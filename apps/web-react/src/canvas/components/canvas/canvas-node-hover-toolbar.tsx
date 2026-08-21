@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { App, Modal, Tooltip } from "antd";
-import { Copy, Download, Ellipsis, FolderPlus, Image as ImageIcon, Info, MessageSquare, Minus, Music2, Pencil, Plus, RefreshCw, Settings2, Trash2, Upload, Video } from "lucide-react";
+import { Copy, Download, Ellipsis, FolderPlus, Image as ImageIcon, MessageSquare, Minus, Music2, Pencil, Plus, RefreshCw, Settings2, Trash2, Upload, Video } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
-import { canvasThemes } from "@/lib/canvas-theme";
+import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
 import { colorWash, nodeTypeColor } from "@/lib/canvas-ui";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { formatBytes, getDataUrlByteSize } from "@/lib/image-utils";
@@ -19,7 +19,7 @@ type CanvasNodeHoverToolbarProps = {
     viewport: ViewportTransform;
     onKeep: (nodeId: string) => void;
     onLeave: () => void;
-    onInfo: (node: CanvasNodeData) => void;
+    onInfo?: (node: CanvasNodeData) => void;
     onEditText: (node: CanvasNodeData) => void;
     onDecreaseFont: (node: CanvasNodeData) => void;
     onIncreaseFont: (node: CanvasNodeData) => void;
@@ -58,7 +58,6 @@ export function CanvasNodeHoverToolbar({
     viewport,
     onKeep,
     onLeave,
-    onInfo,
     onEditText,
     onDecreaseFont,
     onIncreaseFont,
@@ -143,7 +142,6 @@ export function CanvasNodeHoverToolbar({
     }
 
     const baseToolbarTools: ToolbarTool[] = [
-        { id: "info", title: t("canvas.nodeToolbar.infoTitle"), label: t("canvas.nodeToolbar.info"), icon: <Info className="size-4" />, onClick: () => onInfo(node) },
         { id: "delete", title: t("canvas.nodeToolbar.removeTitle"), label: t("common.delete"), icon: <Trash2 className="size-4" />, onClick: () => onDelete(node), danger: true },
     ];
     const nodeToolbarTools: ToolbarTool[] = [
@@ -370,7 +368,7 @@ export function CanvasNodeInfoModal({ node, open, onClose }: { node: CanvasNodeD
     );
 }
 
-function ToolbarAction({ title, label, icon, onClick, showLabel, theme, active = false, danger = false }: ToolbarTool & { showLabel: boolean; theme: (typeof canvasThemes)["light"] }) {
+function ToolbarAction({ title, label, icon, onClick, showLabel, theme, active = false, danger = false }: ToolbarTool & { showLabel: boolean; theme: CanvasTheme }) {
     const hasText = showLabel && Boolean(label);
     return (
         <Tooltip title={title} placement="top" mouseEnterDelay={0.2}>
@@ -405,7 +403,7 @@ function InfoRow({
     value: ReactNode;
     mono?: boolean;
     first?: boolean;
-    theme: (typeof canvasThemes)["light"];
+    theme: CanvasTheme;
     onCopy?: () => void;
 }) {
     return (

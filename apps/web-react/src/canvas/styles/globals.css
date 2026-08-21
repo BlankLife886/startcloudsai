@@ -156,12 +156,6 @@
         border-top: 0;
     }
 
-    html.starclouds-hosted .canvas-app-agent-slot {
-        box-sizing: border-box;
-        height: 100%;
-        padding-top: var(--starclouds-host-header-offset, 62px);
-    }
-
     .canvas-liquid-glass {
         -webkit-backdrop-filter: blur(22px) saturate(180%) contrast(105%);
         backdrop-filter: blur(22px) saturate(180%) contrast(105%);
@@ -548,20 +542,52 @@
     }
 
     .canvas-agent-pill {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        height: 32px;
-        padding: 0 10px;
+        display: grid;
+        place-items: center;
+        width: 40px;
+        height: 40px;
+        padding: 0;
         border-radius: 999px;
-        font-size: 13px;
-        font-weight: 600;
-        letter-spacing: -0.01em;
-        transition: background 160ms ease, color 160ms ease, transform 160ms ease;
+        transition: background 160ms ease, transform 160ms ease;
     }
 
     .canvas-agent-pill:hover {
         transform: translateY(-0.5px);
+    }
+
+    .canvas-agent-panel {
+        color-scheme: light;
+        isolation: isolate;
+    }
+
+    .dark .canvas-agent-panel,
+    html.dark .canvas-agent-panel {
+        color-scheme: dark;
+    }
+
+    .canvas-agent-panel .ant-btn-text {
+        color: var(--agent-muted, inherit);
+    }
+
+    .canvas-agent-panel .ant-btn-text:hover,
+    .canvas-agent-panel .ant-btn-text:focus-visible {
+        color: var(--agent-text, inherit);
+        background: var(--agent-hover, transparent);
+    }
+
+    .canvas-agent-panel .ant-btn-text:disabled,
+    .canvas-agent-panel .ant-btn-text.ant-btn-disabled {
+        color: var(--agent-muted, inherit);
+        opacity: 0.45;
+    }
+
+    .canvas-agent-suggestion {
+        transition: background 160ms ease, border-color 160ms ease;
+    }
+
+    .canvas-agent-suggestion:hover:not(:disabled) {
+        background: var(--agent-hover, transparent) !important;
+        border-color: var(--agent-accent, currentColor) !important;
     }
 
     .canvas-workflow-run {
@@ -603,10 +629,10 @@
     .canvas-workflow-pill {
         display: inline-flex;
         align-items: center;
-        max-width: min(280px, calc(100vw - 420px));
+        max-width: min(320px, calc(100vw - 420px));
         gap: 8px;
         height: 40px;
-        padding: 0 10px 0 8px;
+        padding: 0 6px 0 12px;
         border-radius: 999px;
         border: 1px solid rgba(109, 92, 255, 0.14);
         background: rgba(255, 255, 255, 0.86);
@@ -650,14 +676,32 @@
         display: grid;
         flex-shrink: 0;
         place-items: center;
-        width: 22px;
-        height: 22px;
+        width: 16px;
+        height: 16px;
     }
 
     .canvas-workflow-ring svg {
-        position: absolute;
-        inset: 0;
+        display: block;
+        width: 16px;
+        height: 16px;
         transform: rotate(-90deg);
+    }
+
+    .canvas-workflow-pill__stop {
+        display: grid;
+        flex-shrink: 0;
+        place-items: center;
+        width: 28px;
+        height: 28px;
+        border: 0;
+        border-radius: 999px;
+        background: transparent;
+        cursor: pointer;
+        transition: background 140ms ease;
+    }
+
+    .canvas-workflow-pill__stop:hover {
+        background: rgba(109, 92, 255, 0.12);
     }
 
     .canvas-workflow-pill.is-error {
@@ -2145,6 +2189,24 @@ html.settings-no-animations .canvas-nav-map {
 
 .agent-streamdown {
     overflow-wrap: anywhere;
+}
+
+.agent-streamdown p {
+    margin: 0.4em 0;
+}
+
+.agent-streamdown ul,
+.agent-streamdown ol {
+    margin: 0.4em 0;
+    padding-left: 1.2em;
+}
+
+.agent-streamdown h1,
+.agent-streamdown h2,
+.agent-streamdown h3 {
+    margin: 0.7em 0 0.35em;
+    font-size: 0.95em;
+    font-weight: 650;
 }
 
 .agent-streamdown > :first-child {

@@ -4,10 +4,14 @@ package config
 import (
 	"log"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 )
+
+var assistantOCRLanguagesRE = regexp.MustCompile(`^[A-Za-z0-9_.+-]+$`)
 
 type Config struct {
 	AppEnv         string
@@ -63,12 +67,18 @@ type Config struct {
 	R2Bucket            string
 	R2PresignExpireSecs int
 
-	WorkerConcurrency     int
-	WorkerPollConcurrency int
-	UserMaxRunningTasks   int
-	WorkerImageMemoryMiB  int64
-	APIPprofAddr          string
-	WorkerPprofAddr       string
+	WorkerConcurrency      int
+	WorkerPollConcurrency  int
+	UserMaxRunningTasks    int
+	WorkerImageMemoryMiB   int64
+	APIPprofAddr           string
+	WorkerPprofAddr        string
+	AssistantOCREnabled    bool
+	AssistantPDFToPPMPath  string
+	AssistantTesseractPath string
+	AssistantOCRLanguages  string
+	AssistantOCRMaxPages   int
+	AssistantOCRTimeout    time.Duration
 
 	SessionCookieName string
 	SessionTTLDays    int
@@ -190,12 +200,18 @@ func Load() *Config {
 		R2Bucket:            getenv("R2_BUCKET", "starcloudsai"),
 		R2PresignExpireSecs: getenvInt("R2_PRESIGN_EXPIRE_SECS", 3600),
 
-		WorkerConcurrency:     getenvInt("WORKER_CONCURRENCY", 32),
-		WorkerPollConcurrency: getenvInt("WORKER_POLL_CONCURRENCY", 0),
-		UserMaxRunningTasks:   getenvInt("USER_MAX_RUNNING_TASKS", 100),
-		WorkerImageMemoryMiB:  int64(getenvInt("WORKER_IMAGE_MEMORY_MIB", 1024)),
-		APIPprofAddr:          strings.TrimSpace(getenv("API_PPROF_ADDR", "")),
-		WorkerPprofAddr:       strings.TrimSpace(getenv("WORKER_PPROF_ADDR", "")),
+		WorkerConcurrency:      getenvInt("WORKER_CONCURRENCY", 32),
+		WorkerPollConcurrency:  getenvInt("WORKER_POLL_CONCURRENCY", 0),
+		UserMaxRunningTasks:    getenvInt("USER_MAX_RUNNING_TASKS", 100),
+		WorkerImageMemoryMiB:   int64(getenvInt("WORKER_IMAGE_MEMORY_MIB", 1024)),
+		APIPprofAddr:           strings.TrimSpace(getenv("API_PPROF_ADDR", "")),
+		WorkerPprofAddr:        strings.TrimSpace(getenv("WORKER_PPROF_ADDR", "")),
+		AssistantOCREnabled:    getenvBool("ASSISTANT_OCR_ENABLED", false),
+		AssistantPDFToPPMPath:  strings.TrimSpace(getenv("ASSISTANT_OCR_PDFTOPPM_PATH", "/usr/bin/pdftoppm")),
+		AssistantTesseractPath: strings.TrimSpace(getenv("ASSISTANT_OCR_TESSERACT_PATH", "/usr/bin/tesseract")),
+		AssistantOCRLanguages:  strings.TrimSpace(getenv("ASSISTANT_OCR_LANGUAGES", "chi_sim+eng")),
+		AssistantOCRMaxPages:   getenvInt("ASSISTANT_OCR_MAX_PAGES", 20),
+		AssistantOCRTimeout:    getenvDuration("ASSISTANT_OCR_TIMEOUT", 90*time.Second),
 
 		SessionCookieName: "sc_session",
 		SessionTTLDays:    30,
@@ -206,6 +222,15 @@ func Load() *Config {
 	}
 	if cfg.WorkerImageMemoryMiB < 64 {
 		log.Fatal("WORKER_IMAGE_MEMORY_MIB 不能小于 64")
+	}
+	if cfg.AssistantOCREnabled {
+		if !filepath.IsAbs(cfg.AssistantPDFToPPMPath) || !filepath.IsAbs(cfg.AssistantTesseractPath) {
+			log.Fatal("ASSISTANT_OCR_PDFTOPPM_PATH 与 ASSISTANT_OCR_TESSERACT_PATH 必须是绝对路径")
+		}
+		if cfg.AssistantOCRLanguages == "" || len(cfg.AssistantOCRLanguages) > 100 || !assistantOCRLanguagesRE.MatchString(cfg.AssistantOCRLanguages) ||
+			cfg.AssistantOCRMaxPages < 1 || cfg.AssistantOCRMaxPages > 20 || cfg.AssistantOCRTimeout > 5*time.Minute {
+			log.Fatal("OCR 配置无效：语言不能为空，页数须为 1-20，超时不能超过 5 分钟")
+		}
 	}
 	if (cfg.LanjingPaySecret != "" || cfg.LanjingPayNotifyURL != "") && !cfg.LanjingPayEnabled() {
 		log.Fatal("蓝鲸支付配置不完整：LANJING_PAY_SECRET 与 LANJING_PAY_NOTIFY_URL 必须同时设置")

@@ -91,7 +91,7 @@ Compose 默认把网关绑定到 `127.0.0.1`。线上必须由宿主机或独立
 
 ## 本地开发
 
-推荐 Node.js 22、npm 10+、Go 1.26.5，并准备 PostgreSQL 16/17 与 Redis 7。前端默认把 `/api` 代理到 `http://localhost:8000`。
+推荐 Node.js 22、npm 10+、Go 1.26.6，并准备 PostgreSQL 16/17 与 Redis 7。前端默认把 `/api` 代理到 `http://localhost:8000`。
 
 ```bash
 # API（自动迁移；环境变量默认连接 localhost）

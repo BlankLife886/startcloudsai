@@ -653,14 +653,31 @@ function scheduleReload() {
 watch([query, categoryFilter, typeFilter, statusFilter, sourceFilter, orderFilter, tagFilter], scheduleReload)
 watch([statusFilter, sourceFilter], clearSelection)
 
+const hasFilters = computed(
+  () =>
+    Boolean(query.value.trim()) ||
+    typeFilter.value !== 'all' ||
+    statusFilter.value !== 'all' ||
+    sourceFilter.value !== 'all' ||
+    orderFilter.value !== 'manual' ||
+    tagFilter.value.length > 0,
+)
+
 function resetFilters() {
   query.value = ''
-  categoryFilter.value = 'all'
   typeFilter.value = 'all'
   statusFilter.value = 'all'
   sourceFilter.value = 'all'
   orderFilter.value = 'manual'
   tagFilter.value = []
+}
+
+function onLibraryMore(command: string | number | object) {
+  if (command === 'import') importFileRef.value?.click()
+  else if (command === 'export-json') exportPromptLibrary('json')
+  else if (command === 'export-csv') exportPromptLibrary('csv')
+  else if (command === 'sort') openSortDrawer()
+  else if (command === 'categories') categoryManagerOpen.value = true
 }
 
 /* 大规模排序管理：服务端分页，每次只渲染一小段；跨页移动直接输入目标名次。
@@ -1012,6 +1029,11 @@ const syncingSourceId = ref('')
 const importBatches = ref<PromptImportBatch[]>([])
 const importBatchCreating = ref(false)
 const importMode = ref<'manual' | 'rules' | 'ai'>('rules')
+const IMPORT_MODE_OPTIONS = [
+  { label: '自动规则', value: 'rules' },
+  { label: 'AI 辅助', value: 'ai' },
+  { label: '全人工', value: 'manual' },
+] as const
 const importReviewOpen = ref(false)
 const activeImportBatch = ref<PromptImportBatch | null>(null)
 const importItems = ref<PromptImportItem[]>([])
@@ -1019,6 +1041,18 @@ const importItemsLoading = ref(false)
 const importAnalyzing = ref(false)
 const importBulkWorking = ref(false)
 const importView = ref<'all' | 'duplicates' | 'pending' | 'approved' | 'rejected'>('all')
+const IMPORT_VIEW_TABS: { label: string; value: typeof importView.value; countKey?: 'duplicateCount' | 'approvedCount' }[] = [
+  { label: '全部', value: 'all' },
+  { label: '重复项', value: 'duplicates', countKey: 'duplicateCount' },
+  { label: '待处理', value: 'pending' },
+  { label: '已通过', value: 'approved', countKey: 'approvedCount' },
+  { label: '已移除', value: 'rejected' },
+]
+const importReviewSubtitle = computed(() => {
+  const batch = activeImportBatch.value
+  if (!batch) return ''
+  return `共 ${batch.fetchedCount} 条 · 重复 ${batch.duplicateCount} · 已通过 ${batch.approvedCount} · 已入库 ${batch.importedCount + batch.updatedCount}`
+})
 const importPage = ref(1)
 const importTotal = ref(0)
 const selectedImportItemIds = ref<string[]>([])
@@ -1240,6 +1274,17 @@ interface PromptImportBulkResult {
   updated: number
 }
 
+function onImportReviewMore(command: string) {
+  if (
+    command === 'drop-duplicates' ||
+    command === 'keep-duplicates' ||
+    command === 'reject-blocked' ||
+    command === 'approve-safe'
+  ) {
+    void bulkReviewImport(command)
+  }
+}
+
 async function bulkReviewImport(action: string, itemIds: string[] = []) {
   const batch = activeImportBatch.value
   if (!batch || importBulkWorking.value) return
@@ -1351,17 +1396,6 @@ function intervalLabel(minutes: number | undefined): string {
 
 function sourceUrlOf(source: PromptSource) {
   return source.url || ''
-}
-
-async function copySourceUrl(source: PromptSource) {
-  const url = sourceUrlOf(source)
-  if (!url) return
-  try {
-    await navigator.clipboard.writeText(url)
-    ElMessage.success('源地址已复制')
-  } catch {
-    ElMessage.warning('复制失败，请手动复制')
-  }
 }
 
 async function copyPromptText(item: PromptItem) {
@@ -1570,7 +1604,7 @@ onBeforeUnmount(() => {
         >
           <el-option v-for="tag in availableTags" :key="tag" :label="displayTag(tag)" :value="tag" />
         </el-select>
-        <el-button @click="resetFilters">重置</el-button>
+        <el-button v-if="hasFilters" @click="resetFilters">重置</el-button>
       </div>
       <div class="library-toolbar__actions">
         <input
@@ -1580,13 +1614,28 @@ onBeforeUnmount(() => {
           accept=".json,.csv,application/json,text/csv"
           @change="importPromptLibraryFile"
         />
-        <el-button :icon="UploadFilled" :loading="importFileUploading" @click="importFileRef?.click()">导入</el-button>
-        <el-dropdown @command="exportPromptLibrary">
-          <el-button :icon="Download">导出<el-icon class="el-icon--right"><ArrowDown /></el-icon></el-button>
+        <el-dropdown trigger="click" @command="onLibraryMore">
+          <el-button>
+            更多
+            <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+          </el-button>
           <template #dropdown>
             <el-dropdown-menu>
-              <el-dropdown-item command="json">导出全部 JSON</el-dropdown-item>
-              <el-dropdown-item command="csv">导出全部 CSV</el-dropdown-item>
+              <el-dropdown-item command="import" :icon="UploadFilled">
+                导入 JSON / CSV
+              </el-dropdown-item>
+              <el-dropdown-item command="export-json" :icon="Download">
+                导出 JSON
+              </el-dropdown-item>
+              <el-dropdown-item command="export-csv" :icon="Download">
+                导出 CSV
+              </el-dropdown-item>
+              <el-dropdown-item command="sort" :icon="Rank" divided>
+                排序
+              </el-dropdown-item>
+              <el-dropdown-item command="categories" :icon="CollectionTag">
+                分类管理
+              </el-dropdown-item>
             </el-dropdown-menu>
           </template>
         </el-dropdown>
@@ -1601,8 +1650,6 @@ onBeforeUnmount(() => {
         >
           {{ selectionMode ? '退出多选' : '多选' }}
         </el-button>
-        <el-button :icon="Rank" @click="openSortDrawer">排序</el-button>
-        <el-button :icon="CollectionTag" @click="categoryManagerOpen = true">分类管理</el-button>
         <div class="library-toolbar__buttons">
           <el-button type="primary" :icon="Plus" @click="openEditor()">新增</el-button>
           <el-button :icon="Refresh" :loading="loading" @click="refresh">刷新</el-button>
@@ -1843,9 +1890,16 @@ onBeforeUnmount(() => {
 
             <div v-if="!initialLoading && !visibleItems.length" class="library-empty">
               <el-icon><CollectionTag /></el-icon>
-              <strong>没有匹配的提示词</strong>
-              <span>调整分类或筛选条件后再试</span>
-              <el-button @click="resetFilters">清除筛选</el-button>
+              <strong>{{ items.length || promptScopeTotal ? '没有匹配的提示词' : '还没有提示词' }}</strong>
+              <span>
+                {{
+                  hasFilters || categoryFilter !== 'all'
+                    ? '调整分类或筛选条件后再试'
+                    : '新增或导入后会立即出现在用户端提示词库'
+                }}
+              </span>
+              <el-button v-if="hasFilters" @click="resetFilters">清除筛选</el-button>
+              <el-button v-else type="primary" :icon="Plus" @click="openEditor()">新增提示词</el-button>
             </div>
           </div>
 
@@ -2200,7 +2254,7 @@ onBeforeUnmount(() => {
 
     <el-drawer
       v-model="sourcesDrawerOpen"
-      size="620px"
+      size="640px"
       append-to-body
       class="library-drawer sources-drawer"
     >
@@ -2209,66 +2263,65 @@ onBeforeUnmount(() => {
           <span class="library-drawer__mark"><el-icon><Link /></el-icon></span>
           <div>
             <strong>提示词数据源</strong>
-            <small>{{ enabledSourceCount }} / {{ sources.length }} 个数据源已启用</small>
+            <small>{{ enabledSourceCount }} / {{ sources.length }} 个已启用</small>
           </div>
-          <el-button :icon="Plus" @click="openSourceEditor()">新建源</el-button>
+          <el-button type="primary" :icon="Plus" @click="openSourceEditor()">新建源</el-button>
         </div>
       </template>
       <div class="sources-panel">
         <section class="import-launcher">
-          <div class="import-launcher__head">
-            <span class="import-launcher__icon"><el-icon><MagicStick /></el-icon></span>
-            <div>
-              <strong>批量获取</strong>
-              <span>从 {{ enabledSourceCount }} 个启用源创建审核批次</span>
-            </div>
-          </div>
-          <div class="import-launcher__actions">
-            <el-segmented
-              v-model="importMode"
-              :options="[
-                { label: '自动规则', value: 'rules' },
-                { label: 'AI 辅助', value: 'ai' },
-                { label: '全人工', value: 'manual' },
-              ]"
-            />
-            <el-button
-              type="primary"
-              :icon="MagicStick"
-              :loading="importBatchCreating"
-              @click="createImportBatch"
+          <div class="import-mode-pills" role="radiogroup" aria-label="导入模式">
+            <button
+              v-for="mode in IMPORT_MODE_OPTIONS"
+              :key="mode.value"
+              type="button"
+              role="radio"
+              :aria-checked="importMode === mode.value"
+              class="import-mode-pills__item"
+              :class="{ 'is-active': importMode === mode.value }"
+              @click="importMode = mode.value"
             >
-              获取全部源
-            </el-button>
+              {{ mode.label }}
+            </button>
           </div>
+          <el-button
+            type="primary"
+            :icon="MagicStick"
+            :loading="importBatchCreating"
+            @click="createImportBatch"
+          >
+            获取全部源
+          </el-button>
         </section>
 
         <section v-if="importBatches.length" class="import-batches">
-          <header><strong>最近批次</strong><span>待审核批次可随时继续处理</span></header>
-          <button
-            v-for="batch in importBatches.slice(0, 5)"
-            :key="batch.id"
-            type="button"
-            class="import-batch-row"
-            @click="openImportBatch(batch)"
-          >
-            <span class="import-batch-row__status" :class="`is-${batch.status}`">
-              {{ batch.status === 'review' ? '待审核' : batch.status === 'completed' ? '已发布' : batch.status === 'failed' ? '失败' : '处理中' }}
-            </span>
-            <span>{{ formatTime(batch.createdAt) }}</span>
-            <span>{{ batch.fetchedCount }} 条</span>
-            <span v-if="batch.duplicateCount">重复 {{ batch.duplicateCount }}</span>
-            <span class="import-batch-row__arrow">›</span>
-          </button>
+          <header>
+            <strong>最近批次</strong>
+            <span>待审核可继续处理</span>
+          </header>
+          <div class="import-batch-grid">
+            <button
+              v-for="batch in importBatches.slice(0, 6)"
+              :key="batch.id"
+              type="button"
+              class="import-batch-card"
+              @click="openImportBatch(batch)"
+            >
+              <span class="import-batch-card__status" :class="`is-${batch.status}`">
+                {{ batch.status === 'review' ? '待审核' : batch.status === 'completed' ? '已发布' : batch.status === 'failed' ? '失败' : '处理中' }}
+              </span>
+              <span class="import-batch-card__counts">
+                <strong class="tnum">{{ batch.fetchedCount }} 条</strong>
+                <span v-if="batch.duplicateCount">重复 {{ batch.duplicateCount }}</span>
+              </span>
+            </button>
+          </div>
         </section>
 
         <section class="source-list-section">
           <header class="source-list-head">
-            <div>
-              <strong>数据源</strong>
-              <span>{{ sources.length }} 个</span>
-            </div>
-            <small>{{ enabledSourceCount }} 个启用</small>
+            <strong>数据源</strong>
+            <span class="tnum">{{ sources.length }} 个</span>
           </header>
 
           <div v-loading="sourcesLoading" class="source-list">
@@ -2281,7 +2334,7 @@ onBeforeUnmount(() => {
             <header class="source-card__head">
               <div class="source-card__title">
                 <span class="source-card__state" :class="{ 'is-active': source.enabled }" />
-                <strong :title="source.name">{{ source.name }}</strong>
+                <strong :title="sourceUrlOf(source) || source.name">{{ source.name }}</strong>
                 <span class="format-badge" :style="{ '--format-color': formatMeta(source.format).color }">
                   {{ formatMeta(source.format).label }}
                 </span>
@@ -2294,67 +2347,45 @@ onBeforeUnmount(() => {
               />
             </header>
 
-            <button
-              class="source-card__url"
-              type="button"
-              title="复制源地址"
-              @click="copySourceUrl(source)"
-            >
-              <span>{{ sourceUrlOf(source) || '未填写源地址' }}</span>
-              <el-icon><CopyDocument /></el-icon>
-            </button>
-
             <div v-if="source.lastError" class="source-card__error">
               <el-icon><WarningFilled /></el-icon>
               <span :title="source.lastError">{{ source.lastError }}</span>
             </div>
 
             <footer class="source-card__footer">
-              <div class="source-card__meta">
-                <span class="is-strong">{{ source.itemCount ?? 0 }} 条</span>
+              <p class="source-card__meta">
+                <span class="tnum">{{ source.itemCount ?? 0 }} 条</span>
                 <span>{{ taskTypeLabel(source.taskType) }}</span>
-                <span>
-                  {{ source.lastSyncedAt ? `${relativeTime(source.lastSyncedAt)}同步` : '尚未同步'
-                  }}<template v-if="source.lastSyncedAt && source.lastSyncDurationMs != null">
-                    · {{ source.lastSyncDurationMs }}ms</template
-                  >
-                </span>
-                <span :class="source.autoSyncEnabled ? 'is-auto' : ''">
+                <span>{{ source.lastSyncedAt ? `${relativeTime(source.lastSyncedAt)}同步` : '尚未同步' }}</span>
+                <span :class="{ 'is-auto': source.autoSyncEnabled }">
                   {{ source.autoSyncEnabled ? intervalLabel(source.syncIntervalMinutes) : '仅手动' }}
                 </span>
-              </div>
-
+              </p>
               <div class="source-card__actions">
                 <el-button
                   size="small"
-                  type="primary"
-                  plain
+                  text
                   :icon="Refresh"
                   :loading="syncingSourceId === source.id"
                   @click="syncSource(source)"
                 >
                   获取
                 </el-button>
-                <el-tooltip content="编辑数据源" placement="top">
-                  <el-button
-                    size="small"
-                    circle
-                    :icon="EditPen"
-                    :aria-label="`编辑 ${source.name}`"
-                    @click="openSourceEditor(source)"
-                  />
-                </el-tooltip>
-                <el-tooltip content="删除数据源" placement="top">
-                  <el-button
-                    size="small"
-                    circle
-                    type="danger"
-                    text
-                    :icon="Delete"
-                    :aria-label="`删除 ${source.name}`"
-                    @click="removeSource(source)"
-                  />
-                </el-tooltip>
+                <el-button
+                  size="small"
+                  text
+                  :icon="EditPen"
+                  :aria-label="`编辑 ${source.name}`"
+                  @click="openSourceEditor(source)"
+                />
+                <el-button
+                  size="small"
+                  text
+                  type="danger"
+                  :icon="Delete"
+                  :aria-label="`删除 ${source.name}`"
+                  @click="removeSource(source)"
+                />
               </div>
             </footer>
           </article>
@@ -2362,6 +2393,7 @@ onBeforeUnmount(() => {
           <div v-if="!sourcesLoading && !sources.length" class="sources-empty">
             <el-icon><Link /></el-icon>
             <strong>还没有数据源</strong>
+            <span>新建后即可批量获取并审核导入</span>
             <el-button type="primary" :icon="Plus" @click="openSourceEditor()">新建源</el-button>
           </div>
           </div>
@@ -2432,26 +2464,34 @@ onBeforeUnmount(() => {
       </el-form>
     </AdminDialog>
 
-    <el-dialog
+    <AdminDialog
       v-model="importReviewOpen"
-      width="min(1180px, 94vw)"
-      append-to-body
-      destroy-on-close
-      class="prompt-import-dialog"
+      title="提示词批次审核"
+      :subtitle="importReviewSubtitle"
+      :icon="CollectionTag"
+      width="min(1120px, 94vw)"
+      nested-scroll
+      panel-class="prompt-import-dialog"
+      confirm-text="关闭"
+      :show-cancel="false"
+      @confirm="importReviewOpen = false"
     >
-      <template #header>
-        <div class="import-review-head">
-          <div>
-            <strong>提示词批次审核</strong>
-            <span v-if="activeImportBatch">
-              共 {{ activeImportBatch.fetchedCount }} 条 · 重复 {{ activeImportBatch.duplicateCount }} 条 ·
-              已通过 {{ activeImportBatch.approvedCount }} 条 · 已入库
-              {{ activeImportBatch.importedCount + activeImportBatch.updatedCount }} 条
-            </span>
-          </div>
-          <el-tag v-if="activeImportBatch?.status === 'review'" type="warning" effect="light">待完成</el-tag>
-          <el-tag v-else-if="activeImportBatch?.status === 'completed'" type="success" effect="light">已发布</el-tag>
-        </div>
+      <template #meta>
+        <span
+          v-if="activeImportBatch"
+          class="import-review-status"
+          :class="`is-${activeImportBatch.status}`"
+        >
+          {{
+            activeImportBatch.status === 'review'
+              ? '待完成'
+              : activeImportBatch.status === 'completed'
+                ? '已发布'
+                : activeImportBatch.status === 'failed'
+                  ? '失败'
+                  : '处理中'
+          }}
+        </span>
       </template>
 
       <input
@@ -2462,155 +2502,220 @@ onBeforeUnmount(() => {
         @change="uploadImportCover"
       />
 
-      <div class="import-review-toolbar">
-        <el-segmented
-          v-model="importView"
-          :options="[
-            { label: '全部', value: 'all' },
-            { label: `重复项 ${activeImportBatch?.duplicateCount ?? 0}`, value: 'duplicates' },
-            { label: '待处理', value: 'pending' },
-            { label: '已通过', value: 'approved' },
-            { label: '已移除', value: 'rejected' },
-          ]"
-        />
-        <div class="import-review-toolbar__actions">
-          <el-button :icon="MagicStick" :loading="importAnalyzing" @click="analyzeImportBatch">AI 自动检测</el-button>
-          <el-button @click="bulkReviewImport('drop-duplicates')">重复项全部移除</el-button>
-          <el-button @click="bulkReviewImport('keep-duplicates')">重复项全部保留</el-button>
-          <el-button type="danger" plain @click="bulkReviewImport('reject-blocked')">移除违规项</el-button>
-          <el-button type="success" plain @click="bulkReviewImport('approve-safe')">通过安全项</el-button>
-          <el-button type="success" :loading="importBulkWorking" @click="approveAllImportItems">全部通过</el-button>
-        </div>
-      </div>
-
-      <div v-if="importItems.length" class="import-review-selection">
-        <el-checkbox
-          :model-value="importPageAllSelected"
-          :indeterminate="importPageSomeSelected"
-          :disabled="!importSelectableItems.length || importBulkWorking"
-          @change="toggleImportPageSelection"
-        >
-          全选当前页
-        </el-checkbox>
-        <span>已选择 {{ selectedImportItemIds.length }} 条</span>
-        <div>
-          <el-button
-            size="small"
-            type="success"
-            :disabled="!selectedImportItemIds.length"
-            :loading="importBulkWorking"
-            @click="approveSelectedImportItems"
-          >批量通过并入库</el-button>
-          <el-button
-            size="small"
-            type="danger"
-            plain
-            :disabled="!selectedImportItemIds.length"
-            :loading="importBulkWorking"
-            @click="rejectSelectedImportItems"
-          >批量移除</el-button>
-        </div>
-      </div>
-
-      <div v-loading="importItemsLoading" class="import-review-list">
-        <article
-          v-for="item in importItems"
-          :key="item.id"
-          class="import-review-item"
-          :class="{ 'is-selected': selectedImportItemSet.has(item.id), 'is-published': item.publishedAt }"
-        >
-          <div class="import-review-item__check">
-            <el-checkbox
-              v-if="!item.publishedAt"
-              :model-value="selectedImportItemSet.has(item.id)"
-              :aria-label="`选择 ${item.title}`"
-              @change="toggleImportItemSelection(item, $event)"
-            />
-            <el-icon v-else><CircleCheck /></el-icon>
-          </div>
-          <div
-            v-loading="importCoverUpdatingIds.has(item.id)"
-            class="import-review-item__cover"
-          >
+      <div class="import-review">
+        <div class="import-review-toolbar">
+          <div class="import-review-tabs" role="tablist" aria-label="审核范围">
             <button
-              v-if="item.coverUrl"
+              v-for="tab in IMPORT_VIEW_TABS"
+              :key="tab.value"
               type="button"
-              class="import-review-cover-preview"
-              aria-label="查看封面大图"
-              title="点击查看大图"
-              @click.stop="openImportCoverPreview(item)"
+              role="tab"
+              class="import-review-tabs__item"
+              :class="{ 'is-active': importView === tab.value }"
+              :aria-selected="importView === tab.value"
+              @click="importView = tab.value"
             >
-              <el-image :src="item.coverUrl" fit="cover" lazy />
+              {{ tab.label }}
+              <em v-if="tab.countKey && activeImportBatch" class="tnum">
+                {{ activeImportBatch[tab.countKey] }}
+              </em>
             </button>
-            <el-icon v-else><Picture /></el-icon>
-            <div v-if="!item.publishedAt" class="import-review-cover-actions" @click.stop>
-              <el-tooltip content="上传图片替换" placement="top">
-                <button
-                  type="button"
-                  :disabled="importCoverUpdatingIds.has(item.id)"
-                  aria-label="上传图片替换"
-                  @click="triggerImportCoverPick(item)"
-                >
-                  <el-icon><UploadFilled /></el-icon>
-                </button>
-              </el-tooltip>
-            </div>
           </div>
-          <div class="import-review-item__body">
-            <header>
-              <div><strong>{{ item.title }}</strong><span>{{ item.sourceName }}</span></div>
-              <div class="import-review-item__badges">
-                <el-tag v-if="item.duplicateKind !== 'none'" type="warning" size="small">重复：{{ item.duplicateTitle || '已有内容' }}</el-tag>
-                <el-tag :type="item.complianceStatus === 'blocked' ? 'danger' : item.complianceStatus === 'safe' ? 'success' : 'info'" size="small">
-                  {{ item.complianceStatus === 'blocked' ? '疑似违规' : item.complianceStatus === 'safe' ? '规则安全' : '待检测' }}
-                </el-tag>
-                <el-tag v-if="item.publishedAt" type="success" effect="dark" size="small">已入库</el-tag>
-              </div>
-            </header>
-            <p>{{ item.prompt }}</p>
-            <small v-if="item.complianceReason">{{ item.complianceReason }}</small>
-            <footer v-if="!item.publishedAt">
-              <el-select
-                :model-value="item.category"
-                size="small"
-                style="width: 128px"
-                @change="patchImportItem(item, { category: $event })"
-              >
-                <el-option v-for="category in categoryOptions.slice(1)" :key="category.value" :label="category.label" :value="category.value" />
-              </el-select>
-              <template v-if="item.duplicateKind !== 'none'">
-                <el-button size="small" :type="item.duplicateAction === 'keep' ? 'primary' : ''" @click="patchImportItem(item, { duplicateAction: 'keep' })">保留</el-button>
-                <el-button size="small" :type="item.duplicateAction === 'drop' ? 'danger' : ''" @click="patchImportItem(item, { duplicateAction: 'drop', reviewStatus: 'rejected' })">移除</el-button>
+          <div class="import-review-toolbar__actions">
+            <el-button :icon="MagicStick" :loading="importAnalyzing" @click="analyzeImportBatch">
+              AI 检测
+            </el-button>
+            <el-dropdown trigger="click" @command="onImportReviewMore">
+              <el-button>
+                更多
+                <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+              </el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="drop-duplicates">重复项全部移除</el-dropdown-item>
+                  <el-dropdown-item command="keep-duplicates">重复项全部保留</el-dropdown-item>
+                  <el-dropdown-item command="reject-blocked" divided>移除违规项</el-dropdown-item>
+                  <el-dropdown-item command="approve-safe">通过安全项</el-dropdown-item>
+                </el-dropdown-menu>
               </template>
-              <el-button size="small" :icon="CircleCheck" @click="approveImportItem(item)">合规并通过</el-button>
-              <el-button size="small" type="danger" plain :icon="CircleClose" @click="patchImportItem(item, { complianceStatus: 'blocked', reviewStatus: 'rejected' })">移除</el-button>
-            </footer>
-            <footer v-else class="import-review-item__published">
-              <span>该项审核通过后已自动加入提示词库</span>
-            </footer>
+            </el-dropdown>
+            <el-button type="primary" :loading="importBulkWorking" @click="approveAllImportItems">
+              全部通过
+            </el-button>
           </div>
-        </article>
-        <el-empty v-if="!importItemsLoading && !importItems.length" description="当前范围没有数据" />
-      </div>
+        </div>
 
-      <el-pagination
-        v-if="importTotal > 50"
-        v-model:current-page="importPage"
-        :page-size="50"
-        :total="importTotal"
-        layout="prev, pager, next, total"
-        @current-change="loadImportItems"
-      />
+        <div v-if="importItems.length" class="import-review-selection">
+          <el-checkbox
+            :model-value="importPageAllSelected"
+            :indeterminate="importPageSomeSelected"
+            :disabled="!importSelectableItems.length || importBulkWorking"
+            @change="toggleImportPageSelection"
+          >
+            全选当前页
+          </el-checkbox>
+          <span>已选 {{ selectedImportItemIds.length }}</span>
+          <div v-if="selectedImportItemIds.length" class="import-review-selection__actions">
+            <el-button
+              size="small"
+              type="primary"
+              :loading="importBulkWorking"
+              @click="approveSelectedImportItems"
+            >
+              通过并入库
+            </el-button>
+            <el-button
+              size="small"
+              type="danger"
+              plain
+              :loading="importBulkWorking"
+              @click="rejectSelectedImportItems"
+            >
+              移除
+            </el-button>
+          </div>
+        </div>
+
+        <div v-loading="importItemsLoading" class="import-review-list">
+          <article
+            v-for="item in importItems"
+            :key="item.id"
+            class="import-review-item"
+            :class="{ 'is-selected': selectedImportItemSet.has(item.id), 'is-published': item.publishedAt }"
+          >
+            <div class="import-review-item__check">
+              <el-checkbox
+                v-if="!item.publishedAt"
+                :model-value="selectedImportItemSet.has(item.id)"
+                :aria-label="`选择 ${item.title}`"
+                @change="toggleImportItemSelection(item, $event)"
+              />
+              <el-icon v-else><CircleCheck /></el-icon>
+            </div>
+            <div
+              v-loading="importCoverUpdatingIds.has(item.id)"
+              class="import-review-item__cover"
+            >
+              <button
+                v-if="item.coverUrl"
+                type="button"
+                class="import-review-cover-preview"
+                aria-label="查看封面大图"
+                title="点击查看大图"
+                @click.stop="openImportCoverPreview(item)"
+              >
+                <el-image :src="item.coverUrl" fit="cover" lazy />
+              </button>
+              <el-icon v-else><Picture /></el-icon>
+              <div v-if="!item.publishedAt" class="import-review-cover-actions" @click.stop>
+                <el-tooltip content="上传图片替换" placement="top">
+                  <button
+                    type="button"
+                    :disabled="importCoverUpdatingIds.has(item.id)"
+                    aria-label="上传图片替换"
+                    @click="triggerImportCoverPick(item)"
+                  >
+                    <el-icon><UploadFilled /></el-icon>
+                  </button>
+                </el-tooltip>
+              </div>
+            </div>
+            <div class="import-review-item__body">
+              <header>
+                <div>
+                  <strong>{{ item.title }}</strong>
+                  <span>{{ item.sourceName }}</span>
+                </div>
+                <div class="import-review-item__badges">
+                  <span v-if="item.duplicateKind !== 'none'" class="is-warning">
+                    重复
+                  </span>
+                  <span
+                    :class="
+                      item.complianceStatus === 'blocked'
+                        ? 'is-danger'
+                        : item.complianceStatus === 'safe'
+                          ? 'is-success'
+                          : 'is-muted'
+                    "
+                  >
+                    {{
+                      item.complianceStatus === 'blocked'
+                        ? '疑似违规'
+                        : item.complianceStatus === 'safe'
+                          ? '规则安全'
+                          : '待检测'
+                    }}
+                  </span>
+                  <span v-if="item.publishedAt" class="is-stored">已入库</span>
+                </div>
+              </header>
+              <p>{{ item.prompt }}</p>
+              <small v-if="item.complianceReason">{{ item.complianceReason }}</small>
+              <footer v-if="!item.publishedAt">
+                <el-select
+                  :model-value="item.category"
+                  size="small"
+                  style="width: 128px"
+                  @change="patchImportItem(item, { category: $event })"
+                >
+                  <el-option
+                    v-for="category in categoryOptions.slice(1)"
+                    :key="category.value"
+                    :label="category.label"
+                    :value="category.value"
+                  />
+                </el-select>
+                <template v-if="item.duplicateKind !== 'none'">
+                  <el-button
+                    size="small"
+                    :type="item.duplicateAction === 'keep' ? 'primary' : ''"
+                    @click="patchImportItem(item, { duplicateAction: 'keep' })"
+                  >
+                    保留
+                  </el-button>
+                  <el-button
+                    size="small"
+                    :type="item.duplicateAction === 'drop' ? 'danger' : ''"
+                    @click="patchImportItem(item, { duplicateAction: 'drop', reviewStatus: 'rejected' })"
+                  >
+                    移除
+                  </el-button>
+                </template>
+                <el-button size="small" :icon="CircleCheck" @click="approveImportItem(item)">
+                  通过
+                </el-button>
+                <el-button
+                  size="small"
+                  type="danger"
+                  plain
+                  :icon="CircleClose"
+                  @click="patchImportItem(item, { complianceStatus: 'blocked', reviewStatus: 'rejected' })"
+                >
+                  移除
+                </el-button>
+              </footer>
+            </div>
+          </article>
+          <el-empty v-if="!importItemsLoading && !importItems.length" description="当前范围没有数据" />
+        </div>
+      </div>
 
       <template #footer>
         <div class="import-review-footer">
-          <span>审核通过的数据会立即加入提示词库；新增内容保留 24 小时最新状态。</span>
-          <div>
-            <el-button type="primary" @click="importReviewOpen = false">关闭</el-button>
-          </div>
+          <el-pagination
+            v-if="importTotal > 50"
+            v-model:current-page="importPage"
+            :page-size="50"
+            :total="importTotal"
+            layout="prev, pager, next, total"
+            @current-change="loadImportItems"
+          />
+          <span v-else />
+          <el-button type="primary" @click="importReviewOpen = false">关闭</el-button>
         </div>
       </template>
-    </el-dialog>
+    </AdminDialog>
 
     <el-image-viewer
       v-if="importCoverPreviewUrl"
@@ -2634,8 +2739,7 @@ onBeforeUnmount(() => {
   grid-template-rows: auto minmax(0, 1fr);
   gap: 12px;
   overflow: hidden;
-  padding: 16px 18px;
-  background: var(--bg);
+  padding: 0;
 }
 
 .library-toolbar {
@@ -2689,11 +2793,16 @@ onBeforeUnmount(() => {
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
   white-space: nowrap;
 
   :deep(.el-button) {
-    margin-left: 0 !important;
+    margin: 0;
+    height: 32px;
   }
 
   :deep(.el-button + .el-button) {
@@ -2717,7 +2826,7 @@ onBeforeUnmount(() => {
   overscroll-behavior: contain;
   padding: 14px 10px;
   border: 1px solid var(--library-border);
-  border-radius: 16px;
+  border-radius: var(--radius-card);
   background: var(--surface);
   box-shadow: var(--shadow-sm);
 
@@ -2814,7 +2923,7 @@ onBeforeUnmount(() => {
   grid-template-rows: minmax(0, 1fr);
   overflow: hidden;
   border: 1px solid var(--library-border);
-  border-radius: 16px;
+  border-radius: var(--radius-card);
   background: var(--surface);
   box-shadow: var(--shadow-sm);
 }
@@ -2827,7 +2936,7 @@ onBeforeUnmount(() => {
   scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--accent) 28%, transparent) transparent;
-  padding: 14px 14px 12px;
+  padding: 16px 16px 12px;
 }
 
 .prompt-load-status {
@@ -3413,14 +3522,14 @@ onBeforeUnmount(() => {
   gap: 8px;
   color: var(--library-muted);
   border: 1px dashed var(--library-border);
-  border-radius: 14px;
+  border-radius: var(--radius-card);
 
   .el-icon {
     font-size: 34px;
   }
 
   strong {
-    color: var(--el-text-color-primary);
+    color: var(--ink);
   }
 }
 
@@ -3853,73 +3962,71 @@ onBeforeUnmount(() => {
 
 .import-launcher {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 12px 16px;
-  padding: 14px 0;
-  border-bottom: 1px solid var(--line);
+  gap: 12px;
+  padding: 8px 10px 8px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface-2);
 }
 
-.import-launcher__head {
-  display: flex;
-  min-width: 150px;
-  flex: 1 1 160px;
-  align-items: center;
-  gap: 9px;
-
-  > div {
-    display: grid;
-    gap: 2px;
-  }
-
-  span {
-    color: var(--ink-3);
-    font-size: 11px;
-  }
-}
-
-.import-launcher__icon {
-  display: grid;
-  width: 30px;
-  height: 30px;
+.import-mode-pills {
+  display: inline-flex;
   flex: 0 0 auto;
-  place-items: center;
-  border-radius: 8px;
-  color: var(--accent-ink);
-  background: var(--accent-soft);
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
 }
 
-.import-launcher__actions,
+.import-mode-pills__item {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--ink-2);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+
+  &:hover:not(.is-active) {
+    color: var(--ink);
+    background: var(--surface-2);
+  }
+
+  &.is-active {
+    background: var(--accent);
+    color: var(--accent-on);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+}
+
 .import-review-toolbar,
 .import-review-toolbar__actions,
-.import-review-footer,
-.import-review-footer > div {
+.import-review-footer {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-.import-launcher__actions,
 .import-review-footer {
   justify-content: space-between;
 }
 
-.import-launcher__actions {
-  flex: 0 1 auto;
-
-  :deep(.el-segmented) {
-    --el-segmented-item-selected-color: var(--accent-ink);
-    --el-segmented-item-selected-bg-color: var(--accent-soft);
-    padding: 3px;
-  }
-}
-
 .import-batches {
   display: grid;
-  gap: 6px;
-  padding: 14px 0;
-  border-bottom: 1px solid var(--line);
+  gap: 8px;
 
   > header {
     display: flex;
@@ -3927,90 +4034,203 @@ onBeforeUnmount(() => {
     justify-content: space-between;
     padding: 0 2px;
 
-    span { color: var(--ink-3); font-size: 12px; }
+    strong {
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    span {
+      color: var(--ink-3);
+      font-size: 12px;
+    }
   }
 }
 
-.import-batch-row {
-  min-height: 38px;
+.import-batch-grid {
   display: grid;
-  grid-template-columns: auto 1fr auto auto auto;
-  align-items: center;
+  grid-template-columns: 1fr 1fr;
   gap: 8px;
-  padding: 0 10px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--surface-2);
-  color: var(--ink-2);
-  cursor: pointer;
-  text-align: left;
-
-  &:hover { border-color: var(--accent); }
 }
 
-.import-batch-row__status {
-  color: var(--warning);
-  font-weight: 700;
-  &.is-completed { color: var(--success); }
-  &.is-failed { color: var(--danger); }
-}
-
-.import-batch-row__arrow { font-size: 20px; }
-
-:global(.prompt-import-dialog .el-dialog__body) {
-  padding-top: 8px;
-  min-height: 0;
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-:global(.prompt-import-dialog) {
-  height: min(820px, 92vh);
-  display: flex;
-  flex-direction: column;
-  margin-top: 4vh !important;
-}
-
-.import-review-head {
+.import-batch-card {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding-right: 28px;
+  gap: 8px;
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
 
-  > div { display: grid; gap: 4px; }
-  strong { font-size: 17px; }
-  span { color: var(--ink-3); font-size: 12px; }
+  &:hover {
+    border-color: var(--border-strong);
+    background: var(--surface);
+  }
+}
+
+.import-batch-card__status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: var(--radius-pill);
+  background: var(--info-soft);
+  color: var(--info);
+  font-size: 11px;
+  font-weight: 700;
+
+  &.is-review {
+    background: var(--warning-soft);
+    color: var(--warning);
+  }
+
+  &.is-completed {
+    background: var(--success-soft);
+    color: var(--success);
+  }
+
+  &.is-failed {
+    background: var(--danger-soft);
+    color: var(--danger);
+  }
+}
+
+.import-batch-card__counts {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 6px;
+  overflow: hidden;
+  color: var(--ink-3);
+  font-size: 12px;
+
+  strong {
+    color: var(--ink);
+    font-size: 13px;
+    font-weight: 700;
+  }
+}
+
+.import-review {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.import-review-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 10px;
+  border-radius: var(--radius-pill);
+  background: var(--info-soft);
+  color: var(--info);
+  font-size: 12px;
+  font-weight: 700;
+
+  &.is-review {
+    background: var(--warning-soft);
+    color: var(--warning);
+  }
+
+  &.is-completed {
+    background: var(--success-soft);
+    color: var(--success);
+  }
+
+  &.is-failed {
+    background: var(--danger-soft);
+    color: var(--danger);
+  }
 }
 
 .import-review-toolbar {
   justify-content: space-between;
   flex-wrap: wrap;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--line);
+}
+
+.import-review-tabs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+}
+
+.import-review-tabs__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--ink-2);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+
+  em {
+    color: var(--ink-3);
+    font-size: 11px;
+    font-style: normal;
+    font-weight: 700;
+  }
+
+  &:hover:not(.is-active) {
+    color: var(--ink);
+    background: var(--surface);
+  }
+
+  &.is-active {
+    background: var(--accent);
+    color: var(--accent-on);
+
+    em {
+      color: color-mix(in srgb, var(--accent-on) 72%, transparent);
+    }
+  }
+}
+
+.import-review-toolbar__actions {
+  flex-wrap: wrap;
+  margin-left: auto;
 }
 
 .import-review-selection {
   display: flex;
   align-items: center;
   gap: 12px;
-  min-height: 42px;
-  padding: 7px 10px;
-  border-bottom: 1px solid var(--line);
+  min-height: 40px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
   background: var(--surface-2);
 
   > span {
     color: var(--ink-3);
     font-size: 12px;
   }
+}
 
-  > div {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-left: auto;
-  }
+.import-review-selection__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
 }
 
 .import-review-list {
@@ -4020,17 +4240,16 @@ onBeforeUnmount(() => {
   align-content: start;
   gap: 8px;
   overflow-y: auto;
-  padding: 12px 2px;
 }
 
 .import-review-item {
   display: grid;
   grid-template-columns: 22px 112px minmax(0, 1fr);
-  gap: 10px;
-  padding: 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface-1);
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface-2);
 
   &.is-selected {
     border-color: var(--accent);
@@ -4038,7 +4257,7 @@ onBeforeUnmount(() => {
   }
 
   &.is-published {
-    background: color-mix(in srgb, var(--success) 5%, var(--surface-1));
+    background: color-mix(in srgb, var(--success-soft) 55%, var(--surface-2));
   }
 }
 
@@ -4056,10 +4275,9 @@ onBeforeUnmount(() => {
   display: grid;
   place-items: center;
   overflow: hidden;
-  border-radius: 6px;
-  background: var(--surface-3);
+  border-radius: 12px;
+  background: var(--surface);
   color: var(--ink-3);
-
 }
 
 .import-review-cover-preview {
@@ -4095,16 +4313,14 @@ onBeforeUnmount(() => {
     padding: 0;
     place-items: center;
     border: 1px solid color-mix(in srgb, white 36%, transparent);
-    border-radius: 6px;
+    border-radius: 8px;
     color: white;
     background: color-mix(in srgb, black 68%, transparent);
     backdrop-filter: blur(8px);
     cursor: pointer;
-    transition: background 0.15s ease, transform 0.15s ease;
 
     &:hover:not(:disabled) {
       background: color-mix(in srgb, var(--accent) 82%, black);
-      transform: translateY(-1px);
     }
 
     &:disabled {
@@ -4117,29 +4333,92 @@ onBeforeUnmount(() => {
 .import-review-item__body {
   min-width: 0;
   display: grid;
-  gap: 7px;
+  gap: 8px;
 
-  header, footer, .import-review-item__badges {
+  header,
+  footer,
+  .import-review-item__badges {
     display: flex;
     align-items: center;
-    gap: 7px;
+    gap: 8px;
   }
 
-  header { justify-content: space-between; }
-  header > div:first-child { min-width: 0; display: grid; gap: 2px; }
-  header span, small { color: var(--ink-3); font-size: 12px; }
-  p { margin: 0; color: var(--ink-2); font-size: 13px; line-height: 1.5; }
-  footer { flex-wrap: wrap; }
+  header {
+    justify-content: space-between;
+  }
+
+  header > div:first-child {
+    min-width: 0;
+    display: grid;
+    gap: 2px;
+  }
+
+  strong {
+    overflow: hidden;
+    color: var(--ink);
+    font-size: 14px;
+    font-weight: 700;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  header > div:first-child span,
+  small {
+    color: var(--ink-3);
+    font-size: 12px;
+  }
+
+  p {
+    display: -webkit-box;
+    margin: 0;
+    overflow: hidden;
+    color: var(--ink-2);
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+  }
+
+  footer {
+    flex-wrap: wrap;
+  }
 }
 
-.import-review-item__published span {
-  color: var(--success) !important;
-  font-weight: 650;
+.import-review-item__badges span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 700;
+
+  &.is-warning {
+    background: var(--warning-soft);
+    color: var(--warning);
+  }
+
+  &.is-danger {
+    background: var(--danger-soft);
+    color: var(--danger);
+  }
+
+  &.is-success {
+    background: var(--success-soft);
+    color: var(--success);
+  }
+
+  &.is-stored {
+    background: var(--accent-soft);
+    color: var(--accent-ink);
+  }
 }
 
 .import-review-footer {
   width: 100%;
-  span { color: var(--ink-3); font-size: 12px; }
 }
 
 /* 词库卡片：远程源词条角标（叠在封面图上，跟随主题的 accent 令牌） */
@@ -4166,92 +4445,50 @@ onBeforeUnmount(() => {
 
 .sources-panel {
   display: grid;
-  gap: 0;
-}
-
-.sources-panel__head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 13px 15px;
-  border-radius: 12px;
-  background: var(--accent-soft);
-
-  > div {
-    display: grid;
-    min-width: 0;
-    gap: 3px;
-  }
-
-  strong {
-    color: var(--el-text-color-primary);
-    font-size: 14px;
-  }
-
-  span {
-    color: var(--library-muted);
-    font-size: 12px;
-  }
+  gap: 16px;
 }
 
 .source-list {
   display: grid;
-  gap: 8px;
+  gap: 10px;
   min-height: 200px;
   align-content: start;
 }
 
 .source-list-section {
   display: grid;
-  gap: 9px;
-  padding-top: 14px;
+  gap: 10px;
 }
 
 .source-list-head {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  align-items: baseline;
+  gap: 8px;
   padding: 0 2px;
 
-  > div {
-    display: flex;
-    align-items: baseline;
-    gap: 7px;
-  }
-
   strong {
-    color: var(--ink-1);
+    color: var(--ink);
     font-size: 13px;
+    font-weight: 700;
   }
 
-  span,
-  small {
+  span {
     color: var(--ink-3);
-    font-size: 11px;
+    font-size: 12px;
+    font-weight: 650;
   }
 }
 
 .source-card {
   display: grid;
-  gap: 8px;
-  padding: 11px 12px;
-  border: 1px solid var(--library-border);
-  border-radius: 8px;
-  background: var(--surface);
-  transition:
-    border-color 0.16s ease,
-    background 0.16s ease,
-    opacity 0.2s ease;
-
-  &:hover {
-    border-color: color-mix(in srgb, var(--accent) 38%, var(--library-border));
-    background: color-mix(in srgb, var(--accent-soft) 22%, var(--surface));
-  }
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-2);
 
   &.is-disabled {
-    opacity: 0.62;
+    opacity: 0.72;
   }
 
   &.is-disabled:hover {
@@ -4274,8 +4511,9 @@ onBeforeUnmount(() => {
 
   strong {
     overflow: hidden;
-    color: var(--el-text-color-primary);
+    color: var(--ink);
     font-size: 14px;
+    font-weight: 700;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -4286,100 +4524,42 @@ onBeforeUnmount(() => {
   height: 7px;
   flex: 0 0 auto;
   border-radius: 50%;
-  background: var(--ink-4);
+  background: var(--ink-3);
 
   &.is-active {
     background: var(--success);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 12%, transparent);
+    box-shadow: 0 0 0 3px var(--success-soft);
   }
 }
 
 .format-badge {
   flex-shrink: 0;
-  padding: 3px 6px;
-  border-radius: 4px;
+  padding: 2px 7px;
+  border-radius: var(--radius-pill);
   color: var(--format-color);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
-  line-height: 1;
-  letter-spacing: 0;
+  line-height: 1.2;
   background: color-mix(in srgb, var(--format-color) 12%, transparent);
 }
 
-.source-card__url {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  width: 100%;
-  min-width: 0;
-  padding: 6px 8px;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  color: var(--ink-2);
-  font-size: 11px;
-  text-align: left;
-  background: var(--surface-2);
-  cursor: pointer;
-  transition: 0.15s ease;
-
-  span {
-    flex: 1 1 auto;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .el-icon {
-    flex-shrink: 0;
-    font-size: 12px;
-    color: var(--ink-3);
-    opacity: 0.55;
-    transition: opacity 0.15s ease, color 0.15s ease;
-  }
-
-  &:hover {
-    color: var(--accent-ink);
-    border-color: color-mix(in srgb, var(--accent) 18%, transparent);
-    background: color-mix(in srgb, var(--accent-soft) 58%, var(--surface-2));
-
-    .el-icon {
-      color: var(--accent-ink);
-      opacity: 1;
-    }
-  }
-}
-
 .source-card__meta {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
   min-width: 0;
-  gap: 4px 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--ink-3);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 
-  span {
-    display: inline-flex;
-    align-items: center;
-    color: var(--ink-3);
-    font-size: 10px;
+  span + span::before {
+    margin: 0 6px;
+    color: var(--border-strong);
+    content: '·';
+  }
 
-    & + span::before {
-      width: 1px;
-      height: 10px;
-      margin: 0 7px;
-      background: var(--line);
-      content: '';
-    }
-
-    &.is-strong {
-      color: var(--ink-2);
-      font-weight: 650;
-    }
-
-    &.is-auto {
-      color: var(--success);
-    }
+  .is-auto {
+    color: var(--success);
   }
 }
 
@@ -4387,10 +4567,10 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 7px 10px;
-  border-radius: 8px;
+  padding: 8px 10px;
+  border-radius: 12px;
   color: var(--danger);
-  font-size: 11px;
+  font-size: 12px;
   background: var(--danger-soft);
 
   .el-icon {
@@ -4402,6 +4582,7 @@ onBeforeUnmount(() => {
     overflow: hidden;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
+    line-clamp: 2;
   }
 }
 
@@ -4409,14 +4590,13 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
+  gap: 8px;
 }
 
 .source-card__actions {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
-  gap: 5px;
 
   .el-button + .el-button {
     margin-left: 0;
@@ -4425,22 +4605,28 @@ onBeforeUnmount(() => {
 
 .sources-empty {
   display: grid;
-  min-height: 260px;
+  min-height: 240px;
   place-items: center;
   align-content: center;
   gap: 8px;
-  color: var(--library-muted);
-  border: 1px dashed var(--library-border);
-  border-radius: 8px;
+  color: var(--ink-3);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-card);
+  text-align: center;
 
   .el-icon {
     font-size: 30px;
   }
 
   strong {
-    color: var(--el-text-color-primary);
+    color: var(--ink);
   }
 
+  span {
+    max-width: 260px;
+    font-size: 12px;
+    line-height: 1.45;
+  }
 }
 
 @media (max-width: 1500px) {
@@ -4616,7 +4802,7 @@ onBeforeUnmount(() => {
 
 .library-drawer__head small {
   color: var(--ink-3);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.35;
 }
 
@@ -4625,7 +4811,7 @@ onBeforeUnmount(() => {
 }
 
 .sources-drawer .el-drawer__body {
-  padding: 14px 16px 18px;
+  padding: 16px 18px 22px;
 }
 
 .prompt-quick-sort-dialog {

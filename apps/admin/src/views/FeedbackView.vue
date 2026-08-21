@@ -1,14 +1,8 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref } from "vue";
 import { useRoute } from "vue-router";
 import { ElMessage } from "element-plus";
-import {
-  ChatDotRound,
-  Link,
-  Refresh,
-  Search,
-  Select,
-} from "@element-plus/icons-vue";
+import { ChatDotRound, Link, Refresh, Search } from "@element-plus/icons-vue";
 import AdminDialog from "@/components/AdminDialog.vue";
 import { request, type Page } from "@/request";
 import { usePagedList } from "@/usePagedList";
@@ -36,12 +30,19 @@ interface FeedbackItem {
 }
 
 const STATUS_OPTIONS = [
-  { value: "", label: "全部" },
   { value: "open", label: "待处理" },
   { value: "in_progress", label: "处理中" },
   { value: "resolved", label: "已解决" },
   { value: "closed", label: "已关闭" },
+  { value: "", label: "全部" },
 ];
+
+const REVIEW_STATUSES = [
+  { value: "open", label: "待处理" },
+  { value: "in_progress", label: "处理中" },
+  { value: "resolved", label: "已解决" },
+  { value: "closed", label: "已关闭" },
+] as const;
 
 const CATEGORY_OPTIONS = [
   { value: "", label: "全部分类" },
@@ -59,13 +60,7 @@ const statusLabels: Record<string, string> = {
   resolved: "已解决",
   closed: "已关闭",
 };
-const statusTypes: Record<string, "warning" | "primary" | "success" | "info"> =
-  {
-    open: "warning",
-    in_progress: "primary",
-    resolved: "success",
-    closed: "info",
-  };
+
 const categoryLabels = Object.fromEntries(
   CATEGORY_OPTIONS.filter((item) => item.value).map((item) => [
     item.value,
@@ -167,6 +162,18 @@ const {
   () => filters,
 );
 
+const hasFilters = computed(
+  () =>
+    filters.status !== "open" ||
+    Boolean(filters.category) ||
+    Boolean(filters.search.trim()),
+);
+
+const emptyTitle = computed(() => {
+  if (hasFilters.value) return "没有匹配的反馈";
+  return filters.status === "open" ? "没有待处理反馈" : "当前状态没有反馈";
+});
+
 function setStatus(status: string) {
   if (filters.status === status) return;
   filters.status = status;
@@ -192,6 +199,12 @@ const reviewForm = reactive({
   adopted: false,
   rewardPoints: 100,
 });
+const reviewNeedsReply = computed(() =>
+  ["resolved", "closed"].includes(reviewForm.status),
+);
+const reviewConfirmDisabled = computed(
+  () => reviewNeedsReply.value && !reviewForm.adminReply.trim(),
+);
 const limitDirty = () =>
   normalizePoints(suggestionRewardMax.value) !==
   normalizePoints(savedSuggestionRewardMax.value);
@@ -303,86 +316,127 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="page feedback-admin-page">
-    <PageCard>
-      <div class="feedback-limit-bar">
-        <div class="feedback-limit-bar__copy">
-          <strong>建议采纳上限</strong>
-          <small>前台展示单次最高奖励，后台采纳时也不能超过这个数</small>
-        </div>
-        <div class="feedback-limit-bar__actions">
-          <div class="points-input">
-            <el-input-number
-              v-model="suggestionRewardMax"
-              :min="0"
-              :max="1000000"
-              :step="100"
-              :precision="0"
-              controls-position="right"
-            />
-            <b>积分</b>
-          </div>
-          <el-button
-            type="primary"
-            :loading="savingLimit"
-            :disabled="!limitDirty()"
+  <div class="feedback-page">
+    <header class="feedback-toolbar">
+      <div class="feedback-tabs" role="tablist" aria-label="反馈状态">
+        <button
+          v-for="option in STATUS_OPTIONS"
+          :key="option.value || 'all'"
+          type="button"
+          role="tab"
+          class="feedback-tab"
+          :class="{ 'is-active': filters.status === option.value }"
+          :aria-selected="filters.status === option.value"
+          @click="setStatus(option.value)"
+        >
+          {{ option.label }}
+        </button>
+      </div>
+
+      <div class="feedback-toolbar__right">
+        <el-select
+          v-model="filters.category"
+          class="feedback-category"
+          placeholder="全部分类"
+          @change="reset"
+        >
+          <el-option
+            v-for="option in CATEGORY_OPTIONS"
+            :key="option.value || 'all'"
+            :label="option.label"
+            :value="option.value"
+          />
+        </el-select>
+        <el-input
+          v-model="filters.search"
+          class="feedback-search"
+          :prefix-icon="Search"
+          placeholder="搜索用户、标题或内容"
+          clearable
+          @keyup.enter="reset"
+          @clear="reset"
+        />
+        <div class="feedback-setting-pill is-limit" :class="{ 'is-dirty': limitDirty() }">
+          <span>采纳上限</span>
+          <el-input-number
+            v-model="suggestionRewardMax"
+            :min="0"
+            :max="1000000"
+            :step="100"
+            :precision="0"
+            :controls="false"
+          />
+          <button
+            v-if="limitDirty()"
+            type="button"
+            class="feedback-setting-pill__save"
+            :disabled="savingLimit"
             @click="saveSuggestionRewardLimit"
           >
-            保存上限
-          </el-button>
-        </div>
-      </div>
-      <div class="feedback-toolbar">
-        <div class="feedback-tabs" role="tablist" aria-label="反馈状态">
-          <button
-            v-for="option in STATUS_OPTIONS"
-            :key="option.value || 'all'"
-            type="button"
-            role="tab"
-            class="feedback-tab"
-            :class="{ 'is-active': filters.status === option.value }"
-            :aria-selected="filters.status === option.value"
-            @click="setStatus(option.value)"
-          >
-            {{ option.label }}
+            保存
           </button>
         </div>
+        <el-button v-if="hasFilters" @click="clearFilters">清除</el-button>
+        <el-button :icon="Refresh" :loading="loading" @click="refresh">刷新</el-button>
+      </div>
+    </header>
 
-        <div class="feedback-toolbar__actions">
-          <el-select
-            v-model="filters.category"
-            class="feedback-category-filter"
-            placeholder="全部分类"
-            @change="reset"
-          >
-            <el-option
-              v-for="option in CATEGORY_OPTIONS"
-              :key="option.value || 'all'"
-              :label="option.label"
-              :value="option.value"
-            />
-          </el-select>
-          <el-input
-            v-model="filters.search"
-            class="feedback-search"
-            :prefix-icon="Search"
-            placeholder="搜索用户、标题或内容"
-            clearable
-            @keyup.enter="reset"
-            @clear="reset"
-          />
-          <el-button @click="reset">查询</el-button>
-          <el-button text @click="clearFilters">重置</el-button>
-          <el-button :icon="Refresh" :loading="loading" @click="refresh"
-            >刷新</el-button
-          >
-        </div>
+    <ListError :error="error" :loading="loading" @retry="retry" />
+
+    <div v-loading="loading && items.length > 0" class="feedback-board">
+      <div v-if="loading && !items.length" class="feedback-empty">正在加载反馈…</div>
+
+      <div v-else-if="!items.length" class="feedback-empty">
+        <el-icon><ChatDotRound /></el-icon>
+        <strong>{{ emptyTitle }}</strong>
+        <span>{{ hasFilters ? "调整筛选后再试" : "新反馈会显示在这里" }}</span>
+        <el-button v-if="hasFilters" @click="clearFilters">清除筛选</el-button>
       </div>
 
-      <ListError :error="error" :loading="loading" @retry="retry" />
+      <div v-else class="feedback-list">
+        <article
+          v-for="row in items"
+          :key="row.id"
+          class="feedback-card"
+          :class="`is-${row.status}`"
+          @dblclick="openReview(row)"
+        >
+          <header>
+            <strong :title="row.title">{{ row.title }}</strong>
+            <span class="feedback-status" :class="`is-${row.status}`">
+              {{ statusLabels[row.status] || row.status }}
+            </span>
+          </header>
+          <p>{{ row.content }}</p>
+          <div class="feedback-card__meta">
+            <span :title="row.userEmail">{{ row.username || "未命名用户" }}</span>
+            <i>·</i>
+            <span>{{ categoryLabels[row.category] || row.category }}</span>
+            <template v-if="pageLabel(row.pageUrl)">
+              <i>·</i>
+              <span>{{ pageLabel(row.pageUrl) }}</span>
+            </template>
+            <i>·</i>
+            <span class="tnum">{{ formatTime(row.createdAt) }}</span>
+            <template v-if="row.adopted">
+              <i>·</i>
+              <span>已采纳 {{ formatPoints(row.rewardCents) }}</span>
+            </template>
+          </div>
+          <footer>
+            <span :class="{ 'is-muted': !row.adminReply }">
+              {{ row.adminReply || "尚未回复" }}
+            </span>
+            <el-button @click="openReview(row)">
+              {{ row.status === "open" ? "处理" : "查看" }}
+            </el-button>
+          </footer>
+        </article>
+      </div>
+    </div>
 
-      <AdminListShell
-        viewport-height="clamp(380px, calc(100vh - 230px), 730px)"
+    <footer v-if="items.length" class="feedback-footer">
+      <CursorPager
         :has-prev="hasPrev"
         :has-next="hasNext"
         :loading="loading"
@@ -391,116 +445,30 @@ onMounted(() => {
         :total="total"
         @prev="prev"
         @next="next"
-      >
-        <el-table
-          v-loading="loading"
-          class="feedback-table"
-          :data="items"
-          height="100%"
-          size="small"
-          table-layout="fixed"
-          @row-dblclick="openReview"
-        >
-          <template #empty>
-            <el-empty description="暂无用户反馈" :image-size="64" />
-          </template>
-
-          <el-table-column label="反馈用户" min-width="200">
-            <template #default="{ row }">
-              <div class="feedback-user">
-                <span>{{ row.username || "未命名用户" }}</span>
-                <small>{{ row.userEmail }}</small>
-              </div>
-            </template>
-          </el-table-column>
-
-          <el-table-column label="分类" width="126">
-            <template #default="{ row }">
-              <span class="feedback-category">{{
-                categoryLabels[row.category] || row.category
-              }}</span>
-              <el-tag v-if="row.adopted" type="warning" size="small" effect="plain">
-                已采纳 · {{ formatPoints(row.rewardCents) }}
-              </el-tag>
-            </template>
-          </el-table-column>
-
-          <el-table-column label="问题" min-width="380">
-            <template #default="{ row }">
-              <div class="feedback-problem">
-                <strong>{{ row.title }}</strong>
-                <p>{{ row.content }}</p>
-              </div>
-            </template>
-          </el-table-column>
-
-          <el-table-column label="状态" width="105" align="center">
-            <template #default="{ row }">
-              <el-tag
-                :type="statusTypes[row.status]"
-                effect="light"
-                size="small"
-              >
-                {{ statusLabels[row.status] || row.status }}
-              </el-tag>
-            </template>
-          </el-table-column>
-
-          <el-table-column label="管理员回复" min-width="250">
-            <template #default="{ row }">
-              <p v-if="row.adminReply" class="feedback-reply-cell">
-                {{ row.adminReply }}
-              </p>
-              <span v-else class="muted">尚未回复</span>
-            </template>
-          </el-table-column>
-
-          <el-table-column label="提交时间" width="176">
-            <template #default="{ row }">
-              <span class="tnum">{{ formatTime(row.createdAt) }}</span>
-            </template>
-          </el-table-column>
-
-          <el-table-column label="操作" width="112" fixed="right" align="right">
-            <template #default="{ row }">
-              <el-button
-                type="primary"
-                plain
-                size="small"
-                @click="openReview(row as FeedbackItem)"
-              >
-                {{ row.status === "open" ? "开始处理" : "查看处理" }}
-              </el-button>
-            </template>
-          </el-table-column>
-        </el-table>
-      </AdminListShell>
-    </PageCard>
+      />
+    </footer>
 
     <AdminDialog
       v-model="reviewOpen"
-      title="处理用户反馈"
-      :subtitle="
-        selected
-          ? `${selected.username || '未命名用户'} · ${selected.userEmail}`
-          : ''
-      "
+      panel-class="feedback-review-dialog"
+      title="处理反馈"
       :icon="ChatDotRound"
-      width="640px"
-      confirm-text="保存并通知用户"
-      :confirm-icon="Select"
+      width="560px"
+      confirm-text="保存"
+      :confirm-disabled="reviewConfirmDisabled"
       :confirm-loading="reviewing"
       @confirm="submitReview"
     >
       <div v-if="selected" class="feedback-review">
         <div class="feedback-review__summary">
-          <div>
-            <el-tag effect="plain" size="small">{{
-              categoryLabels[selected.category]
-            }}</el-tag>
-            <span>{{ formatTime(selected.createdAt) }}</span>
+          <div class="feedback-review__meta">
+            <span class="feedback-chip">{{
+              categoryLabels[selected.category] || selected.category
+            }}</span>
+            <span>{{ selected.username || "未命名用户" }} · {{ selected.userEmail }}</span>
+            <span class="tnum">{{ formatTime(selected.createdAt) }}</span>
           </div>
-          <h3>{{ selected.title }}</h3>
+          <strong>{{ selected.title }}</strong>
           <p>{{ selected.content }}</p>
           <a
             v-if="selected.pageUrl && isExternalPage(selected.pageUrl)"
@@ -510,61 +478,66 @@ onMounted(() => {
           >
             <el-icon><Link /></el-icon>{{ pageLabel(selected.pageUrl) }}
           </a>
-          <span v-else-if="selected.pageUrl">{{ pageLabel(selected.pageUrl) }}</span>
+          <span v-else-if="selected.pageUrl" class="feedback-review__page">{{
+            pageLabel(selected.pageUrl)
+          }}</span>
         </div>
 
-        <el-form label-width="92px" @submit.prevent="submitReview">
-          <el-form-item label="处理状态" required>
-            <el-select v-model="reviewForm.status" style="width: 100%">
-              <el-option label="待处理" value="open" />
-              <el-option label="处理中" value="in_progress" />
-              <el-option label="已解决" value="resolved" />
-              <el-option label="已关闭" value="closed" />
-            </el-select>
-          </el-form-item>
-          <el-form-item
-            label="回复用户"
-            :required="['resolved', 'closed'].includes(reviewForm.status)"
+        <div class="feedback-review__statuses" role="group" aria-label="处理状态">
+          <button
+            v-for="option in REVIEW_STATUSES"
+            :key="option.value"
+            type="button"
+            class="feedback-review__chip"
+            :class="{ 'is-active': reviewForm.status === option.value }"
+            @click="reviewForm.status = option.value"
           >
-            <el-input
-              v-model="reviewForm.adminReply"
-              type="textarea"
-              :rows="5"
-              maxlength="2000"
-              show-word-limit
-              placeholder="说明处理进度、解决方法或后续计划；用户会收到站内通知。"
-            />
-          </el-form-item>
-          <el-form-item v-if="selected.category === 'suggestion'" label="建议采纳">
-            <div class="feedback-adoption-control">
-              <el-switch
-                v-model="reviewForm.adopted"
-                :disabled="selected.adopted || suggestionRewardMax <= 0"
-                active-text="采纳并奖励"
-              />
-              <div v-if="reviewForm.adopted" class="feedback-adoption-points">
-                <el-input-number
-                  v-model="reviewForm.rewardPoints"
-                  :min="1"
-                  :max="Math.max(1, suggestionRewardMax)"
-                  :step="10"
-                  :precision="0"
-                  :disabled="selected.adopted"
-                />
-                <span>积分</span>
-              </div>
-              <small v-if="selected.adopted">
-                已于 {{ formatTime(selected.rewardedAt) }} 发放，不能重复奖励
-              </small>
-              <small v-else-if="suggestionRewardMax <= 0">
-                建议奖励当前未开放，请先在系统设置中配置奖励上限
-              </small>
-            </div>
-          </el-form-item>
-        </el-form>
+            {{ option.label }}
+          </button>
+        </div>
 
-        <details v-if="selected.userAgent" class="feedback-diagnostic">
-          <summary>浏览器诊断信息</summary>
+        <el-input
+          v-model="reviewForm.adminReply"
+          type="textarea"
+          :rows="5"
+          maxlength="2000"
+          show-word-limit
+          resize="none"
+          :placeholder="reviewNeedsReply ? '回复会通知用户，解决或关闭时必填' : '回复会通知用户'"
+        />
+
+        <div v-if="selected.category === 'suggestion'" class="feedback-review__adopt">
+          <label
+            class="feedback-review__option"
+            :class="{ 'is-on': reviewForm.adopted }"
+          >
+            <span>{{ selected.adopted ? "已采纳" : "采纳并奖励" }}</span>
+            <el-switch
+              v-model="reviewForm.adopted"
+              :disabled="selected.adopted || suggestionRewardMax <= 0"
+              size="small"
+            />
+          </label>
+          <label v-if="reviewForm.adopted" class="feedback-review__points">
+            <el-input-number
+              v-model="reviewForm.rewardPoints"
+              :min="1"
+              :max="Math.max(1, suggestionRewardMax)"
+              :step="10"
+              :precision="0"
+              :controls="false"
+              :disabled="selected.adopted"
+            />
+            <span>积分</span>
+          </label>
+          <small v-if="selected.adopted">
+            {{ formatTime(selected.rewardedAt) }} 已发放
+          </small>
+          <small v-else-if="suggestionRewardMax <= 0">当前未开放建议奖励</small>
+        </div>
+
+        <details v-if="selected.userAgent" class="feedback-review__diag">
+          <summary>浏览器信息</summary>
           <code>{{ selected.userAgent }}</code>
         </details>
       </div>
@@ -572,236 +545,474 @@ onMounted(() => {
   </div>
 </template>
 
-<style scoped>
-.feedback-admin-page {
-  height: 100%;
-}
-.feedback-admin-page :deep(.page-card) {
-  height: 100%;
+<style scoped lang="scss">
+.feedback-page {
+  box-sizing: border-box;
   display: flex;
+  height: 100%;
+  min-height: 0;
   flex-direction: column;
+  gap: 12px;
+  overflow: hidden;
+  padding: 0;
+  background: var(--bg);
 }
-.feedback-limit-bar {
+
+.feedback-toolbar {
   display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 12px;
-  padding: 12px 14px;
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 12px;
-  background: var(--el-fill-color-blank);
-}
-.feedback-limit-bar__copy {
+  gap: 12px;
   min-width: 0;
 }
-.feedback-limit-bar__copy strong {
-  display: block;
+
+.feedback-tabs {
+  display: inline-flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+}
+
+.feedback-tab {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--ink-2);
+  font-family: inherit;
   font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+
+  &:hover:not(.is-active) {
+    color: var(--ink);
+    background: var(--surface);
+  }
+
+  &.is-active {
+    background: var(--accent);
+    color: var(--accent-on);
+  }
 }
-.feedback-limit-bar__copy small {
-  display: block;
-  margin-top: 2px;
-  color: var(--el-text-color-secondary);
+
+.feedback-toolbar__right {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.feedback-category {
+  width: 128px;
+}
+
+.feedback-search {
+  width: 220px;
+}
+
+.feedback-setting-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 8px 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--ink-2);
   font-size: 12px;
-  line-height: 1.4;
+  font-weight: 650;
+
+  &.is-dirty {
+    border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+    background: var(--accent-soft);
+    color: var(--accent-ink);
+  }
+
+  :deep(.el-input-number) {
+    width: 72px;
+  }
+
+  :deep(.el-input__wrapper) {
+    padding: 0 4px;
+    box-shadow: none;
+    background: transparent;
+  }
+
+  :deep(.el-input__inner) {
+    height: 28px;
+    text-align: center;
+  }
 }
-.feedback-limit-bar__actions {
+
+.feedback-setting-pill__save {
+  height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: var(--accent-on);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+}
+
+.feedback-board {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.feedback-list {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 10px;
+  align-content: start;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px;
+}
+
+.feedback-empty {
+  display: grid;
+  min-height: 280px;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  color: var(--ink-3);
+  text-align: center;
+
+  .el-icon {
+    font-size: 30px;
+  }
+
+  strong {
+    color: var(--ink);
+  }
+
+  span {
+    font-size: 12px;
+  }
+}
+
+.feedback-card {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface-2);
+  cursor: pointer;
+
+  &:hover {
+    border-color: var(--border-strong);
+    box-shadow: var(--shadow-sm);
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  strong {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--ink);
+    font-size: 14px;
+    font-weight: 700;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  > p {
+    display: -webkit-box;
+    margin: 0;
+    overflow: hidden;
+    color: var(--ink-2);
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-width: 0;
+
+    span {
+      min-width: 0;
+      overflow: hidden;
+      color: var(--ink-2);
+      font-size: 12px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .is-muted {
+      color: var(--ink-3);
+    }
+  }
+}
+
+.feedback-status {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 11px;
+  font-weight: 700;
+
+  &.is-open {
+    background: var(--warning-soft);
+    color: var(--warning);
+  }
+
+  &.is-in_progress {
+    background: var(--info-soft);
+    color: var(--info);
+  }
+
+  &.is-resolved {
+    background: var(--success-soft);
+    color: var(--success);
+  }
+
+  &.is-closed {
+    background: var(--surface);
+    color: var(--ink-3);
+  }
+}
+
+.feedback-card__meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-3);
+  font-size: 12px;
+  white-space: nowrap;
+
+  span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  i {
+    flex: 0 0 auto;
+    font-style: normal;
+  }
+}
+
+.feedback-footer {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
-  gap: 10px;
+  min-height: 40px;
 }
-.points-input {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.points-input :deep(.el-input-number) {
-  width: 148px;
-}
-.points-input b {
-  color: var(--el-text-color-regular);
-  font-size: 13px;
-  font-weight: 600;
-}
-.feedback-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+</style>
+
+<style lang="scss">
+.feedback-review {
+  display: grid;
   gap: 14px;
-  margin-bottom: 12px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--el-border-color-lighter);
 }
-.feedback-tabs {
-  display: flex;
-  gap: 3px;
-  padding: 4px;
-  border-radius: 12px;
-  background: var(--el-fill-color-light);
-}
-.feedback-tab {
-  min-height: 32px;
-  padding: 0 14px;
-  border: 0;
-  border-radius: 9px;
-  color: var(--el-text-color-secondary);
-  background: transparent;
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-.feedback-tab.is-active {
-  color: #182000;
-  background: #8ade00;
-  box-shadow: 0 5px 14px rgb(112 185 0 / 18%);
-  font-weight: 700;
-}
-.feedback-toolbar__actions {
-  display: flex;
-  align-items: center;
+
+.feedback-review__summary {
+  display: grid;
   gap: 8px;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-2);
+
+  strong {
+    color: var(--ink);
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1.4;
+  }
+
+  p {
+    margin: 0;
+    white-space: pre-wrap;
+    color: var(--ink-2);
+    font-size: 13px;
+    line-height: 1.55;
+  }
+
+  a {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--accent-ink);
+    font-size: 12px;
+    text-decoration: none;
+  }
 }
-.feedback-category-filter {
-  width: 135px;
-}
-.feedback-search {
-  width: 230px;
-}
-.feedback-adoption-control {
+
+.feedback-review__meta {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
-  width: 100%;
+  gap: 8px 10px;
+  color: var(--ink-3);
+  font-size: 12px;
 }
-.feedback-adoption-points {
+
+.feedback-chip {
+  padding: 3px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--violet-soft);
+  color: var(--violet);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.feedback-review__page {
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.feedback-review__statuses {
   display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.feedback-review__chip {
+  height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+
+  &:hover:not(.is-active) {
+    color: var(--ink);
+    background: var(--surface-3);
+  }
+
+  &.is-active {
+    background: var(--accent);
+    color: var(--accent-on);
+  }
+}
+
+.feedback-review__adopt {
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+
+  small {
+    width: 100%;
+    color: var(--ink-3);
+    font-size: 12px;
+  }
 }
-.feedback-adoption-control small {
-  width: 100%;
-  color: var(--el-text-color-secondary);
-}
-.feedback-user span,
-.feedback-user small {
-  display: block;
-}
-.feedback-user span {
-  font-weight: 650;
-}
-.feedback-user small {
-  margin-top: 3px;
-  color: var(--el-text-color-secondary);
-  font-size: 11px;
-}
-.feedback-category {
+
+.feedback-review__option {
   display: inline-flex;
-  padding: 4px 8px;
-  border-radius: 8px;
-  color: #6854ca;
-  background: rgb(104 84 202 / 8%);
-  font-size: 11px;
-  font-weight: 650;
-}
-.feedback-problem strong {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.feedback-problem p,
-.feedback-reply-cell {
-  display: -webkit-box;
-  margin: 5px 0 0;
-  overflow: hidden;
-  color: var(--el-text-color-secondary);
-  font-size: 11px;
-  line-height: 1.45;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-}
-.feedback-reply-cell {
-  margin: 0;
-  color: var(--el-text-color-regular);
-}
-.muted {
-  color: var(--el-text-color-placeholder);
-  font-size: 11px;
-}
-.feedback-review {
-  display: grid;
-  gap: 20px;
-}
-.feedback-review__summary {
-  padding: 17px;
-  border: 1px solid var(--el-border-color-light);
-  border-radius: 13px;
-  background: var(--el-fill-color-lighter);
-}
-.feedback-review__summary > div {
-  display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  color: var(--el-text-color-secondary);
-  font-size: 11px;
+  height: 40px;
+  padding: 0 14px 0 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+
+  &.is-on {
+    border-color: color-mix(in srgb, var(--success) 28%, var(--border));
+    background: var(--success-soft);
+    color: var(--success);
+  }
 }
-.feedback-review__summary h3 {
-  margin: 15px 0 8px;
-  font-size: 15px;
-}
-.feedback-review__summary p {
-  margin: 0;
-  white-space: pre-wrap;
-  color: var(--el-text-color-regular);
-  font-size: 12px;
-  line-height: 1.7;
-}
-.feedback-review__summary a {
+
+.feedback-review__points {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  margin-top: 13px;
-  color: var(--el-color-primary);
-  font-size: 11px;
-  text-decoration: none;
-}
-.feedback-diagnostic {
-  padding: 10px 13px;
-  border-radius: 10px;
-  background: var(--el-fill-color-light);
-  color: var(--el-text-color-secondary);
-  font-size: 11px;
-}
-.feedback-diagnostic summary {
-  cursor: pointer;
-}
-.feedback-diagnostic code {
-  display: block;
-  margin-top: 8px;
-  overflow-wrap: anywhere;
-  white-space: normal;
-  line-height: 1.5;
-}
-@media (max-width: 1100px) {
-  .feedback-limit-bar {
-    align-items: flex-start;
-    flex-direction: column;
+  gap: 6px;
+  height: 40px;
+  padding: 0 12px 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--ink-3);
+  font-size: 12px;
+
+  .el-input-number {
+    width: 72px;
   }
-  .feedback-toolbar {
-    align-items: flex-start;
-    flex-direction: column;
+
+  .el-input-number .el-input__wrapper {
+    padding: 0;
+    box-shadow: none;
+    background: transparent;
   }
-  .feedback-toolbar__actions {
-    width: 100%;
-    flex-wrap: wrap;
+}
+
+.feedback-review__diag {
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--surface-2);
+  color: var(--ink-3);
+  font-size: 12px;
+
+  summary {
+    cursor: pointer;
   }
-  .feedback-search {
-    flex: 1;
-    min-width: 200px;
+
+  code {
+    display: block;
+    margin-top: 8px;
+    overflow-wrap: anywhere;
+    white-space: normal;
+    line-height: 1.5;
   }
 }
 </style>

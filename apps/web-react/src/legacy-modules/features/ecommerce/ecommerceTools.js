@@ -54,14 +54,15 @@ export const ECOMMERCE_MODES = [
     id: "detail",
     label: "A+ / 详情页",
     shortLabel: "A+ 详情",
-    tagline: "整套详情页视觉",
-    description: "根据平台规范组织首屏、卖点、场景和商品细节模块。",
+    tagline: "任意品类 · 国内外亚马逊 A+",
+    description:
+      "输入 ASIN、图片和站点，文本模型按 PEPCF 规划 5-7 个官方尺寸模块，生图模型出 RGB 图并导出 Seller Central 上传清单。",
     icon: "bi-layout-text-window-reverse",
-    ratio: "3:4",
-    maxCount: 1,
+    ratio: "16:9",
+    maxCount: 7,
     fields: ["platform", "market", "language", "tone", "modules"],
     prompt:
-      "生成一张完整的纵向电商详情页，模块连续排列，具有清晰的信息层级和统一品牌视觉，不展示编辑器界面、设备样机或散乱截图。",
+      "按亚马逊 A+ 官方模块尺寸生成 RGB 静态图，模块连续可拼成详情页。国外站偏生活场景，国内站偏实拍产品图与尺寸标注。不展示编辑器、设备样机或散乱截图。",
   },
   {
     id: "campaign",
@@ -1036,6 +1037,9 @@ export function buildEcommerceGenerationPlan({
         ? `参考图角色：${consistency.roles.join("；")}。`
         : "",
       `本张输出职责：${shot.label}。${shot.direction}`,
+      shot.outputSize
+        ? `精确输出 RGB ${shot.outputSize}，不要改成其他像素。`
+        : "",
       shots.length > 1
         ? `这是整套输出的第 ${index + 1}/${shots.length} 张。`
         : "",
@@ -1049,6 +1053,9 @@ export function buildEcommerceGenerationPlan({
     viewId: shot.id,
     viewLabel: `${mode.shortLabel || mode.label} · ${shot.label}`,
     count: 1,
+    aspectRatio: shot.aspectRatio || "",
+    outputSize: shot.outputSize || "",
+    aplusSpec: shot.aplusSpec || null,
   }));
 }
 

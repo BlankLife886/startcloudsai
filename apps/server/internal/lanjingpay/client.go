@@ -2,7 +2,7 @@ package lanjingpay
 
 import (
 	"context"
-	"crypto/md5"
+	"crypto/md5" // #nosec G501 -- the upstream payment signing protocol mandates MD5.
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
@@ -108,6 +108,7 @@ func New(baseURL, secret, notifyURL string, timeout time.Duration, allowPrivate 
 }
 
 func MD5(parts ...string) string {
+	// #nosec G401 -- compatibility signature required by the upstream payment protocol.
 	hash := md5.Sum([]byte(strings.Join(parts, "")))
 	return hex.EncodeToString(hash[:])
 }

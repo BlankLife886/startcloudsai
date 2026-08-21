@@ -20,6 +20,7 @@ import (
 
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantbilling"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantstream"
+	"github.com/BlankLife886/startcloudsai/server/internal/assistanttools"
 	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
 	"github.com/BlankLife886/startcloudsai/server/internal/crun"
 	"github.com/BlankLife886/startcloudsai/server/internal/media"
@@ -34,9 +35,10 @@ import (
 )
 
 const (
-	assistantOutputLimit     = 32 << 20
-	assistantC2AItemAttempts = 2
-	assistantChatAttempts    = 2
+	assistantOutputLimit           = 32 << 20
+	assistantC2AItemAttempts       = 2
+	assistantChatAttempts          = 2
+	assistantSynchronousImageLimit = 5 * time.Minute
 )
 
 const assistantChatRetryInstruction = `直接回答用户的问题。不要调用、模拟或输出 search 等内部工具调用语法，也不要复述用户提示词。`
@@ -137,6 +139,9 @@ func (w *Worker) handleRunAssistant(ctx context.Context, task *asynq.Task) error
 	if err != nil || run == nil {
 		return err
 	}
+	if err := store.BeginAssistantRunAttempt(ctx, w.St.Pool, run); err != nil {
+		log.Printf("assistant run %s attempt %d trace start failed: %v", run.ID, run.Attempt, err)
+	}
 	workCtx, cancelWork := context.WithCancel(ctx)
 	heartbeatDone := make(chan struct{})
 	go func() {
@@ -147,6 +152,7 @@ func (w *Worker) handleRunAssistant(ctx context.Context, task *asynq.Task) error
 	cancelWork()
 	<-heartbeatDone
 	if err == nil {
+		w.finishAssistantRunAttempt(run, "succeeded", "", "")
 		return nil
 	}
 	failoverCtx, cancelFailover := context.WithTimeout(context.Background(), 30*time.Second)
@@ -156,6 +162,7 @@ func (w *Worker) handleRunAssistant(ctx context.Context, task *asynq.Task) error
 		return failoverErr
 	}
 	if requeued {
+		w.finishAssistantRunAttempt(run, "requeued", "provider_route_failed", sanitizeUpstreamMessage(err.Error()))
 		log.Printf("assistant run %s switching provider route after %s", run.ID, assistantRouteDescription(run))
 		return nil
 	}
@@ -163,6 +170,7 @@ func (w *Worker) handleRunAssistant(ctx context.Context, task *asynq.Task) error
 	current, getErr := store.GetAssistantRun(context.Background(), w.St.Pool, runID)
 	if getErr == nil && current != nil {
 		if current.Status == "canceled" {
+			w.finishAssistantRunAttempt(run, "canceled", "assistant_run_canceled", "")
 			_ = w.clearAssistantMessageOutputMetadata(run, "已停止生成", resolvedAssistantMode(run), "stopped",
 				assistantMessageMetadata(run, nil, "stopped", ""))
 			assistantstream.Publish(context.Background(), w.Stream, runID.String(),
@@ -170,20 +178,30 @@ func (w *Worker) handleRunAssistant(ctx context.Context, task *asynq.Task) error
 			return nil
 		}
 		if current.Status == "failed" {
+			code, message := "assistant_run_failed", ""
+			if current.ErrorCode != nil {
+				code = *current.ErrorCode
+			}
+			if current.ErrorMessage != nil {
+				message = *current.ErrorMessage
+			}
+			w.finishAssistantRunAttempt(run, "failed", code, message)
 			return nil
 		}
 		if current.Attempt != run.Attempt || current.Status != "running" {
+			w.finishAssistantRunAttempt(run, "superseded", "attempt_superseded", "")
 			return nil
 		}
 	}
 	message := sanitizeUpstreamMessage(err.Error())
+	failureCode := sub2api.FailureCode(err)
 	failureCtx, cancelFailure := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancelFailure()
 	var failed bool
 	var failedContent string
 	failErr := w.St.Tx(failureCtx, func(tx pgx.Tx) error {
 		var err error
-		failed, err = assistantbilling.FailTxAttempt(failureCtx, tx, runID, run.Attempt, "assistant_run_failed", message)
+		failed, err = assistantbilling.FailTxAttempt(failureCtx, tx, runID, run.Attempt, failureCode, message)
 		if err != nil || !failed {
 			return err
 		}
@@ -202,12 +220,28 @@ func (w *Worker) handleRunAssistant(ctx context.Context, task *asynq.Task) error
 	if !failed {
 		return nil
 	}
+	w.finishAssistantRunAttempt(run, "failed", failureCode, message)
 	if history, histErr := store.GetTaskByIdemKey(failureCtx, w.St.Pool, run.UserID, store.UIDesignAssetHistoryIdempotencyKey(runID)); histErr == nil && history != nil {
 		w.publishTaskEvent(failureCtx, history, taskstream.Event{Stage: "failed", Status: "failed", Done: true})
 	}
 	assistantstream.Publish(context.Background(), w.Stream, runID.String(),
 		assistantstream.Event{Done: true, Status: "failed"})
 	return nil
+}
+
+func (w *Worker) finishAssistantRunAttempt(run *store.AssistantRun, status, code, message string) {
+	if w == nil || w.St == nil || run == nil || run.Attempt <= 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if strings.TrimSpace(message) != "" {
+		message = sanitizeUpstreamMessage(message)
+	}
+	if _, err := store.FinishAssistantRunAttempt(ctx, w.St.Pool, run.ID, run.Attempt,
+		status, resolvedAssistantMode(run), code, message); err != nil {
+		log.Printf("assistant run %s attempt %d trace finish failed: %v", run.ID, run.Attempt, err)
+	}
 }
 
 func (w *Worker) heartbeatAssistantRunLease(
@@ -263,8 +297,21 @@ func (w *Worker) clearAssistantMessageOutputMetadataTx(ctx context.Context, q st
 	if w == nil || w.St == nil || run == nil {
 		return errors.New("assistant output cleanup store is unavailable")
 	}
+	preserved := make(map[string]any, len(metadata)+1)
+	for key, value := range metadata {
+		preserved[key] = value
+	}
+	message, err := store.GetAssistantMessage(ctx, q, run.AssistantMessageID)
+	if err != nil {
+		return err
+	}
+	if message != nil {
+		if artifacts, ok := message.Metadata["artifacts"]; ok {
+			preserved["artifacts"] = artifacts
+		}
+	}
 	return store.ClearAssistantMessageOutputMetadata(ctx, q, run.UserID, run.AssistantMessageID,
-		content, kind, status, metadata)
+		content, kind, status, preserved)
 }
 
 func (w *Worker) executeAssistantRun(ctx context.Context, run *store.AssistantRun) error {
@@ -272,6 +319,10 @@ func (w *Worker) executeAssistantRun(ctx context.Context, run *store.AssistantRu
 	references, err := w.loadAssistantReferences(ctx, run.Params)
 	if err != nil {
 		return err
+	}
+	if mode != "image" && len(references) > 0 && !isCanvasWorkspaceRun(run) &&
+		assistanttools.ImageToPSDRequested(run.Prompt) {
+		return errors.New("AI 助手暂未开放 PSD 转换")
 	}
 	var client *sub2api.Client
 	if mode == "agent" {
@@ -294,7 +345,23 @@ func (w *Worker) executeAssistantRun(ctx context.Context, run *store.AssistantRu
 		}
 		client = client.WithMaxOutputTokens(
 			assistantParamInt(run.Params, "_chatMaxOutputTokens", assistantDefaultOutputTokens),
-		)
+		).WithReasoningEffort(assistantParamString(run.Params, "reasoningEffort", ""))
+		if assistantArtifactRequested(run.Prompt) && !isCanvasWorkspaceRun(run) {
+			run.ResolvedMode = "chat"
+			stage := "preparing-context"
+			if len(references) > 0 {
+				stage = "analyzing-image"
+			}
+			if err := w.setAssistantRunStage(ctx, run, "chat", stage); err != nil {
+				return err
+			}
+			if err := store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, "", "chat", "running",
+				assistantMessageMetadata(run, nil, stage, "")); err != nil {
+				return err
+			}
+			assistantstream.Publish(ctx, w.Stream, run.ID.String(), assistantstream.Event{Kind: "chat", Stage: stage})
+			return w.executeAssistantChat(ctx, client, run, references)
+		}
 		history, histErr := store.ListAssistantMessages(ctx, w.St.Pool, run.ConversationID, assistantMessageLimitForContext)
 		if histErr != nil {
 			// 历史加载失败时退化为仅使用本轮输入，不阻塞本次运行。
@@ -307,7 +374,7 @@ func (w *Worker) executeAssistantRun(ctx context.Context, run *store.AssistantRu
 		return w.executeAssistantAgent(ctx, client, run, references, history)
 	}
 	run.ResolvedMode = mode
-	stage := "thinking"
+	stage := "preparing-context"
 	if mode == "image" {
 		stage = "generating-image"
 	} else if len(references) > 0 {
@@ -368,7 +435,7 @@ func (w *Worker) executeAssistantRun(ctx context.Context, run *store.AssistantRu
 	}
 	client = client.WithMaxOutputTokens(
 		assistantParamInt(run.Params, "_chatMaxOutputTokens", assistantDefaultOutputTokens),
-	)
+	).WithReasoningEffort(assistantParamString(run.Params, "reasoningEffort", ""))
 	return w.executeAssistantChat(ctx, client, run, references)
 }
 
@@ -756,20 +823,17 @@ func (w *Worker) executeAssistantAgent(
 	history []*store.AssistantMessage,
 ) error {
 	run.ResolvedMode = "agent"
-	if err := w.setAssistantRunStage(ctx, run, "agent", "thinking"); err != nil {
-		return err
-	}
-	if err := store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, "", "agent", "running",
-		assistantMessageMetadata(run, nil, "thinking", "")); err != nil {
-		return err
-	}
-	assistantstream.Publish(ctx, w.Stream, run.ID.String(), assistantstream.Event{Kind: "agent", Stage: "thinking"})
-
 	imageCatalog := buildAssistantImageCatalog(history, run.AssistantMessageID)
 	modelCatalog := assistantProposalModelCatalog(run.Params)
-	payload, _ := buildAssistantContext(
-		assistantAgentInstructions(run, imageCatalog, modelCatalog), history, run, references, false,
-	)
+	nextStage := "thinking"
+	if len(references) > 0 {
+		nextStage = "analyzing-image"
+	}
+	payload, _, err := w.prepareAssistantContext(ctx, run, "agent",
+		assistantAgentInstructions(run, imageCatalog, modelCatalog), history, references, false, nextStage)
+	if err != nil {
+		return err
+	}
 
 	lastCheckpoint := time.Now()
 	lastPublish := time.Time{}
@@ -1477,12 +1541,29 @@ func (w *Worker) executeAssistantChat(ctx context.Context, client *sub2api.Clien
 		messages = nil
 	}
 	messages = assistantMessagesAfterContextBoundary(messages)
-	payload, _ := buildAssistantContext(assistantChatSystemPrompt, messages, run, references, false)
+	systemPrompt := assistantChatSystemPrompt
+	if len(assistantRunFileIDs(run)) > 0 {
+		_, skill, skillErr := w.assistantDocumentSkill(run)
+		if skillErr != nil {
+			return skillErr
+		}
+		systemPrompt += "\n\nDocument analysis rules:\n" + skill.Instructions
+	}
+	nextStage := "thinking"
+	if len(assistantRunFileIDs(run)) > 0 {
+		nextStage = "analyzing-document"
+	} else if len(references) > 0 {
+		nextStage = "analyzing-image"
+	}
+	payload, _, err := w.prepareAssistantContext(ctx, run, "chat", systemPrompt, messages, references, false, nextStage)
+	if err != nil {
+		return err
+	}
 	lastCheckpoint := time.Now()
 	lastPublish := time.Time{}
 	lastTerminationCheck := time.Time{}
 	answering := false
-	text, err := requestAssistantChatText(ctx, client, payload, run.Prompt, func(fullText string) error {
+	onText := func(fullText string) error {
 		// 真流式文本经 Redis 即时推送；PostgreSQL 只保留低频断线恢复检查点。
 		if time.Since(lastPublish) >= 50*time.Millisecond {
 			lastPublish = time.Now()
@@ -1510,12 +1591,22 @@ func (w *Worker) executeAssistantChat(ctx context.Context, client *sub2api.Clien
 		lastCheckpoint = time.Now()
 		return store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, fullText, "chat", "running",
 			assistantMessageMetadata(run, nil, "answering", ""))
-	}, func(attempt int, hasUsableSuffix bool) {
-		log.Printf("assistant run %s filtered leaked search prefix model=%s attempt=%d usable_suffix=%t",
-			run.ID, client.ChatModel(), attempt, hasUsableSuffix)
-	})
+	}
+	var text string
+	var usedTools []string
+	var artifacts []map[string]any
+	if len(assistantRunFileIDs(run)) > 0 {
+		text, usedTools, artifacts, err = w.requestAssistantDocumentText(ctx, client, run, payload, onText)
+	} else if assistantArtifactRequested(run.Prompt) {
+		text, usedTools, artifacts, err = w.requestAssistantArtifactText(ctx, client, run, payload, onText)
+	} else {
+		text, err = requestAssistantChatText(ctx, client, payload, run.Prompt, onText, func(attempt int, hasUsableSuffix bool) {
+			log.Printf("assistant run %s filtered leaked search prefix model=%s attempt=%d usable_suffix=%t",
+				run.ID, client.ChatModel(), attempt, hasUsableSuffix)
+		})
+	}
 	if err != nil {
-		return &assistantProviderError{err: err, outputStarted: strings.TrimSpace(text) != ""}
+		return &assistantProviderError{err: err, outputStarted: strings.TrimSpace(text) != "" || len(artifacts) > 0}
 	}
 	if strings.TrimSpace(text) == "" {
 		text = "没有收到模型回复，请重试。"
@@ -1526,8 +1617,17 @@ func (w *Worker) executeAssistantChat(ctx context.Context, client *sub2api.Clien
 		}
 		return context.Canceled
 	}
-	if err := store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, text, "chat", "complete",
-		assistantMessageMetadata(run, nil, "complete", "")); err != nil {
+	metadata := assistantMessageMetadata(run, nil, "complete", "")
+	if len(usedTools) > 0 {
+		metadata["toolsUsed"] = usedTools
+		if len(assistantRunFileIDs(run)) > 0 {
+			metadata["skill"] = assistanttools.SkillDocumentAnalysis
+		}
+	}
+	if len(artifacts) > 0 {
+		metadata["artifacts"] = artifacts
+	}
+	if err := store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, text, "chat", "complete", metadata); err != nil {
 		return err
 	}
 	completed, err := assistantbilling.CompleteAttempt(ctx, w.St, run.ID, run.Attempt, "chat")
@@ -1910,24 +2010,26 @@ func (w *Worker) executeAssistantImage(ctx context.Context, client *sub2api.Clie
 	quality := assistantParamString(run.Params, "quality", "high")
 	count := assistantParamInt(run.Params, "count", 2)
 	storedByIndex := make([]map[string]any, count)
-	images, err := client.GenerateImageProgressive(ctx, finalPrompt, size, quality, count, references, func(index int, image sub2api.Image) error {
-		if terminated, err := w.assistantRunTerminated(ctx, run.ID); err != nil || terminated {
+	requestCtx, cancelRequest := context.WithTimeout(ctx, assistantSynchronousImageLimit)
+	defer cancelRequest()
+	images, err := client.GenerateImageProgressive(requestCtx, finalPrompt, size, quality, count, references, func(index int, image sub2api.Image) error {
+		if terminated, err := w.assistantRunTerminated(requestCtx, run.ID); err != nil || terminated {
 			if err != nil {
 				return err
 			}
 			return context.Canceled
 		}
-		data, _, _, err := downloadAssistantImage(ctx, image.DataURL)
+		data, _, _, err := downloadAssistantImage(requestCtx, image.DataURL)
 		if err != nil {
 			return err
 		}
-		stored, err := w.storeAssistantImageBytes(ctx, run, index, count, data, image.RevisedPrompt)
+		stored, err := w.storeAssistantImageBytes(requestCtx, run, index, count, data, image.RevisedPrompt)
 		if err != nil {
 			return err
 		}
 		storedByIndex[index] = stored
 		partial := compactAssistantImages(storedByIndex)
-		if err := store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, "", "image", "running",
+		if err := store.UpdateAssistantMessage(requestCtx, w.St.Pool, run.AssistantMessageID, "", "image", "running",
 			assistantMessageMetadata(run, partial, "generating-image", "")); err != nil {
 			w.enqueueAssistantOutputCleanup([]string{assistantMapString(stored, "fileKey")})
 			return err
@@ -1935,6 +2037,9 @@ func (w *Worker) executeAssistantImage(ctx context.Context, client *sub2api.Clie
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			return errors.New("图片生成超过 5 分钟仍未完成，请重试或切换图片模型")
+		}
 		return err
 	}
 	if terminated, err := w.assistantRunTerminated(ctx, run.ID); err != nil || terminated {

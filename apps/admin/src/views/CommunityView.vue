@@ -261,6 +261,10 @@ async function persistWorkOrder() {
 
 const selectedWorkIds = ref<Set<string>>(new Set())
 const selectedCount = computed(() => selectedWorkIds.value.size)
+const featuredCount = computed(() => works.value.filter((item) => item.featured).length)
+function worksInCategory(id: string) {
+  return works.value.filter((item) => item.category?.id === id).length
+}
 const allVisibleSelected = computed(
   () => visibleWorks.value.length > 0 && visibleWorks.value.every((item) => selectedWorkIds.value.has(item.id)),
 )
@@ -688,112 +692,111 @@ onUnmounted(() => {
 
 <template>
   <div class="community-ops-page">
-    <div class="community-pane">
-      <div class="community-pane__bar">
-        <div class="community-filters">
-          <button
-            type="button"
-            class="community-filter"
-            :class="{ 'is-active': workFilter === 'all' }"
-            @click="workFilter = 'all'"
-          >
-            全部作品
-          </button>
-          <button
-            type="button"
-            class="community-filter"
-            :class="{ 'is-active': workFilter === 'featured' }"
-            @click="workFilter = 'featured'"
-          >
-            ★ 精选
-          </button>
-          <button
-            v-for="category in enabledCategories"
-            :key="category.id"
-            type="button"
-            class="community-filter"
-            :class="{ 'is-active': workFilter === category.id }"
-            @click="workFilter = category.id"
-          >
-            {{ category.name }}
-          </button>
-        </div>
-
-        <label class="community-search">
-          <el-icon class="community-search__icon" :size="15"><Search /></el-icon>
-          <el-input v-model="workQuery" clearable placeholder="搜索标题、作者、邮箱或标签" />
-        </label>
-
-        <div class="community-toolbar__actions">
-          <div class="community-setting-pill" :class="{ 'is-on': settings.submissionEnabled }">
-            <span>开放投稿</span>
-            <el-switch
-              v-model="settings.submissionEnabled"
-              :loading="settingsSaving"
-              size="small"
-              @change="saveSettings(settings.submissionEnabled ? '社区投稿已开启' : '社区投稿已关闭')"
-            />
-          </div>
-          <div class="community-setting-pill" :class="{ 'is-on': settings.autoApprove }">
-            <span>自动过审</span>
-            <el-switch
-              v-model="settings.autoApprove"
-              :loading="settingsSaving"
-              size="small"
-              @change="saveSettings(settings.autoApprove ? '新投稿将自动过审' : '已恢复人工审核')"
-            />
-          </div>
-          <div class="community-setting-pill is-limit">
-            <span>每日限额</span>
-            <el-input-number
-              v-model="settings.dailyLimit"
-              :min="0"
-              :max="999"
-              size="small"
-              :controls="false"
-              @change="saveSettings('每日投稿限额已更新')"
-            />
-          </div>
-          <button type="button" class="community-config-btn is-category" @click="categoryOpen = true">
-            <el-icon :size="15"><CollectionTag /></el-icon>
-            <span>分类</span>
-            <em v-if="categories.length">{{ categories.length }}</em>
-          </button>
-          <button type="button" class="community-config-btn is-author" @click="authorsOpen = true">
-            <el-icon :size="15"><User /></el-icon>
-            <span>创作者</span>
-            <em v-if="authors.length">{{ authors.length }}</em>
-          </button>
-          <button
-            type="button"
-            class="community-config-btn"
-            :disabled="!canSortWorks || workOrderSaving"
-            title="调整作品展示顺序"
-            @click="openSortDialog"
-          >
-            <el-icon :size="15"><Rank /></el-icon>
-            <span>排序</span>
-          </button>
-        </div>
+    <header class="community-toolbar">
+      <div class="community-tabs" role="tablist" aria-label="作品分类">
+        <button
+          type="button"
+          role="tab"
+          class="community-tab"
+          :class="{ 'is-active': workFilter === 'all' }"
+          :aria-selected="workFilter === 'all'"
+          @click="workFilter = 'all'"
+        >
+          全部
+          <em class="tnum">{{ works.length }}</em>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          class="community-tab"
+          :class="{ 'is-active': workFilter === 'featured' }"
+          :aria-selected="workFilter === 'featured'"
+          @click="workFilter = 'featured'"
+        >
+          精选
+          <em class="tnum">{{ featuredCount }}</em>
+        </button>
+        <button
+          v-for="category in enabledCategories"
+          :key="category.id"
+          type="button"
+          role="tab"
+          class="community-tab"
+          :class="{ 'is-active': workFilter === category.id }"
+          :aria-selected="workFilter === category.id"
+          @click="workFilter = category.id"
+        >
+          {{ category.name }}
+          <em class="tnum">{{ worksInCategory(category.id) }}</em>
+        </button>
       </div>
 
-      <div class="community-selection-bar" :class="{ 'has-selection': selectedCount > 0 }">
-        <div class="community-selection-bar__left">
-          <el-checkbox :model-value="allVisibleSelected" @change="toggleSelectVisible">
-            {{ allVisibleSelected ? '取消全选' : '全选当前结果' }}
-          </el-checkbox>
-          <span v-if="selectedCount">已选 {{ selectedCount }} 个作品</span>
-          <span v-else-if="canSortWorks" class="is-hint">点击「排序」拖动调整展示顺序</span>
-          <span v-else class="is-hint">清除筛选并加载全部作品后可排序</span>
+      <div class="community-toolbar__right">
+        <el-input
+          v-model="workQuery"
+          :prefix-icon="Search"
+          clearable
+          class="community-search"
+          placeholder="搜索标题、作者或标签"
+        />
+        <div class="community-setting-pill" :class="{ 'is-on': settings.submissionEnabled }">
+          <span>开放投稿</span>
+          <el-switch
+            v-model="settings.submissionEnabled"
+            :loading="settingsSaving"
+            size="small"
+            @change="saveSettings(settings.submissionEnabled ? '社区投稿已开启' : '社区投稿已关闭')"
+          />
         </div>
-        <div v-if="selectedCount" class="community-selection-bar__actions">
-          <el-button text @click="clearSelection">取消选择</el-button>
-          <el-button type="primary" :icon="Check" @click="openBatchEdit">批量编辑</el-button>
+        <div class="community-setting-pill" :class="{ 'is-on': settings.autoApprove }">
+          <span>自动过审</span>
+          <el-switch
+            v-model="settings.autoApprove"
+            :loading="settingsSaving"
+            size="small"
+            @change="saveSettings(settings.autoApprove ? '新投稿将自动过审' : '已恢复人工审核')"
+          />
         </div>
+        <div class="community-setting-pill is-limit">
+          <span>每日限额</span>
+          <el-input-number
+            v-model="settings.dailyLimit"
+            :min="0"
+            :max="999"
+            size="small"
+            :controls="false"
+            @change="saveSettings('每日投稿限额已更新')"
+          />
+        </div>
+        <el-button :icon="CollectionTag" @click="categoryOpen = true">
+          分类
+        </el-button>
+        <el-button :icon="User" @click="authorsOpen = true">
+          创作者
+        </el-button>
+        <el-button
+          :icon="Rank"
+          :disabled="!canSortWorks || workOrderSaving"
+          @click="openSortDialog"
+        >
+          排序
+        </el-button>
       </div>
+    </header>
 
-      <ListError :error="worksError" :loading="loading" @retry="retryWorks" />
+    <div v-if="selectedCount" class="community-selection-bar">
+      <el-checkbox :model-value="allVisibleSelected" @change="toggleSelectVisible">
+        已选 {{ selectedCount }}
+      </el-checkbox>
+      <div class="community-selection-bar__actions">
+        <el-button text @click="clearSelection">取消选择</el-button>
+        <el-button type="primary" :icon="Check" @click="openBatchEdit">批量编辑</el-button>
+      </div>
+    </div>
 
+    <ListError :error="worksError" :loading="loading" @retry="retryWorks" />
+
+    <div class="community-board">
       <div
         ref="communityFeedRef"
         v-loading="loading && works.length > 0"
@@ -803,7 +806,11 @@ onUnmounted(() => {
       >
         <div v-if="loading && !works.length" class="community-grid__loading">正在加载作品…</div>
 
-        <el-empty v-else-if="!visibleWorks.length" description="当前筛选下暂无作品" />
+        <div v-else-if="!visibleWorks.length" class="community-empty">
+          <el-icon><CollectionTag /></el-icon>
+          <strong>{{ works.length ? '没有匹配的作品' : '还没有社区作品' }}</strong>
+          <span>{{ works.length ? '调整分类或搜索后再试' : '过审作品会显示在这里' }}</span>
+        </div>
 
         <div
           v-else
@@ -841,7 +848,6 @@ onUnmounted(() => {
         <div v-if="visibleWorks.length" class="community-load-status" :class="{ 'is-loading': loadingMore }">
           <span v-if="loadingMore">正在加载更多…</span>
           <span v-else-if="!hasMore">已加载全部 {{ works.length }} 条</span>
-          <span v-else>下拉继续加载</span>
         </div>
       </div>
     </div>
@@ -850,6 +856,7 @@ onUnmounted(() => {
       v-if="previewVisible"
       :url-list="previewUrls"
       teleported
+      hide-on-click-modal
       @close="previewVisible = false"
     />
 
@@ -1036,64 +1043,85 @@ onUnmounted(() => {
       title="创作者管理"
       subtitle="查看投稿数据，并解除禁投限制"
       :icon="User"
-      width="880px"
+      width="800px"
       hide-footer
       nested-scroll
     >
-      <div class="authors-overview">
-        <div><strong>{{ authorSummary.creators }}</strong><span>当前创作者</span></div>
-        <div><strong>{{ authorSummary.submissions }}</strong><span>累计投稿</span></div>
-        <div><strong>{{ authorSummary.approved }}</strong><span>已通过</span></div>
-        <div :class="{ 'is-alert': authorSummary.banned > 0 }">
-          <strong>{{ authorSummary.banned }}</strong><span>禁投中</span>
+      <div class="authors-panel">
+        <div class="authors-overview">
+          <div>
+            <strong class="tnum">{{ authorSummary.creators }}</strong>
+            <span>当前创作者</span>
+          </div>
+          <div>
+            <strong class="tnum">{{ authorSummary.submissions }}</strong>
+            <span>累计投稿</span>
+          </div>
+          <div>
+            <strong class="tnum">{{ authorSummary.approved }}</strong>
+            <span>已通过</span>
+          </div>
+          <div :class="{ 'is-alert': authorSummary.banned > 0 }">
+            <strong class="tnum">{{ authorSummary.banned }}</strong>
+            <span>禁投中</span>
+          </div>
         </div>
-      </div>
-      <div class="authors-toolbar">
-        <label class="authors-search">
-          <el-icon :size="16"><Search /></el-icon>
+
+        <div class="authors-toolbar">
           <el-input
             v-model="authorQuery"
+            :prefix-icon="Search"
             clearable
             placeholder="搜索创作者名称或邮箱"
             @keyup.enter="loadAuthors"
             @clear="loadAuthors"
           />
-        </label>
-        <el-button type="primary" :loading="authorsLoading" @click="loadAuthors">查询</el-button>
-      </div>
-      <div v-loading="authorsLoading" class="authors-list">
-        <el-empty v-if="!authorsLoading && !authors.length" description="暂无创作者" />
-        <article v-for="row in authors" :key="row.userId" class="author-row" :class="{ 'is-banned': isBanned(row) }">
-          <el-avatar class="author-row__avatar" :size="44" :src="row.avatarUrl || undefined">
-            {{ authorInitial(row) }}
-          </el-avatar>
-          <div class="author-row__identity">
-            <div class="author-row__name-line">
-              <strong>{{ row.username || '未设置昵称' }}</strong>
-              <el-tag v-if="isBanned(row)" type="danger" size="small" effect="light">禁投中</el-tag>
-              <el-tag v-else type="success" size="small" effect="plain">正常</el-tag>
+          <el-button type="primary" :loading="authorsLoading" @click="loadAuthors">查询</el-button>
+        </div>
+
+        <div v-loading="authorsLoading" class="authors-list">
+          <div v-if="!authorsLoading && !authors.length" class="authors-empty">
+            <el-icon><User /></el-icon>
+            <strong>暂无创作者</strong>
+            <span>调整搜索后再试</span>
+          </div>
+          <article
+            v-for="row in authors"
+            :key="row.userId"
+            class="author-row"
+            :class="{ 'is-banned': isBanned(row) }"
+          >
+            <el-avatar class="author-row__avatar" :size="40" :src="row.avatarUrl || undefined">
+              {{ authorInitial(row) }}
+            </el-avatar>
+            <div class="author-row__identity">
+              <div class="author-row__name-line">
+                <strong>{{ row.username || '未设置昵称' }}</strong>
+                <span class="author-row__status" :class="{ 'is-banned': isBanned(row) }">
+                  {{ isBanned(row) ? '禁投中' : '正常' }}
+                </span>
+              </div>
+              <small :title="row.email">{{ row.email }}</small>
             </div>
-            <small :title="row.email">{{ row.email }}</small>
-          </div>
-          <div class="author-row__metrics">
-            <span><small>投稿</small><strong>{{ row.submissions }}</strong></span>
-            <span><small>通过</small><strong>{{ row.approved }}</strong></span>
-            <span><small>下架</small><strong>{{ row.removed }}</strong></span>
-          </div>
-          <div class="author-row__state">
-            <small v-if="isBanned(row)">至 {{ formatTime(row.bannedUntil) }}</small>
-            <el-button
-              v-if="isBanned(row)"
-              size="small"
-              type="warning"
-              plain
-              :loading="unbanning === row.userId"
-              @click="unbanAuthor(row)"
-            >
-              解除禁投
-            </el-button>
-          </div>
-        </article>
+            <div class="author-row__metrics">
+              <span>投稿 <strong class="tnum">{{ row.submissions }}</strong></span>
+              <span>通过 <strong class="tnum">{{ row.approved }}</strong></span>
+              <span>下架 <strong class="tnum">{{ row.removed }}</strong></span>
+            </div>
+            <div v-if="isBanned(row)" class="author-row__state">
+              <small>至 {{ formatTime(row.bannedUntil) }}</small>
+              <el-button
+                size="small"
+                type="warning"
+                plain
+                :loading="unbanning === row.userId"
+                @click="unbanAuthor(row)"
+              >
+                解除禁投
+              </el-button>
+            </div>
+          </article>
+        </div>
       </div>
     </AdminDialog>
 
@@ -1225,44 +1253,106 @@ onUnmounted(() => {
 
 <style scoped lang="scss">
 .community-ops-page {
-  --community-accent: var(--accent);
-  --community-line: var(--border);
-
   box-sizing: border-box;
-  display: grid;
+  display: flex;
   height: 100%;
   min-height: 0;
-  grid-template-rows: minmax(0, 1fr);
-  gap: 0;
+  flex-direction: column;
+  gap: 12px;
   overflow: hidden;
-  padding: 16px 18px;
+  padding: 0;
   background: var(--bg);
 }
 
-.community-toolbar__actions {
+.community-toolbar {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.community-tabs {
+  display: inline-flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+}
+
+.community-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--ink-2);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+
+  em {
+    color: var(--ink-3);
+    font-size: 12px;
+    font-style: normal;
+    font-weight: 700;
+  }
+
+  &:hover:not(.is-active) {
+    color: var(--ink);
+    background: var(--surface);
+  }
+
+  &.is-active {
+    background: var(--accent);
+    color: var(--accent-on);
+
+    em {
+      color: color-mix(in srgb, var(--accent-on) 72%, transparent);
+    }
+  }
+}
+
+.community-toolbar__right {
   display: flex;
   flex: 0 1 auto;
   flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
-  gap: 6px;
+  gap: 8px;
   margin-left: auto;
+}
+
+.community-search {
+  width: 220px;
 }
 
 .community-setting-pill {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  height: 30px;
-  padding: 0 8px 0 10px;
-  border: 1px solid var(--community-line);
-  border-radius: 8px;
-  color: var(--ink-3);
+  height: 32px;
+  padding: 0 10px 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--ink-2);
   font-size: 12px;
+  font-weight: 650;
   background: var(--surface-2);
 
   &.is-on {
-    border-color: color-mix(in srgb, var(--success) 28%, var(--community-line));
+    border-color: color-mix(in srgb, var(--success) 28%, var(--border));
     background: var(--success-soft);
     color: var(--success);
   }
@@ -1276,202 +1366,38 @@ onUnmounted(() => {
   }
 }
 
-.community-config-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  height: 30px;
-  padding: 0 10px 0 8px;
-  border: 1px solid var(--community-line);
-  border-radius: 8px;
-  background: var(--surface-2);
-  color: var(--ink-2);
-  font-size: 12px;
-  font-weight: 650;
-  line-height: 1;
-  cursor: pointer;
-  transition:
-    background 0.15s ease,
-    border-color 0.15s ease,
-    color 0.15s ease;
-
-  em {
-    min-width: 16px;
-    height: 16px;
-    padding: 0 4px;
-    border-radius: 999px;
-    background: color-mix(in srgb, currentColor 12%, transparent);
-    color: inherit;
-    font-size: 10px;
-    font-style: normal;
-    font-weight: 700;
-    line-height: 16px;
-    text-align: center;
-  }
-
-  &:hover {
-    border-color: color-mix(in srgb, var(--accent) 40%, var(--community-line));
-    background: var(--accent-soft);
-    color: var(--accent-ink);
-  }
-
-  &.is-category {
-    color: var(--accent-ink);
-  }
-
-  &.is-author {
-    color: var(--warning);
-  }
-}
-
-.community-pane {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-width: 0;
-  min-height: 0;
-  height: 100%;
-  overflow: hidden;
-  padding: 12px;
-  border: 1px solid var(--community-line);
-  border-radius: 16px;
-  background: var(--surface);
-  box-shadow: var(--shadow-sm);
-}
-
-.community-pane__bar {
-  display: flex;
-  flex-shrink: 0;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 10px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid var(--community-line);
-}
-
-.community-filters {
-  display: flex;
-  flex: 1 1 220px;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-
-.community-filter {
-  min-height: 30px;
-  padding: 0 11px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--surface);
-  color: var(--ink-2);
-  font-size: 12px;
-  font-weight: 650;
-  cursor: pointer;
-  transition:
-    background-color 0.15s ease,
-    color 0.15s ease,
-    border-color 0.15s ease;
-
-  &:hover {
-    background: var(--surface-3);
-    color: var(--ink);
-  }
-
-  &.is-active {
-    border-color: var(--accent);
-    background: var(--accent);
-    color: #fff;
-  }
-}
-
-.community-bar-aside {
-  display: none;
-}
-
-.community-search {
-  display: flex;
-  flex: 0 1 240px;
-  align-items: center;
-  width: min(240px, 36vw);
-  min-width: 160px;
-  height: 30px;
-  padding: 2px 2px 2px 8px;
-  border: 1px solid var(--community-line);
-  border-radius: 8px;
-  background: var(--surface-2);
-  transition:
-    border-color 0.16s ease,
-    box-shadow 0.16s ease;
-
-  &:focus-within {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 3px var(--accent-soft);
-  }
-
-  :deep(.el-input) {
-    flex: 1 1 auto;
-    min-width: 0;
-  }
-
-  :deep(.el-input__wrapper) {
-    padding: 0 8px 0 6px;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-    box-shadow: none !important;
-  }
-
-  :deep(.el-input__inner) {
-    height: 28px;
-    font-size: 13px;
-  }
-}
-
-.community-search__icon {
-  flex-shrink: 0;
-  color: var(--el-text-color-placeholder);
-}
-
 .community-selection-bar {
   display: flex;
-  flex-shrink: 0;
-  min-height: 38px;
+  flex: 0 0 auto;
+  min-height: 40px;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 4px 8px;
-  border: 1px solid transparent;
-  border-radius: 10px;
-  background: var(--surface-2);
-
-  &.has-selection {
-    border-color: color-mix(in srgb, var(--accent) 28%, transparent);
-    background: var(--accent-soft);
-  }
-}
-
-.community-selection-bar__left,
-.community-selection-bar__actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
+  padding: 6px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  border-radius: 14px;
+  background: var(--accent-soft);
   font-size: 12px;
   font-weight: 650;
 }
 
-.community-selection-bar__left .is-hint {
-  overflow: hidden;
-  color: var(--el-text-color-secondary);
-  font-weight: 500;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.community-selection-bar__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
-.community-pane__scroll {
+.community-board {
+  display: flex;
   flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
 }
 
 .community-feed {
@@ -1480,7 +1406,7 @@ onUnmounted(() => {
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
-  padding: 4px 2px 8px;
+  padding: 14px;
 }
 
 .community-feed.is-scrolling :deep(.community-card) {
@@ -1494,12 +1420,31 @@ onUnmounted(() => {
   transition: none;
 }
 
-.community-grid__loading {
+.community-grid__loading,
+.community-empty {
   display: grid;
-  place-items: center;
-  min-height: 240px;
+  min-height: 280px;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
   color: var(--ink-3);
-  font-size: 13px;
+  text-align: center;
+}
+
+.community-empty {
+  .el-icon {
+    font-size: 30px;
+  }
+
+  strong {
+    color: var(--ink);
+  }
+
+  span {
+    max-width: 280px;
+    font-size: 12px;
+    line-height: 1.45;
+  }
 }
 
 .community-masonry {
@@ -1532,9 +1477,9 @@ onUnmounted(() => {
   gap: 8px;
   padding: 8px;
   overflow: hidden;
-  border: 1px solid var(--community-line);
-  border-radius: 14px;
-  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface-2);
 
   > div {
     height: 168px;
@@ -1663,29 +1608,15 @@ onUnmounted(() => {
 }
 
 @media (max-width: 900px) {
-  .community-pane {
-    padding: 8px;
-  }
-
-  .community-pane__bar {
-    align-items: stretch;
-  }
-
-  .community-toolbar__actions {
+  .community-toolbar__right {
     width: 100%;
     margin-left: 0;
     justify-content: flex-start;
   }
 
   .community-search {
-    flex: 1 1 100%;
     width: 100%;
     max-width: none;
-  }
-
-  .community-selection-bar {
-    align-items: flex-start;
-    flex-direction: column;
   }
 }
 </style>
@@ -1897,102 +1828,113 @@ onUnmounted(() => {
 }
 
 .community-authors-dialog {
-  .el-dialog__body {
-    padding-top: 8px;
+  .authors-panel {
+    display: flex;
+    min-height: 0;
+    flex: 1;
+    flex-direction: column;
+    gap: 12px;
   }
 
   .authors-overview {
     display: grid;
+    flex: 0 0 auto;
     grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 1px;
-    overflow: hidden;
-    margin-bottom: 14px;
-    border: 1px solid var(--community-dialog-line);
-    border-radius: 10px;
-    background: var(--community-dialog-line);
+    gap: 8px;
 
     > div {
       display: grid;
-      gap: 2px;
+      gap: 4px;
       padding: 12px 14px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
       background: var(--surface-2);
 
       strong {
         color: var(--ink);
-        font-size: 20px;
-        line-height: 1.2;
+        font-size: 22px;
+        font-weight: 700;
+        line-height: 1.15;
       }
 
       span {
         color: var(--ink-3);
-        font-size: 11px;
+        font-size: 12px;
       }
 
-      &.is-alert strong {
-        color: var(--danger);
+      &.is-alert {
+        border-color: color-mix(in srgb, var(--danger) 28%, var(--border));
+        background: var(--danger-soft);
+
+        strong {
+          color: var(--danger);
+        }
       }
     }
   }
 
   .authors-toolbar {
     display: flex;
+    flex: 0 0 auto;
     gap: 8px;
-    margin-bottom: 12px;
-  }
 
-  .authors-search {
-    display: flex;
-    flex: 1;
-    align-items: center;
-    gap: 6px;
-    height: 36px;
-    padding-left: 10px;
-    border: 1px solid var(--community-dialog-line);
-    border-radius: 9px;
-    color: var(--ink-3);
-    background: var(--surface-2);
-
-    &:focus-within {
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px var(--accent-soft);
-    }
-
-    .el-input__wrapper {
-      background: transparent;
-      box-shadow: none;
+    .el-input {
+      flex: 1;
     }
   }
 
   .authors-list {
     display: grid;
-    gap: 6px;
-    min-height: 160px;
-    max-height: min(56vh, 520px);
-    padding-right: 3px;
+    flex: 1 1 auto;
+    align-content: start;
+    gap: 8px;
+    min-height: 180px;
     overflow: auto;
+  }
+
+  .authors-empty {
+    display: grid;
+    min-height: 180px;
+    place-content: center;
+    justify-items: center;
+    gap: 6px;
+    color: var(--ink-3);
+    text-align: center;
+
+    .el-icon {
+      font-size: 28px;
+    }
+
+    strong {
+      color: var(--ink);
+    }
+
+    span {
+      font-size: 12px;
+    }
   }
 
   .author-row {
     display: grid;
-    grid-template-columns: 44px minmax(180px, 1fr) auto minmax(88px, auto);
+    grid-template-columns: 40px minmax(160px, 1fr) auto auto;
     align-items: center;
-    gap: 14px;
-    min-height: 68px;
-    padding: 10px 14px;
-    border: 1px solid var(--community-dialog-line);
-    border-radius: 9px;
-    background: var(--surface);
+    gap: 12px;
+    min-height: 64px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--surface-2);
 
     &.is-banned {
-      border-color: color-mix(in srgb, var(--danger) 30%, transparent);
+      border-color: color-mix(in srgb, var(--danger) 28%, var(--border));
       background: var(--danger-soft);
     }
   }
 
   .author-row__avatar {
     flex-shrink: 0;
-    background: var(--accent);
-    color: #fff;
+    background: var(--accent-soft);
+    color: var(--accent-ink);
     font-size: 14px;
     font-weight: 700;
   }
@@ -2004,8 +1946,8 @@ onUnmounted(() => {
       display: block;
       overflow: hidden;
       margin-top: 3px;
-      color: var(--el-text-color-secondary);
-      font-size: 11px;
+      color: var(--ink-3);
+      font-size: 12px;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
@@ -2014,39 +1956,58 @@ onUnmounted(() => {
   .author-row__name-line {
     display: flex;
     align-items: center;
-    gap: 7px;
+    gap: 8px;
     min-width: 0;
 
     strong {
       overflow: hidden;
       color: var(--ink);
-      font-size: 13px;
+      font-size: 14px;
+      font-weight: 700;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
   }
 
+  .author-row__status {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    min-height: 22px;
+    padding: 0 8px;
+    border-radius: var(--radius-pill);
+    background: var(--success-soft);
+    color: var(--success);
+    font-size: 11px;
+    font-weight: 700;
+
+    &.is-banned {
+      background: var(--surface);
+      color: var(--danger);
+    }
+  }
+
   .author-row__metrics {
     display: flex;
-    gap: 5px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px;
 
     > span {
-      display: flex;
-      min-width: 62px;
+      display: inline-flex;
       align-items: baseline;
-      justify-content: space-between;
-      gap: 7px;
-      padding: 5px 8px;
-      border-radius: 7px;
-      background: var(--surface-2);
+      gap: 4px;
+      min-height: 24px;
+      padding: 0 8px;
+      border-radius: var(--radius-pill);
+      background: var(--surface);
+      color: var(--ink-3);
+      font-size: 12px;
 
       strong {
+        color: var(--ink);
         font-size: 13px;
-      }
-
-      small {
-        color: var(--el-text-color-secondary);
-        font-size: 10px;
+        font-weight: 700;
       }
     }
   }
@@ -2054,14 +2015,13 @@ onUnmounted(() => {
   .author-row__state {
     display: grid;
     justify-items: end;
-    gap: 5px;
+    gap: 4px;
 
     > small {
       color: var(--danger);
-      font-size: 10px;
+      font-size: 11px;
     }
   }
-
 }
 
 .community-batch-dialog {

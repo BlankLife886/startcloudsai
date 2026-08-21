@@ -1254,15 +1254,16 @@ test("accessory mode exposes commercial wearing controls and a four-shot PDP pac
   await expect(
     page.getByText("饰品图是唯一商品真值", { exact: false }),
   ).toHaveCount(0);
-  await expect(page.getByText("交付任务", { exact: true })).toBeVisible();
-  await expect(
-    page
-      .locator(".accessory-toolbar__trigger")
-      .filter({ hasText: "交付任务" })
-      .locator(".accessory-toolbar__trigger-badge"),
-  ).toHaveText("4张");
+  await expect(page.getByLabel("选择出图任务")).toBeVisible();
+  await expect(page.getByRole("radio", { name: /详情页套图/ })).toBeChecked();
+  await expect(page.locator(".accessory-studio .handheld-packs em")).toHaveText([
+    "1张",
+    "4张",
+    "4张",
+    "3张",
+  ]);
   await expect(page.getByLabel("饰品生成历史")).toBeVisible();
-  await expect(page.locator(".accessory-history__empty")).toContainText(
+  await expect(page.locator(".accessory-studio .handheld-history__empty")).toContainText(
     "暂无记录",
   );
   await expect(page.getByText("身份参考", { exact: true })).toHaveCount(0);
@@ -1287,19 +1288,6 @@ test("accessory mode exposes commercial wearing controls and a four-shot PDP pac
   await expect(page.getByRole("radio", { name: /包袋/ })).toHaveCount(0);
   await expect(page.getByRole("radio", { name: /帽子/ })).toHaveCount(0);
 
-  await page
-    .locator(".accessory-toolbar__trigger")
-    .filter({ hasText: "交付任务" })
-    .click();
-  await expect(
-    page.getByRole("dialog", { name: "交付任务设置" }),
-  ).toBeVisible();
-  await expect(page.locator(".accessory-toolbar__count")).toHaveText([
-    "1张",
-    "4张",
-    "4张",
-    "3张",
-  ]);
   await expect(page.getByRole("radio", { name: /详情页套图/ })).toBeChecked();
   await expect(page.getByLabel("饰品套图结构")).toHaveCount(0);
 
@@ -1345,12 +1333,8 @@ test("accessory mode exposes commercial wearing controls and a four-shot PDP pac
   await expect(page.getByText("配置完成，可以生成")).toBeVisible();
   await expect(page.getByText("生产预检", { exact: true })).toHaveCount(0);
 
-  await page
-    .locator(".accessory-toolbar__trigger")
-    .filter({ hasText: "交付任务" })
-    .click();
   await page.getByRole("radio", { name: /单张佩戴主图/ }).click();
-  await expect(page.locator(".accessory-frame")).toHaveAttribute(
+  await expect(page.locator(".accessory-studio .handheld-frame")).toHaveAttribute(
     "data-ratio",
     "4:5",
   );
@@ -1439,7 +1423,7 @@ test("accessory results support asset and download actions", async ({
     page.getByRole("button", { name: "查看饰品生成结果" }),
   ).toBeVisible();
   await expect(
-    page.locator('.accessory-frame__shot img[alt="饰品生成结果"]'),
+    page.locator('.accessory-studio .handheld-frame__shot img[alt="饰品生成结果"]'),
   ).toBeVisible();
   await page.getByRole("button", { name: "查看饰品生成结果" }).click();
   await expect(
@@ -1458,13 +1442,13 @@ test("accessory results support asset and download actions", async ({
   await expect(page.getByText("当前成图质检", { exact: true })).toHaveCount(0);
   await expect(page.getByText("共 4 张", { exact: true })).toHaveCount(0);
   await expect(page.getByLabel("本次饰品套图")).toBeVisible();
-  await expect(page.locator(".accessory-frame")).toHaveCSS(
+  await expect(page.locator(".accessory-studio .handheld-frame")).toHaveCSS(
     "border-radius",
     "16px",
   );
-  await expect(page.locator(".accessory-current-set__thumb")).toHaveCount(4);
-  await expect(page.locator(".accessory-history__item")).toHaveCount(1);
-  await expect(page.locator(".accessory-history__count")).toHaveText("4");
+  await expect(page.locator(".accessory-studio .handheld-frame__thumb")).toHaveCount(4);
+  await expect(page.locator(".accessory-studio .handheld-history__item")).toHaveCount(1);
+  await expect(page.locator(".accessory-studio .handheld-history__count")).toHaveText("4");
   if (process.env.CAPTURE_ACCESSORY_GRID === "1") {
     await page.screenshot({
       path: "../../.artifacts/accessory-multi-grid.png",
@@ -1555,10 +1539,10 @@ test("generate asks for credit confirmation before submitting", async ({
   const dialog = page.getByRole("dialog", { name: "确认生成费用" });
   await expect(dialog).toBeVisible();
   await expect(dialog.locator(".ai-cost-confirm-total")).toContainText(
-    "3 积分",
+    "15 积分",
   );
   await expect(dialog.locator(".ai-cost-confirm-total")).toContainText(
-    "3 积分 / 张 × 1 张",
+    "3 积分 / 张 × 5 张",
   );
   await expect(dialog.locator(".ai-cost-confirm-balance")).toContainText(
     "120 积分",

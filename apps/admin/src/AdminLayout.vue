@@ -456,6 +456,10 @@ async function submitPassword() {
             '/growth-groups',
             '/checkin-activity',
             '/model-config',
+            '/page-controls',
+            '/canvas-templates',
+            '/content',
+            '/feedback',
           ].includes(route.path),
         }"
       >

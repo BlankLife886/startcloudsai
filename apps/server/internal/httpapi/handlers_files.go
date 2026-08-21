@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -464,6 +465,27 @@ func (s *Server) getFile(c *gin.Context) {
 		}
 		fail(c, apperr.E("not_found", "文件不存在", 404))
 		return
+	}
+	if c.Query("download") == "1" {
+		name := filepath.Base(strings.ReplaceAll(strings.TrimSpace(c.Query("name")), "\\", "/"))
+		name = strings.Map(func(r rune) rune {
+			if unicode.IsControl(r) {
+				return -1
+			}
+			return r
+		}, name)
+		name = strings.Trim(name, " .")
+		if name == "" {
+			name = filepath.Base(key)
+		}
+		if runes := []rune(name); len(runes) > 160 {
+			name = string(runes[:160])
+		}
+		disposition := mime.FormatMediaType("attachment", map[string]string{"filename": name})
+		if disposition == "" {
+			disposition = "attachment"
+		}
+		c.Header("Content-Disposition", disposition)
 	}
 	s.serveStoredObject(c, key)
 }

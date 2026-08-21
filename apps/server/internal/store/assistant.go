@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 
@@ -10,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const assistantConversationCols = `id, user_id, title, workspace, created_at, updated_at`
+const assistantConversationCols = `id, user_id, title, workspace, project_id, created_at, updated_at`
 const assistantMessageCols = `id, conversation_id, role, content, kind, status, metadata, created_at, updated_at`
 const assistantRunCols = `id, user_id, conversation_id, user_message_id, assistant_message_id,
 	idempotency_key, request_fingerprint, mode, resolved_mode,
@@ -20,7 +21,7 @@ const assistantRunCols = `id, user_id, conversation_id, user_message_id, assista
 
 func scanAssistantConversation(row pgx.Row) (*AssistantConversation, error) {
 	var item AssistantConversation
-	if err := row.Scan(&item.ID, &item.UserID, &item.Title, &item.Workspace, &item.CreatedAt, &item.UpdatedAt); err != nil {
+	if err := row.Scan(&item.ID, &item.UserID, &item.Title, &item.Workspace, &item.ProjectID, &item.CreatedAt, &item.UpdatedAt); err != nil {
 		return nil, err
 	}
 	return &item, nil
@@ -54,13 +55,17 @@ func InsertAssistantConversation(ctx context.Context, q Q, id, userID uuid.UUID,
 }
 
 func InsertAssistantConversationWithWorkspace(ctx context.Context, q Q, id, userID uuid.UUID, title, workspace string, createdAt time.Time) (*AssistantConversation, error) {
+	return InsertAssistantConversationBound(ctx, q, id, userID, title, workspace, nil, createdAt)
+}
+
+func InsertAssistantConversationBound(ctx context.Context, q Q, id, userID uuid.UUID, title, workspace string, projectID *uuid.UUID, createdAt time.Time) (*AssistantConversation, error) {
 	if createdAt.IsZero() {
 		createdAt = time.Now().UTC()
 	}
 	return scanAssistantConversation(q.QueryRow(ctx,
-		`INSERT INTO assistant_conversations (id, user_id, title, workspace, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $5) RETURNING `+assistantConversationCols,
-		id, userID, title, workspace, createdAt))
+		`INSERT INTO assistant_conversations (id, user_id, title, workspace, project_id, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $6) RETURNING `+assistantConversationCols,
+		id, userID, title, workspace, projectID, createdAt))
 }
 
 func ListAssistantConversations(ctx context.Context, q Q, userID uuid.UUID, limit int) ([]*AssistantConversation, error) {
@@ -84,6 +89,32 @@ func ListAssistantConversationsByWorkspace(ctx context.Context, q Q, userID uuid
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+func ListAssistantConversationsByProject(ctx context.Context, q Q, userID uuid.UUID, workspace string, projectID uuid.UUID, limit int) ([]*AssistantConversation, error) {
+	rows, err := q.Query(ctx, `SELECT `+assistantConversationCols+`
+		FROM assistant_conversations WHERE user_id = $1 AND workspace = $2 AND project_id = $3
+		ORDER BY updated_at DESC, id DESC LIMIT $4`, userID, workspace, projectID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]*AssistantConversation, 0)
+	for rows.Next() {
+		item, err := scanAssistantConversation(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func SetAssistantConversationProjectIfEmpty(ctx context.Context, q Q, userID, conversationID, projectID uuid.UUID) error {
+	_, err := q.Exec(ctx, `UPDATE assistant_conversations
+		SET project_id = $3, updated_at = now()
+		WHERE id = $1 AND user_id = $2 AND project_id IS NULL`, conversationID, userID, projectID)
+	return err
 }
 
 func GetUserAssistantConversation(ctx context.Context, q Q, userID, id uuid.UUID) (*AssistantConversation, error) {
@@ -297,6 +328,64 @@ func MergeAssistantMessageMetadata(ctx context.Context, q Q, id uuid.UUID, field
 	_, err := q.Exec(ctx, `UPDATE assistant_messages
 		SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb, updated_at = now()
 		WHERE id = $1`, id, fields)
+	return err
+}
+
+// ClaimAssistantMessagePendingTool atomically assigns one browser executor to a
+// pending tool request. Replays from the same executor remain valid; other
+// browsers stay observers and cannot perform the mutation.
+func ClaimAssistantMessagePendingTool(ctx context.Context, q Q, id uuid.UUID, requestID, executorID string) (bool, error) {
+	tag, err := q.Exec(ctx, `UPDATE assistant_messages
+		SET metadata = jsonb_set(
+			COALESCE(metadata, '{}'::jsonb),
+			'{pendingTool,claimedBy}',
+			to_jsonb($3::text),
+			true
+		), updated_at = now()
+		WHERE id = $1
+			AND metadata->'pendingTool'->>'requestId' = $2
+			AND COALESCE(metadata->'pendingTool'->>'claimedBy', '') IN ('', $3)`, id, requestID, executorID)
+	return tag.RowsAffected() > 0, err
+}
+
+// ClearAssistantMessagePendingTool removes only the tool request identified by
+// requestID. The condition prevents a late result from an earlier tool call
+// from clearing a newer request that the same run has already published.
+func ClearAssistantMessagePendingTool(ctx context.Context, q Q, id uuid.UUID, requestID string) (bool, error) {
+	tag, err := q.Exec(ctx, `UPDATE assistant_messages
+		SET metadata = (COALESCE(metadata, '{}'::jsonb) - 'pendingTool') || jsonb_build_object('statusStage', 'thinking'),
+			updated_at = now()
+		WHERE id = $1 AND metadata->'pendingTool'->>'requestId' = $2`, id, requestID)
+	return tag.RowsAffected() > 0, err
+}
+
+func AppendAssistantMessageArtifact(ctx context.Context, q Q, id uuid.UUID, artifact map[string]any) error {
+	artifactID, _ := artifact["id"].(string)
+	artifactID = strings.TrimSpace(artifactID)
+	if artifactID == "" {
+		return errors.New("assistant artifact id is required")
+	}
+	raw, err := json.Marshal(artifact)
+	if err != nil {
+		return err
+	}
+	_, err = q.Exec(ctx, `UPDATE assistant_messages
+		SET metadata = jsonb_set(
+			COALESCE(metadata, '{}'::jsonb),
+			'{artifacts}',
+			CASE WHEN EXISTS (
+				SELECT 1 FROM jsonb_array_elements(
+					CASE WHEN jsonb_typeof(metadata->'artifacts') = 'array'
+						THEN metadata->'artifacts' ELSE '[]'::jsonb END
+				) item WHERE item->>'id' = $3
+			) THEN CASE WHEN jsonb_typeof(metadata->'artifacts') = 'array'
+				THEN metadata->'artifacts' ELSE '[]'::jsonb END
+			ELSE (CASE WHEN jsonb_typeof(metadata->'artifacts') = 'array'
+				THEN metadata->'artifacts' ELSE '[]'::jsonb END) || jsonb_build_array($2::jsonb)
+			END,
+			true
+		), updated_at = now()
+		WHERE id = $1`, id, string(raw), artifactID)
 	return err
 }
 
@@ -552,6 +641,65 @@ func ClaimAssistantRun(ctx context.Context, q Q, id uuid.UUID) (bool, error) {
 	return item != nil, err
 }
 
+// BeginAssistantRunAttempt records only operational routing metadata. Prompts,
+// message content, and model reasoning are deliberately excluded from traces.
+func BeginAssistantRunAttempt(ctx context.Context, q Q, run *AssistantRun) error {
+	if run == nil || run.ID == uuid.Nil || run.Attempt <= 0 {
+		return errors.New("invalid assistant run attempt")
+	}
+	_, err := q.Exec(ctx, `WITH interrupted AS (
+		UPDATE assistant_run_attempts SET status = 'interrupted', finished_at = $3,
+			error_code = 'lease_expired', error_message = 'worker lease expired before completion'
+		WHERE run_id = $1 AND attempt < $2 AND status = 'running'
+	)
+	INSERT INTO assistant_run_attempts (
+		run_id, attempt, status, lease_owner, provider_route_key, provider_name, model,
+		requested_mode, resolved_mode, started_at
+	)
+	SELECT id, attempt, 'running', lease_owner,
+		NULLIF(params->>'_chatProviderRouteKey', ''),
+		NULLIF(params->>'_chatProviderDisplayName', ''),
+		COALESCE(NULLIF(params->>'_chatModel', ''), NULLIF(params->>'model', '')),
+		mode, resolved_mode, $3
+	FROM assistant_runs
+	WHERE id = $1 AND attempt = $2 AND status = 'running'
+	ON CONFLICT (run_id, attempt) DO UPDATE SET
+		status = 'running', lease_owner = EXCLUDED.lease_owner,
+		provider_route_key = EXCLUDED.provider_route_key,
+		provider_name = EXCLUDED.provider_name, model = EXCLUDED.model,
+		requested_mode = EXCLUDED.requested_mode, resolved_mode = EXCLUDED.resolved_mode,
+		error_code = NULL, error_message = NULL, finished_at = NULL`,
+		run.ID, run.Attempt, time.Now().UTC())
+	return err
+}
+
+func FinishAssistantRunAttempt(
+	ctx context.Context,
+	q Q,
+	runID uuid.UUID,
+	attempt int,
+	status, resolvedMode, errorCode, errorMessage string,
+) (bool, error) {
+	if !containsAssistantAttemptStatus(status) {
+		return false, errors.New("invalid assistant run attempt status")
+	}
+	tag, err := q.Exec(ctx, `UPDATE assistant_run_attempts
+		SET status = $3, resolved_mode = COALESCE(NULLIF($4, ''), resolved_mode),
+			error_code = NULLIF($5, ''), error_message = NULLIF($6, ''), finished_at = now()
+		WHERE run_id = $1 AND attempt = $2 AND status = 'running'`,
+		runID, attempt, status, resolvedMode, errorCode, errorMessage)
+	return tag.RowsAffected() > 0, err
+}
+
+func containsAssistantAttemptStatus(status string) bool {
+	switch status {
+	case "succeeded", "failed", "requeued", "canceled", "interrupted", "superseded":
+		return true
+	default:
+		return false
+	}
+}
+
 func RenewAssistantRunLease(ctx context.Context, q Q, id uuid.UUID, attempt int, owner string, now time.Time, lease time.Duration) (bool, error) {
 	tag, err := q.Exec(ctx, `UPDATE assistant_runs SET heartbeat_at = $4, lease_until = $5
 		WHERE id = $1 AND status = 'running' AND attempt = $2 AND lease_owner = $3 AND lease_until > $4`,
@@ -671,7 +819,13 @@ func RequeueExpiredAssistantRuns(ctx context.Context, q Q, now time.Time) ([]uui
 		UPDATE assistant_runs SET status = 'queued', stage = 'queued', started_at = NULL,
 			lease_owner = NULL, lease_until = NULL, heartbeat_at = NULL
 		WHERE status = 'running' AND (lease_until IS NULL OR lease_until <= $1)
-		RETURNING id
+		RETURNING id, attempt
+	), interrupted AS (
+		UPDATE assistant_run_attempts trace
+		SET status = 'interrupted', finished_at = $1,
+			error_code = 'lease_expired', error_message = 'worker lease expired before completion'
+		FROM expired
+		WHERE trace.run_id = expired.id AND trace.attempt = expired.attempt AND trace.status = 'running'
 	), queued AS (
 		INSERT INTO assistant_run_outbox (run_id)
 		SELECT id FROM expired

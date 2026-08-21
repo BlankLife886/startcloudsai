@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
+	"regexp"
 	"strings"
 	"time"
 
@@ -40,11 +42,14 @@ var canvasAgentOpTypes = map[string]bool{
 	"run_generation":         true,
 	"create_generation_flow": true,
 	"create_graph":           true,
+	"arrange_nodes":          true,
 	"move_nodes":             true,
 	"resize_node":            true,
 }
 
 var canvasAgentNodeTypes = map[string]bool{"text": true, "config": true, "image": true, "group": true}
+
+var canvasAgentAppliedCountPattern = regexp.MustCompile("\"applied\"\\s*:\\s*([0-9]+)")
 
 var canvasAgentOpAliases = map[string]string{
 	"connect":                  "connect_nodes",
@@ -82,7 +87,7 @@ func canvasApplyOpsTool() sub2api.FunctionTool {
 						"properties": map[string]any{
 							"type": map[string]any{
 								"type": "string",
-								"enum": []string{"create_graph", "add_node", "update_node", "delete_node", "connect_nodes", "create_generation_flow", "delete_connections", "select_nodes", "set_viewport", "run_generation", "move_nodes", "resize_node"},
+								"enum": []string{"create_graph", "add_node", "update_node", "delete_node", "connect_nodes", "create_generation_flow", "delete_connections", "select_nodes", "set_viewport", "run_generation", "arrange_nodes", "move_nodes", "resize_node"},
 							},
 							"nodes": map[string]any{
 								"type":        "array",
@@ -123,12 +128,18 @@ func canvasApplyOpsTool() sub2api.FunctionTool {
 							"nodeId":     map[string]any{"type": "string"},
 							"prompt":     map[string]any{"type": "string"},
 							"mode":       map[string]any{"type": "string", "enum": []string{"text", "image"}},
-							"width":      map[string]any{"type": "number"},
-							"height":     map[string]any{"type": "number"},
-							"position":   map[string]any{"type": "object"},
-							"viewport":   map[string]any{"type": "object"},
-							"metadata":   map[string]any{"type": "object"},
-							"patch":      map[string]any{"type": "object"},
+							"scope":      map[string]any{"type": "string", "enum": []string{"all", "selection"}},
+							"direction": map[string]any{
+								"type":        "string",
+								"enum":        []string{"LR", "TB"},
+								"description": "LR 表示从左到右，TB 表示从上到下；按用户明确要求选择",
+							},
+							"width":    map[string]any{"type": "number"},
+							"height":   map[string]any{"type": "number"},
+							"position": map[string]any{"type": "object"},
+							"viewport": map[string]any{"type": "object"},
+							"metadata": map[string]any{"type": "object"},
+							"patch":    map[string]any{"type": "object"},
 							"items": map[string]any{
 								"type": "array",
 								"items": map[string]any{
@@ -418,6 +429,48 @@ type canvasAgentLoopState struct {
 	pendingOps     []map[string]any
 	touched        bool
 	billableAction bool
+	verifiedRead   bool
+	verifiedNoop   bool
+}
+
+const canvasAgentVerifiedNoopMessage = "已读取并核对当前画布，当前状态已满足要求，无需修改。"
+
+func canvasAgentStateReadTool(name string) bool {
+	switch name {
+	case canvasReadStateTool().Name, canvasReadSelectionTool().Name, canvasExportSnapshotTool().Name:
+		return true
+	default:
+		return false
+	}
+}
+
+func canvasAgentExplicitNoopReply(text string) bool {
+	compact := strings.ToLower(strings.Join(strings.Fields(text), ""))
+	for _, phrase := range []string{
+		"无需修改", "不需要修改", "无需改动", "不需要改动", "不用修改", "不用改动",
+		"已经满足", "已满足要求", "已经符合", "已符合要求", "无需重新整理", "不需要重新整理",
+		"nochangesneeded", "nochangeneeded", "alreadymeetstherequirements", "alreadysatisfiestherequest",
+	} {
+		if strings.Contains(compact, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func canvasAgentAcceptVerifiedNoop(loop *canvasAgentLoopState, text string) (string, bool) {
+	if loop == nil || !loop.verifiedRead || !canvasAgentExplicitNoopReply(text) {
+		return "", false
+	}
+	loop.verifiedNoop = true
+	return canvasAgentVerifiedNoopMessage, true
+}
+
+func canvasAgentMutationSatisfied(required bool, loop *canvasAgentLoopState) bool {
+	if !required {
+		return true
+	}
+	return loop != nil && (loop.appliedOps > 0 || loop.verifiedNoop)
 }
 
 func canvasAgentToolResultFailed(raw string) bool {
@@ -478,6 +531,9 @@ func (w *Worker) runCanvasAgentTool(ctx context.Context, run *store.AssistantRun
 			}
 			return "画布没有及时响应，工具 " + call.Name + " 没有执行。请告诉用户刷新页面后再试，不要假装已经完成。"
 		}
+		if canvasAgentStateReadTool(call.Name) && !canvasAgentToolResultFailed(raw) {
+			loop.verifiedRead = true
+		}
 		if mutates && !canvasAgentToolResultFailed(raw) {
 			loop.billableAction = true
 			w.checkpointCanvasAgentAction(ctx, run, loop)
@@ -496,28 +552,97 @@ func canvasAgentKnownTool(name string) bool {
 }
 
 func (w *Worker) dispatchCanvasOps(ctx context.Context, run *store.AssistantRun, loop *canvasAgentLoopState, summary string, ops []map[string]any) string {
+	ops = canvasAgentOpsForPrompt(run.Prompt, ops)
 	arguments, err := json.Marshal(map[string]any{"summary": summary, "ops": ops})
 	if err != nil {
 		return "canvas_apply_ops 调用失败：参数无法序列化，请简化后重试。"
 	}
 	raw, ok := w.dispatchCanvasTool(ctx, run, canvasApplyOpsTool().Name, string(arguments), canvasAgentApplyTimeout)
-	loop.touched = true
-	if strings.TrimSpace(summary) != "" {
-		loop.summary = strings.TrimSpace(summary)
-	}
 	if !ok {
 		// Nobody executed them, so hand them to the client for the legacy
 		// apply-on-completion path rather than dropping the user's request.
+		loop.touched = true
+		if strings.TrimSpace(summary) != "" {
+			loop.summary = strings.TrimSpace(summary)
+		}
 		loop.pendingOps = append(loop.pendingOps, ops...)
 		return "画布暂时没有响应，这批操作会在本轮结束后统一应用。不要重复提交同一批操作，请直接用中文回复用户。"
 	}
 	if canvasAgentToolResultFailed(raw) {
 		return "工具 canvas_apply_ops 的返回：\n" + raw
 	}
-	loop.appliedOps += len(ops)
+	applied := canvasAgentAppliedCount(raw)
+	if applied <= 0 {
+		return "工具 canvas_apply_ops 的返回：\n" + raw + "\n这批操作没有实际改变画布。" +
+			"如果你已通过成功读取确认当前状态本来就满足用户要求，请明确回复“" + canvasAgentVerifiedNoopMessage +
+			"”；否则请用最新画布中的准确节点 id 修正，禁止声称已经完成。"
+	}
+	loop.touched = true
+	if strings.TrimSpace(summary) != "" {
+		loop.summary = strings.TrimSpace(summary)
+	}
+	loop.appliedOps += applied
 	loop.billableAction = true
 	w.checkpointCanvasAgentAction(ctx, run, loop)
 	return "工具 canvas_apply_ops 的返回：\n" + raw + "\n如果已经满足用户要求，就直接用中文回答，不要再调用工具。"
+}
+
+func canvasAgentOpsForPrompt(prompt string, ops []map[string]any) []map[string]any {
+	direction := canvasAgentRequestedLayoutDirection(prompt)
+	if direction == "" {
+		return ops
+	}
+	out := make([]map[string]any, len(ops))
+	for index, op := range ops {
+		if op["type"] != "arrange_nodes" {
+			out[index] = op
+			continue
+		}
+		cloned := make(map[string]any, len(op))
+		for key, value := range op {
+			cloned[key] = value
+		}
+		cloned["direction"] = direction
+		out[index] = cloned
+	}
+	return out
+}
+
+func canvasAgentRequestedLayoutDirection(prompt string) string {
+	normalized := strings.ToLower(strings.TrimSpace(prompt))
+	for _, marker := range []string{
+		"从上到下", "上到下", "纵向布局", "纵向排列", "竖向布局", "竖向排列", "垂直布局", "垂直排列",
+		"不要水平", "不再水平", "非水平", "不要横向", "top to bottom", "top-to-bottom", "vertical",
+	} {
+		if strings.Contains(normalized, marker) {
+			return "TB"
+		}
+	}
+	for _, marker := range []string{
+		"从左到右", "左到右", "横向布局", "横向排列", "水平布局", "水平排列", "left to right", "left-to-right", "horizontal",
+	} {
+		if strings.Contains(normalized, marker) {
+			return "LR"
+		}
+	}
+	return ""
+}
+
+func canvasAgentAppliedCount(raw string) int {
+	var body map[string]any
+	if json.Unmarshal([]byte(strings.TrimSpace(raw)), &body) == nil {
+		if applied, ok := body["applied"].(float64); ok {
+			return min(max(int(applied), 0), canvasAgentMaxOps)
+		}
+	}
+	match := canvasAgentAppliedCountPattern.FindStringSubmatch(raw)
+	if len(match) == 2 {
+		var parsed int
+		if _, err := fmt.Sscanf(match[1], "%d", &parsed); err == nil {
+			return min(max(parsed, 0), canvasAgentMaxOps)
+		}
+	}
+	return 0
 }
 
 // dispatchCanvasTool asks the browser holding the canvas to execute one tool
@@ -528,6 +653,19 @@ func (w *Worker) dispatchCanvasTool(ctx context.Context, run *store.AssistantRun
 		return "", false
 	}
 	requestID := uuid.NewString()
+	if w.St == nil || run == nil {
+		return "", false
+	}
+	pendingTool := canvasAgentPendingTool(requestID, name, arguments)
+	if err := store.MergeAssistantMessageMetadata(ctx, w.St.Pool, run.AssistantMessageID, map[string]any{
+		"pendingTool": pendingTool,
+		"statusStage": "tool",
+	}); err != nil {
+		return "", false
+	}
+	defer func() {
+		_, _ = store.ClearAssistantMessagePendingTool(context.Background(), w.St.Pool, run.AssistantMessageID, requestID)
+	}()
 	assistantstream.Publish(ctx, w.Stream, run.ID.String(), assistantstream.Event{
 		Kind:  "agent",
 		Stage: "tool",
@@ -550,6 +688,15 @@ func (w *Worker) dispatchCanvasTool(ctx context.Context, run *store.AssistantRun
 	return truncateForModel(string(envelope.Result), canvasAgentObservationMaxBytes), true
 }
 
+func canvasAgentPendingTool(requestID, name, arguments string) map[string]any {
+	return map[string]any{
+		"requestId": requestID,
+		"name":      name,
+		"arguments": arguments,
+		"stage":     "tool",
+	}
+}
+
 func (w *Worker) retryCanvasAgentAsJSON(
 	ctx context.Context,
 	client *sub2api.Client,
@@ -564,15 +711,18 @@ func (w *Worker) retryCanvasAgentAsJSON(
 	})
 }
 
-func canvasAgentToolCallTranscript(result sub2api.AgentChatResult) string {
-	parts := make([]string, 0, 2)
-	if text := strings.TrimSpace(result.Text); text != "" {
-		parts = append(parts, text)
+func canvasAgentToolMessages(result sub2api.AgentChatResult, observation string) []sub2api.Message {
+	if result.ToolCall == nil {
+		return nil
 	}
-	if result.ToolCall != nil {
-		parts = append(parts, "调用工具 "+result.ToolCall.Name+"，参数："+truncateForModel(result.ToolCall.Arguments, 2000))
+	call := *result.ToolCall
+	if strings.TrimSpace(call.ID) == "" {
+		call.ID = "call_0"
 	}
-	return strings.Join(parts, "\n")
+	return []sub2api.Message{
+		{Role: "assistant", Content: result.Text, ToolCalls: []sub2api.ToolCall{call}},
+		{Role: "tool", Name: call.Name, ToolCallID: call.ID, Content: observation},
+	}
 }
 
 func canvasAgentReplyContent(arguments string) string {
@@ -616,6 +766,11 @@ func canvasAgentInstructions(run *store.AssistantRun) string {
 - site_navigate：站内跳转，只允许 /、/canvas、/canvas/{id}、/canvas/config、/prompts、/assets。
 - canvas_list_projects / prompts_search / assets_list / assets_add：列画布、搜提示词、列或加入我的素材。
 确认结果满足用户要求后，用一句中文说明你做了什么，不要再调用工具。
+带修改意图的请求只有两种可以完成的结果：canvas_apply_ops 返回 applied 大于 0；或者你先成功读取最新画布，确认现状已经满足要求，并明确回复“` + canvasAgentVerifiedNoopMessage + `” 。没有实际改动时禁止说“已整理”“已修改”或“已完成”。
+
+用户要求「整理、排版、对齐、优化布局」现有画布时，必须读取最新画布后只提交一条 arrange_nodes。默认横向用 LR；用户明确要求纵向、从上到下或不要水平时必须用 TB：
+{"summary":"已整理画布布局","ops":[{"type":"arrange_nodes","scope":"all","direction":"LR"}]}
+只整理用户选中的节点时 scope 用 selection。不要为整理任务生成 move_nodes 坐标；系统会根据真实连线、节点尺寸、连通分支、循环和组关系做确定性布局。
 
 新建多个节点或搭工作流时，只输出一条 create_graph，用 nodes 描述节点、edges 描述连线：
 {"summary":"已创建电商生图工作流","ops":[{"type":"create_graph",
@@ -628,7 +783,7 @@ create_graph 规则：
 - 用户说几个节点就建几个节点；不要把多个步骤压缩进一个节点的文字里。
 - 每条生图链路是 text → config → image，多条链路就重复这个结构。
 
-改动画布上已有的节点时，用 add_node / update_node / connect_nodes / delete_node，并使用下面快照里的真实 id。移动用 move_nodes，缩放用 resize_node：
+改动画布上已有的节点时，用 add_node / update_node / connect_nodes / delete_node，并使用下面快照里的真实 id。禁止用标题、类型或模糊名称代替 id。用户明确指定移动距离时才用 move_nodes，缩放用 resize_node：
 {"type":"move_nodes","items":[{"id":"text-1","dx":80,"dy":0}]}
 {"type":"resize_node","id":"image-1","width":420,"height":480}
 字段名必须是 ops，一次最多 24 条操作。
@@ -639,6 +794,7 @@ create_graph 规则：
 func canvasAgentJSONInstructions(run *store.AssistantRun) string {
 	return `只输出一个 JSON 对象，不要 Markdown、代码块或解释。这个 JSON 会被直接应用到无限画布，你不是在口头指导用户。
 格式：{"summary":"一句话说明","ops":[...]}
+整理现有画布只用 arrange_nodes，不要自己生成移动坐标。默认 direction 用 LR；用户明确要求纵向、从上到下或不要水平时 direction 用 TB。
 新建节点或工作流时只用一条 create_graph，不要写坐标：
 {"summary":"已创建生图流程","ops":[{"type":"create_graph",
  "nodes":[{"key":"a","type":"text","text":"提示词正文"},{"key":"b","type":"config"},{"key":"c","type":"image"}],
@@ -667,6 +823,85 @@ func canvasAgentCapabilityInstructions() string {
 可选能力：reply、canvas_read、canvas_write、generation、attachments、navigate、library_read、library_write。
 reply 用于讨论、解释、规划、澄清或普通问答；canvas_read 用于读取画布或选中节点；canvas_write 用于创建、修改、删除、连接、移动或缩放画布；generation 用于触发生图或查询结果；attachments 用于把聊天附件放到画布；navigate 用于站内跳转；library_read/library_write 用于读取或写入提示词和素材库。
 只返回完成请求所必需的能力，可以返回多个。明确要求“先讲方案、不要修改、不要执行、只解释”时绝不能返回 canvas_write、generation、attachments 或 library_write；“照刚才的方案做/落到画布上”应返回 canvas_write。拿不准时只返回 reply。`
+}
+
+func fallbackCanvasAgentCapabilities(prompt string) canvasAgentCapabilities {
+	capabilities := canvasAgentCapabilities{canvasCapabilityReply: true}
+	if canvasAgentForbidsMutation(prompt) {
+		return capabilities
+	}
+	compact := strings.ToLower(strings.Join(strings.Fields(prompt), ""))
+	canvasObject := strings.Contains(compact, "画布") || strings.Contains(compact, "节点") || strings.Contains(compact, "canvas") || strings.Contains(compact, "nodes")
+	writeAction := false
+	for _, action := range []string{"整理", "排版", "布局", "排列", "创建", "新增", "添加", "修改", "更新", "删除", "连接", "移动", "缩放", "应用", "执行", "organize", "layout", "rearrange", "create", "add", "update", "delete", "connect", "move", "resize", "apply"} {
+		if strings.Contains(compact, action) {
+			writeAction = true
+			break
+		}
+	}
+	writePhrases := []string{
+		"整理画布", "整理一下画布", "把画布整理", "优化画布布局", "重新排版画布", "排列节点", "布局节点",
+		"创建节点", "新增节点", "添加节点", "修改节点", "更新节点", "删除节点", "连接节点", "移动节点", "缩放节点",
+		"修改画布", "改动画布", "落到画布", "应用到画布", "照刚才的方案做", "按刚才的方案做", "执行刚才的方案",
+		"organizecanvas", "layoutnodes", "rearrangecanvas", "applytothecanvas", "updatethecanvas",
+	}
+	if canvasObject && writeAction {
+		capabilities[canvasCapabilityRead] = true
+		capabilities[canvasCapabilityWrite] = true
+		return capabilities
+	}
+	for _, phrase := range writePhrases {
+		if strings.Contains(compact, phrase) {
+			capabilities[canvasCapabilityRead] = true
+			capabilities[canvasCapabilityWrite] = true
+			break
+		}
+	}
+	return capabilities
+}
+
+func canvasAgentRequiresMutation(prompt string) bool {
+	if !fallbackCanvasAgentCapabilities(prompt)[canvasCapabilityWrite] {
+		return false
+	}
+	compact := strings.ToLower(strings.Join(strings.Fields(prompt), ""))
+	question := false
+	for _, phrase := range []string{
+		"如何", "怎么", "怎样", "为什么", "讲讲", "说明一下", "解释一下", "有什么建议", "howto", "howshould", "howwould", "why",
+	} {
+		if strings.Contains(compact, phrase) {
+			question = true
+			break
+		}
+	}
+	if !question {
+		return true
+	}
+	// An explicit execution clause wins over an explanatory lead-in, e.g.
+	// “怎么整理都行，直接执行”.
+	for _, phrase := range []string{
+		"直接执行", "直接修改", "立即执行", "马上执行", "照刚才的方案做", "按刚才的方案做", "落到画布",
+		"doitnow", "applyit", "makethechange",
+	} {
+		if strings.Contains(compact, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func reconcileCanvasAgentCapabilities(prompt string, capabilities canvasAgentCapabilities) canvasAgentCapabilities {
+	reconciled := restrictCanvasAgentCapabilities(prompt, capabilities)
+	if !canvasAgentRequiresMutation(prompt) {
+		return reconciled
+	}
+	// The classifier narrows ambiguous requests, but a deterministic explicit
+	// write intent is a safety boundary: it must never degrade into a reply-only
+	// turn that can claim a mutation without executing one.
+	reconciled[canvasCapabilityReply] = true
+	reconciled[canvasCapabilityRead] = true
+	reconciled[canvasCapabilityWrite] = true
+	return reconciled
 }
 
 func parseCanvasAgentCapabilities(raw string) (canvasAgentCapabilities, error) {
@@ -739,6 +974,11 @@ func canvasAgentToolAllowed(tools []sub2api.FunctionTool, name string) bool {
 
 func canvasAgentInitialToolChoice(capabilities canvasAgentCapabilities, tools []sub2api.FunctionTool) string {
 	if capabilities[canvasCapabilityWrite] {
+		// Read the live canvas first. Besides avoiding stale ids, this gives the
+		// model a verified no-op path when the requested state is already true.
+		if canvasAgentToolAllowed(tools, canvasReadStateTool().Name) {
+			return canvasReadStateTool().Name
+		}
 		return canvasApplyOpsTool().Name
 	}
 	if len(tools) == 1 {
@@ -885,19 +1125,14 @@ func (w *Worker) executeCanvasAgent(
 	history []*store.AssistantMessage,
 ) error {
 	run.ResolvedMode = "agent"
-	if err := w.setAssistantRunStage(ctx, run, "agent", "thinking"); err != nil {
+	payload, _, err := w.prepareAssistantContext(ctx, run, "agent", canvasAgentInstructions(run), history, references, true, "thinking")
+	if err != nil {
 		return err
 	}
-	if err := store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, "", "agent", "running",
-		assistantMessageMetadata(run, nil, "thinking", "")); err != nil {
-		return err
-	}
-	assistantstream.Publish(ctx, w.Stream, run.ID.String(), assistantstream.Event{Kind: "agent", Stage: "thinking"})
-
-	payload, _ := buildAssistantContext(canvasAgentInstructions(run), history, run, references, true)
 	reasoningEffort := assistantParamString(run.Params, "reasoningEffort", "")
 	reasoningClient := client.WithReasoningEffort(reasoningEffort)
 	loop := canvasAgentLoopState{summary: "", pendingOps: nil}
+	requiresMutation := canvasAgentRequiresMutation(run.Prompt)
 
 	lastCheckpoint := time.Now()
 	lastPublish := time.Time{}
@@ -923,12 +1158,18 @@ func (w *Worker) executeCanvasAgent(
 		if strings.TrimSpace(reasoning) != "" {
 			latestReasoning = reasoning
 		}
-		if (fullText != "" || latestReasoning != "") && time.Since(lastPublish) >= 50*time.Millisecond {
+		visibleText := fullText
+		if requiresMutation && !canvasAgentMutationSatisfied(true, &loop) {
+			// A model claim is not user-visible until the write is verified. The UI
+			// still receives reasoning and tool-stage events while work is running.
+			visibleText = ""
+		}
+		if (visibleText != "" || latestReasoning != "") && time.Since(lastPublish) >= 50*time.Millisecond {
 			lastPublish = time.Now()
 			assistantstream.Publish(ctx, w.Stream, run.ID.String(),
-				assistantstream.Event{Content: fullText, Reasoning: latestReasoning, Kind: "agent", Stage: "answering"})
+				assistantstream.Event{Content: visibleText, Reasoning: latestReasoning, Kind: "agent", Stage: "answering"})
 		}
-		if (fullText == "" && latestReasoning == "") || time.Since(lastCheckpoint) < time.Second {
+		if (visibleText == "" && latestReasoning == "") || time.Since(lastCheckpoint) < time.Second {
 			return nil
 		}
 		lastCheckpoint = time.Now()
@@ -942,13 +1183,13 @@ func (w *Worker) executeCanvasAgent(
 		if loop.appliedOps > 0 {
 			metadata["canvasOpsApplied"] = loop.appliedOps
 		}
-		return store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, fullText, "agent", "running", metadata)
+		return store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, visibleText, "agent", "running", metadata)
 	}
 	capabilities, capabilityErr := classifyCanvasAgentCapabilities(ctx, client, payload)
 	if capabilityErr != nil {
-		capabilities = canvasAgentCapabilities{canvasCapabilityReply: true}
+		capabilities = fallbackCanvasAgentCapabilities(run.Prompt)
 	}
-	capabilities = restrictCanvasAgentCapabilities(run.Prompt, capabilities)
+	capabilities = reconcileCanvasAgentCapabilities(run.Prompt, capabilities)
 	forbidsMutation := canvasAgentForbidsMutation(run.Prompt)
 	turnTools := canvasAgentToolsForCapabilities(capabilities)
 	allowsCanvasWrite := capabilities[canvasCapabilityWrite]
@@ -994,6 +1235,12 @@ func (w *Worker) executeCanvasAgent(
 			return context.Canceled
 		}
 		if next.ToolCall == nil {
+			if requiresMutation && loop.appliedOps == 0 {
+				if reply, ok := canvasAgentAcceptVerifiedNoop(&loop, next.Text); ok {
+					result.Text = reply
+					break
+				}
+			}
 			if allowsCanvasWrite && !loop.touched {
 				if summary, ops, parseErr := parseCanvasAgentOps(next.Text); parseErr == nil && len(ops) > 0 {
 					w.dispatchCanvasOps(ctx, run, &loop, summary, ops)
@@ -1017,7 +1264,24 @@ func (w *Worker) executeCanvasAgent(
 			break
 		}
 		if next.ToolCall.Name == canvasReplyTool().Name {
-			if reply := canvasAgentReplyContent(next.ToolCall.Arguments); reply != "" {
+			reply := canvasAgentReplyContent(next.ToolCall.Arguments)
+			if reply == "" {
+				reply = strings.TrimSpace(result.Text)
+			}
+			if requiresMutation && loop.appliedOps == 0 {
+				if verifiedReply, ok := canvasAgentAcceptVerifiedNoop(&loop, reply); ok {
+					result.Text = verifiedReply
+					break
+				}
+				observation := "回复未被接受：本轮有明确的画布修改意图，但尚无已验证的改动。" +
+					"请调用 canvas_apply_ops；只有成功读取后确认现状已满足要求时，才能明确回复“" + canvasAgentVerifiedNoopMessage + "”。"
+				payload = append(payload, canvasAgentToolMessages(next, observation)...)
+				if err := w.setAssistantRunStage(ctx, run, "agent", "thinking"); err != nil {
+					return err
+				}
+				continue
+			}
+			if reply != "" {
 				result.Text = reply
 			} else if strings.TrimSpace(result.Text) == "" {
 				result.Text = "请再具体描述一下你希望我在画布上完成什么。"
@@ -1025,15 +1289,15 @@ func (w *Worker) executeCanvasAgent(
 			break
 		}
 		observation := w.runCanvasAgentTool(ctx, run, &loop, next.ToolCall)
-		payload = append(payload,
-			sub2api.Message{Role: "assistant", Content: canvasAgentToolCallTranscript(next)},
-			sub2api.Message{Role: "user", Content: observation},
-		)
+		payload = append(payload, canvasAgentToolMessages(next, observation)...)
 		if err := w.setAssistantRunStage(ctx, run, "agent", "thinking"); err != nil {
 			return err
 		}
 	}
-	if allowsCanvasWrite && !loop.touched {
+	if !canvasAgentMutationSatisfied(requiresMutation, &loop) {
+		return fmt.Errorf("画布修改未执行：没有检测到已应用的画布变更，也没有经读取确认无需修改")
+	}
+	if allowsCanvasWrite && !loop.touched && !loop.verifiedNoop {
 		return fmt.Errorf("画布修改未执行：模型没有返回可用的结构化操作")
 	}
 
@@ -1256,6 +1520,22 @@ func sanitizeCanvasAgentOps(raw []map[string]any) []map[string]any {
 			out = append(out, op)
 			continue
 		}
+		if opType == "arrange_nodes" {
+			scope := firstStringValue(item, "scope")
+			if scope != "selection" {
+				scope = "all"
+			}
+			direction := strings.ToUpper(firstStringValue(item, "direction"))
+			if direction != "TB" {
+				direction = "LR"
+			}
+			out = append(out, map[string]any{
+				"type":      "arrange_nodes",
+				"scope":     scope,
+				"direction": direction,
+			})
+			continue
+		}
 		if opType == "move_nodes" {
 			items := sanitizeMoveItems(item["items"])
 			if len(items) == 0 {
@@ -1302,6 +1582,7 @@ func sanitizeCanvasAgentOps(raw []map[string]any) []map[string]any {
 func sanitizeCanvasGraphNodes(raw any) []map[string]any {
 	items := mapsFromAny(raw)
 	out := make([]map[string]any, 0, len(items))
+	seenKeys := make(map[string]bool, len(items))
 	for _, item := range items {
 		if len(out) >= canvasAgentMaxGraphNodes {
 			break
@@ -1312,6 +1593,11 @@ func sanitizeCanvasGraphNodes(raw any) []map[string]any {
 		if node["key"] == nil {
 			node["key"] = fmt.Sprintf("n%d", len(out)+1)
 		}
+		key, _ := node["key"].(string)
+		if seenKeys[key] {
+			return nil
+		}
+		seenKeys[key] = true
 		nodeType := firstStringValue(item, "type", "nodeType", "kind")
 		if !canvasAgentNodeTypes[nodeType] {
 			nodeType = "text"
@@ -1409,12 +1695,24 @@ func copyFirstString(src, dst map[string]any, destKey string, keys ...string) {
 }
 
 func copyNumberField(src, dst map[string]any, key string) {
+	store := func(value float64) {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return
+		}
+		switch key {
+		case "width", "height":
+			value = math.Min(4096, math.Max(80, value))
+		case "x", "y", "dx", "dy":
+			value = math.Min(1_000_000, math.Max(-1_000_000, value))
+		}
+		dst[key] = value
+	}
 	switch value := src[key].(type) {
 	case float64:
-		dst[key] = value
+		store(value)
 	case json.Number:
 		if n, err := value.Float64(); err == nil {
-			dst[key] = n
+			store(n)
 		}
 	}
 }

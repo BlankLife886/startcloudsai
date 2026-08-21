@@ -53,6 +53,124 @@ func assistantRunIsTerminal(status string) bool {
 	}
 }
 
+func assistantPendingToolEvent(message *store.AssistantMessage) (assistantstream.Event, bool) {
+	if message == nil || message.Metadata == nil {
+		return assistantstream.Event{}, false
+	}
+	if message.Status != "queued" && message.Status != "running" {
+		return assistantstream.Event{}, false
+	}
+	raw, ok := message.Metadata["pendingTool"].(map[string]any)
+	if !ok || raw == nil {
+		return assistantstream.Event{}, false
+	}
+	requestID, _ := raw["requestId"].(string)
+	name, _ := raw["name"].(string)
+	arguments, _ := raw["arguments"].(string)
+	stage, _ := raw["stage"].(string)
+	title, _ := raw["title"].(string)
+	requestID = strings.TrimSpace(requestID)
+	name = strings.TrimSpace(name)
+	if requestID == "" || name == "" {
+		return assistantstream.Event{}, false
+	}
+	if strings.TrimSpace(stage) == "" {
+		stage = "tool"
+	}
+	return assistantstream.Event{
+		Kind:  "agent",
+		Stage: stage,
+		Tool: &assistantstream.ToolCallEvent{
+			RequestID: requestID,
+			Name:      name,
+			Arguments: arguments,
+			Title:     title,
+		},
+	}, true
+}
+
+func assistantPendingToolRequestID(message *store.AssistantMessage) string {
+	event, ok := assistantPendingToolEvent(message)
+	if !ok || event.Tool == nil {
+		return ""
+	}
+	return event.Tool.RequestID
+}
+
+func assistantPendingToolClaimedBy(message *store.AssistantMessage) string {
+	if message == nil || message.Metadata == nil {
+		return ""
+	}
+	raw, _ := message.Metadata["pendingTool"].(map[string]any)
+	claimedBy, _ := raw["claimedBy"].(string)
+	return strings.TrimSpace(claimedBy)
+}
+
+func writeAssistantMessageStreamSnapshot(c *gin.Context, message *store.AssistantMessage) bool {
+	if message == nil {
+		return true
+	}
+	reasoning, _ := message.Metadata["reasoning"].(string)
+	if message.Content != "" || reasoning != "" {
+		if !writeAssistantStreamEvent(c, assistantstream.Event{Content: message.Content, Reasoning: reasoning, Kind: message.Kind}) {
+			return false
+		}
+	}
+	if event, ok := assistantPendingToolEvent(message); ok {
+		return writeAssistantStreamEvent(c, event)
+	}
+	return true
+}
+
+// postAssistantRunToolClaim elects exactly one browser executor for a pending
+// canvas tool request. The claim is scoped to the request id and disappears
+// when that pending request is acknowledged or times out.
+func (s *Server) postAssistantRunToolClaim(c *gin.Context) {
+	user, err := s.requireUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	runID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		fail(c, apperr.E("validation_error", "run id 无效", 422))
+		return
+	}
+	var body struct {
+		RequestID  string `json:"requestId"`
+		ExecutorID string `json:"executorId"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		fail(c, apperr.E("validation_error", "请求体无效", 422))
+		return
+	}
+	requestID := strings.TrimSpace(body.RequestID)
+	executorID := strings.TrimSpace(body.ExecutorID)
+	if requestID == "" || len(requestID) > 64 || executorID == "" || len(executorID) > 64 {
+		fail(c, apperr.E("validation_error", "工具抢占标识无效", 422))
+		return
+	}
+	run, err := store.GetAssistantRun(c.Request.Context(), s.St.Pool, runID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if run == nil || run.UserID != user.ID {
+		fail(c, apperr.E("not_found", "任务不存在", 404))
+		return
+	}
+	if assistantRunIsTerminal(run.Status) {
+		ok(c, gin.H{"claimed": false})
+		return
+	}
+	claimed, err := store.ClaimAssistantMessagePendingTool(c.Request.Context(), s.St.Pool, run.AssistantMessageID, requestID, executorID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ok(c, gin.H{"claimed": claimed})
+}
+
 // postAssistantRunToolResult 收下浏览器执行画布工具后的观察结果，交给正在
 // 等待的 Worker。这是把单次问答变成多轮工具循环的回边。
 func (s *Server) postAssistantRunToolResult(c *gin.Context) {
@@ -67,9 +185,10 @@ func (s *Server) postAssistantRunToolResult(c *gin.Context) {
 		return
 	}
 	var body struct {
-		RequestID string          `json:"requestId"`
-		Result    json.RawMessage `json:"result"`
-		Error     string          `json:"error"`
+		RequestID  string          `json:"requestId"`
+		ExecutorID string          `json:"executorId"`
+		Result     json.RawMessage `json:"result"`
+		Error      string          `json:"error"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		fail(c, apperr.E("validation_error", "请求体无效", 422))
@@ -87,6 +206,24 @@ func (s *Server) postAssistantRunToolResult(c *gin.Context) {
 	}
 	if run == nil || run.UserID != user.ID {
 		fail(c, apperr.E("not_found", "任务不存在", 404))
+		return
+	}
+	message, err := store.GetAssistantMessage(c.Request.Context(), s.St.Pool, run.AssistantMessageID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	pendingRequestID := assistantPendingToolRequestID(message)
+	if pendingRequestID == "" {
+		c.JSON(http.StatusOK, gin.H{"ok": true, "duplicate": true})
+		return
+	}
+	if pendingRequestID != requestID {
+		fail(c, apperr.E("conflict", "工具请求已更新", 409))
+		return
+	}
+	if claimedBy := assistantPendingToolClaimedBy(message); claimedBy != "" && strings.TrimSpace(body.ExecutorID) != claimedBy {
+		fail(c, apperr.E("conflict", "工具请求已由其他画布客户端执行", 409))
 		return
 	}
 	if assistantRunIsTerminal(run.Status) {
@@ -113,6 +250,10 @@ func (s *Server) postAssistantRunToolResult(c *gin.Context) {
 	}
 	if err := assistantstream.PublishToolResult(c.Request.Context(), client, runID.String(), requestID, payload); err != nil {
 		fail(c, apperr.E("unavailable", "工具结果投递失败", 503))
+		return
+	}
+	if _, err := store.ClearAssistantMessagePendingTool(c.Request.Context(), s.St.Pool, run.AssistantMessageID, requestID); err != nil {
+		fail(c, apperr.E("unavailable", "工具状态确认失败", 503))
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
@@ -171,9 +312,8 @@ func (s *Server) assistantRunStream(c *gin.Context) {
 
 	// 补发当前已生成内容，断线重连/迟到订阅都能立即对齐
 	if message, gerr := store.GetAssistantMessage(c.Request.Context(), s.St.Pool, run.AssistantMessageID); gerr == nil && message != nil {
-		reasoning, _ := message.Metadata["reasoning"].(string)
-		if message.Content != "" || reasoning != "" {
-			writeAssistantStreamEvent(c, assistantstream.Event{Content: message.Content, Reasoning: reasoning, Kind: message.Kind})
+		if !writeAssistantMessageStreamSnapshot(c, message) {
+			return
 		}
 	}
 	if terminal {
@@ -223,13 +363,15 @@ func (s *Server) assistantRunStream(c *gin.Context) {
 			if gerr != nil || current == nil {
 				continue
 			}
-			if assistantRunIsTerminal(current.Status) {
-				if message, gerr := store.GetAssistantMessage(ctx, s.St.Pool, run.AssistantMessageID); gerr == nil && message != nil {
-					reasoning, _ := message.Metadata["reasoning"].(string)
-					if message.Content != "" || reasoning != "" {
-						writeAssistantStreamEvent(c, assistantstream.Event{Content: message.Content, Reasoning: reasoning, Kind: message.Kind})
-					}
+			// Re-send the persisted snapshot on every terminal check. Content is
+			// cumulative and tool request ids are idempotent, so this also repairs a
+			// dropped Pub/Sub frame without waiting for EventSource to reconnect.
+			if message, gerr := store.GetAssistantMessage(ctx, s.St.Pool, run.AssistantMessageID); gerr == nil && message != nil {
+				if !writeAssistantMessageStreamSnapshot(c, message) {
+					return
 				}
+			}
+			if assistantRunIsTerminal(current.Status) {
 				writeAssistantStreamEvent(c, assistantstream.Event{Done: true, Status: current.Status})
 				return
 			}

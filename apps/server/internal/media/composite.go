@@ -270,6 +270,7 @@ func CompositePreservedCanvas(sourceData, resultData []byte) ([]byte, error) {
 			for channel := 0; channel < 3; channel++ {
 				sv := int(scaled.Pix[si+channel])
 				dv := int(result.Pix[di+channel])
+				// #nosec G115 -- source channels and blend are bytes, so the weighted average is in [0, 255].
 				result.Pix[di+channel] = uint8((sv*blend + dv*(255-blend) + 127) / 255)
 			}
 			result.Pix[di+3] = 255

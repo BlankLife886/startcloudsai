@@ -141,15 +141,12 @@ watch(coverUrl, () => {
   padding: 8px;
   overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: 14px;
-  background: var(--surface);
+  border-radius: 16px;
+  background: var(--surface-2);
   box-sizing: border-box;
-  transition:
-    border-color 0.18s ease,
-    box-shadow 0.18s ease;
 
   &:hover {
-    border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+    border-color: var(--border-strong);
     box-shadow: var(--shadow-sm);
 
     .community-cover__tags,
@@ -167,8 +164,8 @@ watch(coverUrl, () => {
   }
 
   &.is-selected {
-    border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent);
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-soft);
   }
 }
 
@@ -234,10 +231,10 @@ watch(coverUrl, () => {
   left: 10px;
   z-index: 3;
   padding: 3px 8px;
-  border-radius: 999px;
-  background: #7c3aed;
+  border-radius: var(--radius-pill);
+  background: var(--violet);
   color: #fff;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   line-height: 1.2;
   pointer-events: none;
@@ -362,20 +359,19 @@ watch(coverUrl, () => {
 }
 
 .community-action {
-  height: 27px;
+  height: 28px;
   padding: 0 10px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--surface-2);
-  color: var(--ink);
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--ink-2);
   font-size: 12px;
   font-weight: 650;
   cursor: pointer;
 
   &:hover:not(:disabled) {
-    border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+    color: var(--ink);
     background: var(--accent-soft);
-    color: var(--accent-ink);
   }
 
   &:disabled {
@@ -384,13 +380,11 @@ watch(coverUrl, () => {
   }
 
   &.is-off {
-    border-color: transparent;
     background: var(--violet-soft);
     color: var(--violet);
   }
 
   &.is-on {
-    border-color: transparent;
     background: var(--success-soft);
     color: var(--success);
   }

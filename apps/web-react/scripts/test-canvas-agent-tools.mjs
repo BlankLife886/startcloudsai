@@ -109,9 +109,30 @@ test("applies move and resize ops", async () => {
         name: "canvas_apply_ops",
         arguments: `{"summary":"移动并缩放","ops":[{"type":"move_nodes","items":[{"id":"text-1","dx":40,"dy":0}]},{"type":"resize_node","id":"text-1","width":480,"height":240}]}`,
     }, canvas);
-    assert.equal(observation.applied, 2);
+    assert.equal(observation.applied, 0, "the test canvas returned an unchanged snapshot");
+    assert.equal(observation.ignored, 2);
     assert.equal(canvas.calls[0][0].type, "move_nodes");
     assert.equal(canvas.calls[0][1].type, "resize_node");
+});
+
+test("reports mixed batches by operations that actually changed state", async () => {
+    const canvas = stubCanvas([node("text-1", "text")]);
+    canvas.applyOps = (ops) => {
+        canvas.calls.push(ops);
+        return {
+            ...canvas.snapshot,
+            nodes: [{ ...canvas.snapshot.nodes[0], position: { x: 40, y: 0 } }],
+            agentReport: { requested: 2, accepted: 2, applied: 1, rejected: 0, errors: [] },
+        };
+    };
+    const observation = await runCanvasAgentTool({
+        name: "canvas_apply_ops",
+        arguments: `{"ops":[{"type":"update_node","id":"text-1","title":"text-1"},{"type":"move_nodes","items":[{"id":"text-1","dx":40}]}]}`,
+    }, canvas);
+    assert.equal(observation.requested, 2);
+    assert.equal(observation.applied, 1);
+    assert.equal(observation.ignored, 1);
+    assert.equal(observation.changedNodes, 1);
 });
 
 test("allows only in-site navigation paths", async () => {

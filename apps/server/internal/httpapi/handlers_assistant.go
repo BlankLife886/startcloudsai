@@ -75,6 +75,36 @@ func (s *Server) requireAssistant(c *gin.Context) (*sub2api.Client, error) {
 	return s.assistantClient(c)
 }
 
+func reasoningModelPayload(model modelconfig.Model) ([]string, string, gin.H) {
+	efforts := model.SupportedReasoningEfforts
+	if len(efforts) == 0 {
+		efforts = modelconfig.ReasoningEffortsForModel(model.UpstreamModel)
+	}
+	defaultEffort := ""
+	if model.ReasoningPricing != nil {
+		defaultEffort = model.ReasoningPricing.DefaultEffort
+	}
+	if defaultEffort == "" {
+		if containsString(efforts, "medium") {
+			defaultEffort = "medium"
+		} else if len(efforts) > 0 {
+			defaultEffort = efforts[0]
+		}
+	}
+	prices := gin.H{}
+	for _, effort := range efforts {
+		assistantPrice := modelconfig.ResolveReasoningPrice(model, effort, modelconfig.ReasoningPriceScopeAssistant)
+		canvasPrice := modelconfig.ResolveReasoningPrice(model, effort, modelconfig.ReasoningPriceScopeCanvasAgent)
+		prices[effort] = gin.H{
+			"assistantStandardPricePoints":   assistantPrice.StandardCents,
+			"assistantPricePoints":           assistantPrice.EffectiveCents,
+			"canvasAgentStandardPricePoints": canvasPrice.StandardCents,
+			"canvasAgentPricePoints":         canvasPrice.EffectiveCents,
+		}
+	}
+	return append([]string(nil), efforts...), defaultEffort, prices
+}
+
 func (s *Server) assistantConfig(c *gin.Context) {
 	user, err := s.currentUser(c)
 	if err != nil {
@@ -87,24 +117,37 @@ func (s *Server) assistantConfig(c *gin.Context) {
 		return
 	}
 	type modelOption struct {
-		Label                    string              `json:"label"`
-		Model                    string              `json:"model"`
-		Source                   string              `json:"source"`
-		Provider                 string              `json:"provider"`
-		Description              string              `json:"description"`
-		StandardPricePoints      *int64              `json:"standardPricePoints,omitempty"`
-		DiscountPricePoints      *int64              `json:"discountPricePoints"`
-		PricePoints              *int64              `json:"pricePoints,omitempty"`
-		Resolutions              []string            `json:"resolutions,omitempty"`
-		Default                  bool                `json:"default,omitempty"`
-		FastMode                 bool                `json:"fastMode,omitempty"`
-		AspectRatios             []string            `json:"aspectRatios,omitempty"`
-		AspectRatiosByResolution map[string][]string `json:"aspectRatiosByResolution,omitempty"`
-		Qualities                []string            `json:"qualities,omitempty"`
-		TransparentBackground    bool                `json:"transparentBackground"`
-		OutputFormats            []string            `json:"outputFormats"`
-		ModerationLevels         []string            `json:"moderationLevels"`
-		MaxReferenceImages       int                 `json:"maxReferenceImages"`
+		Label                     string              `json:"label"`
+		Model                     string              `json:"model"`
+		Source                    string              `json:"source"`
+		Provider                  string              `json:"provider"`
+		Description               string              `json:"description"`
+		StandardPricePoints       *int64              `json:"standardPricePoints,omitempty"`
+		DiscountPricePoints       *int64              `json:"discountPricePoints"`
+		PricePoints               *int64              `json:"pricePoints,omitempty"`
+		Resolutions               []string            `json:"resolutions,omitempty"`
+		Default                   bool                `json:"default,omitempty"`
+		FastMode                  bool                `json:"fastMode,omitempty"`
+		AspectRatios              []string            `json:"aspectRatios,omitempty"`
+		AspectRatiosByResolution  map[string][]string `json:"aspectRatiosByResolution,omitempty"`
+		Qualities                 []string            `json:"qualities,omitempty"`
+		TransparentBackground     bool                `json:"transparentBackground"`
+		OutputFormats             []string            `json:"outputFormats"`
+		ModerationLevels          []string            `json:"moderationLevels"`
+		MaxReferenceImages        int                 `json:"maxReferenceImages"`
+		SupportedReasoningEfforts []string            `json:"supportedReasoningEfforts,omitempty"`
+		DefaultReasoningEffort    string              `json:"defaultReasoningEffort,omitempty"`
+		ReasoningPrices           gin.H               `json:"reasoningPrices,omitempty"`
+	}
+	reasoningOptions := func(model string) ([]string, string) {
+		efforts := modelconfig.ReasoningEffortsForModel(model)
+		defaultEffort := ""
+		if containsString(efforts, "medium") {
+			defaultEffort = "medium"
+		} else if len(efforts) > 0 {
+			defaultEffort = efforts[0]
+		}
+		return efforts, defaultEffort
 	}
 	buildOptions := func(kind string) []modelOption {
 		selections := modelconfig.PublicModelsForWorkspace(modelCfg, modelconfig.WorkspaceAssistant, kind)
@@ -120,6 +163,10 @@ func (s *Server) assistantConfig(c *gin.Context) {
 					description = "对话与图片理解模型"
 				}
 			}
+			reasoningEfforts, defaultReasoningEffort, reasoningPrices := []string(nil), "", gin.H(nil)
+			if kind == modelconfig.ModelKindChat {
+				reasoningEfforts, defaultReasoningEffort, reasoningPrices = reasoningModelPayload(selection.Model)
+			}
 			options = append(options, modelOption{
 				Label: selection.Model.Name, Model: selection.Model.ID, Source: "configured",
 				Provider: selection.Provider.Name, Description: description,
@@ -131,7 +178,9 @@ func (s *Server) assistantConfig(c *gin.Context) {
 				Qualities:             selection.Model.Qualities,
 				TransparentBackground: selection.Model.TransparentBackground,
 				OutputFormats:         selection.Model.OutputFormats, ModerationLevels: selection.Model.ModerationLevels,
-				MaxReferenceImages: selection.Model.MaxReferenceImages,
+				MaxReferenceImages:        selection.Model.MaxReferenceImages,
+				SupportedReasoningEfforts: reasoningEfforts, DefaultReasoningEffort: defaultReasoningEffort,
+				ReasoningPrices: reasoningPrices,
 			})
 		}
 		return options
@@ -187,11 +236,13 @@ func (s *Server) assistantConfig(c *gin.Context) {
 		if model == "" {
 			continue
 		}
-		options = append(options, modelOption{Label: label, Model: model, Source: "legacy"})
+		reasoningEfforts, defaultReasoningEffort := reasoningOptions(model)
+		options = append(options, modelOption{Label: label, Model: model, Source: "legacy", SupportedReasoningEfforts: reasoningEfforts, DefaultReasoningEffort: defaultReasoningEffort})
 		seenModels[model] = true
 	}
 	if !seenModels[client.ChatModel()] {
-		options = append(options, modelOption{Label: client.ChatModel(), Model: client.ChatModel(), Source: "default"})
+		reasoningEfforts, defaultReasoningEffort := reasoningOptions(client.ChatModel())
+		options = append(options, modelOption{Label: client.ChatModel(), Model: client.ChatModel(), Source: "default", SupportedReasoningEfforts: reasoningEfforts, DefaultReasoningEffort: defaultReasoningEffort})
 		seenModels[client.ChatModel()] = true
 	}
 	modelCtx, cancel := context.WithTimeout(c.Request.Context(), 6*time.Second)
@@ -203,7 +254,8 @@ func (s *Server) assistantConfig(c *gin.Context) {
 			if seenModels[model] || !assistantConversationModel(model, client.ImageModel()) {
 				continue
 			}
-			options = append(options, modelOption{Label: model, Model: model, Source: "upstream"})
+			reasoningEfforts, defaultReasoningEffort := reasoningOptions(model)
+			options = append(options, modelOption{Label: model, Model: model, Source: "upstream", SupportedReasoningEfforts: reasoningEfforts, DefaultReasoningEffort: defaultReasoningEffort})
 			seenModels[model] = true
 		}
 	}

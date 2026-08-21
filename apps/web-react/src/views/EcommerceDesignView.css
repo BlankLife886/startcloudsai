@@ -459,7 +459,8 @@ html.color-scheme-dark .commerce-studio {
   .commerce-studio.is-shoot .commerce-layout,
   .commerce-studio.is-tryon .commerce-layout,
   .commerce-studio.is-handheld .commerce-layout,
-  .commerce-studio.is-accessory .commerce-layout {
+  .commerce-studio.is-accessory .commerce-layout,
+  .commerce-studio.is-detail .commerce-layout {
     grid-template-columns: 124px minmax(0, 1fr);
   }
   .commerce-rail {
@@ -2881,7 +2882,8 @@ html.settings-no-animations .result-stage.is-ratio-locked .result-image-card > *
   }
   .commerce-studio.is-tryon .mobile-pane-switch,
   .commerce-studio.is-handheld .mobile-pane-switch,
-  .commerce-studio.is-accessory .mobile-pane-switch {
+  .commerce-studio.is-accessory .mobile-pane-switch,
+  .commerce-studio.is-detail .mobile-pane-switch {
     grid-template-columns: repeat(5, minmax(0, 1fr));
   }
   .commerce-studio.is-shoot .mobile-pane-switch {

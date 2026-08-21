@@ -26,6 +26,32 @@ export type CanvasWorkflowCompileResult =
     | { ok: true; plan: CanvasWorkflowPlan }
     | { ok: false; reason: CanvasWorkflowCompileError; nodeIds: string[] };
 
+export function canvasWorkflowCheckpointForStart(status: string, checkpoint: CanvasWorkflowCheckpoint | null) {
+    return status === "success" || status === "canceled" ? null : checkpoint;
+}
+
+export async function waitForCanvasWorkflowStop(pending: Promise<unknown> | null | undefined) {
+    if (pending) await pending;
+}
+
+export async function settleCanvasWorkflowTerminal(options: {
+    persist: () => Promise<void>;
+    release: () => void;
+    present: () => void;
+}) {
+    let persistenceError: unknown;
+    let persistenceFailed = false;
+    options.release();
+    options.present();
+    try {
+        await options.persist();
+    } catch (error) {
+        persistenceFailed = true;
+        persistenceError = error;
+    }
+    return { persistenceFailed, persistenceError };
+}
+
 export type CanvasWorkflowNodeReadinessIssue = {
     reason: "dependency_incomplete" | "reference_missing" | "reference_empty";
     nodeId: string;

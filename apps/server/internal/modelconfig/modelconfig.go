@@ -15,7 +15,7 @@ import (
 
 const (
 	SettingKey = "model_dispatch_config"
-	Version    = 4
+	Version    = 5
 
 	AdapterOpenAI = "openai"
 	AdapterCRUN   = "crun"
@@ -155,6 +155,8 @@ type Model struct {
 	MaxReferenceImages          int                 `json:"maxReferenceImages"`
 	ContextWindowTokens         int                 `json:"contextWindowTokens,omitempty"`
 	MaxOutputTokens             int                 `json:"maxOutputTokens,omitempty"`
+	SupportedReasoningEfforts   []string            `json:"supportedReasoningEfforts,omitempty"`
+	ReasoningPricing            *ReasoningPricing   `json:"reasoningPricing,omitempty"`
 	Public                      bool                `json:"public"`
 	Default                     bool                `json:"default"`
 	Enabled                     bool                `json:"enabled"`
@@ -343,6 +345,7 @@ func normalize(cfg *Config) {
 		if model.Kind != ModelKindImageTool {
 			model.Tool = ""
 		}
+		normalizeModelReasoningPricing(model)
 		model.Description = strings.TrimSpace(model.Description)
 		if model.Kind == ModelKindChat {
 			if model.ContextWindowTokens <= 0 {
@@ -651,6 +654,9 @@ func Validate(cfg Config) error {
 			}
 			if model.MaxOutputTokens < 256 || model.MaxOutputTokens >= model.ContextWindowTokens {
 				return fmt.Errorf("对话模型 %s 的最大输出 tokens 无效", model.Name)
+			}
+			if err := validateModelReasoningPricing(model); err != nil {
+				return err
 			}
 		}
 		if model.Default {

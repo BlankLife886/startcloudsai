@@ -12,9 +12,10 @@ import (
 )
 
 const (
-	TypeRunTask       = "task:run"
-	TypePollImageTask = "task:poll-image"
-	TypeRunAssistant  = "assistant:run"
+	TypeRunTask             = "task:run"
+	TypePollImageTask       = "task:poll-image"
+	TypeRunAssistant        = "assistant:run"
+	TypeIngestAssistantFile = "assistant:file-ingest"
 )
 
 // Weighted queues keep short, latency-sensitive work from being stuck behind
@@ -51,6 +52,10 @@ type PollImageTasksPayload struct {
 
 type RunAssistantPayload struct {
 	RunID string `json:"run_id"`
+}
+
+type IngestAssistantFilePayload struct {
+	FileID string `json:"file_id"`
 }
 
 // Queue 封装 Asynq 客户端入队 run_task。
@@ -276,6 +281,30 @@ func (q *Queue) EnqueueAssistantRun(ctx context.Context, runID string) error {
 
 func (q *Queue) EnqueueAssistantRunRecovery(ctx context.Context, runID string) error {
 	return q.enqueueAssistantRun(ctx, runID, runID+":recover:"+uuid.NewString())
+}
+
+func (q *Queue) EnqueueAssistantFile(ctx context.Context, fileID string) error {
+	payload, err := json.Marshal(IngestAssistantFilePayload{FileID: fileID})
+	if err != nil {
+		return err
+	}
+	_, err = q.client.EnqueueContext(ctx, asynq.NewTask(TypeIngestAssistantFile, payload),
+		asynq.Queue(QueueAssistant), asynq.MaxRetry(0), asynq.Timeout(q.timeout), asynq.TaskID("assistant-file:"+fileID))
+	if errors.Is(err, asynq.ErrTaskIDConflict) {
+		return nil
+	}
+	return err
+}
+
+func (q *Queue) EnqueueAssistantFileRecovery(ctx context.Context, fileID string) error {
+	payload, err := json.Marshal(IngestAssistantFilePayload{FileID: fileID})
+	if err != nil {
+		return err
+	}
+	_, err = q.client.EnqueueContext(ctx, asynq.NewTask(TypeIngestAssistantFile, payload),
+		asynq.Queue(QueueAssistant), asynq.MaxRetry(0), asynq.Timeout(q.timeout),
+		asynq.TaskID("assistant-file:"+fileID+":"+uuid.NewString()))
+	return err
 }
 
 func (q *Queue) enqueueAssistantRun(ctx context.Context, runID, queueTaskID string) error {

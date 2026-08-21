@@ -36,20 +36,25 @@ type Client struct {
 }
 
 type Message struct {
-	Role            string   `json:"role"`
-	Content         string   `json:"content"`
-	ReferenceImages []string `json:"referenceImages,omitempty"`
+	Role            string     `json:"role"`
+	Content         string     `json:"content"`
+	ReferenceImages []string   `json:"referenceImages,omitempty"`
+	Name            string     `json:"name,omitempty"`
+	ToolCallID      string     `json:"toolCallId,omitempty"`
+	ToolCalls       []ToolCall `json:"toolCalls,omitempty"`
 }
 
 type FunctionTool struct {
 	Name        string
 	Description string
 	Parameters  map[string]any
+	Strict      bool
 }
 
 const RequiredToolChoice = "required"
 
 type ToolCall struct {
+	ID        string
 	Name      string
 	Arguments string
 }
@@ -379,11 +384,14 @@ func (c *Client) ChatAgentWithTools(
 	}
 	declarations := make([]any, 0, len(tools))
 	for _, tool := range tools {
+		function := map[string]any{
+			"name": tool.Name, "description": tool.Description, "parameters": tool.Parameters,
+		}
+		if tool.Strict {
+			function["strict"] = true
+		}
 		declarations = append(declarations, map[string]any{
-			"type": "function",
-			"function": map[string]any{
-				"name": tool.Name, "description": tool.Description, "parameters": tool.Parameters,
-			},
+			"type": "function", "function": function,
 		})
 	}
 	payload := map[string]any{
@@ -446,6 +454,7 @@ func (c *Client) chatAgentWithPayload(
 	receivedOutput := false
 	toolNames := map[int]string{}
 	toolArguments := map[int]string{}
+	toolIDs := map[int]string{}
 	minToolIndex := -1
 	completed := false
 	scanner := bufio.NewScanner(resp.Body)
@@ -509,6 +518,9 @@ func (c *Client) chatAgentWithPayload(
 			if fragment.name != "" {
 				toolNames[fragment.index] = fragment.name
 			}
+			if fragment.id != "" {
+				toolIDs[fragment.index] = fragment.id
+			}
 			if fragment.replace {
 				toolArguments[fragment.index] = fragment.arguments
 			} else {
@@ -534,7 +546,11 @@ func (c *Client) chatAgentWithPayload(
 		return result, receivedOutput, errors.New("provider returned multiple tool calls while parallel tool calls are disabled")
 	}
 	if minToolIndex >= 0 {
-		result.ToolCall = &ToolCall{Name: toolNames[minToolIndex], Arguments: toolArguments[minToolIndex]}
+		callID := toolIDs[minToolIndex]
+		if callID == "" {
+			callID = fmt.Sprintf("call_%d", minToolIndex)
+		}
+		result.ToolCall = &ToolCall{ID: callID, Name: toolNames[minToolIndex], Arguments: toolArguments[minToolIndex]}
 	}
 	return result, receivedOutput, nil
 }
@@ -683,8 +699,49 @@ func RetryableOnAlternateRoute(ctx context.Context, err error) bool {
 	return false
 }
 
+// FailureCode turns provider and streaming failures into stable operational
+// categories without exposing upstream response bodies or request content.
+func FailureCode(err error) string {
+	if err == nil {
+		return ""
+	}
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "assistant_interrupted"
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, errChatStreamIdle):
+		return "upstream_timeout"
+	case errors.Is(err, errChatStreamTruncated):
+		return "output_limit_reached"
+	case errors.Is(err, errChatStreamFiltered):
+		return "content_filtered"
+	case errors.Is(err, errChatStreamIncomplete), errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		return "upstream_stream_incomplete"
+	case errors.Is(err, errChatStreamEmpty):
+		return "upstream_empty_response"
+	}
+	var upstream *UpstreamError
+	if errors.As(err, &upstream) {
+		switch {
+		case upstream.Status == http.StatusUnauthorized || upstream.Status == http.StatusForbidden:
+			return "upstream_auth_failed"
+		case upstream.Status == http.StatusTooManyRequests:
+			return "upstream_rate_limited"
+		case upstream.Status >= http.StatusInternalServerError:
+			return "upstream_unavailable"
+		default:
+			return "upstream_rejected"
+		}
+	}
+	var netErr interface{ Timeout() bool }
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "upstream_timeout"
+	}
+	return "assistant_run_failed"
+}
+
 type toolCallFragment struct {
 	index     int
+	id        string
 	name      string
 	arguments string
 	replace   bool
@@ -704,7 +761,7 @@ func streamToolCallFragments(payload map[string]any) []toolCallFragment {
 			arguments, _ := legacy["arguments"].(string)
 			if name != "" || arguments != "" {
 				fragments = append(fragments, toolCallFragment{
-					index: 0, name: name, arguments: arguments, replace: containerName == "message",
+					index: 0, id: "call_0", name: name, arguments: arguments, replace: containerName == "message",
 				})
 			}
 		}
@@ -712,6 +769,7 @@ func streamToolCallFragments(payload map[string]any) []toolCallFragment {
 		for _, rawCall := range calls {
 			call, _ := rawCall.(map[string]any)
 			function, _ := call["function"].(map[string]any)
+			id, _ := call["id"].(string)
 			index := 0
 			switch value := call["index"].(type) {
 			case float64:
@@ -725,7 +783,7 @@ func streamToolCallFragments(payload map[string]any) []toolCallFragment {
 				continue
 			}
 			fragments = append(fragments, toolCallFragment{
-				index: index, name: name, arguments: arguments, replace: containerName == "message",
+				index: index, id: id, name: name, arguments: arguments, replace: containerName == "message",
 			})
 		}
 	}
@@ -790,6 +848,27 @@ func chatPayloadMessages(messages []Message, imageURLs []string) []any {
 		}
 	}
 	for index, message := range messages {
+		item := map[string]any{"role": message.Role, "content": message.Content}
+		if message.Name != "" {
+			item["name"] = message.Name
+		}
+		if message.ToolCallID != "" {
+			item["tool_call_id"] = message.ToolCallID
+		}
+		if len(message.ToolCalls) > 0 {
+			calls := make([]any, 0, len(message.ToolCalls))
+			for callIndex, call := range message.ToolCalls {
+				callID := strings.TrimSpace(call.ID)
+				if callID == "" {
+					callID = fmt.Sprintf("call_%d", callIndex)
+				}
+				calls = append(calls, map[string]any{
+					"id": callID, "type": "function",
+					"function": map[string]any{"name": call.Name, "arguments": call.Arguments},
+				})
+			}
+			item["tool_calls"] = calls
+		}
 		content := any(message.Content)
 		messageImages := append([]string(nil), message.ReferenceImages...)
 		if index == lastUserIndex {
@@ -810,7 +889,8 @@ func chatPayloadMessages(messages []Message, imageURLs []string) []any {
 			}
 			content = parts
 		}
-		payloadMessages[index] = map[string]any{"role": message.Role, "content": content}
+		item["content"] = content
+		payloadMessages[index] = item
 	}
 	return payloadMessages
 }

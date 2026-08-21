@@ -5,10 +5,11 @@ import { storageKeyFromUrl } from "@/lib/canvas/canvas-preview-url";
 import { getCanvasBackgroundRemovalTool } from "@/lib/canvas/canvas-background-removal-tool";
 import { canvasImageRequestSize, coerceCanvasImageSettings } from "@/lib/canvas/canvas-image-model";
 import type { CanvasAgentOp, CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
+import { createCanvasAgentToolDelivery, type CanvasAgentToolResultEnvelope } from "@/lib/canvas/canvas-agent-tool-delivery";
 import { compactCanvasSnapshot, resolveCanvasAgentCompletion } from "@/lib/canvas/canvas-hosted-agent";
 import { uploadImage } from "@/services/image-storage";
 import { StarcloudsApiError, starcloudsApiUrl, starcloudsFileUrl, starcloudsJson, starcloudsRequest } from "@/services/starclouds-api";
-import type { AgentReasoningEffort } from "@/stores/use-agent-store";
+import type { AgentChatItem, AgentMessageAttachment, AgentReasoningEffort } from "@/stores/use-agent-store";
 import { modelOptionMeta, modelOptionName, type AiConfig } from "@/stores/use-config-store";
 import { scheduleWalletRefresh } from "@react/legacy-modules/services/walletSync.js";
 import type { ReferenceImage } from "@/types/image";
@@ -23,8 +24,17 @@ type CanvasTask = {
 };
 
 type CanvasAssistantResponse = {
-    run: { id: string; status: CanvasTask["status"]; errorMessage?: string };
-    assistantMessage?: { content?: string; canvasOps?: unknown; canvasOpsSummary?: string; reasoning?: string; reasoningTokens?: number; reasoningEffort?: string };
+    run: { id: string; status: CanvasTask["status"]; stage?: string; errorMessage?: string };
+    assistantMessage?: {
+        content?: string;
+        canvasOps?: unknown;
+        canvasOpsSummary?: string;
+        reasoning?: string;
+        reasoningTokens?: number;
+        reasoningEffort?: string;
+        statusStage?: string;
+        pendingTool?: CanvasAgentToolCall;
+    };
 };
 
 export type CanvasAssistantTaskOptions = {
@@ -547,7 +557,7 @@ export type CanvasAgentTurnResult = {
     reasoningEffort?: string;
 };
 
-export type CanvasAgentToolCall = { requestId: string; name: string; arguments: string };
+export type CanvasAgentToolCall = { requestId: string; name: string; arguments: string; stage?: string; title?: string };
 export type CanvasAgentToolHandler = (call: CanvasAgentToolCall) => Promise<unknown>;
 
 export type CanvasAgentTurnOptions = {
@@ -559,6 +569,7 @@ export type CanvasAgentTurnOptions = {
     onCreated?: (runId: string) => void | Promise<void>;
     onDelta?: (text: string) => void;
     onReasoning?: (reasoning: string) => void;
+    onStage?: (stage: string) => void;
     onToolCall?: CanvasAgentToolHandler;
     referenceImages?: Array<{ id?: string; name?: string; dataUrl: string }>;
     reasoningEffort?: AgentReasoningEffort;
@@ -568,38 +579,270 @@ function hostedAgentConversationKey(projectId: string) {
     return `canvas-hosted-agent:${projectId}`;
 }
 
-export function readHostedAgentConversationId(projectId: string) {
+function hostedAgentStorageGet(key: string) {
     try {
-        return sessionStorage.getItem(hostedAgentConversationKey(projectId)) || "";
+        const local = localStorage.getItem(key);
+        if (local) return local;
+        const session = sessionStorage.getItem(key);
+        if (session) {
+            try {
+                localStorage.setItem(key, session);
+                sessionStorage.removeItem(key);
+            } catch {
+                /* ignore quota */
+            }
+            return session;
+        }
     } catch {
-        return "";
+        /* ignore */
     }
+    return "";
 }
 
-export function writeHostedAgentConversationId(projectId: string, conversationId: string) {
+function hostedAgentStorageSet(key: string, value: string) {
     try {
-        sessionStorage.setItem(hostedAgentConversationKey(projectId), conversationId);
+        localStorage.setItem(key, value);
     } catch {
         /* ignore quota */
     }
-}
-
-export function clearHostedAgentConversationId(projectId: string) {
     try {
-        sessionStorage.removeItem(hostedAgentConversationKey(projectId));
+        sessionStorage.removeItem(key);
     } catch {
         /* ignore */
     }
 }
 
+function hostedAgentStorageRemove(key: string) {
+    try {
+        localStorage.removeItem(key);
+    } catch {
+        /* ignore */
+    }
+    try {
+        sessionStorage.removeItem(key);
+    } catch {
+        /* ignore */
+    }
+}
+
+export function readHostedAgentConversationId(projectId: string) {
+    if (!projectId) return "";
+    return hostedAgentStorageGet(hostedAgentConversationKey(projectId));
+}
+
+export function writeHostedAgentConversationId(projectId: string, conversationId: string) {
+    if (!projectId || !conversationId) return;
+    hostedAgentStorageSet(hostedAgentConversationKey(projectId), conversationId);
+}
+
+export function clearHostedAgentConversationId(projectId: string) {
+    if (!projectId) return;
+    hostedAgentStorageRemove(hostedAgentConversationKey(projectId));
+}
+
+export type CanvasAgentConversationMessage = {
+    id: string;
+    role?: string;
+    content?: string;
+    kind?: string;
+    status?: string;
+    pending?: boolean;
+    error?: string;
+    referenceImages?: Array<{ id?: string; name?: string; fileKey?: string; url?: string; thumbnailKey?: string; thumbnailUrl?: string }>;
+    canvasOpsSummary?: string;
+    reasoning?: string;
+    reasoningTokens?: number;
+    reasoningEffort?: string;
+};
+
+export type CanvasAgentConversation = {
+    id: string;
+    title?: string;
+    workspace?: string;
+    projectId?: string | null;
+    createdAt?: string;
+    updatedAt?: string;
+    messages?: CanvasAgentConversationMessage[];
+};
+
+const HOSTED_USER_PROMPT_MARKERS = [
+    "\n\n本轮聊天附件，可用 canvas_create_attachment_nodes 放到画布：",
+    "\n\n本轮引用的当前画布素材：",
+];
+
+function displayHostedUserPrompt(content: string) {
+    let text = content;
+    for (const marker of HOSTED_USER_PROMPT_MARKERS) {
+        const index = text.indexOf(marker);
+        if (index >= 0) text = text.slice(0, index);
+    }
+    return text.trim();
+}
+
+function hostedAgentAttachment(image: NonNullable<CanvasAgentConversationMessage["referenceImages"]>[number], index: number): AgentMessageAttachment | null {
+    const url = image.url || (image.fileKey ? starcloudsFileUrl(image.fileKey) : "") || image.thumbnailUrl || (image.thumbnailKey ? starcloudsFileUrl(image.thumbnailKey) : "");
+    if (!url) return null;
+    return { id: image.id || image.fileKey || `ref-${index}`, name: image.name || "image", url };
+}
+
+export function hostedAgentMessagesFromConversation(
+    messages: CanvasAgentConversationMessage[] | undefined,
+    titles: { assistant: string; reasoning: string; canvasOps: string },
+): AgentChatItem[] {
+    const items: AgentChatItem[] = [];
+    for (const message of messages || []) {
+        const kind = String(message.kind || "");
+        if (kind === "context-divider") continue;
+        const role = String(message.role || "");
+        const content = String(message.content || "").trim();
+        const error = String(message.error || "").trim();
+        const failed = message.status === "failed" || Boolean(error);
+        if (role === "user") {
+            const attachments = (message.referenceImages || []).map(hostedAgentAttachment).filter((item): item is AgentMessageAttachment => Boolean(item));
+            items.push({
+                id: message.id,
+                role: "user",
+                text: displayHostedUserPrompt(content) || (attachments.length ? " " : content),
+                attachments,
+            });
+            continue;
+        }
+        if (role !== "assistant") continue;
+        if (message.pending || message.status === "queued" || message.status === "running") {
+            items.push({
+                id: message.id,
+                role: "assistant",
+                title: titles.assistant,
+                text: error || content,
+                streamId: message.id,
+            });
+            continue;
+        }
+        const reasoning = String(message.reasoning || "").trim();
+        if (reasoning) {
+            items.push({
+                id: `${message.id}:reasoning`,
+                role: "tool",
+                title: titles.reasoning,
+                text: reasoning,
+                detail: {
+                    kind: "reasoning",
+                    status: "completed",
+                    ...(message.reasoningEffort ? { effort: message.reasoningEffort } : {}),
+                    ...(Number(message.reasoningTokens || 0) > 0 ? { tokens: Number(message.reasoningTokens) } : {}),
+                },
+            });
+        }
+        items.push({
+            id: message.id,
+            role: failed ? "error" : "assistant",
+            title: failed ? undefined : titles.assistant,
+            text: error || content,
+        });
+        const summary = String(message.canvasOpsSummary || "").trim();
+        if (summary && !failed) {
+            items.push({
+                id: `${message.id}:ops`,
+                role: "tool",
+                title: titles.canvasOps,
+                text: summary,
+            });
+        }
+    }
+    return items;
+}
+
+export function fetchCanvasAgentConversation(conversationId: string, signal?: AbortSignal, projectId = "") {
+    const query = projectId ? `?projectId=${encodeURIComponent(projectId)}` : "";
+    return starcloudsRequest<CanvasAgentConversation>(`/assistant/conversations/${encodeURIComponent(conversationId)}${query}`, { signal });
+}
+
+export function listActiveCanvasAgentRuns(signal?: AbortSignal) {
+    return starcloudsRequest<{ runs?: Array<{ id: string; conversationId?: string; status?: string }> }>(
+        `/assistant/runs?workspace=${encodeURIComponent("infinite_canvas")}`,
+        { signal },
+    ).then((data) => (Array.isArray(data.runs) ? data.runs : []));
+}
+
+export async function listCanvasAgentConversations(projectId: string, signal?: AbortSignal) {
+    if (!projectId) return [];
+    const data = await starcloudsRequest<{ conversations?: CanvasAgentConversation[] }>(
+        `/assistant/conversations?workspace=${encodeURIComponent("infinite_canvas")}&projectId=${encodeURIComponent(projectId)}`,
+        { signal },
+    );
+    return Array.isArray(data.conversations) ? data.conversations : [];
+}
+
+export async function fetchLatestCanvasAgentConversation(projectId: string, signal?: AbortSignal) {
+    const conversations = await listCanvasAgentConversations(projectId, signal);
+    return conversations[0] || null;
+}
+
+export async function deleteCanvasAgentConversation(conversationId: string, cancelActive = false) {
+    const query = cancelActive ? "?cancelActive=true" : "";
+    await starcloudsRequest(`/assistant/conversations/${encodeURIComponent(conversationId)}${query}`, { method: "DELETE" });
+}
+
+function hostedConversationUnix(value?: string) {
+    if (!value) return undefined;
+    const time = Date.parse(value);
+    return Number.isFinite(time) ? Math.floor(time / 1000) : undefined;
+}
+
+export function hostedAgentConversationPreview(conversation: CanvasAgentConversation) {
+    const user = (conversation.messages || []).find((item) => item.role === "user");
+    return displayHostedUserPrompt(String(user?.content || "")) || String(conversation.title || "").trim();
+}
+
+export function hostedAgentConversationThread(conversation: CanvasAgentConversation) {
+    const preview = hostedAgentConversationPreview(conversation);
+    return {
+        id: conversation.id,
+        name: preview || String(conversation.title || "").trim() || undefined,
+        preview,
+        createdAt: hostedConversationUnix(conversation.createdAt),
+        updatedAt: hostedConversationUnix(conversation.updatedAt),
+    };
+}
+
+const creatingHostedAgentConversations = new Map<string, Promise<CanvasAgentConversation>>();
+let hostedAgentFreshProjectId = "";
+
+export function createCanvasAgentConversation(projectId: string, prompt = "") {
+    const pending = creatingHostedAgentConversations.get(projectId);
+    if (pending) return pending;
+    const task = starcloudsJson<CanvasAgentConversation>("/assistant/conversations", "POST", {
+        title: prompt.slice(0, 42) || "画布 Agent",
+        workspace: "infinite_canvas",
+        projectId,
+    }).then((conversation) => {
+        writeHostedAgentConversationId(projectId, conversation.id);
+        if (hostedAgentFreshProjectId === projectId) hostedAgentFreshProjectId = "";
+        return conversation;
+    }).finally(() => {
+        creatingHostedAgentConversations.delete(projectId);
+    });
+    creatingHostedAgentConversations.set(projectId, task);
+    return task;
+}
+
+export function beginHostedAgentConversation(projectId: string) {
+    hostedAgentFreshProjectId = projectId;
+    clearHostedAgentConversationId(projectId);
+    return createCanvasAgentConversation(projectId);
+}
+
 async function ensureCanvasAgentConversation(projectId: string, prompt: string, conversationId = "") {
     const existing = conversationId || readHostedAgentConversationId(projectId);
     if (existing) return existing;
-    const conversation = await starcloudsJson<{ id: string }>("/assistant/conversations", "POST", {
-        title: prompt.slice(0, 42) || "画布 Agent",
-        workspace: "infinite_canvas",
-    });
-    writeHostedAgentConversationId(projectId, conversation.id);
+    if (hostedAgentFreshProjectId !== projectId) {
+        const latest = await fetchLatestCanvasAgentConversation(projectId);
+        if (latest?.id) {
+            writeHostedAgentConversationId(projectId, latest.id);
+            return latest.id;
+        }
+    }
+    const conversation = await createCanvasAgentConversation(projectId, prompt);
     return conversation.id;
 }
 
@@ -607,7 +850,15 @@ export async function cancelCanvasAssistantRun(runId: string) {
     await starcloudsJson(`/assistant/runs/${encodeURIComponent(runId)}`, "PATCH", { status: "canceled" });
 }
 
-type CanvasAgentStreamPayload = { content?: string; reasoning?: string; done?: boolean; status?: string; tool?: CanvasAgentToolCall };
+type CanvasAgentStreamPayload = {
+    content?: string;
+    reasoning?: string;
+    done?: boolean;
+    status?: string;
+    kind?: string;
+    stage?: string;
+    tool?: CanvasAgentToolCall;
+};
 
 function openCanvasAssistantRunStream(runId: string, onEvent: (payload: CanvasAgentStreamPayload) => void) {
     try {
@@ -628,40 +879,105 @@ function openCanvasAssistantRunStream(runId: string, onEvent: (payload: CanvasAg
 }
 
 export async function postCanvasAgentToolResult(runId: string, requestId: string, payload: { result?: unknown; error?: string }) {
-    await starcloudsJson(`/assistant/runs/${encodeURIComponent(runId)}/tool-results`, "POST", { requestId, ...payload });
+    await starcloudsJson(`/assistant/runs/${encodeURIComponent(runId)}/tool-results`, "POST", {
+        requestId,
+        executorId: currentCanvasAgentExecutorId(),
+        ...payload,
+    });
 }
 
-export async function waitForCanvasAgentRun(runId: string, onDelta: (text: string) => void, signal?: AbortSignal, onToolCall?: CanvasAgentToolHandler, onReasoning?: (reasoning: string) => void): Promise<CanvasAgentTurnResult> {
+const CANVAS_AGENT_EXECUTOR_KEY = "startclouds:canvas-agent-executor";
+let canvasAgentExecutorId = "";
+
+function currentCanvasAgentExecutorId() {
+    if (canvasAgentExecutorId) return canvasAgentExecutorId;
+    try {
+        canvasAgentExecutorId = sessionStorage.getItem(CANVAS_AGENT_EXECUTOR_KEY) || "";
+    } catch {
+        // Storage can be unavailable in privacy-restricted browser contexts.
+    }
+    if (!canvasAgentExecutorId) {
+        canvasAgentExecutorId = `canvas-${nanoid(20)}`;
+        try {
+            sessionStorage.setItem(CANVAS_AGENT_EXECUTOR_KEY, canvasAgentExecutorId);
+        } catch {
+            // The in-memory identifier still protects this page lifetime.
+        }
+    }
+    return canvasAgentExecutorId;
+}
+
+export async function claimCanvasAgentTool(runId: string, requestId: string) {
+    if (!runId || !requestId) return false;
+    const result = await starcloudsJson<{ claimed?: boolean }>(`/assistant/runs/${encodeURIComponent(runId)}/tool-claims`, "POST", {
+        requestId,
+        executorId: currentCanvasAgentExecutorId(),
+    });
+    return result.claimed === true;
+}
+
+const canvasAgentToolResultCache = new Map<string, { envelope: CanvasAgentToolResultEnvelope; successful: boolean }>();
+
+async function withCanvasAgentToolLock<T>(name: string, task: () => Promise<T>): Promise<T | undefined> {
+    if (typeof navigator === "undefined" || !navigator.locks?.request) return task();
+    return navigator.locks.request(name, { mode: "exclusive", ifAvailable: true }, async (lock) => (lock ? task() : undefined));
+}
+
+export async function waitForCanvasAgentRun(
+    runId: string,
+    onDelta: (text: string) => void,
+    signal?: AbortSignal,
+    onToolCall?: CanvasAgentToolHandler,
+    onReasoning?: (reasoning: string) => void,
+    onStage?: (stage: string) => void,
+): Promise<CanvasAgentTurnResult> {
     const deadline = Date.now() + 20 * 60 * 1000;
     let pollDelay = 700;
-    // The worker blocks on each tool result, so a duplicated SSE frame must not
-    // trigger a second execution of the same mutation.
-    const servedToolCalls = new Set<string>();
+    const countedToolCalls = new Set<string>();
     let executedTools = 0;
     let canvasOpsApplied = false;
     let lastReasoning = "";
+    let lastStage = "";
     const emitReasoning = (value: string | undefined) => {
         const reasoning = String(value || "").trim();
         if (!reasoning || reasoning === lastReasoning) return;
         lastReasoning = reasoning;
         onReasoning?.(reasoning);
     };
-    const serveToolCall = async (call: CanvasAgentToolCall) => {
-        if (!onToolCall || !call?.requestId || servedToolCalls.has(call.requestId)) return;
-        servedToolCalls.add(call.requestId);
-        try {
-            const result = await onToolCall(call);
-            executedTools += 1;
-            if (call.name === "canvas_apply_ops") canvasOpsApplied = true;
-            await postCanvasAgentToolResult(runId, call.requestId, { result });
-        } catch (error) {
-            await postCanvasAgentToolResult(runId, call.requestId, { error: error instanceof Error ? error.message : "工具执行失败" }).catch(() => undefined);
-        }
+    const emitStage = (value: string | undefined) => {
+        const stage = String(value || "").trim();
+        if (!stage || stage === lastStage) return;
+        lastStage = stage;
+        onStage?.(stage);
+    };
+    const delivery = onToolCall
+        ? createCanvasAgentToolDelivery({
+            runId,
+            execute: async (call) => {
+                const result = await onToolCall(call);
+                if (!countedToolCalls.has(call.requestId)) {
+                    countedToolCalls.add(call.requestId);
+                    executedTools += 1;
+                    if (call.name === "canvas_apply_ops") canvasOpsApplied = true;
+                }
+                return result;
+            },
+            acknowledge: (_call, envelope) => postCanvasAgentToolResult(runId, _call.requestId, envelope),
+            isPending: (call) => claimCanvasAgentTool(runId, call.requestId),
+            withLock: withCanvasAgentToolLock,
+            resultCache: canvasAgentToolResultCache,
+        })
+        : null;
+    const serveToolCall = (call: CanvasAgentToolCall) => {
+        if (!delivery || !call?.requestId || !call.name) return;
+        emitStage(call.stage || "tool");
+        void delivery.serve(call).catch(() => undefined);
     };
     const stream = openCanvasAssistantRunStream(runId, (payload) => {
         if (payload.content) onDelta(payload.content);
         emitReasoning(payload.reasoning);
-        if (payload.tool) void serveToolCall(payload.tool);
+        emitStage(payload.stage);
+        if (payload.tool) serveToolCall(payload.tool);
     });
     const closeStream = () => {
         stream?.close();
@@ -677,6 +993,8 @@ export async function waitForCanvasAgentRun(runId: string, onDelta: (text: strin
                 const content = current.assistantMessage?.content?.trim() || "";
                 if (content) onDelta(content);
                 emitReasoning(current.assistantMessage?.reasoning);
+                emitStage(current.assistantMessage?.statusStage || current.run.stage);
+                if (current.assistantMessage?.pendingTool) serveToolCall(current.assistantMessage.pendingTool);
                 if (current.run.status === "succeeded") {
                     scheduleWalletRefresh();
                     const { ops, summary } = resolveCanvasAgentCompletion({
@@ -752,5 +1070,5 @@ export async function requestCanvasAgentTurn(prompt: string, options: CanvasAgen
     }
     scheduleWalletRefresh();
     await options.onCreated?.(created.run.id);
-    return waitForCanvasAgentRun(created.run.id, options.onDelta || (() => undefined), options.signal, options.onToolCall, options.onReasoning);
+    return waitForCanvasAgentRun(created.run.id, options.onDelta || (() => undefined), options.signal, options.onToolCall, options.onReasoning, options.onStage);
 }

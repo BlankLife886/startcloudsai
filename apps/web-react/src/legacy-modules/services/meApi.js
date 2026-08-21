@@ -1,7 +1,7 @@
 /**
  * 个人中心相关 API（/api/v1/me/*）。
  */
-import { apiDelete, apiGet, apiPatch, apiPost, buildApiPath, ApiError } from './apiClient'
+import { apiDelete, apiGet, apiPatch, apiPost, buildApiPath, ApiError } from './apiClient.js'
 
 /** 修改资料：{ username?, avatarUrl?, studioFigureUrl?, bio?, location?, websiteUrl?, requireCostConfirm? } */
 export async function updateProfile(payload = {}) {

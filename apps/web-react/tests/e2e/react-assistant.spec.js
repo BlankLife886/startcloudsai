@@ -68,6 +68,7 @@ function succeededRun(body, content = '已完成你的创作请求。') {
 }
 
 async function mockAssistant(page, { user = account, conversations = [], runs = [] } = {}) {
+  await page.addInitScript(() => localStorage.setItem('starclouds-locale', 'zh-CN'))
   await page.route('**/api/**', (route) => fulfillJson(route, {}))
   await mockBootstrapConfig(page)
   await mockAuthConfig(page)
@@ -209,13 +210,13 @@ test.describe('React assistant workspace contract', () => {
     })
     await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
 
-    await page.getByRole('button', { name: /Agent 模式/ }).click()
-    await page.locator('.creation-type-menu').getByRole('button', { name: /图片生成/ }).click()
+    await page.locator('.agent-mode-button').click()
+    await page.locator('.creation-type-menu button').nth(1).click()
     await page.getByRole('button', { name: /Image Basic/ }).click()
     await page.locator('.image-model-menu').getByRole('button', { name: /Image Pro/ }).click()
     await page.locator('.image-settings-button').click()
     await page.locator('.ratio-options').getByRole('button', { name: '16:9' }).click()
-    await page.locator('.image-resolution-options').getByRole('button', { name: /高清 2K/ }).click()
+    await page.locator('.image-resolution-options button').nth(1).click()
     await page.locator('.image-count-options').getByRole('button', { name: '3', exact: true }).click()
     await page.locator('input.reference-file-input').setInputFiles({
       name: 'reference.png',
@@ -223,10 +224,10 @@ test.describe('React assistant workspace contract', () => {
       buffer: Buffer.from('reference-image'),
     })
     await expect(page.locator('.reference-card')).toHaveCount(1)
-    await expect(page.getByRole('button', { name: '继续添加参考图' })).toBeVisible()
+    await expect(page.locator('.composer-attachment-inline')).toBeVisible()
     await page.getByLabel('消息输入').fill('生成横版品牌主视觉')
-    await page.getByRole('button', { name: '发送' }).click()
-    await expect(page.locator('.message--assistant')).toContainText('已完成你的创作请求。')
+    await page.locator('.send-button').click()
+    await expect(page.locator('.message--assistant')).toContainText(/Done|已完成/)
 
     expect(runBody).toMatchObject({
       mode: 'image',
@@ -247,6 +248,190 @@ test.describe('React assistant workspace contract', () => {
         },
       ],
     })
+  })
+
+  test('rejects PSD attachments while keeping the message input usable', async ({ page }) => {
+    let assistantFileUploads = 0
+    await mockAssistant(page)
+    await page.route('**/api/v1/assistant/files', async (route) => {
+      if (route.request().method() === 'POST') assistantFileUploads += 1
+      await fulfillJson(route, { files: [] })
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    const fileInput = page.locator('input.reference-file-input')
+    await expect(fileInput).not.toHaveAttribute('accept', /psd|photoshop/i)
+    await fileInput.setInputFiles({
+      name: 'homepage-layout.psd',
+      mimeType: 'image/vnd.adobe.photoshop',
+      buffer: Buffer.from('8BPS'),
+    })
+    await expect(page.locator('.reference-card, .reference-document-card')).toHaveCount(0)
+    await page.getByLabel('消息输入').fill('继续处理普通问题')
+    await expect(page.getByLabel('消息输入')).toHaveValue('继续处理普通问题')
+    expect(assistantFileUploads).toBe(0)
+  })
+
+  test('blocks image-to-PSD conversion before cost confirmation or task creation', async ({ page }) => {
+    let runCreates = 0
+    await mockAssistant(page, { user: { ...account, requireCostConfirm: true } })
+    await page.route('**/api/v1/uploads', (route) =>
+      fulfillJson(route, {
+        key: 'uploads/assistant/source.png',
+        url: '/api/v1/files/uploads/assistant/source.png',
+        thumbnailUrl: '/sucai/home-intro-03.png',
+      }),
+    )
+    await page.route('**/api/v1/assistant/runs', async (route) => {
+      if (route.request().method() === 'POST') runCreates += 1
+      await fulfillJson(route, { runs: [] })
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+    await page.locator('input.reference-file-input').setInputFiles({
+      name: 'source.png', mimeType: 'image/png', buffer: Buffer.from('source-image'),
+    })
+    await expect(page.locator('.reference-card')).toHaveCount(1)
+    await page.getByLabel('消息输入').fill('把这张图片转换为 PSD')
+    await page.locator('.send-button').click()
+    await expect(page.getByRole('dialog', { name: '确认生成费用' })).toHaveCount(0)
+    await expect(page.locator('.message--user, .message--assistant')).toHaveCount(0)
+    expect(runCreates).toBe(0)
+  })
+
+  test('keeps keyboard send guards aligned with the send button', async ({ page }) => {
+    let conversationCreates = 0
+    let runCreates = 0
+    await mockAssistant(page)
+    await page.route('**/api/v1/assistant/conversations', async (route) => {
+      if (route.request().method() === 'POST') conversationCreates += 1
+      await fulfillJson(route, { conversations: [] })
+    })
+    await page.route('**/api/v1/assistant/runs', async (route) => {
+      if (route.request().method() === 'POST') runCreates += 1
+      await fulfillJson(route, { runs: [] })
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    const input = page.getByLabel('消息输入')
+    await input.fill('第一行')
+    await input.press('Shift+Enter')
+    await expect(input).toHaveValue('第一行\n')
+    expect(runCreates).toBe(0)
+
+    await input.dispatchEvent('keydown', {
+      key: 'Enter', code: 'Enter', bubbles: true, cancelable: true, isComposing: true,
+    })
+    await expect(input).toHaveValue('第一行\n')
+    expect(runCreates).toBe(0)
+
+    await input.fill('x'.repeat(12001))
+    await expect(page.locator('.send-button')).toBeDisabled()
+    await expect(page.locator('.draft-counter')).toHaveClass(/is-over/)
+    await input.press('Enter')
+    await page.waitForTimeout(100)
+    await expect(input).toHaveValue('x'.repeat(12001))
+    expect(conversationCreates).toBe(0)
+    expect(runCreates).toBe(0)
+  })
+
+  test('does not send or detach a document while it is still parsing', async ({ page }) => {
+    let conversationCreates = 0
+    let runCreates = 0
+    const processingFile = {
+      id: 'processing-document',
+      name: 'research-notes.md',
+      contentType: 'text/markdown',
+      sizeBytes: 2048,
+      status: 'processing',
+      pageCount: 0,
+      charCount: 0,
+      segmentCount: 0,
+    }
+    await mockAssistant(page)
+    await page.route('**/api/v1/assistant/files**', (route) =>
+      fulfillJson(route, { file: processingFile }, route.request().method() === 'POST' ? 201 : 200),
+    )
+    await page.route('**/api/v1/assistant/conversations', async (route) => {
+      if (route.request().method() === 'POST') conversationCreates += 1
+      await fulfillJson(route, { conversations: [] })
+    })
+    await page.route('**/api/v1/assistant/runs', async (route) => {
+      if (route.request().method() === 'POST') runCreates += 1
+      await fulfillJson(route, { runs: [] })
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    const input = page.getByLabel('消息输入')
+    await page.locator('input.reference-file-input').setInputFiles({
+      name: 'research-notes.md', mimeType: 'text/markdown', buffer: Buffer.from('# Research'),
+    })
+    await expect(page.locator('.reference-document-card.is-processing')).toHaveCount(1)
+    await input.fill('分析这份文档')
+    await expect(page.locator('.send-button')).toBeDisabled()
+    await input.press('Enter')
+    await page.waitForTimeout(100)
+
+    await expect(input).toHaveValue('分析这份文档')
+    await expect(page.locator('.reference-document-card.is-processing')).toHaveCount(1)
+    await expect(page.locator('.message--user, .message--assistant')).toHaveCount(0)
+    expect(conversationCreates).toBe(0)
+    expect(runCreates).toBe(0)
+  })
+
+  test('document attachments stay above the editable message area on desktop and mobile', async ({ page }) => {
+    let uploadCount = 0
+    await mockAssistant(page)
+    await page.route('**/api/v1/assistant/files', async (route) => {
+      if (route.request().method() !== 'POST') {
+        await fulfillJson(route, { files: [] })
+        return
+      }
+      uploadCount += 1
+      await fulfillJson(route, {
+        file: {
+          id: `attachment-${uploadCount}`,
+          name: uploadCount === 1 ? 'product-brief.pdf' : 'notes.md',
+          contentType: uploadCount === 1 ? 'application/pdf' : 'text/markdown',
+          sizeBytes: uploadCount === 1 ? 4096 : 1024,
+          status: 'ready',
+          pageCount: 1,
+          charCount: 120,
+          segmentCount: 1,
+        },
+      }, 201)
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+    const input = page.getByLabel('消息输入')
+    const pastePrevented = await input.evaluate((element) => {
+      const transfer = new DataTransfer()
+      transfer.items.add(new File(['%PDF'], 'product-brief.pdf', { type: 'application/pdf' }))
+      transfer.items.add(new File(['# Notes'], 'notes.md', { type: 'text/markdown' }))
+      const event = new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: transfer })
+      element.dispatchEvent(event)
+      return event.defaultPrevented
+    })
+    expect(pastePrevented).toBe(true)
+    await expect(page.locator('.reference-document-card')).toHaveCount(2)
+    await input.fill('请结合产品简报和笔记给出修改建议')
+    await expect(input).toHaveValue('请结合产品简报和笔记给出修改建议')
+
+    const assertNoOverlap = async () => {
+      const dockBox = await page.locator('.reference-dock').boundingBox()
+      const inputBox = await input.boundingBox()
+      const composerBox = await page.locator('.assistant-composer').boundingBox()
+      expect(dockBox).not.toBeNull()
+      expect(inputBox).not.toBeNull()
+      expect(composerBox).not.toBeNull()
+      expect(dockBox.y + dockBox.height).toBeLessThanOrEqual(inputBox.y + 1)
+      expect(inputBox.x).toBeGreaterThanOrEqual(composerBox.x)
+      expect(inputBox.x + inputBox.width).toBeLessThanOrEqual(composerBox.x + composerBox.width + 1)
+    }
+
+    await assertNoOverlap()
+    await page.screenshot({ path: '/tmp/startcloudsai-assistant-attachments-desktop.png', fullPage: true })
+    await page.setViewportSize({ width: 390, height: 844 })
+    await assertNoOverlap()
+    await page.screenshot({ path: '/tmp/startcloudsai-assistant-attachments-mobile.png', fullPage: true })
   })
 
   test('selects and deletes an existing conversation', async ({ page }) => {
@@ -627,6 +812,13 @@ test.describe('React assistant workspace contract', () => {
       messages.push(message(`long-user-${index}`, 'user', `第 ${index + 1} 个问题`, { createdAt: `2026-08-11T08:${String(index).padStart(2, '0')}:00Z` }))
       messages.push(message(`long-assistant-${index}`, 'assistant', `第 ${index + 1} 个回答`, {
         images: index === 35 ? [{ dataUrl: '/sucai/home-intro-03.png', name: '会话资产' }] : [],
+        context: index === 35 ? {
+          estimatedInputTokens: 4200,
+          inputBudgetTokens: 10000,
+          usagePercent: 42,
+          includedMessages: 64,
+          compactedMessages: 8,
+        } : undefined,
       }))
     }
     const conversations = [{ id: 'long-conversation', title: '长对话', messages }]
@@ -637,6 +829,7 @@ test.describe('React assistant workspace contract', () => {
     await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
 
     await expect(page.locator('.message--assistant')).toHaveCount(12)
+    await expect(page.locator('.assistant-context-meter')).toContainText('42%')
     await page.locator('.assistant-messages').evaluate((element) => { element.scrollTop = 0; element.dispatchEvent(new Event('scroll')) })
     await expect(page.getByRole('button', { name: '回到底部' })).toBeVisible()
     await page.getByRole('button', { name: '回到底部' }).click()
@@ -652,6 +845,7 @@ test.describe('React assistant workspace contract', () => {
     await expect(page.locator('.reference-card')).toHaveCount(1)
     await page.getByRole('button', { name: '清除上文并保留可见历史' }).click()
     await expect(page.getByText('已从这里开始新的上下文')).toBeVisible()
+    await expect(page.locator('.assistant-context-meter')).toContainText('--')
   })
 
   test('keeps runs isolated when two conversations generate concurrently', async ({ page }) => {
@@ -701,9 +895,26 @@ test.describe('React assistant workspace contract', () => {
   test('renders SSE text immediately and then settles to the authoritative result', async ({ page }) => {
     await page.addInitScript(() => {
       window.EventSource = class FakeEventSource {
-        constructor() {
-          window.setTimeout(() => this.onmessage?.({ data: JSON.stringify({ content: 'SSE 增量回答', kind: 'chat', stage: 'answering' }) }), 120)
+        constructor(url) {
+          if (String(url).includes('/assistant/runs/')) {
+            window.setTimeout(() => this.onmessage?.({ data: JSON.stringify({
+              content: 'SSE 增量回答',
+              kind: 'chat',
+              stage: 'answering',
+              context: {
+                policyVersion: 'assistant-context-v2',
+                estimatedInputTokens: 3200,
+                inputBudgetTokens: 7600,
+                usagePercent: 42,
+                includedMessages: 18,
+                compactedMessages: 12,
+                omittedMessages: 0,
+              },
+            }) }), 120)
+          }
         }
+        addEventListener() {}
+        removeEventListener() {}
         close() {}
       }
     })
@@ -741,8 +952,20 @@ test.describe('React assistant workspace contract', () => {
     await page.getByRole('button', { name: '发送' }).click()
 
     await expect(page.locator('.message--assistant')).toContainText('SSE 增量回答')
+    await expect(page.locator('.assistant-context-meter')).toContainText('42%')
+    const topbarLayout = await page.locator('.assistant-topbar').evaluate((element) => {
+      const boxes = [...element.children].map((child) => child.getBoundingClientRect())
+      return boxes.map((box) => ({ left: box.left, right: box.right, top: box.top, bottom: box.bottom }))
+    })
+    expect(topbarLayout).toHaveLength(3)
+    expect(topbarLayout[0].right).toBeLessThanOrEqual(topbarLayout[1].left + 1)
+    expect(topbarLayout[1].right).toBeLessThanOrEqual(topbarLayout[2].left + 1)
+    expect(Math.max(...topbarLayout.map((box) => box.top)) - Math.min(...topbarLayout.map((box) => box.top))).toBeLessThan(20)
     await expect(page.locator('.message--assistant')).toContainText('服务端最终回答')
     await expect(page.getByRole('button', { name: '停止生成' })).toHaveCount(0)
+    await page.locator('.message--assistant .message-status-toggle').click()
+    await expect(page.locator('.message--assistant .message-context-stats')).toContainText('18 条近期消息')
+    await expect(page.locator('.message--assistant .message-context-stats')).toContainText('12 条已压缩')
   })
 
   test('provides model search when the configured model list is long', async ({ page }) => {

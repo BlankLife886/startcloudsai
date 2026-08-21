@@ -7,14 +7,17 @@ import {
   createAssistantContextBoundary,
   createAssistantConversation,
   createAssistantRun,
+  deleteAssistantFile,
   deleteAssistantMessage,
   deleteAssistantTurn,
   deleteAssistantConversation,
   fetchAssistantConfig,
+  getAssistantFile,
   importAssistantConversations,
   listActiveAssistantRuns,
   listAssistantConversations,
   openAssistantRunStream,
+  uploadAssistantFile,
   waitForAssistantRun,
 } from "@react/legacy-modules/services/assistantApi.js";
 import { uploadFile } from "@react/legacy-modules/services/tasksApi.js";
@@ -55,6 +58,7 @@ import "./assistant-workspace-react.css";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";
+import { assistantClipboardFiles, isImageToPSDRequest, isPSDFile } from "./assistant-attachments.js";
 
 const SUGGESTIONS = [
   ["bi-stars", "画一张星空下的雪山桌面壁纸"],
@@ -67,6 +71,54 @@ const CREATION_TYPES = [
   { id: "agent", label: "Agent 模式", icon: "bi-magic" },
   { id: "image", label: "图片生成", icon: "bi-image" },
 ];
+
+const REASONING_EFFORT_LABELS = {
+  none: "关闭",
+  minimal: "最少",
+  low: "低",
+  medium: "中",
+  high: "高",
+  xhigh: "超高",
+  max: "最大",
+};
+const REASONING_EFFORT_VALUES = Object.keys(REASONING_EFFORT_LABELS);
+
+function normalizeReasoningEfforts(value) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map((item) => String(item || "").trim().toLowerCase()).filter((item) => REASONING_EFFORT_VALUES.includes(item)))];
+}
+
+function normalizeReasoningPrices(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).flatMap(([effort, raw]) => {
+    if (!REASONING_EFFORT_VALUES.includes(effort) || !raw || typeof raw !== "object" || Array.isArray(raw)) return [];
+    const price = raw;
+    const finite = (key) => Number.isFinite(Number(price[key])) ? Math.max(0, Number(price[key])) : undefined;
+    return [[effort, {
+      assistantStandardPricePoints: finite("assistantStandardPricePoints"),
+      assistantPricePoints: finite("assistantPricePoints"),
+      canvasAgentStandardPricePoints: finite("canvasAgentStandardPricePoints"),
+      canvasAgentPricePoints: finite("canvasAgentPricePoints"),
+    }]];
+  }));
+}
+
+function assistantReasoningPrice(model, effort) {
+  const configured = model?.reasoningPrices?.[effort];
+  const effective = Number(configured?.assistantPricePoints);
+  const standard = Number(configured?.assistantStandardPricePoints);
+  return {
+    effective: Number.isFinite(effective) ? Math.max(0, effective) : Math.max(0, Number(model?.pricePoints || 0)),
+    standard: Number.isFinite(standard) ? Math.max(0, standard) : Math.max(0, Number(model?.standardPricePoints ?? model?.pricePoints ?? 0)),
+  };
+}
+
+function defaultReasoningEffort(model) {
+  const efforts = normalizeReasoningEfforts(model?.supportedReasoningEfforts);
+  const configured = String(model?.defaultReasoningEffort || "").trim().toLowerCase();
+  if (efforts.includes(configured)) return configured;
+  return efforts.includes("medium") ? "medium" : efforts[0] || "";
+}
 
 const RESOLUTIONS = [
   { id: "1K", label: "标清 1K", quality: "low", longEdge: 1024 },
@@ -94,6 +146,11 @@ function ratioOption(value) {
 
 const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "canceled"]);
 const MESSAGE_BATCH_SIZE = 24;
+const MAX_ASSISTANT_MESSAGE_CHARACTERS = 12000;
+
+function assistantCharacterCount(value) {
+  return Array.from(String(value || "")).length;
+}
 
 
 function imageUrl(image = {}) {
@@ -114,6 +171,60 @@ function imageRatioValue(message = {}) {
   const width = Number(message.width);
   const height = Number(message.height);
   return width > 0 && height > 0 ? `${width} / ${height}` : "1 / 1";
+}
+
+function formatDocumentSize(value) {
+  const bytes = Math.max(0, Number(value) || 0);
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.ceil(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function documentIcon(item = {}) {
+  const type = String(item.contentType || "").toLowerCase();
+  if (type.includes("photoshop")) return "bi-file-earmark-image";
+  if (type.includes("pdf")) return "bi-file-earmark-pdf";
+  if (type.includes("spreadsheet")) return "bi-file-earmark-spreadsheet";
+  if (type.includes("presentation")) return "bi-file-earmark-slides";
+  if (type.includes("wordprocessing")) return "bi-file-earmark-word";
+  return "bi-file-earmark-text";
+}
+
+function documentStatusLabel(item = {}) {
+  if (item.status === "ready") return item.pageCount ? `${item.pageCount} 页` : "可分析";
+  if (item.status === "failed") return "解析失败";
+  if (item.status === "processing") return "正在解析";
+  return "等待解析";
+}
+
+function normalizeAssistantContext(value) {
+  if (!value || typeof value !== "object") return null;
+  const inputBudgetTokens = Math.max(0, Number(value.inputBudgetTokens) || 0);
+  const estimatedInputTokens = Math.max(0, Number(value.estimatedInputTokens) || 0);
+  if (!inputBudgetTokens) return null;
+  return {
+    ...value,
+    inputBudgetTokens,
+    estimatedInputTokens,
+    usagePercent: Math.max(0, Math.min(100, Number(value.usagePercent) || Math.ceil((estimatedInputTokens * 100) / inputBudgetTokens))),
+    compactedMessages: Math.max(0, Number(value.compactedMessages) || 0),
+    includedMessages: Math.max(0, Number(value.includedMessages) || 0),
+    omittedMessages: Math.max(0, Number(value.omittedMessages) || 0),
+  };
+}
+
+function formatContextTokens(value) {
+  const tokens = Math.max(0, Number(value) || 0);
+  if (tokens < 1000) return String(tokens);
+  if (tokens < 1000000) return `${(tokens / 1000).toFixed(tokens >= 10000 ? 0 : 1)}K`;
+  return `${(tokens / 1000000).toFixed(1)}M`;
+}
+
+function AssistantContextMeter({ context }) {
+  const usage = normalizeAssistantContext(context);
+  if (!usage) return <div className="assistant-context-meter is-empty" title="完成一次回答后显示上下文占用"><i className="bi bi-layers" /><span>上下文</span><strong>--</strong></div>;
+  const title = `本轮估算 ${formatContextTokens(usage.estimatedInputTokens)} / ${formatContextTokens(usage.inputBudgetTokens)} tokens${usage.compactedMessages ? `，已压缩 ${usage.compactedMessages} 条消息` : ""}`;
+  return <div className={`assistant-context-meter${usage.usagePercent >= 80 ? " is-high" : usage.compactedMessages ? " is-compacted" : ""}`} title={title} aria-label={title} role="status"><i className="bi bi-layers" /><span>上下文</span><strong>{usage.usagePercent}%</strong><em aria-hidden="true"><i style={{ width: `${usage.usagePercent}%` }} /></em></div>;
 }
 
 function imageRequestFromProposal(proposal = {}) {
@@ -202,6 +313,9 @@ function normalizeConfig(config = {}) {
       model: String(item?.model || "").trim(),
       label: String(item?.label || item?.model || "").trim(),
       description: String(item?.description || item?.provider || "后台配置的对话模型"),
+      supportedReasoningEfforts: normalizeReasoningEfforts(item?.supportedReasoningEfforts),
+      defaultReasoningEffort: String(item?.defaultReasoningEffort || "").trim().toLowerCase(),
+      reasoningPrices: normalizeReasoningPrices(item?.reasoningPrices),
     }))
     .filter((item) => item.model && item.label);
   const imageModels = (Array.isArray(config.imageModels) ? config.imageModels : [])
@@ -368,6 +482,16 @@ function AssistantMarkdown({ content, streaming }) {
   return <div ref={rootRef} className={`assistant-markdown${streaming ? " is-streaming" : ""}`} onClick={(event) => void handleClick(event)} dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
+function artifactLayerLabel(item = {}) {
+  const count = Math.max(0, Number(item.layerCount) || 0);
+  return count > 1 ? ` · ${count} 图层` : "";
+}
+
+function AssistantArtifacts({ items = [] }) {
+  if (!Array.isArray(items) || !items.length) return null;
+  return <div className="assistant-artifacts" aria-label="生成的文件">{items.map((item, index) => <a key={item.id || `${item.name}-${index}`} className="assistant-artifact" href={item.downloadUrl} download={item.name || "assistant-output.txt"}><i className={`bi ${documentIcon(item)}`} aria-hidden="true" /><span><strong>{item.name || "生成文件"}</strong><small>{String(item.format || "file").toUpperCase()} · {formatDocumentSize(item.sizeBytes)}{artifactLayerLabel(item)}</small></span><i className="bi bi-download" aria-hidden="true" /></a>)}</div>;
+}
+
 function AgentProposal({ message, imageModels, generating, executed, onChange, onDismiss, onRestore, onApprove, onOpenImage }) {
   const proposal = message.proposal;
   if (!proposal) return null;
@@ -396,18 +520,21 @@ function AgentProposal({ message, imageModels, generating, executed, onChange, o
 
 function AssistantMessageRow({ message, turnId, showDate, expanded, copied, generating, isLastAssistant, isLastUser, editing, editingDraft, moreOpen, loadedImages, failedImages, imageRetryVersions, imageModels, sourceProposal, proposalExecuted, onToggleStatus, onCopy, onQuote, onOpenImage, onImageLoad, onImageError, onImageRetry, onStartEdit, onEditDraft, onCancelEdit, onSubmitEdit, onWithdraw, onRetry, onToggleMore, onDownloadMarkdown, onDelete, onProposalChange, onProposalDismiss, onProposalRestore, onProposalApprove, onReopenProposal }) {
   const status = message.role === "assistant" ? messageStatus(message) : null;
+  const contextUsage = normalizeAssistantContext(message.context);
   return (
     <div className="message-turn">
       {showDate && <h2 className="message-date-divider">{formatMessageDate(message.createdAt)}</h2>}
       {message.kind === "context-divider" ? <div className="assistant-context-divider"><span /><p><i className="bi bi-eraser" aria-hidden="true" /> 已从这里开始新的上下文</p><span /></div> : <article className={`message message--${message.role}`} data-message-id={message.id} data-turn-id={turnId || undefined}>
-        {status && <div className={`assistant-message-label is-${status.tone}`}><button className="message-status-toggle" type="button" aria-expanded={expanded} onClick={() => onToggleStatus(message.id)}><span className="message-status-indicator" aria-hidden="true"><i /></span><strong aria-live="polite"><span>{status.label}</span></strong><i className={`bi bi-chevron-right message-status-chevron${expanded ? " is-expanded" : ""}`} /></button>{expanded && <div className="message-status-detail"><p>{status.detail}</p>{message.pending && message.kind !== "image" && status.progress > 0 && <div className="message-status-progress" aria-hidden="true"><i style={{ width: `${status.progress}%` }} /></div>}</div>}</div>}
+        {status && <div className={`assistant-message-label is-${status.tone}`}><button className="message-status-toggle" type="button" aria-expanded={expanded} onClick={() => onToggleStatus(message.id)}><span className="message-status-indicator" aria-hidden="true"><i /></span><strong aria-live="polite"><span>{status.label}</span></strong><i className={`bi bi-chevron-right message-status-chevron${expanded ? " is-expanded" : ""}`} /></button>{expanded && <div className="message-status-detail"><p>{status.detail}</p>{contextUsage && <div className="message-context-stats"><span><b>{contextUsage.usagePercent}%</b> 上下文</span><span><b>{contextUsage.includedMessages}</b> 条近期消息</span>{contextUsage.compactedMessages > 0 && <span><b>{contextUsage.compactedMessages}</b> 条已压缩</span>}{contextUsage.omittedMessages > 0 && <span><b>{contextUsage.omittedMessages}</b> 条未纳入</span>}</div>}{message.pending && message.kind !== "image" && status.progress > 0 && <div className="message-status-progress" aria-hidden="true"><i style={{ width: `${status.progress}%` }} /></div>}</div>}</div>}
         {message.role === "user" && !editing && <div className="user-message-actions" aria-label="用户消息操作"><button type="button" title={copied ? "已复制" : "复制问题"} aria-label={copied ? "已复制" : "复制问题"} className={copied ? "is-copied" : ""} onClick={() => onCopy(message)}><i className={`bi ${copied ? "bi-check2" : "bi-copy"}`} /></button>{isLastUser && <button type="button" title="编辑问题" aria-label="编辑问题" disabled={generating} onClick={() => onStartEdit(message)}><i className="bi bi-pencil" /></button>}{isLastUser && <button type="button" title="撤回本轮" aria-label="撤回本轮" disabled={generating} onClick={() => onWithdraw(message)}><i className="bi bi-arrow-counterclockwise" /></button>}</div>}
-        {message.role === "user" && editing ? <div className="user-message-editor"><textarea autoFocus rows={3} maxLength={12000} aria-label="编辑问题" value={editingDraft} onChange={(event) => onEditDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); onSubmitEdit(message); } }} /><footer><span>{editingDraft.trim().length.toLocaleString("zh-CN")} / 12,000</span><button type="button" onClick={onCancelEdit}>取消</button><button className="is-primary" type="button" disabled={!editingDraft.trim() || generating} onClick={() => onSubmitEdit(message)}><i className="bi bi-arrow-up" /><span>发送</span></button></footer></div> : <div className={`message-content${message.error ? " has-error" : ""}`}>
+        {message.role === "user" && editing ? <div className="user-message-editor"><textarea autoFocus rows={3} aria-label="编辑问题" value={editingDraft} onChange={(event) => onEditDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); onSubmitEdit(message); } }} /><footer><span>{assistantCharacterCount(editingDraft.trim()).toLocaleString("zh-CN")} / 12,000</span><button type="button" onClick={onCancelEdit}>取消</button><button className="is-primary" type="button" disabled={!editingDraft.trim() || assistantCharacterCount(editingDraft.trim()) > MAX_ASSISTANT_MESSAGE_CHARACTERS || generating} onClick={() => onSubmitEdit(message)}><i className="bi bi-arrow-up" /><span>发送</span></button></footer></div> : <div className={`message-content${message.error ? " has-error" : ""}`}>
           {message.pending && message.kind === "image" ? <div className="image-generation-stage"><div className="image-generation-summary"><strong>{message.prompt || "正在生成图片"}</strong><span>{message.model || "默认模型"}</span><i /><span>{message.ratio || "智能"}</span><i /><span>{message.resolution || "1K"}</span><button type="button" title="生成详情" aria-label="生成详情"><i className="bi bi-info-circle" /></button></div><div className={`image-dream-grid${Number(message.count || 2) === 1 ? " is-single" : ""}${Number(message.count || 2) > 2 ? " is-many" : ""}`} style={{ "--image-skeleton-ratio": imageRatioValue(message), "--image-slot-count": Number(message.count || 2) }}>{Array.from({ length: Number(message.count || 2) }, (_, index) => { const image = message.images?.[index]; return <div key={index} className={`image-dream-slot${image ? " is-ready" : ""}${image && loadedImages.has(`${message.id}-${index}`) ? " is-loaded" : ""}`}>{image && <button className="image-dream-preview" type="button" title="查看大图" onClick={() => onOpenImage(image, index, message.images)}><img src={imageThumbUrl(image)} alt={image.revisedPrompt || "AI 生成图片"} onLoad={() => onImageLoad(message.id, index)} /></button>}{(!image || !loadedImages.has(`${message.id}-${index}`)) && <i className="dream-slot-spinner" aria-hidden="true" />}</div>; })}</div><div className="image-generation-queue"><span>{message.statusStage === "preparing-image" ? "意图识别" : "普通队列"}</span><strong>{message.statusStage === "preparing-image" ? "正在准备图片任务" : "成功进入生成阶段"}</strong></div></div> : <>
             {message.role === "user" && message.quoted && <div className="sent-quote"><i className="bi bi-quote" /><span>[{message.quoted.kind}] {message.quoted.content}</span></div>}
             {message.role === "user" && message.referenceImages?.length > 0 && <div className="sent-reference-images">{message.referenceImages.map((image, index) => <button key={image.id || image.fileKey || index} type="button" title="查看参考图" onClick={() => onOpenImage(image, index, message.referenceImages)}><img src={imageUrl(image)} alt={image.name || "参考图"} /></button>)}</div>}
+            {message.role === "user" && message.attachments?.length > 0 && <div className="assistant-document-chips">{message.attachments.map((item) => <span key={item.id} className="assistant-document-chip"><i className={`bi ${documentIcon(item)}`} /><span><strong>{item.name}</strong><small>{formatDocumentSize(item.sizeBytes)} · {item.pageCount ? `${item.pageCount} 页` : "文档"}</small></span></span>)}</div>}
             {message.role === "assistant" && message.kind === "proposal" && message.proposal && <AgentProposal message={message} imageModels={imageModels} generating={generating} executed={proposalExecuted} onChange={onProposalChange} onDismiss={onProposalDismiss} onRestore={onProposalRestore} onApprove={onProposalApprove} onOpenImage={onOpenImage} />}
             {message.role === "assistant" && message.kind !== "proposal" && message.content && message.content !== message.error ? <AssistantMarkdown content={message.content} streaming={message.pending} /> : message.role !== "assistant" && message.content && message.content !== message.error ? <p>{message.content}</p> : null}
+            {message.role === "assistant" && <AssistantArtifacts items={message.artifacts} />}
             {!message.content && message.pending && status?.tone === "working" && <span className="typing-indicator"><i /><i /><i /></span>}
             {message.images?.length > 0 && <div className={`generated-images${message.images.length === 1 ? " is-single" : ""}${message.images.length > 2 ? " is-many" : ""}`} style={{ "--generated-ratio": imageRatioValue(message), "--image-slot-count": message.images.length }}>{message.images.map((image, index) => { const key = `${message.id}-${index}`; const loaded = loadedImages.has(key); const failed = failedImages.has(key); return <figure key={key} data-image-key={key} className={failed ? "is-failed" : loaded ? "" : "is-loading"}>{failed ? <div className="generated-image-failed"><i className="bi bi-image-alt" /><span>图片加载失败</span><button type="button" onClick={() => onImageRetry(message.id, index)}>重新加载</button></div> : <button className="generated-image-preview" type="button" title="查看大图" onClick={() => onOpenImage(image, index, message.images)}><img src={retryableImageUrl(imageThumbUrl(image), imageRetryVersions[key])} alt={image.revisedPrompt || "AI 生成图片"} loading="lazy" decoding="async" onLoad={() => onImageLoad(message.id, index)} onError={() => onImageError(message.id, index)} /><i className="tile-sheen" aria-hidden="true" /></button>}{loaded && !failed && <div className="generated-image-actions"><button type="button" title="下载原图" aria-label="下载原图" onClick={() => { const link = document.createElement("a"); link.href = imageUrl(image); link.download = `assistant-image-${index + 1}.png`; link.click(); }}><i className="bi bi-download" /></button></div>}</figure>; })}</div>}
           </>}
@@ -451,6 +578,7 @@ export function AssistantWorkspaceView() {
   const [modelSearch, setModelSearch] = useState("");
   const [creationMenuOpen, setCreationMenuOpen] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [reasoningMenuOpen, setReasoningMenuOpen] = useState(false);
   const [preferencesOpen, setPreferencesOpen] = useState(false);
   const [assetLibraryOpen, setAssetLibraryOpen] = useState(false);
   const [assetTab, setAssetTab] = useState("all");
@@ -458,6 +586,7 @@ export function AssistantWorkspaceView() {
   const [conversationModels, setConversationModels] = useState([]);
   const [imageModels, setImageModels] = useState([]);
   const [conversationModel, setConversationModel] = useState("");
+  const [reasoningEffort, setReasoningEffort] = useState("");
   const [imageModel, setImageModel] = useState("");
   const [generationRatio, setGenerationRatio] = useState("auto");
   const [generationResolution, setGenerationResolution] = useState("1K");
@@ -465,6 +594,7 @@ export function AssistantWorkspaceView() {
   const [customImageWidth, setCustomImageWidth] = useState(1024);
   const [customImageHeight, setCustomImageHeight] = useState(1024);
   const [references, setReferences] = useState([]);
+  const [documents, setDocuments] = useState([]);
   const [uploading, setUploading] = useState(false);
   const [activeRuns, setActiveRuns] = useState({});
   const [costPayload, setCostPayload] = useState(null);
@@ -499,6 +629,14 @@ export function AssistantWorkspaceView() {
   const generationModel = mode === "image" ? imageModel : conversationModel;
   const selectedModel = generationModels.find((item) => item.model === generationModel) || generationModels[0] || null;
   const generationModelLabel = selectedModel?.label || (loading ? "加载模型…" : "暂无可用模型");
+  const selectedConversationModel = conversationModels.find((item) => item.model === conversationModel) || conversationModels[0] || null;
+  const reasoningEfforts = useMemo(() => normalizeReasoningEfforts(selectedConversationModel?.supportedReasoningEfforts), [selectedConversationModel]);
+  const activeReasoningEffort = reasoningEfforts.includes(reasoningEffort) ? reasoningEffort : defaultReasoningEffort(selectedConversationModel);
+  const reasoningEffortLabel = REASONING_EFFORT_LABELS[activeReasoningEffort] || "";
+  const modelWithReasoningPrice = (model, effort = activeReasoningEffort) => {
+    const price = assistantReasoningPrice(model, effort);
+    return { ...model, pricePoints: price.effective, standardPricePoints: price.standard };
+  };
   const filteredGenerationModels = useMemo(() => {
     const query = modelSearch.trim().toLowerCase();
     return query ? generationModels.filter((item) => `${item.label} ${item.model} ${item.description || ""}`.toLowerCase().includes(query)) : generationModels;
@@ -545,6 +683,14 @@ export function AssistantWorkspaceView() {
   }, [activeConversation, assetSearch, assetTab, conversations]);
   const lastAssistantId = [...messages].reverse().find((message) => message.role === "assistant")?.id || "";
   const lastUserMessageId = [...messages].reverse().find((message) => message.role === "user")?.id || "";
+  const latestContext = useMemo(() => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if (messages[index]?.kind === "context-divider") return null;
+      const context = normalizeAssistantContext(messages[index]?.context);
+      if (context) return context;
+    }
+    return null;
+  }, [messages]);
   const navigatorItems = useMemo(() => messages.filter((message) => message.role === "user").map((message) => ({ id: message.id, date: formatMessageDate(message.createdAt), time: formatTime(message.createdAt), preview: messagePreview(message.content), icon: message.referenceImages?.length ? "bi-image" : "bi-chat-left-text" })), [messages]);
 
   const toggleStatus = useCallback((id) => setExpandedStatusId((current) => current === id ? "" : id), []);
@@ -778,6 +924,7 @@ export function AssistantWorkspaceView() {
       const savedModel = String(workspaceState.generationModel || "").trim();
       if (workspaceState.creationType === "image" && config.imageModels.some((item) => item.model === savedModel)) setImageModel(savedModel);
       if (workspaceState.creationType !== "image" && config.conversationModels.some((item) => item.model === savedModel)) setConversationModel(savedModel);
+      setReasoningEffort(String(workspaceState.reasoningEffort || "").trim().toLowerCase());
       const pending = takePendingPrompt("assistant");
       if (pending) {
         pendingLaunchRef.current = pending;
@@ -834,6 +981,11 @@ export function AssistantWorkspaceView() {
   }, [loadWorkspace]);
 
   useEffect(() => {
+    if (!reasoningEfforts.length || reasoningEfforts.includes(reasoningEffort)) return;
+    setReasoningEffort(defaultReasoningEffort(selectedConversationModel));
+  }, [reasoningEffort, reasoningEfforts, selectedConversationModel]);
+
+  useEffect(() => {
     if (!workspaceHydratedRef.current || loading) return;
     saveAssistantWorkspaceState(workspaceScope, {
       activeId,
@@ -842,12 +994,13 @@ export function AssistantWorkspaceView() {
       creationType,
       generationRatio,
       generationModel,
+      reasoningEffort: activeReasoningEffort,
       generationResolution,
       generationCount,
       customImageWidth,
       customImageHeight,
     });
-  }, [activeId, creationType, customImageHeight, customImageWidth, draft, generationCount, generationModel, generationRatio, generationResolution, loading, mode, workspaceScope]);
+  }, [activeId, activeReasoningEffort, creationType, customImageHeight, customImageWidth, draft, generationCount, generationModel, generationRatio, generationResolution, loading, mode, workspaceScope]);
 
   useEffect(() => {
     const handleKeydown = (event) => {
@@ -856,9 +1009,10 @@ export function AssistantWorkspaceView() {
         cancelUserMessageEdit();
         return;
       }
-      if (creationMenuOpen || modelMenuOpen || preferencesOpen || activeMessageMenuId) {
+      if (creationMenuOpen || modelMenuOpen || reasoningMenuOpen || preferencesOpen || activeMessageMenuId) {
         setCreationMenuOpen(false);
         setModelMenuOpen(false);
+        setReasoningMenuOpen(false);
         setModelSearch("");
         setPreferencesOpen(false);
         setActiveMessageMenuId("");
@@ -867,7 +1021,7 @@ export function AssistantWorkspaceView() {
     };
     window.addEventListener("keydown", handleKeydown);
     return () => window.removeEventListener("keydown", handleKeydown);
-  }, [activeMessageMenuId, assetLibraryOpen, creationMenuOpen, deleteTarget, editingMessageId, modelMenuOpen, preferencesOpen, selectedImage]);
+  }, [activeMessageMenuId, assetLibraryOpen, creationMenuOpen, deleteTarget, editingMessageId, modelMenuOpen, preferencesOpen, reasoningMenuOpen, selectedImage]);
 
   useEffect(() => {
     if (!availableResolutions.length) return;
@@ -882,6 +1036,40 @@ export function AssistantWorkspaceView() {
       setGenerationRatio(availableRatios[0].id);
     }
   }, [availableRatios, generationRatio]);
+
+  const pendingDocumentKey = documents
+    .filter((item) => item.status === "queued" || item.status === "processing")
+    .map((item) => `${item.id}:${item.status}`)
+    .join("|");
+
+  useEffect(() => {
+    if (!pendingDocumentKey) return undefined;
+    const controller = new AbortController();
+    const ids = pendingDocumentKey.split("|").map((item) => item.split(":", 1)[0]).filter(Boolean);
+    const poll = async () => {
+      try {
+        const updates = await Promise.all(ids.map((id) => getAssistantFile(id, { signal: controller.signal }).catch((error) => {
+          if (error?.name === "AbortError") throw error;
+          return null;
+        })));
+        if (controller.signal.aborted || !mountedRef.current) return;
+        const byId = new Map(updates.filter(Boolean).map((item) => [item.id, item]));
+        if (byId.size) {
+          setDocuments((current) => current.map((item) => byId.get(item.id) || item));
+        }
+      } catch (error) {
+        if (error?.name !== "AbortError") {
+          // A transient status read is retried by the next interval.
+        }
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 900);
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+    };
+  }, [pendingDocumentKey]);
 
   useEffect(() => {
     const longEdge = availableResolutions.find((item) => item.id === generationResolution)?.longEdge || 1024;
@@ -914,6 +1102,8 @@ export function AssistantWorkspaceView() {
     setActiveId("");
     setDraft("");
     setReferences([]);
+    for (const item of documents) void deleteAssistantFile(item.id).catch(() => undefined);
+    setDocuments([]);
     setQuotedMessage(null);
     setVisibleMessageLimit(MESSAGE_BATCH_SIZE);
     setCreationType("agent");
@@ -925,30 +1115,59 @@ export function AssistantWorkspaceView() {
 
   const uploadReferences = async (files) => {
     const maxReferences = Math.min(4, Math.max(0, Number(selectedImageModel?.maxReferenceImages ?? 4)));
-    const imageFiles = Array.from(files || []).filter((file) => file.type.startsWith("image/")).slice(0, Math.max(0, maxReferences - references.length));
-    if (!imageFiles.length) return;
+    const selected = Array.from(files || []);
+	const psdFiles = selected.filter(isPSDFile);
+	if (psdFiles.length) notificationService.warning("AI 助手暂不支持 PSD 文件");
+	const supported = selected.filter((file) => !isPSDFile(file));
+    const imageFiles = supported.filter((file) => file.type.startsWith("image/")).slice(0, Math.max(0, maxReferences - references.length));
+    const documentFiles = mode === "image" ? [] : supported.filter((file) => !file.type.startsWith("image/")).slice(0, Math.max(0, 8 - documents.length));
+    if (!imageFiles.length && !documentFiles.length) {
+      if (selected.length && mode === "image") notificationService.warning("图片生成模式仅支持图片附件");
+      return;
+    }
     const controller = new AbortController();
     uploadControllerRef.current?.abort();
     uploadControllerRef.current = controller;
     setUploading(true);
     try {
-      const uploaded = await Promise.all(imageFiles.map(async (file) => {
+      const imageTask = imageFiles.length ? Promise.all(imageFiles.map(async (file) => {
         const result = await uploadFile(file, { signal: controller.signal });
         return { id: uid(), name: file.name, dataUrl: result.url, thumbnailUrl: result.thumbnailUrl, fileKey: result.key };
-      }));
-      if (mountedRef.current && !controller.signal.aborted) setReferences((current) => [...current, ...uploaded].slice(0, maxReferences));
-    } catch (error) {
-      if (error?.name !== "AbortError") notificationService.error(error?.message || "图片上传失败");
+      })).then((uploaded) => {
+        if (mountedRef.current && !controller.signal.aborted) setReferences((current) => [...current, ...uploaded].slice(0, maxReferences));
+      }).catch((error) => {
+        if (error?.name !== "AbortError") notificationService.error(error?.message || "图片上传失败");
+      }) : Promise.resolve();
+      const documentTasks = documentFiles.map(async (file) => {
+        try {
+          const created = await uploadAssistantFile(file, { signal: controller.signal });
+          if (mountedRef.current && !controller.signal.aborted) {
+            setDocuments((current) => current.some((item) => item.id === created.id) ? current : [...current, created].slice(0, 8));
+          }
+        } catch (error) {
+          if (error?.name === "AbortError") return;
+          notificationService.error(error?.message || "文档上传失败");
+        }
+      });
+      await Promise.all([imageTask, ...documentTasks]);
     } finally {
-      if (mountedRef.current) setUploading(false);
+      if (uploadControllerRef.current === controller) {
+        uploadControllerRef.current = null;
+        if (mountedRef.current) setUploading(false);
+      }
     }
   };
 
-  const confirmAssistantCost = async (responseMode, requestedCount = 1, requestedModel = "", { skip = false } = {}) => {
+  const removeComposerDocument = (item) => {
+    setDocuments((current) => current.filter((document) => document.id !== item.id));
+    void deleteAssistantFile(item.id).catch(() => undefined);
+  };
+
+  const confirmAssistantCost = async (responseMode, requestedCount = 1, requestedModel = "", requestedReasoningEffort = activeReasoningEffort, { skip = false } = {}) => {
     const imageCount = Math.max(1, Math.min(4, Number(requestedCount) || 1));
     const chatModel = conversationModels.find((item) => item.model === requestedModel) || conversationModels.find((item) => item.model === conversationModel) || conversationModels[0];
     const imagePriceModel = imageModels.find((item) => item.model === requestedModel) || selectedImageModel;
-    const chatUnit = Math.max(0, Number(chatModel?.pricePoints || 0));
+    const chatUnit = assistantReasoningPrice(chatModel, requestedReasoningEffort).effective;
     const imageUnit = Math.max(0, Number(imagePriceModel?.pricePoints || 0));
     const total = responseMode === "image" ? imageUnit * imageCount : responseMode === "agent" ? Math.max(chatUnit, imageUnit * imageCount) : chatUnit;
     if (!total || skip || auth.user?.requireCostConfirm === false) return true;
@@ -968,8 +1187,8 @@ export function AssistantWorkspaceView() {
       summary: responseMode === "image"
         ? "提交后按图片数量预留费用，成功结算；失败或停止时自动退回。"
         : responseMode === "agent"
-          ? "先按可能发生的最高费用预留，路由完成后按对话或生图实际结果结算，多余部分自动退回。"
-          : "每轮对话按当前模型价格预留，成功结算；失败或停止时自动退回。",
+          ? `${REASONING_EFFORT_LABELS[requestedReasoningEffort] || requestedReasoningEffort || "默认"}推理为 ${chatUnit} 积分/轮；先按对话或生图的较高费用预留，完成后按实际结果结算。`
+          : `${REASONING_EFFORT_LABELS[requestedReasoningEffort] || requestedReasoningEffort || "默认"}推理为 ${chatUnit} 积分/轮；成功后结算，失败或停止时自动退回。`,
     });
     return new Promise((resolve) => { costResolverRef.current = resolve; });
   };
@@ -1023,6 +1242,7 @@ export function AssistantWorkspaceView() {
               ...(typeof event?.content === "string" && event.content ? { content: event.content } : {}),
               ...(event?.kind ? { kind: event.kind === "agent" ? message.kind : event.kind } : {}),
               ...(event?.stage ? { statusStage: event.stage } : {}),
+              ...(event?.context ? { context: event.context } : {}),
               ...(event?.image ? { images, kind: "image", count: event.imageTotal || message.count } : {}),
             };
           }),
@@ -1057,6 +1277,7 @@ export function AssistantWorkspaceView() {
         sourceUserMessageId,
         proposalSourceMessageId,
         referenceImages: (userMessage.referenceImages || []).map((image) => ({ name: image.name, dataUrl: image.dataUrl, thumbnailUrl: image.thumbnailUrl, fileKey: image.fileKey })),
+        attachments: (userMessage.attachments || []).filter((item) => item.status === "ready").map((item) => ({ id: item.id })),
         quoted: userMessage.quoted || null,
         skill: userMessage.skill || "",
         model: assistantMessage.model || generationModel,
@@ -1067,6 +1288,7 @@ export function AssistantWorkspaceView() {
         width: assistantMessage.width || customImageWidth,
         height: assistantMessage.height || customImageHeight,
         quality: assistantMessage.quality || availableResolutions.find((item) => item.id === generationResolution)?.quality || "high",
+        reasoningEffort: responseMode === "image" ? "" : assistantMessage.reasoningEffort || activeReasoningEffort,
         serviceKey: "assistant_image",
       }, { signal: controller.signal });
       if (!mountedRef.current) return;
@@ -1082,7 +1304,7 @@ export function AssistantWorkspaceView() {
     } finally {
       if (runControllersRef.current.get(conversationId) === controller) runControllersRef.current.delete(conversationId);
     }
-  }, [applyRunResult, availableResolutions, clearConversationRun, customImageHeight, customImageWidth, generationCount, generationModel, generationRatio, generationResolution, monitorRun, patchConversation]);
+  }, [activeReasoningEffort, applyRunResult, availableResolutions, clearConversationRun, customImageHeight, customImageWidth, generationCount, generationModel, generationRatio, generationResolution, monitorRun, patchConversation]);
 
   const executeSend = useCallback(async (prompt) => {
     const controller = new AbortController();
@@ -1102,7 +1324,7 @@ export function AssistantWorkspaceView() {
     }
     draftRequestControllerRef.current = null;
     const userMessageId = uid();
-    const responseMode = creationType === "image" ? "image" : "agent";
+    const responseMode = documents.length ? "chat" : creationType === "image" ? "image" : "agent";
     const requestedCount = imageCountFromPrompt(prompt) || generationCount;
     const assistantMessage = createAssistantPlaceholder({
       prompt,
@@ -1110,6 +1332,7 @@ export function AssistantWorkspaceView() {
       userMessageId,
       defaults: {
         model: generationModel,
+        reasoningEffort: activeReasoningEffort,
         ratio: generationRatio,
         resolution: generationResolution,
         count: requestedCount,
@@ -1120,18 +1343,19 @@ export function AssistantWorkspaceView() {
       },
     });
     const currentQuote = quotedMessage ? { ...quotedMessage } : null;
-    const userMessage = { id: userMessageId, role: "user", content: prompt, kind: "chat", quoted: currentQuote, referenceImages: references, createdAt: new Date().toISOString() };
+    const userMessage = { id: userMessageId, role: "user", content: prompt, kind: "chat", quoted: currentQuote, referenceImages: references, attachments: documents.filter((item) => item.status === "ready"), createdAt: new Date().toISOString() };
     const visualContext = resolveVisualContext({ ...conversation, messages: [...conversation.messages, userMessage] }, prompt);
     if (!userMessage.referenceImages.length && visualContext.length) userMessage.referenceImages = visualContext;
     const nextTitle = conversation.messages.length ? conversation.title : conversationTitle(prompt);
     patchConversation(conversation.id, (item) => ({ ...item, title: nextTitle, messages: [...item.messages, userMessage, assistantMessage] }));
     setDraft("");
     setReferences([]);
+    setDocuments([]);
     setQuotedMessage(null);
     scrollToBottom();
     controller.abort();
     await launchRun({ conversationId: conversation.id, prompt, userMessage, assistantMessage, responseMode });
-  }, [activeConversation, availableResolutions, creationType, customImageHeight, customImageWidth, generationCount, generationModel, generationRatio, generationResolution, launchRun, patchConversation, quotedMessage, references, scrollToBottom]);
+  }, [activeConversation, activeReasoningEffort, availableResolutions, creationType, customImageHeight, customImageWidth, documents, generationCount, generationModel, generationRatio, generationResolution, launchRun, patchConversation, quotedMessage, references, scrollToBottom]);
 
   useEffect(() => {
     if (!resumeCandidates.length) return;
@@ -1160,14 +1384,29 @@ export function AssistantWorkspaceView() {
   const requestSend = async () => {
     if (requestAuth({ featureLabel: "AI 助手" })) return;
     const prompt = draft.trim();
-    if (!prompt || loading || serviceError || activeRun || uploading) return;
+    if (!canSend) {
+      if (assistantCharacterCount(prompt) > MAX_ASSISTANT_MESSAGE_CHARACTERS) {
+        notificationService.warning("消息不能超过 12,000 个字符");
+      } else if (documents.some((item) => item.status === "queued" || item.status === "processing")) {
+        notificationService.warning("文档仍在解析，请等待完成后发送");
+      } else if (documents.some((item) => item.status !== "ready")) {
+        notificationService.warning("请移除解析失败的文档后再发送");
+      }
+      return;
+    }
     if (Object.keys(activeRuns).length >= 4 && !activeRuns[activeId]) {
       notificationService.warning("最多可同时运行 4 个对话任务，请等待其中一个完成");
       return;
     }
-    const responseMode = creationType === "image" ? "image" : "agent";
+    if (isImageToPSDRequest(prompt, references.length)) {
+      notificationService.warning("AI 助手暂未开放 PSD 转换");
+      return;
+    }
+    const responseMode = documents.length ? "chat" : creationType === "image" ? "image" : "agent";
     const requestedCount = imageCountFromPrompt(prompt) || generationCount;
-    const confirmed = await confirmAssistantCost(responseMode, requestedCount, generationModel, { skip: pendingLaunchRef.current?.config?.costConfirmed === true });
+    const confirmed = await confirmAssistantCost(responseMode, requestedCount, generationModel, activeReasoningEffort, {
+      skip: pendingLaunchRef.current?.config?.costConfirmed === true,
+    });
     if (!mountedRef.current || !confirmed) return;
     pendingLaunchRef.current = null;
     await executeSend(prompt);
@@ -1288,22 +1527,24 @@ export function AssistantWorkspaceView() {
     if (index < 1 || !prompt) return;
     const responseMode = messageResponseMode(message);
     const model = modelForMode(responseMode, message.model);
-    if (!(await confirmAssistantCost(responseMode, message.count || generationCount, model))) return;
-    const nextAssistant = { ...message, model, requestedMode: responseMode, content: "", images: [], feedback: "", error: "", pending: true, routing: responseMode === "agent", statusStage: responseMode === "image" ? "preparing-image" : "thinking" };
+    const retryEffort = message.reasoningEffort || activeReasoningEffort;
+    if (!(await confirmAssistantCost(responseMode, message.count || generationCount, model, retryEffort))) return;
+    const nextAssistant = { ...message, model, reasoningEffort: retryEffort, requestedMode: responseMode, content: "", images: [], feedback: "", error: "", pending: true, routing: responseMode === "agent", statusStage: responseMode === "image" ? "preparing-image" : "thinking" };
     patchConversation(activeConversation.id, (conversation) => ({ ...conversation, messages: conversation.messages.map((item) => item.id === message.id ? nextAssistant : item) }));
     await launchRun({ conversationId: activeConversation.id, prompt, userMessage, assistantMessage: nextAssistant, responseMode, sourceUserMessageId: userMessage.id });
   };
 
   const submitUserMessageEdit = async (message) => {
     const prompt = editingMessageDraft.trim();
-    if (!activeConversation || activeRun || !prompt || prompt.length > 12000 || message.id !== lastUserMessageId) return;
+    if (!activeConversation || activeRun || !prompt || assistantCharacterCount(prompt) > MAX_ASSISTANT_MESSAGE_CHARACTERS || message.id !== lastUserMessageId) return;
     const messageIndex = messages.findIndex((item) => item.id === message.id);
     if (messageIndex < 0) return;
     const previousReply = messages[messageIndex + 1];
     const responseMode = previousReply ? messageResponseMode(previousReply) : "agent";
     const model = modelForMode(responseMode, previousReply?.model);
     const count = Number(previousReply?.count || generationCount);
-    if (!(await confirmAssistantCost(responseMode, count, model))) return;
+    const editEffort = previousReply?.reasoningEffort || activeReasoningEffort;
+    if (!(await confirmAssistantCost(responseMode, count, model, editEffort))) return;
     const assistantMessage = createAssistantPlaceholder({
       prompt,
       responseMode,
@@ -1311,6 +1552,7 @@ export function AssistantWorkspaceView() {
       userMessageId: message.id,
       defaults: {
         model,
+        reasoningEffort: editEffort,
         ratio: previousReply?.ratio || generationRatio,
         requestRatio: previousReply?.requestRatio || generationRatio,
         resolution: previousReply?.resolution || generationResolution,
@@ -1423,10 +1665,11 @@ export function AssistantWorkspaceView() {
     }
   });
 
-  const canSend = Boolean(draft.trim()) && draft.trim().length <= 12000 && !activeRun && !costPayload && !loading && !serviceError && !uploading;
+  const draftCharacterCount = assistantCharacterCount(draft.trim());
+  const canSend = draftCharacterCount > 0 && draftCharacterCount <= MAX_ASSISTANT_MESSAGE_CHARACTERS && !documents.some((item) => item.status !== "ready") && !activeRun && !costPayload && !loading && !serviceError && !uploading;
 
   return (
-    <div className={`assistant-workspace${isDark ? " is-dark" : ""}${activeRun ? " is-generating" : ""}${sidebarCollapsed ? " is-sidebar-collapsed" : ""}`} onClick={() => { setCreationMenuOpen(false); setModelMenuOpen(false); setPreferencesOpen(false); setActiveMessageMenuId(""); }}>
+    <div className={`assistant-workspace${isDark ? " is-dark" : ""}${activeRun ? " is-generating" : ""}${sidebarCollapsed ? " is-sidebar-collapsed" : ""}`} onClick={() => { setCreationMenuOpen(false); setModelMenuOpen(false); setReasoningMenuOpen(false); setPreferencesOpen(false); setActiveMessageMenuId(""); }}>
       <aside className="assistant-sidebar" onClick={(event) => event.stopPropagation()}>
         <div className="assistant-brand-row"><div className="assistant-brand"><strong>开启创作</strong></div><button className="icon-button sidebar-close" type="button" title={sidebarCollapsed ? "展开侧栏" : "收起侧栏"} aria-label={sidebarCollapsed ? "展开侧栏" : "收起侧栏"} onClick={updateSidebar}><i className={`bi bi-chevron-left${sidebarCollapsed ? " is-collapsed" : ""}`} /></button></div>
         <button className="new-chat-button" type="button" title="新对话" onClick={newConversation}><i className="bi bi-pencil-square" /><span>新对话</span></button>
@@ -1442,7 +1685,7 @@ export function AssistantWorkspaceView() {
 
       <main className={`assistant-main${messages.length ? "" : " is-empty"}`}>
         <div className="assistant-ambient-stage" aria-hidden="true"><i className="ambient-blob is-a" /><i className="ambient-blob is-b" /><i className="ambient-blob is-c" /></div>
-        {messages.length > 0 && <header className="assistant-topbar"><div className="topbar-title"><span className="active-conversation-title" title={activeConversation?.title}>{activeConversation?.title}</span></div><div className="topbar-filters"><button type="button" title={messages.at(-1)?.kind === "context-divider" ? "新的上下文已开始" : "清除上文并保留可见历史"} aria-label={messages.at(-1)?.kind === "context-divider" ? "新的上下文已开始" : "清除上文并保留可见历史"} disabled={Boolean(activeRun) || messages.at(-1)?.kind === "context-divider"} onClick={() => void clearConversationContext()}><i className="bi bi-eraser" /><span>清除上文</span></button><button type="button" className={assetLibraryOpen ? "active" : ""} aria-pressed={assetLibraryOpen} title="资产库" aria-label="资产库" onClick={(event) => { event.stopPropagation(); setAssetLibraryOpen((value) => !value); }}><i className="bi bi-archive" /><span>资产库</span></button></div></header>}
+        {messages.length > 0 && <header className="assistant-topbar"><div className="topbar-title"><span className="active-conversation-title" title={activeConversation?.title}>{activeConversation?.title}</span></div><div className="topbar-context"><AssistantContextMeter context={latestContext} /></div><div className="topbar-filters"><button type="button" title={messages.at(-1)?.kind === "context-divider" ? "新的上下文已开始" : "清除上文并保留可见历史"} aria-label={messages.at(-1)?.kind === "context-divider" ? "新的上下文已开始" : "清除上文并保留可见历史"} disabled={Boolean(activeRun) || messages.at(-1)?.kind === "context-divider"} onClick={() => void clearConversationContext()}><i className="bi bi-eraser" /><span>清除上文</span></button><button type="button" className={assetLibraryOpen ? "active" : ""} aria-pressed={assetLibraryOpen} title="资产库" aria-label="资产库" onClick={(event) => { event.stopPropagation(); setAssetLibraryOpen((value) => !value); }}><i className="bi bi-archive" /><span>资产库</span></button></div></header>}
         <div ref={messageScrollerRef} className="assistant-messages" onScroll={handleMessageScroll}>
           {loading ? <section className="assistant-thread-skeleton" aria-label="正在加载"><div className="sk-bubble is-user"><i style={{ width: "46%" }} /></div><div className="sk-bubble"><i style={{ width: "82%" }} /><i style={{ width: "64%" }} /></div><div className="sk-bubble is-user"><i style={{ width: "30%" }} /></div><div className="sk-bubble"><i style={{ width: "74%" }} /><i style={{ width: "40%" }} /></div></section> : messages.length === 0 ? <section className="assistant-empty-state" aria-label="空白创作区"><div className="assistant-empty-content"><span className="empty-mark"><i className="bi bi-stars" /></span><p className="empty-mode-label"><i className={`bi ${selectedCreation.icon}`} />{mode === "image" ? "图片生成 · 描述画面并上传参考图" : "Agent 模式 · 自动识别对话与生图"}</p><h1>今天想创作什么？</h1><div className="suggestion-grid">{SUGGESTIONS.map(([icon, text]) => <button key={text} type="button" onClick={() => { setDraft(text); textareaRef.current?.focus(); }}><i className={`bi ${icon}`} /><span>{text}</span><i className="bi bi-arrow-up-right suggestion-arrow" /></button>)}</div></div></section> : <section className="message-thread" aria-live="polite">{hiddenMessageCount > 0 && <button className="load-earlier-messages" type="button" disabled={loadingEarlierRef.current} onClick={() => { const scroller = messageScrollerRef.current; if (scroller) scroller.scrollTop = 0; }}><i className="bi bi-clock-history" /><span>加载更早的对话（{hiddenMessageCount}）</span></button>}<div className="message-turns">{renderedMessages.map((message, offset) => {
             const originalIndex = firstRenderedMessageIndex + offset;
@@ -1462,8 +1705,21 @@ export function AssistantWorkspaceView() {
           {messages.length > 0 && !isAtBottom && !isReturningToBottom && <div className="return-to-bottom-row"><button className="return-to-bottom" type="button" title="回到底部" aria-label="回到底部" onClick={() => scrollToBottom("smooth")}><span>回到底部</span><i className="bi bi-chevron-double-down" /></button></div>}
           {serviceError && <div className="assistant-service-error"><i className="bi bi-exclamation-circle" /><span>{serviceError}</span><button type="button" onClick={() => void loadWorkspace()}><i className="bi bi-arrow-clockwise" />重试</button></div>}
           <div className={`assistant-composer${mode === "image" ? " is-image-mode" : ""}`}>
-            {creationMenuOpen && <section className="composer-popover creation-type-menu"><p className="popover-eyebrow">创作类型</p>{CREATION_TYPES.map((type) => <button key={type.id} type="button" className={creationType === type.id ? "active" : ""} onClick={() => { setCreationType(type.id); setCreationMenuOpen(false); }}><i className={`bi ${type.icon}`} /><span>{type.label}</span>{creationType === type.id && <i className="bi bi-check-lg menu-check" />}</button>)}</section>}
-            {modelMenuOpen && <section className="composer-popover image-model-menu" style={{ "--model-menu-left": "150px" }}><header className="model-menu-head"><p className="popover-eyebrow">{mode === "image" ? "选择图片模型" : "选择对话模型"}</p><span>{generationModels.length} 个模型</span></header>{generationModels.length > 6 && <div className="model-menu-search"><i className="bi bi-search" /><input value={modelSearch} type="text" placeholder="搜索模型名称" autoComplete="off" onChange={(event) => setModelSearch(event.target.value)} />{modelSearch && <button type="button" aria-label="清空模型搜索" title="清空" onClick={() => setModelSearch("")}><i className="bi bi-x-lg" /></button>}</div>}<div className="model-menu-options">{filteredGenerationModels.map((model) => <button key={model.model} type="button" className={generationModel === model.model ? "active" : ""} onClick={() => { mode === "image" ? setImageModel(model.model) : setConversationModel(model.model); setModelMenuOpen(false); setModelSearch(""); }}><span className="model-mark"><i className="bi bi-stars" /></span><span className="model-copy"><strong>{model.label}</strong></span><ModelMenuPrice model={model} perImage={mode === "image"} /><span className="model-menu-check-slot">{generationModel === model.model && <i className="bi bi-check-lg menu-check" />}</span></button>)}{!filteredGenerationModels.length && <p className="skill-empty">{modelSearch ? "没有匹配的模型" : "后台暂未提供可用模型"}</p>}</div></section>}
+            {creationMenuOpen && <section className="composer-popover creation-type-menu"><p className="popover-eyebrow">创作类型</p>{CREATION_TYPES.map((type) => <button key={type.id} type="button" className={creationType === type.id ? "active" : ""} disabled={type.id === "image" && documents.length > 0} title={type.id === "image" && documents.length > 0 ? "先移除文档附件" : undefined} onClick={() => { setCreationType(type.id); setCreationMenuOpen(false); }}><i className={`bi ${type.icon}`} /><span>{type.label}</span>{creationType === type.id && <i className="bi bi-check-lg menu-check" />}</button>)}</section>}
+            {modelMenuOpen && <section className="composer-popover image-model-menu" style={{ "--model-menu-left": "150px" }}><header className="model-menu-head"><p className="popover-eyebrow">{mode === "image" ? "选择图片模型" : "选择对话模型"}</p><span>{generationModels.length} 个模型</span></header>{generationModels.length > 6 && <div className="model-menu-search"><i className="bi bi-search" /><input value={modelSearch} type="text" placeholder="搜索模型名称" autoComplete="off" onChange={(event) => setModelSearch(event.target.value)} />{modelSearch && <button type="button" aria-label="清空模型搜索" title="清空" onClick={() => setModelSearch("")}><i className="bi bi-x-lg" /></button>}</div>}<div className="model-menu-options">{filteredGenerationModels.map((model) => <button key={model.model} type="button" className={generationModel === model.model ? "active" : ""} onClick={() => { mode === "image" ? setImageModel(model.model) : setConversationModel(model.model); setModelMenuOpen(false); setModelSearch(""); }}><span className="model-mark"><i className="bi bi-stars" /></span><span className="model-copy"><strong>{model.label}</strong></span><ModelMenuPrice model={mode === "image" ? model : modelWithReasoningPrice(model)} perImage={mode === "image"} /><span className="model-menu-check-slot">{generationModel === model.model && <i className="bi bi-check-lg menu-check" />}</span></button>)}{!filteredGenerationModels.length && <p className="skill-empty">{modelSearch ? "没有匹配的模型" : "后台暂未提供可用模型"}</p>}</div></section>}
+            {reasoningMenuOpen && mode !== "image" && reasoningEfforts.length > 0 && (
+              <section className="composer-popover reasoning-effort-menu" aria-label="推理强度">
+                <header><p className="popover-eyebrow">推理强度</p><span>当前模型支持 {reasoningEfforts.length} 档</span></header>
+                <div className="reasoning-effort-options">
+                  {reasoningEfforts.map((effort) => (
+                    <button key={effort} type="button" className={activeReasoningEffort === effort ? "active" : ""} aria-pressed={activeReasoningEffort === effort} onClick={() => { setReasoningEffort(effort); setReasoningMenuOpen(false); }}>
+                      <span><strong>{REASONING_EFFORT_LABELS[effort] || effort}</strong><small>{effort} · {assistantReasoningPrice(selectedConversationModel, effort).effective} 积分/轮</small></span>
+                      {activeReasoningEffort === effort && <i className="bi bi-check-lg menu-check" />}
+                    </button>
+                  ))}
+                </div>
+              </section>
+            )}
             {preferencesOpen && mode === "image" && (
               <section className="composer-popover image-mode-preferences" aria-label="图片生成参数">
                 <div className="preferences-block">
@@ -1515,12 +1771,28 @@ export function AssistantWorkspaceView() {
                 </div>
               </section>
             )}
-            <input ref={fileInputRef} className="reference-file-input" type="file" accept="image/*" multiple aria-label={mode === "image" ? "添加参考图" : "添加图片，支持识别、分析与编辑"} onChange={(event) => { void uploadReferences(event.target.files); event.target.value = ""; }} />
-            <div className={`reference-dock${references.length ? " has-images" : ""}${uploading ? " is-uploading" : ""}`}>{references.length === 0 ? <button className="composer-attachment" type="button" title="添加参考图" aria-label="添加参考图" onClick={() => fileInputRef.current?.click()}><i className="bi bi-plus-lg" /></button> : <>{references.map((image) => <figure key={image.id} className="reference-card"><img src={image.thumbnailUrl || image.dataUrl} alt={image.name} /><button type="button" title="移除参考图" aria-label="移除参考图" onClick={() => setReferences((current) => current.filter((item) => item.id !== image.id))}><i className="bi bi-x" /></button></figure>)}{references.length < Math.min(4, Math.max(0, Number(selectedImageModel?.maxReferenceImages ?? 4))) && !uploading && <button className="reference-add-more" type="button" title="继续添加参考图" aria-label="继续添加参考图" onClick={() => fileInputRef.current?.click()}><i className="bi bi-plus-lg" /></button>}</>}{uploading && <span className="reference-card reference-skeleton" aria-label="参考图上传中" />}</div>
+            <input ref={fileInputRef} className="reference-file-input" type="file" accept={mode === "image" ? "image/*" : "image/*,.txt,.md,.markdown,.csv,.json,.pdf,.docx,.xlsx,.pptx"} multiple aria-label={mode === "image" ? "添加参考图" : "添加图片或文档"} onChange={(event) => { void uploadReferences(event.target.files); event.target.value = ""; }} />
+            {(references.length > 0 || documents.length > 0 || uploading) && <div className={`reference-dock has-images${uploading ? " is-uploading" : ""}`} aria-label="已添加的附件">{references.map((image) => <figure key={image.id} className="reference-card"><img src={image.thumbnailUrl || image.dataUrl} alt={image.name} /><button type="button" title="移除参考图" aria-label="移除参考图" onClick={() => setReferences((current) => current.filter((item) => item.id !== image.id))}><i className="bi bi-x" /></button></figure>)}{documents.map((item) => <div key={item.id} className={`reference-document-card is-${item.status || "queued"}`} title={item.errorMessage || item.name}><i className={`bi ${documentIcon(item)}`} /><span><strong>{item.name}</strong><small>{documentStatusLabel(item)} · {formatDocumentSize(item.sizeBytes)}</small></span><button type="button" title="移除文档" aria-label={`移除文档 ${item.name}`} onClick={() => removeComposerDocument(item)}><i className="bi bi-x" /></button></div>)}{uploading && <span className="reference-card reference-skeleton" aria-label="附件上传或解析中" />}</div>}
             {quotedMessage && <div className="composer-quote"><i className="bi bi-quote" /><span>[{quotedMessage.kind}] {quotedMessage.content}</span><button type="button" title="移除引用" aria-label="移除引用" onClick={() => setQuotedMessage(null)}><i className="bi bi-x-lg" /></button></div>}
-            <textarea ref={textareaRef} value={draft} rows={1} aria-label="消息输入" placeholder={mode === "image" ? "描述你想生成的画面，也可以上传参考图" : "输入问题或上传图片进行识别、分析与编辑"} disabled={Boolean(activeRun) || Boolean(serviceError)} onChange={(event) => setDraft(event.target.value)} onPaste={(event) => { const files = Array.from(event.clipboardData?.files || []).filter((file) => file.type.startsWith("image/")); if (files.length) { event.preventDefault(); void uploadReferences(files); } }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void requestSend(); } }} />
-            {draft.trim().length > 10000 && <div className={`draft-counter${draft.trim().length > 12000 ? " is-over" : ""}`}>{draft.trim().length.toLocaleString("zh-CN")} / 12,000</div>}
-            <div className="composer-toolbar"><div className="composer-left"><button className={`agent-mode-button${creationMenuOpen ? " active" : ""}`} type="button" onClick={() => setCreationMenuOpen((value) => !value)}><i className={`bi ${selectedCreation.icon}`} /><span>{selectedCreation.label}</span><i className={`bi ${creationMenuOpen ? "bi-chevron-up" : "bi-chevron-down"}`} /></button><button className={`composer-tool-button image-model-button${modelMenuOpen ? " active" : ""}`} type="button" onClick={() => setModelMenuOpen((value) => !value)}><i className={`bi ${mode === "image" ? "bi-box" : "bi-cpu"}`} /><span>{generationModelLabel}</span><i className={`bi ${mode === "image" ? "bi-stars" : "bi-chevron-down"}`} /></button>{mode === "image" ? <button className={`composer-tool-button image-settings-button${preferencesOpen ? " active" : ""}`} type="button" onClick={() => setPreferencesOpen((value) => !value)}><i className="ratio-shape is-square" /><span>{generationRatio === "auto" ? "Auto" : generationRatio} | {generationResolution} | {generationCount}</span></button> : <><button className="composer-tool-button" type="button" disabled title="暂未开放" aria-label="使用技能，暂未开放"><i className="bi bi-wrench-adjustable" /><span>使用技能</span></button><button className="composer-tool-button is-mention" type="button" disabled title="暂未开放" aria-label="添加主体，暂未开放"><span>@</span></button></>}</div>{activeRun ? <button className="send-button stop-button" type="button" aria-label="停止生成" onClick={() => void stopRun()}><span className="stop-glyph" /></button> : <button className="send-button" type="button" title="发送" aria-label="发送" disabled={auth.isAuthenticated && !canSend} onClick={() => void requestSend()}><span className="send-glyph"><i className="bi bi-arrow-up" /></span></button>}</div>
+            <textarea ref={textareaRef} value={draft} rows={1} aria-label="消息输入" placeholder={mode === "image" ? "描述你想生成的画面，也可以上传参考图" : "输入问题，或粘贴、拖入图片和文档"} disabled={Boolean(activeRun) || Boolean(serviceError)} onChange={(event) => setDraft(event.target.value)} onPaste={(event) => { const files = assistantClipboardFiles(event.clipboardData); if (files.length) { event.preventDefault(); void uploadReferences(files); } }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void requestSend(); } }} />
+            {draftCharacterCount > 10000 && <div className={`draft-counter${draftCharacterCount > MAX_ASSISTANT_MESSAGE_CHARACTERS ? " is-over" : ""}`}>{draftCharacterCount.toLocaleString("zh-CN")} / 12,000</div>}
+            <div className="composer-toolbar">
+              <div className="composer-left">
+                <button className="composer-attachment-inline" type="button" title={mode === "image" ? "添加参考图" : "添加附件"} aria-label={mode === "image" ? "添加参考图" : "添加附件"} onClick={() => fileInputRef.current?.click()}><i className="bi bi-paperclip" /></button>
+                <button className={`agent-mode-button${creationMenuOpen ? " active" : ""}`} type="button" onClick={() => { setCreationMenuOpen((value) => !value); setModelMenuOpen(false); setReasoningMenuOpen(false); setPreferencesOpen(false); }}><i className={`bi ${selectedCreation.icon}`} /><span>{selectedCreation.label}</span><i className={`bi ${creationMenuOpen ? "bi-chevron-up" : "bi-chevron-down"}`} /></button>
+                <button className={`composer-tool-button image-model-button${modelMenuOpen ? " active" : ""}`} type="button" title={`模型：${generationModelLabel}`} aria-label={`选择模型，当前为${generationModelLabel}`} onClick={() => { setModelMenuOpen((value) => !value); setCreationMenuOpen(false); setReasoningMenuOpen(false); setPreferencesOpen(false); }}><i className={`bi ${mode === "image" ? "bi-box" : "bi-cpu"}`} /><span>{generationModelLabel}</span><i className={`bi ${mode === "image" ? "bi-stars" : "bi-chevron-down"}`} /></button>
+                {mode === "image" ? (
+                  <button className={`composer-tool-button image-settings-button${preferencesOpen ? " active" : ""}`} type="button" onClick={() => { setPreferencesOpen((value) => !value); setCreationMenuOpen(false); setModelMenuOpen(false); setReasoningMenuOpen(false); }}><i className="ratio-shape is-square" /><span>{generationRatio === "auto" ? "Auto" : generationRatio} | {generationResolution} | {generationCount}</span></button>
+                ) : (
+                  <>
+                    {reasoningEfforts.length > 0 && activeReasoningEffort ? <button className={`composer-tool-button reasoning-effort-button${reasoningMenuOpen ? " active" : ""}`} type="button" title={`推理强度：${reasoningEffortLabel}`} aria-label={`选择推理强度，当前为${reasoningEffortLabel}`} onClick={() => { setReasoningMenuOpen((value) => !value); setCreationMenuOpen(false); setModelMenuOpen(false); setPreferencesOpen(false); }}><i className="bi bi-speedometer2" /><span>推理 {reasoningEffortLabel}</span><i className={`bi ${reasoningMenuOpen ? "bi-chevron-up" : "bi-chevron-down"}`} /></button> : null}
+                    <button className={`composer-tool-button${documents.length ? " active" : ""}`} type="button" disabled title={documents.length ? "文档分析已启用" : "上传文档后自动启用"} aria-label={documents.length ? "文档分析已启用" : "使用技能"}><i className={`bi ${documents.length ? "bi-file-earmark-search" : "bi-wrench-adjustable"}`} /><span>{documents.length ? "文档分析" : "使用技能"}</span></button>
+                    <button className="composer-tool-button is-mention" type="button" disabled title="暂未开放" aria-label="添加主体，暂未开放"><span>@</span></button>
+                  </>
+                )}
+              </div>
+              {activeRun ? <button className="send-button stop-button" type="button" aria-label="停止生成" onClick={() => void stopRun()}><span className="stop-glyph" /></button> : <button className="send-button" type="button" title="发送" aria-label="发送" disabled={auth.isAuthenticated && !canSend} onClick={() => void requestSend()}><span className="send-glyph"><i className="bi bi-arrow-up" /></span></button>}
+            </div>
           </div>
         </div>
       </main>

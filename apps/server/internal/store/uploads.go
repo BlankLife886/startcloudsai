@@ -189,7 +189,8 @@ func IsUserAvatarKey(ctx context.Context, q Q, key string) (bool, error) {
 func validUploadReferenceType(value string) bool {
 	switch value {
 	case UploadReferenceTaskInput, UploadReferenceUserAsset, UploadReferenceUserAvatar,
-		UploadReferenceUserStudioFigure, UploadReferenceAssistantMsg, UploadReferenceAssistantRun:
+		UploadReferenceUserStudioFigure, UploadReferenceAssistantMsg, UploadReferenceAssistantRun,
+		UploadReferenceAssistantFile:
 		return true
 	default:
 		return false

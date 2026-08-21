@@ -34,6 +34,12 @@ export const canvasThemes = {
             activeText: "#4c1d95",
             shadow: "0 14px 36px rgba(49,32,107,.1)",
         },
+        sidebar: {
+            bg: "#f7f5fc",
+            surface: "#ffffff",
+            border: "rgba(109,92,255,.12)",
+            shadow: "0 10px 28px rgba(49, 32, 107, 0.08)",
+        },
     },
     dark: {
         canvas: {
@@ -64,6 +70,12 @@ export const canvasThemes = {
             activeBg: "rgba(167,139,250,.18)",
             activeText: "#ede9fe",
             shadow: "0 16px 40px rgba(0,0,0,.36)",
+        },
+        sidebar: {
+            bg: "#16141e",
+            surface: "#211e2c",
+            border: "rgba(198,188,255,.14)",
+            shadow: "0 12px 32px rgba(0, 0, 0, 0.38)",
         },
     },
 } as const;

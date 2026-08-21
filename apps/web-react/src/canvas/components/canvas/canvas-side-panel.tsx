@@ -556,12 +556,27 @@ const CanvasAssetsTab = memo(function CanvasAssetsTab({ onInsert, theme }: { onI
     const { t } = useTranslation();
     const assets = useAssetStore((state) => state.assets);
     const addAsset = useAssetStore((state) => state.addAsset);
+    const addSharedImage = useAssetStore((state) => state.addSharedImage);
+    const syncCloudImages = useAssetStore((state) => state.syncCloudImages);
     const removeAsset = useAssetStore((state) => state.removeAsset);
     const [keyword, setKeyword] = useState("");
     const [tagFilter, setTagFilter] = useState<string>("all");
     const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
     const [uploading, setUploading] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
+
+    useEffect(() => {
+        const controller = new AbortController();
+        void syncCloudImages(controller.signal);
+        const onVisible = () => {
+            if (document.visibilityState === "visible") void syncCloudImages();
+        };
+        document.addEventListener("visibilitychange", onVisible);
+        return () => {
+            controller.abort();
+            document.removeEventListener("visibilitychange", onVisible);
+        };
+    }, [syncCloudImages]);
 
     const allTags = useMemo(() => Array.from(new Set(assets.flatMap((asset) => asset.tags || []))).slice(0, 20), [assets]);
 
@@ -582,7 +597,7 @@ const CanvasAssetsTab = memo(function CanvasAssetsTab({ onInsert, theme }: { onI
             for (const file of files) {
                 if (file.type.startsWith("image/")) {
                     const image = await uploadImage(file);
-                    addAsset({ kind: "image", title: file.name || t("assets.kinds.image"), coverUrl: image.url, tags: [], data: { dataUrl: image.url, storageKey: image.storageKey, width: image.width, height: image.height, bytes: image.bytes, mimeType: image.mimeType } });
+                    await addSharedImage({ kind: "image", title: file.name || t("assets.kinds.image"), coverUrl: image.thumbnailUrl || image.url, tags: [], data: { dataUrl: image.url, storageKey: image.storageKey, width: image.width, height: image.height, bytes: image.bytes, mimeType: image.mimeType } });
                     added += 1;
                 } else if (file.type.startsWith("video/")) {
                     const media = await uploadMediaFile(file, "video");
@@ -604,7 +619,7 @@ const CanvasAssetsTab = memo(function CanvasAssetsTab({ onInsert, theme }: { onI
 
     return (
         <div className="flex h-full flex-col">
-            <div className="flex items-center gap-2 px-3 pb-3 pt-3">
+            <div className="flex items-center gap-2 px-3 pb-2.5 pt-3">
                 <div className="min-w-0 flex-1">
                     <PanelSearch value={keyword} onChange={setKeyword} placeholder={t("canvas.sidePanel.searchAssets")} theme={theme} />
                 </div>
@@ -612,11 +627,12 @@ const CanvasAssetsTab = memo(function CanvasAssetsTab({ onInsert, theme }: { onI
                     type="button"
                     disabled={uploading}
                     onClick={() => fileInputRef.current?.click()}
-                    className="flex h-9 shrink-0 items-center gap-1 rounded-xl px-2.5 text-[12px] font-semibold disabled:cursor-not-allowed disabled:opacity-50"
+                    className="grid size-9 shrink-0 place-items-center rounded-full disabled:cursor-not-allowed disabled:opacity-50"
                     style={{ background: theme.toolbar.activeBg, color: theme.toolbar.activeText }}
+                    aria-label={t("canvas.sidePanel.add")}
+                    title={t("canvas.sidePanel.add")}
                 >
-                    <Plus className="size-3.5" />
-                    {t("canvas.sidePanel.add")}
+                    <Plus className="size-4" />
                 </button>
                 <input ref={fileInputRef} type="file" accept="image/*,video/*" multiple className="hidden" onChange={(e) => void handleFiles(e.target.files)} />
             </div>
@@ -632,9 +648,9 @@ const CanvasAssetsTab = memo(function CanvasAssetsTab({ onInsert, theme }: { onI
                     ))}
                 </div>
             ) : null}
-            <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
+            <div className="min-h-0 flex-1 overflow-y-auto px-2.5 pb-3">
                 {groups.length ? (
-                    <div className="space-y-1">
+                    <div className="space-y-3">
                         {groups.map((group) => {
                             const isCollapsed = collapsed[group.kind];
                             return (
@@ -642,15 +658,15 @@ const CanvasAssetsTab = memo(function CanvasAssetsTab({ onInsert, theme }: { onI
                                     <button
                                         type="button"
                                         onClick={() => setCollapsed((prev) => ({ ...prev, [group.kind]: !prev[group.kind] }))}
-                                        className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left text-xs font-semibold opacity-75 transition hover:opacity-100"
+                                        className="mb-1.5 flex w-full items-center gap-1.5 px-0.5 text-left text-[11px] font-medium"
+                                        style={{ color: theme.node.muted }}
                                     >
-                                        <ChevronRight className={cn("size-3.5 transition-transform", !isCollapsed && "rotate-90")} />
-                                        <group.icon className="size-3.5" />
+                                        <ChevronRight className={cn("size-3 transition-transform", !isCollapsed && "rotate-90")} />
                                         <span>{t(`assets.kinds.${group.kind}`)}</span>
-                                        <span className="opacity-50">{group.items.length}</span>
+                                        <span className="tabular-nums opacity-70">{group.items.length}</span>
                                     </button>
                                     {isCollapsed ? null : (
-                                        <div className="grid grid-cols-2 gap-2 px-1 pb-2 pt-1">
+                                        <div className="grid grid-cols-3 gap-1.5">
                                             {group.items.map((asset) => (
                                                 <AssetCard key={asset.id} asset={asset} theme={theme} onInsert={() => onInsert(buildInsertPayload(asset))} onRemove={() => (removeAsset(asset.id), message.success(t("canvas.sidePanel.assetRemoved")))} />
                                             ))}
@@ -673,22 +689,22 @@ function AssetCard({ asset, theme, onInsert, onRemove }: { asset: Asset; theme: 
     return (
         <div className="group relative aspect-square overflow-hidden rounded-xl transition duration-200 hover:-translate-y-0.5 hover:shadow-lg" style={{ background: theme.node.panel, boxShadow: theme.toolbar.shadow }}>
             <AssetCover asset={asset} />
-            <div className="absolute inset-0 flex items-center justify-center gap-2.5 opacity-0 transition duration-200 group-hover:opacity-100">
+            <div className="absolute inset-0 flex items-center justify-center gap-1.5 opacity-0 transition duration-200 group-hover:opacity-100">
                 <button
                     type="button"
                     onClick={onInsert}
-                    className="grid size-8 place-items-center rounded-full bg-white/90 text-stone-700 shadow-sm backdrop-blur transition hover:bg-white hover:text-stone-900 dark:bg-black/60 dark:text-stone-100 dark:hover:bg-black/80"
+                    className="grid size-7 place-items-center rounded-full bg-white/90 text-stone-700 shadow-sm backdrop-blur transition hover:bg-white hover:text-stone-900 dark:bg-black/60 dark:text-stone-100 dark:hover:bg-black/80"
                     aria-label={t("canvas.sidePanel.inserted")}
                 >
-                    <Plus className="size-4" />
+                    <Plus className="size-3.5" />
                 </button>
                 <Popconfirm title={t("canvas.sidePanel.removeAssetTitle")} okText={t("canvas.sidePanel.remove")} cancelText={t("common.cancel")} okButtonProps={{ danger: true }} onConfirm={onRemove}>
                     <button
                         type="button"
-                        className="grid size-8 place-items-center rounded-full bg-white/90 text-stone-700 shadow-sm backdrop-blur transition hover:bg-white hover:text-red-500 dark:bg-black/60 dark:text-stone-100 dark:hover:bg-black/80 dark:hover:text-red-400"
+                        className="grid size-7 place-items-center rounded-full bg-white/90 text-stone-700 shadow-sm backdrop-blur transition hover:bg-white hover:text-red-500 dark:bg-black/60 dark:text-stone-100 dark:hover:bg-black/80 dark:hover:text-red-400"
                         aria-label={t("canvas.sidePanel.removeAsset")}
                     >
-                        <Trash2 className="size-4" />
+                        <Trash2 className="size-3.5" />
                     </button>
                 </Popconfirm>
             </div>

@@ -434,6 +434,7 @@ type AssistantConversation struct {
 	UserID    uuid.UUID
 	Title     string
 	Workspace string
+	ProjectID *uuid.UUID
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }

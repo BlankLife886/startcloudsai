@@ -190,10 +190,42 @@ func compileEcommerce(prompt string, params map[string]any) string {
 		"严格遵循参考图角色和任务描述，保持商品外观、品牌、文字、颜色、比例与材质准确，不虚构商品参数或品牌信息。",
 		fmt.Sprintf("电商视觉任务：%s", prompt),
 	}
+	if spec := ecommerceAplusSpec(params); spec != "" {
+		parts = append(parts, spec)
+	}
 	if suffix := styleSuffix(params); suffix != "" {
 		parts = append(parts, suffix)
 	}
 	return strings.Join(parts, " ")
+}
+
+func ecommerceAplusSpec(params map[string]any) string {
+	raw, ok := params["aplusSpec"]
+	if !ok || raw == nil {
+		return ""
+	}
+	spec, ok := raw.(map[string]any)
+	if !ok {
+		return ""
+	}
+	size := strings.TrimSpace(paramString(spec, "outputSize"))
+	if size == "" {
+		width := paramString(spec, "width")
+		height := paramString(spec, "height")
+		if width != "" && height != "" {
+			size = width + "x" + height
+		}
+	}
+	name := firstNonEmpty(paramString(spec, "amazonName"), paramString(spec, "id"))
+	if size == "" && name == "" {
+		return ""
+	}
+	return strings.Join([]string{
+		"这是一张亚马逊 A+ Content 模块图，必须输出 RGB 静态图。",
+		fmt.Sprintf("模块：%s。目标像素：%s。", firstNonEmpty(name, "A+ module"), firstNonEmpty(size, "970x600")),
+		"禁止水印、GIF、HTML、二维码、价格和未证实极限词；文字无法可靠生成时留白。",
+		"不要画 Seller Central 编辑器、浏览器或手机样机。商品身份以参考图为准。",
+	}, " ")
 }
 
 var compilers = map[string]func(string, map[string]any) string{

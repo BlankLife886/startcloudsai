@@ -73,10 +73,17 @@
   --color-stone-600: var(--foreground);
 }
 
+html.dark .canvas-native-view,
+html.dark .canvas-native-view > .canvas-native-mount,
+html.dark .canvas-native-route-entry,
 html.color-scheme-dark .canvas-native-view,
 html.color-scheme-dark .canvas-native-view > .canvas-native-mount,
-html.color-scheme-dark .canvas-native-route-entry {
-  background: var(--canvas-app-surface, oklch(0.145 0 0));
+html.color-scheme-dark .canvas-native-route-entry,
+.dark .canvas-native-view,
+.dark .canvas-native-view > .canvas-native-mount,
+.dark .canvas-native-route-entry {
+  --canvas-app-surface: #12111a;
+  background: #12111a;
 }
 
 .main--canvas-home .canvas-native-view,
@@ -84,6 +91,9 @@ html.color-scheme-dark .canvas-native-route-entry {
 .main--canvas-home .canvas-native-route-entry,
 .main--canvas-home .canvas-home-shell,
 .main--canvas-home .canvas-app-content,
+html.dark .main--canvas-home .canvas-native-view,
+html.dark .main--canvas-home .canvas-native-view > .canvas-native-mount,
+html.dark .main--canvas-home .canvas-native-route-entry,
 html.color-scheme-dark .main--canvas-home .canvas-native-view,
 html.color-scheme-dark .main--canvas-home .canvas-native-view > .canvas-native-mount,
 html.color-scheme-dark .main--canvas-home .canvas-native-route-entry {
@@ -104,4 +114,52 @@ html.color-scheme-dark .main--canvas-home .canvas-native-route-entry {
 html.settings-no-animations .canvas-native-route-entry {
   opacity: 1 !important;
   visibility: visible !important;
+}
+
+html.canvas-editor .site-header,
+html.canvas-editor .site-header.is-canvas,
+html.canvas-editor .site-header.is-scrolled,
+html.canvas-editor .site-header.is-dark,
+html.canvas-editor .site-header.is-canvas.is-scrolled,
+html.canvas-editor .site-header.is-canvas.is-dark,
+html.canvas-editor .site-header.is-dark.is-scrolled,
+html.canvas-editor .site-header.is-canvas.is-dark.is-scrolled {
+  z-index: 5000 !important;
+  background: rgba(255, 255, 255, 0.92) !important;
+  backdrop-filter: blur(16px) saturate(1.15) !important;
+  -webkit-backdrop-filter: blur(16px) saturate(1.15) !important;
+}
+
+html.canvas-editor.dark .site-header,
+html.canvas-editor.dark .site-header.is-canvas,
+html.canvas-editor.dark .site-header.is-scrolled,
+html.canvas-editor.dark .site-header.is-dark,
+html.canvas-editor.dark .site-header.is-canvas.is-scrolled,
+html.canvas-editor.dark .site-header.is-canvas.is-dark,
+html.canvas-editor.dark .site-header.is-dark.is-scrolled,
+html.canvas-editor.dark .site-header.is-canvas.is-dark.is-scrolled,
+html.canvas-editor.color-scheme-dark .site-header,
+html.canvas-editor.color-scheme-dark .site-header.is-canvas,
+html.canvas-editor.color-scheme-dark .site-header.is-scrolled,
+html.canvas-editor.color-scheme-dark .site-header.is-dark,
+html.canvas-editor.color-scheme-dark .site-header.is-canvas.is-scrolled,
+html.canvas-editor.color-scheme-dark .site-header.is-canvas.is-dark,
+html.canvas-editor.color-scheme-dark .site-header.is-dark.is-scrolled,
+html.canvas-editor.color-scheme-dark .site-header.is-canvas.is-dark.is-scrolled {
+  background: rgba(18, 18, 24, 0.92) !important;
+}
+
+html.settings-no-blur.canvas-editor .site-header,
+html.settings-no-blur.canvas-editor .site-header.is-canvas,
+html.settings-no-blur.canvas-editor .site-header.is-canvas.is-dark.is-scrolled {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  background: #ffffff !important;
+}
+
+html.settings-no-blur.canvas-editor.dark .site-header,
+html.settings-no-blur.canvas-editor.dark .site-header.is-canvas,
+html.settings-no-blur.canvas-editor.color-scheme-dark .site-header,
+html.settings-no-blur.canvas-editor.color-scheme-dark .site-header.is-canvas {
+  background: #121218 !important;
 }

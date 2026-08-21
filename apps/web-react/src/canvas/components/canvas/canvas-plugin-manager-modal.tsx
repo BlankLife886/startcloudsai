@@ -3,7 +3,7 @@ import { App, Modal, Popconfirm, Switch } from "antd";
 import { Download, Puzzle, RefreshCw, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
-import { canvasThemes } from "@/lib/canvas-theme";
+import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
 import { CanvasIconWellStyle } from "@/lib/canvas-ui";
 import { installPluginFromUrl, setPluginEnabled, uninstallPlugin, updatePlugin } from "@/lib/canvas/plugin-loader";
 import { fetchOfficialPlugins, hasUpgrade, type OfficialPluginEntry } from "@/lib/canvas/plugin-registry";
@@ -178,7 +178,7 @@ function IconAction({
     children,
 }: {
     title: string;
-    theme: (typeof canvasThemes)["light"];
+    theme: CanvasTheme;
     danger?: boolean;
     active?: boolean;
     onClick?: () => void;

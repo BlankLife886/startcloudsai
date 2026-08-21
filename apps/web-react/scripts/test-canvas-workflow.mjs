@@ -7,6 +7,7 @@ import { copyCanvasNodeMetadata, resolveCopiedCanvasNodeReferences } from "../sr
 import {
     advanceCanvasWorkflowCheckpoint,
     beginCanvasWorkflowRetry,
+    canvasWorkflowCheckpointForStart,
     compileCanvasWorkflow,
     createCanvasWorkflowCheckpoint,
     failCanvasWorkflowCheckpoint,
@@ -19,15 +20,24 @@ import {
     reconcileCanvasWorkflowCheckpoint,
     reconcileCanvasWorkflowFailureOutput,
     reconcileCanvasWorkflowOutputs,
+    settleCanvasWorkflowTerminal,
     validateCanvasWorkflowNodeOutputs,
     validateCanvasWorkflowNodeReadiness,
+    waitForCanvasWorkflowStop,
     workflowPlanMatchesCheckpoint,
 } from "../src/canvas/lib/canvas/canvas-workflow.ts";
-import { mergeCanvasProjectDocuments, mergeCanvasProjectSnapshots } from "../src/canvas/lib/canvas/canvas-project-sync.ts";
+import { canvasProjectNeedsCloudRetry, mergeCanvasProjectDocuments, mergeCanvasProjectSnapshots } from "../src/canvas/lib/canvas/canvas-project-sync.ts";
 import { buildCanvasSidePanelWorkflowGroups } from "../src/canvas/lib/canvas/canvas-workflow-groups.ts";
 
 const node = (id, type, metadata = {}) => ({ id, type, title: id, position: { x: 0, y: 0 }, width: 100, height: 100, metadata });
 const edge = (fromNodeId, toNodeId) => ({ id: `${fromNodeId}-${toNodeId}`, fromNodeId, toNodeId });
+
+test("only retries a cloud save when newer local edits are still pending", () => {
+    assert.equal(canvasProjectNeedsCloudRetry({ pendingSync: true }), true);
+    assert.equal(canvasProjectNeedsCloudRetry({ pendingSync: false }), false);
+    assert.equal(canvasProjectNeedsCloudRetry({}), false);
+    assert.equal(canvasProjectNeedsCloudRetry(null), false);
+});
 
 test("groups disconnected canvas branches as separate collapsible workflows", () => {
     const nodes = [node("input-a", "image"), node("config-a", "config"), node("output-a", "image"), node("input-b", "text"), node("config-b", "config"), node("output-b", "text"), node("guide", "text")];
@@ -306,6 +316,83 @@ test("persists and advances workflow checkpoints", () => {
         currentNodeId: undefined,
         updatedAt: "2026-08-17T00:01:00.000Z",
     });
+});
+
+test("starts success and canceled workflow reruns from a fresh checkpoint", () => {
+    const terminal = {
+        ...createCanvasWorkflowCheckpoint(["a", "b"], "2026-08-17T00:00:00.000Z"),
+        runId: "run-old",
+        completedNodeIds: ["a"],
+        canceledNodeIds: ["b"],
+        currentNodeId: "b",
+    };
+    assert.equal(canvasWorkflowCheckpointForStart("success", terminal), null);
+    assert.equal(canvasWorkflowCheckpointForStart("canceled", terminal), null);
+    assert.equal(canvasWorkflowCheckpointForStart("error", terminal), terminal);
+
+    const restarted = createCanvasWorkflowCheckpoint(["a", "b"], "2026-08-17T01:00:00.000Z");
+    assert.deepEqual(restarted.completedNodeIds, []);
+    assert.equal(restarted.canceledNodeIds, undefined);
+    assert.equal(restarted.currentNodeId, undefined);
+    assert.equal(restarted.runId, undefined);
+});
+
+test("waits for a stopped workflow before creating its fresh rerun", async () => {
+    const events = [];
+    let finishStop;
+    const stopped = new Promise((resolve) => {
+        finishStop = () => {
+            events.push("stopped");
+            resolve();
+        };
+    });
+    const restart = (async () => {
+        await waitForCanvasWorkflowStop(stopped);
+        events.push("restarted");
+        return createCanvasWorkflowCheckpoint(["a"]);
+    })();
+    await Promise.resolve();
+    assert.deepEqual(events, []);
+    finishStop();
+    const checkpoint = await restart;
+    assert.deepEqual(events, ["stopped", "restarted"]);
+    assert.deepEqual(checkpoint.completedNodeIds, []);
+});
+
+test("waits for terminal persistence before creating a fresh rerun", async () => {
+    const events = [];
+    let finishPersistence;
+    const terminalPersistence = new Promise((resolve) => {
+        finishPersistence = () => {
+            events.push("persisted-terminal");
+            resolve();
+        };
+    });
+    const restart = (async () => {
+        await waitForCanvasWorkflowStop(terminalPersistence);
+        events.push("created-rerun");
+    })();
+    await Promise.resolve();
+    assert.deepEqual(events, []);
+    finishPersistence();
+    await restart;
+    assert.deepEqual(events, ["persisted-terminal", "created-rerun"]);
+});
+
+test("releases the workflow lock and presents a terminal state when local persistence fails", async () => {
+    const events = [];
+    const failure = new Error("indexeddb unavailable");
+    const result = await settleCanvasWorkflowTerminal({
+        persist: async () => {
+            events.push("persist");
+            throw failure;
+        },
+        release: () => events.push("release"),
+        present: () => events.push("present"),
+    });
+    assert.equal(result.persistenceFailed, true);
+    assert.equal(result.persistenceError, failure);
+    assert.deepEqual(events, ["release", "present", "persist"]);
 });
 
 test("keeps a failed workflow checkpoint retryable", () => {

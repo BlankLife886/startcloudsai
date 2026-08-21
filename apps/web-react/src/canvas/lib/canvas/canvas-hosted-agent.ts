@@ -1,4 +1,5 @@
-import type { CanvasAgentGraphEdge, CanvasAgentGraphNode, CanvasAgentOp, CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
+import { validCanvasAgentOps } from "./canvas-agent-op-validation.js";
+import type { CanvasAgentApplyResult, CanvasAgentGraphEdge, CanvasAgentGraphNode, CanvasAgentOp, CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
 import { nanoid } from "nanoid";
 
 const MAX_NODES = 40;
@@ -6,6 +7,7 @@ const MAX_CONNECTIONS = 60;
 const MAX_TEXT = 240;
 
 export type CompactCanvasSnapshot = {
+    projectId?: string;
     title: string;
     truncated: boolean;
     selectedNodeIds: string[];
@@ -34,6 +36,7 @@ export function compactCanvasSnapshot(snapshot: CanvasAgentSnapshot | null | und
     const nodes = [...(snapshot?.nodes || [])].sort((left, right) => Number(selected.has(right.id)) - Number(selected.has(left.id)));
     const truncated = nodes.length > MAX_NODES;
     return {
+        ...(snapshot?.projectId ? { projectId: snapshot.projectId } : {}),
         title: snapshot?.title || "",
         truncated,
         selectedNodeIds: (snapshot?.selectedNodeIds || []).slice(0, MAX_NODES),
@@ -75,7 +78,7 @@ function compactText(value: unknown) {
     return text.length > MAX_TEXT ? `${text.slice(0, MAX_TEXT)}…` : text;
 }
 
-const OP_TYPES = new Set(["add_node", "update_node", "delete_node", "connect_nodes", "delete_connections", "select_nodes", "set_viewport", "run_generation", "create_generation_flow", "create_graph", "move_nodes", "resize_node"]);
+const OP_TYPES = new Set(["add_node", "update_node", "delete_node", "connect_nodes", "delete_connections", "select_nodes", "set_viewport", "run_generation", "create_generation_flow", "create_graph", "arrange_nodes", "move_nodes", "resize_node"]);
 const NODE_TYPES = new Set(["text", "image", "config", "group"]);
 const TYPE_ALIASES: Record<string, string> = {
     connect: "connect_nodes",
@@ -160,6 +163,12 @@ export function normalizeCanvasAgentOps(raw: unknown): CanvasAgentOp[] {
             const nodes = normalizeGraphNodes(merged.nodes);
             if (!nodes.length) continue;
             ops.push({ type: "create_graph", nodes, edges: normalizeGraphEdges(merged.edges, merged.connections, merged.links) });
+            if (ops.length >= 24) break;
+            continue;
+        }
+        if (type === "arrange_nodes") {
+            const direction = String(merged.direction || "").trim().toUpperCase() === "TB" ? "TB" : "LR";
+            ops.push({ type: "arrange_nodes", scope: merged.scope === "selection" ? "selection" : "all", direction });
             if (ops.length >= 24) break;
             continue;
         }
@@ -268,17 +277,55 @@ export async function runCanvasAgentTool(request: CanvasAgentToolRequest, canvas
     const { ops } = parseCanvasAgentOpsPayload(request.arguments);
     if (!ops.length) throw new Error("没有解析出有效的 ops");
     const before = liveSnapshot(canvas);
-    const after = canvas.applyOps(ops);
+    const validated = validCanvasAgentOps(before, ops);
+    if (!validated.ops.length) throw new Error("操作没有引用当前画布中的有效节点或连线");
+    const after = canvas.applyOps(validated.ops) as CanvasAgentApplyResult;
+    const changes = canvasMutationStats(before, after);
+    const applied = Number.isInteger(after.agentReport?.applied) ? after.agentReport.applied : changes.total > 0 ? validated.ops.length : 0;
     return {
-        applied: ops.length,
-        addedNodes: after.nodes.length - before.nodes.length,
-        addedConnections: after.connections.length - before.connections.length,
+        requested: ops.length,
+        applied,
+        ignored: ops.length - applied,
+        rejected: validated.rejected,
+        ...(after.agentReport?.errors?.length ? { errors: after.agentReport.errors } : {}),
+        addedNodes: changes.addedNodes,
+        addedConnections: changes.addedConnections,
+        changedNodes: changes.changedNodes,
+        removedNodes: changes.removedNodes,
+        changedConnections: changes.changedConnections,
+        removedConnections: changes.removedConnections,
         snapshot: compactCanvasSnapshot(after),
     };
 }
 
 function liveSnapshot(canvas: CanvasAgentToolCanvas) {
     return canvas.readSnapshot?.() || canvas.snapshot;
+}
+
+function canvasMutationStats(before: CanvasAgentSnapshot, after: CanvasAgentSnapshot) {
+    const beforeNodes = new Map(before.nodes.map((node) => [node.id, JSON.stringify(node)]));
+    const afterNodes = new Map(after.nodes.map((node) => [node.id, JSON.stringify(node)]));
+    const addedNodes = [...afterNodes.keys()].filter((id) => !beforeNodes.has(id)).length;
+    const removedNodes = [...beforeNodes.keys()].filter((id) => !afterNodes.has(id)).length;
+    const updatedNodes = [...afterNodes].filter(([id, value]) => beforeNodes.has(id) && beforeNodes.get(id) !== value).length;
+    const connectionSignature = (connection: CanvasAgentSnapshot["connections"][number]) => `${connection.id}\0${connection.fromNodeId}\0${connection.toNodeId}`;
+    const beforeConnections = new Set(before.connections.map(connectionSignature));
+    const afterConnections = new Set(after.connections.map(connectionSignature));
+    const addedConnections = [...afterConnections].filter((signature) => !beforeConnections.has(signature)).length;
+    const removedConnections = [...beforeConnections].filter((signature) => !afterConnections.has(signature)).length;
+    const selectionChanged = JSON.stringify(before.selectedNodeIds) !== JSON.stringify(after.selectedNodeIds);
+    const viewportChanged = before.viewport.x !== after.viewport.x || before.viewport.y !== after.viewport.y || before.viewport.k !== after.viewport.k;
+    const changedNodes = addedNodes + removedNodes + updatedNodes;
+    const changedConnections = addedConnections + removedConnections;
+    return {
+        total: changedNodes + changedConnections + Number(selectionChanged) + Number(viewportChanged),
+        addedNodes,
+        changedNodes,
+        removedNodes,
+        addedConnections,
+        changedConnections,
+        removedConnections,
+    };
 }
 
 function runGeneration(rawArguments: string, canvas: CanvasAgentToolCanvas) {

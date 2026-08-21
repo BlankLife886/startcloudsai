@@ -76,6 +76,7 @@ func InsertLedgerEntry(ctx context.Context, q Q, userID uuid.UUID, kind string, 
 		userID, kind, deltaCents, balanceAfterCents, sourceType, sourceID, reason, creditBucket))
 }
 
+// #nosec G101 -- this constant contains SQL column names, not credentials.
 const taskCreditReservationCols = `task_id, generation, normal_cents, trial_cents,
 	normal_remaining_cents, trial_remaining_cents, trial_feature_key, created_at, updated_at`
 

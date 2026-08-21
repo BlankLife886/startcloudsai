@@ -51,6 +51,7 @@ const (
 	typeCleanupObjectJobs       = "cron:cleanup_object_jobs"
 	typeCleanupCanvasRuns       = "cron:cleanup_canvas_workflow_runs"
 	typeDispatchAssistantOutbox = "cron:dispatch_assistant_run_outbox"
+	typeDispatchAssistantFiles  = "cron:dispatch_assistant_files"
 
 	taskCompletionLease      = 5 * time.Minute
 	taskLease                = 2 * time.Minute
@@ -147,6 +148,9 @@ func (w *Worker) Run() error {
 	if err := w.recoverAssistantRuns(startupCtx); err != nil {
 		return fmt.Errorf("recover assistant runs: %w", err)
 	}
+	if err := w.dispatchAssistantFiles(startupCtx); err != nil {
+		return fmt.Errorf("recover assistant files: %w", err)
+	}
 	if _, err := w.expireTrialCampaigns(startupCtx); err != nil {
 		return fmt.Errorf("expire trial campaigns: %w", err)
 	}
@@ -165,6 +169,7 @@ func (w *Worker) Run() error {
 	mux.HandleFunc(taskflow.TypeRunTask, w.handleRunTask)
 	mux.HandleFunc(taskflow.TypePollImageTask, w.handlePollImageTask)
 	mux.HandleFunc(taskflow.TypeRunAssistant, w.handleRunAssistant)
+	mux.HandleFunc(taskflow.TypeIngestAssistantFile, w.handleIngestAssistantFile)
 	mux.HandleFunc(typeCleanupSessions, w.handleCleanupSessions)
 	mux.HandleFunc(typeReapZombies, w.handleReapZombies)
 	mux.HandleFunc(typeEnsureImagePolls, w.handleEnsureImagePolls)
@@ -175,6 +180,7 @@ func (w *Worker) Run() error {
 	mux.HandleFunc(typeCleanupObjectJobs, w.handleCleanupObjectJobs)
 	mux.HandleFunc(typeCleanupCanvasRuns, w.handleCleanupCanvasRuns)
 	mux.HandleFunc(typeDispatchAssistantOutbox, w.handleDispatchAssistantOutbox)
+	mux.HandleFunc(typeDispatchAssistantFiles, w.handleDispatchAssistantFiles)
 
 	provider := &staticPeriodicConfigProvider{}
 	mgr, err := asynq.NewPeriodicTaskManager(asynq.PeriodicTaskManagerOpts{
@@ -245,6 +251,7 @@ func (p *staticPeriodicConfigProvider) GetConfigs() ([]*asynq.PeriodicTaskConfig
 		{Cronspec: "@every 5m", Task: asynq.NewTask(typeCleanupObjectJobs, nil, asynq.MaxRetry(3))},
 		{Cronspec: "@every 1h", Task: asynq.NewTask(typeCleanupCanvasRuns, nil, asynq.MaxRetry(0))},
 		{Cronspec: "@every 15s", Task: asynq.NewTask(typeDispatchAssistantOutbox, nil, asynq.MaxRetry(0))},
+		{Cronspec: "@every 15s", Task: asynq.NewTask(typeDispatchAssistantFiles, nil, asynq.MaxRetry(0))},
 	}, nil
 }
 

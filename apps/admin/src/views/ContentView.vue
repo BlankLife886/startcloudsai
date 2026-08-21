@@ -1,12 +1,30 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
+import {
+  Bell,
+  Delete,
+  Document,
+  EditPen,
+  Plus,
+  Refresh,
+  Search,
+} from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import AdminDialog from "@/components/AdminDialog.vue";
 import { normalizeList, request } from "@/request";
 import { useClientPagination } from "@/useClientPagination";
-import { formatTime } from "@/utils";
+import { formatShortTime } from "@/utils";
 
-const activeTab = ref("announcements");
+type ContentTab = "announcements" | "changelog";
+type AnnStatusFilter = "all" | "live" | "pending" | "ended" | "disabled";
+type LogTagFilter = "all" | "feature" | "experience" | "highlight";
+
+const activeTab = ref<ContentTab>("announcements");
+const query = ref("");
+const annStatusFilter = ref<AnnStatusFilter>("all");
+const logTagFilter = ref<LogTagFilter>("all");
+const switchingAnnId = ref("");
+const switchingLogId = ref("");
 
 // ---------- 公告 ----------
 interface Announcement {
@@ -118,10 +136,6 @@ function defaultAnnouncementForm(): AnnouncementForm {
 const annLoading = ref(false);
 const annError = ref("");
 const announcements = ref<Announcement[]>([]);
-const announcementPagination = useClientPagination(
-  () => announcements.value,
-  10,
-);
 
 async function loadAnnouncements() {
   annLoading.value = true;
@@ -193,14 +207,23 @@ function announcementConfigOf(item: Announcement): AnnouncementConfig {
 
 function announcementState(item: Announcement) {
   const now = Date.now();
-  if (item.active === false) return { label: "已停用", type: "info" as const };
+  if (item.active === false) {
+    return { key: "disabled" as const, label: "已停用", tone: "info" as const };
+  }
   if (item.startsAt && new Date(item.startsAt).getTime() > now) {
-    return { label: "待生效", type: "warning" as const };
+    return { key: "pending" as const, label: "待生效", tone: "warning" as const };
   }
   if (item.endsAt && new Date(item.endsAt).getTime() < now) {
-    return { label: "已结束", type: "info" as const };
+    return { key: "ended" as const, label: "已结束", tone: "info" as const };
   }
-  return { label: "展示中", type: "success" as const };
+  return { key: "live" as const, label: "展示中", tone: "success" as const };
+}
+
+function scheduleLabel(item: Announcement) {
+  if (!item.startsAt && !item.endsAt) return "长期有效";
+  const start = item.startsAt ? formatShortTime(item.startsAt) : "立即开始";
+  const end = item.endsAt ? formatShortTime(item.endsAt) : "不限期";
+  return `${start} → ${end}`;
 }
 
 function openAnnCreate() {
@@ -320,7 +343,6 @@ const TAG_LABELS: Record<string, string> = {
 const logLoading = ref(false);
 const logError = ref("");
 const changelog = ref<ChangelogEntry[]>([]);
-const changelogPagination = useClientPagination(() => changelog.value, 10);
 
 async function loadChangelog() {
   logLoading.value = true;
@@ -354,10 +376,55 @@ const logForm = reactive({
   highlight: false,
 });
 
+function parseVersionParts(version: string) {
+  return String(version || "")
+    .trim()
+    .split(".")
+    .map((part) => Number.parseInt(part.replace(/\D.*$/, ""), 10))
+    .filter((part) => Number.isFinite(part));
+}
+
+function compareVersions(left: string, right: string) {
+  const a = parseVersionParts(left);
+  const b = parseVersionParts(right);
+  const length = Math.max(a.length, b.length, 3);
+  for (let index = 0; index < length; index += 1) {
+    const diff = (a[index] ?? 0) - (b[index] ?? 0);
+    if (diff) return diff;
+  }
+  return 0;
+}
+
+function formatVersion(parts: number[]) {
+  const [major = 1, minor = 0, patch = 0] = parts;
+  return `${major}.${minor}.${patch}`;
+}
+
+function nextChangelogVersion() {
+  const versions = changelog.value
+    .map((entry) => entry.version.trim())
+    .filter(Boolean);
+  if (!versions.length) return "1.0.0";
+  const latest = versions.reduce((best, current) =>
+    compareVersions(current, best) > 0 ? current : best,
+  );
+  const parts = parseVersionParts(latest);
+  if (!parts.length) return "1.0.0";
+  while (parts.length < 3) parts.push(0);
+  parts[2] += 1;
+  const used = new Set(versions);
+  let next = formatVersion(parts);
+  while (used.has(next)) {
+    parts[2] += 1;
+    next = formatVersion(parts);
+  }
+  return next;
+}
+
 function openLogCreate() {
   logEditingId.value = null;
   Object.assign(logForm, {
-    version: "",
+    version: nextChangelogVersion(),
     date: new Date().toISOString().slice(0, 10),
     tag: "feature",
     title: "",
@@ -437,6 +504,139 @@ async function removeLog(entry: ChangelogEntry) {
   await loadChangelog();
 }
 
+const filteredAnnouncements = computed(() => {
+  const needle = query.value.trim().toLowerCase();
+  return announcements.value.filter((item) => {
+    if (
+      annStatusFilter.value !== "all" &&
+      announcementState(item).key !== annStatusFilter.value
+    ) {
+      return false;
+    }
+    if (!needle) return true;
+    const config = announcementConfigOf(item);
+    return [item.title, item.body, PLACEMENT_LABELS[config.placement], FREQUENCY_LABELS[config.frequency]]
+      .join(" ")
+      .toLowerCase()
+      .includes(needle);
+  });
+});
+
+const filteredChangelog = computed(() => {
+  const needle = query.value.trim().toLowerCase();
+  return changelog.value.filter((entry) => {
+    if (logTagFilter.value === "highlight" && !entry.highlight) return false;
+    if (
+      (logTagFilter.value === "feature" || logTagFilter.value === "experience") &&
+      entry.tag !== logTagFilter.value
+    ) {
+      return false;
+    }
+    if (!needle) return true;
+    return [
+      entry.version,
+      entry.title,
+      entry.summary,
+      entry.date,
+      TAG_LABELS[entry.tag],
+      ...(entry.items ?? []),
+    ]
+      .join(" ")
+      .toLowerCase()
+      .includes(needle);
+  });
+});
+
+const announcementPagination = useClientPagination(
+  () => filteredAnnouncements.value,
+  10,
+);
+const changelogPagination = useClientPagination(() => filteredChangelog.value, 10);
+
+const liveAnnCount = computed(
+  () => announcements.value.filter((item) => announcementState(item).key === "live").length,
+);
+const highlightCount = computed(
+  () => changelog.value.filter((entry) => entry.highlight).length,
+);
+
+const hasFilters = computed(() => {
+  if (query.value.trim()) return true;
+  return activeTab.value === "announcements"
+    ? annStatusFilter.value !== "all"
+    : logTagFilter.value !== "all";
+});
+
+const currentError = computed(() =>
+  activeTab.value === "announcements" ? annError.value : logError.value,
+);
+const currentLoading = computed(() =>
+  activeTab.value === "announcements" ? annLoading.value : logLoading.value,
+);
+const currentPager = computed(() =>
+  activeTab.value === "announcements" ? announcementPagination : changelogPagination,
+);
+
+function clearFilters() {
+  query.value = "";
+  annStatusFilter.value = "all";
+  logTagFilter.value = "all";
+}
+
+function refreshAll() {
+  void loadAnnouncements();
+  void loadChangelog();
+}
+
+function retryCurrent() {
+  if (activeTab.value === "announcements") return loadAnnouncements();
+  return loadChangelog();
+}
+
+function openCreate() {
+  if (activeTab.value === "announcements") openAnnCreate();
+  else openLogCreate();
+}
+
+async function toggleAnnActive(item: Announcement, active: boolean) {
+  if (switchingAnnId.value) return;
+  switchingAnnId.value = item.id;
+  try {
+    await request(`/api/v1/admin/announcements/${item.id}`, {
+      method: "PATCH",
+      body: { active },
+    });
+    item.active = active;
+    ElMessage.success(active ? "公告已启用" : "公告已停用");
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "公告状态更新失败");
+  } finally {
+    switchingAnnId.value = "";
+  }
+}
+
+async function toggleLogHighlight(entry: ChangelogEntry, highlight: boolean) {
+  if (switchingLogId.value) return;
+  switchingLogId.value = entry.id;
+  try {
+    await request(`/api/v1/admin/changelog/${entry.id}`, {
+      method: "PATCH",
+      body: { highlight },
+    });
+    entry.highlight = highlight;
+    ElMessage.success(highlight ? "已设为焦点版本" : "已取消焦点");
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "更新说明保存失败");
+  } finally {
+    switchingLogId.value = "";
+  }
+}
+
+watch([query, annStatusFilter, logTagFilter, activeTab], () => {
+  announcementPagination.reset();
+  changelogPagination.reset();
+});
+
 onMounted(() => {
   void loadAnnouncements();
   void loadChangelog();
@@ -444,181 +644,250 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="page">
-    <el-tabs v-model="activeTab">
-      <el-tab-pane label="公告" name="announcements">
-        <PageCard
-          title="全站公告"
-          subtitle="发布后出现在用户通知中心的「公告」页签，不会混进通知列表"
-        >
-          <template #actions>
-            <el-button type="primary" @click="openAnnCreate">发布公告</el-button>
-          </template>
-
-          <ListError :error="annError || null" :loading="annLoading" @retry="loadAnnouncements" />
-
-          <AdminListShell
-            class="content-list-shell"
-            :has-prev="announcementPagination.hasPrev.value"
-            :has-next="announcementPagination.hasNext.value"
-            :loading="annLoading"
-            :page="announcementPagination.page.value"
-            :count="announcementPagination.items.value.length"
-            :total="announcementPagination.total.value"
-            @prev="announcementPagination.prev"
-            @next="announcementPagination.next"
+  <div class="page content-admin-page">
+    <PageCard>
+      <div class="content-toolbar">
+        <div class="content-tabs" role="tablist" aria-label="内容类型">
+          <button
+            type="button"
+            role="tab"
+            class="content-tab"
+            :class="{ 'is-active': activeTab === 'announcements' }"
+            :aria-selected="activeTab === 'announcements'"
+            @click="activeTab = 'announcements'"
           >
-            <div class="content-table-shell">
-              <el-table
-                v-loading="annLoading"
-                class="content-table"
-                :data="announcementPagination.items.value"
-                height="100%"
-                size="small"
-              >
-                <template #empty>
-                  <el-empty description="暂无公告" :image-size="60">
-                    <div class="empty-sub">点击右上角「发布公告」创建第一条公告</div>
-                  </el-empty>
-                </template>
-                <el-table-column label="标题" min-width="190" align="left" header-align="left" show-overflow-tooltip>
-                  <template #default="{ row }">
-                    <span class="cell-text">{{ row.title }}</span>
-                  </template>
-                </el-table-column>
-                <el-table-column label="内容" min-width="240" align="left" header-align="left" show-overflow-tooltip>
-                  <template #default="{ row }">
-                    <span class="cell-muted">{{ row.body }}</span>
-                  </template>
-                </el-table-column>
-                <el-table-column label="展示方式" width="120" align="left" header-align="left">
-                  <template #default="{ row }">
-                    <span class="cell-text">{{
-                      PLACEMENT_LABELS[announcementConfigOf(row as Announcement).placement]
-                    }}</span>
-                  </template>
-                </el-table-column>
-                <el-table-column label="展示频率" width="150" align="left" header-align="left">
-                  <template #default="{ row }">
-                    <span class="cell-text">{{
-                      FREQUENCY_LABELS[announcementConfigOf(row as Announcement).frequency]
-                    }}</span>
-                  </template>
-                </el-table-column>
-                <el-table-column label="状态" width="90" align="left" header-align="left">
-                  <template #default="{ row }">
-                    <el-tag :type="announcementState(row as Announcement).type" size="small">
-                      {{ announcementState(row as Announcement).label }}
-                    </el-tag>
-                  </template>
-                </el-table-column>
-                <el-table-column label="创建时间" width="170" align="left" header-align="left">
-                  <template #default="{ row }">
-                    <span class="cell-text tnum">{{ formatTime(row.createdAt) }}</span>
-                  </template>
-                </el-table-column>
-                <el-table-column label="操作" width="140" fixed="right" align="left" header-align="left">
-                  <template #default="{ row }">
-                    <el-button size="small" @click="openAnnEdit(row as Announcement)">编辑</el-button>
-                    <el-button size="small" type="danger" plain @click="removeAnn(row as Announcement)">删除</el-button>
-                  </template>
-                </el-table-column>
-              </el-table>
-            </div>
-          </AdminListShell>
-        </PageCard>
-      </el-tab-pane>
-
-      <el-tab-pane label="更新说明" name="changelog">
-        <PageCard
-          title="更新说明"
-          subtitle="用户端「更新说明」页的版本条目。开发完成用户端发版后，在这里发布版本；正在使用网站的用户会收到刷新提示。"
-        >
-          <template #actions>
-            <el-button type="primary" @click="openLogCreate">发布版本</el-button>
-          </template>
-
-          <ListError :error="logError || null" :loading="logLoading" @retry="loadChangelog" />
-
-          <AdminListShell
-            class="content-list-shell"
-            :has-prev="changelogPagination.hasPrev.value"
-            :has-next="changelogPagination.hasNext.value"
-            :loading="logLoading"
-            :page="changelogPagination.page.value"
-            :count="changelogPagination.items.value.length"
-            :total="changelogPagination.total.value"
-            @prev="changelogPagination.prev"
-            @next="changelogPagination.next"
+            公告
+            <em class="tnum">{{ announcements.length }}</em>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            class="content-tab"
+            :class="{ 'is-active': activeTab === 'changelog' }"
+            :aria-selected="activeTab === 'changelog'"
+            @click="activeTab = 'changelog'"
           >
-            <div class="content-table-shell">
-              <el-table
-                v-loading="logLoading"
-                class="content-table"
-                :data="changelogPagination.items.value"
-                height="100%"
-                size="small"
+            更新说明
+            <em class="tnum">{{ changelog.length }}</em>
+          </button>
+        </div>
+        <div class="content-toolbar__right">
+          <el-input
+            v-model="query"
+            :prefix-icon="Search"
+            clearable
+            :placeholder="
+              activeTab === 'announcements'
+                ? '搜索公告标题或正文'
+                : '搜索版本、标题或条目'
+            "
+          />
+          <el-select
+            v-if="activeTab === 'announcements'"
+            v-model="annStatusFilter"
+            aria-label="公告状态"
+          >
+            <el-option label="全部状态" value="all" />
+            <el-option label="展示中" value="live" />
+            <el-option label="待生效" value="pending" />
+            <el-option label="已结束" value="ended" />
+            <el-option label="已停用" value="disabled" />
+          </el-select>
+          <el-select v-else v-model="logTagFilter" aria-label="更新类型">
+            <el-option label="全部类型" value="all" />
+            <el-option label="新功能" value="feature" />
+            <el-option label="体验优化" value="experience" />
+            <el-option label="焦点版本" value="highlight" />
+          </el-select>
+          <el-button v-if="hasFilters" @click="clearFilters">清除筛选</el-button>
+          <el-button :icon="Refresh" :loading="currentLoading" @click="refreshAll">
+            刷新
+          </el-button>
+          <el-button type="primary" :icon="Plus" @click="openCreate">
+            {{ activeTab === "announcements" ? "发布公告" : "发布版本" }}
+          </el-button>
+        </div>
+      </div>
+
+      <p class="content-legend">
+        <template v-if="activeTab === 'announcements'">
+          公告出现在用户通知中心，不会混进通知列表。当前展示中
+          <em class="tnum">{{ liveAnnCount }}</em>
+          / {{ announcements.length }} 条。
+        </template>
+        <template v-else>
+          发布后同步到用户端更新说明页，打开中的用户会收到刷新提示。焦点版本
+          <em class="tnum">{{ highlightCount }}</em>
+          条。
+        </template>
+      </p>
+
+      <ListError
+        :error="currentError || null"
+        :loading="currentLoading"
+        @retry="retryCurrent"
+      />
+
+      <div v-loading="currentLoading" class="content-board">
+        <div
+          v-if="activeTab === 'announcements' && announcementPagination.items.value.length"
+          class="ann-grid"
+        >
+          <article
+            v-for="item in announcementPagination.items.value"
+            :key="item.id"
+            class="ann-card"
+            :class="`is-${announcementState(item).key}`"
+          >
+            <header class="ann-card__head">
+              <div>
+                <h3>{{ item.title }}</h3>
+                <p>{{ item.body || "未填写正文" }}</p>
+              </div>
+              <span
+                class="status-chip"
+                :class="`is-${announcementState(item).tone}`"
               >
-                <template #empty>
-                  <el-empty description="暂无更新说明" :image-size="60">
-                    <div class="empty-sub">点击右上角「发布版本」写入第一条更新说明</div>
-                  </el-empty>
-                </template>
-                <el-table-column label="版本" width="100" align="left" header-align="left">
-                  <template #default="{ row }">
-                    <span class="cell-num">{{ row.version }}</span>
-                  </template>
-                </el-table-column>
-                <el-table-column label="日期" width="120" align="left" header-align="left">
-                  <template #default="{ row }">
-                    <span class="cell-text tnum">{{ row.date }}</span>
-                  </template>
-                </el-table-column>
-                <el-table-column label="类型" width="100" align="left" header-align="left">
-                  <template #default="{ row }">
-                    <el-tag :type="row.tag === 'feature' ? 'primary' : 'success'" size="small">
-                      {{ TAG_LABELS[row.tag] ?? row.tag }}
-                    </el-tag>
-                  </template>
-                </el-table-column>
-                <el-table-column label="标题" min-width="160" align="left" header-align="left" show-overflow-tooltip>
-                  <template #default="{ row }">
-                    <span class="cell-text">{{ row.title }}</span>
-                  </template>
-                </el-table-column>
-                <el-table-column label="焦点" width="80" align="left" header-align="left">
-                  <template #default="{ row }">
-                    <el-tag v-if="row.highlight" type="warning" size="small">焦点</el-tag>
-                    <span v-else class="cell-muted">—</span>
-                  </template>
-                </el-table-column>
-                <el-table-column label="摘要" min-width="220" align="left" header-align="left" show-overflow-tooltip>
-                  <template #default="{ row }">
-                    <span class="cell-muted">{{ row.summary }}</span>
-                  </template>
-                </el-table-column>
-                <el-table-column label="条目数" width="88" align="left" header-align="left">
-                  <template #default="{ row }">
-                    <span class="cell-num tnum">{{ row.items?.length ?? 0 }}</span>
-                  </template>
-                </el-table-column>
-                <el-table-column label="操作" width="140" fixed="right" align="left" header-align="left">
-                  <template #default="{ row }">
-                    <el-button size="small" @click="openLogEdit(row as ChangelogEntry)">编辑</el-button>
-                    <el-button size="small" type="danger" plain @click="removeLog(row as ChangelogEntry)">删除</el-button>
-                  </template>
-                </el-table-column>
-              </el-table>
+                {{ announcementState(item).label }}
+              </span>
+            </header>
+            <div class="ann-card__meta">
+              <span>{{ PLACEMENT_LABELS[announcementConfigOf(item).placement] }}</span>
+              <span>{{ FREQUENCY_LABELS[announcementConfigOf(item).frequency] }}</span>
+              <span>{{ LAYOUT_LABELS[announcementConfigOf(item).layout] }}</span>
+              <span>{{ scheduleLabel(item) }}</span>
+              <span class="tnum">{{ formatShortTime(item.createdAt) }}</span>
             </div>
-          </AdminListShell>
-        </PageCard>
-      </el-tab-pane>
-    </el-tabs>
+            <footer class="ann-card__foot">
+              <label class="content-switch">
+                <span>{{ item.active === false ? "已停用" : "已启用" }}</span>
+                <el-switch
+                  :model-value="item.active !== false"
+                  :loading="switchingAnnId === item.id"
+                  @change="toggleAnnActive(item, Boolean($event))"
+                />
+              </label>
+              <div class="content-actions">
+                <el-button :icon="EditPen" @click="openAnnEdit(item)">编辑</el-button>
+                <el-button
+                  type="danger"
+                  plain
+                  :icon="Delete"
+                  aria-label="删除公告"
+                  @click="removeAnn(item)"
+                />
+              </div>
+            </footer>
+          </article>
+        </div>
+
+        <div
+          v-else-if="activeTab === 'changelog' && changelogPagination.items.value.length"
+          class="log-list"
+        >
+          <article
+            v-for="entry in changelogPagination.items.value"
+            :key="entry.id"
+            class="log-card"
+            :class="{ 'is-highlight': entry.highlight }"
+          >
+            <div class="log-card__version">
+              <strong>{{ entry.version }}</strong>
+              <span class="tnum">{{ entry.date }}</span>
+            </div>
+            <div class="log-card__body">
+              <header>
+                <h3>{{ entry.title }}</h3>
+                <div class="log-card__tags">
+                  <span
+                    class="status-chip"
+                    :class="entry.tag === 'feature' ? 'is-violet' : 'is-success'"
+                  >
+                    {{ TAG_LABELS[entry.tag] ?? entry.tag }}
+                  </span>
+                  <span v-if="entry.highlight" class="status-chip is-warning">
+                    焦点
+                  </span>
+                </div>
+              </header>
+              <p>{{ entry.summary || "未填写摘要" }}</p>
+              <span class="log-card__count tnum">
+                {{ entry.items?.length || 0 }} 条改动
+              </span>
+            </div>
+            <footer class="log-card__foot">
+              <label class="content-switch">
+                <span>焦点</span>
+                <el-switch
+                  :model-value="Boolean(entry.highlight)"
+                  :loading="switchingLogId === entry.id"
+                  @change="toggleLogHighlight(entry, Boolean($event))"
+                />
+              </label>
+              <div class="content-actions">
+                <el-button :icon="EditPen" @click="openLogEdit(entry)">编辑</el-button>
+                <el-button
+                  type="danger"
+                  plain
+                  :icon="Delete"
+                  aria-label="删除更新说明"
+                  @click="removeLog(entry)"
+                />
+              </div>
+            </footer>
+          </article>
+        </div>
+
+        <div v-else class="content-empty">
+          <el-icon>
+            <component :is="activeTab === 'announcements' ? Bell : Document" />
+          </el-icon>
+          <strong>
+            {{
+              activeTab === "announcements"
+                ? announcements.length
+                  ? "没有匹配的公告"
+                  : "还没有公告"
+                : changelog.length
+                  ? "没有匹配的更新说明"
+                  : "还没有更新说明"
+            }}
+          </strong>
+          <span>
+            {{
+              hasFilters
+                ? "调整筛选条件后再试"
+                : activeTab === "announcements"
+                  ? "发布后会出现在用户通知中心的公告页签"
+                  : "发布版本后，打开中的用户端会收到刷新提示"
+            }}
+          </span>
+          <el-button v-if="hasFilters" @click="clearFilters">清除筛选</el-button>
+          <el-button v-else type="primary" :icon="Plus" @click="openCreate">
+            {{ activeTab === "announcements" ? "发布公告" : "发布版本" }}
+          </el-button>
+        </div>
+      </div>
+
+      <footer class="content-footer">
+        <CursorPager
+          :has-prev="currentPager.hasPrev.value"
+          :has-next="currentPager.hasNext.value"
+          :loading="currentLoading"
+          :page="currentPager.page.value"
+          :count="currentPager.items.value.length"
+          :total="currentPager.total.value"
+          @prev="currentPager.prev"
+          @next="currentPager.next"
+        />
+      </footer>
+    </PageCard>
 
     <AdminDialog
       v-model="annDialogVisible"
       :title="annEditingId ? '编辑公告配置' : '发布公告'"
       subtitle="左侧编辑，右侧实时预览用户端效果"
+      :icon="Bell"
       width="min(1060px, calc(100vw - 32px))"
       nested-scroll
       confirm-text="保存"
@@ -850,6 +1119,7 @@ onMounted(() => {
       v-model="logDialogVisible"
       :title="logEditingId ? '编辑更新说明' : '发布版本'"
       subtitle="发布新版本后，已打开网站的用户会收到刷新提示"
+      :icon="Document"
       width="min(960px, calc(100vw - 32px))"
       nested-scroll
       :confirm-text="logEditingId ? '保存' : '发布'"
@@ -859,7 +1129,14 @@ onMounted(() => {
       <el-form class="changelog-editor" label-position="top">
         <div class="changelog-editor__meta">
           <el-form-item label="版本号" required>
-            <el-input v-model="logForm.version" placeholder="如 3.3.0" />
+            <el-input
+              v-model="logForm.version"
+              maxlength="32"
+              placeholder="如 3.3.1"
+            />
+            <small v-if="!logEditingId" class="changelog-editor__hint">
+              已按上一版自动递增，可直接修改
+            </small>
           </el-form-item>
           <el-form-item label="日期" required>
             <el-date-picker
@@ -912,102 +1189,352 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.page :deep(.el-tabs__header) {
-  margin-bottom: 14px;
-}
-
-.content-list-shell {
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: calc(var(--radius-card) - 4px);
-  background: var(--surface);
-  box-shadow: var(--shadow-sm);
-}
-
-.content-list-shell :deep(.admin-list-shell__footer) {
-  min-height: 56px;
-  padding: 8px 18px;
-  background: var(--surface);
-}
-
-.content-list-shell :deep(.cursor-pager__meta strong) {
-  color: var(--ink);
-}
-
-.content-table-shell {
+.content-admin-page {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
   height: 100%;
-  min-width: 0;
+  min-height: 0;
+  padding: 0;
+}
+
+.content-admin-page :deep(.page-card) {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
   overflow: hidden;
 }
 
-.content-table :deep(.el-table__inner-wrapper::before) {
-  display: none;
+.content-admin-page :deep(.page-card__body) {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
 }
 
-.content-table :deep(.el-table__header-wrapper th.el-table__cell),
-.content-table :deep(.el-table__body td.el-table__cell),
-.content-table :deep(.el-table .cell) {
-  text-align: left !important;
+.content-toolbar {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 
-.content-table :deep(.el-table .cell) {
-  display: block;
-  justify-content: flex-start;
-  padding-left: 12px;
-  padding-right: 12px;
-}
-
-.content-table :deep(.el-table__header-wrapper th.el-table__cell) {
-  height: 48px;
-  padding: 0;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--ink-3);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-}
-
-.content-table :deep(.el-table__body .el-table__cell) {
-  padding: 10px 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
-}
-
-.content-table :deep(.el-table__row td.el-table__cell) {
-  height: 56px;
-}
-
-.content-table :deep(.el-table__row:hover > td.el-table__cell) {
+.content-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
   background: var(--surface-2);
 }
 
-.content-table :deep(.el-table__body tr.el-table__row:last-child td.el-table__cell) {
-  border-bottom-color: transparent;
+.content-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--ink-2);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
 }
 
-.cell-text,
-.cell-num,
-.cell-muted {
+.content-tab em {
+  font-style: normal;
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.content-tab.is-active {
+  background: var(--accent);
+  color: var(--accent-on);
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+.content-tab.is-active em {
+  color: color-mix(in srgb, var(--accent-on) 72%, transparent);
+}
+
+.content-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.content-toolbar__right {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.content-toolbar__right .el-input {
+  width: 220px;
+}
+
+.content-toolbar__right .el-select {
+  width: 128px;
+}
+
+.content-legend {
+  flex: 0 0 auto;
+  margin: 12px 0 14px;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.content-legend em {
+  color: var(--ink);
+  font-style: normal;
+  font-weight: 700;
+}
+
+.content-board {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.ann-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+  align-content: start;
+  gap: 12px;
+}
+
+.ann-card,
+.log-card {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface-2);
+  box-shadow: inset 3px 0 0 transparent;
+}
+
+.ann-card:hover,
+.log-card:hover {
+  border-color: var(--border-strong);
+}
+
+.ann-card.is-live {
+  box-shadow: inset 3px 0 0 var(--success);
+}
+
+.ann-card.is-pending {
+  box-shadow: inset 3px 0 0 var(--warning);
+}
+
+.ann-card.is-disabled,
+.ann-card.is-ended {
+  opacity: 0.78;
+}
+
+.log-card {
+  display: grid;
+  grid-template-columns: 108px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+}
+
+.log-card.is-highlight {
+  border-color: color-mix(in srgb, var(--warning) 28%, var(--border));
+  background: color-mix(in srgb, var(--warning-soft) 45%, var(--surface-2));
+}
+
+.ann-card__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ann-card__head h3,
+.log-card__body h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.35;
+}
+
+.log-card__body h3 {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.cell-text {
+.ann-card__head p,
+.log-card__body p {
+  margin: 6px 0 0;
   color: var(--ink-2);
-  font-size: 12px;
-}
-
-.cell-num {
-  color: var(--ink);
   font-size: 13px;
-  font-weight: 700;
+  line-height: 1.55;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
-.cell-muted {
+.log-card__body p {
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
+}
+
+.log-card__count {
+  display: inline-flex;
+  margin-top: 8px;
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.ann-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
   color: var(--ink-3);
   font-size: 12px;
   font-weight: 600;
+}
+
+.ann-card__foot,
+.log-card__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: auto;
+}
+
+.log-card__version {
+  display: grid;
+  gap: 4px;
+}
+
+.log-card__version strong {
+  font-size: 18px;
+  font-weight: 760;
+  letter-spacing: -0.04em;
+}
+
+.log-card__version span {
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.log-card__body header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.log-card__tags {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-3);
+  color: var(--ink-2);
+  font-size: 11px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.status-chip.is-success {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.status-chip.is-warning {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.status-chip.is-info {
+  background: var(--info-soft);
+  color: var(--info);
+}
+
+.status-chip.is-violet {
+  background: var(--violet-soft);
+  color: var(--violet);
+}
+
+.content-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.content-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.content-empty {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  min-height: 100%;
+  color: var(--ink-3);
+  text-align: center;
+}
+
+.content-empty .el-icon {
+  font-size: 32px;
+}
+
+.content-empty strong {
+  color: var(--ink);
+}
+
+.content-footer {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  min-height: 52px;
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.log-list {
+  display: grid;
+  gap: 10px;
+  align-content: start;
 }
 
 .announcement-editor {
@@ -1314,6 +1841,14 @@ onMounted(() => {
 }
 
 .changelog-editor__highlight span {
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.changelog-editor__hint {
+  display: block;
+  margin-top: 6px;
   color: var(--ink-3);
   font-size: 12px;
   line-height: 1.4;

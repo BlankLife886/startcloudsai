@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { Tooltip } from "antd";
 import { useTranslation } from "react-i18next";
 
-import { canvasThemes } from "@/lib/canvas-theme";
+import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
 import { onCanvasEvent } from "@/lib/canvas/canvas-event-bus";
 import { useCanvasSidePanelStore } from "@/stores/use-canvas-side-panel-store";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -104,7 +104,7 @@ function NavIcon({
 }: {
     title: string;
     active?: boolean;
-    theme: (typeof canvasThemes)["light"];
+    theme: CanvasTheme;
     onClick: () => void;
     children: ReactNode;
 }) {
@@ -122,4 +122,3 @@ function NavIcon({
         </Tooltip>
     );
 }
-

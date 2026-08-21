@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
-import { Refresh, Select } from "@element-plus/icons-vue";
-import { ElMessage } from "element-plus";
+import { Check, Refresh, Search } from "@element-plus/icons-vue";
+import { ElMessage, ElMessageBox } from "element-plus";
 import { request } from "@/request";
 
 type PageStatus = "normal" | "maintenance" | "developing" | "removed";
+type StatusFilter = "all" | PageStatus;
 
 interface PageControl {
   status: PageStatus;
@@ -26,18 +27,49 @@ interface PageGroup {
 const STATUS_OPTIONS: Array<{
   value: PageStatus;
   label: string;
-  type: "success" | "warning" | "primary" | "info";
+  fullLabel: string;
+  tone: "success" | "warning" | "violet" | "info";
+  hint: string;
+  defaultReason: string;
 }> = [
-  { value: "normal", label: "正常开放", type: "success" },
-  { value: "maintenance", label: "维护中", type: "warning" },
-  { value: "developing", label: "正在开发", type: "primary" },
-  { value: "removed", label: "页面移除", type: "info" },
+  {
+    value: "normal",
+    label: "开放",
+    fullLabel: "正常开放",
+    tone: "success",
+    hint: "用户可正常访问",
+    defaultReason: "",
+  },
+  {
+    value: "maintenance",
+    label: "维护",
+    fullLabel: "维护中",
+    tone: "warning",
+    hint: "保留入口，拦截访问",
+    defaultReason: "页面维护中，请稍后再试。",
+  },
+  {
+    value: "developing",
+    label: "开发",
+    fullLabel: "正在开发",
+    tone: "violet",
+    hint: "保留入口，拦截访问",
+    defaultReason: "功能正在开发中，敬请期待。",
+  },
+  {
+    value: "removed",
+    label: "下架",
+    fullLabel: "页面移除",
+    tone: "info",
+    hint: "隐藏入口，拦截历史链接",
+    defaultReason: "该页面已下架。",
+  },
 ];
 
 const PAGE_GROUPS: PageGroup[] = [
   {
     title: "核心创作",
-    description: "控制主创作入口与独立工作台。",
+    description: "主创作入口与独立工作台。",
     pages: [
       { key: "studio", label: "创作台", path: "/studio" },
       { key: "canvas", label: "无限画布", path: "/canvas" },
@@ -56,7 +88,7 @@ const PAGE_GROUPS: PageGroup[] = [
   },
   {
     title: "AI 电商",
-    description: "各子模块可以独立维护或下架。",
+    description: "各子模块可独立维护或下架。",
     pages: [
       { key: "ecommerce.tryon", label: "虚拟试衣", path: "tool=tryon" },
       { key: "ecommerce.handheld", label: "手持商品", path: "tool=handheld" },
@@ -74,7 +106,7 @@ const PAGE_GROUPS: PageGroup[] = [
   },
   {
     title: "活动入口",
-    description: "页面移除后用户端不再展示入口，历史链接会显示下架原因。",
+    description: "下架后用户端不再展示入口。",
     pages: [
       { key: "activity.checkin", label: "签到活动", path: "/check-in" },
       { key: "activity.trial", label: "申请体验", path: "申请弹窗" },
@@ -94,17 +126,27 @@ const PAGE_GROUPS: PageGroup[] = [
   },
 ];
 
-const loading = ref(false);
-const saving = ref(false);
-const controls = ref<Record<string, PageControl>>(
-  Object.fromEntries(
-    PAGE_GROUPS.flatMap((group) => group.pages).map((page) => [
+const ALL_PAGES = PAGE_GROUPS.flatMap((group) => group.pages);
+const DEFAULT_REASONS = new Set(
+  STATUS_OPTIONS.map((option) => option.defaultReason).filter(Boolean),
+);
+
+function emptyControls(): Record<string, PageControl> {
+  return Object.fromEntries(
+    ALL_PAGES.map((page) => [
       page.key,
       { status: "normal", reason: "" } satisfies PageControl,
     ]),
-  ),
-);
-const savedSignature = ref("");
+  );
+}
+
+const loading = ref(false);
+const saving = ref(false);
+const loadError = ref("");
+const query = ref("");
+const statusFilter = ref<StatusFilter>("all");
+const controls = ref<Record<string, PageControl>>(emptyControls());
+const savedControls = ref<Record<string, PageControl>>(emptyControls());
 
 const statusMeta = (status?: PageStatus) =>
   STATUS_OPTIONS.find((option) => option.value === status) || STATUS_OPTIONS[0];
@@ -116,31 +158,131 @@ function normalizeControl(value?: Partial<PageControl>): PageControl {
   return { status, reason: String(value?.reason || "").trim() };
 }
 
-function signature() {
-  return JSON.stringify(controls.value);
+function cloneControls(values: Record<string, PageControl>) {
+  return Object.fromEntries(
+    ALL_PAGES.map((page) => [
+      page.key,
+      { ...normalizeControl(values[page.key]) },
+    ]),
+  );
+}
+
+function signatureOf(values: Record<string, PageControl>) {
+  return JSON.stringify(
+    Object.fromEntries(
+      ALL_PAGES.map((page) => [page.key, normalizeControl(values[page.key])]),
+    ),
+  );
 }
 
 const isDirty = computed(
-  () => savedSignature.value !== "" && signature() !== savedSignature.value,
+  () =>
+    !loading.value &&
+    signatureOf(controls.value) !== signatureOf(savedControls.value),
 );
 
-function hydrate(values: Record<string, PageControl> = {}) {
-  controls.value = Object.fromEntries(
-    PAGE_GROUPS.flatMap((group) => group.pages).map((page) => [
-      page.key,
-      normalizeControl(values[page.key]),
-    ]),
+const dirtyCount = computed(
+  () =>
+    ALL_PAGES.filter((page) => isRowDirty(page.key)).length,
+);
+
+const statusCounts = computed(() => {
+  const counts: Record<PageStatus, number> = {
+    normal: 0,
+    maintenance: 0,
+    developing: 0,
+    removed: 0,
+  };
+  for (const page of ALL_PAGES) {
+    counts[controls.value[page.key]?.status || "normal"] += 1;
+  }
+  return counts;
+});
+
+const restrictedCount = computed(
+  () => ALL_PAGES.length - statusCounts.value.normal,
+);
+
+const matchesQuery = (page: PageDefinition) => {
+  const needle = query.value.trim().toLowerCase();
+  if (!needle) return true;
+  return (
+    page.label.toLowerCase().includes(needle) ||
+    page.path.toLowerCase().includes(needle) ||
+    page.key.toLowerCase().includes(needle)
   );
-  savedSignature.value = signature();
+};
+
+const matchesFilter = (page: PageDefinition) => {
+  if (statusFilter.value === "all") return true;
+  return controls.value[page.key]?.status === statusFilter.value;
+};
+
+const visibleGroups = computed(() =>
+  PAGE_GROUPS.map((group) => ({
+    ...group,
+    pages: group.pages.filter(
+      (page) => matchesQuery(page) && matchesFilter(page),
+    ),
+    restricted: group.pages.filter(
+      (page) => controls.value[page.key]?.status !== "normal",
+    ).length,
+  })).filter((group) => group.pages.length > 0),
+);
+
+function isRowDirty(key: string) {
+  const current = normalizeControl(controls.value[key]);
+  const saved = normalizeControl(savedControls.value[key]);
+  return current.status !== saved.status || current.reason !== saved.reason;
 }
 
-function onStatusChange(key: string) {
+function hydrate(values: Record<string, PageControl> = {}) {
+  controls.value = cloneControls(values);
+  savedControls.value = cloneControls(values);
+}
+
+function setStatus(key: string, status: PageStatus) {
   const control = controls.value[key];
-  if (control.status === "normal") control.reason = "";
+  if (!control || control.status === status) return;
+  const previous = control.status;
+  control.status = status;
+  if (status === "normal") {
+    control.reason = "";
+    return;
+  }
+  const reason = control.reason.trim();
+  if (!reason || DEFAULT_REASONS.has(reason) || previous === "normal") {
+    control.reason = statusMeta(status).defaultReason;
+  }
+}
+
+function applyGroupStatus(title: string, status: PageStatus) {
+  const group = PAGE_GROUPS.find((item) => item.title === title);
+  if (!group) return;
+  for (const page of group.pages) setStatus(page.key, status);
+}
+
+function onGroupCommand(title: string, status: string | number | object) {
+  if (
+    status === "normal" ||
+    status === "maintenance" ||
+    status === "developing" ||
+    status === "removed"
+  ) {
+    applyGroupStatus(title, status);
+  }
+}
+
+function reasonPlaceholder(status: PageStatus) {
+  if (status === "normal") return "正常开放无需说明";
+  if (status === "maintenance") return "例如：系统升级，预计今晚恢复";
+  if (status === "developing") return "例如：功能开发中，敬请期待";
+  return "例如：活动已结束";
 }
 
 async function load() {
   loading.value = true;
+  loadError.value = "";
   try {
     const settings = await request<{ pageControls?: Record<string, PageControl> }>(
       "/api/v1/admin/settings",
@@ -148,19 +290,42 @@ async function load() {
     );
     hydrate(settings.pageControls || {});
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "页面配置读取失败");
+    loadError.value =
+      error instanceof Error ? error.message : "页面配置读取失败";
   } finally {
     loading.value = false;
   }
 }
 
 async function save() {
-  for (const group of PAGE_GROUPS) {
-    for (const page of group.pages) {
-      const control = controls.value[page.key];
-      control.reason = control.reason.trim();
+  if (loading.value || saving.value || !isDirty.value) return;
+
+  for (const page of ALL_PAGES) {
+    const control = controls.value[page.key];
+    control.reason = control.reason.trim();
+    if (control.status !== "normal" && !control.reason) {
+      ElMessage.warning(`「${page.label}」需要填写展示给用户的原因`);
+      return;
     }
   }
+
+  const newlyRemoved = ALL_PAGES.filter(
+    (page) =>
+      controls.value[page.key].status === "removed" &&
+      savedControls.value[page.key]?.status !== "removed",
+  );
+  if (newlyRemoved.length) {
+    try {
+      await ElMessageBox.confirm(
+        `将下架 ${newlyRemoved.map((page) => page.label).join("、")}。用户端会隐藏入口，并拦截历史链接。`,
+        "确认下架页面",
+        { type: "warning", confirmButtonText: "确认下架", cancelButtonText: "取消" },
+      );
+    } catch {
+      return;
+    }
+  }
+
   saving.value = true;
   try {
     const settings = await request<{ pageControls: Record<string, PageControl> }>(
@@ -178,210 +343,517 @@ onMounted(load);
 </script>
 
 <template>
-  <div class="page-controls" v-loading="loading">
-    <header class="page-controls__head">
-      <div>
-        <h2>用户端页面控制</h2>
-        <p>维护中和正在开发仍保留入口；页面移除会隐藏入口并拦截历史链接。</p>
-      </div>
-      <div class="page-controls__actions">
-        <el-button :icon="Refresh" :disabled="saving" @click="load">刷新</el-button>
-        <el-button
-          type="primary"
-          :icon="Select"
-          :loading="saving"
-          :disabled="!isDirty"
-          @click="save"
-        >
-          保存更改
-        </el-button>
-      </div>
-    </header>
-
-    <section v-for="group in PAGE_GROUPS" :key="group.title" class="control-group">
-      <header class="control-group__head">
-        <div>
-          <h3>{{ group.title }}</h3>
-          <p>{{ group.description }}</p>
+  <div v-loading="loading" class="page page-controls-page">
+    <PageCard>
+      <div class="controls-toolbar">
+        <div class="sync-state" :class="{ 'is-dirty': isDirty }">
+          <i />
+          {{
+            isDirty
+              ? `有 ${dirtyCount} 处未保存变更`
+              : "配置已同步"
+          }}
         </div>
-        <span>{{ group.pages.length }} 个页面</span>
-      </header>
-      <el-table :data="group.pages" row-key="key" class="control-table">
-        <el-table-column label="页面" min-width="190">
-          <template #default="{ row }">
-            <div class="page-name">
-              <strong>{{ row.label }}</strong>
-              <small>{{ row.path }}</small>
-            </div>
-          </template>
-        </el-table-column>
-        <el-table-column label="当前状态" width="150">
-          <template #default="{ row }">
-            <el-tag :type="statusMeta(controls[row.key]?.status).type" effect="light">
-              {{ statusMeta(controls[row.key]?.status).label }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="控制" width="180">
-          <template #default="{ row }">
-            <el-select
-              v-model="controls[row.key].status"
-              aria-label="页面状态"
-              @change="onStatusChange(row.key)"
-            >
-              <el-option
-                v-for="option in STATUS_OPTIONS"
-                :key="option.value"
-                :label="option.label"
-                :value="option.value"
-              />
-            </el-select>
-          </template>
-        </el-table-column>
-        <el-table-column label="展示给用户的原因" min-width="320">
-          <template #default="{ row }">
-            <el-input
-              v-model="controls[row.key].reason"
-              :disabled="controls[row.key].status === 'normal'"
-              :placeholder="
-                controls[row.key].status === 'normal'
-                  ? '正常开放无需说明'
-                  : '请输入维护、开发或下架原因'
-              "
-              maxlength="200"
-              show-word-limit
-            />
-          </template>
-        </el-table-column>
-      </el-table>
-      <div class="mobile-control-list">
-        <div v-for="page in group.pages" :key="page.key" class="mobile-control-row">
-          <header>
-            <div class="page-name">
-              <strong>{{ page.label }}</strong>
-              <small>{{ page.path }}</small>
-            </div>
-            <el-tag :type="statusMeta(controls[page.key].status).type" effect="light">
-              {{ statusMeta(controls[page.key].status).label }}
-            </el-tag>
-          </header>
-          <el-select
-            v-model="controls[page.key].status"
-            aria-label="页面状态"
-            @change="onStatusChange(page.key)"
+        <el-input
+          v-model="query"
+          class="controls-search"
+          clearable
+          :prefix-icon="Search"
+          placeholder="搜索页面或路径"
+        />
+        <div class="controls-toolbar__actions">
+          <el-button :icon="Refresh" :disabled="saving" @click="load">
+            刷新
+          </el-button>
+          <el-button
+            type="primary"
+            :icon="Check"
+            :loading="saving"
+            :disabled="!isDirty"
+            @click="save"
           >
-            <el-option
-              v-for="option in STATUS_OPTIONS"
-              :key="option.value"
-              :label="option.label"
-              :value="option.value"
-            />
-          </el-select>
-          <el-input
-            v-model="controls[page.key].reason"
-            :disabled="controls[page.key].status === 'normal'"
-            :placeholder="
-              controls[page.key].status === 'normal'
-                ? '正常开放无需说明'
-                : '请输入展示给用户的原因'
-            "
-            maxlength="200"
-            show-word-limit
-          />
+            保存并生效
+          </el-button>
         </div>
       </div>
-    </section>
+
+      <div class="status-summary" role="tablist" aria-label="按状态筛选">
+        <button
+          type="button"
+          class="status-summary__item"
+          :class="{ 'is-active': statusFilter === 'all' }"
+          @click="statusFilter = 'all'"
+        >
+          <span>全部</span>
+          <b class="tnum">{{ ALL_PAGES.length }}</b>
+        </button>
+        <button
+          v-for="option in STATUS_OPTIONS"
+          :key="option.value"
+          type="button"
+          class="status-summary__item"
+          :class="[`is-${option.tone}`, { 'is-active': statusFilter === option.value }]"
+          :title="option.hint"
+          @click="statusFilter = option.value"
+        >
+          <span>{{ option.fullLabel }}</span>
+          <b class="tnum">{{ statusCounts[option.value] }}</b>
+        </button>
+      </div>
+
+      <p class="status-legend">
+        维护和开发仍保留入口；下架会隐藏入口并拦截历史链接。当前
+        <em class="tnum">{{ restrictedCount }}</em>
+        个页面处于受限状态。
+      </p>
+
+      <ListError :error="loadError" :loading="loading" @retry="load" />
+
+      <div class="controls-body">
+        <el-empty
+          v-if="!visibleGroups.length"
+          description="没有匹配的页面"
+        />
+        <section
+          v-for="group in visibleGroups"
+          :key="group.title"
+          class="control-group"
+        >
+          <header class="control-group__head">
+            <div>
+              <h3>{{ group.title }}</h3>
+              <p>
+                {{ group.description }}
+                <span class="tnum">{{ group.pages.length }}</span>
+                个页面
+                <template v-if="group.restricted">
+                  ·
+                  <span class="tnum">{{ group.restricted }}</span>
+                  个受限
+                </template>
+              </p>
+            </div>
+            <el-dropdown
+              trigger="click"
+              @command="(status) => onGroupCommand(group.title, status)"
+            >
+              <el-button text>
+                整组设为
+                <span class="control-group__caret">▾</span>
+              </el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item
+                    v-for="option in STATUS_OPTIONS"
+                    :key="option.value"
+                    :command="option.value"
+                  >
+                    {{ option.fullLabel }}
+                  </el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+          </header>
+
+          <div class="control-list">
+            <article
+              v-for="page in group.pages"
+              :key="page.key"
+              class="control-row"
+              :class="{
+                'is-dirty': isRowDirty(page.key),
+                [`is-${controls[page.key].status}`]: true,
+              }"
+            >
+              <div class="page-name">
+                <strong>{{ page.label }}</strong>
+                <small class="mono">{{ page.path }}</small>
+              </div>
+              <div
+                class="status-switch"
+                role="radiogroup"
+                :aria-label="`${page.label} 页面状态`"
+              >
+                <button
+                  v-for="option in STATUS_OPTIONS"
+                  :key="option.value"
+                  type="button"
+                  role="radio"
+                  :aria-checked="controls[page.key].status === option.value"
+                  class="status-switch__btn"
+                  :class="[
+                    `is-${option.tone}`,
+                    { 'is-active': controls[page.key].status === option.value },
+                  ]"
+                  :title="`${option.fullLabel} · ${option.hint}`"
+                  @click="setStatus(page.key, option.value)"
+                >
+                  {{ option.label }}
+                </button>
+              </div>
+              <el-input
+                v-model="controls[page.key].reason"
+                class="reason-input"
+                :disabled="controls[page.key].status === 'normal'"
+                :placeholder="reasonPlaceholder(controls[page.key].status)"
+                maxlength="200"
+                show-word-limit
+              />
+            </article>
+          </div>
+        </section>
+      </div>
+    </PageCard>
   </div>
 </template>
 
 <style scoped>
-.page-controls {
-  display: grid;
-  gap: 24px;
-  min-height: 360px;
+.page-controls-page {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
 }
 
-.page-controls__head,
-.control-group__head {
+.page-controls-page :deep(.page-card) {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.page-controls-page :deep(.page-card__body) {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.controls-toolbar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 14px;
+}
+
+.sync-state {
+  display: inline-flex;
+  height: 32px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.sync-state i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 0 3px var(--success-soft);
+}
+
+.sync-state.is-dirty {
+  color: var(--warning);
+}
+
+.sync-state.is-dirty i {
+  background: var(--warning);
+  box-shadow: 0 0 0 3px var(--warning-soft);
+}
+
+.controls-search {
+  width: 240px;
+  margin-left: auto;
+}
+
+.controls-toolbar__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+}
+
+.controls-toolbar__actions :deep(.el-button) {
+  margin: 0;
+  height: 32px;
+}
+
+.status-summary {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.status-summary__item {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 20px;
+  gap: 8px;
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
-.page-controls__head h2,
-.control-group__head h3 {
-  margin: 0;
-  color: var(--text);
-  letter-spacing: 0;
+.status-summary__item:hover {
+  border-color: var(--border-strong);
 }
 
-.page-controls__head h2 { font-size: 20px; }
-.control-group__head h3 { font-size: 16px; }
-
-.page-controls__head p,
-.control-group__head p {
-  margin: 6px 0 0;
-  color: var(--text-muted);
-  font-size: 13px;
+.status-summary__item:focus-visible,
+.status-switch__btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
-.page-controls__actions {
-  display: flex;
-  flex-shrink: 0;
-  gap: 10px;
+.status-summary__item span {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.status-summary__item b {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: var(--ink);
+}
+
+.status-summary__item.is-active {
+  border-color: var(--border-strong);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  color: var(--ink);
+}
+
+.status-summary__item.is-success.is-active {
+  background: var(--success-soft);
+  border-color: color-mix(in srgb, var(--success) 28%, var(--border));
+  color: var(--success);
+}
+
+.status-summary__item.is-warning.is-active {
+  background: var(--warning-soft);
+  border-color: color-mix(in srgb, var(--warning) 28%, var(--border));
+  color: var(--warning);
+}
+
+.status-summary__item.is-violet.is-active {
+  background: var(--violet-soft);
+  border-color: color-mix(in srgb, var(--violet) 28%, var(--border));
+  color: var(--violet);
+}
+
+.status-summary__item.is-info.is-active {
+  background: var(--info-soft);
+  border-color: color-mix(in srgb, var(--info) 28%, var(--border));
+  color: var(--info);
+}
+
+.status-summary__item.is-success.is-active b,
+.status-summary__item.is-warning.is-active b,
+.status-summary__item.is-violet.is-active b,
+.status-summary__item.is-info.is-active b {
+  color: inherit;
+}
+
+.status-legend {
+  margin: 10px 0 14px;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.status-legend em {
+  color: var(--ink);
+  font-style: normal;
+  font-weight: 700;
+}
+
+.controls-body {
+  display: grid;
+  gap: 18px;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
 }
 
 .control-group {
   display: grid;
-  gap: 12px;
+  gap: 8px;
+  min-width: 0;
 }
 
 .control-group__head {
-  padding: 0 4px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 2px;
 }
 
-.control-group__head > span {
-  color: var(--text-muted);
+.control-group__head h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.control-group__head p {
+  margin: 2px 0 0;
+  color: var(--ink-3);
   font-size: 12px;
 }
 
-.control-table {
-  width: 100%;
+.control-group__caret {
+  margin-left: 4px;
+  color: var(--ink-3);
+}
+
+.control-list {
+  display: grid;
+  gap: 6px;
+}
+
+.control-row {
+  display: grid;
+  grid-template-columns: minmax(132px, 168px) 248px minmax(220px, 1fr);
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  padding: 10px 12px;
   border: 1px solid var(--border);
-  border-radius: 8px;
-  overflow: hidden;
+  border-radius: 14px;
+  background: var(--surface-2);
+  box-shadow: inset 3px 0 0 transparent;
+}
+
+.control-row.is-dirty {
+  box-shadow: inset 3px 0 0 var(--warning);
+}
+
+.control-row.is-maintenance {
+  background: color-mix(in srgb, var(--warning-soft) 55%, var(--surface-2));
+}
+
+.control-row.is-developing {
+  background: color-mix(in srgb, var(--violet-soft) 55%, var(--surface-2));
+}
+
+.control-row.is-removed {
+  background: color-mix(in srgb, var(--info-soft) 55%, var(--surface-2));
 }
 
 .page-name {
   display: grid;
-  gap: 4px;
+  gap: 2px;
+  min-width: 0;
 }
 
-.page-name strong { color: var(--text); font-size: 14px; }
-.page-name small { color: var(--text-muted); font-family: ui-monospace, monospace; }
+.page-name strong {
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.3;
+}
 
-.mobile-control-list { display: none; }
+.page-name small {
+  color: var(--ink-3);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
-@media (max-width: 860px) {
-  .page-controls__head { align-items: flex-start; flex-direction: column; }
-  .page-controls__actions { width: 100%; }
-  .page-controls__actions :deep(.el-button) { flex: 1; }
-  .control-table { display: none; }
-  .mobile-control-list { display: grid; gap: 10px; }
-  .mobile-control-row {
-    display: grid;
-    gap: 10px;
-    padding: 12px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--surface);
+.status-switch {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+  padding: 3px;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+
+.status-switch__btn {
+  height: 28px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--ink-3);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.status-switch__btn:hover:not(.is-active) {
+  color: var(--ink);
+  background: var(--surface-2);
+}
+
+.status-switch__btn.is-active.is-success {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.status-switch__btn.is-active.is-warning {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.status-switch__btn.is-active.is-violet {
+  background: var(--violet-soft);
+  color: var(--violet);
+}
+
+.status-switch__btn.is-active.is-info {
+  background: var(--info-soft);
+  color: var(--info);
+}
+
+.reason-input :deep(.el-input__wrapper) {
+  background: var(--surface);
+}
+
+.reason-input :deep(.el-input__count) {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 1320px) {
+  .control-row {
+    grid-template-columns: minmax(120px, 150px) 228px minmax(180px, 1fr);
   }
-  .mobile-control-row > header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .control-row,
+  .status-summary__item,
+  .status-switch__btn {
+    transition: none;
   }
 }
 </style>

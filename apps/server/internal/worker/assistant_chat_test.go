@@ -64,6 +64,21 @@ func TestAssistantConversationPayloadAlwaysIncludesAuthoritativeCurrentPrompt(t 
 	}
 }
 
+func TestAssistantRunFileIDsAreValidatedAndDeduplicated(t *testing.T) {
+	first := uuid.New()
+	run := &store.AssistantRun{Params: map[string]any{
+		"_assistantFileIds": []any{first.String(), "invalid", first.String()},
+	}}
+	ids := assistantRunFileIDs(run)
+	if len(ids) != 1 || ids[0] != first {
+		t.Fatalf("ids = %#v", ids)
+	}
+	if assistantDocumentEvidenceRead([]string{"files_list"}) ||
+		!assistantDocumentEvidenceRead([]string{"files_list", "files_search"}) {
+		t.Fatal("document evidence classification is incorrect")
+	}
+}
+
 func TestBuildAssistantContextAppliesTokenBudgetAndKeepsCurrentPrompt(t *testing.T) {
 	run := &store.AssistantRun{
 		ID: uuid.New(), UserMessageID: uuid.New(), AssistantMessageID: uuid.New(),
@@ -90,6 +105,21 @@ func TestBuildAssistantContextAppliesTokenBudgetAndKeepsCurrentPrompt(t *testing
 	}
 }
 
+func TestBuildAssistantContextDoesNotOverallocateSummaryBudget(t *testing.T) {
+	run := &store.AssistantRun{
+		ID: uuid.New(), UserMessageID: uuid.New(), AssistantMessageID: uuid.New(), Prompt: "必须保留的当前问题",
+		Params: map[string]any{"_chatContextWindowTokens": 4_096, "_chatMaxOutputTokens": 512},
+	}
+	history := []*store.AssistantMessage{
+		{ID: uuid.New(), Role: "user", Content: strings.Repeat("旧问题", 400), Status: "complete"},
+		{ID: uuid.New(), Role: "assistant", Content: strings.Repeat("旧回答", 400), Status: "complete"},
+	}
+	payload, stats := buildAssistantContext(strings.Repeat("系统规则", 260), history, run, nil, false)
+	if payload[len(payload)-1].Content != run.Prompt || stats.EstimatedTokens > stats.InputBudget {
+		t.Fatalf("payload=%#v stats=%#v", payload, stats)
+	}
+}
+
 func TestBuildAssistantContextDropsOrphanedAssistantTurns(t *testing.T) {
 	run := &store.AssistantRun{
 		ID: uuid.New(), UserMessageID: uuid.New(), AssistantMessageID: uuid.New(), Prompt: "当前问题",
@@ -107,12 +137,77 @@ func TestBuildAssistantContextDropsOrphanedAssistantTurns(t *testing.T) {
 	for _, message := range payload {
 		joined += message.Content
 	}
-	if strings.Contains(joined, "没有用户来源") || strings.Contains(joined, "不能脱离旧问题保留") {
+	if strings.Contains(joined, "没有用户来源") {
 		t.Fatalf("orphaned assistant message survived: %#v", payload)
 	}
-	if !strings.Contains(joined, "最近问题") || !strings.Contains(joined, "最近回答") ||
-		payload[len(payload)-1].Content != run.Prompt || stats.DroppedMessages < 3 {
+	if !strings.Contains(joined, "不能脱离旧问题保留") || !strings.Contains(joined, "最近问题") ||
+		!strings.Contains(joined, "最近回答") || payload[len(payload)-1].Content != run.Prompt ||
+		stats.DroppedMessages < 3 || stats.CompactedMessages == 0 {
 		t.Fatalf("payload=%#v stats=%#v", payload, stats)
+	}
+}
+
+func TestBuildAssistantContextProactivelyCompactsLongConversation(t *testing.T) {
+	run := &store.AssistantRun{
+		ID: uuid.New(), UserMessageID: uuid.New(), AssistantMessageID: uuid.New(), Prompt: "继续当前任务",
+		Params: map[string]any{"_chatContextWindowTokens": 128_000, "_chatMaxOutputTokens": 8_192},
+	}
+	history := make([]*store.AssistantMessage, 0, assistantContextCompactAtMessages)
+	for index := 0; index < assistantContextCompactAtMessages/2; index++ {
+		history = append(history,
+			&store.AssistantMessage{ID: uuid.New(), Role: "user", Content: "旧问题 " + strconv.Itoa(index), Status: "complete"},
+			&store.AssistantMessage{ID: uuid.New(), Role: "assistant", Content: "旧回答 " + strconv.Itoa(index), Status: "complete"},
+		)
+	}
+	payload, stats := buildAssistantContext("system", history, run, nil, false)
+	joined := ""
+	for _, message := range payload {
+		joined += message.Content + "\n"
+	}
+	if stats.DroppedMessages == 0 || stats.CompactedMessages == 0 || !stats.CompactionPerformed ||
+		stats.IncludedMessages > assistantContextRecentMessageTarget {
+		t.Fatalf("stats = %#v", stats)
+	}
+	if !strings.Contains(joined, "较早对话的压缩摘要") || !strings.Contains(joined, "旧问题 47") ||
+		payload[len(payload)-1].Content != run.Prompt || stats.EstimatedTokens > stats.InputBudget {
+		t.Fatalf("payload=%#v stats=%#v", payload, stats)
+	}
+}
+
+func TestBuildAssistantContextCarriesForwardPersistedSummary(t *testing.T) {
+	run := &store.AssistantRun{ID: uuid.New(), UserMessageID: uuid.New(), AssistantMessageID: uuid.New(), Prompt: "下一步", Params: map[string]any{}}
+	summarizedUserID := uuid.New()
+	summaryThroughID := uuid.New()
+	history := []*store.AssistantMessage{
+		{ID: summarizedUserID, Role: "user", Content: "已经压缩的旧问题，不应再次进入上下文", Status: "complete"},
+		{ID: summaryThroughID, Role: "assistant", Content: "已经压缩的旧回答，不应再次进入上下文", Status: "complete"},
+		{ID: uuid.New(), Role: "user", Content: "最近补充", Status: "complete"},
+		{ID: uuid.New(), Role: "assistant", Content: "上轮回答", Status: "complete", Metadata: map[string]any{
+			"_contextSummary": "已确认项目目标和三个约束。", "_contextSummaryMessages": 18,
+			"_contextSummaryThroughMessageId": summaryThroughID.String(),
+		}},
+		{ID: uuid.New(), Role: "user", Content: "最新问题", Status: "complete"},
+		{ID: uuid.New(), Role: "assistant", Content: "最新回答", Status: "complete"},
+	}
+	payload, stats := buildAssistantContext("system", history, run, nil, false)
+	if len(payload) != 7 || payload[1].Role != "assistant" || !strings.Contains(payload[1].Content, "三个约束") {
+		t.Fatalf("payload = %#v", payload)
+	}
+	joined := ""
+	for _, message := range payload {
+		joined += message.Content + "\n"
+	}
+	if strings.Contains(joined, "已经压缩的旧问题") || strings.Contains(joined, "已经压缩的旧回答") {
+		t.Fatalf("messages before summary cursor were included again: %#v", payload)
+	}
+	if stats.CompactionPerformed || stats.CompactedMessages != 18 || stats.SummaryMessages != 18 || stats.TotalMessages != 22 ||
+		stats.IncludedMessages != 4 || stats.SummaryThroughID != summaryThroughID.String() {
+		t.Fatalf("stats = %#v", stats)
+	}
+	public := applyAssistantContextStats(run, stats)
+	if public["policyVersion"] != assistantContextPolicyVersion || run.Params["_contextSummaryMessages"] != 18 ||
+		run.Params["_contextSummaryThroughMessageId"] != summaryThroughID.String() {
+		t.Fatalf("public=%#v params=%#v", public, run.Params)
 	}
 }
 
@@ -184,6 +279,30 @@ func TestCleanAssistantChatOutputPreservesLegitimateSearchText(t *testing.T) {
 		cleaned, leaked := cleanAssistantChatOutput(value, prompt)
 		if leaked || cleaned != value {
 			t.Fatalf("value=%q cleaned=%q leaked=%v", value, cleaned, leaked)
+		}
+	}
+}
+
+func TestAssistantArtifactRequested(t *testing.T) {
+	for _, prompt := range []string{
+		"请生成一个 CSV 文件供我下载",
+		"把结果整理成 Markdown 文档",
+		"create a JSON file with these rows",
+		"帮我做成PPT，输出PPT文件",
+		"导出一份 PowerPoint 演示文稿",
+	} {
+		if !assistantArtifactRequested(prompt) {
+			t.Fatalf("expected artifact intent for %q", prompt)
+		}
+	}
+	for _, prompt := range []string{
+		"解释一下 JSON 是什么",
+		"分析我上传的文件",
+		"生成一张图片",
+		"下载这张图片",
+	} {
+		if assistantArtifactRequested(prompt) {
+			t.Fatalf("unexpected artifact intent for %q", prompt)
 		}
 	}
 }

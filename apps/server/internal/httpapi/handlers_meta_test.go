@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -214,7 +215,9 @@ func TestRuntimeConfigUsesWorkspaceSpecificModels(t *testing.T) {
 		{ID: "ui-analysis", Name: "元素分析模型", ProviderID: "provider", UpstreamModel: "upstream-chat", Kind: "chat", Public: true, Enabled: true},
 		{ID: "ecommerce-analysis", Name: "商品分析模型", ProviderID: "provider", UpstreamModel: "upstream-commerce-chat", Kind: "chat", Public: true, Enabled: true},
 		{ID: "canvas-image", Name: "画布生图模型", ProviderID: "provider", UpstreamModel: "upstream-canvas-image", Kind: "image", Public: true, Enabled: true},
-		{ID: "canvas-chat", Name: "画布文本模型", ProviderID: "provider", UpstreamModel: "upstream-canvas-chat", Kind: "chat", Public: true, Enabled: true},
+		{ID: "canvas-chat", Name: "画布文本模型", ProviderID: "provider", UpstreamModel: "provider/gpt-5-5", Kind: "chat", Public: true, Enabled: true},
+		{ID: "canvas-chat-alias-56", Name: "画布别名模型", ProviderID: "provider", UpstreamModel: "provider/gpt-5-6", Kind: "chat", Public: true, Enabled: true},
+		{ID: "canvas-chat-sol", Name: "画布 Sol 模型", ProviderID: "provider", UpstreamModel: "provider/gpt-5.6-sol", Kind: "chat", PriceCents: 7, Public: true, Enabled: true},
 	}
 	cfg.Workspaces = map[string]modelconfig.WorkspaceBinding{
 		modelconfig.WorkspaceT2I:     {ModelIDs: []string{"t2i-model"}},
@@ -228,7 +231,7 @@ func TestRuntimeConfigUsesWorkspaceSpecificModels(t *testing.T) {
 			DefaultModelIDs: map[string]string{modelconfig.ModelKindChat: "ecommerce-analysis"},
 		},
 		modelconfig.WorkspaceCanvas: {
-			ModelIDs: []string{"canvas-image", "canvas-chat"},
+			ModelIDs: []string{"canvas-image", "canvas-chat", "canvas-chat-alias-56", "canvas-chat-sol"},
 			DefaultModelIDs: map[string]string{
 				modelconfig.ModelKindImage: "canvas-image",
 				modelconfig.ModelKindChat:  "canvas-chat",
@@ -266,13 +269,17 @@ func TestRuntimeConfigUsesWorkspaceSpecificModels(t *testing.T) {
 						Default bool   `json:"default"`
 					} `json:"imageModels"`
 					TextModels []struct {
-						ID      string `json:"id"`
-						Default bool   `json:"default"`
+						ID                        string   `json:"id"`
+						Default                   bool     `json:"default"`
+						SupportedReasoningEfforts []string `json:"supportedReasoningEfforts"`
+						DefaultReasoningEffort    string   `json:"defaultReasoningEffort"`
+						ReasoningPrices           map[string]struct {
+							AssistantStandardPricePoints   int64 `json:"assistantStandardPricePoints"`
+							AssistantPricePoints           int64 `json:"assistantPricePoints"`
+							CanvasAgentStandardPricePoints int64 `json:"canvasAgentStandardPricePoints"`
+							CanvasAgentPricePoints         int64 `json:"canvasAgentPricePoints"`
+						} `json:"reasoningPrices"`
 					} `json:"textModels"`
-					AgentPricing struct {
-						StandardMultiplier int64 `json:"standardMultiplier"`
-						DeepMultiplier     int64 `json:"deepMultiplier"`
-					} `json:"agentPricing"`
 				} `json:"config"`
 			} `json:"features"`
 		} `json:"data"`
@@ -307,12 +314,29 @@ func TestRuntimeConfigUsesWorkspaceSpecificModels(t *testing.T) {
 	if len(canvas.ImageModels) != 1 || canvas.ImageModels[0].ID != "canvas-image" || !canvas.ImageModels[0].Default {
 		t.Fatalf("canvas image models = %#v", canvas.ImageModels)
 	}
-	if len(canvas.TextModels) != 1 || canvas.TextModels[0].ID != "canvas-chat" || !canvas.TextModels[0].Default {
+	if len(canvas.TextModels) != 3 || canvas.TextModels[0].ID != "canvas-chat" || !canvas.TextModels[0].Default {
 		t.Fatalf("canvas text models = %#v", canvas.TextModels)
 	}
-	if canvas.AgentPricing.StandardMultiplier != canvasAgentStandardPriceMultiple ||
-		canvas.AgentPricing.DeepMultiplier != canvasAgentDeepPriceMultiple {
-		t.Fatalf("canvas agent pricing = %#v", canvas.AgentPricing)
+	wantReasoningProfiles := map[string]struct {
+		efforts       []string
+		defaultEffort string
+	}{
+		"canvas-chat":          {},
+		"canvas-chat-alias-56": {},
+		"canvas-chat-sol":      {efforts: []string{"low", "medium", "high", "xhigh", "max"}, defaultEffort: "medium"},
+	}
+	for _, got := range canvas.TextModels {
+		want, ok := wantReasoningProfiles[got.ID]
+		if !ok || !reflect.DeepEqual(got.SupportedReasoningEfforts, want.efforts) || got.DefaultReasoningEffort != want.defaultEffort {
+			t.Fatalf("canvas reasoning profile = %#v", got)
+		}
+		if got.ID == "canvas-chat-sol" {
+			if len(got.ReasoningPrices) != 5 || got.ReasoningPrices["medium"].CanvasAgentPricePoints != 21 || got.ReasoningPrices["high"].CanvasAgentPricePoints != 35 {
+				t.Fatalf("canvas reasoning prices = %#v", got.ReasoningPrices)
+			}
+		} else if len(got.ReasoningPrices) != 0 {
+			t.Fatalf("unexpected alias reasoning prices = %#v", got.ReasoningPrices)
+		}
 	}
 }
 

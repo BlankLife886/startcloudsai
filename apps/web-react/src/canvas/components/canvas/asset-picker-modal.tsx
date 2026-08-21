@@ -17,6 +17,13 @@ type Props = {
 
 export function AssetPickerModal({ open, onInsert, onClose }: Props) {
     const { t } = useTranslation();
+    const syncCloudImages = useAssetStore((state) => state.syncCloudImages);
+    useEffect(() => {
+        if (!open) return;
+        const controller = new AbortController();
+        void syncCloudImages(controller.signal);
+        return () => controller.abort();
+    }, [open, syncCloudImages]);
     return (
         <Modal title={t("canvas.assetPicker.title")} open={open} onCancel={onClose} footer={null} width={860} destroyOnHidden styles={{ body: { padding: "0 24px 24px", minHeight: 480 } }}>
             <MyAssetsTab onInsert={onInsert} />

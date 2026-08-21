@@ -17,6 +17,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantbilling"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantstream"
+	"github.com/BlankLife886/startcloudsai/server/internal/assistanttools"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
@@ -24,34 +25,15 @@ import (
 )
 
 const (
-	assistantConversationLimit       = 40
-	assistantMessageLimit            = 160
-	assistantActiveRunLimit          = 4
-	canvasAgentStandardPriceMultiple = int64(3)
-	canvasAgentDeepPriceMultiple     = int64(5)
+	assistantConversationLimit = 40
+	assistantMessageLimit      = 160
+	assistantActiveRunLimit    = 4
 )
-
-func canvasAgentPriceMultiple(reasoningEffort string) int64 {
-	switch strings.ToLower(strings.TrimSpace(reasoningEffort)) {
-	case "high", "xhigh", "max":
-		return canvasAgentDeepPriceMultiple
-	default:
-		return canvasAgentStandardPriceMultiple
-	}
-}
-
-func canvasAgentPrice(unitPrice int64, reasoningEffort string) (int64, int64, string) {
-	multiple := canvasAgentPriceMultiple(reasoningEffort)
-	tier := "standard"
-	if multiple == canvasAgentDeepPriceMultiple {
-		tier = "deep"
-	}
-	return unitPrice * multiple, multiple, tier
-}
 
 type createAssistantConversationIn struct {
 	Title     string `json:"title"`
 	Workspace string `json:"workspace"`
+	ProjectID string `json:"projectId"`
 }
 
 type importAssistantConversationsIn struct {
@@ -74,6 +56,7 @@ type assistantRunIn struct {
 	ClientAssistantMessageID string           `json:"clientAssistantMessageId"`
 	SourceUserMessageID      string           `json:"sourceUserMessageId"`
 	ReferenceImages          []map[string]any `json:"referenceImages"`
+	Attachments              []map[string]any `json:"attachments"`
 	Quoted                   map[string]any   `json:"quoted"`
 	Skill                    string           `json:"skill"`
 	Model                    string           `json:"model"`
@@ -93,13 +76,47 @@ type assistantRunIn struct {
 	CanvasSnapshot           json.RawMessage  `json:"canvasSnapshot"`
 }
 
+func applyAssistantReasoningPriceSnapshot(
+	params map[string]any,
+	model modelconfig.Model,
+	effort string,
+	scope string,
+	pricingVersion int,
+) int64 {
+	price := modelconfig.ResolveReasoningPrice(model, effort, scope)
+	params["_reasoningPriceScope"] = price.Scope
+	params["_reasoningStandardPriceCents"] = price.StandardCents
+	params["_reasoningPricingVersion"] = pricingVersion
+	params["_chatCostCents"] = price.EffectiveCents
+	return price.EffectiveCents
+}
+
 func (s *Server) assistantConversations(c *gin.Context) {
 	user, err := s.requireUser(c)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	items, err := store.ListAssistantConversations(c.Request.Context(), s.St.Pool, user.ID, assistantConversationLimit)
+	workspace, err := assistantConversationWorkspace(c.Query("workspace"))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	projectID, err := parseAssistantProjectID(c.Query("projectId"))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if projectID != nil && workspace != modelconfig.WorkspaceCanvas {
+		fail(c, apperr.E("validation_error", "projectId: 仅支持无限画布会话", 422))
+		return
+	}
+	var items []*store.AssistantConversation
+	if projectID != nil {
+		items, err = store.ListAssistantConversationsByProject(c.Request.Context(), s.St.Pool, user.ID, workspace, *projectID, assistantConversationLimit)
+	} else {
+		items, err = store.ListAssistantConversationsByWorkspace(c.Request.Context(), s.St.Pool, user.ID, workspace, assistantConversationLimit)
+	}
 	if err != nil {
 		fail(c, err)
 		return
@@ -114,6 +131,43 @@ func (s *Server) assistantConversations(c *gin.Context) {
 		out = append(out, assistantConversationDict(item, messages))
 	}
 	ok(c, gin.H{"conversations": out})
+}
+
+func (s *Server) assistantConversation(c *gin.Context) {
+	user, err := s.requireUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	id, err := parseUUIDParam(c, "id")
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	item, err := store.GetUserAssistantConversation(c.Request.Context(), s.St.Pool, user.ID, id)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if item == nil {
+		fail(c, apperr.E("not_found", "对话不存在", 404))
+		return
+	}
+	messages, err := store.ListAssistantMessages(c.Request.Context(), s.St.Pool, item.ID, assistantMessageLimit)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if bindID, bindErr := parseAssistantProjectID(c.Query("projectId")); bindErr != nil {
+		fail(c, bindErr)
+		return
+	} else if bindID != nil {
+		if bindErr := s.bindAssistantConversationProject(c.Request.Context(), user.ID, item, *bindID); bindErr != nil {
+			fail(c, bindErr)
+			return
+		}
+	}
+	ok(c, assistantConversationDict(item, messages))
 }
 
 func (s *Server) createAssistantConversation(c *gin.Context) {
@@ -133,8 +187,17 @@ func (s *Server) createAssistantConversation(c *gin.Context) {
 		return
 	}
 	title := assistantTitle(body.Title)
-	item, err := store.InsertAssistantConversationWithWorkspace(
-		c.Request.Context(), s.St.Pool, uuid.New(), user.ID, title, workspace, time.Now().UTC(),
+	projectID, err := parseAssistantProjectID(body.ProjectID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if projectID != nil && workspace != modelconfig.WorkspaceCanvas {
+		fail(c, apperr.E("validation_error", "projectId: 仅支持无限画布会话", 422))
+		return
+	}
+	item, err := store.InsertAssistantConversationBound(
+		c.Request.Context(), s.St.Pool, uuid.New(), user.ID, title, workspace, projectID, time.Now().UTC(),
 	)
 	if err != nil {
 		fail(c, err)
@@ -425,6 +488,25 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		fail(c, apperr.E("validation_error", "无效的创作模式", 422))
 		return
 	}
+	body.Attachments, err = normalizeAssistantFileAttachments(body.Attachments)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if len(body.Attachments) > 0 && body.Mode != "chat" {
+		fail(c, apperr.E("validation_error", "文档附件仅支持对话分析模式", 422))
+		return
+	}
+	body.Skill = strings.TrimSpace(body.Skill)
+	if len(body.Attachments) > 0 {
+		if body.Skill == "" {
+			body.Skill = "document_analysis"
+		}
+		if body.Skill != "document_analysis" {
+			fail(c, apperr.E("validation_error", "文档附件需要使用文档分析技能", 422))
+			return
+		}
+	}
 	body.IdempotencyKey, err = normalizeAssistantIdempotencyKey(body.IdempotencyKey, body.ClientAssistantMessageID)
 	if err != nil {
 		fail(c, err)
@@ -461,7 +543,7 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		workspace = requestedWorkspace
 	}
 	canvasAgent := workspace == modelconfig.WorkspaceCanvas && body.Mode == "agent"
-	body.ReasoningEffort, err = normalizeAssistantReasoningEffort(body.ReasoningEffort, canvasAgent)
+	body.ReasoningEffort, err = normalizeAssistantReasoningEffort(body.ReasoningEffort, false)
 	if err != nil {
 		fail(c, err)
 		return
@@ -516,6 +598,16 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 				"assistantMessage": assistantMessageDict(assistantMessage)})
 			return
 		}
+	}
+	body.Attachments, err = hydrateAssistantFileAttachments(c.Request.Context(), s.St.Pool, user.ID, body.Attachments)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if workspace == modelconfig.WorkspaceAssistant && body.Mode != "image" &&
+		len(body.ReferenceImages) > 0 && assistanttools.ImageToPSDRequested(body.Prompt) {
+		fail(c, apperr.E("assistant_psd_unavailable", "AI 助手暂未开放 PSD 转换", 422))
+		return
 	}
 	modelCfg, err := modelconfig.Load(c.Request.Context(), s.St.Pool)
 	if err != nil {
@@ -581,6 +673,20 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 			imageSelection = selectedModel
 		} else {
 			chatSelection = selectedModel
+		}
+	}
+	if body.Mode != "image" {
+		upstreamModel := body.Model
+		if chatSelection != nil {
+			upstreamModel = chatSelection.Model.UpstreamModel
+		}
+		body.ReasoningEffort, err = normalizeAssistantReasoningEffortForModel(body.ReasoningEffort, upstreamModel, false)
+		if err != nil {
+			fail(c, err)
+			return
+		}
+		if body.ReasoningEffort == "" && chatSelection != nil && chatSelection.Model.ReasoningPricing != nil {
+			body.ReasoningEffort = chatSelection.Model.ReasoningPricing.DefaultEffort
 		}
 	}
 	if body.Mode == "agent" && !canvasAgent {
@@ -661,7 +767,7 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 	assistantUploadKeys := assistantUploadReferenceKeys(references, user.ID)
 	taskOutputReferenceKeys := assistantTaskOutputReferenceKeys(references, user.ID)
 	assistantOutputKeys := assistantOutputReferenceKeys(references, user.ID)
-	userMetadata := map[string]any{"referenceImages": references, "quoted": body.Quoted, "skill": body.Skill}
+	userMetadata := map[string]any{"referenceImages": references, "attachments": body.Attachments, "quoted": body.Quoted, "skill": body.Skill}
 	if sourceID := strings.TrimSpace(body.ProposalSourceMessageID); sourceID != "" {
 		if _, parseErr := uuid.Parse(sourceID); parseErr != nil {
 			fail(c, apperr.E("validation_error", "proposalSourceMessageId 无效", 422))
@@ -676,6 +782,15 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		"serviceKey": body.ServiceKey, "fastMode": body.FastMode, "_serviceProvider": serviceProvider,
 		"requestedMode": body.Mode,
 		"workspace":     workspace,
+	}
+	if len(body.Attachments) > 0 {
+		fileIDs := make([]string, 0, len(body.Attachments))
+		for _, attachment := range body.Attachments {
+			fileIDs = append(fileIDs, assistantMapText(attachment, "id"))
+		}
+		params["_assistantFileIds"] = fileIDs
+		params["attachments"] = body.Attachments
+		params["skill"] = body.Skill
 	}
 	if body.ReasoningEffort != "" {
 		params["reasoningEffort"] = body.ReasoningEffort
@@ -700,6 +815,12 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 			return
 		}
 		params["canvasSnapshot"] = snapshot
+		if projectID := assistantCanvasSnapshotProjectID(snapshot); projectID != nil {
+			if bindErr := s.bindAssistantConversationProject(c.Request.Context(), user.ID, conversation, *projectID); bindErr != nil {
+				fail(c, bindErr)
+				return
+			}
+		}
 	}
 	if body.Mode == "agent" && !canvasAgent {
 		selections := modelconfig.PublicModelsForWorkspace(modelCfg, modelconfig.WorkspaceAssistant, modelconfig.ModelKindImage)
@@ -753,15 +874,11 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 	}
 	chatCostCents := int64(0)
 	if chatSelection != nil {
-		chatCostCents = modelconfig.EffectivePrice(chatSelection.Model)
-	}
-	if canvasAgent {
-		unitPrice := chatCostCents
-		pricedCost, priceMultiple, priceTier := canvasAgentPrice(unitPrice, body.ReasoningEffort)
-		chatCostCents = pricedCost
-		params["_agentChatUnitPriceCents"] = unitPrice
-		params["_agentPriceMultiple"] = priceMultiple
-		params["_agentPriceTier"] = priceTier
+		priceScope := modelconfig.ReasoningPriceScopeAssistant
+		if canvasAgent {
+			priceScope = modelconfig.ReasoningPriceScopeCanvasAgent
+		}
+		chatCostCents = applyAssistantReasoningPriceSnapshot(params, chatSelection.Model, body.ReasoningEffort, priceScope, modelCfg.Version)
 	}
 	imageCostCents := int64(0)
 	if imageSelection != nil {
@@ -1099,6 +1216,7 @@ func (s *Server) cancelAssistantRun(c *gin.Context) {
 			return nil
 		}
 		metadata := assistantMessageMetadataWithoutOutputs(message)
+		delete(metadata, "pendingTool")
 		metadata["pending"] = false
 		metadata["routing"] = false
 		metadata["statusStage"] = "stopped"
@@ -1143,8 +1261,8 @@ func assistantConversationDict(item *store.AssistantConversation, messages []*st
 	for _, message := range messages {
 		serialized = append(serialized, assistantMessageDict(message))
 	}
-	return gin.H{"id": item.ID.String(), "title": item.Title, "workspace": item.Workspace, "createdAt": isoValue(item.CreatedAt),
-		"updatedAt": isoValue(item.UpdatedAt), "messages": serialized}
+	return gin.H{"id": item.ID.String(), "title": item.Title, "workspace": item.Workspace, "projectId": assistantProjectIDValue(item.ProjectID),
+		"createdAt": isoValue(item.CreatedAt), "updatedAt": isoValue(item.UpdatedAt), "messages": serialized}
 }
 
 func assistantConversationWorkspace(value string) (string, error) {
@@ -1172,12 +1290,39 @@ func normalizeAssistantReasoningEffort(value string, defaultStandard bool) (stri
 	return effort, nil
 }
 
+func normalizeAssistantReasoningEffortForModel(value, upstreamModel string, defaultStandard bool) (string, error) {
+	effort := strings.ToLower(strings.TrimSpace(value))
+	supported := modelconfig.ReasoningEffortsForModel(upstreamModel)
+	if len(supported) == 0 {
+		if effort == "" {
+			return "", nil
+		}
+		return "", apperr.E("validation_error", "reasoningEffort: 所选模型不支持可配置推理强度", 422)
+	}
+	if effort == "" && defaultStandard {
+		if containsString(supported, "medium") {
+			return "medium", nil
+		}
+		return supported[0], nil
+	}
+	if effort == "" {
+		return "", nil
+	}
+	if !containsString(supported, effort) {
+		return "", apperr.E("validation_error", "reasoningEffort: 所选模型仅支持 "+strings.Join(supported, "、"), 422)
+	}
+	return effort, nil
+}
+
 func assistantMessageDict(item *store.AssistantMessage) gin.H {
 	if item == nil {
 		return gin.H{}
 	}
 	out := gin.H{}
 	for key, value := range item.Metadata {
+		if key == "_contextSummary" || key == "_contextSummaryMessages" || key == "_contextSummaryThroughMessageId" {
+			continue
+		}
 		out[key] = value
 	}
 	out["id"] = item.ID.String()
@@ -1249,6 +1394,55 @@ func sanitizeAssistantCanvasSnapshot(raw json.RawMessage) (any, error) {
 		return nil, apperr.E("validation_error", "画布快照无效", 422)
 	}
 	return snapshot, nil
+}
+
+func parseAssistantProjectID(value string) (*uuid.UUID, error) {
+	raw := strings.TrimSpace(value)
+	if raw == "" {
+		return nil, nil
+	}
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		return nil, apperr.E("validation_error", "projectId: 无效 UUID", 422)
+	}
+	return &id, nil
+}
+
+func assistantProjectIDValue(id *uuid.UUID) any {
+	if id == nil {
+		return nil
+	}
+	return id.String()
+}
+
+func assistantCanvasSnapshotProjectID(snapshot any) *uuid.UUID {
+	record, ok := snapshot.(map[string]any)
+	if !ok {
+		return nil
+	}
+	raw, _ := record["projectId"].(string)
+	id, err := parseAssistantProjectID(raw)
+	if err != nil {
+		return nil
+	}
+	return id
+}
+
+func (s *Server) bindAssistantConversationProject(ctx context.Context, userID uuid.UUID, conversation *store.AssistantConversation, projectID uuid.UUID) error {
+	if conversation == nil {
+		return nil
+	}
+	if conversation.Workspace != modelconfig.WorkspaceCanvas {
+		return apperr.E("validation_error", "projectId: 仅支持无限画布会话", 422)
+	}
+	if conversation.ProjectID != nil {
+		return nil
+	}
+	if err := store.SetAssistantConversationProjectIfEmpty(ctx, s.St.Pool, userID, conversation.ID, projectID); err != nil {
+		return err
+	}
+	conversation.ProjectID = &projectID
+	return nil
 }
 
 func assistantTitle(value string) string {
@@ -1353,6 +1547,63 @@ func assistantUploadReferenceKeys(items []map[string]any, userID uuid.UUID) []st
 		keys = append(keys, key)
 	}
 	return keys
+}
+
+func normalizeAssistantFileAttachments(items []map[string]any) ([]map[string]any, error) {
+	if len(items) == 0 {
+		return []map[string]any{}, nil
+	}
+	if len(items) > 8 {
+		return nil, apperr.E("validation_error", "每次最多附加 8 个文档", 422)
+	}
+	out := make([]map[string]any, 0, len(items))
+	seen := make(map[uuid.UUID]bool, len(items))
+	for _, item := range items {
+		id, err := uuid.Parse(strings.TrimSpace(assistantMapText(item, "id")))
+		if err != nil {
+			return nil, apperr.E("validation_error", "attachments: 文件 ID 无效", 422)
+		}
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, map[string]any{"id": id.String()})
+		}
+	}
+	return out, nil
+}
+
+func hydrateAssistantFileAttachments(
+	ctx context.Context,
+	q store.Q,
+	userID uuid.UUID,
+	items []map[string]any,
+) ([]map[string]any, error) {
+	ids := make([]uuid.UUID, 0, len(items))
+	for _, item := range items {
+		id, err := uuid.Parse(assistantMapText(item, "id"))
+		if err != nil {
+			return nil, apperr.E("validation_error", "attachments: 文件 ID 无效", 422)
+		}
+		ids = append(ids, id)
+	}
+	files, err := store.ListUserAssistantFilesByIDs(ctx, q, userID, ids)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]map[string]any, 0, len(ids))
+	for _, id := range ids {
+		file := files[id]
+		if file == nil {
+			return nil, apperr.E("validation_error", "attachments: 文件不存在或不属于当前用户", 422)
+		}
+		if file.Status != "ready" {
+			return nil, apperr.E("assistant_file_not_ready", "文档仍在解析，请等待完成后发送", 409)
+		}
+		out = append(out, map[string]any{
+			"id": file.ID.String(), "name": file.Name, "contentType": file.ContentType,
+			"sizeBytes": file.SizeBytes, "pageCount": file.PageCount, "charCount": file.CharCount,
+		})
+	}
+	return out, nil
 }
 
 func assistantTaskOutputReferenceKeys(items []map[string]any, userID uuid.UUID) []string {

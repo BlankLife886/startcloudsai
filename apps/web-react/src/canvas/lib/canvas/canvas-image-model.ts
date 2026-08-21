@@ -44,7 +44,7 @@ function normalizeQuality(value: string) {
 }
 
 export function canvasImageModelCapabilities(model?: ChannelModel | null): CanvasImageModelCapabilities {
-    const safe = model && typeof model === "object" ? model : {};
+    const safe: Partial<ChannelModel> = model ?? {};
     const globalAspectRatios = normalizeList(safe.aspectRatios, CANVAS_IMAGE_ASPECT_RATIOS, CANVAS_IMAGE_ASPECT_RATIOS);
     const resolutions = normalizeList(safe.resolutions, CANVAS_IMAGE_RESOLUTIONS, CANVAS_IMAGE_RESOLUTIONS).map((item) => item.toUpperCase());
     const sourceRatios = safe.aspectRatiosByResolution && typeof safe.aspectRatiosByResolution === "object" ? safe.aspectRatiosByResolution : {};

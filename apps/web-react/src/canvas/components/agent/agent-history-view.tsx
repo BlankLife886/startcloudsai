@@ -14,6 +14,8 @@ export function AgentHistoryView({
     loading,
     busy,
     connected,
+    showWorkspace = true,
+    emptyText,
     onRefresh,
     onNewThread,
     onResumeThread,
@@ -26,6 +28,8 @@ export function AgentHistoryView({
     loading: boolean;
     busy: boolean;
     connected: boolean;
+    showWorkspace?: boolean;
+    emptyText?: string;
     onRefresh: () => void;
     onNewThread: () => void;
     onResumeThread: (threadId: string) => void;
@@ -46,13 +50,15 @@ export function AgentHistoryView({
     return (
         <div className="thin-scrollbar min-h-0 flex-1 overflow-y-auto p-3">
             <div className="space-y-3">
-                <div className="flex min-w-0 items-center gap-2 text-xs" style={{ color: theme.node.muted }}>
-                    <FolderOpen className="size-3.5 shrink-0" />
-                    <span className="shrink-0">{t("agent.history.workspace")}</span>
-                    <span className="min-w-0 truncate" title={workspacePath}>
-                        {workspacePath || t("agent.history.defaultWorkspace")}
-                    </span>
-                </div>
+                {showWorkspace ? (
+                    <div className="flex min-w-0 items-center gap-2 text-xs" style={{ color: theme.node.muted }}>
+                        <FolderOpen className="size-3.5 shrink-0" />
+                        <span className="shrink-0">{t("agent.history.workspace")}</span>
+                        <span className="min-w-0 truncate" title={workspacePath}>
+                            {workspacePath || t("agent.history.defaultWorkspace")}
+                        </span>
+                    </div>
+                ) : null}
                 <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex items-center gap-2 text-sm" style={{ color: theme.node.muted }}>
                         {threads.length ? <Checkbox checked={allSelected} indeterminate={Boolean(selectedThreads.length) && !allSelected} disabled={loading || busy} onChange={() => setSelectedIds(allSelected ? new Set() : new Set(threads.map((thread) => thread.id)))} /> : null}
@@ -119,7 +125,7 @@ export function AgentHistoryView({
                     })}
                     {!threads.length ? (
                         <div className="px-3 py-8 text-center text-sm" style={{ color: theme.node.muted }}>
-                            {t(connected ? "agent.history.noWorkspaceThreads" : "agent.history.connectHint")}
+                            {emptyText || t(connected ? "agent.history.noWorkspaceThreads" : "agent.history.connectHint")}
                         </div>
                     ) : null}
                 </div>

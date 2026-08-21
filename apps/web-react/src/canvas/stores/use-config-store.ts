@@ -4,6 +4,16 @@ import { persist } from "zustand/middleware";
 
 export type ModelCapability = "image" | "video" | "text" | "audio";
 export type ReasoningEffort = "auto" | "low" | "medium" | "high" | "xhigh";
+export type ModelReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
+export const MODEL_REASONING_EFFORTS: readonly ModelReasoningEffort[] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+export type ModelReasoningPrice = {
+    assistantStandardPricePoints?: number;
+    assistantPricePoints?: number;
+    canvasAgentStandardPricePoints?: number;
+    canvasAgentPricePoints?: number;
+};
 
 export type ChannelModel = {
     name: string;
@@ -18,6 +28,9 @@ export type ChannelModel = {
     qualities?: string[];
     transparentBackground?: boolean;
     maxReferenceImages?: number;
+    supportedReasoningEfforts?: ModelReasoningEffort[];
+    defaultReasoningEffort?: ModelReasoningEffort;
+    reasoningPrices?: Partial<Record<ModelReasoningEffort, ModelReasoningPrice>>;
 };
 
 export type ModelChannel = {

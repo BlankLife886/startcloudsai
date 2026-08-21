@@ -93,7 +93,28 @@ func TestCanvasWorkflowRunLeaseAndProgress(t *testing.T) {
 		"ownerId": ownerB, "nodeIds": []string{"node-b"},
 	}, token)
 	restartedBody, _ := decode(t, restarted)
-	if restarted.Code != http.StatusOK || restartedBody["acquired"] != true || restartedBody["run"].(map[string]any)["id"] == runID {
+	restartedRunID := restartedBody["run"].(map[string]any)["id"].(string)
+	if restarted.Code != http.StatusOK || restartedBody["acquired"] != true || restartedRunID == runID {
 		t.Fatalf("restart: status %d body %s", restarted.Code, restarted.Body.String())
+	}
+
+	finished := env.do(t, http.MethodPatch, acquirePath+"/"+restartedRunID, map[string]any{
+		"ownerId": ownerB, "status": "succeeded", "completedNodeIds": []string{"node-b"},
+	}, token)
+	finishedBody, _ := decode(t, finished)
+	if finished.Code != http.StatusOK || finishedBody["status"] != "succeeded" {
+		t.Fatalf("finish restarted run: status %d body %s", finished.Code, finished.Body.String())
+	}
+
+	afterSuccess := env.do(t, http.MethodPost, acquirePath, map[string]any{
+		"ownerId": ownerB, "nodeIds": []string{"node-a", "node-b"},
+	}, token)
+	afterSuccessBody, _ := decode(t, afterSuccess)
+	afterSuccessRun := afterSuccessBody["run"].(map[string]any)
+	if afterSuccess.Code != http.StatusOK || afterSuccessBody["acquired"] != true || afterSuccessRun["id"] == restartedRunID {
+		t.Fatalf("restart after success: status %d body %s", afterSuccess.Code, afterSuccess.Body.String())
+	}
+	if len(afterSuccessRun["completedNodeIds"].([]any)) != 0 || len(afterSuccessRun["canceledNodeIds"].([]any)) != 0 || afterSuccessRun["currentNodeId"] != nil {
+		t.Fatalf("restart after success must have fresh progress: body %s", afterSuccess.Body.String())
 	}
 }

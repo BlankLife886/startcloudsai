@@ -47,7 +47,7 @@ export function useAgentBridge(params: AgentBridgeParams) {
             const generationOps = safeOps.filter((op): op is Extract<CanvasAgentOp, { type: "run_generation" }> => op.type === "run_generation" && Boolean(op.nodeId));
             const next = applyCanvasAgentOps(
                 before,
-                safeOps.filter((op) => op.type !== "run_generation"),
+                safeOps,
             );
             nodesRef.current = next.nodes;
             connectionsRef.current = next.connections;
@@ -91,8 +91,11 @@ export function useAgentBridge(params: AgentBridgeParams) {
 
     useEffect(() => {
         setAgentCanvasContext({ snapshot: agentSnapshot, applyOps: applyAgentOps, undoOps: undoAgentOps, canUndo: Boolean(agentUndoSnapshot) });
-        return () => setAgentCanvasContext(null);
     }, [agentSnapshot, applyAgentOps, agentUndoSnapshot, setAgentCanvasContext, undoAgentOps]);
+
+    useEffect(() => {
+        return () => setAgentCanvasContext(null);
+    }, [setAgentCanvasContext]);
 
     return { applyAgentOps };
 }

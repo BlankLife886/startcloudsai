@@ -1,10 +1,22 @@
 import { useEffect, useState } from "react";
 import { AuthenticatedImage } from "../../components/AuthenticatedImage.jsx";
+import { CommerceSelect } from "./CommerceSelect.jsx";
+import { accessoryShotBlueprints } from "./accessory/accessoryCommerce.js";
+import {
+  HandheldGeneratingStage,
+  HandheldRefCard,
+} from "./HandheldStudio.jsx";
+import "./HandheldStudio.css";
 import "./AccessoryStudio.css";
 
 function formatSeconds(seconds) {
   const value = Math.max(0, Number(seconds) || 0);
   return value >= 100 ? String(value) : String(value).padStart(2, "0");
+}
+
+function channelRatioVar(ratio) {
+  const [w, h] = String(ratio || "4:5").split(":");
+  return `${w || 4} / ${h || 5}`;
 }
 
 function groupAccessoryHistory(history) {
@@ -30,100 +42,26 @@ function groupAccessoryHistory(history) {
   return groups;
 }
 
-const REFERENCE_SLOTS = [
-  { role: "product", label: "饰品", required: true, icon: "bi-gem" },
-  { role: "model", label: "模特", required: false, icon: "bi-person" },
-  { role: "scene", label: "场景", required: false, icon: "bi-image" },
+const ACCESSORY_RATIO_CHANNELS = [
+  { id: "1:1", label: "方图", ratio: "1:1", hint: "货架主图" },
+  { id: "3:4", label: "详情", ratio: "3:4", hint: "详情页配图" },
+  { id: "4:5", label: "竖图", ratio: "4:5", hint: "通用竖构图" },
+  { id: "9:16", label: "竖屏", ratio: "9:16", hint: "信息流投放" },
 ];
-
-function ReferenceGrid({
-  references = [],
-  running,
-  onUpload,
-  onUploadSlot,
-  onRemove,
-  onPreview,
-  onDropSlot,
-  sceneIgnoredWithoutModel = false,
-}) {
-  function requestUpload(role) {
-    if (onUploadSlot) onUploadSlot(role);
-    else onUpload?.();
-  }
-
-  function handleSlotDrop(role, event) {
-    event.preventDefault();
-    event.stopPropagation();
-    const files = event.dataTransfer?.files;
-    if (!files?.length) return;
-    if (onDropSlot) onDropSlot(role, files);
-    else onUploadSlot?.(role);
-  }
-
-  return (
-    <div className="accessory-references" aria-label="饰品穿戴参考图">
-      {REFERENCE_SLOTS.map((slot, index) => {
-        const item = references[index];
-        return item?.url ? (
-          <figure
-            key={`${slot.role}-${item.url}`}
-            onDragOver={(event) => event.preventDefault()}
-            onDrop={(event) => handleSlotDrop(slot.role, event)}
-          >
-            <button
-              type="button"
-              className="accessory-reference__preview"
-              aria-label={`查看${slot.label}参考图`}
-              onClick={() => onPreview?.(item.url)}
-            >
-              <img src={item.url} alt={`${slot.label}参考图`} />
-            </button>
-            <figcaption>
-              <span>{slot.label}</span>
-              <small>{slot.required ? "必填" : "可选"}</small>
-            </figcaption>
-            <button
-              type="button"
-              className="accessory-reference__remove"
-              aria-label={`移除${slot.label}参考图`}
-              disabled={running}
-              onClick={() => onRemove?.(slot.role, index)}
-            >
-              <i className="bi bi-x-lg" />
-            </button>
-          </figure>
-        ) : (
-          <button
-            key={slot.role}
-            type="button"
-            className="accessory-reference__empty"
-            aria-label={`上传${slot.label}参考图`}
-            disabled={running}
-            onClick={() => requestUpload(slot.role)}
-            onDragOver={(event) => event.preventDefault()}
-            onDrop={(event) => handleSlotDrop(slot.role, event)}
-          >
-            <i className={`bi ${slot.icon}`} />
-            <strong>{slot.label}</strong>
-            <small>{slot.required ? "必填" : "可选"}</small>
-          </button>
-        );
-      })}
-      {sceneIgnoredWithoutModel ? (
-        <p className="accessory-reference-hint" role="status">
-          已上传场景但缺少模特：生成时不会使用场景图，避免角色错位。
-        </p>
-      ) : null}
-    </div>
-  );
-}
 
 export function AccessoryStudio({
   references = [],
   aspectRatio,
+  ratioStyle,
+  onChangeRatio,
   resultUrl = "",
   history = [],
+  pack,
   packOptions = [],
+  onChangePack,
+  crop,
+  cropOptions = [],
+  onChangeCrop,
   running,
   failed,
   failMessage = "",
@@ -131,12 +69,12 @@ export function AccessoryStudio({
   elapsedSeconds = 0,
   generateDisabled,
   generateHint = "",
+  shotCount = 1,
+  costLabel = "",
   onGenerate,
   onCancel,
-  onUpload,
   onUploadSlot,
   onRemoveReference,
-  onDrop,
   onDropSlot,
   sceneIgnoredWithoutModel = false,
   onSelectHistory,
@@ -150,6 +88,9 @@ export function AccessoryStudio({
   cancelling,
 }) {
   const [runSeconds, setRunSeconds] = useState(0);
+  const product = references[0] || null;
+  const model = references[1] || null;
+  const scene = references[2] || null;
 
   useEffect(() => {
     if (!running) return undefined;
@@ -162,151 +103,360 @@ export function AccessoryStudio({
   }, [running]);
 
   const waitSeconds = running ? runSeconds : elapsedSeconds;
-  const ratio = String(aspectRatio || "4:5");
-  const ratioValue = ratio.replace(":", " / ");
+  const posterRatio = String(aspectRatio || "4:5");
+  const frameStyle = ratioStyle || {
+    "--commerce-shot-ratio": posterRatio.replace(":", " / "),
+  };
   const historyGroups = groupAccessoryHistory(history);
+  const selectedPack =
+    packOptions.find((item) => item.id === pack) || packOptions[0];
+  const selectedChannel =
+    ACCESSORY_RATIO_CHANNELS.find((item) => item.id === posterRatio) ||
+    ACCESSORY_RATIO_CHANNELS[2];
+  const planned = accessoryShotBlueprints(selectedPack?.id || pack);
   const activeGroup =
     historyGroups.find((group) =>
       group.rows.some((row) => row.url === resultUrl),
     ) || historyGroups[0];
   const activeRows = activeGroup?.rows || [];
-  const displayRow =
-    activeRows.find((row) => row.url === resultUrl) || activeRows[0] || null;
-  const displayUrl = resultUrl || displayRow?.url || "";
-  // 主舞台大图优先展示图（服务端压缩大图），404 回退原图
+  const plannedShots = planned.map((shot, index) => {
+    const row = activeRows[index];
+    const url = row?.url || (index === 0 && !activeRows.length ? resultUrl : "");
+    return {
+      id: shot.id || `${selectedPack?.id || "shot"}-${index}`,
+      label: shot.label || `第 ${index + 1} 张`,
+      url,
+      preview: row?.preview || url,
+      running: Boolean(running && !url),
+      failed: Boolean(failed && !url && index === 0),
+    };
+  });
+  const displayShot =
+    plannedShots.find((item) => item.url && item.url === resultUrl) ||
+    plannedShots.find((item) => item.url) ||
+    plannedShots.find((item) => item.running) ||
+    plannedShots[0];
+  const displayUrl = resultUrl || displayShot?.url || "";
   const stageDisplayUrl =
     (history || []).find((row) => row.url === displayUrl)?.display || "";
+  const packThumbs = plannedShots.length > 1 ? plannedShots : [];
+  const hasImage = Boolean(displayUrl) && !running && !displayShot?.failed;
 
-  function handleDrop(event) {
-    event.preventDefault();
-    const files = event.dataTransfer?.files;
-    if (files?.length) onDrop?.(files);
+  function previewReference(event, payload) {
+    const url = payload?.url;
+    if (url) onPreview?.(url);
   }
+
+  function uploadRole(role) {
+    onUploadSlot?.(role);
+  }
+
+  function dropRole(role) {
+    return (files) => onDropSlot?.(role, files);
+  }
+
+  const cropOverlay = (
+    <div className="handheld-ref-card__crop">
+      <CommerceSelect
+        value={crop}
+        options={cropOptions.map((item) => ({
+          value: item.id,
+          label: item.label,
+        }))}
+        onChange={onChangeCrop}
+        ariaLabel="选择出镜范围"
+        menuMinWidth={168}
+        disabled={running}
+      />
+    </div>
+  );
 
   return (
     <div className="accessory-studio" aria-label="饰品商业出图工作台">
       <section
-        className="accessory-output"
+        className={`accessory-output handheld-out${running ? " is-running" : ""}`}
         aria-label="饰品生成结果"
-        onDragOver={(event) => event.preventDefault()}
-        onDrop={handleDrop}
       >
+        {notice || sceneIgnoredWithoutModel ? (
+          <p className="handheld-pane__notice" role="status">
+            {sceneIgnoredWithoutModel
+              ? "已上传场景但缺少模特：生成时不会使用场景图，避免角色错位。"
+              : notice}
+          </p>
+        ) : null}
+
         <div
-          className={`accessory-workbench${displayUrl ? " has-result" : ""}`}
+          className="handheld-board handheld-board--top"
           aria-label="饰品画布输入"
         >
-          <aside
-            className="accessory-workbench__panel accessory-workbench__panel--left"
-            aria-label="饰品参考图"
-          >
-            <div className="accessory-section accessory-canvas-reference">
-              <ReferenceGrid
-                references={references}
-                running={running}
-                onUpload={onUpload}
-                onUploadSlot={onUploadSlot}
-                onRemove={onRemoveReference}
-                onPreview={onPreview}
-                onDropSlot={onDropSlot}
-                sceneIgnoredWithoutModel={sceneIgnoredWithoutModel}
-              />
-              {notice ? (
-                <p className="accessory-notice" role="status">
-                  {notice}
-                </p>
-              ) : null}
-            </div>
-
-            <button
-              type="button"
-              className={`accessory-submit${running ? " is-running" : ""}${failed ? " is-failed" : ""}`}
-              disabled={running ? cancelling : generateDisabled}
-              title={!running && generateDisabled ? generateHint : undefined}
-              onClick={running ? onCancel : onGenerate}
-            >
-              <i
-                className={`bi ${running ? "bi-stop-fill" : failed ? "bi-arrow-clockwise" : "bi-stars"}`}
-              />
-              {running
-                ? cancelling
-                  ? "正在停止"
-                  : "停止生成"
-                : failed
-                  ? "重新生成"
-                  : "生成饰品商业图"}
-            </button>
-          </aside>
-
-          <main className="accessory-workbench__canvas">
-            <div
-              className="accessory-current-set"
-              style={{ "--accessory-ratio": ratioValue }}
-            >
-              <div
-                className={`accessory-frame${displayUrl ? " has-image" : ""}`}
-                style={{ "--accessory-ratio": ratioValue }}
-                data-ratio={ratio}
-              >
-                {displayUrl ? (
-                  <button
-                    type="button"
-                    className="accessory-frame__shot"
-                    aria-label="查看饰品生成结果"
-                    aria-pressed="true"
-                    onClick={(event) => {
-                      onSelectHistory?.(displayUrl);
-                      onResultPreview?.(event, {
-                        url: displayUrl,
-                        alt: "饰品生成结果",
-                        title: "饰品生成结果",
-                      });
-                    }}
-                  >
-                    <AuthenticatedImage
-                      src={stageDisplayUrl || displayUrl}
-                      fallbackSrc={displayUrl}
-                      alt="饰品生成结果"
-                    />
-                  </button>
-                ) : (
-                  <div className="accessory-frame__empty">
-                    <i
-                      className={`bi ${running ? "bi-stars" : failed ? "bi-exclamation-triangle" : "bi-gem"}`}
-                    />
-                    <strong>
-                      {running
-                        ? "正在生成商业母版"
-                        : failed
-                          ? "本次生成未完成"
-                          : "还没有结果"}
-                    </strong>
-                    <span>
-                      {running
-                        ? `已等待 ${formatSeconds(waitSeconds)} 秒`
-                        : failed
-                          ? failMessage || "调整参考图或参数后重新生成"
-                          : references.length
-                            ? generateHint
-                            : "上传饰品图后开始配置"}
-                    </span>
-                  </div>
-                )}
-                {running ? (
-                  <span className="accessory-frame__elapsed">
-                    {formatSeconds(waitSeconds)}s
+          <div className="handheld-board__refs">
+            <HandheldRefCard
+              className="handheld-product handheld-product--canvas"
+              tag="饰品"
+              image={product?.url || ""}
+              emptyIcon="bi-gem"
+              emptyLabel="拖拽或点击"
+              emptyAria="上传饰品参考图"
+              previewAria="查看饰品参考图"
+              previewAlt="饰品参考图"
+              previewTitle="饰品"
+              groupAria="饰品图操作"
+              uploadAria="上传饰品图"
+              showMore={false}
+              showClear
+              clearAria="清空饰品参考图"
+              disabled={running}
+              onPreview={previewReference}
+              onUpload={() => uploadRole("product")}
+              onClear={() => onRemoveReference?.("product")}
+              onDrop={dropRole("product")}
+            />
+            <HandheldRefCard
+              className="handheld-scene handheld-scene--canvas"
+              tag="场景"
+              image={scene?.url || ""}
+              emptyIcon="bi-image"
+              emptyLabel="选择场景"
+              emptyAria="上传场景参考图"
+              previewAria="查看场景参考图"
+              previewAlt="场景参考图"
+              previewTitle="场景"
+              groupAria="场景图操作"
+              uploadAria="上传场景图"
+              clearAria="清空场景参考图"
+              showMore={false}
+              showClear
+              disabled={running}
+              onPreview={previewReference}
+              onUpload={() => uploadRole("scene")}
+              onClear={() => onRemoveReference?.("scene")}
+              onDrop={dropRole("scene")}
+            />
+          </div>
+          <div className="handheld-brief handheld-brief--canvas">
+            <div className="handheld-platform">
+              <div className="handheld-brief__head">
+                <span className="handheld-brief__kicker">投放到</span>
+                {selectedChannel ? (
+                  <span className="handheld-brief__meta">
+                    {selectedChannel.hint}
                   </span>
                 ) : null}
-                {displayUrl ? (
-                  <div
+              </div>
+              <div
+                className="handheld-channels"
+                role="radiogroup"
+                aria-label="选择投放比例"
+              >
+                {ACCESSORY_RATIO_CHANNELS.map((item) => {
+                  const active = posterRatio === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      role="radio"
+                      aria-checked={active}
+                      aria-label={item.label}
+                      title={item.hint}
+                      className={active ? "is-active" : ""}
+                      disabled={running}
+                      onClick={() => onChangeRatio?.(item.id)}
+                    >
+                      <span
+                        className="handheld-channels__frame"
+                        style={{
+                          "--channel-ratio": channelRatioVar(item.ratio),
+                        }}
+                        aria-hidden="true"
+                      />
+                      <span className="handheld-channels__name">
+                        {item.label}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="handheld-pack">
+              <div
+                className="handheld-packs"
+                role="radiogroup"
+                aria-label="选择出图任务"
+              >
+                {packOptions.map((item) => {
+                  const active = (selectedPack?.id || pack) === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      role="radio"
+                      aria-checked={active}
+                      className={active ? "is-active" : ""}
+                      disabled={running}
+                      onClick={() => onChangePack?.(item.id)}
+                    >
+                      <strong>{item.label}</strong>
+                      <em>
+                        {item.countLabel || `${item.shotIds?.length || 1}张`}
+                      </em>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="handheld-ref-stack">
+          <div className="handheld-crop handheld-crop--canvas">
+            <HandheldRefCard
+              className="handheld-model"
+              tag="模特"
+              overlay={cropOverlay}
+              image={model?.url || ""}
+              emptyIcon="bi-person"
+              emptyLabel="选择模特"
+              emptyAria="上传模特参考图"
+              previewAria="查看模特参考图"
+              previewAlt="模特参考图"
+              previewTitle="模特"
+              groupAria="模特图操作"
+              uploadAria="上传模特图"
+              clearAria="清空模特参考图"
+              showMore={false}
+              showClear
+              disabled={running}
+              onPreview={previewReference}
+              onUpload={() => uploadRole("model")}
+              onClear={() => onRemoveReference?.("model")}
+              onDrop={dropRole("model")}
+            />
+          </div>
+        </div>
+
+        <div
+          className="handheld-shots"
+          data-count={1}
+          data-ratio={posterRatio}
+          style={frameStyle}
+        >
+          <div
+            className={`handheld-shot-stage${packThumbs.length ? " has-thumbs" : ""}`}
+          >
+            <div
+              className={`handheld-frame${hasImage ? " has-image" : ""}${running ? " is-running" : ""}${failed && !displayUrl ? " is-failed" : ""}${displayUrl ? " is-selected" : ""}`}
+              data-ratio={posterRatio}
+              style={frameStyle}
+            >
+              {running ? (
+                <HandheldGeneratingStage
+                  productUrl={product?.url || ""}
+                  sceneImage={scene?.url || ""}
+                  label={displayShot?.label || "饰品商业图"}
+                  seconds={waitSeconds}
+                />
+              ) : failed && !displayUrl ? (
+                <div className="handheld-frame__status" role="alert">
+                  <strong>本次生成未完成</strong>
+                  <span>{failMessage || "调整参考图或参数后重新生成"}</span>
+                </div>
+              ) : displayUrl ? (
+                <button
+                  type="button"
+                  className="handheld-frame__shot"
+                  aria-label="查看饰品生成结果"
+                  aria-pressed="true"
+                  onClick={(event) => {
+                    onSelectHistory?.(displayUrl);
+                    onResultPreview?.(event, {
+                      url: displayUrl,
+                      alt: "饰品生成结果",
+                      title: "饰品生成结果",
+                    });
+                  }}
+                >
+                  <AuthenticatedImage
+                    src={stageDisplayUrl || displayUrl}
+                    fallbackSrc={displayUrl}
+                    alt="饰品生成结果"
+                  />
+                </button>
+              ) : (
+                <div className="handheld-frame__status">
+                  <strong>还没有结果</strong>
+                  <span>
+                    {references.some((item) => item?.url)
+                      ? generateHint || "配置完成后点生成"
+                      : "上传饰品图后开始配置"}
+                  </span>
+                </div>
+              )}
+              {displayShot?.label ? (
+                <small className="handheld-frame__label">
+                  {displayShot.label}
+                </small>
+              ) : null}
+              {displayUrl && !running && waitSeconds > 0 ? (
+                <span
+                  className="handheld-frame__elapsed"
+                  aria-label={`生成耗时 ${waitSeconds} 秒`}
+                >
+                  {formatSeconds(waitSeconds)}秒
+                </span>
+              ) : null}
+              <div className="handheld-actions">
+                <button
+                  type="button"
+                  className={`handheld-submit handheld-submit--frame${running ? " is-running" : ""}${failed ? " is-failed" : ""}`}
+                  disabled={running ? cancelling : generateDisabled}
+                  title={!running && generateDisabled ? generateHint : undefined}
+                  aria-label={
+                    running
+                      ? cancelling
+                        ? "正在停止"
+                        : "停止生成"
+                      : failed
+                        ? `重试生成饰品图（${shotCount}张）`
+                        : `生成饰品商业图（${shotCount}张）`
+                  }
+                  onClick={running ? onCancel : onGenerate}
+                >
+                  {running ? (
+                    <span
+                      className="handheld-submit__spinner"
+                      aria-hidden="true"
+                    />
+                  ) : (
+                    <i
+                      className={`bi ${failed ? "bi-arrow-clockwise" : "bi-stars"}`}
+                      aria-hidden="true"
+                    />
+                  )}
+                  <span>
+                    {running
+                      ? cancelling
+                        ? "停止中"
+                        : "生成中"
+                      : failed
+                        ? "重试"
+                        : "生成"}
+                  </span>
+                  <small>
+                    {running
+                      ? "进行中"
+                      : `${shotCount}张${costLabel ? ` · ${costLabel}` : ""}`}
+                  </small>
+                </button>
+                {displayUrl && !running ? (
+                  <span
                     className="accessory-frame__actions"
                     aria-label="饰品结果操作"
                   >
                     <button
                       type="button"
-                      disabled={!onMaskEdit || running}
+                      disabled={!onMaskEdit}
                       onClick={onMaskEdit}
                     >
-                      <i className="bi bi-brush" />
                       局部修正
                     </button>
                     <button
@@ -314,7 +464,6 @@ export function AccessoryStudio({
                       disabled={!onDownload}
                       onClick={onDownload}
                     >
-                      <i className="bi bi-download" />
                       下载
                     </button>
                     <button
@@ -322,7 +471,6 @@ export function AccessoryStudio({
                       disabled={!onSaveAsset || actionBusy}
                       onClick={onSaveAsset}
                     >
-                      <i className="bi bi-collection" />
                       存入素材库
                     </button>
                     {activeRows.length > 1 ? (
@@ -331,125 +479,149 @@ export function AccessoryStudio({
                         disabled={!onDownloadPack || actionBusy}
                         onClick={onDownloadPack}
                       >
-                        <i className="bi bi-file-earmark-zip" />
                         下载套图
                       </button>
                     ) : null}
-                  </div>
+                  </span>
                 ) : null}
               </div>
-
-              {activeRows.length > 1 ? (
-                <div
-                  className="accessory-current-set__thumbs"
-                  role="list"
-                  aria-label="本次饰品套图"
-                >
-                  {activeRows.map((row, index) => {
-                    const spec = row?.task?.params?.accessorySpec || {};
-                    const label = spec.shotLabel || `第 ${index + 1} 张`;
-                    return (
-                      <button
-                        key={row.url}
-                        type="button"
-                        role="listitem"
-                        className={`accessory-current-set__thumb${row.url === displayUrl ? " is-active" : ""}`}
-                        aria-label={label}
-                        aria-pressed={row.url === displayUrl}
-                        onClick={() => onSelectHistory?.(row.url)}
-                      >
-                        <AuthenticatedImage
-                          src={row.preview || row.url}
-                          alt=""
-                        />
-                      </button>
-                    );
-                  })}
-                </div>
-              ) : null}
             </div>
-          </main>
-
-          <aside className="accessory-history" aria-label="饰品生成历史">
-            <p className="accessory-history__label">历史</p>
-            {historyGroups.length ? (
-              <div className="accessory-history__list" role="list">
-                {historyGroups.map((group) => {
-                  const cover = group.rows[0];
-                  const count = Math.max(
-                    group.rows.length,
-                    Number(cover?.groupSize) || 0,
-                  );
-                  const active = group === activeGroup;
-                  const mosaic = count > 1 ? group.rows.slice(0, 4) : [];
-                  const spec = cover?.task?.params?.accessorySpec || {};
-                  const packLabel =
-                    packOptions.find((item) => item.id === spec.pack)?.label ||
-                    "饰品穿戴";
+            {packThumbs.length ? (
+              <div
+                className="handheld-frame__thumbs"
+                role="list"
+                aria-label="本次饰品套图"
+              >
+                {packThumbs.map((item, thumbIndex) => {
+                  const thumbActive =
+                    (item.url && item.url === displayUrl) ||
+                    (!item.url && item === displayShot);
+                  const thumbPending =
+                    !item.url && !item.failed && (item.running || running);
+                  const thumbFailed = Boolean(item.failed) && !item.running;
                   return (
                     <button
-                      key={group.id}
+                      key={item.id || `thumb-${thumbIndex}`}
                       type="button"
                       role="listitem"
-                      className={`accessory-history__item${active ? " is-active" : ""}`}
-                      disabled={running}
-                      aria-label={`${packLabel}${count > 1 ? `，共 ${count} 张` : ""}`}
-                      aria-pressed={active}
+                      className={`handheld-frame__thumb${thumbActive ? " is-active" : ""}${thumbPending ? " is-pending" : ""}${thumbFailed ? " is-failed" : ""}`}
+                      disabled={thumbPending || (!item.url && !thumbFailed)}
+                      aria-label={item.label || `第 ${thumbIndex + 1} 张`}
+                      aria-pressed={thumbActive}
                       onClick={() => {
-                        const current = group.rows.find(
-                          (row) => row.url === displayUrl,
-                        );
-                        onSelectHistory?.(current?.url || cover?.url);
+                        if (item.url) onSelectHistory?.(item.url);
                       }}
                     >
-                      <span
-                        className="accessory-history__shot"
-                        style={{
-                          "--accessory-history-ratio": String(
-                            cover?.aspectRatio || spec.aspectRatio || "4:5",
-                          ).replace(":", " / "),
-                        }}
-                      >
-                        {mosaic.length ? (
-                          <span
-                            className="accessory-history__mosaic"
-                            data-count={Math.min(4, mosaic.length)}
-                          >
-                            {mosaic.map((row) => (
-                              <AuthenticatedImage
-                                key={row.url}
-                                src={row.preview || row.url}
-                                alt=""
-                              />
-                            ))}
-                          </span>
-                        ) : (
-                          <AuthenticatedImage
-                            src={cover?.preview || cover?.url}
-                            alt=""
+                      {item.url ? (
+                        <AuthenticatedImage
+                          src={item.preview || item.url}
+                          alt=""
+                        />
+                      ) : thumbFailed ? (
+                        <span className="handheld-frame__thumb-failed">
+                          <i
+                            className="bi bi-arrow-clockwise"
+                            aria-hidden="true"
                           />
-                        )}
-                        {count > 1 ? (
-                          <span className="accessory-history__count">
-                            {count}
-                          </span>
-                        ) : null}
-                      </span>
-                      <span className="accessory-history__meta">
-                        <strong>{packLabel}</strong>
-                      </span>
+                          <small>重试</small>
+                        </span>
+                      ) : thumbPending ? (
+                        <span className="handheld-frame__thumb-pending">
+                          <i
+                            className="handheld-frame__thumb-spin"
+                            aria-hidden="true"
+                          />
+                        </span>
+                      ) : (
+                        <span className="handheld-frame__thumb-empty">
+                          {String(thumbIndex + 1).padStart(2, "0")}
+                        </span>
+                      )}
                     </button>
                   );
                 })}
               </div>
-            ) : (
-              <div className="accessory-history__empty">
-                <i className="bi bi-clock-history" />
-                <span>暂无记录</span>
-              </div>
-            )}
-          </aside>
+            ) : null}
+          </div>
         </div>
+
+        <aside className="handheld-history" aria-label="饰品生成历史">
+          <p className="handheld-history__label">历史</p>
+          {historyGroups.length ? (
+            <div className="handheld-history__list" role="list">
+              {historyGroups.map((group) => {
+                const cover = group.rows[0];
+                const count = Math.max(
+                  group.rows.length,
+                  Number(cover?.groupSize) || 0,
+                );
+                const active = group === activeGroup;
+                const mosaic = count > 1 ? group.rows.slice(0, 4) : [];
+                const spec = cover?.task?.params?.accessorySpec || {};
+                const packLabel =
+                  packOptions.find((item) => item.id === spec.pack)?.label ||
+                  "饰品穿戴";
+                return (
+                  <button
+                    key={group.id}
+                    type="button"
+                    role="listitem"
+                    className={`handheld-history__item${count > 1 ? " is-set" : ""}${active ? " is-active" : ""}`}
+                    disabled={running}
+                    aria-label={`${packLabel}${count > 1 ? `，共 ${count} 张` : ""}`}
+                    aria-pressed={active}
+                    onClick={() => {
+                      const current = group.rows.find(
+                        (row) => row.url === displayUrl,
+                      );
+                      onSelectHistory?.(current?.url || cover?.url);
+                    }}
+                  >
+                    <span
+                      className="handheld-history__shot"
+                      style={{
+                        "--handheld-history-ratio": channelRatioVar(
+                          cover?.aspectRatio || spec.aspectRatio || "4:5",
+                        ),
+                      }}
+                    >
+                      {mosaic.length ? (
+                        <span
+                          className="handheld-history__mosaic"
+                          data-count={Math.min(4, mosaic.length)}
+                        >
+                          {mosaic.map((row) => (
+                            <AuthenticatedImage
+                              key={row.url}
+                              src={row.preview || row.url}
+                              alt=""
+                            />
+                          ))}
+                        </span>
+                      ) : (
+                        <AuthenticatedImage
+                          src={cover?.preview || cover?.url}
+                          alt=""
+                        />
+                      )}
+                      {count > 1 ? (
+                        <span className="handheld-history__count">{count}</span>
+                      ) : null}
+                    </span>
+                    <span className="handheld-history__meta">
+                      <strong>{packLabel}</strong>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="handheld-history__empty">
+              <i className="bi bi-clock-history" />
+              <span>暂无记录</span>
+            </div>
+          )}
+        </aside>
       </section>
     </div>
   );

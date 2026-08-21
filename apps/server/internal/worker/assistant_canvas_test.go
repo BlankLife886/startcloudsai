@@ -74,7 +74,7 @@ func TestCanvasAgentInstructionsIncludeSnapshot(t *testing.T) {
 	if !strings.Contains(instructions, "测试画布") || !strings.Contains(instructions, "text-1") {
 		t.Fatalf("instructions = %q", instructions)
 	}
-	if !strings.Contains(instructions, "create_graph") || !strings.Contains(instructions, "connect_nodes") {
+	if !strings.Contains(instructions, "create_graph") || !strings.Contains(instructions, "connect_nodes") || !strings.Contains(instructions, "arrange_nodes") || !strings.Contains(instructions, "TB") {
 		t.Fatalf("instructions lack graph guidance = %q", instructions)
 	}
 	if strings.Contains(instructions, "x、y") == false {
@@ -177,6 +177,64 @@ func TestParseCanvasAgentOpsAcceptsMoveAndResize(t *testing.T) {
 	}
 }
 
+func TestParseCanvasAgentOpsNormalizesDeterministicArrange(t *testing.T) {
+	_, ops, err := parseCanvasAgentOps(`{"ops":[{"type":"arrange_nodes","scope":"selection","direction":"TB","x":999,"y":999}]}`)
+	if err != nil {
+		t.Fatalf("parse ops: %v", err)
+	}
+	if len(ops) != 1 || ops[0]["type"] != "arrange_nodes" || ops[0]["scope"] != "selection" || ops[0]["direction"] != "TB" {
+		t.Fatalf("arrange = %#v", ops)
+	}
+	if ops[0]["x"] != nil || ops[0]["y"] != nil {
+		t.Fatalf("arrange accepted model coordinates: %#v", ops[0])
+	}
+	_, ops, err = parseCanvasAgentOps(`{"ops":[{"type":"arrange_nodes","direction":"diagonal"}]}`)
+	if err != nil || len(ops) != 1 || ops[0]["direction"] != "LR" {
+		t.Fatalf("invalid direction fallback: ops=%#v err=%v", ops, err)
+	}
+}
+
+func TestCanvasAgentOpsForPromptEnforcesExplicitLayoutDirection(t *testing.T) {
+	input := []map[string]any{
+		{"type": "arrange_nodes", "scope": "all", "direction": "LR"},
+		{"type": "select_nodes", "ids": []string{"text-1"}},
+	}
+	vertical := canvasAgentOpsForPrompt("不要水平，改成从上到下的纵向布局", input)
+	if vertical[0]["direction"] != "TB" || vertical[1]["type"] != "select_nodes" {
+		t.Fatalf("vertical ops = %#v", vertical)
+	}
+	if input[0]["direction"] != "LR" {
+		t.Fatalf("input mutated = %#v", input)
+	}
+	horizontal := canvasAgentOpsForPrompt("按连线从左到右横向排列", []map[string]any{{"type": "arrange_nodes", "direction": "TB"}})
+	if horizontal[0]["direction"] != "LR" {
+		t.Fatalf("horizontal ops = %#v", horizontal)
+	}
+	unspecified := canvasAgentOpsForPrompt("整理一下节点", input)
+	if unspecified[0]["direction"] != "LR" {
+		t.Fatalf("unspecified ops = %#v", unspecified)
+	}
+}
+
+func TestParseCanvasAgentOpsRejectsDuplicateGraphKeys(t *testing.T) {
+	_, _, err := parseCanvasAgentOps(`{"ops":[{"type":"create_graph","nodes":[{"key":"a","type":"text"},{"key":"a","type":"image"}]}]}`)
+	if err == nil {
+		t.Fatal("expected duplicate graph keys to be rejected")
+	}
+}
+
+func TestCanvasAgentAppliedCountUsesActualBrowserObservation(t *testing.T) {
+	if got := canvasAgentAppliedCount(`{"requested":2,"applied":1,"snapshot":{}}`); got != 1 {
+		t.Fatalf("applied = %d", got)
+	}
+	if got := canvasAgentAppliedCount(`{"requested":2,"applied":0,"snapshot":"truncated"`); got != 0 {
+		t.Fatalf("truncated applied = %d", got)
+	}
+	if got := canvasAgentAppliedCount("legacy observation without an applied count"); got != 0 {
+		t.Fatalf("unverified observation counted as applied = %d", got)
+	}
+}
+
 func TestCanvasAgentRecognizesRefusal(t *testing.T) {
 	if !canvasAgentLooksLikeRefusal("当前环境无法执行画布修改操作（没有可用的画布工具）") {
 		t.Fatal("expected refusal")
@@ -213,7 +271,7 @@ func TestCanvasAgentCapabilityToolsEnforceLeastPrivilege(t *testing.T) {
 	if canvasAgentToolAllowed(writeTools, canvasRunGenerationTool().Name) {
 		t.Fatalf("generation tool leaked into write turn: %#v", writeTools)
 	}
-	if got := canvasAgentInitialToolChoice(writeCapabilities, writeTools); got != canvasApplyOpsTool().Name {
+	if got := canvasAgentInitialToolChoice(writeCapabilities, writeTools); got != canvasReadStateTool().Name {
 		t.Fatalf("write choice = %q", got)
 	}
 
@@ -223,6 +281,71 @@ func TestCanvasAgentCapabilityToolsEnforceLeastPrivilege(t *testing.T) {
 	}
 	if got := canvasAgentInitialToolChoice(canvasAgentCapabilities{canvasCapabilityRead: true}, readTools); got != sub2api.RequiredToolChoice {
 		t.Fatalf("read choice = %q", got)
+	}
+}
+
+func TestCanvasAgentExplicitMutationIntentOverridesClassifierMiss(t *testing.T) {
+	prompt := "再次整理当前画布，保持全部节点按连线方向整齐排列"
+	if !canvasAgentRequiresMutation(prompt) {
+		t.Fatalf("expected deterministic mutation intent for %q", prompt)
+	}
+	classified := canvasAgentCapabilities{canvasCapabilityReply: true}
+	reconciled := reconcileCanvasAgentCapabilities(prompt, classified)
+	if !reconciled[canvasCapabilityRead] || !reconciled[canvasCapabilityWrite] {
+		t.Fatalf("classifier miss was not repaired: %#v", reconciled)
+	}
+	if classified[canvasCapabilityRead] || classified[canvasCapabilityWrite] {
+		t.Fatalf("reconciliation mutated classifier output: %#v", classified)
+	}
+	if canvasAgentRequiresMutation("如何整理当前画布的节点布局？") {
+		t.Fatal("an explanatory question must not be forced into a mutation turn")
+	}
+	if canvasAgentRequiresMutation("帮我分析一下如何整理当前画布，不要急着动手") {
+		t.Fatal("an analysis request must not be forced into a mutation turn")
+	}
+	if !canvasAgentRequiresMutation("怎么整理当前画布都行，直接执行") {
+		t.Fatal("an explicit execution clause must win over an explanatory phrase")
+	}
+
+	noMutation := reconcileCanvasAgentCapabilities("只说明怎么整理，不要修改画布", canvasAgentCapabilities{
+		canvasCapabilityReply: true,
+		canvasCapabilityWrite: true,
+	})
+	if noMutation[canvasCapabilityWrite] {
+		t.Fatalf("explicit mutation opt-out was overridden: %#v", noMutation)
+	}
+}
+
+func TestCanvasAgentVerifiedNoopRequiresReadAndExplicitWording(t *testing.T) {
+	loop := &canvasAgentLoopState{}
+	if _, ok := canvasAgentAcceptVerifiedNoop(loop, "当前状态已满足要求，无需修改"); ok {
+		t.Fatal("a model assertion without a successful read must not close a mutation turn")
+	}
+	loop.verifiedRead = true
+	if _, ok := canvasAgentAcceptVerifiedNoop(loop, "已按连线方向重新排布全部节点"); ok {
+		t.Fatal("an unverified completion claim must not be accepted as a no-op")
+	}
+	message, ok := canvasAgentAcceptVerifiedNoop(loop, "读取后确认当前状态已满足要求，无需修改")
+	if !ok || message != canvasAgentVerifiedNoopMessage || !loop.verifiedNoop {
+		t.Fatalf("verified no-op = %q, %#v", message, loop)
+	}
+}
+
+func TestCanvasAgentMutationCompletionRequiresAppliedChangeOrVerifiedNoop(t *testing.T) {
+	if canvasAgentMutationSatisfied(true, &canvasAgentLoopState{
+		touched:    true,
+		pendingOps: []map[string]any{{"type": "arrange_nodes"}},
+	}) {
+		t.Fatal("queued or attempted ops are not proof that the canvas changed")
+	}
+	if !canvasAgentMutationSatisfied(true, &canvasAgentLoopState{appliedOps: 1}) {
+		t.Fatal("a browser-verified applied operation must satisfy the mutation turn")
+	}
+	if !canvasAgentMutationSatisfied(true, &canvasAgentLoopState{verifiedRead: true, verifiedNoop: true}) {
+		t.Fatal("a verified explicit no-op must satisfy the mutation turn")
+	}
+	if !canvasAgentMutationSatisfied(false, &canvasAgentLoopState{}) {
+		t.Fatal("non-mutation turns must not be gated by canvas writes")
 	}
 }
 
@@ -254,6 +377,31 @@ func TestCanvasAgentExplicitNoMutationRemovesWriteCapabilities(t *testing.T) {
 		if canvasAgentForbidsMutation(prompt) {
 			t.Fatalf("existing-node constraint must still allow additive work: %q", prompt)
 		}
+	}
+}
+
+func TestCanvasAgentCapabilityFailureKeepsExplicitWriteIntent(t *testing.T) {
+	for _, prompt := range []string{
+		"帮我整理当前画布",
+		"把这些节点重新排版画布",
+		"照刚才的方案做，落到画布上",
+		"新增节点并连接节点",
+	} {
+		capabilities := fallbackCanvasAgentCapabilities(prompt)
+		if !capabilities[canvasCapabilityWrite] || !capabilities[canvasCapabilityRead] {
+			t.Fatalf("explicit write intent lost for %q: %#v", prompt, capabilities)
+		}
+	}
+	capabilities := fallbackCanvasAgentCapabilities("先讲方案，不要修改画布")
+	if capabilities[canvasCapabilityWrite] {
+		t.Fatalf("no-mutation boundary lost: %#v", capabilities)
+	}
+}
+
+func TestCanvasAgentPendingToolMetadataIsReplayable(t *testing.T) {
+	pending := canvasAgentPendingTool("request-1", "canvas_apply_ops", `{"ops":[]}`)
+	if pending["requestId"] != "request-1" || pending["name"] != "canvas_apply_ops" || pending["stage"] != "tool" {
+		t.Fatalf("pending = %#v", pending)
 	}
 }
 
@@ -406,13 +554,36 @@ func TestRunCanvasAgentToolDegradesGenerationStatusHonestly(t *testing.T) {
 	}
 }
 
-func TestCanvasAgentToolCallTranscriptKeepsCallVisible(t *testing.T) {
-	transcript := canvasAgentToolCallTranscript(sub2api.AgentChatResult{
-		Text:     "先看看画布",
+func TestCanvasAgentToolMessagesPreserveStructuredCallAndObservation(t *testing.T) {
+	messages := canvasAgentToolMessages(sub2api.AgentChatResult{
+		Text: "先看看画布",
+		ToolCall: &sub2api.ToolCall{
+			ID: "call-canvas-1", Name: "canvas_get_state", Arguments: `{"scope":"all"}`,
+		},
+	}, `{"nodes":3}`)
+	if len(messages) != 2 {
+		t.Fatalf("messages = %#v", messages)
+	}
+	assistant := messages[0]
+	if assistant.Role != "assistant" || assistant.Content != "先看看画布" || len(assistant.ToolCalls) != 1 {
+		t.Fatalf("assistant message = %#v", assistant)
+	}
+	call := assistant.ToolCalls[0]
+	if call.ID != "call-canvas-1" || call.Name != "canvas_get_state" || call.Arguments != `{"scope":"all"}` {
+		t.Fatalf("tool call = %#v", call)
+	}
+	observation := messages[1]
+	if observation.Role != "tool" || observation.Name != call.Name || observation.ToolCallID != call.ID || observation.Content != `{"nodes":3}` {
+		t.Fatalf("observation = %#v", observation)
+	}
+}
+
+func TestCanvasAgentToolMessagesProvideStableFallbackCallID(t *testing.T) {
+	messages := canvasAgentToolMessages(sub2api.AgentChatResult{
 		ToolCall: &sub2api.ToolCall{Name: "canvas_get_state", Arguments: "{}"},
-	})
-	if !strings.Contains(transcript, "先看看画布") || !strings.Contains(transcript, "canvas_get_state") {
-		t.Fatalf("transcript = %q", transcript)
+	}, "snapshot")
+	if len(messages) != 2 || messages[0].ToolCalls[0].ID != "call_0" || messages[1].ToolCallID != "call_0" {
+		t.Fatalf("messages = %#v", messages)
 	}
 }
 

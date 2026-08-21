@@ -1,11 +1,15 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"mime/multipart"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -18,21 +22,61 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/sub2api"
 )
 
+func TestAssistantMessageDictKeepsContextStatsPrivateSummaryHidden(t *testing.T) {
+	message := &store.AssistantMessage{
+		ID: uuid.New(), Role: "assistant", Kind: "chat", Status: "complete", Content: "完成",
+		Metadata: map[string]any{
+			"context":                         map[string]any{"usagePercent": 42, "compactedMessages": 12},
+			"_contextSummary":                 "不应发送到浏览器的滚动摘要",
+			"_contextSummaryMessages":         12,
+			"_contextSummaryThroughMessageId": uuid.NewString(),
+		},
+	}
+	payload := assistantMessageDict(message)
+	if payload["context"] == nil {
+		t.Fatalf("context stats missing: %#v", payload)
+	}
+	if _, exists := payload["_contextSummary"]; exists {
+		t.Fatalf("private summary leaked: %#v", payload)
+	}
+	if _, exists := payload["_contextSummaryMessages"]; exists {
+		t.Fatalf("private summary count leaked: %#v", payload)
+	}
+	if _, exists := payload["_contextSummaryThroughMessageId"]; exists {
+		t.Fatalf("private summary cursor leaked: %#v", payload)
+	}
+}
+
 func TestAssistantConfigIncludesStandardAndDiscountPointPrices(t *testing.T) {
 	env := newCommunityEnv(t)
 	_, token := env.newUserSession(t, "user")
-	discount := int64(3)
+	discount, assistantDiscount, canvasDiscount := int64(3), int64(8), int64(29)
 	cfg := modelconfig.Empty()
 	cfg.Providers = []modelconfig.Provider{{
 		ID: "provider", Name: "Provider", Adapter: modelconfig.AdapterOpenAI, Enabled: true,
 	}}
-	cfg.Models = []modelconfig.Model{{
-		ID: "image-model", Name: "Image Model", ProviderID: "provider", UpstreamModel: "image-2",
-		Kind: modelconfig.ModelKindImage, PriceCents: 20, DiscountPriceCents: &discount,
-		Public: true, Enabled: true,
-	}}
+	cfg.Models = []modelconfig.Model{
+		{
+			ID: "chat-model", Name: "Chat Model", ProviderID: "provider", UpstreamModel: "gpt-5.6-luna",
+			Kind: modelconfig.ModelKindChat, PriceCents: 5, Public: true, Enabled: true,
+			ReasoningPricing: &modelconfig.ReasoningPricing{
+				DefaultEffort: "medium",
+				Efforts: map[string]modelconfig.ReasoningEffortPricing{
+					"high": {
+						AssistantPriceCents: 11, AssistantDiscountPriceCents: &assistantDiscount,
+						CanvasAgentPriceCents: 41, CanvasAgentDiscountPriceCents: &canvasDiscount,
+					},
+				},
+			},
+		},
+		{
+			ID: "image-model", Name: "Image Model", ProviderID: "provider", UpstreamModel: "image-2",
+			Kind: modelconfig.ModelKindImage, PriceCents: 20, DiscountPriceCents: &discount,
+			Public: true, Enabled: true,
+		},
+	}
 	cfg.Workspaces = map[string]modelconfig.WorkspaceBinding{
-		modelconfig.WorkspaceAssistant: {ModelIDs: []string{"image-model"}},
+		modelconfig.WorkspaceAssistant: {ModelIDs: []string{"chat-model", "image-model"}},
 	}
 	if err := modelconfig.Save(context.Background(), env.st.Pool, cfg); err != nil {
 		t.Fatal(err)
@@ -43,7 +87,12 @@ func TestAssistantConfigIncludesStandardAndDiscountPointPrices(t *testing.T) {
 		t.Fatalf("status = %d body = %s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, field := range []string{`"pricePoints":3`, `"standardPricePoints":20`, `"discountPricePoints":3`} {
+	for _, field := range []string{
+		`"pricePoints":3`, `"standardPricePoints":20`, `"discountPricePoints":3`,
+		`"supportedReasoningEfforts":["low","medium","high","xhigh","max"]`, `"defaultReasoningEffort":"medium"`,
+		`"reasoningPrices":`, `"assistantStandardPricePoints":11`, `"assistantPricePoints":8`,
+		`"canvasAgentStandardPricePoints":41`, `"canvasAgentPricePoints":29`,
+	} {
 		if !strings.Contains(body, field) {
 			t.Fatalf("assistant model price missing %s: %s", field, body)
 		}
@@ -136,6 +185,46 @@ func TestNormalizeAssistantReasoningEffort(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := normalizeAssistantReasoningEffort(tt.value, tt.defaultStandard)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Fatalf("effort = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeAssistantReasoningEffortForModel(t *testing.T) {
+	tests := []struct {
+		name            string
+		value           string
+		model           string
+		defaultStandard bool
+		want            string
+		wantErr         bool
+	}{
+		{name: "gpt 5.4 agent default", model: "gpt-5.4", defaultStandard: true, want: "medium"},
+		{name: "gpt 5.4 xhigh", value: " XHIGH ", model: "gpt-5.4", want: "xhigh"},
+		{name: "gpt 5.4 rejects max", value: "max", model: "gpt-5.4", wantErr: true},
+		{name: "gpt 5.4 pro rejects low", value: "low", model: "gpt-5.4-pro", wantErr: true},
+		{name: "gpt 5.6 luna defaults medium", model: "gpt-5.6-luna", defaultStandard: true, want: "medium"},
+		{name: "gpt 5.6 terra accepts max", value: "max", model: "gpt-5.6-terra", want: "max"},
+		{name: "gpt 5.6 sol defaults medium", model: "gpt-5.6-sol", defaultStandard: true, want: "medium"},
+		{name: "gpt 5.6 alias remains unset", model: "gpt-5-6", defaultStandard: true},
+		{name: "gpt 5.6 alias rejects explicit effort", value: "xhigh", model: "gpt-5-6", wantErr: true},
+		{name: "gpt 5.5 alias remains unset", model: "gpt-5-5", defaultStandard: true},
+		{name: "gpt 5.5 alias rejects explicit effort", value: "xhigh", model: "gpt-5-5", wantErr: true},
+		{name: "gpt 5 uses minimal rather than none", value: "minimal", model: "gpt-5", want: "minimal"},
+		{name: "gpt 5 rejects none", value: "none", model: "gpt-5", wantErr: true},
+		{name: "gpt 5.1 rejects xhigh", value: "xhigh", model: "gpt-5.1", wantErr: true},
+		{name: "gpt 5.3 codex rejects none", value: "none", model: "gpt-5.3-codex", wantErr: true},
+		{name: "unknown model remains unset", model: "custom-chat", defaultStandard: true},
+		{name: "unknown model rejects explicit effort", value: "medium", model: "custom-chat", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := normalizeAssistantReasoningEffortForModel(tt.value, tt.model, tt.defaultStandard)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -559,6 +648,150 @@ func TestAssistantConversationLifecycle(t *testing.T) {
 	}
 }
 
+func TestAssistantPSDProcessingIsUnavailable(t *testing.T) {
+	env := newCommunityEnv(t)
+	_, token := env.newUserSession(t, "user")
+	created := env.do(t, http.MethodPost, "/api/v1/assistant/conversations", map[string]any{
+		"title": "PSD disabled",
+	}, token)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create conversation: status %d body %s", created.Code, created.Body.String())
+	}
+	conversation, _ := decode(t, created)
+	response := env.do(t, http.MethodPost, "/api/v1/assistant/runs", map[string]any{
+		"conversationId": conversation["id"],
+		"prompt":         "把这张图片转换为 PSD",
+		"mode":           "agent",
+		"referenceImages": []map[string]any{{
+			"name": "source.png", "dataUrl": "data:image/png;base64,aW1hZ2U=",
+		}},
+	}, token)
+	if response.Code != http.StatusUnprocessableEntity ||
+		!strings.Contains(response.Body.String(), "assistant_psd_unavailable") {
+		t.Fatalf("PSD conversion: status %d body %s", response.Code, response.Body.String())
+	}
+
+	var upload bytes.Buffer
+	writer := multipart.NewWriter(&upload)
+	part, err := writer.CreateFormFile("file", "layout.psd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	header := make([]byte, 26)
+	copy(header[:4], "8BPS")
+	binary.BigEndian.PutUint16(header[4:6], 1)
+	binary.BigEndian.PutUint16(header[12:14], 4)
+	binary.BigEndian.PutUint32(header[14:18], 1)
+	binary.BigEndian.PutUint32(header[18:22], 1)
+	binary.BigEndian.PutUint16(header[22:24], 8)
+	binary.BigEndian.PutUint16(header[24:26], 3)
+	if _, err := part.Write(header); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/assistant/files", &upload)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.AddCookie(&http.Cookie{Name: env.cfg.SessionCookieName, Value: token})
+	recorder := httptest.NewRecorder()
+	env.engine.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusBadRequest ||
+		!strings.Contains(recorder.Body.String(), "assistant_psd_unavailable") {
+		t.Fatalf("PSD upload: status %d body %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestCanvasAssistantConversationFollowsProject(t *testing.T) {
+	env := newCommunityEnv(t)
+	_, token := env.newUserSession(t, "user")
+	_, otherToken := env.newUserSession(t, "user")
+	projectID := uuid.NewString()
+
+	created := env.do(t, http.MethodPost, "/api/v1/assistant/conversations", map[string]any{
+		"title": "画布助手", "workspace": "infinite_canvas", "projectId": projectID,
+	}, token)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create canvas conversation: status %d body %s", created.Code, created.Body.String())
+	}
+	data, _ := decode(t, created)
+	id, _ := data["id"].(string)
+	if id == "" || data["workspace"] != "infinite_canvas" || data["projectId"] != projectID {
+		t.Fatalf("created canvas conversation = %#v", data)
+	}
+
+	rejected := env.do(t, http.MethodPost, "/api/v1/assistant/conversations", map[string]any{
+		"title": "串项目", "workspace": "assistant", "projectId": projectID,
+	}, token)
+	if rejected.Code != http.StatusUnprocessableEntity || !strings.Contains(rejected.Body.String(), "仅支持无限画布会话") {
+		t.Fatalf("assistant workspace with projectId: status %d body %s", rejected.Code, rejected.Body.String())
+	}
+
+	listed := env.do(t, http.MethodGet, "/api/v1/assistant/conversations?workspace=infinite_canvas&projectId="+projectID, nil, token)
+	if listed.Code != http.StatusOK {
+		t.Fatalf("list canvas conversations: status %d body %s", listed.Code, listed.Body.String())
+	}
+	listedData, _ := decode(t, listed)
+	conversations, _ := listedData["conversations"].([]any)
+	if len(conversations) != 1 {
+		t.Fatalf("listed canvas conversations = %#v", listedData["conversations"])
+	}
+	first, _ := conversations[0].(map[string]any)
+	if first["id"] != id {
+		t.Fatalf("latest canvas conversation = %#v", first)
+	}
+
+	got := env.do(t, http.MethodGet, "/api/v1/assistant/conversations/"+id, nil, token)
+	if got.Code != http.StatusOK {
+		t.Fatalf("get canvas conversation: status %d body %s", got.Code, got.Body.String())
+	}
+	gotData, _ := decode(t, got)
+	if gotData["id"] != id || gotData["projectId"] != projectID {
+		t.Fatalf("got canvas conversation = %#v", gotData)
+	}
+
+	other := env.do(t, http.MethodGet, "/api/v1/assistant/conversations/"+id, nil, otherToken)
+	if other.Code != http.StatusNotFound {
+		t.Fatalf("other user get conversation: status %d body %s", other.Code, other.Body.String())
+	}
+
+	legacy := env.do(t, http.MethodPost, "/api/v1/assistant/conversations", map[string]any{
+		"title": "未绑定画布", "workspace": "infinite_canvas",
+	}, token)
+	if legacy.Code != http.StatusCreated {
+		t.Fatalf("create unbound canvas conversation: status %d body %s", legacy.Code, legacy.Body.String())
+	}
+	legacyData, _ := decode(t, legacy)
+	legacyID, _ := legacyData["id"].(string)
+	bound := env.do(t, http.MethodGet, "/api/v1/assistant/conversations/"+legacyID+"?projectId="+projectID, nil, token)
+	if bound.Code != http.StatusOK {
+		t.Fatalf("bind canvas conversation: status %d body %s", bound.Code, bound.Body.String())
+	}
+	boundData, _ := decode(t, bound)
+	if boundData["projectId"] != projectID {
+		t.Fatalf("bound canvas conversation = %#v", boundData)
+	}
+
+	newer := env.do(t, http.MethodPost, "/api/v1/assistant/conversations", map[string]any{
+		"title": "新对话", "workspace": "infinite_canvas", "projectId": projectID,
+	}, token)
+	if newer.Code != http.StatusCreated {
+		t.Fatalf("create newer canvas conversation: status %d body %s", newer.Code, newer.Body.String())
+	}
+	newerData, _ := decode(t, newer)
+	newerID, _ := newerData["id"].(string)
+	latest := env.do(t, http.MethodGet, "/api/v1/assistant/conversations?workspace=infinite_canvas&projectId="+projectID, nil, token)
+	latestData, _ := decode(t, latest)
+	latestConversations, _ := latestData["conversations"].([]any)
+	if len(latestConversations) < 2 {
+		t.Fatalf("expected multiple project conversations, got %#v", latestData["conversations"])
+	}
+	latestFirst, _ := latestConversations[0].(map[string]any)
+	if latestFirst["id"] != newerID {
+		t.Fatalf("newest canvas conversation should be first: %#v", latestFirst)
+	}
+}
+
 func TestDeleteAssistantConversationQueuesGeneratedImages(t *testing.T) {
 	env := newCommunityEnv(t)
 	user, token := env.newUserSession(t, "user")
@@ -774,24 +1007,57 @@ func TestInfiniteCanvasSelectsItsAssignedChatModel(t *testing.T) {
 	}
 }
 
-func TestCanvasAgentPrice(t *testing.T) {
+func TestCanvasAgentReasoningPrice(t *testing.T) {
+	model := modelconfig.Model{
+		Kind: modelconfig.ModelKindChat, UpstreamModel: "gpt-5.6-sol", PriceCents: 7,
+	}
 	tests := []struct {
-		effort       string
-		wantMultiple int64
-		wantPrice    int64
-		wantTier     string
+		effort    string
+		wantPrice int64
 	}{
-		{effort: "medium", wantMultiple: canvasAgentStandardPriceMultiple, wantPrice: 21, wantTier: "standard"},
-		{effort: "low", wantMultiple: canvasAgentStandardPriceMultiple, wantPrice: 21, wantTier: "standard"},
-		{effort: "xhigh", wantMultiple: canvasAgentDeepPriceMultiple, wantPrice: 35, wantTier: "deep"},
-		{effort: "high", wantMultiple: canvasAgentDeepPriceMultiple, wantPrice: 35, wantTier: "deep"},
-		{effort: "max", wantMultiple: canvasAgentDeepPriceMultiple, wantPrice: 35, wantTier: "deep"},
+		{effort: "medium", wantPrice: 21},
+		{effort: "low", wantPrice: 21},
+		{effort: "xhigh", wantPrice: 35},
+		{effort: "high", wantPrice: 35},
+		{effort: "max", wantPrice: 35},
 	}
 	for _, tt := range tests {
-		price, multiple, tier := canvasAgentPrice(7, tt.effort)
-		if price != tt.wantPrice || multiple != tt.wantMultiple || tier != tt.wantTier {
-			t.Fatalf("canvasAgentPrice(7, %q) = (%d, %d, %q), want (%d, %d, %q)",
-				tt.effort, price, multiple, tier, tt.wantPrice, tt.wantMultiple, tt.wantTier)
+		price := modelconfig.ResolveReasoningPrice(model, tt.effort, modelconfig.ReasoningPriceScopeCanvasAgent)
+		if price.StandardCents != tt.wantPrice || price.EffectiveCents != tt.wantPrice {
+			t.Fatalf("canvas Agent price for %q = %#v, want %d", tt.effort, price, tt.wantPrice)
+		}
+	}
+}
+
+func TestApplyAssistantReasoningPriceSnapshotUsesConfiguredScope(t *testing.T) {
+	assistantDiscount, canvasDiscount := int64(8), int64(29)
+	model := modelconfig.Model{
+		Kind: modelconfig.ModelKindChat, UpstreamModel: "gpt-5.6-sol", PriceCents: 5,
+		ReasoningPricing: &modelconfig.ReasoningPricing{
+			DefaultEffort: "high",
+			Efforts: map[string]modelconfig.ReasoningEffortPricing{
+				"high": {
+					AssistantPriceCents: 11, AssistantDiscountPriceCents: &assistantDiscount,
+					CanvasAgentPriceCents: 41, CanvasAgentDiscountPriceCents: &canvasDiscount,
+				},
+			},
+		},
+	}
+	tests := []struct {
+		scope         string
+		wantStandard  int64
+		wantEffective int64
+	}{
+		{scope: modelconfig.ReasoningPriceScopeAssistant, wantStandard: 11, wantEffective: 8},
+		{scope: modelconfig.ReasoningPriceScopeCanvasAgent, wantStandard: 41, wantEffective: 29},
+	}
+	for _, tt := range tests {
+		params := map[string]any{}
+		got := applyAssistantReasoningPriceSnapshot(params, model, "high", tt.scope, 5)
+		if got != tt.wantEffective || params["_chatCostCents"] != tt.wantEffective ||
+			params["_reasoningStandardPriceCents"] != tt.wantStandard ||
+			params["_reasoningPriceScope"] != tt.scope || params["_reasoningPricingVersion"] != 5 {
+			t.Fatalf("snapshot for %s = %#v, effective=%d", tt.scope, params, got)
 		}
 	}
 }

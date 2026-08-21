@@ -419,17 +419,24 @@ assert.equal(
   "an upload notice must not hide the partial failure notice",
 );
 
-const nav = await readFile(
-  new URL("../src/layout/NavBar.jsx", import.meta.url),
+const commerceEntries = await readFile(
+  new URL(
+    "../src/legacy-modules/features/creator-hub/studioTools.js",
+    import.meta.url,
+  ),
   "utf8",
 );
 assert.equal(
-  nav.includes('ids: ["tryon", "handheld", "accessory"]'),
+  /ids:\s*\[['"]tryon['"],\s*['"]handheld['"],\s*['"]accessory['"]\]/.test(
+    commerceEntries,
+  ),
   true,
   "top ecommerce menu must place handheld directly after try-on",
 );
 assert.equal(
-  nav.includes('ids: ["shoot", "listing", "handheld", "detail"]'),
+  /ids:\s*\[['"]shoot['"],\s*['"]listing['"],\s*['"]handheld['"],\s*['"]detail['"]\]/.test(
+    commerceEntries,
+  ),
   false,
   "top ecommerce menu must not leave handheld in product design",
 );

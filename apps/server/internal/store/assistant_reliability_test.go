@@ -35,6 +35,26 @@ func TestAssistantRunIdempotencyLeaseAndOutbox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := store.MergeAssistantMessageMetadata(ctx, st.Pool, assistantMessage.ID, map[string]any{
+		"pendingTool": map[string]any{"requestId": "tool-request", "name": "canvas_apply_ops"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if claimed, err := store.ClaimAssistantMessagePendingTool(ctx, st.Pool, assistantMessage.ID, "tool-request", "browser-a"); err != nil || !claimed {
+		t.Fatalf("first tool claim = %v err=%v", claimed, err)
+	}
+	if claimed, err := store.ClaimAssistantMessagePendingTool(ctx, st.Pool, assistantMessage.ID, "tool-request", "browser-b"); err != nil || claimed {
+		t.Fatalf("competing tool claim = %v err=%v", claimed, err)
+	}
+	if claimed, err := store.ClaimAssistantMessagePendingTool(ctx, st.Pool, assistantMessage.ID, "tool-request", "browser-a"); err != nil || !claimed {
+		t.Fatalf("idempotent tool claim = %v err=%v", claimed, err)
+	}
+	if cleared, err := store.ClearAssistantMessagePendingTool(ctx, st.Pool, assistantMessage.ID, "wrong-request"); err != nil || cleared {
+		t.Fatalf("stale tool clear = %v err=%v", cleared, err)
+	}
+	if cleared, err := store.ClearAssistantMessagePendingTool(ctx, st.Pool, assistantMessage.ID, "tool-request"); err != nil || !cleared {
+		t.Fatalf("matching tool clear = %v err=%v", cleared, err)
+	}
 	key, fingerprint := "request-key", "fingerprint"
 	run, err := store.InsertAssistantRun(ctx, st.Pool, store.AssistantRun{
 		ID: uuid.New(), UserID: user.ID, ConversationID: conversation.ID,
@@ -66,6 +86,9 @@ func TestAssistantRunIdempotencyLeaseAndOutbox(t *testing.T) {
 	if err != nil || claimed == nil || claimed.Attempt != 1 || claimed.LeaseOwner == nil || *claimed.LeaseOwner != "worker-a" {
 		t.Fatalf("claimed run = %#v err=%v", claimed, err)
 	}
+	if err := store.BeginAssistantRunAttempt(ctx, st.Pool, claimed); err != nil {
+		t.Fatal(err)
+	}
 	running, err := store.RunningAssistantRunsByProvider(ctx, st.Pool, []string{"provider/route-a", "provider/route-b"})
 	if err != nil || running["provider/route-a"] != 1 || running["provider/route-b"] != 0 {
 		t.Fatalf("running routes = %#v err=%v", running, err)
@@ -93,6 +116,9 @@ func TestAssistantRunIdempotencyLeaseAndOutbox(t *testing.T) {
 	if err != nil || second == nil || second.Attempt != 2 {
 		t.Fatalf("second claim = %#v err=%v", second, err)
 	}
+	if err := store.BeginAssistantRunAttempt(ctx, st.Pool, second); err != nil {
+		t.Fatal(err)
+	}
 	if changed, err := store.CompleteAssistantRunAttempt(ctx, st.Pool, run.ID, claimed.Attempt, "chat", 0); err != nil || changed {
 		t.Fatalf("stale completion = %v err=%v", changed, err)
 	}
@@ -100,6 +126,28 @@ func TestAssistantRunIdempotencyLeaseAndOutbox(t *testing.T) {
 		ctx, st.Pool, run.ID, second.Attempt, []string{"provider/route-a"},
 	); err != nil || !changed {
 		t.Fatalf("route failover requeue = %v err=%v", changed, err)
+	}
+	if changed, err := store.FinishAssistantRunAttempt(ctx, st.Pool, run.ID, second.Attempt,
+		"requeued", "chat", "provider_route_failed", "temporary upstream failure"); err != nil || !changed {
+		t.Fatalf("finish attempt trace = %v err=%v", changed, err)
+	}
+	var firstStatus, secondStatus, routeKey string
+	var firstFinished, secondFinished bool
+	if err := st.Pool.QueryRow(ctx, `SELECT
+		max(status) FILTER (WHERE attempt = 1),
+		max(status) FILTER (WHERE attempt = 2),
+		COALESCE(max(provider_route_key) FILTER (WHERE attempt = 1), ''),
+		bool_and(finished_at IS NOT NULL) FROM assistant_run_attempts WHERE run_id = $1`, run.ID).
+		Scan(&firstStatus, &secondStatus, &routeKey, &firstFinished); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Pool.QueryRow(ctx, `SELECT finished_at IS NOT NULL FROM assistant_run_attempts
+		WHERE run_id = $1 AND attempt = 2`, run.ID).Scan(&secondFinished); err != nil {
+		t.Fatal(err)
+	}
+	if firstStatus != "interrupted" || secondStatus != "requeued" || routeKey != "provider/route-a" || !firstFinished || !secondFinished {
+		t.Fatalf("attempt traces first=%q second=%q route=%q finished=%v/%v",
+			firstStatus, secondStatus, routeKey, firstFinished, secondFinished)
 	}
 	reloaded, err = store.GetAssistantRun(ctx, st.Pool, run.ID)
 	if err != nil || reloaded == nil {

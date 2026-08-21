@@ -95,6 +95,7 @@ import {
 } from "@react/legacy-modules/features/ecommerce/accessoryDraftStorage.js";
 import { fetchRuntimeConfig } from "@react/legacy-modules/services/runtimeConfig.js";
 import {
+  generateAplusPlan,
   generateCommerceProductBrief,
   listTryonCatalog,
 } from "@react/legacy-modules/services/ecommerceApi.js";
@@ -135,6 +136,18 @@ import {
   HandheldPosePopover,
 } from "../features/ecommerce/HandheldStudio.jsx";
 import { AccessoryStudio } from "../features/ecommerce/AccessoryStudio.jsx";
+import { DetailStudio } from "../features/ecommerce/DetailStudio.jsx";
+import { DetailTopToolbar } from "../features/ecommerce/businesses/detail/DetailTopToolbar.jsx";
+import {
+  aplusCategoryById,
+  aplusChecklistCsv,
+  aplusExportChecklist,
+  aplusMarketplaceById,
+  aplusShotBlueprintsFromPlan,
+  buildAplusTaskPrompt,
+  buildDefaultAplusPlan,
+  parseAplusAsinList,
+} from "../features/ecommerce/aplus/amazonAplus.js";
 import {
   ACCESSORY_CATEGORY_OPTIONS,
   ACCESSORY_CROP_OPTIONS,
@@ -322,12 +335,17 @@ function isShootMode(id) {
   return id === "shoot";
 }
 
+function isDetailMode(id) {
+  return id === "detail";
+}
+
 function hidesCommerceSettings(id) {
   return (
     isShootMode(id) ||
     isTryonMode(id) ||
     isHandheldMode(id) ||
-    isAccessoryMode(id)
+    isAccessoryMode(id) ||
+    isDetailMode(id)
   );
 }
 
@@ -857,6 +875,7 @@ export function EcommerceBusinessSession({
   const modelFileInput = useRef(null);
   const sceneFileInput = useRef(null);
   const layoutFileInput = useRef(null);
+  const previewUrlsRef = useRef([]);
   const tryonNoticeTimer = useRef(0);
   const compressControllerRef = useRef(null);
   const uploadPrefetchRef = useRef(new Map());
@@ -1068,6 +1087,16 @@ export function EcommerceBusinessSession({
       (item) => item.value,
     ),
   );
+  const [aplusAsin, setAplusAsin] = useState("");
+  const [aplusCompetitorAsin, setAplusCompetitorAsin] = useState("");
+  const [aplusCategoryId, setAplusCategoryId] = useState("generic");
+  const [aplusMarketplaceId, setAplusMarketplaceId] = useState("US");
+  const [aplusTier, setAplusTier] = useState("basic");
+  const [aplusDisclosure, setAplusDisclosure] = useState(true);
+  const [aplusBatchText, setAplusBatchText] = useState("");
+  const [aplusLivePlan, setAplusLivePlan] = useState(null);
+  const [aplusPlanning, setAplusPlanning] = useState(false);
+  const [aplusAnalyzeError, setAplusAnalyzeError] = useState("");
   const [structureMode, setStructureMode] = useState("smart");
   const [counts, setCounts] = useState({
     white: 1,
@@ -2109,13 +2138,24 @@ export function EcommerceBusinessSession({
     },
     [],
   );
+  useEffect(() => {
+    const keep = new Set(
+      previews
+        .filter((item) => item.local && item.managed !== "slot")
+        .map((item) => item.url)
+        .filter(Boolean),
+    );
+    previewUrlsRef.current.forEach((url) => {
+      if (!keep.has(url)) URL.revokeObjectURL(url);
+    });
+    previewUrlsRef.current = [...keep];
+  }, [previews]);
   useEffect(
-    () => () =>
-      previews.forEach((item) => {
-        if (item.local && item.managed !== "slot")
-          URL.revokeObjectURL(item.url);
-      }),
-    [previews],
+    () => () => {
+      previewUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+      previewUrlsRef.current = [];
+    },
+    [],
   );
 
   const updateRail = useCallback(() => {
@@ -2181,6 +2221,40 @@ export function EcommerceBusinessSession({
     () => accessoryShotBlueprints(accessoryPack),
     [accessoryPack],
   );
+  const aplusPlan = useMemo(
+    () =>
+      aplusLivePlan?.modules?.length
+        ? aplusLivePlan
+        : buildDefaultAplusPlan({
+            categoryId: aplusCategoryId,
+            marketplaceId: aplusMarketplaceId,
+            tierId: aplusTier,
+            productName,
+            sellingPoints,
+            asin: aplusAsin,
+            competitorAsin: aplusCompetitorAsin,
+            disclosure: aplusDisclosure,
+            selectedModules,
+          }),
+    [
+      aplusLivePlan,
+      aplusCategoryId,
+      aplusMarketplaceId,
+      aplusTier,
+      productName,
+      sellingPoints,
+      aplusAsin,
+      aplusCompetitorAsin,
+      aplusDisclosure,
+      selectedModules,
+    ],
+  );
+  const aplusBlueprints = useMemo(
+    () => aplusShotBlueprintsFromPlan(aplusPlan),
+    [aplusPlan],
+  );
+  const aplusMarketplace = aplusMarketplaceById(aplusMarketplaceId);
+  const aplusCategory = aplusCategoryById(aplusCategoryId);
   const shootBlueprints = useMemo(
     () =>
       shootShotIds
@@ -2199,7 +2273,9 @@ export function EcommerceBusinessSession({
             ? handheldBlueprints
             : mode.id === "accessory"
               ? accessoryBlueprints
-              : ecommerceShotBlueprints(mode.id, selectedModules);
+              : mode.id === "detail"
+                ? aplusBlueprints
+                : ecommerceShotBlueprints(mode.id, selectedModules);
   const maxOutputCount = Math.max(
     1,
     Math.min(mode.maxCount || 1, blueprints.length || 1),
@@ -2217,7 +2293,9 @@ export function EcommerceBusinessSession({
             ? handheldBlueprints.length
             : mode.id === "accessory"
               ? accessoryBlueprints.length
-              : Math.min(requestedCount, maxOutputCount);
+              : mode.id === "detail"
+                ? aplusBlueprints.length
+                : Math.min(requestedCount, maxOutputCount);
   const tryonLensOption = tryonLensById(tryonLens);
   const tryonLightOption = tryonLightById(tryonLight);
   const tryonMentionModelLabel =
@@ -2307,6 +2385,15 @@ export function EcommerceBusinessSession({
           hasModel: accessoryHasModel,
           hasScene: accessoryHasScene,
         })
+      : isDetailMode(mode.id)
+        ? buildAplusTaskPrompt({
+            plan: aplusPlan,
+            marketplace: aplusMarketplace,
+            category: aplusCategory,
+            productName,
+            sellingPoints,
+            tone,
+          })
       : [
           `任务：${mode.label}。${mode.prompt}`,
           isTryonMode(mode.id)
@@ -2433,7 +2520,9 @@ export function EcommerceBusinessSession({
               ? handheldBlueprints
               : mode.id === "accessory"
                 ? accessoryBlueprints
-                : null,
+                : mode.id === "detail"
+                  ? aplusBlueprints
+                  : null,
   });
   function handheldPromptForShot(shot, index) {
     const shotId = String(shot?.id || `shot-${index + 1}`);
@@ -3380,6 +3469,14 @@ export function EcommerceBusinessSession({
         local: false,
       })),
     );
+    if (mode.id === "detail") {
+      if (product.sku) setAplusAsin(String(product.sku).toUpperCase());
+      if (product.category) {
+        const nextCategory = aplusCategoryById(product.category);
+        if (nextCategory?.id) setAplusCategoryId(nextCategory.id);
+      }
+      setAplusLivePlan(null);
+    }
     if (mode.id === "tryon") {
       setTryonSlots({
         garment: productAssets[0]
@@ -3449,6 +3546,64 @@ export function EcommerceBusinessSession({
     }
     setWorkspace("result");
     setPane(hidesCommerceSettings(mode.id) ? "canvas" : "settings");
+  }
+  async function uploadAplusInputKeys(files = []) {
+    const keys = [];
+    for (const file of files) {
+      const cached = normalizeTaskImageKey(file?.uploadKey || "");
+      if (isReusableTaskImageKey(cached)) {
+        keys.push(cached);
+        continue;
+      }
+      const source = String(file?.sourceUrl || "").trim();
+      let blob = file;
+      if (!(file instanceof Blob) || !file.size) {
+        if (!source) continue;
+        blob = await fetchAuthenticatedMediaBlob(source, { cache: "no-store" });
+      }
+      const ready = await prepareUploadFile(blob);
+      const uploaded = await uploadFile(ready);
+      const key = normalizeTaskImageKey(uploaded?.key || uploaded?.url || "");
+      if (!isReusableTaskImageKey(key)) continue;
+      attachEcommerceUploadKey(file, key);
+      keys.push(key);
+    }
+    return keys;
+  }
+  async function runAplusPlanner(files = []) {
+    const keys = await uploadAplusInputKeys(files);
+    if (!keys.length) throw new Error("请先上传商品参考图");
+    const planned = await generateAplusPlan({
+      inputKeys: keys,
+      asin: aplusAsin,
+      competitorAsin: aplusCompetitorAsin,
+      categoryId: aplusCategoryId,
+      marketplaceId: aplusMarketplaceId,
+      language,
+      tier: aplusTier,
+      productName,
+      sellingPoints,
+      selectedModules,
+      disclosure: aplusDisclosure,
+    });
+    if (!planned?.modules?.length) {
+      throw new Error("AI 未能给出有效的 A+ 模块结构");
+    }
+    setAplusLivePlan(planned);
+    return planned;
+  }
+  async function analyzeAplus() {
+    if (requestAuth({ featureLabel: "A+ 分析" })) return;
+    if (!inputFiles.length || aplusPlanning || jobs.running) return;
+    setAplusAnalyzeError("");
+    setAplusPlanning(true);
+    try {
+      await runAplusPlanner(inputFiles);
+    } catch (error) {
+      setAplusAnalyzeError(error?.message || "AI 分析失败，请重试");
+    } finally {
+      setAplusPlanning(false);
+    }
   }
   async function generateBrief() {
     if (requestAuth({ featureLabel: "AI 商品识别" })) return;
@@ -3874,18 +4029,51 @@ export function EcommerceBusinessSession({
                 hasScene: accessoryHasScene,
               })
             : null;
+        let planItems = generationPlan;
+        if (mode.id === "detail") {
+          try {
+            const planned = aplusLivePlan?.modules?.length
+              ? aplusLivePlan
+              : await runAplusPlanner(resolvedFiles);
+            if (planned?.modules?.length) {
+              const shots = aplusShotBlueprintsFromPlan(planned);
+              planItems = buildEcommerceGenerationPlan({
+                modeId: mode.id,
+                count: shots.length,
+                selectedModules,
+                basePrompt: buildAplusTaskPrompt({
+                  plan: planned,
+                  marketplace: aplusMarketplaceById(planned.marketplaceId),
+                  category: aplusCategoryById(planned.categoryId),
+                  productName,
+                  sellingPoints,
+                  tone,
+                }),
+                referenceCount: resolvedFiles.length,
+                shotBlueprints: shots,
+              });
+            }
+          } catch {
+            /* 文本规划失败时仍按品类模板出图 */
+          }
+        }
         await jobs.createBatch({
           files: resolvedFiles,
           modelId,
           batchId,
-          batchSize: count,
-          items: generationPlan.map((item, index) => ({
+          batchSize: planItems.length,
+          items: planItems.map((item, index) => ({
             ...item,
             kindVariant: mode.id,
-            aspectRatio,
+            aspectRatio:
+              mode.id === "detail"
+                ? item.aspectRatio || aspectRatio
+                : aspectRatio,
             platform: `${platform} · ${market} · ${language}`,
             quality: "high",
             batchIndex: index,
+            ...(item.outputSize ? { outputSize: item.outputSize } : {}),
+            ...(item.aplusSpec ? { aplusSpec: item.aplusSpec } : {}),
             ...(accessorySpecBase
               ? {
                   accessorySpec: {
@@ -3906,6 +4094,7 @@ export function EcommerceBusinessSession({
     } finally {
       setTryonStarting(false);
       setHandheldStarting(false);
+      setAplusPlanning(false);
     }
   }
   async function executeTryonBriefRevision({
@@ -4421,6 +4610,41 @@ export function EcommerceBusinessSession({
       setAccessoryActionBusy(false);
     }
   }
+  async function exportAplusPack() {
+    if (!currentGroup.length) return;
+    const checklist = aplusExportChecklist(aplusPlan, currentGroup);
+    try {
+      await downloadHistoryImagesAsZip(
+        currentGroup.map((row, index) => ({
+          url: row.url,
+          filename: `${aplusPlan.asin || "aplus"}-${String(index + 1).padStart(2, "0")}-${String(checklist[index]?.amazonModule || "module").replace(/\s+/g, "-")}`,
+        })),
+      );
+      const csv = aplusChecklistCsv(checklist);
+      const json = JSON.stringify({ plan: aplusPlan, checklist }, null, 2);
+      const csvUrl = URL.createObjectURL(
+        new Blob([`\ufeff${csv}`], { type: "text/csv;charset=utf-8" }),
+      );
+      const jsonUrl = URL.createObjectURL(
+        new Blob([json], { type: "application/json" }),
+      );
+      const stamp = new Date().toISOString().slice(0, 10);
+      const click = (href, name) => {
+        const anchor = document.createElement("a");
+        anchor.href = href;
+        anchor.download = name;
+        anchor.click();
+      };
+      click(csvUrl, `aplus-upload-${stamp}.csv`);
+      click(jsonUrl, `aplus-copy-${stamp}.json`);
+      window.setTimeout(() => {
+        URL.revokeObjectURL(csvUrl);
+        URL.revokeObjectURL(jsonUrl);
+      }, 60_000);
+    } catch (error) {
+      setSubmitError(error?.message || "A+ 导出失败");
+    }
+  }
   async function downloadOutput(row) {
     if (!row?.url) return;
     const controller = new AbortController();
@@ -4616,7 +4840,7 @@ export function EcommerceBusinessSession({
   return (
     <main
       ref={pageRef}
-      className={`commerce-studio${isShootMode(mode.id) ? " is-shoot" : ""}${isTryonMode(mode.id) ? " is-tryon" : ""}${isHandheldMode(mode.id) ? " is-handheld" : ""}${isAccessoryMode(mode.id) ? " is-accessory" : ""}`}
+      className={`commerce-studio${isShootMode(mode.id) ? " is-shoot" : ""}${isTryonMode(mode.id) ? " is-tryon" : ""}${isHandheldMode(mode.id) ? " is-handheld" : ""}${isAccessoryMode(mode.id) ? " is-accessory" : ""}${isDetailMode(mode.id) ? " is-detail" : ""}`}
       data-ecommerce-business={mode.id}
       data-ecommerce-page-motion-state="waiting"
       data-ecommerce-content-motion-state="waiting"
@@ -4846,9 +5070,6 @@ export function EcommerceBusinessSession({
             modelId={modelId}
             modelOptions={commerceModelOptions(models, unitPrice)}
             onChangeModelId={setModelId}
-            pack={accessoryPack}
-            packOptions={ACCESSORY_PACK_OPTIONS}
-            onChangePack={setAccessoryPack}
             category={accessoryCategory}
             categoryOptions={ACCESSORY_CATEGORY_OPTIONS}
             onChangeCategory={(id) => {
@@ -4879,15 +5100,37 @@ export function EcommerceBusinessSession({
             market={market}
             marketOptions={OPTIONS.market}
             onChangeMarket={setMarket}
-            aspectRatio={aspectRatio}
-            ratioOptions={OPTIONS.handheldRatio}
-            onChangeRatio={setAspectRatio}
             productName={productName}
             onChangeProductName={setProductName}
             sku={accessorySku}
             onChangeSku={setAccessorySku}
             sellingPoints={sellingPoints}
             onChangeSellingPoints={setSellingPoints}
+            disabled={jobs.running}
+          />
+        ) : isDetailMode(mode.id) ? (
+          <DetailTopToolbar
+            modelId={modelId}
+            modelOptions={commerceModelOptions(models, unitPrice)}
+            onChangeModelId={setModelId}
+            platform={platform}
+            platformOptions={OPTIONS.platform}
+            onChangePlatform={setPlatform}
+            market={market}
+            marketOptions={OPTIONS.market}
+            onChangeMarket={setMarket}
+            language={language}
+            languageOptions={OPTIONS.language}
+            onChangeLanguage={setLanguage}
+            tone={tone}
+            toneOptions={OPTIONS.tone}
+            onChangeTone={setTone}
+            productName={productName}
+            onChangeProductName={setProductName}
+            sellingPoints={sellingPoints}
+            onChangeSellingPoints={setSellingPoints}
+            textStable={textStable}
+            onToggleTextStable={() => setTextStable((value) => !value)}
             disabled={jobs.running}
           />
         ) : (
@@ -5073,7 +5316,11 @@ export function EcommerceBusinessSession({
               onChange={(event) => {
                 const files = Array.from(event.target.files || []);
                 event.target.value = "";
-                if (isShootMode(mode.id) || isAccessoryMode(mode.id)) {
+                if (
+                  isShootMode(mode.id) ||
+                  isAccessoryMode(mode.id) ||
+                  isDetailMode(mode.id)
+                ) {
                   addFiles(files);
                 } else {
                   void (isHandheldMode(mode.id)
@@ -5081,6 +5328,7 @@ export function EcommerceBusinessSession({
                     : setTryonSlot("garment", files));
                 }
               }}
+              multiple={isDetailMode(mode.id)}
             />
             <input
               ref={modelFileInput}
@@ -6247,10 +6495,17 @@ export function EcommerceBusinessSession({
           ) : isAccessoryMode(mode.id) ? (
             <AccessoryStudio
               references={accessoryReferencesFromSlots(accessorySlots)}
-              aspectRatio={aspectRatio}
+              aspectRatio={shotRatio}
+              ratioStyle={shotRatioStyle}
+              onChangeRatio={setAspectRatio}
               resultUrl={currentRow?.url || ""}
               history={modeRows}
+              pack={accessoryPack}
               packOptions={ACCESSORY_PACK_OPTIONS}
+              onChangePack={setAccessoryPack}
+              crop={accessoryCrop}
+              cropOptions={ACCESSORY_CROP_OPTIONS}
+              onChangeCrop={setAccessoryCrop}
               running={jobs.running}
               failed={Boolean((submitError || jobs.error) && !currentRow)}
               failMessage={submitError || jobs.error || ""}
@@ -6258,18 +6513,12 @@ export function EcommerceBusinessSession({
               elapsedSeconds={ecommerceElapsedSeconds(currentRow?.task)}
               generateDisabled={auth.isAuthenticated && !canGenerate}
               generateHint={readiness}
+              shotCount={generationPlan.length}
+              costLabel={costLabel}
               onGenerate={generate}
               onCancel={jobs.cancelAll}
-              onUpload={() =>
-                requestAccessoryUpload(nextEmptyAccessorySlot(accessorySlots))
-              }
               onUploadSlot={requestAccessoryUpload}
               onRemoveReference={(role) => clearAccessorySlot(role)}
-              onDrop={(files) => {
-                accessoryUploadRoleRef.current =
-                  nextEmptyAccessorySlot(accessorySlots);
-                addFiles(files);
-              }}
               onDropSlot={(role, files) => {
                 accessoryUploadRoleRef.current = role;
                 void setAccessorySlot(role, files);
@@ -6303,6 +6552,124 @@ export function EcommerceBusinessSession({
                   : undefined
               }
               cancelling={jobs.cancelling}
+            />
+          ) : isDetailMode(mode.id) ? (
+            <DetailStudio
+              previews={previews}
+              modules={ECOMMERCE_DETAIL_MODULES}
+              selectedModules={selectedModules}
+              onToggleModule={(value) =>
+                setSelectedModules((current) =>
+                  current.includes(value)
+                    ? current.filter((item) => item !== value)
+                    : [...current, value],
+                )
+              }
+              aplus={{
+                asin: aplusAsin,
+                onChangeAsin: setAplusAsin,
+                competitorAsin: aplusCompetitorAsin,
+                onChangeCompetitorAsin: setAplusCompetitorAsin,
+                categoryId: aplusCategoryId,
+                categoryLabel: aplusCategory.label,
+                onChangeCategory: (id) => {
+                  setAplusCategoryId(id);
+                  setAplusLivePlan(null);
+                  setAplusAnalyzeError("");
+                },
+                marketplaceId: aplusMarketplaceId,
+                marketplaceLabel: aplusMarketplace.label,
+                language: aplusMarketplace.language,
+                onChangeMarketplace: (id) => {
+                  const next = aplusMarketplaceById(id);
+                  setAplusMarketplaceId(id);
+                  setAplusLivePlan(null);
+                  setAplusAnalyzeError("");
+                  setLanguage(next.language);
+                  setPlatform("Amazon");
+                  setMarket(
+                    next.id === "CN"
+                      ? "中国大陆"
+                      : next.id === "UK"
+                        ? "英国"
+                        : next.id === "DE"
+                          ? "德国"
+                          : next.id === "JP"
+                            ? "日本"
+                            : "美国",
+                  );
+                },
+                tier: aplusTier,
+                onChangeTier: (id) => {
+                  setAplusTier(id);
+                  setAplusLivePlan(null);
+                  setAplusAnalyzeError("");
+                },
+                disclosure: aplusDisclosure,
+                onChangeDisclosure: setAplusDisclosure,
+                batchText: aplusBatchText,
+                onChangeBatchText: (value) => {
+                  setAplusBatchText(value);
+                  const asins = parseAplusAsinList(value);
+                  if (asins[0] && !aplusAsin) setAplusAsin(asins[0]);
+                },
+                plan: aplusPlan,
+                analyzed: Boolean(aplusLivePlan?.modules?.length),
+                planning: aplusPlanning,
+                analyzeError: aplusAnalyzeError,
+                onAnalyze: analyzeAplus,
+                analyzeDisabled:
+                  auth.isAuthenticated &&
+                  (!inputFiles.length || aplusPlanning || jobs.running),
+                analyzeHint: inputFiles.length ? "" : "还需上传商品图",
+              }}
+              resultUrl={currentRow?.url || ""}
+              history={modeRows}
+              running={jobs.running}
+              failed={Boolean((submitError || jobs.error) && !currentRow)}
+              failMessage={submitError || jobs.error || ""}
+              elapsedSeconds={ecommerceElapsedSeconds(currentRow?.task)}
+              generateDisabled={auth.isAuthenticated && !canGenerate}
+              generateHint={readiness}
+              shotCount={generationPlan.length}
+              costLabel={costLabel}
+              generateLabel={`一键生成${mode.label}`}
+              onGenerate={generate}
+              onCancel={jobs.cancelAll}
+              onUpload={() => fileInput.current?.click()}
+              onRemoveFile={removeFile}
+              onDropFiles={addFiles}
+              onSelectHistory={setActiveUrl}
+              onPreview={setPreviewUrl}
+              onResultPreview={(event, payload) =>
+                setPreviewUrl(payload?.url || "")
+              }
+              onMaskEdit={currentRow ? () => setMaskRow(currentRow) : undefined}
+              onDownload={
+                currentRow ? () => downloadOutput(currentRow) : undefined
+              }
+              onExport={
+                currentGroup.length ? () => void exportAplusPack() : undefined
+              }
+              cancelling={jobs.cancelling}
+              showcaseSrc={detailPreview}
+              showcaseAlt="详情页案例预览"
+              revision={
+                currentRow
+                  ? {
+                      available: true,
+                      open: revisionOpen,
+                      onToggle: () => setRevisionOpen((value) => !value),
+                      direction: revisionDirection,
+                      directionOptions: ECOMMERCE_REVISION_DIRECTIONS,
+                      onChangeDirection: setRevisionDirection,
+                      brief: revisionBrief,
+                      onChangeBrief: setRevisionBrief,
+                      onSubmit: reviseCurrent,
+                      version: currentVersion,
+                    }
+                  : { available: false }
+              }
             />
           ) : mode.id === "shoot" ? (
             <CreativeShootWorkspace

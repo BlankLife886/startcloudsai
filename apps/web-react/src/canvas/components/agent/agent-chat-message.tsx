@@ -120,20 +120,32 @@ export function AgentChatMessage({ item, theme, onRejectTool, onApproveTool }: {
         if (objectField(item.detail, "status") === "pending") return <AgentPendingToolCard summary={item.text} detail={item.detail} theme={theme} onReject={() => onRejectTool?.(item.id)} onApprove={() => onApproveTool?.(item.id)} />;
         return <AgentToolCard title={item.title || tr("toolCall")} text={item.text} detail={item.detail} theme={theme} />;
     }
-    return (
-        <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
-            <div
-                className={isUser ? "min-w-0 max-w-[82%] py-1 text-right text-sm leading-6" : "min-w-0 w-full text-left text-sm leading-6"}
-                style={{ color }}
-            >
-                {isUser ? (
-                    <AgentUserMessageContent text={item.text} references={item.canvasReferences || []} skill={item.skill} theme={theme} />
-                ) : (
-                    <Streamdown {...streamdownProps()} animated={streamdownAnimation} isAnimating={!!item.streamId}>{item.text}</Streamdown>
-                )}
-                {item.attachments?.length ? <AgentMessageAttachments attachments={item.attachments} alignRight={isUser} /> : null}
-                {item.meta ? <div className={`mt-1 text-[11px] tabular-nums opacity-55 ${isUser ? "text-right" : ""}`}>{item.meta}</div> : null}
+    if (item.role === "error") {
+        return (
+            <div className="rounded-2xl border px-3.5 py-2.5 text-sm leading-6" style={{ borderColor: "rgba(220,38,38,.22)", background: "rgba(220,38,38,.06)", color: "#dc2626" }}>
+                {item.text}
+                {item.meta ? <div className="mt-1 text-[11px] tabular-nums opacity-70">{item.meta}</div> : null}
             </div>
+        );
+    }
+    if (isUser) {
+        return (
+            <div className="flex justify-end">
+                <div className="min-w-0 max-w-[86%]">
+                    <div className="rounded-[18px] rounded-br-md px-3.5 py-2.5 text-left text-sm leading-6" style={{ background: theme.toolbar.activeBg, color: theme.node.text }}>
+                        <AgentUserMessageContent text={item.text} references={item.canvasReferences || []} skill={item.skill} theme={theme} />
+                    </div>
+                    {item.attachments?.length ? <AgentMessageAttachments attachments={item.attachments} alignRight /> : null}
+                    {item.meta ? <div className="mt-1 text-right text-[11px] tabular-nums opacity-55">{item.meta}</div> : null}
+                </div>
+            </div>
+        );
+    }
+    return (
+        <div className="min-w-0 w-full text-left text-sm leading-6" style={{ color }}>
+            <Streamdown {...streamdownProps()} animated={streamdownAnimation} isAnimating={!!item.streamId}>{item.text}</Streamdown>
+            {item.attachments?.length ? <AgentMessageAttachments attachments={item.attachments} /> : null}
+            {item.meta ? <div className="mt-1 text-[11px] tabular-nums opacity-55">{item.meta}</div> : null}
         </div>
     );
 }
@@ -188,7 +200,7 @@ export function AgentPendingToolCard({ summary, detail, theme, onReject, onAppro
     const { t } = useTranslation();
     const view = userDetail(detail);
     return (
-        <div className="min-w-0 rounded-xl border px-3 py-3" style={{ borderColor: "rgba(217,119,6,.28)", background: "rgba(217,119,6,.025)", color: theme.node.text }}>
+        <div className="min-w-0 rounded-2xl border px-3 py-3" style={{ borderColor: "rgba(217,119,6,.28)", background: "rgba(217,119,6,.025)", color: theme.node.text }}>
             <details className="group">
                 <summary className={`list-none ${view ? "cursor-pointer" : "cursor-default"}`} onClick={(event) => { if (!view) event.preventDefault(); }}>
                     <div className="flex min-w-0 items-center gap-2 text-sm font-medium leading-5">
@@ -221,7 +233,7 @@ export function AgentApprovalCard({ approval, theme, onDecision }: { approval: A
     const title = t(isNetwork ? "agent.message.networkApproval" : isFile ? "agent.message.fileApproval" : approval.method === "item/permissions/requestApproval" ? "agent.message.permissionApproval" : "agent.message.commandApproval");
     const target = isNetwork ? approvalTarget(approval.networkApprovalContext) : isFile ? approval.grantRoot || approval.cwd : commandText(approval.command) || approval.cwd;
     return (
-        <div className="min-w-0 rounded-xl border px-3 py-3" style={{ borderColor: "rgba(234,88,12,.32)", background: "rgba(234,88,12,.035)", color: theme.node.text }}>
+        <div className="min-w-0 rounded-2xl border px-3 py-3" style={{ borderColor: "rgba(234,88,12,.32)", background: "rgba(234,88,12,.035)", color: theme.node.text }}>
             <div className="flex items-start gap-2.5">
                 <ShieldAlert className="mt-0.5 size-4 shrink-0 text-orange-600" />
                 <div className="min-w-0 flex-1">
@@ -248,8 +260,8 @@ export function AgentToolCard({ title, text, detail, theme }: { title: string; t
     const state = toolCardState(title, text, detail);
     const view = userDetail(detail);
     const showText = title !== "读取画布" || text !== "已读取当前画布内容";
-    const className = "group min-w-0 rounded-xl border px-3 py-2.5 text-left";
-    const style = { borderColor: theme.node.stroke, background: "transparent", color: theme.node.text };
+    const className = "group min-w-0 rounded-2xl border px-3 py-2 text-left";
+    const style = { borderColor: theme.sidebar?.border || theme.node.stroke, background: theme.sidebar?.surface || theme.node.fill, color: theme.node.text };
     const content = (
         <>
             <div className="flex min-w-0 items-center gap-2 text-sm leading-5">
@@ -378,7 +390,7 @@ function AgentPlanCard({ title, plan, theme }: { title: string; plan: PlanDetail
     const completed = plan.tasks.filter((item) => item.status === "completed").length;
     const state = planCardState(plan, completed);
     return (
-        <details open={open} onToggle={(event) => setOpen(event.currentTarget.open)} className="group min-w-0 flex-1 rounded-xl border px-3 py-2.5 text-left" style={{ borderColor: theme.node.stroke, background: "transparent", color: theme.node.text }}>
+        <details open={open} onToggle={(event) => setOpen(event.currentTarget.open)} className="group min-w-0 flex-1 rounded-2xl border px-3 py-2.5 text-left" style={{ borderColor: theme.sidebar?.border || theme.node.stroke, background: theme.sidebar?.surface || theme.node.fill, color: theme.node.text }}>
             <summary className="flex min-w-0 cursor-pointer list-none items-center gap-2.5">
                 <ListChecks className="size-4 shrink-0" style={{ color: state.color }} />
                 <span className="min-w-0 flex-1 truncate text-sm font-medium">{title}</span>
@@ -414,7 +426,7 @@ export function AgentWorkingMessage({ text, detail, status = "running", mcpStatu
     }, [activityKey]);
     return (
         <div className="min-w-0 py-1" aria-live="polite">
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm" style={{ color: theme.node.muted }}>
+            <div className="inline-flex max-w-full flex-wrap items-center gap-x-2 gap-y-1 rounded-full px-2.5 py-1 text-sm" style={{ background: theme.toolbar.itemHover, color: theme.node.muted }}>
                 {status === "running" ? <LoaderCircle className="size-3.5 shrink-0 animate-spin" /> : status === "ready" ? <CheckCircle2 className="size-3.5 shrink-0 text-emerald-600" /> : <XCircle className="size-3.5 shrink-0 text-red-600" />}
                 <span className="min-w-0">{text}</span>
                 {status === "running" && elapsed >= 5 ? <span className="shrink-0 text-[11px] tabular-nums opacity-60">{waitingTime(elapsed)}</span> : null}

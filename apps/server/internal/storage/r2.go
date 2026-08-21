@@ -23,8 +23,9 @@ import (
 )
 
 const (
-	objectReadAttempts       = 3
-	objectReadAttemptTimeout = 7 * time.Second
+	objectReadAttempts             = 3
+	objectReadAttemptTimeout       = 30 * time.Second
+	objectPrefixReadAttemptTimeout = 7 * time.Second
 )
 
 func IsNotFound(err error) bool {
@@ -214,14 +215,14 @@ func (s *Storage) getBytesLimitOnce(ctx context.Context, key string, maxBytes in
 
 // GetBytesPrefix reads the first maxBytes of an object. Task input inspection
 // only needs the image header, so this avoids pulling a full 15MB original
-// through a 7s storage timeout.
+// through the longer full-object storage timeout.
 func (s *Storage) GetBytesPrefix(ctx context.Context, key string, maxBytes int64) ([]byte, error) {
 	if maxBytes <= 0 {
 		return nil, fmt.Errorf("invalid prefix size")
 	}
 	var lastErr error
 	for attempt := 0; attempt < objectReadAttempts; attempt++ {
-		attemptCtx, cancel := context.WithTimeout(ctx, objectReadAttemptTimeout)
+		attemptCtx, cancel := context.WithTimeout(ctx, objectPrefixReadAttemptTimeout)
 		data, err := s.getBytesPrefixOnce(attemptCtx, key, maxBytes)
 		cancel()
 		if err == nil {
@@ -313,6 +314,7 @@ func (s *Storage) ListObjectsPage(ctx context.Context, prefix, startAfter string
 		limit = 1000
 	}
 	items := make([]ObjectInfo, 0, limit)
+	// #nosec G115 -- limit is clamped to [1, 1000] above.
 	pageSize := int32(limit)
 	out, err := s.client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
 		Bucket: aws.String(s.bucket),

@@ -18,9 +18,10 @@ export async function loadCanvasBackgroundRemovalTool() {
     if (cache !== undefined) return cache;
     const tools = await fetchSiteBackgroundRemovalTools();
     const selected = tools.find((item) => item.default) || tools[0];
-    cache = selected ? { id: selected.id, pricePoints: selected.pricePoints } : null;
-    listeners.forEach((listener) => listener(cache));
-    return cache;
+    const result = selected ? { id: selected.id, pricePoints: selected.pricePoints } : null;
+    cache = result;
+    listeners.forEach((listener) => listener(result));
+    return result;
 }
 
 export function useCanvasBackgroundRemovalTool() {

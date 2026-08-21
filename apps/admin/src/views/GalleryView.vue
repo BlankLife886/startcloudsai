@@ -28,7 +28,7 @@ export interface AdminSubmission {
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Check, Close, Refresh, CircleCloseFilled, CollectionTag, WarningFilled } from '@element-plus/icons-vue'
+import { Close, Refresh, CircleCloseFilled, CollectionTag, Picture, WarningFilled } from '@element-plus/icons-vue'
 import { request, normalizeList, type Page } from '@/request'
 import { useVirtualMasonryFeed } from '@/composables/useVirtualMasonryFeed'
 import { formatTime, SUBMISSION_STATUS_LABELS, TASK_TYPES, taskTypeLabel } from '@/utils'
@@ -40,11 +40,11 @@ const status = ref('pending')
 const operatingId = ref('')
 
 const statusFilters = [
-  { label: '待审核', value: 'pending', type: 'warning' },
-  { label: '已通过', value: 'approved', type: 'success' },
-  { label: '已拒绝', value: 'rejected', type: 'danger' },
-  { label: '已下架', value: 'removed', type: 'info' },
-  { label: '全部', value: '', type: 'info' },
+  { label: '待审核', value: 'pending' },
+  { label: '已通过', value: 'approved' },
+  { label: '已拒绝', value: 'rejected' },
+  { label: '已下架', value: 'removed' },
+  { label: '全部', value: '' },
 ] as const
 
 const items = ref<AdminSubmission[]>([])
@@ -155,7 +155,7 @@ const {
 } = useVirtualMasonryFeed({
   items: masonryItems,
   fallbackAspect: 3 / 4,
-  bodyHeight: 124,
+  bodyHeight: 72,
   mediaInset: 8,
   minColumnWidth: 168,
   maxColumns: 6,
@@ -349,13 +349,21 @@ function openReject(item: AdminSubmission) {
 }
 
 function applyRejectPreset(reason: string) {
-  const current = rejectNote.value.trim()
-  if (!current) {
-    rejectNote.value = reason
-    return
-  }
-  if (current.includes(reason)) return
-  rejectNote.value = `${current}；${reason}`
+  const parts = rejectNote.value
+    .split(/[；;]/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+  const index = parts.indexOf(reason)
+  if (index >= 0) parts.splice(index, 1)
+  else parts.push(reason)
+  rejectNote.value = parts.join('；')
+}
+
+function rejectPresetSelected(reason: string) {
+  return rejectNote.value
+    .split(/[；;]/)
+    .map((part) => part.trim())
+    .includes(reason)
 }
 
 async function confirmReject() {
@@ -441,7 +449,6 @@ const previewIndex = ref(0)
 const previewMediaIndex = ref(0)
 
 const previewUserName = computed(() => userLabel(previewItem.value))
-const previewUserInitial = computed(() => previewUserName.value.slice(0, 1).toUpperCase() || '?')
 const previewStatusText = computed(() =>
   previewItem.value ? (SUBMISSION_STATUS_LABELS[previewItem.value.status] ?? previewItem.value.status) : '',
 )
@@ -534,124 +541,103 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="community-ops-page">
-    <div class="ops-toolbar-panel">
-      <div class="share-toolbar">
-        <div class="share-toolbar__lead">
-          <strong class="share-toolbar__title">投稿审核</strong>
-          <div class="share-toolbar__filters">
-            <button
-              v-for="filter in statusFilters"
-              :key="filter.value || 'all'"
-              type="button"
-              class="share-filter"
-              :class="{ 'is-active': status === filter.value, [`is-${filter.type}`]: true }"
-              @click="setStatusFilter(filter.value)"
-            >
-              {{ filter.label }}
-            </button>
-          </div>
-        </div>
-        <div class="share-toolbar__aside">
-          <span v-if="items.length" class="share-toolbar__count">
-            已加载 {{ items.length }} 条{{ total != null ? ` / ${total}` : '' }}
-          </span>
-          <el-button :icon="Refresh" :loading="loading" @click="reset">刷新</el-button>
-        </div>
+  <div class="gallery-page">
+    <header class="gallery-toolbar">
+      <div class="gallery-tabs" role="tablist" aria-label="审核状态">
+        <button
+          v-for="filter in statusFilters"
+          :key="filter.value || 'all'"
+          type="button"
+          role="tab"
+          class="gallery-tab"
+          :class="{ 'is-active': status === filter.value }"
+          :aria-selected="status === filter.value"
+          @click="setStatusFilter(filter.value)"
+        >
+          {{ filter.label }}
+        </button>
       </div>
-    </div>
+      <div class="gallery-toolbar__right">
+        <el-button :icon="Refresh" :loading="loading" @click="reset">刷新</el-button>
+      </div>
+    </header>
 
     <ListError :error="error" :loading="loading" @retry="retry" />
 
-    <div
-      ref="galleryFeedRef"
-      v-loading="loading && items.length > 0"
-      class="share-feed"
-      :class="{ 'is-scrolling': isGridScrolling }"
-      @scroll.passive="onGalleryScroll"
-    >
-      <div v-if="loading && !items.length" class="share-feed__loading">正在加载投稿…</div>
-
-      <el-empty v-else-if="!items.length" description="当前没有待处理的投稿" />
-
+    <div class="gallery-board">
       <div
-        v-else
-        ref="masonryRef"
-        class="share-masonry"
-        :style="{ height: `${masonryHeight}px` }"
+        ref="galleryFeedRef"
+        v-loading="loading && items.length > 0"
+        class="share-feed"
+        :class="{ 'is-scrolling': isGridScrolling }"
+        @scroll.passive="onGalleryScroll"
       >
-        <ShareReviewCard
-          v-for="entry in visibleMasonryItems"
-          :key="entry.key"
-          :style="{
-            position: 'absolute',
-            top: '0',
-            left: '0',
-            width: `${entry.width}px`,
-            height: `${entry.height}px`,
-            transform: `translate3d(${entry.left}px, ${entry.top}px, 0)`,
-            willChange: 'transform',
-          }"
-          :item="entry.item"
-          :operating="operatingId === entry.item.id"
-          :media-height="entry.mediaHeight"
-          :card-width="entry.width"
-          :image-loading="imageLoadingMode(entry.index)"
-          @preview="openPreview"
-          @approve="approve"
-          @reject="openReject"
-          @violation="openViolation"
-          @prompt="openPromptCreator"
-          @measure="(item, event) => measureFromEvent(item.id, event)"
-        />
-      </div>
+        <div v-if="loading && !items.length" class="share-feed__loading">正在加载投稿…</div>
 
-      <div v-if="items.length" class="share-load-status" :class="{ 'is-loading': loadingMore }">
-        <span v-if="loadingMore">正在加载更多…</span>
-        <span v-else-if="!hasMore">已加载全部 {{ items.length }} 条</span>
-        <span v-else>下拉继续加载</span>
+        <div v-else-if="!items.length" class="gallery-empty">
+          <el-icon><Picture /></el-icon>
+          <strong>{{ status === 'pending' ? '没有待审核投稿' : '当前状态没有投稿' }}</strong>
+          <span>{{ status === 'pending' ? '新投稿会显示在这里' : '换一个状态再看' }}</span>
+        </div>
+
+        <div
+          v-else
+          ref="masonryRef"
+          class="share-masonry"
+          :style="{ height: `${masonryHeight}px` }"
+        >
+          <ShareReviewCard
+            v-for="entry in visibleMasonryItems"
+            :key="entry.key"
+            :style="{
+              position: 'absolute',
+              top: '0',
+              left: '0',
+              width: `${entry.width}px`,
+              height: `${entry.height}px`,
+              transform: `translate3d(${entry.left}px, ${entry.top}px, 0)`,
+              willChange: 'transform',
+            }"
+            :item="entry.item"
+            :operating="operatingId === entry.item.id"
+            :media-height="entry.mediaHeight"
+            :card-width="entry.width"
+            :image-loading="imageLoadingMode(entry.index)"
+            @preview="openPreview"
+            @approve="approve"
+            @reject="openReject"
+            @violation="openViolation"
+            @prompt="openPromptCreator"
+            @measure="(item, event) => measureFromEvent(item.id, event)"
+          />
+        </div>
+
+        <div v-if="items.length" class="share-load-status" :class="{ 'is-loading': loadingMore }">
+          <span v-if="loadingMore">正在加载更多…</span>
+          <span v-else-if="!hasMore">已加载全部 {{ total ?? items.length }} 条</span>
+        </div>
       </div>
     </div>
 
     <Teleport to="body">
       <Transition name="share-lightbox" @after-leave="onPreviewAfterLeave">
-        <div v-if="previewOpen && previewItem" class="share-lightbox" @click.self="closePreview">
+        <div v-if="previewOpen && previewItem" class="share-lightbox" @click="closePreview">
           <header class="share-lightbox__bar">
-            <div class="share-lightbox__user">
-              <span class="share-lightbox__avatar">{{ previewUserInitial }}</span>
-              <div class="share-lightbox__copy">
-                <div class="share-lightbox__title-row">
-                  <strong :title="itemTitle(previewItem)">{{ itemTitle(previewItem) }}</strong>
-                  <span class="share-lightbox__status" :class="`is-${previewItem.status || 'unknown'}`">
-                    {{ previewStatusText }}
-                  </span>
-                </div>
-                <div class="share-lightbox__facts">
-                  <span>{{ previewUserName }}</span>
-                  <span>{{ kindLabel(previewItem) }}</span>
-                  <span>{{ formatTime(previewItem.createdAt) }}</span>
-                  <span v-if="previewItem.category?.name">{{ previewItem.category.name }}</span>
-                </div>
-              </div>
+            <div class="share-lightbox__copy">
+              <strong :title="itemTitle(previewItem)">{{ itemTitle(previewItem) }}</strong>
+              <span class="share-lightbox__status" :class="`is-${previewItem.status || 'unknown'}`">
+                {{ previewStatusText }}
+              </span>
+              <span class="share-lightbox__facts">
+                {{ previewUserName }}
+                · {{ kindLabel(previewItem) }}
+                · {{ formatTime(previewItem.createdAt) }}
+                <template v-if="previewItem.category?.name"> · {{ previewItem.category.name }}</template>
+              </span>
             </div>
-            <div class="share-lightbox__tools">
-              <div v-if="previewMedias.length > 1" class="share-lightbox__switch" role="tablist" aria-label="媒体切换">
-                <button
-                  v-for="(url, index) in previewMedias"
-                  :key="url"
-                  type="button"
-                  role="tab"
-                  :aria-selected="previewMediaIndex === index"
-                  :class="{ 'is-active': previewMediaIndex === index }"
-                  @click="previewMediaIndex = index"
-                >
-                  {{ index + 1 }}
-                </button>
-              </div>
-              <button type="button" class="share-lightbox__close" aria-label="关闭预览" @click="closePreview">
-                <el-icon :size="18"><Close /></el-icon>
-              </button>
-            </div>
+            <button type="button" class="share-lightbox__close" aria-label="关闭预览" @click.stop="closePreview">
+              <el-icon :size="18"><Close /></el-icon>
+            </button>
           </header>
 
           <div class="share-lightbox__stage">
@@ -661,7 +647,7 @@ onUnmounted(() => {
               class="share-lightbox__nav is-prev"
               aria-label="上一张"
               title="上一张 ←"
-              @click="jumpPreview(-1)"
+              @click.stop="jumpPreview(-1)"
             >
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path
@@ -684,8 +670,9 @@ onUnmounted(() => {
                     :src="previewMediaUrl"
                     :alt="itemTitle(previewItem)"
                     fit="contain"
+                    @click.stop
                   />
-                  <div v-else class="share-lightbox__empty">暂无图片</div>
+                  <div v-else class="share-lightbox__empty" @click.stop>暂无图片</div>
                 </div>
               </Transition>
             </div>
@@ -696,7 +683,7 @@ onUnmounted(() => {
               class="share-lightbox__nav is-next"
               aria-label="下一张"
               title="下一张 →"
-              @click="jumpPreview(1)"
+              @click.stop="jumpPreview(1)"
             >
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path
@@ -712,12 +699,23 @@ onUnmounted(() => {
           </div>
 
           <footer class="share-lightbox__footer">
-            <div class="share-lightbox__meta">
-              <span class="share-lightbox__index tnum">{{ previewIndex + 1 }} / {{ items.length }}</span>
-              <div class="share-lightbox__hint">
-                <span><kbd>←</kbd><kbd>→</kbd> 切换</span>
-                <span><kbd>Esc</kbd> 关闭</span>
-              </div>
+            <span class="share-lightbox__index tnum">{{ previewIndex + 1 }} / {{ items.length }}</span>
+            <div
+              v-if="previewMedias.length > 1"
+              class="share-lightbox__dots"
+              role="tablist"
+              aria-label="媒体切换"
+            >
+              <button
+                v-for="(url, index) in previewMedias"
+                :key="url"
+                type="button"
+                role="tab"
+                :aria-label="`第 ${index + 1} 张`"
+                :aria-selected="previewMediaIndex === index"
+                :class="{ 'is-active': previewMediaIndex === index }"
+                @click.stop="previewMediaIndex = index"
+              />
             </div>
             <div class="share-lightbox__actions" role="group" aria-label="审核操作">
               <button
@@ -725,38 +723,34 @@ onUnmounted(() => {
                 type="button"
                 class="share-action is-prompt"
                 :disabled="operatingId === previewItem.id || Boolean(previewItem.promptEntryId)"
-                @click="openPromptCreator(previewItem, previewMediaIndex)"
+                @click.stop="openPromptCreator(previewItem, previewMediaIndex)"
               >
-                <el-icon :size="14"><CollectionTag /></el-icon>
-                {{ previewItem.promptEntryId ? '已加入提示词库' : '作为提示词' }}
+                {{ previewItem.promptEntryId ? '已入' : '入词库' }}
               </button>
               <button
+                v-if="previewCanApprove"
                 type="button"
                 class="share-action is-approve"
-                :disabled="operatingId === previewItem.id || !previewCanApprove"
-                @click="approve(previewItem)"
+                :disabled="operatingId === previewItem.id"
+                @click.stop="approve(previewItem)"
               >
-                <el-icon :size="14"><Check /></el-icon>
-                {{ previewCanApprove ? '通过' : '已通过' }}
-                <kbd v-if="previewCanApprove">A</kbd>
+                通过
               </button>
               <button
+                v-if="previewCanReject"
                 type="button"
                 class="share-action is-reject"
-                :disabled="operatingId === previewItem.id || !previewCanReject"
-                @click="openReject(previewItem)"
+                :disabled="operatingId === previewItem.id"
+                @click.stop="openReject(previewItem)"
               >
-                <el-icon :size="14"><CircleCloseFilled /></el-icon>
-                {{ previewCanReject ? '拒绝' : '已拒绝' }}
-                <kbd v-if="previewCanReject">R</kbd>
+                拒绝
               </button>
               <button
                 type="button"
                 class="share-action is-violate"
                 :disabled="operatingId === previewItem.id"
-                @click="openViolation(previewItem)"
+                @click.stop="openViolation(previewItem)"
               >
-                <el-icon :size="14"><WarningFilled /></el-icon>
                 违规
               </button>
             </div>
@@ -768,7 +762,6 @@ onUnmounted(() => {
     <AdminDialog
       v-model="promptCreatorOpen"
       title="加入提示词库"
-      subtitle="将审核图片复制为提示词封面，不依赖原画廊状态"
       :icon="CollectionTag"
       width="min(860px, 94vw)"
       nested-scroll
@@ -812,258 +805,212 @@ onUnmounted(() => {
 
     <AdminDialog
       v-model="rejectOpen"
+      panel-class="gallery-reject-dialog"
       title="拒绝投稿"
-      subtitle="拒绝后不会进入社区公开展示，原因将通知作者"
       :icon="CircleCloseFilled"
-      width="480px"
+      width="520px"
       confirm-text="确认拒绝"
       confirm-type="danger"
+      :confirm-disabled="!rejectNote.trim()"
       :confirm-loading="Boolean(rejectTarget && operatingId === rejectTarget.id)"
       @confirm="confirmReject"
     >
-      <div class="share-review-panel">
-        <div v-if="rejectTarget" class="share-review-panel__summary">
-          <div class="share-review-panel__summary-main">
+      <div class="gallery-reject">
+        <div v-if="rejectTarget" class="gallery-reject__work">
+          <img
+            v-if="mediaListOf(rejectTarget)[0] || rejectTarget.coverUrl"
+            :src="mediaListOf(rejectTarget)[0] || rejectTarget.coverUrl"
+            :alt="itemTitle(rejectTarget)"
+          />
+          <div v-else class="gallery-reject__empty">暂无封面</div>
+          <div class="gallery-reject__copy">
             <strong :title="itemTitle(rejectTarget)">{{ itemTitle(rejectTarget) }}</strong>
-            <small>{{ userLabel(rejectTarget) }} · {{ kindLabel(rejectTarget) }}</small>
+            <span>{{ userLabel(rejectTarget) }} · {{ kindLabel(rejectTarget) }}</span>
           </div>
-          <span class="share-review-panel__pill is-reject">拒绝</span>
         </div>
 
-        <div class="share-review-panel__section">
-          <div class="share-review-panel__label">
-            <span>拒绝原因</span>
-            <em>必填，将通知作者</em>
-          </div>
-          <div class="share-review-panel__presets is-reject">
-            <button
-              v-for="reason in rejectReasonPresets"
-              :key="reason"
-              type="button"
-              :class="{ 'is-active': rejectNote.includes(reason) }"
-              @click="applyRejectPreset(reason)"
-            >
-              {{ reason }}
-            </button>
-          </div>
-          <el-input
-            v-model="rejectNote"
-            type="textarea"
-            :rows="4"
-            maxlength="300"
-            show-word-limit
-            resize="none"
-            placeholder="补充说明，例如质量、版权或内容问题…"
-          />
+        <div class="gallery-reject__presets">
+          <button
+            v-for="reason in rejectReasonPresets"
+            :key="reason"
+            type="button"
+            class="gallery-reject__chip"
+            :class="{ 'is-active': rejectPresetSelected(reason) }"
+            @click="applyRejectPreset(reason)"
+          >
+            {{ reason }}
+          </button>
         </div>
+        <el-input
+          v-model="rejectNote"
+          type="textarea"
+          :rows="4"
+          maxlength="300"
+          show-word-limit
+          resize="none"
+          placeholder="拒绝原因会通知作者"
+        />
       </div>
     </AdminDialog>
 
     <AdminDialog
       v-model="violationOpen"
+      panel-class="gallery-violate-dialog"
       title="违规处理"
-      subtitle="下架作品并可限制该用户继续投稿"
       :icon="WarningFilled"
       width="520px"
       :confirm-text="violationForm.banDays > 0 ? '下架并禁投' : '确认下架'"
       confirm-type="danger"
+      :confirm-disabled="!violationForm.reason.trim()"
       :confirm-loading="Boolean(violationTarget && operatingId === violationTarget.id)"
       @confirm="confirmViolation"
     >
-      <div class="share-review-panel">
-        <div class="share-review-panel__alert">
-          <el-icon :size="16"><WarningFilled /></el-icon>
-          <p>
-            将下架作品并限制
-            <strong>{{ userLabel(violationTarget) }}</strong>
-            投稿，用户会收到违规通知。
-          </p>
-        </div>
-
-        <div v-if="violationTarget" class="share-review-panel__summary">
-          <div class="share-review-panel__summary-main">
+      <div class="gallery-violate">
+        <div v-if="violationTarget" class="gallery-violate__work">
+          <img
+            v-if="mediaListOf(violationTarget)[0] || violationTarget.coverUrl"
+            :src="mediaListOf(violationTarget)[0] || violationTarget.coverUrl"
+            :alt="itemTitle(violationTarget)"
+          />
+          <div v-else class="gallery-violate__empty">暂无封面</div>
+          <div class="gallery-violate__copy">
             <strong :title="itemTitle(violationTarget)">{{ itemTitle(violationTarget) }}</strong>
-            <small>{{ userLabel(violationTarget) }} · {{ kindLabel(violationTarget) }}</small>
+            <span>{{ userLabel(violationTarget) }} · {{ kindLabel(violationTarget) }}</span>
           </div>
-          <span class="share-review-panel__pill is-violate">违规</span>
         </div>
 
-        <div class="share-review-panel__section">
-          <div class="share-review-panel__label">
-            <span>禁投天数</span>
-            <em>0–365 天，0 表示只下架不禁投</em>
-          </div>
-          <div class="share-review-panel__presets is-violate">
-            <button
-              v-for="days in banDayPresets"
-              :key="days"
-              type="button"
-              :class="{ 'is-active': violationForm.banDays === days }"
-              @click="violationForm.banDays = days"
-            >
-              {{ days === 0 ? '仅下架' : `${days} 天` }}
-            </button>
-          </div>
-          <el-input-number
-            v-model="violationForm.banDays"
-            :min="0"
-            :max="365"
-            :step="1"
-            controls-position="right"
-            style="width: 100%"
-          />
+        <div class="gallery-violate__bans">
+          <button
+            v-for="days in banDayPresets"
+            :key="days"
+            type="button"
+            class="gallery-violate__chip"
+            :class="{ 'is-active': violationForm.banDays === days }"
+            @click="violationForm.banDays = days"
+          >
+            {{ days === 0 ? '仅下架' : `${days} 天` }}
+          </button>
+          <label class="gallery-violate__custom">
+            <el-input-number
+              v-model="violationForm.banDays"
+              :min="0"
+              :max="365"
+              :controls="false"
+            />
+            <span>天</span>
+          </label>
         </div>
 
-        <div class="share-review-panel__section">
-          <div class="share-review-panel__label">
-            <span>违规原因</span>
-            <em>将记录到处理结果并通知用户</em>
-          </div>
-          <el-input
-            v-model="violationForm.reason"
-            type="textarea"
-            :rows="3"
-            maxlength="300"
-            show-word-limit
-            resize="none"
-            placeholder="说明违规原因，便于运营追溯"
-          />
-        </div>
+        <el-input
+          v-model="violationForm.reason"
+          type="textarea"
+          :rows="3"
+          maxlength="300"
+          show-word-limit
+          resize="none"
+          placeholder="违规原因会通知作者"
+        />
 
-        <div class="share-review-panel__section">
-          <el-checkbox v-model="violationForm.deleteMedia">
-            同时删除媒体文件（不可恢复）
-          </el-checkbox>
-        </div>
+        <label class="gallery-violate__option" :class="{ 'is-on': violationForm.deleteMedia }">
+          <span>删除媒体文件</span>
+          <el-switch v-model="violationForm.deleteMedia" size="small" />
+        </label>
       </div>
     </AdminDialog>
   </div>
 </template>
 
 <style scoped lang="scss">
-.community-ops-page {
-  --community-accent: var(--accent);
-  --community-line: var(--border);
-
+.gallery-page {
   box-sizing: border-box;
-  display: grid;
+  display: flex;
   height: 100%;
   min-height: 0;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  flex-direction: column;
   gap: 12px;
   overflow: hidden;
-  padding: 16px 18px;
+  padding: 0;
   background: var(--bg);
 }
 
-.ops-toolbar-panel {
-  flex-shrink: 0;
-  min-height: 52px;
-  padding: 8px 10px;
-  border: 1px solid var(--community-line);
-  border-radius: 16px;
-  background: var(--surface);
-  box-shadow: var(--shadow-sm);
-}
-
-.share-toolbar {
+.gallery-toolbar {
   display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   min-width: 0;
 }
 
-.share-toolbar__lead {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  min-width: 0;
-}
-
-.share-toolbar__title {
-  position: relative;
-  flex: 0 0 auto;
-  padding-left: 10px;
-  color: var(--el-text-color-primary);
-  font-size: 13px;
-  font-weight: 760;
-
-  &::before {
-    position: absolute;
-    top: 50%;
-    left: 0;
-    width: 3px;
-    height: 16px;
-    content: '';
-    background: var(--community-accent);
-    transform: translateY(-50%);
-  }
-}
-
-.share-toolbar__filters {
-  display: flex;
+.gallery-tabs {
+  display: inline-flex;
+  flex: 1 1 auto;
   flex-wrap: wrap;
-  gap: 0;
-  min-width: 0;
-  overflow: hidden;
-  border: 1px solid var(--community-line);
-  border-radius: 10px;
-}
-
-.share-toolbar__aside {
-  display: flex;
-  flex: 0 0 auto;
   align-items: center;
-  gap: 10px;
+  gap: 2px;
+  min-width: 0;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
 }
 
-.share-toolbar__count {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
-  white-space: nowrap;
-}
-
-.share-filter {
-  min-height: 30px;
-  padding: 0 14px;
+.gallery-tab {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 12px;
   border: 0;
-  border-right: 1px solid var(--community-line);
-  border-radius: 0;
+  border-radius: var(--radius-pill);
   background: transparent;
   color: var(--ink-2);
-  font-size: 12px;
-  font-weight: 650;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
   cursor: pointer;
-  transition:
-    color 0.15s ease,
-    background-color 0.15s ease;
 
-  &:last-child {
-    border-right: 0;
-  }
-
-  &:hover {
-    background: var(--accent-soft);
-    color: var(--accent-ink);
+  &:hover:not(.is-active) {
+    color: var(--ink);
+    background: var(--surface);
   }
 
   &.is-active {
     background: var(--accent);
-    color: #fff;
+    color: var(--accent-on);
   }
+}
+
+.gallery-toolbar__right {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.gallery-board {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
 }
 
 .share-feed {
   min-height: 0;
+  flex: 1;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
-  padding: 4px 2px 8px;
-  border: 1px solid var(--community-line);
-  border-radius: 16px;
-  background: var(--surface);
-  box-shadow: var(--shadow-sm);
+  padding: 14px;
 }
 
 .share-feed.is-scrolling :deep(.share-card) {
@@ -1077,12 +1024,29 @@ onUnmounted(() => {
   transition: none;
 }
 
-.share-feed__loading {
+.share-feed__loading,
+.gallery-empty {
   display: grid;
-  place-items: center;
-  min-height: 240px;
+  min-height: 280px;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
   color: var(--ink-3);
-  font-size: 13px;
+  text-align: center;
+}
+
+.gallery-empty {
+  .el-icon {
+    font-size: 30px;
+  }
+
+  strong {
+    color: var(--ink);
+  }
+
+  span {
+    font-size: 12px;
+  }
 }
 
 .share-masonry {
@@ -1113,21 +1077,19 @@ onUnmounted(() => {
   inset: 0;
   z-index: 4000;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
   height: 100dvh;
   min-height: 0;
   color: #f4f6fa;
-  background:
-    radial-gradient(120% 80% at 50% 42%, rgb(28 34 48 / 0.55), transparent 62%),
-    #07090e;
+  background: rgb(18 20 26 / 0.94);
 }
 
 .share-lightbox-enter-active {
-  transition: opacity 0.32s ease;
+  transition: opacity 0.22s ease;
 }
 
 .share-lightbox-leave-active {
-  transition: opacity 0.22s ease;
+  transition: opacity 0.16s ease;
 }
 
 .share-lightbox-enter-from,
@@ -1135,69 +1097,14 @@ onUnmounted(() => {
   opacity: 0;
 }
 
-.share-lightbox-enter-active .share-lightbox__bar {
-  animation: share-lightbox-bar-in 0.38s cubic-bezier(0.22, 0.8, 0.24, 1) both;
-}
-
-.share-lightbox-enter-active .share-lightbox__stage {
-  animation: share-lightbox-stage-in 0.42s cubic-bezier(0.22, 0.8, 0.24, 1) both;
-}
-
-.share-lightbox-enter-active .share-lightbox__footer {
-  animation: share-lightbox-footer-in 0.38s cubic-bezier(0.22, 0.8, 0.24, 1) 0.05s both;
-}
-
 .share-media-enter-active,
 .share-media-leave-active {
-  transition:
-    opacity 0.2s ease,
-    transform 0.2s cubic-bezier(0.22, 0.8, 0.24, 1);
+  transition: opacity 0.16s ease;
 }
 
-.share-media-enter-from {
-  opacity: 0;
-  transform: scale(1.015);
-}
-
+.share-media-enter-from,
 .share-media-leave-to {
   opacity: 0;
-  transform: scale(0.992);
-}
-
-@keyframes share-lightbox-bar-in {
-  from {
-    opacity: 0;
-    transform: translateY(-14px);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes share-lightbox-footer-in {
-  from {
-    opacity: 0;
-    transform: translateY(14px);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes share-lightbox-stage-in {
-  from {
-    opacity: 0;
-    transform: scale(0.97) translateY(10px);
-  }
-
-  to {
-    opacity: 1;
-    transform: scale(1) translateY(0);
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1207,17 +1114,12 @@ onUnmounted(() => {
   .share-media-leave-active {
     transition: none;
   }
+}
 
-  .share-lightbox-enter-active .share-lightbox__bar,
-  .share-lightbox-enter-active .share-lightbox__stage,
-  .share-lightbox-enter-active .share-lightbox__footer {
-    animation: none !important;
-  }
-
-  .share-media-enter-from,
-  .share-media-leave-to {
-    transform: none;
-  }
+.share-lightbox__bar,
+.share-lightbox__stage,
+.share-lightbox__footer {
+  grid-area: 1 / 1;
 }
 
 .share-lightbox__bar,
@@ -1225,187 +1127,112 @@ onUnmounted(() => {
   z-index: 4;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
+  gap: 12px 16px;
   min-width: 0;
-  margin: 0;
-  padding: 16px 24px;
-  border: 0;
-  background: rgb(10 12 18 / 78%);
-  box-shadow: none;
-  backdrop-filter: blur(18px) saturate(1.08);
-  -webkit-backdrop-filter: blur(18px) saturate(1.08);
+  pointer-events: none;
+}
+
+.share-lightbox__bar > *,
+.share-lightbox__footer > * {
+  pointer-events: auto;
 }
 
 .share-lightbox__bar {
-  border-bottom: 1px solid rgb(255 255 255 / 8%);
+  align-self: start;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 18px 22px 56px;
+  background: linear-gradient(to bottom, rgb(18 20 26 / 0.78), transparent);
 }
 
 .share-lightbox__footer {
-  border-top: 1px solid rgb(255 255 255 / 8%);
-}
-
-.share-lightbox__user {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  min-width: 0;
+  align-self: end;
+  padding: 56px 22px 18px;
+  background: linear-gradient(to top, rgb(18 20 26 / 0.82), transparent);
 }
 
 .share-lightbox__copy {
-  min-width: 0;
-}
-
-.share-lightbox__facts {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
-  margin-top: 8px;
-  color: rgb(255 255 255 / 62%);
-  font-size: 12px;
+  gap: 8px 10px;
+  min-width: 0;
+  padding-right: 12px;
 
-  span {
-    display: inline-flex;
-    align-items: center;
-    min-height: 22px;
-    padding: 0 8px;
-    border-radius: 999px;
-    background: rgb(255 255 255 / 8%);
+  strong {
+    overflow: hidden;
+    max-width: min(560px, 46vw);
+    font-size: 15px;
+    font-weight: 700;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 }
 
-.share-lightbox__title-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  min-width: 0;
-
-  strong {
-    display: -webkit-box;
-    min-width: 0;
-    overflow: hidden;
-    font-size: 15px;
-    font-weight: 740;
-    line-height: 1.45;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-  }
+.share-lightbox__facts {
+  color: rgb(255 255 255 / 62%);
+  font-size: 12px;
 }
 
 .share-lightbox__status {
   flex: 0 0 auto;
-  margin-top: 2px;
   padding: 3px 8px;
-  border-radius: 999px;
-  background: rgb(255 255 255 / 12%);
-  color: #fff;
+  border-radius: var(--radius-pill);
+  background: rgb(255 255 255 / 14%);
   font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.02em;
 
   &.is-pending {
-    background: color-mix(in srgb, var(--warning) 88%, #000);
+    background: var(--warning);
+    color: #fff;
   }
 
   &.is-approved {
-    background: color-mix(in srgb, var(--success) 88%, #000);
+    background: var(--success);
+    color: #fff;
   }
 
   &.is-rejected {
-    background: color-mix(in srgb, var(--danger) 88%, #000);
+    background: var(--danger);
+    color: #fff;
   }
 
   &.is-removed {
-    background: rgb(100 116 139 / 88%);
-  }
-}
-
-.share-lightbox__avatar {
-  display: grid;
-  flex: 0 0 auto;
-  place-items: center;
-  width: 40px;
-  height: 40px;
-  margin-top: 1px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, rgb(129 140 248 / 78%), rgb(56 189 248 / 58%));
-  font-size: 14px;
-  font-weight: 740;
-}
-
-.share-lightbox__tools {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.share-lightbox__switch {
-  display: inline-flex;
-  padding: 3px;
-  border: 1px solid rgb(255 255 255 / 10%);
-  border-radius: 999px;
-  background: rgb(255 255 255 / 8%);
-
-  button {
-    min-width: 30px;
-    min-height: 30px;
-    padding: 0 10px;
-    border: 0;
-    border-radius: 999px;
-    background: transparent;
-    color: rgb(255 255 255 / 72%);
-    font-size: 12px;
-    font-weight: 650;
-    font-variant-numeric: tabular-nums;
-    cursor: pointer;
-    transition:
-      background-color 0.15s ease,
-      color 0.15s ease;
-
-    &.is-active {
-      background: #fff;
-      color: #111827;
-      box-shadow: 0 6px 16px rgb(0 0 0 / 18%);
-    }
+    background: rgb(100 116 139);
+    color: #fff;
   }
 }
 
 .share-lightbox__close {
   display: grid;
+  flex: 0 0 auto;
   place-items: center;
   width: 36px;
   height: 36px;
-  border: 1px solid rgb(255 255 255 / 12%);
+  border: 0;
   border-radius: 50%;
-  background: rgb(255 255 255 / 10%);
+  background: rgb(255 255 255 / 12%);
   color: #fff;
   cursor: pointer;
-  transition:
-    background-color 0.15s ease,
-    transform 0.15s ease;
 
   &:hover {
-    background: rgb(255 255 255 / 18%);
-    transform: scale(1.04);
+    background: rgb(255 255 255 / 20%);
   }
 }
 
 .share-lightbox__stage {
   position: relative;
-  z-index: 2;
+  z-index: 1;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  background: transparent;
 }
 
 .share-lightbox__viewport {
   position: absolute;
-  inset: 18px 76px;
+  inset: 72px 80px 84px;
   min-width: 0;
   min-height: 0;
-  overflow: hidden;
 }
 
 .share-lightbox__media {
@@ -1415,43 +1242,41 @@ onUnmounted(() => {
   height: 100%;
   min-width: 0;
   min-height: 0;
+  pointer-events: none;
 }
 
 .share-lightbox__image {
-  display: block;
-  box-sizing: border-box;
-  width: 100%;
-  height: 100%;
+  width: fit-content !important;
+  height: fit-content !important;
   max-width: 100%;
   max-height: 100%;
+  pointer-events: auto;
   background: transparent !important;
   user-select: none;
   -webkit-user-drag: none;
 }
 
 .share-lightbox__image.progressive-image,
-.share-lightbox__image .progressive-image,
 .share-lightbox .progressive-image.share-lightbox__image {
+  overflow: visible;
   background: transparent !important;
 }
 
 .share-lightbox__image img,
 .share-lightbox .share-lightbox__image img {
+  width: auto !important;
+  height: auto !important;
+  max-width: 100%;
+  max-height: calc(100dvh - 168px);
   object-fit: contain;
   object-position: center;
   background: transparent;
-  filter: drop-shadow(0 18px 48px rgb(0 0 0 / 0.42));
 }
 
 .share-lightbox__empty {
-  display: grid;
-  gap: 10px;
-  place-content: center;
-  justify-items: center;
-  padding: 24px;
-  color: rgb(255 255 255 / 62%);
+  pointer-events: auto;
+  color: rgb(255 255 255 / 58%);
   font-size: 13px;
-  text-align: center;
 }
 
 .share-lightbox__nav {
@@ -1460,33 +1285,23 @@ onUnmounted(() => {
   z-index: 3;
   display: grid;
   place-items: center;
-  width: 52px;
-  height: 52px;
+  width: 40px;
+  height: 40px;
   padding: 0;
-  border: 1px solid rgb(255 255 255 / 16%);
+  border: 0;
   border-radius: 50%;
-  background: rgb(12 14 20 / 62%);
+  background: rgb(255 255 255 / 12%);
   color: #fff;
   cursor: pointer;
   transform: translateY(-50%);
-  backdrop-filter: blur(14px);
-  transition:
-    background-color 0.15s ease,
-    border-color 0.15s ease,
-    transform 0.15s ease;
 
   svg {
-    width: 20px;
-    height: 20px;
+    width: 18px;
+    height: 18px;
   }
 
   &:hover {
-    background: rgb(255 255 255 / 16%);
-    border-color: rgb(255 255 255 / 28%);
-  }
-
-  &:active {
-    transform: translateY(-50%) scale(0.96);
+    background: rgb(255 255 255 / 22%);
   }
 
   &.is-prev {
@@ -1498,56 +1313,31 @@ onUnmounted(() => {
   }
 }
 
-.share-lightbox__meta {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px 14px;
-  min-width: 0;
-}
-
 .share-lightbox__index {
-  display: inline-flex;
-  align-items: center;
-  min-height: 30px;
-  padding: 0 12px;
-  border-radius: 999px;
-  background: rgb(255 255 255 / 12%);
-  color: #fff;
+  color: rgb(255 255 255 / 70%);
   font-size: 13px;
-  font-weight: 740;
+  font-weight: 650;
   font-variant-numeric: tabular-nums;
 }
 
-.share-lightbox__hint {
+.share-lightbox__dots {
   display: inline-flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 10px 14px;
-  color: rgb(255 255 255 / 52%);
-  font-size: 12px;
+  gap: 6px;
 
-  span {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-  }
+  button {
+    width: 7px;
+    height: 7px;
+    padding: 0;
+    border: 0;
+    border-radius: 999px;
+    background: rgb(255 255 255 / 0.35);
+    cursor: pointer;
 
-  kbd {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 22px;
-    height: 22px;
-    padding: 0 6px;
-    border: 1px solid rgb(255 255 255 / 14%);
-    border-radius: 6px;
-    background: rgb(255 255 255 / 8%);
-    color: rgb(255 255 255 / 78%);
-    font-family: inherit;
-    font-size: 11px;
-    font-weight: 700;
-    line-height: 1;
+    &.is-active {
+      width: 16px;
+      background: #fff;
+    }
   }
 }
 
@@ -1556,125 +1346,96 @@ onUnmounted(() => {
   flex: 0 0 auto;
   align-items: center;
   gap: 8px;
+  margin-left: auto;
 
   .share-action {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    min-height: 36px;
+    height: 32px;
     padding: 0 14px;
-    border: 1px solid transparent;
-    border-radius: 999px;
+    border: 0;
+    border-radius: var(--radius-pill);
     font-size: 13px;
-    font-weight: 700;
+    font-weight: 650;
     cursor: pointer;
-    transition:
-      background-color 0.15s ease,
-      border-color 0.15s ease,
-      color 0.15s ease,
-      transform 0.15s ease;
-
-    .el-icon {
-      flex: 0 0 auto;
-    }
-
-    kbd {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      min-width: 18px;
-      height: 18px;
-      margin-left: 2px;
-      padding: 0 4px;
-      border-radius: 5px;
-      background: rgb(255 255 255 / 16%);
-      font-family: inherit;
-      font-size: 10px;
-      font-weight: 740;
-      line-height: 1;
-    }
 
     &:disabled {
       opacity: 0.42;
       cursor: not-allowed;
     }
 
-    &:not(:disabled):hover {
-      transform: translateY(-1px);
-    }
-
-    &:not(:disabled):active {
-      transform: scale(0.98);
-    }
-
-    &.is-prompt {
-      border-color: color-mix(in srgb, var(--violet) 42%, transparent);
-      background: color-mix(in srgb, var(--violet) 22%, rgb(12 14 20 / 70%));
-      color: #ddd6fe;
-    }
-
     &.is-approve {
-      border-color: color-mix(in srgb, var(--success) 42%, transparent);
-      background: color-mix(in srgb, var(--success) 22%, rgb(12 14 20 / 70%));
-      color: #bbf7d0;
+      background: var(--success);
+      color: #fff;
     }
 
     &.is-reject {
-      border-color: color-mix(in srgb, var(--danger) 42%, transparent);
-      background: color-mix(in srgb, var(--danger) 22%, rgb(12 14 20 / 70%));
-      color: #fecaca;
+      background: var(--danger);
+      color: #fff;
     }
 
     &.is-violate {
-      border-color: color-mix(in srgb, var(--warning) 42%, transparent);
-      background: color-mix(in srgb, var(--warning) 20%, rgb(12 14 20 / 70%));
-      color: #fde68a;
+      background: var(--warning);
+      color: #fff;
     }
 
-    &:not(:disabled):hover.is-prompt {
-      background: color-mix(in srgb, var(--violet) 34%, rgb(12 14 20 / 55%));
+    &.is-prompt {
+      background: var(--violet);
+      color: #fff;
     }
 
-    &:not(:disabled):hover.is-approve {
-      background: color-mix(in srgb, var(--success) 34%, rgb(12 14 20 / 55%));
-    }
-
-    &:not(:disabled):hover.is-reject {
-      background: color-mix(in srgb, var(--danger) 34%, rgb(12 14 20 / 55%));
-    }
-
-    &:not(:disabled):hover.is-violate {
-      background: color-mix(in srgb, var(--warning) 32%, rgb(12 14 20 / 55%));
+    &:not(:disabled):hover {
+      filter: brightness(1.08);
     }
   }
 }
 
-/* 审核对话框（拒绝 / 违规）——样式挂在弹窗内容根节点，不依赖 teleport 外层 class */
-.share-review-panel {
-  --community-dialog-line: var(--border);
+/* 审核对话框 teleport 到 body，需全局样式 */
+.gallery-reject,
+.gallery-violate {
   display: grid;
   gap: 14px;
 }
 
-.share-review-panel__summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+.gallery-reject__work,
+.gallery-violate__work {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
   gap: 12px;
-  padding: 12px 14px;
-  border: 1px solid var(--community-dialog-line);
-  border-radius: 12px;
+  align-items: center;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
   background: var(--surface-2);
-  box-shadow: var(--shadow-sm);
+
+  img,
+  .gallery-reject__empty,
+  .gallery-violate__empty {
+    width: 72px;
+    height: 72px;
+    border-radius: 10px;
+    background: var(--surface);
+  }
+
+  img {
+    display: block;
+    object-fit: cover;
+  }
 }
 
-.share-review-panel__summary-main {
+.gallery-reject__empty,
+.gallery-violate__empty {
+  display: grid;
+  place-items: center;
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.gallery-reject__copy,
+.gallery-violate__copy {
   min-width: 0;
-  flex: 1 1 auto;
 
   strong,
-  small {
+  span {
     display: block;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1682,124 +1443,101 @@ onUnmounted(() => {
   }
 
   strong {
-    color: var(--el-text-color-primary);
+    color: var(--ink);
     font-size: 14px;
     font-weight: 700;
   }
 
-  small {
-    margin-top: 3px;
-    color: var(--el-text-color-secondary);
-    font-size: 12px;
-  }
-}
-
-.share-review-panel__pill {
-  flex: 0 0 auto;
-  padding: 4px 10px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 700;
-
-  &.is-reject {
-    background: var(--danger-soft);
-    color: var(--danger);
-  }
-
-  &.is-violate {
-    background: var(--warning-soft);
-    color: var(--warning);
-  }
-}
-
-.share-review-panel__alert {
-  display: flex;
-  gap: 10px;
-  align-items: flex-start;
-  padding: 12px 14px;
-  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
-  border-radius: 12px;
-  background: var(--danger-soft);
-  color: var(--danger);
-
-  .el-icon {
-    flex: 0 0 auto;
-    margin-top: 1px;
-  }
-
-  p {
-    margin: 0;
-    font-size: 13px;
-    line-height: 1.55;
-  }
-
-  strong {
-    font-weight: 740;
-  }
-}
-
-.share-review-panel__section {
-  display: grid;
-  gap: 8px;
-}
-
-.share-review-panel__label {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
-
   span {
-    color: var(--el-text-color-primary);
-    font-size: 13px;
-    font-weight: 700;
-  }
-
-  em {
-    color: var(--el-text-color-secondary);
+    margin-top: 4px;
+    color: var(--ink-3);
     font-size: 12px;
-    font-style: normal;
   }
 }
 
-.share-review-panel__presets {
+.gallery-reject__presets,
+.gallery-violate__bans {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
+}
 
-  button {
-    min-height: 28px;
-    padding: 0 10px;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: var(--surface);
-    color: var(--ink-2);
-    font-size: 12px;
-    font-weight: 650;
-    cursor: pointer;
-    transition:
-      border-color 0.15s ease,
-      color 0.15s ease,
-      background-color 0.15s ease,
-      transform 0.15s ease;
+.gallery-reject__chip,
+.gallery-violate__chip {
+  height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
 
-    &:hover {
-      transform: translateY(-1px);
-      border-color: var(--el-color-primary-light-5);
-      color: var(--el-color-primary);
-    }
+  &:hover:not(.is-active) {
+    color: var(--ink);
+    background: var(--surface-3);
+  }
+}
+
+.gallery-reject__chip.is-active {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.gallery-violate__chip.is-active {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.gallery-violate__custom {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 10px 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--ink-3);
+  font-size: 12px;
+
+  .el-input-number {
+    width: 48px;
   }
 
-  &.is-reject button.is-active {
-    border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+  .el-input-number .el-input__wrapper {
+    padding: 0;
+    box-shadow: none;
+    background: transparent;
+  }
+
+  .el-input-number .el-input__inner {
+    height: 30px;
+    text-align: center;
+  }
+}
+
+.gallery-violate__option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 40px;
+  padding: 0 14px 0 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+
+  &.is-on {
+    border-color: color-mix(in srgb, var(--danger) 28%, var(--border));
     background: var(--danger-soft);
     color: var(--danger);
-  }
-
-  &.is-violate button.is-active {
-    border-color: color-mix(in srgb, var(--warning) 40%, transparent);
-    background: var(--warning-soft);
-    color: var(--warning);
   }
 }
 

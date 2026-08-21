@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Bot, CircleAlert, Download, Eraser, Info, LoaderCircle, Palette, Pencil, Play, RotateCcw, Square, Upload } from "lucide-react";
+import { CircleAlert, Download, Eraser, Info, LoaderCircle, Palette, Pencil, Play, RotateCcw, Square, Upload } from "lucide-react";
 import { Switch, Tooltip } from "antd";
 import { useTranslation } from "react-i18next";
 
@@ -80,11 +80,11 @@ export function CanvasTopBar({
                 className="pointer-events-none absolute left-0 right-0 top-3 z-50 flex h-11 items-center justify-between pr-4"
                 style={{ paddingLeft: sidePanelOpen ? sidePanelWidth + 20 : 268, transition: "padding-left 380ms cubic-bezier(0.22, 1, 0.36, 1)" }}
             >
-                <div className="pointer-events-auto shrink-0">
+                <div className="pointer-events-auto relative z-20 shrink-0">
                     <WorkflowControl theme={theme} workflowRun={workflowRun} onRun={onRunWorkflow} onStop={onStopWorkflow} onRefresh={onRefreshWorkflow} />
                 </div>
 
-                {children ? <div className="pointer-events-auto absolute left-1/2 top-1/2 max-w-[min(720px,calc(100%-380px))] -translate-x-1/2 -translate-y-1/2">{children}</div> : null}
+                {children ? <div className="pointer-events-none absolute left-1/2 top-1/2 z-10 max-w-[min(720px,calc(100%-380px))] -translate-x-1/2 -translate-y-1/2"><div className="pointer-events-auto">{children}</div></div> : null}
 
                 <div className="pointer-events-auto flex items-center gap-2">
                     <div ref={extrasRef} className="canvas-chrome-cluster relative" style={{ color: theme.toolbar.item }}>
@@ -115,18 +115,19 @@ export function CanvasTopBar({
                             />
                         ) : null}
                     </div>
-                    <button
-                        type="button"
-                        className="canvas-agent-pill canvas-chrome-cluster"
-                        style={{
-                            color: agentOpen ? theme.toolbar.activeText : theme.node.text,
-                            background: agentOpen ? theme.toolbar.activeBg : undefined,
-                        }}
-                        onClick={onToggleAgent}
-                    >
-                        <Bot className="size-3.5" />
-                        Agent
-                    </button>
+                    <Tooltip title={agentOpen ? t("topNav.closeAgent") : t("topNav.openAgent")} placement="bottom">
+                        <button
+                            type="button"
+                            className="canvas-agent-pill canvas-chrome-cluster"
+                            aria-label={agentOpen ? t("topNav.closeAgent") : t("topNav.openAgent")}
+                            style={{
+                                background: agentOpen ? theme.toolbar.activeBg : undefined,
+                            }}
+                            onClick={onToggleAgent}
+                        >
+                            <img src="/sucai/starcloud-fcdd57fe8811-1.webp" alt="" className="size-7 object-contain" />
+                        </button>
+                    </Tooltip>
                 </div>
             </div>
             <CanvasShortcutsDialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
@@ -180,11 +181,9 @@ function WorkflowControl({
                 ? t("canvas.workflow.parallelRunning", { count: workflowRun.running })
                 : workflowRun.currentNodeTitle || t("canvas.workflow.preparing");
         return (
-            <div className="canvas-workflow-pill is-running" style={{ color: theme.node.text }}>
+            <div className="canvas-workflow-pill is-running" style={{ color: theme.node.text }} title={detail}>
                 <WorkflowProgress value={progress} color={theme.node.activeStroke} />
-                <Tooltip title={detail} placement="bottom">
-                    <span className="canvas-workflow-pill__label">{label}</span>
-                </Tooltip>
+                <span className="canvas-workflow-pill__label">{label}</span>
                 {workflowRun.total > 0 ? (
                     <span className="canvas-workflow-pill__meta">
                         {workflowRun.completed}/{workflowRun.total}
@@ -192,11 +191,20 @@ function WorkflowControl({
                 ) : null}
                 <span className="canvas-workflow-pill__meta tabular-nums">{elapsedLabel}</span>
                 {locked ? null : (
-                    <Tooltip title={t("canvas.workflow.stop")} placement="bottom">
-                        <button type="button" className="canvas-chrome-btn" onClick={onStop} aria-label={t("canvas.workflow.stop")} style={{ color: theme.toolbar.item }}>
-                            <Square className="size-2.5 fill-current" />
-                        </button>
-                    </Tooltip>
+                    <button
+                        type="button"
+                        className="canvas-workflow-pill__stop"
+                        title={t("canvas.workflow.stop")}
+                        aria-label={t("canvas.workflow.stop")}
+                        style={{ color: theme.node.text }}
+                        onClick={(event) => {
+                            event.stopPropagation();
+                            onStop();
+                        }}
+                        onPointerDown={(event) => event.stopPropagation()}
+                    >
+                        <Square className="size-2.5 fill-current" />
+                    </button>
                 )}
             </div>
         );
@@ -226,33 +234,37 @@ function WorkflowControl({
         );
     }
 
+    const rerun = workflowRun.status === "success" || workflowRun.status === "canceled";
+    const runLabel = t(rerun ? "canvas.workflow.rerun" : "canvas.workflow.run");
     return (
-        <button type="button" className="canvas-workflow-run" onClick={onRun} aria-label={t("canvas.workflow.run")}>
-            <Play className="size-3.5 shrink-0 fill-current" />
-            <span className="canvas-workflow-pill__label">{t("canvas.workflow.run")}</span>
+        <button type="button" className="canvas-workflow-run" onClick={onRun} aria-label={runLabel}>
+            {rerun ? <RotateCcw className="size-3.5 shrink-0" /> : <Play className="size-3.5 shrink-0 fill-current" />}
+            <span className="canvas-workflow-pill__label">{runLabel}</span>
         </button>
     );
 }
 
 function WorkflowProgress({ value, color }: { value: number; color: string }) {
-    const radius = 8;
+    if (value <= 0) {
+        return <LoaderCircle className="size-4 shrink-0 animate-spin" style={{ color }} aria-hidden />;
+    }
+    const radius = 7;
     const circumference = 2 * Math.PI * radius;
     return (
         <span className="canvas-workflow-ring" aria-hidden>
-            <svg viewBox="0 0 22 22">
-                <circle cx="11" cy="11" r={radius} fill="none" stroke={color} strokeOpacity="0.16" strokeWidth="1.75" />
+            <svg viewBox="0 0 18 18">
+                <circle cx="9" cy="9" r={radius} fill="none" stroke={color} strokeOpacity="0.18" strokeWidth="2" />
                 <circle
-                    cx="11"
-                    cy="11"
+                    cx="9"
+                    cy="9"
                     r={radius}
                     fill="none"
                     stroke={color}
-                    strokeWidth="1.75"
+                    strokeWidth="2"
                     strokeLinecap="round"
                     strokeDasharray={`${circumference * value} ${circumference}`}
                 />
             </svg>
-            <LoaderCircle className="size-2.5 animate-spin" style={{ color }} />
         </span>
     );
 }

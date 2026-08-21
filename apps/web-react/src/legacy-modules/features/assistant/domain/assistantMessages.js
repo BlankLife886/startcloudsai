@@ -49,6 +49,7 @@ export function createAssistantPlaceholder({
     createdAt: new Date().toISOString(),
     prompt,
     model: previous?.model || defaults.model,
+    reasoningEffort: previous?.reasoningEffort || defaults.reasoningEffort || '',
     ratio: previous?.ratio || defaults.ratio,
     requestRatio: previous?.requestRatio || defaults.requestRatio || defaults.ratio,
     resolution: previous?.resolution || defaults.resolution,
@@ -58,6 +59,13 @@ export function createAssistantPlaceholder({
     height: previous?.height || defaults.height,
     quality: previous?.quality || defaults.quality,
     progress: 0,
+    routing: responseMode === 'agent',
+    statusStage:
+      responseMode === 'agent'
+        ? 'routing'
+        : responseMode === 'image'
+          ? 'preparing-image'
+          : 'preparing-context',
     ...(userMessageId ? { userMessageId } : {}),
   }
 }
@@ -69,17 +77,41 @@ const MESSAGE_STATUS = {
     tone: 'working',
     progress: 14,
   },
-  thinking: {
-    label: '正在梳理上下文',
-    detail: '正在读取前文并组织回答思路。',
+  'preparing-context': {
+    label: '正在准备上下文',
+    detail: '正在读取近期对话、附件状态和模型窗口。',
     tone: 'working',
-    progress: 32,
+    progress: 22,
+  },
+  'compacting-context': {
+    label: '正在压缩较早对话',
+    detail: '正在保留关键目标与约束，并为当前回答释放上下文空间。',
+    tone: 'working',
+    progress: 30,
+  },
+  thinking: {
+    label: '正在组织回答',
+    detail: '上下文已准备，正在形成直接、完整的回答。',
+    tone: 'working',
+    progress: 42,
+  },
+  'analyzing-document': {
+    label: '正在分析文档',
+    detail: '正在检索附件中的相关内容并核对引用依据。',
+    tone: 'working',
+    progress: 46,
   },
   'analyzing-image': {
     label: '正在理解图片',
     detail: '正在读取画面、文字和细节，并结合你的问题组织回答。',
     tone: 'working',
     progress: 38,
+  },
+  'converting-file': {
+    label: '正在转换 PSD',
+    detail: '正在识别主体、背景和文字区域，并生成可下载的自动拆层 PSD。',
+    tone: 'working',
+    progress: 58,
   },
   answering: {
     label: '正在输入回答',

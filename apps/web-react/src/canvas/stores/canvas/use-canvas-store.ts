@@ -6,7 +6,7 @@ import { localForageStorage } from "@/lib/localforage-storage";
 import type { CanvasBackgroundMode } from "@/lib/canvas-theme";
 import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, ViewportTransform } from "@/types/canvas";
 import type { CanvasWorkflowCheckpoint } from "@/lib/canvas/canvas-workflow";
-import { mergeCanvasProjectDocuments, mergeCanvasProjectSnapshots, type CanvasCloudProjectSummary } from "@/lib/canvas/canvas-project-sync";
+import { canvasProjectNeedsCloudRetry, mergeCanvasProjectDocuments, mergeCanvasProjectSnapshots, type CanvasCloudProjectSummary } from "@/lib/canvas/canvas-project-sync";
 import { createCloudCanvasProject, deleteCloudCanvasProject, getCloudCanvasProject, listCloudCanvasProjectSummaries, updateCloudCanvasProject } from "@/services/canvas-cloud-repository";
 import { StarcloudsApiError } from "@/services/starclouds-api";
 
@@ -145,7 +145,7 @@ async function persistProjectToCloud(id: string, userId: string) {
         notifyCloudSaveRecovered(id);
     }
     const latest = useCanvasStore.getState().projects.find((item) => item.id === id);
-    if (latest && latest.updatedAt !== expectedUpdatedAt) scheduleCloudSave(id, 1500);
+    if (canvasProjectNeedsCloudRetry(latest)) scheduleCloudSave(id, 1500);
 }
 
 let cloudSaveBaseDelayMs = 700;

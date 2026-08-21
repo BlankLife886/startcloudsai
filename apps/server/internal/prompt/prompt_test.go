@@ -82,6 +82,24 @@ func TestUIDesignIterationLocksUnchangedContent(t *testing.T) {
 	}
 }
 
+func TestEcommerceAplusSpecLocksModuleSize(t *testing.T) {
+	p, size := prompt.Compile("ecommerce_design", "生成灯泡 A+ 首屏", map[string]any{
+		"outputSize": "970x600",
+		"aplusSpec": map[string]any{
+			"amazonName": "Standard Header Image",
+			"outputSize": "970x600",
+		},
+	})
+	if size != "970x600" {
+		t.Fatalf("size = %q, want 970x600", size)
+	}
+	for _, expected := range []string{"Standard Header Image", "970x600", "A+ Content"} {
+		if !strings.Contains(p, expected) {
+			t.Fatalf("compiled aplus prompt missing %q: %s", expected, p)
+		}
+	}
+}
+
 func TestEcommerceDesignUsesCommercePromptBoundary(t *testing.T) {
 	p, _ := prompt.Compile("ecommerce_design", "生成亚马逊耳机商品套图", map[string]any{})
 	for _, expected := range []string{

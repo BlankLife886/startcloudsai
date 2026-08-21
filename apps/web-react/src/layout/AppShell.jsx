@@ -49,6 +49,7 @@ export function AppShell() {
       "canvas-entry",
       canvasHome || canvasEditor,
     );
+    document.documentElement.classList.toggle("canvas-editor", canvasEditor);
   }, [canvasEditor, canvasHome]);
 
   useEffect(() => {

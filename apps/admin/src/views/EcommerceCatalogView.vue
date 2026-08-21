@@ -80,6 +80,11 @@ const KINDS: {
   },
 ];
 
+const STATUS_FILTERS: { value: CatalogStatus; label: string }[] = [
+  { value: "all", label: "全部" },
+  { value: "active", label: "已上架" },
+  { value: "inactive", label: "已下架" },
+];
 const APPAREL_OPTIONS = ["上装", "下装", "全身"] as const;
 const MAX_PER_KIND = 40;
 const IMAGE_ACCEPT = "image/png,image/jpeg,image/webp";
@@ -183,11 +188,31 @@ const kindCounts = computed(
 const activeCount = computed(
   () => items.value.filter((item) => item.active).length,
 );
+const inactiveCount = computed(() => items.value.length - activeCount.value);
+function statusCount(value: CatalogStatus) {
+  if (value === "active") return activeCount.value;
+  if (value === "inactive") return inactiveCount.value;
+  return items.value.length;
+}
 const remaining = computed(() =>
   Math.max(0, MAX_PER_KIND - items.value.length),
 );
 const dialogTitle = computed(() =>
   editingId.value ? `编辑${kindMeta.value.label}` : `上传${kindMeta.value.label}`,
+);
+const dialogSubtitle = computed(() =>
+  editingId.value
+    ? "修改后立即同步到用户端"
+    : `还可上传 ${remaining.value} 张`,
+);
+const dialogWidth = computed(() => {
+  if (editingId.value) return "580px";
+  if (pendingUploads.value.length > 4) return "min(880px, 92vw)";
+  if (pendingUploads.value.length) return "min(720px, 92vw)";
+  return "560px";
+});
+const dialogNestedScroll = computed(
+  () => !editingId.value && pendingUploads.value.length > 4,
 );
 const dialogConfirmText = computed(() => {
   if (editingId.value) return "保存素材";
@@ -264,19 +289,6 @@ function clearFilters() {
   search.value = "";
   statusFilter.value = "all";
   sortMode.value = "manual";
-}
-
-function formatItemTime(value?: string) {
-  if (!value) return "暂无更新时间";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "暂无更新时间";
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).format(date);
 }
 
 function openCreate() {
@@ -679,25 +691,34 @@ onBeforeUnmount(() => {
           :prefix-icon="Search"
           clearable
           class="catalog-search"
-          placeholder="搜索名称、品类或排序"
+          placeholder="搜索名称或品类"
         />
-        <el-select v-model="statusFilter" class="toolbar-select is-short" aria-label="上架状态">
-          <el-option label="全部状态" value="all" />
-          <el-option label="已上架" value="active" />
-          <el-option label="已下架" value="inactive" />
-        </el-select>
+        <div class="catalog-status-pills" role="tablist" aria-label="上架状态">
+          <button
+            v-for="item in STATUS_FILTERS"
+            :key="item.value"
+            type="button"
+            role="tab"
+            class="catalog-status-pills__item"
+            :class="{ 'is-active': statusFilter === item.value }"
+            :aria-selected="statusFilter === item.value"
+            @click="statusFilter = item.value"
+          >
+            {{ item.label }}
+            <em class="tnum">{{ statusCount(item.value) }}</em>
+          </button>
+        </div>
         <el-select v-model="sortMode" class="toolbar-select is-short" aria-label="素材排序">
           <el-option label="手动排序" value="manual" />
           <el-option label="最近更新" value="newest" />
           <el-option label="按名称" value="name" />
         </el-select>
         <el-button v-if="hasFilters" @click="clearFilters">重置</el-button>
-        <span class="catalog-result-count">{{ visibleItems.length }} / {{ items.length }} 张</span>
       </div>
       <div class="library-toolbar__actions">
         <el-popover placement="bottom-end" :width="292" trigger="click">
           <template #reference>
-            <el-button :icon="Setting">压缩 {{ compressionPercent }}%</el-button>
+            <el-button :icon="Setting">压缩</el-button>
           </template>
           <div class="catalog-compression-settings">
             <div class="catalog-compression-settings__heading">
@@ -759,14 +780,6 @@ onBeforeUnmount(() => {
 
       <main class="catalog-content">
         <div class="catalog-content__scroll">
-          <header class="catalog-heading">
-            <div>
-              <strong>{{ kindMeta.label }}</strong>
-              <span>{{ activeCount }} 张已上架</span>
-            </div>
-            <p>{{ kindMeta.hint }}</p>
-          </header>
-
           <div v-if="loadError" class="catalog-error">
             <el-icon><ShoppingBag /></el-icon>
             <div>
@@ -817,14 +830,13 @@ onBeforeUnmount(() => {
                       @change="toggleActive(item, Boolean($event))"
                     />
                   </header>
-                  <div class="catalog-card__meta">
+                  <footer class="catalog-card__footer">
                     <span v-if="item.apparel">{{ item.apparel }}</span>
-                    <small>{{ formatItemTime(item.updatedAt || item.createdAt) }}</small>
                     <div class="catalog-card__actions">
-                      <el-button link type="primary" @click="openEdit(item)">编辑</el-button>
-                      <el-button link type="danger" @click="removeItem(item)">删除</el-button>
+                      <el-button size="small" text @click="openEdit(item)">编辑</el-button>
+                      <el-button size="small" text type="danger" @click="removeItem(item)">删除</el-button>
                     </div>
-                  </div>
+                  </footer>
                 </div>
               </article>
             </div>
@@ -863,10 +875,10 @@ onBeforeUnmount(() => {
     <AdminDialog
       v-model="dialogOpen"
       :title="dialogTitle"
-      :subtitle="editingId ? kindMeta.hint : `可一次选择多张，当前分类还能上传 ${remaining} 张`"
-      :icon="ShoppingBag"
-      :width="editingId ? '520px' : 'min(1360px, 96vw)'"
-      :nested-scroll="!editingId"
+      :subtitle="dialogSubtitle"
+      :icon="kindMeta.icon"
+      :width="dialogWidth"
+      :nested-scroll="dialogNestedScroll"
       panel-class="catalog-upload-dialog"
       :confirm-loading="saving"
       :confirm-disabled="saving || compressing"
@@ -881,13 +893,18 @@ onBeforeUnmount(() => {
       <el-form
         label-position="top"
         class="catalog-form"
-        :class="{ 'is-create': !editingId }"
+        :class="{
+          'is-create': !editingId,
+          'is-edit': Boolean(editingId),
+          'has-files': !editingId && pendingUploads.length,
+        }"
       >
-        <div class="catalog-form__meta">
+        <div class="catalog-form__fields">
           <el-form-item
             v-if="editingId || !pendingUploads.length"
             :label="`${kindMeta.label}名称`"
             required
+            class="is-name"
           >
             <el-input
               v-model="form.label"
@@ -896,14 +913,12 @@ onBeforeUnmount(() => {
               :placeholder="`例如：${kind === 'model' ? '东亚女性' : kind === 'scene' ? '纯色棚拍' : kind === 'hand' ? '自然肤色右手' : '白色衬衫'}`"
             />
           </el-form-item>
-          <el-form-item v-else :label="`已选${kindMeta.label}`">
-            <div class="catalog-form__count">
-              <strong>{{ pendingUploads.length }}</strong>
-              <span>张，还可再传 {{ Math.max(0, remaining - pendingUploads.length) }} 张</span>
-            </div>
-          </el-form-item>
-          <el-form-item v-if="kind === 'garment'" label="衣服类型">
-            <el-select v-model="form.apparel">
+          <div v-else class="catalog-form__count">
+            <strong class="tnum">{{ pendingUploads.length }}</strong>
+            <span>张已选</span>
+          </div>
+          <el-form-item v-if="kind === 'garment'" label="衣服类型" class="is-compact">
+            <el-select v-model="form.apparel" style="width: 120px">
               <el-option
                 v-for="option in APPAREL_OPTIONS"
                 :key="option"
@@ -912,14 +927,15 @@ onBeforeUnmount(() => {
               />
             </el-select>
           </el-form-item>
-          <el-form-item v-if="editingId" label="排序">
-            <el-input-number v-model="form.sort" :min="0" :max="9999" />
+          <el-form-item v-if="editingId" label="排序" class="is-compact">
+            <el-input-number v-model="form.sort" :min="0" :max="9999" controls-position="right" />
           </el-form-item>
-          <el-form-item label="上架">
+          <el-form-item label="上架" class="is-switch">
             <el-switch v-model="form.active" />
           </el-form-item>
         </div>
-        <el-form-item :label="editingId ? '更换图片（可选）' : '图片'" required>
+
+        <div class="catalog-form__media">
           <div v-if="!editingId && pendingUploads.length" class="catalog-pending">
             <article v-for="item in pendingUploads" :key="item.key" class="catalog-pending__item">
               <div class="catalog-pending__thumb">
@@ -939,7 +955,6 @@ onBeforeUnmount(() => {
             <label v-if="remaining - pendingUploads.length > 0" class="catalog-pending__add">
               <el-icon><Plus /></el-icon>
               继续添加
-              <small>还可再选 {{ remaining - pendingUploads.length }} 张</small>
               <input
                 type="file"
                 multiple
@@ -949,12 +964,12 @@ onBeforeUnmount(() => {
               />
             </label>
           </div>
-          <label v-else v-loading="compressing" class="catalog-file">
+          <label v-else v-loading="compressing" class="catalog-file" :class="{ 'has-image': Boolean(createPreview) }">
             <img v-if="createPreview" :src="createPreview" alt="" />
             <span v-else>
-              <el-icon :size="20"><Upload /></el-icon>
-              {{ editingId ? "选择 PNG / JPG / WebP" : "选择一张或多张 PNG / JPG / WebP" }}
-              <small>超过 1MB 时转 WebP，目标 {{ compressionPercent }}%</small>
+              <i><el-icon><Upload /></el-icon></i>
+              <strong>{{ editingId ? "点击更换图片" : "点击或拖入图片" }}</strong>
+              <small>PNG / JPG / WebP{{ editingId ? "" : "，可多选" }}</small>
             </span>
             <input
               type="file"
@@ -964,7 +979,7 @@ onBeforeUnmount(() => {
               @change="onPickCreateFiles"
             />
           </label>
-        </el-form-item>
+        </div>
       </el-form>
     </AdminDialog>
 
@@ -1076,7 +1091,7 @@ onBeforeUnmount(() => {
   </div>
 </template>
 
-<style scoped>
+<style scoped lang="scss">
 .ecommerce-catalog-page {
   --library-border: var(--border);
   box-sizing: border-box;
@@ -1086,7 +1101,7 @@ onBeforeUnmount(() => {
   grid-template-rows: auto minmax(0, 1fr);
   gap: 12px;
   overflow: hidden;
-  padding: 16px 18px;
+  padding: 0;
   background: var(--bg);
 }
 
@@ -1094,10 +1109,9 @@ onBeforeUnmount(() => {
 .library-toolbar__filters,
 .library-toolbar__actions,
 .library-toolbar__buttons,
-.catalog-heading > div,
 .catalog-error,
 .catalog-card__body header,
-.catalog-card__meta,
+.catalog-card__footer,
 .catalog-card__actions,
 .catalog-compression-settings__heading,
 .catalog-compression-settings__value,
@@ -1123,9 +1137,62 @@ onBeforeUnmount(() => {
 }
 
 .catalog-search {
-  width: min(260px, 100%);
+  width: min(240px, 100%);
   flex: 1 1 180px;
-  max-width: 280px;
+  max-width: 260px;
+}
+
+.catalog-status-pills {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+}
+
+.catalog-status-pills__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--ink-2);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+
+  em {
+    color: var(--ink-3);
+    font-size: 11px;
+    font-style: normal;
+    font-weight: 700;
+  }
+
+  &:hover:not(.is-active) {
+    color: var(--ink);
+    background: var(--surface);
+  }
+
+  &.is-active {
+    background: var(--accent);
+    color: var(--accent-on);
+
+    em {
+      color: color-mix(in srgb, var(--accent-on) 72%, transparent);
+    }
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
 }
 
 .toolbar-select {
@@ -1137,12 +1204,6 @@ onBeforeUnmount(() => {
   width: 118px;
 }
 
-.catalog-result-count {
-  color: var(--ink-3);
-  font: 500 11px/1 ui-monospace, monospace;
-  white-space: nowrap;
-}
-
 .library-toolbar__actions {
   flex: 0 0 auto;
   flex-wrap: nowrap;
@@ -1151,12 +1212,21 @@ onBeforeUnmount(() => {
 
 .library-toolbar__buttons {
   flex: 0 0 auto;
-  gap: 8px;
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
   white-space: nowrap;
-}
 
-.library-toolbar__buttons :deep(.el-button) {
-  margin-left: 0 !important;
+  :deep(.el-button) {
+    margin: 0;
+    height: 32px;
+  }
+
+  :deep(.el-button + .el-button) {
+    margin-left: 0 !important;
+  }
 }
 
 .items-workspace {
@@ -1178,7 +1248,7 @@ onBeforeUnmount(() => {
   overscroll-behavior: contain;
   padding: 14px 10px;
   border: 1px solid var(--library-border);
-  border-radius: 16px;
+  border-radius: var(--radius-card);
   background: var(--surface);
   box-shadow: var(--shadow-sm);
 }
@@ -1256,8 +1326,10 @@ onBeforeUnmount(() => {
 }
 
 .catalog-capacity strong {
-  color: var(--ink-2);
-  font: 600 11px/1 ui-monospace, monospace;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
 }
 
 .catalog-content {
@@ -1267,7 +1339,7 @@ onBeforeUnmount(() => {
   grid-template-rows: minmax(0, 1fr);
   overflow: hidden;
   border: 1px solid var(--library-border);
-  border-radius: 16px;
+  border-radius: var(--radius-card);
   background: var(--surface);
   box-shadow: var(--shadow-sm);
 }
@@ -1282,43 +1354,6 @@ onBeforeUnmount(() => {
   padding: 14px;
 }
 
-.catalog-heading {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-  margin-bottom: 14px;
-}
-
-.catalog-heading > div {
-  gap: 8px;
-  min-width: 0;
-}
-
-.catalog-heading strong {
-  min-width: 0;
-  overflow: hidden;
-  font-size: 16px;
-  font-weight: 700;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.catalog-heading span {
-  flex: 0 0 auto;
-  padding: 3px 7px;
-  color: var(--accent-ink);
-  border-radius: 999px;
-  background: var(--accent-soft);
-  font-size: 11px;
-  font-weight: 650;
-}
-
-.catalog-heading p {
-  margin: 0;
-  color: var(--ink-2);
-  font-size: 12px;
-}
-
 .catalog-error {
   justify-content: flex-start;
   gap: 12px;
@@ -1326,7 +1361,7 @@ onBeforeUnmount(() => {
   padding: 24px;
   color: var(--ink-2);
   border: 1px dashed var(--border-strong);
-  border-radius: 14px;
+  border-radius: var(--radius-card);
 }
 
 .catalog-error > div {
@@ -1355,14 +1390,14 @@ onBeforeUnmount(() => {
   display: grid;
   min-width: 0;
   overflow: hidden;
-  border: 1px solid var(--library-border);
-  border-radius: 14px;
-  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface-2);
   box-sizing: border-box;
 }
 
 .catalog-card:hover {
-  border-color: color-mix(in srgb, var(--accent) 28%, var(--library-border));
+  border-color: var(--border-strong);
   box-shadow: var(--shadow-sm);
 }
 
@@ -1376,7 +1411,7 @@ onBeforeUnmount(() => {
   width: 100%;
   aspect-ratio: 4 / 5;
   overflow: hidden;
-  background: var(--surface-2);
+  background: var(--surface);
   cursor: zoom-in;
 }
 
@@ -1390,18 +1425,18 @@ onBeforeUnmount(() => {
 .catalog-card__status {
   position: absolute;
   inset: 8px auto auto 8px;
-  padding: 3px 7px;
+  padding: 3px 8px;
   color: var(--ink-2);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: color-mix(in srgb, var(--surface) 88%, transparent);
   backdrop-filter: blur(8px);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 650;
 }
 
 .catalog-card__status.is-active {
-  color: var(--accent-ink);
-  background: color-mix(in srgb, var(--accent-soft) 88%, transparent);
+  color: var(--success);
+  background: color-mix(in srgb, var(--success-soft) 88%, transparent);
 }
 
 .catalog-card__replace {
@@ -1416,9 +1451,9 @@ onBeforeUnmount(() => {
 
 .catalog-card__body {
   display: grid;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
-  padding: 10px;
+  padding: 10px 12px 8px;
 }
 
 .catalog-card__body header {
@@ -1430,39 +1465,29 @@ onBeforeUnmount(() => {
 .catalog-card__body strong {
   min-width: 0;
   overflow: hidden;
+  color: var(--ink);
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 700;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.catalog-card__meta {
+.catalog-card__footer {
   justify-content: space-between;
   gap: 6px;
   min-width: 0;
+  min-height: 28px;
   color: var(--ink-3);
-}
-
-.catalog-card__meta > span {
-  flex: 0 0 auto;
-  padding: 2px 6px;
-  color: var(--ink-2);
-  border-radius: 6px;
-  background: var(--surface-3);
-  font-size: 10px;
-}
-
-.catalog-card__meta small {
-  min-width: 0;
-  overflow: hidden;
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: 12px;
 }
 
 .catalog-card__actions {
   margin-left: auto;
   gap: 0;
+
+  .el-button + .el-button {
+    margin-left: 0;
+  }
 }
 
 .library-empty {
@@ -1513,29 +1538,62 @@ onBeforeUnmount(() => {
 
 .catalog-form {
   display: grid;
-  gap: 4px;
+  gap: 14px;
   min-width: 0;
 }
 
-.catalog-form.is-create {
+.catalog-form.is-edit {
+  grid-template-columns: 176px minmax(0, 1fr);
+  align-items: start;
+}
+
+.catalog-form.is-edit .catalog-form__media {
+  order: -1;
+}
+
+.catalog-form.has-files {
   flex: 1 1 auto;
   min-height: 0;
   grid-template-rows: auto minmax(0, 1fr);
 }
 
-.catalog-form__meta {
-  display: grid;
-  gap: 4px;
+.catalog-form.has-files .catalog-pending {
+  max-height: none;
+  height: 100%;
+}
+
+.catalog-form__fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px 12px;
   min-width: 0;
 }
 
-.catalog-form.is-create .catalog-form__meta {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px 16px;
+.catalog-form__fields :deep(.el-form-item) {
+  margin-bottom: 0;
 }
 
-.catalog-form__meta :deep(.el-form-item) {
-  margin-bottom: 8px;
+.catalog-form__fields .is-name {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.catalog-form__fields .is-compact,
+.catalog-form__fields .is-switch {
+  flex: 0 0 auto;
+}
+
+.catalog-form.is-edit .catalog-form__fields {
+  display: grid;
+  gap: 10px;
+}
+
+.catalog-form.is-edit .is-name,
+.catalog-form.is-edit .is-compact,
+.catalog-form.is-edit .is-switch {
+  flex: none;
+  width: 100%;
 }
 
 .catalog-form__count {
@@ -1543,24 +1601,19 @@ onBeforeUnmount(() => {
   align-items: baseline;
   gap: 6px;
   min-height: 32px;
+  margin-right: auto;
   color: var(--ink-2);
   font-size: 13px;
 }
 
 .catalog-form__count strong {
-  color: var(--accent-ink);
-  font: 700 18px/1 ui-monospace, monospace;
+  color: var(--ink);
+  font-size: 20px;
+  font-weight: 700;
 }
 
-.catalog-form.is-create :deep(.el-form-item:last-child) {
-  display: flex;
-  min-height: 0;
-  flex-direction: column;
-  margin-bottom: 0;
-}
-
-.catalog-form.is-create :deep(.el-form-item:last-child .el-form-item__content) {
-  flex: 1 1 auto;
+.catalog-form__media {
+  min-width: 0;
   min-height: 0;
 }
 
@@ -1573,46 +1626,69 @@ onBeforeUnmount(() => {
   overflow: hidden;
   color: var(--ink-2);
   border: 1px dashed var(--border-strong);
-  border-radius: 12px;
+  border-radius: 16px;
   background: var(--surface-2);
   cursor: pointer;
 }
 
 .catalog-file {
-  height: 220px;
+  min-height: 168px;
 }
 
-.catalog-form.is-create .catalog-file {
-  height: min(320px, 42vh);
+.catalog-form.is-edit .catalog-file {
+  min-height: 0;
+  aspect-ratio: 4 / 5;
+}
+
+.catalog-file.has-image {
+  background: var(--surface);
+  border-style: solid;
+  border-color: var(--border);
 }
 
 .catalog-file:hover,
 .catalog-pending__add:hover {
   color: var(--ink);
   border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent-soft) 55%, var(--surface-2));
 }
 
 .catalog-file > span,
 .catalog-pending__add {
+  display: grid;
+  justify-items: center;
   gap: 6px;
   font-size: 13px;
+  text-align: center;
 }
 
-.catalog-file > span {
+.catalog-file > span i {
   display: grid;
+  width: 40px;
+  height: 40px;
   place-items: center;
+  border-radius: 12px;
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+  font-style: normal;
+}
+
+.catalog-file > span strong {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .catalog-file > span small,
 .catalog-pending__add small {
   color: var(--ink-3);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .catalog-file img {
   width: 100%;
   height: 100%;
-  object-fit: contain;
+  object-fit: cover;
 }
 
 .catalog-file input,
@@ -1625,15 +1701,14 @@ onBeforeUnmount(() => {
 
 .catalog-pending {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
   align-content: start;
-  gap: 12px;
+  gap: 10px;
   min-width: 0;
   min-height: 0;
-  max-height: min(560px, calc(100dvh - 280px));
+  max-height: min(480px, calc(100dvh - 280px));
   overflow-x: hidden;
   overflow-y: auto;
-  padding-right: 2px;
 }
 
 .catalog-pending__item {
@@ -1644,7 +1719,7 @@ onBeforeUnmount(() => {
   min-width: 0;
   padding: 8px;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 14px;
   background: var(--surface-2);
 }
 
@@ -1652,7 +1727,7 @@ onBeforeUnmount(() => {
   position: relative;
   overflow: hidden;
   aspect-ratio: 4 / 5;
-  border-radius: 8px;
+  border-radius: 10px;
   background: var(--surface);
 }
 
@@ -1685,8 +1760,6 @@ onBeforeUnmount(() => {
   min-height: 0;
   aspect-ratio: 4 / 5;
   align-content: center;
-  justify-items: center;
-  text-align: center;
 }
 
 .catalog-sort-panel {
@@ -1850,32 +1923,25 @@ onBeforeUnmount(() => {
 
 @media (max-width: 1200px) {
   .catalog-pending {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
   }
 }
 
 @media (max-width: 900px) {
-  .catalog-form.is-create .catalog-form__meta,
-  .catalog-pending {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .catalog-form.is-edit {
+    grid-template-columns: 1fr;
+  }
+
+  .catalog-form.is-edit .catalog-form__media {
+    order: 0;
+  }
+
+  .catalog-form.is-edit .catalog-file {
+    max-height: 220px;
   }
 }
 
 @media (max-width: 720px) {
-  .ecommerce-catalog-page {
-    padding: 12px;
-  }
-
-  .catalog-form.is-create .catalog-form__meta,
-  .catalog-pending {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .library-toolbar__actions {
-    width: 100%;
-    flex-wrap: wrap;
-  }
-
   .catalog-search,
   .toolbar-select {
     width: 100%;

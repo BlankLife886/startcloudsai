@@ -19,6 +19,11 @@ export type CanvasCloudProjectSummary = {
     updatedAt: string;
 };
 
+/** A completed cloud save only needs another pass when local edits are still pending. */
+export function canvasProjectNeedsCloudRetry(project: Pick<CanvasProjectSnapshot, "pendingSync"> | null | undefined) {
+    return project?.pendingSync === true;
+}
+
 /**
  * Merge the cloud project list (summaries only, no documents) with the locally
  * cached full projects:

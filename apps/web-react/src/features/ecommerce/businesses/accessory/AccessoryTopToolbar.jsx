@@ -90,9 +90,6 @@ export function AccessoryTopToolbar({
   modelId,
   modelOptions,
   onChangeModelId,
-  pack,
-  packOptions,
-  onChangePack,
   category,
   categoryOptions,
   onChangeCategory,
@@ -119,9 +116,6 @@ export function AccessoryTopToolbar({
   market,
   marketOptions,
   onChangeMarket,
-  aspectRatio,
-  ratioOptions,
-  onChangeRatio,
   productName,
   onChangeProductName,
   sku,
@@ -167,24 +161,6 @@ export function AccessoryTopToolbar({
           disabled={disabled}
         />
       </label>
-
-      <Menu
-        id="pack"
-        label="交付任务"
-        summary={selected(packOptions, pack).label || "请选择"}
-        active={activeMenu === "pack"}
-        onToggle={setActiveMenu}
-        disabled={disabled}
-        badge={`${selected(packOptions, pack).shotIds?.length || 1}张`}
-      >
-        <OptionButtons
-          label="选择饰品出图任务"
-          value={pack}
-          options={packOptions}
-          onChange={onChangePack}
-          disabled={disabled}
-        />
-      </Menu>
 
       <Menu
         id="category"
@@ -313,16 +289,6 @@ export function AccessoryTopToolbar({
             />
           </label>
         </div>
-        <OptionButtons
-          label="选择饰品画面比例"
-          value={aspectRatio}
-          options={ratioOptions.map((item) => ({
-            id: item.value,
-            label: item.label,
-          }))}
-          onChange={onChangeRatio}
-          disabled={disabled}
-        />
       </Menu>
 
       <Menu

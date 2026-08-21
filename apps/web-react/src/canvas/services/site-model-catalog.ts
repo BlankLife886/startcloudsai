@@ -1,5 +1,5 @@
 import { starcloudsRequest } from "@/services/starclouds-api";
-import { defaultCanvasAgentPricing, type CanvasAgentPricing, type ChannelModel, type ModelChannel } from "@/stores/use-config-store";
+import { MODEL_REASONING_EFFORTS, defaultCanvasAgentPricing, type CanvasAgentPricing, type ChannelModel, type ModelChannel, type ModelReasoningEffort, type ModelReasoningPrice } from "@/stores/use-config-store";
 
 type SiteModel = {
     id?: unknown;
@@ -17,6 +17,9 @@ type SiteModel = {
     qualities?: unknown;
     transparentBackground?: unknown;
     maxReferenceImages?: unknown;
+    supportedReasoningEfforts?: unknown;
+    defaultReasoningEffort?: unknown;
+    reasoningPrices?: unknown;
     pricing?: {
         points?: unknown;
         standardPoints?: unknown;
@@ -145,7 +148,38 @@ function mapSiteModel(raw: SiteModel, capability: "image" | "text"): ChannelMode
         qualities: stringList(raw.qualities),
         transparentBackground: raw.transparentBackground !== false,
         maxReferenceImages: finiteNumber(raw.maxReferenceImages),
+        supportedReasoningEfforts: reasoningEffortList(raw.supportedReasoningEfforts),
+        defaultReasoningEffort: reasoningEffort(raw.defaultReasoningEffort),
+        reasoningPrices: reasoningPriceMap(raw.reasoningPrices),
     };
+}
+
+function reasoningEffort(value: unknown): ModelReasoningEffort | undefined {
+    const normalized = String(value || "").trim().toLowerCase() as ModelReasoningEffort;
+    return MODEL_REASONING_EFFORTS.includes(normalized) ? normalized : undefined;
+}
+
+function reasoningEffortList(value: unknown) {
+    if (!Array.isArray(value)) return undefined;
+    const efforts = value.map(reasoningEffort).filter((item): item is ModelReasoningEffort => Boolean(item));
+    return efforts.length ? [...new Set(efforts)] : undefined;
+}
+
+function reasoningPriceMap(value: unknown): Partial<Record<ModelReasoningEffort, ModelReasoningPrice>> | undefined {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+    const prices: Partial<Record<ModelReasoningEffort, ModelReasoningPrice>> = {};
+    for (const [key, raw] of Object.entries(value)) {
+        const effort = reasoningEffort(key);
+        if (!effort || !raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+        const source = raw as Record<string, unknown>;
+        prices[effort] = {
+            assistantStandardPricePoints: finiteNumber(source.assistantStandardPricePoints),
+            assistantPricePoints: finiteNumber(source.assistantPricePoints),
+            canvasAgentStandardPricePoints: finiteNumber(source.canvasAgentStandardPricePoints),
+            canvasAgentPricePoints: finiteNumber(source.canvasAgentPricePoints),
+        };
+    }
+    return Object.keys(prices).length ? prices : undefined;
 }
 
 function stringList(value: unknown) {

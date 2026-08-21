@@ -1,4 +1,4 @@
-import { ApiError, apiDelete, apiGet, apiPatch, apiPost, buildApiPath } from './apiClient'
+import { ApiError, apiDelete, apiGet, apiPatch, apiPost, apiRequest, buildApiPath } from './apiClient'
 
 // 旧的客户端直连管线（streamAssistantChat / classifyAssistantIntent / generateAssistantImage）
 // 已由服务端 runs 管线取代并删除：意图路由与生图统一走 /assistant/runs。
@@ -75,6 +75,55 @@ export async function importAssistantConversations(conversations, { signal } = {
 
 export async function createAssistantRun(input, { signal } = {}) {
   return apiPost('/assistant/runs', input, { signal, fallbackMessage: '任务创建失败' })
+}
+
+export async function uploadAssistantFile(file, { signal } = {}) {
+  if (!file) throw new Error('请先选择文档')
+  const formData = new FormData()
+  formData.append('file', file, file.name || `document-${Date.now()}`)
+  const data = await apiRequest('/assistant/files', {
+    method: 'POST', body: formData, signal, fallbackMessage: '文档上传失败',
+  })
+  return data?.file || data
+}
+
+export async function getAssistantFile(id, { signal } = {}) {
+  const data = await apiGet(`/assistant/files/${encodeURIComponent(id)}`, {
+    signal, fallbackMessage: '文档状态读取失败',
+  })
+  return data?.file || data
+}
+
+export async function deleteAssistantFile(id) {
+  return apiDelete(`/assistant/files/${encodeURIComponent(id)}`, {
+    fallbackMessage: '删除文档失败',
+  })
+}
+
+export async function waitForAssistantFile(
+  id,
+  { signal, onUpdate, intervalMs = 600, maxWaitMs = 5 * 60 * 1000 } = {},
+) {
+  const startedAt = Date.now()
+  for (;;) {
+    if (signal?.aborted) throw abortError()
+    const file = await getAssistantFile(id, { signal })
+    onUpdate?.(file)
+    if (file?.status === 'ready') return file
+    if (file?.status === 'failed') throw new ApiError(file.errorMessage || '文档解析失败', {
+      code: file.errorCode || 'assistant_file_failed',
+    })
+    if (Date.now() - startedAt > maxWaitMs) {
+      throw new ApiError('文档仍在后台解析，请稍后重试', { code: 'assistant_file_timeout' })
+    }
+    await new Promise((resolve, reject) => {
+      const timer = window.setTimeout(resolve, intervalMs)
+      signal?.addEventListener('abort', () => {
+        window.clearTimeout(timer)
+        reject(abortError())
+      }, { once: true })
+    })
+  }
 }
 
 /**

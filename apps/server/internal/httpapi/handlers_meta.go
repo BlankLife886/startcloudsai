@@ -71,12 +71,15 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 	chatItem := func(selection modelconfig.Selection, isDefault bool) gin.H {
 		model := selection.Model
 		price := modelconfig.EffectivePrice(model)
+		reasoningEfforts, defaultReasoningEffort, reasoningPrices := reasoningModelPayload(model)
 		return gin.H{
 			"id": model.ID, "model": model.ID, "label": model.Name, "name": model.Name,
 			"description": model.Description, "provider": selection.Provider.Name,
 			"providerId": selection.Provider.ID, "providerName": selection.Provider.Name,
 			"pricePoints": price, "standardPricePoints": model.PriceCents,
 			"discountPricePoints": model.DiscountPriceCents, "default": isDefault,
+			"supportedReasoningEfforts": reasoningEfforts, "defaultReasoningEffort": defaultReasoningEffort,
+			"reasoningPrices": reasoningPrices,
 		}
 	}
 	toolItem := func(selection modelconfig.Selection) gin.H {
@@ -175,10 +178,6 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 		"ai.infiniteCanvas": gin.H{"enabled": len(canvasImageModels)+len(canvasTextModels) > 0, "config": gin.H{
 			"imageModels": canvasImageModels,
 			"textModels":  canvasTextModels,
-			"agentPricing": gin.H{
-				"standardMultiplier": canvasAgentStandardPriceMultiple,
-				"deepMultiplier":     canvasAgentDeepPriceMultiple,
-			},
 		}},
 	}
 	ok(c, gin.H{

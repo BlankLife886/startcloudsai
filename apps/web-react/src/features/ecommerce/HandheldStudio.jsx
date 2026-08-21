@@ -744,7 +744,7 @@ function handheldEarliestStartedAt(shots = []) {
   return timestamps.length ? Math.min(...timestamps) : 0;
 }
 
-function HandheldGeneratingStage({
+export function HandheldGeneratingStage({
   productUrl = "",
   sceneImage = "",
   label = "",
@@ -815,7 +815,6 @@ function HandheldGeneratingStage({
       <div className="handheld-generating__copy">
         <em>正在生成</em>
         <strong key={seconds}>{formatSeconds(seconds)}</strong>
-        <small>{label || "手持商品图"}</small>
       </div>
     </div>
   );
@@ -985,7 +984,7 @@ function HandheldFlowGuides({ rootRef, revision, running = false }) {
   );
 }
 
-function HandheldRefCard({
+export function HandheldRefCard({
   className = "",
   tag,
   image = "",
@@ -2081,12 +2080,16 @@ export function HandheldStudio({
                               />
                               <small>重试</small>
                             </span>
-                          ) : (
+                          ) : thumbPending ? (
                             <span className="handheld-frame__thumb-pending">
                               <i
                                 className="handheld-frame__thumb-spin"
                                 aria-hidden="true"
                               />
+                            </span>
+                          ) : (
+                            <span className="handheld-frame__thumb-empty">
+                              {String(thumbIndex + 1).padStart(2, "0")}
                             </span>
                           )}
                         </button>

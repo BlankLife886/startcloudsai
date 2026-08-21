@@ -72,6 +72,20 @@ export async function generateCommerceProductBrief(payload, { signal } = {}) {
   })
 }
 
+export async function generateAplusPlan(payload, { signal } = {}) {
+  return apiPost('/commerce/aplus-plans', payload, {
+    signal,
+    fallbackMessage: 'A+ 结构分析失败',
+  })
+}
+
+export async function getAplusCatalog({ signal } = {}) {
+  return apiGet('/commerce/aplus-catalog', {
+    signal,
+    fallbackMessage: 'A+ 知识库读取失败',
+  })
+}
+
 export async function listCommerceAssetReviews({ status = '', limit = 100, signal } = {}) {
   const data = await apiGet('/commerce/reviews', {
     query: { status, limit },

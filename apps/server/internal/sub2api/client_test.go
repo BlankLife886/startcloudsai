@@ -35,6 +35,31 @@ func TestRetryableOnAlternateRouteClassifiesRouteFailures(t *testing.T) {
 	}
 }
 
+func TestFailureCodeClassifiesProviderFailures(t *testing.T) {
+	tests := []struct {
+		err  error
+		want string
+	}{
+		{context.Canceled, "assistant_interrupted"},
+		{context.DeadlineExceeded, "upstream_timeout"},
+		{errChatStreamIdle, "upstream_timeout"},
+		{errChatStreamTruncated, "output_limit_reached"},
+		{errChatStreamFiltered, "content_filtered"},
+		{errChatStreamIncomplete, "upstream_stream_incomplete"},
+		{errChatStreamEmpty, "upstream_empty_response"},
+		{&UpstreamError{Status: http.StatusUnauthorized}, "upstream_auth_failed"},
+		{&UpstreamError{Status: http.StatusTooManyRequests}, "upstream_rate_limited"},
+		{&UpstreamError{Status: http.StatusBadGateway}, "upstream_unavailable"},
+		{&UpstreamError{Status: http.StatusUnprocessableEntity}, "upstream_rejected"},
+		{errors.New("other"), "assistant_run_failed"},
+	}
+	for _, test := range tests {
+		if got := FailureCode(test.err); got != test.want {
+			t.Errorf("FailureCode(%v) = %q, want %q", test.err, got, test.want)
+		}
+	}
+}
+
 func TestApplyChatOutputLimitUsesModelCompatibleField(t *testing.T) {
 	tests := []struct {
 		model   string
@@ -66,7 +91,7 @@ func TestChatStreamUsesOpenAIContract(t *testing.T) {
 		}
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		if body["model"] != "gpt-test" || body["stream"] != true || body["max_tokens"] != float64(2048) {
+		if body["model"] != "gpt-test" || body["stream"] != true || body["max_tokens"] != float64(2048) || body["reasoning_effort"] != "high" {
 			t.Fatalf("body = %#v", body)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -78,7 +103,7 @@ func TestChatStreamUsesOpenAIContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := client.WithMaxOutputTokens(2048).ChatStream(
+	resp, err := client.WithMaxOutputTokens(2048).WithReasoningEffort(" HIGH ").ChatStream(
 		context.Background(), []Message{{Role: "user", Content: "hello"}},
 	)
 	if err != nil {
@@ -331,6 +356,12 @@ func TestChatAgentWithToolsSupportsRequiredChoice(t *testing.T) {
 		if body["tool_choice"] != RequiredToolChoice {
 			t.Fatalf("tool_choice = %#v", body["tool_choice"])
 		}
+		tools, _ := body["tools"].([]any)
+		declaration, _ := tools[0].(map[string]any)
+		function, _ := declaration["function"].(map[string]any)
+		if function["strict"] != true {
+			t.Fatalf("strict tool declaration = %#v", declaration)
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"canvas_reply","arguments":"{\"content\":\"你好\"}"}}]}}]}`+"\n\n")
 		fmt.Fprint(w, "data: [DONE]\n\n")
@@ -339,7 +370,7 @@ func TestChatAgentWithToolsSupportsRequiredChoice(t *testing.T) {
 
 	client, _ := New(server.URL, "test-key", "gpt-test", "image-test", 30)
 	result, err := client.ChatAgentWithTools(context.Background(), []Message{{Role: "user", Content: "你好"}}, nil,
-		[]FunctionTool{{Name: "canvas_reply", Parameters: map[string]any{"type": "object"}}}, RequiredToolChoice, nil)
+		[]FunctionTool{{Name: "canvas_reply", Parameters: map[string]any{"type": "object"}, Strict: true}}, RequiredToolChoice, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -385,6 +416,35 @@ func TestChatAgentWithToolsSendsReasoningEffortAndReadsUsage(t *testing.T) {
 	}
 	if result.Reasoning != "真实分析" || result.ReasoningTokens != 17 {
 		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestChatAgentWithToolsOmitsEmptyReasoningEffort(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if _, exists := body["reasoning_effort"]; exists {
+			t.Fatalf("reasoning_effort must be omitted: %#v", body["reasoning_effort"])
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"canvas_reply","arguments":"{}"}}]}}]}`+"\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client, _ := New(server.URL, "test-key", "gpt-5-6", "image-test", 30)
+	_, err := client.WithReasoningEffort("  ").ChatAgentWithTools(
+		context.Background(),
+		[]Message{{Role: "user", Content: "分析画布"}},
+		nil,
+		[]FunctionTool{{Name: "canvas_reply", Parameters: map[string]any{"type": "object"}}},
+		RequiredToolChoice,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 

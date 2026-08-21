@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {
   computed,
+  nextTick,
   onBeforeUnmount,
   onMounted,
   reactive,
@@ -18,6 +19,7 @@ import { formatPoints, IMAGE_SERVICE_ROUTES, normalizePoints } from "@/utils";
 type ProviderAdapter = "openai" | "crun";
 type ModelKind = "image" | "chat" | "image_tool";
 type ImageTool = "background_remove";
+type ReasoningPriceScope = "assistant" | "canvas_agent";
 type WorkspaceKey =
   | "assistant"
   | "t2i"
@@ -51,6 +53,18 @@ interface ProviderRoute {
   enabled: boolean;
 }
 
+interface ReasoningEffortPricing {
+  assistantPriceCents: number;
+  assistantDiscountPriceCents: number | null;
+  canvasAgentPriceCents: number;
+  canvasAgentDiscountPriceCents: number | null;
+}
+
+interface ReasoningPricing {
+  defaultEffort: string;
+  efforts: Record<string, ReasoningEffortPricing>;
+}
+
 interface ModelItem {
   id: string;
   name: string;
@@ -75,6 +89,8 @@ interface ModelItem {
   maxReferenceImages: number;
   contextWindowTokens: number;
   maxOutputTokens: number;
+  supportedReasoningEfforts: string[];
+  reasoningPricing: ReasoningPricing | null;
   public: boolean;
   default: boolean;
   enabled: boolean;
@@ -133,6 +149,100 @@ const IMAGE_QUALITIES = [
 ];
 const IMAGE_OUTPUT_FORMATS = ["png", "jpeg", "webp"];
 const IMAGE_MODERATION_LEVELS = ["auto", "low"];
+const REASONING_EFFORT_LABELS: Record<string, string> = {
+  none: "关闭",
+  minimal: "极低",
+  low: "低",
+  medium: "中",
+  high: "高",
+  xhigh: "超高",
+  max: "最大",
+};
+
+function reasoningModelIs(model: string, base: string) {
+  return model === base || model.startsWith(`${base}-`);
+}
+
+function reasoningEffortsForModel(raw: string) {
+  const model = String(raw || "")
+    .trim()
+    .toLowerCase()
+    .split("/")
+    .at(-1) || "";
+  if (!model || model.includes("-chat")) return [];
+  if (reasoningModelIs(model, "gpt-5.6"))
+    return ["low", "medium", "high", "xhigh", "max"];
+  if (["gpt-5.5-pro", "gpt-5.4-pro", "gpt-5.2-pro"].some((base) => reasoningModelIs(model, base)))
+    return ["medium", "high", "xhigh"];
+  if (["gpt-5.5", "gpt-5.4", "gpt-5.2"].some((base) => reasoningModelIs(model, base)))
+    return ["low", "medium", "high", "xhigh"];
+  if (reasoningModelIs(model, "gpt-5.3-codex") || model === "codex-auto-review")
+    return ["low", "medium", "high", "xhigh"];
+  if (reasoningModelIs(model, "gpt-5.1"))
+    return ["none", "low", "medium", "high"];
+  if (["gpt-5", "gpt-5-mini", "gpt-5-nano"].includes(model))
+    return ["minimal", "low", "medium", "high"];
+  return [];
+}
+
+function defaultReasoningEffort(efforts: string[]) {
+  return efforts.includes("medium") ? "medium" : efforts[0] || "";
+}
+
+function legacyReasoningEffortPrice(
+  effort: string,
+  standard: number,
+  discount: number | null,
+): ReasoningEffortPricing {
+  const multiplier = ["high", "xhigh", "max"].includes(effort) ? 5 : 3;
+  return {
+    assistantPriceCents: normalizePoints(standard),
+    assistantDiscountPriceCents:
+      discount === null ? null : normalizePoints(discount),
+    canvasAgentPriceCents: normalizePoints(standard) * multiplier,
+    canvasAgentDiscountPriceCents:
+      discount === null ? null : normalizePoints(discount) * multiplier,
+  };
+}
+
+function normalizeReasoningPricing(
+  source: ReasoningPricing | null | undefined,
+  efforts: string[],
+  standard: number,
+  discount: number | null,
+): ReasoningPricing | null {
+  if (!efforts.length) return null;
+  const prices = Object.fromEntries(
+    efforts.map((effort) => {
+      const configured = source?.efforts?.[effort];
+      return [
+        effort,
+        configured
+          ? {
+              assistantPriceCents: normalizePoints(configured.assistantPriceCents),
+              assistantDiscountPriceCents:
+                configured.assistantDiscountPriceCents === null ||
+                configured.assistantDiscountPriceCents === undefined
+                  ? null
+                  : normalizePoints(configured.assistantDiscountPriceCents),
+              canvasAgentPriceCents: normalizePoints(configured.canvasAgentPriceCents),
+              canvasAgentDiscountPriceCents:
+                configured.canvasAgentDiscountPriceCents === null ||
+                configured.canvasAgentDiscountPriceCents === undefined
+                  ? null
+                  : normalizePoints(configured.canvasAgentDiscountPriceCents),
+            }
+          : legacyReasoningEffortPrice(effort, standard, discount),
+      ];
+    }),
+  );
+  return {
+    defaultEffort: efforts.includes(source?.defaultEffort || "")
+      ? source!.defaultEffort
+      : defaultReasoningEffort(efforts),
+    efforts: prices,
+  };
+}
 
 function normalizeAspectRatiosByResolution(
   resolutions: string[],
@@ -275,7 +385,7 @@ const autoSaveReady = ref(false);
 let autoSaveTimer: ReturnType<typeof setTimeout> | null = null;
 let saveQueued = false;
 const config = reactive<ModelConfig>({
-	version: 4,
+	version: 5,
   providers: [],
   models: [],
   workspaces: {} as Record<WorkspaceKey, WorkspaceBinding>,
@@ -329,7 +439,7 @@ const viewTabs = computed(() => [
 watch([kindFilter, modelSearch], modelPagination.reset);
 
 function hydrate(value: ModelConfig) {
-	config.version = value.version || 4;
+	config.version = value.version || 5;
   config.providers = (value.providers || []).map((provider) => ({
     ...provider,
     adapter: provider.adapter || "openai",
@@ -380,6 +490,19 @@ function hydrate(value: ModelConfig) {
       model.kind === "chat" ? Number(model.contextWindowTokens ?? 128000) : 0,
     maxOutputTokens:
       model.kind === "chat" ? Number(model.maxOutputTokens ?? 8192) : 0,
+    supportedReasoningEfforts:
+      model.kind === "chat"
+        ? reasoningEffortsForModel(model.upstreamModel)
+        : [],
+    reasoningPricing:
+      model.kind === "chat"
+        ? normalizeReasoningPricing(
+            model.reasoningPricing,
+            reasoningEffortsForModel(model.upstreamModel),
+            model.priceCents,
+            model.discountPriceCents,
+          )
+        : null,
     public: model.public !== false,
     default: model.default === true,
   }));
@@ -728,6 +851,46 @@ function aspectByResolutionParts(model: ModelItem) {
 }
 
 function modelCardHighlights(model: ModelItem) {
+  if (model.kind === "chat" && model.reasoningPricing) {
+    const efforts = model.supportedReasoningEfforts || [];
+    const label = (effort: string) =>
+      REASONING_EFFORT_LABELS[effort] || effort;
+    const effective = (standard: number, discount: number | null) =>
+      discount === null ? standard : discount;
+    return [
+      {
+        label: "推理档位",
+        value: efforts.map(label).join(" · "),
+        tags: efforts.map(label),
+      },
+      {
+        label: "AI 助手积分",
+        value: efforts
+          .map((effort) => {
+            const price = model.reasoningPricing!.efforts[effort];
+            return `${label(effort)} ${effective(price.assistantPriceCents, price.assistantDiscountPriceCents)}`;
+          })
+          .join(" · "),
+        tags: efforts.map((effort) => {
+          const price = model.reasoningPricing!.efforts[effort];
+          return `${label(effort)} ${effective(price.assistantPriceCents, price.assistantDiscountPriceCents)}`;
+        }),
+      },
+      {
+        label: "画布 Agent 积分",
+        value: efforts
+          .map((effort) => {
+            const price = model.reasoningPricing!.efforts[effort];
+            return `${label(effort)} ${effective(price.canvasAgentPriceCents, price.canvasAgentDiscountPriceCents)}`;
+          })
+          .join(" · "),
+        tags: efforts.map((effort) => {
+          const price = model.reasoningPricing!.efforts[effort];
+          return `${label(effort)} ${effective(price.canvasAgentPriceCents, price.canvasAgentDiscountPriceCents)}`;
+        }),
+      },
+    ];
+  }
   if (model.kind !== "image") return [];
   const qualities = (model.qualities || []).map((item) => qualityLabel(item));
   const formats = (model.outputFormats || []).map((item) =>
@@ -1062,6 +1225,8 @@ const modelDraft = reactive<ModelDraft>({
   maxReferenceImages: 4,
   contextWindowTokens: 0,
   maxOutputTokens: 0,
+  supportedReasoningEfforts: [],
+  reasoningPricing: null,
   public: true,
   default: false,
   enabled: true,
@@ -1104,6 +1269,19 @@ function openModel(index = -1) {
           maxReferenceImages: Number(source.maxReferenceImages ?? 4),
           contextWindowTokens: Number(source.contextWindowTokens ?? (source.kind === "chat" ? 128000 : 0)),
           maxOutputTokens: Number(source.maxOutputTokens ?? (source.kind === "chat" ? 8192 : 0)),
+          supportedReasoningEfforts:
+            source.kind === "chat"
+              ? reasoningEffortsForModel(source.upstreamModel)
+              : [],
+          reasoningPricing:
+            source.kind === "chat"
+              ? normalizeReasoningPricing(
+                  source.reasoningPricing,
+                  reasoningEffortsForModel(source.upstreamModel),
+                  source.priceCents,
+                  source.discountPriceCents,
+                )
+              : null,
           public: source.public,
           default: source.default,
           enabled: source.enabled,
@@ -1142,6 +1320,8 @@ function openModel(index = -1) {
           maxReferenceImages: 4,
           contextWindowTokens: kindFilter.value === "chat" ? 128000 : 0,
           maxOutputTokens: kindFilter.value === "chat" ? 8192 : 0,
+          supportedReasoningEfforts: [],
+          reasoningPricing: null,
           public: true,
           default: false,
           enabled: true,
@@ -1149,6 +1329,14 @@ function openModel(index = -1) {
   );
   modelEditIndex.value = index;
   modelDialogVisible.value = true;
+}
+
+async function openReasoningPricing(model: ModelItem) {
+  openModel(modelOriginalIndex(model));
+  await nextTick();
+  document
+    .getElementById("model-reasoning-pricing-section")
+    ?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function focusModelCapabilities() {
@@ -1167,6 +1355,7 @@ const modelProviderOptions = computed(
 
 function onModelProviderChange() {
   modelDraft.upstreamModel = "";
+  syncModelDraftReasoningPricing();
 }
 
 function selectModelKind(kind: ModelKind) {
@@ -1208,10 +1397,59 @@ function onModelKindChange(value: unknown) {
     modelDraft.moderationEnabled = true;
     modelDraft.maxReferenceImages = 4;
   }
+	syncModelDraftReasoningPricing();
 }
 
 function onUpstreamModelChange(value: string) {
   if (!modelDraft.name.trim()) modelDraft.name = value;
+  syncModelDraftReasoningPricing();
+}
+
+function syncModelDraftReasoningPricing(fillFromBase = false) {
+  const efforts =
+    modelDraft.kind === "chat"
+      ? reasoningEffortsForModel(modelDraft.upstreamModel)
+      : [];
+  modelDraft.supportedReasoningEfforts = efforts;
+  modelDraft.reasoningPricing = normalizeReasoningPricing(
+    fillFromBase ? null : modelDraft.reasoningPricing,
+    efforts,
+    modelDraft.pricePoints,
+    modelDraft.discountEnabled ? modelDraft.discountPoints : null,
+  );
+}
+
+function fillReasoningPricingFromBase() {
+  syncModelDraftReasoningPricing(true);
+  ElMessage.success("已按兼容规则填充各推理档积分");
+}
+
+function reasoningDiscountEnabled(
+  effort: string,
+  scope: ReasoningPriceScope,
+) {
+  const price = modelDraft.reasoningPricing?.efforts?.[effort];
+  return scope === "assistant"
+    ? price?.assistantDiscountPriceCents !== null &&
+        price?.assistantDiscountPriceCents !== undefined
+    : price?.canvasAgentDiscountPriceCents !== null &&
+        price?.canvasAgentDiscountPriceCents !== undefined;
+}
+
+function toggleReasoningDiscount(
+  effort: string,
+  scope: ReasoningPriceScope,
+  enabled: unknown,
+) {
+  const price = modelDraft.reasoningPricing?.efforts?.[effort];
+  if (!price) return;
+  if (scope === "assistant") {
+    price.assistantDiscountPriceCents =
+      enabled === true ? price.assistantPriceCents : null;
+  } else {
+    price.canvasAgentDiscountPriceCents =
+      enabled === true ? price.canvasAgentPriceCents : null;
+  }
 }
 
 watch(
@@ -1326,6 +1564,24 @@ function saveModelDraft() {
     ElMessage.warning("默认模型必须启用并对用户开放");
     return;
   }
+  if (modelDraft.kind === "chat" && modelDraft.reasoningPricing) {
+    for (const effort of modelDraft.supportedReasoningEfforts) {
+      const price = modelDraft.reasoningPricing.efforts[effort];
+      if (!price) {
+        ElMessage.warning(`推理强度 ${effort} 缺少积分配置`);
+        return;
+      }
+      if (
+        (price.assistantDiscountPriceCents !== null &&
+          price.assistantDiscountPriceCents > price.assistantPriceCents) ||
+        (price.canvasAgentDiscountPriceCents !== null &&
+          price.canvasAgentDiscountPriceCents > price.canvasAgentPriceCents)
+      ) {
+        ElMessage.warning(`${REASONING_EFFORT_LABELS[effort] || effort}档折扣积分不能高于标准积分`);
+        return;
+      }
+    }
+  }
   const value: ModelItem = {
     id: modelDraft.id,
     name: modelDraft.name.trim(),
@@ -1384,6 +1640,19 @@ function saveModelDraft() {
             Math.max(256, Math.round(modelDraft.maxOutputTokens)),
           )
         : 0,
+    supportedReasoningEfforts:
+      modelDraft.kind === "chat"
+        ? [...modelDraft.supportedReasoningEfforts]
+        : [],
+    reasoningPricing:
+      modelDraft.kind === "chat"
+        ? normalizeReasoningPricing(
+            modelDraft.reasoningPricing,
+            modelDraft.supportedReasoningEfforts,
+            modelDraft.pricePoints,
+            modelDraft.discountEnabled ? modelDraft.discountPoints : null,
+          )
+        : null,
     public: modelDraft.public,
     default: modelDraft.default,
     enabled: modelDraft.enabled,
@@ -1586,7 +1855,7 @@ onBeforeUnmount(() => {
                           : row.priceCents,
                       )
                     }}</strong>
-                    <span>积分</span>
+                    <span>{{ row.kind === "chat" ? "基础积分" : "积分" }}</span>
                   </div>
                   <div
                     v-if="hasDiscountPrice(row as ModelItem)"
@@ -1603,8 +1872,9 @@ onBeforeUnmount(() => {
               </header>
 
               <div
-                v-if="row.kind === 'image'"
+                v-if="modelCardHighlights(row as ModelItem).length"
                 class="model-card__highlights"
+                :class="{ 'is-reasoning': row.kind === 'chat' }"
               >
                 <div
                   v-for="item in modelCardHighlights(row as ModelItem)"
@@ -1698,6 +1968,14 @@ onBeforeUnmount(() => {
                   <el-switch v-model="row.fastMode" size="small" />
                 </label>
                 <div class="model-card__actions">
+                  <el-button
+                    v-if="row.kind === 'chat' && row.supportedReasoningEfforts.length"
+                    link
+                    type="primary"
+                    @click="openReasoningPricing(row as ModelItem)"
+                  >
+                    推理定价
+                  </el-button>
                   <el-button
                     link
                     type="primary"
@@ -2265,6 +2543,110 @@ onBeforeUnmount(() => {
           </div>
         </section>
 
+        <section
+          v-if="modelDraft.kind === 'chat' && modelDraft.reasoningPricing && modelDraft.supportedReasoningEfforts.length"
+          id="model-reasoning-pricing-section"
+          class="model-section reasoning-pricing-section"
+        >
+          <header class="model-section__head reasoning-pricing-head">
+            <span>
+              <strong>推理强度计费</strong>
+              <small>每个推理档位必须独立设置 AI 助手与无限画布 Agent 价格</small>
+            </span>
+            <el-button size="small" @click="fillReasoningPricingFromBase">
+              按基础价初始化
+            </el-button>
+          </header>
+          <div class="reasoning-default-row">
+            <span>
+              <strong>默认推理强度</strong>
+              <small>用户未手动切换时使用此档</small>
+            </span>
+            <el-select
+              v-model="modelDraft.reasoningPricing.defaultEffort"
+              style="width: 160px"
+            >
+              <el-option
+                v-for="effort in modelDraft.supportedReasoningEfforts"
+                :key="effort"
+                :label="`${REASONING_EFFORT_LABELS[effort] || effort} (${effort})`"
+                :value="effort"
+              />
+            </el-select>
+          </div>
+          <div class="reasoning-price-table">
+            <div class="reasoning-price-table__head">
+              <span>档位</span>
+              <span>AI 助手</span>
+              <span>无限画布 Agent</span>
+            </div>
+            <div
+              v-for="effort in modelDraft.supportedReasoningEfforts"
+              :key="effort"
+              class="reasoning-price-row"
+            >
+              <div class="reasoning-effort-name">
+                <strong>{{ REASONING_EFFORT_LABELS[effort] || effort }}</strong>
+                <small>{{ effort }}</small>
+              </div>
+              <div class="reasoning-channel-price">
+                <label>
+                  <span>标准积分</span>
+                  <el-input-number
+                    v-model="modelDraft.reasoningPricing.efforts[effort].assistantPriceCents"
+                    :min="0"
+                    :precision="0"
+                    :step="1"
+                  />
+                </label>
+                <label>
+                  <span>折扣积分</span>
+                  <div class="reasoning-discount-control">
+                    <el-switch
+                      :model-value="reasoningDiscountEnabled(effort, 'assistant')"
+                      @change="toggleReasoningDiscount(effort, 'assistant', $event)"
+                    />
+                    <el-input-number
+                      v-model="modelDraft.reasoningPricing.efforts[effort].assistantDiscountPriceCents"
+                      :disabled="!reasoningDiscountEnabled(effort, 'assistant')"
+                      :min="0"
+                      :precision="0"
+                      :step="1"
+                    />
+                  </div>
+                </label>
+              </div>
+              <div class="reasoning-channel-price">
+                <label>
+                  <span>标准积分</span>
+                  <el-input-number
+                    v-model="modelDraft.reasoningPricing.efforts[effort].canvasAgentPriceCents"
+                    :min="0"
+                    :precision="0"
+                    :step="1"
+                  />
+                </label>
+                <label>
+                  <span>折扣积分</span>
+                  <div class="reasoning-discount-control">
+                    <el-switch
+                      :model-value="reasoningDiscountEnabled(effort, 'canvas_agent')"
+                      @change="toggleReasoningDiscount(effort, 'canvas_agent', $event)"
+                    />
+                    <el-input-number
+                      v-model="modelDraft.reasoningPricing.efforts[effort].canvasAgentDiscountPriceCents"
+                      :disabled="!reasoningDiscountEnabled(effort, 'canvas_agent')"
+                      :min="0"
+                      :precision="0"
+                      :step="1"
+                    />
+                  </div>
+                </label>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <section class="model-section">
           <header class="model-section__head">
             <strong>映射与展示</strong>
@@ -2657,6 +3039,103 @@ onBeforeUnmount(() => {
 .model-section__head small {
   color: var(--ink-3);
   font-size: 12px;
+}
+
+.reasoning-pricing-head {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.reasoning-pricing-head > span,
+.reasoning-default-row > span {
+  display: grid;
+  gap: 2px;
+}
+
+.reasoning-default-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.reasoning-default-row strong {
+  color: var(--ink-2);
+  font-size: 13px;
+}
+
+.reasoning-default-row small {
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.reasoning-price-table {
+  display: grid;
+  gap: 0;
+  overflow-x: auto;
+}
+
+.reasoning-price-table__head,
+.reasoning-price-row {
+  display: grid;
+  grid-template-columns: 84px repeat(2, minmax(250px, 1fr));
+  min-width: 620px;
+}
+
+.reasoning-price-table__head {
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.reasoning-price-table__head > span,
+.reasoning-price-row > div {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.reasoning-effort-name {
+  display: grid;
+  align-content: center;
+  gap: 2px;
+}
+
+.reasoning-effort-name strong {
+  color: var(--ink-2);
+  font-size: 13px;
+}
+
+.reasoning-effort-name small,
+.reasoning-channel-price label > span {
+  color: var(--ink-3);
+  font-size: 10px;
+}
+
+.reasoning-channel-price {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.reasoning-channel-price label {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.reasoning-channel-price :deep(.el-input-number) {
+  width: 100%;
+}
+
+.reasoning-discount-control {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
 }
 
 .model-section__field {
@@ -3273,6 +3752,15 @@ html.dark .model-card__price .price-was {
   padding: 10px 12px;
   border-radius: 10px;
   background: var(--surface-2);
+}
+
+.model-card__highlights.is-reasoning {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.model-card__highlights.is-reasoning .model-card__highlight {
+  grid-template-columns: 104px minmax(0, 1fr);
+  align-items: start;
 }
 
 .model-card__highlight {
