@@ -139,6 +139,16 @@ func taskSourceID(taskID uuid.UUID, generation int) string {
 
 // FreezeForTask 冻结任务费用：只对匹配的真实功能使用体验积分，其余费用使用普通积分。
 func FreezeForTask(ctx context.Context, q store.Q, userID, taskID uuid.UUID, amountCents int64, featureKey string, reason *string) (*store.LedgerEntry, error) {
+	// Allocation must read the balance after acquiring the wallet row lock. If
+	// concurrent statements calculate from the same pre-lock snapshot, both can
+	// reserve the same trial credits before their UPDATE statements serialize.
+	var lockedUserID uuid.UUID
+	if err := q.QueryRow(ctx, `SELECT user_id FROM wallets WHERE user_id = $1 FOR UPDATE`, userID).Scan(&lockedUserID); err != nil {
+		if isNoRows(err) {
+			return nil, apperr.E("not_found", "钱包不存在", 404)
+		}
+		return nil, err
+	}
 	// freeze 代数 = 已有 reservation 行数（每次冻结插一条），走主键索引。
 	gen, err := store.CountTaskCreditReservations(ctx, q, taskID)
 	if err != nil {
