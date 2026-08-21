@@ -68,9 +68,16 @@ const SUGGESTIONS = [
 ];
 
 const CREATION_TYPES = [
+  { id: "chat", label: "问答模式", icon: "bi-chat-left-dots" },
   { id: "agent", label: "Agent 模式", icon: "bi-magic" },
   { id: "image", label: "图片生成", icon: "bi-image" },
 ];
+
+const CREATION_TYPE_DESCRIPTIONS = {
+  chat: "问答模式 · 只进行对话，不调用图片生成",
+  agent: "Agent 模式 · 回答问题或整理生图方案",
+  image: "图片生成 · 描述画面并上传参考图",
+};
 
 const REASONING_EFFORT_LABELS = {
   none: "关闭",
@@ -362,13 +369,13 @@ function AssistantCostDialog({ payload, light, onCancel, onConfirm }) {
       <section className="ai-cost-confirm-panel is-credits" role="dialog" aria-modal="true" aria-labelledby="assistant-cost-title">
         <header className="ai-cost-confirm-head">
           <span className="ai-cost-confirm-icon"><i className="bi bi-coin" /></span>
-          <div className="ai-cost-confirm-titles"><span className="ai-cost-confirm-eyebrow">{payload.featureLabel}</span><h5 id="assistant-cost-title">确认生成费用</h5></div>
+          <div className="ai-cost-confirm-titles"><span className="ai-cost-confirm-eyebrow">{payload.featureLabel}</span><h5 id="assistant-cost-title">{payload.title}</h5></div>
           <button type="button" className="ai-cost-confirm-close" aria-label="关闭费用确认" onClick={onCancel}><i className="bi bi-x-lg" /></button>
         </header>
         <p className="ai-cost-confirm-summary">{payload.summary}</p>
         <div className="ai-cost-confirm-card">
           <div className="ai-cost-confirm-total"><div className="ai-cost-confirm-total__copy"><span>本次预计</span><small>{payload.unit} 积分 / {payload.unitLabel} × {payload.count} {payload.unitLabel}</small></div><strong>{total.toLocaleString("zh-CN")} 积分</strong></div>
-          <div className="ai-cost-confirm-balance"><div><span>当前可用</span><strong>{available == null ? "读取中" : `${available.toLocaleString("zh-CN")} 积分`}</strong></div><i className="bi bi-arrow-right" /><div className={insufficient ? "danger" : ""}><span>支付后余额</span><strong>{available == null ? "待计算" : insufficient ? "余额不足" : `${Math.max(0, available - total).toLocaleString("zh-CN")} 积分`}</strong></div></div>
+          <div className="ai-cost-confirm-balance"><div><span>当前可用</span><strong>{available == null ? "读取中" : `${available.toLocaleString("zh-CN")} 积分`}</strong></div><i className="bi bi-arrow-right" /><div className={insufficient ? "danger" : ""}><span>预留后余额</span><strong>{available == null ? "待计算" : insufficient ? "余额不足" : `${Math.max(0, available - total).toLocaleString("zh-CN")} 积分`}</strong></div></div>
         </div>
         <footer className="ai-cost-confirm-footer">
           <label className="ai-cost-confirm-preference"><input type="checkbox" checked={skip} onChange={(event) => setSkip(event.target.checked)} /><span>不再每次确认</span></label>
@@ -572,7 +579,7 @@ export function AssistantWorkspaceView() {
   const [conversations, setConversations] = useState([]);
   const [activeId, setActiveId] = useState("");
   const [draft, setDraft] = useState("");
-  const [creationType, setCreationType] = useState("agent");
+  const [creationType, setCreationType] = useState("chat");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [conversationSearch, setConversationSearch] = useState("");
   const [modelSearch, setModelSearch] = useState("");
@@ -1106,7 +1113,7 @@ export function AssistantWorkspaceView() {
     setDocuments([]);
     setQuotedMessage(null);
     setVisibleMessageLimit(MESSAGE_BATCH_SIZE);
-    setCreationType("agent");
+    setCreationType("chat");
     setCreationMenuOpen(false);
     setModelMenuOpen(false);
     setPreferencesOpen(false);
@@ -1169,25 +1176,26 @@ export function AssistantWorkspaceView() {
     const imagePriceModel = imageModels.find((item) => item.model === requestedModel) || selectedImageModel;
     const chatUnit = assistantReasoningPrice(chatModel, requestedReasoningEffort).effective;
     const imageUnit = Math.max(0, Number(imagePriceModel?.pricePoints || 0));
-    const total = responseMode === "image" ? imageUnit * imageCount : responseMode === "agent" ? Math.max(chatUnit, imageUnit * imageCount) : chatUnit;
+    const total = responseMode === "image" ? imageUnit * imageCount : chatUnit;
     if (!total || skip || auth.user?.requireCostConfirm === false) return true;
     const controller = new AbortController();
     costControllerRef.current?.abort();
     costControllerRef.current = controller;
     const wallet = await getWallet({ signal: controller.signal }).catch(() => null);
     if (controller.signal.aborted || !mountedRef.current) return false;
-    const unit = responseMode === "image" ? imageUnit : total;
+    const unit = responseMode === "image" ? imageUnit : chatUnit;
     setCostPayload({
+      title: responseMode === "image" ? "确认生成费用" : "确认本轮费用",
       unit,
       count: responseMode === "image" ? imageCount : 1,
       total,
       available: wallet ? Number(wallet.normalBalanceCents ?? wallet.availableCents ?? wallet.balanceCents ?? 0) : null,
-      unitLabel: responseMode === "image" ? "张" : responseMode === "agent" ? "次" : "轮",
+      unitLabel: responseMode === "image" ? "张" : "轮",
       featureLabel: responseMode === "image" ? "AI 助手生图" : responseMode === "agent" ? "AI 助手 Agent" : "AI 助手对话",
       summary: responseMode === "image"
         ? "提交后按图片数量预留费用，成功结算；失败或停止时自动退回。"
         : responseMode === "agent"
-          ? `${REASONING_EFFORT_LABELS[requestedReasoningEffort] || requestedReasoningEffort || "默认"}推理为 ${chatUnit} 积分/轮；先按对话或生图的较高费用预留，完成后按实际结果结算。`
+          ? `${REASONING_EFFORT_LABELS[requestedReasoningEffort] || requestedReasoningEffort || "默认"}推理为 ${chatUnit} 积分/轮；本轮只收 Agent 推理费用，执行生图时另行确认图片费用。`
           : `${REASONING_EFFORT_LABELS[requestedReasoningEffort] || requestedReasoningEffort || "默认"}推理为 ${chatUnit} 积分/轮；成功后结算，失败或停止时自动退回。`,
     });
     return new Promise((resolve) => { costResolverRef.current = resolve; });
@@ -1324,7 +1332,7 @@ export function AssistantWorkspaceView() {
     }
     draftRequestControllerRef.current = null;
     const userMessageId = uid();
-    const responseMode = documents.length ? "chat" : creationType === "image" ? "image" : "agent";
+    const responseMode = documents.length ? "chat" : creationType === "image" ? "image" : creationType === "agent" ? "agent" : "chat";
     const requestedCount = imageCountFromPrompt(prompt) || generationCount;
     const assistantMessage = createAssistantPlaceholder({
       prompt,
@@ -1402,7 +1410,7 @@ export function AssistantWorkspaceView() {
       notificationService.warning("AI 助手暂未开放 PSD 转换");
       return;
     }
-    const responseMode = documents.length ? "chat" : creationType === "image" ? "image" : "agent";
+    const responseMode = documents.length ? "chat" : creationType === "image" ? "image" : creationType === "agent" ? "agent" : "chat";
     const requestedCount = imageCountFromPrompt(prompt) || generationCount;
     const confirmed = await confirmAssistantCost(responseMode, requestedCount, generationModel, activeReasoningEffort, {
       skip: pendingLaunchRef.current?.config?.costConfirmed === true,
@@ -1540,7 +1548,7 @@ export function AssistantWorkspaceView() {
     const messageIndex = messages.findIndex((item) => item.id === message.id);
     if (messageIndex < 0) return;
     const previousReply = messages[messageIndex + 1];
-    const responseMode = previousReply ? messageResponseMode(previousReply) : "agent";
+    const responseMode = previousReply ? messageResponseMode(previousReply) : "chat";
     const model = modelForMode(responseMode, previousReply?.model);
     const count = Number(previousReply?.count || generationCount);
     const editEffort = previousReply?.reasoningEffort || activeReasoningEffort;
@@ -1687,7 +1695,7 @@ export function AssistantWorkspaceView() {
         <div className="assistant-ambient-stage" aria-hidden="true"><i className="ambient-blob is-a" /><i className="ambient-blob is-b" /><i className="ambient-blob is-c" /></div>
         {messages.length > 0 && <header className="assistant-topbar"><div className="topbar-title"><span className="active-conversation-title" title={activeConversation?.title}>{activeConversation?.title}</span></div><div className="topbar-context"><AssistantContextMeter context={latestContext} /></div><div className="topbar-filters"><button type="button" title={messages.at(-1)?.kind === "context-divider" ? "新的上下文已开始" : "清除上文并保留可见历史"} aria-label={messages.at(-1)?.kind === "context-divider" ? "新的上下文已开始" : "清除上文并保留可见历史"} disabled={Boolean(activeRun) || messages.at(-1)?.kind === "context-divider"} onClick={() => void clearConversationContext()}><i className="bi bi-eraser" /><span>清除上文</span></button><button type="button" className={assetLibraryOpen ? "active" : ""} aria-pressed={assetLibraryOpen} title="资产库" aria-label="资产库" onClick={(event) => { event.stopPropagation(); setAssetLibraryOpen((value) => !value); }}><i className="bi bi-archive" /><span>资产库</span></button></div></header>}
         <div ref={messageScrollerRef} className="assistant-messages" onScroll={handleMessageScroll}>
-          {loading ? <section className="assistant-thread-skeleton" aria-label="正在加载"><div className="sk-bubble is-user"><i style={{ width: "46%" }} /></div><div className="sk-bubble"><i style={{ width: "82%" }} /><i style={{ width: "64%" }} /></div><div className="sk-bubble is-user"><i style={{ width: "30%" }} /></div><div className="sk-bubble"><i style={{ width: "74%" }} /><i style={{ width: "40%" }} /></div></section> : messages.length === 0 ? <section className="assistant-empty-state" aria-label="空白创作区"><div className="assistant-empty-content"><span className="empty-mark"><i className="bi bi-stars" /></span><p className="empty-mode-label"><i className={`bi ${selectedCreation.icon}`} />{mode === "image" ? "图片生成 · 描述画面并上传参考图" : "Agent 模式 · 自动识别对话与生图"}</p><h1>今天想创作什么？</h1><div className="suggestion-grid">{SUGGESTIONS.map(([icon, text]) => <button key={text} type="button" onClick={() => { setDraft(text); textareaRef.current?.focus(); }}><i className={`bi ${icon}`} /><span>{text}</span><i className="bi bi-arrow-up-right suggestion-arrow" /></button>)}</div></div></section> : <section className="message-thread" aria-live="polite">{hiddenMessageCount > 0 && <button className="load-earlier-messages" type="button" disabled={loadingEarlierRef.current} onClick={() => { const scroller = messageScrollerRef.current; if (scroller) scroller.scrollTop = 0; }}><i className="bi bi-clock-history" /><span>加载更早的对话（{hiddenMessageCount}）</span></button>}<div className="message-turns">{renderedMessages.map((message, offset) => {
+          {loading ? <section className="assistant-thread-skeleton" aria-label="正在加载"><div className="sk-bubble is-user"><i style={{ width: "46%" }} /></div><div className="sk-bubble"><i style={{ width: "82%" }} /><i style={{ width: "64%" }} /></div><div className="sk-bubble is-user"><i style={{ width: "30%" }} /></div><div className="sk-bubble"><i style={{ width: "74%" }} /><i style={{ width: "40%" }} /></div></section> : messages.length === 0 ? <section className="assistant-empty-state" aria-label="空白创作区"><div className="assistant-empty-content"><span className="empty-mark"><i className="bi bi-stars" /></span><p className="empty-mode-label"><i className={`bi ${selectedCreation.icon}`} />{CREATION_TYPE_DESCRIPTIONS[creationType]}</p><h1>今天想创作什么？</h1><div className="suggestion-grid">{SUGGESTIONS.map(([icon, text]) => <button key={text} type="button" onClick={() => { setDraft(text); textareaRef.current?.focus(); }}><i className={`bi ${icon}`} /><span>{text}</span><i className="bi bi-arrow-up-right suggestion-arrow" /></button>)}</div></div></section> : <section className="message-thread" aria-live="polite">{hiddenMessageCount > 0 && <button className="load-earlier-messages" type="button" disabled={loadingEarlierRef.current} onClick={() => { const scroller = messageScrollerRef.current; if (scroller) scroller.scrollTop = 0; }}><i className="bi bi-clock-history" /><span>加载更早的对话（{hiddenMessageCount}）</span></button>}<div className="message-turns">{renderedMessages.map((message, offset) => {
             const originalIndex = firstRenderedMessageIndex + offset;
             const previous = messages[originalIndex - 1];
             const currentDate = new Date(message.createdAt);

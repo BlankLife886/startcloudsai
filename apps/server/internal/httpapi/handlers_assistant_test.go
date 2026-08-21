@@ -1062,6 +1062,22 @@ func TestApplyAssistantReasoningPriceSnapshotUsesConfiguredScope(t *testing.T) {
 	}
 }
 
+func TestAssistantRunReservedCostDoesNotPreauthorizeImageForAgent(t *testing.T) {
+	tests := []struct {
+		mode string
+		want int64
+	}{
+		{mode: "chat", want: 1},
+		{mode: "agent", want: 1},
+		{mode: "image", want: 20},
+	}
+	for _, tt := range tests {
+		if got := assistantRunReservedCost(tt.mode, 1, 20); got != tt.want {
+			t.Fatalf("reserved cost for %s = %d, want %d", tt.mode, got, tt.want)
+		}
+	}
+}
+
 func TestDeleteActiveAssistantConversationRequiresConfirmation(t *testing.T) {
 	env := newCommunityEnv(t)
 	user, token := env.newUserSession(t, "user")

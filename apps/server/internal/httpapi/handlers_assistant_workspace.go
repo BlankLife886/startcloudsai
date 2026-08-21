@@ -884,12 +884,7 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 	if imageSelection != nil {
 		imageCostCents = modelconfig.EffectivePrice(imageSelection.Model) * int64(body.Count)
 	}
-	reservedCents := chatCostCents
-	if body.Mode == "image" {
-		reservedCents = imageCostCents
-	} else if body.Mode == "agent" && !canvasAgent && imageCostCents > reservedCents {
-		reservedCents = imageCostCents
-	}
+	reservedCents := assistantRunReservedCost(body.Mode, chatCostCents, imageCostCents)
 	params["_chatCostCents"] = chatCostCents
 	params["_imageCostCents"] = imageCostCents
 	params["_reservedCostCents"] = reservedCents
@@ -1078,6 +1073,13 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		return
 	}
 	respondCreated(c, payload)
+}
+
+func assistantRunReservedCost(mode string, chatCostCents, imageCostCents int64) int64 {
+	if mode == "image" {
+		return imageCostCents
+	}
+	return chatCostCents
 }
 
 func (s *Server) enqueueAssistantRunFromOutbox(ctx context.Context, run *store.AssistantRun) bool {

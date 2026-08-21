@@ -136,7 +136,7 @@ test.describe('React assistant workspace contract', () => {
       conversationId: 'conversation-new',
       prompt: '请帮我设计一个简洁的品牌图标',
       userMessageContent: '请帮我设计一个简洁的品牌图标',
-      mode: 'agent',
+      mode: 'chat',
       referenceImages: [],
       model: 'chat-basic',
       ratio: 'auto',
@@ -152,11 +152,12 @@ test.describe('React assistant workspace contract', () => {
     expect(runBody.clientAssistantMessageId).toMatch(/^[0-9a-f-]{36}$/)
   })
 
-  test('agent confirmation reserves the maximum chat or image cost and saves the preference', async ({ page }) => {
+  test('agent confirmation reserves only the reasoning cost and saves the preference', async ({ page }) => {
     let profileBody = null
+    let runBody = null
     await mockAssistant(page, { user: { ...account, requireCostConfirm: true } })
     await page.route('**/api/v1/me/wallet', (route) =>
-      fulfillJson(route, { availableCents: 100, balanceCents: 100 }),
+      fulfillJson(route, { availableCents: 3, balanceCents: 3 }),
     )
     await page.route('**/api/v1/me/profile', async (route) => {
       if (route.request().method() === 'PATCH') profileBody = route.request().postDataJSON()
@@ -170,20 +171,26 @@ test.describe('React assistant workspace contract', () => {
         await fulfillJson(route, { runs: [] })
         return
       }
-      const body = route.request().postDataJSON()
-      await fulfillJson(route, succeededRun(body), 201)
+      runBody = route.request().postDataJSON()
+      await fulfillJson(route, succeededRun(runBody), 201)
     })
     await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
 
+    await page.locator('.agent-mode-button').click()
+    await page.getByRole('button', { name: 'Agent 模式' }).click()
     await page.getByLabel('消息输入').fill('生成两张主视觉')
     await page.getByRole('button', { name: '发送' }).click()
-    const dialog = page.getByRole('dialog', { name: '确认生成费用' })
+    const dialog = page.getByRole('dialog', { name: '确认本轮费用' })
     await expect(dialog).toBeVisible()
-    await expect(dialog.locator('.ai-cost-confirm-total')).toContainText('24 积分')
+    await expect(dialog.locator('.ai-cost-confirm-total')).toContainText('3 积分')
+    await expect(dialog).toContainText('执行生图时另行确认图片费用')
+    await expect(dialog).toContainText('预留后余额')
     await dialog.getByText('不再每次确认').click()
     await dialog.getByRole('button', { name: '确认', exact: true }).click()
 
     await expect(page.locator('.message--assistant')).toContainText('已完成你的创作请求。')
+    await expect.poll(() => profileBody).not.toBeNull()
+    expect(runBody).toMatchObject({ mode: 'agent', model: 'chat-basic' })
     expect(profileBody).toEqual({ requireCostConfirm: false })
   })
 
@@ -211,7 +218,7 @@ test.describe('React assistant workspace contract', () => {
     await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
 
     await page.locator('.agent-mode-button').click()
-    await page.locator('.creation-type-menu button').nth(1).click()
+    await page.getByRole('button', { name: '图片生成' }).click()
     await page.getByRole('button', { name: /Image Basic/ }).click()
     await page.locator('.image-model-menu').getByRole('button', { name: /Image Pro/ }).click()
     await page.locator('.image-settings-button').click()
@@ -1028,10 +1035,13 @@ test.describe('React assistant workspace contract', () => {
     })
     await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
 
+    await page.locator('.agent-mode-button').click()
+    await page.getByRole('button', { name: 'Agent 模式' }).click()
     await page.getByLabel('消息输入').fill('把这张图的背景改成白色，生成3张')
     await page.getByRole('button', { name: '发送' }).click()
     await expect(page.locator('.message--assistant').last()).toContainText('已完成你的创作请求。')
     expect(runBody.count).toBe(3)
+    expect(runBody.mode).toBe('agent')
     expect(runBody.referenceImages).toEqual([{
       name: '最近生成图',
       dataUrl: '/sucai/home-intro-03.png',
