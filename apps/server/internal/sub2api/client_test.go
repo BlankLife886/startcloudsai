@@ -60,6 +60,95 @@ func TestFailureCodeClassifiesProviderFailures(t *testing.T) {
 	}
 }
 
+func TestStreamUpstreamErrorPreservesOrInfersStatus(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload map[string]any
+		status  int
+		code    string
+	}{
+		{
+			name: "explicit unprocessable entity",
+			payload: map[string]any{
+				"type":  "error",
+				"error": map[string]any{"status_code": float64(http.StatusUnprocessableEntity), "message": "reasoning effort is not supported"},
+			},
+			status: http.StatusUnprocessableEntity,
+			code:   "upstream_rejected",
+		},
+		{
+			name:    "authentication type",
+			payload: map[string]any{"type": "error", "error": map[string]any{"type": "authentication_error", "code": "invalid_api_key", "message": "bad key"}},
+			status:  http.StatusUnauthorized,
+			code:    "upstream_auth_failed",
+		},
+		{
+			name:    "rate limit type",
+			payload: map[string]any{"error": map[string]any{"type": "rate_limit_error", "code": "rate_limit_exceeded", "message": "busy"}},
+			status:  http.StatusTooManyRequests,
+			code:    "upstream_rate_limited",
+		},
+		{
+			name:    "unclassified provider event",
+			payload: map[string]any{"error": "provider stream failed"},
+			status:  http.StatusBadGateway,
+			code:    "upstream_unavailable",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := streamUpstreamError(tt.payload)
+			var upstream *UpstreamError
+			if !errors.As(err, &upstream) || upstream.Status != tt.status {
+				t.Fatalf("error=%#v upstream=%#v, want status %d", err, upstream, tt.status)
+			}
+			if got := FailureCode(err); got != tt.code {
+				t.Fatalf("FailureCode(%v) = %q, want %q", err, got, tt.code)
+			}
+		})
+	}
+	if err := streamUpstreamError(map[string]any{"choices": []any{}}); err != nil {
+		t.Fatalf("non-error stream event returned %v", err)
+	}
+}
+
+func TestChatTextStreamReturnsTypedProviderError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `data: {"type":"error","status":422,"error":{"type":"invalid_request_error","message":"reasoning effort is not supported"}}`+"\n\n")
+	}))
+	defer server.Close()
+
+	client, _ := New(server.URL, "test-key", "gpt-test", "image-test", 30)
+	_, err := client.CompleteChatTextWithImages(context.Background(), []Message{{Role: "user", Content: "hello"}}, nil, nil)
+	var upstream *UpstreamError
+	if !errors.As(err, &upstream) || upstream.Status != http.StatusUnprocessableEntity || FailureCode(err) != "upstream_rejected" {
+		t.Fatalf("err=%#v upstream=%#v code=%q", err, upstream, FailureCode(err))
+	}
+}
+
+func TestChatAgentStreamReturnsTypedProviderError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `data: {"type":"error","error":{"type":"authentication_error","code":"invalid_api_key","message":"bad key"}}`+"\n\n")
+	}))
+	defer server.Close()
+
+	client, _ := New(server.URL, "test-key", "gpt-test", "image-test", 30)
+	_, err := client.ChatAgentWithTools(
+		context.Background(),
+		[]Message{{Role: "user", Content: "update canvas"}},
+		nil,
+		[]FunctionTool{{Name: "canvas_apply_ops", Parameters: map[string]any{"type": "object"}}},
+		RequiredToolChoice,
+		nil,
+	)
+	var upstream *UpstreamError
+	if !errors.As(err, &upstream) || upstream.Status != http.StatusUnauthorized || FailureCode(err) != "upstream_auth_failed" {
+		t.Fatalf("err=%#v upstream=%#v code=%q", err, upstream, FailureCode(err))
+	}
+}
+
 func TestApplyChatOutputLimitUsesModelCompatibleField(t *testing.T) {
 	tests := []struct {
 		model   string

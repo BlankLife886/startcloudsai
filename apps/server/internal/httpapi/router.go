@@ -44,6 +44,8 @@ func requestBodyLimit(path string, uploadMaxBytes int64) int64 {
 	case strings.HasPrefix(path, "/api/v1/admin/ecommerce/catalog"),
 		strings.HasPrefix(path, "/api/v1/admin/ecommerce/tryon-catalog"):
 		return tryonCatalogMaxBytes + (1 << 20)
+	case path == "/api/v1/admin/announcements/images":
+		return promptCoverMaxBytes + (1 << 20)
 	case path == "/api/v1/admin/prompt-import-batches/upload":
 		return promptTransferMaxBytes + (1 << 20)
 	default:
@@ -159,6 +161,7 @@ func (s *Server) Router() *gin.Engine {
 	api.GET("/assistant/conversations", s.assistantConversations)
 	api.POST("/assistant/conversations", s.createAssistantConversation)
 	api.GET("/assistant/conversations/:id", s.assistantConversation)
+	api.PATCH("/assistant/conversations/:id", s.patchAssistantConversation)
 	api.DELETE("/assistant/conversations/:id", s.deleteAssistantConversation)
 	api.POST("/assistant/conversations/:id/context-boundaries", s.createAssistantContextBoundary)
 	api.DELETE("/assistant/messages/:id", s.deleteAssistantMessage)
@@ -383,6 +386,7 @@ func (s *Server) Router() *gin.Engine {
 	admin.POST("/prompt-import-batches/:id/publish", s.adminOnly(s.adminPublishPromptImportBatch))
 	admin.GET("/announcements", s.adminOnly(s.adminAnnouncements))
 	admin.POST("/announcements", s.adminOnly(s.adminCreateAnnouncement))
+	admin.POST("/announcements/images", s.adminOnly(s.adminUploadAnnouncementImage))
 	admin.PATCH("/announcements/:id", s.adminOnly(s.adminPatchAnnouncement))
 	admin.DELETE("/announcements/:id", s.adminOnly(s.adminDeleteAnnouncement))
 	admin.GET("/changelog", s.adminOnly(s.adminChangelog))

@@ -214,7 +214,7 @@ func (s *Server) myWalletExport(c *gin.Context) {
 	stamp := time.Now().In(promptDayLocation).Format("2006-01-02 15:04:05")
 	_ = writer.Write([]string{"星空云绘积分账单"})
 	_ = writer.Write([]string{"导出时间", stamp})
-	_ = writer.Write([]string{"账号", user.Email})
+	_ = writer.Write(safeCSVRow("账号", user.Email))
 	_ = writer.Write([]string{"可用余额", strconv.FormatInt(wallet.BalanceCents+wallet.TrialBalanceCents, 10)})
 	_ = writer.Write([]string{"冻结中", strconv.FormatInt(wallet.FrozenCents+wallet.TrialFrozenCents, 10)})
 	_ = writer.Write([]string{"普通积分", strconv.FormatInt(wallet.BalanceCents, 10)})
@@ -227,12 +227,12 @@ func (s *Server) myWalletExport(c *gin.Context) {
 	_ = writer.Write([]string{"合计入账", fmt.Sprint(summary["incomeCents"]), fmt.Sprint(summary["incomeCount"]), "所有渠道累计到账"})
 	if rawItems, ok := summary["items"].([]gin.H); ok {
 		for _, item := range rawItems {
-			_ = writer.Write([]string{
+			_ = writer.Write(safeCSVRow(
 				fmt.Sprint(item["label"]),
 				fmt.Sprint(item["cents"]),
 				fmt.Sprint(item["count"]),
 				fmt.Sprint(item["hint"]),
-			})
+			))
 		}
 	}
 	_ = writer.Write([]string{})
@@ -256,7 +256,7 @@ func (s *Server) myWalletExport(c *gin.Context) {
 			elapsed = formatExportDuration(stringValue(task["startedAt"]), stringValue(task["finishedAt"]))
 		}
 		delta := ledgerExportDelta(entry, tasksByID, runsByID)
-		_ = writer.Write([]string{
+		_ = writer.Write(safeCSVRow(
 			entry.CreatedAt.In(promptDayLocation).Format("2006-01-02 15:04:05"),
 			elapsed,
 			title,
@@ -267,7 +267,7 @@ func (s *Server) myWalletExport(c *gin.Context) {
 			strconv.FormatInt(entry.BalanceAfterCents, 10),
 			walletIncomeLabel(entry.SourceType),
 			walletCreditBucketLabel(entry.CreditBucket),
-		})
+		))
 	}
 	writer.Flush()
 	if err := writer.Error(); err != nil {

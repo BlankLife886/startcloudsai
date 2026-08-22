@@ -37,10 +37,10 @@ func (s *Server) adminExportPrompts(c *gin.Context, _ *store.User) {
 		_ = writer.Write([]string{"id", "title", "prompt", "taskType", "category", "tags", "coverKey",
 			"sort", "active", "sourceId", "sourceItemKey", "createdAt"})
 		for _, item := range items {
-			_ = writer.Write([]string{item.ID.String(), item.Title, item.Prompt, item.TaskType,
+			_ = writer.Write(safeCSVRow(item.ID.String(), item.Title, item.Prompt, item.TaskType,
 				item.Category, strings.Join(item.Tags, "|"), item.CoverKey, strconv.Itoa(item.Sort),
 				strconv.FormatBool(item.Active), item.SourceID, item.SourceItemKey,
-				item.CreatedAt.UTC().Format(time.RFC3339Nano)})
+				item.CreatedAt.UTC().Format(time.RFC3339Nano)))
 		}
 		writer.Flush()
 		if err := writer.Error(); err != nil {

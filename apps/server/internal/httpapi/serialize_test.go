@@ -215,6 +215,39 @@ func TestLedgerDictWithAssistantRunUsesCanvasDisplayName(t *testing.T) {
 	}
 }
 
+func TestLedgerDictWithAssistantRunExplainsHistoricalUserCancellation(t *testing.T) {
+	tests := []struct {
+		name   string
+		reason string
+		params map[string]any
+		want   string
+	}{
+		{
+			name:   "assistant",
+			reason: "AI 助手已停止，按已完成操作结算",
+			params: map[string]any{},
+			want:   "AI 助手由用户主动停止，本轮积分不退还",
+		},
+		{
+			name:   "canvas",
+			reason: "无限画布已停止，按已完成操作结算",
+			params: map[string]any{"workspace": "infinite_canvas", "_source": "react_canvas"},
+			want:   "无限画布由用户主动停止，按已完成画布操作结算",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			entry := &store.LedgerEntry{ID: uuid.New(), Kind: "spend", SourceType: "assistant_run", Reason: &tt.reason, CreatedAt: time.Now()}
+			run := &store.AssistantRun{ID: uuid.New(), Status: "canceled", Params: tt.params}
+			dict := ledgerDictWithAssistantRun(entry, run)
+			got, _ := dict["reason"].(*string)
+			if got == nil || *got != tt.want {
+				t.Fatalf("reason = %#v, want %q", dict["reason"], tt.want)
+			}
+		})
+	}
+}
+
 func TestLedgerDictWithTaskRewritesCanvasFreezeReason(t *testing.T) {
 	reason := "任务冻结（t2i×1）"
 	entry := &store.LedgerEntry{

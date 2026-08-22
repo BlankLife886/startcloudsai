@@ -58,7 +58,7 @@ func randomDigits(n int) string {
 		if err != nil {
 			panic(err)
 		}
-		buf[i] = byte('0' + v.Int64())
+		buf[i] = "0123456789"[v.Int64()]
 	}
 	return string(buf)
 }

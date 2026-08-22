@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
+	"mime/multipart"
+	"net/http"
 	"net/url"
 	"sort"
 	"strings"
@@ -1489,6 +1492,65 @@ func (s *Server) adminDeleteAnnouncement(c *gin.Context, _ *store.User) {
 		return
 	}
 	respondNoContent(c)
+}
+
+func (s *Server) adminUploadAnnouncementImage(c *gin.Context, _ *store.User) {
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		log.Printf("announcement image multipart parse failed: path=%s content_length=%d body_limit=%d err=%v",
+			c.Request.URL.Path, c.Request.ContentLength,
+			requestBodyLimit(c.Request.URL.Path, s.Cfg.UploadMaxBytes), err)
+		var maxBytesError *http.MaxBytesError
+		if errors.As(err, &maxBytesError) || errors.Is(err, multipart.ErrMessageTooLarge) {
+			fail(c, apperr.E("upload_too_large", "公告图片不能超过 8MB", 413))
+			return
+		}
+		if errors.Is(err, io.ErrUnexpectedEOF) {
+			fail(c, apperr.E("invalid_upload", "图片上传数据不完整，请重新选择后重试", 400))
+			return
+		}
+		fail(c, apperr.E("validation_error", "file: 缺少上传文件", 422))
+		return
+	}
+	if fileHeader.Size > promptCoverMaxBytes {
+		fail(c, apperr.E("upload_too_large", "公告图片不能超过 8MB", 413))
+		return
+	}
+	f, err := fileHeader.Open()
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, promptCoverMaxBytes+1))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if int64(len(data)) > promptCoverMaxBytes {
+		fail(c, apperr.E("upload_too_large", "公告图片不能超过 8MB", 413))
+		return
+	}
+	if len(data) == 0 {
+		fail(c, apperr.E("unsupported_file", "文件为空", 400))
+		return
+	}
+	ext, contentType := sniffImage(data)
+	if ext == "" {
+		fail(c, apperr.E("unsupported_file", "仅支持 png / jpg / webp 图片", 400))
+		return
+	}
+	ctx := c.Request.Context()
+	data, ext, contentType = s.compressCoverImage(ctx, data, ext, contentType)
+	newKey := fmt.Sprintf("announcement-images/%s.%s", uuid.NewString(), ext)
+	if err := s.Storage.UploadBytes(ctx, newKey, data, contentType); err != nil {
+		fail(c, err)
+		return
+	}
+	respondCreated(c, gin.H{
+		"key": newKey,
+		"url": "/api/v1/files/" + newKey,
+	})
 }
 
 // ---------- changelog ----------

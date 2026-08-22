@@ -69,4 +69,11 @@ export interface AdminSettings {
   imageDisplayMaxEdge?: number
 	imageThumbMaxEdge?: number
   imageFetchConcurrency?: number
+  lanjingPayEnabled?: boolean
+  lanjingPayBaseUrl?: string
+  lanjingPaySecret?: string
+  lanjingPayNotifyUrl?: string
+  lanjingPayTimeoutSecs?: number
+  lanjingPayAlipayEnabled?: boolean
+  lanjingPayWechatEnabled?: boolean
 }

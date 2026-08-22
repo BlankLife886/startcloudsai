@@ -39,6 +39,7 @@ import {
   getModelAspectRatiosForResolution,
   normalizeImageModelCapabilities,
 } from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
+import { resolveModelPointPricing } from "@react/legacy-modules/features/ai-shared/modelPointPricing.js";
 import {
   taskDisplayUrl,
   taskOriginalUrl,
@@ -139,7 +140,88 @@ const CAPTIONED_FIELDS = new Set([
   "resolution",
   "count",
   "skill",
+  "reasoning",
 ]);
+const REASONING_EFFORT_LABELS = {
+  none: "关闭",
+  minimal: "极低",
+  low: "低",
+  medium: "中",
+  high: "高",
+  xhigh: "超高",
+  max: "最大",
+};
+
+function normalizeReasoningEffortId(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function listReasoningEfforts(model) {
+  const priced = Array.isArray(model?.reasoningEfforts) ? model.reasoningEfforts : [];
+  const source = priced.length
+    ? priced
+    : Array.isArray(model?.supportedReasoningEfforts)
+      ? model.supportedReasoningEfforts
+      : [];
+  const seen = new Set();
+  return source.flatMap((item) => {
+    const raw = item && typeof item === "object" ? item : { id: item };
+    const id = normalizeReasoningEffortId(raw.id || raw.effort);
+    if (!id || seen.has(id)) return [];
+    seen.add(id);
+    return [{
+      id,
+      label: String(raw.label || REASONING_EFFORT_LABELS[id] || id).trim() || id,
+      pricePoints: raw.pricePoints,
+      standardPricePoints: raw.standardPricePoints,
+      discountPricePoints: raw.discountPricePoints,
+    }];
+  });
+}
+
+function firstReasoningEffort(model) {
+  return listReasoningEfforts(model)[0]?.id || "";
+}
+
+function modelWithReasoningPrice(model, effortId) {
+  const option = listReasoningEfforts(model).find(
+    (item) => item.id === normalizeReasoningEffortId(effortId),
+  );
+  if (!option) return model;
+  return {
+    ...model,
+    pricePoints: option.pricePoints ?? model?.pricePoints,
+    standardPricePoints: option.standardPricePoints ?? model?.standardPricePoints,
+    discountPricePoints: option.discountPricePoints ?? model?.discountPricePoints,
+  };
+}
+
+function compactModelPriceLabel(model, { perImage = true } = {}) {
+  const price = resolveModelPointPricing(model);
+  if (!price.configured) return "";
+  const suffix = perImage ? "/张" : "";
+  if (price.hasDiscount) return `折扣 ${price.discount}积分${suffix}`;
+  if (price.effective === 0) return "免费";
+  return `${price.effective}积分${suffix}`;
+}
+
+function StudioModelPrice({ model, perImage }) {
+  const price = resolveModelPointPricing(model);
+  if (!price.configured) return null;
+  const suffix = perImage ? "/张" : "";
+  return (
+    <span className={`studio-composer__model-price${price.hasDiscount ? " has-discount" : ""}`}>
+      {price.hasDiscount ? (
+        <>
+          <strong>折扣 {price.discount} 积分{suffix}</strong>
+          <del>{price.standard} 积分{suffix}</del>
+        </>
+      ) : (
+        <strong>{price.effective === 0 ? "免费" : `${price.effective} 积分${suffix}`}</strong>
+      )}
+    </span>
+  );
+}
 const STUDIO_PROMPT_PAGE_SIZE = 48;
 
 function promptLibraryType(tool) {
@@ -632,45 +714,76 @@ export function StudioHubView() {
     const usesModelImageParams =
       selectedTool?.id === "t2i" ||
       (selectedTool?.id === "assistant" && selectedConfig.skill === "image");
-    return launchFields.map((field) => {
+    const reasoningOptions = usesModelImageParams
+      ? []
+      : listReasoningEfforts(selectedModel);
+    return launchFields.flatMap((field) => {
+      if (field.key === "reasoning") {
+        if (!reasoningOptions.length) return [];
+        return [{
+          ...field,
+          options: reasoningOptions.map((item) => ({
+            value: item.id,
+            label: item.label,
+            description: item.id,
+            priceModel: {
+              pricePoints: item.pricePoints ?? selectedModel?.pricePoints,
+              standardPricePoints: item.standardPricePoints ?? selectedModel?.standardPricePoints,
+              discountPricePoints: item.discountPricePoints ?? selectedModel?.discountPricePoints,
+            },
+            perImage: false,
+          })),
+        }];
+      }
       if (field.key === "model")
-        return {
+        return [{
           ...field,
           options: [
-            {
-              value: "",
-              label: modelOptions.length ? "自动匹配" : "默认模型",
-            },
-            ...modelOptions.map((model) => ({
-              value: model.id,
-              label: model.label,
-            })),
+            ...(!modelOptions.length
+              ? [{ value: "", label: "默认模型" }]
+              : []),
+            ...modelOptions.map((model) => {
+              const pricedModel = usesModelImageParams
+                ? model
+                : modelWithReasoningPrice(model, firstReasoningEffort(model));
+              const reasoningCount = listReasoningEfforts(model).length;
+              return {
+                value: model.id,
+                label: model.label,
+                priceModel: pricedModel,
+                perImage: usesModelImageParams,
+                description:
+                  !usesModelImageParams && reasoningCount
+                    ? `推理强度 ${reasoningCount} 档`
+                    : "",
+              };
+            }),
           ],
-        };
-      if (!usesModelImageParams) return field;
+        }];
+      if (!usesModelImageParams) return [field];
       if (field.key === "resolution")
-        return {
+        return [{
           ...field,
           options: field.options.filter((option) =>
             allowedResolutions.has(String(option.value).toUpperCase()),
           ),
-        };
+        }];
       if (field.key === "quality")
-        return {
+        return [{
           ...field,
           options: field.options.filter((option) =>
             allowedQualities.has(String(option.value).toLowerCase()),
           ),
-        };
+        }];
       if (field.key === "ratio")
-        return {
+        return [{
           ...field,
           options: allowedRatios.map((value) => ({
             value,
             label: ratioLabels.get(value) || ratioChipLabel(value),
           })),
-        };
-      return field;
+        }];
+      return [field];
     });
   }, [modelOptions, selectedConfig, selectedModel, selectedTool?.id]);
   const wallTools = useMemo(() => {
@@ -744,10 +857,13 @@ export function StudioHubView() {
   const columns = balanceColumns(recentItems, columnCount);
 
   const updateSelectedConfig = (patch) =>
-    setLaunchConfigs((current) => ({
-      ...current,
-      [selectedTool?.id || "t2i"]: { ...selectedConfig, ...patch },
-    }));
+    setLaunchConfigs((current) => {
+      const toolId = selectedTool?.id || "t2i";
+      return {
+        ...current,
+        [toolId]: { ...(current[toolId] || selectedConfig), ...patch },
+      };
+    });
   const optionSelected = (field, value) => {
     const key = field.configKey || field.key;
     const current = selectedConfig[key];
@@ -771,7 +887,21 @@ export function StudioHubView() {
       )?.label || field.label
     );
   };
-  const fieldCaption = (field) => field.label;
+  const usesImagePrice =
+    selectedTool?.id === "t2i" ||
+    (selectedTool?.id === "assistant" && selectedConfig.skill === "image");
+  const explicitModel =
+    modelOptions.find((model) => model.id === selectedConfig.model) || null;
+  const fieldCaption = (field) => {
+    if (field.key === "model") {
+      const priced = usesImagePrice
+        ? explicitModel
+        : modelWithReasoningPrice(explicitModel, selectedConfig.reasoningEffort);
+      const priceLabel = compactModelPriceLabel(priced, { perImage: usesImagePrice });
+      return priceLabel ? `${field.label} · ${priceLabel}` : field.label;
+    }
+    return field.label;
+  };
   const fieldValueText = (field) => {
     if (field.key === "skill" && field.multiple) {
       const count = selectedConfig.skills?.length || 0;
@@ -848,10 +978,16 @@ export function StudioHubView() {
                   )}
                   <span className="studio-composer__field-option-copy">
                     <strong>{option.label}</strong>
-                    {field.multiple && option.description && (
+                    {option.description && (
                       <small>{option.description}</small>
                     )}
                   </span>
+                  {option.priceModel ? (
+                    <StudioModelPrice
+                      model={option.priceModel}
+                      perImage={option.perImage}
+                    />
+                  ) : null}
                   {optionSelected(field, option.value) && (
                     <i className="bi bi-check2" />
                   )}
@@ -880,8 +1016,12 @@ export function StudioHubView() {
     } else {
       const patch = { [key]: value };
       if (selectedTool?.id === "assistant" && key === "skill") {
-        patch.model = "";
+        const nextModels =
+          value === "image" ? assistantModels.image : assistantModels.conversation;
         patch.mode = value;
+        patch.model = nextModels[0]?.id || "";
+        patch.reasoningEffort =
+          value === "image" ? "" : firstReasoningEffort(nextModels[0]);
       }
       updateSelectedConfig(patch);
       setActivePanel("");
@@ -1022,6 +1162,33 @@ export function StudioHubView() {
     selectedConfig.skill,
     selectedTool?.id,
   ]);
+
+  useEffect(() => {
+    if (!modelOptions.length) return;
+    const toolId = selectedTool?.id || "t2i";
+    const firstModelId = modelOptions[0]?.id;
+    if (!firstModelId) return;
+    setLaunchConfigs((current) => {
+      const prev = current[toolId] || {};
+      if (modelOptions.some((model) => model.id === prev.model)) return current;
+      return { ...current, [toolId]: { ...prev, model: firstModelId } };
+    });
+  }, [modelOptions, selectedTool?.id]);
+
+  useEffect(() => {
+    if (selectedTool?.id !== "assistant" || selectedConfig.skill === "image") return;
+    const toolId = selectedTool.id;
+    const next = firstReasoningEffort(selectedModel);
+    if (!next) return;
+    setLaunchConfigs((current) => {
+      const prev = current[toolId] || {};
+      const currentValid = listReasoningEfforts(selectedModel).some(
+        (item) => item.id === prev.reasoningEffort,
+      );
+      if (currentValid) return current;
+      return { ...current, [toolId]: { ...prev, reasoningEffort: next } };
+    });
+  }, [selectedConfig.skill, selectedModel, selectedTool?.id]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -1321,8 +1488,16 @@ export function StudioHubView() {
       costConfirmed: true,
     };
     if (selectedTool.id === "assistant") {
-      config.mode = selectedConfig.skill === "image" ? "image" : "agent";
-      config.skill = config.mode;
+      const assistantSkill = selectedConfig.skill === "image"
+        ? "image"
+        : selectedConfig.skill === "chat"
+          ? "chat"
+          : "agent";
+      config.mode = assistantSkill;
+      config.skill = assistantSkill;
+      if (assistantSkill !== "image" && selectedConfig.reasoningEffort) {
+        config.reasoningEffort = selectedConfig.reasoningEffort;
+      }
       config.count =
         imageCountFromPrompt(prompt) || Math.max(1, Number(config.count) || 2);
       if (config.mode === "image") {
@@ -1351,14 +1526,25 @@ export function StudioHubView() {
         (assistantImageMode
           ? assistantModels.image[0]
           : assistantModels.conversation[0]);
+      const pricedAssistantModel = assistantImageMode
+        ? assistantModel
+        : modelWithReasoningPrice(assistantModel, config.reasoningEffort);
+      const assistantUnit = Math.max(
+        0,
+        Number(resolveModelPointPricing(pricedAssistantModel).effective ?? 0),
+      );
       const assistantTotal = assistantImageMode
-        ? Number(assistantModel?.pricePoints || 0) *
-          Math.min(4, Number(config.count) || 2)
-        : Number(assistantModel?.pricePoints || 0);
+        ? assistantUnit * Math.min(4, Number(config.count) || 2)
+        : assistantUnit;
       const unitPrice =
         selectedTool.id === "assistant"
           ? assistantTotal
-          : Number(selectedModel?.pricePoints || unit || 0);
+          : Number(
+              resolveModelPointPricing(selectedModel).effective ??
+                selectedModel?.pricePoints ??
+                unit ??
+                0,
+            );
       setPendingLaunch({ tool: selectedTool, prompt, config });
       setCost({
         billingMode: "credits",
@@ -1371,7 +1557,9 @@ export function StudioHubView() {
           selectedTool.id === "assistant"
             ? selectedConfig.skill === "image"
               ? "AI 助手 图片生成"
-              : "AI 助手 Agent"
+              : selectedConfig.skill === "chat"
+                ? "AI 助手 问答"
+                : "AI 助手 Agent"
             : "文生图",
         summary:
           selectedTool.id === "assistant"

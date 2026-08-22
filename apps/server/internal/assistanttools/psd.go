@@ -199,6 +199,7 @@ func writePSDPascalName(out *bytes.Buffer, value string) {
 		}
 	}
 	start := out.Len()
+	// #nosec G115 -- legacy is explicitly clipped to the PSD Pascal-name byte limit above.
 	out.WriteByte(byte(len(legacy)))
 	out.Write(legacy)
 	for (out.Len()-start)%4 != 0 {

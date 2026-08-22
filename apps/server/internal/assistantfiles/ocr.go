@@ -45,6 +45,7 @@ type systemOCRCommandRunner struct{}
 func (systemOCRCommandRunner) Run(ctx context.Context, name string, args []string, stdoutLimit int64) ([]byte, error) {
 	stdout := &limitedCommandBuffer{limit: stdoutLimit}
 	stderr := &limitedCommandBuffer{limit: maxOCRCommandLogBytes}
+	// #nosec G204 -- validateOCRConfig requires trusted absolute executable paths; arguments bypass the shell.
 	command := exec.CommandContext(ctx, name, args...)
 	command.Stdout = stdout
 	command.Stderr = stderr

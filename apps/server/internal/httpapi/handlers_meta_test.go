@@ -217,7 +217,11 @@ func TestRuntimeConfigUsesWorkspaceSpecificModels(t *testing.T) {
 		{ID: "canvas-image", Name: "画布生图模型", ProviderID: "provider", UpstreamModel: "upstream-canvas-image", Kind: "image", Public: true, Enabled: true},
 		{ID: "canvas-chat", Name: "画布文本模型", ProviderID: "provider", UpstreamModel: "provider/gpt-5-5", Kind: "chat", Public: true, Enabled: true},
 		{ID: "canvas-chat-alias-56", Name: "画布别名模型", ProviderID: "provider", UpstreamModel: "provider/gpt-5-6", Kind: "chat", Public: true, Enabled: true},
-		{ID: "canvas-chat-sol", Name: "画布 Sol 模型", ProviderID: "provider", UpstreamModel: "provider/gpt-5.6-sol", Kind: "chat", PriceCents: 7, Public: true, Enabled: true},
+		{
+			ID: "canvas-chat-sol", Name: "画布 Sol 模型", ProviderID: "provider", UpstreamModel: "provider/gpt-5.6-sol",
+			Kind: "chat", PriceCents: 7, Public: true, Enabled: true,
+			SupportedReasoningEfforts: []string{"low", "medium", "high", "xhigh", "max"},
+		},
 	}
 	cfg.Workspaces = map[string]modelconfig.WorkspaceBinding{
 		modelconfig.WorkspaceT2I:     {ModelIDs: []string{"t2i-model"}},

@@ -37,6 +37,14 @@ export async function createAssistantConversation(
   )
 }
 
+export async function patchAssistantConversation(id, { title } = {}) {
+  return apiPatch(
+    `/assistant/conversations/${encodeURIComponent(id)}`,
+    { title },
+    { fallbackMessage: '重命名失败' },
+  )
+}
+
 export async function deleteAssistantConversation(id, { cancelActive = false } = {}) {
   return apiDelete(`/assistant/conversations/${encodeURIComponent(id)}`, {
     query: cancelActive ? { cancelActive: true } : null,

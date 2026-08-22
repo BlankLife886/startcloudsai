@@ -14,7 +14,6 @@ func TestReasoningEffortsForModel(t *testing.T) {
 		{model: "gpt-5.4", want: []string{"low", "medium", "high", "xhigh"}},
 		{model: "openai/gpt-5.4-2026-03-05", want: []string{"low", "medium", "high", "xhigh"}},
 		{model: "gpt-5.4-pro", want: []string{"medium", "high", "xhigh"}},
-		{model: "gpt-5.5-pro", want: []string{"medium", "high", "xhigh"}},
 		{model: "gpt-5.2-pro", want: []string{"medium", "high", "xhigh"}},
 		{model: "gpt-5.3-codex", want: []string{"low", "medium", "high", "xhigh"}},
 		{model: "gpt-5.3-codex-spark", want: []string{"low", "medium", "high", "xhigh"}},
@@ -25,10 +24,10 @@ func TestReasoningEffortsForModel(t *testing.T) {
 		{model: "provider/gpt-5-5"},
 		{model: "gpt-5-6"},
 		{model: "provider/gpt-5-6"},
-		{model: "gpt-5.6", want: []string{"low", "medium", "high", "xhigh", "max"}},
-		{model: "gpt-5.6-luna", want: []string{"low", "medium", "high", "xhigh", "max"}},
-		{model: "gpt-5.6-terra", want: []string{"low", "medium", "high", "xhigh", "max"}},
-		{model: "provider/gpt-5.6-sol", want: []string{"low", "medium", "high", "xhigh", "max"}},
+		{model: "gpt-5.5"},
+		{model: "gpt-5.6"},
+		{model: "gpt-5.6-luna"},
+		{model: "provider/gpt-5.6-sol"},
 		{model: "gpt-5.2-chat-latest"},
 		{model: "gpt-5-5-pro"},
 		{model: "gpt-5-5-codex"},
@@ -59,9 +58,9 @@ func TestReasoningEffortLabel(t *testing.T) {
 }
 
 func TestReasoningEffortsForModelReturnsACopy(t *testing.T) {
-	first := ReasoningEffortsForModel("gpt-5.6-terra")
+	first := ReasoningEffortsForModel("gpt-5.4")
 	first[0] = "changed"
-	if got := ReasoningEffortsForModel("gpt-5.6-terra")[0]; got != "low" {
+	if got := ReasoningEffortsForModel("gpt-5.4")[0]; got != "low" {
 		t.Fatalf("shared effort slice was mutated: %q", got)
 	}
 }
@@ -69,14 +68,14 @@ func TestReasoningEffortsForModelReturnsACopy(t *testing.T) {
 func TestNormalizeModelReasoningPricingBackfillsLegacyPrices(t *testing.T) {
 	discount := int64(4)
 	model := Model{
-		Kind: ModelKindChat, UpstreamModel: "gpt-5.6-terra",
+		Kind: ModelKindChat, UpstreamModel: "gpt-5.4",
 		PriceCents: 6, DiscountPriceCents: &discount,
 	}
 	normalizeModelReasoningPricing(&model)
 	if model.ReasoningPricing == nil || model.ReasoningPricing.DefaultEffort != "medium" {
 		t.Fatalf("pricing = %#v", model.ReasoningPricing)
 	}
-	if !reflect.DeepEqual(model.SupportedReasoningEfforts, []string{"low", "medium", "high", "xhigh", "max"}) {
+	if !reflect.DeepEqual(model.SupportedReasoningEfforts, []string{"low", "medium", "high", "xhigh"}) {
 		t.Fatalf("supported = %#v", model.SupportedReasoningEfforts)
 	}
 	medium := model.ReasoningPricing.Efforts["medium"]
@@ -93,7 +92,9 @@ func TestNormalizeModelReasoningPricingBackfillsLegacyPrices(t *testing.T) {
 func TestNormalizeModelReasoningPricingHonorsDisabledEfforts(t *testing.T) {
 	disabled := false
 	model := Model{
-		Kind: ModelKindChat, UpstreamModel: "gpt-5.6-luna", PriceCents: 10,
+		Kind: ModelKindChat, UpstreamModel: "provider/custom-reasoner", PriceCents: 10,
+		SupportedReasoningEfforts:    []string{"low", "medium", "high", "xhigh", "max"},
+		supportedReasoningEffortsSet: true,
 		ReasoningPricing: &ReasoningPricing{
 			DefaultEffort: "high",
 			Efforts: map[string]ReasoningEffortPricing{
@@ -131,7 +132,7 @@ func TestNormalizeModelReasoningPricingHonorsDisabledEfforts(t *testing.T) {
 
 func TestNormalizeModelReasoningPricingUsesIncomingSupportedList(t *testing.T) {
 	model := Model{
-		Kind: ModelKindChat, UpstreamModel: "gpt-5.6-luna", PriceCents: 10,
+		Kind: ModelKindChat, UpstreamModel: "provider/custom-reasoner", PriceCents: 10,
 		SupportedReasoningEfforts:    []string{"medium", "high"},
 		supportedReasoningEffortsSet: true,
 		ReasoningPricing: &ReasoningPricing{
@@ -146,8 +147,11 @@ func TestNormalizeModelReasoningPricingUsesIncomingSupportedList(t *testing.T) {
 	if !reflect.DeepEqual(model.SupportedReasoningEfforts, []string{"medium", "high"}) {
 		t.Fatalf("supported = %#v", model.SupportedReasoningEfforts)
 	}
-	if reasoningEffortEnabled(model.ReasoningPricing.Efforts["low"]) || reasoningEffortEnabled(model.ReasoningPricing.Efforts["xhigh"]) {
+	if reasoningEffortEnabled(model.ReasoningPricing.Efforts["low"]) {
 		t.Fatalf("efforts missing from supported list should be disabled: %#v", model.ReasoningPricing.Efforts)
+	}
+	if _, exists := model.ReasoningPricing.Efforts["xhigh"]; exists {
+		t.Fatalf("unconfigured custom effort should not be invented: %#v", model.ReasoningPricing.Efforts)
 	}
 
 	model.SupportedReasoningEfforts = nil
@@ -160,7 +164,7 @@ func TestNormalizeModelReasoningPricingUsesIncomingSupportedList(t *testing.T) {
 
 func TestModelUnmarshalKeepsEmptySupportedReasoningEfforts(t *testing.T) {
 	raw := []byte(`{
-		"id":"chat","name":"Chat","providerId":"provider","upstreamModel":"gpt-5.6-luna",
+		"id":"chat","name":"Chat","providerId":"provider","upstreamModel":"provider/custom-reasoner",
 		"kind":"chat","priceCents":10,"public":true,"enabled":true,
 		"supportedReasoningEfforts":[],
 		"reasoningPricing":{"defaultEffort":"medium","efforts":{"medium":{"assistantPriceCents":2,"canvasAgentPriceCents":6}}}
@@ -178,7 +182,7 @@ func TestModelUnmarshalKeepsEmptySupportedReasoningEfforts(t *testing.T) {
 	}
 
 	omitted := []byte(`{
-		"id":"chat","name":"Chat","providerId":"provider","upstreamModel":"gpt-5.6-luna",
+		"id":"chat","name":"Chat","providerId":"provider","upstreamModel":"provider/custom-reasoner",
 		"kind":"chat","priceCents":10,"public":true,"enabled":true
 	}`)
 	var legacy Model
@@ -245,6 +249,26 @@ func TestResolveReasoningPriceUsesConfiguredScopeAndDiscount(t *testing.T) {
 	canvas := ResolveReasoningPrice(model, "high", ReasoningPriceScopeCanvasAgent)
 	if canvas.StandardCents != 24 || canvas.EffectiveCents != 19 {
 		t.Fatalf("canvas price = %#v", canvas)
+	}
+}
+
+func TestNormalizeUnknownModelUsesConfiguredReasoningEfforts(t *testing.T) {
+	model := Model{
+		Kind: ModelKindChat, UpstreamModel: "provider/new-model", PriceCents: 10,
+		ReasoningPricing: &ReasoningPricing{
+			DefaultEffort: "deep",
+			Efforts: map[string]ReasoningEffortPricing{
+				"deep": {AssistantPriceCents: 7, CanvasAgentPriceCents: 21},
+				"max":  {AssistantPriceCents: 9, CanvasAgentPriceCents: 27},
+			},
+		},
+	}
+	normalizeModelReasoningPricing(&model)
+	if !reflect.DeepEqual(model.SupportedReasoningEfforts, []string{"deep", "max"}) {
+		t.Fatalf("configured efforts = %#v", model.SupportedReasoningEfforts)
+	}
+	if got := ResolveReasoningPrice(model, "deep", ReasoningPriceScopeAssistant); got.EffectiveCents != 7 {
+		t.Fatalf("configured price = %#v", got)
 	}
 }
 

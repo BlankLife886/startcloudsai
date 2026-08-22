@@ -74,6 +74,7 @@ export function arrangeCanvasNodes(nodes: CanvasArrangeNode[], edges: GraphLayou
     const safeOptions = normalizeOptions({ originX: 0, originY: 0, columnGap: options.columnGap, rowGap: options.rowGap });
     const normalized = normalizeArrangeNodes(nodes);
     if (!normalized.length) return { positions: new Map<string, { x: number; y: number }>(), arrangedKeys: [] as string[] };
+    const usableEdges = normalizeEdges(edges, normalized);
 
     const nodeByKey = new Map(normalized.map((node) => [node.key, node]));
     const groupKeys = new Set(normalized.filter((node) => node.isGroup).map((node) => node.key));
@@ -99,15 +100,20 @@ export function arrangeCanvasNodes(nodes: CanvasArrangeNode[], edges: GraphLayou
         const order = nodeByKey.get(key)?.order ?? Math.min(...members.map((member) => member.order));
         return { key, members, bounds, order };
     });
-    units.sort((left, right) => left.order - right.order || left.key.localeCompare(right.key));
+    units.sort((left, right) => unitCrossAxisStart(left, direction) - unitCrossAxisStart(right, direction)
+        || unitMainAxisStart(left, direction) - unitMainAxisStart(right, direction)
+        || compareStableStrings(left.key, right.key));
+    units.forEach((unit, order) => {
+        unit.order = order;
+    });
     const unitByMember = new Map<string, string>();
     units.forEach((unit) => unit.members.forEach((member) => unitByMember.set(member.key, unit.key)));
 
     const unitEdges: GraphLayoutEdge[] = [];
     const seenUnitEdges = new Set<string>();
-    edges.forEach((edge) => {
-        const from = unitByMember.get(String(edge.from || "").trim());
-        const to = unitByMember.get(String(edge.to || "").trim());
+    usableEdges.forEach((edge) => {
+        const from = unitByMember.get(edge.from);
+        const to = unitByMember.get(edge.to);
         if (!from || !to || from === to) return;
         const signature = `${from}\u0000${to}`;
         if (seenUnitEdges.has(signature)) return;
@@ -117,19 +123,7 @@ export function arrangeCanvasNodes(nodes: CanvasArrangeNode[], edges: GraphLayou
 
     const activeMembers = units.flatMap((unit) => unit.members);
     const anchor = boundsOf(activeMembers);
-    const layout = layoutCanvasGraph(
-        units.map((unit) => {
-            const width = unit.bounds.right - unit.bounds.left;
-            const height = unit.bounds.bottom - unit.bounds.top;
-            return { key: unit.key, width: direction === "TB" ? height : width, height: direction === "TB" ? width : height, order: unit.order };
-        }),
-        unitEdges,
-        {
-            ...safeOptions,
-            originX: direction === "TB" ? anchor.top : anchor.left,
-            originY: direction === "TB" ? anchor.left : anchor.top,
-        },
-    );
+    const layout = layoutArrangeUnits(units, unitEdges, safeOptions, anchor, direction);
     const positions = new Map<string, { x: number; y: number }>();
     units.forEach((unit) => {
         const layoutTarget = layout.positions.get(unit.key);
@@ -140,7 +134,7 @@ export function arrangeCanvasNodes(nodes: CanvasArrangeNode[], edges: GraphLayou
         unit.members.forEach((member) => positions.set(member.key, { x: member.x + dx, y: member.y + dy }));
     });
 
-    if (options.scope === "selection") avoidFixedNodeOverlap(positions, normalized, safeOptions.columnGap, direction);
+    if (options.scope === "selection") avoidFixedNodeOverlap(positions, normalized, usableEdges, safeOptions.columnGap, direction);
     const orderedPositions = new Map<string, { x: number; y: number }>();
     normalized.forEach((node) => {
         const position = positions.get(node.key);
@@ -212,7 +206,11 @@ function nodeComparator(nodes: NormalizedNode[]) {
 }
 
 function compareKeys(left: string, right: string, order: Map<string, number>) {
-    return (order.get(left) ?? 0) - (order.get(right) ?? 0) || left.localeCompare(right);
+    return (order.get(left) ?? 0) - (order.get(right) ?? 0) || compareStableStrings(left, right);
+}
+
+function compareStableStrings(left: string, right: string) {
+    return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function weaklyConnectedComponents(nodes: NormalizedNode[], edges: GraphLayoutEdge[], compareNodes: (left: NormalizedNode, right: NormalizedNode) => number) {
@@ -275,7 +273,7 @@ function layoutConnectedComponent(nodes: NormalizedNode[], edges: GraphLayoutEdg
         incoming.get(to)?.add(from);
     });
 
-    const compareBlocks = (left: LayoutBlock, right: LayoutBlock) => left.order - right.order || left.stableKey.localeCompare(right.stableKey);
+    const compareBlocks = (left: LayoutBlock, right: LayoutBlock) => left.order - right.order || compareStableStrings(left.stableKey, right.stableKey);
     const ranks = condensationRanks(blocks, incoming, outgoing, compareBlocks);
     const maxRank = Math.max(0, ...ranks.values());
     const columns = Array.from({ length: maxRank + 1 }, () => [] as LayoutBlock[]);
@@ -307,46 +305,59 @@ function layoutConnectedComponent(nodes: NormalizedNode[], edges: GraphLayoutEdg
 function stronglyConnectedComponents(nodes: NormalizedNode[], edges: GraphLayoutEdge[], compareNodes: (left: NormalizedNode, right: NormalizedNode) => number) {
     const nodeByKey = new Map(nodes.map((node) => [node.key, node]));
     const adjacent = new Map(nodes.map((node) => [node.key, [] as NormalizedNode[]]));
+    const reverseAdjacent = new Map(nodes.map((node) => [node.key, [] as NormalizedNode[]]));
     edges.forEach((edge) => {
+        const source = nodeByKey.get(edge.from);
         const target = nodeByKey.get(edge.to);
         if (target) adjacent.get(edge.from)?.push(target);
+        if (source) reverseAdjacent.get(edge.to)?.push(source);
     });
     adjacent.forEach((targets) => targets.sort(compareNodes));
-    let cursor = 0;
-    const indexByKey = new Map<string, number>();
-    const lowLink = new Map<string, number>();
-    const stack: NormalizedNode[] = [];
-    const onStack = new Set<string>();
-    const components: NormalizedNode[][] = [];
+    reverseAdjacent.forEach((sources) => sources.sort(compareNodes));
 
-    const visit = (node: NormalizedNode) => {
-        const index = cursor++;
-        indexByKey.set(node.key, index);
-        lowLink.set(node.key, index);
-        stack.push(node);
-        onStack.add(node.key);
-        (adjacent.get(node.key) || []).forEach((target) => {
-            if (!indexByKey.has(target.key)) {
-                visit(target);
-                lowLink.set(node.key, Math.min(lowLink.get(node.key) ?? index, lowLink.get(target.key) ?? index));
-            } else if (onStack.has(target.key)) {
-                lowLink.set(node.key, Math.min(lowLink.get(node.key) ?? index, indexByKey.get(target.key) ?? index));
-            }
-        });
-        if (lowLink.get(node.key) !== indexByKey.get(node.key)) return;
-        const component: NormalizedNode[] = [];
+    const visited = new Set<string>();
+    const finishOrder: NormalizedNode[] = [];
+    [...nodes].sort(compareNodes).forEach((root) => {
+        if (visited.has(root.key)) return;
+        visited.add(root.key);
+        const stack = [{ node: root, nextTarget: 0 }];
         while (stack.length) {
-            const member = stack.pop();
-            if (!member) break;
-            onStack.delete(member.key);
-            component.push(member);
-            if (member.key === node.key) break;
+            const frame = stack[stack.length - 1];
+            const targets = adjacent.get(frame.node.key) || [];
+            if (frame.nextTarget < targets.length) {
+                const target = targets[frame.nextTarget++];
+                if (visited.has(target.key)) continue;
+                visited.add(target.key);
+                stack.push({ node: target, nextTarget: 0 });
+                continue;
+            }
+            finishOrder.push(frame.node);
+            stack.pop();
+        }
+    });
+
+    const assigned = new Set<string>();
+    const components: NormalizedNode[][] = [];
+    for (let index = finishOrder.length - 1; index >= 0; index -= 1) {
+        const root = finishOrder[index];
+        if (assigned.has(root.key)) continue;
+        assigned.add(root.key);
+        const component: NormalizedNode[] = [];
+        const stack = [root];
+        while (stack.length) {
+            const node = stack.pop();
+            if (!node) continue;
+            component.push(node);
+            const sources = reverseAdjacent.get(node.key) || [];
+            for (let sourceIndex = sources.length - 1; sourceIndex >= 0; sourceIndex -= 1) {
+                const source = sources[sourceIndex];
+                if (assigned.has(source.key)) continue;
+                assigned.add(source.key);
+                stack.push(source);
+            }
         }
         components.push(component);
-    };
-    [...nodes].sort(compareNodes).forEach((node) => {
-        if (!indexByKey.has(node.key)) visit(node);
-    });
+    }
     return components;
 }
 
@@ -382,14 +393,55 @@ function reduceCrossings(columns: LayoutBlock[][], incoming: Map<number, Set<num
     };
     for (let round = 0; round < 4; round += 1) {
         for (let rank = 1; rank < columns.length; rank += 1) {
+            if (columns[rank].length < 2) continue;
             const indexes = blockIndexes(columns);
             columns[rank].sort((left, right) => compareOptionalScores(neighborScore(incoming.get(left.id), indexes), neighborScore(incoming.get(right.id), indexes)) || compareBlocks(left, right));
         }
         for (let rank = columns.length - 2; rank >= 0; rank -= 1) {
+            if (columns[rank].length < 2) continue;
             const indexes = blockIndexes(columns);
             columns[rank].sort((left, right) => compareOptionalScores(neighborScore(outgoing.get(left.id), indexes), neighborScore(outgoing.get(right.id), indexes)) || compareBlocks(left, right));
         }
     }
+    reduceCrossingsByAdjacentSwap(columns, incoming, outgoing);
+}
+
+function reduceCrossingsByAdjacentSwap(columns: LayoutBlock[][], incoming: Map<number, Set<number>>, outgoing: Map<number, Set<number>>) {
+    const locations = new Map<number, { rank: number; index: number }>();
+    columns.forEach((column, rank) => column.forEach((block, index) => locations.set(block.id, { rank, index })));
+    let improved = true;
+    while (improved) {
+        improved = false;
+        columns.forEach((column) => {
+            for (let index = 0; index < column.length - 1; index += 1) {
+                const first = column[index];
+                const second = column[index + 1];
+                const delta = neighborSwapCrossingDelta(incoming.get(first.id), incoming.get(second.id), locations)
+                    + neighborSwapCrossingDelta(outgoing.get(first.id), outgoing.get(second.id), locations);
+                if (delta >= 0) continue;
+                [column[index], column[index + 1]] = [second, first];
+                const firstLocation = locations.get(first.id);
+                const secondLocation = locations.get(second.id);
+                if (firstLocation) firstLocation.index = index + 1;
+                if (secondLocation) secondLocation.index = index;
+                improved = true;
+            }
+        });
+    }
+}
+
+function neighborSwapCrossingDelta(firstNeighbors: Set<number> | undefined, secondNeighbors: Set<number> | undefined, locations: Map<number, { rank: number; index: number }>) {
+    let delta = 0;
+    (firstNeighbors || []).forEach((firstId) => {
+        const first = locations.get(firstId);
+        if (!first) return;
+        (secondNeighbors || []).forEach((secondId) => {
+            const second = locations.get(secondId);
+            if (!second || first.rank !== second.rank || first.index === second.index) return;
+            delta += first.index < second.index ? 1 : -1;
+        });
+    });
+    return delta;
 }
 
 function blockIndexes(columns: LayoutBlock[][]) {
@@ -441,21 +493,28 @@ function offsets(sizes: number[], gap: number) {
 
 function rigidGroupRoots<T extends { key: string; groupKey?: string }>(nodes: T[], groupKeys: Set<string>, nodeByKey: Map<string, T>) {
     const roots = new Map<string, string>();
-    const resolve = (key: string, path: Set<string>): string => {
-        const cached = roots.get(key);
-        if (cached) return cached;
-        if (path.has(key)) throw new Error(`Cyclic canvas group relation at ${key}`);
-        const node = nodeByKey.get(key);
-        const parent = node?.groupKey && groupKeys.has(node.groupKey) && nodeByKey.has(node.groupKey) ? node.groupKey : "";
-        if (!parent || parent === key) {
-            roots.set(key, key);
-            return key;
+    nodes.forEach((node) => {
+        if (roots.has(node.key)) return;
+        const path: string[] = [];
+        const pathIndexes = new Map<string, number>();
+        let current = node.key;
+        let root = "";
+        while (!root) {
+            const cached = roots.get(current);
+            if (cached) {
+                root = cached;
+                break;
+            }
+            if (pathIndexes.has(current)) throw new Error(`Cyclic canvas group relation at ${current}`);
+            pathIndexes.set(current, path.length);
+            path.push(current);
+            const currentNode = nodeByKey.get(current);
+            const parent = currentNode?.groupKey && groupKeys.has(currentNode.groupKey) && nodeByKey.has(currentNode.groupKey) ? currentNode.groupKey : "";
+            if (!parent || parent === current) root = current;
+            else current = parent;
         }
-        const root = resolve(parent, new Set(path).add(key));
-        roots.set(key, root);
-        return root;
-    };
-    nodes.forEach((node) => resolve(node.key, new Set()));
+        path.forEach((key) => roots.set(key, root));
+    });
     return roots;
 }
 
@@ -471,30 +530,178 @@ function boundsOf(nodes: Array<{ x: number; y: number; width: number; height: nu
     );
 }
 
-function avoidFixedNodeOverlap(positions: Map<string, { x: number; y: number }>, nodes: ReturnType<typeof normalizeArrangeNodes>, gap: number, direction: "LR" | "TB") {
-    const arranged = new Set(positions.keys());
-    const fixed = nodes.filter((node) => !arranged.has(node.key));
-    for (let round = 0; round <= fixed.length; round += 1) {
-        let shift = 0;
-        nodes.forEach((node) => {
-            const position = positions.get(node.key);
-            if (!position) return;
-            fixed.forEach((fixedNode) => {
-                if (!rectanglesOverlap(position.x, position.y, node.width, node.height, fixedNode.x, fixedNode.y, fixedNode.width, fixedNode.height)) return;
-                shift = Math.max(shift, direction === "TB"
-                    ? fixedNode.y + fixedNode.height + gap - position.y
-                    : fixedNode.x + fixedNode.width + gap - position.x);
-            });
+function unitCrossAxisStart(unit: { bounds: ReturnType<typeof boundsOf> }, direction: "LR" | "TB") {
+    return direction === "TB" ? unit.bounds.left : unit.bounds.top;
+}
+
+function unitMainAxisStart(unit: { bounds: ReturnType<typeof boundsOf> }, direction: "LR" | "TB") {
+    return direction === "TB" ? unit.bounds.top : unit.bounds.left;
+}
+
+function layoutArrangeUnits(
+    units: Array<{ key: string; bounds: ReturnType<typeof boundsOf>; order: number }>,
+    edges: GraphLayoutEdge[],
+    options: GraphLayoutOptions,
+    anchor: ReturnType<typeof boundsOf>,
+    direction: "LR" | "TB",
+) {
+    const stateSignature = () => JSON.stringify([...units].sort((left, right) => left.order - right.order || compareStableStrings(left.key, right.key)).map((unit) => unit.key));
+    const seen = new Map<string, number>();
+    const results: Array<{ layout: ReturnType<typeof layoutCanvasGraph>; nextState: string }> = [];
+    let state = stateSignature();
+    seen.set(state, 0);
+
+    // Geometry-based ordering can expose another strict crossing improvement.
+    // Resolve that feedback inside one arrange call so repeated requests do not
+    // shuffle branches a second time.
+    const iterationLimit = Math.min(4, Math.max(2, units.length));
+    for (let iteration = 0; iteration < iterationLimit; iteration += 1) {
+        const layout = layoutCanvasGraph(
+            units.map((unit) => {
+                const width = unit.bounds.right - unit.bounds.left;
+                const height = unit.bounds.bottom - unit.bounds.top;
+                return { key: unit.key, width: direction === "TB" ? height : width, height: direction === "TB" ? width : height, order: unit.order };
+            }),
+            edges,
+            {
+                ...options,
+                originX: direction === "TB" ? anchor.top : anchor.left,
+                originY: direction === "TB" ? anchor.left : anchor.top,
+            },
+        );
+        const nextOrder = [...units].sort((left, right) => {
+            const leftPosition = layout.positions.get(left.key);
+            const rightPosition = layout.positions.get(right.key);
+            return (leftPosition?.y ?? 0) - (rightPosition?.y ?? 0)
+                || (leftPosition?.x ?? 0) - (rightPosition?.x ?? 0)
+                || compareStableStrings(left.key, right.key);
         });
-        if (!(shift > 0)) break;
-        positions.forEach((position, key) => positions.set(key, direction === "TB"
-            ? { x: position.x, y: position.y + shift }
-            : { x: position.x + shift, y: position.y }));
+        const nextState = JSON.stringify(nextOrder.map((unit) => unit.key));
+        results.push({ layout, nextState });
+        if (nextState === state) return layout;
+
+        const cycleStart = seen.get(nextState);
+        if (cycleStart !== undefined) {
+            return [...results.slice(cycleStart)].sort((left, right) => compareStableStrings(left.nextState, right.nextState))[0].layout;
+        }
+        nextOrder.forEach((unit, order) => {
+            unit.order = order;
+        });
+        state = nextState;
+        seen.set(state, results.length);
     }
+    return [...results].sort((left, right) => compareStableStrings(left.nextState, right.nextState))[0].layout;
+}
+
+function avoidFixedNodeOverlap(
+    positions: Map<string, { x: number; y: number }>,
+    nodes: ReturnType<typeof normalizeArrangeNodes>,
+    edges: GraphLayoutEdge[],
+    gap: number,
+    direction: "LR" | "TB",
+) {
+    const arranged = new Set(positions.keys());
+    const moving = nodes.filter((node) => arranged.has(node.key));
+    const fixed = nodes.filter((node) => !arranged.has(node.key));
+    const nodeByKey = new Map(nodes.map((node) => [node.key, node]));
+    let minimumShift = Number.NEGATIVE_INFINITY;
+    let maximumShift = Number.POSITIVE_INFINITY;
+    edges.forEach((edge) => {
+        const fromNode = nodeByKey.get(edge.from);
+        const toNode = nodeByKey.get(edge.to);
+        const fromPosition = positions.get(edge.from);
+        const toPosition = positions.get(edge.to);
+        if (!fromNode || !toNode || Boolean(fromPosition) === Boolean(toPosition)) return;
+        if (fromPosition) {
+            maximumShift = Math.min(maximumShift, axisStart(toNode, direction) - gap - axisEnd(fromNode, fromPosition, direction));
+            return;
+        }
+        if (toPosition) {
+            minimumShift = Math.max(minimumShift, axisEnd(fromNode, fromNode, direction) + gap - axisStart(toPosition, direction));
+        }
+    });
+    const directionalConstraintsAreCompatible = minimumShift <= maximumShift;
+
+    const overlapsFixed = moving.some((node) => {
+        const position = positions.get(node.key);
+        return Boolean(position && fixed.some((fixedNode) => rectanglesOverlap(position.x, position.y, node.width, node.height, fixedNode.x, fixedNode.y, fixedNode.width, fixedNode.height)));
+    });
+    const directionRequiresShift = directionalConstraintsAreCompatible && (minimumShift > 0 || maximumShift < 0);
+    if (!overlapsFixed && !directionRequiresShift) return;
+
+    // Each fixed/moving pair forbids an interval of rigid translations on the
+    // layout axis. Pick the closest permitted boundary of the merged interval;
+    // this clears every obstacle at once and avoids cascading collisions.
+    const clearance = overlapsFixed || directionRequiresShift ? gap : 0;
+    const forbidden: Array<[number, number]> = [];
+    moving.forEach((node) => {
+        const position = positions.get(node.key);
+        if (!position) return;
+        fixed.forEach((fixedNode) => {
+            if (direction === "TB") {
+                if (!spansOverlap(position.x, position.x + node.width, fixedNode.x, fixedNode.x + fixedNode.width)) return;
+                forbidden.push([
+                    fixedNode.y - clearance - (position.y + node.height),
+                    fixedNode.y + fixedNode.height + clearance - position.y,
+                ]);
+                return;
+            }
+            if (!spansOverlap(position.y, position.y + node.height, fixedNode.y, fixedNode.y + fixedNode.height)) return;
+            forbidden.push([
+                fixedNode.x - clearance - (position.x + node.width),
+                fixedNode.x + fixedNode.width + clearance - position.x,
+            ]);
+        });
+    });
+    forbidden.sort((left, right) => left[0] - right[0] || left[1] - right[1]);
+
+    const merged: Array<[number, number]> = [];
+    forbidden.forEach((interval) => {
+        const current = merged[merged.length - 1];
+        if (!current || interval[0] >= current[1]) {
+            merged.push(interval);
+            return;
+        }
+        current[1] = Math.max(current[1], interval[1]);
+    });
+
+    const preferredShift = directionalConstraintsAreCompatible ? Math.max(minimumShift, Math.min(maximumShift, 0)) : 0;
+    const containingPreferred = merged.find((interval) => interval[0] < preferredShift && interval[1] > preferredShift);
+    let shift = preferredShift;
+    if (containingPreferred) {
+        let candidates = [containingPreferred[0], containingPreferred[1]];
+        if (directionalConstraintsAreCompatible) {
+            candidates = candidates.filter((candidate) => candidate >= minimumShift && candidate <= maximumShift);
+            if (!candidates.length) throw new Error("Selected nodes cannot avoid fixed nodes while preserving connection direction");
+        }
+        candidates.sort((left, right) => directionalShiftPenalty(left, minimumShift, maximumShift) - directionalShiftPenalty(right, minimumShift, maximumShift)
+            || Math.abs(left) - Math.abs(right)
+            || right - left);
+        [shift] = candidates;
+    }
+    positions.forEach((position, key) => positions.set(key, direction === "TB"
+        ? { x: position.x, y: position.y + shift }
+        : { x: position.x + shift, y: position.y }));
+}
+
+function directionalShiftPenalty(shift: number, minimum: number, maximum: number) {
+    return Math.max(0, minimum - shift) + Math.max(0, shift - maximum);
+}
+
+function axisStart(position: { x: number; y: number }, direction: "LR" | "TB") {
+    return direction === "TB" ? position.y : position.x;
+}
+
+function axisEnd(node: { width: number; height: number }, position: { x: number; y: number }, direction: "LR" | "TB") {
+    return axisStart(position, direction) + (direction === "TB" ? node.height : node.width);
 }
 
 function rectanglesOverlap(ax: number, ay: number, aw: number, ah: number, bx: number, by: number, bw: number, bh: number) {
     return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+}
+
+function spansOverlap(aStart: number, aEnd: number, bStart: number, bEnd: number) {
+    return aStart < bEnd && aEnd > bStart;
 }
 
 function finiteNumber(value: number, label: string) {

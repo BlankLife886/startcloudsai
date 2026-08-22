@@ -29,7 +29,7 @@ func isUserUploadObjectKey(userID uuid.UUID, key string) bool {
 	if len(parts) != 4 || parts[0] != "uploads" || parts[1] != userID.String() {
 		return false
 	}
-	if parts[2] != "original" && parts[2] != "thumb" {
+	if parts[2] != "original" && parts[2] != "thumb" && parts[2] != "display" {
 		return false
 	}
 	return parts[3] != "" && !strings.Contains(parts[3], "..") && !strings.Contains(parts[3], "\\")

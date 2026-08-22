@@ -29,6 +29,7 @@ const FIELD_META = {
   quality: { key: 'quality', label: '质量', icon: 'bi-stars' },
   count: { key: 'count', label: '张数', icon: 'bi-images' },
   model: { key: 'model', label: '模型', icon: 'bi-cpu' },
+  reasoning: { key: 'reasoning', label: '推理强度', icon: 'bi-speedometer2' },
   material: { key: 'material', label: '提示词素材', icon: 'bi-journal-richtext' },
   device: { key: 'device', label: '设备', icon: 'bi-display' },
 }
@@ -43,16 +44,22 @@ const PROFILES = {
       resolution: '1K',
       count: 2,
       model: '',
+      reasoningEffort: '',
     },
     fields: (config) =>
       config.skill === 'image'
         ? ['skill', 'model', 'ratio', 'resolution', 'count']
-        : ['skill', 'model'],
+        : ['skill', 'model', 'reasoning'],
     fieldMeta: {
       skill: { label: '创作类型', icon: 'bi-magic' },
+      reasoning: { configKey: 'reasoningEffort' },
     },
     options: {
       skill: [
+        option('chat', '问答模式', {
+          icon: 'bi-chat-left-dots',
+          description: '只进行对话，不调用图片生成',
+        }),
         option('agent', 'Agent 模式', {
           icon: 'bi-magic',
           description: '自动识别对话与生图',

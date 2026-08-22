@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
 import { useLocation, useNavigation } from "react-router";
+import { ClientAnnouncementHost } from "../components/ClientAnnouncementHost.jsx";
 import { NavBar } from "./NavBar.jsx";
 import { AuthPromptProvider } from "../auth/AuthPromptContext.jsx";
 import { useRouteMotion } from "../components/motion/RouteMotionController.jsx";
@@ -151,6 +152,7 @@ export function AppShell() {
             </div>
           )}
           <NavBar />
+          <ClientAnnouncementHost />
           <main
             ref={mainRef}
             className={mainClasses.join(" ")}

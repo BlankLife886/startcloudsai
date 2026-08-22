@@ -742,11 +742,6 @@
   max-height: 560px;
   object-fit: contain;
   background: var(--assistant-image-bg);
-  transition: transform 180ms ease;
-}
-.assistant-workspace .generated-image-preview:hover img,
-.assistant-workspace .generated-image-preview:focus-visible img {
-  transform: scale(1.03);
 }
 .assistant-workspace .generated-image-preview > span {
   position: absolute;
@@ -994,8 +989,11 @@
 .assistant-dialog-layer {
   --assistant-card: #ffffff;
   --assistant-text: #1f211c;
+  --assistant-text-soft: rgb(31 33 28 / 72%);
   --assistant-muted: #6f736c;
   --assistant-border: rgb(32 34 28 / 8%);
+  --assistant-accent: #6556d9;
+  --assistant-accent-ink: #5143bd;
   --assistant-panel-hover: #f3f3ef;
   --assistant-danger: #c4473e;
   --assistant-danger-hover: #b03d35;
@@ -1016,7 +1014,10 @@
 .assistant-dialog-layer.is-dark {
   --assistant-card: #161821;
   --assistant-text: #e8ebf4;
+  --assistant-text-soft: rgb(232 235 244 / 72%);
   --assistant-muted: #9aa3b8;
+  --assistant-accent: #b49cff;
+  --assistant-accent-ink: #d8b4fe;
   --assistant-border: rgb(255 255 255 / 7%);
   --assistant-panel-hover: rgb(255 255 255 / 6%);
   --assistant-danger: #e07068;
@@ -3838,11 +3839,6 @@
   width: 100%;
   height: 100%;
   object-fit: cover;
-  transition: transform 180ms ease;
-}
-
-.assistant-workspace .sent-reference-images button:hover img {
-  transform: scale(1.06);
 }
 
 .asset-library-layer {

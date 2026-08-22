@@ -131,6 +131,33 @@ func TestAssistantProposalPromptFromAgentTextKeepsVisualBrief(t *testing.T) {
 	}
 }
 
+func TestAttachAssistantProposalReferencesKeepsOnlyUserUploads(t *testing.T) {
+	run := &store.AssistantRun{Params: map[string]any{
+		"referenceImages": []any{
+			map[string]any{"id": "user-ref", "fileKey": "uploads/u/a.png", "dataUrl": "/api/v1/files/uploads/u/a.png"},
+		},
+	}}
+	catalog := []assistantCatalogImage{
+		{ID: "user-ref", Image: map[string]any{"id": "user-ref", "fileKey": "uploads/u/a.png"}},
+		{ID: "old-1", Image: map[string]any{"id": "old-1", "fileKey": "tasks/u/1.png", "dataUrl": "/api/v1/files/tasks/u/1.png"}},
+	}
+	got := attachAssistantProposalReferences(assistantImageProposal{ReferencedImageIDs: []string{"user-ref", "old-1"}}, run, catalog, nil)
+	if len(got.ReferenceImages) != 1 || assistantMapString(got.ReferenceImages[0], "id") != "user-ref" {
+		t.Fatalf("refs = %#v", got.ReferenceImages)
+	}
+}
+
+func TestAttachAssistantProposalReferencesUsesHistoryWhenUserDidNotAttach(t *testing.T) {
+	run := &store.AssistantRun{Params: map[string]any{}}
+	catalog := []assistantCatalogImage{
+		{ID: "old-1", Image: map[string]any{"id": "old-1", "fileKey": "tasks/u/1.png", "dataUrl": "/api/v1/files/tasks/u/1.png"}},
+	}
+	got := attachAssistantProposalReferences(assistantImageProposal{ReferencedImageIDs: []string{"old-1"}}, run, catalog, nil)
+	if len(got.ReferenceImages) != 1 || assistantMapString(got.ReferenceImages[0], "id") != "old-1" {
+		t.Fatalf("refs = %#v", got.ReferenceImages)
+	}
+}
+
 func TestNormalizeAssistantProposalUsesConfiguredCapabilities(t *testing.T) {
 	run := &store.AssistantRun{Prompt: "生成海报", Params: map[string]any{
 		"ratio": "1:1", "resolution": "1K", "count": float64(1), "quality": "low",

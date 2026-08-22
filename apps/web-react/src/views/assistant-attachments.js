@@ -4,20 +4,58 @@ export function isPSDFile(file) {
   return name.endsWith(".psd") || type === "image/vnd.adobe.photoshop" || type === "image/x-photoshop";
 }
 
+const IMAGE_NAME = /\.(png|jpe?g|webp|gif|bmp)$/i;
+
+function clipboardHintType(file, hintType = "") {
+  return String(file?.type || hintType || "").trim().toLowerCase();
+}
+
+export function isAssistantImageFile(file, hintType = "") {
+  if (!file || isPSDFile(file)) return false;
+  const type = clipboardHintType(file, hintType);
+  if (type.startsWith("image/")) return true;
+  return IMAGE_NAME.test(String(file.name || ""));
+}
+
+function extensionForImageType(type) {
+  if (type.includes("jpeg")) return "jpg";
+  if (type.includes("webp")) return "webp";
+  if (type.includes("gif")) return "gif";
+  if (type.includes("bmp")) return "bmp";
+  return "png";
+}
+
+function normalizeClipboardFile(file, hintType = "") {
+  if (!isAssistantImageFile(file, hintType)) return file;
+  const type = clipboardHintType(file, hintType);
+  const name = String(file.name || "").trim();
+  const nextType = type || "image/png";
+  const nextName = name || `paste-${Date.now()}.${extensionForImageType(nextType)}`;
+  if (file.type === nextType && file.name === nextName) return file;
+  return new File([file], nextName, { type: nextType, lastModified: file.lastModified || Date.now() });
+}
+
+function clipboardFileKey(file, hintType = "") {
+  const type = clipboardHintType(file, hintType) || "application/octet-stream";
+  return `${file.size || 0}|${type}`;
+}
+
 export function assistantClipboardFiles(clipboardData) {
   if (!clipboardData) return [];
   const out = [];
   const seen = new Set();
-  const add = (file) => {
+  const add = (file, hintType = "") => {
     if (!file) return;
-    const key = [file.name || "", file.type || "", file.size || 0, file.lastModified || 0].join("|");
+    const key = clipboardFileKey(file, hintType);
     if (seen.has(key)) return;
     seen.add(key);
-    out.push(file);
+    out.push(normalizeClipboardFile(file, hintType));
   };
-  for (const file of Array.from(clipboardData.files || [])) add(file);
+  const files = Array.from(clipboardData.files || []);
+  for (const file of files) add(file);
   for (const item of Array.from(clipboardData.items || [])) {
-    if (item?.kind === "file" && typeof item.getAsFile === "function") add(item.getAsFile());
+    if (item?.kind !== "file" || typeof item.getAsFile !== "function") continue;
+    add(item.getAsFile(), item.type);
   }
   return out;
 }

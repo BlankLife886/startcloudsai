@@ -63,6 +63,7 @@ func TestAssistantConfigIncludesStandardAndDiscountPointPrices(t *testing.T) {
 		{
 			ID: "chat-model", Name: "Chat Model", ProviderID: "provider", UpstreamModel: "gpt-5.6-luna",
 			Kind: modelconfig.ModelKindChat, PriceCents: 5, Public: true, Enabled: true,
+			SupportedReasoningEfforts: []string{"low", "medium", "high", "xhigh", "max"},
 			ReasoningPricing: &modelconfig.ReasoningPricing{
 				DefaultEffort: "medium",
 				Efforts: map[string]modelconfig.ReasoningEffortPricing{
@@ -213,9 +214,9 @@ func TestNormalizeAssistantReasoningEffortForModel(t *testing.T) {
 		{name: "gpt 5.4 xhigh", value: " XHIGH ", model: "gpt-5.4", want: "xhigh"},
 		{name: "gpt 5.4 rejects max", value: "max", model: "gpt-5.4", wantErr: true},
 		{name: "gpt 5.4 pro rejects low", value: "low", model: "gpt-5.4-pro", wantErr: true},
-		{name: "gpt 5.6 luna defaults medium", model: "gpt-5.6-luna", defaultStandard: true, want: "medium"},
-		{name: "gpt 5.6 terra accepts max", value: "max", model: "gpt-5.6-terra", want: "max"},
-		{name: "gpt 5.6 sol defaults medium", model: "gpt-5.6-sol", defaultStandard: true, want: "medium"},
+		{name: "gpt 5.6 luna remains unset without config", model: "gpt-5.6-luna", defaultStandard: true},
+		{name: "gpt 5.6 terra rejects effort without config", value: "max", model: "gpt-5.6-terra", wantErr: true},
+		{name: "gpt 5.6 sol remains unset without config", model: "gpt-5.6-sol", defaultStandard: true},
 		{name: "gpt 5.6 alias remains unset", model: "gpt-5-6", defaultStandard: true},
 		{name: "gpt 5.6 alias rejects explicit effort", value: "xhigh", model: "gpt-5-6", wantErr: true},
 		{name: "gpt 5.5 alias remains unset", model: "gpt-5-5", defaultStandard: true},
@@ -514,6 +515,14 @@ func TestAssistantConversationLifecycle(t *testing.T) {
 	if id == "" || data["title"] != "持久化测试" || data["workspace"] != "assistant" {
 		t.Fatalf("created conversation = %#v", data)
 	}
+	renamed := env.do(t, http.MethodPatch, "/api/v1/assistant/conversations/"+id, map[string]any{"title": "已改名"}, token)
+	if renamed.Code != http.StatusOK {
+		t.Fatalf("rename conversation: status %d body %s", renamed.Code, renamed.Body.String())
+	}
+	renamedData, _ := decode(t, renamed)
+	if renamedData["title"] != "已改名" {
+		t.Fatalf("renamed conversation = %#v", renamedData)
+	}
 
 	designCreated := env.do(t, http.MethodPost, "/api/v1/assistant/conversations", map[string]any{
 		"title": "框选图片编辑", "workspace": "ui_design",
@@ -719,6 +728,29 @@ func TestAssistantPSDProcessingIsUnavailable(t *testing.T) {
 	if recorder.Code != http.StatusBadRequest ||
 		!strings.Contains(recorder.Body.String(), "assistant_psd_unavailable") {
 		t.Fatalf("PSD upload: status %d body %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestAssistantAgentRejectsImageCountAboveModelLimit(t *testing.T) {
+	env := newCommunityEnv(t)
+	env.cfg.Sub2APIAPIKey = "test-key"
+	env.cfg.Sub2APIBaseURL = "https://sub2api.test"
+	_, token := env.newUserSession(t, "user")
+	created := env.do(t, http.MethodPost, "/api/v1/assistant/conversations", map[string]any{
+		"title": "Agent count validation",
+	}, token)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create conversation: status %d body %s", created.Code, created.Body.String())
+	}
+	conversation, _ := decode(t, created)
+	response := env.do(t, http.MethodPost, "/api/v1/assistant/runs", map[string]any{
+		"conversationId": conversation["id"],
+		"prompt":         "生成五张图片",
+		"mode":           "agent",
+		"count":          modelconfig.DefaultMaxImages + 1,
+	}, token)
+	if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "图片数量须在 1-4 之间") {
+		t.Fatalf("agent image count: status %d body %s", response.Code, response.Body.String())
 	}
 }
 
@@ -1030,6 +1062,7 @@ func TestInfiniteCanvasSelectsItsAssignedChatModel(t *testing.T) {
 func TestCanvasAgentReasoningPrice(t *testing.T) {
 	model := modelconfig.Model{
 		Kind: modelconfig.ModelKindChat, UpstreamModel: "gpt-5.6-sol", PriceCents: 7,
+		SupportedReasoningEfforts: []string{"low", "medium", "high", "xhigh", "max"},
 	}
 	tests := []struct {
 		effort    string
@@ -1318,8 +1351,12 @@ func TestCancelAssistantRunQueuesGeneratedImagesAtomically(t *testing.T) {
 		t.Fatalf("cancel assistant run: status %d body %s", response.Code, response.Body.String())
 	}
 	storedRun, err := store.GetAssistantRun(ctx, env.st.Pool, run.ID)
-	if err != nil || storedRun == nil || storedRun.Status != "canceled" {
+	if err != nil || storedRun == nil || storedRun.Status != "canceled" || storedRun.ErrorCode == nil || *storedRun.ErrorCode != "user_canceled" || storedRun.ErrorMessage == nil || *storedRun.ErrorMessage != "用户主动停止任务" {
 		t.Fatalf("stored canceled run = %#v, err = %v", storedRun, err)
+	}
+	adminTasks, err := store.ListAdminTasks(ctx, env.st.Pool, store.PromptTaskTypeAssistant, "canceled", "user_canceled", []uuid.UUID{user.ID}, 20, nil, "")
+	if err != nil || len(adminTasks) != 1 || adminTasks[0].ID != run.ID || adminTasks[0].ErrorCode == nil || *adminTasks[0].ErrorCode != "user_canceled" || adminTasks[0].ErrorMessage == nil || *adminTasks[0].ErrorMessage != "用户主动停止任务" {
+		t.Fatalf("admin canceled task = %#v, err = %v", adminTasks, err)
 	}
 	storedMessage, err := store.GetAssistantMessage(ctx, env.st.Pool, assistantMessageID)
 	if err != nil || storedMessage == nil || storedMessage.Status != "stopped" {

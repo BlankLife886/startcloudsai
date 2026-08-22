@@ -151,9 +151,14 @@ func TestAssistantCancelAndRetryReleaseEveryReservation(t *testing.T) {
 	if _, canceled, err := assistantbilling.CancelUser(context.Background(), st, user.ID, run.ID); err != nil || !canceled {
 		t.Fatalf("cancel = %v err=%v", canceled, err)
 	}
-	if state := walletState(t, st, user.ID); state.BalanceCents != 100 || state.FrozenCents != 0 {
+	if state := walletState(t, st, user.ID); state.BalanceCents != 80 || state.FrozenCents != 0 {
 		t.Fatalf("canceled wallet = %#v", state)
 	}
+	stored, err = store.GetAssistantRun(context.Background(), st.Pool, run.ID)
+	if err != nil || stored == nil || stored.Status != "canceled" || stored.CostCents != 20 || pointerString(stored.ErrorCode) != "user_canceled" || pointerString(stored.ErrorMessage) != "用户主动停止任务" {
+		t.Fatalf("canceled run = %#v err=%v", stored, err)
+	}
+	assertLedgerReason(t, st, user.ID, "AI 助手由用户主动停止，本轮积分不退还")
 }
 
 func TestCanvasAssistantReserveUsesCanvasLedgerReason(t *testing.T) {
@@ -194,9 +199,50 @@ func TestCanvasAgentCancelAfterBillableActionSettlesReservedFee(t *testing.T) {
 		t.Fatalf("settled canceled wallet = %#v", state)
 	}
 	stored, err := store.GetAssistantRun(context.Background(), st.Pool, run.ID)
-	if err != nil || stored == nil || stored.Status != "canceled" || stored.CostCents != 15 {
+	if err != nil || stored == nil || stored.Status != "canceled" || stored.CostCents != 15 || pointerString(stored.ErrorCode) != "user_canceled" || pointerString(stored.ErrorMessage) != "用户主动停止任务" {
 		t.Fatalf("stored run = %#v err=%v", stored, err)
 	}
+	assertLedgerReason(t, st, user.ID, "无限画布由用户主动停止，按已完成画布操作结算")
+}
+
+func TestCanvasAgentCancelBeforeBillableActionReleasesReservation(t *testing.T) {
+	st := testdb.Setup(t)
+	user := billingUser(t, st, 100)
+	run := billingRun(t, st, user.ID, 15, map[string]any{
+		"_source": "react_canvas", "workspace": "infinite_canvas", "_chatCostCents": int64(15),
+	})
+	if _, canceled, err := assistantbilling.CancelUser(context.Background(), st, user.ID, run.ID); err != nil || !canceled {
+		t.Fatalf("cancel = %v err=%v", canceled, err)
+	}
+	if state := walletState(t, st, user.ID); state.BalanceCents != 100 || state.FrozenCents != 0 {
+		t.Fatalf("released canceled wallet = %#v", state)
+	}
+	stored, err := store.GetAssistantRun(context.Background(), st.Pool, run.ID)
+	if err != nil || stored == nil || stored.Status != "canceled" || stored.CostCents != 0 || pointerString(stored.ErrorCode) != "user_canceled" || pointerString(stored.ErrorMessage) != "用户主动停止任务" {
+		t.Fatalf("stored run = %#v err=%v", stored, err)
+	}
+	assertLedgerReason(t, st, user.ID, "无限画布由用户主动停止，未执行画布操作，费用已退回")
+}
+
+func assertLedgerReason(t *testing.T, st *store.Store, userID uuid.UUID, want string) {
+	t.Helper()
+	entries, err := store.ListLedger(context.Background(), st.Pool, userID, 50, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.Reason != nil && *entry.Reason == want {
+			return
+		}
+	}
+	t.Fatalf("ledger reason %q missing: %#v", want, ledgerReasons(entries))
+}
+
+func pointerString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func ledgerReasons(entries []*store.LedgerEntry) []string {

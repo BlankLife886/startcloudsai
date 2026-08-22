@@ -671,6 +671,7 @@ export function NavBar() {
       ref={rootRef}
       className={`site-header${isDark ? " is-dark" : ""}${isHome ? " is-home-dark" : ""}${isCanvas ? " is-canvas" : ""}${scrolled ? " is-scrolled" : ""}${mobileOpen ? " is-mobile-open" : ""}`}
     >
+      <div id="site-announcement-slot" />
       <div className="header-shell">
         <div className="header-row">
           <div className="brand-cluster">
@@ -685,7 +686,6 @@ export function NavBar() {
               </span>
               <span className="brand-copy">
                 <strong>星空云绘</strong>
-                <small>StarCloudIsAI</small>
               </span>
             </Link>
           </div>

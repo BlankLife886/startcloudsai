@@ -17,6 +17,30 @@ test("collects pasted documents and images without duplicate clipboard entries",
   assert.deepEqual(files, [document, image]);
 });
 
+test("keeps a single pasted image when files and items both expose it", () => {
+  const named = new File(["png-bytes"], "image.png", { type: "image/png", lastModified: 1 });
+  const unnamed = new File(["png-bytes"], "", { type: "", lastModified: 2 });
+  Object.defineProperty(unnamed, "type", { value: "" });
+  const files = assistantClipboardFiles({
+    files: [named],
+    items: [{ kind: "file", type: "image/png", getAsFile: () => unnamed }],
+  });
+  assert.equal(files.length, 1);
+  assert.equal(files[0].name, "image.png");
+});
+
+test("treats clipboard screenshots with empty MIME type as images", () => {
+  const screenshot = new File(["png"], "", { type: "" });
+  Object.defineProperty(screenshot, "type", { value: "" });
+  const files = assistantClipboardFiles({
+    files: [],
+    items: [{ kind: "file", type: "image/png", getAsFile: () => screenshot }],
+  });
+  assert.equal(files.length, 1);
+  assert.equal(files[0].type, "image/png");
+  assert.match(files[0].name, /^paste-\d+\.png$/);
+});
+
 test("keeps plain text paste native and recognizes PSD MIME or extension", () => {
   assert.deepEqual(assistantClipboardFiles({ items: [{ kind: "string" }] }), []);
   assert.equal(isPSDFile({ name: "LAYOUT.PSD", type: "application/octet-stream" }), true);

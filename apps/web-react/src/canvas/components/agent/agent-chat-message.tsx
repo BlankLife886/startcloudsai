@@ -179,7 +179,7 @@ function AgentCanvasMention({ reference, theme }: { reference: AgentCanvasRefere
     const node = useAgentStore((state) => state.canvasContext?.snapshot.nodes.find((item) => item.id === reference.nodeId));
     const endpoint = useAgentStore((state) => state.url);
     const token = useAgentStore((state) => state.token);
-    const previewUrl = resolveAgentMessageAssetUrl(endpoint, token, reference.previewUrl || node?.metadata?.content || "");
+    const previewUrl = useAgentAssetUrl(endpoint, token, reference.previewUrl || node?.metadata?.content || "");
     const previewText = reference.text || node?.metadata?.content || node?.metadata?.prompt;
     const Icon = canvasReferenceIcon(reference.kind);
     return (
@@ -547,17 +547,7 @@ function AgentMessageAttachments({ attachments, alignRight }: { attachments: Age
     return (
         <>
             <div className={`mt-1.5 flex flex-wrap gap-1.5 ${alignRight ? "justify-end" : "justify-start"}`}>
-                {attachments.map((item) => (
-                    <img
-                        key={item.id}
-                        src={item.url}
-                        alt={item.name}
-                        title={t("agent.message.viewLarge")}
-                        className="size-10 cursor-zoom-in rounded-lg object-cover"
-                        draggable={false}
-                        onClick={() => setPreviewUrl(item.url)}
-                    />
-                ))}
+                {attachments.map((item) => <AgentMessageAttachmentImage key={item.id} item={item} onPreview={setPreviewUrl} />)}
             </div>
             {previewUrl ? (
                 <div className="hidden">
@@ -566,6 +556,50 @@ function AgentMessageAttachments({ attachments, alignRight }: { attachments: Age
             ) : null}
         </>
     );
+}
+
+function AgentMessageAttachmentImage({ item, onPreview }: { item: AgentChatAttachment; onPreview: (url: string) => void }) {
+    const { t } = useTranslation();
+    const endpoint = useAgentStore((state) => state.url);
+    const token = useAgentStore((state) => state.token);
+    const url = useAgentAssetUrl(endpoint, token, item.url);
+    if (!url) return null;
+    return (
+        <img
+            src={url}
+            alt={item.name}
+            title={t("agent.message.viewLarge")}
+            className="size-10 cursor-zoom-in rounded-lg object-cover"
+            draggable={false}
+            onClick={() => onPreview(url)}
+        />
+    );
+}
+
+function useAgentAssetUrl(endpoint: string, token: string, source: string) {
+    const [url, setUrl] = useState(source.startsWith("agent-asset:") ? "" : source);
+    useEffect(() => {
+        let disposed = false;
+        let objectUrl = "";
+        if (!source.startsWith("agent-asset:")) {
+            setUrl(source);
+            return;
+        }
+        setUrl("");
+        void resolveAgentMessageAssetUrl(endpoint, token, source).then((resolved) => {
+            if (disposed) {
+                if (resolved.startsWith("blob:")) URL.revokeObjectURL(resolved);
+                return;
+            }
+            objectUrl = resolved;
+            setUrl(resolved);
+        });
+        return () => {
+            disposed = true;
+            if (objectUrl.startsWith("blob:")) URL.revokeObjectURL(objectUrl);
+        };
+    }, [endpoint, source, token]);
+    return url;
 }
 
 function statusTone(theme: (typeof canvasThemes)[keyof typeof canvasThemes], tone: "info" | "success" | "warning" | "danger") {

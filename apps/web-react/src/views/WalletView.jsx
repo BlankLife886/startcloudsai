@@ -170,6 +170,7 @@ function presentationFor(entry) {
   const remaining = remainingCents(entry);
   const remainingText = remaining == null ? "—" : formatPoints(remaining, { withUnit: false });
   const reason = String(entry?.reason || "").trim();
+  const userStopped = reason.includes("用户主动停止");
 
   if (kind === "freeze" || kind === "task_freeze")
     return {
@@ -191,10 +192,10 @@ function presentationFor(entry) {
       tone: "settled",
       kindLabel: "消费",
       title: label,
-      badge: "已结算",
+      badge: userStopped ? "用户停止" : "已结算",
       amount: delta === 0 ? `结算 ${formatPoints(cost)}` : amount.text,
       amountTone: delta === 0 ? "neutral" : "spend",
-      description: delta === 0 ? `已从预扣中结算 ${formatPoints(cost)}，可用余额不再另扣。` : `实际扣除 ${formatPoints(Math.abs(delta))}。`,
+      description: reason || (delta === 0 ? `已从预扣中结算 ${formatPoints(cost)}，可用余额不再另扣。` : `实际扣除 ${formatPoints(Math.abs(delta))}。`),
       meta,
       model,
       remainingText,
@@ -205,12 +206,12 @@ function presentationFor(entry) {
       tone: "refund",
       kindLabel: "退款",
       title: label,
-      badge: status === "canceled" ? "已取消" : statusLabel || "已退回",
+      badge: userStopped ? "用户停止" : status === "canceled" ? "已取消" : statusLabel || "已退回",
       amount: amount.tone === "income" ? amount.text : `+${formatPoints(Math.abs(delta) || cost)}`,
       amountTone: "income",
-      description: status === "canceled" || status === "failed"
+      description: reason || (status === "canceled" || status === "failed"
         ? `任务未完成，${formatPoints(Math.abs(delta) || cost)} 已退回可用余额。`
-        : `${formatPoints(Math.abs(delta) || cost)} 已退回可用余额。`,
+        : `${formatPoints(Math.abs(delta) || cost)} 已退回可用余额。`),
       meta,
       model,
       remainingText,

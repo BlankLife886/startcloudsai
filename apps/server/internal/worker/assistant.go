@@ -929,15 +929,7 @@ func (w *Worker) executeAssistantAgent(
 			proposal.PlanningSummary = fmt.Sprintf("已整理 %d 张图片的生成方案。", proposal.Count)
 		}
 		proposal = normalizeAssistantProposalWithModels(proposal, run, modelCatalog)
-		currentReferences := assistantProposalReferences(run.Params)
-		historicalReferences := resolveAssistantProposalReferences(proposal.ReferencedImageIDs, imageCatalog, run.Prompt)
-		if len(currentReferences) > 0 && len(proposal.ReferencedImageIDs) == 0 {
-			historicalReferences = nil
-		}
-		proposal.ReferenceImages = mergeAssistantProposalReferences(
-			currentReferences, historicalReferences, assistantProposalMaxReferences(proposal.Model, modelCatalog),
-		)
-		proposal.ReferencedImageIDs = assistantReferenceIDs(proposal.ReferenceImages)
+		proposal = attachAssistantProposalReferences(proposal, run, imageCatalog, modelCatalog)
 		content := strings.TrimSpace(result.Text)
 		if parsedTextFallback {
 			content = "图片创作方案已准备，可以调整后开始生成。"
@@ -1030,17 +1022,7 @@ model 必须从模型目录选择；referencedImageIds 只填写图片目录中�
 			proposal = normalizeAssistantProposalWithModels(parsed, run, modelCatalog)
 		}
 	}
-	currentReferences := assistantProposalReferences(run.Params)
-	historicalReferences := resolveAssistantProposalReferences(proposal.ReferencedImageIDs, imageCatalog, run.Prompt)
-	if len(currentReferences) > 0 && len(proposal.ReferencedImageIDs) == 0 {
-		historicalReferences = nil
-	}
-	proposal.ReferenceImages = mergeAssistantProposalReferences(
-		currentReferences,
-		historicalReferences,
-		assistantProposalMaxReferences(proposal.Model, modelCatalog),
-	)
-	proposal.ReferencedImageIDs = assistantReferenceIDs(proposal.ReferenceImages)
+	proposal = attachAssistantProposalReferences(proposal, run, imageCatalog, modelCatalog)
 	metadata := assistantMessageMetadata(run, nil, "complete", "")
 	metadata["proposal"] = proposal
 	content := "我整理了一份图片创作方案，你可以调整后再开始生成。"
@@ -1350,6 +1332,19 @@ func renderAssistantModelCatalog(models []map[string]any) string {
 		lines = append(lines, fmt.Sprintf("- id=%s，名称=%s，说明=%s，分辨率=%s，最多参考图=%d", assistantMapString(model, "id"), assistantMapString(model, "name"), assistantMapString(model, "description"), strings.Join(assistantMapStrings(model, "resolutions"), "/"), assistantMapInt(model, "maxReferenceImages")))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func attachAssistantProposalReferences(proposal assistantImageProposal, run *store.AssistantRun, imageCatalog []assistantCatalogImage, modelCatalog []map[string]any) assistantImageProposal {
+	currentReferences := assistantProposalReferences(run.Params)
+	historicalReferences := resolveAssistantProposalReferences(proposal.ReferencedImageIDs, imageCatalog, run.Prompt)
+	if len(currentReferences) > 0 {
+		historicalReferences = nil
+	}
+	proposal.ReferenceImages = mergeAssistantProposalReferences(
+		currentReferences, historicalReferences, assistantProposalMaxReferences(proposal.Model, modelCatalog),
+	)
+	proposal.ReferencedImageIDs = assistantReferenceIDs(proposal.ReferenceImages)
+	return proposal
 }
 
 func resolveAssistantProposalReferences(ids []string, catalog []assistantCatalogImage, prompt string) []map[string]any {

@@ -21,6 +21,9 @@ func TestAssistantFileLifecycleSearchAndRead(t *testing.T) {
 	}
 	id := uuid.New()
 	key := "uploads/" + user.ID.String() + "/original/" + id.String() + ".txt"
+	if err := store.InsertAssistantFileUploadEvent(ctx, st.Pool, id, user.ID, 128, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.RegisterUserUploadObjects(ctx, st.Pool, user.ID, []string{key}); err != nil {
 		t.Fatal(err)
 	}
@@ -111,5 +114,9 @@ func TestAssistantFileLifecycleSearchAndRead(t *testing.T) {
 	deleted, ok, err := store.DeleteUserAssistantFile(ctx, st.Pool, user.ID, file.ID)
 	if err != nil || !ok || deleted == nil {
 		t.Fatalf("deleted = %#v ok=%v err=%v", deleted, ok, err)
+	}
+	usage, err := store.GetAssistantFileUsage(ctx, st.Pool, user.ID, time.Now().UTC().Add(-24*time.Hour))
+	if err != nil || usage.FileCount != 0 || usage.TotalBytes != 0 || usage.Created24h != 1 {
+		t.Fatalf("usage after delete = %#v err=%v", usage, err)
 	}
 }

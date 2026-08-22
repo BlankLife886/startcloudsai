@@ -3,7 +3,6 @@ import i18n from "@/i18n";
 import { summarizeCanvasAgentOps, type CanvasAgentOp } from "@/lib/canvas/canvas-agent-ops";
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { randomId } from "@/lib/utils";
-import { resolveAgentMessageAssetUrl } from "@/services/api/canvas-agent";
 import { useAgentStore, type AgentAttachment, type AgentChatItem, type AgentEventLog, type AgentMessageAttachment, type AgentTokenUsage } from "@/stores/use-agent-store";
 import type { AgentChatAttachment } from "./agent-chat-message";
 export const REASONING_PLACEHOLDER = i18n.t("agent.events.analyzing");
@@ -62,7 +61,9 @@ export function agentMessageToChatMessage(item: AgentChatItem, endpoint: string,
 }
 
 export function agentAttachmentToChatAttachment(item: AgentMessageAttachment, endpoint: string, token: string): AgentChatAttachment {
-    return { id: item.id, name: item.name, url: resolveAgentMessageAssetUrl(endpoint, token, item.dataUrl || item.url) };
+    void endpoint;
+    void token;
+    return { id: item.id, name: item.name, url: item.dataUrl || item.url };
 }
 
 export function formatAgentEvent(event: AgentEventPayload): Omit<AgentChatItem, "id"> | null {

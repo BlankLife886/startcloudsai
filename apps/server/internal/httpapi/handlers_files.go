@@ -431,6 +431,8 @@ func (s *Server) getFile(c *gin.Context) {
 		allowed = true // 提示词封面公开可读
 	case strings.HasPrefix(key, "canvas-template-covers/"):
 		allowed = true // 画布生产模板封面公开可读
+	case strings.HasPrefix(key, "announcement-images/"):
+		allowed = true // 公告图片对用户端公开可读
 	case strings.HasPrefix(key, "ecommerce-catalog/"),
 		strings.HasPrefix(key, "ecommerce-tryon/"),
 		strings.HasPrefix(key, "ecommerce-handheld/"):

@@ -374,8 +374,8 @@ func (c *Client) chatTextWithImages(ctx context.Context, messages []Message, ima
 		if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 			return result, receivedOutput, fmt.Errorf("decode chat stream event: %w", err)
 		}
-		if message := streamError(payload); message != "" {
-			return result, receivedOutput, errors.New(message)
+		if streamErr := streamUpstreamError(payload); streamErr != nil {
+			return result, receivedOutput, streamErr
 		}
 		if reason := streamFinishReason(payload); reason != "" {
 			if err := validateChatFinishReason(reason); err != nil {
@@ -562,8 +562,8 @@ func (c *Client) chatAgentWithPayload(
 		if err := json.Unmarshal([]byte(raw), &event); err != nil {
 			return result, receivedOutput, fmt.Errorf("decode chat agent stream event: %w", err)
 		}
-		if message := streamError(event); message != "" {
-			return result, receivedOutput, errors.New(message)
+		if streamErr := streamUpstreamError(event); streamErr != nil {
+			return result, receivedOutput, streamErr
 		}
 		if reason := streamFinishReason(event); reason != "" {
 			if err := validateChatFinishReason(reason); err != nil {
@@ -1032,21 +1032,104 @@ func streamToolCallFragments(payload map[string]any) []toolCallFragment {
 	return fragments
 }
 
-func streamError(payload map[string]any) string {
-	if payload["type"] == "error" {
-		if item, ok := payload["error"].(map[string]any); ok {
-			if message, ok := item["message"].(string); ok {
-				return message
+func streamUpstreamError(payload map[string]any) error {
+	rawError, hasError := payload["error"]
+	if !hasError && strings.ToLower(strings.TrimSpace(stringValue(payload["type"]))) != "error" {
+		return nil
+	}
+
+	containers := []map[string]any{payload}
+	if item, ok := rawError.(map[string]any); ok {
+		containers = append([]map[string]any{item}, containers...)
+	}
+	message := firstStreamErrorString(containers, "message", "detail", "error_description")
+	if message == "" {
+		message = strings.TrimSpace(stringValue(rawError))
+	}
+	code := firstStreamErrorString(containers, "code", "error_code")
+	errorType := firstStreamErrorString(containers, "type", "error_type")
+	if message == "" {
+		message = firstNonEmpty(code, errorType, "upstream stream error")
+	}
+
+	status := firstStreamErrorStatus(containers)
+	if status == 0 {
+		status = inferStreamErrorStatus(code, errorType, message)
+	}
+	return &UpstreamError{Status: status, Message: message}
+}
+
+func firstStreamErrorString(containers []map[string]any, keys ...string) string {
+	for _, container := range containers {
+		for _, key := range keys {
+			if value := strings.TrimSpace(stringValue(container[key])); value != "" {
+				return value
 			}
 		}
 	}
-	if item, ok := payload["error"].(map[string]any); ok {
-		if message, ok := item["message"].(string); ok {
-			return message
+	return ""
+}
+
+func firstStreamErrorStatus(containers []map[string]any) int {
+	for _, container := range containers {
+		for _, key := range []string{"status", "status_code", "statusCode", "http_status", "httpStatus", "code"} {
+			if status := httpStatusValue(container[key]); status >= 400 && status <= 599 {
+				return status
+			}
 		}
 	}
-	if message, ok := payload["error"].(string); ok {
-		return message
+	return 0
+}
+
+func httpStatusValue(value any) int {
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	case json.Number:
+		parsed, _ := strconv.Atoi(typed.String())
+		return parsed
+	case string:
+		parsed, _ := strconv.Atoi(strings.TrimSpace(typed))
+		return parsed
+	default:
+		return 0
+	}
+}
+
+func inferStreamErrorStatus(code, errorType, message string) int {
+	value := strings.ToLower(strings.Join([]string{code, errorType, message}, " "))
+	switch {
+	case strings.Contains(value, "invalid_request"), strings.Contains(value, "bad_request"), strings.Contains(value, "unprocessable"):
+		return http.StatusBadRequest
+	case strings.Contains(value, "authentication"), strings.Contains(value, "invalid_api_key"), strings.Contains(value, "unauthorized"), strings.Contains(value, "token_invalidated"):
+		return http.StatusUnauthorized
+	case strings.Contains(value, "permission"), strings.Contains(value, "forbidden"):
+		return http.StatusForbidden
+	case strings.Contains(value, "rate_limit"), strings.Contains(value, "rate limit"), strings.Contains(value, "too many requests"), strings.Contains(value, "quota"):
+		return http.StatusTooManyRequests
+	default:
+		// An error delivered inside a successful SSE response is still an
+		// upstream failure. sub2api uses 502 for unclassified provider events.
+		return http.StatusBadGateway
+	}
+}
+
+func stringValue(value any) string {
+	if text, ok := value.(string); ok {
+		return text
+	}
+	return ""
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
 	}
 	return ""
 }

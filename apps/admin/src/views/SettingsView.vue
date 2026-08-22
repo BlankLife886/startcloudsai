@@ -4,36 +4,9 @@ import { Check, Connection, Delete, Plus, Refresh } from "@element-plus/icons-vu
 import { ElMessage } from "element-plus";
 import { request } from "@/request";
 import { normalizePoints } from "@/utils";
+import type { AdminSettings, GrowthMilestone } from "@/components/settings/types";
 
-interface AdminSettings {
-  userMaxRunningTasks?: number;
-  userMaxRunningImages?: number;
-  userMaxConcurrentTasks?: number;
-  globalMaxConcurrentTasks?: number;
-  globalMaxActiveTasks?: number;
-  globalMaxActiveImages?: number;
-  taskFailureRetryCount?: number;
-  taskRetryFirstDelaySecs?: number;
-  taskRetryBackoffSecs?: number;
-  crossProviderSameModelBalancingEnabled?: boolean;
-  workerConcurrencyCeiling?: number;
-  effectiveGlobalConcurrency?: number;
-  registrationEnabled?: boolean;
-  signupBonusCents?: number;
-  checkinEnabled?: boolean;
-  checkinCampaignTitle?: string;
-  checkinRewards?: number[];
-  growthGroupEnabled?: boolean;
-  growthGroupCampaignKey?: string;
-  growthGroupTargetMembers?: number;
-  growthGroupRewardCents?: number;
-  growthGroupDurationHours?: number;
-  growthFailureBonusEnabled?: boolean;
-  growthFailureBonusCents?: number;
-  growthFailureBonusDailyLimit?: number;
-  growthUsageRewardsEnabled?: boolean;
-  growthUsageMilestones?: GrowthMilestone[];
-  suggestionRewardMaxCents?: number;
+interface PaymentSettings {
   lanjingPayEnabled?: boolean;
   lanjingPayBaseUrl?: string;
   lanjingPaySecret?: string;
@@ -41,11 +14,6 @@ interface AdminSettings {
   lanjingPayTimeoutSecs?: number;
   lanjingPayAlipayEnabled?: boolean;
   lanjingPayWechatEnabled?: boolean;
-}
-
-interface GrowthMilestone {
-  units: number;
-  rewardCents: number;
 }
 
 interface PaymentTestResult {
@@ -56,7 +24,10 @@ interface PaymentTestResult {
   lastPaymentAt?: string | null;
 }
 
+type SettingsSection = "payment" | "account" | "growth" | "concurrency" | "retry";
+
 const loading = ref(false);
+const activeSection = ref<SettingsSection>("payment");
 const saving = ref(false);
 const savedSignature = ref("");
 const workerConcurrencyCeiling = ref(1);
@@ -76,14 +47,6 @@ const form = reactive({
   crossProviderSameModelBalancingEnabled: false,
   registrationEnabled: true,
   signupBonusPoints: 0,
-  checkinEnabled: true,
-  checkinCampaignTitle: "连续签到领创作积分",
-  checkinRewards: [10, 15, 20, 25, 30, 40, 80],
-  growthGroupEnabled: true,
-  growthGroupCampaignKey: "launch-2026",
-  growthGroupTargetMembers: 3,
-  growthGroupRewardPoints: 30,
-  growthGroupDurationHours: 48,
   growthFailureBonusEnabled: true,
   growthFailureBonusPoints: 3,
   growthFailureBonusDailyLimit: 3,
@@ -118,14 +81,6 @@ const settingsSignature = () =>
       form.crossProviderSameModelBalancingEnabled,
     registrationEnabled: form.registrationEnabled,
     signupBonusPoints: form.signupBonusPoints,
-    checkinEnabled: form.checkinEnabled,
-    checkinCampaignTitle: form.checkinCampaignTitle,
-    checkinRewards: form.checkinRewards,
-    growthGroupEnabled: form.growthGroupEnabled,
-    growthGroupCampaignKey: form.growthGroupCampaignKey,
-    growthGroupTargetMembers: form.growthGroupTargetMembers,
-    growthGroupRewardPoints: form.growthGroupRewardPoints,
-    growthGroupDurationHours: form.growthGroupDurationHours,
     growthFailureBonusEnabled: form.growthFailureBonusEnabled,
     growthFailureBonusPoints: form.growthFailureBonusPoints,
     growthFailureBonusDailyLimit: form.growthFailureBonusDailyLimit,
@@ -150,14 +105,59 @@ const isDirty = computed(
 const effectiveGlobalConcurrency = computed(() =>
   Math.min(form.globalMaxConcurrentTasks, workerConcurrencyCeiling.value),
 );
-const checkinWeekTotal = computed(() =>
-  form.checkinRewards.reduce((sum, reward) => sum + normalizePoints(reward), 0),
-);
 const usageRewardTotal = computed(() =>
   form.growthUsageMilestones.reduce(
     (sum, milestone) => sum + normalizePoints(milestone.rewardCents),
     0,
   ),
+);
+const paymentStateLabel = computed(() => {
+  if (paymentTest.value) return `监听端${paymentTest.value.stateLabel}`;
+  return form.lanjingPayEnabled ? "等待检测" : "支付已停用";
+});
+
+const sections = computed(() => [
+  {
+    id: "payment" as const,
+    label: "支付",
+    hint: form.lanjingPayEnabled ? paymentStateLabel.value : "已停用",
+    on: form.lanjingPayEnabled,
+  },
+  {
+    id: "account" as const,
+    label: "账号",
+    hint: form.registrationEnabled ? "开放注册" : "注册已关闭",
+    on: form.registrationEnabled,
+  },
+  {
+    id: "growth" as const,
+    label: "增长激励",
+    hint: form.growthUsageRewardsEnabled
+      ? `用量 ${usageRewardTotal.value.toLocaleString("zh-CN")} 积分`
+      : "用量奖励关闭",
+    on: form.growthFailureBonusEnabled || form.growthUsageRewardsEnabled,
+  },
+  {
+    id: "concurrency" as const,
+    label: "任务并发",
+    hint: `${effectiveGlobalConcurrency.value} / ${workerConcurrencyCeiling.value}`,
+    on: true,
+  },
+  {
+    id: "retry" as const,
+    label: "调度与重试",
+    hint:
+      form.taskFailureRetryCount > 0
+        ? `重试 ${form.taskFailureRetryCount} 次`
+        : "不重试",
+    on: form.taskFailureRetryCount > 0,
+  },
+]);
+
+const activeSectionMeta = computed(
+  () =>
+    sections.value.find((item) => item.id === activeSection.value) ||
+    sections.value[0],
 );
 
 function addUsageMilestone() {
@@ -180,7 +180,7 @@ function removeUsageMilestone(index: number) {
   form.growthUsageMilestones.splice(index, 1);
 }
 
-function hydrate(settings: AdminSettings) {
+function hydrate(settings: AdminSettings & PaymentSettings) {
   form.userMaxRunningTasks = settings.userMaxRunningTasks ?? 100;
   form.userMaxRunningImages = settings.userMaxRunningImages ?? 400;
   form.userMaxConcurrentTasks = settings.userMaxConcurrentTasks ?? 20;
@@ -198,22 +198,6 @@ function hydrate(settings: AdminSettings) {
   );
   form.registrationEnabled = settings.registrationEnabled ?? true;
   form.signupBonusPoints = normalizePoints(settings.signupBonusCents);
-  form.checkinEnabled = settings.checkinEnabled ?? true;
-  form.checkinCampaignTitle =
-    settings.checkinCampaignTitle || "连续签到领创作积分";
-  form.checkinRewards =
-    Array.isArray(settings.checkinRewards) &&
-    settings.checkinRewards.length === 7
-      ? settings.checkinRewards.map(normalizePoints)
-      : [10, 15, 20, 25, 30, 40, 80];
-  form.growthGroupEnabled = settings.growthGroupEnabled ?? true;
-  form.growthGroupCampaignKey =
-    settings.growthGroupCampaignKey || "launch-2026";
-  form.growthGroupTargetMembers = settings.growthGroupTargetMembers ?? 3;
-  form.growthGroupRewardPoints = normalizePoints(
-    settings.growthGroupRewardCents ?? 30,
-  );
-  form.growthGroupDurationHours = settings.growthGroupDurationHours ?? 48;
   form.growthFailureBonusEnabled = settings.growthFailureBonusEnabled ?? true;
   form.growthFailureBonusPoints = normalizePoints(
     settings.growthFailureBonusCents ?? 3,
@@ -250,7 +234,7 @@ function hydrate(settings: AdminSettings) {
 async function load() {
   loading.value = true;
   try {
-    hydrate(await request<AdminSettings>("/api/v1/admin/settings"));
+    hydrate(await request<AdminSettings & PaymentSettings>("/api/v1/admin/settings"));
   } finally {
     loading.value = false;
   }
@@ -277,7 +261,7 @@ async function save() {
   saving.value = true;
   try {
     hydrate(
-      await request<AdminSettings>("/api/v1/admin/settings", {
+      await request<AdminSettings & PaymentSettings>("/api/v1/admin/settings", {
         method: "PUT",
         body: {
           userMaxRunningTasks: form.userMaxRunningTasks,
@@ -293,14 +277,6 @@ async function save() {
             form.crossProviderSameModelBalancingEnabled,
           registrationEnabled: form.registrationEnabled,
           signupBonusCents: normalizePoints(form.signupBonusPoints),
-          checkinEnabled: form.checkinEnabled,
-          checkinCampaignTitle: form.checkinCampaignTitle.trim(),
-          checkinRewards: form.checkinRewards.map(normalizePoints),
-          growthGroupEnabled: form.growthGroupEnabled,
-          growthGroupCampaignKey: form.growthGroupCampaignKey.trim(),
-          growthGroupTargetMembers: form.growthGroupTargetMembers,
-          growthGroupRewardCents: normalizePoints(form.growthGroupRewardPoints),
-          growthGroupDurationHours: form.growthGroupDurationHours,
           growthFailureBonusEnabled: form.growthFailureBonusEnabled,
           growthFailureBonusCents: normalizePoints(
             form.growthFailureBonusPoints,
@@ -373,10 +349,10 @@ onMounted(load);
 </script>
 
 <template>
-  <div v-loading="loading" class="page">
+  <div v-loading="loading" class="page settings-page">
     <PageCard>
-      <div class="settings-toolbar">
-        <div class="save-state" :class="{ 'is-dirty': isDirty }">
+      <header class="settings-toolbar">
+        <div class="sync-state" :class="{ 'is-dirty': isDirty }">
           <i />{{ isDirty ? "有未保存变更" : "配置已同步" }}
         </div>
         <div class="settings-toolbar__actions">
@@ -391,594 +367,421 @@ onMounted(load);
             保存并生效
           </el-button>
         </div>
-      </div>
+      </header>
 
-      <div class="settings-body">
-        <section class="settings-group payment-settings">
-          <header class="settings-group__head payment-settings__head">
+      <div class="settings-workspace">
+        <nav class="settings-nav" aria-label="系统设置分组">
+          <p class="settings-nav__hint">选择分组</p>
+          <button
+            v-for="item in sections"
+            :key="item.id"
+            type="button"
+            class="settings-nav__item"
+            :class="{ 'is-active': activeSection === item.id }"
+            @click="activeSection = item.id"
+          >
+            <i :class="{ 'is-on': item.on }" />
+            <span>
+              <strong>{{ item.label }}</strong>
+              <small>{{ item.hint }}</small>
+            </span>
+          </button>
+        </nav>
+
+        <section class="settings-pane">
+          <header class="pane-head">
             <div>
-              <strong>支付</strong>
-              <span>蓝鲸支付渠道、回调和监听状态</span>
-            </div>
-            <div class="payment-settings__controls">
-              <span
-                class="payment-state"
-                :class="{
-                  'is-online': paymentTest?.online,
-                  'is-offline': paymentTest && !paymentTest.online,
-                }"
-              >
-                {{
-                  paymentTest
-                    ? `监听端${paymentTest.stateLabel}`
-                    : form.lanjingPayEnabled
-                      ? "等待检测"
-                      : "支付已停用"
-                }}
-              </span>
-              <el-switch
-                v-model="form.lanjingPayEnabled"
-                active-text="启用"
-                inactive-text="停用"
-              />
+              <strong>{{ activeSectionMeta.label }}</strong>
+              <small>{{ activeSectionMeta.hint }}</small>
             </div>
           </header>
-
-          <div class="settings-grid settings-grid--pair payment-settings__grid">
-            <label class="setting-tile">
-              <div class="setting-tile__top setting-tile__top--stack">
-                <strong>接口地址</strong>
-                <el-input
-                  v-model="form.lanjingPayBaseUrl"
-                  placeholder="https://2347537.pay.lanjingzf.com"
-                />
-              </div>
-              <small>蓝鲸支付商户实例地址</small>
-            </label>
-
-            <label class="setting-tile">
-              <div class="setting-tile__top setting-tile__top--stack">
-                <strong>通讯密钥</strong>
-                <el-input
-                  v-model="form.lanjingPaySecret"
-                  type="password"
-                  show-password
-                  autocomplete="new-password"
-                  placeholder="输入商户后台通讯密钥"
-                />
-              </div>
-              <small>保存时加密；掩码原样保存不会更换密钥</small>
-            </label>
-
-            <label class="setting-tile payment-settings__callback">
-              <div class="setting-tile__top setting-tile__top--stack">
-                <strong>异步回调地址</strong>
-                <el-input
-                  v-model="form.lanjingPayNotifyUrl"
-                  placeholder="https://你的域名/api/v1/payments/lanjing/notify"
-                />
-              </div>
-              <small>生产环境必须为平台可访问的公网 HTTPS 地址</small>
-            </label>
-
-            <label class="setting-tile">
-              <div class="setting-tile__top">
-                <strong>请求超时</strong>
-                <div class="points-input">
-                  <el-input-number
-                    v-model="form.lanjingPayTimeoutSecs"
-                    class="settings-stepper"
-                    :min="1"
-                    :max="60"
-                    :precision="0"
-                  />
-                  <b>秒</b>
-                </div>
-              </div>
-              <small>创建、查询和关闭订单的服务端超时</small>
-            </label>
-
-            <div class="setting-tile payment-settings__methods">
-              <div class="setting-tile__top">
-                <strong>支付方式</strong>
-                <el-checkbox v-model="form.lanjingPayAlipayEnabled">
-                  支付宝
-                </el-checkbox>
-                <el-checkbox v-model="form.lanjingPayWechatEnabled">
-                  微信支付
-                </el-checkbox>
-              </div>
-              <small>至少开放一种；用户价格页只展示已开放渠道</small>
+          <div class="pane-body">
+            <template v-if="activeSection === 'payment'">
+      <div class="settings-card">
+        <div
+          class="status-banner"
+          :class="{
+            'is-on': form.lanjingPayEnabled,
+            'is-warn': paymentTest && !paymentTest.online,
+          }"
+        >
+          <div class="status-banner__copy">
+            <span class="status-banner__dot" />
+            <div>
+              <strong>蓝鲸支付</strong>
+              <p>{{ paymentStateLabel }}</p>
             </div>
+          </div>
+          <el-switch v-model="form.lanjingPayEnabled" />
+        </div>
 
-            <div class="payment-settings__test">
-              <div v-if="paymentTest" class="payment-test-result">
-                <span>最近心跳</span>
-                <strong>{{ formatPaymentTime(paymentTest.lastHeartbeatAt) }}</strong>
-                <span>最近收款</span>
-                <strong>{{ formatPaymentTime(paymentTest.lastPaymentAt) }}</strong>
-              </div>
-              <span v-else>连接测试只查询监听状态，不创建支付订单</span>
+        <div class="field-grid">
+          <label class="field-row is-wide">
+            <span>
+              <strong>接口地址</strong>
+              <small>蓝鲸支付商户实例</small>
+            </span>
+            <el-input
+              v-model="form.lanjingPayBaseUrl"
+              placeholder="https://2347537.pay.lanjingzf.com"
+            />
+          </label>
+          <label class="field-row is-wide">
+            <span>
+              <strong>通讯密钥</strong>
+              <small>保存时加密，掩码原样保存不换钥</small>
+            </span>
+            <el-input
+              v-model="form.lanjingPaySecret"
+              type="password"
+              show-password
+              autocomplete="new-password"
+              placeholder="输入商户后台通讯密钥"
+            />
+          </label>
+          <label class="field-row is-wide">
+            <span>
+              <strong>异步回调</strong>
+              <small>生产环境须为公网 HTTPS</small>
+            </span>
+            <el-input
+              v-model="form.lanjingPayNotifyUrl"
+              placeholder="https://你的域名/api/v1/payments/lanjing/notify"
+            />
+          </label>
+          <label class="field-row">
+            <span>
+              <strong>请求超时</strong>
+              <small>创建、查询和关闭订单</small>
+            </span>
+            <div class="field-unit">
+              <el-input-number
+                v-model="form.lanjingPayTimeoutSecs"
+                :min="1"
+                :max="60"
+                :precision="0"
+              />
+              <em>秒</em>
+            </div>
+          </label>
+          <div class="field-row">
+            <span>
+              <strong>支付方式</strong>
+              <small>价格页只展示已开放渠道</small>
+            </span>
+            <div class="method-pills">
+              <label class="method-pill" :class="{ 'is-on': form.lanjingPayAlipayEnabled }">
+                <el-checkbox v-model="form.lanjingPayAlipayEnabled">支付宝</el-checkbox>
+              </label>
+              <label class="method-pill" :class="{ 'is-on': form.lanjingPayWechatEnabled }">
+                <el-checkbox v-model="form.lanjingPayWechatEnabled">微信</el-checkbox>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <div class="pay-test">
+          <div v-if="paymentTest" class="pay-test__meta">
+            <span>最近心跳 <b class="tnum">{{ formatPaymentTime(paymentTest.lastHeartbeatAt) }}</b></span>
+            <span>最近收款 <b class="tnum">{{ formatPaymentTime(paymentTest.lastPaymentAt) }}</b></span>
+          </div>
+          <p v-else>连接测试只查询监听状态，不创建支付订单</p>
+          <el-button
+            :icon="Connection"
+            :loading="testingPayment"
+            @click="testPaymentConnection"
+          >
+            测试连接
+          </el-button>
+        </div>
+      </div>
+            </template>
+
+            <template v-else-if="activeSection === 'account'">
+      <div class="settings-card">
+        <div class="status-banner" :class="{ 'is-on': form.registrationEnabled }">
+          <div class="status-banner__copy">
+            <span class="status-banner__dot" />
+            <div>
+              <strong>{{ form.registrationEnabled ? "开放注册" : "注册已关闭" }}</strong>
+              <p>{{ form.registrationEnabled ? "新用户可以从前台注册入口加入" : "前台注册入口关闭，已有账号不受影响" }}</p>
+            </div>
+          </div>
+          <el-switch v-model="form.registrationEnabled" />
+        </div>
+        <div class="field-grid">
+          <label class="field-row is-wide">
+            <span>
+              <strong>注册赠送</strong>
+              <small>新账号首次获得的积分</small>
+            </span>
+            <div class="field-unit">
+              <el-input-number
+                v-model="form.signupBonusPoints"
+                :min="0"
+                :step="1"
+                :precision="0"
+              />
+              <em>积分</em>
+            </div>
+          </label>
+        </div>
+        <div class="jump-row">
+          <RouterLink class="jump-chip" to="/checkin-activity">签到活动</RouterLink>
+          <RouterLink class="jump-chip" to="/growth-groups">好友拼团</RouterLink>
+          <RouterLink class="jump-chip" to="/trial-applications">体验活动</RouterLink>
+        </div>
+      </div>
+            </template>
+
+            <template v-else-if="activeSection === 'growth'">
+      <div class="settings-card">
+        <div class="field-grid">
+          <label class="field-row">
+            <span>
+              <strong>失败额外补偿</strong>
+              <small>任务费用仍全额退回，再发安抚积分</small>
+            </span>
+            <el-switch v-model="form.growthFailureBonusEnabled" />
+          </label>
+          <label class="field-row">
+            <span>
+              <strong>单次补偿</strong>
+              <small>仅真实上游失败，强制终止不发</small>
+            </span>
+            <div class="field-unit">
+              <el-input-number
+                v-model="form.growthFailureBonusPoints"
+                :min="0"
+                :max="1000000"
+                :precision="0"
+              />
+              <em>积分</em>
+            </div>
+          </label>
+          <label class="field-row">
+            <span>
+              <strong>每日补偿次数</strong>
+              <small>按用户限制，0 表示当天不发</small>
+            </span>
+            <el-input-number
+              v-model="form.growthFailureBonusDailyLimit"
+              :min="0"
+              :max="100"
+              :precision="0"
+            />
+          </label>
+          <label class="field-row">
+            <span>
+              <strong>建议采纳上限</strong>
+              <small>单次最高奖励</small>
+            </span>
+            <div class="field-unit">
+              <el-input-number
+                v-model="form.suggestionRewardMaxPoints"
+                :min="0"
+                :max="1000000"
+                :step="100"
+                :precision="0"
+              />
+              <em>积分</em>
+            </div>
+          </label>
+        </div>
+
+        <div class="usage-block">
+          <header>
+            <div>
+              <strong>用量计划档位</strong>
+              <small>按自然月累计成功交付图片数，达标自动发放</small>
+            </div>
+            <div class="usage-block__actions">
+              <span class="usage-total tnum">总奖励 {{ usageRewardTotal.toLocaleString("zh-CN") }} 积分</span>
+              <el-switch v-model="form.growthUsageRewardsEnabled" />
               <el-button
-                :icon="Connection"
-                :loading="testingPayment"
-                @click="testPaymentConnection"
+                :icon="Plus"
+                :disabled="form.growthUsageMilestones.length >= 12"
+                @click="addUsageMilestone"
               >
-                测试连接
+                添加
               </el-button>
             </div>
-          </div>
-        </section>
-
-        <section class="settings-group">
-          <header class="settings-group__head">
-            <strong>账号</strong>
-            <span>注册入口与新用户赠送</span>
           </header>
-          <div class="settings-grid settings-grid--pair">
-            <label class="setting-tile">
-              <div class="setting-tile__top">
-                <strong>开放注册</strong>
-                <el-switch v-model="form.registrationEnabled" />
-              </div>
-              <small>控制新用户注册入口</small>
-            </label>
-
-            <label class="setting-tile">
-              <div class="setting-tile__top">
-                <strong>注册赠送</strong>
-                <div class="points-input">
-                  <el-input-number
-                    v-model="form.signupBonusPoints"
-                    class="settings-stepper"
-                    :min="0"
-                    :step="1"
-                    :precision="0"
-                  />
-                  <b>积分</b>
-                </div>
-              </div>
-              <small>新账号首次获得的积分</small>
-            </label>
-          </div>
-        </section>
-
-        <section class="settings-group">
-          <header class="settings-group__head">
-            <strong>增长与商业模式</strong>
-            <span>拼团、合作申请和用户激励规则</span>
-          </header>
-
-          <div class="settings-grid settings-grid--pair">
-            <label class="setting-tile">
-              <div class="setting-tile__top">
-                <strong>开放好友拼团</strong>
-                <el-switch v-model="form.growthGroupEnabled" />
-              </div>
-              <small>用户可创建或加入当期拼团，满员后自动发放奖励</small>
-            </label>
-
-            <label class="setting-tile">
-              <div class="setting-tile__top">
-                <strong>拼团活动批次</strong>
-                <el-input
-                  v-model="form.growthGroupCampaignKey"
-                  maxlength="64"
-                  placeholder="launch-2026"
-                />
-              </div>
-              <small>更换批次会开启新一期活动，历史拼团仍保留</small>
-            </label>
-
-            <label class="setting-tile">
-              <div class="setting-tile__top">
-                <strong>成团人数</strong>
+          <div class="milestone-list">
+            <div
+              v-for="(milestone, index) in form.growthUsageMilestones"
+              :key="index"
+              class="milestone-row"
+            >
+              <span class="milestone-index tnum">{{ index + 1 }}</span>
+              <label>
+                <span>累计交付</span>
                 <el-input-number
-                  v-model="form.growthGroupTargetMembers"
-                  class="settings-stepper"
-                  :min="2"
-                  :max="10"
-                  :precision="0"
-                />
-              </div>
-              <small>每个拼团达到该人数后立即结算</small>
-            </label>
-
-            <label class="setting-tile">
-              <div class="setting-tile__top">
-                <strong>每人拼团奖励</strong>
-                <div class="points-input">
-                  <el-input-number
-                    v-model="form.growthGroupRewardPoints"
-                    class="settings-stepper"
-                    :min="0"
-                    :max="1000000"
-                    :precision="0"
-                  />
-                  <b>积分</b>
-                </div>
-              </div>
-              <small>仅满员时发放，每个成员同一拼团只到账一次</small>
-            </label>
-
-            <label class="setting-tile">
-              <div class="setting-tile__top">
-                <strong>拼团有效期</strong>
-                <div class="points-input">
-                  <el-input-number
-                    v-model="form.growthGroupDurationHours"
-                    class="settings-stepper"
-                    :min="1"
-                    :max="720"
-                    :precision="0"
-                  />
-                  <b>小时</b>
-                </div>
-              </div>
-              <small>超时未满员的拼团不能继续加入</small>
-            </label>
-
-          </div>
-
-          <div class="growth-subsection">
-            <header>
-              <div>
-                <strong>自动激励</strong>
-                <small>失败补偿和建议采纳奖励均通过积分账本发放</small>
-              </div>
-            </header>
-            <div class="settings-grid settings-grid--pair">
-              <label class="setting-tile">
-                <div class="setting-tile__top">
-                  <strong>失败额外补偿</strong>
-                  <el-switch v-model="form.growthFailureBonusEnabled" />
-                </div>
-                <small>任务费用仍全额退回，开启后再发放额外安抚积分</small>
-              </label>
-
-              <label class="setting-tile">
-                <div class="setting-tile__top">
-                  <strong>单次补偿</strong>
-                  <div class="points-input">
-                    <el-input-number
-                      v-model="form.growthFailureBonusPoints"
-                      class="settings-stepper"
-                      :min="0"
-                      :max="1000000"
-                      :precision="0"
-                    />
-                    <b>积分</b>
-                  </div>
-                </div>
-                <small>只对真实上游失败生效，管理员强制终止不奖励</small>
-              </label>
-
-              <label class="setting-tile">
-                <div class="setting-tile__top">
-                  <strong>每日补偿次数</strong>
-                  <el-input-number
-                    v-model="form.growthFailureBonusDailyLimit"
-                    class="settings-stepper"
-                    :min="0"
-                    :max="100"
-                    :precision="0"
-                  />
-                </div>
-                <small>按用户限制，0 表示当天不发额外补偿</small>
-              </label>
-
-              <label class="setting-tile">
-                <div class="setting-tile__top">
-                  <strong>建议采纳上限</strong>
-                  <div class="points-input">
-                    <el-input-number
-                      v-model="form.suggestionRewardMaxPoints"
-                      class="settings-stepper"
-                      :min="0"
-                      :max="1000000"
-                      :step="100"
-                      :precision="0"
-                    />
-                    <b>积分</b>
-                  </div>
-                </div>
-                <small>后台采纳产品建议时可发放的单次最高奖励</small>
-              </label>
-            </div>
-          </div>
-
-          <div class="growth-subsection">
-            <header>
-              <div>
-                <strong>用量计划档位</strong>
-                <small>按自然月累计成功交付图片数，达标自动发放</small>
-              </div>
-              <div class="growth-subsection__actions">
-                <span
-                  >总奖励
-                  {{ usageRewardTotal.toLocaleString("zh-CN") }} 积分</span
-                >
-                <el-tooltip content="添加里程碑" placement="top">
-                  <el-button
-                    circle
-                    :icon="Plus"
-                    :disabled="form.growthUsageMilestones.length >= 12"
-                    aria-label="添加里程碑"
-                    @click="addUsageMilestone"
-                  />
-                </el-tooltip>
-              </div>
-            </header>
-            <label class="growth-reward-toggle">
-              <span>
-                <strong>启用用量奖励</strong>
-                <small>关闭后保留历史到账记录，不再产生新奖励</small>
-              </span>
-              <el-switch v-model="form.growthUsageRewardsEnabled" />
-            </label>
-            <div class="growth-milestones">
-              <div
-                v-for="(milestone, index) in form.growthUsageMilestones"
-                :key="index"
-                class="growth-milestone"
-              >
-                <span class="growth-milestone__index">{{ index + 1 }}</span>
-                <label>
-                  <span>累计交付</span>
-                  <el-input-number
-                    v-model="milestone.units"
-                    :min="1"
-                    :max="1000000"
-                    :precision="0"
-                    controls-position="right"
-                  />
-                  <small>张</small>
-                </label>
-                <label>
-                  <span>奖励</span>
-                  <el-input-number
-                    v-model="milestone.rewardCents"
-                    :min="1"
-                    :max="1000000"
-                    :precision="0"
-                    controls-position="right"
-                  />
-                  <small>积分</small>
-                </label>
-                <el-tooltip content="删除里程碑" placement="top">
-                  <el-button
-                    circle
-                    text
-                    type="danger"
-                    :icon="Delete"
-                    :disabled="form.growthUsageMilestones.length <= 1"
-                    aria-label="删除里程碑"
-                    @click="removeUsageMilestone(index)"
-                  />
-                </el-tooltip>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <section class="settings-group">
-          <header class="settings-group__head">
-            <strong>签到活动</strong>
-            <span>连续签到奖励与用户回访激励</span>
-          </header>
-          <div class="settings-grid settings-grid--pair">
-            <label class="setting-tile">
-              <div class="setting-tile__top">
-                <strong>开放签到活动</strong>
-                <el-switch v-model="form.checkinEnabled" />
-              </div>
-              <small>关闭后保留历史记录，但用户无法领取新的签到奖励</small>
-            </label>
-
-            <label class="setting-tile">
-              <div class="setting-tile__top setting-tile__top--stack">
-                <strong>活动标题</strong>
-                <el-input
-                  v-model="form.checkinCampaignTitle"
-                  maxlength="40"
-                  placeholder="连续签到领创作积分"
-                />
-              </div>
-              <small>显示在用户签到页的主活动标题</small>
-            </label>
-          </div>
-
-          <div class="checkin-reward-card">
-            <div class="checkin-reward-card__head">
-              <div>
-                <strong>7 天循环奖励</strong>
-                <small
-                  >连续第 7 天建议设置高额里程碑奖励，之后从第 1 天循环</small
-                >
-              </div>
-              <span
-                >每周期共
-                {{ checkinWeekTotal.toLocaleString("zh-CN") }} 积分</span
-              >
-            </div>
-            <div class="checkin-reward-grid">
-              <label v-for="(_, index) in form.checkinRewards" :key="index">
-                <span>第 {{ index + 1 }} 天</span>
-                <el-input-number
-                  v-model="form.checkinRewards[index]"
-                  :min="0"
+                  v-model="milestone.units"
+                  :min="1"
                   :max="1000000"
-                  :step="index === 6 ? 10 : 5"
                   :precision="0"
-                  controls-position="right"
                 />
-                <small>{{ index === 6 ? "里程碑" : "积分" }}</small>
+                <em>张</em>
               </label>
+              <label>
+                <span>奖励</span>
+                <el-input-number
+                  v-model="milestone.rewardCents"
+                  :min="1"
+                  :max="1000000"
+                  :precision="0"
+                />
+                <em>积分</em>
+              </label>
+              <el-button
+                circle
+                text
+                type="danger"
+                :icon="Delete"
+                :disabled="form.growthUsageMilestones.length <= 1"
+                aria-label="删除里程碑"
+                @click="removeUsageMilestone(index)"
+              />
             </div>
           </div>
-        </section>
+        </div>
+      </div>
+            </template>
 
-        <section class="settings-group">
-          <header class="settings-group__head">
-            <strong>任务并发</strong>
-            <span>全站与单用户执行水位</span>
-          </header>
-          <div class="settings-grid">
-            <label class="setting-tile">
-              <div class="setting-tile__top">
-                <strong>全站同时执行</strong>
-                <el-input-number
-                  v-model="form.globalMaxConcurrentTasks"
-                  class="settings-stepper"
-                  :min="1"
-                  :max="10000000"
-                  :step="100"
-                />
-              </div>
-              <small>
-                上游在途上限 · 当前 {{ effectiveGlobalConcurrency }} / Worker
-                {{ workerConcurrencyCeiling }}
-              </small>
-            </label>
+            <template v-else-if="activeSection === 'concurrency'">
+      <div class="settings-card">
+        <div class="field-grid is-stack">
+          <label class="field-row">
+            <span>
+              <strong>全站同时执行</strong>
+              <small>上游在途上限</small>
+            </span>
+            <el-input-number
+              v-model="form.globalMaxConcurrentTasks"
+              :min="1"
+              :max="10000000"
+              :step="100"
+            />
+          </label>
+          <label class="field-row">
+            <span>
+              <strong>单用户同时执行</strong>
+              <small>账号同时处于上游执行的任务</small>
+            </span>
+            <el-input-number
+              v-model="form.userMaxConcurrentTasks"
+              :min="1"
+              :max="10000"
+            />
+          </label>
+          <label class="field-row">
+            <span>
+              <strong>全站待处理容量</strong>
+              <small>排队与运行达到后停收</small>
+            </span>
+            <el-input-number
+              v-model="form.globalMaxActiveTasks"
+              :min="10"
+              :max="10000000"
+              :step="100"
+            />
+          </label>
+          <label class="field-row">
+            <span>
+              <strong>全站图片容量</strong>
+              <small>按任务 count 累计</small>
+            </span>
+            <el-input-number
+              v-model="form.globalMaxActiveImages"
+              :min="10"
+              :max="10000000"
+              :step="100"
+            />
+          </label>
+          <label class="field-row">
+            <span>
+              <strong>单用户待处理任务</strong>
+              <small>运行中与排队总量</small>
+            </span>
+            <el-input-number
+              v-model="form.userMaxRunningTasks"
+              :min="1"
+              :max="10000"
+            />
+          </label>
+          <label class="field-row">
+            <span>
+              <strong>单用户图片容量</strong>
+              <small>排队与运行图片单位</small>
+            </span>
+            <el-input-number
+              v-model="form.userMaxRunningImages"
+              :min="1"
+              :max="100000"
+              :step="10"
+            />
+          </label>
+        </div>
+      </div>
+            </template>
 
-            <label class="setting-tile">
-              <div class="setting-tile__top">
-                <strong>单用户同时执行</strong>
-                <el-input-number
-                  v-model="form.userMaxConcurrentTasks"
-                  class="settings-stepper"
-                  :min="1"
-                  :max="10000"
-                />
-              </div>
-              <small>每个账号允许同时处于上游执行中的任务数</small>
-            </label>
-
-            <label class="setting-tile">
-              <div class="setting-tile__top">
-                <strong>全站待处理容量</strong>
-                <el-input-number
-                  v-model="form.globalMaxActiveTasks"
-                  class="settings-stepper"
-                  :min="10"
-                  :max="10000000"
-                  :step="100"
-                />
-              </div>
-              <small>排队与运行达到水位后停止接收新任务</small>
-            </label>
-
-            <label class="setting-tile">
-              <div class="setting-tile__top">
-                <strong>全站图片容量</strong>
-                <el-input-number
-                  v-model="form.globalMaxActiveImages"
-                  class="settings-stepper"
-                  :min="10"
-                  :max="10000000"
-                  :step="100"
-                />
-              </div>
-              <small>按任务 count 累计的排队与运行图片单位上限</small>
-            </label>
-
-            <label class="setting-tile">
-              <div class="setting-tile__top">
-                <strong>单用户待处理任务</strong>
-                <el-input-number
-                  v-model="form.userMaxRunningTasks"
-                  class="settings-stepper"
-                  :min="1"
-                  :max="10000"
-                />
-              </div>
-              <small>运行中与排队中的任务总量上限</small>
-            </label>
-
-            <label class="setting-tile">
-              <div class="setting-tile__top">
-                <strong>单用户图片容量</strong>
-                <el-input-number
-                  v-model="form.userMaxRunningImages"
-                  class="settings-stepper"
-                  :min="1"
-                  :max="100000"
-                  :step="10"
-                />
-              </div>
-              <small>单个账号排队与运行中的图片单位上限</small>
-            </label>
-          </div>
-        </section>
-
-        <section class="settings-group">
-          <header class="settings-group__head">
-            <strong>调度与重试</strong>
-            <span>失败补偿与跨服务商泄压</span>
-          </header>
-          <div class="settings-grid settings-grid--pair">
-            <label class="setting-tile">
-              <div class="setting-tile__top">
-                <strong>任务失败重试</strong>
-                <el-input-number
-                  v-model="form.taskFailureRetryCount"
-                  class="settings-stepper"
-                  :min="0"
-                  :max="100"
-                  :step="1"
-                  :precision="0"
-                />
-              </div>
-              <small
-                >连接、超时或临时上游错误的额外尝试次数；0 表示不重试</small
-              >
-            </label>
-
-            <label class="setting-tile">
-              <div class="setting-tile__top">
-                <strong>首次重试等待（秒）</strong>
-                <el-input-number
-                  v-model="form.taskRetryFirstDelaySecs"
-                  class="settings-stepper"
-                  :min="1"
-                  :max="600"
-                  :step="1"
-                  :precision="0"
-                />
-              </div>
-              <small
-                >上游临时报错（如账号池忙）后第一次重试前的等待时间；越短用户等待越少</small
-              >
-            </label>
-
-            <label class="setting-tile">
-              <div class="setting-tile__top">
-                <strong>后续重试间隔（秒）</strong>
-                <el-input-number
-                  v-model="form.taskRetryBackoffSecs"
-                  class="settings-stepper"
-                  :min="1"
-                  :max="600"
-                  :step="5"
-                  :precision="0"
-                />
-              </div>
-              <small
-                >第二次起每次重试的间隔步长（第 N 次重试等待 (N-1)×该值 秒），避免持续打爆上游</small
-              >
-            </label>
-
-            <label class="setting-tile">
-              <div class="setting-tile__top">
-                <strong>同名模型跨服务商泄压</strong>
-                <el-switch
-                  v-model="form.crossProviderSameModelBalancingEnabled"
-                />
-              </div>
-              <small
-                >仅同类型、同名称、同积分且参数兼容的模型参与容量调度</small
-              >
-            </label>
+            <template v-else>
+      <div class="settings-card">
+        <div class="field-grid is-stack">
+          <label class="field-row">
+            <span>
+              <strong>任务失败重试</strong>
+              <small>连接、超时或临时上游错误；0 不重试</small>
+            </span>
+            <el-input-number
+              v-model="form.taskFailureRetryCount"
+              :min="0"
+              :max="100"
+              :precision="0"
+            />
+          </label>
+          <label class="field-row">
+            <span>
+              <strong>首次重试等待</strong>
+              <small>第一次重试前的等待</small>
+            </span>
+            <div class="field-unit">
+              <el-input-number
+                v-model="form.taskRetryFirstDelaySecs"
+                :min="1"
+                :max="600"
+                :precision="0"
+              />
+              <em>秒</em>
+            </div>
+          </label>
+          <label class="field-row">
+            <span>
+              <strong>后续重试间隔</strong>
+              <small>第 N 次等待 (N-1)×该值 秒</small>
+            </span>
+            <div class="field-unit">
+              <el-input-number
+                v-model="form.taskRetryBackoffSecs"
+                :min="1"
+                :max="600"
+                :step="5"
+                :precision="0"
+              />
+              <em>秒</em>
+            </div>
+          </label>
+          <label class="field-row">
+            <span>
+              <strong>同名模型跨服务商泄压</strong>
+              <small>同类型、同名称、同积分且参数兼容才参与</small>
+            </span>
+            <el-switch v-model="form.crossProviderSameModelBalancingEnabled" />
+          </label>
+        </div>
+      </div>
+            </template>
           </div>
         </section>
       </div>
@@ -986,293 +789,543 @@ onMounted(load);
   </div>
 </template>
 
-<style scoped>
-.settings-toolbar {
+<style scoped lang="scss">
+.settings-page {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 18px;
-}
-
-.settings-toolbar__actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  margin-left: auto;
-}
-
-.save-state {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  height: 32px;
-  padding: 0 12px;
-  border-radius: 999px;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  color: var(--ink-3);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.save-state i {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--success);
-  box-shadow: 0 0 0 3px var(--success-soft);
-}
-
-.save-state.is-dirty {
-  color: var(--warning);
-}
-
-.save-state.is-dirty i {
-  background: var(--warning);
-  box-shadow: 0 0 0 3px var(--warning-soft);
-}
-
-.settings-body {
-  display: grid;
-  gap: 20px;
+  flex-direction: column;
   width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+  background: var(--bg);
 }
 
-.settings-group {
-  display: grid;
-  gap: 10px;
-}
-
-.settings-group__head {
+.settings-page :deep(.page-card) {
   display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 8px 12px;
-}
-
-.settings-group__head strong {
-  color: var(--ink);
-  font-size: 14px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-}
-
-.settings-group__head span {
-  color: var(--ink-3);
-  font-size: 12px;
-  font-weight: 500;
-}
-
-.settings-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.settings-grid--pair {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.setting-tile {
-  display: grid;
-  gap: 8px;
-  min-width: 0;
-  padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: calc(var(--radius-card) - 6px);
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
   background: var(--surface);
   box-shadow: var(--shadow-sm);
-  cursor: default;
-  transition:
-    border-color 0.15s ease,
-    background 0.15s ease;
 }
 
-.setting-tile:hover {
-  border-color: var(--border-strong);
-  background: color-mix(in srgb, var(--surface-2) 55%, var(--surface));
+.settings-page :deep(.page-card:hover) {
+  border-color: var(--border);
 }
 
-.setting-tile__top {
+.settings-page :deep(.page-card__body) {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-width: 0;
-}
-
-.setting-tile__top--stack {
-  align-items: stretch;
+  flex: 1;
   flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
 }
 
-.payment-settings__head {
-  align-items: center;
-  justify-content: space-between;
-}
-
-.payment-settings__head > div:first-child strong,
-.payment-settings__head > div:first-child span {
-  display: block;
-}
-
-.payment-settings__head > div:first-child span {
-  margin-top: 3px;
-}
-
-.payment-settings__controls {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.payment-state {
-  display: inline-flex;
-  align-items: center;
-  min-height: 26px;
-  padding: 0 9px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  color: var(--ink-3) !important;
-  background: var(--surface-2);
-  font-size: 11px !important;
-  font-weight: 650 !important;
-}
-
-.payment-state.is-online {
-  border-color: color-mix(in srgb, var(--success) 35%, var(--border));
-  color: var(--success) !important;
-  background: var(--success-soft);
-}
-
-.payment-state.is-offline {
-  border-color: color-mix(in srgb, var(--warning) 35%, var(--border));
-  color: var(--warning) !important;
-  background: var(--warning-soft);
-}
-
-.payment-settings__methods .setting-tile__top {
-  justify-content: flex-start;
-}
-
-.payment-settings__methods .setting-tile__top > strong {
-  margin-right: auto;
-}
-
-.payment-settings__test {
-  grid-column: 1 / -1;
-  display: flex;
-  min-height: 52px;
-  padding: 8px 12px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  border-top: 1px solid var(--border);
-  color: var(--ink-3);
-  font-size: 11px;
-}
-
-.payment-test-result {
-  display: grid;
-  grid-template-columns: auto minmax(130px, 1fr) auto minmax(130px, 1fr);
-  align-items: center;
-  gap: 4px 10px;
-}
-
-.payment-test-result strong {
-  color: var(--ink-2);
-  font-size: 11px;
-  font-weight: 650;
-  font-variant-numeric: tabular-nums;
-}
-
-.growth-subsection {
-  display: grid;
-  gap: 12px;
-  margin-top: 4px;
-  padding-top: 14px;
-  border-top: 1px solid var(--border);
-}
-
-.growth-subsection > header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-}
-
-.growth-subsection > header strong,
-.growth-subsection > header small {
-  display: block;
-}
-
-.growth-subsection > header strong {
-  color: var(--ink);
-  font-size: 13px;
-}
-
-.growth-subsection > header small,
-.growth-reward-toggle small {
-  margin-top: 3px;
-  color: var(--ink-3);
-  font-size: 11px;
-}
-
-.growth-subsection__actions {
+.settings-toolbar {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
-  gap: 10px;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 14px;
 }
 
-.growth-subsection__actions > span {
+.settings-toolbar__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+
+  :deep(.el-button) {
+    margin: 0;
+    height: 32px;
+  }
+}
+
+.sync-state {
+  display: inline-flex;
+  height: 32px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 650;
+
+  i {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--success);
+    box-shadow: 0 0 0 3px var(--success-soft);
+  }
+
+  &.is-dirty {
+    border-color: color-mix(in srgb, var(--warning) 28%, var(--border));
+    background: var(--warning-soft);
+    color: var(--warning);
+
+    i {
+      background: var(--warning);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning) 18%, transparent);
+    }
+  }
+}
+
+.settings-workspace {
+  display: grid;
+  flex: 1;
+  grid-template-columns: 208px minmax(0, 1fr);
+  gap: 16px;
+  min-height: 0;
+}
+
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  padding: 12px 8px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface);
+}
+
+.settings-nav__hint {
+  margin: 0 10px 8px;
   color: var(--ink-3);
   font-size: 11px;
   font-weight: 650;
+  letter-spacing: 0.04em;
 }
 
-.growth-reward-toggle {
+.settings-nav__item {
+  display: grid;
+  width: 100%;
+  grid-template-columns: 8px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+
+  i {
+    width: 7px;
+    height: 7px;
+    margin-top: 6px;
+    border-radius: 50%;
+    background: var(--surface-3);
+
+    &.is-on {
+      background: var(--accent);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+    }
+  }
+
+  span {
+    min-width: 0;
+  }
+
+  strong,
+  small {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  strong {
+    color: var(--ink-2);
+    font-size: 13px;
+    font-weight: 650;
+  }
+
+  small {
+    margin-top: 2px;
+    color: var(--ink-3);
+    font-size: 11px;
+    line-height: 1.4;
+  }
+
+  &:hover {
+    background: var(--surface-2);
+
+    strong {
+      color: var(--ink);
+    }
+  }
+
+  &.is-active {
+    background: var(--accent-soft);
+
+    strong {
+      color: var(--accent-ink);
+    }
+
+    small {
+      color: color-mix(in srgb, var(--accent-ink) 62%, var(--ink-3));
+    }
+  }
+}
+
+.settings-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface);
+}
+
+.pane-head {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 3px;
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid var(--border);
+
+  strong,
+  small {
+    display: block;
+  }
+
+  strong {
+    color: var(--ink);
+    font-size: 16px;
+    font-weight: 750;
+    letter-spacing: -0.02em;
+  }
+
+  small {
+    color: var(--ink-3);
+    font-size: 12px;
+    line-height: 1.5;
+  }
+}
+
+.pane-body {
+  flex: 1;
+  min-height: 0;
+  padding: 16px 18px 18px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.settings-card {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+.status-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-2);
+
+  &.is-on {
+    border-color: color-mix(in srgb, var(--success) 28%, var(--border));
+    background: var(--success-soft);
+
+    .status-banner__dot {
+      background: var(--success);
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--success) 18%, transparent);
+    }
+  }
+
+  &.is-warn {
+    border-color: color-mix(in srgb, var(--warning) 28%, var(--border));
+    background: var(--warning-soft);
+
+    .status-banner__dot {
+      background: var(--warning);
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--warning) 18%, transparent);
+    }
+  }
+}
+
+.status-banner__copy {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.status-banner__dot {
+  width: 8px;
+  height: 8px;
+  margin-top: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--ink-3);
+}
+
+.status-banner strong {
+  display: block;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 750;
+}
+
+.status-banner p {
+  margin: 4px 0 0;
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 18px;
+  padding: 4px 16px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+
+  &.is-stack {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.field-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  min-height: 64px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+
+  &.is-wide {
+    grid-column: 1 / -1;
+  }
+
+  &:last-child {
+    border-bottom: 0;
+  }
+
+  > span {
+    min-width: 0;
+  }
+
+  strong,
+  small {
+    display: block;
+  }
+
+  strong {
+    color: var(--ink);
+    font-size: 13px;
+    font-weight: 650;
+  }
+
+  small {
+    margin-top: 3px;
+    color: var(--ink-3);
+    font-size: 11px;
+    line-height: 1.45;
+  }
+
+  :deep(.el-input),
+  :deep(.el-input-number) {
+    width: 220px;
+  }
+}
+
+.field-unit {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+
+  em {
+    color: var(--ink-3);
+    font-size: 12px;
+    font-style: normal;
+    font-weight: 650;
+  }
+}
+
+.method-pills {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.method-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+
+  &.is-on {
+    border-color: color-mix(in srgb, var(--accent) 36%, var(--border));
+    background: var(--accent-soft);
+  }
+
+  :deep(.el-checkbox) {
+    margin: 0;
+    height: auto;
+  }
+}
+
+.pay-test {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
   padding: 12px 14px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 14px;
   background: var(--surface-2);
-}
-
-.growth-reward-toggle strong,
-.growth-reward-toggle small {
-  display: block;
-}
-
-.growth-reward-toggle strong {
-  color: var(--ink);
+  color: var(--ink-3);
   font-size: 12px;
+
+  p {
+    margin: 0;
+  }
 }
 
-.growth-milestones {
+.pay-test__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px 22px;
+
+  b {
+    margin-left: 6px;
+    color: var(--ink-2);
+    font-weight: 650;
+  }
+}
+
+.jump-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.jump-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 650;
+  text-decoration: none;
+
+  &:hover {
+    border-color: var(--border-strong);
+    background: var(--surface);
+    color: var(--ink);
+  }
+}
+
+.usage-block {
+  display: grid;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+
+  > header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+
+    strong,
+    small {
+      display: block;
+    }
+
+    strong {
+      color: var(--ink);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    small {
+      margin-top: 3px;
+      color: var(--ink-3);
+      font-size: 11px;
+    }
+  }
+}
+
+.usage-block__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.usage-total {
+  color: var(--accent-ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.milestone-list {
   display: grid;
   gap: 8px;
 }
 
-.growth-milestone {
+.milestone-row {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr) minmax(0, 1fr) 32px;
+  grid-template-columns: 28px minmax(0, 1fr) minmax(0, 1fr) 36px;
   align-items: center;
   gap: 10px;
-  min-height: 54px;
+  min-height: 56px;
   padding: 8px 10px;
   border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
+  border-radius: 12px;
+  background: var(--surface-2);
+
+  > label {
+    display: grid;
+    grid-template-columns: 64px minmax(0, 1fr) 28px;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    color: var(--ink-3);
+    font-size: 12px;
+  }
+
+  :deep(.el-input-number) {
+    width: 100%;
+  }
+
+  em {
+    font-style: normal;
+  }
 }
 
-.growth-milestone__index {
+.milestone-index {
   display: grid;
   width: 26px;
   height: 26px;
@@ -1282,239 +1335,5 @@ onMounted(load);
   color: var(--accent-ink);
   font-size: 11px;
   font-weight: 750;
-}
-
-.growth-milestone > label {
-  display: grid;
-  grid-template-columns: 58px minmax(110px, 1fr) 32px;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.growth-milestone > label > span,
-.growth-milestone > label > small {
-  color: var(--ink-3);
-  font-size: 11px;
-}
-
-.growth-milestone :deep(.el-input-number) {
-  width: 100%;
-}
-
-.checkin-reward-card {
-  display: grid;
-  gap: 14px;
-  padding: 16px;
-  border: 1px solid var(--border);
-  border-radius: calc(var(--radius-card) - 6px);
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--accent-soft) 58%, var(--surface)),
-    var(--surface)
-  );
-  box-shadow: var(--shadow-sm);
-}
-
-.checkin-reward-card__head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.checkin-reward-card__head strong,
-.checkin-reward-card__head small {
-  display: block;
-}
-
-.checkin-reward-card__head strong {
-  font-size: 13px;
-}
-
-.checkin-reward-card__head small {
-  margin-top: 4px;
-  color: var(--ink-3);
-  font-size: 11px;
-}
-
-.checkin-reward-card__head > span {
-  flex: 0 0 auto;
-  padding: 6px 10px;
-  border-radius: 999px;
-  color: var(--accent-ink);
-  background: var(--accent-soft);
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.checkin-reward-grid {
-  display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.checkin-reward-grid > label {
-  display: grid;
-  gap: 6px;
-  padding: 10px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface);
-}
-
-.checkin-reward-grid > label > span,
-.checkin-reward-grid > label > small {
-  text-align: center;
-  font-size: 10px;
-}
-
-.checkin-reward-grid > label > span {
-  color: var(--ink-2);
-  font-weight: 700;
-}
-
-.checkin-reward-grid > label > small {
-  color: var(--ink-3);
-}
-
-.checkin-reward-grid :deep(.el-input-number) {
-  width: 100%;
-}
-
-@media (max-width: 1180px) {
-  .checkin-reward-grid {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 720px) {
-  .checkin-reward-card__head {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .checkin-reward-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .settings-grid,
-  .settings-grid--pair {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .payment-settings__head,
-  .payment-settings__test {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .payment-settings__test :deep(.el-button) {
-    width: 100%;
-  }
-
-  .payment-test-result {
-    grid-template-columns: auto minmax(0, 1fr);
-  }
-
-  .growth-subsection > header {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .growth-milestone {
-    grid-template-columns: 28px minmax(0, 1fr) 32px;
-  }
-
-  .growth-milestone > label {
-    grid-column: 2;
-  }
-
-  .growth-milestone > :deep(.el-button) {
-    grid-column: 3;
-    grid-row: 1;
-  }
-}
-
-.setting-tile__top strong {
-  min-width: 0;
-  color: var(--ink);
-  font-size: 13px;
-  font-weight: 650;
-}
-
-.setting-tile > small {
-  color: var(--ink-3);
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 1.45;
-}
-
-.points-input {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 8px;
-}
-
-.points-input b {
-  color: var(--ink-3);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.setting-tile :deep(.settings-stepper) {
-  width: 136px;
-  line-height: 34px;
-}
-
-.setting-tile :deep(.settings-stepper .el-input-number__decrease),
-.setting-tile :deep(.settings-stepper .el-input-number__increase) {
-  width: 30px;
-  color: var(--ink-2);
-  background: var(--surface-2);
-  border-color: var(--border);
-  transition:
-    color 0.15s ease,
-    background 0.15s ease;
-}
-
-.setting-tile :deep(.settings-stepper .el-input-number__decrease) {
-  border-radius: var(--radius-control) 0 0 var(--radius-control);
-}
-
-.setting-tile :deep(.settings-stepper .el-input-number__increase) {
-  border-radius: 0 var(--radius-control) var(--radius-control) 0;
-}
-
-.setting-tile :deep(.settings-stepper .el-input-number__decrease:hover),
-.setting-tile :deep(.settings-stepper .el-input-number__increase:hover) {
-  color: var(--accent-ink);
-  background: var(--accent-soft);
-}
-
-.setting-tile :deep(.settings-stepper .el-input__wrapper) {
-  height: 34px;
-  padding: 0 34px;
-  border-radius: var(--radius-control);
-  background: var(--surface);
-  box-shadow: 0 0 0 1px var(--border) inset;
-  transition: box-shadow 0.15s ease;
-}
-
-.setting-tile :deep(.settings-stepper .el-input__wrapper.is-focus) {
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--accent) 55%, var(--border)) inset,
-    0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
-}
-
-.setting-tile :deep(.settings-stepper .el-input__inner) {
-  height: 34px;
-  color: var(--ink);
-  font-size: 13px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  font-feature-settings: "tnum" 1;
-  text-align: center;
 }
 </style>

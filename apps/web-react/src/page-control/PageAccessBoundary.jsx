@@ -1,25 +1,20 @@
 import { useEffect } from "react";
-import { Link, Outlet, useLocation } from "react-router";
+import { Outlet, useLocation } from "react-router";
 import { PAGE_STATUS, pageControlForLocation } from "../config/pageControls.js";
+import { StatusBackButton, StatusShowcase } from "../components/status/StatusShowcase.jsx";
 import { usePageControls } from "./PageControlContext.jsx";
 import "./page-access.css";
 
-const STATUS_COPY = {
-  [PAGE_STATUS.MAINTENANCE]: {
-    eyebrow: "TEMPORARILY UNAVAILABLE",
-    title: "页面维护中",
-    icon: "bi-tools",
-  },
-  [PAGE_STATUS.DEVELOPING]: {
-    eyebrow: "COMING SOON",
-    title: "页面正在开发",
-    icon: "bi-code-slash",
-  },
-  [PAGE_STATUS.REMOVED]: {
-    eyebrow: "NO LONGER AVAILABLE",
-    title: "页面已移除",
-    icon: "bi-archive",
-  },
+const STATUS_KIND = {
+  [PAGE_STATUS.MAINTENANCE]: "maintenance",
+  [PAGE_STATUS.DEVELOPING]: "developing",
+  [PAGE_STATUS.REMOVED]: "removed",
+};
+
+const STATUS_DOCUMENT_TITLE = {
+  maintenance: "页面维护中",
+  developing: "页面开发中",
+  removed: "页面已下架",
 };
 
 function LoadingView() {
@@ -36,29 +31,21 @@ function LoadingView() {
 }
 
 function PageStatusView({ control }) {
-  const copy = STATUS_COPY[control.status] || STATUS_COPY[PAGE_STATUS.MAINTENANCE];
+  const kind = STATUS_KIND[control.status] || "maintenance";
   useEffect(() => {
     const previous = document.title;
-    document.title = `${copy.title} · 星空云绘`;
+    document.title = `${STATUS_DOCUMENT_TITLE[kind] || "暂时无法访问"} · 星空云绘`;
     return () => {
       document.title = previous;
     };
-  }, [copy.title]);
+  }, [kind]);
 
   return (
-    <section className={`page-access-state is-${control.status}`} aria-labelledby="page-access-title">
-      <div className="page-access-state__mark" aria-hidden="true">
-        <i className={`bi ${copy.icon}`} />
-      </div>
-      <p>{copy.eyebrow}</p>
-      <h1 id="page-access-title">{copy.title}</h1>
-      <strong>{control.label}</strong>
-      <span>{control.reason || "该页面暂时无法访问，请稍后再试。"}</span>
-      <Link to="/">
-        <i className="bi bi-house-door" aria-hidden="true" />
-        返回首页
-      </Link>
-    </section>
+    <StatusShowcase
+      kind={kind}
+      reason={control.reason}
+      actions={<StatusBackButton />}
+    />
   );
 }
 

@@ -232,6 +232,7 @@ function normalizePendingLaunchConfig(value) {
     'material',
     'device',
     'skills',
+    'reasoningEffort',
     'referenceImages',
     'autoStart',
     'costConfirmed',

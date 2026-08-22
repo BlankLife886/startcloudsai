@@ -266,10 +266,20 @@ func rewriteAssistantLedgerReason(reason *string, params map[string]any) *string
 		return nil
 	}
 	product := store.AssistantProductName(params)
-	if product == "AI 助手" || !strings.Contains(*reason, "AI 助手") {
+	rewritten := *reason
+	if product != "AI 助手" && strings.Contains(rewritten, "AI 助手") {
+		rewritten = strings.ReplaceAll(rewritten, "AI 助手", product)
+	}
+	if product == "无限画布" {
+		rewritten = strings.ReplaceAll(rewritten, "已停止，按已完成操作结算", "由用户主动停止，按已完成画布操作结算")
+	} else {
+		rewritten = strings.ReplaceAll(rewritten, "已停止，按已完成操作结算", "由用户主动停止，本轮积分不退还")
+	}
+	rewritten = strings.ReplaceAll(rewritten, "已停止，未使用费用已退回", "由用户主动停止，未使用费用已退回")
+	rewritten = strings.ReplaceAll(rewritten, "已停止，费用已退回", "由用户主动停止，未执行画布操作，费用已退回")
+	if rewritten == *reason {
 		return reason
 	}
-	rewritten := strings.ReplaceAll(*reason, "AI 助手", product)
 	return &rewritten
 }
 

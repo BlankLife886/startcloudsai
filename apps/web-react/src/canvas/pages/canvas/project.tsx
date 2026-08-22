@@ -136,6 +136,7 @@ import {
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio } from "@/types/media";
 import {
+    cancelCanvasAssistantRun,
     cancelCanvasTask,
     canvasManualTaskKey,
     canvasWorkflowTaskKey,
@@ -173,6 +174,10 @@ type CanvasGenerationRequest = {
     runningNodeId: string;
     controller: AbortController;
 };
+
+function cancelPersistedCanvasTask(taskId: string, kind: "image" | "assistant") {
+    return kind === "assistant" ? cancelCanvasAssistantRun(taskId) : cancelCanvasTask(taskId);
+}
 
 type CanvasWorkflowRunState = {
     status: "idle" | "running" | "locked" | "refresh" | "success" | "error" | "canceled";
@@ -331,7 +336,8 @@ function InfiniteCanvasPage() {
     const [backgroundMode, setBackgroundMode] = useState<CanvasBackgroundMode>("lines");
     const [showImageInfo, setShowImageInfo] = useState(false);
     const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
-    const [stopConfirm, setStopConfirm] = useState<{ kind: "running" | "workflow"; queuedCount: number } | null>(null);
+    const [stopConfirm, setStopConfirm] = useState<{ kind: "running" | "workflow"; queuedCount: number; nodeId?: string } | null>(null);
+    const [stopSubmitting, setStopSubmitting] = useState(false);
     const [assetPickerOpen, setAssetPickerOpen] = useState(false);
     const [projectLoaded, setProjectLoaded] = useState(false);
     const [toolbarNodeId, setToolbarNodeId] = useState<string | null>(null);
@@ -506,11 +512,22 @@ function InfiniteCanvasPage() {
 
     const persistCanvasTaskId = useCallback(
         async (nodeId: string, taskId: string, imageId?: string, taskKind: "image" | "assistant" = "image") => {
-            if (workflowRunRef.current.cancelQueued || workflowRunRef.current.stopped || workflowRunRef.current.canceledNodeIds.has(nodeId)) {
-                void cancelCanvasTask(taskId).catch(() => undefined);
-            }
             const nodes = nodesRef.current;
             const current = nodes.find((item) => item.id === nodeId);
+            const shouldCancelSubmittedTask =
+                workflowRunRef.current.cancelQueued ||
+                workflowRunRef.current.stopped ||
+                workflowRunRef.current.canceledNodeIds.has(nodeId) ||
+                !current ||
+                !isInFlightCanvasGeneration(current);
+            if (shouldCancelSubmittedTask) {
+                try {
+                    await cancelPersistedCanvasTask(taskId, taskKind);
+                } catch (error) {
+                    message.error(error instanceof Error ? error.message : t("canvas.projectPage.stopFailed"));
+                }
+                return;
+            }
             workflowSubmittedNodeIdsRef.current.add(nodeId);
             if (current?.metadata?.workflowProducerNodeId) workflowSubmittedNodeIdsRef.current.add(current.metadata.workflowProducerNodeId);
             nodes.forEach((item) => {
@@ -526,16 +543,13 @@ function InfiniteCanvasPage() {
                     const producerId = current.find((item) => item.id === nodeId)?.metadata?.workflowProducerNodeId;
                     const isProducer = node.metadata?.workflowOutputNodeIds?.includes(nodeId) || node.id === producerId;
                     if (node.id !== nodeId && !isProducer) return node;
-                    if (!isInFlightCanvasGeneration(node)) {
-                        if (node.id === nodeId) void cancelCanvasTask(taskId).catch(() => undefined);
-                        return node;
-                    }
+                    if (!isInFlightCanvasGeneration(node)) return node;
                     return attachCanvasTaskId(node, taskId, node.id === nodeId ? imageId : undefined, taskKind);
                 }),
             );
             await flushCanvasPersistence();
         },
-        [commitNodes],
+        [commitNodes, message, t],
     );
 
     const finalizeCanceledGenerationNodes = useCallback(
@@ -3918,20 +3932,95 @@ function InfiniteCanvasPage() {
             const node = nodesRef.current.find((item) => item.id === nodeId);
             if (node && !hasSubmittedCanvasTask(node, nodesRef.current)) {
                 const count = stopUnsubmittedWorkflowWork(nodeId);
-                if (count) message.info(t("canvas.workflow.queuedNodesCanceled", { count }));
-                return;
+                if (count) {
+                    message.info(t("canvas.workflow.queuedNodesCanceled", { count }));
+                    return;
+                }
             }
             const queuedCount = collectUnsubmittedWorkflowNodeIds().size;
-            setStopConfirm({ kind: queuedCount > 0 ? "workflow" : "running", queuedCount });
+            setStopConfirm({ kind: queuedCount > 0 ? "workflow" : "running", queuedCount, nodeId });
         },
         [collectUnsubmittedWorkflowNodeIds, message, stopUnsubmittedWorkflowWork, t],
     );
 
+    const stopRunningGeneration = useCallback(async () => {
+        const requestedNodeId = stopConfirm?.nodeId;
+        if (!requestedNodeId || stopSubmitting) return;
+        setStopSubmitting(true);
+        try {
+            const stoppedNodeIds = new Set([requestedNodeId]);
+            generationRequestsRef.current.forEach((request) => {
+                if (request.targetNodeId !== requestedNodeId && request.originNodeId !== requestedNodeId && request.runningNodeId !== requestedNodeId) return;
+                stoppedNodeIds.add(request.targetNodeId);
+                stoppedNodeIds.add(request.originNodeId);
+                stoppedNodeIds.add(request.runningNodeId);
+            });
+            let expanded = true;
+            while (expanded) {
+                expanded = false;
+                for (const node of nodesRef.current) {
+                    const related =
+                        stoppedNodeIds.has(node.id) ||
+                        Boolean(node.metadata?.workflowProducerNodeId && stoppedNodeIds.has(node.metadata.workflowProducerNodeId)) ||
+                        Boolean(node.metadata?.workflowOutputNodeIds?.some((id) => stoppedNodeIds.has(id)));
+                    if (!related) continue;
+                    const before = stoppedNodeIds.size;
+                    stoppedNodeIds.add(node.id);
+                    if (node.metadata?.workflowProducerNodeId) stoppedNodeIds.add(node.metadata.workflowProducerNodeId);
+                    node.metadata?.workflowOutputNodeIds?.forEach((id) => stoppedNodeIds.add(id));
+                    if (stoppedNodeIds.size !== before) expanded = true;
+                }
+            }
+            const tasks = [...new Map(pendingCanvasTasks(nodesRef.current).filter((task) => stoppedNodeIds.has(task.nodeId)).map((task) => [`${task.kind}:${task.taskId}`, task])).values()];
+            if (tasks.length) {
+                const results = await Promise.allSettled(tasks.map((task) => cancelPersistedCanvasTask(task.taskId, task.kind)));
+                const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+                if (failures.length === tasks.length) {
+                    throw failures[0]?.reason || new Error(t("canvas.projectPage.stopFailed"));
+                }
+                if (failures.length) {
+                    message.error(failures[0].reason instanceof Error ? failures[0].reason.message : t("canvas.projectPage.stopFailed"));
+                }
+            }
+            if (tasks.length) {
+                generationRequestsRef.current.forEach((request) => {
+                    if (!stoppedNodeIds.has(request.targetNodeId) && !stoppedNodeIds.has(request.originNodeId) && !stoppedNodeIds.has(request.runningNodeId)) return;
+                    const submitted = [request.targetNodeId, request.originNodeId, request.runningNodeId]
+                        .map((id) => nodesRef.current.find((node) => node.id === id))
+                        .some((node) => node && hasSubmittedCanvasTask(node, nodesRef.current));
+                    if (submitted) request.controller.abort();
+                });
+            }
+            finalizeCanceledGenerationNodes(stoppedNodeIds);
+            setRunningNodeIds((current) => {
+                const next = new Set(current);
+                stoppedNodeIds.forEach((id) => next.delete(id));
+                return next;
+            });
+            setStopConfirm(null);
+            message.info(t("canvas.generation.canceled"));
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : t("canvas.projectPage.stopFailed"));
+        } finally {
+            setStopSubmitting(false);
+        }
+    }, [finalizeCanceledGenerationNodes, message, stopConfirm?.nodeId, stopSubmitting, t]);
+
     const stopWorkflow = useCallback(() => {
         workflowExecutionTokenRef.current += 1;
         const checkpoint = workflowCheckpointRef.current;
-        const submittedTaskIds = [...workflowRunTaskIdsRef.current];
         const runningOrQueued = nodesRef.current.filter((node) => node.metadata?.executionStatus === "queued" || node.metadata?.executionStatus === "running").map((node) => node.id);
+        const activeWorkflowNodeIds = new Set([...(checkpoint?.nodeIds || []), ...runningOrQueued]);
+        const submittedTasks = new Map<string, PendingCanvasTask>();
+        workflowRunTaskIdsRef.current.forEach((taskId) => submittedTasks.set(`image:${taskId}`, { nodeId: "", taskId, kind: "image" }));
+        pendingCanvasTasks(nodesRef.current).forEach((task) => {
+            const node = nodesRef.current.find((item) => item.id === task.nodeId);
+            const belongsToWorkflow =
+                activeWorkflowNodeIds.has(task.nodeId) ||
+                Boolean(node?.metadata?.workflowProducerNodeId && activeWorkflowNodeIds.has(node.metadata.workflowProducerNodeId)) ||
+                nodesRef.current.some((item) => activeWorkflowNodeIds.has(item.id) && item.metadata?.workflowOutputNodeIds?.includes(task.nodeId));
+            if (belongsToWorkflow) submittedTasks.set(`${task.kind}:${task.taskId}`, task);
+        });
         workflowRunRef.current = {
             cancelQueued: true,
             stopped: true,
@@ -3939,10 +4028,21 @@ function InfiniteCanvasPage() {
             lockLost: workflowRunRef.current.lockLost,
             canceledNodeIds: new Set([...workflowRunRef.current.canceledNodeIds, ...runningOrQueued]),
         };
-        generationRequestsRef.current.forEach((request) => request.controller.abort());
+        const cancellations = [...submittedTasks.values()].map((task) => cancelPersistedCanvasTask(task.taskId, task.kind));
+        generationRequestsRef.current.forEach((request) => {
+            const submitted = [request.targetNodeId, request.originNodeId, request.runningNodeId]
+                .map((id) => nodesRef.current.find((node) => node.id === id))
+                .some((node) => node && hasSubmittedCanvasTask(node, nodesRef.current));
+            if (submitted) request.controller.abort();
+        });
         workflowRunTaskIdsRef.current.clear();
         workflowSubmittedNodeIdsRef.current.clear();
-        if (submittedTaskIds.length) void Promise.all(submittedTaskIds.map((taskId) => cancelCanvasTask(taskId).catch(() => undefined)));
+        if (cancellations.length) {
+            void Promise.allSettled(cancellations).then((results) => {
+                const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+                if (failure) message.error(failure.reason instanceof Error ? failure.reason.message : t("canvas.projectPage.stopFailed"));
+            });
+        }
         finalizeCanceledGenerationNodes();
         setRunningNodeIds(new Set());
         workflowPlanRef.current = null;
@@ -3963,12 +4063,6 @@ function InfiniteCanvasPage() {
         setWorkflowRun({ status: "canceled", completed: 0, total: 0, running: 0, queued: 0 });
         message.info(t("canvas.workflow.canceled"));
     }, [beginWorkflowStop, finalizeCanceledGenerationNodes, message, releaseWorkflowBrowserLock, t]);
-
-    const stopWorkflowSubsequent = useCallback(() => {
-        const count = stopUnsubmittedWorkflowWork();
-        if (count) message.info(t("canvas.workflow.queuedNodesCanceled", { count }));
-        setStopConfirm(null);
-    }, [message, stopUnsubmittedWorkflowWork, t]);
 
     const requestStopWorkflow = useCallback(() => {
         const queuedCount = collectUnsubmittedWorkflowNodeIds().size;
@@ -4662,20 +4756,28 @@ function InfiniteCanvasPage() {
                     tone="danger"
                     eyebrow={t("canvas.projectPage.stopEyebrow")}
                     title={t("canvas.projectPage.stopTitle")}
-                    description={stopConfirm?.kind === "workflow" && (stopConfirm.queuedCount || 0) > 0 ? t("canvas.projectPage.stopWorkflowDescription") : t("canvas.projectPage.stopDescription")}
+                    description={stopConfirm?.kind === "workflow" ? t("canvas.projectPage.stopWorkflowDescription") : t("canvas.projectPage.stopDescription")}
                     closeLabel={t("canvas.project.close")}
                     footer={
-                        stopConfirm?.kind === "workflow" && (stopConfirm.queuedCount || 0) > 0 ? (
+                        stopConfirm?.kind === "workflow" ? (
                             <>
                                 <button type="button" className="sc-cd-btn" onClick={() => setStopConfirm(null)}>
                                     {t("canvas.projectPage.continue")}
                                 </button>
-                                <button type="button" className="sc-cd-btn is-solid" onClick={stopWorkflowSubsequent}>
-                                    {t("canvas.projectPage.stopQueued")}
+                                <button
+                                    type="button"
+                                    className="sc-cd-btn is-solid"
+                                    disabled={stopSubmitting}
+                                    onClick={() => {
+                                        setStopConfirm(null);
+                                        stopWorkflow();
+                                    }}
+                                >
+                                    {t("canvas.projectPage.stop")}
                                 </button>
                             </>
                         ) : (
-                            <button type="button" className="sc-cd-btn is-solid" onClick={() => setStopConfirm(null)}>
+                            <button type="button" className="sc-cd-btn is-solid" disabled={stopSubmitting} onClick={() => void stopRunningGeneration()}>
                                 {t("canvas.projectPage.stop")}
                             </button>
                         )

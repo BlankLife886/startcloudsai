@@ -20,7 +20,8 @@ func TestUserUploadReferencesProtectSharedObjectsUntilLastRelease(t *testing.T) 
 	}
 	sharedKey := "uploads/" + user.ID.String() + "/original/shared.png"
 	standaloneKey := "uploads/" + user.ID.String() + "/thumb/standalone.jpg"
-	if err := store.RegisterUserUploadObjects(ctx, st.Pool, user.ID, []string{sharedKey, standaloneKey}); err != nil {
+	displayKey := "uploads/" + user.ID.String() + "/display/standalone.jpg"
+	if err := store.RegisterUserUploadObjects(ctx, st.Pool, user.ID, []string{sharedKey, standaloneKey, displayKey}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -40,7 +41,7 @@ func TestUserUploadReferencesProtectSharedObjectsUntilLastRelease(t *testing.T) 
 			t.Fatal(txErr)
 		}
 		defer tx.Rollback(ctx) //nolint:errcheck
-		keys, claimErr := store.ClaimUnreferencedUserUploadObjects(ctx, tx, []string{sharedKey, standaloneKey}, cutoff)
+		keys, claimErr := store.ClaimUnreferencedUserUploadObjects(ctx, tx, []string{sharedKey, standaloneKey, displayKey}, cutoff)
 		if claimErr != nil {
 			t.Fatal(claimErr)
 		}
@@ -52,8 +53,8 @@ func TestUserUploadReferencesProtectSharedObjectsUntilLastRelease(t *testing.T) 
 		}
 		return keys
 	}
-	if keys := claim(); len(keys) != 1 || keys[0] != standaloneKey {
-		t.Fatalf("first claim = %#v, want only standalone object", keys)
+	if keys := claim(); len(keys) != 2 || !containsUploadKey(keys, displayKey) || !containsUploadKey(keys, standaloneKey) {
+		t.Fatalf("first claim = %#v, want standalone display and thumbnail objects", keys)
 	}
 
 	if err := store.DeleteUserUploadReferences(ctx, st.Pool, store.UploadReferenceUserAsset, assetID); err != nil {
@@ -78,6 +79,15 @@ func TestUserUploadReferencesProtectSharedObjectsUntilLastRelease(t *testing.T) 
 	if deletedAt == nil {
 		t.Fatal("claimed object was not marked deleted")
 	}
+}
+
+func containsUploadKey(keys []string, requested string) bool {
+	for _, key := range keys {
+		if key == requested {
+			return true
+		}
+	}
+	return false
 }
 
 func TestGetUserAssetByFileKeyIsUserScoped(t *testing.T) {

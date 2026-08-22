@@ -47,6 +47,41 @@ type AssistantFileSegment struct {
 	Content string
 }
 
+type AssistantFileUsage struct {
+	FileCount   int
+	TotalBytes  int64
+	ActiveCount int
+	Created24h  int
+}
+
+// LockAssistantFilesForUser serializes quota checks and inserts for one user.
+func LockAssistantFilesForUser(ctx context.Context, q Q, userID uuid.UUID) error {
+	_, err := q.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "assistant_files:"+userID.String())
+	return err
+}
+
+func GetAssistantFileUsage(ctx context.Context, q Q, userID uuid.UUID, since time.Time) (AssistantFileUsage, error) {
+	var usage AssistantFileUsage
+	err := q.QueryRow(ctx, `SELECT COUNT(*), COALESCE(SUM(size_bytes), 0),
+		COUNT(*) FILTER (WHERE status IN ('queued', 'processing')),
+		(SELECT COUNT(*) FROM assistant_file_upload_events WHERE user_id = $1 AND created_at >= $2)
+		FROM assistant_files WHERE user_id = $1`, userID, since).Scan(
+		&usage.FileCount, &usage.TotalBytes, &usage.ActiveCount, &usage.Created24h,
+	)
+	return usage, err
+}
+
+func InsertAssistantFileUploadEvent(ctx context.Context, q Q, id, userID uuid.UUID, sizeBytes int64, createdAt time.Time) error {
+	_, err := q.Exec(ctx, `INSERT INTO assistant_file_upload_events (id, user_id, size_bytes, created_at)
+		VALUES ($1, $2, $3, $4)`, id, userID, sizeBytes, createdAt)
+	return err
+}
+
+func DeleteOldAssistantFileUploadEvents(ctx context.Context, q Q, userID uuid.UUID, before time.Time) error {
+	_, err := q.Exec(ctx, `DELETE FROM assistant_file_upload_events WHERE user_id = $1 AND created_at < $2`, userID, before)
+	return err
+}
+
 func scanAssistantFile(row pgx.Row) (*AssistantFile, error) {
 	var item AssistantFile
 	if err := row.Scan(&item.ID, &item.UserID, &item.ObjectKey, &item.Name, &item.ContentType,

@@ -63,7 +63,9 @@ func (e *Engine) BackfillCoverDimensions(ctx context.Context, limit int) error {
 			width, height, resolveErr := e.fetchCoverDimensions(ctx, item.CoverURL)
 			if resolveErr != nil {
 				log.Printf("prompt cover dimensions %s failed: %v", item.ID, resolveErr)
-				_ = store.MarkPromptCoverDimensionsChecked(context.Background(), e.St.Pool, item.ID)
+				markCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+				defer cancel()
+				_ = store.MarkPromptCoverDimensionsChecked(markCtx, e.St.Pool, item.ID)
 				return
 			}
 			if resolveErr = store.SetPromptCoverDimensions(ctx, e.St.Pool, item.ID, width, height); resolveErr != nil {

@@ -827,7 +827,7 @@ func (s *Server) createHandheldJob(c *gin.Context) {
 
 func (s *Server) compensateHandheldTasks(ctx context.Context, userID, batchID uuid.UUID, tasks []*store.Task) {
 	for _, task := range tasks {
-		_, _ = taskflow.CancelTask(ctx, s.St, userID, task.ID)
+		_, _ = taskflow.CancelQueuedTaskSilently(ctx, s.St, userID, task.ID)
 	}
 	_ = store.UpdateEcommerceHandheldBatchStatus(ctx, s.St.Pool, userID, batchID, "failed")
 }

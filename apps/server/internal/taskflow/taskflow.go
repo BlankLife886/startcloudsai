@@ -551,18 +551,33 @@ func createTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 	return task, created, nil
 }
 
-// CancelTask 仅 queued 可取消：条件更新 + release，单事务。
+// CancelTask 用户主动停止：queued 解冻退回，running 视为已经提交并结算预留费用。
 func CancelTask(ctx context.Context, st *store.Store, userID, taskID uuid.UUID) (*store.Task, error) {
-	return cancelTask(ctx, st, &userID, taskID, false)
+	return cancelTask(ctx, st, &userID, taskID, cancelActorUser)
 }
 
-// AdminCancelTask 管理员取消任意用户的 queued 任务：同用户端语义（放开属主校验），并通知任务属主。
+// AdminCancelTask 管理员取消任意用户的 queued 任务并退回冻结费用。
 func AdminCancelTask(ctx context.Context, st *store.Store, taskID uuid.UUID) (*store.Task, error) {
-	return cancelTask(ctx, st, nil, taskID, true)
+	return cancelTask(ctx, st, nil, taskID, cancelActorAdmin)
 }
 
-// cancelTask owner 非 nil 时校验属主；notify 为 true 时给任务属主发通知。
-func cancelTask(ctx context.Context, st *store.Store, owner *uuid.UUID, taskID uuid.UUID, notify bool) (*store.Task, error) {
+// CancelQueuedTaskSilently is reserved for internal rollback before a queued
+// task is exposed to the user. It must not be presented as a user action.
+func CancelQueuedTaskSilently(ctx context.Context, st *store.Store, userID, taskID uuid.UUID) (*store.Task, error) {
+	return cancelTask(ctx, st, &userID, taskID, cancelActorSystem)
+}
+
+type cancelActor string
+
+const (
+	cancelActorUser   cancelActor = "user"
+	cancelActorAdmin  cancelActor = "admin"
+	cancelActorSystem cancelActor = "system"
+)
+
+// cancelTask only lets an explicit user action stop running work. Admin and
+// internal rollback remain limited to queued tasks.
+func cancelTask(ctx context.Context, st *store.Store, owner *uuid.UUID, taskID uuid.UUID, actor cancelActor) (*store.Task, error) {
 	var task *store.Task
 	err := st.Tx(ctx, func(tx pgx.Tx) error {
 		var t *store.Task
@@ -578,24 +593,65 @@ func cancelTask(ctx context.Context, st *store.Store, owner *uuid.UUID, taskID u
 		if t == nil {
 			return apperr.E("task_not_found", "任务不存在", 404)
 		}
-		ok, err := store.CancelTask(ctx, tx, taskID, now())
+		if actor == cancelActorUser && t.Status == "canceled" && t.ErrorCode != nil && *t.ErrorCode == "user_canceled" {
+			task = t
+			return nil
+		}
+		fromStatus := t.Status
+		if fromStatus != "queued" && (actor != cancelActorUser || fromStatus != "running") {
+			if actor != cancelActorUser {
+				return apperr.E("task_not_cancelable", "仅排队中的任务可以取消", 400)
+			}
+			return apperr.E("task_not_cancelable", "仅排队中或运行中的任务可以停止", 400)
+		}
+		errorCode, errorMessage := "user_canceled", "用户主动停止任务"
+		if actor == cancelActorAdmin {
+			errorCode, errorMessage = "admin_canceled", "管理员取消任务"
+		} else if actor == cancelActorSystem {
+			errorCode, errorMessage = "system_canceled", "系统回滚未提交任务"
+		}
+		ok, err := store.CancelTaskFromStatus(ctx, tx, taskID, fromStatus, errorCode, errorMessage, now())
 		if err != nil {
 			return err
 		}
 		if !ok {
-			return apperr.E("task_not_cancelable", "仅排队中的任务可以取消", 400)
+			return apperr.E("task_not_cancelable", "任务状态已变化，无法停止", 409)
 		}
 		if err := store.ClearTaskOutputsAndEnqueueCleanup(ctx, tx, taskID, t.OutputKeys, t.ThumbnailKeys); err != nil {
 			return err
 		}
+		if err := store.SupersedePendingTaskUpstreamAttempts(ctx, tx, taskID, now()); err != nil {
+			return err
+		}
 		if t.CostCents > 0 {
-			if _, err := wallet.ReleaseForTask(ctx, tx, t.UserID, taskID, t.CostCents, strPtr("任务取消解冻")); err != nil {
-				return err
+			if fromStatus == "running" {
+				if _, err := wallet.SettleForTask(ctx, tx, t.UserID, taskID, t.CostCents, strPtr("用户主动停止：任务已提交，按预留积分结算")); err != nil {
+					return err
+				}
+			} else {
+				reason := "用户主动停止：任务未提交，冻结积分退回"
+				if actor == cancelActorAdmin {
+					reason = "管理员取消：任务未提交，冻结积分退回"
+				} else if actor == cancelActorSystem {
+					reason = "系统回滚：任务未提交，冻结积分退回"
+				}
+				if _, err := wallet.ReleaseForTask(ctx, tx, t.UserID, taskID, t.CostCents, strPtr(reason)); err != nil {
+					return err
+				}
 			}
 		}
-		if notify {
+		if actor == cancelActorAdmin {
 			body := taskNotifyName(t) + "已被管理员取消，费用已退回。"
 			if err := store.InsertNotification(ctx, tx, &t.UserID, "task", taskNotifyName(t)+"已取消", &body); err != nil {
+				return err
+			}
+		} else if actor == cancelActorUser {
+			name := taskNotifyName(t)
+			body := "你已主动停止" + name + "任务。任务尚未提交，冻结积分已退回。"
+			if fromStatus == "running" {
+				body = "你已主动停止" + name + "任务。任务已提交，按本次预留积分结算，不按失败退款，也不会发放失败补偿。"
+			}
+			if err := store.InsertNotification(ctx, tx, &t.UserID, "task", name+"已主动停止", &body); err != nil {
 				return err
 			}
 		}
@@ -806,6 +862,13 @@ func ApplyTaskNotificationDisplay(n *store.Notification, task *store.Task) {
 		body = *n.Body
 	}
 	switch {
+	case (task.ErrorCode != nil && *task.ErrorCode == "user_canceled") || strings.Contains(title, "主动停止") || strings.Contains(body, "主动停止"):
+		n.Title = name + "已主动停止"
+		text := "你已主动停止" + name + "任务。任务尚未提交，冻结积分已退回。"
+		if task.StartedAt != nil {
+			text = "你已主动停止" + name + "任务。任务已提交，按本次预留积分结算，不按失败退款，也不会发放失败补偿。"
+		}
+		n.Body = &text
 	case strings.Contains(title, "取消") || strings.Contains(body, "取消"):
 		n.Title = name + "已取消"
 		text := name + "已被管理员取消，费用已退回。"

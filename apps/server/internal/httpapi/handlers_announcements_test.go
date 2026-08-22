@@ -1,8 +1,11 @@
 package httpapi
 
 import (
+	"bytes"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -154,4 +157,46 @@ func mustFindPublicAnnouncement(t *testing.T, env *communityEnv, id string) map[
 		t.Fatalf("missing public announcement %s", id)
 	}
 	return item
+}
+
+func TestAdminUploadAnnouncementImage(t *testing.T) {
+	env := newCommunityEnv(t)
+	_, adminToken := env.newUserSession(t, "admin")
+
+	missing := env.do(t, http.MethodPost, "/api/v1/admin/announcements/images", nil, adminToken)
+	if missing.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("missing file: status %d body %s", missing.Code, missing.Body.String())
+	}
+
+	var invalid bytes.Buffer
+	invalidWriter := multipart.NewWriter(&invalid)
+	part, err := invalidWriter.CreateFormFile("file", "notice.txt")
+	if err != nil {
+		t.Fatalf("create invalid file: %v", err)
+	}
+	if _, err := part.Write([]byte("not an image")); err != nil {
+		t.Fatalf("write invalid file: %v", err)
+	}
+	if err := invalidWriter.Close(); err != nil {
+		t.Fatalf("close invalid writer: %v", err)
+	}
+	invalidReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/announcements/images", &invalid)
+	invalidReq.Header.Set("Content-Type", invalidWriter.FormDataContentType())
+	invalidReq.AddCookie(&http.Cookie{Name: adminSessionCookieName, Value: adminToken})
+	invalidRes := httptest.NewRecorder()
+	env.engine.ServeHTTP(invalidRes, invalidReq)
+	if invalidRes.Code != http.StatusBadRequest {
+		t.Fatalf("unsupported file: status %d body %s", invalidRes.Code, invalidRes.Body.String())
+	}
+
+	if _, err := normalizeAnnouncementConfig(&announcementConfigIn{
+		Placement: "modal", Layout: "image_top", AllowClose: true,
+		Frequency: "session_once", Version: 1, DismissHours: 24, CarouselIntervalMS: 4500,
+		Assets: []announcementAssetIn{{
+			URL: "/api/v1/files/announcement-images/notice.webp",
+			Alt: "活动图",
+		}},
+	}); err != nil {
+		t.Fatalf("uploaded url rejected: %v", err)
+	}
 }

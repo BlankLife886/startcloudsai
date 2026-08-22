@@ -18,7 +18,12 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 )
 
-const assistantFileListLimit = 50
+const (
+	assistantFileListLimit       = 50
+	assistantFileTotalBytesLimit = 300 << 20
+	assistantFileActiveLimit     = 4
+	assistantFileDailyLimit      = 50
+)
 
 func (s *Server) assistantFiles(c *gin.Context) {
 	user, err := s.requireUser(c)
@@ -112,6 +117,15 @@ func (s *Server) createAssistantFile(c *gin.Context) {
 		fail(c, apperr.E("assistant_psd_unavailable", "AI 助手暂不支持 PSD 文件", 400))
 		return
 	}
+	usage, err := store.GetAssistantFileUsage(c.Request.Context(), s.St.Pool, user.ID, time.Now().UTC().Add(-24*time.Hour))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if err := validateAssistantFileQuota(usage, int64(len(data))); err != nil {
+		fail(c, err)
+		return
+	}
 	id := uuid.New()
 	key := fmt.Sprintf("uploads/%s/original/%s.%s", user.ID, id, format.Extension)
 	if err := s.Storage.UploadBytes(c.Request.Context(), key, data, format.ContentType); err != nil {
@@ -121,6 +135,23 @@ func (s *Server) createAssistantFile(c *gin.Context) {
 	sum := sha256.Sum256(data)
 	var item *store.AssistantFile
 	err = s.St.Tx(c.Request.Context(), func(tx pgx.Tx) error {
+		if err := store.LockAssistantFilesForUser(c.Request.Context(), tx, user.ID); err != nil {
+			return err
+		}
+		quotaSince := time.Now().UTC().Add(-24 * time.Hour)
+		if err := store.DeleteOldAssistantFileUploadEvents(c.Request.Context(), tx, user.ID, quotaSince); err != nil {
+			return err
+		}
+		usage, err := store.GetAssistantFileUsage(c.Request.Context(), tx, user.ID, quotaSince)
+		if err != nil {
+			return err
+		}
+		if err := validateAssistantFileQuota(usage, int64(len(data))); err != nil {
+			return err
+		}
+		if err := store.InsertAssistantFileUploadEvent(c.Request.Context(), tx, id, user.ID, int64(len(data)), time.Now().UTC()); err != nil {
+			return err
+		}
 		if err := store.RegisterUserUploadObjects(c.Request.Context(), tx, user.ID, []string{key}); err != nil {
 			return err
 		}
@@ -147,6 +178,21 @@ func (s *Server) createAssistantFile(c *gin.Context) {
 		_ = s.Queue.EnqueueAssistantFile(c.Request.Context(), id.String())
 	}
 	respondCreated(c, gin.H{"file": assistantFileDict(item)})
+}
+
+func validateAssistantFileQuota(usage store.AssistantFileUsage, incomingBytes int64) error {
+	switch {
+	case usage.FileCount >= assistantFileListLimit:
+		return apperr.E("assistant_file_count_limit", "最多保留 50 个 AI 助手文档，请先删除不需要的文档", 409)
+	case usage.TotalBytes+incomingBytes > assistantFileTotalBytesLimit:
+		return apperr.E("assistant_file_storage_limit", "AI 助手文档总容量不能超过 300MB", 409)
+	case usage.ActiveCount >= assistantFileActiveLimit:
+		return apperr.E("assistant_file_processing_limit", "最多同时处理 4 个文档，请稍后再试", 429)
+	case usage.Created24h >= assistantFileDailyLimit:
+		return apperr.E("assistant_file_daily_limit", "24 小时内最多上传 50 个 AI 助手文档", 429)
+	default:
+		return nil
+	}
 }
 
 func (s *Server) deleteAssistantFile(c *gin.Context) {

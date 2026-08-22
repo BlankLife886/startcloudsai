@@ -12,7 +12,19 @@ const account = {
 const assistantConfig = {
   conversationModels: [
     { model: 'chat-basic', label: 'Chat Basic', description: '日常对话', pricePoints: 3 },
-    { model: 'chat-pro', label: 'Chat Pro', description: '复杂创作', pricePoints: 5 },
+    {
+      model: 'chat-pro',
+      label: 'Chat Pro',
+      description: '复杂创作',
+      pricePoints: 5,
+      defaultReasoningEffort: 'medium',
+      supportedReasoningEfforts: ['low', 'medium', 'high'],
+      reasoningEfforts: [
+        { id: 'low', label: '低', pricePoints: 3 },
+        { id: 'medium', label: '中', pricePoints: 5 },
+        { id: 'high', label: '高', pricePoints: 8 },
+      ],
+    },
   ],
   imageModels: [
     {
@@ -638,6 +650,49 @@ test.describe('React assistant workspace contract', () => {
       referenceImages: [{ name: '商品参考图', dataUrl: '/sucai/home-intro-03.png', fileKey: 'uploads/studio-reference.png' }],
     })
     expect(await page.evaluate(() => localStorage.getItem('starclouds:pending-prompt'))).toBeNull()
+  })
+
+  test('studio pending prompt keeps Q&A mode and reasoning effort', async ({ page }) => {
+    let runBody = null
+    await page.addInitScript(() => {
+      localStorage.setItem('starclouds:pending-prompt', JSON.stringify({
+        version: 2,
+        taskType: 'assistant',
+        prompt: '只回答，不要生图',
+        at: Date.now(),
+        config: {
+          autoStart: true,
+          costConfirmed: true,
+          skill: 'chat',
+          mode: 'chat',
+          model: 'chat-pro',
+          reasoningEffort: 'high',
+        },
+      }))
+    })
+    await mockAssistant(page)
+    await page.route('**/api/v1/assistant/conversations', (route) =>
+      fulfillJson(route, { id: 'studio-chat-conversation', title: '新对话', messages: [] }, 201),
+    )
+    await page.route('**/api/v1/assistant/runs', async (route) => {
+      if (route.request().method() !== 'POST') {
+        await fulfillJson(route, { runs: [] })
+        return
+      }
+      runBody = route.request().postDataJSON()
+      await fulfillJson(route, succeededRun(runBody), 201)
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    await expect(page.locator('.message--assistant')).toContainText('已完成你的创作请求。')
+    await expect(page.locator('.agent-mode-button')).toContainText('问答模式')
+    expect(runBody).toMatchObject({
+      conversationId: 'studio-chat-conversation',
+      prompt: '只回答，不要生图',
+      model: 'chat-pro',
+      mode: 'chat',
+      reasoningEffort: 'high',
+    })
   })
 
   test('pending assistant requests do not block client-side navigation', async ({ page }) => {

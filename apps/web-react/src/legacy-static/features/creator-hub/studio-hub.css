@@ -1050,6 +1050,18 @@ html.color-scheme-dark .studio-composer__rail .studio-composer__control[aria-exp
   max-width: 118px;
 }
 
+.studio-composer__rail .studio-composer__control.is-field.is-model.is-captioned > small,
+.studio-composer__rail .studio-composer__control.is-field.is-reasoning.is-captioned > small {
+  max-width: 148px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.studio-composer__rail .studio-composer__control.is-field.is-reasoning .studio-composer__control-value em {
+  max-width: 56px;
+}
+
 .studio-composer__rail .studio-composer__control.is-field.is-quality .studio-composer__control-value em,
 .studio-composer__rail .studio-composer__control.is-field.is-resolution .studio-composer__control-value em,
 .studio-composer__rail .studio-composer__control.is-field.is-count .studio-composer__control-value em {
@@ -1280,6 +1292,57 @@ html.color-scheme-dark .studio-composer__rail .studio-composer__control[aria-exp
 .studio-composer__field-menu.is-skill > button > i:last-child {
   margin-left: auto;
   color: var(--sc-accent);
+}
+
+.studio-composer__field-menu.is-model,
+.studio-composer__field-menu.is-reasoning {
+  min-width: 280px;
+  max-width: min(360px, calc(100vw - 32px));
+}
+
+.studio-composer__field-menu.is-model > button,
+.studio-composer__field-menu.is-reasoning > button {
+  min-height: 48px;
+  align-items: center;
+  gap: 10px;
+}
+
+.studio-composer__field-menu.is-model .studio-composer__field-option-copy,
+.studio-composer__field-menu.is-reasoning .studio-composer__field-option-copy {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 2px;
+  overflow: visible;
+  white-space: normal;
+}
+
+.studio-composer__model-price {
+  display: grid;
+  flex: 0 0 auto;
+  justify-items: end;
+  gap: 1px;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+
+.studio-composer__model-price strong {
+  color: #a96000;
+  font-size: 0.68rem;
+  font-weight: 720;
+}
+
+.studio-composer__model-price del {
+  color: color-mix(in srgb, var(--sc-muted) 80%, transparent);
+  font-size: 0.6rem;
+  text-decoration-thickness: 1px;
+}
+
+html.color-scheme-dark .studio-composer__model-price strong {
+  color: #f3b94f;
+}
+
+html.color-scheme-dark .studio-composer__model-price del {
+  color: rgba(255, 255, 255, 0.38);
 }
 
 .studio-composer__field-menu > button i {

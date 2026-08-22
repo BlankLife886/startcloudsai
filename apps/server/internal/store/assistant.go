@@ -750,6 +750,7 @@ func FailAssistantRunAttempt(ctx context.Context, q Q, id uuid.UUID, attempt int
 
 func CancelAssistantRun(ctx context.Context, q Q, userID, id uuid.UUID) (bool, error) {
 	tag, err := q.Exec(ctx, `UPDATE assistant_runs SET status = 'canceled', stage = 'stopped', finished_at = now(),
+		error_code = 'user_canceled', error_message = '用户主动停止任务',
 		lease_owner = NULL, lease_until = NULL, heartbeat_at = NULL
 		WHERE id = $1 AND user_id = $2 AND status IN ('queued','running')`, id, userID)
 	return tag.RowsAffected() > 0, err
@@ -757,7 +758,8 @@ func CancelAssistantRun(ctx context.Context, q Q, userID, id uuid.UUID) (bool, e
 
 func CancelAssistantRunWithCost(ctx context.Context, q Q, userID, id uuid.UUID, costCents int64) (bool, error) {
 	tag, err := q.Exec(ctx, `UPDATE assistant_runs SET status = 'canceled', stage = 'stopped',
-		cost_cents = $3, finished_at = now(), lease_owner = NULL, lease_until = NULL, heartbeat_at = NULL
+		cost_cents = $3, error_code = 'user_canceled', error_message = '用户主动停止任务',
+		finished_at = now(), lease_owner = NULL, lease_until = NULL, heartbeat_at = NULL
 		WHERE id = $1 AND user_id = $2 AND status IN ('queued','running')
 		AND $3 >= 0 AND $3 <= reserved_cents`, id, userID, costCents)
 	return tag.RowsAffected() > 0, err

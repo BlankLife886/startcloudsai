@@ -241,18 +241,26 @@ type staticPeriodicConfigProvider struct{}
 
 func (p *staticPeriodicConfigProvider) GetConfigs() ([]*asynq.PeriodicTaskConfig, error) {
 	return []*asynq.PeriodicTaskConfig{
-		{Cronspec: "@every 1h", Task: asynq.NewTask(typeCleanupSessions, nil, asynq.MaxRetry(0))},
-		{Cronspec: "@every 2m", Task: asynq.NewTask(typeReapZombies, nil, asynq.MaxRetry(3))},
-		{Cronspec: "@every 1m", Task: asynq.NewTask(typeEnsureImagePolls, nil, asynq.MaxRetry(3))},
-		{Cronspec: "@every 1m", Task: asynq.NewTask(typeExpireTrialCampaigns, nil, asynq.MaxRetry(3))},
-		{Cronspec: "@every 30m", Task: asynq.NewTask(typeSyncPromptSources, nil, asynq.MaxRetry(0))},
-		{Cronspec: "@every 10m", Task: asynq.NewTask(typeBackfillPromptCovers, nil, asynq.MaxRetry(0))},
-		{Cronspec: "@every 1h", Task: asynq.NewTask(typeCleanupUserUploads, nil, asynq.MaxRetry(3))},
-		{Cronspec: "@every 5m", Task: asynq.NewTask(typeCleanupObjectJobs, nil, asynq.MaxRetry(3))},
-		{Cronspec: "@every 1h", Task: asynq.NewTask(typeCleanupCanvasRuns, nil, asynq.MaxRetry(0))},
-		{Cronspec: "@every 15s", Task: asynq.NewTask(typeDispatchAssistantOutbox, nil, asynq.MaxRetry(0))},
-		{Cronspec: "@every 15s", Task: asynq.NewTask(typeDispatchAssistantFiles, nil, asynq.MaxRetry(0))},
+		periodicConfig("@every 1h", typeCleanupSessions, 59*time.Minute, 0),
+		periodicConfig("@every 2m", typeReapZombies, 110*time.Second, 3),
+		periodicConfig("@every 1m", typeEnsureImagePolls, 55*time.Second, 3),
+		periodicConfig("@every 1m", typeExpireTrialCampaigns, 55*time.Second, 3),
+		periodicConfig("@every 30m", typeSyncPromptSources, 29*time.Minute, 0),
+		periodicConfig("@every 10m", typeBackfillPromptCovers, 9*time.Minute, 0),
+		periodicConfig("@every 1h", typeCleanupUserUploads, 59*time.Minute, 3),
+		periodicConfig("@every 5m", typeCleanupObjectJobs, 4*time.Minute+30*time.Second, 3),
+		periodicConfig("@every 1h", typeCleanupCanvasRuns, 59*time.Minute, 0),
+		periodicConfig("@every 15s", typeDispatchAssistantOutbox, 14*time.Second, 0),
+		periodicConfig("@every 15s", typeDispatchAssistantFiles, 14*time.Second, 0),
 	}, nil
+}
+
+func periodicConfig(cronspec, taskType string, uniqueFor time.Duration, maxRetry int) *asynq.PeriodicTaskConfig {
+	return &asynq.PeriodicTaskConfig{
+		Cronspec: cronspec,
+		Task:     asynq.NewTask(taskType, nil),
+		Opts:     []asynq.Option{asynq.Unique(uniqueFor), asynq.MaxRetry(maxRetry)},
+	}
 }
 
 // claimTask 条件更新 queued→running，抢不到返回 nil。

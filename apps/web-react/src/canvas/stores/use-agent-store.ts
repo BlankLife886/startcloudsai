@@ -94,6 +94,15 @@ type AgentStore = {
 
 export const CANVAS_AGENT_PANEL_MOTION_MS = 500;
 
+function sessionAgentToken() {
+    if (typeof window === "undefined") return "";
+    const current = sessionStorage.getItem("canvas-agent-token") || "";
+    const legacy = localStorage.getItem("canvas-agent-token") || "";
+    localStorage.removeItem("canvas-agent-token");
+    if (!current && legacy) sessionStorage.setItem("canvas-agent-token", legacy);
+    return current || legacy;
+}
+
 export const useAgentStore = create<AgentStore>((set, get) => ({
     width: typeof window === "undefined" ? 440 : Number(localStorage.getItem("canvas-agent-panel-width")) || 440,
     panelOpen: false,
@@ -101,7 +110,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     panelClosing: false,
     canvasContext: null,
     url: typeof window === "undefined" ? "http://127.0.0.1:17371" : localStorage.getItem("canvas-agent-url") || "http://127.0.0.1:17371",
-    token: typeof window === "undefined" ? "" : localStorage.getItem("canvas-agent-token") || "",
+    token: sessionAgentToken(),
     connected: false,
     enabled: false,
     silentConnect: false,
@@ -154,7 +163,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
             return set({ connectError: silent ? "" : i18n.t("agent.state.invalidUrl") });
         }
         localStorage.setItem("canvas-agent-url", endpoint);
-        localStorage.setItem("canvas-agent-token", token);
+        sessionStorage.setItem("canvas-agent-token", token);
         // Only set enabled here; LocalAgentPanel's effect owns SSE initialization.
         set({ url: endpoint, token, enabled: true, silentConnect: silent, activity: i18n.t("agent.status.connecting"), connectError: "" });
     },

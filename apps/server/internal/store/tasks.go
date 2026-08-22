@@ -1521,8 +1521,18 @@ func RenewTaskCompletionClaim(ctx context.Context, q Q, id uuid.UUID, claimID st
 }
 
 func CancelTask(ctx context.Context, q Q, id uuid.UUID, finishedAt time.Time) (bool, error) {
+	return CancelTaskFromStatus(ctx, q, id, "queued", "", "", finishedAt)
+}
+
+// CancelTaskFromStatus fences a terminal user cancellation against the exact
+// status observed while the task row is locked. Late worker success/failure
+// callbacks therefore cannot overwrite the cancellation.
+func CancelTaskFromStatus(ctx context.Context, q Q, id uuid.UUID, fromStatus, errorCode, errorMessage string, finishedAt time.Time) (bool, error) {
 	tag, err := q.Exec(ctx,
-		`UPDATE tasks SET status = 'canceled', finished_at = $2 WHERE id = $1 AND status = 'queued'`, id, finishedAt)
+		`UPDATE tasks SET status = 'canceled', error_code = NULLIF($3, ''), error_message = NULLIF($4, ''), finished_at = $5,
+			lease_owner = NULL, heartbeat_at = NULL, lease_until = NULL,
+			params = COALESCE(params, '{}'::jsonb) - '_completionClaimId' - '_completionClaimedAtMs'
+		 WHERE id = $1 AND status = $2`, id, fromStatus, errorCode, errorMessage, finishedAt)
 	if err != nil {
 		return false, err
 	}

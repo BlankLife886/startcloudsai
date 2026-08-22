@@ -5,6 +5,7 @@ import {
   Delete,
   Document,
   EditPen,
+  Picture,
   Plus,
   Refresh,
   Search,
@@ -89,7 +90,6 @@ interface AnnouncementForm extends AnnouncementConfig {
   active: boolean;
   startsAt: string;
   endsAt: string;
-  assetsText: string;
 }
 
 const PLACEMENT_LABELS = { modal: "居中弹窗", banner: "顶部横幅" } as const;
@@ -119,7 +119,6 @@ function defaultAnnouncementForm(): AnnouncementForm {
     placement: "modal",
     layout: "text_only",
     assets: [],
-    assetsText: "",
     decorImageUrl: "",
     ctaText: "",
     ctaUrl: "",
@@ -163,7 +162,7 @@ const annSubmitting = ref(false);
 const annForm = reactive<AnnouncementForm>(defaultAnnouncementForm());
 
 const annPreviewAssets = computed(() =>
-  parseAnnouncementAssets(annForm.assetsText),
+  annForm.assets.filter((asset) => Boolean(asset.url)),
 );
 const annPreviewImage = computed(() => annPreviewAssets.value[0]?.url || "");
 const annPreviewClass = computed(() => ({
@@ -172,16 +171,135 @@ const annPreviewClass = computed(() => ({
   "has-media": annPreviewAssets.value.length > 0,
 }));
 
-function parseAnnouncementAssets(value: string): AnnouncementAsset[] {
-  return value
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .slice(0, 4)
-    .map((line) => {
-      const [url, alt = ""] = line.split("|").map((part) => part.trim());
-      return { url, alt };
-    });
+const ANN_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
+const SINGLE_IMAGE_LAYOUTS = new Set(["image_top", "image_left", "image_right"]);
+const MULTI_IMAGE_LAYOUTS = new Set(["grid", "carousel"]);
+const annAssetsInputRef = ref<HTMLInputElement | null>(null);
+const annDecorInputRef = ref<HTMLInputElement | null>(null);
+const annImageUploading = ref(0);
+const annDecorUploading = ref(false);
+
+const isBannerPlacement = computed(() => annForm.placement === "banner");
+const showContentImages = computed(
+  () => !isBannerPlacement.value && annForm.layout !== "text_only",
+);
+const showDecorImage = computed(() => isBannerPlacement.value);
+const showCarouselOptions = computed(
+  () => showContentImages.value && annForm.layout === "carousel",
+);
+const annAssetLimit = computed(() =>
+  MULTI_IMAGE_LAYOUTS.has(annForm.layout) ? 4 : 1,
+);
+const contentImageLabel = computed(() => {
+  if (annForm.layout === "grid") return "宫格图片";
+  if (annForm.layout === "carousel") return "轮播图片";
+  if (annForm.layout === "image_top") return "海报图片";
+  if (annForm.layout === "image_left") return "左侧配图";
+  if (annForm.layout === "image_right") return "右侧配图";
+  return "内容图片";
+});
+const contentImageHint = computed(() => {
+  if (annForm.layout === "grid") return "最多 4 张，按从左到右排列";
+  if (annForm.layout === "carousel") return "最多 4 张，顺序即播放顺序";
+  if (annForm.layout === "image_top")
+    return "建议透明 PNG，弹窗无底色，只显示图片和底部按钮";
+  if (SINGLE_IMAGE_LAYOUTS.has(annForm.layout)) return "该布局只使用 1 张图片";
+  return "PNG / JPG / WebP · 8MB";
+});
+
+watch(
+  () => [annForm.placement, annForm.layout] as const,
+  () => {
+    if (!showContentImages.value) return;
+    if (annForm.assets.length > annAssetLimit.value) {
+      annForm.assets.splice(annAssetLimit.value);
+    }
+  },
+);
+
+function validateAnnouncementImage(file: File) {
+  const allowed =
+    ["image/png", "image/jpeg", "image/webp"].includes(file.type) ||
+    /\.(png|jpe?g|webp)$/i.test(file.name);
+  if (!allowed) {
+    ElMessage.warning("仅支持 PNG / JPG / WebP");
+    return false;
+  }
+  if (file.size > ANN_IMAGE_MAX_BYTES) {
+    ElMessage.warning("图片不能超过 8MB");
+    return false;
+  }
+  return true;
+}
+
+async function uploadAnnouncementImage(file: File) {
+  const body = new FormData();
+  body.append("file", file);
+  const res = await fetch("/api/v1/admin/announcements/images", {
+    method: "POST",
+    credentials: "include",
+    body,
+  });
+  const payload = (await res.json().catch(() => null)) as
+    | { success?: boolean; data?: { url?: string }; error?: string }
+    | null;
+  if (!res.ok || !payload?.success || !payload.data?.url) {
+    throw new Error(payload?.error || `图片上传失败（HTTP ${res.status}）`);
+  }
+  return payload.data.url;
+}
+
+function triggerAnnAssetsPick() {
+  if (annImageUploading.value || annForm.assets.length >= annAssetLimit.value)
+    return;
+  annAssetsInputRef.value?.click();
+}
+
+function triggerAnnDecorPick() {
+  if (annDecorUploading.value) return;
+  annDecorInputRef.value?.click();
+}
+
+async function onAnnAssetsPick(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const files = Array.from(input.files || []);
+  input.value = "";
+  const room = annAssetLimit.value - annForm.assets.length;
+  for (const file of files.slice(0, room)) {
+    if (!validateAnnouncementImage(file)) continue;
+    annImageUploading.value += 1;
+    try {
+      const url = await uploadAnnouncementImage(file);
+      annForm.assets.push({ url, alt: "" });
+    } catch (error) {
+      ElMessage.error(error instanceof Error ? error.message : "图片上传失败");
+    } finally {
+      annImageUploading.value -= 1;
+    }
+  }
+}
+
+async function onAnnDecorPick(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file || !validateAnnouncementImage(file)) return;
+  annDecorUploading.value = true;
+  try {
+    annForm.decorImageUrl = await uploadAnnouncementImage(file);
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "图片上传失败");
+  } finally {
+    annDecorUploading.value = false;
+  }
+}
+
+function removeAnnAsset(index: number) {
+  annForm.assets.splice(index, 1);
+}
+
+function clearAnnDecor() {
+  annForm.decorImageUrl = "";
 }
 
 function announcementConfigOf(item: Announcement): AnnouncementConfig {
@@ -243,21 +361,31 @@ function openAnnEdit(item: Announcement) {
     startsAt: item.startsAt || "",
     endsAt: item.endsAt || "",
     ...config,
-    assetsText: config.assets
-      .map((asset) => `${asset.url}${asset.alt ? ` | ${asset.alt}` : ""}`)
-      .join("\n"),
+    assets: config.assets.map((asset) => ({
+      url: asset.url,
+      alt: asset.alt || "",
+    })),
   });
   annDialogVisible.value = true;
 }
 
 async function submitAnn() {
+  if (annImageUploading.value || annDecorUploading.value) {
+    ElMessage.warning("图片还在上传，请稍后再保存");
+    return;
+  }
   if (!annForm.title.trim() || !annForm.body.trim()) {
     ElMessage.warning("请填写标题与内容");
     return;
   }
-  const assets = parseAnnouncementAssets(annForm.assetsText);
-  if (annForm.layout !== "text_only" && assets.length === 0) {
-    ElMessage.warning("当前图文布局至少需要配置一张图片");
+  const assets = annForm.assets
+    .map((asset) => ({ url: asset.url.trim(), alt: asset.alt?.trim() || "" }))
+    .filter((asset) => asset.url);
+  const visibleAssets = showContentImages.value
+    ? assets.slice(0, annAssetLimit.value)
+    : [];
+  if (showContentImages.value && visibleAssets.length === 0) {
+    ElMessage.warning("当前图文布局至少需要上传一张图片");
     return;
   }
   if (
@@ -276,7 +404,7 @@ async function submitAnn() {
     config: {
       placement: annForm.placement,
       layout: annForm.layout,
-      assets,
+      assets: visibleAssets,
       decorImageUrl: annForm.decorImageUrl.trim(),
       ctaText: annForm.ctaText.trim(),
       ctaUrl: annForm.ctaUrl.trim(),
@@ -888,15 +1016,21 @@ onMounted(() => {
       :title="annEditingId ? '编辑公告配置' : '发布公告'"
       subtitle="左侧编辑，右侧实时预览用户端效果"
       :icon="Bell"
-      width="min(1060px, calc(100vw - 32px))"
+      width="min(1280px, calc(100vw - 40px))"
+      panel-class="announcement-dialog"
       nested-scroll
       confirm-text="保存"
       :confirm-loading="annSubmitting"
+      :confirm-disabled="annImageUploading > 0 || annDecorUploading"
       @confirm="submitAnn"
     >
       <div class="announcement-editor">
         <el-form class="announcement-editor__form" label-position="top">
           <section class="announcement-editor__section">
+            <header class="announcement-editor__head">
+              <strong>文案</strong>
+              <small>用户第一眼看到的标题和正文</small>
+            </header>
             <el-form-item label="标题" required>
               <el-input
                 v-model="annForm.title"
@@ -909,7 +1043,7 @@ onMounted(() => {
               <el-input
                 v-model="annForm.body"
                 type="textarea"
-                :rows="5"
+                :autosize="{ minRows: 7, maxRows: 14 }"
                 maxlength="3000"
                 show-word-limit
                 placeholder="支持换行，建议只保留与用户相关的重点内容"
@@ -918,6 +1052,10 @@ onMounted(() => {
           </section>
 
           <section class="announcement-editor__section">
+            <header class="announcement-editor__head">
+              <strong>展示</strong>
+              <small>决定公告出现的位置和版式</small>
+            </header>
             <div class="announcement-editor__row">
               <el-form-item label="展示位置">
                 <el-radio-group v-model="annForm.placement">
@@ -925,11 +1063,8 @@ onMounted(() => {
                   <el-radio-button value="banner">顶部横幅</el-radio-button>
                 </el-radio-group>
               </el-form-item>
-              <el-form-item label="内容布局">
-                <el-select
-                  v-model="annForm.layout"
-                  :disabled="annForm.placement === 'banner'"
-                >
+              <el-form-item v-if="!isBannerPlacement" label="内容布局">
+                <el-select v-model="annForm.layout">
                   <el-option
                     v-for="(label, value) in LAYOUT_LABELS"
                     :key="value"
@@ -939,22 +1074,108 @@ onMounted(() => {
                 </el-select>
               </el-form-item>
             </div>
-            <el-form-item label="内容图片">
-              <el-input
-                v-model="annForm.assetsText"
-                type="textarea"
-                :rows="3"
-                placeholder="每行一张：图片地址 | 图片说明（最多 4 张）"
-              />
-            </el-form-item>
-            <el-form-item label="装饰图片">
-              <el-input
-                v-model="annForm.decorImageUrl"
-                placeholder="可选，用作横幅缩略图或弹窗轻量装饰"
-              />
-            </el-form-item>
             <div
-              v-if="annForm.layout === 'carousel'"
+              v-if="showContentImages || showDecorImage"
+              class="announcement-editor__media"
+              :class="{
+                'is-single': !showContentImages || !showDecorImage,
+                'is-multi': annAssetLimit > 1,
+              }"
+            >
+              <el-form-item v-if="showContentImages" :label="contentImageLabel">
+                <div
+                  class="ann-upload-grid"
+                  :class="{ 'is-single': annAssetLimit === 1 }"
+                >
+                  <div
+                    v-for="(asset, index) in annForm.assets"
+                    :key="`${asset.url}-${index}`"
+                    class="ann-upload-tile"
+                  >
+                    <img :src="asset.url" :alt="asset.alt || '公告图片'" />
+                    <button
+                      type="button"
+                      class="ann-upload-tile__remove"
+                      aria-label="移除图片"
+                      @click="removeAnnAsset(index)"
+                    >
+                      移除
+                    </button>
+                    <el-input
+                      v-model="asset.alt"
+                      maxlength="200"
+                      placeholder="图片说明（可选）"
+                    />
+                  </div>
+                  <button
+                    v-if="annForm.assets.length < annAssetLimit"
+                    type="button"
+                    class="ann-upload-empty"
+                    :disabled="annImageUploading > 0"
+                    @click="triggerAnnAssetsPick"
+                  >
+                    <el-icon :size="20"><Picture /></el-icon>
+                    <strong>{{
+                      annImageUploading > 0 ? "上传中…" : "上传图片"
+                    }}</strong>
+                    <small>{{ contentImageHint }}</small>
+                  </button>
+                </div>
+                <input
+                  ref="annAssetsInputRef"
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  :multiple="annAssetLimit > 1"
+                  hidden
+                  @change="onAnnAssetsPick"
+                />
+              </el-form-item>
+              <el-form-item v-if="showDecorImage" label="横幅配图">
+                <div
+                  class="ann-upload-tile is-single"
+                  :class="{ 'has-image': Boolean(annForm.decorImageUrl) }"
+                >
+                  <button
+                    v-if="annForm.decorImageUrl"
+                    type="button"
+                    class="ann-upload-tile__preview"
+                    @click="triggerAnnDecorPick"
+                  >
+                    <img :src="annForm.decorImageUrl" alt="横幅配图" />
+                  </button>
+                  <button
+                    v-else
+                    type="button"
+                    class="ann-upload-empty"
+                    :disabled="annDecorUploading"
+                    @click="triggerAnnDecorPick"
+                  >
+                    <el-icon :size="20"><Picture /></el-icon>
+                    <strong>{{
+                      annDecorUploading ? "上传中…" : "上传配图"
+                    }}</strong>
+                    <small>显示在顶部横幅左侧</small>
+                  </button>
+                  <button
+                    v-if="annForm.decorImageUrl"
+                    type="button"
+                    class="ann-upload-tile__remove"
+                    @click="clearAnnDecor"
+                  >
+                    移除
+                  </button>
+                </div>
+                <input
+                  ref="annDecorInputRef"
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  hidden
+                  @change="onAnnDecorPick"
+                />
+              </el-form-item>
+            </div>
+            <div
+              v-if="showCarouselOptions"
               class="announcement-editor__row"
             >
               <el-form-item label="自动轮播">
@@ -974,7 +1195,11 @@ onMounted(() => {
           </section>
 
           <section class="announcement-editor__section">
-            <div class="announcement-editor__row">
+            <header class="announcement-editor__head">
+              <strong>行动</strong>
+              <small>按钮文案、跳转和再次出现的规则</small>
+            </header>
+            <div class="announcement-editor__row is-3">
               <el-form-item label="行动按钮文案">
                 <el-input
                   v-model="annForm.ctaText"
@@ -988,8 +1213,6 @@ onMounted(() => {
                   placeholder="/wallpaper 或 https://..."
                 />
               </el-form-item>
-            </div>
-            <div class="announcement-editor__row">
               <el-form-item label="关闭按钮文案">
                 <el-input
                   v-model="annForm.closeText"
@@ -997,11 +1220,11 @@ onMounted(() => {
                   placeholder="我知道了"
                 />
               </el-form-item>
+            </div>
+            <div class="announcement-editor__row is-3">
               <el-form-item label="允许关闭">
                 <el-switch v-model="annForm.allowClose" />
               </el-form-item>
-            </div>
-            <div class="announcement-editor__row">
               <el-form-item label="展示频率">
                 <el-select v-model="annForm.frequency">
                   <el-option
@@ -1039,7 +1262,11 @@ onMounted(() => {
           </section>
 
           <section class="announcement-editor__section">
-            <div class="announcement-editor__row">
+            <header class="announcement-editor__head">
+              <strong>投放</strong>
+              <small>生效时间和是否对用户可见</small>
+            </header>
+            <div class="announcement-editor__row is-3">
               <el-form-item label="开始时间">
                 <el-date-picker
                   v-model="annForm.startsAt"
@@ -1056,13 +1283,15 @@ onMounted(() => {
                   placeholder="长期有效"
                 />
               </el-form-item>
-            </div>
-            <div class="announcement-publish-switch">
-              <div>
-                <strong>启用公告</strong>
-                <span>关闭后用户端不会读取到这条公告</span>
-              </div>
-              <el-switch v-model="annForm.active" />
+              <el-form-item label="启用公告">
+                <div class="announcement-publish-switch">
+                  <div>
+                    <strong>{{ annForm.active ? "已启用" : "已停用" }}</strong>
+                    <span>关闭后用户端不会读取到这条公告</span>
+                  </div>
+                  <el-switch v-model="annForm.active" />
+                </div>
+              </el-form-item>
             </div>
           </section>
         </el-form>
@@ -1074,6 +1303,14 @@ onMounted(() => {
           </div>
           <div class="announcement-preview-canvas">
             <article class="announcement-preview" :class="annPreviewClass">
+              <button
+                v-if="annForm.placement === 'modal' && annForm.layout === 'image_top' && annForm.allowClose"
+                class="announcement-preview__close"
+                type="button"
+                aria-label="关闭"
+              >
+                ×
+              </button>
               <img
                 v-if="annForm.placement === 'banner' && annForm.decorImageUrl"
                 class="announcement-preview__decor"
@@ -1098,7 +1335,10 @@ onMounted(() => {
                 </template>
                 <img v-else :src="annPreviewImage" alt="公告预览" />
               </div>
-              <div class="announcement-preview__copy">
+              <div
+                v-if="annForm.placement !== 'modal' || annForm.layout !== 'image_top'"
+                class="announcement-preview__copy"
+              >
                 <small>ANNOUNCEMENT</small>
                 <strong>{{ annForm.title || "公告标题" }}</strong>
                 <p>{{ annForm.body || "公告正文会显示在这里。" }}</p>
@@ -1109,6 +1349,12 @@ onMounted(() => {
                   </button>
                 </div>
               </div>
+              <span
+                v-else-if="annForm.ctaText"
+                class="announcement-preview__poster-cta"
+              >
+                {{ annForm.ctaText }}
+              </span>
             </article>
           </div>
         </aside>
@@ -1539,30 +1785,79 @@ onMounted(() => {
 
 .announcement-editor {
   display: grid;
-  grid-template-columns: minmax(0, 1.08fr) minmax(320px, 0.92fr);
-  height: min(76vh, 780px);
-  min-height: 560px;
+  flex: 1;
+  grid-template-columns: minmax(0, 1fr) 400px;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface);
 }
 
 .announcement-editor__form {
   min-width: 0;
+  overflow-x: hidden;
   overflow-y: auto;
-  padding: 20px;
+  overscroll-behavior: contain;
+  padding: 18px 20px 20px;
+}
+
+.announcement-editor__form :deep(.el-form-item) {
+  margin-bottom: 14px;
+}
+
+.announcement-editor__form :deep(.el-form-item__label) {
+  color: var(--ink-2);
+  font-weight: 650;
+}
+
+.announcement-editor__form :deep(.el-input),
+.announcement-editor__form :deep(.el-textarea),
+.announcement-editor__form :deep(.el-select),
+.announcement-editor__form :deep(.el-date-editor),
+.announcement-editor__form :deep(.el-input-number),
+.announcement-editor__form :deep(.el-radio-group) {
+  width: 100%;
 }
 
 .announcement-editor__section {
-  padding: 0 0 16px;
-  margin: 0 0 8px;
+  padding: 0 0 4px;
+  margin: 0 0 6px;
 }
 
 .announcement-editor__section:not(:last-child) {
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
-  margin-bottom: 16px;
+  margin-bottom: 14px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
 }
 
 .announcement-editor__section:last-child {
   margin-bottom: 0;
+  padding-bottom: 0;
   border-bottom: 0;
+}
+
+.announcement-editor__head {
+  display: grid;
+  gap: 2px;
+  margin-bottom: 12px;
+
+  strong,
+  small {
+    display: block;
+  }
+
+  strong {
+    color: var(--ink);
+    font-size: 13px;
+    font-weight: 750;
+  }
+
+  small {
+    color: var(--ink-3);
+    font-size: 12px;
+    line-height: 1.45;
+  }
 }
 
 .announcement-publish-switch span {
@@ -1573,12 +1868,119 @@ onMounted(() => {
 .announcement-editor__row {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
+  gap: 0 16px;
+}
+
+.announcement-editor__row.is-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .announcement-editor__row :deep(.el-select),
 .announcement-editor__row :deep(.el-date-editor) {
   width: 100%;
+}
+
+.announcement-editor__media {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0 16px;
+}
+
+.announcement-editor__media:not(.is-single) {
+  grid-template-columns: minmax(0, 1.4fr) minmax(180px, 0.6fr);
+}
+
+.ann-upload-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.ann-upload-grid.is-single {
+  grid-template-columns: minmax(0, 280px);
+}
+
+.ann-upload-tile,
+.ann-upload-empty {
+  position: relative;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ann-upload-tile img,
+.ann-upload-tile__preview {
+  display: block;
+  width: 100%;
+  height: 108px;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+
+.ann-upload-tile__preview {
+  padding: 0;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.ann-upload-tile__preview img {
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+}
+
+.ann-upload-tile.is-single .ann-upload-empty,
+.ann-upload-tile.is-single .ann-upload-tile__preview {
+  min-height: 132px;
+}
+
+.ann-upload-empty {
+  display: grid;
+  min-height: 108px;
+  place-items: center;
+  align-content: center;
+  gap: 4px;
+  padding: 12px 10px;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  background: var(--surface-2);
+  color: var(--ink-3);
+  cursor: pointer;
+  text-align: center;
+}
+
+.ann-upload-empty:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.ann-upload-empty strong {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.ann-upload-empty small {
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.ann-upload-tile__remove {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 1;
+  height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: rgb(18 20 26 / 0.72);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 650;
+  cursor: pointer;
 }
 
 .form-unit {
@@ -1589,14 +1991,10 @@ onMounted(() => {
 
 .announcement-publish-switch {
   display: flex;
-  min-height: 54px;
+  min-height: 32px;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface-2);
+  gap: 12px;
 }
 
 .announcement-publish-switch > div {
@@ -1685,6 +2083,78 @@ onMounted(() => {
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   border-radius: 14px;
+}
+
+.announcement-preview.is-image-top {
+  position: relative;
+  width: min(280px, 100%);
+  overflow: visible;
+  padding-top: 28px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.announcement-preview.is-image-top .announcement-preview__media {
+  height: auto;
+  background: transparent;
+}
+
+.announcement-preview.is-image-top .announcement-preview__media img {
+  height: auto;
+  max-height: 280px;
+  object-fit: contain;
+}
+
+.announcement-preview__close {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  padding: 0;
+  border: 1.5px solid rgb(255 255 255 / 0.86);
+  border-radius: 50%;
+  background: transparent;
+  color: transparent;
+  font-size: 0;
+  line-height: 0;
+}
+
+.announcement-preview__close::before,
+.announcement-preview__close::after {
+  content: "";
+  position: absolute;
+  width: 10px;
+  height: 1.5px;
+  border-radius: 1px;
+  background: #fff;
+}
+
+.announcement-preview__close::before {
+  transform: rotate(45deg);
+}
+
+.announcement-preview__close::after {
+  transform: rotate(-45deg);
+}
+
+.announcement-preview__poster-cta {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  justify-content: center;
+  justify-self: center;
+  margin-top: 12px;
+  padding: 0 18px;
+  border-radius: 999px;
+  background: linear-gradient(108deg, #5f4bf3, #8b5cf6 62%, #c052d5);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .announcement-preview__decor {
@@ -1804,9 +2274,22 @@ onMounted(() => {
   color: rgba(255, 255, 255, 0.78);
 }
 
+@media (max-width: 1100px) {
+  .announcement-editor {
+    grid-template-columns: minmax(0, 1fr) 340px;
+  }
+
+  .announcement-editor__row.is-3 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .announcement-editor__media {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 860px) {
   .announcement-editor {
-    height: min(82vh, 900px);
     grid-template-columns: 1fr;
     overflow-y: auto;
   }
@@ -1815,8 +2298,16 @@ onMounted(() => {
     overflow: visible;
   }
 
+  .announcement-editor__row,
+  .announcement-editor__row.is-3,
+  .announcement-editor__media {
+    grid-template-columns: 1fr;
+  }
+
   .announcement-preview-stage {
-    min-height: 460px;
+    min-height: 420px;
+    border-left: 0;
+    border-top: 1px solid var(--border);
   }
 }
 
@@ -1887,6 +2378,12 @@ onMounted(() => {
   }
 }
 
+</style>
 
-
+<style>
+.admin-dialog.announcement-dialog.el-dialog {
+  width: min(1280px, calc(100vw - 40px)) !important;
+  max-width: calc(100vw - 40px);
+  height: min(880px, calc(100dvh - 40px));
+}
 </style>

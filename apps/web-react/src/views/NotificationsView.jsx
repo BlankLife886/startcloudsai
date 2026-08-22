@@ -122,8 +122,11 @@ const SCOPE_FILTERS = [
 
 function formatStamp(value) {
   const date = parseDate(value);
-  if (!date) return "—";
-  return `${date.getMonth() + 1}月${date.getDate()}日 ${formatClock(value)}`;
+  if (!date) return { day: "—", clock: "" };
+  return {
+    day: `${date.getMonth() + 1}月${date.getDate()}日`,
+    clock: formatClock(value),
+  };
 }
 
 function inboxItemsOf(rows) {
@@ -132,18 +135,71 @@ function inboxItemsOf(rows) {
   );
 }
 
-function announcementCover(item) {
-  const assets = Array.isArray(item?.assets) ? item.assets : [];
-  const first = assets.find((asset) => String(asset?.url || "").trim());
-  return String(first?.url || item?.decorImageUrl || "").trim();
+function announcementPhotos(item) {
+  const images = [];
+  const seen = new Set();
+  for (const asset of Array.isArray(item?.assets) ? item.assets : []) {
+    const url = String(asset?.url || "").trim();
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    images.push({ url, alt: String(asset?.alt || "").trim() });
+  }
+  return images;
+}
+
+function announcementThumb(item) {
+  return announcementPhotos(item)[0]?.url || String(item?.decorImageUrl || "").trim();
+}
+
+function announcementBodyParts(body) {
+  const listMark = /^(?:\d+[\.．、)]\s+|[-*•]\s+)/;
+  const lines = String(body || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const listed = lines.filter((line) => listMark.test(line)).length;
+  if (lines.length >= 2 && listed >= Math.ceil(lines.length * 0.6)) {
+    return { items: lines.map((line) => line.replace(listMark, "")) };
+  }
+  return { paragraphs: lines };
+}
+
+function AnnouncementDetailBody({ body }) {
+  const parts = announcementBodyParts(body);
+  if (parts.items) {
+    return (
+      <ol className="nt-announce-item__list">
+        {parts.items.map((line, index) => (
+          <li key={`${line}-${index}`}>
+            <em>{String(index + 1).padStart(2, "0")}</em>
+            <span>{localizedText(line)}</span>
+          </li>
+        ))}
+      </ol>
+    );
+  }
+  if (!parts.paragraphs?.length) return null;
+  return (
+    <div className="nt-announce-item__article">
+      {parts.paragraphs.map((line, index) => (
+        <p key={`${line}-${index}`}>{localizedText(line)}</p>
+      ))}
+    </div>
+  );
+}
+
+function announcementSnippet(body) {
+  const parts = announcementBodyParts(body);
+  const first = (parts.items || parts.paragraphs || [])[0] || "";
+  return first.replace(/\s+/g, " ").trim();
 }
 
 function announcementCta(item) {
   const text = String(item?.ctaText || "").trim();
   const url = String(item?.ctaUrl || "").trim();
-  if (!text || !url) return null;
-  if (!/^https?:\/\//i.test(url)) return null;
-  return { text, url };
+  if (!text || !url || url.startsWith("//")) return null;
+  if (/^https?:\/\//i.test(url) || url.startsWith("/")) return { text, url };
+  return null;
 }
 
 function readableBody(body) {
@@ -216,6 +272,7 @@ export function NotificationsView() {
   const [announcementsLoading, setAnnouncementsLoading] = useState(false);
   const [announcementsLoaded, setAnnouncementsLoaded] = useState(false);
   const [announcementsError, setAnnouncementsError] = useState("");
+  const [expandedAnnouncementId, setExpandedAnnouncementId] = useState(null);
 
   const pageTab =
     new URLSearchParams(location.search).get("tab") === "announce"
@@ -223,6 +280,7 @@ export function NotificationsView() {
       : "inbox";
 
   const setPageTab = (id) => {
+    setExpandedAnnouncementId(null);
     const query = new URLSearchParams(location.search);
     if (id === "announce") query.set("tab", "announce");
     else query.delete("tab");
@@ -512,6 +570,9 @@ export function NotificationsView() {
   const emptyUnread = loaded && !loading && items.length > 0 && !visibleItems.length;
   const emptyAnnouncements =
     announcementsLoaded && !announcementsLoading && !announcements.length;
+  const toggleAnnouncement = (id) => {
+    setExpandedAnnouncementId((current) => (current === id ? null : id));
+  };
 
   return (
     <div className={`nt-page ${isDark ? "is-dark" : "is-light"}`}>
@@ -608,7 +669,10 @@ export function NotificationsView() {
             </div>
           )}
         </header>
-        <section className="nt-board" aria-live="polite">
+        <section
+          className={`nt-board${onAnnounceTab ? " is-announce" : ""}`}
+          aria-live="polite"
+        >
           {onAnnounceTab ? (
             announcementsLoading && !announcements.length ? (
               <div className="nt-skel" aria-hidden="true">
@@ -629,41 +693,105 @@ export function NotificationsView() {
                 </button>
               </div>
             ) : announcements.length ? (
-              <div className="nt-announce-board">
+              <ol className="nt-announce-list">
                 {announcements.map((item) => {
-                  const cover = announcementCover(item);
-                  const cta = announcementCta(item);
+                  const thumb = announcementThumb(item);
+                  const stamp = formatStamp(item.createdAt);
+                  const snippet = announcementSnippet(item.body);
+                  const photos = announcementPhotos(item).filter(
+                    (image) => image.url !== thumb,
+                  );
                   const body = String(item.body || "").trim();
+                  const cta = announcementCta(item);
+                  const start = formatStamp(item.startsAt);
+                  const end = formatStamp(item.endsAt);
+                  const expanded = expandedAnnouncementId === item.id;
                   return (
-                    <article key={item.id} className="nt-announce-card">
-                      {cover ? (
-                        <div className="nt-announce-card__media">
-                          <img src={cover} alt="" />
+                    <li
+                      key={item.id}
+                      className={`nt-announce-item${expanded ? " is-open" : ""}`}
+                    >
+                      <button
+                        type="button"
+                        className="nt-announce-item__hit"
+                        aria-expanded={expanded}
+                        onClick={() => toggleAnnouncement(item.id)}
+                      >
+                        {thumb ? (
+                          <img className="nt-item__thumb" src={thumb} alt="" />
+                        ) : (
+                          <span className="nt-item__icon" data-tone="announce">
+                            <i className="bi bi-megaphone" />
+                          </span>
+                        )}
+                        <span className="nt-announce-item__main" data-no-translate>
+                          <span className="nt-announce-item__topline">
+                            <strong>{localizedText(item.title)}</strong>
+                            <time dateTime={item.createdAt}>
+                              {stamp.day} {stamp.clock}
+                            </time>
+                          </span>
+                          {!expanded && snippet ? (
+                            <em>{localizedText(snippet)}</em>
+                          ) : null}
+                          <span className="nt-item__more">
+                            {expanded ? "收起" : "展开全文"}
+                            <i
+                              className={`bi ${expanded ? "bi-chevron-up" : "bi-chevron-down"}`}
+                            />
+                          </span>
+                        </span>
+                      </button>
+                      {expanded ? (
+                        <div className="nt-announce-item__detail">
+                          {start.day !== "—" ? (
+                            <p className="nt-announce-item__period">
+                              有效期 {start.day} {start.clock}
+                              {end.day !== "—"
+                                ? ` – ${end.day} ${end.clock}`
+                                : ""}
+                            </p>
+                          ) : null}
+                          {photos.length ? (
+                            <div className="nt-announce-item__media">
+                              {photos.map((image) => (
+                                <img
+                                  key={image.url}
+                                  src={image.url}
+                                  alt={image.alt}
+                                />
+                              ))}
+                            </div>
+                          ) : null}
+                          {body ? (
+                            <div data-no-translate>
+                              <AnnouncementDetailBody body={body} />
+                            </div>
+                          ) : null}
+                          {cta ? (
+                            <a
+                              className="nt-announce-item__cta"
+                              href={cta.url}
+                              target={
+                                cta.url.startsWith("http") ? "_blank" : undefined
+                              }
+                              rel={
+                                cta.url.startsWith("http")
+                                  ? "noreferrer"
+                                  : undefined
+                              }
+                              onClick={(event) => event.stopPropagation()}
+                            >
+                              {cta.text}
+                              <i className="bi bi-arrow-up-right" />
+                            </a>
+                          ) : null}
                         </div>
                       ) : null}
-                      <div className="nt-announce-card__copy" data-no-translate>
-                        <header>
-                          <span className="nt-item__kind">公告</span>
-                          <time>{formatStamp(item.createdAt)}</time>
-                        </header>
-                        <h2>{localizedText(item.title)}</h2>
-                        {body ? <p>{localizedText(body)}</p> : null}
-                        {cta ? (
-                          <a
-                            className="nt-announce-card__cta"
-                            href={cta.url}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            {cta.text}
-                            <i className="bi bi-arrow-up-right" />
-                          </a>
-                        ) : null}
-                      </div>
-                    </article>
+                    </li>
                   );
                 })}
-              </div>
+              </ol>
             ) : emptyAnnouncements ? (
               <div className="nt-empty">
                 <i className="bi bi-megaphone" />

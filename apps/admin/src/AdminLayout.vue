@@ -455,6 +455,7 @@ async function submitPassword() {
             '/plans',
             '/growth-groups',
             '/checkin-activity',
+            '/settings',
             '/model-config',
             '/page-controls',
             '/canvas-templates',

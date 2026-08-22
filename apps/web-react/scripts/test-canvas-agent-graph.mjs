@@ -58,6 +58,21 @@ test("merges a diamond back into a later column", () => {
     assert.equal(positions.get("d").y, positions.get("a").y);
 });
 
+test("uses strict adjacent improvements to remove a remaining branch crossing", () => {
+    const keys = ["L0N0", "L0N1", "L1N0", "L1N1", "L1N2", "L2N0", "L2N1"];
+    const edges = [
+        { from: "L0N0", to: "L1N0" },
+        { from: "L0N0", to: "L1N2" },
+        { from: "L0N1", to: "L1N1" },
+        { from: "L1N0", to: "L2N1" },
+        { from: "L1N1", to: "L2N0" },
+        { from: "L1N2", to: "L2N0" },
+    ];
+    const { positions } = layoutCanvasGraph(keys.map((key) => ({ key, width: 100, height: 100 })), edges, options);
+    const middleOrder = ["L1N0", "L1N1", "L1N2"].sort((left, right) => positions.get(left).y - positions.get(right).y);
+    assert.deepEqual(middleOrder, ["L1N0", "L1N2", "L1N1"]);
+});
+
 test("tolerates a cycle instead of looping forever", () => {
     const { positions, edges } = layoutCanvasGraph(sized(["a", "b"]), [{ from: "a", to: "b" }, { from: "b", to: "a" }], options);
     assert.equal(positions.size, 2);
@@ -89,6 +104,15 @@ test("packs isolated nodes into a stable compact grid", () => {
     assert.ok(new Set([...first.values()].map((position) => position.x)).size > 1);
     assert.ok(new Set([...first.values()].map((position) => position.y)).size > 1);
     assertNoOverlap(nodes, first);
+});
+
+test("uses a locale-independent key tie-break when explicit orders match", () => {
+    const nodes = [
+        { key: "ä", width: 100, height: 100, order: 0 },
+        { key: "z", width: 100, height: 100, order: 0 },
+    ];
+    const { positions } = layoutCanvasGraph(nodes, [], { ...options, columnGap: 10 });
+    assert.ok(positions.get("z").x < positions.get("ä").x);
 });
 
 test("lays cycles out identically regardless of edge order", () => {
@@ -152,6 +176,14 @@ test("keeps all nodes and edges in a fifty-node workflow", () => {
     const layout = layoutCanvasGraph(sized(nodes.map((node) => node.key)), edges, options);
     assert.equal(layout.positions.size, 50);
     assert.equal(layout.edges.length, 49);
+});
+
+test("lays out a large existing chain without recursive stack overflow", () => {
+    const graph = chain(2_000);
+    const { positions, edges } = layoutCanvasGraph(graph.nodes, graph.edges, options);
+    assert.equal(positions.size, graph.nodes.length);
+    assert.equal(edges.length, graph.edges.length);
+    assert.ok(positions.get("n1999").x > positions.get("n0").x);
 });
 
 test("keeps the workflow alias and rejects a graph with no nodes", () => {
@@ -246,6 +278,67 @@ test("keeps crossing branch order stable across repeated arrangements", () => {
     assert.deepEqual([...second.positions], [...first.positions]);
 });
 
+test("converges crossing feedback within one live arrangement", () => {
+    const nodes = [
+        { key: "n0", width: 100, height: 100, x: 300, y: -100 },
+        { key: "n1", width: 100, height: 100, x: 300, y: 200 },
+        { key: "n2", width: 100, height: 100, x: 400, y: -300 },
+        { key: "n3", width: 100, height: 100, x: -500, y: 100 },
+        { key: "n4", width: 100, height: 100, x: 400, y: 100 },
+        { key: "n5", width: 100, height: 100, x: -300, y: 0 },
+        { key: "n6", width: 100, height: 100, x: 400, y: 400 },
+        { key: "n7", width: 100, height: 100, x: -300, y: 400 },
+    ];
+    const edges = [
+        { from: "n1", to: "n7" },
+        { from: "n2", to: "n7" },
+        { from: "n3", to: "n6" },
+        { from: "n4", to: "n0" },
+        { from: "n4", to: "n1" },
+        { from: "n4", to: "n3" },
+        { from: "n5", to: "n2" },
+    ];
+    const arrangeOptions = { scope: "all", direction: "TB", columnGap: 72, rowGap: 48 };
+    const first = arrangeCanvasNodes(nodes, edges, arrangeOptions).positions;
+    const arrangedNodes = nodes.map((node) => ({ ...node, ...first.get(node.key) }));
+    const second = arrangeCanvasNodes(arrangedNodes, edges, arrangeOptions).positions;
+    assert.deepEqual([...second], [...first]);
+});
+
+test("preserves existing branch order independently of live node array order", () => {
+    const horizontalNodes = [
+        { key: "root", width: 100, height: 100, x: 0, y: 150 },
+        { key: "lower", width: 100, height: 100, x: 300, y: 300 },
+        { key: "upper", width: 100, height: 100, x: 300, y: 0 },
+    ];
+    const verticalNodes = horizontalNodes.map(({ x, y, width, height, ...node }) => ({ ...node, x: y, y: x, width: height, height: width }));
+    const edges = [{ from: "root", to: "upper" }, { from: "root", to: "lower" }];
+
+    for (const [direction, nodes, axis] of [["LR", horizontalNodes, "y"], ["TB", verticalNodes, "x"]]) {
+        const arrangeOptions = { scope: "all", direction, columnGap: 72, rowGap: 48 };
+        const first = arrangeCanvasNodes(nodes, edges, arrangeOptions).positions;
+        const reordered = arrangeCanvasNodes([nodes[2], nodes[0], nodes[1]], edges, arrangeOptions).positions;
+        assert.ok(first.get("upper")[axis] < first.get("lower")[axis]);
+        nodes.forEach((node) => assert.deepEqual(reordered.get(node.key), first.get(node.key)));
+    }
+});
+
+test("keeps mixed-size isolate order stable after the first live arrangement", () => {
+    const horizontalNodes = [
+        { key: "tall", width: 100, height: 200, x: 0, y: 0 },
+        { key: "short", width: 100, height: 100, x: 0, y: 200 },
+    ];
+    const verticalNodes = horizontalNodes.map(({ x, y, width, height, ...node }) => ({ ...node, x: y, y: x, width: height, height: width }));
+
+    for (const [direction, nodes] of [["LR", horizontalNodes], ["TB", verticalNodes]]) {
+        const arrangeOptions = { scope: "all", direction, columnGap: 72, rowGap: 48 };
+        const first = arrangeCanvasNodes(nodes, [], arrangeOptions).positions;
+        const arrangedNodes = nodes.map((node) => ({ ...node, ...first.get(node.key) }));
+        const second = arrangeCanvasNodes(arrangedNodes, [], arrangeOptions).positions;
+        assert.deepEqual([...second], [...first]);
+    }
+});
+
 test("arrange selection promotes a group and translates all children rigidly", () => {
     const nodes = [
         { key: "loose", x: 0, y: 0, width: 180, height: 160 },
@@ -276,6 +369,94 @@ test("arrange selection promotes a group and translates all children rigidly", (
         const overlapsFixed = position.x < fixed.x + fixed.width && position.x + node.width > fixed.x && position.y < fixed.y + fixed.height && position.y + node.height > fixed.y;
         assert.equal(overlapsFixed, false, `${node.key} must not overlap an unselected node`);
     }
+});
+
+test("resolves deeply nested group roots without recursive stack overflow", () => {
+    const count = 8_000;
+    const nodes = Array.from({ length: count }, (_, index) => ({
+        key: `group-${index}`,
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+        isGroup: true,
+        ...(index < count - 1 ? { groupKey: `group-${index + 1}` } : {}),
+    }));
+    const result = arrangeCanvasNodes(nodes, [], { scope: "all", direction: "LR", columnGap: 72, rowGap: 48 });
+    assert.equal(result.positions.size, count);
+});
+
+test("arrange selection clears interleaved fixed nodes with one nearest rigid translation", () => {
+    const horizontalNodes = [
+        { key: "fixed-right", width: 353, height: 121, x: 735, y: -80, order: 0 },
+        { key: "selected-a", width: 318, height: 419, x: -640, y: -339, order: 1 },
+        { key: "selected-b", width: 87, height: 268, x: 689, y: -440, order: 2 },
+        { key: "fixed-middle", width: 229, height: 194, x: -164, y: -240, order: 3 },
+        { key: "selected-c", width: 317, height: 211, x: 857, y: -195, order: 4 },
+        { key: "selected-d", width: 409, height: 292, x: 351, y: 197, order: 5 },
+    ];
+    const verticalNodes = horizontalNodes.map(({ x, y, width, height, ...node }) => ({ ...node, x: y, y: x, width: height, height: width }));
+
+    for (const [direction, nodes, axis] of [["LR", horizontalNodes, "x"], ["TB", verticalNodes, "y"]]) {
+        const arrangeOptions = {
+            scope: "selection",
+            selectedKeys: ["selected-a", "selected-b", "selected-c", "selected-d"],
+            direction,
+            columnGap: 72,
+            rowGap: 48,
+        };
+        const first = arrangeCanvasNodes(nodes, [], arrangeOptions);
+        const allPositions = new Map(nodes.map((node) => [node.key, first.positions.get(node.key) || { x: node.x, y: node.y }]));
+        assertNoOverlap(nodes, allPositions, `${direction} selection layout must clear every fixed node`);
+        const size = axis === "x" ? "width" : "height";
+        const farObstacle = nodes.find((node) => node.key === "fixed-right");
+        const arrangedEnd = Math.max(...nodes.filter((node) => first.positions.has(node.key)).map((node) => first.positions.get(node.key)[axis] + node[size]));
+        assert.ok(arrangedEnd + arrangeOptions.columnGap <= farObstacle[axis], `${direction} layout should clear toward the nearer side instead of jumping past the far obstacle`);
+
+        const arrangedNodes = nodes.map((node) => ({ ...node, ...first.positions.get(node.key) }));
+        const second = arrangeCanvasNodes(arrangedNodes, [], arrangeOptions);
+        assert.deepEqual([...second.positions], [...first.positions]);
+    }
+});
+
+test("arrange selection preserves the direction of connections crossing its boundary", () => {
+    const horizontalNodes = [
+        { key: "source", width: 100, height: 120, x: 90, y: 0 },
+        { key: "target", width: 100, height: 120, x: 0, y: 0 },
+    ];
+    const verticalNodes = horizontalNodes.map(({ x, y, width, height, ...node }) => ({ ...node, x: y, y: x, width: height, height: width }));
+
+    for (const [direction, nodes, axis, size] of [["LR", horizontalNodes, "x", "width"], ["TB", verticalNodes, "y", "height"]]) {
+        for (const selectedKey of ["source", "target"]) {
+            const arrangeOptions = { scope: "selection", selectedKeys: [selectedKey], direction, columnGap: 72, rowGap: 48 };
+            const first = arrangeCanvasNodes(nodes, [{ from: "source", to: "target" }], arrangeOptions);
+            const allPositions = new Map(nodes.map((node) => [node.key, first.positions.get(node.key) || { x: node.x, y: node.y }]));
+            const source = nodes.find((node) => node.key === "source");
+            assert.ok(allPositions.get("source")[axis] + source[size] + arrangeOptions.columnGap <= allPositions.get("target")[axis], `${direction} must keep the source before the target when ${selectedKey} moves`);
+            assertNoOverlap(nodes, allPositions);
+
+            const arrangedNodes = nodes.map((node) => ({ ...node, ...first.positions.get(node.key) }));
+            const second = arrangeCanvasNodes(arrangedNodes, [{ from: "source", to: "target" }], arrangeOptions);
+            assert.deepEqual([...second.positions], [...first.positions]);
+        }
+    }
+});
+
+test("fails closed when fixed obstacles leave no direction-preserving selection layout", () => {
+    const nodes = [
+        { key: "moving", width: 100, height: 100, x: 200, y: 0 },
+        { key: "predecessor", width: 100, height: 100, x: 0, y: 0 },
+        { key: "obstacle", width: 120, height: 100, x: 190, y: 0 },
+        { key: "successor", width: 100, height: 100, x: 400, y: 0 },
+    ];
+    const edges = [{ from: "predecessor", to: "moving" }, { from: "moving", to: "successor" }];
+    assert.throws(() => arrangeCanvasNodes(nodes, edges, {
+        scope: "selection",
+        selectedKeys: ["moving"],
+        direction: "LR",
+        columnGap: 72,
+        rowGap: 48,
+    }), /cannot avoid fixed nodes while preserving connection direction/);
 });
 
 test("canvas mutations require exact ids and reject duplicate node ids", () => {

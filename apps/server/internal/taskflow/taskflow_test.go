@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -818,7 +819,7 @@ func TestUsageMilestonesGrantEachThresholdOnce(t *testing.T) {
 	}
 }
 
-func TestCancelOnlyQueued(t *testing.T) {
+func TestUserCancelQueuedReleasesReservedCredits(t *testing.T) {
 	st := testdb.Setup(t)
 	user := newUserWithBalance(t, st, 100)
 	ctx := context.Background()
@@ -841,6 +842,12 @@ func TestCancelOnlyQueued(t *testing.T) {
 	if canceled.Status != "canceled" {
 		t.Fatalf("status = %s, want canceled", canceled.Status)
 	}
+	if canceled.ErrorCode == nil || *canceled.ErrorCode != "user_canceled" {
+		t.Fatalf("errorCode = %v, want user_canceled", canceled.ErrorCode)
+	}
+	if canceled.ErrorMessage == nil || *canceled.ErrorMessage != "用户主动停止任务" {
+		t.Fatalf("errorMessage = %v, want user cancellation message", canceled.ErrorMessage)
+	}
 	if len(canceled.OutputKeys) != 0 || len(canceled.ThumbnailKeys) != 0 {
 		t.Fatalf("canceled outputs = %#v / %#v, want empty", canceled.OutputKeys, canceled.ThumbnailKeys)
 	}
@@ -857,8 +864,90 @@ func TestCancelOnlyQueued(t *testing.T) {
 		t.Fatalf("wallet = (%d, %d), want (100, 0)", w.BalanceCents, w.FrozenCents)
 	}
 
-	_, err = taskflow.CancelTask(ctx, st, user.ID, task.ID)
-	mustAppErr(t, err, "task_not_cancelable")
+	replayed, err := taskflow.CancelTask(ctx, st, user.ID, task.ID)
+	if err != nil || replayed == nil || replayed.Status != "canceled" {
+		t.Fatalf("replayed cancel = %#v, err=%v, want idempotent canceled task", replayed, err)
+	}
+}
+
+func TestUserCancelRunningSettlesWithoutFailureCompensation(t *testing.T) {
+	st := testdb.Setup(t)
+	user := newUserWithBalance(t, st, 100)
+	ctx := context.Background()
+	if err := settings.Set(ctx, st.Pool, "growth_failure_bonus_enabled", json.RawMessage(`true`)); err != nil {
+		t.Fatal(err)
+	}
+	task, _, err := createT2I(t, st, user.ID, 1, nil)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	forceRunning(t, st, task.ID)
+	attemptID, err := store.UpsertTaskUpstreamAttempt(ctx, st.Pool, store.UpstreamAttemptInput{
+		TaskID: task.ID, TaskAttempt: task.Attempt, ProviderID: "provider", RouteID: "route",
+		RouteKey: "route-key", Adapter: "openai", UpstreamModel: "image-model",
+		BaseURL: "https://provider.test", APIKeyEncrypted: "encrypted", Status: store.UpstreamAttemptPending,
+	})
+	if err != nil {
+		t.Fatalf("insert upstream attempt: %v", err)
+	}
+
+	canceled, err := taskflow.CancelTask(ctx, st, user.ID, task.ID)
+	if err != nil {
+		t.Fatalf("cancel running task: %v", err)
+	}
+	if canceled.Status != "canceled" || canceled.ErrorCode == nil || *canceled.ErrorCode != "user_canceled" {
+		t.Fatalf("canceled task = %#v, want canceled/user_canceled", canceled)
+	}
+	if canceled.ErrorMessage == nil || *canceled.ErrorMessage != "用户主动停止任务" {
+		t.Fatalf("errorMessage = %v, want user cancellation message", canceled.ErrorMessage)
+	}
+	w := getWallet(t, st, user.ID)
+	if w.BalanceCents != 80 || w.FrozenCents != 0 {
+		t.Fatalf("wallet = (%d, %d), want (80, 0)", w.BalanceCents, w.FrozenCents)
+	}
+	var spends, releases, bonuses int
+	if err := st.Pool.QueryRow(ctx, `SELECT
+		count(*) FILTER (WHERE kind='spend' AND source_type='task'),
+		count(*) FILTER (WHERE kind='release' AND source_type='task'),
+		count(*) FILTER (WHERE kind='grant' AND source_type='task_failure_bonus')
+		FROM wallet_ledger WHERE user_id=$1`, user.ID).Scan(&spends, &releases, &bonuses); err != nil {
+		t.Fatal(err)
+	}
+	if spends != 1 || releases != 0 || bonuses != 0 {
+		t.Fatalf("ledger spend/release/bonus = %d/%d/%d, want 1/0/0", spends, releases, bonuses)
+	}
+	var spendReason string
+	if err := st.Pool.QueryRow(ctx, `SELECT reason FROM wallet_ledger
+		WHERE user_id=$1 AND kind='spend' AND source_type='task'`, user.ID).Scan(&spendReason); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(spendReason, "用户主动停止") || !strings.Contains(spendReason, "任务已提交") {
+		t.Fatalf("spend reason = %q, want explicit user cancellation", spendReason)
+	}
+	var attemptStatus string
+	if err := st.Pool.QueryRow(ctx, `SELECT status FROM task_upstream_attempts WHERE id=$1`, attemptID).Scan(&attemptStatus); err != nil {
+		t.Fatal(err)
+	}
+	if attemptStatus != store.UpstreamAttemptSuperseded {
+		t.Fatalf("attempt status = %q, want superseded", attemptStatus)
+	}
+	var notificationTitle, notificationBody string
+	if err := st.Pool.QueryRow(ctx, `SELECT title, body FROM notifications
+		WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1`, user.ID).Scan(&notificationTitle, &notificationBody); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(notificationTitle, "主动停止") || !strings.Contains(notificationBody, "不会发放失败补偿") {
+		t.Fatalf("notification = %q / %q, want active stop explanation", notificationTitle, notificationBody)
+	}
+	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		won, markErr := taskflow.MarkFailed(ctx, tx, task, "upstream_error", "late failure", "running")
+		if won {
+			t.Fatal("late worker failure overwrote user cancellation")
+		}
+		return markErr
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestRequeueRefreezesThenSettles(t *testing.T) {

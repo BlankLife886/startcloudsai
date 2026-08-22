@@ -198,13 +198,20 @@ func CancelUserTx(ctx context.Context, q store.Q, userID, id uuid.UUID) (*store.
 	if err != nil || run == nil {
 		return run, false, err
 	}
-	billable, err := hasBillableCanvasAgentAction(ctx, q, run)
-	if err != nil {
-		return run, false, err
+	canvasAgent := run.Mode == "agent" && paramString(run.Params, "workspace") == "infinite_canvas"
+	cost := run.ReservedCents
+	if canvasAgent {
+		billable, err := hasBillableCanvasAgentAction(ctx, q, run)
+		if err != nil {
+			return run, false, err
+		}
+		cost = 0
+		if billable {
+			cost = ResolvedCost(run, "chat")
+		}
 	}
-	cost := int64(0)
-	if billable {
-		cost = ResolvedCost(run, "chat")
+	if cost < 0 || cost > run.ReservedCents {
+		return run, false, apperr.E("assistant_billing_invalid", "AI 助手结算金额超过预留金额", 500)
 	}
 	var changed bool
 	if cost > 0 {
@@ -217,17 +224,21 @@ func CancelUserTx(ctx context.Context, q store.Q, userID, id uuid.UUID) (*store.
 	}
 	if cost > 0 {
 		billingID := sourceID(run, run.BillingGeneration)
+		settlementReason := productReason(run, "%s由用户主动停止，本轮积分不退还")
+		if canvasAgent {
+			settlementReason = productReason(run, "%s由用户主动停止，按已完成画布操作结算")
+		}
 		if _, err := wallet.SettleNormalCredits(ctx, q, run.UserID, cost, SourceType, billingID,
-			strPtr(productReason(run, "%s已停止，按已完成操作结算"))); err != nil {
+			strPtr(settlementReason)); err != nil {
 			return run, false, err
 		}
 		if remainder := run.ReservedCents - cost; remainder > 0 {
 			if _, err := wallet.ReleaseNormalCredits(ctx, q, run.UserID, remainder, SourceType, billingID,
-				strPtr(productReason(run, "%s已停止，未使用费用已退回"))); err != nil {
+				strPtr(productReason(run, "%s由用户主动停止，未使用费用已退回"))); err != nil {
 				return run, false, err
 			}
 		}
-	} else if err := release(ctx, q, run, productReason(run, "%s已停止，费用已退回")); err != nil {
+	} else if err := release(ctx, q, run, productReason(run, "%s由用户主动停止，未执行画布操作，费用已退回")); err != nil {
 		return run, false, err
 	}
 	latest, syncErr := store.GetAssistantRun(ctx, q, id)

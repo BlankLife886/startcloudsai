@@ -145,9 +145,11 @@ async function withCanvasTaskSlot<T>(signal: AbortSignal | undefined, run: () =>
     }
 }
 
-/** Cancel a queued task server-side. The backend exposes this as PATCH /tasks/:id { status: "canceled" } and rejects tasks that already started. */
-export function cancelCanvasTask(id: string) {
-    return starcloudsJson<CanvasTask>(`/tasks/${encodeURIComponent(id)}`, "PATCH", { status: "canceled" });
+/** Stop a queued or running task server-side and refresh all wallet consumers. */
+export async function cancelCanvasTask(id: string) {
+    const task = await starcloudsJson<CanvasTask>(`/tasks/${encodeURIComponent(id)}`, "PATCH", { status: "canceled" });
+    scheduleWalletRefresh();
+    return task;
 }
 
 function cloudKey(reference: ReferenceImage) {
@@ -832,6 +834,7 @@ async function ensureCanvasAgentConversation(projectId: string, prompt: string, 
 
 export async function cancelCanvasAssistantRun(runId: string) {
     await starcloudsJson(`/assistant/runs/${encodeURIComponent(runId)}`, "PATCH", { status: "canceled" });
+    scheduleWalletRefresh();
 }
 
 type CanvasAgentStreamPayload = {

@@ -371,6 +371,15 @@ function isUserDeletedTask(task: AdminTask) {
   return task.deletionActor === 'user' && Boolean(task.deletedAt)
 }
 
+function isUserCanceledTask(task: AdminTask) {
+  return task.status === 'canceled' && task.errorCode === 'user_canceled'
+}
+
+function taskStatusLabel(task: AdminTask) {
+  if (isUserCanceledTask(task)) return '用户主动停止'
+  return TASK_STATUS_LABELS[task.status] ?? task.status
+}
+
 function taskInputCount(task: AdminTask) {
   return task.inputKeys?.length || 0
 }
@@ -923,7 +932,7 @@ async function forceFail(task: AdminTask) {
               <template #default="{ row }">
                 <div class="task-status-cell">
                   <span class="kind-text" :class="`is-status-${row.status}`">
-                    {{ TASK_STATUS_LABELS[row.status] ?? row.status }}
+                    {{ taskStatusLabel(row as AdminTask) }}
                   </span>
                   <small v-if="isUserDeletedTask(row as AdminTask)" class="deletion-mark">用户已删除</small>
                 </div>
@@ -1083,7 +1092,7 @@ async function forceFail(task: AdminTask) {
         <div v-if="detail" class="drawer-header">
           <div class="drawer-heading">
             <span class="drawer-status" :class="`is-${detail.status}`">
-              {{ TASK_STATUS_LABELS[detail.status] ?? detail.status }}
+              {{ taskStatusLabel(detail) }}
             </span>
             <strong>{{ taskTypeLabel(detail.type, detail.params) }}</strong>
             <small>{{ taskServiceProviderMeta(detail).name }} · {{ taskServiceProviderMeta(detail).detail }}</small>
@@ -1174,11 +1183,11 @@ async function forceFail(task: AdminTask) {
         <el-alert
           v-if="detail.errorCode || detail.errorMessage"
           class="drawer-alert"
-          type="error"
+          :type="isUserCanceledTask(detail) ? 'warning' : 'error'"
           :closable="false"
           show-icon
-          :title="detail.errorCode || '任务异常'"
-          :description="detail.errorMessage || ''"
+          :title="isUserCanceledTask(detail) ? '用户主动停止' : detail.errorCode || '任务异常'"
+          :description="isUserCanceledTask(detail) ? '该任务由用户主动停止，不属于模型或系统执行失败。' : detail.errorMessage || ''"
         />
 
         <section class="detail-section">

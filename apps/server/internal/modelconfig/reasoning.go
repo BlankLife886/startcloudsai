@@ -2,6 +2,7 @@ package modelconfig
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -36,10 +37,9 @@ type ResolvedReasoningPrice struct {
 var (
 	gpt5ReasoningEfforts       = []string{"minimal", "low", "medium", "high"}
 	gpt51ReasoningEfforts      = []string{"none", "low", "medium", "high"}
-	gpt52To55ReasoningEfforts  = []string{"low", "medium", "high", "xhigh"}
+	gpt52To54ReasoningEfforts  = []string{"low", "medium", "high", "xhigh"}
 	gpt53CodexReasoningEfforts = []string{"low", "medium", "high", "xhigh"}
 	gptProReasoningEfforts     = []string{"medium", "high", "xhigh"}
-	gpt56ReasoningEfforts      = []string{"low", "medium", "high", "xhigh", "max"}
 )
 
 // ReasoningEffortsForModel returns the explicit effort values accepted by the
@@ -51,16 +51,12 @@ func ReasoningEffortsForModel(raw string) []string {
 	switch {
 	case model == "" || strings.Contains(model, "-chat"):
 		return nil
-	case reasoningModelIs(model, "gpt-5.6"):
-		efforts = gpt56ReasoningEfforts
-	case reasoningModelIs(model, "gpt-5.5-pro"),
-		reasoningModelIs(model, "gpt-5.4-pro"),
+	case reasoningModelIs(model, "gpt-5.4-pro"),
 		reasoningModelIs(model, "gpt-5.2-pro"):
 		efforts = gptProReasoningEfforts
-	case reasoningModelIs(model, "gpt-5.5"),
-		reasoningModelIs(model, "gpt-5.4"),
+	case reasoningModelIs(model, "gpt-5.4"),
 		reasoningModelIs(model, "gpt-5.2"):
-		efforts = gpt52To55ReasoningEfforts
+		efforts = gpt52To54ReasoningEfforts
 	case reasoningModelIs(model, "gpt-5.3-codex"), model == "codex-auto-review":
 		efforts = gpt53CodexReasoningEfforts
 	case reasoningModelIs(model, "gpt-5.1"):
@@ -157,6 +153,42 @@ func enabledBool(value bool) *bool {
 	return &value
 }
 
+func normalizeReasoningEffortID(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func configuredReasoningEfforts(model Model) []string {
+	seen := make(map[string]bool)
+	result := make([]string, 0)
+	add := func(raw string) {
+		effort := normalizeReasoningEffortID(raw)
+		if effort == "" || seen[effort] {
+			return
+		}
+		seen[effort] = true
+		result = append(result, effort)
+	}
+	if model.supportedReasoningEffortsSet || len(model.SupportedReasoningEfforts) > 0 {
+		for _, effort := range model.SupportedReasoningEfforts {
+			add(effort)
+		}
+	}
+	if model.ReasoningPricing != nil && len(model.ReasoningPricing.Efforts) > 0 {
+		keys := make([]string, 0, len(model.ReasoningPricing.Efforts))
+		for effort := range model.ReasoningPricing.Efforts {
+			keys = append(keys, effort)
+		}
+		sort.Strings(keys)
+		for _, effort := range keys {
+			add(effort)
+		}
+	}
+	if model.supportedReasoningEffortsSet || len(model.SupportedReasoningEfforts) > 0 || len(result) > 0 {
+		return result
+	}
+	return ReasoningEffortsForModel(model.UpstreamModel)
+}
+
 func normalizeModelReasoningPricing(model *Model) {
 	if model == nil || model.Kind != ModelKindChat {
 		if model != nil {
@@ -165,14 +197,19 @@ func normalizeModelReasoningPricing(model *Model) {
 		}
 		return
 	}
-	available := ReasoningEffortsForModel(model.UpstreamModel)
+	available := configuredReasoningEfforts(*model)
 	if len(available) == 0 {
 		model.SupportedReasoningEfforts = nil
 		model.ReasoningPricing = nil
 		return
 	}
-	incoming := append([]string(nil), model.SupportedReasoningEfforts...)
-	incomingSet := model.supportedReasoningEffortsSet
+	incoming := make([]string, 0, len(model.SupportedReasoningEfforts))
+	for _, effort := range model.SupportedReasoningEfforts {
+		if normalized := normalizeReasoningEffortID(effort); normalized != "" && !containsStringValue(incoming, normalized) {
+			incoming = append(incoming, normalized)
+		}
+	}
+	incomingSet := model.supportedReasoningEffortsSet || len(incoming) > 0
 	pricing := model.ReasoningPricing
 	if pricing == nil {
 		pricing = &ReasoningPricing{}
@@ -180,10 +217,16 @@ func normalizeModelReasoningPricing(model *Model) {
 	if pricing.Efforts == nil {
 		pricing.Efforts = map[string]ReasoningEffortPricing{}
 	}
+	incomingPricing := make(map[string]ReasoningEffortPricing, len(pricing.Efforts))
+	for effort, price := range pricing.Efforts {
+		if normalizedEffort := normalizeReasoningEffortID(effort); normalizedEffort != "" {
+			incomingPricing[normalizedEffort] = price
+		}
+	}
 	normalized := make(map[string]ReasoningEffortPricing, len(available))
 	enabled := make([]string, 0, len(available))
 	for _, effort := range available {
-		price, ok := pricing.Efforts[effort]
+		price, ok := incomingPricing[effort]
 		if !ok {
 			price = fallbackReasoningEffortPricing(*model, effort)
 		}
@@ -228,16 +271,18 @@ func validateDiscountPrice(modelName, label string, standard int64, discount *in
 }
 
 func validateModelReasoningPricing(model Model) error {
-	available := ReasoningEffortsForModel(model.UpstreamModel)
-	if len(available) == 0 {
-		return nil
-	}
+	normalizeModelReasoningPricing(&model)
 	if model.ReasoningPricing == nil {
-		return fmt.Errorf("对话模型 %s 缺少推理强度配置", model.Name)
+		return nil
 	}
 	if len(model.SupportedReasoningEfforts) > 0 && !containsStringValue(model.SupportedReasoningEfforts, model.ReasoningPricing.DefaultEffort) {
 		return fmt.Errorf("对话模型 %s 的默认推理强度无效", model.Name)
 	}
+	available := make([]string, 0, len(model.ReasoningPricing.Efforts))
+	for effort := range model.ReasoningPricing.Efforts {
+		available = append(available, effort)
+	}
+	sort.Strings(available)
 	for _, effort := range available {
 		price, ok := model.ReasoningPricing.Efforts[effort]
 		if !ok {

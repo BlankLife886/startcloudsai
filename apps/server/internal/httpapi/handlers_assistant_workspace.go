@@ -36,6 +36,10 @@ type createAssistantConversationIn struct {
 	ProjectID string `json:"projectId"`
 }
 
+type patchAssistantConversationIn struct {
+	Title string `json:"title"`
+}
+
 type importAssistantConversationsIn struct {
 	Conversations []struct {
 		ID        string           `json:"id"`
@@ -261,6 +265,42 @@ func (s *Server) deleteAssistantConversation(c *gin.Context) {
 		}
 	}
 	respondNoContent(c)
+}
+
+func (s *Server) patchAssistantConversation(c *gin.Context) {
+	user, err := s.requireUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	id, err := parseUUIDParam(c, "id")
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	var body patchAssistantConversationIn
+	if err := bindJSON(c, &body); err != nil {
+		fail(c, err)
+		return
+	}
+	item, err := store.GetUserAssistantConversation(c.Request.Context(), s.St.Pool, user.ID, id)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if item == nil {
+		fail(c, apperr.E("not_found", "对话不存在", 404))
+		return
+	}
+	title := assistantTitle(body.Title)
+	now := time.Now().UTC()
+	if err := store.TouchAssistantConversation(c.Request.Context(), s.St.Pool, user.ID, id, &title, now); err != nil {
+		fail(c, err)
+		return
+	}
+	item.Title = title
+	item.UpdatedAt = now
+	ok(c, assistantConversationDict(item, nil))
 }
 
 func (s *Server) createAssistantContextBoundary(c *gin.Context) {
@@ -703,6 +743,19 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		)
 		if len(modelCfg.Models) > 0 && imageSelection == nil {
 			fail(c, apperr.E("validation_error", "AI 助手还没有可用的图片模型", 422))
+			return
+		}
+	}
+	if body.Mode == "agent" {
+		maxAgentImages := maxImages
+		if canvasAgent {
+			maxAgentImages = modelconfig.MaxImagesLimit
+		}
+		if imageSelection != nil {
+			maxAgentImages = imageSelection.Model.GenerationMaxImages()
+		}
+		if body.Count < 1 || body.Count > maxAgentImages {
+			fail(c, apperr.E("validation_error", fmt.Sprintf("图片数量须在 1-%d 之间", maxAgentImages), 422))
 			return
 		}
 	}
@@ -1232,7 +1285,7 @@ func (s *Server) cancelAssistantRun(c *gin.Context) {
 		metadata["routing"] = false
 		metadata["statusStage"] = "stopped"
 		return store.ClearAssistantMessageOutputMetadata(c.Request.Context(), tx, run.UserID, message.ID,
-			"已停止生成", assistantResolvedMode(run), "stopped", metadata)
+			"用户已主动停止生成", assistantResolvedMode(run), "stopped", metadata)
 	})
 	if err != nil {
 		fail(c, err)
