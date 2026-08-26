@@ -4,25 +4,28 @@ import i18n from "@/i18n";
 import { isCanvasNodeTypeEnabled } from "@/constant/canvas";
 import { validCanvasAgentOps } from "./canvas-agent-op-validation.js";
 import { arrangeCanvasNodes, layoutCanvasGraph } from "@/lib/canvas/canvas-graph-layout";
+import { applyCanvasAgentNodeUpdate, canvasAgentGraphTextMetadata, type CanvasAgentNodePatch } from "@/lib/canvas/canvas-agent-node-metadata";
+import { resolveCanvasAgentGraphModes } from "@/lib/canvas/canvas-agent-graph-contract";
+import { canvasWorkflowNodeIds } from "@/lib/canvas/canvas-workflow-groups";
 import { getNodeSpec, isRegisteredNodeType } from "@/lib/canvas/node-registry";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type CanvasNodeMetadata, type CanvasNodeTypeId, type ViewportTransform } from "@/types/canvas";
 
 export type CanvasAgentOp =
     | { type: "add_node"; id?: string; nodeType?: CanvasNodeTypeId; title?: string; position?: { x: number; y: number }; x?: number; y?: number; width?: number; height?: number; metadata?: CanvasNodeMetadata }
-    | { type: "update_node"; id: string; title?: string; patch?: Partial<CanvasNodeData>; metadata?: CanvasNodeMetadata }
+    | { type: "update_node"; id: string; title?: string; patch?: CanvasAgentNodePatch; metadata?: CanvasNodeMetadata }
     | { type: "delete_node"; id?: string; ids?: string[]; nodeType?: CanvasNodeTypeId }
     | { type: "delete_connections"; id?: string; ids?: string[]; all?: boolean }
     | { type: "connect_nodes"; id?: string; fromNodeId?: string; toNodeId?: string; from?: string; to?: string }
     | { type: "create_generation_flow"; id?: string; prompt?: string; title?: string; x?: number; y?: number; position?: { x: number; y: number } }
     | { type: "create_graph"; nodes?: CanvasAgentGraphNode[]; edges?: CanvasAgentGraphEdge[]; x?: number; y?: number; position?: { x: number; y: number } }
-    | { type: "arrange_nodes"; scope?: "all" | "selection"; direction?: "LR" | "TB" }
+    | { type: "arrange_nodes"; scope?: "all" | "selection" | "workflow"; workflowId?: string; direction?: "LR" | "TB" }
     | { type: "set_viewport"; viewport: ViewportTransform }
     | { type: "select_nodes"; ids: string[] }
     | { type: "run_generation"; nodeId: string; mode?: "text" | "image" | "video" | "audio"; prompt?: string }
     | { type: "move_nodes"; items?: Array<{ id: string; x?: number; y?: number; dx?: number; dy?: number }> }
     | { type: "resize_node"; id: string; width?: number; height?: number; freeResize?: boolean };
 
-export type CanvasAgentGraphNode = { key?: string; type?: CanvasNodeTypeId; title?: string; text?: string };
+export type CanvasAgentGraphNode = { key?: string; type?: CanvasNodeTypeId; title?: string; text?: string; composerContent?: string; generationMode?: "text" | "image" | "video" | "audio" };
 export type CanvasAgentGraphEdge = { from?: string; to?: string };
 
 export type CanvasAgentSnapshot = {
@@ -99,16 +102,10 @@ export function applyCanvasAgentOps(snapshot: CanvasAgentSnapshot, ops?: CanvasA
             if (!op.id) return;
             nodes = nodes.map((node) => {
                 if (node.id !== op.id) return node;
-                const title = typeof op.title === "string"
-                    ? op.title
-                    : typeof op.patch?.title === "string"
-                      ? op.patch.title
-                      : node.title;
-                const patchMetadata = isRecord(op.patch?.metadata) ? op.patch.metadata : {};
-                const metadata = { ...node.metadata, ...patchMetadata, ...(isRecord(op.metadata) ? op.metadata : {}) };
-                if (title === node.title && canvasAgentRecordEqual(metadata, node.metadata || {})) return node;
+                const updated = applyCanvasAgentNodeUpdate(node, op);
+                if (updated === node) return node;
                 changed = true;
-                return { ...node, title, metadata };
+                return updated;
             });
         }
         if (op.type === "delete_node") {
@@ -144,6 +141,12 @@ export function applyCanvasAgentOps(snapshot: CanvasAgentSnapshot, ops?: CanvasA
         }
         if (op.type === "arrange_nodes") {
             try {
+                let selectedKeys = selectedNodeIds;
+                if (op.scope === "workflow") {
+                    selectedKeys = canvasWorkflowNodeIds(nodes, connections, op.workflowId || "");
+                    if (!selectedKeys.length) throw new Error(`工作流不存在：${op.workflowId || "未指定"}`);
+                }
+                const scopedLayout = op.scope === "selection" || op.scope === "workflow";
                 const arranged = arrangeCanvasNodes(
                     nodes.map((node) => ({
                         key: node.id,
@@ -156,8 +159,8 @@ export function applyCanvasAgentOps(snapshot: CanvasAgentSnapshot, ops?: CanvasA
                     })),
                     connections.map((connection) => ({ from: connection.fromNodeId, to: connection.toNodeId })),
                     {
-                        scope: op.scope === "selection" ? "selection" : "all",
-                        selectedKeys: selectedNodeIds,
+                        scope: scopedLayout ? "selection" : "all",
+                        selectedKeys,
                         direction: op.direction === "TB" ? "TB" : "LR",
                         columnGap: FLOW_GAP,
                         rowGap: GRAPH_ROW_GAP,
@@ -165,7 +168,7 @@ export function applyCanvasAgentOps(snapshot: CanvasAgentSnapshot, ops?: CanvasA
                 );
                 const dimensions = new Map(nodes.map((node) => [node.id, { width: node.width, height: node.height }]));
                 const positions = fitCanvasAgentPositions(arranged.positions, dimensions);
-                if (op.scope === "selection" && canvasAgentPositionsOverlapFixedNodes(positions, nodes)) {
+                if (scopedLayout && canvasAgentPositionsOverlapFixedNodes(positions, nodes)) {
                     throw new Error("选中节点在画布边界内没有可用的不重叠布局空间");
                 }
                 nodes = nodes.map((node) => {
@@ -274,7 +277,7 @@ function graphOps(op: Extract<CanvasAgentOp, { type: "create_graph" }>, snapshot
         .map((node, order) => {
             const type = node?.type && isRegisteredNodeType(node.type) ? node.type : CanvasNodeType.Text;
             const spec = getNodeSpec(type);
-            return { key: String(node?.key || `n${order + 1}`).trim() || `n${order + 1}`, type, spec, title: node?.title, text: String(node?.text || "").trim() };
+            return { key: String(node?.key || `n${order + 1}`).trim() || `n${order + 1}`, type, spec, title: node?.title, text: String(node?.text || "").trim(), composerContent: String(node?.composerContent || "").trim(), generationMode: node?.generationMode };
         })
         .filter((plan) => isCanvasNodeTypeEnabled(plan.type));
     if (!plans.length) return [];
@@ -286,17 +289,24 @@ function graphOps(op: Extract<CanvasAgentOp, { type: "create_graph" }>, snapshot
         (op.edges || []).map((edge) => ({ from: String(edge?.from || "").trim(), to: String(edge?.to || "").trim() })),
         { originX: origin.x, originY: origin.y, columnGap: FLOW_GAP, rowGap: GRAPH_ROW_GAP },
     );
+    const generationModes = resolveCanvasAgentGraphModes(plans, edges);
     const positions = placeCanvasAgentGraph(rawPositions, plans, snapshot);
 
-    const ops: CanvasAgentOp[] = plans.map((plan) => ({
-        type: "add_node",
-        id: ids.get(plan.key),
-        nodeType: plan.type,
-        title: plan.title || plan.spec.title,
-        x: positions.get(plan.key)?.x ?? origin.x,
-        y: positions.get(plan.key)?.y ?? origin.y,
-        ...(plan.text ? { metadata: { content: plan.text, status: "success" } } : {}),
-    }));
+    const ops: CanvasAgentOp[] = plans.map((plan) => {
+        const graphTextMetadata = canvasAgentGraphTextMetadata(plan.type, plan.text);
+        const metadata = plan.type === CanvasNodeType.Config
+            ? { ...(plan.composerContent ? { composerContent: plan.composerContent } : {}), generationMode: generationModes.get(plan.key) || "image" }
+            : graphTextMetadata;
+        return {
+            type: "add_node",
+            id: ids.get(plan.key),
+            nodeType: plan.type,
+            title: plan.title || plan.spec.title,
+            x: positions.get(plan.key)?.x ?? origin.x,
+            y: positions.get(plan.key)?.y ?? origin.y,
+            ...(metadata ? { metadata } : {}),
+        };
+    });
     edges.forEach((edge) => {
         ops.push({ type: "connect_nodes", fromNodeId: ids.get(edge.from), toNodeId: ids.get(edge.to) });
     });
@@ -364,12 +374,6 @@ function boundedCoordinate(value: unknown, fallback: number) {
 function boundedNodeSize(value: unknown, fallback: number) {
     const number = typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
     return Math.min(MAX_AGENT_NODE_SIZE, Math.max(MIN_AGENT_NODE_SIZE, number));
-}
-
-function canvasAgentRecordEqual(left: Record<string, unknown>, right: Record<string, unknown>) {
-    const leftKeys = Object.keys(left);
-    const rightKeys = Object.keys(right);
-    return leftKeys.length === rightKeys.length && leftKeys.every((key) => Object.is(left[key], right[key]));
 }
 
 function canvasAgentStringArrayEqual(left: string[], right: string[]) {

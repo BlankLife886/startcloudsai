@@ -761,28 +761,32 @@ export function StudioHubView() {
           ],
         }];
       if (!usesModelImageParams) return [field];
-      if (field.key === "resolution")
-        return [{
+      if (field.key === "resolution") {
+        const options = field.options.filter((option) =>
+          allowedResolutions.has(String(option.value).toUpperCase()),
+        );
+        return options.length ? [{
           ...field,
-          options: field.options.filter((option) =>
-            allowedResolutions.has(String(option.value).toUpperCase()),
-          ),
-        }];
-      if (field.key === "quality")
-        return [{
+          options,
+        }] : [];
+      }
+      if (field.key === "quality") {
+        const options = field.options.filter((option) =>
+          allowedQualities.has(String(option.value).toLowerCase()),
+        );
+        return options.length ? [{
           ...field,
-          options: field.options.filter((option) =>
-            allowedQualities.has(String(option.value).toLowerCase()),
-          ),
-        }];
+          options,
+        }] : [];
+      }
       if (field.key === "ratio")
-        return [{
+        return allowedRatios.length ? [{
           ...field,
           options: allowedRatios.map((value) => ({
             value,
             label: ratioLabels.get(value) || ratioChipLabel(value),
           })),
-        }];
+        }] : [];
       return [field];
     });
   }, [modelOptions, selectedConfig, selectedModel, selectedTool?.id]);
@@ -1132,6 +1136,7 @@ export function StudioHubView() {
     const qualityField = fields.find((field) => field.key === "quality");
     const ratioField = fields.find((field) => field.key === "ratio");
     const patch = {};
+    if (!resolutionField && selectedConfig.resolution) patch.resolution = "";
     if (
       resolutionField?.options.length &&
       !resolutionField.options.some(
@@ -1139,6 +1144,7 @@ export function StudioHubView() {
       )
     )
       patch.resolution = resolutionField.options[0].value;
+    if (!qualityField && selectedConfig.quality) patch.quality = "";
     if (
       qualityField?.options.length &&
       !qualityField.options.some(
@@ -1146,6 +1152,7 @@ export function StudioHubView() {
       )
     )
       patch.quality = qualityField.options[0].value;
+    if (!ratioField && selectedConfig.ratio) patch.ratio = "";
     if (
       ratioField?.options.length &&
       !ratioField.options.some(
@@ -1501,10 +1508,14 @@ export function StudioHubView() {
       config.count =
         imageCountFromPrompt(prompt) || Math.max(1, Number(config.count) || 2);
       if (config.mode === "image") {
-        const resolution = String(config.resolution || "1K").toUpperCase();
-        config.resolution = resolution;
-        config.quality =
-          { "1K": "low", "2K": "medium", "4K": "high" }[resolution] || "high";
+        const capabilities = normalizeImageModelCapabilities(selectedModel || {});
+        const resolution = String(config.resolution || "").toUpperCase();
+        config.resolution = capabilities.resolutions.includes(resolution)
+          ? resolution
+          : capabilities.resolutions[0] || "";
+        config.quality = capabilities.qualities.includes(config.quality)
+          ? config.quality
+          : capabilities.qualities[0] || "";
       }
     }
     setLaunchSubmitting(true);

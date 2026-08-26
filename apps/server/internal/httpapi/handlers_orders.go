@@ -476,7 +476,7 @@ func (s *Server) completeOrder(ctx context.Context, order *store.Order) (*store.
 			body = fmt.Sprintf("「%s」订阅已生效，每日发放 %d 分，有效期至 %s。",
 				plan.Name, sub.DailyGrantCents, subscription.BeijingDate(sub.EndsAt))
 		}
-		if nerr := store.InsertNotification(ctx, s.St.Pool, &order.UserID, "order", title, &body); nerr != nil {
+		if nerr := store.InsertNotificationWithSource(ctx, s.St.Pool, &order.UserID, "order", title, &body, "order", order.ID); nerr != nil {
 			log.Printf("notify order %s completed: %v", order.ID, nerr)
 		}
 	}

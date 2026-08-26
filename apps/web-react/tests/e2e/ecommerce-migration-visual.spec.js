@@ -223,7 +223,7 @@ test.describe('Ecommerce Vue to React visual contract @visual', () => {
     await page.goto('/ecommerce-design?tool=detail&visualResult=1', {
       waitUntil: 'domcontentloaded',
     })
-    await page.getByRole('button', { name: '放大查看当前结果' }).click()
+    await page.getByRole('button', { name: /放大查看当前结果|查看.*Header Image/ }).click()
     await expect(page.getByRole('dialog', { name: /全屏预览/ })).toBeVisible()
     await page.addStyleTag({
       content: '*,*::before,*::after{animation:none!important;transition:none!important}',
@@ -243,7 +243,7 @@ test.describe('Ecommerce Vue to React visual contract @visual', () => {
       await page.goto('/ecommerce-design?tool=detail&visualResult=1', {
         waitUntil: 'domcontentloaded',
       })
-      await page.getByRole('button', { name: '放大查看当前结果' }).click()
+      await page.getByRole('button', { name: /放大查看当前结果|查看.*Header Image/ }).click()
       await expect(page.getByRole('dialog', { name: /全屏预览/ })).toBeVisible()
       await expect(page.locator('.preview-main-pane .preview-image')).toBeVisible()
       await expect
@@ -287,7 +287,7 @@ test.describe('Ecommerce Vue to React visual contract @visual', () => {
     await page.goto('/ecommerce-design?tool=detail&visualResult=1', {
       waitUntil: 'domcontentloaded',
     })
-    await page.getByRole('button', { name: '放大查看当前结果' }).click()
+    await page.getByRole('button', { name: /放大查看当前结果|查看.*Header Image/ }).click()
     await expect(page.getByRole('dialog', { name: /全屏预览/ })).toBeVisible()
     await expect(page.locator('.preview-main-pane .preview-image')).toBeVisible()
     await expect
@@ -316,7 +316,7 @@ test.describe('Ecommerce Vue to React visual contract @visual', () => {
     await page.goto('/ecommerce-design?tool=detail&visualResult=1', {
       waitUntil: 'domcontentloaded',
     })
-    await page.getByRole('button', { name: '放大查看当前结果' }).click()
+    await page.getByRole('button', { name: /放大查看当前结果|查看.*Header Image/ }).click()
     await expect(page.getByRole('dialog', { name: /全屏预览/ })).toBeVisible()
     const reactFilter = page.locator('[data-preview-action="filters"]')
     if (await reactFilter.count()) await reactFilter.click()

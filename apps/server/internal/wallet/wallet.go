@@ -357,8 +357,218 @@ func SettleForTask(ctx context.Context, q store.Q, userID, taskID uuid.UUID, amo
 	return store.InsertLedgerEntry(ctx, q, userID, "spend", 0, balanceAfter, "task", strPtr(taskID.String()), reason, creditBucket(normalCents, trialCents))
 }
 
-// FreezeNormalCredits 为非图片任务预留普通积分。sourceType/sourceID 组成幂等键；
-// 体验积分只用于活动明确授权的图片功能，不参与此类扣费。
+// FreezeFeatureCredits reserves a generic billable operation from the trial
+// bucket when the user has an active entitlement for featureKey, then uses
+// normal credits for any remainder.
+func FreezeFeatureCredits(ctx context.Context, q store.Q, userID uuid.UUID, amountCents int64, featureKey, sourceType, sourceID string, reason *string) (*store.LedgerEntry, error) {
+	if amountCents <= 0 {
+		return nil, nil
+	}
+	existing, err := store.GetLedgerEntry(ctx, q, "freeze", sourceType, sourceID)
+	if err != nil || existing != nil {
+		return existing, err
+	}
+	var lockedUserID uuid.UUID
+	if err := q.QueryRow(ctx, `SELECT user_id FROM wallets WHERE user_id = $1 FOR UPDATE`, userID).Scan(&lockedUserID); err != nil {
+		if isNoRows(err) {
+			return nil, apperr.E("not_found", "钱包不存在", 404)
+		}
+		return nil, err
+	}
+	var balanceAfter, normalCents, trialCents int64
+	err = q.QueryRow(ctx,
+		`WITH allocation AS (
+			SELECT user_id,
+			       LEAST(
+			           CASE WHEN EXISTS (
+			               SELECT 1 FROM user_trial_feature_entitlements entitlement
+			               JOIN trial_access_applications application ON application.id = entitlement.application_id
+			               JOIN trial_campaigns campaign ON campaign.id = application.campaign_id
+			               WHERE entitlement.user_id = wallets.user_id
+			                 AND entitlement.feature_key = $4
+			                 AND entitlement.revoked_at IS NULL
+			                 AND campaign.status = 'active'
+			                 AND campaign.expires_at > now()
+			           ) THEN trial_balance_cents ELSE 0 END,
+			           $2::bigint
+			       ) AS trial_cents,
+			       $2::bigint - LEAST(
+			           CASE WHEN EXISTS (
+			               SELECT 1 FROM user_trial_feature_entitlements entitlement
+			               JOIN trial_access_applications application ON application.id = entitlement.application_id
+			               JOIN trial_campaigns campaign ON campaign.id = application.campaign_id
+			               WHERE entitlement.user_id = wallets.user_id
+			                 AND entitlement.feature_key = $4
+			                 AND entitlement.revoked_at IS NULL
+			                 AND campaign.status = 'active'
+			                 AND campaign.expires_at > now()
+			           ) THEN trial_balance_cents ELSE 0 END,
+			           $2::bigint
+			       ) AS normal_cents
+			FROM wallets
+			WHERE user_id = $1
+			  AND balance_cents + CASE WHEN EXISTS (
+			      SELECT 1 FROM user_trial_feature_entitlements entitlement
+			      JOIN trial_access_applications application ON application.id = entitlement.application_id
+			      JOIN trial_campaigns campaign ON campaign.id = application.campaign_id
+			      WHERE entitlement.user_id = wallets.user_id
+			        AND entitlement.feature_key = $4
+			        AND entitlement.revoked_at IS NULL
+			        AND campaign.status = 'active'
+			        AND campaign.expires_at > now()
+			  ) THEN trial_balance_cents ELSE 0 END >= $2
+		), updated AS (
+			UPDATE wallets w
+			SET balance_cents = w.balance_cents - a.normal_cents,
+			    frozen_cents = w.frozen_cents + a.normal_cents,
+			    trial_balance_cents = w.trial_balance_cents - a.trial_cents,
+			    trial_frozen_cents = w.trial_frozen_cents + a.trial_cents,
+			    updated_at = $3
+			FROM allocation a
+			WHERE w.user_id = a.user_id
+			RETURNING w.balance_cents + w.trial_balance_cents AS balance_after,
+			          a.normal_cents, a.trial_cents
+		)
+		SELECT balance_after, normal_cents, trial_cents FROM updated`,
+		userID, amountCents, now(), featureKey).Scan(&balanceAfter, &normalCents, &trialCents)
+	if err != nil {
+		if isNoRows(err) {
+			current, walletErr := store.GetWallet(ctx, q, userID)
+			if walletErr != nil {
+				return nil, walletErr
+			}
+			if current != nil && current.BalanceCents+current.TrialBalanceCents >= amountCents && current.TrialBalanceCents > 0 {
+				return nil, apperr.E("trial_credit_feature_mismatch", "当前体验积分仅限获批功能使用，普通积分不足以支付本次任务", 400)
+			}
+			return nil, apperr.E("insufficient_balance", "余额不足", 400)
+		}
+		return nil, err
+	}
+	reservationFeatureKey := ""
+	if trialCents > 0 {
+		reservationFeatureKey = featureKey
+	}
+	if _, err := store.InsertCreditReservation(ctx, q, sourceType, sourceID, normalCents, trialCents, reservationFeatureKey); err != nil {
+		return nil, err
+	}
+	return store.InsertLedgerEntry(ctx, q, userID, "freeze", -amountCents, balanceAfter, sourceType, strPtr(sourceID), reason, creditBucket(normalCents, trialCents))
+}
+
+// ReleaseFeatureCredits returns the requested remainder to the same credit
+// buckets used by the original generic reservation.
+func ReleaseFeatureCredits(ctx context.Context, q store.Q, userID uuid.UUID, amountCents int64, sourceType, sourceID string, reason *string) (*store.LedgerEntry, error) {
+	if amountCents <= 0 {
+		return nil, nil
+	}
+	existing, err := store.GetLedgerEntry(ctx, q, "release", sourceType, sourceID)
+	if err != nil || existing != nil {
+		return existing, err
+	}
+	freeze, err := store.GetLedgerEntry(ctx, q, "freeze", sourceType, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	if freeze == nil {
+		return nil, apperr.E("internal_error", "费用未预留，无法退回", 500)
+	}
+	reservation, err := store.GetCreditReservationForUpdate(ctx, q, sourceType, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	if reservation == nil || reservation.NormalRemainingCents+reservation.TrialRemainingCents < amountCents {
+		return nil, apperr.E("internal_error", "冻结来源异常，无法退回", 500)
+	}
+	trialCents := min(reservation.TrialRemainingCents, amountCents)
+	normalCents := amountCents - trialCents
+	if normalCents > reservation.NormalRemainingCents {
+		return nil, apperr.E("internal_error", "冻结来源不足，无法退回", 500)
+	}
+	var balanceAfter int64
+	err = q.QueryRow(ctx,
+		`UPDATE wallets
+		 SET balance_cents = balance_cents + $2,
+		     frozen_cents = frozen_cents - $2,
+		     trial_balance_cents = trial_balance_cents + $3,
+		     trial_frozen_cents = trial_frozen_cents - $3,
+		     updated_at = $4
+		 WHERE user_id = $1 AND frozen_cents >= $2 AND trial_frozen_cents >= $3
+		 RETURNING balance_cents + trial_balance_cents`,
+		userID, normalCents, trialCents, now()).Scan(&balanceAfter)
+	if err != nil {
+		if isNoRows(err) {
+			return nil, apperr.E("internal_error", "冻结余额异常，无法退回", 500)
+		}
+		return nil, err
+	}
+	if err := store.UpdateCreditReservationRemaining(ctx, q, sourceType, sourceID,
+		reservation.NormalRemainingCents-normalCents,
+		reservation.TrialRemainingCents-trialCents, now()); err != nil {
+		return nil, err
+	}
+	return store.InsertLedgerEntry(ctx, q, userID, "release", amountCents, balanceAfter, sourceType, strPtr(sourceID), reason, creditBucket(normalCents, trialCents))
+}
+
+// SettleFeatureCredits consumes the requested amount from a generic mixed
+// reservation. Any remaining amount can be released in the same transaction.
+func SettleFeatureCredits(ctx context.Context, q store.Q, userID uuid.UUID, amountCents int64, sourceType, sourceID string, reason *string) (*store.LedgerEntry, error) {
+	if amountCents <= 0 {
+		return nil, nil
+	}
+	existing, err := store.GetLedgerEntry(ctx, q, "spend", sourceType, sourceID)
+	if err != nil || existing != nil {
+		return existing, err
+	}
+	freeze, err := store.GetLedgerEntry(ctx, q, "freeze", sourceType, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	if freeze == nil {
+		return nil, apperr.E("internal_error", "费用未预留，无法结算", 500)
+	}
+	reservation, err := store.GetCreditReservationForUpdate(ctx, q, sourceType, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	if reservation == nil || reservation.NormalRemainingCents+reservation.TrialRemainingCents < amountCents {
+		return nil, apperr.E("internal_error", "冻结来源异常，无法结算", 500)
+	}
+	trialCents := min(reservation.TrialRemainingCents, amountCents)
+	normalCents := amountCents - trialCents
+	if normalCents > reservation.NormalRemainingCents {
+		return nil, apperr.E("internal_error", "冻结来源不足，无法结算", 500)
+	}
+	var balanceAfter int64
+	err = q.QueryRow(ctx,
+		`UPDATE wallets
+		 SET frozen_cents = frozen_cents - $2,
+		     trial_frozen_cents = trial_frozen_cents - $3,
+		     trial_feature_key = CASE
+		         WHEN trial_balance_cents + trial_frozen_cents - $3 = 0 THEN NULL
+		         ELSE trial_feature_key
+		     END,
+		     updated_at = $4
+		 WHERE user_id = $1 AND frozen_cents >= $2 AND trial_frozen_cents >= $3
+		 RETURNING balance_cents + trial_balance_cents`,
+		userID, normalCents, trialCents, now()).Scan(&balanceAfter)
+	if err != nil {
+		if isNoRows(err) {
+			return nil, apperr.E("internal_error", "冻结余额异常，无法结算", 500)
+		}
+		return nil, err
+	}
+	if err := store.UpdateCreditReservationRemaining(ctx, q, sourceType, sourceID,
+		reservation.NormalRemainingCents-normalCents,
+		reservation.TrialRemainingCents-trialCents, now()); err != nil {
+		return nil, err
+	}
+	if reason == nil {
+		reason = strPtr(fmt.Sprintf("任务结算：消耗冻结 %d 分", amountCents))
+	}
+	return store.InsertLedgerEntry(ctx, q, userID, "spend", 0, balanceAfter, sourceType, strPtr(sourceID), reason, creditBucket(normalCents, trialCents))
+}
+
+// FreezeNormalCredits reserves only normal credits for operations that are not
+// associated with a trial campaign feature.
 func FreezeNormalCredits(ctx context.Context, q store.Q, userID uuid.UUID, amountCents int64, sourceType, sourceID string, reason *string) (*store.LedgerEntry, error) {
 	if amountCents <= 0 {
 		return nil, nil

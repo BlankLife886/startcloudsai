@@ -21,6 +21,7 @@ func TestRouterExposesOnlyVersionedRESTContract(t *testing.T) {
 		"POST /api/v1/tasks",
 		"PATCH /api/v1/tasks/:id",
 		"DELETE /api/v1/tasks/:id",
+		"DELETE /api/v1/tasks/:id/outputs/:index",
 		"GET /api/v1/canvas-projects",
 		"POST /api/v1/canvas-projects",
 		"GET /api/v1/canvas-projects/:id",

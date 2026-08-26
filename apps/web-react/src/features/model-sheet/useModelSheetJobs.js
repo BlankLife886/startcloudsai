@@ -11,10 +11,7 @@ import {
   coerceImageModelSettings,
   normalizeImageModelCapabilities,
 } from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
-import {
-  GPT_IMAGE_OUTPUT_LIMITS,
-  normalizeGptImageOutputSize,
-} from "@react/legacy-modules/services/aiImageOutputSize.js";
+import { resolveT2iOutputSize } from "@react/legacy-modules/features/ai-wallpaper/composables/wallpaperStudioConstants.js";
 
 const HISTORY_LIMIT = 24;
 const ACTIVE_STATUSES = new Set(["queued", "running", "waiting_provider"]);
@@ -52,17 +49,6 @@ function displayUrls(job = {}, originals = []) {
   return Object.fromEntries(
     originals.map((url, index) => [url, values[index] || ""]),
   );
-}
-
-function outputSize(aspectRatio = "16:9", longSide = 1536) {
-  const [rawWidth = 16, rawHeight = 9] = String(aspectRatio).split(":").map(Number);
-  const ratioWidth = Number.isFinite(rawWidth) && rawWidth > 0 ? rawWidth : 1;
-  const ratioHeight = Number.isFinite(rawHeight) && rawHeight > 0 ? rawHeight : 1;
-  const edge = Math.max(1024, Math.min(longSide, GPT_IMAGE_OUTPUT_LIMITS.maxEdge));
-  const width = ratioWidth >= ratioHeight ? edge : (edge * ratioWidth) / ratioHeight;
-  const height = ratioWidth >= ratioHeight ? (edge * ratioHeight) / ratioWidth : edge;
-  const normalized = normalizeGptImageOutputSize(width, height);
-  return `${normalized.width}x${normalized.height}`;
 }
 
 function taskMeta(job = {}) {
@@ -225,30 +211,40 @@ export function useModelSheetJobs({ model, isAuthenticated }) {
   }, [historyLoading, isAuthenticated, resumeJob]);
 
   const runOne = useCallback(async ({ item, sourceUrls, groupId, index, size, signal }) => {
+    const capabilities = normalizeImageModelCapabilities(model || {});
+    const resolutionScale = capabilities.resolutions[0] || "";
     const settings = coerceImageModelSettings(model, {
       aspectRatio: item.aspectRatio,
+      resolutionScale,
       quality: item.quality,
       transparentBackground: item.transparentPngEnabled,
       outputFormat: item.transparentPngEnabled ? "png" : undefined,
     });
     const sources = [...new Set((sourceUrls || []).filter(Boolean))].slice(
       0,
-      normalizeImageModelCapabilities(model || {}).maxReferenceImages,
+      capabilities.maxReferenceImages,
     );
-    const sizeValue = outputSize(settings.aspectRatio);
+    const sizeValue = resolutionScale && settings.aspectRatio
+      ? resolveT2iOutputSize(settings.aspectRatio, resolutionScale)
+      : "";
     const shared = {
       source: "ultra-model-sheet",
       sourceUrl: sources[0] || "",
       sourceUrls: sources,
       ...(item.maskUrl ? { maskUrl: item.maskUrl, mask: item.maskUrl } : {}),
-      aspectRatio: settings.aspectRatio,
-      size: sizeValue,
-      outputSize: sizeValue,
+      ...(settings.aspectRatio ? { aspectRatio: settings.aspectRatio } : {}),
+      ...(sizeValue ? { size: sizeValue, outputSize: sizeValue } : {}),
+      ...(resolutionScale ? { resolutionScale } : {}),
       count: 1,
-      transparentPngEnabled: settings.transparentBackground,
-      transparentBackground: settings.transparentBackground,
-      upscaleOutputFormat: settings.transparentBackground ? "png" : "auto",
-      quality: settings.quality,
+      ...(capabilities.transparentBackground
+        ? {
+            transparentPngEnabled: settings.transparentBackground,
+            transparentBackground: settings.transparentBackground,
+          }
+        : {}),
+      ...(settings.transparentBackground ? { upscaleOutputFormat: "png" } : {}),
+      ...(settings.quality ? { quality: settings.quality } : {}),
+      ...(settings.outputFormat ? { outputFormat: settings.outputFormat } : {}),
       viewId: String(item.viewId || ""),
       viewLabel: String(item.viewLabel || ""),
       outputMode: String(item.outputMode || "board"),

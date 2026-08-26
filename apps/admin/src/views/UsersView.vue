@@ -8,6 +8,7 @@ import RegistrationSettingsDialog from '@/components/settings/RegistrationSettin
 import { request, type Page } from '@/request'
 import { usePagedList } from '@/usePagedList'
 import {
+  adminMediaUrl,
   formatPoints,
   formatShortTime,
   formatTime,
@@ -511,7 +512,7 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
                   <span class="user-avatar" :class="{ 'has-image': showAvatar(row as AdminUser) }">
                     <img
                       v-if="showAvatar(row as AdminUser)"
-                      :src="row.avatarUrl!"
+                      :src="adminMediaUrl(row.avatarUrl)"
                       alt=""
                       @error="avatarBroken(row.id)"
                     />
@@ -668,7 +669,7 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
           <span class="drawer-avatar" :class="{ 'has-image': showAvatar(drawerUserInfo) }">
             <img
               v-if="showAvatar(drawerUserInfo)"
-              :src="drawerUserInfo.avatarUrl!"
+              :src="adminMediaUrl(drawerUserInfo.avatarUrl)"
               alt=""
               @error="avatarBroken(drawerUserInfo.id)"
             />

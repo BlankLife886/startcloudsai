@@ -78,11 +78,14 @@ func GetCanvasWorkflowTemplate(ctx context.Context, q Q, id uuid.UUID, publicOnl
 }
 
 func CreateCanvasWorkflowTemplate(ctx context.Context, q Q, item *CanvasWorkflowTemplate) (*CanvasWorkflowTemplate, error) {
+	if item.ID == uuid.Nil {
+		item.ID = uuid.New()
+	}
 	return scanCanvasWorkflowTemplate(q.QueryRow(ctx, `INSERT INTO canvas_workflow_templates
-		(slug, title, category, category_label, industry, summary, platforms, deliverables, accent, document, node_count, enabled, sort)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+		(id, slug, title, category, category_label, industry, summary, platforms, deliverables, accent, document, node_count, enabled, sort)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 		RETURNING `+canvasWorkflowTemplateCols,
-		item.Slug, item.Title, item.Category, item.CategoryLabel, item.Industry, item.Summary,
+		item.ID, item.Slug, item.Title, item.Category, item.CategoryLabel, item.Industry, item.Summary,
 		item.Platforms, item.Deliverables, item.Accent, item.Document, item.NodeCount, item.Enabled, item.Sort))
 }
 

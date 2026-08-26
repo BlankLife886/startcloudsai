@@ -13,10 +13,12 @@ import { useIsDark } from "../hooks/useIsDark.js";
 import {
   getWallet,
   listNotifications,
+  markNotificationsRead,
 } from "@react/legacy-modules/services/meApi.js";
 import { logoutAccount } from "@react/legacy-modules/services/auth.js";
 import { getTrialAccessCampaign } from "@react/legacy-modules/services/trialAccessApi.js";
 import notificationService from "@react/legacy-modules/services/notification.js";
+import { fetchRuntimeConfig } from "@react/legacy-modules/services/runtimeConfig.js";
 import {
   COMMERCE_ENTRY_GROUPS,
   ecomToolCover,
@@ -101,7 +103,7 @@ const commerceGroups = COMMERCE_ENTRY_GROUPS.map((group) => ({
   })),
 }));
 
-const tools = [
+const baseTools = [
   ["/tools/background-remove", "背景移除", "bi-person-bounding-box"],
   ["/tools/image-compress", "图片压缩", "bi-file-zip"],
   ["/tools/puzzle", "拼图", "bi-puzzle-fill"],
@@ -173,7 +175,7 @@ const navItems = [
     name: "tools",
     label: "工具",
     icon: "bi-columns-gap",
-    links: tools,
+    links: baseTools,
   },
 ];
 
@@ -218,6 +220,7 @@ export function NavBar() {
   const [notificationUnread, setNotificationUnread] = useState(0);
   const [notificationItems, setNotificationItems] = useState([]);
   const [notificationLoading, setNotificationLoading] = useState(false);
+  const [notificationMarking, setNotificationMarking] = useState(false);
   const [notificationOpen, setNotificationOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [trialCampaign, setTrialCampaign] = useState(null);
@@ -225,18 +228,50 @@ export function NavBar() {
   const [redeemDialogOpen, setRedeemDialogOpen] = useState(false);
   const [logoutOpen, setLogoutOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
+  const [mediaTools, setMediaTools] = useState([]);
   const checkinVisible = isEntryVisible("activity.checkin");
   const trialVisible = isEntryVisible("activity.trial");
+  useEffect(() => {
+    let active = true;
+    const loadMediaTools = () => {
+      fetchRuntimeConfig({ force: true }).then((config) => {
+        if (!active) return;
+        const configured = config?.features?.["ai.mediaTools"]?.config?.tools;
+        setMediaTools((Array.isArray(configured) ? configured : []).map((tool) => ({
+          to: `/tools/${encodeURIComponent(tool.id)}`,
+          label: String(tool.name || tool.label || "媒体工具"),
+          icon: tool.modality === "video" ? "bi-camera-video" : tool.modality === "audio" ? "bi-soundwave" : "bi-image",
+        })));
+      }).catch(() => active && setMediaTools([]));
+    };
+    const refreshVisibleTools = () => {
+      if (document.visibilityState === "visible") loadMediaTools();
+    };
+    loadMediaTools();
+    window.addEventListener("focus", loadMediaTools);
+    document.addEventListener("visibilitychange", refreshVisibleTools);
+    return () => {
+      active = false;
+      window.removeEventListener("focus", loadMediaTools);
+      document.removeEventListener("visibilitychange", refreshVisibleTools);
+    };
+  }, []);
+  const resolvedNavItems = useMemo(
+    () => navItems.map((item) => item.type === "group" && item.name === "tools"
+      ? { ...item, links: [...mediaTools, ...item.links] }
+      : item),
+    [mediaTools],
+  );
   const visibleNavItems = useMemo(
     () =>
-      navItems.flatMap((item) => {
+      resolvedNavItems.flatMap((item) => {
         if (item.type === "link") {
           return isEntryVisible(item.to) ? [item] : [];
         }
         const links = item.links.filter((link) => isEntryVisible(link.to));
         return links.length ? [{ ...item, links }] : [];
       }),
-    [isEntryVisible],
+    [isEntryVisible, resolvedNavItems],
   );
 
   const isActive = (to) => {
@@ -557,6 +592,14 @@ export function NavBar() {
         setNotificationItems([]);
         return;
       }
+      if (event?.detail?.source === "mark-all") {
+        lastUnread = 0;
+        const readAt = new Date().toISOString();
+        setNotificationItems((items) =>
+          items.map((item) => ({ ...item, readAt: item.readAt || readAt })),
+        );
+        return;
+      }
       if (Array.isArray(event?.detail?.previewItems)) {
         lastUnread = nextUnread;
         setNotificationItems(event.detail.previewItems.slice(0, 8));
@@ -603,6 +646,29 @@ export function NavBar() {
       () => setNotificationOpen(false),
       160,
     );
+  }
+
+  async function markAllNotificationsRead() {
+    if (notificationMarking || notificationUnread <= 0) return;
+    setNotificationMarking(true);
+    try {
+      await markNotificationsRead();
+      const readAt = new Date().toISOString();
+      setNotificationUnread(0);
+      setNotificationItems((items) =>
+        items.map((item) => ({ ...item, readAt: item.readAt || readAt })),
+      );
+      window.dispatchEvent(
+        new CustomEvent("starclouds:notifications-updated", {
+          detail: { unreadCount: 0, source: "mark-all" },
+        }),
+      );
+      notificationService.success("已全部标记为已读");
+    } catch (error) {
+      notificationService.error(error?.message || "操作失败");
+    } finally {
+      setNotificationMarking(false);
+    }
   }
 
   function requestLogout() {
@@ -938,6 +1004,22 @@ export function NavBar() {
                                 : "消息已全部读完"}
                             </small>
                           </div>
+                          <button
+                            type="button"
+                            className="nav-notify__read-all"
+                            disabled={
+                              notificationLoading ||
+                              notificationMarking ||
+                              notificationUnread <= 0
+                            }
+                            onClick={markAllNotificationsRead}
+                          >
+                            <i
+                              className={`bi ${notificationMarking ? "bi-arrow-repeat spin" : "bi-check2-all"}`}
+                              aria-hidden="true"
+                            />
+                            <span>{notificationMarking ? "处理中" : "全部已读"}</span>
+                          </button>
                         </header>
                         {notificationLoading ? (
                           <div className="nav-notify__loading">

@@ -196,12 +196,15 @@ export function useIllustrationColoringJobs({ authenticated }) {
         ).slice(0, referenceLimit);
         const count = Math.max(1, Math.min(4, Number(options.generationCount || 1)));
         const batchId = count > 1 ? `coloring-${crypto.randomUUID()}` : "";
-        const output = resolveOutputPixelSize(
-          sourceMeta?.width,
-          sourceMeta?.height,
-          options.outputSize,
-          options.outputOrientation,
-        );
+        const hasExplicitOutput = Boolean(options.outputSize && options.outputOrientation);
+        const output = hasExplicitOutput
+          ? resolveOutputPixelSize(
+              sourceMeta?.width,
+              sourceMeta?.height,
+              options.outputSize,
+              options.outputOrientation,
+            )
+          : { width: 0, height: 0, orientation: "" };
         const requests = Array.from({ length: count }, (_, index) => ({
           clientRequestId: crypto.randomUUID(),
           batchId,
@@ -222,9 +225,13 @@ export function useIllustrationColoringJobs({ authenticated }) {
               outputFormat: options.outputFormat,
               moderationLevel: options.moderationLevel,
               maxAdditionalReferences: referenceLimit,
-              outputWidth: output.width,
-              outputHeight: output.height,
-              outputOrientation: output.orientation,
+              ...(hasExplicitOutput
+                ? {
+                    outputWidth: output.width,
+                    outputHeight: output.height,
+                    outputOrientation: output.orientation,
+                  }
+                : {}),
               referenceImageUrls: remoteReferences,
               batchId,
               variantIndex: request.variantIndex,

@@ -27,6 +27,14 @@ func InsertNotification(ctx context.Context, q Q, userID *uuid.UUID, kind, title
 	return err
 }
 
+func InsertNotificationWithSource(ctx context.Context, q Q, userID *uuid.UUID, kind, title string, body *string, sourceType string, sourceID uuid.UUID) error {
+	_, err := q.Exec(ctx, `
+		INSERT INTO notifications (user_id, kind, title, body, source_type, source_id)
+		VALUES ($1, $2, $3, $4, $5, $6)`,
+		userID, kind, title, body, sourceType, sourceID)
+	return err
+}
+
 const AnnouncementNotificationSource = "announcement"
 
 func UpsertAnnouncementNotification(ctx context.Context, q Q, announcementID uuid.UUID, title string, body *string) error {

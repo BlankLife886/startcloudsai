@@ -19,7 +19,7 @@ type ResizeHandle = "n" | "e" | "s" | "w" | "ne" | "nw" | "se" | "sw";
 const handles: ResizeHandle[] = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
 const minSize = 0.06;
 const defaultCrop = { x: 0.12, y: 0.12, width: 0.76, height: 0.76 };
-export function CanvasNodeCropDialog({ dataUrl, open, onClose, onConfirm }: { dataUrl: string; open: boolean; onClose: () => void; onConfirm: (crop: CanvasImageCropRect) => void }) {
+export function CanvasNodeCropDialog({ dataUrl, open, initialCrop, onClose, onConfirm }: { dataUrl: string; open: boolean; initialCrop?: CanvasImageCropRect; onClose: () => void; onConfirm: (crop: CanvasImageCropRect) => void }) {
     const { t } = useTranslation();
     const [crop, setCrop] = useState<CanvasImageCropRect>(defaultCrop);
     const [ratioPreset, setRatioPreset] = useState("free");
@@ -32,11 +32,11 @@ export function CanvasNodeCropDialog({ dataUrl, open, onClose, onConfirm }: { da
 
     useEffect(() => {
         if (open) {
-            setCrop(defaultCrop);
+            setCrop(initialCrop ? { ...initialCrop } : defaultCrop);
             setRatioPreset("free");
             setFixedRatio(null);
         }
-    }, [dataUrl, open]);
+    }, [dataUrl, initialCrop, open]);
 
     useEffect(() => {
         if (!open) return;

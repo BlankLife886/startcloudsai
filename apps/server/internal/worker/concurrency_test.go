@@ -895,7 +895,7 @@ func TestTextReviewPastFailoverWithoutAlternateClosesTask(t *testing.T) {
 	taskID, routeKey, _ := insertPollableOpenAITaskWindow(t, st, ctx, now.Add(-6*time.Minute), now.Add(-time.Minute), now.Add(20*time.Minute))
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"items":[{"id":"%s","status":"text_review"}]}`, taskID)
+		fmt.Fprintf(w, `{"items":[{"id":"%s","status":"text_review","output":{"content":[{"type":"output_text","text":"内容审核拒绝：参考图不符合服务政策 https://internal.example/review/123"}]}}]}`, taskID)
 	}))
 	defer server.Close()
 	claimed, err := store.ClaimPendingUpstreamTasksByRoute(ctx, st.Pool, routeKey, "attempt-poller:test", now, time.Minute, 10)
@@ -913,6 +913,19 @@ func TestTextReviewPastFailoverWithoutAlternateClosesTask(t *testing.T) {
 	}
 	if task.Status != "failed" || task.ErrorCode == nil || *task.ErrorCode != "upstream_error" {
 		t.Fatalf("stale text_review remained active: %#v", task)
+	}
+	const expectedMessage = "内容审核拒绝：参考图不符合服务政策"
+	if task.ErrorMessage == nil || *task.ErrorMessage != expectedMessage {
+		t.Fatalf("task error message = %v, want %q", task.ErrorMessage, expectedMessage)
+	}
+	var attemptStatus, lastError string
+	if err := st.Pool.QueryRow(ctx,
+		`SELECT status, last_error FROM task_upstream_attempts WHERE task_id=$1`, taskID,
+	).Scan(&attemptStatus, &lastError); err != nil {
+		t.Fatal(err)
+	}
+	if attemptStatus != store.UpstreamAttemptSuperseded || lastError != expectedMessage {
+		t.Fatalf("attempt status=%q last_error=%q", attemptStatus, lastError)
 	}
 }
 

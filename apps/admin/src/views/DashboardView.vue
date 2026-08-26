@@ -1,13 +1,18 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, type Component } from 'vue'
+import { useRouter } from 'vue-router'
 import {
 	AlarmClock,
+  ArrowRight,
+  ChatDotRound,
   CircleCheck,
 	DataAnalysis,
   Histogram,
 	Loading,
+	Picture,
 	Reading,
 	Refresh,
+  Star,
   User,
   UserFilled,
   Wallet,
@@ -57,6 +62,13 @@ interface AdminStats {
   typeDistribution?: Record<string, number>
 	taskPerformance?: TaskPerformance
 	providerPerformance?: ProviderPerformance[]
+}
+
+interface AdminTodoCounts {
+	pendingSubmissions: number
+	runningTasks: number
+	pendingTrialApplications: number
+	pendingFeedback: number
 }
 
 interface RuntimeMemoryMetrics {
@@ -176,6 +188,13 @@ const systemMetrics = ref<SystemMetrics | null>(null)
 const systemHistory = ref<SystemMetricPoint[]>([])
 const systemError = ref('')
 const loadedAt = ref('')
+const router = useRouter()
+const todoCounts = ref<AdminTodoCounts>({
+	pendingSubmissions: 0,
+	runningTasks: 0,
+	pendingTrialApplications: 0,
+	pendingFeedback: 0,
+})
 let refreshTimer: number | null = null
 let systemRefreshTimer: number | null = null
 
@@ -224,6 +243,15 @@ function formatUptime(seconds: number) {
 	if (days > 0) return `${days} 天 ${hours} 小时`
 	if (hours > 0) return `${hours} 小时 ${minutes} 分`
 	return `${minutes} 分钟`
+}
+
+function formatMoney(cents: number | null | undefined) {
+	const value = Number(cents)
+	if (!Number.isFinite(value)) return '-'
+	return `¥${(value / 100).toLocaleString('zh-CN', {
+		minimumFractionDigits: 2,
+		maximumFractionDigits: 2,
+	})}`
 }
 
 /** 系统健康仪表：只放与「运行时资源」不重复的容量类指标 */
@@ -605,26 +633,52 @@ const providerPerfOption = computed((): EChartOption => {
 	}
 })
 
-const businessMetrics = computed(() => [
-	{ label: '总用户', value: stats.value?.totalUsers ?? '-', icon: User },
-	{ label: '今日新增', value: stats.value?.newUsersToday ?? '-', icon: UserFilled },
+const businessMetrics = computed<KpiCard[]>(() => [
+	{ label: '累计用户', value: stats.value?.totalUsers ?? '-', caption: '平台注册规模', icon: User, tone: 'info' },
+	{ label: '今日新增', value: stats.value?.newUsersToday ?? '-', caption: '今日注册用户', icon: UserFilled, tone: 'success' },
 	{
-	  label: '近 30 日消耗积分',
-	  value: stats.value?.revenueCents !== undefined ? formatPoints(stats.value.revenueCents) : '-',
+	  label: '近 30 日实收',
+	  value: formatMoney(stats.value?.revenueCents),
+	  caption: '已完成订单金额',
 	  icon: Histogram,
+	  tone: 'accent',
 	},
 	{
-	  label: '用户积分结余',
+	  label: '平台积分负债',
 	  value: stats.value?.walletBalanceCents !== undefined ? formatPoints(stats.value.walletBalanceCents) : '-',
+	  caption: '用户钱包可用余额',
 	  icon: Wallet,
+	  tone: 'warning',
 	},
 ])
+
+const todoItems = computed(() => [
+	{ label: '投稿待审核', caption: '画廊内容审核', value: todoCounts.value.pendingSubmissions, icon: Picture, to: '/gallery', tone: 'warning' },
+	{ label: '体验资格待审核', caption: '当前体验活动', value: todoCounts.value.pendingTrialApplications, icon: Star, to: '/trial-applications', tone: 'accent' },
+	{ label: '用户反馈待处理', caption: '未关闭反馈', value: todoCounts.value.pendingFeedback, icon: ChatDotRound, to: '/feedback', tone: 'danger' },
+	{ label: '任务执行中', caption: '排队中与运行中', value: todoCounts.value.runningTasks, icon: Loading, to: '/tasks', tone: 'info' },
+])
+
+const operationTodoTotal = computed(() =>
+	todoCounts.value.pendingSubmissions +
+	todoCounts.value.pendingTrialApplications +
+	todoCounts.value.pendingFeedback,
+)
+
+function openDashboardTarget(path: string) {
+	void router.push(path)
+}
 
 async function load() {
 	if (loading.value) return
   loading.value = true
   try {
-    stats.value = await request<AdminStats>('/api/v1/admin/statistics')
+		const [nextStats, nextTodos] = await Promise.all([
+			request<AdminStats>('/api/v1/admin/statistics'),
+			request<AdminTodoCounts>('/api/v1/admin/badge-counts', { silent: true }).catch(() => todoCounts.value),
+		])
+		stats.value = nextStats
+		todoCounts.value = nextTodos
     loadedAt.value = formatTime(new Date().toISOString())
   } finally {
     loading.value = false
@@ -687,8 +741,8 @@ onBeforeUnmount(() => {
 
       <div class="status-rail__primary">
         <span class="status-rail__kicker">LIVE</span>
-        <span class="status-rail__title">系统监控</span>
-        <span class="status-rail__cadence">5s</span>
+        <span class="status-rail__title">经营与生产总览</span>
+        <span class="status-rail__cadence">LIVE</span>
       </div>
 
       <div class="status-rail__divider" aria-hidden="true" />
@@ -772,8 +826,8 @@ onBeforeUnmount(() => {
         <section class="help-section">
           <h3>这个页面做什么</h3>
           <p>
-            仪表盘是运维总览：一眼看到任务是否顺畅、业务量大概多少、API / Worker /
-            数据库有没有压力。适合值班巡检和排障时先判断「问题在哪一层」。
+            仪表盘汇总经营、AI 生产、运营待办和系统保障数据。日常先看用户、收入、任务成功率与待办，
+            出现生产异常时再结合线路、Worker、API 和数据库指标定位问题。
           </p>
           <ul>
             <li>业务统计约每 20 秒自动刷新；系统指标约每 5 秒刷新。</li>
@@ -786,8 +840,8 @@ onBeforeUnmount(() => {
           <h3>顶部状态条</h3>
           <dl>
             <div>
-              <dt>LIVE / 5s</dt>
-              <dd>系统指标处于实时监控，默认 5 秒采样一次。</dd>
+              <dt>经营与生产总览</dt>
+              <dd>业务数据每 20 秒刷新，系统运行数据每 5 秒采样一次。</dd>
             </div>
             <div>
               <dt>服务在线 / 队列异常</dt>
@@ -834,12 +888,12 @@ onBeforeUnmount(() => {
               <dd>注册用户规模与今日净增，观察增长是否异常。</dd>
             </div>
             <div>
-              <dt>近 30 日消耗积分</dt>
-              <dd>近 30 天用户消耗的积分总量，反映平台使用强度。</dd>
+              <dt>近 30 日实收</dt>
+              <dd>近 30 天已完成订单的实际支付金额。</dd>
             </div>
             <div>
-              <dt>用户积分结余</dt>
-              <dd>当前所有用户钱包里尚未消耗的积分合计。</dd>
+              <dt>平台积分负债</dt>
+              <dd>当前所有用户钱包里尚未消耗的可用积分合计。</dd>
             </div>
           </dl>
         </section>
@@ -959,7 +1013,18 @@ onBeforeUnmount(() => {
 
     <div class="dashboard-board">
       <section class="board-top" aria-label="核心概览">
-        <div class="board-strip board-strip--hero">
+        <div class="board-strip board-strip--business-primary">
+          <StatCard
+            v-for="item in businessMetrics"
+            :key="item.label"
+            :label="item.label"
+            :value="item.value"
+            :caption="item.caption"
+            :icon="item.icon"
+            :tone="item.tone"
+          />
+        </div>
+        <div class="board-strip board-strip--hero" aria-label="AI 生产状态">
           <StatCard
             v-for="card in heroCards"
             :key="card.label"
@@ -970,13 +1035,6 @@ onBeforeUnmount(() => {
             :tone="card.tone"
           />
         </div>
-        <div class="board-strip board-strip--business" aria-label="业务概览">
-          <div v-for="item in businessMetrics" :key="item.label" class="business-metric">
-            <el-icon><component :is="item.icon" /></el-icon>
-            <span>{{ item.label }}</span>
-            <strong class="tnum">{{ item.value }}</strong>
-          </div>
-        </div>
       </section>
 
       <div class="board-main">
@@ -986,6 +1044,31 @@ onBeforeUnmount(() => {
           </div>
           <div v-else class="panel-empty">
             <el-empty description="暂无任务数据" :image-size="40" />
+          </div>
+        </PageCard>
+
+        <PageCard
+          class="dash-panel panel--todos"
+          title="运营待办"
+          :subtitle="operationTodoTotal ? `${operationTodoTotal} 项需要处理` : '当前没有运营待办'"
+        >
+          <div class="todo-list">
+            <button
+              v-for="item in todoItems"
+              :key="item.label"
+              type="button"
+              class="todo-row"
+              :class="`is-${item.tone}`"
+              @click="openDashboardTarget(item.to)"
+            >
+              <span class="todo-row__icon"><el-icon><component :is="item.icon" /></el-icon></span>
+              <span class="todo-row__copy">
+                <strong>{{ item.label }}</strong>
+                <small>{{ item.caption }}</small>
+              </span>
+              <b class="tnum">{{ item.value }}</b>
+              <el-icon class="todo-row__arrow"><ArrowRight /></el-icon>
+            </button>
           </div>
         </PageCard>
 
@@ -1114,7 +1197,7 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: var(--dash-gap);
   padding: 2px 4px 4px;
-  overflow: hidden;
+  overflow: auto;
 }
 
 .status-rail {
@@ -1486,16 +1569,16 @@ onBeforeUnmount(() => {
 
 
 .dashboard-board {
-  flex: 1;
+  flex: 0 0 auto;
   min-height: 0;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto;
   gap: var(--dash-gap);
 }
 
 .board-top {
   display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  grid-template-columns: 1fr;
   gap: var(--dash-gap);
   min-width: 0;
 }
@@ -1506,7 +1589,8 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
-.board-strip--hero {
+.board-strip--hero,
+.board-strip--business-primary {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
@@ -1591,43 +1675,48 @@ onBeforeUnmount(() => {
 .board-main {
   display: grid;
   grid-template-columns: repeat(12, minmax(0, 1fr));
-  grid-template-rows: minmax(0, 1.15fr) minmax(0, 1fr) minmax(0, 0.95fr);
+  grid-template-rows: 238px 220px 220px 220px;
   gap: var(--dash-gap);
   min-height: 0;
 }
 
 .panel--task-trend {
-  grid-column: 1 / 6;
+  grid-column: 1 / 9;
+  grid-row: 1;
+}
+
+.panel--todos {
+  grid-column: 9 / 13;
   grid-row: 1;
 }
 
 .panel--type-pie {
-  grid-column: 6 / 9;
-  grid-row: 1;
-}
-
-.panel--latency {
-  grid-column: 9 / 13;
-  grid-row: 1;
-}
-
-.panel--runtime {
   grid-column: 1 / 5;
   grid-row: 2;
 }
 
-.panel--traffic {
+.panel--latency {
   grid-column: 5 / 9;
   grid-row: 2;
 }
 
+.panel--runtime {
+  grid-column: 1 / 7;
+  grid-row: 4;
+}
+
+.panel--traffic {
+  grid-column: 7 / 13;
+  grid-row: 4;
+}
+
 .panel--system {
-  grid-column: 9 / 13;
-  grid-row: 2;
+  grid-column: 1 / 5;
+  grid-row: 3;
 }
 
 .panel--workers {
-  grid-column: 1 / 5;
+  grid-column: 9 / 13;
   grid-row: 3;
 }
 
@@ -1638,7 +1727,7 @@ onBeforeUnmount(() => {
 
 .panel--providers {
   grid-column: 9 / 13;
-  grid-row: 3;
+  grid-row: 2;
 }
 
 .dash-panel {
@@ -1758,19 +1847,70 @@ onBeforeUnmount(() => {
   height: 5px;
 }
 
+.todo-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  height: 100%;
+}
+
+.todo-row {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto 14px;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius-card) - 5px);
+  background: var(--surface-2);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+}
+
+.todo-row:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-3);
+  transform: translateY(-1px);
+}
+
+.todo-row__icon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.todo-row.is-warning .todo-row__icon { color: var(--warning); background: var(--warning-soft); }
+.todo-row.is-danger .todo-row__icon { color: var(--danger); background: var(--danger-soft); }
+.todo-row.is-info .todo-row__icon { color: var(--info, #38bdf8); background: color-mix(in srgb, #38bdf8 12%, transparent); }
+
+.todo-row__copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.todo-row__copy strong,
+.todo-row__copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.todo-row__copy strong { font-size: 11px; font-weight: 650; }
+.todo-row__copy small { color: var(--ink-3); font-size: 9px; }
+.todo-row b { font-size: 17px; font-weight: 750; }
+.todo-row__arrow { color: var(--ink-3); font-size: 12px; }
+
 @media (max-width: 1400px) {
-  .board-top {
-    grid-template-columns: 1fr;
-  }
-
-  .board-strip--business {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    grid-template-rows: auto;
-  }
-
   .board-main {
-    overflow: auto;
-    grid-template-rows: 180px 180px 170px;
+    grid-template-rows: 220px 210px 210px 210px;
   }
 }
 
@@ -1785,6 +1925,7 @@ onBeforeUnmount(() => {
   }
 
   .board-strip--hero,
+  .board-strip--business-primary,
   .board-strip--business {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1796,6 +1937,7 @@ onBeforeUnmount(() => {
   }
 
   .panel--task-trend,
+  .panel--todos,
   .panel--type-pie,
   .panel--latency,
   .panel--runtime,
@@ -1813,5 +1955,43 @@ onBeforeUnmount(() => {
     min-height: 180px;
   }
 
+  .todo-list {
+    min-height: 160px;
+  }
+
+}
+
+@media (max-width: 640px) {
+  .dashboard {
+    padding-inline: 0;
+  }
+
+  .status-rail {
+    gap: 8px;
+  }
+
+  .status-rail__clock,
+  .status-rail__help span,
+  .status-rail__refresh span {
+    display: none;
+  }
+
+  .status-rail__refresh,
+  .status-rail__help {
+    width: 30px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .board-strip--hero,
+  .board-strip--business-primary,
+  .board-strip--business,
+  .todo-list {
+    grid-template-columns: 1fr;
+  }
+
+  .todo-list {
+    min-height: 300px;
+  }
 }
 </style>

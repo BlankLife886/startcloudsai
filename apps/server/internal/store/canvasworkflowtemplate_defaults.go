@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const canvasWorkflowTemplateSeedVersion = 1
+const canvasWorkflowTemplateSeedVersion = 8
 
 //go:embed canvas_workflow_template_defaults.json
 var canvasWorkflowTemplateDefaultsJSON []byte
@@ -37,8 +37,8 @@ func SeedDefaultCanvasWorkflowTemplates(ctx context.Context, st *Store) (int, er
 	if err := json.Unmarshal(canvasWorkflowTemplateDefaultsJSON, &defaults); err != nil {
 		return 0, fmt.Errorf("decode default canvas workflow templates: %w", err)
 	}
-	if len(defaults) != 41 {
-		return 0, fmt.Errorf("decode default canvas workflow templates: got %d entries, want 41", len(defaults))
+	if len(defaults) != 42 {
+		return 0, fmt.Errorf("decode default canvas workflow templates: got %d entries, want 42", len(defaults))
 	}
 
 	inserted := 0
@@ -64,6 +64,13 @@ func SeedDefaultCanvasWorkflowTemplates(ctx context.Context, st *Store) (int, er
 				return err
 			}
 			inserted += int(tag.RowsAffected())
+			if item.Slug == "ecommerce-detail-replica" {
+				if _, err := tx.Exec(ctx, `UPDATE canvas_workflow_templates
+					SET document = $1, node_count = $2, updated_at = now()
+					WHERE slug = $3`, item.Document, item.NodeCount, item.Slug); err != nil {
+					return err
+				}
+			}
 		}
 		return nil
 	})

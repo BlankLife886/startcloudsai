@@ -58,6 +58,13 @@ export async function deleteAssistantMessage(id) {
   })
 }
 
+export async function deleteAssistantMessageImage(messageId, imageId) {
+  return apiDelete(
+    `/assistant/messages/${encodeURIComponent(messageId)}/images/${encodeURIComponent(imageId)}`,
+    { fallbackMessage: '删除图片失败' },
+  )
+}
+
 export async function deleteAssistantTurn(userMessageId) {
   return apiDelete(`/assistant/messages/${encodeURIComponent(userMessageId)}`, {
     query: { scope: 'turn' },
@@ -200,29 +207,52 @@ function abortError() {
 
 export async function waitForAssistantRun(
   id,
-  { signal, onUpdate, intervalMs = 700, maxWaitMs = 20 * 60 * 1000 } = {},
+  { signal, onUpdate, intervalMs = 700, maxWaitMs = 0 } = {},
 ) {
   const startedAt = Date.now()
+  let transientFailures = 0
   for (;;) {
     if (signal?.aborted) throw abortError()
-    const data = await getAssistantRun(id, { signal })
+    let data
+    try {
+      data = await getAssistantRun(id, { signal })
+      transientFailures = 0
+    } catch (error) {
+      if (error?.name === 'AbortError') throw error
+      const status = Number(error?.status || 0)
+      if (status > 0 && status < 500) throw error
+      transientFailures += 1
+      await waitForAssistantDelay(
+        Math.min(5000, Math.max(intervalMs, intervalMs * 2 ** Math.min(transientFailures, 3))),
+        signal,
+      )
+      continue
+    }
     onUpdate?.(data)
     if (['succeeded', 'failed', 'canceled'].includes(data?.run?.status)) return data
-    if (Date.now() - startedAt > maxWaitMs) {
+    if (maxWaitMs > 0 && Date.now() - startedAt > maxWaitMs) {
       throw new ApiError('任务仍在后台运行，可稍后回到该对话查看', {
         code: 'assistant_run_timeout',
       })
     }
-    await new Promise((resolve, reject) => {
-      const timer = window.setTimeout(resolve, intervalMs)
-      signal?.addEventListener(
-        'abort',
-        () => {
-          window.clearTimeout(timer)
-          reject(abortError())
-        },
-        { once: true },
-      )
-    })
+    await waitForAssistantDelay(intervalMs, signal)
   }
+}
+
+function waitForAssistantDelay(delayMs, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortError())
+      return
+    }
+    const onAbort = () => {
+      window.clearTimeout(timer)
+      reject(abortError())
+    }
+    const timer = window.setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, delayMs)
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
 }

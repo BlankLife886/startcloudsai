@@ -233,7 +233,7 @@ function LibraryDrawer({ open, tab, setTab, history, activeId, light, onClose, o
     { title: "赛博霓虹", prompt: "紫红与电光蓝霓虹配色，冷暖对比，高质感金属反射" },
   ];
     return createPortal(<div className={`coloring-library-backdrop${light ? " is-light" : ""}`} onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="coloring-library-drawer" role="dialog" aria-modal="true" aria-label="染色资源"><header className="coloring-library-head"><div><strong>染色资源</strong><small>选择结果、任务或配色提示词</small></div><button type="button" aria-label="关闭" onClick={onClose}><i className="bi bi-x-lg" /></button></header><nav className="coloring-library-tabs" role="tablist">{[["assets", "bi-images", "资产库", assets.length], ["history", "bi-clock-history", "历史记录", history.length], ["prompts", "bi-journal-text", "提示词库", null]].map(([id, icon, label, count]) => <button key={id} type="button" role="tab" aria-selected={tab === id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}><i className={`bi ${icon}`} />{label}{count != null && <em>{count}</em>}</button>)}</nav><div className="coloring-library-body">
-    {tab === "assets" && (assets.length ? <div className="coloring-library-grid">{assets.map((item) => <button key={item.id} type="button" className={`coloring-library-card${item.id === activeId ? " active" : ""}`} onClick={() => onSelect(item)}><span className="coloring-library-image"><MediaImage src={item.resultUrl} alt="" /></span><strong>{item.title || "插画染色"}</strong><small>{item.outputOrientation || "原图比例"} · {item.outputSize || "2K"}</small></button>)}</div> : <div className="coloring-library-empty"><i className="bi bi-images" /><strong>还没有染色资产</strong><span>完成的染色结果会自动保存在这里。</span></div>)}
+    {tab === "assets" && (assets.length ? <div className="coloring-library-grid">{assets.map((item) => <button key={item.id} type="button" className={`coloring-library-card${item.id === activeId ? " active" : ""}`} onClick={() => onSelect(item)}><span className="coloring-library-image"><MediaImage src={item.resultUrl} alt="" /></span><strong>{item.title || "插画染色"}</strong><small>{[item.outputOrientation || "模型默认比例", item.outputSize || "模型默认分辨率"].join(" · ")}</small></button>)}</div> : <div className="coloring-library-empty"><i className="bi bi-images" /><strong>还没有染色资产</strong><span>完成的染色结果会自动保存在这里。</span></div>)}
     {tab === "history" && (history.length ? <div className="coloring-library-list">{history.map((item) => <button key={item.id} type="button" className={item.id === activeId ? "active" : ""} onClick={() => onSelect(item)}><span className="coloring-library-list-thumb">{item.resultUrl || item.sourcePreview ? <MediaImage src={item.resultUrl || item.sourcePreview} alt="" /> : <i className="bi bi-palette2" />}</span><span><strong>{item.title || "插画染色"}</strong><small>{statusLabel(item)}</small></span><i className="bi bi-chevron-right" /></button>)}</div> : <div className="coloring-library-empty"><i className="bi bi-clock-history" /><strong>暂无历史记录</strong><span>创建任务后可在这里查看进度和结果。</span></div>)}
     {tab === "prompts" && <div className="coloring-prompt-list">{prompts.map((item) => <button key={item.title} type="button" onClick={() => onPrompt(item)}><span><strong>{item.title}</strong><small>{item.prompt}</small></span><i className="bi bi-plus-circle" /></button>)}</div>}
   </div></aside></div>, document.body);
@@ -299,13 +299,13 @@ export function AiIllustrationColoringView() {
         const resolution = resolutionSetting(current.outputSize);
         const nextResolution = supportedResolutions.includes(resolution)
           ? resolution
-          : supportedResolutions[0] || "2K";
+          : supportedResolutions[0] || "";
         const allowedRatios = getModelAspectRatiosForResolution(selected, nextResolution);
-        const nextOrientation = current.outputOrientation === "source"
+        const nextOrientation = current.outputOrientation === "source" && allowedRatios.includes("auto")
           ? "source"
           : allowedRatios.includes(current.outputOrientation)
             ? current.outputOrientation
-            : allowedRatios[0] === "auto" ? "source" : allowedRatios[0] || "source";
+            : allowedRatios[0] === "auto" ? "source" : allowedRatios[0] || "";
         const next = {
           ...current,
           publicModelKey: selected.id,
@@ -354,8 +354,7 @@ export function AiIllustrationColoringView() {
       ? selectedModel.resolutions.map(resolutionSetting)
       : [];
     const filtered = T2I_RESOLUTION_OPTIONS.filter((item) => supported.includes(item.value));
-    return (filtered.length ? filtered : T2I_RESOLUTION_OPTIONS.filter((item) => item.value !== "8K"))
-      .map((item) => ({ value: item.value.toLowerCase(), label: item.label }));
+    return filtered.map((item) => ({ value: item.value.toLowerCase(), label: item.label }));
   }, [selectedModel]);
   const orientationOptions = useMemo(() => {
     if (!selectedModel) return [];
@@ -364,7 +363,7 @@ export function AiIllustrationColoringView() {
     const options = T2I_ASPECT_OPTIONS
       .filter((item) => item.value !== "auto" && allowed.includes(item.value))
       .map((item) => ({ value: item.value, label: item.label }));
-    const allowSource = allowed.includes("auto") || !allowed.length;
+    const allowSource = allowed.includes("auto");
     return [
       ...(allowSource ? [{ value: "source", label: "原图比例" }] : []),
       ...options,
@@ -391,17 +390,17 @@ export function AiIllustrationColoringView() {
     if (!selectedModel) return;
     const resolution = resolutionOptions.some((item) => item.value === settings.outputSize)
       ? settings.outputSize
-      : resolutionOptions[0]?.value || "1k";
+      : resolutionOptions[0]?.value || "";
     const nextOrientationOptions = (() => {
       const allowed = getModelAspectRatiosForResolution(selectedModel, resolutionSetting(resolution));
       return [
-        ...(allowed.includes("auto") || !allowed.length ? ["source"] : []),
+        ...(allowed.includes("auto") ? ["source"] : []),
         ...allowed.filter((item) => item !== "auto"),
       ];
     })();
     const outputOrientation = nextOrientationOptions.includes(settings.outputOrientation)
       ? settings.outputOrientation
-      : nextOrientationOptions[0] || "source";
+      : nextOrientationOptions[0] || "";
     if (resolution !== settings.outputSize || outputOrientation !== settings.outputOrientation) {
       setSettings((current) => writeColoringSettings({
         ...current,
@@ -535,13 +534,21 @@ export function AiIllustrationColoringView() {
       title: title.trim() || "插画染色",
       customPrompt: prompt.trim(),
       publicModelKey: selectedModel?.id || settings.publicModelKey || "standard",
-      outputSize: settings.outputSize,
-      outputOrientation: settings.outputOrientation,
-      aspectRatio: settings.outputOrientation === "source" ? "auto" : settings.outputOrientation,
-      resolutionScale: resolutionSetting(settings.outputSize),
-      quality,
-      outputFormat,
-      moderationLevel: moderation,
+      ...(resolutionOptions.some((item) => item.value === settings.outputSize)
+        ? {
+            outputSize: settings.outputSize,
+            resolutionScale: resolutionSetting(settings.outputSize),
+          }
+        : {}),
+      ...(orientationOptions.some((item) => item.value === settings.outputOrientation)
+        ? {
+            outputOrientation: settings.outputOrientation,
+            aspectRatio: settings.outputOrientation === "source" ? "auto" : settings.outputOrientation,
+          }
+        : {}),
+      ...(qualityOptions.some((item) => item.value === quality) ? { quality } : {}),
+      ...(outputFormatOptions.some((item) => item.value === outputFormat) ? { outputFormat } : {}),
+      ...(moderationOptions.some((item) => item.value === moderation) ? { moderationLevel: moderation } : {}),
       generationCount: settings.generationCount,
       maxAdditionalReferences: maxReferences,
       uploadSettings: settings,
@@ -554,7 +561,7 @@ export function AiIllustrationColoringView() {
     } catch { /* service will enforce the balance */ }
     setPendingSubmit(payload);
     setCost({ unit: unitCost, count: settings.generationCount, total: totalCost, available, priced: Boolean(selectedModel && resolveModelPointPricing(selectedModel).configured) });
-  }, [canSubmit, effectiveMeta, maxReferences, moderation, outputFormat, prompt, quality, references, requestAuth, selectedModel, settings, source, sourceUrl, title, totalCost, unitCost]);
+  }, [canSubmit, effectiveMeta, maxReferences, moderation, moderationOptions, orientationOptions, outputFormat, outputFormatOptions, prompt, quality, qualityOptions, references, requestAuth, resolutionOptions, selectedModel, settings, source, sourceUrl, title, totalCost, unitCost]);
 
   const removeHistory = useCallback((item) => {
     const items = item.batchId ? jobs.history.filter((entry) => entry.batchId === item.batchId) : [item];
@@ -624,7 +631,7 @@ export function AiIllustrationColoringView() {
           <div className="coloring-source-tools"><button type="button" className="coloring-source-tool" disabled={controlsLocked} title="本地上传" aria-label="本地上传" onClick={() => fileInput.current?.click()}><i className="bi bi-upload" /></button></div>
         </div><input ref={fileInput} type="file" accept="image/*" hidden onChange={(event) => { void chooseSource(event.target.files?.[0]); event.target.value = ""; }} /></section>
         <section className="coloring-block"><header className="coloring-block-head"><span>配色描述</span><small>{prompt.length} 字</small></header><textarea className="coloring-textarea" value={prompt} disabled={controlsLocked} placeholder="描述主色、阴影倾向、材质或氛围，例如：薄荷绿与珊瑚粉，暖色阴影，线稿保持清晰…" onChange={(event) => setPrompt(event.target.value)} /></section>
-        <section className="coloring-block coloring-parameter-block"><header className="coloring-block-head"><span>输出设置</span><small>{outputPreview.label}</small></header><div className="coloring-parameter-selectors"><div className="coloring-selector-field is-wide"><span>输出比例</span><ColoringSelect value={settings.outputOrientation} options={orientationOptions} onChange={(value) => updateSettings({ outputOrientation: value })} label="输出比例" disabled={controlsLocked || !orientationOptions.length} /></div><div className="coloring-selector-field"><span>分辨率</span><ColoringSelect value={settings.outputSize} options={resolutionOptions} onChange={(value) => updateSettings({ outputSize: value })} label="分辨率" disabled={controlsLocked || !resolutionOptions.length} /></div><div className="coloring-selector-field"><span>生成张数</span><ColoringSelect value={settings.generationCount} options={COLORING_BATCH_COUNT_OPTIONS.map((value) => ({ value, label: `${value} 张` }))} onChange={(value) => updateSettings({ generationCount: Number(value) })} label="生成张数" disabled={controlsLocked} /></div>{qualityOptions.length > 0 && <div className="coloring-selector-field"><span>质量</span><ColoringSelect value={quality} options={qualityOptions} onChange={setQuality} label="质量" disabled={controlsLocked} /></div>}{outputFormatOptions.length > 0 && <div className="coloring-selector-field"><span>格式</span><ColoringSelect value={outputFormat} options={outputFormatOptions} onChange={setOutputFormat} label="格式" disabled={controlsLocked} /></div>}{moderationOptions.length > 0 && <div className="coloring-selector-field is-wide"><span>内容审核</span><ColoringSelect value={moderation} options={moderationOptions} onChange={setModeration} label="内容审核" disabled={controlsLocked} /></div>}</div></section>
+        <section className="coloring-block coloring-parameter-block"><header className="coloring-block-head"><span>输出设置</span><small>{resolutionOptions.length || orientationOptions.length ? outputPreview.label : "模型默认"}</small></header><div className="coloring-parameter-selectors">{orientationOptions.length > 0 && <div className="coloring-selector-field is-wide"><span>输出比例</span><ColoringSelect value={settings.outputOrientation} options={orientationOptions} onChange={(value) => updateSettings({ outputOrientation: value })} label="输出比例" disabled={controlsLocked} /></div>}{resolutionOptions.length > 0 && <div className="coloring-selector-field"><span>分辨率</span><ColoringSelect value={settings.outputSize} options={resolutionOptions} onChange={(value) => updateSettings({ outputSize: value })} label="分辨率" disabled={controlsLocked} /></div>}<div className="coloring-selector-field"><span>生成张数</span><ColoringSelect value={settings.generationCount} options={COLORING_BATCH_COUNT_OPTIONS.map((value) => ({ value, label: `${value} 张` }))} onChange={(value) => updateSettings({ generationCount: Number(value) })} label="生成张数" disabled={controlsLocked} /></div>{qualityOptions.length > 0 && <div className="coloring-selector-field"><span>质量</span><ColoringSelect value={quality} options={qualityOptions} onChange={setQuality} label="质量" disabled={controlsLocked} /></div>}{outputFormatOptions.length > 0 && <div className="coloring-selector-field"><span>格式</span><ColoringSelect value={outputFormat} options={outputFormatOptions} onChange={setOutputFormat} label="格式" disabled={controlsLocked} /></div>}{moderationOptions.length > 0 && <div className="coloring-selector-field is-wide"><span>内容审核</span><ColoringSelect value={moderation} options={moderationOptions} onChange={setModeration} label="内容审核" disabled={controlsLocked} /></div>}</div></section>
       </div><div className="coloring-side-footer">{unitCost > 0 && <div className="coloring-footer-meta"><span>本次约消耗</span><strong>{totalCost} 积分</strong></div>}{jobs.history.some((item) => ACTIVE.has(item.status)) && active && <button type="button" className="coloring-secondary-btn coloring-new-task-btn" disabled={jobs.submitting} onClick={beginNewTask}><i className="bi bi-plus-circle" />新建染色任务</button>}<button type="button" className="coloring-primary-btn" disabled={auth.isAuthenticated && !canSubmit} onClick={startColoring}><i className={`bi ${jobs.submitting ? "bi-arrow-repeat spin" : "bi-palette-fill"}`} />{jobs.submitting ? "正在提交…" : settings.generationCount > 1 ? `开始 AI 染色 · ${settings.generationCount} 张` : "开始 AI 染色"}</button>{active && ["failed", "cancelled", "canceled"].includes(active.status) && <button type="button" className="coloring-retry-btn" disabled={jobs.submitting} onClick={startColoring}><i className="bi bi-arrow-clockwise" />重试失败任务</button>}{active && isActiveColoringJobStatus(active.status) && <button type="button" className="coloring-secondary-btn" disabled={jobs.submitting} onClick={() => jobs.cancel(active)}><i className="bi bi-x-circle" />取消任务</button>}</div></aside>
 
       <section className="coloring-stage"><div ref={stageRef} className={`coloring-stage-shell${isFullscreen ? " is-fullscreen" : ""}`}>

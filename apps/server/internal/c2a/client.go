@@ -51,9 +51,20 @@ func (e *UpstreamError) Error() string { return e.Message }
 // NetworkError 连接/超时类错误（可重试一次）。
 type NetworkError struct {
 	Message string
+	Err     error
 }
 
 func (e *NetworkError) Error() string { return e.Message }
+func (e *NetworkError) Unwrap() error { return e.Err }
+func (e *NetworkError) Timeout() bool {
+	var timeout interface{ Timeout() bool }
+	if errors.As(e.Err, &timeout) && timeout.Timeout() {
+		return true
+	}
+	message := strings.ToLower(e.Message)
+	return strings.Contains(message, "timeout") || strings.Contains(message, "deadline exceeded") ||
+		strings.Contains(message, "超时")
+}
 
 type imageNotReadyError struct {
 	err error
@@ -180,7 +191,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, payload any
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return nil, &NetworkError{Message: fmt.Sprintf("上游连接失败：%v", err)}
+		return nil, &NetworkError{Message: fmt.Sprintf("上游连接失败：%v", err), Err: err}
 	}
 	defer resp.Body.Close()
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
@@ -260,14 +271,7 @@ func (t *imageTask) UnmarshalJSON(buf []byte) error {
 	t.ErrorCode = readString("error_code", "errorCode")
 	t.Error = readString("error", "message")
 	if t.Error == "" {
-		if val, ok := raw["error"]; ok {
-			var payload map[string]any
-			if json.Unmarshal(val, &payload) == nil {
-				if message, ok := payload["message"].(string); ok {
-					t.Error = strings.TrimSpace(message)
-				}
-			}
-		}
+		t.Error = imageTaskFailureMessage(raw)
 	}
 	t.Data = decodeImageObjectArray(raw["data"])
 	t.Results = decodeImageObjectArray(raw["results"])
@@ -284,6 +288,65 @@ func (t *imageTask) UnmarshalJSON(buf []byte) error {
 		t.Data = []map[string]any{{"url": url}}
 	}
 	return nil
+}
+
+// imageTaskFailureMessage reads only known text-bearing fields. Some C2A
+// deployments return a review/refusal explanation under result/output/data
+// while keeping status=text_review and leaving error empty.
+func imageTaskFailureMessage(raw map[string]json.RawMessage) string {
+	for _, key := range []string{
+		"error", "message", "detail", "reason", "error_description", "errorDescription",
+		"output_text", "outputText", "text", "response",
+	} {
+		if message := imageTaskTextValue(raw[key], 0); message != "" {
+			return message
+		}
+	}
+	for _, key := range []string{"result", "output", "data", "results"} {
+		if message := imageTaskTextValue(raw[key], 0); message != "" {
+			return message
+		}
+	}
+	return ""
+}
+
+func imageTaskTextValue(raw json.RawMessage, depth int) string {
+	if len(raw) == 0 || depth >= 5 {
+		return ""
+	}
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return truncate(strings.TrimSpace(text), 2000)
+	}
+	var object map[string]json.RawMessage
+	if json.Unmarshal(raw, &object) == nil {
+		for _, key := range []string{
+			"error", "message", "detail", "reason", "error_description", "errorDescription",
+			"output_text", "outputText", "text", "response", "content",
+		} {
+			if message := imageTaskTextValue(object[key], depth+1); message != "" {
+				return message
+			}
+		}
+		for _, key := range []string{"result", "output", "data", "results"} {
+			if message := imageTaskTextValue(object[key], depth+1); message != "" {
+				return message
+			}
+		}
+		return ""
+	}
+	var array []json.RawMessage
+	if json.Unmarshal(raw, &array) == nil {
+		if len(array) > 20 {
+			array = array[:20]
+		}
+		for _, item := range array {
+			if message := imageTaskTextValue(item, depth+1); message != "" {
+				return message
+			}
+		}
+	}
+	return ""
 }
 
 func decodeImageObjectArray(raw json.RawMessage) []map[string]any {
@@ -656,16 +719,24 @@ func (c *Client) submitAndPollImageTask(ctx context.Context, endpoint, taskID st
 	defer cancel()
 
 	body, err := c.doRequest(taskCtx, http.MethodPost, endpoint, payload, asyncSubmitTimeout)
-	if err != nil {
+	if err != nil && !isRetryablePollError(err) {
 		return nil, err
 	}
-	task, err := parseImageTask(body)
-	if err != nil {
-		return nil, err
+	var task imageTask
+	if err == nil {
+		task, err = parseImageTask(body)
+		if err != nil {
+			return nil, err
+		}
 	}
+	// A submit timeout/5xx is ambiguous: the upstream may have accepted the
+	// deterministic client_task_id and continued after our connection closed.
+	// Poll that id instead of resubmitting or declaring a false failure.
 	bestData := imageTaskResults(task)
-	if images, _, done, err := c.completedTaskImages(taskCtx, task, expected); done {
-		return images, err
+	if task.ID != "" {
+		if images, _, done, taskErr := c.completedTaskImages(taskCtx, task, expected); done {
+			return images, taskErr
+		}
 	}
 	recoverBest := func(fallback error) ([]string, error) {
 		if len(bestData) == 0 {

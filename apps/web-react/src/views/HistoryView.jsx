@@ -113,6 +113,18 @@ function taskTypeLabel(task) {
     : TASK_TYPE_LABELS[task?.type] || "创作";
 }
 
+function taskMediaModality(task) {
+  if (task?.type !== "crun_media") return "image";
+  const modality = String(task?.params?.modality || "").toLowerCase();
+  if (modality === "video" || modality === "audio") return modality;
+  if (modality === "tool") {
+    const path = String(taskOriginalUrl(task) || "").split(/[?#]/, 1)[0].toLowerCase();
+    if (/\.(mp4|webm)$/.test(path)) return "video";
+    if (/\.(mp3|wav|m4a|ogg)$/.test(path)) return "audio";
+  }
+  return "image";
+}
+
 function taskShareStatus(task) {
   const status = String(task?.shareSubmissionStatus || "")
     .trim()
@@ -419,16 +431,19 @@ export function HistoryView() {
 
   const coverSrc = (task) =>
     failedThumbIds.has(String(task.id))
-      ? taskDisplayUrl(task) || taskOriginalUrl(task)
+      ? taskOriginalUrl(task)
       : taskThumbnailUrl(task) || taskDisplayUrl(task) || taskOriginalUrl(task);
-  const tableCoverSrc = (task) =>
-    taskThumbnailUrl(task) || taskDisplayUrl(task) || taskOriginalUrl(task);
+  const tableCoverSrc = (task) => taskCoverUrl(task);
   const ensureMetadata = async (task) => {
     const id = String(task?.id || "");
     const url = taskOriginalUrl(task);
+    if (taskMediaModality(task) !== "image") return;
     if (!id || !url || metadata[id] || metadataPendingRef.current.has(id))
       return;
     metadataPendingRef.current.add(id);
+    setMetadata((current) =>
+      current[id] ? current : { ...current, [id]: { pending: true } },
+    );
     try {
       const result = await readHistoryImageMetadata(url);
       if (mountedRef.current)
@@ -443,13 +458,19 @@ export function HistoryView() {
       metadataPendingRef.current.delete(id);
     }
   };
+  useEffect(() => {
+    if (layoutMode !== "table") return;
+    visibleTasks.slice(0, 24).forEach((task) => void ensureMetadata(task));
+  }, [layoutMode, visibleTasks]);
   const metadataLabel = (task) => {
+    if (taskMediaModality(task) === "video") return "视频结果";
+    if (taskMediaModality(task) === "audio") return "音频结果";
     if (!taskOriginalUrl(task))
       return isUserDeleted(task)
         ? `用户已删除 ${task.deletedOutputCount || ""} 个产物`.trim()
         : "无原图信息";
     const value = metadata[String(task.id)];
-    if (!value)
+    if (!value || value.pending)
       return metadataPendingRef.current.has(String(task.id))
         ? "读取原图信息…"
         : "原图信息待读取";
@@ -496,7 +517,7 @@ export function HistoryView() {
   const openPreview = (task) => {
     if (!taskCoverUrl(task)) return;
     setPreview(task);
-    ensureMetadata(task);
+    if (taskMediaModality(task) === "image") ensureMetadata(task);
   };
   const closePreview = () => setPreview(null);
   const openShareAction = (task) => {
@@ -919,7 +940,7 @@ export function HistoryView() {
                       transform: `translate(${item.left}px, ${item.top}px)`,
                     }}
                   >
-                    {selectMode && taskOriginalUrl(task) && (
+                    {selectMode && taskOriginalUrl(task) && taskMediaModality(task) === "image" && (
                       <button
                         type="button"
                         className="ch-card__check"
@@ -938,16 +959,29 @@ export function HistoryView() {
                       disabled={!selectMode && !src}
                       onClick={() =>
                         selectMode
-                          ? taskOriginalUrl(task) && toggleSelected(task.id)
+                          ? taskOriginalUrl(task) && taskMediaModality(task) === "image" && toggleSelected(task.id)
                           : openPreview(task)
                       }
                     >
-                      {src ? (
+                      {src && taskMediaModality(task) === "video" ? (
+                        <video
+                          className="ch-prompt-card__image is-loaded"
+                          src={taskOriginalUrl(task) || src}
+                          muted
+                          playsInline
+                          preload="metadata"
+                        />
+                      ) : src && taskMediaModality(task) === "audio" ? (
+                        <div className="ch-card__placeholder">
+                          <i className="bi bi-soundwave" />
+                          <span>音频结果已就绪</span>
+                        </div>
+                      ) : src ? (
                         <AuthenticatedImage
                           className={`ch-prompt-card__image${loadedImageIdsRef.current.has(String(task.id)) ? " is-loaded" : ""}`}
                           src={src}
                           fallbackSrc={
-                            taskDisplayUrl(task) || taskOriginalUrl(task)
+                            taskOriginalUrl(task)
                           }
                           alt={task.cleanPrompt}
                           maxDimension={Math.min(
@@ -1041,8 +1075,9 @@ export function HistoryView() {
                               : "发布到社区"
                           }
                           disabled={
-                            !share &&
+                            taskMediaModality(task) !== "image" || (!share &&
                             (task.status !== "succeeded" || !taskCoverUrl(task))
+                            )
                           }
                           onClick={() => openShareAction(task)}
                         >
@@ -1118,7 +1153,7 @@ export function HistoryView() {
                         {selectMode && (
                           <td className="is-check">
                             <button
-                              disabled={!taskOriginalUrl(task)}
+                              disabled={!taskOriginalUrl(task) || taskMediaModality(task) !== "image"}
                               onClick={() => toggleSelected(task.id)}
                             >
                               <i
@@ -1134,7 +1169,11 @@ export function HistoryView() {
                             disabled={!tableCoverSrc(task)}
                             onClick={() => openPreview(task)}
                           >
-                            {tableCoverSrc(task) && (
+                            {tableCoverSrc(task) && taskMediaModality(task) === "video" ? (
+                              <video src={taskOriginalUrl(task)} muted playsInline preload="metadata" />
+                            ) : tableCoverSrc(task) && taskMediaModality(task) === "audio" ? (
+                              <i className="bi bi-soundwave" aria-hidden="true" />
+                            ) : tableCoverSrc(task) ? (
                               <img
                                 src={tableCoverSrc(task)}
                                 alt={task.cleanPrompt}
@@ -1143,8 +1182,19 @@ export function HistoryView() {
                                 width={52}
                                 height={52}
                                 onLoad={() => ensureMetadata(task)}
+                                onError={(event) => {
+                                  const original = taskOriginalUrl(task);
+                                  if (
+                                    original &&
+                                    event.currentTarget.getAttribute("src") !== original
+                                  ) {
+                                    event.currentTarget.src = original;
+                                    return;
+                                  }
+                                  void ensureMetadata(task);
+                                }}
                               />
-                            )}
+                            ) : null}
                             <span>{taskTypeLabel(task)}</span>
                           </button>
                         </td>
@@ -1154,6 +1204,10 @@ export function HistoryView() {
                         <td className="is-size" data-label="尺寸">
                           {!taskOriginalUrl(task)
                             ? "—"
+                            : taskMediaModality(task) === "video"
+                              ? "视频"
+                              : taskMediaModality(task) === "audio"
+                                ? "音频"
                             : meta?.width
                               ? `${meta.width}×${meta.height}`
                               : meta?.error
@@ -1214,9 +1268,10 @@ export function HistoryView() {
                                   : "发布"
                               }
                               disabled={
-                                !share &&
+                                taskMediaModality(task) !== "image" || (!share &&
                                 (task.status !== "succeeded" ||
                                   !taskCoverUrl(task))
+                                )
                               }
                               onClick={() => openShareAction(task)}
                             >
@@ -1298,7 +1353,22 @@ export function HistoryView() {
         {preview ? (
           <>
             <div className="ch-preview__media">
-              {taskCoverUrl(preview) ? (
+              {taskCoverUrl(preview) && taskMediaModality(preview) === "video" ? (
+                <video
+                  key={String(preview.id)}
+                  src={taskOriginalUrl(preview) || taskCoverUrl(preview)}
+                  controls
+                  playsInline
+                  preload="metadata"
+                />
+              ) : taskCoverUrl(preview) && taskMediaModality(preview) === "audio" ? (
+                <audio
+                  key={String(preview.id)}
+                  src={taskOriginalUrl(preview) || taskCoverUrl(preview)}
+                  controls
+                  preload="metadata"
+                />
+              ) : taskCoverUrl(preview) ? (
                 <img
                   key={String(preview.id)}
                   src={taskDisplayUrl(preview) || taskCoverUrl(preview)}
@@ -1393,8 +1463,8 @@ export function HistoryView() {
                   <button
                     type="button"
                     disabled={
-                      !taskShareStatus(preview) &&
-                      preview.status !== "succeeded"
+                      taskMediaModality(preview) !== "image" ||
+                      (!taskShareStatus(preview) && preview.status !== "succeeded")
                     }
                     onClick={() => openShareAction(preview)}
                   >

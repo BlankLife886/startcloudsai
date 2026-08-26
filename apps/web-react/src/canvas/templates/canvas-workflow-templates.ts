@@ -63,6 +63,18 @@ const QUICK_TEST_TEMPLATES: TemplateSeed[] = [
 ];
 
 const INDUSTRY_TEMPLATES: TemplateSeed[] = [
+    {
+        id: "ecommerce-detail-replica",
+        title: "电商详情图｜参考模板复刻生产线",
+        category: "industry",
+        industry: "电商详情页",
+        summary: "复刻森格原模板：三张旧详情图合并输入，分析排版与文案后并行驱动六个详情图生成节点。",
+        platforms: ["淘宝", "天猫", "京东", "抖音商城"],
+        deliverables: ["详情页分屏策划", "六个原模板生成槽"],
+        focus: ["原排版复刻", "新产品身份保真", "人物与细节描述", "分屏并行生成"],
+        nodeCount: 10,
+        accent: "#16a34a",
+    },
     { id: "beauty-skincare-launch", title: "美妆护肤｜新品全渠道上市", category: "industry", industry: "美妆护肤", summary: "从瓶器校对、质地表达、功效合规到全渠道首发素材。", platforms: ["天猫", "小红书", "抖音商城", "Sephora"], deliverables: ["透明瓶器母版", "成分视觉", "功效信息图", "详情页", "投放素材"], focus: ["瓶器与泵头精修", "膏体质地微距", "成分证据表达", "敏感词合规", "肤感场景", "套装组合"], nodeCount: 100, accent: "#db2777" },
     { id: "fashion-apparel-season", title: "服装服饰｜季度上新与穿搭矩阵", category: "industry", industry: "服装服饰", summary: "覆盖平铺、挂拍、模特上身、面料细节、尺码与多平台投放。", platforms: ["天猫", "淘宝", "抖音商城", "Zalando"], deliverables: ["标准款式图", "模特上身", "穿搭套组", "尺码图", "Lookbook"], focus: ["版型一致性", "面料纹理", "多身型试穿", "季节穿搭", "配色扩展", "尺码说明"], nodeCount: 100, accent: "#7c3aed" },
     { id: "footwear-sneaker-drop", title: "鞋履运动｜球鞋发售视觉系统", category: "industry", industry: "鞋履运动", summary: "鞋型校准、鞋底科技、脚感场景、发售海报和渠道规格一体化。", platforms: ["京东", "得物", "抖音商城", "Amazon"], deliverables: ["鞋型母版", "多角度展示", "科技拆解", "上脚场景", "发售海报"], focus: ["鞋楦轮廓", "鞋底结构", "材质拼接", "动态上脚", "限量发售", "真假细节校验"], nodeCount: 100, accent: "#2563eb" },
@@ -318,8 +330,7 @@ function createStageNodes(template: CanvasWorkflowTemplate, stage: Stage, index:
         metadata: {
             status: "idle",
             generationMode: stage.mode,
-            model: stage.mode === "image" ? "gpt-image-2" : "gpt-5.4",
-            ...(stage.mode === "image" ? { quality: "low", size: index % 6 === 1 ? "1024x1536" : index % 6 === 4 ? "1536x1024" : "1024x1024", resolution: "1K", count: 1, ...(transparent ? { background: "transparent" } : {}) } : { reasoningEffort: "medium", count: 1 }),
+            ...(stage.mode === "image" ? { count: 1, ...(transparent ? { background: "transparent" } : {}) } : { count: 1 }),
             composerContent: stage.mode === "image"
                 ? `为“${template.title}”执行【${stage.title}】。使用 ${referenceText} 作为上游依据，重点解决“${stage.purpose}”。保持主体身份、结构、品牌、包装、人物、材质和事实一致；按 ${template.platforms.join("、")} 的商业发布标准输出专业可用的${template.industry}视觉。保留安全裁切区，不添加未经提供的文字、Logo、认证、价格、人物或版权元素。${transparent ? "输出干净透明背景 PNG，边缘无白边和污染。" : "画面需具备明确视觉层级、真实光影和可用于排版的空间。"}`
                 : `为“${template.title}”完成【${stage.title}】。读取 ${referenceText}，围绕“${stage.purpose}”输出结构化中文生产结论。必须区分已验证事实、合理建议和禁止虚构项，并给出面向 ${template.platforms.join("、")} 的具体交付标准、检查项和下一节点可直接使用的内容。`,
@@ -339,9 +350,179 @@ function createStageNodes(template: CanvasWorkflowTemplate, stage: Stage, index:
     return { config, output, refs };
 }
 
+function createEcommerceDetailReplicaProject(template: CanvasWorkflowTemplate): CanvasProject {
+    const analysisPrompt = "根据上传的详情图，反推详情图的排版逻辑与文案。 再根据最后一个上传的新产品图，撰写的详情图文案，新文案的排版、细节、要和原来的一模一样；如果人物、模特的要描述清楚。 几个详情图就写几屏文案，最后一张产品图不不算。 目的是复刻详情图。";
+    const screenPrompts = [
+        { screen: 1, prompt: "获取新产品复刻文案，第1屏的文案，生成详情图。" },
+        { screen: 2, prompt: "获取新产品复刻文案，第2屏的文案，生成详情图。" },
+        { screen: 3, prompt: "获取新产品复刻文案，第3屏的文案，生成详情图。" },
+        { screen: 4, prompt: "获取新产品复刻文案，第4屏的文案，生成详情图。" },
+        { screen: 3, prompt: "获取新产品复刻文案，第3屏的文案，生成详情图。" },
+        { screen: 3, prompt: "获取新产品复刻文案，第3屏的文案，生成详情图。" },
+    ] as const;
+    const demoAssetBase = "/assets/canvas-workflow-demo/ecommerce-detail-replica";
+    const oldReferenceGroupId = nodeId(template, "old-detail-group");
+    const optionalTextId = nodeId(template, "optional-requirements");
+    const productId = nodeId(template, "new-product");
+    const analysisConfigId = nodeId(template, "analysis-config");
+    const analysisOutputId = nodeId(template, "analysis-output");
+    const oldDetails = [
+        { file: "senge-old-detail-01.webp", bytes: 133594 },
+        { file: "senge-old-detail-02.webp", bytes: 68436 },
+        { file: "senge-old-detail-03.webp", bytes: 74408 },
+    ].map((asset, index) => ({
+        id: `${oldReferenceGroupId}-image-${index + 1}`,
+        status: "success" as const,
+        content: `${demoAssetBase}/${asset.file}`,
+        storageKey: "",
+        naturalWidth: 720,
+        naturalHeight: 1280,
+        bytes: asset.bytes,
+        mimeType: "image/webp",
+    }));
+    const nodes: CanvasNodeData[] = [
+        {
+            id: oldReferenceGroupId,
+            type: "image",
+            title: "原详情图｜三屏图片组",
+            position: { x: 0, y: 0 },
+            width: 380,
+            height: 680,
+            metadata: {
+                content: oldDetails[0].content,
+                status: "success",
+                freeResize: false,
+                prompt: "按顺序放入原详情页第 1、2、3 屏。图片顺序会作为分析模型的图 1、图 2、图 3。",
+                naturalWidth: 720,
+                naturalHeight: 1280,
+                bytes: oldDetails[0].bytes,
+                mimeType: "image/webp",
+                images: oldDetails,
+                primaryImageId: oldDetails[0].id,
+            },
+        },
+        {
+            id: optionalTextId,
+            type: "text",
+            title: "文本｜补充要求",
+            position: { x: 0, y: 1120 },
+            width: 380,
+            height: 260,
+            metadata: { content: "", status: "idle", fontSize: 14 },
+        },
+        {
+            id: productId,
+            type: "image",
+            title: "新产品图｜迷彩防晒帽",
+            position: { x: 0, y: 740 },
+            width: 380,
+            height: 320,
+            metadata: {
+                content: `${demoAssetBase}/senge-new-product.webp`,
+                status: "success",
+                freeResize: false,
+                prompt: "新产品唯一身份参考。",
+                naturalWidth: 800,
+                naturalHeight: 800,
+                bytes: 86800,
+                mimeType: "image/webp",
+            },
+        },
+        {
+            id: analysisConfigId,
+            type: "config",
+            title: "文本｜Gemini 详情图分析",
+            position: { x: 520, y: 360 },
+            width: 400,
+            height: 760,
+            metadata: {
+                status: "idle",
+                generationMode: "text",
+                reasoningEffort: "medium",
+                count: 1,
+                inlineOutputNodeId: analysisOutputId,
+                composerContent: analysisPrompt,
+                workflowOutputNodeIds: [analysisOutputId],
+            },
+        },
+        {
+            id: analysisOutputId,
+            type: "text",
+            title: "文本结果｜新产品复刻文案",
+            position: { x: 980, y: 360 },
+            width: 420,
+            height: 520,
+            metadata: { content: "", status: "idle", fontSize: 14, workflowProducerNodeId: analysisConfigId, hidden: true },
+        },
+    ];
+    const connections: CanvasConnection[] = [];
+    [oldReferenceGroupId, productId, optionalTextId].forEach((fromNodeId, index) => {
+        connections.push({ id: nodeId(template, `edge-analysis-input-${index + 1}`), fromNodeId, toNodeId: analysisConfigId });
+    });
+    connections.push({ id: nodeId(template, "edge-analysis-output"), fromNodeId: analysisConfigId, toNodeId: analysisOutputId });
+
+    screenPrompts.forEach(({ screen, prompt }, index) => {
+        const configId = nodeId(template, `screen-${index + 1}-config`);
+        const outputId = nodeId(template, `screen-${index + 1}-output`);
+        const x = 1480 + index * 460;
+        nodes.push(
+            {
+                id: configId,
+                type: "config",
+                title: `图片生成｜第 ${screen} 屏${index >= 4 ? ` · 分支 ${index - 3}` : ""}`,
+                position: { x, y: 180 },
+                width: 360,
+                height: 760,
+                metadata: {
+                    status: "idle",
+                    generationMode: "image",
+                    generationType: "edit",
+                    model: "gpt-image-2",
+                    size: "9:16",
+                    resolution: "1K",
+                    quality: "auto",
+                    count: 1,
+                    inlineOutputNodeId: outputId,
+                    composerContent: prompt,
+                    workflowOutputNodeIds: [outputId],
+                },
+            },
+            {
+                id: outputId,
+                type: "image",
+                title: `生成结果｜第 ${screen} 屏${index >= 4 ? ` · 分支 ${index - 3}` : ""}`,
+                position: { x, y: 650 },
+                width: 360,
+                height: 640,
+                metadata: { content: "", status: "idle", freeResize: false, workflowProducerNodeId: configId, hidden: true },
+            },
+        );
+        connections.push(
+            { id: nodeId(template, `edge-analysis-screen-${index + 1}`), fromNodeId: analysisOutputId, toNodeId: configId },
+            { id: nodeId(template, `edge-product-screen-${index + 1}`), fromNodeId: productId, toNodeId: configId },
+            { id: nodeId(template, `edge-screen-${index + 1}-output`), fromNodeId: configId, toNodeId: outputId },
+        );
+    });
+    const now = new Date().toISOString();
+    return {
+        id: crypto.randomUUID(),
+        title: `模板｜${template.title}`,
+        createdAt: now,
+        updatedAt: now,
+        nodes,
+        connections,
+        chatSessions: [],
+        activeChatId: null,
+        backgroundMode: "lines",
+        showImageInfo: true,
+        viewport: { x: 120, y: 260, k: 0.18 },
+    };
+}
+
 export function createCanvasProjectFromTemplate(templateOrId: CanvasWorkflowTemplate | string): CanvasProject {
     const template = typeof templateOrId === "string" ? CANVAS_WORKFLOW_TEMPLATES.find((item) => item.id === templateOrId) : templateOrId;
     if (!template) throw new Error(`Unknown canvas workflow template: ${templateOrId}`);
+    if (template.id === "ecommerce-detail-replica") return createEcommerceDetailReplicaProject(template);
     const inputCount = template.nodeCount === 10 ? 2 : template.nodeCount === 50 ? 4 : template.nodeCount === 80 ? 6 : 8;
     const stageCount = (template.nodeCount - inputCount - 2) / 2;
     const definitions = inputDefinitions(template, inputCount);

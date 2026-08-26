@@ -14,7 +14,7 @@ const FILE_MARKER = "/api/v1/files/";
 
 export function storageKeyFromUrl(value = "") {
     if (!value) return "";
-    if (value.startsWith("uploads/") || value.startsWith("tasks/")) return value;
+    if (value.startsWith("uploads/") || value.startsWith("tasks/") || value.startsWith("canvas-template-assets/")) return value;
     const index = value.indexOf(FILE_MARKER);
     return index >= 0 ? decodeURIComponent(value.slice(index + FILE_MARKER.length).split(/[?#]/, 1)[0] || "") : "";
 }
@@ -99,7 +99,10 @@ export function isDisplayPreviewUrl(value = "") {
 }
 
 export function canvasDisplayCandidates(input: { src?: string; storageKey?: string; thumbnailUrl?: string }) {
-    const thumbnail = input.thumbnailUrl && (isDisplayPreviewUrl(input.thumbnailUrl) || !isHeavyImageSource(input.thumbnailUrl)) ? input.thumbnailUrl : "";
+    const thumbnailKey = storageKeyFromUrl(input.thumbnailUrl || "");
+    const originalKey = storageKeyFromUrl(input.storageKey || input.src || "");
+    const explicitThumbnail = Boolean(input.thumbnailUrl && thumbnailKey && thumbnailKey !== originalKey);
+    const thumbnail = input.thumbnailUrl && (explicitThumbnail || isDisplayPreviewUrl(input.thumbnailUrl) || !isHeavyImageSource(input.thumbnailUrl)) ? input.thumbnailUrl : "";
     return uniqueUrls([thumbnail, cloudThumbnailUrl(input.storageKey || ""), cloudThumbnailUrl(input.src || "")]);
 }
 

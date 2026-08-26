@@ -8,6 +8,7 @@ import { useTranslation } from "react-i18next";
 import i18n from "@/i18n";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { upscaleDataUrl } from "@/lib/canvas/canvas-image-data";
+import { dataUrlToBlob } from "@/lib/data-url";
 import { imageMetadata } from "@/lib/canvas/canvas-node-factory";
 import { cardSizeForMedia } from "@/lib/canvas/canvas-node-size";
 import { resolveCanvasReferenceImages } from "@/lib/canvas/canvas-resource-references";
@@ -1540,11 +1541,14 @@ async function importGeneratedImages(endpoint: string, token: string, item: Agen
     const sources = Array.from(generatedImageSources(item));
     return await Promise.all(
         sources.map(async (source, index) => {
-            const response = source.startsWith("data:image/")
-                ? await fetch(source)
-                : await fetch(`${endpoint}/agent/local-image`, { method: "POST", headers: agentHeaders(token, { "content-type": "application/json" }), body: JSON.stringify({ path: source }) });
-            if (!response.ok) throw new Error(rt("generatedImageReadFailed"));
-            const blob = await response.blob();
+            let blob: Blob;
+            if (source.startsWith("data:image/")) {
+                blob = dataUrlToBlob(source);
+            } else {
+                const response = await fetch(`${endpoint}/agent/local-image`, { method: "POST", headers: agentHeaders(token, { "content-type": "application/json" }), body: JSON.stringify({ path: source }) });
+                if (!response.ok) throw new Error(rt("generatedImageReadFailed"));
+                blob = await response.blob();
+            }
             const upload = await uploadImage(blob);
             const dataUrl = await readDataUrl(blob);
             const name = source.startsWith("/") ? source.split("/").at(-1) || rt("generatedImageName", { index: index + 1 }) : rt("generatedImageName", { index: index + 1 });

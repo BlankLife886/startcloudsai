@@ -6,7 +6,9 @@ import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@/types/canvas";
 import { getGenerationResourceNodes } from "@/lib/canvas/canvas-resource-references";
+import { isCanvasExecutableNode } from "@/lib/canvas/canvas-operation-node";
 import { resolveCopiedCanvasNodeReferences } from "@/lib/canvas/canvas-node-copy";
+import { appendConnectedTextToPrompt } from "@/lib/canvas/canvas-prompt-context";
 
 export type NodeGenerationContext = {
     prompt: string;
@@ -32,7 +34,7 @@ export type NodeGenerationInput = {
 export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[], prompt: string): NodeGenerationContext {
     const inputs = buildNodeGenerationInputs(nodeId, nodes, connections);
     const sourceNode = nodes.find((node) => node.id === nodeId);
-    if (sourceNode?.type === CanvasNodeType.Config && Boolean(sourceNode.metadata?.composerContent?.trim())) {
+    if (isCanvasExecutableNode(sourceNode) && Boolean(sourceNode?.metadata?.composerContent?.trim())) {
         return buildComposerGenerationContext(inputs, resolveCopiedCanvasNodeReferences(nodeId, prompt, nodes, connections));
     }
 
@@ -57,9 +59,10 @@ export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData
 }
 
 function buildComposerGenerationContext(inputs: NodeGenerationInput[], prompt: string): NodeGenerationContext {
-    const inputByNodeId = new Map(inputs.map((input) => [input.nodeId, input]));
+    const inputsByNodeId = new Map<string, NodeGenerationInput[]>();
+    inputs.forEach((input) => inputsByNodeId.set(input.nodeId, [...(inputsByNodeId.get(input.nodeId) || []), input]));
     const selectedInputs: NodeGenerationInput[] = [];
-    const labelByNodeId = new Map<string, string>();
+    const labelsByNodeId = new Map<string, string[]>();
     const textBlocks: string[] = [];
     const counts = { image: 0, video: 0, audio: 0, text: 0 };
     let hasToken = false;
@@ -70,16 +73,19 @@ function buildComposerGenerationContext(inputs: NodeGenerationInput[], prompt: s
         if (match.index === undefined) continue;
         hasToken = true;
         nextPrompt += prompt.slice(lastIndex, match.index);
-        const input = inputByNodeId.get(match[1]);
-        if (input) {
-            let label = labelByNodeId.get(input.nodeId);
-            if (!label) {
-                label = generationLabel(input.type, counts[input.type]++);
-                labelByNodeId.set(input.nodeId, label);
-                if (input.type === "text") textBlocks.push(`【${label}】\n${input.text || ""}`);
-                else selectedInputs.push(input);
+        const matchedInputs = inputsByNodeId.get(match[1]);
+        if (matchedInputs?.length) {
+            let labels = labelsByNodeId.get(match[1]);
+            if (!labels) {
+                labels = matchedInputs.map((input) => {
+                    const label = generationLabel(input.type, counts[input.type]++);
+                    if (input.type === "text") textBlocks.push(`【${label}】\n${input.text || ""}`);
+                    else selectedInputs.push(input);
+                    return input.type === "text" ? `【${label}】` : label;
+                });
+                labelsByNodeId.set(match[1], labels);
             }
-            nextPrompt += input.type === "text" ? `【${label}】` : label;
+            nextPrompt += labels.join("、");
         }
         lastIndex = match.index + match[0].length;
     }
@@ -95,7 +101,7 @@ function buildComposerGenerationContext(inputs: NodeGenerationInput[], prompt: s
         const referenceVideos = inputs.map((input) => input.video).filter((video): video is ReferenceVideo => Boolean(video));
         const referenceAudios = inputs.map((input) => input.audio).filter((audio): audio is ReferenceAudio => Boolean(audio));
         return {
-            prompt,
+            prompt: appendConnectedTextToPrompt(prompt, inputs.map((input) => input.text)),
             referenceImages,
             referenceVideos,
             referenceAudios,
@@ -120,8 +126,8 @@ function buildComposerGenerationContext(inputs: NodeGenerationInput[], prompt: s
 
 export function buildNodeGenerationInputs(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]): NodeGenerationInput[] {
     return getGenerationResourceNodes(nodeId, nodes, connections).flatMap((node): NodeGenerationInput[] => {
-        const image = readReferenceImage(node);
-        if (image) return [{ nodeId: node.id, type: "image" as const, title: node.title, image }];
+        const images = readReferenceImages(node);
+        if (images.length) return images.map((image) => ({ nodeId: node.id, type: "image" as const, title: node.title, image }));
         const video = readReferenceVideo(node);
         if (video) return [{ nodeId: node.id, type: "video" as const, title: node.title, video }];
         const audio = readReferenceAudio(node);
@@ -163,15 +169,25 @@ function generationLabel(type: NodeGenerationInput["type"], index: number) {
     return i18n.t("canvas.composer.resources.text", { index: index + 1 });
 }
 
-function readReferenceImage(node: CanvasNodeData): ReferenceImage | null {
-    if (node.type !== CanvasNodeType.Image || !node.metadata?.content) return null;
-    return {
+function readReferenceImages(node: CanvasNodeData): ReferenceImage[] {
+    if (node.type !== CanvasNodeType.Image || !node.metadata?.content) return [];
+    const batch = (node.metadata.images || []).filter((image) => image.status === "success" && Boolean(image.content || image.storageKey));
+    if (batch.length) {
+        return batch.map((image, index) => ({
+            id: `${node.id}:${image.id}`,
+            name: `${node.title || node.id}-${index + 1}.png`,
+            type: image.mimeType || node.metadata?.mimeType || "image/png",
+            dataUrl: image.content || node.metadata?.content || "",
+            storageKey: image.storageKey || undefined,
+        }));
+    }
+    return [{
         id: node.id,
         name: `${node.title || node.id}.png`,
         type: node.metadata.mimeType || "image/png",
         dataUrl: node.metadata.content,
         storageKey: node.metadata.storageKey,
-    };
+    }];
 }
 
 function readReferenceVideo(node: CanvasNodeData): ReferenceVideo | null {

@@ -1,8 +1,6 @@
 import type { CSSProperties } from "react";
-import { BookOpen, Keyboard, Puzzle } from "lucide-react";
-import { Tooltip } from "antd";
+import { Keyboard } from "lucide-react";
 
-import { DOCS_URL } from "@/constant/env";
 import { cn } from "@/lib/utils";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -10,10 +8,9 @@ import { useThemeStore } from "@/stores/use-theme-store";
 type UserStatusActionsProps = {
     variant?: "default" | "canvas" | "rail";
     onOpenShortcuts?: () => void;
-    onOpenPlugins?: () => void;
 };
 
-export function UserStatusActions({ variant = "default", onOpenShortcuts, onOpenPlugins }: UserStatusActionsProps) {
+export function UserStatusActions({ variant = "default", onOpenShortcuts }: UserStatusActionsProps) {
     const theme = useThemeStore((state) => state.theme);
     const canvasTheme = canvasThemes[theme];
     const rail = variant === "rail";
@@ -26,22 +23,6 @@ export function UserStatusActions({ variant = "default", onOpenShortcuts, onOpen
 
     return (
         <div className={cn("inline-flex shrink-0 items-center gap-1", rail && "flex-col")}>
-            {onOpenPlugins ? (
-                <button type="button" className={naturalIconClass} style={iconStyle} onClick={onOpenPlugins} aria-label="节点插件" title="节点插件">
-                    <Puzzle className="size-4" />
-                </button>
-            ) : null}
-            {rail ? (
-                <Tooltip title="文档" placement="right" mouseEnterDelay={0.25}>
-                    <a href={DOCS_URL} target="_blank" rel="noopener noreferrer" className={naturalIconClass} style={iconStyle} aria-label="文档">
-                        <BookOpen className="size-4" />
-                    </a>
-                </Tooltip>
-            ) : (
-                <a href={DOCS_URL} target="_blank" rel="noopener noreferrer" className={naturalIconClass} style={iconStyle} aria-label="文档" title="文档">
-                    <BookOpen className="size-4" />
-                </a>
-            )}
             {onOpenShortcuts ? (
                 <button type="button" className={naturalIconClass} style={iconStyle} onClick={onOpenShortcuts} aria-label="快捷键" title="快捷键">
                     <Keyboard className="size-4" />

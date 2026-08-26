@@ -50,35 +50,42 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 	allModels := modelconfig.PublicModels(cfg, "")
 	allImageModels := make([]gin.H, 0)
 	backgroundRemovalModels := make([]gin.H, 0)
+	mediaTools := make([]gin.H, 0)
 	catalogModels := make([]gin.H, 0, len(allModels))
 	providerModels := make(map[string][]gin.H)
-	imageItem := func(selection modelconfig.Selection, isDefault bool) gin.H {
+	imageItem := func(selection modelconfig.Selection, isDefault bool, workspace string) gin.H {
 		model := selection.Model
-		price := modelconfig.EffectivePrice(model)
+		price := modelconfig.ResolveWorkspacePrice(cfg, workspace, model)
 		return gin.H{
 			"id": model.ID, "publicModelKey": model.ID, "label": model.Name, "name": model.Name,
+			"kind":        model.Kind,
 			"description": model.Description, "provider": selection.Provider.ID,
 			"providerId": selection.Provider.ID, "providerName": selection.Provider.Name,
 			"capabilities": []string{"textToImage", "imageToImage", "image.generate", "image.edit"},
-			"billingMode":  "wallet", "creditCost": price, "pricePoints": price, "priceCents": price,
-			"standardPricePoints": model.PriceCents, "discountPricePoints": model.DiscountPriceCents,
-			"default": isDefault, "fastMode": model.FastMode, "resolutions": model.Resolutions,
+			"billingMode":  "wallet", "creditCost": price.EffectiveCents,
+			"pricePoints": price.EffectiveCents, "priceCents": price.EffectiveCents,
+			"standardPricePoints": price.PriceCents, "discountPricePoints": price.DiscountPriceCents,
+			"workspacePriceOverridden": price.Overridden,
+			"default":                  isDefault, "fastMode": model.FastMode, "resolutions": model.Resolutions,
 			"aspectRatios": model.AspectRatios, "aspectRatiosByResolution": model.AspectRatiosByResolution, "qualities": model.Qualities,
 			"transparentBackground": model.TransparentBackground, "outputFormats": model.OutputFormats,
 			"moderationLevels": model.ModerationLevels, "maxReferenceImages": model.MaxReferenceImages,
-			"maxImages": model.GenerationMaxImages(),
+			"maxImages":   model.GenerationMaxImages(),
+			"inputFields": model.UpstreamInputFields, "inputSchema": model.UpstreamInputSchema,
 		}
 	}
-	chatItem := func(selection modelconfig.Selection, isDefault bool) gin.H {
+	chatItem := func(selection modelconfig.Selection, isDefault bool, workspace string) gin.H {
 		model := selection.Model
-		price := modelconfig.EffectivePrice(model)
-		reasoningEfforts, defaultReasoningEffort, reasoningPrices, reasoningEffortItems := reasoningModelPayload(model)
+		price := modelconfig.ResolveWorkspacePrice(cfg, workspace, model)
+		reasoningEfforts, defaultReasoningEffort, reasoningPrices, reasoningEffortItems := reasoningModelPayload(model, &cfg)
 		return gin.H{
 			"id": model.ID, "model": model.ID, "label": model.Name, "name": model.Name,
+			"kind":        model.Kind,
 			"description": model.Description, "provider": selection.Provider.Name,
 			"providerId": selection.Provider.ID, "providerName": selection.Provider.Name,
-			"pricePoints": price, "standardPricePoints": model.PriceCents,
-			"discountPricePoints": model.DiscountPriceCents, "default": isDefault,
+			"pricePoints": price.EffectiveCents, "standardPricePoints": price.PriceCents,
+			"discountPricePoints": price.DiscountPriceCents, "workspacePriceOverridden": price.Overridden,
+			"default":                   isDefault,
 			"supportedReasoningEfforts": reasoningEfforts, "defaultReasoningEffort": defaultReasoningEffort,
 			"reasoningPrices": reasoningPrices, "reasoningEfforts": reasoningEffortItems,
 		}
@@ -86,18 +93,40 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 	toolItem := func(selection modelconfig.Selection) gin.H {
 		model := selection.Model
 		price := modelconfig.EffectivePrice(model)
-		return gin.H{
+		item := gin.H{
 			"id": model.ID, "publicModelKey": model.ID, "label": model.Name, "name": model.Name,
 			"description": model.Description, "tool": model.Tool,
 			"pricePoints": price, "standardPricePoints": model.PriceCents,
 			"discountPricePoints": model.DiscountPriceCents, "default": model.Default,
+			"modality": model.Modality, "operations": model.Operations,
+			"inputFields":         model.UpstreamInputFields,
+			"requiredInputFields": model.UpstreamRequiredInputFields,
+			"inputSchema":         model.UpstreamInputSchema,
 		}
+		if pricing := model.ImageUpscalePricing; pricing != nil && model.Tool == modelconfig.ImageToolUpscale {
+			highPrice := pricing.HighPriceCents
+			if pricing.HighDiscountPriceCents != nil {
+				highPrice = *pricing.HighDiscountPriceCents
+			}
+			item["imageUpscalePricing"] = gin.H{
+				"thresholdPixels":         pricing.ThresholdPixels,
+				"lowStandardPricePoints":  model.PriceCents,
+				"lowDiscountPricePoints":  model.DiscountPriceCents,
+				"lowPricePoints":          price,
+				"highStandardPricePoints": pricing.HighPriceCents,
+				"highDiscountPricePoints": pricing.HighDiscountPriceCents,
+				"highPricePoints":         highPrice,
+			}
+		}
+		return item
 	}
 	for _, selection := range allModels {
 		model := selection.Model
 		if model.Kind == modelconfig.ModelKindImageTool {
 			if model.Tool == modelconfig.ImageToolBackgroundRemove {
 				backgroundRemovalModels = append(backgroundRemovalModels, toolItem(selection))
+			} else {
+				mediaTools = append(mediaTools, toolItem(selection))
 			}
 			continue
 		}
@@ -116,7 +145,8 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 			"aspectRatiosByResolution": model.AspectRatiosByResolution, "qualities": model.Qualities,
 			"transparentBackground": model.TransparentBackground, "outputFormats": model.OutputFormats,
 			"moderationLevels": model.ModerationLevels, "maxReferenceImages": model.MaxReferenceImages,
-			"maxImages": model.GenerationMaxImages(),
+			"maxImages":   model.GenerationMaxImages(),
+			"inputFields": model.UpstreamInputFields, "inputSchema": model.UpstreamInputSchema,
 			"pricing": gin.H{
 				"points": price, "cents": price, "standardPoints": model.PriceCents,
 				"discountPoints": model.DiscountPriceCents,
@@ -126,7 +156,7 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 		catalogModels = append(catalogModels, item)
 		providerModels[selection.Provider.ID] = append(providerModels[selection.Provider.ID], item)
 		if model.Kind == modelconfig.ModelKindImage {
-			allImageModels = append(allImageModels, imageItem(selection, model.Default))
+			allImageModels = append(allImageModels, imageItem(selection, model.Default, ""))
 		}
 	}
 	providers := make([]gin.H, 0, len(cfg.Providers))
@@ -143,7 +173,7 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 		selections := modelconfig.PublicModelsForWorkspace(cfg, workspace, modelconfig.ModelKindImage)
 		items := make([]gin.H, 0, len(selections))
 		for index, selection := range selections {
-			items = append(items, imageItem(selection, index == 0))
+			items = append(items, imageItem(selection, index == 0, workspace))
 		}
 		return items
 	}
@@ -154,14 +184,21 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 		}
 		items := make([]gin.H, 0, len(selections))
 		for index, selection := range selections {
-			items = append(items, chatItem(selection, index == 0))
+			items = append(items, chatItem(selection, index == 0, workspace))
 		}
 		return items
 	}
 	canvasImageModels := workspaceImageModels(modelconfig.WorkspaceCanvas)
 	canvasTextModels := workspaceChatModels(modelconfig.WorkspaceCanvas)
+	assistantImageModels := workspaceImageModels(modelconfig.WorkspaceAssistant)
+	assistantTextModels := workspaceChatModels(modelconfig.WorkspaceAssistant)
 	features := gin.H{
+		"ai.assistant": gin.H{"enabled": len(assistantImageModels)+len(assistantTextModels) > 0, "config": gin.H{
+			"imageModels": assistantImageModels,
+			"textModels":  assistantTextModels,
+		}},
 		"ai.imageTools":           gin.H{"enabled": len(backgroundRemovalModels) > 0, "config": gin.H{"backgroundRemovalModels": backgroundRemovalModels}},
+		"ai.mediaTools":           gin.H{"enabled": len(mediaTools) > 0, "config": gin.H{"tools": mediaTools}},
 		"ai.wallpaperGeneration":  gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceT2I)}},
 		"wallpaper":               gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceT2I)}},
 		"ai.illustrationColoring": gin.H{"enabled": true, "config": gin.H{"publicModels": workspaceImageModels(modelconfig.WorkspaceColoring)}},

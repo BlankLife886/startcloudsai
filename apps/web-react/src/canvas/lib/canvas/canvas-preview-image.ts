@@ -1,4 +1,5 @@
 import { isLocalImageKey, isRemoteOriginalSource } from "@/lib/canvas/canvas-preview-url";
+import { dataUrlToBlob } from "@/lib/data-url";
 import { getImageBlob } from "@/services/image-storage";
 
 export const CANVAS_PREVIEW_MIN_EDGE = 160;
@@ -72,7 +73,8 @@ function isTransientPreviewError(error: unknown) {
 async function loadPreviewBlob(src: string) {
     if (isRemoteOriginalSource(src)) return;
     if (isLocalImageKey(src)) return (await getImageBlob(src)) || undefined;
-    const credentials = src.startsWith("blob:") || src.startsWith("data:") ? ("omit" as const) : ("include" as const);
+    if (src.startsWith("data:")) return dataUrlToBlob(src);
+    const credentials = src.startsWith("blob:") ? ("omit" as const) : ("include" as const);
     const response = await fetch(src, { cache: "force-cache", credentials });
     if (!response.ok) {
         if (response.status === 404 && /\/thumb\/[^/.?#]+$/.test(src)) {

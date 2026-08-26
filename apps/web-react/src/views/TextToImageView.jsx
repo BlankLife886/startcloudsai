@@ -7,6 +7,7 @@ import {
   buildWallpaperSkillPrompt,
   resolveActiveWallpaperSkills,
 } from "@react/legacy-modules/features/ai-wallpaper/skills/wallpaperSkills.js";
+import { normalizeSelectedWallpaperSkillIds } from "@react/legacy-modules/features/ai-wallpaper/skills/wallpaperSkillSelection.js";
 import {
   T2I_ASPECT_OPTIONS,
   T2I_COUNT_OPTIONS,
@@ -34,7 +35,7 @@ import {
 } from "@react/legacy-modules/services/runtimeConfig.js";
 import { getWallet, updateProfile } from "@react/legacy-modules/services/meApi.js";
 import { getFeatureUnitPriceCents } from "@react/legacy-modules/services/pricing.js";
-import { registerUploadedUrl } from "@react/legacy-modules/services/aiWallpaper.js";
+import { quoteServerAiJob, registerUploadedUrl } from "@react/legacy-modules/services/aiWallpaper.js";
 import { downloadAuthenticatedMedia } from "@react/legacy-modules/services/authenticatedMedia.js";
 import {
   listPromptCategories,
@@ -62,6 +63,7 @@ import { DialogMotion } from "../components/motion/DialogMotion.jsx";
 import { useContentReveal } from "../components/motion/useContentReveal.js";
 import { useTextToImageJobs } from "../features/text-to-image/useTextToImageJobs.js";
 import { T2iHistoryFeed } from "../features/text-to-image/T2iHistoryFeed.jsx";
+import { WallevenImagePreview } from "../components/common/WallevenImagePreview.jsx";
 import "./TextToImageView.css";
 
 gsap.registerPlugin(useGSAP);
@@ -613,12 +615,10 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   const historyActionRef = useRef({});
   const stageCanvasRef = useRef(null);
   const filmstripRef = useRef(null);
-  const lightboxFrameRef = useRef(null);
-  const lightboxPanStartRef = useRef(null);
-  const lightboxComparePointerRef = useRef(null);
   const isDark = useIsDark();
   const fileInputRef = useRef(null);
   const pendingRef = useRef(null);
+  const quotedUnitPriceRef = useRef(null);
   const promptLibraryRequestRef = useRef(0);
   const storedPromptCategoryRef = useRef(readStoredPromptCategory());
   const draft = useMemo(storedDraft, []);
@@ -641,7 +641,9 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   const [translate, setTranslate] = useState(draft.autoTranslateEnabled === true);
   const [transparent, setTransparent] = useState(draft.transparentPngEnabled === true);
   const [autoRemove, setAutoRemove] = useState(draft.autoBackgroundRemovalEnabled === true);
-  const [selectedSkillIds, setSelectedSkillIds] = useState(["preserve-4k-upscale"]);
+  const [selectedSkillIds, setSelectedSkillIds] = useState(() =>
+    normalizeSelectedWallpaperSkillIds(draft.skillIds, WALLPAPER_SKILL_OPTIONS),
+  );
   const [references, setReferences] = useState([]);
   const [openLayer, setOpenLayer] = useState("");
   const [modelOpen, setModelOpen] = useState(false);
@@ -669,14 +671,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   const [unavailableImageKeys, setUnavailableImageKeys] = useState({});
   const [stageCanvasAspect, setStageCanvasAspect] = useState(16 / 9);
   const [cost, setCost] = useState(null);
-  const [lightbox, setLightbox] = useState(null);
-  const [lightboxZoom, setLightboxZoom] = useState(1);
-  const [lightboxPan, setLightboxPan] = useState({ x: 0, y: 0 });
-  const [lightboxPanning, setLightboxPanning] = useState(false);
-  const [lightboxImageLoading, setLightboxImageLoading] = useState(false);
-  const [lightboxNaturalSize, setLightboxNaturalSize] = useState({ width: 0, height: 0 });
-  const [lightboxCompareEnabled, setLightboxCompareEnabled] = useState(false);
-  const [lightboxComparePosition, setLightboxComparePosition] = useState(50);
+  const [previewKey, setPreviewKey] = useState("");
   const [actionBusyId, setActionBusyId] = useState("");
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [regenerateTarget, setRegenerateTarget] = useState(null);
@@ -896,19 +891,25 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   }, [currentModel]);
 
   useEffect(() => {
-    if (resolutionOptions.length && !resolutionOptions.some((item) => item.value === resolution)) {
+    if (!resolutionOptions.length) {
+      if (resolution) setResolution("");
+    } else if (!resolutionOptions.some((item) => item.value === resolution)) {
       setResolution(resolutionOptions[0].value);
     }
   }, [resolution, resolutionOptions]);
 
   useEffect(() => {
-    if (ratioOptions.length && !ratioOptions.some((item) => item.value === ratio)) {
+    if (!ratioOptions.length) {
+      if (ratio) setRatio("");
+    } else if (!ratioOptions.some((item) => item.value === ratio)) {
       setRatio(ratioOptions[0].value);
     }
   }, [ratio, ratioOptions]);
 
   useEffect(() => {
-    if (qualityOptions.length && !qualityOptions.some((item) => item.value === quality)) {
+    if (!qualityOptions.length) {
+      if (quality) setQuality("");
+    } else if (!qualityOptions.some((item) => item.value === quality)) {
       setQuality(qualityOptions[0].value);
     }
   }, [quality, qualityOptions]);
@@ -947,7 +948,9 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     if (config.resolution) setResolution(String(config.resolution));
     if (config.quality) setQuality(config.quality);
     if (config.count) setCount(Math.min(4, Math.max(1, Number(config.count) || 1)));
-    if (Array.isArray(config.skills)) setSelectedSkillIds(config.skills.filter((id) => id !== "none"));
+    if (Array.isArray(config.skills)) {
+      setSelectedSkillIds(normalizeSelectedWallpaperSkillIds(config.skills, WALLPAPER_SKILL_OPTIONS));
+    }
     setReferences(
       (config.referenceImages || []).map((item, index) => {
         if (item.fileKey && item.dataUrl) registerUploadedUrl(item.dataUrl, item.fileKey);
@@ -1070,6 +1073,14 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   }, [mainTab, promptCategory, promptSort]);
 
   useEffect(() => {
+    const current = storedDraft();
+    localStorage.setItem(DRAFT_KEY, JSON.stringify({
+      ...current,
+      skillIds: selectedSkillIds,
+    }));
+  }, [selectedSkillIds]);
+
+  useEffect(() => {
     const timer = window.setTimeout(() => {
       localStorage.setItem(DRAFT_KEY, JSON.stringify({
         prompt,
@@ -1084,10 +1095,11 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
         autoTranslateEnabled: translate,
         transparentPngEnabled: transparent,
         autoBackgroundRemovalEnabled: autoRemove,
+        skillIds: selectedSkillIds,
       }));
     }, 240);
     return () => window.clearTimeout(timer);
-  }, [autoRemove, count, modelId, moderation, outputFormat, polish, prompt, quality, ratio, resolution, translate, transparent]);
+  }, [autoRemove, count, modelId, moderation, outputFormat, polish, prompt, quality, ratio, resolution, selectedSkillIds, translate, transparent]);
 
   useEffect(() => {
     if (!activeTaskId && jobs.tasks[0]) setActiveTaskId(jobs.tasks[0].id);
@@ -1129,15 +1141,22 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   };
 
   const buildPayload = useCallback(({ sourceUrls, batchId, batchIndex, batchSize, batchCreatedAt }) => {
+    const capabilities = normalizeImageModelCapabilities(currentModel || {});
+    const supportsResolution = capabilities.resolutions.includes(resolution);
+    const supportsQuality = capabilities.qualities.includes(quality);
+    const supportedRatios = getModelAspectRatiosForResolution(currentModel || {}, resolution);
+    const supportsRatio = supportedRatios.includes(ratio);
     const activeSkills = resolveActiveWallpaperSkills({
       outputType: "image",
-      resolutionScale: resolution,
+      resolutionScale: supportsResolution ? resolution : "",
       superResolutionEnabled: feature.superResolutionEnabled !== false,
       selectedSkillIds,
       customSkills: [],
     });
     const skillPrompt = buildWallpaperSkillPrompt(activeSkills);
-    const outputSize = resolveT2iOutputSize(ratio, resolution);
+    const outputSize = supportsResolution && supportsRatio
+      ? resolveT2iOutputSize(ratio, resolution)
+      : "";
     const publicModelKey = currentModel?.id || modelId;
     const kind = sourceUrls.length ? "wallpaper-image-edit" : "wallpaper-image-generation";
     const requestPrompt = [prompt.trim(), skillPrompt].filter(Boolean).join("\n\n");
@@ -1153,16 +1172,13 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     const input = {
       sourceUrl: sourceUrls[0] || "",
       sourceUrls,
-      aspectRatio: ratio,
-      requestedAspectRatio: ratio,
-      autoAspectRatioCandidates:
-        ratio === "auto"
-          ? getModelAutoAspectRatioCandidates(currentModel || {}, resolution)
-          : [],
-      outputSize,
-      size: outputSize,
-      resolutionScale: resolution,
-      quality,
+      ...(supportsRatio ? { aspectRatio: ratio, requestedAspectRatio: ratio } : {}),
+      ...(supportsRatio && ratio === "auto"
+        ? { autoAspectRatioCandidates: getModelAutoAspectRatioCandidates(currentModel || {}, resolution) }
+        : {}),
+      ...(outputSize ? { outputSize, size: outputSize } : {}),
+      ...(supportsResolution ? { resolutionScale: resolution } : {}),
+      ...(supportsQuality ? { quality } : {}),
       count: 1,
       n: 1,
       batchId,
@@ -1173,8 +1189,12 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
       userPrompt: prompt.trim(),
       promptPolishEnabled: polish,
       autoTranslateEnabled: translate,
-      transparentPngEnabled: transparent,
-      transparentBackground: transparent,
+      ...(capabilities.transparentBackground
+        ? {
+            transparentPngEnabled: transparent,
+            transparentBackground: transparent,
+          }
+        : {}),
       autoBackgroundRemovalEnabled: autoRemove,
       autoBackgroundRemovalModelKey: autoRemove ? backgroundRemovalModel?.id || "" : "",
       ...(effectiveOutputFormat ? { outputFormat: effectiveOutputFormat } : {}),
@@ -1195,6 +1215,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
         executionMode: "server",
       },
       units: 1,
+      expectedUnitPriceCents: quotedUnitPriceRef.current,
     };
   }, [autoRemove, backgroundRemovalModel?.id, currentModel, feature.superResolutionEnabled, modelId, moderation, outputFormat, polish, prompt, quality, ratio, resolution, selectedSkillIds, translate, transparent]);
 
@@ -1215,20 +1236,34 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     }
     if (!prompt.trim() || !currentModel) return;
     if (user?.requireCostConfirm === false || pendingRef.current?.value?.config?.costConfirmed) {
+      quotedUnitPriceRef.current = null;
       pendingRef.current = { consumed: true, value: null };
       await submitGeneration();
       return;
     }
-    const [walletResult, featurePrice] = await Promise.allSettled([
+    const quotePayload = buildPayload({
+      sourceUrls: [], batchId: "", batchIndex: 0, batchSize: 1,
+      batchCreatedAt: new Date().toISOString(),
+    });
+    const [walletResult, quoteResult, featurePrice] = await Promise.allSettled([
       getWallet(),
+      quoteServerAiJob(quotePayload),
       getFeatureUnitPriceCents("wallpaper"),
     ]);
     const modelPriceConfigured = currentModel.pointPricing?.configured === true;
+    const quotedGenerationUnit = quoteResult.status === "fulfilled"
+      ? Number(quoteResult.value?.unitPriceCents)
+      : Number.NaN;
+    quotedUnitPriceRef.current = Number.isFinite(quotedGenerationUnit)
+      ? quotedGenerationUnit
+      : null;
     const serverPriceAvailable = featurePrice.status === "fulfilled";
     const generationUnit = Math.max(
       0,
       Number(
-        modelPriceConfigured
+        Number.isFinite(quotedGenerationUnit)
+          ? quotedGenerationUnit
+          : modelPriceConfigured
           ? currentModel.creditCost
           : serverPriceAvailable
             ? featurePrice.value
@@ -1248,9 +1283,9 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
       total: unit * count,
       available,
       pricingUnavailable:
-        !modelPriceConfigured && !serverPriceAvailable && !Number.isFinite(Number(feature.creditCost)),
+        !Number.isFinite(quotedGenerationUnit) && !modelPriceConfigured && !serverPriceAvailable && !Number.isFinite(Number(feature.creditCost)),
     });
-  }, [authenticated, autoRemove, backgroundRemovalModel?.pricePoints, count, currentModel, feature.creditCost, onRequireAuth, submitGeneration, user?.requireCostConfirm]);
+  }, [authenticated, autoRemove, backgroundRemovalModel?.pricePoints, buildPayload, count, currentModel, feature.creditCost, onRequireAuth, submitGeneration, user?.requireCostConfirm]);
 
   useEffect(() => {
     const pending = pendingRef.current?.value;
@@ -1487,17 +1522,15 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   const failedOrPausedTasks = jobs.historyTasks.filter((task) =>
     ["failed", "paused"].includes(task.status),
   );
-  const lightboxItems = (mainTab === "history" ? historyItems : galleryItems).filter((item) => item.kind === "image");
-  const lightboxItem = lightbox
-    ? lightboxItems.find((item) => item.key === lightbox.key) || null
+  const previewItems = (mainTab === "history" ? historyItems : galleryItems).filter(
+    (item) => item.kind === "image",
+  );
+  const previewItem = previewKey
+    ? previewItems.find((item) => item.key === previewKey) || null
     : null;
-  const lightboxOriginalUrl = String(
-    lightboxItem?.task?.originalOutputUrl || "",
-  ).trim();
-  const lightboxCanCompare = Boolean(
-    lightboxOriginalUrl &&
-      lightboxItem?.url &&
-      lightboxOriginalUrl !== lightboxItem.url,
+  const previewGallery = previewItems.map((item) => item.url);
+  const previewDisplaySources = Object.fromEntries(
+    previewItems.map((item) => [item.url, item.displayUrl || ""]),
   );
   const generationCost = (
     Math.max(
@@ -1511,7 +1544,10 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     (autoRemove ? Math.max(0, Number(backgroundRemovalModel?.pricePoints || 0)) : 0)
   ) * count;
   const qualityLabel =
-    T2I_QUALITY_OPTIONS.find((item) => item.value === quality)?.label || quality;
+    qualityOptions.find((item) => item.value === quality)?.label || "";
+  const frameSummary = [qualityLabel, ratio, resolution, `${count}张`]
+    .filter(Boolean)
+    .join(" · ");
   const enhanceSummary = [
     `润色${polish ? "开" : "关"}`,
     `翻译${translate ? "开" : "关"}`,
@@ -1548,7 +1584,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     setTransparent(task.transparentPngEnabled === true);
     setAutoRemove(task.autoBackgroundRemovalEnabled === true);
     if (Array.isArray(task.input?.skillIds)) {
-      setSelectedSkillIds(task.input.skillIds.filter(Boolean));
+      setSelectedSkillIds(normalizeSelectedWallpaperSkillIds(task.input.skillIds, WALLPAPER_SKILL_OPTIONS));
     }
     setMainTab("images");
     window.requestAnimationFrame(() => promptInputRef.current?.focus());
@@ -1607,22 +1643,9 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     );
   };
 
-  const resetLightboxView = useCallback(() => {
-    setLightboxZoom(1);
-    setLightboxPan({ x: 0, y: 0 });
-    setLightboxPanning(false);
-    setLightboxCompareEnabled(false);
-    setLightboxComparePosition(50);
-    lightboxPanStartRef.current = null;
-    lightboxComparePointerRef.current = null;
-  }, []);
-
-  const openLightbox = (item) => {
+  const openPreview = (item) => {
     if (item?.kind !== "image") return;
-    resetLightboxView();
-    setLightboxImageLoading(true);
-    setLightboxNaturalSize({ width: 0, height: 0 });
-    setLightbox({ key: item.key });
+    setPreviewKey(item.key);
   };
 
   const markImageUnavailable = useCallback((item) => {
@@ -1630,92 +1653,6 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     const key = `${item.task.id}::${item.index}::${item.url}`;
     setUnavailableImageKeys((current) => current[key] ? current : { ...current, [key]: true });
   }, []);
-
-  const stepLightbox = useCallback((delta) => {
-    if (!lightboxItem || lightboxItems.length < 2) return;
-    const index = Math.max(0, lightboxItems.findIndex((item) => item.key === lightboxItem.key));
-    setLightbox({
-      key: lightboxItems[(index + delta + lightboxItems.length) % lightboxItems.length].key,
-    });
-    resetLightboxView();
-    setLightboxImageLoading(true);
-    setLightboxNaturalSize({ width: 0, height: 0 });
-  }, [lightboxItem, lightboxItems, resetLightboxView]);
-
-  const clampLightboxPan = useCallback((nextPan, zoom = lightboxZoom) => {
-    const frame = lightboxFrameRef.current;
-    if (!frame || zoom <= 1) return { x: 0, y: 0 };
-    const rect = frame.getBoundingClientRect();
-    const naturalWidth = Number(lightboxNaturalSize.width || rect.width);
-    const naturalHeight = Number(lightboxNaturalSize.height || rect.height);
-    const fitScale = Math.min(rect.width / naturalWidth, rect.height / naturalHeight);
-    const maxX = Math.max(0, (naturalWidth * fitScale * zoom - rect.width) / 2);
-    const maxY = Math.max(0, (naturalHeight * fitScale * zoom - rect.height) / 2);
-    return {
-      x: Math.min(maxX, Math.max(-maxX, nextPan.x)),
-      y: Math.min(maxY, Math.max(-maxY, nextPan.y)),
-    };
-  }, [lightboxNaturalSize, lightboxZoom]);
-
-  const changeLightboxZoom = (value) => {
-    const next = Math.min(5, Math.max(1, Math.round(Number(value || 1) * 100) / 100));
-    setLightboxZoom(next);
-    setLightboxPan((current) => clampLightboxPan(current, next));
-  };
-
-  const startLightboxPan = (event) => {
-    if (event.button !== 0 || lightboxZoom <= 1) return;
-    event.preventDefault();
-    lightboxPanStartRef.current = {
-      pointerId: event.pointerId,
-      x: event.clientX,
-      y: event.clientY,
-      panX: lightboxPan.x,
-      panY: lightboxPan.y,
-    };
-    setLightboxPanning(true);
-    event.currentTarget.setPointerCapture?.(event.pointerId);
-  };
-
-  const moveLightboxPan = (event) => {
-    const start = lightboxPanStartRef.current;
-    if (!start || start.pointerId !== event.pointerId) return;
-    setLightboxPan(
-      clampLightboxPan({
-        x: start.panX + event.clientX - start.x,
-        y: start.panY + event.clientY - start.y,
-      }),
-    );
-  };
-
-  const endLightboxPan = (event) => {
-    if (lightboxPanStartRef.current?.pointerId !== event.pointerId) return;
-    event.currentTarget.releasePointerCapture?.(event.pointerId);
-    lightboxPanStartRef.current = null;
-    setLightboxPanning(false);
-  };
-
-  const updateComparePosition = (event) => {
-    const rect = lightboxFrameRef.current?.getBoundingClientRect();
-    if (!rect?.width) return;
-    setLightboxComparePosition(
-      Math.min(100, Math.max(0, ((event.clientX - rect.left) / rect.width) * 100)),
-    );
-  };
-
-  useEffect(() => {
-    if (!lightboxItem) return undefined;
-    const onKeyDown = (event) => {
-      if (event.key === "Escape") setLightbox(null);
-      if (event.key === "ArrowLeft") stepLightbox(-1);
-      if (event.key === "ArrowRight") stepLightbox(1);
-      if (event.key === "+" || event.key === "=") changeLightboxZoom(lightboxZoom + 0.25);
-      if (event.key === "-" || event.key === "_") changeLightboxZoom(lightboxZoom - 0.25);
-      if (event.key === "0") resetLightboxView();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [lightboxItem, lightboxZoom, resetLightboxView, stepLightbox]);
 
   const downloadItem = async (item) => {
     if (!item?.url) return;
@@ -1799,7 +1736,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   historyActionRef.current = {
     open: (item) => {
       setActiveTaskId(item.task.id);
-      openLightbox(item);
+      openPreview(item);
     },
     reference: useAsReference,
     edit: (item) => editTask(item.task),
@@ -1914,7 +1851,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
           <div className="t2i-control-layers" data-motion>
             <div className="t2i-control-layer-bar" aria-label="生成参数分类">
               {[
-                ["frame", "bi-aspect-ratio", "画面", `${qualityLabel} · ${ratio} · ${resolution} · ${count}张`],
+                ["frame", "bi-aspect-ratio", "画面", frameSummary],
                 ["output", "bi-file-earmark-image", "输出", `${outputFormat === "auto" ? "模型内置" : outputFormat.toUpperCase()} · ${moderation ? (moderation === "auto" ? "自动审核" : "低限制") : "模型内置"}`],
                 ["enhance", "bi-stars", "增强", enhanceSummary],
               ].map(([id, icon, title, summary]) => (
@@ -1946,7 +1883,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                 <div className="t2i-prompt-enhancers">
                   <Toggle label="润色" icon="bi-stars" value={polish} onChange={setPolish} />
                   <Toggle label="翻译" icon="bi-translate" value={translate} onChange={setTranslate} />
-                  <Toggle label="透明" icon="bi-transparency" value={transparent} disabled={!currentModel?.transparentBackground} onChange={(next) => { setTransparent(next); if (next) setAutoRemove(false); }} />
+                  {currentModel?.transparentBackground ? <Toggle label="透明" icon="bi-transparency" value={transparent} onChange={(next) => { setTransparent(next); if (next) setAutoRemove(false); }} /> : null}
                   {backgroundRemovalModel && <Toggle label="生成后抠图" icon="bi-person-bounding-box" value={autoRemove} onChange={(next) => { setAutoRemove(next); if (next) setTransparent(false); }} />}
                 </div>
               </section>
@@ -2026,7 +1963,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                                 <PendingStage task={item.task} now={now} batchIndex={item.batchIndex} />
                               ) : (
                                 <>
-                                  <button type="button" className="t2i-stage-cell-media" onClick={() => openLightbox(item)}>
+                                  <button type="button" className="t2i-stage-cell-media" onClick={() => openPreview(item)}>
                                     <ProgressiveAuthenticatedImage
                                       src={item.displayUrl || item.url}
                                       fallbackSrc={item.url}
@@ -2065,7 +2002,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                         </div>
                       ) : featuredItem.kind === "image" ? (
                         <>
-                          <button type="button" className={`t2i-stage-media${showsTransparentCanvas(activeTask) ? " is-transparent-output" : ""}`} onClick={() => openLightbox(featuredItem)}>
+                          <button type="button" className={`t2i-stage-media${showsTransparentCanvas(activeTask) ? " is-transparent-output" : ""}`} onClick={() => openPreview(featuredItem)}>
                             <ProgressiveAuthenticatedImage
                               src={featuredItem.displayUrl || activeOutput}
                               fallbackSrc={activeOutput}
@@ -2270,67 +2207,34 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
         onCancel={() => setRegenerateTarget(null)}
         onConfirm={confirmRegenerate}
       />
-      {lightboxItem && createPortal(
-        <div className="t2i-lightbox is-plain-open" role="dialog" aria-modal="true" aria-label="全屏预览" onMouseDown={(event) => event.target === event.currentTarget && setLightbox(null)}>
-          <div className="t2i-lightbox-stage">
-            <div
-              ref={lightboxFrameRef}
-              className={`t2i-lightbox-frame${lightboxZoom > 1 ? " is-zoomed" : ""}${lightboxPanning ? " is-panning" : ""}`}
-              onWheel={(event) => { event.preventDefault(); changeLightboxZoom(lightboxZoom + (event.deltaY < 0 ? 0.25 : -0.25)); }}
-              onDoubleClick={() => changeLightboxZoom(lightboxZoom === 1 ? 2 : 1)}
-              onPointerDown={startLightboxPan}
-              onPointerMove={moveLightboxPan}
-              onPointerUp={endLightboxPan}
-              onPointerCancel={endLightboxPan}
-            >
-              <div className="t2i-lightbox-image-layer" style={{ transform: `translate3d(${lightboxPan.x}px, ${lightboxPan.y}px, 0) scale(${lightboxZoom})` }}>
-                <AuthenticatedImage src={lightboxItem.displayUrl || lightboxItem.url} fallbackSrc={lightboxItem.url} alt={lightboxItem.task.prompt || "图片预览"} loading="eager" onLoad={(event) => { setLightboxImageLoading(false); setLightboxNaturalSize({ width: event.target.naturalWidth, height: event.target.naturalHeight }); }} onError={() => setLightboxImageLoading(false)} />
-              </div>
-              {lightboxCompareEnabled && lightboxCanCompare && (
-                <>
-                  <div className="t2i-lightbox-original-clip" style={{ clipPath: `inset(0 ${100 - lightboxComparePosition}% 0 0)` }}>
-                    <div className="t2i-lightbox-image-layer" style={{ transform: `translate3d(${lightboxPan.x}px, ${lightboxPan.y}px, 0) scale(${lightboxZoom})` }}><AuthenticatedImage src={lightboxOriginalUrl} alt="" loading="eager" /></div>
-                  </div>
-                  <span className="t2i-lightbox-compare-badge is-original">{lightboxItem.task.originalOutputSize ? `原图 ${lightboxItem.task.originalOutputSize.replace(/x/i, "×")}` : "原图"}</span>
-                  <span className="t2i-lightbox-compare-badge is-processed">{lightboxItem.task.actualOutputSize || lightboxItem.task.outputSize ? `处理后 ${(lightboxItem.task.actualOutputSize || lightboxItem.task.outputSize).replace(/x/i, "×")}` : "处理后"}</span>
-                  <button
-                    type="button"
-                    className="t2i-lightbox-compare-divider"
-                    style={{ left: `${lightboxComparePosition}%` }}
-                    role="slider"
-                    aria-label="拖动比较原图与处理后图片"
-                    aria-valuemin="0"
-                    aria-valuemax="100"
-                    aria-valuenow={Math.round(lightboxComparePosition)}
-                    onPointerDown={(event) => { event.stopPropagation(); lightboxComparePointerRef.current = event.pointerId; event.currentTarget.setPointerCapture?.(event.pointerId); updateComparePosition(event); }}
-                    onPointerMove={(event) => lightboxComparePointerRef.current === event.pointerId && updateComparePosition(event)}
-                    onPointerUp={(event) => { event.currentTarget.releasePointerCapture?.(event.pointerId); lightboxComparePointerRef.current = null; }}
-                    onKeyDown={(event) => { if (event.key === "ArrowLeft") setLightboxComparePosition((value) => Math.max(0, value - 2)); if (event.key === "ArrowRight") setLightboxComparePosition((value) => Math.min(100, value + 2)); }}
-                  ><i className="bi bi-arrows" /></button>
-                </>
-              )}
-            </div>
-          </div>
-          {lightboxItems.length > 1 && <><button type="button" className="t2i-lightbox-hotzone is-prev" aria-label="上一张" title="上一张" data-click-guard="off" onClick={() => stepLightbox(-1)}><i className="bi bi-chevron-left" /></button><button type="button" className="t2i-lightbox-hotzone is-next" aria-label="下一张" title="下一张" data-click-guard="off" onClick={() => stepLightbox(1)}><i className="bi bi-chevron-right" /></button></>}
-          <div className={`t2i-lightbox-load-chip${lightboxImageLoading ? " is-visible" : ""}`} aria-hidden="true"><span className="t2i-lightbox-load-chip-dot" /><span>图片加载中</span></div>
-          <div className="t2i-lightbox-controls" aria-label="预览操作">
-            <div className="t2i-lightbox-controls-info"><strong className="t2i-lightbox-controls-title" title={lightboxItem.task.prompt}>{lightboxItem.task.prompt || "图片预览"}</strong><span className="t2i-lightbox-controls-count">{lightboxItems.findIndex((item) => item.key === lightboxItem.key) + 1} / {lightboxItems.length}</span><span className="t2i-lightbox-controls-size">{lightboxItem.task.actualOutputSize || lightboxItem.task.outputSize ? `处理后 ${(lightboxItem.task.actualOutputSize || lightboxItem.task.outputSize).replace(/x/i, "×")}` : "处理后"}</span></div>
-            {lightboxItems.length > 1 && <div className="t2i-lightbox-controls-nav" data-click-guard="off"><button type="button" aria-label="上一张" title="上一张" onClick={() => stepLightbox(-1)}><i className="bi bi-chevron-left" /></button><button type="button" aria-label="下一张" title="下一张" onClick={() => stepLightbox(1)}><i className="bi bi-chevron-right" /></button></div>}
-            <div className="t2i-lightbox-controls-tools" data-click-guard="off">
-              <button type="button" disabled={lightboxZoom <= 1} aria-label="缩小图片" onClick={() => changeLightboxZoom(lightboxZoom - 0.25)}><i className="bi bi-zoom-out" /></button>
-              <output className="t2i-lightbox-controls-zoom">{Math.round(lightboxZoom * 100)}%</output>
-              <button type="button" disabled={lightboxZoom >= 5} aria-label="放大图片" onClick={() => changeLightboxZoom(lightboxZoom + 0.25)}><i className="bi bi-zoom-in" /></button>
-              <button type="button" className="is-fit" aria-label="适应屏幕" onClick={resetLightboxView}><i className="bi bi-arrows-angle-contract" /><span>适应</span></button>
-              {lightboxCanCompare && <button type="button" className={lightboxCompareEnabled ? "is-on" : ""} aria-pressed={lightboxCompareEnabled} aria-label="对比原图和处理后图片" title={lightboxCompareEnabled ? "退出前后对比" : "前后对比"} onClick={() => { const next = !lightboxCompareEnabled; setLightboxCompareEnabled(next); setLightboxComparePosition(50); if (next) changeLightboxZoom(2); }}><i className="bi bi-layout-split" /></button>}
-              <button type="button" aria-label="局部编辑图片" title="局部编辑" onClick={() => { setLightbox(null); editTask(lightboxItem.task); }}><i className="bi bi-brush" /></button>
-              <button type="button" aria-label="下载图片" title="下载" onClick={() => void downloadItem(lightboxItem)}><span className="t2i-icon-download" /></button>
-              <button type="button" className="is-danger" aria-label="删除图片" title="删除" onClick={() => requestDelete([lightboxItem.task])}><span className="t2i-icon-delete" /></button>
-              <span className="t2i-lightbox-controls-divider" />
-              <button type="button" aria-label="关闭预览" title="关闭" onClick={() => setLightbox(null)}><i className="bi bi-x-lg" /></button>
-            </div>
-          </div>
-        </div>,
-        document.body,
+      {previewItem && (
+        <WallevenImagePreview
+          sourceUrl={previewItem.url}
+          displaySourceUrl={previewItem.displayUrl || ""}
+          title={previewItem.task.prompt || "文生图作品"}
+          filename={downloadFilename(previewItem.task, previewItem.index)}
+          gallery={previewGallery}
+          displaySources={previewDisplaySources}
+          metadata={{
+            id: previewItem.task.id,
+            prompt: previewItem.task.prompt,
+            model: previewItem.task.publicModelKey || previewItem.task.model,
+            ratio: previewItem.task.aspectRatio,
+            resolution: previewItem.task.actualOutputSize || previewItem.task.outputSize,
+            quality: previewItem.task.imageQuality,
+            createdAt: previewItem.task.createdAt,
+            source: "文生图",
+          }}
+          actionBusy={actionBusyId === previewItem.task.id ? "delete" : ""}
+          onSelect={(url) => {
+            const next = previewItems.find((item) => item.url === url);
+            if (next) setPreviewKey(next.key);
+          }}
+          onClose={() => setPreviewKey("")}
+          onDownload={() => void downloadItem(previewItem)}
+          onUseReference={() => useAsReference(previewItem)}
+          onDelete={() => requestDelete([previewItem.task])}
+        />
       )}
     </div>
   );

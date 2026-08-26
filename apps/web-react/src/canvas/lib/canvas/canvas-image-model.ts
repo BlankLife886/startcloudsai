@@ -35,7 +35,7 @@ function normalizeList(value: unknown, allowed: readonly string[], fallback: rea
                 .map((item) => allowed.find((option) => option.toLowerCase() === item.toLowerCase()) || item),
         ),
     );
-    return next.length ? next : [...fallback];
+    return next.length ? next : Array.isArray(value) ? [] : [...fallback];
 }
 
 function normalizeQuality(value: string) {
@@ -55,6 +55,7 @@ export function canvasImageMaxCount(model?: ChannelModel | null) {
 
 export function canvasImageModelCapabilities(model?: ChannelModel | null): CanvasImageModelCapabilities {
     const safe: Partial<ChannelModel> = model ?? {};
+    const hasConfiguredAspectRatios = Array.isArray(safe.aspectRatios);
     const globalAspectRatios = normalizeList(safe.aspectRatios, CANVAS_IMAGE_ASPECT_RATIOS, CANVAS_IMAGE_ASPECT_RATIOS);
     const resolutions = normalizeList(safe.resolutions, CANVAS_IMAGE_RESOLUTIONS, CANVAS_IMAGE_RESOLUTIONS).map((item) => item.toUpperCase());
     const sourceRatios = safe.aspectRatiosByResolution && typeof safe.aspectRatiosByResolution === "object" ? safe.aspectRatiosByResolution : {};
@@ -69,9 +70,9 @@ export function canvasImageModelCapabilities(model?: ChannelModel | null): Canva
     const configuredRatioSet = new Set(Object.values(aspectRatiosByResolution).flat());
     const aspectRatios = CANVAS_IMAGE_ASPECT_RATIOS.filter((ratio) => configuredRatioSet.has(ratio));
     return {
-        aspectRatios: aspectRatios.length ? aspectRatios : ["1:1"],
+        aspectRatios: aspectRatios.length ? aspectRatios : hasConfiguredAspectRatios ? [] : ["1:1"],
         aspectRatiosByResolution,
-        resolutions: resolutions.length ? resolutions : ["1K"],
+        resolutions,
         qualities: normalizeList(safe.qualities, CANVAS_IMAGE_QUALITIES, CANVAS_IMAGE_QUALITIES),
         transparentBackground: safe.transparentBackground !== false,
         maxImages: canvasImageMaxCount(model),
@@ -124,12 +125,12 @@ export function coerceCanvasImageSettings(model: ChannelModel | null | undefined
     const capabilities = canvasImageModelCapabilities(model);
     const parsed = parseCanvasImageSize(String(settings.size || ""));
     const requestedResolution = String(settings.resolution || parsed.resolution || "").trim().toUpperCase();
-    const resolution = capabilities.resolutions.includes(requestedResolution) ? requestedResolution : capabilities.resolutions[0] || "1K";
+    const resolution = capabilities.resolutions.includes(requestedResolution) ? requestedResolution : capabilities.resolutions[0] || "";
     const ratios = aspectRatiosForResolution(model, resolution);
     const requestedRatio = parsed.ratio || "auto";
-    const size = ratios.includes(requestedRatio) ? requestedRatio : ratios[0] || "1:1";
+    const size = ratios.includes(requestedRatio) ? requestedRatio : ratios[0] || "";
     const requestedQuality = normalizeQuality(String(settings.quality || ""));
-    const quality = capabilities.qualities.includes(requestedQuality) ? requestedQuality : capabilities.qualities[0] || "medium";
+    const quality = capabilities.qualities.includes(requestedQuality) ? requestedQuality : capabilities.qualities[0] || "";
     return {
         quality,
         size,

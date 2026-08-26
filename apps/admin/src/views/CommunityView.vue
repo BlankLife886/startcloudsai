@@ -260,6 +260,7 @@ async function persistWorkOrder() {
 }
 
 const selectedWorkIds = ref<Set<string>>(new Set())
+const workSelectionMode = ref(false)
 const selectedCount = computed(() => selectedWorkIds.value.size)
 const featuredCount = computed(() => works.value.filter((item) => item.featured).length)
 function worksInCategory(id: string) {
@@ -285,6 +286,15 @@ function toggleSelectVisible() {
 
 function clearSelection() {
   selectedWorkIds.value = new Set()
+}
+
+function enterWorkSelectionMode() {
+  workSelectionMode.value = true
+}
+
+function exitWorkSelectionMode() {
+  workSelectionMode.value = false
+  clearSelection()
 }
 
 watch(works, (list) => {
@@ -385,7 +395,7 @@ const batchForm = reactive({
 })
 
 function openBatchEdit() {
-  if (!selectedCount.value) return
+  if (!workSelectionMode.value || !selectedCount.value) return
   batchForm.setFeatured = false
   batchForm.featured = true
   batchForm.setCategory = false
@@ -440,7 +450,7 @@ async function saveBatchEdit() {
       return { ...item, ...patch }
     })
     batchOpen.value = false
-    clearSelection()
+    exitWorkSelectionMode()
     ElMessage.success(`已更新 ${ids.length} 个作品`)
   } finally {
     batchSaving.value = false
@@ -781,16 +791,31 @@ onUnmounted(() => {
         >
           排序
         </el-button>
+        <el-button
+          :type="workSelectionMode ? 'primary' : 'default'"
+          :icon="Check"
+          @click="workSelectionMode ? exitWorkSelectionMode() : enterWorkSelectionMode()"
+        >
+          {{ workSelectionMode ? '退出多选' : '多选' }}
+        </el-button>
       </div>
     </header>
 
-    <div v-if="selectedCount" class="community-selection-bar">
+    <div v-if="workSelectionMode" class="community-selection-bar">
       <el-checkbox :model-value="allVisibleSelected" @change="toggleSelectVisible">
-        已选 {{ selectedCount }}
+        {{ allVisibleSelected ? '取消全选' : '全选当前结果' }}
       </el-checkbox>
+      <span class="community-selection-bar__count">已选 {{ selectedCount }} 个作品</span>
       <div class="community-selection-bar__actions">
-        <el-button text @click="clearSelection">取消选择</el-button>
-        <el-button type="primary" :icon="Check" @click="openBatchEdit">批量编辑</el-button>
+        <el-button text :disabled="!selectedCount" @click="clearSelection">清空选择</el-button>
+        <el-button
+          type="primary"
+          :icon="Check"
+          :disabled="!selectedCount"
+          @click="openBatchEdit"
+        >
+          批量编辑
+        </el-button>
       </div>
     </div>
 
@@ -834,6 +859,7 @@ onUnmounted(() => {
             :operating="workOperating === entry.item.id"
             :category-label="categoryLabelOf(entry.item)"
             :selected="selectedWorkIds.has(entry.item.id)"
+            :selection-mode="workSelectionMode"
             :media-height="entry.mediaHeight"
             :card-width="entry.width"
             :image-loading="imageLoadingMode(entry.index)"
@@ -1385,6 +1411,12 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.community-selection-bar__count {
+  margin-right: auto;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
 }
 
 .community-board {

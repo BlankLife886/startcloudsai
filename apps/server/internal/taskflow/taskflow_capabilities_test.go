@@ -18,6 +18,7 @@ func TestValidateModelImageCapabilities(t *testing.T) {
 		references int
 	}{
 		{name: "aspect", params: map[string]any{"aspectRatio": "9:16"}},
+		{name: "resolution", params: map[string]any{"resolutionScale": "1K"}},
 		{name: "quality", params: map[string]any{"quality": "low"}},
 		{name: "transparent", params: map[string]any{"transparentBackground": true}},
 		{name: "format", params: map[string]any{"outputFormat": "webp"}},

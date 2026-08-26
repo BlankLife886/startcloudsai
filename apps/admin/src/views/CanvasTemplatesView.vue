@@ -4,6 +4,7 @@ import {
   Delete,
   EditPen,
   Files,
+  MagicStick,
   Picture,
   Plus,
   Rank,
@@ -12,6 +13,7 @@ import {
   Upload,
 } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
+import { strFromU8, unzipSync } from "fflate";
 import draggable from "vuedraggable";
 
 import AdminDialog from "@/components/AdminDialog.vue";
@@ -45,6 +47,18 @@ type CanvasDocument = {
   viewport?: unknown;
 };
 
+type TemplateAnalysis = {
+  slug: string;
+  title: string;
+  category: string;
+  categoryLabel: string;
+  industry: string;
+  summary: string;
+  platforms: string[];
+  deliverables: string[];
+  accent: string;
+};
+
 type StatusFilter = "all" | "published" | "unpublished";
 
 const CATEGORY_PRESETS = [
@@ -69,6 +83,11 @@ const dialogOpen = ref(false);
 const editingId = ref("");
 const document = ref<CanvasDocument | null>(null);
 const fileName = ref("");
+const pendingTemplatePackage = ref<File | null>(null);
+const analyzing = ref(false);
+const analysisError = ref("");
+const analysisApplied = ref(false);
+const analysisRequestId = ref(0);
 const pendingCover = ref<File | null>(null);
 const previewUrl = ref("");
 const coverInputRef = ref<HTMLInputElement | null>(null);
@@ -420,6 +439,7 @@ async function load() {
 }
 
 function resetForm(item?: TemplateItem) {
+  analysisRequestId.value += 1;
   editingId.value = item?.id || "";
   form.slug = item?.slug || "";
   form.title = item?.title || "";
@@ -438,6 +458,10 @@ function resetForm(item?: TemplateItem) {
   form.enabled = item?.enabled ?? true;
   document.value = null;
   fileName.value = "";
+  pendingTemplatePackage.value = null;
+  analyzing.value = false;
+  analysisError.value = "";
+  analysisApplied.value = false;
   pendingCover.value = null;
   if (previewUrl.value.startsWith("blob:")) URL.revokeObjectURL(previewUrl.value);
   previewUrl.value = item?.coverUrl || "";
@@ -485,22 +509,92 @@ function extractDocument(value: unknown): CanvasDocument {
   };
 }
 
+function applyTemplateAnalysis(result: TemplateAnalysis) {
+  form.slug = result.slug;
+  form.title = result.title;
+  form.category = result.category;
+  form.categoryLabel = result.categoryLabel;
+  form.industry = result.industry;
+  form.summary = result.summary;
+  form.platforms = result.platforms.join("，");
+  form.deliverables = result.deliverables.join("，");
+  form.accent = result.accent;
+}
+
+async function analyzeTemplate(
+  source: CanvasDocument | null = document.value,
+  sourceName = fileName.value,
+) {
+  if (!source || analyzing.value) return;
+  const requestId = ++analysisRequestId.value;
+  analyzing.value = true;
+  analysisError.value = "";
+  analysisApplied.value = false;
+  try {
+    const result = await request<TemplateAnalysis>(
+      "/api/v1/admin/canvas-workflow-templates/analyze",
+      {
+        method: "POST",
+        body: { document: source, fileName: sourceName },
+        silent: true,
+      },
+    );
+    if (requestId !== analysisRequestId.value) return;
+    applyTemplateAnalysis(result);
+    analysisApplied.value = true;
+    ElMessage.success("AI 已分析画布并填充模板信息");
+  } catch (error) {
+    if (requestId !== analysisRequestId.value) return;
+    analysisError.value = error instanceof Error ? error.message : "AI 分析失败";
+    ElMessage.error(analysisError.value);
+  } finally {
+    if (requestId === analysisRequestId.value) analyzing.value = false;
+  }
+}
+
 async function onFileChange(event: Event) {
   const input = event.target as HTMLInputElement;
   const file = input.files?.[0];
   input.value = "";
   if (!file) return;
   try {
-    document.value = extractDocument(JSON.parse(await file.text()));
+    analysisRequestId.value += 1;
+    analyzing.value = false;
+    if (file.size > 128 * 1024 * 1024) {
+      throw new Error("画布导出包不能超过 128MB");
+    }
+    const isZip = file.name.toLowerCase().endsWith(".zip");
+    let source: unknown;
+    if (isZip) {
+      const entries = unzipSync(new Uint8Array(await file.arrayBuffer()), {
+        filter: (entry) => entry.name.replace(/^\.\//, "") === "projects.json",
+      });
+      const manifest = entries["projects.json"] || entries["./projects.json"];
+      if (!manifest) throw new Error("ZIP 中缺少 projects.json");
+      source = JSON.parse(strFromU8(manifest));
+    } else {
+      source = JSON.parse(await file.text());
+    }
+    const parsed = extractDocument(source);
+    document.value = parsed;
     fileName.value = file.name;
+    pendingTemplatePackage.value = isZip ? file : null;
+    analysisError.value = "";
+    analysisApplied.value = false;
     if (!form.title) form.title = file.name.replace(/\.json$/i, "");
     if (!form.slug) form.slug = slugFromTitle(form.title);
     ElMessage.success(
       `已读取 ${document.value.nodes.length} 个节点、${document.value.connections.length} 条连线`,
     );
+    void analyzeTemplate(parsed, file.name);
   } catch (error) {
+    analysisRequestId.value += 1;
+    analyzing.value = false;
+    analysisError.value = "";
+    analysisApplied.value = false;
     document.value = null;
     fileName.value = "";
+    pendingTemplatePackage.value = null;
     ElMessage.error(error instanceof Error ? error.message : "模板文件读取失败");
   }
 }
@@ -564,7 +658,7 @@ async function submit() {
     return;
   }
   if (!editingId.value && !document.value) {
-    ElMessage.warning("请选择模板 JSON 文件");
+    ElMessage.warning("请选择模板 JSON 或 ZIP 文件");
     return;
   }
   saving.value = true;
@@ -576,12 +670,33 @@ async function submit() {
       ...(document.value ? { document: document.value } : {}),
     };
     const creating = !editingId.value;
-    const saved = await request<TemplateItem>(
-      editingId.value
-        ? `/api/v1/admin/canvas-workflow-templates/${editingId.value}`
-        : "/api/v1/admin/canvas-workflow-templates",
-      { method: editingId.value ? "PATCH" : "POST", body, silent: true },
-    );
+    const endpoint = editingId.value
+      ? `/api/v1/admin/canvas-workflow-templates/${editingId.value}`
+      : "/api/v1/admin/canvas-workflow-templates";
+    let saved: TemplateItem;
+    if (pendingTemplatePackage.value) {
+      const payload = new FormData();
+      payload.append("metadata", JSON.stringify(body));
+      payload.append("package", pendingTemplatePackage.value);
+      const response = await fetch(endpoint, {
+        method: editingId.value ? "PATCH" : "POST",
+        credentials: "include",
+        body: payload,
+      });
+      const envelope = (await response.json().catch(() => null)) as
+        | { success?: boolean; data?: TemplateItem; error?: string }
+        | null;
+      if (!response.ok || !envelope?.success || !envelope.data) {
+        throw new Error(envelope?.error || `模板保存失败（HTTP ${response.status}）`);
+      }
+      saved = envelope.data;
+    } else {
+      saved = await request<TemplateItem>(endpoint, {
+        method: editingId.value ? "PATCH" : "POST",
+        body,
+        silent: true,
+      });
+    }
     const id = saved?.id || editingId.value;
     if (creating && id) editingId.value = id;
     if (pendingCover.value && id) {
@@ -974,7 +1089,14 @@ watch(dialogOpen, (open) => {
       width="880px"
       confirm-text="保存模板"
       :confirm-loading="saving"
-      :footer-hint="pendingCover ? '已选择新封面，保存时一并上传' : ''"
+      :confirm-disabled="saving || analyzing"
+      :footer-hint="
+        analyzing
+          ? 'AI 正在分析画布 JSON'
+          : pendingCover
+            ? '已选择新封面，保存时将自动压缩上传'
+            : ''
+      "
       @confirm="submit"
     >
       <el-form
@@ -1018,6 +1140,9 @@ watch(dialogOpen, (open) => {
                 @change="pickCover"
               />
             </div>
+            <small class="cover-compression-note">
+              上传后由服务端自动压缩，最长边不超过 1280px
+            </small>
           </el-form-item>
           <el-form-item
             :label="editingId ? '替换模板文件（可选）' : '模板文件'"
@@ -1025,19 +1150,43 @@ watch(dialogOpen, (open) => {
           >
             <label class="file-picker">
               <el-icon><Upload /></el-icon>
-              <span>{{ fileName || "选择 JSON 文件" }}</span>
+              <span>{{ fileName || "选择画布 JSON / ZIP" }}</span>
               <input
                 type="file"
-                accept="application/json,.json"
+                accept="application/json,application/zip,.json,.zip"
                 @change="onFileChange"
               />
             </label>
-            <small v-if="document" class="file-meta">
-              已读取 {{ document.nodes.length }} 个节点、{{
-                document.connections.length
-              }}
-              条连线
-            </small>
+            <div v-if="document" class="file-analysis">
+              <small
+                class="file-meta"
+                :class="{
+                  'is-success': analysisApplied,
+                  'is-error': Boolean(analysisError),
+                }"
+                :title="analysisError"
+              >
+                {{
+                  analyzing
+                    ? "AI 正在分析节点、配置和连接关系"
+                    : analysisApplied
+                      ? "AI 已自动填充全部模板信息"
+                      : analysisError
+                        ? "AI 分析失败，已保留当前表单"
+                        : `已读取 ${document.nodes.length} 个节点、${document.connections.length} 条连线`
+                }}
+              </small>
+              <el-button
+                type="primary"
+                link
+                :icon="MagicStick"
+                :loading="analyzing"
+                :disabled="saving"
+                @click="analyzeTemplate()"
+              >
+                {{ analysisApplied || analysisError ? "重新分析并填充" : "AI 分析并填充" }}
+              </el-button>
+            </div>
           </el-form-item>
         </aside>
 
@@ -1674,14 +1823,51 @@ watch(dialogOpen, (open) => {
 
 .file-meta {
   display: block;
-  margin-top: 6px;
   color: var(--ink-3);
   font-size: 12px;
+}
+
+.file-analysis {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.file-analysis .file-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-analysis .file-meta.is-success {
+  color: var(--success);
+}
+
+.file-analysis .file-meta.is-error {
+  color: var(--danger);
+}
+
+.file-analysis :deep(.el-button) {
+  flex: none;
+  padding-inline: 4px;
 }
 
 .cover-picker {
   position: relative;
   width: 100%;
+}
+
+.cover-compression-note {
+  display: block;
+  margin-top: 6px;
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .cover-picker input {

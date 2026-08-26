@@ -111,6 +111,9 @@ export function AppShell() {
   if (location.pathname === "/tools/background-remove") {
     mainClasses.push("main--background-remove");
   }
+  if (location.pathname === "/tools" || (location.pathname.startsWith("/tools/") && !location.pathname.startsWith("/tools/background-remove") && !location.pathname.startsWith("/tools/image-compress") && !location.pathname.startsWith("/tools/puzzle"))) {
+    mainClasses.push("main--media-tools");
+  }
   if (location.pathname === "/design-workshop") {
     mainClasses.push("main--design-workshop");
   }

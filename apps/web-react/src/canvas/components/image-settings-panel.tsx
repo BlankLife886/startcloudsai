@@ -79,19 +79,18 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
             >
                 {showTitle ? <div className="text-[13px] font-semibold leading-none">{t("settingsPanels.image.title")}</div> : null}
 
-                <div className="grid grid-cols-3 gap-1.5">
-                    <FieldBlock label={t("settingsPanels.image.quality")} style={labelStyle}>
+                <div className="grid gap-1.5" style={{ gridTemplateColumns: `repeat(${Math.max(1, Number(ratioOptions.length > 0) + Number(qualityOptions.length > 0) + Number(resolutionOptions.length > 0))}, minmax(0, 1fr))` }}>
+                    {qualityOptions.length ? <FieldBlock label={t("settingsPanels.image.quality")} style={labelStyle}>
                         <CanvasFieldMenu compact value={quality} options={qualityOptions} theme={theme} surface={controlBg} triggerClassName={triggerClass} onChange={(value) => onConfigChange("quality", value)}>
                             {(open) => <FieldMenuValue open={open}>{imageQualityLabel(quality)}</FieldMenuValue>}
                         </CanvasFieldMenu>
-                    </FieldBlock>
-                    <FieldBlock label={t("settingsPanels.image.aspectRatio")} style={labelStyle}>
+                    </FieldBlock> : null}
+                    {ratioOptions.length ? <FieldBlock label={t("settingsPanels.image.aspectRatio")} style={labelStyle}>
                         <CanvasFieldMenu compact value={selectedRatio} options={ratioOptions} theme={theme} surface={controlBg} triggerClassName={triggerClass} onChange={(ratio) => onConfigChange("size", ratio)}>
                             {(open) => <FieldMenuValue open={open}>{selectedRatio === "auto" ? t("settingsPanels.common.auto") : selectedRatio}</FieldMenuValue>}
                         </CanvasFieldMenu>
-                    </FieldBlock>
-                    <FieldBlock label={t("settingsPanels.image.resolution")} style={labelStyle}>
-                        {resolutionOptions.length ? (
+                    </FieldBlock> : null}
+                    {resolutionOptions.length ? <FieldBlock label={t("settingsPanels.image.resolution")} style={labelStyle}>
                             <CanvasFieldMenu compact value={selectedResolution} options={resolutionOptions} theme={theme} surface={controlBg} triggerClassName={triggerClass} onChange={(resolution) => {
                                 const next = coerceCanvasImageSettings(model, { ...settings, resolution });
                                 onConfigChange("resolution", next.resolution);
@@ -99,21 +98,16 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                             }}>
                                 {(open) => <FieldMenuValue open={open}>{selectedResolution}</FieldMenuValue>}
                             </CanvasFieldMenu>
-                        ) : (
-                            <div className={`canvas-config-field flex ${controlH} items-center rounded-[10px] px-2.5 text-[13px] font-medium`} style={{ background: controlBg, color: theme.node.muted }}>
-                                {t("settingsPanels.common.auto")}
-                            </div>
-                        )}
-                    </FieldBlock>
+                    </FieldBlock> : null}
                 </div>
 
-                <div className="grid grid-cols-2 gap-1.5">
-                    <div className={`canvas-config-field flex ${controlH} min-w-0 items-center justify-between rounded-[10px] px-2.5`} style={{ background: controlBg, opacity: capabilities.transparentBackground ? 1 : 0.45 }} title={t("settingsPanels.image.transparentHint")}>
+                <div className={`grid gap-1.5 ${capabilities.transparentBackground ? "grid-cols-2" : "grid-cols-1"}`}>
+                    {capabilities.transparentBackground ? <div className={`canvas-config-field flex ${controlH} min-w-0 items-center justify-between rounded-[10px] px-2.5`} style={{ background: controlBg }} title={t("settingsPanels.image.transparentHint")}>
                         <span className="truncate text-[12px] font-medium">{t("settingsPanels.image.transparent")}</span>
                         <span className="shrink-0" onMouseDown={(event) => event.stopPropagation()}>
-                            <Switch size="small" checked={transparentBackground} disabled={!capabilities.transparentBackground} onChange={(checked) => onConfigChange("background", checked ? "transparent" : "")} />
+                            <Switch size="small" checked={transparentBackground} onChange={(checked) => onConfigChange("background", checked ? "transparent" : "")} />
                         </span>
-                    </div>
+                    </div> : null}
                     <div className={`canvas-config-field flex ${controlH} min-w-0 items-center rounded-[10px] px-1`} style={{ background: controlBg }}>
                         <HoldButton disabled={count <= 1} theme={theme} onHold={() => stepCount(-1)}>
                             <Minus className="size-3.5" />
@@ -130,7 +124,7 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                     </div>
                 </div>
 
-                {showDimensions ? (
+                {showDimensions && resolutionOptions.length > 0 && dimensions ? (
                     <FieldBlock label={t("settingsPanels.image.size")} style={labelStyle}>
                         <div className="grid grid-cols-2 gap-1.5">
                             <DimensionPreview prefix="W" value={dimensions?.width} theme={theme} surface={controlBg} compact={embedded} />

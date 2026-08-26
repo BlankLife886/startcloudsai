@@ -2,6 +2,7 @@ import localforage from "localforage";
 
 import { nanoid } from "nanoid";
 import i18n from "@/i18n";
+import { dataUrlToBlob } from "@/lib/data-url";
 import { readImageSizeFromBlob } from "@/lib/image-utils";
 import { cloudFileUrl, cloudThumbnailKey, cloudThumbnailUrl, isLocalImageKey, storageKeyFromUrl } from "@/lib/canvas/canvas-preview-url";
 import { StarcloudsApiError, fetchCloudFileBlob, starcloudsFileUrl, uploadCloudFile } from "@/services/starclouds-api";
@@ -194,7 +195,7 @@ function blobToDataUrl(blob: Blob) {
 }
 
 function isCloudStorageKey(key: string) {
-    return key.startsWith("uploads/") || key.startsWith("tasks/");
+    return key.startsWith("uploads/") || key.startsWith("tasks/") || key.startsWith("canvas-template-assets/");
 }
 
 function imageFilename(blob: Blob) {
@@ -221,7 +222,8 @@ async function fetchSourceBlob(src: string) {
         if (!blob) throw new Error(i18n.t("common.imageReadFailed"));
         return blob;
     }
-    const credentials = src.startsWith("blob:") || src.startsWith("data:") ? ("omit" as const) : ("include" as const);
+    if (src.startsWith("data:")) return dataUrlToBlob(src);
+    const credentials = src.startsWith("blob:") ? ("omit" as const) : ("include" as const);
     const response = await fetch(src, { credentials });
     if (!response.ok) throw new Error(i18n.t("common.imageReadFailed"));
     return response.blob();

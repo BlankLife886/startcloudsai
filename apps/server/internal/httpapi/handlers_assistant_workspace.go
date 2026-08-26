@@ -18,6 +18,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantbilling"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantstream"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistanttools"
+	"github.com/BlankLife886/startcloudsai/server/internal/media"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
@@ -25,9 +26,10 @@ import (
 )
 
 const (
-	assistantConversationLimit = 40
-	assistantMessageLimit      = 160
-	assistantActiveRunLimit    = 4
+	assistantConversationLimit      = 40
+	assistantMessageLimit           = 160
+	assistantActiveRunLimit         = 4
+	assistantCanvasSnapshotMaxBytes = 128 * 1024
 )
 
 type createAssistantConversationIn struct {
@@ -60,6 +62,7 @@ type assistantRunIn struct {
 	ClientAssistantMessageID string           `json:"clientAssistantMessageId"`
 	SourceUserMessageID      string           `json:"sourceUserMessageId"`
 	ReferenceImages          []map[string]any `json:"referenceImages"`
+	ReferenceMode            string           `json:"referenceMode"`
 	Attachments              []map[string]any `json:"attachments"`
 	Quoted                   map[string]any   `json:"quoted"`
 	Skill                    string           `json:"skill"`
@@ -77,6 +80,9 @@ type assistantRunIn struct {
 	FastMode                 bool             `json:"fastMode"`
 	ProposalSourceMessageID  string           `json:"proposalSourceMessageId"`
 	ParentOutputURL          string           `json:"parentOutputUrl"`
+	MaskImage                map[string]any   `json:"maskImage"`
+	MaskBaseImage            map[string]any   `json:"maskBaseImage"`
+	MaskRect                 string           `json:"maskRect"`
 	CanvasSnapshot           json.RawMessage  `json:"canvasSnapshot"`
 }
 
@@ -415,6 +421,92 @@ func (s *Server) deleteAssistantMessage(c *gin.Context) {
 	respondNoContent(c)
 }
 
+func (s *Server) deleteAssistantMessageImage(c *gin.Context) {
+	user, err := s.requireUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	messageID, err := uuid.Parse(strings.TrimSpace(c.Param("id")))
+	if err != nil {
+		fail(c, apperr.E("validation_error", "消息 ID 无效", 422))
+		return
+	}
+	imageID := strings.TrimSpace(c.Param("imageId"))
+	if imageID == "" {
+		fail(c, apperr.E("validation_error", "图片 ID 无效", 422))
+		return
+	}
+	messageDeleted := false
+	err = s.St.Tx(c.Request.Context(), func(tx pgx.Tx) error {
+		message, getErr := store.GetAssistantMessage(c.Request.Context(), tx, messageID)
+		if getErr != nil {
+			return getErr
+		}
+		if message == nil {
+			return apperr.E("not_found", "图片消息不存在", 404)
+		}
+		conversation, getErr := store.GetUserAssistantConversation(c.Request.Context(), tx, user.ID, message.ConversationID)
+		if getErr != nil {
+			return getErr
+		}
+		if conversation == nil {
+			return apperr.E("not_found", "图片消息不存在", 404)
+		}
+		if message.Status == "running" || message.Status == "queued" {
+			return apperr.E("assistant_conversation_busy", "图片仍在生成，请先停止任务", 409)
+		}
+		images := assistantReferenceItems(message.Metadata["images"])
+		next := make([]map[string]any, 0, len(images))
+		var removed map[string]any
+		for _, image := range images {
+			if removed == nil && (assistantMapText(image, "id") == imageID || assistantMapText(image, "fileKey") == imageID) {
+				removed = image
+				continue
+			}
+			next = append(next, image)
+		}
+		if removed == nil {
+			return apperr.E("not_found", "图片不存在", 404)
+		}
+		if len(next) == 0 {
+			deleted, deleteErr := store.DeleteUserAssistantMessage(c.Request.Context(), tx, user.ID, messageID)
+			if deleteErr != nil {
+				return deleteErr
+			}
+			if !deleted {
+				return apperr.E("not_found", "图片消息不存在", 404)
+			}
+			messageDeleted = true
+			return nil
+		}
+		metadata := make(map[string]any, len(message.Metadata))
+		for key, value := range message.Metadata {
+			metadata[key] = value
+		}
+		metadata["images"] = next
+		if err := store.UpdateAssistantMessage(c.Request.Context(), tx, message.ID, message.Content, message.Kind, message.Status, metadata); err != nil {
+			return err
+		}
+		key := assistantMapText(removed, "fileKey")
+		if key != "" {
+			keys := append([]string{key}, store.AssistantVariantKeys(key)...)
+			if err := store.LockObjectReferenceKeys(c.Request.Context(), tx, keys); err != nil {
+				return err
+			}
+			if err := store.EnqueueObjectCleanup(c.Request.Context(), tx, keys); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ok(c, gin.H{"messageDeleted": messageDeleted})
+}
+
 func (s *Server) importAssistantConversations(c *gin.Context) {
 	user, err := s.requireUser(c)
 	if err != nil {
@@ -548,6 +640,11 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		}
 	}
 	body.IdempotencyKey, err = normalizeAssistantIdempotencyKey(body.IdempotencyKey, body.ClientAssistantMessageID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	body.ReferenceMode, err = normalizeAssistantReferenceMode(body.ReferenceMode)
 	if err != nil {
 		fail(c, err)
 		return
@@ -698,20 +795,6 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		fail(c, apperr.E("validation_error", fmt.Sprintf("图片数量须在 1-%d 之间", maxImages), 422))
 		return
 	}
-	if body.RequestSize == "" {
-		body.RequestSize = "auto"
-	}
-	if err := validateAssistantImageSize(body.RequestSize); err != nil {
-		fail(c, err)
-		return
-	}
-	if body.Quality == "" {
-		body.Quality = "high"
-	}
-	if !containsString([]string{"low", "medium", "high"}, body.Quality) {
-		fail(c, apperr.E("validation_error", "不支持的图片质量", 422))
-		return
-	}
 	serviceProvider := ""
 	requestedAutoRatio := false
 	var imageSelection *modelconfig.Selection
@@ -759,19 +842,25 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 			return
 		}
 	}
-	if imageSelection != nil && len(imageSelection.Model.Resolutions) > 0 {
-		resolutionSupported := false
-		for _, resolution := range imageSelection.Model.Resolutions {
-			if strings.EqualFold(body.Resolution, resolution) {
-				body.Resolution = resolution
-				resolutionSupported = true
-				break
-			}
+	if imageSelection != nil {
+		requestedAutoRatio, err = normalizeAssistantConfiguredImageParameters(&body, imageSelection.Model)
+		if err != nil {
+			fail(c, err)
+			return
 		}
-		if body.Resolution == "" || (body.Mode == "agent" && !resolutionSupported) {
-			body.Resolution = imageSelection.Model.Resolutions[0]
-		} else if !resolutionSupported {
-			fail(c, apperr.E("validation_error", "所选模型不支持该分辨率，请刷新模型配置后重试", 422))
+	} else {
+		if body.RequestSize == "" {
+			body.RequestSize = "auto"
+		}
+		if err := validateAssistantImageSize(body.RequestSize); err != nil {
+			fail(c, err)
+			return
+		}
+		if body.Quality == "" {
+			body.Quality = "high"
+		}
+		if !containsString([]string{"low", "medium", "high"}, body.Quality) {
+			fail(c, apperr.E("validation_error", "不支持的图片质量", 422))
 			return
 		}
 	}
@@ -779,29 +868,6 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		if len(body.ReferenceImages) > imageSelection.Model.MaxReferenceImages {
 			fail(c, apperr.E("validation_error", fmt.Sprintf("所选模型最多允许 %d 张参考图", imageSelection.Model.MaxReferenceImages), 422))
 			return
-		}
-		ratio := strings.ToLower(strings.TrimSpace(body.Ratio))
-		if ratio == "" || ratio == "自动" {
-			ratio = "auto"
-		}
-		allowedRatios := modelconfig.AspectRatiosForResolution(imageSelection.Model, body.Resolution)
-		if !containsString(allowedRatios, ratio) {
-			if body.Mode == "agent" {
-				ratio = allowedRatios[0]
-			} else {
-				fail(c, apperr.E("validation_error", "所选模型不支持该宽高比", 422))
-				return
-			}
-		}
-		requestedAutoRatio = ratio == "auto"
-		body.Ratio = ratio
-		if !containsString(imageSelection.Model.Qualities, body.Quality) {
-			if body.Mode == "agent" {
-				body.Quality = imageSelection.Model.Qualities[0]
-			} else {
-				fail(c, apperr.E("validation_error", "所选模型不支持该图片质量", 422))
-				return
-			}
 		}
 	} else if len(body.ReferenceImages) > maxAssistantReferences {
 		fail(c, apperr.E("validation_error", "最多允许 4 张参考图", 422))
@@ -825,10 +891,45 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		fail(c, err)
 		return
 	}
+	if body.Mode == "image" {
+		if body.ReferenceMode == "" {
+			body.ReferenceMode = "shared"
+		}
+		if body.ReferenceMode == "individual" && (len(references) == 0 || len(references) != body.Count) {
+			fail(c, apperr.E("validation_error", fmt.Sprintf("逐张编辑要求参考图数量与输出数量一致：参考图 %d 张，输出 %d 张", len(references), body.Count), 422))
+			return
+		}
+	} else {
+		body.ReferenceMode = ""
+	}
+	maskReferences := []map[string]any{}
+	if len(body.MaskImage) > 0 || len(body.MaskBaseImage) > 0 || strings.TrimSpace(body.MaskRect) != "" {
+		if body.Mode != "image" || len(body.MaskImage) == 0 || len(body.MaskBaseImage) == 0 {
+			fail(c, apperr.E("validation_error", "局部编辑参数不完整", 422))
+			return
+		}
+		if _, parseErr := media.ParseMaskRect(body.MaskRect); parseErr != nil {
+			fail(c, apperr.E("validation_error", "maskRect: 格式无效", 422))
+			return
+		}
+		maskReferences, err = sanitizeAssistantReferences([]map[string]any{body.MaskImage, body.MaskBaseImage}, user.ID)
+		if err != nil || len(maskReferences) != 2 || assistantMapText(maskReferences[0], "fileKey") == "" || assistantMapText(maskReferences[1], "fileKey") == "" {
+			fail(c, apperr.E("validation_error", "局部编辑蒙版或底图无效", 422))
+			return
+		}
+	}
 	assistantUploadKeys := assistantUploadReferenceKeys(references, user.ID)
 	taskOutputReferenceKeys := assistantTaskOutputReferenceKeys(references, user.ID)
 	assistantOutputKeys := assistantOutputReferenceKeys(references, user.ID)
+	if len(maskReferences) == 2 {
+		assistantUploadKeys = append(assistantUploadKeys, assistantUploadReferenceKeys(maskReferences, user.ID)...)
+		taskOutputReferenceKeys = append(taskOutputReferenceKeys, assistantTaskOutputReferenceKeys(maskReferences, user.ID)...)
+		assistantOutputKeys = append(assistantOutputKeys, assistantOutputReferenceKeys(maskReferences, user.ID)...)
+	}
 	userMetadata := map[string]any{"referenceImages": references, "attachments": body.Attachments, "quoted": body.Quoted, "skill": body.Skill}
+	if body.ReferenceMode != "" {
+		userMetadata["referenceMode"] = body.ReferenceMode
+	}
 	if sourceID := strings.TrimSpace(body.ProposalSourceMessageID); sourceID != "" {
 		if _, parseErr := uuid.Parse(sourceID); parseErr != nil {
 			fail(c, apperr.E("validation_error", "proposalSourceMessageId 无效", 422))
@@ -837,12 +938,37 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		userMetadata["proposalSourceMessageId"] = sourceID
 	}
 	params := map[string]any{
-		"referenceImages": references, "prompt": body.Prompt, "model": body.Model, "ratio": body.Ratio,
-		"resolution": body.Resolution, "count": body.Count, "requestSize": body.RequestSize,
-		"width": body.Width, "height": body.Height, "quality": body.Quality,
+		"referenceImages": references, "prompt": body.Prompt, "model": body.Model, "count": body.Count,
 		"serviceKey": body.ServiceKey, "fastMode": body.FastMode, "_serviceProvider": serviceProvider,
 		"requestedMode": body.Mode,
 		"workspace":     workspace,
+	}
+	if body.ReferenceMode != "" {
+		params["referenceMode"] = body.ReferenceMode
+	}
+	if body.Ratio != "" {
+		params["ratio"] = body.Ratio
+	}
+	if body.Resolution != "" {
+		params["resolution"] = body.Resolution
+	}
+	if body.RequestSize != "" {
+		params["requestSize"] = body.RequestSize
+	}
+	if body.Width > 0 {
+		params["width"] = body.Width
+	}
+	if body.Height > 0 {
+		params["height"] = body.Height
+	}
+	if body.Quality != "" {
+		params["quality"] = body.Quality
+	}
+	if len(maskReferences) == 2 {
+		params["_maskKey"] = assistantMapText(maskReferences[0], "fileKey")
+		params["_maskBaseKey"] = assistantMapText(maskReferences[1], "fileKey")
+		params["_maskRect"] = strings.TrimSpace(body.MaskRect)
+		params["maskEdit"] = true
 	}
 	if len(body.Attachments) > 0 {
 		fileIDs := make([]string, 0, len(body.Attachments))
@@ -907,6 +1033,7 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		)
 	}
 	if imageSelection != nil {
+		imageWorkspacePrice := modelconfig.ResolveWorkspacePrice(modelCfg, workspace, imageSelection.Model)
 		params["_imageModelConfigId"] = imageSelection.Model.ID
 		params["_imageProviderConfigId"] = imageSelection.Provider.ID
 		params["_imageProviderDisplayName"] = imageSelection.Provider.Name
@@ -922,7 +1049,10 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		params["_modelOutputFormats"] = imageSelection.Model.OutputFormats
 		params["_modelModerationLevels"] = imageSelection.Model.ModerationLevels
 		params["_modelMaxReferenceImages"] = imageSelection.Model.MaxReferenceImages
-		params["_unitPriceCents"] = modelconfig.EffectivePrice(imageSelection.Model)
+		params["_unitPriceCents"] = imageWorkspacePrice.EffectiveCents
+		params["_billingUnitPriceCents"] = imageWorkspacePrice.EffectiveCents
+		params["_modelEffectivePriceCents"] = modelconfig.EffectivePrice(imageSelection.Model)
+		params["_pricingWorkspace"] = workspace
 	}
 	if chatSelection != nil {
 		params["_chatModelConfigId"] = chatSelection.Model.ID
@@ -933,6 +1063,7 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		params["_chatContextWindowTokens"] = chatSelection.Model.ContextWindowTokens
 		params["_chatMaxOutputTokens"] = chatSelection.Model.MaxOutputTokens
 		params["_modelDisplayName"] = chatSelection.Model.Name
+		params["_chatModelEffectivePriceCents"] = modelconfig.EffectivePrice(chatSelection.Model)
 	}
 	chatCostCents := int64(0)
 	if chatSelection != nil {
@@ -940,11 +1071,20 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		if canvasAgent {
 			priceScope = modelconfig.ReasoningPriceScopeCanvasAgent
 		}
-		chatCostCents = applyAssistantReasoningPriceSnapshot(params, chatSelection.Model, body.ReasoningEffort, priceScope, modelCfg.Version)
+		workspacePrice := modelconfig.ResolveWorkspacePrice(modelCfg, workspace, chatSelection.Model)
+		if workspacePrice.Overridden {
+			params["_reasoningPriceScope"] = priceScope
+			params["_reasoningStandardPriceCents"] = workspacePrice.PriceCents
+			params["_reasoningPricingVersion"] = modelCfg.Version
+			params["_workspacePriceOverridden"] = true
+			chatCostCents = workspacePrice.EffectiveCents
+		} else {
+			chatCostCents = applyAssistantReasoningPriceSnapshot(params, chatSelection.Model, body.ReasoningEffort, priceScope, modelCfg.Version)
+		}
 	}
 	imageCostCents := int64(0)
 	if imageSelection != nil {
-		imageCostCents = modelconfig.EffectivePrice(imageSelection.Model) * int64(body.Count)
+		imageCostCents = modelconfig.EffectiveWorkspacePrice(modelCfg, workspace, imageSelection.Model) * int64(body.Count)
 	}
 	reservedCents := assistantRunReservedCost(body.Mode, chatCostCents, imageCostCents)
 	params["_chatCostCents"] = chatCostCents
@@ -1460,7 +1600,7 @@ func sanitizeAssistantCanvasSnapshot(raw json.RawMessage) (any, error) {
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil, nil
 	}
-	if len(raw) > 20_000 {
+	if len(raw) > assistantCanvasSnapshotMaxBytes {
 		return nil, apperr.E("validation_error", "画布快照过大", 422)
 	}
 	var snapshot any
@@ -1510,6 +1650,9 @@ func (s *Server) bindAssistantConversationProject(ctx context.Context, userID uu
 		return apperr.E("validation_error", "projectId: 仅支持无限画布会话", 422)
 	}
 	if conversation.ProjectID != nil {
+		if *conversation.ProjectID != projectID {
+			return apperr.E("not_found", "对话不属于当前画布", 404)
+		}
 		return nil
 	}
 	if err := store.SetAssistantConversationProjectIfEmpty(ctx, s.St.Pool, userID, conversation.ID, projectID); err != nil {
@@ -1558,6 +1701,76 @@ func normalizeAssistantIdempotencyKey(value, fallback string) (string, error) {
 		return "", apperr.E("validation_error", "idempotencyKey 格式无效", 422)
 	}
 	return key, nil
+}
+
+func assistantAllowedConfiguredValue(values []string, requested string) (string, bool) {
+	requested = strings.TrimSpace(requested)
+	for _, value := range values {
+		if strings.EqualFold(value, requested) {
+			return value, true
+		}
+	}
+	return "", false
+}
+
+func normalizeAssistantReferenceMode(value string) (string, error) {
+	switch normalized := strings.ToLower(strings.TrimSpace(value)); normalized {
+	case "", "shared", "individual":
+		return normalized, nil
+	default:
+		return "", apperr.E("validation_error", "referenceMode: 仅支持 shared 或 individual", 422)
+	}
+}
+
+func normalizeAssistantConfiguredImageParameters(body *assistantRunIn, model modelconfig.Model) (bool, error) {
+	if len(model.Resolutions) == 0 {
+		body.Resolution = ""
+		body.RequestSize = ""
+		body.Width = 0
+		body.Height = 0
+	} else {
+		resolution, supported := assistantAllowedConfiguredValue(model.Resolutions, body.Resolution)
+		if supported {
+			body.Resolution = resolution
+		} else if body.Resolution == "" || body.Mode == "agent" {
+			body.Resolution = model.Resolutions[0]
+		} else {
+			return false, apperr.E("validation_error", "所选模型不支持该分辨率，请刷新模型配置后重试", 422)
+		}
+		if body.RequestSize == "" {
+			body.RequestSize = "auto"
+		}
+		if err := validateAssistantImageSize(body.RequestSize); err != nil {
+			return false, err
+		}
+	}
+
+	if len(model.Qualities) == 0 {
+		body.Quality = ""
+	} else if quality, supported := assistantAllowedConfiguredValue(model.Qualities, body.Quality); supported {
+		body.Quality = quality
+	} else if body.Quality == "" || body.Mode == "agent" {
+		body.Quality = model.Qualities[0]
+	} else {
+		return false, apperr.E("validation_error", "所选模型不支持该图片质量", 422)
+	}
+
+	ratio := strings.ToLower(strings.TrimSpace(body.Ratio))
+	if ratio == "" || ratio == "自动" {
+		ratio = "auto"
+	}
+	allowedRatios := modelconfig.AspectRatiosForResolution(model, body.Resolution)
+	if len(allowedRatios) == 0 {
+		ratio = ""
+	} else if !containsString(allowedRatios, ratio) {
+		if body.Mode == "agent" {
+			ratio = allowedRatios[0]
+		} else {
+			return false, apperr.E("validation_error", "所选模型不支持该宽高比", 422)
+		}
+	}
+	body.Ratio = ratio
+	return ratio == "auto", nil
 }
 
 func assistantRunRequestFingerprint(body assistantRunIn) (string, error) {

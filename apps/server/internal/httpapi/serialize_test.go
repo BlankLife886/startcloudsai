@@ -18,6 +18,19 @@ func TestTaskDictIncludesRecordedModel(t *testing.T) {
 	}
 }
 
+func TestTaskNotificationIncludesPreciseSource(t *testing.T) {
+	notification := &store.Notification{
+		ID: uuid.New(), Kind: "task", Title: "文生图已完成", CreatedAt: time.Now(),
+	}
+	task := &store.Task{ID: uuid.New(), Type: "t2i"}
+	attachTaskNotification(notification, task)
+	dict := notificationDict(notification, nil)
+
+	if dict["sourceType"] != "task" || dict["sourceId"] != task.ID.String() {
+		t.Fatalf("task notification source missing: %#v", dict)
+	}
+}
+
 func TestAttachShareSubmission(t *testing.T) {
 	empty := attachShareSubmission(gin.H{}, nil)
 	if empty["shareSubmitted"] != false || empty["shareSubmissionStatus"] != "" {
@@ -304,5 +317,24 @@ func TestThumbURLsForTaskPrefersStoredThumbsAndDerivesWhenMissing(t *testing.T) 
 	assistant := thumbURLsForTask(&store.Task{OutputKeys: []string{assistantOriginal}}, prefix)
 	if len(assistant) != 1 || assistant[0] != prefix+"tasks/"+userID.String()+"/assistant/"+taskID.String()+"/1-thumb" {
 		t.Fatalf("assistant thumbs = %#v", assistant)
+	}
+}
+
+func TestDisplayURLsForTaskFallsBackToOriginalWithoutStoredThumbnail(t *testing.T) {
+	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	taskID := uuid.MustParse("22222222-2222-2222-2222-222222222222")
+	original := "tasks/" + userID.String() + "/" + taskID.String() + "/original/0.png"
+	thumbnail := "tasks/" + userID.String() + "/" + taskID.String() + "/thumb/0"
+	prefix := "/api/v1/files/"
+
+	fallback := displayURLsForTask(&store.Task{OutputKeys: []string{original}}, prefix)
+	if len(fallback) != 1 || fallback[0] != prefix+original {
+		t.Fatalf("display fallback = %#v, want original", fallback)
+	}
+
+	derived := displayURLsForTask(&store.Task{OutputKeys: []string{original}, ThumbnailKeys: []string{thumbnail}}, prefix)
+	want := prefix + "tasks/" + userID.String() + "/" + taskID.String() + "/display/0"
+	if len(derived) != 1 || derived[0] != want {
+		t.Fatalf("display variant = %#v, want %q", derived, want)
 	}
 }

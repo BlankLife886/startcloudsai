@@ -79,7 +79,7 @@
 | GET    | `/api/v1/me/growth`                         | 好友拼团、会员、失败补偿、用量里程碑和建议采纳；同时返回当前拼团及奖励进度                                                                                                                                          |
 | POST   | `/api/v1/me/growth/groups`                  | 创建当期好友拼团；同一用户同一活动批次只能参加一个有效拼团                                                                                                                                                        |
 | POST   | `/api/v1/me/growth/groups/join`             | `{code}` 加入拼团；满员后同一事务向全部成员各发放一次积分                                                                                                                                                         |
-| GET    | `/api/v1/me/notifications`            | 个人通知与全站通知合并后的 cursor 分页                                                                                                                                                                           |
+| GET    | `/api/v1/me/notifications`            | 个人通知与全站通知合并后的 cursor 分页；任务与订单通知可包含 `sourceType`、`sourceId`，用于用户端精确深链                                                                                                         |
 | PATCH  | `/api/v1/me/notifications`       | `{ids?:[]}`；省略 ids 表示全部已读；成功返回 204                                                                                                                                                                 |
 | GET    | `/api/v1/me/gallery/submissions`      | 我的投稿 cursor 分页                                                                                                                                                                                             |
 | DELETE | `/api/v1/me/gallery/submissions/{id}` | 删除自己的投稿                                                                                                                                                                                                   |
@@ -313,12 +313,13 @@ task 主要字段：
 | ------ | ----------------------------------------------- | -------------------------------------------------------------------- |
 | GET    | `/api/v1/admin/ecommerce/catalog`               | `?kind=model\|scene\|garment\|hand` 列表，含未上架项                   |
 | POST   | `/api/v1/admin/ecommerce/catalog`               | multipart：`kind`、`label`、`file`，可选 `apparel`、`sort`、`active` |
+| POST   | `/api/v1/admin/ecommerce/catalog/analyze`       | multipart：`kind`、`file`，使用电商分析模型返回 `{title}`             |
 | PATCH  | `/api/v1/admin/ecommerce/catalog/order`         | `{kind,ids}` 按当前分类槽位保存拖拽顺序                               |
 | PATCH  | `/api/v1/admin/ecommerce/catalog/{id}`          | `{label?,apparel?,sort?,active?}`                                    |
 | PUT    | `/api/v1/admin/ecommerce/catalog/{id}/image`    | multipart 替换图片                                                |
 | DELETE | `/api/v1/admin/ecommerce/catalog/{id}`          | 删除记录并删除对象存储文件                                           |
 
-`/api/v1/admin/ecommerce/tryon-catalog` 为同组别名。`kind` 为 `model`、`scene`、`garment` 或 `hand`。`apparel` 仅服装可用，取值为 `上装`、`下装`、`全身`。图片仅支持 png / jpg / webp，最大 8MB。多张上传由后台连续调用创建接口完成。
+`/api/v1/admin/ecommerce/tryon-catalog` 为同组别名。`kind` 为 `model`、`scene`、`garment` 或 `hand`。`apparel` 仅服装可用，取值为 `上装`、`下装`、`全身`。图片仅支持 png / jpg / webp，最大 8MB。多张上传由后台连续调用创建接口完成。管理员点击单张图片旁的 AI 按钮后才调用 `analyze`；服务商、模型与推理强度由系统设置中的“后台图片分析”统一配置，该配置可由其他后台图片理解功能复用，且不回退到用户端模型。
 
 ## 管理端：画廊与社区
 

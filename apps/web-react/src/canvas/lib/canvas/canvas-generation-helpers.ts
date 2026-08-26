@@ -6,11 +6,15 @@ import { resolveImageUrl, uploadImage, type UploadedImage } from "@/services/ima
 import { imageMetadata, referenceUrl } from "@/lib/canvas/canvas-node-factory";
 import { resultNodeSize } from "@/lib/canvas/canvas-node-size";
 import { canonicalImageSrc, cloudFileUrl, cloudThumbnailUrl } from "@/lib/canvas/canvas-preview-url";
+import { isUsableCanvasImageSource, isUsableCanvasImageStorageKey, normalizeHydratedCanvasImageMetadata } from "@/lib/canvas/canvas-image-hydration";
+export { pendingCanvasTasks, type PendingCanvasTask } from "./canvas-pending-tasks.ts";
+export { repairMisappliedCanvasWorkflowOutputs } from "@/lib/canvas/canvas-image-hydration";
 import type { NodeGenerationInput } from "@/components/canvas/canvas-node-generation";
 import type { CanvasNodeGenerationMode } from "@/components/canvas/canvas-node-prompt-panel";
 import type { CanvasImageAngleParams } from "@/components/canvas/canvas-node-angle-dialog";
 import type { ReferenceImage } from "@/types/image";
 import { CanvasNodeType, type CanvasAssistantSession, type CanvasConnection, type CanvasNodeData, type CanvasNodeImage, type CanvasNodeMetadata } from "@/types/canvas";
+import { isCanvasExecutableNode } from "@/lib/canvas/canvas-operation-node";
 
 export function imageExtension(dataUrl: string) {
     return dataUrl.match(/^data:image[/]([^;]+)/)?.[1] || dataUrl.match(/image[/]([^;]+)/)?.[1] || "png";
@@ -55,11 +59,13 @@ export async function hydrateCanvasImages(nodes: CanvasNodeData[]) {
     return Promise.all(
         nodes.map(async (node) => {
             const content = node.metadata?.content;
-            const images = node.metadata?.images || [];
             if ((node.type === CanvasNodeType.Video || node.type === CanvasNodeType.Audio) && (node.metadata?.storageKey || content)) {
                 return { ...node, metadata: { ...node.metadata, content: displayMediaSrc(node.metadata?.storageKey, content) } };
             }
             if (node.type !== CanvasNodeType.Image) return node;
+            const normalizedMetadata = normalizeHydratedCanvasImageMetadata(node.metadata);
+            const normalizedContent = normalizedMetadata.content;
+            const normalizedImages = normalizedMetadata.images || [];
             const uploadedByDataUrl = new Map<string, Awaited<ReturnType<typeof uploadImage>>>();
             const hydrateDataUrl = async (dataUrl: string) => {
                 const cached = uploadedByDataUrl.get(dataUrl);
@@ -69,21 +75,27 @@ export async function hydrateCanvasImages(nodes: CanvasNodeData[]) {
                 return uploaded;
             };
             const hydratedImages = await Promise.all(
-                images.map(async (image) => {
+                normalizedImages.map(async (image) => {
                     if (image.content?.startsWith("data:image/")) {
                         const uploaded = await hydrateDataUrl(image.content);
                         return { ...image, content: uploaded.url, storageKey: uploaded.storageKey, thumbnailUrl: uploaded.thumbnailUrl, thumbnailKey: uploaded.thumbnailKey };
                     }
-                    const nextContent = canonicalImageSrc({ src: image.content, storageKey: image.storageKey });
+                    const nextContent = hydratedCanvasImageSrc(image.content, image.storageKey);
                     return { ...image, content: nextContent, thumbnailUrl: image.thumbnailUrl || cloudThumbnailUrl(image.storageKey || nextContent) || undefined };
                 }),
             );
-            if (content?.startsWith("data:image/")) return { ...node, metadata: { ...node.metadata, ...imageMetadata(await hydrateDataUrl(content)), images: hydratedImages } };
-            const nextContent = canonicalImageSrc({ src: content, storageKey: node.metadata?.storageKey });
-            if (!nextContent && !hydratedImages.length) return node;
-            return { ...node, metadata: { ...node.metadata, content: nextContent, thumbnailUrl: node.metadata?.thumbnailUrl || cloudThumbnailUrl(node.metadata?.storageKey || nextContent) || undefined, images: hydratedImages } };
+            if (normalizedContent?.startsWith("data:image/")) return { ...node, metadata: { ...normalizedMetadata, ...imageMetadata(await hydrateDataUrl(normalizedContent)), images: hydratedImages } };
+            const nextContent = hydratedCanvasImageSrc(normalizedContent, normalizedMetadata.storageKey);
+            if (!nextContent && !hydratedImages.length) return { ...node, metadata: normalizedMetadata };
+            return { ...node, metadata: { ...normalizedMetadata, content: nextContent || undefined, thumbnailUrl: normalizedMetadata.thumbnailUrl || cloudThumbnailUrl(normalizedMetadata.storageKey || nextContent) || undefined, images: hydratedImages } };
         }),
     );
+}
+
+function hydratedCanvasImageSrc(content?: string, storageKey?: string) {
+    if (isUsableCanvasImageSource(content)) return canonicalImageSrc({ src: content, storageKey });
+    if (!isUsableCanvasImageStorageKey(storageKey)) return "";
+    return storageKey?.startsWith("image:") ? storageKey : cloudFileUrl(storageKey);
 }
 
 export async function hydrateAssistantImages(sessions: CanvasAssistantSession[]) {
@@ -144,30 +156,8 @@ export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | u
     return mode === "image" ? applyCanvasImageModelSettings(next, modelOptionMeta(next, next.model)) : next;
 }
 
-export type PendingCanvasTask = {
-    nodeId: string;
-    taskId: string;
-    imageId?: string;
-    kind: "image" | "assistant";
-};
-
 function hasResumableTask(node: CanvasNodeData) {
     return Boolean(node.metadata?.taskId) || Boolean(node.metadata?.images?.some((image) => image.status === "loading" && image.taskId));
-}
-
-export function pendingCanvasTasks(nodes: CanvasNodeData[]): PendingCanvasTask[] {
-    const targets: PendingCanvasTask[] = [];
-    for (const node of nodes) {
-        for (const image of node.metadata?.images || []) {
-            if (image.status === "loading" && image.taskId) {
-                targets.push({ nodeId: node.id, imageId: image.id, taskId: image.taskId, kind: "image" });
-            }
-        }
-        if (node.metadata?.status === "loading" && node.metadata.taskId && !targets.some((target) => target.nodeId === node.id && target.taskId === node.metadata?.taskId)) {
-            targets.push({ nodeId: node.id, taskId: node.metadata.taskId, kind: node.metadata.taskKind || "image" });
-        }
-    }
-    return targets;
 }
 
 export function attachCanvasTaskId(node: CanvasNodeData, taskId: string, imageId?: string, taskKind: "image" | "assistant" = "image"): CanvasNodeData {
@@ -297,7 +287,7 @@ export function applyCanceledGenerationToNode(node: CanvasNodeData, errorDetails
     const hasSuccess = Boolean(node.metadata?.content) || Boolean(images?.some((image) => image.status === "success"));
     const wasLoading = node.metadata?.status === "loading";
     const wasRunning = node.metadata?.executionStatus === "running" || node.metadata?.executionStatus === "queued";
-    const isConfig = node.type === CanvasNodeType.Config;
+    const isConfig = isCanvasExecutableNode(node);
     const status = wasLoading ? (hasSuccess ? ("success" as const) : isConfig ? ("idle" as const) : ("error" as const)) : node.metadata?.status;
     const startedAt = node.metadata?.generationStartedAt ? new Date(node.metadata.generationStartedAt) : new Date(completedAt);
     return {
@@ -338,7 +328,7 @@ export function resetInterruptedGeneration(nodes: CanvasNodeData[]) {
             return images ? { ...node, metadata: { ...node.metadata, images } } : node;
         }
         const hasSuccess = Boolean(node.metadata?.content) || Boolean(images?.some((image) => image.status === "success"));
-        const isConfig = node.type === CanvasNodeType.Config;
+        const isConfig = isCanvasExecutableNode(node);
         return {
             ...node,
             metadata: {
@@ -383,7 +373,7 @@ export function findRetrySourceNode(nodeId: string, nodes: CanvasNodeData[], con
         if (visited.has(id)) continue;
         visited.add(id);
         const node = nodes.find((item) => item.id === id);
-        if (node?.type === CanvasNodeType.Config) return node;
+        if (isCanvasExecutableNode(node)) return node;
         connections.filter((connection) => connection.toNodeId === id).forEach((connection) => queue.push(connection.fromNodeId));
     }
     return null;

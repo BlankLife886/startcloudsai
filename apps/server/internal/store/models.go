@@ -14,8 +14,8 @@ const (
 )
 
 var (
-	TaskTypes          = []string{"t2i", "coloring", "ui_design", "ecommerce_design", "model_sheet", "game_art", "puzzle", "background_remove"}
-	PromptTaskTypes    = append(append([]string{}, TaskTypes...), PromptTaskTypeCanvas, PromptTaskTypeAssistant)
+	TaskTypes          = []string{"t2i", "coloring", "ui_design", "ecommerce_design", "model_sheet", "game_art", "puzzle", "background_remove", "media_tool"}
+	PromptTaskTypes    = []string{"t2i", "coloring", "ui_design", "ecommerce_design", "model_sheet", "game_art", "puzzle", "background_remove", "media_tool", PromptTaskTypeCanvas, PromptTaskTypeAssistant}
 	AdminTaskTypes     = append(append([]string{}, TaskTypes...), "assistant")
 	AdminTaskFilters   = append(append([]string{}, AdminTaskTypes...), PromptTaskTypeCanvas)
 	TaskStatuses       = []string{"queued", "running", "succeeded", "failed", "canceled"}
@@ -276,6 +276,18 @@ type LedgerEntry struct {
 type TaskCreditReservation struct {
 	TaskID               uuid.UUID
 	Generation           int
+	NormalCents          int64
+	TrialCents           int64
+	NormalRemainingCents int64
+	TrialRemainingCents  int64
+	TrialFeatureKey      *string
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+}
+
+type CreditReservation struct {
+	SourceType           string
+	SourceID             string
 	NormalCents          int64
 	TrialCents           int64
 	NormalRemainingCents int64

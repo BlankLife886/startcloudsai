@@ -22,6 +22,22 @@ func TestDecodeEcommerceProductBriefRejectsEmptyFields(t *testing.T) {
 	}
 }
 
+func TestDecodeEcommerceCatalogTitle(t *testing.T) {
+	result, err := decodeEcommerceCatalogTitle("```json\n{\"title\":\"  白色针织上衣  \"}\n```")
+	if err != nil {
+		t.Fatalf("decode catalog title: %v", err)
+	}
+	if result.Title != "白色针织上衣" {
+		t.Fatalf("unexpected title: %q", result.Title)
+	}
+}
+
+func TestDecodeEcommerceCatalogTitleRejectsEmptyTitle(t *testing.T) {
+	if _, err := decodeEcommerceCatalogTitle(`{"title":""}`); err == nil {
+		t.Fatal("expected empty title to fail")
+	}
+}
+
 func TestSelectEcommerceAnalysisModelUsesWorkspaceDefault(t *testing.T) {
 	cfg := modelconfig.Config{
 		Providers: []modelconfig.Provider{{
@@ -44,5 +60,34 @@ func TestSelectEcommerceAnalysisModelUsesWorkspaceDefault(t *testing.T) {
 	selection, ok := selectEcommerceAnalysisModel(cfg)
 	if !ok || selection.Model.ID != "commerce-chat-b" || selection.Model.UpstreamModel != "commerce-upstream-b" {
 		t.Fatalf("ecommerce analysis selection = %#v", selection)
+	}
+}
+
+func TestSelectAdminImageAnalysisModelUsesAdminSettingAndReasoning(t *testing.T) {
+	cfg := modelconfig.Config{
+		Providers: []modelconfig.Provider{{
+			ID: "provider", Name: "Provider", Adapter: modelconfig.AdapterOpenAI,
+			BaseURL: "https://example.com", APIKey: "secret", Enabled: true,
+		}},
+		Models: []modelconfig.Model{{
+			ID: "catalog-title", Name: "素材标题", ProviderID: "provider",
+			UpstreamModel: "vision-model", Kind: modelconfig.ModelKindChat,
+			Public: false, Enabled: true,
+			SupportedReasoningEfforts: []string{"medium", "high"},
+			ReasoningPricing:          &modelconfig.ReasoningPricing{DefaultEffort: "high"},
+		}},
+	}
+	if _, _, ok := selectAdminImageAnalysisModel(cfg, "", "", ""); ok {
+		t.Fatal("empty admin setting must not select a model")
+	}
+	if _, _, ok := selectAdminImageAnalysisModel(cfg, "other-provider", "catalog-title", "high"); ok {
+		t.Fatal("mismatched provider must not select a model")
+	}
+	selection, effort, ok := selectAdminImageAnalysisModel(cfg, "provider", "catalog-title", "")
+	if !ok || selection.Model.ID != "catalog-title" || selection.Provider.ID != "provider" || effort != "high" {
+		t.Fatalf("catalog analysis selection = %#v", selection)
+	}
+	if _, _, ok := selectAdminImageAnalysisModel(cfg, "provider", "catalog-title", "max"); ok {
+		t.Fatal("unsupported reasoning effort must be rejected")
 	}
 }

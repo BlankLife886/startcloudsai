@@ -98,6 +98,8 @@ test('region selection uses image-content coordinates and keeps controls usable'
 
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.goto('/design-workshop')
+  await page.getByRole('button', { name: '框选优化' }).click()
+  await expect(page.getByRole('dialog', { name: '框选优化' })).toBeVisible()
   const target = [{ id: 'icon', name: '搜索图标', type: 'icon', x: 10, y: 10, width: 20, height: 20 }]
   const editInstructions = {
     remove: buildRegionEditInstruction({ elements: target, action: 'remove' }),
@@ -152,14 +154,16 @@ test('region selection uses image-content coordinates and keeps controls usable'
     .toBe('"1"')
 
   const geometry = await page.evaluate(() => {
-    const artboard = document.querySelector('.dws-artboard').getBoundingClientRect()
+    const workspace = document.querySelector('.dws-region-workspace').getBoundingClientRect()
+    const stage = document.querySelector('.dws-region-workspace__stage').getBoundingClientRect()
     const layer = document.querySelector('.dws-region-layer').getBoundingClientRect()
     const selection = document.querySelector('.dws-region-box').getBoundingClientRect()
     const hit = document.querySelector('.dws-region-hit').getBoundingClientRect()
-    const close = document.querySelector('.dws-region-close').getBoundingClientRect()
+    const close = document.querySelector('[aria-label="关闭框选优化"]').getBoundingClientRect()
     const composer = document.querySelector('.dws-region-composer').getBoundingClientRect()
     return {
-      artboard: rect(artboard),
+      workspace: rect(workspace),
+      stage: rect(stage),
       layer: rect(layer),
       selection: rect(selection),
       hit: rect(hit),
@@ -181,14 +185,14 @@ test('region selection uses image-content coordinates and keeps controls usable'
     }
   })
 
-  expect(Math.abs(geometry.layer.width - geometry.layer.height)).toBeLessThanOrEqual(1)
-  expect(Math.abs(geometry.layer.top - geometry.artboard.top)).toBeLessThanOrEqual(1)
-  expect(
-    Math.abs(
-      geometry.layer.left -
-        (geometry.artboard.left + (geometry.artboard.width - geometry.layer.width) / 2),
-    ),
-  ).toBeLessThanOrEqual(1)
+  expect(geometry.workspace.left).toBe(0)
+  expect(geometry.workspace.top).toBe(0)
+  expect(geometry.workspace.right).toBe(geometry.viewport.width)
+  expect(geometry.workspace.bottom).toBe(geometry.viewport.height)
+  expect(Math.abs(geometry.layer.width - geometry.stage.width)).toBeLessThanOrEqual(1)
+  expect(Math.abs(geometry.layer.height - geometry.stage.height)).toBeLessThanOrEqual(1)
+  expect(Math.abs(geometry.layer.top - geometry.stage.top)).toBeLessThanOrEqual(1)
+  expect(Math.abs(geometry.layer.left - geometry.stage.left)).toBeLessThanOrEqual(1)
   expect(
     Math.abs(geometry.selection.left - (geometry.layer.left + geometry.layer.width * 0.1)),
   ).toBeLessThanOrEqual(2)
@@ -201,13 +205,12 @@ test('region selection uses image-content coordinates and keeps controls usable'
   expect(
     Math.abs(geometry.hit.top - (geometry.selection.top + geometry.selection.height * 0.18)),
   ).toBeLessThanOrEqual(2)
-  expect(geometry.close.top).toBeGreaterThanOrEqual(geometry.composer.top)
-  expect(geometry.close.right).toBeLessThanOrEqual(geometry.composer.right)
-  expect(geometry.composerPosition).toBe('fixed')
-  expect(geometry.composer.left).toBeGreaterThanOrEqual(8)
-  expect(geometry.composer.top).toBeGreaterThanOrEqual(8)
-  expect(geometry.composer.right).toBeLessThanOrEqual(geometry.viewport.width - 8)
-  expect(geometry.composer.bottom).toBeLessThanOrEqual(geometry.viewport.height - 8)
+  expect(geometry.close.top).toBeGreaterThanOrEqual(geometry.workspace.top)
+  expect(geometry.close.right).toBeLessThanOrEqual(geometry.composer.left)
+  expect(geometry.composerPosition).toBe('relative')
+  expect(geometry.composer.left).toBeGreaterThan(geometry.stage.left)
+  expect(geometry.composer.right).toBe(geometry.viewport.width)
+  expect(geometry.composer.bottom).toBeLessThanOrEqual(geometry.viewport.height)
 
   await page.mouse.click(
     geometry.selection.left + geometry.selection.width * 0.45,
@@ -257,12 +260,12 @@ test('region selection uses image-content coordinates and keeps controls usable'
       const box = await page.locator('.dws-region-composer').boundingBox()
       return box.x + box.width
     })
-    .toBeLessThanOrEqual(382)
+    .toBeLessThanOrEqual(390)
   const mobileComposer = await page.locator('.dws-region-composer').boundingBox()
-  expect(mobileComposer.x).toBeGreaterThanOrEqual(8)
-  expect(mobileComposer.y).toBeGreaterThanOrEqual(8)
-  expect(mobileComposer.x + mobileComposer.width).toBeLessThanOrEqual(382)
-  expect(mobileComposer.y + mobileComposer.height).toBeLessThanOrEqual(836)
+  expect(mobileComposer.x).toBeGreaterThanOrEqual(0)
+  expect(mobileComposer.y).toBeGreaterThanOrEqual(0)
+  expect(mobileComposer.x + mobileComposer.width).toBeLessThanOrEqual(390)
+  expect(mobileComposer.y + mobileComposer.height).toBeLessThanOrEqual(844)
 })
 
 test('initial region selection accepts an eight-pixel drag and removes the canvas hint', async ({
@@ -270,8 +273,8 @@ test('initial region selection accepts an eight-pixel drag and removes the canva
 }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.goto('/design-workshop')
-  await page.getByRole('button', { name: '清除框选区域' }).click()
   await page.getByRole('button', { name: '框选优化' }).click()
+  await page.getByRole('button', { name: '清除框选区域' }).click()
   await expect(page.locator('.dws-region-layer.is-drawing')).toBeVisible()
   await expect(page.locator('.dws-region-hint')).toBeVisible()
 
@@ -289,6 +292,67 @@ test('initial region selection accepts an eight-pixel drag and removes the canva
   expect(selection.width).toBeGreaterThanOrEqual(8)
   expect(selection.height).toBeGreaterThanOrEqual(8)
 
+  await expect(page.locator('.dws-region-handle')).toHaveCount(8)
+  const southeastHandle = await page.getByLabel('调整选区 se').boundingBox()
+  await page.mouse.move(
+    southeastHandle.x + southeastHandle.width / 2,
+    southeastHandle.y + southeastHandle.height / 2,
+  )
+  await page.mouse.down()
+  await page.mouse.move(
+    southeastHandle.x + southeastHandle.width / 2 + 28,
+    southeastHandle.y + southeastHandle.height / 2 + 24,
+  )
+  await page.mouse.up()
+  const resizedSelection = await page.locator('.dws-region-box').boundingBox()
+  expect(resizedSelection.width).toBeGreaterThan(selection.width + 20)
+  expect(resizedSelection.height).toBeGreaterThan(selection.height + 16)
+
+  const ratioBeforeLockedResize = resizedSelection.width / resizedSelection.height
+  const lockedHandle = await page.getByLabel('调整选区 se').boundingBox()
+  await page.mouse.move(
+    lockedHandle.x + lockedHandle.width / 2,
+    lockedHandle.y + lockedHandle.height / 2,
+  )
+  await page.mouse.down()
+  await page.keyboard.down('Shift')
+  await page.mouse.move(
+    lockedHandle.x + lockedHandle.width / 2 + 36,
+    lockedHandle.y + lockedHandle.height / 2 + 8,
+  )
+  await page.keyboard.up('Shift')
+  await page.mouse.up()
+  const lockedSelection = await page.locator('.dws-region-box').boundingBox()
+  expect(Math.abs(lockedSelection.width / lockedSelection.height - ratioBeforeLockedResize)).toBeLessThan(0.08)
+
+  await page.keyboard.press('Control+C')
+  await expect(page.locator('.dws-region-box')).toHaveCount(2)
+  await expect(page.getByText('已复制同尺寸选区，可拖动到目标位置')).toBeVisible()
+  const duplicatedSelection = await page.locator('.dws-region-box.is-active').boundingBox()
+  expect(Math.abs(duplicatedSelection.width - lockedSelection.width)).toBeLessThanOrEqual(1)
+  expect(Math.abs(duplicatedSelection.height - lockedSelection.height)).toBeLessThanOrEqual(1)
+  expect(
+    Math.abs(duplicatedSelection.x - lockedSelection.x) +
+      Math.abs(duplicatedSelection.y - lockedSelection.y),
+  ).toBeGreaterThan(2)
+  await page.getByRole('button', { name: '删除此框' }).click()
+  await expect(page.locator('.dws-region-box')).toHaveCount(1)
+
+  await page.mouse.move(
+    lockedSelection.x + lockedSelection.width / 2,
+    lockedSelection.y + lockedSelection.height / 2,
+  )
+  await page.mouse.down()
+  await page.mouse.move(
+    lockedSelection.x + lockedSelection.width / 2 + 24,
+    lockedSelection.y + lockedSelection.height / 2 + 18,
+  )
+  await page.mouse.up()
+  const movedSelection = await page.locator('.dws-region-box').boundingBox()
+  expect(movedSelection.x).toBeGreaterThan(lockedSelection.x + 16)
+  expect(movedSelection.y).toBeGreaterThan(lockedSelection.y + 10)
+  await expect(page.getByText('选区已调整，可重新分析元素或开始图片编辑')).toBeVisible()
+
   await page.mouse.move(startX + 80, startY + 16)
   await page.mouse.down()
   await page.mouse.move(startX + 120, startY + 48)
@@ -298,6 +362,33 @@ test('initial region selection accepts an eight-pixel drag and removes the canva
   await expect(page.locator('.dws-region-composer__refs')).toContainText(
     '多框选各出一张：无参考图时，后续按第一张出图对齐风格',
   )
+})
+
+test('closing the region workspace keeps processing visible on the toolbar', async ({
+  page,
+}) => {
+  let releaseRequest
+  await page.route('**/api/v1/assistant/runs', async (route) => {
+    if (route.request().method() !== 'POST') {
+      await route.fallback()
+      return
+    }
+    await new Promise((resolve) => {
+      releaseRequest = resolve
+    })
+    await route.abort()
+  })
+
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto('/design-workshop')
+  await page.getByRole('button', { name: '框选优化' }).click()
+  await page.getByRole('button', { name: /^(开始|重新)分析元素$/ }).click()
+  await expect(page.getByText('正在分析元素…').first()).toBeVisible()
+  await page.getByRole('button', { name: '关闭框选优化' }).click()
+  await expect(page.getByRole('dialog', { name: '框选优化' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '处理中 1' })).toBeVisible()
+
+  releaseRequest?.()
 })
 
 async function mockDesignWorkshopApis(page) {

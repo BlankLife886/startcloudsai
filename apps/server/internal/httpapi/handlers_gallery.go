@@ -225,8 +225,22 @@ func (s *Server) submitGallery(c *gin.Context) {
 		return
 	}
 	if task == nil {
-		fail(c, apperr.E("task_not_found", "任务不存在", 404))
-		return
+		run, runErr := store.GetUserAssistantRun(ctx, s.St.Pool, user.ID, taskID)
+		if runErr != nil {
+			fail(c, runErr)
+			return
+		}
+		if run != nil {
+			task, err = store.EnsureAssistantGalleryTask(ctx, s.St.Pool, run)
+			if err != nil {
+				fail(c, err)
+				return
+			}
+		}
+		if task == nil {
+			fail(c, apperr.E("task_not_found", "任务不存在", 404))
+			return
+		}
 	}
 	if task.Status != "succeeded" || len(task.OutputKeys) == 0 {
 		fail(c, apperr.E("submission_not_allowed", "仅有产物的成功任务可以投稿", 400))

@@ -321,12 +321,13 @@ function AgentReasoningSummary({ text, detail, theme }: { text: string; detail?:
     const effort = String(objectField(detail, "effort") || "");
     const tokens = Number(objectField(detail, "tokens") || 0);
     const running = ["inProgress", "in_progress", "running", "started", "pending"].includes(status);
+    const stopped = ["interrupted", "cancelled", "canceled"].includes(status);
     return (
         <details className="group min-w-0 text-left">
             <summary className="cursor-pointer list-none py-1 text-sm" style={{ color: theme.node.muted }}>
                 <div className="flex min-w-0 items-center gap-2">
                     {running ? <LoaderCircle className="size-4 shrink-0 animate-spin" /> : <Brain className="size-4 shrink-0" />}
-                    <span>{t(running ? "agent.message.thinking" : "agent.events.reasoning")}</span>
+                    <span>{t(running ? "agent.message.thinking" : stopped ? "agent.message.stopped" : "agent.events.reasoning")}</span>
                     {effort ? <span className="text-[11px] opacity-70">{t(`agent.composer.effort.${effort}`)}</span> : null}
                     {tokens > 0 ? <span className="text-[11px] opacity-70">{t("agent.message.reasoningTokens", { count: tokens })}</span> : null}
                     <ChevronRight className="size-3.5 shrink-0 transition-transform group-open:rotate-90" />
@@ -616,6 +617,7 @@ function toolCardState(title: string, text: string, detail: unknown | undefined,
     const status = String(objectField(detail, "status") || "").toLowerCase();
     if (status === "noop" || /未生效|无需|没有找到|没有.*可|已存在/.test(raw)) return { label: tr("noEffect"), color: statusTone(theme, "warning"), icon: <CircleAlert className="size-4" />, isError: false };
     if (["declined", "rejected", "cancelled", "canceled"].includes(status) || /拒绝|取消/.test(raw)) return { label: tr("canceled"), color: statusTone(theme, "danger"), icon: <XCircle className="size-4" />, isError: true };
+    if (status === "interrupted") return { label: tr("stopped"), color: statusTone(theme, "warning"), icon: <CircleAlert className="size-4" />, isError: false };
     if (["failed", "error"].includes(status) || /失败|错误/.test(raw) || lower.includes("failed") || lower.includes("error")) return { label: tr("failed"), color: statusTone(theme, "danger"), icon: <XCircle className="size-4" />, isError: true };
     if (["inprogress", "in_progress", "running", "started", "pending"].includes(status)) return { label: tr("running"), color: statusTone(theme, "warning"), icon: <LoaderCircle className="size-4 animate-spin" />, isError: false };
     if (["completed", "succeeded", "success"].includes(status) || /完成|成功/.test(raw)) return { label: tr("completed"), color: statusTone(theme, "success"), icon: <CheckCircle2 className="size-4" />, isError: false };

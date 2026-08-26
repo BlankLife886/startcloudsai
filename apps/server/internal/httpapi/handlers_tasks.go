@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -63,15 +64,72 @@ func parseUUIDParam(c *gin.Context, name string) (uuid.UUID, error) {
 }
 
 type taskCreateIn struct {
-	Type           string         `json:"type"`
-	Prompt         string         `json:"prompt"`
-	Params         map[string]any `json:"params"`
-	InputKeys      []string       `json:"inputKeys"`
-	Count          *int           `json:"count"`
-	IdempotencyKey *string        `json:"idempotencyKey"`
+	Type                   string         `json:"type"`
+	Prompt                 string         `json:"prompt"`
+	Params                 map[string]any `json:"params"`
+	InputKeys              []string       `json:"inputKeys"`
+	Count                  *int           `json:"count"`
+	IdempotencyKey         *string        `json:"idempotencyKey"`
+	ExpectedUnitPriceCents *int64         `json:"expectedUnitPriceCents"`
 }
 
 type taskImageInspector func(context.Context, string, int64) (int64, error)
+
+func firstMediaToolImageKey(params map[string]any, inputKeys []string) string {
+	toolFiles, _ := params["toolFiles"].(map[string]any)
+	for _, field := range []string{"img_urls", "images", "image_url", "reference_images"} {
+		raw := toolFiles[field]
+		var key string
+		switch value := raw.(type) {
+		case []any:
+			if len(value) > 0 {
+				key, _ = value[0].(string)
+			}
+		case []string:
+			if len(value) > 0 {
+				key = value[0]
+			}
+		case string:
+			key = value
+		}
+		key = strings.TrimSpace(key)
+		for _, inputKey := range inputKeys {
+			if key != "" && key == inputKey {
+				return key
+			}
+		}
+	}
+	return ""
+}
+
+func (s *Server) attachTrustedInputImageDimensions(ctx context.Context, params map[string]any, inputKeys []string) {
+	delete(params, "_inputImageWidth")
+	delete(params, "_inputImageHeight")
+	delete(params, "_inputImageLongEdge")
+	key := firstMediaToolImageKey(params, inputKeys)
+	if key == "" {
+		return
+	}
+	size, err := s.Storage.ObjectSize(ctx, key)
+	if err != nil || size <= 0 {
+		return
+	}
+	limit := int64(taskImageHeaderBytes)
+	if size < limit {
+		limit = size
+	}
+	header, err := s.Storage.GetBytesPrefix(ctx, key, limit)
+	if err != nil {
+		return
+	}
+	width, height, err := media.Dimensions(header)
+	if err != nil {
+		return
+	}
+	params["_inputImageWidth"] = width
+	params["_inputImageHeight"] = height
+	params["_inputImageLongEdge"] = max(width, height)
+}
 
 func validateTaskImageKeys(ctx context.Context, userID uuid.UUID, field string, keys []string, maxKeys int, maxObjectBytes, maxTotalBytes int64, inspect taskImageInspector, owned func(uuid.UUID, string) bool) error {
 	if len(keys) > maxKeys {
@@ -148,6 +206,30 @@ func validateTaskInputImages(ctx context.Context, userID uuid.UUID, keys []strin
 	return validateTaskImageKeys(ctx, userID, "inputKeys", keys, maxTaskInputImages, maxObjectBytes, 32<<20, inspect, isAllowedTaskInputImageKey)
 }
 
+func validateTaskInputMedia(ctx context.Context, userID uuid.UUID, keys []string, maxObjectBytes int64, inspect taskImageInspector) error {
+	if len(keys) > 8 {
+		return apperr.E("validation_error", "inputKeys: 媒体文件不能超过 8 个", 422)
+	}
+	seen := map[string]bool{}
+	var total int64
+	for _, raw := range keys {
+		key := strings.TrimSpace(raw)
+		if key == "" || seen[key] || !isOwnedTaskMediaKey(userID, key) {
+			return apperr.E("validation_error", "inputKeys: 只能引用自己的图片、视频或音频文件", 422)
+		}
+		seen[key] = true
+		size, err := inspect(ctx, key, maxObjectBytes)
+		if err != nil {
+			return apperr.E("validation_error", "inputKeys: 文件不存在、格式不支持或超过上传限制", 422)
+		}
+		total += size
+		if total > maxObjectBytes*8 {
+			return apperr.E("validation_error", "inputKeys: 文件累计大小超过限制", 422)
+		}
+	}
+	return nil
+}
+
 func taskImageParam(params map[string]any, key string) (string, bool, error) {
 	raw, exists := params[key]
 	if !exists || raw == nil {
@@ -205,6 +287,9 @@ func (s *Server) createTask(c *gin.Context) {
 		fail(c, err)
 		return
 	}
+	if body.Params == nil {
+		body.Params = map[string]any{}
+	}
 	if !store.Contains(store.TaskTypes, body.Type) {
 		fail(c, apperr.E("validation_error", "type: 无效的任务类型", 422))
 		return
@@ -228,9 +313,20 @@ func (s *Server) createTask(c *gin.Context) {
 	inspectTaskImage := func(ctx context.Context, key string, maxBytes int64) (int64, error) {
 		return s.inspectOwnedTaskImage(ctx, user.ID, key, maxBytes)
 	}
-	if err := validateTaskInputImages(c.Request.Context(), user.ID, body.InputKeys, s.Cfg.UploadMaxBytes, inspectTaskImage); err != nil {
+	validateInputs := validateTaskInputImages
+	inputInspector := taskImageInspector(inspectTaskImage)
+	if body.Type == "media_tool" {
+		validateInputs = validateTaskInputMedia
+		inputInspector = func(ctx context.Context, key string, maxBytes int64) (int64, error) {
+			return s.inspectOwnedTaskMedia(ctx, user.ID, key, maxBytes)
+		}
+	}
+	if err := validateInputs(c.Request.Context(), user.ID, body.InputKeys, s.Cfg.UploadMaxBytes, inputInspector); err != nil {
 		fail(c, err)
 		return
+	}
+	if body.Type == "media_tool" {
+		s.attachTrustedInputImageDimensions(c.Request.Context(), body.Params, body.InputKeys)
 	}
 	maskKeys, err := taskMaskImageKeys(body.Params)
 	if err != nil {
@@ -251,12 +347,13 @@ func (s *Server) createTask(c *gin.Context) {
 	}
 
 	task, created, err := taskflow.CreateTask(c.Request.Context(), s.St, user.ID, taskflow.CreateInput{
-		Type:           body.Type,
-		Prompt:         body.Prompt,
-		Params:         body.Params,
-		InputKeys:      body.InputKeys,
-		Count:          count,
-		IdempotencyKey: body.IdempotencyKey,
+		Type:                   body.Type,
+		Prompt:                 body.Prompt,
+		Params:                 body.Params,
+		InputKeys:              body.InputKeys,
+		Count:                  count,
+		IdempotencyKey:         body.IdempotencyKey,
+		ExpectedUnitPriceCents: body.ExpectedUnitPriceCents,
 	})
 	if err != nil {
 		fail(c, err)
@@ -281,6 +378,51 @@ func (s *Server) createTask(c *gin.Context) {
 		return
 	}
 	ok(c, data)
+}
+
+func (s *Server) quoteTask(c *gin.Context) {
+	user, err := s.requireUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	var body taskCreateIn
+	if err := bindJSON(c, &body); err != nil {
+		fail(c, err)
+		return
+	}
+	if body.Params == nil {
+		body.Params = map[string]any{}
+	}
+	if body.Type == "media_tool" {
+		inspect := func(ctx context.Context, key string, maxBytes int64) (int64, error) {
+			return s.inspectOwnedTaskMedia(ctx, user.ID, key, maxBytes)
+		}
+		if err := validateTaskInputMedia(c.Request.Context(), user.ID, body.InputKeys, s.Cfg.UploadMaxBytes, inspect); err != nil {
+			fail(c, err)
+			return
+		}
+		s.attachTrustedInputImageDimensions(c.Request.Context(), body.Params, body.InputKeys)
+	}
+	count := 1
+	if body.Count != nil {
+		count = *body.Count
+	}
+	quote, err := taskflow.QuoteTaskPrice(c.Request.Context(), s.St.Pool, taskflow.CreateInput{
+		Type: body.Type, Params: body.Params, InputKeys: body.InputKeys, Count: count,
+	})
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ok(c, gin.H{
+		"currency": "credits", "workspace": quote.Workspace, "modelId": quote.ModelID,
+		"standardUnitPriceCents": quote.StandardUnitPriceCents,
+		"discountUnitPriceCents": quote.DiscountUnitPriceCents,
+		"unitPriceCents":         quote.UnitPriceCents, "count": quote.Count,
+		"totalPriceCents": quote.TotalPriceCents, "configVersion": quote.ConfigVersion,
+		"workspacePriceOverridden": quote.Overridden, "authoritative": true,
+	})
 }
 
 func (s *Server) listTasks(c *gin.Context) {
@@ -580,3 +722,103 @@ func (s *Server) deleteTask(c *gin.Context) {
 	}
 	ok(c, gin.H{"deletedTaskIds": ids})
 }
+
+func (s *Server) deleteTaskOutput(c *gin.Context) {
+	user, err := s.requireUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	taskID, err := parseUUIDParam(c, "id")
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	index, err := strconv.Atoi(c.Param("index"))
+	if err != nil || index < 0 {
+		fail(c, apperr.E("validation_error", "index: 无效", 422))
+		return
+	}
+
+	ctx := c.Request.Context()
+	var (
+		updated *store.Task
+		keys    []string
+	)
+	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
+		task, err := store.GetUserTaskForUpdate(ctx, tx, user.ID, taskID)
+		if err != nil {
+			return err
+		}
+		if task == nil {
+			return apperr.E("task_not_found", "任务不存在", 404)
+		}
+		if task.Status != "succeeded" && task.Status != "failed" && task.Status != "canceled" {
+			return apperr.E("task_not_cancelable", "仅已结束的任务可以删除", 400)
+		}
+		if len(task.OutputKeys) <= 1 {
+			return errDeleteWholeTask
+		}
+		if index >= len(task.OutputKeys) {
+			return apperr.E("validation_error", "index: 超出图片范围", 422)
+		}
+
+		removed := []string{task.OutputKeys[index]}
+		if index < len(task.ThumbnailKeys) {
+			removed = append(removed, task.ThumbnailKeys[index])
+		}
+		if thumb := store.ThumbKeyForOriginal(task.OutputKeys[index]); thumb != "" {
+			removed = append(removed, thumb)
+		}
+		removed = store.WithDisplayKeys(removed)
+		referencing, err := store.CountTasksReferencingInputKeys(ctx, tx, user.ID, task.ID, removed)
+		if err != nil {
+			return err
+		}
+		if referencing > 0 {
+			return apperr.E("task_in_use", "该任务产物仍被其他内容引用，无法删除", 409)
+		}
+		if err := store.EnqueueObjectCleanup(ctx, tx, removed); err != nil {
+			return err
+		}
+
+		outputs := append([]string{}, task.OutputKeys[:index]...)
+		outputs = append(outputs, task.OutputKeys[index+1:]...)
+		thumbs := append([]string{}, task.ThumbnailKeys...)
+		if index < len(thumbs) {
+			thumbs = append(thumbs[:index], thumbs[index+1:]...)
+		}
+		if err := store.RemoveTaskOutputAt(ctx, tx, task.ID, outputs, thumbs); err != nil {
+			return err
+		}
+		keys = removed
+		updated, err = store.GetUserTaskForUpdate(ctx, tx, user.ID, taskID)
+		return err
+	})
+	if errors.Is(err, errDeleteWholeTask) {
+		s.deleteTask(c)
+		return
+	}
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if updated == nil {
+		fail(c, apperr.E("task_not_found", "任务不存在", 404))
+		return
+	}
+	if len(keys) > 0 && s.Storage != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		cleanupErr := s.Storage.DeleteKeys(cleanupCtx, keys)
+		if cleanupErr == nil {
+			_, cleanupErr = store.DeleteObjectCleanupJobs(cleanupCtx, s.St.Pool, keys)
+		}
+		cancel()
+		if cleanupErr != nil {
+			log.Printf("task %s output %d removed but object cleanup failed: %v", taskID, index, cleanupErr)
+		}
+	}
+	ok(c, taskDict(updated, s.outputURLsFor(c, updated), s.originalURLsFor(c, updated)))
+}
+
+var errDeleteWholeTask = errors.New("delete whole task")

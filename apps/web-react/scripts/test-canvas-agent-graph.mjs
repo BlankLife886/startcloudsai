@@ -4,6 +4,10 @@ import test from "node:test";
 import { arrangeCanvasNodes, layoutCanvasGraph } from "../src/canvas/lib/canvas/canvas-graph-layout.ts";
 import { validCanvasAgentOps } from "../src/canvas/lib/canvas/canvas-agent-op-validation.js";
 import { parseCanvasAgentOpsPayload, resolveCanvasAgentCompletion } from "../src/canvas/lib/canvas/canvas-hosted-agent.ts";
+import { applyCanvasAgentNodeUpdate, canvasAgentGraphTextMetadata, mergeCanvasAgentNodeMetadata } from "../src/canvas/lib/canvas/canvas-agent-node-metadata.ts";
+import { isUsableCanvasImageSource, normalizeHydratedCanvasImageMetadata, repairMisappliedCanvasWorkflowOutputs } from "../src/canvas/lib/canvas/canvas-image-hydration.ts";
+import { resolveCanvasAgentGraphModes } from "../src/canvas/lib/canvas/canvas-agent-graph-contract.ts";
+import { canvasWorkflowNodeIds } from "../src/canvas/lib/canvas/canvas-workflow-groups.ts";
 
 const options = { originX: 0, originY: 0, columnGap: 72, rowGap: 48 };
 const sized = (keys) => keys.map((key) => ({ key, width: 300, height: 200 }));
@@ -166,6 +170,76 @@ test("parses a graph payload without coordinates and accepts edge pairs", () => 
     assert.deepEqual(ops[0].edges, [{ from: "a", to: "b" }, { from: "b", to: "c" }]);
 });
 
+test("keeps graph text only on text nodes", () => {
+    const { ops } = parseCanvasAgentOpsPayload(`{"ops":[{"type":"create_graph","nodes":[{"key":"copy","type":"text","content":"商品卖点"},{"key":"result","type":"image","content":"输出图片"},{"key":"config","type":"config","prompt":"绘图说明"}]}]}`);
+    assert.equal(ops[0].nodes[0].text, "商品卖点");
+    assert.equal(ops[0].nodes[1].text, undefined);
+    assert.equal(ops[0].nodes[2].text, undefined);
+    assert.equal(ops[0].nodes[2].composerContent, "绘图说明");
+    assert.deepEqual(canvasAgentGraphTextMetadata("text", "商品卖点"), { content: "商品卖点", status: "success" });
+    assert.equal(canvasAgentGraphTextMetadata("image", "输出图片"), undefined);
+});
+
+test("merges semantic update fields into node metadata", () => {
+    const metadata = mergeCanvasAgentNodeMetadata(
+        { content: "旧正文", composerContent: "旧配置指令", prompt: "旧提示词", model: "old" },
+        { content: "新正文", composerContent: "新配置指令", prompt: "新提示词", metadata: { model: "patch", quality: "high" } },
+        { model: "top" },
+    );
+    assert.deepEqual(metadata, { content: "新正文", composerContent: "新配置指令", prompt: "新提示词", model: "top", quality: "high" });
+    const node = { id: "text-1", type: "text", title: "旧标题", position: { x: 0, y: 0 }, width: 300, height: 200, metadata: { content: "旧正文" } };
+    const updated = applyCanvasAgentNodeUpdate(node, { patch: { title: "新标题", content: "新正文" } });
+    assert.notEqual(updated, node, "a content update must count as a real node change");
+    assert.equal(updated.title, "新标题");
+    assert.equal(updated.metadata.content, "新正文");
+});
+
+test("clears ordinary text masquerading as an image source", () => {
+    assert.equal(isUsableCanvasImageSource("这是一张待生成图片"), false);
+    assert.equal(isUsableCanvasImageSource("https://example.com/result.png"), true);
+    assert.deepEqual(
+        normalizeHydratedCanvasImageMetadata({ content: "这是一张待生成图片", status: "success", prompt: "保留这个提示词", naturalWidth: 1024 }),
+        { prompt: "保留这个提示词" },
+    );
+    assert.deepEqual(normalizeHydratedCanvasImageMetadata({}), {});
+    assert.equal(normalizeHydratedCanvasImageMetadata({ content: "/api/v1/files/tasks/a/original/b.png", status: "success" }).content, "/api/v1/files/tasks/a/original/b.png");
+});
+
+test("preserves an empty loading image slot when it has a resumable task", () => {
+    const metadata = normalizeHydratedCanvasImageMetadata({
+        status: "loading",
+        images: [{ id: "image-1", status: "loading", content: "", storageKey: "", naturalWidth: 0, naturalHeight: 0, bytes: 0, mimeType: "", taskId: "task-1" }],
+    });
+    assert.equal(metadata.status, "loading");
+    assert.equal(metadata.images?.[0]?.taskId, "task-1");
+});
+
+test("moves a workflow result accidentally restored onto its config back to the output node", () => {
+    const nodes = repairMisappliedCanvasWorkflowOutputs([
+        { id: "config", type: "config", title: "Config", position: { x: 0, y: 0 }, width: 300, height: 200, metadata: { generationMode: "image", status: "success", executionStatus: "running", workflowOutputNodeIds: ["output"], content: "/api/v1/files/tasks/task-1/original/result.png", storageKey: "tasks/task-1/original/result.png", naturalWidth: 1024, naturalHeight: 1024 } },
+        { id: "output", type: "image", title: "Output", position: { x: 400, y: 0 }, width: 300, height: 300, metadata: { status: "error", errorDetails: "页面刷新后生成已中断，请重新生成。" } },
+    ]);
+    assert.equal(nodes[0].metadata.content, undefined);
+    assert.equal(nodes[0].metadata.executionStatus, "succeeded");
+    assert.equal(nodes[1].metadata.content, "/api/v1/files/tasks/task-1/original/result.png");
+    assert.equal(nodes[1].metadata.status, "success");
+    assert.equal(nodes[1].metadata.errorDetails, undefined);
+});
+
+test("requires Agent workflows to use typed outputs between config steps", () => {
+    const textFlow = [
+        { key: "input", type: "text" },
+        { key: "plan", type: "config", generationMode: "text" },
+        { key: "plan-output", type: "text" },
+        { key: "render", type: "config", generationMode: "image" },
+        { key: "image-output", type: "image" },
+    ];
+    const edges = [{ from: "input", to: "plan" }, { from: "plan", to: "plan-output" }, { from: "plan-output", to: "render" }, { from: "render", to: "image-output" }];
+    assert.deepEqual([...resolveCanvasAgentGraphModes(textFlow, edges)], [["plan", "text"], ["render", "image"]]);
+    assert.throws(() => resolveCanvasAgentGraphModes(textFlow, [{ from: "plan", to: "render" }]), /不能直接连接配置节点/);
+    assert.throws(() => resolveCanvasAgentGraphModes([{ key: "render", type: "config", generationMode: "image" }], []), /缺少.*输出节点/);
+});
+
 test("keeps all nodes and edges in a fifty-node workflow", () => {
     const nodes = Array.from({ length: 50 }, (_, index) => ({ key: `n${index + 1}`, type: "text", text: `步骤 ${index + 1}` }));
     const edges = Array.from({ length: 49 }, (_, index) => ({ from: `n${index + 1}`, to: `n${index + 2}` }));
@@ -206,6 +280,19 @@ test("parses arrange_nodes direction without accepting model-provided coordinate
     assert.deepEqual(parseCanvasAgentOpsPayload(`{"ops":[{"type":"arrange_nodes","direction":"diagonal"}]}`).ops, [
         { type: "arrange_nodes", scope: "all", direction: "LR" },
     ]);
+    assert.deepEqual(parseCanvasAgentOpsPayload(`{"ops":[{"type":"arrange_nodes","scope":"workflow","workflowId":"workflow:config-a","direction":"LR"}]}`).ops, [
+        { type: "arrange_nodes", scope: "workflow", workflowId: "workflow:config-a", direction: "LR" },
+    ]);
+    assert.deepEqual(parseCanvasAgentOpsPayload(`{"ops":[{"type":"arrange_nodes","scope":"workflow"}]}`).ops, []);
+});
+
+test("resolves only the requested workflow nodes from the live graph", () => {
+    const canvasNode = (id, type, x, y) => ({ id, type, title: id, position: { x, y }, width: 300, height: 200, metadata: {} });
+    const nodes = [canvasNode("config-a", "config", 0, 0), canvasNode("image-a", "image", 0, 0), canvasNode("config-b", "config", 2000, 0), canvasNode("image-b", "image", 2400, 0)];
+    const connections = [{ id: "a", fromNodeId: "config-a", toNodeId: "image-a" }, { id: "b", fromNodeId: "config-b", toNodeId: "image-b" }];
+    assert.deepEqual(canvasWorkflowNodeIds(nodes, connections, "workflow:config-a"), ["config-a", "image-a"]);
+    assert.deepEqual(canvasWorkflowNodeIds(nodes, connections, "workflow:config-b"), ["config-b", "image-b"]);
+    assert.deepEqual(canvasWorkflowNodeIds(nodes, connections, "workflow:missing"), []);
 });
 
 test("arranges the complete live node set deterministically and idempotently", () => {

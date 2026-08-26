@@ -60,9 +60,14 @@ export function useCanvasPreviewSrc(src?: string, options?: { storageKey?: strin
     }, [options?.maxEdge]);
 
     useEffect(() => {
-        if (!enabled || !compressSrc) {
+        if (!enabled) {
             setPreviewSrc(undefined);
             setUseOriginal(false);
+            return;
+        }
+        if (!compressSrc) {
+            setPreviewSrc(undefined);
+            setUseOriginal(allowOriginalFallback);
             return;
         }
         let cancelled = false;
@@ -130,7 +135,7 @@ export function CanvasPreviewImage({ src, storageKey, thumbnailUrl, alt = "", cl
                 alt={alt}
                 className={className}
                 draggable={draggable}
-                loading="lazy"
+                loading="eager"
                 decoding="async"
                 onDragStart={onDragStart}
                 onError={preview.onError}

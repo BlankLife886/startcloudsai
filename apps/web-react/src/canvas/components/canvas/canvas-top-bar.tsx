@@ -13,7 +13,6 @@ import { CanvasShortcutsDialog } from "./canvas-shortcuts-dialog";
 
 export function CanvasTopBar({
     onRename,
-    onOpenPlugins,
     agentOpen,
     onToggleAgent,
     backgroundMode,
@@ -30,7 +29,6 @@ export function CanvasTopBar({
     children,
 }: {
     onRename: () => void;
-    onOpenPlugins: () => void;
     agentOpen: boolean;
     onToggleAgent: () => void;
     backgroundMode: CanvasBackgroundMode;
@@ -104,7 +102,7 @@ export function CanvasTopBar({
                             <Eraser className="size-3.5" />
                         </ChromeAction>
                         <span className="mx-0.5 h-3.5 w-px" style={{ background: theme.toolbar.border }} />
-                        <UserStatusActions variant="canvas" onOpenShortcuts={() => setShortcutsOpen(true)} onOpenPlugins={onOpenPlugins} />
+                        <UserStatusActions variant="canvas" onOpenShortcuts={() => setShortcutsOpen(true)} />
                         {appearanceOpen ? (
                             <AppearancePanel
                                 theme={theme}

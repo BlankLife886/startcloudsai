@@ -10,6 +10,48 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 )
 
+func TestDeleteTaskOutputRemovesOneImageFromABatch(t *testing.T) {
+	env := newCommunityEnv(t)
+	user, token := env.newUserSession(t, "user")
+	first := "tasks/" + user.ID.String() + "/a.png"
+	second := "tasks/" + user.ID.String() + "/b.png"
+	third := "tasks/" + user.ID.String() + "/c.png"
+
+	var taskID uuid.UUID
+	if err := env.st.Pool.QueryRow(context.Background(), `
+		INSERT INTO tasks (user_id, type, prompt, status, input_keys, output_keys, thumbnail_keys, count, cost_cents)
+		VALUES ($1, 't2i', 'batch', 'succeeded', '[]'::jsonb,
+			jsonb_build_array($2::text, $3::text, $4::text),
+			jsonb_build_array($2::text, $3::text, $4::text),
+			3, 0)
+		RETURNING id`, user.ID, first, second, third).Scan(&taskID); err != nil {
+		t.Fatalf("insert batch task: %v", err)
+	}
+
+	w := env.do(t, http.MethodDelete, "/api/v1/tasks/"+taskID.String()+"/outputs/1", nil, token)
+	data, code := decode(t, w)
+	if w.Code != http.StatusOK || code != "" {
+		t.Fatalf("delete one output: status %d code %s body %s", w.Code, code, w.Body.String())
+	}
+	originals, _ := data["originalUrls"].([]any)
+	if len(originals) != 2 {
+		t.Fatalf("originalUrls = %#v, want 2 remaining images", originals)
+	}
+	if count, _ := data["count"].(float64); count != 2 {
+		t.Fatalf("count = %#v, want 2", data["count"])
+	}
+
+	var remaining int
+	if err := env.st.Pool.QueryRow(context.Background(),
+		`SELECT jsonb_array_length(output_keys) FROM tasks WHERE id = $1 AND deleted_at IS NULL`,
+		taskID).Scan(&remaining); err != nil {
+		t.Fatalf("read remaining outputs: %v", err)
+	}
+	if remaining != 2 {
+		t.Fatalf("remaining outputs = %d, want 2", remaining)
+	}
+}
+
 func TestDeleteTaskProtectsReferencedOutputs(t *testing.T) {
 	env := newCommunityEnv(t)
 	user, token := env.newUserSession(t, "user")

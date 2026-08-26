@@ -1,6 +1,7 @@
 import { saveAs } from "file-saver";
 
 import i18n from "@/i18n";
+import { dataUrlToBlob } from "@/lib/data-url";
 import { createZip } from "@/lib/zip";
 import { getMediaBlob } from "@/services/file-storage";
 import { getImageBlob } from "@/services/image-storage";
@@ -10,6 +11,7 @@ import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 
 export async function exportCanvasProjects(projects: CanvasProject[], fileName = i18n.t("canvas.export.defaultProjectName")) {
     const zipFiles: { name: string; data: BlobPart }[] = [];
+    const missingAssets: string[] = [];
     // Cloud list entries may not have their document downloaded yet.
     const resolvedProjects = await Promise.all(
         projects.map(async (project) => (project.documentPending || project.documentStale ? (await ensureCanvasProjectDocument(project.id).catch(() => null)) || project : project)),
@@ -27,12 +29,16 @@ export async function exportCanvasProjects(projects: CanvasProject[], fileName =
                         zipFiles.push({ name: path, data: blob });
                     } catch (error) {
                         console.warn("Canvas export skipped a file", storageKey, error);
+                        missingAssets.push(storageKey);
                     }
                 }),
             );
             return { project, files };
         }),
     );
+    if (missingAssets.length) {
+        throw new Error(`Canvas export could not read ${missingAssets.length} referenced file(s)`);
+    }
 
     const data: CanvasExportFile = { app: "infinite-canvas", version: 3, exportedAt: new Date().toISOString(), projects: exportedProjects };
     const zip = await createZip([{ name: "projects.json", data: JSON.stringify(data, null, 2) }, ...zipFiles]);
@@ -66,7 +72,7 @@ export async function exportCanvasNodes(nodes: CanvasNodeData[], fileName = i18n
             const content = node.metadata?.content;
             if (content && content.startsWith("data:")) {
                 try {
-                    const blob = await (await fetch(content)).blob();
+                    const blob = dataUrlToBlob(content);
                     return void zipFiles.push({ name: uniqueName(title, fileExtension(blob.type, storageKey)), data: blob });
                 } catch (error) {
                     console.warn("Canvas node export skipped data URL", error);
@@ -82,7 +88,7 @@ export async function exportCanvasNodes(nodes: CanvasNodeData[], fileName = i18n
 
 function collectStorageKeys(value: unknown, keys = new Set<string>()) {
     if (!value || typeof value !== "object") return [...keys];
-    if ("storageKey" in value && typeof value.storageKey === "string" && value.storageKey.includes(":")) keys.add(value.storageKey);
+    if ("storageKey" in value && typeof value.storageKey === "string" && value.storageKey.trim()) keys.add(value.storageKey.trim());
     Object.values(value).forEach((item) => (Array.isArray(item) ? item.forEach((child) => collectStorageKeys(child, keys)) : collectStorageKeys(item, keys)));
     return [...keys];
 }

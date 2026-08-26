@@ -254,6 +254,76 @@ func TestCreateTaskUsesUserSelectedPublicModel(t *testing.T) {
 	}
 }
 
+func TestCreateTaskAndQuoteUseWorkspacePriceOverride(t *testing.T) {
+	st := testdb.Setup(t)
+	user := newUserWithBalance(t, st, 100)
+	t2iDiscount := int64(13)
+	cfg := modelconfig.Empty()
+	cfg.Providers = []modelconfig.Provider{{
+		ID: "provider", Name: "Provider", Adapter: "openai",
+		BaseURL: "https://api.example.com", APIKey: "secret", Enabled: true,
+	}}
+	cfg.Models = []modelconfig.Model{{
+		ID: "shared", Name: "Shared", ProviderID: "provider", UpstreamModel: "shared-upstream",
+		Kind: modelconfig.ModelKindImage, PriceCents: 20, Public: true, Default: true, Enabled: true,
+	}}
+	cfg.Workspaces = map[string]modelconfig.WorkspaceBinding{
+		modelconfig.WorkspaceT2I: {
+			ModelIDs: []string{"shared"},
+			ModelPricing: map[string]modelconfig.WorkspaceModelPricing{
+				"shared": {PriceCents: 18, DiscountPriceCents: &t2iDiscount},
+			},
+		},
+		modelconfig.WorkspaceCanvas: {
+			ModelIDs: []string{"shared"},
+			ModelPricing: map[string]modelconfig.WorkspaceModelPricing{
+				"shared": {PriceCents: 7},
+			},
+		},
+	}
+	if err := modelconfig.Save(context.Background(), st.Pool, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	quote, err := taskflow.QuoteTaskPrice(context.Background(), st.Pool, taskflow.CreateInput{
+		Type: "t2i", Count: 2, Params: map[string]any{"publicModelKey": "shared"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if quote.UnitPriceCents != 13 || quote.TotalPriceCents != 26 || !quote.Overridden || quote.Workspace != modelconfig.WorkspaceT2I {
+		t.Fatalf("t2i quote = %#v", quote)
+	}
+	canvasQuote, err := taskflow.QuoteTaskPrice(context.Background(), st.Pool, taskflow.CreateInput{
+		Type: "t2i", Count: 1,
+		Params: map[string]any{"publicModelKey": "shared", "_source": "react_canvas"},
+	})
+	if err != nil || canvasQuote.UnitPriceCents != 7 || canvasQuote.Workspace != modelconfig.WorkspaceCanvas {
+		t.Fatalf("canvas quote = %#v err=%v", canvasQuote, err)
+	}
+	stalePrice := int64(99)
+	_, _, err = taskflow.CreateTask(context.Background(), st, user.ID, taskflow.CreateInput{
+		Type: "t2i", Prompt: "旧价格", Count: 1,
+		Params: map[string]any{"publicModelKey": "shared"}, ExpectedUnitPriceCents: &stalePrice,
+	})
+	mustAppErr(t, err, "price_changed")
+
+	task, _, err := taskflow.CreateTask(context.Background(), st, user.ID, taskflow.CreateInput{
+		Type: "t2i", Prompt: "测试", Count: 2, Params: map[string]any{"publicModelKey": "shared"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.CostCents != 26 || fmt.Sprint(task.Params["_billingUnitPriceCents"]) != "13" ||
+		fmt.Sprint(task.Params["_modelEffectivePriceCents"]) != "20" || task.Params["_pricingWorkspace"] != modelconfig.WorkspaceT2I {
+		t.Fatalf("task pricing snapshot cost=%d params=%#v", task.CostCents, task.Params)
+	}
+	wallet := getWallet(t, st, user.ID)
+	if wallet.BalanceCents != 74 || wallet.FrozenCents != 26 {
+		t.Fatalf("wallet = (%d, %d), want (74, 26)", wallet.BalanceCents, wallet.FrozenCents)
+	}
+}
+
 func TestCreateCanvasTaskUsesInfiniteCanvasAssignment(t *testing.T) {
 	st := testdb.Setup(t)
 	user := newUserWithBalance(t, st, 100)
@@ -322,6 +392,95 @@ func TestCreateBackgroundRemovalTaskUsesToolPrice(t *testing.T) {
 		Type: "background_remove", Prompt: "移除图片背景", Count: 1,
 	})
 	mustAppErr(t, err, "validation_error")
+}
+
+func TestCreateMediaToolTaskUsesConfiguredSchemaAndPlatformPoints(t *testing.T) {
+	st := testdb.Setup(t)
+	user := newUserWithBalance(t, st, 100)
+	key := "uploads/" + user.ID.String() + "/original/source.png"
+	cfg := modelconfig.Empty()
+	cfg.Providers = []modelconfig.Provider{{
+		ID: "crun", Name: "CRUN", Adapter: modelconfig.AdapterCRUN,
+		BaseURL: "https://api.crun.ai", APIKey: "secret", Enabled: true,
+	}}
+	cfg.Models = []modelconfig.Model{{
+		ID: "upscale", Name: "图片高清放大", ProviderID: "crun", UpstreamModel: "image-upscale",
+		Kind: modelconfig.ModelKindImageTool, Tool: "image_upscale", PriceCents: 12,
+		UpstreamInputFields: []string{"img_urls", "mode"}, UpstreamRequiredInputFields: []string{"img_urls"},
+		UpstreamInputSchema: map[string]any{"properties": map[string]any{
+			"img_urls": map[string]any{"type": "array", "minItems": float64(1), "maxItems": float64(1)},
+			"mode":     map[string]any{"type": "string", "enum": []any{"clean", "face"}},
+		}}, Public: true, Default: true, Enabled: true,
+	}}
+	if err := modelconfig.Save(context.Background(), st.Pool, cfg); err != nil {
+		t.Fatal(err)
+	}
+	task, _, err := taskflow.CreateTask(context.Background(), st, user.ID, taskflow.CreateInput{
+		Type: "media_tool", Prompt: "图片高清放大", Count: 1, InputKeys: []string{key},
+		Params: map[string]any{
+			"publicModelKey": "upscale", "toolInput": map[string]any{"mode": "face"},
+			"toolFiles": map[string]any{"img_urls": []string{key}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Model != "image-upscale" || task.CostCents != 12 || task.Params["_modelTool"] != "image_upscale" {
+		t.Fatalf("media tool task model=%q cost=%d params=%#v", task.Model, task.CostCents, task.Params)
+	}
+	wallet := getWallet(t, st, user.ID)
+	if wallet.BalanceCents != 88 || wallet.FrozenCents != 12 {
+		t.Fatalf("wallet = (%d, %d), want (88, 12)", wallet.BalanceCents, wallet.FrozenCents)
+	}
+}
+
+func TestImageUpscaleQuoteAndCreateUseTargetResolutionTier(t *testing.T) {
+	st := testdb.Setup(t)
+	user := newUserWithBalance(t, st, 100)
+	key := "uploads/" + user.ID.String() + "/original/source.png"
+	cfg := modelconfig.Empty()
+	cfg.Providers = []modelconfig.Provider{{
+		ID: "crun", Name: "CRUN", Adapter: modelconfig.AdapterCRUN,
+		BaseURL: "https://api.crun.ai", APIKey: "secret", Enabled: true,
+	}}
+	cfg.Models = []modelconfig.Model{{
+		ID: "upscale", Name: "图片高清放大", ProviderID: "crun", UpstreamModel: "image-upscaler-basic",
+		Kind: modelconfig.ModelKindImageTool, Tool: modelconfig.ImageToolUpscale, PriceCents: 3,
+		ImageUpscalePricing: &modelconfig.ImageUpscalePricing{ThresholdPixels: 2048, HighPriceCents: 5},
+		UpstreamInputFields: []string{"img_urls", "scale_factor"}, UpstreamRequiredInputFields: []string{"img_urls"},
+		UpstreamInputSchema: map[string]any{"properties": map[string]any{
+			"img_urls":     map[string]any{"type": "array", "minItems": float64(1), "maxItems": float64(1)},
+			"scale_factor": map[string]any{"type": "number", "enum": []any{float64(1), float64(2), float64(4), nil}},
+		}}, Public: true, Default: true, Enabled: true,
+	}}
+	if err := modelconfig.Save(context.Background(), st.Pool, cfg); err != nil {
+		t.Fatal(err)
+	}
+	params := func(longEdge, scale float64) map[string]any {
+		return map[string]any{
+			"publicModelKey": "upscale", "_inputImageLongEdge": longEdge,
+			"toolInput": map[string]any{"scale_factor": scale},
+			"toolFiles": map[string]any{"img_urls": []string{key}},
+		}
+	}
+	low, err := taskflow.QuoteTaskPrice(context.Background(), st.Pool, taskflow.CreateInput{
+		Type: "media_tool", Count: 1, InputKeys: []string{key}, Params: params(512, 4),
+	})
+	if err != nil || low.UnitPriceCents != 3 {
+		t.Fatalf("low quote = %#v err=%v", low, err)
+	}
+	high, err := taskflow.QuoteTaskPrice(context.Background(), st.Pool, taskflow.CreateInput{
+		Type: "media_tool", Count: 1, InputKeys: []string{key}, Params: params(1024, 4),
+	})
+	if err != nil || high.UnitPriceCents != 5 {
+		t.Fatalf("high quote = %#v err=%v", high, err)
+	}
+	stale := int64(3)
+	_, _, err = taskflow.CreateTask(context.Background(), st, user.ID, taskflow.CreateInput{
+		Type: "media_tool", Prompt: "高清放大", Count: 1, InputKeys: []string{key},
+		Params: params(1024, 4), ExpectedUnitPriceCents: &stale,
+	})
+	mustAppErr(t, err, "price_changed")
 }
 
 func TestCreateTaskSnapshotsConfiguredImageService(t *testing.T) {

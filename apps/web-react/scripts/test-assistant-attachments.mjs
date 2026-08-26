@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { assistantClipboardFiles, isImageToPSDRequest, isPSDFile } from "../src/views/assistant-attachments.js";
+import { promptNeedsRecentVisual } from "../src/legacy-modules/features/assistant/domain/visualContext.js";
 
 test("collects pasted documents and images without duplicate clipboard entries", () => {
   const document = { name: "brief.pdf", type: "application/pdf", size: 100, lastModified: 1 };
@@ -53,4 +54,13 @@ test("recognizes explicit image-to-PSD commands without matching conceptual ques
   assert.equal(isImageToPSDRequest("Convert this image to a PSD", 1), true);
   assert.equal(isImageToPSDRequest("图片可以转 PSD 吗？", 1), false);
   assert.equal(isImageToPSDRequest("把这张图片转换为 PSD", 0), false);
+});
+
+test("only reuses conversation images when the prompt explicitly points to visual history", () => {
+  for (const prompt of ["创建一张蓝天白云图", "设计一个全新的 logo", "画一张星空下的雪山"]) {
+    assert.equal(promptNeedsRecentVisual(prompt), false, prompt);
+  }
+  for (const prompt of ["把上一张的背景换成蓝色", "参考图2的构图生成一个新版本", "把图片中的人物头发改成红色"]) {
+    assert.equal(promptNeedsRecentVisual(prompt), true, prompt);
+  }
 });

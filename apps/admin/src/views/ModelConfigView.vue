@@ -9,7 +9,7 @@ import {
   watch,
 } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { Connection, Cpu, Delete, Plus, Refresh, Search } from "@element-plus/icons-vue";
+import { Coin, Connection, Cpu, Delete, Plus, Refresh, Search } from "@element-plus/icons-vue";
 import AdminDialog from "@/components/AdminDialog.vue";
 import PageCard from "@/components/PageCard.vue";
 import { request } from "@/request";
@@ -18,7 +18,7 @@ import { formatPoints, IMAGE_SERVICE_ROUTES, normalizePoints } from "@/utils";
 
 type ProviderAdapter = "openai" | "crun";
 type ModelKind = "image" | "chat" | "image_tool";
-type ImageTool = "background_remove";
+type ImageTool = string;
 type ReasoningPriceScope = "assistant" | "canvas_agent";
 type WorkspaceKey =
   | "assistant"
@@ -66,16 +66,28 @@ interface ReasoningPricing {
   efforts: Record<string, ReasoningEffortPricing>;
 }
 
+interface ImageUpscalePricing {
+  thresholdPixels: number;
+  highPriceCents: number;
+  highDiscountPriceCents: number | null;
+}
+
 interface ModelItem {
   id: string;
   name: string;
   providerId: string;
   upstreamModel: string;
+  upstreamInputFields: string[];
+  upstreamRequiredInputFields: string[];
+  upstreamInputSchema: Record<string, unknown>;
+  modality: string;
+  operations: string[];
   kind: ModelKind;
   tool: ImageTool | "";
   description: string;
   priceCents: number;
   discountPriceCents: number | null;
+  imageUpscalePricing: ImageUpscalePricing | null;
   fastMode: boolean;
   minSeconds: number;
   maxSeconds: number;
@@ -108,10 +120,17 @@ interface ModelConfig {
 interface WorkspaceBinding {
   modelIds: string[];
   defaultModelIds: Partial<Record<ModelKind, string>>;
+  modelPricing: Record<string, WorkspaceModelPricing>;
+}
+
+interface WorkspaceModelPricing {
+  priceCents: number;
+  discountPriceCents: number | null;
 }
 
 interface ModelDiscoveryResult {
   models: string[];
+  entries?: ModelCatalogEntry[];
   modelCount: number;
   compatibleCount?: number;
   taskModelCount?: number;
@@ -119,13 +138,54 @@ interface ModelDiscoveryResult {
   warning?: string;
 }
 
+interface ModelSchemaProperty {
+  type?: string;
+  title?: string;
+  description?: string;
+  enum?: unknown[];
+  default?: unknown;
+  minimum?: number;
+  maximum?: number;
+  minItems?: number;
+  maxItems?: number;
+  minLength?: number;
+  maxLength?: number;
+  anyOf?: Array<Record<string, unknown>>;
+  items?: Record<string, unknown>;
+}
+
+interface ModelCatalogEntry {
+  id: string;
+  kind: ModelKind | "";
+  modelType?: string;
+  modality?: string;
+  operations?: string[];
+  inputFields?: string[];
+  requiredInputFields?: string[];
+  inputSchema?: {
+    type?: string;
+    properties?: Record<string, ModelSchemaProperty>;
+    required?: string[];
+  };
+  supportsReference?: boolean;
+  compatible: boolean;
+  incompatibility?: string;
+}
+
+function cloneJSON<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value));
+}
+
 interface ModelDraft extends Omit<
   ModelItem,
-  "priceCents" | "discountPriceCents"
+  "priceCents" | "discountPriceCents" | "imageUpscalePricing"
 > {
   pricePoints: number;
   discountEnabled: boolean;
   discountPoints: number;
+  upscaleHighPricePoints: number;
+  upscaleHighDiscountEnabled: boolean;
+  upscaleHighDiscountPoints: number;
   outputFormatsEnabled: boolean;
   moderationEnabled: boolean;
 }
@@ -331,24 +391,13 @@ const adapterMeta: Record<ProviderAdapter, { name: string; detail: string }> = {
 const kindMeta: Record<ModelKind, { name: string; detail: string }> = {
   image: { name: "生图模型", detail: "供全部图片工作台与 AI 助手选择" },
   chat: { name: "对话模型", detail: "供 AI 助手对话、分析和意图识别" },
-  image_tool: { name: "图片工具", detail: "处理已有图片，不参与普通生图" },
+  image_tool: { name: "媒体工具", detail: "按 CRUN 实时 schema 处理图片、视频和音频" },
 };
-const imageToolOptions: Array<{
-  value: ImageTool;
-  label: string;
-  detail: string;
-}> = [
-  {
-    value: "background_remove",
-    label: "背景移除",
-    detail: "当前仅支持 CRUN 服务商",
-  },
-];
 const kindFilters: Array<{ id: "all" | ModelKind; label: string }> = [
   { id: "all", label: "全部" },
   { id: "image", label: "生图模型" },
   { id: "chat", label: "对话模型" },
-  { id: "image_tool", label: "图片工具" },
+  { id: "image_tool", label: "媒体工具" },
 ];
 
 const workspaceMeta: Array<{
@@ -411,6 +460,11 @@ const loading = ref(false);
 const saving = ref(false);
 const activeView = ref<"models" | "workspaces" | "providers">("models");
 const activeWorkspaceKey = ref<WorkspaceKey>("assistant");
+const workspacePricingDialogVisible = ref(false);
+const pricingWorkspaceKey = ref<WorkspaceKey>("assistant");
+const workspacePricingDraft = ref<
+  Record<WorkspaceKey, Record<string, WorkspaceModelPricing>>
+>({} as Record<WorkspaceKey, Record<string, WorkspaceModelPricing>>);
 const kindFilter = ref<"all" | ModelKind>("all");
 const modelSearch = ref("");
 const reasoningPriceScope = ref<ReasoningPriceScope>("assistant");
@@ -419,7 +473,7 @@ const autoSaveReady = ref(false);
 let autoSaveTimer: ReturnType<typeof setTimeout> | null = null;
 let saveQueued = false;
 const config = reactive<ModelConfig>({
-	version: 5,
+	version: 7,
   providers: [],
   models: [],
   workspaces: {} as Record<WorkspaceKey, WorkspaceBinding>,
@@ -473,7 +527,7 @@ const viewTabs = computed(() => [
 watch([kindFilter, modelSearch], modelPagination.reset);
 
 function hydrate(value: ModelConfig) {
-	config.version = value.version || 5;
+	config.version = value.version || 7;
   config.providers = (value.providers || []).map((provider) => ({
     ...provider,
     adapter: provider.adapter || "openai",
@@ -491,6 +545,12 @@ function hydrate(value: ModelConfig) {
 	for (const provider of config.providers) syncProviderPrimary(provider);
   config.models = (value.models || []).map((model) => ({
     ...model,
+    upstreamInputFields: model.upstreamInputFields || [],
+    upstreamRequiredInputFields: model.upstreamRequiredInputFields || [],
+    upstreamInputSchema: model.upstreamInputSchema || {},
+    modality: model.modality || "",
+    operations: model.operations || [],
+    imageUpscalePricing: model.imageUpscalePricing || null,
     kind: model.kind || "image",
     tool: model.kind === "image_tool" ? model.tool || "background_remove" : "",
     description: model.description || "",
@@ -578,7 +638,18 @@ function hydrate(value: ModelConfig) {
             "";
         }
       }
-      return [workspace.key, { modelIds, defaultModelIds }];
+      const modelPricing = Object.fromEntries(
+        Object.entries(saved?.modelPricing || {})
+          .filter(([modelId]) => modelIds.includes(modelId))
+          .map(([modelId, pricing]) => [modelId, {
+            priceCents: Math.max(0, Number(pricing?.priceCents || 0)),
+            discountPriceCents:
+              pricing?.discountPriceCents === null || pricing?.discountPriceCents === undefined
+                ? null
+                : Math.max(0, Number(pricing.discountPriceCents)),
+          }]),
+      );
+      return [workspace.key, { modelIds, defaultModelIds, modelPricing }];
     }),
   ) as Record<WorkspaceKey, WorkspaceBinding>;
   sanitizeWorkspaceBindings();
@@ -597,6 +668,10 @@ async function load() {
 }
 
 async function save() {
+  if (autoSaveTimer) {
+    clearTimeout(autoSaveTimer);
+    autoSaveTimer = null;
+  }
   if (saving.value) {
     saveQueued = true;
     return;
@@ -691,6 +766,111 @@ const activeWorkspace = computed(
     workspaceMeta[0],
 );
 
+const pricingWorkspace = computed(
+  () =>
+    workspaceMeta.find(
+      (workspace) => workspace.key === pricingWorkspaceKey.value,
+    ) || workspaceMeta[0],
+);
+
+const pricingWorkspaceModels = computed(() => {
+  const binding = config.workspaces[pricingWorkspace.value.key];
+  if (!binding) return [] as ModelItem[];
+  const assigned = new Set(binding.modelIds);
+  return config.models.filter(
+    (model) =>
+      assigned.has(model.id) && pricingWorkspace.value.kinds.includes(model.kind),
+  );
+});
+
+function openWorkspacePricing() {
+  const firstAssigned = workspaceMeta.find(
+    (workspace) => workspaceAssignedCount(workspace) > 0,
+  );
+  if (!workspaceAssignedCount(activeWorkspace.value) && firstAssigned) {
+    pricingWorkspaceKey.value = firstAssigned.key;
+  } else {
+    pricingWorkspaceKey.value = activeWorkspace.value.key;
+  }
+  workspacePricingDraft.value = Object.fromEntries(
+    workspaceMeta.map((workspace) => [
+      workspace.key,
+      cloneJSON(config.workspaces[workspace.key]?.modelPricing || {}),
+    ]),
+  ) as Record<WorkspaceKey, Record<string, WorkspaceModelPricing>>;
+  workspacePricingDialogVisible.value = true;
+}
+
+function pricingDraftOverride(model: ModelItem) {
+  return workspacePricingDraft.value[pricingWorkspace.value.key]?.[model.id] || null;
+}
+
+function pricingDraftEffectivePrice(model: ModelItem) {
+  const pricing = pricingDraftOverride(model);
+  return pricing ? pricing.discountPriceCents ?? pricing.priceCents : effectivePrice(model);
+}
+
+function setPricingDraftOverride(model: ModelItem, enabled: boolean) {
+  const workspacePricing =
+    workspacePricingDraft.value[pricingWorkspace.value.key] ||
+    (workspacePricingDraft.value[pricingWorkspace.value.key] = {});
+  if (!enabled) {
+    delete workspacePricing[model.id];
+    return;
+  }
+  workspacePricing[model.id] = {
+    priceCents: normalizePoints(model.priceCents),
+    discountPriceCents:
+      model.discountPriceCents === null || model.discountPriceCents === undefined
+        ? null
+        : normalizePoints(model.discountPriceCents),
+  };
+}
+
+function setPricingDraftDiscount(model: ModelItem, enabled: boolean) {
+  const pricing = pricingDraftOverride(model);
+  if (!pricing) return;
+  pricing.discountPriceCents = enabled ? pricing.priceCents : null;
+}
+
+function pricingWorkspaceOverrideCount(
+  workspace: (typeof workspaceMeta)[number],
+) {
+  const assigned = new Set(config.workspaces[workspace.key]?.modelIds || []);
+  return Object.keys(workspacePricingDraft.value[workspace.key] || {}).filter(
+    (modelId) => assigned.has(modelId),
+  ).length;
+}
+
+async function saveWorkspacePricingDraft() {
+  for (const workspace of workspaceMeta) {
+    const binding = config.workspaces[workspace.key];
+    if (!binding) continue;
+    const assigned = new Set(binding.modelIds);
+    binding.modelPricing = Object.fromEntries(
+      Object.entries(workspacePricingDraft.value[workspace.key] || {})
+        .filter(([modelId]) => assigned.has(modelId))
+        .map(([modelId, pricing]) => {
+          const priceCents = normalizePoints(pricing.priceCents);
+          const discountPriceCents =
+            pricing.discountPriceCents === null ||
+            pricing.discountPriceCents === undefined
+              ? null
+              : Math.min(priceCents, normalizePoints(pricing.discountPriceCents));
+          return [modelId, { priceCents, discountPriceCents }];
+        }),
+    );
+  }
+  await save();
+  workspacePricingDialogVisible.value = false;
+}
+
+function openWorkspaceAssignmentFromPricing() {
+  activeWorkspaceKey.value = pricingWorkspace.value.key;
+  workspacePricingDialogVisible.value = false;
+  activeView.value = "workspaces";
+}
+
 const uiDesignServiceRoutes = computed(() =>
   IMAGE_SERVICE_ROUTES.filter(
     (route) => route.key === "ui_design" || route.key === "ui_design_asset",
@@ -766,6 +946,7 @@ function removeWorkspaceModel(
   const binding = config.workspaces[workspace.key];
   if (!binding) return;
   binding.modelIds = binding.modelIds.filter((id) => id !== modelId);
+  delete binding.modelPricing[modelId];
   ensureWorkspaceDefaults(workspace);
 }
 
@@ -774,6 +955,7 @@ function clearWorkspaceModels(workspace: (typeof workspaceMeta)[number]) {
   if (!binding) return;
   binding.modelIds = [];
   binding.defaultModelIds = {};
+  binding.modelPricing = {};
   ensureWorkspaceDefaults(workspace);
 }
 
@@ -814,6 +996,7 @@ function sanitizeWorkspaceBindings() {
     const binding = config.workspaces[workspace.key] || {
       modelIds: [],
       defaultModelIds: {},
+      modelPricing: {},
     };
     const allowed = new Set(
       workspaceAvailableModels(workspace).map((model) => model.id),
@@ -822,6 +1005,20 @@ function sanitizeWorkspaceBindings() {
       allowed.has(id),
     );
     binding.defaultModelIds = { ...(binding.defaultModelIds || {}) };
+    binding.modelPricing = Object.fromEntries(
+      Object.entries(binding.modelPricing || {})
+        .filter(([modelId]) => {
+          const model = config.models.find((item) => item.id === modelId);
+          return allowed.has(modelId) && Boolean(model);
+        })
+        .map(([modelId, pricing]) => {
+          const priceCents = Math.max(0, Math.round(Number(pricing.priceCents) || 0));
+          const discountPriceCents = pricing.discountPriceCents === null || pricing.discountPriceCents === undefined
+            ? null
+            : Math.min(priceCents, Math.max(0, Math.round(Number(pricing.discountPriceCents) || 0)));
+          return [modelId, { priceCents, discountPriceCents }];
+        }),
+    );
     config.workspaces[workspace.key] = binding;
     ensureWorkspaceDefaults(workspace);
   }
@@ -832,6 +1029,7 @@ function pruneWorkspaceModel(modelId: string) {
     const binding = config.workspaces[workspace.key];
     if (!binding) continue;
     binding.modelIds = binding.modelIds.filter((id) => id !== modelId);
+    delete binding.modelPricing[modelId];
     for (const kind of workspace.kinds) {
       if (binding.defaultModelIds[kind] === modelId) {
         binding.defaultModelIds[kind] = "";
@@ -844,6 +1042,25 @@ function pruneWorkspaceModel(modelId: string) {
 function effectivePrice(value: unknown) {
   const model = value as ModelItem;
   return model.discountPriceCents ?? model.priceCents;
+}
+
+function workspacePriceOverride(workspace: (typeof workspaceMeta)[number], model: ModelItem) {
+  return config.workspaces[workspace.key]?.modelPricing?.[model.id] || null;
+}
+
+function workspaceEffectivePrice(workspace: (typeof workspaceMeta)[number], model: ModelItem) {
+  const pricing = workspacePriceOverride(workspace, model);
+  return pricing ? pricing.discountPriceCents ?? pricing.priceCents : effectivePrice(model);
+}
+
+function workspacePriceLabel(workspace: (typeof workspaceMeta)[number], model: ModelItem) {
+  const pricing = workspacePriceOverride(workspace, model);
+  const prefix = pricing ? "页面价" : "继承";
+  return `${prefix} ${formatPoints(workspaceEffectivePrice(workspace, model))} 积分`;
+}
+
+function workspacePriceUnit(model: ModelItem) {
+  return model.kind === "image" ? "积分/张" : "积分/次";
 }
 
 function hasDiscountPrice(model: ModelItem) {
@@ -1156,6 +1373,7 @@ function modelModerationLine(model: ModelItem) {
 
 const discoveredModelsDialogVisible = ref(false);
 const discoveredModelsViewer = reactive({
+  providerId: "",
   providerName: "",
   models: [] as string[],
   configured: [] as string[],
@@ -1173,6 +1391,7 @@ function openDiscoveredModelsDialog(provider: ModelProvider) {
   );
   const configuredSet = new Set(configured);
   discoveredModelsViewer.providerName = provider.name || "服务商";
+  discoveredModelsViewer.providerId = provider.id;
   discoveredModelsViewer.configured = configured;
   discoveredModelsViewer.models = [...models].sort((a, b) => {
     const aConfigured = configuredSet.has(a) ? 0 : 1;
@@ -1181,6 +1400,73 @@ function openDiscoveredModelsDialog(provider: ModelProvider) {
     return a.localeCompare(b);
   });
   discoveredModelsDialogVisible.value = true;
+}
+
+const importingDiscoveredTools = ref(false);
+
+function importedToolName(entry: ModelCatalogEntry) {
+  const labels: Record<string, string> = {
+    "image-background-remove": "背景移除",
+    "image-upscale": "图片高清放大",
+    "image-watermark-remove": "图片去水印",
+    "video-enhance": "视频增强",
+    "video-watermark-remove": "视频去水印",
+    "vidu/lip-sync": "口型同步",
+  };
+  return labels[entry.id] || entry.id;
+}
+
+async function importDiscoveredMediaTools() {
+  const provider = config.providers.find((item) => item.id === discoveredModelsViewer.providerId);
+  if (!provider || provider.adapter !== "crun") return;
+  const entries = (catalogEntriesByProvider[provider.id] || []).filter(
+    (entry) => entry.compatible && entry.kind === "image_tool",
+  );
+  if (!entries.length) {
+    ElMessage.warning("请先在服务商编辑窗口读取最新 CRUN 模型目录");
+    return;
+  }
+  importingDiscoveredTools.value = true;
+  try {
+    const schemas = await Promise.all(
+      entries.map((entry) => fetchCRUNModelSchema(provider, entry.id)),
+    );
+    let created = 0;
+    for (const entry of schemas) {
+      const existing = config.models.find(
+        (model) => model.providerId === provider.id && model.upstreamModel === entry.id,
+      );
+      if (existing) {
+        existing.upstreamInputFields = [...(entry.inputFields || [])];
+        existing.upstreamRequiredInputFields = [...(entry.requiredInputFields || [])];
+        existing.upstreamInputSchema = cloneJSON(entry.inputSchema || {});
+        existing.modality = entry.modality || "";
+        existing.operations = [...(entry.operations || [])];
+        existing.tool = String(entry.operations?.[0] || "").replaceAll("-", "_");
+        continue;
+      }
+      const operation = String(entry.operations?.[0] || "").replaceAll("-", "_");
+      config.models.push({
+        id: createId("media-tool"), name: importedToolName(entry), providerId: provider.id,
+        upstreamModel: entry.id, upstreamInputFields: [...(entry.inputFields || [])],
+        upstreamRequiredInputFields: [...(entry.requiredInputFields || [])],
+        upstreamInputSchema: cloneJSON(entry.inputSchema || {}), modality: entry.modality || "",
+        operations: [...(entry.operations || [])], kind: "image_tool", tool: operation,
+        description: "", priceCents: 0, discountPriceCents: null, imageUpscalePricing: null, fastMode: false,
+        minSeconds: 30, maxSeconds: 600, resolutions: [], aspectRatios: [],
+        aspectRatiosByResolution: {}, qualities: [], transparentBackground: false,
+        outputFormats: [], moderationLevels: [], maxReferenceImages: 0, maxImages: 0,
+        contextWindowTokens: 0, maxOutputTokens: 0, supportedReasoningEfforts: [],
+        reasoningPricing: null, public: false, default: false, enabled: false,
+      });
+      created += 1;
+    }
+    discoveredModelsViewer.configured = providerModels(provider.id).map((model) => model.upstreamModel);
+    await save();
+    ElMessage.success(`已同步 ${schemas.length} 个媒体工具，新增 ${created} 个；请设置平台积分后再启用`);
+  } finally {
+    importingDiscoveredTools.value = false;
+  }
 }
 
 function qualityLabel(value: string) {
@@ -1202,6 +1488,9 @@ const providerDialogVisible = ref(false);
 const providerEditIndex = ref(-1);
 const discoveringProviderModels = ref(false);
 const providerCatalogSummary = ref("");
+const catalogEntriesByProvider = reactive<Record<string, ModelCatalogEntry[]>>({});
+const testingProviderRouteId = ref("");
+const providerRouteChecks = reactive<Record<string, string>>({});
 const providerDraft = reactive<ModelProvider>({
   id: "",
   name: "",
@@ -1263,12 +1552,14 @@ function openProvider(index = -1) {
   );
   providerEditIndex.value = index;
   providerCatalogSummary.value = "";
+  for (const key of Object.keys(providerRouteChecks)) delete providerRouteChecks[key];
   providerDialogVisible.value = true;
 }
 
 function invalidateProviderModels() {
   providerDraft.discoveredModels = [];
   providerCatalogSummary.value = "";
+  for (const key of Object.keys(providerRouteChecks)) delete providerRouteChecks[key];
 }
 
 async function fetchProviderModels(provider: ModelProvider) {
@@ -1280,8 +1571,9 @@ async function fetchProviderModels(provider: ModelProvider) {
 }
 
 function discoverySummary(result: ModelDiscoveryResult) {
-  if (result.catalogSource === "crun_full") {
-    return `全量 ${result.modelCount} 个：兼容模型 ${result.compatibleCount || 0} 个，CreateTask 任务模型 ${result.taskModelCount || 0} 个（已去重）`;
+  const compatible = result.compatibleCount ?? result.modelCount ?? result.models?.length ?? 0;
+  if (result.catalogSource === "crun-live-catalog") {
+    return `可配置 ${compatible} 个 · 媒体目录 ${result.taskModelCount || 0} 个`;
   }
   return `已读取 ${result.modelCount || result.models?.length || 0} 个模型`;
 }
@@ -1303,6 +1595,7 @@ async function discoverProviderModels() {
   try {
     const result = await fetchProviderModels(providerDraft);
     providerDraft.discoveredModels = result.models || [];
+    catalogEntriesByProvider[providerDraft.id] = result.entries || [];
     providerCatalogSummary.value = discoverySummary(result);
     if (result.warning) ElMessage.warning(result.warning);
     else ElMessage.success(providerCatalogSummary.value);
@@ -1311,6 +1604,31 @@ async function discoverProviderModels() {
     return null;
   } finally {
     discoveringProviderModels.value = false;
+  }
+}
+
+async function testProviderRoute(route: ProviderRoute) {
+  if (!/^https?:\/\//.test(route.baseUrl.trim()) || !route.apiKey.trim()) {
+    ElMessage.warning("请先填写该线路的 Base URL 和 API Key");
+    return;
+  }
+  testingProviderRouteId.value = route.id;
+  providerRouteChecks[route.id] = "";
+  try {
+    const result = await request<ModelDiscoveryResult & { ok: boolean }>(
+      "/api/v1/admin/model-config/discoveries",
+      {
+        method: "POST",
+        query: { routeId: route.id },
+        body: copyProvider(providerDraft),
+      },
+    );
+    providerRouteChecks[route.id] = `连接正常 · 可配置 ${result.compatibleCount ?? result.modelCount ?? 0} 个`;
+    ElMessage.success(`${route.name || "线路"}连接正常`);
+  } catch {
+    providerRouteChecks[route.id] = "连接失败";
+  } finally {
+    testingProviderRouteId.value = "";
   }
 }
 
@@ -1375,12 +1693,20 @@ const modelDraft = reactive<ModelDraft>({
   name: "",
   providerId: "",
   upstreamModel: "",
+  upstreamInputFields: [],
+  upstreamRequiredInputFields: [],
+  upstreamInputSchema: {},
+  modality: "",
+  operations: [],
   kind: "image",
   tool: "",
   description: "",
   pricePoints: 20,
   discountEnabled: false,
   discountPoints: 20,
+  upscaleHighPricePoints: 20,
+  upscaleHighDiscountEnabled: false,
+  upscaleHighDiscountPoints: 20,
   fastMode: false,
   minSeconds: 30,
   maxSeconds: 90,
@@ -1416,6 +1742,11 @@ function openModel(index = -1) {
           name: source.name,
           providerId: source.providerId,
           upstreamModel: source.upstreamModel,
+          upstreamInputFields: [...(source.upstreamInputFields || [])],
+          upstreamRequiredInputFields: [...(source.upstreamRequiredInputFields || [])],
+          upstreamInputSchema: cloneJSON(source.upstreamInputSchema || {}),
+          modality: source.modality || "",
+          operations: [...(source.operations || [])],
           kind: source.kind,
           tool: source.kind === "image_tool" ? source.tool || "background_remove" : "",
           description: source.description,
@@ -1464,12 +1795,23 @@ function openModel(index = -1) {
           pricePoints: normalizePoints(source.priceCents),
           discountEnabled: source.discountPriceCents !== null,
           discountPoints: normalizePoints(source.discountPriceCents),
+          upscaleHighPricePoints: normalizePoints(source.imageUpscalePricing?.highPriceCents ?? source.priceCents),
+          upscaleHighDiscountEnabled: source.imageUpscalePricing?.highDiscountPriceCents !== null
+            && source.imageUpscalePricing?.highDiscountPriceCents !== undefined,
+          upscaleHighDiscountPoints: normalizePoints(
+            source.imageUpscalePricing?.highDiscountPriceCents ?? source.imageUpscalePricing?.highPriceCents ?? source.priceCents,
+          ),
         }
       : {
           id: createId("model"),
           name: "",
           providerId: defaultProvider,
           upstreamModel: "",
+          upstreamInputFields: [],
+          upstreamRequiredInputFields: [],
+          upstreamInputSchema: {},
+          modality: "",
+          operations: [],
           kind:
             kindFilter.value === "chat"
               ? "chat"
@@ -1481,6 +1823,9 @@ function openModel(index = -1) {
           pricePoints: 20,
           discountEnabled: false,
           discountPoints: 20,
+          upscaleHighPricePoints: 20,
+          upscaleHighDiscountEnabled: false,
+          upscaleHighDiscountPoints: 20,
           fastMode: false,
           minSeconds: 30,
           maxSeconds: 90,
@@ -1505,7 +1850,14 @@ function openModel(index = -1) {
         },
   );
   modelEditIndex.value = index;
+  activeCRUNSchema.value = null;
   modelDialogVisible.value = true;
+  if (
+    source &&
+    config.providers.find((provider) => provider.id === source.providerId)?.adapter === "crun"
+  ) {
+    void loadCRUNModelSchema(source.upstreamModel);
+  }
 }
 
 async function openReasoningPricing(model: ModelItem) {
@@ -1524,14 +1876,200 @@ function focusModelCapabilities() {
   });
 }
 
-const modelProviderOptions = computed(
-  () =>
-    config.providers.find((item) => item.id === modelDraft.providerId)
-      ?.discoveredModels || [],
+const activeCRUNSchema = ref<ModelCatalogEntry | null>(null);
+const loadingCRUNSchema = ref(false);
+
+const selectedModelProvider = computed(() =>
+  config.providers.find((item) => item.id === modelDraft.providerId),
 );
+
+const selectedProviderCatalogEntries = computed(
+  () => catalogEntriesByProvider[modelDraft.providerId] || [],
+);
+
+const modelProviderOptions = computed(() => {
+  const provider = selectedModelProvider.value;
+  const entries = selectedProviderCatalogEntries.value;
+  if (provider?.adapter === "crun" && entries.length) {
+    return entries
+      .filter((entry) => entry.compatible && entry.kind === modelDraft.kind)
+      .map((entry) => entry.id);
+  }
+  return provider?.discoveredModels || [];
+});
+
+const currentSchemaProperties = computed(
+  () => activeCRUNSchema.value?.inputSchema?.properties || {},
+);
+
+function schemaStringEnum(field: string) {
+  return (currentSchemaProperties.value[field]?.enum || [])
+    .map((value) => String(value).trim())
+    .filter(Boolean);
+}
+
+const schemaResolutionOptions = computed(() =>
+  Array.from(
+    new Set(
+      schemaStringEnum("resolution").map((value) => value.toUpperCase()),
+    ),
+  ),
+);
+
+const schemaAspectRatioOptions = computed(() =>
+  schemaStringEnum("aspect_ratio")
+    .map((value) => value.toLowerCase())
+    .filter((value) => IMAGE_ASPECT_RATIOS.includes(value)),
+);
+
+const schemaQualityOptions = computed(() =>
+  schemaStringEnum("quality")
+    .map((value) => value.toLowerCase())
+    .filter((value) => IMAGE_QUALITIES.some((item) => item.value === value)),
+);
+
+const schemaOutputFormatOptions = computed(() =>
+  schemaStringEnum("output_format")
+    .map((value) => value.toLowerCase())
+    .filter((value) => IMAGE_OUTPUT_FORMATS.includes(value)),
+);
+
+const schemaModerationOptions = computed(() =>
+  schemaStringEnum("moderation")
+    .map((value) => value.toLowerCase())
+    .filter((value) => IMAGE_MODERATION_LEVELS.includes(value)),
+);
+
+const schemaSupportsTransparentBackground = computed(() =>
+  schemaStringEnum("background").some(
+    (value) => value.toLowerCase() === "transparent",
+  ),
+);
+
+const schemaReferenceMax = computed(() => {
+  if (!modelDraft.upstreamInputFields.includes("img_urls")) return 0;
+  const maxItems = Number(currentSchemaProperties.value.img_urls?.maxItems || 0);
+  return Math.min(16, Math.max(1, maxItems || 1));
+});
+
+const isSchemaDrivenCRUNImage = computed(
+  () =>
+    selectedModelProvider.value?.adapter === "crun" &&
+    modelDraft.kind === "image",
+);
+
+const availableResolutionOptions = computed(() =>
+  isSchemaDrivenCRUNImage.value
+    ? schemaResolutionOptions.value
+    : ["1K", "2K", "4K"],
+);
+
+const availableAspectRatioOptions = computed(() =>
+  isSchemaDrivenCRUNImage.value
+    ? schemaAspectRatioOptions.value
+    : IMAGE_ASPECT_RATIOS,
+);
+
+const availableQualityOptions = computed(() =>
+  isSchemaDrivenCRUNImage.value
+    ? IMAGE_QUALITIES.filter((item) =>
+        schemaQualityOptions.value.includes(item.value),
+      )
+    : IMAGE_QUALITIES,
+);
+
+const availableOutputFormatOptions = computed(() =>
+  isSchemaDrivenCRUNImage.value
+    ? schemaOutputFormatOptions.value
+    : IMAGE_OUTPUT_FORMATS,
+);
+
+const availableModerationOptions = computed(() =>
+  isSchemaDrivenCRUNImage.value
+    ? schemaModerationOptions.value
+    : IMAGE_MODERATION_LEVELS,
+);
+
+async function fetchCRUNModelSchema(provider: ModelProvider, model: string) {
+  syncProviderPrimary(provider);
+  return request<ModelCatalogEntry>("/api/v1/admin/model-config/discoveries", {
+    method: "POST",
+    query: { model },
+    body: provider,
+  });
+}
+
+function applyCRUNModelSchema(entry: ModelCatalogEntry) {
+  activeCRUNSchema.value = entry;
+  modelDraft.upstreamInputFields = [...(entry.inputFields || [])];
+  modelDraft.upstreamRequiredInputFields = [...(entry.requiredInputFields || [])];
+  modelDraft.upstreamInputSchema = cloneJSON(entry.inputSchema || {});
+  modelDraft.modality = entry.modality || "";
+  modelDraft.operations = [...(entry.operations || [])];
+  if (entry.kind && modelDraft.kind !== entry.kind) {
+    modelDraft.kind = entry.kind;
+    onModelKindChange(entry.kind);
+  }
+  modelDraft.tool = entry.kind === "image_tool"
+    ? String(entry.operations?.[0] || "").replaceAll("-", "_")
+    : "";
+  if (entry.kind !== "image") return;
+
+  const resolutions = [...schemaResolutionOptions.value];
+  const ratios = [...schemaAspectRatioOptions.value];
+  modelDraft.resolutions = resolutions;
+  modelDraft.aspectRatios = ratios;
+  modelDraft.aspectRatiosByResolution = Object.fromEntries(
+    resolutions.map((resolution) => [resolution, [...ratios]]),
+  );
+  modelDraft.qualities = [...schemaQualityOptions.value];
+  modelDraft.transparentBackground = schemaSupportsTransparentBackground.value;
+  modelDraft.outputFormats = [...schemaOutputFormatOptions.value];
+  modelDraft.outputFormatsEnabled = modelDraft.outputFormats.length > 0;
+  modelDraft.moderationLevels = [...schemaModerationOptions.value];
+  modelDraft.moderationEnabled = modelDraft.moderationLevels.length > 0;
+  modelDraft.maxReferenceImages = schemaReferenceMax.value;
+  modelDraft.maxImages = Math.min(4, Math.max(1, modelDraft.maxImages || 4));
+}
+
+async function loadCRUNModelSchema(model: string) {
+  const provider = selectedModelProvider.value;
+  if (provider?.adapter !== "crun" || !model.trim()) {
+    activeCRUNSchema.value = null;
+    return;
+  }
+  const catalogEntry = selectedProviderCatalogEntries.value.find(
+    (entry) => entry.id === model,
+  );
+  if (catalogEntry?.kind === "chat") {
+    activeCRUNSchema.value = catalogEntry;
+    modelDraft.upstreamInputFields = [];
+    return;
+  }
+  loadingCRUNSchema.value = true;
+  try {
+    applyCRUNModelSchema(await fetchCRUNModelSchema(provider, model));
+    ElMessage.success("已按 CRUN 实时参数同步模型能力");
+  } catch {
+    activeCRUNSchema.value = null;
+    modelDraft.upstreamInputFields = [];
+    modelDraft.upstreamRequiredInputFields = [];
+    modelDraft.upstreamInputSchema = {};
+    modelDraft.modality = "";
+    modelDraft.operations = [];
+  } finally {
+    loadingCRUNSchema.value = false;
+  }
+}
 
 function onModelProviderChange() {
   modelDraft.upstreamModel = "";
+  modelDraft.upstreamInputFields = [];
+  modelDraft.upstreamRequiredInputFields = [];
+  modelDraft.upstreamInputSchema = {};
+  modelDraft.modality = "";
+  modelDraft.operations = [];
+  activeCRUNSchema.value = null;
   syncModelDraftReasoningPricing();
 }
 
@@ -1543,7 +2081,7 @@ function selectModelKind(kind: ModelKind) {
 
 function onModelKindChange(value: unknown) {
   const kind = String(value) as ModelKind;
-	modelDraft.tool = kind === "image_tool" ? "background_remove" : "";
+	modelDraft.tool = kind === "image_tool" ? modelDraft.tool : "";
 	modelDraft.contextWindowTokens = kind === "chat" ? Math.max(4096, modelDraft.contextWindowTokens || 128000) : 0;
 	modelDraft.maxOutputTokens = kind === "chat" ? Math.max(256, modelDraft.maxOutputTokens || 8192) : 0;
 	if (kind !== "image") {
@@ -1579,9 +2117,10 @@ function onModelKindChange(value: unknown) {
 	syncModelDraftReasoningPricing();
 }
 
-function onUpstreamModelChange(value: string) {
+async function onUpstreamModelChange(value: string) {
   if (!modelDraft.name.trim()) modelDraft.name = value;
   syncModelDraftReasoningPricing();
+  await loadCRUNModelSchema(value);
 }
 
 function syncModelDraftReasoningPricing(fillFromBase = false) {
@@ -1678,13 +2217,13 @@ watch(
 
 function onOutputFormatsEnabled(value: unknown) {
   if (value === true && !modelDraft.outputFormats.length) {
-    modelDraft.outputFormats = [...IMAGE_OUTPUT_FORMATS];
+    modelDraft.outputFormats = [...availableOutputFormatOptions.value];
   }
 }
 
 function onModerationEnabled(value: unknown) {
   if (value === true && !modelDraft.moderationLevels.length) {
-    modelDraft.moderationLevels = [...IMAGE_MODERATION_LEVELS];
+    modelDraft.moderationLevels = [...availableModerationOptions.value];
   }
 }
 
@@ -1700,7 +2239,11 @@ async function refreshModelOptions() {
   try {
     const result = await fetchProviderModels(provider);
     provider.discoveredModels = result.models || [];
+    catalogEntriesByProvider[provider.id] = result.entries || [];
     providerCatalogSummary.value = discoverySummary(result);
+    if (provider.adapter === "crun" && modelDraft.upstreamModel) {
+      await loadCRUNModelSchema(modelDraft.upstreamModel);
+    }
     if (result.warning) ElMessage.warning(result.warning);
     else ElMessage.success(providerCatalogSummary.value);
   } finally {
@@ -1708,7 +2251,7 @@ async function refreshModelOptions() {
   }
 }
 
-function saveModelDraft() {
+async function saveModelDraft() {
   if (
     !modelDraft.name.trim() ||
     !modelDraft.upstreamModel.trim() ||
@@ -1717,12 +2260,9 @@ function saveModelDraft() {
     ElMessage.warning("请填写模型名称、上游模型 ID 和服务商");
     return;
   }
-  if (modelDraft.kind === "image" && !modelDraft.resolutions.length) {
-    ElMessage.warning("图片模型至少选择一个支持分辨率");
-    return;
-  }
   if (
     modelDraft.kind === "image" &&
+    modelDraft.resolutions.length > 0 &&
     modelDraft.resolutions.some(
       (resolution) => !modelDraft.aspectRatiosByResolution[resolution]?.length,
     )
@@ -1733,6 +2273,7 @@ function saveModelDraft() {
   }
   if (
     modelDraft.kind === "image" &&
+    modelDraft.resolutions.length > 0 &&
     modelDraft.resolutions.some((resolution) => {
       const ratios = modelDraft.aspectRatiosByResolution[resolution] || [];
       return ratios.includes("auto") && !ratios.some((ratio) => ratio !== "auto");
@@ -1742,18 +2283,30 @@ function saveModelDraft() {
     focusModelCapabilities();
     return;
   }
-  if (modelDraft.kind === "image" && !modelDraft.qualities.length) {
-    ElMessage.warning("图片模型至少选择一个输出质量");
-    return;
-  }
+	const provider = config.providers.find((item) => item.id === modelDraft.providerId);
+	if (
+		provider?.adapter === "crun" &&
+		modelDraft.kind !== "chat" &&
+		!modelDraft.upstreamInputFields.length
+	) {
+		ElMessage.warning("请先读取该 CRUN 模型的实时参数，不能按猜测配置");
+		return;
+	}
 	if (modelDraft.kind === "image_tool") {
-		const provider = config.providers.find((item) => item.id === modelDraft.providerId);
-		if (modelDraft.tool !== "background_remove") {
-			ElMessage.warning("请选择图片工具能力");
+		if (!modelDraft.tool || !modelDraft.operations.length || !Object.keys(modelDraft.upstreamInputSchema).length) {
+			ElMessage.warning("请先读取 CRUN 实时 schema，工具能力不能手工填写");
 			return;
 		}
 		if (provider?.adapter !== "crun") {
-			ElMessage.warning("背景移除工具当前只支持 CRUN 服务商");
+			ElMessage.warning("媒体工具当前只支持 CRUN 服务商");
+			return;
+		}
+		if (
+			modelDraft.tool === "image_upscale" &&
+			modelDraft.upscaleHighDiscountEnabled &&
+			modelDraft.upscaleHighDiscountPoints > modelDraft.upscaleHighPricePoints
+		) {
+			ElMessage.warning("4096px 档折扣积分不能高于标准积分");
 			return;
 		}
 	}
@@ -1800,6 +2353,11 @@ function saveModelDraft() {
     name: modelDraft.name.trim(),
     providerId: modelDraft.providerId,
     upstreamModel: modelDraft.upstreamModel.trim(),
+    upstreamInputFields: [...modelDraft.upstreamInputFields],
+    upstreamRequiredInputFields: [...modelDraft.upstreamRequiredInputFields],
+    upstreamInputSchema: cloneJSON(modelDraft.upstreamInputSchema),
+    modality: modelDraft.modality,
+    operations: [...modelDraft.operations],
     kind: modelDraft.kind,
     tool: modelDraft.kind === "image_tool" ? modelDraft.tool : "",
     description: modelDraft.description.trim(),
@@ -1807,6 +2365,16 @@ function saveModelDraft() {
     discountPriceCents: modelDraft.discountEnabled
       ? normalizePoints(modelDraft.discountPoints)
       : null,
+    imageUpscalePricing:
+      modelDraft.kind === "image_tool" && modelDraft.tool === "image_upscale"
+        ? {
+            thresholdPixels: 2048,
+            highPriceCents: normalizePoints(modelDraft.upscaleHighPricePoints),
+            highDiscountPriceCents: modelDraft.upscaleHighDiscountEnabled
+              ? normalizePoints(modelDraft.upscaleHighDiscountPoints)
+              : null,
+          }
+        : null,
     fastMode: modelDraft.kind === "image" && modelDraft.fastMode,
     minSeconds: modelDraft.minSeconds,
     maxSeconds: modelDraft.maxSeconds,
@@ -1817,7 +2385,9 @@ function saveModelDraft() {
           )
         : [],
     aspectRatios: modelDraft.kind === "image"
-      ? aspectRatioUnion(modelDraft.aspectRatiosByResolution)
+      ? modelDraft.resolutions.length
+        ? aspectRatioUnion(modelDraft.aspectRatiosByResolution)
+        : [...modelDraft.aspectRatios]
       : [],
     aspectRatiosByResolution:
       modelDraft.kind === "image"
@@ -1897,8 +2467,12 @@ function saveModelDraft() {
   }
   sanitizeWorkspaceBindings();
   modelDialogVisible.value = false;
-  ElMessage.success("已更新模型");
-  void save();
+  try {
+    await save();
+    ElMessage.success("模型已保存");
+  } catch {
+    // request() already presents the server validation message.
+  }
 }
 
 async function removeModel(index: number) {
@@ -1929,6 +2503,21 @@ function onCatalogModelStateChange(value: unknown) {
   }
 }
 
+function openFrontendTool(value: unknown) {
+  const model = value as ModelItem;
+  const url = new URL(
+    `/tools/${encodeURIComponent(model.id)}`,
+    window.location.origin,
+  );
+  if (
+    ["localhost", "127.0.0.1"].includes(url.hostname) &&
+    url.port === "3200"
+  ) {
+    url.port = "3105";
+  }
+  window.open(url.toString(), "_blank", "noopener,noreferrer");
+}
+
 onMounted(load);
 onBeforeUnmount(() => {
   if (autoSaveTimer) clearTimeout(autoSaveTimer);
@@ -1943,30 +2532,44 @@ onBeforeUnmount(() => {
   <div v-loading="loading" class="model-config-page">
     <PageCard>
       <div class="config-toolbar">
-        <div class="status-tabs" role="tablist" aria-label="模型配置视图">
-          <button
-            v-for="tab in viewTabs"
-            :key="tab.value"
-            type="button"
-            role="tab"
-            class="status-tab"
-            :class="{ 'is-active': activeView === tab.value }"
-            :aria-selected="activeView === tab.value"
-            @click="activeView = tab.value"
-          >
-            {{ tab.label }}
-            <em class="tnum">{{ tab.count }}</em>
-          </button>
+        <div class="config-toolbar__heading">
+          <div class="status-tabs" role="tablist" aria-label="模型配置视图">
+            <button
+              v-for="tab in viewTabs"
+              :key="tab.value"
+              type="button"
+              role="tab"
+              class="status-tab"
+              :class="{ 'is-active': activeView === tab.value }"
+              :aria-selected="activeView === tab.value"
+              @click="activeView = tab.value"
+            >
+              {{ tab.label }}
+              <em class="tnum">{{ tab.count }}</em>
+            </button>
+          </div>
+
+          <div class="config-toolbar__heading-actions">
+            <div
+              class="save-status"
+              :class="{ 'is-dirty': isDirty, 'is-saving': saving }"
+            >
+              <span class="save-status__dot" />
+              {{ saveStatusLabel }}
+            </div>
+            <el-button
+              v-if="activeView === 'models'"
+              type="primary"
+              :icon="Coin"
+              class="workspace-pricing-entry"
+              @click="openWorkspacePricing"
+            >
+              页面模型价格
+            </el-button>
+          </div>
         </div>
 
         <div v-if="activeView === 'models'" class="config-toolbar__actions">
-          <div
-            class="save-status"
-            :class="{ 'is-dirty': isDirty, 'is-saving': saving }"
-          >
-            <span class="save-status__dot" />
-            {{ saveStatusLabel }}
-          </div>
           <div class="kind-filter" role="tablist" aria-label="模型类型">
             <button
               v-for="item in kindFilters"
@@ -2001,13 +2604,6 @@ onBeforeUnmount(() => {
         </div>
 
         <div v-else-if="activeView === 'providers'" class="config-toolbar__actions">
-          <div
-            class="save-status"
-            :class="{ 'is-dirty': isDirty, 'is-saving': saving }"
-          >
-            <span class="save-status__dot" />
-            {{ saveStatusLabel }}
-          </div>
           <div class="config-toolbar__buttons">
             <el-button type="primary" :icon="Plus" @click="openProvider()">
               添加服务商
@@ -2019,13 +2615,6 @@ onBeforeUnmount(() => {
         </div>
 
         <div v-else class="config-toolbar__actions">
-          <div
-            class="save-status"
-            :class="{ 'is-dirty': isDirty, 'is-saving': saving }"
-          >
-            <span class="save-status__dot" />
-            {{ saveStatusLabel }}
-          </div>
           <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
         </div>
       </div>
@@ -2277,7 +2866,7 @@ onBeforeUnmount(() => {
                   <strong>{{ modelModerationLine(row as ModelItem) }}</strong>
                 </div>
                 <label class="model-card__switch">
-                  <span>可选</span>
+                  <span>{{ row.kind === "image_tool" ? "前台展示" : "可选" }}</span>
                   <el-switch
                     v-model="row.public"
                     size="small"
@@ -2301,6 +2890,19 @@ onBeforeUnmount(() => {
                   <el-switch v-model="row.fastMode" size="small" />
                 </label>
                 <div class="model-card__actions">
+                  <el-button
+                    v-if="
+                      row.kind === 'image_tool' &&
+                      row.tool !== 'background_remove' &&
+                      row.public &&
+                      row.enabled
+                    "
+                    link
+                    type="primary"
+                    @click="openFrontendTool(row)"
+                  >
+                    前台使用
+                  </el-button>
                   <el-button
                     v-if="row.kind === 'chat' && row.supportedReasoningEfforts.length"
                     link
@@ -2459,6 +3061,9 @@ onBeforeUnmount(() => {
                         >{{ kindName(model.kind) }} ·
                         {{ providerName(model.providerId) }}</small
                       >
+                      <em class="assignment-card__price">
+                        {{ workspacePriceLabel(activeWorkspace, model) }}
+                      </em>
                     </div>
                     <div class="assignment-card__foot">
                       <button
@@ -2667,6 +3272,135 @@ onBeforeUnmount(() => {
     </PageCard>
 
     <AdminDialog
+      v-model="workspacePricingDialogVisible"
+      title="页面模型价格"
+      subtitle="修改已分配到各业务页面的模型价格"
+      :icon="Coin"
+      width="min(1040px, calc(100% - 24px))"
+      panel-class="workspace-pricing-dialog-panel"
+      confirm-text="保存价格"
+      :confirm-loading="saving"
+      :close-on-click-modal="false"
+      @confirm="saveWorkspacePricingDraft"
+    >
+      <div class="workspace-pricing-dialog">
+        <aside class="workspace-pricing-pages" aria-label="业务页面">
+          <button
+            v-for="workspace in workspaceMeta"
+            :key="workspace.key"
+            type="button"
+            :class="{ 'is-active': pricingWorkspaceKey === workspace.key }"
+            @click="pricingWorkspaceKey = workspace.key"
+          >
+            <span>
+              <strong>{{ workspace.name }}</strong>
+              <small>已分配 {{ workspaceAssignedCount(workspace) }} 个模型</small>
+            </span>
+            <em
+              v-if="pricingWorkspaceOverrideCount(workspace)"
+              class="tnum"
+            >
+              {{ pricingWorkspaceOverrideCount(workspace) }}
+            </em>
+          </button>
+        </aside>
+
+        <section class="workspace-pricing-main">
+          <header class="workspace-pricing-main__head">
+            <span>
+              <strong>{{ pricingWorkspace.name }}</strong>
+              <small>{{ pricingWorkspace.detail }}</small>
+            </span>
+            <em class="tnum">{{ pricingWorkspaceModels.length }} 个模型</em>
+          </header>
+
+          <div v-if="pricingWorkspaceModels.length" class="workspace-pricing-list">
+            <article
+              v-for="model in pricingWorkspaceModels"
+              :key="model.id"
+              class="workspace-pricing-row"
+            >
+              <header>
+                <span>
+                  <strong>{{ model.name }}</strong>
+                  <small>
+                    {{ kindName(model.kind) }} · {{ providerName(model.providerId) }} ·
+                    模型目录 {{ formatPoints(effectivePrice(model)) }}
+                    {{ workspacePriceUnit(model) }}
+                  </small>
+                </span>
+                <em>
+                  当前 {{ formatPoints(pricingDraftEffectivePrice(model)) }}
+                  {{ workspacePriceUnit(model) }}
+                </em>
+              </header>
+
+              <div class="workspace-pricing-row__controls">
+                <label class="workspace-pricing-toggle">
+                  <span>
+                    <strong>页面单独定价</strong>
+                    <small>关闭后继承模型目录价格</small>
+                  </span>
+                  <el-switch
+                    :model-value="Boolean(pricingDraftOverride(model))"
+                    @change="setPricingDraftOverride(model, $event === true)"
+                  />
+                </label>
+
+                <template v-if="pricingDraftOverride(model)">
+                  <label class="workspace-pricing-field">
+                    <span>标准价格</span>
+                    <el-input-number
+                      v-model="workspacePricingDraft[pricingWorkspace.key][model.id].priceCents"
+                      :min="0"
+                      :precision="0"
+                      :step="1"
+                    />
+                    <em>{{ workspacePriceUnit(model) }}</em>
+                  </label>
+                  <label class="workspace-pricing-toggle is-compact">
+                    <span>
+                      <strong>活动价格</strong>
+                      <small>开启后优先结算</small>
+                    </span>
+                    <el-switch
+                      :model-value="pricingDraftOverride(model)?.discountPriceCents !== null"
+                      @change="setPricingDraftDiscount(model, $event === true)"
+                    />
+                  </label>
+                  <label
+                    v-if="pricingDraftOverride(model)?.discountPriceCents !== null"
+                    class="workspace-pricing-field"
+                  >
+                    <span>活动价格</span>
+                    <el-input-number
+                      v-model="workspacePricingDraft[pricingWorkspace.key][model.id].discountPriceCents"
+                      :min="0"
+                      :max="workspacePricingDraft[pricingWorkspace.key][model.id].priceCents"
+                      :precision="0"
+                      :step="1"
+                    />
+                    <em>{{ workspacePriceUnit(model) }}</em>
+                  </label>
+                </template>
+              </div>
+            </article>
+          </div>
+
+          <el-empty
+            v-else
+            description="该页面还没有分配模型"
+            :image-size="64"
+          >
+            <el-button type="primary" @click="openWorkspaceAssignmentFromPricing">
+              前往页面分配
+            </el-button>
+          </el-empty>
+        </section>
+      </div>
+    </AdminDialog>
+
+    <AdminDialog
       v-model="discoveredModelsDialogVisible"
       :title="`${discoveredModelsViewer.providerName} · 可读取模型`"
       :subtitle="`共 ${discoveredModelsViewer.models.length} 个，已配置 ${discoveredModelsViewer.configured.length} 个`"
@@ -2675,6 +3409,12 @@ onBeforeUnmount(() => {
       :show-confirm="false"
       cancel-text="关闭"
     >
+      <div v-if="config.providers.find((item) => item.id === discoveredModelsViewer.providerId)?.adapter === 'crun'" class="discovered-model-actions">
+        <el-button type="primary" :loading="importingDiscoveredTools" @click="importDiscoveredMediaTools">
+          同步全部媒体工具
+        </el-button>
+        <span>严格读取每个工具的实时 schema；新工具默认关闭，设置本站积分后再开放。</span>
+      </div>
       <div class="discovered-model-grid">
         <span
           v-for="modelId in discoveredModelsViewer.models"
@@ -2742,6 +3482,14 @@ onBeforeUnmount(() => {
                 <el-tag v-if="routeIndex === 0" size="small" effect="plain">主线路</el-tag>
               </div>
               <div class="provider-route-actions">
+                <el-button
+                  size="small"
+                  plain
+                  :loading="testingProviderRouteId === route.id"
+                  @click="testProviderRoute(route)"
+                >
+                  测试线路
+                </el-button>
                 <span>启用</span>
                 <el-switch v-model="route.enabled" />
                 <el-tooltip v-if="routeIndex > 0" content="删除线路" placement="top">
@@ -2802,6 +3550,15 @@ onBeforeUnmount(() => {
                 />
               </label>
             </div>
+            <div v-if="providerRouteChecks[route.id]" class="provider-route-check">
+              <el-tag
+                :type="providerRouteChecks[route.id] === '连接失败' ? 'danger' : 'success'"
+                size="small"
+                effect="plain"
+              >
+                {{ providerRouteChecks[route.id] }}
+              </el-tag>
+            </div>
           </div>
         </section>
         <div class="model-discovery">
@@ -2814,7 +3571,7 @@ onBeforeUnmount(() => {
               >已读取 {{ providerDraft.discoveredModels.length }} 个模型</span
             ><span v-else>{{
               providerDraft.adapter === "crun"
-                ? "读取兼容模型，并合并 CRUN 全部 CreateTask 图片、视频、音频与工具模型"
+                ? "实时读取 CRUN 对话与媒体目录，并过滤尚未接入的能力"
                 : "从 /v1/models 读取兼容模型目录，也可手工填写模型 ID"
             }}</span>
           </div>
@@ -2860,18 +3617,11 @@ onBeforeUnmount(() => {
           </div>
           <div v-if="modelDraft.kind === 'image_tool'" class="model-tool-picker">
             <span class="model-tool-picker__label">工具能力</span>
-            <div class="model-tool-options" role="radiogroup" aria-label="工具能力">
-              <button
-                v-for="tool in imageToolOptions"
-                :key="tool.value"
-                type="button"
-                class="model-tool-option"
-                :class="{ 'is-active': modelDraft.tool === tool.value }"
-                @click="modelDraft.tool = tool.value"
-              >
-                <strong>{{ tool.label }}</strong>
-                <small>{{ tool.detail }}</small>
-              </button>
+            <div class="model-tool-options" aria-label="工具能力">
+              <div class="model-tool-option is-active">
+                <strong>{{ modelDraft.operations.join(" · ") || "等待读取上游 schema" }}</strong>
+                <small>能力、媒体类型和参数均由 CRUN 实时接口自动同步</small>
+              </div>
             </div>
           </div>
         </section>
@@ -3049,6 +3799,7 @@ onBeforeUnmount(() => {
               <div class="model-picker">
                 <el-select
                   v-model="modelDraft.upstreamModel"
+                  :loading="loadingCRUNSchema"
                   filterable
                   allow-create
                   default-first-option
@@ -3071,6 +3822,27 @@ onBeforeUnmount(() => {
                 >
                   刷新
                 </el-button>
+              </div>
+              <div
+                v-if="selectedModelProvider?.adapter === 'crun' && modelDraft.upstreamModel"
+                class="model-schema-state"
+              >
+                <el-tag
+                  :type="activeCRUNSchema ? 'success' : 'warning'"
+                  size="small"
+                  effect="plain"
+                >
+                  {{
+                    loadingCRUNSchema
+                      ? "正在读取实时参数"
+                      : activeCRUNSchema
+                        ? `参数已验证 · ${modelDraft.upstreamInputFields.length} 个字段`
+                        : "参数尚未验证"
+                  }}
+                </el-tag>
+                <span v-if="activeCRUNSchema?.operations?.length">
+                  {{ activeCRUNSchema.operations.join(" · ") }}
+                </span>
               </div>
             </el-form-item>
             <el-form-item label="模型说明" class="is-wide">
@@ -3095,7 +3867,7 @@ onBeforeUnmount(() => {
             <small>积分定价与预计等待时间</small>
           </header>
           <div class="model-field-grid">
-            <el-form-item label="标准积分">
+            <el-form-item :label="modelDraft.kind === 'image_tool' && modelDraft.tool === 'image_upscale' ? '≤ 2048px 标准积分' : '标准积分'">
               <el-input-number
                 v-model="modelDraft.pricePoints"
                 :min="0"
@@ -3104,12 +3876,39 @@ onBeforeUnmount(() => {
                 style="width: 100%"
               />
             </el-form-item>
-            <el-form-item label="折扣积分">
+            <el-form-item :label="modelDraft.kind === 'image_tool' && modelDraft.tool === 'image_upscale' ? '≤ 2048px 折扣积分' : '折扣积分'">
               <div class="discount-input">
                 <el-switch v-model="modelDraft.discountEnabled" />
                 <el-input-number
                   v-model="modelDraft.discountPoints"
                   :disabled="!modelDraft.discountEnabled"
+                  :min="0"
+                  :precision="0"
+                  :step="1"
+                />
+              </div>
+            </el-form-item>
+            <el-form-item
+              v-if="modelDraft.kind === 'image_tool' && modelDraft.tool === 'image_upscale'"
+              label="2049–4096px 标准积分"
+            >
+              <el-input-number
+                v-model="modelDraft.upscaleHighPricePoints"
+                :min="0"
+                :precision="0"
+                :step="1"
+                style="width: 100%"
+              />
+            </el-form-item>
+            <el-form-item
+              v-if="modelDraft.kind === 'image_tool' && modelDraft.tool === 'image_upscale'"
+              label="2049–4096px 折扣积分"
+            >
+              <div class="discount-input">
+                <el-switch v-model="modelDraft.upscaleHighDiscountEnabled" />
+                <el-input-number
+                  v-model="modelDraft.upscaleHighDiscountPoints"
+                  :disabled="!modelDraft.upscaleHighDiscountEnabled"
                   :min="0"
                   :precision="0"
                   :step="1"
@@ -3231,7 +4030,9 @@ onBeforeUnmount(() => {
             <small
               >{{ modelDraft.resolutions.length }} 档分辨率 ·
               {{
-                aspectRatioUnion(modelDraft.aspectRatiosByResolution).length
+                modelDraft.resolutions.length
+                  ? aspectRatioUnion(modelDraft.aspectRatiosByResolution).length
+                  : modelDraft.aspectRatios.length
               }}
               种比例</small
             >
@@ -3241,24 +4042,30 @@ onBeforeUnmount(() => {
             <div class="model-capability-row">
               <div class="model-capability-copy">
                 <strong>支持分辨率</strong>
-                <span>至少选择一个输出档位</span>
+                <span>仅显示上游实时 schema 声明的档位</span>
               </div>
               <el-checkbox-group
+                v-if="availableResolutionOptions.length"
                 v-model="modelDraft.resolutions"
                 class="capability-options compact-options"
               >
-                <el-checkbox-button value="1K">1K</el-checkbox-button>
-                <el-checkbox-button value="2K">2K</el-checkbox-button>
-                <el-checkbox-button value="4K">4K</el-checkbox-button>
+                <el-checkbox-button
+                  v-for="resolution in availableResolutionOptions"
+                  :key="resolution"
+                  :value="resolution"
+                >
+                  {{ resolution }}
+                </el-checkbox-button>
               </el-checkbox-group>
+              <em v-else>模型使用内置分辨率</em>
             </div>
 
-            <div class="auto-aspect-rules">
+            <div v-if="availableAspectRatioOptions.length" class="auto-aspect-rules">
               <div class="auto-aspect-rules__heading">
                 <strong>比例控制</strong>
-                <span>为每个分辨率配置可选比例，可包含 Auto</span>
+                <span>仅开放上游当前接受的比例</span>
               </div>
-              <div class="auto-aspect-rules__grid">
+              <div v-if="modelDraft.resolutions.length" class="auto-aspect-rules__grid">
                 <label
                   v-for="resolution in modelDraft.resolutions"
                   :key="resolution"
@@ -3276,7 +4083,7 @@ onBeforeUnmount(() => {
                     popper-class="aspect-ratio-dropdown"
                   >
                     <el-option
-                      v-for="ratio in IMAGE_ASPECT_RATIOS"
+                      v-for="ratio in availableAspectRatioOptions"
                       :key="ratio"
                       :label="ratio === 'auto' ? 'Auto' : ratio"
                       :value="ratio"
@@ -3284,6 +4091,21 @@ onBeforeUnmount(() => {
                   </el-select>
                 </label>
               </div>
+              <el-select
+                v-else
+                v-model="modelDraft.aspectRatios"
+                multiple
+                collapse-tags
+                collapse-tags-tooltip
+                placeholder="选择用户可用比例"
+              >
+                <el-option
+                  v-for="ratio in availableAspectRatioOptions"
+                  :key="ratio"
+                  :label="ratio === 'auto' ? 'Auto' : ratio"
+                  :value="ratio"
+                />
+              </el-select>
             </div>
 
             <div class="model-capability-tiles">
@@ -3293,24 +4115,29 @@ onBeforeUnmount(() => {
                   <span>用户可选档位</span>
                 </div>
                 <el-checkbox-group
+                  v-if="availableQualityOptions.length"
                   v-model="modelDraft.qualities"
                   class="capability-options compact-options"
                 >
                   <el-checkbox-button
-                    v-for="quality in IMAGE_QUALITIES"
+                    v-for="quality in availableQualityOptions"
                     :key="quality.value"
                     :value="quality.value"
                   >
                     {{ quality.label }}
                   </el-checkbox-button>
                 </el-checkbox-group>
+                <em v-else>模型使用内置质量</em>
               </div>
               <div class="model-capability-tile">
                 <div class="model-capability-copy">
                   <strong>透明背景</strong>
                   <span>允许生成透明底图片</span>
                 </div>
-                <el-switch v-model="modelDraft.transparentBackground" />
+                <el-switch
+                  v-model="modelDraft.transparentBackground"
+                  :disabled="isSchemaDrivenCRUNImage && !schemaSupportsTransparentBackground"
+                />
               </div>
               <div class="model-capability-tile is-wide">
                 <div class="model-capability-copy">
@@ -3320,6 +4147,7 @@ onBeforeUnmount(() => {
                 <div class="capability-control">
                   <el-switch
                     v-model="modelDraft.outputFormatsEnabled"
+                    :disabled="isSchemaDrivenCRUNImage && !availableOutputFormatOptions.length"
                     @change="onOutputFormatsEnabled"
                   />
                   <el-checkbox-group
@@ -3328,7 +4156,7 @@ onBeforeUnmount(() => {
                     class="capability-options compact-options"
                   >
                     <el-checkbox-button
-                      v-for="format in IMAGE_OUTPUT_FORMATS"
+                      v-for="format in availableOutputFormatOptions"
                       :key="format"
                       :value="format"
                     >
@@ -3346,6 +4174,7 @@ onBeforeUnmount(() => {
                 <div class="capability-control">
                   <el-switch
                     v-model="modelDraft.moderationEnabled"
+                    :disabled="isSchemaDrivenCRUNImage && !availableModerationOptions.length"
                     @change="onModerationEnabled"
                   />
                   <el-checkbox-group
@@ -3354,7 +4183,7 @@ onBeforeUnmount(() => {
                     class="capability-options compact-options"
                   >
                     <el-checkbox-button
-                      v-for="level in IMAGE_MODERATION_LEVELS"
+                      v-for="level in availableModerationOptions"
                       :key="level"
                       :value="level"
                     >
@@ -3373,7 +4202,8 @@ onBeforeUnmount(() => {
                   <el-input-number
                     v-model="modelDraft.maxReferenceImages"
                     :min="0"
-                    :max="16"
+                    :max="isSchemaDrivenCRUNImage ? schemaReferenceMax : 16"
+                    :disabled="isSchemaDrivenCRUNImage && schemaReferenceMax === 0"
                     :step="1"
                     :precision="0"
                   />
@@ -3827,18 +4657,34 @@ onBeforeUnmount(() => {
 }
 
 .config-toolbar {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.config-toolbar__heading {
   display: flex;
-  flex-wrap: nowrap;
+  min-width: 0;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 14px;
+  gap: 16px;
+}
+
+.config-toolbar__heading-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 14px;
+}
+
+.workspace-pricing-entry {
+  min-width: 112px;
 }
 
 .config-toolbar__actions {
   display: flex;
-  flex: 1 1 auto;
-  flex-wrap: nowrap;
+  width: 100%;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
@@ -3970,6 +4816,12 @@ html.dark .status-tab.is-active {
   align-content: start;
   gap: 12px;
   padding: 2px 2px 8px;
+}
+
+@media (max-width: 1180px) {
+  .model-card-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .model-card {
@@ -5058,6 +5910,10 @@ html.dark .assignment-panel {
   font-weight: 600;
 }
 
+.assignment-card__body .assignment-card__price {
+  color: var(--assign-accent-ink);
+}
+
 .assignment-card__foot {
   display: flex;
   flex-wrap: wrap;
@@ -5095,9 +5951,12 @@ html.dark .assignment-panel {
 }
 
 .assignment-card__foot :deep(.el-button.is-link) {
-  margin-left: auto;
   color: var(--ink-2);
   font-weight: 600;
+}
+
+.assignment-card__foot > :last-child {
+  margin-left: auto;
 }
 
 .assignment-card__foot :deep(.el-button.is-link:hover) {
@@ -5116,6 +5975,250 @@ html.dark .assignment-panel {
 
 .assignment-col .el-empty {
   flex: 1;
+}
+
+.workspace-pricing-dialog {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  min-height: min(560px, calc(100dvh - 230px));
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.workspace-pricing-pages {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+  padding: 10px;
+  border-right: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.workspace-pricing-pages button {
+  display: flex;
+  width: 100%;
+  min-height: 54px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ink-2);
+  text-align: left;
+  cursor: pointer;
+}
+
+.workspace-pricing-pages button:hover {
+  background: var(--surface);
+}
+
+.workspace-pricing-pages button.is-active {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow-sm);
+}
+
+.workspace-pricing-pages button > span {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.workspace-pricing-pages strong {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.workspace-pricing-pages small {
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.workspace-pricing-pages em {
+  display: grid;
+  min-width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.workspace-pricing-main {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.workspace-pricing-main__head {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.workspace-pricing-main__head > span {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.workspace-pricing-main__head strong {
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.workspace-pricing-main__head small,
+.workspace-pricing-main__head > em {
+  color: var(--ink-3);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.workspace-pricing-list {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.workspace-pricing-row {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.workspace-pricing-row > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.workspace-pricing-row > header > span {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.workspace-pricing-row > header strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-pricing-row > header small {
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.workspace-pricing-row > header > em {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--accent-ink);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.workspace-pricing-row__controls {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(240px, 1.15fr);
+  align-items: center;
+  gap: 12px 18px;
+}
+
+.workspace-pricing-toggle {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.workspace-pricing-toggle > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.workspace-pricing-toggle strong,
+.workspace-pricing-field > span {
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.workspace-pricing-toggle small {
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.workspace-pricing-field {
+  display: grid;
+  grid-template-columns: 64px minmax(110px, 1fr) 52px;
+  align-items: center;
+  gap: 8px;
+}
+
+.workspace-pricing-field :deep(.el-input-number) {
+  width: 100%;
+}
+
+.workspace-pricing-field > em {
+  color: var(--ink-3);
+  font-size: 11px;
+  font-style: normal;
+}
+
+@media (max-width: 760px) {
+  .workspace-pricing-dialog {
+    grid-template-columns: minmax(0, 1fr);
+    min-height: min(640px, calc(100dvh - 190px));
+  }
+
+  .workspace-pricing-pages {
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .workspace-pricing-pages button {
+    min-width: 152px;
+  }
+
+  .workspace-pricing-row > header,
+  .workspace-pricing-row__controls {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workspace-pricing-row > header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .workspace-pricing-row > header > em {
+    align-self: flex-start;
+  }
 }
 .config-table :deep(.el-table__inner-wrapper::before) {
   display: none;
@@ -5263,6 +6366,30 @@ html.dark .assignment-panel {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: 8px;
+}
+
+.discovered-model-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.discovered-model-actions span {
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+@media (max-width: 640px) {
+  .discovered-model-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
 }
 
 .discovered-model-chip {
@@ -5569,6 +6696,10 @@ html.dark .assignment-panel {
 .route-timeout-field {
   grid-column: span 3;
 }
+.provider-route-check {
+  display: flex;
+  justify-content: flex-end;
+}
 
 .model-discovery > div {
   display: grid;
@@ -5591,6 +6722,15 @@ html.dark .assignment-panel {
 .model-picker .el-select {
   width: 100%;
 }
+.model-schema-state {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  color: var(--ink-3);
+  font-size: 11px;
+}
 .discount-input,
 .eta-input {
   display: flex;
@@ -5609,12 +6749,16 @@ html.dark .assignment-panel {
   font-size: 11px;
 }
 @media (max-width: 1100px) {
-  .config-toolbar {
+  .config-toolbar__heading {
     flex-wrap: wrap;
   }
 
+  .config-toolbar__heading-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+
   .config-toolbar__actions {
-    flex: 1 1 100%;
     justify-content: flex-start;
   }
 }

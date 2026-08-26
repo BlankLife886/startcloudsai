@@ -83,7 +83,10 @@ export function validCanvasAgentOps(snapshot, ops) {
         }
         if (op.type === "arrange_nodes") {
             if (!knownNodeIds.size || (op.scope === "selection" && !snapshot.selectedNodeIds.some((id) => knownNodeIds.has(id)))) continue;
-            accepted.push({ type: "arrange_nodes", scope: op.scope === "selection" ? "selection" : "all", direction: op.direction === "TB" ? "TB" : "LR" });
+            const scope = op.scope === "selection" ? "selection" : op.scope === "workflow" ? "workflow" : "all";
+            const workflowId = cleanId(op.workflowId);
+            if (scope === "workflow" && !workflowId) continue;
+            accepted.push({ type: "arrange_nodes", scope, ...(scope === "workflow" ? { workflowId } : {}), direction: op.direction === "TB" ? "TB" : "LR" });
             continue;
         }
         if (op.type === "create_graph") {

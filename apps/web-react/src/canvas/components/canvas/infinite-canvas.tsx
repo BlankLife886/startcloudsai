@@ -11,6 +11,11 @@ export const MAX_CANVAS_SCALE = 5;
 const VIEWPORT_COMMIT_MS = 450;
 const LOW_ZOOM = 0.14;
 const GRID_BASE = 48;
+let liveCanvasScale = 1;
+
+export function getCanvasLiveScale(fallback = 1) {
+    return Number.isFinite(liveCanvasScale) && liveCanvasScale > 0 ? liveCanvasScale : fallback;
+}
 
 export function wheelZoomFactor(deltaY: number, deltaMode: number, sensitivity = 0.0016) {
     let delta = deltaY;
@@ -58,6 +63,7 @@ function wrapOffset(value: number, size: number) {
 }
 
 function paintViewport(world: HTMLElement | null, grid: HTMLElement | null, stage: HTMLElement | null, viewport: ViewportTransform) {
+    liveCanvasScale = viewport.k;
     if (world) world.style.transform = worldTransform(viewport);
     if (grid) {
         const size = GRID_BASE * viewport.k * gridStep(viewport.k);

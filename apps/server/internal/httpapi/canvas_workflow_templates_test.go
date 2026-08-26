@@ -1,8 +1,13 @@
 package httpapi
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/json"
+	"image"
+	"image/color"
+	"image/png"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -11,8 +16,63 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"github.com/BlankLife886/startcloudsai/server/internal/media"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 )
+
+func canvasTemplatePackageFileHeader(t *testing.T, manifest any, assets map[string][]byte) *multipart.FileHeader {
+	t.Helper()
+	var archiveBody bytes.Buffer
+	archiveWriter := zip.NewWriter(&archiveBody)
+	manifestPart, err := archiveWriter.Create("projects.json")
+	if err != nil {
+		t.Fatalf("create projects.json: %v", err)
+	}
+	manifestJSON, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+	if _, err := manifestPart.Write(manifestJSON); err != nil {
+		t.Fatalf("write projects.json: %v", err)
+	}
+	for name, data := range assets {
+		part, err := archiveWriter.Create(name)
+		if err != nil {
+			t.Fatalf("create asset %s: %v", name, err)
+		}
+		if _, err := part.Write(data); err != nil {
+			t.Fatalf("write asset %s: %v", name, err)
+		}
+	}
+	if err := archiveWriter.Close(); err != nil {
+		t.Fatalf("close zip: %v", err)
+	}
+
+	var multipartBody bytes.Buffer
+	multipartWriter := multipart.NewWriter(&multipartBody)
+	filePart, err := multipartWriter.CreateFormFile("package", "canvas.zip")
+	if err != nil {
+		t.Fatalf("create multipart package: %v", err)
+	}
+	if _, err := filePart.Write(archiveBody.Bytes()); err != nil {
+		t.Fatalf("write multipart package: %v", err)
+	}
+	if err := multipartWriter.Close(); err != nil {
+		t.Fatalf("close multipart: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/", &multipartBody)
+	req.Header.Set("Content-Type", multipartWriter.FormDataContentType())
+	if err := req.ParseMultipartForm(1 << 20); err != nil {
+		t.Fatalf("parse multipart: %v", err)
+	}
+	file, fileHeader, err := req.FormFile("package")
+	if err != nil {
+		t.Fatalf("read package header: %v", err)
+	}
+	_ = file.Close()
+	t.Cleanup(func() { _ = req.MultipartForm.RemoveAll() })
+	return fileHeader
+}
 
 func validCanvasWorkflowTemplatePayload() gin.H {
 	return gin.H{
@@ -140,6 +200,152 @@ func TestCanvasWorkflowTemplateRejectsInvalidDocument(t *testing.T) {
 	}
 }
 
+func TestCanvasWorkflowTemplateAnalysisRejectsInvalidDocument(t *testing.T) {
+	env := newCommunityEnv(t)
+	_, adminToken := env.newUserSession(t, "admin")
+	response := env.do(t, http.MethodPost, "/api/v1/admin/canvas-workflow-templates/analyze", gin.H{
+		"fileName": "invalid.json",
+		"document": gin.H{"version": 2, "nodes": []gin.H{}, "connections": []gin.H{}},
+	}, adminToken)
+	if response.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("invalid analysis document: status %d body %s", response.Code, response.Body.String())
+	}
+	_, code := decode(t, response)
+	if code != "validation_error" {
+		t.Fatalf("invalid analysis document code = %q", code)
+	}
+}
+
+func TestReadCanvasTemplatePackageIncludesDocumentAndLocalAssets(t *testing.T) {
+	assetPath := "projects/project-1/files/reference.png"
+	manifest := gin.H{
+		"app": "infinite-canvas", "version": 3,
+		"projects": []gin.H{{
+			"project": gin.H{
+				"nodes": []gin.H{{
+					"id": "image-1", "type": "image", "title": "商品参考图",
+					"position": gin.H{"x": 10, "y": 20}, "width": 320, "height": 240,
+					"metadata": gin.H{"content": "blob:local", "storageKey": "image:reference"},
+				}},
+				"connections": []gin.H{}, "backgroundMode": "dots", "viewport": gin.H{"x": 0, "y": 0, "k": 1},
+			},
+			"files": []gin.H{{"storageKey": "image:reference", "path": assetPath, "mimeType": "image/png", "bytes": 7}},
+		}},
+	}
+	fileHeader := canvasTemplatePackageFileHeader(t, manifest, map[string][]byte{assetPath: []byte("pngdata")})
+	pkg, err := readCanvasTemplatePackage(fileHeader)
+	if err != nil {
+		t.Fatalf("read package: %v", err)
+	}
+	if string(pkg.Assets["image:reference"].Data) != "pngdata" || pkg.Assets["image:reference"].ContentType != "image/png" {
+		t.Fatalf("unexpected package asset: %#v", pkg.Assets["image:reference"])
+	}
+	var document canvasTemplateDocument
+	if err := json.Unmarshal(pkg.Document, &document); err != nil {
+		t.Fatalf("decode document: %v", err)
+	}
+	if document.Version != 3 || len(document.Nodes) != 1 || len(document.Connections) != 0 || document.BackgroundMode != "dots" {
+		t.Fatalf("unexpected package document: %#v", document)
+	}
+}
+
+func TestCanvasTemplateStorageKeyNormalizesPrivateAndTemplateURLs(t *testing.T) {
+	tests := map[string]string{
+		"tasks/user/task/original/a.png":                                     "tasks/user/task/original/a.png",
+		"/api/v1/files/uploads/user/original/a.png":                          "uploads/user/original/a.png",
+		"https://example.test/api/v1/files/tasks/user/task/thumb/a?size=320": "tasks/user/task/thumb/a",
+		"/api/v1/files/canvas-template-assets/template/a.webp":               "canvas-template-assets/template/a.webp",
+		"ordinary prompt text":                                               "",
+	}
+	for input, want := range tests {
+		if got := canvasTemplateStorageKey(input); got != want {
+			t.Fatalf("canvasTemplateStorageKey(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestCanvasTemplateAnalysisContextKeepsSemanticsAndDropsMedia(t *testing.T) {
+	document := gin.H{
+		"nodes": []gin.H{{
+			"id": "node-1", "type": "config", "title": "生成电商主图",
+			"metadata": gin.H{
+				"prompt":     "生成适合商品详情页的白底主图",
+				"model":      "image-pro",
+				"dataUrl":    "data:image/png;base64,very-large-payload",
+				"storageKey": "uploads/private/source.png",
+			},
+		}},
+		"connections": []gin.H{},
+	}
+	raw, _ := json.Marshal(document)
+	contextJSON, err := canvasTemplateAnalysisContext(raw)
+	if err != nil {
+		t.Fatalf("analysis context: %v", err)
+	}
+	text := string(contextJSON)
+	if !bytes.Contains(contextJSON, []byte("生成适合商品详情页的白底主图")) {
+		t.Fatalf("analysis context lost semantic prompt: %s", text)
+	}
+	for _, privateValue := range []string{"very-large-payload", "uploads/private/source.png", "dataUrl", "storageKey"} {
+		if bytes.Contains(contextJSON, []byte(privateValue)) {
+			t.Fatalf("analysis context leaked %q: %s", privateValue, text)
+		}
+	}
+}
+
+func TestDecodeCanvasTemplateAnalysisNormalizesAllFields(t *testing.T) {
+	document := json.RawMessage(`{"version":3,"nodes":[{"id":"n","type":"config","title":"节点","position":{"x":0,"y":0},"width":100,"height":100}],"connections":[]}`)
+	result, err := decodeCanvasTemplateAnalysis("```json\n"+`{
+		"slug":"  Beauty Launch Workflow  ",
+		"title":"  美妆新品全渠道上市  ",
+		"category":"commerce-poster",
+		"categoryLabel":"",
+		"industry":" 美妆护肤 ",
+		"summary":" 从商品图生成主图、海报与投放文案。 ",
+		"platforms":["天猫","抖音商城"],
+		"deliverables":["商品主图","推广海报"],
+		"accent":"#A855F7"
+	}`+"\n```", document)
+	if err != nil {
+		t.Fatalf("decode analysis: %v", err)
+	}
+	if result.Slug != "beauty-launch-workflow" || result.Title != "美妆新品全渠道上市" {
+		t.Fatalf("unexpected identity fields: %#v", result)
+	}
+	if result.CategoryLabel != "电商海报" || result.Industry != "美妆护肤" || result.Accent != "#a855f7" {
+		t.Fatalf("unexpected normalized fields: %#v", result)
+	}
+	if len(result.Platforms) != 2 || len(result.Deliverables) != 2 {
+		t.Fatalf("unexpected array fields: %#v", result)
+	}
+}
+
+func TestCanvasTemplateCoverCompressionLimitsLongestEdge(t *testing.T) {
+	env := newCommunityEnv(t)
+	source := image.NewRGBA(image.Rect(0, 0, 1800, 900))
+	for y := 0; y < 900; y++ {
+		for x := 0; x < 1800; x++ {
+			source.SetRGBA(x, y, color.RGBA{R: uint8(x % 255), G: uint8(y % 255), B: 160, A: 255})
+		}
+	}
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, source); err != nil {
+		t.Fatalf("encode source: %v", err)
+	}
+	server := &Server{Cfg: env.cfg, St: env.st}
+	compressed, ext, contentType := server.compressCoverImage(context.Background(), encoded.Bytes(), "png", "image/png")
+	width, height, err := media.Dimensions(compressed)
+	if err != nil {
+		t.Fatalf("compressed cover unreadable: %v", err)
+	}
+	if width != 1280 || height != 640 {
+		t.Fatalf("compressed dimensions = %dx%d, want 1280x640", width, height)
+	}
+	if ext == "" || contentType == "" {
+		t.Fatalf("compressed metadata missing: ext=%q contentType=%q", ext, contentType)
+	}
+}
+
 func TestCanvasWorkflowTemplateRejectsInvalidNodeAndDuplicateSlug(t *testing.T) {
 	env := newCommunityEnv(t)
 	_, adminToken := env.newUserSession(t, "admin")
@@ -172,8 +378,8 @@ func TestDefaultCanvasWorkflowTemplatesSeedOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed defaults: %v", err)
 	}
-	if inserted != 41 {
-		t.Fatalf("inserted defaults = %d, want 41", inserted)
+	if inserted != 42 {
+		t.Fatalf("inserted defaults = %d, want 42", inserted)
 	}
 
 	response := env.do(t, http.MethodGet, "/api/v1/canvas-workflow-templates", nil, "")
@@ -182,8 +388,8 @@ func TestDefaultCanvasWorkflowTemplatesSeedOnce(t *testing.T) {
 	}
 	data, _ := decode(t, response)
 	items, _ := data["items"].([]any)
-	if len(items) != 41 {
-		t.Fatalf("seeded public templates = %d, want 41", len(items))
+	if len(items) != 42 {
+		t.Fatalf("seeded public templates = %d, want 42", len(items))
 	}
 
 	inserted, err = store.SeedDefaultCanvasWorkflowTemplates(context.Background(), env.st)

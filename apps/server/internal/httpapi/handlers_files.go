@@ -41,6 +41,7 @@ var mp4FtypBrands = map[string]bool{
 	"isom": true, "iso2": true, "iso4": true, "iso5": true, "iso6": true,
 	"mp41": true, "mp42": true, "avc1": true, "av01": true, "dash": true,
 	"M4V ": true,
+	"M4A ": true,
 }
 
 // sniffUploadMedia identifies supported upload formats from their signatures.
@@ -55,10 +56,25 @@ func sniffUploadMedia(data []byte) (ext string, contentType string, image bool) 
 		return "webp", "image/webp", true
 	}
 	if len(data) >= 12 && string(data[4:8]) == "ftyp" && mp4FtypBrands[string(data[8:12])] {
+		if string(data[8:12]) == "M4A " {
+			return "m4a", "audio/mp4", false
+		}
 		return "mp4", "video/mp4", false
 	}
 	if len(data) >= 4 && data[0] == 0x1a && data[1] == 0x45 && data[2] == 0xdf && data[3] == 0xa3 {
 		return "webm", "video/webm", false
+	}
+	if len(data) >= 12 && string(data[:4]) == "RIFF" && string(data[8:12]) == "WAVE" {
+		return "wav", "audio/wav", false
+	}
+	if len(data) >= 3 && string(data[:3]) == "ID3" {
+		return "mp3", "audio/mpeg", false
+	}
+	if len(data) >= 2 && data[0] == 0xff && data[1]&0xe0 == 0xe0 {
+		return "mp3", "audio/mpeg", false
+	}
+	if len(data) >= 4 && string(data[:4]) == "OggS" {
+		return "ogg", "audio/ogg", false
 	}
 	return "", "", false
 }
@@ -125,6 +141,49 @@ func isOwnedTaskImageKey(userID uuid.UUID, key string) bool {
 	return isOwnedUserUploadImageKey(userID, key) ||
 		isOwnedTaskOutputImageKey(userID, key) ||
 		isOwnedAssistantOutputImageKey(userID, key)
+}
+
+func isOwnedTaskMediaKey(userID uuid.UUID, key string) bool {
+	key = strings.TrimSpace(key)
+	if key == "" || len(key) > 512 || strings.Contains(key, "..") || strings.Contains(key, "\\") {
+		return false
+	}
+	uploadPrefix := "uploads/" + userID.String() + "/original/"
+	if strings.HasPrefix(key, uploadPrefix) && !strings.Contains(strings.TrimPrefix(key, uploadPrefix), "/") {
+		return true
+	}
+	taskPrefix := "tasks/" + userID.String() + "/"
+	if !strings.HasPrefix(key, taskPrefix) {
+		return false
+	}
+	parts := strings.Split(strings.TrimPrefix(key, taskPrefix), "/")
+	if len(parts) != 3 || parts[1] != "original" || parts[2] == "" {
+		return false
+	}
+	_, err := uuid.Parse(parts[0])
+	return err == nil
+}
+
+func (s *Server) inspectOwnedTaskMedia(ctx context.Context, userID uuid.UUID, key string, maxBytes int64) (int64, error) {
+	if !isOwnedTaskMediaKey(userID, key) {
+		return 0, errors.New("object key is not an owned media file")
+	}
+	size, err := s.Storage.ObjectSize(ctx, key)
+	if err != nil || size <= 0 || size > maxBytes {
+		return 0, errors.New("media file is missing or too large")
+	}
+	limit := int64(taskImageHeaderBytes)
+	if size < limit {
+		limit = size
+	}
+	header, err := s.Storage.GetBytesPrefix(ctx, key, limit)
+	if err != nil {
+		return 0, err
+	}
+	if ext, _, _ := sniffUploadMedia(header); ext == "" {
+		return 0, errors.New("unsupported media file")
+	}
+	return size, nil
 }
 
 func isPublicEcommerceCatalogImageKey(key string) bool {
@@ -316,7 +375,7 @@ func (s *Server) upload(c *gin.Context) {
 	}
 	ext, contentType, isImage := sniffUploadMedia(data)
 	if ext == "" {
-		fail(c, apperr.E("unsupported_file", "仅支持 png / jpg / webp 图片或 mp4 / webm 视频", 400))
+		fail(c, apperr.E("unsupported_file", "仅支持 png / jpg / webp 图片、mp4 / webm 视频或 mp3 / wav / m4a / ogg 音频", 400))
 		return
 	}
 	fileID := uuid.NewString()
@@ -431,6 +490,8 @@ func (s *Server) getFile(c *gin.Context) {
 		allowed = true // 提示词封面公开可读
 	case strings.HasPrefix(key, "canvas-template-covers/"):
 		allowed = true // 画布生产模板封面公开可读
+	case strings.HasPrefix(key, "canvas-template-assets/"):
+		allowed = true // 已发布画布模板的内嵌资源公开可读
 	case strings.HasPrefix(key, "announcement-images/"):
 		allowed = true // 公告图片对用户端公开可读
 	case strings.HasPrefix(key, "ecommerce-catalog/"),

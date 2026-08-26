@@ -125,6 +125,43 @@
   color: rgba(28, 26, 39, 0.55);
   font-size: 0.68rem;
 }
+.nav-notify__read-all {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #5b4dff;
+  font-size: 0.7rem;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 140ms ease, color 140ms ease, opacity 140ms ease;
+}
+.nav-notify__read-all:hover:not(:disabled) {
+  background: rgba(91, 77, 255, 0.09);
+}
+.nav-notify__read-all:focus-visible {
+  outline: 2px solid rgba(91, 77, 255, 0.38);
+  outline-offset: 1px;
+}
+.nav-notify__read-all:disabled {
+  color: rgba(28, 26, 39, 0.34);
+  cursor: default;
+}
+.site-header.is-dark .nav-notify__read-all {
+  color: #aaa3ff;
+}
+.site-header.is-dark .nav-notify__read-all:hover:not(:disabled) {
+  background: rgba(170, 163, 255, 0.12);
+}
+.site-header.is-dark .nav-notify__read-all:disabled {
+  color: rgba(255, 255, 255, 0.3);
+}
 .nav-notify__loading,
 .nav-notify__empty {
   display: grid;

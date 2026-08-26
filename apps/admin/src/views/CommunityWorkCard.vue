@@ -7,6 +7,7 @@ const props = defineProps<{
   operating: boolean
   categoryLabel: string
   selected: boolean
+  selectionMode: boolean
   mediaHeight: number
   cardWidth: number
   imageLoading?: 'eager' | 'lazy'
@@ -48,6 +49,14 @@ function emitMeasure(event: Event) {
   emit('measure', props.item, event)
 }
 
+function handleCoverClick() {
+  if (props.selectionMode) {
+    emit('select', props.item, !props.selected)
+    return
+  }
+  emit('preview', props.item)
+}
+
 /** 缓存图可能在 @load 绑定前已完成，需补一次测高，避免按 3:4 占位导致上下留白 */
 function measureIfComplete() {
   const image = coverImgRef.value
@@ -65,12 +74,19 @@ watch(coverUrl, () => {
 </script>
 
 <template>
-  <article class="community-card" :class="{ 'is-featured': isFeatured, 'is-selected': selected }">
+  <article
+    class="community-card"
+    :class="{
+      'is-featured': isFeatured,
+      'is-selected': selected,
+      'is-selection-mode': selectionMode,
+    }"
+  >
     <div
       class="community-cover"
       :class="{ 'has-image': Boolean(coverUrl) }"
       :style="{ height: `${mediaHeight}px` }"
-      @click="emit('preview', item)"
+      @click="handleCoverClick"
     >
       <img
         v-if="coverUrl"
@@ -87,6 +103,7 @@ watch(coverUrl, () => {
       <div v-else class="community-cover__empty">暂无封面</div>
 
       <el-checkbox
+        v-if="selectionMode"
         class="community-card__select"
         :model-value="selected"
         :aria-label="`选择${title}`"
@@ -166,6 +183,10 @@ watch(coverUrl, () => {
   &.is-selected {
     border-color: var(--accent);
     box-shadow: 0 0 0 2px var(--accent-soft);
+  }
+
+  &.is-selection-mode .community-cover {
+    cursor: pointer;
   }
 }
 

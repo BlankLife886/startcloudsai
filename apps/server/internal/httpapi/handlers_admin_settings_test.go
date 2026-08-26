@@ -146,6 +146,33 @@ func TestAdminPutSettingsValidatesTaskFailureRetryCount(t *testing.T) {
 	}
 }
 
+func TestAdminPutSettingsRequiresCompleteImageAnalysisSelection(t *testing.T) {
+	st := testdb.Setup(t)
+	srv := &Server{Cfg: &config.Config{}, St: st}
+	for _, body := range []string{
+		`{"adminImageAnalysisProviderId":"provider","adminImageAnalysisModelId":""}`,
+		`{"adminImageAnalysisProviderId":"","adminImageAnalysisModelId":"model"}`,
+	} {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPut, "/api/v1/admin/settings", strings.NewReader(body))
+		c.Request.Header.Set("Content-Type", "application/json")
+		srv.adminPutSettings(c, nil)
+		if recorder.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("body %s status = %d, want 422; response=%s", body, recorder.Code, recorder.Body.String())
+		}
+	}
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPut, "/api/v1/admin/settings", strings.NewReader(`{"adminImageAnalysisProviderId":"","adminImageAnalysisModelId":"","adminImageAnalysisReasoningEffort":""}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	srv.adminPutSettings(c, nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("clearing catalog analysis selection status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestAdminPutSettingsValidatesCheckinCampaign(t *testing.T) {
 	st := testdb.Setup(t)
 	srv := &Server{Cfg: &config.Config{}, St: st}

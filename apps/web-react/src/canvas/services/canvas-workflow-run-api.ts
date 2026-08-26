@@ -35,6 +35,12 @@ export function updateCanvasWorkflowRun(
         currentNodeId?: string;
         errorMessage?: string;
     },
+    options?: { keepalive?: boolean },
 ) {
-    return starcloudsJson<CanvasWorkflowRunRecord>(`/canvas-projects/${encodeURIComponent(projectId)}/workflow-runs/${encodeURIComponent(runId)}`, "PATCH", input);
+    return starcloudsRequest<CanvasWorkflowRunRecord>(`/canvas-projects/${encodeURIComponent(projectId)}/workflow-runs/${encodeURIComponent(runId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+        keepalive: options?.keepalive,
+    });
 }

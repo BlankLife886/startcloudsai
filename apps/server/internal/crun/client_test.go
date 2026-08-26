@@ -21,6 +21,8 @@ func TestCreateAndWaitTasks(t *testing.T) {
 			t.Fatalf("x-api-key = %q", r.Header.Get("x-api-key"))
 		}
 		switch r.URL.Path {
+		case "/api/v1/client/job/EstimateTask":
+			fmt.Fprint(w, `{"code":200,"message":"success","data":{"estimated_credits":2,"balance":50,"affordable":true}}`)
 		case "/api/v1/client/job/CreateTask":
 			var body struct {
 				Model string `json:"model"`
@@ -88,8 +90,12 @@ func TestCreateAndWaitTasks(t *testing.T) {
 	}
 }
 
-func TestCreateTaskOmitsResolutionForBaseGPTImage2(t *testing.T) {
+func TestCreateTaskFiltersFieldsUsingLiveSchema(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/client/job/EstimateTask" {
+			fmt.Fprint(w, `{"code":200,"message":"success","data":{"estimated_credits":1,"balance":50,"affordable":true}}`)
+			return
+		}
 		var body struct {
 			Model string         `json:"model"`
 			Input map[string]any `json:"input"`
@@ -100,8 +106,10 @@ func TestCreateTaskOmitsResolutionForBaseGPTImage2(t *testing.T) {
 		if body.Model != DefaultModel {
 			t.Fatalf("model = %q", body.Model)
 		}
-		if _, exists := body.Input["resolution"]; exists {
-			t.Fatalf("base GPT Image 2 request must omit resolution: %#v", body.Input)
+		for _, field := range []string{"resolution", "quality", "output_format", "moderation", "background"} {
+			if _, exists := body.Input[field]; exists {
+				t.Fatalf("unsupported field %s must be omitted: %#v", field, body.Input)
+			}
 		}
 		fmt.Fprint(w, `{"code":200,"message":"success","data":{"task_id":"task-1"}}`)
 	}))
@@ -111,13 +119,48 @@ func TestCreateTaskOmitsResolutionForBaseGPTImage2(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.CreateTask(context.Background(), "hello", "1:1", "4K", nil); err != nil {
+	if _, err := client.CreateTaskWithRequest(context.Background(), OpenAIImageRequest{
+		Prompt: "hello", AspectRatio: "1:1", Resolution: "4K", Quality: "high",
+		OutputFormat: "webp", ModerationLevel: "low", TransparentBackground: true,
+		AllowedInputFields: []string{"prompt", "img_urls", "aspect_ratio"},
+	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCreateTaskStopsWhenEstimateIsUnaffordable(t *testing.T) {
+	createCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/client/job/EstimateTask":
+			fmt.Fprint(w, `{"code":200,"message":"success","data":{"estimated_credits":5,"balance":1,"affordable":false}}`)
+		case "/api/v1/client/job/CreateTask":
+			createCalls++
+			http.Error(w, "must not create", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL, "test-key", "google/nano-banana", 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.CreateTaskWithRequest(context.Background(), OpenAIImageRequest{
+		Prompt: "hello", AllowedInputFields: []string{"prompt"},
+	})
+	if err == nil || createCalls != 0 {
+		t.Fatalf("err=%v createCalls=%d", err, createCalls)
 	}
 }
 
 func TestCreateTaskUsesResolvedAspectWithFixedResolution(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/client/job/EstimateTask" {
+			fmt.Fprint(w, `{"code":200,"message":"success","data":{"estimated_credits":1,"balance":50,"affordable":true}}`)
+			return
+		}
 		var body struct {
 			Input map[string]any `json:"input"`
 		}
@@ -160,6 +203,10 @@ func TestBalance(t *testing.T) {
 
 func TestCreateBackgroundRemovalTask(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/client/job/EstimateTask" {
+			fmt.Fprint(w, `{"code":200,"message":"success","data":{"estimated_credits":1,"balance":50,"affordable":true}}`)
+			return
+		}
 		if r.URL.Path != "/api/v1/client/job/CreateTask" {
 			t.Fatalf("path = %q", r.URL.Path)
 		}
@@ -185,5 +232,60 @@ func TestCreateBackgroundRemovalTask(t *testing.T) {
 	taskID, err := client.CreateBackgroundRemovalTask(context.Background(), "https://cdn.example/source.png")
 	if err != nil || taskID != "remove-1" {
 		t.Fatalf("taskID=%q err=%v", taskID, err)
+	}
+}
+
+func TestGenericMediaCatalogEstimateCreateAndWait(t *testing.T) {
+	var createCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/client/job/Models":
+			if r.URL.Query().Get("modality") != "video" {
+				t.Fatalf("modality = %q", r.URL.Query().Get("modality"))
+			}
+			fmt.Fprint(w, `{"code":200,"message":"success","data":{"models":[{"model":"demo/video"}]}}`)
+		case "/api/v1/client/job/Models/demo/video":
+			fmt.Fprint(w, `{"code":200,"message":"success","data":{"model":"demo/video","input_schema":{"type":"object"}}}`)
+		case "/api/v1/client/job/EstimateTask":
+			fmt.Fprint(w, `{"code":200,"message":"success","data":{"estimated_credits":2.5,"balance":50,"affordable":true}}`)
+		case "/api/v1/client/job/CreateTask":
+			createCalls++
+			var body MediaTaskRequest
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Model != "demo/video" || body.Input["prompt"] != "launch" {
+				t.Fatalf("body = %#v", body)
+			}
+			fmt.Fprint(w, `{"code":200,"message":"success","data":{"task_id":"media-1"}}`)
+		case "/api/v1/client/job/TaskInfo":
+			fmt.Fprint(w, `{"code":200,"message":"success","data":{"task_id":"media-1","status":"success","result":{"code":200,"message":"ok","media_urls":["https://cdn.example/a.mp4","https://cdn.example/b.mp4"]}}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL, "test-key", "", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ListModels(context.Background(), "video", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.DescribeModel(context.Background(), "demo/video"); err != nil {
+		t.Fatal(err)
+	}
+	estimate, err := client.EstimateMediaTask(context.Background(), MediaTaskRequest{Model: "demo/video", Input: map[string]any{"prompt": "launch"}})
+	if err != nil || estimate.EstimatedCredits != 2.5 || !estimate.Affordable {
+		t.Fatalf("estimate=%#v err=%v", estimate, err)
+	}
+	created, err := client.CreateMediaTask(context.Background(), MediaTaskRequest{Model: "demo/video", Input: map[string]any{"prompt": "launch"}})
+	if err != nil || created.TaskID != "media-1" || createCalls != 1 {
+		t.Fatalf("created=%#v calls=%d err=%v", created, createCalls, err)
+	}
+	urls, err := client.WaitMediaTask(context.Background(), created.TaskID)
+	if err != nil || len(urls) != 2 {
+		t.Fatalf("urls=%#v err=%v", urls, err)
 	}
 }

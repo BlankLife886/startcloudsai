@@ -316,7 +316,7 @@ function taskOperationName(task: AdminTask) {
 }
 
 const serviceProviderMeta = {
-  c2a: { name: 'C2A', detail: 'gpt.xkyh.cc.cd/v1' },
+  c2a: { name: 'C2A', detail: '旧版线路（端点未记录）' },
   sub2api: { name: 'Sub2API', detail: 'OpenAI 兼容服务' },
   crun: { name: 'CRUN', detail: 'api.crun.ai' },
   local: { name: '本地处理', detail: '浏览器 Canvas' },
@@ -348,13 +348,32 @@ function taskServiceProviderMeta(task: AdminTask) {
   ]
     .map((value) => String(value || '').trim())
     .filter((value, index, values) => value && values.indexOf(value) === index)
+  const endpoints = [
+    params._providerEndpoint,
+    params._chatProviderEndpoint,
+    params._imageProviderEndpoint,
+  ]
+    .map((value) => String(value || '').trim())
+    .filter((value, index, values) => value && values.indexOf(value) === index)
+  const routeNames = [
+    params._providerRouteName,
+    params._chatProviderRouteName,
+    params._imageProviderRouteName,
+  ]
+    .map((value) => String(value || '').trim())
+    .filter((value, index, values) => value && values.indexOf(value) === index)
   if (providerNames.length) {
+    const routeDetail = endpoints.join(' / ') || routeNames.join(' / ') || '线路未记录'
     return {
       name: providerNames.join(' / '),
-      detail:
-        modelNames.join(' / ') ||
-        serviceProviderMeta[taskServiceProvider(task)].detail,
+      detail: [modelNames.join(' / '), routeDetail].filter(Boolean).join(' · '),
     }
+  }
+  if (
+    String(params._kind || '') === 'ui-design-region-edit' ||
+    String(params.assistantRunId || '')
+  ) {
+    return { name: '未记录', detail: '线路未记录' }
   }
   return serviceProviderMeta[taskServiceProvider(task)]
 }
@@ -774,6 +793,7 @@ async function forceFail(task: AdminTask) {
     acting.value = false
   }
 }
+
 </script>
 
 <template>
@@ -1111,7 +1131,7 @@ async function forceFail(task: AdminTask) {
           </div>
           <div class="drawer-toolbar__actions">
             <el-button
-              v-if="detail.status === 'failed'"
+			  v-if="detail.status === 'failed'"
               size="small"
               type="warning"
               :loading="acting"

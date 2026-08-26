@@ -44,6 +44,22 @@ export function adminFileUrl(key: string): string {
   return `/api/v1/admin/files/${key}`;
 }
 
+/** 把用户端 `/api/v1/files/...` 头像地址转成后台可带管理员 Cookie 的地址。 */
+export function adminMediaUrl(url: string | null | undefined): string {
+  const raw = String(url || "").trim();
+  if (!raw) return "";
+  const marker = "/api/v1/files/";
+  const index = raw.indexOf(marker);
+  if (index >= 0) {
+    return adminFileUrl(raw.slice(index + marker.length).replace(/^\/+/, ""));
+  }
+  if (raw.startsWith("/api/v1/admin/files/")) return raw;
+  if (!/^https?:\/\//i.test(raw) && !raw.startsWith("/")) {
+    return adminFileUrl(raw.replace(/^\/+/, ""));
+  }
+  return raw;
+}
+
 /** 任务类型 */
 export const TASK_TYPES = [
   "t2i",
@@ -95,6 +111,7 @@ export const TASK_TYPE_LABELS: Record<string, string> = {
   game_art: "游戏设计",
   puzzle: "拼图",
   background_remove: "背景移除",
+  media_tool: "媒体工具",
 };
 
 export function taskTypeLabel(

@@ -308,6 +308,68 @@ func TestTaskListIncludesGalleryShareStatus(t *testing.T) {
 	}
 }
 
+func TestAssistantImageRunCanBeSubmittedToGallery(t *testing.T) {
+	env := newCommunityEnv(t)
+	user, token := env.newUserSession(t, "user")
+	ctx := context.Background()
+	now := time.Now().UTC()
+	conversation, err := store.InsertAssistantConversation(ctx, env.st.Pool, uuid.New(), user.ID, "助手投稿", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userMessage, err := store.InsertAssistantMessage(ctx, env.st.Pool, store.AssistantMessage{
+		ID: uuid.New(), ConversationID: conversation.ID, Role: "user", Content: "生成海报",
+		Kind: "chat", Status: "complete", CreatedAt: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outputKey := fmt.Sprintf("tasks/%s/assistant/%s/1.png", user.ID, uuid.New())
+	assistantMessage, err := store.InsertAssistantMessage(ctx, env.st.Pool, store.AssistantMessage{
+		ID: uuid.New(), ConversationID: conversation.ID, Role: "assistant", Kind: "image", Status: "complete",
+		Metadata:  map[string]any{"images": []map[string]any{{"id": "result-1", "fileKey": outputKey}}},
+		CreatedAt: now.Add(time.Millisecond),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := store.InsertAssistantRun(ctx, env.st.Pool, store.AssistantRun{
+		ID: uuid.New(), UserID: user.ID, ConversationID: conversation.ID,
+		UserMessageID: userMessage.ID, AssistantMessageID: assistantMessage.ID,
+		Mode: "image", Prompt: "生成海报", ReservedCents: 20, Params: map[string]any{
+			"model": "image-pro", "count": 1, "referenceImages": []map[string]any{}, "_maskKey": "private",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.st.Pool.Exec(ctx,
+		`UPDATE assistant_runs SET status = 'succeeded', resolved_mode = 'image', stage = 'complete', cost_cents = 20, started_at = $2, finished_at = $2 WHERE id = $1`,
+		run.ID, now); err != nil {
+		t.Fatal(err)
+	}
+
+	response := env.do(t, http.MethodPost, "/api/v1/gallery/submissions", gin.H{
+		"taskId": run.ID.String(), "title": "助手生成海报",
+	}, token)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("submit assistant run: status %d body %s", response.Code, response.Body.String())
+	}
+	task, err := store.GetUserTask(ctx, env.st.Pool, user.ID, run.ID)
+	if err != nil || task == nil {
+		t.Fatalf("assistant gallery task = %#v, err = %v", task, err)
+	}
+	if len(task.OutputKeys) != 1 || task.OutputKeys[0] != outputKey || task.Type != "t2i" || task.Status != "succeeded" {
+		t.Fatalf("assistant gallery task fields = %#v", task)
+	}
+	if task.Params["_source"] != "assistant" || task.Params["assistantRunId"] != run.ID.String() || task.Params["_maskKey"] != nil {
+		t.Fatalf("assistant gallery task params = %#v", task.Params)
+	}
+	if submission, err := store.GetSubmissionByTaskID(ctx, env.st.Pool, run.ID); err != nil || submission == nil {
+		t.Fatalf("assistant gallery submission = %#v, err = %v", submission, err)
+	}
+}
+
 func TestAdminPromptCoverReportsOversizeInsteadOfMissingFile(t *testing.T) {
 	env := newCommunityEnv(t)
 	_, adminToken := env.newUserSession(t, "admin")

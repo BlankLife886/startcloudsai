@@ -29,7 +29,7 @@ export async function createIllustrationColoringJob({
   styleId = 'coloring',
   customPrompt = '',
   publicModelKey = ILLUSTRATION_COLORING_PUBLIC_MODEL,
-  outputSize = 'original',
+  outputSize = '',
   aspectRatio = '',
   resolutionScale = '',
   quality = '',
@@ -37,7 +37,7 @@ export async function createIllustrationColoringJob({
   moderationLevel = '',
   outputWidth = 0,
   outputHeight = 0,
-  outputOrientation = 'source',
+  outputOrientation = '',
   pricingUsd = 0,
   referenceImageUrls = [],
   maxAdditionalReferences = 3,
@@ -53,11 +53,13 @@ export async function createIllustrationColoringJob({
         .filter(Boolean),
     ),
   ).slice(0, Math.max(0, Math.min(15, Number(maxAdditionalReferences) || 0)))
-  const orientation = String(outputOrientation || 'source').trim()
+  const orientation = String(outputOrientation || '').trim()
   const orientationPrompt =
     orientation === 'source'
       ? ' Keep the original canvas ratio and composition.'
-      : ` Compose the final artwork on a ${orientation} canvas. Extend the background naturally when needed while preserving the complete original subject without cropping or stretching.`
+      : orientation
+        ? ` Compose the final artwork on a ${orientation} canvas. Extend the background naturally when needed while preserving the complete original subject without cropping or stretching.`
+        : ''
   const prompt = `${buildColoringPrompt(styleId, customPrompt, {
     referenceCount: normalizedReferenceUrls.length,
   })}${orientationPrompt}`.trim()
@@ -68,6 +70,18 @@ export async function createIllustrationColoringJob({
     Number(outputWidth) > 0 && Number(outputHeight) > 0
       ? `${Math.round(outputWidth)}x${Math.round(outputHeight)}`
       : ''
+  const modelParams = {
+    ...(outputSize ? { outputSize } : {}),
+    ...(aspectRatio ? { aspectRatio } : {}),
+    ...(resolutionScale ? { resolutionScale } : {}),
+    ...(quality ? { quality } : {}),
+    ...(outputFormat ? { outputFormat } : {}),
+    ...(moderationLevel ? { moderationLevel } : {}),
+    ...(Number(outputWidth) > 0 ? { outputWidth: Number(outputWidth) } : {}),
+    ...(Number(outputHeight) > 0 ? { outputHeight: Number(outputHeight) } : {}),
+    ...(orientation ? { outputOrientation: orientation } : {}),
+    ...(sizeLabel ? { size: sizeLabel } : {}),
+  }
 
   const response = await createServerAiJob({
     kind: 'illustration-coloring',
@@ -86,16 +100,7 @@ export async function createIllustrationColoringJob({
       styleId: 'coloring',
       styleLabel: '插画染色',
       customPrompt: String(customPrompt || '').trim(),
-      outputSize,
-      aspectRatio,
-      resolutionScale,
-      quality,
-      outputFormat,
-      moderationLevel,
-      outputWidth: Number(outputWidth || 0),
-      outputHeight: Number(outputHeight || 0),
-      outputOrientation: orientation,
-      size: sizeLabel,
+      ...modelParams,
     },
     params: {
       publicModelKey,
@@ -111,16 +116,7 @@ export async function createIllustrationColoringJob({
       styleId: 'coloring',
       styleLabel: '插画染色',
       customPrompt: String(customPrompt || '').trim(),
-      outputSize,
-      aspectRatio,
-      resolutionScale,
-      quality,
-      outputFormat,
-      moderationLevel,
-      outputWidth: Number(outputWidth || 0),
-      outputHeight: Number(outputHeight || 0),
-      outputOrientation: orientation,
-      size: sizeLabel,
+      ...modelParams,
       executionMode: 'server',
     },
     estimatedCostUsd: Number(pricingUsd || 0),

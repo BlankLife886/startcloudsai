@@ -1,5 +1,6 @@
 import localforage from "localforage";
 import { nanoid } from "nanoid";
+import { dataUrlToBlob } from "@/lib/data-url";
 import { StarcloudsApiError, fetchCloudFileBlob, starcloudsFileUrl, uploadCloudFile } from "@/services/starclouds-api";
 
 export type UploadedFile = { url: string; storageKey: string; bytes: number; mimeType: string; width?: number; height?: number; durationMs?: number };
@@ -8,7 +9,7 @@ const store = localforage.createInstance({ name: "infinite-canvas", storeName: "
 const objectUrls = new Map<string, string>();
 
 export async function uploadMediaFile(input: string | Blob, prefix = "file"): Promise<UploadedFile> {
-    const blob = typeof input === "string" ? await (await fetch(input)).blob() : input;
+    const blob = typeof input === "string" ? (input.startsWith("data:") ? dataUrlToBlob(input) : await (await fetch(input)).blob()) : input;
     if (blob.type.startsWith("video/") || blob.type.startsWith("audio/")) {
         try {
             const uploaded = await uploadCloudFile(blob, mediaFilename(blob));
@@ -110,7 +111,7 @@ function readAudioMeta(url: string) {
 }
 
 function isCloudStorageKey(key: string) {
-    return key.startsWith("uploads/") || key.startsWith("tasks/");
+    return key.startsWith("uploads/") || key.startsWith("tasks/") || key.startsWith("canvas-template-assets/");
 }
 
 function mediaFilename(blob: Blob) {

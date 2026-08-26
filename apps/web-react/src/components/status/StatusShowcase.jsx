@@ -24,14 +24,25 @@ export function StatusBackButton({ className = "is-primary" }) {
   );
 }
 
+/**
+ * @param {{
+ *   kind?: keyof typeof STATUS_ART,
+ *   eyebrow?: string,
+ *   title?: string,
+ *   label?: string,
+ *   reason?: string,
+ *   compact?: boolean,
+ *   actions?: import("react").ReactNode,
+ * }} props
+ */
 export function StatusShowcase({
   kind = "unavailable",
-  eyebrow,
-  title,
-  label,
-  reason,
+  eyebrow = "",
+  title = "",
+  label = "",
+  reason = "",
   compact = false,
-  actions,
+  actions = null,
 }) {
   const art = STATUS_ART[kind] || STATUS_ART.unavailable;
   const hasCopy = Boolean(eyebrow || title || label || reason || actions);

@@ -285,7 +285,20 @@ test.describe('React public pages interaction contract', () => {
       }),
     )
     let createBody = null
+    let quoteBody = null
     await page.route('**/api/v1/tasks**', async (route) => {
+      if (new URL(route.request().url()).pathname.endsWith('/tasks/quote')) {
+        quoteBody = route.request().postDataJSON()
+        await fulfillJson(route, {
+          currency: 'credits',
+          workspace: 't2i',
+          modelId: 'image-pro',
+          unitPriceCents: 12,
+          totalPriceCents: 12,
+          authoritative: true,
+        })
+        return
+      }
       if (route.request().method() === 'POST') {
         createBody = route.request().postDataJSON()
         await fulfillJson(route, {
@@ -346,6 +359,8 @@ test.describe('React public pages interaction contract', () => {
 
     await page.goto('/text-to-image', { waitUntil: 'domcontentloaded' })
     await expect(page.locator('.t2i-page')).toBeVisible()
+    const skillTrigger = page.getByRole('button', { name: /Skills/ })
+    await expect(skillTrigger).toContainText('0')
     await page.getByRole('button', { name: '生成模型' }).click()
     const modelMenu = page.getByRole('listbox', { name: '生成模型列表' })
     await expect(modelMenu).toHaveClass(/has-priced-options/)
@@ -368,16 +383,25 @@ test.describe('React public pages interaction contract', () => {
     await expect(modelMenu).toHaveCount(0, { timeout: 1_000 })
     await page.getByLabel('创作描述').fill('极简产品摄影，柔和侧光')
 
-    await page.getByRole('button', { name: /Skills/ }).click()
+    await skillTrigger.click()
     const skillPanel = page.locator('.t2i-skill-panel.is-floating')
     await expect(skillPanel).toHaveCSS('position', 'fixed')
     await expect(skillPanel).toHaveCSS('z-index', '4200')
     await expect(skillPanel).toHaveCSS('transition-duration', '0.15s, 0.15s')
     await page.getByRole('option', { name: /Style Director/ }).click()
     await page.getByRole('option', { name: /Detail QA/ }).click()
-    await expect(page.getByRole('button', { name: /Skills/ })).toContainText('3')
+    await expect(skillTrigger).toContainText('2')
     await page.getByRole('button', { name: '关闭 Skill' }).click()
     await expect(skillPanel).toHaveClass(/t2i-skill-popover-leave-active/)
+    await expect(skillPanel).toHaveCount(0, { timeout: 1_000 })
+
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    await expect(page.locator('.t2i-page')).toBeVisible()
+    await expect(skillTrigger).toContainText('2')
+    await skillTrigger.click()
+    await expect(page.getByRole('option', { name: /Style Director/ })).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByRole('option', { name: /Detail QA/ })).toHaveAttribute('aria-selected', 'true')
+    await page.getByRole('button', { name: '关闭 Skill' }).click()
     await expect(skillPanel).toHaveCount(0, { timeout: 1_000 })
 
     await page.locator('.t2i-prompt-box input[type="file"]').setInputFiles({
@@ -427,9 +451,10 @@ test.describe('React public pages interaction contract', () => {
     expect(createBody.params.resolutionScale).toBe('4K')
     expect(createBody.params.outputSize).toBe(createBody.params.size)
     expect(createBody.params.outputSize).not.toBe('1024x1024')
-    expect(createBody.params.skillIds).toEqual(
-      expect.arrayContaining(['preserve-4k-upscale', 'style-director', 'detail-qa']),
-    )
+    expect(createBody.params.skillIds).toEqual(['style-director', 'detail-qa'])
+    expect(createBody.expectedUnitPriceCents).toBe(12)
+    expect(quoteBody.params.publicModelKey).toBe('image-pro')
+    expect(quoteBody.params.skillIds).toEqual(['style-director', 'detail-qa'])
     await expect(page.locator('.t2i-stage-media img')).toBeVisible({ timeout: 8_000 })
   })
 
@@ -573,20 +598,23 @@ test.describe('React public pages interaction contract', () => {
     await expect(page.locator('.t2i-stage-grid .t2i-stage-cell-media')).toHaveCount(2)
 
     await page.locator('.t2i-stage-cell-media').first().click()
-    await expect(page.getByRole('dialog', { name: '全屏预览' })).toBeVisible()
-    await expect(page.locator('.t2i-lightbox')).toHaveCSS('z-index', '10050')
-    await expect(page.getByRole('button', { name: '下一张' }).first()).toBeVisible()
+    const preview = page.locator('.wallpaper-fullscreen-preview')
+    await expect(preview).toBeVisible()
+    await expect(page.locator('.t2i-lightbox')).toHaveCount(0)
+    await expect(preview.getByRole('button', { name: '下一张' })).toBeVisible()
     await expect(page.getByRole('button', { name: '缩小图片' })).toBeVisible()
     await expect(page.getByRole('button', { name: '放大图片' })).toBeVisible()
-    await expect(page.getByRole('button', { name: '适应屏幕' })).toBeVisible()
-    await expect(page.getByRole('button', { name: '局部编辑图片' })).toBeVisible()
+    await expect(page.locator('[data-preview-action="fit"]')).toBeVisible()
+    await expect(page.locator('[data-preview-action="copy-prompt"]')).toBeEnabled()
+    await expect(page.locator('[data-preview-action="reference"]')).toBeEnabled()
+    await expect(page.locator('[data-preview-action="region-edit"]')).toBeDisabled()
     await page.getByRole('button', { name: '删除图片' }).click()
     await expect(page.getByRole('alertdialog')).toBeVisible()
     await expect(page.locator('.delete-confirm__backdrop')).toHaveCSS('z-index', '10100')
-    await expect(page.getByRole('dialog', { name: '全屏预览' })).toBeVisible()
+    await expect(preview).toBeVisible()
     await page.getByRole('button', { name: '取消', exact: true }).click()
     await page.getByRole('button', { name: '关闭预览' }).click()
-    await expect(page.getByRole('dialog', { name: '全屏预览' })).toHaveCount(0)
+    await expect(preview).toHaveCount(0)
   })
 
   test('text-to-image canvas follows Vue image sizing and transparent output rules', async ({

@@ -2,8 +2,10 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch, type Component } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
+  CircleCheck,
   Delete,
   Goods,
+  MagicStick,
   Picture,
   Plus,
   Pointer,
@@ -46,6 +48,8 @@ interface PendingUpload {
   preview: string;
   label: string;
   summary: string;
+  analysisStatus: "idle" | "queued" | "analyzing" | "done" | "error";
+  analysisError: string;
 }
 
 const KINDS: {
@@ -88,7 +92,7 @@ const STATUS_FILTERS: { value: CatalogStatus; label: string }[] = [
 const APPAREL_OPTIONS = ["上装", "下装", "全身"] as const;
 const MAX_PER_KIND = 40;
 const IMAGE_ACCEPT = "image/png,image/jpeg,image/webp";
-const COMPRESSION_THRESHOLD_BYTES = 1024 * 1024;
+const COMPRESSION_THRESHOLD_BYTES = 512 * 1024;
 const COMPRESSION_PERCENT_KEY = "admin:ecommerce-catalog:compression-percent";
 
 function initialCompressionPercent() {
@@ -128,6 +132,11 @@ const replaceTargetId = ref("");
 const replacingId = ref("");
 const compressionSummary = ref("");
 const uploadProgress = ref({ current: 0, total: 0 });
+const ANALYSIS_CONCURRENCY = 3;
+const analysisQueue: PendingUpload[] = [];
+let activeAnalyses = 0;
+const editingAnalysisStatus = ref<"idle" | "analyzing" | "done" | "error">("idle");
+const editingAnalysisError = ref("");
 
 const sortOpen = ref(false);
 const sortItems = ref<CatalogItem[]>([]);
@@ -136,6 +145,9 @@ const sortSaving = ref(false);
 const previewOpen = ref(false);
 const previewIndex = ref(0);
 const previewUrls = ref<string[]>([]);
+const selectedIds = reactive(new Set<string>());
+const selectionMode = ref(false);
+const batchDeleting = ref(false);
 
 const form = reactive({
   label: "",
@@ -187,6 +199,23 @@ const kindCounts = computed(
 const activeCount = computed(
   () => items.value.filter((item) => item.active).length,
 );
+const selectedItems = computed(() =>
+  items.value.filter((item) => selectedIds.has(item.id)),
+);
+const selectedVisibleCount = computed(() =>
+  visibleItems.value.reduce(
+    (count, item) => count + Number(selectedIds.has(item.id)),
+    0,
+  ),
+);
+const allVisibleSelected = computed(
+  () =>
+    visibleItems.value.length > 0 &&
+    selectedVisibleCount.value === visibleItems.value.length,
+);
+const someVisibleSelected = computed(
+  () => selectedVisibleCount.value > 0 && !allVisibleSelected.value,
+);
 const inactiveCount = computed(() => items.value.length - activeCount.value);
 function statusCount(value: CatalogStatus) {
   if (value === "active") return activeCount.value;
@@ -218,6 +247,18 @@ const dialogConfirmText = computed(() => {
   if (pendingUploads.value.length > 1) return `上传 ${pendingUploads.value.length} 张`;
   return "保存素材";
 });
+const analyzingCount = computed(
+  () =>
+    pendingUploads.value.filter(
+      (item) => item.analysisStatus === "queued" || item.analysisStatus === "analyzing",
+    ).length,
+);
+const editingAnalyzing = computed(
+  () => editingAnalysisStatus.value === "analyzing",
+);
+const editingItem = computed(() =>
+  catalogItems.value.find((item) => item.id === editingId.value),
+);
 const hasFilters = computed(
   () =>
     Boolean(search.value) ||
@@ -235,6 +276,7 @@ function revokePreview(url = createPreview.value) {
 }
 
 function revokePendingUploads() {
+  analysisQueue.splice(0);
   for (const item of pendingUploads.value) revokePreview(item.preview);
   pendingUploads.value = [];
 }
@@ -248,6 +290,8 @@ function resetForm() {
   form.active = true;
   compressionSummary.value = "";
   uploadProgress.value = { current: 0, total: 0 };
+  editingAnalysisStatus.value = "idle";
+  editingAnalysisError.value = "";
   revokePendingUploads();
   revokePreview();
 }
@@ -260,6 +304,10 @@ async function loadItems() {
       "/api/v1/admin/ecommerce/catalog",
     );
     catalogItems.value = Array.isArray(data?.items) ? data.items : [];
+    const loadedIds = new Set(catalogItems.value.map((item) => item.id));
+    for (const id of [...selectedIds]) {
+      if (!loadedIds.has(id)) selectedIds.delete(id);
+    }
   } catch (error) {
     loadError.value = error instanceof Error ? error.message : "素材读取失败";
   } finally {
@@ -269,7 +317,31 @@ async function loadItems() {
 
 function setKind(value: CatalogKind) {
   if (kind.value === value) return;
+  selectedIds.clear();
   kind.value = value;
+}
+
+function toggleSelectionMode() {
+  if (selectionMode.value) selectedIds.clear();
+  selectionMode.value = !selectionMode.value;
+}
+
+function toggleSelected(id: string, selected: boolean) {
+  if (batchDeleting.value) return;
+  if (selected) selectedIds.add(id);
+  else selectedIds.delete(id);
+}
+
+function toggleVisibleSelection(selected: boolean) {
+  if (batchDeleting.value) return;
+  for (const item of visibleItems.value) {
+    if (selected) selectedIds.add(item.id);
+    else selectedIds.delete(item.id);
+  }
+}
+
+function clearSelection() {
+  selectedIds.clear();
 }
 
 function clearFilters() {
@@ -296,6 +368,8 @@ function openEdit(item: CatalogItem) {
   form.active = item.active;
   compressionSummary.value = "";
   uploadProgress.value = { current: 0, total: 0 };
+  editingAnalysisStatus.value = "idle";
+  editingAnalysisError.value = "";
   revokePendingUploads();
   revokePreview();
   createPreview.value = item.imageUrl;
@@ -304,7 +378,7 @@ function openEdit(item: CatalogItem) {
 
 function describeCompression(result: CatalogCompressionResult) {
   if (!result.compressed) {
-    return `${formatCatalogBytes(result.originalBytes)}（未超过 1MB，保留原图）`;
+    return `${formatCatalogBytes(result.originalBytes)}（未超过 512KB，保留原图）`;
   }
   const percent = Math.max(1, Math.round(result.ratio * 100));
   return `${formatCatalogBytes(result.originalBytes)} → ${formatCatalogBytes(result.compressedBytes)}（${percent}%）`;
@@ -312,7 +386,7 @@ function describeCompression(result: CatalogCompressionResult) {
 
 function notifyCompression(result: CatalogCompressionResult) {
   if (!result.compressed) {
-    ElMessage.info("图片未超过 1MB，已保留原图");
+    ElMessage.info("图片未超过 512KB，已保留原图");
     return;
   }
   const message = `已转为 WebP：${describeCompression(result)}`;
@@ -325,6 +399,91 @@ async function compressPickedFile(file: File) {
     targetRatio: compressionPercent.value / 100,
     thresholdBytes: COMPRESSION_THRESHOLD_BYTES,
   });
+}
+
+async function analyzePendingUpload(item: PendingUpload) {
+  const labelBeforeAnalysis = item.label;
+  item.analysisStatus = "analyzing";
+  item.analysisError = "";
+  try {
+    const body = new FormData();
+    body.append("kind", kind.value);
+    body.append("file", item.file);
+    const result = await uploadMultipart<{ title: string }>(
+      "/api/v1/admin/ecommerce/catalog/analyze",
+      "POST",
+      body,
+    );
+    const title = String(result?.title || "").trim();
+    if (!title) throw new Error("AI 未返回有效标题");
+    const shouldApply = item.label === labelBeforeAnalysis;
+    if (shouldApply) {
+      item.label = title;
+    }
+    item.analysisStatus = shouldApply ? "done" : "idle";
+  } catch (error) {
+    item.analysisStatus = "error";
+    item.analysisError = error instanceof Error ? error.message : "AI 分析失败";
+    ElMessage.error(item.analysisError);
+  }
+}
+
+function drainAnalysisQueue() {
+  while (activeAnalyses < ANALYSIS_CONCURRENCY && analysisQueue.length) {
+    const queued = analysisQueue.shift();
+    if (!queued || !pendingUploads.value.includes(queued)) continue;
+    activeAnalyses += 1;
+    void analyzePendingUpload(queued).finally(() => {
+      activeAnalyses -= 1;
+      drainAnalysisQueue();
+    });
+  }
+}
+
+function queueImageAnalysis(item: PendingUpload) {
+  if (item.analysisStatus === "queued" || item.analysisStatus === "analyzing") return;
+  item.analysisStatus = "queued";
+  item.analysisError = "";
+  analysisQueue.push(item);
+  drainAnalysisQueue();
+}
+
+async function currentEditingImageFile() {
+  const replacement = pendingUploads.value[0]?.file;
+  if (replacement) return replacement;
+  const item = editingItem.value;
+  if (!item?.imageUrl) throw new Error("当前素材没有可分析的图片");
+  const response = await fetch(item.imageUrl, { credentials: "include" });
+  if (!response.ok) throw new Error(`素材图片读取失败（HTTP ${response.status}）`);
+  const blob = await response.blob();
+  if (!blob.type.startsWith("image/")) throw new Error("当前素材不是有效图片");
+  return new File([blob], `${item.id}.png`, { type: blob.type });
+}
+
+async function analyzeEditingImage() {
+  if (!editingId.value || editingAnalyzing.value) return;
+  const labelBeforeAnalysis = form.label;
+  editingAnalysisStatus.value = "analyzing";
+  editingAnalysisError.value = "";
+  try {
+    const body = new FormData();
+    body.append("kind", kind.value);
+    body.append("file", await currentEditingImageFile());
+    const result = await uploadMultipart<{ title: string }>(
+      "/api/v1/admin/ecommerce/catalog/analyze",
+      "POST",
+      body,
+    );
+    const title = String(result?.title || "").trim();
+    if (!title) throw new Error("AI 未返回有效标题");
+    if (form.label === labelBeforeAnalysis) form.label = title;
+    editingAnalysisStatus.value = "done";
+  } catch (error) {
+    editingAnalysisStatus.value = "error";
+    editingAnalysisError.value =
+      error instanceof Error ? error.message : "AI 分析失败";
+    ElMessage.error(editingAnalysisError.value);
+  }
 }
 
 async function appendPendingFiles(files: File[]) {
@@ -347,6 +506,8 @@ async function appendPendingFiles(files: File[]) {
       lastResult = result;
       const preview = URL.createObjectURL(result.file);
       if (editingId.value) {
+        editingAnalysisStatus.value = "idle";
+        editingAnalysisError.value = "";
         revokePendingUploads();
         revokePreview();
         createPreview.value = preview;
@@ -357,22 +518,25 @@ async function appendPendingFiles(files: File[]) {
             preview,
             label: form.label || labelFromFilename(file.name),
             summary: describeCompression(result),
+            analysisStatus: "idle",
+            analysisError: "",
           },
         ];
         compressionSummary.value = describeCompression(result);
         notifyCompression(result);
         return;
       }
-      pendingUploads.value.push({
+      const manualLabel = pendingUploads.value.length === 0 && form.label.trim();
+      const pendingItem: PendingUpload = {
         key: nextPendingKey(),
         file: result.file,
         preview,
-        label:
-          pendingUploads.value.length === 0 && form.label.trim()
-            ? form.label.trim()
-            : labelFromFilename(file.name),
+        label: manualLabel ? form.label.trim() : labelFromFilename(file.name),
         summary: describeCompression(result),
-      });
+        analysisStatus: "idle",
+        analysisError: "",
+      };
+      pendingUploads.value.push(pendingItem);
       compressionSummary.value = describeCompression(result);
     }
     if (lastResult && picked.length === 1) notifyCompression(lastResult);
@@ -400,22 +564,28 @@ function removePendingUpload(key: string) {
   if (editingId.value) {
     createPreview.value = "";
     compressionSummary.value = "";
+    editingAnalysisStatus.value = "idle";
+    editingAnalysisError.value = "";
   }
 }
 
-async function uploadMultipart(url: string, method: "POST" | "PUT", body: FormData) {
+async function uploadMultipart<T = CatalogItem>(
+  url: string,
+  method: "POST" | "PUT",
+  body: FormData,
+) {
   const res = await fetch(url, {
     method,
     credentials: "include",
     body,
   });
   const payload = (await res.json().catch(() => null)) as
-    | { success?: boolean; data?: CatalogItem; error?: string }
+    | { success?: boolean; data?: T; error?: string }
     | null;
   if (!res.ok || !payload?.success) {
     throw new Error(payload?.error || `上传失败（HTTP ${res.status}）`);
   }
-  return payload.data;
+  return payload.data as T;
 }
 
 async function createCatalogItem(item: PendingUpload, sort: number) {
@@ -432,7 +602,7 @@ async function createCatalogItem(item: PendingUpload, sort: number) {
 }
 
 async function saveItem() {
-  if (saving.value || compressing.value) return;
+  if (saving.value || compressing.value || editingAnalyzing.value) return;
   if (editingId.value) {
     const label = form.label.trim();
     if (!label) {
@@ -576,6 +746,62 @@ async function removeItem(item: CatalogItem) {
   await loadItems();
 }
 
+async function removeSelectedItems() {
+  const targets = selectedItems.value;
+  if (!targets.length) {
+    ElMessage.warning("请先选择素材");
+    return;
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      `删除后，用户端将不再展示已选的 ${targets.length} 个${kindMeta.value.label}素材，已保存在用户本地草稿里的选择可能失效。`,
+      "批量删除电商素材",
+      {
+        type: "warning",
+        confirmButtonText: "确认删除",
+        cancelButtonText: "取消",
+      },
+    );
+  } catch {
+    return;
+  }
+
+  batchDeleting.value = true;
+  const queue = [...targets];
+  const failedIds = new Set<string>();
+  const worker = async () => {
+    while (queue.length) {
+      const item = queue.shift();
+      if (!item) return;
+      try {
+        await request(`/api/v1/admin/ecommerce/catalog/${item.id}`, {
+          method: "DELETE",
+          silent: true,
+        });
+        selectedIds.delete(item.id);
+      } catch {
+        failedIds.add(item.id);
+      }
+    }
+  };
+
+  try {
+    await Promise.all(
+      Array.from({ length: Math.min(6, targets.length) }, worker),
+    );
+    const successCount = targets.length - failedIds.size;
+    if (successCount) ElMessage.success(`已删除 ${successCount} 个素材`);
+    if (failedIds.size) {
+      for (const id of failedIds) selectedIds.add(id);
+      ElMessage.error(`${failedIds.size} 个素材删除失败，已保留选择`);
+    }
+    if (successCount) await loadItems();
+  } finally {
+    batchDeleting.value = false;
+  }
+}
+
 function openPreview(item: CatalogItem, list = visibleItems.value) {
   const urls = list.map((entry) => entry.imageUrl).filter(Boolean);
   const index = list.findIndex((entry) => entry.id === item.id);
@@ -700,7 +926,7 @@ onBeforeUnmount(() => {
           <div class="catalog-compression-settings">
             <div class="catalog-compression-settings__heading">
               <strong>上传压缩</strong>
-              <span>超过 1MB 时生效</span>
+              <span>超过 512KB 时生效</span>
             </div>
             <div class="catalog-compression-settings__value">
               <span>目标文件体积</span>
@@ -716,12 +942,38 @@ onBeforeUnmount(() => {
             <small>数值越低，文件越小；系统会优先保留清晰度，再逐级缩放。</small>
           </div>
         </el-popover>
-        <el-button :icon="Rank" :disabled="!items.length" @click="openSortDialog">排序</el-button>
+        <el-button
+          :icon="Rank"
+          :disabled="!items.length || batchDeleting"
+          @click="openSortDialog"
+        >
+          排序
+        </el-button>
+        <el-button
+          :type="selectionMode ? 'primary' : undefined"
+          :icon="CircleCheck"
+          :disabled="batchDeleting || !items.length"
+          @click="toggleSelectionMode"
+        >
+          {{ selectionMode ? "退出多选" : "多选" }}
+        </el-button>
         <div class="library-toolbar__buttons">
-          <el-button type="primary" :icon="Plus" :disabled="remaining <= 0" @click="openCreate">
+          <el-button
+            type="primary"
+            :icon="Plus"
+            :disabled="remaining <= 0 || batchDeleting"
+            @click="openCreate"
+          >
             上传
           </el-button>
-          <el-button :icon="Refresh" :loading="loading" @click="loadItems">刷新</el-button>
+          <el-button
+            :icon="Refresh"
+            :loading="loading"
+            :disabled="batchDeleting"
+            @click="loadItems"
+          >
+            刷新
+          </el-button>
         </div>
       </div>
     </header>
@@ -767,26 +1019,87 @@ onBeforeUnmount(() => {
           </div>
 
           <div v-else v-loading="loading" class="catalog-feed">
+            <div
+              v-if="selectionMode"
+              class="catalog-bulk-bar"
+              :class="{ 'is-active': selectedItems.length }"
+            >
+              <div class="catalog-bulk-selection">
+                <el-checkbox
+                  :model-value="allVisibleSelected"
+                  :indeterminate="someVisibleSelected"
+                  :disabled="!visibleItems.length || batchDeleting"
+                  @change="toggleVisibleSelection(Boolean($event))"
+                >
+                  全选当前结果
+                </el-checkbox>
+                <span v-if="selectedItems.length">已选 {{ selectedItems.length }} 个</span>
+              </div>
+              <div v-if="selectedItems.length" class="catalog-bulk-actions">
+                <el-button
+                  type="danger"
+                  size="small"
+                  :icon="Delete"
+                  :loading="batchDeleting"
+                  @click="removeSelectedItems"
+                >
+                  删除所选
+                </el-button>
+                <el-button
+                  text
+                  size="small"
+                  :disabled="batchDeleting"
+                  @click="clearSelection"
+                >
+                  清除选择
+                </el-button>
+              </div>
+            </div>
             <div v-if="visibleItems.length" class="catalog-grid">
               <article
                 v-for="item in visibleItems"
                 :key="item.id"
                 class="catalog-card"
-                :class="{ 'is-inactive': !item.active }"
+                :class="{
+                  'is-inactive': !item.active,
+                  'is-selected': selectedIds.has(item.id),
+                  'is-selection-mode': selectionMode,
+                }"
               >
                 <div
                   class="catalog-card__image"
                   role="button"
                   tabindex="0"
-                  :aria-label="`查看${item.label}大图`"
-                  @click="openPreview(item)"
-                  @keydown.enter.prevent="openPreview(item)"
+                  :aria-label="selectionMode ? `选择${item.label}` : `查看${item.label}大图`"
+                  @click="
+                    selectionMode
+                      ? toggleSelected(item.id, !selectedIds.has(item.id))
+                      : openPreview(item)
+                  "
+                  @keydown.enter.prevent="
+                    selectionMode
+                      ? toggleSelected(item.id, !selectedIds.has(item.id))
+                      : openPreview(item)
+                  "
                 >
                   <img :src="item.imageUrl" :alt="item.label" />
+                  <el-checkbox
+                    v-if="selectionMode"
+                    class="catalog-card__select"
+                    :model-value="selectedIds.has(item.id)"
+                    :aria-label="`选择 ${item.label}`"
+                    :disabled="batchDeleting"
+                    @click.stop
+                    @change="toggleSelected(item.id, Boolean($event))"
+                  />
                   <span class="catalog-card__status" :class="{ 'is-active': item.active }">
                     {{ item.active ? "已上架" : "已下架" }}
                   </span>
-                  <el-tooltip :content="`更换${kindMeta.label}图片`" placement="top">
+                  <el-tooltip
+                    v-if="!selectionMode"
+                    :content="`更换${kindMeta.label}图片`"
+                    placement="top"
+                  >
                     <el-button
                       class="catalog-card__replace"
                       :icon="Upload"
@@ -804,14 +1117,25 @@ onBeforeUnmount(() => {
                       :model-value="item.active"
                       size="small"
                       :loading="switchingId === item.id"
+                      :disabled="batchDeleting"
                       @change="toggleActive(item, Boolean($event))"
                     />
                   </header>
                   <footer class="catalog-card__footer">
                     <span v-if="item.apparel">{{ item.apparel }}</span>
                     <div class="catalog-card__actions">
-                      <el-button size="small" text @click="openEdit(item)">编辑</el-button>
-                      <el-button size="small" text type="danger" @click="removeItem(item)">删除</el-button>
+                      <el-button size="small" text :disabled="batchDeleting" @click="openEdit(item)">
+                        编辑
+                      </el-button>
+                      <el-button
+                        size="small"
+                        text
+                        type="danger"
+                        :disabled="batchDeleting"
+                        @click="removeItem(item)"
+                      >
+                        删除
+                      </el-button>
                     </div>
                   </footer>
                 </div>
@@ -858,11 +1182,13 @@ onBeforeUnmount(() => {
       :nested-scroll="dialogNestedScroll"
       panel-class="catalog-upload-dialog"
       :confirm-loading="saving"
-      :confirm-disabled="saving || compressing"
+      :confirm-disabled="saving || compressing || analyzingCount > 0 || editingAnalyzing"
       :confirm-text="dialogConfirmText"
       :footer-hint="
         uploadProgress.total > 1
           ? `正在上传 ${uploadProgress.current} / ${uploadProgress.total}`
+          : analyzingCount
+            ? `AI 正在分析 ${analyzingCount} 张图片`
           : compressionSummary
       "
       @confirm="saveItem"
@@ -883,12 +1209,45 @@ onBeforeUnmount(() => {
             required
             class="is-name"
           >
-            <el-input
-              v-model="form.label"
-              maxlength="32"
-              show-word-limit
-              :placeholder="`例如：${kind === 'model' ? '东亚女性' : kind === 'scene' ? '纯色棚拍' : kind === 'hand' ? '自然肤色右手' : '白色衬衫'}`"
-            />
+            <div class="catalog-title-input">
+              <el-input
+                v-model="form.label"
+                maxlength="32"
+                show-word-limit
+                :placeholder="`例如：${kind === 'model' ? '东亚女性' : kind === 'scene' ? '纯色棚拍' : kind === 'hand' ? '自然肤色右手' : '白色衬衫'}`"
+              />
+              <el-tooltip
+                v-if="editingId"
+                :content="pendingUploads.length ? 'AI 分析替换图片' : 'AI 分析当前图片'"
+                placement="top"
+              >
+                <el-button
+                  :icon="MagicStick"
+                  circle
+                  :loading="editingAnalyzing"
+                  :disabled="saving || compressing"
+                  aria-label="AI 分析图片标题"
+                  @click="analyzeEditingImage"
+                />
+              </el-tooltip>
+            </div>
+            <small
+              v-if="editingId && editingAnalysisStatus !== 'idle'"
+              class="catalog-edit-analysis"
+              :class="{
+                'is-success': editingAnalysisStatus === 'done',
+                'is-error': editingAnalysisStatus === 'error',
+              }"
+              :title="editingAnalysisError"
+            >
+              {{
+                editingAnalysisStatus === "analyzing"
+                  ? "AI 正在识别图片"
+                  : editingAnalysisStatus === "done"
+                    ? "AI 已生成标题"
+                    : "AI 分析失败"
+              }}
+            </small>
           </el-form-item>
           <div v-else class="catalog-form__count">
             <strong class="tnum">{{ pendingUploads.length }}</strong>
@@ -926,8 +1285,46 @@ onBeforeUnmount(() => {
                   @click="removePendingUpload(item.key)"
                 />
               </div>
-              <el-input v-model="item.label" maxlength="32" placeholder="素材名称" />
-              <small>{{ item.summary }}</small>
+              <div class="catalog-pending__name">
+                <el-input
+                  v-model="item.label"
+                  maxlength="32"
+                  placeholder="素材名称"
+                />
+                <el-tooltip
+                  :content="item.analysisStatus === 'error' ? '重新分析图片' : '使用 AI 分析图片标题'"
+                  placement="top"
+                >
+                  <el-button
+                    :icon="MagicStick"
+                    circle
+                    :loading="item.analysisStatus === 'queued' || item.analysisStatus === 'analyzing'"
+                    :disabled="saving || compressing"
+                    aria-label="AI 分析图片标题"
+                    @click="queueImageAnalysis(item)"
+                  />
+                </el-tooltip>
+              </div>
+              <small
+                class="catalog-pending__analysis"
+                :class="{
+                  'is-success': item.analysisStatus === 'done',
+                  'is-error': item.analysisStatus === 'error',
+                }"
+                :title="item.analysisError || item.summary"
+              >
+                {{
+                  item.analysisStatus === "queued"
+                    ? "等待 AI 分析"
+                    : item.analysisStatus === "analyzing"
+                      ? "AI 正在识别图片"
+                      : item.analysisStatus === "done"
+                        ? "AI 已生成标题"
+                        : item.analysisStatus === "error"
+                          ? "AI 分析失败，已保留当前标题"
+                          : item.summary
+                }}
+              </small>
             </article>
             <label v-if="remaining - pendingUploads.length > 0" class="catalog-pending__add">
               <el-icon><Plus /></el-icon>
@@ -1310,6 +1707,53 @@ onBeforeUnmount(() => {
   min-height: 240px;
 }
 
+.catalog-bulk-bar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  min-height: 46px;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 12px;
+  margin-bottom: 12px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  box-shadow: var(--shadow-sm);
+  backdrop-filter: blur(14px);
+}
+
+.catalog-bulk-bar.is-active {
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--border));
+}
+
+.catalog-bulk-selection,
+.catalog-bulk-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.catalog-bulk-selection > span {
+  padding-left: 9px;
+  border-left: 1px solid var(--border);
+  color: var(--accent-ink);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.catalog-bulk-actions {
+  margin-left: auto;
+}
+
+.catalog-bulk-actions :deep(.el-button + .el-button) {
+  margin-left: 0;
+}
+
 .catalog-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(196px, 1fr));
@@ -1329,6 +1773,15 @@ onBeforeUnmount(() => {
 .catalog-card:hover {
   border-color: var(--border-strong);
   box-shadow: var(--shadow-sm);
+}
+
+.catalog-card.is-selected {
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.catalog-card.is-selection-mode .catalog-card__image {
+  cursor: pointer;
 }
 
 .catalog-card.is-inactive .catalog-card__image img {
@@ -1362,6 +1815,21 @@ onBeforeUnmount(() => {
   backdrop-filter: blur(8px);
   font-size: 11px;
   font-weight: 650;
+}
+
+.catalog-card.is-selection-mode .catalog-card__status {
+  left: 40px;
+}
+
+.catalog-card__select {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 2;
+  padding: 4px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  backdrop-filter: blur(8px);
 }
 
 .catalog-card__status.is-active {
@@ -1507,6 +1975,42 @@ onBeforeUnmount(() => {
 .catalog-form__fields .is-name {
   flex: 1 1 220px;
   min-width: 0;
+}
+
+.catalog-title-input {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.catalog-title-input :deep(.el-input) {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.catalog-title-input :deep(.el-button) {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  margin: 0;
+}
+
+.catalog-edit-analysis {
+  display: block;
+  width: 100%;
+  margin-top: 5px;
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.catalog-edit-analysis.is-success {
+  color: var(--success);
+}
+
+.catalog-edit-analysis.is-error {
+  color: var(--danger);
 }
 
 .catalog-form__fields .is-compact,
@@ -1678,12 +2182,34 @@ onBeforeUnmount(() => {
   backdrop-filter: blur(8px);
 }
 
+.catalog-pending__name {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.catalog-pending__name :deep(.el-button) {
+  width: 32px;
+  height: 32px;
+  margin: 0;
+}
+
 .catalog-pending__item small {
   overflow: hidden;
   color: var(--ink-3);
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.catalog-pending__analysis.is-success {
+  color: var(--success);
+}
+
+.catalog-pending__analysis.is-error {
+  color: var(--danger);
 }
 
 .catalog-pending__add {

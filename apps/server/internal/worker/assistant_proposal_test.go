@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -20,7 +21,7 @@ func TestParseAssistantProposalAcceptsWrappedJSON(t *testing.T) {
 }
 
 func TestAssistantProposalFunctionToolKeepsCountInsideParameters(t *testing.T) {
-	tool := assistantProposalFunctionTool()
+	tool := assistantProposalFunctionTool(nil)
 	properties, _ := tool.Parameters["properties"].(map[string]any)
 	count, _ := properties["count"].(map[string]any)
 	if tool.Name != "propose_image_action" || count["minimum"] != 1 || count["maximum"] != 4 {
@@ -28,6 +29,36 @@ func TestAssistantProposalFunctionToolKeepsCountInsideParameters(t *testing.T) {
 	}
 	if _, exists := tool.Parameters["n"]; exists {
 		t.Fatalf("n must not be a top-level tool parameter: %#v", tool.Parameters)
+	}
+	referenceMode, ok := properties["referenceMode"].(map[string]any)
+	if !ok || len(referenceMode["enum"].([]string)) != 2 {
+		t.Fatalf("referenceMode schema = %#v", properties["referenceMode"])
+	}
+	required, _ := tool.Parameters["required"].([]string)
+	if !slices.Contains(required, "referenceMode") {
+		t.Fatalf("referenceMode must be required: %#v", required)
+	}
+}
+
+func TestAssistantProposalFunctionToolOmitsUnsupportedModelParameters(t *testing.T) {
+	models := []map[string]any{{
+		"id": "schema-only", "aspectRatios": []any{"auto", "16:9"},
+		"resolutions": []any{}, "qualities": []any{}, "maxImages": float64(2),
+	}}
+	tool := assistantProposalFunctionTool(models)
+	properties, _ := tool.Parameters["properties"].(map[string]any)
+	if _, exists := properties["resolution"]; exists {
+		t.Fatalf("unsupported resolution leaked into tool schema: %#v", properties)
+	}
+	if _, exists := properties["quality"]; exists {
+		t.Fatalf("unsupported quality leaked into tool schema: %#v", properties)
+	}
+	if ratio, ok := properties["ratio"].(map[string]any); !ok || len(ratio["enum"].([]string)) != 2 {
+		t.Fatalf("ratio schema = %#v", properties["ratio"])
+	}
+	count := properties["count"].(map[string]any)
+	if count["maximum"] != 2 {
+		t.Fatalf("count schema = %#v", count)
 	}
 }
 
@@ -42,6 +73,9 @@ func TestAssistantAgentInstructionsPreserveRequestedCount(t *testing.T) {
 	}
 	if !strings.Contains(instructions, "不支持工具调用") || !strings.Contains(instructions, "JSON 对象") {
 		t.Fatalf("instructions lack structured fallback = %q", instructions)
+	}
+	if !strings.Contains(instructions, "referenceMode=individual") || !strings.Contains(instructions, "一一对应") {
+		t.Fatalf("instructions lack reference mapping rules = %q", instructions)
 	}
 }
 
@@ -82,6 +116,44 @@ func TestNormalizeAssistantProposalSelectsValidatedModel(t *testing.T) {
 	}, run, models)
 	if proposal.Model != "quality" || proposal.ModelName != "高质量模型" || proposal.Resolution != "2K" || proposal.Ratio != "16:9" || proposal.Quality != "high" {
 		t.Fatalf("proposal = %#v", proposal)
+	}
+}
+
+func TestNormalizeAssistantProposalPreservesStructuredReferenceMode(t *testing.T) {
+	run := &store.AssistantRun{Prompt: "分别编辑四张图", Params: map[string]any{"count": float64(4)}}
+	individual := normalizeAssistantProposal(assistantImageProposal{
+		Action: "edit", Prompt: "分别编辑图1、图2、图3、图4", Count: 4, ReferenceMode: assistantReferenceModeIndividual,
+	}, run)
+	if individual.ReferenceMode != assistantReferenceModeIndividual {
+		t.Fatalf("individual reference mode = %q", individual.ReferenceMode)
+	}
+	shared := normalizeAssistantProposal(assistantImageProposal{
+		Action: "generate", Prompt: "融合多张参考图", Count: 4, ReferenceMode: assistantReferenceModeIndividual,
+	}, run)
+	if shared.ReferenceMode != assistantReferenceModeShared {
+		t.Fatalf("fresh generation reference mode = %q", shared.ReferenceMode)
+	}
+}
+
+func TestNormalizeAssistantProposalClearsUnsupportedConfiguredParameters(t *testing.T) {
+	run := &store.AssistantRun{Prompt: "生成海报", Params: map[string]any{
+		"ratio": "1:1", "resolution": "1K", "count": float64(1), "quality": "high",
+		"requestSize": "1024x1024", "width": float64(1024), "height": float64(1024),
+		"_imageModelConfigId": "schema-only",
+	}}
+	models := []map[string]any{{
+		"id": "schema-only", "name": "Schema 模型", "aspectRatios": []any{"auto", "16:9"},
+		"resolutions": []any{}, "qualities": []any{}, "maxImages": float64(2),
+	}}
+	proposal := normalizeAssistantProposalWithModels(assistantImageProposal{
+		Action: "generate", Prompt: "电影海报", Model: "schema-only", Ratio: "1:1",
+		Resolution: "4K", Quality: "high", Count: 1,
+	}, run, models)
+	if proposal.Ratio != "auto" || proposal.Resolution != "" || proposal.Quality != "" {
+		t.Fatalf("proposal capabilities = %#v", proposal)
+	}
+	if proposal.RequestSize != "" || proposal.Width != 0 || proposal.Height != 0 {
+		t.Fatalf("unsupported size leaked into proposal = %#v", proposal)
 	}
 }
 
@@ -147,14 +219,66 @@ func TestAttachAssistantProposalReferencesKeepsOnlyUserUploads(t *testing.T) {
 	}
 }
 
+func TestAttachAssistantProposalReferencesAlignsIndividualOutputCount(t *testing.T) {
+	run := &store.AssistantRun{Params: map[string]any{
+		"referenceImages": []any{
+			map[string]any{"id": "ref-1", "fileKey": "uploads/u/1.png"},
+			map[string]any{"id": "ref-2", "fileKey": "uploads/u/2.png"},
+			map[string]any{"id": "ref-3", "fileKey": "uploads/u/3.png"},
+			map[string]any{"id": "ref-4", "fileKey": "uploads/u/4.png"},
+		},
+	}}
+	models := []map[string]any{{"id": "image-model", "maxImages": float64(4), "maxReferenceImages": float64(4)}}
+	got := attachAssistantProposalReferences(assistantImageProposal{
+		Action: "edit", Model: "image-model", Count: 1, ReferenceMode: assistantReferenceModeIndividual,
+	}, run, nil, models)
+	if got.Count != 4 || len(got.ReferenceImages) != 4 {
+		t.Fatalf("individual proposal = %#v", got)
+	}
+}
+
 func TestAttachAssistantProposalReferencesUsesHistoryWhenUserDidNotAttach(t *testing.T) {
-	run := &store.AssistantRun{Params: map[string]any{}}
+	run := &store.AssistantRun{Prompt: "把上一张的背景换成蓝色", Params: map[string]any{}}
 	catalog := []assistantCatalogImage{
 		{ID: "old-1", Image: map[string]any{"id": "old-1", "fileKey": "tasks/u/1.png", "dataUrl": "/api/v1/files/tasks/u/1.png"}},
 	}
-	got := attachAssistantProposalReferences(assistantImageProposal{ReferencedImageIDs: []string{"old-1"}}, run, catalog, nil)
+	got := attachAssistantProposalReferences(assistantImageProposal{Action: "edit", ReferencedImageIDs: []string{"old-1"}}, run, catalog, nil)
 	if len(got.ReferenceImages) != 1 || assistantMapString(got.ReferenceImages[0], "id") != "old-1" {
 		t.Fatalf("refs = %#v", got.ReferenceImages)
+	}
+}
+
+func TestAttachAssistantProposalReferencesRejectsUnrelatedHistoryForFreshImage(t *testing.T) {
+	run := &store.AssistantRun{Prompt: "创建一张蓝天白云图", Params: map[string]any{}}
+	catalog := []assistantCatalogImage{
+		{ID: "old-1", Image: map[string]any{"id": "old-1", "fileKey": "tasks/u/1.png", "dataUrl": "/api/v1/files/tasks/u/1.png"}},
+	}
+	got := attachAssistantProposalReferences(assistantImageProposal{Action: "generate", ReferencedImageIDs: []string{"old-1"}}, run, catalog, nil)
+	if len(got.ReferenceImages) != 0 || len(got.ReferencedImageIDs) != 0 {
+		t.Fatalf("fresh image inherited unrelated refs = %#v", got.ReferenceImages)
+	}
+}
+
+func TestAssistantPromptAllowsHistoricalReferences(t *testing.T) {
+	tests := []struct {
+		name   string
+		prompt string
+		action string
+		want   bool
+	}{
+		{name: "previous image", prompt: "沿用之前图片的风格做一张海报", action: "generate", want: true},
+		{name: "numbered image", prompt: "参考图2的构图生成一个新版本", action: "generate", want: true},
+		{name: "implicit edit", prompt: "把人物头发改成红色", action: "edit", want: true},
+		{name: "fresh landscape", prompt: "创建一张蓝天白云图", action: "generate", want: false},
+		{name: "fresh logo", prompt: "设计一个全新的 logo", action: "generate", want: false},
+		{name: "unrelated edit action", prompt: "把标题改成更简洁的说法", action: "edit", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := assistantPromptAllowsHistoricalReferences(tt.prompt, tt.action); got != tt.want {
+				t.Fatalf("assistantPromptAllowsHistoricalReferences(%q, %q) = %v, want %v", tt.prompt, tt.action, got, tt.want)
+			}
+		})
 	}
 }
 

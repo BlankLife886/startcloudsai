@@ -22,6 +22,38 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/sub2api"
 )
 
+func TestNormalizeAssistantConfiguredImageParametersClearsUnsupportedFields(t *testing.T) {
+	body := assistantRunIn{
+		Mode: "image", Ratio: "16:9", Resolution: "4K", Quality: "high",
+		RequestSize: "4096x2304", Width: 4096, Height: 2304,
+	}
+	model := modelconfig.Model{AspectRatios: []string{"auto", "16:9"}, Resolutions: []string{}, Qualities: []string{}}
+	auto, err := normalizeAssistantConfiguredImageParameters(&body, model)
+	if err != nil {
+		t.Fatalf("normalize parameters: %v", err)
+	}
+	if auto || body.Ratio != "16:9" {
+		t.Fatalf("ratio = %q, auto = %v", body.Ratio, auto)
+	}
+	if body.Resolution != "" || body.Quality != "" || body.RequestSize != "" || body.Width != 0 || body.Height != 0 {
+		t.Fatalf("unsupported parameters leaked: %#v", body)
+	}
+}
+
+func TestNormalizeAssistantReferenceMode(t *testing.T) {
+	for input, expected := range map[string]string{
+		"": "", " shared ": "shared", "INDIVIDUAL": "individual",
+	} {
+		actual, err := normalizeAssistantReferenceMode(input)
+		if err != nil || actual != expected {
+			t.Fatalf("normalizeAssistantReferenceMode(%q) = %q, %v; want %q", input, actual, err, expected)
+		}
+	}
+	if _, err := normalizeAssistantReferenceMode("auto"); err == nil {
+		t.Fatal("unsupported reference mode must fail validation")
+	}
+}
+
 func TestAssistantMessageDictKeepsContextStatsPrivateSummaryHidden(t *testing.T) {
 	message := &store.AssistantMessage{
 		ID: uuid.New(), Role: "assistant", Kind: "chat", Status: "complete", Content: "完成",
@@ -77,6 +109,12 @@ func TestAssistantConfigIncludesStandardAndDiscountPointPrices(t *testing.T) {
 		{
 			ID: "image-model", Name: "Image Model", ProviderID: "provider", UpstreamModel: "image-2",
 			Kind: modelconfig.ModelKindImage, PriceCents: 20, DiscountPriceCents: &discount,
+			UpstreamInputFields:         []string{"prompt", "aspect_ratio", "img_urls", "output_format"},
+			UpstreamRequiredInputFields: []string{"prompt"},
+			UpstreamInputSchema: map[string]any{"type": "object", "properties": map[string]any{
+				"prompt": map[string]any{"type": "string"}, "aspect_ratio": map[string]any{"type": "string", "enum": []any{"auto", "16:9"}},
+			}},
+			AspectRatios: []string{"auto", "16:9"}, Resolutions: []string{}, Qualities: []string{},
 			Public: true, Enabled: true,
 		},
 	}
@@ -98,6 +136,7 @@ func TestAssistantConfigIncludesStandardAndDiscountPointPrices(t *testing.T) {
 		`"reasoningPrices":`, `"assistantStandardPricePoints":11`, `"assistantPricePoints":8`,
 		`"assistantDiscountPricePoints":8`, `"canvasAgentStandardPricePoints":41`, `"canvasAgentPricePoints":29`,
 		`"canvasAgentDiscountPricePoints":29`, `"reasoningEfforts":`,
+		`"resolutions":[]`, `"qualities":[]`, `"inputFields":["aspect_ratio","img_urls","output_format","prompt"]`,
 	} {
 		if !strings.Contains(body, field) {
 			t.Fatalf("assistant model price missing %s: %s", field, body)
@@ -497,7 +536,12 @@ func TestSanitizeAssistantCanvasSnapshot(t *testing.T) {
 	if _, err := sanitizeAssistantCanvasSnapshot([]byte(`{`)); err == nil {
 		t.Fatal("expected invalid snapshot error")
 	}
-	if _, err := sanitizeAssistantCanvasSnapshot([]byte(strings.Repeat("a", 20_001))); err == nil {
+	largeValid := []byte(`{"title":"` + strings.Repeat("画", 8_000) + `"}`)
+	if _, err := sanitizeAssistantCanvasSnapshot(largeValid); err != nil {
+		t.Fatalf("ordinary multi-byte canvas snapshot should be accepted: %v", err)
+	}
+	oversized := []byte(`{"title":"` + strings.Repeat("a", assistantCanvasSnapshotMaxBytes) + `"}`)
+	if _, err := sanitizeAssistantCanvasSnapshot(oversized); err == nil {
 		t.Fatal("expected oversized snapshot error")
 	}
 }
@@ -801,6 +845,10 @@ func TestCanvasAssistantConversationFollowsProject(t *testing.T) {
 	if gotData["id"] != id || gotData["projectId"] != projectID {
 		t.Fatalf("got canvas conversation = %#v", gotData)
 	}
+	mismatchedProject := env.do(t, http.MethodGet, "/api/v1/assistant/conversations/"+id+"?projectId="+uuid.NewString(), nil, token)
+	if mismatchedProject.Code != http.StatusNotFound || !strings.Contains(mismatchedProject.Body.String(), "不属于当前画布") {
+		t.Fatalf("cross-project conversation read: status %d body %s", mismatchedProject.Code, mismatchedProject.Body.String())
+	}
 
 	other := env.do(t, http.MethodGet, "/api/v1/assistant/conversations/"+id, nil, otherToken)
 	if other.Code != http.StatusNotFound {
@@ -925,6 +973,71 @@ func TestDeleteAssistantMessageQueuesLaterGeneratedImages(t *testing.T) {
 	// 原图 + 约定推导的小图/展示图变体一并入队清理。
 	if len(locked) != 3 || !containsString(locked, key) {
 		t.Fatalf("message cleanup candidates = %#v, want %q plus 2 variants", locked, key)
+	}
+}
+
+func TestDeleteAssistantMessageImageRetainsSiblingsAndDeletesFinalMessage(t *testing.T) {
+	env := newCommunityEnv(t)
+	user, token := env.newUserSession(t, "user")
+	ctx := context.Background()
+	now := time.Now().UTC()
+	conversation, err := store.InsertAssistantConversation(ctx, env.st.Pool, uuid.New(), user.ID, "单图删除", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstKey := fmt.Sprintf("tasks/%s/assistant/%s/1.png", user.ID, uuid.New())
+	secondKey := fmt.Sprintf("tasks/%s/assistant/%s/2.png", user.ID, uuid.New())
+	message, err := store.InsertAssistantMessage(ctx, env.st.Pool, store.AssistantMessage{
+		ID: uuid.New(), ConversationID: conversation.ID, Role: "assistant", Kind: "image", Status: "complete",
+		Metadata: map[string]any{"images": []map[string]any{
+			{"id": "first", "fileKey": firstKey},
+			{"id": "second", "fileKey": secondKey},
+		}}, CreatedAt: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	response := env.do(t, http.MethodDelete, "/api/v1/assistant/messages/"+message.ID.String()+"/images/first", nil, token)
+	data, code := decode(t, response)
+	if response.Code != http.StatusOK || code != "" || data["messageDeleted"] != false {
+		t.Fatalf("delete first image: status %d data %#v body %s", response.Code, data, response.Body.String())
+	}
+	stored, err := store.GetAssistantMessage(ctx, env.st.Pool, message.ID)
+	if err != nil || stored == nil {
+		t.Fatalf("remaining message = %#v, err = %v", stored, err)
+	}
+	remaining := assistantReferenceItems(stored.Metadata["images"])
+	if len(remaining) != 1 || assistantMapText(remaining[0], "id") != "second" {
+		t.Fatalf("remaining images = %#v, want only second", remaining)
+	}
+	for _, key := range append([]string{firstKey}, store.AssistantVariantKeys(firstKey)...) {
+		var count int
+		if err := env.st.Pool.QueryRow(ctx, `SELECT count(*) FROM object_cleanup_jobs WHERE object_key = $1`, key).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("cleanup count for %q = %d, want 1", key, count)
+		}
+	}
+
+	response = env.do(t, http.MethodDelete, "/api/v1/assistant/messages/"+message.ID.String()+"/images/second", nil, token)
+	data, code = decode(t, response)
+	if response.Code != http.StatusOK || code != "" || data["messageDeleted"] != true {
+		t.Fatalf("delete final image: status %d data %#v body %s", response.Code, data, response.Body.String())
+	}
+	stored, err = store.GetAssistantMessage(ctx, env.st.Pool, message.ID)
+	if err != nil || stored != nil {
+		t.Fatalf("message after final image deletion = %#v, err = %v", stored, err)
+	}
+	for _, key := range append([]string{secondKey}, store.AssistantVariantKeys(secondKey)...) {
+		var count int
+		if err := env.st.Pool.QueryRow(ctx, `SELECT count(*) FROM object_cleanup_jobs WHERE object_key = $1`, key).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("cleanup count for %q = %d, want 1", key, count)
+		}
 	}
 }
 
@@ -1112,6 +1225,36 @@ func TestApplyAssistantReasoningPriceSnapshotUsesConfiguredScope(t *testing.T) {
 			params["_reasoningPriceScope"] != tt.scope || params["_reasoningPricingVersion"] != 5 {
 			t.Fatalf("snapshot for %s = %#v, effective=%d", tt.scope, params, got)
 		}
+	}
+}
+
+func TestWorkspaceReasoningPriceOverridesConfiguredEffortPrice(t *testing.T) {
+	discount := int64(6)
+	model := modelconfig.Model{
+		ID: "chat", Kind: modelconfig.ModelKindChat, UpstreamModel: "gpt-5.6-sol", PriceCents: 5,
+		SupportedReasoningEfforts: []string{"high"},
+		ReasoningPricing: &modelconfig.ReasoningPricing{
+			DefaultEffort: "high",
+			Efforts: map[string]modelconfig.ReasoningEffortPricing{
+				"high": {AssistantPriceCents: 30, CanvasAgentPriceCents: 40},
+			},
+		},
+	}
+	cfg := modelconfig.Config{Workspaces: map[string]modelconfig.WorkspaceBinding{
+		modelconfig.WorkspaceAssistant: {
+			ModelIDs: []string{"chat"},
+			ModelPricing: map[string]modelconfig.WorkspaceModelPricing{
+				"chat": {PriceCents: 9, DiscountPriceCents: &discount},
+			},
+		},
+	}}
+	assistant := workspaceReasoningPrice(&cfg, modelconfig.WorkspaceAssistant, model, "high", modelconfig.ReasoningPriceScopeAssistant)
+	if assistant.StandardCents != 9 || assistant.EffectiveCents != 6 {
+		t.Fatalf("assistant workspace reasoning price = %#v", assistant)
+	}
+	canvas := workspaceReasoningPrice(&cfg, modelconfig.WorkspaceCanvas, model, "high", modelconfig.ReasoningPriceScopeCanvasAgent)
+	if canvas.StandardCents != 40 || canvas.EffectiveCents != 40 {
+		t.Fatalf("canvas inherited reasoning price = %#v", canvas)
 	}
 }
 

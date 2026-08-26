@@ -359,10 +359,6 @@ to {
   background: rgba(255, 255, 255, 0.08);
   color: rgba(236, 234, 248, 0.72);
 }
-.dvd-meta-title em.is-tile-refine {
-  background: color-mix(in srgb, #6d5cff 34%, transparent);
-  color: #efeaff;
-}
 .dvd-scrim.is-light .dvd-major-title em,
 .dvd-scrim.is-light .dvd-meta-title em {
   background: color-mix(in srgb, #6250e8 14%, transparent);

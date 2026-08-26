@@ -8,7 +8,7 @@ export function promptNeedsRecentVisual(prompt) {
     .toLowerCase()
   if (!text) return false
   const previousVisualCue =
-    /(这张|这幅|这个图|该图|那张|上图|上一张|前一张|刚才.{0,8}(图|图片|画面)|之前.{0,8}(图|图片|画面)|图中|图片中|照片中|截图中|画面中|它|其中|上述)/i
+    /(这张|这幅|这个图|该图|那张|上图|上一张|前一张|最后一张|刚才.{0,8}(图|图片|画面)|之前.{0,8}(图|图片|画面)|参考图\s*[一二三四五六七八九1-9]|图\s*[1-9]|第[一二三四五六七八九1-9]张|图中|图片中|照片中|截图中|画面中|它|其中|上述)/i
   if (previousVisualCue.test(text)) return true
 
   const freshImageRequest =

@@ -3,12 +3,27 @@ import { Link, useNavigate, useSearchParams } from "react-router";
 import { useGSAP } from "@gsap/react";
 import { QRCode } from "antd";
 import {
+  Bot,
+  Brush,
   CheckCircle2,
+  ChevronDown,
   Clock3,
   ExternalLink,
+  Gamepad2,
+  Image as ImageIcon,
+  LayoutGrid,
   LoaderCircle,
+  Maximize2,
+  MessageSquareText,
+  MonitorSmartphone,
+  PackageSearch,
   RefreshCw,
+  Scissors,
   ShieldCheck,
+  ShoppingBag,
+  Sparkles,
+  WandSparkles,
+  Workflow,
   X,
 } from "lucide-react";
 import gsap from "gsap";
@@ -28,10 +43,23 @@ const sectionTabs = [
 ];
 
 const MODEL_KIND_META = {
-  image: { label: "生图", icon: "bi-image", unit: "/ 张" },
-  chat: { label: "对话", icon: "bi-chat-dots", unit: "/ 条" },
-  tool: { label: "工具", icon: "bi-scissors", unit: "/ 次" },
+  image: { label: "生图", icon: ImageIcon, unit: "/ 张" },
+  chat: { label: "对话", icon: MessageSquareText, unit: "/ 次" },
+  tool: { label: "工具", icon: WandSparkles, unit: "/ 次" },
 };
+
+const MODEL_PAGE_META = [
+  { id: "assistant", label: "AI 助手", icon: Bot, feature: "ai.assistant", lists: ["imageModels", "textModels"], reasoningScope: "assistant" },
+  { id: "t2i", label: "文生图", icon: ImageIcon, feature: "ai.wallpaperGeneration", lists: ["publicModels"] },
+  { id: "coloring", label: "插画染色", icon: Brush, feature: "ai.illustrationColoring", lists: ["publicModels"] },
+  { id: "ui-design", label: "UI 设计稿", icon: MonitorSmartphone, feature: "ai.uiDesign", lists: ["publicModels", "analysisModels"], reasoningScope: "assistant" },
+  { id: "ecommerce", label: "AI 电商", icon: ShoppingBag, feature: "ai.ecommerceDesign", lists: ["publicModels", "analysisModels"], reasoningScope: "assistant" },
+  { id: "model-sheet", label: "模型设计", icon: PackageSearch, feature: "ai.ultraModelSheet", lists: ["publicModels"] },
+  { id: "game-art", label: "游戏设计", icon: Gamepad2, feature: "ai.gameDesign", lists: ["publicModels"] },
+  { id: "canvas", label: "无限画布", icon: Workflow, feature: "ai.infiniteCanvas", lists: ["imageModels", "textModels"], reasoningScope: "canvas_agent" },
+  { id: "background-remove", label: "背景移除", icon: Scissors, feature: "ai.imageTools", lists: ["backgroundRemovalModels"] },
+  { id: "media-tools", label: "媒体工具", icon: WandSparkles, feature: "ai.mediaTools", lists: ["tools"] },
+];
 
 const previewPlans = [
   {
@@ -208,6 +236,7 @@ function collectRawModels(runtimeConfig) {
     push(config.textModels);
     push(config.analysisModels);
     push(config.backgroundRemovalModels);
+    push(config.tools);
   }
   return out;
 }
@@ -238,6 +267,162 @@ function inferModelKind(model) {
   return "image";
 }
 
+function finitePoints(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function pricePair({ effective, standard, discount }) {
+  const explicitDiscount = finitePoints(discount);
+  const standardPoints = finitePoints(standard);
+  const effectivePoints = finitePoints(effective) ?? explicitDiscount ?? standardPoints ?? 0;
+  const comparePoints = standardPoints ?? effectivePoints;
+  return {
+    points: effectivePoints,
+    standard: comparePoints,
+    discount: explicitDiscount,
+    hasDiscount: explicitDiscount !== null && explicitDiscount < comparePoints,
+  };
+}
+
+function baseModelPrice(model) {
+  return pricePair({
+    effective:
+      model.pricePoints ??
+      model.creditCost ??
+      model.priceCents ??
+      model.pricing?.points ??
+      model.pricing?.cents,
+    standard: model.standardPricePoints ?? model.pricing?.standardPoints,
+    discount: model.discountPricePoints ?? model.pricing?.discountPoints,
+  });
+}
+
+function modelPriceVariants(model, page) {
+  const upscale = model?.imageUpscalePricing;
+  if (upscale && typeof upscale === "object") {
+    return [
+      {
+        id: "upscale-low",
+        label: `≤ ${Number(upscale.thresholdPixels || 2048)}px`,
+        ...pricePair({
+          effective: upscale.lowPricePoints,
+          standard: upscale.lowStandardPricePoints,
+          discount: upscale.lowDiscountPricePoints,
+        }),
+      },
+      {
+        id: "upscale-high",
+        label: `${Number(upscale.thresholdPixels || 2048) + 1}–4096px`,
+        ...pricePair({
+          effective: upscale.highPricePoints,
+          standard: upscale.highStandardPricePoints,
+          discount: upscale.highDiscountPricePoints,
+        }),
+      },
+    ];
+  }
+
+  const efforts = Array.isArray(model?.reasoningEfforts) ? model.reasoningEfforts : [];
+  return efforts.map((effort) => {
+    const scoped = model?.reasoningPrices?.[effort.id] || {};
+    const canvas = page.reasoningScope === "canvas_agent";
+    return {
+      id: `reasoning-${effort.id}`,
+      label: effort.label || effort.id,
+      ...pricePair({
+        effective: canvas ? scoped.canvasAgentPricePoints : effort.pricePoints,
+        standard: canvas ? scoped.canvasAgentStandardPricePoints : effort.standardPricePoints,
+        discount: canvas ? scoped.canvasAgentDiscountPricePoints : effort.discountPricePoints,
+      }),
+    };
+  });
+}
+
+function modelBrandIcon(model, kind) {
+  const identity = [model?.id, model?.name, model?.label, model?.providerName, model?.provider]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  if (identity.includes("nano-banana") || identity.includes("nano banana")) {
+    return { src: "/icons/nano-banana.svg", branded: true };
+  }
+  if (identity.includes("gemini")) return { src: "/icons/gemini.svg", branded: true };
+  if (identity.includes("kling")) return { src: "/icons/kling.svg", branded: true };
+  if (identity.includes("bytedance") || identity.includes("byte dance")) {
+    return { src: "/icons/bytedance.svg", branded: true };
+  }
+  if (identity.includes("openai") || /(^|[\s/_-])gpt(?:[\s/_.-]|$)/.test(identity)) {
+    return { src: "/icons/openai.svg", branded: true };
+  }
+
+  const tool = String(model?.tool || model?.operations?.[0] || "").replaceAll("-", "_");
+  if (tool === "background_remove") return { component: Scissors, branded: false };
+  if (tool === "image_upscale") return { component: Maximize2, branded: false };
+  if (tool.includes("motion") || tool.includes("animate")) return { component: Workflow, branded: false };
+  if (tool.includes("video") || tool.includes("template")) return { component: Sparkles, branded: false };
+  return { component: MODEL_KIND_META[kind].icon, branded: false };
+}
+
+function normalizeModelCard(model, page) {
+  const id = String(model?.id || model?.publicModelKey || model?.model || "").trim();
+  if (!id) return null;
+  const provider = String(model.providerName || model.provider || "").trim();
+  const description = String(model.description || "").trim();
+  const kind = inferModelKind(model);
+  const price = baseModelPrice(model);
+  const icon = modelBrandIcon(model, kind);
+  return {
+    id,
+    pageId: page.id,
+    name: String(model.label || model.name || id),
+    provider: placeholderText.test(provider) ? "" : provider,
+    description: placeholderText.test(description) ? "" : description,
+    ...price,
+    fastMode: model.fastMode === true,
+    isDefault: model.default === true,
+    workspacePriceOverridden: model.workspacePriceOverridden === true,
+    kind,
+    icon: icon.component,
+    iconSrc: icon.src || "",
+    brandedIcon: icon.branded,
+    variants: modelPriceVariants(model, page),
+  };
+}
+
+function buildModelPageGroups(runtimeConfig) {
+  const assigned = new Set();
+  const features = runtimeConfig?.features || {};
+  const groups = MODEL_PAGE_META.flatMap((page) => {
+    const config = features[page.feature]?.config || {};
+    const seen = new Set();
+    const rawModels = page.lists.flatMap((key) => (Array.isArray(config[key]) ? config[key] : []));
+    const models = rawModels
+      .map((model) => {
+        const card = normalizeModelCard(model, page);
+        if (!card || seen.has(card.id)) return null;
+        seen.add(card.id);
+        assigned.add(card.id);
+        return card;
+      })
+      .filter(Boolean);
+    return models.length ? [{ ...page, models }] : [];
+  });
+
+  const fallbackPage = { id: "other", label: "其他已上架模型", icon: LayoutGrid };
+  const seen = new Set();
+  const remaining = collectRawModels(runtimeConfig)
+    .map((model) => normalizeModelCard(model, fallbackPage))
+    .filter((model) => {
+      if (!model || assigned.has(model.id) || seen.has(model.id)) return false;
+      seen.add(model.id);
+      return true;
+    });
+  if (remaining.length) groups.push({ ...fallbackPage, models: remaining });
+  return groups;
+}
+
 function isUsagePlan(plan) {
   return plan.preview === true && plan.priceMode === "unit";
 }
@@ -259,7 +444,7 @@ export function PricingView() {
   const [plansLoading, setPlansLoading] = useState(true);
   const [modelsLoading, setModelsLoading] = useState(true);
   const [plansLoadFailed, setPlansLoadFailed] = useState(false);
-  const [modelKindFilter, setModelKindFilter] = useState("all");
+  const [activeModelPage, setActiveModelPage] = useState("assistant");
   const [wallet, setWallet] = useState(null);
   const [checkout, setCheckout] = useState(null);
   const [checkoutNow, setCheckoutNow] = useState(Date.now());
@@ -519,68 +704,20 @@ export function PricingView() {
     );
   }, [pricing]);
 
-  const modelCards = useMemo(() => {
-    const seen = new Set();
-    const kindOrder = { image: 0, chat: 1, tool: 2 };
-    return collectRawModels(runtimeConfig)
-      .map((model) => {
-        const id = String(model?.id || model?.publicModelKey || model?.model || "").trim();
-        if (!id || seen.has(id)) return null;
-        seen.add(id);
-        const points = Number(
-          model.pricePoints ??
-            model.creditCost ??
-            model.priceCents ??
-            model.pricing?.points ??
-            model.pricing?.cents ??
-            0,
-        );
-        const standard = Number(
-          model.standardPricePoints ?? model.pricing?.standardPoints ?? 0,
-        );
-        const discount = Number(
-          model.discountPricePoints ?? model.pricing?.discountPoints ?? 0,
-        );
-        const provider = String(
-          model.providerName || model.provider || "",
-        ).trim();
-        const description = String(model.description || "").trim();
-        const kind = inferModelKind(model);
-        return {
-          id,
-          name: String(model.label || model.name || id),
-          provider: placeholderText.test(provider) ? "" : provider,
-          description: placeholderText.test(description) ? "" : description,
-          points: Number.isFinite(points) ? points : 0,
-          standard: Number.isFinite(standard) ? standard : 0,
-          discount: Number.isFinite(discount) ? discount : 0,
-          fastMode: model.fastMode === true,
-          isDefault: model.default === true,
-          kind,
-        };
-      })
-      .filter(Boolean)
-      .sort(
-        (a, b) =>
-          kindOrder[a.kind] - kindOrder[b.kind] ||
-          a.points - b.points ||
-          a.name.localeCompare(b.name, "zh"),
-      );
-  }, [runtimeConfig]);
-
-  const modelKindCounts = useMemo(() => {
-    const counts = { all: modelCards.length, image: 0, chat: 0, tool: 0 };
-    for (const model of modelCards) counts[model.kind] += 1;
-    return counts;
-  }, [modelCards]);
-
-  const visibleModels = useMemo(
-    () =>
-      modelKindFilter === "all"
-        ? modelCards
-        : modelCards.filter((model) => model.kind === modelKindFilter),
-    [modelCards, modelKindFilter],
+  const modelPageGroups = useMemo(() => buildModelPageGroups(runtimeConfig), [runtimeConfig]);
+  const activeModelGroup = useMemo(
+    () => modelPageGroups.find((group) => group.id === activeModelPage) || modelPageGroups[0] || null,
+    [activeModelPage, modelPageGroups],
   );
+  const modelCards = activeModelGroup?.models || [];
+
+  useEffect(() => {
+    if (!modelPageGroups.length) return;
+    if (!modelPageGroups.some((group) => group.id === activeModelPage)) {
+      setActiveModelPage(modelPageGroups[0].id);
+    }
+  }, [activeModelPage, modelPageGroups]);
+  const ActiveModelPageIcon = activeModelGroup?.icon || LayoutGrid;
 
   const displayPlans = useMemo(() => normalizePlans(plans), [plans]);
   const packPlans = useMemo(
@@ -936,59 +1073,101 @@ export function PricingView() {
         <div className="pp-shell">
           <header className="pp-head">
             <h2 id="models-title">{t("模型价格")}</h2>
-            <div className="pp-model-filters" role="tablist" aria-label={t("模型类型")}>
-              {[
-                ["all", "全部"],
-                ["image", "生图"],
-                ["chat", "对话"],
-                ["tool", "工具"],
-              ].map(([id, label]) => (
-                <button
-                  key={id}
-                  type="button"
-                  role="tab"
-                  aria-selected={modelKindFilter === id}
-                  className={modelKindFilter === id ? "is-active" : ""}
-                  disabled={id !== "all" && !modelKindCounts[id]}
-                  onClick={() => setModelKindFilter(id)}
+            {!modelsLoading && activeModelGroup && (
+              <label className="pp-model-page-select">
+                <ActiveModelPageIcon size={18} strokeWidth={1.9} aria-hidden="true" />
+                <select
+                  aria-label={t("创作页面")}
+                  value={activeModelGroup.id}
+                  onChange={(event) => setActiveModelPage(event.target.value)}
                 >
-                  {t(label)}
-                  <span>{modelKindCounts[id] || 0}</span>
-                </button>
-              ))}
-            </div>
+                  {modelPageGroups.map((group) => (
+                    <option key={group.id} value={group.id}>
+                      {t(group.label)} · {group.models.length}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown size={15} strokeWidth={2} aria-hidden="true" />
+              </label>
+            )}
           </header>
           {modelsLoading ? (
-            <div className="pp-model-grid" aria-busy="true">
-              {[1, 2, 3, 4, 5, 6].map((n) => (
-                <article key={n} className="pp-model-card is-loading" />
-              ))}
+            <div className="pp-model-browser is-loading" aria-busy="true">
+              <div className="pp-model-browser__content">
+                {[1, 2, 3, 4].map((n) => (
+                  <article key={n} className="pp-model-row is-loading" />
+                ))}
+              </div>
             </div>
-          ) : visibleModels.length ? (
-            <div className="pp-model-grid">
-              {visibleModels.map((model) => {
-                const meta = MODEL_KIND_META[model.kind];
-                return (
-                  <article
-                    key={model.id}
-                    className={`pp-model-card${model.isDefault ? " is-default" : ""}`}
-                  >
-                    <div className="pp-model-card__name">
-                      <strong>{model.name}</strong>
-                      <small>
-                        {model.provider && <>{model.provider} · </>}
-                        {t(meta.label)}
-                        {model.isDefault && <em>{t("默认")}</em>}
-                        {model.fastMode && <em className="is-fast">{t("极速")}</em>}
-                      </small>
+          ) : modelPageGroups.length && activeModelGroup ? (
+            <div className="pp-model-browser">
+              <section className="pp-model-browser__content" aria-label={t(activeModelGroup.label)}>
+                {modelCards.length ? (
+                  <div className="pp-model-table" role="table">
+                    <div className="pp-model-table__head" role="row">
+                      <span>{t("模型")}</span>
+                      <span>{t("当前价格")}</span>
+                      <span>{t("价格明细")}</span>
                     </div>
-                    <div className="pp-model-card__price">
-                      <b>{t(formatPoints(model.points))}</b>
-                      <span>{t(meta.unit)}</span>
-                    </div>
-                  </article>
-                );
-              })}
+                    {modelCards.map((model) => {
+                      const meta = MODEL_KIND_META[model.kind];
+                      const ModelIcon = model.icon;
+                      return (
+                        <article
+                          key={`${activeModelGroup.id}:${model.id}`}
+                          className={`pp-model-row${model.isDefault ? " is-default" : ""}`}
+                          role="row"
+                        >
+                          <div className="pp-model-row__identity" role="cell">
+                            <span className={`pp-model-row__icon${model.brandedIcon ? " is-brand" : ""}`} aria-hidden="true">
+                              {model.iconSrc
+                                ? <img src={model.iconSrc} alt="" width="20" height="20" />
+                                : <ModelIcon size={20} strokeWidth={1.9} />}
+                            </span>
+                            <div>
+                              <strong>{model.name}</strong>
+                              <small>
+                                {t(meta.label)} · {model.provider || t("平台模型")}
+                                {model.workspacePriceOverridden && <em>{t("页面价")}</em>}
+                                {model.isDefault && <em>{t("默认")}</em>}
+                                {model.fastMode && <em className="is-fast">{t("极速")}</em>}
+                              </small>
+                            </div>
+                          </div>
+                          <div className="pp-model-row__price" role="cell">
+                            <span>
+                              <b>{t(formatPoints(model.points, { withUnit: false }))}</b>
+                              <small>{t("积分")}{t(meta.unit)}</small>
+                            </span>
+                            {model.hasDiscount && (
+                              <span className="is-discount">
+                                <del>{t(formatPoints(model.standard))}</del>
+                                <em>{t("折扣")}</em>
+                              </span>
+                            )}
+                          </div>
+                          <div className="pp-model-row__variants" role="cell">
+                            {model.variants.length ? model.variants.map((variant) => (
+                              <span key={variant.id}>
+                                <small>{t(variant.label)}</small>
+                                <strong>
+                                  {variant.hasDiscount && (
+                                    <del>{t(formatPoints(variant.standard, { withUnit: false }))}</del>
+                                  )}
+                                  <b>{t(formatPoints(variant.points, { withUnit: false }))}</b>
+                                  <i>{t("积分")}</i>
+                                </strong>
+                              </span>
+                            )) : <span className="is-empty">—</span>}
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="pp-model-browser__empty">{t("该页面暂无此类模型")}</div>
+                )}
+              </section>
             </div>
           ) : (
             <div className="pp-empty">

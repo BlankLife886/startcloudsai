@@ -25,6 +25,7 @@ export type CanvasNodeStatus = "idle" | "success" | "loading" | "error";
 export type CanvasNodeExecutionStatus = "queued" | "running" | "succeeded" | "failed" | "canceled";
 export type CanvasGenerationMode = "text" | "image" | "video" | "audio";
 export type CanvasImageGenerationType = "generation" | "edit";
+export type CanvasLocalImageOperation = "crop" | "split" | "upscale";
 
 export type CanvasNodeImage = {
     id: string;
@@ -79,6 +80,8 @@ export type CanvasNodeMetadata = {
     durationMs?: number;
     groupId?: string;
     interactive?: boolean; // Plugin node interaction/move state; see CanvasNodeDefinition.interactionToggle.
+    editing?: boolean;
+    pluginColor?: string;
     taskId?: string;
     taskKind?: "image" | "assistant";
     executionStatus?: CanvasNodeExecutionStatus;
@@ -88,6 +91,16 @@ export type CanvasNodeMetadata = {
     generationDurationMs?: number;
     workflowOutputNodeIds?: string[];
     workflowProducerNodeId?: string;
+    /** Internal workflow result nodes can be hidden and rendered inside their producer card. */
+    hidden?: boolean;
+    inlineOutputNodeId?: string;
+    agentRequestId?: string;
+    agentBatchId?: string;
+    agentSourceNodeId?: string;
+    localImageOperation?: CanvasLocalImageOperation;
+    localImageOperationParams?: Record<string, unknown>;
+    localImageOperationCompletedCount?: number;
+    imageAngleParams?: Record<string, unknown>;
 };
 
 export type CanvasNodeData = {

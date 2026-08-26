@@ -61,6 +61,27 @@ function formatDate(value, locale) {
   });
 }
 
+function formatCampaignDeadline(value, locale) {
+  if (!value) return "长期有效";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "长期有效";
+  if (locale === "en-US") {
+    return date.toLocaleString("en-US", {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+  }
+  const month = date.getMonth() + 1;
+  const day = date.getDate();
+  const hour = String(date.getHours()).padStart(2, "0");
+  const minute = String(date.getMinutes()).padStart(2, "0");
+  return `${date.getFullYear()}年${month}月${day}日 ${hour}:${minute}`;
+}
+
 function joinLabels(items, t, locale) {
   const parts = (items || []).map((item) => t(item)).filter(Boolean);
   if (!parts.length) return "—";
@@ -265,12 +286,31 @@ export function TrialAccessDialog({ open, initialCampaign = null, onClose }) {
           <p className="trial-dialog__intro">{t("告诉我们你的创作方式。审核通过后，可领取体验积分并进入获批工作台。")}</p>
           {campaign && (
             <section className="trial-dialog__campaign" aria-label={t("体验活动名额")}>
-              <header><span>{t("本期体验功能")}</span><strong>{campaign.full ? t("名额已满") : t(`剩余 ${campaign.remaining ?? 0} 名`)}</strong></header>
-              <div className="trial-dialog__features">
-                {sourceFeatures(campaign).map((feature) => <span key={feature.key}><i className={`bi ${feature.icon || "bi-stars"}`} />{t(feature.label)}</span>)}
+              <div className="trial-dialog__campaign-top">
+                <div className="trial-dialog__campaign-copy">
+                  <span>{t("本期体验功能")}</span>
+                  <div className={`trial-dialog__features${sourceFeatures(campaign).length === 1 ? " is-single" : ""}`}>
+                    {sourceFeatures(campaign).map((feature) => (
+                      <span key={feature.key}>
+                        <i className={`bi ${feature.icon || "bi-stars"}`} aria-hidden="true" />
+                        <em>{t(feature.label)}</em>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                <p className={`trial-dialog__remaining${campaign.full ? " is-full" : ""}`}>
+                  {campaign.full ? <strong>{t("已满")}</strong> : <strong>{campaign.remaining ?? 0}</strong>}
+                  <small>{campaign.full ? t("名额已满") : t("剩余名额")}</small>
+                </p>
               </div>
-              <div className="trial-dialog__track" aria-hidden="true"><i style={{ width: `${progress}%` }} /></div>
-              <dl><div><dt>{t("已申请")}</dt><dd>{applied}</dd></div><div><dt>{t("总名额")}</dt><dd>{capacity || "—"}</dd></div><div><dt>{t("活动截止")}</dt><dd>{t(formatDate(campaign.expiresAt, locale))}</dd></div></dl>
+              <div className="trial-dialog__quota">
+                <div className="trial-dialog__track" aria-hidden="true"><i style={{ width: `${progress}%` }} /></div>
+                <dl>
+                  <div><dt>{t("已申请")}</dt><dd>{applied}</dd></div>
+                  <div><dt>{t("总名额")}</dt><dd>{capacity || "—"}</dd></div>
+                  <div><dt>{t("活动截止")}</dt><dd>{t(formatCampaignDeadline(campaign.expiresAt, locale))}</dd></div>
+                </dl>
+              </div>
             </section>
           )}
           <ol className="trial-dialog__steps"><li><span>01</span>{t("登录账号")}</li><li><span>02</span>{t("提交职业与申请理由")}</li><li><span>03</span>{t("审核通过后领取积分")}</li></ol>
@@ -283,7 +323,15 @@ export function TrialAccessDialog({ open, initialCampaign = null, onClose }) {
           {screen === "pending" && <State icon="bi-hourglass-split" title={t("申请审核中")} text={t("申请已收到，审核结果会显示在这里并通过站内通知提醒你。")}><Summary application={application} features={features} t={t} locale={locale} /><div className="trial-dialog__button-row"><button type="button" className="is-primary" onClick={refreshApplication}>{t("刷新状态")}</button><button type="button" className="is-secondary" onClick={onClose}>{t("我知道了")}</button></div></State>}
           {screen === "approved" && <State icon="bi-patch-check-fill" title={t("体验资格已通过")} text={t("真实功能权限已经生效，领取后积分可用于全部获批功能。")}><Reward application={application} t={t} locale={locale} /><button type="button" className="is-primary is-wide" disabled={claiming} onClick={claimReward}>{claiming ? t("领取中…") : t("立即领取")}</button></State>}
           {screen === "expired" && <State icon="bi-clock-history" title={t("体验积分已过期")} text={t("领取期限已经结束，请等待管理员重新发放体验积分。")}><Reward application={application} t={t} locale={locale} /></State>}
-          {screen === "redeemed" && <State icon="bi-check-lg" title={t("体验积分已到账")} text={t("活动积分已经存入钱包，现在可以进入获批工作台开始体验。")}><Reward application={application} t={t} locale={locale} /><div className="trial-dialog__launchers">{features.map((feature) => <button key={feature.key} type="button" onClick={() => { onClose?.(); navigate(feature.route || "/studio"); }}><i className={`bi ${feature.icon || "bi-stars"}`} /><span>{t(feature.label)}</span><i className="bi bi-arrow-right" /></button>)}</div><div className="trial-dialog__button-row"><button type="button" className="is-secondary" onClick={() => { onClose?.(); navigate("/wallet"); }}>{t("查看钱包")}</button></div></State>}
+          {screen === "redeemed" && (
+            <State icon="bi-check-lg" title={t("体验积分已到账")} text={t("活动积分已经存入钱包，现在可以进入获批工作台开始体验。")}>
+              <Reward application={application} t={t} locale={locale} />
+              <Launchers features={features} t={t} onOpen={(route) => { onClose?.(); navigate(route || "/studio"); }} />
+              <div className="trial-dialog__button-row">
+                <button type="button" className="is-secondary" onClick={() => { onClose?.(); navigate("/wallet"); }}>{t("查看钱包")}</button>
+              </div>
+            </State>
+          )}
           {screen === "apply" && (
             <form className="trial-dialog__form" onSubmit={submit}>
               {status === "rejected" && <div className="trial-dialog__rejected"><strong>{t("上次申请未通过")}</strong><p>{t(application?.reviewNote || "可以更新资料后重新提交。")}</p></div>}
@@ -311,4 +359,21 @@ function Summary({ application, features, t, locale }) {
 
 function Reward({ application, t, locale }) {
   return <div className="trial-dialog__reward"><span>{t("体验积分")}</span><strong>{t(formatPoints(application?.rewardCents || 0))}</strong><small>{t(`领取有效期至 ${formatDate(application?.rewardExpiresAt, locale)}`)}</small></div>;
+}
+
+function Launchers({ features, t, onOpen }) {
+  return (
+    <div className={`trial-dialog__launchers${features.length === 1 ? " is-single" : ""}`}>
+      {features.map((feature) => (
+        <button key={feature.key} type="button" onClick={() => onOpen(feature.route)}>
+          <i className={`bi ${feature.icon || "bi-stars"}`} aria-hidden="true" />
+          <span>
+            <strong>{t(feature.label)}</strong>
+            <small>{t("进入体验")}</small>
+          </span>
+          <i className="bi bi-arrow-right" aria-hidden="true" />
+        </button>
+      ))}
+    </div>
+  );
 }

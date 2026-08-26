@@ -40,6 +40,7 @@ function preloaderForPath(pathname) {
   const exactPreloader = routePreloaders.get(pathname);
   if (exactPreloader) return exactPreloader;
   if (pathname.startsWith("/canvas/")) return routePreloaders.get("/canvas/config");
+  if (pathname.startsWith("/tools/")) return () => import("./views/MediaToolsView.jsx");
   if (pathname.startsWith("/incentive-plans/")) {
     return () => import("./views/incentives/CreatorIncentiveDetailRoute.jsx");
   }

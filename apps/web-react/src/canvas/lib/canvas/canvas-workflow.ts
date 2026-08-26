@@ -1,7 +1,8 @@
 import type { CanvasConnection, CanvasNodeData } from "@/types/canvas";
 import { resolveCopiedCanvasNodeReferences } from "./canvas-node-copy.ts";
+import { isCanvasExecutableNode } from "./canvas-operation-node.ts";
 
-export type CanvasWorkflowCompileError = "empty" | "cycle";
+export type CanvasWorkflowCompileError = "empty" | "cycle" | "invalid_connection";
 
 export type CanvasWorkflowPlan = {
     nodeIds: string[];
@@ -220,8 +221,14 @@ export function reconcileCanvasWorkflowFailureOutput(checkpoint: CanvasWorkflowC
     };
 }
 
-/** Adopt every valid persisted output before scheduling. This prevents concurrent nodes from replaying after a refresh. */
-export function reconcileCanvasWorkflowOutputs(checkpoint: CanvasWorkflowCheckpoint, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
+/** Adopt valid persisted outputs only while recovering an interrupted run. A fresh run must regenerate them. */
+export function reconcileCanvasWorkflowOutputs(
+    checkpoint: CanvasWorkflowCheckpoint,
+    nodes: CanvasNodeData[],
+    connections: CanvasConnection[],
+    options: { recoverPersistedOutputs: boolean },
+) {
+    if (!options.recoverPersistedOutputs) return checkpoint;
     let next = checkpoint;
     for (const nodeId of checkpoint.nodeIds) {
         if (next.completedNodeIds.includes(nodeId)) continue;
@@ -335,8 +342,9 @@ function workflowOutputSuccessCount(node: CanvasNodeData) {
 }
 
 /** Compile generation-config nodes into a stable, dependency-ordered execution plan. */
-export function compileCanvasWorkflow(nodes: CanvasNodeData[], connections: CanvasConnection[]): CanvasWorkflowCompileResult {
-    const executableNodes = nodes.filter((node) => node.type === "config");
+export function compileCanvasWorkflow(nodes: CanvasNodeData[], connections: CanvasConnection[], options: { configNodeIds?: Iterable<string> } = {}): CanvasWorkflowCompileResult {
+    const scopedConfigIds = options.configNodeIds ? new Set(options.configNodeIds) : null;
+    const executableNodes = nodes.filter((node) => isCanvasExecutableNode(node) && (!scopedConfigIds || scopedConfigIds.has(node.id)));
     if (!executableNodes.length) return { ok: false, reason: "empty", nodeIds: [] };
 
     const nodeById = new Map(nodes.map((node) => [node.id, node]));
@@ -349,6 +357,8 @@ export function compileCanvasWorkflow(nodes: CanvasNodeData[], connections: Canv
     }
 
     const executableIds = new Set(executableNodes.map((node) => node.id));
+    const invalidConfigIds = connections.flatMap((connection) => executableIds.has(connection.fromNodeId) && executableIds.has(connection.toNodeId) ? [connection.fromNodeId, connection.toNodeId] : []);
+    if (invalidConfigIds.length) return { ok: false, reason: "invalid_connection", nodeIds: [...new Set(invalidConfigIds)] };
     const dependencies = new Map<string, Set<string>>();
     for (const node of executableNodes) {
         dependencies.set(node.id, findConfigDependencies(node.id, executableIds, nodeById, incoming));

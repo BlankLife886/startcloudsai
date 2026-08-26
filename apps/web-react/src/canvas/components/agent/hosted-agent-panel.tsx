@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router";
 
 import { canvasThemes } from "@/lib/canvas-theme";
+import { bindHostedAgentRunId, createHostedAgentRunScope, isHostedAgentRunIdRetired, isHostedAgentRunScopeActive, isHostedAgentStateForProject, registerHostedAgentRunStopper, retireHostedAgentRunId, settleHostedAgentMessagesOnStop, type HostedAgentRunScope } from "@/lib/agent/hosted-agent-run-scope";
 import { summarizeCanvasAgentOps, type CanvasAgentOp } from "@/lib/canvas/canvas-agent-ops";
 import { canExecuteApprovedCanvasAgentTool, waitForCanvasAgentToolPaint } from "@/lib/canvas/canvas-agent-tool-delivery";
 import { resolveCanvasReferenceImages } from "@/lib/canvas/canvas-resource-references";
@@ -45,6 +46,25 @@ const HOSTED_REASONING_EFFORT_KEY = "canvas-hosted-agent-reasoning-effort";
 const HOSTED_MODEL_KEY = "canvas-hosted-agent-model";
 const HOSTED_CONFIRM_TOOLS_KEY = "canvas-hosted-agent-confirm-tools";
 const VALID_HOSTED_REASONING_EFFORTS = new Set<ModelReasoningEffort>(MODEL_REASONING_EFFORTS);
+type HostedAgentRunBinding = HostedAgentRunScope & {
+    attachments: AgentAttachment[];
+    waitForRunId: Promise<string>;
+    resolveRunId: (runId: string) => void;
+};
+
+function createHostedAgentRunBinding(projectId: string, attachments: AgentAttachment[], controller = new AbortController()): HostedAgentRunBinding {
+    let resolveRunId: (runId: string) => void = () => undefined;
+    const waitForRunId = new Promise<string>((resolve) => {
+        resolveRunId = resolve;
+    });
+    return { ...createHostedAgentRunScope(projectId, controller), attachments, waitForRunId, resolveRunId };
+}
+
+function cancelHostedAgentRun(runId: string, options?: { keepalive?: boolean }) {
+    if (!runId) return Promise.resolve();
+    retireHostedAgentRunId(runId);
+    return cancelCanvasAssistantRun(runId, options);
+}
 
 function initialHostedConfirmTools() {
     if (typeof window === "undefined") return false;
@@ -108,6 +128,7 @@ function toolTitle(name: string, t: Translate) {
     if (name === "canvas_get_state") return t("agent.eventExtra.tools.readCanvas");
     if (name === "canvas_get_selection") return t("agent.eventExtra.tools.readSelection");
     if (name === "canvas_export_snapshot") return t("agent.eventExtra.tools.exportSnapshot");
+    if (name === "canvas_regenerate_selection") return t("agent.eventExtra.tools.runGeneration");
     if (name === "canvas_run_generation") return t("agent.eventExtra.tools.runGeneration");
     if (name === "canvas_generation_status") return t("agent.hosted.generationStatus");
     if (name === "canvas_create_attachment_nodes") return t("agent.eventExtra.tools.addAttachments");
@@ -122,11 +143,33 @@ function toolTitle(name: string, t: Translate) {
 function hostedToolRunningText(name: string, title: string, t: Translate) {
     if (["canvas_get_state", "canvas_get_selection", "canvas_export_snapshot", "canvas_list_projects", "prompts_search", "assets_list"].includes(name)) return t("agent.hosted.toolReading");
     if (["canvas_apply_ops", "canvas_create_attachment_nodes", "assets_add"].includes(name)) return t("agent.hosted.toolModifying");
-    if (["canvas_run_generation", "canvas_generation_status"].includes(name)) return t("agent.hosted.toolGenerating");
+    if (["canvas_regenerate_selection", "canvas_run_generation", "canvas_generation_status"].includes(name)) return t("agent.hosted.toolGenerating");
     return t("agent.hosted.toolWorking", { tool: title });
 }
 
 function describeToolObservation(name: string, observation: unknown, t: Translate) {
+    if (name === "canvas_get_selection") {
+        const result = observation as { total?: number; selectedNodeIds?: unknown[]; nodes?: Array<{ id?: string; type?: string; title?: string }>; truncated?: boolean };
+        const nodes = Array.isArray(result.nodes) ? result.nodes : [];
+        const total = Number(result.total ?? result.selectedNodeIds?.length ?? nodes.length) || 0;
+        const summary = `${t("agent.eventMore.selectionRead")} · ${t("agent.hosted.listedItems", { count: total })}`;
+        if (!nodes.length) return summary;
+        const lines = nodes.map((node, index) => {
+            const id = String(node.id || "-");
+            const title = String(node.title || "");
+            const label = title && title !== id ? `${title} (${id})` : id;
+            return `${index + 1}. ${label} · ${String(node.type || "node")}`;
+        });
+        if (result.truncated) lines.push("…");
+        return `${summary}\n${lines.join("\n")}`;
+    }
+    if (name === "canvas_regenerate_selection") {
+        const result = observation as { status?: string; sourceImageCount?: number; skippedNodeIds?: unknown[]; items?: unknown[] };
+        if (result.status === "canceled") return t("agent.runtime.canvasToolCanceled");
+        const summary = t("agent.hosted.generationTriggered", { count: result.sourceImageCount ?? result.items?.length ?? 0 });
+        const skipped = result.skippedNodeIds?.length || 0;
+        return skipped ? `${summary} · ${t("agent.hosted.generationSelectionSkipped", { count: skipped })}` : summary;
+    }
     if (name === "canvas_run_generation") {
         const triggered = (observation as { triggered?: string[] })?.triggered?.length || 0;
         return t("agent.hosted.generationTriggered", { count: triggered });
@@ -177,9 +220,12 @@ function hostedMessageTitles(t: Translate) {
     };
 }
 
-function hostedAgentErrorText(error: unknown, fallback: string, authFailed: string) {
+function hostedAgentErrorText(error: unknown, fallback: string, authFailed: string, interrupted: string) {
     const detail = error instanceof Error ? error.message : fallback;
     const lower = detail.toLowerCase();
+    if (lower === "aborted" || lower.includes("aborterror") || lower.includes("signal is aborted") || lower.includes("operation was aborted")) {
+        return interrupted;
+    }
     if (
         lower.includes("token_invalidated") ||
         lower.includes("chat_requirements_prepare") ||
@@ -208,9 +254,7 @@ export function HostedAgentPanel() {
     const canvasConfig = useConfigStore((state) => state.config);
     const agentPricing = useConfigStore((state) => state.agentPricing);
     const canvasContextRef = useRef<AgentCanvasContext | null>(useAgentStore.getState().canvasContext);
-    const abortRef = useRef<AbortController | null>(null);
-    const runIdRef = useRef("");
-    const turnAttachmentsRef = useRef<AgentAttachment[]>([]);
+    const activeRunRef = useRef<HostedAgentRunBinding | null>(null);
     const confirmToolsRef = useRef(false);
     const hostedToolWaiterRef = useRef<{ call: CanvasAgentToolCall; resolve: () => void; reject: (error: Error) => void } | null>(null);
     const projectId = useAgentStore((state) => state.canvasContext?.snapshot.projectId || "");
@@ -278,7 +322,7 @@ export function HostedAgentPanel() {
 
     const lastProjectIdRef = useRef(projectId);
     const restoreSeqRef = useRef(0);
-    const followHostedRunRef = useRef<(runId: string) => Promise<void>>(async () => undefined);
+    const followHostedRunRef = useRef<(runId: string, originProjectId: string) => Promise<void>>(async () => undefined);
 
     useEffect(() => {
         return useAgentStore.subscribe((state) => {
@@ -286,24 +330,81 @@ export function HostedAgentPanel() {
         });
     }, []);
 
+    const rejectHostedPendingTool = useCallback((error: Error, recordFailure = false) => {
+        const waiter = hostedToolWaiterRef.current;
+        hostedToolWaiterRef.current = null;
+        if (useAgentStore.getState().pendingTool) setAgentState({ pendingTool: null });
+        if (waiter && recordFailure) {
+            const detail = error.message;
+            addMessage({
+                id: `hosted-tool:${waiter.call.requestId}`,
+                role: "tool",
+                title: waiter.call.title || toolTitle(waiter.call.name, t),
+                text: detail,
+                detail: toolCallDetail(waiter.call.name, hostedToolInput(waiter.call), "failed", detail),
+            });
+        }
+        waiter?.reject(error);
+    }, [addMessage, setAgentState, t]);
+
+    const cancelHostedRun = useCallback((markStopped = false, options?: { keepalive?: boolean }) => {
+        const scope = activeRunRef.current;
+        let cancellation = Promise.resolve();
+        if (scope) {
+            activeRunRef.current = null;
+            scope.controller.abort();
+            cancellation = scope.runId
+                ? cancelHostedAgentRun(scope.runId, options)
+                : scope.waitForRunId.then((runId) => cancelHostedAgentRun(runId, options));
+            void cancellation.catch(() => undefined);
+        }
+        rejectHostedPendingTool(new Error(t("agent.runtime.canvasToolCanceled")));
+        if (!scope) return cancellation;
+        const current = useAgentStore.getState();
+        setAgentState({
+            sending: false,
+            waiting: false,
+            activity: "",
+            ...(markStopped ? {
+                messages: settleHostedAgentMessagesOnStop(current.messages, t("agent.message.stopped")),
+            } : {}),
+        });
+        return cancellation;
+    }, [rejectHostedPendingTool, setAgentState, t]);
+    const cancelHostedRunRef = useRef(cancelHostedRun);
+    cancelHostedRunRef.current = cancelHostedRun;
+
     useEffect(() => {
-        if (!projectId) return;
+        return () => {
+            void cancelHostedRunRef.current(true);
+        };
+    }, []);
+
+    useEffect(() => registerHostedAgentRunStopper((targetProjectId, options) => {
+        const scope = activeRunRef.current;
+        if (!scope || scope.projectId !== targetProjectId) return Promise.resolve();
+        return cancelHostedRunRef.current(true, options);
+    }), []);
+
+    useEffect(() => {
         const previousProjectId = lastProjectIdRef.current;
         const switched = Boolean(previousProjectId && previousProjectId !== projectId);
         lastProjectIdRef.current = projectId;
-        if (switched) {
-            abortRef.current?.abort();
-            abortRef.current = null;
-            runIdRef.current = "";
+        const current = useAgentStore.getState();
+        const stateMatchesProject = isHostedAgentStateForProject(current.hostedProjectId, projectId);
+        const projectStateChanged = switched || !stateMatchesProject;
+        if (projectStateChanged) {
+            cancelHostedRun(true);
             setHostedTab("chat");
             setConversations([]);
             setCurrentConversationId("");
-            setAgentState({ messages: [], prompt: "", attachments: [], canvasReferences: [], sending: false, waiting: false, activeTab: "chat" });
+            setAgentState({ hostedProjectId: projectId, messages: [], prompt: "", attachments: [], canvasReferences: [], sending: false, waiting: false, activeTab: "chat" });
         }
-        const current = useAgentStore.getState();
-        if (!switched && (current.messages.length > 0 || current.sending || current.waiting)) {
+        if (!projectId) return;
+        if (!projectStateChanged && (current.messages.length > 0 || current.sending || current.waiting)) {
             setHydrating(false);
             void listCanvasAgentConversations(projectId).then((items) => {
+                if (useAgentStore.getState().canvasContext?.snapshot.projectId !== projectId) return;
                 setConversations(items);
                 setCurrentConversationId(readHostedAgentConversationId(projectId) || items[0]?.id || "");
             }).catch(() => undefined);
@@ -316,7 +417,7 @@ export function HostedAgentPanel() {
             if (seq !== restoreSeqRef.current || !conversation?.id) return false;
             writeHostedAgentConversationId(projectId, conversation.id);
             setCurrentConversationId(conversation.id);
-            setAgentState({ messages: hostedAgentMessagesFromConversation(conversation.messages, titles) });
+            setAgentState({ hostedProjectId: projectId, messages: hostedAgentMessagesFromConversation(conversation.messages, titles) });
             return true;
         };
         setHydrating(true);
@@ -329,8 +430,8 @@ export function HostedAgentPanel() {
                 if (!applyConversation(selected)) return;
                 const runs = await listActiveCanvasAgentRuns(controller.signal);
                 if (seq !== restoreSeqRef.current) return;
-                const active = runs.find((run) => run.conversationId === selected?.id && (run.status === "queued" || run.status === "running"));
-                if (active?.id) void followHostedRunRef.current(active.id);
+                const active = runs.find((run) => run.conversationId === selected?.id && !isHostedAgentRunIdRetired(run.id) && (run.status === "queued" || run.status === "running"));
+                if (active?.id) void followHostedRunRef.current(active.id, projectId);
             })
             .catch((error) => {
                 if (seq !== restoreSeqRef.current || controller.signal.aborted) return;
@@ -343,7 +444,7 @@ export function HostedAgentPanel() {
             restoreSeqRef.current += 1;
             controller.abort();
         };
-    }, [projectId, setAgentState, t]);
+    }, [cancelHostedRun, projectId, setAgentState, t]);
 
     useEffect(() => {
         const current = useAgentStore.getState();
@@ -369,6 +470,7 @@ export function HostedAgentPanel() {
         setLoadingHistory(true);
         try {
             const items = await listCanvasAgentConversations(projectId, signal);
+            if (useAgentStore.getState().canvasContext?.snapshot.projectId !== projectId) return [];
             setConversations(items);
             return items;
         } catch (error) {
@@ -379,43 +481,24 @@ export function HostedAgentPanel() {
         }
     }, [projectId]);
 
-    const rejectHostedPendingTool = useCallback((error: Error, recordFailure = false) => {
-        const waiter = hostedToolWaiterRef.current;
-        hostedToolWaiterRef.current = null;
-        if (useAgentStore.getState().pendingTool) setAgentState({ pendingTool: null });
-        if (waiter && recordFailure) {
-            const detail = error.message;
-            addMessage({
-                id: `hosted-tool:${waiter.call.requestId}`,
-                role: "tool",
-                title: waiter.call.title || toolTitle(waiter.call.name, t),
-                text: detail,
-                detail: toolCallDetail(waiter.call.name, hostedToolInput(waiter.call), "failed", detail),
-            });
-        }
-        waiter?.reject(error);
-    }, [addMessage, setAgentState, t]);
-
     const startNewChat = useCallback(() => {
-        abortRef.current?.abort();
-        abortRef.current = null;
-        runIdRef.current = "";
+        cancelHostedRun();
         restoreSeqRef.current += 1;
-        rejectHostedPendingTool(new Error(t("agent.runtime.canvasToolCanceled")));
         setHydrating(false);
         setHostedTab("chat");
-        setAgentState({ messages: [], prompt: "", attachments: [], canvasReferences: [], sending: false, waiting: false });
+        setAgentState({ hostedProjectId: projectId, messages: [], prompt: "", attachments: [], canvasReferences: [], sending: false, waiting: false });
         if (!projectId) {
             setCurrentConversationId("");
             return;
         }
         void beginHostedAgentConversation(projectId)
             .then((conversation) => {
+                if (useAgentStore.getState().canvasContext?.snapshot.projectId !== projectId) return;
                 setCurrentConversationId(conversation.id);
                 setConversations((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
             })
             .catch(() => message.error(t("agent.runtime.newConversationFailed")));
-    }, [message, projectId, rejectHostedPendingTool, setAgentState, t]);
+    }, [cancelHostedRun, message, projectId, setAgentState, t]);
 
     const resumeConversation = useCallback(async (conversationId: string) => {
         if (!projectId || !conversationId) return;
@@ -423,11 +506,8 @@ export function HostedAgentPanel() {
             setHostedTab("chat");
             return;
         }
-        abortRef.current?.abort();
-        abortRef.current = null;
-        runIdRef.current = "";
+        cancelHostedRun();
         restoreSeqRef.current += 1;
-        rejectHostedPendingTool(new Error(t("agent.runtime.canvasToolCanceled")));
         const seq = restoreSeqRef.current;
         setHydrating(true);
         try {
@@ -440,6 +520,7 @@ export function HostedAgentPanel() {
                 return [conversation, ...next];
             });
             setAgentState({
+                hostedProjectId: projectId,
                 messages: hostedAgentMessagesFromConversation(conversation.messages, hostedMessageTitles(t)),
                 sending: false,
                 waiting: false,
@@ -447,15 +528,15 @@ export function HostedAgentPanel() {
             setHostedTab("chat");
             const runs = await listActiveCanvasAgentRuns();
             if (seq !== restoreSeqRef.current) return;
-            const active = runs.find((run) => run.conversationId === conversation.id && (run.status === "queued" || run.status === "running"));
-            if (active?.id) void followHostedRunRef.current(active.id);
+            const active = runs.find((run) => run.conversationId === conversation.id && !isHostedAgentRunIdRetired(run.id) && (run.status === "queued" || run.status === "running"));
+            if (active?.id) void followHostedRunRef.current(active.id, projectId);
         } catch (error) {
             if (seq !== restoreSeqRef.current) return;
             message.error(error instanceof Error ? error.message : t("agent.runtime.resumeConversationFailed"));
         } finally {
             if (seq === restoreSeqRef.current) setHydrating(false);
         }
-    }, [currentConversationId, message, projectId, rejectHostedPendingTool, setAgentState, t]);
+    }, [cancelHostedRun, currentConversationId, message, projectId, setAgentState, t]);
 
     const confirmDeleteConversations = useCallback((conversationIds: string[]) => {
         if (!conversationIds.length) return;
@@ -471,13 +552,12 @@ export function HostedAgentPanel() {
             for (const id of conversationIds) {
                 await deleteCanvasAgentConversation(id, deletingCurrent && id === currentConversationId && (sending || waiting));
             }
+            if (useAgentStore.getState().canvasContext?.snapshot.projectId !== projectId) return;
             const remaining = conversations.filter((item) => !conversationIds.includes(item.id));
             setConversations(remaining);
             setPendingDeleteIds(null);
             if (deletingCurrent) {
-                abortRef.current?.abort();
-                abortRef.current = null;
-                runIdRef.current = "";
+                cancelHostedRun();
                 if (remaining[0]) {
                     await resumeConversation(remaining[0].id);
                 } else {
@@ -493,13 +573,21 @@ export function HostedAgentPanel() {
         } finally {
             setDeletingHistory(false);
         }
-    }, [conversations, currentConversationId, deletingHistory, message, pendingDeleteIds, projectId, resumeConversation, sending, setAgentState, t, waiting]);
+    }, [cancelHostedRun, conversations, currentConversationId, deletingHistory, message, pendingDeleteIds, projectId, resumeConversation, sending, setAgentState, t, waiting]);
 
-    const runHostedTool = useCallback(async (call: CanvasAgentToolCall, verifyBeforeExecution?: () => Promise<boolean>) => {
+    const runHostedTool = useCallback(async (call: CanvasAgentToolCall, scope: HostedAgentRunBinding, verifyBeforeExecution?: () => Promise<boolean>) => {
         const messageId = `hosted-tool:${call.requestId}`;
         const title = call.title || toolTitle(call.name, t);
         const input = hostedToolInput(call);
+        const requireOriginCanvas = () => {
+            const canvas = canvasContextRef.current;
+            if (!canvas || !isHostedAgentRunScopeActive(scope, activeRunRef.current, canvas.snapshot.projectId)) {
+                throw new Error(t("agent.runtime.canvasToolCanceled"));
+            }
+            return canvas;
+        };
         const upsertToolMessage = (patch: Partial<AgentChatItem>) => {
+            requireOriginCanvas();
             const current = useAgentStore.getState();
             const index = current.messages.findIndex((item) => item.id === messageId);
             const base: AgentChatItem = { id: messageId, role: "tool", title, text: "" };
@@ -509,34 +597,42 @@ export function HostedAgentPanel() {
                     : [...current.messages, { ...base, ...patch }],
             });
         };
-        upsertToolMessage({ text: hostedToolRunningText(call.name, title, t), detail: toolCallDetail(call.name, input, "running") });
         try {
+            upsertToolMessage({ text: hostedToolRunningText(call.name, title, t), detail: toolCallDetail(call.name, input, "running") });
             if (isCanvasWriteTool(call.name) || call.name === "canvas_run_generation") await waitForCanvasAgentToolPaint();
+            requireOriginCanvas();
             if (verifyBeforeExecution && !(await verifyBeforeExecution())) throw new Error(t("agent.runtime.canvasToolExpired"));
-            const canvas = canvasContextRef.current;
-            if (!canvas) throw new Error(t("agent.hosted.failed"));
+            const canvas = requireOriginCanvas();
             const observation = await runCanvasAgentTool(call, {
                 ...canvas,
-                readSnapshot: () => canvasContextRef.current?.snapshot || canvas.snapshot,
-                attachments: turnAttachmentsRef.current,
+                readSnapshot: () => requireOriginCanvas().snapshot,
+                attachments: scope.attachments,
                 navigate,
             });
+            requireOriginCanvas();
             upsertToolMessage({ text: describeToolObservation(call.name, observation, t), detail: toolCallDetail(call.name, input, "completed") });
             return observation;
         } catch (error) {
             const detail = error instanceof Error ? error.message : t("agent.runtime.toolExecutionFailed");
-            upsertToolMessage({ text: detail, detail: toolCallDetail(call.name, input, "failed", detail) });
+            if (isHostedAgentRunScopeActive(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "")) {
+                upsertToolMessage({ text: detail, detail: toolCallDetail(call.name, input, "failed", detail) });
+            }
             throw error;
         }
     }, [navigate, setAgentState, t]);
 
-    const handleHostedStage = useCallback((stage: string) => {
-        if (stage === "tool") setAgentState({ activity: t("agent.hosted.applying") });
+    const handleHostedStage = useCallback((stage: string, scope: HostedAgentRunScope) => {
+        if (stage === "tool" && isHostedAgentRunScopeActive(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "")) {
+            setAgentState({ activity: t("agent.hosted.applying") });
+        }
     }, [setAgentState, t]);
 
-    const handleHostedToolCall = useCallback((call: CanvasAgentToolCall) => {
-        const runId = runIdRef.current;
-        const verifyBeforeExecution = () => canExecuteApprovedCanvasAgentTool(call, runId, claimCanvasAgentTool);
+    const handleHostedToolCall = useCallback((call: CanvasAgentToolCall, scope: HostedAgentRunBinding) => {
+        const verifyBeforeExecution = async () => {
+            if (!isHostedAgentRunScopeActive(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "")) return false;
+            const allowed = await canExecuteApprovedCanvasAgentTool(call, scope.runId, claimCanvasAgentTool);
+            return allowed && isHostedAgentRunScopeActive(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "");
+        };
         if (confirmToolsRef.current && isCanvasWriteTool(call.name)) {
             if (hostedToolWaiterRef.current) return Promise.reject(new Error(t("agent.runtime.pendingCanvasTool")));
             return new Promise<void>((resolve, reject) => {
@@ -544,20 +640,22 @@ export function HostedAgentPanel() {
                 setAgentState({
                     pendingTool: { requestId: call.requestId, name: call.name, input: hostedToolInput(call) },
                 });
-            }).then(() => runHostedTool(call, verifyBeforeExecution));
+            }).then(() => runHostedTool(call, scope, verifyBeforeExecution));
         }
-        return runHostedTool(call, verifyBeforeExecution);
+        return runHostedTool(call, scope, verifyBeforeExecution);
     }, [runHostedTool, setAgentState, t]);
 
-    const applyCompletionOps = useCallback(async (ops: CanvasAgentOp[], summary?: string) => {
+    const applyCompletionOps = useCallback(async (ops: CanvasAgentOp[], scope: HostedAgentRunBinding, summary?: string) => {
         if (!ops.length) return;
+        const currentProjectId = canvasContextRef.current?.snapshot.projectId || "";
+        if (!isHostedAgentRunScopeActive(scope, activeRunRef.current, currentProjectId)) return;
         if (confirmToolsRef.current) {
             try {
                 await handleHostedToolCall({
                     requestId: `completion:${randomId()}`,
                     name: "canvas_apply_ops",
                     arguments: JSON.stringify({ ops }),
-                });
+                }, scope);
             } catch (error) {
                 if (error instanceof Error && error.message === t("agent.runtime.canvasToolCanceled")) return;
                 throw error;
@@ -565,7 +663,7 @@ export function HostedAgentPanel() {
             return;
         }
         const liveContext = canvasContextRef.current;
-        if (!liveContext) return;
+        if (!liveContext || !isHostedAgentRunScopeActive(scope, activeRunRef.current, liveContext.snapshot.projectId)) return;
         const before = liveContext.snapshot.connections.length;
         const next = liveContext.applyOps(ops);
         const linked = Math.max(0, next.connections.length - before);
@@ -590,25 +688,21 @@ export function HostedAgentPanel() {
     }, [rejectHostedPendingTool, t]);
 
     const stopTurn = useCallback(() => {
-        abortRef.current?.abort();
-        abortRef.current = null;
-        const runId = runIdRef.current;
-        runIdRef.current = "";
-        rejectHostedPendingTool(new Error(t("agent.runtime.canvasToolCanceled")));
-        if (runId) void cancelCanvasAssistantRun(runId).catch(() => undefined);
-        setAgentState({ sending: false, waiting: false, activity: "" });
-        const current = useAgentStore.getState();
-        setAgentState({
-            messages: current.messages.map((item) => (item.streamId ? { ...item, streamId: undefined, text: item.text || t("agent.message.stopped") } : item)),
-        });
-    }, [rejectHostedPendingTool, setAgentState, t]);
+        cancelHostedRun(true);
+    }, [cancelHostedRun]);
 
-    const followHostedRun = useCallback(async (runId: string) => {
-        if (!runId || runIdRef.current === runId) return;
-        abortRef.current?.abort();
+    const followHostedRun = useCallback(async (runId: string, originProjectId: string) => {
+        if (!runId || !originProjectId || isHostedAgentRunIdRetired(runId)) return;
+        const currentContext = canvasContextRef.current;
+        if (!currentContext || currentContext.snapshot.projectId !== originProjectId) return;
+        if (activeRunRef.current?.runId === runId && activeRunRef.current.projectId === originProjectId) return;
+        cancelHostedRun();
         const controller = new AbortController();
-        abortRef.current = controller;
-        runIdRef.current = runId;
+        const scope = createHostedAgentRunBinding(originProjectId, [], controller);
+        scope.runId = runId;
+        scope.resolveRunId(runId);
+        activeRunRef.current = scope;
+        const scopeIsActive = () => isHostedAgentRunScopeActive(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "");
         setAgentState({ sending: true, waiting: true });
         const currentMessages = useAgentStore.getState().messages;
         let assistantId = [...currentMessages].reverse().find((item) => item.role === "assistant")?.id;
@@ -622,11 +716,13 @@ export function HostedAgentPanel() {
         }
         const reasoningId = `${assistantId}:reasoning`;
         const patchAssistant = (patch: Partial<AgentChatItem>) => {
+            if (!scopeIsActive()) return;
             setAgentState({
                 messages: useAgentStore.getState().messages.map((item) => (item.id === assistantId ? { ...item, ...patch } : item)),
             });
         };
         const patchReasoning = (reasoning: string, status: "inProgress" | "completed", tokens = 0) => {
+            if (!scopeIsActive()) return;
             const text = reasoning.trim();
             if (!text) return;
             const detail = { kind: "reasoning", status, ...(activeReasoningEffort ? { effort: activeReasoningEffort } : {}), ...(tokens > 0 ? { tokens } : {}) };
@@ -652,11 +748,11 @@ export function HostedAgentPanel() {
                 runId,
                 (next) => patchAssistant({ text: next }),
                 controller.signal,
-                handleHostedToolCall,
+                (call) => handleHostedToolCall(call, scope),
                 (next) => patchReasoning(next, "inProgress"),
-                handleHostedStage,
+                (stage) => handleHostedStage(stage, scope),
             );
-            if (controller.signal.aborted) return;
+            if (!scopeIsActive()) return;
             const ops = (result.ops || []).filter((op): op is CanvasAgentOp => Boolean(op?.type));
             const summary = result.summary;
             if (result.reasoning) {
@@ -668,18 +764,20 @@ export function HostedAgentPanel() {
             // A timed-out server tool can still own the manual confirmation slot.
             // Retire it before offering the local completion fallback for approval.
             rejectHostedPendingTool(new Error(t("agent.runtime.canvasToolExpired")), true);
-            await applyCompletionOps(ops, summary);
+            await applyCompletionOps(ops, scope, summary);
         } catch (error) {
-            if (controller.signal.aborted) return;
-            const detail = hostedAgentErrorText(error, t("agent.hosted.failed"), t("agent.hosted.authFailed"));
+            if (!scopeIsActive()) return;
+            const detail = hostedAgentErrorText(error, t("agent.hosted.failed"), t("agent.hosted.authFailed"), t("agent.hosted.interrupted"));
+            setAgentState({ messages: settleHostedAgentMessagesOnStop(useAgentStore.getState().messages, detail) });
             patchAssistant({ role: "error", text: detail, streamId: undefined });
             message.error(detail);
         } finally {
-            if (abortRef.current === controller) abortRef.current = null;
-            if (runIdRef.current === runId) runIdRef.current = "";
-            setAgentState({ sending: false, waiting: false, activity: "" });
+            if (activeRunRef.current === scope) {
+                activeRunRef.current = null;
+                setAgentState({ sending: false, waiting: false, activity: "" });
+            }
         }
-    }, [activeReasoningEffort, addMessage, applyCompletionOps, handleHostedStage, handleHostedToolCall, message, rejectHostedPendingTool, setAgentState, t]);
+    }, [activeReasoningEffort, addMessage, applyCompletionOps, cancelHostedRun, handleHostedStage, handleHostedToolCall, message, rejectHostedPendingTool, setAgentState, t]);
     followHostedRunRef.current = followHostedRun;
 
     const addAttachments = useCallback(async (files: FileList | File[] | null) => {
@@ -712,24 +810,27 @@ export function HostedAgentPanel() {
         const files = state.attachments;
         const canvasReferences = state.canvasReferences;
         if ((!text && !files.length && !canvasReferences.length) || !context || state.sending || state.waiting) return;
-        abortRef.current?.abort();
         const controller = new AbortController();
-        abortRef.current = controller;
+        const scope = createHostedAgentRunBinding(context.snapshot.projectId, [...files], controller);
+        activeRunRef.current = scope;
+        const scopeIsActive = () => isHostedAgentRunScopeActive(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "");
         const userId = randomId();
         const assistantId = randomId();
         const reasoningId = randomId();
         const userText = text || t(files.length ? "agent.runtime.imagesSent" : "agent.runtime.canvasReferencesSent", { count: files.length || canvasReferences.length });
+        setAgentState({ hostedProjectId: context.snapshot.projectId });
         addMessage({ id: userId, role: "user", text: userText, attachments: files });
         addMessage({ id: assistantId, role: "assistant", title: t("agent.hosted.subtitle"), text: "", streamId: assistantId });
-        turnAttachmentsRef.current = files;
         setAgentState({ prompt: "", attachments: [], canvasReferences: [], sending: true, waiting: true });
         const patchAssistant = (patch: Partial<AgentChatItem>) => {
+            if (!scopeIsActive()) return;
             const current = useAgentStore.getState();
             setAgentState({
                 messages: current.messages.map((item) => (item.id === assistantId ? { ...item, ...patch } : item)),
             });
         };
         const patchReasoning = (reasoning: string, status: "inProgress" | "completed", tokens = 0) => {
+            if (!scopeIsActive()) return;
             const text = reasoning.trim();
             if (!text) return;
             const current = useAgentStore.getState();
@@ -764,15 +865,17 @@ export function HostedAgentPanel() {
                 signal: controller.signal,
                 referenceImages,
                 onCreated: (runId) => {
-                    runIdRef.current = runId;
+                    scope.resolveRunId(runId);
+                    const stillActive = bindHostedAgentRunId(scope, runId, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "");
+                    if (!stillActive) void cancelHostedAgentRun(runId).catch(() => undefined);
                 },
                 onDelta: (next) => patchAssistant({ text: next }),
                 onReasoning: (next) => patchReasoning(next, "inProgress"),
-                onToolCall: handleHostedToolCall,
-                onStage: handleHostedStage,
+                onToolCall: (call) => handleHostedToolCall(call, scope),
+                onStage: (stage) => handleHostedStage(stage, scope),
                 ...(activeReasoningEffort ? { reasoningEffort: activeReasoningEffort } : {}),
             });
-            if (controller.signal.aborted) return;
+            if (!scopeIsActive()) return;
             const ops = (result.ops || []).filter((op): op is CanvasAgentOp => Boolean(op?.type));
             const summary = result.summary;
             if (result.reasoning) {
@@ -782,17 +885,20 @@ export function HostedAgentPanel() {
             }
             patchAssistant({ text: ops.length ? summary || t("agent.hosted.applied") : result.text, streamId: undefined });
             rejectHostedPendingTool(new Error(t("agent.runtime.canvasToolExpired")), true);
-            await applyCompletionOps(ops, summary);
+            await applyCompletionOps(ops, scope, summary);
         } catch (error) {
-            if (controller.signal.aborted) return;
-            const detail = hostedAgentErrorText(error, t("agent.hosted.failed"), t("agent.hosted.authFailed"));
+            if (!scopeIsActive()) return;
+            const detail = hostedAgentErrorText(error, t("agent.hosted.failed"), t("agent.hosted.authFailed"), t("agent.hosted.interrupted"));
+            setAgentState({ messages: settleHostedAgentMessagesOnStop(useAgentStore.getState().messages, detail) });
             patchAssistant({ role: "error", text: detail, streamId: undefined });
             message.error(detail);
         } finally {
-            if (abortRef.current === controller) abortRef.current = null;
-            runIdRef.current = "";
-            setAgentState({ sending: false, waiting: false, activity: "" });
-            void refreshConversations().catch(() => undefined);
+            scope.resolveRunId(scope.runId);
+            if (activeRunRef.current === scope) {
+                activeRunRef.current = null;
+                setAgentState({ sending: false, waiting: false, activity: "" });
+                void refreshConversations().catch(() => undefined);
+            }
         }
     }, [activeReasoningEffort, addMessage, applyCompletionOps, canvasConfig.textModel, handleHostedStage, handleHostedToolCall, hostedModel, message, refreshConversations, rejectHostedPendingTool, setAgentState, t]);
 

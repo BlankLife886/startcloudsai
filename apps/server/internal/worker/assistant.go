@@ -9,11 +9,11 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
 	"unicode"
-
 
 	"github.com/google/uuid"
 	"github.com/hibiken/asynq"
@@ -36,10 +36,12 @@ import (
 )
 
 const (
-	assistantOutputLimit           = 32 << 20
-	assistantC2AItemAttempts       = 2
-	assistantChatAttempts          = 2
-	assistantSynchronousImageLimit = 5 * time.Minute
+	assistantOutputLimit             = 32 << 20
+	assistantC2AItemAttempts         = 2
+	assistantChatAttempts            = 2
+	assistantSynchronousImageLimit   = 5 * time.Minute
+	assistantReferenceModeShared     = "shared"
+	assistantReferenceModeIndividual = "individual"
 )
 
 const assistantChatRetryInstruction = `直接回答用户的问题。不要调用、模拟或输出 search 等内部工具调用语法，也不要复述用户提示词。`
@@ -50,6 +52,52 @@ type assistantC2AImageResult struct {
 	index   int
 	encoded string
 	err     error
+}
+
+type assistantStorageError struct{ err error }
+
+func (e *assistantStorageError) Error() string { return e.err.Error() }
+func (e *assistantStorageError) Unwrap() error { return e.err }
+
+func assistantFailureCode(err error) string {
+	var storageErr *assistantStorageError
+	if errors.As(err, &storageErr) {
+		return "storage_unavailable"
+	}
+	var networkErr *c2a.NetworkError
+	if errors.As(err, &networkErr) {
+		if networkErr.Timeout() {
+			return "upstream_timeout"
+		}
+		return "upstream_unavailable"
+	}
+	var c2aErr *c2a.UpstreamError
+	if errors.As(err, &c2aErr) {
+		switch {
+		case c2aErr.StatusCode == http.StatusTooManyRequests:
+			return "upstream_rate_limited"
+		case c2aErr.StatusCode == http.StatusUnauthorized || c2aErr.StatusCode == http.StatusForbidden:
+			return "upstream_auth_failed"
+		case c2aErr.StatusCode >= http.StatusInternalServerError:
+			return "upstream_unavailable"
+		default:
+			return "upstream_rejected"
+		}
+	}
+	var crunErr *crun.UpstreamError
+	if errors.As(err, &crunErr) {
+		switch {
+		case crunErr.Status == http.StatusTooManyRequests:
+			return "upstream_rate_limited"
+		case crunErr.Status == http.StatusUnauthorized || crunErr.Status == http.StatusForbidden:
+			return "upstream_auth_failed"
+		case crunErr.Status >= http.StatusInternalServerError || crunErr.Code == 455:
+			return "upstream_unavailable"
+		default:
+			return "upstream_rejected"
+		}
+	}
+	return sub2api.FailureCode(err)
 }
 
 func (w *Worker) recoverAssistantRuns(ctx context.Context) error {
@@ -135,7 +183,7 @@ func (w *Worker) handleRunAssistant(ctx context.Context, task *asynq.Task) error
 	leaseOwner := w.workerID + ":assistant:" + uuid.NewString()
 	run, err := w.claimAssistantRun(ctx, runID, leaseOwner)
 	if errors.Is(err, errAssistantRoutesExhausted) {
-		return w.failQueuedAssistantRun(ctx, runID, "对话模型的可用线路均已失败，请稍后重试或切换模型")
+		return w.failQueuedAssistantRun(ctx, runID, "所选模型的可用线路均已失败，请稍后重试或切换模型")
 	}
 	if err != nil || run == nil {
 		return err
@@ -194,8 +242,9 @@ func (w *Worker) handleRunAssistant(ctx context.Context, task *asynq.Task) error
 			return nil
 		}
 	}
+	failureCode := assistantFailureCode(err)
+	log.Printf("assistant run %s attempt %d failed (%s): %v", run.ID, run.Attempt, failureCode, err)
 	message := sanitizeUpstreamMessage(err.Error())
-	failureCode := sub2api.FailureCode(err)
 	failureCtx, cancelFailure := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancelFailure()
 	var failed bool
@@ -400,6 +449,9 @@ func (w *Worker) executeAssistantRun(ctx context.Context, run *store.AssistantRu
 			return configuredErr
 		}
 		if configured {
+			if err := w.recordConfiguredAssistantImageRoute(ctx, run, selection); err != nil {
+				return err
+			}
 			return w.executeConfiguredAssistantImage(ctx, run, references, selection)
 		}
 		provider, providerErr := settings.ImageServiceProvider(ctx, w.St.Pool, serviceKey)
@@ -443,6 +495,64 @@ func (w *Worker) executeAssistantRun(ctx context.Context, run *store.AssistantRu
 	return w.executeAssistantChat(ctx, client, run, references)
 }
 
+func (w *Worker) recordConfiguredAssistantImageRoute(ctx context.Context, run *store.AssistantRun, selection *modelconfig.Selection) error {
+	provider := selection.Provider
+	serviceProvider := "c2a"
+	if provider.Adapter == modelconfig.AdapterCRUN {
+		serviceProvider = "crun"
+	}
+	metadata := map[string]any{
+		"_serviceProvider":          serviceProvider,
+		"_imageProviderRouteId":     provider.RouteID,
+		"_imageProviderRouteKey":    modelconfig.ExecutionRouteKey(provider),
+		"_imageProviderRouteName":   provider.RouteName,
+		"_imageProviderEndpoint":    assistantProviderEndpoint(provider.BaseURL),
+		"_imageProviderDisplayName": provider.Name,
+		"_imageModel":               selection.Model.UpstreamModel,
+		"_imageModelDisplayName":    selection.Model.Name,
+	}
+	if err := store.RecordAssistantRunExecutionRoute(
+		ctx, w.St.Pool, run.ID, run.Attempt, metadata,
+		modelconfig.ExecutionRouteKey(provider), provider.Name, selection.Model.UpstreamModel,
+	); err != nil {
+		return err
+	}
+	if run.Params == nil {
+		run.Params = map[string]any{}
+	}
+	for key, value := range metadata {
+		run.Params[key] = value
+	}
+	_, _, err := store.SyncUIDesignAssetHistoryFromRun(ctx, w.St.Pool, run, nil)
+	return err
+}
+
+func assistantProviderEndpoint(raw string) string {
+	raw = strings.TrimSpace(raw)
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return strings.TrimRight(raw, "/")
+	}
+	parsed.User = nil
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return strings.TrimRight(parsed.String(), "/")
+}
+
+func crunOpenAICompatibleBaseURL(raw string) string {
+	raw = strings.TrimRight(strings.TrimSpace(raw), "/")
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return strings.TrimSuffix(raw, "/api/v1") + "/api/v1"
+	}
+	path := strings.TrimRight(parsed.Path, "/")
+	path = strings.TrimSuffix(path, "/api/v1")
+	parsed.Path = strings.TrimRight(path, "/") + "/api/v1"
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return strings.TrimRight(parsed.String(), "/")
+}
+
 func (w *Worker) configuredAssistantModelSelection(ctx context.Context, run *store.AssistantRun, kind string) (*modelconfig.Selection, bool, error) {
 	prefix := "_chat"
 	if kind == modelconfig.ModelKindImage {
@@ -477,8 +587,12 @@ func (w *Worker) configuredAssistantChatClient(selection *modelconfig.Selection)
 	if strings.TrimSpace(provider.APIKey) == "" {
 		return nil, errors.New("对话模型服务商没有可用的 API Key")
 	}
+	baseURL := provider.BaseURL
+	if provider.Adapter == modelconfig.AdapterCRUN {
+		baseURL = crunOpenAICompatibleBaseURL(baseURL)
+	}
 	client, err := sub2api.New(
-		provider.BaseURL, provider.APIKey, selection.Model.UpstreamModel,
+		baseURL, provider.APIKey, selection.Model.UpstreamModel,
 		w.Cfg.Sub2APIImageModel, provider.TimeoutSecs,
 	)
 	if err != nil {
@@ -505,7 +619,7 @@ func (w *Worker) executeConfiguredAssistantImage(ctx context.Context, run *store
 		if err != nil {
 			return err
 		}
-		return w.executeAssistantImageCRUNClient(ctx, run, client)
+		return w.executeAssistantImageCRUNClient(ctx, run, client, selection.Model.UpstreamInputFields)
 	default:
 		return errors.New("不支持的模型服务商类型")
 	}
@@ -773,6 +887,7 @@ type assistantImageProposal struct {
 	Height             int              `json:"height"`
 	ReferenceImages    []map[string]any `json:"referenceImages"`
 	ReferencedImageIDs []string         `json:"referencedImageIds"`
+	ReferenceMode      string           `json:"referenceMode"`
 }
 
 type assistantCatalogImage struct {
@@ -782,28 +897,83 @@ type assistantCatalogImage struct {
 	Image       map[string]any
 }
 
-func assistantProposalFunctionTool() sub2api.FunctionTool {
+func assistantProposalFunctionTool(models []map[string]any) sub2api.FunctionTool {
+	properties := map[string]any{
+		"action":             map[string]any{"type": "string", "enum": []string{"generate", "edit"}},
+		"prompt":             map[string]any{"type": "string", "description": "可直接交给图片模型的完整中文提示词；参考图使用图1、图2指代"},
+		"reason":             map[string]any{"type": "string", "description": "一句话说明方案依据"},
+		"planningSummary":    map[string]any{"type": "string", "description": "面向用户的一句简短方案摘要"},
+		"count":              map[string]any{"type": "integer", "minimum": 1, "maximum": assistantProposalCatalogMaxImages(models)},
+		"model":              map[string]any{"type": "string", "description": "当前可用图片模型目录中的 id"},
+		"referencedImageIds": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+		"referenceMode": map[string]any{
+			"type": "string", "enum": []string{assistantReferenceModeShared, assistantReferenceModeIndividual},
+			"description": "shared=多张参考图共同参与每张输出；individual=图1只生成结果1、图2只生成结果2，逐张一一对应",
+		},
+	}
+	required := []string{"action", "prompt", "reason", "planningSummary", "count", "model", "referencedImageIds", "referenceMode"}
+	capabilities := map[string][]string{
+		"ratio":      assistantProposalCapabilityUnion(models, "aspectRatios"),
+		"resolution": assistantProposalCapabilityUnion(models, "resolutions"),
+		"quality":    assistantProposalCapabilityUnion(models, "qualities"),
+	}
+	if len(models) == 0 {
+		capabilities["ratio"] = []string{"auto", "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "9:21", "21:9"}
+		capabilities["resolution"] = []string{"1K", "2K", "4K"}
+		capabilities["quality"] = []string{"low", "medium", "high"}
+	} else {
+		modelIDs := make([]string, 0, len(models))
+		for _, model := range models {
+			if id := assistantMapString(model, "id"); id != "" {
+				modelIDs = append(modelIDs, id)
+			}
+		}
+		properties["model"] = map[string]any{"type": "string", "enum": modelIDs, "description": "当前可用图片模型目录中的 id"}
+	}
+	for _, key := range []string{"ratio", "resolution", "quality"} {
+		if values := capabilities[key]; len(values) > 0 {
+			properties[key] = map[string]any{"type": "string", "enum": values}
+		}
+	}
 	return sub2api.FunctionTool{
 		Name:        "propose_image_action",
 		Description: "用户明确希望生成或编辑图片时，提交一份可确认、可修改的图片方案。纯对话不要调用。",
 		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"action":             map[string]any{"type": "string", "enum": []string{"generate", "edit"}},
-				"prompt":             map[string]any{"type": "string", "description": "可直接交给图片模型的完整中文提示词；参考图使用图1、图2指代"},
-				"reason":             map[string]any{"type": "string", "description": "一句话说明方案依据"},
-				"planningSummary":    map[string]any{"type": "string", "description": "面向用户的一句简短方案摘要"},
-				"ratio":              map[string]any{"type": "string", "enum": []string{"auto", "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "9:21", "21:9"}},
-				"resolution":         map[string]any{"type": "string", "enum": []string{"1K", "2K", "4K"}},
-				"count":              map[string]any{"type": "integer", "minimum": 1, "maximum": 4},
-				"quality":            map[string]any{"type": "string", "enum": []string{"low", "medium", "high"}},
-				"model":              map[string]any{"type": "string", "description": "当前可用图片模型目录中的 id"},
-				"referencedImageIds": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			},
-			"required":             []string{"action", "prompt", "reason", "planningSummary", "ratio", "resolution", "count", "quality", "model", "referencedImageIds"},
+			"type":                 "object",
+			"properties":           properties,
+			"required":             required,
 			"additionalProperties": false,
 		},
 	}
+}
+
+func assistantProposalCapabilityUnion(models []map[string]any, key string) []string {
+	seen := map[string]bool{}
+	values := make([]string, 0)
+	for _, model := range models {
+		for _, value := range assistantMapStrings(model, key) {
+			normalized := strings.ToLower(strings.TrimSpace(value))
+			if normalized == "" || seen[normalized] {
+				continue
+			}
+			seen[normalized] = true
+			values = append(values, value)
+		}
+	}
+	return values
+}
+
+func assistantProposalCatalogMaxImages(models []map[string]any) int {
+	maximum := 4
+	if len(models) > 0 {
+		maximum = 1
+	}
+	for _, model := range models {
+		if value := assistantMapInt(model, "maxImages"); value > maximum {
+			maximum = value
+		}
+	}
+	return maximum
 }
 
 func assistantAgentInstructions(run *store.AssistantRun, catalog []assistantCatalogImage, models []map[string]any) string {
@@ -812,16 +982,19 @@ func assistantAgentInstructions(run *store.AssistantRun, catalog []assistantCata
 - 纯聊天、分析、解释或需求不明确时，立即自然回答；需要澄清时直接提问，不调用工具。
 - 用户明确要生成新图或编辑已有图片时，可以先给一句简短说明，然后调用 propose_image_action；工具调用成功后不要再输出 JSON 或重复提示词。
 - 如果当前上游不支持工具调用，无法调用 propose_image_action，则只输出一个与该工具参数完全同结构的 JSON 对象，不要 Markdown、代码块或额外文字。
-- 编辑图片时 referencedImageIds 必须来自图片目录；提示词用“图1、图2”指代参考图，不臆造参考图内容。
+	- 编辑图片时 referencedImageIds 必须来自图片目录；提示词用“图1、图2”指代参考图，不臆造参考图内容。
+	- 编辑图片时必须判断参考图映射：用户要求分别、逐张、各自或一一对应处理时 referenceMode=individual，且 count 等于参考图数量；多张参考图需要共同融合、共同指导每张输出时 referenceMode=shared。
+	- 生成全新图片或没有参考图时 referenceMode=shared。
+	- 生成全新图片时 referencedImageIds 默认必须为空；只有用户明确提到上一张、图1/图2、之前图片的主体/风格，或明确要求修改历史图片时才可引用图片目录。
 - 用户明确要求几张图时必须原样写入 count；未指定时使用当前默认数量。
 - 参数只从工具允许值和模型目录选择，系统还会按模型能力做最终校验。`
-	instructions += fmt.Sprintf("\n\n当前默认参数：比例=%s，分辨率=%s，数量=%d，质量=%s，图片模型=%s。",
-		assistantParamString(run.Params, "ratio", "auto"),
-		assistantParamString(run.Params, "resolution", "1K"),
-		assistantParamInt(run.Params, "count", 1),
-		assistantParamString(run.Params, "quality", "high"),
-		assistantParamString(run.Params, "_imageModelConfigId", ""),
-	)
+	defaults := []string{fmt.Sprintf("数量=%d", assistantParamInt(run.Params, "count", 1))}
+	for _, item := range []struct{ label, key string }{{"比例", "ratio"}, {"分辨率", "resolution"}, {"质量", "quality"}, {"图片模型", "_imageModelConfigId"}} {
+		if value := assistantParamString(run.Params, item.key, ""); value != "" {
+			defaults = append(defaults, item.label+"="+value)
+		}
+	}
+	instructions += "\n\n当前默认参数：" + strings.Join(defaults, "，") + "。"
 	if catalogText := renderAssistantImageCatalog(catalog); catalogText != "" {
 		instructions += "\n\n当前可用图片目录：\n" + catalogText
 	} else {
@@ -863,7 +1036,7 @@ func (w *Worker) executeAssistantAgent(
 	fastIntent, fastIntentCertain := fastAssistantIntent(run.Prompt, len(references) > 0, lastWasImage)
 	forceProposalTool := fastIntentCertain && fastIntent == "image"
 	suppressProposalTool := fastIntentCertain && fastIntent == "chat"
-	result, err := client.ChatAgentWithImages(ctx, payload, nil, assistantProposalFunctionTool(), forceProposalTool, func(fullText, reasoning string) error {
+	result, err := client.ChatAgentWithImages(ctx, payload, nil, assistantProposalFunctionTool(modelCatalog), forceProposalTool, func(fullText, reasoning string) error {
 		markAssistantFirstToken(&firstVisible, fullText)
 		markAssistantFirstToken(&firstVisible, reasoning)
 		if time.Since(lastTerminationCheck) >= 400*time.Millisecond {
@@ -908,7 +1081,7 @@ func (w *Worker) executeAssistantAgent(
 		return context.Canceled
 	}
 
-	tool := assistantProposalFunctionTool()
+	tool := assistantProposalFunctionTool(modelCatalog)
 	if forceProposalTool || (!suppressProposalTool && result.ToolCall != nil && result.ToolCall.Name == tool.Name) {
 		proposal := defaultAssistantProposal(run)
 		parsedTextFallback := false
@@ -994,13 +1167,15 @@ func (w *Worker) executeAssistantProposal(ctx context.Context, client *sub2api.C
 	imageCatalog := buildAssistantImageCatalog(history, run.UserMessageID, run.AssistantMessageID)
 	modelCatalog := assistantProposalModelCatalog(run.Params)
 	system := `你是图像创作 Agent 的方案规划器。根据对话整理一份可直接执行的图片生成或编辑方案。
-只输出一个 JSON 对象，不要 Markdown、代码块或解释。字段必须包含：
-action（generate 或 edit）、prompt、reason、planningSummary、ratio、resolution、count、quality、model、referencedImageIds。
-prompt 使用简体中文，完整描述目标画面和修改要求；有参考图时用“图1、图2”指代，不要臆造参考图内容。
-ratio 使用 auto、1:1、2:3、3:2、3:4、4:3、4:5、5:4、9:16、16:9、9:21、21:9 之一。
-resolution 使用 1K、2K、4K 之一；count 为 1 到 4；quality 使用 low、medium、high 之一。
+		只输出一个 JSON 对象，不要 Markdown、代码块或解释。字段必须包含：
+		action（generate 或 edit）、prompt、reason、planningSummary、count、model、referencedImageIds、referenceMode。
+		prompt 使用简体中文，完整描述目标画面和修改要求；有参考图时用“图1、图2”指代，不要臆造参考图内容。
+		referenceMode 只能是 shared 或 individual：要求逐张、一一对应分别编辑时用 individual 且 count 等于参考图数量；多图需要共同融合或共同指导每张输出时用 shared；无参考图时用 shared。
+	ratio、resolution、quality 仅在所选模型目录明确提供对应可选值时填写，且只能使用目录列出的值；模型未提供的参数不要输出。
+	count 不得超过所选模型目录中的最大生成数量。
 reason 用一句话说明方案如何响应用户需求；planningSummary 用一句面向用户的简短规划摘要，不要输出思维过程。
 model 必须从模型目录选择；referencedImageIds 只填写图片目录中的 id，没有历史引用时返回空数组。`
+	system += `生成全新图片时 referencedImageIds 默认返回空数组；只有用户明确提到上一张、图1/图2、之前图片的主体/风格，或明确要求修改历史图片时才可引用图片目录。`
 	if catalogText := renderAssistantImageCatalog(imageCatalog); catalogText != "" {
 		system += "\n\n当前对话图片目录（序号从旧到新，可用于理解‘上一张/第二张/图1’）：\n" + catalogText
 	}
@@ -1052,13 +1227,13 @@ func defaultAssistantProposal(run *store.AssistantRun) assistantImageProposal {
 		Action: action, Prompt: strings.TrimSpace(run.Prompt),
 		Reason:          "已根据当前对话整理生成目标和可调整参数。",
 		PlanningSummary: "已结合当前对话、历史图片和可用模型整理执行方案。",
-		Ratio:           assistantParamString(run.Params, "ratio", "auto"),
-		Resolution:      assistantParamString(run.Params, "resolution", "1K"),
+		Ratio:           assistantParamString(run.Params, "ratio", ""),
+		Resolution:      assistantParamString(run.Params, "resolution", ""),
 		Count:           assistantParamInt(run.Params, "count", 1),
-		Quality:         assistantParamString(run.Params, "quality", "high"),
+		Quality:         assistantParamString(run.Params, "quality", ""),
 		Model:           assistantParamString(run.Params, "_imageModelConfigId", ""),
 		ModelName:       assistantParamString(run.Params, "_imageModelDisplayName", "默认图片模型"),
-		RequestSize:     assistantParamString(run.Params, "requestSize", "auto"),
+		RequestSize:     assistantParamString(run.Params, "requestSize", ""),
 		Width:           assistantParamInt(run.Params, "width", 0), Height: assistantParamInt(run.Params, "height", 0),
 	}
 }
@@ -1132,54 +1307,52 @@ func normalizeAssistantProposalWithModels(proposal assistantImageProposal, run *
 	if proposal.Action != "edit" && proposal.Action != "generate" {
 		proposal.Action = fallback.Action
 	}
+	if proposal.ReferenceMode != assistantReferenceModeIndividual && proposal.ReferenceMode != assistantReferenceModeShared {
+		proposal.ReferenceMode = assistantReferenceModeShared
+	}
+	if proposal.Action != "edit" {
+		proposal.ReferenceMode = assistantReferenceModeShared
+	}
 	selectedModel := assistantProposalModel(proposal.Model, models)
-	allowedRatios := assistantMapStrings(selectedModel, "aspectRatios")
-	if len(allowedRatios) == 0 {
-		allowedRatios = assistantParamStrings(run.Params, "_modelAspectRatios")
-	}
-	if len(allowedRatios) == 0 {
-		allowedRatios = []string{"auto", "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "9:21", "21:9"}
-	}
-	if value, ok := assistantAllowedValue(allowedRatios, proposal.Ratio); ok {
-		proposal.Ratio = value
-	} else if value, ok := assistantAllowedValue(allowedRatios, fallback.Ratio); ok {
-		proposal.Ratio = value
-	} else {
-		proposal.Ratio = allowedRatios[0]
-	}
-	allowedResolutions := assistantMapStrings(selectedModel, "resolutions")
-	if len(allowedResolutions) == 0 {
-		allowedResolutions = assistantParamStrings(run.Params, "_modelResolutions")
-	}
-	if len(allowedResolutions) > 0 {
-		if value, ok := assistantAllowedValue(allowedResolutions, proposal.Resolution); ok {
-			proposal.Resolution = value
-		} else if value, ok := assistantAllowedValue(allowedResolutions, fallback.Resolution); ok {
-			proposal.Resolution = value
-		} else {
-			proposal.Resolution = allowedResolutions[0]
+	if len(models) > 0 && selectedModel == nil {
+		selectedModel = assistantProposalModel(fallback.Model, models)
+		if selectedModel == nil {
+			selectedModel = models[0]
 		}
 	}
-	if proposal.Resolution == "" {
-		proposal.Resolution = fallback.Resolution
+	configuredCatalog := len(models) > 0
+	allowedRatios := assistantMapStrings(selectedModel, "aspectRatios")
+	if !configuredCatalog && len(allowedRatios) == 0 {
+		allowedRatios = assistantParamStrings(run.Params, "_modelAspectRatios")
 	}
-	if proposal.Count < 1 || proposal.Count > assistantProposalMaxImages(proposal.Model, models) {
+	if !configuredCatalog && len(allowedRatios) == 0 {
+		allowedRatios = []string{"auto", "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "9:21", "21:9"}
+	}
+	proposal.Ratio = assistantNormalizedProposalValue(allowedRatios, proposal.Ratio, fallback.Ratio)
+	allowedResolutions := assistantMapStrings(selectedModel, "resolutions")
+	if !configuredCatalog && len(allowedResolutions) == 0 {
+		allowedResolutions = assistantParamStrings(run.Params, "_modelResolutions")
+	}
+	proposal.Resolution = assistantNormalizedProposalValue(allowedResolutions, proposal.Resolution, fallback.Resolution)
+	countModelID := proposal.Model
+	if selectedModel != nil {
+		countModelID = assistantMapString(selectedModel, "id")
+	}
+	maxImages := assistantProposalMaxImages(countModelID, models)
+	if proposal.Count < 1 || proposal.Count > maxImages {
 		proposal.Count = fallback.Count
+		if proposal.Count < 1 || proposal.Count > maxImages {
+			proposal.Count = 1
+		}
 	}
 	allowedQualities := assistantMapStrings(selectedModel, "qualities")
-	if len(allowedQualities) == 0 {
+	if !configuredCatalog && len(allowedQualities) == 0 {
 		allowedQualities = assistantParamStrings(run.Params, "_modelQualities")
 	}
-	if len(allowedQualities) == 0 {
+	if !configuredCatalog && len(allowedQualities) == 0 {
 		allowedQualities = []string{"low", "medium", "high"}
 	}
-	if value, ok := assistantAllowedValue(allowedQualities, proposal.Quality); ok {
-		proposal.Quality = value
-	} else if value, ok := assistantAllowedValue(allowedQualities, fallback.Quality); ok {
-		proposal.Quality = value
-	} else {
-		proposal.Quality = allowedQualities[0]
-	}
+	proposal.Quality = assistantNormalizedProposalValue(allowedQualities, proposal.Quality, fallback.Quality)
 	if selectedModel != nil {
 		proposal.Model = assistantMapString(selectedModel, "id")
 		proposal.ModelName = assistantMapString(selectedModel, "name")
@@ -1187,10 +1360,29 @@ func normalizeAssistantProposalWithModels(proposal assistantImageProposal, run *
 		proposal.Model = fallback.Model
 		proposal.ModelName = fallback.ModelName
 	}
-	proposal.RequestSize = fallback.RequestSize
-	proposal.Width = fallback.Width
-	proposal.Height = fallback.Height
+	if proposal.Resolution == "" {
+		proposal.RequestSize = ""
+		proposal.Width = 0
+		proposal.Height = 0
+	} else {
+		proposal.RequestSize = fallback.RequestSize
+		proposal.Width = fallback.Width
+		proposal.Height = fallback.Height
+	}
 	return proposal
+}
+
+func assistantNormalizedProposalValue(allowed []string, requested, fallback string) string {
+	if len(allowed) == 0 {
+		return ""
+	}
+	if value, ok := assistantAllowedValue(allowed, requested); ok {
+		return value
+	}
+	if value, ok := assistantAllowedValue(allowed, fallback); ok {
+		return value
+	}
+	return allowed[0]
 }
 
 func assistantProposalReferences(params map[string]any) []map[string]any {
@@ -1233,9 +1425,7 @@ func assistantProposalModel(id string, models []map[string]any) map[string]any {
 func assistantProposalMaxReferences(modelID string, models []map[string]any) int {
 	limit := 4
 	if model := assistantProposalModel(modelID, models); model != nil {
-		if value := assistantMapInt(model, "maxReferenceImages"); value > 0 {
-			limit = value
-		}
+		limit = max(0, assistantMapInt(model, "maxReferenceImages"))
 	}
 	return limit
 }
@@ -1329,22 +1519,54 @@ func renderAssistantImageCatalog(catalog []assistantCatalogImage) string {
 func renderAssistantModelCatalog(models []map[string]any) string {
 	lines := make([]string, 0, len(models))
 	for _, model := range models {
-		lines = append(lines, fmt.Sprintf("- id=%s，名称=%s，说明=%s，分辨率=%s，最多参考图=%d", assistantMapString(model, "id"), assistantMapString(model, "name"), assistantMapString(model, "description"), strings.Join(assistantMapStrings(model, "resolutions"), "/"), assistantMapInt(model, "maxReferenceImages")))
+		lines = append(lines, fmt.Sprintf(
+			"- id=%s，名称=%s，说明=%s，比例=%s，分辨率=%s，质量=%s，最多生成=%d，最多参考图=%d",
+			assistantMapString(model, "id"), assistantMapString(model, "name"), assistantMapString(model, "description"),
+			strings.Join(assistantMapStrings(model, "aspectRatios"), "/"), strings.Join(assistantMapStrings(model, "resolutions"), "/"),
+			strings.Join(assistantMapStrings(model, "qualities"), "/"), assistantMapInt(model, "maxImages"), assistantMapInt(model, "maxReferenceImages"),
+		))
 	}
 	return strings.Join(lines, "\n")
 }
 
 func attachAssistantProposalReferences(proposal assistantImageProposal, run *store.AssistantRun, imageCatalog []assistantCatalogImage, modelCatalog []map[string]any) assistantImageProposal {
 	currentReferences := assistantProposalReferences(run.Params)
-	historicalReferences := resolveAssistantProposalReferences(proposal.ReferencedImageIDs, imageCatalog, run.Prompt)
+	historicalReferences := []map[string]any(nil)
+	if assistantPromptAllowsHistoricalReferences(run.Prompt, proposal.Action) {
+		historicalReferences = resolveAssistantProposalReferences(proposal.ReferencedImageIDs, imageCatalog, run.Prompt)
+	}
 	if len(currentReferences) > 0 {
 		historicalReferences = nil
 	}
 	proposal.ReferenceImages = mergeAssistantProposalReferences(
 		currentReferences, historicalReferences, assistantProposalMaxReferences(proposal.Model, modelCatalog),
 	)
+	if len(proposal.ReferenceImages) == 0 {
+		proposal.ReferenceMode = assistantReferenceModeShared
+	} else if proposal.ReferenceMode == assistantReferenceModeIndividual &&
+		len(proposal.ReferenceImages) <= assistantProposalMaxImages(proposal.Model, modelCatalog) {
+		proposal.Count = len(proposal.ReferenceImages)
+	}
 	proposal.ReferencedImageIDs = assistantReferenceIDs(proposal.ReferenceImages)
 	return proposal
+}
+
+var assistantHistoricalVisualCue = regexp.MustCompile(`这张|这幅|这个图|该图|那张|上图|上一张|前一张|最后一张|刚才.{0,8}(图|图片|画面)|之前.{0,8}(图|图片|画面)|图中|图片中|照片中|截图中|画面中|previous|last image|图\s*[1-9]|第[一二三四五六七八九1-9]张`)
+var assistantFreshVisualRequest = regexp.MustCompile(`(生成|创建|制作|绘制|画|设计|做|来|给我).{0,14}([1-9一二两三四五六七八九十]\s*)?(张|幅)?\s*(新)?(图|图片|图像|海报|插画|头像|壁纸|封面|logo|标志)`)
+var assistantHistoricalEditCue = regexp.MustCompile(`(?:(修改|编辑|重绘|替换|换成|改成|变成|风格化|美化|换背景|去背景|抠图|擦除|移除|删除|添加|修复|扩图|裁剪|上色).{0,12}(图|图片|图像|照片|截图|画面|文字|背景|人物|主体|颜色|构图|风格)|(图|图片|图像|照片|截图|画面|文字|背景|人物|主体|颜色|构图|风格).{0,12}(修改|编辑|重绘|替换|换成|改成|变成|风格化|美化|换背景|去背景|抠图|擦除|移除|删除|添加|修复|扩图|裁剪|上色))`)
+
+func assistantPromptAllowsHistoricalReferences(prompt, action string) bool {
+	text := strings.ToLower(strings.TrimSpace(prompt))
+	if text == "" {
+		return false
+	}
+	if assistantHistoricalVisualCue.MatchString(text) {
+		return true
+	}
+	if assistantFreshVisualRequest.MatchString(text) {
+		return false
+	}
+	return action == "edit" && assistantHistoricalEditCue.MatchString(text)
 }
 
 func resolveAssistantProposalReferences(ids []string, catalog []assistantCatalogImage, prompt string) []map[string]any {
@@ -1697,6 +1919,25 @@ func (w *Worker) executeAssistantChat(ctx context.Context, client *sub2api.Clien
 }
 
 func (w *Worker) storeAssistantImageBytes(ctx context.Context, run *store.AssistantRun, index, count int, data []byte, revisedPrompt string) (map[string]any, error) {
+	if maskKey := assistantParamString(run.Params, "_maskKey", ""); maskKey != "" {
+		baseKey := assistantParamString(run.Params, "_maskBaseKey", "")
+		rect, err := media.ParseMaskRect(assistantParamString(run.Params, "_maskRect", ""))
+		if err != nil || baseKey == "" {
+			return nil, errors.New("局部编辑参数无效")
+		}
+		maskData, err := w.loadTaskImageBytes(ctx, maskKey)
+		if err != nil {
+			return nil, fmt.Errorf("读取局部编辑蒙版失败: %w", err)
+		}
+		baseData, err := w.loadTaskImageBytes(ctx, baseKey)
+		if err != nil {
+			return nil, fmt.Errorf("读取局部编辑底图失败: %w", err)
+		}
+		data, err = media.CompositeMaskedEdit(baseData, maskData, data, rect)
+		if err != nil {
+			return nil, fmt.Errorf("局部编辑结果合成失败: %w", err)
+		}
+	}
 	if len(data) == 0 || len(data) > assistantOutputLimit {
 		return nil, errors.New("上游图片超过大小限制")
 	}
@@ -1709,7 +1950,7 @@ func (w *Worker) storeAssistantImageBytes(ctx context.Context, run *store.Assist
 	}
 	key := fmt.Sprintf("tasks/%s/assistant/%s/%d.%s", run.UserID, run.ID, index+1, ext)
 	if err := w.Storage.UploadBytes(ctx, key, data, contentType); err != nil {
-		return nil, err
+		return nil, &assistantStorageError{err: err}
 	}
 	stored := map[string]any{
 		"id": uuid.NewString(), "index": index, "dataUrl": "/api/v1/files/" + key, "fileKey": key,
@@ -1793,7 +2034,7 @@ func (w *Worker) completeAssistantImageRun(ctx context.Context, run *store.Assis
 		w.enqueueAssistantOutputCleanup(assistantImageOutputKeys(stored))
 		return err
 	}
-	completed, err := assistantbilling.CompleteAttempt(ctx, w.St, run.ID, run.Attempt, "image")
+	completed, err := assistantbilling.CompleteImageAttempt(ctx, w.St, run.ID, run.Attempt, actual)
 	if err != nil {
 		return err
 	}
@@ -1841,19 +2082,48 @@ func generateAssistantC2AItems(
 	if count < 1 {
 		return 0, errors.New("assistant image count must be positive")
 	}
+	images, generateErr := generate(ctx, runID)
+	actual := 0
+	for index, encoded := range images {
+		if index >= count || strings.TrimSpace(encoded) == "" {
+			continue
+		}
+		if err := onImage(index, encoded); err != nil {
+			return actual, err
+		}
+		actual++
+	}
+	if actual == 0 {
+		if generateErr != nil {
+			return 0, generateErr
+		}
+		return 0, errors.New("上游未返回图片")
+	}
+	// Preserve useful partial output. The completion path settles only the
+	// images that were actually returned and releases the remaining reserve.
+	return actual, nil
+}
+
+func generateAssistantC2AIndividualItems(
+	ctx context.Context,
+	runID string,
+	count int,
+	generate func(context.Context, string, int) ([]string, error),
+	onImage func(int, string) error,
+) (int, error) {
+	if count < 1 {
+		return 0, errors.New("assistant image count must be positive")
+	}
 	batchCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	results := make(chan assistantC2AImageResult, count)
 	for index := 0; index < count; index++ {
 		go func(index int) {
-			taskID := runID
-			if count > 1 {
-				taskID = fmt.Sprintf("%s-%d", runID, index+1)
-			}
+			taskID := fmt.Sprintf("%s-%d", runID, index+1)
 			currentTaskID := taskID
 			var lastErr error
 			for attempt := 0; attempt < assistantC2AItemAttempts; attempt++ {
-				images, err := generate(batchCtx, currentTaskID)
+				images, err := generate(batchCtx, currentTaskID, index)
 				if len(images) > 0 && strings.TrimSpace(images[0]) != "" {
 					results <- assistantC2AImageResult{index: index, encoded: images[0]}
 					return
@@ -1924,12 +2194,13 @@ func (w *Worker) executeAssistantImageC2AClient(ctx context.Context, run *store.
 		inputs = append(inputs, base64.StdEncoding.EncodeToString(data))
 	}
 	storedByIndex := make([]map[string]any, count)
-	actual, err := generateAssistantC2AItems(ctx, run.ID.String(), count, func(itemCtx context.Context, taskID string) ([]string, error) {
-		if len(inputs) > 0 {
-			return client.EditImagesWithID(itemCtx, taskID, finalPrompt, model, 1, inputs, size, quality)
+	onImage := func(index int, encoded string) error {
+		if terminated, terminateErr := w.assistantRunTerminated(ctx, run.ID); terminateErr != nil || terminated {
+			if terminateErr != nil {
+				return terminateErr
+			}
+			return context.Canceled
 		}
-		return client.GenerateImagesWithID(itemCtx, taskID, finalPrompt, model, 1, size, quality)
-	}, func(index int, encoded string) error {
 		data, decodeErr := base64.StdEncoding.DecodeString(encoded)
 		if decodeErr != nil {
 			return decodeErr
@@ -1945,7 +2216,25 @@ func (w *Worker) executeAssistantImageC2AClient(ctx context.Context, run *store.
 			return err
 		}
 		return nil
-	})
+	}
+	var actual int
+	var err error
+	if assistantParamString(run.Params, "referenceMode", assistantReferenceModeShared) == assistantReferenceModeIndividual {
+		if len(inputs) != count {
+			return fmt.Errorf("逐张编辑要求参考图数量与输出数量一致：参考图 %d 张，输出 %d 张", len(inputs), count)
+		}
+		actual, err = generateAssistantC2AIndividualItems(ctx, run.ID.String(), count,
+			func(itemCtx context.Context, taskID string, index int) ([]string, error) {
+				return client.EditImagesWithID(itemCtx, taskID, finalPrompt, model, 1, []string{inputs[index]}, size, quality)
+			}, onImage)
+	} else {
+		actual, err = generateAssistantC2AItems(ctx, run.ID.String(), count, func(itemCtx context.Context, taskID string) ([]string, error) {
+			if len(inputs) > 0 {
+				return client.EditImagesWithID(itemCtx, taskID, finalPrompt, model, count, inputs, size, quality)
+			}
+			return client.GenerateImagesWithID(itemCtx, taskID, finalPrompt, model, count, size, quality)
+		}, onImage)
+	}
 	if err != nil {
 		return err
 	}
@@ -2000,10 +2289,52 @@ func (w *Worker) executeAssistantImageCRUN(ctx context.Context, run *store.Assis
 	if err != nil {
 		return err
 	}
-	return w.executeAssistantImageCRUNClient(ctx, run, client)
+	return w.executeAssistantImageCRUNClient(ctx, run, client, nil)
 }
 
-func (w *Worker) executeAssistantImageCRUNClient(ctx context.Context, run *store.AssistantRun, client *crun.Client) error {
+func createAssistantCRUNImageTasks(
+	ctx context.Context,
+	client *crun.Client,
+	request crun.OpenAIImageRequest,
+	referenceMode string,
+	existing []string,
+	onCreated func([]string) error,
+) ([]string, error) {
+	if referenceMode != assistantReferenceModeIndividual {
+		return client.CreateImageTasks(ctx, request, existing, onCreated)
+	}
+	if len(request.ImageURLs) != request.N || request.N < 1 {
+		return nil, fmt.Errorf("逐张编辑要求参考图数量与输出数量一致：参考图 %d 张，输出 %d 张", len(request.ImageURLs), request.N)
+	}
+	taskIDs := append([]string(nil), existing...)
+	if len(taskIDs) > request.N {
+		taskIDs = taskIDs[:request.N]
+	}
+	for len(taskIDs) < request.N {
+		index := len(taskIDs)
+		itemRequest := request
+		itemRequest.N = 1
+		itemRequest.ImageURLs = []string{request.ImageURLs[index]}
+		taskID, err := client.CreateTaskWithRequest(ctx, itemRequest)
+		if err != nil {
+			return nil, err
+		}
+		taskIDs = append(taskIDs, taskID)
+		if onCreated != nil {
+			if err := onCreated(append([]string(nil), taskIDs...)); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return taskIDs, nil
+}
+
+func (w *Worker) executeAssistantImageCRUNClient(
+	ctx context.Context,
+	run *store.AssistantRun,
+	client *crun.Client,
+	allowedInputFields []string,
+) error {
 	finalPrompt := prompt.ConstrainAutoAspectRatio(run.Prompt, run.Params)
 	references, temporaryKeys, err := w.crunAssistantReferenceURLs(ctx, run)
 	if len(temporaryKeys) > 0 {
@@ -2015,18 +2346,22 @@ func (w *Worker) executeAssistantImageCRUNClient(ctx context.Context, run *store
 	count := assistantParamInt(run.Params, "count", 2)
 	aspectRatio := normalizeCRUNAspectRatio(run.Params, assistantParamString(run.Params, "requestSize", ""))
 	resolution := normalizeCRUNResolutionForAspect(normalizeCRUNResolution(run.Params), aspectRatio)
-	taskIDs, err := client.CreateImageTasks(ctx, crun.OpenAIImageRequest{
+	request := crun.OpenAIImageRequest{
 		Prompt: crunPrompt(finalPrompt), N: count,
 		Size:    assistantParamString(run.Params, "requestSize", ""),
-		Quality: assistantParamString(run.Params, "quality", "high"), ImageURLs: references,
+		Quality: assistantParamString(run.Params, "quality", ""), ImageURLs: references,
 		AspectRatio: aspectRatio, Resolution: resolution,
-	}, taskParamStrings(run.Params, "_crunTaskIds"), func(created []string) error {
-		if err := store.SetAssistantRunCRUNTaskIDs(ctx, w.St.Pool, run.ID, created); err != nil {
-			return err
-		}
-		run.Params["_crunTaskIds"] = append([]string(nil), created...)
-		return nil
-	})
+		AllowedInputFields: allowedInputFields,
+	}
+	taskIDs, err := createAssistantCRUNImageTasks(ctx, client, request,
+		assistantParamString(run.Params, "referenceMode", assistantReferenceModeShared),
+		taskParamStrings(run.Params, "_crunTaskIds"), func(created []string) error {
+			if err := store.SetAssistantRunCRUNTaskIDs(ctx, w.St.Pool, run.ID, created); err != nil {
+				return err
+			}
+			run.Params["_crunTaskIds"] = append([]string(nil), created...)
+			return nil
+		})
 	if err != nil {
 		return err
 	}
@@ -2068,7 +2403,7 @@ func (w *Worker) executeAssistantImage(ctx context.Context, client *sub2api.Clie
 	storedByIndex := make([]map[string]any, count)
 	requestCtx, cancelRequest := context.WithTimeout(ctx, assistantSynchronousImageLimit)
 	defer cancelRequest()
-	images, err := client.GenerateImageProgressive(requestCtx, finalPrompt, size, quality, count, references, func(index int, image sub2api.Image) error {
+	storeImage := func(index int, image sub2api.Image) error {
 		if terminated, err := w.assistantRunTerminated(requestCtx, run.ID); err != nil || terminated {
 			if err != nil {
 				return err
@@ -2091,7 +2426,28 @@ func (w *Worker) executeAssistantImage(ctx context.Context, client *sub2api.Clie
 			return err
 		}
 		return nil
-	})
+	}
+	actual := 0
+	var err error
+	if assistantParamString(run.Params, "referenceMode", assistantReferenceModeShared) == assistantReferenceModeIndividual {
+		if len(references) != count {
+			return fmt.Errorf("逐张编辑要求参考图数量与输出数量一致：参考图 %d 张，输出 %d 张", len(references), count)
+		}
+		for index, reference := range references {
+			images, generateErr := client.GenerateImageProgressive(requestCtx, finalPrompt, size, quality, 1, []string{reference}, func(_ int, image sub2api.Image) error {
+				return storeImage(index, image)
+			})
+			actual += len(images)
+			if generateErr != nil {
+				err = generateErr
+				break
+			}
+		}
+	} else {
+		var images []sub2api.Image
+		images, err = client.GenerateImageProgressive(requestCtx, finalPrompt, size, quality, count, references, storeImage)
+		actual = len(images)
+	}
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
 			return errors.New("图片生成超过 5 分钟仍未完成，请重试或切换图片模型")
@@ -2104,7 +2460,7 @@ func (w *Worker) executeAssistantImage(ctx context.Context, client *sub2api.Clie
 		}
 		return context.Canceled
 	}
-	return w.completeAssistantImageRun(ctx, run, storedByIndex, count, len(images))
+	return w.completeAssistantImageRun(ctx, run, storedByIndex, count, actual)
 }
 
 func compactAssistantImages(images []map[string]any) []map[string]any {
@@ -2168,7 +2524,7 @@ func (w *Worker) loadAssistantReferences(ctx context.Context, params map[string]
 func assistantMessageMetadata(run *store.AssistantRun, images []map[string]any, stage, errorMessage string) map[string]any {
 	metadata := make(map[string]any, len(run.Params)+6)
 	for key, value := range run.Params {
-		if key == "referenceImages" || key == "canvasSnapshot" {
+		if key == "referenceImages" || key == "canvasSnapshot" || strings.HasPrefix(key, "_mask") {
 			continue
 		}
 		metadata[key] = value

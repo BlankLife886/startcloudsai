@@ -4183,3 +4183,88 @@ html.assistant-image-viewer-open body {
   height: 100%;
   object-fit: cover;
 }
+
+/* The composer floats over the thread, so its reserved scroll space must grow with it. */
+.assistant-workspace .message-thread,
+.assistant-workspace .assistant-thread-skeleton {
+  padding-bottom: var(--assistant-composer-reserved-space, 250px);
+}
+
+.assistant-workspace .assistant-empty-state {
+  padding-bottom: var(--assistant-composer-reserved-space, 250px);
+}
+
+.assistant-workspace .assistant-messages {
+  scroll-padding-bottom: var(--assistant-composer-reserved-space, 250px);
+}
+
+.assistant-workspace .composer-resize-handle {
+  position: absolute;
+  z-index: 12;
+  top: -7px;
+  right: 18px;
+  left: 18px;
+  height: 14px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.assistant-workspace .composer-resize-handle::after {
+  position: absolute;
+  top: 4px;
+  left: 50%;
+  width: 42px;
+  height: 3px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--assistant-border-strong) 72%, transparent);
+  content: "";
+  opacity: 0;
+  transform: translateX(-50%);
+  transition: width 160ms ease, background 160ms ease, opacity 160ms ease;
+}
+
+.assistant-workspace .assistant-composer:hover .composer-resize-handle::after,
+.assistant-workspace .composer-resize-handle:focus-visible::after,
+.assistant-workspace .assistant-composer.is-resizing .composer-resize-handle::after {
+  width: 52px;
+  background: color-mix(in srgb, var(--assistant-accent) 72%, var(--assistant-border-strong));
+  opacity: 1;
+}
+
+.assistant-workspace .composer-zone .assistant-composer.is-manually-resized textarea {
+  height: var(--assistant-composer-input-height, 56px) !important;
+  min-height: var(--assistant-composer-input-height, 56px);
+  max-height: var(--assistant-composer-input-height, 56px);
+  overflow-y: auto;
+}
+
+.assistant-workspace .assistant-composer.is-resizing,
+.assistant-workspace .assistant-composer.is-resizing textarea {
+  transition: none !important;
+}
+
+html.assistant-composer-resizing,
+html.assistant-composer-resizing * {
+  cursor: ns-resize !important;
+  user-select: none !important;
+}
+
+@media (pointer: coarse) {
+  .assistant-workspace .composer-resize-handle {
+    top: -10px;
+    height: 20px;
+  }
+}
+
+@media (max-width: 640px) {
+  .assistant-workspace > .assistant-sidebar {
+    display: none;
+  }
+
+  .assistant-workspace > .assistant-main {
+    padding-left: 0;
+  }
+}

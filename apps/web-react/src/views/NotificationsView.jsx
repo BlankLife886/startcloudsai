@@ -386,6 +386,17 @@ export function NotificationsView() {
     loadList();
     loadAnnouncements();
     const onUpdated = (event) => {
+      if (event?.detail?.source === "mark-all") {
+        const readAt = new Date().toISOString();
+        applyItems(
+          itemsRef.current.map((item) => ({
+            ...item,
+            readAt: item.readAt || readAt,
+          })),
+        );
+        setUnread(0);
+        return;
+      }
       if (
         event?.detail?.source !== "preview" ||
         !Array.isArray(event.detail.previewItems)

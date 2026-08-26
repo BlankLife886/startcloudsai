@@ -39,7 +39,7 @@ func (s *Server) adminPatchTask(c *gin.Context, admin *store.User) {
 	case "failed":
 		s.adminForceFailTask(c, admin)
 	default:
-		fail(c, apperr.E("validation_error", "status: 仅支持 queued、canceled 或 failed", 422))
+		fail(c, apperr.E("validation_error", "status: 操作不受支持", 422))
 	}
 }
 

@@ -490,7 +490,7 @@ func (s *Server) adminAnalyzePromptImportBatch(c *gin.Context, _ *store.User) {
 		fail(c, apperr.E("conflict", "当前批次不能分析", 409))
 		return
 	}
-	client, err := s.assistantClient(c)
+	client, err := s.adminImageAnalysisClient(c.Request.Context())
 	if err != nil {
 		fail(c, err)
 		return

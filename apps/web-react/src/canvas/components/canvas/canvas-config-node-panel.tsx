@@ -1,4 +1,4 @@
-import { CheckCircle2, ChevronDown, ChevronRight, Clock3, Cpu, Image as ImageIcon, MessageSquare, Music2, Play, Settings2, Square, Video, X } from "lucide-react";
+import { CheckCircle2, ChevronDown, ChevronRight, Clock3, Cpu, Crop, Grid2x2, Image as ImageIcon, Maximize2, MessageSquare, Music2, Play, Settings2, SlidersHorizontal, Square, Video, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { ImageSettingsPanel } from "@/components/image-settings-panel";
@@ -11,10 +11,13 @@ import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
 import { canvasRaisedStyle, colorWash, nodeTypeColor } from "@/lib/canvas-ui";
 import { applyCanvasImageModelSettings, canvasImageSettingsFromModel } from "@/lib/canvas/canvas-image-model";
 import { formatGenerationDuration, useGenerationElapsed } from "@/lib/canvas/canvas-generation-elapsed";
-import { isUnsubmittedCanvasGeneration } from "@/lib/canvas/canvas-generation-helpers";
+import { buildAngleLabel, isUnsubmittedCanvasGeneration } from "@/lib/canvas/canvas-generation-helpers";
+import { canvasLocalImageOperationOutputCount, isCanvasLocalImageOperation, normalizeCanvasLocalImageOperationParams } from "@/lib/canvas/canvas-local-image-operation";
+import { CanvasOperationNodeType } from "@/lib/canvas/canvas-operation-node";
 import { defaultConfig, formatModelPriceParts, modelOptionLabel, modelOptionMeta, modelOptionName, resolveModelForCapability, selectableModelsByCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { CanvasGenerationMode, CanvasNodeData, CanvasNodeMetadata } from "@/types/canvas";
+import { CanvasPreviewImage } from "./canvas-preview-image";
 import { CanvasAudioSettingsPopover, type CanvasAudioSettingKey } from "./canvas-audio-settings-popover";
 import { CanvasFieldMenu } from "./canvas-field-menu";
 import { CanvasPriceMark } from "./canvas-setting-controls";
@@ -22,6 +25,7 @@ import { CanvasVideoSettingsPopover } from "./canvas-video-settings-popover";
 
 type CanvasConfigNodePanelProps = {
     node: CanvasNodeData;
+    outputNode?: CanvasNodeData;
     isRunning: boolean;
     inputSummary: { textCount: number; imageCount: number; videoCount: number; audioCount: number };
     onConfigChange: (nodeId: string, patch: Partial<CanvasNodeMetadata>) => void;
@@ -29,6 +33,7 @@ type CanvasConfigNodePanelProps = {
     onStopGeneration: (nodeId: string) => void;
     onCancelQueued: (nodeId: string) => void;
     onComposerToggle: () => void;
+    onConfigureOperation: (node: CanvasNodeData) => void;
 };
 
 const MODES: Array<{ value: CanvasGenerationMode; icon: typeof ImageIcon; colorKey: string; labelKey: "image" | "text" | "video" | "audio" }> = [
@@ -40,7 +45,49 @@ const MODES: Array<{ value: CanvasGenerationMode; icon: typeof ImageIcon; colorK
 
 const FIELD_CLASS = "canvas-config-field flex h-9 w-full min-w-0 items-center gap-2.5 rounded-[10px] px-3 text-left text-[13px] transition-colors";
 
-export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigChange, onGenerate, onStopGeneration, onCancelQueued, onComposerToggle }: CanvasConfigNodePanelProps) {
+export function CanvasConfigNodePanel({ node, outputNode, isRunning, inputSummary, onConfigChange, onGenerate, onStopGeneration, onCancelQueued, onComposerToggle, onConfigureOperation }: CanvasConfigNodePanelProps) {
+    const panel = isCanvasLocalImageOperation(node.metadata?.localImageOperation) ? (
+        <CanvasLocalImageOperationPanel node={node} isRunning={isRunning} inputSummary={inputSummary} onGenerate={onGenerate} onStopGeneration={onStopGeneration} onCancelQueued={onCancelQueued} onConfigureOperation={onConfigureOperation} />
+    ) : node.type === CanvasOperationNodeType.Angle || node.type === CanvasOperationNodeType.ReversePrompt ? (
+        <CanvasAiOperationPanel node={node} isRunning={isRunning} inputSummary={inputSummary} onConfigChange={onConfigChange} onGenerate={onGenerate} onStopGeneration={onStopGeneration} onCancelQueued={onCancelQueued} onConfigureOperation={onConfigureOperation} />
+    ) : (
+        <CanvasGenerationConfigNodePanel node={node} isRunning={isRunning} inputSummary={inputSummary} onConfigChange={onConfigChange} onGenerate={onGenerate} onStopGeneration={onStopGeneration} onCancelQueued={onCancelQueued} onComposerToggle={onComposerToggle} onConfigureOperation={onConfigureOperation} />
+    );
+
+    if (!node.metadata?.inlineOutputNodeId) return panel;
+    return (
+        <div className="flex h-full w-full flex-col overflow-hidden">
+            <div className="h-[414px] shrink-0">{panel}</div>
+            <CanvasInlineOutputPreview outputNode={outputNode} mode={node.metadata.generationMode || "image"} />
+        </div>
+    );
+}
+
+function CanvasInlineOutputPreview({ outputNode, mode }: { outputNode?: CanvasNodeData; mode: CanvasGenerationMode }) {
+    const { t } = useTranslation();
+    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const content = outputNode?.metadata?.content || "";
+    const loading = outputNode?.metadata?.status === "loading";
+    const error = outputNode?.metadata?.status === "error" ? outputNode.metadata.errorDetails : "";
+    return (
+        <div className="relative min-h-0 flex-1 overflow-hidden border-t" style={{ borderColor: theme.node.stroke, background: theme.toolbar.itemHover }}>
+            {mode === "text" && content ? (
+                <div className="thin-scrollbar h-full overflow-y-auto whitespace-pre-wrap break-words p-3 text-[12px] leading-5" style={{ color: theme.node.text }} data-canvas-no-zoom>
+                    {content}
+                </div>
+            ) : mode === "image" && content ? (
+                <CanvasPreviewImage src={content} storageKey={outputNode?.metadata?.storageKey} thumbnailUrl={outputNode?.metadata?.thumbnailUrl} alt={outputNode?.title || ""} className="h-full w-full object-contain" />
+            ) : (
+                <div className="flex h-full flex-col items-center justify-center gap-2 px-5 text-center text-[12px]" style={{ color: error ? "#ef4444" : theme.node.muted }}>
+                    {loading ? <span className="size-5 animate-spin rounded-full border-2 border-current border-t-transparent" /> : null}
+                    <span>{error || (loading ? t("canvas.node.generating") : t("canvas.node.emptyImage"))}</span>
+                </div>
+            )}
+        </div>
+    );
+}
+
+function CanvasGenerationConfigNodePanel({ node, isRunning, inputSummary, onConfigChange, onGenerate, onStopGeneration, onCancelQueued, onComposerToggle }: CanvasConfigNodePanelProps) {
     const { t } = useTranslation();
     const globalConfig = useEffectiveConfig();
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
@@ -233,6 +280,163 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
             </button>
         </div>
     );
+}
+
+function CanvasLocalImageOperationPanel({ node, isRunning, inputSummary, onGenerate, onStopGeneration, onCancelQueued, onConfigureOperation }: Pick<CanvasConfigNodePanelProps, "node" | "isRunning" | "inputSummary" | "onGenerate" | "onStopGeneration" | "onCancelQueued" | "onConfigureOperation">) {
+    const { t } = useTranslation();
+    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const operation = node.metadata?.localImageOperation;
+    if (!isCanvasLocalImageOperation(operation)) return null;
+    const Icon = operation === "crop" ? Crop : operation === "split" ? Grid2x2 : Maximize2;
+    const label = t(`canvas.imageTools.${operation}`);
+    const count = canvasLocalImageOperationOutputCount(operation, node.metadata?.localImageOperationParams);
+    const summary = localOperationSummary(operation, node.metadata?.localImageOperationParams, t);
+    const queued = isUnsubmittedCanvasGeneration(node);
+    const executionStatus = node.metadata?.executionStatus;
+    const running = (isRunning || executionStatus === "running") && !queued;
+    const elapsedMs = useGenerationElapsed(node.metadata?.generationStartedAt, node.metadata?.generationDurationMs, running);
+    const hasOutput = Boolean(node.metadata?.workflowOutputNodeIds?.length);
+    const canRun = inputSummary.imageCount === 1;
+    const accent = nodeTypeColor("image", undefined, theme.scheme);
+    const completedCount = Math.min(count, Math.max(0, node.metadata?.localImageOperationCompletedCount || 0));
+
+    return (
+        <div className="canvas-config-node flex h-full w-full cursor-move flex-col px-3 py-2.5" style={{ color: theme.node.text }} onWheel={(event) => event.stopPropagation()}>
+            <div className="flex min-h-12 shrink-0 items-center gap-3 rounded-xl px-3" style={{ background: colorWash(accent, theme.scheme === "dark" ? 0.12 : 0.08) }}>
+                <span className="grid size-8 shrink-0 place-items-center rounded-lg" style={{ background: colorWash(accent, 0.16), color: accent }}>
+                    <Icon className="size-4" />
+                </span>
+                <div className="min-w-0 flex-1">
+                    <div className="truncate text-[13px] font-semibold">{label}</div>
+                    <div className="mt-0.5 truncate text-[11px]" style={{ color: theme.node.muted }}>{summary}</div>
+                </div>
+                <button type="button" className="grid size-8 shrink-0 place-items-center rounded-lg transition hover:scale-105" style={{ background: theme.toolbar.itemHover, color: theme.node.muted }} title={t("canvas.configNode.configureOperation")} onMouseDown={(event) => event.stopPropagation()} onClick={() => onConfigureOperation(node)}>
+                    <SlidersHorizontal className="size-3.5" />
+                </button>
+            </div>
+
+            <button type="button" className="mt-2.5 flex min-h-11 items-center justify-between rounded-xl px-3 text-left" style={{ background: theme.toolbar.itemHover }} onMouseDown={(event) => event.stopPropagation()} onClick={() => onConfigureOperation(node)}>
+                <span className="min-w-0">
+                    <span className="block text-[11px]" style={{ color: theme.node.muted }}>{t("canvas.configNode.operationParams")}</span>
+                    <span className="mt-0.5 block truncate text-[12px] font-semibold">{summary}</span>
+                </span>
+                <ChevronRight className="size-4 shrink-0 opacity-45" />
+            </button>
+
+            <div className="mt-2 flex items-center justify-between rounded-xl px-3 py-2.5" style={{ background: theme.toolbar.itemHover }}>
+                <span className="text-[12px]" style={{ color: theme.node.muted }}>{t("canvas.configNode.operationInput")}</span>
+                <span className="text-[12px] font-semibold" style={{ color: canRun ? accent : inputSummary.imageCount > 1 ? "#ef4444" : theme.node.muted }}>{t("canvas.configNode.images", { count: inputSummary.imageCount })}</span>
+            </div>
+
+            <div className="mt-auto min-h-7 px-1 pt-3 text-[11px]" style={{ color: executionStatus === "failed" ? "#ef4444" : theme.node.muted }}>
+                {queued ? t("canvas.configNode.queuedOperation", { operation: label }) : running ? t("canvas.configNode.processingOperationProgress", { operation: label, completed: completedCount, count, duration: formatGenerationDuration(elapsedMs) }) : executionStatus === "succeeded" ? t("canvas.configNode.operationCompleted", { operation: label, duration: formatGenerationDuration(elapsedMs) }) : executionStatus === "failed" ? node.metadata?.errorDetails || t("canvas.configNode.operationFailed", { operation: label, duration: formatGenerationDuration(elapsedMs) }) : inputSummary.imageCount > 1 ? t("canvas.configNode.singleImageOnly") : t("canvas.configNode.operationReadyLocal", { operation: label })}
+            </div>
+
+            <button
+                type="button"
+                className="canvas-config-generate mt-2 inline-flex h-9 w-full shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-xl text-[13px] font-medium disabled:cursor-not-allowed disabled:opacity-60"
+                style={{ background: queued ? "#d97706" : theme.scheme === "dark" ? colorWash(accent, 0.16) : accent, color: queued ? "#fff" : theme.scheme === "dark" ? accent : "#fff", boxShadow: theme.scheme === "dark" && !queued ? `inset 0 0 0 1px ${colorWash(accent, 0.38)}` : undefined }}
+                disabled={!queued && !running && !canRun}
+                onMouseDown={(event) => event.stopPropagation()}
+                onClick={() => (queued ? onCancelQueued(node.id) : running ? onStopGeneration(node.id) : onGenerate(node.id))}
+            >
+                {queued ? <><X className="size-4" />{t("canvas.configNode.cancelQueued")}</> : running ? <><Square className="size-3.5 fill-current" />{t("canvas.configNode.stopWithDuration", { duration: formatGenerationDuration(elapsedMs) })}</> : <><Play className="size-4 fill-current" />{t(hasOutput ? "canvas.configNode.rerunOperation" : "canvas.configNode.runOperation", { operation: label })}</>}
+            </button>
+        </div>
+    );
+}
+
+function CanvasAiOperationPanel({ node, isRunning, inputSummary, onConfigChange, onGenerate, onStopGeneration, onCancelQueued, onConfigureOperation }: Pick<CanvasConfigNodePanelProps, "node" | "isRunning" | "inputSummary" | "onConfigChange" | "onGenerate" | "onStopGeneration" | "onCancelQueued" | "onConfigureOperation">) {
+    const { t } = useTranslation();
+    const globalConfig = useEffectiveConfig();
+    const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
+    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const angle = node.type === CanvasOperationNodeType.Angle;
+    const mode: CanvasGenerationMode = angle ? "image" : "text";
+    const label = t(angle ? "canvas.operationNodes.angle" : "canvas.operationNodes.reversePrompt");
+    const color = nodeTypeColor(angle ? "image" : "text", undefined, theme.scheme);
+    const config = buildNodeConfig(globalConfig, node, mode);
+    const queued = isUnsubmittedCanvasGeneration(node);
+    const executionStatus = node.metadata?.executionStatus;
+    const running = (isRunning || executionStatus === "running") && !queued;
+    const elapsedMs = useGenerationElapsed(node.metadata?.generationStartedAt, node.metadata?.generationDurationMs, running);
+    const instruction = node.metadata?.composerContent ?? node.metadata?.prompt ?? "";
+    const canRun = inputSummary.imageCount === 1 && Boolean(instruction.trim());
+    const hasOutput = Boolean(node.metadata?.workflowOutputNodeIds?.length);
+    const cost = estimateCanvasGenerationCost({ config, kind: angle ? "image" : "text", count: 1 });
+    const angleSummary = angle ? buildAngleLabel(normalizeAngleParams(node.metadata?.imageAngleParams)) : "";
+
+    return (
+        <div className="canvas-config-node flex h-full w-full cursor-move flex-col px-3 py-2.5" style={{ color: theme.node.text }} onWheel={(event) => event.stopPropagation()}>
+            <div className="flex min-h-12 shrink-0 items-center gap-3 rounded-xl px-3" style={{ background: colorWash(color, theme.scheme === "dark" ? 0.12 : 0.08) }}>
+                <span className="grid size-8 shrink-0 place-items-center rounded-lg" style={{ background: colorWash(color, 0.16), color }}>
+                    {angle ? <SlidersHorizontal className="size-4" /> : <MessageSquare className="size-4" />}
+                </span>
+                <div className="min-w-0 flex-1">
+                    <div className="truncate text-[13px] font-semibold">{label}</div>
+                    <div className="mt-0.5 truncate text-[11px]" style={{ color: theme.node.muted }}>{angle ? angleSummary : t("canvas.operationNodes.reversePromptDescription")}</div>
+                </div>
+                {angle ? <button type="button" className="grid size-8 shrink-0 place-items-center rounded-lg transition hover:scale-105" style={{ background: theme.toolbar.itemHover, color: theme.node.muted }} title={t("canvas.configNode.configureOperation")} onMouseDown={(event) => event.stopPropagation()} onClick={() => onConfigureOperation(node)}><SlidersHorizontal className="size-3.5" /></button> : null}
+            </div>
+
+            <div className="mt-2.5">
+                <ConfigModelField config={config} mode={mode} theme={theme} surface={theme.toolbar.itemHover} placeholder={t("canvas.configNode.model")} onChange={(model) => onConfigChange(node.id, angle ? canvasImageSettingsFromModel(config, model) : { model })} onMissingConfig={() => openConfigDialog(true)} />
+            </div>
+            {angle ? (
+                <button type="button" className="mt-2 flex min-h-11 items-center justify-between rounded-xl px-3 text-left" style={{ background: theme.toolbar.itemHover }} onMouseDown={(event) => event.stopPropagation()} onClick={() => onConfigureOperation(node)}>
+                    <span className="min-w-0"><span className="block text-[11px]" style={{ color: theme.node.muted }}>{t("canvas.configNode.angleParams")}</span><span className="mt-0.5 block truncate text-[12px] font-semibold">{angleSummary}</span></span>
+                    <ChevronRight className="size-4 shrink-0 opacity-45" />
+                </button>
+            ) : (
+                <label className="mt-2 block rounded-xl px-3 py-2" style={{ background: theme.toolbar.itemHover }} onMouseDown={(event) => event.stopPropagation()}>
+                    <span className="block text-[11px]" style={{ color: theme.node.muted }}>{t("canvas.configNode.analysisInstruction")}</span>
+                    <textarea
+                        value={instruction}
+                        rows={3}
+                        className="mt-1 block max-h-20 min-h-14 w-full resize-none bg-transparent text-[12px] leading-5 outline-none"
+                        placeholder={t("canvas.configNode.analysisInstructionPlaceholder")}
+                        onChange={(event) => onConfigChange(node.id, { composerContent: event.target.value, prompt: event.target.value, status: "idle", executionStatus: undefined, errorDetails: undefined })}
+                    />
+                </label>
+            )}
+            <div className="mt-2 flex items-center justify-between rounded-xl px-3 py-2.5" style={{ background: theme.toolbar.itemHover }}>
+                <span className="text-[12px]" style={{ color: theme.node.muted }}>{t("canvas.configNode.operationInput")}</span>
+                <span className="text-[12px] font-semibold" style={{ color: inputSummary.imageCount === 1 ? color : inputSummary.imageCount > 1 ? "#ef4444" : theme.node.muted }}>{t("canvas.configNode.images", { count: inputSummary.imageCount })}</span>
+            </div>
+            <div className="mt-auto min-h-7 px-1 pt-3 text-[11px]" style={{ color: executionStatus === "failed" ? "#ef4444" : theme.node.muted }}>
+                {queued ? t("canvas.configNode.queuedOperation", { operation: label }) : running ? t("canvas.configNode.processingOperation", { operation: label, duration: formatGenerationDuration(elapsedMs) }) : executionStatus === "succeeded" ? t("canvas.configNode.operationCompleted", { operation: label, duration: formatGenerationDuration(elapsedMs) }) : executionStatus === "failed" ? node.metadata?.errorDetails || t("canvas.configNode.operationFailed", { operation: label, duration: formatGenerationDuration(elapsedMs) }) : inputSummary.imageCount > 1 ? t("canvas.configNode.singleImageOnly") : t("canvas.configNode.operationReady", { operation: label })}
+            </div>
+            <button type="button" className="canvas-config-generate mt-2 inline-flex h-9 w-full shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-xl text-[13px] font-medium disabled:cursor-not-allowed disabled:opacity-60" style={{ background: queued ? "#d97706" : theme.scheme === "dark" ? colorWash(color, 0.16) : color, color: queued ? "#fff" : theme.scheme === "dark" ? color : "#fff" }} disabled={!queued && !running && !canRun} onMouseDown={(event) => event.stopPropagation()} onClick={() => queued ? onCancelQueued(node.id) : running ? onStopGeneration(node.id) : onGenerate(node.id)}>
+                {queued ? <><X className="size-4" />{t("canvas.configNode.cancelQueued")}</> : running ? <><Square className="size-3.5 fill-current" />{t("canvas.configNode.stopWithDuration", { duration: formatGenerationDuration(elapsedMs) })}</> : <><Play className="size-4 fill-current" />{t(hasOutput ? "canvas.configNode.regenerate" : "canvas.configNode.generate")}{cost.total > 0 ? <><span className="opacity-40">·</span><CanvasPriceMark price={`${cost.total.toLocaleString()} 积分`} /></> : null}</>}
+            </button>
+        </div>
+    );
+}
+
+function localOperationSummary(operation: "crop" | "split" | "upscale", value: unknown, t: (key: string, options?: Record<string, unknown>) => string) {
+    if (operation === "crop") {
+        const params = normalizeCanvasLocalImageOperationParams("crop", value);
+        return t("canvas.configNode.cropSummary", { width: Math.round(params.width * 100), height: Math.round(params.height * 100) });
+    }
+    if (operation === "split") {
+        const params = normalizeCanvasLocalImageOperationParams("split", value);
+        return t("canvas.configNode.splitSummary", { rows: params.rows, columns: params.columns });
+    }
+    const params = normalizeCanvasLocalImageOperationParams("upscale", value);
+    return t("canvas.configNode.upscaleSummary", { size: params.targetLongEdge, algorithm: t(`canvas.editors.${params.algorithm}`) });
+}
+
+function normalizeAngleParams(value: unknown) {
+    const params = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+    const horizontalAngle = Number(params.horizontalAngle);
+    const pitchAngle = Number(params.pitchAngle);
+    const cameraDistance = Number(params.cameraDistance);
+    return {
+        horizontalAngle: Number.isFinite(horizontalAngle) ? Math.max(-60, Math.min(60, horizontalAngle)) : 45,
+        pitchAngle: Number.isFinite(pitchAngle) ? Math.max(-45, Math.min(45, pitchAngle)) : 0,
+        cameraDistance: Number.isFinite(cameraDistance) ? Math.max(1, Math.min(10, cameraDistance)) : 4.8,
+        wideAngle: Boolean(params.wideAngle),
+    };
 }
 
 function formatGenerationTime(value: string) {

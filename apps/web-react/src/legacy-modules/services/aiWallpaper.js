@@ -13,6 +13,7 @@ import {
   deleteTask,
   getTask,
   listTasks,
+  quoteTaskPrice,
   uploadFile,
   waitForTask,
 } from '@/services/tasksApi'
@@ -424,10 +425,39 @@ export async function createServerAiJob(payload = {}) {
     inputKeys,
     count,
     idempotencyKey: String(payload.clientRequestId || '').trim() || undefined,
+    expectedUnitPriceCents: payload.expectedUnitPriceCents,
   })
   // 冻结额度已变化，让下一次余额预检重新读取。
   invalidateStudioCreditSnapshot()
   return { job: taskToLegacyJob(task) }
+}
+
+export async function quoteServerAiJob(payload = {}) {
+  const kind = String(payload.kind || '').trim()
+  const type = mapJobKindToTaskType(kind)
+  const input = payload.input && typeof payload.input === 'object' ? payload.input : {}
+  const legacyParams = payload.params && typeof payload.params === 'object' ? payload.params : {}
+  const count = Math.max(
+    1,
+    Math.min(Number(payload.units || input.count || legacyParams.count || 1) || 1, 16),
+  )
+  return quoteTaskPrice({
+    type,
+    params: {
+      ...legacyParams,
+      ...input,
+      _kind: String(input._kind || legacyParams._kind || kind).trim(),
+      ...(String(input._source || legacyParams._source || '').trim()
+        ? { _source: String(input._source || legacyParams._source).trim() }
+        : {}),
+    },
+    inputKeys: [
+      ...(Array.isArray(payload.inputKeys) ? payload.inputKeys : []),
+      ...(Array.isArray(input.inputKeys) ? input.inputKeys : []),
+      ...(Array.isArray(legacyParams.inputKeys) ? legacyParams.inputKeys : []),
+    ],
+    count,
+  })
 }
 
 export async function listServerAiJobs(limit = 30, options = {}) {

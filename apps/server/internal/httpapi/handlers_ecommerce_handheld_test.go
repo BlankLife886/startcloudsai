@@ -54,7 +54,7 @@ func TestValidateHandheldSpecOrdersProductReferencesFirst(t *testing.T) {
 	}
 }
 
-func TestHandheldGenerationParamsUseHighFidelityAndDropExecutionState(t *testing.T) {
+func TestHandheldGenerationParamsDropPersistedModelAndExecutionState(t *testing.T) {
 	batchID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 	itemID := uuid.MustParse("22222222-2222-2222-2222-222222222222")
 	params := handheldGenerationParams(map[string]any{
@@ -65,14 +65,13 @@ func TestHandheldGenerationParamsUseHighFidelityAndDropExecutionState(t *testing
 		"_failedProviderConfigIds": []string{"stale-provider"},
 		"_upstreamStage":           "async_pending",
 	}, "model-id", "3:4", batchID, itemID, 2, 4, "product-id", map[string]any{"title": "product"}, map[string]any{"pack": "listing"}, []handheldInputIn{{Role: "product_front", Key: "front.png"}})
-	if params["quality"] != "high" || params["inputFidelity"] != "high" {
-		t.Fatalf("handheld fidelity params = quality:%#v fidelity:%#v", params["quality"], params["inputFidelity"])
-	}
 	if params["batchId"] != batchID.String() || params["handheldItemId"] != itemID.String() {
 		t.Fatalf("handheld identity params = batch:%#v item:%#v", params["batchId"], params["handheldItemId"])
 	}
-	if params["moderationLevel"] != "low" {
-		t.Fatalf("semantic retry option was not preserved: %#v", params)
+	for _, key := range []string{"quality", "inputFidelity", "moderationLevel"} {
+		if _, exists := params[key]; exists {
+			t.Fatalf("persisted model parameter %s leaked into retry params: %#v", key, params)
+		}
 	}
 	for _, key := range []string{"_failedProviderConfigIds", "_upstreamStage"} {
 		if _, exists := params[key]; exists {

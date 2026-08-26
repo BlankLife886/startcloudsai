@@ -9,7 +9,8 @@ func TestRequestBodyLimitAllowsPromptCoverMultipart(t *testing.T) {
 	}{
 		{path: "/api/v1/admin/prompts/4be6463a-e469-4db5-82ff-bfd3e9071f85/cover", want: promptCoverMaxBytes + (1 << 20)},
 		{path: "/api/v1/admin/canvas-workflow-templates/4be6463a-e469-4db5-82ff-bfd3e9071f85/cover", want: promptCoverMaxBytes + (1 << 20)},
-		{path: "/api/v1/admin/canvas-workflow-templates", want: 2 << 20},
+		{path: "/api/v1/admin/canvas-workflow-templates/analyze", want: 2 << 20},
+		{path: "/api/v1/admin/canvas-workflow-templates", want: canvasTemplatePackageMaxBytes + (2 << 20)},
 		{path: "/api/v1/admin/prompt-import-batches/355dea02-8dd3-4554-8092-f63e4645fc57/items/4be6463a-e469-4db5-82ff-bfd3e9071f85/cover", want: promptCoverMaxBytes + (1 << 20)},
 		{path: "/api/v1/admin/prompts/order", want: 1 << 20},
 		{path: "/api/v1/admin/prompts", want: 1 << 20},

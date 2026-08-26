@@ -146,8 +146,13 @@ async function withCanvasTaskSlot<T>(signal: AbortSignal | undefined, run: () =>
 }
 
 /** Stop a queued or running task server-side and refresh all wallet consumers. */
-export async function cancelCanvasTask(id: string) {
-    const task = await starcloudsJson<CanvasTask>(`/tasks/${encodeURIComponent(id)}`, "PATCH", { status: "canceled" });
+export async function cancelCanvasTask(id: string, options?: { keepalive?: boolean }) {
+    const task = await starcloudsRequest<CanvasTask>(`/tasks/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "canceled" }),
+        keepalive: options?.keepalive,
+    });
     scheduleWalletRefresh();
     return task;
 }
@@ -249,13 +254,12 @@ export async function requestCanvasBackgroundRemoval(reference: ReferenceImage, 
 function imageTaskParams(config: AiConfig) {
     const settings = coerceCanvasImageSettings(modelOptionMeta(config, config.model), config);
     const quality = settings.quality === "standard" ? "medium" : settings.quality === "hd" ? "high" : settings.quality;
-    const aspectRatio = settings.size || "auto";
-    const resolutionScale = settings.resolution || "1K";
-    const outputSize = canvasImageRequestSize(aspectRatio, resolutionScale);
+    const aspectRatio = settings.size;
+    const resolutionScale = settings.resolution;
+    const outputSize = resolutionScale ? canvasImageRequestSize(aspectRatio, resolutionScale) : "";
     return {
-        aspectRatio,
-        requestedAspectRatio: aspectRatio,
-        resolutionScale,
+        ...(aspectRatio ? { aspectRatio, requestedAspectRatio: aspectRatio } : {}),
+        ...(resolutionScale ? { resolutionScale } : {}),
         ...(outputSize ? { size: outputSize, outputSize } : {}),
         ...(quality ? { quality } : {}),
         ...(settings.background === "transparent" ? { transparentBackground: true } : {}),
@@ -523,8 +527,6 @@ export async function requestCanvasAssistant(messages: Array<{ role: string; con
         ...(model ? { model: modelOptionName(model) } : {}),
         ...(referenceImages.length ? { referenceImages } : {}),
         count: 1,
-        requestSize: "auto",
-        quality: "high",
         ...(reasoningEffort ? { reasoningEffort } : {}),
         idempotencyKey: crypto.randomUUID(),
     });
@@ -832,8 +834,13 @@ async function ensureCanvasAgentConversation(projectId: string, prompt: string, 
     return conversation.id;
 }
 
-export async function cancelCanvasAssistantRun(runId: string) {
-    await starcloudsJson(`/assistant/runs/${encodeURIComponent(runId)}`, "PATCH", { status: "canceled" });
+export async function cancelCanvasAssistantRun(runId: string, options?: { keepalive?: boolean }) {
+    await starcloudsRequest(`/assistant/runs/${encodeURIComponent(runId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "canceled" }),
+        keepalive: options?.keepalive,
+    });
     scheduleWalletRefresh();
 }
 
@@ -1015,8 +1022,13 @@ export async function waitForCanvasAgentRun(
             }
         } catch (error) {
             if (signal?.aborted) throw abortError();
-            if (error instanceof StarcloudsApiError && error.status >= 400 && error.status < 500 && error.status !== 408 && error.status !== 429) throw error;
-            if (!(error instanceof StarcloudsApiError) && !(error instanceof TypeError)) throw error;
+            // Each GET has its own timeout. That timeout aborts only the current
+            // request and must not be reported as an interrupted Agent turn.
+            const pollTimedOut = error instanceof DOMException && error.name === "AbortError";
+            if (!pollTimedOut) {
+                if (error instanceof StarcloudsApiError && error.status >= 400 && error.status < 500 && error.status !== 408 && error.status !== 429) throw error;
+                if (!(error instanceof StarcloudsApiError) && !(error instanceof TypeError)) throw error;
+            }
         }
         if (Date.now() >= deadline) throw new Error("画布 Agent 仍在后台处理，请稍后重试");
         await wait(pollDelay, signal);
@@ -1040,8 +1052,6 @@ export async function requestCanvasAgentTurn(prompt: string, options: CanvasAgen
             ...(options.model ? { model: modelOptionName(options.model) } : {}),
             ...(options.referenceImages?.length ? { referenceImages: options.referenceImages.slice(0, 4) } : {}),
             count: 1,
-            requestSize: "auto",
-            quality: "high",
             ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
             idempotencyKey: crypto.randomUUID(),
         });

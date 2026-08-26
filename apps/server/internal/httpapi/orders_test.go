@@ -80,6 +80,17 @@ func TestCompleteOrderCreditsOnce(t *testing.T) {
 	if grantCount != 1 {
 		t.Fatalf("grant count = %d, want 1", grantCount)
 	}
+	var sourceType string
+	var sourceID uuid.UUID
+	if err := st.Pool.QueryRow(ctx, `
+		SELECT source_type, source_id FROM notifications
+		WHERE user_id = $1 AND kind = 'order' ORDER BY created_at DESC LIMIT 1`,
+		user.ID).Scan(&sourceType, &sourceID); err != nil {
+		t.Fatalf("get order notification source: %v", err)
+	}
+	if sourceType != "order" || sourceID != order.ID {
+		t.Fatalf("notification source = %s/%s, want order/%s", sourceType, sourceID, order.ID)
+	}
 }
 
 func TestLanjingPaymentCallbackCreditsOnce(t *testing.T) {

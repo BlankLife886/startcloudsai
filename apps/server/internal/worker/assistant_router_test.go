@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantbilling"
+	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
 	"github.com/BlankLife886/startcloudsai/server/internal/config"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
@@ -20,6 +21,24 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/testdb"
 	"github.com/BlankLife886/startcloudsai/server/internal/wallet"
 )
+
+func TestAssistantProviderEndpointRemovesCredentialsAndQuery(t *testing.T) {
+	got := assistantProviderEndpoint("https://user:secret@enabled.example.com/v1/?token=secret#fragment")
+	if got != "https://enabled.example.com/v1" {
+		t.Fatalf("assistantProviderEndpoint() = %q", got)
+	}
+}
+
+func TestCRUNOpenAICompatibleBaseURL(t *testing.T) {
+	for _, input := range []string{
+		"https://api.crun.ai",
+		"https://api.crun.ai/api/v1",
+	} {
+		if got := crunOpenAICompatibleBaseURL(input); got != "https://api.crun.ai/api/v1" {
+			t.Fatalf("crunOpenAICompatibleBaseURL(%q) = %q", input, got)
+		}
+	}
+}
 
 func assistantRoutingTestWorker(t *testing.T, st *store.Store, routeLimits ...int) *Worker {
 	t.Helper()
@@ -42,11 +61,18 @@ func assistantRoutingTestWorker(t *testing.T, st *store.Store, routeLimits ...in
 			ID: "chat-provider", Name: "Chat Provider", Adapter: modelconfig.AdapterOpenAI,
 			Routes: routes, Enabled: true,
 		}},
-		Models: []modelconfig.Model{{
-			ID: "chat-model", Name: "Assistant Chat", ProviderID: "chat-provider",
-			UpstreamModel: "gpt-test", Kind: modelconfig.ModelKindChat, PriceCents: 20,
-			Public: true, Default: true, Enabled: true,
-		}},
+		Models: []modelconfig.Model{
+			{
+				ID: "chat-model", Name: "Assistant Chat", ProviderID: "chat-provider",
+				UpstreamModel: "gpt-test", Kind: modelconfig.ModelKindChat, PriceCents: 20,
+				Public: true, Default: true, Enabled: true,
+			},
+			{
+				ID: "image-model", Name: "Assistant Image", ProviderID: "chat-provider",
+				UpstreamModel: "gpt-image-test", Kind: modelconfig.ModelKindImage, PriceCents: 5,
+				MaxImages: 4, Public: true, Default: true, Enabled: true,
+			},
+		},
 	}
 	if err := modelconfig.Save(context.Background(), st.Pool, cfg); err != nil {
 		t.Fatal(err)
@@ -116,6 +142,17 @@ func insertAssistantRoutingTestRun(
 		"_chatMaxOutputTokens":         8_192,
 		"_failedChatProviderRouteKeys": []string{},
 	}
+	if mode == "image" {
+		params = map[string]any{
+			"workspace":                      workspace,
+			"count":                          2,
+			"_imageProviderConfigId":         "chat-provider",
+			"_imageModelConfigId":            "image-model",
+			"_imageCostCents":                int64(10),
+			"_imageModelEffectivePriceCents": int64(5),
+			"_failedImageProviderRouteKeys":  []string{},
+		}
+	}
 	var run *store.AssistantRun
 	if err := st.Tx(ctx, func(tx pgx.Tx) error {
 		var insertErr error
@@ -173,6 +210,34 @@ func TestClaimAssistantRunBalancesRoutesAndDefersAtCapacity(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("deferred run %s missing from outbox: %#v", runs[3].ID, ready)
+	}
+}
+
+func TestClaimAssistantImageRunUsesWeightedCapacityAndFailover(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	w := assistantRoutingTestWorker(t, st, 2, 2)
+	user := assistantRoutingTestUser(t, st, 100)
+	firstRun := insertAssistantRoutingTestRun(t, st, user.ID, "image", modelconfig.WorkspaceAssistant, 10)
+	secondRun := insertAssistantRoutingTestRun(t, st, user.ID, "image", modelconfig.WorkspaceAssistant, 10)
+
+	first, err := w.claimAssistantRun(ctx, firstRun.ID, "image-worker-a")
+	if err != nil || first == nil || assistantParamString(first.Params, "_imageProviderRouteKey", "") != "chat-provider/route-a" {
+		t.Fatalf("first image claim = %#v err=%v", first, err)
+	}
+	second, err := w.claimAssistantRun(ctx, secondRun.ID, "image-worker-b")
+	if err != nil || second == nil || assistantParamString(second.Params, "_imageProviderRouteKey", "") != "chat-provider/route-b" {
+		t.Fatalf("second image claim = %#v err=%v", second, err)
+	}
+
+	requeued, err := w.retryAssistantProviderRoute(ctx, first,
+		&c2a.UpstreamError{Message: "temporary image failure", StatusCode: http.StatusBadGateway})
+	if err != nil || !requeued {
+		t.Fatalf("image failover = %v err=%v", requeued, err)
+	}
+	stored, err := store.GetAssistantRun(ctx, st.Pool, first.ID)
+	if err != nil || stored == nil || len(assistantParamStrings(stored.Params, "_failedImageProviderRouteKeys")) != 1 {
+		t.Fatalf("stored image failover = %#v err=%v", stored, err)
 	}
 }
 

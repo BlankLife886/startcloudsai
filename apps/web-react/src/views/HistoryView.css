@@ -169,12 +169,45 @@
   border-radius: 7px;
   background: var(--ch-surface-soft);
 }
+.ch-page--history .ch-table-preview > video {
+  flex: 0 0 52px;
+  width: 52px;
+  height: 52px;
+  object-fit: cover;
+  border-radius: 7px;
+  background: #0b0b10;
+}
+.ch-page--history .ch-table-preview > .bi-soundwave {
+  display: grid;
+  place-items: center;
+  flex: 0 0 52px;
+  width: 52px;
+  height: 52px;
+  border-radius: 7px;
+  background: var(--ch-surface-soft);
+  color: var(--ch-brand);
+  font-size: 22px;
+}
 .ch-page--history .ch-preview__media > img {
   position: static;
   width: 100%;
   height: auto;
   min-height: 100%;
   object-fit: contain;
+}
+.ch-page--history .ch-preview__media > video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.ch-page--history .ch-preview__media > audio {
+  position: absolute;
+  left: 8%;
+  right: 8%;
+  top: 50%;
+  width: 84%;
+  transform: translateY(-50%);
 }
 .ch-card__placeholder.is-user-deleted {
   color: var(--ch-danger);

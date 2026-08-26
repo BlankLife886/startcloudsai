@@ -25,7 +25,6 @@ docker compose --env-file .env up -d --build
 
 ```bash
 npm run test:domain
-npm run test:tile-precision-refine:visual
 npm run test:e2e
 npx playwright test --grep @visual --project visual-desktop --project visual-mobile --grep-invert 'Ecommerce Vue to React visual contract'
 npx playwright test tests/e2e/ecommerce-migration-visual.spec.js --project visual-desktop

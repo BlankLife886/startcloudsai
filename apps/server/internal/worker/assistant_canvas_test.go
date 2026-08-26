@@ -80,6 +80,25 @@ func TestCanvasAgentInstructionsIncludeSnapshot(t *testing.T) {
 	if strings.Contains(instructions, "x、y") == false {
 		t.Fatalf("instructions must forbid coordinates = %q", instructions)
 	}
+	if !strings.Contains(instructions, "canvas_run_workflow") || !strings.Contains(instructions, "workflows") || !strings.Contains(instructions, "composerContent") {
+		t.Fatalf("instructions lack workflow semantics = %q", instructions)
+	}
+}
+
+func TestRenderCanvasSnapshotKeepsLargeJSONValid(t *testing.T) {
+	snapshot := map[string]any{"title": "大画布", "note": strings.Repeat("结构信息", 4_000)}
+	rendered := renderCanvasSnapshot(map[string]any{"canvasSnapshot": snapshot})
+	jsonStart := strings.Index(rendered, "{")
+	if jsonStart < 0 {
+		t.Fatalf("rendered = %q", rendered)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(rendered[jsonStart:]), &decoded); err != nil {
+		t.Fatalf("snapshot JSON was truncated: %v", err)
+	}
+	if decoded["note"] != snapshot["note"] {
+		t.Fatal("large snapshot content was lost")
+	}
 }
 
 func TestParseCanvasAgentOpsAcceptsGraphWithoutCoordinates(t *testing.T) {
@@ -102,6 +121,38 @@ func TestParseCanvasAgentOpsAcceptsGraphWithoutCoordinates(t *testing.T) {
 	edges, _ := ops[0]["edges"].([]map[string]any)
 	if len(edges) != 2 || edges[0]["from"] != "a" || edges[1]["to"] != "c" {
 		t.Fatalf("edges = %#v", edges)
+	}
+}
+
+func TestParseCanvasAgentOpsKeepsGraphTextOnlyForTextNodes(t *testing.T) {
+	_, ops, err := parseCanvasAgentOps(`{"ops":[{"type":"create_graph","nodes":[{"key":"copy","type":"text","content":"商品卖点"},{"key":"result","type":"image","content":"输出图片"},{"key":"config","type":"config","prompt":"绘图说明","mode":"text"}]}]}`)
+	if err != nil {
+		t.Fatalf("parse ops: %v", err)
+	}
+	nodes, _ := ops[0]["nodes"].([]map[string]any)
+	if nodes[0]["text"] != "商品卖点" {
+		t.Fatalf("text node = %#v", nodes[0])
+	}
+	if nodes[1]["text"] != nil || nodes[2]["text"] != nil {
+		t.Fatalf("non-text graph nodes retained text: %#v", nodes)
+	}
+	if nodes[2]["composerContent"] != "绘图说明" {
+		t.Fatalf("config node lost composer content: %#v", nodes[2])
+	}
+	if nodes[2]["generationMode"] != "text" {
+		t.Fatalf("config node lost generation mode: %#v", nodes[2])
+	}
+}
+
+func TestParseCanvasAgentOpsPreservesUpdatePatchContent(t *testing.T) {
+	_, ops, err := parseCanvasAgentOps(`{"ops":[{"type":"update_node","nodeId":"text-1","patch":{"title":"新标题","content":"新正文","prompt":"新提示词","metadata":{"model":"gpt-image"}}}]}`)
+	if err != nil {
+		t.Fatalf("parse ops: %v", err)
+	}
+	patch, _ := ops[0]["patch"].(map[string]any)
+	metadata, _ := patch["metadata"].(map[string]any)
+	if ops[0]["nodeId"] != "text-1" || patch["content"] != "新正文" || patch["prompt"] != "新提示词" || metadata["model"] != "gpt-image" {
+		t.Fatalf("update op = %#v", ops[0])
 	}
 }
 
@@ -192,6 +243,14 @@ func TestParseCanvasAgentOpsNormalizesDeterministicArrange(t *testing.T) {
 	if err != nil || len(ops) != 1 || ops[0]["direction"] != "LR" {
 		t.Fatalf("invalid direction fallback: ops=%#v err=%v", ops, err)
 	}
+	_, ops, err = parseCanvasAgentOps(`{"ops":[{"type":"arrange_nodes","scope":"workflow","workflowId":"workflow:config-a","direction":"LR"}]}`)
+	if err != nil || len(ops) != 1 || ops[0]["scope"] != "workflow" || ops[0]["workflowId"] != "workflow:config-a" {
+		t.Fatalf("workflow arrange: ops=%#v err=%v", ops, err)
+	}
+	_, ops, err = parseCanvasAgentOps(`{"ops":[{"type":"arrange_nodes","scope":"workflow"}]}`)
+	if err == nil || len(ops) != 0 {
+		t.Fatalf("workflow arrange without id must be rejected: ops=%#v err=%v", ops, err)
+	}
 }
 
 func TestCanvasAgentOpsForPromptEnforcesExplicitLayoutDirection(t *testing.T) {
@@ -245,12 +304,75 @@ func TestCanvasAgentRecognizesRefusal(t *testing.T) {
 }
 
 func TestCanvasAgentParsesCapabilities(t *testing.T) {
-	capabilities, err := parseCanvasAgentCapabilities("```json\n{\"capabilities\":[\"reply\",\"canvas_write\",\"unknown\"]}\n```")
+	capabilities, err := parseCanvasAgentCapabilities("```json\n{\"capabilities\":[\"reply\",\"canvas_write\",\"unknown\"],\"requiredAction\":\"canvas_write\"}\n```")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !capabilities[canvasCapabilityReply] || !capabilities[canvasCapabilityWrite] || capabilities["unknown"] {
 		t.Fatalf("capabilities = %#v", capabilities)
+	}
+}
+
+func TestCanvasAgentFallbackRecognizesWorkflowExecution(t *testing.T) {
+	capabilities := fallbackCanvasAgentCapabilities("执行工作流2")
+	if !capabilities[canvasCapabilityRead] || !capabilities[canvasCapabilityGeneration] || capabilities[canvasCapabilityWrite] {
+		t.Fatalf("capabilities = %#v", capabilities)
+	}
+}
+
+func TestCanvasAgentFallbackRecognizesSelectedImageRegeneration(t *testing.T) {
+	prompt := "参考选中节点的人物分别重新生成人物，背景改为米白色"
+	if !canvasAgentRequiresGeneration(prompt) {
+		t.Fatalf("expected deterministic generation intent for %q", prompt)
+	}
+	capabilities := fallbackCanvasAgentCapabilities(prompt)
+	if !capabilities[canvasCapabilityRead] || !capabilities[canvasCapabilityGeneration] {
+		t.Fatalf("capabilities = %#v", capabilities)
+	}
+	intent := canvasAgentIntentFromFallback(prompt)
+	if intent.RequiredAction != canvasRequiredActionGeneration {
+		t.Fatalf("fallback intent = %#v", intent)
+	}
+	tools := canvasAgentToolsForCapabilities(intent.Capabilities)
+	if !canvasAgentToolAllowed(tools, canvasRegenerateSelectionTool().Name) {
+		t.Fatalf("selected-image batch tool missing: %#v", tools)
+	}
+}
+
+func TestCanvasAgentSemanticIntentForcesGenerationWithoutKeywordMatch(t *testing.T) {
+	prompt := "这些按之前商量的都来一版"
+	if fallbackCanvasAgentCapabilities(prompt)[canvasCapabilityGeneration] {
+		t.Fatalf("test prompt unexpectedly matched keyword fallback: %q", prompt)
+	}
+	intent, err := parseCanvasAgentIntent(`{"capabilities":["reply"],"requiredAction":"generation"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent = restrictCanvasAgentIntent(prompt, intent)
+	if intent.RequiredAction != canvasRequiredActionGeneration || !intent.Capabilities[canvasCapabilityGeneration] || !intent.Capabilities[canvasCapabilityRead] {
+		t.Fatalf("semantic intent was not preserved: %#v", intent)
+	}
+	tools := canvasAgentToolsForCapabilities(intent.Capabilities)
+	if !canvasAgentToolAllowed(tools, canvasRegenerateSelectionTool().Name) {
+		t.Fatalf("semantic generation intent did not expose regeneration tool: %#v", tools)
+	}
+}
+
+func TestCanvasAgentIntentRequiresExplicitActionContract(t *testing.T) {
+	if _, err := parseCanvasAgentIntent(`{"capabilities":["generation"]}`); err == nil {
+		t.Fatal("missing requiredAction must fall back instead of silently losing the execution boundary")
+	}
+}
+
+func TestCanvasAgentRequiredActionAcceptsStartedOrCanceledBatch(t *testing.T) {
+	if !canvasAgentMutationSatisfied(true, &canvasAgentLoopState{billableAction: true}) {
+		t.Fatal("a started generation batch must satisfy the action boundary")
+	}
+	if !canvasAgentMutationSatisfied(true, &canvasAgentLoopState{userCanceled: true}) {
+		t.Fatal("a real cost-dialog cancellation must satisfy the action boundary")
+	}
+	if canvasAgentMutationSatisfied(true, &canvasAgentLoopState{}) {
+		t.Fatal("an unexecuted reply must not satisfy the action boundary")
 	}
 }
 
@@ -284,19 +406,22 @@ func TestCanvasAgentCapabilityToolsEnforceLeastPrivilege(t *testing.T) {
 	}
 }
 
-func TestCanvasAgentExplicitMutationIntentOverridesClassifierMiss(t *testing.T) {
-	prompt := "再次整理当前画布，保持全部节点按连线方向整齐排列"
-	if !canvasAgentRequiresMutation(prompt) {
-		t.Fatalf("expected deterministic mutation intent for %q", prompt)
+func TestCanvasAgentSemanticMutationIntentDoesNotDependOnPromptKeywords(t *testing.T) {
+	prompt := "这些照之前说的处理一下"
+	if fallbackCanvasAgentCapabilities(prompt)[canvasCapabilityWrite] {
+		t.Fatalf("test prompt unexpectedly matched keyword fallback: %q", prompt)
 	}
-	classified := canvasAgentCapabilities{canvasCapabilityReply: true}
-	reconciled := reconcileCanvasAgentCapabilities(prompt, classified)
-	if !reconciled[canvasCapabilityRead] || !reconciled[canvasCapabilityWrite] {
-		t.Fatalf("classifier miss was not repaired: %#v", reconciled)
+	intent, err := parseCanvasAgentIntent(`{"capabilities":["reply"],"requiredAction":"canvas_write"}`)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if classified[canvasCapabilityRead] || classified[canvasCapabilityWrite] {
-		t.Fatalf("reconciliation mutated classifier output: %#v", classified)
+	intent = restrictCanvasAgentIntent(prompt, intent)
+	if intent.RequiredAction != canvasRequiredActionWrite || !intent.Capabilities[canvasCapabilityRead] || !intent.Capabilities[canvasCapabilityWrite] {
+		t.Fatalf("semantic mutation intent was not preserved: %#v", intent)
 	}
+}
+
+func TestCanvasAgentMutationFallbackAndOptOutRemainSafe(t *testing.T) {
 	if canvasAgentRequiresMutation("如何整理当前画布的节点布局？") {
 		t.Fatal("an explanatory question must not be forced into a mutation turn")
 	}
@@ -307,11 +432,11 @@ func TestCanvasAgentExplicitMutationIntentOverridesClassifierMiss(t *testing.T) 
 		t.Fatal("an explicit execution clause must win over an explanatory phrase")
 	}
 
-	noMutation := reconcileCanvasAgentCapabilities("只说明怎么整理，不要修改画布", canvasAgentCapabilities{
-		canvasCapabilityReply: true,
-		canvasCapabilityWrite: true,
+	noMutation := restrictCanvasAgentIntent("只说明怎么整理，不要修改画布", canvasAgentIntent{
+		Capabilities:   canvasAgentCapabilities{canvasCapabilityReply: true, canvasCapabilityWrite: true},
+		RequiredAction: canvasRequiredActionWrite,
 	})
-	if noMutation[canvasCapabilityWrite] {
+	if noMutation.Capabilities[canvasCapabilityWrite] || noMutation.RequiredAction != canvasRequiredActionNone {
 		t.Fatalf("explicit mutation opt-out was overridden: %#v", noMutation)
 	}
 }
@@ -423,12 +548,27 @@ func TestCanvasAgentExposesReadAndWriteTools(t *testing.T) {
 	}
 	for _, want := range []string{
 		"canvas_reply", "canvas_apply_ops", "canvas_get_state", "canvas_get_selection", "canvas_export_snapshot",
-		"canvas_run_generation", "canvas_generation_status", "canvas_create_attachment_nodes",
+		"canvas_regenerate_selection", "canvas_run_generation", "canvas_generation_status", "canvas_run_workflow", "canvas_workflow_status", "canvas_create_attachment_nodes",
 		"site_navigate", "canvas_list_projects", "prompts_search", "assets_list", "assets_add",
 	} {
 		if !names[want] {
 			t.Fatalf("tool %s missing from %#v", want, names)
 		}
+	}
+}
+
+func TestCanvasRegenerateSelectionReadsNodeIDsFromLiveBrowserSelection(t *testing.T) {
+	tool := canvasRegenerateSelectionTool()
+	properties, _ := tool.Parameters["properties"].(map[string]any)
+	if _, exists := properties["sourceNodeIds"]; exists {
+		t.Fatalf("sourceNodeIds must not be model-provided: %#v", properties)
+	}
+	required, _ := tool.Parameters["required"].([]string)
+	if len(required) != 1 || required[0] != "instruction" {
+		t.Fatalf("required = %#v, want instruction only", required)
+	}
+	if !strings.Contains(tool.Description, "实时选区") || !strings.Contains(tool.Description, "模型不提供也不能猜测") {
+		t.Fatalf("tool must use the complete live selection: %q", tool.Description)
 	}
 }
 

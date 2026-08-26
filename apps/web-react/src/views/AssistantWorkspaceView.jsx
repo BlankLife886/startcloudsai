@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
@@ -9,6 +9,7 @@ import {
   createAssistantRun,
   deleteAssistantFile,
   deleteAssistantMessage,
+  deleteAssistantMessageImage,
   deleteAssistantTurn,
   deleteAssistantConversation,
   fetchAssistantConfig,
@@ -23,7 +24,8 @@ import {
 } from "@react/legacy-modules/services/assistantApi.js";
 import { uploadFile } from "@react/legacy-modules/services/tasksApi.js";
 import { scheduleWalletRefresh } from "@react/legacy-modules/services/walletSync.js";
-import { getWallet, listUserAssets, updateProfile } from "@react/legacy-modules/services/meApi.js";
+import { createUserAsset, getWallet, listUserAssets, updateProfile } from "@react/legacy-modules/services/meApi.js";
+import { submitShareItem } from "@react/legacy-modules/services/shareGallery.js";
 import {
   composePendingLaunchPrompt,
   takePendingPrompt,
@@ -44,7 +46,7 @@ import {
   assistantCodeLanguageLabel,
   highlightAssistantCode,
 } from "@react/legacy-modules/features/assistant/domain/assistantCodeHighlight.js";
-import { resolveVisualContext } from "@react/legacy-modules/features/assistant/domain/visualContext.js";
+import { promptNeedsRecentVisual, resolveVisualContext } from "@react/legacy-modules/features/assistant/domain/visualContext.js";
 import {
   clearAssistantHistory,
   loadAssistantHistory,
@@ -68,6 +70,9 @@ import { useAuth } from "../auth/AuthContext.jsx";
 import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";
 import { DialogMotion } from "../components/motion/DialogMotion.jsx";
+import { ConfirmDialog } from "../components/ConfirmDialog.jsx";
+import { SharePublishDialog } from "../components/SharePublishDialog.jsx";
+import { WallevenImagePreview } from "../components/common/WallevenImagePreview.jsx";
 import { assistantClipboardFiles, isAssistantImageFile, isImageToPSDRequest, isPSDFile } from "./assistant-attachments.js";
 
 const SUGGESTIONS = [
@@ -184,9 +189,15 @@ function defaultReasoningEffort(model) {
 }
 
 const RESOLUTIONS = [
-  { id: "1K", label: "标清 1K", quality: "low", longEdge: 1024 },
-  { id: "2K", label: "高清 2K", quality: "medium", longEdge: 2048 },
-  { id: "4K", label: "超清 4K", quality: "high", longEdge: 4096 },
+  { id: "1K", label: "标清 1K", longEdge: 1024 },
+  { id: "2K", label: "高清 2K", longEdge: 2048 },
+  { id: "4K", label: "超清 4K", longEdge: 4096 },
+];
+
+const IMAGE_QUALITY_OPTIONS = [
+  { id: "low", label: "低" },
+  { id: "medium", label: "中" },
+  { id: "high", label: "高" },
 ];
 
 function ratioShape(value) {
@@ -467,7 +478,7 @@ function imageGenerationMeta(message = {}, imageModels = []) {
       : "";
   return {
     modelLabel: assistantModelLabel(message.model, imageModels),
-    ratio: !ratio || ratio === "auto" ? "Auto" : ratio,
+    ratio: ratio === "auto" ? "Auto" : ratio,
     resolution: String(message.resolution || "").trim(),
     size,
     prompt: String(message.prompt || message.content || "").trim(),
@@ -500,6 +511,62 @@ async function copyAssistantImage(image) {
   if (!response.ok) throw new Error("复制图片失败");
   const blob = await response.blob();
   await navigator.clipboard.write([new ClipboardItem({ [blob.type || "image/png"]: blob })]);
+}
+
+function AssistantFullscreenPreview({
+  value,
+  actionBusy = "",
+  onClose,
+  onStep,
+  onUseReference,
+  onRegionEdit,
+  onFavorite,
+  onPublish,
+  onDelete,
+}) {
+  if (!value?.item) return null;
+  const item = value.item;
+  const galleryItems = uniqueReferenceImages(value.gallery?.length ? value.gallery : [item]);
+  const sourceUrl = imageUrl(item);
+  if (!sourceUrl) return null;
+  const index = Math.max(0, galleryItems.findIndex((entry) => entry === item || sameAssetReference(entry, imageAssetFromItem(item))));
+  const meta = value.meta && typeof value.meta === "object" ? value.meta : {};
+  const prompt = String(meta.prompt || item.revisedPrompt || item.name || "").trim();
+  const title = prompt || "AI 助手图片";
+  const gallery = galleryItems.map(imageUrl).filter(Boolean);
+  const displaySources = Object.fromEntries(galleryItems.map((entry) => [imageUrl(entry), imageDisplayUrl(entry)]).filter(([url]) => url));
+  const pending = Boolean(meta.pending);
+  return (
+    <WallevenImagePreview
+      sourceUrl={sourceUrl}
+      displaySourceUrl={imageDisplayUrl(item)}
+      title={title}
+      filename={`assistant-image-${index + 1}.png`}
+      gallery={gallery}
+      displaySources={displaySources}
+      metadata={{
+        id: item.id || "",
+        model: meta.modelLabel || meta.model || "",
+        ratio: meta.ratio || "",
+        resolution: meta.resolution || meta.size || "",
+        prompt,
+        source: meta.messageId ? "AI 助手" : "",
+      }}
+      actionBusy={pending ? "pending" : actionBusy}
+      regionEditBusy={actionBusy === "region-edit"}
+      onUseReference={() => onUseReference?.(item)}
+      onRegionEdit={(payload) => onRegionEdit?.(payload, item, meta)}
+      onFavorite={item.fileKey ? () => onFavorite?.(item, meta) : undefined}
+      onPublish={meta.runId ? () => onPublish?.(item, meta) : undefined}
+      onDelete={meta.messageId ? () => onDelete?.(item, meta) : undefined}
+      onSelect={(url) => {
+        const nextIndex = gallery.indexOf(url);
+        if (nextIndex >= 0) onStep(nextIndex - index);
+      }}
+      onClose={onClose}
+      onDownload={() => downloadAssistantImage(item, index)}
+    />
+  );
 }
 
 function formatDocumentSize(value) {
@@ -670,16 +737,54 @@ function AssistantContextMeter({ context }) {
   );
 }
 
-function imageRequestFromProposal(proposal = {}) {
-  const resolution = RESOLUTIONS.find((item) => item.id === String(proposal.resolution || "").toUpperCase()) || RESOLUTIONS[0];
-  const longEdge = resolution.longEdge;
-  const ratio = String(proposal.ratio || "auto");
-  if (ratio === "auto") return { width: longEdge, height: longEdge, requestSize: "auto", quality: resolution.quality };
+function assistantImageSettings(model, settings = {}) {
+  const capabilities = normalizeImageModelCapabilities(model || {});
+  const requestedResolution = String(settings.resolution || "").toUpperCase();
+  const resolution = capabilities.resolutions.includes(requestedResolution)
+    ? requestedResolution
+    : capabilities.resolutions[0] || "";
+  const requestedQuality = String(settings.quality || "").toLowerCase();
+  const quality = capabilities.qualities.includes(requestedQuality)
+    ? requestedQuality
+    : capabilities.qualities[0] || "";
+  const ratios = getModelAspectRatiosForResolution(model || {}, resolution);
+  const requestedRatio = String(settings.ratio || "auto").toLowerCase();
+  const ratio = ratios.includes(requestedRatio) ? requestedRatio : ratios[0] || "";
+  const resolutionMeta = RESOLUTIONS.find((item) => item.id === resolution);
+  if (!resolutionMeta) return { ratio, resolution: "", quality, width: 0, height: 0, requestSize: "" };
+  const longEdge = resolutionMeta.longEdge;
+  if (ratio === "auto") return { ratio, resolution, quality, width: longEdge, height: longEdge, requestSize: "auto" };
   const [ratioWidth, ratioHeight] = ratio.split(":").map(Number);
-  if (!ratioWidth || !ratioHeight) return { width: longEdge, height: longEdge, requestSize: `${longEdge}x${longEdge}`, quality: resolution.quality };
+  if (!ratioWidth || !ratioHeight) return { ratio, resolution, quality, width: longEdge, height: longEdge, requestSize: `${longEdge}x${longEdge}` };
   const width = ratioWidth >= ratioHeight ? longEdge : Math.round((longEdge * ratioWidth) / ratioHeight);
   const height = ratioHeight >= ratioWidth ? longEdge : Math.round((longEdge * ratioHeight) / ratioWidth);
-  return { width, height, requestSize: `${width}x${height}`, quality: resolution.quality };
+  return { ratio, resolution, quality, width, height, requestSize: `${width}x${height}` };
+}
+
+function imageRequestFromProposal(proposal = {}, model = null) {
+  return assistantImageSettings(model, proposal);
+}
+
+function proposalReferenceMode(proposal = {}, references = []) {
+  if (proposal.referenceMode === "individual" || proposal.referenceMode === "shared") {
+    return proposal.referenceMode;
+  }
+  // Compatibility for plans created before referenceMode existed. A one-output-
+  // per-reference edit is the only legacy shape that has an unambiguous mapping.
+  if (proposal.action === "edit" && references.length > 1 && Number(proposal.count) === references.length) {
+    return "individual";
+  }
+  return "shared";
+}
+
+function imageRunReferenceMode(userMessage = {}, assistantMessage = {}) {
+  const explicit = userMessage.referenceMode || assistantMessage.referenceMode;
+  if (explicit === "individual" || explicit === "shared") return explicit;
+  const references = uniqueReferenceImages(userMessage.referenceImages || []);
+  if (userMessage.proposalSourceMessageId && references.length > 1 && Number(assistantMessage.count) === references.length) {
+    return "individual";
+  }
+  return "shared";
 }
 
 function retryableImageUrl(url, version = 0) {
@@ -910,129 +1015,8 @@ function AssistantCostDialog({ payload, light, onCancel, onConfirm }) {
   );
 }
 
-function AssistantImageViewer({ value, onClose, onStep, onUseReference }) {
-  const isDark = useIsDark();
-  const [zoom, setZoom] = useState(1);
-  const [naturalSize, setNaturalSize] = useState({ width: 0, height: 0 });
-  const [busy, setBusy] = useState("");
-  useEffect(() => {
-    if (!value) return undefined;
-    document.documentElement.classList.add("assistant-image-viewer-open");
-    const handleKeydown = (event) => {
-      if (event.key === "Escape") onClose();
-      else if (event.key === "ArrowLeft") onStep(-1);
-      else if (event.key === "ArrowRight") onStep(1);
-      else if (event.key === "+" || event.key === "=") setZoom((current) => Math.min(5, current + 0.25));
-      else if (event.key === "-" || event.key === "_") setZoom((current) => Math.max(0.5, current - 0.25));
-      else if (event.key === "0") setZoom(1);
-    };
-    window.addEventListener("keydown", handleKeydown);
-    return () => {
-      document.documentElement.classList.remove("assistant-image-viewer-open");
-      window.removeEventListener("keydown", handleKeydown);
-    };
-  }, [onClose, onStep, value]);
-  useEffect(() => {
-    setZoom(1);
-    setNaturalSize({ width: 0, height: 0 });
-    setBusy("");
-  }, [value?.index, value?.item]);
-  if (!value?.item) return null;
-  const item = value.item;
-  const gallery = uniqueReferenceImages(value.gallery?.length ? value.gallery : [item]);
-  const index = Math.max(0, gallery.findIndex((entry) => entry === item || sameAssetReference(entry, imageAssetFromItem(item))));
-  const meta = value.meta && typeof value.meta === "object" ? value.meta : {};
-  const url = imageUrl(item);
-  const displayUrl = imageDisplayUrl(item);
-  if (!displayUrl && !url) return null;
-  const title = item.revisedPrompt || item.name || meta.prompt || "AI 生成图片";
-  const details = [
-    meta.modelLabel,
-    meta.ratio,
-    meta.resolution,
-    naturalSize.width > 0 ? `${naturalSize.width}×${naturalSize.height}` : meta.size,
-  ].filter(Boolean).join(" · ");
-  const copyImage = async () => {
-    try {
-      setBusy("copy");
-      await copyAssistantImage(item);
-      notificationService.success("图片已复制");
-    } catch {
-      notificationService.error("复制图片失败");
-    } finally {
-      setBusy("");
-    }
-  };
-  return createPortal(
-    <div
-      className={`image-viewer${isDark ? " is-dark" : ""}`}
-      role="dialog"
-      aria-modal="true"
-      aria-label="图片预览"
-      onMouseDown={(event) => {
-        const target = event.target;
-        if (!(target instanceof Element)) return;
-        if (target === event.currentTarget || target.classList.contains("image-viewer__stage") || target.classList.contains("image-viewer__canvas") || target.classList.contains("image-viewer__dock")) {
-          onClose();
-        }
-      }}
-    >
-      <button className="image-viewer__close" type="button" title="关闭" aria-label="关闭预览" onClick={onClose}><i className="bi bi-x-lg" /></button>
-      <div className="image-viewer__stage">
-        {gallery.length > 1 && <button className="image-viewer__nav is-previous" type="button" title="上一张" aria-label="上一张" data-click-guard="off" onClick={() => onStep(-1)}><i className="bi bi-chevron-left" /></button>}
-        <div
-          className={`image-viewer__canvas${zoom > 1 ? " is-zoomed" : ""}`}
-          onWheel={(event) => { event.preventDefault(); setZoom((current) => Math.min(5, Math.max(0.5, current + (event.deltaY < 0 ? 0.25 : -0.25)))); }}
-          onDoubleClick={() => setZoom((current) => current === 1 ? 2 : 1)}
-        >
-          <img
-            src={displayUrl}
-            alt={title}
-            draggable="false"
-            style={{ transform: `scale(${zoom})` }}
-            onLoad={(event) => setNaturalSize({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })}
-            onError={(event) => {
-              const image = event.currentTarget;
-              if (url && image.src !== url && !image.dataset.fallbackApplied) {
-                image.dataset.fallbackApplied = "1";
-                image.src = url;
-              }
-            }}
-          />
-        </div>
-        {gallery.length > 1 && <button className="image-viewer__nav is-next" type="button" title="下一张" aria-label="下一张" data-click-guard="off" onClick={() => onStep(1)}><i className="bi bi-chevron-right" /></button>}
-      </div>
-      <div className="image-viewer__dock">
-        <div className="image-viewer__copy">
-          <strong>{gallery.length > 1 ? `${index + 1} / ${gallery.length}` : title}</strong>
-          {details ? <small>{details}</small> : null}
-        </div>
-        <div className="image-viewer__tools" aria-label="预览操作">
-          <button type="button" title="复制图片" aria-label="复制图片" disabled={busy === "copy"} onClick={() => void copyImage()}><i className={`bi ${busy === "copy" ? "bi-check2" : "bi-copy"}`} /></button>
-          {onUseReference ? <button type="button" title="用作参考图" aria-label="用作参考图" onClick={() => onUseReference(item)}><i className="bi bi-image" /></button> : null}
-          <button type="button" title="下载原图" aria-label="下载原图" onClick={() => downloadAssistantImage(item, index)}><i className="bi bi-download" /></button>
-          <span />
-          <button type="button" disabled={zoom <= 0.5} title="缩小" aria-label="缩小" onClick={() => setZoom((current) => Math.max(0.5, current - 0.25))}><i className="bi bi-zoom-out" /></button>
-          <output>{Math.round(zoom * 100)}%</output>
-          <button type="button" disabled={zoom >= 5} title="放大" aria-label="放大" onClick={() => setZoom((current) => Math.min(5, current + 0.25))}><i className="bi bi-zoom-in" /></button>
-        </div>
-        {gallery.length > 1 && (
-          <div className="image-viewer__film" aria-label="全部图片">
-            {gallery.map((entry, entryIndex) => (
-              <button key={entry.id || entry.fileKey || entryIndex} type="button" className={entryIndex === index ? "is-active" : ""} aria-label={`查看第 ${entryIndex + 1} 张`} onClick={() => onStep(entryIndex - index)}>
-                <img src={imageThumbUrl(entry) || imageUrl(entry)} alt="" />
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>,
-    document.body,
-  );
-}
-
 function GeneratedImageGrid({ message, imageModels, loadedImages, failedImages, imageRetryVersions, onOpenImage, onImageLoad, onImageError, onImageRetry, onUseReference }) {
-  const meta = imageGenerationMeta(message, imageModels);
+  const meta = { ...imageGenerationMeta(message, imageModels), messageId: message.id, runId: message.runId || "", model: message.model || "", requestRatio: message.requestRatio || message.ratio || "", requestSize: message.requestSize || "", width: message.width, height: message.height, quality: message.quality || "", pending: Boolean(message.pending) };
   const params = [meta.modelLabel, meta.ratio, meta.resolution].filter(Boolean);
   return (
     <div className={`generated-images${message.images.length === 1 ? " is-single" : ""}${message.images.length > 2 ? " is-many" : ""}`} style={{ "--generated-ratio": imageRatioValue(message), "--image-slot-count": message.images.length }}>
@@ -1618,7 +1602,7 @@ function AgentProposal({ message, imageModels, generating, executed, attachedRef
     };
   }, [openMenu]);
   const proposal = message.proposal;
-  const referenceImages = uniqueReferenceImages(attachedReferences?.length ? attachedReferences : proposal?.referenceImages);
+  const referenceImages = uniqueReferenceImages(attachedReferences?.length ? attachedReferences : promptNeedsRecentVisual(message.prompt) ? proposal?.referenceImages : []);
   if (!proposal) return null;
   if (proposal.dismissed) {
     return (
@@ -1634,9 +1618,12 @@ function AgentProposal({ message, imageModels, generating, executed, attachedRef
   const selectedModel = imageModels.find((item) => item.model === proposal.model) || imageModels[0] || null;
   const modelCapabilities = normalizeImageModelCapabilities(selectedModel || {});
   const resolutions = RESOLUTIONS.filter((item) => modelCapabilities.resolutions.includes(item.id));
+  const qualities = IMAGE_QUALITY_OPTIONS.filter((item) => modelCapabilities.qualities.includes(item.id));
   const ratios = getModelAspectRatiosForResolution(selectedModel, proposal.resolution).map(ratioOption);
   const counts = imageCountOptions(selectedModel);
-  const proposalCount = clampImageCount(proposal.count || 1, selectedModel, 1);
+  const referenceMode = proposalReferenceMode(proposal, referenceImages);
+  const individualReferences = referenceMode === "individual" && referenceImages.length > 0;
+  const proposalCount = individualReferences ? referenceImages.length : clampImageCount(proposal.count || 1, selectedModel, 1);
   const summary = proposal.planningSummary || proposal.reason || "";
   const busy = Boolean(proposal.submitting);
   const toggleMenu = (id) => setOpenMenu((current) => current === id ? "" : id);
@@ -1692,7 +1679,13 @@ function AgentProposal({ message, imageModels, generating, executed, attachedRef
             onToggle={() => toggleMenu("model")}
             onPick={(nextModel) => {
               setOpenMenu("");
-              onChange({ model: nextModel, count: clampImageCount(proposal.count, imageModels.find((item) => item.model === nextModel) || selectedModel, 1) });
+              const model = imageModels.find((item) => item.model === nextModel) || selectedModel;
+              if (individualReferences && imageModelMaxCount(model) < referenceImages.length) {
+                notificationService.warning(`该模型最多生成 ${imageModelMaxCount(model)} 张，无法逐张处理 ${referenceImages.length} 张参考图`);
+                return;
+              }
+              const settings = assistantImageSettings(model, proposal);
+              onChange({ model: nextModel, ...settings, count: individualReferences ? referenceImages.length : clampImageCount(proposal.count, model, 1) });
             }}
             options={imageModels.map((model) => ({
               id: model.model,
@@ -1707,11 +1700,11 @@ function AgentProposal({ message, imageModels, generating, executed, attachedRef
             <div className="agent-proposal-readonly">{proposal.modelName || proposal.model || "模型不可用"}</div>
           </div>
         )}
-        <ProposalSelect
+        {ratios.length ? <ProposalSelect
           id="ratio"
           label="比例"
           ariaLabel="画面比例"
-          valueLabel={ratios.find((item) => item.id === (proposal.ratio || "auto"))?.label || proposal.ratio || "自动"}
+          valueLabel={ratios.find((item) => item.id === proposal.ratio)?.label || proposal.ratio || ratios[0]?.label}
           disabled={busy}
           open={openMenu === "ratio"}
           onToggle={() => toggleMenu("ratio")}
@@ -1719,16 +1712,16 @@ function AgentProposal({ message, imageModels, generating, executed, attachedRef
           options={ratios.map((ratio) => ({
             id: ratio.id,
             label: ratio.label,
-            selected: (proposal.ratio || "auto") === ratio.id,
+            selected: proposal.ratio === ratio.id,
             mark: ratio.shape,
             markStyle: ratioPreviewStyle(ratio.id),
           }))}
-        />
-        <ProposalSelect
+        /> : null}
+        {resolutions.length ? <ProposalSelect
           id="resolution"
           label="清晰度"
           ariaLabel="清晰度"
-          valueLabel={resolutions.find((item) => item.id === (proposal.resolution || resolutions[0]?.id))?.label || "标清 1K"}
+          valueLabel={resolutions.find((item) => item.id === proposal.resolution)?.label || resolutions[0]?.label}
           disabled={busy}
           open={openMenu === "resolution"}
           onToggle={() => toggleMenu("resolution")}
@@ -1736,15 +1729,30 @@ function AgentProposal({ message, imageModels, generating, executed, attachedRef
           options={resolutions.map((option) => ({
             id: option.id,
             label: option.label,
-            selected: (proposal.resolution || resolutions[0]?.id || "1K") === option.id,
+            selected: proposal.resolution === option.id,
           }))}
-        />
+        /> : null}
+        {qualities.length ? <ProposalSelect
+          id="quality"
+          label="质量"
+          ariaLabel="图片质量"
+          valueLabel={qualities.find((item) => item.id === (proposal.quality || qualities[0]?.id))?.label || qualities[0]?.label}
+          disabled={busy}
+          open={openMenu === "quality"}
+          onToggle={() => toggleMenu("quality")}
+          onPick={(quality) => { setOpenMenu(""); onChange({ quality }); }}
+          options={qualities.map((option) => ({
+            id: option.id,
+            label: option.label,
+            selected: (proposal.quality || qualities[0]?.id) === option.id,
+          }))}
+        /> : null}
         <ProposalSelect
           id="count"
           label="数量"
           ariaLabel="生成数量"
-          valueLabel={`${proposalCount} 张`}
-          disabled={busy}
+          valueLabel={`${proposalCount} 张${individualReferences ? " · 逐张" : ""}`}
+          disabled={busy || individualReferences}
           open={openMenu === "count"}
           onToggle={() => toggleMenu("count")}
           onPick={(count) => { setOpenMenu(""); onChange({ count: Number(count) }); }}
@@ -1818,18 +1826,17 @@ function AssistantMessageStatus({ message, status, contextUsage, expanded, onTog
   );
 }
 
-function ImageGenerationStage({ message, imageModelLabel, loadedImages, onOpenImage, onImageLoad }) {
+function ImageGenerationStage({ message, imageModelLabel, imageModels, loadedImages, onOpenImage, onImageLoad }) {
   const elapsedMs = useElapsedMs(usageStartedAtMs(message), Boolean(message.pending));
   const preparing = message.statusStage === "preparing-image";
+  const previewMeta = { ...imageGenerationMeta(message, imageModels), messageId: message.id, runId: message.runId || "", model: message.model || "", requestRatio: message.requestRatio || message.ratio || "", requestSize: message.requestSize || "", width: message.width, height: message.height, quality: message.quality || "", pending: Boolean(message.pending) };
+  const stageParameters = [message.ratio, message.resolution, message.quality].filter(Boolean);
   return (
     <div className="image-generation-stage">
       <div className="image-generation-summary">
         <strong>{message.prompt || "正在生成图片"}</strong>
         <span title={imageModelLabel}>{imageModelLabel}</span>
-        <i />
-        <span>{message.ratio || "智能"}</span>
-        <i />
-        <span>{message.resolution || "1K"}</span>
+        {stageParameters.map((value) => <Fragment key={value}><i /><span>{value}</span></Fragment>)}
         <i />
         <span className="image-generation-elapsed" aria-label="已用时">{formatElapsedClock(elapsedMs)}</span>
       </div>
@@ -1840,7 +1847,7 @@ function ImageGenerationStage({ message, imageModelLabel, loadedImages, onOpenIm
           return (
             <div key={index} className={`image-dream-slot${image ? " is-ready" : ""}${loaded ? " is-loaded" : ""}`}>
               {image && (
-                <button className="image-dream-preview" type="button" title="查看大图" onClick={() => onOpenImage(image, index, message.images)}>
+                <button className="image-dream-preview" type="button" title="查看大图" onClick={() => onOpenImage(image, index, message.images, previewMeta)}>
                   <img src={imageThumbUrl(image)} alt={image.revisedPrompt || "AI 生成图片"} onLoad={() => onImageLoad(message.id, index)} />
                 </button>
               )}
@@ -1869,7 +1876,7 @@ function AssistantMessageRow({ message, turnId, showDate, expanded, copied, gene
         {status ? <AssistantMessageStatus message={message} status={status} contextUsage={contextUsage} expanded={expanded} onToggle={onToggleStatus} /> : null}
         {message.role === "user" && !editing && <div className="user-message-actions" aria-label="用户消息操作"><button type="button" title={copied ? "已复制" : "复制问题"} aria-label={copied ? "已复制" : "复制问题"} className={copied ? "is-copied" : ""} onClick={() => onCopy(message)}><i className={`bi ${copied ? "bi-check2" : "bi-copy"}`} /></button>{isLastUser && <button type="button" title="编辑问题" aria-label="编辑问题" disabled={generating} onClick={() => onStartEdit(message)}><i className="bi bi-pencil" /></button>}{isLastUser && <button type="button" title="重试" aria-label="重试" disabled={generating} onClick={() => onRetry(message)}><i className="bi bi-arrow-repeat" /></button>}</div>}
         {message.role === "user" && editing ? <div className="user-message-editor"><textarea autoFocus rows={3} aria-label="编辑问题" value={editingDraft} onChange={(event) => onEditDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); onSubmitEdit(message); } }} /><footer><span>{assistantCharacterCount(editingDraft.trim()).toLocaleString("zh-CN")} / 12,000</span><button type="button" onClick={onCancelEdit}>取消</button><button className="is-primary" type="button" disabled={!editingDraft.trim() || assistantCharacterCount(editingDraft.trim()) > MAX_ASSISTANT_MESSAGE_CHARACTERS || generating} onClick={() => onSubmitEdit(message)}><i className="bi bi-arrow-up" /><span>发送</span></button></footer></div> : <div className={`message-content${message.error ? " has-error" : ""}`}>
-          {message.pending && message.kind === "image" ? <ImageGenerationStage message={message} imageModelLabel={imageModelLabel} loadedImages={loadedImages} onOpenImage={onOpenImage} onImageLoad={onImageLoad} /> : <>
+          {message.pending && message.kind === "image" ? <ImageGenerationStage message={message} imageModelLabel={imageModelLabel} imageModels={imageModels} loadedImages={loadedImages} onOpenImage={onOpenImage} onImageLoad={onImageLoad} /> : <>
             {message.role === "user" && message.quoted && <div className="sent-quote"><i className="bi bi-quote" /><span>[{message.quoted.kind}] {message.quoted.content}</span></div>}
             {message.role === "user" && uniqueReferenceImages(message.referenceImages).length > 0 && <div className="sent-reference-images">{uniqueReferenceImages(message.referenceImages).map((image, index, images) => <button key={image.id || image.fileKey || index} type="button" title="查看参考图" onClick={() => onOpenImage(image, index, images)}><img src={imageThumbUrl(image)} alt={image.name || "参考图"} /></button>)}</div>}
             {message.role === "user" && message.attachments?.length > 0 && <div className="assistant-document-chips">{message.attachments.map((item) => <span key={item.id} className="assistant-document-chip"><i className={`bi ${documentIcon(item)}`} /><span><strong>{item.name}</strong><small>{formatDocumentSize(item.sizeBytes)} · {item.pageCount ? `${item.pageCount} 页` : "文档"}</small></span></span>)}</div>}
@@ -1894,6 +1901,10 @@ export function AssistantWorkspaceView() {
   const mountedRef = useRef(true);
   const fileInputRef = useRef(null);
   const textareaRef = useRef(null);
+  const composerRef = useRef(null);
+  const composerZoneRef = useRef(null);
+  const composerInputHeightRef = useRef(0);
+  const composerResizeStateRef = useRef(null);
   const recognitionRef = useRef(null);
   const draftRef = useRef("");
   const voiceBaseDraftRef = useRef("");
@@ -1958,10 +1969,9 @@ export function AssistantWorkspaceView() {
   const [reasoningEffort, setReasoningEffort] = useState("");
   const [imageModel, setImageModel] = useState("");
   const [generationRatio, setGenerationRatio] = useState("auto");
-  const [generationResolution, setGenerationResolution] = useState("1K");
+  const [generationResolution, setGenerationResolution] = useState("");
+  const [generationQuality, setGenerationQuality] = useState("");
   const [generationCount, setGenerationCount] = useState(2);
-  const [customImageWidth, setCustomImageWidth] = useState(1024);
-  const [customImageHeight, setCustomImageHeight] = useState(1024);
   const [references, setReferences] = useState([]);
   const [documents, setDocuments] = useState([]);
   const [uploading, setUploading] = useState(false);
@@ -1970,9 +1980,15 @@ export function AssistantWorkspaceView() {
   const [activeRuns, setActiveRuns] = useState({});
   const [costPayload, setCostPayload] = useState(null);
   const [stopConfirmOpen, setStopConfirmOpen] = useState(false);
+  const [stopBusy, setStopBusy] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [resumeCandidates, setResumeCandidates] = useState([]);
   const [selectedImage, setSelectedImage] = useState(null);
+  const [imageActionBusy, setImageActionBusy] = useState("");
+  const [imageDeleteTarget, setImageDeleteTarget] = useState(null);
+  const [imageDeleteBusy, setImageDeleteBusy] = useState(false);
+  const [shareTarget, setShareTarget] = useState(null);
+  const [shareSubmitting, setShareSubmitting] = useState(false);
   const [quotedMessage, setQuotedMessage] = useState(null);
   const [conversationPeek, setConversationPeek] = useState(null);
   const [loadedImages, setLoadedImages] = useState(() => new Set());
@@ -1985,6 +2001,8 @@ export function AssistantWorkspaceView() {
   const [activeMessageMenuId, setActiveMessageMenuId] = useState("");
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [isReturningToBottom, setIsReturningToBottom] = useState(false);
+  const [composerManuallyResized, setComposerManuallyResized] = useState(false);
+  const [composerResizing, setComposerResizing] = useState(false);
   const [visibleMessageLimit, setVisibleMessageLimit] = useState(MESSAGE_BATCH_SIZE);
   const [activeNavigatorMessageId, setActiveNavigatorMessageId] = useState("");
   const [threadSearch, setThreadSearch] = useState("");
@@ -1995,6 +2013,10 @@ export function AssistantWorkspaceView() {
   const messages = activeConversation?.messages || [];
   messagesRef.current = messages;
   const activeRun = activeRuns[activeId] || null;
+  const composerScrolledAway = messages.length > 0
+    && !isAtBottom
+    && !isReturningToBottom
+    && !composerManuallyResized;
   const firstRenderedMessageIndex = Math.max(0, messages.length - visibleMessageLimit);
   const renderedMessages = messages.slice(firstRenderedMessageIndex);
   const hiddenMessageCount = firstRenderedMessageIndex;
@@ -2068,6 +2090,12 @@ export function AssistantWorkspaceView() {
     );
     return RESOLUTIONS.filter((item) => supported.has(item.id));
   }, [selectedImageModel]);
+  const availableQualities = useMemo(() => {
+    const supported = new Set(
+      normalizeImageModelCapabilities(selectedImageModel || {}).qualities,
+    );
+    return IMAGE_QUALITY_OPTIONS.filter((item) => supported.has(item.id));
+  }, [selectedImageModel]);
   const listableConversations = useMemo(
     () => conversations.filter((item) => (item?.messages || []).length > 0),
     [conversations],
@@ -2139,6 +2167,10 @@ export function AssistantWorkspaceView() {
   const navigatorItems = useMemo(() => messages.filter((message) => message.role === "user").map((message) => ({ id: message.id, time: formatTime(message.createdAt), preview: messagePreview(message.content) })), [messages]);
   const activeNavigatorIndex = navigatorItems.findIndex((item) => item.id === activeNavigatorMessageId);
 
+  const patchConversation = useCallback((id, patcher) => {
+    setConversations((current) => current.map((item) => item.id === id ? patcher(item) : item));
+  }, []);
+
   const toggleStatus = useCallback((id) => setExpandedStatusId((current) => current === id ? "" : id), []);
   const copyMessage = useCallback(async (message) => {
     try {
@@ -2176,6 +2208,77 @@ export function AssistantWorkspaceView() {
       return { ...current, index, item: current.gallery[index] };
     });
   }, []);
+  const favoriteAssistantImage = useCallback(async (item, meta) => {
+    if (!item?.fileKey || imageActionBusy) return;
+    setImageActionBusy("favorite");
+    try {
+      const response = await fetch(imageUrl(item), { credentials: "same-origin" });
+      if (!response.ok) throw new Error("图片读取失败");
+      const blob = await response.blob();
+      const file = new File([blob], `assistant-asset-${Date.now()}.png`, { type: blob.type || "image/png" });
+      const uploaded = await uploadFile(file);
+      const asset = await createUserAsset({
+        title: String(meta?.prompt || item.revisedPrompt || "AI 助手图片").slice(0, 120),
+        fileKey: uploaded.key,
+        thumbnailKey: uploaded.thumbnailKey,
+        contentType: uploaded.contentType || file.type,
+      });
+      setLibraryAssets((current) => [asset, ...current.filter((entry) => entry.id !== asset.id)]);
+      libraryAssetsLoadedRef.current = false;
+      notificationService.success("已收藏到我的资产");
+    } catch (caught) {
+      notificationService.error(caught?.code === "asset_exists" ? "这张图片已经在资产库中" : caught?.message || "收藏失败");
+    } finally {
+      setImageActionBusy("");
+    }
+  }, [imageActionBusy]);
+  const requestPublishImage = useCallback((item, meta) => {
+    setSelectedImage(null);
+    setShareTarget({ item, meta: meta || {} });
+  }, []);
+  const requestDeleteImage = useCallback((item, meta) => {
+    setSelectedImage(null);
+    setImageDeleteTarget({ item, meta: meta || {} });
+  }, []);
+  const confirmDeleteImage = useCallback(async () => {
+    const target = imageDeleteTarget;
+    const messageId = target?.meta?.messageId;
+    const imageId = target?.item?.id || target?.item?.fileKey;
+    if (!messageId || !imageId || imageDeleteBusy || !activeConversation) return;
+    setImageDeleteBusy(true);
+    try {
+      const result = await deleteAssistantMessageImage(messageId, imageId);
+      patchConversation(activeConversation.id, (conversation) => ({
+        ...conversation,
+        updatedAt: new Date().toISOString(),
+        messages: result?.messageDeleted
+          ? conversation.messages.filter((message) => message.id !== messageId)
+          : conversation.messages.map((message) => message.id === messageId
+            ? { ...message, images: (message.images || []).filter((image) => String(image.id || image.fileKey) !== String(imageId)) }
+            : message),
+      }));
+      setImageDeleteTarget(null);
+      notificationService.success("图片已删除");
+    } catch (caught) {
+      notificationService.error(caught?.message || "删除图片失败");
+    } finally {
+      setImageDeleteBusy(false);
+    }
+  }, [activeConversation, imageDeleteBusy, imageDeleteTarget, patchConversation]);
+  const submitAssistantShare = useCallback(async (options) => {
+    const runId = shareTarget?.meta?.runId;
+    if (!runId || shareSubmitting) return;
+    setShareSubmitting(true);
+    try {
+      await submitShareItem({ taskId: runId, ...options });
+      notificationService.success("已提交到社区审核");
+      setShareTarget(null);
+    } catch (caught) {
+      notificationService.error(caught?.message || "发布失败");
+    } finally {
+      setShareSubmitting(false);
+    }
+  }, [shareSubmitting, shareTarget]);
   const markImageLoaded = useCallback((messageId, index) => {
     const key = `${messageId}-${index}`;
     setLoadedImages((current) => {
@@ -2216,10 +2319,6 @@ export function AssistantWorkspaceView() {
       return next;
     });
     setImageRetryVersions((current) => ({ ...current, [key]: (current[key] || 0) + 1 }));
-  }, []);
-
-  const patchConversation = useCallback((id, patcher) => {
-    setConversations((current) => current.map((item) => item.id === id ? patcher(item) : item));
   }, []);
 
   const setConversationRun = useCallback((conversationId, run) => {
@@ -2360,10 +2459,151 @@ export function AssistantWorkspaceView() {
   useEffect(() => {
     const input = textareaRef.current;
     if (!input) return;
+    if (composerInputHeightRef.current > 0) return;
     const compact = messages.length > 0 && !isAtBottom && !isReturningToBottom;
     input.style.height = "auto";
     input.style.height = `${Math.min(input.scrollHeight, compact ? 36 : 168)}px`;
   }, [draft, isAtBottom, isReturningToBottom, messages.length]);
+
+  const getComposerInputHeightBounds = useCallback(() => {
+    const zone = composerZoneRef.current;
+    const input = textareaRef.current;
+    const main = zone?.closest(".assistant-main");
+    const inputHeight = input?.getBoundingClientRect().height || 56;
+    const zoneHeight = zone?.getBoundingClientRect().height || 168;
+    const mainHeight = main?.getBoundingClientRect().height || window.innerHeight;
+    const minimum = 56;
+    const mobile = window.innerWidth <= 640;
+    const preferredMaximum = Math.min(mobile ? 280 : 420, mainHeight * (mobile ? 0.42 : 0.52));
+    const nonInputHeight = Math.max(96, zoneHeight - inputHeight);
+    const readableMessageHeight = mobile ? 160 : 220;
+    const availableMaximum = mainHeight - nonInputHeight - readableMessageHeight;
+    return {
+      minimum,
+      maximum: Math.max(minimum, Math.floor(Math.min(preferredMaximum, availableMaximum))),
+    };
+  }, []);
+
+  const applyComposerInputHeight = useCallback((value) => {
+    const composer = composerRef.current;
+    if (!composer) return 0;
+    const { minimum, maximum } = getComposerInputHeightBounds();
+    const next = Math.round(Math.min(maximum, Math.max(minimum, Number(value) || minimum)));
+    composerInputHeightRef.current = next;
+    composer.style.setProperty("--assistant-composer-input-height", `${next}px`);
+    return next;
+  }, [getComposerInputHeightBounds]);
+
+  const startComposerResize = useCallback((event) => {
+    if (event.button !== 0 || !textareaRef.current || !composerRef.current) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const startHeight = applyComposerInputHeight(
+      composerInputHeightRef.current || textareaRef.current.getBoundingClientRect().height,
+    );
+    composerResizeStateRef.current = {
+      pointerId: event.pointerId,
+      startY: event.clientY,
+      startHeight,
+      followBottom: atBottomRef.current || returningRef.current,
+    };
+    composerRef.current.classList.add("is-manually-resized", "is-resizing");
+    setComposerManuallyResized(true);
+    setComposerResizing(true);
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    document.documentElement.classList.add("assistant-composer-resizing");
+  }, [applyComposerInputHeight]);
+
+  const moveComposerResize = useCallback((event) => {
+    const state = composerResizeStateRef.current;
+    if (!state || state.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    applyComposerInputHeight(state.startHeight + state.startY - event.clientY);
+  }, [applyComposerInputHeight]);
+
+  const finishComposerResize = useCallback((event) => {
+    const state = composerResizeStateRef.current;
+    if (!state || (event?.pointerId !== undefined && state.pointerId !== event.pointerId)) return;
+    composerResizeStateRef.current = null;
+    composerRef.current?.classList.remove("is-resizing");
+    setComposerResizing(false);
+    document.documentElement.classList.remove("assistant-composer-resizing");
+    if (event?.currentTarget?.hasPointerCapture?.(state.pointerId)) {
+      event.currentTarget.releasePointerCapture(state.pointerId);
+    }
+    textareaRef.current?.focus({ preventScroll: true });
+  }, []);
+
+  const resetComposerInputHeight = useCallback(() => {
+    composerResizeStateRef.current = null;
+    composerInputHeightRef.current = 0;
+    composerRef.current?.style.removeProperty("--assistant-composer-input-height");
+    composerRef.current?.classList.remove("is-manually-resized", "is-resizing");
+    setComposerManuallyResized(false);
+    setComposerResizing(false);
+    document.documentElement.classList.remove("assistant-composer-resizing");
+    window.requestAnimationFrame(() => {
+      const input = textareaRef.current;
+      if (!input) return;
+      input.style.height = "auto";
+      input.style.height = `${Math.min(input.scrollHeight, 168)}px`;
+      input.focus({ preventScroll: true });
+    });
+  }, []);
+
+  const resizeComposerFromKeyboard = useCallback((event) => {
+    if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const { minimum, maximum } = getComposerInputHeightBounds();
+    const current = composerInputHeightRef.current || textareaRef.current?.getBoundingClientRect().height || minimum;
+    const next = event.key === "Home"
+      ? minimum
+      : event.key === "End"
+        ? maximum
+        : current + (event.key === "ArrowUp" ? 16 : -16);
+    composerRef.current?.classList.add("is-manually-resized");
+    setComposerManuallyResized(true);
+    applyComposerInputHeight(next);
+  }, [applyComposerInputHeight, getComposerInputHeightBounds]);
+
+  useLayoutEffect(() => {
+    const zone = composerZoneRef.current;
+    const workspace = zone?.closest(".assistant-workspace");
+    if (!zone || !workspace) return undefined;
+    let frame = 0;
+    let previousHeight = 0;
+    const syncReservedSpace = () => {
+      const height = Math.ceil(zone.getBoundingClientRect().height);
+      if (!height || height === previousHeight) return;
+      previousHeight = height;
+      workspace.style.setProperty("--assistant-composer-reserved-space", `${Math.max(250, height + 32)}px`);
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        const resizeState = composerResizeStateRef.current;
+        if (!atBottomRef.current && !returningRef.current && !resizeState?.followBottom) return;
+        const scroller = messageScrollerRef.current;
+        if (scroller) scroller.scrollTop = scroller.scrollHeight;
+      });
+    };
+    syncReservedSpace();
+    const observer = new ResizeObserver(syncReservedSpace);
+    observer.observe(zone);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer.disconnect();
+      workspace.style.removeProperty("--assistant-composer-reserved-space");
+      document.documentElement.classList.remove("assistant-composer-resizing");
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!composerManuallyResized) return undefined;
+    const clampHeight = () => applyComposerInputHeight(composerInputHeightRef.current);
+    window.addEventListener("resize", clampHeight, { passive: true });
+    clampHeight();
+    return () => window.removeEventListener("resize", clampHeight);
+  }, [applyComposerInputHeight, composerManuallyResized, documents.length, references.length, uploading]);
 
   const loadWorkspace = useCallback(async () => {
     const controller = new AbortController();
@@ -2417,9 +2657,8 @@ export function AssistantWorkspaceView() {
       if (CREATION_TYPES.some((item) => item.id === workspaceState.creationType)) setCreationType(workspaceState.creationType);
       if (IMAGE_ASPECT_RATIOS.includes(workspaceState.generationRatio)) setGenerationRatio(workspaceState.generationRatio);
       if (RESOLUTIONS.some((item) => item.id === String(workspaceState.generationResolution || "").toUpperCase())) setGenerationResolution(String(workspaceState.generationResolution).toUpperCase());
+      if (IMAGE_QUALITY_OPTIONS.some((item) => item.id === String(workspaceState.generationQuality || "").toLowerCase())) setGenerationQuality(String(workspaceState.generationQuality).toLowerCase());
       if (Number.isFinite(Number(workspaceState.generationCount))) setGenerationCount(clampImageCount(workspaceState.generationCount, config.imageModels.find((item) => item.model === (workspaceState.creationType === "image" ? workspaceState.generationModel : "")) || config.imageModels[0]));
-      if (Number.isFinite(Number(workspaceState.customImageWidth))) setCustomImageWidth(Math.min(4096, Math.max(256, Number(workspaceState.customImageWidth))));
-      if (Number.isFinite(Number(workspaceState.customImageHeight))) setCustomImageHeight(Math.min(4096, Math.max(256, Number(workspaceState.customImageHeight))));
       const savedModel = String(workspaceState.generationModel || "").trim();
       if (workspaceState.creationType === "image" && config.imageModels.some((item) => item.model === savedModel)) setImageModel(savedModel);
       if (workspaceState.creationType !== "image" && config.conversationModels.some((item) => item.model === savedModel)) setConversationModel(savedModel);
@@ -2566,13 +2805,12 @@ export function AssistantWorkspaceView() {
       generationModel,
       reasoningEffort: activeReasoningEffort,
       generationResolution,
+      generationQuality,
       generationCount,
-      customImageWidth,
-      customImageHeight,
       pinnedIds,
     });
     syncConversationUrl(activeId);
-  }, [activeId, activeReasoningEffort, creationType, customImageHeight, customImageWidth, draft, generationCount, generationModel, generationRatio, generationResolution, loading, mode, pinnedIds, workspaceScope]);
+  }, [activeId, activeReasoningEffort, creationType, draft, generationCount, generationModel, generationQuality, generationRatio, generationResolution, loading, mode, pinnedIds, workspaceScope]);
 
   useEffect(() => {
     const handleKeydown = (event) => {
@@ -2687,11 +2925,20 @@ export function AssistantWorkspaceView() {
   }, [assetLibraryOpen, auth.isAuthenticated, workspaceScope]);
 
   useEffect(() => {
-    if (!availableResolutions.length) return;
-    if (!availableResolutions.some((item) => item.id === generationResolution)) {
+    if (!availableResolutions.length) {
+      if (generationResolution) setGenerationResolution("");
+    } else if (!availableResolutions.some((item) => item.id === generationResolution)) {
       setGenerationResolution(availableResolutions[0].id);
     }
   }, [availableResolutions, generationResolution]);
+
+  useEffect(() => {
+    if (!availableQualities.length) {
+      if (generationQuality) setGenerationQuality("");
+    } else if (!availableQualities.some((item) => item.id === generationQuality)) {
+      setGenerationQuality(availableQualities[0].id);
+    }
+  }, [availableQualities, generationQuality]);
 
   useEffect(() => {
     if (!availableRatios.length) return;
@@ -2733,26 +2980,6 @@ export function AssistantWorkspaceView() {
       window.clearInterval(timer);
     };
   }, [pendingDocumentKey]);
-
-  useEffect(() => {
-    const longEdge = availableResolutions.find((item) => item.id === generationResolution)?.longEdge || 1024;
-    if (generationRatio === "auto") {
-      setCustomImageWidth(longEdge);
-      setCustomImageHeight(longEdge);
-      return;
-    }
-    const [ratioWidth, ratioHeight] = generationRatio.split(":").map(Number);
-    if (!ratioWidth || !ratioHeight || ratioWidth === ratioHeight) {
-      setCustomImageWidth(longEdge);
-      setCustomImageHeight(longEdge);
-    } else if (ratioWidth > ratioHeight) {
-      setCustomImageWidth(longEdge);
-      setCustomImageHeight(Math.round((longEdge * ratioHeight) / ratioWidth));
-    } else {
-      setCustomImageWidth(Math.round((longEdge * ratioWidth) / ratioHeight));
-      setCustomImageHeight(longEdge);
-    }
-  }, [availableResolutions, generationRatio, generationResolution]);
 
   useEffect(() => {
     setReferences((current) => (current.length > maxReferences ? current.slice(0, Math.max(0, maxReferences)) : current));
@@ -3069,11 +3296,20 @@ export function AssistantWorkspaceView() {
     }
   }, [applyRunResult, followConversationBottom, patchConversation, setConversationRun]);
 
-  const launchRun = useCallback(async ({ conversationId, prompt, userMessage, assistantMessage, responseMode, sourceUserMessageId = "", proposalSourceMessageId = "" }) => {
+  const launchRun = useCallback(async ({ conversationId, prompt, userMessage, assistantMessage, responseMode, sourceUserMessageId = "", proposalSourceMessageId = "", maskEdit = null }) => {
     const controller = new AbortController();
     runControllersRef.current.get(conversationId)?.abort();
     runControllersRef.current.set(conversationId, controller);
     try {
+      const requestImageModel = responseMode === "image"
+        ? imageModels.find((item) => item.model === assistantMessage.model) || selectedImageModel
+        : selectedImageModel;
+      const imageSettings = assistantImageSettings(requestImageModel, {
+        ratio: assistantMessage.requestRatio || assistantMessage.ratio || generationRatio,
+        resolution: assistantMessage.resolution || generationResolution,
+        quality: assistantMessage.quality || generationQuality,
+      });
+      const includeImageParameters = responseMode === "image" || responseMode === "agent";
       const created = await createAssistantRun({
         conversationId,
         idempotencyKey: assistantMessage.id,
@@ -3085,19 +3321,24 @@ export function AssistantWorkspaceView() {
         sourceUserMessageId,
         proposalSourceMessageId,
         referenceImages: (userMessage.referenceImages || []).map((image) => ({ name: image.name, dataUrl: image.dataUrl, thumbnailUrl: image.thumbnailUrl, fileKey: image.fileKey })),
+        referenceMode: responseMode === "image" ? imageRunReferenceMode(userMessage, assistantMessage) : "",
         attachments: (userMessage.attachments || []).filter((item) => item.status === "ready").map((item) => ({ id: item.id })),
         quoted: userMessage.quoted || null,
         skill: userMessage.skill || "",
         model: assistantMessage.model || (responseMode === "image" ? imageModel : conversationModel),
-        ratio: assistantMessage.requestRatio || assistantMessage.ratio || generationRatio,
-        resolution: assistantMessage.resolution || generationResolution,
         count: responseMode === "image" || responseMode === "agent" ? assistantMessage.count || generationCount : 1,
-        requestSize: assistantMessage.requestSize || (generationRatio === "auto" ? "auto" : `${customImageWidth}x${customImageHeight}`),
-        width: assistantMessage.width || customImageWidth,
-        height: assistantMessage.height || customImageHeight,
-        quality: assistantMessage.quality || availableResolutions.find((item) => item.id === generationResolution)?.quality || "high",
+        ...(includeImageParameters && imageSettings.ratio ? { ratio: imageSettings.ratio } : {}),
+        ...(includeImageParameters && imageSettings.resolution ? { resolution: imageSettings.resolution } : {}),
+        ...(includeImageParameters && imageSettings.requestSize ? { requestSize: imageSettings.requestSize } : {}),
+        ...(includeImageParameters && imageSettings.width > 0 ? { width: imageSettings.width } : {}),
+        ...(includeImageParameters && imageSettings.height > 0 ? { height: imageSettings.height } : {}),
+        ...(includeImageParameters && imageSettings.quality ? { quality: imageSettings.quality } : {}),
         reasoningEffort: responseMode === "image" ? "" : assistantMessage.reasoningEffort || activeReasoningEffort,
         serviceKey: "assistant_image",
+        parentOutputUrl: maskEdit?.parentOutputUrl || "",
+        maskImage: maskEdit?.maskImage || null,
+        maskBaseImage: maskEdit?.maskBaseImage || null,
+        maskRect: maskEdit?.maskRect || "",
       }, { signal: controller.signal });
       if (!mountedRef.current) return;
       applyRunResult(conversationId, assistantMessage.id, created);
@@ -3113,7 +3354,91 @@ export function AssistantWorkspaceView() {
     } finally {
       if (runControllersRef.current.get(conversationId) === controller) runControllersRef.current.delete(conversationId);
     }
-  }, [activeReasoningEffort, applyRunResult, availableResolutions, clearConversationRun, conversationModel, customImageHeight, customImageWidth, generationCount, generationRatio, generationResolution, imageModel, monitorRun, patchConversation]);
+  }, [activeReasoningEffort, applyRunResult, clearConversationRun, conversationModel, generationCount, generationQuality, generationRatio, generationResolution, imageModel, imageModels, monitorRun, patchConversation, selectedImageModel]);
+
+  const submitRegionEdit = useCallback(async (payload, item, meta = {}) => {
+    if (!item || !payload?.prompt || !activeConversation || activeRun || imageActionBusy) return false;
+    const preferredModel = String(meta.model || imageModel || imageModels[0]?.model || "");
+    const selected = imageModels.find((item) => item.model === preferredModel) || selectedImageModel;
+    setImageActionBusy("region-edit");
+    try {
+      if (!(await confirmAssistantCost("image", 1, preferredModel, ""))) return false;
+      const [cropUpload, maskUpload] = await Promise.all([
+        uploadFile(payload.cropFile),
+        uploadFile(payload.maskFile),
+      ]);
+      let baseImage = item.fileKey
+        ? { id: item.id || "", name: "局部编辑底图", fileKey: item.fileKey, dataUrl: imageUrl(item) }
+        : null;
+      if (!baseImage) {
+        if (!payload.baseFile) throw new Error("原始底图无法上传");
+        const baseUpload = await uploadFile(payload.baseFile);
+        baseImage = { name: "局部编辑底图", fileKey: baseUpload.key, dataUrl: baseUpload.url };
+      }
+      const cropReference = {
+        id: crypto.randomUUID(),
+        name: "局部编辑区域",
+        fileKey: cropUpload.key,
+        dataUrl: cropUpload.url,
+        thumbnailUrl: cropUpload.thumbnailUrl || cropUpload.url,
+      };
+      const prompt = `${payload.prompt.trim()}\n只修改指定局部区域，保持区域外的构图、主体、光线、颜色和材质完全不变。`;
+      const userMessageId = uid();
+      const requestRatio = String(meta.requestRatio || generationRatio || "auto").toLowerCase() === "auto" ? "auto" : meta.requestRatio;
+      const imageSettings = assistantImageSettings(selected, {
+        ratio: requestRatio,
+        resolution: meta.resolution || generationResolution,
+        quality: meta.quality || generationQuality,
+      });
+      const assistantMessage = createAssistantPlaceholder({
+        prompt,
+        responseMode: "image",
+        userMessageId,
+        defaults: {
+          model: preferredModel,
+          ratio: imageSettings.ratio,
+          resolution: imageSettings.resolution,
+          count: 1,
+          requestSize: imageSettings.requestSize,
+          quality: imageSettings.quality,
+          width: imageSettings.width,
+          height: imageSettings.height,
+        },
+      });
+      const userMessage = {
+        id: userMessageId,
+        role: "user",
+        content: `局部编辑：${payload.prompt.trim()}`,
+        kind: "chat",
+        referenceImages: [cropReference],
+        attachments: [],
+        createdAt: new Date().toISOString(),
+      };
+      patchConversation(activeConversation.id, (conversation) => ({
+        ...conversation,
+        updatedAt: assistantMessage.createdAt,
+        messages: [...conversation.messages, userMessage, assistantMessage],
+      }));
+      scrollToBottom();
+      await launchRun({
+        conversationId: activeConversation.id,
+        prompt,
+        userMessage,
+        assistantMessage,
+        responseMode: "image",
+        maskEdit: {
+          parentOutputUrl: imageUrl(item),
+          maskImage: { name: "局部编辑蒙版", fileKey: maskUpload.key, dataUrl: maskUpload.url },
+          maskBaseImage: baseImage,
+          maskRect: payload.maskRect,
+        },
+      });
+      if (selected && selected.model !== imageModel) setImageModel(selected.model);
+      return true;
+    } finally {
+      setImageActionBusy("");
+    }
+  }, [activeConversation, activeRun, confirmAssistantCost, generationQuality, generationRatio, generationResolution, imageActionBusy, imageModel, imageModels, launchRun, patchConversation, scrollToBottom, selectedImageModel]);
 
   const executeSend = useCallback(async (prompt) => {
     const controller = new AbortController();
@@ -3134,6 +3459,11 @@ export function AssistantWorkspaceView() {
     draftRequestControllerRef.current = null;
     const userMessageId = uid();
     const { responseMode, sendModel, requestedCount } = resolveAssistantSend(prompt);
+    const imageSettings = assistantImageSettings(selectedImageModel, {
+      ratio: generationRatio,
+      resolution: generationResolution,
+      quality: generationQuality,
+    });
     const assistantMessage = createAssistantPlaceholder({
       prompt,
       responseMode,
@@ -3141,13 +3471,13 @@ export function AssistantWorkspaceView() {
       defaults: {
         model: sendModel,
         reasoningEffort: activeReasoningEffort,
-        ratio: generationRatio,
-        resolution: generationResolution,
+        ratio: imageSettings.ratio,
+        resolution: imageSettings.resolution,
         count: requestedCount,
-        requestSize: generationRatio === "auto" ? "auto" : `${customImageWidth}x${customImageHeight}`,
-        quality: availableResolutions.find((item) => item.id === generationResolution)?.quality || "high",
-        width: customImageWidth,
-        height: customImageHeight,
+        requestSize: imageSettings.requestSize,
+        quality: imageSettings.quality,
+        width: imageSettings.width,
+        height: imageSettings.height,
       },
     });
     const currentQuote = quotedMessage ? { ...quotedMessage } : null;
@@ -3163,7 +3493,7 @@ export function AssistantWorkspaceView() {
     scrollToBottom();
     controller.abort();
     await launchRun({ conversationId: conversation.id, prompt, userMessage, assistantMessage, responseMode });
-  }, [activeConversation, activeReasoningEffort, availableResolutions, conversationModel, conversationModels, creationType, customImageHeight, customImageWidth, documents, generationCount, generationRatio, generationResolution, imageModel, imageModels, launchRun, maxImages, maxReferences, patchConversation, quotedMessage, references, scrollToBottom, selectedImageModel]);
+  }, [activeConversation, activeReasoningEffort, conversationModel, conversationModels, creationType, documents, generationCount, generationQuality, generationRatio, generationResolution, imageModel, imageModels, launchRun, maxImages, maxReferences, patchConversation, quotedMessage, references, scrollToBottom, selectedImageModel]);
 
   useEffect(() => {
     if (!resumeCandidates.length) return;
@@ -3421,6 +3751,11 @@ export function AssistantWorkspaceView() {
     const retryEffort = target.reasoningEffort || activeReasoningEffort;
     const retryModel = imageModels.find((item) => item.model === model) || selectedImageModel;
     const retryCount = responseMode === "image" ? clampImageCount(target.count || generationCount, retryModel) : 1;
+    const retrySettings = assistantImageSettings(retryModel, {
+      ratio: target.requestRatio || target.ratio || generationRatio,
+      resolution: target.resolution || generationResolution,
+      quality: target.quality || generationQuality,
+    });
     if (!(await confirmAssistantCost(responseMode, retryCount, model, retryEffort))) return;
     const assistantMessage = createAssistantPlaceholder({
       prompt,
@@ -3430,14 +3765,14 @@ export function AssistantWorkspaceView() {
       defaults: {
         model,
         reasoningEffort: retryEffort,
-        ratio: target.ratio || generationRatio,
-        requestRatio: target.requestRatio || target.ratio || generationRatio,
-        resolution: target.resolution || generationResolution,
+        ratio: retrySettings.ratio,
+        requestRatio: retrySettings.ratio,
+        resolution: retrySettings.resolution,
         count: retryCount,
-        requestSize: target.requestSize || (generationRatio === "auto" ? "auto" : `${customImageWidth}x${customImageHeight}`),
-        width: target.width || customImageWidth,
-        height: target.height || customImageHeight,
-        quality: target.quality || availableResolutions.find((item) => item.id === generationResolution)?.quality || "high",
+        requestSize: retrySettings.requestSize,
+        width: retrySettings.width,
+        height: retrySettings.height,
+        quality: retrySettings.quality,
       },
     });
     patchConversation(activeConversation.id, (conversation) => ({
@@ -3460,6 +3795,12 @@ export function AssistantWorkspaceView() {
     const count = responseMode === "image"
       ? clampImageCount(previousReply?.count || generationCount, imageModels.find((item) => item.model === model) || selectedImageModel)
       : 1;
+    const editModel = imageModels.find((item) => item.model === model) || selectedImageModel;
+    const editSettings = assistantImageSettings(editModel, {
+      ratio: previousReply?.requestRatio || previousReply?.ratio || generationRatio,
+      resolution: previousReply?.resolution || generationResolution,
+      quality: previousReply?.quality || generationQuality,
+    });
     const editEffort = previousReply?.reasoningEffort || activeReasoningEffort;
     if (!(await confirmAssistantCost(responseMode, count, model, editEffort))) return;
     const assistantMessage = createAssistantPlaceholder({
@@ -3470,14 +3811,14 @@ export function AssistantWorkspaceView() {
       defaults: {
         model,
         reasoningEffort: editEffort,
-        ratio: previousReply?.ratio || generationRatio,
-        requestRatio: previousReply?.requestRatio || generationRatio,
-        resolution: previousReply?.resolution || generationResolution,
+        ratio: editSettings.ratio,
+        requestRatio: editSettings.ratio,
+        resolution: editSettings.resolution,
         count,
-        requestSize: previousReply?.requestSize || (generationRatio === "auto" ? "auto" : `${customImageWidth}x${customImageHeight}`),
-        width: previousReply?.width || customImageWidth,
-        height: previousReply?.height || customImageHeight,
-        quality: previousReply?.quality || availableResolutions.find((item) => item.id === generationResolution)?.quality || "high",
+        requestSize: editSettings.requestSize,
+        width: editSettings.width,
+        height: editSettings.height,
+        quality: editSettings.quality,
       },
     });
     const editedUser = { ...message, content: prompt, editedAt: new Date().toISOString() };
@@ -3491,10 +3832,8 @@ export function AssistantWorkspaceView() {
       if (message.id !== messageId || !message.proposal) return message;
       const next = { ...message.proposal, ...patch };
       const selected = imageModels.find((item) => item.model === next.model) || imageModels[0];
-      const resolutionIds = normalizeImageModelCapabilities(selected || {}).resolutions;
-      if (resolutionIds.length && !resolutionIds.includes(String(next.resolution || "").toUpperCase())) next.resolution = resolutionIds[0];
-      const ratioIds = getModelAspectRatiosForResolution(selected, next.resolution);
-      if (ratioIds.length && !ratioIds.includes(next.ratio)) next.ratio = ratioIds[0];
+      Object.assign(next, assistantImageSettings(selected, next));
+      next.count = clampImageCount(next.count, selected, 1);
       return { ...message, proposal: next };
     }) }));
   };
@@ -3507,16 +3846,26 @@ export function AssistantWorkspaceView() {
       notificationService.warning("最多可同时运行 4 个对话任务，请稍后再试");
       return;
     }
-    const count = Math.max(1, Math.min(4, Number(proposal.count || 1)));
     const model = modelForMode("image", proposal.model);
-    if (!(await confirmAssistantCost("image", count, model))) return;
-    const request = imageRequestFromProposal(proposal);
+    const selected = imageModels.find((item) => item.model === model) || selectedImageModel;
+    const request = imageRequestFromProposal(proposal, selected);
     const messageIndex = activeConversation.messages.findIndex((item) => item.id === message.id);
     const sourceUser = (message.userMessageId && activeConversation.messages.find((item) => item.id === message.userMessageId))
       || [...activeConversation.messages.slice(0, Math.max(0, messageIndex))].reverse().find((item) => item.role === "user");
-    const referenceImages = uniqueReferenceImages(sourceUser?.referenceImages?.length ? sourceUser.referenceImages : proposal.referenceImages);
-    const userMessage = { id: uid(), role: "user", content: "执行这个创作方案", createdAt: new Date().toISOString(), proposalSourceMessageId: message.id, referenceImages: referenceImages.map((image) => ({ ...image })) };
-    const assistantMessage = createAssistantPlaceholder({ prompt, responseMode: "image", userMessageId: userMessage.id, defaults: { model, ratio: proposal.ratio || "auto", requestRatio: proposal.ratio || "auto", resolution: proposal.resolution || "1K", count, requestSize: request.requestSize, width: request.width, height: request.height, quality: proposal.quality || request.quality } });
+    const sourcePrompt = sourceUser?.content || message.prompt || "";
+    const referenceImages = uniqueReferenceImages(sourceUser?.referenceImages?.length ? sourceUser.referenceImages : promptNeedsRecentVisual(sourcePrompt) ? proposal.referenceImages : []);
+    const referenceMode = proposalReferenceMode(proposal, referenceImages);
+    let count = clampImageCount(proposal.count, selected, 1);
+    if (referenceMode === "individual") {
+      if (!referenceImages.length || imageModelMaxCount(selected) < referenceImages.length) {
+        notificationService.warning("当前模型无法按参考图数量逐张生成，请调整模型或参考图");
+        return;
+      }
+      count = referenceImages.length;
+    }
+    if (!(await confirmAssistantCost("image", count, model))) return;
+    const userMessage = { id: uid(), role: "user", content: "执行这个创作方案", createdAt: new Date().toISOString(), proposalSourceMessageId: message.id, referenceMode, referenceImages: referenceImages.map((image) => ({ ...image })) };
+    const assistantMessage = createAssistantPlaceholder({ prompt, responseMode: "image", userMessageId: userMessage.id, defaults: { model, ratio: request.ratio, requestRatio: request.ratio, resolution: request.resolution, count, requestSize: request.requestSize, width: request.width, height: request.height, quality: request.quality, referenceMode } });
     updateProposal(message.id, { submitting: true, dismissed: false });
     patchConversation(activeConversation.id, (conversation) => ({ ...conversation, updatedAt: userMessage.createdAt, messages: [...conversation.messages, userMessage, assistantMessage] }));
     try {
@@ -3539,26 +3888,35 @@ export function AssistantWorkspaceView() {
   };
 
   const stopRun = async () => {
-    if (!activeRun?.id) return;
+    if (!activeRun?.id || stopBusy) return;
     const stoppingRun = activeRun;
-    setStopConfirmOpen(false);
-    runControllersRef.current.get(activeId)?.abort();
-    runControllersRef.current.delete(activeId);
-    if (stoppingRun.conversationId && stoppingRun.assistantMessageId) {
-      patchConversation(stoppingRun.conversationId, (conversation) => ({
-        ...conversation,
-        messages: conversation.messages.map((message) => message.id === stoppingRun.assistantMessageId
-          ? { ...message, pending: false, routing: false, statusStage: "stopped", content: message.content || "你已主动停止生成" }
-          : message),
-      }));
-    }
-    clearConversationRun(activeId);
+    setStopBusy(true);
     try {
-      await cancelAssistantRun(stoppingRun.id);
+      const result = await cancelAssistantRun(stoppingRun.id);
+      if (!result?.canceled) {
+        setStopConfirmOpen(false);
+        notificationService.info("任务已经结束，无需停止");
+        return;
+      }
+      runControllersRef.current.get(activeId)?.abort();
+      runControllersRef.current.delete(activeId);
+      if (stoppingRun.conversationId && stoppingRun.assistantMessageId) {
+        patchConversation(stoppingRun.conversationId, (conversation) => ({
+          ...conversation,
+          messages: conversation.messages.map((message) => message.id === stoppingRun.assistantMessageId
+            ? { ...message, pending: false, routing: false, statusStage: "stopped", content: message.content || "你已主动停止生成" }
+            : message),
+        }));
+      }
+      clearConversationRun(stoppingRun.conversationId || activeId);
+      setStopConfirmOpen(false);
       scheduleWalletRefresh();
       notificationService.warning("你已主动停止生成，本轮积分不退还");
     } catch (error) {
+      setStopConfirmOpen(false);
       notificationService.error(error?.message || "停止任务失败");
+    } finally {
+      if (mountedRef.current) setStopBusy(false);
     }
   };
 
@@ -3789,9 +4147,26 @@ export function AssistantWorkspaceView() {
           </nav>
         )}
 
-        <div className={`composer-zone${messages.length > 0 && !isAtBottom && !isReturningToBottom ? " is-scrolled-away" : ""}`} onClick={(event) => event.stopPropagation()} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void uploadReferences(event.dataTransfer.files); }}>
+        <div ref={composerZoneRef} className={`composer-zone${composerScrolledAway ? " is-scrolled-away" : ""}`} onClick={(event) => event.stopPropagation()} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void uploadReferences(event.dataTransfer.files); }}>
           {serviceError && <div className="assistant-service-error"><i className="bi bi-exclamation-circle" /><span>{serviceError}</span><button type="button" onClick={() => void loadWorkspace()}><i className="bi bi-arrow-clockwise" />重试</button></div>}
-          <div className={`assistant-composer${mode === "image" ? " is-image-mode" : ""}${references.length || documents.length || uploading ? " has-attachments" : ""}`}>
+          <div ref={composerRef} className={`assistant-composer${mode === "image" ? " is-image-mode" : ""}${references.length || documents.length || uploading ? " has-attachments" : ""}${composerManuallyResized ? " is-manually-resized" : ""}${composerResizing ? " is-resizing" : ""}`}>
+            <div
+              className="composer-resize-handle"
+              role="separator"
+              aria-label="调整输入框高度"
+              aria-orientation="horizontal"
+              aria-valuemin="56"
+              aria-valuemax={getComposerInputHeightBounds().maximum}
+              aria-valuenow={composerInputHeightRef.current || undefined}
+              tabIndex={0}
+              title="拖动调整输入框高度，双击恢复"
+              onPointerDown={startComposerResize}
+              onPointerMove={moveComposerResize}
+              onPointerUp={finishComposerResize}
+              onPointerCancel={finishComposerResize}
+              onDoubleClick={resetComposerInputHeight}
+              onKeyDown={resizeComposerFromKeyboard}
+            />
             {messages.length > 0 && !isAtBottom && !isReturningToBottom && (
               <button className="return-to-bottom" type="button" title="回到底部" aria-label="回到底部" onClick={() => scrollToBottom("smooth")}>
                 <svg className="return-to-bottom-icon" viewBox="0 0 16 16" aria-hidden="true">
@@ -3820,7 +4195,7 @@ export function AssistantWorkspaceView() {
             )}
             {preferencesOpen && mode === "image" && (
               <section className="composer-popover image-mode-preferences" aria-label="图片生成参数">
-                <div className="preferences-block">
+                {availableRatios.length ? <div className="preferences-block">
                   <p className="preferences-label">选择比例</p>
                   <div className="ratio-options">
                     {availableRatios.map((item) => (
@@ -3830,9 +4205,9 @@ export function AssistantWorkspaceView() {
                       </button>
                     ))}
                   </div>
-                </div>
+                </div> : null}
                 <div className="preferences-split">
-                  <div className="preferences-block">
+                  {availableResolutions.length ? <div className="preferences-block">
                     <p className="preferences-label">选择分辨率</p>
                     <div className="image-resolution-options">
                       {availableResolutions.map((option) => (
@@ -3842,7 +4217,7 @@ export function AssistantWorkspaceView() {
                         </button>
                       ))}
                     </div>
-                  </div>
+                  </div> : null}
                   <div className="preferences-block">
                     <p className="preferences-label">选择生成数量</p>
                     <div className="image-count-options">
@@ -3852,21 +4227,14 @@ export function AssistantWorkspaceView() {
                     </div>
                   </div>
                 </div>
-                <div className="preferences-block">
-                  <p className="preferences-label">尺寸</p>
-                  <div className="custom-image-size">
-                    <label>
-                      <span>W</span>
-                      <input aria-label="图片宽度" value={customImageWidth} type="number" min="256" max="4096" onChange={(event) => setCustomImageWidth(Math.min(4096, Math.max(256, Number(event.target.value) || 256)))} />
-                    </label>
-                    <i className="bi bi-link-45deg" aria-hidden="true" />
-                    <label>
-                      <span>H</span>
-                      <input aria-label="图片高度" value={customImageHeight} type="number" min="256" max="4096" onChange={(event) => setCustomImageHeight(Math.min(4096, Math.max(256, Number(event.target.value) || 256)))} />
-                    </label>
-                    <span>PX</span>
+                {availableQualities.length ? <div className="preferences-block">
+                  <p className="preferences-label">选择质量</p>
+                  <div className="image-count-options">
+                    {availableQualities.map((option) => (
+                      <button key={option.id} type="button" className={generationQuality === option.id ? "active" : ""} aria-pressed={generationQuality === option.id} onClick={() => setGenerationQuality(option.id)}>{option.label}</button>
+                    ))}
                   </div>
-                </div>
+                </div> : null}
               </section>
             )}
             <input ref={fileInputRef} className="reference-file-input" type="file" accept={mode === "image" ? "image/*" : "image/*,.txt,.md,.markdown,.csv,.json,.pdf,.docx,.xlsx,.pptx"} multiple aria-label={mode === "image" ? "添加参考图" : "添加图片或文档"} onChange={(event) => { void uploadReferences(event.target.files); event.target.value = ""; }} />
@@ -3880,7 +4248,7 @@ export function AssistantWorkspaceView() {
                 <button className={`agent-mode-button${creationMenuOpen ? " active" : ""}`} type="button" onClick={() => { setCreationMenuOpen((value) => !value); setModelMenuOpen(false); setReasoningMenuOpen(false); setPreferencesOpen(false); }}><i className={`bi ${selectedCreation.icon}`} /><span>{selectedCreation.label}</span><i className={`bi bi-chevron-down menu-chevron${creationMenuOpen ? " is-open" : ""}`} /></button>
                 <button className={`composer-tool-button image-model-button${modelMenuOpen ? " active" : ""}`} type="button" title={`模型：${generationModelLabel}`} aria-label={`选择模型，当前为${generationModelLabel}`} onClick={() => { setModelMenuOpen((value) => !value); setCreationMenuOpen(false); setReasoningMenuOpen(false); setPreferencesOpen(false); }}><i className={`bi ${mode === "image" ? "bi-box" : "bi-cpu"}`} /><span>{generationModelLabel}</span>{mode === "image" ? <i className="bi bi-stars" /> : <i className={`bi bi-chevron-down menu-chevron${modelMenuOpen ? " is-open" : ""}`} />}</button>
                 {mode === "image" ? (
-                  <button className={`composer-tool-button image-settings-button${preferencesOpen ? " active" : ""}`} type="button" onClick={() => { setPreferencesOpen((value) => !value); setCreationMenuOpen(false); setModelMenuOpen(false); setReasoningMenuOpen(false); }}><i className="ratio-shape is-square" /><span>{generationRatio === "auto" ? "Auto" : generationRatio} | {generationResolution} | {generationCount}</span></button>
+                  <button className={`composer-tool-button image-settings-button${preferencesOpen ? " active" : ""}`} type="button" onClick={() => { setPreferencesOpen((value) => !value); setCreationMenuOpen(false); setModelMenuOpen(false); setReasoningMenuOpen(false); }}><i className="ratio-shape is-square" /><span>{[generationRatio === "auto" ? "Auto" : generationRatio, generationResolution, generationQuality, `${generationCount}张`].filter(Boolean).join(" | ")}</span></button>
                 ) : (
                   <>
                     {reasoningEfforts.length > 0 && activeReasoningEffort ? <button className={`composer-tool-button reasoning-effort-button${reasoningMenuOpen ? " active" : ""}`} type="button" title={`推理强度：${reasoningEffortLabel}`} aria-label={`选择推理强度，当前为${reasoningEffortLabel}`} onClick={() => { setReasoningMenuOpen((value) => !value); setCreationMenuOpen(false); setModelMenuOpen(false); setPreferencesOpen(false); }}><i className="bi bi-speedometer2" /><span>推理 {reasoningEffortLabel}</span><i className={`bi bi-chevron-down menu-chevron${reasoningMenuOpen ? " is-open" : ""}`} /></button> : null}
@@ -3983,10 +4351,37 @@ export function AssistantWorkspaceView() {
         </div>,
         document.body,
       )}
-      {stopConfirmOpen && createPortal(<div className={`assistant-dialog-layer${isDark ? " is-dark" : ""}`} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setStopConfirmOpen(false); }}><section className="assistant-dialog" role="dialog" aria-modal="true" aria-labelledby="assistant-stop-title" onMouseDown={(event) => event.stopPropagation()}><span className="dialog-icon is-danger"><i className="bi bi-stop-circle" /></span><div className="dialog-copy"><h2 id="assistant-stop-title">停止本次生成？</h2><p>任务仍在进行中。主动停止后，本轮已预留的积分不会退还。</p></div><div className="dialog-actions"><button type="button" onClick={() => setStopConfirmOpen(false)}>继续生成</button><button type="button" className="is-danger" onClick={() => void stopRun()}>确认停止</button></div></section></div>, document.body)}
+      {stopConfirmOpen && createPortal(<div className={`assistant-dialog-layer${isDark ? " is-dark" : ""}`} role="presentation" onMouseDown={(event) => { if (!stopBusy && event.target === event.currentTarget) setStopConfirmOpen(false); }}><section className="assistant-dialog" role="dialog" aria-modal="true" aria-labelledby="assistant-stop-title" onMouseDown={(event) => event.stopPropagation()}><span className="dialog-icon is-danger"><i className="bi bi-stop-circle" /></span><div className="dialog-copy"><h2 id="assistant-stop-title">停止本次生成？</h2><p>任务仍在进行中。主动停止后，本轮已预留的积分不会退还。</p></div><div className="dialog-actions"><button type="button" disabled={stopBusy} onClick={() => setStopConfirmOpen(false)}>继续生成</button><button type="button" className="is-danger" disabled={stopBusy} onClick={() => void stopRun()}>{stopBusy ? "正在停止" : "确认停止"}</button></div></section></div>, document.body)}
       {deleteTarget && createPortal(<div className={`assistant-dialog-layer${isDark ? " is-dark" : ""}`} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setDeleteTarget(null); }}><section className="assistant-dialog" role="dialog" aria-modal="true" aria-labelledby="assistant-delete-title" onMouseDown={(event) => event.stopPropagation()}><span className="dialog-icon is-danger"><i className={`bi ${activeRuns[deleteTarget.id] ? "bi-stop-circle" : "bi-trash3"}`} /></span><div className="dialog-copy"><h2 id="assistant-delete-title">{activeRuns[deleteTarget.id] ? "停止任务并删除对话？" : "删除这个对话？"}</h2><p>“{deleteTarget.title}”{activeRuns[deleteTarget.id] ? "仍在处理中。继续操作会先停止任务，再永久删除对话和已生成内容。主动停止不退还本轮积分。" : "及其中的消息将被永久删除。"}</p></div><div className="dialog-actions"><button type="button" onClick={() => setDeleteTarget(null)}>取消</button><button type="button" className="is-danger" onClick={() => void deleteConversationRow()}>{activeRuns[deleteTarget.id] ? "停止任务并删除" : "删除"}</button></div></section></div>, document.body)}
       <AssistantCostDialog payload={costPayload} light={!isDark} onCancel={cancelCost} onConfirm={(skip) => void confirmCost(skip)} />
-      <AssistantImageViewer value={selectedImage} onClose={closeImage} onStep={stepImage} onUseReference={useGeneratedImageAsReference} />
+      <AssistantFullscreenPreview
+        value={selectedImage}
+        actionBusy={imageActionBusy}
+        onClose={closeImage}
+        onStep={stepImage}
+        onUseReference={useGeneratedImageAsReference}
+        onRegionEdit={submitRegionEdit}
+        onFavorite={(item, meta) => void favoriteAssistantImage(item, meta)}
+        onPublish={requestPublishImage}
+        onDelete={requestDeleteImage}
+      />
+      <ConfirmDialog
+        open={Boolean(imageDeleteTarget)}
+        busy={imageDeleteBusy}
+        heading="删除这张图片？"
+        description="图片会从当前对话中移除，删除后无法恢复。"
+        light={!isDark}
+        onClose={() => !imageDeleteBusy && setImageDeleteTarget(null)}
+        onConfirm={() => void confirmDeleteImage()}
+      />
+      <SharePublishDialog
+        open={Boolean(shareTarget)}
+        title={String(shareTarget?.meta?.prompt || shareTarget?.item?.revisedPrompt || "AI 助手创作").slice(0, 120)}
+        submitting={shareSubmitting}
+        light={!isDark}
+        onClose={() => !shareSubmitting && setShareTarget(null)}
+        onSubmit={(options) => void submitAssistantShare(options)}
+      />
     </div>
   );
 }

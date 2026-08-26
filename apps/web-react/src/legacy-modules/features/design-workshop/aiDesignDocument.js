@@ -467,7 +467,6 @@ async function executeDesignPass({
       clientAssistantMessageId: uid('assistant'),
       referenceImages: references,
       count: 1,
-      quality: 'high',
       serviceKey: 'ui_design_analysis',
     },
     { signal },
@@ -1212,9 +1211,9 @@ export async function generateDesignRegionImage({
   transparent = true,
   generationMode = 'strict',
   userInstruction = '',
-  requestSize = 'auto',
+  requestSize = '',
   resolution = '',
-  quality = 'high',
+  quality = '',
   preserveLayout = false,
   retainConversation = true,
   designReferenceImage = '',
@@ -1273,7 +1272,9 @@ export async function generateDesignRegionImage({
       .filter(Boolean)
     const references = [regionReference, designReference, ...extraReferences].filter(Boolean)
     if (!references.length) throw new Error('缺少设计图参考，无法进行图片编辑')
-    const safeRequestSize = resolveRegionImageRequestSize(requestSize, resolution)
+    const safeRequestSize = requestSize
+      ? resolveRegionImageRequestSize(requestSize, resolution)
+      : ''
     const created = await createAssistantRun(
       {
         conversationId: conversation.id,
@@ -1294,9 +1295,9 @@ export async function generateDesignRegionImage({
         clientAssistantMessageId: uid('assistant'),
         referenceImages: references,
         count: 1,
-        requestSize: safeRequestSize,
+        ...(safeRequestSize ? { requestSize: safeRequestSize } : {}),
         ...(resolution ? { resolution } : {}),
-        quality,
+        ...(quality ? { quality } : {}),
         serviceKey: 'ui_design_asset',
         ...(String(parentOutputUrl || '').trim()
           ? { parentOutputUrl: String(parentOutputUrl).trim() }

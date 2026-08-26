@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
+	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/sub2api"
 )
 
@@ -35,6 +37,59 @@ type ecommerceProductBriefIn struct {
 type ecommerceProductBrief struct {
 	ProductName   string `json:"productName"`
 	SellingPoints string `json:"sellingPoints"`
+}
+
+type ecommerceCatalogTitle struct {
+	Title string `json:"title"`
+}
+
+func (s *Server) adminAnalyzeEcommerceCatalogImage(c *gin.Context, _ *store.User) {
+	data, _, contentType, err := s.readTryonCatalogImage(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	kind, err := parseTryonCatalogKind(c.PostForm("kind"), false)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	client, err := s.adminImageAnalysisClient(c.Request.Context())
+	if err != nil {
+		fail(c, err)
+		return
+	}
+
+	kindLabel := map[string]string{
+		"model": "人物模特", "scene": "拍摄场景", "garment": "服装商品", "hand": "手部姿态",
+	}[kind]
+	prompt := fmt.Sprintf(`你是电商素材归档助手。请识别图片中的主体，为这张%s素材生成一个便于运营人员检索和选择的简体中文标题。
+
+规则：
+1. 标题必须准确描述图片中真实可见的主体和关键特征，不得虚构品牌、材质、身份或用途。
+2. 标题简洁自然，建议 4-12 个汉字，最长不超过 32 个字符。
+3. 不使用“图片”“素材”“照片”等无信息量词语，不添加序号、引号或标点结尾。
+4. 只返回 JSON，不要 Markdown、代码围栏或解释。格式必须是：{"title":"..."}。`, fallbackBriefContext(kindLabel, "电商"))
+
+	if !ecommerceBriefSemaphore.TryAcquire(1) {
+		fail(c, apperr.E("busy", "当前分析请求过多，请稍后再试", 429))
+		return
+	}
+	defer ecommerceBriefSemaphore.Release(1)
+	llmCtx, cancel := context.WithTimeout(c.Request.Context(), ecommerceBriefTimeout)
+	defer cancel()
+	imageURL := "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(data)
+	reply, err := client.ChatTextWithImages(llmCtx, []sub2api.Message{{Role: "user", Content: prompt}}, []string{imageURL}, nil)
+	if err != nil {
+		fail(c, assistantUpstreamError(err))
+		return
+	}
+	title, err := decodeEcommerceCatalogTitle(reply)
+	if err != nil {
+		fail(c, apperr.E("assistant_bad_response", "AI 未能生成有效素材标题，请重试", 502))
+		return
+	}
+	ok(c, title)
 }
 
 func (s *Server) generateEcommerceProductBrief(c *gin.Context) {
@@ -133,21 +188,7 @@ func (s *Server) ecommerceAnalysisClient(ctx context.Context) (*sub2api.Client, 
 	if !ok {
 		return nil, apperr.E("assistant_unavailable", "AI 电商商品分析模型尚未配置", http.StatusServiceUnavailable)
 	}
-	provider := selection.Provider
-	if strings.TrimSpace(provider.APIKey) == "" {
-		return nil, apperr.E("assistant_unavailable", "商品分析模型服务商没有可用的 API Key", http.StatusServiceUnavailable)
-	}
-	client, err := sub2api.New(
-		provider.BaseURL, provider.APIKey, selection.Model.UpstreamModel,
-		s.Cfg.Sub2APIImageModel, provider.TimeoutSecs,
-	)
-	if err != nil {
-		return nil, apperr.E("assistant_unavailable", "商品分析模型配置无效", http.StatusServiceUnavailable)
-	}
-	if provider.Adapter == modelconfig.AdapterCRUN {
-		client = client.WithAPIKeyHeader("x-api-key")
-	}
-	return client, nil
+	return s.analysisClientForSelection(selection)
 }
 
 func fallbackBriefContext(value, fallback string) string {
@@ -175,6 +216,24 @@ func decodeEcommerceProductBrief(raw string) (*ecommerceProductBrief, error) {
 	brief.ProductName = truncateEcommerceBrief(brief.ProductName, 60)
 	brief.SellingPoints = truncateEcommerceBrief(brief.SellingPoints, 1200)
 	return &brief, nil
+}
+
+func decodeEcommerceCatalogTitle(raw string) (*ecommerceCatalogTitle, error) {
+	text := strings.TrimSpace(raw)
+	start, end := strings.Index(text, "{"), strings.LastIndex(text, "}")
+	if start < 0 || end <= start {
+		return nil, fmt.Errorf("missing JSON object")
+	}
+	var result ecommerceCatalogTitle
+	if err := json.Unmarshal([]byte(text[start:end+1]), &result); err != nil {
+		return nil, err
+	}
+	result.Title = strings.TrimSpace(result.Title)
+	if result.Title == "" {
+		return nil, fmt.Errorf("empty catalog title")
+	}
+	result.Title = truncateEcommerceBrief(result.Title, 32)
+	return &result, nil
 }
 
 func truncateEcommerceBrief(value string, limit int) string {

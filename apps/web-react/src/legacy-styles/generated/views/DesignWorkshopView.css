@@ -1047,391 +1047,6 @@
 .dws-config-picker.is-light .dws-state-options button.is-on {
   color: #4e3bd0;
 }
-.dws-quality-layer {
-  position: fixed;
-  z-index: 2200;
-  inset: 0;
-  display: grid;
-  padding: 24px;
-  place-items: center;
-  background: rgba(6, 7, 11, 0.66);
-  -webkit-backdrop-filter: blur(12px);
-  backdrop-filter: blur(12px);
-}
-.dws-quality-dialog {
-  --quality-bg: #111319;
-  --quality-ink: rgba(255, 255, 255, 0.94);
-  --quality-muted: rgba(255, 255, 255, 0.58);
-  --quality-faint: rgba(255, 255, 255, 0.36);
-  --quality-fill: rgba(255, 255, 255, 0.05);
-  display: flex;
-  flex-direction: column;
-  width: min(820px, 100%);
-  max-height: min(780px, calc(100dvh - 48px));
-  overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.09);
-  border-radius: 14px;
-  background: var(--quality-bg);
-  color: var(--quality-ink);
-  box-shadow: 0 32px 100px rgba(0, 0, 0, 0.54);
-  animation: dws-quality-enter 0.22s ease-out both;
-}
-.dws-quality-header {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto 34px 34px;
-  align-items: center;
-  gap: 12px;
-  flex: none;
-  min-height: 70px;
-  padding: 0 16px 0 20px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-}
-.dws-quality-header > span {
-  display: grid;
-  gap: 4px;
-}
-.dws-quality-header small {
-  color: #72d5b1;
-  font: 700 0.56rem/1 monospace;
-}
-.dws-quality-header strong {
-  font-size: 0.96rem;
-}
-.dws-quality-header > em {
-  padding: 5px 8px;
-  border-radius: 6px;
-  background: rgba(18, 183, 106, 0.12);
-  color: #91dfc3;
-  font-size: 0.62rem;
-  font-style: normal;
-}
-.dws-quality-header > button {
-  display: grid;
-  width: 34px;
-  height: 34px;
-  padding: 0;
-  place-items: center;
-  border: 0;
-  border-radius: 8px;
-  background: var(--quality-fill);
-  color: var(--quality-muted);
-  cursor: pointer;
-}
-.dws-quality-header > button.is-refresh {
-  color: #91dfc3;
-}
-.dws-quality-modes {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 4px;
-  flex: none;
-  padding: 6px 20px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-}
-.dws-quality-modes button {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  min-height: 34px;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--quality-faint);
-  font-size: 0.66rem;
-  cursor: pointer;
-}
-.dws-quality-modes button.is-on {
-  background: var(--quality-fill);
-  color: var(--quality-ink);
-}
-.dws-quality-modes button:disabled {
-  cursor: wait;
-  opacity: 0.5;
-}
-.dws-quality-modes button > i {
-  color: #72d5b1;
-}
-.dws-quality-modes button > em {
-  min-width: 23px;
-  padding: 3px 5px;
-  border-radius: 5px;
-  background: rgba(18, 183, 106, 0.12);
-  color: #72d5b1;
-  font: 700 0.54rem/1 monospace;
-  font-style: normal;
-}
-.dws-quality-loading,
-.dws-quality-error,
-.dws-quality-empty {
-  display: grid;
-  justify-items: center;
-  gap: 10px;
-  min-height: 390px;
-  padding: 40px;
-  place-content: center;
-  text-align: center;
-}
-.dws-quality-loading > strong,
-.dws-quality-error > strong,
-.dws-quality-empty > strong {
-  font-size: 0.9rem;
-}
-.dws-quality-loading > p,
-.dws-quality-error > p,
-.dws-quality-empty > p {
-  max-width: 440px;
-  margin: 0;
-  color: var(--quality-faint);
-  font-size: 0.7rem;
-  line-height: 1.6;
-}
-.dws-quality-orbit {
-  position: relative;
-  width: 54px;
-  height: 54px;
-  margin-bottom: 8px;
-  border: 1px solid rgba(114, 213, 177, 0.22);
-  border-radius: 50%;
-  animation: dws-spin 3s linear infinite;
-}
-.dws-quality-orbit i {
-  position: absolute;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #72d5b1;
-}
-.dws-quality-orbit i:nth-child(1) {
-  top: -4px;
-  left: 23px;
-}
-.dws-quality-orbit i:nth-child(2) {
-  right: 2px;
-  bottom: 7px;
-  opacity: 0.65;
-}
-.dws-quality-orbit i:nth-child(3) {
-  bottom: 7px;
-  left: 2px;
-  opacity: 0.35;
-}
-.dws-quality-loading > div {
-  display: grid;
-  gap: 7px;
-  width: min(360px, 80vw);
-  margin-top: 18px;
-}
-.dws-quality-loading > div i {
-  height: 7px;
-  border-radius: 4px;
-  background: linear-gradient(
-    90deg,
-    rgba(255, 255, 255, 0.04),
-    rgba(114, 213, 177, 0.15),
-    rgba(255, 255, 255, 0.04)
-  );
-  background-size: 200% 100%;
-  animation: dws-quality-scan 1.6s ease-in-out infinite;
-}
-.dws-quality-loading > div i:nth-child(2) {
-  width: 76%;
-}
-.dws-quality-loading > div i:nth-child(3) {
-  width: 56%;
-}
-.dws-quality-error > i {
-  color: #ffb36b;
-  font-size: 1.8rem;
-}
-.dws-quality-empty > i {
-  color: #72d5b1;
-  font-size: 1.8rem;
-}
-.dws-quality-error > button,
-.dws-quality-empty > button {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  min-height: 36px;
-  margin-top: 10px;
-  padding: 0 13px;
-  border: 0;
-  border-radius: 8px;
-  background: rgba(109, 92, 255, 0.18);
-  color: #c7beff;
-  font-size: 0.7rem;
-  cursor: pointer;
-}
-.dws-quality-result {
-  padding: 18px 20px 24px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(114, 213, 177, 0.32) transparent;
-}
-.dws-quality-inline-empty {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 14px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  background: var(--quality-fill);
-}
-.dws-quality-inline-empty > span {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  min-width: 0;
-}
-.dws-quality-inline-empty i {
-  color: #72d5b1;
-}
-.dws-quality-inline-empty b {
-  font-size: 0.64rem;
-}
-.dws-quality-inline-empty small {
-  color: var(--quality-faint);
-  font-size: 0.57rem;
-}
-.dws-quality-inline-empty > button {
-  min-height: 30px;
-  padding: 0 10px;
-  border: 0;
-  border-radius: 7px;
-  background: rgba(109, 92, 255, 0.18);
-  color: #c7beff;
-  font-size: 0.6rem;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.dws-quality-summary {
-  display: grid;
-  grid-template-columns: 96px minmax(0, 1fr);
-  align-items: center;
-  gap: 18px;
-  padding-bottom: 18px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-}
-.dws-quality-score {
-  display: grid;
-  width: 88px;
-  height: 88px;
-  place-items: center;
-  border-radius: 50%;
-  background: conic-gradient(#55c99f var(--quality-score), rgba(255, 255, 255, 0.06) 0);
-}
-.dws-quality-score::before {
-  content: '';
-  grid-area: 1 / 1;
-  width: 72px;
-  height: 72px;
-  border-radius: 50%;
-  background: var(--quality-bg);
-}
-.dws-quality-score > span {
-  z-index: 1;
-  grid-area: 1 / 1;
-  display: grid;
-  justify-items: center;
-  gap: 3px;
-}
-.dws-quality-score b {
-  font: 800 1.38rem/1 monospace;
-}
-.dws-quality-score small {
-  color: var(--quality-faint);
-  font: 600 0.54rem/1 monospace;
-}
-.dws-quality-summary > div:last-child {
-  display: grid;
-  gap: 7px;
-}
-.dws-quality-summary > div:last-child small {
-  color: #72d5b1;
-  font-size: 0.6rem;
-}
-.dws-quality-summary > div:last-child strong {
-  font-size: 0.9rem;
-  line-height: 1.45;
-}
-.dws-quality-summary p {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0;
-  color: var(--quality-faint);
-  font-size: 0.64rem;
-}
-.dws-quality-summary p b {
-  padding: 3px 6px;
-  border-radius: 5px;
-  font: 700 0.58rem/1 monospace;
-}
-.dws-quality-summary p b.is-up {
-  background: rgba(18, 183, 106, 0.13);
-  color: #72d5b1;
-}
-.dws-quality-summary p b.is-down {
-  background: rgba(240, 68, 56, 0.13);
-  color: #ff9d95;
-}
-.dws-quality-comparison {
-  display: grid;
-  grid-template-columns: 58px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 12px;
-  margin-top: 14px;
-  padding: 11px 12px;
-  border: 1px solid rgba(114, 213, 177, 0.14);
-  border-radius: 8px;
-  background: rgba(114, 213, 177, 0.045);
-}
-.dws-quality-comparison > span {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font: 700 0.76rem/1 monospace;
-}
-.dws-quality-comparison > span.is-up {
-  color: #72d5b1;
-}
-.dws-quality-comparison > span.is-down {
-  color: #ff9d95;
-}
-.dws-quality-comparison > div {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-}
-.dws-quality-comparison strong {
-  font-size: 0.63rem;
-}
-.dws-quality-comparison p {
-  overflow: hidden;
-  margin: 0;
-  color: var(--quality-faint);
-  font-size: 0.58rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.dws-quality-comparison ul {
-  display: flex;
-  gap: 5px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-.dws-quality-comparison li {
-  padding: 4px 6px;
-  border-radius: 5px;
-  background: var(--quality-fill);
-  color: var(--quality-muted);
-  font-size: 0.54rem;
-  white-space: nowrap;
-}
 .dws-region-review {
   margin-top: 14px;
   overflow: hidden;
@@ -1546,377 +1161,6 @@
   color: #fff;
   font-size: 0.62rem;
   cursor: pointer;
-}
-.dws-quality-dimensions {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-  margin-top: 14px;
-}
-.dws-quality-dimensions article {
-  display: grid;
-  gap: 7px;
-  min-width: 0;
-  padding: 10px;
-  border-radius: 8px;
-  background: var(--quality-fill);
-}
-.dws-quality-dimensions article > span {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.dws-quality-dimensions b {
-  font-size: 0.63rem;
-}
-.dws-quality-dimensions em {
-  color: #72d5b1;
-  font: 700 0.63rem/1 monospace;
-  font-style: normal;
-}
-.dws-quality-dimensions article > span > u {
-  margin-left: auto;
-  padding: 2px 4px;
-  border-radius: 4px;
-  font: 700 0.51rem/1 monospace;
-  text-decoration: none;
-}
-.dws-quality-dimensions article > span > u.is-up {
-  background: rgba(18, 183, 106, 0.12);
-  color: #72d5b1;
-}
-.dws-quality-dimensions article > span > u.is-down {
-  background: rgba(240, 68, 56, 0.12);
-  color: #ff9d95;
-}
-.dws-quality-dimensions article > i {
-  height: 3px;
-  overflow: hidden;
-  border-radius: 2px;
-  background: rgba(255, 255, 255, 0.07);
-}
-.dws-quality-dimensions article > i u {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: #55c99f;
-  text-decoration: none;
-}
-.dws-quality-dimensions small {
-  overflow: hidden;
-  color: var(--quality-faint);
-  font-size: 0.56rem;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.dws-quality-strengths,
-.dws-quality-assets,
-.dws-quality-issues {
-  margin-top: 20px;
-}
-.dws-quality-assets > header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 10px;
-}
-.dws-quality-assets > header > span {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 0.74rem;
-}
-.dws-quality-assets > header > span i {
-  color: #a99cff;
-}
-.dws-quality-assets > header small {
-  color: var(--quality-faint);
-  font: 600 0.57rem/1 monospace;
-}
-.dws-quality-assets > header button {
-  min-height: 28px;
-  padding: 0 9px;
-  border: 0;
-  border-radius: 6px;
-  background: rgba(109, 92, 255, 0.14);
-  color: #bdb3ff;
-  font-size: 0.6rem;
-  cursor: pointer;
-}
-.dws-quality-assets > header button i {
-  margin-left: 5px;
-}
-.dws-quality-assets > div {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-}
-.dws-quality-assets article {
-  display: grid;
-  grid-template-columns: 68px minmax(0, 1fr);
-  gap: 9px;
-  min-width: 0;
-  padding: 7px;
-  border-radius: 7px;
-  background: var(--quality-fill);
-}
-.dws-quality-asset-thumb {
-  min-height: 58px;
-  border-radius: 5px;
-  background-color: rgba(0, 0, 0, 0.22);
-  background-repeat: no-repeat;
-}
-.dws-quality-assets article > div {
-  display: grid;
-  align-content: center;
-  gap: 3px;
-  min-width: 0;
-}
-.dws-quality-assets article strong {
-  overflow: hidden;
-  font-size: 0.64rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.dws-quality-assets article small {
-  color: #a99cff;
-  font: 600 0.52rem/1.2 monospace;
-}
-.dws-quality-assets article p {
-  display: -webkit-box;
-  overflow: hidden;
-  margin: 0;
-  color: var(--quality-faint);
-  font-size: 0.55rem;
-  line-height: 1.35;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-.dws-quality-strengths h3,
-.dws-quality-issues h3 {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  margin: 0;
-  font-size: 0.75rem;
-}
-.dws-quality-strengths h3 i {
-  color: #72d5b1;
-}
-.dws-quality-strengths ul {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 7px 20px;
-  margin: 12px 0 0;
-  padding: 0;
-  list-style: none;
-}
-.dws-quality-strengths li {
-  position: relative;
-  padding-left: 13px;
-  color: var(--quality-muted);
-  font-size: 0.66rem;
-  line-height: 1.5;
-}
-.dws-quality-strengths li::before {
-  content: '';
-  position: absolute;
-  top: 0.55em;
-  left: 0;
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: #55c99f;
-}
-.dws-quality-issues > header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 10px;
-}
-.dws-quality-issues > header > div {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-}
-.dws-quality-issues > header button {
-  min-height: 26px;
-  padding: 0 8px;
-  border: 0;
-  border-radius: 6px;
-  background: var(--quality-fill);
-  color: var(--quality-muted);
-  font-size: 0.58rem;
-  cursor: pointer;
-}
-.dws-quality-issues > header span {
-  margin-left: 3px;
-  color: var(--quality-faint);
-  font: 600 0.58rem/1 monospace;
-}
-.dws-quality-issues article {
-  display: grid;
-  grid-template-columns: 28px 42px minmax(0, 1fr);
-  gap: 10px;
-  margin: 0 -8px;
-  padding: 13px 8px;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 7px;
-  transition: background-color 0.15s ease;
-}
-.dws-quality-issues article.is-selected {
-  background: rgba(114, 213, 177, 0.045);
-}
-.dws-quality-issues article.is-located {
-  box-shadow: inset 3px 0 #6d5cff;
-}
-.dws-quality-issues article:has(.bi-crosshair) {
-  cursor: pointer;
-}
-.dws-quality-check {
-  display: grid;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  place-items: center;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--quality-faint);
-  cursor: pointer;
-}
-.dws-quality-check[aria-pressed='true'] {
-  border-color: rgba(114, 213, 177, 0.38);
-  background: rgba(18, 183, 106, 0.14);
-  color: #91dfc3;
-}
-.dws-quality-issues article > span {
-  align-self: start;
-  padding: 4px 0;
-  border-radius: 5px;
-  color: #ffd1a8;
-  font-size: 0.56rem;
-  text-align: center;
-}
-.dws-quality-issues article > span.is-critical {
-  background: rgba(240, 68, 56, 0.15);
-  color: #ff9d95;
-}
-.dws-quality-issues article > span.is-major {
-  background: rgba(247, 144, 9, 0.14);
-  color: #ffc178;
-}
-.dws-quality-issues article > span.is-minor {
-  background: rgba(47, 129, 247, 0.13);
-  color: #91c0ff;
-}
-.dws-quality-issues article > div {
-  display: grid;
-  gap: 5px;
-}
-.dws-quality-issues article strong {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 0.7rem;
-}
-.dws-quality-issues article strong em {
-  padding: 3px 5px;
-  border-radius: 4px;
-  background: var(--quality-fill);
-  color: var(--quality-faint);
-  font-size: 0.53rem;
-  font-style: normal;
-  font-weight: 600;
-}
-.dws-quality-issues article strong > i {
-  margin-left: auto;
-  color: #a99cff;
-  font-size: 0.67rem;
-}
-.dws-quality-issues article p,
-.dws-quality-issues article small {
-  margin: 0;
-  color: var(--quality-faint);
-  font-size: 0.63rem;
-  line-height: 1.5;
-}
-.dws-quality-issues article small {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  color: var(--quality-muted);
-}
-.dws-quality-clear {
-  margin: 14px 0 0;
-  color: var(--quality-muted);
-  font-size: 0.68rem;
-}
-.dws-quality-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  flex: none;
-  min-height: 64px;
-  padding: 0 16px 0 20px;
-  border-top: 1px solid rgba(255, 255, 255, 0.07);
-}
-.dws-quality-footer > span {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  color: var(--quality-faint);
-  font-size: 0.61rem;
-}
-.dws-quality-footer > span i {
-  color: #72d5b1;
-}
-.dws-quality-footer > button {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 38px;
-  padding: 0 14px;
-  border: 0;
-  border-radius: 9px;
-  background: #5a4bd4;
-  color: #fff;
-  font-size: 0.7rem;
-  font-weight: 700;
-  cursor: pointer;
-}
-.dws-quality-footer > button:disabled {
-  opacity: 0.42;
-  cursor: not-allowed;
-}
-.dws-quality-dialog.is-light {
-  --quality-bg: #ffffff;
-  --quality-ink: rgba(27, 29, 42, 0.96);
-  --quality-muted: rgba(43, 45, 60, 0.66);
-  --quality-faint: rgba(47, 49, 65, 0.45);
-  --quality-fill: rgba(34, 36, 50, 0.055);
-  border-color: rgba(35, 37, 52, 0.1);
-  box-shadow: 0 32px 90px rgba(48, 44, 78, 0.2);
-}
-.dws-quality-dialog.is-light .dws-quality-header,
-.dws-quality-dialog.is-light .dws-quality-modes,
-.dws-quality-dialog.is-light .dws-quality-summary,
-.dws-quality-dialog.is-light .dws-quality-footer,
-.dws-quality-dialog.is-light .dws-quality-issues article {
-  border-color: rgba(35, 37, 52, 0.08);
-}
-@keyframes dws-quality-enter {
-from {
-    opacity: 0;
-    transform: translateY(12px) scale(0.985);
-}
-}
-@keyframes dws-quality-scan {
-to {
-    background-position: -200% 0;
-}
 }
 @keyframes dws-page-type-enter {
 from {
@@ -2350,10 +1594,6 @@ from {
   color: #c3b8ff;
   font: 700 0.64rem/1.3 monospace;
 }
-.dws-stage-meta em.is-tile-refine-tag {
-  background: rgba(109, 92, 255, 0.28);
-  color: #efeaff;
-}
 .dws-stage-spec {
   position: absolute;
   top: 55px;
@@ -2409,24 +1649,9 @@ from {
   background: var(--dws-accent-soft);
   color: #d4ceff;
 }
-.dws-stage-actions button.is-quality {
-  color: #8fd9c0;
-}
-.dws-stage-actions button.is-quality:hover:not(:disabled) {
-  background: rgba(18, 183, 106, 0.14);
-  color: #b4f0db;
-}
 .dws-stage-actions button.is-region.is-on {
   background: rgba(18, 183, 106, 0.16);
   color: #a7ead2;
-}
-.dws-stage-actions button.is-tile-refine {
-  background: rgba(109, 92, 255, 0.14);
-  color: #d5ceff;
-}
-.dws-stage-actions button.is-tile-refine:hover:not(:disabled) {
-  background: rgba(109, 92, 255, 0.24);
-  color: #efeaff;
 }
 .dws-stage-actions button.is-editor:hover:not(:disabled) {
   background: color-mix(in srgb, var(--dws-accent) 34%, transparent);
@@ -2480,215 +1705,6 @@ from {
 .dws-canvas.is-multi-loading {
   place-items: stretch;
   align-content: center;
-}
-.dws-canvas.is-tile-refine {
-  position: relative;
-}
-.dws-tile-refine {
-  position: absolute;
-  z-index: 12;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  padding: 24px;
-  background: rgba(8, 8, 14, 0.55);
-  backdrop-filter: blur(8px);
-}
-.dws-tile-refine-card {
-  display: grid;
-  gap: 14px;
-  width: min(420px, 100%);
-  padding: 18px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 18px;
-  background: rgba(18, 18, 26, 0.96);
-  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.45);
-  color: rgba(255, 255, 255, 0.92);
-}
-.dws-tile-refine-card > header {
-  display: grid;
-  grid-template-columns: 34px minmax(0, 1fr);
-  gap: 10px;
-  align-items: start;
-}
-.dws-tile-refine-card > header > i {
-  display: grid;
-  width: 34px;
-  height: 34px;
-  place-items: center;
-  border-radius: 10px;
-  background: rgba(109, 92, 255, 0.24);
-  color: #cfc7ff;
-}
-.dws-tile-refine-card strong {
-  display: block;
-  font-size: 0.92rem;
-  font-weight: 750;
-}
-.dws-tile-refine-card small {
-  display: block;
-  margin-top: 4px;
-  color: rgba(255, 255, 255, 0.55);
-  font-size: 0.68rem;
-  line-height: 1.4;
-}
-.dws-tile-refine-card ul {
-  display: grid;
-  gap: 6px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-.dws-tile-refine-card li {
-  display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) auto;
-  gap: 8px;
-  align-items: center;
-  min-height: 34px;
-  padding: 0 10px;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.04);
-  font-size: 0.72rem;
-}
-.dws-tile-refine-card li.is-done {
-  color: #9ef0c8;
-}
-.dws-tile-refine-card li.is-running {
-  color: #dcd6ff;
-}
-.dws-tile-refine-card li.is-failed,
-.dws-tile-refine-card li.is-cancelled {
-  color: #ffb0a8;
-}
-.dws-tile-refine-card li em {
-  font-style: normal;
-  color: rgba(255, 255, 255, 0.45);
-  font-size: 0.62rem;
-}
-.dws-tile-refine-card .dws-running-cancel {
-  justify-self: center;
-}
-.dws-tile-result {
-  position: fixed;
-  z-index: 240;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  padding: 20px;
-  background: rgba(6, 6, 12, 0.7);
-  backdrop-filter: blur(10px);
-}
-.dws-tile-result-card {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
-  gap: 12px;
-  width: min(880px, 100%);
-  max-height: min(88vh, 920px);
-  padding: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 20px;
-  background: rgba(16, 16, 24, 0.97);
-  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.55);
-  color: rgba(255, 255, 255, 0.92);
-}
-.dws-tile-result-card > header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-.dws-tile-result-card > header strong {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 0.94rem;
-  font-weight: 750;
-}
-.dws-tile-result-card > header strong em {
-  padding: 2px 7px;
-  border-radius: 999px;
-  background: rgba(109, 92, 255, 0.26);
-  color: #d9d2ff;
-  font-style: normal;
-  font-size: 0.6rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-}
-.dws-tile-result-card > header small {
-  display: block;
-  margin-top: 5px;
-  color: rgba(255, 255, 255, 0.52);
-  font-size: 0.68rem;
-}
-.dws-tile-result-card > header > button {
-  display: grid;
-  width: 32px;
-  height: 32px;
-  flex: none;
-  place-items: center;
-  border: 0;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(255, 255, 255, 0.7);
-  cursor: pointer;
-}
-.dws-tile-result-card > header > button:hover {
-  background: rgba(255, 255, 255, 0.12);
-  color: #fff;
-}
-.dws-tile-result-stage {
-  display: grid;
-  place-items: center;
-  min-height: 0;
-  overflow: auto;
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  border-radius: 14px;
-  background:
-    repeating-conic-gradient(rgba(255, 255, 255, 0.04) 0% 25%, transparent 0% 50%) 0 0 / 22px 22px,
-    rgba(10, 10, 16, 0.9);
-}
-.dws-tile-result-stage :deep(img),
-.dws-tile-result-stage img {
-  display: block;
-  max-width: 100%;
-  max-height: min(64vh, 720px);
-  object-fit: contain;
-}
-.dws-tile-result-card > footer {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 10px;
-}
-.dws-tile-result-card > footer button {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  min-height: 38px;
-  padding: 0 16px;
-  border: 0;
-  border-radius: 11px;
-  font-size: 0.76rem;
-  font-weight: 650;
-  cursor: pointer;
-}
-.dws-tile-result-card > footer button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.dws-tile-result-card > footer button.is-secondary {
-  background: rgba(109, 92, 255, 0.16);
-  color: #d5ceff;
-}
-.dws-tile-result-card > footer button.is-secondary:hover:not(:disabled) {
-  background: rgba(109, 92, 255, 0.26);
-}
-.dws-tile-result-card > footer button.is-primary {
-  background: #6d5cff;
-  color: #fff;
-}
-.dws-tile-result-card > footer button.is-primary:hover {
-  background: #7f70ff;
 }
 .dws-multi-board {
   display: grid;
@@ -3057,6 +2073,7 @@ from {
   pointer-events: auto;
 }
 .dws-region-handle[data-handle='nw'] {
+  z-index: 2001;
   top: -7px;
   left: -7px;
   cursor: nwse-resize;
@@ -3068,6 +2085,7 @@ from {
   transform: translateX(-50%);
 }
 .dws-region-handle[data-handle='ne'] {
+  z-index: 2001;
   top: -7px;
   right: -7px;
   cursor: nesw-resize;
@@ -3079,6 +2097,7 @@ from {
   transform: translateY(-50%);
 }
 .dws-region-handle[data-handle='se'] {
+  z-index: 2001;
   right: -7px;
   bottom: -7px;
   cursor: nwse-resize;
@@ -3090,6 +2109,7 @@ from {
   transform: translateX(-50%);
 }
 .dws-region-handle[data-handle='sw'] {
+  z-index: 2001;
   bottom: -7px;
   left: -7px;
   cursor: nesw-resize;
@@ -3122,16 +2142,124 @@ from {
 .dws-region-layer.has-selection {
   pointer-events: none;
 }
+.dws-region-workspace {
+  position: fixed;
+  z-index: 10020;
+  inset: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  min-width: 0;
+  min-height: 0;
+  background: #090c11;
+  color: #eef6f2;
+}
+.dws-region-workspace__canvas {
+  display: grid;
+  grid-template-rows: 58px minmax(0, 1fr) 38px;
+  min-width: 0;
+  min-height: 0;
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+    #090c11;
+  background-size: 24px 24px;
+}
+.dws-region-workspace__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(12, 16, 22, 0.96);
+}
+.dws-region-workspace__header > div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.dws-region-workspace__header > div:first-child {
+  display: grid;
+  gap: 2px;
+}
+.dws-region-workspace__header strong {
+  font-size: 0.86rem;
+}
+.dws-region-workspace__header small {
+  color: rgba(224, 239, 232, 0.58);
+  font-size: 0.66rem;
+}
+.dws-region-workspace__viewport {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  place-items: center;
+  overflow: auto;
+  padding: 24px;
+}
+.dws-region-workspace__stage {
+  position: relative;
+  width: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  overflow: visible;
+  background: #11151b;
+  box-shadow: 0 24px 72px rgba(0, 0, 0, 0.46);
+}
+.dws-region-workspace__stage > .authenticated-image {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.dws-region-workspace__stage .authenticated-image-media {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+}
+.dws-region-workspace__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 18px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  color: rgba(222, 237, 230, 0.6);
+  font-size: 0.66rem;
+}
+.dws-region-workspace__footer em {
+  overflow: hidden;
+  color: #9fe7c8;
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dws-region-size-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid rgba(114, 213, 177, 0.24);
+  border-radius: 6px;
+  background: rgba(46, 174, 129, 0.1);
+  color: #baf4df;
+  font: 700 0.68rem/1 monospace;
+  cursor: pointer;
+}
 .dws-region-composer__header {
   position: sticky;
   z-index: 8;
-  top: -10px;
+  top: 0;
   display: flex;
   min-height: 36px;
   align-items: center;
   justify-content: space-between;
-  margin: -10px -10px 0;
-  padding: 6px 10px;
+  margin: 0;
+  padding: 10px 12px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(12, 16, 22, 0.97);
 }
@@ -3140,23 +2268,43 @@ from {
   font-size: 0.72rem;
 }
 .dws-region-composer {
-  position: fixed;
-  top: 0;
-  left: 0;
-  z-index: 10020;
+  position: relative;
+  z-index: 1;
   display: grid;
-  width: min(420px, calc(100vw - 24px));
-  max-height: calc(100vh - 24px);
+  box-sizing: border-box;
+  align-content: start;
+  width: 100%;
+  min-width: 0;
+  max-height: 100vh;
   gap: 8px;
-  padding: 10px;
+  padding: 0 12px 14px;
   overflow: auto;
-  border: 1px solid rgba(114, 213, 177, 0.35);
-  border-radius: 12px;
-  background: rgba(12, 16, 22, 0.94);
-  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.35);
+  border: 0;
+  border-left: 1px solid rgba(114, 213, 177, 0.18);
+  border-radius: 0;
+  background: #0c1016;
+  box-shadow: none;
   color: #eef6f2;
   pointer-events: auto;
   backdrop-filter: blur(10px);
+}
+.dws-region-close:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+@media (max-width: 900px) {
+  .dws-region-workspace {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(360px, 58vh) minmax(0, 1fr);
+  }
+  .dws-region-composer {
+    max-height: 42vh;
+    border-top: 1px solid rgba(114, 213, 177, 0.18);
+    border-left: 0;
+  }
+  .dws-region-workspace__viewport {
+    padding: 16px;
+  }
 }
 .dws-region-composer figure,
 .dws-region-composer__preview {
@@ -3378,76 +2526,6 @@ from {
 .dws-region-composer__actions > button:disabled {
   cursor: not-allowed;
   opacity: 0.5;
-}
-.dws-quality-marks {
-  position: absolute;
-  z-index: 7;
-  inset: 0;
-  pointer-events: none;
-}
-.dws-quality-marks > button {
-  position: absolute;
-  min-width: 12px;
-  min-height: 12px;
-  padding: 0;
-  border: 1.5px solid #f79009;
-  border-radius: 4px;
-  background: rgba(247, 144, 9, 0.08);
-  box-shadow: 0 0 0 1px rgba(10, 10, 16, 0.45);
-  color: #fff;
-  cursor: pointer;
-  pointer-events: auto;
-  transition:
-    border-color 0.16s ease,
-    background-color 0.16s ease,
-    box-shadow 0.16s ease;
-}
-.dws-quality-marks > button.is-critical {
-  border-color: #f04438;
-  background: rgba(240, 68, 56, 0.1);
-}
-.dws-quality-marks > button.is-minor {
-  border-color: #2f81f7;
-  background: rgba(47, 129, 247, 0.08);
-}
-.dws-quality-marks > button.is-active {
-  border-width: 2px;
-  background: rgba(109, 92, 255, 0.12);
-  box-shadow:
-    0 0 0 2px rgba(255, 255, 255, 0.92),
-    0 0 0 5px rgba(109, 92, 255, 0.72),
-    0 12px 32px rgba(0, 0, 0, 0.34);
-}
-.dws-quality-marks b {
-  position: absolute;
-  top: -11px;
-  left: -11px;
-  display: grid;
-  width: 20px;
-  height: 20px;
-  place-items: center;
-  border: 2px solid #fff;
-  border-radius: 50%;
-  background: #151820;
-  font: 700 0.56rem/1 monospace;
-}
-.dws-quality-marks span {
-  position: absolute;
-  bottom: calc(100% + 7px);
-  left: 0;
-  display: none;
-  width: max-content;
-  max-width: 210px;
-  padding: 6px 8px;
-  border-radius: 5px;
-  background: rgba(16, 17, 24, 0.94);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.34);
-  font-size: 0.58rem;
-  line-height: 1.35;
-}
-.dws-quality-marks > button:hover span,
-.dws-quality-marks > button.is-active span {
-  display: block;
 }
 .dws-empty {
   position: absolute;
@@ -4128,11 +3206,6 @@ to {
 .dws-version-families button:focus-visible,
 .dws-editable-history button:focus-visible,
 .dws-inline-iterations button:focus-visible,
-.dws-quality-header button:focus-visible,
-.dws-quality-modes button:focus-visible,
-.dws-quality-issues button:focus-visible,
-.dws-quality-footer button:focus-visible,
-.dws-quality-inline-empty button:focus-visible,
 .dws-region-review button:focus-visible,
 .dws-region-box button:focus-visible {
   outline: 2px solid var(--dws-accent-2);
@@ -4171,7 +3244,6 @@ to {
   .dws-artboard,
   .dws-page-type-picker,
   .dws-config-picker,
-  .dws-quality-dialog,
   .dws-history-tabs button,
   .dws-history-panel-enter-active,
   .dws-history-panel-leave-active {
@@ -4192,9 +3264,7 @@ to {
 .dws-running-scan,
   .dws-running i,
   .dws-empty-sketch span,
-  .dws-versions-skeleton i,
-  .dws-quality-orbit,
-  .dws-quality-loading > div i {
+  .dws-versions-skeleton i {
     animation: none;
 }
 .dws-version-family:hover,
@@ -4313,37 +3383,11 @@ to {
     min-height: 30px;
     padding: 0 7px;
 }
-.dws-quality-layer {
-    padding: 10px;
-}
-.dws-quality-dialog {
-    max-height: calc(100dvh - 20px);
-}
-.dws-quality-strengths ul {
-    grid-template-columns: 1fr;
-}
-.dws-quality-dimensions {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-.dws-quality-comparison {
-    grid-template-columns: 52px minmax(0, 1fr);
-}
-.dws-quality-comparison ul {
-    grid-column: 1 / -1;
-}
 .dws-region-review-body {
     grid-template-columns: 1fr;
 }
 .dws-region-review figure {
     max-height: 170px;
-}
-.dws-quality-footer {
-    align-items: stretch;
-    flex-direction: column;
-    padding: 12px;
-}
-.dws-quality-footer > button {
-    justify-content: center;
 }
 .dws-page-type-grid,
   .dws-style-grid,
@@ -4389,43 +3433,6 @@ to {
 }
 }
 @media (max-width: 420px) {
-.dws-quality-header {
-    grid-template-columns: minmax(0, 1fr) 34px 34px;
-}
-.dws-quality-header > em {
-    display: none;
-}
-.dws-quality-result {
-    padding-inline: 14px;
-}
-.dws-quality-summary {
-    grid-template-columns: 78px minmax(0, 1fr);
-    gap: 12px;
-}
-.dws-quality-score {
-    width: 74px;
-    height: 74px;
-}
-.dws-quality-score::before {
-    width: 60px;
-    height: 60px;
-}
-.dws-quality-dimensions {
-    grid-template-columns: 1fr;
-}
-.dws-quality-modes {
-    padding-inline: 12px;
-}
-.dws-quality-modes button {
-    gap: 5px;
-}
-.dws-quality-modes button > i {
-    display: none;
-}
-.dws-quality-issues > header {
-    align-items: flex-start;
-    gap: 8px;
-}
 .dws-page-type-header,
   .dws-config-header {
     grid-template-columns: minmax(0, 1fr) 32px;

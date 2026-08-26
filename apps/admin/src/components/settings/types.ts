@@ -61,6 +61,9 @@ export interface AdminSettings {
   taskRetryFirstDelaySecs?: number
   taskRetryBackoffSecs?: number
   crossProviderSameModelBalancingEnabled?: boolean
+  adminImageAnalysisProviderId?: string
+  adminImageAnalysisModelId?: string
+  adminImageAnalysisReasoningEffort?: string
   workerConcurrencyCeiling?: number
   effectiveGlobalConcurrency?: number
   imageVariantFormat?: 'webp' | 'png'

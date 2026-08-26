@@ -3,6 +3,7 @@ package taskflow
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"regexp"
@@ -34,6 +35,50 @@ func stringParam(params map[string]any, keys ...string) string {
 	return ""
 }
 
+func mediaToolInput(params map[string]any) (map[string]any, error) {
+	raw, exists := params["toolInput"]
+	if !exists || raw == nil {
+		return map[string]any{}, nil
+	}
+	value, ok := raw.(map[string]any)
+	if !ok {
+		return nil, apperr.E("validation_error", "toolInput: 必须是参数对象", 422)
+	}
+	return value, nil
+}
+
+func mediaToolFiles(params map[string]any) (map[string][]string, error) {
+	result := map[string][]string{}
+	raw, exists := params["toolFiles"]
+	if !exists || raw == nil {
+		return result, nil
+	}
+	value, ok := raw.(map[string]any)
+	if !ok {
+		return nil, apperr.E("validation_error", "toolFiles: 必须是文件参数对象", 422)
+	}
+	for field, encoded := range value {
+		items, ok := encoded.([]any)
+		if !ok {
+			if stringsValue, stringsOK := encoded.([]string); stringsOK {
+				result[field] = append([]string(nil), stringsValue...)
+				continue
+			}
+			return nil, apperr.E("validation_error", "toolFiles."+field+": 必须是文件数组", 422)
+		}
+		keys := make([]string, 0, len(items))
+		for _, item := range items {
+			key, ok := item.(string)
+			if !ok || strings.TrimSpace(key) == "" {
+				return nil, apperr.E("validation_error", "toolFiles."+field+": 文件键无效", 422)
+			}
+			keys = append(keys, strings.TrimSpace(key))
+		}
+		result[field] = keys
+	}
+	return result, nil
+}
+
 func boolParam(params map[string]any, keys ...string) bool {
 	for _, key := range keys {
 		if value, ok := params[key].(bool); ok && value {
@@ -54,6 +99,9 @@ func supports(values []string, requested string) bool {
 
 func validateModelImageCapabilities(model modelconfig.Model, params map[string]any, referenceCount int) error {
 	requestedResolution := stringParam(params, "resolutionScale", "resolution")
+	if requestedResolution != "" && !supports(model.Resolutions, requestedResolution) {
+		return apperr.E("validation_error", "所选模型不支持该分辨率，请重新选择", 422)
+	}
 	allowedRatios := modelconfig.AspectRatiosForResolution(model, requestedResolution)
 	aspectRatio := stringParam(params, "aspectRatio", "ratio")
 	if aspectRatio != "" && !supports(allowedRatios, aspectRatio) {
@@ -110,12 +158,142 @@ func ValidateModelImageCapabilities(model modelconfig.Model, params map[string]a
 }
 
 type CreateInput struct {
-	Type           string
-	Prompt         string
-	Params         map[string]any
-	InputKeys      []string
-	Count          int
-	IdempotencyKey *string
+	Type                   string
+	Prompt                 string
+	Params                 map[string]any
+	InputKeys              []string
+	Count                  int
+	IdempotencyKey         *string
+	ExpectedUnitPriceCents *int64
+}
+
+type PriceQuote struct {
+	Workspace              string
+	ModelID                string
+	StandardUnitPriceCents int64
+	DiscountUnitPriceCents *int64
+	UnitPriceCents         int64
+	Count                  int
+	TotalPriceCents        int64
+	ConfigVersion          int
+	Overridden             bool
+}
+
+func requestedModelID(params map[string]any) string {
+	for _, key := range []string{"publicModelKey", "modelId"} {
+		if value, ok := params[key].(string); ok && strings.TrimSpace(value) != "" {
+			value = strings.TrimSpace(value)
+			if value == "standard" {
+				return ""
+			}
+			return value
+		}
+	}
+	return ""
+}
+
+func numericParam(params map[string]any, key string) float64 {
+	if params == nil {
+		return 0
+	}
+	switch value := params[key].(type) {
+	case float64:
+		return value
+	case float32:
+		return float64(value)
+	case int:
+		return float64(value)
+	case int64:
+		return float64(value)
+	case int32:
+		return float64(value)
+	case json.Number:
+		parsed, _ := value.Float64()
+		return parsed
+	default:
+		return 0
+	}
+}
+
+func resolveSelectionPrice(cfg modelconfig.Config, workspace string, model modelconfig.Model, params map[string]any) modelconfig.ResolvedWorkspacePrice {
+	if model.Kind == modelconfig.ModelKindImageTool && model.Tool == modelconfig.ImageToolUpscale {
+		toolInput, _ := params["toolInput"].(map[string]any)
+		return modelconfig.ResolveImageUpscalePrice(
+			model,
+			int(numericParam(params, "_inputImageLongEdge")),
+			numericParam(toolInput, "scale_factor"),
+		)
+	}
+	return modelconfig.ResolveWorkspacePrice(cfg, workspace, model)
+}
+
+func QuoteTaskPrice(ctx context.Context, q store.Q, in CreateInput) (*PriceQuote, error) {
+	if !store.Contains(store.TaskTypes, in.Type) || in.Type == "puzzle" {
+		return nil, apperr.E("validation_error", "不支持的任务类型", 422)
+	}
+	if in.Count < 1 || in.Count > modelconfig.MaxImagesLimit {
+		return nil, apperr.E("validation_error", fmt.Sprintf("count 须在 1-%d 之间", modelconfig.MaxImagesLimit), 422)
+	}
+	unitPrice, err := settings.TaskPriceCents(ctx, q, in.Type)
+	if err != nil {
+		return nil, err
+	}
+	quote := &PriceQuote{
+		StandardUnitPriceCents: unitPrice, UnitPriceCents: unitPrice,
+		Count: in.Count, TotalPriceCents: unitPrice * int64(in.Count),
+	}
+	cfg, err := modelconfig.Load(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	quote.ConfigVersion = cfg.Version
+	workspace, workspaceMapped := modelconfig.WorkspaceForTaskType(in.Type)
+	if stringParam(in.Params, "_source") == "react_canvas" {
+		workspace = modelconfig.WorkspaceCanvas
+		workspaceMapped = true
+	}
+	quote.Workspace = workspace
+	modelID := requestedModelID(in.Params)
+	var selection *modelconfig.Selection
+	var configured bool
+	switch in.Type {
+	case "media_tool":
+		if modelID == "" {
+			return nil, apperr.E("validation_error", "媒体工具必须指定后台已开放的工具模型", 422)
+		}
+		selection, configured = modelconfig.SelectPublic(cfg, modelconfig.ModelKindImageTool, modelID)
+	case "background_remove":
+		selection, configured = modelconfig.SelectPublicImageTool(cfg, modelconfig.ImageToolBackgroundRemove, modelID)
+	default:
+		if workspaceMapped {
+			selection, configured = modelconfig.SelectPublicForWorkspace(cfg, workspace, modelconfig.ModelKindImage, modelID)
+		} else {
+			selection, configured = modelconfig.SelectPublic(cfg, modelconfig.ModelKindImage, modelID)
+		}
+	}
+	if configured {
+		if selection.Model.Kind == modelconfig.ModelKindImage {
+			if err := validateModelImageCapabilities(selection.Model, in.Params, len(in.InputKeys)); err != nil {
+				return nil, err
+			}
+			if in.Count > selection.Model.GenerationMaxImages() {
+				return nil, apperr.E("validation_error", fmt.Sprintf("所选模型单次最多生成 %d 张", selection.Model.GenerationMaxImages()), 422)
+			}
+		}
+		resolved := resolveSelectionPrice(cfg, workspace, selection.Model, in.Params)
+		quote.ModelID = selection.Model.ID
+		quote.StandardUnitPriceCents = resolved.PriceCents
+		quote.DiscountUnitPriceCents = resolved.DiscountPriceCents
+		quote.UnitPriceCents = resolved.EffectiveCents
+		quote.TotalPriceCents = resolved.EffectiveCents * int64(in.Count)
+		quote.Overridden = resolved.Overridden
+		return quote, nil
+	}
+	if in.Type == "media_tool" || in.Type == "background_remove" ||
+		(workspaceMapped && modelconfig.HasWorkspaceBinding(cfg, workspace)) || modelID != "" {
+		return nil, apperr.E("validation_error", "所选模型未分配给当前页面或已下线", 422)
+	}
+	return quote, nil
 }
 
 // CreateTaskCommitHook runs inside the task creation transaction after the
@@ -131,30 +309,6 @@ func taskUploadReferenceKeys(inputKeys []string, params map[string]any) []string
 		}
 	}
 	return keys
-}
-
-func authorizeTrialFeature(ctx context.Context, q store.Q, userID uuid.UUID, feature trialfeature.Feature) error {
-	if feature.Key == "" {
-		return nil
-	}
-	campaign, err := store.GetActiveTrialCampaign(ctx, q)
-	if err != nil {
-		return err
-	}
-	if campaign == nil || campaign.AccessMode != "restricted" {
-		return nil
-	}
-	if !store.Contains(campaign.FeatureKeys, feature.Key) {
-		return nil
-	}
-	allowed, err := store.HasActiveTrialFeatureEntitlement(ctx, q, userID, feature.Key)
-	if err != nil {
-		return err
-	}
-	if !allowed {
-		return apperr.E("trial_feature_access_required", fmt.Sprintf("「%s」正在内测，请先申请并通过体验资格审核", feature.Label), 403)
-	}
-	return nil
 }
 
 func taskOutputParentID(userID uuid.UUID, key string) (uuid.UUID, bool) {
@@ -255,9 +409,13 @@ func createTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 		return nil, false, apperr.E("validation_error", fmt.Sprintf("count 须在 1-%d 之间", modelconfig.MaxImagesLimit), 422)
 	}
 	isBackgroundRemove := in.Type == "background_remove"
-	taskFeature, _ := trialfeature.ForTaskType(in.Type)
+	isMediaTool := in.Type == "media_tool"
+	taskFeature, _ := trialfeature.ForTask(in.Type, in.Params)
 	if isBackgroundRemove && (in.Count != 1 || len(in.InputKeys) != 1) {
 		return nil, false, apperr.E("validation_error", "背景移除任务必须且只能包含 1 张输入图片", 422)
+	}
+	if isMediaTool && in.Count != 1 {
+		return nil, false, apperr.E("validation_error", "媒体工具任务每次只能提交 1 个处理任务", 422)
 	}
 
 	var task *store.Task
@@ -286,7 +444,7 @@ func createTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 		if err := validateAndLockTaskInputReferences(ctx, tx, userID, taskUploadReferenceKeys(in.InputKeys, in.Params)); err != nil {
 			return err
 		}
-		if err := authorizeTrialFeature(ctx, tx, userID, taskFeature); err != nil {
+		if err := trialfeature.Authorize(ctx, tx, userID, taskFeature); err != nil {
 			return err
 		}
 
@@ -325,7 +483,7 @@ func createTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 		}
 		provider := ""
 		model := ""
-		if !isBackgroundRemove {
+		if !isBackgroundRemove && !isMediaTool {
 			provider, err = settings.ImageServiceProvider(ctx, tx, in.Type)
 			if err != nil {
 				return err
@@ -363,7 +521,12 @@ func createTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 		}
 		var selection *modelconfig.Selection
 		var configured bool
-		if isBackgroundRemove {
+		if isMediaTool {
+			if requestedModelID == "" {
+				return apperr.E("validation_error", "媒体工具必须指定后台已开放的工具模型", 422)
+			}
+			selection, configured = modelconfig.SelectPublic(modelCfg, modelconfig.ModelKindImageTool, requestedModelID)
+		} else if isBackgroundRemove {
 			selection, configured = modelconfig.SelectPublicImageTool(
 				modelCfg, modelconfig.ImageToolBackgroundRemove, requestedModelID,
 			)
@@ -375,7 +538,19 @@ func createTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 			selection, configured = modelconfig.SelectPublic(modelCfg, modelconfig.ModelKindImage, requestedModelID)
 		}
 		if configured {
-			if !isBackgroundRemove {
+			if isMediaTool {
+				toolInput, inputErr := mediaToolInput(params)
+				if inputErr != nil {
+					return inputErr
+				}
+				toolFiles, filesErr := mediaToolFiles(params)
+				if filesErr != nil {
+					return filesErr
+				}
+				if err := modelconfig.ValidateMediaToolInput(selection.Model, toolInput, toolFiles, in.InputKeys); err != nil {
+					return apperr.E("validation_error", err.Error(), 422)
+				}
+			} else if !isBackgroundRemove {
 				normalizeCanvasImageOutputFormat(selection.Model, params)
 				if err := validateModelImageCapabilities(selection.Model, params, len(in.InputKeys)); err != nil {
 					return err
@@ -405,7 +580,7 @@ func createTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 						break
 					}
 				}
-				if requestedResolution != "" && len(selection.Model.Resolutions) > 0 {
+				if requestedResolution != "" {
 					supported := false
 					for _, resolution := range selection.Model.Resolutions {
 						if strings.EqualFold(resolution, requestedResolution) {
@@ -428,7 +603,9 @@ func createTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 			}
 			provider = selection.Provider.Adapter
 			model = selection.Model.UpstreamModel
-			unitPrice = modelconfig.EffectivePrice(selection.Model)
+			modelEffectivePrice := modelconfig.EffectivePrice(selection.Model)
+			resolvedPrice := resolveSelectionPrice(modelCfg, workspace, selection.Model, params)
+			unitPrice = resolvedPrice.EffectiveCents
 			params["_serviceProvider"] = provider
 			params["_modelConfigId"] = selection.Model.ID
 			params["_providerConfigId"] = selection.Provider.ID
@@ -448,6 +625,11 @@ func createTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 			params["_modelMaxReferenceImages"] = selection.Model.MaxReferenceImages
 			params["_modelMaxImages"] = selection.Model.GenerationMaxImages()
 			params["_unitPriceCents"] = unitPrice
+			params["_billingUnitPriceCents"] = unitPrice
+			params["_modelEffectivePriceCents"] = modelEffectivePrice
+			params["_pricingWorkspace"] = workspace
+		} else if isMediaTool {
+			return apperr.E("validation_error", "所选媒体工具尚未配置、未开放或已下线", 422)
 		} else if isBackgroundRemove {
 			return apperr.E("validation_error", "背景移除工具尚未配置或未开放", 422)
 		} else if (workspaceMapped && modelconfig.HasWorkspaceBinding(modelCfg, workspace)) ||
@@ -455,6 +637,9 @@ func createTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 			return apperr.E("validation_error", "所选图片模型未分配给当前页面，请刷新模型列表后重试", 422)
 		}
 		costCents := unitPrice * int64(in.Count)
+		if in.ExpectedUnitPriceCents != nil && *in.ExpectedUnitPriceCents != unitPrice {
+			return apperr.E("price_changed", "任务价格已更新，请确认最新费用后重试", 409)
+		}
 
 		// Model validation and route resolution above are independent per user and
 		// intentionally happen before the short global admission section. Only the
@@ -823,6 +1008,11 @@ func taskNotifyName(task *store.Task) string {
 		return "拼图"
 	case "background_remove":
 		return "背景移除"
+	case "media_tool":
+		if name := stringParam(task.Params, "_modelDisplayName"); name != "" {
+			return name
+		}
+		return "媒体工具"
 	case "assistant":
 		return "AI 助手"
 	default:
@@ -833,7 +1023,11 @@ func taskNotifyName(task *store.Task) string {
 // NotifyTaskSucceeded 主事务提交后尽力而为发通知，失败仅日志（M4 解耦）。
 func NotifyTaskSucceeded(ctx context.Context, q store.Q, task *store.Task, imageCount int) {
 	name := taskNotifyName(task)
-	body := fmt.Sprintf("%s已生成 %d 张图片。", name, imageCount)
+	unit := "张图片"
+	if task != nil && task.Type == "media_tool" {
+		unit = "个结果"
+	}
+	body := fmt.Sprintf("%s已生成 %d %s。", name, imageCount, unit)
 	if err := store.InsertNotification(ctx, q, &task.UserID, "task", name+"已完成", &body); err != nil {
 		log.Printf("notify task %s succeeded: %v", task.ID, err)
 	}
@@ -942,7 +1136,7 @@ func RequeueTask(ctx context.Context, st *store.Store, taskID uuid.UUID) (*store
 			return apperr.E("task_not_cancelable", "仅失败任务可以重新入队", 400)
 		}
 		if t.CostCents > 0 {
-			feature, _ := trialfeature.ForTaskType(t.Type)
+			feature, _ := trialfeature.ForTask(t.Type, t.Params)
 			if _, err := wallet.FreezeForTask(ctx, tx, t.UserID, taskID, t.CostCents, feature.Key, strPtr("任务重跑冻结")); err != nil {
 				return err
 			}

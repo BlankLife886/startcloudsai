@@ -26,12 +26,22 @@ import {
     waitForCanvasWorkflowStop,
     workflowPlanMatchesCheckpoint,
 } from "../src/canvas/lib/canvas/canvas-workflow.ts";
+import { pendingCanvasTasks } from "../src/canvas/lib/canvas/canvas-pending-tasks.ts";
 import { canvasProjectNeedsCloudRetry, mergeCanvasProjectDocuments, mergeCanvasProjectSnapshots } from "../src/canvas/lib/canvas/canvas-project-sync.ts";
 import { buildCanvasSidePanelWorkflowGroups } from "../src/canvas/lib/canvas/canvas-workflow-groups.ts";
 import { shouldPromoteGeneratedImage } from "../src/canvas/lib/canvas/canvas-image-primary.ts";
+import { shouldBlockCanvasNavigation } from "../src/canvas/lib/canvas/canvas-leave-guard.ts";
+import { canvasLocalImageOperationOutputCount, isCanvasLocalImageOperation, normalizeCanvasLocalImageOperationParams } from "../src/canvas/lib/canvas/canvas-local-image-operation.ts";
 
 const node = (id, type, metadata = {}) => ({ id, type, title: id, position: { x: 0, y: 0 }, width: 100, height: 100, metadata });
 const edge = (fromNodeId, toNodeId) => ({ id: `${fromNodeId}-${toNodeId}`, fromNodeId, toNodeId });
+
+test("blocks leaving only while the Agent is active", () => {
+    assert.equal(shouldBlockCanvasNavigation("/canvas/a", "/canvas/b", true, false), true);
+    assert.equal(shouldBlockCanvasNavigation("/canvas/a", "/canvas/b", false, false), false, "workflow and generation activity must not block navigation without an active Agent");
+    assert.equal(shouldBlockCanvasNavigation("/canvas/a", "/canvas/a", true, false), false);
+    assert.equal(shouldBlockCanvasNavigation("/canvas/a", "/canvas/b", true, true), false);
+});
 
 test("only retries a cloud save when newer local edits are still pending", () => {
     assert.equal(canvasProjectNeedsCloudRetry({ pendingSync: true }), true);
@@ -67,6 +77,28 @@ test("orders config nodes through generated resource nodes", () => {
     assert.deepEqual(result.plan.layers, [["a"], ["b"], ["c"]]);
 });
 
+test("keeps reusable local image operations deterministic", () => {
+    assert.equal(isCanvasLocalImageOperation("split"), true);
+    assert.equal(isCanvasLocalImageOperation("angle"), false);
+    const split = normalizeCanvasLocalImageOperationParams("split", { rows: 99, columns: 0, horizontalLines: [0.75, 0.25, 0.25], verticalLines: [0.5] });
+    assert.deepEqual(split, { rows: 3, columns: 2, horizontalLines: [0.25, 0.75], verticalLines: [0.5] });
+    assert.equal(canvasLocalImageOperationOutputCount("split", split), 6);
+    assert.deepEqual(normalizeCanvasLocalImageOperationParams("crop", { x: -1, y: 0.8, width: 3, height: 3 }), { x: 0, y: 0.8, width: 1, height: 0.19999999999999996 });
+    assert.deepEqual(normalizeCanvasLocalImageOperationParams("upscale", { targetLongEdge: 9000, algorithm: "unknown" }), { targetLongEdge: 4096, algorithm: "high" });
+});
+
+test("schedules reusable image operations as ordinary workflow dependencies", () => {
+    const nodes = [
+        node("input", "image", { status: "success", content: "source.png" }),
+        node("split", "builtin:split", { localImageOperation: "split", localImageOperationParams: { rows: 2, columns: 2 } }),
+        node("piece", "image", { workflowProducerNodeId: "split" }),
+        node("angle", "builtin:angle", { generationMode: "image" }),
+    ];
+    const result = compileCanvasWorkflow(nodes, [edge("input", "split"), edge("split", "piece"), edge("piece", "angle")]);
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.plan.layers, [["split"], ["angle"]]);
+});
+
 test("keeps independent branches in the same layer", () => {
     const nodes = [node("a", "config"), node("b", "config"), node("a-out", "image"), node("b-out", "image"), node("c", "config")];
     const connections = [edge("a", "a-out"), edge("b", "b-out"), edge("a-out", "c"), edge("b-out", "c")];
@@ -75,11 +107,24 @@ test("keeps independent branches in the same layer", () => {
     assert.deepEqual(result.plan.layers, [["a", "b"], ["c"]]);
 });
 
+test("compiles only the requested workflow config nodes", () => {
+    const nodes = [node("input-a", "text"), node("config-a", "config"), node("output-a", "image"), node("input-b", "text"), node("config-b", "config"), node("output-b", "image")];
+    const connections = [edge("input-a", "config-a"), edge("config-a", "output-a"), edge("input-b", "config-b"), edge("config-b", "output-b")];
+    const result = compileCanvasWorkflow(nodes, connections, { configNodeIds: ["config-b"] });
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.plan.nodeIds, ["config-b"]);
+});
+
 test("rejects cycles between config nodes", () => {
     const nodes = [node("a", "config"), node("a-out", "image"), node("b", "config"), node("b-out", "image")];
     const connections = [edge("a", "a-out"), edge("a-out", "b"), edge("b", "b-out"), edge("b-out", "a")];
     const result = compileCanvasWorkflow(nodes, connections);
     assert.deepEqual(result, { ok: false, reason: "cycle", nodeIds: ["a", "b"] });
+});
+
+test("rejects direct config-to-config edges before scheduling", () => {
+    const nodes = [node("a", "config"), node("b", "config")];
+    assert.deepEqual(compileCanvasWorkflow(nodes, [edge("a", "b")]), { ok: false, reason: "invalid_connection", nodeIds: ["a", "b"] });
 });
 
 test("resolves stable output slots", () => {
@@ -249,7 +294,30 @@ test("adopts all completed concurrent outputs after refresh", () => {
         node("b-out", "image", { status: "success", content: "b.png" }),
         node("c", "config"),
     ];
-    assert.deepEqual(reconcileCanvasWorkflowOutputs(checkpoint, nodes, []).completedNodeIds, ["a", "b"]);
+    assert.deepEqual(reconcileCanvasWorkflowOutputs(checkpoint, nodes, [], { recoverPersistedOutputs: true }).completedNodeIds, ["a", "b"]);
+});
+
+test("does not adopt outputs from a previous run when explicitly rerunning", () => {
+    const checkpoint = createCanvasWorkflowCheckpoint(["a", "b"]);
+    const nodes = [
+        node("a", "config", { status: "success", workflowOutputNodeIds: ["a-out"] }),
+        node("a-out", "image", { status: "success", content: "old-a.png" }),
+        node("b", "config", { status: "success", workflowOutputNodeIds: ["b-out"] }),
+        node("b-out", "image", { status: "success", content: "old-b.png" }),
+    ];
+    const rerun = reconcileCanvasWorkflowOutputs(checkpoint, nodes, [], { recoverPersistedOutputs: false });
+    assert.equal(rerun, checkpoint);
+    assert.deepEqual(rerun.completedNodeIds, []);
+});
+
+test("resumes a duplicated workflow task only on its real output node", () => {
+    const taskId = "task-1";
+    const image = { id: "image-1", status: "loading", content: "", storageKey: "", naturalWidth: 0, naturalHeight: 0, bytes: 0, mimeType: "", taskId };
+    const nodes = [
+        node("config", "config", { status: "loading", taskId, taskKind: "image", workflowOutputNodeIds: ["output"] }),
+        node("output", "image", { status: "loading", taskId, taskKind: "image", workflowProducerNodeId: "config", images: [image] }),
+    ];
+    assert.deepEqual(pendingCanvasTasks(nodes), [{ nodeId: "output", imageId: "image-1", taskId, kind: "image" }]);
 });
 
 test("schedules independent workflows together and cancels only queued dependents", () => {

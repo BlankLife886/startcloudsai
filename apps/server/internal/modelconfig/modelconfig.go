@@ -15,7 +15,7 @@ import (
 
 const (
 	SettingKey = "model_dispatch_config"
-	Version    = 5
+	Version    = 7
 
 	AdapterOpenAI = "openai"
 	AdapterCRUN   = "crun"
@@ -25,6 +25,7 @@ const (
 	ModelKindImageTool = "image_tool"
 
 	ImageToolBackgroundRemove = "background_remove"
+	ImageToolUpscale          = "image_upscale"
 
 	WorkspaceAssistant  = "assistant"
 	WorkspaceT2I        = "t2i"
@@ -138,40 +139,54 @@ func (p *Provider) UnmarshalJSON(data []byte) error {
 }
 
 type Model struct {
-	ID                           string              `json:"id"`
-	Name                         string              `json:"name"`
-	ProviderID                   string              `json:"providerId"`
-	UpstreamModel                string              `json:"upstreamModel"`
-	Kind                         string              `json:"kind"`
-	Tool                         string              `json:"tool,omitempty"`
-	Description                  string              `json:"description,omitempty"`
-	PriceCents                   int64               `json:"priceCents"`
-	DiscountPriceCents           *int64              `json:"discountPriceCents"`
-	FastMode                     bool                `json:"fastMode"`
-	MinSeconds                   int                 `json:"minSeconds"`
-	MaxSeconds                   int                 `json:"maxSeconds"`
-	Resolutions                  []string            `json:"resolutions"`
-	AspectRatios                 []string            `json:"aspectRatios"`
-	AspectRatiosByResolution     map[string][]string `json:"aspectRatiosByResolution"`
-	Qualities                    []string            `json:"qualities"`
-	TransparentBackground        bool                `json:"transparentBackground"`
-	OutputFormats                []string            `json:"outputFormats"`
-	ModerationLevels             []string            `json:"moderationLevels"`
-	MaxReferenceImages           int                 `json:"maxReferenceImages"`
-	MaxImages                    int                 `json:"maxImages"`
-	ContextWindowTokens          int                 `json:"contextWindowTokens,omitempty"`
-	MaxOutputTokens              int                 `json:"maxOutputTokens,omitempty"`
-	SupportedReasoningEfforts    []string            `json:"supportedReasoningEfforts"`
-	ReasoningPricing             *ReasoningPricing   `json:"reasoningPricing,omitempty"`
-	Public                       bool                `json:"public"`
-	Default                      bool                `json:"default"`
-	Enabled                      bool                `json:"enabled"`
+	ID                           string               `json:"id"`
+	Name                         string               `json:"name"`
+	ProviderID                   string               `json:"providerId"`
+	UpstreamModel                string               `json:"upstreamModel"`
+	UpstreamInputFields          []string             `json:"upstreamInputFields,omitempty"`
+	UpstreamRequiredInputFields  []string             `json:"upstreamRequiredInputFields,omitempty"`
+	UpstreamInputSchema          map[string]any       `json:"upstreamInputSchema,omitempty"`
+	Modality                     string               `json:"modality,omitempty"`
+	Operations                   []string             `json:"operations,omitempty"`
+	Kind                         string               `json:"kind"`
+	Tool                         string               `json:"tool,omitempty"`
+	Description                  string               `json:"description,omitempty"`
+	PriceCents                   int64                `json:"priceCents"`
+	DiscountPriceCents           *int64               `json:"discountPriceCents"`
+	ImageUpscalePricing          *ImageUpscalePricing `json:"imageUpscalePricing,omitempty"`
+	FastMode                     bool                 `json:"fastMode"`
+	MinSeconds                   int                  `json:"minSeconds"`
+	MaxSeconds                   int                  `json:"maxSeconds"`
+	Resolutions                  []string             `json:"resolutions"`
+	AspectRatios                 []string             `json:"aspectRatios"`
+	AspectRatiosByResolution     map[string][]string  `json:"aspectRatiosByResolution"`
+	Qualities                    []string             `json:"qualities"`
+	TransparentBackground        bool                 `json:"transparentBackground"`
+	OutputFormats                []string             `json:"outputFormats"`
+	ModerationLevels             []string             `json:"moderationLevels"`
+	MaxReferenceImages           int                  `json:"maxReferenceImages"`
+	MaxImages                    int                  `json:"maxImages"`
+	ContextWindowTokens          int                  `json:"contextWindowTokens,omitempty"`
+	MaxOutputTokens              int                  `json:"maxOutputTokens,omitempty"`
+	SupportedReasoningEfforts    []string             `json:"supportedReasoningEfforts"`
+	ReasoningPricing             *ReasoningPricing    `json:"reasoningPricing,omitempty"`
+	Public                       bool                 `json:"public"`
+	Default                      bool                 `json:"default"`
+	Enabled                      bool                 `json:"enabled"`
 	transparentBackgroundSet     bool
 	maxReferenceImagesSet        bool
 	maxImagesSet                 bool
 	aspectRatiosByResolutionSet  bool
 	supportedReasoningEffortsSet bool
 	legacyAutoAspectRatios       map[string][]string
+}
+
+// ImageUpscalePricing keeps the platform credit price separate from the
+// provider's USD cost. PriceCents on Model is the <= threshold tier.
+type ImageUpscalePricing struct {
+	ThresholdPixels        int    `json:"thresholdPixels"`
+	HighPriceCents         int64  `json:"highPriceCents"`
+	HighDiscountPriceCents *int64 `json:"highDiscountPriceCents"`
 }
 
 func (m *Model) UnmarshalJSON(data []byte) error {
@@ -269,8 +284,21 @@ type Config struct {
 }
 
 type WorkspaceBinding struct {
-	ModelIDs        []string          `json:"modelIds"`
-	DefaultModelIDs map[string]string `json:"defaultModelIds"`
+	ModelIDs        []string                         `json:"modelIds"`
+	DefaultModelIDs map[string]string                `json:"defaultModelIds"`
+	ModelPricing    map[string]WorkspaceModelPricing `json:"modelPricing,omitempty"`
+}
+
+type WorkspaceModelPricing struct {
+	PriceCents         int64  `json:"priceCents"`
+	DiscountPriceCents *int64 `json:"discountPriceCents"`
+}
+
+type ResolvedWorkspacePrice struct {
+	PriceCents         int64
+	DiscountPriceCents *int64
+	EffectiveCents     int64
+	Overridden         bool
 }
 
 type Selection struct {
@@ -370,6 +398,10 @@ func normalize(cfg *Config) {
 		model.Name = strings.TrimSpace(model.Name)
 		model.ProviderID = strings.TrimSpace(model.ProviderID)
 		model.UpstreamModel = strings.TrimSpace(model.UpstreamModel)
+		model.UpstreamInputFields = cleanStrings(model.UpstreamInputFields)
+		model.UpstreamRequiredInputFields = cleanStrings(model.UpstreamRequiredInputFields)
+		model.Modality = strings.ToLower(strings.TrimSpace(model.Modality))
+		model.Operations = cleanStrings(model.Operations)
 		model.Kind = strings.TrimSpace(model.Kind)
 		model.Tool = strings.TrimSpace(model.Tool)
 		if model.Kind == "" {
@@ -459,6 +491,14 @@ func normalize(cfg *Config) {
 			}
 		}
 		binding.DefaultModelIDs = defaultModelIDs
+		modelPricing := make(map[string]WorkspaceModelPricing, len(binding.ModelPricing))
+		for modelID, pricing := range binding.ModelPricing {
+			modelID = strings.TrimSpace(modelID)
+			if modelID != "" {
+				modelPricing[modelID] = pricing
+			}
+		}
+		binding.ModelPricing = modelPricing
 		normalizedWorkspaces[strings.TrimSpace(key)] = binding
 	}
 	cfg.Workspaces = normalizedWorkspaces
@@ -600,7 +640,17 @@ func ValidModelKind(value string) bool {
 }
 
 func ValidImageTool(value string) bool {
-	return value == ImageToolBackgroundRemove
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 100 {
+		return false
+	}
+	for _, char := range value {
+		if (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || char == '_' || char == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func ValidWorkspace(value string) bool {
@@ -674,12 +724,35 @@ func Validate(cfg Config) error {
 			if providers[model.ProviderID].Adapter != AdapterCRUN {
 				return fmt.Errorf("图片工具 %s 当前只支持 CRUN 服务商", model.Name)
 			}
+			properties, _ := model.UpstreamInputSchema["properties"].(map[string]any)
+			if len(model.UpstreamInputFields) == 0 || len(properties) == 0 {
+				return fmt.Errorf("媒体工具 %s 缺少已验证的上游参数 schema", model.Name)
+			}
+			for _, field := range model.UpstreamInputFields {
+				if _, ok := properties[field]; !ok {
+					return fmt.Errorf("媒体工具 %s 的参数 %s 不在上游 schema 中", model.Name, field)
+				}
+			}
 		}
 		if model.PriceCents < 0 || (model.DiscountPriceCents != nil && *model.DiscountPriceCents < 0) {
 			return fmt.Errorf("模型 %s 的价格不能为负", model.Name)
 		}
 		if model.DiscountPriceCents != nil && *model.DiscountPriceCents > model.PriceCents {
 			return fmt.Errorf("模型 %s 的折扣价不能高于标准价", model.Name)
+		}
+		if pricing := model.ImageUpscalePricing; pricing != nil {
+			if model.Kind != ModelKindImageTool || model.Tool != ImageToolUpscale {
+				return fmt.Errorf("模型 %s 不是高清放大工具，不能配置分辨率分档价格", model.Name)
+			}
+			if pricing.ThresholdPixels != 2048 {
+				return fmt.Errorf("高清放大模型 %s 的价格分档阈值必须为 2048px", model.Name)
+			}
+			if pricing.HighPriceCents < 0 || (pricing.HighDiscountPriceCents != nil && *pricing.HighDiscountPriceCents < 0) {
+				return fmt.Errorf("高清放大模型 %s 的 4096px 档价格不能为负", model.Name)
+			}
+			if pricing.HighDiscountPriceCents != nil && *pricing.HighDiscountPriceCents > pricing.HighPriceCents {
+				return fmt.Errorf("高清放大模型 %s 的 4096px 档折扣价不能高于标准价", model.Name)
+			}
 		}
 		if model.MinSeconds < 0 || model.MaxSeconds < model.MinSeconds || model.MaxSeconds > 3600 {
 			return fmt.Errorf("模型 %s 的预计耗时无效", model.Name)
@@ -731,7 +804,17 @@ func Validate(cfg Config) error {
 					}
 				}
 			}
-			if len(model.Qualities) == 0 {
+			requiresQuality := true
+			if providers[model.ProviderID].Adapter == AdapterCRUN && len(model.UpstreamInputFields) > 0 {
+				requiresQuality = false
+				for _, field := range model.UpstreamInputFields {
+					if field == "quality" {
+						requiresQuality = true
+						break
+					}
+				}
+			}
+			if requiresQuality && len(model.Qualities) == 0 {
 				return fmt.Errorf("模型 %s 至少需要一个输出质量", model.Name)
 			}
 			if model.MaxReferenceImages < 0 || model.MaxReferenceImages > 16 {
@@ -768,6 +851,18 @@ func Validate(cfg Config) error {
 			model, exists := models[modelID]
 			if !exists || !assigned[modelID] || model.Kind != kind {
 				return fmt.Errorf("页面 %s 的默认模型必须包含在该页面的可选模型中", workspace)
+			}
+		}
+		for modelID, pricing := range binding.ModelPricing {
+			model, exists := models[modelID]
+			if !exists || !assigned[modelID] {
+				return fmt.Errorf("页面 %s 的价格模型必须包含在该页面的可选模型中：%s", workspace, modelID)
+			}
+			if pricing.PriceCents < 0 || (pricing.DiscountPriceCents != nil && *pricing.DiscountPriceCents < 0) {
+				return fmt.Errorf("页面 %s 的模型 %s 价格不能为负", workspace, model.Name)
+			}
+			if pricing.DiscountPriceCents != nil && *pricing.DiscountPriceCents > pricing.PriceCents {
+				return fmt.Errorf("页面 %s 的模型 %s 折扣价不能高于标准价", workspace, model.Name)
 			}
 		}
 	}
@@ -885,6 +980,58 @@ func EffectivePrice(model Model) int64 {
 		return *model.DiscountPriceCents
 	}
 	return model.PriceCents
+}
+
+// ResolveImageUpscalePrice resolves the two provider resolution tiers using
+// trusted input dimensions. Missing dimensions or scale select the high tier
+// so an incomplete client quote can never undercharge the task.
+func ResolveImageUpscalePrice(model Model, inputLongEdge int, scaleFactor float64) ResolvedWorkspacePrice {
+	pricing := model.ImageUpscalePricing
+	if model.Kind != ModelKindImageTool || model.Tool != ImageToolUpscale || pricing == nil {
+		return ResolvedWorkspacePrice{
+			PriceCents: model.PriceCents, DiscountPriceCents: model.DiscountPriceCents,
+			EffectiveCents: EffectivePrice(model),
+		}
+	}
+	if inputLongEdge > 0 && scaleFactor > 0 && float64(inputLongEdge)*scaleFactor <= float64(pricing.ThresholdPixels) {
+		return ResolvedWorkspacePrice{
+			PriceCents: model.PriceCents, DiscountPriceCents: model.DiscountPriceCents,
+			EffectiveCents: EffectivePrice(model),
+		}
+	}
+	effective := pricing.HighPriceCents
+	if pricing.HighDiscountPriceCents != nil {
+		effective = *pricing.HighDiscountPriceCents
+	}
+	return ResolvedWorkspacePrice{
+		PriceCents: pricing.HighPriceCents, DiscountPriceCents: pricing.HighDiscountPriceCents,
+		EffectiveCents: effective,
+	}
+}
+
+func ResolveWorkspacePrice(cfg Config, workspace string, model Model) ResolvedWorkspacePrice {
+	standard := model.PriceCents
+	discount := model.DiscountPriceCents
+	overridden := false
+	if binding, ok := cfg.Workspaces[strings.TrimSpace(workspace)]; ok {
+		if pricing, ok := binding.ModelPricing[model.ID]; ok {
+			standard = pricing.PriceCents
+			discount = pricing.DiscountPriceCents
+			overridden = true
+		}
+	}
+	effective := standard
+	if discount != nil {
+		effective = *discount
+	}
+	return ResolvedWorkspacePrice{
+		PriceCents: standard, DiscountPriceCents: discount,
+		EffectiveCents: effective, Overridden: overridden,
+	}
+}
+
+func EffectiveWorkspacePrice(cfg Config, workspace string, model Model) int64 {
+	return ResolveWorkspacePrice(cfg, workspace, model).EffectiveCents
 }
 
 func activeProviders(cfg Config) map[string]Provider {
@@ -1223,9 +1370,10 @@ func OverlayTaskPrices(cfg Config, legacy map[string]int64) (map[string]int64, m
 		if len(models) == 0 {
 			continue
 		}
-		rangeValue := PriceRange{MinCents: EffectivePrice(models[0].Model), MaxCents: EffectivePrice(models[0].Model)}
+		firstPrice := EffectiveWorkspacePrice(cfg, workspace, models[0].Model)
+		rangeValue := PriceRange{MinCents: firstPrice, MaxCents: firstPrice}
 		for _, selection := range models[1:] {
-			price := EffectivePrice(selection.Model)
+			price := EffectiveWorkspacePrice(cfg, workspace, selection.Model)
 			if price < rangeValue.MinCents {
 				rangeValue.MinCents = price
 			}

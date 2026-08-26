@@ -100,6 +100,127 @@ func TestRuntimeConfigExposesOnlyPublicModelMapping(t *testing.T) {
 	}
 }
 
+func TestRuntimeConfigExposesImageUpscalePlatformPriceTiers(t *testing.T) {
+	st := testdb.Setup(t)
+	highDiscount := int64(4)
+	cfg := modelconfig.Empty()
+	cfg.Providers = []modelconfig.Provider{{
+		ID: "crun", Name: "CRUN", Adapter: modelconfig.AdapterCRUN,
+		BaseURL: "https://api.crun.ai", APIKey: "secret", Enabled: true,
+	}}
+	cfg.Models = []modelconfig.Model{{
+		ID: "upscale", Name: "高清放大", ProviderID: "crun", UpstreamModel: "image-upscaler-basic",
+		Kind: modelconfig.ModelKindImageTool, Tool: modelconfig.ImageToolUpscale, PriceCents: 3,
+		ImageUpscalePricing: &modelconfig.ImageUpscalePricing{
+			ThresholdPixels: 2048, HighPriceCents: 5, HighDiscountPriceCents: &highDiscount,
+		},
+		UpstreamInputFields: []string{"img_urls"},
+		UpstreamInputSchema: map[string]any{"properties": map[string]any{"img_urls": map[string]any{"type": "array"}}},
+		Public:              true, Enabled: true,
+	}}
+	if err := modelconfig.Save(context.Background(), st.Pool, cfg); err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/runtime-config", nil)
+	(&Server{St: st}).runtimeConfig(c)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	for _, expected := range []string{
+		`"thresholdPixels":2048`, `"lowPricePoints":3`,
+		`"highStandardPricePoints":5`, `"highPricePoints":4`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("runtime config missing %s: %s", expected, body)
+		}
+	}
+}
+
+func TestRuntimeConfigAndPricingExposeWorkspaceModelPrice(t *testing.T) {
+	st := testdb.Setup(t)
+	discount := int64(12)
+	cfg := modelconfig.Empty()
+	cfg.Providers = []modelconfig.Provider{{
+		ID: "provider", Name: "Provider", Adapter: "openai",
+		BaseURL: "https://api.example.com", APIKey: "secret", Enabled: true,
+	}}
+	cfg.Models = []modelconfig.Model{{
+		ID: "shared-image", Name: "Shared Image", ProviderID: "provider",
+		UpstreamModel: "shared-upstream", Kind: modelconfig.ModelKindImage,
+		PriceCents: 30, Public: true, Default: true, Enabled: true,
+	}}
+	cfg.Workspaces = map[string]modelconfig.WorkspaceBinding{
+		modelconfig.WorkspaceT2I: {
+			ModelIDs: []string{"shared-image"},
+			ModelPricing: map[string]modelconfig.WorkspaceModelPricing{
+				"shared-image": {PriceCents: 18, DiscountPriceCents: &discount},
+			},
+		},
+	}
+	if err := modelconfig.Save(context.Background(), st.Pool, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/runtime-config", nil)
+	(&Server{St: st}).runtimeConfig(c)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("runtime status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var runtimeResponse struct {
+		Data struct {
+			Features map[string]struct {
+				Config struct {
+					PublicModels []struct {
+						ID                       string `json:"id"`
+						PricePoints              int64  `json:"pricePoints"`
+						StandardPricePoints      int64  `json:"standardPricePoints"`
+						DiscountPricePoints      *int64 `json:"discountPricePoints"`
+						WorkspacePriceOverridden bool   `json:"workspacePriceOverridden"`
+					} `json:"publicModels"`
+				} `json:"config"`
+			} `json:"features"`
+			AIModelCatalog struct {
+				PublicModels []struct {
+					ID          string `json:"id"`
+					PricePoints int64  `json:"pricePoints"`
+				} `json:"publicModels"`
+			} `json:"aiModelCatalog"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &runtimeResponse); err != nil {
+		t.Fatal(err)
+	}
+	models := runtimeResponse.Data.Features["ai.wallpaperGeneration"].Config.PublicModels
+	if len(models) != 1 || models[0].PricePoints != 12 || models[0].StandardPricePoints != 18 ||
+		models[0].DiscountPricePoints == nil || *models[0].DiscountPricePoints != 12 || !models[0].WorkspacePriceOverridden {
+		t.Fatalf("workspace runtime models = %#v", models)
+	}
+	if catalog := runtimeResponse.Data.AIModelCatalog.PublicModels; len(catalog) != 1 || catalog[0].PricePoints != 30 {
+		t.Fatalf("base catalog models = %#v", catalog)
+	}
+
+	recorder = httptest.NewRecorder()
+	c, _ = gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/pricing", nil)
+	(&Server{St: st}).pricing(c)
+	var pricingResponse struct {
+		Data struct {
+			TaskPointPrices map[string]int64 `json:"taskPointPrices"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &pricingResponse); err != nil {
+		t.Fatal(err)
+	}
+	if pricingResponse.Data.TaskPointPrices["t2i"] != 12 {
+		t.Fatalf("t2i public price = %#v", pricingResponse.Data.TaskPointPrices)
+	}
+}
+
 func TestRuntimeConfigExposesResolvedPageControls(t *testing.T) {
 	st := testdb.Setup(t)
 	raw := json.RawMessage(`{"studio":{"status":"maintenance","reason":"系统升级"}}`)
@@ -379,6 +500,9 @@ func TestRuntimeConfigFallsBackToAssistantChatForUIDesignAnalysis(t *testing.T) 
 					AnalysisModels []struct {
 						Model string `json:"model"`
 					} `json:"analysisModels"`
+					TextModels []struct {
+						Model string `json:"model"`
+					} `json:"textModels"`
 				} `json:"config"`
 			} `json:"features"`
 		} `json:"data"`
@@ -389,5 +513,9 @@ func TestRuntimeConfigFallsBackToAssistantChatForUIDesignAnalysis(t *testing.T) 
 	models := response.Data.Features["ai.uiDesign"].Config.AnalysisModels
 	if len(models) != 1 || models[0].Model != "assistant-chat" {
 		t.Fatalf("UI design analysis fallback = %#v", models)
+	}
+	assistantModels := response.Data.Features["ai.assistant"].Config.TextModels
+	if len(assistantModels) != 1 || assistantModels[0].Model != "assistant-chat" {
+		t.Fatalf("assistant text models = %#v", assistantModels)
 	}
 }

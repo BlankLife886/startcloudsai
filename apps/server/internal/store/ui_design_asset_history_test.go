@@ -88,6 +88,18 @@ func TestUIDesignAssetHistoryPersistsRunningThenSucceeded(t *testing.T) {
 	if parent, _ := running.Params["parentOutputUrl"].(string); parent != "/api/v1/files/tasks/parent.png" {
 		t.Fatalf("parentOutputUrl = %#v", running.Params["parentOutputUrl"])
 	}
+	run.Params["_serviceProvider"] = "c2a"
+	run.Params["_imageProviderDisplayName"] = "Enabled Provider"
+	run.Params["_imageProviderRouteKey"] = "provider/enabled-route"
+	run.Params["_imageProviderEndpoint"] = "https://enabled.example.com/v1"
+	updatedRunning, created, err := store.SyncUIDesignAssetHistoryFromRun(ctx, st.Pool, run, nil)
+	if err != nil || created || updatedRunning == nil {
+		t.Fatalf("update running route snapshot = %#v created=%v err=%v", updatedRunning, created, err)
+	}
+	if updatedRunning.Params["_imageProviderEndpoint"] != "https://enabled.example.com/v1" ||
+		updatedRunning.Params["_imageProviderRouteKey"] != "provider/enabled-route" {
+		t.Fatalf("history route snapshot = %#v", updatedRunning.Params)
+	}
 
 	listedRunning, err := store.ListTasks(ctx, st.Pool, &user.ID, "ui_design", "running", nil, 10, nil, "", "")
 	if err != nil {

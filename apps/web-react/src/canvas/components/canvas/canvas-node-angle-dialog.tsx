@@ -29,7 +29,7 @@ const distancePresets = [
     { id: "far", value: 8, labelKey: "canvas.editors.angleFar" },
 ] as const;
 
-export function CanvasNodeAngleDialog({ dataUrl, open, onClose, onConfirm }: { dataUrl: string; open: boolean; onClose: () => void; onConfirm: (params: CanvasImageAngleParams) => void }) {
+export function CanvasNodeAngleDialog({ dataUrl, open, initialParams, onClose, onConfirm }: { dataUrl: string; open: boolean; initialParams?: CanvasImageAngleParams; onClose: () => void; onConfirm: (params: CanvasImageAngleParams) => void }) {
     const { t } = useTranslation();
     const stageRef = useRef<HTMLDivElement>(null);
     const dragAbortRef = useRef<AbortController | null>(null);
@@ -40,11 +40,11 @@ export function CanvasNodeAngleDialog({ dataUrl, open, onClose, onConfirm }: { d
 
     useEffect(() => {
         if (!open) return;
-        setParams(defaultParams);
+        setParams(initialParams ? { ...initialParams } : defaultParams);
         setImage(null);
         setDragging(false);
         void readImageMeta(dataUrl).then(setImage);
-    }, [dataUrl, open]);
+    }, [dataUrl, initialParams, open]);
 
     useEffect(() => {
         if (!open) dragAbortRef.current?.abort();

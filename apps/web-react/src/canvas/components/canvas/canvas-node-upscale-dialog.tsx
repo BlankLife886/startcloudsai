@@ -21,7 +21,7 @@ const defaultParams: CanvasImageUpscaleParams = {
     algorithm: "high",
 };
 
-export function CanvasNodeUpscaleDialog({ dataUrl, open, onClose, onConfirm }: { dataUrl: string; open: boolean; onClose: () => void; onConfirm: (params: CanvasImageUpscaleParams) => void }) {
+export function CanvasNodeUpscaleDialog({ dataUrl, open, initialParams, onClose, onConfirm }: { dataUrl: string; open: boolean; initialParams?: CanvasImageUpscaleParams; onClose: () => void; onConfirm: (params: CanvasImageUpscaleParams) => void }) {
     const { t } = useTranslation();
     const [params, setParams] = useState<CanvasImageUpscaleParams>(defaultParams);
     const [image, setImage] = useState<{ width: number; height: number } | null>(null);
@@ -34,9 +34,9 @@ export function CanvasNodeUpscaleDialog({ dataUrl, open, onClose, onConfirm }: {
 
     useEffect(() => {
         if (!open) return;
-        setParams({ ...defaultParams });
+        setParams(initialParams ? { ...initialParams } : { ...defaultParams });
         setImage(null);
-    }, [dataUrl, open]);
+    }, [dataUrl, initialParams, open]);
 
     useEffect(() => {
         if (!open) return;
@@ -44,10 +44,10 @@ export function CanvasNodeUpscaleDialog({ dataUrl, open, onClose, onConfirm }: {
     }, [dataUrl, open]);
 
     useEffect(() => {
-        if (!image) return;
+        if (!image || initialParams) return;
         const nextTarget = targetOptions.find((option) => sourceLongEdge < option.value)?.value || MAX_UPSCALE_LONG_EDGE;
         setParams((current) => ({ ...current, targetLongEdge: nextTarget }));
-    }, [image, sourceLongEdge]);
+    }, [image, initialParams, sourceLongEdge]);
 
     return (
         <CanvasEditorModal

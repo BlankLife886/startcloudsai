@@ -11,6 +11,7 @@ import (
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
+	"github.com/BlankLife886/startcloudsai/server/internal/trialfeature"
 	"github.com/BlankLife886/startcloudsai/server/internal/wallet"
 )
 
@@ -81,11 +82,19 @@ func productReason(run *store.AssistantRun, format string, args ...any) string {
 	return fmt.Sprintf(format, all...)
 }
 
+func trialFeatureKey(run *store.AssistantRun) string {
+	if run == nil {
+		return ""
+	}
+	feature, _ := trialfeature.ForAssistantParams(run.Params)
+	return feature.Key
+}
+
 func Reserve(ctx context.Context, q store.Q, run *store.AssistantRun) error {
 	if run == nil || run.ReservedCents <= 0 {
 		return nil
 	}
-	_, err := wallet.FreezeNormalCredits(ctx, q, run.UserID, run.ReservedCents,
+	_, err := wallet.FreezeFeatureCredits(ctx, q, run.UserID, run.ReservedCents, trialFeatureKey(run),
 		SourceType, sourceID(run, run.BillingGeneration), strPtr(productReason(run, "%s费用预留")))
 	return err
 }
@@ -94,7 +103,7 @@ func release(ctx context.Context, q store.Q, run *store.AssistantRun, reason str
 	if run == nil || run.ReservedCents <= 0 {
 		return nil
 	}
-	_, err := wallet.ReleaseNormalCredits(ctx, q, run.UserID, run.ReservedCents,
+	_, err := wallet.ReleaseFeatureCredits(ctx, q, run.UserID, run.ReservedCents,
 		SourceType, sourceID(run, run.BillingGeneration), strPtr(reason))
 	return err
 }
@@ -105,6 +114,17 @@ func Complete(ctx context.Context, st *store.Store, id uuid.UUID, resolvedMode s
 }
 
 func CompleteAttempt(ctx context.Context, st *store.Store, id uuid.UUID, expectedAttempt int, resolvedMode string) (bool, error) {
+	return completeAttempt(ctx, st, id, expectedAttempt, resolvedMode, nil)
+}
+
+func CompleteImageAttempt(ctx context.Context, st *store.Store, id uuid.UUID, expectedAttempt, actualImages int) (bool, error) {
+	if actualImages < 0 {
+		return false, apperr.E("assistant_billing_invalid", "AI 助手实际图片数量无效", 500)
+	}
+	return completeAttempt(ctx, st, id, expectedAttempt, "image", &actualImages)
+}
+
+func completeAttempt(ctx context.Context, st *store.Store, id uuid.UUID, expectedAttempt int, resolvedMode string, actualImages *int) (bool, error) {
 	changed := false
 	err := st.Tx(ctx, func(tx pgx.Tx) error {
 		run, err := store.GetAssistantRunForUpdate(ctx, tx, id)
@@ -118,6 +138,22 @@ func CompleteAttempt(ctx context.Context, st *store.Store, id uuid.UUID, expecte
 			return nil
 		}
 		cost := ResolvedCost(run, resolvedMode)
+		if resolvedMode == "image" && actualImages != nil {
+			requested := paramInt64(run.Params, "count")
+			actual := int64(*actualImages)
+			if requested <= 0 || actual > requested {
+				return apperr.E("assistant_billing_invalid", "AI 助手实际图片数量超过请求数量", 500)
+			}
+			unit := paramInt64(run.Params, "_billingUnitPriceCents")
+			if unit <= 0 {
+				unit = paramInt64(run.Params, "_unitPriceCents")
+			}
+			if unit > 0 {
+				cost = unit * actual
+			} else if requested > 0 {
+				cost = cost * actual / requested
+			}
+		}
 		if cost < 0 || cost > run.ReservedCents {
 			return apperr.E("assistant_billing_invalid", "AI 助手结算金额超过预留金额", 500)
 		}
@@ -127,13 +163,13 @@ func CompleteAttempt(ctx context.Context, st *store.Store, id uuid.UUID, expecte
 		}
 		billingID := sourceID(run, run.BillingGeneration)
 		if cost > 0 {
-			if _, err := wallet.SettleNormalCredits(ctx, tx, run.UserID, cost, SourceType, billingID,
+			if _, err := wallet.SettleFeatureCredits(ctx, tx, run.UserID, cost, SourceType, billingID,
 				strPtr(productReason(run, "%s结算（%s）", resolvedMode))); err != nil {
 				return err
 			}
 		}
 		if remainder := run.ReservedCents - cost; remainder > 0 {
-			if _, err := wallet.ReleaseNormalCredits(ctx, tx, run.UserID, remainder, SourceType, billingID,
+			if _, err := wallet.ReleaseFeatureCredits(ctx, tx, run.UserID, remainder, SourceType, billingID,
 				strPtr(productReason(run, "%s按实际模式退回多预留费用"))); err != nil {
 				return err
 			}
@@ -228,12 +264,12 @@ func CancelUserTx(ctx context.Context, q store.Q, userID, id uuid.UUID) (*store.
 		if canvasAgent {
 			settlementReason = productReason(run, "%s由用户主动停止，按已完成画布操作结算")
 		}
-		if _, err := wallet.SettleNormalCredits(ctx, q, run.UserID, cost, SourceType, billingID,
+		if _, err := wallet.SettleFeatureCredits(ctx, q, run.UserID, cost, SourceType, billingID,
 			strPtr(settlementReason)); err != nil {
 			return run, false, err
 		}
 		if remainder := run.ReservedCents - cost; remainder > 0 {
-			if _, err := wallet.ReleaseNormalCredits(ctx, q, run.UserID, remainder, SourceType, billingID,
+			if _, err := wallet.ReleaseFeatureCredits(ctx, q, run.UserID, remainder, SourceType, billingID,
 				strPtr(productReason(run, "%s由用户主动停止，未使用费用已退回"))); err != nil {
 				return run, false, err
 			}
@@ -324,7 +360,7 @@ func Requeue(ctx context.Context, q store.Q, run *store.AssistantRun) (bool, err
 	}
 	nextGeneration := run.BillingGeneration + 1
 	if run.ReservedCents > 0 {
-		if _, err := wallet.FreezeNormalCredits(ctx, q, run.UserID, run.ReservedCents,
+		if _, err := wallet.FreezeFeatureCredits(ctx, q, run.UserID, run.ReservedCents, trialFeatureKey(run),
 			SourceType, sourceID(run, nextGeneration), strPtr(productReason(run, "%s重试费用预留"))); err != nil {
 			return false, err
 		}

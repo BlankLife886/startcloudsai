@@ -1,4 +1,5 @@
 import type { CanvasConnection, CanvasNodeData } from "@/types/canvas";
+import { isCanvasExecutableNode } from "./canvas-operation-node.ts";
 
 export type CanvasSidePanelWorkflowGroup = {
     id: string;
@@ -33,10 +34,14 @@ export function buildCanvasSidePanelWorkflowGroups(nodes: CanvasNodeData[], conn
             });
         }
         const component = nodes.filter((node) => componentIds.has(node.id));
-        const firstConfig = component.find((node) => node.type === "config");
+        const firstConfig = component.find((node) => isCanvasExecutableNode(node));
         if (firstConfig) workflowGroups.push({ id: `workflow:${firstConfig.id}`, nodes: component, firstConfig });
         else standaloneNodes.push(...component);
     }
 
     return standaloneNodes.length ? [...workflowGroups, { id: "standalone", nodes: standaloneNodes }] : workflowGroups;
+}
+
+export function canvasWorkflowNodeIds(nodes: CanvasNodeData[], connections: CanvasConnection[], workflowId: string) {
+    return buildCanvasSidePanelWorkflowGroups(nodes, connections).find((group) => group.id === workflowId)?.nodes.map((node) => node.id) || [];
 }

@@ -439,7 +439,10 @@ func (w *Worker) taskExecutionCandidates(ctx context.Context, task *store.Task) 
 	if err != nil {
 		return nil, err
 	}
-	unitPrice, hasUnitPrice := taskParamInt64(task.Params, "_unitPriceCents")
+	unitPrice, hasUnitPrice := taskParamInt64(task.Params, "_modelEffectivePriceCents")
+	if !hasUnitPrice {
+		unitPrice, hasUnitPrice = taskParamInt64(task.Params, "_unitPriceCents")
+	}
 	var candidates []modelconfig.Selection
 	if balanceAcrossProviders && hasUnitPrice {
 		candidates = modelconfig.ExecutionCandidatesRouteAcrossProviders(cfg, providerID, modelID, routeID, unitPrice)
@@ -785,7 +788,7 @@ func crunPrompt(prompt string) string {
 }
 
 func (w *Worker) callCRUNClient(ctx context.Context, task *store.Task, client *crun.Client, onImage imageReadyFunc) ([]string, error) {
-	taskIDs, err := w.createCRUNImageTasks(ctx, task, client)
+	taskIDs, err := w.createCRUNImageTasks(ctx, task, client, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -815,7 +818,12 @@ func (w *Worker) callCRUNClient(ctx context.Context, task *store.Task, client *c
 	return compactEncodedImages(encodedByIndex), nil
 }
 
-func (w *Worker) createCRUNImageTasks(ctx context.Context, task *store.Task, client *crun.Client) ([]string, error) {
+func (w *Worker) createCRUNImageTasks(
+	ctx context.Context,
+	task *store.Task,
+	client *crun.Client,
+	allowedInputFields []string,
+) ([]string, error) {
 	finalPrompt, size := prompt.Compile(task.Type, task.Prompt, task.Params)
 	aspectRatio := normalizeCRUNAspectRatio(task.Params, size)
 	resolution := normalizeCRUNResolutionForAspect(normalizeCRUNResolution(task.Params), aspectRatio)
@@ -837,6 +845,7 @@ func (w *Worker) createCRUNImageTasks(ctx context.Context, task *store.Task, cli
 		TransparentBackground: taskParamBool(task.Params, "transparentPngEnabled", "transparentPng", "transparentBackground"),
 		OutputFormat:          taskParamString(task.Params, "outputFormat"),
 		ModerationLevel:       taskParamString(task.Params, "moderationLevel"),
+		AllowedInputFields:    allowedInputFields,
 	}, taskParamStrings(task.Params, "_crunTaskIds"), func(created []string) error {
 		if err := store.SetTaskCRUNTaskIDsOwned(ctx, w.St.Pool, task.ID, created, taskLeaseOwner(task)); err != nil {
 			return err
@@ -956,6 +965,12 @@ func (w *Worker) callConfiguredUpstream(ctx context.Context, task *store.Task, s
 			return nil, err
 		}
 		if selection.Model.Kind == modelconfig.ModelKindImageTool {
+			if task.Type == "media_tool" {
+				if _, err := w.createCRUNMediaToolTask(ctx, task, client, selection.Model); err != nil {
+					return nil, err
+				}
+				return nil, &asyncImagePendingError{}
+			}
 			if selection.Model.Tool != modelconfig.ImageToolBackgroundRemove {
 				return nil, errors.New("不支持的图片工具")
 			}
@@ -964,7 +979,7 @@ func (w *Worker) callConfiguredUpstream(ctx context.Context, task *store.Task, s
 			}
 			return nil, &asyncImagePendingError{}
 		}
-		if _, err := w.createCRUNImageTasks(ctx, task, client); err != nil {
+		if _, err := w.createCRUNImageTasks(ctx, task, client, selection.Model.UpstreamInputFields); err != nil {
 			return nil, err
 		}
 		return nil, &asyncImagePendingError{}
@@ -1265,6 +1280,18 @@ func sanitizeUpstreamMessage(msg string) string {
 		cleaned = string(runes[:maxUpstreamMessageRunes])
 	}
 	return cleaned
+}
+
+func pendingImagePollFailure(status, upstreamMessage string) (string, string) {
+	status = strings.ToLower(strings.TrimSpace(status))
+	upstreamMessage = strings.TrimSpace(upstreamMessage)
+	if status == "text_review" || strings.Contains(upstreamMessage, "上游返回文本") {
+		if upstreamMessage != "" {
+			return "upstream_error", sanitizeUpstreamMessage(upstreamMessage)
+		}
+		return "upstream_error", "上游未生成图片，且未返回具体失败原因（状态：text_review）"
+	}
+	return "upstream_unreachable", "生成服务响应超时，请重试"
 }
 
 func (w *Worker) taskFailureRetryCount(ctx context.Context) int {
@@ -2113,6 +2140,13 @@ func (w *Worker) pollCRUNProviderTasks(ctx context.Context, provider *modelconfi
 			w.finishFailedUpstreamAttempt(ctx, task, "upstream_error", sanitizeUpstreamMessage(pollErr.Error()), claimID)
 			continue
 		}
+		if task.Type == "media_tool" {
+			if err := w.completePolledMediaTool(ctx, task, urls, claimID); err != nil {
+				log.Printf("task %s CRUN media tool completion failed: %v", task.ID, err)
+				w.finishFailedUpstreamAttempt(ctx, task, "storage_error", "工具结果保存失败，请重试", claimID)
+			}
+			continue
+		}
 		images := make([]string, len(urls))
 		var downloadErr error
 		var downloadMu sync.Mutex
@@ -2278,6 +2312,10 @@ func (w *Worker) failCurrentTaskAndCloseAttempts(ctx context.Context, attemptTas
 	}
 	if won && failedTask != nil {
 		taskflow.NotifyTaskFailed(ctx, w.St.Pool, failedTask)
+		if errorCode == "upstream_error" {
+			w.recordTimeline(ctx, failedTask.ID, "upstream_error", "warning",
+				"上游返回错误："+errorMessage, -1, map[string]any{"errorCode": errorCode})
+		}
 		w.publishTaskEvent(ctx, failedTask, taskstream.Event{Stage: "failed", Status: "failed", Done: true})
 	}
 }
@@ -2398,19 +2436,15 @@ func (w *Worker) finishPendingImagePoll(ctx context.Context, task *store.Task, p
 						log.Printf("task %s attempt %s still in upstream review status=%q; no alternate route, keep polling until expiry",
 							task.ID, attemptID, result.Status)
 					} else {
-						detail := strings.TrimSpace(result.Status)
-						if result.ErrorMessage != "" {
-							detail = strings.TrimSpace(detail + " " + result.ErrorMessage)
-						}
-						if detail == "" {
-							detail = "upstream still pending after failover"
+						errorCode, errorMessage := pendingImagePollFailure(result.Status, result.ErrorMessage)
+						detail := errorMessage
+						if errorCode != "upstream_error" {
+							status := strings.TrimSpace(result.Status)
+							if status != "" {
+								detail = sanitizeUpstreamMessage(status + ": " + errorMessage)
+							}
 						}
 						_ = store.RecordTaskUpstreamAttemptPollError(ctx, w.St.Pool, attemptID, detail)
-						errorCode, errorMessage := "upstream_unreachable", "生成服务响应超时，请重试"
-						if strings.EqualFold(strings.TrimSpace(result.Status), "text_review") ||
-							strings.Contains(result.ErrorMessage, "上游返回文本") {
-							errorCode, errorMessage = "upstream_error", "上游返回文本，未生成图片"
-						}
 						log.Printf("task %s attempt %s still pending after failover status=%q; no alternate route, closing task",
 							task.ID, attemptID, result.Status)
 						w.failCurrentTaskAndCloseAttempts(ctx, task, errorCode, errorMessage)

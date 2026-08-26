@@ -9,6 +9,7 @@ import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
 import { CanvasIconWellStyle, nodeTypeColor } from "@/lib/canvas-ui";
 import { exportCanvasNodes } from "@/lib/canvas/canvas-export";
 import { buildCanvasSidePanelWorkflowGroups } from "@/lib/canvas/canvas-workflow-groups";
+import { isCanvasExecutableNode } from "@/lib/canvas/canvas-operation-node";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { cn } from "@/lib/utils";
 import { PromptDetailDialog } from "@/pages/prompts/components/prompt-detail-dialog";
@@ -55,7 +56,7 @@ const STATUS_COLOR: Record<string, string> = {
     idle: "transparent",
 };
 
-export function CanvasSidePanel({ nodes, connections, selectedNodeIds, onFocusNode, onPreviewNode, onInsertAsset }: Props) {
+export const CanvasSidePanel = memo(function CanvasSidePanel({ nodes, connections, selectedNodeIds, onFocusNode, onPreviewNode, onInsertAsset }: Props) {
     const { t } = useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const [tab, setTab] = useState<PanelTab>("canvas");
@@ -186,7 +187,7 @@ export function CanvasSidePanel({ nodes, connections, selectedNodeIds, onFocusNo
             </motion.aside>
         </div>
     );
-}
+});
 
 function PanelToggle({
     theme,
@@ -244,7 +245,7 @@ function CanvasNodesTab({ nodes, connections, selectedNodeIds, onFocusNode, onPr
             .map((group, index) => ({
                 ...group,
                 workflowIndex: index + 1,
-                nodes: group.nodes.filter((node) => (typeFilter === "all" || node.type === typeFilter) && (!query || [node.title, node.metadata?.content, node.metadata?.prompt].filter(Boolean).join(" ").toLowerCase().includes(query))),
+                nodes: group.nodes.filter((node) => (typeFilter === "all" || node.type === typeFilter || (typeFilter === CanvasNodeType.Config && isCanvasExecutableNode(node))) && (!query || [node.title, node.metadata?.content, node.metadata?.prompt].filter(Boolean).join(" ").toLowerCase().includes(query))),
             }))
             .filter((group) => group.nodes.length);
     }, [keyword, typeFilter, workflowGroups]);
@@ -353,7 +354,8 @@ function CanvasNodesTab({ nodes, connections, selectedNodeIds, onFocusNode, onPr
                                             >
                                                 <div className="space-y-1">
                                                     {group.nodes.map((node) => {
-                                                        const Icon = NODE_TYPE_ICON[node.type] || FileText;
+                                                        const Icon = NODE_TYPE_ICON[node.type];
+                                                        const registeredIcon = getNodeDefinition(node.type)?.icon;
                                                         const isImage = node.type === CanvasNodeType.Image && Boolean(node.metadata?.content || node.metadata?.thumbnailUrl);
                                                         const isChecked = checked.has(node.id);
                                                         const active = selectMode ? isChecked : selectedNodeIds.has(node.id);
@@ -362,7 +364,7 @@ function CanvasNodesTab({ nodes, connections, selectedNodeIds, onFocusNode, onPr
                                                                 <button type="button" onClick={() => (selectMode ? toggleChecked(node.id) : onFocusNode(node.id))} className="flex min-w-0 flex-1 items-center gap-3 px-2.5 py-2 text-left" title={selectMode ? undefined : t("canvas.sidePanel.focusNode")}>
                                                                     {selectMode ? <CheckMark checked={isChecked} theme={theme} /> : null}
                                                                     <span className="grid size-10 shrink-0 place-items-center overflow-hidden rounded-xl transition-transform duration-300 ease-out group-hover:scale-105" style={isImage ? { background: theme.node.fill } : CanvasIconWellStyle(nodeTypeColor(node.type))}>
-                                                                        {isImage ? <CanvasPreviewImage storageKey={node.metadata?.storageKey} thumbnailUrl={node.metadata?.thumbnailUrl} alt={node.title} maxEdge={160} allowOriginalFallback={false} className="size-full object-cover" /> : <Icon className="size-4" />}
+                                                                        {isImage ? <CanvasPreviewImage storageKey={node.metadata?.storageKey} thumbnailUrl={node.metadata?.thumbnailUrl} alt={node.title} maxEdge={160} allowOriginalFallback={false} className="size-full object-cover" /> : Icon ? <Icon className="size-4" /> : registeredIcon || <FileText className="size-4" />}
                                                                     </span>
                                                                     <span className="min-w-0 flex-1">
                                                                         <span className="block truncate text-[13px] font-medium leading-5">{node.title || getNodeDefinition(node.type)?.title || t("canvas.node.untitled")}</span>

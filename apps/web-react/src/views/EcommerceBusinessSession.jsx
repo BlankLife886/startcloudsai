@@ -175,7 +175,7 @@ import {
   CreativeShootWorkspace,
 } from "../features/ecommerce/CreativeShootWorkspace.jsx";
 import { EcommerceMaskEditor } from "../features/ecommerce/EcommerceMaskEditor.jsx";
-import { EcommerceFullscreenPreview } from "../features/ecommerce/EcommerceFullscreenPreview.jsx";
+import { canOpenWallevenImagePreview, WallevenImagePreview } from "../components/common/WallevenImagePreview.jsx";
 import { TryonFlipLightbox } from "../features/ecommerce/TryonFlipLightbox.jsx";
 import { useEcommerceJobs } from "../features/ecommerce/useEcommerceJobs.js";
 import { useTryonBusinessState } from "../features/ecommerce/businesses/tryon/useTryonBusinessState.js";
@@ -1127,6 +1127,10 @@ export function EcommerceBusinessSession({
   const [deleteRow, setDeleteRow] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const [previewUrl, setPreviewUrl] = useState("");
+
+  function openImagePreview(url) {
+    if (url && canOpenWallevenImagePreview()) setPreviewUrl(url);
+  }
   const [maskRow, setMaskRow] = useState(null);
   const [brief, setBrief] = useState({
     open: false,
@@ -1145,6 +1149,7 @@ export function EcommerceBusinessSession({
   });
   const jobs = useEcommerceJobs({
     taskKind: `ui-design-ecommerce-${mode.id}-generation`,
+    models,
   });
 
   useGSAP(
@@ -3749,7 +3754,6 @@ export function EcommerceBusinessSession({
         const quote = await quoteHandheldJob({
           modelId,
           aspectRatio,
-          quality: "high",
           inputCount: productInputs + reservedRoles,
           itemCount: generationPlan.length,
         });
@@ -4070,7 +4074,6 @@ export function EcommerceBusinessSession({
                 ? item.aspectRatio || aspectRatio
                 : aspectRatio,
             platform: `${platform} · ${market} · ${language}`,
-            quality: "high",
             batchIndex: index,
             ...(item.outputSize ? { outputSize: item.outputSize } : {}),
             ...(item.aplusSpec ? { aplusSpec: item.aplusSpec } : {}),
@@ -4414,7 +4417,6 @@ export function EcommerceBusinessSession({
             kindVariant: mode.id,
             aspectRatio,
             platform: `${platform} · ${market} · ${language}`,
-            quality: "high",
             batchIndex: index,
             ...(mode.id === "accessory"
               ? {
@@ -5994,7 +5996,7 @@ export function EcommerceBusinessSession({
                       <button
                         type="button"
                         aria-label="放大查看当前结果"
-                        onClick={() => setPreviewUrl(currentRow.url)}
+                        onClick={() => openImagePreview(currentRow.url)}
                       >
                         <i className="bi bi-arrows-fullscreen" />
                       </button>
@@ -6058,7 +6060,7 @@ export function EcommerceBusinessSession({
                             className="result-image-hit-area"
                             aria-label={`查看第 ${index + 1} 张结果细节`}
                             onClick={() => setActiveUrl(row.url)}
-                            onDoubleClick={() => setPreviewUrl(row.url)}
+                            onDoubleClick={() => openImagePreview(row.url)}
                           >
                             <span className="result-image-skeleton" />
                             <AuthenticatedImage
@@ -6642,7 +6644,7 @@ export function EcommerceBusinessSession({
               onSelectHistory={setActiveUrl}
               onPreview={setPreviewUrl}
               onResultPreview={(event, payload) =>
-                setPreviewUrl(payload?.url || "")
+                openImagePreview(payload?.url || "")
               }
               onMaskEdit={currentRow ? () => setMaskRow(currentRow) : undefined}
               onDownload={
@@ -6843,7 +6845,7 @@ export function EcommerceBusinessSession({
         )}
       {previewUrl &&
         createPortal(
-          <EcommerceFullscreenPreview
+          <WallevenImagePreview
             sourceUrl={previewUrl}
             displaySourceUrl={
               jobs.outputRows.find((row) => row.url === previewUrl)?.display ||
@@ -6854,11 +6856,15 @@ export function EcommerceBusinessSession({
                 ? `${mode.label} · V${currentVersion}`
                 : "查看大图"
             }
+            filename="ecommerce-design.png"
             gallery={
               modeRows.some((row) => row.url === previewUrl)
                 ? modeRows.map((row) => row.url)
                 : [previewUrl]
             }
+            displaySources={Object.fromEntries(
+              modeRows.map((row) => [row.url, row.display || ""]),
+            )}
             onSelect={setPreviewUrl}
             onClose={() => setPreviewUrl("")}
             onDownload={

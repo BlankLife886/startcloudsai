@@ -7,6 +7,7 @@ import { canvasNodeShadow, CanvasIconWellStyle } from "@/lib/canvas-ui";
 import { formatGenerationDuration, useGenerationElapsed } from "@/lib/canvas/canvas-generation-elapsed";
 import { formatBytes } from "@/lib/image-utils";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
+import { isCanvasExecutableNode } from "@/lib/canvas/canvas-operation-node";
 import { buildNodeContext } from "@/lib/canvas/plugin-node-context";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasPreviewImage, CanvasPreviewVideo } from "./canvas-preview-image";
@@ -14,9 +15,8 @@ import { CanvasResourceMentionTextarea } from "./canvas-resource-mention-textare
 import { CanvasNodeType, type CanvasNodeData, type CanvasNodeImage, type Position } from "@/types/canvas";
 import type { CanvasNodeContext, CanvasPluginHost } from "@/types/canvas-plugin";
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
-import { onCanvasEvent } from "@/lib/canvas/canvas-event-bus";
 import { useTranslation } from "react-i18next";
-import { CANVAS_VIEWPORT_LIVE_EVENT } from "./infinite-canvas";
+import { getCanvasLiveScale } from "./infinite-canvas";
 
 type ResizeCorner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
 
@@ -168,19 +168,12 @@ export const CanvasNode = React.memo(function CanvasNode({
         ratio: 1,
         pointerId: -1,
     });
-    const scaleRef = useRef(scale);
-    scaleRef.current = scale;
     const resizeMoveRef = useRef<(event: PointerEvent) => void>(() => undefined);
     const resizeUpRef = useRef<(event: PointerEvent) => void>(() => undefined);
-
-    useEffect(() => {
-        const stop = onCanvasEvent(CANVAS_VIEWPORT_LIVE_EVENT, (payload) => {
-            const next = payload as { k?: number } | undefined;
-            if (typeof next?.k === "number") scaleRef.current = next.k;
-        });
-        return () => {
-            stop();
-        };
+    const resizeListenerCleanupRef = useRef<(() => void) | null>(null);
+    const detachResizeListeners = useCallback(() => {
+        resizeListenerCleanupRef.current?.();
+        resizeListenerCleanupRef.current = null;
     }, []);
 
     useEffect(() => {
@@ -252,7 +245,7 @@ export const CanvasNode = React.memo(function CanvasNode({
             if (!resizeRef.current.isResizing) return;
             if (resizeRef.current.pointerId >= 0 && event.pointerId !== resizeRef.current.pointerId) return;
 
-            const liveScale = scaleRef.current || 1;
+            const liveScale = getCanvasLiveScale(scale) || 1;
             const dx = (event.clientX - resizeRef.current.startX) / liveScale;
             const dy = (event.clientY - resizeRef.current.startY) / liveScale;
             const minWidth = 220;
@@ -287,7 +280,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                 y: fromTop ? startBottom - height : resizeRef.current.startTop,
             });
         },
-        [data.id, onResize],
+        [data.id, onResize, scale],
     );
 
     const handleResizeUp = useCallback(
@@ -296,13 +289,28 @@ export const CanvasNode = React.memo(function CanvasNode({
             if (!resizeRef.current.isResizing) return;
             resizeRef.current.isResizing = false;
             resizeRef.current.pointerId = -1;
+            detachResizeListeners();
             onResizeEnd(data.id);
         },
-        [data.id, onResizeEnd],
+        [data.id, detachResizeListeners, onResizeEnd],
     );
 
     resizeMoveRef.current = handleResizeMove;
     resizeUpRef.current = handleResizeUp;
+
+    const attachResizeListeners = () => {
+        detachResizeListeners();
+        const move = (event: PointerEvent) => resizeMoveRef.current(event);
+        const up = (event: PointerEvent) => resizeUpRef.current(event);
+        window.addEventListener("pointermove", move);
+        window.addEventListener("pointerup", up);
+        window.addEventListener("pointercancel", up);
+        resizeListenerCleanupRef.current = () => {
+            window.removeEventListener("pointermove", move);
+            window.removeEventListener("pointerup", up);
+            window.removeEventListener("pointercancel", up);
+        };
+    };
 
     const handleResizePointerDown = (event: React.PointerEvent, corner: ResizeCorner) => {
         event.stopPropagation();
@@ -322,20 +330,10 @@ export const CanvasNode = React.memo(function CanvasNode({
             pointerId: event.pointerId,
         };
         event.currentTarget.setPointerCapture(event.pointerId);
+        attachResizeListeners();
     };
 
-    useEffect(() => {
-        const move = (event: PointerEvent) => resizeMoveRef.current(event);
-        const up = (event: PointerEvent) => resizeUpRef.current(event);
-        window.addEventListener("pointermove", move);
-        window.addEventListener("pointerup", up);
-        window.addEventListener("pointercancel", up);
-        return () => {
-            window.removeEventListener("pointermove", move);
-            window.removeEventListener("pointerup", up);
-            window.removeEventListener("pointercancel", up);
-        };
-    }, []);
+    useEffect(() => detachResizeListeners, [detachResizeListeners]);
 
     return (
         <div
@@ -510,7 +508,7 @@ function hasVisibleImage(node: NodeContentRendererProps["node"]) {
 }
 
 function NodeContent(props: NodeContentRendererProps) {
-    if (props.node.type === CanvasNodeType.Config && props.renderNodeContent) return props.renderNodeContent(props.node);
+    if (isCanvasExecutableNode(props.node) && props.renderNodeContent) return props.renderNodeContent(props.node);
     if (props.isBatchRoot) return <ImageNodeContent {...props} />;
     if (props.node.metadata?.status === "loading" && !hasVisibleImage(props.node)) return <LoadingContent node={props.node} theme={props.theme} />;
     if (props.node.metadata?.status === "error" && !hasVisibleImage(props.node)) return <ErrorContent node={props.node} theme={props.theme} onRetry={props.onRetry} />;

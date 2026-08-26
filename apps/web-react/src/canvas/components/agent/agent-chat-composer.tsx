@@ -1,16 +1,18 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { Button, Dropdown, Tooltip } from "antd";
-import { ArrowUp, Check, ChevronDown, ChevronUp, Gauge, Hand, ImagePlus, LoaderCircle, PenLine, RefreshCw, Shield, ShieldAlert, ShieldCheck, ShieldOff, SlidersHorizontal, Sparkles, Square, X } from "lucide-react";
+import { Button, Dropdown, Popover, Tooltip } from "antd";
+import { ArrowUp, Check, ChevronDown, ChevronUp, FileText, Gauge, Group, Hand, Image as ImageIcon, ImagePlus, Layers3, LoaderCircle, Music2, PenLine, RefreshCw, Settings2, Shield, ShieldAlert, ShieldCheck, ShieldOff, SlidersHorizontal, Sparkles, Square, Video, X } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useTranslation } from "react-i18next";
 
 import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select";
 import { canvasThemes } from "@/lib/canvas-theme";
+import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { ensureCanvasOverlayRoot } from "@/lib/canvas-portal";
 import { cn } from "@/lib/utils";
 import { useAgentStore, type AgentModel, type AgentPermissionMode, type AgentReasoningEffort } from "@/stores/use-agent-store";
 import { useThemeStore } from "@/stores/use-theme-store";
+import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import type { AgentChatAttachment } from "./agent-chat-message";
 import { AgentChatPromptInput } from "./agent-chat-prompt-input";
 
@@ -192,6 +194,7 @@ export function AgentChatComposer({
                                 <Button type="text" shape="circle" className="!h-9 !w-9 !min-w-9" disabled={disabled || sending} style={{ color: theme.node.muted }} icon={<ImagePlus className="size-4" />} onClick={() => fileInputRef.current?.click()} aria-label={t("agent.composer.uploadImage")} />
                             </>
                         ) : null}
+                        <AgentSelectedNodesControl theme={theme} />
                         <div className="min-w-0 @min-[560px]:hidden">
                             <ComposerSettingsMenu
                                 theme={theme}
@@ -273,6 +276,98 @@ export function AgentChatComposer({
             {hint ? <div className="px-1 pt-2 text-center text-[11px] leading-4" style={{ color: theme.node.faint }}>{hint}</div> : null}
         </div>
     );
+}
+
+function AgentSelectedNodesControl({ theme }: { theme: (typeof canvasThemes)[keyof typeof canvasThemes] }) {
+    const { t } = useTranslation();
+    const nodes = useAgentStore((state) => state.canvasContext?.snapshot.nodes);
+    const selectedNodeIds = useAgentStore((state) => state.canvasContext?.snapshot.selectedNodeIds);
+    const selectedNodes = useMemo(() => {
+        const selectedIds = new Set(selectedNodeIds || []);
+        return (nodes || []).filter((node) => selectedIds.has(node.id));
+    }, [nodes, selectedNodeIds]);
+
+    if (!selectedNodes.length) return null;
+
+    const previewNodes = selectedNodes.slice(0, 3);
+    const content = (
+        <div className="w-[min(340px,calc(100vw-32px))]" style={{ color: theme.node.text }} onWheel={(event) => event.stopPropagation()}>
+            <div className="flex items-center justify-between gap-3 border-b px-3 py-2.5" style={{ borderColor: theme.toolbar.border }}>
+                <span className="text-[13px] font-semibold">{t("agent.selection.selectedNodesTitle")}</span>
+                <span className="text-[11px] tabular-nums" style={{ color: theme.node.muted }}>{selectedNodes.length}</span>
+            </div>
+            <div className="thin-scrollbar max-h-[min(420px,56vh)] overflow-y-auto p-1.5">
+                {selectedNodes.map((node, index) => (
+                    <div key={node.id} className="flex min-w-0 items-center gap-2.5 rounded-lg px-2 py-2" style={{ background: index % 2 ? theme.toolbar.itemHover : "transparent" }}>
+                        <SelectedNodePreview node={node} theme={theme} />
+                        <span className="min-w-0 flex-1">
+                            <span className="block truncate text-[12px] font-medium">{node.title || t("canvas.node.untitled")}</span>
+                            <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[10px]" style={{ color: theme.node.muted }}>
+                                <span className="shrink-0">{selectedNodeTypeLabel(node, t)}</span>
+                                <span className="opacity-35">·</span>
+                                <span className="truncate font-mono">{node.id}</span>
+                            </span>
+                        </span>
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+
+    return (
+        <Popover trigger="click" placement="topLeft" arrow={false} content={content} overlayInnerStyle={{ padding: 0, overflow: "hidden", background: theme.toolbar.panel, border: `1px solid ${theme.toolbar.border}` }}>
+            <button
+                type="button"
+                className="flex h-9 min-w-0 max-w-48 items-center gap-2 rounded-lg px-2 text-[11px] font-medium transition-colors"
+                style={{ background: theme.toolbar.itemHover, color: theme.node.text }}
+                aria-label={t("agent.selection.selectedNodes", { count: selectedNodes.length })}
+                title={t("agent.selection.viewSelectedNodes")}
+            >
+                <span className="flex h-6 shrink-0 items-center pl-1">
+                    {previewNodes.map((node, index) => (
+                        <span key={node.id} className="-ml-1 grid size-6 shrink-0 place-items-center overflow-hidden rounded-md border" style={{ zIndex: previewNodes.length - index, background: theme.toolbar.panel, borderColor: theme.toolbar.border }}>
+                            <SelectedNodeMark node={node} />
+                        </span>
+                    ))}
+                </span>
+                <span className="truncate">{t("agent.selection.selectedNodes", { count: selectedNodes.length })}</span>
+                <ChevronUp className="size-3 shrink-0 opacity-45" />
+            </button>
+        </Popover>
+    );
+}
+
+function SelectedNodePreview({ node, theme }: { node: CanvasNodeData; theme: (typeof canvasThemes)[keyof typeof canvasThemes] }) {
+    const source = node.metadata?.thumbnailUrl || node.metadata?.content;
+    if (node.type === CanvasNodeType.Image && source) return <img src={source} alt="" className="size-10 shrink-0 rounded-md object-cover" />;
+    const Icon = selectedNodeIcon(node.type);
+    return <span className="grid size-10 shrink-0 place-items-center rounded-md" style={{ background: theme.toolbar.itemHover, color: theme.node.muted }}><Icon className="size-4" /></span>;
+}
+
+function SelectedNodeMark({ node }: { node: CanvasNodeData }) {
+    const source = node.metadata?.thumbnailUrl || node.metadata?.content;
+    if (node.type === CanvasNodeType.Image && source) return <img src={source} alt="" className="size-full object-cover" />;
+    const Icon = selectedNodeIcon(node.type);
+    return <Icon className="size-3" />;
+}
+
+function selectedNodeIcon(type: string) {
+    if (type === CanvasNodeType.Image) return ImageIcon;
+    if (type === CanvasNodeType.Text) return FileText;
+    if (type === CanvasNodeType.Config) return Settings2;
+    if (type === CanvasNodeType.Video) return Video;
+    if (type === CanvasNodeType.Audio) return Music2;
+    if (type === CanvasNodeType.Group) return Group;
+    return Layers3;
+}
+
+function selectedNodeTypeLabel(node: CanvasNodeData, t: (key: string) => string) {
+    const definition = getNodeDefinition(node.type);
+    if (definition?.title) return definition.title;
+    if (node.type === CanvasNodeType.Config) return t("canvas.configNode.title");
+    if (node.type === CanvasNodeType.Group) return t("canvas.node.group");
+    if (node.type === CanvasNodeType.Image || node.type === CanvasNodeType.Text || node.type === CanvasNodeType.Video || node.type === CanvasNodeType.Audio) return t(`assets.kinds.${node.type}`);
+    return node.type;
 }
 
 function ComposerSettingsMenu({

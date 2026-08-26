@@ -25,6 +25,11 @@ func TestSniffUploadMedia(t *testing.T) {
 		{name: "webp", data: []byte("RIFFxxxxWEBP"), ext: "webp", contentType: "image/webp", image: true},
 		{name: "mp4", data: []byte("xxxxftypisom"), ext: "mp4", contentType: "video/mp4"},
 		{name: "webm", data: []byte{0x1a, 0x45, 0xdf, 0xa3}, ext: "webm", contentType: "video/webm"},
+		{name: "mp3 id3", data: []byte("ID3audio"), ext: "mp3", contentType: "audio/mpeg"},
+		{name: "mp3 frame", data: []byte{0xff, 0xfb, 0x90, 0x64}, ext: "mp3", contentType: "audio/mpeg"},
+		{name: "wav", data: []byte("RIFFxxxxWAVE"), ext: "wav", contentType: "audio/wav"},
+		{name: "m4a", data: []byte("xxxxftypM4A "), ext: "m4a", contentType: "audio/mp4"},
+		{name: "ogg", data: []byte("OggSaudio"), ext: "ogg", contentType: "audio/ogg"},
 		{name: "unknown", data: []byte("not-media")},
 	}
 	for _, test := range tests {

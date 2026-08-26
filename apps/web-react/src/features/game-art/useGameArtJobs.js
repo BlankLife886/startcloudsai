@@ -6,8 +6,11 @@ import {
   uploadAiInputFile,
   waitForServerAiJob,
 } from "@react/legacy-modules/services/aiWallpaper.js";
-import { coerceImageModelSettings } from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
-import { normalizeGptImageOutputSize } from "@react/legacy-modules/services/aiImageOutputSize.js";
+import {
+  coerceImageModelSettings,
+  normalizeImageModelCapabilities,
+} from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
+import { resolveT2iOutputSize } from "@react/legacy-modules/features/ai-wallpaper/composables/wallpaperStudioConstants.js";
 
 const ACTIVE_STATUSES = new Set(["queued", "running", "waiting_provider"]);
 
@@ -40,17 +43,6 @@ function previewMap(job, urls) {
 function displayMap(job, urls) {
   const values = [...(Array.isArray(job.displayMediaUrls) ? job.displayMediaUrls : []), job.displayMediaUrl].filter(Boolean);
   return Object.fromEntries(urls.map((url, index) => [url, values[index] || ""]));
-}
-
-function outputSize(aspectRatio = "1:1") {
-  const [rawWidth = 1, rawHeight = 1] = String(aspectRatio).split(":").map(Number);
-  const widthRatio = Number.isFinite(rawWidth) && rawWidth > 0 ? rawWidth : 1;
-  const heightRatio = Number.isFinite(rawHeight) && rawHeight > 0 ? rawHeight : 1;
-  const edge = 2048;
-  const width = widthRatio >= heightRatio ? edge : (edge * widthRatio) / heightRatio;
-  const height = widthRatio >= heightRatio ? (edge * heightRatio) / widthRatio : edge;
-  const normalized = normalizeGptImageOutputSize(width, height);
-  return `${normalized.width}x${normalized.height}`;
 }
 
 function entriesFromJob(job, result = null) {
@@ -157,25 +149,36 @@ export function useGameArtJobs({ model, isAuthenticated }) {
   }
 
   const runItem = useCallback(async ({ item, sourceUrl, groupId, index, size, runId, context }) => {
+    const capabilities = normalizeImageModelCapabilities(model || {});
+    const resolutionScale = capabilities.resolutions[0] || "";
     const settings = coerceImageModelSettings(model, {
       aspectRatio: item.aspectRatio,
+      resolutionScale,
       quality: item.quality,
       transparentBackground: item.transparentPngEnabled,
       outputFormat: item.transparentPngEnabled ? "png" : undefined,
     });
-    const dimensions = outputSize(settings.aspectRatio);
+    const dimensions = resolutionScale && settings.aspectRatio
+      ? resolveT2iOutputSize(settings.aspectRatio, resolutionScale)
+      : "";
+    const allowedSourceUrl = capabilities.maxReferenceImages > 0 ? String(sourceUrl || "") : "";
     const shared = {
       source: "game-art-studio",
-      sourceUrl: String(sourceUrl || ""),
-      sourceUrls: sourceUrl ? [sourceUrl] : [],
-      aspectRatio: settings.aspectRatio,
-      size: dimensions,
-      outputSize: dimensions,
+      sourceUrl: allowedSourceUrl,
+      sourceUrls: allowedSourceUrl ? [allowedSourceUrl] : [],
+      ...(settings.aspectRatio ? { aspectRatio: settings.aspectRatio } : {}),
+      ...(dimensions ? { size: dimensions, outputSize: dimensions } : {}),
+      ...(resolutionScale ? { resolutionScale } : {}),
       count: 1,
-      transparentPngEnabled: settings.transparentBackground,
-      transparentBackground: settings.transparentBackground,
-      upscaleOutputFormat: settings.transparentBackground ? "png" : "auto",
-      quality: settings.quality,
+      ...(capabilities.transparentBackground
+        ? {
+            transparentPngEnabled: settings.transparentBackground,
+            transparentBackground: settings.transparentBackground,
+          }
+        : {}),
+      ...(settings.transparentBackground ? { upscaleOutputFormat: "png" } : {}),
+      ...(settings.quality ? { quality: settings.quality } : {}),
+      ...(settings.outputFormat ? { outputFormat: settings.outputFormat } : {}),
       viewLabel: item.viewLabel,
       kindVariant: item.kindVariant,
       batchId: groupId,
@@ -184,7 +187,7 @@ export function useGameArtJobs({ model, isAuthenticated }) {
       batchCreatedAt: item.batchCreatedAt,
     };
     const response = await createServerAiJob({
-      kind: `game-art-${item.kindVariant}-${sourceUrl ? "edit" : "generation"}`,
+      kind: `game-art-${item.kindVariant}-${allowedSourceUrl ? "edit" : "generation"}`,
       clientRequestId: crypto.randomUUID(),
       prompt: item.prompt,
       input: shared,

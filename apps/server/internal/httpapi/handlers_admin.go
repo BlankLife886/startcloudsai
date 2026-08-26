@@ -22,6 +22,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
 	"github.com/BlankLife886/startcloudsai/server/internal/crun"
 	"github.com/BlankLife886/startcloudsai/server/internal/lanjingpay"
+	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/netguard"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
@@ -1776,6 +1777,9 @@ var settingsCamel = map[string]string{
 	"image_thumb_max_edge":                        "imageThumbMaxEdge",
 	"image_fetch_concurrency":                     "imageFetchConcurrency",
 	"cross_provider_same_model_balancing_enabled": "crossProviderSameModelBalancingEnabled",
+	"admin_image_analysis_provider_id":            "adminImageAnalysisProviderId",
+	"admin_image_analysis_model_id":               "adminImageAnalysisModelId",
+	"admin_image_analysis_reasoning_effort":       "adminImageAnalysisReasoningEffort",
 	"signup_bonus_cents":                          "signupBonusCents",
 	"registration_enabled":                        "registrationEnabled",
 	"task_models":                                 "taskModels",
@@ -2011,6 +2015,18 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 				fail(c, apperr.E("validation_error", "taskRetryBackoffSecs: 须在 1-600 之间", 422))
 				return
 			}
+		case "admin_image_analysis_provider_id", "admin_image_analysis_model_id", "admin_image_analysis_reasoning_effort":
+			var v string
+			if err := json.Unmarshal(raw, &v); err != nil {
+				fail(c, apperr.E("validation_error", camel+": 格式不正确", 422))
+				return
+			}
+			v = strings.TrimSpace(v)
+			if len([]rune(v)) > 128 {
+				fail(c, apperr.E("validation_error", camel+": 长度不能超过 128", 422))
+				return
+			}
+			raw, _ = json.Marshal(v)
 		case "image_variant_format":
 			var v string
 			if err := json.Unmarshal(raw, &v); err != nil || (v != "webp" && v != "png") {
@@ -2288,6 +2304,10 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 		updates["trial_campaign_feature_keys"], _ = json.Marshal([]string{value})
 	}
 	ctx := c.Request.Context()
+	if err := s.validateAdminImageAnalysisSettings(ctx, updates); err != nil {
+		fail(c, err)
+		return
+	}
 	if err := s.validateLanjingPaySettings(ctx, updates); err != nil {
 		fail(c, err)
 		return
@@ -2310,6 +2330,51 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 		return
 	}
 	ok(c, out)
+}
+
+func (s *Server) validateAdminImageAnalysisSettings(ctx context.Context, updates map[string]json.RawMessage) error {
+	_, providerUpdated := updates["admin_image_analysis_provider_id"]
+	_, modelUpdated := updates["admin_image_analysis_model_id"]
+	_, effortUpdated := updates["admin_image_analysis_reasoning_effort"]
+	if !providerUpdated && !modelUpdated && !effortUpdated {
+		return nil
+	}
+	read := func(key string) (string, error) {
+		if raw, exists := updates[key]; exists {
+			var value string
+			if err := json.Unmarshal(raw, &value); err != nil {
+				return "", err
+			}
+			return strings.TrimSpace(value), nil
+		}
+		return settings.GetString(ctx, s.St.Pool, key)
+	}
+	providerID, err := read("admin_image_analysis_provider_id")
+	if err != nil {
+		return err
+	}
+	modelID, err := read("admin_image_analysis_model_id")
+	if err != nil {
+		return err
+	}
+	reasoningEffort, err := read("admin_image_analysis_reasoning_effort")
+	if err != nil {
+		return err
+	}
+	if providerID == "" && modelID == "" && reasoningEffort == "" {
+		return nil
+	}
+	if providerID == "" || modelID == "" {
+		return apperr.E("validation_error", "后台图片分析的服务商和模型必须同时配置", 422)
+	}
+	cfg, err := modelconfig.Runtime(ctx, s.St.Pool, s.Cfg.AppSecret)
+	if err != nil {
+		return err
+	}
+	if _, _, ok := selectAdminImageAnalysisModel(cfg, providerID, modelID, reasoningEffort); !ok {
+		return apperr.E("validation_error", "后台图片分析的服务商、模型或推理强度无效", 422)
+	}
+	return nil
 }
 
 func (s *Server) validateLanjingPaySettings(ctx context.Context, updates map[string]json.RawMessage) error {

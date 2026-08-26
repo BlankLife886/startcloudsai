@@ -17,6 +17,11 @@ import {
 } from "./handheld/handheldApi.js";
 import { compressEcommerceUploadFile } from "@react/legacy-modules/features/ecommerce/compressEcommerceUpload.js";
 import {
+  getModelAspectRatiosForResolution,
+  normalizeImageModelCapabilities,
+  normalizeImageQuality,
+} from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
+import {
   attachEcommerceUploadKey,
   ECOMMERCE_IMAGE_TARGET_BYTES,
   isReusableTaskImageKey,
@@ -24,6 +29,49 @@ import {
 } from "@react/legacy-modules/features/ecommerce/ecommerceTools.js";
 
 const ACTIVE_STATUSES = new Set(["queued", "running", "waiting_provider"]);
+
+function sanitizeEcommerceImageParams(item = {}, model = {}) {
+  const capabilities = normalizeImageModelCapabilities(model);
+  const {
+    aspectRatio,
+    requestedAspectRatio,
+    quality,
+    resolution,
+    resolutionScale,
+    outputSize,
+    size,
+    outputFormat,
+    moderationLevel,
+    transparentPngEnabled,
+    transparentBackground,
+    ...businessParams
+  } = item;
+  const requestedResolution = String(resolutionScale || resolution || "").trim().toUpperCase();
+  const supportedResolution = capabilities.resolutions.includes(requestedResolution)
+    ? requestedResolution
+    : "";
+  const requestedRatio = String(aspectRatio || requestedAspectRatio || "").trim().toLowerCase();
+  const supportedRatios = getModelAspectRatiosForResolution(model, supportedResolution);
+  const supportedRatio = supportedRatios.includes(requestedRatio) ? requestedRatio : "";
+  const requestedQuality = normalizeImageQuality(quality);
+  const requestedFormat = String(outputFormat || "").trim().toLowerCase().replace(/^jpg$/, "jpeg");
+  const requestedModeration = String(moderationLevel || "").trim().toLowerCase();
+  const supportsDimensions = capabilities.resolutions.length > 0 && Boolean(supportedRatio);
+  const wantsTransparent = transparentPngEnabled === true || transparentBackground === true;
+  return {
+    ...businessParams,
+    ...(supportedRatio ? { aspectRatio: supportedRatio, requestedAspectRatio: supportedRatio } : {}),
+    ...(supportedResolution ? { resolutionScale: supportedResolution } : {}),
+    ...(supportsDimensions && outputSize ? { outputSize } : {}),
+    ...(supportsDimensions && size ? { size } : {}),
+    ...(capabilities.qualities.includes(requestedQuality) ? { quality: requestedQuality } : {}),
+    ...(capabilities.outputFormats.includes(requestedFormat) ? { outputFormat: requestedFormat } : {}),
+    ...(capabilities.moderationLevels.includes(requestedModeration) ? { moderationLevel: requestedModeration } : {}),
+    ...(capabilities.transparentBackground
+      ? { transparentPngEnabled: wantsTransparent, transparentBackground: wantsTransparent }
+      : {}),
+  };
+}
 
 async function uploadKeyFromFile(file, signal) {
   const ready = await compressEcommerceUploadFile(file, {
@@ -165,7 +213,7 @@ export function ecommerceTaskMatchesKind(task, taskKind = "") {
   return String(task?.kind || params._kind || "").trim() === expected;
 }
 
-export function useEcommerceJobs({ taskKind = "" } = {}) {
+export function useEcommerceJobs({ taskKind = "", models = [] } = {}) {
   const [tasks, setTasks] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState("");
@@ -298,6 +346,18 @@ export function useEcommerceJobs({ taskKind = "" } = {}) {
       if (!items.length) {
         throw new Error("没有可生成的内容");
       }
+      const selectedModel = models.find((model) =>
+        [model?.id, model?.publicModelKey, model?.model].map(String).includes(String(modelId)),
+      );
+      if (selectedModel) {
+        const maxReferences = normalizeImageModelCapabilities(selectedModel).maxReferenceImages;
+        if (files.length > maxReferences) {
+          throw new Error(`当前模型最多支持 ${maxReferences} 张参考图`);
+        }
+      }
+      const taskItems = selectedModel
+        ? items.map((item) => sanitizeEcommerceImageParams(item, selectedModel))
+        : items;
       if (
         files.some(
           (file) =>
@@ -325,7 +385,7 @@ export function useEcommerceJobs({ taskKind = "" } = {}) {
         }
         const batchCreatedAt = new Date().toISOString();
         const settled = await Promise.allSettled(
-          items.map(async (item, index) => {
+          taskItems.map(async (item, index) => {
             const batchIndex = Number.isFinite(Number(item.batchIndex))
               ? Number(item.batchIndex)
               : index;
@@ -356,7 +416,7 @@ export function useEcommerceJobs({ taskKind = "" } = {}) {
           .map((result) => result.value);
         settled.forEach((result, index) => {
           if (result.status !== "rejected") return;
-          const item = items[index] || {};
+          const item = taskItems[index] || {};
           const batchIndex = Number.isFinite(Number(item.batchIndex))
             ? Number(item.batchIndex)
             : index;
@@ -395,7 +455,7 @@ export function useEcommerceJobs({ taskKind = "" } = {}) {
         if (mountedRef.current) setSubmitting(false);
       }
     },
-    [upsert, watchTask],
+    [models, upsert, watchTask],
   );
 
   const createHandheldBatch = useCallback(

@@ -1294,10 +1294,15 @@ async function analyzeImportBatch() {
   try {
     const result = await request<{ analyzed: number }>(
       `/api/v1/admin/prompt-import-batches/${batch.id}/analyze`,
-      { method: 'POST' },
+      { method: 'POST', silent: true },
     )
     ElMessage.success(`AI 已完成 ${result.analyzed} 条分类、去重与合规检测`)
     await refreshImportBatch()
+  } catch (cause) {
+    ElMessage.error({
+      message: cause instanceof Error && cause.message ? cause.message : 'AI 检测失败',
+      grouping: true,
+    })
   } finally {
     importAnalyzing.value = false
   }

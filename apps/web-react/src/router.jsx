@@ -115,6 +115,14 @@ export const router = createBrowserRouter([
         ),
       },
       {
+        path: "/tools",
+        element: <Navigate replace to="/studio" />,
+      },
+      {
+        path: "/tools/:modelId",
+        lazy: lazyView(() => import("./views/MediaToolsView.jsx"), "MediaToolsView"),
+      },
+      {
         path: "/tools/puzzle",
         lazy: lazyView(() => import("./views/PuzzleView.jsx"), "PuzzleView"),
       },

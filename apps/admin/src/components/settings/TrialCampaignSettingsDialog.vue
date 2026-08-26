@@ -337,7 +337,10 @@ function applyExpiryShortcut(fn: () => Date) {
                 <i :class="['bi', feature.icon]" aria-hidden="true" />
                 <span>
                   <strong>{{ feature.label }}</strong>
-                  <small>{{ feature.route }} · {{ feature.taskTypes.join(', ') }}</small>
+				  <small>
+					{{ feature.route }}
+					<template v-if="feature.taskTypes?.length"> · {{ feature.taskTypes.join(', ') }}</template>
+				  </small>
                 </span>
               </div>
             </el-option>

@@ -154,6 +154,22 @@ func uiDesignAssetHistoryParams(run *AssistantRun) map[string]any {
 	if display := paramText(run.Params, "_imageModelDisplayName", "_modelDisplayName"); display != "" {
 		params["_modelDisplayName"] = display
 	}
+	for _, key := range []string{
+		"_serviceProvider",
+		"_imageProviderConfigId",
+		"_imageProviderDisplayName",
+		"_imageProviderRouteId",
+		"_imageProviderRouteKey",
+		"_imageProviderRouteName",
+		"_imageProviderEndpoint",
+		"_imageModelConfigId",
+		"_imageModel",
+		"_imageModelDisplayName",
+	} {
+		if value, exists := run.Params[key]; exists {
+			params[key] = value
+		}
+	}
 	if parent := paramText(run.Params, "parentOutputUrl"); parent != "" {
 		params["parentOutputUrl"] = parent
 	}
@@ -174,6 +190,91 @@ func SyncUIDesignAssetHistoryFromRun(ctx context.Context, q Q, run *AssistantRun
 		return upsertUIDesignAssetHistoryTask(ctx, q, run, run.Status, nil)
 	default:
 		return upsertUIDesignAssetHistoryTask(ctx, q, run, "running", nil)
+	}
+}
+
+// EnsureAssistantGalleryTask materializes a completed assistant image run as a
+// task only when a user publishes it. Gallery submissions retain their existing
+// task ownership, output-locking, review, and duplicate-prevention contracts.
+func EnsureAssistantGalleryTask(ctx context.Context, q Q, run *AssistantRun) (*Task, error) {
+	if run == nil || run.UserID == uuid.Nil || run.Status != "succeeded" ||
+		(run.Mode != "image" && run.ResolvedMode != "image") {
+		return nil, nil
+	}
+	if existing, err := GetTask(ctx, q, run.ID); err != nil || existing != nil {
+		return existing, err
+	}
+	message, err := GetAssistantMessage(ctx, q, run.AssistantMessageID)
+	if err != nil || message == nil {
+		return nil, err
+	}
+	images := assistantGalleryImages(message.Metadata["images"])
+	outputKeys := make([]string, 0, len(images))
+	seen := make(map[string]struct{}, len(images))
+	for _, item := range images {
+		if key := strings.TrimSpace(paramText(item, "fileKey")); strings.HasPrefix(key, "tasks/"+run.UserID.String()+"/") {
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			outputKeys = append(outputKeys, key)
+		}
+	}
+	if len(outputKeys) == 0 {
+		return nil, nil
+	}
+	params := make(map[string]any, len(run.Params)+3)
+	for key, value := range run.Params {
+		if strings.HasPrefix(key, "_") || key == "referenceImages" {
+			continue
+		}
+		params[key] = value
+	}
+	params["_source"] = "assistant"
+	params["_historyMirror"] = true
+	params["assistantRunId"] = run.ID.String()
+	count := len(outputKeys)
+	if count > 4 {
+		count = 4
+		outputKeys = outputKeys[:4]
+	}
+	createdAt := run.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	task, err := scanTask(q.QueryRow(ctx,
+		`INSERT INTO tasks (
+			id, user_id, type, model, status, prompt, params, count,
+			input_keys, output_keys, thumbnail_keys, cost_cents, work_units,
+			idempotency_key, started_at, finished_at, created_at
+		) VALUES ($1, $2, 't2i', $3, 'succeeded', $4, $5, $6, $7, $8, $8, $9, $6, $10, $11, $12, $13)
+		RETURNING `+taskCols,
+		run.ID, run.UserID, paramText(run.Params, "model"), run.Prompt, params, count,
+		assistantReferenceFileKeys(run.Params), outputKeys, run.CostCents,
+		"assistant-gallery:"+run.ID.String(), run.StartedAt, run.FinishedAt, createdAt))
+	if err != nil {
+		if existing, lookupErr := GetTask(ctx, q, run.ID); lookupErr == nil && existing != nil {
+			return existing, nil
+		}
+		return nil, err
+	}
+	return task, nil
+}
+
+func assistantGalleryImages(value any) []map[string]any {
+	switch images := value.(type) {
+	case []map[string]any:
+		return images
+	case []any:
+		items := make([]map[string]any, 0, len(images))
+		for _, raw := range images {
+			if item, ok := raw.(map[string]any); ok && item != nil {
+				items = append(items, item)
+			}
+		}
+		return items
+	default:
+		return nil
 	}
 }
 
@@ -223,10 +324,6 @@ func upsertUIDesignAssetHistoryTask(ctx context.Context, q Q, run *AssistantRun,
 		}
 	}
 	if existing != nil {
-		if existing.Status == status &&
-			(status != "succeeded" || (len(existing.OutputKeys) == len(outputKeys) && (len(outputKeys) == 0 || existing.OutputKeys[0] == outputKeys[0]))) {
-			return existing, false, nil
-		}
 		task, err := scanTask(q.QueryRow(ctx,
 			`UPDATE tasks SET
 				status = $2, model = $3, prompt = $4, params = $5, count = $6, work_units = $6,
@@ -1777,6 +1874,26 @@ func RetryRunningTaskOwned(ctx context.Context, q Q, id uuid.UUID, owner string,
 		return expectedAttempt, false, nil
 	}
 	return attempt, err == nil, err
+}
+
+func RemoveTaskOutputAt(ctx context.Context, q Q, id uuid.UUID, remainingOutputs, remainingThumbs []string) error {
+	if remainingOutputs == nil {
+		remainingOutputs = []string{}
+	}
+	if remainingThumbs == nil {
+		remainingThumbs = []string{}
+	}
+	count := len(remainingOutputs)
+	if count < 1 {
+		count = 1
+	}
+	_, err := q.Exec(ctx, `UPDATE tasks SET
+		output_keys = $2,
+		thumbnail_keys = $3,
+		count = $4,
+		deleted_output_count = deleted_output_count + 1
+		WHERE id = $1 AND deleted_at IS NULL`, id, remainingOutputs, remainingThumbs, count)
+	return err
 }
 
 func MarkTaskDeletedByUser(ctx context.Context, q Q, id uuid.UUID, deletedAt time.Time) error {

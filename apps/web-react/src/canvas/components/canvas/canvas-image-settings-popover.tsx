@@ -26,10 +26,14 @@ export function CanvasImageSettingsPopover({ config, onConfigChange, onOpenChang
     const { t } = useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const { buttonRef, panelRef, open, buttonRect, updateOpen } = useAnchorPopover(onOpenChange);
-    const quality = config.quality || "medium";
+    const quality = config.quality || "";
     const count = Math.max(1, Math.min(canvasImageMaxCount(modelOptionMeta(config, config.model)), Math.floor(Math.abs(Number(config.count)) || 1)));
-    const activeSize = config.size || "auto";
-    const summary = `${imageQualityLabel(quality)} · ${imageSizeLabel(activeSize, config.resolution)} · ${t("canvas.controls.images", { count })}`;
+    const activeSize = config.size || "";
+    const summary = [
+        quality ? imageQualityLabel(quality) : "",
+        activeSize || config.resolution ? imageSizeLabel(activeSize, config.resolution) : "",
+        t("canvas.controls.images", { count }),
+    ].filter(Boolean).join(" · ");
 
     return (
         <>

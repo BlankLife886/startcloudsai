@@ -575,10 +575,19 @@ func RunningAssistantRunsByProvider(ctx context.Context, q Q, providerKeys []str
 	if len(providerKeys) == 0 {
 		return out, nil
 	}
-	rows, err := q.Query(ctx, `SELECT COALESCE(params ->> '_chatProviderRouteKey', params ->> '_chatProviderConfigId'), count(*)
+	rows, err := q.Query(ctx, `SELECT CASE WHEN mode = 'image'
+			THEN COALESCE(params ->> '_imageProviderRouteKey', params ->> '_imageProviderConfigId')
+			ELSE COALESCE(params ->> '_chatProviderRouteKey', params ->> '_chatProviderConfigId')
+		END AS provider_key,
+		SUM(CASE WHEN mode = 'image'
+			THEN LEAST(16, GREATEST(1, COALESCE(NULLIF(params ->> 'count', '')::bigint, 1)))
+			ELSE 1 END)::bigint
 		FROM assistant_runs
 		WHERE status = 'running'
-		AND COALESCE(params ->> '_chatProviderRouteKey', params ->> '_chatProviderConfigId') = ANY($1)
+		AND (CASE WHEN mode = 'image'
+			THEN COALESCE(params ->> '_imageProviderRouteKey', params ->> '_imageProviderConfigId')
+			ELSE COALESCE(params ->> '_chatProviderRouteKey', params ->> '_chatProviderConfigId')
+		END) = ANY($1)
 		GROUP BY 1`, providerKeys)
 	if err != nil {
 		return nil, err
@@ -670,6 +679,39 @@ func BeginAssistantRunAttempt(ctx context.Context, q Q, run *AssistantRun) error
 		requested_mode = EXCLUDED.requested_mode, resolved_mode = EXCLUDED.resolved_mode,
 		error_code = NULL, error_message = NULL, finished_at = NULL`,
 		run.ID, run.Attempt, time.Now().UTC())
+	return err
+}
+
+// RecordAssistantRunExecutionRoute persists the route selected at execution
+// time. The run params feed history mirrors while the attempt row is the
+// operational audit trail for the exact attempt.
+func RecordAssistantRunExecutionRoute(
+	ctx context.Context,
+	q Q,
+	runID uuid.UUID,
+	attempt int,
+	metadata map[string]any,
+	routeKey, providerName, model string,
+) error {
+	if runID == uuid.Nil || attempt <= 0 {
+		return errors.New("invalid assistant run execution route")
+	}
+	raw, err := json.Marshal(metadata)
+	if err != nil {
+		return err
+	}
+	_, err = q.Exec(ctx, `WITH updated_run AS (
+		UPDATE assistant_runs
+		SET params = COALESCE(params, '{}'::jsonb) || $3::jsonb
+		WHERE id = $1 AND attempt = $2 AND status = 'running'
+		RETURNING id
+	)
+	UPDATE assistant_run_attempts
+	SET provider_route_key = NULLIF($4, ''), provider_name = NULLIF($5, ''),
+		model = NULLIF($6, '')
+	WHERE run_id = $1 AND attempt = $2 AND status = 'running'
+		AND EXISTS (SELECT 1 FROM updated_run)`,
+		runID, attempt, raw, routeKey, providerName, model)
 	return err
 }
 
@@ -782,14 +824,30 @@ func RequeueRunningAssistantRunForRouteFailover(
 	attempt int,
 	failedRouteKeys []string,
 ) (bool, error) {
+	return RequeueRunningAssistantRunForRouteFailoverWithKey(
+		ctx, q, id, attempt, "_failedChatProviderRouteKeys", failedRouteKeys,
+	)
+}
+
+func RequeueRunningAssistantRunForRouteFailoverWithKey(
+	ctx context.Context,
+	q Q,
+	id uuid.UUID,
+	attempt int,
+	failedRouteParam string,
+	failedRouteKeys []string,
+) (bool, error) {
+	if failedRouteParam != "_failedChatProviderRouteKeys" && failedRouteParam != "_failedImageProviderRouteKeys" {
+		return false, errors.New("invalid assistant failed route parameter")
+	}
 	raw, err := json.Marshal(failedRouteKeys)
 	if err != nil {
 		return false, err
 	}
 	tag, err := q.Exec(ctx, `UPDATE assistant_runs SET status = 'queued', stage = 'queued', resolved_mode = '',
 		started_at = NULL, lease_owner = NULL, lease_until = NULL, heartbeat_at = NULL,
-		params = jsonb_set(COALESCE(params, '{}'::jsonb), '{_failedChatProviderRouteKeys}', $3::jsonb, true)
-		WHERE id = $1 AND status = 'running' AND attempt = $2 AND lease_until > now()`, id, attempt, raw)
+		params = jsonb_set(COALESCE(params, '{}'::jsonb), ARRAY[$3]::text[], $4::jsonb, true)
+		WHERE id = $1 AND status = 'running' AND attempt = $2 AND lease_until > now()`, id, attempt, failedRouteParam, raw)
 	return tag.RowsAffected() > 0, err
 }
 

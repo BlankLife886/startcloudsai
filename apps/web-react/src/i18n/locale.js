@@ -22,7 +22,7 @@ export function readLocale() {
       // Storage may be unavailable in privacy-restricted browser contexts.
     }
   }
-  return normalizeLocale(typeof navigator !== "undefined" ? navigator.language : "zh-CN");
+  return "zh-CN";
 }
 
 export function persistLocale(value) {
@@ -45,4 +45,3 @@ export function applyLocaleToDocument(value) {
   }
   return locale;
 }
-

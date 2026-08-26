@@ -153,6 +153,49 @@ func CountTaskCreditReservations(ctx context.Context, q Q, taskID uuid.UUID) (in
 	return n, err
 }
 
+// #nosec G101 -- this constant contains SQL column names, not credentials.
+const creditReservationCols = `source_type, source_id, normal_cents, trial_cents,
+	normal_remaining_cents, trial_remaining_cents, trial_feature_key, created_at, updated_at`
+
+func scanCreditReservation(row pgx.Row) (*CreditReservation, error) {
+	var reservation CreditReservation
+	err := row.Scan(
+		&reservation.SourceType, &reservation.SourceID,
+		&reservation.NormalCents, &reservation.TrialCents,
+		&reservation.NormalRemainingCents, &reservation.TrialRemainingCents,
+		&reservation.TrialFeatureKey, &reservation.CreatedAt, &reservation.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &reservation, nil
+}
+
+func InsertCreditReservation(ctx context.Context, q Q, sourceType, sourceID string, normalCents, trialCents int64, trialFeatureKey string) (*CreditReservation, error) {
+	return scanCreditReservation(q.QueryRow(ctx,
+		`INSERT INTO credit_reservations (
+			source_type, source_id, normal_cents, trial_cents,
+			normal_remaining_cents, trial_remaining_cents, trial_feature_key
+		 ) VALUES ($1, $2, $3, $4, $3, $4, NULLIF($5, '')) RETURNING `+creditReservationCols,
+		sourceType, sourceID, normalCents, trialCents, trialFeatureKey))
+}
+
+func GetCreditReservationForUpdate(ctx context.Context, q Q, sourceType, sourceID string) (*CreditReservation, error) {
+	item, err := scanCreditReservation(q.QueryRow(ctx,
+		`SELECT `+creditReservationCols+` FROM credit_reservations
+		 WHERE source_type = $1 AND source_id = $2 FOR UPDATE`, sourceType, sourceID))
+	return nilOnNoRows(item, err)
+}
+
+func UpdateCreditReservationRemaining(ctx context.Context, q Q, sourceType, sourceID string, normalRemainingCents, trialRemainingCents int64, at time.Time) error {
+	_, err := q.Exec(ctx,
+		`UPDATE credit_reservations
+		 SET normal_remaining_cents = $3, trial_remaining_cents = $4, updated_at = $5
+		 WHERE source_type = $1 AND source_id = $2`,
+		sourceType, sourceID, normalRemainingCents, trialRemainingCents, at)
+	return err
+}
+
 // ListLedger 用户账本分页（limit+1 行）。
 func ListLedger(ctx context.Context, q Q, userID uuid.UUID, limit int, cursor *Cursor) ([]*LedgerEntry, error) {
 	return ListLedgerFiltered(ctx, q, &userID, "", "", nil, limit, cursor)

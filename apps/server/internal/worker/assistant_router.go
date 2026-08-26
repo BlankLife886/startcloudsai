@@ -12,6 +12,8 @@ import (
 
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantbilling"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantstream"
+	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
+	"github.com/BlankLife886/startcloudsai/server/internal/crun"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
@@ -29,8 +31,12 @@ func (e *assistantProviderError) Error() string { return e.err.Error() }
 func (e *assistantProviderError) Unwrap() error { return e.err }
 
 func (w *Worker) assistantExecutionCandidates(ctx context.Context, run *store.AssistantRun) ([]modelconfig.Selection, error) {
-	providerID := assistantParamString(run.Params, "_chatProviderConfigId", "")
-	modelID := assistantParamString(run.Params, "_chatModelConfigId", "")
+	prefix := "_chat"
+	if run.Mode == "image" {
+		prefix = "_image"
+	}
+	providerID := assistantParamString(run.Params, prefix+"ProviderConfigId", "")
+	modelID := assistantParamString(run.Params, prefix+"ModelConfigId", "")
 	if providerID == "" || modelID == "" {
 		return nil, nil
 	}
@@ -38,14 +44,22 @@ func (w *Worker) assistantExecutionCandidates(ctx context.Context, run *store.As
 	if err != nil {
 		return nil, err
 	}
-	routeID := assistantParamString(run.Params, "_chatProviderRouteId", "")
+	routeID := assistantParamString(run.Params, prefix+"ProviderRouteId", "")
 	balanceAcrossProviders, err := settings.GetBool(ctx, w.St.Pool, "cross_provider_same_model_balancing_enabled")
 	if err != nil {
 		return nil, err
 	}
 	if balanceAcrossProviders {
-		unitPrice := assistantParamInt(run.Params, "_agentChatUnitPriceCents",
-			assistantParamInt(run.Params, "_chatCostCents", -1))
+		unitPrice := assistantParamInt(run.Params, prefix+"ModelEffectivePriceCents", -1)
+		if run.Mode == "image" {
+			unitPrice = assistantParamInt(run.Params, "_modelEffectivePriceCents",
+				assistantParamInt(run.Params, "_billingUnitPriceCents", unitPrice))
+		}
+		if run.Mode != "image" {
+			unitPrice = assistantParamInt(run.Params, "_chatModelEffectivePriceCents",
+				assistantParamInt(run.Params, "_agentChatUnitPriceCents",
+					assistantParamInt(run.Params, "_chatCostCents", -1)))
+		}
 		if unitPrice >= 0 {
 			return modelconfig.ExecutionCandidatesRouteAcrossProviders(
 				cfg, providerID, modelID, routeID, int64(unitPrice),
@@ -69,8 +83,12 @@ func (w *Worker) claimAssistantRun(
 		return nil, err
 	}
 	if len(candidates) == 0 {
-		if assistantParamString(queued.Params, "_chatProviderConfigId", "") != "" &&
-			assistantParamString(queued.Params, "_chatModelConfigId", "") != "" {
+		prefix := "_chat"
+		if queued.Mode == "image" {
+			prefix = "_image"
+		}
+		if assistantParamString(queued.Params, prefix+"ProviderConfigId", "") != "" &&
+			assistantParamString(queued.Params, prefix+"ModelConfigId", "") != "" {
 			return nil, errAssistantRoutesExhausted
 		}
 		return store.ClaimAssistantRunWithLease(ctx, w.St.Pool, runID, leaseOwner, time.Now().UTC(), taskLease)
@@ -96,8 +114,14 @@ func (w *Worker) claimAssistantRun(
 		for key, count := range assistantRunning {
 			running[key] += count
 		}
+		prefix := "_chat"
+		failedRouteParam := "_failedChatProviderRouteKeys"
+		if queued.Mode == "image" {
+			prefix = "_image"
+			failedRouteParam = "_failedImageProviderRouteKeys"
+		}
 		excluded := make(map[string]bool)
-		for _, key := range assistantParamStrings(queued.Params, "_failedChatProviderRouteKeys") {
+		for _, key := range assistantParamStrings(queued.Params, failedRouteParam) {
 			excluded[key] = true
 		}
 		selected, ok := selectExecutionCandidateExcluding(candidates, running, excluded)
@@ -119,14 +143,14 @@ func (w *Worker) claimAssistantRun(
 				"all assistant provider routes are at capacity", time.Now().UTC().Add(5*time.Second))
 		}
 		route := map[string]any{
-			"_chatProviderConfigId":    selected.Provider.ID,
-			"_chatProviderRouteId":     selected.Provider.RouteID,
-			"_chatProviderRouteKey":    modelconfig.ExecutionRouteKey(selected.Provider),
-			"_chatProviderDisplayName": selected.Provider.Name,
-			"_chatModelConfigId":       selected.Model.ID,
-			"_chatModel":               selected.Model.UpstreamModel,
-			"_chatModelDisplayName":    selected.Model.Name,
-			"_modelDisplayName":        selected.Model.Name,
+			prefix + "ProviderConfigId":    selected.Provider.ID,
+			prefix + "ProviderRouteId":     selected.Provider.RouteID,
+			prefix + "ProviderRouteKey":    modelconfig.ExecutionRouteKey(selected.Provider),
+			prefix + "ProviderDisplayName": selected.Provider.Name,
+			prefix + "ModelConfigId":       selected.Model.ID,
+			prefix + "Model":               selected.Model.UpstreamModel,
+			prefix + "ModelDisplayName":    selected.Model.Name,
+			"_modelDisplayName":            selected.Model.Name,
 		}
 		updated, err := store.SetQueuedAssistantRunExecutionRoute(ctx, tx, runID, route)
 		if err != nil || !updated {
@@ -160,19 +184,34 @@ func (w *Worker) retryAssistantProviderRoute(
 	run *store.AssistantRun,
 	executionErr error,
 ) (bool, error) {
-	if run == nil || isCanvasWorkspaceRun(run) || (run.Mode != "chat" && run.Mode != "agent") ||
-		!sub2api.RetryableOnAlternateRoute(ctx, executionErr) {
+	if run == nil || isCanvasWorkspaceRun(run) {
+		return false, nil
+	}
+	retryable := sub2api.RetryableOnAlternateRoute(ctx, executionErr)
+	if run.Mode == "image" {
+		retryable = c2a.IsRetryableError(executionErr) || crun.IsRetryableError(executionErr) ||
+			errors.Is(executionErr, context.DeadlineExceeded)
+	} else if run.Mode != "chat" && run.Mode != "agent" {
+		return false, nil
+	}
+	if !retryable {
 		return false, nil
 	}
 	var providerErr *assistantProviderError
 	if errors.As(executionErr, &providerErr) && providerErr.outputStarted {
 		return false, nil
 	}
-	routeKey := assistantParamString(run.Params, "_chatProviderRouteKey", "")
+	prefix := "_chat"
+	failedRouteParam := "_failedChatProviderRouteKeys"
+	if run.Mode == "image" {
+		prefix = "_image"
+		failedRouteParam = "_failedImageProviderRouteKeys"
+	}
+	routeKey := assistantParamString(run.Params, prefix+"ProviderRouteKey", "")
 	if routeKey == "" {
 		return false, nil
 	}
-	failedKeys := assistantParamStrings(run.Params, "_failedChatProviderRouteKeys")
+	failedKeys := assistantParamStrings(run.Params, failedRouteParam)
 	for _, key := range failedKeys {
 		if key == routeKey {
 			return false, nil
@@ -182,7 +221,9 @@ func (w *Worker) retryAssistantProviderRoute(
 	requeued := false
 	err := w.St.Tx(ctx, func(tx pgx.Tx) error {
 		var err error
-		requeued, err = store.RequeueRunningAssistantRunForRouteFailover(ctx, tx, run.ID, run.Attempt, failedKeys)
+		requeued, err = store.RequeueRunningAssistantRunForRouteFailoverWithKey(
+			ctx, tx, run.ID, run.Attempt, failedRouteParam, failedKeys,
+		)
 		if err != nil || !requeued {
 			return err
 		}
@@ -205,9 +246,13 @@ func assistantRouteDescription(run *store.AssistantRun) string {
 	if run == nil {
 		return ""
 	}
+	prefix := "_chat"
+	if run.Mode == "image" {
+		prefix = "_image"
+	}
 	parts := []string{
-		assistantParamString(run.Params, "_chatProviderDisplayName", ""),
-		assistantParamString(run.Params, "_chatProviderRouteKey", ""),
+		assistantParamString(run.Params, prefix+"ProviderDisplayName", ""),
+		assistantParamString(run.Params, prefix+"ProviderRouteKey", ""),
 	}
 	return strings.Trim(strings.Join(parts, " "), " ")
 }

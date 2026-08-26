@@ -140,6 +140,21 @@ html.settings-no-animations .main-content > [data-route-motion-target] {
   overflow: hidden;
 }
 
+.app-container > .main-content.main--media-tools {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  max-height: 100dvh;
+  min-height: 0;
+  padding-bottom: 0;
+  overflow: hidden;
+}
+
+.app-container > .main-content.main--media-tools > * {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
 .app-container > .main-content.main--design-workshop {
   height: 100dvh;
   max-height: 100dvh;

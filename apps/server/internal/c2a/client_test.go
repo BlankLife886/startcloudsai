@@ -373,6 +373,43 @@ func TestGenerateImagesKeepsPollingAfterTransientGatewayFailure(t *testing.T) {
 	}
 }
 
+func TestGenerateImagesPollsDeterministicIDAfterAmbiguousSubmitFailure(t *testing.T) {
+	polls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/image-tasks/generations":
+			http.Error(w, `{"detail":"submit gateway timeout"}`, http.StatusGatewayTimeout)
+		case "/api/image-tasks":
+			polls++
+			if polls == 1 {
+				_, _ = w.Write([]byte(`{"items":[],"missing_ids":["task-ambiguous"]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"items":[{"id":"task-ambiguous","status":"success","data":[{"b64_json":"recovered-image"}]}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 10, true)
+	images, err := client.GenerateImagesWithID(context.Background(), "task-ambiguous", "draw a cat", "gpt-image-2", 1, "")
+	if err != nil {
+		t.Fatalf("GenerateImagesWithID: %v", err)
+	}
+	if polls < 2 || len(images) != 1 || images[0] != "recovered-image" {
+		t.Fatalf("polls=%d images=%#v", polls, images)
+	}
+}
+
+func TestNetworkErrorReportsTimeout(t *testing.T) {
+	err := &NetworkError{Message: "上游图片任务等待超时"}
+	if !err.Timeout() {
+		t.Fatal("NetworkError.Timeout() = false, want true")
+	}
+}
+
 func TestSubmitAndPollImageTaskAreOneShotOperations(t *testing.T) {
 	submits, polls := 0, 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -716,5 +753,22 @@ func TestPollImageTasksReadNestedResultData(t *testing.T) {
 	})
 	if result.Pending || result.Err != nil || len(result.Images) != 1 || result.Images[0] != "nested-img" {
 		t.Fatalf("nested result = %#v, want nested-img", result)
+	}
+}
+
+func TestPollImageTasksReadsNestedTextReviewReason(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"id":"reviewed","status":"text_review","output":{"content":[{"type":"output_text","text":"内容审核拒绝：参考图不符合服务政策"}]}}]}`))
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	var result ImageTaskPollResult
+	client.PollImageTasksEach(context.Background(), []string{"reviewed"}, map[string]int{"reviewed": 1}, func(_ string, got ImageTaskPollResult) {
+		result = got
+	})
+	if !result.Pending || result.Status != "text_review" || result.ErrorMessage != "内容审核拒绝：参考图不符合服务政策" {
+		t.Fatalf("text review result = %#v", result)
 	}
 }

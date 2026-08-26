@@ -87,6 +87,31 @@ jobs:
         working-directory: apps/admin
         run: npm audit --audit-level=high
 
+  mobile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: 3.41.6
+          channel: stable
+          cache: true
+      - name: Install
+        working-directory: apps/mobile
+        run: flutter pub get
+      - name: Format
+        working-directory: apps/mobile
+        run: dart format --output=none --set-exit-if-changed lib test
+      - name: Analyze
+        working-directory: apps/mobile
+        run: flutter analyze --fatal-infos
+      - name: Test
+        working-directory: apps/mobile
+        run: flutter test
+      - name: Build Android debug APK
+        working-directory: apps/mobile
+        run: flutter build apk --debug
+
   security:
     runs-on: ubuntu-latest
     steps:

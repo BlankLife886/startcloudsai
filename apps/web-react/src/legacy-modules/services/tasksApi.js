@@ -1,7 +1,7 @@
 /**
  * AI 任务 API（新契约 /api/v1/tasks*、/api/v1/uploads）。
  *
- * 任务类型：t2i | coloring | ui_design | ecommerce_design | model_sheet | game_art | puzzle | background_remove
+ * 任务类型：t2i | coloring | ui_design | ecommerce_design | model_sheet | game_art | puzzle | background_remove | media_tool
  * 无限画布不是独立 type，而是 t2i / background_remove + params._source=react_canvas
  * 状态机：queued → running → succeeded | failed | canceled
  */
@@ -18,6 +18,7 @@ export const TASK_TYPES = [
   'game_art',
   'puzzle',
   'background_remove',
+  'media_tool',
 ]
 
 export const TASK_TYPE_LABELS = {
@@ -29,6 +30,7 @@ export const TASK_TYPE_LABELS = {
   game_art: '游戏设计',
   puzzle: '拼图',
   background_remove: '背景移除',
+  media_tool: '媒体工具',
 }
 
 export function taskOriginLabel(item = {}) {
@@ -147,6 +149,7 @@ export async function createTask({
   inputKeys = [],
   count = 1,
   idempotencyKey = '',
+  expectedUnitPriceCents = null,
 } = {}) {
   const body = {
     type,
@@ -155,10 +158,22 @@ export async function createTask({
     inputKeys: (Array.isArray(inputKeys) ? inputKeys : []).filter(Boolean),
     count: Math.max(1, Math.min(Number(count) || 1, 4)),
     ...(idempotencyKey ? { idempotencyKey } : {}),
+    ...(Number.isFinite(Number(expectedUnitPriceCents))
+      ? { expectedUnitPriceCents: Math.max(0, Number(expectedUnitPriceCents)) }
+      : {}),
   }
   const data = await withSubmissionSlot(() => postTaskWithRecovery(body, idempotencyKey))
   scheduleWalletRefresh()
   return data?.task || data
+}
+
+export async function quoteTaskPrice({ type, params = {}, inputKeys = [], count = 1 } = {}) {
+  return apiPost('/tasks/quote', {
+    type,
+    params: params && typeof params === 'object' ? params : {},
+    inputKeys: (Array.isArray(inputKeys) ? inputKeys : []).filter(Boolean),
+    count: Math.max(1, Math.min(Number(count) || 1, 16)),
+  }, { fallbackMessage: '任务价格读取失败' })
 }
 
 /** 任务详情（轮询用），支持 AbortSignal。 */

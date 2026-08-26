@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
@@ -76,6 +77,9 @@ func nonNilStrings(s []string) []string {
 // displayURLsForTask 由原图 key 按约定推导展示图（压缩图）地址。
 // 旧任务没有展示图对象时前端加载 404 会回退到原图。
 func displayURLsForTask(t *store.Task, prefix string) []string {
+	if !hasDedicatedThumbKeys(t.ThumbnailKeys, t.OutputKeys) {
+		return prefixedObjectURLs(t.OutputKeys, prefix)
+	}
 	return variantURLsForTask(t, prefix, outputVariantDisplay)
 }
 
@@ -508,7 +512,7 @@ func notificationDict(n *store.Notification, globalReadAt *string) gin.H {
 	} else {
 		readAt = iso(n.ReadAt)
 	}
-	return gin.H{
+	d := gin.H{
 		"id":        n.ID.String(),
 		"kind":      n.Kind,
 		"title":     n.Title,
@@ -516,6 +520,13 @@ func notificationDict(n *store.Notification, globalReadAt *string) gin.H {
 		"readAt":    readAt,
 		"createdAt": isoValue(n.CreatedAt),
 	}
+	if n.SourceType != nil && strings.TrimSpace(*n.SourceType) != "" {
+		d["sourceType"] = strings.TrimSpace(*n.SourceType)
+	}
+	if n.SourceID != nil && *n.SourceID != uuid.Nil {
+		d["sourceId"] = n.SourceID.String()
+	}
+	return d
 }
 
 func attachSubmissionTask(d gin.H, task *store.Task) {

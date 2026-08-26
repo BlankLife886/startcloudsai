@@ -49,6 +49,7 @@ export function normalizeImageQuality(value) {
 export function normalizeImageModelCapabilities(model = {}) {
   // 默认参数对 null 不生效；模型未就绪时必须兜底，否则文生图页会白屏崩溃
   const safeModel = model && typeof model === 'object' ? model : {}
+  const hasConfiguredAspectRatios = Array.isArray(safeModel.aspectRatios)
   const globalAspectRatios = normalizeEnumList(
     safeModel.aspectRatios,
     IMAGE_ASPECT_RATIOS,
@@ -107,13 +108,19 @@ export function normalizeImageModelCapabilities(model = {}) {
     }),
   )
   const configuredRatioSet = new Set(Object.values(aspectRatiosByResolution).flat())
-  const aspectRatios = IMAGE_ASPECT_RATIOS.filter((ratio) => configuredRatioSet.has(ratio))
+  const aspectRatios = supportedResolutions.length
+    ? IMAGE_ASPECT_RATIOS.filter((ratio) => configuredRatioSet.has(ratio))
+    : globalAspectRatios
 
   return {
-    resolutions: supportedResolutions.length ? supportedResolutions : [...IMAGE_RESOLUTIONS],
-    aspectRatios: aspectRatios.length ? aspectRatios : ['1:1'],
+    resolutions: supportedResolutions,
+    aspectRatios: aspectRatios.length
+      ? aspectRatios
+      : hasConfiguredAspectRatios
+        ? []
+        : ['1:1'],
     aspectRatiosByResolution,
-    qualities: qualities.length ? qualities : ['medium'],
+    qualities,
     transparentBackground: safeModel.transparentBackground !== false,
     outputFormats,
     moderationLevels,
@@ -164,7 +171,8 @@ export function getModelAutoAspectRatioCandidates(model, resolution) {
     (ratio) => ratio !== 'auto',
   )
   if (configured.length) return configured
-  return [capabilities.aspectRatios.find((ratio) => ratio !== 'auto') || '1:1']
+  const fallback = capabilities.aspectRatios.find((ratio) => ratio !== 'auto')
+  return fallback ? [fallback] : []
 }
 
 export function coerceImageModelSettings(model, settings = {}) {
@@ -192,7 +200,7 @@ export function coerceImageModelSettings(model, settings = {}) {
       : allowedAspectRatios[0],
     quality: capabilities.qualities.includes(requestedQuality)
       ? requestedQuality
-      : capabilities.qualities[0],
+      : capabilities.qualities[0] || '',
     transparentBackground:
       capabilities.transparentBackground && settings.transparentBackground === true,
     outputFormat: capabilities.outputFormats.includes(requestedFormat)

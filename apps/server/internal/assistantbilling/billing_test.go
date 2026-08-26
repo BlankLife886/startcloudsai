@@ -84,6 +84,34 @@ func walletState(t *testing.T, st *store.Store, userID uuid.UUID) *store.Wallet 
 	return item
 }
 
+func grantAssistantTrialCredits(t *testing.T, st *store.Store, userID uuid.UUID, featureKey string, amount int64) {
+	t.Helper()
+	ctx := context.Background()
+	campaign, err := store.GetActiveTrialCampaign(ctx, st.Pool)
+	if err != nil || campaign == nil {
+		t.Fatalf("active trial campaign = %#v err=%v", campaign, err)
+	}
+	if _, err = store.UpdateTrialCampaign(ctx, st.Pool, campaign.ID, campaign.Title,
+		[]string{featureKey}, "restricted", campaign.Capacity, campaign.DisplayOffset,
+		campaign.ExpiresAt, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	application, err := store.InsertTrialAccessApplication(ctx, st.Pool, userID, campaign.ID, 1,
+		[]string{featureKey}, "测试用户", "用于验证助手体验积分的混合结算逻辑")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.GrantTrialFeatureEntitlement(ctx, st.Pool, userID, featureKey, application.ID, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		_, grantErr := wallet.GrantTrial(ctx, tx, userID, amount, featureKey, "test_trial", uuid.NewString(), nil)
+		return grantErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAgentCompletionSettlesActualChatCostAndReleasesRemainder(t *testing.T) {
 	st := testdb.Setup(t)
 	user := billingUser(t, st, 200)
@@ -109,6 +137,64 @@ func TestAgentCompletionSettlesActualChatCostAndReleasesRemainder(t *testing.T) 
 	}
 	if changed, err := assistantbilling.Complete(context.Background(), st, run.ID, "chat"); err != nil || changed {
 		t.Fatalf("idempotent complete = %v err=%v", changed, err)
+	}
+}
+
+func TestAssistantCompletionUsesApprovedTrialCreditsAndReturnsMixedRemainder(t *testing.T) {
+	st := testdb.Setup(t)
+	user := billingUser(t, st, 50)
+	grantAssistantTrialCredits(t, st, user.ID, "ai_assistant", 30)
+	run := billingRun(t, st, user.ID, 60, map[string]any{
+		"workspace": "assistant", "_chatCostCents": int64(20), "_imageCostCents": int64(60),
+	})
+
+	if state := walletState(t, st, user.ID); state.BalanceCents != 20 || state.TrialBalanceCents != 0 ||
+		state.FrozenCents != 30 || state.TrialFrozenCents != 30 {
+		t.Fatalf("mixed reserved wallet = %#v", state)
+	}
+	if claimed, err := store.ClaimAssistantRun(context.Background(), st.Pool, run.ID); err != nil || !claimed {
+		t.Fatalf("claim = %v err=%v", claimed, err)
+	}
+	if changed, err := assistantbilling.Complete(context.Background(), st, run.ID, "chat"); err != nil || !changed {
+		t.Fatalf("complete = %v err=%v", changed, err)
+	}
+	if state := walletState(t, st, user.ID); state.BalanceCents != 50 || state.TrialBalanceCents != 10 ||
+		state.FrozenCents != 0 || state.TrialFrozenCents != 0 {
+		t.Fatalf("mixed settled wallet = %#v", state)
+	}
+	entries, err := store.ListLedger(context.Background(), st.Pool, user.ID, 20, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buckets := map[string]string{}
+	for _, entry := range entries {
+		if entry.SourceType == assistantbilling.SourceType {
+			buckets[entry.Kind] = entry.CreditBucket
+		}
+	}
+	if buckets["freeze"] != "mixed" || buckets["spend"] != "trial" || buckets["release"] != "mixed" {
+		t.Fatalf("assistant ledger buckets = %#v", buckets)
+	}
+}
+
+func TestAssistantPartialImageCompletionSettlesOnlyActualImages(t *testing.T) {
+	st := testdb.Setup(t)
+	user := billingUser(t, st, 100)
+	run := billingRun(t, st, user.ID, 20, map[string]any{
+		"count": int64(4), "_imageCostCents": int64(20), "_billingUnitPriceCents": int64(5),
+	})
+	if claimed, err := store.ClaimAssistantRun(context.Background(), st.Pool, run.ID); err != nil || !claimed {
+		t.Fatalf("claim = %v err=%v", claimed, err)
+	}
+	if changed, err := assistantbilling.CompleteImageAttempt(context.Background(), st, run.ID, 0, 1); err != nil || !changed {
+		t.Fatalf("complete partial images = %v err=%v", changed, err)
+	}
+	if state := walletState(t, st, user.ID); state.BalanceCents != 95 || state.FrozenCents != 0 {
+		t.Fatalf("partial image wallet = %#v", state)
+	}
+	stored, err := store.GetAssistantRun(context.Background(), st.Pool, run.ID)
+	if err != nil || stored == nil || stored.CostCents != 5 {
+		t.Fatalf("stored partial image run = %#v err=%v", stored, err)
 	}
 }
 

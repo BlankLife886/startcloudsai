@@ -624,9 +624,20 @@ func decorateTaskNotifications(ctx context.Context, q store.Q, userID uuid.UUID,
 			continue
 		}
 		used[task.ID] = true
-		taskflow.ApplyTaskNotificationDisplay(item, task)
+		attachTaskNotification(item, task)
 	}
 	return nil
+}
+
+func attachTaskNotification(notification *store.Notification, task *store.Task) {
+	if notification == nil || task == nil {
+		return
+	}
+	sourceType := "task"
+	sourceID := task.ID
+	notification.SourceType = &sourceType
+	notification.SourceID = &sourceID
+	taskflow.ApplyTaskNotificationDisplay(notification, task)
 }
 
 func closestUnusedTask(at time.Time, tasks []*store.Task, used map[uuid.UUID]bool) *store.Task {

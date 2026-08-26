@@ -54,4 +54,23 @@ test("builds file URLs and candidate order", () => {
     assert.equal(canvasCompressSource({ src: "/api/v1/files/uploads/user-1/original/file-9.png" }), "/api/v1/files/uploads/user-1/thumb/file-9");
     assert.equal(canvasCompressSource({ src: "https://cdn.example.com/full.png" }), "");
     assert.equal(canvasCompressSource({ src: "image:local-only", storageKey: "image:local-only" }), "image:local-only");
+    const templateOriginal = "/api/v1/files/canvas-template-assets/template-1/original.png";
+    const templateThumbnail = "/api/v1/files/canvas-template-assets/template-1/thumbnail.webp";
+    assert.equal(storageKeyFromUrl(templateOriginal), "canvas-template-assets/template-1/original.png");
+    assert.deepEqual(
+        canvasDisplayCandidates({
+            src: templateOriginal,
+            storageKey: "canvas-template-assets/template-1/original.png",
+            thumbnailUrl: templateThumbnail,
+        }),
+        [templateThumbnail],
+    );
+    assert.equal(
+        canvasCompressSource({
+            src: templateOriginal,
+            storageKey: "canvas-template-assets/template-1/original.png",
+            thumbnailUrl: templateThumbnail,
+        }),
+        templateThumbnail,
+    );
 });

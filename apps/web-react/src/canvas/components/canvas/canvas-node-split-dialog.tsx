@@ -13,7 +13,7 @@ const defaultParams: CanvasImageSplitParams = { rows: 2, columns: 2, horizontalL
 const maxGridSize = 12;
 type ActiveLine = { axis: "horizontal" | "vertical"; index: number } | null;
 
-export function CanvasNodeSplitDialog({ dataUrl, open, onClose, onConfirm }: { dataUrl: string; open: boolean; onClose: () => void; onConfirm: (params: CanvasImageSplitParams) => void }) {
+export function CanvasNodeSplitDialog({ dataUrl, open, initialParams, onClose, onConfirm }: { dataUrl: string; open: boolean; initialParams?: CanvasImageSplitParams; onClose: () => void; onConfirm: (params: CanvasImageSplitParams) => void }) {
     const { t } = useTranslation();
     const [params, setParams] = useState(defaultParams);
     const [image, setImage] = useState<{ width: number; height: number } | null>(null);
@@ -34,14 +34,14 @@ export function CanvasNodeSplitDialog({ dataUrl, open, onClose, onConfirm }: { d
 
     useEffect(() => {
         if (!open) return;
-        setParams(defaultParams);
+        setParams(initialParams ? cloneSplitParams(initialParams) : defaultParams);
         setActive(null);
         setImage(null);
         historyRef.current = [];
         redoRef.current = [];
         setHistorySize(0);
         setRedoSize(0);
-    }, [dataUrl, open]);
+    }, [dataUrl, initialParams, open]);
 
     useEffect(() => {
         if (!open) return;

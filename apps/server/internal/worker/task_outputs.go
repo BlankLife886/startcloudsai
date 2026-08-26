@@ -75,6 +75,58 @@ func compactTaskKeys(slots []string) []string {
 	return keys
 }
 
+// uploadImageOutputVariants stores the required original/thumbnail pair and a best-effort display image.
+func (w *Worker) uploadImageOutputVariants(ctx context.Context, taskID, originalKey, thumbnailKey string, data []byte, contentType string) ([]string, error) {
+	variantCfg := w.imageVariantConfig(ctx)
+	displayKey := store.DisplayKeyForOriginal(originalKey)
+	type uploadResult struct {
+		key      string
+		err      error
+		optional bool
+	}
+	results := make(chan uploadResult, 3)
+	go func() {
+		results <- uploadResult{key: originalKey, err: w.Storage.UploadBytes(ctx, originalKey, data, contentType)}
+	}()
+	go func() {
+		thumbnail, err := media.EncodeVariant(data, media.VariantOptions{
+			Format: variantCfg.Format, Quality: 75, MaxEdge: variantCfg.ThumbMaxEdge,
+		})
+		if err != nil {
+			results <- uploadResult{key: thumbnailKey, err: err}
+			return
+		}
+		results <- uploadResult{key: thumbnailKey, err: w.Storage.UploadBytes(ctx, thumbnailKey, thumbnail.Data, thumbnail.ContentType)}
+	}()
+	go func() {
+		display, err := media.EncodeVariant(data, media.VariantOptions{
+			Format: variantCfg.Format, Lossless: variantCfg.Lossless,
+			Quality: variantCfg.Quality, MaxEdge: variantCfg.DisplayMaxEdge,
+		})
+		if err != nil {
+			results <- uploadResult{key: displayKey, err: err, optional: true}
+			return
+		}
+		results <- uploadResult{key: displayKey, err: w.Storage.UploadBytes(ctx, displayKey, display.Data, display.ContentType), optional: true}
+	}()
+
+	uploaded := make([]string, 0, 3)
+	var requiredErr error
+	for range 3 {
+		result := <-results
+		if result.err != nil {
+			if result.optional {
+				log.Printf("task %s display variant skipped key=%s: %v", taskID, result.key, result.err)
+				continue
+			}
+			requiredErr = result.err
+			continue
+		}
+		uploaded = append(uploaded, result.key)
+	}
+	return uploaded, requiredErr
+}
+
 func (c *taskOutputCollector) persist(index int, encoded string) error {
 	if index < 0 || index >= len(c.outputSlots) {
 		log.Printf("task %s ignored unexpected upstream output index=%d expected=%d", c.task.ID, index, len(c.outputSlots))
@@ -154,61 +206,13 @@ func (c *taskOutputCollector) persist(index int, encoded string) error {
 		}
 		objectIndex += "-" + token
 	}
-	variantCfg := c.w.imageVariantConfig(c.ctx)
 	key := fmt.Sprintf("tasks/%s/%s/original/%s.%s", c.task.UserID, c.task.ID, objectIndex, ext)
 	// 小图/展示图 key 不带扩展名：编码格式可在后台切换（webp/png），
 	// 内容类型由对象存储元数据提供，key 保持与格式无关。
 	thumbKey := fmt.Sprintf("tasks/%s/%s/thumb/%s", c.task.UserID, c.task.ID, objectIndex)
-	displayKey := store.DisplayKeyForOriginal(key)
 	transformMs := time.Since(transformStartedAt).Milliseconds()
 	uploadStartedAt := time.Now()
-	type uploadResult struct {
-		key      string
-		err      error
-		optional bool
-	}
-	results := make(chan uploadResult, 3)
-	go func() {
-		results <- uploadResult{key: key, err: c.w.Storage.UploadBytes(c.ctx, key, data, contentType)}
-	}()
-	go func() {
-		// 小图：列表/网格用，固定有损（png 格式天生无损）。
-		thumb, thumbErr := media.EncodeVariant(data, media.VariantOptions{
-			Format: variantCfg.Format, Quality: 75, MaxEdge: variantCfg.ThumbMaxEdge,
-		})
-		if thumbErr != nil {
-			results <- uploadResult{key: thumbKey, err: thumbErr}
-			return
-		}
-		results <- uploadResult{key: thumbKey, err: c.w.Storage.UploadBytes(c.ctx, thumbKey, thumb.Data, thumb.ContentType)}
-	}()
-	go func() {
-		// 展示图：点开大图用，编码方式由后台配置。失败不阻断任务
-		//（前端会回退加载原图），仅记录日志。
-		display, displayErr := media.EncodeVariant(data, media.VariantOptions{
-			Format: variantCfg.Format, Lossless: variantCfg.Lossless,
-			Quality: variantCfg.Quality, MaxEdge: variantCfg.DisplayMaxEdge,
-		})
-		if displayErr != nil {
-			results <- uploadResult{key: displayKey, err: displayErr, optional: true}
-			return
-		}
-		results <- uploadResult{key: displayKey, err: c.w.Storage.UploadBytes(c.ctx, displayKey, display.Data, display.ContentType), optional: true}
-	}()
-	uploaded := make([]string, 0, 3)
-	var uploadErr error
-	for range 3 {
-		result := <-results
-		if result.err != nil {
-			if result.optional {
-				log.Printf("task %s display variant skipped key=%s: %v", c.task.ID, result.key, result.err)
-				continue
-			}
-			uploadErr = result.err
-			continue
-		}
-		uploaded = append(uploaded, result.key)
-	}
+	uploaded, uploadErr := c.w.uploadImageOutputVariants(c.ctx, c.task.ID.String(), key, thumbKey, data, contentType)
 	uploadMs := time.Since(uploadStartedAt).Milliseconds()
 	if uploadErr != nil {
 		if len(uploaded) > 0 {

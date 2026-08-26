@@ -45,6 +45,17 @@ const assistantConfig = {
       qualities: ['low', 'medium', 'high'],
       maxReferenceImages: 4,
     },
+    {
+      model: 'schema-image',
+      label: 'Schema Only',
+      pricePoints: 20,
+      aspectRatios: ['auto', '1:1', '16:9'],
+      resolutions: [],
+      qualities: [],
+      inputFields: ['prompt', 'aspect_ratio', 'img_urls', 'output_format'],
+      maxReferenceImages: 10,
+      maxImages: 4,
+    },
   ],
 }
 
@@ -151,15 +162,12 @@ test.describe('React assistant workspace contract', () => {
       mode: 'chat',
       referenceImages: [],
       model: 'chat-basic',
-      ratio: 'auto',
-      resolution: '1K',
       count: 1,
-      requestSize: 'auto',
-      width: 1024,
-      height: 1024,
-      quality: 'low',
       serviceKey: 'assistant_image',
     })
+    for (const field of ['ratio', 'resolution', 'requestSize', 'width', 'height', 'quality']) {
+      expect(runBody).not.toHaveProperty(field)
+    }
     expect(runBody.clientUserMessageId).toMatch(/^[0-9a-f-]{36}$/)
     expect(runBody.clientAssistantMessageId).toMatch(/^[0-9a-f-]{36}$/)
   })
@@ -236,6 +244,7 @@ test.describe('React assistant workspace contract', () => {
     await page.locator('.image-settings-button').click()
     await page.locator('.ratio-options').getByRole('button', { name: '16:9' }).click()
     await page.locator('.image-resolution-options button').nth(1).click()
+    await page.getByRole('button', { name: '中', exact: true }).click()
     await page.locator('.image-count-options').getByRole('button', { name: '3', exact: true }).click()
     await page.locator('input.reference-file-input').setInputFiles({
       name: 'reference.png',
@@ -267,6 +276,42 @@ test.describe('React assistant workspace contract', () => {
         },
       ],
     })
+  })
+
+  test('schema-only image model hides and omits unsupported parameters', async ({ page }) => {
+    let runBody = null
+    await mockAssistant(page)
+    await page.route('**/api/v1/assistant/conversations', (route) =>
+      fulfillJson(route, { id: 'schema-conversation', title: '新对话', messages: [] }, 201),
+    )
+    await page.route('**/api/v1/assistant/runs', async (route) => {
+      if (route.request().method() !== 'POST') {
+        await fulfillJson(route, { runs: [] })
+        return
+      }
+      runBody = route.request().postDataJSON()
+      await fulfillJson(route, succeededRun(runBody), 201)
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    await page.locator('.agent-mode-button').click()
+    await page.getByRole('button', { name: '图片生成' }).click()
+    await page.getByRole('button', { name: /Image Basic/ }).click()
+    await page.locator('.image-model-menu').getByRole('button', { name: /Schema Only/ }).click()
+    await page.locator('.image-settings-button').click()
+
+    await expect(page.getByText('选择比例', { exact: true })).toBeVisible()
+    await expect(page.getByText('选择分辨率', { exact: true })).toHaveCount(0)
+    await expect(page.getByText('选择质量', { exact: true })).toHaveCount(0)
+    await expect(page.getByText('尺寸', { exact: true })).toHaveCount(0)
+
+    await page.getByLabel('消息输入').fill('生成一个品牌图标')
+    await page.getByRole('button', { name: '发送' }).click()
+    await expect.poll(() => runBody).not.toBeNull()
+    expect(runBody).toMatchObject({ mode: 'image', model: 'schema-image', ratio: 'auto', count: 2 })
+    for (const field of ['resolution', 'requestSize', 'width', 'height', 'quality']) {
+      expect(runBody).not.toHaveProperty(field)
+    }
   })
 
   test('greeting in image mode sends a chat turn instead of generating images', async ({ page }) => {
@@ -500,7 +545,9 @@ test.describe('React assistant workspace contract', () => {
 
     await page.getByRole('button', { name: /第二个对话/ }).click()
     await expect(page.locator('.message--user')).toContainText('第二条内容')
-    await page.locator('[data-conversation-id="conversation-two"] .conversation-delete').click()
+    const row = page.locator('[data-conversation-id="conversation-two"]')
+    await row.getByRole('button', { name: '更多' }).click()
+    await row.getByRole('menuitem', { name: '删除' }).click()
     const dialog = page.getByRole('dialog', { name: '删除这个对话？' })
     await expect(dialog).toBeVisible()
     await expect(dialog).toBeInViewport()
@@ -549,7 +596,7 @@ test.describe('React assistant workspace contract', () => {
     await expect(page.getByRole('dialog', { name: '停止本次生成？' })).toContainText('主动停止后，本轮已预留的积分不会退还')
     await page.getByRole('button', { name: '确认停止' }).click()
 
-    await expect(page.locator('.message--assistant')).toContainText('已停止生成')
+    await expect(page.locator('.message--assistant')).toContainText('你已主动停止生成')
     expect(patchBody).toEqual({ status: 'canceled' })
   })
 
@@ -597,7 +644,7 @@ test.describe('React assistant workspace contract', () => {
     await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
 
     await page.locator('.generated-image-preview').first().click()
-    const viewer = page.getByRole('dialog', { name: '生成图片全屏预览' })
+    const viewer = page.locator('.wallpaper-fullscreen-preview')
     await expect(viewer).toBeVisible()
     await expect(viewer).toContainText('1 / 2')
     await viewer.getByRole('button', { name: '下一张' }).click()
@@ -606,6 +653,172 @@ test.describe('React assistant workspace contract', () => {
     await expect(viewer.locator('output')).toHaveText('125%')
     await viewer.getByRole('button', { name: '关闭预览' }).click()
     await expect(viewer).toHaveCount(0)
+  })
+
+  test('shared preview exposes assistant actions and submits a painted region edit', async ({ page }) => {
+    let runBody = null
+    const uploads = []
+    const conversations = [{
+      id: 'region-edit-conversation',
+      title: '局部编辑测试',
+      updatedAt: '2026-08-11T08:00:00Z',
+      messages: [
+        message('region-edit-user', 'user', '把杯子改成绿色'),
+        message('region-edit-assistant', 'assistant', '', {
+          kind: 'image',
+          runId: 'region-edit-source-run',
+          prompt: '一只放在桌面的白色杯子',
+          model: 'image-pro',
+          ratio: '1:1',
+          resolution: '1K',
+          images: [{
+            id: 'region-edit-image',
+            fileKey: 'tasks/assistant-user/assistant/source/1.png',
+            dataUrl: '/sucai/home-intro-03.png',
+            revisedPrompt: '一只放在桌面的白色杯子',
+          }],
+        }),
+      ],
+    }]
+    await mockAssistant(page, { conversations })
+    await page.route('**/api/v1/uploads', async (route) => {
+      const index = uploads.length
+      uploads.push(route.request().postDataBuffer())
+      await fulfillJson(route, {
+        key: `uploads/assistant/region-${index + 1}.png`,
+        url: `/api/v1/files/uploads/assistant/region-${index + 1}.png`,
+        thumbnailUrl: `/api/v1/files/uploads/assistant/region-${index + 1}.png`,
+      })
+    })
+    await page.route('**/api/v1/assistant/runs', async (route) => {
+      if (route.request().method() !== 'POST') {
+        await fulfillJson(route, { runs: [] })
+        return
+      }
+      runBody = route.request().postDataJSON()
+      await fulfillJson(route, succeededRun(runBody), 201)
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+    await page.getByRole('button', { name: '收起侧栏' }).click()
+
+    await page.locator('.generated-image-preview').click()
+    const viewer = page.locator('.wallpaper-fullscreen-preview')
+    await expect(viewer).toBeVisible()
+    for (const name of ['局部编辑', '复制提示词', '收藏到资产', '发布作品', '删除图片']) {
+      await expect(viewer.getByRole('button', { name })).toBeVisible()
+    }
+    await viewer.getByRole('button', { name: '复制提示词' }).click()
+    await expect(page.locator('.app-toast')).toContainText('提示词已复制')
+    await viewer.getByRole('button', { name: '局部编辑' }).click()
+
+    const editor = page.getByRole('dialog', { name: '图片局部编辑' })
+    await expect(editor).toBeVisible()
+    const canvas = editor.getByLabel('涂抹编辑区域')
+    await expect(canvas).toBeVisible()
+    const box = await canvas.boundingBox()
+    expect(box).not.toBeNull()
+    await page.mouse.move(box.x + box.width * 0.42, box.y + box.height * 0.45)
+    await page.mouse.down()
+    await page.mouse.move(box.x + box.width * 0.58, box.y + box.height * 0.55, { steps: 8 })
+    await page.mouse.up()
+    await editor.getByPlaceholder('描述选中区域需要变成什么').fill('把杯子改成绿色磨砂陶瓷')
+    await editor.getByRole('button', { name: '生成局部编辑' }).click()
+
+    await expect.poll(() => uploads.length).toBe(2)
+    await expect.poll(() => runBody).not.toBeNull()
+    expect(runBody).toMatchObject({
+      mode: 'image',
+      count: 1,
+      parentOutputUrl: '/sucai/home-intro-03.png',
+      maskBaseImage: { fileKey: 'tasks/assistant-user/assistant/source/1.png' },
+    })
+    const regionKeys = new Set([
+      runBody.maskImage?.fileKey,
+      runBody.referenceImages?.[0]?.fileKey,
+    ])
+    expect(regionKeys).toEqual(new Set([
+      'uploads/assistant/region-1.png',
+      'uploads/assistant/region-2.png',
+    ]))
+    expect(runBody.maskRect).toMatch(/^\d+,\d+,\d+,\d+$/)
+    await expect(editor).toHaveCount(0)
+  })
+
+  test('assistant preview favorites, publishes, and deletes the current image', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    let assetBody = null
+    let publishBody = null
+    let deletePath = ''
+    const conversations = [{
+      id: 'image-actions-conversation',
+      title: '图片操作测试',
+      updatedAt: '2026-08-11T08:00:00Z',
+      messages: [
+        message('image-actions-user', 'user', '生成海报'),
+        message('image-actions-assistant', 'assistant', '', {
+          kind: 'image',
+          runId: '6a38abeb-6fb5-4f27-af68-77f2d81e2301',
+          prompt: '极简绿色品牌海报',
+          images: [{
+            id: 'image-actions-result',
+            fileKey: 'tasks/assistant-user/assistant/actions/1.png',
+            dataUrl: '/sucai/home-intro-03.png',
+            revisedPrompt: '极简绿色品牌海报',
+          }],
+        }),
+      ],
+    }]
+    await mockAssistant(page, { conversations })
+    await page.route('**/api/v1/uploads', (route) => fulfillJson(route, {
+      key: 'uploads/assistant-user/original/favorite.png',
+      thumbnailKey: 'uploads/assistant-user/thumbs/favorite.jpg',
+      url: '/api/v1/files/uploads/assistant-user/original/favorite.png',
+      contentType: 'image/png',
+    }))
+    await page.route('**/api/v1/me/assets', async (route) => {
+      if (route.request().method() === 'POST') assetBody = route.request().postDataJSON()
+      await fulfillJson(route, { id: 'favorite-asset', title: '极简绿色品牌海报' }, 201)
+    })
+    await page.route('**/api/v1/gallery/submissions', async (route) => {
+      if (route.request().method() === 'POST') publishBody = route.request().postDataJSON()
+      await fulfillJson(route, { id: 'assistant-submission', status: 'pending' }, 201)
+    })
+    await page.route('**/api/v1/assistant/messages/*/images/*', async (route) => {
+      if (route.request().method() === 'DELETE') deletePath = new URL(route.request().url()).pathname
+      await fulfillJson(route, { messageDeleted: true })
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+    await page.getByRole('button', { name: '收起侧栏' }).click()
+
+    await page.locator('.generated-image-preview').click()
+    let viewer = page.locator('.wallpaper-fullscreen-preview')
+    await viewer.getByRole('button', { name: '收藏到资产' }).click()
+    await expect.poll(() => assetBody).not.toBeNull()
+    expect(assetBody).toMatchObject({
+      title: '极简绿色品牌海报',
+      fileKey: 'uploads/assistant-user/original/favorite.png',
+      thumbnailKey: 'uploads/assistant-user/thumbs/favorite.jpg',
+    })
+    await expect(page.locator('.app-toast')).toContainText('已收藏到我的资产')
+
+    await viewer.getByRole('button', { name: '发布作品' }).click()
+    const publishDialog = page.getByRole('dialog', { name: '发布作品' })
+    await expect(publishDialog).toBeVisible()
+    await publishDialog.getByRole('button', { name: '提交审核' }).click()
+    await expect.poll(() => publishBody).not.toBeNull()
+    expect(publishBody).toMatchObject({
+      taskId: '6a38abeb-6fb5-4f27-af68-77f2d81e2301',
+      title: '极简绿色品牌海报',
+    })
+
+    await page.locator('.generated-image-preview').click()
+    viewer = page.locator('.wallpaper-fullscreen-preview')
+    await viewer.getByRole('button', { name: '删除图片' }).click()
+    const deleteDialog = page.getByRole('alertdialog', { name: '删除这张图片？' })
+    await expect(deleteDialog).toBeVisible()
+    await deleteDialog.getByRole('button', { name: '确认删除' }).click()
+    await expect.poll(() => deletePath).toBe('/api/v1/assistant/messages/image-actions-assistant/images/image-actions-result')
+    await expect(page.locator('.generated-image-preview')).toHaveCount(0)
   })
 
   test('studio pending prompt starts a new conversation with saved launch settings', async ({ page }) => {

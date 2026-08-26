@@ -202,7 +202,9 @@ func TestBackgroundRemovalToolSelectionAndValidation(t *testing.T) {
 	cfg.Models = append(cfg.Models, Model{
 		ID: "remove-bg", Name: "背景移除", ProviderID: "crun-tool",
 		UpstreamModel: "image-background-remove", Kind: ModelKindImageTool,
-		Tool: ImageToolBackgroundRemove, PriceCents: 5, Public: true, Enabled: true,
+		UpstreamInputFields: []string{"img_urls"}, UpstreamRequiredInputFields: []string{"img_urls"},
+		UpstreamInputSchema: map[string]any{"properties": map[string]any{"img_urls": map[string]any{"type": "array"}}},
+		Tool:                ImageToolBackgroundRemove, PriceCents: 5, Public: true, Enabled: true,
 	})
 	if err := Validate(cfg); err != nil {
 		t.Fatalf("valid background removal tool: %v", err)
@@ -214,9 +216,55 @@ func TestBackgroundRemovalToolSelectionAndValidation(t *testing.T) {
 
 	invalid := cfg
 	invalid.Models = append([]Model(nil), cfg.Models...)
-	invalid.Models[len(invalid.Models)-1].Tool = "unknown_tool"
+	invalid.Models[len(invalid.Models)-1].Tool = "unknown/tool"
 	if err := Validate(invalid); err == nil || !strings.Contains(err.Error(), "工具能力无效") {
 		t.Fatalf("invalid tool validation = %v", err)
+	}
+}
+
+func TestResolveImageUpscalePriceUsesResolutionTier(t *testing.T) {
+	lowDiscount := int64(2)
+	highDiscount := int64(4)
+	model := Model{
+		Kind: ModelKindImageTool, Tool: ImageToolUpscale,
+		PriceCents: 3, DiscountPriceCents: &lowDiscount,
+		ImageUpscalePricing: &ImageUpscalePricing{
+			ThresholdPixels: 2048, HighPriceCents: 5, HighDiscountPriceCents: &highDiscount,
+		},
+	}
+	low := ResolveImageUpscalePrice(model, 512, 4)
+	if low.PriceCents != 3 || low.EffectiveCents != 2 {
+		t.Fatalf("2048px tier = %#v", low)
+	}
+	high := ResolveImageUpscalePrice(model, 1024, 4)
+	if high.PriceCents != 5 || high.EffectiveCents != 4 {
+		t.Fatalf("4096px tier = %#v", high)
+	}
+	unknown := ResolveImageUpscalePrice(model, 0, 0)
+	if unknown.EffectiveCents != 4 {
+		t.Fatalf("unknown dimensions must use high tier: %#v", unknown)
+	}
+}
+
+func TestValidateImageUpscalePricing(t *testing.T) {
+	cfg := testConfig()
+	cfg.Providers[0].Adapter = AdapterCRUN
+	highDiscount := int64(6)
+	cfg.Models = []Model{{
+		ID: "upscale", Name: "高清放大", ProviderID: "provider", UpstreamModel: "image-upscaler-basic",
+		Kind: ModelKindImageTool, Tool: ImageToolUpscale, PriceCents: 3,
+		UpstreamInputFields: []string{"img_urls"},
+		UpstreamInputSchema: map[string]any{"properties": map[string]any{"img_urls": map[string]any{"type": "array"}}},
+		ImageUpscalePricing: &ImageUpscalePricing{ThresholdPixels: 2048, HighPriceCents: 5, HighDiscountPriceCents: &highDiscount},
+		Public:              true, Enabled: true,
+	}}
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "折扣价不能高于标准价") {
+		t.Fatalf("expected high tier discount validation, got %v", err)
+	}
+	cfg.Models[0].ImageUpscalePricing.HighDiscountPriceCents = int64Pointer(4)
+	cfg.Models[0].ImageUpscalePricing.ThresholdPixels = 1024
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "必须为 2048px") {
+		t.Fatalf("expected threshold validation, got %v", err)
 	}
 }
 
@@ -304,6 +352,21 @@ func TestExplicitImageCountLimitKeepsItsValue(t *testing.T) {
 	}
 	if got := model.GenerationMaxImages(); got != 8 {
 		t.Fatalf("GenerationMaxImages = %d", got)
+	}
+}
+
+func TestValidateCRUNImageOnlyRequiresSchemaDeclaredQuality(t *testing.T) {
+	cfg := testConfig()
+	cfg.Providers[0].Adapter = AdapterCRUN
+	cfg.Models[0].Qualities = []string{}
+	cfg.Models[0].UpstreamInputFields = []string{"prompt", "aspect_ratio"}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("CRUN model without quality input should be valid: %v", err)
+	}
+
+	cfg.Models[0].UpstreamInputFields = append(cfg.Models[0].UpstreamInputFields, "quality")
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "至少需要一个输出质量") {
+		t.Fatalf("CRUN model declaring quality must configure it, got %v", err)
 	}
 }
 
@@ -481,6 +544,76 @@ func TestOverlayPricesUsesWorkspaceModels(t *testing.T) {
 	}
 	if ranges["t2i"] != (PriceRange{MinCents: 20, MaxCents: 20}) {
 		t.Fatalf("workspace range = %#v", ranges["t2i"])
+	}
+}
+
+func TestWorkspacePriceOverrideResolvesPerPageAndOverlaysPricing(t *testing.T) {
+	cfg := testConfig()
+	t2iDiscount := int64(12)
+	cfg.Workspaces = map[string]WorkspaceBinding{
+		WorkspaceT2I: {
+			ModelIDs: []string{"image-fast"},
+			ModelPricing: map[string]WorkspaceModelPricing{
+				"image-fast": {PriceCents: 18, DiscountPriceCents: &t2iDiscount},
+			},
+		},
+		WorkspaceColoring: {
+			ModelIDs: []string{"image-fast"},
+			ModelPricing: map[string]WorkspaceModelPricing{
+				"image-fast": {PriceCents: 25},
+			},
+		},
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if got := ResolveWorkspacePrice(cfg, WorkspaceT2I, cfg.Models[1]); got.EffectiveCents != 12 || !got.Overridden {
+		t.Fatalf("t2i workspace price = %#v", got)
+	}
+	if got := EffectiveWorkspacePrice(cfg, WorkspaceColoring, cfg.Models[1]); got != 25 {
+		t.Fatalf("coloring workspace price = %d", got)
+	}
+	if got := EffectiveWorkspacePrice(cfg, WorkspaceGameArt, cfg.Models[1]); got != 20 {
+		t.Fatalf("inherited workspace price = %d", got)
+	}
+	prices, ranges := OverlayTaskPrices(cfg, map[string]int64{})
+	if prices["t2i"] != 12 || prices["coloring"] != 25 || ranges["t2i"] != (PriceRange{MinCents: 12, MaxCents: 12}) {
+		t.Fatalf("workspace overlay prices=%#v ranges=%#v", prices, ranges)
+	}
+}
+
+func TestWorkspacePriceOverrideValidation(t *testing.T) {
+	cfg := testConfig()
+	tooHigh := int64(21)
+	cfg.Workspaces = map[string]WorkspaceBinding{
+		WorkspaceT2I: {
+			ModelIDs: []string{"image-fast"},
+			ModelPricing: map[string]WorkspaceModelPricing{
+				"image-fast": {PriceCents: 20, DiscountPriceCents: &tooHigh},
+			},
+		},
+	}
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "折扣价不能高于标准价") {
+		t.Fatalf("expected invalid workspace discount, got %v", err)
+	}
+	cfg.Workspaces[WorkspaceT2I] = WorkspaceBinding{
+		ModelIDs:     []string{"image-fast"},
+		ModelPricing: map[string]WorkspaceModelPricing{"image-quality": {PriceCents: 10}},
+	}
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "必须包含") {
+		t.Fatalf("expected unassigned price model error, got %v", err)
+	}
+	cfg.Workspaces = map[string]WorkspaceBinding{
+		WorkspaceAssistant: {
+			ModelIDs:     []string{"chat"},
+			ModelPricing: map[string]WorkspaceModelPricing{"chat": {PriceCents: 9}},
+		},
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("chat workspace price should be valid: %v", err)
+	}
+	if got := EffectiveWorkspacePrice(cfg, WorkspaceAssistant, cfg.Models[2]); got != 9 {
+		t.Fatalf("chat workspace price = %d", got)
 	}
 }
 

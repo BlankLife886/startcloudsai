@@ -90,3 +90,20 @@ func TestSanitizeUpstreamMessageHidesInvalidatedToken(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestPendingImagePollFailureUsesSanitizedUpstreamReason(t *testing.T) {
+	code, message := pendingImagePollFailure("text_review", "内容审核拒绝：参考图不符合服务政策 https://internal.example/review/123")
+	if code != "upstream_error" {
+		t.Fatalf("code = %q, want upstream_error", code)
+	}
+	if strings.Contains(message, "http") || message != "内容审核拒绝：参考图不符合服务政策" {
+		t.Fatalf("message = %q", message)
+	}
+}
+
+func TestPendingImagePollFailureExplainsMissingUpstreamReason(t *testing.T) {
+	code, message := pendingImagePollFailure("text_review", "")
+	if code != "upstream_error" || !strings.Contains(message, "未返回具体失败原因") {
+		t.Fatalf("code=%q message=%q", code, message)
+	}
+}

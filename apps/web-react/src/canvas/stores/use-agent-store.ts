@@ -24,7 +24,32 @@ export type AgentModel = {
 };
 export type AgentApprovalDecision = "accept" | "acceptForSession" | "decline";
 export type AgentPendingApproval = { requestId: string; method: string; threadId?: string; turnId?: string; itemId?: string; reason?: string; command?: unknown; cwd?: string; grantRoot?: string; networkApprovalContext?: unknown; permissions?: unknown; deciding?: AgentApprovalDecision };
-export type AgentCanvasContext = { snapshot: CanvasAgentSnapshot; applyOps: (ops?: CanvasAgentOp[]) => CanvasAgentSnapshot; undoOps: () => CanvasAgentSnapshot | null; canUndo: boolean };
+export type AgentTaskStatus = "queued" | "running" | "succeeded" | "failed" | "canceled";
+export type AgentRegenerateSelectionInput = {
+    requestId: string;
+    instruction: string;
+};
+export type AgentRegenerateSelectionResult = {
+    status: "started" | "canceled";
+    batchId: string;
+    generationRequestId?: string;
+    createdBranches: number;
+    selectedNodeCount: number;
+    sourceImageCount: number;
+    skippedNodeIds: string[];
+    items: Array<{ sourceNodeId: string; configNodeId: string; outputNodeId: string }>;
+};
+export type AgentCanvasContext = {
+    snapshot: CanvasAgentSnapshot;
+    applyOps: (ops?: CanvasAgentOp[]) => CanvasAgentSnapshot;
+    undoOps: () => CanvasAgentSnapshot | null;
+    canUndo: boolean;
+    startGeneration: (input: { nodeIds: string[]; mode?: "text" | "image" | "video" | "audio"; prompt?: string }) => { requestId: string; nodeIds: string[] };
+    getGenerationStatus: (requestId: string) => { requestId: string; tasks: Array<{ nodeId: string; status: AgentTaskStatus; error?: string }> } | null;
+    regenerateSelection: (input: AgentRegenerateSelectionInput) => Promise<AgentRegenerateSelectionResult>;
+    startWorkflow: (input: { workflowId?: string }) => { requestId: string; workflowId?: string; configNodeIds: string[] };
+    getWorkflowStatus: (requestId: string) => { requestId: string; workflowId?: string; status: AgentTaskStatus; completed: number; total: number; currentNodeId?: string; error?: string } | null;
+};
 export type AgentThreadSummary = { id: string; preview: string; name?: string | null; cwd?: string; status?: string; source?: unknown; createdAt?: number; updatedAt?: number };
 export type AgentTokenUsage = { input: number; cached: number; output: number };
 export type AgentBootstrapStatus = { key: string; text: string; detail: string; status: "running" | "ready" | "error" };
@@ -60,6 +85,7 @@ type AgentStore = {
     sending: boolean;
     waiting: boolean;
     messages: AgentChatItem[];
+    hostedProjectId: string;
     tokenUsage: AgentTokenUsage | null;
     eventLogs: AgentEventLog[];
     threads: AgentThreadSummary[];
@@ -120,6 +146,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     sending: false,
     waiting: false,
     messages: [],
+    hostedProjectId: "",
     tokenUsage: null,
     eventLogs: [],
     threads: [],

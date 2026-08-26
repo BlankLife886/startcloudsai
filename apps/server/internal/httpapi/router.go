@@ -33,9 +33,11 @@ func requestBodyLimit(path string, uploadMaxBytes int64) int64 {
 		return 5 << 20
 	case strings.HasPrefix(path, "/api/v1/admin/canvas-workflow-templates/") && strings.HasSuffix(path, "/cover"):
 		return promptCoverMaxBytes + (1 << 20)
-	case strings.HasPrefix(path, "/api/v1/admin/canvas-workflow-templates"):
-		// Template documents may be up to 1 MiB; leave room for metadata and JSON encoding.
+	case path == "/api/v1/admin/canvas-workflow-templates/analyze":
 		return 2 << 20
+	case strings.HasPrefix(path, "/api/v1/admin/canvas-workflow-templates"):
+		// 完整画布导出包包含图片；multipart 边界需要额外空间。
+		return canvasTemplatePackageMaxBytes + (2 << 20)
 	case strings.HasPrefix(path, "/api/v1/admin/prompts/") && strings.HasSuffix(path, "/cover"):
 		// multipart 边界和字段会产生少量额外开销，不能直接使用图片净大小。
 		return promptCoverMaxBytes + (1 << 20)
@@ -165,6 +167,7 @@ func (s *Server) Router() *gin.Engine {
 	api.DELETE("/assistant/conversations/:id", s.deleteAssistantConversation)
 	api.POST("/assistant/conversations/:id/context-boundaries", s.createAssistantContextBoundary)
 	api.DELETE("/assistant/messages/:id", s.deleteAssistantMessage)
+	api.DELETE("/assistant/messages/:id/images/:imageId", s.deleteAssistantMessageImage)
 	api.POST("/assistant/conversation-imports", s.importAssistantConversations)
 	api.GET("/assistant/files", s.assistantFiles)
 	api.POST("/assistant/files", s.createAssistantFile)
@@ -214,11 +217,15 @@ func (s *Server) Router() *gin.Engine {
 
 	// tasks
 	api.POST("/tasks", s.createTask)
+	api.POST("/tasks/quote", s.quoteTask)
 	api.GET("/tasks", s.listTasks)
 	api.GET("/tasks/:id", s.getTask)
 	api.GET("/tasks/:id/events", s.taskStream)
 	api.PATCH("/tasks/:id", s.patchTask)
 	api.DELETE("/tasks/:id", s.deleteTask)
+	api.DELETE("/tasks/:id/outputs/:index", s.deleteTaskOutput)
+
+	// CRUN generic media catalog and point-billed tasks
 
 	// AI ecommerce product workspace
 	api.GET("/commerce/products", s.listEcommerceProducts)
@@ -320,6 +327,7 @@ func (s *Server) Router() *gin.Engine {
 	admin.GET("/tasks/:id/timeline", s.adminOnly(s.adminTaskTimeline))
 	admin.GET("/canvas-workflow-templates", s.adminOnly(s.adminCanvasWorkflowTemplates))
 	admin.POST("/canvas-workflow-templates", s.adminOnly(s.adminCreateCanvasWorkflowTemplate))
+	admin.POST("/canvas-workflow-templates/analyze", s.adminOnly(s.adminAnalyzeCanvasWorkflowTemplate))
 	admin.PATCH("/canvas-workflow-templates/order", s.adminOnly(s.adminReorderCanvasWorkflowTemplates))
 	admin.PATCH("/canvas-workflow-templates/:id", s.adminOnly(s.adminPatchCanvasWorkflowTemplate))
 	admin.PUT("/canvas-workflow-templates/:id/cover", s.adminOnly(s.adminUploadCanvasWorkflowTemplateCover))

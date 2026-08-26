@@ -24,7 +24,35 @@ interface PaymentTestResult {
   lastPaymentAt?: string | null;
 }
 
-type SettingsSection = "payment" | "account" | "growth" | "concurrency" | "retry";
+interface ModelProviderOption {
+  id: string;
+  name: string;
+  enabled: boolean;
+}
+
+interface ModelOption {
+  id: string;
+  name: string;
+  providerId: string;
+  upstreamModel: string;
+  kind: "image" | "chat" | "image_tool";
+  enabled: boolean;
+  supportedReasoningEfforts?: string[];
+  reasoningPricing?: { defaultEffort?: string } | null;
+}
+
+interface ModelDirectory {
+  providers: ModelProviderOption[];
+  models: ModelOption[];
+}
+
+type SettingsSection =
+  | "payment"
+  | "image-ai"
+  | "account"
+  | "growth"
+  | "concurrency"
+  | "retry";
 
 const loading = ref(false);
 const activeSection = ref<SettingsSection>("payment");
@@ -33,6 +61,7 @@ const savedSignature = ref("");
 const workerConcurrencyCeiling = ref(1);
 const testingPayment = ref(false);
 const paymentTest = ref<PaymentTestResult | null>(null);
+const modelDirectory = ref<ModelDirectory>({ providers: [], models: [] });
 
 const form = reactive({
   userMaxRunningTasks: 100,
@@ -45,6 +74,9 @@ const form = reactive({
   taskRetryFirstDelaySecs: 3,
   taskRetryBackoffSecs: 15,
   crossProviderSameModelBalancingEnabled: false,
+  adminImageAnalysisProviderId: "",
+  adminImageAnalysisModelId: "",
+  adminImageAnalysisReasoningEffort: "",
   registrationEnabled: true,
   signupBonusPoints: 0,
   growthFailureBonusEnabled: true,
@@ -79,6 +111,9 @@ const settingsSignature = () =>
     taskRetryBackoffSecs: form.taskRetryBackoffSecs,
     crossProviderSameModelBalancingEnabled:
       form.crossProviderSameModelBalancingEnabled,
+    adminImageAnalysisProviderId: form.adminImageAnalysisProviderId,
+    adminImageAnalysisModelId: form.adminImageAnalysisModelId,
+    adminImageAnalysisReasoningEffort: form.adminImageAnalysisReasoningEffort,
     registrationEnabled: form.registrationEnabled,
     signupBonusPoints: form.signupBonusPoints,
     growthFailureBonusEnabled: form.growthFailureBonusEnabled,
@@ -115,6 +150,21 @@ const paymentStateLabel = computed(() => {
   if (paymentTest.value) return `监听端${paymentTest.value.stateLabel}`;
   return form.lanjingPayEnabled ? "等待检测" : "支付已停用";
 });
+const imageAnalysisModels = computed(() =>
+  modelDirectory.value.models.filter(
+    (model) =>
+      model.providerId === form.adminImageAnalysisProviderId &&
+      model.kind === "chat",
+  ),
+);
+const selectedImageAnalysisModel = computed(() =>
+  modelDirectory.value.models.find(
+    (model) => model.id === form.adminImageAnalysisModelId,
+  ),
+);
+const imageAnalysisReasoningEfforts = computed(
+  () => selectedImageAnalysisModel.value?.supportedReasoningEfforts || [],
+);
 
 const sections = computed(() => [
   {
@@ -122,6 +172,12 @@ const sections = computed(() => [
     label: "支付",
     hint: form.lanjingPayEnabled ? paymentStateLabel.value : "已停用",
     on: form.lanjingPayEnabled,
+  },
+  {
+    id: "image-ai" as const,
+    label: "AI 模型",
+    hint: selectedImageAnalysisModel.value?.name || "后台图片分析",
+    on: true,
   },
   {
     id: "account" as const,
@@ -180,6 +236,19 @@ function removeUsageMilestone(index: number) {
   form.growthUsageMilestones.splice(index, 1);
 }
 
+function changeImageAnalysisProvider() {
+  form.adminImageAnalysisModelId = "";
+  form.adminImageAnalysisReasoningEffort = "";
+}
+
+function changeImageAnalysisModel() {
+  const model = selectedImageAnalysisModel.value;
+  form.adminImageAnalysisReasoningEffort =
+    model?.reasoningPricing?.defaultEffort ||
+    model?.supportedReasoningEfforts?.[0] ||
+    "";
+}
+
 function hydrate(settings: AdminSettings & PaymentSettings) {
   form.userMaxRunningTasks = settings.userMaxRunningTasks ?? 100;
   form.userMaxRunningImages = settings.userMaxRunningImages ?? 400;
@@ -192,6 +261,10 @@ function hydrate(settings: AdminSettings & PaymentSettings) {
   form.taskRetryBackoffSecs = settings.taskRetryBackoffSecs ?? 15;
   form.crossProviderSameModelBalancingEnabled =
     settings.crossProviderSameModelBalancingEnabled ?? false;
+  form.adminImageAnalysisProviderId = settings.adminImageAnalysisProviderId || "";
+  form.adminImageAnalysisModelId = settings.adminImageAnalysisModelId || "";
+  form.adminImageAnalysisReasoningEffort =
+    settings.adminImageAnalysisReasoningEffort || "";
   workerConcurrencyCeiling.value = Math.max(
     1,
     settings.workerConcurrencyCeiling ?? 1,
@@ -234,13 +307,28 @@ function hydrate(settings: AdminSettings & PaymentSettings) {
 async function load() {
   loading.value = true;
   try {
-    hydrate(await request<AdminSettings & PaymentSettings>("/api/v1/admin/settings"));
+    const [settings, directory] = await Promise.all([
+      request<AdminSettings & PaymentSettings>("/api/v1/admin/settings"),
+      request<ModelDirectory>("/api/v1/admin/model-config"),
+    ]);
+    modelDirectory.value = {
+      providers: Array.isArray(directory.providers) ? directory.providers : [],
+      models: Array.isArray(directory.models) ? directory.models : [],
+    };
+    hydrate(settings);
   } finally {
     loading.value = false;
   }
 }
 
 async function save() {
+  if (
+    Boolean(form.adminImageAnalysisProviderId) !==
+    Boolean(form.adminImageAnalysisModelId)
+  ) {
+    ElMessage.warning("后台图片分析的服务商和模型必须同时配置");
+    return;
+  }
   if (
     form.lanjingPayEnabled &&
     (!form.lanjingPayBaseUrl.trim() ||
@@ -275,6 +363,10 @@ async function save() {
           taskRetryBackoffSecs: form.taskRetryBackoffSecs,
           crossProviderSameModelBalancingEnabled:
             form.crossProviderSameModelBalancingEnabled,
+          adminImageAnalysisProviderId: form.adminImageAnalysisProviderId,
+          adminImageAnalysisModelId: form.adminImageAnalysisModelId,
+          adminImageAnalysisReasoningEffort:
+            form.adminImageAnalysisReasoningEffort,
           registrationEnabled: form.registrationEnabled,
           signupBonusCents: normalizePoints(form.signupBonusPoints),
           growthFailureBonusEnabled: form.growthFailureBonusEnabled,
@@ -495,6 +587,96 @@ onMounted(load);
           </el-button>
         </div>
       </div>
+            </template>
+
+            <template v-else-if="activeSection === 'image-ai'">
+              <div class="settings-card">
+                <div
+                  class="status-banner"
+                  :class="{
+                    'is-on': form.adminImageAnalysisProviderId && form.adminImageAnalysisModelId,
+                  }"
+                >
+                  <div class="status-banner__copy">
+                    <span class="status-banner__dot" />
+                    <div>
+                      <strong>后台图片分析</strong>
+                      <p>
+                        {{
+                          selectedImageAnalysisModel
+                            ? `使用 ${selectedImageAnalysisModel.name}`
+                            : "尚未配置分析模型"
+                        }}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="field-grid is-stack">
+                  <label class="field-row">
+                    <span>
+                      <strong>服务商</strong>
+                      <small>供电商素材等后台页面复用</small>
+                    </span>
+                    <el-select
+                      v-model="form.adminImageAnalysisProviderId"
+                      clearable
+                      filterable
+                      placeholder="选择服务商"
+                      @change="changeImageAnalysisProvider"
+                    >
+                      <el-option
+                        v-for="provider in modelDirectory.providers"
+                        :key="provider.id"
+                        :label="provider.name"
+                        :value="provider.id"
+                        :disabled="!provider.enabled"
+                      />
+                    </el-select>
+                  </label>
+                  <label class="field-row">
+                    <span>
+                      <strong>图片理解模型</strong>
+                      <small>请选择支持视觉输入的对话模型</small>
+                    </span>
+                    <el-select
+                      v-model="form.adminImageAnalysisModelId"
+                      clearable
+                      filterable
+                      :disabled="!form.adminImageAnalysisProviderId"
+                      placeholder="选择模型"
+                      @change="changeImageAnalysisModel"
+                    >
+                      <el-option
+                        v-for="model in imageAnalysisModels"
+                        :key="model.id"
+                        :label="`${model.name} · ${model.upstreamModel}`"
+                        :value="model.id"
+                        :disabled="!model.enabled"
+                      />
+                    </el-select>
+                  </label>
+                  <label class="field-row">
+                    <span>
+                      <strong>推理强度</strong>
+                      <small>随分析请求发送给支持推理的模型</small>
+                    </span>
+                    <el-select
+                      v-model="form.adminImageAnalysisReasoningEffort"
+                      clearable
+                      :disabled="!imageAnalysisReasoningEfforts.length"
+                      placeholder="模型默认"
+                    >
+                      <el-option
+                        v-for="effort in imageAnalysisReasoningEfforts"
+                        :key="effort"
+                        :label="effort"
+                        :value="effort"
+                      />
+                    </el-select>
+                  </label>
+                </div>
+              </div>
             </template>
 
             <template v-else-if="activeSection === 'account'">

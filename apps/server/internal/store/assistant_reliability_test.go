@@ -89,6 +89,24 @@ func TestAssistantRunIdempotencyLeaseAndOutbox(t *testing.T) {
 	if err := store.BeginAssistantRunAttempt(ctx, st.Pool, claimed); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.RecordAssistantRunExecutionRoute(ctx, st.Pool, claimed.ID, claimed.Attempt, map[string]any{
+		"_imageProviderRouteKey": "provider/route-a",
+		"_imageProviderEndpoint": "https://enabled.example.com/v1",
+	}, "provider/route-a", "Enabled Provider", "image-model"); err != nil {
+		t.Fatal(err)
+	}
+	recorded, err := store.GetAssistantRun(ctx, st.Pool, claimed.ID)
+	if err != nil || recorded == nil || recorded.Params["_imageProviderEndpoint"] != "https://enabled.example.com/v1" {
+		t.Fatalf("recorded execution route = %#v err=%v", recorded, err)
+	}
+	var attemptProvider, attemptModel string
+	if err := st.Pool.QueryRow(ctx, `SELECT provider_name, model FROM assistant_run_attempts
+		WHERE run_id = $1 AND attempt = $2`, claimed.ID, claimed.Attempt).Scan(&attemptProvider, &attemptModel); err != nil {
+		t.Fatal(err)
+	}
+	if attemptProvider != "Enabled Provider" || attemptModel != "image-model" {
+		t.Fatalf("attempt route provider=%q model=%q", attemptProvider, attemptModel)
+	}
 	running, err := store.RunningAssistantRunsByProvider(ctx, st.Pool, []string{"provider/route-a", "provider/route-b"})
 	if err != nil || running["provider/route-a"] != 1 || running["provider/route-b"] != 0 {
 		t.Fatalf("running routes = %#v err=%v", running, err)

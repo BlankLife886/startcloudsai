@@ -511,7 +511,7 @@ func (s *Server) handheldUnitPrice(ctx context.Context, modelID string, params m
 		if err := taskflow.ValidateModelImageCapabilities(selection.Model, params, inputCount); err != nil {
 			return 0, err
 		}
-		return modelconfig.EffectivePrice(selection.Model), nil
+		return modelconfig.EffectiveWorkspacePrice(cfg, modelconfig.WorkspaceEcommerce, selection.Model), nil
 	}
 	if modelconfig.HasWorkspaceBinding(cfg, modelconfig.WorkspaceEcommerce) || modelID != "" {
 		return 0, apperr.E("validation_error", "所选图片模型未分配给电商页面", 422)
@@ -537,7 +537,13 @@ func (s *Server) quoteHandheldJob(c *gin.Context) {
 		fail(c, apperr.E("validation_error", "生成数量或参考图数量无效", 422))
 		return
 	}
-	params := map[string]any{"aspectRatio": firstNonEmpty(body.AspectRatio, "4:5"), "quality": firstNonEmpty(body.Quality, "high"), "publicModelKey": body.ModelID}
+	params := map[string]any{"publicModelKey": body.ModelID}
+	if aspectRatio := strings.TrimSpace(body.AspectRatio); aspectRatio != "" {
+		params["aspectRatio"] = aspectRatio
+	}
+	if quality := strings.TrimSpace(body.Quality); quality != "" {
+		params["quality"] = quality
+	}
 	unit, err := s.handheldUnitPrice(c.Request.Context(), body.ModelID, params, body.InputCount)
 	if err != nil {
 		fail(c, err)
@@ -668,14 +674,17 @@ func handheldAssetObjectKeys(userID, itemID uuid.UUID, originalExt, thumbnailExt
 func handheldGenerationParams(base map[string]any, modelID, aspectRatio string, batchID, itemID uuid.UUID, batchIndex, batchSize int, productID string, snapshot, spec map[string]any, inputRoles any) map[string]any {
 	params := make(map[string]any, len(base)+14)
 	for key, value := range base {
-		if !strings.HasPrefix(key, "_") {
-			params[key] = value
+		if strings.HasPrefix(key, "_") {
+			continue
 		}
+		switch key {
+		case "aspectRatio", "quality", "inputFidelity", "moderationLevel", "outputFormat", "resolution", "resolutionScale", "size", "outputSize", "transparentPngEnabled", "transparentBackground":
+			continue
+		}
+		params[key] = value
 	}
 	params["publicModelKey"] = modelID
 	params["aspectRatio"] = aspectRatio
-	params["quality"] = "high"
-	params["inputFidelity"] = "high"
 	params["_kind"] = "ui-design-ecommerce-handheld-generation"
 	params["handheldBatchId"] = batchID.String()
 	params["handheldItemId"] = itemID.String()
@@ -759,7 +768,7 @@ func (s *Server) createHandheldJob(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	params := map[string]any{"aspectRatio": body.Spec.AspectRatio, "quality": "high", "inputFidelity": "high", "publicModelKey": body.ModelID}
+	params := map[string]any{"aspectRatio": body.Spec.AspectRatio, "publicModelKey": body.ModelID}
 	unit, err := s.handheldUnitPrice(c.Request.Context(), body.ModelID, params, len(keys))
 	if err != nil {
 		fail(c, err)
@@ -1031,7 +1040,8 @@ func (s *Server) retryHandheldItem(c *gin.Context) {
 		aspectRatio, _ = batch.JobSpec["aspectRatio"].(string)
 	}
 	if strings.TrimSpace(aspectRatio) == "" {
-		aspectRatio = "4:5"
+		fail(c, apperr.E("validation_error", "原任务缺少画面比例，无法重试", 422))
+		return
 	}
 	productID := ""
 	if batch.ProductID != nil {

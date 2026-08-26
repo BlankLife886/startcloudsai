@@ -129,6 +129,7 @@ cd apps/admin && npm ci && npm run build
 
 ## 文档索引
 
+- [本地开发启动手册](docs/LOCAL_DEVELOPMENT.md)
 - [生产部署与运维手册](docs/DEPLOYMENT.md)
 - [架构说明](docs/ARCHITECTURE.md)
 - [API 契约](docs/API_CONTRACT.md)

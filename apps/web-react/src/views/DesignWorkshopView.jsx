@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { useIsDark } from "../hooks/useIsDark.js";
 import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
-import { EcommerceFullscreenPreview } from "../features/ecommerce/EcommerceFullscreenPreview.jsx";
+import { canOpenWallevenImagePreview, WallevenImagePreview } from "../components/common/WallevenImagePreview.jsx";
 import {
   PAGE_TYPES,
   VISUAL_STYLES,
@@ -13,6 +13,11 @@ import {
 } from "../features/design-workshop/options.js";
 import { fetchRuntimeConfig } from "@react/legacy-modules/services/runtimeConfig.js";
 import {
+  getModelAspectRatiosForResolution,
+  normalizeImageModelCapabilities,
+} from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
+import { resolveT2iOutputSize } from "@react/legacy-modules/features/ai-wallpaper/composables/wallpaperStudioConstants.js";
+import {
   cancelServerAiJob,
   createServerAiJob,
   deleteServerAiJob,
@@ -20,10 +25,7 @@ import {
   uploadAiInputFile,
   waitForServerAiJob,
 } from "@react/legacy-modules/services/aiWallpaper.js";
-import {
-  downloadAuthenticatedMedia,
-  fetchAuthenticatedMediaBlob,
-} from "@react/legacy-modules/services/authenticatedMedia.js";
+import { downloadAuthenticatedMedia } from "@react/legacy-modules/services/authenticatedMedia.js";
 import {
   cancelAssistantRun,
   listActiveAssistantRuns,
@@ -43,23 +45,12 @@ import {
 } from "@react/legacy-modules/features/design-workshop/designDevices.js";
 import { metricsForDeviceOption } from "@react/legacy-modules/features/design-workshop/multiDeviceConsistency.js";
 import {
-  buildTileRefinePrompt,
-  extractQuadrantTileFiles,
-  resolveTileOutputLongSide,
-  stitchQuadrantTiles,
-} from "@react/legacy-modules/features/design-workshop/tilePrecisionRefine.js";
-import {
   buildVersionForest,
   canIterate,
   collectDescendants,
   pickCarrier,
   resolveParentOutputUrl,
 } from "@react/legacy-modules/features/design-workshop/versionTree.js";
-import {
-  DESIGN_QUALITY_REVIEW_MODES,
-  auditAiDesignQuality,
-  buildQualityIterationPrompt,
-} from "@react/legacy-modules/features/design-workshop/designQualityProfile.js";
 import {
   MAX_REGION_STYLE_REFERENCES,
   REGION_EDIT_ACTIONS,
@@ -68,7 +59,6 @@ import {
   normalizeRegionBoxesFromSession,
   regionNodeMatchesRecognitionTypes,
   resolveRegionDesignReference,
-  resolveRegionSelectionRequestSize,
   wantsRegionTransparentOutput,
 } from "@react/legacy-modules/features/design-workshop/regionOutputPolicy.js";
 import {
@@ -105,6 +95,30 @@ function isImageFile(file) {
   return IMAGE_NAME_PATTERN.test(file.name || "");
 }
 
+function resolveRegionPointerRect(start, x, y, rect, lockRatio = false) {
+  let endX = Math.max(0, Math.min(1, x));
+  let endY = Math.max(0, Math.min(1, y));
+  if (lockRatio) {
+    const dx = (endX - start.x) * rect.width;
+    const dy = (endY - start.y) * rect.height;
+    const horizontalLimit = (dx < 0 ? start.x : 1 - start.x) * rect.width;
+    const verticalLimit = (dy < 0 ? start.y : 1 - start.y) * rect.height;
+    const side = Math.min(
+      Math.max(Math.abs(dx), Math.abs(dy)),
+      horizontalLimit,
+      verticalLimit,
+    );
+    endX = start.x + (dx < 0 ? -side : side) / rect.width;
+    endY = start.y + (dy < 0 ? -side : side) / rect.height;
+  }
+  return {
+    x: Math.min(start.x, endX),
+    y: Math.min(start.y, endY),
+    width: Math.abs(endX - start.x),
+    height: Math.abs(endY - start.y),
+  };
+}
+
 function readSavedUploads() {
   try {
     const rows = JSON.parse(getScopedLocalItem(UPLOADS_KEY) || "[]");
@@ -135,6 +149,7 @@ function featureModels(config = {}) {
   return (Array.isArray(payload.publicModels) ? payload.publicModels : [])
     .map((item) => ({
       ...item,
+      ...normalizeImageModelCapabilities(item),
       id: String(item.id || item.publicModelKey || ""),
       label: String(
         item.label || item.name || item.id || item.publicModelKey || "",
@@ -144,13 +159,22 @@ function featureModels(config = {}) {
     .filter((item) => item.id);
 }
 
-function outputSizeForRatio(ratio = "16:9", longSide = 2048) {
-  const [rw = 16, rh = 9] = ratio.split(":").map(Number);
-  const width =
-    rw >= rh ? longSide : Math.round((longSide * rw) / rh / 64) * 64;
-  const height =
-    rh >= rw ? longSide : Math.round((longSide * rh) / rw / 64) * 64;
-  return `${Math.max(256, width)}x${Math.max(256, height)}`;
+function modelOutputParamsForRatio(model, ratio) {
+  const capabilities = normalizeImageModelCapabilities(model || {});
+  const resolutionScale = capabilities.resolutions.find((resolution) =>
+    getModelAspectRatiosForResolution(model || {}, resolution).includes(ratio),
+  ) || "";
+  const supportsRatio = capabilities.resolutions.length
+    ? Boolean(resolutionScale)
+    : capabilities.aspectRatios.includes(ratio);
+  const outputSize = supportsRatio && resolutionScale
+    ? resolveT2iOutputSize(ratio, resolutionScale)
+    : "";
+  return {
+    ...(supportsRatio ? { aspectRatio: ratio } : {}),
+    ...(resolutionScale ? { resolutionScale } : {}),
+    ...(outputSize ? { size: outputSize, outputSize } : {}),
+  };
 }
 
 function jobKind(job = {}) {
@@ -631,217 +655,6 @@ function ConfigPicker({
   );
 }
 
-function QualityDialog({
-  light,
-  audit,
-  loading,
-  error,
-  mode,
-  selected,
-  onMode,
-  onRun,
-  onToggle,
-  onApply,
-  onClose,
-}) {
-  return createPortal(
-    <div
-      className="dws-quality-layer"
-      onMouseDown={(event) => event.target === event.currentTarget && onClose()}
-    >
-      <section
-        className={`dws-quality-dialog${light ? " is-light" : ""}`}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="dws-quality-title"
-      >
-        <header className="dws-quality-header">
-          <span>
-            <small>DESIGN QUALITY · V3</small>
-            <strong id="dws-quality-title">设计品质检查</strong>
-          </span>
-          <em>{audit?.version || "视觉模型评审"}</em>
-          {audit && !loading && (
-            <button
-              type="button"
-              className="is-refresh"
-              aria-label="重新检查当前版本"
-              onClick={onRun}
-            >
-              <i className="bi bi-arrow-clockwise" />
-            </button>
-          )}
-          <button type="button" aria-label="关闭品质检查" onClick={onClose}>
-            <i className="bi bi-x-lg" />
-          </button>
-        </header>
-        <nav className="dws-quality-modes" aria-label="品质检查视角">
-          {DESIGN_QUALITY_REVIEW_MODES.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              disabled={loading}
-              className={mode === item.id ? "is-on" : ""}
-              aria-pressed={mode === item.id}
-              onClick={() => onMode(item.id)}
-            >
-              <i className={`bi ${item.icon}`} />
-              <span>{item.label}</span>
-            </button>
-          ))}
-        </nav>
-        {loading ? (
-          <div className="dws-quality-loading">
-            <span className="dws-quality-orbit">
-              <i />
-              <i />
-              <i />
-            </span>
-            <strong>正在检查设计品质</strong>
-            <p>分析信息层级、栅格、文字、配色、组件一致性与业务完整度</p>
-            <div>
-              <i />
-              <i />
-              <i />
-            </div>
-          </div>
-        ) : error ? (
-          <div className="dws-quality-error">
-            <i className="bi bi-exclamation-triangle" />
-            <strong>检查没有完成</strong>
-            <p>{error}</p>
-            <button type="button" onClick={onRun}>
-              <i className="bi bi-arrow-repeat" />
-              重新检查
-            </button>
-          </div>
-        ) : !audit ? (
-          <div className="dws-quality-empty">
-            <i className="bi bi-clipboard2-pulse" />
-            <strong>这个视角还没有检查记录</strong>
-            <p>
-              {
-                DESIGN_QUALITY_REVIEW_MODES.find((item) => item.id === mode)
-                  ?.prompt
-              }
-            </p>
-            <button type="button" onClick={onRun}>
-              <i className="bi bi-stars" />
-              开始检查
-            </button>
-          </div>
-        ) : (
-          <div className="dws-quality-result">
-            <section className="dws-quality-summary">
-              <div
-                className="dws-quality-score"
-                style={{ "--quality-score": `${audit.score * 3.6}deg` }}
-              >
-                <span>
-                  <b>{audit.score}</b>
-                  <small>/ 100</small>
-                </span>
-              </div>
-              <div>
-                <small>总体结论</small>
-                <strong>{audit.verdict}</strong>
-                <p>基于当前页面目标和所选视觉规范评估</p>
-              </div>
-            </section>
-            {audit.dimensions?.length > 0 && (
-              <section className="dws-quality-dimensions">
-                {audit.dimensions.map((item) => (
-                  <article key={item.id}>
-                    <span>
-                      <b>{item.label}</b>
-                      <em>{item.score}</em>
-                    </span>
-                    <i>
-                      <u style={{ width: `${item.score}%` }} />
-                    </i>
-                    <small>{item.note}</small>
-                  </article>
-                ))}
-              </section>
-            )}
-            {audit.strengths?.length > 0 && (
-              <section className="dws-quality-strengths">
-                <h3>
-                  <i className="bi bi-check2-circle" />
-                  做得好的地方
-                </h3>
-                <ul>
-                  {audit.strengths.map((item) => (
-                    <li key={item}>{item}</li>
-                  ))}
-                </ul>
-              </section>
-            )}
-            <section className="dws-quality-issues">
-              <header>
-                <h3>
-                  <i className="bi bi-list-check" />
-                  需要调整
-                </h3>
-                <span>
-                  {selected.length}/{audit.issues?.length || 0} 项
-                </span>
-              </header>
-              <div>
-                {audit.issues?.map((issue) => (
-                  <article
-                    key={issue.id}
-                    className={selected.includes(issue.id) ? "is-selected" : ""}
-                  >
-                    <button
-                      type="button"
-                      className="dws-quality-check"
-                      aria-pressed={selected.includes(issue.id)}
-                      onClick={() => onToggle(issue.id)}
-                    >
-                      <i
-                        className={`bi ${selected.includes(issue.id) ? "bi-check2" : "bi-plus"}`}
-                      />
-                    </button>
-                    <span className={`is-${issue.severity}`}>
-                      {issue.severity === "critical"
-                        ? "严重"
-                        : issue.severity === "major"
-                          ? "主要"
-                          : "细节"}
-                    </span>
-                    <div>
-                      <strong>{issue.title}</strong>
-                      <p>{issue.evidence}</p>
-                      <small>
-                        <i className="bi bi-arrow-return-right" />
-                        {issue.fix}
-                      </small>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            </section>
-          </div>
-        )}
-        {audit && !loading && (
-          <footer className="dws-quality-footer">
-            <span>
-              <i className="bi bi-stars" />
-              已选择 {selected.length} 项，未选择区域保持不变
-            </span>
-            <button type="button" disabled={!selected.length} onClick={onApply}>
-              定向迭代
-              <i className="bi bi-arrow-right" />
-            </button>
-          </footer>
-        )}
-      </section>
-    </div>,
-    document.body,
-  );
-}
-
 function VersionDrawer({
   light,
   forest,
@@ -1136,6 +949,7 @@ export function DesignWorkshopView() {
   const activeJobIdsRef = useRef(new Set());
   const previewUrlsRef = useRef(new Set());
   const regionStartRef = useRef(null);
+  const regionAdjustRef = useRef(null);
   const regionPersistRef = useRef({});
   const regionResumeIdsRef = useRef(new Set());
   const continueRegionProcessRef = useRef(async () => {});
@@ -1174,23 +988,14 @@ export function DesignWorkshopView() {
   const [configPicker, setConfigPicker] = useState(null);
   const [fullscreenOpen, setFullscreenOpen] = useState(false);
   const [versionDrawerOpen, setVersionDrawerOpen] = useState(false);
-  const [qualityOpen, setQualityOpen] = useState(false);
-  const [qualityMode, setQualityMode] = useState("balanced");
-  const [qualityLoading, setQualityLoading] = useState(false);
-  const [qualityError, setQualityError] = useState("");
-  const [qualityByOutput, setQualityByOutput] = useState({});
-  const [qualitySelected, setQualitySelected] = useState([]);
   const [analysisModelId, setAnalysisModelId] = useState("");
   const [analysisOpen, setAnalysisOpen] = useState(false);
   const [analysisBusy, setAnalysisBusy] = useState(false);
   const [analysisError, setAnalysisError] = useState("");
   const [analysisElements, setAnalysisElements] = useState([]);
   const [analysisTypes, setAnalysisTypes] = useState(["text", "icon", "image"]);
-  const [tilePhase, setTilePhase] = useState("");
-  const [tileProgress, setTileProgress] = useState([]);
-  const [tileEntry, setTileEntry] = useState(null);
-  const [tileDialogOpen, setTileDialogOpen] = useState(false);
   const [activeImageDimensions, setActiveImageDimensions] = useState(null);
+  const [regionDialogOpen, setRegionDialogOpen] = useState(false);
   const [regionMode, setRegionMode] = useState(false);
   const [regions, setRegions] = useState([]);
   const [activeRegionId, setActiveRegionId] = useState("");
@@ -1274,8 +1079,6 @@ export function DesignWorkshopView() {
   );
   const pagedMajors = majors.slice(historyPage * 4, historyPage * 4 + 4);
   const historyPages = Math.max(1, Math.ceil(majors.length / 4));
-  const qualityAudit =
-    qualityByOutput[`${qualityMode}::${activeOutput}`] || null;
   const region =
     regions.find((item) => item.id === activeRegionId) || regions[0] || null;
   const regionElements = region?.elements || [];
@@ -1298,27 +1101,6 @@ export function DesignWorkshopView() {
     regionPrompt,
     regionAction,
   );
-  const [frameWidth = 16, frameHeight = 9] = device.ratio
-    .split(":")
-    .map(Number);
-  const frameRatio = frameWidth / Math.max(1, frameHeight);
-  const imageRatio = activeImageDimensions
-    ? activeImageDimensions.width / Math.max(1, activeImageDimensions.height)
-    : frameRatio;
-  const regionLayerStyle =
-    imageRatio >= frameRatio
-      ? {
-          left: "0%",
-          top: `${((1 - frameRatio / imageRatio) / 2) * 100}%`,
-          width: "100%",
-          height: `${(frameRatio / imageRatio) * 100}%`,
-        }
-      : {
-          left: `${((1 - imageRatio / frameRatio) / 2) * 100}%`,
-          top: "0%",
-          width: `${(imageRatio / frameRatio) * 100}%`,
-          height: "100%",
-        };
   const regionOutputWidth = Math.max(
     1,
     Math.round((activeImageDimensions?.width || 1024) * (region?.width || 1)),
@@ -1331,6 +1113,51 @@ export function DesignWorkshopView() {
     regions.length > 1
       ? `共 ${regions.length} 处`
       : `${regionOutputWidth}×${regionOutputHeight}`;
+  const regionPendingCount = regionBusy
+    ? Math.max(1, regions.filter((item) => !item.resultUrl).length)
+    : 0;
+  const regionHasMarks = regions.some((box) => box.marked?.length);
+  const regionHasPrompt = Boolean(regionPrompt.trim());
+  const regionHasStyleShortcut =
+    regionReferences.length > 0 &&
+    ["improve-icon", "custom"].includes(regionAction);
+  const regionCanProcess =
+    regions.length > 0 &&
+    (regionHasPrompt ||
+      regionHasMarks ||
+      regionHasStyleShortcut ||
+      regionAction === "replace-background");
+  const regionActionGuide =
+    regionAction === "remove"
+      ? {
+          placeholder: "例如：去掉这张卡上的价格和促销标签",
+          next: "写明要去掉什么，或分析后点选元素",
+        }
+      : regionAction === "improve-icon"
+        ? {
+            placeholder: "例如：图标更精致，保持原来的含义",
+            next: "写一句要求，或添加风格参考图",
+          }
+        : regionAction === "replace-background"
+          ? {
+              placeholder: "例如：换成更干净的浅色渐变（可留空直接开始）",
+              next: "可直接开始，也可补充背景风格",
+            }
+          : {
+              placeholder: "说明要改什么，越具体越好",
+              next: "写明修改要求，或添加参考图",
+            };
+  const regionNextStep = regionBusy
+    ? regionStatus || "正在处理…"
+    : regionError
+      ? regionError
+      : regionResultUrls.length
+        ? "满意就加入素材库，或改完再出一版"
+        : !regions.length
+          ? "先在左侧拖出要改的区域"
+          : regionCanProcess
+            ? "可以开始编辑，拖空白处还能再加框"
+            : regionActionGuide.next;
 
   const buildPrompt = useCallback(
     (targetDevice = device) => {
@@ -1687,24 +1514,78 @@ export function DesignWorkshopView() {
   useEffect(() => {
     const onEscape = (event) => {
       if (event.key !== "Escape") return;
-      if (qualityOpen) setQualityOpen(false);
-      else if (versionDrawerOpen) setVersionDrawerOpen(false);
+      if (versionDrawerOpen) setVersionDrawerOpen(false);
       else if (pageTypePicker) setPageTypePicker(null);
       else if (configPicker) setConfigPicker(null);
-      else if (regionMode || hasRegionSelection) {
-        clearRegionSession();
-      }
+      else if (regionDialogOpen) setRegionDialogOpen(false);
     };
     window.addEventListener("keydown", onEscape);
     return () => window.removeEventListener("keydown", onEscape);
   }, [
     configPicker,
-    hasRegionSelection,
     pageTypePicker,
-    qualityOpen,
-    regionMode,
+    regionDialogOpen,
     versionDrawerOpen,
   ]);
+
+  const duplicateActiveRegion = useCallback(() => {
+    if (!region || regionBusy) return;
+    const offsetX = Math.max(
+      0.02,
+      20 / Math.max(1, activeImageDimensions?.width || 1000),
+    );
+    const offsetY = Math.max(
+      0.02,
+      20 / Math.max(1, activeImageDimensions?.height || 1000),
+    );
+    const nextX =
+      region.x + region.width + offsetX <= 1
+        ? region.x + offsetX
+        : Math.max(0, region.x - offsetX);
+    const nextY =
+      region.y + region.height + offsetY <= 1
+        ? region.y + offsetY
+        : Math.max(0, region.y - offsetY);
+    const duplicate = {
+      ...region,
+      id: crypto.randomUUID(),
+      x: nextX,
+      y: nextY,
+      elements: [],
+      marked: [],
+      viewport: null,
+      resultUrl: "",
+      runId: "",
+      conversationId: "",
+    };
+    setRegions((current) => [...current, duplicate]);
+    setActiveRegionId(duplicate.id);
+    setRegionMode(true);
+    setManualMode(false);
+    setRegionError("");
+    setRegionStatus("已复制同尺寸选区，可拖动到目标位置");
+  }, [activeImageDimensions, region, regionBusy]);
+
+  useEffect(() => {
+    if (!regionDialogOpen || !region) return undefined;
+    const onCopy = (event) => {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "c")
+        return;
+      const target = event.target;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target?.isContentEditable ||
+        window.getSelection()?.toString()
+      ) {
+        return;
+      }
+      event.preventDefault();
+      duplicateActiveRegion();
+    };
+    window.addEventListener("keydown", onCopy);
+    return () => window.removeEventListener("keydown", onCopy);
+  }, [duplicateActiveRegion, region, regionDialogOpen]);
 
   const addFiles = useCallback(
     (files) => {
@@ -1795,6 +1676,11 @@ export function DesignWorkshopView() {
       setLocalError("后台还没有为图片工作台分配可用模型。");
       return;
     }
+    const maxReferenceImages = Math.max(0, Number(activeModel.maxReferenceImages || 0));
+    if (hasReference && maxReferenceImages < 1) {
+      setLocalError("当前模型不支持参考图，请在后台切换模型后重试。");
+      return;
+    }
     const devices = isIteration
       ? [
           getDesignDevice(
@@ -1811,7 +1697,8 @@ export function DesignWorkshopView() {
     const groupId = `ui-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`;
     try {
       const uploaded = [];
-      for (const item of references)
+      const referenceCapacity = Math.max(0, maxReferenceImages - (iterationSource ? 1 : 0));
+      for (const item of references.slice(0, referenceCapacity))
         uploaded.push(
           await uploadAiInputFile(item.file, { signal: controller.signal }),
         );
@@ -1821,10 +1708,10 @@ export function DesignWorkshopView() {
         const target = devices[index];
         setStatus(`正在生成 ${target.label}（${index + 1}/${devices.length}）`);
         const sourceUrls = [
-          ...uploaded,
           ...(iterationSource ? [iterationSource] : []),
-        ];
-        const outputSize = outputSizeForRatio(target.ratio);
+          ...uploaded,
+        ].slice(0, maxReferenceImages);
+        const modelOutputParams = modelOutputParamsForRatio(activeModel, target.ratio);
         const created = await createServerAiJob({
           kind: iterationSource ? "ui-design-edit" : "ui-design-generation",
           clientRequestId: crypto.randomUUID(),
@@ -1832,10 +1719,7 @@ export function DesignWorkshopView() {
           input: {
             source: "ui-design-workshop",
             sourceUrls,
-            aspectRatio: target.ratio,
-            size: outputSize,
-            outputSize,
-            quality: "high",
+            ...modelOutputParams,
             platform: target.label,
             deviceId: target.id,
             viewId: target.id,
@@ -1850,10 +1734,7 @@ export function DesignWorkshopView() {
           params: {
             publicModelKey: activeModel.publicModelKey,
             modelHint: activeModel.id,
-            aspectRatio: target.ratio,
-            size: outputSize,
-            outputSize,
-            quality: "high",
+            ...modelOutputParams,
             deviceId: target.id,
             viewId: target.id,
             viewLabel: target.label,
@@ -1975,52 +1856,6 @@ export function DesignWorkshopView() {
     setPageTypePicker({ left, top, width, maxHeight });
   };
 
-  const runQuality = useCallback(async () => {
-    if (!activeOutput || qualityLoading) return;
-    setQualityOpen(true);
-    setQualityLoading(true);
-    setQualityError("");
-    try {
-      const result = await auditAiDesignQuality({
-        image: activeOutput,
-        model: analysisModelId,
-        productPrompt: brief.trim(),
-        pageType: pageType.label,
-        style: visualStyle.label,
-        density: SPEC_OPTIONS.density.find(([id]) => id === spec.density)?.[1],
-        colorScheme: colorScheme === "dark" ? "深色" : "浅色",
-        reviewMode: qualityMode,
-      });
-      const snapshot = {
-        ...result,
-        output: activeOutput,
-        version: activeVersionLabel,
-        reviewMode: qualityMode,
-        auditedAt: new Date().toISOString(),
-      };
-      setQualityByOutput((current) => ({
-        ...current,
-        [`${qualityMode}::${activeOutput}`]: snapshot,
-      }));
-      setQualitySelected(snapshot.issues?.map((item) => item.id) || []);
-    } catch (error) {
-      setQualityError(error?.message || "品质检查失败");
-    } finally {
-      setQualityLoading(false);
-    }
-  }, [
-    activeOutput,
-    activeVersionLabel,
-    analysisModelId,
-    brief,
-    colorScheme,
-    pageType.label,
-    qualityLoading,
-    qualityMode,
-    spec.density,
-    visualStyle.label,
-  ]);
-
   const patchActiveRegion = useCallback((patch) => {
     setRegions((current) =>
       current.map((item) =>
@@ -2043,7 +1878,7 @@ export function DesignWorkshopView() {
     }
     clearRegionProcessSession();
     regionPersistRef.current = {};
-    setRegionMode(false);
+    setRegionMode(true);
     setRegions([]);
     setActiveRegionId("");
     setRegionDraft(null);
@@ -2094,7 +1929,7 @@ export function DesignWorkshopView() {
     };
     regionStartRef.current = point;
     setRegionDraft({ ...point, width: 0, height: 0 });
-    event.currentTarget.setPointerCapture?.(event.pointerId);
+    layer.setPointerCapture?.(event.pointerId);
   };
   const moveRegion = (event) => {
     const start = regionStartRef.current;
@@ -2108,12 +1943,9 @@ export function DesignWorkshopView() {
       0,
       Math.min(1, (event.clientY - rect.top) / rect.height),
     );
-    setRegionDraft({
-      x: Math.min(start.x, x),
-      y: Math.min(start.y, y),
-      width: Math.abs(x - start.x),
-      height: Math.abs(y - start.y),
-    });
+    setRegionDraft(
+      resolveRegionPointerRect(start, x, y, rect, event.shiftKey),
+    );
   };
   const finishRegion = (event) => {
     const start = regionStartRef.current;
@@ -2128,12 +1960,13 @@ export function DesignWorkshopView() {
       0,
       Math.min(1, (event.clientY - rect.top) / rect.height),
     );
-    const next = {
-      x: Math.min(start.x, x),
-      y: Math.min(start.y, y),
-      width: Math.abs(x - start.x),
-      height: Math.abs(y - start.y),
-    };
+    const next = resolveRegionPointerRect(
+      start,
+      x,
+      y,
+      rect,
+      event.shiftKey,
+    );
     setRegionDraft(null);
     if (next.width * rect.width < 8 || next.height * rect.height < 8) {
       setRegionError("框选范围太小，请至少拖出 8×8 像素的区域");
@@ -2153,6 +1986,164 @@ export function DesignWorkshopView() {
         ? `已框选 ${regions.length + 1} 处，将出 ${regions.length + 1} 张`
         : "可继续框选其他区域，框几处出几张",
     );
+  };
+
+  const beginRegionAdjustment = (event, box) => {
+    if (regionBusy || event.button !== 0) return;
+    const layer = event.currentTarget.closest(".dws-region-layer");
+    const rect = layer?.getBoundingClientRect();
+    if (!rect?.width || !rect?.height) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setActiveRegionId(box.id);
+    regionAdjustRef.current = {
+      pointerId: event.pointerId,
+      regionId: box.id,
+      handle:
+        event.target.closest(".dws-region-handle")?.dataset.handle || "move",
+      startX: event.clientX,
+      startY: event.clientY,
+      layerWidth: rect.width,
+      layerHeight: rect.height,
+      origin: {
+        x: box.x,
+        y: box.y,
+        width: box.width,
+        height: box.height,
+      },
+      changed: false,
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  };
+
+  const moveRegionAdjustment = (event) => {
+    const adjustment = regionAdjustRef.current;
+    if (!adjustment || adjustment.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const dx = (event.clientX - adjustment.startX) / adjustment.layerWidth;
+    const dy = (event.clientY - adjustment.startY) / adjustment.layerHeight;
+    const minimumWidth = Math.min(1, 8 / adjustment.layerWidth);
+    const minimumHeight = Math.min(1, 8 / adjustment.layerHeight);
+    const origin = adjustment.origin;
+    const next = { ...origin };
+
+    if (adjustment.handle === "move") {
+      next.x = Math.max(0, Math.min(1 - origin.width, origin.x + dx));
+      next.y = Math.max(0, Math.min(1 - origin.height, origin.y + dy));
+    } else {
+      if (adjustment.handle.includes("w")) {
+        const right = origin.x + origin.width;
+        next.x = Math.max(0, Math.min(right - minimumWidth, origin.x + dx));
+        next.width = right - next.x;
+      }
+      if (adjustment.handle.includes("e")) {
+        next.width = Math.max(
+          minimumWidth,
+          Math.min(1 - origin.x, origin.width + dx),
+        );
+      }
+      if (adjustment.handle.includes("n")) {
+        const bottom = origin.y + origin.height;
+        next.y = Math.max(
+          0,
+          Math.min(bottom - minimumHeight, origin.y + dy),
+        );
+        next.height = bottom - next.y;
+      }
+      if (adjustment.handle.includes("s")) {
+        next.height = Math.max(
+          minimumHeight,
+          Math.min(1 - origin.y, origin.height + dy),
+        );
+      }
+      if (event.shiftKey && /^(nw|ne|se|sw)$/.test(adjustment.handle)) {
+        const anchorX = adjustment.handle.includes("w")
+          ? origin.x + origin.width
+          : origin.x;
+        const anchorY = adjustment.handle.includes("n")
+          ? origin.y + origin.height
+          : origin.y;
+        const pointerX = Math.max(
+          0,
+          Math.min(1, (event.clientX - adjustment.startX) / adjustment.layerWidth +
+            (adjustment.handle.includes("w") ? origin.x : origin.x + origin.width)),
+        );
+        const pointerY = Math.max(
+          0,
+          Math.min(1, (event.clientY - adjustment.startY) / adjustment.layerHeight +
+            (adjustment.handle.includes("n") ? origin.y : origin.y + origin.height)),
+        );
+        const ratio =
+          (origin.width * adjustment.layerWidth) /
+          Math.max(1, origin.height * adjustment.layerHeight);
+        const availableWidth = adjustment.handle.includes("w")
+          ? anchorX * adjustment.layerWidth
+          : (1 - anchorX) * adjustment.layerWidth;
+        const availableHeight = adjustment.handle.includes("n")
+          ? anchorY * adjustment.layerHeight
+          : (1 - anchorY) * adjustment.layerHeight;
+        let width = Math.abs(pointerX - anchorX) * adjustment.layerWidth;
+        let height = Math.abs(pointerY - anchorY) * adjustment.layerHeight;
+        if (width / Math.max(1, height) > ratio) height = width / ratio;
+        else width = height * ratio;
+        const scale = Math.min(
+          1,
+          availableWidth / Math.max(1, width),
+          availableHeight / Math.max(1, height),
+        );
+        width = Math.max(8, width * scale);
+        height = Math.max(8, height * scale);
+        next.width = Math.min(availableWidth, width) / adjustment.layerWidth;
+        next.height =
+          Math.min(availableHeight, height) / adjustment.layerHeight;
+        next.x = adjustment.handle.includes("w")
+          ? anchorX - next.width
+          : anchorX;
+        next.y = adjustment.handle.includes("n")
+          ? anchorY - next.height
+          : anchorY;
+      }
+    }
+
+    if (
+      next.x === origin.x &&
+      next.y === origin.y &&
+      next.width === origin.width &&
+      next.height === origin.height
+    ) {
+      return;
+    }
+    adjustment.changed = true;
+    setRegions((current) =>
+      current.map((item) =>
+        item.id === adjustment.regionId
+          ? {
+              ...item,
+              ...next,
+              elements: [],
+              marked: [],
+              viewport: null,
+              resultUrl: "",
+              runId: "",
+              conversationId: "",
+            }
+          : item,
+      ),
+    );
+  };
+
+  const finishRegionAdjustment = (event) => {
+    const adjustment = regionAdjustRef.current;
+    if (!adjustment || adjustment.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    regionAdjustRef.current = null;
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    if (adjustment.changed) {
+      setRegionError("");
+      setRegionStatus("选区已调整，可重新分析元素或开始图片编辑");
+    }
   };
 
   const beginManualElement = (event) => {
@@ -2437,10 +2428,6 @@ export function DesignWorkshopView() {
             const captured = await captureRegion(box);
             const blob = await (await fetch(captured.dataUrl)).blob();
             const regionReferenceDataUrl = await uploadAiTempBlob(blob);
-            const requestSize = resolveRegionSelectionRequestSize(
-              captured.width,
-              captured.height,
-            );
             const designReference = resolveRegionDesignReference({
               index,
               firstResultUrl: firstStyleReferenceUrl,
@@ -2467,8 +2454,6 @@ export function DesignWorkshopView() {
               generationMode: "strict",
               userInstruction:
                 instruction || prompt || "处理当前框选区域",
-              requestSize,
-              quality: "high",
               preserveLayout,
               retainConversation: true,
               conversationId: sharedConversationId,
@@ -2656,10 +2641,6 @@ export function DesignWorkshopView() {
         const captured = await captureRegion(box);
         const blob = await (await fetch(captured.dataUrl)).blob();
         const regionReferenceDataUrl = await uploadAiTempBlob(blob);
-        const requestSize = resolveRegionSelectionRequestSize(
-          captured.width,
-          captured.height,
-        );
         const designReference = resolveRegionDesignReference({
           index,
           firstResultUrl: firstStyleReferenceUrl,
@@ -2686,8 +2667,6 @@ export function DesignWorkshopView() {
           transparent,
           generationMode: uploadedRefs.length ? "replace" : "strict",
           userInstruction: instruction,
-          requestSize,
-          quality: "high",
           preserveLayout,
           retainConversation: true,
           conversationId: sharedConversationId,
@@ -2870,6 +2849,7 @@ export function DesignWorkshopView() {
           : "已加入素材库",
       );
       clearRegionSession();
+      setRegionDialogOpen(false);
     } catch (error) {
       setRegionError(error?.message || "加入素材库失败");
     } finally {
@@ -2877,153 +2857,138 @@ export function DesignWorkshopView() {
     }
   }, [clearRegionSession, regionApproving, regionPrompt, regionResultUrls]);
 
-  const runTileRefine = useCallback(async () => {
-    if (!activeOutput || running || tilePhase) return;
-    const confirmed = window.confirm(
-      "四宫格精修会把当前设计稿十字切成 4 块，并发生成后按原坐标硬拼回完整图。预计消耗约 4 张图费用，是否继续？",
-    );
-    if (!confirmed) return;
-    const controller = new AbortController();
-    taskControllerRef.current?.abort();
-    taskControllerRef.current = controller;
-    setLocalError("");
-    setTilePhase("preparing");
-    setTileProgress(
-      ["左上", "右上", "左下", "右下"].map((label) => ({
-        label,
-        status: "pending",
-      })),
-    );
-    const intermediateIds = [];
-    try {
-      const sourceBlob = await fetchAuthenticatedMediaBlob(activeOutput, {
-        cache: "no-store",
-        signal: controller.signal,
-      });
-      const extracted = await extractQuadrantTileFiles(sourceBlob);
-      const uploaded = [];
-      for (const entry of extracted.files) {
-        uploaded.push({
-          ...entry,
-          url: await uploadAiInputFile(entry.file, {
-            signal: controller.signal,
-          }),
-        });
-      }
-      setTilePhase("generating");
-      const generatedUrls = await Promise.all(
-        uploaded.map(async (entry, index) => {
-          setTileProgress((current) =>
-            current.map((item, at) =>
-              at === index ? { ...item, status: "running" } : item,
-            ),
-          );
-          const outputLongSide = resolveTileOutputLongSide(entry.tile);
-          const outputSize = outputSizeForRatio(
-            entry.tile.aspectLabel || entry.tile.aspectRatio,
-            outputLongSide,
-          );
-          const created = await createServerAiJob({
-            kind: "ui-design-tile-refine-edit",
-            clientRequestId: crypto.randomUUID(),
-            prompt: buildTileRefinePrompt({
-              quadrantLabel: entry.tile.label,
-              aspectLabel: entry.tile.aspectLabel || entry.tile.aspectRatio,
-            }),
-            input: {
-              source: "ui-design-workshop",
-              sourceUrls: [entry.url],
-              aspectRatio: entry.tile.aspectLabel || entry.tile.aspectRatio,
-              size: outputSize,
-              outputSize,
-              quality: "high",
-              deviceId: viewDeviceId,
-              viewId: `tile-${entry.tile.id}`,
-              parentOutputUrl: activeOutput,
-              iterationMode: true,
-              batchIndex: index,
-              batchSize: 4,
-            },
-            params: {
-              publicModelKey: activeModel?.publicModelKey,
-              modelHint: activeModel?.id,
-              size: outputSize,
-              outputSize,
-              quality: "high",
-              suppressHistory: true,
-              batchIndex: index,
-              batchSize: 4,
-            },
-            units: 1,
-          });
-          const jobId = created.job?.id;
-          if (!jobId) throw new Error("精修任务未返回任务 ID");
-          intermediateIds.push(jobId);
-          const completed = await waitForServerAiJob(jobId, {
-            signal: controller.signal,
-          });
-          const url =
-            completed.result?.outputs?.[0] ||
-            completed.job?.originalMediaUrls?.[0] ||
-            "";
-          if (!url) throw new Error(`${entry.tile.label}精修没有返回图片`);
-          setTileProgress((current) =>
-            current.map((item, at) =>
-              at === index ? { ...item, status: "done" } : item,
-            ),
-          );
-          return url;
-        }),
-      );
-      setTilePhase("stitching");
-      const blobs = [];
-      for (const url of generatedUrls) {
-        blobs.push(
-          await fetchAuthenticatedMediaBlob(url, {
-            cache: "no-store",
-            signal: controller.signal,
-          }),
-        );
-      }
-      const stitched = await stitchQuadrantTiles({
-        tiles: extracted.tiles,
-        tileImages: blobs,
-        originalCrops: extracted.files.map((entry) => entry.cropFile),
-        fullWidth: extracted.width,
-        fullHeight: extracted.height,
-      });
-      const url = await uploadAiTempBlob(stitched.file, {
-        signal: controller.signal,
-      });
-      const next = {
-        url,
-        parentOutputUrl: activeOutput,
-        deviceId: viewDeviceId,
-        width: stitched.width,
-        height: stitched.height,
-      };
-      setTileEntry(next);
-      setTileDialogOpen(true);
-      setTilePhase("done");
-      await Promise.allSettled(
-        intermediateIds.map((id) => deleteServerAiJob(id)),
-      );
-      notificationService.success("四宫格精修完成，已合并为完整设计稿");
-    } catch (error) {
-      if (error?.name !== "AbortError")
-        setLocalError(error?.message || "四宫格精修失败");
-      setTilePhase("");
-    }
-  }, [activeModel, activeOutput, running, tilePhase, viewDeviceId]);
-
-  const tileBusy = Boolean(tilePhase && tilePhase !== "done");
-
   const artboardRatio = device.ratio.split(":").map(Number);
   const artboardStyle = {
     aspectRatio: `${artboardRatio[0]} / ${artboardRatio[1]}`,
-    width: `min(100%, calc((100vh - var(--app-header-offset, 64px) - 220px) * ${artboardRatio[0] / artboardRatio[1]}))`,
+    width: `min(100%, calc((100dvh - var(--app-header-offset, 64px) - 128px) * ${artboardRatio[0] / artboardRatio[1]}))`,
   };
   const assembledPrompt = buildPrompt(device);
+  const regionSelectionLayer = activeImageDimensions ? (
+    <div
+      className={`dws-region-layer${regionMode && !regionBusy ? " is-drawing" : " has-selection"}`}
+      onPointerDown={beginRegion}
+      onPointerMove={(event) => {
+        if (regionAdjustRef.current) moveRegionAdjustment(event);
+        else moveRegion(event);
+      }}
+      onPointerUp={(event) => {
+        if (regionAdjustRef.current) finishRegionAdjustment(event);
+        else finishRegion(event);
+      }}
+      onPointerCancel={(event) => {
+        if (regionAdjustRef.current) finishRegionAdjustment(event);
+        else {
+          regionStartRef.current = null;
+          setRegionDraft(null);
+        }
+      }}
+    >
+      {regionMode && regions.length === 0 && !regionDraft && (
+        <span
+          className={`dws-region-hint${regionError ? " is-error" : ""}`}
+        >
+          <i className="bi bi-bounding-box-circles" />
+          {regionError || "按住鼠标拖拽框选要优化的区域"}
+        </span>
+      )}
+      {regions.map((box, index) => {
+        const active = box.id === region?.id;
+        return (
+          <div
+            key={box.id}
+            className={`dws-region-box${active ? " is-adjustable is-active" : ""}${manualMode && active ? " is-manual" : ""}`}
+            data-index={index + 1}
+            style={{
+              left: `${box.x * 100}%`,
+              top: `${box.y * 100}%`,
+              width: `${box.width * 100}%`,
+              height: `${box.height * 100}%`,
+            }}
+            onPointerDown={(event) => {
+              event.stopPropagation();
+              setActiveRegionId(box.id);
+              if (manualMode && active) beginManualElement(event);
+              else if (!manualMode) beginRegionAdjustment(event, box);
+            }}
+            onPointerMove={
+              manualMode && active ? moveManualElement : undefined
+            }
+            onPointerUp={
+              manualMode && active ? finishManualElement : undefined
+            }
+            onPointerCancel={
+              manualMode && active
+                ? () => {
+                    manualStartRef.current = null;
+                    setManualDraft(null);
+                  }
+                : undefined
+            }
+          >
+            {active &&
+              visibleRegionElements.map((node, hitIndex) => (
+                <button
+                  key={node.id}
+                  type="button"
+                  className={`dws-region-hit${regionMarked.includes(node.id) ? " is-marked" : ""}`}
+                  data-index={hitIndex + 1}
+                  style={{
+                    left: `${node.manual ? node.x * 100 : (node.x / (regionViewport?.width || 1)) * 100}%`,
+                    top: `${node.manual ? node.y * 100 : (node.y / (regionViewport?.height || 1)) * 100}%`,
+                    width: `${node.manual ? node.width * 100 : (node.width / (regionViewport?.width || 1)) * 100}%`,
+                    height: `${node.manual ? node.height * 100 : (node.height / (regionViewport?.height || 1)) * 100}%`,
+                  }}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    const marked = regionMarked.includes(node.id)
+                      ? regionMarked.filter((id) => id !== node.id)
+                      : [...regionMarked, node.id];
+                    patchActiveRegion({ marked });
+                  }}
+                >
+                  {(node.text || node.name) && (
+                    <span>{node.text || node.name}</span>
+                  )}
+                </button>
+              ))}
+            {active && manualDraft && (
+              <span
+                className="dws-region-manual-draft"
+                style={{
+                  left: `${manualDraft.x * 100}%`,
+                  top: `${manualDraft.y * 100}%`,
+                  width: `${manualDraft.width * 100}%`,
+                  height: `${manualDraft.height * 100}%`,
+                }}
+              />
+            )}
+            {active &&
+              !manualMode &&
+              REGION_HANDLES.map((handle) => (
+                <button
+                  key={handle}
+                  type="button"
+                  className="dws-region-handle"
+                  data-handle={handle}
+                  aria-label={`调整选区 ${handle}`}
+                />
+              ))}
+          </div>
+        );
+      })}
+      {regionDraft && (
+        <div
+          className="dws-region-box is-draft"
+          style={{
+            left: `${regionDraft.x * 100}%`,
+            top: `${regionDraft.y * 100}%`,
+            width: `${regionDraft.width * 100}%`,
+            height: `${regionDraft.height * 100}%`,
+          }}
+        />
+      )}
+    </div>
+  ) : null;
 
   return (
     <main
@@ -3425,7 +3390,7 @@ export function DesignWorkshopView() {
             <button
               className="dws-generate"
               type="button"
-              disabled={running || tileBusy}
+              disabled={running}
               aria-label={`${isIteration ? "生成迭代稿" : references.length ? "参考图重绘" : "生成设计稿"}，${costLabel}`}
               onClick={generate}
             >
@@ -3483,26 +3448,6 @@ export function DesignWorkshopView() {
             </button>
             <button
               type="button"
-              className="is-quality"
-              disabled={!activeOutput || running || qualityLoading}
-              onClick={() => {
-                setQualityOpen(true);
-                if (!qualityAudit) void runQuality();
-              }}
-            >
-              <i
-                className={`bi ${qualityLoading ? "bi-arrow-repeat spin" : "bi-patch-check"}`}
-              />
-              <span>
-                {qualityLoading
-                  ? "检查中"
-                  : qualityAudit
-                    ? `${qualityAudit.score} 分`
-                    : "品质检查"}
-              </span>
-            </button>
-            <button
-              type="button"
               className="is-editor"
               disabled={!activeOutput || running}
               onClick={() => setAnalysisOpen(true)}
@@ -3512,22 +3457,16 @@ export function DesignWorkshopView() {
             </button>
             <button
               type="button"
-              className={`is-region${regionMode || hasRegionSelection ? " is-on" : ""}`}
-              disabled={!activeOutput || running || regionBusy}
+              className={`is-region${regionBusy || hasRegionSelection ? " is-on" : ""}`}
+              disabled={!activeOutput || running}
               onClick={() => {
-                if (regionMode || hasRegionSelection) {
-                  clearRegionSession();
-                } else setRegionMode(true);
+                if (!hasRegionSelection) setRegionMode(true);
+                setManualMode(false);
+                setRegionDialogOpen(true);
               }}
             >
               <i className="bi bi-bounding-box-circles" />
-              <span>
-                {regionMode
-                  ? "拖拽框选"
-                  : hasRegionSelection
-                    ? "取消框选"
-                    : "框选优化"}
-              </span>
+              <span>{regionBusy ? `处理中 ${regionPendingCount}` : "框选优化"}</span>
             </button>
             <button
               type="button"
@@ -3544,22 +3483,6 @@ export function DesignWorkshopView() {
             </button>
             <button
               type="button"
-              className="is-tile-refine"
-              disabled={!activeOutput || running || tileBusy}
-              title="四宫格精修将在下一步弹出精修结果"
-              onClick={() =>
-                tileEntry ? setTileDialogOpen(true) : void runTileRefine()
-              }
-            >
-              <i
-                className={`bi ${tileBusy ? "bi-arrow-repeat spin" : "bi-grid-3x3-gap"}`}
-              />
-              <span>
-                {tileBusy ? "精修中" : tileEntry ? "查看精修" : "四宫格精修"}
-              </span>
-            </button>
-            <button
-              type="button"
               disabled={!activeOutput}
               onClick={() =>
                 downloadAuthenticatedMedia(
@@ -3573,7 +3496,7 @@ export function DesignWorkshopView() {
             </button>
           </div>
           <div
-            className={`dws-canvas${tileBusy ? " is-tile-refine" : ""}`}
+            className="dws-canvas"
             onDragOver={(event) => {
               if (activeOutput || running) return;
               event.preventDefault();
@@ -3584,74 +3507,20 @@ export function DesignWorkshopView() {
               void uploadDesign(event.dataTransfer.files?.[0]);
             }}
           >
-            {tileBusy && (
-              <div className="dws-tile-refine" aria-live="polite">
-                <div className="dws-tile-refine-card">
-                  <header>
-                    <i className="bi bi-grid-3x3-gap" />
-                    <div>
-                      <strong>
-                        {tilePhase === "preparing"
-                          ? "正在精密切图…"
-                          : tilePhase === "stitching"
-                            ? "正在无损拼接四象限…"
-                            : "正在分象限高精度重绘…"}
-                      </strong>
-                      <small>
-                        标准比例贴边 → 四路精修 → 对齐回裁 → 归属区防重影拼接
-                      </small>
-                    </div>
-                  </header>
-                  <ul>
-                    {tileProgress.map((item, index) => (
-                      <li key={index} className={`is-${item.status}`}>
-                        <i
-                          className={`bi ${item.status === "done" ? "bi-check-circle-fill" : item.status === "running" ? "bi-arrow-repeat spin" : "bi-circle"}`}
-                        />
-                        <span>{item.label}</span>
-                        <em>
-                          {item.status === "done"
-                            ? "完成"
-                            : item.status === "running"
-                              ? "精修中"
-                              : "排队"}
-                        </em>
-                      </li>
-                    ))}
-                  </ul>
-                  <button
-                    type="button"
-                    className="dws-running-cancel"
-                    disabled={tilePhase === "stitching"}
-                    onClick={cancelGeneration}
-                  >
-                    停止精修
-                  </button>
-                </div>
-              </div>
-            )}
             <div
               ref={artboardRef}
-              className={`dws-artboard${activeOutput && !running && !regionMode && !hasRegionSelection ? " is-previewable" : ""}${regionMode || hasRegionSelection ? " is-region-selecting" : ""}`}
+              className={`dws-artboard${activeOutput && !running ? " is-previewable" : ""}`}
               style={artboardStyle}
-              role={
-                activeOutput && !running && !hasRegionSelection
-                  ? "button"
-                  : undefined
-              }
-              tabIndex={
-                activeOutput && !running && !hasRegionSelection ? 0 : undefined
-              }
+              role={activeOutput && !running ? "button" : undefined}
+              tabIndex={activeOutput && !running ? 0 : undefined}
               aria-label={
-                activeOutput && !running && !hasRegionSelection
+                activeOutput && !running
                   ? "查看当前设计稿大图"
                   : undefined
               }
               onClick={() =>
                 activeOutput &&
-                !regionMode &&
-                !hasRegionSelection &&
-                setFullscreenOpen(true)
+                canOpenWallevenImagePreview() && setFullscreenOpen(true)
               }
             >
               {activeOutput ? (
@@ -3674,118 +3543,6 @@ export function DesignWorkshopView() {
                         setMediaError("图片加载失败，请切换版本或重新生成")
                       }
                     />
-                    {(regionMode ||
-                      ((hasRegionSelection || regionDraft) &&
-                        activeImageDimensions)) && (
-                      <div
-                        className={`dws-region-layer${regionMode ? " is-drawing" : " has-selection"}`}
-                        style={regionLayerStyle}
-                        onPointerDown={beginRegion}
-                        onPointerMove={moveRegion}
-                        onPointerUp={finishRegion}
-                      >
-                        {regionMode && regions.length === 0 && !regionDraft && (
-                          <span
-                            className={`dws-region-hint${regionError ? " is-error" : ""}`}
-                          >
-                            <i className="bi bi-bounding-box-circles" />
-                            {regionError || "按住鼠标拖拽框选要优化的区域"}
-                          </span>
-                        )}
-                        {regions.map((box, index) => {
-                          const active = box.id === region?.id;
-                          return (
-                            <div
-                              key={box.id}
-                              className={`dws-region-box${active ? " is-adjustable is-active" : ""}${manualMode && active ? " is-manual" : ""}`}
-                              data-index={index + 1}
-                              style={{
-                                left: `${box.x * 100}%`,
-                                top: `${box.y * 100}%`,
-                                width: `${box.width * 100}%`,
-                                height: `${box.height * 100}%`,
-                              }}
-                              onPointerDown={(event) => {
-                                event.stopPropagation();
-                                setActiveRegionId(box.id);
-                                if (manualMode && active)
-                                  beginManualElement(event);
-                              }}
-                              onPointerMove={
-                                active ? moveManualElement : undefined
-                              }
-                              onPointerUp={
-                                active ? finishManualElement : undefined
-                              }
-                            >
-                              {active &&
-                                visibleRegionElements.map((node, hitIndex) => (
-                                  <button
-                                    key={node.id}
-                                    type="button"
-                                    className={`dws-region-hit${regionMarked.includes(node.id) ? " is-marked" : ""}`}
-                                    data-index={hitIndex + 1}
-                                    style={{
-                                      left: `${node.manual ? node.x * 100 : (node.x / (regionViewport?.width || 1)) * 100}%`,
-                                      top: `${node.manual ? node.y * 100 : (node.y / (regionViewport?.height || 1)) * 100}%`,
-                                      width: `${node.manual ? node.width * 100 : (node.width / (regionViewport?.width || 1)) * 100}%`,
-                                      height: `${node.manual ? node.height * 100 : (node.height / (regionViewport?.height || 1)) * 100}%`,
-                                    }}
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      const marked = regionMarked.includes(
-                                        node.id,
-                                      )
-                                        ? regionMarked.filter(
-                                            (id) => id !== node.id,
-                                          )
-                                        : [...regionMarked, node.id];
-                                      patchActiveRegion({ marked });
-                                    }}
-                                  >
-                                    {(node.text || node.name) && (
-                                      <span>{node.text || node.name}</span>
-                                    )}
-                                  </button>
-                                ))}
-                              {active && manualDraft && (
-                                <span
-                                  className="dws-region-manual-draft"
-                                  style={{
-                                    left: `${manualDraft.x * 100}%`,
-                                    top: `${manualDraft.y * 100}%`,
-                                    width: `${manualDraft.width * 100}%`,
-                                    height: `${manualDraft.height * 100}%`,
-                                  }}
-                                />
-                              )}
-                              {active &&
-                                !manualMode &&
-                                REGION_HANDLES.map((handle) => (
-                                  <button
-                                    key={handle}
-                                    type="button"
-                                    className="dws-region-handle"
-                                    data-handle={handle}
-                                    aria-label={`调整选区 ${handle}`}
-                                  />
-                                ))}
-                            </div>
-                          );
-                        })}
-                        {regionDraft && (
-                          <div
-                            className="dws-region-box is-draft"
-                            style={{
-                              left: `${regionDraft.x * 100}%`,
-                              top: `${regionDraft.y * 100}%`,
-                              width: `${regionDraft.width * 100}%`,
-                              height: `${regionDraft.height * 100}%`,
-                            }}
-                          />
-                        )}
-                      </div>
-                    )}
                   </div>
                 </div>
               ) : (
@@ -3961,11 +3718,19 @@ export function DesignWorkshopView() {
         />
       )}
       {fullscreenOpen && (
-        <EcommerceFullscreenPreview
+        <WallevenImagePreview
           sourceUrl={activeOutput}
           displaySourceUrl={outputMaps.displays[activeOutput] || ""}
           title="UI 设计稿"
+          filename="ui-design.png"
+          metadata={{
+            id: activeVersionLabel || "ui-design",
+            category: pageType.label,
+            ratio: device.ratio,
+            style: visualStyle.label,
+          }}
           gallery={outputMaps.outputs}
+          displaySources={outputMaps.displays}
           onSelect={setActiveOutput}
           onClose={() => setFullscreenOpen(false)}
           onDownload={() =>
@@ -3974,9 +3739,15 @@ export function DesignWorkshopView() {
         />
       )}
       {regionFullscreen && regionResultUrls.length > 0 && (
-        <EcommerceFullscreenPreview
+        <WallevenImagePreview
           sourceUrl={regionPreviewUrl || regionResultUrls[0]}
           title="框选优化结果"
+          filename="ui-region-optimize.png"
+          metadata={{
+            id: "region-optimize",
+            category: "框选优化",
+            ratio: device.ratio,
+          }}
           gallery={regionResultUrls}
           onSelect={setRegionPreviewUrl}
           onClose={() => setRegionFullscreen(false)}
@@ -4056,143 +3827,164 @@ export function DesignWorkshopView() {
           onClose={() => setVersionDrawerOpen(false)}
         />
       )}
-      {qualityOpen && (
-        <QualityDialog
-          light={!isDark}
-          audit={qualityAudit}
-          loading={qualityLoading}
-          error={qualityError}
-          mode={qualityMode}
-          selected={qualitySelected}
-          onMode={(mode) => {
-            setQualityMode(mode);
-            setQualitySelected(
-              qualityByOutput[`${mode}::${activeOutput}`]?.issues?.map(
-                (item) => item.id,
-              ) || [],
-            );
-          }}
-          onRun={runQuality}
-          onToggle={(id) =>
-            setQualitySelected((current) =>
-              current.includes(id)
-                ? current.filter((item) => item !== id)
-                : [...current, id],
-            )
-          }
-          onApply={() => {
-            const prompt = buildQualityIterationPrompt(
-              qualityAudit,
-              qualitySelected,
-            ).trim();
-            if (prompt) {
-              setIterationSource(activeOutput);
-              setIterationBrief(prompt);
-              setQualityOpen(false);
-              setTabletPane("controls");
-            }
-          }}
-          onClose={() => setQualityOpen(false)}
-        />
-      )}
-      {tileDialogOpen &&
-        tileEntry &&
+      {regionDialogOpen &&
         createPortal(
           <div
-            className="dws-tile-result"
+            className="dws-region-workspace"
             role="dialog"
             aria-modal="true"
-            aria-label="四宫格精修结果"
-            onMouseDown={(event) =>
-              event.target === event.currentTarget && setTileDialogOpen(false)
-            }
+            aria-label="框选优化"
+            onClick={(event) => event.stopPropagation()}
           >
-            <section className="dws-tile-result-card">
-              <header>
+            <section className="dws-region-workspace__canvas">
+              <header className="dws-region-workspace__header">
                 <div>
-                  <strong>
-                    四宫格精修结果 <em>Beta</em>
-                  </strong>
-                  <small>
-                    {tileEntry.width}×{tileEntry.height} · 亚像素对齐 ·
-                    无缝合并为 1 张整图
-                  </small>
+                  <span className="dws-region-workspace__mark" aria-hidden="true">
+                    <i className="bi bi-bounding-box-circles" />
+                  </span>
+                  <div>
+                    <strong>框选优化</strong>
+                    <small>
+                      {regionBusy
+                        ? `${regionPendingCount} 个任务正在处理`
+                        : activeVersionLabel || "当前设计稿"}
+                    </small>
+                  </div>
+                </div>
+                <div>
+                  {region && (
+                    <button
+                      type="button"
+                      className="dws-region-size-copy"
+                      aria-label="复制同尺寸选区"
+                      title="复制同尺寸选区"
+                      disabled={regionBusy}
+                      onClick={duplicateActiveRegion}
+                    >
+                      <i className="bi bi-copy" />
+                      {regionOutputWidth} × {regionOutputHeight}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="dws-region-close"
+                    aria-label="关闭框选优化"
+                    onClick={() => setRegionDialogOpen(false)}
+                  >
+                    <i className="bi bi-x-lg" />
+                  </button>
+                </div>
+              </header>
+              <div className="dws-region-workspace__viewport">
+                <div
+                  className="dws-region-workspace__stage"
+                  style={{
+                    aspectRatio: `${activeImageDimensions?.width || 16} / ${activeImageDimensions?.height || 9}`,
+                    width: `min(100%, ${Math.max(32, ((activeImageDimensions?.width || 16) / Math.max(1, activeImageDimensions?.height || 9)) * 82)}vh)`,
+                  }}
+                >
+                  <AuthenticatedImage
+                    src={outputMaps.displays[activeOutput] || activeOutput}
+                    fallbackSrc={activeOutput}
+                    alt="待框选的 UI 设计稿"
+                    loading="eager"
+                    maxDimension={2400}
+                    onLoad={(event) =>
+                      setActiveImageDimensions({
+                        width: event.currentTarget.naturalWidth,
+                        height: event.currentTarget.naturalHeight,
+                      })
+                    }
+                  />
+                  {regionSelectionLayer}
+                </div>
+              </div>
+              <footer className="dws-region-workspace__footer">
+                <span>
+                  {regions.length
+                    ? `已框选 ${regions.length} 处 · 拖空白处可再加`
+                    : "在图片上拖拽创建选区"}
+                </span>
+                <div className="dws-region-workspace__tools">
+                  <button
+                    type="button"
+                    className={regionMode ? "is-active" : ""}
+                    disabled={regionBusy}
+                    onClick={() => {
+                      setRegionMode(true);
+                      setManualMode(false);
+                      setRegionStatus("继续拖拽可再框选一处");
+                    }}
+                  >
+                    {regionMode ? "继续框选中" : "继续框选"}
+                  </button>
+                  {regions.length > 1 && (
+                    <button
+                      type="button"
+                      disabled={regionBusy || !region}
+                      onClick={() => {
+                        const next = regions.filter((item) => item.id !== region?.id);
+                        setRegions(next);
+                        setActiveRegionId(next[0]?.id || "");
+                        if (!next.length) setRegionMode(true);
+                      }}
+                    >
+                      删除此框
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    disabled={regionBusy}
+                    onClick={() => {
+                      clearRegionProcessSession();
+                      regionPersistRef.current = {};
+                      setRegions([]);
+                      setActiveRegionId("");
+                      setRegionDraft(null);
+                      setRegionPreviewUrl("");
+                      setRegionMode(true);
+                      setManualMode(false);
+                      setRegionStatus("");
+                    }}
+                  >
+                    重新框选
+                  </button>
+                </div>
+                {regionBusy && <em>{regionStatus || "正在处理…"}</em>}
+              </footer>
+            </section>
+            <aside className="dws-region-composer">
+              <header className="dws-region-composer__header">
+                <div>
+                  <strong>操作{regions.length > 1 ? ` · ${regions.length} 处` : ""}</strong>
+                  <small>{regionNextStep}</small>
                 </div>
                 <button
                   type="button"
-                  aria-label="关闭"
-                  onClick={() => setTileDialogOpen(false)}
+                  className="dws-region-close"
+                  aria-label="清除框选区域"
+                  disabled={regionBusy || !regions.length}
+                  onClick={clearRegionSession}
+                  title="清除全部选区"
                 >
-                  <i className="bi bi-x-lg" />
+                  <i className="bi bi-trash3" />
                 </button>
               </header>
-              <div className="dws-tile-result-stage">
-                <AuthenticatedImage
-                  src={tileEntry.url}
-                  alt="四宫格精修合并结果"
-                  loading="eager"
-                  maxDimension={2400}
-                />
+            {regions.length > 1 && (
+              <div className="dws-region-composer__boxes" aria-label="切换选区">
+                {regions.map((box, index) => (
+                  <button
+                    key={box.id}
+                    type="button"
+                    className={box.id === region?.id ? "is-on" : ""}
+                    disabled={regionBusy}
+                    onClick={() => setActiveRegionId(box.id)}
+                  >
+                    {index + 1}
+                  </button>
+                ))}
               </div>
-              <footer>
-                <button
-                  type="button"
-                  className="is-secondary"
-                  onClick={() => {
-                    setTileDialogOpen(false);
-                    setTileEntry(null);
-                    setTilePhase("");
-                  }}
-                >
-                  <i className="bi bi-arrow-repeat" />
-                  重新精修（约 4 张图费用）
-                </button>
-                <button
-                  type="button"
-                  className="is-primary"
-                  onClick={() => {
-                    setActiveOutput(tileEntry.url);
-                    setTileDialogOpen(false);
-                    setTilePhase("");
-                    setTabletPane("canvas");
-                  }}
-                >
-                  <i className="bi bi-check2" />
-                  应用到画布
-                </button>
-              </footer>
-            </section>
-          </div>,
-          document.body,
-        )}
-      {regions.length > 0 &&
-        createPortal(
-          <div
-            className="dws-region-composer"
-            style={{
-              left:
-                typeof window === "undefined"
-                  ? 12
-                  : Math.max(12, window.innerWidth - 316),
-              top: 150,
-              width: 300,
-              maxHeight: "calc(100vh - 170px)",
-            }}
-            onClick={(event) => event.stopPropagation()}
-          >
-            <header className="dws-region-composer__header">
-              <strong>
-                框选优化{regions.length > 1 ? ` · ${regions.length} 处` : ""}
-              </strong>
-              <button
-                type="button"
-                className="dws-region-close"
-                aria-label="清除框选区域"
-                onClick={clearRegionSession}
-              >
-                <i className="bi bi-x" />
-              </button>
-            </header>
+            )}
             {regionResultUrls.length > 0 && (
               <div
                 className={`dws-region-composer__previews${regionResultUrls.length > 1 ? " is-multi" : ""}`}
@@ -4203,7 +3995,7 @@ export function DesignWorkshopView() {
                     className="dws-region-composer__preview is-clickable"
                     onClick={() => {
                       setRegionPreviewUrl(url);
-                      setRegionFullscreen(true);
+                      if (canOpenWallevenImagePreview()) setRegionFullscreen(true);
                     }}
                   >
                     <img src={url} alt={`编辑结果 ${index + 1}`} />
@@ -4214,7 +4006,7 @@ export function DesignWorkshopView() {
                       onClick={(event) => {
                         event.stopPropagation();
                         setRegionPreviewUrl(url);
-                        setRegionFullscreen(true);
+                        if (canOpenWallevenImagePreview()) setRegionFullscreen(true);
                       }}
                     >
                       <i className="bi bi-arrows-fullscreen" />
@@ -4224,6 +4016,34 @@ export function DesignWorkshopView() {
                 ))}
               </div>
             )}
+            <div className="dws-region-composer__modes" aria-label="编辑方式">
+              {REGION_EDIT_ACTIONS.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={regionAction === item.id ? "active" : ""}
+                  disabled={regionBusy}
+                  onClick={() => setRegionAction(item.id)}
+                >
+                  <i className={`bi ${item.icon}`} />
+                  <span>{item.label}</span>
+                </button>
+              ))}
+            </div>
+            <textarea
+              value={regionPrompt}
+              rows={4}
+              maxLength={1000}
+              disabled={regionBusy}
+              placeholder={regionActionGuide.placeholder}
+              onChange={(event) => setRegionPrompt(event.target.value)}
+              onKeyDown={(event) => {
+                if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                  event.preventDefault();
+                  if (regionCanProcess && !regionBusy) processRegion();
+                }
+              }}
+            />
             <div className="dws-region-composer__refs">
               <strong>参考图</strong>
               <div>
@@ -4286,75 +4106,78 @@ export function DesignWorkshopView() {
                 }}
               />
             </div>
-            <div className="dws-region-composer__recognition">
-              <strong>识别类型</strong>
-              <div>
-                {REGION_RECOGNITION_OPTIONS.map((item) => (
-                  <label key={item.id}>
-                    <input
-                      type="checkbox"
-                      value={item.id}
-                      checked={regionRecognition.includes(item.id)}
-                      disabled={regionBusy}
-                      onChange={() =>
-                        setRegionRecognition((current) =>
-                          current.includes(item.id)
-                            ? current.filter((id) => id !== item.id)
-                            : [...current, item.id],
-                        )
-                      }
-                    />
-                    <span>{item.label}</span>
-                  </label>
-                ))}
+            <div className="dws-region-composer__elements">
+              <div className="dws-region-composer__recognition">
+                <strong>识别类型</strong>
+                <div>
+                  {REGION_RECOGNITION_OPTIONS.map((item) => (
+                    <label key={item.id}>
+                      <input
+                        type="checkbox"
+                        value={item.id}
+                        checked={regionRecognition.includes(item.id)}
+                        disabled={regionBusy}
+                        onChange={() =>
+                          setRegionRecognition((current) =>
+                            current.includes(item.id)
+                              ? current.filter((id) => id !== item.id)
+                              : [...current, item.id],
+                          )
+                        }
+                      />
+                      <span>{item.label}</span>
+                    </label>
+                  ))}
+                </div>
               </div>
+              <div className="dws-region-composer__element-actions">
+                <button
+                  type="button"
+                  className={manualMode ? "is-active" : ""}
+                  aria-pressed={manualMode}
+                  disabled={regionBusy || !region}
+                  onClick={() => setManualMode((current) => !current)}
+                >
+                  <i className="bi bi-bounding-box" />
+                  {manualMode ? "退出手动框选" : "手动框选元素"}
+                </button>
+                <button
+                  type="button"
+                  disabled={
+                    regionBusy || !region || !regionRecognition.length
+                  }
+                  onClick={analyzeRegion}
+                >
+                  {visibleRegionElements.some((item) => !item.manual)
+                    ? "重新分析元素"
+                    : "开始分析元素"}
+                </button>
+              </div>
+              {regionMarkedElements.length > 0 && !regionResult && (
+                <div className="dws-region-composer__chips">
+                  {regionMarkedElements.map((node) => (
+                    <button
+                      key={node.id}
+                      type="button"
+                      className="dws-region-composer__chip"
+                      onClick={() =>
+                        patchActiveRegion({
+                          marked: regionMarked.filter((id) => id !== node.id),
+                        })
+                      }
+                    >
+                      {node.name || node.text || node.type}
+                      <i className="bi bi-x" />
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
             <p
               className={`dws-region-composer__status${regionError ? " is-error" : regionResult ? " is-done" : ""}`}
             >
-              {regionError || regionStatus}
+              {regionError || regionStatus || regionNextStep}
             </p>
-            {regionMarkedElements.length > 0 && !regionResult && (
-              <div className="dws-region-composer__chips">
-                {regionMarkedElements.map((node) => (
-                  <button
-                    key={node.id}
-                    type="button"
-                    className="dws-region-composer__chip"
-                    onClick={() =>
-                      patchActiveRegion({
-                        marked: regionMarked.filter((id) => id !== node.id),
-                      })
-                    }
-                  >
-                    {node.name || node.text || node.type}
-                    <i className="bi bi-x" />
-                  </button>
-                ))}
-              </div>
-            )}
-            <div className="dws-region-composer__modes" aria-label="编辑方式">
-              {REGION_EDIT_ACTIONS.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  className={regionAction === item.id ? "active" : ""}
-                  disabled={regionBusy}
-                  onClick={() => setRegionAction(item.id)}
-                >
-                  <i className={`bi ${item.icon}`} />
-                  {item.label}
-                </button>
-              ))}
-            </div>
-            <textarea
-              value={regionPrompt}
-              rows={4}
-              maxLength={1000}
-              disabled={regionBusy}
-              placeholder="补充具体修改要求"
-              onChange={(event) => setRegionPrompt(event.target.value)}
-            />
             <label className="dws-region-composer__option">
               <input
                 type="checkbox"
@@ -4376,8 +4199,23 @@ export function DesignWorkshopView() {
             <p className="dws-region-composer__cost">
               图片编辑 · 输出 {regionOutputSizeLabel} · 预计消耗{" "}
               {regions.length} 张图费用
+              <em> ⌘/Ctrl + Enter</em>
             </p>
             <div className="dws-region-composer__actions">
+              <button
+                type="button"
+                className="is-primary"
+                disabled={regionBusy || !regionCanProcess}
+                onClick={processRegion}
+              >
+                {regionBusy
+                  ? "处理中…"
+                  : regionResultUrls.length
+                    ? "重新编辑"
+                    : regions.length > 1
+                      ? `开始图片编辑（${regions.length}）`
+                      : "开始图片编辑"}
+              </button>
               {regionResultUrls.length > 0 && (
                 <button
                   type="button"
@@ -4392,102 +4230,19 @@ export function DesignWorkshopView() {
                       : "满意，加入素材库"}
                 </button>
               )}
-              <button
-                type="button"
-                className={manualMode ? "is-active" : ""}
-                aria-pressed={manualMode}
-                disabled={regionBusy}
-                onClick={() => setManualMode((current) => !current)}
-              >
-                <i className="bi bi-bounding-box" />
-                {manualMode ? "退出手动框选" : "手动框选元素"}
-              </button>
               {regionResultUrls.length > 0 && (
                 <button
                   type="button"
                   onClick={() => {
                     setRegionPreviewUrl(regionResultUrls[0]);
-                    setRegionFullscreen(true);
+                    if (canOpenWallevenImagePreview()) setRegionFullscreen(true);
                   }}
                 >
                   查看大图
                 </button>
               )}
-              <button
-                type="button"
-                className="is-primary"
-                disabled={
-                  regionBusy ||
-                  (!regionPrompt.trim() &&
-                    !regions.some((box) => box.marked?.length) &&
-                    !(
-                      regionReferences.length &&
-                      ["improve-icon", "custom"].includes(regionAction)
-                    ))
-                }
-                onClick={processRegion}
-              >
-                {regionBusy
-                  ? "处理中…"
-                  : regionResultUrls.length
-                    ? "重新编辑"
-                    : regions.length > 1
-                      ? `开始图片编辑（${regions.length}）`
-                      : "开始图片编辑"}
-              </button>
-              <button
-                type="button"
-                disabled={regionBusy || !regionRecognition.length}
-                onClick={analyzeRegion}
-              >
-                {visibleRegionElements.some((item) => !item.manual)
-                  ? "重新分析元素"
-                  : "开始分析元素"}
-              </button>
-              <button
-                type="button"
-                className={regionMode ? "is-active" : ""}
-                disabled={regionBusy}
-                onClick={() => {
-                  setRegionMode(true);
-                  setManualMode(false);
-                  setRegionStatus("继续拖拽可再框选一处");
-                }}
-              >
-                {regionMode ? "继续框选中" : "继续框选"}
-              </button>
-              {regions.length > 1 && (
-                <button
-                  type="button"
-                  disabled={regionBusy || !region}
-                  onClick={() => {
-                    const next = regions.filter((item) => item.id !== region?.id);
-                    setRegions(next);
-                    setActiveRegionId(next[0]?.id || "");
-                    if (!next.length) setRegionMode(true);
-                  }}
-                >
-                  删除此框
-                </button>
-              )}
-              <button
-                type="button"
-                disabled={regionBusy}
-                onClick={() => {
-                  clearRegionProcessSession();
-                  regionPersistRef.current = {};
-                  setRegions([]);
-                  setActiveRegionId("");
-                  setRegionDraft(null);
-                  setRegionPreviewUrl("");
-                  setRegionMode(true);
-                  setManualMode(false);
-                  setRegionStatus("");
-                }}
-              >
-                重新框选
-              </button>
             </div>
+            </aside>
           </div>,
           document.body,
         )}

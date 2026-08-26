@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { CANVAS_WORKFLOW_TEMPLATES, createCanvasProjectFromTemplate } from "../src/canvas/templates/canvas-workflow-templates.ts";
 import { createCanvasProjectFromUploadedTemplate } from "../src/canvas/lib/canvas/canvas-workflow-template-project.ts";
+import { appendConnectedTextToPrompt } from "../src/canvas/lib/canvas/canvas-prompt-context.ts";
 
 function assertAcyclic(project) {
     const configs = new Set(project.nodes.filter((node) => node.type === "config").map((node) => node.id));
@@ -33,19 +34,24 @@ function assertAcyclic(project) {
 }
 
 test("ships the production templates and the quick-test workflow by category", () => {
-    assert.equal(CANVAS_WORKFLOW_TEMPLATES.length, 41);
+    assert.equal(CANVAS_WORKFLOW_TEMPLATES.length, 42);
     assert.deepEqual(
         Object.fromEntries([...new Set(CANVAS_WORKFLOW_TEMPLATES.map((item) => item.category))].map((category) => [category, CANVAS_WORKFLOW_TEMPLATES.filter((item) => item.category === category).length])),
-        { "quick-test": 1, industry: 15, "model-poster": 5, "commerce-poster": 5, card: 5, "game-model": 5, icon: 5 },
+        { "quick-test": 1, industry: 16, "model-poster": 5, "commerce-poster": 5, card: 5, "game-model": 5, icon: 5 },
     );
 });
 
 test("builds exact 10, 50, 80, and 100 node projects without audio or video", () => {
     for (const template of CANVAS_WORKFLOW_TEMPLATES) {
         const project = createCanvasProjectFromTemplate(template);
-        assert.equal(project.nodes.length, template.nodeCount, template.id);
+        if (template.id === "ecommerce-detail-replica") assert.equal(project.nodes.filter((node) => !node.metadata?.hidden).length, template.nodeCount, template.id);
+        else assert.equal(project.nodes.length, template.nodeCount, template.id);
         assert.equal(new Set(project.nodes.map((node) => node.id)).size, project.nodes.length, template.id);
         assert.equal(project.nodes.some((node) => node.type === "audio" || node.type === "video"), false, template.id);
+        if (template.id === "ecommerce-detail-replica") {
+            assertAcyclic(project);
+            continue;
+        }
         const minimumConfigCount = template.nodeCount === 10 ? 3 : 22;
         assert.ok(project.nodes.filter((node) => node.type === "config").length >= minimumConfigCount, template.id);
         assert.ok(project.nodes.some((node) => node.type === "config" && node.metadata?.generationMode === "image" && node.metadata?.background === "transparent"), `${template.id}: missing transparent image stage`);
@@ -66,6 +72,58 @@ test("builds exact 10, 50, 80, and 100 node projects without audio or video", ()
         });
         assertAcyclic(project);
     }
+});
+
+test("builds the Senge ecommerce replica topology with one image group and six original branches", () => {
+    const exactAnalysisPrompt = "根据上传的详情图，反推详情图的排版逻辑与文案。 再根据最后一个上传的新产品图，撰写的详情图文案，新文案的排版、细节、要和原来的一模一样；如果人物、模特的要描述清楚。 几个详情图就写几屏文案，最后一张产品图不不算。 目的是复刻详情图。";
+    const exactScreenPrompts = [
+        "获取新产品复刻文案，第1屏的文案，生成详情图。",
+        "获取新产品复刻文案，第2屏的文案，生成详情图。",
+        "获取新产品复刻文案，第3屏的文案，生成详情图。",
+        "获取新产品复刻文案，第4屏的文案，生成详情图。",
+        "获取新产品复刻文案，第3屏的文案，生成详情图。",
+        "获取新产品复刻文案，第3屏的文案，生成详情图。",
+    ];
+    const project = createCanvasProjectFromTemplate("ecommerce-detail-replica");
+    const configs = project.nodes.filter((node) => node.type === "config");
+    const analysis = configs.find((node) => node.id.endsWith("analysis-config"));
+    const product = project.nodes.find((node) => node.id.endsWith("new-product"));
+    const analysisOutput = project.nodes.find((node) => node.id.endsWith("analysis-output"));
+    const oldDetailGroup = project.nodes.find((node) => node.id.endsWith("old-detail-group"));
+    const imageConfigs = configs.filter((node) => node.metadata?.generationMode === "image");
+    assert.equal(project.nodes.length, 17);
+    assert.equal(project.connections.length, 22);
+    assert.equal(project.nodes.filter((node) => !node.metadata?.hidden).length, 10);
+    assert.equal(project.nodes.filter((node) => node.metadata?.hidden).length, 7);
+    assert.equal(configs.length, 7);
+    assert.equal(imageConfigs.length, 6);
+    assert.equal(analysis?.metadata?.generationMode, "text");
+    assert.equal(analysis?.metadata?.composerContent, exactAnalysisPrompt);
+    assert.equal(project.connections.filter((edge) => edge.toNodeId === analysis?.id).length, 3);
+    assert.ok(product && analysisOutput && oldDetailGroup);
+    assert.equal(oldDetailGroup.metadata?.images?.length, 3);
+    assert.equal(oldDetailGroup.metadata?.primaryImageId, oldDetailGroup.metadata?.images?.[0]?.id);
+    [...(oldDetailGroup.metadata?.images || []), product.metadata].forEach((metadata) => {
+        assert.equal(metadata?.status, "success");
+        assert.match(metadata?.content || "", /^\/assets\/canvas-workflow-demo\/ecommerce-detail-replica\/senge-.+\.webp$/);
+        assert.equal(metadata?.mimeType, "image/webp");
+    });
+    imageConfigs.forEach((node, index) => {
+        const incoming = project.connections.filter((edge) => edge.toNodeId === node.id).map((edge) => edge.fromNodeId);
+        assert.deepEqual(new Set(incoming), new Set([product.id, analysisOutput.id]));
+        assert.equal(node.metadata?.model, "gpt-image-2");
+        assert.equal(node.metadata?.size, "9:16");
+        assert.equal(node.metadata?.workflowOutputNodeIds?.length, 1);
+        assert.equal(node.metadata?.composerContent, exactScreenPrompts[index]);
+    });
+    assertAcyclic(project);
+});
+
+test("keeps the Senge prompt unchanged in the node and adds connected text only at execution time", () => {
+    const storedPrompt = "获取新产品复刻文案，第1屏的文案，生成详情图。";
+    assert.equal(appendConnectedTextToPrompt(storedPrompt, []), storedPrompt);
+    assert.equal(appendConnectedTextToPrompt(storedPrompt, [undefined, "上游复刻文案"]), `${storedPrompt}\n\n上游复刻文案`);
+    assert.equal(storedPrompt, "获取新产品复刻文案，第1屏的文案，生成详情图。");
 });
 
 test("builds a complete deterministic 10-node ecommerce quick-test workflow", () => {
@@ -166,4 +224,47 @@ test("creates a clean project from a backend-uploaded template", () => {
     assert.equal(project.nodes[0].metadata.images[0].status, "idle");
     assert.equal(project.nodes[0].metadata.images[0].taskId, undefined);
     assert.equal(project.nodes[0].metadata.images[0].errorDetails, undefined);
+});
+
+test("keeps migrated template image assets when creating a user project", () => {
+    const storageKey = "canvas-template-assets/template-1/reference.webp";
+    const content = `/api/v1/files/${storageKey}`;
+    const project = createCanvasProjectFromUploadedTemplate({
+        id: "template-1",
+        slug: "template-with-image",
+        title: "带参考图模板",
+        category: "test",
+        categoryLabel: "测试",
+        industry: "",
+        summary: "",
+        platforms: [],
+        deliverables: [],
+        accent: "#16a34a",
+        nodeCount: 1,
+        sort: 0,
+        document: {
+            version: 3,
+            connections: [],
+            nodes: [{
+                id: "image-1",
+                type: "image",
+                title: "商品参考图",
+                position: { x: 20, y: 40 },
+                width: 320,
+                height: 240,
+                metadata: {
+                    content,
+                    storageKey,
+                    status: "success",
+                    images: [{ id: "result-1", content, storageKey, status: "success" }],
+                },
+            }],
+        },
+    });
+
+    assert.equal(project.nodes[0].metadata.content, content);
+    assert.equal(project.nodes[0].metadata.storageKey, storageKey);
+    assert.equal(project.nodes[0].metadata.status, "success");
+    assert.equal(project.nodes[0].metadata.images[0].content, content);
+    assert.equal(project.nodes[0].metadata.images[0].status, "success");
 });
