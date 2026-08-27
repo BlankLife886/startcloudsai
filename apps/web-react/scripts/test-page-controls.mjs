@@ -70,4 +70,8 @@ test("stored page controls override defaults without dropping new keys", () => {
     pageControlForLocation(controls, "/studio").status,
     PAGE_STATUS.MAINTENANCE,
   );
+  assert.equal(
+    pageControlForLocation(controls, "/").status,
+    PAGE_STATUS.NORMAL,
+  );
 });

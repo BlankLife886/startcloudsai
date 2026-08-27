@@ -51,6 +51,14 @@ const session = await readFile(
   new URL("../src/views/EcommerceBusinessSession.jsx", import.meta.url),
   "utf8",
 );
+const jobsSource = await readFile(
+  new URL("../src/features/ecommerce/useEcommerceJobs.js", import.meta.url),
+  "utf8",
+);
+const tasksApiSource = await readFile(
+  new URL("../src/legacy-modules/services/tasksApi.js", import.meta.url),
+  "utf8",
+);
 for (const leakedOwner of [
   "starclouds-accessory-reviews-v1",
   "starclouds-accessory-qa-v1",
@@ -113,6 +121,20 @@ assert.ok(
 assert.ok(
   session.includes("finishTaskLaunch();"),
   "task launch failures and acknowledgements must release navigation",
+);
+assert.ok(
+  session.includes("jobs.quoteBatch({") &&
+    session.includes("expectedUnitPriceCents: quotedUnit"),
+  "ecommerce generation must submit the same authoritative price the user confirmed",
+);
+assert.ok(
+  jobsSource.includes('String(key).startsWith("prepare-")') &&
+    jobsSource.includes("pendingControllers.forEach"),
+  "stop generation must also abort uploads and task preparation before a task id exists",
+);
+assert.ok(
+  tasksApiSource.includes("expectedUnitPriceCents != null"),
+  "an omitted expected price must not be serialized as zero",
 );
 assert.equal(session.includes("function TryonLiveStage"), false);
 assert.equal(session.includes("clone-settings-section"), false);

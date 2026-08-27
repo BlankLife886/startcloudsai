@@ -443,7 +443,7 @@ func (s *Server) listTasks(c *gin.Context) {
 		source = store.CanvasTaskSource
 		taskType = ""
 	}
-	if taskType != "" && !store.Contains(store.TaskTypes, taskType) {
+	if taskType != "" && taskType != store.PromptTaskTypeAssistant && !store.Contains(store.TaskTypes, taskType) {
 		fail(c, apperr.E("validation_error", "无效的任务类型", 422))
 		return
 	}

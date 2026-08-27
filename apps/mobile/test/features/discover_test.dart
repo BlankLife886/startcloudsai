@@ -102,6 +102,7 @@ Widget _app({
   bool communityOnly = false,
   bool promptLibraryOnly = false,
   Brightness brightness = Brightness.light,
+  EdgeInsets padding = EdgeInsets.zero,
   List<PromptPageRequest>? promptPageRequests,
   List<GalleryPageRequest>? galleryPageRequests,
 }) {
@@ -182,7 +183,7 @@ Widget _app({
       builder: (context, child) => MediaQuery(
         data: MediaQuery.of(
           context,
-        ).copyWith(textScaler: TextScaler.linear(textScale)),
+        ).copyWith(textScaler: TextScaler.linear(textScale), padding: padding),
         child: child!,
       ),
       home: screen,
@@ -203,11 +204,34 @@ void main() {
 
       final scaffold = tester.widget<Scaffold>(find.byType(Scaffold));
       expect(scaffold.backgroundColor, expectedTheme.colorScheme.surface);
-      expect(find.byType(AppBar), findsNothing);
-      expect(find.byKey(const Key('home-tabs')), findsNothing);
+      expect(find.byKey(const Key('home-tabs')), findsOneWidget);
+      expect(find.byKey(const Key('home-tab-home')), findsOneWidget);
+      expect(find.byKey(const Key('home-tab-prompts')), findsOneWidget);
+      expect(find.byKey(const Key('home-tab-community')), findsOneWidget);
       expect(find.text('今天，做点新东西'), findsNothing);
       expect(tester.takeException(), isNull);
     }
+  });
+
+  testWidgets('home tabs stay visible below a device status bar', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _app(
+        promptRequests: [],
+        galleryRequests: [],
+        padding: const EdgeInsets.only(top: 59),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final tabs = tester.getRect(find.byKey(const Key('home-tabs')));
+    expect(tabs.top, greaterThanOrEqualTo(59));
+    expect(tabs.height, 48);
+    expect(find.text('首页'), findsWidgets);
+    expect(find.text('提示词'), findsWidgets);
+    expect(find.text('社区'), findsWidgets);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('home has no sidebar toggle, account icon, or drawer', (
@@ -222,13 +246,8 @@ void main() {
     expect(find.byTooltip('登录'), findsNothing);
     expect(find.byTooltip('我的账号'), findsNothing);
     expect(find.byKey(const Key('home-sidebar')), findsNothing);
-    expect(
-      find.descendant(
-        of: find.byType(AppBar),
-        matching: find.byType(IconButton),
-      ),
-      findsNothing,
-    );
+    expect(find.byType(AppBar), findsNothing);
+    expect(find.byKey(const Key('home-tabs')), findsOneWidget);
     await tester.flingFrom(const Offset(4, 240), const Offset(280, 0), 1200);
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('home-sidebar')), findsNothing);
@@ -328,11 +347,11 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(promptRequests, [const PromptQuery(sort: 'latest', limit: 8)]);
-      expect(find.byKey(const Key('home-tabs')), findsNothing);
-      expect(find.byKey(const Key('home-tab-home')), findsNothing);
-      expect(find.byKey(const Key('home-tab-prompts')), findsNothing);
-      expect(find.byKey(const Key('home-tab-community')), findsNothing);
-      expect(find.text('提示词'), findsOneWidget);
+      expect(find.byKey(const Key('home-tabs')), findsOneWidget);
+      expect(find.byKey(const Key('home-tab-home')), findsOneWidget);
+      expect(find.byKey(const Key('home-tab-prompts')), findsOneWidget);
+      expect(find.byKey(const Key('home-tab-community')), findsOneWidget);
+      expect(find.text('提示词'), findsWidgets);
       expect(find.byKey(const Key('all-prompts-action')), findsOneWidget);
       expect(find.byType(SearchBar), findsNothing);
       expect(find.byKey(const Key('prompt-category-portrait')), findsNothing);
@@ -1004,7 +1023,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('提示词'), findsOneWidget);
+    expect(find.text('提示词'), findsWidgets);
     expect(find.byKey(const Key('all-prompts-action')), findsOneWidget);
     expect(find.byType(SearchBar), findsNothing);
     expect(find.byKey(const Key('prompt-category-portrait')), findsNothing);
@@ -1037,7 +1056,8 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('提示词'), findsOneWidget);
+    expect(find.byKey(const Key('home-tab-prompts')), findsOneWidget);
+    expect(find.text('提示词'), findsWidgets);
     expect(find.text('社区作品'), findsNothing);
     expect(find.text('这个分类暂时没有公开作品'), findsNothing);
     expect(tester.takeException(), isNull);

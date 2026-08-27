@@ -110,20 +110,31 @@ export function ConnectionCreateMenu({
     onClose,
 }: {
     pending: PendingConnectionCreate;
-    onCreate: (type: CanvasNodeType.Image | CanvasNodeType.Text | CanvasNodeType.Config | CanvasNodeType.Video | CanvasNodeType.Audio) => void;
+    onCreate: (type: string) => void;
     onClose: () => void;
 }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const { t } = useTranslation();
+    useNodeRegistryVersion();
+    const definitions = listNodeDefinitions().filter((def) => def.showInCreateMenu !== false);
+    const basic = definitions.filter((def) => getNodePluginId(def.type) === "builtin");
+    const extensions = definitions.filter((def) => getNodePluginId(def.type) !== "builtin");
     return (
         <MenuShell connection className="w-[300px] p-2.5" style={{ left: pending.position.x, top: pending.position.y }}>
             <MenuHeader title={t("canvas.createMenu.fromNode")} onClose={onClose} />
-            <div className="grid gap-0.5">
-                <CreateListOption theme={theme} accent={nodeTypeColor(CanvasNodeType.Text)} icon={<List />} title={t("canvas.createMenu.text")} description={t("canvas.createMenu.textDescription")} onClick={() => onCreate(CanvasNodeType.Text)} />
-                <CreateListOption theme={theme} accent={nodeTypeColor(CanvasNodeType.Image)} icon={<ImageIcon />} title={t("canvas.createMenu.image")} onClick={() => onCreate(CanvasNodeType.Image)} />
-                <CreateListOption theme={theme} accent={nodeTypeColor(CanvasNodeType.Video)} icon={<Video />} title={t("canvas.createMenu.video")} description={t("canvas.unavailable")} disabled={!isCanvasNodeTypeEnabled(CanvasNodeType.Video)} onClick={() => onCreate(CanvasNodeType.Video)} />
-                <CreateListOption theme={theme} accent={nodeTypeColor(CanvasNodeType.Audio)} icon={<Music2 />} title={t("canvas.createMenu.audio")} description={t("canvas.unavailable")} disabled={!isCanvasNodeTypeEnabled(CanvasNodeType.Audio)} onClick={() => onCreate(CanvasNodeType.Audio)} />
-                <CreateListOption theme={theme} accent={nodeTypeColor(CanvasNodeType.Config)} icon={<Settings2 />} title={t("canvas.createMenu.config")} description={t("canvas.createMenu.configDescription")} onClick={() => onCreate(CanvasNodeType.Config)} />
+            <div className="thin-scrollbar max-h-[min(62vh,520px)] overflow-y-auto pr-0.5">
+                {basic.length ? <SectionLabel>{t("canvas.createMenu.basic")}</SectionLabel> : null}
+                <div className="grid gap-0.5">
+                    {basic.map((def) => (
+                        <CreateListOption key={def.type} theme={theme} accent={nodeAccent(def)} icon={def.icon} title={def.title} description={def.description} disabled={!isCanvasNodeTypeEnabled(def.type)} onClick={() => onCreate(def.type)} />
+                    ))}
+                </div>
+                {extensions.length ? <SectionLabel>{t("canvas.createMenu.extensions")}</SectionLabel> : null}
+                <div className="grid gap-0.5">
+                    {extensions.map((def) => (
+                        <CreateListOption key={def.type} theme={theme} accent={nodeAccent(def)} icon={def.icon} title={def.title} description={def.description} disabled={!isCanvasNodeTypeEnabled(def.type)} onClick={() => onCreate(def.type)} />
+                    ))}
+                </div>
             </div>
         </MenuShell>
     );

@@ -33,7 +33,7 @@ async function apiRequest(path, options = {}) {
 
 function safeRedirect(value) {
   const path = String(value || "").trim();
-  return path.startsWith("/") && !path.startsWith("//") ? path : "/studio";
+  return path.startsWith("/") && !path.startsWith("//") ? path : "/";
 }
 
 export function AuthAccountView() {

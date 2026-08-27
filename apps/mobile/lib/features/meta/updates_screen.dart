@@ -1,13 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/providers.dart';
+import '../../core/widgets/app_notice.dart';
 import '../../core/widgets/app_top_bar.dart';
 import 'meta.dart';
 
 class UpdatesScreen extends ConsumerStatefulWidget {
-  const UpdatesScreen({super.key});
+  const UpdatesScreen({this.openExternal, super.key});
+
+  final Future<bool> Function(Uri uri)? openExternal;
 
   @override
   ConsumerState<UpdatesScreen> createState() => _UpdatesScreenState();
@@ -15,6 +20,34 @@ class UpdatesScreen extends ConsumerStatefulWidget {
 
 class _UpdatesScreenState extends ConsumerState<UpdatesScreen> {
   String? _tag;
+
+  Future<void> _openAnnouncement(AppAnnouncement item) async {
+    final raw = item.ctaUrl?.trim() ?? '';
+    final uri = Uri.tryParse(raw);
+    if (uri == null || raw.isEmpty) return;
+    if (!uri.hasScheme && raw.startsWith('/')) {
+      final router = GoRouter.maybeOf(context);
+      if (router == null) {
+        AppNotice.error(context, '暂时无法打开此页面');
+        return;
+      }
+      router.push(uri.toString());
+      return;
+    }
+    if (uri.scheme != 'http' && uri.scheme != 'https') {
+      AppNotice.error(context, '公告链接不可用');
+      return;
+    }
+    try {
+      final opened = await (widget.openExternal ?? _launchExternal)(uri);
+      if (mounted && !opened) AppNotice.error(context, '暂时无法打开公告链接');
+    } catch (_) {
+      if (mounted) AppNotice.error(context, '暂时无法打开公告链接');
+    }
+  }
+
+  Future<bool> _launchExternal(Uri uri) =>
+      launchUrl(uri, mode: LaunchMode.externalApplication);
 
   Future<void> _refresh() async {
     ref.invalidate(metaFeedProvider);
@@ -70,8 +103,10 @@ class _UpdatesScreenState extends ConsumerState<UpdatesScreen> {
               sliver: SliverList.separated(
                 itemCount: feed.announcements.length,
                 separatorBuilder: (_, _) => const SizedBox(height: 10),
-                itemBuilder: (context, index) =>
-                    _AnnouncementCard(item: feed.announcements[index]),
+                itemBuilder: (context, index) => _AnnouncementCard(
+                  item: feed.announcements[index],
+                  onOpen: () => _openAnnouncement(feed.announcements[index]),
+                ),
               ),
             ),
           ],
@@ -117,9 +152,11 @@ class _UpdatesOverview extends StatelessWidget {
     final latest = feed.latest;
     final colors = Theme.of(context).colorScheme;
     return DecoratedBox(
+      key: const Key('updates-overview-surface'),
       decoration: BoxDecoration(
-        color: colors.secondaryContainer,
-        borderRadius: BorderRadius.circular(18),
+        color: colors.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: colors.outlineVariant),
       ),
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -130,12 +167,12 @@ class _UpdatesOverview extends StatelessWidget {
               width: 44,
               height: 44,
               decoration: BoxDecoration(
-                color: colors.secondary,
-                borderRadius: BorderRadius.circular(18),
+                color: colors.secondaryContainer,
+                borderRadius: BorderRadius.circular(8),
               ),
               child: Icon(
                 Icons.new_releases_outlined,
-                color: colors.onSecondary,
+                color: colors.onSecondaryContainer,
               ),
             ),
             const SizedBox(width: 12),
@@ -224,66 +261,93 @@ class _SectionTitle extends StatelessWidget {
 }
 
 class _AnnouncementCard extends ConsumerWidget {
-  const _AnnouncementCard({required this.item});
+  const _AnnouncementCard({required this.item, required this.onOpen});
 
   final AppAnnouncement item;
+  final VoidCallback onOpen;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final resolvedImage = ref
         .watch(apiClientProvider)
         .resolveUrl(item.imageUrl ?? '');
-    return Card(
-      clipBehavior: Clip.antiAlias,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (resolvedImage.isNotEmpty)
-            AspectRatio(
-              aspectRatio: 16 / 7,
-              child: Image.network(
-                resolvedImage,
-                fit: BoxFit.cover,
-                errorBuilder: (_, _, _) => const SizedBox.shrink(),
+    final colors = Theme.of(context).colorScheme;
+    final hasAction = item.ctaUrl?.trim().isNotEmpty == true;
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(8),
+      child: DecoratedBox(
+        key: Key('announcement-surface-${item.id}'),
+        decoration: BoxDecoration(
+          color: colors.surfaceContainerLow,
+          border: Border.all(color: colors.outlineVariant),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (resolvedImage.isNotEmpty)
+              AspectRatio(
+                aspectRatio: 16 / 7,
+                child: Image.network(
+                  resolvedImage,
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                ),
+              ),
+            Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(Icons.campaign, size: 19, color: colors.tertiary),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          item.title,
+                          style: const TextStyle(fontWeight: FontWeight.w800),
+                        ),
+                      ),
+                    ],
+                  ),
+                  if (item.body.isNotEmpty) ...[
+                    const SizedBox(height: 9),
+                    Text(item.body, style: const TextStyle(height: 1.45)),
+                  ],
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          _announcementPeriod(item),
+                          style: Theme.of(context).textTheme.bodySmall
+                              ?.copyWith(color: colors.onSurfaceVariant),
+                        ),
+                      ),
+                      if (hasAction)
+                        TextButton.icon(
+                          key: Key('announcement-action-${item.id}'),
+                          onPressed: onOpen,
+                          iconAlignment: IconAlignment.end,
+                          icon: const Icon(
+                            Icons.arrow_forward_rounded,
+                            size: 17,
+                          ),
+                          label: Text(
+                            item.ctaText?.trim().isNotEmpty == true
+                                ? item.ctaText!.trim()
+                                : '查看详情',
+                          ),
+                        ),
+                    ],
+                  ),
+                ],
               ),
             ),
-          Padding(
-            padding: const EdgeInsets.all(14),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Icon(
-                      Icons.campaign,
-                      size: 19,
-                      color: Theme.of(context).colorScheme.tertiary,
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        item.title,
-                        style: const TextStyle(fontWeight: FontWeight.w800),
-                      ),
-                    ),
-                  ],
-                ),
-                if (item.body.isNotEmpty) ...[
-                  const SizedBox(height: 9),
-                  Text(item.body, style: const TextStyle(height: 1.45)),
-                ],
-                const SizedBox(height: 10),
-                Text(
-                  _announcementPeriod(item),
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

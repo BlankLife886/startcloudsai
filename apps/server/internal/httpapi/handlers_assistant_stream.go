@@ -69,6 +69,8 @@ func assistantPendingToolEvent(message *store.AssistantMessage) (assistantstream
 	arguments, _ := raw["arguments"].(string)
 	stage, _ := raw["stage"].(string)
 	title, _ := raw["title"].(string)
+	execution, _ := raw["execution"].(string)
+	status, _ := raw["status"].(string)
 	requestID = strings.TrimSpace(requestID)
 	name = strings.TrimSpace(name)
 	if requestID == "" || name == "" {
@@ -85,6 +87,8 @@ func assistantPendingToolEvent(message *store.AssistantMessage) (assistantstream
 			Name:      name,
 			Arguments: arguments,
 			Title:     title,
+			Execution: execution,
+			Status:    status,
 		},
 	}, true
 }

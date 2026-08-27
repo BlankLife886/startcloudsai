@@ -486,6 +486,96 @@ test.describe('React public pages interaction contract', () => {
     await expect.poll(() => createCount).toBe(1)
   })
 
+  test('text-to-image refreshes an outdated price before the user submits again', async ({
+    page,
+  }) => {
+    await mockTextToImageApis(page)
+    const quotePrices = [3, 5]
+    const createBodies = []
+    let quoteCount = 0
+    await page.route('**/api/v1/tasks**', async (route) => {
+      const url = new URL(route.request().url())
+      if (url.pathname.endsWith('/tasks/quote')) {
+        const unitPriceCents = quotePrices[Math.min(quoteCount, quotePrices.length - 1)]
+        quoteCount += 1
+        await fulfillJson(route, {
+          currency: 'credits',
+          workspace: 't2i',
+          modelId: 'image-pro',
+          unitPriceCents,
+          totalPriceCents: unitPriceCents,
+          authoritative: true,
+        })
+        return
+      }
+      if (route.request().method() === 'POST') {
+        const body = route.request().postDataJSON()
+        createBodies.push(body)
+        if (createBodies.length === 1) {
+          await route.fulfill({
+            status: 409,
+            contentType: 'application/json',
+            body: JSON.stringify({
+              success: false,
+              error: {
+                code: 'price_changed',
+                message: '任务价格已更新，请确认最新费用后重试',
+              },
+            }),
+          })
+          return
+        }
+        await fulfillJson(route, {
+          task: {
+            id: 'price-refreshed-task',
+            type: 't2i',
+            status: 'queued',
+            prompt: body.prompt,
+            params: body.params,
+            createdAt: '2026-08-27T08:00:00Z',
+          },
+        })
+        return
+      }
+      if (url.searchParams.get('ids') === 'price-refreshed-task') {
+        await fulfillJson(route, {
+          items: [{
+            id: 'price-refreshed-task',
+            type: 't2i',
+            status: 'succeeded',
+            prompt: createBodies[1]?.prompt || '',
+            params: createBodies[1]?.params || {},
+            outputUrls: ['/sucai/home-intro-02.png'],
+            originalUrls: ['/sucai/home-intro-02.png'],
+            thumbnailUrls: ['/sucai/home-intro-02.png'],
+            startedAt: '2026-08-27T08:00:01Z',
+            finishedAt: '2026-08-27T08:00:04Z',
+            createdAt: '2026-08-27T08:00:00Z',
+          }],
+        })
+        return
+      }
+      await fulfillJson(route, { items: [], nextCursor: null })
+    })
+
+    await page.goto('/text-to-image', { waitUntil: 'domcontentloaded' })
+    await page.getByLabel('创作描述').fill('价格快照冲突恢复测试')
+    await page.getByRole('button', { name: '立即生成' }).click()
+    await expect(page.locator('.ai-cost-confirm-total')).toContainText('3 积分')
+    await page.getByRole('button', { name: '确认', exact: true }).click()
+
+    await expect(page.getByRole('dialog', { name: '确认生成费用' })).toBeVisible()
+    await expect(page.locator('.ai-cost-confirm-total')).toContainText('5 积分')
+    await expect(page.locator('.ai-cost-confirm-warn')).toContainText('任务价格已更新')
+    expect(createBodies).toHaveLength(1)
+
+    await page.getByRole('button', { name: '确认', exact: true }).click()
+    await expect.poll(() => createBodies.length).toBe(2)
+    expect(createBodies[1].expectedUnitPriceCents).toBe(5)
+    await expect(page.locator('.t2i-stage-media img')).toBeVisible({ timeout: 8_000 })
+    expect(quoteCount).toBe(2)
+  })
+
   test('text-to-image uses provider-native settings when model formats are not declared', async ({
     page,
   }) => {

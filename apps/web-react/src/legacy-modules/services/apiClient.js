@@ -105,8 +105,12 @@ export async function apiRequest(path, options = {}) {
 
   const payload = await parsePayload(response)
   if (!response.ok || !payload || payload.success !== true) {
-    const error = new ApiError(String(payload?.error || `${fallbackMessage}（${response.status}）`), {
-      code: String(payload?.code || (response.status >= 500 ? 'internal_error' : 'request_failed')),
+    const errorPayload = payload?.error
+    const errorMessage = typeof errorPayload === 'string'
+      ? errorPayload
+      : errorPayload?.message || payload?.message || `${fallbackMessage}（${response.status}）`
+    const error = new ApiError(String(errorMessage), {
+      code: String(payload?.code || errorPayload?.code || (response.status >= 500 ? 'internal_error' : 'request_failed')),
       status: response.status,
     })
     if (response.status === 401 && error.code === 'auth_required' && unauthorizedHandler) {

@@ -835,7 +835,10 @@ func appendTaskOriginFilter(sql string, args []any, source, excludeSource string
 }
 
 const userHistoryTaskSourceSQL = `
-		SELECT id, user_id, type, model, status, prompt, params, count, input_keys,
+		SELECT id, user_id,
+			CASE WHEN COALESCE(idempotency_key, '') LIKE 'assistant-gallery:%'
+				THEN 'assistant'::text ELSE type END AS type,
+			model, status, prompt, params, count, input_keys,
 			output_keys, thumbnail_keys, cost_cents, work_units, idempotency_key, error_code,
 			error_message, attempt, started_at, lease_owner, heartbeat_at, lease_until, finished_at, created_at,
 			deleted_at, deletion_actor, deleted_output_count
@@ -899,12 +902,67 @@ const userHistoryTaskSourceSQL = `
 			  AND task.deleted_at IS NULL
 			  AND task.idempotency_key = '` + UIDesignAssetHistoryIdemPrefix + `' || run.id::text
 		  )
+		UNION ALL
+		SELECT run.id, run.user_id, 'assistant'::text AS type,
+			COALESCE(run.params->>'model', '') AS model, run.status, run.prompt,
+			(run.params - 'referenceImages') || jsonb_build_object(
+				'conversationId', run.conversation_id::text,
+				'assistantMessageId', run.assistant_message_id::text,
+				'mode', run.mode,
+				'resolvedMode', run.resolved_mode,
+				'stage', run.stage,
+				'workspace', conversation.workspace,
+				'_source', 'assistant'
+			) AS params,
+			CASE WHEN COALESCE(run.params->>'count', '') ~ '^[1-4]$'
+				THEN (run.params->>'count')::integer ELSE 1 END AS count,
+			COALESCE((
+				SELECT jsonb_agg(ref->>'fileKey')
+				FROM jsonb_array_elements(COALESCE(run.params->'referenceImages', '[]'::jsonb)) ref
+				WHERE COALESCE(ref->>'fileKey', '') <> ''
+			), '[]'::jsonb) AS input_keys,
+			COALESCE((
+				SELECT jsonb_agg(image->>'fileKey')
+				FROM jsonb_array_elements(
+					(CASE WHEN jsonb_typeof(message.metadata->'images') = 'array'
+						THEN message.metadata->'images' ELSE '[]'::jsonb END)
+					|| (CASE WHEN jsonb_typeof(message.metadata->'proposal'->'images') = 'array'
+						THEN message.metadata->'proposal'->'images' ELSE '[]'::jsonb END)
+				) image
+				WHERE COALESCE(image->>'fileKey', '') <> ''
+			), '[]'::jsonb) AS output_keys,
+			COALESCE((
+				SELECT jsonb_agg(image->>'fileKey')
+				FROM jsonb_array_elements(
+					(CASE WHEN jsonb_typeof(message.metadata->'images') = 'array'
+						THEN message.metadata->'images' ELSE '[]'::jsonb END)
+					|| (CASE WHEN jsonb_typeof(message.metadata->'proposal'->'images') = 'array'
+						THEN message.metadata->'proposal'->'images' ELSE '[]'::jsonb END)
+				) image
+				WHERE COALESCE(image->>'fileKey', '') <> ''
+			), '[]'::jsonb) AS thumbnail_keys,
+			CASE WHEN run.status IN ('queued', 'running') AND run.cost_cents <= 0
+				THEN COALESCE(run.reserved_cents, 0) ELSE run.cost_cents END::bigint AS cost_cents,
+			1::integer AS work_units, NULL::text AS idempotency_key,
+			run.error_code, run.error_message, 0::integer AS attempt,
+			run.started_at, NULL::text AS lease_owner, NULL::timestamptz AS heartbeat_at,
+			NULL::timestamptz AS lease_until, run.finished_at, run.created_at,
+			NULL::timestamptz AS deleted_at, NULL::text AS deletion_actor,
+			0::integer AS deleted_output_count
+		FROM assistant_runs run
+		JOIN assistant_conversations conversation ON conversation.id = run.conversation_id
+		JOIN assistant_messages message ON message.id = run.assistant_message_id
+		WHERE conversation.workspace = 'assistant'
+		  AND (run.mode = 'image' OR run.resolved_mode = 'image')
+		  AND NOT EXISTS (
+			SELECT 1 FROM tasks task WHERE task.id = run.id
+		  )
 	`
 
 func getUserUIDesignAssetRunAsTask(ctx context.Context, q Q, userID, id uuid.UUID) (*Task, error) {
 	t, err := scanTask(q.QueryRow(ctx,
 		`SELECT `+taskCols+` FROM (`+userHistoryTaskSourceSQL+`) user_history_tasks
-		 WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`, id, userID))
+		 WHERE id = $1 AND user_id = $2 AND type = 'ui_design' AND deleted_at IS NULL`, id, userID))
 	return nilOnNoRows(t, err)
 }
 

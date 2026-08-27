@@ -36,6 +36,7 @@ Widget _app({
   Future<AuthProviders> Function()? providerLoader,
   _FakeSessionController Function()? sessionController,
   double textScale = 1,
+  DateTime Function()? now,
 }) {
   assert(providers != null || providerLoader != null);
   return ProviderScope(
@@ -59,7 +60,7 @@ Widget _app({
         ).copyWith(textScaler: TextScaler.linear(textScale)),
         child: child!,
       ),
-      home: const LoginScreen(),
+      home: LoginScreen(now: now),
     ),
   );
 }
@@ -86,6 +87,20 @@ void main() {
     expect(validateLoginEmail(' QA@EXAMPLE.COM ', _available), isNull);
   });
 
+  test('resend deadline rounds up and expires against wall-clock time', () {
+    final now = DateTime(2026, 8, 27, 10);
+
+    expect(codeResendSecondsRemaining(null, now), 0);
+    expect(
+      codeResendSecondsRemaining(
+        now.add(const Duration(milliseconds: 1001)),
+        now,
+      ),
+      2,
+    );
+    expect(codeResendSecondsRemaining(now, now), 0);
+  });
+
   testWidgets('available provider drives validation and code delivery', (
     tester,
   ) async {
@@ -98,6 +113,13 @@ void main() {
 
     expect(find.text('邮箱验证码登录'), findsOneWidget);
     expect(find.text('支持 example.com'), findsOneWidget);
+    final status = tester.widget<DecoratedBox>(
+      find.byKey(const Key('auth-service-status')),
+    );
+    expect(
+      (status.decoration as BoxDecoration).borderRadius,
+      BorderRadius.circular(8),
+    );
     await tester.enterText(find.byType(TextFormField).first, 'qa@gmail.com');
     await tester.tap(find.text('获取验证码'));
     await tester.pump();
@@ -117,6 +139,39 @@ void main() {
     );
 
     await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('resend countdown corrects itself after app resume', (
+    tester,
+  ) async {
+    final controller = _FakeSessionController();
+    var now = DateTime(2026, 8, 27, 10);
+    await tester.pumpWidget(
+      _app(
+        providers: _available,
+        sessionController: () => controller,
+        now: () => now,
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    await tester.enterText(find.byType(TextFormField).first, 'qa@example.com');
+    await tester.tap(find.text('获取验证码'));
+    await tester.pump();
+    expect(find.text('60s 后重试'), findsOneWidget);
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    now = now.add(const Duration(seconds: 61));
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump();
+
+    expect(find.text('获取验证码'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('unavailable provider disables authentication actions', (

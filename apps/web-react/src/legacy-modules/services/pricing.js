@@ -14,12 +14,14 @@ export const FEATURE_TASK_TYPE_MAP = {
   wallpaper: 't2i',
   'ai.wallpaperGeneration': 't2i',
   'ai.optimize': 't2i',
+  'ai.infiniteCanvas': 'infinite_canvas',
   'ai.illustrationColoring': 'coloring',
   'ai.uiDesign': 'ui_design',
   'ai.ecommerceDesign': 'ecommerce_design',
   'ai.ultraModelSheet': 'model_sheet',
   'ai.gameDesign': 'game_art',
   'ai.puzzle': 'puzzle',
+  'ai.imageTools': 'background_remove',
 }
 
 let cached = null
@@ -41,6 +43,21 @@ export async function fetchTaskPricing({ force = false } = {}) {
       inFlight = null
     })
   return inFlight
+}
+
+function finitePoints(value) {
+  const points = Number(value)
+  return Number.isFinite(points) && points >= 0 ? Math.round(points) : null
+}
+
+/** 某任务类型的最低积分单价；没有配置时返回 null。 */
+export function minPointsForTaskType(pricing, taskType) {
+  const type = String(taskType || '').trim()
+  if (!type || !pricing || typeof pricing !== 'object') return null
+  const range = pricing.taskPointPriceRanges?.[type] || pricing.taskPriceRanges?.[type] || {}
+  const min = finitePoints(range.minPoints ?? range.MinCents ?? range.minCents)
+  if (min !== null) return min
+  return finitePoints((pricing.taskPointPrices || pricing.taskPrices || {})[type])
 }
 
 /**

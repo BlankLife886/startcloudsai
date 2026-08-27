@@ -13,6 +13,7 @@ class AuthenticatedRoute extends ConsumerWidget {
     required this.child,
     this.showBackButton = true,
     this.fallbackLocation = '/discover',
+    this.loading,
     super.key,
   });
 
@@ -21,17 +22,22 @@ class AuthenticatedRoute extends ConsumerWidget {
   final Widget child;
   final bool showBackButton;
   final String fallbackLocation;
+  final Widget? loading;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final session = ref.watch(sessionControllerProvider);
     return session.when(
-      loading: () => _AuthRouteScaffold(
-        title: title,
-        showBackButton: showBackButton,
-        fallbackLocation: fallbackLocation,
-        child: const _RouteLoading(),
-      ),
+      skipLoadingOnReload: true,
+      skipLoadingOnRefresh: true,
+      loading: () =>
+          loading ??
+          _AuthRouteScaffold(
+            title: title,
+            showBackButton: showBackButton,
+            fallbackLocation: fallbackLocation,
+            child: const _RouteLoading(),
+          ),
       error: (error, stackTrace) => _AuthRouteScaffold(
         title: title,
         showBackButton: showBackButton,

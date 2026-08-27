@@ -713,6 +713,11 @@ void main() {
       findsOneWidget,
     );
     expect(
+      find.byKey(const Key('creation-turn-task-t2i-1-reference')),
+      findsOneWidget,
+    );
+    expect(find.text('作为参考图'), findsOneWidget);
+    expect(
       find.byKey(const Key('creation-turn-task-t2i-1-download')),
       findsOneWidget,
     );
@@ -739,6 +744,60 @@ void main() {
         tester.getRect(find.byKey(const Key('creation-settings'))).top,
       ),
     );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('long-press can add a generated image as a reference', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 844));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(
+      _app(
+        _FakeDraftStore(),
+        authenticated: true,
+        models: const [
+          ImageModelOption(
+            id: 'pro-ref',
+            name: '参考模型',
+            description: '',
+            resolutions: ['1K'],
+            aspectRatios: ['auto', '1:1'],
+            qualities: ['medium'],
+            maxImages: 2,
+            maxReferenceImages: 2,
+            pricePoints: 3,
+          ),
+        ],
+        tasks: [
+          TaskItem.fromJson({
+            'id': 'task-ref',
+            'type': 't2i',
+            'status': 'succeeded',
+            'count': 1,
+            'originalUrls': ['/api/v1/files/tasks/user/task-ref/original/0.png'],
+            'outputKeys': ['tasks/user/task-ref/original/0.png'],
+            'params': {
+              'userPrompt': '青色草地图',
+              'modelHint': '参考模型',
+              'aspectRatio': 'auto',
+              'resolutionScale': '1K',
+              'quality': 'medium',
+            },
+          }),
+        ],
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.longPress(find.byKey(const Key('creation-current-task-ref')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('creation-turn-task-ref-reference')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('creation-turn-task-ref-reference')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('creation-reference-strip')), findsOneWidget);
+    expect(find.text('已添加到参考图'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -872,6 +931,10 @@ void main() {
     );
     expect(
       find.byKey(const Key('creation-turn-task-t2i-batch-regenerate-1')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('creation-turn-task-t2i-batch-reference-1')),
       findsOneWidget,
     );
     expect(

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { App, Button, Tooltip } from "antd";
-import { ArrowUpRight, History, MessageSquare, PanelRightClose, Plus, Sparkles } from "lucide-react";
+import { History, MessageSquare, PanelRightClose, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router";
 
@@ -125,15 +125,38 @@ function formatCanvasAgentTurnPrice(t: Translate, cost: { effective?: number; st
 }
 
 function toolTitle(name: string, t: Translate) {
+    if (name === "web_search") return t("agent.siteTools.webSearch");
     if (name === "canvas_get_state") return t("agent.eventExtra.tools.readCanvas");
     if (name === "canvas_get_selection") return t("agent.eventExtra.tools.readSelection");
+    if (name === "canvas_find_nodes") return t("agent.eventExtra.tools.findNodes");
+    if (name === "canvas_inspect_nodes") return t("agent.eventExtra.tools.inspectNodes");
+    if (name === "canvas_focus_nodes") return t("agent.eventExtra.tools.focusNodes");
+    if (name === "canvas_duplicate_selection") return t("agent.eventExtra.tools.duplicateSelection");
+    if (name === "canvas_create_image_operation") return t("agent.eventExtra.tools.imageOperation");
+    if (name === "canvas_replace_workflow_input") return t("agent.eventExtra.tools.replaceWorkflowInput");
+    if (name === "canvas_run_downstream") return t("agent.eventExtra.tools.runDownstream");
+    if (name === "canvas_list_agent_history") return t("agent.eventExtra.tools.listAgentHistory");
+    if (name === "canvas_create_checkpoint") return t("agent.eventExtra.tools.createCheckpoint");
+    if (name === "canvas_restore_checkpoint") return t("agent.eventExtra.tools.restoreCheckpoint");
+    if (name === "canvas_restore_agent_transaction") return t("agent.eventExtra.tools.restoreTransaction");
+    if (name === "canvas_update_generation_settings") return t("agent.generationSettingsTool.title");
+    if (name === "canvas_undo_last_action") return t("agent.canvasHistoryTool.undoTitle");
+    if (name === "canvas_redo_last_action") return t("agent.canvasHistoryTool.redoTitle");
     if (name === "canvas_export_snapshot") return t("agent.eventExtra.tools.exportSnapshot");
     if (name === "canvas_regenerate_selection") return t("agent.eventExtra.tools.runGeneration");
     if (name === "canvas_run_generation") return t("agent.eventExtra.tools.runGeneration");
     if (name === "canvas_generation_status") return t("agent.hosted.generationStatus");
+    if (name === "canvas_validate_workflow") return t("agent.eventExtra.tools.validateWorkflow");
+    if (name === "canvas_plan_workflow_run") return t("agent.siteTools.workflowPreflight");
+    if (name === "canvas_stop_workflow") return t("agent.eventExtra.tools.stopWorkflow");
+    if (name === "canvas_resume_workflow") return t("agent.eventExtra.tools.resumeWorkflow");
+    if (name === "canvas_retry_failed_nodes") return t("agent.eventExtra.tools.retryFailedNodes");
     if (name === "canvas_create_attachment_nodes") return t("agent.eventExtra.tools.addAttachments");
     if (name === "site_navigate") return t("agent.eventExtra.tools.openPage");
     if (name === "canvas_list_projects") return t("agent.siteTools.canvasList");
+    if (name === "canvas_list_workflow_templates") return t("agent.siteTools.workflowTemplateList");
+    if (name === "canvas_inspect_workflow_template") return t("agent.siteTools.workflowTemplateInspect");
+    if (name === "canvas_create_from_workflow_template") return t("agent.siteTools.workflowTemplateCreate");
     if (name === "prompts_search") return t("agent.siteTools.promptSearch");
     if (name === "assets_list") return t("agent.siteTools.assetList");
     if (name === "assets_add") return t("agent.siteTools.assetAdd");
@@ -141,13 +164,21 @@ function toolTitle(name: string, t: Translate) {
 }
 
 function hostedToolRunningText(name: string, title: string, t: Translate) {
-    if (["canvas_get_state", "canvas_get_selection", "canvas_export_snapshot", "canvas_list_projects", "prompts_search", "assets_list"].includes(name)) return t("agent.hosted.toolReading");
-    if (["canvas_apply_ops", "canvas_create_attachment_nodes", "assets_add"].includes(name)) return t("agent.hosted.toolModifying");
-    if (["canvas_regenerate_selection", "canvas_run_generation", "canvas_generation_status"].includes(name)) return t("agent.hosted.toolGenerating");
+    if (name === "web_search") return t("agent.hosted.webSearching");
+    if (["canvas_get_state", "canvas_get_selection", "canvas_find_nodes", "canvas_inspect_nodes", "canvas_validate_workflow", "canvas_plan_workflow_run", "canvas_list_agent_history", "canvas_export_snapshot", "canvas_list_projects", "canvas_list_workflow_templates", "canvas_inspect_workflow_template", "prompts_search", "assets_list"].includes(name)) return t("agent.hosted.toolReading");
+    if (["canvas_apply_ops", "canvas_focus_nodes", "canvas_duplicate_selection", "canvas_create_image_operation", "canvas_replace_workflow_input", "canvas_update_generation_settings", "canvas_undo_last_action", "canvas_redo_last_action", "canvas_create_checkpoint", "canvas_restore_checkpoint", "canvas_restore_agent_transaction", "canvas_create_attachment_nodes", "canvas_create_from_workflow_template", "assets_add"].includes(name)) return t("agent.hosted.toolModifying");
+    if (["canvas_regenerate_selection", "canvas_run_generation", "canvas_generation_status", "canvas_run_downstream", "canvas_stop_workflow", "canvas_resume_workflow", "canvas_retry_failed_nodes"].includes(name)) return t("agent.hosted.toolGenerating");
     return t("agent.hosted.toolWorking", { tool: title });
 }
 
 function describeToolObservation(name: string, observation: unknown, t: Translate) {
+    if (name === "web_search") {
+        const result = (observation && typeof observation === "object" ? observation : {}) as { query?: string; sources?: Array<{ title?: string; url?: string }> };
+        const sources = Array.isArray(result.sources) ? result.sources.filter((source) => /^https?:\/\//i.test(String(source.url || ""))).slice(0, 8) : [];
+        const summary = t("agent.hosted.webSearchCompleted", { count: sources.length });
+        if (!sources.length) return summary;
+        return `${summary}\n${sources.map((source, index) => `${index + 1}. [${String(source.title || source.url)}](${String(source.url)})`).join("\n")}`;
+    }
     if (name === "canvas_get_selection") {
         const result = observation as { total?: number; selectedNodeIds?: unknown[]; nodes?: Array<{ id?: string; type?: string; title?: string }>; truncated?: boolean };
         const nodes = Array.isArray(result.nodes) ? result.nodes : [];
@@ -170,6 +201,15 @@ function describeToolObservation(name: string, observation: unknown, t: Translat
         const skipped = result.skippedNodeIds?.length || 0;
         return skipped ? `${summary} · ${t("agent.hosted.generationSelectionSkipped", { count: skipped })}` : summary;
     }
+    if (name === "canvas_update_generation_settings") {
+        const result = observation as { updated?: number; unchanged?: number };
+        return result.updated
+            ? t("agent.generationSettingsTool.updated", { count: result.updated })
+            : t("agent.generationSettingsTool.unchanged", { count: result.unchanged || 0 });
+    }
+    if (name === "canvas_undo_last_action" || name === "canvas_redo_last_action") {
+        return t(name === "canvas_undo_last_action" ? "agent.canvasHistoryTool.undone" : "agent.canvasHistoryTool.redone");
+    }
     if (name === "canvas_run_generation") {
         const triggered = (observation as { triggered?: string[] })?.triggered?.length || 0;
         return t("agent.hosted.generationTriggered", { count: triggered });
@@ -184,23 +224,36 @@ function describeToolObservation(name: string, observation: unknown, t: Translat
             .filter(Boolean)
             .join(" · ") || t("agent.hosted.generationIdle");
     }
+    if (name === "canvas_plan_workflow_run") {
+        const result = observation as { nodeIds?: unknown[]; totals?: { total?: number; paidNodeCount?: number; freeNodeCount?: number } };
+        return t("agent.hosted.workflowPreflight", { nodes: result.nodeIds?.length || 0, price: result.totals?.total || 0, paid: result.totals?.paidNodeCount || 0, free: result.totals?.freeNodeCount || 0 });
+    }
     if (name === "site_navigate") {
         return t("agent.hosted.openedPage", { path: String((observation as { path?: string })?.path || "/") });
     }
     if (name === "canvas_create_attachment_nodes") {
         return t("agent.hosted.attachmentNodes", { count: (observation as { added?: string[] })?.added?.length || 0 });
     }
-    if (name === "canvas_list_projects" || name === "prompts_search" || name === "assets_list") {
+    if (name === "canvas_list_projects" || name === "canvas_list_workflow_templates" || name === "prompts_search" || name === "assets_list") {
         const total = Number((observation as { total?: number })?.total || 0);
         return t("agent.hosted.listedItems", { count: total });
     }
+    if (name === "canvas_inspect_workflow_template") {
+        const result = observation as { title?: string; nodeCount?: number; nodes?: unknown[]; workflows?: unknown[] };
+        return t("agent.hosted.workflowTemplateInspected", { title: result.title || "-", nodes: result.nodeCount || result.nodes?.length || 0, workflows: result.workflows?.length || 0 });
+    }
+    if (name === "canvas_create_from_workflow_template") {
+        return t("agent.hosted.workflowTemplateCreated", { title: String((observation as { title?: string })?.title || "-") });
+    }
     if (name === "assets_add") return t("agent.hosted.assetAdded");
     if (name !== "canvas_apply_ops") return t("agent.hosted.readCanvas");
-    const applied = observation as { applied?: number; addedNodes?: number; addedConnections?: number };
+    const applied = observation as { applied?: number; ignored?: number; rejected?: number; addedNodes?: number; addedConnections?: number };
+    if (!applied.applied && applied.rejected) return t("agent.hosted.noValidOps");
     return [
         t("agent.hosted.appliedCount", { count: applied?.applied || 0 }),
         applied?.addedNodes ? t("agent.hosted.addedNodes", { count: applied.addedNodes }) : "",
         applied?.addedConnections ? t("agent.hosted.linked", { count: applied.addedConnections }) : "",
+        applied?.ignored ? t("agent.hosted.ignoredOps", { count: applied.ignored }) : "",
     ]
         .filter(Boolean)
         .join(" · ");
@@ -621,13 +674,48 @@ export function HostedAgentPanel() {
         }
     }, [navigate, setAgentState, t]);
 
+    const handleServerHostedToolEvent = useCallback(async (call: CanvasAgentToolCall, scope: HostedAgentRunBinding) => {
+        if (!isHostedAgentRunScopeActive(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "")) return;
+        const messageId = `hosted-tool:${call.requestId}`;
+        const title = call.title || toolTitle(call.name, t);
+        const input = hostedToolInput(call);
+        const status = call.status || "running";
+        const current = useAgentStore.getState();
+        const index = current.messages.findIndex((item) => item.id === messageId);
+        const existingStatus = index >= 0 ? String((current.messages[index].detail as { status?: string } | undefined)?.status || "") : "";
+        if (status === "running" && (existingStatus === "completed" || existingStatus === "failed")) return call.result;
+        const detail = call.error || (status === "failed" ? t("agent.hosted.webSearchFailed") : "");
+        const text = status === "completed"
+            ? describeToolObservation(call.name, call.result, t)
+            : status === "failed"
+                ? detail
+                : hostedToolRunningText(call.name, title, t);
+        const item: AgentChatItem = {
+            id: messageId,
+            role: "tool",
+            title,
+            text,
+            detail: toolCallDetail(call.name, input, status, detail),
+        };
+        setAgentState({
+            messages: index >= 0
+                ? current.messages.map((messageItem, itemIndex) => (itemIndex === index ? { ...messageItem, ...item } : messageItem))
+                : [...current.messages, item],
+        });
+        return call.result;
+    }, [setAgentState, t]);
+
     const handleHostedStage = useCallback((stage: string, scope: HostedAgentRunScope) => {
         if (stage === "tool" && isHostedAgentRunScopeActive(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "")) {
             setAgentState({ activity: t("agent.hosted.applying") });
         }
+        if (stage === "web_search" && isHostedAgentRunScopeActive(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "")) {
+            setAgentState({ activity: t("agent.hosted.webSearching") });
+        }
     }, [setAgentState, t]);
 
     const handleHostedToolCall = useCallback((call: CanvasAgentToolCall, scope: HostedAgentRunBinding) => {
+        if (call.execution === "server") return handleServerHostedToolEvent(call, scope);
         const verifyBeforeExecution = async () => {
             if (!isHostedAgentRunScopeActive(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "")) return false;
             const allowed = await canExecuteApprovedCanvasAgentTool(call, scope.runId, claimCanvasAgentTool);
@@ -643,7 +731,7 @@ export function HostedAgentPanel() {
             }).then(() => runHostedTool(call, scope, verifyBeforeExecution));
         }
         return runHostedTool(call, scope, verifyBeforeExecution);
-    }, [runHostedTool, setAgentState, t]);
+    }, [handleServerHostedToolEvent, runHostedTool, setAgentState, t]);
 
     const applyCompletionOps = useCallback(async (ops: CanvasAgentOp[], scope: HostedAgentRunBinding, summary?: string) => {
         if (!ops.length) return;
@@ -904,12 +992,6 @@ export function HostedAgentPanel() {
 
     const empty = hostedTab === "chat" && messages.length === 0 && !sending && !waiting && !hydrating && !pendingTool;
     const historyThreads = useMemo(() => conversations.map(hostedAgentConversationThread), [conversations]);
-    const suggestions = [
-        t("agent.hosted.suggestions.layout"),
-        t("agent.hosted.suggestions.flow"),
-        t("agent.hosted.suggestions.prompt"),
-        t("agent.hosted.suggestions.status"),
-    ];
 
     return (
         <>
@@ -984,30 +1066,8 @@ export function HostedAgentPanel() {
                         onDeleteThread={(conversationId) => confirmDeleteConversations([conversationId])}
                     />
                 ) : empty ? (
-                    <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-6 pb-4 text-center">
-                        <span
-                            className="grid size-12 place-items-center rounded-2xl"
-                            style={{ background: theme.toolbar.activeBg, color: theme.toolbar.activeText, boxShadow: `inset 0 0 0 1px ${theme.sidebar.border}` }}
-                        >
-                            <Sparkles className="size-5" />
-                        </span>
-                        <h3 className="mt-4 text-[17px] font-semibold tracking-tight">{t("agent.hosted.emptyTitle")}</h3>
-                        <p className="mt-1.5 max-w-[280px] text-[13px] leading-5" style={{ color: theme.node.muted }}>{t("agent.hosted.empty")}</p>
-                        <div className="mt-5 flex w-full max-w-[340px] flex-col gap-2">
-                            {suggestions.map((item) => (
-                                <button
-                                    key={item}
-                                    type="button"
-                                    disabled={!projectId}
-                                    className="canvas-agent-suggestion flex w-full items-center justify-between gap-3 rounded-2xl border px-3.5 py-2.5 text-left text-[13px] leading-5 disabled:opacity-50"
-                                    style={{ background: theme.sidebar.surface, borderColor: theme.sidebar.border, color: theme.node.text }}
-                                    onClick={() => setAgentState({ prompt: item })}
-                                >
-                                    <span className="min-w-0">{item}</span>
-                                    <ArrowUpRight className="size-3.5 shrink-0 opacity-40" />
-                                </button>
-                            ))}
-                        </div>
+                    <div className="flex min-h-0 flex-1 items-center justify-center px-8 pb-4 text-center">
+                        <p className="max-w-[260px] text-[13px] leading-5" style={{ color: theme.node.muted }}>{t("agent.hosted.empty")}</p>
                     </div>
                 ) : (
                     <AgentChatTimeline

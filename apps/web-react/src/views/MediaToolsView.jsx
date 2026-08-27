@@ -380,7 +380,7 @@ export function MediaToolsView() {
   }, [selected?.id]);
 
   useEffect(() => {
-    if (!loading && (!modelId || !selected)) navigate("/studio", { replace: true });
+    if (!loading && (!modelId || !selected)) navigate("/", { replace: true });
   }, [loading, modelId, navigate, selected]);
 
   const submit = useCallback(async () => {

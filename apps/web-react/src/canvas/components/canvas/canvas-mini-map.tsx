@@ -5,6 +5,7 @@ import { onCanvasEvent } from "@/lib/canvas/canvas-event-bus";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { type CanvasConnection, type CanvasNodeData, type ViewportTransform } from "@/types/canvas";
 import { CANVAS_VIEWPORT_LIVE_EVENT, type CanvasViewportApi, wheelZoomFactor } from "./infinite-canvas";
+import { pickLargestCanvasNodes } from "@/lib/canvas/canvas-spatial-index";
 
 const MAP_H = 118;
 const PAD = 12;
@@ -22,8 +23,7 @@ function worldView(viewport: ViewportTransform, size: { width: number; height: n
 }
 
 function pickNodes(nodes: CanvasNodeData[]) {
-    if (nodes.length <= MAX_NODES) return nodes;
-    return [...nodes].sort((a, b) => b.width * b.height - a.width * a.height).slice(0, MAX_NODES);
+    return pickLargestCanvasNodes(nodes, MAX_NODES);
 }
 
 function nodeBounds(nodes: CanvasNodeData[]) {

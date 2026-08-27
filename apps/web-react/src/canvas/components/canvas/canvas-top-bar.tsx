@@ -78,13 +78,12 @@ export function CanvasTopBar({
                 className="pointer-events-none absolute left-0 right-0 top-3 z-50 flex h-11 items-center justify-between pr-4"
                 style={{ paddingLeft: sidePanelOpen ? sidePanelWidth + 20 : 268, transition: "padding-left 380ms cubic-bezier(0.22, 1, 0.36, 1)" }}
             >
-                <div className="pointer-events-auto relative z-20 shrink-0">
-                    <WorkflowControl theme={theme} workflowRun={workflowRun} onRun={onRunWorkflow} onStop={onStopWorkflow} onRefresh={onRefreshWorkflow} />
-                </div>
+                {children ? <div className="pointer-events-none absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2" style={{ width: "clamp(260px, calc(100% - 822px), 720px)" }}><div className="pointer-events-auto">{children}</div></div> : null}
 
-                {children ? <div className="pointer-events-none absolute left-1/2 top-1/2 z-10 max-w-[min(720px,calc(100%-380px))] -translate-x-1/2 -translate-y-1/2"><div className="pointer-events-auto">{children}</div></div> : null}
-
-                <div className="pointer-events-auto flex items-center gap-2">
+                <div className="pointer-events-auto ml-auto flex items-center gap-2" data-canvas-topbar-actions>
+                    <div className="canvas-workflow-control-slot relative z-20 shrink-0">
+                        <WorkflowControl theme={theme} workflowRun={workflowRun} onRun={onRunWorkflow} onStop={onStopWorkflow} onRefresh={onRefreshWorkflow} />
+                    </div>
                     <div ref={extrasRef} className="canvas-chrome-cluster relative" style={{ color: theme.toolbar.item }}>
                         <ChromeAction title={t("canvas.project.rename")} theme={theme} onClick={onRename}>
                             <Pencil className="size-3.5" />

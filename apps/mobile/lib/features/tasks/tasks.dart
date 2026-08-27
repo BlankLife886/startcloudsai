@@ -24,6 +24,7 @@ class TaskItem {
     required this.originalUrls,
     required this.errorCode,
     required this.errorMessage,
+    this.outputKeys = const [],
     this.deletedAt,
     this.deletionActor,
     this.deletedOutputCount = 0,
@@ -58,6 +59,7 @@ class TaskItem {
       thumbnailUrls: thumbnails,
       displayUrls: _stringList(json['displayUrls']),
       originalUrls: originals,
+      outputKeys: _stringList(json['outputKeys']),
       errorCode: json['errorCode']?.toString(),
       errorMessage: json['errorMessage']?.toString(),
       deletedAt: _date(json['deletedAt']),
@@ -92,6 +94,7 @@ class TaskItem {
   final List<String> thumbnailUrls;
   final List<String> displayUrls;
   final List<String> originalUrls;
+  final List<String> outputKeys;
   final String? errorCode;
   final String? errorMessage;
   final DateTime? deletedAt;
@@ -138,6 +141,23 @@ class TaskItem {
 
   String get groupKey => batchId.isEmpty ? id : batchId;
 
+  String? outputKeyAt(int index) {
+    if (index >= 0 && index < outputKeys.length) {
+      final key = outputKeys[index].trim();
+      if (key.isNotEmpty) return key;
+    }
+    final urls = <String>[
+      if (index >= 0 && index < originalUrls.length) originalUrls[index],
+      if (index >= 0 && index < displayUrls.length) displayUrls[index],
+      if (index >= 0 && index < thumbnailUrls.length) thumbnailUrls[index],
+    ];
+    for (final url in urls) {
+      final key = authenticatedFileKey(url);
+      if (key != null) return key;
+    }
+    return null;
+  }
+
   Duration? get duration {
     final start = startedAt ?? createdAt;
     final end = finishedAt;
@@ -163,6 +183,18 @@ List<List<TaskItem>> groupCreationTurns(Iterable<TaskItem> items) {
       (List<TaskItem>.from(groups[key]!)
         ..sort((left, right) => left.batchIndex.compareTo(right.batchIndex))),
   ];
+}
+
+String? authenticatedFileKey(String url) {
+  final raw = url.trim();
+  if (raw.isEmpty) return null;
+  if (!raw.contains('://') && !raw.startsWith('/')) return raw;
+  const marker = '/api/v1/files/';
+  final path = Uri.tryParse(raw)?.path ?? raw;
+  final index = path.indexOf(marker);
+  if (index < 0) return null;
+  final key = Uri.decodeComponent(path.substring(index + marker.length)).trim();
+  return key.isEmpty ? null : key;
 }
 
 List<String> _stringList(dynamic value) =>

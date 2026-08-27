@@ -2704,7 +2704,7 @@ export function AssistantWorkspaceView() {
 
   useEffect(() => {
     mountedRef.current = true;
-    void import("./CommercialHomeView.jsx");
+    void import("./StudioHubView.jsx");
     try {
       setSidebarCollapsed(localStorage.getItem("starclouds:assistant-sidebar-collapsed") === "true");
     } catch {

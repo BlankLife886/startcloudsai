@@ -43,22 +43,11 @@ final appRouterProvider = Provider<GoRouter>(
             routes: [
               GoRoute(
                 path: '/discover',
-                redirect: (context, state) =>
-                    switch (state.uri.queryParameters['tab']) {
-                      'prompts' => '/prompts',
-                      'community' => '/community',
-                      _ => null,
-                    },
-                builder: (context, state) => const DiscoverScreen(),
-              ),
-            ],
-          ),
-          StatefulShellBranch(
-            routes: [
-              GoRoute(
-                path: '/community',
-                builder: (context, state) =>
-                    const DiscoverScreen(communityOnly: true),
+                builder: (context, state) => DiscoverScreen(
+                  initialTab: HomeDiscoverTab.fromQuery(
+                    state.uri.queryParameters['tab'],
+                  ),
+                ),
               ),
             ],
           ),
@@ -70,6 +59,7 @@ final appRouterProvider = Provider<GoRouter>(
                   title: 'AI 助手',
                   icon: Icons.auto_awesome_outlined,
                   showBackButton: false,
+                  loading: AssistantPageSkeleton(),
                   child: AssistantScreen(),
                 ),
               ),
@@ -274,10 +264,12 @@ final appRouterProvider = Provider<GoRouter>(
         builder: (context, state) => const LoginScreen(),
       ),
       GoRoute(
-        parentNavigatorKey: _rootNavigatorKey,
+        path: '/community',
+        redirect: (context, state) => '/discover?tab=community',
+      ),
+      GoRoute(
         path: '/prompts',
-        builder: (context, state) =>
-            const DiscoverScreen(promptLibraryOnly: true),
+        redirect: (context, state) => '/discover?tab=prompts',
       ),
       GoRoute(
         parentNavigatorKey: _rootNavigatorKey,
@@ -286,6 +278,10 @@ final appRouterProvider = Provider<GoRouter>(
           title: 'AI 助手',
           icon: Icons.auto_awesome_outlined,
           fallbackLocation: '/discover',
+          loading: const AssistantPageSkeleton(
+            showBackButton: true,
+            fallbackLocation: '/discover',
+          ),
           child: AssistantScreen(
             initialPrompt: state.uri.queryParameters['prompt'],
             showBackButton: true,

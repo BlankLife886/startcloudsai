@@ -31,6 +31,19 @@ func TestAssistantPendingToolEventReplaysMetadata(t *testing.T) {
 	}
 }
 
+func TestAssistantPendingToolEventReplaysServerToolLifecycle(t *testing.T) {
+	message := &store.AssistantMessage{Status: "running", Metadata: map[string]any{
+		"pendingTool": map[string]any{
+			"requestId": "web-1", "name": "web_search", "arguments": `{"query":"latest"}`,
+			"stage": "web_search", "execution": "server", "status": "running",
+		},
+	}}
+	event, ok := assistantPendingToolEvent(message)
+	if !ok || event.Tool == nil || event.Stage != "web_search" || event.Tool.Execution != "server" || event.Tool.Status != "running" {
+		t.Fatalf("event = %#v", event)
+	}
+}
+
 func TestAssistantPendingToolEventIgnoresClearedOrMalformedMetadata(t *testing.T) {
 	for _, metadata := range []map[string]any{
 		nil,

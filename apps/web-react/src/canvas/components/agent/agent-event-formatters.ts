@@ -323,19 +323,23 @@ export function toolName(name: string) {
     if (name === "exec" || name === "exec_command" || name.endsWith("__exec_command")) return tr("tools.executeCommand");
     if (name === "apply_patch" || name.endsWith("__apply_patch")) return tr("tools.editFiles");
     if (name === "web__run" || name.endsWith("__web__run")) return tr("tools.searchWeb");
+    if (name === "canvas_plan_workflow_run") return i18n.t("agent.siteTools.workflowPreflight");
     if (toolTranslationKeys[name]) return tr(`tools.${toolTranslationKeys[name]}`);
     if (isSiteTool(name)) return SITE_TOOL_LABELS[name];
     return name ? tr("toolNamed", { name }) : tr("toolOperation");
 }
 
 const toolTranslationKeys: Record<string, string> = {
-    canvas_apply_ops: "canvasOps", canvas_get_state: "readCanvas", canvas_get_selection: "readSelection", canvas_export_snapshot: "exportSnapshot", canvas_create_node: "createNode", canvas_create_attachment_nodes: "addAttachments", canvas_create_text_node: "createText", canvas_create_text_nodes: "createTexts", canvas_create_config_node: "createConfig", canvas_create_image_prompt_flow: "createImageFlow", canvas_create_generation_flow: "createGenerationFlow", canvas_generate_text: "generateText", canvas_generate_image: "generateImage", canvas_generate_video: "generateVideo", canvas_generate_audio: "generateAudio", canvas_update_node: "updateNode", canvas_update_node_text: "updateText", canvas_move_nodes: "moveNodes", canvas_resize_node: "resizeNode", canvas_delete_nodes: "deleteNodes", canvas_connect_nodes: "connectNodes", canvas_select_nodes: "selectNodes", canvas_set_viewport: "setViewport", canvas_run_generation: "runGeneration", canvas_regenerate_selection: "runGeneration", canvas_run_workflow: "runWorkflow", canvas_workflow_status: "workflowStatus", site_navigate: "openPage",
+    web_search: "searchWeb", canvas_apply_ops: "canvasOps", canvas_get_state: "readCanvas", canvas_get_selection: "readSelection", canvas_find_nodes: "findNodes", canvas_inspect_nodes: "inspectNodes", canvas_focus_nodes: "focusNodes", canvas_duplicate_selection: "duplicateSelection", canvas_create_image_operation: "imageOperation", canvas_replace_workflow_input: "replaceWorkflowInput", canvas_run_downstream: "runDownstream", canvas_list_agent_history: "listAgentHistory", canvas_create_checkpoint: "createCheckpoint", canvas_restore_checkpoint: "restoreCheckpoint", canvas_restore_agent_transaction: "restoreTransaction", canvas_export_snapshot: "exportSnapshot", canvas_create_node: "createNode", canvas_create_attachment_nodes: "addAttachments", canvas_create_text_node: "createText", canvas_create_text_nodes: "createTexts", canvas_create_config_node: "createConfig", canvas_create_image_prompt_flow: "createImageFlow", canvas_create_generation_flow: "createGenerationFlow", canvas_generate_text: "generateText", canvas_generate_image: "generateImage", canvas_generate_video: "generateVideo", canvas_generate_audio: "generateAudio", canvas_update_node: "updateNode", canvas_update_node_text: "updateText", canvas_move_nodes: "moveNodes", canvas_resize_node: "resizeNode", canvas_delete_nodes: "deleteNodes", canvas_connect_nodes: "connectNodes", canvas_select_nodes: "selectNodes", canvas_set_viewport: "setViewport", canvas_run_generation: "runGeneration", canvas_regenerate_selection: "runGeneration", canvas_run_workflow: "runWorkflow", canvas_workflow_status: "workflowStatus", canvas_validate_workflow: "validateWorkflow", canvas_plan_workflow_run: "planWorkflowRun", canvas_stop_workflow: "stopWorkflow", canvas_resume_workflow: "resumeWorkflow", canvas_retry_failed_nodes: "retryFailedNodes", site_navigate: "openPage",
 };
 
 function siteToolSummary(name: string, result: unknown, input: unknown) {
     const data = result && typeof result === "object" ? (result as Record<string, unknown>) : {};
     if (name === "site_navigate") return tr("openedRoute", { route: routeName(stringText(objectField(input, "path")) || "/") });
     if (name === "canvas_list_projects") return tr("canvasCount", { count: numberField(data, "total") });
+    if (name === "canvas_list_workflow_templates") return tr("workflowTemplateCount", { count: numberField(data, "total") });
+    if (name === "canvas_inspect_workflow_template") return tr("workflowTemplateInspected");
+    if (name === "canvas_create_from_workflow_template") return tr("workflowTemplateCreated");
     if (name === "prompts_search") return tr("promptCount", { count: numberField(data, "total") });
     if (name === "assets_list") return tr("assetCount", { count: numberField(data, "total") });
     if (name === "assets_add") return tr("assetAdded");
@@ -361,8 +365,11 @@ export function toolCallDetail(name: string, input: unknown, status: string, err
 
 function toolInputRows(name: string, input: unknown) {
     input = parseToolArguments(input);
+    if (name === "web_search") return [detailRow(tr("searchContent"), objectField(input, "query"))].flatMap((row) => (row ? [row] : []));
     if (name === "site_navigate") return [detailRow(tr("targetPage"), routeName(stringText(objectField(input, "path")) || "/"))].flatMap((row) => (row ? [row] : []));
     if (name === "prompts_search") return [detailRow(tr("searchContent"), objectField(input, "query"))].flatMap((row) => (row ? [row] : []));
+    if (name === "canvas_list_workflow_templates") return [detailRow(tr("searchContent"), objectField(input, "keyword"))].flatMap((row) => (row ? [row] : []));
+    if (name === "canvas_inspect_workflow_template" || name === "canvas_create_from_workflow_template") return [detailRow(tr("operationContent"), objectField(input, "templateId"))].flatMap((row) => (row ? [row] : []));
     if (name === "canvas_create_text_node") return [detailRow(tr("textContent"), objectField(input, "text"))].flatMap((row) => (row ? [row] : []));
     if (name === "canvas_apply_ops") return [detailRow(tr("operationContent"), summarizeCanvasAgentOps((objectField(input, "ops") as CanvasAgentOp[] | undefined) || []))].flatMap((row) => (row ? [row] : []));
     if (name === "canvas_create_attachment_nodes") return [detailRow(tr("imageCount"), Array.isArray(objectField(input, "attachmentIds")) ? (objectField(input, "attachmentIds") as unknown[]).length : 0)].flatMap((row) => (row ? [row] : []));
@@ -377,8 +384,13 @@ export function toolSummary(item?: AgentEventItem) {
     const connectionField = objectField(result, "connections");
     const nodes = Array.isArray(nodeField) ? nodeField : [];
     const connections = Array.isArray(connectionField) ? connectionField : [];
+    if (name === "web_search") return i18n.t("agent.hosted.webSearchCompleted", { count: Array.isArray(objectField(result, "sources")) ? (objectField(result, "sources") as unknown[]).length : 0 });
     if (name === "canvas_get_state") return Array.isArray(nodeField) || Array.isArray(connectionField) ? canvasContentSummary(nodes, connections.length) : tr("canvasRead");
     if (name === "canvas_get_selection") return tr("selectionRead");
+    if (name === "canvas_plan_workflow_run") {
+        const totals = objectField(result, "totals") as Record<string, unknown> | undefined;
+        return tr("workflowPreflight", { count: Array.isArray(objectField(result, "nodeIds")) ? (objectField(result, "nodeIds") as unknown[]).length : 0, price: numberField(totals || {}, "total") });
+    }
     return "";
 }
 
@@ -422,6 +434,7 @@ export function workingActivity(item?: AgentChatItem) {
     const output = stringText(objectField(item?.detail, "output"));
     const key = `${item?.id || "waiting"}-${status}-${item?.text || ""}-${output.length}`;
     if (item?.role !== "tool") return { key, text: tr("thinking") };
+    if (item.title === toolName("web_search") && ["inProgress", "in_progress", "running", "pending"].includes(status)) return { key, text: i18n.t("agent.hosted.webSearching") };
     if (["inProgress", "in_progress", "running", "pending"].includes(status)) return { key, text: tr("operationRunning", { operation: item.title || tr("toolOperation") }) };
     if (item.title === toolName("canvas_get_state")) return { key, text: tr("organizingCanvas") };
     return { key, text: tr("operationCompleted", { operation: item.title || tr("toolOperation") }) };
@@ -501,7 +514,7 @@ export function formatBytes(bytes: number) {
 }
 
 export function isCanvasWriteTool(name: string) {
-    return name === "canvas_apply_ops" || name === "canvas_create_attachment_nodes" || name === "canvas_regenerate_selection";
+    return name === "canvas_apply_ops" || name === "canvas_focus_nodes" || name === "canvas_duplicate_selection" || name === "canvas_create_image_operation" || name === "canvas_replace_workflow_input" || name === "canvas_run_downstream" || name === "canvas_update_generation_settings" || name === "canvas_undo_last_action" || name === "canvas_redo_last_action" || name === "canvas_create_checkpoint" || name === "canvas_restore_checkpoint" || name === "canvas_restore_agent_transaction" || name === "canvas_create_attachment_nodes" || name === "canvas_create_from_workflow_template" || name === "canvas_regenerate_selection" || name === "canvas_stop_workflow" || name === "canvas_resume_workflow" || name === "canvas_retry_failed_nodes";
 }
 
 function parseToolArguments(value: unknown) {

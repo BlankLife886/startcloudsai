@@ -284,8 +284,8 @@ function tryonCurtainReducedMotion() {
 }
 
 function formatTryonSeconds(seconds) {
-  const value = Math.max(0, Number(seconds) || 0);
-  return value >= 100 ? String(value) : String(value).padStart(2, "0");
+  const value = Math.max(0, Math.floor(Number(seconds) || 0));
+  return String(value).padStart(2, "0");
 }
 
 function TryonGeneratingStage({

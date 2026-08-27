@@ -144,11 +144,38 @@ class MetaRepository {
   }
 
   Future<MetaFeed> load() async {
-    final values = await Future.wait([announcements(), changelog()]);
+    final announcementsRequest = _settle(announcements());
+    final changelogRequest = _settle(changelog());
+    final announcementsResult = await announcementsRequest;
+    final changelogResult = await changelogRequest;
+    if (announcementsResult.error != null && changelogResult.error != null) {
+      Error.throwWithStackTrace(
+        announcementsResult.error!,
+        announcementsResult.stackTrace!,
+      );
+    }
     return MetaFeed(
-      announcements: values[0] as List<AppAnnouncement>,
-      changelog: values[1] as List<ChangelogEntry>,
+      announcements: announcementsResult.items ?? const [],
+      changelog: changelogResult.items ?? const [],
     );
+  }
+}
+
+class _MetaLoadResult<T> {
+  const _MetaLoadResult.success(this.items) : error = null, stackTrace = null;
+
+  const _MetaLoadResult.failure(this.error, this.stackTrace) : items = null;
+
+  final List<T>? items;
+  final Object? error;
+  final StackTrace? stackTrace;
+}
+
+Future<_MetaLoadResult<T>> _settle<T>(Future<List<T>> request) async {
+  try {
+    return _MetaLoadResult.success(await request);
+  } catch (error, stackTrace) {
+    return _MetaLoadResult.failure(error, stackTrace);
   }
 }
 

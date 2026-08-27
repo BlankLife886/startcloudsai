@@ -25,6 +25,25 @@ export type AgentModel = {
 export type AgentApprovalDecision = "accept" | "acceptForSession" | "decline";
 export type AgentPendingApproval = { requestId: string; method: string; threadId?: string; turnId?: string; itemId?: string; reason?: string; command?: unknown; cwd?: string; grantRoot?: string; networkApprovalContext?: unknown; permissions?: unknown; deciding?: AgentApprovalDecision };
 export type AgentTaskStatus = "queued" | "running" | "succeeded" | "failed" | "canceled";
+export type AgentWorkflowPreflightResult = {
+    workflowId: string;
+    resumeFromCheckpoint: boolean;
+    nodeIds: string[];
+    completedNodeIds: string[];
+    items: Array<{
+        nodeId: string;
+        title: string;
+        mode: string;
+        model: string;
+        count: number;
+        localOperation: boolean;
+        inputSummary: { textCount: number; imageCount: number; videoCount: number; audioCount: number };
+        unit: number;
+        total: number;
+        compareTotal?: number;
+    }>;
+    totals: { generation: number; removal: number; total: number; compareTotal?: number; paidNodeCount: number; freeNodeCount: number };
+};
 export type AgentRegenerateSelectionInput = {
     requestId: string;
     instruction: string;
@@ -43,12 +62,21 @@ export type AgentCanvasContext = {
     snapshot: CanvasAgentSnapshot;
     applyOps: (ops?: CanvasAgentOp[]) => CanvasAgentSnapshot;
     undoOps: () => CanvasAgentSnapshot | null;
+    redoOps: () => CanvasAgentSnapshot | null;
     canUndo: boolean;
+    canRedo: boolean;
     startGeneration: (input: { nodeIds: string[]; mode?: "text" | "image" | "video" | "audio"; prompt?: string }) => { requestId: string; nodeIds: string[] };
     getGenerationStatus: (requestId: string) => { requestId: string; tasks: Array<{ nodeId: string; status: AgentTaskStatus; error?: string }> } | null;
     regenerateSelection: (input: AgentRegenerateSelectionInput) => Promise<AgentRegenerateSelectionResult>;
-    startWorkflow: (input: { workflowId?: string }) => { requestId: string; workflowId?: string; configNodeIds: string[] };
+    startWorkflow: (input: { workflowId?: string; nodeIds?: string[] }) => { requestId: string; workflowId?: string; configNodeIds: string[] };
     getWorkflowStatus: (requestId: string) => { requestId: string; workflowId?: string; status: AgentTaskStatus; completed: number; total: number; currentNodeId?: string; error?: string } | null;
+    focusNodes: (nodeIds: string[]) => CanvasAgentSnapshot;
+    stopWorkflow: () => { stopped: boolean; status: string; nodeIds: string[] };
+    getWorkflowState: () => { status: string; completed: number; total: number; currentNodeId?: string; errorMessage?: string; startedAt?: string };
+    planWorkflow: (input: { workflowId?: string; nodeIds?: string[] }) => AgentWorkflowPreflightResult;
+    listHistory: () => { past: Array<{ id: string; name: string; createdAt: string }>; future: Array<{ id: string; name: string; createdAt: string }>; checkpoints: Array<{ id: string; name: string; createdAt: string }> };
+    createCheckpoint: (name: string) => { id: string; name: string; createdAt: string };
+    restoreHistory: (input: { checkpointId?: string; transactionId?: string }) => CanvasAgentSnapshot | null;
 };
 export type AgentThreadSummary = { id: string; preview: string; name?: string | null; cwd?: string; status?: string; source?: unknown; createdAt?: number; updatedAt?: number };
 export type AgentTokenUsage = { input: number; cached: number; output: number };

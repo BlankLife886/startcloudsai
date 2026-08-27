@@ -22,6 +22,7 @@ export const TASK_TYPES = [
 ]
 
 export const TASK_TYPE_LABELS = {
+  assistant: 'AI 助手',
   t2i: '文生图',
   coloring: '插画染色',
   ui_design: 'UI 设计稿',
@@ -158,7 +159,8 @@ export async function createTask({
     inputKeys: (Array.isArray(inputKeys) ? inputKeys : []).filter(Boolean),
     count: Math.max(1, Math.min(Number(count) || 1, 4)),
     ...(idempotencyKey ? { idempotencyKey } : {}),
-    ...(Number.isFinite(Number(expectedUnitPriceCents))
+    ...(expectedUnitPriceCents != null &&
+      Number.isFinite(Number(expectedUnitPriceCents))
       ? { expectedUnitPriceCents: Math.max(0, Number(expectedUnitPriceCents)) }
       : {}),
   }

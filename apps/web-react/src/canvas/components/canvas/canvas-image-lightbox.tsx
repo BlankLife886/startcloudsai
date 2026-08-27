@@ -5,9 +5,9 @@ import { useTranslation } from "react-i18next";
 
 import { cloudDisplayUrl, cloudFileUrl, isCloudThumbnailUrl, isLocalImageKey } from "@/lib/canvas/canvas-preview-url";
 import { resolveMediaUrl } from "@/services/file-storage";
-import type { CanvasNodeData } from "@/types/canvas";
+import type { CanvasNodeData, CanvasNodeImage } from "@/types/canvas";
 
-export function CanvasImageLightbox({ node, open, onClose }: { node: CanvasNodeData | null; open: boolean; onClose: () => void }) {
+export function CanvasImageLightbox({ node, image, open, onClose }: { node: CanvasNodeData | null; image?: CanvasNodeImage | null; open: boolean; onClose: () => void }) {
     const { t } = useTranslation();
     const [src, setSrc] = useState("");
     const [fallback, setFallback] = useState("");
@@ -18,8 +18,8 @@ export function CanvasImageLightbox({ node, open, onClose }: { node: CanvasNodeD
             setFallback("");
             return;
         }
-        const content = node.metadata?.content || "";
-        const storageKey = node.metadata?.storageKey || "";
+        const content = image?.content || node.metadata?.content || "";
+        const storageKey = image?.storageKey || node.metadata?.storageKey || "";
         const original = cloudFileUrl(storageKey) || (!isCloudThumbnailUrl(content) ? content : "") || content;
         // 放大预览优先加载展示图（服务端压缩过的大图）；
         // 旧图没有展示图时 onError 回退到原图。
@@ -39,7 +39,7 @@ export function CanvasImageLightbox({ node, open, onClose }: { node: CanvasNodeD
         return () => {
             cancelled = true;
         };
-    }, [node, open]);
+    }, [image, node, open]);
 
     return (
         <Modal

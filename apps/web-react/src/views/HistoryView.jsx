@@ -58,6 +58,7 @@ const STATUS_FILTERS = [
   ["failed", "失败"],
 ];
 const CANVAS_SOURCE = "react_canvas";
+const ASSISTANT_TYPE = "assistant";
 const TYPE_FILTERS = [
   ["", "全部"],
   [CANVAS_SOURCE, "无限画布"],
@@ -74,6 +75,17 @@ function matchesTypeFilter(task, typeFilter) {
     return false;
   }
   return typeFilter === task?.type;
+}
+
+function isAssistantTask(task) {
+  return String(task?.type || "") === ASSISTANT_TYPE;
+}
+
+function isHistoryTaskDeletable(task) {
+  return (
+    !isAssistantTask(task) &&
+    DELETABLE_STATUSES.has(String(task?.status || "").toLowerCase())
+  );
 }
 
 function readStoredLayout() {
@@ -246,6 +258,12 @@ export function HistoryView() {
   const selectedDownloadTasks = visibleTasks.filter(
     (task) => selectedIds.has(String(task.id)) && taskOriginalUrl(task),
   );
+  const selectedDeletableIds = visibleTasks
+    .filter(
+      (task) =>
+        selectedIds.has(String(task.id)) && isHistoryTaskDeletable(task),
+    )
+    .map((task) => String(task.id));
   const previewIndex = preview
     ? visibleTasks.findIndex((task) => String(task.id) === String(preview.id))
     : -1;
@@ -253,6 +271,7 @@ export function HistoryView() {
   const syncSubscriptions = useCallback((rows) => {
     const active = new Set(
       rows
+        .filter((task) => !isAssistantTask(task))
         .filter((task) =>
           ["queued", "running"].includes(String(task.status).toLowerCase()),
         )
@@ -568,7 +587,9 @@ export function HistoryView() {
     }
   };
   const removeTask = (task) => {
-    if (!DELETABLE_STATUSES.has(String(task.status).toLowerCase()))
+    if (isAssistantTask(task))
+      return notificationService.info("请在 AI 助手中管理这条对话记录");
+    if (!isHistoryTaskDeletable(task))
       return notificationService.info("进行中的任务结束后才能删除");
     openConfirm(
       {
@@ -640,18 +661,18 @@ export function HistoryView() {
       {
         heading: all ? "删除全部历史记录？" : "清除全部失败记录？",
         description: all
-          ? "仅已结束的任务会被删除，进行中的任务会保留。产物也会一并删除，且不可撤销。"
+          ? "仅已结束的普通任务会被删除，进行中的任务和 AI 助手记录会保留。产物也会一并删除，且不可撤销。"
           : "将删除账号下所有失败任务及其产物，此操作不可撤销。",
         confirmLabel: all ? "清空全部" : "全部清除",
         busyLabel: "清除中…",
       },
       async () => {
         const rows = await fetchAll(all ? {} : { status: "failed" });
-        const targets = all
-          ? rows.filter((task) =>
-              DELETABLE_STATUSES.has(String(task.status).toLowerCase()),
-            )
-          : rows;
+        const targets = rows.filter((task) =>
+          all
+            ? isHistoryTaskDeletable(task)
+            : !isAssistantTask(task),
+        );
         if (!targets.length)
           return notificationService.info(
             all ? "没有可删除的已结束任务" : "没有失败记录",
@@ -832,10 +853,13 @@ export function HistoryView() {
                   <button
                     type="button"
                     className="ch-chip is-danger"
-                    disabled={!selectedIds.size || bulkBusy}
-                    onClick={() => batchDelete([...selectedIds])}
+                    disabled={!selectedDeletableIds.length || bulkBusy}
+                    onClick={() => batchDelete(selectedDeletableIds)}
                   >
-                    删除所选{selectedIds.size ? ` (${selectedIds.size})` : ""}
+                    删除所选
+                    {selectedDeletableIds.length
+                      ? ` (${selectedDeletableIds.length})`
+                      : ""}
                   </button>
                 </>
               )}
@@ -905,13 +929,25 @@ export function HistoryView() {
               <span>
                 {typeFilter === CANVAS_SOURCE
                   ? "去无限画布生成第一张图吧"
-                  : "去创作台生成第一张图吧"}
+                  : typeFilter === ASSISTANT_TYPE
+                    ? "去 AI 助手生成第一张图吧"
+                    : "去创作台生成第一张图吧"}
               </span>
               <Link
                 className="ch-btn is-primary"
-                to={typeFilter === CANVAS_SOURCE ? "/canvas" : "/studio"}
+                to={
+                  typeFilter === CANVAS_SOURCE
+                    ? "/canvas"
+                    : typeFilter === ASSISTANT_TYPE
+                      ? "/assistant"
+                      : "/"
+                }
               >
-                {typeFilter === CANVAS_SOURCE ? "打开无限画布" : "打开创作台"}
+                {typeFilter === CANVAS_SOURCE
+                  ? "打开无限画布"
+                  : typeFilter === ASSISTANT_TYPE
+                    ? "打开 AI 助手"
+                    : "打开创作台"}
               </Link>
             </div>
           ) : layoutMode === "grid" ? (
@@ -1095,16 +1131,14 @@ export function HistoryView() {
                         >
                           <i className="bi bi-copy" aria-hidden="true" />
                         </button>
-                        {!selectMode && (
+                        {!selectMode && !isAssistantTask(task) && (
                           <button
                             type="button"
                             className="is-danger"
                             title="删除"
                             aria-label="删除"
                             disabled={
-                              !DELETABLE_STATUSES.has(
-                                String(task.status).toLowerCase(),
-                              )
+                              !isHistoryTaskDeletable(task)
                             }
                             onClick={() => removeTask(task)}
                           >
@@ -1287,17 +1321,15 @@ export function HistoryView() {
                             >
                               <i className="bi bi-copy" />
                             </button>
-                            <button
-                              title="删除"
-                              disabled={
-                                !DELETABLE_STATUSES.has(
-                                  String(task.status).toLowerCase(),
-                                )
-                              }
-                              onClick={() => removeTask(task)}
-                            >
-                              <i className="bi bi-trash3" />
-                            </button>
+                            {!isAssistantTask(task) && (
+                              <button
+                                title="删除"
+                                disabled={!isHistoryTaskDeletable(task)}
+                                onClick={() => removeTask(task)}
+                              >
+                                <i className="bi bi-trash3" />
+                              </button>
+                            )}
                           </div>
                         </td>
                       </tr>

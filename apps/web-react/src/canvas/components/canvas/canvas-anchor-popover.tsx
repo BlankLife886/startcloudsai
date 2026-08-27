@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 
 import { floatingPanelStyle } from "./canvas-setting-controls";
@@ -23,18 +23,20 @@ function isInsideNestedPopover(panel: HTMLElement | null, target: Node) {
     return openPopoverPanels.slice(Math.max(0, index) + 1).some((item) => item.contains(target));
 }
 
-export function useAnchorPopover(onOpenChange?: (open: boolean) => void) {
+export function useAnchorPopover(onOpenChange?: (open: boolean) => void, controlledOpen?: boolean) {
     const buttonRef = useRef<HTMLSpanElement>(null);
     const panelRef = useRef<HTMLDivElement>(null);
-    const [open, setOpen] = useState(false);
+    const [internalOpen, setInternalOpen] = useState(false);
     const [buttonRect, setButtonRect] = useState<DOMRect | null>(null);
     const onOpenChangeRef = useRef(onOpenChange);
     onOpenChangeRef.current = onOpenChange;
+    const controlled = controlledOpen !== undefined;
+    const open = controlled ? controlledOpen : internalOpen;
 
-    const updateOpen = (next: boolean) => {
-        setOpen(next);
+    const updateOpen = useCallback((next: boolean) => {
+        if (!controlled) setInternalOpen(next);
         onOpenChangeRef.current?.(next);
-    };
+    }, [controlled]);
 
     useEffect(() => {
         if (!open) return;
@@ -45,8 +47,7 @@ export function useAnchorPopover(onOpenChange?: (open: boolean) => void) {
             if (buttonRef.current?.contains(target) || panelRef.current?.contains(target)) return;
             if (isInsideNestedPopover(panelRef.current, target)) return;
             if (document.activeElement instanceof HTMLElement && panelRef.current?.contains(document.activeElement)) document.activeElement.blur();
-            setOpen(false);
-            onOpenChangeRef.current?.(false);
+            updateOpen(false);
         };
 
         syncPosition();
@@ -58,7 +59,7 @@ export function useAnchorPopover(onOpenChange?: (open: boolean) => void) {
             window.removeEventListener("scroll", syncPosition, true);
             window.removeEventListener("pointerdown", closeOnOutsidePointer, true);
         };
-    }, [open]);
+    }, [open, updateOpen]);
 
     return { buttonRef, panelRef, open, buttonRect, updateOpen };
 }

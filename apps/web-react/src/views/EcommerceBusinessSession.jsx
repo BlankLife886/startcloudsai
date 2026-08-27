@@ -1339,6 +1339,16 @@ export function EcommerceBusinessSession({
   }, []);
 
   useEffect(() => {
+    const selected = models.find((item) =>
+      [item?.id, item?.publicModelKey, item?.model]
+        .map(String)
+        .includes(String(modelId)),
+    );
+    const price = Number(selected?.creditCost ?? selected?.pricePoints);
+    if (Number.isFinite(price)) setUnitPrice(Math.max(0, price));
+  }, [modelId, models]);
+
+  useEffect(() => {
     tryonRatioHydratedRef.current = false;
     setAspectRatio(
       mode.id === "tryon"
@@ -3726,22 +3736,6 @@ export function EcommerceBusinessSession({
     if (requestAuth({ featureLabel: "AI 电商" })) return;
     if (!canGenerate) return;
     if (!beginTaskLaunch()) return;
-    if (mode.id === "tryon" && currentRow && tryonBrief.trim()) {
-      const sourceRow = currentRow;
-      const brief = tryonBrief.trim();
-      await requestCostThenRun(
-        () =>
-          executeTryonBriefRevision({
-            sourceRow,
-            brief,
-            briefKey: sourceRow.url,
-          }),
-        1,
-        unitPrice,
-        true,
-      );
-      return;
-    }
     if (mode.id === "handheld") {
       try {
         const reservedRoles =
@@ -3772,10 +3766,47 @@ export function EcommerceBusinessSession({
         return;
       }
     }
+    let quotedUnit = unitPrice;
+    try {
+      const quote = await jobs.quoteBatch({
+        modelId,
+        items: generationPlan.map((item) => ({
+          ...item,
+          kindVariant: mode.id,
+          aspectRatio: item.aspectRatio || aspectRatio,
+        })),
+      });
+      const value = Number(quote?.unitPriceCents);
+      if (Number.isFinite(value)) {
+        quotedUnit = Math.max(0, value);
+        setUnitPrice(quotedUnit);
+      }
+    } catch (error) {
+      finishTaskLaunch();
+      setSubmitError(error?.message || "任务价格读取失败，请刷新后重试");
+      return;
+    }
+    if (mode.id === "tryon" && currentRow && tryonBrief.trim()) {
+      const sourceRow = currentRow;
+      const brief = tryonBrief.trim();
+      await requestCostThenRun(
+        () =>
+          executeTryonBriefRevision({
+            sourceRow,
+            brief,
+            briefKey: sourceRow.url,
+            expectedUnitPriceCents: quotedUnit,
+          }),
+        1,
+        quotedUnit,
+        true,
+      );
+      return;
+    }
     await requestCostThenRun(
-      executeGenerate,
+      () => executeGenerate({ expectedUnitPriceCents: quotedUnit }),
       generationPlan.length,
-      unitPrice,
+      quotedUnit,
       true,
     );
   }
@@ -3978,7 +4009,7 @@ export function EcommerceBusinessSession({
       spec: handheldSpec,
     };
   }
-  async function executeGenerate() {
+  async function executeGenerate({ expectedUnitPriceCents = null } = {}) {
     const batchId = crypto.randomUUID();
     const count = generationPlan.length;
     setSubmitError("");
@@ -4066,6 +4097,7 @@ export function EcommerceBusinessSession({
           modelId,
           batchId,
           batchSize: planItems.length,
+          expectedUnitPriceCents,
           items: planItems.map((item, index) => ({
             ...item,
             kindVariant: mode.id,
@@ -4093,7 +4125,9 @@ export function EcommerceBusinessSession({
         });
       }
     } catch (error) {
-      setSubmitError(error?.message || "生成失败，请检查网络后重试");
+      if (error?.name !== "AbortError") {
+        setSubmitError(error?.message || "生成失败，请检查网络后重试");
+      }
     } finally {
       setTryonStarting(false);
       setHandheldStarting(false);
@@ -4104,6 +4138,7 @@ export function EcommerceBusinessSession({
     sourceRow,
     brief,
     briefKey,
+    expectedUnitPriceCents = null,
   } = {}) {
     const text = String(brief || "").trim();
     if (!sourceRow?.url || !text || jobs.running) return;
@@ -4139,6 +4174,7 @@ export function EcommerceBusinessSession({
         modelId,
         batchId,
         batchSize: 1,
+        expectedUnitPriceCents,
         items: [
           {
             prompt: revision.prompt,
@@ -4156,7 +4192,9 @@ export function EcommerceBusinessSession({
       clearTryonBrief(briefKey, text);
     } catch (error) {
       setActiveUrl(sourceRow.url);
-      setSubmitError(error?.message || "试衣结果修改失败，请重试");
+      if (error?.name !== "AbortError") {
+        setSubmitError(error?.message || "试衣结果修改失败，请重试");
+      }
     } finally {
       setTryonStarting(false);
     }

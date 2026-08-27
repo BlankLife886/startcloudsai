@@ -343,12 +343,19 @@ export function useTextToImageJobs({ authenticated, historyActive = false }) {
             }
             return next;
           } catch (error) {
-            upsertTask({
-              id: optimisticId,
-              status: "failed",
-              error: error?.message || "任务提交失败",
-              finishedAt: new Date().toISOString(),
-            });
+            if (error?.code === "price_changed") {
+              if (mountedRef.current) {
+                setTasks((current) => current.filter((item) => item.id !== optimisticId));
+                setHistoryTasks((current) => current.filter((item) => item.id !== optimisticId));
+              }
+            } else {
+              upsertTask({
+                id: optimisticId,
+                status: "failed",
+                error: error?.message || "任务提交失败",
+                finishedAt: new Date().toISOString(),
+              });
+            }
             throw error;
           }
         });

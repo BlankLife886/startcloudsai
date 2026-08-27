@@ -5,6 +5,7 @@ import { Group, Hand, Home, Image as ImageIcon, MousePointer2, Music2, Plus, Puz
 import { useTranslation } from "react-i18next";
 
 import { isCanvasNodeTypeEnabled } from "@/constant/canvas";
+import { isCanvasOperationNodeType } from "@/lib/canvas/canvas-operation-node";
 import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
 import { CanvasNodeType } from "@/types/canvas";
 import { getNodePluginId, listNodeDefinitions, useNodeRegistryVersion } from "@/lib/canvas/node-registry";
@@ -52,7 +53,9 @@ export function CanvasToolbar({
     const [extensionsOpen, setExtensionsOpen] = useState(false);
     const [extPanelX, setExtPanelX] = useState(0);
     useNodeRegistryVersion();
-    const extensionDefs = listNodeDefinitions().filter((def) => def.showInCreateMenu !== false && getNodePluginId(def.type) !== "builtin");
+    const creatableDefinitions = listNodeDefinitions().filter((def) => def.showInCreateMenu !== false);
+    const operationDefs = creatableDefinitions.filter((def) => isCanvasOperationNodeType(def.type));
+    const extensionDefs = creatableDefinitions.filter((def) => getNodePluginId(def.type) !== "builtin");
     const dockStyle = { background: theme.toolbar.panel, color: theme.toolbar.item, boxShadow: theme.toolbar.shadow };
     const hoverStyle = { background: theme.toolbar.itemHover, color: theme.toolbar.activeText };
     const activeStyle = { background: theme.toolbar.activeBg, color: theme.toolbar.activeText };
@@ -67,8 +70,17 @@ export function CanvasToolbar({
     }, [extensionsOpen]);
 
     return (
-        <div ref={rootRef} className="relative">
-            <div ref={wrapRef} className="canvas-editor-chrome canvas-chrome-cluster thin-scrollbar pointer-events-auto flex h-10 max-w-full items-center gap-0.5 overflow-x-auto rounded-full px-1.5 [&>*]:shrink-0" style={dockStyle}>
+        <div ref={rootRef} className="relative w-fit min-w-0 max-w-full">
+            <div
+                ref={wrapRef}
+                className="canvas-editor-chrome canvas-chrome-cluster thin-scrollbar pointer-events-auto flex h-10 max-w-full items-center gap-0.5 overflow-x-auto overscroll-x-contain rounded-full px-1.5 [&>*]:shrink-0"
+                style={dockStyle}
+                onWheel={(event) => {
+                    event.stopPropagation();
+                    if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+                    event.currentTarget.scrollLeft += event.deltaY;
+                }}
+            >
                 <ToolbarButton id="tool-home" label={t("canvas.projects")} hovered={hovered} hoverStyle={hoverStyle} onHover={setHovered} onClick={onProjects}>
                     <Home className="size-3.5" />
                 </ToolbarButton>
@@ -98,6 +110,26 @@ export function CanvasToolbar({
                 <ToolbarButton id="tool-group" label={t("canvas.toolbar.group")} hovered={hovered} hoverStyle={hoverStyle} onHover={setHovered} onClick={onAddGroup}>
                     <Group className="size-3.5" />
                 </ToolbarButton>
+                {operationDefs.map((definition) => {
+                    const enabled = isCanvasNodeTypeEnabled(definition.type);
+                    const label = enabled ? definition.title : `${definition.title} · ${t("canvas.unavailable")}`;
+                    return (
+                        <ToolbarButton
+                            key={definition.type}
+                            id={`tool-node-${definition.type}`}
+                            label={label}
+                            disabled={!enabled}
+                            hovered={hovered}
+                            hoverStyle={hoverStyle}
+                            onHover={setHovered}
+                            onClick={() => onAddExtensionNode(definition.type)}
+                        >
+                            <span className="inline-flex size-3.5 items-center justify-center [&>svg]:size-3.5">
+                                {definition.icon}
+                            </span>
+                        </ToolbarButton>
+                    );
+                })}
                 {extensionDefs.length ? (
                     <ToolbarButton
                         id="tool-extensions"

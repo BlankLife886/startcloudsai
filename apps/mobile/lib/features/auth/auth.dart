@@ -117,6 +117,13 @@ String formatLoginEmailDomains(Iterable<String> domains) {
   return labels.isEmpty ? '服务端配置的邮箱' : labels.join('、');
 }
 
+int codeResendSecondsRemaining(DateTime? deadline, DateTime now) {
+  if (deadline == null) return 0;
+  final milliseconds = deadline.difference(now).inMilliseconds;
+  if (milliseconds <= 0) return 0;
+  return (milliseconds + 999) ~/ 1000;
+}
+
 class AuthRepository {
   const AuthRepository(this._apiClient, this._sessionStore);
 

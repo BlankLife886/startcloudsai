@@ -38,7 +38,7 @@ const feedbackPageGroups = [
   {
     group: "创作",
     items: [
-      { value: "/studio", label: "创作台" },
+      { value: "/", label: "创作台" },
       { value: "/text-to-image", label: "文生图" },
       { value: "/canvas", label: "无限画布" },
       { value: "/assistant", label: "AI 助手" },

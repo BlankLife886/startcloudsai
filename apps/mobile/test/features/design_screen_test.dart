@@ -1,7 +1,32 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
+import 'package:starcloudsai_mobile/app/starclouds_theme.dart';
+import 'package:starcloudsai_mobile/features/create/creation_draft.dart';
 import 'package:starcloudsai_mobile/features/design/design_screen.dart';
+
+class _DraftStore implements CreationDraftStore {
+  _DraftStore([this.draft]);
+
+  CreationDraft? draft;
+
+  @override
+  Future<CreationDraft?> read() async => draft;
+
+  @override
+  Future<void> write(CreationDraft draft) async => this.draft = draft;
+
+  @override
+  Future<void> clear() async => draft = null;
+}
+
+Widget _scope(Widget child, {CreationDraftStore? store}) => ProviderScope(
+  overrides: [
+    creationDraftStoreProvider.overrideWithValue(store ?? _DraftStore()),
+  ],
+  child: child,
+);
 
 void main() {
   testWidgets('design hub exposes every tool on narrow large text', (
@@ -10,16 +35,19 @@ void main() {
     await tester.binding.setSurfaceSize(const Size(320, 800));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.pumpWidget(
-      MaterialApp(
-        builder: (context, child) => MediaQuery(
-          data: MediaQuery.of(
-            context,
-          ).copyWith(textScaler: const TextScaler.linear(1.6)),
-          child: child!,
+      _scope(
+        MaterialApp(
+          builder: (context, child) => MediaQuery(
+            data: MediaQuery.of(
+              context,
+            ).copyWith(textScaler: const TextScaler.linear(1.6)),
+            child: child!,
+          ),
+          home: const DesignScreen(),
         ),
-        home: const DesignScreen(),
       ),
     );
+    await tester.pumpAndSettle();
 
     expect(find.byKey(const Key('design-tool-text-to-image')), findsOneWidget);
     expect(find.text('文生图'), findsOneWidget);
@@ -32,8 +60,45 @@ void main() {
     }
     expect(find.byKey(const Key('design-open-works')), findsOneWidget);
     expect(find.byKey(const Key('design-open-assets')), findsOneWidget);
+    final surface = tester.widget<DecoratedBox>(
+      find.byKey(const Key('design-featured-surface')),
+    );
+    final decoration = surface.decoration as BoxDecoration;
+    expect(decoration.borderRadius, BorderRadius.circular(8));
     expect(find.byKey(const Key('app-top-bar-back')), findsNothing);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('flat creation entry follows light and dark surfaces', (
+    tester,
+  ) async {
+    for (final brightness in Brightness.values) {
+      final theme = brightness == Brightness.dark
+          ? StarCloudsTheme.dark()
+          : StarCloudsTheme.light();
+      await tester.pumpWidget(
+        _scope(
+          MaterialApp(
+            theme: StarCloudsTheme.light(),
+            darkTheme: StarCloudsTheme.dark(),
+            themeMode: brightness == Brightness.dark
+                ? ThemeMode.dark
+                : ThemeMode.light,
+            home: const DesignScreen(),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final surface = tester.widget<DecoratedBox>(
+        find.byKey(const Key('design-featured-surface')),
+      );
+      final decoration = surface.decoration as BoxDecoration;
+      expect(decoration.color, theme.colorScheme.surfaceContainerLow);
+      expect(decoration.borderRadius, BorderRadius.circular(8));
+      expect(find.text('从一句描述开始'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    }
   });
 
   testWidgets('every design tool opens its processing page', (tester) async {
@@ -62,7 +127,7 @@ void main() {
       ],
     );
     addTearDown(router.dispose);
-    await tester.pumpWidget(MaterialApp.router(routerConfig: router));
+    await tester.pumpWidget(_scope(MaterialApp.router(routerConfig: router)));
 
     for (final entry in destinations.entries) {
       final tool = find.byKey(Key('design-tool-${entry.key}'));
@@ -73,6 +138,65 @@ void main() {
       router.go('/design');
       await tester.pumpAndSettle();
     }
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('saved creation draft is visible and resumes from the hub', (
+    tester,
+  ) async {
+    final store = _DraftStore(
+      CreationDraft(
+        prompt: '雨夜霓虹街道，电影感光影与湿润路面反射',
+        count: 2,
+        updatedAt: DateTime(2026, 8, 26, 10, 30),
+      ),
+    );
+    final router = GoRouter(
+      initialLocation: '/design',
+      routes: [
+        GoRoute(
+          path: '/design',
+          builder: (context, state) => const DesignScreen(),
+        ),
+        GoRoute(
+          path: '/create',
+          builder: (context, state) => const Scaffold(body: Text('草稿创作页')),
+        ),
+        GoRoute(
+          path: '/works',
+          builder: (context, state) => const SizedBox.shrink(),
+        ),
+        GoRoute(
+          path: '/profile/assets',
+          builder: (context, state) => const SizedBox.shrink(),
+        ),
+      ],
+    );
+    addTearDown(router.dispose);
+    await tester.pumpWidget(
+      _scope(MaterialApp.router(routerConfig: router), store: store),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('继续上次创作'), findsOneWidget);
+    expect(find.textContaining('雨夜霓虹街道'), findsOneWidget);
+    expect(find.bySemanticsLabel('继续文生图草稿'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('design-tool-text-to-image')));
+    await tester.pumpAndSettle();
+    expect(router.state.uri.path, '/create');
+    expect(find.text('草稿创作页'), findsOneWidget);
+
+    store.draft = CreationDraft(
+      prompt: '更新后的海边日落草稿',
+      count: 1,
+      updatedAt: DateTime(2026, 8, 26, 11),
+    );
+    router.pop();
+    await tester.pumpAndSettle();
+    expect(router.state.uri.path, '/design');
+    expect(find.textContaining('更新后的海边日落草稿'), findsOneWidget);
+    expect(find.textContaining('雨夜霓虹街道'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 }

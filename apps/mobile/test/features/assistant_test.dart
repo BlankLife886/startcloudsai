@@ -1,10 +1,13 @@
 import 'dart:async';
+import 'dart:ui' show SemanticsAction, Tristate;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:speech_to_text/speech_recognition_result.dart';
+import 'package:speech_to_text/speech_to_text.dart';
 import 'package:starcloudsai_mobile/app/starclouds_theme.dart';
 import 'package:starcloudsai_mobile/features/assistant/assistant.dart';
 import 'package:starcloudsai_mobile/features/assistant/assistant_draft.dart';
@@ -199,6 +202,15 @@ class _FakeAssistantRepository implements AssistantRepository {
   Stream<AssistantStreamEvent> streamRun(String id) => streamController.stream;
 }
 
+class _LoadingAssistantController extends AssistantWorkspaceController {
+  _LoadingAssistantController(this.gate);
+
+  final Completer<AssistantWorkspaceState> gate;
+
+  @override
+  Future<AssistantWorkspaceState> build() => gate.future;
+}
+
 class _ScreenAssistantController extends AssistantWorkspaceController {
   _ScreenAssistantController(this.initial);
 
@@ -329,12 +341,72 @@ class _FakeAssistantDraftStore implements AssistantDraftStore {
   }
 }
 
+class _FakeSpeechInput implements AssistantSpeechInput {
+  SpeechResultListener? resultListener;
+  SpeechStatusListener? statusListener;
+  SpeechErrorListener? errorListener;
+  bool listening = false;
+  int initializeCount = 0;
+  int listenCount = 0;
+  int stopCount = 0;
+  int cancelCount = 0;
+  Completer<bool>? initializeGate;
+
+  @override
+  bool get isListening => listening;
+
+  @override
+  Future<bool> initialize({
+    required SpeechErrorListener onError,
+    required SpeechStatusListener onStatus,
+  }) async {
+    initializeCount += 1;
+    errorListener = onError;
+    statusListener = onStatus;
+    return initializeGate?.future ?? true;
+  }
+
+  @override
+  Future<void> listen({
+    required SpeechResultListener onResult,
+    required SpeechListenOptions listenOptions,
+  }) async {
+    listenCount += 1;
+    resultListener = onResult;
+    listening = true;
+    statusListener?.call('listening');
+  }
+
+  @override
+  Future<void> stop() async {
+    stopCount += 1;
+    listening = false;
+    statusListener?.call('notListening');
+  }
+
+  @override
+  Future<void> cancel() async {
+    cancelCount += 1;
+    listening = false;
+    statusListener?.call('notListening');
+  }
+
+  void emit(String words) {
+    resultListener?.call(
+      SpeechRecognitionResult.init([
+        SpeechRecognitionWords(words, null, 1),
+      ], ResultType.finalResult),
+    );
+  }
+}
+
 Widget _screen(
-  _ScreenAssistantController Function() controller, {
+  AssistantWorkspaceController Function() controller, {
   double textScale = 1,
   String? initialPrompt,
   int availablePoints = 100,
   AssistantDraftStore? draftStore,
+  AssistantSpeechInput? speechInput,
   Brightness brightness = Brightness.light,
 }) {
   final resolvedDraftStore = draftStore ?? _FakeAssistantDraftStore();
@@ -362,7 +434,10 @@ Widget _screen(
         ).copyWith(textScaler: TextScaler.linear(textScale)),
         child: child!,
       ),
-      home: AssistantScreen(initialPrompt: initialPrompt),
+      home: AssistantScreen(
+        initialPrompt: initialPrompt,
+        speechInput: speechInput,
+      ),
     ),
   );
 }
@@ -519,6 +594,155 @@ void main() {
       expect(find.text('有什么可以帮你？'), findsOneWidget);
       expect(tester.takeException(), isNull);
     }
+  });
+
+  testWidgets('voice input transcribes and stops before a new conversation', (
+    tester,
+  ) async {
+    final speech = _FakeSpeechInput();
+    late _ScreenAssistantController controller;
+    await tester.pumpWidget(
+      _screen(
+        speechInput: speech,
+        () => controller = _ScreenAssistantController(
+          const AssistantWorkspaceState(
+            config: _config,
+            conversations: [],
+            selectedConversationId: null,
+            selectedModelId: 'chat-pro',
+            reasoningEffort: 'medium',
+            activeRuns: {},
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('assistant-voice')));
+    await tester.pumpAndSettle();
+    expect(speech.listenCount, 1);
+    expect(find.bySemanticsLabel('停止语音输入'), findsOneWidget);
+    expect(find.byIcon(Icons.graphic_eq_rounded), findsOneWidget);
+    final voiceSemantics = tester.getSemantics(find.bySemanticsLabel('停止语音输入'));
+    final voiceData = voiceSemantics.getSemanticsData();
+    expect(voiceData.flagsCollection.isButton, isTrue);
+    expect(voiceData.flagsCollection.isSelected, Tristate.isTrue);
+    expect(voiceData.hasAction(SemanticsAction.tap), isTrue);
+    final activeSurface = tester.widget<AnimatedContainer>(
+      find.descendant(
+        of: find.byKey(const Key('assistant-voice')),
+        matching: find.byType(AnimatedContainer),
+      ),
+    );
+    final activeDecoration = activeSurface.decoration as BoxDecoration;
+    expect(
+      activeDecoration.color,
+      Theme.of(
+        tester.element(find.byKey(const Key('assistant-voice'))),
+      ).colorScheme.primaryContainer,
+    );
+
+    speech.emit('帮我分析这张海报的构图');
+    await tester.pump();
+    expect(find.text('帮我分析这张海报的构图'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('assistant-new')));
+    await tester.pumpAndSettle();
+    expect(speech.cancelCount, 1);
+    expect(speech.isListening, isFalse);
+    expect(controller.newConversationCount, 1);
+    expect(find.bySemanticsLabel('语音输入'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('conversation switch cancels speech initialization race', (
+    tester,
+  ) async {
+    final speech = _FakeSpeechInput()..initializeGate = Completer<bool>();
+    late _ScreenAssistantController controller;
+    await tester.pumpWidget(
+      _screen(
+        speechInput: speech,
+        () => controller = _ScreenAssistantController(
+          const AssistantWorkspaceState(
+            config: _config,
+            conversations: [],
+            selectedConversationId: null,
+            selectedModelId: 'chat-pro',
+            reasoningEffort: 'medium',
+            activeRuns: {},
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('assistant-voice')));
+    await tester.pump();
+    expect(speech.initializeCount, 1);
+
+    await tester.tap(find.byKey(const Key('assistant-new')));
+    await tester.pump();
+    expect(controller.newConversationCount, 1);
+
+    speech.initializeGate!.complete(true);
+    await tester.pumpAndSettle();
+    expect(speech.listenCount, 0);
+    expect(find.bySemanticsLabel('语音输入'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('first workspace load shows a skeleton instead of a spinner', (
+    tester,
+  ) async {
+    final gate = Completer<AssistantWorkspaceState>();
+    await tester.pumpWidget(_screen(() => _LoadingAssistantController(gate)));
+    await tester.pump();
+
+    expect(
+      find.byKey(const Key('assistant-workspace-skeleton')),
+      findsOneWidget,
+    );
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(find.byKey(const Key('assistant-welcome')), findsNothing);
+
+    gate.complete(
+      const AssistantWorkspaceState(
+        config: _config,
+        conversations: [],
+        selectedConversationId: null,
+        selectedModelId: 'chat-pro',
+        reasoningEffort: 'medium',
+        activeRuns: {},
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.byKey(const Key('assistant-workspace-skeleton')), findsNothing);
+    expect(find.text('有什么可以帮你？'), findsOneWidget);
+  });
+
+  testWidgets('route skeleton matches the assistant chrome without a spinner', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: StarCloudsTheme.light(),
+        home: const AssistantPageSkeleton(),
+      ),
+    );
+    await tester.pump();
+
+    expect(
+      find.byKey(const Key('assistant-workspace-skeleton')),
+      findsOneWidget,
+    );
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(find.text('正在检查账号状态'), findsNothing);
+    expect(find.byKey(const Key('assistant-composer')), findsNothing);
+    expect(find.textContaining('问答 · AI 助手'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('header dropdown selects reasoning without a bottom sheet', (

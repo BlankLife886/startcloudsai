@@ -41,29 +41,7 @@
           linear-gradient(90deg, rgba(198, 188, 255, 0.075) 1px, transparent 1px);
       }
     </style>
-    <script>
-      (() => {
-        try {
-          document.documentElement.classList.toggle(
-            "canvas-entry",
-            location.pathname === "/canvas" || location.pathname.startsWith("/canvas/"),
-          );
-          const value =
-            localStorage.getItem("walleven-color-scheme") ||
-            localStorage.getItem("starclouds-appearance") ||
-            "light";
-          const appearance = value === "dark" ? "dark" : "light";
-          document.documentElement.classList.toggle(
-            "color-scheme-dark",
-            appearance === "dark",
-          );
-          document.documentElement.dataset.colorScheme = appearance;
-          document.documentElement.style.colorScheme = appearance;
-        } catch {
-          document.documentElement.dataset.colorScheme = "light";
-        }
-      })();
-    </script>
+    <script src="/theme-init.js"></script>
   </head>
   <body>
     <div id="root"></div>

@@ -18,7 +18,7 @@ class _SessionController extends SessionController {
 }
 
 void main() {
-  testWidgets('bottom navigation exposes five stable destinations', (
+  testWidgets('bottom navigation exposes four stable destinations', (
     tester,
   ) async {
     var selected = -1;
@@ -43,9 +43,10 @@ void main() {
       ),
     );
 
-    for (final label in ['首页', '社区', '设计', '我的']) {
+    for (final label in ['首页', '设计', '我的']) {
       expect(find.text(label), findsOneWidget);
     }
+    expect(find.text('社区'), findsNothing);
     expect(find.text('AI'), findsNothing);
     expect(find.bySemanticsLabel('AI'), findsOneWidget);
     expect(find.byType(InkWell), findsNothing);
@@ -54,13 +55,13 @@ void main() {
       tester.getSize(find.byKey(const Key('bottom-nav-ai-button'))),
       const Size(28, 28),
     );
-    for (var index = 0; index < 5; index += 1) {
+    for (var index = 0; index < 4; index += 1) {
       expect(
         tester.getSize(find.byKey(Key('bottom-nav-item-$index'))).height,
         greaterThanOrEqualTo(56),
       );
     }
-    expect(find.byKey(const Key('bottom-nav-item-5')), findsNothing);
+    expect(find.byKey(const Key('bottom-nav-item-4')), findsNothing);
     final navigation = tester.getRect(
       find.byKey(const Key('app-bottom-navigation')),
     );

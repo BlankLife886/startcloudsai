@@ -545,7 +545,17 @@ export type CanvasAgentTurnResult = {
     reasoningEffort?: string;
 };
 
-export type CanvasAgentToolCall = { requestId: string; name: string; arguments: string; stage?: string; title?: string };
+export type CanvasAgentToolCall = {
+    requestId: string;
+    name: string;
+    arguments: string;
+    stage?: string;
+    title?: string;
+    execution?: "browser" | "server";
+    status?: "running" | "completed" | "failed";
+    result?: unknown;
+    error?: string;
+};
 export type CanvasAgentToolHandler = (call: CanvasAgentToolCall) => Promise<unknown>;
 
 export type CanvasAgentTurnOptions = {
@@ -963,8 +973,19 @@ export async function waitForCanvasAgentRun(
         })
         : null;
     const serveToolCall = (call: CanvasAgentToolCall) => {
-        if (!delivery || !call?.requestId || !call.name) return;
+        if (!call?.requestId || !call.name) return;
         emitStage(call.stage || "tool");
+        if (call.execution === "server") {
+            if (!onToolCall) return;
+            void onToolCall(call).then(() => {
+                if (call.status === "completed" && !countedToolCalls.has(call.requestId)) {
+                    countedToolCalls.add(call.requestId);
+                    executedTools += 1;
+                }
+            }).catch(() => undefined);
+            return;
+        }
+        if (!delivery) return;
         void delivery.serve(call).catch(() => undefined);
     };
     const stream = openCanvasAssistantRunStream(runId, (payload) => {

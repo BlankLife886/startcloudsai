@@ -1,7 +1,7 @@
 const routePreloaders = new Map([
   ["/", () => import("./views/CommercialHomeView.jsx")],
-  ["/prompts", () => import("./views/PromptLibraryView.jsx")],
   ["/studio", () => import("./views/StudioHubView.jsx")],
+  ["/prompts", () => import("./views/PromptLibraryView.jsx")],
   ["/text-to-image", () => import("./views/TextToImageView.jsx")],
   ["/pricing", () => import("./views/PricingView.jsx")],
   ["/share", () => import("./views/ShareView.jsx")],

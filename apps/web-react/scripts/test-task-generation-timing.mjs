@@ -3,6 +3,9 @@ import {
   serverTaskStartedAt,
   taskGenerationElapsedMs,
 } from '../src/legacy-modules/features/ai-wallpaper/domain/taskGenerationTiming.js'
+import {
+  ecommerceElapsedSeconds,
+} from '../src/features/ecommerce/businesses/shared/generationTiming.js'
 
 const createdAt = '2026-08-10T01:00:00.000Z'
 const startedAt = '2026-08-10T01:05:00.000Z'
@@ -12,6 +15,11 @@ assert.equal(
   serverTaskStartedAt({ status: 'queued', createdAt, startedAt: null }),
   0,
   '排队任务不能用 createdAt 作为生成开始时间',
+)
+assert.equal(
+  ecommerceElapsedSeconds({ startedAt, finishedAt }),
+  12,
+  '电商任务应使用服务端开始和结束时间计算耗时',
 )
 assert.equal(
   taskGenerationElapsedMs({ status: 'queued', createdAt, startedAt: Date.parse(createdAt) }),

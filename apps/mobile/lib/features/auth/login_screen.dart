@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../app/starclouds_theme.dart';
 import '../../core/config/app_environment.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/widgets/app_notice.dart';
@@ -14,28 +13,74 @@ import '../../core/providers.dart';
 import 'auth.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
-  const LoginScreen({super.key});
+  const LoginScreen({this.now, super.key});
+
+  final DateTime Function()? now;
 
   @override
   ConsumerState<LoginScreen> createState() => _LoginScreenState();
 }
 
-class _LoginScreenState extends ConsumerState<LoginScreen> {
+class _LoginScreenState extends ConsumerState<LoginScreen>
+    with WidgetsBindingObserver {
   final _formKey = GlobalKey<FormState>();
   final _emailController = TextEditingController();
   final _codeController = TextEditingController();
   Timer? _timer;
+  DateTime? _resendDeadline;
   int _resendSeconds = 0;
   bool _sendingCode = false;
   bool _signingIn = false;
   String? _developmentCode;
 
+  DateTime get _now => (widget.now ?? DateTime.now)();
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _timer?.cancel();
     _emailController.dispose();
     _codeController.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _syncResendCountdown();
+  }
+
+  void _startResendCountdown(int seconds) {
+    _timer?.cancel();
+    final duration = seconds.clamp(0, 3600);
+    _resendDeadline = duration == 0
+        ? null
+        : _now.add(Duration(seconds: duration));
+    _syncResendCountdown();
+    if (_resendDeadline != null) {
+      _timer = Timer.periodic(
+        const Duration(seconds: 1),
+        (_) => _syncResendCountdown(),
+      );
+    }
+  }
+
+  void _syncResendCountdown() {
+    if (!mounted) return;
+    final remaining = codeResendSecondsRemaining(_resendDeadline, _now);
+    if (remaining != _resendSeconds) {
+      setState(() => _resendSeconds = remaining);
+    }
+    if (remaining == 0) {
+      _resendDeadline = null;
+      _timer?.cancel();
+      _timer = null;
+    }
   }
 
   void _showError(Object error) {
@@ -71,21 +116,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
           .requestCode(_emailController.text);
       if (!mounted) return;
       setState(() {
-        _resendSeconds = delivery.resendAfter;
         _developmentCode = delivery.developmentCode;
         if (delivery.developmentCode != null) {
           _codeController.text = delivery.developmentCode!;
         }
       });
-      _timer?.cancel();
-      _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
-        if (!mounted || _resendSeconds <= 1) {
-          timer.cancel();
-          if (mounted) setState(() => _resendSeconds = 0);
-          return;
-        }
-        setState(() => _resendSeconds -= 1);
-      });
+      _startResendCountdown(delivery.resendAfter);
     } catch (error) {
       _showError(error);
     } finally {
@@ -132,8 +168,13 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    const AppAppear(child: Center(child: _BrandMark())),
-                    const SizedBox(height: 24),
+                    const AppAppear(
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: _BrandMark(),
+                      ),
+                    ),
+                    const SizedBox(height: 20),
                     if (isDevelopment) ...[
                       _DevelopmentEnvironmentNotice(environment: environment),
                       const SizedBox(height: 18),
@@ -336,9 +377,17 @@ class _AuthStatusPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     final foreground = error ? colors.onErrorContainer : colors.onSurface;
-    return AppSoftCard(
-      color: error ? colors.errorContainer : colors.surface,
-      radius: BorderRadius.circular(18),
+    return DecoratedBox(
+      key: const Key('auth-service-status'),
+      decoration: BoxDecoration(
+        color: error ? colors.errorContainer : colors.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: error
+              ? colors.error.withValues(alpha: .28)
+              : colors.outlineVariant,
+        ),
+      ),
       child: Column(
         children: [
           Padding(
@@ -393,35 +442,41 @@ class _DevelopmentEnvironmentNotice extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return AppSoftCard(
-      color: colors.tertiaryContainer,
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      child: Row(
-        children: [
-          Icon(Icons.dns_outlined, color: colors.onTertiaryContainer),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  '本地开发环境',
-                  style: TextStyle(
-                    color: colors.onTertiaryContainer,
-                    fontWeight: FontWeight.w700,
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: colors.tertiaryContainer,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: colors.tertiary.withValues(alpha: .25)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        child: Row(
+          children: [
+            Icon(Icons.dns_outlined, color: colors.onTertiaryContainer),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '本地开发环境',
+                    style: TextStyle(
+                      color: colors.onTertiaryContainer,
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  Uri.parse(environment.origin).authority,
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: colors.onTertiaryContainer,
+                  const SizedBox(height: 2),
+                  Text(
+                    Uri.parse(environment.origin).authority,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: colors.onTertiaryContainer,
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -432,36 +487,18 @@ class _BrandMark extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final visual = StarCloudsVisualStyle.of(context);
-    return Column(
+    final colors = Theme.of(context).colorScheme;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
       children: [
-        Container(
-          width: 56,
-          height: 56,
-          decoration: BoxDecoration(
-            gradient: visual.brandGradient,
-            borderRadius: BorderRadius.circular(16),
-            boxShadow: [
-              BoxShadow(
-                color: visual.brandStart.withValues(alpha: .28),
-                blurRadius: 16,
-                offset: const Offset(0, 8),
-              ),
-            ],
-          ),
-          child: const Icon(Icons.auto_awesome, color: Colors.white),
-        ),
-        const SizedBox(height: 14),
-        const Text(
+        Icon(Icons.auto_awesome_rounded, color: colors.primary, size: 24),
+        const SizedBox(width: 9),
+        Text(
           '星空云绘',
-          style: TextStyle(
-            fontSize: 24,
-            fontWeight: FontWeight.w900,
-            letterSpacing: -0.8,
-          ),
+          style: Theme.of(
+            context,
+          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
         ),
-        const SizedBox(height: 4),
-        const Text('StarCloudsAI', style: TextStyle(fontSize: 13)),
       ],
     );
   }

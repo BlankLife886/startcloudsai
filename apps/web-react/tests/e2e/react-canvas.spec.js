@@ -11,7 +11,7 @@ const project = {
   updatedAt: '2026-08-12T08:10:00.000Z',
 }
 
-async function mockCanvasBase(page, { pendingProjects = false } = {}) {
+async function mockCanvasBase(page, { pendingProjects = false, nodes = [] } = {}) {
   await page.addInitScript(() => {
     localStorage.setItem('starclouds-locale', 'zh-CN')
     localStorage.removeItem('infinite-canvas:canvas_store')
@@ -37,7 +37,7 @@ async function mockCanvasBase(page, { pendingProjects = false } = {}) {
   })
   await page.route(`**/api/v1/canvas-projects/${project.id}`, (route) => fulfillJson(route, {
     ...project,
-    document: { version: 3, nodes: [], connections: [], chatSessions: [], activeChatId: null, backgroundMode: 'lines', showImageInfo: false, viewport: { x: 0, y: 0, k: 1 } },
+    document: { version: 3, nodes, connections: [], chatSessions: [], activeChatId: null, backgroundMode: 'lines', showImageInfo: false, viewport: { x: 0, y: 0, k: 1 } },
   }))
   await page.route('**/api/v1/prompts**', (route) => fulfillJson(route, { items: [], page: 1, pageSize: 20, total: 0, hasMore: false }))
 }
@@ -168,6 +168,69 @@ test.describe('React native canvas integration', () => {
     await expect(page.getByRole('menuitem', { name: '主页' })).toHaveCount(0)
     await expect(page.getByRole('menuitem', { name: '文档' })).toHaveCount(0)
     await expect(page.getByRole('menuitem', { name: '我的画布' })).toBeVisible()
+  })
+
+  test('closes side-panel node actions on outside click and keeps only one menu open', async ({ page }) => {
+    await mockCanvasBase(page, {
+      nodes: [
+        { id: 'text-node-1', type: 'text', title: '文案节点一', position: { x: 100, y: 100 }, width: 320, height: 220, metadata: { content: '第一段文案' } },
+        { id: 'image-node-2', type: 'image', title: '图片节点二', position: { x: 500, y: 100 }, width: 320, height: 220, metadata: { content: '/sucai/home-intro-02.png' } },
+      ],
+    })
+    await page.goto(`/canvas/${project.id}`, { waitUntil: 'domcontentloaded' })
+
+    await page.locator('[data-node-id="image-node-2"] [data-canvas-node-shell]').click({ button: 'right', position: { x: 12, y: 12 } })
+    const nodeToolbar = page.locator('[data-canvas-node-toolbar]')
+    await expect(nodeToolbar).toBeVisible()
+    await expect(nodeToolbar.getByRole('button', { name: '复制', exact: true })).toHaveCount(0)
+    await expect(nodeToolbar.getByRole('button', { name: '信息', exact: true })).toHaveCount(0)
+
+    const triggers = page.locator('.canvas-node-actions-trigger')
+    const popover = page.locator('.canvas-anchor-popover')
+    const workflowSlot = page.locator('[data-canvas-topbar-actions] > .canvas-workflow-control-slot')
+    await expect(workflowSlot).toContainText('运行工作流')
+    const toolbar = page.locator('.canvas-editor-chrome.thin-scrollbar')
+    const [toolbarBox, lastToolbarItemBox, workflowBox, chromeBox] = await Promise.all([
+      toolbar.boundingBox(),
+      toolbar.locator(':scope > :last-child').boundingBox(),
+      workflowSlot.boundingBox(),
+      page.locator('[data-canvas-topbar-actions] > div.canvas-chrome-cluster').boundingBox(),
+    ])
+    expect(toolbarBox.x + toolbarBox.width - (lastToolbarItemBox.x + lastToolbarItemBox.width)).toBeLessThanOrEqual(12)
+    expect(toolbarBox.x + toolbarBox.width).toBeLessThanOrEqual(workflowBox.x)
+    expect(workflowBox.x + workflowBox.width).toBeLessThanOrEqual(chromeBox.x)
+    await expect(triggers).toHaveCount(2)
+
+    await triggers.nth(0).click()
+    await expect(popover).toHaveCount(1)
+    await expect(triggers.nth(0)).toHaveAttribute('aria-expanded', 'true')
+
+    await page.getByPlaceholder('搜索节点').click()
+    await expect(popover).toHaveCount(0)
+    await expect(triggers.nth(0)).toHaveAttribute('aria-expanded', 'false')
+
+    await triggers.nth(1).click()
+    await triggers.nth(0).click()
+    await expect(popover).toHaveCount(1)
+    await expect(triggers.nth(0)).toHaveAttribute('aria-expanded', 'true')
+    await expect(triggers.nth(1)).toHaveAttribute('aria-expanded', 'false')
+    await expect(popover.getByRole('button', { name: '信息', exact: true })).toHaveCount(0)
+    await expect(popover.getByRole('button', { name: '复制', exact: true })).toHaveCount(0)
+
+    await page.locator('.canvas-side-panel-select').click()
+    const exportSelected = page.getByRole('button', { name: '导出选中', exact: true })
+    await expect(exportSelected).toBeVisible()
+    await expect(exportSelected).toHaveText('')
+  })
+
+  test('keeps the canvas Agent empty state concise', async ({ page }) => {
+    await mockCanvasBase(page)
+    await page.goto(`/canvas/${project.id}`, { waitUntil: 'domcontentloaded' })
+
+    await page.getByRole('button', { name: '打开 Agent' }).click()
+    await expect(page.getByText('描述你想创建或修改的画布内容。', { exact: true })).toBeVisible()
+    await expect(page.getByText('从一句话改画布', { exact: true })).toHaveCount(0)
+    await expect(page.locator('.canvas-agent-suggestion')).toHaveCount(0)
   })
 
   test('honors reduced motion without hiding the canvas surface', async ({ page }) => {

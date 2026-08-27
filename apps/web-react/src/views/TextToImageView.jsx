@@ -575,6 +575,7 @@ function CostConfirmDialog({ cost, light = false, onCancel, onConfirm }) {
             <div className={insufficient ? "danger" : ""}><span>支付后余额</span><strong>{available == null ? "待计算" : insufficient ? "余额不足" : `${remaining.toLocaleString("zh-CN")} 积分`}</strong></div>
           </div>
         </div>
+        {activeCost.priceUpdated && <p className="ai-cost-confirm-warn"><i className="bi bi-arrow-repeat" />任务价格已更新，请确认最新费用后再提交。</p>}
         {activeCost.pricingUnavailable && <p className="ai-cost-confirm-warn"><i className="bi bi-info-circle" />暂时读取不到单价，本次费用以服务端结算为准。</p>}
         {insufficient && <p className="ai-cost-confirm-warn is-danger"><i className="bi bi-exclamation-circle" />钱包余额不足，请充值后再提交任务。</p>}
         <footer className="ai-cost-confirm-footer">
@@ -837,8 +838,10 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
       ) {
         return;
       }
+      const targets = rootRef.current?.querySelectorAll("[data-motion]");
+      if (!targets?.length) return;
       gsap.fromTo(
-        rootRef.current?.querySelectorAll("[data-motion]") || [],
+        targets,
         { opacity: 0, y: 8 },
         {
           opacity: 1,
@@ -1219,28 +1222,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     };
   }, [autoRemove, backgroundRemovalModel?.id, currentModel, feature.superResolutionEnabled, modelId, moderation, outputFormat, polish, prompt, quality, ratio, resolution, selectedSkillIds, translate, transparent]);
 
-  const submitGeneration = useCallback(async () => {
-    if (!prompt.trim()) return;
-    try {
-      await jobs.createBatch({ count, references, buildPayload });
-      setMainTab("images");
-    } catch (error) {
-      notificationService.error(error?.message || "任务提交失败");
-    }
-  }, [buildPayload, count, jobs, prompt, references]);
-
-  const requestGeneration = useCallback(async () => {
-    if (!authenticated) {
-      onRequireAuth?.();
-      return;
-    }
-    if (!prompt.trim() || !currentModel) return;
-    if (user?.requireCostConfirm === false || pendingRef.current?.value?.config?.costConfirmed) {
-      quotedUnitPriceRef.current = null;
-      pendingRef.current = { consumed: true, value: null };
-      await submitGeneration();
-      return;
-    }
+  const refreshGenerationCost = useCallback(async ({ authoritativeOnly = false, priceUpdated = false } = {}) => {
     const quotePayload = buildPayload({
       sourceUrls: [], batchId: "", batchIndex: 0, batchSize: 1,
       batchCreatedAt: new Date().toISOString(),
@@ -1250,18 +1232,22 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
       quoteServerAiJob(quotePayload),
       getFeatureUnitPriceCents("wallpaper"),
     ]);
-    const modelPriceConfigured = currentModel.pointPricing?.configured === true;
+    const modelPriceConfigured = currentModel?.pointPricing?.configured === true;
     const quotedGenerationUnit = quoteResult.status === "fulfilled"
       ? Number(quoteResult.value?.unitPriceCents)
       : Number.NaN;
-    quotedUnitPriceRef.current = Number.isFinite(quotedGenerationUnit)
-      ? quotedGenerationUnit
-      : null;
+    const hasAuthoritativeQuote = Number.isFinite(quotedGenerationUnit);
+    quotedUnitPriceRef.current = hasAuthoritativeQuote ? quotedGenerationUnit : null;
+    if (authoritativeOnly && !hasAuthoritativeQuote) {
+      throw quoteResult.status === "rejected"
+        ? quoteResult.reason
+        : new Error("服务端未返回有效的最新价格，请稍后重试");
+    }
     const serverPriceAvailable = featurePrice.status === "fulfilled";
     const generationUnit = Math.max(
       0,
       Number(
-        Number.isFinite(quotedGenerationUnit)
+        hasAuthoritativeQuote
           ? quotedGenerationUnit
           : modelPriceConfigured
           ? currentModel.creditCost
@@ -1282,10 +1268,46 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
       count,
       total: unit * count,
       available,
+      priceUpdated,
       pricingUnavailable:
-        !Number.isFinite(quotedGenerationUnit) && !modelPriceConfigured && !serverPriceAvailable && !Number.isFinite(Number(feature.creditCost)),
+        !hasAuthoritativeQuote && !modelPriceConfigured && !serverPriceAvailable && !Number.isFinite(Number(feature.creditCost)),
     });
-  }, [authenticated, autoRemove, backgroundRemovalModel?.pricePoints, buildPayload, count, currentModel, feature.creditCost, onRequireAuth, submitGeneration, user?.requireCostConfirm]);
+  }, [autoRemove, backgroundRemovalModel?.pricePoints, buildPayload, count, currentModel, feature.creditCost]);
+
+  const submitGeneration = useCallback(async () => {
+    if (!prompt.trim()) return;
+    try {
+      await jobs.createBatch({ count, references, buildPayload });
+      setMainTab("images");
+    } catch (error) {
+      if (error?.code === "price_changed") {
+        quotedUnitPriceRef.current = null;
+        try {
+          await refreshGenerationCost({ authoritativeOnly: true, priceUpdated: true });
+          notificationService.warning("任务价格已更新，请确认最新费用");
+        } catch (quoteError) {
+          notificationService.error(quoteError?.message || "最新价格读取失败，请稍后重试");
+        }
+        return;
+      }
+      notificationService.error(error?.message || "任务提交失败");
+    }
+  }, [buildPayload, count, jobs, prompt, references, refreshGenerationCost]);
+
+  const requestGeneration = useCallback(async () => {
+    if (!authenticated) {
+      onRequireAuth?.();
+      return;
+    }
+    if (!prompt.trim() || !currentModel) return;
+    if (user?.requireCostConfirm === false || pendingRef.current?.value?.config?.costConfirmed) {
+      quotedUnitPriceRef.current = null;
+      pendingRef.current = { consumed: true, value: null };
+      await submitGeneration();
+      return;
+    }
+    await refreshGenerationCost();
+  }, [authenticated, currentModel, onRequireAuth, prompt, refreshGenerationCost, submitGeneration, user?.requireCostConfirm]);
 
   useEffect(() => {
     const pending = pendingRef.current?.value;

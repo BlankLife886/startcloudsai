@@ -118,9 +118,42 @@ void main() {
     await tester.tap(find.text('立即签到'));
     await tester.pumpAndSettle();
 
-    expect(find.text('今日已签到'), findsWidgets);
+    expect(find.text('已签到'), findsOneWidget);
+    expect(find.text('今日积分已到账'), findsOneWidget);
     expect(find.text('签到成功，获得 20 积分'), findsOneWidget);
     expect(find.text('明日继续签到可领 25 积分'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('reward and signed calendar days show exact point details', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          checkinControllerProvider.overrideWith(_FakeCheckinController.new),
+        ],
+        child: const MaterialApp(home: CheckinScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('checkin-reward-7')));
+    await tester.pump();
+    expect(find.text('第 7 天奖励 · 里程碑'), findsOneWidget);
+    expect(find.text('连续签到至第 7 天可领取 80 积分'), findsOneWidget);
+
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('checkin-calendar-surface')),
+      320,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('checkin-record-23')));
+    await tester.pump();
+
+    expect(find.text('8 月 23 日签到'), findsOneWidget);
+    expect(find.text('连续 2 天，本次获得 15 积分'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -150,6 +183,18 @@ void main() {
 
     expect(find.text('连续签到领创作积分'), findsOneWidget);
     expect(find.text('立即签到'), findsOneWidget);
+    final headerDecoration = tester.widget<DecoratedBox>(
+      find
+          .descendant(
+            of: find.byKey(const Key('checkin-header-surface')),
+            matching: find.byType(DecoratedBox),
+          )
+          .first,
+    );
+    expect(
+      (headerDecoration.decoration as BoxDecoration).borderRadius,
+      BorderRadius.circular(8),
+    );
     expect(tester.takeException(), isNull);
 
     await tester.scrollUntilVisible(

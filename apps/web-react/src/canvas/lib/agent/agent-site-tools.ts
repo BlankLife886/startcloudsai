@@ -4,12 +4,17 @@ import { uploadImage } from "@/services/image-storage";
 import type { CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useAssetStore } from "@/stores/use-asset-store";
+import { createCanvasProjectFromUploadedTemplate, getCanvasWorkflowTemplate, listCanvasWorkflowTemplates } from "@/services/canvas-workflow-template-api";
+import { inspectCanvasWorkflowTemplate, queryCanvasWorkflowTemplates } from "./canvas-workflow-template-agent.ts";
 
 // Execute site-level Agent tools in the browser, including canvas lists, prompt search, and asset operations.
 // Image assets share the signed-in user's cloud library; text stays in the local canvas store.
 
 export const SITE_TOOL_NAMES = [
     "canvas_list_projects",
+    "canvas_list_workflow_templates",
+    "canvas_inspect_workflow_template",
+    "canvas_create_from_workflow_template",
     "generation_get_status",
     "prompts_search",
     "assets_list",
@@ -28,6 +33,9 @@ function siteText(key: string, options?: Record<string, unknown>) {
 
 export const SITE_TOOL_LABELS: Record<SiteToolName, string> = {
     get canvas_list_projects() { return siteText("canvasList"); },
+    get canvas_list_workflow_templates() { return siteText("workflowTemplateList"); },
+    get canvas_inspect_workflow_template() { return siteText("workflowTemplateInspect"); },
+    get canvas_create_from_workflow_template() { return siteText("workflowTemplateCreate"); },
     get generation_get_status() { return siteText("generationStatus"); },
     get prompts_search() { return siteText("promptSearch"); },
     get assets_list() { return siteText("assetList"); },
@@ -43,6 +51,12 @@ export async function runSiteTool(name: SiteToolName, input: SiteToolInput, cont
     switch (name) {
         case "canvas_list_projects":
             return listCanvasProjects(input);
+        case "canvas_list_workflow_templates":
+            return listWorkflowTemplates(input);
+        case "canvas_inspect_workflow_template":
+            return inspectWorkflowTemplate(input);
+        case "canvas_create_from_workflow_template":
+            return createFromWorkflowTemplate(input);
         case "generation_get_status":
             return getGenerationStatus(input, context.canvasSnapshot);
         case "prompts_search":
@@ -54,6 +68,30 @@ export async function runSiteTool(name: SiteToolName, input: SiteToolInput, cont
         default:
             throw new Error(siteText("unknownTool", { name }));
     }
+}
+
+async function listWorkflowTemplates(input: SiteToolInput) {
+    return queryCanvasWorkflowTemplates(await listCanvasWorkflowTemplates(), input);
+}
+
+async function inspectWorkflowTemplate(input: SiteToolInput) {
+    const templateId = String(input.templateId || "").trim();
+    if (!templateId) throw new Error(siteText("workflowTemplateIdRequired"));
+    return inspectCanvasWorkflowTemplate(await getCanvasWorkflowTemplate(templateId));
+}
+
+async function createFromWorkflowTemplate(input: SiteToolInput) {
+    const templateId = String(input.templateId || "").trim();
+    if (!templateId) throw new Error(siteText("workflowTemplateIdRequired"));
+    const store = useCanvasStore.getState();
+    if (!store.hydrated) throw new Error(siteText("canvasLoading"));
+    if (!store.ownerUserId) throw new Error(siteText("workflowTemplateAuthRequired"));
+    const detail = await getCanvasWorkflowTemplate(templateId);
+    const project = createCanvasProjectFromUploadedTemplate(detail);
+    const title = String(input.title || "").trim();
+    if (title) project.title = title.slice(0, 120);
+    const id = useCanvasStore.getState().importProject(project);
+    return { created: true, id, path: `/canvas/${id}`, templateId: detail.id, title: project.title, nodeCount: project.nodes.length, connectionCount: project.connections.length };
 }
 
 function getGenerationStatus(input: SiteToolInput, canvasSnapshot?: CanvasAgentSnapshot | null) {

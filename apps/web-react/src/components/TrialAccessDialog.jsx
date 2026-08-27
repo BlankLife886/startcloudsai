@@ -326,7 +326,7 @@ export function TrialAccessDialog({ open, initialCampaign = null, onClose }) {
           {screen === "redeemed" && (
             <State icon="bi-check-lg" title={t("体验积分已到账")} text={t("活动积分已经存入钱包，现在可以进入获批工作台开始体验。")}>
               <Reward application={application} t={t} locale={locale} />
-              <Launchers features={features} t={t} onOpen={(route) => { onClose?.(); navigate(route || "/studio"); }} />
+              <Launchers features={features} t={t} onOpen={(route) => { onClose?.(); navigate(route || "/"); }} />
               <div className="trial-dialog__button-row">
                 <button type="button" className="is-secondary" onClick={() => { onClose?.(); navigate("/wallet"); }}>{t("查看钱包")}</button>
               </div>

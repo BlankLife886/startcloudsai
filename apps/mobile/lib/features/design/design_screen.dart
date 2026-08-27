@@ -1,11 +1,24 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/widgets/app_top_bar.dart';
 import '../../core/widgets/app_visual.dart';
+import '../create/creation_draft.dart';
 
-class DesignScreen extends StatelessWidget {
+class DesignScreen extends ConsumerStatefulWidget {
   const DesignScreen({super.key});
+
+  @override
+  ConsumerState<DesignScreen> createState() => _DesignScreenState();
+}
+
+class _DesignScreenState extends ConsumerState<DesignScreen> {
+  CreationDraft? _draft;
+  var _wasVisible = false;
+  var _draftRequest = 0;
 
   static const _tools = [
     _DesignTool(
@@ -17,6 +30,26 @@ class DesignScreen extends StatelessWidget {
       accent: Color(0xFF4F67D6),
     ),
   ];
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final visible = TickerMode.valuesOf(context).enabled;
+    if (visible && !_wasVisible) unawaited(_refreshDraft());
+    _wasVisible = visible;
+  }
+
+  Future<void> _refreshDraft() async {
+    final request = ++_draftRequest;
+    CreationDraft? draft;
+    try {
+      draft = await ref.read(creationDraftStoreProvider).read();
+    } catch (_) {
+      draft = null;
+    }
+    if (!mounted || request != _draftRequest) return;
+    setState(() => _draft = draft);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -42,19 +75,18 @@ class DesignScreen extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      '从一张图开始',
-                      style: Theme.of(context).textTheme.headlineSmall
-                          ?.copyWith(
-                            fontWeight: FontWeight.w900,
-                            letterSpacing: -0.8,
-                          ),
+                      '创作工具',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
                     ),
-                    const SizedBox(height: 14),
+                    const SizedBox(height: 10),
                     SizedBox(
-                      height: 148 + ((textScale - 1).clamp(0.0, .5) * 28),
+                      height: 126 + ((textScale - 1).clamp(0.0, .6) * 36),
                       width: double.infinity,
                       child: _DesignFeaturedCard(
                         tool: featured,
+                        draft: _draft,
                         onTap: () => context.push(featured.location),
                       ),
                     ),
@@ -109,66 +141,90 @@ class DesignScreen extends StatelessWidget {
 }
 
 class _DesignFeaturedCard extends StatelessWidget {
-  const _DesignFeaturedCard({required this.tool, required this.onTap});
+  const _DesignFeaturedCard({
+    required this.tool,
+    required this.draft,
+    required this.onTap,
+  });
 
   final _DesignTool tool;
+  final CreationDraft? draft;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final hasDraft = draft != null && !draft!.isEmpty;
     return Semantics(
-      label: '进入${tool.title}',
+      label: hasDraft ? '继续${tool.title}草稿' : '进入${tool.title}',
       button: true,
       child: ExcludeSemantics(
         child: AppPressable(
           key: Key('design-tool-${tool.keyName}'),
           onTap: onTap,
           child: DecoratedBox(
+            key: const Key('design-featured-surface'),
             decoration: BoxDecoration(
-              color: const Color(0xFFDCE3FF),
-              borderRadius: BorderRadius.circular(26),
+              color: colors.surfaceContainerLow,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: colors.outlineVariant),
             ),
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(20, 18, 18, 18),
+              padding: const EdgeInsets.fromLTRB(16, 14, 14, 14),
               child: Row(
                 children: [
                   Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Icon(tool.icon, color: tool.accent, size: 26),
-                        const Spacer(),
-                        Text(
-                          tool.title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context).textTheme.headlineSmall
-                              ?.copyWith(
-                                color: const Color(0xFF2548A7),
-                                fontWeight: FontWeight.w900,
-                                letterSpacing: -0.6,
+                    child: AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 220),
+                      switchInCurve: Curves.easeOutCubic,
+                      switchOutCurve: Curves.easeInCubic,
+                      child: Column(
+                        key: ValueKey(hasDraft),
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Row(
+                            children: [
+                              Icon(tool.icon, color: tool.accent, size: 20),
+                              const SizedBox(width: 7),
+                              Text(
+                                tool.title,
+                                style: Theme.of(context).textTheme.labelLarge
+                                    ?.copyWith(
+                                      color: tool.accent,
+                                      fontWeight: FontWeight.w800,
+                                    ),
                               ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          tool.subtitle,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context).textTheme.bodyMedium
-                              ?.copyWith(
-                                color: const Color(
-                                  0xFF2548A7,
-                                ).withValues(alpha: .72),
-                                fontWeight: FontWeight.w600,
-                              ),
-                        ),
-                      ],
+                            ],
+                          ),
+                          const SizedBox(height: 10),
+                          Text(
+                            hasDraft ? '继续上次创作' : '从一句描述开始',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.titleLarge
+                                ?.copyWith(fontWeight: FontWeight.w900),
+                          ),
+                          const SizedBox(height: 3),
+                          Text(
+                            hasDraft ? draft!.prompt.trim() : tool.subtitle,
+                            maxLines: hasDraft ? 2 : 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.bodySmall
+                                ?.copyWith(
+                                  color: colors.onSurfaceVariant,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
+                  const SizedBox(width: 12),
                   Icon(
-                    Icons.arrow_outward_rounded,
-                    color: tool.accent,
-                    size: 22,
+                    Icons.arrow_forward_rounded,
+                    color: colors.onSurfaceVariant,
+                    size: 20,
                   ),
                 ],
               ),
@@ -271,7 +327,7 @@ class _DesignUtilityAction extends StatelessWidget {
           child: DecoratedBox(
             decoration: BoxDecoration(
               color: colors.surfaceContainerLow,
-              borderRadius: BorderRadius.circular(16),
+              borderRadius: BorderRadius.circular(8),
             ),
             child: ConstrainedBox(
               constraints: const BoxConstraints(minHeight: 52),

@@ -14,10 +14,16 @@ export function cardSizeForMedia(width: number, height: number, cardWidth = CANV
     if (width <= 0 || height <= 0) {
         return { width: cardWidth, height: Math.round(cardWidth * 0.75) };
     }
-    const nextHeight = Math.round(cardWidth * (height / width));
+    const ratio = width / height;
+    let nextWidth = cardWidth;
+    let nextHeight = cardWidth / ratio;
+    if (nextHeight > CANVAS_CARD_MAX_HEIGHT) {
+        nextHeight = CANVAS_CARD_MAX_HEIGHT;
+        nextWidth = nextHeight * ratio;
+    }
     return {
-        width: cardWidth,
-        height: Math.max(CANVAS_CARD_MIN_HEIGHT, Math.min(CANVAS_CARD_MAX_HEIGHT, nextHeight)),
+        width: Math.round(nextWidth),
+        height: Math.round(nextHeight),
     };
 }
 

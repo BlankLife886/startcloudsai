@@ -18,9 +18,12 @@ import (
 )
 
 const (
-	maxImageResponseBytes = 32 << 20
-	chatStreamAttempts    = 2
-	chatStreamRetryDelay  = 200 * time.Millisecond
+	maxImageResponseBytes     = 32 << 20
+	maxWebSearchResponseBytes = 2 << 20
+	maxWebSearchTextBytes     = 48 << 10
+	maxWebSearchSources       = 12
+	chatStreamAttempts        = 2
+	chatStreamRetryDelay      = 200 * time.Millisecond
 )
 
 type Client struct {
@@ -119,6 +122,22 @@ type AgentChatResult struct {
 	ReasoningTokens int64
 	ToolCall        *ToolCall
 	Usage           ChatUsage
+}
+
+type WebSearchOptions struct {
+	RecencyDays    int
+	AllowedDomains []string
+}
+
+type WebSearchSource struct {
+	Title string `json:"title"`
+	URL   string `json:"url"`
+}
+
+type WebSearchResult struct {
+	Text    string            `json:"text"`
+	Query   string            `json:"query"`
+	Sources []WebSearchSource `json:"sources"`
 }
 
 type Image struct {
@@ -284,6 +303,287 @@ func (c *Client) ListModels(ctx context.Context) ([]string, error) {
 		}
 	}
 	return models, nil
+}
+
+// WebSearch performs a real hosted web search through the configured model
+// provider. Responses API is preferred because it lets the model use the
+// built-in web_search tool and returns structured URL citations. Older
+// OpenAI-compatible gateways fall back to the dedicated search chat model.
+func (c *Client) WebSearch(ctx context.Context, query string, options WebSearchOptions) (WebSearchResult, error) {
+	if !c.Configured() {
+		return WebSearchResult{}, errors.New("Sub2API API key is not configured")
+	}
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return WebSearchResult{}, errors.New("web search query is empty")
+	}
+	if len([]rune(query)) > 2000 {
+		return WebSearchResult{}, errors.New("web search query exceeds 2000 characters")
+	}
+	options.RecencyDays = min(max(options.RecencyDays, 0), 3650)
+	options.AllowedDomains = normalizeWebSearchDomains(options.AllowedDomains)
+
+	result, responsesErr := c.webSearchResponses(ctx, query, options)
+	if responsesErr == nil {
+		return result, nil
+	}
+	if !webSearchFallbackAllowed(ctx, responsesErr) {
+		return WebSearchResult{}, responsesErr
+	}
+	result, fallbackErr := c.webSearchChatCompletions(ctx, query, options)
+	if fallbackErr == nil {
+		return result, nil
+	}
+	message := fmt.Sprintf("Responses API 联网搜索失败：%v；Chat Completions 搜索回退失败：%v", responsesErr, fallbackErr)
+	var upstream *UpstreamError
+	if errors.As(fallbackErr, &upstream) {
+		return WebSearchResult{}, &UpstreamError{Status: upstream.Status, Message: message}
+	}
+	return WebSearchResult{}, fmt.Errorf("%s", message)
+}
+
+func (c *Client) webSearchResponses(ctx context.Context, query string, options WebSearchOptions) (WebSearchResult, error) {
+	tool := map[string]any{"type": "web_search"}
+	if len(options.AllowedDomains) > 0 {
+		tool["filters"] = map[string]any{"allowed_domains": options.AllowedDomains}
+	}
+	payload := map[string]any{
+		"model":       c.chatModel,
+		"input":       webSearchPrompt(query, options),
+		"tools":       []any{tool},
+		"tool_choice": "required",
+	}
+	if c.maxOutputTokens > 0 {
+		payload["max_output_tokens"] = c.maxOutputTokens
+	}
+	req, err := c.newJSONRequest(ctx, "/v1/responses", payload)
+	if err != nil {
+		return WebSearchResult{}, err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return WebSearchResult{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return WebSearchResult{}, decodeUpstreamError(resp)
+	}
+	raw, err := readLimitedBody(resp.Body, maxWebSearchResponseBytes)
+	if err != nil {
+		return WebSearchResult{}, fmt.Errorf("读取 Responses 联网搜索结果：%w", err)
+	}
+	return parseResponsesWebSearch(raw, query)
+}
+
+func (c *Client) webSearchChatCompletions(ctx context.Context, query string, options WebSearchOptions) (WebSearchResult, error) {
+	payload := map[string]any{
+		"model": "gpt-5-search-api",
+		"messages": []any{
+			map[string]any{"role": "system", "content": "必须先联网检索再回答。只使用检索到的事实，并保留引用来源。"},
+			map[string]any{"role": "user", "content": webSearchPrompt(query, options)},
+		},
+		"stream": false,
+	}
+	if c.maxOutputTokens > 0 {
+		payload["max_completion_tokens"] = c.maxOutputTokens
+	}
+	req, err := c.newJSONRequest(ctx, "/v1/chat/completions", payload)
+	if err != nil {
+		return WebSearchResult{}, err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return WebSearchResult{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return WebSearchResult{}, decodeUpstreamError(resp)
+	}
+	raw, err := readLimitedBody(resp.Body, maxWebSearchResponseBytes)
+	if err != nil {
+		return WebSearchResult{}, fmt.Errorf("读取 Chat Completions 联网搜索结果：%w", err)
+	}
+	return parseChatWebSearch(raw, query)
+}
+
+func webSearchPrompt(query string, options WebSearchOptions) string {
+	parts := []string{"联网检索并回答以下问题：" + strings.TrimSpace(query)}
+	if options.RecencyDays > 0 {
+		parts = append(parts, fmt.Sprintf("优先使用最近 %d 天发布或更新的资料；如果没有足够的新资料，请明确说明。", options.RecencyDays))
+	}
+	if len(options.AllowedDomains) > 0 {
+		parts = append(parts, "仅使用这些域名的来源："+strings.Join(options.AllowedDomains, ", "))
+	}
+	parts = append(parts, "回答必须基于实际搜索结果，不得凭记忆补写；保留可核验的来源链接。")
+	return strings.Join(parts, "\n")
+}
+
+func normalizeWebSearchDomains(values []string) []string {
+	out := make([]string, 0, min(len(values), 10))
+	seen := map[string]bool{}
+	for _, value := range values {
+		if len(out) >= 10 {
+			break
+		}
+		value = strings.TrimSpace(strings.ToLower(value))
+		if value == "" {
+			continue
+		}
+		if !strings.Contains(value, "://") {
+			value = "https://" + value
+		}
+		parsed, err := url.Parse(value)
+		if err != nil || parsed.User != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			continue
+		}
+		host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+		if host == "" || seen[host] {
+			continue
+		}
+		seen[host] = true
+		out = append(out, host)
+	}
+	return out
+}
+
+func webSearchFallbackAllowed(ctx context.Context, err error) bool {
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var upstream *UpstreamError
+	if errors.As(err, &upstream) && (upstream.Status == http.StatusUnauthorized || upstream.Status == http.StatusForbidden || upstream.Status == http.StatusTooManyRequests) {
+		return false
+	}
+	return true
+}
+
+func readLimitedBody(reader io.Reader, limit int64) ([]byte, error) {
+	raw, err := io.ReadAll(io.LimitReader(reader, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(raw)) > limit {
+		return nil, fmt.Errorf("response exceeds %d bytes", limit)
+	}
+	return raw, nil
+}
+
+func parseResponsesWebSearch(raw []byte, fallbackQuery string) (WebSearchResult, error) {
+	var payload struct {
+		OutputText string `json:"output_text"`
+		Output     []struct {
+			Type   string `json:"type"`
+			Action struct {
+				Query   string   `json:"query"`
+				Queries []string `json:"queries"`
+			} `json:"action"`
+			Content []struct {
+				Type        string                `json:"type"`
+				Text        string                `json:"text"`
+				Annotations []webSearchAnnotation `json:"annotations"`
+			} `json:"content"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return WebSearchResult{}, fmt.Errorf("解析 Responses 联网搜索结果：%w", err)
+	}
+	result := WebSearchResult{Text: strings.TrimSpace(payload.OutputText), Query: strings.TrimSpace(fallbackQuery)}
+	for _, item := range payload.Output {
+		if item.Type == "web_search_call" {
+			if query := strings.TrimSpace(item.Action.Query); query != "" {
+				result.Query = query
+			} else if len(item.Action.Queries) > 0 && strings.TrimSpace(item.Action.Queries[0]) != "" {
+				result.Query = strings.TrimSpace(item.Action.Queries[0])
+			}
+		}
+		for _, content := range item.Content {
+			if text := strings.TrimSpace(content.Text); text != "" {
+				if result.Text == "" {
+					result.Text = text
+				} else if !strings.Contains(result.Text, text) {
+					result.Text += "\n" + text
+				}
+			}
+			result.Sources = appendWebSearchAnnotations(result.Sources, content.Annotations)
+		}
+	}
+	return finishWebSearchResult(result)
+}
+
+type webSearchAnnotation struct {
+	Type        string `json:"type"`
+	URL         string `json:"url"`
+	Title       string `json:"title"`
+	URLCitation *struct {
+		URL   string `json:"url"`
+		Title string `json:"title"`
+	} `json:"url_citation"`
+}
+
+func parseChatWebSearch(raw []byte, fallbackQuery string) (WebSearchResult, error) {
+	var payload struct {
+		Choices []struct {
+			Message struct {
+				Content     string                `json:"content"`
+				Annotations []webSearchAnnotation `json:"annotations"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return WebSearchResult{}, fmt.Errorf("解析 Chat Completions 联网搜索结果：%w", err)
+	}
+	if len(payload.Choices) == 0 {
+		return WebSearchResult{}, errors.New("Chat Completions 联网搜索没有返回 choices")
+	}
+	result := WebSearchResult{Text: strings.TrimSpace(payload.Choices[0].Message.Content), Query: strings.TrimSpace(fallbackQuery)}
+	result.Sources = appendWebSearchAnnotations(nil, payload.Choices[0].Message.Annotations)
+	return finishWebSearchResult(result)
+}
+
+func appendWebSearchAnnotations(sources []WebSearchSource, annotations []webSearchAnnotation) []WebSearchSource {
+	for _, annotation := range annotations {
+		urlValue, title := annotation.URL, annotation.Title
+		if annotation.URLCitation != nil {
+			urlValue, title = annotation.URLCitation.URL, annotation.URLCitation.Title
+		}
+		sources = appendWebSearchSource(sources, title, urlValue)
+	}
+	return sources
+}
+
+func appendWebSearchSource(sources []WebSearchSource, title, urlValue string) []WebSearchSource {
+	if len(sources) >= maxWebSearchSources {
+		return sources
+	}
+	parsed, err := url.Parse(strings.TrimSpace(urlValue))
+	if err != nil || parsed.User != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return sources
+	}
+	canonical := parsed.String()
+	for _, source := range sources {
+		if strings.EqualFold(source.URL, canonical) {
+			return sources
+		}
+	}
+	title = strings.TrimSpace(title)
+	if title == "" {
+		title = parsed.Hostname()
+	}
+	if len([]rune(title)) > 200 {
+		title = string([]rune(title)[:200])
+	}
+	return append(sources, WebSearchSource{Title: title, URL: canonical})
+}
+
+func finishWebSearchResult(result WebSearchResult) (WebSearchResult, error) {
+	result.Text = strings.TrimSpace(result.Text)
+	if result.Text == "" {
+		return WebSearchResult{}, errors.New("联网搜索完成但没有返回文本结果")
+	}
+	if len(result.Text) > maxWebSearchTextBytes {
+		result.Text = result.Text[:maxWebSearchTextBytes] + "…（搜索结果已截断）"
+	}
+	return result, nil
 }
 
 func (c *Client) newJSONRequest(ctx context.Context, path string, body any) (*http.Request, error) {

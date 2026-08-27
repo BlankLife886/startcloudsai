@@ -113,13 +113,7 @@ const baseTools = [
 ].map(([to, label, icon]) => ({ to, label, icon }));
 
 const navItems = [
-  {
-    type: "link",
-    id: "home",
-    to: "/",
-    label: "首页",
-    icon: "bi-house-door-fill",
-  },
+  { type: "link", id: "home", to: "/", label: "首页", icon: "bi-house-door-fill" },
   { type: "link", to: "/studio", label: "创作台", icon: "bi-grid-1x2-fill" },
   {
     type: "link",
@@ -208,7 +202,6 @@ export function NavBar() {
   const { requestAuth } = useAuthPrompt();
   const isDark = useIsDark();
   const { isEntryVisible } = usePageControls();
-  const isHome = location.pathname === "/";
   const isCanvas =
     location.pathname === "/canvas" || location.pathname.startsWith("/canvas/");
   const rootRef = useRef(null);
@@ -735,7 +728,7 @@ export function NavBar() {
   return (
     <header
       ref={rootRef}
-      className={`site-header${isDark ? " is-dark" : ""}${isHome ? " is-home-dark" : ""}${isCanvas ? " is-canvas" : ""}${scrolled ? " is-scrolled" : ""}${mobileOpen ? " is-mobile-open" : ""}`}
+      className={`site-header${isDark ? " is-dark" : ""}${isCanvas ? " is-canvas" : ""}${scrolled ? " is-scrolled" : ""}${mobileOpen ? " is-mobile-open" : ""}`}
     >
       <div id="site-announcement-slot" />
       <div className="header-shell">

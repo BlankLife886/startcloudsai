@@ -1,8 +1,64 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
+import 'package:starcloudsai_mobile/core/config/app_environment.dart';
+import 'package:starcloudsai_mobile/core/network/api_client.dart';
+import 'package:starcloudsai_mobile/core/storage/session_store.dart';
 import 'package:starcloudsai_mobile/features/meta/meta.dart';
 import 'package:starcloudsai_mobile/features/meta/updates_screen.dart';
+
+class _MetaApiClient extends ApiClient {
+  _MetaApiClient({this.failAnnouncements = false, this.failChangelog = false})
+    : super(
+        environment: AppEnvironment.create(
+          name: AppEnvironmentName.development,
+          baseUrl: 'http://localhost:8000',
+        ),
+        sessionStore: SessionStore(namespace: 'updates-test'),
+      );
+
+  final bool failAnnouncements;
+  final bool failChangelog;
+
+  @override
+  Future<dynamic> get(
+    String path, {
+    Map<String, dynamic>? queryParameters,
+    CancelToken? cancelToken,
+  }) async {
+    if (path == '/announcements') {
+      if (failAnnouncements) throw StateError('announcements unavailable');
+      return {
+        'items': [
+          {
+            'id': 'announcement-live',
+            'title': '线上公告',
+            'body': '公告接口返回成功。',
+            'createdAt': '2026-08-27T08:00:00Z',
+          },
+        ],
+      };
+    }
+    if (path == '/changelog') {
+      if (failChangelog) throw StateError('changelog unavailable');
+      return {
+        'items': [
+          {
+            'id': 'change-live',
+            'version': '3.5.0',
+            'date': '2026-08-27',
+            'tag': 'fix',
+            'title': '稳定性更新',
+            'items': ['修复公告加载'],
+          },
+        ],
+      };
+    }
+    throw StateError('unexpected path: $path');
+  }
+}
 
 final _feed = MetaFeed(
   announcements: [
@@ -12,6 +68,8 @@ final _feed = MetaFeed(
       body: '维护期间已提交的任务会继续处理，完成后可在作品页查看。',
       createdAt: DateTime(2026, 8, 24),
       endsAt: DateTime(2026, 8, 31),
+      ctaText: '查看安排',
+      ctaUrl: 'https://example.com/maintenance',
     ),
   ],
   changelog: [
@@ -38,7 +96,10 @@ final _feed = MetaFeed(
   ],
 );
 
-Widget _app({double textScale = 1}) => ProviderScope(
+Widget _app({
+  double textScale = 1,
+  Future<bool> Function(Uri uri)? openExternal,
+}) => ProviderScope(
   overrides: [metaFeedProvider.overrideWith((ref) async => _feed)],
   child: MaterialApp(
     builder: (context, child) => MediaQuery(
@@ -47,11 +108,33 @@ Widget _app({double textScale = 1}) => ProviderScope(
       ).copyWith(textScaler: TextScaler.linear(textScale)),
       child: child!,
     ),
-    home: const UpdatesScreen(),
+    home: UpdatesScreen(openExternal: openExternal),
   ),
 );
 
 void main() {
+  test('meta feed keeps the successful endpoint when its peer fails', () async {
+    final announcementsOnly = await MetaRepository(
+      _MetaApiClient(failChangelog: true),
+    ).load();
+    final changelogOnly = await MetaRepository(
+      _MetaApiClient(failAnnouncements: true),
+    ).load();
+
+    expect(announcementsOnly.announcements.single.title, '线上公告');
+    expect(announcementsOnly.changelog, isEmpty);
+    expect(changelogOnly.announcements, isEmpty);
+    expect(changelogOnly.changelog.single.version, '3.5.0');
+  });
+
+  test('meta feed still reports an error when both endpoints fail', () {
+    final repository = MetaRepository(
+      _MetaApiClient(failAnnouncements: true, failChangelog: true),
+    );
+
+    expect(repository.load, throwsStateError);
+  });
+
   test('parses announcement config and changelog fields defensively', () {
     final announcement = AppAnnouncement.fromJson({
       'id': 'announcement-1',
@@ -94,6 +177,14 @@ void main() {
     expect(find.text('服务版本 v3.4.0'), findsOneWidget);
     expect(find.text('服务维护安排'), findsOneWidget);
     expect(find.text('新增公告总览'), findsOneWidget);
+    expect(find.text('查看安排'), findsOneWidget);
+    final overview = tester.widget<DecoratedBox>(
+      find.byKey(const Key('updates-overview-surface')),
+    );
+    expect(
+      (overview.decoration as BoxDecoration).borderRadius,
+      BorderRadius.circular(8),
+    );
 
     await tester.scrollUntilVisible(
       find.byKey(const Key('updates-tag-fix')),
@@ -113,6 +204,75 @@ void main() {
     expect(find.textContaining('创作稳定性修复'), findsOneWidget);
     expect(find.byKey(const Key('changelog-change-feature')), findsNothing);
     expect(find.text('修复断线重连后的重复提示'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('announcement action safely opens an external web link', (
+    tester,
+  ) async {
+    Uri? opened;
+    await tester.pumpWidget(
+      _app(
+        openExternal: (uri) async {
+          opened = uri;
+          return true;
+        },
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(
+      find.byKey(const Key('announcement-action-announcement-1')),
+    );
+    await tester.pumpAndSettle();
+    expect(opened, Uri.parse('https://example.com/maintenance'));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('announcement action routes app-relative links in place', (
+    tester,
+  ) async {
+    final internalFeed = MetaFeed(
+      announcements: [
+        AppAnnouncement(
+          id: 'announcement-internal',
+          title: '外观设置更新',
+          body: '选择新的显示模式。',
+          createdAt: DateTime(2026, 8, 27),
+          ctaText: '前往设置',
+          ctaUrl: '/profile/appearance',
+        ),
+      ],
+      changelog: const [],
+    );
+    final router = GoRouter(
+      initialLocation: '/updates',
+      routes: [
+        GoRoute(
+          path: '/updates',
+          builder: (context, state) => const UpdatesScreen(),
+        ),
+        GoRoute(
+          path: '/profile/appearance',
+          builder: (context, state) => const Scaffold(body: Text('外观设置目标页')),
+        ),
+      ],
+    );
+    addTearDown(router.dispose);
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [metaFeedProvider.overrideWith((ref) async => internalFeed)],
+        child: MaterialApp.router(routerConfig: router),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(
+      find.byKey(const Key('announcement-action-announcement-internal')),
+    );
+    await tester.pumpAndSettle();
+    expect(router.state.uri.path, '/profile/appearance');
+    expect(find.text('外观设置目标页'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 

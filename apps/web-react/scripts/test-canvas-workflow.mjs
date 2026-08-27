@@ -99,6 +99,7 @@ test("schedules reusable image operations as ordinary workflow dependencies", ()
     assert.deepEqual(result.plan.layers, [["split"], ["angle"]]);
 });
 
+
 test("keeps independent branches in the same layer", () => {
     const nodes = [node("a", "config"), node("b", "config"), node("a-out", "image"), node("b-out", "image"), node("c", "config")];
     const connections = [edge("a", "a-out"), edge("b", "b-out"), edge("a-out", "c"), edge("b-out", "c")];

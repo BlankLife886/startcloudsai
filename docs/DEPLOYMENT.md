@@ -352,10 +352,11 @@ location / {
 }
 ```
 
-在站点 Nginx 配置的 `server {}` 内添加：
+在站点 Nginx 配置的 `server {}` 内添加。画布模板 ZIP 最大为 128 MiB，
+这里需要覆盖 ZIP、模板元数据和 multipart 边界：
 
 ```nginx
-client_max_body_size 20m;
+client_max_body_size 131m;
 ```
 
 如果已有更大的 `client_max_body_size`，无需重复添加。
@@ -407,7 +408,7 @@ unset ADMIN_PASSWORD
 - 文生图可以提交、扣积分、完成并显示历史记录。
 - AI 助手对话、图片生成、刷新恢复和任务监控正常。
 - 插画染色和其他工作台能够提交任务。
-- 上传参考图、提示词封面和资产图片没有 `413`。
+- 上传参考图、提示词封面、资产图片和 128 MiB 以内的画布模板 ZIP 没有 `413`。
 - 原图、缩略图和全屏预览可以通过站内文件接口加载。
 - 任务失败时积分可以正确释放。
 
@@ -617,10 +618,15 @@ docker compose --env-file .env logs --since=10m --no-color --tail=200 server
 检查宝塔站点 `server {}` 中是否存在：
 
 ```nginx
-client_max_body_size 20m;
+client_max_body_size 131m;
 ```
 
-修改后保存并确认 Nginx 配置检测通过。
+画布模板 ZIP 最大为 128 MiB，不能继续沿用早期的 `20m` 配置。修改后保存并确认
+Nginx 配置检测通过；同时重建 `gateway`，让 `deploy/nginx.conf` 的接口级限制生效：
+
+```bash
+docker compose up -d --force-recreate gateway
+```
 
 ### 11.6 登录或写请求提示 Origin 错误
 

@@ -19,23 +19,44 @@ import '../../app/starclouds_theme.dart';
 import '../../core/widgets/app_chrome.dart';
 import '../../core/widgets/app_visual.dart';
 
+enum HomeDiscoverTab {
+  home,
+  prompts,
+  community;
+
+  String get queryName => switch (this) {
+    HomeDiscoverTab.home => '',
+    HomeDiscoverTab.prompts => 'prompts',
+    HomeDiscoverTab.community => 'community',
+  };
+
+  static HomeDiscoverTab fromQuery(String? value) => switch (value) {
+    'prompts' => HomeDiscoverTab.prompts,
+    'community' => HomeDiscoverTab.community,
+    _ => HomeDiscoverTab.home,
+  };
+}
+
 class DiscoverScreen extends ConsumerStatefulWidget {
   const DiscoverScreen({
     super.key,
     this.searchDebounce = const Duration(milliseconds: 350),
     this.communityOnly = false,
     this.promptLibraryOnly = false,
+    this.initialTab = HomeDiscoverTab.home,
   });
 
   final Duration searchDebounce;
   final bool communityOnly;
   final bool promptLibraryOnly;
+  final HomeDiscoverTab initialTab;
 
   @override
   ConsumerState<DiscoverScreen> createState() => _DiscoverScreenState();
 }
 
-class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
+class _DiscoverScreenState extends ConsumerState<DiscoverScreen>
+    with SingleTickerProviderStateMixin {
   static const _loadMoreExtent = 360.0;
   static const _masonryCacheExtent = 480.0;
 
@@ -43,6 +64,9 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
   final _promptScrollController = ScrollController();
   final _galleryScrollController = ScrollController();
   Timer? _searchTimer;
+  late final TabController _tabs;
+  var _applyingRouteTab = false;
+  late final Set<int> _openedTabs;
   String _search = '';
   String? _promptCategory;
   String? _galleryCategory;
@@ -57,6 +81,12 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
   bool _loadingMoreGallery = false;
   bool _promptLoadMoreFailed = false;
   bool _galleryLoadMoreFailed = false;
+
+  HomeDiscoverTab get _activeTab {
+    if (widget.promptLibraryOnly) return HomeDiscoverTab.prompts;
+    if (widget.communityOnly) return HomeDiscoverTab.community;
+    return HomeDiscoverTab.values[_tabs.index];
+  }
 
   PromptQuery _homePromptQuery() => const PromptQuery(sort: 'latest', limit: 8);
 
@@ -91,19 +121,92 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
   @override
   void initState() {
     super.initState();
+    _tabs = TabController(
+      length: HomeDiscoverTab.values.length,
+      vsync: this,
+      initialIndex: widget.initialTab.index,
+    );
+    _openedTabs = {widget.initialTab.index};
+    _tabs.addListener(_onTabChanged);
     _promptScrollController.addListener(_onPromptScroll);
     _galleryScrollController.addListener(_onGalleryScroll);
   }
 
   @override
+  void didUpdateWidget(covariant DiscoverScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (_applyingRouteTab || oldWidget.initialTab == widget.initialTab) {
+      return;
+    }
+    if (_tabs.index != widget.initialTab.index) {
+      final opened = _openedTabs.add(widget.initialTab.index);
+      _tabs.index = widget.initialTab.index;
+      if (opened) setState(() {});
+    }
+  }
+
+  @override
   void dispose() {
+    _tabs.removeListener(_onTabChanged);
     _promptScrollController.removeListener(_onPromptScroll);
     _galleryScrollController.removeListener(_onGalleryScroll);
+    _tabs.dispose();
     _promptScrollController.dispose();
     _galleryScrollController.dispose();
     _searchTimer?.cancel();
     _searchController.dispose();
     super.dispose();
+  }
+
+  void _onTabChanged() {
+    if (!mounted) return;
+    final opened = _openedTabs.add(_tabs.index);
+    if (opened) setState(() {});
+    if (_tabs.indexIsChanging) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _syncDiscoverTabRoute();
+      _fillVisibleTab();
+    });
+  }
+
+  void _selectHomeTab(HomeDiscoverTab tab) {
+    if (_tabs.index == tab.index) return;
+    HapticFeedback.selectionClick();
+    if (_openedTabs.add(tab.index)) setState(() {});
+    final reduce = MediaQuery.disableAnimationsOf(context);
+    if (reduce) {
+      _tabs.index = tab.index;
+    } else {
+      _tabs.animateTo(tab.index);
+    }
+  }
+
+  void _syncDiscoverTabRoute() {
+    if (widget.promptLibraryOnly || widget.communityOnly) return;
+    final router = GoRouter.maybeOf(context);
+    if (router == null) return;
+    final uri = GoRouterState.of(context).uri;
+    if (uri.path != '/discover') return;
+    final tab = HomeDiscoverTab.values[_tabs.index];
+    if (HomeDiscoverTab.fromQuery(uri.queryParameters['tab']) == tab) return;
+    _applyingRouteTab = true;
+    router.go(
+      tab == HomeDiscoverTab.home
+          ? '/discover'
+          : '/discover?tab=${tab.queryName}',
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _applyingRouteTab = false;
+    });
+  }
+
+  void _fillVisibleTab() {
+    if (_activeTab == HomeDiscoverTab.prompts) {
+      _onPromptScroll();
+    } else if (_activeTab == HomeDiscoverTab.community) {
+      _onGalleryScroll();
+    }
   }
 
   void _onSearchChanged(String value) {
@@ -170,7 +273,7 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
   }
 
   Future<void> _refresh() async {
-    if (widget.promptLibraryOnly) {
+    if (_activeTab == HomeDiscoverTab.prompts) {
       final authenticated =
           ref.read(sessionControllerProvider).valueOrNull?.isAuthenticated ==
           true;
@@ -187,7 +290,7 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
       ]);
       return;
     }
-    if (widget.communityOnly) {
+    if (_activeTab == HomeDiscoverTab.community) {
       final galleryQuery = _galleryQuery;
       setState(_resetGalleryPaginationState);
       ref.invalidate(galleryCategoriesProvider);
@@ -286,7 +389,7 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
   }
 
   void _onPromptScroll() {
-    if (!widget.promptLibraryOnly) return;
+    if (_activeTab != HomeDiscoverTab.prompts) return;
     final authenticated =
         ref.read(sessionControllerProvider).valueOrNull?.isAuthenticated ==
         true;
@@ -296,7 +399,7 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
   }
 
   void _onGalleryScroll() {
-    if (!widget.communityOnly) return;
+    if (_activeTab != HomeDiscoverTab.community) return;
     final query = _galleryQuery;
     final page = ref.read(discoverGalleryPageProvider(query)).asData?.value;
     if (page != null) _maybeLoadMoreGallery(page, query);
@@ -315,7 +418,7 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
   }
 
   void _maybeLoadMorePrompts(PromptPage firstPage, PromptQuery query) {
-    if (!widget.promptLibraryOnly) return;
+    if (_activeTab != HomeDiscoverTab.prompts) return;
     if (_loadingMorePrompts || _promptLoadMoreFailed) return;
     if (_nextPromptCursor(firstPage, query) == null) return;
     if (!_shouldLoadMore(_promptScrollController)) return;
@@ -323,7 +426,7 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
   }
 
   void _maybeLoadMoreGallery(GalleryPage firstPage, GalleryQuery query) {
-    if (!widget.communityOnly) return;
+    if (_activeTab != HomeDiscoverTab.community) return;
     if (_loadingMoreGallery || _galleryLoadMoreFailed) return;
     if (_nextGalleryCursor(firstPage, query) == null) return;
     if (!_shouldLoadMore(_galleryScrollController)) return;
@@ -689,7 +792,36 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
     if (widget.promptLibraryOnly) return _buildPromptLibraryScreen();
     if (widget.communityOnly) return _buildCommunityScreen();
     final colors = Theme.of(context).colorScheme;
-    return Scaffold(backgroundColor: colors.surface, body: _buildHomeBody());
+    return Scaffold(
+      backgroundColor: colors.surface,
+      body: Column(
+        children: [
+          ColoredBox(
+            color: colors.surface,
+            child: SafeArea(
+              bottom: false,
+              child: _HomeTabBar(controller: _tabs, onSelected: _selectHomeTab),
+            ),
+          ),
+          Expanded(
+            child: _DiscoverTabViewport(
+              controller: _tabs,
+              children: [
+                _openedTabs.contains(HomeDiscoverTab.home.index)
+                    ? _buildHomeBody()
+                    : const SizedBox.shrink(),
+                _openedTabs.contains(HomeDiscoverTab.prompts.index)
+                    ? _buildPromptLibraryBody()
+                    : const SizedBox.shrink(),
+                _openedTabs.contains(HomeDiscoverTab.community.index)
+                    ? _buildCommunityBody()
+                    : const SizedBox.shrink(),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _buildHomeBody() {
@@ -723,7 +855,7 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
           title: '提示词',
           action: '全部',
           inverted: dark,
-          onAction: () => context.push('/prompts'),
+          onAction: () => _selectHomeTab(HomeDiscoverTab.prompts),
         ),
         ...prompts.when(
           loading: () => [
@@ -764,7 +896,7 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
             action: '去社区',
             inverted: dark,
             actionKey: const Key('home-community-action'),
-            onAction: () => context.go('/community'),
+            onAction: () => _selectHomeTab(HomeDiscoverTab.community),
           ),
           SliverToBoxAdapter(
             child: _HomeCategoryStrip(
@@ -961,6 +1093,169 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
           data: (page) => _buildGalleryPage(page, query),
         ),
       ],
+    );
+  }
+}
+
+class _DiscoverTabViewport extends StatefulWidget {
+  const _DiscoverTabViewport({
+    required this.controller,
+    required this.children,
+  });
+
+  final TabController controller;
+  final List<Widget> children;
+
+  @override
+  State<_DiscoverTabViewport> createState() => _DiscoverTabViewportState();
+}
+
+class _DiscoverTabViewportState extends State<_DiscoverTabViewport> {
+  late int _index = widget.controller.index;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_onController);
+  }
+
+  @override
+  void didUpdateWidget(covariant _DiscoverTabViewport oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller.removeListener(_onController);
+      widget.controller.addListener(_onController);
+      _index = widget.controller.index;
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_onController);
+    super.dispose();
+  }
+
+  void _onController() {
+    if (widget.controller.index == _index) return;
+    setState(() => _index = widget.controller.index);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return IndexedStack(
+      index: _index,
+      sizing: StackFit.expand,
+      children: widget.children,
+    );
+  }
+}
+
+class _HomeTabBar extends StatelessWidget implements PreferredSizeWidget {
+  const _HomeTabBar({required this.controller, required this.onSelected});
+
+  final TabController controller;
+  final ValueChanged<HomeDiscoverTab> onSelected;
+
+  static const _indicatorWidth = 20.0;
+
+  @override
+  Size get preferredSize => const Size.fromHeight(48);
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final animation = controller.animation!;
+    return AnimatedBuilder(
+      animation: animation,
+      builder: (context, child) {
+        return SizedBox(
+          key: const Key('home-tabs'),
+          height: 48,
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final tabWidth =
+                  constraints.maxWidth / HomeDiscoverTab.values.length;
+              final t = animation.value;
+              return Stack(
+                children: [
+                  Row(
+                    children: [
+                      for (final tab in HomeDiscoverTab.values)
+                        Expanded(
+                          child: _HomeTabButton(
+                            key: Key('home-tab-${tab.name}'),
+                            label: switch (tab) {
+                              HomeDiscoverTab.home => '首页',
+                              HomeDiscoverTab.prompts => '提示词',
+                              HomeDiscoverTab.community => '社区',
+                            },
+                            emphasis: (1 - (t - tab.index).abs()).clamp(
+                              0.0,
+                              1.0,
+                            ),
+                            color: colors.onSurface,
+                            muted: colors.onSurfaceVariant,
+                            onTap: () => onSelected(tab),
+                          ),
+                        ),
+                    ],
+                  ),
+                  Positioned(
+                    left: tabWidth * t + (tabWidth - _indicatorWidth) / 2,
+                    bottom: 4,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: colors.primary,
+                        borderRadius: BorderRadius.circular(99),
+                      ),
+                      child: const SizedBox(width: _indicatorWidth, height: 2),
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _HomeTabButton extends StatelessWidget {
+  const _HomeTabButton({
+    required this.label,
+    required this.emphasis,
+    required this.color,
+    required this.muted,
+    required this.onTap,
+    super.key,
+  });
+
+  final String label;
+  final double emphasis;
+  final Color color;
+  final Color muted;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: Center(
+        child: Text(
+          label,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            color: Color.lerp(muted, color, emphasis),
+            fontWeight: emphasis > 0.5 ? FontWeight.w800 : FontWeight.w600,
+            fontSize: 16,
+            height: 1,
+            letterSpacing: -0.3,
+          ),
+        ),
+      ),
     );
   }
 }

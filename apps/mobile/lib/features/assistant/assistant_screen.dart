@@ -236,17 +236,66 @@ class _AssistantScrollPosition extends ScrollPositionWithSingleContext {
   }
 }
 
+abstract interface class AssistantSpeechInput {
+  bool get isListening;
+
+  Future<bool> initialize({
+    required SpeechStatusListener onStatus,
+    required SpeechErrorListener onError,
+  });
+
+  Future<void> listen({
+    required SpeechResultListener onResult,
+    required SpeechListenOptions listenOptions,
+  });
+
+  Future<void> stop();
+
+  Future<void> cancel();
+}
+
+class DeviceAssistantSpeechInput implements AssistantSpeechInput {
+  DeviceAssistantSpeechInput() : _delegate = SpeechToText();
+
+  final SpeechToText _delegate;
+
+  @override
+  bool get isListening => _delegate.isListening;
+
+  @override
+  Future<bool> initialize({
+    required SpeechStatusListener onStatus,
+    required SpeechErrorListener onError,
+  }) => _delegate.initialize(onStatus: onStatus, onError: onError);
+
+  @override
+  Future<void> listen({
+    required SpeechResultListener onResult,
+    required SpeechListenOptions listenOptions,
+  }) async {
+    await _delegate.listen(onResult: onResult, listenOptions: listenOptions);
+  }
+
+  @override
+  Future<void> stop() => _delegate.stop();
+
+  @override
+  Future<void> cancel() => _delegate.cancel();
+}
+
 class AssistantScreen extends ConsumerStatefulWidget {
   const AssistantScreen({
     this.initialPrompt,
     this.showBackButton = false,
     this.fallbackLocation = '/discover',
+    this.speechInput,
     super.key,
   });
 
   final String? initialPrompt;
   final bool showBackButton;
   final String fallbackLocation;
+  final AssistantSpeechInput? speechInput;
 
   @override
   ConsumerState<AssistantScreen> createState() => _AssistantScreenState();
@@ -257,7 +306,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   final _historySearch = TextEditingController();
   final _composerFocus = FocusNode();
   final _scrollController = _AssistantScrollController();
-  final _speech = SpeechToText();
+  late final AssistantSpeechInput _speech;
   final List<ReferenceImageDraft> _references = [];
   final Set<String> _persistentDraftPaths = {};
   AssistantQuotedMessage? _quoted;
@@ -273,9 +322,11 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   bool _speechAvailable = false;
   bool _speechInitializing = false;
   bool _speechListening = false;
+  bool _disposing = false;
   bool _creatingConversation = false;
   bool _historyDrawerOpen = false;
   String _speechPrefix = '';
+  int _speechSession = 0;
   Timer? _draftTimer;
   Future<void> _draftWriteFuture = Future<void>.value();
   int _draftWriteGeneration = 0;
@@ -283,6 +334,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   @override
   void initState() {
     super.initState();
+    _speech = widget.speechInput ?? DeviceAssistantSpeechInput();
     _composer = TextEditingController(text: widget.initialPrompt?.trim() ?? '');
     _scrollController.addListener(_handleMessageScroll);
     _restoreDraft();
@@ -293,6 +345,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     super.didUpdateWidget(oldWidget);
     final next = widget.initialPrompt?.trim() ?? '';
     if (next.isNotEmpty && next != oldWidget.initialPrompt?.trim()) {
+      unawaited(_cancelSpeechInput());
       for (final image in _references) {
         _deleteLocalReference(image);
       }
@@ -308,7 +361,9 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
 
   @override
   void dispose() {
+    _disposing = true;
     _draftTimer?.cancel();
+    _speechSession += 1;
     unawaited(_speech.cancel());
     _composer.dispose();
     _historySearch.dispose();
@@ -321,10 +376,12 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   Future<void> _toggleSpeechInput() async {
     if (_speechInitializing) return;
     if (_speech.isListening || _speechListening) {
+      _speechSession += 1;
       await _speech.stop();
       if (mounted) setState(() => _speechListening = false);
       return;
     }
+    final session = ++_speechSession;
     setState(() => _speechInitializing = true);
     try {
       if (!_speechAvailable) {
@@ -333,7 +390,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
           onError: _handleSpeechError,
         );
       }
-      if (!mounted) return;
+      if (!mounted || session != _speechSession) return;
       if (!_speechAvailable) {
         _showSpeechUnavailable();
         return;
@@ -349,16 +406,33 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
           enableHapticFeedback: true,
         ),
       );
-      if (mounted) setState(() => _speechListening = _speech.isListening);
+      if (mounted && session == _speechSession) {
+        setState(() => _speechListening = _speech.isListening);
+      }
     } catch (_) {
-      if (mounted) _showSpeechUnavailable();
+      if (mounted && session == _speechSession) _showSpeechUnavailable();
     } finally {
-      if (mounted) setState(() => _speechInitializing = false);
+      if (mounted && session == _speechSession) {
+        setState(() => _speechInitializing = false);
+      }
     }
   }
 
+  Future<void> _cancelSpeechInput() async {
+    final shouldCancel = _speechListening || _speech.isListening;
+    _speechSession += 1;
+    _speechPrefix = '';
+    if (mounted && (_speechListening || _speechInitializing)) {
+      setState(() {
+        _speechListening = false;
+        _speechInitializing = false;
+      });
+    }
+    if (shouldCancel) await _speech.cancel();
+  }
+
   void _handleSpeechResult(SpeechRecognitionResult result) {
-    if (!mounted) return;
+    if (!mounted || _disposing) return;
     final words = result.recognizedWords.trim();
     if (words.isEmpty) return;
     final separator = _speechPrefix.isEmpty ? '' : ' ';
@@ -371,12 +445,12 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   }
 
   void _handleSpeechStatus(String status) {
-    if (!mounted) return;
+    if (!mounted || _disposing) return;
     setState(() => _speechListening = _speech.isListening);
   }
 
   void _handleSpeechError(SpeechRecognitionError error) {
-    if (!mounted) return;
+    if (!mounted || _disposing) return;
     setState(() => _speechListening = false);
     final denied = error.errorMsg.contains('permission') || error.permanent;
     AppNotice.error(context, denied ? '需要开启麦克风和语音识别权限' : '语音输入失败，请稍后重试');
@@ -549,6 +623,8 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
       ),
     );
     if (confirmed != true || !mounted) return;
+    await _cancelSpeechInput();
+    if (!mounted) return;
     _draftTimer?.cancel();
     _draftWriteGeneration += 1;
     final references = List<ReferenceImageDraft>.of(_references);
@@ -807,6 +883,8 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
       );
       if (confirmed != true || !mounted) return;
     }
+    await _cancelSpeechInput();
+    if (!mounted) return;
     for (final image in _references) {
       _deleteLocalReference(image);
     }
@@ -1133,6 +1211,8 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   Future<void> _newConversation() async {
     if (_creatingConversation) return;
     unawaited(HapticFeedback.lightImpact());
+    await _cancelSpeechInput();
+    if (!mounted) return;
     setState(() => _creatingConversation = true);
     try {
       await _run(
@@ -1143,7 +1223,9 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     }
   }
 
-  void _applyQuickTask(String value) {
+  Future<void> _applyQuickTask(String value) async {
+    await _cancelSpeechInput();
+    if (!mounted) return;
     unawaited(HapticFeedback.selectionClick());
     _composer.value = TextEditingValue(
       text: value,
@@ -1253,7 +1335,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
         ),
       ),
     );
-    if (selected != null && mounted) _applyQuickTask(selected.prompt);
+    if (selected != null && mounted) await _applyQuickTask(selected.prompt);
   }
 
   Future<void> _renameConversation(AssistantConversation conversation) async {
@@ -1332,6 +1414,8 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
 
   Future<void> _showConversations() async {
     if (_historyDrawerOpen || !mounted) return;
+    await _cancelSpeechInput();
+    if (!mounted) return;
     _historyDrawerOpen = true;
     try {
       await showAppDrawer<void>(
@@ -1497,7 +1581,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
           body: workspace.when(
             skipLoadingOnReload: true,
             skipLoadingOnRefresh: true,
-            loading: () => const Center(child: CircularProgressIndicator()),
+            loading: () => const _AssistantWorkspaceSkeleton(),
             error: (error, stackTrace) => _AssistantError(
               onRetry: () => ref.invalidate(assistantWorkspaceProvider),
             ),
@@ -1585,7 +1669,10 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
           speechInitializing: _speechInitializing,
           speechListening: _speechListening,
           onChanged: _scheduleDraftSave,
-          onOpenTools: () => _showModePicker(state),
+          onOpenTools: () async {
+            await _cancelSpeechInput();
+            if (mounted) _showModePicker(state);
+          },
           onRemoveReference: _removeReference,
           onToggleSpeech: _toggleSpeechInput,
           onStop: state.selectedRun == null
@@ -2796,6 +2883,235 @@ class _AssistantHeaderEmptyOption extends StatelessWidget {
       ),
     ),
   );
+}
+
+class AssistantPageSkeleton extends StatelessWidget {
+  const AssistantPageSkeleton({
+    this.showBackButton = false,
+    this.fallbackLocation = '/discover',
+    super.key,
+  });
+
+  final bool showBackButton;
+  final String fallbackLocation;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Scaffold(
+      backgroundColor: colors.surface,
+      appBar: AppTopBar(
+        backgroundColor: colors.surface,
+        leading: showBackButton
+            ? null
+            : Padding(
+                padding: const EdgeInsets.only(left: 12),
+                child: IconButton(
+                  tooltip: '历史对话',
+                  style: IconButton.styleFrom(
+                    backgroundColor: colors.surfaceContainerLowest.withValues(
+                      alpha: .72,
+                    ),
+                    foregroundColor: colors.onSurface,
+                    minimumSize: const Size.square(40),
+                    maximumSize: const Size.square(40),
+                    padding: EdgeInsets.zero,
+                  ),
+                  onPressed: null,
+                  icon: const Icon(Icons.history_rounded, size: 21),
+                ),
+              ),
+        leadingWidth: showBackButton ? null : 64,
+        centerTitle: true,
+        title: const _AssistantHeaderMenu(
+          state: null,
+          onSelectMode: null,
+          onSelectModel: null,
+          onSelectReasoning: null,
+        ),
+        showBackButton: showBackButton,
+        fallbackLocation: fallbackLocation,
+        actions: [
+          Padding(
+            padding: EdgeInsets.fromLTRB(showBackButton ? 4 : 0, 0, 12, 0),
+            child: SizedBox.square(
+              dimension: 40,
+              child: IconButton.filled(
+                tooltip: '新对话',
+                style: IconButton.styleFrom(
+                  backgroundColor: colors.onSurface,
+                  foregroundColor: colors.surface,
+                  disabledBackgroundColor: colors.onSurface,
+                  disabledForegroundColor: colors.surface,
+                  minimumSize: const Size.square(40),
+                  maximumSize: const Size.square(40),
+                  padding: EdgeInsets.zero,
+                ),
+                onPressed: null,
+                icon: const Icon(Icons.add_rounded, size: 22),
+              ),
+            ),
+          ),
+        ],
+      ),
+      body: const _AssistantWorkspaceSkeleton(),
+    );
+  }
+}
+
+class _AssistantWorkspaceSkeleton extends StatelessWidget {
+  const _AssistantWorkspaceSkeleton();
+
+  @override
+  Widget build(BuildContext context) {
+    return const _AssistantSkeletonPulse(
+      child: Column(
+        key: Key('assistant-workspace-skeleton'),
+        children: [
+          Expanded(child: _AssistantWelcomeSkeleton()),
+          _AssistantComposerSkeleton(),
+        ],
+      ),
+    );
+  }
+}
+
+class _AssistantWelcomeSkeleton extends StatelessWidget {
+  const _AssistantWelcomeSkeleton();
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, viewport) => SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+        physics: const NeverScrollableScrollPhysics(),
+        child: Center(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxWidth: 520,
+              minHeight: viewport.maxHeight > 48 ? viewport.maxHeight - 48 : 0,
+            ),
+            child: const Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                _AssistantBone(width: 118, height: 118, radius: 999),
+                SizedBox(height: 18),
+                _AssistantBone(width: 168, height: 22, radius: 8),
+                SizedBox(height: 10),
+                _AssistantBone(width: 200, height: 14, radius: 6),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AssistantComposerSkeleton extends StatelessWidget {
+  const _AssistantComposerSkeleton();
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 6, 14, 12),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: Theme.of(context).brightness == Brightness.dark
+                ? colors.surfaceContainerHigh
+                : const Color(0xFFF3F4F6),
+            borderRadius: BorderRadius.circular(999),
+          ),
+          child: const Padding(
+            padding: EdgeInsets.all(4),
+            child: SizedBox(
+              height: 36,
+              child: Row(
+                children: [
+                  _AssistantBone(width: 28, height: 28, radius: 999),
+                  SizedBox(width: 10),
+                  Expanded(child: _AssistantBone(height: 10, radius: 6)),
+                  SizedBox(width: 10),
+                  _AssistantBone(width: 28, height: 28, radius: 999),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AssistantBone extends StatelessWidget {
+  const _AssistantBone({this.width, required this.height, this.radius = 8});
+
+  final double? width;
+  final double height;
+  final double radius;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: Theme.of(
+          context,
+        ).colorScheme.surfaceContainerHighest.withValues(alpha: 0.72),
+        borderRadius: BorderRadius.circular(radius),
+      ),
+      child: SizedBox(width: width ?? double.infinity, height: height),
+    );
+  }
+}
+
+class _AssistantSkeletonPulse extends StatefulWidget {
+  const _AssistantSkeletonPulse({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_AssistantSkeletonPulse> createState() =>
+      _AssistantSkeletonPulseState();
+}
+
+class _AssistantSkeletonPulseState extends State<_AssistantSkeletonPulse>
+    with SingleTickerProviderStateMixin {
+  AnimationController? _motion;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_loopingMotionEnabled(context)) {
+      _motion?.stop();
+      return;
+    }
+    _motion ??= AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1100),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _motion?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final motion = _motion;
+    if (motion == null) return widget.child;
+    return FadeTransition(
+      opacity: Tween<double>(
+        begin: 0.58,
+        end: 1,
+      ).animate(CurvedAnimation(parent: motion, curve: Curves.easeInOut)),
+      child: widget.child,
+    );
+  }
 }
 
 class _AssistantWelcome extends StatelessWidget {
@@ -4785,6 +5101,7 @@ class _AssistantComposerState extends State<_AssistantComposer> {
         ? _ComposerIconButton(
             key: const Key('assistant-voice'),
             tooltip: widget.speechListening ? '停止语音输入' : '语音输入',
+            active: widget.speechListening,
             onPressed: widget.enabled || widget.speechListening
                 ? widget.onToggleSpeech
                 : null,
@@ -5000,27 +5317,52 @@ class _ComposerIconButton extends StatelessWidget {
     required this.tooltip,
     required this.icon,
     required this.onPressed,
+    this.active = false,
     super.key,
   });
 
   final String tooltip;
   final Widget icon;
   final VoidCallback? onPressed;
+  final bool active;
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return SizedBox.square(
-      dimension: _composerControlSize,
-      child: IconButton(
-        tooltip: tooltip,
-        onPressed: onPressed,
-        style: _composerIconStyle(
-          background: Colors.transparent,
-          foreground: colors.onSurface,
-          disabledBackground: Colors.transparent,
+    return Semantics(
+      label: tooltip,
+      button: true,
+      selected: active,
+      enabled: onPressed != null,
+      onTap: onPressed,
+      liveRegion: active,
+      child: ExcludeSemantics(
+        child: AnimatedScale(
+          scale: active ? 1.04 : 1,
+          duration: _motionDuration(context, 180),
+          curve: Curves.easeOutCubic,
+          child: AnimatedContainer(
+            duration: _motionDuration(context, 180),
+            curve: Curves.easeOutCubic,
+            decoration: BoxDecoration(
+              color: active ? colors.primaryContainer : Colors.transparent,
+              shape: BoxShape.circle,
+            ),
+            child: SizedBox.square(
+              dimension: _composerControlSize,
+              child: IconButton(
+                tooltip: tooltip,
+                onPressed: onPressed,
+                style: _composerIconStyle(
+                  background: Colors.transparent,
+                  foreground: active ? colors.primary : colors.onSurface,
+                  disabledBackground: Colors.transparent,
+                ),
+                icon: icon,
+              ),
+            ),
+          ),
         ),
-        icon: icon,
       ),
     );
   }

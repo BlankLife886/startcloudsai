@@ -20,6 +20,7 @@ export type UploadedImage = {
 
 const store = localforage.createInstance({ name: "infinite-canvas", storeName: "image_files" });
 const objectUrls = new Map<string, string>();
+const previewObjectUrls = new Map<string, string>();
 
 async function createPreviewObjectUrl(blob: Blob, edge = 512) {
     const source = await createImageBitmap(blob);
@@ -108,6 +109,7 @@ export async function uploadImage(input: string | Blob): Promise<UploadedImage> 
     await store.setItem(storageKey, blob);
     const url = URL.createObjectURL(blob);
     objectUrls.set(storageKey, url);
+    if (previewUrl) previewObjectUrls.set(storageKey, previewUrl);
     return { url, storageKey, thumbnailUrl: previewUrl || undefined, width: meta.width, height: meta.height, bytes: blob.size, mimeType: blob.type || meta.mimeType };
 }
 
@@ -155,7 +157,10 @@ export async function deleteStoredImages(keys: Iterable<string>) {
         Array.from(new Set(keys)).map(async (key) => {
             const url = objectUrls.get(key);
             if (url) URL.revokeObjectURL(url);
+            const previewUrl = previewObjectUrls.get(key);
+            if (previewUrl) URL.revokeObjectURL(previewUrl);
             objectUrls.delete(key);
+            previewObjectUrls.delete(key);
             if (!isCloudStorageKey(key)) await store.removeItem(key);
         }),
     );

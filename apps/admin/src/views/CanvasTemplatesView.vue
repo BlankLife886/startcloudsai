@@ -687,6 +687,11 @@ async function submit() {
         | { success?: boolean; data?: TemplateItem; error?: string }
         | null;
       if (!response.ok || !envelope?.success || !envelope.data) {
+        if (response.status === 413) {
+          throw new Error(
+            "画布导出包被上传网关拒绝，请确认文件不超过 128MB，并检查线上网关上传限制",
+          );
+        }
         throw new Error(envelope?.error || `模板保存失败（HTTP ${response.status}）`);
       }
       saved = envelope.data;

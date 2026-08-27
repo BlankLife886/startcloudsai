@@ -197,20 +197,13 @@ class AppBottomNavigationBar extends StatelessWidget {
     final colors = Theme.of(context).colorScheme;
     final textScale = MediaQuery.textScalerOf(context).scale(1);
     final height = 64 + ((textScale - 1).clamp(0.0, 0.6) * 20);
-    final currentIndex = selectedIndex.clamp(0, 4);
+    final currentIndex = selectedIndex.clamp(0, 3);
     final destinations = [
       (
         label: '首页',
         semantics: '首页',
         icon: Icons.home_outlined,
         selectedIcon: Icons.home_rounded,
-        showLabel: true,
-      ),
-      (
-        label: '社区',
-        semantics: '社区',
-        icon: Icons.people_outline_rounded,
-        selectedIcon: Icons.people_rounded,
         showLabel: true,
       ),
       (
@@ -257,9 +250,9 @@ class AppBottomNavigationBar extends StatelessWidget {
                 final destination = destinations[index];
                 final selected = currentIndex == index;
                 Widget icon;
-                if (index == 2) {
+                if (index == 1) {
                   icon = _AiNavigationIcon(selected: selected);
-                } else if (index == 3) {
+                } else if (index == 2) {
                   icon = NavigationStatusIcon(
                     icon: selected
                         ? destination.selectedIcon
@@ -268,7 +261,7 @@ class AppBottomNavigationBar extends StatelessWidget {
                     semanticsLabel: destination.label,
                     countDescription: '个正在生成',
                   );
-                } else if (index == 4) {
+                } else if (index == 3) {
                   icon = NavigationStatusIcon(
                     icon: selected
                         ? destination.selectedIcon

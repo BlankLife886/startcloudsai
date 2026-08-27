@@ -18,6 +18,7 @@ import { defaultConfig, formatModelPriceParts, modelOptionLabel, modelOptionMeta
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { CanvasGenerationMode, CanvasNodeData, CanvasNodeMetadata } from "@/types/canvas";
 import { CanvasPreviewImage } from "./canvas-preview-image";
+import type { NodeGenerationInput } from "./canvas-node-generation";
 import { CanvasAudioSettingsPopover, type CanvasAudioSettingKey } from "./canvas-audio-settings-popover";
 import { CanvasFieldMenu } from "./canvas-field-menu";
 import { CanvasPriceMark } from "./canvas-setting-controls";
@@ -28,6 +29,7 @@ type CanvasConfigNodePanelProps = {
     outputNode?: CanvasNodeData;
     isRunning: boolean;
     inputSummary: { textCount: number; imageCount: number; videoCount: number; audioCount: number };
+    inputs: NodeGenerationInput[];
     onConfigChange: (nodeId: string, patch: Partial<CanvasNodeMetadata>) => void;
     onGenerate: (nodeId: string) => void;
     onStopGeneration: (nodeId: string) => void;
@@ -45,13 +47,13 @@ const MODES: Array<{ value: CanvasGenerationMode; icon: typeof ImageIcon; colorK
 
 const FIELD_CLASS = "canvas-config-field flex h-9 w-full min-w-0 items-center gap-2.5 rounded-[10px] px-3 text-left text-[13px] transition-colors";
 
-export function CanvasConfigNodePanel({ node, outputNode, isRunning, inputSummary, onConfigChange, onGenerate, onStopGeneration, onCancelQueued, onComposerToggle, onConfigureOperation }: CanvasConfigNodePanelProps) {
+export function CanvasConfigNodePanel({ node, outputNode, isRunning, inputSummary, inputs, onConfigChange, onGenerate, onStopGeneration, onCancelQueued, onComposerToggle, onConfigureOperation }: CanvasConfigNodePanelProps) {
     const panel = isCanvasLocalImageOperation(node.metadata?.localImageOperation) ? (
         <CanvasLocalImageOperationPanel node={node} isRunning={isRunning} inputSummary={inputSummary} onGenerate={onGenerate} onStopGeneration={onStopGeneration} onCancelQueued={onCancelQueued} onConfigureOperation={onConfigureOperation} />
     ) : node.type === CanvasOperationNodeType.Angle || node.type === CanvasOperationNodeType.ReversePrompt ? (
         <CanvasAiOperationPanel node={node} isRunning={isRunning} inputSummary={inputSummary} onConfigChange={onConfigChange} onGenerate={onGenerate} onStopGeneration={onStopGeneration} onCancelQueued={onCancelQueued} onConfigureOperation={onConfigureOperation} />
     ) : (
-        <CanvasGenerationConfigNodePanel node={node} isRunning={isRunning} inputSummary={inputSummary} onConfigChange={onConfigChange} onGenerate={onGenerate} onStopGeneration={onStopGeneration} onCancelQueued={onCancelQueued} onComposerToggle={onComposerToggle} onConfigureOperation={onConfigureOperation} />
+        <CanvasGenerationConfigNodePanel node={node} isRunning={isRunning} inputSummary={inputSummary} inputs={inputs} onConfigChange={onConfigChange} onGenerate={onGenerate} onStopGeneration={onStopGeneration} onCancelQueued={onCancelQueued} onComposerToggle={onComposerToggle} onConfigureOperation={onConfigureOperation} />
     );
 
     if (!node.metadata?.inlineOutputNodeId) return panel;
@@ -87,7 +89,7 @@ function CanvasInlineOutputPreview({ outputNode, mode }: { outputNode?: CanvasNo
     );
 }
 
-function CanvasGenerationConfigNodePanel({ node, isRunning, inputSummary, onConfigChange, onGenerate, onStopGeneration, onCancelQueued, onComposerToggle }: CanvasConfigNodePanelProps) {
+function CanvasGenerationConfigNodePanel({ node, isRunning, inputSummary, inputs, onConfigChange, onGenerate, onStopGeneration, onCancelQueued, onComposerToggle }: CanvasConfigNodePanelProps) {
     const { t } = useTranslation();
     const globalConfig = useEffectiveConfig();
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
@@ -112,6 +114,7 @@ function CanvasGenerationConfigNodePanel({ node, isRunning, inputSummary, onConf
     const generating = (isRunning || executionStatus === "running") && !queued;
     const elapsedMs = useGenerationElapsed(node.metadata?.generationStartedAt, node.metadata?.generationDurationMs, generating);
     const completedAt = node.metadata?.generationCompletedAt;
+    const referenceImages = inputs.filter((input) => Boolean(input.image));
 
     return (
         <div className="canvas-config-node flex h-full w-full cursor-move flex-col px-3 py-2.5" style={{ color: theme.node.text }} onWheel={(event) => event.stopPropagation()}>
@@ -162,6 +165,7 @@ function CanvasGenerationConfigNodePanel({ node, isRunning, inputSummary, onConf
                         theme={theme}
                         showTitle={false}
                         embedded
+                        showDimensions={false}
                         onConfigChange={(key, value) => onConfigChange(node.id, key === "count" ? { count: Number(value) || 1 } : { [key]: value })}
                     />
                 ) : mode === "text" ? (
@@ -178,6 +182,20 @@ function CanvasGenerationConfigNodePanel({ node, isRunning, inputSummary, onConf
 
             <div className="mt-auto flex min-w-0 shrink-0 items-center gap-2 pt-2">
                 <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+                    {referenceImages.length ? (
+                        <div className="mr-0.5 flex items-center -space-x-1" title={t("canvas.configNode.references")}>
+                            {referenceImages.slice(0, 4).map((input, index) => (
+                                <span key={`${input.nodeId}:${index}`} className="relative grid size-7 shrink-0 place-items-center overflow-hidden rounded-lg border" style={{ background: theme.node.fill, borderColor: theme.toolbar.panel, zIndex: 4 - index }}>
+                                    <CanvasPreviewImage src={input.image?.dataUrl} storageKey={input.image?.storageKey} alt={input.title} maxEdge={96} className="size-full object-cover" />
+                                </span>
+                            ))}
+                            {referenceImages.length > 4 ? (
+                                <span className="relative grid size-7 shrink-0 place-items-center rounded-lg border text-[10px] font-semibold" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.muted, zIndex: 0 }}>
+                                    +{referenceImages.length - 4}
+                                </span>
+                            ) : null}
+                        </div>
+                    ) : null}
                     {stats.length ? (
                         stats.map((item) => (
                             <span

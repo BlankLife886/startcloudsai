@@ -282,6 +282,86 @@ class _CreateScreenState extends ConsumerState<CreateScreen>
     await _submit(model);
   }
 
+  Future<void> _addTurnAsReference(
+    TaskItem task,
+    List<ImageModelOption> models, {
+    required int imageIndex,
+  }) async {
+    if (_busyTaskId != null || _submitting) return;
+    final model = models.firstWhere(
+      (item) => item.id == _modelId,
+      orElse: () => models.first,
+    );
+    final limit = creationReferenceLimit(model);
+    if (limit <= 0) {
+      AppNotice.warning(context, '当前模型不支持参考图');
+      return;
+    }
+    if (_references.length >= limit) {
+      AppNotice.warning(context, '当前模型最多支持 $limit 张参考图');
+      return;
+    }
+    final key = task.outputKeyAt(imageIndex);
+    final url = imageIndex >= 0 && imageIndex < task.previewUrls.length
+        ? task.previewUrls[imageIndex]
+        : (imageIndex >= 0 && imageIndex < task.originalUrls.length
+              ? task.originalUrls[imageIndex]
+              : null);
+    if ((key == null || key.isEmpty) && (url == null || url.isEmpty)) {
+      AppNotice.warning(context, '这张图还不能作为参考图');
+      return;
+    }
+    if (key != null &&
+        _references.any((image) => image.remoteKey == key)) {
+      AppNotice.success(context, '已经在参考图里了');
+      return;
+    }
+    if (url != null &&
+        _references.any((image) => image.remoteUrl == url)) {
+      AppNotice.success(context, '已经在参考图里了');
+      return;
+    }
+    final prompt = task.displayPrompt.trim();
+    final filename = prompt.isEmpty
+        ? '生成图片'
+        : (prompt.length > 80 ? prompt.substring(0, 80) : prompt);
+    if (key != null && key.isNotEmpty) {
+      setState(() {
+        _references.add(
+          ReferenceImageDraft(
+            localPath: '',
+            filename: filename,
+            remoteKey: key,
+            remoteUrl: url,
+          ),
+        );
+      });
+      AppNotice.success(context, '已添加到参考图');
+      return;
+    }
+    setState(() => _busyTaskId = task.id);
+    try {
+      final file = await ref
+          .read(taskRepositoryProvider)
+          .downloadOriginal(task, imageIndex);
+      if (!mounted) return;
+      setState(() {
+        _references.add(
+          ReferenceImageDraft(
+            localPath: file.path,
+            filename: filename,
+            remoteUrl: url,
+          ),
+        );
+      });
+      AppNotice.success(context, '已添加到参考图');
+    } catch (error) {
+      if (mounted) _showError(error);
+    } finally {
+      if (mounted) setState(() => _busyTaskId = null);
+    }
+  }
+
   Future<void> _downloadTurn(TaskItem task, {int? index}) async {
     if (_busyTaskId != null) return;
     if (task.originalUrls.isEmpty) {
@@ -339,6 +419,13 @@ class _CreateScreenState extends ConsumerState<CreateScreen>
                   onTap: () =>
                       Navigator.pop(context, _TurnImageAction.regenerate),
                 ),
+                ListTile(
+                  key: Key('$prefix-reference$suffix'),
+                  leading: const Icon(Icons.add_photo_alternate_outlined),
+                  title: const Text('作为参考图'),
+                  onTap: () =>
+                      Navigator.pop(context, _TurnImageAction.reference),
+                ),
                 if (imageIndex < task.originalUrls.length)
                   ListTile(
                     key: Key('$prefix-download$suffix'),
@@ -367,6 +454,8 @@ class _CreateScreenState extends ConsumerState<CreateScreen>
     switch (action) {
       case _TurnImageAction.regenerate:
         await _regenerate(task, models, count: 1);
+      case _TurnImageAction.reference:
+        await _addTurnAsReference(task, models, imageIndex: imageIndex);
       case _TurnImageAction.download:
         await _downloadTurn(task, index: imageIndex);
       case _TurnImageAction.delete:
@@ -1039,7 +1128,7 @@ class _CreateScreenState extends ConsumerState<CreateScreen>
   }
 }
 
-enum _TurnImageAction { regenerate, download, delete }
+enum _TurnImageAction { regenerate, reference, download, delete }
 
 class _CreationImageActionTarget {
   const _CreationImageActionTarget({

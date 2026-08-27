@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:starcloudsai_mobile/app/app_router.dart';
+import 'package:starcloudsai_mobile/features/assistant/assistant_screen.dart';
 import 'package:starcloudsai_mobile/features/auth/auth.dart';
 import 'package:starcloudsai_mobile/features/auth/authenticated_route.dart';
 import 'package:starcloudsai_mobile/features/discover/discover.dart';
@@ -31,6 +34,15 @@ class _FakeSessionController extends SessionController {
     refreshCount += 1;
     state = const AsyncData(SessionState(user: _user));
   }
+}
+
+class _PendingSessionController extends SessionController {
+  _PendingSessionController(this.gate);
+
+  final Completer<SessionState> gate;
+
+  @override
+  Future<SessionState> build() => gate.future;
 }
 
 Widget _app({
@@ -237,6 +249,51 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('assistant route shows a skeleton while session is checking', (
+    tester,
+  ) async {
+    final router = GoRouter(
+      initialLocation: '/ai',
+      routes: [
+        GoRoute(
+          path: '/ai',
+          builder: (context, state) => const AuthenticatedRoute(
+            title: 'AI 助手',
+            icon: Icons.auto_awesome_outlined,
+            showBackButton: false,
+            loading: AssistantPageSkeleton(),
+            child: AssistantScreen(),
+          ),
+        ),
+        GoRoute(
+          path: '/login',
+          builder: (context, state) => const Scaffold(body: Text('登录流程')),
+        ),
+      ],
+    );
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          sessionControllerProvider.overrideWith(
+            () => _PendingSessionController(Completer<SessionState>()),
+          ),
+        ],
+        child: MaterialApp.router(routerConfig: router),
+      ),
+    );
+    await tester.pump();
+
+    expect(
+      find.byKey(const Key('assistant-workspace-skeleton')),
+      findsOneWidget,
+    );
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(find.text('正在检查账号状态'), findsNothing);
+    expect(find.text('登录后查看AI 助手'), findsNothing);
+    expect(find.byKey(const Key('assistant-composer')), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('AI navigation tab is guarded before private API screens', (
     tester,
   ) async {
@@ -263,7 +320,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('home actions open standalone prompts and community routes', (
+  testWidgets('home tabs switch prompts and community without leaving discover', (
     tester,
   ) async {
     final container = ProviderContainer(
@@ -295,33 +352,35 @@ void main() {
 
     await tester.pumpAndSettle();
     expect(router.state.uri.path, '/discover');
-    expect(find.byKey(const Key('home-tabs')), findsNothing);
+    expect(find.byKey(const Key('home-tabs')), findsOneWidget);
+    expect(find.byKey(const Key('home-tab-home')), findsOneWidget);
+    expect(find.byKey(const Key('home-tab-prompts')), findsOneWidget);
+    expect(find.byKey(const Key('home-tab-community')), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('all-prompts-action')));
     await tester.pumpAndSettle();
-    expect(router.state.uri.path, '/prompts');
-    expect(find.text('全部提示词'), findsOneWidget);
-    expect(find.byKey(const Key('app-top-bar-back')), findsOneWidget);
+    expect(router.state.uri.path, '/discover');
+    expect(router.state.uri.queryParameters['tab'], 'prompts');
     expect(find.byType(SearchBar), findsOneWidget);
-    expect(find.byKey(const Key('bottom-nav-home-button')), findsNothing);
+    expect(find.byKey(const Key('app-top-bar-back')), findsNothing);
+    expect(find.byKey(const Key('home-tabs')), findsOneWidget);
 
-    await tester.tap(find.byKey(const Key('app-top-bar-back')));
+    await tester.tap(find.byKey(const Key('home-tab-community')));
     await tester.pumpAndSettle();
     expect(router.state.uri.path, '/discover');
-    expect(find.byKey(const Key('bottom-nav-item-1')), findsOneWidget);
+    expect(router.state.uri.queryParameters['tab'], 'community');
+    expect(find.byKey(const Key('home-tabs')), findsOneWidget);
 
-    await tester.tap(find.byKey(const Key('bottom-nav-item-1')));
+    router.go('/prompts');
     await tester.pumpAndSettle();
-    expect(router.state.uri.path, '/community');
-    expect(
-      find.descendant(of: find.byType(AppBar), matching: find.text('社区')),
-      findsOneWidget,
-    );
+    expect(router.state.uri.path, '/discover');
+    expect(router.state.uri.queryParameters['tab'], 'prompts');
+    expect(find.byType(SearchBar), findsOneWidget);
 
-    router.go('/discover?tab=prompts');
+    router.go('/community');
     await tester.pumpAndSettle();
-    expect(router.state.uri.path, '/prompts');
-    expect(find.text('全部提示词'), findsOneWidget);
+    expect(router.state.uri.path, '/discover');
+    expect(router.state.uri.queryParameters['tab'], 'community');
     expect(tester.takeException(), isNull);
   });
 

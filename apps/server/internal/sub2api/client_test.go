@@ -224,6 +224,94 @@ func TestChatStreamSupportsProviderAPIKeyHeader(t *testing.T) {
 	resp.Body.Close()
 }
 
+func TestWebSearchUsesResponsesAndParsesCitations(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["model"] != "gpt-test" || body["tool_choice"] != "required" {
+			t.Fatalf("body = %#v", body)
+		}
+		tools, _ := body["tools"].([]any)
+		tool, _ := tools[0].(map[string]any)
+		filters, _ := tool["filters"].(map[string]any)
+		domains, _ := filters["allowed_domains"].([]any)
+		if tool["type"] != "web_search" || len(domains) != 1 || domains[0] != "example.com" {
+			t.Fatalf("tool = %#v", tool)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"output":[{"type":"web_search_call","action":{"type":"search","query":"latest widgets"}},{"type":"message","content":[{"type":"output_text","text":"最新结果","annotations":[{"type":"url_citation","url":"https://example.com/news","title":"Example News"},{"type":"url_citation","url":"https://example.com/news","title":"Duplicate"},{"type":"url_citation","url":"javascript:alert(1)","title":"Unsafe"}]}]}]}`)
+	}))
+	defer server.Close()
+
+	client, _ := New(server.URL, "test-key", "gpt-test", "image-test", 30)
+	result, err := client.WebSearch(context.Background(), "查最新组件", WebSearchOptions{
+		RecencyDays: 7, AllowedDomains: []string{"https://Example.com/path", "javascript:alert(1)"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Text != "最新结果" || result.Query != "latest widgets" || len(result.Sources) != 1 {
+		t.Fatalf("result = %#v", result)
+	}
+	if result.Sources[0].URL != "https://example.com/news" || result.Sources[0].Title != "Example News" {
+		t.Fatalf("source = %#v", result.Sources[0])
+	}
+}
+
+func TestWebSearchFallsBackToSearchChatModel(t *testing.T) {
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if r.URL.Path == "/v1/responses" {
+			http.Error(w, `{"error":{"message":"endpoint not found"}}`, http.StatusNotFound)
+			return
+		}
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["model"] != "gpt-5-search-api" || body["stream"] != false {
+			t.Fatalf("fallback body = %#v", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"回退结果","annotations":[{"type":"url_citation","url_citation":{"url":"https://fallback.example/result","title":"Fallback"}}]}}]}`)
+	}))
+	defer server.Close()
+
+	client, _ := New(server.URL, "test-key", "gpt-test", "image-test", 30)
+	result, err := client.WebSearch(context.Background(), "fallback", WebSearchOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(paths, ",") != "/v1/responses,/v1/chat/completions" || result.Text != "回退结果" || len(result.Sources) != 1 {
+		t.Fatalf("paths=%v result=%#v", paths, result)
+	}
+}
+
+func TestWebSearchPreservesBothUpstreamFailures(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/responses" {
+			http.Error(w, `{"error":{"message":"responses unavailable"}}`, http.StatusNotFound)
+			return
+		}
+		http.Error(w, `{"error":{"message":"search model unavailable"}}`, http.StatusUnprocessableEntity)
+	}))
+	defer server.Close()
+
+	client, _ := New(server.URL, "test-key", "gpt-test", "image-test", 30)
+	_, err := client.WebSearch(context.Background(), "failure", WebSearchOptions{})
+	var upstream *UpstreamError
+	if !errors.As(err, &upstream) || upstream.Status != http.StatusUnprocessableEntity {
+		t.Fatalf("err = %#v", err)
+	}
+	if !strings.Contains(err.Error(), "responses unavailable") || !strings.Contains(err.Error(), "search model unavailable") {
+		t.Fatalf("error lost upstream detail: %v", err)
+	}
+}
+
 func TestChatTextWithImagesPublishesCumulativeSSEDeltas(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

@@ -33,13 +33,17 @@ type Event struct {
 	Status     string         `json:"status,omitempty"`
 }
 
-// ToolCallEvent asks the browser that owns the canvas to run one agent tool and
-// post the observation back, which is what turns a single response into a loop.
+// ToolCallEvent either asks the browser to run a canvas tool or reports the
+// lifecycle of a server-executed tool such as web search.
 type ToolCallEvent struct {
-	RequestID string `json:"requestId"`
-	Name      string `json:"name"`
-	Arguments string `json:"arguments,omitempty"`
-	Title     string `json:"title,omitempty"`
+	RequestID string          `json:"requestId"`
+	Name      string          `json:"name"`
+	Arguments string          `json:"arguments,omitempty"`
+	Title     string          `json:"title,omitempty"`
+	Execution string          `json:"execution,omitempty"`
+	Status    string          `json:"status,omitempty"`
+	Result    json.RawMessage `json:"result,omitempty"`
+	Error     string          `json:"error,omitempty"`
 }
 
 type ImageEvent struct {

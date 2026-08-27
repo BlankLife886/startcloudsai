@@ -38,6 +38,10 @@ function lazyView(importer, exportName) {
   };
 }
 
+function RouteHydrationFallback() {
+  return null;
+}
+
 // Route changes must continue to pass the screenshot and interaction contracts
 // maintained in apps/web-react/tests.
 export const router = createBrowserRouter([
@@ -59,6 +63,7 @@ export const router = createBrowserRouter([
   },
   {
     element: <AppShell />,
+    HydrateFallback: RouteHydrationFallback,
     children: [
       {
         path: "/",
@@ -116,7 +121,7 @@ export const router = createBrowserRouter([
       },
       {
         path: "/tools",
-        element: <Navigate replace to="/studio" />,
+        element: <Navigate replace to="/" />,
       },
       {
         path: "/tools/:modelId",

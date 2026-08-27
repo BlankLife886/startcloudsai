@@ -4,6 +4,16 @@ import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { CanvasConnection, CanvasNodeData, ConnectionHandle, Position } from "@/types/canvas";
 
+export function canvasConnectionPathD(from: CanvasNodeData, to: CanvasNodeData) {
+    const startX = from.position.x + from.width;
+    const startY = from.position.y + from.height / 2;
+    const endX = to.position.x;
+    const endY = to.position.y + to.height / 2;
+    const dx = Math.abs(endX - startX);
+    const curvature = Math.max(dx * 0.5, 50);
+    return `M ${startX} ${startY} C ${startX + curvature} ${startY}, ${endX - curvature} ${endY}, ${endX} ${endY}`;
+}
+
 export const ConnectionPath = memo(function ConnectionPath({
     connection,
     from,
@@ -16,22 +26,17 @@ export const ConnectionPath = memo(function ConnectionPath({
     from: CanvasNodeData;
     to: CanvasNodeData;
     active: boolean;
-    onSelect: (connectionId: string) => void;
+    onSelect: (event: ReactMouseEvent<SVGPathElement>, connectionId: string) => void;
     onContextMenu?: (event: ReactMouseEvent<SVGPathElement>, connectionId: string) => void;
 }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
-    const startX = from.position.x + from.width;
-    const startY = from.position.y + from.height / 2;
-    const endX = to.position.x;
-    const endY = to.position.y + to.height / 2;
-    const dx = Math.abs(endX - startX);
-    const curvature = Math.max(dx * 0.5, 50);
-    const pathD = `M ${startX} ${startY} C ${startX + curvature} ${startY}, ${endX - curvature} ${endY}, ${endX} ${endY}`;
+    const pathD = canvasConnectionPathD(from, to);
 
     return (
         <g>
             <path
                 data-connection-id={connection.id}
+                data-connection-path={connection.id}
                 d={pathD}
                 stroke="transparent"
                 strokeWidth="16"
@@ -39,7 +44,7 @@ export const ConnectionPath = memo(function ConnectionPath({
                 style={{ cursor: "pointer", pointerEvents: "stroke" }}
                 onClick={(event) => {
                     event.stopPropagation();
-                    onSelect(connection.id);
+                    onSelect(event, connection.id);
                 }}
                 onContextMenu={(event) => {
                     event.preventDefault();
@@ -48,12 +53,13 @@ export const ConnectionPath = memo(function ConnectionPath({
                 }}
             />
             <path
+                data-connection-path={connection.id}
                 d={pathD}
                 stroke={active ? theme.canvas.connectionActive : theme.canvas.connection}
                 strokeWidth={active ? 2.4 : 1.8}
                 strokeLinecap="round"
                 fill="none"
-                style={{ filter: active ? `drop-shadow(0 0 10px ${theme.canvas.connectionActive}55)` : undefined, pointerEvents: "none" }}
+                style={{ pointerEvents: "none" }}
             />
         </g>
     );

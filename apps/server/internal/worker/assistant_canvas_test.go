@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -82,6 +84,15 @@ func TestCanvasAgentInstructionsIncludeSnapshot(t *testing.T) {
 	}
 	if !strings.Contains(instructions, "canvas_run_workflow") || !strings.Contains(instructions, "workflows") || !strings.Contains(instructions, "composerContent") {
 		t.Fatalf("instructions lack workflow semantics = %q", instructions)
+	}
+	if !strings.Contains(instructions, "canvas_update_generation_settings") || !strings.Contains(instructions, "禁止改用 create_graph、add_node、connect_nodes") || !strings.Contains(instructions, "禁止自动启动生成") {
+		t.Fatalf("instructions lack generation-settings boundary = %q", instructions)
+	}
+	if !strings.Contains(instructions, "canvas_undo_last_action") || !strings.Contains(instructions, "canvas_redo_last_action") || !strings.Contains(instructions, "禁止用 canvas_apply_ops 猜测反向操作") {
+		t.Fatalf("instructions lack deterministic history tools = %q", instructions)
+	}
+	if !strings.Contains(instructions, "canvas_create_image_operation") || !strings.Contains(instructions, "canvas_validate_workflow") || !strings.Contains(instructions, "canvas_retry_failed_nodes") || !strings.Contains(instructions, "canvas_replace_workflow_input") || !strings.Contains(instructions, "canvas_create_checkpoint") {
+		t.Fatalf("instructions lack image operation or workflow control tools = %q", instructions)
 	}
 }
 
@@ -313,10 +324,360 @@ func TestCanvasAgentParsesCapabilities(t *testing.T) {
 	}
 }
 
+func TestCanvasAgentWebSearchCapabilityIsReadOnlyAndForcedFirst(t *testing.T) {
+	intent, err := parseCanvasAgentIntent(`{"capabilities":["reply","web_search"],"requiredAction":"none","actions":[{"id":"search","capability":"web_search","requiredAction":"none","description":"查最新资料"}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !intent.Capabilities[canvasCapabilityWeb] || intent.RequiredAction != canvasRequiredActionNone {
+		t.Fatalf("intent = %#v", intent)
+	}
+	tools := canvasAgentToolsForCapabilities(intent.Capabilities)
+	if !canvasAgentToolAllowed(tools, webSearchTool().Name) || canvasAgentToolMutates(webSearchTool().Name) {
+		t.Fatalf("tools = %#v", tools)
+	}
+	if got := canvasAgentInitialToolChoice(intent.Capabilities, tools); got != webSearchTool().Name {
+		t.Fatalf("initial tool = %q", got)
+	}
+	if capabilities := fallbackCanvasAgentCapabilities("帮我联网查一下今天的 AI 新闻"); !capabilities[canvasCapabilityWeb] {
+		t.Fatalf("fallback capabilities = %#v", capabilities)
+	}
+}
+
 func TestCanvasAgentFallbackRecognizesWorkflowExecution(t *testing.T) {
 	capabilities := fallbackCanvasAgentCapabilities("执行工作流2")
 	if !capabilities[canvasCapabilityRead] || !capabilities[canvasCapabilityGeneration] || capabilities[canvasCapabilityWrite] {
 		t.Fatalf("capabilities = %#v", capabilities)
+	}
+}
+
+func TestCanvasAgentFallbackRecognizesGenerationSettingsMutation(t *testing.T) {
+	for _, prompt := range []string{
+		"比例改为9:16的比例，高质量",
+		"统一用竖版高画质",
+		"这批节点改成 9:16 和 high quality",
+		"所有生图步骤都用高质量",
+		"尺寸统一调整为 9:16",
+	} {
+		capabilities := fallbackCanvasAgentCapabilities(prompt)
+		if !capabilities[canvasCapabilityRead] || !capabilities[canvasCapabilityGenerationSettings] {
+			t.Fatalf("generation settings intent lost for %q: %#v", prompt, capabilities)
+		}
+		if capabilities[canvasCapabilityWrite] || capabilities[canvasCapabilityGeneration] {
+			t.Fatalf("structural or generation capability leaked for %q: %#v", prompt, capabilities)
+		}
+		if intent := canvasAgentIntentFromFallback(prompt); intent.RequiredAction != canvasRequiredActionWrite {
+			t.Fatalf("required action for %q = %#v", prompt, intent)
+		}
+	}
+}
+
+func TestCanvasAgentSemanticGenerationSettingsUsesDedicatedTool(t *testing.T) {
+	intent, err := parseCanvasAgentIntent(`{"capabilities":["reply","generation_settings"],"requiredAction":"canvas_write"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !intent.Capabilities[canvasCapabilityGenerationSettings] || intent.Capabilities[canvasCapabilityWrite] {
+		t.Fatalf("settings capability was not isolated: %#v", intent)
+	}
+	tools := canvasAgentToolsForCapabilities(intent.Capabilities)
+	if !canvasAgentToolAllowed(tools, canvasUpdateGenerationSettingsTool().Name) {
+		t.Fatalf("dedicated settings tool missing: %#v", tools)
+	}
+	if canvasAgentToolAllowed(tools, canvasApplyOpsTool().Name) || canvasAgentToolAllowed(tools, canvasRunGenerationTool().Name) {
+		t.Fatalf("structural or generation tool leaked: %#v", tools)
+	}
+	if got := canvasAgentInitialToolChoice(intent.Capabilities, tools); got != canvasUpdateGenerationSettingsTool().Name {
+		t.Fatalf("initial tool = %q", got)
+	}
+}
+
+func TestCanvasAgentSemanticImageOperationUsesDedicatedTool(t *testing.T) {
+	intent, err := parseCanvasAgentIntent(`{"capabilities":["reply","image_operation"],"requiredAction":"canvas_write"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !intent.Capabilities[canvasCapabilityImageOperation] || intent.Capabilities[canvasCapabilityWrite] {
+		t.Fatalf("image operation capability was not isolated: %#v", intent)
+	}
+	tools := canvasAgentToolsForCapabilities(intent.Capabilities)
+	if !canvasAgentToolAllowed(tools, canvasCreateImageOperationTool().Name) {
+		t.Fatalf("dedicated image operation tool missing: %#v", tools)
+	}
+	if canvasAgentToolAllowed(tools, canvasApplyOpsTool().Name) {
+		t.Fatalf("generic structural tool leaked: %#v", tools)
+	}
+	if got := canvasAgentInitialToolChoice(intent.Capabilities, tools); got != canvasCreateImageOperationTool().Name {
+		t.Fatalf("initial tool = %q", got)
+	}
+}
+
+func TestCanvasAgentCompoundIntentKeepsEveryRequiredToolFamily(t *testing.T) {
+	intent, err := parseCanvasAgentIntent(`{
+		"capabilities":["reply","image_operation","canvas_write"],
+		"requiredAction":"canvas_write",
+		"actions":[
+			{"id":"cut","capability":"image_operation","requiredAction":"canvas_write","description":"把选中图片切成四张"},
+			{"id":"note","capability":"canvas_write","requiredAction":"canvas_write","description":"新增说明节点并整理布局"}
+		]
+	}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !intent.Capabilities[canvasCapabilityImageOperation] || !intent.Capabilities[canvasCapabilityWrite] || len(intent.Actions) != 2 {
+		t.Fatalf("compound intent was collapsed: %#v", intent)
+	}
+	tools := canvasAgentToolsForCapabilities(intent.Capabilities)
+	if !canvasAgentToolAllowed(tools, canvasCreateImageOperationTool().Name) || !canvasAgentToolAllowed(tools, canvasApplyOpsTool().Name) {
+		t.Fatalf("compound tools missing: %#v", tools)
+	}
+	loop := &canvasAgentLoopState{plannedActions: append([]canvasAgentPlannedAction(nil), intent.Actions...), lastToolSucceeded: true}
+	loop.completeNextPlannedAction(canvasCreateImageOperationTool().Name)
+	pending := loop.pendingPlannedActions()
+	if len(pending) != 1 || pending[0].ID != "note" {
+		t.Fatalf("pending after first goal = %#v", pending)
+	}
+	loop.completeNextPlannedAction(canvasApplyOpsTool().Name)
+	if pending := loop.pendingPlannedActions(); len(pending) != 0 {
+		t.Fatalf("all goals should be complete: %#v", pending)
+	}
+}
+
+func TestCanvasAgentAttachmentIntentOnlyExposesGenericWritesForARealSecondGoal(t *testing.T) {
+	single, err := parseCanvasAgentIntent(`{"capabilities":["reply","attachments"],"requiredAction":"canvas_write","actions":[{"id":"upload","capability":"attachments","requiredAction":"canvas_write","description":"把附件放到画布"}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if single.Capabilities[canvasCapabilityWrite] || !canvasAgentToolAllowed(canvasAgentToolsForCapabilities(single.Capabilities), canvasCreateAttachmentNodesTool().Name) {
+		t.Fatalf("single attachment intent leaked generic writes: %#v", single)
+	}
+	compound, err := parseCanvasAgentIntent(`{"capabilities":["reply","attachments","canvas_write"],"requiredAction":"canvas_write","actions":[{"id":"upload","capability":"attachments","requiredAction":"canvas_write","description":"把附件放到画布"},{"id":"note","capability":"canvas_write","requiredAction":"canvas_write","description":"新增说明节点"}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := canvasAgentToolsForCapabilities(compound.Capabilities)
+	if !canvasAgentToolAllowed(tools, canvasCreateAttachmentNodesTool().Name) || !canvasAgentToolAllowed(tools, canvasApplyOpsTool().Name) {
+		t.Fatalf("compound attachment tools missing: %#v", tools)
+	}
+}
+
+func TestCanvasAgentSemanticWorkflowReuseUsesDedicatedTools(t *testing.T) {
+	intent, err := parseCanvasAgentIntent(`{"capabilities":["reply","workflow_reuse"],"requiredAction":"generation"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !intent.Capabilities[canvasCapabilityWorkflowReuse] || !intent.Capabilities[canvasCapabilityGeneration] || intent.Capabilities[canvasCapabilityWrite] {
+		t.Fatalf("workflow reuse capability was not isolated: %#v", intent)
+	}
+	tools := canvasAgentToolsForCapabilities(intent.Capabilities)
+	for _, want := range []string{canvasReplaceWorkflowInputTool().Name, canvasRunDownstreamTool().Name, canvasRunWorkflowTool().Name} {
+		if !canvasAgentToolAllowed(tools, want) {
+			t.Fatalf("workflow reuse tool %s missing: %#v", want, tools)
+		}
+	}
+	if canvasAgentToolAllowed(tools, canvasApplyOpsTool().Name) {
+		t.Fatalf("generic structural tool leaked: %#v", tools)
+	}
+}
+
+func TestCanvasAgentHistoryCapabilitySupportsReadAndRestore(t *testing.T) {
+	readIntent, err := parseCanvasAgentIntent(`{"capabilities":["reply","canvas_history"],"requiredAction":"none"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readTools := canvasAgentToolsForCapabilities(readIntent.Capabilities)
+	if !canvasAgentToolAllowed(readTools, canvasListAgentHistoryTool().Name) {
+		t.Fatalf("history list tool missing: %#v", readTools)
+	}
+	writeIntent, err := parseCanvasAgentIntent(`{"capabilities":["reply","canvas_history_write"],"requiredAction":"canvas_write"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTools := canvasAgentToolsForCapabilities(writeIntent.Capabilities)
+	for _, want := range []string{canvasCreateCheckpointTool().Name, canvasRestoreCheckpointTool().Name, canvasRestoreAgentTransactionTool().Name} {
+		if !canvasAgentToolAllowed(writeTools, want) {
+			t.Fatalf("history mutation tool %s missing: %#v", want, writeTools)
+		}
+	}
+	if canvasAgentToolAllowed(writeTools, canvasApplyOpsTool().Name) {
+		t.Fatalf("generic write tool leaked into history capability: %#v", writeTools)
+	}
+}
+
+func TestCanvasAgentImageOperationFallbackIsIsolated(t *testing.T) {
+	for _, prompt := range []string{"把选中的图片切图", "给这张图做高清放大", "添加一个反推提示词节点"} {
+		capabilities := fallbackCanvasAgentCapabilities(prompt)
+		if !capabilities[canvasCapabilityImageOperation] || !capabilities[canvasCapabilityRead] {
+			t.Fatalf("image operation fallback for %q = %#v", prompt, capabilities)
+		}
+		if capabilities[canvasCapabilityWrite] {
+			t.Fatalf("generic write capability leaked for %q: %#v", prompt, capabilities)
+		}
+	}
+}
+
+func TestCanvasAgentHistoryFallbackDistinguishesListAndRestore(t *testing.T) {
+	if intent := canvasAgentIntentFromFallback("查看 Agent 历史"); intent.RequiredAction != canvasRequiredActionNone || !intent.Capabilities[canvasCapabilityHistory] {
+		t.Fatalf("history list fallback = %#v", intent)
+	}
+	if intent := canvasAgentIntentFromFallback("恢复检查点"); intent.RequiredAction != canvasRequiredActionWrite || !intent.Capabilities[canvasCapabilityHistoryWrite] {
+		t.Fatalf("history restore fallback = %#v", intent)
+	}
+}
+
+func TestCanvasAgentSemanticHistoryUsesDedicatedTools(t *testing.T) {
+	tests := []struct {
+		capability string
+		tool       string
+	}{
+		{canvasCapabilityUndo, canvasUndoLastActionTool().Name},
+		{canvasCapabilityRedo, canvasRedoLastActionTool().Name},
+	}
+	for _, test := range tests {
+		intent, err := parseCanvasAgentIntent(fmt.Sprintf(`{"capabilities":["reply",%q],"requiredAction":"canvas_write"}`, test.capability))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if intent.Capabilities[canvasCapabilityWrite] || !intent.Capabilities[test.capability] {
+			t.Fatalf("history capability was not isolated: %#v", intent)
+		}
+		tools := canvasAgentToolsForCapabilities(intent.Capabilities)
+		if !canvasAgentToolAllowed(tools, test.tool) || canvasAgentToolAllowed(tools, canvasApplyOpsTool().Name) {
+			t.Fatalf("history tools = %#v", tools)
+		}
+		if got := canvasAgentInitialToolChoice(intent.Capabilities, tools); got != test.tool {
+			t.Fatalf("initial tool = %q, want %q", got, test.tool)
+		}
+	}
+}
+
+func TestCanvasAgentSemanticWorkflowTemplatesSeparateReadAndCreate(t *testing.T) {
+	readIntent, err := parseCanvasAgentIntent(`{"capabilities":["reply","workflow_template_read"],"requiredAction":"none"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readTools := canvasAgentToolsForCapabilities(readIntent.Capabilities)
+	for _, want := range []string{canvasListWorkflowTemplatesTool().Name, canvasInspectWorkflowTemplateTool().Name} {
+		if !canvasAgentToolAllowed(readTools, want) {
+			t.Fatalf("template read tool %s missing: %#v", want, readTools)
+		}
+	}
+	if canvasAgentToolAllowed(readTools, canvasCreateFromWorkflowTemplateTool().Name) || canvasAgentToolAllowed(readTools, canvasApplyOpsTool().Name) {
+		t.Fatalf("template read leaked mutation tools: %#v", readTools)
+	}
+
+	writeIntent, err := parseCanvasAgentIntent(`{"capabilities":["reply","workflow_template_write","navigate"],"requiredAction":"canvas_write"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTools := canvasAgentToolsForCapabilities(writeIntent.Capabilities)
+	for _, want := range []string{canvasListWorkflowTemplatesTool().Name, canvasInspectWorkflowTemplateTool().Name, canvasCreateFromWorkflowTemplateTool().Name, siteNavigateTool().Name} {
+		if !canvasAgentToolAllowed(writeTools, want) {
+			t.Fatalf("template create tool %s missing: %#v", want, writeTools)
+		}
+	}
+	if canvasAgentToolAllowed(writeTools, canvasApplyOpsTool().Name) || canvasAgentToolAllowed(writeTools, assetsAddTool().Name) {
+		t.Fatalf("unrelated write tool leaked into template creation: %#v", writeTools)
+	}
+	if !canvasAgentToolMutates(canvasCreateFromWorkflowTemplateTool().Name) || canvasAgentToolMutates(canvasListWorkflowTemplatesTool().Name) || canvasAgentToolMutates(canvasInspectWorkflowTemplateTool().Name) {
+		t.Fatal("workflow template tool mutation classification is incorrect")
+	}
+}
+
+func TestCanvasAgentWorkflowTemplateFallbackDistinguishesReadAndCreate(t *testing.T) {
+	read := fallbackCanvasAgentCapabilities("帮我找一个电商工作流模板")
+	if !read[canvasCapabilityTemplateRead] || read[canvasCapabilityTemplateWrite] || read[canvasCapabilityWrite] {
+		t.Fatalf("template search fallback = %#v", read)
+	}
+	write := fallbackCanvasAgentCapabilities("使用这个工作流模板创建新画布")
+	if !write[canvasCapabilityTemplateWrite] || write[canvasCapabilityTemplateRead] || write[canvasCapabilityWrite] {
+		t.Fatalf("template create fallback = %#v", write)
+	}
+	if intent := canvasAgentIntentFromFallback("使用这个工作流模板创建新画布"); intent.RequiredAction != canvasRequiredActionWrite {
+		t.Fatalf("template create required action = %#v", intent)
+	}
+}
+
+func TestCanvasAgentWorkflowPreflightIsReadOnly(t *testing.T) {
+	intent, err := parseCanvasAgentIntent(`{"capabilities":["reply","canvas_read"],"requiredAction":"none"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := canvasAgentToolsForCapabilities(intent.Capabilities)
+	if !canvasAgentToolAllowed(tools, canvasPlanWorkflowRunTool().Name) {
+		t.Fatalf("workflow preflight tool missing: %#v", tools)
+	}
+	if canvasAgentToolMutates(canvasPlanWorkflowRunTool().Name) {
+		t.Fatal("workflow preflight must remain read-only")
+	}
+	for _, prompt := range []string{"这个工作流需要多少积分", "运行前检查一下工作流会执行哪些节点", "can this workflow run and what will it cost"} {
+		capabilities := fallbackCanvasAgentCapabilities(prompt)
+		if !capabilities[canvasCapabilityRead] || capabilities[canvasCapabilityWrite] || capabilities[canvasCapabilityGeneration] {
+			t.Fatalf("workflow preflight fallback for %q = %#v", prompt, capabilities)
+		}
+	}
+}
+
+func TestCanvasAgentHistoryFallbackDistinguishesCommandsFromQuestions(t *testing.T) {
+	for _, prompt := range []string{"撤销刚才对节点的修改", "回退上一步", "帮我恢复到修改前", "undo the last canvas change"} {
+		capabilities := fallbackCanvasAgentCapabilities(prompt)
+		if !capabilities[canvasCapabilityUndo] || capabilities[canvasCapabilityWrite] {
+			t.Fatalf("undo fallback for %q = %#v", prompt, capabilities)
+		}
+	}
+	for _, prompt := range []string{"重做刚才撤销的操作", "恢复刚才撤销", "redo"} {
+		capabilities := fallbackCanvasAgentCapabilities(prompt)
+		if !capabilities[canvasCapabilityRedo] || capabilities[canvasCapabilityUndo] {
+			t.Fatalf("redo fallback for %q = %#v", prompt, capabilities)
+		}
+	}
+	for _, prompt := range []string{"我这个 Agent 能做节点回退吗？", "怎么撤销节点修改？", "是否可以 redo？"} {
+		capabilities := fallbackCanvasAgentCapabilities(prompt)
+		if capabilities[canvasCapabilityUndo] || capabilities[canvasCapabilityRedo] {
+			t.Fatalf("history question became mutation for %q: %#v", prompt, capabilities)
+		}
+	}
+}
+
+func TestCanvasAgentHistoryToolsAreMutatingAndArgumentFree(t *testing.T) {
+	for _, tool := range []sub2api.FunctionTool{canvasUndoLastActionTool(), canvasRedoLastActionTool()} {
+		if !canvasAgentToolMutates(tool.Name) {
+			t.Fatalf("history tool %s must be tracked as mutation", tool.Name)
+		}
+		properties, _ := tool.Parameters["properties"].(map[string]any)
+		if len(properties) != 0 {
+			t.Fatalf("history tool must not accept model-guessed state: %#v", properties)
+		}
+	}
+}
+
+func TestCanvasAgentHistoryUnavailableIsAConfirmedSafeNoop(t *testing.T) {
+	if !canvasAgentHistoryUnavailable("执行失败：没有可撤销的 Agent 画布操作，或画布已在之后被修改", true) {
+		t.Fatal("missing undo history must be recognized")
+	}
+	if !canvasAgentHistoryUnavailable("执行失败：没有可重做的 Agent 画布操作", false) {
+		t.Fatal("missing redo history must be recognized")
+	}
+	if canvasAgentHistoryUnavailable("执行失败：网络错误", true) {
+		t.Fatal("an unrelated failure must not be accepted as a safe no-op")
+	}
+}
+
+func TestCanvasAgentGenerationSettingsToolIsMutatingAndParameterOnly(t *testing.T) {
+	tool := canvasUpdateGenerationSettingsTool()
+	if !canvasAgentToolMutates(tool.Name) {
+		t.Fatal("generation settings tool must be tracked as a mutation")
+	}
+	properties, _ := tool.Parameters["properties"].(map[string]any)
+	for _, want := range []string{"scope", "workflowId", "nodeIds", "size", "resolution", "quality", "model", "count", "background"} {
+		if _, ok := properties[want]; !ok {
+			t.Fatalf("parameter %s missing from %#v", want, properties)
+		}
+	}
+	for _, forbidden := range []string{"nodes", "edges", "ops", "run"} {
+		if _, ok := properties[forbidden]; ok {
+			t.Fatalf("structural parameter %s leaked into settings tool", forbidden)
+		}
 	}
 }
 
@@ -547,13 +908,16 @@ func TestCanvasAgentExposesReadAndWriteTools(t *testing.T) {
 		names[tool.Name] = true
 	}
 	for _, want := range []string{
-		"canvas_reply", "canvas_apply_ops", "canvas_get_state", "canvas_get_selection", "canvas_export_snapshot",
-		"canvas_regenerate_selection", "canvas_run_generation", "canvas_generation_status", "canvas_run_workflow", "canvas_workflow_status", "canvas_create_attachment_nodes",
-		"site_navigate", "canvas_list_projects", "prompts_search", "assets_list", "assets_add",
+		"canvas_reply", "canvas_apply_ops", "canvas_get_state", "canvas_get_selection", "canvas_find_nodes", "canvas_inspect_nodes", "canvas_focus_nodes", "canvas_duplicate_selection", "canvas_create_image_operation", "canvas_replace_workflow_input", "canvas_run_downstream", "canvas_update_generation_settings", "canvas_undo_last_action", "canvas_redo_last_action", "canvas_export_snapshot",
+		"canvas_regenerate_selection", "canvas_run_generation", "canvas_generation_status", "canvas_run_workflow", "canvas_workflow_status", "canvas_validate_workflow", "canvas_plan_workflow_run", "canvas_stop_workflow", "canvas_resume_workflow", "canvas_retry_failed_nodes", "canvas_list_agent_history", "canvas_create_checkpoint", "canvas_restore_checkpoint", "canvas_restore_agent_transaction", "canvas_create_attachment_nodes",
+		"site_navigate", "canvas_list_projects", "canvas_list_workflow_templates", "canvas_inspect_workflow_template", "canvas_create_from_workflow_template", "prompts_search", "assets_list", "assets_add",
 	} {
 		if !names[want] {
 			t.Fatalf("tool %s missing from %#v", want, names)
 		}
+	}
+	if len(names) != len(canvasAgentTools()) {
+		t.Fatalf("canvas agent tool list contains duplicate names")
 	}
 }
 
@@ -607,6 +971,49 @@ func TestRunCanvasAgentToolReportsUnknownTool(t *testing.T) {
 	observation := worker.runCanvasAgentTool(context.Background(), &store.AssistantRun{}, &canvasAgentLoopState{}, &sub2api.ToolCall{Name: "canvas_teleport"})
 	if !strings.Contains(observation, "canvas_apply_ops") {
 		t.Fatalf("observation should list the real tools: %q", observation)
+	}
+}
+
+func TestRunCanvasAgentToolExecutesWebSearchOnServer(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"output":[{"type":"message","content":[{"type":"output_text","text":"实时资料","annotations":[{"type":"url_citation","url":"https://example.com/live","title":"Live"}]}]}]}`)
+	}))
+	defer server.Close()
+	client, err := sub2api.New(server.URL, "test-key", "gpt-test", "image-test", 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loop := &canvasAgentLoopState{webSearchClient: client}
+	observation := (&Worker{}).runCanvasAgentTool(context.Background(), &store.AssistantRun{}, loop, &sub2api.ToolCall{
+		Name: webSearchTool().Name, Arguments: `{"query":"查实时资料"}`,
+	})
+	if !loop.lastToolSucceeded || !strings.Contains(observation, "实时资料") || !strings.Contains(observation, "https://example.com/live") {
+		t.Fatalf("loop=%#v observation=%q", loop, observation)
+	}
+}
+
+func TestRunCanvasAgentToolMarksWebSearchFailureAsBlocking(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"error":{"message":"search is disabled"}}`, http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	client, err := sub2api.New(server.URL, "test-key", "gpt-test", "image-test", 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loop := &canvasAgentLoopState{webSearchClient: client}
+	observation := (&Worker{}).runCanvasAgentTool(context.Background(), &store.AssistantRun{}, loop, &sub2api.ToolCall{
+		Name: webSearchTool().Name, Arguments: `{"query":"查实时资料"}`,
+	})
+	if !loop.webSearchFailed || loop.webSearchError == "" || loop.lastToolSucceeded {
+		t.Fatalf("loop = %#v", loop)
+	}
+	if !strings.Contains(observation, "search is disabled") || !strings.Contains(loop.webSearchError, "search is disabled") {
+		t.Fatalf("observation=%q error=%q", observation, loop.webSearchError)
 	}
 }
 

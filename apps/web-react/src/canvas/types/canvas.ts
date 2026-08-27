@@ -47,6 +47,7 @@ export type CanvasNodeMetadata = {
     composerContent?: string;
     prompt?: string;
     status?: CanvasNodeStatus;
+    uploading?: boolean;
     errorDetails?: string;
     fontSize?: number;
     generationMode?: CanvasGenerationMode;

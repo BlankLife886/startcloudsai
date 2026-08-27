@@ -4,6 +4,7 @@ import {
   createTask,
   deleteTask,
   listTasks,
+  quoteTaskPrice,
   subscribeTask,
   uploadFile,
   waitForTask,
@@ -29,6 +30,10 @@ import {
 } from "@react/legacy-modules/features/ecommerce/ecommerceTools.js";
 
 const ACTIVE_STATUSES = new Set(["queued", "running", "waiting_provider"]);
+
+function isAbortError(error) {
+  return error?.name === "AbortError";
+}
 
 function sanitizeEcommerceImageParams(item = {}, model = {}) {
   const capabilities = normalizeImageModelCapabilities(model);
@@ -223,6 +228,7 @@ export function useEcommerceJobs({ taskKind = "", models = [] } = {}) {
   const [cancelling, setCancelling] = useState(false);
   const [lastError, setLastError] = useState("");
   const controllersRef = useRef(new Map());
+  const preparationDoneRef = useRef(new Map());
   const mountedRef = useRef(true);
 
   const upsert = useCallback((task) => {
@@ -335,6 +341,30 @@ export function useEcommerceJobs({ taskKind = "", models = [] } = {}) {
       .forEach(watchTask);
   }, [taskKind, tasks, watchTask]);
 
+  const quoteBatch = useCallback(
+    async ({ items = [], modelId = "" } = {}) => {
+      if (!items.length) throw new Error("没有可报价的生成内容");
+      const selectedModel = models.find((model) =>
+        [model?.id, model?.publicModelKey, model?.model]
+          .map(String)
+          .includes(String(modelId)),
+      );
+      const firstItem = selectedModel
+        ? sanitizeEcommerceImageParams(items[0], selectedModel)
+        : items[0];
+      return quoteTaskPrice({
+        type: "ecommerce_design",
+        params: {
+          ...firstItem,
+          publicModelKey: modelId,
+          _kind: `ui-design-ecommerce-${firstItem.kindVariant || "detail"}-generation`,
+        },
+        count: 1,
+      });
+    },
+    [models],
+  );
+
   const createBatch = useCallback(
     async ({
       files = [],
@@ -342,6 +372,7 @@ export function useEcommerceJobs({ taskKind = "", models = [] } = {}) {
       modelId = "",
       batchId = "",
       batchSize = 0,
+      expectedUnitPriceCents = null,
     } = {}) => {
       if (!items.length) {
         throw new Error("没有可生成的内容");
@@ -370,6 +401,13 @@ export function useEcommerceJobs({ taskKind = "", models = [] } = {}) {
       const prepareKey = `prepare-${Date.now()}`;
       const controller = new AbortController();
       controllersRef.current.set(prepareKey, controller);
+      let resolvePreparationDone;
+      preparationDoneRef.current.set(
+        prepareKey,
+        new Promise((resolve) => {
+          resolvePreparationDone = resolve;
+        }),
+      );
       const nextBatchId = String(batchId || crypto.randomUUID());
       const nextBatchSize = Math.max(1, Number(batchSize) || items.length);
       setLastError("");
@@ -386,6 +424,9 @@ export function useEcommerceJobs({ taskKind = "", models = [] } = {}) {
         const batchCreatedAt = new Date().toISOString();
         const settled = await Promise.allSettled(
           taskItems.map(async (item, index) => {
+            if (controller.signal.aborted) {
+              throw new DOMException("已停止本次生成", "AbortError");
+            }
             const batchIndex = Number.isFinite(Number(item.batchIndex))
               ? Number(item.batchIndex)
               : index;
@@ -404,7 +445,17 @@ export function useEcommerceJobs({ taskKind = "", models = [] } = {}) {
               inputKeys: uploads,
               count: 1,
               idempotencyKey: crypto.randomUUID(),
+              expectedUnitPriceCents,
             });
+            if (controller.signal.aborted) {
+              try {
+                const canceled = await cancelTask(task.id);
+                upsert(canceled);
+              } catch {
+                upsert(task);
+              }
+              throw new DOMException("已停止本次生成", "AbortError");
+            }
             const normalized = normalizeTask(task);
             upsert(normalized);
             watchTask(normalized);
@@ -422,8 +473,10 @@ export function useEcommerceJobs({ taskKind = "", models = [] } = {}) {
             : index;
           upsert({
             id: `local-failed-${nextBatchId}-${batchIndex}`,
-            status: "failed",
-            error: result.reason?.message || "创建任务失败",
+            status: isAbortError(result.reason) ? "canceled" : "failed",
+            error: isAbortError(result.reason)
+              ? "已停止本次生成"
+              : result.reason?.message || "创建任务失败",
             kind: `ui-design-ecommerce-${item.kindVariant || "detail"}-generation`,
             batchId: nextBatchId,
             batchIndex,
@@ -439,19 +492,47 @@ export function useEcommerceJobs({ taskKind = "", models = [] } = {}) {
           });
         });
         if (!created.length) {
-          const message =
-            settled.find((result) => result.status === "rejected")?.reason
-              ?.message || "生成失败，请重试";
+          const reason = settled.find(
+            (result) => result.status === "rejected",
+          )?.reason;
+          if (isAbortError(reason)) throw reason;
+          const message = reason?.message || "生成失败，请重试";
           setLastError(message);
           throw new Error(message);
         }
         return { batchId: nextBatchId, tasks: created };
       } catch (error) {
         const message = error?.message || "生成失败，请重试";
-        if (mountedRef.current) setLastError(message);
+        if (isAbortError(error)) {
+          taskItems.forEach((item, index) => {
+            const batchIndex = Number.isFinite(Number(item.batchIndex))
+              ? Number(item.batchIndex)
+              : index;
+            upsert({
+              id: `local-failed-${nextBatchId}-${batchIndex}`,
+              status: "canceled",
+              error: "已停止本次生成",
+              kind: `ui-design-ecommerce-${item.kindVariant || "detail"}-generation`,
+              batchId: nextBatchId,
+              batchIndex,
+              batchSize: nextBatchSize,
+              params: {
+                _kind: `ui-design-ecommerce-${item.kindVariant || "detail"}-generation`,
+                batchId: nextBatchId,
+                batchIndex,
+                batchSize: nextBatchSize,
+              },
+              outputs: [],
+              previews: [],
+            });
+          });
+        }
+        if (mountedRef.current && !isAbortError(error)) setLastError(message);
         throw error;
       } finally {
         controllersRef.current.delete(prepareKey);
+        preparationDoneRef.current.delete(prepareKey);
+        resolvePreparationDone?.();
         if (mountedRef.current) setSubmitting(false);
       }
     },
@@ -587,15 +668,35 @@ export function useEcommerceJobs({ taskKind = "", models = [] } = {}) {
     const active = scopedTasks.filter((task) =>
       ACTIVE_STATUSES.has(task.status),
     );
-    if (!active.length) return;
+    const pendingControllers = [...controllersRef.current.entries()].filter(
+      ([key]) => String(key).startsWith("prepare-"),
+    );
+    const preparationDone = pendingControllers
+      .map(([key]) => preparationDoneRef.current.get(key))
+      .filter(Boolean);
+    if (!active.length && !pendingControllers.length) return;
     setCancelling(true);
     try {
+      pendingControllers.forEach(([, controller]) => controller.abort());
       const settled = await Promise.allSettled(
         active.map((task) => cancelTask(task.id)),
       );
-      settled.forEach((result) => {
-        if (result.status === "fulfilled") upsert(result.value);
+      await Promise.allSettled(preparationDone);
+      const canceledIds = [];
+      settled.forEach((result, index) => {
+        if (result.status !== "fulfilled") return;
+        const taskId = active[index]?.id;
+        upsert(result.value);
+        if (taskId) {
+          canceledIds.push(taskId);
+          controllersRef.current.get(taskId)?.abort();
+          controllersRef.current.delete(taskId);
+        }
       });
+      if (canceledIds.length && mountedRef.current) {
+        const canceled = new Set(canceledIds);
+        setRunningIds((current) => current.filter((id) => !canceled.has(id)));
+      }
     } finally {
       if (mountedRef.current) setCancelling(false);
     }
@@ -646,6 +747,7 @@ export function useEcommerceJobs({ taskKind = "", models = [] } = {}) {
     loadMoreHistory: () => loadHistory({ append: true }),
     lastError,
     clearError: () => setLastError(""),
+    quoteBatch,
     createBatch,
     createHandheldBatch,
     retryHandheldItem,
