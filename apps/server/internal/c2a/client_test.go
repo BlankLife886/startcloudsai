@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -21,6 +22,12 @@ func TestImageDownloadTimeoutAllowsSlowCompletedImages(t *testing.T) {
 	}
 	if got := imageDownloadTimeout(2 * time.Minute); got != 2*time.Minute {
 		t.Fatalf("configured timeout = %s, want 2m", got)
+	}
+}
+
+func TestAsyncSubmitTimeoutCoversSlowReferenceHandoff(t *testing.T) {
+	if asyncSubmitTimeout < 2*time.Minute {
+		t.Fatalf("async submit timeout=%s, want at least 2m", asyncSubmitTimeout)
 	}
 }
 
@@ -454,6 +461,62 @@ func TestPollImageTasksBatchesMultipleIDs(t *testing.T) {
 	results := client.PollImageTasks(context.Background(), []string{"task-a", "task-b"}, map[string]int{"task-a": 1, "task-b": 1})
 	if requests != 1 || !results["task-a"].Pending || results["task-b"].Pending || len(results["task-b"].Images) != 1 {
 		t.Fatalf("requests=%d results=%#v", requests, results)
+	}
+}
+
+func TestSubmitGenerateImagesTrackedReturnsCanonicalUpstreamID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/image-tasks/generations" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"canonical-upstream-id","client_task_id":"local-id","status":"processing"}`))
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	images, pending, upstreamTaskID, err := client.SubmitGenerateImagesTracked(
+		context.Background(), "local-id", "draw", "gpt-image-2", 1, "", ImageOptions{})
+	if err != nil || !pending || len(images) != 0 || upstreamTaskID != "canonical-upstream-id" {
+		t.Fatalf("images=%#v pending=%v upstreamTaskID=%q err=%v", images, pending, upstreamTaskID, err)
+	}
+}
+
+func TestPollImageTasksHandlesTwentyCanonicalIDs(t *testing.T) {
+	const count = 20
+	taskIDs := make([]string, 0, count)
+	expected := make(map[string]int, count)
+	for index := 0; index < count; index++ {
+		id := fmt.Sprintf("upstream-%02d", index)
+		taskIDs = append(taskIDs, id)
+		expected[id] = 1
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := strings.Split(r.URL.Query().Get("ids"), ","); len(got) != count {
+			t.Fatalf("polled %d ids, want %d", len(got), count)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"items":[`)
+		for index, id := range taskIDs {
+			if index > 0 {
+				_, _ = io.WriteString(w, ",")
+			}
+			fmt.Fprintf(w, `{"id":%q,"status":"success","data":[{"b64_json":%q}]}`, id, "image-"+id)
+		}
+		_, _ = io.WriteString(w, `]}`)
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	results := client.PollImageTasks(context.Background(), taskIDs, expected)
+	if len(results) != count {
+		t.Fatalf("results=%d, want %d", len(results), count)
+	}
+	for _, id := range taskIDs {
+		result := results[id]
+		if result.Pending || result.Missing || result.Err != nil || len(result.Images) != 1 || result.Images[0] != "image-"+id {
+			t.Fatalf("task %s result=%#v", id, result)
+		}
 	}
 }
 

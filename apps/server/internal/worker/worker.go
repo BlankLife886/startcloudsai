@@ -574,7 +574,9 @@ func (w *Worker) upstreamClient(ctx context.Context) *c2a.Client {
 
 type imageReadyFunc func(index int, encoded string) error
 
-type asyncImagePendingError struct{}
+type asyncImagePendingError struct {
+	upstreamTaskIDs []string
+}
 
 func (*asyncImagePendingError) Error() string { return "upstream image task pending" }
 
@@ -944,6 +946,7 @@ func (w *Worker) callConfiguredUpstream(ctx context.Context, task *store.Task, s
 		}
 		var images []string
 		var pending bool
+		var upstreamTaskID string
 		var err error
 		if len(task.InputKeys) > 0 {
 			inputStartedAt := time.Now()
@@ -955,15 +958,19 @@ func (w *Worker) callConfiguredUpstream(ctx context.Context, task *store.Task, s
 			w.recordTimeline(ctx, task.ID, "input_prepare", "info",
 				fmt.Sprintf("%d 张参考图已从云存储取出并编码完成", len(inputs)),
 				time.Since(inputStartedAt).Milliseconds(), map[string]any{"count": len(inputs)})
-			images, pending, err = client.SubmitEditImages(ctx, task.ID.String(), finalPrompt, model, task.Count, inputs, size, imageOptions)
+			images, pending, upstreamTaskID, err = client.SubmitEditImagesTracked(ctx, task.ID.String(), finalPrompt, model, task.Count, inputs, size, imageOptions)
 		} else {
-			images, pending, err = client.SubmitGenerateImages(ctx, task.ID.String(), finalPrompt, model, task.Count, size, imageOptions)
+			images, pending, upstreamTaskID, err = client.SubmitGenerateImagesTracked(ctx, task.ID.String(), finalPrompt, model, task.Count, size, imageOptions)
 		}
 		if err != nil {
 			return images, err
 		}
 		if pending {
-			return nil, &asyncImagePendingError{}
+			upstreamTaskIDs := []string(nil)
+			if strings.TrimSpace(upstreamTaskID) != "" {
+				upstreamTaskIDs = []string{strings.TrimSpace(upstreamTaskID)}
+			}
+			return nil, &asyncImagePendingError{upstreamTaskIDs: upstreamTaskIDs}
 		}
 		return images, deliverEncodedImages(images, onImage)
 	case modelconfig.AdapterCRUN:
@@ -1076,6 +1083,10 @@ func (w *Worker) registerConfiguredUpstreamAttempt(ctx context.Context, task *st
 	}
 	submittedAt := time.Now().UTC()
 	timeoutSecs := providerTimeoutSecs(&provider)
+	attemptTimeoutSecs := timeoutSecs
+	if provider.Adapter == modelconfig.AdapterOpenAI && attemptTimeoutSecs < 180 {
+		attemptTimeoutSecs = 180
+	}
 	// Keep the attempt out of the normal poll set until the submit request has
 	// either been acknowledged or become ambiguous. With multiple worker slots,
 	// publishing OpenAI attempts as pending here lets a poller race the in-flight
@@ -1093,8 +1104,8 @@ func (w *Worker) registerConfiguredUpstreamAttempt(ctx context.Context, task *st
 		APIKeyEncrypted: encryptedKey, TimeoutSecs: timeoutSecs,
 		MaxConcurrency: provider.MaxConcurrency, UpstreamTaskIDs: upstreamIDs,
 		Status: status, SubmittedAt: submittedAt,
-		FailoverAt: submittedAt.Add(time.Duration(timeoutSecs) * time.Second),
-		ExpiresAt:  upstreamAttemptExpiry(submittedAt, timeoutSecs),
+		FailoverAt: submittedAt.Add(time.Duration(attemptTimeoutSecs) * time.Second),
+		ExpiresAt:  upstreamAttemptExpiry(submittedAt, attemptTimeoutSecs),
 	})
 	return id, provider.Adapter, err
 }
@@ -1321,10 +1332,6 @@ func (w *Worker) taskFailureRetryCount(ctx context.Context) int {
 
 func (w *Worker) scheduleTaskRetry(ctx context.Context, task *store.Task, owner string) (bool, error) {
 	return w.enqueueTaskRetry(ctx, task, owner, failedTaskProviderIDs(task))
-}
-
-func (w *Worker) scheduleSameRouteRetry(ctx context.Context, task *store.Task, owner string) (bool, error) {
-	return w.enqueueTaskRetry(ctx, task, owner, taskParamStrings(task.Params, "_failedProviderConfigIds"))
 }
 
 func (w *Worker) enqueueTaskRetry(ctx context.Context, task *store.Task, owner string, failed []string) (bool, error) {
@@ -1560,7 +1567,13 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 			routeKey = providerID
 		}
 		if attemptID != uuid.Nil {
-			upstreamIDs := []string{taskID.String()}
+			upstreamIDs := []string(nil)
+			if pendingErr != nil {
+				upstreamIDs = append(upstreamIDs, pendingErr.upstreamTaskIDs...)
+			}
+			if attemptAdapter == modelconfig.AdapterOpenAI && len(upstreamIDs) == 0 {
+				upstreamIDs = []string{taskID.String()}
+			}
 			if attemptAdapter == modelconfig.AdapterCRUN {
 				upstreamIDs = taskParamStrings(task.Params, "_crunTaskIds")
 			}
@@ -1928,6 +1941,9 @@ func (w *Worker) pollOpenAIProviderTaskBatch(ctx context.Context, client *c2a.Cl
 	var resultMu sync.Mutex
 	for _, task := range batch {
 		id := task.ID.String()
+		if upstreamIDs := taskParamStrings(task.Params, "_upstreamTaskIds"); len(upstreamIDs) > 0 && strings.TrimSpace(upstreamIDs[0]) != "" {
+			id = strings.TrimSpace(upstreamIDs[0])
+		}
 		ids = append(ids, id)
 		expected[id] = task.Count
 		byID[id] = task
@@ -2384,10 +2400,6 @@ func (w *Worker) failCurrentTaskAndCloseAttempts(ctx context.Context, attemptTas
 }
 
 func (w *Worker) finishUncertainImagePoll(ctx context.Context, task *store.Task, detail string, immediate, missing bool, claimID string) {
-	if claimID != "" {
-		_, _ = store.ReleaseTaskCompletionClaim(ctx, w.St.Pool, task.ID, claimID)
-	}
-	defer w.releaseUpstreamAttemptPoll(ctx, task)
 	attemptID := upstreamAttemptID(task)
 	if attemptID == uuid.Nil {
 		return
@@ -2399,6 +2411,17 @@ func (w *Worker) finishUncertainImagePoll(ctx context.Context, task *store.Task,
 		log.Printf("task %s attempt %s record unknown poll outcome failed: %v", task.ID, attemptID, err)
 		return
 	}
+	// A successful batch response may omit a task while the upstream is still
+	// uploading/indexing it or when the response is partial. Missing is an
+	// observation, not a terminal state.
+	if missing && !immediate {
+		w.finishPendingImagePoll(ctx, task, nil, claimID, c2a.ImageTaskPollResult{Pending: true, Missing: true})
+		return
+	}
+	if claimID != "" {
+		_, _ = store.ReleaseTaskCompletionClaim(ctx, w.St.Pool, task.ID, claimID)
+	}
+	defer w.releaseUpstreamAttemptPoll(ctx, task)
 	now := time.Now().UTC()
 	if !immediate {
 		if submittedAt, ok := upstreamAttemptTime(task, "_upstreamAttemptSubmittedAtMs"); ok && now.Before(submittedAt.Add(30*time.Second)) {
@@ -2417,32 +2440,6 @@ func (w *Worker) finishUncertainImagePoll(ctx context.Context, task *store.Task,
 	}
 	current, err := store.GetTask(ctx, w.St.Pool, task.ID)
 	if err != nil || current == nil || current.Status != "running" || !taskUsesAttemptRoute(current, task) {
-		return
-	}
-	// A task omitted from /api/image-tasks after the consistency grace is not
-	// still generating. Keep-polling only helps statuses that remain in items
-	// (text_review, moderating). Missing + no alternate previously spun until
-	// expires_at while occupying user concurrency, after EOF submits that the
-	// upstream never indexed under our client_task_id.
-	if missing && !immediate {
-		finished, finishErr := store.FinishTaskUpstreamAttempt(ctx, w.St.Pool, attemptID,
-			store.UpstreamAttemptFailed, detail, now)
-		if finishErr != nil {
-			log.Printf("task %s attempt %s missing-outcome close failed: %v", task.ID, attemptID, finishErr)
-			w.renewCurrentAttemptTaskLease(ctx, task)
-			return
-		}
-		if finished {
-			retried, retryErr := w.scheduleSameRouteRetry(ctx, current, taskLeaseOwner(current))
-			if retryErr != nil {
-				log.Printf("task %s missing-outcome resubmit failed: %v", task.ID, retryErr)
-			} else if retried {
-				log.Printf("task %s attempt %s missing from upstream poll; resubmitting same route by client task id", task.ID, attemptID)
-				return
-			}
-		}
-		log.Printf("task %s attempt %s missing from upstream poll and cannot resubmit; closing task", task.ID, attemptID)
-		w.failCurrentTaskAndCloseAttempts(ctx, task, "upstream_unreachable", "生成服务未确认任务，请重试")
 		return
 	}
 	if !w.hasAlternateExecutionRoute(ctx, current) {

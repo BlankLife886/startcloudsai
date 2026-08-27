@@ -158,10 +158,12 @@ func ClaimPendingUpstreamTasksByRoute(ctx context.Context, q Q, routeKey, owner 
 		WHERE attempt.route_key = $1
 		  AND attempt.status IN ('submitting','pending')
 		  AND (attempt.status = 'pending' OR (
-			-- The submit HTTP timeout is 10s. Leave a short handoff window for
-			-- the submitting worker to publish pending before crash recovery polls
-			-- the deterministic OpenAI task ID.
-			attempt.submitted_at <= $3::timestamptz - interval '25 seconds'
+			-- OpenAI-compatible image submission can spend up to 2m handing off
+			-- reference images. CRUN keeps the shorter crash-recovery window.
+			((attempt.adapter = 'openai'
+				AND attempt.submitted_at <= $3::timestamptz - interval '130 seconds')
+			 OR (attempt.adapter <> 'openai'
+				AND attempt.submitted_at <= $3::timestamptz - interval '25 seconds'))
 			AND (attempt.adapter = 'openai'
 				OR jsonb_array_length(attempt.upstream_task_ids) > 0
 				OR (jsonb_typeof(task.params->'_crunTaskIds') = 'array'
@@ -225,6 +227,7 @@ func ClaimPendingUpstreamTasksByRoute(ctx context.Context, q Q, routeKey, owner 
 		copyTask.Params["_upstreamAttemptFailoverAtMs"] = attempt.FailoverAt.UnixMilli()
 		copyTask.Params["_upstreamAttemptExpiresAtMs"] = attempt.ExpiresAt.UnixMilli()
 		copyTask.Params["_upstreamAttemptFailoverScheduled"] = attempt.FailoverScheduledAt != nil
+		copyTask.Params["_upstreamTaskIds"] = append([]string(nil), attempt.UpstreamTaskIDs...)
 		copyTask.Params["_providerConfigId"] = attempt.ProviderID
 		copyTask.Params["_providerRouteId"] = attempt.RouteID
 		copyTask.Params["_providerRouteKey"] = attempt.RouteKey

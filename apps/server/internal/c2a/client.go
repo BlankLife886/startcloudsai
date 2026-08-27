@@ -25,10 +25,11 @@ import (
 const (
 	maxResponseBytes int64 = 64 << 20
 	maxImageBytes    int64 = 20 << 20
-	// The async endpoint only needs to acknowledge the deterministic task ID.
-	// Generation continues upstream, so a slow acknowledgement is treated as
-	// ambiguous and recovered by polling instead of occupying a worker slot.
-	asyncSubmitTimeout                   = 10 * time.Second
+	// Reference images are uploaded by the upstream before it acknowledges an
+	// async task. Under concurrency that handoff can legitimately exceed one
+	// minute, so keep the POST alive long enough to receive the canonical task
+	// ID instead of cancelling valid work and trying to recover by client ID.
+	asyncSubmitTimeout                   = 2 * time.Minute
 	asyncPollTimeout                     = 15 * time.Second
 	asyncPollInterval                    = 2 * time.Second
 	maxImageDownloadTimeout              = 3 * time.Minute
@@ -817,23 +818,28 @@ func (c *Client) submitAndPollImageTask(ctx context.Context, endpoint, taskID st
 }
 
 // SubmitImageTask submits once and reports whether the upstream task still
-// needs polling. It is used by queue workers so upstream wait time does not
-// occupy a worker goroutine.
-func (c *Client) SubmitImageTask(ctx context.Context, endpoint, taskID string, payload map[string]any, expected int) ([]string, bool, error) {
+// needs polling. Queue workers wait only for the upstream acknowledgement;
+// generation itself continues through the lightweight poll queue.
+func (c *Client) submitImageTaskTracked(ctx context.Context, endpoint, taskID string, payload map[string]any, expected int) ([]string, bool, string, error) {
 	payload["client_task_id"] = taskID
 	body, err := c.doRequest(ctx, http.MethodPost, endpoint, payload, asyncSubmitTimeout)
 	if err != nil {
-		return nil, false, err
+		return nil, false, "", err
 	}
 	task, err := parseImageTask(body)
 	if err != nil {
-		return nil, false, err
+		return nil, false, "", err
 	}
 	images, _, done, err := c.completedTaskImages(ctx, task, expected)
 	if !done {
-		return images, true, nil
+		return images, true, strings.TrimSpace(task.ID), nil
 	}
-	return images, false, err
+	return images, false, strings.TrimSpace(task.ID), err
+}
+
+func (c *Client) SubmitImageTask(ctx context.Context, endpoint, taskID string, payload map[string]any, expected int) ([]string, bool, error) {
+	images, pending, _, err := c.submitImageTaskTracked(ctx, endpoint, taskID, payload, expected)
+	return images, pending, err
 }
 
 // PollImageTask performs exactly one status request.
@@ -1183,17 +1189,24 @@ func (c *Client) GenerateImagesWithOptions(ctx context.Context, taskID, prompt, 
 }
 
 func (c *Client) SubmitGenerateImages(ctx context.Context, taskID, prompt, model string, n int, size string, options ImageOptions) ([]string, bool, error) {
+	images, pending, _, err := c.SubmitGenerateImagesTracked(ctx, taskID, prompt, model, n, size, options)
+	return images, pending, err
+}
+
+// SubmitGenerateImagesTracked also returns the canonical upstream task ID so
+// queue workers never have to assume that it equals client_task_id.
+func (c *Client) SubmitGenerateImagesTracked(ctx context.Context, taskID, prompt, model string, n int, size string, options ImageOptions) ([]string, bool, string, error) {
 	payload := imageGenerationPayload(prompt, model, n, size, options)
-	images, pending, err := c.SubmitImageTask(ctx, "/api/image-tasks/generations", taskID, payload, n)
+	images, pending, upstreamTaskID, err := c.submitImageTaskTracked(ctx, "/api/image-tasks/generations", taskID, payload, n)
 	if err == nil || !shouldFallbackToSync(err) {
-		return images, pending, err
+		return images, pending, upstreamTaskID, err
 	}
 	body, err := c.doRequest(ctx, http.MethodPost, "/v1/images/generations", payload, c.Timeout)
 	if err != nil {
-		return nil, false, err
+		return nil, false, "", err
 	}
 	images, err = extractB64List(body)
-	return images, false, err
+	return images, false, "", err
 }
 
 // EditImages 图生图 /v1/images/edits（JSON base64 引用）→ base64 列表。
@@ -1224,17 +1237,24 @@ func (c *Client) EditImagesWithOptions(ctx context.Context, taskID, prompt, mode
 }
 
 func (c *Client) SubmitEditImages(ctx context.Context, taskID, prompt, model string, n int, inputImagesB64 []string, size string, options ImageOptions) ([]string, bool, error) {
+	images, pending, _, err := c.SubmitEditImagesTracked(ctx, taskID, prompt, model, n, inputImagesB64, size, options)
+	return images, pending, err
+}
+
+// SubmitEditImagesTracked is the edit equivalent of
+// SubmitGenerateImagesTracked.
+func (c *Client) SubmitEditImagesTracked(ctx context.Context, taskID, prompt, model string, n int, inputImagesB64 []string, size string, options ImageOptions) ([]string, bool, string, error) {
 	payload := imageEditPayload(prompt, model, n, inputImagesB64, size, options)
-	images, pending, err := c.SubmitImageTask(ctx, "/api/image-tasks/edits", taskID, payload, n)
+	images, pending, upstreamTaskID, err := c.submitImageTaskTracked(ctx, "/api/image-tasks/edits", taskID, payload, n)
 	if err == nil || !shouldFallbackToSync(err) {
-		return images, pending, err
+		return images, pending, upstreamTaskID, err
 	}
 	body, err := c.doRequest(ctx, http.MethodPost, "/v1/images/edits", payload, c.Timeout)
 	if err != nil {
-		return nil, false, err
+		return nil, false, "", err
 	}
 	images, err = extractB64List(body)
-	return images, false, err
+	return images, false, "", err
 }
 
 func normalizedImageQuality(values ...string) string {

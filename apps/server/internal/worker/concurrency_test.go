@@ -748,6 +748,13 @@ func TestRegisterOpenAIUpstreamAttemptStartsSubmitting(t *testing.T) {
 	if status != store.UpstreamAttemptSubmitting {
 		t.Fatalf("attempt status=%q, want submitting", status)
 	}
+	var failoverAt time.Time
+	if err := st.Pool.QueryRow(ctx, `SELECT failover_at FROM task_upstream_attempts WHERE id=$1`, attemptID).Scan(&failoverAt); err != nil {
+		t.Fatal(err)
+	}
+	if remaining := time.Until(failoverAt); remaining < 179*time.Second {
+		t.Fatalf("OpenAI attempt failover window=%s, want at least 3m", remaining)
+	}
 	claimed, err := store.ClaimPendingUpstreamTasksByRoute(ctx, st.Pool, routeKey, "attempt-poller:test", time.Now().UTC(), time.Minute, 10)
 	if err != nil {
 		t.Fatal(err)
@@ -756,10 +763,10 @@ func TestRegisterOpenAIUpstreamAttemptStartsSubmitting(t *testing.T) {
 		t.Fatalf("fresh in-flight submit was claimed by poller: %#v", claimed)
 	}
 	if _, err := st.Pool.Exec(ctx,
-		`UPDATE task_upstream_attempts SET submitted_at=now() - interval '11 seconds' WHERE id=$1`, attemptID); err != nil {
+		`UPDATE task_upstream_attempts SET submitted_at=now() - interval '121 seconds' WHERE id=$1`, attemptID); err != nil {
 		t.Fatal(err)
 	}
-	claimed, err = store.ClaimPendingUpstreamTasksByRoute(ctx, st.Pool, routeKey, "attempt-poller:test-11s", time.Now().UTC(), time.Minute, 10)
+	claimed, err = store.ClaimPendingUpstreamTasksByRoute(ctx, st.Pool, routeKey, "attempt-poller:test-121s", time.Now().UTC(), time.Minute, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -767,10 +774,10 @@ func TestRegisterOpenAIUpstreamAttemptStartsSubmitting(t *testing.T) {
 		t.Fatalf("submit was claimed at the HTTP timeout boundary: %#v", claimed)
 	}
 	if _, err := st.Pool.Exec(ctx,
-		`UPDATE task_upstream_attempts SET submitted_at=now() - interval '26 seconds' WHERE id=$1`, attemptID); err != nil {
+		`UPDATE task_upstream_attempts SET submitted_at=now() - interval '131 seconds' WHERE id=$1`, attemptID); err != nil {
 		t.Fatal(err)
 	}
-	claimed, err = store.ClaimPendingUpstreamTasksByRoute(ctx, st.Pool, routeKey, "attempt-poller:test-26s", time.Now().UTC(), time.Minute, 10)
+	claimed, err = store.ClaimPendingUpstreamTasksByRoute(ctx, st.Pool, routeKey, "attempt-poller:test-131s", time.Now().UTC(), time.Minute, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -890,7 +897,7 @@ func TestDisconnectedPollRouteCannotLeaveTaskRunning(t *testing.T) {
 	}
 }
 
-func TestMissingPollResubmitsSameRouteInsteadOfHanging(t *testing.T) {
+func TestMissingPollKeepsOriginalAttemptPending(t *testing.T) {
 	st := testdb.Setup(t)
 	ctx := context.Background()
 	if err := settings.Set(ctx, st.Pool, "task_failure_retry_count", json.RawMessage(`2`)); err != nil {
@@ -916,15 +923,58 @@ func TestMissingPollResubmitsSameRouteInsteadOfHanging(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if task.Status != "queued" || task.Attempt != 1 {
-		t.Fatalf("missing task was not resubmitted: status=%s attempt=%d owner=%s", task.Status, task.Attempt, owner)
+	if task.Status != "running" || task.Attempt != 0 {
+		t.Fatalf("missing task was prematurely finalized: status=%s attempt=%d owner=%s", task.Status, task.Attempt, owner)
 	}
 	var attemptStatus string
 	if err := st.Pool.QueryRow(ctx, `SELECT status FROM task_upstream_attempts WHERE task_id=$1`, taskID).Scan(&attemptStatus); err != nil {
 		t.Fatal(err)
 	}
-	if attemptStatus != store.UpstreamAttemptFailed {
-		t.Fatalf("attempt status=%s, want failed so the ghost poll stops", attemptStatus)
+	if attemptStatus != store.UpstreamAttemptPending {
+		t.Fatalf("attempt status=%s, want pending while upstream indexing is uncertain", attemptStatus)
+	}
+}
+
+func TestOpenAIPollUsesCanonicalUpstreamTaskID(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	taskID, routeKey, _ := insertPollableOpenAITask(t, st, ctx, time.Now().UTC())
+	canonicalID := "upstream-" + uuid.NewString()
+	if _, err := st.Pool.Exec(ctx,
+		`UPDATE task_upstream_attempts SET upstream_task_ids=jsonb_build_array($2::text) WHERE task_id=$1`,
+		taskID, canonicalID); err != nil {
+		t.Fatal(err)
+	}
+	requested := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requested <- r.URL.Query().Get("ids")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"items":[{"id":%q,"status":"processing"}]}`, canonicalID)
+	}))
+	defer server.Close()
+	claimed, err := store.ClaimPendingUpstreamTasksByRoute(ctx, st.Pool, routeKey, "attempt-poller:test", time.Now().UTC(), time.Minute, 10)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("claim attempts=%d err=%v", len(claimed), err)
+	}
+	w := &Worker{St: st, Cfg: &config.Config{AppEnv: "development"}}
+	w.pollOpenAIProviderTasks(ctx, &modelconfig.Provider{
+		ID: "provider-a", RouteID: "route-a", Adapter: modelconfig.AdapterOpenAI,
+		BaseURL: server.URL, APIKey: "test", TimeoutSecs: 30,
+	}, claimed)
+	select {
+	case got := <-requested:
+		if got != canonicalID {
+			t.Fatalf("poll ids=%q, want canonical upstream id %q", got, canonicalID)
+		}
+	default:
+		t.Fatal("upstream poll was not sent")
+	}
+	task, err := store.GetTask(ctx, st.Pool, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Status != "running" {
+		t.Fatalf("pending canonical task status=%s", task.Status)
 	}
 }
 
