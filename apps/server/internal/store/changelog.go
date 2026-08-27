@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -30,6 +31,14 @@ func InsertChangelog(ctx context.Context, q Q, c *ChangelogEntry) (*ChangelogEnt
 
 func GetChangelog(ctx context.Context, q Q, id uuid.UUID) (*ChangelogEntry, error) {
 	c, err := scanChangelog(q.QueryRow(ctx, `SELECT `+changelogCols+` FROM changelog_entries WHERE id = $1`, id))
+	return nilOnNoRows(c, err)
+}
+
+func GetChangelogByIdentity(ctx context.Context, q Q, version string, date time.Time, title string) (*ChangelogEntry, error) {
+	c, err := scanChangelog(q.QueryRow(ctx,
+		`SELECT `+changelogCols+` FROM changelog_entries
+		 WHERE version = $1 AND date = $2 AND title = $3
+		 ORDER BY created_at DESC LIMIT 1`, version, date, title))
 	return nilOnNoRows(c, err)
 }
 

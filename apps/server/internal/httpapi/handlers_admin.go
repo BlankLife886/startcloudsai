@@ -10,6 +10,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -1578,6 +1579,220 @@ type changelogIn struct {
 	Items     []string `json:"items"`
 	Highlight *bool    `json:"highlight"`
 	Sort      *int     `json:"sort"`
+}
+
+const (
+	changelogTransferFormat     = "startcloudsai-changelog"
+	changelogTransferVersion    = 1
+	changelogImportMaxEntries   = 500
+	changelogImportMaxItems     = 100
+	changelogImportMaxItemRunes = 500
+)
+
+type changelogTransferEntry struct {
+	ID        string   `json:"id,omitempty"`
+	Version   string   `json:"version"`
+	Date      string   `json:"date"`
+	Tag       string   `json:"tag"`
+	Title     string   `json:"title"`
+	Summary   string   `json:"summary"`
+	Items     []string `json:"items"`
+	Highlight bool     `json:"highlight"`
+	Sort      int      `json:"sort"`
+}
+
+type changelogTransferFile struct {
+	Format        string                   `json:"format"`
+	SchemaVersion int                      `json:"schemaVersion"`
+	ExportedAt    string                   `json:"exportedAt,omitempty"`
+	Entries       []changelogTransferEntry `json:"entries"`
+}
+
+func changelogSummaryText(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func changelogTransferEntryFromStore(entry *store.ChangelogEntry) changelogTransferEntry {
+	return changelogTransferEntry{
+		ID: entry.ID.String(), Version: entry.Version, Date: entry.Date.Format("2006-01-02"),
+		Tag: entry.Tag, Title: entry.Title, Summary: changelogSummaryText(entry.Summary),
+		Items: nonNilStrings(entry.Items), Highlight: entry.Highlight, Sort: entry.Sort,
+	}
+}
+
+func normalizeChangelogTransferEntry(input changelogTransferEntry) (*store.ChangelogEntry, error) {
+	version := strings.TrimSpace(input.Version)
+	dateText := strings.TrimSpace(input.Date)
+	tag := strings.TrimSpace(input.Tag)
+	title := strings.TrimSpace(input.Title)
+	date, err := validateChangelogIn(version, dateText, tag, title)
+	if err != nil {
+		return nil, err
+	}
+	summary := strings.TrimSpace(input.Summary)
+	if len([]rune(summary)) > 4000 {
+		return nil, apperr.E("validation_error", "summary: 不能超过 4000 个字符", 422)
+	}
+	if len(input.Items) > changelogImportMaxItems {
+		return nil, apperr.E("validation_error", "items: 每个版本最多 100 条", 422)
+	}
+	items := make([]string, 0, len(input.Items))
+	for _, raw := range input.Items {
+		item := strings.TrimSpace(raw)
+		if item == "" {
+			continue
+		}
+		if len([]rune(item)) > changelogImportMaxItemRunes {
+			return nil, apperr.E("validation_error", "items: 单条不能超过 500 个字符", 422)
+		}
+		items = append(items, item)
+	}
+	if input.Sort < -1_000_000 || input.Sort > 1_000_000 {
+		return nil, apperr.E("validation_error", "sort: 超出允许范围", 422)
+	}
+	var id uuid.UUID
+	if idText := strings.TrimSpace(input.ID); idText != "" {
+		parsed, parseErr := uuid.Parse(idText)
+		if parseErr != nil {
+			return nil, apperr.E("validation_error", "id: 格式无效", 422)
+		}
+		id = parsed
+	}
+	return &store.ChangelogEntry{
+		ID: id, Version: version, Date: date, Tag: tag, Title: title,
+		Summary: &summary, Items: items, Highlight: input.Highlight, Sort: input.Sort,
+	}, nil
+}
+
+func changelogEntriesEqual(left, right *store.ChangelogEntry) bool {
+	return left.Version == right.Version && left.Date.Format("2006-01-02") == right.Date.Format("2006-01-02") &&
+		left.Tag == right.Tag && left.Title == right.Title && changelogSummaryText(left.Summary) == changelogSummaryText(right.Summary) &&
+		slices.Equal(left.Items, right.Items) && left.Highlight == right.Highlight && left.Sort == right.Sort
+}
+
+func (s *Server) adminExportChangelog(c *gin.Context, _ *store.User) {
+	rows, err := store.ListChangelog(c.Request.Context(), s.St.Pool)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	entries := make([]changelogTransferEntry, 0, len(rows))
+	for _, entry := range rows {
+		entries = append(entries, changelogTransferEntryFromStore(entry))
+	}
+	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="startcloudsai-changelog-%s.json"`, time.Now().UTC().Format("20060102-150405")))
+	c.JSON(http.StatusOK, changelogTransferFile{
+		Format: changelogTransferFormat, SchemaVersion: changelogTransferVersion,
+		ExportedAt: isoValue(time.Now()), Entries: entries,
+	})
+}
+
+func (s *Server) adminImportChangelog(c *gin.Context, _ *store.User) {
+	var body changelogTransferFile
+	if err := bindJSON(c, &body); err != nil {
+		fail(c, err)
+		return
+	}
+	if body.Format != "" && body.Format != changelogTransferFormat {
+		fail(c, apperr.E("validation_error", "format: 不是 StarCloudsAI 更新说明文件", 422))
+		return
+	}
+	if body.SchemaVersion != 0 && body.SchemaVersion != changelogTransferVersion {
+		fail(c, apperr.E("validation_error", "schemaVersion: 暂不支持该文件版本", 422))
+		return
+	}
+	if len(body.Entries) == 0 || len(body.Entries) > changelogImportMaxEntries {
+		fail(c, apperr.E("validation_error", "entries: 数量须在 1-500 之间", 422))
+		return
+	}
+
+	normalized := make([]*store.ChangelogEntry, 0, len(body.Entries))
+	seenIDs := make(map[uuid.UUID]bool, len(body.Entries))
+	seenIdentities := make(map[string]bool, len(body.Entries))
+	highlights := 0
+	for index, input := range body.Entries {
+		entry, err := normalizeChangelogTransferEntry(input)
+		if err != nil {
+			fail(c, apperr.E("validation_error", fmt.Sprintf("第 %d 条：%s", index+1, err.Error()), 422))
+			return
+		}
+		if entry.ID != uuid.Nil {
+			if seenIDs[entry.ID] {
+				fail(c, apperr.E("validation_error", fmt.Sprintf("第 %d 条：ID 重复", index+1), 422))
+				return
+			}
+			seenIDs[entry.ID] = true
+		}
+		identity := entry.Version + "\x00" + entry.Date.Format("2006-01-02") + "\x00" + entry.Title
+		if seenIdentities[identity] {
+			fail(c, apperr.E("validation_error", fmt.Sprintf("第 %d 条：版本、日期与标题重复", index+1), 422))
+			return
+		}
+		seenIdentities[identity] = true
+		if entry.Highlight {
+			highlights++
+		}
+		normalized = append(normalized, entry)
+	}
+	if highlights > 1 {
+		fail(c, apperr.E("validation_error", "entries: 一次导入只能包含一个焦点版本", 422))
+		return
+	}
+
+	created, updated, unchanged := 0, 0, 0
+	err := s.St.Tx(c.Request.Context(), func(tx pgx.Tx) error {
+		for _, incoming := range normalized {
+			var existing *store.ChangelogEntry
+			var lookupErr error
+			if incoming.ID != uuid.Nil {
+				existing, lookupErr = store.GetChangelog(c.Request.Context(), tx, incoming.ID)
+				if lookupErr != nil {
+					return lookupErr
+				}
+			}
+			if existing == nil {
+				existing, lookupErr = store.GetChangelogByIdentity(c.Request.Context(), tx, incoming.Version, incoming.Date, incoming.Title)
+				if lookupErr != nil {
+					return lookupErr
+				}
+			}
+			if existing == nil {
+				incoming.ID = uuid.Nil
+				inserted, insertErr := store.InsertChangelog(c.Request.Context(), tx, incoming)
+				if insertErr != nil {
+					return insertErr
+				}
+				incoming = inserted
+				created++
+			} else if changelogEntriesEqual(existing, incoming) {
+				incoming = existing
+				unchanged++
+			} else {
+				existing.Version, existing.Date, existing.Tag, existing.Title = incoming.Version, incoming.Date, incoming.Tag, incoming.Title
+				existing.Summary, existing.Items = incoming.Summary, incoming.Items
+				existing.Highlight, existing.Sort = incoming.Highlight, incoming.Sort
+				if updateErr := store.UpdateChangelog(c.Request.Context(), tx, existing); updateErr != nil {
+					return updateErr
+				}
+				incoming = existing
+				updated++
+			}
+			if incoming.Highlight {
+				if clearErr := store.ClearOtherChangelogHighlights(c.Request.Context(), tx, incoming.ID); clearErr != nil {
+					return clearErr
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ok(c, gin.H{"total": len(normalized), "created": created, "updated": updated, "unchanged": unchanged})
 }
 
 func validateChangelogIn(version, date, tag, title string) (time.Time, error) {

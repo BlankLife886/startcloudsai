@@ -397,6 +397,8 @@ func (s *Server) Router() *gin.Engine {
 	admin.POST("/announcements/images", s.adminOnly(s.adminUploadAnnouncementImage))
 	admin.PATCH("/announcements/:id", s.adminOnly(s.adminPatchAnnouncement))
 	admin.DELETE("/announcements/:id", s.adminOnly(s.adminDeleteAnnouncement))
+	admin.GET("/changelog/export", s.adminOnly(s.adminExportChangelog))
+	admin.POST("/changelog/import", s.adminOnly(s.adminImportChangelog))
 	admin.GET("/changelog", s.adminOnly(s.adminChangelog))
 	admin.POST("/changelog", s.adminOnly(s.adminCreateChangelog))
 	admin.PATCH("/changelog/:id", s.adminOnly(s.adminPatchChangelog))

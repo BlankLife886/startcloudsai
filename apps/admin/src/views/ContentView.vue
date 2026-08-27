@@ -3,12 +3,14 @@ import { computed, onMounted, reactive, ref, watch } from "vue";
 import {
   Bell,
   Delete,
+  Download,
   Document,
   EditPen,
   Picture,
   Plus,
   Refresh,
   Search,
+  UploadFilled,
 } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import AdminDialog from "@/components/AdminDialog.vue";
@@ -463,6 +465,13 @@ interface ChangelogEntry {
   highlight?: boolean;
 }
 
+interface ChangelogImportResult {
+  total: number;
+  created: number;
+  updated: number;
+  unchanged: number;
+}
+
 const TAG_LABELS: Record<string, string> = {
   feature: "新功能",
   experience: "体验优化",
@@ -471,6 +480,8 @@ const TAG_LABELS: Record<string, string> = {
 const logLoading = ref(false);
 const logError = ref("");
 const changelog = ref<ChangelogEntry[]>([]);
+const logImportInputRef = ref<HTMLInputElement | null>(null);
+const logImporting = ref(false);
 
 async function loadChangelog() {
   logLoading.value = true;
@@ -488,6 +499,72 @@ async function loadChangelog() {
       error instanceof Error ? error.message : "更新说明读取失败";
   } finally {
     logLoading.value = false;
+  }
+}
+
+function exportChangelog() {
+  const link = document.createElement("a");
+  link.href = "/api/v1/admin/changelog/export";
+  link.download = "";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+function triggerChangelogImport() {
+  logImportInputRef.value?.click();
+}
+
+async function importChangelogFile(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file) return;
+  if (file.size > 1024 * 1024) {
+    ElMessage.warning("更新说明导入文件不能超过 1MB");
+    return;
+  }
+  try {
+    const parsed = JSON.parse(await file.text()) as
+      | { format?: string; schemaVersion?: number; entries?: unknown[] }
+      | unknown[];
+    const entries = Array.isArray(parsed) ? parsed : parsed?.entries;
+    if (!Array.isArray(entries) || entries.length === 0) {
+      throw new Error("文件中没有可导入的更新说明");
+    }
+    if (entries.length > 500) {
+      throw new Error("一次最多导入 500 条更新说明");
+    }
+    await ElMessageBox.confirm(
+      `将导入 ${entries.length} 条更新说明。相同 ID 或相同“版本号 + 日期 + 标题”的记录会更新，其余记录会新建；现有其他记录不会删除。`,
+      "确认导入更新说明",
+      {
+        type: "warning",
+        confirmButtonText: "开始导入",
+        cancelButtonText: "取消",
+      },
+    );
+    const body = Array.isArray(parsed)
+      ? {
+          format: "startcloudsai-changelog",
+          schemaVersion: 1,
+          entries,
+        }
+      : parsed;
+    logImporting.value = true;
+    const result = await request<ChangelogImportResult>(
+      "/api/v1/admin/changelog/import",
+      { method: "POST", body, silent: true },
+    );
+    await loadChangelog();
+    ElMessage.success(
+      `导入完成：新建 ${result.created} 条，更新 ${result.updated} 条，未变化 ${result.unchanged} 条`,
+    );
+  } catch (error) {
+    if (error === "cancel" || error === "close") return;
+    ElMessage.error(error instanceof Error ? error.message : "更新说明导入失败");
+  } finally {
+    logImporting.value = false;
   }
 }
 
@@ -800,6 +877,14 @@ onMounted(() => {
           </button>
         </div>
         <div class="content-toolbar__right">
+          <input
+            v-if="activeTab === 'changelog'"
+            ref="logImportInputRef"
+            class="content-transfer-input"
+            type="file"
+            accept=".json,application/json"
+            @change="importChangelogFile"
+          />
           <el-input
             v-model="query"
             :prefix-icon="Search"
@@ -828,6 +913,22 @@ onMounted(() => {
             <el-option label="焦点版本" value="highlight" />
           </el-select>
           <el-button v-if="hasFilters" @click="clearFilters">清除筛选</el-button>
+          <el-button
+            v-if="activeTab === 'changelog'"
+            :icon="UploadFilled"
+            :loading="logImporting"
+            @click="triggerChangelogImport"
+          >
+            导入
+          </el-button>
+          <el-button
+            v-if="activeTab === 'changelog'"
+            :icon="Download"
+            :disabled="!changelog.length || logImporting"
+            @click="exportChangelog"
+          >
+            导出
+          </el-button>
           <el-button :icon="Refresh" :loading="currentLoading" @click="refreshAll">
             刷新
           </el-button>
@@ -1532,6 +1633,10 @@ onMounted(() => {
 
 .content-toolbar__right .el-select {
   width: 128px;
+}
+
+.content-transfer-input {
+  display: none;
 }
 
 .content-legend {
