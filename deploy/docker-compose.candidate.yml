@@ -34,8 +34,10 @@ services:
       start_period: 15s
 
   worker:
+    profiles: ["worker"]
     image: startcloudsai-candidate-server:${RELEASE_ID:-candidate}
     restart: unless-stopped
+    stop_grace_period: 15m
     env_file: ${RELEASE_DIR}/.env
     environment:
       REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set}@redis:6379/0

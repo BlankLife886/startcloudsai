@@ -504,9 +504,10 @@ gzip -t /www/backup/startcloudsai/<备份文件>.sql.gz
 ### 9.1 零停机更新（生产推荐）
 
 生产环境不要直接在承接流量的 `8080` 实例上执行 `up -d --build`。本仓库提供
-`deploy/docker-compose.candidate.yml`，用于在 `127.0.0.1:8081` 启动候选 API、Worker、
-用户端、管理端和网关。候选环境只连接生产现有的 PostgreSQL/Redis Docker 网络，
-不创建、不复制也不覆盖任何数据卷。
+`deploy/docker-compose.candidate.yml`，用于在 `127.0.0.1:8081` 启动候选 API、用户端、
+管理端和网关。候选环境只连接生产现有的 PostgreSQL/Redis Docker 网络，不创建、不复制
+也不覆盖任何数据卷。候选 Worker 默认不启动，避免在验收阶段提前消费线上任务；正式
+Worker 继续承接任务，切换正式版本时通过 15 分钟优雅停机窗口完成替换。
 
 先在开发机生成发布包并上传发布包与校验文件。服务器上把新版本解压到独立目录，
 不要覆盖当前 `/www/wwwroot/startcloudsai`：
@@ -550,7 +551,7 @@ docker compose --env-file "$RELEASE_DIR/.env" -p startcloudsai_candidate \
 docker compose --env-file "$RELEASE_DIR/.env" -p startcloudsai_candidate \
   -f "$RELEASE_DIR/deploy/docker-compose.candidate.yml" build admin
 docker compose --env-file "$RELEASE_DIR/.env" -p startcloudsai_candidate \
-  -f "$RELEASE_DIR/deploy/docker-compose.candidate.yml" up -d --no-build
+  -f "$RELEASE_DIR/deploy/docker-compose.candidate.yml" up -d --no-build server web admin gateway
 ```
 
 保留旧前端哈希资源，避免已经打开页面的用户在发布期间懒加载旧 chunk 时出现 404：
@@ -578,6 +579,26 @@ curl -fsSI http://127.0.0.1:8081/admin/
 同时确认宝塔站点 Nginx 的 `server {}` 已设置 `client_max_body_size 131m;`。否则带图片的
 画布模板 ZIP 会先被宝塔外层代理拒绝，候选容器内的接口限制即使正确也无法生效。
 
+在切换网页流量前先滚动 Worker。先保留当前 Worker 镜像作为回滚点，再使用候选 Server
+镜像启动新 Worker；`--no-deps` 可避免此时改动仍在承接流量的正式 API 和数据库容器：
+
+```bash
+OLD_WORKER=$(cd /www/wwwroot/startcloudsai && docker compose --env-file .env -p startcloudsai ps -q worker)
+OLD_WORKER_IMAGE=$(docker inspect -f '{{.Image}}' "$OLD_WORKER")
+docker tag "$OLD_WORKER_IMAGE" startcloudsai-worker:rollback-$RELEASE_ID
+docker tag startcloudsai-candidate-server:$RELEASE_ID startcloudsai-worker:latest
+
+cd "$RELEASE_DIR"
+docker compose --env-file .env -p startcloudsai \
+  up -d --no-build --no-deps worker
+docker compose --env-file .env -p startcloudsai ps worker
+docker compose --env-file .env -p startcloudsai logs --since=5m --tail=100 worker
+```
+
+Worker 收到 SIGTERM 后会停止领取新任务，并最多等待 15 分钟让在途任务完成；命令等待期间
+不要中断。日志必须出现 `worker ready`，否则将 `startcloudsai-worker:rollback-$RELEASE_ID`
+重新标记为 `startcloudsai-worker:latest` 并用旧目录的 Compose 重建 Worker，然后停止发布。
+
 在宝塔站点反向代理中把目标从 `http://127.0.0.1:8080` 改为
 `http://127.0.0.1:8081`，先执行 Nginx 配置检测，成功后 reload。再次验证公网健康接口、
 首页和后台。登录后台上传一个带图片的无限画布 ZIP 模板，确认保存成功，并在用户端打开
@@ -587,13 +608,11 @@ curl -fsSI http://127.0.0.1:8081/admin/
 
 ```bash
 docker tag startcloudsai-candidate-server:$RELEASE_ID startcloudsai-server:latest
-docker tag startcloudsai-candidate-server:$RELEASE_ID startcloudsai-worker:latest
 docker tag startcloudsai-candidate-web:$RELEASE_ID startcloudsai-web:latest
 docker tag startcloudsai-candidate-admin:$RELEASE_ID startcloudsai-admin:latest
 
 cd "$RELEASE_DIR"
 docker compose --env-file .env -p startcloudsai up -d --no-build server web admin gateway
-docker compose --env-file .env -p startcloudsai up -d --no-build worker
 
 NEW_WEB=$(docker compose --env-file .env -p startcloudsai ps -q web)
 docker cp "$LEGACY_ASSETS"/. "$NEW_WEB":/usr/share/nginx/html/assets/
