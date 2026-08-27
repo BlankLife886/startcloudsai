@@ -2,6 +2,9 @@
 
 本文档适用于当前仓库的生产部署、日常更新、备份恢复和故障排查。示例环境使用：
 
+需要单独执行生产蓝绿更新时，使用独立手册
+[ZERO_DOWNTIME_RELEASE_RUNBOOK.md](./ZERO_DOWNTIME_RELEASE_RUNBOOK.md)。
+
 - 域名：`starcloudisai.com`
 - 服务器：`47.82.102.112`
 - 管理面板：宝塔面板
