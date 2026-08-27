@@ -182,6 +182,7 @@ func TestClaimAssistantRunBalancesRoutesAndDefersAtCapacity(t *testing.T) {
 		runs[index] = insertAssistantRoutingTestRun(t, st, user.ID, "chat", modelconfig.WorkspaceAssistant, 0)
 	}
 	wantRoutes := []string{"chat-provider/route-a", "chat-provider/route-b", "chat-provider/route-b"}
+	wantEndpoints := []string{"https://route-1.example.com", "https://route-2.example.com", "https://route-2.example.com"}
 	for index, want := range wantRoutes {
 		claimed, err := w.claimAssistantRun(ctx, runs[index].ID, fmt.Sprintf("worker-%d", index))
 		if err != nil || claimed == nil {
@@ -189,6 +190,10 @@ func TestClaimAssistantRunBalancesRoutesAndDefersAtCapacity(t *testing.T) {
 		}
 		if got := assistantParamString(claimed.Params, "_chatProviderRouteKey", ""); got != want {
 			t.Fatalf("claim %d route = %q, want %q", index, got, want)
+		}
+		wantEndpoint := wantEndpoints[index]
+		if got := assistantParamString(claimed.Params, "_chatProviderEndpoint", ""); got != wantEndpoint {
+			t.Fatalf("claim %d endpoint = %q, want %q", index, got, wantEndpoint)
 		}
 	}
 

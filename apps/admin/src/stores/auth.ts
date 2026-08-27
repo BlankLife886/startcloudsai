@@ -22,7 +22,10 @@ export const useAuthStore = defineStore('auth', {
   actions: {
     async fetchMe() {
       try {
-        const data = await request<{ admin: AdminAccount | null }>('/api/v1/admin/auth/session', { silent: true })
+        const data = await request<{ admin: AdminAccount | null }>('/api/v1/admin/auth/session', {
+          silent: true,
+          scope: 'persistent',
+        })
         this.user = data.admin
       } catch {
         this.user = null

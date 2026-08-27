@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { useVirtualMasonryFeed } from "../features/prompts/useVirtualMasonryFeed.js";
+import { taskFailureMessage } from "../features/history/taskFailureMessage.js";
 import {
   deleteTask,
   listTasks,
@@ -234,6 +235,10 @@ export function HistoryView() {
       .map((task) => ({
         ...task,
         cleanPrompt: taskPrompt(task) || "未填写提示词",
+        failureMessage:
+          String(task.status || "").toLowerCase() === "failed"
+            ? taskFailureMessage(task)
+            : "",
       }));
   }, [search, statusFilter, tasks]);
   const masonryItems = useMemo(
@@ -534,7 +539,7 @@ export function HistoryView() {
       return next;
     });
   const openPreview = (task) => {
-    if (!taskCoverUrl(task)) return;
+    if (!taskCoverUrl(task) && task.status !== "failed") return;
     setPreview(task);
     if (taskMediaModality(task) === "image") ensureMetadata(task);
   };
@@ -992,7 +997,7 @@ export function HistoryView() {
                       type="button"
                       className="ch-card__media ch-prompt-card__media"
                       style={{ height: item.mediaHeight, aspectRatio: "auto" }}
-                      disabled={!selectMode && !src}
+                      disabled={!selectMode && !src && task.status !== "failed"}
                       onClick={() =>
                         selectMode
                           ? taskOriginalUrl(task) && taskMediaModality(task) === "image" && toggleSelected(task.id)
@@ -1047,8 +1052,11 @@ export function HistoryView() {
                         </div>
                       )}
                       <span className="ch-history-card__details">
-                        <span className="ch-history-card__prompt">
-                          {cardPromptPreview(task.cleanPrompt)}
+                        <span
+                          className={`ch-history-card__prompt${task.failureMessage ? " is-failure" : ""}`}
+                          title={task.failureMessage || undefined}
+                        >
+                          {task.failureMessage || cardPromptPreview(task.cleanPrompt)}
                         </span>
                         <span
                           className="ch-history-card__meta"
@@ -1200,7 +1208,7 @@ export function HistoryView() {
                           <button
                             className="ch-table-preview"
                             type="button"
-                            disabled={!tableCoverSrc(task)}
+                            disabled={!tableCoverSrc(task) && task.status !== "failed"}
                             onClick={() => openPreview(task)}
                           >
                             {tableCoverSrc(task) && taskMediaModality(task) === "video" ? (
@@ -1277,6 +1285,11 @@ export function HistoryView() {
                               {shareStatusLabel(share)}
                             </span>
                           )}
+                          {task.failureMessage ? (
+                            <small className="ch-table-failure" title={task.failureMessage}>
+                              {task.failureMessage}
+                            </small>
+                          ) : null}
                         </td>
                         <td className="is-created" data-label="创建时间">
                           {formatTime(task.createdAt)}
@@ -1449,6 +1462,15 @@ export function HistoryView() {
                 </div>
               </div>
               <div className="ch-preview__mid">
+                {preview.status === "failed" ? (
+                  <div className="ch-preview__failure" role="alert">
+                    <i className="bi bi-exclamation-triangle" />
+                    <span>
+                      <strong>失败原因</strong>
+                      <small>{taskFailureMessage(preview)}</small>
+                    </span>
+                  </div>
+                ) : null}
                 <p className="ch-preview__prompt">
                   {taskPrompt(preview) || "未填写提示词"}
                 </p>

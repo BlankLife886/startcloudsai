@@ -30,6 +30,24 @@ AppAppearance parseAppAppearance(String? value) => switch (value) {
   _ => AppAppearance.system,
 };
 
+Brightness effectiveAppearanceBrightness(
+  AppAppearance appearance,
+  Brightness platformBrightness,
+) => switch (appearance) {
+  AppAppearance.system => platformBrightness,
+  AppAppearance.light => Brightness.light,
+  AppAppearance.dark => Brightness.dark,
+};
+
+String effectiveAppearanceLabel(
+  AppAppearance appearance,
+  Brightness platformBrightness,
+) =>
+    effectiveAppearanceBrightness(appearance, platformBrightness) ==
+        Brightness.dark
+    ? '深色外观'
+    : '浅色外观';
+
 abstract interface class AppearancePreferenceStore {
   Future<String?> read();
   Future<void> write(String value);

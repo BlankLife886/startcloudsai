@@ -147,6 +147,7 @@ func (w *Worker) claimAssistantRun(
 			prefix + "ProviderRouteId":     selected.Provider.RouteID,
 			prefix + "ProviderRouteKey":    modelconfig.ExecutionRouteKey(selected.Provider),
 			prefix + "ProviderDisplayName": selected.Provider.Name,
+			prefix + "ProviderEndpoint":    assistantProviderEndpoint(selected.Provider.BaseURL),
 			prefix + "ModelConfigId":       selected.Model.ID,
 			prefix + "Model":               selected.Model.UpstreamModel,
 			prefix + "ModelDisplayName":    selected.Model.Name,

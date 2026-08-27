@@ -5,6 +5,7 @@ import { compactCanvasSnapshot, runCanvasAgentTool } from "../src/canvas/lib/can
 import { planCanvasAgentRegeneration, resolveCanvasAgentRegenerationSourceIds } from "../src/canvas/lib/canvas/canvas-agent-regenerate.ts";
 import { hasVisibleAgentRunActivity } from "../src/canvas/lib/agent/agent-run-activity.ts";
 import { inspectCanvasWorkflowTemplate, queryCanvasWorkflowTemplates } from "../src/canvas/lib/agent/canvas-workflow-template-agent.ts";
+import { analyzeCanvasVisualFingerprints, inspectCanvasVisuals } from "../src/canvas/lib/canvas/canvas-visual-inspection.ts";
 
 const node = (id, type, metadata = {}) => ({ id, type, title: id, position: { x: 0, y: 0 }, width: 300, height: 200, metadata });
 
@@ -84,6 +85,108 @@ function liveCanvas(nodes = [], connections = [], selectedNodeIds = []) {
         },
     };
 }
+
+test("visual inspection follows a selected text node to every downstream image", async () => {
+    const snapshot = {
+        projectId: "p1",
+        title: "商品工作流",
+        nodes: [
+            node("prompt", "text", { content: "商品素材" }),
+            node("config", "config", { composerContent: "生成两张商品图" }),
+            node("output-a", "image", { storageKey: "tasks/user/task-a/original/a.png", workflowProducerNodeId: "config", generationCompletedAt: "2026-08-27T10:00:00Z" }),
+            node("output-b", "image", { storageKey: "tasks/user/task-b/original/b.png", workflowProducerNodeId: "config", generationCompletedAt: "2026-08-27T10:00:01Z" }),
+        ],
+        connections: [
+            { id: "a", fromNodeId: "prompt", toNodeId: "config" },
+            { id: "b", fromNodeId: "config", toNodeId: "output-a" },
+            { id: "c", fromNodeId: "config", toNodeId: "output-b" },
+        ],
+        selectedNodeIds: ["prompt"],
+        viewport: { x: 0, y: 0, k: 1 },
+    };
+    const result = await inspectCanvasVisuals(snapshot, { scope: "auto" });
+    assert.equal(result.resolvedFrom, "selection_downstream");
+    assert.equal(result.inspected, 2);
+    assert.deepEqual(new Set(result.items.map((item) => item.nodeId)), new Set(["output-a", "output-b"]));
+    assert.deepEqual(new Set(result.visionReferences.map((item) => item.nodeId)), new Set(["output-a", "output-b"]));
+});
+
+test("visual inspection exposes every image in a multi-image node and detects identical storage", async () => {
+    const sharedKey = "uploads/user/original/shared.png";
+    const canvas = stubCanvas([
+        node("gallery", "image", {
+            images: [
+                { id: "first", content: "", storageKey: sharedKey, thumbnailUrl: "", naturalWidth: 1200, naturalHeight: 800 },
+                { id: "second", content: "", storageKey: sharedKey, thumbnailUrl: "", naturalWidth: 1200, naturalHeight: 800 },
+            ],
+        }),
+    ], [], ["gallery"]);
+    const result = await runCanvasAgentTool({ name: "canvas_inspect_visuals", arguments: "{}" }, canvas);
+    assert.equal(result.inspected, 2);
+    assert.deepEqual(result.items.map((item) => item.imageId), ["first", "second"]);
+    assert.equal(result.exactDuplicateGroups.length, 1);
+    assert.deepEqual(result.exactDuplicateGroups[0].resourceIds, ["gallery:first", "gallery:second"]);
+    assert.equal(result.visionReferences.every((item) => item.nodeId === "gallery" && item.fileKey === sharedKey), true);
+});
+
+test("visual fingerprint analysis separates exact and perceptual duplicates", () => {
+    const result = analyzeCanvasVisualFingerprints([
+        { resourceId: "a", nodeId: "node-a", exact: "sha-a", perceptual: "0000000000000000" },
+        { resourceId: "b", nodeId: "node-b", exact: "sha-a", perceptual: "0000000000000000" },
+        { resourceId: "c", nodeId: "node-c", exact: "sha-c", perceptual: "0000000000000003" },
+        { resourceId: "d", nodeId: "node-d", exact: "sha-d", perceptual: "ffffffffffffffff" },
+    ]);
+    assert.equal(result.exactDuplicateGroups.length, 1);
+    assert.deepEqual(result.exactDuplicateGroups[0].nodeIds, ["node-a", "node-b"]);
+    assert.equal(result.similarPairs.some((pair) => pair.leftResourceId === "a" && pair.rightResourceId === "c"), true);
+    assert.equal(result.similarPairs.some((pair) => pair.leftResourceId === "a" && pair.rightResourceId === "b"), false, "exact pairs must not be reported twice");
+    assert.equal(result.similarPairs.some((pair) => pair.rightResourceId === "d"), false);
+});
+
+test("visual fingerprint analysis caps quadratic similar-pair output", () => {
+    const result = analyzeCanvasVisualFingerprints(Array.from({ length: 70 }, (_, index) => ({
+        resourceId: `resource-${index}`,
+        nodeId: `node-${index}`,
+        exact: `sha-${index}`,
+        perceptual: "0000000000000000",
+    })));
+    assert.equal(result.similarPairs.length, 64);
+    assert.equal(result.similarPairsTruncated, true);
+});
+
+test("visual inspection falls back to the most recent workflow outputs", async () => {
+    const canvas = stubCanvas([
+        node("old", "image", { storageKey: "tasks/user/old/original/a.png", workflowProducerNodeId: "config-old", generationCompletedAt: "2026-08-26T10:00:00Z" }),
+        node("new", "image", { storageKey: "tasks/user/new/original/b.png", workflowProducerNodeId: "config-new", generationCompletedAt: "2026-08-27T10:00:00Z" }),
+        node("loose", "image", { storageKey: "uploads/user/original/loose.png", generationCompletedAt: "2026-08-28T10:00:00Z" }),
+    ]);
+    const result = await runCanvasAgentTool({ name: "canvas_inspect_visuals", arguments: JSON.stringify({ maxImages: 1 }) }, canvas);
+    assert.equal(result.resolvedFrom, "recent_outputs");
+    assert.equal(result.total, 2, "workflow outputs take precedence over unrelated loose images");
+    assert.equal(result.items[0].nodeId, "new");
+    assert.equal(result.truncated, true);
+});
+
+test("visual inspection paginates a large selection without dropping images", async () => {
+    const sharedKey = "tasks/user/shared-task/original/result.png";
+    const images = Array.from({ length: 15 }, (_, index) => node(`image-${String(index + 1).padStart(2, "0")}`, "image", {
+        storageKey: index === 0 || index === 14 ? sharedKey : `tasks/user/task-${index + 1}/original/result.png`,
+        generationCompletedAt: "2026-08-27T10:00:00Z",
+    }));
+    const canvas = stubCanvas(images, [], images.map((item) => item.id));
+    const first = await runCanvasAgentTool({ name: "canvas_inspect_visuals", arguments: "{}" }, canvas);
+    assert.equal(first.inspected, 12);
+    assert.equal(first.truncated, true);
+    assert.equal(first.nextOffset, 12);
+    const second = await runCanvasAgentTool({ name: "canvas_inspect_visuals", arguments: JSON.stringify({ offset: first.nextOffset }) }, canvas);
+    assert.equal(second.inspected, 3);
+    assert.equal(second.offset, 12);
+    assert.equal(second.truncated, false);
+    assert.equal(second.nextOffset, undefined);
+    assert.equal(new Set([...first.items, ...second.items].map((item) => item.nodeId)).size, 15);
+    assert.equal(second.compared, 15);
+    assert.equal(second.exactDuplicateGroups.some((group) => new Set(group.nodeIds).has("image-01") && new Set(group.nodeIds).has("image-15")), true, "duplicates across pages must be detected");
+});
 
 function semanticCanvas(nodes = [], connections = [], selectedNodeIds = []) {
     let snapshot = { projectId: "p1", title: "测试画布", nodes, connections, selectedNodeIds, viewport: { x: 0, y: 0, k: 1 } };
@@ -347,6 +450,37 @@ test("validates empty workflow inputs before execution", async () => {
     const observation = await runCanvasAgentTool({ name: "canvas_validate_workflow", arguments: "{}" }, canvas);
     assert.equal(observation.valid, false);
     assert.deepEqual(observation.workflows[0].emptyInputNodeIds, ["input"]);
+});
+
+test("requires every declared reference image to feed the executable workflow", async () => {
+    const canvas = semanticCanvas([
+        node("reference-a", "image", { content: "/a.png" }),
+        node("reference-b", "image", { content: "/b.png" }),
+        node("prompt", "text", { content: "商品主图" }),
+        node("config", "config", { generationMode: "image" }),
+        node("output", "image"),
+    ], [
+        { id: "a", fromNodeId: "reference-a", toNodeId: "config" },
+        { id: "b", fromNodeId: "prompt", toNodeId: "config" },
+        { id: "c", fromNodeId: "config", toNodeId: "output" },
+    ]);
+    const incomplete = await runCanvasAgentTool({
+        name: "canvas_validate_workflow",
+        arguments: JSON.stringify({ requiredInputNodeIds: ["reference-a", "reference-b"] }),
+    }, canvas);
+    assert.equal(incomplete.valid, false);
+    assert.deepEqual(incomplete.disconnectedRequiredInputNodeIds, ["reference-b"]);
+    canvas.snapshot = {
+        ...canvas.snapshot,
+        connections: [...canvas.snapshot.connections, { id: "d", fromNodeId: "reference-b", toNodeId: "config" }],
+    };
+    canvas.readSnapshot = () => canvas.snapshot;
+    const complete = await runCanvasAgentTool({
+        name: "canvas_validate_workflow",
+        arguments: JSON.stringify({ requiredInputNodeIds: ["reference-a", "reference-b"] }),
+    }, canvas);
+    assert.equal(complete.valid, true);
+    assert.deepEqual(complete.disconnectedRequiredInputNodeIds, []);
 });
 
 test("stops the live workflow and retries only when failed nodes exist", async () => {

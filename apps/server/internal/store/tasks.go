@@ -1055,7 +1055,9 @@ const adminTaskSourceSQL = `
 				) image
 				WHERE COALESCE(image->>'fileKey', '') <> ''
 			), '[]'::jsonb) AS thumbnail_keys,
-			0::bigint AS cost_cents, 1::integer AS work_units, NULL::text AS idempotency_key,
+			CASE WHEN run.status IN ('queued', 'running') AND run.cost_cents <= 0
+				THEN COALESCE(run.reserved_cents, 0) ELSE run.cost_cents END::bigint AS cost_cents,
+			1::integer AS work_units, NULL::text AS idempotency_key,
 			run.error_code, run.error_message, 0::integer AS attempt,
 			run.started_at, NULL::text AS lease_owner, NULL::timestamptz AS heartbeat_at,
 			NULL::timestamptz AS lease_until, run.finished_at, run.created_at,
@@ -1505,6 +1507,23 @@ func RenewTaskLease(ctx context.Context, q Q, id uuid.UUID, owner string, now ti
 		return false, err
 	}
 	return tag.RowsAffected() > 0, nil
+}
+
+func RenewTaskLeases(ctx context.Context, q Q, ids []uuid.UUID, owners []string, now time.Time, lease time.Duration) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	if len(ids) != len(owners) || lease <= 0 {
+		return errors.New("batch task lease renewal requires matching ids and owners")
+	}
+	_, err := q.Exec(ctx, `UPDATE tasks AS task
+		SET heartbeat_at = $2, lease_until = $3
+		FROM unnest($1::uuid[], $4::text[]) AS renewal(id, owner)
+		WHERE task.id = renewal.id
+		  AND task.status = 'running'
+		  AND task.lease_owner = renewal.owner`,
+		ids, now, now.Add(lease), owners)
+	return err
 }
 
 func TransferTaskLease(ctx context.Context, q Q, id uuid.UUID, fromOwner, toOwner string, now time.Time, lease time.Duration) (bool, error) {

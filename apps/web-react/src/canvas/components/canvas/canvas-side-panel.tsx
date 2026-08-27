@@ -1,7 +1,7 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
-import { App, Popconfirm, Spin, Tag } from "antd";
+import { App, Modal, Popconfirm, Spin, Tag } from "antd";
 import { useQuery } from "@tanstack/react-query";
-import { Check, ChevronDown, ChevronRight, Download, Ellipsis, Eye, FileClock, FileText, Image as ImageIcon, ListChecks, Music2, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Settings2, Square, Trash2, Type, Video } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Download, Ellipsis, Eye, FileClock, FileText, Image as ImageIcon, Info, ListChecks, Music2, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Settings2, Square, Trash2, Type, Video } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router";
@@ -242,6 +242,7 @@ function CanvasNodesTab({ nodes, connections, selectedNodeIds, onFocusNode, onPr
     const [exporting, setExporting] = useState(false);
     const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
     const [openActionsNodeId, setOpenActionsNodeId] = useState<string | null>(null);
+    const [infoNodeId, setInfoNodeId] = useState<string | null>(null);
 
     const workflowGroups = useMemo(() => buildCanvasSidePanelWorkflowGroups(nodes, connections), [connections, nodes]);
     const grouped = useMemo(() => {
@@ -255,9 +256,13 @@ function CanvasNodesTab({ nodes, connections, selectedNodeIds, onFocusNode, onPr
             .filter((group) => group.nodes.length);
     }, [keyword, typeFilter, workflowGroups]);
     const filtered = useMemo(() => grouped.flatMap((group) => group.nodes), [grouped]);
+    const infoNode = infoNodeId ? nodes.find((node) => node.id === infoNodeId) || null : null;
     useEffect(() => {
         if (openActionsNodeId && !filtered.some((node) => node.id === openActionsNodeId)) setOpenActionsNodeId(null);
     }, [filtered, openActionsNodeId]);
+    useEffect(() => {
+        if (infoNodeId && !nodes.some((node) => node.id === infoNodeId)) setInfoNodeId(null);
+    }, [infoNodeId, nodes]);
     const toggleGroup = (groupId: string) =>
         setCollapsedGroups((current) => {
             const next = new Set(current);
@@ -394,6 +399,7 @@ function CanvasNodesTab({ nodes, connections, selectedNodeIds, onFocusNode, onPr
                                                                         onOpenChange={(open) => setOpenActionsNodeId((current) => (open ? node.id : current === node.id ? null : current))}
                                                                         onPreview={() => onPreviewNode(node.id)}
                                                                         onRename={() => onRenameNode(node.id)}
+                                                                        onInfo={() => setInfoNodeId(node.id)}
                                                                         onDelete={() => onDeleteNodes(new Set([node.id]))}
                                                                         theme={theme}
                                                                     />
@@ -437,11 +443,12 @@ function CanvasNodesTab({ nodes, connections, selectedNodeIds, onFocusNode, onPr
                     </button>
                 </div>
             ) : null}
+            <CanvasSidePanelNodeInfoDialog node={infoNode} open={Boolean(infoNode)} onClose={() => setInfoNodeId(null)} theme={theme} />
         </div>
     );
 }
 
-function NodeRowActionsMenu({ node, canPreview, open, onOpenChange, onPreview, onRename, onDelete, theme }: { node: CanvasNodeData; canPreview: boolean; open: boolean; onOpenChange: (open: boolean) => void; onPreview: () => void; onRename: () => void; onDelete: () => void; theme: CanvasTheme }) {
+function NodeRowActionsMenu({ node, canPreview, open, onOpenChange, onPreview, onRename, onInfo, onDelete, theme }: { node: CanvasNodeData; canPreview: boolean; open: boolean; onOpenChange: (open: boolean) => void; onPreview: () => void; onRename: () => void; onInfo: () => void; onDelete: () => void; theme: CanvasTheme }) {
     const { t } = useTranslation();
     const { buttonRef, panelRef, open: popoverOpen, buttonRect, updateOpen } = useAnchorPopover(onOpenChange, open);
 
@@ -470,6 +477,7 @@ function NodeRowActionsMenu({ node, canPreview, open, onOpenChange, onPreview, o
                     <div className="grid gap-0.5">
                         {canPreview ? <NodeRowMenuItem icon={<Eye className="size-3.5" />} label={t("canvas.sidePanel.preview")} onClick={() => runAction(onPreview)} theme={theme} /> : null}
                         <NodeRowMenuItem icon={<Pencil className="size-3.5" />} label={t("canvas.nodeToolbar.rename")} onClick={() => runAction(onRename)} theme={theme} />
+                        <NodeRowMenuItem icon={<Info className="size-3.5" />} label={t("canvas.nodeToolbar.nodeInfo")} onClick={() => runAction(onInfo)} theme={theme} />
                         <div className="my-0.5 h-px" style={{ background: theme.toolbar.border }} />
                         <NodeRowMenuItem icon={<Trash2 className="size-3.5" />} label={t("common.delete")} onClick={() => runAction(onDelete)} theme={theme} danger />
                     </div>
@@ -477,6 +485,76 @@ function NodeRowActionsMenu({ node, canPreview, open, onOpenChange, onPreview, o
             ) : null}
         </>
     );
+}
+
+function CanvasSidePanelNodeInfoDialog({ node, open, onClose, theme }: { node: CanvasNodeData | null; open: boolean; onClose: () => void; theme: CanvasTheme }) {
+    const { t } = useTranslation();
+    const metadata = node?.metadata;
+    const images = metadata?.images || [];
+    const primaryImage = images.find((image) => image.id === metadata?.primaryImageId) || images[0];
+    const naturalWidth = metadata?.naturalWidth || primaryImage?.naturalWidth || 0;
+    const naturalHeight = metadata?.naturalHeight || primaryImage?.naturalHeight || 0;
+    const bytes = metadata?.bytes || primaryImage?.bytes || 0;
+    const mimeType = metadata?.mimeType || primaryImage?.mimeType || "";
+    const status = metadata?.status || "idle";
+    const statusLabel = status === "success" ? t("agent.message.completed") : status === "loading" ? t("agent.message.running") : status === "error" ? t("agent.message.failed") : t("agent.message.pending");
+    const statusColor = STATUS_COLOR[status] || theme.node.muted;
+    const typeLabel = node
+        ? node.type === CanvasNodeType.Group
+            ? t("canvas.node.group")
+            : node.type === CanvasNodeType.Config
+              ? t("canvas.configNode.title")
+              : [CanvasNodeType.Image, CanvasNodeType.Video, CanvasNodeType.Audio, CanvasNodeType.Text].includes(node.type as CanvasNodeType)
+                ? t(`assets.kinds.${node.type}`)
+                : getNodeDefinition(node.type)?.title || node.type
+        : "";
+
+    return (
+        <Modal className="canvas-node-info-modal" title={t("canvas.nodeToolbar.nodeInfo")} open={open && Boolean(node)} centered footer={null} width={420} destroyOnHidden onCancel={onClose}>
+            {node ? (
+                <div className="space-y-3 select-text" data-canvas-shortcuts-ignore>
+                    <div className="overflow-hidden rounded-lg" style={{ background: theme.toolbar.itemHover }}>
+                        <NodeInfoRow label={t("canvas.nodeToolbar.name")} value={node.title || t("canvas.node.untitled")} theme={theme} first />
+                        <NodeInfoRow label={t("canvas.nodeToolbar.type")} value={typeLabel} theme={theme} />
+                        <NodeInfoRow
+                            label={t("canvas.nodeToolbar.status")}
+                            value={<span className="inline-flex items-center gap-1.5"><span className="size-1.5 rounded-full" style={{ background: statusColor }} />{statusLabel}</span>}
+                            theme={theme}
+                        />
+                        {naturalWidth > 0 && naturalHeight > 0 ? <NodeInfoRow label={t("canvas.nodeToolbar.originalSize")} value={`${naturalWidth} × ${naturalHeight}`} theme={theme} /> : null}
+                        {mimeType ? <NodeInfoRow label={t("canvas.nodeToolbar.mimeType")} value={mimeType} theme={theme} /> : null}
+                        {bytes > 0 ? <NodeInfoRow label={t("canvas.nodeToolbar.imageSize")} value={formatNodeBytes(bytes)} theme={theme} /> : null}
+                        {images.length > 1 ? <NodeInfoRow label={t("canvas.nodeToolbar.imageGroup")} value={t("canvas.configNode.images", { count: images.length })} theme={theme} /> : null}
+                    </div>
+                    {metadata?.prompt ? <NodeInfoTextBlock label={t("canvas.configNode.prompt")} value={metadata.prompt} theme={theme} /> : null}
+                    {metadata?.errorDetails ? <NodeInfoTextBlock label={t("agent.message.errorInfo")} value={metadata.errorDetails} theme={theme} danger /> : null}
+                </div>
+            ) : null}
+        </Modal>
+    );
+}
+
+function NodeInfoRow({ label, value, theme, first = false }: { label: string; value: ReactNode; theme: CanvasTheme; first?: boolean }) {
+    return (
+        <div className="flex min-h-10 items-center gap-3 px-3 py-2" style={{ boxShadow: first ? undefined : `inset 0 1px 0 ${theme.toolbar.border}` }}>
+            <span className="w-20 shrink-0 text-[12px] font-medium" style={{ color: theme.node.muted }}>{label}</span>
+            <span className="min-w-0 flex-1 truncate text-[13px] font-medium" style={{ color: theme.node.text }} title={typeof value === "string" ? value : undefined}>{value}</span>
+        </div>
+    );
+}
+
+function NodeInfoTextBlock({ label, value, theme, danger = false }: { label: string; value: string; theme: CanvasTheme; danger?: boolean }) {
+    return (
+        <div className="rounded-lg px-3 py-2.5" style={{ background: danger ? "rgba(239,68,68,0.1)" : theme.toolbar.itemHover }}>
+            <div className="text-[11px] font-medium" style={{ color: danger ? "#ef4444" : theme.node.muted }}>{label}</div>
+            <div className="thin-scrollbar mt-1.5 max-h-28 overflow-y-auto whitespace-pre-wrap break-words text-[13px] leading-5" style={{ color: danger ? "#ef4444" : theme.node.text }}>{value}</div>
+        </div>
+    );
+}
+
+function formatNodeBytes(bytes: number) {
+    if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+    return `${Math.max(1, Math.ceil(bytes / 1024))} KB`;
 }
 
 function NodeRowMenuItem({ icon, label, onClick, theme, danger = false }: { icon: ReactNode; label: string; onClick: () => void; theme: CanvasTheme; danger?: boolean }) {

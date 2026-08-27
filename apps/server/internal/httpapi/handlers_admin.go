@@ -34,10 +34,20 @@ import (
 
 // ---------- stats ----------
 
+var dashboardDayLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
+
+func dashboardPeriodStarts(now time.Time) (today, last7Days, last30Days time.Time) {
+	businessNow := now.In(dashboardDayLocation)
+	businessToday := time.Date(
+		businessNow.Year(), businessNow.Month(), businessNow.Day(), 0, 0, 0, 0, dashboardDayLocation,
+	)
+	return businessToday.UTC(), businessToday.AddDate(0, 0, -6).UTC(), businessToday.AddDate(0, 0, -29).UTC()
+}
+
 func (s *Server) adminStats(c *gin.Context, _ *store.User) {
 	ctx := c.Request.Context()
 	now := time.Now().UTC()
-	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	todayStart, last7DaysStart, last30DaysStart := dashboardPeriodStarts(now)
 	weekAgo := now.AddDate(0, 0, -7)
 	monthAgo := now.AddDate(0, 0, -30)
 	dayAgo := now.Add(-24 * time.Hour)
@@ -80,6 +90,13 @@ func (s *Server) adminStats(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
+	usageMetrics, err := store.GetDashboardUsageMetrics(
+		ctx, s.St.Pool, todayStart, last7DaysStart, last30DaysStart,
+	)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	balanceTotal, err := store.SumWalletBalance(ctx, s.St.Pool)
 	if err != nil {
 		fail(c, err)
@@ -102,6 +119,7 @@ func (s *Server) adminStats(c *gin.Context, _ *store.User) {
 		"providerPerformance": providerPerformance,
 		"taskDaily":           taskDaily,
 		"revenueCents":        revenue,
+		"usageMetrics":        usageMetrics,
 		"walletBalanceCents":  balanceTotal,
 		"typeDistribution":    typeDistribution,
 	})

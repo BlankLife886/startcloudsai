@@ -28,7 +28,7 @@ const form = reactive({
   imageDisplayQuality: 85,
   imageDisplayMaxEdge: 2048,
   imageThumbMaxEdge: 512,
-  imageFetchConcurrency: 2,
+  imageFetchConcurrency: 8,
 })
 
 function hydrate(settings: AdminSettings) {
@@ -48,7 +48,7 @@ function hydrate(settings: AdminSettings) {
   form.imageDisplayQuality = settings.imageDisplayQuality ?? 85
   form.imageDisplayMaxEdge = settings.imageDisplayMaxEdge ?? 2048
   form.imageThumbMaxEdge = settings.imageThumbMaxEdge ?? 512
-  form.imageFetchConcurrency = settings.imageFetchConcurrency ?? 2
+  form.imageFetchConcurrency = settings.imageFetchConcurrency ?? 8
   workerConcurrencyCeiling.value = Math.max(1, settings.workerConcurrencyCeiling ?? 1)
   effectiveGlobalConcurrency.value = Math.max(
     1,

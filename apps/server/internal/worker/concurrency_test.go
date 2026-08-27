@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/testdb"
+	"golang.org/x/sync/semaphore"
 )
 
 func TestSelectExecutionCandidateUsesCapacityWeightedLoad(t *testing.T) {
@@ -168,8 +170,8 @@ func TestImageFetchConcurrencyDefaultsAndClamps(t *testing.T) {
 	st := testdb.Setup(t)
 	ctx := context.Background()
 	w := &Worker{St: st}
-	if got := w.imageFetchConcurrency(ctx); got != 2 {
-		t.Fatalf("default = %d, want 2", got)
+	if got := w.imageFetchConcurrency(ctx); got != 8 {
+		t.Fatalf("default = %d, want 8", got)
 	}
 	if err := settings.Set(ctx, st.Pool, "image_fetch_concurrency", json.RawMessage(`8`)); err != nil {
 		t.Fatal(err)
@@ -697,6 +699,140 @@ func TestProviderForUpstreamAttemptPrefersImmutableSnapshot(t *testing.T) {
 	}
 }
 
+func TestRegisterOpenAIUpstreamAttemptStartsSubmitting(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	const secret = "register-attempt-test-secret"
+	user, err := store.InsertUser(ctx, st.Pool, fmt.Sprintf("register-attempt-%s@test.dev", uuid.NewString()[:8]), "worker", "x", "user", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var taskID uuid.UUID
+	if err := st.Pool.QueryRow(ctx,
+		`INSERT INTO tasks (user_id, type, prompt, params, model, status, cost_cents)
+		 VALUES ($1, 't2i', 'test', '{}'::jsonb, 'gpt-image-2', 'running', 0) RETURNING id`,
+		user.ID).Scan(&taskID); err != nil {
+		t.Fatal(err)
+	}
+	routeKey := "provider-a/route-a"
+	w := &Worker{
+		St: st, Cfg: &config.Config{AppSecret: secret},
+		modelConfig: modelconfig.Config{
+			Version: modelconfig.Version,
+			Providers: []modelconfig.Provider{{
+				ID: "provider-a", Name: "Provider A", Adapter: modelconfig.AdapterOpenAI, Enabled: true,
+				Routes: []modelconfig.ProviderRoute{{
+					ID: "route-a", Name: "Route A", BaseURL: "https://example.com", APIKey: "test-key",
+					TimeoutSecs: 300, MaxConcurrency: 100, Enabled: true,
+				}},
+			}},
+			Models: []modelconfig.Model{{
+				ID: "model-a", Name: "Image", ProviderID: "provider-a", UpstreamModel: "gpt-image-2",
+				Kind: modelconfig.ModelKindImage, Enabled: true,
+			}},
+		},
+		modelConfigAt: time.Now(),
+	}
+	task := &store.Task{ID: taskID, UserID: user.ID, Type: "t2i", Model: "gpt-image-2", Params: map[string]any{
+		"_providerConfigId": "provider-a", "_providerRouteId": "route-a",
+		"_providerRouteKey": routeKey, "_modelConfigId": "model-a",
+	}}
+	attemptID, adapter, err := w.registerConfiguredUpstreamAttempt(ctx, task)
+	if err != nil || attemptID == uuid.Nil || adapter != modelconfig.AdapterOpenAI {
+		t.Fatalf("attempt=%s adapter=%q err=%v", attemptID, adapter, err)
+	}
+	var status string
+	if err := st.Pool.QueryRow(ctx, `SELECT status FROM task_upstream_attempts WHERE id=$1`, attemptID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != store.UpstreamAttemptSubmitting {
+		t.Fatalf("attempt status=%q, want submitting", status)
+	}
+	claimed, err := store.ClaimPendingUpstreamTasksByRoute(ctx, st.Pool, routeKey, "attempt-poller:test", time.Now().UTC(), time.Minute, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed) != 0 {
+		t.Fatalf("fresh in-flight submit was claimed by poller: %#v", claimed)
+	}
+	if _, err := st.Pool.Exec(ctx,
+		`UPDATE task_upstream_attempts SET submitted_at=now() - interval '11 seconds' WHERE id=$1`, attemptID); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err = store.ClaimPendingUpstreamTasksByRoute(ctx, st.Pool, routeKey, "attempt-poller:test-11s", time.Now().UTC(), time.Minute, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed) != 0 {
+		t.Fatalf("submit was claimed at the HTTP timeout boundary: %#v", claimed)
+	}
+	if _, err := st.Pool.Exec(ctx,
+		`UPDATE task_upstream_attempts SET submitted_at=now() - interval '26 seconds' WHERE id=$1`, attemptID); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err = store.ClaimPendingUpstreamTasksByRoute(ctx, st.Pool, routeKey, "attempt-poller:test-26s", time.Now().UTC(), time.Minute, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed) != 1 {
+		t.Fatalf("orphaned submit was not recovered after handoff grace: %#v", claimed)
+	}
+}
+
+func TestOpenAIPollBatchesUseBoundedParallelism(t *testing.T) {
+	tasks := make([]*store.Task, 100)
+	for index := range tasks {
+		tasks[index] = &store.Task{ID: uuid.New()}
+	}
+	w := &Worker{pollRequests: semaphore.NewWeighted(4)}
+	started := make(chan struct{}, 5)
+	release := make(chan struct{})
+	done := make(chan struct{})
+	var active atomic.Int32
+	var maximum atomic.Int32
+	var completed atomic.Int32
+	go func() {
+		defer close(done)
+		w.forEachOpenAIPollBatch(context.Background(), tasks, func(batch []*store.Task) {
+			if len(batch) != 20 {
+				t.Errorf("batch size=%d, want 20", len(batch))
+			}
+			current := active.Add(1)
+			for {
+				previous := maximum.Load()
+				if current <= previous || maximum.CompareAndSwap(previous, current) {
+					break
+				}
+			}
+			started <- struct{}{}
+			<-release
+			active.Add(-1)
+			completed.Add(1)
+		})
+	}()
+	for range 4 {
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			t.Fatal("four poll batches did not start concurrently")
+		}
+	}
+	select {
+	case <-started:
+		t.Fatal("poll request concurrency exceeded four")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("poll batches did not finish")
+	}
+	if completed.Load() != 5 || maximum.Load() != 4 {
+		t.Fatalf("completed=%d maximum=%d, want 5/4", completed.Load(), maximum.Load())
+	}
+}
+
 func TestDisconnectedPollRouteCannotLeaveTaskRunning(t *testing.T) {
 	st := testdb.Setup(t)
 	ctx := context.Background()
@@ -823,7 +959,7 @@ func TestTextUpstreamStatusFailsInsteadOfHanging(t *testing.T) {
 	}
 }
 
-func TestTextReviewKeepsPollingWithoutAlternateRoute(t *testing.T) {
+func TestTextReviewWithoutMessageFailsImmediately(t *testing.T) {
 	st := testdb.Setup(t)
 	ctx := context.Background()
 	if err := settings.Set(ctx, st.Pool, "task_failure_retry_count", json.RawMessage(`0`)); err != nil {
@@ -849,8 +985,11 @@ func TestTextReviewKeepsPollingWithoutAlternateRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if task.Status != "running" {
-		t.Fatalf("text_review should keep polling, got status=%s", task.Status)
+	if task.Status != "failed" || task.ErrorCode == nil || *task.ErrorCode != "upstream_error" {
+		t.Fatalf("text_review remained active: %#v", task)
+	}
+	if task.ErrorMessage == nil || *task.ErrorMessage != "上游返回文本，未生成图片" {
+		t.Fatalf("text_review error = %v", task.ErrorMessage)
 	}
 }
 
@@ -885,14 +1024,14 @@ func TestPendingPastFailoverWithoutAlternateClosesTask(t *testing.T) {
 	}
 }
 
-func TestTextReviewPastFailoverWithoutAlternateClosesTask(t *testing.T) {
+func TestTextReviewWithFailureTextClosesTaskImmediately(t *testing.T) {
 	st := testdb.Setup(t)
 	ctx := context.Background()
 	if err := settings.Set(ctx, st.Pool, "task_failure_retry_count", json.RawMessage(`0`)); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	taskID, routeKey, _ := insertPollableOpenAITaskWindow(t, st, ctx, now.Add(-6*time.Minute), now.Add(-time.Minute), now.Add(20*time.Minute))
+	taskID, routeKey, _ := insertPollableOpenAITask(t, st, ctx, now.Add(-45*time.Second))
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"items":[{"id":"%s","status":"text_review","output":{"content":[{"type":"output_text","text":"内容审核拒绝：参考图不符合服务政策 https://internal.example/review/123"}]}}]}`, taskID)
@@ -924,7 +1063,7 @@ func TestTextReviewPastFailoverWithoutAlternateClosesTask(t *testing.T) {
 	).Scan(&attemptStatus, &lastError); err != nil {
 		t.Fatal(err)
 	}
-	if attemptStatus != store.UpstreamAttemptSuperseded || lastError != expectedMessage {
+	if attemptStatus != store.UpstreamAttemptFailed || lastError != expectedMessage {
 		t.Fatalf("attempt status=%q last_error=%q", attemptStatus, lastError)
 	}
 }

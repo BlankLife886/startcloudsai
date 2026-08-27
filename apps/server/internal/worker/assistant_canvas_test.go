@@ -12,6 +12,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/sub2api"
+	"github.com/google/uuid"
 )
 
 func TestParseCanvasAgentOpsAcceptsWrappedJSON(t *testing.T) {
@@ -91,7 +92,7 @@ func TestCanvasAgentInstructionsIncludeSnapshot(t *testing.T) {
 	if !strings.Contains(instructions, "canvas_undo_last_action") || !strings.Contains(instructions, "canvas_redo_last_action") || !strings.Contains(instructions, "禁止用 canvas_apply_ops 猜测反向操作") {
 		t.Fatalf("instructions lack deterministic history tools = %q", instructions)
 	}
-	if !strings.Contains(instructions, "canvas_create_image_operation") || !strings.Contains(instructions, "canvas_validate_workflow") || !strings.Contains(instructions, "canvas_retry_failed_nodes") || !strings.Contains(instructions, "canvas_replace_workflow_input") || !strings.Contains(instructions, "canvas_create_checkpoint") {
+	if !strings.Contains(instructions, "canvas_create_image_operation") || !strings.Contains(instructions, "canvas_validate_workflow") || !strings.Contains(instructions, "canvas_retry_failed_nodes") || !strings.Contains(instructions, "canvas_replace_workflow_input") || !strings.Contains(instructions, "canvas_create_checkpoint") || !strings.Contains(instructions, "canvas_inspect_visuals") || !strings.Contains(instructions, "真实图片像素") {
 		t.Fatalf("instructions lack image operation or workflow control tools = %q", instructions)
 	}
 }
@@ -324,6 +325,80 @@ func TestCanvasAgentParsesCapabilities(t *testing.T) {
 	}
 }
 
+func TestCanvasAgentIntentRoutingPreservesImagePresenceWithoutSendingPixels(t *testing.T) {
+	message := canvasAgentIntentRoutingMessage(sub2api.Message{
+		Role: "user", Content: "照这些参考图搭一个工作流", ReferenceImages: []string{"data:image/png;base64,a", "data:image/png;base64,b"},
+	})
+	if len(message.ReferenceImages) != 0 || !strings.Contains(message.Content, "2 张真实参考图") || !strings.Contains(message.Content, "执行模型会收到图片像素") {
+		t.Fatalf("routing message = %#v", message)
+	}
+	empty := canvasAgentIntentRoutingMessage(sub2api.Message{Role: "user", ReferenceImages: []string{"data:image/png;base64,a"}})
+	if empty.Content == "" || len(empty.ReferenceImages) != 0 {
+		t.Fatalf("empty routing message = %#v", empty)
+	}
+}
+
+func TestCanvasAgentFallbackKeepsAttachmentWorkflowCapabilities(t *testing.T) {
+	prompt := "照这些参考图搭一个完整工作流\n\n本轮聊天附件，可用 canvas_create_attachment_nodes 放到画布：\n- id=attachment-1 name=\"参考图.png\""
+	intent := canvasAgentIntentFromFallback(prompt)
+	if intent.RequiredAction != canvasRequiredActionWrite || !intent.Capabilities[canvasCapabilityAttachments] || !intent.Capabilities[canvasCapabilityWrite] || !intent.Capabilities[canvasCapabilityWorkflowValidation] {
+		t.Fatalf("attachment workflow fallback = %#v", intent)
+	}
+	if len(intent.Actions) != 3 || intent.Actions[0].Capability != canvasCapabilityAttachments || intent.Actions[1].Capability != canvasCapabilityWrite || intent.Actions[2].Capability != canvasCapabilityWorkflowValidation {
+		t.Fatalf("attachment workflow plan = %#v", intent.Actions)
+	}
+}
+
+func TestCanvasAgentSemanticWorkflowValidationKeepsWriteCapability(t *testing.T) {
+	intent, err := parseCanvasAgentIntent(`{"capabilities":["reply","attachments","canvas_write","workflow_validation"],"requiredAction":"canvas_write","actions":[]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, capability := range []string{canvasCapabilityAttachments, canvasCapabilityWrite, canvasCapabilityWorkflowValidation} {
+		if !intent.Capabilities[capability] {
+			t.Fatalf("missing capability %q in %#v", capability, intent)
+		}
+	}
+	if len(intent.Actions) != 3 || intent.Actions[2].Capability != canvasCapabilityWorkflowValidation {
+		t.Fatalf("workflow validation plan = %#v", intent.Actions)
+	}
+}
+
+func TestCanvasAgentWorkflowValidationCannotCompleteBeforeWrites(t *testing.T) {
+	loop := &canvasAgentLoopState{
+		plannedActions: []canvasAgentPlannedAction{
+			{ID: "attachments", Capability: canvasCapabilityAttachments, RequiredAction: canvasRequiredActionWrite},
+			{ID: "write", Capability: canvasCapabilityWrite, RequiredAction: canvasRequiredActionWrite},
+			{ID: "validate", Capability: canvasCapabilityWorkflowValidation, RequiredAction: canvasRequiredActionNone},
+		},
+		lastToolSucceeded: true,
+	}
+	loop.completeNextPlannedAction(canvasValidateWorkflowTool().Name)
+	if len(loop.pendingPlannedActions()) != 3 {
+		t.Fatalf("validation skipped earlier actions: %#v", loop.plannedActions)
+	}
+	loop.completeNextPlannedAction(canvasCreateAttachmentNodesTool().Name)
+	loop.completeNextPlannedAction(canvasApplyOpsTool().Name)
+	loop.completeNextPlannedAction(canvasValidateWorkflowTool().Name)
+	if pending := loop.pendingPlannedActions(); len(pending) != 0 {
+		t.Fatalf("completed workflow plan remained pending: %#v", pending)
+	}
+}
+
+func TestCanvasAgentWorkflowValidationAlwaysIncludesCreatedAttachmentNodes(t *testing.T) {
+	raw := canvasAgentWorkflowValidationArguments(`{"workflowId":"workflow:config-1","requiredInputNodeIds":["image-b"]}`, []string{"image-a", "image-b"})
+	var input struct {
+		WorkflowID           string   `json:"workflowId"`
+		RequiredInputNodeIDs []string `json:"requiredInputNodeIds"`
+	}
+	if err := json.Unmarshal([]byte(raw), &input); err != nil {
+		t.Fatal(err)
+	}
+	if input.WorkflowID != "workflow:config-1" || len(input.RequiredInputNodeIDs) != 2 || input.RequiredInputNodeIDs[0] != "image-a" || input.RequiredInputNodeIDs[1] != "image-b" {
+		t.Fatalf("validation arguments = %#v", input)
+	}
+}
+
 func TestCanvasAgentWebSearchCapabilityIsReadOnlyAndForcedFirst(t *testing.T) {
 	intent, err := parseCanvasAgentIntent(`{"capabilities":["reply","web_search"],"requiredAction":"none","actions":[{"id":"search","capability":"web_search","requiredAction":"none","description":"查最新资料"}]}`)
 	if err != nil {
@@ -341,6 +416,72 @@ func TestCanvasAgentWebSearchCapabilityIsReadOnlyAndForcedFirst(t *testing.T) {
 	}
 	if capabilities := fallbackCanvasAgentCapabilities("帮我联网查一下今天的 AI 新闻"); !capabilities[canvasCapabilityWeb] {
 		t.Fatalf("fallback capabilities = %#v", capabilities)
+	}
+}
+
+func TestCanvasAgentVisualInspectionIsForcedBeforeVisualRepair(t *testing.T) {
+	inspection, err := parseCanvasAgentIntent(`{"capabilities":["reply","visual_inspection"],"requiredAction":"none","actions":[{"id":"inspect","capability":"visual_inspection","requiredAction":"none","description":"比较真实图片"}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inspectionTools := canvasAgentToolsForCapabilities(inspection.Capabilities)
+	if !canvasAgentToolAllowed(inspectionTools, canvasInspectVisualsTool().Name) || canvasAgentToolAllowed(inspectionTools, canvasRunGenerationTool().Name) {
+		t.Fatalf("inspection tools = %#v", inspectionTools)
+	}
+	if got := canvasAgentInitialToolChoice(inspection.Capabilities, inspectionTools); got != canvasInspectVisualsTool().Name {
+		t.Fatalf("initial inspection tool = %q", got)
+	}
+
+	repair, err := parseCanvasAgentIntent(`{"capabilities":["reply","visual_inspection","canvas_write","generation"],"requiredAction":"generation","actions":[{"id":"inspect","capability":"visual_inspection","requiredAction":"none","description":"检查重复图片"},{"id":"repair","capability":"canvas_write","requiredAction":"canvas_write","description":"调整重复节点"},{"id":"generate","capability":"generation","requiredAction":"generation","description":"重新生成"}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repairTools := canvasAgentToolsForCapabilities(repair.Capabilities)
+	for _, want := range []string{canvasInspectVisualsTool().Name, canvasApplyOpsTool().Name, canvasRunGenerationTool().Name} {
+		if !canvasAgentToolAllowed(repairTools, want) {
+			t.Fatalf("visual repair tool %s missing from %#v", want, repairTools)
+		}
+	}
+	if got := canvasAgentInitialToolChoice(repair.Capabilities, repairTools); got != canvasInspectVisualsTool().Name {
+		t.Fatalf("visual repair must inspect first, got %q", got)
+	}
+}
+
+func TestCanvasAgentVisualPlanWaitsForEveryInspectionPage(t *testing.T) {
+	loop := &canvasAgentLoopState{
+		lastToolSucceeded: true,
+		plannedActions:    []canvasAgentPlannedAction{{ID: "inspect", Capability: canvasCapabilityVisualInspection, RequiredAction: canvasRequiredActionNone}},
+	}
+	loop.completeNextPlannedAction(canvasInspectVisualsTool().Name)
+	if len(loop.pendingPlannedActions()) != 1 {
+		t.Fatalf("partial visual inspection completed the plan: %#v", loop.plannedActions)
+	}
+	loop.visualInspected = true
+	loop.completeNextPlannedAction(canvasInspectVisualsTool().Name)
+	if len(loop.pendingPlannedActions()) != 0 {
+		t.Fatalf("complete visual inspection remained pending: %#v", loop.plannedActions)
+	}
+	properties, _ := canvasInspectVisualsTool().Parameters["properties"].(map[string]any)
+	if _, ok := properties["offset"]; !ok {
+		t.Fatalf("visual inspection pagination is missing: %#v", properties)
+	}
+}
+
+func TestCanvasAgentVisualFallbackRecognizesDuplicateRepair(t *testing.T) {
+	prompt := "出的图有问题，有两张一模一样的，希望更新一下"
+	capabilities := fallbackCanvasAgentCapabilities(prompt)
+	for _, want := range []string{canvasCapabilityRead, canvasCapabilityVisualInspection, canvasCapabilityWrite, canvasCapabilityGeneration} {
+		if !capabilities[want] {
+			t.Fatalf("capability %s missing from %#v", want, capabilities)
+		}
+	}
+	repair := canvasAgentIntentFromFallback(prompt)
+	if len(repair.Actions) != 3 || repair.Actions[0].Capability != canvasCapabilityVisualInspection || repair.Actions[0].RequiredAction != canvasRequiredActionNone {
+		t.Fatalf("fallback visual repair plan = %#v", repair.Actions)
+	}
+	inspection := canvasAgentIntentFromFallback("帮我比较这两张生成图片是否一模一样")
+	if inspection.RequiredAction != canvasRequiredActionNone || len(inspection.Actions) != 1 || inspection.Actions[0].Capability != canvasCapabilityVisualInspection || inspection.Actions[0].RequiredAction != canvasRequiredActionNone {
+		t.Fatalf("fallback inspection plan = %#v", inspection)
 	}
 }
 
@@ -908,7 +1049,7 @@ func TestCanvasAgentExposesReadAndWriteTools(t *testing.T) {
 		names[tool.Name] = true
 	}
 	for _, want := range []string{
-		"canvas_reply", "canvas_apply_ops", "canvas_get_state", "canvas_get_selection", "canvas_find_nodes", "canvas_inspect_nodes", "canvas_focus_nodes", "canvas_duplicate_selection", "canvas_create_image_operation", "canvas_replace_workflow_input", "canvas_run_downstream", "canvas_update_generation_settings", "canvas_undo_last_action", "canvas_redo_last_action", "canvas_export_snapshot",
+		"canvas_reply", "canvas_apply_ops", "canvas_get_state", "canvas_get_selection", "canvas_find_nodes", "canvas_inspect_nodes", "canvas_inspect_visuals", "canvas_focus_nodes", "canvas_duplicate_selection", "canvas_create_image_operation", "canvas_replace_workflow_input", "canvas_run_downstream", "canvas_update_generation_settings", "canvas_undo_last_action", "canvas_redo_last_action", "canvas_export_snapshot",
 		"canvas_regenerate_selection", "canvas_run_generation", "canvas_generation_status", "canvas_run_workflow", "canvas_workflow_status", "canvas_validate_workflow", "canvas_plan_workflow_run", "canvas_stop_workflow", "canvas_resume_workflow", "canvas_retry_failed_nodes", "canvas_list_agent_history", "canvas_create_checkpoint", "canvas_restore_checkpoint", "canvas_restore_agent_transaction", "canvas_create_attachment_nodes",
 		"site_navigate", "canvas_list_projects", "canvas_list_workflow_templates", "canvas_inspect_workflow_template", "canvas_create_from_workflow_template", "prompts_search", "assets_list", "assets_add",
 	} {
@@ -963,6 +1104,69 @@ func TestRunCanvasAgentToolGuidesTheModelBackOnBadArguments(t *testing.T) {
 	}
 	if loop.touched {
 		t.Fatal("a rejected call must not count as a canvas change")
+	}
+}
+
+func TestRunCanvasAgentToolBlocksGenerationUntilVisualInspection(t *testing.T) {
+	worker := &Worker{}
+	loop := &canvasAgentLoopState{requiresVisualInspection: true}
+	writeObservation := worker.runCanvasAgentTool(context.Background(), &store.AssistantRun{}, loop, &sub2api.ToolCall{Name: canvasApplyOpsTool().Name, Arguments: `{"ops":[{"type":"add_node","nodeType":"text"}]}`})
+	if !strings.Contains(writeObservation, canvasInspectVisualsTool().Name) || loop.touched {
+		t.Fatalf("canvas write was not blocked: loop=%#v observation=%q", loop, writeObservation)
+	}
+	observation := worker.runCanvasAgentTool(context.Background(), &store.AssistantRun{}, loop, &sub2api.ToolCall{Name: canvasRunGenerationTool().Name, Arguments: `{"nodeIds":["config-1"]}`})
+	if !strings.Contains(observation, canvasInspectVisualsTool().Name) || len(loop.pendingOps) != 0 {
+		t.Fatalf("generation was not blocked: loop=%#v observation=%q", loop, observation)
+	}
+	loop.visualInspected = true
+	observation = worker.runCanvasAgentTool(context.Background(), &store.AssistantRun{}, loop, &sub2api.ToolCall{Name: canvasRunGenerationTool().Name, Arguments: `{"nodeIds":["config-1"]}`})
+	if strings.Contains(observation, "必须先调用") || len(loop.pendingOps) != 1 {
+		t.Fatalf("generation remained blocked after inspection: loop=%#v observation=%q", loop, observation)
+	}
+}
+
+func TestCanvasAgentVisualReferencesAreRestrictedToTheCurrentUser(t *testing.T) {
+	userID := uuid.MustParse("f25376d5-9001-4286-b65f-6037b5995845")
+	for _, allowed := range []string{
+		"uploads/f25376d5-9001-4286-b65f-6037b5995845/original/a.png",
+		"tasks/f25376d5-9001-4286-b65f-6037b5995845/task-1/original/a.png",
+		"canvas-template-assets/template-1/a.png",
+	} {
+		if !canvasAgentVisualReferenceAllowed(userID, allowed) {
+			t.Fatalf("expected allowed visual key %q", allowed)
+		}
+	}
+	for _, denied := range []string{
+		"uploads/41a38963-b12b-464c-b687-b130de8fd1b5/original/a.png",
+		"tasks/41a38963-b12b-464c-b687-b130de8fd1b5/task-1/original/a.png",
+		"https://example.com/a.png",
+		"../uploads/f25376d5-9001-4286-b65f-6037b5995845/original/a.png",
+	} {
+		if canvasAgentVisualReferenceAllowed(userID, denied) {
+			t.Fatalf("visual key escaped user boundary: %q", denied)
+		}
+	}
+	if !canvasAgentTemporaryVisualKeyAllowed(userID, "uploads/f25376d5-9001-4286-b65f-6037b5995845/thumb/a") {
+		t.Fatal("current user temporary upload should be removable")
+	}
+	for _, denied := range []string{
+		"tasks/f25376d5-9001-4286-b65f-6037b5995845/task-1/original/a.png",
+		"uploads/41a38963-b12b-464c-b687-b130de8fd1b5/original/a.png",
+		"canvas-template-assets/template-1/a.png",
+	} {
+		if canvasAgentTemporaryVisualKeyAllowed(userID, denied) {
+			t.Fatalf("temporary cleanup escaped upload ownership: %q", denied)
+		}
+	}
+	if got := uniqueCanvasAgentStrings([]string{"a", "a", "", "b"}); len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Fatalf("unique temporary keys = %#v", got)
+	}
+}
+
+func TestCanvasAgentVisualContextWarnsWhenPixelsAreUnavailable(t *testing.T) {
+	message := (&Worker{}).consumeCanvasAgentVisualContext(context.Background(), &store.AssistantRun{}, &canvasAgentLoopState{visualInspected: true})
+	if message == nil || message.Role != "user" || !strings.Contains(message.Content, "没有可供模型读取") || !strings.Contains(message.Content, "禁止声称") || len(message.ReferenceImages) != 0 {
+		t.Fatalf("visual fallback message = %#v", message)
 	}
 }
 

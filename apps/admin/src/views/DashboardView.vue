@@ -18,6 +18,10 @@ import {
   Wallet,
 } from '@element-plus/icons-vue'
 import { request } from '@/request'
+import {
+	loadAdminBadgeCounts,
+	type AdminBadgeCounts as AdminTodoCounts,
+} from '@/services/adminBadgeCounts'
 import { formatPoints, formatTime, taskTypeLabel } from '@/utils'
 import EChart, { type EChartOption } from '@/components/EChart.vue'
 import { chartBase, CHART_COLORS } from '@/chartTheme'
@@ -52,6 +56,23 @@ interface ProviderPerformance {
 	p95DurationMs: number
 }
 
+interface PeriodUsageMetrics {
+	settledCents: number
+	imageCount: number
+}
+
+interface DashboardUsageMetrics {
+	today: PeriodUsageMetrics
+	last7Days: PeriodUsageMetrics
+	last30Days: PeriodUsageMetrics
+	todayToken: {
+		inputTokens: number
+		outputTokens: number
+		reasoningTokens: number
+		totalTokens: number
+	}
+}
+
 interface AdminStats {
   totalUsers?: number
   newUsersToday?: number
@@ -62,13 +83,7 @@ interface AdminStats {
   typeDistribution?: Record<string, number>
 	taskPerformance?: TaskPerformance
 	providerPerformance?: ProviderPerformance[]
-}
-
-interface AdminTodoCounts {
-	pendingSubmissions: number
-	runningTasks: number
-	pendingTrialApplications: number
-	pendingFeedback: number
+	usageMetrics?: DashboardUsageMetrics
 }
 
 interface RuntimeMemoryMetrics {
@@ -252,6 +267,11 @@ function formatMoney(cents: number | null | undefined) {
 		minimumFractionDigits: 2,
 		maximumFractionDigits: 2,
 	})}`
+}
+
+function formatCount(value: number | null | undefined) {
+	const count = Number(value)
+	return Number.isFinite(count) ? Math.max(0, Math.round(count)).toLocaleString('zh-CN') : '-'
 }
 
 /** 系统健康仪表：只放与「运行时资源」不重复的容量类指标 */
@@ -637,11 +657,11 @@ const businessMetrics = computed<KpiCard[]>(() => [
 	{ label: '累计用户', value: stats.value?.totalUsers ?? '-', caption: '平台注册规模', icon: User, tone: 'info' },
 	{ label: '今日新增', value: stats.value?.newUsersToday ?? '-', caption: '今日注册用户', icon: UserFilled, tone: 'success' },
 	{
-	  label: '近 30 日实收',
-	  value: formatMoney(stats.value?.revenueCents),
-	  caption: '已完成订单金额',
-	  icon: Histogram,
-	  tone: 'accent',
+		label: '今日 Token',
+		value: formatCount(stats.value?.usageMetrics?.todayToken.totalTokens),
+		caption: `输入 ${formatCount(stats.value?.usageMetrics?.todayToken.inputTokens)} · 输出 ${formatCount(stats.value?.usageMetrics?.todayToken.outputTokens)}`,
+		icon: DataAnalysis,
+		tone: 'violet',
 	},
 	{
 	  label: '平台积分负债',
@@ -649,6 +669,30 @@ const businessMetrics = computed<KpiCard[]>(() => [
 	  caption: '用户钱包可用余额',
 	  icon: Wallet,
 	  tone: 'warning',
+	},
+])
+
+const periodMetrics = computed<KpiCard[]>(() => [
+	{
+		label: '今日实收',
+		value: formatMoney(stats.value?.usageMetrics?.today.settledCents),
+		caption: `生图 ${formatCount(stats.value?.usageMetrics?.today.imageCount)} 张`,
+		icon: Wallet,
+		tone: 'success',
+	},
+	{
+		label: '近 7 日实收',
+		value: formatMoney(stats.value?.usageMetrics?.last7Days.settledCents),
+		caption: `生图 ${formatCount(stats.value?.usageMetrics?.last7Days.imageCount)} 张`,
+		icon: Histogram,
+		tone: 'accent',
+	},
+	{
+		label: '近 30 日实收',
+		value: formatMoney(stats.value?.usageMetrics?.last30Days.settledCents),
+		caption: `生图 ${formatCount(stats.value?.usageMetrics?.last30Days.imageCount)} 张`,
+		icon: Picture,
+		tone: 'info',
 	},
 ])
 
@@ -675,7 +719,7 @@ async function load() {
   try {
 		const [nextStats, nextTodos] = await Promise.all([
 			request<AdminStats>('/api/v1/admin/statistics'),
-			request<AdminTodoCounts>('/api/v1/admin/badge-counts', { silent: true }).catch(() => todoCounts.value),
+			loadAdminBadgeCounts().catch(() => todoCounts.value),
 		])
 		stats.value = nextStats
 		todoCounts.value = nextTodos
@@ -826,7 +870,7 @@ onBeforeUnmount(() => {
         <section class="help-section">
           <h3>这个页面做什么</h3>
           <p>
-            仪表盘汇总经营、AI 生产、运营待办和系统保障数据。日常先看用户、收入、任务成功率与待办，
+            仪表盘汇总经营、AI 生产、运营待办和系统保障数据。日常先看用户、实收、生图、Token、任务成功率与待办，
             出现生产异常时再结合线路、Worker、API 和数据库指标定位问题。
           </p>
           <ul>
@@ -888,8 +932,12 @@ onBeforeUnmount(() => {
               <dd>注册用户规模与今日净增，观察增长是否异常。</dd>
             </div>
             <div>
-              <dt>近 30 日实收</dt>
-              <dd>近 30 天已完成订单的实际支付金额。</dd>
+			  <dt>今日 / 近 7 日 / 近 30 日实收与生图</dt>
+			  <dd>按北京时间自然日统计已结算任务积分与成功交付图片；1 积分按 1 分钱换算，镜像历史记录不会重复计数。</dd>
+			</div>
+			<div>
+			  <dt>今日 Token</dt>
+			  <dd>按北京时间统计 AI 助手已记录的模型 Token 总量，卡片下方显示输入与输出拆分。</dd>
             </div>
             <div>
               <dt>平台积分负债</dt>
@@ -1024,6 +1072,17 @@ onBeforeUnmount(() => {
             :tone="item.tone"
           />
         </div>
+		<div class="board-strip board-strip--period" aria-label="周期经营数据">
+		  <StatCard
+			v-for="item in periodMetrics"
+			:key="item.label"
+			:label="item.label"
+			:value="item.value"
+			:caption="item.caption"
+			:icon="item.icon"
+			:tone="item.tone"
+		  />
+		</div>
         <div class="board-strip board-strip--hero" aria-label="AI 生产状态">
           <StatCard
             v-for="card in heroCards"
@@ -1594,6 +1653,10 @@ onBeforeUnmount(() => {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
+.board-strip--period {
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .board-strip--business {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   grid-template-rows: repeat(2, minmax(0, 1fr));
@@ -1926,6 +1989,7 @@ onBeforeUnmount(() => {
 
   .board-strip--hero,
   .board-strip--business-primary,
+	.board-strip--period,
   .board-strip--business {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1985,6 +2049,7 @@ onBeforeUnmount(() => {
 
   .board-strip--hero,
   .board-strip--business-primary,
+	.board-strip--period,
   .board-strip--business,
   .todo-list {
     grid-template-columns: 1fr;

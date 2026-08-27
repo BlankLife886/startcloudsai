@@ -322,6 +322,16 @@ const serviceProviderMeta = {
   local: { name: '本地处理', detail: '浏览器 Canvas' },
 } as const
 
+const reasoningEffortLabels: Record<string, string> = {
+  none: '无',
+  minimal: '极低',
+  low: '低',
+  medium: '中',
+  high: '高',
+  xhigh: '极高',
+  max: '最高',
+}
+
 function taskServiceProvider(task: AdminTask): keyof typeof serviceProviderMeta {
   if (task.serviceProvider && task.serviceProvider in serviceProviderMeta) {
     return task.serviceProvider
@@ -362,11 +372,15 @@ function taskServiceProviderMeta(task: AdminTask) {
   ]
     .map((value) => String(value || '').trim())
     .filter((value, index, values) => value && values.indexOf(value) === index)
+  const reasoningEffort = String(params.reasoningEffort || '').trim().toLowerCase()
+  const reasoningLabel = reasoningEffort
+    ? `推理强度：${reasoningEffortLabels[reasoningEffort] || reasoningEffort}`
+    : ''
   if (providerNames.length) {
-    const routeDetail = endpoints.join(' / ') || routeNames.join(' / ') || '线路未记录'
+    const routeDetail = endpoints.join(' / ') || routeNames.join(' / ') || '历史线路（端点未留存）'
     return {
       name: providerNames.join(' / '),
-      detail: [modelNames.join(' / '), routeDetail].filter(Boolean).join(' · '),
+      detail: [modelNames.join(' / '), reasoningLabel, routeDetail].filter(Boolean).join(' · '),
     }
   }
   if (
@@ -447,6 +461,7 @@ const PARAM_LABELS: Record<string, string> = {
   guidance: '引导强度',
   strength: '强度',
   count: '张数',
+  reasoningEffort: '推理强度',
   _serviceProvider: '服务商',
   _providerDisplayName: '服务商名称',
   _modelDisplayName: '模型名称',
@@ -458,6 +473,9 @@ const PARAM_LABELS: Record<string, string> = {
   _providerConfigId: '服务商配置 ID',
   _providerRouteId: '路由 ID',
   _providerRouteKey: '路由 Key',
+  _providerEndpoint: '执行端点',
+  _chatProviderEndpoint: '对话执行端点',
+  _imageProviderEndpoint: '生图执行端点',
   _modelTool: '模型工具',
   _modelFastMode: '快速模式',
   _modelResolutions: '可用分辨率',
@@ -491,6 +509,7 @@ const PARAM_ORDER = [
   'guidance',
   'strength',
   'count',
+  'reasoningEffort',
   'autoAspectRatioCandidates',
 ]
 

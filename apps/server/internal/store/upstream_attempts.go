@@ -158,7 +158,10 @@ func ClaimPendingUpstreamTasksByRoute(ctx context.Context, q Q, routeKey, owner 
 		WHERE attempt.route_key = $1
 		  AND attempt.status IN ('submitting','pending')
 		  AND (attempt.status = 'pending' OR (
-			attempt.submitted_at <= $3::timestamptz - interval '30 seconds'
+			-- The submit HTTP timeout is 10s. Leave a short handoff window for
+			-- the submitting worker to publish pending before crash recovery polls
+			-- the deterministic OpenAI task ID.
+			attempt.submitted_at <= $3::timestamptz - interval '25 seconds'
 			AND (attempt.adapter = 'openai'
 				OR jsonb_array_length(attempt.upstream_task_ids) > 0
 				OR (jsonb_typeof(task.params->'_crunTaskIds') = 'array'
@@ -267,6 +270,23 @@ func RenewTaskUpstreamAttemptPoll(ctx context.Context, q Q, id uuid.UUID, owner 
 		SET poll_lease_until = $3, last_polled_at = $4
 		WHERE id = $1 AND poll_owner = $2 AND status IN ('submitting','pending')`,
 		id, owner, now.Add(lease), now)
+	return err
+}
+
+func RenewTaskUpstreamAttemptPolls(ctx context.Context, q Q, ids []uuid.UUID, owners []string, now time.Time, lease time.Duration) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	if len(ids) != len(owners) || lease <= 0 {
+		return errors.New("batch attempt poll renewal requires matching ids and owners")
+	}
+	_, err := q.Exec(ctx, `UPDATE task_upstream_attempts AS attempt
+		SET poll_lease_until = $3, last_polled_at = $2
+		FROM unnest($1::uuid[], $4::text[]) AS renewal(id, owner)
+		WHERE attempt.id = renewal.id
+		  AND attempt.poll_owner = renewal.owner
+		  AND attempt.status IN ('submitting','pending')`,
+		ids, now, now.Add(lease), owners)
 	return err
 }
 

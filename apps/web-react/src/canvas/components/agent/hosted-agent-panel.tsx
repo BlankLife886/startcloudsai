@@ -45,6 +45,14 @@ const MAX_ATTACHMENT_PAYLOAD_BYTES = 12 * 1024 * 1024;
 const HOSTED_REASONING_EFFORT_KEY = "canvas-hosted-agent-reasoning-effort";
 const HOSTED_MODEL_KEY = "canvas-hosted-agent-model";
 const HOSTED_CONFIRM_TOOLS_KEY = "canvas-hosted-agent-confirm-tools";
+const HOSTED_LOCAL_APPROVAL_TIMEOUT_MS = 2 * 60 * 1000;
+
+type HostedToolWaiter = {
+    call: CanvasAgentToolCall;
+    resolve: () => void;
+    reject: (error: Error) => void;
+    timer?: number;
+};
 const VALID_HOSTED_REASONING_EFFORTS = new Set<ModelReasoningEffort>(MODEL_REASONING_EFFORTS);
 type HostedAgentRunBinding = HostedAgentRunScope & {
     attachments: AgentAttachment[];
@@ -130,6 +138,7 @@ function toolTitle(name: string, t: Translate) {
     if (name === "canvas_get_selection") return t("agent.eventExtra.tools.readSelection");
     if (name === "canvas_find_nodes") return t("agent.eventExtra.tools.findNodes");
     if (name === "canvas_inspect_nodes") return t("agent.eventExtra.tools.inspectNodes");
+    if (name === "canvas_inspect_visuals") return t("agent.visual.inspectTool");
     if (name === "canvas_focus_nodes") return t("agent.eventExtra.tools.focusNodes");
     if (name === "canvas_duplicate_selection") return t("agent.eventExtra.tools.duplicateSelection");
     if (name === "canvas_create_image_operation") return t("agent.eventExtra.tools.imageOperation");
@@ -165,7 +174,7 @@ function toolTitle(name: string, t: Translate) {
 
 function hostedToolRunningText(name: string, title: string, t: Translate) {
     if (name === "web_search") return t("agent.hosted.webSearching");
-    if (["canvas_get_state", "canvas_get_selection", "canvas_find_nodes", "canvas_inspect_nodes", "canvas_validate_workflow", "canvas_plan_workflow_run", "canvas_list_agent_history", "canvas_export_snapshot", "canvas_list_projects", "canvas_list_workflow_templates", "canvas_inspect_workflow_template", "prompts_search", "assets_list"].includes(name)) return t("agent.hosted.toolReading");
+    if (["canvas_get_state", "canvas_get_selection", "canvas_find_nodes", "canvas_inspect_nodes", "canvas_inspect_visuals", "canvas_validate_workflow", "canvas_plan_workflow_run", "canvas_list_agent_history", "canvas_export_snapshot", "canvas_list_projects", "canvas_list_workflow_templates", "canvas_inspect_workflow_template", "prompts_search", "assets_list"].includes(name)) return t("agent.hosted.toolReading");
     if (["canvas_apply_ops", "canvas_focus_nodes", "canvas_duplicate_selection", "canvas_create_image_operation", "canvas_replace_workflow_input", "canvas_update_generation_settings", "canvas_undo_last_action", "canvas_redo_last_action", "canvas_create_checkpoint", "canvas_restore_checkpoint", "canvas_restore_agent_transaction", "canvas_create_attachment_nodes", "canvas_create_from_workflow_template", "assets_add"].includes(name)) return t("agent.hosted.toolModifying");
     if (["canvas_regenerate_selection", "canvas_run_generation", "canvas_generation_status", "canvas_run_downstream", "canvas_stop_workflow", "canvas_resume_workflow", "canvas_retry_failed_nodes"].includes(name)) return t("agent.hosted.toolGenerating");
     return t("agent.hosted.toolWorking", { tool: title });
@@ -178,6 +187,18 @@ function describeToolObservation(name: string, observation: unknown, t: Translat
         const summary = t("agent.hosted.webSearchCompleted", { count: sources.length });
         if (!sources.length) return summary;
         return `${summary}\n${sources.map((source, index) => `${index + 1}. [${String(source.title || source.url)}](${String(source.url)})`).join("\n")}`;
+    }
+    if (name === "canvas_inspect_visuals") {
+        const result = (observation && typeof observation === "object" ? observation : {}) as {
+            inspected?: number;
+            compared?: number;
+            exactDuplicateGroups?: unknown[];
+            similarPairs?: unknown[];
+        };
+        return t("agent.visual.inspection", {
+            count: Number(result.compared || result.inspected || 0),
+            duplicates: (result.exactDuplicateGroups?.length || 0) + (result.similarPairs?.length || 0),
+        });
     }
     if (name === "canvas_get_selection") {
         const result = observation as { total?: number; selectedNodeIds?: unknown[]; nodes?: Array<{ id?: string; type?: string; title?: string }>; truncated?: boolean };
@@ -309,7 +330,7 @@ export function HostedAgentPanel() {
     const canvasContextRef = useRef<AgentCanvasContext | null>(useAgentStore.getState().canvasContext);
     const activeRunRef = useRef<HostedAgentRunBinding | null>(null);
     const confirmToolsRef = useRef(false);
-    const hostedToolWaiterRef = useRef<{ call: CanvasAgentToolCall; resolve: () => void; reject: (error: Error) => void } | null>(null);
+    const hostedToolWaiterRef = useRef<HostedToolWaiter | null>(null);
     const projectId = useAgentStore((state) => state.canvasContext?.snapshot.projectId || "");
     const [reasoningEffort, setReasoningEffort] = useState<ModelReasoningEffort | "">(initialHostedReasoningEffort);
     const [confirmTools, setConfirmTools] = useState(initialHostedConfirmTools);
@@ -386,6 +407,7 @@ export function HostedAgentPanel() {
     const rejectHostedPendingTool = useCallback((error: Error, recordFailure = false) => {
         const waiter = hostedToolWaiterRef.current;
         hostedToolWaiterRef.current = null;
+        if (waiter?.timer) window.clearTimeout(waiter.timer);
         if (useAgentStore.getState().pendingTool) setAgentState({ pendingTool: null });
         if (waiter && recordFailure) {
             const detail = error.message;
@@ -399,6 +421,24 @@ export function HostedAgentPanel() {
         }
         waiter?.reject(error);
     }, [addMessage, setAgentState, t]);
+
+    const waitForHostedToolApproval = useCallback((call: CanvasAgentToolCall) => {
+        if (hostedToolWaiterRef.current) return Promise.reject(new Error(t("agent.runtime.pendingCanvasTool")));
+        return new Promise<void>((resolve, reject) => {
+            const waiter: HostedToolWaiter = { call, resolve, reject };
+            waiter.timer = window.setTimeout(() => {
+                if (hostedToolWaiterRef.current !== waiter) return;
+                rejectHostedPendingTool(new Error(t("agent.runtime.canvasToolExpired")), true);
+            }, HOSTED_LOCAL_APPROVAL_TIMEOUT_MS);
+            hostedToolWaiterRef.current = waiter;
+            setAgentState({
+                pendingTool: { requestId: call.requestId, name: call.name, input: hostedToolInput(call) },
+                sending: false,
+                waiting: false,
+                activity: t("agent.runtime.awaitingConfirmation"),
+            });
+        });
+    }, [rejectHostedPendingTool, setAgentState, t]);
 
     const cancelHostedRun = useCallback((markStopped = false, options?: { keepalive?: boolean }) => {
         const scope = activeRunRef.current;
@@ -722,28 +762,40 @@ export function HostedAgentPanel() {
             return allowed && isHostedAgentRunScopeActive(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "");
         };
         if (confirmToolsRef.current && isCanvasWriteTool(call.name)) {
-            if (hostedToolWaiterRef.current) return Promise.reject(new Error(t("agent.runtime.pendingCanvasTool")));
-            return new Promise<void>((resolve, reject) => {
-                hostedToolWaiterRef.current = { call, resolve: () => resolve(), reject };
-                setAgentState({
-                    pendingTool: { requestId: call.requestId, name: call.name, input: hostedToolInput(call) },
+            return waitForHostedToolApproval(call)
+                .then(() => {
+                    if (isHostedAgentRunScopeActive(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "")) {
+                        setAgentState({ sending: true, waiting: true, activity: hostedToolRunningText(call.name, call.title || toolTitle(call.name, t), t) });
+                    }
+                    return runHostedTool(call, scope, verifyBeforeExecution);
+                })
+                .catch((error) => {
+                    if (isHostedAgentRunScopeActive(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "")) {
+                        setAgentState({ sending: true, waiting: true, activity: "" });
+                    }
+                    throw error;
                 });
-            }).then(() => runHostedTool(call, scope, verifyBeforeExecution));
         }
         return runHostedTool(call, scope, verifyBeforeExecution);
-    }, [handleServerHostedToolEvent, runHostedTool, setAgentState, t]);
+    }, [handleServerHostedToolEvent, runHostedTool, setAgentState, t, waitForHostedToolApproval]);
 
     const applyCompletionOps = useCallback(async (ops: CanvasAgentOp[], scope: HostedAgentRunBinding, summary?: string) => {
         if (!ops.length) return;
         const currentProjectId = canvasContextRef.current?.snapshot.projectId || "";
         if (!isHostedAgentRunScopeActive(scope, activeRunRef.current, currentProjectId)) return;
         if (confirmToolsRef.current) {
+            const call: CanvasAgentToolCall = {
+                requestId: `completion:${randomId()}`,
+                name: "canvas_apply_ops",
+                arguments: JSON.stringify({ ops }),
+            };
             try {
-                await handleHostedToolCall({
-                    requestId: `completion:${randomId()}`,
-                    name: "canvas_apply_ops",
-                    arguments: JSON.stringify({ ops }),
-                }, scope);
+                await waitForHostedToolApproval(call);
+                if (!isHostedAgentRunScopeActive(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "")) return;
+                setAgentState({ sending: true, waiting: true, activity: hostedToolRunningText(call.name, toolTitle(call.name, t), t) });
+                // Completion ops are a local fallback emitted after the server
+                // run is terminal, so there is no server-side request to claim.
+                await runHostedTool(call, scope);
             } catch (error) {
                 if (error instanceof Error && error.message === t("agent.runtime.canvasToolCanceled")) return;
                 throw error;
@@ -761,12 +813,13 @@ export function HostedAgentPanel() {
             title: t("agent.eventExtra.tools.canvasOps"),
             text: [summary || summarizeCanvasAgentOps(ops) || t("agent.hosted.applied"), linked ? t("agent.hosted.linked", { count: linked }) : ""].filter(Boolean).join(" · "),
         });
-    }, [addMessage, handleHostedToolCall, t]);
+    }, [addMessage, runHostedTool, setAgentState, t, waitForHostedToolApproval]);
 
     const approvePendingTool = useCallback(() => {
         const waiter = hostedToolWaiterRef.current;
         if (!waiter) return;
         hostedToolWaiterRef.current = null;
+        if (waiter.timer) window.clearTimeout(waiter.timer);
         setAgentState({ pendingTool: null });
         waiter.resolve();
     }, [setAgentState]);
@@ -856,6 +909,7 @@ export function HostedAgentPanel() {
         } catch (error) {
             if (!scopeIsActive()) return;
             const detail = hostedAgentErrorText(error, t("agent.hosted.failed"), t("agent.hosted.authFailed"), t("agent.hosted.interrupted"));
+            rejectHostedPendingTool(new Error(detail));
             setAgentState({ messages: settleHostedAgentMessagesOnStop(useAgentStore.getState().messages, detail) });
             patchAssistant({ role: "error", text: detail, streamId: undefined });
             message.error(detail);
@@ -897,7 +951,7 @@ export function HostedAgentPanel() {
         const context = canvasContextRef.current;
         const files = state.attachments;
         const canvasReferences = state.canvasReferences;
-        if ((!text && !files.length && !canvasReferences.length) || !context || state.sending || state.waiting) return;
+        if ((!text && !files.length && !canvasReferences.length) || !context || state.sending || state.waiting || state.pendingTool) return;
         const controller = new AbortController();
         const scope = createHostedAgentRunBinding(context.snapshot.projectId, [...files], controller);
         activeRunRef.current = scope;
@@ -977,6 +1031,7 @@ export function HostedAgentPanel() {
         } catch (error) {
             if (!scopeIsActive()) return;
             const detail = hostedAgentErrorText(error, t("agent.hosted.failed"), t("agent.hosted.authFailed"), t("agent.hosted.interrupted"));
+            rejectHostedPendingTool(new Error(detail));
             setAgentState({ messages: settleHostedAgentMessagesOnStop(useAgentStore.getState().messages, detail) });
             patchAssistant({ role: "error", text: detail, streamId: undefined });
             message.error(detail);
@@ -1087,7 +1142,7 @@ export function HostedAgentPanel() {
                 prompt={prompt}
                 attachments={attachments.map((item) => ({ id: item.id, name: item.name, url: item.url }))}
                 disabled={!projectId}
-                sending={sending || waiting}
+                sending={sending || waiting || Boolean(pendingTool)}
                 placeholder={t("agent.hosted.placeholder")}
                 hint={t("agent.hosted.composerHint")}
                 theme={theme}

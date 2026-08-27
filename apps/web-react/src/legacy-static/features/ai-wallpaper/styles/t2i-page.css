@@ -2182,6 +2182,97 @@
     linear-gradient(160deg, #12121a, #08080d 68%);
 }
 
+.t2i-stage-media.is-status,
+.t2i-stage-cell.is-status {
+  cursor: default;
+  background: #101015;
+}
+
+.t2i-stage-status,
+.t2i-stage-cell-status {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 10px;
+  padding: 24px;
+  color: rgba(255, 255, 255, 0.76);
+  text-align: center;
+}
+
+.t2i-stage-cell-status {
+  gap: 7px;
+  padding: 14px;
+}
+
+.t2i-status-icon {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.64);
+}
+
+.t2i-stage-cell-status .t2i-status-icon {
+  width: 42px;
+  height: 42px;
+}
+
+.t2i-stage-status.is-failed .t2i-status-icon,
+.t2i-stage-cell-status.is-failed .t2i-status-icon {
+  border-color: rgba(255, 105, 125, 0.3);
+  background: rgba(255, 76, 103, 0.1);
+  color: #ff8fa2;
+}
+
+.t2i-status-icon i {
+  font-size: 1.35rem;
+}
+
+.t2i-stage-status strong,
+.t2i-stage-cell-status strong {
+  color: #fff;
+  font-size: 1rem;
+}
+
+.t2i-stage-cell-status strong {
+  font-size: 0.82rem;
+}
+
+.t2i-terminal-message {
+  display: -webkit-box;
+  max-width: min(52ch, 88%);
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.66);
+  font-size: 0.82rem;
+  font-style: normal;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
+
+.t2i-stage-cell-status .t2i-terminal-message {
+  max-width: 22ch;
+  font-size: 0.68rem;
+  -webkit-line-clamp: 2;
+}
+
+.t2i-status-prompt {
+  display: -webkit-box;
+  max-width: 42ch;
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.38);
+  font-size: 0.76rem;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
 /* 重新生成时抬高层级，避免被相邻格子盖住 */
 .t2i-stage-cell.is-regenerating {
   z-index: 3;
@@ -2990,6 +3081,30 @@
   object-fit: cover;
   object-position: center;
   display: block;
+}
+
+.t2i-film-status {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 5px;
+  background: rgba(255, 76, 103, 0.08);
+  color: #ff8fa2;
+}
+
+.t2i-film-status i {
+  font-size: 1.15rem;
+}
+
+.t2i-film-status em {
+  font-size: 0.6rem;
+  font-style: normal;
+}
+
+.t2i-film-item.is-status::after {
+  border-color: rgba(255, 105, 125, 0.28);
 }
 
 .t2i-film-item .authenticated-image,
@@ -4793,6 +4908,47 @@ html.settings-no-animations .t2i-masonry-card {
 .t2i-page.is-light .t2i-stage-cell-media .authenticated-image,
 .t2i-page.is-light .t2i-stage-cell-media img {
   background: transparent;
+}
+
+.t2i-page.is-light .t2i-stage-media.is-status,
+.t2i-page.is-light .t2i-stage-cell.is-status {
+  background: #f7f7fb;
+}
+
+.t2i-page.is-light .t2i-stage-status,
+.t2i-page.is-light .t2i-stage-cell-status {
+  color: var(--t2i-muted);
+}
+
+.t2i-page.is-light .t2i-stage-status strong,
+.t2i-page.is-light .t2i-stage-cell-status strong {
+  color: var(--t2i-ink);
+}
+
+.t2i-page.is-light .t2i-terminal-message {
+  color: var(--t2i-muted);
+}
+
+.t2i-page.is-light .t2i-status-prompt {
+  color: var(--t2i-faint);
+}
+
+.t2i-page.is-light .t2i-status-icon {
+  border-color: rgba(28, 30, 43, 0.1);
+  background: rgba(28, 30, 43, 0.04);
+  color: rgba(42, 44, 58, 0.58);
+}
+
+.t2i-page.is-light .t2i-stage-status.is-failed .t2i-status-icon,
+.t2i-page.is-light .t2i-stage-cell-status.is-failed .t2i-status-icon {
+  border-color: rgba(204, 72, 92, 0.24);
+  background: rgba(204, 72, 92, 0.08);
+  color: var(--t2i-danger);
+}
+
+.t2i-page.is-light .t2i-film-status {
+  background: #fff4f5;
+  color: var(--t2i-danger);
 }
 
 .t2i-page.is-light .t2i-model-badge {

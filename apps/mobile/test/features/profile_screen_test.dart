@@ -70,6 +70,7 @@ Widget _screen({
   required AppUser? user,
   bool overviewFails = false,
   double textScale = 1,
+  Future<bool> Function(Uri uri)? openExternal,
 }) => ProviderScope(
   overrides: [
     sessionControllerProvider.overrideWith(
@@ -91,11 +92,73 @@ Widget _screen({
       ).copyWith(textScaler: TextScaler.linear(textScale)),
       child: child!,
     ),
-    home: const ProfileScreen(),
+    home: ProfileScreen(openExternal: openExternal),
   ),
 );
 
 void main() {
+  test('normalizes legacy profile websites and rejects unsafe schemes', () {
+    expect(
+      profileWebsiteUri(' star.example.com/portfolio '),
+      Uri.parse('https://star.example.com/portfolio'),
+    );
+    expect(
+      profileWebsiteUri('http://example.com/path?q=1'),
+      Uri.parse('http://example.com/path?q=1'),
+    );
+    expect(profileWebsiteUri('javascript:alert(1)'), isNull);
+    expect(profileWebsiteUri('ftp://example.com'), isNull);
+    expect(profileWebsiteUri('  '), isNull);
+  });
+
+  testWidgets('profile website opens safely from a flat metadata action', (
+    tester,
+  ) async {
+    Uri? opened;
+    await tester.pumpWidget(
+      _screen(
+        user: _user,
+        openExternal: (uri) async {
+          opened = uri;
+          return true;
+        },
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final website = find.byKey(const Key('profile-website'));
+    expect(website, findsOneWidget);
+    expect(
+      find.descendant(of: website, matching: find.byType(DecoratedBox)),
+      findsNothing,
+    );
+    final hero = tester.widget<ColoredBox>(
+      find.byKey(const Key('profile-hero-surface')),
+    );
+    expect(hero.color, Theme.of(tester.element(website)).colorScheme.surface);
+
+    await tester.tap(website);
+    await tester.pumpAndSettle();
+
+    expect(opened, Uri.parse('https://star.example.com'));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('profile website launch failure uses the centered notice', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _screen(user: _user, openExternal: (uri) async => false),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('profile-website')));
+    await tester.pump();
+
+    expect(find.text('暂时无法打开个人网站'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('signed-in profile is grouped and contains no repeated tools', (
     tester,
   ) async {

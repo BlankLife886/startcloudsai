@@ -90,7 +90,10 @@ function succeededRun(body, content = '已完成你的创作请求。') {
   }
 }
 
-async function mockAssistant(page, { user = account, conversations = [], runs = [] } = {}) {
+async function mockAssistant(
+  page,
+  { user = account, conversations = [], runs = [], config = assistantConfig } = {},
+) {
   await page.addInitScript(() => localStorage.setItem('starclouds-locale', 'zh-CN'))
   await page.route('**/api/**', (route) => fulfillJson(route, {}))
   await mockBootstrapConfig(page)
@@ -99,7 +102,7 @@ async function mockAssistant(page, { user = account, conversations = [], runs = 
   await page.route('**/api/v1/runtime-config', (route) =>
     fulfillJson(route, { routes: {}, features: {}, pageLayout: {}, blacklist: { blocked: false } }),
   )
-  await page.route('**/api/v1/assistant/config', (route) => fulfillJson(route, assistantConfig))
+  await page.route('**/api/v1/assistant/config', (route) => fulfillJson(route, config))
   await page.route('**/api/v1/assistant/conversations**', (route) =>
     fulfillJson(route, { conversations }),
   )
@@ -312,6 +315,74 @@ test.describe('React assistant workspace contract', () => {
     for (const field of ['resolution', 'requestSize', 'width', 'height', 'quality']) {
       expect(runBody).not.toHaveProperty(field)
     }
+  })
+
+  test('image preferences balance dynamic model capability options', async ({ page }) => {
+    await mockAssistant(page, {
+      config: {
+        ...assistantConfig,
+        imageModels: [
+          {
+            model: 'image-dynamic',
+            label: 'Image Dynamic',
+            pricePoints: 20,
+            aspectRatios: ['auto', '16:9', '9:16', '1:1', '3:2'],
+            resolutions: ['1K'],
+            qualities: ['low', 'medium', 'high'],
+            maxReferenceImages: 4,
+            maxImages: 16,
+          },
+        ],
+      },
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    await page.locator('.agent-mode-button').click()
+    await page.getByRole('button', { name: '图片生成' }).click()
+    await page.locator('.image-settings-button').click()
+
+    const panel = page.locator('.image-mode-preferences')
+    await expect(panel).toBeVisible()
+    await expect(panel.locator('.ratio-options button')).toHaveCount(5)
+    await expect(panel.locator('.image-count-options').first().locator('button')).toHaveCount(16)
+
+    const layout = await panel.evaluate((element) => {
+      const columns = (selector) =>
+        getComputedStyle(element.querySelector(selector))
+          .gridTemplateColumns.split(/\s+/)
+          .filter(Boolean).length
+      const countButtons = Array.from(
+        element.querySelectorAll('.preferences-split .image-count-options button'),
+      )
+      const rowSizes = Array.from(
+        countButtons.reduce((rows, button) => {
+          const top = Math.round(button.getBoundingClientRect().top)
+          rows.set(top, (rows.get(top) || 0) + 1)
+          return rows
+        }, new Map()).values(),
+      )
+      const rect = element.getBoundingClientRect()
+      return {
+        ratioColumns: columns('.ratio-options'),
+        resolutionColumns: columns('.image-resolution-options'),
+        countColumns: columns('.preferences-split .image-count-options'),
+        qualityColumns: columns(':scope > .preferences-block:last-child .image-count-options'),
+        countRows: rowSizes,
+        panelTop: rect.top,
+        panelBottom: rect.bottom,
+        viewportHeight: window.innerHeight,
+      }
+    })
+
+    expect(layout).toMatchObject({
+      ratioColumns: 5,
+      resolutionColumns: 1,
+      countColumns: 8,
+      qualityColumns: 3,
+      countRows: [8, 8],
+    })
+    expect(layout.panelTop).toBeGreaterThanOrEqual(0)
+    expect(layout.panelBottom).toBeLessThanOrEqual(layout.viewportHeight)
   })
 
   test('greeting in image mode sends a chat turn instead of generating images', async ({ page }) => {

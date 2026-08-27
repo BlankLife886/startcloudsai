@@ -5,6 +5,7 @@ import { CanvasOperationNodeType, isCanvasExecutableNode } from "./canvas-operat
 import { canvasLocalImageOperationOutputCount, normalizeCanvasLocalImageOperationParams } from "./canvas-local-image-operation.ts";
 import { compileCanvasWorkflow } from "./canvas-workflow.ts";
 import { copyCanvasNodeMetadata } from "./canvas-node-copy.ts";
+import { inspectCanvasVisuals } from "./canvas-visual-inspection.ts";
 import type { CanvasNodeMetadata } from "../../types/canvas.ts";
 import type { SiteToolName } from "../agent/agent-site-tools.ts";
 import type { AgentWorkflowPreflightResult } from "../../stores/use-agent-store.ts";
@@ -357,6 +358,18 @@ export async function runCanvasAgentTool(request: CanvasAgentToolRequest, canvas
     }
     if (request.name === "canvas_inspect_nodes") {
         return inspectCanvasNodes(request.arguments, canvas);
+    }
+    if (request.name === "canvas_inspect_visuals") {
+        const input = asRecord(safeParse(request.arguments)) || {};
+        return inspectCanvasVisuals(liveSnapshot(canvas), {
+            scope: ["auto", "selection", "workflow", "recent"].includes(String(input.scope || ""))
+                ? String(input.scope) as "auto" | "selection" | "workflow" | "recent"
+                : "auto",
+            workflowId: String(input.workflowId || "").trim() || undefined,
+            nodeIds: Array.isArray(input.nodeIds) ? input.nodeIds.map((id) => String(id || "").trim()).filter(Boolean) : undefined,
+            maxImages: Number(input.maxImages) || undefined,
+            offset: Number(input.offset) || undefined,
+        });
     }
     if (request.name === "canvas_focus_nodes") {
         return focusCanvasNodes(request.arguments, canvas);
@@ -980,6 +993,9 @@ function validateCanvasWorkflows(rawArguments: string, canvas: CanvasAgentToolCa
     const input = asRecord(safeParse(rawArguments)) || {};
     const snapshot = liveSnapshot(canvas);
     const workflowId = String(input.workflowId || "").trim();
+    const requiredInputNodeIds = [...new Set(Array.isArray(input.requiredInputNodeIds)
+        ? input.requiredInputNodeIds.map((id) => String(id || "").trim()).filter(Boolean)
+        : [])];
     const groups = buildCanvasSidePanelWorkflowGroups(snapshot.nodes, snapshot.connections).filter((group) => group.firstConfig && (!workflowId || group.id === workflowId));
     if (!groups.length) throw new Error(workflowId ? `没有找到工作流 ${workflowId}` : "当前画布没有可执行工作流");
     const workflows = groups.map((group, index) => {
@@ -1003,7 +1019,34 @@ function validateCanvasWorkflows(rawArguments: string, canvas: CanvasAgentToolCa
             emptyInputNodeIds,
         };
     });
-    return { valid: workflows.every((workflow) => workflow.valid), total: workflows.length, workflows };
+    const knownNodeIds = new Set(snapshot.nodes.map((node) => node.id));
+    const executableNodeIds = new Set(groups.flatMap((group) => group.nodes.filter((node) => isCanvasExecutableNode(node)).map((node) => node.id)));
+    const outgoing = new Map<string, string[]>();
+    snapshot.connections.forEach((connection) => outgoing.set(connection.fromNodeId, [...(outgoing.get(connection.fromNodeId) || []), connection.toNodeId]));
+    const reachesExecutable = (startNodeId: string) => {
+        const queue = [startNodeId];
+        const visited = new Set<string>();
+        while (queue.length) {
+            const nodeId = queue.shift()!;
+            if (visited.has(nodeId)) continue;
+            visited.add(nodeId);
+            if (nodeId !== startNodeId && executableNodeIds.has(nodeId)) return true;
+            (outgoing.get(nodeId) || []).forEach((nextNodeId) => {
+                if (!visited.has(nextNodeId)) queue.push(nextNodeId);
+            });
+        }
+        return false;
+    };
+    const missingRequiredInputNodeIds = requiredInputNodeIds.filter((nodeId) => !knownNodeIds.has(nodeId));
+    const disconnectedRequiredInputNodeIds = requiredInputNodeIds.filter((nodeId) => knownNodeIds.has(nodeId) && !reachesExecutable(nodeId));
+    return {
+        valid: workflows.every((workflow) => workflow.valid) && !missingRequiredInputNodeIds.length && !disconnectedRequiredInputNodeIds.length,
+        total: workflows.length,
+        workflows,
+        requiredInputNodeIds,
+        missingRequiredInputNodeIds,
+        disconnectedRequiredInputNodeIds,
+    };
 }
 
 function resumeCanvasWorkflow(rawArguments: string, canvas: CanvasAgentToolCanvas, retryFailed: boolean) {

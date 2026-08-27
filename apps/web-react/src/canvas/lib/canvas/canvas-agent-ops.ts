@@ -284,12 +284,15 @@ function graphOps(op: Extract<CanvasAgentOp, { type: "create_graph" }>, snapshot
 
     const ids = new Map(plans.map((plan) => [plan.key, `${plan.type}-${nanoid(6)}`]));
     const origin = op.position || { x: op.x ?? flowOriginX(snapshot) + index * 40, y: op.y ?? flowOriginY(snapshot) };
-    const { positions: rawPositions, edges } = layoutCanvasGraph(
+    const requestedEdges = (op.edges || []).map((edge) => ({ from: String(edge?.from || "").trim(), to: String(edge?.to || "").trim() }));
+    const graphKeys = new Set(ids.keys());
+    const internalRequestedEdges = requestedEdges.filter((edge) => graphKeys.has(edge.from) && graphKeys.has(edge.to));
+    const { positions: rawPositions, edges: internalEdges } = layoutCanvasGraph(
         plans.map((plan) => ({ key: plan.key, width: plan.spec.width, height: plan.spec.height })),
-        (op.edges || []).map((edge) => ({ from: String(edge?.from || "").trim(), to: String(edge?.to || "").trim() })),
+        internalRequestedEdges,
         { originX: origin.x, originY: origin.y, columnGap: FLOW_GAP, rowGap: GRAPH_ROW_GAP },
     );
-    const generationModes = resolveCanvasAgentGraphModes(plans, edges);
+    const generationModes = resolveCanvasAgentGraphModes(plans, internalEdges);
     const positions = placeCanvasAgentGraph(rawPositions, plans, snapshot);
 
     const ops: CanvasAgentOp[] = plans.map((plan) => {
@@ -307,8 +310,20 @@ function graphOps(op: Extract<CanvasAgentOp, { type: "create_graph" }>, snapshot
             ...(metadata ? { metadata } : {}),
         };
     });
-    edges.forEach((edge) => {
-        ops.push({ type: "connect_nodes", fromNodeId: ids.get(edge.from), toNodeId: ids.get(edge.to) });
+    const existingIds = new Set(snapshot.nodes.map((node) => node.id));
+    const resolveEdgeNodeId = (reference: string) => ids.get(reference) || (existingIds.has(reference) ? reference : undefined);
+    const connectionEdges = [
+        ...internalEdges,
+        ...requestedEdges.filter((edge) => {
+            const touchesNewNode = graphKeys.has(edge.from) || graphKeys.has(edge.to);
+            return touchesNewNode && !(graphKeys.has(edge.from) && graphKeys.has(edge.to));
+        }),
+    ];
+    connectionEdges.forEach((edge) => {
+        const fromNodeId = resolveEdgeNodeId(edge.from);
+        const toNodeId = resolveEdgeNodeId(edge.to);
+        if (!fromNodeId || !toNodeId || fromNodeId === toNodeId) return;
+        ops.push({ type: "connect_nodes", fromNodeId, toNodeId });
     });
     return ops;
 }

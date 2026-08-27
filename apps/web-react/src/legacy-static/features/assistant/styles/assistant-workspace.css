@@ -3102,9 +3102,14 @@
   left: 24px;
   display: grid;
   width: min(620px, calc(100% - 48px));
+  max-height: min(620px, calc(100dvh - 128px));
   gap: 16px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 16px 16px 14px;
   border-radius: 20px;
+  scrollbar-width: thin;
 }
 
 .assistant-workspace .image-mode-preferences .preferences-block {
@@ -3119,7 +3124,7 @@
 
 .assistant-workspace .image-mode-preferences .preferences-split {
   display: grid;
-  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
   gap: 12px;
 }
 
@@ -3141,6 +3146,13 @@
   height: auto;
 }
 
+.assistant-workspace .image-mode-preferences .ratio-options {
+  grid-template-columns: repeat(
+    var(--assistant-option-columns, 1),
+    minmax(0, 1fr)
+  );
+}
+
 .assistant-workspace .image-resolution-options,
 .assistant-workspace .image-count-options {
   display: grid;
@@ -3150,11 +3162,17 @@
 }
 
 .assistant-workspace .image-resolution-options {
-  grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
+  grid-template-columns: repeat(
+    var(--assistant-option-columns, 1),
+    minmax(0, 1fr)
+  );
 }
 
 .assistant-workspace .image-count-options {
-  grid-template-columns: repeat(auto-fit, minmax(40px, 1fr));
+  grid-template-columns: repeat(
+    var(--assistant-option-columns, 1),
+    minmax(32px, 1fr)
+  );
 }
 
 .assistant-workspace .image-resolution-options button,

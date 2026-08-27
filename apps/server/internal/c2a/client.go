@@ -23,13 +23,16 @@ import (
 )
 
 const (
-	maxResponseBytes               int64 = 64 << 20
-	maxImageBytes                  int64 = 20 << 20
-	asyncSubmitTimeout                   = 30 * time.Second
+	maxResponseBytes int64 = 64 << 20
+	maxImageBytes    int64 = 20 << 20
+	// The async endpoint only needs to acknowledge the deterministic task ID.
+	// Generation continues upstream, so a slow acknowledgement is treated as
+	// ambiguous and recovered by polling instead of occupying a worker slot.
+	asyncSubmitTimeout                   = 10 * time.Second
 	asyncPollTimeout                     = 15 * time.Second
 	asyncPollInterval                    = 2 * time.Second
 	maxImageDownloadTimeout              = 3 * time.Minute
-	imagePollStatusTimeout               = 45 * time.Second
+	imagePollStatusTimeout               = 10 * time.Second
 	imageResultDownloadConcurrency int64 = 2
 )
 
@@ -236,6 +239,7 @@ type imageTask struct {
 	ID           string           `json:"id"`
 	ClientTaskID string           `json:"client_task_id"`
 	Status       string           `json:"status"`
+	Terminal     bool             `json:"terminal"`
 	Progress     string           `json:"progress"`
 	Error        string           `json:"error"`
 	ErrorCode    string           `json:"error_code"`
@@ -264,12 +268,24 @@ func (t *imageTask) UnmarshalJSON(buf []byte) error {
 		}
 		return ""
 	}
+	readBool := func(keys ...string) bool {
+		for _, key := range keys {
+			if value, ok := raw[key]; ok {
+				var result bool
+				if json.Unmarshal(value, &result) == nil {
+					return result
+				}
+			}
+		}
+		return false
+	}
 	t.ID = readString("id")
 	t.ClientTaskID = readString("client_task_id", "clientTaskId")
 	t.Status = readString("status", "state")
+	t.Terminal = readBool("terminal", "done")
 	t.Progress = readString("progress")
 	t.ErrorCode = readString("error_code", "errorCode")
-	t.Error = readString("error", "message")
+	t.Error = readString("error", "message", "public_error", "publicError", "error_message", "errorMessage")
 	if t.Error == "" {
 		t.Error = imageTaskFailureMessage(raw)
 	}
@@ -291,11 +307,12 @@ func (t *imageTask) UnmarshalJSON(buf []byte) error {
 }
 
 // imageTaskFailureMessage reads only known text-bearing fields. Some C2A
-// deployments return a review/refusal explanation under result/output/data
+// deployments return a final review/refusal explanation under result/output/data
 // while keeping status=text_review and leaving error empty.
 func imageTaskFailureMessage(raw map[string]json.RawMessage) string {
 	for _, key := range []string{
 		"error", "message", "detail", "reason", "error_description", "errorDescription",
+		"public_error", "publicError", "error_message", "errorMessage",
 		"output_text", "outputText", "text", "response",
 	} {
 		if message := imageTaskTextValue(raw[key], 0); message != "" {
@@ -322,6 +339,7 @@ func imageTaskTextValue(raw json.RawMessage, depth int) string {
 	if json.Unmarshal(raw, &object) == nil {
 		for _, key := range []string{
 			"error", "message", "detail", "reason", "error_description", "errorDescription",
+			"public_error", "publicError", "error_message", "errorMessage",
 			"output_text", "outputText", "text", "response", "content",
 		} {
 			if message := imageTaskTextValue(object[key], depth+1); message != "" {
@@ -593,7 +611,7 @@ func imageTaskError(task imageTask) error {
 	message := strings.TrimSpace(task.Error)
 	if message == "" {
 		switch normalizedImageTaskStatus(task) {
-		case "text", "text_result", "text_response", "文本":
+		case "text_review", "text", "text_result", "text_response", "文本":
 			message = "上游返回文本，未生成图片"
 		default:
 			message = "上游图片任务失败"
@@ -635,8 +653,8 @@ func normalizedImageTaskStatus(task imageTask) string {
 }
 
 func imageTaskStatusPending(status string) bool {
-	// 只有明确成功/失败才是终态。text_review、moderating 等审核中间态，
-	// 以及上游新增的未知状态，都继续轮询；attempt 自带 expires_at 兜底。
+	// 只有明确成功/失败才是终态。moderating 等审核中间态和上游新增的
+	// 未知状态继续轮询；text_review 表示图片请求返回了文本，直接失败。
 	return !imageTaskStatusSucceeded(status) && !imageTaskStatusFailed(status)
 }
 
@@ -651,7 +669,7 @@ func imageTaskStatusSucceeded(status string) bool {
 
 func imageTaskStatusFailed(status string) bool {
 	switch status {
-	case "error", "failed", "canceled", "cancelled", "expired", "text", "text_result", "text_response", "文本":
+	case "error", "failed", "canceled", "cancelled", "expired", "text_review", "text", "text_result", "text_response", "文本":
 		return true
 	default:
 		return false
@@ -668,9 +686,10 @@ func ImagePollHoldsForReview(status string) bool {
 }
 
 func imageTaskIsTextFailure(task imageTask) bool {
-	if imageTaskStatusFailed(normalizedImageTaskStatus(task)) {
-		switch normalizedImageTaskStatus(task) {
-		case "text", "text_result", "text_response", "文本":
+	status := normalizedImageTaskStatus(task)
+	if imageTaskStatusFailed(status) {
+		switch status {
+		case "text_review", "text", "text_result", "text_response", "文本":
 			return true
 		}
 	}
@@ -703,6 +722,9 @@ func (c *Client) completedTaskImages(ctx context.Context, task imageTask, expect
 	}
 	if imageTaskStatusSucceeded(status) {
 		return nil, stats, true, &UpstreamError{Message: "上游图片任务成功但未返回图片", StatusCode: http.StatusBadGateway}
+	}
+	if task.Terminal {
+		return nil, stats, true, imageTaskError(task)
 	}
 	if imageTaskStatusFailed(status) {
 		return nil, stats, true, imageTaskError(task)
@@ -1024,7 +1046,7 @@ func (c *Client) pollImageTasksEach(ctx context.Context, taskIDs []string, expec
 }
 
 func imageTaskNeedsCompletionClaim(task imageTask, expected int) bool {
-	if imageTaskIsTextFailure(task) {
+	if task.Terminal || imageTaskIsTextFailure(task) {
 		return true
 	}
 	status := normalizedImageTaskStatus(task)

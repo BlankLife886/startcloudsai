@@ -323,6 +323,7 @@ export function toolName(name: string) {
     if (name === "exec" || name === "exec_command" || name.endsWith("__exec_command")) return tr("tools.executeCommand");
     if (name === "apply_patch" || name.endsWith("__apply_patch")) return tr("tools.editFiles");
     if (name === "web__run" || name.endsWith("__web__run")) return tr("tools.searchWeb");
+    if (name === "canvas_inspect_visuals") return i18n.t("agent.visual.inspectTool");
     if (name === "canvas_plan_workflow_run") return i18n.t("agent.siteTools.workflowPreflight");
     if (toolTranslationKeys[name]) return tr(`tools.${toolTranslationKeys[name]}`);
     if (isSiteTool(name)) return SITE_TOOL_LABELS[name];
@@ -387,6 +388,11 @@ export function toolSummary(item?: AgentEventItem) {
     if (name === "web_search") return i18n.t("agent.hosted.webSearchCompleted", { count: Array.isArray(objectField(result, "sources")) ? (objectField(result, "sources") as unknown[]).length : 0 });
     if (name === "canvas_get_state") return Array.isArray(nodeField) || Array.isArray(connectionField) ? canvasContentSummary(nodes, connections.length) : tr("canvasRead");
     if (name === "canvas_get_selection") return tr("selectionRead");
+    if (name === "canvas_inspect_visuals") {
+        const exact = Array.isArray(objectField(result, "exactDuplicateGroups")) ? (objectField(result, "exactDuplicateGroups") as unknown[]).length : 0;
+        const similar = Array.isArray(objectField(result, "similarPairs")) ? (objectField(result, "similarPairs") as unknown[]).length : 0;
+        return i18n.t("agent.visual.inspection", { count: numberField(result, "compared") || numberField(result, "inspected"), duplicates: exact + similar });
+    }
     if (name === "canvas_plan_workflow_run") {
         const totals = objectField(result, "totals") as Record<string, unknown> | undefined;
         return tr("workflowPreflight", { count: Array.isArray(objectField(result, "nodeIds")) ? (objectField(result, "nodeIds") as unknown[]).length : 0, price: numberField(totals || {}, "total") });

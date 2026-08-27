@@ -79,24 +79,26 @@ export function AgentChatTimeline({
     return (
         <div className="relative min-h-0 flex-1">
             <div ref={listRef} className="thin-scrollbar h-full select-text overflow-y-auto" onScroll={updateScrollState}>
-                <div ref={contentRef} className="space-y-4 px-4 pb-5 pt-4">
+                <div ref={contentRef} className={`space-y-4 px-4 pt-4 ${pendingTool ? "pb-40" : "pb-5"}`}>
                     {timeline.map((entry) => entry.type === "commands"
                         ? <AgentCommandGroupRow key={entry.id} items={entry.items} theme={theme} />
                         : <AgentChatMessageRow key={entry.item.id} item={entry.item} theme={theme} />)}
-                    {pendingTool ? (
-                        <AgentPendingToolCard
-                            summary={summarizeCanvasAgentOps(pendingTool.input?.ops || []) || toolName(pendingTool.name)}
-                            detail={toolCallDetail(pendingTool.name, pendingTool.input, "pending")}
-                            theme={theme}
-                            onReject={onRejectTool}
-                            onApprove={onApproveTool}
-                        />
-                    ) : null}
                     {pendingApprovals.map((approval) => <AgentApprovalCard key={approval.requestId} approval={approval} theme={theme} onDecision={(decision) => onApprovalDecision(approval, decision)} />)}
                     {(sending || waiting || showBootstrap) && !visibleRunActivity && !pendingTool && !pendingApprovals.length ? <AgentWorkingMessage text={working.text} detail={"detail" in working && typeof working.detail === "string" ? working.detail : undefined} status={showBootstrap ? bootstrapStatus?.status : undefined} mcpStatuses={showBootstrap ? Object.entries(mcpStartupStatuses).map(([name, item]) => ({ name, ...item })) : []} activityKey={working.key} theme={theme} /> : null}
                 </div>
             </div>
-            {showScrollToBottom ? (
+            {pendingTool ? (
+                <div className="absolute inset-x-3 bottom-2 z-20">
+                    <AgentPendingToolCard
+                        summary={summarizeCanvasAgentOps(pendingTool.input?.ops || []) || toolName(pendingTool.name)}
+                        detail={toolCallDetail(pendingTool.name, pendingTool.input, "pending")}
+                        theme={theme}
+                        onReject={onRejectTool}
+                        onApprove={onApproveTool}
+                    />
+                </div>
+            ) : null}
+            {showScrollToBottom && !pendingTool ? (
                 <AgentScrollToBottom theme={theme} title={t("agent.chat.latestMessages")} onClick={() => scrollToBottom()} />
             ) : null}
         </div>

@@ -28,7 +28,7 @@ var Defaults = map[string]json.RawMessage{
 	"image_display_quality":                       json.RawMessage(`85`),
 	"image_display_max_edge":                      json.RawMessage(`2048`),
 	"image_thumb_max_edge":                        json.RawMessage(`512`),
-	"image_fetch_concurrency":                     json.RawMessage(`2`),
+	"image_fetch_concurrency":                     json.RawMessage(`8`),
 	"cross_provider_same_model_balancing_enabled": json.RawMessage(`false`),
 	"admin_image_analysis_provider_id":            json.RawMessage(`""`),
 	"admin_image_analysis_model_id":               json.RawMessage(`""`),

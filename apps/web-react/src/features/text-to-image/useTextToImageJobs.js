@@ -86,6 +86,7 @@ function taskFromJob(job = {}, patch = {}) {
     startedAt: job.startedAt || "",
     finishedAt: job.finishedAt || "",
     error: String(job.error || ""),
+    errorCode: String(job.errorCode || ""),
     input,
     params,
     ...patch,

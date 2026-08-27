@@ -500,7 +500,7 @@ func TestCompletedTaskImagesNormalizesProviderStatuses(t *testing.T) {
 	}{
 		{status: "pending", pending: true},
 		{status: "processing", pending: true},
-		{status: "text_review", pending: true},
+		{status: "text_review", explicitFailure: true},
 		{status: "moderating", pending: true},
 		{status: "mystery_new_state", pending: true},
 		{status: "text", explicitFailure: true},
@@ -768,7 +768,28 @@ func TestPollImageTasksReadsNestedTextReviewReason(t *testing.T) {
 	client.PollImageTasksEach(context.Background(), []string{"reviewed"}, map[string]int{"reviewed": 1}, func(_ string, got ImageTaskPollResult) {
 		result = got
 	})
-	if !result.Pending || result.Status != "text_review" || result.ErrorMessage != "内容审核拒绝：参考图不符合服务政策" {
+	if result.Pending || !result.ExplicitFailure || result.Err == nil || result.Status != "text_review" || result.ErrorMessage != "内容审核拒绝：参考图不符合服务政策" {
 		t.Fatalf("text review result = %#v", result)
+	}
+}
+
+func TestPollImageTasksReturnsPublicTerminalError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"id":"reviewed","status":"text_review","terminal":true,"error_code":"upstream_text_reply","public_error":"请上传需要重新设计的 APP 首页参考图"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	var result ImageTaskPollResult
+	client.PollImageTasksEach(context.Background(), []string{"reviewed"}, map[string]int{"reviewed": 1}, func(_ string, got ImageTaskPollResult) {
+		result = got
+	})
+	if result.Pending || !result.ExplicitFailure || result.Err == nil {
+		t.Fatalf("terminal text result = %#v", result)
+	}
+	if result.ErrorMessage != "请上传需要重新设计的 APP 首页参考图" ||
+		!strings.Contains(result.Err.Error(), "upstream_text_reply: 请上传需要重新设计的 APP 首页参考图") {
+		t.Fatalf("terminal text error was not preserved: %#v", result)
 	}
 }

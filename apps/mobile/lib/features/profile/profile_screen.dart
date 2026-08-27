@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/providers.dart';
+import '../../core/widgets/app_notice.dart';
 import '../../core/widgets/app_visual.dart';
 import '../../core/widgets/authenticated_image.dart';
 import '../../app/appearance.dart';
@@ -32,11 +34,24 @@ Future<void> _refreshProfile(WidgetRef ref) async {
   ]);
 }
 
+Uri? profileWebsiteUri(String value) {
+  final raw = value.trim();
+  if (raw.isEmpty) return null;
+  final candidate = Uri.tryParse(raw)?.hasScheme == true ? raw : 'https://$raw';
+  final uri = Uri.tryParse(candidate);
+  if (uri == null ||
+      !{'http', 'https'}.contains(uri.scheme) ||
+      uri.host.isEmpty) {
+    return null;
+  }
+  return uri;
+}
+
 abstract final class _ProfileLayout {
   static const inset = 20.0;
   static const block = 10.0;
   static const section = 20.0;
-  static const radius = 20.0;
+  static const radius = 8.0;
   static const avatar = 36.0;
   static const action = 36.0;
   static const iconWell = 44.0;
@@ -54,7 +69,28 @@ abstract final class _ProfileLayout {
 }
 
 class ProfileScreen extends ConsumerWidget {
-  const ProfileScreen({super.key});
+  const ProfileScreen({this.openExternal, super.key});
+
+  final Future<bool> Function(Uri uri)? openExternal;
+
+  Future<void> _openWebsite(BuildContext context, String value) async {
+    final uri = profileWebsiteUri(value);
+    if (uri == null) {
+      AppNotice.warning(context, '个人网站地址不可用');
+      return;
+    }
+    try {
+      final opened = await (openExternal ?? _launchExternal)(uri);
+      if (context.mounted && !opened) {
+        AppNotice.error(context, '暂时无法打开个人网站');
+      }
+    } catch (_) {
+      if (context.mounted) AppNotice.error(context, '暂时无法打开个人网站');
+    }
+  }
+
+  Future<bool> _launchExternal(Uri uri) =>
+      launchUrl(uri, mode: LaunchMode.externalApplication);
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -81,6 +117,7 @@ class ProfileScreen extends ConsumerWidget {
           return _SignedInProfile(
             user: state.user!,
             environmentLabel: environment.label,
+            onOpenWebsite: () => _openWebsite(context, state.user!.websiteUrl),
           );
         },
       ),
@@ -166,10 +203,15 @@ class _AnonymousIdentity extends StatelessWidget {
 }
 
 class _SignedInProfile extends ConsumerWidget {
-  const _SignedInProfile({required this.user, required this.environmentLabel});
+  const _SignedInProfile({
+    required this.user,
+    required this.environmentLabel,
+    required this.onOpenWebsite,
+  });
 
   final AppUser user;
   final String environmentLabel;
+  final VoidCallback onOpenWebsite;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -192,6 +234,7 @@ class _SignedInProfile extends ConsumerWidget {
                   onEdit: () => context.push('/profile/edit'),
                   onOpenNotifications: () =>
                       context.push('/profile/notifications'),
+                  onOpenWebsite: onOpenWebsite,
                 ),
                 const SizedBox(height: 22),
                 _ProfileOverviewPanel(
@@ -261,27 +304,10 @@ class _ProfileHeroShell extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final dark = Theme.of(context).brightness == Brightness.dark;
     final topInset = MediaQuery.paddingOf(context).top;
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: dark
-              ? [
-                  const Color(0xFF2A3368),
-                  const Color(0xFF1C2038),
-                  colors.surface,
-                ]
-              : [
-                  const Color(0xFFFFE4D6),
-                  const Color(0xFFFFF1EA),
-                  const Color(0xFFF0ECFF),
-                  colors.surface,
-                ],
-        ),
-      ),
+    return ColoredBox(
+      key: const Key('profile-hero-surface'),
+      color: colors.surface,
       child: Padding(
         padding: EdgeInsets.fromLTRB(
           _ProfileLayout.inset,
@@ -376,12 +402,14 @@ class _ProfileIdentityHeader extends StatelessWidget {
     required this.unreadCount,
     required this.onEdit,
     required this.onOpenNotifications,
+    required this.onOpenWebsite,
   });
 
   final AppUser user;
   final int unreadCount;
   final VoidCallback onEdit;
   final VoidCallback onOpenNotifications;
+  final VoidCallback onOpenWebsite;
 
   @override
   Widget build(BuildContext context) {
@@ -493,8 +521,11 @@ class _ProfileIdentityHeader extends StatelessWidget {
                           ),
                         if (user.websiteUrl.isNotEmpty)
                           _ProfileMetaChip(
-                            icon: Icons.link,
+                            key: const Key('profile-website'),
+                            icon: Icons.open_in_new_rounded,
                             text: user.websiteUrl,
+                            tooltip: '打开个人网站',
+                            onTap: onOpenWebsite,
                           ),
                       ],
                     ),
@@ -1050,42 +1081,49 @@ class _AppearanceTile extends ConsumerWidget {
 }
 
 class _ProfileMetaChip extends StatelessWidget {
-  const _ProfileMetaChip({required this.icon, required this.text});
+  const _ProfileMetaChip({
+    required this.icon,
+    required this.text,
+    this.tooltip,
+    this.onTap,
+    super.key,
+  });
 
   final IconData icon;
   final String text;
+  final String? tooltip;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final dark = Theme.of(context).brightness == Brightness.dark;
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: dark
-            ? colors.surfaceContainerHigh
-            : Colors.white.withValues(alpha: .7),
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 13, color: colors.onSurfaceVariant),
-            const SizedBox(width: 4),
-            Flexible(
-              child: Text(
-                text,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: colors.onSurfaceVariant,
-                  fontWeight: FontWeight.w600,
-                ),
+    final content = Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 4),
+      child: Row(
+        children: [
+          Icon(icon, size: 14, color: colors.onSurfaceVariant),
+          const SizedBox(width: 5),
+          Expanded(
+            child: Text(
+              text,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: onTap == null ? colors.onSurfaceVariant : colors.primary,
+                fontWeight: FontWeight.w600,
               ),
             ),
-          ],
-        ),
+          ),
+        ],
+      ),
+    );
+    if (onTap == null) return content;
+    return Tooltip(
+      message: tooltip ?? text,
+      child: Semantics(
+        button: true,
+        label: tooltip,
+        child: AppPressable(onTap: onTap, child: content),
       ),
     );
   }

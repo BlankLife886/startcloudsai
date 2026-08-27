@@ -58,6 +58,10 @@
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
+.ch-page--history .ch-history-card__prompt.is-failure {
+  color: #ffd7d7;
+  -webkit-line-clamp: 3;
+}
 .ch-page--history .ch-history-card__meta {
   display: flex;
   align-items: center;
@@ -216,6 +220,50 @@
 .ch-card__placeholder > span {
   display: block;
   text-align: center;
+}
+
+.ch-page--history .ch-table-failure {
+  display: -webkit-box;
+  max-width: 220px;
+  margin-top: 5px;
+  overflow: hidden;
+  color: var(--ch-danger);
+  font-size: 0.68rem;
+  font-weight: 560;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.ch-page--history .ch-preview__failure {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 11px 12px;
+  border: 1px solid color-mix(in srgb, var(--ch-danger) 28%, var(--ch-line));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--ch-danger) 8%, var(--ch-surface-soft));
+  color: var(--ch-danger);
+}
+.ch-page--history .ch-preview__failure > i {
+  margin-top: 1px;
+  font-size: 1rem;
+}
+.ch-page--history .ch-preview__failure > span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.ch-page--history .ch-preview__failure strong {
+  font-size: 0.76rem;
+}
+.ch-page--history .ch-preview__failure small {
+  color: var(--ch-heading);
+  font-size: 0.74rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 760px) {

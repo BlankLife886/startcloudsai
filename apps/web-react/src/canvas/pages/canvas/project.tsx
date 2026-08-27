@@ -62,6 +62,7 @@ import { applyNodeConfigPatch, audioMetadata, buildAudioGenerationMetadata, buil
 import { copyCanvasNodeMetadata } from "@/lib/canvas/canvas-node-copy";
 import { connectionLayerBox, getConnectionTargetAnchor, normalizeConnection, normalizeConnectionBetween, snapNodesIntoGroup } from "@/lib/canvas/canvas-node-geometry";
 import { buildCanvasSpatialIndex, type CanvasSpatialIndex } from "@/lib/canvas/canvas-spatial-index";
+import { canvasClipboardImages } from "@/lib/canvas/canvas-clipboard";
 import {
     applyCanceledGenerationToNodes,
     applyFailedCanvasTaskToNode,
@@ -2163,15 +2164,17 @@ function InfiniteCanvasPage() {
     useEffect(() => {
         const handlePaste = (event: ClipboardEvent) => {
             const target = event.target instanceof Element ? event.target : null;
-            if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement || target?.closest("[contenteditable='true'],[data-canvas-no-zoom],[data-canvas-shortcuts-ignore]")) return;
+            if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement || target?.closest("[contenteditable='true'],[data-canvas-shortcuts-ignore]")) return;
             const clipboard = event.clipboardData;
             if (!clipboard) return;
-            const imageFile = Array.from(clipboard.items)
-                .find((item) => item.kind === "file" && item.type.startsWith("image/"))
-                ?.getAsFile();
-            if (imageFile) {
+            const imageFiles = canvasClipboardImages(clipboard);
+            if (imageFiles.length > 0) {
                 event.preventDefault();
-                void createImageFileNode(imageFile, getCanvasCenter());
+                const center = getCanvasCenter();
+                imageFiles.forEach((file, index) => {
+                    const offset = index * 24;
+                    void createImageFileNode(file, { x: center.x + offset, y: center.y + offset });
+                });
                 message.success(t("canvas.projectPage.clipboardImageAdded"));
                 return;
             }

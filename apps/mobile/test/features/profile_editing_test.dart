@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
 import 'package:starcloudsai_mobile/features/auth/auth.dart';
 import 'package:starcloudsai_mobile/features/create/create.dart';
 import 'package:starcloudsai_mobile/features/create/create_screen.dart';
@@ -23,8 +24,16 @@ const _profileUser = AppUser(
 );
 
 class _ProfileSessionController extends SessionController {
+  bool signOutCalled = false;
+
   @override
   FutureOr<SessionState> build() => const SessionState(user: _profileUser);
+
+  @override
+  Future<void> signOut() async {
+    signOutCalled = true;
+    state = const AsyncData(SessionState());
+  }
 }
 
 void main() {
@@ -175,6 +184,18 @@ void main() {
 
     expect(find.text('编辑资料'), findsOneWidget);
     expect(find.byTooltip('更换头像'), findsOneWidget);
+    final accountSurface = tester.widget<DecoratedBox>(
+      find
+          .descendant(
+            of: find.byKey(const Key('edit-account-surface')),
+            matching: find.byType(DecoratedBox),
+          )
+          .first,
+    );
+    expect(
+      (accountSurface.decoration as BoxDecoration).borderRadius,
+      BorderRadius.circular(8),
+    );
     await tester.scrollUntilVisible(
       find.text('创作费用确认'),
       300,
@@ -188,6 +209,54 @@ void main() {
     );
     expect(find.byKey(const Key('profile-sign-out')), findsOneWidget);
     expect(find.widgetWithText(FilledButton, '保存资料'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('sign out requires confirmation before clearing the session', (
+    tester,
+  ) async {
+    final controller = _ProfileSessionController();
+    final router = GoRouter(
+      initialLocation: '/profile/edit',
+      routes: [
+        GoRoute(
+          path: '/profile/edit',
+          builder: (context, state) => const EditProfileScreen(),
+        ),
+        GoRoute(
+          path: '/discover',
+          builder: (context, state) => const Scaffold(body: Text('首页目标页')),
+        ),
+      ],
+    );
+    addTearDown(router.dispose);
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [sessionControllerProvider.overrideWith(() => controller)],
+        child: MaterialApp.router(routerConfig: router),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.byKey(const Key('profile-sign-out')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('profile-sign-out')));
+    await tester.pumpAndSettle();
+    expect(find.text('退出当前账号？'), findsOneWidget);
+    expect(controller.signOutCalled, isFalse);
+
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+    expect(controller.signOutCalled, isFalse);
+
+    await tester.tap(find.byKey(const Key('profile-sign-out')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('确认退出'));
+    await tester.pumpAndSettle();
+
+    expect(controller.signOutCalled, isTrue);
+    expect(router.state.uri.path, '/discover');
+    expect(find.text('首页目标页'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }

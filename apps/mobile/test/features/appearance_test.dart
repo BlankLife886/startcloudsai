@@ -31,6 +31,18 @@ void main() {
     expect(AppAppearance.system.themeMode, ThemeMode.system);
     expect(AppAppearance.light.themeMode, ThemeMode.light);
     expect(AppAppearance.dark.themeMode, ThemeMode.dark);
+    expect(
+      effectiveAppearanceBrightness(AppAppearance.system, Brightness.dark),
+      Brightness.dark,
+    );
+    expect(
+      effectiveAppearanceBrightness(AppAppearance.light, Brightness.dark),
+      Brightness.light,
+    );
+    expect(
+      effectiveAppearanceLabel(AppAppearance.system, Brightness.dark),
+      '深色外观',
+    );
   });
 
   test('appearance controller restores and persists selection', () async {
@@ -104,7 +116,43 @@ void main() {
 
     expect(find.text('深色模式'), findsOneWidget);
     expect(find.text('始终使用深色外观'), findsOneWidget);
+    expect(find.text('当前生效：深色外观'), findsOneWidget);
+    expect(find.byKey(const Key('appearance-preview-dark')), findsOneWidget);
+    final darkOption = tester.widget<AnimatedContainer>(
+      find.byKey(const Key('appearance-option-dark')),
+    );
+    expect(
+      (darkOption.decoration as BoxDecoration).borderRadius,
+      BorderRadius.circular(8),
+    );
     expect(store.writes, ['dark']);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('system appearance reports the device mode and previews it', (
+    tester,
+  ) async {
+    final store = _FakeAppearanceStore();
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appearancePreferenceStoreProvider.overrideWithValue(store)],
+        child: MaterialApp(
+          builder: (context, child) => MediaQuery(
+            data: MediaQuery.of(
+              context,
+            ).copyWith(platformBrightness: Brightness.dark),
+            child: child!,
+          ),
+          home: const AppearanceSettingsScreen(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('当前生效：深色外观'), findsOneWidget);
+    expect(find.text('设备当前为深色外观'), findsOneWidget);
+    expect(find.text('界面预览 · 深色外观'), findsOneWidget);
+    expect(find.byKey(const Key('appearance-preview-dark')), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -125,5 +173,6 @@ void main() {
 
     expect(find.text('外观设置保存失败，请稍后重试'), findsOneWidget);
     expect(find.text('浅色模式'), findsOneWidget);
+    expect(find.byKey(const Key('appearance-preview-light')), findsOneWidget);
   });
 }

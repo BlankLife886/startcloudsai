@@ -53,19 +53,47 @@ type Query = Record<
   string | number | boolean | string[] | null | undefined
 >;
 
-interface RequestOptions {
+export interface RequestOptions {
   method?: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
   query?: Query;
   body?: unknown;
   /** true 时不弹全局错误提示（调用方自行处理） */
   silent?: boolean;
+  /** 调用方主动取消请求时使用。 */
+  signal?: AbortSignal;
+  /** persistent 请求不会在后台页面切换时被取消。 */
+  scope?: "page" | "persistent";
+}
+
+const pendingPageRequests = new Set<AbortController>();
+
+/** 页面切换时只取消读取请求，避免旧页面继续占用连接。 */
+export function abortPendingPageRequests(): void {
+  const controllers = Array.from(pendingPageRequests);
+  pendingPageRequests.clear();
+  for (const controller of controllers) controller.abort();
+}
+
+export function isRequestAborted(error: unknown): boolean {
+  return (
+    (error instanceof ApiError && error.code === "request_aborted") ||
+    (error instanceof DOMException && error.name === "AbortError") ||
+    (error instanceof Error && error.name === "AbortError")
+  );
 }
 
 export async function request<T>(
   path: string,
   options: RequestOptions = {},
 ): Promise<T> {
-  const { method = "GET", query, body, silent = false } = options;
+  const {
+    method = "GET",
+    query,
+    body,
+    silent = false,
+    signal: externalSignal,
+    scope = "page",
+  } = options;
 
   let url = path;
   if (query) {
@@ -85,60 +113,88 @@ export async function request<T>(
     if (str) url += (url.includes("?") ? "&" : "?") + str;
   }
 
-  let res: Response;
+  const pageController =
+    method === "GET" && scope === "page" ? new AbortController() : null;
+  const requestSignal = pageController?.signal ?? externalSignal;
+  let removeExternalAbort: (() => void) | undefined;
+
+  if (pageController) {
+    pendingPageRequests.add(pageController);
+    if (externalSignal) {
+      const abortFromExternal = () => pageController.abort();
+      if (externalSignal.aborted) abortFromExternal();
+      else {
+        externalSignal.addEventListener("abort", abortFromExternal, {
+          once: true,
+        });
+        removeExternalAbort = () =>
+          externalSignal.removeEventListener("abort", abortFromExternal);
+      }
+    }
+  }
+
   try {
-    res = await fetch(url, {
+    const res = await fetch(url, {
       method,
       credentials: "include",
       headers:
         body !== undefined ? { "Content-Type": "application/json" } : undefined,
       body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: requestSignal,
     });
-  } catch {
+
+    let payload: unknown = null;
+    if (res.status === 204) {
+      if (res.ok) return undefined as T;
+    } else {
+      try {
+        payload = await res.json();
+      } catch (error) {
+        if (requestSignal?.aborted || isRequestAborted(error)) throw error;
+        // 非 JSON 响应（如网关 5xx），走下面的统一失败处理
+      }
+    }
+
+    const envelope = payload as
+      | { success: true; data: T }
+      | { success: false; code?: string; error?: string }
+      | null;
+
+    if (envelope && envelope.success === true) {
+      return envelope.data;
+    }
+
+    const code =
+      (envelope && envelope.success === false && envelope.code) ||
+      `http_${res.status}`;
+    const serverMessage =
+      (envelope && envelope.success === false && envelope.error) || "";
+    const message =
+      code === "validation_error" && serverMessage
+        ? serverMessage
+        : (CODE_MESSAGES[code] ?? serverMessage ?? `请求失败（${res.status}）`);
+
+    if (res.status === 401) {
+      // 会话失效：回登录页（避免在登录页上循环跳转）
+      if (!location.pathname.endsWith("/login")) {
+        location.assign(`${import.meta.env.BASE_URL}login`);
+      }
+      throw new ApiError(code, message, 401);
+    }
+
+    if (!silent) ElMessage.error(message || "请求失败");
+    throw new ApiError(code, message || "请求失败", res.status);
+  } catch (error) {
+    if (requestSignal?.aborted || isRequestAborted(error)) {
+      throw new ApiError("request_aborted", "请求已取消", 0);
+    }
+    if (error instanceof ApiError) throw error;
     if (!silent) ElMessage.error(CODE_MESSAGES.network_error);
     throw new ApiError("network_error", CODE_MESSAGES.network_error, 0);
+  } finally {
+    if (pageController) pendingPageRequests.delete(pageController);
+    removeExternalAbort?.();
   }
-
-  let payload: unknown = null;
-  if (res.status === 204) {
-    if (res.ok) return undefined as T;
-  } else {
-    try {
-      payload = await res.json();
-    } catch {
-      // 非 JSON 响应（如网关 5xx），走下面的统一失败处理
-    }
-  }
-
-  const envelope = payload as
-    | { success: true; data: T }
-    | { success: false; code?: string; error?: string }
-    | null;
-
-  if (envelope && envelope.success === true) {
-    return envelope.data;
-  }
-
-  const code =
-    (envelope && envelope.success === false && envelope.code) ||
-    `http_${res.status}`;
-  const serverMessage =
-    (envelope && envelope.success === false && envelope.error) || "";
-  const message =
-    code === "validation_error" && serverMessage
-      ? serverMessage
-      : (CODE_MESSAGES[code] ?? serverMessage ?? `请求失败（${res.status}）`);
-
-  if (res.status === 401) {
-    // 会话失效：回登录页（避免在登录页上循环跳转）
-    if (!location.pathname.endsWith("/login")) {
-      location.assign(`${import.meta.env.BASE_URL}login`);
-    }
-    throw new ApiError(code, message, 401);
-  }
-
-  if (!silent) ElMessage.error(message || "请求失败");
-  throw new ApiError(code, message || "请求失败", res.status);
 }
 
 /** cursor 分页统一响应 */

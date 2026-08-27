@@ -1,5 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import {
+  computed,
+  onBeforeUnmount,
+  onMounted,
+  reactive,
+  ref,
+  watch,
+} from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
@@ -32,6 +39,8 @@ import {
 import AdminDialog from "@/components/AdminDialog.vue";
 import { useAuthStore } from "@/stores/auth";
 import { request } from "@/request";
+import { preloadAdminRoute } from "@/router";
+import { loadAdminBadgeCounts } from "@/services/adminBadgeCounts";
 import { isDark, toggleTheme } from "@/theme";
 import { useAdminShellMotion } from "@/composables/useAdminShellMotion";
 
@@ -129,12 +138,7 @@ const pendingFeedback = ref(0);
 /** 聚合端点一次返回全部徽标计数，替代原先的多次独立请求。 */
 async function loadTodoCounts() {
   try {
-    const data = await request<{
-      pendingSubmissions?: number;
-      runningTasks?: number;
-      pendingTrialApplications?: number;
-      pendingFeedback?: number;
-    }>("/api/v1/admin/badge-counts", { silent: true });
+    const data = await loadAdminBadgeCounts();
     if (typeof data.pendingSubmissions === "number")
       pendingSubmissions.value = data.pendingSubmissions;
     if (typeof data.runningTasks === "number")
@@ -203,7 +207,64 @@ const notifyTotal = computed(() =>
 onMounted(() => {
   void loadTodoCounts();
 });
-watch(() => route.path, loadTodoCounts);
+watch(
+  () => route.path,
+  () => void loadTodoCounts(),
+);
+
+/* ---------- 路由预取 / 切页反馈 ---------- */
+
+const navigatingTo = ref("");
+let routePreloadTimer: number | null = null;
+
+function cancelScheduledPreload() {
+  if (routePreloadTimer === null) return;
+  window.clearTimeout(routePreloadTimer);
+  routePreloadTimer = null;
+}
+
+function preloadRouteNow(path: string) {
+  cancelScheduledPreload();
+  if (path !== route.path) void preloadAdminRoute(path);
+}
+
+function scheduleRoutePreload(path: string) {
+  cancelScheduledPreload();
+  if (path === route.path) return;
+  routePreloadTimer = window.setTimeout(() => {
+    routePreloadTimer = null;
+    void preloadAdminRoute(path);
+  }, 150);
+}
+
+function onNavClick(path: string, event: MouseEvent) {
+  if (
+    event.defaultPrevented ||
+    event.button !== 0 ||
+    event.metaKey ||
+    event.ctrlKey ||
+    event.shiftKey ||
+    event.altKey ||
+    path === route.path
+  ) {
+    navigatingTo.value = "";
+    return;
+  }
+  navigatingTo.value = path;
+}
+
+const removeNavigationCompleteHook = router.afterEach(() => {
+  navigatingTo.value = "";
+});
+const removeNavigationErrorHook = router.onError(() => {
+  navigatingTo.value = "";
+});
+
+onBeforeUnmount(() => {
+  cancelScheduledPreload();
+  removeNavigationCompleteHook();
+  removeNavigationErrorHook();
+});
 
 function goTodo(to: string) {
   router.push(to);
@@ -305,7 +366,16 @@ async function submitPassword() {
                 :key="item.path"
                 :to="item.path"
                 class="nav-item"
-                :class="{ 'is-active': route.path === item.path }"
+                :class="{
+                  'is-active': route.path === item.path,
+                  'is-pending': navigatingTo === item.path,
+                }"
+                @mouseenter="scheduleRoutePreload(item.path)"
+                @mouseleave="cancelScheduledPreload"
+                @focus="preloadRouteNow(item.path)"
+                @pointerdown="preloadRouteNow(item.path)"
+                @touchstart.passive="preloadRouteNow(item.path)"
+                @click="onNavClick(item.path, $event)"
               >
                 <span class="nav-item__icon">
                   <el-icon :size="18"><component :is="item.icon" /></el-icon>
@@ -356,6 +426,9 @@ async function submitPassword() {
 
     <!-- ==== 主区域 ==== -->
     <div class="main-col">
+      <div v-if="navigatingTo" class="route-progress" aria-hidden="true">
+        <span />
+      </div>
       <header class="topbar">
         <h1 class="page-title">{{ pageTitle }}</h1>
 
@@ -755,6 +828,25 @@ async function submitPassword() {
   color: var(--accent-on);
 }
 
+.nav-item.is-pending:not(.is-active) {
+  background: var(--surface-3);
+  color: var(--ink);
+}
+
+.nav-item.is-pending:not(.is-active) .nav-item__icon {
+  color: var(--accent);
+  animation: nav-pending-pulse 0.7s ease-in-out infinite alternate;
+}
+
+@keyframes nav-pending-pulse {
+  from {
+    opacity: 0.45;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
 .nav-item.is-active .nav-badge {
   background: var(--accent-on);
   color: var(--accent);
@@ -843,12 +935,54 @@ async function submitPassword() {
 
 /* ---- 顶栏 ---- */
 .main-col {
+  position: relative;
   display: flex;
   flex-direction: column;
   flex: 1;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+}
+
+.route-progress {
+  position: absolute;
+  z-index: 30;
+  top: 0;
+  right: 8px;
+  left: 4px;
+  height: 2px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.route-progress span {
+  display: block;
+  width: 32%;
+  height: 100%;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  animation: route-progress-move 0.85s ease-in-out infinite;
+}
+
+@keyframes route-progress-move {
+  from {
+    transform: translateX(-110%);
+  }
+  to {
+    transform: translateX(420%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nav-item.is-pending:not(.is-active) .nav-item__icon,
+  .route-progress span {
+    animation: none;
+  }
+
+  .route-progress span {
+    width: 100%;
+    opacity: 0.65;
+  }
 }
 
 .topbar {

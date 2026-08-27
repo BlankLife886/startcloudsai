@@ -74,6 +74,7 @@ import { ConfirmDialog } from "../components/ConfirmDialog.jsx";
 import { SharePublishDialog } from "../components/SharePublishDialog.jsx";
 import { WallevenImagePreview } from "../components/common/WallevenImagePreview.jsx";
 import { assistantClipboardFiles, isAssistantImageFile, isImageToPSDRequest, isPSDFile } from "./assistant-attachments.js";
+import { balancedOptionColumns } from "../features/assistant/adaptiveOptionGrid.js";
 
 const SUGGESTIONS = [
   ["bi-stars", "画一张星空下的雪山桌面壁纸"],
@@ -4197,7 +4198,10 @@ export function AssistantWorkspaceView() {
               <section className="composer-popover image-mode-preferences" aria-label="图片生成参数">
                 {availableRatios.length ? <div className="preferences-block">
                   <p className="preferences-label">选择比例</p>
-                  <div className="ratio-options">
+                  <div
+                    className="ratio-options"
+                    style={{ "--assistant-option-columns": balancedOptionColumns(availableRatios.length) }}
+                  >
                     {availableRatios.map((item) => (
                       <button key={item.id} type="button" className={generationRatio === item.id ? "active" : ""} aria-pressed={generationRatio === item.id} onClick={() => setGenerationRatio(item.id)}>
                         <i className={`ratio-shape is-${item.shape}`} style={ratioPreviewStyle(item.id)} />
@@ -4209,7 +4213,10 @@ export function AssistantWorkspaceView() {
                 <div className="preferences-split">
                   {availableResolutions.length ? <div className="preferences-block">
                     <p className="preferences-label">选择分辨率</p>
-                    <div className="image-resolution-options">
+                    <div
+                      className="image-resolution-options"
+                      style={{ "--assistant-option-columns": balancedOptionColumns(availableResolutions.length, 4) }}
+                    >
                       {availableResolutions.map((option) => (
                         <button key={option.id} type="button" className={generationResolution === option.id ? "active" : ""} aria-pressed={generationResolution === option.id} onClick={() => setGenerationResolution(option.id)}>
                           {option.label}
@@ -4220,7 +4227,10 @@ export function AssistantWorkspaceView() {
                   </div> : null}
                   <div className="preferences-block">
                     <p className="preferences-label">选择生成数量</p>
-                    <div className="image-count-options">
+                    <div
+                      className="image-count-options"
+                      style={{ "--assistant-option-columns": balancedOptionColumns(availableCounts.length) }}
+                    >
                       {availableCounts.map((value) => (
                         <button key={value} type="button" className={generationCount === value ? "active" : ""} aria-pressed={generationCount === value} onClick={() => setGenerationCount(value)}>{value}</button>
                       ))}
@@ -4229,7 +4239,10 @@ export function AssistantWorkspaceView() {
                 </div>
                 {availableQualities.length ? <div className="preferences-block">
                   <p className="preferences-label">选择质量</p>
-                  <div className="image-count-options">
+                  <div
+                    className="image-count-options"
+                    style={{ "--assistant-option-columns": balancedOptionColumns(availableQualities.length, 4) }}
+                  >
                     {availableQualities.map((option) => (
                       <button key={option.id} type="button" className={generationQuality === option.id ? "active" : ""} aria-pressed={generationQuality === option.id} onClick={() => setGenerationQuality(option.id)}>{option.label}</button>
                     ))}

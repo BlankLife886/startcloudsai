@@ -51,11 +51,10 @@ test("text node keeps edit and font controls in its dedicated bottom action row"
     assert.match(canvasNode, /containerClassName="min-h-0 flex-1"/);
     assert.match(canvasNode, /className="thin-scrollbar m-0 block h-full w-full resize-none/);
     assert.doesNotMatch(hoverToolbar, /id: "decreaseFont"|id: "increaseFont"/);
-    assert.match(hoverToolbar, /!isText && onInfo/);
     assert.match(hoverToolbar, /!isText \? \[\{ id: "rename"/);
-    assert.match(hoverToolbar, /!isText \? \[\{ id: "duplicate"/);
-    assert.doesNotMatch(hoverToolbar, /<InfoRow label="ID"|copyText\(node\.id\)/);
-    assert.match(hoverToolbar, /nodeToolbar\.name[\s\S]*first theme=\{theme\}/);
+    assert.doesNotMatch(hoverToolbar, /\bonInfo\b|id: "duplicate"|<InfoRow label="ID"|copyText\(node\.id\)/);
+    assert.match(hoverToolbar, /showLabel=\{showImageToolLabels\}/);
+    assert.match(hoverToolbar, /const hasText = showLabel && Boolean\(label\)/);
 });
 
 test("node context menu stays focused and rename uses one dialog flow", async () => {
@@ -73,17 +72,18 @@ test("node context menu stays focused and rename uses one dialog flow", async ()
     assert.match(project, /setRenameDialog\(\{ nodeId: node\.id, title: node\.title \|\| "" \}\)/);
 });
 
-test("side panel node actions omit duplicate but retain node information", async () => {
+test("side panel node actions omit duplicate while retaining node information", async () => {
     const sidePanel = await readCanvasSource("components/canvas/canvas-side-panel.tsx");
     assert.doesNotMatch(sidePanel, /onDuplicateNode|<Copy\b/);
-    assert.match(sidePanel, /onInfoNode/);
+    assert.match(sidePanel, /onInfo=\{\(\) => setInfoNodeId\(node\.id\)\}/);
+    assert.match(sidePanel, /label=\{t\("canvas\.nodeToolbar\.nodeInfo"\)\}/);
+    assert.doesNotMatch(sidePanel, /label="ID"|JSON\.stringify\(\s*node/);
     assert.match(sidePanel, /function NodeRowActionsMenu/);
     assert.match(sidePanel, /useAnchorPopover\(onOpenChange, open\)/);
     assert.doesNotMatch(sidePanel, /if \(open !== popoverOpen\) updateOpen\(open\)/);
     assert.match(sidePanel, /<AnchorPopoverPanel/);
     assert.match(sidePanel, /open=\{openActionsNodeId === node\.id\}/);
     assert.match(sidePanel, /current === node\.id \? null : current/);
-    assert.match(sidePanel, /label=\{t\("canvas\.nodeToolbar\.info"\)\}/);
     assert.match(sidePanel, /<Ellipsis className="size-4"/);
     assert.match(sidePanel, /canvas-node-actions-trigger/);
     assert.doesNotMatch(sidePanel, /nodePreviewText|metadata\?\.content \|\| node\.metadata\?\.prompt/);

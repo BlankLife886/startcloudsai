@@ -1351,7 +1351,7 @@ func TestAssistantRunStatePersistence(t *testing.T) {
 	run, err := store.InsertAssistantRun(ctx, env.st.Pool, store.AssistantRun{
 		ID: uuid.New(), UserID: user.ID, ConversationID: conversation.ID,
 		UserMessageID: userMessage.ID, AssistantMessageID: assistantMessage.ID,
-		Mode: "agent", Prompt: "你好", Params: map[string]any{"count": 2},
+		Mode: "agent", Prompt: "你好", Params: map[string]any{"count": 2}, ReservedCents: 7,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1363,7 +1363,7 @@ func TestAssistantRunStatePersistence(t *testing.T) {
 	if err := store.SetAssistantRunStage(ctx, env.st.Pool, run.ID, "chat", "answering"); err != nil {
 		t.Fatal(err)
 	}
-	completed, err := store.CompleteAssistantRun(ctx, env.st.Pool, run.ID, "chat", 0)
+	completed, err := store.CompleteAssistantRun(ctx, env.st.Pool, run.ID, "chat", 7)
 	if err != nil || !completed {
 		t.Fatalf("complete = %v, err = %v", completed, err)
 	}
@@ -1384,6 +1384,9 @@ func TestAssistantRunStatePersistence(t *testing.T) {
 	}
 	if listed == nil || listed.Type != "assistant" || listed.Status != "succeeded" {
 		t.Fatalf("admin assistant task = %#v", listed)
+	}
+	if listed.CostCents != 7 {
+		t.Fatalf("admin assistant cost = %d, want 7", listed.CostCents)
 	}
 	if listed.Params["stage"] != "complete" || listed.Params["resolvedMode"] != "chat" {
 		t.Fatalf("admin assistant params = %#v", listed.Params)

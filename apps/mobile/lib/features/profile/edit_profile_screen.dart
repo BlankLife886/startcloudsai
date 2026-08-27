@@ -278,6 +278,33 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
     if (mounted) context.go('/discover');
   }
 
+  Future<void> _confirmSignOut() async {
+    if (_saving) return;
+    final confirmed = await showAppDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AppDialog(
+        icon: const Icon(Icons.logout_rounded),
+        title: const Text('退出当前账号？'),
+        content: const Text('本机登录状态将被清除，作品、积分和素材仍保存在账号中。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(dialogContext).colorScheme.error,
+              foregroundColor: Theme.of(dialogContext).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('确认退出'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true && mounted) await _signOut();
+  }
+
   @override
   Widget build(BuildContext context) {
     final session = ref.watch(sessionControllerProvider);
@@ -355,6 +382,7 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
                 const _EditSectionTitle(title: '账号'),
                 const SizedBox(height: 10),
                 _EditCard(
+                  key: const Key('edit-account-surface'),
                   children: [
                     _EditFieldRow(
                       icon: Icons.person_outline,
@@ -391,6 +419,7 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
                 const _EditSectionTitle(title: '资料'),
                 const SizedBox(height: 10),
                 _EditCard(
+                  key: const Key('edit-profile-surface'),
                   children: [
                     _EditFieldRow(
                       icon: Icons.location_on_outlined,
@@ -451,7 +480,7 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
                     foregroundColor: colors.error,
                     minimumSize: const Size.fromHeight(48),
                   ),
-                  onPressed: _saving ? null : _signOut,
+                  onPressed: _saving ? null : _confirmSignOut,
                   icon: const Icon(Icons.logout),
                   label: const Text('退出登录'),
                 ),
@@ -514,9 +543,7 @@ class _EditAvatarButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final ring = Theme.of(context).brightness == Brightness.dark
-        ? colors.surface
-        : Colors.white;
+    final ring = colors.surface;
     return Tooltip(
       message: '更换头像',
       child: AppPressable(
@@ -530,19 +557,10 @@ class _EditAvatarButton extends StatelessWidget {
               DecoratedBox(
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  border: Border.all(color: ring, width: 3),
-                  boxShadow: [
-                    BoxShadow(
-                      color: StarCloudsVisualStyle.of(
-                        context,
-                      ).shadow.withValues(alpha: .16),
-                      blurRadius: 18,
-                      offset: const Offset(0, 8),
-                    ),
-                  ],
+                  border: Border.all(color: colors.outlineVariant),
                 ),
                 child: Padding(
-                  padding: const EdgeInsets.all(3),
+                  padding: const EdgeInsets.all(2),
                   child: ProfileAvatar(
                     username: username,
                     userId: userId,
@@ -588,28 +606,33 @@ class _EditAvatarButton extends StatelessWidget {
 }
 
 class _EditCard extends StatelessWidget {
-  const _EditCard({required this.children});
+  const _EditCard({required this.children, super.key});
 
   final List<Widget> children;
 
   @override
   Widget build(BuildContext context) {
-    return AppSoftCard(
-      radius: BorderRadius.circular(22),
-      padding: const EdgeInsets.fromLTRB(14, 8, 14, 8),
-      child: Column(
-        children: [
-          for (var i = 0; i < children.length; i++) ...[
-            if (i > 0)
-              Divider(
-                height: 1,
-                color: Theme.of(
-                  context,
-                ).colorScheme.outlineVariant.withValues(alpha: .45),
-              ),
-            children[i],
+    final colors = Theme.of(context).colorScheme;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: colors.outlineVariant),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 8, 14, 8),
+        child: Column(
+          children: [
+            for (var i = 0; i < children.length; i++) ...[
+              if (i > 0)
+                Divider(
+                  height: 1,
+                  color: colors.outlineVariant.withValues(alpha: .65),
+                ),
+              children[i],
+            ],
           ],
-        ],
+        ),
       ),
     );
   }
@@ -645,7 +668,7 @@ class _EditFieldRow extends StatelessWidget {
           DecoratedBox(
             decoration: BoxDecoration(
               color: accent.withValues(alpha: .12),
-              borderRadius: BorderRadius.circular(14),
+              borderRadius: BorderRadius.circular(8),
             ),
             child: SizedBox.square(
               dimension: 40,
@@ -691,21 +714,19 @@ class _EditLockPill extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: colors.surfaceContainerHigh,
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        child: Text(
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(Icons.lock_outline_rounded, size: 13, color: colors.outline),
+        const SizedBox(width: 4),
+        Text(
           text,
           style: Theme.of(context).textTheme.labelSmall?.copyWith(
             color: colors.onSurfaceVariant,
             fontWeight: FontWeight.w700,
           ),
         ),
-      ),
+      ],
     );
   }
 }
@@ -718,48 +739,57 @@ class _EditPreferenceCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final dark = Theme.of(context).brightness == Brightness.dark;
-    return AppSoftCard(
-      radius: BorderRadius.circular(22),
-      color: dark ? const Color(0xFF1E3A36) : const Color(0xFFD8F3EE),
-      padding: const EdgeInsets.fromLTRB(16, 16, 12, 16),
-      child: Row(
-        children: [
-          const DecoratedBox(
-            decoration: BoxDecoration(
-              color: Color(0x220F766E),
-              borderRadius: BorderRadius.all(Radius.circular(14)),
-            ),
-            child: SizedBox.square(
-              dimension: 40,
-              child: Icon(Icons.price_check_outlined, color: Color(0xFF0F766E)),
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  '创作费用确认',
-                  style: Theme.of(
-                    context,
-                  ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+    final colors = Theme.of(context).colorScheme;
+    return DecoratedBox(
+      key: const Key('edit-preference-surface'),
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: colors.outlineVariant),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 16, 12, 16),
+        child: Row(
+          children: [
+            const DecoratedBox(
+              decoration: BoxDecoration(
+                color: Color(0x220F766E),
+                borderRadius: BorderRadius.all(Radius.circular(8)),
+              ),
+              child: SizedBox.square(
+                dimension: 40,
+                child: Icon(
+                  Icons.price_check_outlined,
+                  color: Color(0xFF0F766E),
                 ),
-                const SizedBox(height: 4),
-                Text(
-                  '提交付费创作前显示预计积分',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    height: 1.3,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '创作费用确认',
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
                   ),
-                ),
-              ],
+                  const SizedBox(height: 4),
+                  Text(
+                    '提交付费创作前显示预计积分',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: colors.onSurfaceVariant,
+                      height: 1.3,
+                    ),
+                  ),
+                ],
+              ),
             ),
-          ),
-          const SizedBox(width: 8),
-          Switch.adaptive(value: enabled, onChanged: onChanged),
-        ],
+            const SizedBox(width: 8),
+            Switch.adaptive(value: enabled, onChanged: onChanged),
+          ],
+        ),
       ),
     );
   }
@@ -795,7 +825,7 @@ class _EditSaveBar extends StatelessWidget {
               style: FilledButton.styleFrom(
                 minimumSize: const Size.fromHeight(48),
                 shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(16),
+                  borderRadius: BorderRadius.circular(8),
                 ),
               ),
               child: Text(saving ? '保存中' : '保存资料'),
@@ -845,7 +875,8 @@ class _AvatarSheetAction extends StatelessWidget {
         child: DecoratedBox(
           decoration: BoxDecoration(
             color: colors.surfaceContainerLow,
-            borderRadius: BorderRadius.circular(16),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: colors.outlineVariant),
           ),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),

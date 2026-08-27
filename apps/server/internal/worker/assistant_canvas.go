@@ -110,7 +110,7 @@ func canvasApplyOpsTool() sub2api.FunctionTool {
 							},
 							"edges": map[string]any{
 								"type":        "array",
-								"description": "create_graph 的连线，使用 nodes 里的 key",
+								"description": "create_graph 的连线。新节点使用 nodes.key；也可直接引用画布快照或上一工具返回的现有节点 id，把参考图原子接入新工作流",
 								"maxItems":    canvasAgentMaxGraphEdges,
 								"items": map[string]any{
 									"type": "object",
@@ -247,6 +247,24 @@ func canvasInspectNodesTool() sub2api.FunctionTool {
 	}
 }
 
+func canvasInspectVisualsTool() sub2api.FunctionTool {
+	return sub2api.FunctionTool{
+		Name:        "canvas_inspect_visuals",
+		Description: "读取真实画布图片并检查重复或高度相似内容。scope=auto 会从实时选区沿连线查找下游图片；没有选区时检查最近输出。用户反馈图片重复、效果不对、主体变化、颜色或构图问题时，必须先调用此工具，禁止未检查就直接重新生成。",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"scope":      map[string]any{"type": "string", "enum": []string{"auto", "selection", "workflow", "recent"}, "description": "默认 auto；selection 只看选中图片，workflow 检查指定工作流，recent 检查最近输出"},
+				"workflowId": map[string]any{"type": "string", "description": "scope=workflow 时使用快照 workflows 中的精确 id"},
+				"nodeIds":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "可选精确起点；留空使用实时选区，模型不确定时不要猜"},
+				"maxImages":  map[string]any{"type": "integer", "minimum": 1, "maximum": 12, "description": "单页本地比较上限，默认 12；每页最多 4 张真实图片会送回视觉模型"},
+				"offset":     map[string]any{"type": "integer", "minimum": 0, "description": "分页起点，首次为 0；truncated=true 时必须使用返回的 nextOffset 继续检查"},
+			},
+			"additionalProperties": false,
+		},
+	}
+}
+
 func canvasFocusNodesTool() sub2api.FunctionTool {
 	return sub2api.FunctionTool{
 		Name:        "canvas_focus_nodes",
@@ -348,11 +366,12 @@ func canvasCreateImageOperationTool() sub2api.FunctionTool {
 func canvasValidateWorkflowTool() sub2api.FunctionTool {
 	return sub2api.FunctionTool{
 		Name:        "canvas_validate_workflow",
-		Description: "只读校验一个或全部工作流的可执行节点、依赖层级、循环、无效连接、失败节点和空输入，不启动任务。",
+		Description: "只读校验一个或全部工作流的可执行节点、依赖层级、循环、无效连接、失败节点和空输入，不启动任务。依据聊天附件搭建工作流时，requiredInputNodeIds 必须传 canvas_create_attachment_nodes 返回的全部图片节点 id，确保每张参考图真实接入可执行节点。",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"workflowId": map[string]any{"type": "string", "description": "快照 workflows 中的精确 id；留空校验全部"},
+				"workflowId":           map[string]any{"type": "string", "description": "快照 workflows 中的精确 id；留空校验全部"},
+				"requiredInputNodeIds": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "必须接入目标可执行工作流的输入节点 id；使用工具真实返回值，禁止猜测"},
 			},
 			"additionalProperties": false,
 		},
@@ -689,6 +708,7 @@ func canvasAgentTools() []sub2api.FunctionTool {
 		canvasReadSelectionTool(),
 		canvasFindNodesTool(),
 		canvasInspectNodesTool(),
+		canvasInspectVisualsTool(),
 		canvasFocusNodesTool(),
 		canvasDuplicateSelectionTool(),
 		canvasReplaceWorkflowInputTool(),
@@ -738,7 +758,7 @@ func canvasAgentBrowserTimeout(name string) time.Duration {
 	case canvasGenerationStatusTool().Name, canvasWorkflowStatusTool().Name, canvasRegenerateSelectionTool().Name:
 		return canvasAgentStatusTimeout
 	case canvasReadStateTool().Name, canvasReadSelectionTool().Name, canvasExportSnapshotTool().Name,
-		canvasFindNodesTool().Name, canvasInspectNodesTool().Name, canvasValidateWorkflowTool().Name, canvasPlanWorkflowRunTool().Name, canvasListAgentHistoryTool().Name,
+		canvasFindNodesTool().Name, canvasInspectNodesTool().Name, canvasInspectVisualsTool().Name, canvasValidateWorkflowTool().Name, canvasPlanWorkflowRunTool().Name, canvasListAgentHistoryTool().Name,
 		canvasListProjectsTool().Name, canvasListWorkflowTemplatesTool().Name, canvasInspectWorkflowTemplateTool().Name, promptsSearchTool().Name, assetsListTool().Name, assetsAddTool().Name,
 		siteNavigateTool().Name:
 		return canvasAgentReadTimeout
@@ -786,27 +806,40 @@ func canvasRunGenerationFallbackOps(arguments string) []map[string]any {
 // canvasAgentLoopState accumulates what the tool loop actually did, so the
 // closing message can describe real changes instead of intentions.
 type canvasAgentLoopState struct {
-	summary           string
-	appliedOps        int
-	pendingOps        []map[string]any
-	touched           bool
-	billableAction    bool
-	verifiedRead      bool
-	verifiedNoop      bool
-	userCanceled      bool
-	finishAfterTool   bool
-	lastToolSucceeded bool
-	plannedActions    []canvasAgentPlannedAction
-	webSearchClient   *sub2api.Client
-	webSearchFailed   bool
-	webSearchError    string
+	summary                  string
+	appliedOps               int
+	pendingOps               []map[string]any
+	touched                  bool
+	billableAction           bool
+	verifiedRead             bool
+	verifiedNoop             bool
+	userCanceled             bool
+	finishAfterTool          bool
+	lastToolSucceeded        bool
+	plannedActions           []canvasAgentPlannedAction
+	webSearchClient          *sub2api.Client
+	webSearchFailed          bool
+	webSearchError           string
+	visualReferences         []canvasAgentVisualReference
+	attachmentNodeIDs        []string
+	requiresVisualInspection bool
+	visualInspected          bool
+}
+
+type canvasAgentVisualReference struct {
+	NodeID        string   `json:"nodeId"`
+	ImageID       string   `json:"imageId"`
+	ResourceID    string   `json:"resourceId"`
+	Title         string   `json:"title"`
+	FileKey       string   `json:"fileKey"`
+	TemporaryKeys []string `json:"temporaryKeys"`
 }
 
 const canvasAgentVerifiedNoopMessage = "已读取并核对当前画布，当前状态已满足要求，无需修改。"
 
 func canvasAgentStateReadTool(name string) bool {
 	switch name {
-	case canvasReadStateTool().Name, canvasReadSelectionTool().Name, canvasExportSnapshotTool().Name, canvasFindNodesTool().Name, canvasInspectNodesTool().Name, canvasValidateWorkflowTool().Name, canvasListAgentHistoryTool().Name:
+	case canvasReadStateTool().Name, canvasReadSelectionTool().Name, canvasExportSnapshotTool().Name, canvasFindNodesTool().Name, canvasInspectNodesTool().Name, canvasInspectVisualsTool().Name, canvasValidateWorkflowTool().Name, canvasListAgentHistoryTool().Name:
 		return true
 	default:
 		return false
@@ -931,9 +964,69 @@ func (w *Worker) runCanvasAgentWebSearch(ctx context.Context, run *store.Assista
 func (w *Worker) runCanvasAgentTool(ctx context.Context, run *store.AssistantRun, loop *canvasAgentLoopState, call *sub2api.ToolCall) string {
 	loop.lastToolSucceeded = false
 	loop.finishAfterTool = false
+	if loop.requiresVisualInspection && !loop.visualInspected && canvasAgentToolMutates(call.Name) {
+		return "画布写入或生成调用已拒绝：本轮涉及图片重复或效果问题，必须先调用 canvas_inspect_visuals 读取真实图片，不能未经检查直接修改或重新生成。"
+	}
 	switch call.Name {
 	case webSearchTool().Name:
 		return w.runCanvasAgentWebSearch(ctx, run, loop, call)
+	case canvasInspectVisualsTool().Name:
+		raw, ok := w.dispatchCanvasTool(ctx, run, call.Name, call.Arguments, canvasAgentReadTimeout)
+		if !ok {
+			return "画布没有及时响应，无法读取真实图片。禁止根据节点标题或提示词猜测图片内容，也不要直接重新生成。"
+		}
+		var response struct {
+			Inspected        int                          `json:"inspected"`
+			Truncated        bool                         `json:"truncated"`
+			NextOffset       int                          `json:"nextOffset"`
+			VisionReferences []canvasAgentVisualReference `json:"visionReferences"`
+		}
+		_ = json.Unmarshal([]byte(raw), &response)
+		if canvasAgentToolResultFailed(raw) || response.Inspected <= 0 {
+			return "工具 canvas_inspect_visuals 的返回：\n" + raw + "\n没有读取到可检查的图片，禁止声称已经看过图片或直接重新生成。"
+		}
+		loop.verifiedRead = true
+		loop.lastToolSucceeded = true
+		loop.visualInspected = !response.Truncated
+		loop.visualReferences = response.VisionReferences
+		if response.Truncated {
+			return fmt.Sprintf("工具 canvas_inspect_visuals 的返回：\n%s\n当前只完成一页检查，必须继续调用 canvas_inspect_visuals，并传入 offset=%d；检查完全部图片前禁止修改或生成。", raw, response.NextOffset)
+		}
+		return "工具 canvas_inspect_visuals 的返回：\n" + raw + "\n重复检测由浏览器基于真实图片完成；随后附加的图片与 visionReferences 顺序一致，请结合像素内容、节点和生产配置继续处理。"
+	case canvasValidateWorkflowTool().Name:
+		arguments := canvasAgentWorkflowValidationArguments(call.Arguments, loop.attachmentNodeIDs)
+		raw, ok := w.dispatchCanvasTool(ctx, run, call.Name, arguments, canvasAgentReadTimeout)
+		if !ok {
+			return "画布没有及时响应，无法验证工作流完整性。禁止声称工作流已经完成。"
+		}
+		var response struct {
+			Valid                            bool     `json:"valid"`
+			MissingRequiredInputNodeIDs      []string `json:"missingRequiredInputNodeIds"`
+			DisconnectedRequiredInputNodeIDs []string `json:"disconnectedRequiredInputNodeIds"`
+		}
+		_ = json.Unmarshal([]byte(raw), &response)
+		loop.verifiedRead = true
+		if canvasAgentToolResultFailed(raw) || !response.Valid {
+			return "工具 canvas_validate_workflow 的返回：\n" + raw + "\n工作流尚未通过完整性校验。必须使用返回的精确节点 id 修复缺失输入、参考图连线或依赖结构，然后重新校验；禁止提前宣布完成。"
+		}
+		loop.lastToolSucceeded = true
+		return "工具 canvas_validate_workflow 的返回：\n" + raw + "\n工作流结构和必需参考输入均已验证，可以总结本轮结果。"
+	case canvasCreateAttachmentNodesTool().Name:
+		raw, ok := w.dispatchCanvasTool(ctx, run, call.Name, call.Arguments, canvasAgentApplyTimeout)
+		var response struct {
+			Added []string `json:"added"`
+		}
+		_ = json.Unmarshal([]byte(raw), &response)
+		if !ok || canvasAgentToolResultFailed(raw) || len(response.Added) == 0 {
+			return "聊天参考图没有完整放入画布。工具返回：\n" + raw + "\n禁止继续搭建或声称工作流已经完成。"
+		}
+		loop.touched = true
+		loop.appliedOps += len(response.Added)
+		loop.billableAction = true
+		loop.lastToolSucceeded = true
+		loop.attachmentNodeIDs = uniqueCanvasAgentStrings(append(loop.attachmentNodeIDs, response.Added...))
+		w.checkpointCanvasAgentAction(ctx, run, loop)
+		return "工具 canvas_create_attachment_nodes 的返回：\n" + raw + "\n已记录真实参考图节点 id；搭建工作流后必须校验这些节点全部接入可执行步骤。"
 	case canvasApplyOpsTool().Name:
 		summary, ops, err := parseCanvasAgentOps(call.Arguments)
 		if err != nil || len(ops) == 0 {
@@ -1444,6 +1537,101 @@ func canvasAgentToolMessages(result sub2api.AgentChatResult, observation string)
 	}
 }
 
+func (w *Worker) consumeCanvasAgentVisualContext(ctx context.Context, run *store.AssistantRun, loop *canvasAgentLoopState) *sub2api.Message {
+	if run == nil || loop == nil {
+		return nil
+	}
+	references := loop.visualReferences
+	loop.visualReferences = nil
+	if len(references) == 0 {
+		if !loop.visualInspected {
+			return &sub2api.Message{Role: "user", Content: "真实图片检查没有成功，禁止声称已经比较或看过图片，也不能据此修改或重新生成。"}
+		}
+		return &sub2api.Message{Role: "user", Content: "视觉检查完成了浏览器端重复检测，但这些图片没有可供模型读取的云端文件。只能依据工具返回的确定性重复结果继续，禁止声称已经看过图片像素；涉及主体、颜色或构图判断时应明确告诉用户图片尚未同步。"}
+	}
+	allowed := make([]canvasAgentVisualReference, 0, min(len(references), 4))
+	raw := make([]any, 0, min(len(references), 4))
+	temporaryKeys := make([]string, 0, 8)
+	for _, reference := range references {
+		key := strings.TrimSpace(reference.FileKey)
+		if !canvasAgentVisualReferenceAllowed(run.UserID, key) {
+			continue
+		}
+		allowed = append(allowed, reference)
+		raw = append(raw, map[string]any{"fileKey": key})
+		for _, temporaryKey := range reference.TemporaryKeys {
+			temporaryKey = strings.TrimSpace(temporaryKey)
+			if canvasAgentTemporaryVisualKeyAllowed(run.UserID, temporaryKey) {
+				temporaryKeys = append(temporaryKeys, temporaryKey)
+			}
+		}
+		if len(allowed) >= 4 {
+			break
+		}
+	}
+	if len(allowed) == 0 {
+		return &sub2api.Message{Role: "user", Content: "视觉检查完成了本地重复检测，但没有取得可供模型查看的云端图片。只能依据工具返回的确定性重复结果继续，禁止声称已经看过图片像素。"}
+	}
+	images, err := w.loadAssistantReferences(ctx, map[string]any{"referenceImages": raw})
+	if len(temporaryKeys) > 0 && w.Storage != nil {
+		_ = w.Storage.DeleteKeys(ctx, uniqueCanvasAgentStrings(temporaryKeys))
+	}
+	if err != nil || len(images) != len(allowed) {
+		return &sub2api.Message{Role: "user", Content: "视觉检查已定位图片节点，但真实图片读取失败。禁止根据标题、提示词或旧输出猜测画面，也不要未经检查直接重新生成。"}
+	}
+	lines := make([]string, 0, len(allowed)+1)
+	lines = append(lines, "以下是真实画布图片，不是节点文字摘要。图片顺序与映射如下：")
+	for index, reference := range allowed {
+		lines = append(lines, fmt.Sprintf("图%d：nodeId=%q，imageId=%q，resourceId=%q，title=%q", index+1, reference.NodeID, reference.ImageID, reference.ResourceID, reference.Title))
+	}
+	lines = append(lines, "请结合像素内容和工具返回的重复检测结果判断问题；修改时使用映射中的真实节点或其 producerNodeId，禁止猜节点 ID。")
+	return &sub2api.Message{Role: "user", Content: strings.Join(lines, "\n"), ReferenceImages: images}
+}
+
+func canvasAgentVisualReferenceAllowed(userID uuid.UUID, key string) bool {
+	user := userID.String()
+	return strings.HasPrefix(key, "uploads/"+user+"/") || strings.HasPrefix(key, "tasks/"+user+"/") || strings.HasPrefix(key, "canvas-template-assets/")
+}
+
+func canvasAgentTemporaryVisualKeyAllowed(userID uuid.UUID, key string) bool {
+	return strings.HasPrefix(key, "uploads/"+userID.String()+"/")
+}
+
+func uniqueCanvasAgentStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	unique := make([]string, 0, len(values))
+	for _, value := range values {
+		if _, exists := seen[value]; value == "" || exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		unique = append(unique, value)
+	}
+	return unique
+}
+
+func canvasAgentWorkflowValidationArguments(arguments string, requiredInputNodeIDs []string) string {
+	if len(requiredInputNodeIDs) == 0 {
+		return arguments
+	}
+	input := map[string]any{}
+	_ = json.Unmarshal([]byte(strings.TrimSpace(arguments)), &input)
+	merged := append([]string(nil), requiredInputNodeIDs...)
+	if existing, ok := input["requiredInputNodeIds"].([]any); ok {
+		for _, value := range existing {
+			if nodeID := strings.TrimSpace(fmt.Sprint(value)); nodeID != "" {
+				merged = append(merged, nodeID)
+			}
+		}
+	}
+	input["requiredInputNodeIds"] = uniqueCanvasAgentStrings(merged)
+	raw, err := json.Marshal(input)
+	if err != nil {
+		return arguments
+	}
+	return string(raw)
+}
+
 func canvasAgentReplyContent(arguments string) string {
 	var body struct {
 		Content string `json:"content"`
@@ -1484,6 +1672,7 @@ func canvasAgentInstructions(run *store.AssistantRun) string {
 - canvas_get_state / canvas_export_snapshot：读画布最新结构。下面的快照是本轮开始时的，改过之后想确认就再读一次。
 - canvas_get_selection：读用户当前选中的节点。用户说「这个/这些/选中的」时先读它。
 - canvas_find_nodes / canvas_inspect_nodes：在大画布中按语义查找节点，并读取准确配置和上下游依赖。找到后需要定位时调用 canvas_focus_nodes。
+- canvas_inspect_visuals：读取真实图片像素并做确定性重复检测。scope=auto 会从实时选区追踪下游输出；选中文字或配置节点时也能找到其生成图片。用户反馈图片重复、相似、效果不对、主体变化、颜色或构图问题时必须先调用；工具返回后会附上最多 4 张真实图片及 nodeId/imageId 映射。truncated=true 时必须用 nextOffset 继续分页，全部检查完成前禁止修改或生成。禁止只凭 hasContent、标题或提示词声称看过图片，也禁止未检查就直接重新生成。
 - canvas_duplicate_selection：复制指定节点或实时选区，浏览器负责 ID、组关系、节点引用、任务归属和内部连线重映射。
 - canvas_replace_workflow_input：保留目标输入节点 ID 和连线，用现有资源或文字替换内容，并使所有受影响旧输出失效；runDownstream=true 时只重跑真实下游。canvas_run_downstream 可从任意选中起点定向重跑。运行中的工作流必须先停止。
 - canvas_create_image_operation：为每张来源图片创建独立的内置操作节点和准确连线。只搭工作流时 execute=false；用户明确要求立即处理时 execute=true。裁剪、切图、本地放大不应改造成付费生图 config，多角度和反推提示词仍走现有生成费用确认。
@@ -1494,12 +1683,12 @@ func canvasAgentInstructions(run *store.AssistantRun) string {
 - canvas_apply_ops：改画布。返回里会带上应用后的节点和连线，发现不对可以再调一次修正。
 - canvas_regenerate_selection：把工具执行瞬间实时选区中的全部有效图片（最多 80 张）分别作为唯一参考图，确定性创建一对一的“参考图→配置→新结果”分支并生成。节点 ID 由浏览器直接读取，禁止在参数中猜测或抄写节点 ID；底层会限制并发并自动排队。用户要求对选中图片分别产生新结果时，读完选区后优先直接调用它，不要自己拼节点，不要再次口头确认。工具成功启动任务后立即结束本轮，生成进度由画布节点展示，不要继续轮询。
 - canvas_run_workflow：运行一个完整工作流或全部工作流。用户说「工作流 2」时必须从快照 workflows 找 index=2 的 id，禁止把它猜成第二个配置节点。成功启动后立即结束本轮，进度由画布展示。
-- canvas_validate_workflow：只检查依赖、空输入、失败节点和结构问题，不执行。canvas_stop_workflow 停止当前工作流；canvas_resume_workflow 从真实检查点恢复；canvas_retry_failed_nodes 只重试实际失败节点。禁止用修改节点状态模拟停止或恢复。
+- canvas_validate_workflow：只检查依赖、空输入、失败节点和结构问题，不执行。依据聊天参考图新建完整工作流时，必须把 canvas_create_attachment_nodes 返回的全部图片节点 id 作为 requiredInputNodeIds 校验；valid=true 后才能宣布完成。canvas_stop_workflow 停止当前工作流；canvas_resume_workflow 从真实检查点恢复；canvas_retry_failed_nodes 只重试实际失败节点。禁止用修改节点状态模拟停止或恢复。
 - canvas_plan_workflow_run：只读预检下一次真实运行，费用和就绪状态与画布运行器共用同一套逻辑。用户问会运行哪些节点、是否可运行或需要多少积分时调用它；禁止根据模型名称自行计算价格。
 - canvas_workflow_status：按本轮工作流 requestId 查状态。只有返回 succeeded 才能说工作流完成。
 - canvas_run_generation：只触发明确指定的单个或少量配置节点，不等价于运行工作流。成功启动后立即结束本轮，进度由画布节点展示。
 - canvas_generation_status：仅在用户明确要求查询或等待生成结果时调用，并传对应的本轮 requestId；禁止读取节点上一轮的 success 后提前完成。
-- canvas_create_attachment_nodes：把本轮聊天里用户上传的图片放到画布上。
+- canvas_create_attachment_nodes：把本轮聊天里用户上传的图片放到画布上。依据附件搭工作流时保存返回的全部 added 节点 id；下一次 create_graph 的 edges 可直接引用这些现有 id，把每张参考图连接到对应的新配置节点，最后用 canvas_validate_workflow.requiredInputNodeIds 校验全部引用。
 - site_navigate：站内跳转，只允许 /、/canvas、/canvas/{id}、/canvas/config、/prompts、/assets。
 - canvas_list_projects / prompts_search / assets_list / assets_add：列画布、搜提示词、列或加入我的素材。
 - web_search：由服务端直接联网检索，返回 text、实际 query 和 sources。最终答复必须让来源链接清晰可点击；搜索失败时原样说明真实上游错误，禁止用记忆补成“搜索结果”。用户要求把资料写入画布时，必须先搜索，再根据搜索结果调用画布写入工具。
@@ -1519,7 +1708,7 @@ func canvasAgentInstructions(run *store.AssistantRun) string {
  "edges":[{"from":"a","to":"b"},{"from":"b","to":"c"}]}]}
 create_graph 规则：
 - 绝对不要写 x、y 坐标，排版由系统按连线方向自动完成。
-- key 只是本次响应内的临时名字，edges 必须引用这些 key。
+- key 是本次响应内的新节点临时名字；edges 可引用这些 key，也可引用刚从画布读取或 canvas_create_attachment_nodes 返回的现有节点 id。依据参考图搭工作流时必须在同一条 create_graph 中把全部参考图 id 连到对应配置节点，禁止先创建空工作流、结束前再口头声称已接入。
 - 节点类型只有 text（文字输入）、config（可执行生成步骤）、image（图片输入或产物）、group。
 - 用户说几个节点就建几个节点；不要把多个步骤压缩进一个节点的文字里。
 - config 节点才参与工作流调度；text/image 是它的输入或输出资源。基础生图链路是 text → config → image，复杂工作流可以共享上游文字并包含多个 config。
@@ -1551,6 +1740,8 @@ func canvasAgentJSONInstructions(run *store.AssistantRun) string {
 const (
 	canvasCapabilityReply              = "reply"
 	canvasCapabilityRead               = "canvas_read"
+	canvasCapabilityVisualInspection   = "visual_inspection"
+	canvasCapabilityWorkflowValidation = "workflow_validation"
 	canvasCapabilityWrite              = "canvas_write"
 	canvasCapabilityImageOperation     = "image_operation"
 	canvasCapabilityWorkflowReuse      = "workflow_reuse"
@@ -1595,8 +1786,8 @@ func canvasAgentCapabilityInstructions() string {
 	return `你只负责判断无限画布用户本轮需要哪些能力并拆分执行目标，不能回答用户，也不能执行任何操作。
 结合完整对话理解省略、代词和跟进表达，以最新一条用户消息为最高优先级。
 只输出 JSON：{"capabilities":[...],"requiredAction":"...","actions":[{"id":"action-1","capability":"...","requiredAction":"...","description":"一句话目标"}]}
-	可选能力：reply、canvas_read、canvas_write、image_operation、workflow_reuse、canvas_history、canvas_history_write、workflow_template_read、workflow_template_write、generation_settings、canvas_undo、canvas_redo、generation、attachments、navigate、library_read、library_write、web_search。
-	reply 用于讨论、解释、规划、澄清或普通问答；canvas_read 用于查找或检查节点、校验工作流，以及读取真实待执行节点和预计积分；canvas_write 用于普通结构性创建、修改、删除、连接、复制、移动或缩放画布；image_operation 专门用于裁剪、切图、高清放大、多角度或反推提示词的内置操作节点；workflow_reuse 用于替换工作流输入、使旧下游输出失效或只重跑受影响步骤；canvas_history 只用于列出 Agent 历史；canvas_history_write 用于创建命名检查点、恢复检查点或指定事务；workflow_template_read 专门用于搜索或检查系统工作流模板，workflow_template_write 专门用于按精确模板 ID 创建新画布；generation_settings 专门用于修改已有生图节点的比例、尺寸、质量、分辨率、模型、张数或背景；canvas_undo 用于逐步撤销 Agent 画布操作；canvas_redo 用于恢复刚刚被撤销的 Agent 操作；generation 用于触发单节点生成、运行、停止、恢复、重试工作流、对选中图片分别重生成或查询本轮结果；attachments 用于把聊天附件放到画布；navigate 用于站内跳转；library_read/library_write 用于读取或写入提示词和素材库；web_search 用于用户明确要求联网、搜索网页、核验外部事实，或问题依赖最新时效信息。普通画布操作和稳定常识不要返回 web_search。
+	可选能力：reply、canvas_read、visual_inspection、workflow_validation、canvas_write、image_operation、workflow_reuse、canvas_history、canvas_history_write、workflow_template_read、workflow_template_write、generation_settings、canvas_undo、canvas_redo、generation、attachments、navigate、library_read、library_write、web_search。
+	reply 用于讨论、解释、规划、澄清或普通问答；canvas_read 用于读取节点结构；visual_inspection 用于查看真实画布图片并判断重复、相似、主体、颜色、构图或效果问题；workflow_validation 用于用户要求创建或修复一个完整、可执行、正确接入全部参考输入的工作流，必须放在写入动作之后并通过 canvas_validate_workflow 验证；canvas_write 用于普通结构性创建、修改、删除、连接、复制、移动或缩放画布；image_operation 专门用于裁剪、切图、高清放大、多角度或反推提示词的内置操作节点；workflow_reuse 用于替换工作流输入、使旧下游输出失效或只重跑受影响步骤；canvas_history 只用于列出 Agent 历史；canvas_history_write 用于创建命名检查点、恢复检查点或指定事务；workflow_template_read 专门用于搜索或检查系统工作流模板，workflow_template_write 专门用于按精确模板 ID 创建新画布；generation_settings 专门用于修改已有生图节点的比例、尺寸、质量、分辨率、模型、张数或背景；canvas_undo 用于逐步撤销 Agent 画布操作；canvas_redo 用于恢复刚刚被撤销的 Agent 操作；generation 用于触发单节点生成、运行、停止、恢复、重试工作流、对选中图片分别重生成或查询本轮结果；attachments 用于把聊天附件放到画布；navigate 用于站内跳转；library_read/library_write 用于读取或写入提示词和素材库；web_search 用于用户明确要求联网、搜索网页、核验外部事实，或问题依赖最新时效信息。普通画布操作和稳定常识不要返回 web_search。
 requiredAction 只能是 none、canvas_write 或 generation：
 - 用户只是讨论、询问、读取或查询状态时用 none。
 	- 用户要求本轮实际改变普通画布结构时用 canvas_write。裁剪、切图、高清放大、多角度或反推提示词必须返回 image_operation，不要返回 canvas_write；如果只是创建或配置操作节点用 requiredAction=canvas_write，如果明确要求立即执行用 requiredAction=generation。若只是修改已有生图参数，capabilities 必须返回 generation_settings，不要返回 canvas_write 或 generation。例如“比例改成 9:16，质量高一点”“统一用竖版高画质”“这批节点改成 9:16 和 high”“所有生图步骤都用高质量”“尺寸统一调整为 9:16”都属于 generation_settings。
@@ -1605,6 +1796,8 @@ requiredAction 只能是 none、canvas_write 或 generation：
 	- 用户明确要求联网、网上搜索、打开外部资料核验，或问题涉及会随时间变化的新闻、价格、版本、政策、人物职位、产品信息时返回 web_search 和 none；如果还要求把检索结果写入画布，同时返回对应写入能力并拆成“先检索、后写入”两个 actions。不能把站内提示词/素材/工作流模板搜索误判为联网搜索。
 - “撤销刚才对节点的修改”“回到 Agent 操作前”“把上一步还原”“undo the last canvas change”返回 canvas_undo；“重做刚才撤销的操作”“恢复被撤销的节点修改”“redo”返回 canvas_redo。这两类都使用 requiredAction=canvas_write，不要同时返回 canvas_write，也不要根据当前节点推测反向操作。询问是否支持回退、讨论回退方案时仍然只返回 reply 和 none。
 - 用户要求本轮实际启动生成时用 generation；必须结合上下文识别省略表达和口语跟进，例如“这几张照刚才说的各做一版”“都给我换个干净背景”“可以，开始吧”，不能要求用户包含“生成”等固定关键词。
+	- 用户反馈生成图片重复、过于相似、效果不对、主体变化、颜色不准、构图异常或要求比较图片时必须返回 visual_inspection。只检查时 requiredAction=none；还要求修改或重新生成时，同时拆出后续 canvas_write 或 generation action，并把 visual_inspection 放在第一项。禁止把视觉问题直接路由成单独 generation。
+	- 路由消息中的“本消息包含 N 张真实参考图”表示执行模型会直接收到用户附件像素。用户要求把附件放进画布时返回 attachments；要求依据附件搭建或修改完整工作流时返回 attachments + canvas_write + workflow_validation，并拆成先放置附件、后搭建并连接结构、最后校验全部参考输入。visual_inspection 只用于检查画布节点里的图片，不要用它代替聊天附件。
 		只返回完成请求所必需的能力，可以返回多个。actions 必须把用户要求的每个独立目标分别列出并保持执行顺序；复合请求不能把多个目标压成一项。例如“切图后新增说明节点并整理布局”至少拆成 image_operation 和 canvas_write 两项，capabilities 同时保留这两种能力。全局 requiredAction 取 actions 中最高级别：generation 高于 canvas_write，高于 none。明确要求只讲方案、不修改或不执行时，requiredAction 必须是 none，actions 为空，且绝不能返回 canvas_write、image_operation、workflow_reuse、canvas_history_write、workflow_template_write、generation_settings、canvas_undo、canvas_redo、generation、attachments 或 library_write。拿不准时只返回 reply，requiredAction 用 none。`
 }
 
@@ -1613,7 +1806,7 @@ func canvasAgentIntentFromFallback(prompt string) canvasAgentIntent {
 	requiredAction := canvasRequiredActionNone
 	if capabilities[canvasCapabilityGeneration] {
 		requiredAction = canvasRequiredActionGeneration
-	} else if capabilities[canvasCapabilityImageOperation] || capabilities[canvasCapabilityWorkflowReuse] || capabilities[canvasCapabilityHistoryWrite] || capabilities[canvasCapabilityTemplateWrite] || capabilities[canvasCapabilityGenerationSettings] || capabilities[canvasCapabilityUndo] || capabilities[canvasCapabilityRedo] || canvasAgentRequiresMutation(prompt) {
+	} else if capabilities[canvasCapabilityImageOperation] || capabilities[canvasCapabilityWorkflowReuse] || capabilities[canvasCapabilityHistoryWrite] || capabilities[canvasCapabilityTemplateWrite] || capabilities[canvasCapabilityGenerationSettings] || capabilities[canvasCapabilityUndo] || capabilities[canvasCapabilityRedo] || capabilities[canvasCapabilityAttachments] || canvasAgentRequiresMutation(prompt) {
 		requiredAction = canvasRequiredActionWrite
 	}
 	return canvasAgentIntent{Capabilities: capabilities, RequiredAction: requiredAction, Actions: synthesizeCanvasAgentPlannedActions(capabilities, requiredAction)}
@@ -1641,12 +1834,60 @@ func fallbackCanvasAgentWebSearchIntent(compact string) bool {
 	return false
 }
 
+// This is only an availability fallback when semantic intent classification
+// fails. Normal visual routing is decided by the configured model.
+func fallbackCanvasAgentVisualInspectionIntent(compact string) (inspect bool, repair bool) {
+	imageContext := false
+	for _, phrase := range []string{"图片", "图像", "生成图", "输出图", "出的图", "画面", "image", "images", "outputimage"} {
+		if strings.Contains(compact, phrase) {
+			imageContext = true
+			break
+		}
+	}
+	if !imageContext {
+		return false, false
+	}
+	for _, phrase := range []string{"一模一样", "重复", "太像", "相似", "效果不对", "有问题", "不对", "主体变", "颜色不准", "构图", "对比", "比较", "duplicate", "similar", "wrong", "compare"} {
+		if strings.Contains(compact, phrase) {
+			inspect = true
+			break
+		}
+	}
+	if !inspect {
+		return false, false
+	}
+	for _, phrase := range []string{"更新", "修改", "修复", "调整", "重新", "重做", "再生成", "处理", "fix", "update", "regenerate", "redo"} {
+		if strings.Contains(compact, phrase) {
+			return true, true
+		}
+	}
+	return true, false
+}
+
 func fallbackCanvasAgentCapabilities(prompt string) canvasAgentCapabilities {
 	capabilities := canvasAgentCapabilities{canvasCapabilityReply: true}
 	if canvasAgentForbidsMutation(prompt) {
 		return capabilities
 	}
 	compact := strings.ToLower(strings.Join(strings.Fields(prompt), ""))
+	hasAttachmentCatalog := strings.Contains(compact, "本轮聊天附件") && strings.Contains(compact, "canvas_create_attachment_nodes")
+	if hasAttachmentCatalog {
+		capabilities[canvasCapabilityRead] = true
+		capabilities[canvasCapabilityAttachments] = true
+		if strings.Contains(compact, "工作流") || strings.Contains(compact, "workflow") {
+			capabilities[canvasCapabilityWrite] = true
+			capabilities[canvasCapabilityWorkflowValidation] = true
+		}
+	}
+	if inspect, repair := fallbackCanvasAgentVisualInspectionIntent(compact); inspect && !hasAttachmentCatalog {
+		capabilities[canvasCapabilityRead] = true
+		capabilities[canvasCapabilityVisualInspection] = true
+		if repair {
+			capabilities[canvasCapabilityWrite] = true
+			capabilities[canvasCapabilityGeneration] = true
+		}
+		return capabilities
+	}
 	templateIntent := strings.Contains(compact, "工作流模板") || strings.Contains(compact, "画布模板") || strings.Contains(compact, "workflowtemplate") || strings.Contains(compact, "canvastemplate")
 	if templateIntent {
 		for _, action := range []string{"使用", "套用", "创建", "新建", "生成画布", "use", "create", "instantiate"} {
@@ -1855,6 +2096,8 @@ func parseCanvasAgentIntent(raw string) (canvasAgentIntent, error) {
 	}
 	allowed := map[string]bool{
 		canvasCapabilityReply: true, canvasCapabilityRead: true, canvasCapabilityWrite: true,
+		canvasCapabilityVisualInspection:   true,
+		canvasCapabilityWorkflowValidation: true,
 		canvasCapabilityImageOperation:     true,
 		canvasCapabilityWorkflowReuse:      true,
 		canvasCapabilityHistory:            true,
@@ -1876,6 +2119,9 @@ func parseCanvasAgentIntent(raw string) (canvasAgentIntent, error) {
 	}
 	if len(capabilities) == 0 {
 		return canvasAgentIntent{}, fmt.Errorf("capabilities empty")
+	}
+	if capabilities[canvasCapabilityWorkflowValidation] {
+		capabilities[canvasCapabilityRead] = true
 	}
 	requiredAction := strings.TrimSpace(strings.ToLower(body.RequiredAction))
 	switch requiredAction {
@@ -1941,7 +2187,7 @@ func parseCanvasAgentIntent(raw string) (canvasAgentIntent, error) {
 	if requiredAction == canvasRequiredActionGeneration {
 		capabilities[canvasCapabilityGeneration] = true
 	}
-	if (capabilities[canvasCapabilityImageOperation] || capabilities[canvasCapabilityWorkflowReuse] || capabilities[canvasCapabilityHistoryWrite] || capabilities[canvasCapabilityTemplateWrite] || capabilities[canvasCapabilityGenerationSettings] || capabilities[canvasCapabilityUndo] || capabilities[canvasCapabilityRedo] || capabilities[canvasCapabilityAttachments] || capabilities[canvasCapabilityLibraryWrite]) && !explicitCanvasWriteAction {
+	if (capabilities[canvasCapabilityImageOperation] || capabilities[canvasCapabilityWorkflowReuse] || capabilities[canvasCapabilityHistoryWrite] || capabilities[canvasCapabilityTemplateWrite] || capabilities[canvasCapabilityGenerationSettings] || capabilities[canvasCapabilityUndo] || capabilities[canvasCapabilityRedo] || capabilities[canvasCapabilityAttachments] || capabilities[canvasCapabilityLibraryWrite]) && !explicitCanvasWriteAction && !capabilities[canvasCapabilityWorkflowValidation] {
 		delete(capabilities, canvasCapabilityWrite)
 	}
 	if len(actions) == 0 {
@@ -1951,10 +2197,11 @@ func parseCanvasAgentIntent(raw string) (canvasAgentIntent, error) {
 }
 
 func synthesizeCanvasAgentPlannedActions(capabilities canvasAgentCapabilities, requiredAction string) []canvasAgentPlannedAction {
-	if requiredAction == canvasRequiredActionNone {
+	if requiredAction == canvasRequiredActionNone && !capabilities[canvasCapabilityVisualInspection] && !capabilities[canvasCapabilityWorkflowValidation] {
 		return nil
 	}
 	ordered := []string{
+		canvasCapabilityVisualInspection,
 		canvasCapabilityImageOperation,
 		canvasCapabilityWorkflowReuse,
 		canvasCapabilityHistoryWrite,
@@ -1965,6 +2212,7 @@ func synthesizeCanvasAgentPlannedActions(capabilities canvasAgentCapabilities, r
 		canvasCapabilityAttachments,
 		canvasCapabilityLibraryWrite,
 		canvasCapabilityWrite,
+		canvasCapabilityWorkflowValidation,
 	}
 	actions := make([]canvasAgentPlannedAction, 0, 2)
 	for _, capability := range ordered {
@@ -1972,7 +2220,11 @@ func synthesizeCanvasAgentPlannedActions(capabilities canvasAgentCapabilities, r
 			continue
 		}
 		actionRequired := canvasRequiredActionWrite
-		if requiredAction == canvasRequiredActionGeneration && (capability == canvasCapabilityImageOperation || capability == canvasCapabilityWorkflowReuse) {
+		if capability == canvasCapabilityVisualInspection {
+			actionRequired = canvasRequiredActionNone
+		} else if capability == canvasCapabilityWorkflowValidation {
+			actionRequired = canvasRequiredActionNone
+		} else if requiredAction == canvasRequiredActionGeneration && (capability == canvasCapabilityImageOperation || capability == canvasCapabilityWorkflowReuse) {
 			actionRequired = canvasRequiredActionGeneration
 		}
 		actions = append(actions, canvasAgentPlannedAction{
@@ -1982,8 +2234,9 @@ func synthesizeCanvasAgentPlannedActions(capabilities canvasAgentCapabilities, r
 			Description:    capability,
 		})
 	}
-	if requiredAction == canvasRequiredActionGeneration && len(actions) == 0 {
-		actions = append(actions, canvasAgentPlannedAction{ID: "action-1", Capability: canvasCapabilityGeneration, RequiredAction: canvasRequiredActionGeneration, Description: canvasCapabilityGeneration})
+	hasSelfStartingGenerationAction := capabilities[canvasCapabilityImageOperation] || capabilities[canvasCapabilityWorkflowReuse]
+	if requiredAction == canvasRequiredActionGeneration && !hasSelfStartingGenerationAction {
+		actions = append(actions, canvasAgentPlannedAction{ID: fmt.Sprintf("action-%d", len(actions)+1), Capability: canvasCapabilityGeneration, RequiredAction: canvasRequiredActionGeneration, Description: canvasCapabilityGeneration})
 	}
 	return actions
 }
@@ -1991,7 +2244,7 @@ func synthesizeCanvasAgentPlannedActions(capabilities canvasAgentCapabilities, r
 func canvasAgentPlanInstructions(actions []canvasAgentPlannedAction) string {
 	pending := make([]map[string]string, 0, len(actions))
 	for _, action := range actions {
-		if action.RequiredAction == canvasRequiredActionNone {
+		if action.RequiredAction == canvasRequiredActionNone && action.Capability != canvasCapabilityVisualInspection && action.Capability != canvasCapabilityWorkflowValidation {
 			continue
 		}
 		pending = append(pending, map[string]string{
@@ -2009,6 +2262,10 @@ func canvasAgentToolCapability(name string) string {
 	switch name {
 	case canvasApplyOpsTool().Name, canvasFocusNodesTool().Name, canvasDuplicateSelectionTool().Name:
 		return canvasCapabilityWrite
+	case canvasInspectVisualsTool().Name:
+		return canvasCapabilityVisualInspection
+	case canvasValidateWorkflowTool().Name:
+		return canvasCapabilityWorkflowValidation
 	case canvasCreateImageOperationTool().Name:
 		return canvasCapabilityImageOperation
 	case canvasReplaceWorkflowInputTool().Name, canvasRunDownstreamTool().Name:
@@ -2042,8 +2299,21 @@ func (loop *canvasAgentLoopState) completeNextPlannedAction(toolName string) {
 	if capability == "" {
 		return
 	}
+	if capability == canvasCapabilityVisualInspection && !loop.visualInspected {
+		return
+	}
+	if capability == canvasCapabilityWorkflowValidation {
+		for _, action := range loop.plannedActions {
+			if action.Capability == canvasCapabilityWorkflowValidation {
+				break
+			}
+			if !action.Completed && (action.RequiredAction != canvasRequiredActionNone || action.Capability == canvasCapabilityVisualInspection) {
+				return
+			}
+		}
+	}
 	for index := range loop.plannedActions {
-		if !loop.plannedActions[index].Completed && loop.plannedActions[index].RequiredAction != canvasRequiredActionNone && loop.plannedActions[index].Capability == capability {
+		if !loop.plannedActions[index].Completed && (loop.plannedActions[index].RequiredAction != canvasRequiredActionNone || capability == canvasCapabilityVisualInspection || capability == canvasCapabilityWorkflowValidation) && loop.plannedActions[index].Capability == capability {
 			loop.plannedActions[index].Completed = true
 			return
 		}
@@ -2056,7 +2326,7 @@ func (loop *canvasAgentLoopState) pendingPlannedActions() []canvasAgentPlannedAc
 	}
 	pending := make([]canvasAgentPlannedAction, 0, len(loop.plannedActions))
 	for _, action := range loop.plannedActions {
-		if !action.Completed && action.RequiredAction != canvasRequiredActionNone {
+		if !action.Completed && (action.RequiredAction != canvasRequiredActionNone || action.Capability == canvasCapabilityVisualInspection || action.Capability == canvasCapabilityWorkflowValidation) {
 			pending = append(pending, action)
 		}
 	}
@@ -2078,6 +2348,9 @@ func canvasAgentToolsForCapabilities(capabilities canvasAgentCapabilities) []sub
 	}
 	if capabilities[canvasCapabilityWrite] {
 		tools = append(tools, canvasApplyOpsTool())
+	}
+	if capabilities[canvasCapabilityVisualInspection] {
+		tools = append(tools, canvasInspectVisualsTool())
 	}
 	if capabilities[canvasCapabilityImageOperation] {
 		tools = append(tools, canvasCreateImageOperationTool())
@@ -2103,7 +2376,7 @@ func canvasAgentToolsForCapabilities(capabilities canvasAgentCapabilities) []sub
 	if capabilities[canvasCapabilityRedo] {
 		tools = append(tools, canvasRedoLastActionTool())
 	}
-	if capabilities[canvasCapabilityRead] || capabilities[canvasCapabilityWrite] || capabilities[canvasCapabilityImageOperation] || capabilities[canvasCapabilityWorkflowReuse] || capabilities[canvasCapabilityHistory] || capabilities[canvasCapabilityHistoryWrite] || capabilities[canvasCapabilityGenerationSettings] || capabilities[canvasCapabilityUndo] || capabilities[canvasCapabilityRedo] || capabilities[canvasCapabilityGeneration] || capabilities[canvasCapabilityAttachments] {
+	if capabilities[canvasCapabilityRead] || capabilities[canvasCapabilityVisualInspection] || capabilities[canvasCapabilityWorkflowValidation] || capabilities[canvasCapabilityWrite] || capabilities[canvasCapabilityImageOperation] || capabilities[canvasCapabilityWorkflowReuse] || capabilities[canvasCapabilityHistory] || capabilities[canvasCapabilityHistoryWrite] || capabilities[canvasCapabilityGenerationSettings] || capabilities[canvasCapabilityUndo] || capabilities[canvasCapabilityRedo] || capabilities[canvasCapabilityGeneration] || capabilities[canvasCapabilityAttachments] {
 		tools = append(tools, canvasReadStateTool(), canvasReadSelectionTool(), canvasFindNodesTool(), canvasInspectNodesTool(), canvasExportSnapshotTool(), canvasValidateWorkflowTool(), canvasPlanWorkflowRunTool(), canvasListAgentHistoryTool())
 	}
 	if capabilities[canvasCapabilityWrite] {
@@ -2143,6 +2416,12 @@ func canvasAgentInitialToolChoice(capabilities canvasAgentCapabilities, tools []
 	if capabilities[canvasCapabilityWeb] && canvasAgentToolAllowed(tools, webSearchTool().Name) {
 		return webSearchTool().Name
 	}
+	if capabilities[canvasCapabilityVisualInspection] && canvasAgentToolAllowed(tools, canvasInspectVisualsTool().Name) {
+		return canvasInspectVisualsTool().Name
+	}
+	if capabilities[canvasCapabilityWorkflowValidation] && !capabilities[canvasCapabilityWrite] && canvasAgentToolAllowed(tools, canvasValidateWorkflowTool().Name) {
+		return canvasValidateWorkflowTool().Name
+	}
 	if capabilities[canvasCapabilityImageOperation] && canvasAgentToolAllowed(tools, canvasCreateImageOperationTool().Name) {
 		return canvasCreateImageOperationTool().Name
 	}
@@ -2176,14 +2455,28 @@ func classifyCanvasAgentIntent(ctx context.Context, client *sub2api.Client, payl
 		start = len(payload) - 16
 	}
 	for _, message := range payload[start:] {
-		message.ReferenceImages = nil
-		messages = append(messages, message)
+		messages = append(messages, canvasAgentIntentRoutingMessage(message))
 	}
 	raw, err := client.ChatTextWithImages(ctx, messages, nil, nil)
 	if err != nil {
 		return canvasAgentIntent{}, err
 	}
 	return parseCanvasAgentIntent(raw)
+}
+
+func canvasAgentIntentRoutingMessage(message sub2api.Message) sub2api.Message {
+	imageCount := len(message.ReferenceImages)
+	message.ReferenceImages = nil
+	if imageCount <= 0 {
+		return message
+	}
+	marker := fmt.Sprintf("[本消息包含 %d 张真实参考图；执行模型会收到图片像素]", imageCount)
+	if strings.TrimSpace(message.Content) == "" {
+		message.Content = marker
+	} else {
+		message.Content = strings.TrimSpace(message.Content) + "\n" + marker
+	}
+	return message
 }
 
 func restrictCanvasAgentIntent(prompt string, intent canvasAgentIntent) canvasAgentIntent {
@@ -2337,6 +2630,7 @@ func (w *Worker) executeCanvasAgent(
 	}
 	intent = restrictCanvasAgentIntent(run.Prompt, intent)
 	capabilities := intent.Capabilities
+	loop.requiresVisualInspection = capabilities[canvasCapabilityVisualInspection]
 	loop.plannedActions = append([]canvasAgentPlannedAction(nil), intent.Actions...)
 	if planInstructions := canvasAgentPlanInstructions(loop.plannedActions); planInstructions != "" {
 		payload = append(payload, sub2api.Message{Role: "system", Content: planInstructions})
@@ -2567,7 +2861,13 @@ func (w *Worker) executeCanvasAgent(
 			break
 		}
 		observation := w.runCanvasAgentTool(ctx, run, &loop, next.ToolCall)
-		payload = append(payload, canvasAgentToolMessages(next, observation)...)
+		toolMessages := canvasAgentToolMessages(next, observation)
+		if next.ToolCall.Name == canvasInspectVisualsTool().Name {
+			if visualContext := w.consumeCanvasAgentVisualContext(ctx, run, &loop); visualContext != nil {
+				toolMessages = append(toolMessages, *visualContext)
+			}
+		}
+		payload = append(payload, toolMessages...)
 		if loop.webSearchFailed {
 			return fmt.Errorf("%s", loop.webSearchError)
 		}

@@ -82,6 +82,7 @@ type Worker struct {
 	imageMemory      *semaphore.Weighted
 	imageMemoryBytes int64
 	pollWorkers      *semaphore.Weighted
+	pollRequests     *semaphore.Weighted
 	pollConcurrency  int
 	workerID         string
 	modelConfigMu    sync.Mutex
@@ -126,6 +127,7 @@ func New(cfg *config.Config, st *store.Store, stg *storage.Storage, c2aClient *c
 		imageMemory:      semaphore.NewWeighted(imageMemoryBytes),
 		imageMemoryBytes: imageMemoryBytes,
 		pollWorkers:      semaphore.NewWeighted(int64(pollConcurrency)),
+		pollRequests:     semaphore.NewWeighted(int64(pollConcurrency)),
 		pollConcurrency:  pollConcurrency,
 		workerID:         workerID,
 	}
@@ -612,6 +614,11 @@ func ensureUpstreamOutputError(callErr error, outputKeys []string) error {
 	return callErr
 }
 
+func shouldRecoverEmptyOpenAISubmit(attemptID uuid.UUID, adapter string, images []string, callErr error) bool {
+	return attemptID != uuid.Nil && adapter == modelconfig.AdapterOpenAI &&
+		callErr == nil && nonEmptyImageCount(images) == 0
+}
+
 func (w *Worker) callSub2APIClient(ctx context.Context, task *store.Task, client *sub2api.Client, model string, onImage imageReadyFunc) ([]string, error) {
 	if model != "" {
 		client = client.WithImageModel(model)
@@ -1069,10 +1076,13 @@ func (w *Worker) registerConfiguredUpstreamAttempt(ctx context.Context, task *st
 	}
 	submittedAt := time.Now().UTC()
 	timeoutSecs := providerTimeoutSecs(&provider)
-	status := store.UpstreamAttemptPending
+	// Keep the attempt out of the normal poll set until the submit request has
+	// either been acknowledged or become ambiguous. With multiple worker slots,
+	// publishing OpenAI attempts as pending here lets a poller race the in-flight
+	// POST and incorrectly finalize a task before submission has completed.
+	status := store.UpstreamAttemptSubmitting
 	upstreamIDs := []string{task.ID.String()}
 	if provider.Adapter == modelconfig.AdapterCRUN {
-		status = store.UpstreamAttemptSubmitting
 		upstreamIDs = taskParamStrings(task.Params, "_crunTaskIds")
 	}
 	id, err := store.UpsertTaskUpstreamAttempt(ctx, w.St.Pool, store.UpstreamAttemptInput{
@@ -1376,11 +1386,11 @@ func (w *Worker) retryDelaySetting(ctx context.Context, key string, fallback int
 
 func (w *Worker) imageFetchConcurrency(ctx context.Context) int64 {
 	if w == nil || w.St == nil {
-		return 2
+		return 8
 	}
 	value, err := settings.GetInt(ctx, w.St.Pool, "image_fetch_concurrency")
 	if err != nil || value <= 0 {
-		return 2
+		return 8
 	}
 	if value > 32 {
 		return 32
@@ -1528,6 +1538,14 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 		callErr = fmt.Errorf("persist upstream attempt: %w", attemptErr)
 	} else {
 		imagesB64, callErr = w.callUpstream(ctx, task, provider, model, collector.persist)
+	}
+	// Some OpenAI-compatible async gateways can acknowledge the request with an
+	// empty body/result while the deterministic client_task_id is already being
+	// processed. Treat that outcome as ambiguous and recover it through polling;
+	// declaring success-without-output here caused false failures at the 30s
+	// submit boundary under concurrent load.
+	if shouldRecoverEmptyOpenAISubmit(attemptID, attemptAdapter, imagesB64, callErr) {
+		callErr = &asyncImagePendingError{}
 	}
 	var netErr *c2a.NetworkError
 	var pendingErr *asyncImagePendingError
@@ -1874,58 +1892,90 @@ func (w *Worker) pollOpenAIProviderTasks(ctx context.Context, provider *modelcon
 	client := c2a.NewWithPolicy(provider.BaseURL, provider.APIKey, provider.TimeoutSecs, w.Cfg != nil && w.Cfg.AppEnv == "development")
 	stopRenew := w.startUpstreamAttemptPollRenewal(ctx, tasks)
 	defer stopRenew()
+	w.forEachOpenAIPollBatch(ctx, tasks, func(batch []*store.Task) {
+		w.pollOpenAIProviderTaskBatch(ctx, client, provider, batch)
+	})
+}
+
+func (w *Worker) forEachOpenAIPollBatch(ctx context.Context, tasks []*store.Task, process func([]*store.Task)) {
+	if len(tasks) == 0 || process == nil {
+		return
+	}
+	var wg sync.WaitGroup
 	for start := 0; start < len(tasks); start += 20 {
 		end := min(start+20, len(tasks))
 		batch := tasks[start:end]
-		ids := make([]string, 0, len(batch))
-		expected := make(map[string]int, len(batch))
-		byID := make(map[string]*store.Task, len(batch))
-		claims := make(map[string]string, len(batch))
-		for _, task := range batch {
-			id := task.ID.String()
-			ids = append(ids, id)
-			expected[id] = task.Count
-			byID[id] = task
-		}
-		if len(ids) == 0 {
-			continue
-		}
-		processed := make(map[string]bool, len(ids))
-		client.PollImageTaskStatusesGuarded(ctx, ids, expected, func(taskID string) bool {
-			task := byID[taskID]
-			if task == nil {
-				return false
-			}
-			claimID := uuid.NewString()
-			claimed, err := store.TryClaimTaskCompletion(ctx, w.St.Pool, task.ID, claimID, time.Now().UTC(), taskCompletionLease)
-			if err != nil {
-				log.Printf("task %s async completion claim failed: %v", task.ID, err)
-				return false
-			}
-			if claimed {
-				claims[taskID] = claimID
-			}
-			return claimed
-		}, func(taskID string, result c2a.ImageTaskPollResult) {
-			task := byID[taskID]
-			processed[taskID] = true
-			if task == nil {
-				return
-			}
-			claimID := claims[taskID]
-			if openAIPollNeedsFetch(result) {
-				w.startOpenAIResultFetch(provider, task, result, claimID)
-				return
-			}
-			w.applyOpenAIPollResult(ctx, client, provider, task, result, claimID)
-		})
-		for taskID, task := range byID {
-			if !processed[taskID] {
-				if claimID := claims[taskID]; claimID != "" {
-					_, _ = store.ReleaseTaskCompletionClaim(ctx, w.St.Pool, task.ID, claimID)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if w.pollRequests != nil {
+				if err := w.pollRequests.Acquire(ctx, 1); err != nil {
+					return
 				}
-				w.releaseUpstreamAttemptPoll(ctx, task)
+				defer w.pollRequests.Release(1)
 			}
+			process(batch)
+		}()
+	}
+	wg.Wait()
+}
+
+func (w *Worker) pollOpenAIProviderTaskBatch(ctx context.Context, client *c2a.Client, provider *modelconfig.Provider, batch []*store.Task) {
+	ids := make([]string, 0, len(batch))
+	expected := make(map[string]int, len(batch))
+	byID := make(map[string]*store.Task, len(batch))
+	claims := make(map[string]string, len(batch))
+	var resultMu sync.Mutex
+	for _, task := range batch {
+		id := task.ID.String()
+		ids = append(ids, id)
+		expected[id] = task.Count
+		byID[id] = task
+	}
+	if len(ids) == 0 {
+		return
+	}
+	processed := make(map[string]bool, len(ids))
+	client.PollImageTaskStatusesGuarded(ctx, ids, expected, func(taskID string) bool {
+		task := byID[taskID]
+		if task == nil {
+			return false
+		}
+		claimID := uuid.NewString()
+		claimed, err := store.TryClaimTaskCompletion(ctx, w.St.Pool, task.ID, claimID, time.Now().UTC(), taskCompletionLease)
+		if err != nil {
+			log.Printf("task %s async completion claim failed: %v", task.ID, err)
+			return false
+		}
+		if claimed {
+			resultMu.Lock()
+			claims[taskID] = claimID
+			resultMu.Unlock()
+		}
+		return claimed
+	}, func(taskID string, result c2a.ImageTaskPollResult) {
+		task := byID[taskID]
+		resultMu.Lock()
+		processed[taskID] = true
+		claimID := claims[taskID]
+		resultMu.Unlock()
+		if task == nil {
+			return
+		}
+		if openAIPollNeedsFetch(result) {
+			w.startOpenAIResultFetch(provider, task, result, claimID)
+			return
+		}
+		w.applyOpenAIPollResult(ctx, client, provider, task, result, claimID)
+	})
+	resultMu.Lock()
+	defer resultMu.Unlock()
+	for taskID, task := range byID {
+		if !processed[taskID] {
+			if claimID := claims[taskID]; claimID != "" {
+				_, _ = store.ReleaseTaskCompletionClaim(ctx, w.St.Pool, task.ID, claimID)
+			}
+			w.releaseUpstreamAttemptPoll(ctx, task)
 		}
 	}
 }
@@ -2092,16 +2142,29 @@ func (w *Worker) startUpstreamAttemptPollRenewal(ctx context.Context, tasks []*s
 
 func (w *Worker) renewUpstreamAttemptPolls(ctx context.Context, tasks []*store.Task) {
 	now := time.Now().UTC()
+	attemptIDs := make([]uuid.UUID, 0, len(tasks))
+	attemptOwners := make([]string, 0, len(tasks))
+	taskIDs := make([]uuid.UUID, 0, len(tasks))
+	taskOwners := make([]string, 0, len(tasks))
 	for _, task := range tasks {
 		id := upstreamAttemptID(task)
 		owner := taskParamString(task.Params, "_upstreamAttemptPollOwner")
 		if id == uuid.Nil || owner == "" {
 			continue
 		}
-		if err := store.RenewTaskUpstreamAttemptPoll(ctx, w.St.Pool, id, owner, now, upstreamAttemptPollLease); err != nil {
-			log.Printf("task %s attempt %s poll lease renewal failed: %v", task.ID, id, err)
+		attemptIDs = append(attemptIDs, id)
+		attemptOwners = append(attemptOwners, owner)
+		routeKey := taskParamString(task.Params, "_providerRouteKey")
+		if routeKey != "" {
+			taskIDs = append(taskIDs, task.ID)
+			taskOwners = append(taskOwners, "poller:"+routeKey)
 		}
-		w.renewCurrentAttemptTaskLease(ctx, task)
+	}
+	if err := store.RenewTaskUpstreamAttemptPolls(ctx, w.St.Pool, attemptIDs, attemptOwners, now, upstreamAttemptPollLease); err != nil {
+		log.Printf("batch poll lease renewal failed attempts=%d: %v", len(attemptIDs), err)
+	}
+	if err := store.RenewTaskLeases(ctx, w.St.Pool, taskIDs, taskOwners, now, asyncTaskLease); err != nil {
+		log.Printf("batch task lease renewal failed tasks=%d: %v", len(taskIDs), err)
 	}
 }
 

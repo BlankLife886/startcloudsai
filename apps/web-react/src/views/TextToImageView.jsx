@@ -63,6 +63,8 @@ import { DialogMotion } from "../components/motion/DialogMotion.jsx";
 import { useContentReveal } from "../components/motion/useContentReveal.js";
 import { useTextToImageJobs } from "../features/text-to-image/useTextToImageJobs.js";
 import { T2iHistoryFeed } from "../features/text-to-image/T2iHistoryFeed.jsx";
+import { taskFailureMessage } from "../features/history/taskFailureMessage.js";
+import { summarizeGalleryGroup } from "../features/text-to-image/galleryGroupState.js";
 import { WallevenImagePreview } from "../components/common/WallevenImagePreview.jsx";
 import "./TextToImageView.css";
 
@@ -315,6 +317,7 @@ function statusLabel(task) {
   if (task.status === "waiting_provider") return "等待模型响应";
   if (task.status === "running") return "正在生成";
   if (task.status === "completed") return "已完成";
+  if (task.status === "paused") return "已暂停";
   if (["cancelled", "canceled"].includes(task.status)) return "已取消";
   if (task.status === "failed") return "生成失败";
   return task.status || "处理中";
@@ -401,19 +404,19 @@ function buildGalleryItems(tasks, unavailableImageKeys = {}, { limit = 120 } = {
         ? 1
         : Math.min(4, Math.max(1, Number(task.count || 1)));
       for (let index = 0; index < slots; index += 1) {
-      items.push({
-        key: `pending-${task.id}-${index}`,
-        kind: "pending",
-        task,
-        index,
-        batchIndex: batchSize > 1 ? Number(task.batchIndex || 0) : index,
-        total: batchSize > 1 ? batchSize : slots,
-        title: task.prompt || "图片生成",
-      });
+        items.push({
+          key: `pending-${task.id}-${index}`,
+          kind: "pending",
+          task,
+          index,
+          batchIndex: batchSize > 1 ? Number(task.batchIndex || 0) : index,
+          total: batchSize > 1 ? batchSize : slots,
+          title: task.prompt || "图片生成",
+        });
       }
       continue;
     }
-    if (["cancelled", "canceled"].includes(task.status)) {
+    if (["failed", "paused", "cancelled", "canceled"].includes(task.status)) {
       items.push({
         key: `status-${task.id}`,
         kind: "status",
@@ -463,15 +466,23 @@ function groupGalleryItems(items) {
         Number(left.batchIndex || left.index || 0) -
         Number(right.batchIndex || right.index || 0),
     );
-    const imageCover = group.items.find((item) => item.kind === "image");
-    const pendingCount = group.items.filter((item) => item.kind === "pending").length;
     return {
       ...group,
-      cover: imageCover || group.items[0],
-      pendingCount,
-      kind: imageCover ? (pendingCount ? "mixed" : "image") : "pending",
+      ...summarizeGalleryGroup(group.items),
     };
   });
+}
+
+function galleryGroupTitle(group) {
+  if (group.kind === "pending") return "任务处理中";
+  if (group.kind === "status") return statusLabel(group.cover.task);
+  if (group.pendingCount)
+    return `已完成 ${group.imageCount}/${group.items.length} 张`;
+  if (group.statusCount)
+    return `已完成 ${group.imageCount}/${group.items.length} 张，${group.statusCount} 张未生成`;
+  return group.items.length > 1
+    ? "单击查看这组图片"
+    : "单击查看，双击设为参考图";
 }
 
 function transitionClasses(name, phase) {
@@ -1980,9 +1991,11 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                           aria-label="同批次生成结果"
                         >
                           {stageGridItems.map((item) => (
-                            <div key={item.key} className={`t2i-stage-cell${item.kind === "pending" ? " is-pending" : ""}${showsTransparentCanvas(item.task) ? " is-transparent-output" : ""}`}>
+                            <div key={item.key} className={`t2i-stage-cell${item.kind === "pending" ? " is-pending" : item.kind === "status" ? " is-status" : ""}${item.kind === "image" && showsTransparentCanvas(item.task) ? " is-transparent-output" : ""}`}>
                               {item.kind === "pending" ? (
                                 <PendingStage task={item.task} now={now} batchIndex={item.batchIndex} />
+                              ) : item.kind === "status" ? (
+                                <TaskStatusStage task={item.task} batchIndex={item.batchIndex} />
                               ) : (
                                 <>
                                   <button type="button" className="t2i-stage-cell-media" onClick={() => openPreview(item)}>
@@ -2058,10 +2071,14 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                             onReference={() => useAsReference(featuredItem)}
                           />
                         </>
-                      ) : (
+                      ) : featuredItem.kind === "pending" ? (
                         <div className="t2i-stage-media is-skeleton" role="status">
                           <div className="t2i-skeleton-shine" />
                           <PendingStage task={activeTask} now={now} />
+                        </div>
+                      ) : (
+                        <div className="t2i-stage-media is-status">
+                          <TaskStatusStage task={activeTask} />
                         </div>
                       )}
                     </div>
@@ -2093,13 +2110,18 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                           key={group.key}
                           type="button"
                           data-click-guard="off"
-                          className={`t2i-film-item${group.key === featuredGroup.key ? " is-on" : ""}${group.kind !== "image" ? " is-pending" : ""}`}
-                          title={group.kind === "pending" ? "任务处理中" : group.kind === "mixed" ? `已完成 ${group.items.length - group.pendingCount}/${group.items.length} 张` : group.items.length > 1 ? "单击查看这组图片" : "单击查看，双击设为参考图"}
+                          className={`t2i-film-item${group.key === featuredGroup.key ? " is-on" : ""}${group.pendingCount ? " is-pending" : ""}${group.kind === "status" ? " is-status" : ""}`}
+                          title={galleryGroupTitle(group)}
                           onClick={(event) => focusGroup(group, event)}
                           onDoubleClick={() => group.items.length === 1 && group.cover.kind === "image" && useAsReference(group.cover)}
                         >
                           {group.kind === "pending" ? (
                             <span className="t2i-film-pending"><span className="t2i-film-pending-spinner" /><em>{elapsedLabel(group.cover.task, now)}</em></span>
+                          ) : group.cover.kind === "status" ? (
+                            <span className="t2i-film-status">
+                              <i className={`bi ${group.cover.task.status === "failed" ? "bi-exclamation-triangle" : "bi-x-circle"}`} />
+                              <em>{statusLabel(group.cover.task)}</em>
+                            </span>
                           ) : (
                             <AuthenticatedImage
                               src={group.cover.thumbnailUrl || group.cover.url}
@@ -2308,6 +2330,34 @@ function PendingStage({ task, now, batchIndex }) {
       <span className="t2i-pending-bar"><i /></span>
       {elapsedLabel(task, now) && <em className="t2i-pending-elapsed">{elapsedLabel(task, now)}</em>}
       {!isCell && <span className="t2i-pending-prompt">{task?.prompt}</span>}
+    </div>
+  );
+}
+
+function TaskStatusStage({ task, batchIndex }) {
+  const isCell = Number.isFinite(Number(batchIndex));
+  const failed = task?.status === "failed";
+  const canceled = ["cancelled", "canceled"].includes(task?.status);
+  const message = failed
+    ? taskFailureMessage(task)
+    : canceled
+      ? "任务已取消，没有生成图片"
+      : task?.status === "paused"
+        ? "任务已暂停，没有生成图片"
+        : "任务已结束，没有可用图片";
+  return (
+    <div
+      className={`${isCell ? "t2i-stage-cell-status" : "t2i-stage-status"}${failed ? " is-failed" : ""}`}
+      role={failed ? "alert" : "status"}
+    >
+      <span className="t2i-status-icon">
+        <i className={`bi ${failed ? "bi-exclamation-triangle" : "bi-x-circle"}`} />
+      </span>
+      <strong>
+        {isCell ? `第 ${Number(batchIndex) + 1} 张 · ${statusLabel(task)}` : statusLabel(task)}
+      </strong>
+      <em className="t2i-terminal-message" title={message}>{message}</em>
+      {!isCell && task?.prompt ? <span className="t2i-status-prompt">{task.prompt}</span> : null}
     </div>
   );
 }

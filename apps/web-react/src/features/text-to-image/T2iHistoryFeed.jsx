@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AuthenticatedImage } from "../../components/AuthenticatedImage.jsx";
+import { taskFailureMessage } from "../history/taskFailureMessage.js";
 
 const ACTIVE_STATUSES = new Set(["queued", "running", "waiting_provider"]);
 const GRID_GAP = 10;
@@ -17,6 +18,7 @@ function statusLabel(task) {
   if (task.status === "waiting_provider") return "等待模型响应";
   if (task.status === "running") return "正在生成";
   if (task.status === "completed") return "已完成";
+  if (task.status === "paused") return "已暂停";
   if (["cancelled", "canceled"].includes(task.status)) return "已取消";
   if (task.status === "failed") return "生成失败";
   return task.status || "处理中";
@@ -179,6 +181,7 @@ const HistoryCard = memo(function HistoryCard({ item, isActive, now, onAction })
   const task = item.task;
   const running = ACTIVE_STATUSES.has(task.status);
   const elapsed = elapsedLabel(task, now);
+  const failure = task.status === "failed" ? taskFailureMessage(task) : "";
   return (
     <article
       className={`t2i-history-card${isActive ? " is-active" : ""}`}
@@ -208,7 +211,7 @@ const HistoryCard = memo(function HistoryCard({ item, isActive, now, onAction })
         <div className="t2i-masonry-cover t2i-masonry-placeholder" data-status={task.status}>
           <i className={`bi ${running ? "bi-arrow-repeat spin" : task.status === "failed" ? "bi-exclamation-triangle" : "bi-image"}`} />
           <span>{statusLabel(task)}</span>
-          {task.error ? <small className="t2i-history-error">{task.error}</small> : null}
+          {failure ? <small className="t2i-history-error" title={failure}>{failure}</small> : null}
         </div>
       )}
       <footer className="t2i-entry-actions t2i-history-actions">
