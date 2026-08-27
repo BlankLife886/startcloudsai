@@ -78,6 +78,7 @@ GrowthGroup _group({String code = 'TEAM88'}) => GrowthGroup.fromJson({
   'targetMembers': 3,
   'memberCount': 2,
   'rewardCents': 200,
+  'expiresAt': '2026-09-18T10:30:00Z',
   'members': [
     {'userId': 'user-1', 'username': 'QA', 'role': 'owner'},
     {'userId': 'user-2', 'username': '  ', 'role': 'member'},
@@ -158,6 +159,7 @@ Widget _app({
   required BenefitsController Function() controller,
   double textScale = 1,
   String location = '/profile/benefits',
+  GrowthGroupShareHandler? shareHandler,
 }) {
   final router = GoRouter(
     initialLocation: location,
@@ -187,7 +189,11 @@ Widget _app({
     ],
   );
   return ProviderScope(
-    overrides: [benefitsControllerProvider.overrideWith(controller)],
+    overrides: [
+      benefitsControllerProvider.overrideWith(controller),
+      if (shareHandler != null)
+        growthGroupShareHandlerProvider.overrideWithValue(shareHandler),
+    ],
     child: MaterialApp.router(
       builder: (context, child) => MediaQuery(
         data: MediaQuery.of(
@@ -347,6 +353,32 @@ void main() {
     expect(find.text('拼团码已复制'), findsOneWidget);
   });
 
+  testWidgets('active group can be shared with its invite code', (
+    tester,
+  ) async {
+    String? sharedCode;
+    Rect? sharedOrigin;
+    await tester.pumpWidget(
+      _app(
+        controller: () => _FakeBenefitsController(initialGroup: _group()),
+        location: '/profile/benefits/group',
+        shareHandler: (code, origin) async {
+          sharedCode = code;
+          sharedOrigin = origin;
+        },
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('分享拼团码'));
+    await tester.pump();
+
+    expect(sharedCode, 'TEAM88');
+    expect(sharedOrigin, isNotNull);
+    expect(sharedOrigin!.isEmpty, isFalse);
+    expect(find.textContaining('有效期至'), findsOneWidget);
+  });
+
   testWidgets('campaign, growth and group fit 320px with large text', (
     tester,
   ) async {
@@ -424,5 +456,36 @@ void main() {
       expect(find.text(entry.$2), findsOneWidget);
       expect(tester.takeException(), isNull);
     }
+  });
+
+  testWidgets('benefits hub supports dark mode without layout errors', (
+    tester,
+  ) async {
+    final router = GoRouter(
+      routes: [
+        GoRoute(path: '/', builder: (context, state) => const BenefitsScreen()),
+      ],
+    );
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          benefitsControllerProvider.overrideWith(_FakeBenefitsController.new),
+        ],
+        child: MaterialApp.router(
+          theme: ThemeData.light(),
+          darkTheme: ThemeData.dark(),
+          themeMode: ThemeMode.dark,
+          routerConfig: router,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('资格与奖励'), findsOneWidget);
+    expect(
+      Theme.of(tester.element(find.text('资格与奖励'))).brightness,
+      Brightness.dark,
+    );
+    expect(tester.takeException(), isNull);
   });
 }

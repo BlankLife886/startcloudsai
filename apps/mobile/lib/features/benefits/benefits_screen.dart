@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../../app/starclouds_theme.dart';
 import '../../core/network/api_exception.dart';
@@ -14,6 +15,20 @@ import '../notifications/notifications.dart';
 import '../profile/profile.dart';
 import '../wallet/wallet.dart';
 import 'benefits.dart';
+
+typedef GrowthGroupShareHandler =
+    Future<void> Function(String code, Rect origin);
+
+final growthGroupShareHandlerProvider = Provider<GrowthGroupShareHandler>(
+  (ref) =>
+      (code, origin) => SharePlus.instance.share(
+        ShareParams(
+          title: '邀请好友拼团',
+          text: '我正在星空云绘参加好友拼团，输入拼团码 $code 一起加入。',
+          sharePositionOrigin: origin,
+        ),
+      ),
+);
 
 class BenefitsScreen extends ConsumerStatefulWidget {
   const BenefitsScreen({super.key});
@@ -61,29 +76,48 @@ class _BenefitsScreenState extends ConsumerState<BenefitsScreen> {
         physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
         children: [
-          _BenefitHubEntry(
-            icon: Icons.auto_awesome_outlined,
-            title: '体验资格',
-            detail: application == null
-                ? (state.campaign?.full == true ? '本期名额已满' : '申请限量体验资格')
-                : _applicationTitle(application.status),
-            onTap: () => context.push('/profile/benefits/trial'),
+          Text(
+            '资格与奖励',
+            style: Theme.of(
+              context,
+            ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w800),
           ),
-          const SizedBox(height: 10),
-          _BenefitHubEntry(
-            icon: Icons.trending_up,
-            title: '成长奖励',
-            detail: rules.usageRewardsEnabled ? '本月创作里程碑' : '当前未开放',
-            onTap: () => context.push('/profile/benefits/growth'),
-          ),
-          const SizedBox(height: 10),
-          _BenefitHubEntry(
-            icon: Icons.groups_outlined,
-            title: '好友拼团',
-            detail: group == null
-                ? (rules.groupEnabled ? '创建拼团' : '拼团活动暂未开放')
-                : (group.status == 'completed' ? '拼团已完成' : '拼团进行中'),
-            onTap: () => context.push('/profile/benefits/group'),
+          const SizedBox(height: 8),
+          DecoratedBox(
+            decoration: BoxDecoration(
+              border: Border.all(
+                color: Theme.of(context).colorScheme.outlineVariant,
+              ),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Column(
+              children: [
+                _BenefitHubEntry(
+                  icon: Icons.auto_awesome_outlined,
+                  title: '体验资格',
+                  detail: application == null
+                      ? (state.campaign?.full == true ? '本期名额已满' : '申请限量体验资格')
+                      : _applicationTitle(application.status),
+                  onTap: () => context.push('/profile/benefits/trial'),
+                ),
+                const Divider(height: 1, indent: 48),
+                _BenefitHubEntry(
+                  icon: Icons.trending_up,
+                  title: '成长奖励',
+                  detail: rules.usageRewardsEnabled ? '本月创作里程碑' : '当前未开放',
+                  onTap: () => context.push('/profile/benefits/growth'),
+                ),
+                const Divider(height: 1, indent: 48),
+                _BenefitHubEntry(
+                  icon: Icons.groups_outlined,
+                  title: '好友拼团',
+                  detail: group == null
+                      ? (rules.groupEnabled ? '创建拼团' : '拼团活动暂未开放')
+                      : (group.status == 'completed' ? '拼团已完成' : '拼团进行中'),
+                  onTap: () => context.push('/profile/benefits/group'),
+                ),
+              ],
+            ),
           ),
         ],
       ),
@@ -287,6 +321,19 @@ class _GrowthGroupBenefitScreenState
     }
   }
 
+  Future<void> _shareGroup(String code, BuildContext buttonContext) async {
+    final box = buttonContext.findRenderObject() as RenderBox?;
+    final origin = box == null
+        ? Offset(MediaQuery.sizeOf(context).width / 2, 80) & const Size(1, 1)
+        : box.localToGlobal(Offset.zero) & box.size;
+    try {
+      await ref.read(growthGroupShareHandlerProvider)(code, origin);
+    } catch (error) {
+      if (!mounted) return;
+      AppNotice.error(context, '分享面板打开失败，请稍后重试');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final benefits = ref.watch(benefitsControllerProvider);
@@ -311,6 +358,7 @@ class _GrowthGroupBenefitScreenState
                 busy: state.isGroupBusy,
                 onCreate: _createGroup,
                 onJoin: _joinGroup,
+                onShare: _shareGroup,
               ),
             ],
           ),
@@ -336,47 +384,46 @@ class _BenefitHubEntry extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return AppSoftCard(
-      onTap: onTap,
-      radius: StarCloudsRadii.card,
-      padding: const EdgeInsets.fromLTRB(14, 14, 12, 14),
-      child: Row(
-        children: [
-          DecoratedBox(
-            decoration: BoxDecoration(
-              color: colors.primaryContainer.withValues(alpha: .7),
-              shape: BoxShape.circle,
-            ),
-            child: SizedBox.square(
-              dimension: 40,
-              child: Icon(icon, color: colors.primary, size: 20),
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: Theme.of(
-                    context,
-                  ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
+          child: Row(
+            children: [
+              SizedBox.square(
+                dimension: 24,
+                child: Icon(icon, color: colors.primary, size: 20),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      detail,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: colors.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 3),
-                Text(
-                  detail,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: colors.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ),
+              ),
+              Icon(Icons.chevron_right_rounded, color: colors.onSurfaceVariant),
+            ],
           ),
-          Icon(Icons.chevron_right_rounded, color: colors.onSurfaceVariant),
-        ],
+        ),
       ),
     );
   }
@@ -767,6 +814,7 @@ class GrowthGroupPanel extends StatelessWidget {
     required this.busy,
     required this.onCreate,
     required this.onJoin,
+    required this.onShare,
     super.key,
   });
 
@@ -775,6 +823,7 @@ class GrowthGroupPanel extends StatelessWidget {
   final bool busy;
   final VoidCallback onCreate;
   final VoidCallback onJoin;
+  final Future<void> Function(String code, BuildContext buttonContext) onShare;
 
   @override
   Widget build(BuildContext context) {
@@ -859,11 +908,13 @@ class GrowthGroupPanel extends StatelessWidget {
           const SizedBox(height: 12),
           DecoratedBox(
             decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.primaryContainer,
-              borderRadius: BorderRadius.circular(18),
+              border: Border.all(
+                color: Theme.of(context).colorScheme.outlineVariant,
+              ),
+              borderRadius: BorderRadius.circular(8),
             ),
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(12, 4, 4, 4),
+              padding: const EdgeInsets.fromLTRB(12, 2, 2, 2),
               child: Row(
                 children: [
                   Expanded(
@@ -884,22 +935,45 @@ class GrowthGroupPanel extends StatelessWidget {
                     },
                     icon: const Icon(Icons.copy_outlined),
                   ),
+                  Builder(
+                    builder: (buttonContext) => IconButton(
+                      tooltip: '分享拼团码',
+                      onPressed: () => onShare(item.code, buttonContext),
+                      icon: const Icon(Icons.ios_share_outlined),
+                    ),
+                  ),
                 ],
               ),
             ),
           ),
+          if (item.expiresAt != null) ...[
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Icon(
+                  Icons.schedule_outlined,
+                  size: 16,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+                const SizedBox(width: 5),
+                Expanded(
+                  child: Text(
+                    '有效期至 ${DateFormat('M月d日 HH:mm').format(item.expiresAt!.toLocal())}',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
           const SizedBox(height: 10),
           Wrap(
-            spacing: 8,
-            runSpacing: 8,
+            spacing: 14,
+            runSpacing: 10,
             children: [
               for (final member in item.members)
-                Chip(
-                  avatar: CircleAvatar(
-                    child: Text(member.username.characters.first.toUpperCase()),
-                  ),
-                  label: Text(member.username),
-                ),
+                _GroupMemberLabel(member: member),
             ],
           ),
           const SizedBox(height: 8),
@@ -913,6 +987,29 @@ class GrowthGroupPanel extends StatelessWidget {
       ),
     );
   }
+}
+
+class _GroupMemberLabel extends StatelessWidget {
+  const _GroupMemberLabel({required this.member});
+
+  final GrowthMember member;
+
+  @override
+  Widget build(BuildContext context) => Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      CircleAvatar(
+        radius: 12,
+        backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+        child: Text(
+          member.username.characters.first.toUpperCase(),
+          style: Theme.of(context).textTheme.labelSmall,
+        ),
+      ),
+      const SizedBox(width: 6),
+      Text(member.username, style: Theme.of(context).textTheme.bodySmall),
+    ],
+  );
 }
 
 class TrialApplicationSheet extends StatefulWidget {
