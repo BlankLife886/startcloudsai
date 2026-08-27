@@ -13,7 +13,7 @@ flowchart LR
   G -->|/api/v1/| S[Go API / Gin]
   S --> P[(PostgreSQL)]
   S --> R[(Redis / Asynq)]
-  S --> O[(Cloudflare R2)]
+  S --> O[(S3-compatible object storage)]
   K[Go Worker / Asynq] --> P
   K --> R
   K --> C[chatgpt2api]
@@ -37,7 +37,7 @@ Compose 中的 `server` 与 `worker` 来自同一个 Go 镜像，分别执行 `/
 
 前端业务请求只访问同源 `/api/v1`。用户端和管理端开发服务器分别监听 `3105`、`3200`，并通过 `/api` 代理到 `localhost:8000`。`/canvas` 由 React 主站直接编译并原生挂载画布模块，不存在独立画布开发服务或生产容器；旧 `/canvas-app/` 地址只重定向到 `/canvas`。
 
-画布项目以 v3 JSON 文档保存到 `canvas_projects`，使用 `revision` 做乐观并发控制；浏览器 IndexedDB 只作为离线缓存。图片和视频上传进入 R2，生图、改图与文本助手复用现有任务、钱包和模型路由。上游 `basketikun/infinite-canvas` 的 MIT 许可证及来源信息保存在 `apps/web-react/CANVAS_UPSTREAM_LICENSE` 和 `CANVAS_UPSTREAM.md`。
+画布项目以 v3 JSON 文档保存到 `canvas_projects`，使用 `revision` 做乐观并发控制；浏览器 IndexedDB 只作为离线缓存。图片和视频上传进入 S3 兼容对象存储，生图、改图与文本助手复用现有任务、钱包和模型路由。上游 `basketikun/infinite-canvas` 的 MIT 许可证及来源信息保存在 `apps/web-react/CANVAS_UPSTREAM_LICENSE` 和 `CANVAS_UPSTREAM.md`。
 
 ## 请求与鉴权
 
@@ -126,5 +126,5 @@ Worker 每 30 分钟领取到期且启用自动同步的数据源。同步使用
 - API 健康检查会验证数据库和 Redis；它不代表 R2 或图片上游一定可用。
 - 网关把 `/api/v1/` 的读取超时设置为 300 秒，并允许最大 20 MB 请求；应用上传限制为 15 MB。
 - Compose 使用 `data`、`api`、`frontend` 三个内部网络；`edge` 只连接 Gateway 并负责宿主机端口发布；`outbound` 只提供给确实需要访问 C2A、R2、OAuth、SMTP 或外部提示词源的 Server/Worker。
-- 线上与线下必须使用不同环境文件、数据库/Redis、R2 bucket、OAuth client、SMTP 凭据和 `APP_SECRET`。开发环境可以在 SMTP 缺失时回传调试验证码，生产环境禁止该行为。
+- 线上与线下必须使用不同环境文件、数据库/Redis、对象存储 bucket、SMTP 凭据和 `APP_SECRET`。开发环境可以在 SMTP 缺失时回传调试验证码，生产环境禁止该行为。
 - 生产环境必须在网关外提供 HTTPS；Compose 网关默认只绑定回环地址。生产模式强制使用强 `APP_SECRET`、HTTPS Origin 和 Redis 分布式限流。

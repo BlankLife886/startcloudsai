@@ -61,11 +61,14 @@ type Config struct {
 	CRUNAPIKey      string
 	CRUNTimeoutSecs int
 
-	R2Endpoint          string
-	R2AccessKeyID       string
-	R2SecretAccessKey   string
-	R2Bucket            string
-	R2PresignExpireSecs int
+	ObjectStorageEndpoint          string
+	ObjectStorageRegion            string
+	ObjectStorageAccessKeyID       string
+	ObjectStorageSecretAccessKey   string
+	ObjectStorageBucket            string
+	ObjectStorageUsePathStyle      bool
+	ObjectStoragePresignExpireSecs int
+	ObjectStorageCDNBaseURL        string
 
 	WorkerConcurrency      int
 	WorkerPollConcurrency  int
@@ -88,6 +91,33 @@ type Config struct {
 func getenv(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return def
+}
+
+// getenvWithLegacy gives the provider-neutral variable priority while keeping
+// one release of compatibility with the previous R2-specific deployment keys.
+func getenvWithLegacy(key, legacyKey, def string) string {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(os.Getenv(legacyKey)); value != "" {
+		return value
+	}
+	return def
+}
+
+func getenvBoolWithLegacy(key, legacyKey string, def bool) bool {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		if parsed, err := strconv.ParseBool(value); err == nil {
+			return parsed
+		}
+		return def
+	}
+	if value := strings.TrimSpace(os.Getenv(legacyKey)); value != "" {
+		if parsed, err := strconv.ParseBool(value); err == nil {
+			return parsed
+		}
 	}
 	return def
 }
@@ -152,6 +182,7 @@ func Load() *Config {
 	if appEnv != "development" && appEnv != "test" && appEnv != "production" {
 		log.Fatalf("APP_ENV 必须为 development、test 或 production，当前为 %q", appEnv)
 	}
+	legacyR2Configured := strings.TrimSpace(os.Getenv("OBJECT_STORAGE_ENDPOINT")) == "" && strings.TrimSpace(os.Getenv("R2_ENDPOINT")) != ""
 	cfg := &Config{
 		AppEnv:           appEnv,
 		DevLoginCodeEcho: getenvBool("DEV_LOGIN_CODE_ECHO", false),
@@ -194,11 +225,14 @@ func Load() *Config {
 		CRUNAPIKey:      getenv("CRUN_API_KEY", ""),
 		CRUNTimeoutSecs: getenvInt("CRUN_TIMEOUT_SECS", 1200),
 
-		R2Endpoint:          getenv("R2_ENDPOINT", ""),
-		R2AccessKeyID:       getenv("R2_ACCESS_KEY_ID", ""),
-		R2SecretAccessKey:   getenv("R2_SECRET_ACCESS_KEY", ""),
-		R2Bucket:            getenv("R2_BUCKET", "starcloudsai"),
-		R2PresignExpireSecs: getenvInt("R2_PRESIGN_EXPIRE_SECS", 3600),
+		ObjectStorageEndpoint:          getenvWithLegacy("OBJECT_STORAGE_ENDPOINT", "R2_ENDPOINT", ""),
+		ObjectStorageRegion:            getenvWithLegacy("OBJECT_STORAGE_REGION", "R2_REGION", "auto"),
+		ObjectStorageAccessKeyID:       getenvWithLegacy("OBJECT_STORAGE_ACCESS_KEY_ID", "R2_ACCESS_KEY_ID", ""),
+		ObjectStorageSecretAccessKey:   getenvWithLegacy("OBJECT_STORAGE_SECRET_ACCESS_KEY", "R2_SECRET_ACCESS_KEY", ""),
+		ObjectStorageBucket:            getenvWithLegacy("OBJECT_STORAGE_BUCKET", "R2_BUCKET", "starcloudsai"),
+		ObjectStorageUsePathStyle:      getenvBoolWithLegacy("OBJECT_STORAGE_USE_PATH_STYLE", "R2_USE_PATH_STYLE", legacyR2Configured),
+		ObjectStoragePresignExpireSecs: getenvInt("OBJECT_STORAGE_PRESIGN_EXPIRE_SECS", getenvInt("R2_PRESIGN_EXPIRE_SECS", 3600)),
+		ObjectStorageCDNBaseURL:        strings.TrimRight(strings.TrimSpace(getenv("OBJECT_STORAGE_CDN_BASE_URL", "")), "/"),
 
 		WorkerConcurrency:      getenvInt("WORKER_CONCURRENCY", 32),
 		WorkerPollConcurrency:  getenvInt("WORKER_POLL_CONCURRENCY", 0),

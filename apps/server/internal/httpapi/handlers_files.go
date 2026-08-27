@@ -596,7 +596,7 @@ func objectKeyETag(key string) string {
 // 受保护文件统一由应用服务转发。此前这里 302 到 R2 的预签名地址，
 // 会把“用户是否能直连对象存储”变成图片能否展示的额外前提；在代理、
 // 企业网络或部分移动网络下，会出现任务已成功、R2 也有文件，但页面一直
-// 空白的情况。服务端本身已经能访问 R2（上传也走同一连接），因此在完成
+// 空白的情况。服务端本身已经能访问对象存储（上传也走同一连接），因此在完成
 // 权限校验后由服务端读取并返回，交付链路会更稳定。
 func (s *Server) serveStoredObject(c *gin.Context, key string) {
 	immutable := isImmutableObjectKey(key)
@@ -648,7 +648,7 @@ func (s *Server) serveStoredObject(c *gin.Context, key string) {
 		contentType = "application/octet-stream"
 	}
 	writeCacheHeaders()
-	// R2 首字节耗时暴露给浏览器 DevTools（Timing 面板），便于区分
+	// 对象存储首字节耗时暴露给浏览器 DevTools（Timing 面板），便于区分
 	// “对象存储慢”还是“传输/排队慢”。
 	c.Header("Server-Timing", fmt.Sprintf("r2;dur=%d", openMs))
 	status := http.StatusOK

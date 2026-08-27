@@ -59,8 +59,8 @@ func TestAssistantPPTXRequestCreatesAndPersistsDownload(t *testing.T) {
 	}))
 	defer objectServer.Close()
 	objectStorage, err := storage.New(&config.Config{
-		R2Endpoint: objectServer.URL, R2AccessKeyID: "test", R2SecretAccessKey: "test",
-		R2Bucket: "test-bucket", R2PresignExpireSecs: 300,
+		ObjectStorageEndpoint: objectServer.URL, ObjectStorageAccessKeyID: "test", ObjectStorageSecretAccessKey: "test",
+		ObjectStorageBucket: "test-bucket", ObjectStorageUsePathStyle: true, ObjectStoragePresignExpireSecs: 300,
 	})
 	if err != nil {
 		t.Fatal(err)

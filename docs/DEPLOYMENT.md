@@ -4,6 +4,8 @@
 
 需要单独执行生产蓝绿更新时，使用独立手册
 [ZERO_DOWNTIME_RELEASE_RUNBOOK.md](./ZERO_DOWNTIME_RELEASE_RUNBOOK.md)。
+升级到 4C8G、合并 ChatGPT2API、迁移 PostgreSQL 18 与阿里云 OSS 时使用
+[INTEGRATED_4C8G_MIGRATION.md](./INTEGRATED_4C8G_MIGRATION.md)，不要把 PG17 数据卷直接挂载给 PG18。
 
 - 域名：`starcloudisai.com`
 - 服务器：`47.82.102.112`
@@ -41,7 +43,7 @@ docker compose --env-file .env up -d --build
      -> /api/v1/      Go server
                      -> PostgreSQL
                      -> Redis / Worker
-                     -> ChatGPT2API / Sub2API / Cloudflare R2
+                     -> ChatGPT2API / Sub2API / Alibaba Cloud OSS
 ```
 
 Compose 服务：
@@ -56,7 +58,7 @@ Compose 服务：
 | `postgres` | 用户、钱包、任务和运营数据   | `pg_data`    |
 | `redis`    | 队列和限流状态               | `redis_data` |
 
-生成图片和上传文件保存在 Cloudflare R2，不在服务器本地磁盘。
+生成图片和上传文件保存在阿里云 OSS，不在服务器本地磁盘。香港 ECS 通过同地域内网 endpoint 上传和回读；允许公开缓存的输出可经 CDN 分发，私有参考图继续走站内鉴权或短期签名 URL。
 
 ## 2. 上线前准备
 
@@ -196,11 +198,14 @@ SUB2API_CHAT_MODEL=gpt-5.4
 SUB2API_IMAGE_MODEL=gpt-image-2
 SUB2API_TIMEOUT_SECS=300
 
-R2_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
-R2_ACCESS_KEY_ID=<R2访问密钥ID>
-R2_SECRET_ACCESS_KEY=<R2访问密钥>
-R2_BUCKET=starcloudsai
-R2_PRESIGN_EXPIRE_SECS=3600
+OBJECT_STORAGE_ENDPOINT=https://s3.oss-cn-hongkong-internal.aliyuncs.com
+OBJECT_STORAGE_REGION=cn-hongkong
+OBJECT_STORAGE_ACCESS_KEY_ID=<OSS RAM AccessKey ID>
+OBJECT_STORAGE_SECRET_ACCESS_KEY=<OSS RAM AccessKey Secret>
+OBJECT_STORAGE_BUCKET=starcloudsai
+OBJECT_STORAGE_USE_PATH_STYLE=false
+OBJECT_STORAGE_PRESIGN_EXPIRE_SECS=3600
+OBJECT_STORAGE_CDN_BASE_URL=https://<已配置私有 OSS 回源鉴权的 CDN 域名>
 
 SMTP_ADDR=<SMTP服务器:端口>
 SMTP_USER=<完整邮箱地址>
@@ -225,7 +230,7 @@ GATEWAY_PORT=8080
 
 - `C2A_BASE_URL` 填 ChatGPT2API 根地址，不加后台路径。
 - `SUB2API_BASE_URL` 填 Sub2API 根地址，去掉 `/admin/accounts`。
-- R2 未配置时，上传和生成图片无法正常持久化。
+- 对象存储未配置时，上传和生成图片无法正常持久化。ECS 与 OSS bucket 必须同为香港地域才能使用 internal endpoint。
 - 生产环境未配置 SMTP 时，用户无法获取账号验证码。
 - `WORKER_CONCURRENCY=32` 是 Worker 启动时的物理槽位，不代表同时执行 32 个图片任务。图片实际并发在后台“全站同时执行”中调整，2 核 2 GB 服务器建议从 4 开始逐级压测。
 - `GOMEMLIMIT` 必须低于容器硬上限，数据库连接池只有在后台等待指标持续增长后才应调大。指标说明和 pprof/PGO 操作见 [Go 性能与实时可观测性](GO_PERFORMANCE_OBSERVABILITY.md)。
@@ -496,7 +501,7 @@ gzip -t /www/backup/startcloudsai/<备份文件>.sql.gz
 ### 8.2 其他必须备份的内容
 
 - `/www/wwwroot/startcloudsai/.env`
-- Cloudflare R2 bucket 及访问密钥信息
+- 阿里云 OSS bucket、RAM 最小权限访问密钥及 CDN 回源配置
 - 宝塔站点 Nginx 和 SSL 配置
 - 当前生产 Git 提交：`git rev-parse HEAD`
 

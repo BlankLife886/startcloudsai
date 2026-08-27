@@ -30,7 +30,7 @@
 | `postgres` | 业务数据、钱包账本和运营内容 |
 | `redis` | Asynq 队列 |
 
-外部依赖包括 `chatgpt2api`/OpenAI 兼容图片服务、Sub2API 对话服务、CRUN 异步图片工具、Cloudflare R2（S3 兼容对象存储）和 SMTP 邮件服务。Worker 使用幂等异步提交和轮询回收图片，避免长连接中断后图片已在上游生成、用户端却无法取得；图片对用户统一通过站内鉴权文件接口交付，不要求用户浏览器能够直接访问 R2。
+外部依赖包括 `chatgpt2api`/OpenAI 兼容图片服务、Sub2API 对话服务、CRUN 异步图片工具、S3 兼容对象存储（生产推荐阿里云香港 OSS）和 SMTP 邮件服务。Worker 使用幂等异步提交和轮询回收图片，避免长连接中断后图片已在上游生成、用户端却无法取得；私有图片对用户统一通过站内鉴权文件接口交付，不要求用户浏览器能够直接访问对象存储。
 
 ## Docker 本地启动
 
@@ -77,7 +77,7 @@ docker compose down -v          # 删除数据卷；会清空本地业务数据
 
 ## 生产部署
 
-生产和开发必须使用不同环境文件、数据库、Redis、R2 bucket、OAuth 应用和密钥。复制 `.env.example` 为 `.env`，替换数据库密码、`APP_SECRET`、C2A/R2 凭据、OAuth/SMTP 配置与域名后再启动。生产模式会拒绝弱 `APP_SECRET` 或非 HTTPS Origin；登录与兑换限流使用 Redis 共享状态。
+生产和开发必须使用不同环境文件、数据库、Redis、对象存储 bucket 和密钥。复制 `.env.example` 为 `.env`，替换数据库密码、`APP_SECRET`、C2A/对象存储凭据、SMTP 配置与域名后再启动。生产模式会拒绝弱 `APP_SECRET` 或非 HTTPS Origin；登录与兑换限流使用 Redis 共享状态。
 
 ```bash
 cp .env.example .env
@@ -113,7 +113,7 @@ npm ci
 npm run dev
 ```
 
-根目录 `.env` 由 Docker Compose 读取；直接运行 Go 命令时需要在 shell 中导出相应变量。开发环境至少需要可连接的 `DATABASE_URL`、`REDIS_URL`，图片上传和生成还需要有效的 `R2_*`、`C2A_*`。
+根目录 `.env` 由 Docker Compose 读取；直接运行 Go 命令时需要在 shell 中导出相应变量。开发环境至少需要可连接的 `DATABASE_URL`、`REDIS_URL`，图片上传和生成还需要有效的 `OBJECT_STORAGE_*`、`C2A_*`。
 
 ## 验证
 
@@ -131,6 +131,7 @@ cd apps/admin && npm ci && npm run build
 
 - [本地开发启动手册](docs/LOCAL_DEVELOPMENT.md)
 - [生产部署与运维手册](docs/DEPLOYMENT.md)
+- [4C8G 一体化部署与 PG18/OSS 迁移手册](docs/INTEGRATED_4C8G_MIGRATION.md)
 - [架构说明](docs/ARCHITECTURE.md)
 - [API 契约](docs/API_CONTRACT.md)
 - [数据库设计](docs/DATABASE.md)

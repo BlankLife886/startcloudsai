@@ -16,7 +16,7 @@ internal/
 ├── promptsync/          # JSON/Markdown/HTML 提示词源同步
 ├── redemption/          # 兑换码生成与兑换
 ├── settings/            # app_settings 读写
-├── storage/             # Cloudflare R2 上传、列举、删除、读取与可选预签名
+├── storage/             # S3 兼容对象存储上传、列举、删除、读取与预签名
 ├── store/               # pgx 数据访问、事务和 Goose 迁移
 ├── subscription/        # 历史订阅数据兼容（当前无支付入口）
 ├── taskflow/            # 提交、状态机、计费与 Asynq 入队
@@ -40,7 +40,7 @@ scripts/                 # 运维/回填 SQL
 | 图片上游 | `C2A_BASE_URL`、`C2A_API_KEY`、`C2A_TIMEOUT_SECS` |
 | 对话与生图工作区 | `SUB2API_BASE_URL`、`SUB2API_API_KEY`、`SUB2API_CHAT_MODEL`、`SUB2API_IMAGE_MODEL` |
 | CRUN 异步生图 | `CRUN_BASE_URL`、`CRUN_API_KEY`、`CRUN_TIMEOUT_SECS` |
-| 对象存储 | `R2_ENDPOINT`、`R2_ACCESS_KEY_ID`、`R2_SECRET_ACCESS_KEY`、`R2_BUCKET`、`R2_PRESIGN_EXPIRE_SECS` |
+| 对象存储 | `OBJECT_STORAGE_ENDPOINT`、`OBJECT_STORAGE_REGION`、`OBJECT_STORAGE_ACCESS_KEY_ID`、`OBJECT_STORAGE_SECRET_ACCESS_KEY`、`OBJECT_STORAGE_BUCKET`、`OBJECT_STORAGE_USE_PATH_STYLE`、`OBJECT_STORAGE_PRESIGN_EXPIRE_SECS`、`OBJECT_STORAGE_CDN_BASE_URL` |
 | Worker | `WORKER_CONCURRENCY`（物理槽位）、`WORKER_IMAGE_MEMORY_MIB`；实际图片并发在后台实时配置 |
 | 诊断 | `API_PPROF_ADDR`、`WORKER_PPROF_ADDR`（仅允许回环地址） |
 

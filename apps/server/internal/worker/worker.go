@@ -2856,7 +2856,7 @@ func (w *Worker) handleCleanupObjectJobs(ctx context.Context, _ *asynq.Task) err
 
 // handleCleanupUserUploads removes objects that have survived the grace
 // period without a durable database reference. The database transaction holds
-// row locks while R2 deletion runs, so a concurrent reference either commits
+// row locks while object storage deletion runs, so a concurrent reference either commits
 // first or observes the object as deleted and fails instead of creating a
 // dangling reference.
 func (w *Worker) handleCleanupUserUploads(ctx context.Context, _ *asynq.Task) error {

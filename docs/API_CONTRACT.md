@@ -110,7 +110,7 @@
 | GET    | `/api/v1/tasks/{id}`                 | 当前用户任务详情                                                                |
 | GET    | `/api/v1/tasks/{id}/events`          | 单任务 SSE 状态事件流                                                           |
 | PATCH  | `/api/v1/tasks/{id}`                 | `{status:"canceled"}`；仅 queued 可取消并释放冻结额                           |
-| DELETE | `/api/v1/tasks/{id}`                 | 删除终态任务记录及对应 R2 产物；成功返回 204                                    |
+| DELETE | `/api/v1/tasks/{id}`                 | 删除终态任务记录及对应对象存储产物；成功返回 204                                |
 | GET    | `/api/v1/me/tasks/events`            | 当前用户全部任务的 SSE 事件流                                                   |
 
 task 主要字段：

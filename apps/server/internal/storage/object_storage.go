@@ -1,4 +1,4 @@
-// Package storage 封装 R2（S3 兼容）：上传 / 删除 / 下载 / presigned GET。
+// Package storage encapsulates S3-compatible object storage operations.
 package storage
 
 import (
@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -52,6 +53,7 @@ type Storage struct {
 	presigner     *s3.PresignClient
 	bucket        string
 	presignExpiry time.Duration
+	cdnBaseURL    *url.URL
 }
 
 type limitedReadCloser struct {
@@ -68,10 +70,10 @@ func ValidateConfig(cfg *appconfig.Config) error {
 	}
 	missing := make([]string, 0, 4)
 	for name, value := range map[string]string{
-		"R2_ENDPOINT":          cfg.R2Endpoint,
-		"R2_ACCESS_KEY_ID":     cfg.R2AccessKeyID,
-		"R2_SECRET_ACCESS_KEY": cfg.R2SecretAccessKey,
-		"R2_BUCKET":            cfg.R2Bucket,
+		"OBJECT_STORAGE_ENDPOINT":          cfg.ObjectStorageEndpoint,
+		"OBJECT_STORAGE_ACCESS_KEY_ID":     cfg.ObjectStorageAccessKeyID,
+		"OBJECT_STORAGE_SECRET_ACCESS_KEY": cfg.ObjectStorageSecretAccessKey,
+		"OBJECT_STORAGE_BUCKET":            cfg.ObjectStorageBucket,
 	} {
 		if strings.TrimSpace(value) == "" {
 			missing = append(missing, name)
@@ -81,28 +83,53 @@ func ValidateConfig(cfg *appconfig.Config) error {
 		sort.Strings(missing)
 		return fmt.Errorf("对象存储配置不完整，缺少 %s", strings.Join(missing, "、"))
 	}
+	endpoint, err := url.Parse(cfg.ObjectStorageEndpoint)
+	if err != nil || endpoint.Scheme == "" || endpoint.Host == "" {
+		return errors.New("OBJECT_STORAGE_ENDPOINT 必须是完整的 HTTP(S) URL")
+	}
+	if endpoint.Scheme != "http" && endpoint.Scheme != "https" {
+		return errors.New("OBJECT_STORAGE_ENDPOINT 只支持 HTTP 或 HTTPS")
+	}
+	if cfg.ObjectStoragePresignExpireSecs <= 0 {
+		return errors.New("OBJECT_STORAGE_PRESIGN_EXPIRE_SECS 必须为正整数")
+	}
+	if value := strings.TrimSpace(cfg.ObjectStorageCDNBaseURL); value != "" {
+		cdnURL, parseErr := url.Parse(value)
+		if parseErr != nil || cdnURL.Scheme != "https" || cdnURL.Host == "" || cdnURL.RawQuery != "" || cdnURL.Fragment != "" {
+			return errors.New("OBJECT_STORAGE_CDN_BASE_URL 必须是不含查询参数和片段的 HTTPS URL")
+		}
+	}
 	return nil
 }
 
 func New(cfg *appconfig.Config) (*Storage, error) {
+	region := strings.TrimSpace(cfg.ObjectStorageRegion)
+	if region == "" {
+		region = "auto"
+	}
 	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
-		awsconfig.WithRegion("auto"),
+		awsconfig.WithRegion(region),
 		awsconfig.WithCredentialsProvider(
-			credentials.NewStaticCredentialsProvider(cfg.R2AccessKeyID, cfg.R2SecretAccessKey, "")),
+			credentials.NewStaticCredentialsProvider(cfg.ObjectStorageAccessKeyID, cfg.ObjectStorageSecretAccessKey, "")),
 		awsconfig.WithRetryMaxAttempts(2),
 	)
 	if err != nil {
 		return nil, err
 	}
 	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
-		o.BaseEndpoint = aws.String(cfg.R2Endpoint)
-		o.UsePathStyle = true
+		o.BaseEndpoint = aws.String(cfg.ObjectStorageEndpoint)
+		o.UsePathStyle = cfg.ObjectStorageUsePathStyle
 	})
+	var cdnBaseURL *url.URL
+	if value := strings.TrimSpace(cfg.ObjectStorageCDNBaseURL); value != "" {
+		cdnBaseURL, _ = url.Parse(value)
+	}
 	return &Storage{
 		client:        client,
 		presigner:     s3.NewPresignClient(client),
-		bucket:        cfg.R2Bucket,
-		presignExpiry: time.Duration(cfg.R2PresignExpireSecs) * time.Second,
+		bucket:        cfg.ObjectStorageBucket,
+		presignExpiry: time.Duration(cfg.ObjectStoragePresignExpireSecs) * time.Second,
+		cdnBaseURL:    cdnBaseURL,
 	}, nil
 }
 
@@ -418,4 +445,18 @@ func (s *Storage) PresignGet(ctx context.Context, key string) (string, error) {
 		return "", err
 	}
 	return req.URL, nil
+}
+
+// PublicURL returns a CDN URL only when a CDN base URL is explicitly
+// configured. Callers must use this only for objects whose authorization model
+// permits public immutable delivery; private inputs continue to use PresignGet.
+func (s *Storage) PublicURL(key string) (string, bool) {
+	if s == nil || s.cdnBaseURL == nil || strings.TrimSpace(key) == "" {
+		return "", false
+	}
+	result := *s.cdnBaseURL
+	basePath := strings.TrimRight(result.Path, "/")
+	result.RawPath = ""
+	result.Path = basePath + "/" + strings.TrimLeft(key, "/")
+	return result.String(), true
 }
