@@ -501,7 +501,129 @@ gzip -t /www/backup/startcloudsai/<备份文件>.sql.gz
 
 ## 9. 手动更新发布
 
-### 9.1 更新前
+### 9.1 零停机更新（生产推荐）
+
+生产环境不要直接在承接流量的 `8080` 实例上执行 `up -d --build`。本仓库提供
+`deploy/docker-compose.candidate.yml`，用于在 `127.0.0.1:8081` 启动候选 API、Worker、
+用户端、管理端和网关。候选环境只连接生产现有的 PostgreSQL/Redis Docker 网络，
+不创建、不复制也不覆盖任何数据卷。
+
+先在开发机生成发布包并上传发布包与校验文件。服务器上把新版本解压到独立目录，
+不要覆盖当前 `/www/wwwroot/startcloudsai`：
+
+```bash
+RELEASE_ID=<新commit的12位短提交号>
+RELEASE_ROOT=/www/wwwroot/releases/$RELEASE_ID
+RELEASE_DIR=$RELEASE_ROOT/startcloudsai
+
+mkdir -p "$RELEASE_ROOT"
+cd "$RELEASE_ROOT"
+sha256sum -c /www/wwwroot/startcloudsai-$RELEASE_ID.tar.gz.sha256
+tar -xzf /www/wwwroot/startcloudsai-$RELEASE_ID.tar.gz
+
+# 只复制线上配置；禁止上传或复制开发机 .env、数据库和上传目录。
+install -m 600 /www/wwwroot/startcloudsai/.env "$RELEASE_DIR/.env"
+```
+
+更新前备份生产数据库并验证备份可读：
+
+```bash
+mkdir -p /www/backup/startcloudsai
+BACKUP=/www/backup/startcloudsai/predeploy-$RELEASE_ID.sql.gz
+cd /www/wwwroot/startcloudsai
+docker compose --env-file .env exec -T postgres \
+  pg_dump --clean --if-exists -U starclouds starclouds | gzip > "$BACKUP"
+test -s "$BACKUP"
+gzip -t "$BACKUP"
+```
+
+候选镜像应逐个构建，避免并行构建争抢线上 CPU/内存。随后启动候选环境：
+
+```bash
+export RELEASE_ID RELEASE_DIR
+export PRODUCTION_COMPOSE_PROJECT=startcloudsai
+
+docker compose --env-file "$RELEASE_DIR/.env" -p startcloudsai_candidate \
+  -f "$RELEASE_DIR/deploy/docker-compose.candidate.yml" build server
+docker compose --env-file "$RELEASE_DIR/.env" -p startcloudsai_candidate \
+  -f "$RELEASE_DIR/deploy/docker-compose.candidate.yml" build web
+docker compose --env-file "$RELEASE_DIR/.env" -p startcloudsai_candidate \
+  -f "$RELEASE_DIR/deploy/docker-compose.candidate.yml" build admin
+docker compose --env-file "$RELEASE_DIR/.env" -p startcloudsai_candidate \
+  -f "$RELEASE_DIR/deploy/docker-compose.candidate.yml" up -d --no-build
+```
+
+保留旧前端哈希资源，避免已经打开页面的用户在发布期间懒加载旧 chunk 时出现 404：
+
+```bash
+LEGACY_ASSETS=/www/backup/startcloudsai/web-assets-$RELEASE_ID
+mkdir -p "$LEGACY_ASSETS"
+BLUE_WEB=$(cd /www/wwwroot/startcloudsai && docker compose --env-file .env ps -q web)
+GREEN_WEB=$(docker compose --env-file "$RELEASE_DIR/.env" -p startcloudsai_candidate \
+  -f "$RELEASE_DIR/deploy/docker-compose.candidate.yml" ps -q web)
+docker cp "$BLUE_WEB":/usr/share/nginx/html/assets/. "$LEGACY_ASSETS"/
+docker cp "$LEGACY_ASSETS"/. "$GREEN_WEB":/usr/share/nginx/html/assets/
+```
+
+候选环境必须全部通过后才能切流量：
+
+```bash
+docker compose --env-file "$RELEASE_DIR/.env" -p startcloudsai_candidate \
+  -f "$RELEASE_DIR/deploy/docker-compose.candidate.yml" ps
+curl -fsS http://127.0.0.1:8081/api/v1/health
+curl -fsSI http://127.0.0.1:8081/
+curl -fsSI http://127.0.0.1:8081/admin/
+```
+
+在宝塔站点反向代理中把目标从 `http://127.0.0.1:8080` 改为
+`http://127.0.0.1:8081`，先执行 Nginx 配置检测，成功后 reload。再次验证公网健康接口、
+首页和后台。失败时立即把目标改回 `8080`，旧环境此时仍完整运行。
+
+候选环境稳定后，把已构建镜像标记为正式 Compose 使用的镜像名，正式容器无需再次构建：
+
+```bash
+docker tag startcloudsai-candidate-server:$RELEASE_ID startcloudsai-server:latest
+docker tag startcloudsai-candidate-server:$RELEASE_ID startcloudsai-worker:latest
+docker tag startcloudsai-candidate-web:$RELEASE_ID startcloudsai-web:latest
+docker tag startcloudsai-candidate-admin:$RELEASE_ID startcloudsai-admin:latest
+
+cd "$RELEASE_DIR"
+docker compose --env-file .env -p startcloudsai up -d --no-build server web admin gateway
+docker compose --env-file .env -p startcloudsai up -d --no-build worker
+
+NEW_WEB=$(docker compose --env-file .env -p startcloudsai ps -q web)
+docker cp "$LEGACY_ASSETS"/. "$NEW_WEB":/usr/share/nginx/html/assets/
+
+docker compose --env-file .env -p startcloudsai ps
+curl -fsS http://127.0.0.1:8080/api/v1/health
+curl -fsSI http://127.0.0.1:8080/
+curl -fsSI http://127.0.0.1:8080/admin/
+```
+
+`8080` 新版本验证通过后，将宝塔反向代理目标切回 `http://127.0.0.1:8080` 并 reload。
+确认公网正常后再关闭候选环境：
+
+```bash
+docker compose --env-file "$RELEASE_DIR/.env" -p startcloudsai_candidate \
+  -f "$RELEASE_DIR/deploy/docker-compose.candidate.yml" down
+```
+
+最后保留旧源码目录作为回滚入口，并把已在运行的新源码目录移到标准路径：
+
+```bash
+OLD_RELEASE=<旧commit>
+mv /www/wwwroot/startcloudsai "/www/wwwroot/startcloudsai-backup-${OLD_RELEASE}"
+mv "$RELEASE_DIR" /www/wwwroot/startcloudsai
+```
+
+不要执行 `down -v`、`docker volume prune`，也不要把开发机 `.env`、数据库导出、上传文件或
+任何本地缓存放入发布目录。
+
+### 9.2 原地更新（仅维护窗口）
+
+下面的原地更新会重建单实例容器，只能在明确安排维护窗口时使用。
+
+#### 更新前
 
 ```bash
 cd /www/wwwroot/startcloudsai
