@@ -20,7 +20,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 )
 
-func canvasTemplatePackageFileHeader(t *testing.T, manifest any, assets map[string][]byte) *multipart.FileHeader {
+func canvasTemplatePackageBytes(t *testing.T, manifest any, assets map[string][]byte) []byte {
 	t.Helper()
 	var archiveBody bytes.Buffer
 	archiveWriter := zip.NewWriter(&archiveBody)
@@ -47,14 +47,18 @@ func canvasTemplatePackageFileHeader(t *testing.T, manifest any, assets map[stri
 	if err := archiveWriter.Close(); err != nil {
 		t.Fatalf("close zip: %v", err)
 	}
+	return archiveBody.Bytes()
+}
 
+func canvasTemplatePackageFileHeader(t *testing.T, manifest any, assets map[string][]byte) *multipart.FileHeader {
+	t.Helper()
 	var multipartBody bytes.Buffer
 	multipartWriter := multipart.NewWriter(&multipartBody)
 	filePart, err := multipartWriter.CreateFormFile("package", "canvas.zip")
 	if err != nil {
 		t.Fatalf("create multipart package: %v", err)
 	}
-	if _, err := filePart.Write(archiveBody.Bytes()); err != nil {
+	if _, err := filePart.Write(canvasTemplatePackageBytes(t, manifest, assets)); err != nil {
 		t.Fatalf("write multipart package: %v", err)
 	}
 	if err := multipartWriter.Close(); err != nil {
@@ -72,6 +76,58 @@ func canvasTemplatePackageFileHeader(t *testing.T, manifest any, assets map[stri
 	_ = file.Close()
 	t.Cleanup(func() { _ = req.MultipartForm.RemoveAll() })
 	return fileHeader
+}
+
+func TestCanvasWorkflowTemplateMultipartCreate(t *testing.T) {
+	env := newCommunityEnv(t)
+	_, adminToken := env.newUserSession(t, "admin")
+	manifest := gin.H{
+		"app": "infinite-canvas", "version": 3,
+		"projects": []gin.H{{
+			"project": gin.H{
+				"nodes": []gin.H{{
+					"id": "config-1", "type": "config", "title": "生成商品图",
+					"position": gin.H{"x": 10, "y": 20}, "width": 320, "height": 240,
+				}},
+				"connections": []gin.H{}, "backgroundMode": "dots", "viewport": gin.H{"x": 0, "y": 0, "k": 1},
+			},
+			"files": []gin.H{},
+		}},
+	}
+	metadata := validCanvasWorkflowTemplatePayload()
+	delete(metadata, "document")
+	metadataJSON, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("marshal metadata: %v", err)
+	}
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("metadata", string(metadataJSON)); err != nil {
+		t.Fatalf("write metadata: %v", err)
+	}
+	part, err := writer.CreateFormFile("package", "canvas.zip")
+	if err != nil {
+		t.Fatalf("create package part: %v", err)
+	}
+	if _, err := part.Write(canvasTemplatePackageBytes(t, manifest, nil)); err != nil {
+		t.Fatalf("write package: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/canvas-workflow-templates", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.AddCookie(&http.Cookie{Name: adminSessionCookieName, Value: adminToken})
+	response := httptest.NewRecorder()
+	env.engine.ServeHTTP(response, req)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("multipart create: status %d body %s", response.Code, response.Body.String())
+	}
+	created, _ := decode(t, response)
+	if created["nodeCount"] != float64(1) || created["document"] == nil {
+		t.Fatalf("multipart template = %#v", created)
+	}
 }
 
 func validCanvasWorkflowTemplatePayload() gin.H {

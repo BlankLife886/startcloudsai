@@ -517,9 +517,9 @@ RELEASE_ROOT=/www/wwwroot/releases/$RELEASE_ID
 RELEASE_DIR=$RELEASE_ROOT/startcloudsai
 
 mkdir -p "$RELEASE_ROOT"
-cd "$RELEASE_ROOT"
+cd /www/wwwroot
 sha256sum -c /www/wwwroot/startcloudsai-$RELEASE_ID.tar.gz.sha256
-tar -xzf /www/wwwroot/startcloudsai-$RELEASE_ID.tar.gz
+tar -xzf /www/wwwroot/startcloudsai-$RELEASE_ID.tar.gz -C "$RELEASE_ROOT"
 
 # 只复制线上配置；禁止上传或复制开发机 .env、数据库和上传目录。
 install -m 600 /www/wwwroot/startcloudsai/.env "$RELEASE_DIR/.env"
@@ -575,9 +575,13 @@ curl -fsSI http://127.0.0.1:8081/
 curl -fsSI http://127.0.0.1:8081/admin/
 ```
 
+同时确认宝塔站点 Nginx 的 `server {}` 已设置 `client_max_body_size 131m;`。否则带图片的
+画布模板 ZIP 会先被宝塔外层代理拒绝，候选容器内的接口限制即使正确也无法生效。
+
 在宝塔站点反向代理中把目标从 `http://127.0.0.1:8080` 改为
 `http://127.0.0.1:8081`，先执行 Nginx 配置检测，成功后 reload。再次验证公网健康接口、
-首页和后台。失败时立即把目标改回 `8080`，旧环境此时仍完整运行。
+首页和后台。登录后台上传一个带图片的无限画布 ZIP 模板，确认保存成功，并在用户端打开
+该模板确认节点图片可见。失败时立即把目标改回 `8080`，旧环境此时仍完整运行。
 
 候选环境稳定后，把已构建镜像标记为正式 Compose 使用的镜像名，正式容器无需再次构建：
 
