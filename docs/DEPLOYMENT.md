@@ -554,16 +554,21 @@ docker compose --env-file "$RELEASE_DIR/.env" -p startcloudsai_candidate \
   -f "$RELEASE_DIR/deploy/docker-compose.candidate.yml" up -d --no-build server web admin gateway
 ```
 
-保留旧前端哈希资源，避免已经打开页面的用户在发布期间懒加载旧 chunk 时出现 404：
+保留用户端和管理端旧哈希资源，避免已经打开的页面在发布期间懒加载旧 chunk 时出现 404：
 
 ```bash
 LEGACY_ASSETS=/www/backup/startcloudsai/web-assets-$RELEASE_ID
-mkdir -p "$LEGACY_ASSETS"
+mkdir -p "$LEGACY_ASSETS/web" "$LEGACY_ASSETS/admin"
 BLUE_WEB=$(cd /www/wwwroot/startcloudsai && docker compose --env-file .env ps -q web)
+BLUE_ADMIN=$(cd /www/wwwroot/startcloudsai && docker compose --env-file .env ps -q admin)
 GREEN_WEB=$(docker compose --env-file "$RELEASE_DIR/.env" -p startcloudsai_candidate \
   -f "$RELEASE_DIR/deploy/docker-compose.candidate.yml" ps -q web)
-docker cp "$BLUE_WEB":/usr/share/nginx/html/assets/. "$LEGACY_ASSETS"/
-docker cp "$LEGACY_ASSETS"/. "$GREEN_WEB":/usr/share/nginx/html/assets/
+GREEN_ADMIN=$(docker compose --env-file "$RELEASE_DIR/.env" -p startcloudsai_candidate \
+  -f "$RELEASE_DIR/deploy/docker-compose.candidate.yml" ps -q admin)
+docker cp "$BLUE_WEB":/usr/share/nginx/html/assets/. "$LEGACY_ASSETS/web"/
+docker cp "$LEGACY_ASSETS/web"/. "$GREEN_WEB":/usr/share/nginx/html/assets/
+docker cp "$BLUE_ADMIN":/usr/share/nginx/html/admin/assets/. "$LEGACY_ASSETS/admin"/
+docker cp "$LEGACY_ASSETS/admin"/. "$GREEN_ADMIN":/usr/share/nginx/html/admin/assets/
 ```
 
 候选环境必须全部通过后才能切流量：
@@ -615,7 +620,9 @@ cd "$RELEASE_DIR"
 docker compose --env-file .env -p startcloudsai up -d --no-build server web admin gateway
 
 NEW_WEB=$(docker compose --env-file .env -p startcloudsai ps -q web)
-docker cp "$LEGACY_ASSETS"/. "$NEW_WEB":/usr/share/nginx/html/assets/
+NEW_ADMIN=$(docker compose --env-file .env -p startcloudsai ps -q admin)
+docker cp "$LEGACY_ASSETS/web"/. "$NEW_WEB":/usr/share/nginx/html/assets/
+docker cp "$LEGACY_ASSETS/admin"/. "$NEW_ADMIN":/usr/share/nginx/html/admin/assets/
 
 docker compose --env-file .env -p startcloudsai ps
 curl -fsS http://127.0.0.1:8080/api/v1/health
@@ -631,12 +638,15 @@ docker compose --env-file "$RELEASE_DIR/.env" -p startcloudsai_candidate \
   -f "$RELEASE_DIR/deploy/docker-compose.candidate.yml" down
 ```
 
-最后保留旧源码目录作为回滚入口，并把已在运行的新源码目录移到标准路径：
+最后保留旧源码目录作为回滚入口，并让标准路径指向独立发布目录。不要移动
+`$RELEASE_DIR`：正式 Gateway 的只读绑定源仍指向该真实路径，移动后容器下次重启会找不到
+`deploy/nginx.conf`。
 
 ```bash
-OLD_RELEASE=<旧commit>
-mv /www/wwwroot/startcloudsai "/www/wwwroot/startcloudsai-backup-${OLD_RELEASE}"
-mv "$RELEASE_DIR" /www/wwwroot/startcloudsai
+OLD_CODE_BACKUP=/www/wwwroot/startcloudsai-backup-before-$RELEASE_ID
+mv /www/wwwroot/startcloudsai "$OLD_CODE_BACKUP"
+ln -s "$RELEASE_DIR" /www/wwwroot/startcloudsai
+test "$(readlink -f /www/wwwroot/startcloudsai)" = "$RELEASE_DIR"
 ```
 
 不要执行 `down -v`、`docker volume prune`，也不要把开发机 `.env`、数据库导出、上传文件或
@@ -698,13 +708,22 @@ docker compose --env-file .env up -d --force-recreate gateway
 
 ### 10.1 代码回滚
 
-确认旧版本兼容当前数据库迁移后，在宝塔文件管理器中：
+确认旧版本兼容当前数据库迁移后，先把宝塔代理指向仍健康的候选 `8081`。若标准路径是
+零停机发布创建的软链接，在宝塔终端执行：
 
-1. 将失败的新目录重命名为 `startcloudsai-failed-<新commit>`。
-2. 将更新前保留的 `startcloudsai-backup-<旧commit>` 重命名回 `startcloudsai`。
-3. 确认 `.env` 仍在恢复后的目录中。
+```bash
+STANDARD_DIR=/www/wwwroot/startcloudsai
+OLD_CODE_BACKUP=/www/wwwroot/startcloudsai-backup-before-<新commit>
+test -L "$STANDARD_DIR"
+test -d "$OLD_CODE_BACKUP"
+unlink "$STANDARD_DIR"
+mv "$OLD_CODE_BACKUP" "$STANDARD_DIR"
+```
 
-然后在宝塔“终端”中执行：
+独立发布目录保留在 `/www/wwwroot/releases/<新commit>/startcloudsai` 供排障，不要直接删除。
+确认旧目录的生产 `.env` 仍存在且权限为 `600`，然后重建旧版本容器：
+
+在宝塔终端执行：
 
 ```bash
 cd /www/wwwroot/startcloudsai
