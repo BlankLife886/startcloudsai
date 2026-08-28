@@ -120,6 +120,12 @@ func New(cfg *appconfig.Config) (*Storage, error) {
 		awsconfig.WithCredentialsProvider(
 			credentials.NewStaticCredentialsProvider(cfg.ObjectStorageAccessKeyID, cfg.ObjectStorageSecretAccessKey, "")),
 		awsconfig.WithRetryMaxAttempts(2),
+		// Alibaba OSS implements the S3 API but rejects the SDK's optional
+		// STREAMING-UNSIGNED-PAYLOAD-TRAILER encoding. Required-only mode keeps
+		// checksums for operations that mandate them without adding trailers to
+		// ordinary PutObject uploads.
+		awsconfig.WithRequestChecksumCalculation(aws.RequestChecksumCalculationWhenRequired),
+		awsconfig.WithResponseChecksumValidation(aws.ResponseChecksumValidationWhenRequired),
 	)
 	if err != nil {
 		return nil, err

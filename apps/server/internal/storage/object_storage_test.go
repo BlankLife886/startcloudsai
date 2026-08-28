@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -123,6 +125,49 @@ func TestOSSPresignUsesVirtualHostedBucketAndConfiguredRegion(t *testing.T) {
 	credential := presigned.Query().Get("X-Amz-Credential")
 	if !strings.Contains(credential, "/cn-hongkong/s3/aws4_request") {
 		t.Fatalf("presigned credential uses wrong region: %q", credential)
+	}
+}
+
+func TestOSSUploadDoesNotUseUnsupportedAWSChunkedTrailer(t *testing.T) {
+	payload := []byte("test-image-data")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/starcloudsai-test/tasks/test.png" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		if got := strings.ToLower(r.Header.Get("Content-Encoding")); strings.Contains(got, "aws-chunked") {
+			t.Fatalf("unsupported content encoding sent: %q", got)
+		}
+		if got := r.Header.Get("X-Amz-Trailer"); got != "" {
+			t.Fatalf("unsupported checksum trailer sent: %q", got)
+		}
+		if got := r.Header.Get("X-Amz-Sdk-Checksum-Algorithm"); got != "" {
+			t.Fatalf("optional checksum algorithm sent: %q", got)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upload body: %v", err)
+		}
+		if string(body) != string(payload) {
+			t.Fatalf("upload body = %q, want %q", body, payload)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	storage, err := New(&appconfig.Config{
+		ObjectStorageEndpoint:          server.URL,
+		ObjectStorageRegion:            "ap-northeast-1",
+		ObjectStorageAccessKeyID:       "test-access-key",
+		ObjectStorageSecretAccessKey:   "test-secret-key",
+		ObjectStorageBucket:            "starcloudsai-test",
+		ObjectStorageUsePathStyle:      true,
+		ObjectStoragePresignExpireSecs: 900,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := storage.UploadBytes(context.Background(), "tasks/test.png", payload, "image/png"); err != nil {
+		t.Fatalf("UploadBytes() error = %v", err)
 	}
 }
 

@@ -2776,6 +2776,7 @@ func (w *Worker) completePolledImageTask(ctx context.Context, task *store.Task, 
 	collector := newClaimedTaskOutputCollector(w, ctx, task, claimID)
 	if err := deliverEncodedImages(images, collector.persist); err != nil {
 		collector.cleanup()
+		log.Printf("task %s completed image persist failed: %v", task.ID, err)
 		errorCode, errorMessage := "storage_error", "图片保存失败，请重试"
 		var outputProcessingErr *taskOutputProcessingError
 		if errors.As(err, &outputProcessingErr) {
