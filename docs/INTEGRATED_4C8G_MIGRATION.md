@@ -179,6 +179,52 @@ CDN URL 鉴权。版本化对象 key 使用长期缓存，旧固定 key 使用�
 数据库大版本切换存在短暂写入窗口，不能宣称完全零停机。若需要秒级切换，应另行设计
 PG17 到 PG18 逻辑复制；在当前数据量未知前，不把它作为默认方案。
 
+### 7.1 一体化环境后端零停机更新
+
+一体化部署不能使用仓库根目录的旧版候选 Compose。后端更新应使用
+`deploy/integrated/docker-compose.candidate.yml`：候选 API 在 `8081` 提供服务，复用
+正式 PostgreSQL、Redis、Web 和 Admin，但不启动第二个 Worker。
+
+把正式 `deploy/integrated/.env.integrated` 以权限 `600` 复制到独立发布目录的相同位置，
+并先启动候选 API/网关：
+
+```bash
+export RELEASE_ID=<新提交短哈希>
+export RELEASE_DIR=/www/wwwroot/releases/$RELEASE_ID/startcloudsai
+export INTEGRATED_APP_ENV_FILE=$RELEASE_DIR/deploy/integrated/.env.integrated
+
+docker compose --env-file "$INTEGRATED_APP_ENV_FILE" \
+  -f "$RELEASE_DIR/deploy/integrated/docker-compose.candidate.yml" build server
+docker compose --env-file "$INTEGRATED_APP_ENV_FILE" \
+  -f "$RELEASE_DIR/deploy/integrated/docker-compose.candidate.yml" up -d --no-build server gateway
+curl -fsS http://127.0.0.1:8081/api/v1/health
+curl -fsSI http://127.0.0.1:8081/
+curl -fsSI http://127.0.0.1:8081/admin/
+```
+
+候选通过后，把宝塔外层反向代理从 `8080` 切到 `8081` 并 reload。再把候选 Server 镜像
+标记为正式 Server/Worker 镜像，并从发布目录仅重建后端：
+
+```bash
+docker tag startcloudsai-integrated-candidate-server:$RELEASE_ID startcloudsai-integrated-server:latest
+docker tag startcloudsai-integrated-candidate-server:$RELEASE_ID startcloudsai-integrated-worker:latest
+
+cd "$RELEASE_DIR"
+docker compose --env-file deploy/integrated/.env.integrated \
+  -f deploy/integrated/docker-compose.yml up -d --no-build --no-deps server
+docker compose --env-file deploy/integrated/.env.integrated \
+  -f deploy/integrated/docker-compose.yml up -d --no-build --no-deps worker
+```
+
+Worker 会停止领取新任务并等待在途任务结束，最多等待 15 分钟；不要中断该命令。正式
+`8080` 健康后把宝塔代理切回 `8080`，再关闭候选环境。禁止执行 `down -v`：
+
+```bash
+curl -fsS http://127.0.0.1:8080/api/v1/health
+docker compose --env-file "$INTEGRATED_APP_ENV_FILE" \
+  -f "$RELEASE_DIR/deploy/integrated/docker-compose.candidate.yml" down
+```
+
 ## 8. 验收与回滚
 
 用同一组 20 个真实任务记录四个时间点：提交成功、上游开始、上游完成、平台完成。
