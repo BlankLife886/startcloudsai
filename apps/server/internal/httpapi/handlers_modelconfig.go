@@ -27,11 +27,12 @@ func (s *Server) adminPutModelConfig(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
+	allowPrivate := s.Cfg.C2APrivateNetworkAllowed()
 	for index := range input.Providers {
 		provider := &input.Providers[index]
 		if len(provider.Routes) == 0 {
 			provider.BaseURL = strings.TrimRight(strings.TrimSpace(provider.BaseURL), "/")
-			if provider.BaseURL == "" || netguard.ValidateURL(provider.BaseURL, s.Cfg.AppEnv == "development", false) != nil {
+			if provider.BaseURL == "" || netguard.ValidateURL(provider.BaseURL, allowPrivate, false) != nil {
 				fail(c, apperr.E("validation_error", "服务商 "+provider.Name+" 的地址无效或指向受限网络", 422))
 				return
 			}
@@ -39,7 +40,7 @@ func (s *Server) adminPutModelConfig(c *gin.Context, _ *store.User) {
 		for routeIndex := range provider.Routes {
 			route := &provider.Routes[routeIndex]
 			route.BaseURL = strings.TrimRight(strings.TrimSpace(route.BaseURL), "/")
-			if route.BaseURL == "" || netguard.ValidateURL(route.BaseURL, s.Cfg.AppEnv == "development", false) != nil {
+			if route.BaseURL == "" || netguard.ValidateURL(route.BaseURL, allowPrivate, false) != nil {
 				fail(c, apperr.E("validation_error", "服务商 "+provider.Name+" 的线路地址无效或指向受限网络", 422))
 				return
 			}
@@ -69,11 +70,12 @@ func (s *Server) adminDiscoverProviderModels(c *gin.Context, _ *store.User) {
 		return
 	}
 	provider.BaseURL = strings.TrimRight(strings.TrimSpace(provider.BaseURL), "/")
+	allowPrivate := s.Cfg.C2APrivateNetworkAllowed()
 	if !modelconfig.ValidAdapter(provider.Adapter) {
 		fail(c, apperr.E("validation_error", "请选择有效的调用协议", 422))
 		return
 	}
-	if provider.BaseURL == "" || netguard.ValidateURL(provider.BaseURL, s.Cfg.AppEnv == "development", false) != nil {
+	if provider.BaseURL == "" || netguard.ValidateURL(provider.BaseURL, allowPrivate, false) != nil {
 		fail(c, apperr.E("validation_error", "服务商地址无效或指向受限网络", 422))
 		return
 	}
@@ -127,7 +129,7 @@ func (s *Server) adminDiscoverProviderModels(c *gin.Context, _ *store.User) {
 			fail(c, apperr.E("validation_error", "线路不存在", 422))
 			return
 		}
-		if provider.BaseURL == "" || netguard.ValidateURL(provider.BaseURL, s.Cfg.AppEnv == "development", false) != nil {
+		if provider.BaseURL == "" || netguard.ValidateURL(provider.BaseURL, allowPrivate, false) != nil {
 			fail(c, apperr.E("validation_error", "线路地址无效或指向受限网络", 422))
 			return
 		}
@@ -138,7 +140,7 @@ func (s *Server) adminDiscoverProviderModels(c *gin.Context, _ *store.User) {
 	}
 	if model := strings.TrimSpace(c.Query("model")); model != "" {
 		entry, err := modelprovider.DescribeCRUNModel(
-			c.Request.Context(), provider, model, s.Cfg.AppEnv == "development",
+			c.Request.Context(), provider, model, allowPrivate,
 		)
 		if err != nil {
 			fail(c, apperr.E("model_schema_failed", err.Error(), 502))
@@ -147,7 +149,7 @@ func (s *Server) adminDiscoverProviderModels(c *gin.Context, _ *store.User) {
 		ok(c, entry)
 		return
 	}
-	catalog, err := modelprovider.DiscoverModels(c.Request.Context(), provider, s.Cfg.AppEnv == "development")
+	catalog, err := modelprovider.DiscoverModels(c.Request.Context(), provider, allowPrivate)
 	if err != nil {
 		fail(c, apperr.E("model_discovery_failed", err.Error(), 502))
 		return

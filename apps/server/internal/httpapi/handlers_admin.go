@@ -2457,7 +2457,11 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 				return
 			}
 			v = strings.TrimRight(strings.TrimSpace(v), "/")
-			if v != "" && netguard.ValidateURL(v, s.Cfg.AppEnv == "development", false) != nil {
+			allowPrivate := s.Cfg.AppEnv == "development"
+			if snake == "c2a_base_url" {
+				allowPrivate = s.Cfg.C2APrivateNetworkAllowed()
+			}
+			if v != "" && netguard.ValidateURL(v, allowPrivate, false) != nil {
 				fail(c, apperr.E("validation_error", camel+": 地址无效或指向受限网络", 422))
 				return
 			}
@@ -2687,7 +2691,7 @@ func (s *Server) adminTestC2A(c *gin.Context, _ *store.User) {
 		return
 	}
 	if v := strings.TrimRight(strings.TrimSpace(override.BaseURL), "/"); v != "" {
-		if netguard.ValidateURL(v, s.Cfg.AppEnv == "development", false) != nil {
+		if netguard.ValidateURL(v, s.Cfg.C2APrivateNetworkAllowed(), false) != nil {
 			fail(c, apperr.E("validation_error", "baseUrl: 地址无效或指向受限网络", 422))
 			return
 		}
