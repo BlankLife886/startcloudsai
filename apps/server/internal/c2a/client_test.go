@@ -25,6 +25,22 @@ func TestImageDownloadTimeoutAllowsSlowCompletedImages(t *testing.T) {
 	}
 }
 
+func TestTaskImagesSupportsPlatformSixteenImageLimit(t *testing.T) {
+	items := make([]map[string]any, maxTaskImages)
+	for index := range items {
+		items[index] = map[string]any{"b64_json": "YQ=="}
+	}
+	client := NewWithPolicy("http://example.test", "test", 30, true)
+	images, _, err := client.taskImagesB64(context.Background(), items)
+	if err != nil || len(images) != maxTaskImages {
+		t.Fatalf("images=%d err=%v, want %d images", len(images), err, maxTaskImages)
+	}
+	items = append(items, map[string]any{"b64_json": "YQ=="})
+	if _, _, err := client.taskImagesB64(context.Background(), items); err == nil {
+		t.Fatal("seventeen-image response must be rejected")
+	}
+}
+
 func TestAsyncSubmitTimeoutCoversSlowReferenceHandoff(t *testing.T) {
 	if asyncSubmitTimeout < 2*time.Minute {
 		t.Fatalf("async submit timeout=%s, want at least 2m", asyncSubmitTimeout)
@@ -65,7 +81,14 @@ func TestEndpointURLUsesOriginForAsyncAPIAndPreservesQuery(t *testing.T) {
 }
 
 func TestExtractB64ListRejectsTooManyImages(t *testing.T) {
-	body := []byte(`{"data":[{"b64_json":"a"},{"b64_json":"b"},{"b64_json":"c"},{"b64_json":"d"},{"b64_json":"e"}]}`)
+	items := make([]map[string]string, maxTaskImages+1)
+	for index := range items {
+		items[index] = map[string]string{"b64_json": "a"}
+	}
+	body, err := json.Marshal(map[string]any{"data": items})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := extractB64List(body); err == nil {
 		t.Fatal("expected too-many-images error")
 	}
@@ -799,6 +822,23 @@ func TestPollImageTasksMatchClientTaskIDWhenUpstreamIDDiffers(t *testing.T) {
 	})
 	if gotID != "local-task" || result.Pending || result.Missing || result.Err != nil || len(result.Images) != 1 || result.Images[0] != "matched" {
 		t.Fatalf("id=%q result=%#v, want local-task image", gotID, result)
+	}
+}
+
+func TestPollImageTasksTreatsPartialSuccessAsTerminalDelivery(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"id":"partial","status":"partial_success","terminal":true,"results":[{"b64_json":"one"},{"b64_json":"two"}]}]}`))
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	var result ImageTaskPollResult
+	client.PollImageTasksEach(context.Background(), []string{"partial"}, map[string]int{"partial": 4}, func(_ string, got ImageTaskPollResult) {
+		result = got
+	})
+	if result.Pending || result.Err != nil || len(result.Images) != 2 {
+		t.Fatalf("partial result = %#v, want terminal two-image delivery", result)
 	}
 }
 

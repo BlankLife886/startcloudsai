@@ -25,6 +25,7 @@ import (
 const (
 	maxResponseBytes int64 = 64 << 20
 	maxImageBytes    int64 = 20 << 20
+	maxTaskImages          = 16
 	// Reference images are uploaded by the upstream before it acknowledges an
 	// async task. Under concurrency that handoff can legitimately exceed one
 	// minute, so keep the POST alive long enough to receive the canonical task
@@ -221,7 +222,7 @@ func extractB64List(body []byte) ([]string, error) {
 	var images []string
 	for _, item := range payload.Data {
 		if b64, ok := item["b64_json"].(string); ok && b64 != "" {
-			if len(images) >= 4 {
+			if len(images) >= maxTaskImages {
 				return nil, &UpstreamError{Message: "上游返回图片数量超过限制"}
 			}
 			if len(b64) > 32<<20 {
@@ -556,7 +557,7 @@ func nonEmptyImageCount(images []string) int {
 }
 
 func (c *Client) taskImagesB64(ctx context.Context, data []map[string]any) ([]string, downloadStats, error) {
-	if len(data) > 4 {
+	if len(data) > maxTaskImages {
 		return nil, downloadStats{}, &UpstreamError{Message: "上游返回图片数量超过限制"}
 	}
 	images := make([]string, len(data))
@@ -661,7 +662,7 @@ func imageTaskStatusPending(status string) bool {
 
 func imageTaskStatusSucceeded(status string) bool {
 	switch status {
-	case "success", "succeeded", "successful", "completed", "complete", "done", "ok", "finished", "finished_successfully":
+	case "success", "succeeded", "successful", "partial_success", "partially_succeeded", "completed", "complete", "done", "ok", "finished", "finished_successfully":
 		return true
 	default:
 		return false

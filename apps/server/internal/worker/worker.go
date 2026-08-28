@@ -78,20 +78,28 @@ type Worker struct {
 	Queue      *taskflow.Queue
 	PromptSync *promptsync.Engine
 	// Stream 用于把助手回答增量推给 API 层 SSE；nil 时静默降级为纯轮询。
-	Stream           *redis.Client
-	imageMemory      *semaphore.Weighted
-	imageMemoryBytes int64
-	pollWorkers      *semaphore.Weighted
-	pollRequests     *semaphore.Weighted
-	pollConcurrency  int
-	workerID         string
-	modelConfigMu    sync.Mutex
-	modelConfig      modelconfig.Config
-	modelConfigAt    time.Time
-	imageFetchMu     sync.Mutex
-	imageFetchCond   *sync.Cond
-	imageFetchOnce   sync.Once
-	imageFetchActive int64
+	Stream                   *redis.Client
+	imageMemory              *semaphore.Weighted
+	imageMemoryBytes         int64
+	pollWorkers              *semaphore.Weighted
+	pollRequests             *semaphore.Weighted
+	pollConcurrency          int
+	workerID                 string
+	modelConfigMu            sync.Mutex
+	modelConfig              modelconfig.Config
+	modelConfigAt            time.Time
+	imageFetchMu             sync.Mutex
+	imageFetchConfigMu       sync.Mutex
+	imageFetchCond           *sync.Cond
+	imageFetchOnce           sync.Once
+	imageFetchActive         int64
+	imageFetchLimit          int64
+	imageFetchCeiling        int64
+	imageFetchCeilingAt      time.Time
+	imageFetchHealthySamples int
+	forecastFetchCapacityMu  sync.Mutex
+	forecastFetchSlots       int64
+	forecastFetchSlotsAt     time.Time
 }
 
 func (w *Worker) runtimeModelConfig(ctx context.Context) (modelconfig.Config, error) {
@@ -197,6 +205,9 @@ func (w *Worker) Run() error {
 		return fmt.Errorf("start periodic task manager: %w", err)
 	}
 	defer mgr.Shutdown()
+	metricsCtx, cancelMetrics := context.WithCancel(context.Background())
+	defer cancelMetrics()
+	go w.publishImageFetchMetricsLoop(metricsCtx)
 
 	return srv.Run(mux)
 }
@@ -299,6 +310,9 @@ func (w *Worker) claimTask(ctx context.Context, taskID uuid.UUID) (*store.Task, 
 	if userLimit <= 0 {
 		userLimit = 2
 	}
+	imageFetchCeiling := w.imageFetchConcurrency(ctx)
+	forecastFetchSlots := w.globalImageFetchSlots(ctx, imageFetchCeiling)
+	predictedDuration := predictedExecutionDuration(candidates)
 	var claimedTask *store.Task
 	deferReason := ""
 	leaseOwner := w.workerID + ":" + uuid.NewString()
@@ -309,19 +323,33 @@ func (w *Worker) claimTask(ctx context.Context, taskID uuid.UUID) (*store.Task, 
 		if err := store.LockUserTaskExecution(ctx, tx, queued.UserID); err != nil {
 			return err
 		}
-		globalRunning, err := store.CountRunningTasksGlobal(ctx, tx)
+		now := time.Now().UTC()
+		forecastEnd := now.Add(predictedDuration)
+		forecastStart := forecastEnd.Add(-forecastWindow)
+		if forecastStart.Before(now) {
+			forecastStart = now
+		}
+		pressure, err := store.GetTaskExecutionPressure(ctx, tx, queued.UserID, forecastStart, forecastEnd)
 		if err != nil {
 			return err
 		}
-		if globalRunning >= globalLimit {
+		if pressure.RunningTasks >= globalLimit {
 			deferReason = "global_execution_limit"
 			return nil
 		}
-		running, err := store.CountRunningTasks(ctx, tx, queued.UserID)
-		if err != nil {
-			return err
+		decision := adaptiveDispatchLimits(
+			pressure,
+			userLimit,
+			globalLimit,
+			executionCandidateCapacity(candidates),
+			forecastFetchSlots,
+			max(queued.WorkUnits, queued.Count),
+		)
+		if decision.DeferForForecast {
+			deferReason = "forecast_completion_pressure"
+			return nil
 		}
-		if running >= userLimit {
+		if pressure.UserRunningTasks >= decision.EffectiveUserLimit {
 			deferReason = "user_execution_limit"
 			return nil
 		}
@@ -362,13 +390,15 @@ func (w *Worker) claimTask(ctx context.Context, taskID uuid.UUID) (*store.Task, 
 				return nil
 			}
 			route := map[string]any{
-				"_serviceProvider":     selected.Provider.Adapter,
-				"_providerConfigId":    selected.Provider.ID,
-				"_providerRouteId":     selected.Provider.RouteID,
-				"_providerRouteKey":    modelconfig.ExecutionRouteKey(selected.Provider),
-				"_modelConfigId":       selected.Model.ID,
-				"_providerDisplayName": selected.Provider.Name,
-				"_modelDisplayName":    selected.Model.Name,
+				"_serviceProvider":       selected.Provider.Adapter,
+				"_providerConfigId":      selected.Provider.ID,
+				"_providerRouteId":       selected.Provider.RouteID,
+				"_providerRouteKey":      modelconfig.ExecutionRouteKey(selected.Provider),
+				"_modelConfigId":         selected.Model.ID,
+				"_providerDisplayName":   selected.Provider.Name,
+				"_modelDisplayName":      selected.Model.Name,
+				"_predictedCompleteAtMs": now.Add(predictedGenerationDuration(selected.Model)).UnixMilli(),
+				"_predictedImageUnits":   max(queued.WorkUnits, queued.Count),
 			}
 			updated, err := store.SetQueuedTaskExecutionRoute(ctx, tx, taskID, selected.Model.UpstreamModel, route)
 			if err != nil || !updated {
@@ -387,6 +417,23 @@ func (w *Worker) claimTask(ctx context.Context, taskID uuid.UUID) (*store.Task, 
 
 func selectExecutionCandidate(candidates []modelconfig.Selection, running map[string]int64) (*modelconfig.Selection, bool) {
 	return selectExecutionCandidateAvoiding(candidates, running, "")
+}
+
+func executionCandidateCapacity(candidates []modelconfig.Selection) int64 {
+	seen := make(map[string]struct{}, len(candidates))
+	var capacity int64
+	for _, candidate := range candidates {
+		key := modelconfig.ExecutionRouteKey(candidate.Provider)
+		if key == "" {
+			key = candidate.Provider.ID
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		capacity += int64(max(candidate.Provider.MaxConcurrency, 1))
+	}
+	return capacity
 }
 
 func selectExecutionCandidateAvoiding(candidates []modelconfig.Selection, running map[string]int64, avoidProviderID string) (*modelconfig.Selection, bool) {
@@ -1395,21 +1442,115 @@ func (w *Worker) imageFetchConcurrency(ctx context.Context) int64 {
 	if w == nil || w.St == nil {
 		return 8
 	}
+	w.imageFetchConfigMu.Lock()
+	defer w.imageFetchConfigMu.Unlock()
+	if w.imageFetchCeiling > 0 && time.Since(w.imageFetchCeilingAt) < 5*time.Second {
+		return w.imageFetchCeiling
+	}
 	value, err := settings.GetInt(ctx, w.St.Pool, "image_fetch_concurrency")
 	if err != nil || value <= 0 {
-		return 8
+		value = 8
 	}
 	if value > 32 {
-		return 32
+		value = 32
 	}
-	return value
+	w.imageFetchCeiling = value
+	w.imageFetchCeilingAt = time.Now()
+	return w.imageFetchCeiling
+}
+
+func (w *Worker) globalImageFetchSlots(ctx context.Context, localCeiling int64) int64 {
+	if localCeiling < 1 {
+		localCeiling = 1
+	}
+	if w == nil || w.Queue == nil {
+		return localCeiling
+	}
+	w.forecastFetchCapacityMu.Lock()
+	defer w.forecastFetchCapacityMu.Unlock()
+	if w.forecastFetchSlots > 0 && time.Since(w.forecastFetchSlotsAt) < 3*time.Second {
+		return w.forecastFetchSlots
+	}
+	metrics := w.Queue.ImageFetchMetrics(ctx)
+	slots := metrics.EffectiveLimit
+	if !metrics.Available || slots < 1 {
+		slots = localCeiling
+	}
+	w.forecastFetchSlots = slots
+	w.forecastFetchSlotsAt = time.Now()
+	return slots
+}
+
+func (w *Worker) publishImageFetchMetricsLoop(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		w.publishImageFetchMetrics(ctx)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (w *Worker) publishImageFetchMetrics(ctx context.Context) {
+	if w == nil || w.Queue == nil {
+		return
+	}
+	ceiling := w.imageFetchConcurrency(ctx)
+	w.imageFetchMu.Lock()
+	limit := w.imageFetchLimit
+	if limit < 1 || limit > ceiling {
+		limit = ceiling
+	}
+	snapshot := taskflow.ImageFetchWorkerMetrics{
+		WorkerID:          w.workerID,
+		Active:            w.imageFetchActive,
+		EffectiveLimit:    limit,
+		ConfiguredCeiling: ceiling,
+	}
+	w.imageFetchMu.Unlock()
+	if err := w.Queue.PublishImageFetchMetrics(ctx, snapshot); err != nil && ctx.Err() == nil {
+		log.Printf("publish image fetch metrics failed: %v", err)
+	}
+}
+
+func (w *Worker) currentImageFetchLimit(ctx context.Context) int64 {
+	ceiling := w.imageFetchConcurrency(ctx)
+	w.imageFetchMu.Lock()
+	defer w.imageFetchMu.Unlock()
+	if w.imageFetchLimit < 1 || w.imageFetchLimit > ceiling {
+		w.imageFetchLimit = ceiling
+		w.imageFetchHealthySamples = 0
+	}
+	return w.imageFetchLimit
+}
+
+func (w *Worker) observeImageFetch(ctx context.Context, duration time.Duration, failed bool) {
+	ceiling := w.imageFetchConcurrency(ctx)
+	w.imageFetchMu.Lock()
+	next, samples := nextAdaptiveFetchLimit(
+		w.imageFetchLimit,
+		ceiling,
+		duration,
+		failed,
+		w.imageFetchHealthySamples,
+	)
+	changed := next != w.imageFetchLimit
+	w.imageFetchLimit = next
+	w.imageFetchHealthySamples = samples
+	if changed && w.imageFetchCond != nil {
+		w.imageFetchCond.Broadcast()
+	}
+	w.imageFetchMu.Unlock()
 }
 
 func (w *Worker) acquireImageFetch(ctx context.Context) error {
 	w.imageFetchOnce.Do(func() {
 		w.imageFetchCond = sync.NewCond(&w.imageFetchMu)
 	})
-	limit := w.imageFetchConcurrency(ctx)
+	limit := w.currentImageFetchLimit(ctx)
 	stop := context.AfterFunc(ctx, func() {
 		w.imageFetchCond.Broadcast()
 	})
@@ -1741,6 +1882,9 @@ func taskDispatchBackoff(reason string, taskID uuid.UUID) time.Duration {
 	if reason == "user_execution_limit" {
 		return 5*time.Second + time.Duration(taskID[0]%6)*time.Second
 	}
+	if reason == "forecast_completion_pressure" {
+		return 3*time.Second + time.Duration(taskID[0]%5)*time.Second
+	}
 	// Provider and global saturation affect many queued tasks at once. A wider
 	// deterministic jitter avoids a thundering herd against PostgreSQL and Redis
 	// while image generation is already using all available upstream capacity.
@@ -2005,6 +2149,7 @@ func openAIPollNeedsFetch(result c2a.ImageTaskPollResult) bool {
 
 func (w *Worker) startOpenAIResultFetch(provider *modelconfig.Provider, task *store.Task, result c2a.ImageTaskPollResult, claimID string) {
 	go func() {
+		fetchStartedAt := time.Now()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 		if err := w.acquireImageFetch(ctx); err != nil {
@@ -2018,11 +2163,14 @@ func (w *Worker) startOpenAIResultFetch(provider *modelconfig.Provider, task *st
 		defer w.releaseImageFetch()
 		allowPrivate := w.Cfg != nil && w.Cfg.AppEnv == "development"
 		client := c2a.NewWithPolicy(provider.BaseURL, provider.APIKey, provider.TimeoutSecs, allowPrivate)
-		w.applyOpenAIPollResult(ctx, client, provider, task, result, claimID)
+		fetchFailed := w.applyOpenAIPollResult(ctx, client, provider, task, result, claimID)
+		observeCtx, observeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		w.observeImageFetch(observeCtx, time.Since(fetchStartedAt), fetchFailed || ctx.Err() != nil)
+		observeCancel()
 	}()
 }
 
-func (w *Worker) applyOpenAIPollResult(ctx context.Context, client *c2a.Client, provider *modelconfig.Provider, task *store.Task, result c2a.ImageTaskPollResult, claimID string) {
+func (w *Worker) applyOpenAIPollResult(ctx context.Context, client *c2a.Client, provider *modelconfig.Provider, task *store.Task, result c2a.ImageTaskPollResult, claimID string) (fetchFailed bool) {
 	if result.Pending {
 		if nonEmptyImageCount(result.Images) > 0 {
 			if claimID == "" {
@@ -2086,10 +2234,11 @@ func (w *Worker) applyOpenAIPollResult(ctx context.Context, client *c2a.Client, 
 			if c2a.IsRetryableError(err) {
 				result.Pending = true
 				result.Err = err
-				w.applyOpenAIPollResult(ctx, client, provider, task, result, claimID)
+				fetchFailed = w.applyOpenAIPollResult(ctx, client, provider, task, result, claimID)
 				return
 			}
 			w.finishUncertainImagePoll(ctx, task, err.Error(), true, false, claimID)
+			fetchFailed = true
 			return
 		}
 		images = downloaded
@@ -2110,7 +2259,9 @@ func (w *Worker) applyOpenAIPollResult(ctx context.Context, client *c2a.Client, 
 	}
 	if err := w.completePolledImageTask(ctx, task, images, claimID); err != nil {
 		log.Printf("task %s async completion failed: %v", task.ID, err)
+		return true
 	}
+	return false
 }
 
 func nonEmptyImageCount(images []string) int {

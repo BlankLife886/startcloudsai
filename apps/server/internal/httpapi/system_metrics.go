@@ -12,10 +12,12 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
+	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
 )
 
 const requestMetricsWindow = 60
@@ -217,6 +219,11 @@ func (s *Server) adminSystemMetrics(c *gin.Context, _ *store.User) {
 	workerCeiling := int64(s.workerConcurrencyCeiling())
 	profilingEnabled := s.Cfg.APIPprofAddr != "" || s.Cfg.WorkerPprofAddr != ""
 	providerCapacity := s.providerCapacityMetrics(c.Request.Context())
+	imageFetch := s.Queue.ImageFetchMetrics(c.Request.Context())
+	executionPressure, executionPressureErr := store.GetTaskExecutionPressure(
+		c.Request.Context(), s.St.Pool, uuid.Nil, now.UTC(), now.UTC().Add(10*time.Second),
+	)
+	imageFetchForecast := imageFetchForecastSnapshot(imageFetch, executionPressure, executionPressureErr)
 
 	ok(c, gin.H{
 		"sampledAt": now.UTC().Format(time.RFC3339Nano),
@@ -245,8 +252,30 @@ func (s *Server) adminSystemMetrics(c *gin.Context, _ *store.User) {
 		"queue":        queue,
 		"taskPressure": taskPressureSnapshot(now, pressure, pressureErr, globalLimit, globalLimitErr, globalImageLimit, globalImageLimitErr, globalConcurrency, globalConcurrencyErr, userConcurrency, userConcurrencyErr, workerCeiling),
 		"providers":    providerCapacity,
+		"imageFetch":   imageFetchForecast,
 		"profiling":    gin.H{"enabled": profilingEnabled},
 	})
+}
+
+func imageFetchForecastSnapshot(metrics taskflow.ImageFetchMetrics, pressure store.TaskExecutionPressure, pressureErr error) gin.H {
+	forecastCapacity := metrics.EffectiveLimit * 4 * 2
+	out := gin.H{
+		"available":             metrics.Available,
+		"active":                metrics.Active,
+		"effectiveLimit":        metrics.EffectiveLimit,
+		"configuredCeiling":     metrics.ConfiguredCeiling,
+		"workers":               len(metrics.Workers),
+		"activeUsers":           pressure.ActiveUsers,
+		"waitingUsers":          pressure.WaitingOtherUsers,
+		"forecastWindowSeconds": 10,
+		"forecastImageUnits":    pressure.ForecastUnitsNear,
+		"forecastCapacity":      forecastCapacity,
+		"forecastPressure":      pressure.WaitingOtherUsers > 0 && forecastCapacity > 0 && pressure.ForecastUnitsNear >= forecastCapacity,
+	}
+	if metrics.Error != "" || pressureErr != nil {
+		out["error"] = "image_fetch_metrics_unavailable"
+	}
+	return out
 }
 
 func (s *Server) providerCapacityMetrics(ctx context.Context) []gin.H {

@@ -47,9 +47,10 @@ type Config struct {
 	DBMaxConnIdleTime   time.Duration
 	DBHealthCheckPeriod time.Duration
 
-	C2ABaseURL     string
-	C2AAPIKey      string
-	C2ATimeoutSecs int
+	C2ABaseURL        string
+	C2AAPIKey         string
+	C2ACallbackSecret string
+	C2ATimeoutSecs    int
 
 	Sub2APIBaseURL     string
 	Sub2APIAPIKey      string
@@ -211,9 +212,10 @@ func Load() *Config {
 		DBMaxConnIdleTime:   getenvDuration("DB_MAX_CONN_IDLE_TIME", 5*time.Minute),
 		DBHealthCheckPeriod: getenvDuration("DB_HEALTH_CHECK_PERIOD", time.Minute),
 
-		C2ABaseURL:     getenv("C2A_BASE_URL", "http://localhost:3000"),
-		C2AAPIKey:      getenv("C2A_API_KEY", ""),
-		C2ATimeoutSecs: getenvInt("C2A_TIMEOUT_SECS", 600),
+		C2ABaseURL:        getenv("C2A_BASE_URL", "http://localhost:3000"),
+		C2AAPIKey:         getenv("C2A_API_KEY", ""),
+		C2ACallbackSecret: strings.TrimSpace(getenv("C2A_CALLBACK_SECRET", "")),
+		C2ATimeoutSecs:    getenvInt("C2A_TIMEOUT_SECS", 600),
 
 		Sub2APIBaseURL:     getenv("SUB2API_BASE_URL", "http://localhost:8080"),
 		Sub2APIAPIKey:      getenv("SUB2API_API_KEY", ""),

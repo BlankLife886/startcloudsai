@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/hibiken/asynq"
+	"github.com/redis/go-redis/v9"
 )
 
 const (
@@ -62,7 +63,25 @@ type IngestAssistantFilePayload struct {
 type Queue struct {
 	client    *asynq.Client
 	inspector *asynq.Inspector
+	metrics   *redis.Client
 	timeout   time.Duration
+}
+
+type ImageFetchWorkerMetrics struct {
+	WorkerID          string    `json:"workerId"`
+	Active            int64     `json:"active"`
+	EffectiveLimit    int64     `json:"effectiveLimit"`
+	ConfiguredCeiling int64     `json:"configuredCeiling"`
+	UpdatedAt         time.Time `json:"updatedAt"`
+}
+
+type ImageFetchMetrics struct {
+	Available         bool                      `json:"available"`
+	Active            int64                     `json:"active"`
+	EffectiveLimit    int64                     `json:"effectiveLimit"`
+	ConfiguredCeiling int64                     `json:"configuredCeiling"`
+	Workers           []ImageFetchWorkerMetrics `json:"workers"`
+	Error             string                    `json:"error,omitempty"`
 }
 
 type WorkerMetrics struct {
@@ -105,9 +124,14 @@ func NewQueue(redisURL string, c2aTimeoutSecs int) (*Queue, error) {
 	if c2aTimeoutSecs < maxC2ATimeoutSecs {
 		c2aTimeoutSecs = maxC2ATimeoutSecs
 	}
+	metricsOpt, err := redis.ParseURL(redisURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse metrics redis url: %w", err)
+	}
 	return &Queue{
 		client:    asynq.NewClient(opt),
 		inspector: asynq.NewInspector(opt),
+		metrics:   redis.NewClient(metricsOpt),
 		timeout:   time.Duration(c2aTimeoutSecs*2+120) * time.Second,
 	}, nil
 }
@@ -115,10 +139,71 @@ func NewQueue(redisURL string, c2aTimeoutSecs int) (*Queue, error) {
 func (q *Queue) Close() error {
 	clientErr := q.client.Close()
 	inspectorErr := q.inspector.Close()
+	var metricsErr error
+	if q.metrics != nil {
+		metricsErr = q.metrics.Close()
+	}
 	if clientErr != nil {
 		return clientErr
 	}
-	return inspectorErr
+	if inspectorErr != nil {
+		return inspectorErr
+	}
+	return metricsErr
+}
+
+const imageFetchMetricsKeyPrefix = "startclouds:metrics:image-fetch:"
+
+func (q *Queue) PublishImageFetchMetrics(ctx context.Context, snapshot ImageFetchWorkerMetrics) error {
+	if q == nil || q.metrics == nil || snapshot.WorkerID == "" {
+		return nil
+	}
+	snapshot.UpdatedAt = time.Now().UTC()
+	payload, err := json.Marshal(snapshot)
+	if err != nil {
+		return err
+	}
+	return q.metrics.Set(ctx, imageFetchMetricsKeyPrefix+snapshot.WorkerID, payload, 20*time.Second).Err()
+}
+
+func (q *Queue) ImageFetchMetrics(ctx context.Context) ImageFetchMetrics {
+	out := ImageFetchMetrics{Workers: []ImageFetchWorkerMetrics{}}
+	if q == nil || q.metrics == nil {
+		out.Error = "image_fetch_metrics_unavailable"
+		return out
+	}
+	var cursor uint64
+	for {
+		keys, next, err := q.metrics.Scan(ctx, cursor, imageFetchMetricsKeyPrefix+"*", 100).Result()
+		if err != nil {
+			out.Error = "image_fetch_metrics_unavailable"
+			return out
+		}
+		out.Available = true
+		if len(keys) > 0 {
+			values, err := q.metrics.MGet(ctx, keys...).Result()
+			if err != nil {
+				out.Error = "image_fetch_metrics_unavailable"
+				return out
+			}
+			for _, value := range values {
+				text, _ := value.(string)
+				var worker ImageFetchWorkerMetrics
+				if text == "" || json.Unmarshal([]byte(text), &worker) != nil || worker.WorkerID == "" {
+					continue
+				}
+				out.Workers = append(out.Workers, worker)
+				out.Active += worker.Active
+				out.EffectiveLimit += worker.EffectiveLimit
+				out.ConfiguredCeiling += worker.ConfiguredCeiling
+			}
+		}
+		cursor = next
+		if cursor == 0 {
+			break
+		}
+	}
+	return out
 }
 
 // Ping 检查 Redis 连通性（健康检查用）。

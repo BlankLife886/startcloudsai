@@ -690,6 +690,53 @@ type TaskPressure struct {
 	OldestRunningAt *time.Time
 }
 
+// TaskExecutionPressure is the cluster-wide snapshot used by the adaptive
+// dispatcher. Hard settings remain safety ceilings; this projection tells the
+// worker when other users are actually waiting and whether large image work is
+// predicted to complete in the same short window.
+type TaskExecutionPressure struct {
+	ActiveUsers       int64
+	WaitingOtherUsers int64
+	RunningTasks      int64
+	UserRunningTasks  int64
+	RunningUnits      int64
+	ForecastUnitsNear int64
+}
+
+func GetTaskExecutionPressure(ctx context.Context, q Q, userID uuid.UUID, windowStart, windowEnd time.Time) (TaskExecutionPressure, error) {
+	var out TaskExecutionPressure
+	err := q.QueryRow(ctx, `
+		WITH active AS (
+			SELECT user_id, status, GREATEST(work_units, 1) AS units, started_at,
+				CASE
+					WHEN COALESCE(params->>'_predictedCompleteAtMs', '') ~ '^[0-9]{10,16}$'
+						THEN to_timestamp((params->>'_predictedCompleteAtMs')::double precision / 1000.0)
+					WHEN started_at IS NOT NULL THEN started_at + interval '60 seconds'
+					ELSE NULL
+				END AS predicted_complete_at
+			FROM tasks
+			WHERE status IN ('queued', 'running') AND `+uiDesignAssetHistoryNotSQL+`
+		)
+		SELECT
+			count(DISTINCT user_id),
+			count(DISTINCT user_id) FILTER (WHERE status = 'queued' AND user_id <> $1),
+			count(*) FILTER (WHERE status = 'running'),
+			count(*) FILTER (WHERE status = 'running' AND user_id = $1),
+			COALESCE(sum(units) FILTER (WHERE status = 'running'), 0),
+			COALESCE(sum(units) FILTER (
+				WHERE status = 'running' AND predicted_complete_at > $2 AND predicted_complete_at <= $3
+			), 0)
+		FROM active`, userID, windowStart, windowEnd).Scan(
+		&out.ActiveUsers,
+		&out.WaitingOtherUsers,
+		&out.RunningTasks,
+		&out.UserRunningTasks,
+		&out.RunningUnits,
+		&out.ForecastUnitsNear,
+	)
+	return out, err
+}
+
 func GetTaskPressure(ctx context.Context, q Q) (TaskPressure, error) {
 	var out TaskPressure
 	err := q.QueryRow(ctx, `

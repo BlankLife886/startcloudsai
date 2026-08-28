@@ -184,6 +184,20 @@ interface SystemMetrics {
 		limit: number
 		utilizationPercent: number
 	}>
+	imageFetch: {
+		available: boolean
+		active: number
+		effectiveLimit: number
+		configuredCeiling: number
+		workers: number
+		activeUsers: number
+		waitingUsers: number
+		forecastWindowSeconds: number
+		forecastImageUnits: number
+		forecastCapacity: number
+		forecastPressure: boolean
+		error?: string
+	}
 	profiling: { enabled: boolean }
 }
 
@@ -359,6 +373,18 @@ const systemChips = computed(() => {
 		},
 		{ label: '队列', value: queue.available ? String(queue.pending) : '-' },
 		{ label: '容量', value: `${pressure.active}/${pressure.globalLimit}` },
+		{
+			label: '拉图槽',
+			value: metrics.imageFetch.available
+				? `${metrics.imageFetch.active}/${metrics.imageFetch.effectiveLimit}`
+				: '-',
+		},
+		{
+			label: '10秒回图',
+			value: metrics.imageFetch.available
+				? `${metrics.imageFetch.forecastImageUnits}/${metrics.imageFetch.forecastCapacity}`
+				: '-',
+		},
 		{ label: 'Worker', value: `${queue.onlineWorkers} 在线` },
 		{ label: '运行', value: formatUptime(metrics.process.uptimeSeconds) },
 		{

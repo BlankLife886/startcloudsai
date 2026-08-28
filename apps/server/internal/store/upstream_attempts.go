@@ -50,6 +50,38 @@ type UpstreamAttemptRoute struct {
 	MaxConcurrency  int
 }
 
+// CallbackImagePollRoutes returns only active OpenAI-compatible routes for a
+// live platform task. The upstream currently reuses the platform UUID as its
+// client task ID, while upstream_task_ids preserves compatibility with a
+// provider that returns a different canonical ID.
+func CallbackImagePollRoutes(ctx context.Context, q Q, taskID uuid.UUID) ([]AsyncPendingRoute, error) {
+	rows, err := q.Query(ctx, `SELECT DISTINCT
+		attempt.provider_id, attempt.route_id, attempt.route_key
+		FROM task_upstream_attempts attempt
+		JOIN tasks task ON task.id = attempt.task_id
+		WHERE attempt.adapter = 'openai'
+		  AND attempt.status IN ('submitting','pending')
+		  AND task.status IN ('queued','running')
+		  AND (attempt.task_id = $1
+		       OR attempt.upstream_task_ids @> jsonb_build_array($1::text))
+		ORDER BY attempt.route_key`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	routes := make([]AsyncPendingRoute, 0, 1)
+	for rows.Next() {
+		var route AsyncPendingRoute
+		if err := rows.Scan(&route.ProviderID, &route.RouteID, &route.RouteKey); err != nil {
+			return nil, err
+		}
+		if route.RouteKey != "" {
+			routes = append(routes, route)
+		}
+	}
+	return routes, rows.Err()
+}
+
 type claimedUpstreamAttempt struct {
 	ID                  uuid.UUID
 	TaskID              uuid.UUID

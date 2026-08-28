@@ -3,12 +3,14 @@
 package httpapi
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/auth"
 	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
@@ -68,6 +70,8 @@ type Server struct {
 	Metrics           *systemMetrics
 	LanjingPay        *lanjingpay.Client
 	limiterClosers    []func() error
+	c2aCallbackRoutes func(context.Context, uuid.UUID) ([]store.AsyncPendingRoute, error)
+	enqueueImagePoll  func(context.Context, string, string, string, int, time.Duration) error
 }
 
 func New(cfg *config.Config, st *store.Store, stg *storage.Storage, c2aClient *c2a.Client, queue *taskflow.Queue) (*Server, error) {
@@ -82,6 +86,14 @@ func New(cfg *config.Config, st *store.Store, stg *storage.Storage, c2aClient *c
 		RedeemLimiter:     auth.NewRedeemLimiter(),
 		PromptSync:        promptsync.New(st, cfg.AppEnv == "development"),
 		Metrics:           newSystemMetrics(time.Now()),
+	}
+	if st != nil {
+		s.c2aCallbackRoutes = func(ctx context.Context, taskID uuid.UUID) ([]store.AsyncPendingRoute, error) {
+			return store.CallbackImagePollRoutes(ctx, st.Pool, taskID)
+		}
+	}
+	if queue != nil {
+		s.enqueueImagePoll = queue.EnqueueImagePoll
 	}
 	if cfg.AppEnv == "production" {
 		login, err := auth.NewRedisLoginLimiter(cfg.RedisURL, "user-login", false)
@@ -144,6 +156,7 @@ func (s *Server) Router() *gin.Engine {
 	r.NoMethod(func(c *gin.Context) {
 		c.JSON(405, gin.H{"success": false, "code": "bad_request", "error": "Method Not Allowed"})
 	})
+	r.POST("/internal/c2a/image-task-events", s.c2aImageTaskEvent)
 
 	api := r.Group("/api/v1")
 

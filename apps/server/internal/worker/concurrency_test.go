@@ -120,6 +120,9 @@ func TestTaskDispatchBackoffSpreadsSaturatedQueue(t *testing.T) {
 	if got := taskDispatchBackoff("global_execution_limit", id); got < 15*time.Second || got > 30*time.Second {
 		t.Fatalf("global backoff = %s", got)
 	}
+	if got := taskDispatchBackoff("forecast_completion_pressure", id); got < 3*time.Second || got > 7*time.Second {
+		t.Fatalf("forecast backoff = %s", got)
+	}
 }
 
 func TestSelectExecutionCandidateAvoidsFailedProvider(t *testing.T) {
@@ -182,6 +185,9 @@ func TestImageFetchConcurrencyDefaultsAndClamps(t *testing.T) {
 	if err := settings.Set(ctx, st.Pool, "image_fetch_concurrency", json.RawMessage(`99`)); err != nil {
 		t.Fatal(err)
 	}
+	// Runtime settings are cached briefly so a completion burst does not query
+	// PostgreSQL once per image. Expire the cache to verify the next refresh.
+	w.imageFetchCeilingAt = time.Time{}
 	if got := w.imageFetchConcurrency(ctx); got != 32 {
 		t.Fatalf("clamped = %d, want 32", got)
 	}
