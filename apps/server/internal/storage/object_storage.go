@@ -11,13 +11,13 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 
 	appconfig "github.com/BlankLife886/startcloudsai/server/internal/config"
@@ -27,6 +27,8 @@ const (
 	objectReadAttempts             = 3
 	objectReadAttemptTimeout       = 30 * time.Second
 	objectPrefixReadAttemptTimeout = 7 * time.Second
+	objectDeleteConcurrency        = 8
+	objectDeleteErrorDetailLimit   = 8
 )
 
 func IsNotFound(err error) bool {
@@ -401,60 +403,76 @@ func (s *Storage) ListObjectsPage(ctx context.Context, prefix, startAfter string
 }
 
 func (s *Storage) DeleteKeys(ctx context.Context, keys []string) error {
-	for i := 0; i < len(keys); i += 1000 {
-		end := i + 1000
-		if end > len(keys) {
-			end = len(keys)
-		}
-		objects := make([]types.ObjectIdentifier, 0, end-i)
-		for _, k := range keys[i:end] {
-			objects = append(objects, types.ObjectIdentifier{Key: aws.String(k)})
-		}
-		out, err := s.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
-			Bucket: aws.String(s.bucket),
-			Delete: &types.Delete{Objects: objects, Quiet: aws.Bool(true)},
-		})
-		if err != nil {
-			return err
-		}
-		if err := summarizeDeleteObjectErrors(out.Errors); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func summarizeDeleteObjectErrors(items []types.Error) error {
-	if len(items) == 0 {
+	if len(keys) == 0 {
 		return nil
 	}
-	failures := make([]string, 0, len(items))
-	for _, item := range items {
-		code := strings.TrimSpace(aws.ToString(item.Code))
-		if strings.EqualFold(code, "NoSuchKey") || strings.EqualFold(code, "NotFound") {
-			continue
-		}
-		key := strings.TrimSpace(aws.ToString(item.Key))
-		message := strings.TrimSpace(aws.ToString(item.Message))
-		entry := code
-		if entry == "" {
-			entry = "unknown error"
-		}
-		if key != "" {
-			entry += " for " + key
-		}
-		if message != "" {
-			entry += ": " + message
-		}
-		failures = append(failures, entry)
-		if len(failures) >= 8 {
-			break
+
+	workerCount := objectDeleteConcurrency
+	if len(keys) < workerCount {
+		workerCount = len(keys)
+	}
+	jobs := make(chan string)
+	var workers sync.WaitGroup
+	var failuresMu sync.Mutex
+	failures := make([]error, 0)
+
+	workers.Add(workerCount)
+	for range workerCount {
+		go func() {
+			defer workers.Done()
+			for key := range jobs {
+				_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+					Bucket: aws.String(s.bucket),
+					Key:    aws.String(key),
+				})
+				if err == nil || IsNotFound(err) {
+					continue
+				}
+				failuresMu.Lock()
+				failures = append(failures, err)
+				failuresMu.Unlock()
+			}
+		}()
+	}
+
+	for _, key := range keys {
+		select {
+		case jobs <- key:
+		case <-ctx.Done():
+			close(jobs)
+			workers.Wait()
+			return ctx.Err()
 		}
 	}
+	close(jobs)
+	workers.Wait()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return summarizeDeleteErrors(failures)
+}
+
+func summarizeDeleteErrors(failures []error) error {
 	if len(failures) == 0 {
 		return nil
 	}
-	return fmt.Errorf("object deletion failed: %s", strings.Join(failures, "; "))
+	details := make([]string, 0, min(len(failures), objectDeleteErrorDetailLimit))
+	for _, err := range failures {
+		detail := "request failed"
+		var apiErr smithy.APIError
+		if errors.As(err, &apiErr) && strings.TrimSpace(apiErr.ErrorCode()) != "" {
+			detail = apiErr.ErrorCode()
+		}
+		var statusErr interface{ HTTPStatusCode() int }
+		if errors.As(err, &statusErr) {
+			detail += fmt.Sprintf(" (HTTP %d)", statusErr.HTTPStatusCode())
+		}
+		details = append(details, detail)
+		if len(details) >= objectDeleteErrorDetailLimit {
+			break
+		}
+	}
+	return fmt.Errorf("object deletion failed for %d object(s): %s", len(failures), strings.Join(details, "; "))
 }
 
 // PresignGet 生成短期可读 URL（本地签名计算，不发网络请求）。
