@@ -72,6 +72,8 @@ type Config struct {
 	ObjectStorageUsePathStyle      bool
 	ObjectStoragePresignExpireSecs int
 	ObjectStorageCDNBaseURL        string
+	ObjectStorageCDNAuthKey        string
+	ObjectStorageCDNAuthTTLSecs    int
 
 	WorkerConcurrency      int
 	WorkerPollConcurrency  int
@@ -239,6 +241,8 @@ func Load() *Config {
 		ObjectStorageUsePathStyle:      getenvBoolWithLegacy("OBJECT_STORAGE_USE_PATH_STYLE", "R2_USE_PATH_STYLE", legacyR2Configured),
 		ObjectStoragePresignExpireSecs: getenvInt("OBJECT_STORAGE_PRESIGN_EXPIRE_SECS", getenvInt("R2_PRESIGN_EXPIRE_SECS", 3600)),
 		ObjectStorageCDNBaseURL:        strings.TrimRight(strings.TrimSpace(getenv("OBJECT_STORAGE_CDN_BASE_URL", "")), "/"),
+		ObjectStorageCDNAuthKey:        strings.TrimSpace(getenv("OBJECT_STORAGE_CDN_AUTH_KEY", "")),
+		ObjectStorageCDNAuthTTLSecs:    getenvInt("OBJECT_STORAGE_CDN_AUTH_TTL_SECS", 900),
 
 		WorkerConcurrency:      getenvInt("WORKER_CONCURRENCY", 32),
 		WorkerPollConcurrency:  getenvInt("WORKER_POLL_CONCURRENCY", 0),

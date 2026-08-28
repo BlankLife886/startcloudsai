@@ -584,7 +584,16 @@ func (s *Server) compressCoverImage(ctx context.Context, data []byte, ext, conte
 // isImmutableObjectKey 上传与任务产物 key 都带 UUID 且从不覆盖写，内容不可变，
 // key 本身即内容指纹。后台可覆盖上传的素材（prompt-covers、ecommerce-* 等）不算。
 func isImmutableObjectKey(key string) bool {
-	return strings.HasPrefix(key, "tasks/") || strings.HasPrefix(key, "uploads/")
+	if strings.HasPrefix(key, "tasks/") || strings.HasPrefix(key, "uploads/") ||
+		strings.HasPrefix(key, "announcement-images/") || strings.HasPrefix(key, "canvas-template-assets/") {
+		return true
+	}
+	for _, prefix := range []string{"prompt-covers/", "canvas-template-covers/", "ecommerce-catalog/"} {
+		if remainder := strings.TrimPrefix(key, prefix); remainder != key && strings.Contains(remainder, "/") {
+			return true
+		}
+	}
+	return false
 }
 
 func objectKeyETag(key string) string {
@@ -592,13 +601,25 @@ func objectKeyETag(key string) string {
 	return `"` + hex.EncodeToString(sum[:16]) + `"`
 }
 
-// serveStoredObject 在权限校验完成后转发对象内容。
-// 受保护文件统一由应用服务转发。此前这里 302 到 R2 的预签名地址，
-// 会把“用户是否能直连对象存储”变成图片能否展示的额外前提；在代理、
-// 企业网络或部分移动网络下，会出现任务已成功、R2 也有文件，但页面一直
-// 空白的情况。服务端本身已经能访问对象存储（上传也走同一连接），因此在完成
-// 权限校验后由服务端读取并返回，交付链路会更稳定。
+// serveStoredObject 在权限校验完成后交付对象内容。配置私有 CDN 鉴权时，
+// 普通查看请求重定向到短期签名地址；下载、排障请求和未配置 CDN 的部署仍由
+// 应用服务代理，保证稳定的 /files URL 不变。
 func (s *Server) serveStoredObject(c *gin.Context, key string) {
+	// The stable /files URL remains the authorization boundary. Once access is
+	// approved, ordinary views can move the payload to private CDN delivery.
+	// Downloads stay proxied so Content-Disposition and the requested filename
+	// remain under application control.
+	if c.Query("download") != "1" && c.Query("origin") != "1" {
+		if target, ttl, ok := s.Storage.SignedCDNURL(key, time.Now().UTC()); ok {
+			maxAge := int(min(ttl/2, 5*time.Minute).Seconds())
+			maxAge = max(maxAge, 1)
+			c.Header("Cache-Control", fmt.Sprintf("private, max-age=%d", maxAge))
+			c.Header("Vary", "Cookie")
+			c.Header("X-Storage-Delivery", "cdn")
+			c.Redirect(http.StatusFound, target)
+			return
+		}
+	}
 	immutable := isImmutableObjectKey(key)
 	cacheControl := "private, max-age=3600"
 	etag := ""
@@ -614,7 +635,7 @@ func (s *Server) serveStoredObject(c *gin.Context, key string) {
 			c.Header("ETag", etag)
 		}
 	}
-	// 内容不可变时 If-None-Match 命中直接 304，无需读 R2。
+	// 内容不可变时 If-None-Match 命中直接 304，无需读取对象存储。
 	if etag != "" {
 		if match := c.GetHeader("If-None-Match"); match != "" && strings.Contains(match, etag) {
 			writeCacheHeaders()
@@ -650,7 +671,7 @@ func (s *Server) serveStoredObject(c *gin.Context, key string) {
 	writeCacheHeaders()
 	// 对象存储首字节耗时暴露给浏览器 DevTools（Timing 面板），便于区分
 	// “对象存储慢”还是“传输/排队慢”。
-	c.Header("Server-Timing", fmt.Sprintf("r2;dur=%d", openMs))
+	c.Header("Server-Timing", fmt.Sprintf("object_storage;dur=%d", openMs))
 	status := http.StatusOK
 	if stream.ContentRange != "" {
 		status = http.StatusPartialContent
@@ -658,6 +679,6 @@ func (s *Server) serveStoredObject(c *gin.Context, key string) {
 	}
 	c.DataFromReader(status, stream.ContentLength, contentType, stream.Body, nil)
 	if total := time.Since(openStartedAt); total > time.Second {
-		log.Printf("slow file serve key=%s r2_open_ms=%d total_ms=%d bytes=%d", key, openMs, total.Milliseconds(), stream.ContentLength)
+		log.Printf("slow file serve key=%s object_storage_open_ms=%d total_ms=%d bytes=%d", key, openMs, total.Milliseconds(), stream.ContentLength)
 	}
 }

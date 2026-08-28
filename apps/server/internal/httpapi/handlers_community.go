@@ -491,7 +491,7 @@ func (s *Server) adminCreatePromptFromSubmission(c *gin.Context, _ *store.User) 
 		Category: body.Category, Tags: body.Tags, GallerySubmissionID: &submissionID,
 		Sort: maxSort + 10, Active: active,
 	}
-	coverKey := fmt.Sprintf("prompt-covers/%s.%s", entry.ID, ext)
+	coverKey := fmt.Sprintf("prompt-covers/%s/%s.%s", entry.ID, uuid.NewString(), ext)
 	if err := s.Storage.UploadBytes(ctx, coverKey, data, contentType); err != nil {
 		fail(c, err)
 		return
@@ -816,7 +816,7 @@ func (s *Server) adminUploadPromptCover(c *gin.Context, _ *store.User) {
 		fail(c, apperr.E("unsupported_file", "图片尺寸过大或内容无法读取", 400))
 		return
 	}
-	newKey := fmt.Sprintf("prompt-covers/%s.%s", entry.ID, ext)
+	newKey := fmt.Sprintf("prompt-covers/%s/%s.%s", entry.ID, uuid.NewString(), ext)
 	oldKey := ""
 	if entry.CoverKey != nil {
 		oldKey = *entry.CoverKey

@@ -190,7 +190,7 @@ func (s *Server) adminCreateTryonCatalog(c *gin.Context, _ *store.User) {
 		Sort:    sortVal,
 		Active:  active,
 	}
-	item.ImageKey = fmt.Sprintf("ecommerce-catalog/%s.%s", item.ID, ext)
+	item.ImageKey = fmt.Sprintf("ecommerce-catalog/%s/%s.%s", item.ID, uuid.NewString(), ext)
 	if err := s.Storage.UploadBytes(ctx, item.ImageKey, data, contentType); err != nil {
 		fail(c, err)
 		return
@@ -321,7 +321,7 @@ func (s *Server) adminUploadTryonCatalogImage(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	newKey := fmt.Sprintf("ecommerce-catalog/%s.%s", item.ID, ext)
+	newKey := fmt.Sprintf("ecommerce-catalog/%s/%s.%s", item.ID, uuid.NewString(), ext)
 	oldKey := item.ImageKey
 	if err := s.Storage.UploadBytes(ctx, newKey, data, contentType); err != nil {
 		fail(c, err)

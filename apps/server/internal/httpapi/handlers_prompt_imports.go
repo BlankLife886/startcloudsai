@@ -240,7 +240,7 @@ func (s *Server) replacePromptImportItemCover(ctx context.Context, batchID, item
 	if current.PublishedAt != nil {
 		return nil, apperr.E("conflict", "该审核项已经加入提示词库", 409)
 	}
-	newKey := fmt.Sprintf("prompt-covers/import-%s.%s", itemID, ext)
+	newKey := fmt.Sprintf("prompt-covers/import-%s/%s.%s", itemID, uuid.NewString(), ext)
 	if err := s.Storage.UploadBytes(ctx, newKey, raw, contentType); err != nil {
 		return nil, err
 	}

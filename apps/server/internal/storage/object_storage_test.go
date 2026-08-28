@@ -2,6 +2,8 @@ package storage
 
 import (
 	"context"
+	"crypto/md5" // #nosec G501 -- test mirrors Alibaba CDN Type A.
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -89,9 +91,29 @@ func TestValidateConfigAcceptsOSS(t *testing.T) {
 		ObjectStorageBucket:            "starcloudsai",
 		ObjectStoragePresignExpireSecs: 3600,
 		ObjectStorageCDNBaseURL:        "https://media.example.com/assets",
+		ObjectStorageCDNAuthKey:        "test-cdn-auth-key",
+		ObjectStorageCDNAuthTTLSecs:    900,
 	}
 	if err := ValidateConfig(cfg); err != nil {
 		t.Fatalf("valid OSS configuration rejected: %v", err)
+	}
+}
+
+func TestValidateConfigRejectsIncompleteCDNAuth(t *testing.T) {
+	base := appconfig.Config{
+		ObjectStorageEndpoint: "https://s3.example.com", ObjectStorageRegion: "ap-northeast-1",
+		ObjectStorageAccessKeyID: "key", ObjectStorageSecretAccessKey: "secret",
+		ObjectStorageBucket: "bucket", ObjectStoragePresignExpireSecs: 900,
+	}
+	base.ObjectStorageCDNAuthKey = "test-auth-key"
+	base.ObjectStorageCDNAuthTTLSecs = 900
+	if err := ValidateConfig(&base); err == nil || !strings.Contains(err.Error(), "CDN_BASE_URL") {
+		t.Fatalf("missing CDN base URL error = %v", err)
+	}
+	base.ObjectStorageCDNBaseURL = "https://media.example.com"
+	base.ObjectStorageCDNAuthTTLSecs = 30
+	if err := ValidateConfig(&base); err == nil || !strings.Contains(err.Error(), "TTL") {
+		t.Fatalf("invalid CDN TTL error = %v", err)
 	}
 }
 
@@ -144,6 +166,9 @@ func TestOSSUploadDoesNotUseUnsupportedAWSChunkedTrailer(t *testing.T) {
 		if got := r.Header.Get("X-Amz-Sdk-Checksum-Algorithm"); got != "" {
 			t.Fatalf("optional checksum algorithm sent: %q", got)
 		}
+		if got := r.Header.Get("Cache-Control"); got != "public, max-age=31536000, immutable" {
+			t.Fatalf("Cache-Control = %q", got)
+		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Fatalf("read upload body: %v", err)
@@ -169,6 +194,26 @@ func TestOSSUploadDoesNotUseUnsupportedAWSChunkedTrailer(t *testing.T) {
 	}
 	if err := storage.UploadBytes(context.Background(), "tasks/test.png", payload, "image/png"); err != nil {
 		t.Fatalf("UploadBytes() error = %v", err)
+	}
+}
+
+func TestObjectUploadCacheControlDistinguishesVersionedKeys(t *testing.T) {
+	tests := []struct {
+		key  string
+		want string
+	}{
+		{key: "tasks/user/task/original/result.png", want: "public, max-age=31536000, immutable"},
+		{key: "prompt-covers/item/version.png", want: "public, max-age=31536000, immutable"},
+		{key: "canvas-template-covers/item/version.webp", want: "public, max-age=31536000, immutable"},
+		{key: "ecommerce-catalog/item/version.jpg", want: "public, max-age=31536000, immutable"},
+		{key: "prompt-covers/item.png", want: "private, max-age=300"},
+		{key: "canvas-template-covers/item.webp", want: "private, max-age=300"},
+		{key: "ecommerce-catalog/item.jpg", want: "private, max-age=300"},
+	}
+	for _, test := range tests {
+		if got := objectUploadCacheControl(test.key); got != test.want {
+			t.Errorf("objectUploadCacheControl(%q) = %q, want %q", test.key, got, test.want)
+		}
 	}
 }
 
@@ -202,6 +247,39 @@ func TestPublicURL(t *testing.T) {
 	}
 	if got, ok := (&Storage{}).PublicURL("private/input.png"); ok || got != "" {
 		t.Fatalf("unconfigured CDN returned %q, %v", got, ok)
+	}
+}
+
+func TestSignedCDNURLUsesAlibabaTypeA(t *testing.T) {
+	base, err := url.Parse("https://media.example.com/assets")
+	if err != nil {
+		t.Fatal(err)
+	}
+	storage := &Storage{
+		cdnBaseURL: base,
+		cdnAuthKey: "private-cdn-key",
+		cdnAuthTTL: 15 * time.Minute,
+	}
+	now := time.Unix(1_700_000_000, 0).UTC()
+	raw, ttl, ok := storage.SignedCDNURL("tasks/user 1/result #1.png", now)
+	if !ok || ttl != 15*time.Minute {
+		t.Fatalf("SignedCDNURL() ok=%v ttl=%s", ok, ttl)
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Host != "media.example.com" || parsed.EscapedPath() != "/assets/tasks/user%201/result%20%231.png" {
+		t.Fatalf("signed URL = %s", raw)
+	}
+	canonical := "/assets/tasks/user%201/result%20%231.png-1700000000-0-0-private-cdn-key"
+	digest := md5.Sum([]byte(canonical)) // #nosec G401 -- protocol fixture.
+	wantAuth := "1700000000-0-0-" + hex.EncodeToString(digest[:])
+	if got := parsed.Query().Get("auth_key"); got != wantAuth {
+		t.Fatalf("auth_key = %q, want %q", got, wantAuth)
+	}
+	if _, _, ok := (&Storage{cdnBaseURL: base}).SignedCDNURL("tasks/a.png", now); ok {
+		t.Fatal("unsigned CDN configuration must not produce a private delivery URL")
 	}
 }
 

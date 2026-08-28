@@ -4,6 +4,8 @@ package storage
 import (
 	"bytes"
 	"context"
+	"crypto/md5" // #nosec G501 -- Alibaba CDN Type A requires MD5 by protocol.
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -56,6 +58,8 @@ type Storage struct {
 	bucket        string
 	presignExpiry time.Duration
 	cdnBaseURL    *url.URL
+	cdnAuthKey    string
+	cdnAuthTTL    time.Duration
 }
 
 type limitedReadCloser struct {
@@ -109,6 +113,17 @@ func ValidateConfig(cfg *appconfig.Config) error {
 			return errors.New("OBJECT_STORAGE_CDN_BASE_URL 必须是不含查询参数和片段的 HTTPS URL")
 		}
 	}
+	if cfg.ObjectStorageCDNAuthKey != "" {
+		if strings.TrimSpace(cfg.ObjectStorageCDNBaseURL) == "" {
+			return errors.New("OBJECT_STORAGE_CDN_AUTH_KEY 需要同时配置 OBJECT_STORAGE_CDN_BASE_URL")
+		}
+		if len([]byte(cfg.ObjectStorageCDNAuthKey)) < 8 || len([]byte(cfg.ObjectStorageCDNAuthKey)) > 128 {
+			return errors.New("OBJECT_STORAGE_CDN_AUTH_KEY 须为 8-128 字节")
+		}
+		if cfg.ObjectStorageCDNAuthTTLSecs < 60 || cfg.ObjectStorageCDNAuthTTLSecs > 86400 {
+			return errors.New("OBJECT_STORAGE_CDN_AUTH_TTL_SECS 须在 60-86400 之间")
+		}
+	}
 	return nil
 }
 
@@ -154,17 +169,66 @@ func New(cfg *appconfig.Config) (*Storage, error) {
 		bucket:        cfg.ObjectStorageBucket,
 		presignExpiry: time.Duration(cfg.ObjectStoragePresignExpireSecs) * time.Second,
 		cdnBaseURL:    cdnBaseURL,
+		cdnAuthKey:    strings.TrimSpace(cfg.ObjectStorageCDNAuthKey),
+		cdnAuthTTL:    time.Duration(cfg.ObjectStorageCDNAuthTTLSecs) * time.Second,
 	}, nil
+}
+
+func immutableDeliveryObjectKey(key string) bool {
+	key = strings.TrimLeft(strings.TrimSpace(key), "/")
+	if strings.HasPrefix(key, "tasks/") || strings.HasPrefix(key, "uploads/") ||
+		strings.HasPrefix(key, "announcement-images/") || strings.HasPrefix(key, "canvas-template-assets/") {
+		return true
+	}
+	for _, prefix := range []string{"prompt-covers/", "canvas-template-covers/", "ecommerce-catalog/"} {
+		if remainder := strings.TrimPrefix(key, prefix); remainder != key && strings.Contains(remainder, "/") {
+			return true
+		}
+	}
+	return false
+}
+
+func objectUploadCacheControl(key string) string {
+	if immutableDeliveryObjectKey(key) {
+		return "public, max-age=31536000, immutable"
+	}
+	return "private, max-age=300"
 }
 
 func (s *Storage) UploadBytes(ctx context.Context, key string, data []byte, contentType string) error {
 	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket:      aws.String(s.bucket),
-		Key:         aws.String(key),
-		Body:        bytes.NewReader(data),
-		ContentType: aws.String(contentType),
+		Bucket:       aws.String(s.bucket),
+		Key:          aws.String(key),
+		Body:         bytes.NewReader(data),
+		ContentType:  aws.String(contentType),
+		CacheControl: aws.String(objectUploadCacheControl(key)),
 	})
 	return err
+}
+
+// SignedCDNURL returns an Alibaba CDN Type A authenticated URL. Timestamp is
+// the URL creation time; the CDN console validity period must match cdnAuthTTL.
+// The signature is calculated locally and never sends the auth key upstream.
+func (s *Storage) SignedCDNURL(key string, now time.Time) (string, time.Duration, bool) {
+	if s == nil || s.cdnBaseURL == nil || s.cdnAuthKey == "" || s.cdnAuthTTL <= 0 {
+		return "", 0, false
+	}
+	key = strings.TrimLeft(strings.TrimSpace(key), "/")
+	if key == "" || strings.Contains(key, "..") || strings.Contains(key, "\\") {
+		return "", 0, false
+	}
+	result := *s.cdnBaseURL
+	result.RawPath = ""
+	result.Path = strings.TrimRight(result.Path, "/") + "/" + key
+	timestamp := now.UTC().Unix()
+	const random, uid = "0", "0"
+	canonical := fmt.Sprintf("%s-%d-%s-%s-%s", result.EscapedPath(), timestamp, random, uid, s.cdnAuthKey)
+	digest := md5.Sum([]byte(canonical)) // #nosec G401 -- mandated by Alibaba CDN Type A.
+	authKey := fmt.Sprintf("%d-%s-%s-%s", timestamp, random, uid, hex.EncodeToString(digest[:]))
+	query := result.Query()
+	query.Set("auth_key", authKey)
+	result.RawQuery = query.Encode()
+	return result.String(), s.cdnAuthTTL, true
 }
 
 func (s *Storage) GetBytes(ctx context.Context, key string) ([]byte, error) {

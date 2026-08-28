@@ -207,6 +207,8 @@ OBJECT_STORAGE_BUCKET=starcloudsai
 OBJECT_STORAGE_USE_PATH_STYLE=false
 OBJECT_STORAGE_PRESIGN_EXPIRE_SECS=3600
 OBJECT_STORAGE_CDN_BASE_URL=https://<已配置私有 OSS 回源鉴权的 CDN 域名>
+OBJECT_STORAGE_CDN_AUTH_KEY=<阿里云 CDN Type A 主密钥>
+OBJECT_STORAGE_CDN_AUTH_TTL_SECS=900
 
 SMTP_ADDR=<SMTP服务器:端口>
 SMTP_USER=<完整邮箱地址>
@@ -232,12 +234,33 @@ GATEWAY_PORT=8080
 - `C2A_BASE_URL` 填 ChatGPT2API 根地址，不加后台路径。
 - `SUB2API_BASE_URL` 填 Sub2API 根地址，去掉 `/admin/accounts`。
 - 对象存储未配置时，上传和生成图片无法正常持久化。ECS 与 OSS bucket 必须同为香港地域才能使用 internal endpoint。
+- CDN 三项配置必须同时启用；`OBJECT_STORAGE_CDN_AUTH_KEY` 只放服务器 `.env`，不得写入后台设置、前端代码或接口响应。未配置密钥时 `/api/v1/files/*` 自动保持 Go 服务代理，不影响旧部署。
 - 生产环境未配置 SMTP 时，用户无法获取账号验证码。
 - `WORKER_CONCURRENCY=32` 是 Worker 启动时的物理槽位，不代表同时执行 32 个图片任务。图片实际并发在后台“全站同时执行”中调整，2 核 2 GB 服务器建议从 4 开始逐级压测。
 - `GOMEMLIMIT` 必须低于容器硬上限，数据库连接池只有在后台等待指标持续增长后才应调大。指标说明和 pprof/PGO 操作见 [Go 性能与实时可观测性](GO_PERFORMANCE_OBSERVABILITY.md)。
 - 不要把 `.env`、密钥或完整日志发布到 GitHub、聊天截图或工单。
 
-### 3.4 配置邮箱验证码
+### 3.4 配置私有图片 CDN
+
+OSS bucket 保持私有。在阿里云 CDN 中把源站设为该 OSS bucket，并开启“阿里云 OSS
+私有 Bucket 回源”；不要把 OSS 的预签名参数带到 CDN 地址。CDN 域名必须启用 HTTPS，
+然后开启“URL 鉴权”的 Type A 模式：
+
+1. CDN 控制台的 Type A 主密钥与 `OBJECT_STORAGE_CDN_AUTH_KEY` 完全一致。
+2. CDN 控制台的鉴权有效时长与 `OBJECT_STORAGE_CDN_AUTH_TTL_SECS` 一致，默认 900 秒。
+3. 缓存参数规则不能让每个 `auth_key` 形成独立缓存副本；配置查询参数过滤时忽略 `auth_key`，缓存按对象路径命中，但仍保留 CDN 节点的 URL 鉴权。
+4. `tasks/`、`uploads/`、`announcement-images/`、`canvas-template-assets/` 及带 UUID 子目录的版本化封面/电商素材可长期缓存。旧固定 key 只设短缓存，避免替换后仍看到旧图。
+5. 普通查看先通过 `/api/v1/files/{key}` 完成用户权限校验，再返回短期 CDN 地址；`?download=1` 保持源站代理和下载文件名，排障时可临时使用 `?origin=1` 强制源站代理。
+
+部署后分别用无权限账号、文件属主和管理员验证：无权限请求必须为 `401/404`，有权限的
+普通查看应为 `302` 且响应头包含 `X-Storage-Delivery: cdn`，下载请求不得重定向。
+
+生产 CDN 域名 `img.starcloudisai.com` 当前使用手动 DNS 验证签发并自定义上传的
+Let's Encrypt 证书，证书到期时间为 `2026-11-26`。应在 `2026-11-01` 前重新签发并在
+阿里云 CDN HTTPS 配置中替换证书和私钥；在接入 DNS API 与 CDN API 自动续期前，不得
+假设宝塔或 CDN 会自动更新这张证书。
+
+### 3.5 配置邮箱验证码
 
 用户端仅支持 Gmail、Googlemail、QQ 邮箱验证码认证，首次验证会自动创建账号。生产环境必须在 `.env` 配置可用的 SMTP 发件账号：
 
@@ -270,7 +293,7 @@ awk -F= '/^APP_SECRET=/{gsub(/\r/,"",$2); print "APP_SECRET长度=" length($2)}'
 
 正常应输出 `APP_SECRET长度=64`。
 
-### 3.5 启动
+### 3.6 启动
 
 ```bash
 cd /www/wwwroot/startcloudsai
@@ -296,7 +319,7 @@ curl http://127.0.0.1:8080/api/v1/health
 curl -I http://127.0.0.1:8080/
 ```
 
-### 3.6 首次数据库密码错误
+### 3.7 首次数据库密码错误
 
 如果日志出现：
 

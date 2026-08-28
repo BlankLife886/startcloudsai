@@ -7,6 +7,10 @@ import (
 	"fmt"
 	"image"
 	"image/png"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -170,5 +174,126 @@ func TestInspectUserUploadImageData(t *testing.T) {
 		if _, _, err := inspectUserUploadImageData(data); err == nil {
 			t.Fatalf("unsupported or truncated data %q was accepted", data)
 		}
+	}
+}
+
+func TestGetFileAuthorizesBeforeCDNRedirect(t *testing.T) {
+	t.Setenv("OBJECT_STORAGE_CDN_BASE_URL", "https://media.example.com/assets")
+	t.Setenv("OBJECT_STORAGE_CDN_AUTH_KEY", "private-cdn-auth-key")
+	t.Setenv("OBJECT_STORAGE_CDN_AUTH_TTL_SECS", "900")
+
+	env := newCommunityEnv(t)
+	owner, ownerToken := env.newUserSession(t, "user")
+	_, otherToken := env.newUserSession(t, "user")
+	key := "tasks/" + owner.ID.String() + "/task/original/result image.png"
+	path := "/api/v1/files/" + strings.ReplaceAll(key, " ", "%20")
+
+	unauthenticated := env.do(t, http.MethodGet, path, nil, "")
+	if unauthenticated.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous private file status = %d, want 401; body=%s", unauthenticated.Code, unauthenticated.Body.String())
+	}
+	if location := unauthenticated.Header().Get("Location"); location != "" {
+		t.Fatalf("anonymous private file leaked CDN redirect %q", location)
+	}
+
+	foreign := env.do(t, http.MethodGet, path, nil, otherToken)
+	if foreign.Code != http.StatusNotFound {
+		t.Fatalf("foreign private file status = %d, want 404; body=%s", foreign.Code, foreign.Body.String())
+	}
+	if location := foreign.Header().Get("Location"); location != "" {
+		t.Fatalf("foreign private file leaked CDN redirect %q", location)
+	}
+
+	owned := env.do(t, http.MethodGet, path, nil, ownerToken)
+	if owned.Code != http.StatusFound {
+		t.Fatalf("owned private file status = %d, want 302; body=%s", owned.Code, owned.Body.String())
+	}
+	assertCDNRedirect(t, owned, "/assets/"+key)
+
+	public := env.do(t, http.MethodGet, "/api/v1/files/prompt-covers/item/cover.png", nil, "")
+	if public.Code != http.StatusFound {
+		t.Fatalf("public cover status = %d, want 302; body=%s", public.Code, public.Body.String())
+	}
+	assertCDNRedirect(t, public, "/assets/prompt-covers/item/cover.png")
+}
+
+func TestGetFileDownloadAndOriginStayProxied(t *testing.T) {
+	t.Setenv("OBJECT_STORAGE_CDN_BASE_URL", "https://media.example.com")
+	t.Setenv("OBJECT_STORAGE_CDN_AUTH_KEY", "private-cdn-auth-key")
+	t.Setenv("OBJECT_STORAGE_CDN_AUTH_TTL_SECS", "900")
+
+	env := newCommunityEnv(t)
+	owner, token := env.newUserSession(t, "user")
+	key := "tasks/" + owner.ID.String() + "/task/original/result.png"
+	etag := objectKeyETag(key)
+
+	tests := []struct {
+		name            string
+		query           string
+		wantDisposition bool
+	}{
+		{name: "download", query: "?download=1&name=custom.png", wantDisposition: true},
+		{name: "forced origin", query: "?origin=1"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/files/"+key+test.query, nil)
+			req.Header.Set("If-None-Match", etag)
+			req.AddCookie(&http.Cookie{Name: env.cfg.SessionCookieName, Value: token})
+			response := httptest.NewRecorder()
+			env.engine.ServeHTTP(response, req)
+
+			if response.Code != http.StatusNotModified {
+				t.Fatalf("status = %d, want 304; body=%s", response.Code, response.Body.String())
+			}
+			if location := response.Header().Get("Location"); location != "" {
+				t.Fatalf("proxied request redirected to %q", location)
+			}
+			if delivery := response.Header().Get("X-Storage-Delivery"); delivery != "" {
+				t.Fatalf("proxied request delivery = %q", delivery)
+			}
+			if disposition := response.Header().Get("Content-Disposition"); test.wantDisposition != (disposition != "") {
+				t.Fatalf("Content-Disposition = %q, expected presence %v", disposition, test.wantDisposition)
+			}
+		})
+	}
+}
+
+func TestGetFileWithoutCDNAuthKeepsOriginDelivery(t *testing.T) {
+	t.Setenv("OBJECT_STORAGE_CDN_BASE_URL", "https://media.example.com")
+	t.Setenv("OBJECT_STORAGE_CDN_AUTH_KEY", "")
+
+	env := newCommunityEnv(t)
+	owner, token := env.newUserSession(t, "user")
+	key := "tasks/" + owner.ID.String() + "/task/original/result.png"
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/files/"+key, nil)
+	req.Header.Set("If-None-Match", objectKeyETag(key))
+	req.AddCookie(&http.Cookie{Name: env.cfg.SessionCookieName, Value: token})
+	response := httptest.NewRecorder()
+	env.engine.ServeHTTP(response, req)
+
+	if response.Code != http.StatusNotModified {
+		t.Fatalf("status = %d, want 304; body=%s", response.Code, response.Body.String())
+	}
+	if location := response.Header().Get("Location"); location != "" {
+		t.Fatalf("unsigned CDN configuration redirected to %q", location)
+	}
+}
+
+func assertCDNRedirect(t *testing.T, response *httptest.ResponseRecorder, wantPath string) {
+	t.Helper()
+	location := response.Header().Get("Location")
+	parsed, err := url.Parse(location)
+	if err != nil {
+		t.Fatalf("parse redirect %q: %v", location, err)
+	}
+	if parsed.Host != "media.example.com" || parsed.Path != wantPath {
+		t.Fatalf("redirect location = %q, want host media.example.com path %q", location, wantPath)
+	}
+	if authKey := parsed.Query().Get("auth_key"); authKey == "" || len(strings.Split(authKey, "-")) != 4 {
+		t.Fatalf("redirect auth_key = %q", authKey)
+	}
+	if response.Header().Get("X-Storage-Delivery") != "cdn" {
+		t.Fatalf("X-Storage-Delivery = %q, want cdn", response.Header().Get("X-Storage-Delivery"))
 	}
 }

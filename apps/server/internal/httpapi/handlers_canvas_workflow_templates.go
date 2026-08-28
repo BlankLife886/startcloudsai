@@ -883,7 +883,7 @@ func (s *Server) adminUploadCanvasWorkflowTemplateCover(c *gin.Context, _ *store
 		fail(c, apperr.E("unsupported_file", "图片尺寸过大或内容无法读取", 400))
 		return
 	}
-	newKey := fmt.Sprintf("canvas-template-covers/%s.%s", item.ID, ext)
+	newKey := fmt.Sprintf("canvas-template-covers/%s/%s.%s", item.ID, uuid.NewString(), ext)
 	oldKey := item.CoverKey
 	if err := s.Storage.UploadBytes(ctx, newKey, data, contentType); err != nil {
 		fail(c, err)

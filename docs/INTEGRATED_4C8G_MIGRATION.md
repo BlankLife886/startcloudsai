@@ -136,6 +136,9 @@ OBJECT_STORAGE_ENDPOINT=https://s3.oss-cn-hongkong-internal.aliyuncs.com
 OBJECT_STORAGE_PUBLIC_ENDPOINT=https://s3.oss-cn-hongkong.aliyuncs.com
 OBJECT_STORAGE_REGION=cn-hongkong
 OBJECT_STORAGE_USE_PATH_STYLE=false
+OBJECT_STORAGE_CDN_BASE_URL=https://<CDN 域名>
+OBJECT_STORAGE_CDN_AUTH_KEY=<CDN Type A 主密钥>
+OBJECT_STORAGE_CDN_AUTH_TTL_SECS=900
 ```
 
 本地或非香港 ECS 不能使用 internal endpoint，应使用：
@@ -150,9 +153,17 @@ OBJECT_STORAGE_PUBLIC_ENDPOINT=
 随机抽样 SHA-256。旧 R2 bucket 至少保留到 OSS 稳定运行和回滚窗口结束，期间只读，
 不能立即删除。
 
-CDN 回源应指向私有 OSS bucket 并开启私有回源授权。`OBJECT_STORAGE_CDN_BASE_URL`
-只是显式公开对象的地址基础，当前私有参考图和用户文件仍走站内鉴权/预签名 URL；
-在 URL 鉴权策略未验收前，不得把全部对象直接改成 CDN 公网 URL。
+CDN 回源应指向私有 OSS bucket 并开启“阿里云 OSS 私有 Bucket 回源”。普通图片请求
+始终先访问稳定的 `/api/v1/files/{key}`，由 Go 服务完成属主/公开权限校验；鉴权通过后
+才返回阿里云 CDN Type A 短期签名 URL。CDN Type A 主密钥和有效时长必须分别与
+`OBJECT_STORAGE_CDN_AUTH_KEY`、`OBJECT_STORAGE_CDN_AUTH_TTL_SECS` 一致，密钥只放
+服务器环境变量。缓存参数规则应忽略 `auth_key` 形成的差异并按对象路径命中，同时保留
+CDN URL 鉴权。版本化对象 key 使用长期缓存，旧固定 key 使用短缓存；更新图片依靠新 key，
+不调用 CDN 刷新 API。`?download=1` 和 `?origin=1` 继续由 Go 服务代理。
+
+未配置 CDN 鉴权密钥时自动保持原有对象代理，可先部署代码再单独启用 CDN。启用后必须
+验证无权限用户仍为 `401/404`、属主查看为 `302`、下载不重定向，并检查 CDN `X-Cache`
+从首次 `MISS` 转为后续 `HIT`，再扩大流量。
 
 ## 7. 生产切换
 
