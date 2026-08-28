@@ -39,6 +39,7 @@ services:
     networks: [data]
     mem_limit: 1280m
     cpus: 1.25
+    cpuset: "0-3"
     pids_limit: 250
 
   redis:
@@ -64,6 +65,7 @@ services:
     networks: [data]
     mem_limit: 384m
     cpus: 0.40
+    cpuset: "0-3"
     pids_limit: 120
 
   chatgpt2api:
@@ -97,6 +99,7 @@ services:
     networks: [data, upstream, outbound]
     mem_limit: 1536m
     cpus: 1.25
+    cpuset: "0-3"
     pids_limit: 500
 
   server:
@@ -125,6 +128,7 @@ services:
     networks: [data, api, outbound]
     mem_limit: 768m
     cpus: 0.75
+    cpuset: "0-3"
     pids_limit: 220
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8000/api/v1/health"]
@@ -168,6 +172,7 @@ services:
     networks: [data, upstream, outbound]
     mem_limit: 2304m
     cpus: 1.75
+    cpuset: "0-3"
     pids_limit: 400
 
   web:
@@ -178,6 +183,7 @@ services:
     networks: [frontend]
     mem_limit: 192m
     cpus: 0.25
+    cpuset: "0-3"
     pids_limit: 100
 
   admin:
@@ -186,6 +192,7 @@ services:
     networks: [frontend]
     mem_limit: 192m
     cpus: 0.25
+    cpuset: "0-3"
     pids_limit: 100
 
   gateway:
@@ -209,6 +216,7 @@ services:
       edge: {}
     mem_limit: 128m
     cpus: 0.15
+    cpuset: "0-3"
     pids_limit: 100
 
 volumes:
