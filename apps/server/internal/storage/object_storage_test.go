@@ -94,7 +94,8 @@ func TestValidateConfigAcceptsOSS(t *testing.T) {
 
 func TestOSSPresignUsesVirtualHostedBucketAndConfiguredRegion(t *testing.T) {
 	cfg := &appconfig.Config{
-		ObjectStorageEndpoint:          "https://s3.oss-cn-hongkong.aliyuncs.com",
+		ObjectStorageEndpoint:          "https://s3.oss-cn-hongkong-internal.aliyuncs.com",
+		ObjectStoragePublicEndpoint:    "https://s3.oss-cn-hongkong.aliyuncs.com",
 		ObjectStorageRegion:            "cn-hongkong",
 		ObjectStorageAccessKeyID:       "test-access-key",
 		ObjectStorageSecretAccessKey:   "test-secret-key",
@@ -122,6 +123,21 @@ func TestOSSPresignUsesVirtualHostedBucketAndConfiguredRegion(t *testing.T) {
 	credential := presigned.Query().Get("X-Amz-Credential")
 	if !strings.Contains(credential, "/cn-hongkong/s3/aws4_request") {
 		t.Fatalf("presigned credential uses wrong region: %q", credential)
+	}
+}
+
+func TestValidateConfigRejectsInvalidPublicEndpoint(t *testing.T) {
+	cfg := &appconfig.Config{
+		ObjectStorageEndpoint:          "https://s3.oss-cn-hongkong-internal.aliyuncs.com",
+		ObjectStoragePublicEndpoint:    "file:///private/oss",
+		ObjectStorageAccessKeyID:       "test-access-key",
+		ObjectStorageSecretAccessKey:   "test-secret-key",
+		ObjectStorageBucket:            "starcloudsai",
+		ObjectStoragePresignExpireSecs: 3600,
+	}
+	err := ValidateConfig(cfg)
+	if err == nil || !strings.Contains(err.Error(), "OBJECT_STORAGE_PUBLIC_ENDPOINT") {
+		t.Fatalf("unexpected validation error: %v", err)
 	}
 }
 

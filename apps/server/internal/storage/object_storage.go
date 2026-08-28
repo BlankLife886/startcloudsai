@@ -83,12 +83,20 @@ func ValidateConfig(cfg *appconfig.Config) error {
 		sort.Strings(missing)
 		return fmt.Errorf("对象存储配置不完整，缺少 %s", strings.Join(missing, "、"))
 	}
-	endpoint, err := url.Parse(cfg.ObjectStorageEndpoint)
-	if err != nil || endpoint.Scheme == "" || endpoint.Host == "" {
-		return errors.New("OBJECT_STORAGE_ENDPOINT 必须是完整的 HTTP(S) URL")
-	}
-	if endpoint.Scheme != "http" && endpoint.Scheme != "https" {
-		return errors.New("OBJECT_STORAGE_ENDPOINT 只支持 HTTP 或 HTTPS")
+	for name, value := range map[string]string{
+		"OBJECT_STORAGE_ENDPOINT":        cfg.ObjectStorageEndpoint,
+		"OBJECT_STORAGE_PUBLIC_ENDPOINT": cfg.ObjectStoragePublicEndpoint,
+	} {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		endpoint, err := url.Parse(value)
+		if err != nil || endpoint.Scheme == "" || endpoint.Host == "" {
+			return fmt.Errorf("%s 必须是完整的 HTTP(S) URL", name)
+		}
+		if endpoint.Scheme != "http" && endpoint.Scheme != "https" {
+			return fmt.Errorf("%s 只支持 HTTP 或 HTTPS", name)
+		}
 	}
 	if cfg.ObjectStoragePresignExpireSecs <= 0 {
 		return errors.New("OBJECT_STORAGE_PRESIGN_EXPIRE_SECS 必须为正整数")
@@ -120,13 +128,21 @@ func New(cfg *appconfig.Config) (*Storage, error) {
 		o.BaseEndpoint = aws.String(cfg.ObjectStorageEndpoint)
 		o.UsePathStyle = cfg.ObjectStorageUsePathStyle
 	})
+	presignClient := client
+	publicEndpoint := strings.TrimSpace(cfg.ObjectStoragePublicEndpoint)
+	if publicEndpoint != "" && publicEndpoint != strings.TrimRight(strings.TrimSpace(cfg.ObjectStorageEndpoint), "/") {
+		presignClient = s3.NewFromConfig(awsCfg, func(o *s3.Options) {
+			o.BaseEndpoint = aws.String(publicEndpoint)
+			o.UsePathStyle = cfg.ObjectStorageUsePathStyle
+		})
+	}
 	var cdnBaseURL *url.URL
 	if value := strings.TrimSpace(cfg.ObjectStorageCDNBaseURL); value != "" {
 		cdnBaseURL, _ = url.Parse(value)
 	}
 	return &Storage{
 		client:        client,
-		presigner:     s3.NewPresignClient(client),
+		presigner:     s3.NewPresignClient(presignClient),
 		bucket:        cfg.ObjectStorageBucket,
 		presignExpiry: time.Duration(cfg.ObjectStoragePresignExpireSecs) * time.Second,
 		cdnBaseURL:    cdnBaseURL,

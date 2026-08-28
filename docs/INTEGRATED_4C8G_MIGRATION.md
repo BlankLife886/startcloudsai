@@ -133,6 +133,7 @@ sh deploy/integrated/scripts/migrate-chatgpt2api-sqlite.sh \
 
 ```env
 OBJECT_STORAGE_ENDPOINT=https://s3.oss-cn-hongkong-internal.aliyuncs.com
+OBJECT_STORAGE_PUBLIC_ENDPOINT=https://s3.oss-cn-hongkong.aliyuncs.com
 OBJECT_STORAGE_REGION=cn-hongkong
 OBJECT_STORAGE_USE_PATH_STYLE=false
 ```
@@ -141,6 +142,7 @@ OBJECT_STORAGE_USE_PATH_STYLE=false
 
 ```env
 OBJECT_STORAGE_ENDPOINT=https://s3.oss-cn-hongkong.aliyuncs.com
+OBJECT_STORAGE_PUBLIC_ENDPOINT=
 ```
 
 迁移对象采用“两次同步”：在线期间先全量复制，切换前暂停新任务和删除操作后再同步

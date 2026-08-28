@@ -199,6 +199,7 @@ SUB2API_IMAGE_MODEL=gpt-image-2
 SUB2API_TIMEOUT_SECS=300
 
 OBJECT_STORAGE_ENDPOINT=https://s3.oss-cn-hongkong-internal.aliyuncs.com
+OBJECT_STORAGE_PUBLIC_ENDPOINT=https://s3.oss-cn-hongkong.aliyuncs.com
 OBJECT_STORAGE_REGION=cn-hongkong
 OBJECT_STORAGE_ACCESS_KEY_ID=<OSS RAM AccessKey ID>
 OBJECT_STORAGE_SECRET_ACCESS_KEY=<OSS RAM AccessKey Secret>

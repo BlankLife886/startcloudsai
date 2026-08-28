@@ -63,6 +63,7 @@ type Config struct {
 	CRUNTimeoutSecs int
 
 	ObjectStorageEndpoint          string
+	ObjectStoragePublicEndpoint    string
 	ObjectStorageRegion            string
 	ObjectStorageAccessKeyID       string
 	ObjectStorageSecretAccessKey   string
@@ -228,6 +229,7 @@ func Load() *Config {
 		CRUNTimeoutSecs: getenvInt("CRUN_TIMEOUT_SECS", 1200),
 
 		ObjectStorageEndpoint:          getenvWithLegacy("OBJECT_STORAGE_ENDPOINT", "R2_ENDPOINT", ""),
+		ObjectStoragePublicEndpoint:    strings.TrimRight(strings.TrimSpace(getenv("OBJECT_STORAGE_PUBLIC_ENDPOINT", "")), "/"),
 		ObjectStorageRegion:            getenvWithLegacy("OBJECT_STORAGE_REGION", "R2_REGION", "auto"),
 		ObjectStorageAccessKeyID:       getenvWithLegacy("OBJECT_STORAGE_ACCESS_KEY_ID", "R2_ACCESS_KEY_ID", ""),
 		ObjectStorageSecretAccessKey:   getenvWithLegacy("OBJECT_STORAGE_SECRET_ACCESS_KEY", "R2_SECRET_ACCESS_KEY", ""),

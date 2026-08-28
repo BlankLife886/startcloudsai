@@ -6,6 +6,7 @@ func clearObjectStorageEnv(t *testing.T) {
 	t.Helper()
 	for _, key := range []string{
 		"OBJECT_STORAGE_ENDPOINT",
+		"OBJECT_STORAGE_PUBLIC_ENDPOINT",
 		"OBJECT_STORAGE_REGION",
 		"OBJECT_STORAGE_ACCESS_KEY_ID",
 		"OBJECT_STORAGE_SECRET_ACCESS_KEY",
@@ -29,6 +30,7 @@ func TestLoadObjectStoragePrefersProviderNeutralVariables(t *testing.T) {
 	clearObjectStorageEnv(t)
 	t.Setenv("APP_ENV", "test")
 	t.Setenv("OBJECT_STORAGE_ENDPOINT", "https://s3.oss-cn-hongkong.aliyuncs.com")
+	t.Setenv("OBJECT_STORAGE_PUBLIC_ENDPOINT", "https://s3-public.oss-cn-hongkong.aliyuncs.com/")
 	t.Setenv("OBJECT_STORAGE_REGION", "cn-hongkong")
 	t.Setenv("OBJECT_STORAGE_ACCESS_KEY_ID", "oss-key")
 	t.Setenv("OBJECT_STORAGE_SECRET_ACCESS_KEY", "oss-secret")
@@ -40,6 +42,7 @@ func TestLoadObjectStoragePrefersProviderNeutralVariables(t *testing.T) {
 
 	cfg := Load()
 	if cfg.ObjectStorageEndpoint != "https://s3.oss-cn-hongkong.aliyuncs.com" ||
+		cfg.ObjectStoragePublicEndpoint != "https://s3-public.oss-cn-hongkong.aliyuncs.com" ||
 		cfg.ObjectStorageRegion != "cn-hongkong" || cfg.ObjectStorageAccessKeyID != "oss-key" ||
 		cfg.ObjectStorageSecretAccessKey != "oss-secret" || cfg.ObjectStorageBucket != "oss-bucket" ||
 		cfg.ObjectStorageUsePathStyle || cfg.ObjectStoragePresignExpireSecs != 900 ||
