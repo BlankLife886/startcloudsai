@@ -146,6 +146,9 @@ func AddUserUploadReferences(ctx context.Context, q Q, userID uuid.UUID, referen
 	if len(keys) == 0 {
 		return nil
 	}
+	if err := LockObjectReferenceKeys(ctx, q, keys); err != nil {
+		return err
+	}
 	if err := RegisterUserUploadObjects(ctx, q, userID, keys); err != nil {
 		return err
 	}

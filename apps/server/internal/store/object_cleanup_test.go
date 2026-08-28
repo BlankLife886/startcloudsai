@@ -53,10 +53,43 @@ func TestObjectCleanupJobsWaitForReferences(t *testing.T) {
 	}
 }
 
-func TestEnqueueObjectCleanupRejectsNonTaskKeys(t *testing.T) {
+func TestObjectCleanupAcceptsUnreferencedUserUploads(t *testing.T) {
 	st := testdb.Setup(t)
-	if err := store.EnqueueObjectCleanup(context.Background(), st.Pool, []string{"uploads/user/original/image.png"}); err == nil {
-		t.Fatal("upload key unexpectedly accepted by task cleanup queue")
+	ctx := context.Background()
+	user, err := store.InsertUser(ctx, st.Pool, fmt.Sprintf("upload-cleanup-%s@test.dev", uuid.NewString()[:8]), "cleanup", "x", "user", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := fmt.Sprintf("uploads/%s/original/image.png", user.ID)
+	if err := store.RegisterUserUploadObjects(ctx, st.Pool, user.ID, []string{key}); err != nil {
+		t.Fatal(err)
+	}
+	referenceID := uuid.New()
+	if err := store.AddUserUploadReferences(ctx, st.Pool, user.ID, store.UploadReferenceUserAsset, referenceID, []string{key}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.EnqueueObjectCleanup(ctx, st.Pool, []string{key}); err != nil {
+		t.Fatalf("enqueue upload cleanup: %v", err)
+	}
+	locked, err := store.LockReadyObjectCleanupJobs(ctx, st.Pool, time.Now().UTC(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(locked) != 0 {
+		t.Fatalf("referenced upload cleanup jobs = %#v, want none", locked)
+	}
+	if err := store.DeleteUserUploadReferences(ctx, st.Pool, store.UploadReferenceUserAsset, referenceID); err != nil {
+		t.Fatal(err)
+	}
+	locked, err = store.LockReadyObjectCleanupJobs(ctx, st.Pool, time.Now().UTC(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(locked) != 1 || locked[0] != key {
+		t.Fatalf("unreferenced upload cleanup jobs = %#v, want [%q]", locked, key)
+	}
+	if err := store.EnqueueObjectCleanup(ctx, st.Pool, []string{"uploads/not-a-user/original/image.png"}); err == nil {
+		t.Fatal("invalid upload owner unexpectedly accepted")
 	}
 }
 

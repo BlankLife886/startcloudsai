@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 const maxObjectCleanupKeys = 1000
@@ -165,9 +167,13 @@ func LockReadyObjectCleanupJobs(ctx context.Context, q Q, now time.Time, limit i
 						WHERE reference.value->>'fileKey' = locked.object_key
 			)
 		  )
-		  AND NOT EXISTS (
-			SELECT 1
-			FROM gallery_submissions submission
+			  AND NOT EXISTS (
+				SELECT 1 FROM user_upload_references reference
+				WHERE reference.object_key = locked.object_key
+			  )
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM gallery_submissions submission
 				WHERE submission.cover_key = locked.object_key
 			   OR EXISTS (
 					SELECT 1
@@ -252,7 +258,7 @@ func normalizeObjectCleanupKeys(keys []string) ([]string, error) {
 		if key == "" {
 			continue
 		}
-		if len(key) > 512 || !strings.HasPrefix(key, "tasks/") || strings.Contains(key, "..") || strings.Contains(key, "\\") {
+		if !validObjectCleanupKey(key) {
 			return nil, fmt.Errorf("invalid object cleanup key %q", key)
 		}
 		if _, exists := seen[key]; exists {
@@ -262,4 +268,22 @@ func normalizeObjectCleanupKeys(keys []string) ([]string, error) {
 		out = append(out, key)
 	}
 	return out, nil
+}
+
+func validObjectCleanupKey(key string) bool {
+	if len(key) == 0 || len(key) > 512 || strings.Contains(key, "..") || strings.Contains(key, "\\") {
+		return false
+	}
+	if strings.HasPrefix(key, "tasks/") {
+		return len(strings.TrimPrefix(key, "tasks/")) > 0
+	}
+	parts := strings.Split(key, "/")
+	if len(parts) != 4 || parts[0] != "uploads" || parts[3] == "" {
+		return false
+	}
+	if parts[2] != "original" && parts[2] != "thumb" && parts[2] != "display" {
+		return false
+	}
+	_, err := uuid.Parse(parts[1])
+	return err == nil
 }

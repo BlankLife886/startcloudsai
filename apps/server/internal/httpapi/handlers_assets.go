@@ -1,10 +1,7 @@
 package httpapi
 
 import (
-	"context"
-	"log"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
@@ -292,19 +289,14 @@ func (s *Server) deleteUserAsset(c *gin.Context) {
 		if err := store.DeleteUserUploadReferences(ctx, tx, store.UploadReferenceUserAsset, asset.ID); err != nil {
 			return err
 		}
+		if err := store.EnqueueObjectCleanup(ctx, tx, keys); err != nil {
+			return err
+		}
 		return store.DeleteUserAsset(ctx, tx, user.ID, id)
 	})
 	if err != nil {
 		fail(c, err)
 		return
-	}
-	if len(keys) > 0 {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		cleanupErr := s.Storage.DeleteKeys(cleanupCtx, keys)
-		cancel()
-		if cleanupErr != nil {
-			log.Printf("asset %s deleted from database but object cleanup failed: %v", id, cleanupErr)
-		}
 	}
 	respondNoContent(c)
 }

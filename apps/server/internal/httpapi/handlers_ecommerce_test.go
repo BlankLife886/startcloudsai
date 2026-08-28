@@ -11,6 +11,32 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 )
 
+func TestDeleteUserAssetEnqueuesDeferredObjectCleanup(t *testing.T) {
+	env := newCommunityEnv(t)
+	user, token := env.newUserSession(t, "user")
+	fileKey := "uploads/" + user.ID.String() + "/original/asset.png"
+	thumbnailKey := "uploads/" + user.ID.String() + "/thumb/asset.jpg"
+	asset, err := store.InsertUserAsset(context.Background(), env.st.Pool, user.ID,
+		"待删除素材", fileKey, thumbnailKey, "image/png", 128, nil)
+	if err != nil {
+		t.Fatalf("insert asset: %v", err)
+	}
+
+	w := env.do(t, http.MethodDelete, "/api/v1/me/assets/"+asset.ID.String(), nil, token)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("delete asset: status %d body %s", w.Code, w.Body.String())
+	}
+	var cleanupJobs int
+	if err := env.st.Pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM object_cleanup_jobs WHERE object_key = ANY($1::text[])`,
+		[]string{fileKey, thumbnailKey}).Scan(&cleanupJobs); err != nil {
+		t.Fatalf("count deferred cleanup jobs: %v", err)
+	}
+	if cleanupJobs != 2 {
+		t.Fatalf("deferred cleanup jobs = %d, want 2", cleanupJobs)
+	}
+}
+
 func TestEcommerceProductCRUDAndOwnership(t *testing.T) {
 	env := newCommunityEnv(t)
 	user, token := env.newUserSession(t, "user")

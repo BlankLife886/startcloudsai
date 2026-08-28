@@ -53,19 +53,22 @@ const (
 	typeDispatchAssistantOutbox = "cron:dispatch_assistant_run_outbox"
 	typeDispatchAssistantFiles  = "cron:dispatch_assistant_files"
 
-	taskCompletionLease      = 5 * time.Minute
-	taskLease                = 2 * time.Minute
-	taskHeartbeatInterval    = 30 * time.Second
-	asyncTaskLease           = 15 * time.Minute
-	upstreamAttemptPollLease = 5 * time.Minute
-	staleQueuedMinutes       = 2
-	maxTaskFailureRetries    = 100
-	maxUpstreamMessageRunes  = 2000
-	userUploadRetention      = 7 * 24 * time.Hour
-	userUploadCleanupLimit   = 500
-	maxTaskImageObjectBytes  = 20 << 20
-	objectCleanupLimit       = 100
-	objectCleanupRetryDelay  = 5 * time.Minute
+	taskCompletionLease         = 5 * time.Minute
+	taskLease                   = 2 * time.Minute
+	taskHeartbeatInterval       = 30 * time.Second
+	asyncTaskLease              = 15 * time.Minute
+	upstreamAttemptPollLease    = 5 * time.Minute
+	staleQueuedMinutes          = 2
+	maxTaskFailureRetries       = 100
+	maxUpstreamMessageRunes     = 2000
+	userUploadRetention         = 7 * 24 * time.Hour
+	userUploadCleanupLimit      = 500
+	maxTaskImageObjectBytes     = 20 << 20
+	objectCleanupIdleLimit      = 100
+	objectCleanupLowLoadLimit   = 1
+	objectCleanupRetryDelay     = 5 * time.Minute
+	objectCleanupMaxLowRunning  = 2
+	objectCleanupMaxLowWorkUnit = 4
 )
 
 var errTaskProviderUnavailable = errors.New("task provider unavailable")
@@ -261,7 +264,7 @@ func (p *staticPeriodicConfigProvider) GetConfigs() ([]*asynq.PeriodicTaskConfig
 		periodicConfig("@every 30m", typeSyncPromptSources, 29*time.Minute, 0),
 		periodicConfig("@every 10m", typeBackfillPromptCovers, 9*time.Minute, 0),
 		periodicConfig("@every 1h", typeCleanupUserUploads, 59*time.Minute, 3),
-		periodicConfig("@every 5m", typeCleanupObjectJobs, 4*time.Minute+30*time.Second, 3),
+		periodicConfig("@every 1m", typeCleanupObjectJobs, 50*time.Second, 3),
 		periodicConfig("@every 1h", typeCleanupCanvasRuns, 59*time.Minute, 0),
 		periodicConfig("@every 15s", typeDispatchAssistantOutbox, 14*time.Second, 0),
 		periodicConfig("@every 15s", typeDispatchAssistantFiles, 14*time.Second, 0),
@@ -2962,8 +2965,21 @@ func userUploadObjectOwner(key string) (uuid.UUID, bool) {
 	return owner, err == nil
 }
 
+func objectCleanupBatchLimit(pressure store.TaskPressure) int {
+	if pressure.Queued > 0 {
+		return 0
+	}
+	if pressure.Running == 0 {
+		return objectCleanupIdleLimit
+	}
+	if pressure.Running <= objectCleanupMaxLowRunning && pressure.ActiveUnits <= objectCleanupMaxLowWorkUnit {
+		return objectCleanupLowLoadLimit
+	}
+	return 0
+}
+
 // handleCleanupObjectJobs retries task/assistant objects after their database
-// owner has gone away. The job rows remain locked while the bounded R2 delete
+// owner has gone away. The job rows remain locked while the bounded object-store delete
 // runs, so cleanup workers cannot process the same job concurrently; task and
 // assistant reference creation serializes against the owning rows and the
 // candidate query rechecks the broader durable reference set before deletion.
@@ -2977,7 +2993,15 @@ func (w *Worker) handleCleanupObjectJobs(ctx context.Context, _ *asynq.Task) err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 	now := time.Now().UTC()
-	keys, err := store.LockReadyObjectCleanupJobs(ctx, tx, now, objectCleanupLimit)
+	pressure, err := store.GetTaskPressure(ctx, tx)
+	if err != nil {
+		return err
+	}
+	limit := objectCleanupBatchLimit(pressure)
+	if limit == 0 {
+		return tx.Commit(ctx)
+	}
+	keys, err := store.LockReadyObjectCleanupJobs(ctx, tx, now, limit)
 	if err != nil {
 		return err
 	}
@@ -2993,6 +3017,9 @@ func (w *Worker) handleCleanupObjectJobs(ctx context.Context, _ *asynq.Task) err
 		}
 		return err
 	}
+	if _, err := store.MarkUserUploadObjectsDeleted(ctx, tx, keys); err != nil {
+		return err
+	}
 	deleted, err := store.DeleteObjectCleanupJobs(ctx, tx, keys)
 	if err != nil {
 		return err
@@ -3001,7 +3028,7 @@ func (w *Worker) handleCleanupObjectJobs(ctx context.Context, _ *asynq.Task) err
 		return err
 	}
 	if deleted > 0 {
-		log.Printf("cleaned %d task/assistant objects", deleted)
+		log.Printf("cleaned %d deferred objects", deleted)
 	}
 	return nil
 }

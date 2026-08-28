@@ -50,6 +50,14 @@ func TestDeleteTaskOutputRemovesOneImageFromABatch(t *testing.T) {
 	if remaining != 2 {
 		t.Fatalf("remaining outputs = %d, want 2", remaining)
 	}
+	var cleanupJobs int
+	if err := env.st.Pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM object_cleanup_jobs WHERE object_key = $1`, second).Scan(&cleanupJobs); err != nil {
+		t.Fatalf("count deferred cleanup jobs: %v", err)
+	}
+	if cleanupJobs != 1 {
+		t.Fatalf("deferred cleanup jobs = %d, want 1", cleanupJobs)
+	}
 }
 
 func TestDeleteTaskProtectsReferencedOutputs(t *testing.T) {

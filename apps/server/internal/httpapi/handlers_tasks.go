@@ -622,7 +622,6 @@ func (s *Server) deleteTask(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
-	var keys []string
 	var deletedTaskIDs []uuid.UUID
 	deletedAt := time.Now().UTC()
 	cascade := c.Query("cascade") == "true"
@@ -689,7 +688,6 @@ func (s *Server) deleteTask(c *gin.Context) {
 				if err := store.MarkTaskDeletedByUser(ctx, tx, task.ID, deletedAt); err != nil {
 					return err
 				}
-				keys = append(keys, taskKeys...)
 				deletedTaskIDs = append(deletedTaskIDs, task.ID)
 				delete(remaining, task.ID)
 				deletedLeaf = true
@@ -704,17 +702,6 @@ func (s *Server) deleteTask(c *gin.Context) {
 	if err != nil {
 		fail(c, err)
 		return
-	}
-	if len(keys) > 0 && s.Storage != nil {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		cleanupErr := s.Storage.DeleteKeys(cleanupCtx, keys)
-		if cleanupErr == nil {
-			_, cleanupErr = store.DeleteObjectCleanupJobs(cleanupCtx, s.St.Pool, keys)
-		}
-		cancel()
-		if cleanupErr != nil {
-			log.Printf("task %s marked as user-deleted but object cleanup failed: %v", taskID, cleanupErr)
-		}
 	}
 	ids := make([]string, 0, len(deletedTaskIDs))
 	for _, id := range deletedTaskIDs {
@@ -741,10 +728,7 @@ func (s *Server) deleteTaskOutput(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	var (
-		updated *store.Task
-		keys    []string
-	)
+	var updated *store.Task
 	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
 		task, err := store.GetUserTaskForUpdate(ctx, tx, user.ID, taskID)
 		if err != nil {
@@ -791,7 +775,6 @@ func (s *Server) deleteTaskOutput(c *gin.Context) {
 		if err := store.RemoveTaskOutputAt(ctx, tx, task.ID, outputs, thumbs); err != nil {
 			return err
 		}
-		keys = removed
 		updated, err = store.GetUserTaskForUpdate(ctx, tx, user.ID, taskID)
 		return err
 	})
@@ -806,17 +789,6 @@ func (s *Server) deleteTaskOutput(c *gin.Context) {
 	if updated == nil {
 		fail(c, apperr.E("task_not_found", "任务不存在", 404))
 		return
-	}
-	if len(keys) > 0 && s.Storage != nil {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		cleanupErr := s.Storage.DeleteKeys(cleanupCtx, keys)
-		if cleanupErr == nil {
-			_, cleanupErr = store.DeleteObjectCleanupJobs(cleanupCtx, s.St.Pool, keys)
-		}
-		cancel()
-		if cleanupErr != nil {
-			log.Printf("task %s output %d removed but object cleanup failed: %v", taskID, index, cleanupErr)
-		}
 	}
 	ok(c, taskDict(updated, s.outputURLsFor(c, updated), s.originalURLsFor(c, updated)))
 }
