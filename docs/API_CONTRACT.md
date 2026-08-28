@@ -240,7 +240,7 @@ task 主要字段：
 
 | 方法  | 路径                                  | 说明                                                      |
 | ----- | ------------------------------------- | --------------------------------------------------------- |
-| GET   | `/api/v1/admin/statistics`                    | 用户、任务、全站余额、运行中任务和类型分布                |
+| GET   | `/api/v1/admin/statistics`                    | 用户、任务、财务、类型分布与当前 `operationalIncidents` 运行告警 |
 | GET   | `/api/v1/admin/system/metrics`                | API、Go Runtime、数据库池、Asynq 队列和 Worker 实时快照   |
 | GET   | `/api/v1/admin/users`                    | `search`、`status` 筛选的 cursor 列表；每项附带 `usage` 使用摘要 |
 | GET   | `/api/v1/admin/users/{id}`               | 用户完整资料、钱包拆分、当前套餐、体验申请、签到/拼团、任务/投稿/素材/订单/反馈计数及最近会话摘要 |

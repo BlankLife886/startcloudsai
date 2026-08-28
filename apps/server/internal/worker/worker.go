@@ -50,6 +50,7 @@ const (
 	typeCleanupUserUploads      = "cron:cleanup_user_uploads"
 	typeCleanupObjectJobs       = "cron:cleanup_object_jobs"
 	typeCleanupCanvasRuns       = "cron:cleanup_canvas_workflow_runs"
+	typeEvaluateIncidents       = "cron:evaluate_operational_incidents"
 	typeDispatchAssistantOutbox = "cron:dispatch_assistant_run_outbox"
 	typeDispatchAssistantFiles  = "cron:dispatch_assistant_files"
 
@@ -192,6 +193,7 @@ func (w *Worker) Run() error {
 	mux.HandleFunc(typeCleanupUserUploads, w.handleCleanupUserUploads)
 	mux.HandleFunc(typeCleanupObjectJobs, w.handleCleanupObjectJobs)
 	mux.HandleFunc(typeCleanupCanvasRuns, w.handleCleanupCanvasRuns)
+	mux.HandleFunc(typeEvaluateIncidents, w.handleEvaluateOperationalIncidents)
 	mux.HandleFunc(typeDispatchAssistantOutbox, w.handleDispatchAssistantOutbox)
 	mux.HandleFunc(typeDispatchAssistantFiles, w.handleDispatchAssistantFiles)
 
@@ -266,6 +268,7 @@ func (p *staticPeriodicConfigProvider) GetConfigs() ([]*asynq.PeriodicTaskConfig
 		periodicConfig("@every 1h", typeCleanupUserUploads, 59*time.Minute, 3),
 		periodicConfig("@every 1m", typeCleanupObjectJobs, 50*time.Second, 3),
 		periodicConfig("@every 1h", typeCleanupCanvasRuns, 59*time.Minute, 0),
+		periodicConfig("@every 1m", typeEvaluateIncidents, 50*time.Second, 1),
 		periodicConfig("@every 15s", typeDispatchAssistantOutbox, 14*time.Second, 0),
 		periodicConfig("@every 15s", typeDispatchAssistantFiles, 14*time.Second, 0),
 	}, nil

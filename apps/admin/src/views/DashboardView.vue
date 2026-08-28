@@ -16,6 +16,7 @@ import {
   User,
   UserFilled,
   Wallet,
+	WarningFilled,
 } from '@element-plus/icons-vue'
 import { request } from '@/request'
 import {
@@ -73,6 +74,17 @@ interface DashboardUsageMetrics {
 	}
 }
 
+interface OperationalIncident {
+	key: string
+	severity: 'warning' | 'critical'
+	title: string
+	summary: string
+	status: 'open' | 'resolved'
+	occurrences: number
+	firstSeenAt: string
+	lastSeenAt: string
+}
+
 interface AdminStats {
   totalUsers?: number
   newUsersToday?: number
@@ -84,6 +96,7 @@ interface AdminStats {
 	taskPerformance?: TaskPerformance
 	providerPerformance?: ProviderPerformance[]
 	usageMetrics?: DashboardUsageMetrics
+	operationalIncidents?: OperationalIncident[]
 }
 
 interface RuntimeMemoryMetrics {
@@ -212,6 +225,7 @@ interface SystemMetricPoint {
 const loading = ref(false)
 const systemLoading = ref(false)
 const helpOpen = ref(false)
+const incidentsOpen = ref(false)
 const stats = ref<AdminStats | null>(null)
 const systemMetrics = ref<SystemMetrics | null>(null)
 const systemHistory = ref<SystemMetricPoint[]>([])
@@ -228,6 +242,10 @@ let refreshTimer: number | null = null
 let systemRefreshTimer: number | null = null
 
 const taskDaily = computed(() => stats.value?.taskDaily ?? [])
+const operationalIncidents = computed(() => stats.value?.operationalIncidents ?? [])
+const criticalIncidentCount = computed(() =>
+	operationalIncidents.value.filter((item) => item.severity === 'critical').length,
+)
 
 const performance = computed<TaskPerformance>(() => stats.value?.taskPerformance ?? {
 	queuedNow: 0,
@@ -839,6 +857,17 @@ onBeforeUnmount(() => {
         </span>
       </div>
 
+		<button
+			v-if="operationalIncidents.length"
+			type="button"
+			class="status-rail__incidents"
+			:class="{ 'is-critical': criticalIncidentCount > 0 }"
+			@click="incidentsOpen = true"
+		>
+			<el-icon><WarningFilled /></el-icon>
+			<span>{{ operationalIncidents.length }} 项运行告警</span>
+		</button>
+
       <div v-if="systemMetrics" class="status-rail__meta">
         <span class="status-rail__meta-item">
           <em>Runtime</em>
@@ -884,6 +913,32 @@ onBeforeUnmount(() => {
         <span>说明</span>
       </button>
     </header>
+
+		<el-drawer
+			v-model="incidentsOpen"
+			title="运行告警"
+			size="min(520px, 96vw)"
+			append-to-body
+			class="incident-drawer"
+		>
+			<div class="incident-list">
+				<article
+					v-for="incident in operationalIncidents"
+					:key="incident.key"
+					class="incident-item"
+					:class="`is-${incident.severity}`"
+				>
+					<div class="incident-item__heading">
+						<span>{{ incident.severity === 'critical' ? '严重' : '注意' }}</span>
+						<time :datetime="incident.lastSeenAt">{{ formatTime(incident.lastSeenAt) }}</time>
+					</div>
+					<strong>{{ incident.title }}</strong>
+					<p>{{ incident.summary }}</p>
+					<small>首次出现 {{ formatTime(incident.firstSeenAt) }} · 已检测 {{ incident.occurrences }} 次</small>
+				</article>
+				<el-empty v-if="!operationalIncidents.length" description="当前没有运行告警" :image-size="56" />
+			</div>
+		</el-drawer>
 
     <el-drawer
       v-model="helpOpen"
@@ -1411,6 +1466,78 @@ onBeforeUnmount(() => {
   color: var(--ink-3);
   background: var(--surface-2);
   border-color: var(--border);
+}
+
+.status-rail__incidents {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	flex: 0 0 auto;
+	height: 26px;
+	padding: 0 9px;
+	border: 1px solid color-mix(in srgb, var(--warning) 32%, var(--border));
+	border-radius: 6px;
+	background: var(--warning-soft);
+	color: var(--warning);
+	font: inherit;
+	font-size: 11px;
+	font-weight: 700;
+	cursor: pointer;
+}
+
+.status-rail__incidents.is-critical {
+	border-color: color-mix(in srgb, var(--danger) 36%, var(--border));
+	background: var(--danger-soft);
+	color: var(--danger);
+}
+
+.incident-list {
+	display: grid;
+	gap: 8px;
+}
+
+.incident-item {
+	padding: 12px;
+	border: 1px solid var(--border);
+	border-left: 3px solid var(--warning);
+	border-radius: 6px;
+	background: var(--surface);
+}
+
+.incident-item.is-critical {
+	border-left-color: var(--danger);
+}
+
+.incident-item__heading {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	margin-bottom: 6px;
+	color: var(--ink-3);
+	font-size: 10px;
+}
+
+.incident-item__heading span {
+	font-weight: 750;
+}
+
+.incident-item strong {
+	display: block;
+	color: var(--ink);
+	font-size: 13px;
+}
+
+.incident-item p {
+	margin: 5px 0;
+	color: var(--ink-2);
+	font-size: 12px;
+	line-height: 1.55;
+}
+
+.incident-item small {
+	color: var(--ink-3);
+	font-size: 10px;
 }
 
 .status-rail__meta {

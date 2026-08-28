@@ -264,6 +264,10 @@ task_models               {"default":"gpt-image-2"}
 
 记录管理员 ID/email 快照、method、path、归一化 action、目标 ID、响应状态、IP、脱敏 detail 与创建时间。`admin_id` 指向 `admin_accounts`；管理员被删除时置 NULL，email 快照保留。索引支持全局倒序和按管理员倒序查询。Worker 定期删除 6 个月以前的记录；管理员登录、改密和业务写操作也写入本表。
 
+### `operational_incidents`
+
+保存 Worker 每分钟评估的运行告警，包括稳定告警 key、`warning|critical` 级别、标题、摘要、出现次数、结构化指标、首次/最近发现时间和恢复时间。相同问题重复出现时更新原记录，不按分钟创建新行；指标恢复后自动从 `open` 转为 `resolved`。当前规则覆盖任务排队延迟、近期任务失败率、Redis/Asynq 队列不可用或暂停、队列持续积压以及对象清理积压。管理端统计接口只返回当前 open 告警。
+
 ## 迁移与运维
 
 ```bash

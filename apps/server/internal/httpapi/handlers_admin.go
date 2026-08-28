@@ -107,21 +107,27 @@ func (s *Server) adminStats(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
+	incidents, err := store.ListOpenOperationalIncidents(ctx, s.St.Pool, 20)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	typeDistribution := gin.H{}
 	for _, t := range store.TaskTypes {
 		typeDistribution[t] = byType[t]
 	}
 	ok(c, gin.H{
-		"totalUsers":          totalUsers,
-		"newUsersToday":       newUsersToday,
-		"runningTasks":        performance.QueuedNow + performance.RunningNow,
-		"taskPerformance":     performance,
-		"providerPerformance": providerPerformance,
-		"taskDaily":           taskDaily,
-		"revenueCents":        revenue,
-		"usageMetrics":        usageMetrics,
-		"walletBalanceCents":  balanceTotal,
-		"typeDistribution":    typeDistribution,
+		"totalUsers":           totalUsers,
+		"newUsersToday":        newUsersToday,
+		"runningTasks":         performance.QueuedNow + performance.RunningNow,
+		"taskPerformance":      performance,
+		"providerPerformance":  providerPerformance,
+		"taskDaily":            taskDaily,
+		"revenueCents":         revenue,
+		"usageMetrics":         usageMetrics,
+		"walletBalanceCents":   balanceTotal,
+		"typeDistribution":     typeDistribution,
+		"operationalIncidents": incidents,
 	})
 }
 
