@@ -50,6 +50,7 @@ type Config struct {
 	C2ABaseURL        string
 	C2AAPIKey         string
 	C2ACallbackSecret string
+	C2AAllowPrivate   bool
 	C2ATimeoutSecs    int
 
 	Sub2APIBaseURL     string
@@ -216,6 +217,7 @@ func Load() *Config {
 		C2ABaseURL:        getenv("C2A_BASE_URL", "http://localhost:3000"),
 		C2AAPIKey:         getenv("C2A_API_KEY", ""),
 		C2ACallbackSecret: strings.TrimSpace(getenv("C2A_CALLBACK_SECRET", "")),
+		C2AAllowPrivate:   getenvBool("C2A_ALLOW_PRIVATE", false),
 		C2ATimeoutSecs:    getenvInt("C2A_TIMEOUT_SECS", 600),
 
 		Sub2APIBaseURL:     getenv("SUB2API_BASE_URL", "http://localhost:8080"),
@@ -300,6 +302,12 @@ func (c *Config) LanjingPayEnabled() bool {
 	return strings.TrimSpace(c.LanjingPayBaseURL) != "" &&
 		strings.TrimSpace(c.LanjingPaySecret) != "" &&
 		strings.TrimSpace(c.LanjingPayNotifyURL) != ""
+}
+
+// C2APrivateNetworkAllowed is opt-in in production. Integrated deployments
+// enable it only for the explicitly configured Docker-network upstream.
+func (c *Config) C2APrivateNetworkAllowed() bool {
+	return c != nil && (c.AppEnv == "development" || c.C2AAllowPrivate)
 }
 
 // AllowedOriginsList 返回去掉尾部斜杠的 Origin 白名单。

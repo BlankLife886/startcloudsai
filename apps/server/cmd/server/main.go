@@ -120,7 +120,7 @@ func runServe(cfg *config.Config) error {
 	}
 	defer queue.Close()
 
-	c2aClient := c2a.NewWithPolicy(cfg.C2ABaseURL, cfg.C2AAPIKey, cfg.C2ATimeoutSecs, cfg.AppEnv == "development")
+	c2aClient := c2a.NewWithPolicy(cfg.C2ABaseURL, cfg.C2AAPIKey, cfg.C2ATimeoutSecs, cfg.C2APrivateNetworkAllowed())
 	server, err := httpapi.New(cfg, st, stg, c2aClient, queue)
 	if err != nil {
 		return fmt.Errorf("initialize HTTP server: %w", err)
@@ -190,7 +190,7 @@ func runWorker(cfg *config.Config) error {
 	}
 	defer queue.Close()
 
-	c2aClient := c2a.NewWithPolicy(cfg.C2ABaseURL, cfg.C2AAPIKey, cfg.C2ATimeoutSecs, cfg.AppEnv == "development")
+	c2aClient := c2a.NewWithPolicy(cfg.C2ABaseURL, cfg.C2AAPIKey, cfg.C2ATimeoutSecs, cfg.C2APrivateNetworkAllowed())
 	stopPprof := diagnostics.StartPprof(cfg.WorkerPprofAddr, "worker")
 	defer stopPprof()
 	return worker.New(cfg, st, stg, c2aClient, queue).Run()

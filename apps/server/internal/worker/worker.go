@@ -616,7 +616,7 @@ func (w *Worker) upstreamClient(ctx context.Context) *c2a.Client {
 		// 配置读取失败时退回启动时的客户端，任务仍可执行
 		return w.C2A
 	}
-	return c2a.NewWithPolicy(resolved.BaseURL, resolved.APIKey, resolved.TimeoutSecs, w.Cfg.AppEnv == "development")
+	return c2a.NewWithPolicy(resolved.BaseURL, resolved.APIKey, resolved.TimeoutSecs, w.Cfg.C2APrivateNetworkAllowed())
 }
 
 type imageReadyFunc func(index int, encoded string) error
@@ -982,7 +982,7 @@ func (w *Worker) callConfiguredUpstream(ctx context.Context, task *store.Task, s
 	timeout := provider.TimeoutSecs
 	switch provider.Adapter {
 	case modelconfig.AdapterOpenAI:
-		client := c2a.NewWithPolicy(provider.BaseURL, provider.APIKey, timeout, w.Cfg.AppEnv == "development")
+		client := c2a.NewWithPolicy(provider.BaseURL, provider.APIKey, timeout, w.Cfg.C2APrivateNetworkAllowed())
 		finalPrompt, size := prompt.Compile(task.Type, task.Prompt, task.Params)
 		imageOptions := c2a.ImageOptions{
 			Quality:               taskParamString(task.Params, "quality"),
@@ -2046,7 +2046,7 @@ func (w *Worker) providerForUpstreamAttempt(task *store.Task, fallback *modelcon
 }
 
 func (w *Worker) pollOpenAIProviderTasks(ctx context.Context, provider *modelconfig.Provider, tasks []*store.Task) {
-	client := c2a.NewWithPolicy(provider.BaseURL, provider.APIKey, provider.TimeoutSecs, w.Cfg != nil && w.Cfg.AppEnv == "development")
+	client := c2a.NewWithPolicy(provider.BaseURL, provider.APIKey, provider.TimeoutSecs, w.Cfg.C2APrivateNetworkAllowed())
 	stopRenew := w.startUpstreamAttemptPollRenewal(ctx, tasks)
 	defer stopRenew()
 	w.forEachOpenAIPollBatch(ctx, tasks, func(batch []*store.Task) {
@@ -2161,7 +2161,7 @@ func (w *Worker) startOpenAIResultFetch(provider *modelconfig.Provider, task *st
 			return
 		}
 		defer w.releaseImageFetch()
-		allowPrivate := w.Cfg != nil && w.Cfg.AppEnv == "development"
+		allowPrivate := w.Cfg.C2APrivateNetworkAllowed()
 		client := c2a.NewWithPolicy(provider.BaseURL, provider.APIKey, provider.TimeoutSecs, allowPrivate)
 		fetchFailed := w.applyOpenAIPollResult(ctx, client, provider, task, result, claimID)
 		observeCtx, observeCancel := context.WithTimeout(context.Background(), 2*time.Second)

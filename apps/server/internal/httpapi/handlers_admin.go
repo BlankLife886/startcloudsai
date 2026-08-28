@@ -2696,7 +2696,7 @@ func (s *Server) adminTestC2A(c *gin.Context, _ *store.User) {
 	if v := strings.TrimSpace(override.APIKey); v != "" && !strings.HasPrefix(v, "****") {
 		resolved.APIKey = v
 	}
-	client := c2a.NewWithPolicy(resolved.BaseURL, resolved.APIKey, resolved.TimeoutSecs, s.Cfg.AppEnv == "development")
+	client := c2a.NewWithPolicy(resolved.BaseURL, resolved.APIKey, resolved.TimeoutSecs, s.Cfg.C2APrivateNetworkAllowed())
 	result, err := client.ListModels(ctx)
 	if err != nil {
 		msg := err.Error()

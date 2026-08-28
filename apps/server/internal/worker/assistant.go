@@ -612,7 +612,7 @@ func (w *Worker) executeConfiguredAssistantImage(ctx context.Context, run *store
 	}
 	switch provider.Adapter {
 	case modelconfig.AdapterOpenAI:
-		client := c2a.NewWithPolicy(provider.BaseURL, provider.APIKey, provider.TimeoutSecs, w.Cfg.AppEnv == "development")
+		client := c2a.NewWithPolicy(provider.BaseURL, provider.APIKey, provider.TimeoutSecs, w.Cfg.C2APrivateNetworkAllowed())
 		return w.executeAssistantImageC2AClient(ctx, run, references, client, model)
 	case modelconfig.AdapterCRUN:
 		client, err := crun.New(provider.BaseURL, provider.APIKey, model, provider.TimeoutSecs)

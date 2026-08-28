@@ -68,3 +68,15 @@ func TestLoadObjectStorageSupportsLegacyR2Variables(t *testing.T) {
 		t.Fatalf("legacy R2 variables were not mapped: %+v", cfg)
 	}
 }
+
+func TestC2APrivateNetworkAllowedRequiresExplicitProductionOptIn(t *testing.T) {
+	if (&Config{AppEnv: "production"}).C2APrivateNetworkAllowed() {
+		t.Fatal("production must reject private C2A networks by default")
+	}
+	if !(&Config{AppEnv: "production", C2AAllowPrivate: true}).C2APrivateNetworkAllowed() {
+		t.Fatal("production opt-in must allow the configured private C2A network")
+	}
+	if !(&Config{AppEnv: "development"}).C2APrivateNetworkAllowed() {
+		t.Fatal("development must preserve private-network support")
+	}
+}
