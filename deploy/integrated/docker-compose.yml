@@ -74,6 +74,7 @@ services:
       dockerfile: Dockerfile
     image: chatgpt2api-startcloud:${CHATGPT2API_IMAGE_TAG:-local}
     restart: unless-stopped
+    stop_grace_period: 15m
     environment:
       DATABASE_URL: postgresql://${CHATGPT2API_DB_USER:-chatgpt2api}:${CHATGPT2API_DB_PASSWORD:?CHATGPT2API_DB_PASSWORD must be set}@postgres:5432/${CHATGPT2API_DB_NAME:-chatgpt2api}
       CHATGPT2API_AUTH_KEY: ${CHATGPT2API_AUTH_KEY:?CHATGPT2API_AUTH_KEY must be set}
