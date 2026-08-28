@@ -203,26 +203,33 @@ curl -fsSI http://127.0.0.1:8081/admin/
 ```
 
 候选通过后，把宝塔外层反向代理从 `8080` 切到 `8081` 并 reload。再把候选 Server 镜像
-标记为正式 Server/Worker 镜像，并从发布目录仅重建后端：
+标记为正式 Server 镜像，并从发布目录只重建 API：
 
 ```bash
 docker tag startcloudsai-integrated-candidate-server:$RELEASE_ID startcloudsai-integrated-server:latest
-docker tag startcloudsai-integrated-candidate-server:$RELEASE_ID startcloudsai-integrated-worker:latest
 
 cd "$RELEASE_DIR"
 docker compose --env-file deploy/integrated/.env.integrated \
   -f deploy/integrated/docker-compose.yml up -d --no-build --no-deps server
-docker compose --env-file deploy/integrated/.env.integrated \
-  -f deploy/integrated/docker-compose.yml up -d --no-build --no-deps worker
 ```
 
-Worker 会停止领取新任务并等待在途任务结束，最多等待 15 分钟；不要中断该命令。正式
-`8080` 健康后把宝塔代理切回 `8080`，再关闭候选环境。禁止执行 `down -v`：
+默认不在这次切换中更新 Worker，避免用户新任务在 Worker 优雅停机期间排队。正式 `8080`
+健康后把宝塔代理切回 `8080`，再关闭候选环境。禁止执行 `down -v`：
 
 ```bash
 curl -fsS http://127.0.0.1:8080/api/v1/health
 docker compose --env-file "$INTEGRATED_APP_ENV_FILE" \
   -f "$RELEASE_DIR/deploy/integrated/docker-compose.candidate.yml" down
+```
+
+Worker 仅在后台确认没有运行中图片任务后单独更新。它会停止领取新任务并等待在途任务结束，
+最多等待 15 分钟；有任务时不要执行：
+
+```bash
+docker tag startcloudsai-integrated-candidate-server:$RELEASE_ID startcloudsai-integrated-worker:latest
+cd "$RELEASE_DIR"
+docker compose --env-file deploy/integrated/.env.integrated \
+  -f deploy/integrated/docker-compose.yml up -d --no-build --no-deps worker
 ```
 
 ## 8. 验收与回滚
