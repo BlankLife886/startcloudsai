@@ -132,6 +132,7 @@ cd apps/admin && npm ci && npm run build
 - [本地开发启动手册](docs/LOCAL_DEVELOPMENT.md)
 - [生产部署与运维手册](docs/DEPLOYMENT.md)
 - [4C8G 一体化部署与 PG18/OSS 迁移手册](docs/INTEGRATED_4C8G_MIGRATION.md)
+- [旧服务器到新服务器的数据迁移](docs/PRODUCTION_DATA_MIGRATION.md)
 - [架构说明](docs/ARCHITECTURE.md)
 - [API 契约](docs/API_CONTRACT.md)
 - [开放 API 与 Webhook 接入](docs/OPEN_API.md)
