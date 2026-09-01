@@ -345,44 +345,18 @@ class _TaskDetailScreenState extends ConsumerState<TaskDetailScreen>
   Future<void> _openFullscreen(TaskItem task) async {
     final urls = task.previewUrls;
     if (urls.isEmpty) return;
-    await showDialog<void>(
+    final selectedIndex = await showDialog<int>(
       context: context,
       useSafeArea: false,
       builder: (context) => Dialog.fullscreen(
         backgroundColor: Colors.black,
-        child: SafeArea(
-          child: Stack(
-            children: [
-              Positioned.fill(
-                child: InteractiveViewer(
-                  minScale: 0.5,
-                  maxScale: 5,
-                  child: Center(
-                    child: AuthenticatedImage(
-                      url: urls[_pageIndex.clamp(0, urls.length - 1)],
-                      fit: BoxFit.contain,
-                    ),
-                  ),
-                ),
-              ),
-              Positioned(
-                right: 12,
-                top: 8,
-                child: IconButton.filled(
-                  tooltip: '关闭预览',
-                  onPressed: () => Navigator.pop(context),
-                  style: IconButton.styleFrom(
-                    backgroundColor: Colors.black54,
-                    foregroundColor: Colors.white,
-                  ),
-                  icon: const Icon(Icons.close),
-                ),
-              ),
-            ],
-          ),
-        ),
+        child: _TaskFullscreenPreview(urls: urls, initialIndex: _pageIndex),
       ),
     );
+    if (!mounted || selectedIndex == null || selectedIndex == _pageIndex) {
+      return;
+    }
+    _selectImage(selectedIndex);
   }
 
   @override
@@ -1002,6 +976,198 @@ class _ButtonProgress extends StatelessWidget {
     return const SizedBox.square(
       dimension: 18,
       child: CircularProgressIndicator(strokeWidth: 2),
+    );
+  }
+}
+
+class _TaskFullscreenPreview extends StatefulWidget {
+  const _TaskFullscreenPreview({
+    required this.urls,
+    required this.initialIndex,
+  });
+
+  final List<String> urls;
+  final int initialIndex;
+
+  @override
+  State<_TaskFullscreenPreview> createState() => _TaskFullscreenPreviewState();
+}
+
+class _TaskFullscreenPreviewState extends State<_TaskFullscreenPreview> {
+  late final PageController _pageController;
+  late int _selectedIndex;
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedIndex = widget.initialIndex.clamp(0, widget.urls.length - 1);
+    _pageController = PageController(initialPage: _selectedIndex);
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  void _select(int index) {
+    if (index == _selectedIndex) return;
+    unawaited(HapticFeedback.selectionClick());
+    _pageController.animateToPage(
+      index,
+      duration: MediaQuery.disableAnimationsOf(context)
+          ? Duration.zero
+          : const Duration(milliseconds: 220),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
+  void _close() => Navigator.pop(context, _selectedIndex);
+
+  @override
+  Widget build(BuildContext context) {
+    final multiple = widget.urls.length > 1;
+    return SafeArea(
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: PageView.builder(
+              key: const Key('task-fullscreen-page-view'),
+              controller: _pageController,
+              itemCount: widget.urls.length,
+              onPageChanged: (index) => setState(() => _selectedIndex = index),
+              itemBuilder: (context, index) => _TaskFullscreenImage(
+                key: ValueKey('task-fullscreen-image-$index'),
+                url: widget.urls[index],
+              ),
+            ),
+          ),
+          Positioned(
+            left: 8,
+            top: 8,
+            child: IconButton.filledTonal(
+              key: const Key('task-fullscreen-close'),
+              tooltip: '关闭预览',
+              onPressed: _close,
+              style: IconButton.styleFrom(
+                backgroundColor: Colors.black54,
+                foregroundColor: Colors.white,
+              ),
+              icon: const Icon(Icons.close),
+            ),
+          ),
+          if (multiple)
+            Positioned(
+              left: 72,
+              right: 72,
+              top: 20,
+              child: IgnorePointer(
+                child: Text(
+                  '${_selectedIndex + 1} / ${widget.urls.length}',
+                  key: const Key('task-fullscreen-page-count'),
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ),
+          if (multiple)
+            Positioned(
+              left: 12,
+              right: 12,
+              bottom: 12,
+              child: SizedBox(
+                height: 54,
+                child: Center(
+                  child: ListView.separated(
+                    key: const Key('task-fullscreen-thumbnails'),
+                    shrinkWrap: true,
+                    scrollDirection: Axis.horizontal,
+                    itemCount: widget.urls.length,
+                    separatorBuilder: (_, _) => const SizedBox(width: 8),
+                    itemBuilder: (context, index) {
+                      final selected = index == _selectedIndex;
+                      return Semantics(
+                        button: true,
+                        selected: selected,
+                        excludeSemantics: true,
+                        label: '全屏查看第 ${index + 1} 张图片',
+                        child: AnimatedContainer(
+                          duration: MediaQuery.disableAnimationsOf(context)
+                              ? Duration.zero
+                              : const Duration(milliseconds: 180),
+                          width: 54,
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                              color: selected ? Colors.white : Colors.white38,
+                              width: selected ? 2 : 1,
+                            ),
+                          ),
+                          padding: EdgeInsets.all(selected ? 2 : 3),
+                          child: Material(
+                            key: Key('task-fullscreen-thumbnail-$index'),
+                            color: Colors.black,
+                            borderRadius: BorderRadius.circular(5),
+                            clipBehavior: Clip.antiAlias,
+                            child: InkWell(
+                              onTap: () => _select(index),
+                              child: AuthenticatedImage(
+                                url: widget.urls[index],
+                                fit: BoxFit.cover,
+                              ),
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TaskFullscreenImage extends StatefulWidget {
+  const _TaskFullscreenImage({required this.url, super.key});
+
+  final String url;
+
+  @override
+  State<_TaskFullscreenImage> createState() => _TaskFullscreenImageState();
+}
+
+class _TaskFullscreenImageState extends State<_TaskFullscreenImage> {
+  final _transformationController = TransformationController();
+  bool _zoomed = false;
+
+  @override
+  void dispose() {
+    _transformationController.dispose();
+    super.dispose();
+  }
+
+  void _syncZoomState() {
+    final zoomed = _transformationController.value.getMaxScaleOnAxis() > 1.01;
+    if (zoomed != _zoomed) setState(() => _zoomed = zoomed);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return InteractiveViewer(
+      transformationController: _transformationController,
+      minScale: 1,
+      maxScale: 5,
+      panEnabled: _zoomed,
+      onInteractionEnd: (_) => _syncZoomState(),
+      child: Center(
+        child: AuthenticatedImage(url: widget.url, fit: BoxFit.contain),
+      ),
     );
   }
 }

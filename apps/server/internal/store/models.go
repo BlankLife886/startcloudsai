@@ -417,6 +417,9 @@ type Order struct {
 	ProviderOrderID        *string
 	ProviderPayAmountCents *int64
 	PaymentMethod          *string
+	ProviderPayURL         *string
+	RequiresManualAmount   *bool
+	ProviderExpiresAt      *time.Time
 	PaidAt                 *time.Time
 	CompletedAt            *time.Time
 	CreatedAt              time.Time

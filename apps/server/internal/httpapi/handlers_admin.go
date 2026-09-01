@@ -420,8 +420,14 @@ func (s *Server) adminListOrders(c *gin.Context, _ *store.User) {
 		}
 		if plan != nil {
 			d["planName"] = plan.Name
+			d["planKind"] = plan.Kind
+			d["durationDays"] = plan.DurationDays
+			d["dailyGrantCents"] = plan.DailyGrantCents
 		} else {
 			d["planName"] = nil
+			d["planKind"] = nil
+			d["durationDays"] = nil
+			d["dailyGrantCents"] = nil
 		}
 		return d
 	}))

@@ -37,6 +37,7 @@ import {
   Star,
   User,
   UserFilled,
+  Wallet,
 } from "@element-plus/icons-vue";
 import AdminDialog from "@/components/AdminDialog.vue";
 import { useAuthStore } from "@/stores/auth";
@@ -117,6 +118,7 @@ const NAV_GROUPS = [
     title: "交易与审计",
     items: [
       { path: "/profitability", label: "成本利润", icon: TrendCharts },
+      { path: "/orders", label: "订单管理", icon: Wallet },
       { path: "/plans", label: "套餐管理", icon: Box },
       { path: "/codes", label: "兑换码", icon: Ticket },
       { path: "/audit", label: "审计日志", icon: List },

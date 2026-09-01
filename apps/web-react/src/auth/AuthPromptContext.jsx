@@ -24,6 +24,7 @@ const pageLabels = {
   "/profile": "个人中心",
   "/submissions": "我的投稿",
   "/wallet": "我的钱包",
+  "/orders": "我的订单",
   "/account": "账号设置",
   "/notifications": "通知中心",
   "/assets": "我的资产",

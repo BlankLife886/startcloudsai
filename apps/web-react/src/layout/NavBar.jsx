@@ -1147,6 +1147,7 @@ export function NavBar() {
                             ["/profile", "bi-person-circle", "个人中心"],
                             ["/submissions", "bi-send-check", "我的投稿"],
                             ["/wallet", "bi-wallet2", "我的钱包"],
+                            ["/orders", "bi-receipt", "我的订单"],
                             ["/account", "bi-person-gear", "账号设置"],
                             ["/developer-api", "bi-code-square", "开发者 API"],
                           ]

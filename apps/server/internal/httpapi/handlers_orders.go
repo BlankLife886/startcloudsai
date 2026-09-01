@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"crypto/hmac"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -21,6 +22,8 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/subscription"
 	"github.com/BlankLife886/startcloudsai/server/internal/wallet"
 )
+
+var errProviderAdjustedAmount = errors.New("provider adjusted payment amount")
 
 func (s *Server) listPlans(c *gin.Context) {
 	plans, err := store.ListPlans(c.Request.Context(), s.St.Pool, true)
@@ -101,10 +104,89 @@ func (s *Server) createOrder(c *gin.Context) {
 		fail(c, apperr.E("plan_not_found", "套餐不存在或已下架", 404))
 		return
 	}
-	order, err := store.InsertOrder(ctx, s.St.Pool, user.ID, plan.ID, plan.PriceCents, plan.GrantCents, plan.BonusCents, "lanjing")
+	existingOrders, err := store.ListPendingOrdersForPlan(ctx, s.St.Pool, user.ID, plan.ID)
 	if err != nil {
 		fail(c, err)
 		return
+	}
+	var reusable *store.Order
+	for _, existing := range existingOrders {
+		if reusable == nil && orderMatchesCheckout(existing, plan, paymentType) {
+			reusable = existing
+		}
+	}
+	for _, existing := range existingOrders {
+		if reusable != nil && existing.ID == reusable.ID {
+			continue
+		}
+		if _, err := s.cancelPendingLanjingOrder(ctx, existing); err != nil {
+			log.Printf("close duplicate lanjing order %s: %v", existing.ID, err)
+			fail(c, apperr.E("payment_order_conflict", "该套餐存在无法自动关闭的待支付订单，请先在我的订单中取消", 409))
+			return
+		}
+	}
+	if reusable != nil {
+		fresh, remote, syncErr := s.syncLanjingOrder(ctx, reusable)
+		if syncErr != nil {
+			log.Printf("sync reusable lanjing order %s: %v", reusable.ID, syncErr)
+			fail(c, apperr.E("payment_provider_error", "现有待支付订单暂时无法读取，请稍后重试", 502))
+			return
+		}
+		if fresh.Status == "pending" {
+			out := lanjingOrderDict(fresh, remote)
+			out["reused"] = true
+			ok(c, out)
+			return
+		}
+	}
+	order, created, err := store.GetOrInsertPendingOrder(ctx, s.St, user.ID, plan.ID, plan.PriceCents,
+		plan.GrantCents, plan.BonusCents, "lanjing")
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if !created {
+		if order.Provider != "lanjing" {
+			fail(c, apperr.E("payment_order_conflict", "该套餐已有待支付订单，请先处理现有订单", 409))
+			return
+		}
+		if order.ProviderOrderID == nil {
+			fail(c, apperr.E("payment_order_creating", "该套餐订单正在创建，请稍后重试", 409))
+			return
+		}
+		fresh, remote, syncErr := s.syncLanjingOrder(ctx, order)
+		if syncErr != nil {
+			log.Printf("sync existing lanjing order %s: %v", order.ID, syncErr)
+			if order.ProviderPayURL != nil {
+				out := orderDict(order, nil)
+				out["reused"] = true
+				ok(c, out)
+				return
+			}
+			fail(c, apperr.E("payment_provider_error", "现有待支付订单暂时无法读取，请稍后重试", 502))
+			return
+		}
+		if fresh.Status == "pending" {
+			var out gin.H
+			if remote != nil {
+				out = lanjingOrderDict(fresh, remote)
+			} else {
+				out = orderDict(fresh, nil)
+			}
+			out["reused"] = true
+			ok(c, out)
+			return
+		}
+		order, created, err = store.GetOrInsertPendingOrder(ctx, s.St, user.ID, plan.ID, plan.PriceCents,
+			plan.GrantCents, plan.BonusCents, "lanjing")
+		if err != nil {
+			fail(c, err)
+			return
+		}
+		if !created {
+			fail(c, apperr.E("payment_order_creating", "该套餐订单正在创建，请稍后重试", 409))
+			return
+		}
 	}
 	remote, err := client.CreateOrder(ctx, lanjingpay.CreateOrderInput{
 		MerchantOrderID: order.ID.String(),
@@ -118,10 +200,14 @@ func (s *Server) createOrder(c *gin.Context) {
 		fail(c, apperr.E("payment_provider_error", "支付渠道暂时不可用，请稍后重试", 502))
 		return
 	}
-	if err := validateRemoteOrder(order, remote); err != nil {
+	if err := validateRemoteOrder(order, remote, true, true); err != nil {
 		_ = client.CloseOrder(ctx, remote.ProviderOrderID)
 		_, _ = store.TransitionPendingOrderStatus(ctx, s.St.Pool, order.ID, "failed")
 		log.Printf("invalid lanjing payment response for order %s: %v", order.ID, err)
+		if errors.Is(err, errProviderAdjustedAmount) {
+			fail(c, apperr.E("payment_amount_conflict", "当前金额已有待支付订单，支付渠道无法保持套餐标价，请稍后重试", 409))
+			return
+		}
 		fail(c, apperr.E("payment_provider_error", "支付渠道返回异常，请稍后重试", 502))
 		return
 	}
@@ -133,14 +219,27 @@ func (s *Server) createOrder(c *gin.Context) {
 		return
 	}
 	payAmountCents, _ := remote.ReallyPriceCents()
+	var expiresAt *time.Time
+	if value := remote.ExpiresAt(); !value.IsZero() {
+		expiresAt = &value
+	}
 	order, err = store.SetOrderProviderDetails(ctx, s.St.Pool, order.ID, remote.ProviderOrderID,
-		payAmountCents, lanjingPaymentMethod(remote.Type))
+		payAmountCents, lanjingPaymentMethod(remote.Type), remote.PayURL, remote.IsAuto == 1, expiresAt)
 	if err != nil {
 		_ = client.CloseOrder(ctx, remote.ProviderOrderID)
 		fail(c, err)
 		return
 	}
 	respondCreated(c, lanjingOrderDict(order, remote))
+}
+
+func orderMatchesCheckout(order *store.Order, plan *store.Plan, paymentType lanjingpay.PaymentType) bool {
+	if order == nil || plan == nil || order.Provider != "lanjing" || order.ProviderOrderID == nil ||
+		order.AmountCents != plan.PriceCents || order.GrantCents != plan.GrantCents || order.BonusCents != plan.BonusCents ||
+		expectedProviderPayAmount(order) != plan.PriceCents || order.PaymentMethod == nil {
+		return false
+	}
+	return *order.PaymentMethod == lanjingPaymentMethod(paymentType)
 }
 
 func (s *Server) resolveLanjingPay(ctx context.Context) (*lanjingpay.Client, settings.LanjingPayConfig, error) {
@@ -184,17 +283,45 @@ func (s *Server) listOrders(c *gin.Context) {
 		fail(c, err)
 		return
 	}
+	status := strings.TrimSpace(c.Query("status"))
+	if status != "" && !store.Contains(store.OrderStatuses, status) {
+		fail(c, apperr.E("validation_error", "无效的订单状态", 422))
+		return
+	}
 	limit, cursor, err := pageParams(c)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	rows, err := store.ListOrders(c.Request.Context(), s.St.Pool, &user.ID, "", nil, limit, cursor)
+	ctx := c.Request.Context()
+	rows, err := store.ListOrders(ctx, s.St.Pool, &user.ID, status, nil, limit, cursor)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	ok(c, buildPage(rows, limit, func(o *store.Order) gin.H { return orderDict(o, nil) }))
+	planIDs := make([]uuid.UUID, 0, len(rows))
+	seenPlans := make(map[uuid.UUID]bool, len(rows))
+	for _, order := range rows {
+		if !seenPlans[order.PlanID] {
+			seenPlans[order.PlanID] = true
+			planIDs = append(planIDs, order.PlanID)
+		}
+	}
+	plans, err := store.GetPlansByIDs(ctx, s.St.Pool, planIDs)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ok(c, buildPage(rows, limit, func(o *store.Order) gin.H {
+		out := orderDict(o, nil)
+		if plan := plans[o.PlanID]; plan != nil {
+			out["planName"] = plan.Name
+			out["planKind"] = plan.Kind
+			out["durationDays"] = plan.DurationDays
+			out["dailyGrantCents"] = plan.DailyGrantCents
+		}
+		return out
+	}))
 }
 
 func (s *Server) getOrder(c *gin.Context) {
@@ -257,8 +384,8 @@ func expectedProviderPayAmount(order *store.Order) int64 {
 	return order.AmountCents
 }
 
-func validateRemoteOrder(order *store.Order, remote *lanjingpay.Order) error {
-	if remote == nil || remote.ProviderOrderID == "" || remote.PayURL == "" {
+func validateRemoteOrder(order *store.Order, remote *lanjingpay.Order, requirePayURL, requireExactAmount bool) error {
+	if remote == nil || remote.ProviderOrderID == "" || (requirePayURL && remote.PayURL == "") {
 		return fmt.Errorf("missing provider order data")
 	}
 	if remote.MerchantOrderID != order.ID.String() {
@@ -275,6 +402,9 @@ func validateRemoteOrder(order *store.Order, remote *lanjingpay.Order) error {
 	if err != nil || payAmountCents <= 0 {
 		return fmt.Errorf("invalid paid amount")
 	}
+	if requireExactAmount && payAmountCents != order.AmountCents {
+		return fmt.Errorf("%w: expected %d, got %d", errProviderAdjustedAmount, order.AmountCents, payAmountCents)
+	}
 	paymentMethod := lanjingPaymentMethod(remote.Type)
 	if paymentMethod == "" {
 		return fmt.Errorf("invalid payment type")
@@ -285,7 +415,40 @@ func validateRemoteOrder(order *store.Order, remote *lanjingpay.Order) error {
 	if order.PaymentMethod != nil && paymentMethod != *order.PaymentMethod {
 		return fmt.Errorf("payment type mismatch")
 	}
+	if remote.IsAuto != 0 && remote.IsAuto != 1 {
+		return fmt.Errorf("invalid manual amount flag")
+	}
+	if remote.State < -1 || remote.State > 2 {
+		return fmt.Errorf("invalid provider state")
+	}
+	if requirePayURL && remote.State != 0 {
+		return fmt.Errorf("new provider order is not pending")
+	}
 	return nil
+}
+
+func validatePaymentConfirmation(order *store.Order, confirmation *lanjingpay.PaymentConfirmation) error {
+	if confirmation == nil || confirmation.MerchantOrderID != order.ID.String() || confirmation.Param != order.ID.String() {
+		return fmt.Errorf("merchant order mismatch")
+	}
+	paymentMethod := lanjingPaymentMethod(confirmation.Type)
+	if paymentMethod == "" || (order.PaymentMethod != nil && paymentMethod != *order.PaymentMethod) {
+		return fmt.Errorf("payment type mismatch")
+	}
+	priceCents, err := lanjingpay.ParseCents(confirmation.Price)
+	if err != nil || priceCents != order.AmountCents {
+		return fmt.Errorf("price mismatch")
+	}
+	paidAmountCents, err := lanjingpay.ParseCents(confirmation.ReallyPrice)
+	if err != nil || paidAmountCents != expectedProviderPayAmount(order) {
+		return fmt.Errorf("paid amount mismatch")
+	}
+	return nil
+}
+
+func isLanjingUnpaid(err error) bool {
+	var apiErr *lanjingpay.APIError
+	return errors.As(err, &apiErr) && apiErr.Code == -1
 }
 
 func lanjingOrderDict(order *store.Order, remote *lanjingpay.Order) gin.H {
@@ -296,7 +459,9 @@ func lanjingOrderDict(order *store.Order, remote *lanjingpay.Order) gin.H {
 	if cents, err := remote.ReallyPriceCents(); err == nil {
 		out["payAmountCents"] = cents
 	}
-	out["requiresManualAmount"] = remote.IsAuto == 1
+	if remote.IsAuto == 0 || remote.IsAuto == 1 {
+		out["requiresManualAmount"] = remote.IsAuto == 1
+	}
 	out["providerState"] = remote.State
 	if expiresAt := remote.ExpiresAt(); !expiresAt.IsZero() {
 		out["expiresAt"] = isoValue(expiresAt)
@@ -316,8 +481,27 @@ func (s *Server) syncLanjingOrder(ctx context.Context, order *store.Order) (*sto
 	if err != nil {
 		return order, nil, err
 	}
-	if err := validateRemoteOrder(order, remote); err != nil {
+	if err := validateRemoteOrder(order, remote, false, false); err != nil {
 		return order, remote, err
+	}
+	var expiresAt *time.Time
+	if value := remote.ExpiresAt(); !value.IsZero() {
+		expiresAt = &value
+	}
+	order, err = store.UpdateOrderPaymentDisplay(ctx, s.St.Pool, order.ID, remote.PayURL, remote.IsAuto == 1, expiresAt)
+	if err != nil {
+		return order, remote, err
+	}
+	confirmation, checkErr := client.CheckOrder(ctx, *order.ProviderOrderID)
+	if checkErr == nil {
+		if err := validatePaymentConfirmation(order, confirmation); err != nil {
+			return order, remote, fmt.Errorf("invalid lanjing payment confirmation: %w", err)
+		}
+		completed, err := s.completeOrder(ctx, order)
+		return completed, remote, err
+	}
+	if !isLanjingUnpaid(checkErr) {
+		return order, remote, checkErr
 	}
 	switch remote.State {
 	case 1, 2:
@@ -359,31 +543,40 @@ func (s *Server) closeOrder(c *gin.Context) {
 		ok(c, orderDict(order, nil))
 		return
 	}
-	client, _, configErr := s.resolveLanjingPay(ctx)
-	if configErr != nil || client == nil || order.Provider != "lanjing" || order.ProviderOrderID == nil {
-		fail(c, apperr.E("payment_unavailable", "支付渠道尚未配置", 503))
-		return
-	}
-	if err := client.CloseOrder(ctx, *order.ProviderOrderID); err != nil {
-		fresh, _, syncErr := s.syncLanjingOrder(ctx, order)
-		if syncErr == nil && fresh != nil && fresh.Status == "completed" {
-			ok(c, orderDict(fresh, nil))
-			return
-		}
-		log.Printf("close lanjing order %s: %v", order.ID, err)
+	order, err = s.cancelPendingLanjingOrder(ctx, order)
+	if err != nil {
+		log.Printf("close lanjing order %s: %v", orderID, err)
 		fail(c, apperr.E("payment_provider_error", "订单暂时无法关闭，请稍后重试", 502))
 		return
 	}
-	if _, err := store.TransitionPendingOrderStatus(ctx, s.St.Pool, order.ID, "expired"); err != nil {
-		fail(c, err)
-		return
-	}
-	order, err = store.GetOrder(ctx, s.St.Pool, order.ID)
-	if err != nil {
-		fail(c, err)
-		return
-	}
 	ok(c, orderDict(order, nil))
+}
+
+func (s *Server) cancelPendingLanjingOrder(ctx context.Context, order *store.Order) (*store.Order, error) {
+	if order == nil || order.Status != "pending" {
+		return order, nil
+	}
+	if order.Provider == "lanjing" && order.ProviderOrderID == nil {
+		if _, err := store.TransitionPendingOrderStatus(ctx, s.St.Pool, order.ID, "expired"); err != nil {
+			return order, err
+		}
+		return store.GetOrder(ctx, s.St.Pool, order.ID)
+	}
+	client, _, configErr := s.resolveLanjingPay(ctx)
+	if configErr != nil || client == nil || order.Provider != "lanjing" || order.ProviderOrderID == nil {
+		return order, fmt.Errorf("payment provider unavailable")
+	}
+	if err := client.CloseOrder(ctx, *order.ProviderOrderID); err != nil {
+		fresh, _, syncErr := s.syncLanjingOrder(ctx, order)
+		if syncErr == nil && fresh != nil && (fresh.Status == "completed" || fresh.Status == "expired") {
+			return fresh, nil
+		}
+		return order, err
+	}
+	if _, err := store.TransitionPendingOrderStatus(ctx, s.St.Pool, order.ID, "expired"); err != nil {
+		return order, err
+	}
+	return store.GetOrder(ctx, s.St.Pool, order.ID)
 }
 
 func (s *Server) lanjingPaymentNotify(c *gin.Context) {

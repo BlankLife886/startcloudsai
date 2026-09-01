@@ -41,6 +41,7 @@ func TestPaymentRoutesFailClosedWithoutProviderConfiguration(t *testing.T) {
 		http.MethodGet + " /api/v1/orders/:id",
 		http.MethodPost + " /api/v1/orders/:id/close",
 		http.MethodGet + " /api/v1/payments/lanjing/notify",
+		http.MethodGet + " /api/v1/admin/orders",
 	} {
 		if !registered[route] {
 			t.Fatalf("payment route is not registered: %s", route)

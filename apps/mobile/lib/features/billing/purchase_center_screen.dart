@@ -930,7 +930,7 @@ class _PaymentOrderSheetState extends State<PaymentOrderSheet> {
                 Padding(
                   padding: const EdgeInsets.only(top: 8),
                   child: Text(
-                    '付款时请确认金额必须为 ${_cny(payAmount)}',
+                    '扫码后请手动输入 ${_cny(payAmount)}，付款金额必须完全一致',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       color: Theme.of(context).colorScheme.error,

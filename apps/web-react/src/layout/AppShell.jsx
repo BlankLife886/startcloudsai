@@ -23,6 +23,7 @@ const documentScrollRoutes = new Set([
   "/prompts",
   "/history",
   "/submissions",
+  "/orders",
   "/share",
 ]);
 
@@ -115,6 +116,8 @@ export function AppShell() {
     mainClasses.push("main--profile-console");
   if (location.pathname === "/wallet")
     mainClasses.push("main--wallet-console");
+  if (location.pathname === "/orders")
+    mainClasses.push("main--orders-console");
   if (location.pathname === "/account")
     mainClasses.push("main--settings-console");
   if (location.pathname === "/developer-api")

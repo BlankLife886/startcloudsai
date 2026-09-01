@@ -178,29 +178,44 @@ func (s *Server) reconcilePaymentOrder(ctx context.Context, order *store.Order) 
 	if !identityValid || !paymentMethodValid || priceErr != nil || providerAmount != order.AmountCents {
 		result.Outcome = "identity_or_amount_mismatch"
 		result.Detail = pointer("上游订单身份、支付渠道或标价与本站不一致")
-	} else if remote.State == 1 || remote.State == 2 {
-		if paidErr != nil || paidAmount != expectedProviderPayAmount(order) {
-			result.Outcome = "paid_amount_mismatch"
-			result.Detail = pointer("上游实付金额与本站支付快照不一致")
-		} else if order.Status == "completed" {
-			result.Outcome = "matched"
-		} else if order.Status == "pending" || order.Status == "paid" {
-			if _, err := s.completeOrder(ctx, order); err != nil {
-				result.Outcome = "repair_failed"
-				result.Detail = pointer(err.Error())
-			} else {
-				result.Outcome = "repaired"
-				result.Detail = pointer("上游已支付，本站已自动补齐到账")
-			}
-		} else {
-			result.Outcome = "local_terminal_mismatch"
-			result.Detail = pointer("上游已支付，但本站订单处于不可自动修复的终态")
-		}
-	} else if order.Status == "completed" {
-		result.Outcome = "local_ahead"
-		result.Detail = pointer("本站已完成，但上游尚未确认支付")
 	} else {
-		result.Outcome = "matched"
+		paymentConfirmed := remote.State == 1 || remote.State == 2
+		confirmation, checkErr := client.CheckOrder(ctx, *order.ProviderOrderID)
+		if checkErr == nil {
+			if err := validatePaymentConfirmation(order, confirmation); err != nil {
+				result.Outcome = "identity_or_amount_mismatch"
+				result.Detail = pointer("上游支付确认参数与本站订单不一致")
+			} else {
+				paymentConfirmed = true
+			}
+		} else if !isLanjingUnpaid(checkErr) {
+			result.Outcome = "provider_error"
+			result.Detail = pointer(checkErr.Error())
+		}
+		if result.Detail == nil && paymentConfirmed {
+			if paidErr != nil || paidAmount != expectedProviderPayAmount(order) {
+				result.Outcome = "paid_amount_mismatch"
+				result.Detail = pointer("上游实付金额与本站支付快照不一致")
+			} else if order.Status == "completed" {
+				result.Outcome = "matched"
+			} else if order.Status == "pending" || order.Status == "paid" || order.Status == "expired" {
+				if _, err := s.completeOrder(ctx, order); err != nil {
+					result.Outcome = "repair_failed"
+					result.Detail = pointer(err.Error())
+				} else {
+					result.Outcome = "repaired"
+					result.Detail = pointer("上游已支付，本站已自动补齐到账")
+				}
+			} else {
+				result.Outcome = "local_terminal_mismatch"
+				result.Detail = pointer("上游已支付，但本站订单处于不可自动修复的终态")
+			}
+		} else if result.Detail == nil && order.Status == "completed" {
+			result.Outcome = "local_ahead"
+			result.Detail = pointer("本站已完成，但上游尚未确认支付")
+		} else if result.Detail == nil {
+			result.Outcome = "matched"
+		}
 	}
 	if result.Outcome != "matched" && result.Outcome != "repaired" {
 		s.recordRisk(ctx, store.NewSecurityRiskEvent{UserID: &order.UserID, Category: "payment_reconciliation",

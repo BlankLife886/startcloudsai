@@ -405,6 +405,7 @@ func (s *Server) Router() *gin.Engine {
 	admin.GET("/users/:id/wallet/entries", s.adminOnly(s.adminUserLedger))
 	admin.POST("/users/:id/wallet/entries", s.adminOnly(s.adminWalletAdjust))
 	admin.GET("/wallet/entries", s.adminOnly(s.adminSiteLedger))
+	admin.GET("/orders", s.adminOnly(s.adminListOrders))
 	admin.GET("/plans", s.adminOnly(s.adminListPlans))
 	admin.POST("/plans", s.adminOnly(s.adminCreatePlan))
 	admin.PATCH("/plan-order", s.adminOnly(s.adminReorderPlans))

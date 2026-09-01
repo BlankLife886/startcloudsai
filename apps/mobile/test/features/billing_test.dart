@@ -362,7 +362,10 @@ void main() {
     expect(find.byType(PaymentOrderSheet), findsOneWidget);
     expect(find.byType(QrImageView), findsOneWidget);
     expect(find.text('扫码支付 ¥98.00'), findsOneWidget);
-    expect(find.textContaining('付款时请确认金额必须为 ¥98.00'), findsOneWidget);
+    expect(
+      find.textContaining('扫码后请手动输入 ¥98.00，付款金额必须完全一致'),
+      findsOneWidget,
+    );
     expect(tester.takeException(), isNull);
   });
 

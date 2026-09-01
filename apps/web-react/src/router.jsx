@@ -265,6 +265,13 @@ export const router = createBrowserRouter([
             ),
           },
           {
+            path: "/orders",
+            lazy: lazyView(
+              () => import("./views/OrdersView.jsx"),
+              "OrdersView",
+            ),
+          },
+          {
             path: "/account",
             lazy: lazyView(
               () => import("./views/AccountSettingsView.jsx"),

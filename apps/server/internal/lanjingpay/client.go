@@ -61,6 +61,14 @@ type ServerState struct {
 	LastPayment   time.Time
 }
 
+type PaymentConfirmation struct {
+	MerchantOrderID string
+	Param           string
+	Type            PaymentType
+	Price           string
+	ReallyPrice     string
+}
+
 func (o *Order) PriceCents() (int64, error)       { return ParseCents(o.Price) }
 func (o *Order) ReallyPriceCents() (int64, error) { return ParseCents(o.ReallyPrice) }
 
@@ -195,6 +203,80 @@ func (c *Client) GetOrder(ctx context.Context, providerOrderID string) (*Order, 
 	return c.orderRequest(ctx, "/getOrder", url.Values{"orderId": {providerOrderID}})
 }
 
+func (c *Client) CheckOrder(ctx context.Context, providerOrderID string) (*PaymentConfirmation, error) {
+	providerOrderID = strings.TrimSpace(providerOrderID)
+	if providerOrderID == "" {
+		return nil, errors.New("provider order ID is required")
+	}
+	var response responseEnvelope[string]
+	if err := c.postForm(ctx, "/checkOrder", url.Values{"orderId": {providerOrderID}}, &response); err != nil {
+		return nil, err
+	}
+	if response.Code != 1 || strings.TrimSpace(response.Data) == "" {
+		return nil, &APIError{Code: response.Code, Message: response.Message}
+	}
+	callbackURL, err := url.Parse(strings.TrimSpace(response.Data))
+	if err != nil || callbackURL.Scheme == "" || callbackURL.Host == "" {
+		return nil, fmt.Errorf("lanjing pay /checkOrder: invalid callback URL")
+	}
+	if callbackURL.Scheme != "http" && callbackURL.Scheme != "https" {
+		return nil, fmt.Errorf("lanjing pay /checkOrder: unsupported callback URL scheme")
+	}
+	values := callbackURL.Query()
+	payID, err := requiredSingleQueryValue(values, "payId")
+	if err != nil {
+		return nil, fmt.Errorf("lanjing pay /checkOrder: %w", err)
+	}
+	param, err := requiredSingleQueryValue(values, "param")
+	if err != nil {
+		return nil, fmt.Errorf("lanjing pay /checkOrder: %w", err)
+	}
+	paymentTypeValue, err := requiredSingleQueryValue(values, "type")
+	if err != nil {
+		return nil, fmt.Errorf("lanjing pay /checkOrder: %w", err)
+	}
+	price, err := requiredSingleQueryValue(values, "price")
+	if err != nil {
+		return nil, fmt.Errorf("lanjing pay /checkOrder: %w", err)
+	}
+	reallyPrice, err := requiredSingleQueryValue(values, "reallyPrice")
+	if err != nil {
+		return nil, fmt.Errorf("lanjing pay /checkOrder: %w", err)
+	}
+	signature, err := requiredSingleQueryValue(values, "sign")
+	if err != nil {
+		return nil, fmt.Errorf("lanjing pay /checkOrder: %w", err)
+	}
+	paymentTypeNumber, err := strconv.Atoi(paymentTypeValue)
+	if err != nil || (PaymentType(paymentTypeNumber) != Wechat && PaymentType(paymentTypeNumber) != Alipay) {
+		return nil, fmt.Errorf("lanjing pay /checkOrder: invalid payment type")
+	}
+	if _, err := ParseCents(price); err != nil {
+		return nil, fmt.Errorf("lanjing pay /checkOrder: invalid price: %w", err)
+	}
+	if _, err := ParseCents(reallyPrice); err != nil {
+		return nil, fmt.Errorf("lanjing pay /checkOrder: invalid paid amount: %w", err)
+	}
+	if !c.VerifyCallback(payID, param, paymentTypeValue, price, reallyPrice, signature) {
+		return nil, fmt.Errorf("lanjing pay /checkOrder: invalid callback signature")
+	}
+	return &PaymentConfirmation{
+		MerchantOrderID: payID,
+		Param:           param,
+		Type:            PaymentType(paymentTypeNumber),
+		Price:           price,
+		ReallyPrice:     reallyPrice,
+	}, nil
+}
+
+func requiredSingleQueryValue(values url.Values, key string) (string, error) {
+	items := values[key]
+	if len(items) != 1 || strings.TrimSpace(items[0]) == "" {
+		return "", fmt.Errorf("callback parameter %s must appear exactly once", key)
+	}
+	return strings.TrimSpace(items[0]), nil
+}
+
 func (c *Client) CloseOrder(ctx context.Context, providerOrderID string) error {
 	providerOrderID = strings.TrimSpace(providerOrderID)
 	if providerOrderID == "" {
@@ -248,16 +330,16 @@ type responseEnvelope[T any] struct {
 }
 
 type wireOrder struct {
-	MerchantOrderID string      `json:"payId"`
-	ProviderOrderID string      `json:"orderId"`
-	Type            PaymentType `json:"payType"`
-	Price           json.Number `json:"price"`
-	ReallyPrice     json.Number `json:"reallyPrice"`
-	PayURL          string      `json:"payUrl"`
-	IsAuto          int         `json:"isAuto"`
-	State           int         `json:"state"`
-	TimeoutMinutes  int         `json:"timeOut"`
-	Date            int64       `json:"date"`
+	MerchantOrderID string          `json:"payId"`
+	ProviderOrderID string          `json:"orderId"`
+	Type            json.RawMessage `json:"payType"`
+	Price           json.RawMessage `json:"price"`
+	ReallyPrice     json.RawMessage `json:"reallyPrice"`
+	PayURL          string          `json:"payUrl"`
+	IsAuto          json.RawMessage `json:"isAuto"`
+	State           json.RawMessage `json:"state"`
+	TimeoutMinutes  json.RawMessage `json:"timeOut"`
+	Date            json.RawMessage `json:"date"`
 }
 
 type wireServerState struct {
@@ -274,12 +356,82 @@ func parseRawInt(raw json.RawMessage) (int64, error) {
 	return strconv.ParseInt(value, 10, 64)
 }
 
+func parseRawString(raw json.RawMessage) (string, error) {
+	value := strings.TrimSpace(string(raw))
+	if value == "" || value == "null" {
+		return "", nil
+	}
+	if strings.HasPrefix(value, `"`) {
+		var decoded string
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(decoded), nil
+	}
+	return value, nil
+}
+
 func parseRawMillis(raw json.RawMessage) (time.Time, error) {
 	value, err := parseRawInt(raw)
 	if err != nil || value <= 0 {
 		return time.Time{}, err
 	}
-	return time.UnixMilli(value).UTC(), nil
+	return parseUnixTimestamp(value), nil
+}
+
+func parseUnixTimestamp(value int64) time.Time {
+	if value <= 0 {
+		return time.Time{}
+	}
+	if value < 100_000_000_000 {
+		return time.Unix(value, 0).UTC()
+	}
+	return time.UnixMilli(value).UTC()
+}
+
+func NormalizePaymentURL(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", nil
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		parsed, err := url.Parse(value)
+		if err == nil && parsed.Scheme != "" {
+			return validatedPaymentURL(parsed)
+		}
+		decoded, decodeErr := url.PathUnescape(value)
+		if decodeErr != nil {
+			return "", fmt.Errorf("decode payment URL: %w", decodeErr)
+		}
+		decoded = strings.TrimSpace(decoded)
+		if decoded == value {
+			break
+		}
+		value = decoded
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme == "" {
+		return "", fmt.Errorf("invalid payment URL")
+	}
+	return validatedPaymentURL(parsed)
+}
+
+func validatedPaymentURL(parsed *url.URL) (string, error) {
+	scheme := strings.ToLower(parsed.Scheme)
+	switch scheme {
+	case "http", "https":
+		if parsed.Host == "" {
+			return "", fmt.Errorf("payment URL has no host")
+		}
+	case "alipay", "alipays", "weixin":
+		if parsed.Host == "" && parsed.Opaque == "" && parsed.Path == "" {
+			return "", fmt.Errorf("payment URL has no target")
+		}
+	default:
+		return "", fmt.Errorf("unsupported payment URL scheme %q", parsed.Scheme)
+	}
+	parsed.Scheme = scheme
+	return parsed.String(), nil
 }
 
 func (c *Client) orderRequest(ctx context.Context, path string, values url.Values) (*Order, error) {
@@ -291,17 +443,49 @@ func (c *Client) orderRequest(ctx context.Context, path string, values url.Value
 		return nil, &APIError{Code: response.Code, Message: response.Message}
 	}
 	wire := response.Data
+	paymentType, err := parseRawInt(wire.Type)
+	if err != nil {
+		return nil, fmt.Errorf("lanjing pay %s: invalid payment type: %w", path, err)
+	}
+	price, err := parseRawString(wire.Price)
+	if err != nil {
+		return nil, fmt.Errorf("lanjing pay %s: invalid price: %w", path, err)
+	}
+	reallyPrice, err := parseRawString(wire.ReallyPrice)
+	if err != nil {
+		return nil, fmt.Errorf("lanjing pay %s: invalid paid amount: %w", path, err)
+	}
+	isAuto, err := parseRawInt(wire.IsAuto)
+	if err != nil {
+		return nil, fmt.Errorf("lanjing pay %s: invalid manual amount flag: %w", path, err)
+	}
+	state, err := parseRawInt(wire.State)
+	if err != nil {
+		return nil, fmt.Errorf("lanjing pay %s: invalid order state: %w", path, err)
+	}
+	timeoutMinutes, err := parseRawInt(wire.TimeoutMinutes)
+	if err != nil {
+		return nil, fmt.Errorf("lanjing pay %s: invalid timeout: %w", path, err)
+	}
+	createdAtValue, err := parseRawInt(wire.Date)
+	if err != nil {
+		return nil, fmt.Errorf("lanjing pay %s: invalid order timestamp: %w", path, err)
+	}
+	payURL, err := NormalizePaymentURL(wire.PayURL)
+	if err != nil {
+		return nil, fmt.Errorf("lanjing pay %s: invalid payment URL: %w", path, err)
+	}
 	return &Order{
 		MerchantOrderID: wire.MerchantOrderID,
 		ProviderOrderID: wire.ProviderOrderID,
-		Type:            wire.Type,
-		Price:           wire.Price.String(),
-		ReallyPrice:     wire.ReallyPrice.String(),
-		PayURL:          wire.PayURL,
-		IsAuto:          wire.IsAuto,
-		State:           wire.State,
-		TimeoutMinutes:  wire.TimeoutMinutes,
-		CreatedAt:       time.UnixMilli(wire.Date).UTC(),
+		Type:            PaymentType(paymentType),
+		Price:           price,
+		ReallyPrice:     reallyPrice,
+		PayURL:          payURL,
+		IsAuto:          int(isAuto),
+		State:           int(state),
+		TimeoutMinutes:  int(timeoutMinutes),
+		CreatedAt:       parseUnixTimestamp(createdAtValue),
 	}, nil
 }
 

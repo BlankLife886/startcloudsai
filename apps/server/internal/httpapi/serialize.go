@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"github.com/BlankLife886/startcloudsai/server/internal/lanjingpay"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
 )
@@ -575,11 +576,32 @@ func orderDict(o *store.Order, payURL *string) gin.H {
 		"providerPayAmountCents": o.ProviderPayAmountCents,
 		"payAmountCents":         o.ProviderPayAmountCents,
 		"paymentMethod":          o.PaymentMethod,
-		"payUrl":                 payURL,
+		"providerOrderId":        o.ProviderOrderID,
+		"payUrl":                 normalizedPaymentURL(firstNonEmptyString(payURL, o.ProviderPayURL)),
+		"requiresManualAmount":   o.RequiresManualAmount,
+		"expiresAt":              iso(o.ProviderExpiresAt),
 		"paidAt":                 iso(o.PaidAt),
 		"completedAt":            iso(o.CompletedAt),
 		"createdAt":              isoValue(o.CreatedAt),
 	}
+}
+
+func normalizedPaymentURL(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	normalized, err := lanjingpay.NormalizePaymentURL(*value)
+	if err != nil || normalized == "" {
+		return nil
+	}
+	return &normalized
+}
+
+func firstNonEmptyString(preferred, fallback *string) *string {
+	if preferred != nil && strings.TrimSpace(*preferred) != "" {
+		return preferred
+	}
+	return fallback
 }
 
 func adminOrderDict(o *store.Order, user *store.User) gin.H {

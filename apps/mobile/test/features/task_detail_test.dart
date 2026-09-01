@@ -173,6 +173,28 @@ void main() {
 
     expect(find.text('3/3'), findsOneWidget);
     expect(find.text('1/3'), findsNothing);
+
+    await tester.tap(find.byTooltip('全屏预览'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('task-fullscreen-page-view')), findsOneWidget);
+    expect(find.byKey(const Key('task-fullscreen-thumbnails')), findsOneWidget);
+    expect(find.text('3 / 3'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('task-fullscreen-thumbnail-0')));
+    await tester.pumpAndSettle();
+    expect(find.text('1 / 3'), findsOneWidget);
+
+    await tester.drag(
+      find.byKey(const Key('task-fullscreen-page-view')),
+      const Offset(-240, 0),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('2 / 3'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('task-fullscreen-close')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('task-fullscreen-page-view')), findsNothing);
+    expect(find.text('2/3'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 

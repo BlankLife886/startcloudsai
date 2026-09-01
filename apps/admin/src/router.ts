@@ -38,6 +38,7 @@ const dashboardView = memoizeRouteLoader(
 const usersView = memoizeRouteLoader(() => import("@/views/UsersView.vue"));
 const codesView = memoizeRouteLoader(() => import("@/views/CodesView.vue"));
 const plansView = memoizeRouteLoader(() => import("@/views/PlansView.vue"));
+const ordersView = memoizeRouteLoader(() => import("@/views/OrdersView.vue"));
 const trialApplicationsView = memoizeRouteLoader(
   () => import("@/views/TrialApplicationsView.vue"),
 );
@@ -95,6 +96,7 @@ const routeLoaders = new Map<string, RouteLoader>([
   ["/users", usersView],
   ["/codes", codesView],
   ["/plans", plansView],
+  ["/orders", ordersView],
   ["/trial-applications", trialApplicationsView],
   ["/checkin-activity", checkinSettingsView],
   ["/growth-groups", growthGroupsView],
@@ -164,6 +166,11 @@ const router = createRouter({
           path: "plans",
           component: plansView,
           meta: { title: "套餐管理" },
+        },
+        {
+          path: "orders",
+          component: ordersView,
+          meta: { title: "订单管理" },
         },
         {
           path: "trial-applications",

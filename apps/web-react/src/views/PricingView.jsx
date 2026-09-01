@@ -208,12 +208,26 @@ function planFeatures(plan) {
 }
 
 function checkoutCountdown(expiresAt, now) {
-  const remaining = Math.max(0, new Date(expiresAt || 0).getTime() - now);
+	const expiresAtMs = new Date(expiresAt || "").getTime();
+	if (!Number.isFinite(expiresAtMs)) {
+		return { expired: false, label: null };
+	}
+	const remaining = Math.max(0, expiresAtMs - now);
   const seconds = Math.ceil(remaining / 1000);
   return {
     expired: seconds <= 0,
     label: `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`,
   };
+}
+
+function mergePaymentOrder(previous, current) {
+	if (!previous) return current;
+	if (!current) return previous;
+	const merged = { ...previous, ...current };
+	if (!current.payUrl && previous.payUrl) merged.payUrl = previous.payUrl;
+	if (!current.expiresAt && previous.expiresAt) merged.expiresAt = previous.expiresAt;
+	if (!current.payUrl && previous.requiresManualAmount) merged.requiresManualAmount = true;
+	return merged;
 }
 
 function collectRawModels(runtimeConfig) {
@@ -506,15 +520,15 @@ export function PricingView() {
             );
           }
           setCheckout((value) =>
-            value?.order?.id === order.id
-              ? { ...value, order: { ...value.order, ...current }, error: "" }
+			value?.order?.id === order.id
+				? { ...value, order: mergePaymentOrder(value.order, current), error: "" }
               : value,
           );
           return;
         }
         setCheckout((value) =>
-          value?.order?.id === order.id
-            ? { ...value, order: { ...value.order, ...current }, error: "" }
+		value?.order?.id === order.id
+			? { ...value, order: mergePaymentOrder(value.order, current), error: "" }
             : value,
         );
         if (current?.status === "expired" || current?.status === "failed") return;
@@ -771,6 +785,8 @@ export function PricingView() {
       order: null,
       loading: false,
       error: "",
+		cancelConfirm: false,
+		cancelled: false,
     });
   }
   async function createPaymentOrder(method) {
@@ -782,7 +798,15 @@ export function PricingView() {
         paymentMethod: method,
       });
       setCheckoutNow(Date.now());
-      setCheckout((value) => ({ ...value, method, order, loading: false, error: "" }));
+		setCheckout((value) => ({
+			...value,
+			method: order.paymentMethod || method,
+			order,
+			loading: false,
+			error: "",
+			cancelConfirm: false,
+			cancelled: false,
+		}));
     } catch (error) {
       setCheckout((value) => ({
         ...value,
@@ -797,15 +821,23 @@ export function PricingView() {
       setCheckout(null);
       return;
     }
-    setCheckout((value) => ({ ...value, loading: true, error: "" }));
-    try {
-      await apiPost(`/orders/${encodeURIComponent(order.id)}/close`);
-      setCheckout(null);
+		setCheckout((value) => ({ ...value, loading: true, error: "" }));
+		try {
+			const current = await apiPost(`/orders/${encodeURIComponent(order.id)}/close`);
+			setCheckout((value) => value?.order?.id === order.id ? {
+				...value,
+				order: mergePaymentOrder(value.order, current),
+				loading: false,
+				error: "",
+				cancelConfirm: false,
+				cancelled: current?.status === "expired",
+			} : value);
     } catch (error) {
       setCheckout((value) => ({
         ...value,
         loading: false,
-        error: error?.message || "订单关闭失败，请稍后重试",
+				error: error?.message || "订单关闭失败，请稍后重试",
+				cancelConfirm: false,
       }));
     }
   }
@@ -1300,8 +1332,10 @@ export function PricingView() {
                 checkout={checkout}
                 now={checkoutNow}
                 onCancel={cancelPaymentOrder}
+				onRequestCancel={() => setCheckout((value) => ({ ...value, cancelConfirm: true, error: "" }))}
+				onKeepPaying={() => setCheckout((value) => ({ ...value, cancelConfirm: false }))}
                 onRetry={() =>
-                  setCheckout((value) => ({ ...value, order: null, error: "" }))
+					setCheckout((value) => ({ ...value, order: null, error: "", cancelled: false, cancelConfirm: false }))
                 }
                 t={t}
               />
@@ -1356,18 +1390,18 @@ export function PricingView() {
   );
 }
 
-function PaymentQRCode({ checkout, now, onCancel, onRetry, t }) {
-  const order = checkout.order;
-  const countdown = checkoutCountdown(order.expiresAt, now);
-  const terminal = countdown.expired || order.status === "expired" || order.status === "failed";
-  const paymentName = checkout.method === "wechat" ? "微信" : "支付宝";
+function PaymentQRCode({ checkout, now, onCancel, onRequestCancel, onKeepPaying, onRetry, t }) {
+	const order = checkout.order;
+	const countdown = checkoutCountdown(order.expiresAt, now);
+	const terminal = order.status === "expired" || order.status === "failed";
+	const paymentName = (order.paymentMethod || checkout.method) === "wechat" ? "微信" : "支付宝";
   const amount = formatCents(order.payAmountCents ?? order.amountCents);
 
   if (terminal) {
     return (
       <div className="pp-checkout__expired">
         <Clock3 size={38} aria-hidden="true" />
-        <strong>{t("支付订单已失效")}</strong>
+			<strong>{t(checkout.cancelled ? "支付订单已取消" : "支付订单已失效")}</strong>
         <button type="button" onClick={onRetry}>
           <RefreshCw size={17} aria-hidden="true" />
           {t("重新创建")}
@@ -1384,25 +1418,39 @@ function PaymentQRCode({ checkout, now, onCancel, onRetry, t }) {
       <div className="pp-checkout__amount">
         <small>{t("应付金额")}</small>
         <strong>{amount}</strong>
-        <span>
-          <Clock3 size={14} aria-hidden="true" />
-          {t(`请在 ${countdown.label} 内完成`)}
-        </span>
+		<span>
+			<Clock3 size={14} aria-hidden="true" />
+			{t(countdown.expired ? "正在确认订单状态" : countdown.label ? `请在 ${countdown.label} 内完成` : "请尽快完成支付")}
+		</span>
       </div>
-      {order.requiresManualAmount && (
-        <p className="pp-checkout__notice">
-          {t(`扫码后请确认金额为 ${amount}`)}
-        </p>
+	{order.requiresManualAmount && (
+		<p className="pp-checkout__notice">
+			{t(`扫码后请手动输入 ${amount}，付款金额必须完全一致`)}
+		</p>
       )}
-      {checkout.error && <p className="pp-checkout__error">{t(checkout.error)}</p>}
-      <div className="pp-checkout__pay-actions">
+		{checkout.error && <p className="pp-checkout__error">{t(checkout.error)}</p>}
+		{checkout.cancelConfirm && (
+			<div className="pp-checkout__confirm" role="alert">
+				<div>
+					<strong>{t("确认取消订单？")}</strong>
+					<span>{t("确认后当前二维码将失效，未付款不会产生扣款。")}</span>
+				</div>
+				<div>
+					<button type="button" disabled={checkout.loading} onClick={onKeepPaying}>{t("返回支付")}</button>
+					<button type="button" disabled={checkout.loading} onClick={onCancel}>
+						{checkout.loading && <LoaderCircle className="is-spinning" size={16} aria-hidden="true" />}
+						{t(checkout.loading ? "取消中" : "确认取消")}
+					</button>
+				</div>
+			</div>
+		)}
+		<div className="pp-checkout__pay-actions">
         <a href={order.payUrl} target="_blank" rel="noreferrer">
           <ExternalLink size={16} aria-hidden="true" />
           {t(`打开${paymentName}`)}
         </a>
-        <button type="button" disabled={checkout.loading} onClick={onCancel}>
-          {checkout.loading && <LoaderCircle className="is-spinning" size={16} aria-hidden="true" />}
-          {t("取消订单")}
+			<button type="button" disabled={checkout.loading || checkout.cancelConfirm} onClick={onRequestCancel}>
+				{t("取消订单")}
         </button>
       </div>
     </div>
