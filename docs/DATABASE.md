@@ -52,9 +52,9 @@
 
 历史迁移 `00008` 曾创建 `admin_access_keys`，迁移 `00011` 已将该表删除。当前管理员认证只依赖 `admin_accounts` 与 `admin_sessions`，不生成、不保存也不校验管理员密钥。
 
-## 钱包与历史支付数据
+## 钱包与支付数据
 
-支付、订单、套餐购买和订阅 API 当前在所有环境中停用。以下 `plans`、`orders`、`subscriptions` 表仍保留，用于已有部署无损迁移和历史数据审计；它们不代表存在可用支付入口。
+蓝鲸支付配置完整并启用后，用户可以购买充值或订阅套餐。`plans`、`orders`、`subscriptions` 与钱包账本共同构成支付和权益发放的持久化边界。
 
 ### `wallets`
 
@@ -89,7 +89,7 @@
 
 ### `orders`
 
-订单保存用户、套餐和下单时的 `amount_cents`、`grant_cents`、`bonus_cents` 快照。状态为 `pending|paid|completed|failed|expired`；`(provider, provider_order_id)` 对非空 provider order 唯一。订单完成条件更新与入账/开通订阅位于同一事务。
+订单保存用户、套餐和下单时的 `amount_cents`、`grant_cents`、`bonus_cents` 快照。`provider_pay_amount_cents` 保存蓝鲸创建订单时返回的实际应付金额，`payment_method` 保存 `alipay|wechat` 渠道；回调、主动查单和对账均以这两个不可变快照校验，迁移前历史订单为空时回退套餐标价。状态为 `pending|paid|completed|failed|expired`；`(provider, provider_order_id)` 对非空 provider order 唯一。订单完成条件更新与入账/开通订阅位于同一事务，收入统计优先使用实际支付金额。
 
 ### `subscriptions`
 

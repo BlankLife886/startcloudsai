@@ -147,7 +147,7 @@ func pointer[T any](value T) *T { return &value }
 
 func (s *Server) reconcilePaymentOrder(ctx context.Context, order *store.Order) (*store.PaymentReconciliation, error) {
 	result := &store.PaymentReconciliation{OrderID: order.ID, Provider: order.Provider, LocalStatus: order.Status,
-		ExpectedAmountCents: order.AmountCents, Outcome: "provider_error"}
+		ExpectedAmountCents: expectedProviderPayAmount(order), Outcome: "provider_error"}
 	client, _, err := s.resolveLanjingPay(ctx)
 	if err != nil || client == nil {
 		if err == nil {
@@ -173,13 +173,15 @@ func (s *Server) reconcilePaymentOrder(ctx context.Context, order *store.Order) 
 		result.ProviderPaidAmountCents = pointer(paidAmount)
 	}
 	identityValid := remote.MerchantOrderID == order.ID.String() && remote.ProviderOrderID == *order.ProviderOrderID
-	if !identityValid || priceErr != nil || providerAmount != order.AmountCents {
+	paymentMethod := lanjingPaymentMethod(remote.Type)
+	paymentMethodValid := paymentMethod != "" && (order.PaymentMethod == nil || paymentMethod == *order.PaymentMethod)
+	if !identityValid || !paymentMethodValid || priceErr != nil || providerAmount != order.AmountCents {
 		result.Outcome = "identity_or_amount_mismatch"
-		result.Detail = pointer("上游订单身份或标价与本站不一致")
+		result.Detail = pointer("上游订单身份、支付渠道或标价与本站不一致")
 	} else if remote.State == 1 || remote.State == 2 {
-		if paidErr != nil || paidAmount != order.AmountCents {
+		if paidErr != nil || paidAmount != expectedProviderPayAmount(order) {
 			result.Outcome = "paid_amount_mismatch"
-			result.Detail = pointer("上游实付金额与本站订单金额不一致")
+			result.Detail = pointer("上游实付金额与本站支付快照不一致")
 		} else if order.Status == "completed" {
 			result.Outcome = "matched"
 		} else if order.Status == "pending" || order.Status == "paid" {

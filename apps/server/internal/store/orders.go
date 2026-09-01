@@ -10,12 +10,13 @@ import (
 )
 
 const orderCols = `id, user_id, plan_id, amount_cents, grant_cents, bonus_cents, status, provider,
-	provider_order_id, paid_at, completed_at, created_at`
+	provider_order_id, provider_pay_amount_cents, payment_method, paid_at, completed_at, created_at`
 
 func scanOrder(row pgx.Row) (*Order, error) {
 	var o Order
 	err := row.Scan(&o.ID, &o.UserID, &o.PlanID, &o.AmountCents, &o.GrantCents, &o.BonusCents, &o.Status,
-		&o.Provider, &o.ProviderOrderID, &o.PaidAt, &o.CompletedAt, &o.CreatedAt)
+		&o.Provider, &o.ProviderOrderID, &o.ProviderPayAmountCents, &o.PaymentMethod,
+		&o.PaidAt, &o.CompletedAt, &o.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -39,10 +40,11 @@ func GetUserOrder(ctx context.Context, q Q, userID, id uuid.UUID) (*Order, error
 	return nilOnNoRows(o, err)
 }
 
-func SetOrderProviderID(ctx context.Context, q Q, id uuid.UUID, providerOrderID string) (*Order, error) {
+func SetOrderProviderDetails(ctx context.Context, q Q, id uuid.UUID, providerOrderID string, payAmountCents int64, paymentMethod string) (*Order, error) {
 	return scanOrder(q.QueryRow(ctx,
-		`UPDATE orders SET provider_order_id = $2 WHERE id = $1 AND status = 'pending' RETURNING `+orderCols,
-		id, providerOrderID))
+		`UPDATE orders SET provider_order_id = $2, provider_pay_amount_cents = $3, payment_method = $4
+		 WHERE id = $1 AND status = 'pending' RETURNING `+orderCols,
+		id, providerOrderID, payAmountCents, paymentMethod))
 }
 
 func TransitionPendingOrderStatus(ctx context.Context, q Q, id uuid.UUID, status string) (bool, error) {
@@ -104,14 +106,16 @@ func ListOrders(ctx context.Context, q Q, userID *uuid.UUID, status string, user
 func RevenueSince(ctx context.Context, q Q, since time.Time) (int64, error) {
 	var n int64
 	err := q.QueryRow(ctx,
-		`SELECT COALESCE(SUM(amount_cents), 0) FROM orders WHERE status = 'completed' AND created_at >= $1`, since).Scan(&n)
+		`SELECT COALESCE(SUM(COALESCE(provider_pay_amount_cents, amount_cents)), 0)
+		 FROM orders WHERE status = 'completed' AND created_at >= $1`, since).Scan(&n)
 	return n, err
 }
 
 // RevenueDailySince 已完成订单按天收入（UTC 日期 → 分，按下单时间）。
 func RevenueDailySince(ctx context.Context, q Q, since time.Time) (map[string]int64, error) {
 	rows, err := q.Query(ctx,
-		`SELECT (created_at AT TIME ZONE 'UTC')::date::text AS day, COALESCE(SUM(amount_cents), 0)
+		`SELECT (created_at AT TIME ZONE 'UTC')::date::text AS day,
+		 COALESCE(SUM(COALESCE(provider_pay_amount_cents, amount_cents)), 0)
 		 FROM orders WHERE status = 'completed' AND created_at >= $1 GROUP BY day`, since)
 	if err != nil {
 		return nil, err

@@ -125,7 +125,16 @@ func (s *Server) createOrder(c *gin.Context) {
 		fail(c, apperr.E("payment_provider_error", "支付渠道返回异常，请稍后重试", 502))
 		return
 	}
-	order, err = store.SetOrderProviderID(ctx, s.St.Pool, order.ID, remote.ProviderOrderID)
+	if remote.Type != paymentType {
+		_ = client.CloseOrder(ctx, remote.ProviderOrderID)
+		_, _ = store.TransitionPendingOrderStatus(ctx, s.St.Pool, order.ID, "failed")
+		log.Printf("invalid lanjing payment type for order %s: requested=%d returned=%d", order.ID, paymentType, remote.Type)
+		fail(c, apperr.E("payment_provider_error", "支付渠道返回异常，请稍后重试", 502))
+		return
+	}
+	payAmountCents, _ := remote.ReallyPriceCents()
+	order, err = store.SetOrderProviderDetails(ctx, s.St.Pool, order.ID, remote.ProviderOrderID,
+		payAmountCents, lanjingPaymentMethod(remote.Type))
 	if err != nil {
 		_ = client.CloseOrder(ctx, remote.ProviderOrderID)
 		fail(c, err)
@@ -230,6 +239,24 @@ func parseLanjingPaymentType(method string) (lanjingpay.PaymentType, error) {
 	}
 }
 
+func lanjingPaymentMethod(paymentType lanjingpay.PaymentType) string {
+	switch paymentType {
+	case lanjingpay.Wechat:
+		return "wechat"
+	case lanjingpay.Alipay:
+		return "alipay"
+	default:
+		return ""
+	}
+}
+
+func expectedProviderPayAmount(order *store.Order) int64 {
+	if order.ProviderPayAmountCents != nil {
+		return *order.ProviderPayAmountCents
+	}
+	return order.AmountCents
+}
+
 func validateRemoteOrder(order *store.Order, remote *lanjingpay.Order) error {
 	if remote == nil || remote.ProviderOrderID == "" || remote.PayURL == "" {
 		return fmt.Errorf("missing provider order data")
@@ -237,9 +264,26 @@ func validateRemoteOrder(order *store.Order, remote *lanjingpay.Order) error {
 	if remote.MerchantOrderID != order.ID.String() {
 		return fmt.Errorf("merchant order mismatch")
 	}
+	if order.ProviderOrderID != nil && remote.ProviderOrderID != *order.ProviderOrderID {
+		return fmt.Errorf("provider order mismatch")
+	}
 	priceCents, err := remote.PriceCents()
 	if err != nil || priceCents != order.AmountCents {
 		return fmt.Errorf("price mismatch")
+	}
+	payAmountCents, err := remote.ReallyPriceCents()
+	if err != nil || payAmountCents <= 0 {
+		return fmt.Errorf("invalid paid amount")
+	}
+	paymentMethod := lanjingPaymentMethod(remote.Type)
+	if paymentMethod == "" {
+		return fmt.Errorf("invalid payment type")
+	}
+	if order.ProviderPayAmountCents != nil && payAmountCents != *order.ProviderPayAmountCents {
+		return fmt.Errorf("paid amount mismatch")
+	}
+	if order.PaymentMethod != nil && paymentMethod != *order.PaymentMethod {
+		return fmt.Errorf("payment type mismatch")
 	}
 	return nil
 }
@@ -248,10 +292,7 @@ func lanjingOrderDict(order *store.Order, remote *lanjingpay.Order) gin.H {
 	payURL := remote.PayURL
 	out := orderDict(order, &payURL)
 	out["providerOrderId"] = remote.ProviderOrderID
-	out["paymentMethod"] = map[lanjingpay.PaymentType]string{
-		lanjingpay.Wechat: "wechat",
-		lanjingpay.Alipay: "alipay",
-	}[remote.Type]
+	out["paymentMethod"] = lanjingPaymentMethod(remote.Type)
 	if cents, err := remote.ReallyPriceCents(); err == nil {
 		out["payAmountCents"] = cents
 	}
@@ -367,10 +408,11 @@ func (s *Server) lanjingPaymentNotify(c *gin.Context) {
 	fingerprint := paymentCallbackFingerprint(payID, param, paymentType, price, reallyPrice, signature)
 	outcome, detail := "invalid_request", ""
 	var orderID *uuid.UUID
+	var providerOrderID string
 	var amountCents, paidAmountCents *int64
 	signatureValid := false
 	defer func() {
-		_, _ = store.InsertPaymentCallbackEvent(context.Background(), s.St.Pool, fingerprint, orderID, "",
+		_, _ = store.InsertPaymentCallbackEvent(context.Background(), s.St.Pool, fingerprint, orderID, providerOrderID,
 			amountCents, paidAmountCents, c.ClientIP(), signatureValid, outcome, detail)
 	}()
 	client, _, err := s.resolveLanjingPay(c.Request.Context())
@@ -383,7 +425,9 @@ func (s *Server) lanjingPaymentNotify(c *gin.Context) {
 		c.String(http.StatusBadRequest, "invalid_request")
 		return
 	}
-	if paymentType != strconv.Itoa(int(lanjingpay.Wechat)) && paymentType != strconv.Itoa(int(lanjingpay.Alipay)) {
+	parsedPaymentType, err := strconv.Atoi(paymentType)
+	callbackPaymentMethod := lanjingPaymentMethod(lanjingpay.PaymentType(parsedPaymentType))
+	if err != nil || callbackPaymentMethod == "" {
 		outcome = "invalid_type"
 		c.String(http.StatusBadRequest, "invalid_type")
 		return
@@ -428,11 +472,23 @@ func (s *Server) lanjingPaymentNotify(c *gin.Context) {
 		c.String(http.StatusBadRequest, "invalid_order")
 		return
 	}
-	if reallyPriceCents != order.AmountCents {
+	if order.ProviderOrderID != nil {
+		providerOrderID = *order.ProviderOrderID
+	}
+	if order.PaymentMethod != nil && callbackPaymentMethod != *order.PaymentMethod {
+		outcome, detail = "payment_method_mismatch", "支付渠道与订单不一致"
+		s.recordRisk(ctx, store.NewSecurityRiskEvent{UserID: &order.UserID, ClientIP: c.ClientIP(),
+			Category: "payment_method_mismatch", Severity: "critical", Score: 100, Action: "blocked",
+			Reason: detail, Metadata: map[string]any{"orderId": order.ID.String(), "expected": *order.PaymentMethod, "actual": callbackPaymentMethod}})
+		c.String(http.StatusBadRequest, "invalid_type")
+		return
+	}
+	expectedPayAmountCents := expectedProviderPayAmount(order)
+	if reallyPriceCents != expectedPayAmountCents {
 		outcome, detail = "amount_mismatch", "实付金额与订单金额不一致"
 		s.recordRisk(ctx, store.NewSecurityRiskEvent{UserID: &order.UserID, ClientIP: c.ClientIP(),
 			Category: "payment_amount_mismatch", Severity: "critical", Score: 100, Action: "blocked",
-			Reason: detail, Metadata: map[string]any{"orderId": order.ID.String(), "expected": order.AmountCents, "paid": reallyPriceCents}})
+			Reason: detail, Metadata: map[string]any{"orderId": order.ID.String(), "expected": expectedPayAmountCents, "paid": reallyPriceCents}})
 		c.String(http.StatusBadRequest, "invalid_really_price")
 		return
 	}

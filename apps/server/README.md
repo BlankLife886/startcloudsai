@@ -80,7 +80,7 @@ printf '%s' "$ADMIN_PASSWORD" | go run ./cmd/server create-admin --email admin@e
 - 管理员使用独立账号、密码和 `sc_admin_session`；不使用管理员密钥。管理员与用户的账号表、密码、会话和 Cookie 均不能交叉访问。
 - `create-admin` 只创建或更新 `admin_accounts`，不会创建普通用户或钱包；更新密码时会撤销该管理员的全部旧会话。
 - 浏览器写请求校验 `Origin`，代理地址只信任 `TRUSTED_PROXIES`。
-- `GET /api/v1/plans` 返回可售套餐与当前可用支付渠道；蓝鲸支付配置完整并启用后，订单创建、状态查询、关闭及异步通知路由可用。支付完成复用钱包账本幂等约束，重复通知不会重复入账。
+- `GET /api/v1/plans` 返回可售套餐与当前可用支付渠道；蓝鲸支付配置完整并启用后，订单创建、状态查询、关闭及异步通知路由可用。创建订单时保存上游实际应付金额和支付渠道快照，查单、回调与后台对账必须与该快照一致；支付完成复用钱包账本幂等约束，重复通知不会重复入账。
 - `/api/v1/assistant/*` 使用服务端保存的 Sub2API Key 代理流式对话和图片生成，浏览器不会取得该 Key；当前只要求用户已登录，不从站内钱包重复扣费。
 - AI 助手识别明确的 PPT/PSD 制作请求后，会通过 ChatGPT2API 的 `/v1/editable-file-tasks` 异步生成主文件和素材 ZIP；结果完成格式校验后写入本站对象存储并绑定用户消息。PSD 必须先上传 JPG、PNG 或 WebP 参考图，PSD 文件本身不作为输入附件。
 - 数据库中的 C2A API Key 使用 `APP_SECRET` 派生密钥进行 AES-GCM 加密；启动时会自动迁移旧明文值。

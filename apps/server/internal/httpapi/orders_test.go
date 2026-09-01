@@ -3,6 +3,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,8 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"github.com/BlankLife886/startcloudsai/server/internal/auth"
 	"github.com/BlankLife886/startcloudsai/server/internal/config"
 	"github.com/BlankLife886/startcloudsai/server/internal/lanjingpay"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
@@ -40,6 +43,100 @@ func makeOrder(t *testing.T, st *store.Store) (*store.User, *store.Order) {
 		t.Fatalf("insert order: %v", err)
 	}
 	return user, order
+}
+
+func prepareLanjingOrder(t *testing.T, st *store.Store, order *store.Order, providerOrderID string, payAmountCents int64, paymentMethod string) *store.Order {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := st.Pool.Exec(ctx, `UPDATE orders SET provider = 'lanjing' WHERE id = $1`, order.ID); err != nil {
+		t.Fatal(err)
+	}
+	order, err := store.SetOrderProviderDetails(ctx, st.Pool, order.ID, providerOrderID, payAmountCents, paymentMethod)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return order
+}
+
+func lanjingCallbackPath(client *lanjingpay.Client, orderID, paymentType, price, reallyPrice string) string {
+	values := url.Values{
+		"payId":       {orderID},
+		"param":       {orderID},
+		"type":        {paymentType},
+		"price":       {price},
+		"reallyPrice": {reallyPrice},
+	}
+	values.Set("sign", client.CallbackSignature(orderID, orderID, paymentType, price, reallyPrice))
+	return "/api/v1/payments/lanjing/notify?" + values.Encode()
+}
+
+func TestCreateLanjingOrderPersistsProviderPaymentSnapshot(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	user, seedOrder := makeOrder(t, st)
+
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/createOrder" {
+			http.NotFound(w, r)
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("parse provider form: %v", err)
+			http.Error(w, "bad form", http.StatusBadRequest)
+			return
+		}
+		if got := r.Form.Get("type"); got != "2" {
+			t.Errorf("payment type = %q, want 2", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(gin.H{"code": 1, "msg": "ok", "data": gin.H{
+			"payId": r.Form.Get("payId"), "orderId": "provider-adjusted", "payType": 2,
+			"price": 9.90, "reallyPrice": 9.91, "payUrl": "https://qr.example/pay",
+			"isAuto": 1, "state": 0, "timeOut": 5, "date": time.Now().UnixMilli(),
+		}})
+	}))
+	defer provider.Close()
+	client, err := lanjingpay.New(provider.URL, "create-secret", provider.URL+"/notify", time.Second, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Load()
+	token := auth.NewSessionToken()
+	if err := store.InsertSession(ctx, st.Pool, user.ID, auth.HashToken(token), time.Now().Add(time.Hour), nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{Cfg: cfg, St: st, LanjingPay: client}
+	recorder := authRequest(t, srv.Router(), http.MethodPost, "/api/v1/orders", gin.H{
+		"planId": seedOrder.PlanID.String(), "paymentMethod": "alipay",
+	}, &http.Cookie{Name: cfg.SessionCookieName, Value: token})
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("create order = %d %s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Data struct {
+			ID              string `json:"id"`
+			PayAmountCents  int64  `json:"payAmountCents"`
+			PaymentMethod   string `json:"paymentMethod"`
+			ProviderOrderID string `json:"providerOrderId"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Data.PayAmountCents != 991 || response.Data.PaymentMethod != "alipay" || response.Data.ProviderOrderID != "provider-adjusted" {
+		t.Fatalf("payment response = %+v", response.Data)
+	}
+	createdID, err := uuid.Parse(response.Data.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.GetOrder(ctx, st.Pool, createdID)
+	if err != nil || created == nil {
+		t.Fatalf("get created order: order=%v err=%v", created, err)
+	}
+	if created.ProviderPayAmountCents == nil || *created.ProviderPayAmountCents != 991 || created.PaymentMethod == nil || *created.PaymentMethod != "alipay" {
+		t.Fatalf("stored payment snapshot = amount %v method %v", created.ProviderPayAmountCents, created.PaymentMethod)
+	}
 }
 
 func TestCompleteOrderCreditsOnce(t *testing.T) {
@@ -181,6 +278,107 @@ func TestLanjingPaymentCallbackRejectsTamperedPrice(t *testing.T) {
 	}
 	if wallet.BalanceCents != 0 {
 		t.Fatalf("balance = %d, want 0", wallet.BalanceCents)
+	}
+}
+
+func TestLanjingPaymentCallbackAcceptsAdjustedProviderAmount(t *testing.T) {
+	st := testdb.Setup(t)
+	user, order := makeOrder(t, st)
+	order = prepareLanjingOrder(t, st, order, "provider-adjusted", 991, "alipay")
+	provider := httptest.NewServer(http.NotFoundHandler())
+	defer provider.Close()
+	client, err := lanjingpay.New(provider.URL, "callback-secret", provider.URL+"/notify", time.Second, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{Cfg: config.Load(), St: st, LanjingPay: client}
+	recorder := httptest.NewRecorder()
+	srv.Router().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet,
+		lanjingCallbackPath(client, order.ID.String(), "2", "9.90", "9.91"), nil))
+	if recorder.Code != http.StatusOK || recorder.Body.String() != "success" {
+		t.Fatalf("callback = %d %q", recorder.Code, recorder.Body.String())
+	}
+	wallet, err := store.GetWallet(context.Background(), st.Pool, user.ID)
+	if err != nil || wallet.BalanceCents != order.GrantCents+order.BonusCents {
+		t.Fatalf("wallet after callback = %+v err=%v", wallet, err)
+	}
+	var providerOrderID *string
+	if err := st.Pool.QueryRow(context.Background(), `SELECT provider_order_id FROM payment_callback_events WHERE order_id = $1`, order.ID).Scan(&providerOrderID); err != nil {
+		t.Fatal(err)
+	}
+	if providerOrderID == nil || *providerOrderID != "provider-adjusted" {
+		t.Fatalf("callback provider order id = %v", providerOrderID)
+	}
+}
+
+func TestLanjingPaymentCallbackRejectsSnapshotMismatch(t *testing.T) {
+	tests := []struct {
+		name        string
+		paymentType string
+		reallyPrice string
+		wantBody    string
+	}{
+		{name: "paid amount", paymentType: "2", reallyPrice: "9.92", wantBody: "invalid_really_price"},
+		{name: "payment method", paymentType: "1", reallyPrice: "9.91", wantBody: "invalid_type"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			st := testdb.Setup(t)
+			user, order := makeOrder(t, st)
+			order = prepareLanjingOrder(t, st, order, "provider-snapshot", 991, "alipay")
+			provider := httptest.NewServer(http.NotFoundHandler())
+			defer provider.Close()
+			client, err := lanjingpay.New(provider.URL, "callback-secret", provider.URL+"/notify", time.Second, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			srv := &Server{Cfg: config.Load(), St: st, LanjingPay: client}
+			recorder := httptest.NewRecorder()
+			srv.Router().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet,
+				lanjingCallbackPath(client, order.ID.String(), test.paymentType, "9.90", test.reallyPrice), nil))
+			if recorder.Code != http.StatusBadRequest || recorder.Body.String() != test.wantBody {
+				t.Fatalf("callback = %d %q", recorder.Code, recorder.Body.String())
+			}
+			wallet, err := store.GetWallet(context.Background(), st.Pool, user.ID)
+			if err != nil || wallet.BalanceCents != 0 {
+				t.Fatalf("wallet after rejected callback = %+v err=%v", wallet, err)
+			}
+		})
+	}
+}
+
+func TestReconcileLanjingOrderUsesProviderPaymentSnapshot(t *testing.T) {
+	st := testdb.Setup(t)
+	_, order := makeOrder(t, st)
+	order = prepareLanjingOrder(t, st, order, "provider-reconcile", 991, "alipay")
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/getOrder" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(gin.H{"code": 1, "msg": "ok", "data": gin.H{
+			"payId": order.ID.String(), "orderId": "provider-reconcile", "payType": 2,
+			"price": 9.90, "reallyPrice": 9.91, "payUrl": "https://qr.example/pay",
+			"isAuto": 1, "state": 1, "timeOut": 5, "date": time.Now().UnixMilli(),
+		}})
+	}))
+	defer provider.Close()
+	client, err := lanjingpay.New(provider.URL, "reconcile-secret", provider.URL+"/notify", time.Second, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{St: st, LanjingPay: client}
+	result, err := srv.reconcilePaymentOrder(context.Background(), order)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != "repaired" || result.ExpectedAmountCents != 991 {
+		t.Fatalf("reconciliation = %+v", result)
+	}
+	fresh, err := store.GetOrder(context.Background(), st.Pool, order.ID)
+	if err != nil || fresh.Status != "completed" {
+		t.Fatalf("reconciled order = %+v err=%v", fresh, err)
 	}
 }
 

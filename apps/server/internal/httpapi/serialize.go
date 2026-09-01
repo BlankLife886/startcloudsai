@@ -563,19 +563,22 @@ func planDict(p *store.Plan, includeAdmin bool) gin.H {
 
 func orderDict(o *store.Order, payURL *string) gin.H {
 	return gin.H{
-		"id":          o.ID.String(),
-		"planId":      o.PlanID.String(),
-		"status":      o.Status,
-		"amountCents": o.AmountCents,
-		"grantCents":  o.GrantCents,
-		"bonusCents":  o.BonusCents,
-		"grantPoints": o.GrantCents,
-		"bonusPoints": o.BonusCents,
-		"provider":    o.Provider,
-		"payUrl":      payURL,
-		"paidAt":      iso(o.PaidAt),
-		"completedAt": iso(o.CompletedAt),
-		"createdAt":   isoValue(o.CreatedAt),
+		"id":                     o.ID.String(),
+		"planId":                 o.PlanID.String(),
+		"status":                 o.Status,
+		"amountCents":            o.AmountCents,
+		"grantCents":             o.GrantCents,
+		"bonusCents":             o.BonusCents,
+		"grantPoints":            o.GrantCents,
+		"bonusPoints":            o.BonusCents,
+		"provider":               o.Provider,
+		"providerPayAmountCents": o.ProviderPayAmountCents,
+		"payAmountCents":         o.ProviderPayAmountCents,
+		"paymentMethod":          o.PaymentMethod,
+		"payUrl":                 payURL,
+		"paidAt":                 iso(o.PaidAt),
+		"completedAt":            iso(o.CompletedAt),
+		"createdAt":              isoValue(o.CreatedAt),
 	}
 }
 

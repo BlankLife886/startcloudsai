@@ -406,18 +406,20 @@ type TrialAccessApplication struct {
 }
 
 type Order struct {
-	ID              uuid.UUID
-	UserID          uuid.UUID
-	PlanID          uuid.UUID
-	AmountCents     int64
-	GrantCents      int64
-	BonusCents      int64
-	Status          string
-	Provider        string
-	ProviderOrderID *string
-	PaidAt          *time.Time
-	CompletedAt     *time.Time
-	CreatedAt       time.Time
+	ID                     uuid.UUID
+	UserID                 uuid.UUID
+	PlanID                 uuid.UUID
+	AmountCents            int64
+	GrantCents             int64
+	BonusCents             int64
+	Status                 string
+	Provider               string
+	ProviderOrderID        *string
+	ProviderPayAmountCents *int64
+	PaymentMethod          *string
+	PaidAt                 *time.Time
+	CompletedAt            *time.Time
+	CreatedAt              time.Time
 }
 
 type Task struct {
