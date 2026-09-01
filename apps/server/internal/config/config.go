@@ -71,9 +71,6 @@ type Config struct {
 	ObjectStorageBucket            string
 	ObjectStorageUsePathStyle      bool
 	ObjectStoragePresignExpireSecs int
-	ObjectStorageCDNBaseURL        string
-	ObjectStorageCDNAuthKey        string
-	ObjectStorageCDNAuthTTLSecs    int
 
 	WorkerConcurrency      int
 	WorkerPollConcurrency  int
@@ -91,6 +88,10 @@ type Config struct {
 	SessionCookieName string
 	SessionTTLDays    int
 	UploadMaxBytes    int64
+	UploadClamAVAddr  string
+	UploadReviewURL   string
+	UploadReviewKey   string
+	UploadScanTimeout time.Duration
 }
 
 func getenv(key, def string) string {
@@ -240,9 +241,6 @@ func Load() *Config {
 		ObjectStorageBucket:            getenvWithLegacy("OBJECT_STORAGE_BUCKET", "R2_BUCKET", "starcloudsai"),
 		ObjectStorageUsePathStyle:      getenvBoolWithLegacy("OBJECT_STORAGE_USE_PATH_STYLE", "R2_USE_PATH_STYLE", legacyR2Configured),
 		ObjectStoragePresignExpireSecs: getenvInt("OBJECT_STORAGE_PRESIGN_EXPIRE_SECS", getenvInt("R2_PRESIGN_EXPIRE_SECS", 3600)),
-		ObjectStorageCDNBaseURL:        strings.TrimRight(strings.TrimSpace(getenv("OBJECT_STORAGE_CDN_BASE_URL", "")), "/"),
-		ObjectStorageCDNAuthKey:        strings.TrimSpace(getenv("OBJECT_STORAGE_CDN_AUTH_KEY", "")),
-		ObjectStorageCDNAuthTTLSecs:    getenvInt("OBJECT_STORAGE_CDN_AUTH_TTL_SECS", 900),
 
 		WorkerConcurrency:      getenvInt("WORKER_CONCURRENCY", 32),
 		WorkerPollConcurrency:  getenvInt("WORKER_POLL_CONCURRENCY", 0),
@@ -260,6 +258,10 @@ func Load() *Config {
 		SessionCookieName: "sc_session",
 		SessionTTLDays:    30,
 		UploadMaxBytes:    15 * 1024 * 1024,
+		UploadClamAVAddr:  strings.TrimSpace(getenv("UPLOAD_CLAMAV_ADDR", "")),
+		UploadReviewURL:   strings.TrimSpace(getenv("UPLOAD_REVIEW_URL", "")),
+		UploadReviewKey:   strings.TrimSpace(getenv("UPLOAD_REVIEW_KEY", "")),
+		UploadScanTimeout: getenvDuration("UPLOAD_SCAN_TIMEOUT", 20*time.Second),
 	}
 	if cfg.DBMaxConns < 0 || cfg.DBMinConns < 0 || (cfg.DBMaxConns == 0 && cfg.DBMinConns > 0) || (cfg.DBMaxConns > 0 && cfg.DBMinConns > cfg.DBMaxConns) {
 		log.Fatal("数据库连接池配置无效：须满足 0 <= DB_MIN_CONNS <= DB_MAX_CONNS")

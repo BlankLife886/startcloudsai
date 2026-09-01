@@ -69,6 +69,7 @@ export function DetailStudio({
   failed,
   failMessage = "",
   elapsedSeconds = 0,
+  generationStageLabel = "正在生成",
   generateDisabled,
   generateHint = "",
   shotCount = 1,
@@ -506,7 +507,7 @@ export function DetailStudio({
                           <i className="detail-page__spin" aria-hidden="true" />
                           <span>
                             {index === 0
-                              ? `正在生成 ${formatSeconds(waitSeconds)}s`
+                              ? `已等待 ${formatSeconds(waitSeconds)}s`
                               : "排队中"}
                           </span>
                         </div>
@@ -639,7 +640,7 @@ export function DetailStudio({
                 {running
                   ? aplus.planning
                     ? "文本模型规划中"
-                    : "进行中"
+                    : generationStageLabel
                   : `${shotCount}张${costLabel ? ` · ${costLabel}` : ""}`}
               </small>
             </button>

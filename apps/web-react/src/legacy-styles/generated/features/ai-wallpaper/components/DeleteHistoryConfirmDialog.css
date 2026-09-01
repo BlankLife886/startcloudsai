@@ -37,6 +37,10 @@
   background: rgba(126, 108, 255, 0.16);
   color: #b7aeff;
 }
+.delete-confirm__icon.is-warning {
+  background: rgba(245, 184, 72, 0.14);
+  color: #f5c56d;
+}
 .delete-confirm__copy {
   min-width: 0;
 }
@@ -84,6 +88,11 @@
 .delete-confirm__actions .is-confirm.is-accent {
   border-color: rgba(126, 108, 255, 0.45);
   background: #7e6cff;
+  color: #fff;
+}
+.delete-confirm__actions .is-confirm.is-warning {
+  border-color: rgba(224, 166, 58, 0.48);
+  background: #c98a22;
   color: #fff;
 }
 .delete-confirm__actions .spin {
@@ -145,4 +154,8 @@ to {
 .delete-confirm__backdrop.is-light .delete-confirm__icon.is-accent {
   background: rgba(126, 108, 255, 0.12);
   color: #6b5ce6;
+}
+.delete-confirm__backdrop.is-light .delete-confirm__icon.is-warning {
+  background: rgba(201, 138, 34, 0.12);
+  color: #a96d0c;
 }

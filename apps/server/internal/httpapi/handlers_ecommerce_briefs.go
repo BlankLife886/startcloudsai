@@ -98,6 +98,9 @@ func (s *Server) generateEcommerceProductBrief(c *gin.Context) {
 		fail(c, err)
 		return
 	}
+	if !s.enforceUsageLimit(c, "ecommerce-plan-minute", user.ID.String(), highCostRequestsPerMinute, 1, time.Minute) {
+		return
+	}
 	if s.Storage == nil {
 		fail(c, apperr.E("storage_unavailable", "图片存储服务暂不可用", http.StatusServiceUnavailable))
 		return

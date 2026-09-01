@@ -26,6 +26,17 @@ test("activity entries are removed by default", () => {
   assert.equal(isPageEntryVisible(controls, "/incentive-plans"), false);
 });
 
+test("developer API is hidden and blocked by default", () => {
+  const controls = getDefaultPageControls();
+  assert.equal(controls.developer_api.status, PAGE_STATUS.REMOVED);
+  assert.equal(pageKeyForLocation("/developer-api"), "developer_api");
+  assert.equal(isPageEntryVisible(controls, "/developer-api"), false);
+  assert.equal(
+    pageControlForLocation(controls, "/developer-api").status,
+    PAGE_STATUS.REMOVED,
+  );
+});
+
 test("ecommerce route resolves each controlled tool independently", () => {
   assert.equal(
     pageKeyForHref("/ecommerce-design?tool=backdrop"),

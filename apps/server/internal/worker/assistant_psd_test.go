@@ -17,7 +17,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/testdb"
 )
 
-func TestAssistantImageToPSDIsRejectedWithoutModel(t *testing.T) {
+func TestAssistantImageToPSDRoutesToEditableFileWithoutChatModel(t *testing.T) {
 	ctx := context.Background()
 	st := testdb.Setup(t)
 	user, err := store.InsertUser(ctx, st.Pool, "assistant-psd-"+uuid.NewString()+"@test.dev", "psd", "x", "user", nil)
@@ -69,7 +69,7 @@ func TestAssistantImageToPSDIsRejectedWithoutModel(t *testing.T) {
 
 	worker := &Worker{St: st}
 	err = worker.executeAssistantRun(ctx, run)
-	if err == nil || !strings.Contains(err.Error(), "暂未开放 PSD 转换") {
+	if err == nil || !strings.Contains(err.Error(), "可编辑文件存储不可用") {
 		t.Fatalf("PSD conversion error = %v", err)
 	}
 	persisted, err := store.GetAssistantMessage(ctx, st.Pool, assistantMessage.ID)

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -122,7 +123,10 @@ class _UpdatesScreenState extends ConsumerState<UpdatesScreen> {
           if (filtered.isEmpty)
             SliverFillRemaining(
               hasScrollBody: false,
-              child: _UpdatesEmpty(filtered: selectedTag != null),
+              child: _UpdatesEmpty(
+                filtered: selectedTag != null,
+                unavailable: feed.changelogUnavailable,
+              ),
             )
           else
             SliverPadding(
@@ -163,32 +167,33 @@ class _UpdatesOverview extends StatelessWidget {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Container(
-              width: 44,
-              height: 44,
-              decoration: BoxDecoration(
-                color: colors.secondaryContainer,
-                borderRadius: BorderRadius.circular(8),
-              ),
+            SizedBox.square(
+              dimension: 28,
               child: Icon(
                 Icons.new_releases_outlined,
-                color: colors.onSecondaryContainer,
+                color: colors.onSurfaceVariant,
+                size: 22,
               ),
             ),
-            const SizedBox(width: 12),
+            const SizedBox(width: 10),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    latest == null ? '暂无版本记录' : '服务版本 v${latest.version}',
+                    latest == null
+                        ? (feed.changelogUnavailable ? '版本记录暂时不可用' : '暂无版本记录')
+                        : '服务版本 v${latest.version}',
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
                       fontWeight: FontWeight.w800,
                     ),
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    latest?.title ?? '更新内容发布后会在这里展示',
+                    latest?.title ??
+                        (feed.changelogUnavailable
+                            ? '公告仍可正常查看，可稍后刷新版本记录'
+                            : '更新内容发布后会在这里展示'),
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -203,7 +208,9 @@ class _UpdatesOverview extends StatelessWidget {
                       ),
                       _CountLabel(
                         icon: Icons.history,
-                        label: '${feed.changelog.length} 个版本',
+                        label: feed.changelogUnavailable
+                            ? '版本加载失败'
+                            : '${feed.changelog.length} 个版本',
                       ),
                     ],
                   ),
@@ -371,22 +378,78 @@ class _TagStrip extends StatelessWidget {
     child: Row(
       spacing: 8,
       children: [
-        FilterChip(
-          label: const Text('全部'),
+        _UpdateTagButton(
+          label: '全部',
           selected: selected == null,
-          onSelected: (_) => onSelected(null),
+          onTap: () => onSelected(null),
         ),
         for (final tag in tags)
-          FilterChip(
+          _UpdateTagButton(
             key: Key('updates-tag-$tag'),
-            avatar: Icon(_tagIcon(tag), size: 16),
-            label: Text(_tagLabel(tag)),
+            label: _tagLabel(tag),
+            icon: _tagIcon(tag),
             selected: selected == tag,
-            onSelected: (_) => onSelected(tag),
+            onTap: () => onSelected(tag),
           ),
       ],
     ),
   );
+}
+
+class _UpdateTagButton extends StatelessWidget {
+  const _UpdateTagButton({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+    this.icon,
+    super.key,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+  final IconData? icon;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Material(
+      color: selected ? colors.onSurface : colors.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(8),
+        side: BorderSide(
+          color: selected ? colors.onSurface : colors.outlineVariant,
+        ),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (icon != null) ...[
+                Icon(
+                  icon,
+                  size: 15,
+                  color: selected ? colors.surface : colors.onSurfaceVariant,
+                ),
+                const SizedBox(width: 5),
+              ],
+              Text(
+                label,
+                style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                  color: selected ? colors.surface : colors.onSurface,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _ChangelogCard extends StatelessWidget {
@@ -398,21 +461,26 @@ class _ChangelogCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return Card(
+    return Material(
       key: Key('changelog-${entry.id}'),
+      color: colors.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(8),
+        side: BorderSide(
+          color: entry.highlight ? colors.primary : colors.outlineVariant,
+        ),
+      ),
       clipBehavior: Clip.antiAlias,
       child: ExpansionTile(
         initiallyExpanded: initiallyExpanded,
-        leading: Container(
-          width: 38,
-          height: 38,
-          decoration: BoxDecoration(
-            color: entry.highlight
-                ? colors.tertiaryContainer
-                : colors.surfaceContainerHighest,
-            borderRadius: BorderRadius.circular(7),
+        tilePadding: const EdgeInsets.fromLTRB(12, 4, 8, 4),
+        leading: SizedBox.square(
+          dimension: 26,
+          child: Icon(
+            _tagIcon(entry.tag),
+            size: 19,
+            color: entry.highlight ? colors.primary : colors.onSurfaceVariant,
           ),
-          child: Icon(_tagIcon(entry.tag), size: 20),
         ),
         title: Text(
           'v${entry.version} · ${entry.title}',
@@ -454,16 +522,40 @@ class _ChangelogCard extends StatelessWidget {
                 ),
               ),
           ],
+          const SizedBox(height: 4),
+          Align(
+            alignment: Alignment.centerRight,
+            child: IconButton(
+              key: Key('copy-changelog-${entry.id}'),
+              tooltip: '复制更新内容',
+              onPressed: () async {
+                await Clipboard.setData(
+                  ClipboardData(text: changelogCopyText(entry)),
+                );
+                if (!context.mounted) return;
+                AppNotice.success(context, '更新内容已复制');
+              },
+              icon: const Icon(Icons.copy_outlined, size: 18),
+            ),
+          ),
         ],
       ),
     );
   }
 }
 
+String changelogCopyText(ChangelogEntry entry) {
+  final lines = <String>['v${entry.version} · ${entry.title}'];
+  if (entry.summary.isNotEmpty) lines.add(entry.summary);
+  lines.addAll(entry.items.map((item) => '- $item'));
+  return lines.join('\n');
+}
+
 class _UpdatesEmpty extends StatelessWidget {
-  const _UpdatesEmpty({required this.filtered});
+  const _UpdatesEmpty({required this.filtered, required this.unavailable});
 
   final bool filtered;
+  final bool unavailable;
 
   @override
   Widget build(BuildContext context) => Center(
@@ -474,7 +566,13 @@ class _UpdatesEmpty extends StatelessWidget {
         children: [
           const Icon(Icons.inbox_outlined, size: 40),
           const SizedBox(height: 10),
-          Text(filtered ? '这个分类还没有更新记录' : '暂时没有更新记录'),
+          Text(
+            unavailable
+                ? '版本记录暂时不可用，请稍后刷新'
+                : filtered
+                ? '这个分类还没有更新记录'
+                : '暂时没有更新记录',
+          ),
         ],
       ),
     ),

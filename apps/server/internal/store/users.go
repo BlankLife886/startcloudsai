@@ -106,8 +106,8 @@ func CountUsersSince(ctx context.Context, q Q, since time.Time) (int64, error) {
 	return n, err
 }
 
-// ListUsers 后台用户搜索分页（limit+1 行）。
-func ListUsers(ctx context.Context, q Q, search, status string, limit int, cursor *Cursor) ([]*User, error) {
+// ListUsers 后台用户搜索分页（limit+1 行）。画像筛选读取预聚合快照，不扫描历史任务。
+func ListUsers(ctx context.Context, q Q, search, status, lifecycle, risk, profileTag string, limit int, cursor *Cursor) ([]*User, error) {
 	sql := `SELECT ` + userCols + ` FROM users WHERE role = 'user'`
 	args := []any{}
 	if search != "" {
@@ -117,6 +117,18 @@ func ListUsers(ctx context.Context, q Q, search, status string, limit int, curso
 	if status != "" {
 		args = append(args, status)
 		sql += fmt.Sprintf(` AND status = $%d`, len(args))
+	}
+	if lifecycle != "" {
+		args = append(args, lifecycle)
+		sql += fmt.Sprintf(` AND EXISTS (SELECT 1 FROM user_profile_metrics profile WHERE profile.user_id=users.id AND profile.lifecycle=$%d)`, len(args))
+	}
+	if risk != "" {
+		args = append(args, risk)
+		sql += fmt.Sprintf(` AND EXISTS (SELECT 1 FROM user_profile_metrics profile WHERE profile.user_id=users.id AND profile.risk_level=$%d)`, len(args))
+	}
+	if profileTag != "" {
+		args = append(args, profileTag)
+		sql += fmt.Sprintf(` AND EXISTS (SELECT 1 FROM user_profile_metrics profile WHERE profile.user_id=users.id AND profile.tags ? $%d)`, len(args))
 	}
 	sql, args = appendCursor(sql, args, cursor, limit)
 	rows, err := q.Query(ctx, sql, args...)

@@ -52,15 +52,23 @@ type User struct {
 }
 
 type UserAsset struct {
-	ID           uuid.UUID
-	UserID       uuid.UUID
-	GroupID      *uuid.UUID
-	Title        string
-	FileKey      string
-	ThumbnailKey string
-	ContentType  string
-	SizeBytes    int64
-	CreatedAt    time.Time
+	ID             uuid.UUID
+	UserID         uuid.UUID
+	GroupID        *uuid.UUID
+	Title          string
+	FileKey        string
+	ThumbnailKey   string
+	ContentType    string
+	SizeBytes      int64
+	Tags           []string
+	ContentHash    *string
+	SourceType     string
+	SourceID       *string
+	SourceMetadata json.RawMessage
+	ParentAssetID  *uuid.UUID
+	DeletedAt      *time.Time
+	UpdatedAt      time.Time
+	CreatedAt      time.Time
 }
 
 func (a *UserAsset) CursorKey() (time.Time, uuid.UUID) { return a.CreatedAt, a.ID }
@@ -475,6 +483,7 @@ type AssistantRun struct {
 	ResolvedMode       string
 	Status             string
 	Stage              string
+	QueuePosition      int64
 	Prompt             string
 	Params             map[string]any
 	ReservedCents      int64

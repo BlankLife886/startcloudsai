@@ -1,6 +1,6 @@
 # 数据库设计
 
-数据库为 PostgreSQL。精确 DDL 位于 `apps/server/migrations/*.sql`，当前迁移版本为 `00083`；迁移工具是 Goose，并内嵌到 Go 二进制中。本文用于解释表职责、关键约束和跨表事务，不替代迁移文件。
+数据库为 PostgreSQL。精确 DDL 位于 `apps/server/migrations/*.sql`，当前迁移版本为 `00108`；迁移工具是 Goose，并内嵌到 Go 二进制中。本文用于解释表职责、关键约束和跨表事务，不替代迁移文件。
 
 ## 全局约定
 
@@ -144,7 +144,7 @@ Worker 每 5 分钟锁定一批到期作业，在 R2 删除前再次检查任务
 
 ### `user_assets`
 
-用户个人素材库记录。每行保存所属 `user_id`、可选 `group_id`、标题、原图 `file_key`、512px JPEG `thumbnail_key`、内容类型、原图字节数与创建时间；`(user_id, file_key)` 唯一，删除用户时级联删除记录。API 同时校验 object key 必须属于当前用户的 `uploads/{user_id}/` 前缀，并将每账号素材数量限制为 200 项。删除素材时先删除数据库记录，再尽力删除对应原图和缩略图对象。
+用户个人素材库记录。除文件和分组外，还保存 `tags`、真实内容 SHA-256、`source_type/source_id/source_metadata`、`parent_asset_id` 派生关系及 `deleted_at` 回收站状态。搜索覆盖标题、来源和标签；批量移动、标签、删除与恢复均按用户归属更新。普通删除只写 `deleted_at`，30 天后 Worker 仅在任务低负载时解除引用并登记对象清理；永久删除立即登记清理，但实际 OSS 删除仍由统一的动态低负载队列完成。
 
 ### `user_upload_objects` / `user_upload_references`
 
@@ -256,6 +256,12 @@ growth_usage_rewards_enabled          true
 growth_usage_milestones               [{"units":10,"rewardCents":20},{"units":30,"rewardCents":50},{"units":100,"rewardCents":150}]
 suggestion_reward_max_cents           5000
 task_models               {"default":"gpt-image-2"}
+platform_logging_enabled                  false
+platform_log_security_enabled             true
+platform_log_operations_enabled           true
+platform_log_user_enabled                 false
+platform_log_retention_days               7
+platform_log_max_mb                       256
 ```
 
 应用层还为未落库配置提供相同默认值。后台保存后通过 upsert 写入本表。增长奖励都使用带稳定来源 ID 的钱包账本：失败补偿为 `task_failure_bonus` + task ID，用量奖励为 `usage_milestone` + `userId:YYYY-MM:units`，因此任务重放或 Worker 重试不会重复入账。非空 C2A 数据库配置覆盖环境变量；API Key 的管理接口只回传掩码。
@@ -264,9 +270,55 @@ task_models               {"default":"gpt-image-2"}
 
 记录管理员 ID/email 快照、method、path、归一化 action、目标 ID、响应状态、IP、脱敏 detail 与创建时间。`admin_id` 指向 `admin_accounts`；管理员被删除时置 NULL，email 快照保留。索引支持全局倒序和按管理员倒序查询。Worker 定期删除 6 个月以前的记录；管理员登录、改密和业务写操作也写入本表。
 
+### `platform_logs`
+
+可选平台运行日志，分类为 `security|operations|user`，等级为 `info|warning|error`。记录服务、稳定事件名、脱敏描述、request/user/admin/task ID、状态码、耗时、受限 metadata、逻辑字节数和时间；只有安全日志保存来源 IP。表索引支持按时间、分类、等级、任务、用户和请求 ID 查询。
+
+总开关默认关闭，Recorder 没有队列或后台 goroutine；关闭时直接返回，不写本表。Worker 每小时按 `platform_log_retention_days` 删除过期记录，再按 `platform_log_max_mb` 的逻辑字节总量从最旧记录开始删除。后台同时展示逻辑容量和 PostgreSQL 物理表/索引容量，二者口径不同属于正常现象。
+
+可观测控制台按选择的周期临时聚合错误、警告、慢事件、P95、事件趋势、慢路由和异常任务，不新增时序常驻进程。日志列表通过 `task_id` 只读关联 `tasks` / `assistant_runs` / `users`，展示当前任务上下文；提示词、图片内容和密钥始终不进入关联结果。
+
 ### `operational_incidents`
 
 保存 Worker 每分钟评估的运行告警，包括稳定告警 key、`warning|critical` 级别、标题、摘要、出现次数、结构化指标、首次/最近发现时间和恢复时间。相同问题重复出现时更新原记录，不按分钟创建新行；指标恢复后自动从 `open` 转为 `resolved`。当前规则覆盖任务排队延迟、近期任务失败率、Redis/Asynq 队列不可用或暂停、队列持续积压以及对象清理积压。管理端统计接口只返回当前 open 告警。
+
+## 成本利润与开放平台
+
+### `usage_profit_ledger`
+
+成功、最终失败和运行中取消的图片任务与 AI 助手运行会写入成本利润账本。`(source_type,source_id,billing_generation)` 唯一，Worker 重试不会重复记账。每条记录保存用户实收积分、任务创建时快照的上游单位成本、数量、模型、服务商、线路、工作区和来源 API Key；`gross_profit_cents` 由 PostgreSQL 生成列计算。迁移前的历史任务没有可信的上游成本快照，因此不自动猜测回填，后台利润统计从新任务开始准确累计。
+
+### `user_api_keys` / `api_key_usage_events`
+
+API Key 仅保存 SHA-256 哈希和可识别前缀，明文只在创建时返回。每个 Key 保存 scope、公开模型白名单、日/月任务上限、日/月积分额度、到期时间和限频更新的最近使用信息。`api_key_usage_events` 在创建任务的同一数据库事务内记录额度占用，`task_id` 唯一，幂等重试不会重复占用额度。
+
+### `api_webhook_endpoints` / `api_webhook_deliveries`
+
+Webhook endpoint 保存用户、HTTPS URL、加密 Secret、订阅事件和启停状态，每个用户最多 10 个。终态任务在同一事务创建 delivery，`(endpoint_id,event_type,source_id)` 唯一。Worker 使用 `FOR UPDATE SKIP LOCKED` 租约并发领取，网络错误、限流和服务端错误指数退避；不可重试的 4xx 或达到 8 次后进入 `dead`。用户可把自己的 dead 记录重新置为 `pending`，不能操作其他用户记录。
+
+## 无限画布工作流运行诊断
+
+### `canvas_workflow_runs`
+
+运行租约表保存活动画布运行及逐节点 `node_metrics`、`total_cost_cents` 和 `error_node_id`。节点指标由持有租约的画布执行器随心跳同步，服务端限制 JSON 类型、大小、节点 ID 唯一性、状态和非负费用。任务费用由前端根据该节点真实提交的终态任务回查 `settledCostCents/costCents` 后汇总，不按模型配置猜测。所有接口同时校验用户与项目归属。
+
+普通工作流继续由画布页面执行，支持依赖调度、并行分支、刷新接管、失败重试和取消。版本发布、替换输入、后台执行、结果应用和批量运行功能已停用。
+
+### 历史兼容表与字段
+
+迁移 `00103`、`00107`、`00108` 已经可能在线上数据库创建 `canvas_project_versions`、`canvas_workflow_run_nodes`、`canvas_workflow_batches`、`canvas_workflow_batch_items` 及相关列。应用不再注册这些功能的路由、调度器或 Worker 执行器，也不再读写这些表。迁移文件和既有数据暂时保留，避免部署时回滚迁移、删除生产数据或破坏数据库版本连续性。
+
+## Agent 质量工程
+
+### `agent_execution_traces` / `agent_tool_steps`
+
+每个无限画布 Hosted Agent 运行保存模型、推理强度、Prompt/工具版本、初始结构化画布快照、视觉参考摘要、自动恢复点和终态评分。工具步骤按运行内顺序持久化请求参数、执行器、是否需要确认、结果、错误和耗时。首次写画布前客户端自动创建检查点；删除节点、清空或覆盖历史始终要求用户确认。Agent 运行结束时根据工具成功率、悬空调用、恢复点和终态计算 0-100 分，追踪失败不会阻塞用户工具结果。
+
+### `agent_eval_cases` / `agent_eval_runs` / `agent_eval_results`
+
+固定评测集覆盖选中节点引用、多图一一连接、参考图生成完整工作流、高风险删除确认、节点回退、失败步骤重试、连接正确性和悬空工具调用。运行表按模型、推理强度、Prompt 版本和工具版本保存样本量与整批分数，结果表保留每个用例的适用样本量、通过数、通过率、代表失败追踪和无样本原因。后台可以停用不适用于当前阶段的评测项，并对近 7/30 日真实执行做回归比较；评测过程只读追踪，不调用模型或修改用户画布。
+
+新追踪显式写入 `canvas-agent-2026-08-29` 与 `canvas-tools-2026-08-29` 版本，后续改 Prompt 或工具协议时必须同步递增版本，避免不同实现混入同一回归组。迁移 `00100` 至 `00108` 只新增字段及关联索引，不导入旧服务器数据，不修改现有用户、钱包和图片对象；其中工作流产品化相关结构当前仅为历史兼容保留。
 
 ## 迁移与运维
 

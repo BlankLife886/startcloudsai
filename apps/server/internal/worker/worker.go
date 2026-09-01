@@ -29,6 +29,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/crun"
 	"github.com/BlankLife886/startcloudsai/server/internal/media"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
+	"github.com/BlankLife886/startcloudsai/server/internal/platformlog"
 	"github.com/BlankLife886/startcloudsai/server/internal/prompt"
 	"github.com/BlankLife886/startcloudsai/server/internal/promptsync"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
@@ -50,9 +51,14 @@ const (
 	typeCleanupUserUploads      = "cron:cleanup_user_uploads"
 	typeCleanupObjectJobs       = "cron:cleanup_object_jobs"
 	typeCleanupCanvasRuns       = "cron:cleanup_canvas_workflow_runs"
+	typeCleanupTrashedAssets    = "cron:cleanup_trashed_assets"
 	typeEvaluateIncidents       = "cron:evaluate_operational_incidents"
 	typeDispatchAssistantOutbox = "cron:dispatch_assistant_run_outbox"
 	typeDispatchAssistantFiles  = "cron:dispatch_assistant_files"
+	typeDispatchAPIWebhooks     = "cron:dispatch_api_webhooks"
+	typeRefreshUserProfiles     = "cron:refresh_user_profiles"
+	typeRankUserProfiles        = "cron:rank_user_profiles"
+	typeEnqueueAllUserProfiles  = "cron:enqueue_all_user_profiles"
 
 	taskCompletionLease         = 5 * time.Minute
 	taskLease                   = 2 * time.Minute
@@ -81,6 +87,7 @@ type Worker struct {
 	C2A        *c2a.Client
 	Queue      *taskflow.Queue
 	PromptSync *promptsync.Engine
+	Logs       *platformlog.Recorder
 	// Stream 用于把助手回答增量推给 API 层 SSE；nil 时静默降级为纯轮询。
 	Stream                   *redis.Client
 	imageMemory              *semaphore.Weighted
@@ -135,6 +142,7 @@ func New(cfg *config.Config, st *store.Store, stg *storage.Storage, c2aClient *c
 	return &Worker{
 		Cfg: cfg, St: st, Storage: stg, C2A: c2aClient, Queue: queue,
 		PromptSync:       promptsync.New(st, cfg.AppEnv == "development"),
+		Logs:             platformlog.New(st.Pool, "worker"),
 		Stream:           assistantstream.NewClient(cfg.RedisURL),
 		imageMemory:      semaphore.NewWeighted(imageMemoryBytes),
 		imageMemoryBytes: imageMemoryBytes,
@@ -193,9 +201,14 @@ func (w *Worker) Run() error {
 	mux.HandleFunc(typeCleanupUserUploads, w.handleCleanupUserUploads)
 	mux.HandleFunc(typeCleanupObjectJobs, w.handleCleanupObjectJobs)
 	mux.HandleFunc(typeCleanupCanvasRuns, w.handleCleanupCanvasRuns)
+	mux.HandleFunc(typeCleanupTrashedAssets, w.handleCleanupTrashedAssets)
 	mux.HandleFunc(typeEvaluateIncidents, w.handleEvaluateOperationalIncidents)
 	mux.HandleFunc(typeDispatchAssistantOutbox, w.handleDispatchAssistantOutbox)
 	mux.HandleFunc(typeDispatchAssistantFiles, w.handleDispatchAssistantFiles)
+	mux.HandleFunc(typeDispatchAPIWebhooks, w.handleDispatchAPIWebhooks)
+	mux.HandleFunc(typeRefreshUserProfiles, w.handleRefreshUserProfiles)
+	mux.HandleFunc(typeRankUserProfiles, w.handleRankUserProfiles)
+	mux.HandleFunc(typeEnqueueAllUserProfiles, w.handleEnqueueAllUserProfiles)
 
 	provider := &staticPeriodicConfigProvider{}
 	mgr, err := asynq.NewPeriodicTaskManager(asynq.PeriodicTaskManagerOpts{
@@ -268,10 +281,65 @@ func (p *staticPeriodicConfigProvider) GetConfigs() ([]*asynq.PeriodicTaskConfig
 		periodicConfig("@every 1h", typeCleanupUserUploads, 59*time.Minute, 3),
 		periodicConfig("@every 1m", typeCleanupObjectJobs, 50*time.Second, 3),
 		periodicConfig("@every 1h", typeCleanupCanvasRuns, 59*time.Minute, 0),
+		periodicConfig("@every 6h", typeCleanupTrashedAssets, 5*time.Hour+59*time.Minute, 1),
 		periodicConfig("@every 1m", typeEvaluateIncidents, 50*time.Second, 1),
 		periodicConfig("@every 15s", typeDispatchAssistantOutbox, 14*time.Second, 0),
 		periodicConfig("@every 15s", typeDispatchAssistantFiles, 14*time.Second, 0),
+		periodicConfig("@every 15s", typeDispatchAPIWebhooks, 14*time.Second, 0),
+		periodicConfig("@every 1m", typeRefreshUserProfiles, 50*time.Second, 1),
+		periodicConfig("@every 1h", typeRankUserProfiles, 59*time.Minute, 1),
+		periodicConfig("@every 24h", typeEnqueueAllUserProfiles, 23*time.Hour+59*time.Minute, 1),
 	}, nil
+}
+
+func (w *Worker) handleRefreshUserProfiles(ctx context.Context, _ *asynq.Task) error {
+	processed := 0
+	err := w.St.Tx(ctx, func(tx pgx.Tx) error {
+		ids, err := store.LockQueuedUserProfileIDs(ctx, tx, 100)
+		if err != nil || len(ids) == 0 {
+			return err
+		}
+		rules, err := settings.UserProfileRules(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if err := store.RefreshUserProfiles(ctx, tx, ids, rules, time.Now().UTC()); err != nil {
+			return err
+		}
+		if err := store.DeleteUserProfileRefreshQueue(ctx, tx, ids); err != nil {
+			return err
+		}
+		processed = len(ids)
+		return nil
+	})
+	if err == nil && processed > 0 {
+		log.Printf("refreshed %d user profiles", processed)
+	}
+	return err
+}
+
+func (w *Worker) handleRankUserProfiles(ctx context.Context, _ *asynq.Task) error {
+	changed := 0
+	err := w.St.Tx(ctx, func(tx pgx.Tx) error {
+		rules, err := settings.UserProfileRules(ctx, tx)
+		if err != nil {
+			return err
+		}
+		changed, err = store.RefreshHighValueProfileTags(ctx, tx, rules.HighValuePercentile, time.Now().UTC())
+		return err
+	})
+	if err == nil && changed > 0 {
+		log.Printf("updated high-value ranking for %d user profiles", changed)
+	}
+	return err
+}
+
+func (w *Worker) handleEnqueueAllUserProfiles(ctx context.Context, _ *asynq.Task) error {
+	if err := store.EnqueueAllUserProfiles(ctx, w.St.Pool); err != nil {
+		return err
+	}
+	log.Printf("queued all user profiles for daily lifecycle refresh")
+	return nil
 }
 
 func periodicConfig(cronspec, taskType string, uniqueFor time.Duration, maxRetry int) *asynq.PeriodicTaskConfig {
@@ -1338,6 +1406,12 @@ var urlPattern = regexp.MustCompile(`https?://\S+`)
 func sanitizeUpstreamMessage(msg string) string {
 	cleaned := strings.TrimSpace(urlPattern.ReplaceAllString(msg, ""))
 	cleaned = strings.Join(strings.Fields(cleaned), " ")
+	for _, prefix := range []string{"upstream_text_reply:", "upstream_error:"} {
+		if strings.HasPrefix(strings.ToLower(cleaned), prefix) {
+			cleaned = strings.TrimSpace(cleaned[len(prefix):])
+			break
+		}
+	}
 	lower := strings.ToLower(cleaned)
 	if canvasAgentLooksLikeAuthFailure(cleaned) {
 		return "对话模型认证失效，请检查后台模型服务商配置后重试"
@@ -1384,7 +1458,18 @@ func (w *Worker) taskFailureRetryCount(ctx context.Context) int {
 }
 
 func (w *Worker) scheduleTaskRetry(ctx context.Context, task *store.Task, owner string) (bool, error) {
-	return w.enqueueTaskRetry(ctx, task, owner, failedTaskProviderIDs(task))
+	failed := failedTaskProviderIDs(task)
+	if !w.hasAlternateExecutionRoute(ctx, task) {
+		// A transient failure must still consume the configured retry budget when
+		// only one route exists. Clearing exclusions allows the same route to be
+		// tried again; with alternatives available we keep preferring failover.
+		failed = nil
+	}
+	return w.enqueueTaskRetry(ctx, task, owner, failed)
+}
+
+func retryableTerminalTaskFailure(errorCode string) bool {
+	return strings.TrimSpace(errorCode) == "upstream_unreachable"
 }
 
 func (w *Worker) enqueueTaskRetry(ctx context.Context, task *store.Task, owner string, failed []string) (bool, error) {
@@ -1632,6 +1717,16 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 	if leaseOwner == "" {
 		return fmt.Errorf("task %s was claimed without a lease owner", taskID)
 	}
+	if updated, err := store.SetTaskGenerationStageOwned(ctx, w.St.Pool, taskID, "preparing", leaseOwner); err != nil {
+		return fmt.Errorf("task %s persist preparing stage: %w", taskID, err)
+	} else if !updated {
+		log.Printf("task %s stopped before preparation began", taskID)
+		return nil
+	}
+	if task.Params == nil {
+		task.Params = map[string]any{}
+	}
+	task.Params["_generationStage"] = "preparing"
 	workCtx, cancelWork := context.WithCancel(ctx)
 	defer cancelWork()
 	ctx = workCtx
@@ -1684,6 +1779,14 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 
 	errorCode, errorMessage := "internal_error", "未知错误"
 	collector := newTaskOutputCollector(w, ctx, task)
+	if updated, err := store.SetTaskGenerationStageOwned(ctx, w.St.Pool, taskID, "upstream_generating", leaseOwner); err != nil {
+		return fmt.Errorf("task %s persist upstream stage: %w", taskID, err)
+	} else if !updated {
+		log.Printf("task %s stopped before upstream submission", taskID)
+		return nil
+	}
+	task.Params["_generationStage"] = "upstream_generating"
+	w.publishTaskEvent(ctx, task, taskstream.Event{Stage: "upstream_generating", Status: "running"})
 	upstreamStartedAt := time.Now()
 	attemptID, attemptAdapter, attemptErr := w.registerConfiguredUpstreamAttempt(ctx, task)
 	var imagesB64 []string
@@ -2158,6 +2261,11 @@ func (w *Worker) startOpenAIResultFetch(provider *modelconfig.Provider, task *st
 		fetchStartedAt := time.Now()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
+		if err := store.SetTaskGenerationStage(ctx, w.St.Pool, task.ID, "fetching_result"); err != nil {
+			log.Printf("task %s persist result fetch stage failed: %v", task.ID, err)
+		} else {
+			w.publishTaskEvent(ctx, task, taskstream.Event{Stage: "fetching_result", Status: "running"})
+		}
 		if err := w.acquireImageFetch(ctx); err != nil {
 			log.Printf("task %s image fetch slot timed out: %v", task.ID, err)
 			if claimID != "" && w.St != nil {
@@ -2628,6 +2736,11 @@ func (w *Worker) finishPendingImagePoll(ctx context.Context, task *store.Task, p
 	if attemptID == uuid.Nil {
 		return
 	}
+	if err := store.SetTaskGenerationStage(ctx, w.St.Pool, task.ID, "upstream_generating"); err != nil {
+		log.Printf("task %s restore upstream generation stage failed: %v", task.ID, err)
+	} else {
+		w.publishTaskEvent(ctx, task, taskstream.Event{Stage: "upstream_generating", Status: "running"})
+	}
 	now := time.Now().UTC()
 	if expiresAt, ok := upstreamAttemptTime(task, "_upstreamAttemptExpiresAtMs"); ok && !now.Before(expiresAt) {
 		finished, err := store.FinishTaskUpstreamAttempt(ctx, w.St.Pool, attemptID,
@@ -2721,12 +2834,14 @@ func (w *Worker) finishFailedUpstreamAttempt(ctx context.Context, task *store.Ta
 		"上游返回错误："+errorMessage, -1, map[string]any{"errorCode": errorCode})
 	current, getErr := store.GetTask(ctx, w.St.Pool, task.ID)
 	if getErr == nil && current != nil && current.Status == "running" && taskUsesAttemptRoute(current, task) {
-		retried, retryErr := w.scheduleTaskRetry(ctx, current, taskLeaseOwner(current))
-		if retryErr != nil {
-			log.Printf("task %s failed-route retry scheduling failed: %v", task.ID, retryErr)
-		}
-		if retried {
-			return
+		if retryableTerminalTaskFailure(errorCode) {
+			retried, retryErr := w.scheduleTaskRetry(ctx, current, taskLeaseOwner(current))
+			if retryErr != nil {
+				log.Printf("task %s failed-route retry scheduling failed: %v", task.ID, retryErr)
+			}
+			if retried {
+				return
+			}
 		}
 		w.failCurrentTaskAndCloseAttempts(ctx, task, errorCode, errorMessage)
 		return
@@ -2938,6 +3053,54 @@ func (w *Worker) handleCleanupCanvasRuns(ctx context.Context, _ *asynq.Task) err
 	return nil
 }
 
+// handleCleanupTrashedAssets only moves expired trash into the existing
+// deferred object-cleanup queue. Actual OSS deletion remains load-aware.
+func (w *Worker) handleCleanupTrashedAssets(ctx context.Context, _ *asynq.Task) error {
+	tx, err := w.St.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	pressure, err := store.GetTaskPressure(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if pressure.Queued > 0 || pressure.Running > 2 {
+		return tx.Commit(ctx)
+	}
+	items, err := store.ListExpiredTrashedUserAssets(ctx, tx, time.Now().UTC().AddDate(0, 0, -30), 100)
+	if err != nil {
+		return err
+	}
+	deleted := 0
+	for _, item := range items {
+		locked, lockErr := store.GetUserAssetForUpdate(ctx, tx, item.UserID, item.ID)
+		if lockErr != nil {
+			return lockErr
+		}
+		if locked == nil || locked.DeletedAt == nil {
+			continue
+		}
+		if err := store.DeleteUserUploadReferences(ctx, tx, store.UploadReferenceUserAsset, locked.ID); err != nil {
+			return err
+		}
+		if err := store.EnqueueObjectCleanup(ctx, tx, []string{locked.FileKey, locked.ThumbnailKey}); err != nil {
+			return err
+		}
+		if err := store.PermanentlyDeleteUserAsset(ctx, tx, locked.UserID, locked.ID); err != nil {
+			return err
+		}
+		deleted++
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if deleted > 0 {
+		log.Printf("asset trash cleanup: deleted=%d", deleted)
+	}
+	return nil
+}
+
 // handleCleanupSessions cron：每小时清理过期 session。
 func (w *Worker) handleCleanupSessions(ctx context.Context, _ *asynq.Task) error {
 	now := time.Now().UTC()
@@ -2953,8 +3116,41 @@ func (w *Worker) handleCleanupSessions(ctx context.Context, _ *asynq.Task) error
 	if err != nil {
 		return err
 	}
-	if n > 0 || adminN > 0 || auditN > 0 {
-		log.Printf("cleaned %d user sessions, %d admin sessions and %d audit logs", n, adminN, auditN)
+	logConfig := w.Logs.Current(ctx)
+	if logConfig.RetentionDays <= 0 {
+		logConfig.RetentionDays = 7
+	}
+	if logConfig.MaxMB <= 0 {
+		logConfig.MaxMB = 256
+	}
+	platformLogN, err := store.CleanupPlatformLogs(
+		ctx, w.St.Pool, now.AddDate(0, 0, -int(logConfig.RetentionDays)), logConfig.MaxMB<<20,
+	)
+	if err != nil {
+		return err
+	}
+	behaviorRetentionDays, err := settings.GetInt(ctx, w.St.Pool, "user_behavior_retention_days")
+	if err != nil {
+		return err
+	}
+	behaviorRetentionDays = max(1, min(behaviorRetentionDays, 365))
+	behaviorN, err := store.DeleteUserBehaviorEventsBefore(ctx, w.St.Pool, now.AddDate(0, 0, -int(behaviorRetentionDays)))
+	if err != nil {
+		return err
+	}
+	profileHistoryRetentionDays, err := settings.GetInt(ctx, w.St.Pool, "user_profile_history_retention_days")
+	if err != nil {
+		return err
+	}
+	profileHistoryRetentionDays = max(1, min(profileHistoryRetentionDays, 730))
+	profileHistoryN, err := store.DeleteUserProfileHistoryBefore(
+		ctx, w.St.Pool, now.AddDate(0, 0, -int(profileHistoryRetentionDays)),
+	)
+	if err != nil {
+		return err
+	}
+	if n > 0 || adminN > 0 || auditN > 0 || platformLogN > 0 || behaviorN > 0 || profileHistoryN > 0 {
+		log.Printf("cleaned %d user sessions, %d admin sessions, %d audit logs, %d platform logs, %d behavior events and %d user profile snapshots", n, adminN, auditN, platformLogN, behaviorN, profileHistoryN)
 	}
 	return nil
 }

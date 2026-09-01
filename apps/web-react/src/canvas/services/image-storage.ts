@@ -6,6 +6,7 @@ import { dataUrlToBlob } from "@/lib/data-url";
 import { readImageSizeFromBlob } from "@/lib/image-utils";
 import { cloudFileUrl, cloudThumbnailKey, cloudThumbnailUrl, isLocalImageKey, storageKeyFromUrl } from "@/lib/canvas/canvas-preview-url";
 import { StarcloudsApiError, fetchCloudFileBlob, starcloudsFileUrl, uploadCloudFile } from "@/services/starclouds-api";
+import { trackReferenceUpload } from "@react/legacy-modules/services/behaviorTracker.js";
 
 export type UploadedImage = {
     url: string;
@@ -88,7 +89,10 @@ export async function uploadImage(input: string | Blob): Promise<UploadedImage> 
     const blob = await ensureUploadableImageBlob(source);
     const meta = await readImageSizeFromBlob(blob);
     try {
-        const uploaded = await uploadCloudFile(blob, imageFilename(blob));
+        const upload = () => uploadCloudFile(blob, imageFilename(blob));
+        const uploaded = input instanceof Blob
+            ? await trackReferenceUpload(upload, { feature: "canvas", metadata: { uploadKind: "reference" } })
+            : await upload();
         return {
             url: uploaded.url,
             storageKey: uploaded.key,

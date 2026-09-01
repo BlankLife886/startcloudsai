@@ -37,13 +37,25 @@ String walletPoints(int value, {bool withUnit = false}) {
 }
 
 class WalletScreen extends ConsumerStatefulWidget {
-  const WalletScreen({super.key});
+  const WalletScreen({this.initiallyOpenRedeem = false, super.key});
+
+  final bool initiallyOpenRedeem;
 
   @override
   ConsumerState<WalletScreen> createState() => _WalletScreenState();
 }
 
 class _WalletScreenState extends ConsumerState<WalletScreen> {
+  @override
+  void initState() {
+    super.initState();
+    if (widget.initiallyOpenRedeem) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _openRedeem();
+      });
+    }
+  }
+
   Future<void> _refresh() async {
     ref.invalidate(walletProvider);
     ref.invalidate(profileOverviewProvider);
@@ -131,7 +143,11 @@ class _WalletScreenState extends ConsumerState<WalletScreen> {
               ),
             ],
             const SizedBox(height: 16),
-            WalletCompositionGrid(wallet: wallet),
+            WalletCompositionGrid(
+              wallet: wallet,
+              onOpenLedger: (filter) =>
+                  context.push('/profile/wallet/ledger?filter=${filter.name}'),
+            ),
             const SizedBox(height: 22),
             WalletBillSummary(center: center),
           ],
@@ -157,204 +173,126 @@ class WalletBalancePanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final dark = Theme.of(context).brightness == Brightness.dark;
-    final visual = StarCloudsVisualStyle.of(context);
+    final colors = Theme.of(context).colorScheme;
     return AppAppear(
       child: DecoratedBox(
         decoration: BoxDecoration(
-          borderRadius: StarCloudsRadii.card,
-          boxShadow: [
-            BoxShadow(
-              color: visual.shadow.withValues(alpha: dark ? .38 : .18),
-              blurRadius: 28,
-              offset: const Offset(0, 12),
-            ),
-          ],
+          color: colors.surface,
+          border: Border.all(color: colors.outlineVariant),
+          borderRadius: BorderRadius.circular(8),
         ),
         child: ClipRRect(
-          borderRadius: StarCloudsRadii.card,
-          child: Stack(
+          borderRadius: BorderRadius.circular(8),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Positioned.fill(
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: dark
-                          ? const [Color(0xFF2A2438), Color(0xFF1C2038)]
-                          : const [Color(0xFF2B2A32), Color(0xFF3D3428)],
-                    ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 14),
+                child: wallet.when(
+                  loading: () => const SizedBox(
+                    height: 78,
+                    child: Center(child: CircularProgressIndicator()),
                   ),
-                ),
-              ),
-              const Positioned(
-                right: -40,
-                top: -56,
-                child: _HeroGlow(size: 180, color: Color(0x55E8C07A)),
-              ),
-              const Positioned(
-                left: -36,
-                bottom: 28,
-                child: _HeroGlow(size: 140, color: Color(0x332B4C9A)),
-              ),
-              const Positioned(
-                right: 18,
-                top: 18,
-                child: Icon(
-                  Icons.account_balance_wallet_outlined,
-                  color: Color(0x33E8C07A),
-                  size: 26,
-                ),
-              ),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(22, 22, 22, 18),
-                    child: wallet.when(
-                      loading: () => const SizedBox(
-                        height: 88,
-                        child: Center(
-                          child: CircularProgressIndicator(
-                            color: Color(0xFFE8C07A),
-                          ),
+                  error: (error, stackTrace) => const SizedBox(
+                    height: 78,
+                    child: Center(child: Text('钱包加载失败')),
+                  ),
+                  data: (value) => Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '可用余额',
+                        style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                          color: colors.onSurfaceVariant,
+                          fontWeight: FontWeight.w700,
                         ),
                       ),
-                      error: (error, stackTrace) => const SizedBox(
-                        height: 88,
-                        child: Center(
-                          child: Text(
-                            '钱包加载失败',
-                            style: TextStyle(color: Color(0xCCFFFFFF)),
-                          ),
-                        ),
-                      ),
-                      data: (value) => Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            '可用余额',
-                            style: TextStyle(
-                              color: Color(0xFFE8C07A),
-                              fontWeight: FontWeight.w700,
-                              fontSize: 13,
-                              letterSpacing: 0.4,
-                            ),
-                          ),
-                          const SizedBox(height: 10),
-                          FittedBox(
-                            fit: BoxFit.scaleDown,
-                            alignment: Alignment.centerLeft,
-                            child: Row(
-                              crossAxisAlignment: CrossAxisAlignment.end,
-                              children: [
-                                Text(
-                                  walletPoints(value.availablePoints),
-                                  style: Theme.of(context)
-                                      .textTheme
-                                      .displaySmall
-                                      ?.copyWith(
-                                        color: Colors.white,
-                                        fontWeight: FontWeight.w900,
-                                        letterSpacing: -1.8,
-                                        height: 1,
-                                      ),
-                                ),
-                                const Padding(
-                                  padding: EdgeInsets.only(left: 8, bottom: 4),
-                                  child: Text(
-                                    '积分',
-                                    style: TextStyle(
-                                      color: Color(0xCCFFFFFF),
-                                      fontWeight: FontWeight.w700,
-                                    ),
+                      const SizedBox(height: 7),
+                      FittedBox(
+                        fit: BoxFit.scaleDown,
+                        alignment: Alignment.centerLeft,
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            Text(
+                              walletPoints(value.availablePoints),
+                              style: Theme.of(context).textTheme.headlineLarge
+                                  ?.copyWith(
+                                    color: colors.onSurface,
+                                    fontWeight: FontWeight.w900,
+                                    height: 1,
                                   ),
-                                ),
-                              ],
                             ),
-                          ),
-                          if (value.frozenPoints > 0) ...[
-                            const SizedBox(height: 12),
-                            DecoratedBox(
-                              decoration: BoxDecoration(
-                                color: const Color(0x22E8C07A),
-                                borderRadius: StarCloudsRadii.pillAll,
+                            Padding(
+                              padding: const EdgeInsets.only(
+                                left: 7,
+                                bottom: 2,
                               ),
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 10,
-                                  vertical: 5,
-                                ),
-                                child: Text(
-                                  '另有 ${walletPoints(value.frozenPoints, withUnit: true)} 冻结中，完成后结算或退回。',
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                    color: Color(0xE8E8C07A),
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w600,
-                                  ),
+                              child: Text(
+                                '积分',
+                                style: TextStyle(
+                                  color: colors.onSurfaceVariant,
+                                  fontWeight: FontWeight.w700,
                                 ),
                               ),
                             ),
                           ],
-                        ],
+                        ),
                       ),
-                    ),
+                      if (value.frozenPoints > 0) ...[
+                        const SizedBox(height: 10),
+                        Row(
+                          children: [
+                            Icon(
+                              Icons.schedule_outlined,
+                              size: 15,
+                              color: colors.onSurfaceVariant,
+                            ),
+                            const SizedBox(width: 5),
+                            Expanded(
+                              child: Text(
+                                '${walletPoints(value.frozenPoints, withUnit: true)} 冻结中，完成后结算或退回',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: Theme.of(context).textTheme.bodySmall
+                                    ?.copyWith(color: colors.onSurfaceVariant),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ],
                   ),
-                  ColoredBox(
-                    color: const Color(0x33000000),
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(6, 12, 6, 12),
-                      child: Row(
-                        children: [
-                          _WalletHeroAction(
-                            icon: Icons.redeem_outlined,
-                            label: '兑换积分',
-                            onTap: onRedeem,
-                          ),
-                          _WalletHeroAction(
-                            icon: Icons.receipt_long_outlined,
-                            label: '积分明细',
-                            onTap: onLedger,
-                          ),
-                          _WalletHeroAction(
-                            icon: Icons.workspace_premium_outlined,
-                            label: '购买套餐',
-                            onTap: onPurchase,
-                          ),
-                        ],
+                ),
+              ),
+              DecoratedBox(
+                decoration: BoxDecoration(
+                  border: Border(top: BorderSide(color: colors.outlineVariant)),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(4, 10, 4, 10),
+                  child: Row(
+                    children: [
+                      _WalletHeroAction(
+                        icon: Icons.redeem_outlined,
+                        label: '兑换积分',
+                        onTap: onRedeem,
                       ),
-                    ),
+                      _WalletHeroAction(
+                        icon: Icons.receipt_long_outlined,
+                        label: '积分明细',
+                        onTap: onLedger,
+                      ),
+                      _WalletHeroAction(
+                        icon: Icons.workspace_premium_outlined,
+                        label: '购买套餐',
+                        onTap: onPurchase,
+                      ),
+                    ],
                   ),
-                ],
+                ),
               ),
             ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _HeroGlow extends StatelessWidget {
-  const _HeroGlow({required this.size, required this.color});
-
-  final double size;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) {
-    return IgnorePointer(
-      child: SizedBox.square(
-        dimension: size,
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            gradient: RadialGradient(
-              colors: [color, color.withValues(alpha: 0)],
-            ),
           ),
         ),
       ),
@@ -375,29 +313,24 @@ class _WalletHeroAction extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
     return Expanded(
       child: AppPressable(
         onTap: onTap,
         child: Column(
           children: [
-            DecoratedBox(
-              decoration: const BoxDecoration(
-                color: Color(0x28E8C07A),
-                shape: BoxShape.circle,
-              ),
-              child: SizedBox.square(
-                dimension: 42,
-                child: Icon(icon, color: const Color(0xFFE8C07A), size: 20),
-              ),
+            SizedBox.square(
+              dimension: 28,
+              child: Icon(icon, color: colors.onSurface, size: 20),
             ),
-            const SizedBox(height: 7),
+            const SizedBox(height: 5),
             Text(
               label,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               textAlign: TextAlign.center,
-              style: const TextStyle(
-                color: Color(0xEEFFFFFF),
+              style: TextStyle(
+                color: colors.onSurface,
                 fontWeight: FontWeight.w700,
                 fontSize: 12,
                 height: 1.1,
@@ -411,39 +344,56 @@ class _WalletHeroAction extends StatelessWidget {
 }
 
 class WalletCompositionGrid extends StatelessWidget {
-  const WalletCompositionGrid({required this.wallet, super.key});
+  const WalletCompositionGrid({
+    required this.wallet,
+    required this.onOpenLedger,
+    super.key,
+  });
 
   final AsyncValue<WalletSnapshot> wallet;
+  final ValueChanged<WalletEntryFilter> onOpenLedger;
 
   @override
   Widget build(BuildContext context) {
     final value = wallet.asData?.value;
     if (value == null) return const SizedBox.shrink();
     final colors = Theme.of(context).colorScheme;
-    final rows = [
+    final rows = <(IconData, String, int, Color, WalletEntryFilter)>[
       (
         Icons.account_balance_wallet_outlined,
         '账户总额',
         value.totalPoints,
         colors.onSurface,
+        WalletEntryFilter.all,
       ),
       (
         Icons.hourglass_top_outlined,
         '冻结中',
         value.frozenPoints,
         value.frozenPoints > 0 ? colors.tertiary : colors.onSurfaceVariant,
+        WalletEntryFilter.pending,
       ),
-      (Icons.toll_outlined, '普通积分', value.normalPoints, colors.onSurface),
+      (
+        Icons.toll_outlined,
+        '普通积分',
+        value.normalPoints,
+        colors.onSurface,
+        WalletEntryFilter.normal,
+      ),
       (
         Icons.card_giftcard_outlined,
         '体验积分',
         value.trialPoints,
         value.trialPoints > 0 ? colors.secondary : colors.onSurfaceVariant,
+        WalletEntryFilter.trial,
       ),
     ];
-    return AppSoftCard(
-      radius: StarCloudsRadii.card,
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: colors.surface,
+        border: Border.all(color: colors.outlineVariant),
+        borderRadius: BorderRadius.circular(8),
+      ),
       child: Column(
         children: [
           for (var i = 0; i < rows.length; i++) ...[
@@ -457,6 +407,8 @@ class WalletCompositionGrid extends StatelessWidget {
               label: rows[i].$2,
               value: rows[i].$3,
               valueColor: rows[i].$4,
+              filter: rows[i].$5,
+              onTap: () => onOpenLedger(rows[i].$5),
             ),
           ],
         ],
@@ -471,55 +423,69 @@ class _CompositionRow extends StatelessWidget {
     required this.label,
     required this.value,
     required this.valueColor,
+    required this.filter,
+    required this.onTap,
   });
 
   final IconData icon;
   final String label;
   final int value;
   final Color valueColor;
+  final WalletEntryFilter filter;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    return ConstrainedBox(
-      constraints: const BoxConstraints(minHeight: 52),
-      child: Row(
-        children: [
-          DecoratedBox(
-            decoration: BoxDecoration(
-              color: valueColor.withValues(alpha: .10),
-              shape: BoxShape.circle,
-            ),
-            child: SizedBox.square(
-              dimension: 32,
-              child: Icon(icon, size: 17, color: valueColor),
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        key: Key('wallet-composition-${filter.name}'),
+        onTap: onTap,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: 52),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            child: Row(
+              children: [
+                SizedBox.square(
+                  dimension: 24,
+                  child: Icon(icon, size: 17, color: valueColor),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerRight,
+                  child: Text(
+                    walletPoints(value),
+                    maxLines: 1,
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: -0.3,
+                      color: valueColor,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 3),
+                Icon(
+                  Icons.chevron_right_rounded,
+                  size: 18,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ],
             ),
           ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Text(
-              label,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(
-                context,
-              ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
-            ),
-          ),
-          const SizedBox(width: 10),
-          FittedBox(
-            fit: BoxFit.scaleDown,
-            alignment: Alignment.centerRight,
-            child: Text(
-              walletPoints(value),
-              maxLines: 1,
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.w800,
-                letterSpacing: -0.3,
-                color: valueColor,
-              ),
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }

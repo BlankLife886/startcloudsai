@@ -94,10 +94,17 @@ class ChangelogEntry {
 }
 
 class MetaFeed {
-  const MetaFeed({required this.announcements, required this.changelog});
+  const MetaFeed({
+    required this.announcements,
+    required this.changelog,
+    this.announcementsUnavailable = false,
+    this.changelogUnavailable = false,
+  });
 
   final List<AppAnnouncement> announcements;
   final List<ChangelogEntry> changelog;
+  final bool announcementsUnavailable;
+  final bool changelogUnavailable;
 
   ChangelogEntry? get latest => changelog.firstOrNull;
 }
@@ -157,6 +164,8 @@ class MetaRepository {
     return MetaFeed(
       announcements: announcementsResult.items ?? const [],
       changelog: changelogResult.items ?? const [],
+      announcementsUnavailable: announcementsResult.error != null,
+      changelogUnavailable: changelogResult.error != null,
     );
   }
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
+	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/subscription"
 )
@@ -85,6 +86,11 @@ func (s *Server) adminGetUser(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
+	profileOut, err := s.adminUserProfileData(ctx, userID, now, false)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	var tasksTotal int64
 	for _, n := range byStatus {
 		tasksTotal += n
@@ -103,6 +109,7 @@ func (s *Server) adminGetUser(c *gin.Context, _ *store.User) {
 		"trialAccess":  trialAccessApplicationDict(trialApp, false),
 		"checkin":      checkinOut,
 		"growthGroup":  growthOut,
+		"profile":      profileOut,
 		"security": gin.H{
 			"activeSessions":       sessions.ActiveCount,
 			"lastSessionIp":        sessions.LastIP,
@@ -122,6 +129,86 @@ func (s *Server) adminGetUser(c *gin.Context, _ *store.User) {
 			"feedback":       feedbackCount,
 		},
 	})
+}
+
+func (s *Server) adminRefreshUserProfile(c *gin.Context, _ *store.User) {
+	userID, err := parseUUIDParam(c, "id")
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ctx := c.Request.Context()
+	user, err := store.GetUserByID(ctx, s.St.Pool, userID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if user == nil || user.Role != "user" {
+		fail(c, apperr.E("not_found", "用户不存在", 404))
+		return
+	}
+	profile, err := s.adminUserProfileData(ctx, userID, time.Now().UTC(), true)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ok(c, profile)
+}
+
+func (s *Server) adminUserProfileData(ctx context.Context, userID uuid.UUID, now time.Time, force bool) (gin.H, error) {
+	metric, err := store.GetUserProfileMetric(ctx, s.St.Pool, userID)
+	if err != nil {
+		return nil, err
+	}
+	if metric == nil || force {
+		rules, err := settings.UserProfileRules(ctx, s.St.Pool)
+		if err != nil {
+			return nil, err
+		}
+		if err := store.RefreshUserProfiles(ctx, s.St.Pool, []uuid.UUID{userID}, rules, now); err != nil {
+			return nil, err
+		}
+		if err := store.DeleteUserProfileRefreshQueue(ctx, s.St.Pool, []uuid.UUID{userID}); err != nil {
+			return nil, err
+		}
+		metric, err = store.GetUserProfileMetric(ctx, s.St.Pool, userID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	workspaces, err := store.UserProfileWorkspaceBreakdown(ctx, s.St.Pool, userID)
+	if err != nil {
+		return nil, err
+	}
+	models, err := store.UserProfileModelBreakdown(ctx, s.St.Pool, userID)
+	if err != nil {
+		return nil, err
+	}
+	failures, err := store.UserProfileFailureBreakdown(ctx, s.St.Pool, userID)
+	if err != nil {
+		return nil, err
+	}
+	trend, err := store.UserProfileDailyTrend(ctx, s.St.Pool, userID)
+	if err != nil {
+		return nil, err
+	}
+	funnel, err := store.UserBehaviorFunnel30(ctx, s.St.Pool, userID)
+	if err != nil {
+		return nil, err
+	}
+	history, err := store.UserProfileHistory(ctx, s.St.Pool, userID, 30)
+	if err != nil {
+		return nil, err
+	}
+	return gin.H{
+		"metrics":    metric,
+		"workspaces": workspaces,
+		"models":     models,
+		"failures":   failures,
+		"dailyTrend": trend,
+		"funnel":     funnel,
+		"history":    history,
+	}, nil
 }
 
 func ptrString(value *string) string {

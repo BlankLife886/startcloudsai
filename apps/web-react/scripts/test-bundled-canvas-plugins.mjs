@@ -116,5 +116,5 @@ test("image uploads render a pending node before waiting for cloud storage", asy
     assert.ok(waitForUpload > createUploadStart, "pending node must render before the cloud upload resolves");
     assert.match(project, /metadata: \{ status: NODE_STATUS_LOADING, uploading: true \}/);
     assert.match(canvasNode, /data\.metadata\?\.uploading\s*\? t\("canvas\.node\.uploading"\)/);
-    assert.match(canvasNode, /node\.metadata\?\.uploading \? "canvas\.node\.uploading" : "canvas\.node\.generating"/);
+    assert.match(canvasNode, /node\.metadata\?\.uploading \? t\("canvas\.node\.uploading"\) : canvasGenerationStageLabel/);
 });

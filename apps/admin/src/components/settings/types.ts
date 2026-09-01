@@ -72,6 +72,12 @@ export interface AdminSettings {
   imageDisplayMaxEdge?: number
 	imageThumbMaxEdge?: number
   imageFetchConcurrency?: number
+  platformLoggingEnabled?: boolean
+  platformLogSecurityEnabled?: boolean
+  platformLogOperationsEnabled?: boolean
+  platformLogUserEnabled?: boolean
+  platformLogRetentionDays?: number
+  platformLogMaxMb?: number
   lanjingPayEnabled?: boolean
   lanjingPayBaseUrl?: string
   lanjingPaySecret?: string

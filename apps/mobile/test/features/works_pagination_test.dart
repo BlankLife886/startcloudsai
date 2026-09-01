@@ -5,10 +5,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
 import 'package:starcloudsai_mobile/core/config/app_environment.dart';
 import 'package:starcloudsai_mobile/core/network/api_client.dart';
 import 'package:starcloudsai_mobile/core/storage/session_store.dart';
 import 'package:starcloudsai_mobile/features/auth/auth.dart';
+import 'package:starcloudsai_mobile/features/gallery/gallery.dart';
+import 'package:starcloudsai_mobile/features/tasks/task_detail_screen.dart';
 import 'package:starcloudsai_mobile/features/tasks/task_sync.dart';
 import 'package:starcloudsai_mobile/features/tasks/tasks.dart';
 import 'package:starcloudsai_mobile/features/tasks/works_screen.dart';
@@ -158,6 +161,73 @@ class _RecoveringTaskCenterController extends _FakeTaskCenterController {
   }
 }
 
+class _DeepSearchTaskCenterController extends TaskCenterController {
+  int loadMoreCount = 0;
+
+  @override
+  Future<TaskCenterState> build() async => TaskCenterState(
+    items: [_task('task-current', prompt: '当前页作品')],
+    nextCursor: 'page-2',
+  );
+
+  @override
+  Future<void> loadMore() async {
+    final current = state.requireValue;
+    if (!current.hasMore) return;
+    loadMoreCount += 1;
+    state = AsyncData(
+      current.copyWith(
+        items: [
+          ...current.items,
+          loadMoreCount == 1
+              ? _task('task-older', prompt: '无关的旧作品')
+              : _task('task-match', prompt: '山谷风景壁纸'),
+        ],
+        nextCursor: loadMoreCount == 1 ? 'page-3' : null,
+        clearCursor: loadMoreCount > 1,
+      ),
+    );
+  }
+
+  @override
+  Future<void> refresh() async {}
+}
+
+class _CachedDetailTaskCenterController extends TaskCenterController {
+  @override
+  Future<TaskCenterState> build() async => TaskCenterState(
+    items: [
+      TaskItem(
+        id: 'cached-multi-image',
+        type: 'text-to-image',
+        model: 'image-pro',
+        status: 'succeeded',
+        prompt: '四图品牌视觉',
+        params: const {'batchSize': 4},
+        inputKeys: const [],
+        costPoints: 12,
+        createdAt: DateTime(2026, 8, 24, 12),
+        startedAt: null,
+        finishedAt: null,
+        thumbnailUrls: const ['thumbnail'],
+        displayUrls: const ['display-1', 'display-2', 'display-3', 'display-4'],
+        originalUrls: const [
+          'original-1',
+          'original-2',
+          'original-3',
+          'original-4',
+        ],
+        errorCode: null,
+        errorMessage: null,
+        count: 4,
+      ),
+    ],
+  );
+
+  @override
+  Future<void> refresh() async {}
+}
+
 Widget _worksApp({required TaskCenterController Function() controller}) {
   return ProviderScope(
     overrides: [
@@ -176,6 +246,43 @@ Widget _worksApp({required TaskCenterController Function() controller}) {
       ),
       home: const WorksScreen(),
     ),
+  );
+}
+
+Widget _worksRouterApp() {
+  final router = GoRouter(
+    initialLocation: '/works',
+    routes: [
+      GoRoute(
+        path: '/works',
+        builder: (context, state) => const WorksScreen(),
+        routes: [
+          GoRoute(
+            path: ':id',
+            builder: (context, state) => TaskDetailScreen(
+              taskId: state.pathParameters['id']!,
+              initialTask: state.extra as TaskItem?,
+            ),
+          ),
+        ],
+      ),
+    ],
+  );
+  return ProviderScope(
+    overrides: [
+      sessionControllerProvider.overrideWith(
+        _AuthenticatedSessionController.new,
+      ),
+      taskSyncControllerProvider.overrideWith(_IdleTaskSyncController.new),
+      taskCenterControllerProvider.overrideWith(
+        _CachedDetailTaskCenterController.new,
+      ),
+      taskDetailProvider.overrideWith(
+        (ref, id) async => throw StateError('detail unavailable'),
+      ),
+      gallerySubmissionForTaskProvider.overrideWith((ref, id) async => null),
+    ],
+    child: MaterialApp.router(routerConfig: router),
   );
 }
 
@@ -321,7 +428,7 @@ void main() {
       filterTasksForWorks(
         items,
         filter: WorksTaskFilter.succeeded,
-        query: '产品',
+        query: '产品 image-fast',
       ).map((item) => item.id),
       ['task-1'],
     );
@@ -348,6 +455,14 @@ void main() {
         query: 'image-to-image',
       ).map((item) => item.id),
       ['task-3'],
+    );
+    expect(
+      filterTasksForWorks(
+        items,
+        filter: WorksTaskFilter.all,
+        query: '产品 portrait',
+      ),
+      isEmpty,
     );
     expect(
       filterTasksForWorks(
@@ -429,7 +544,38 @@ void main() {
     await tester.tap(find.byKey(const Key('works-status-filter-生成中')));
     await tester.pump();
     expect(find.text('没有匹配的作品'), findsOneWidget);
-    expect(find.text('继续加载更多作品'), findsOneWidget);
+    expect(find.text('还可以继续查找更早的历史记录'), findsOneWidget);
+    expect(find.text('查找更多历史'), findsOneWidget);
+    final search = tester.widget<TextField>(
+      find.byKey(const Key('works-search')),
+    );
+    final border = search.decoration!.border! as OutlineInputBorder;
+    expect(border.borderRadius, BorderRadius.circular(8));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('search action continues into older pages until a match', (
+    tester,
+  ) async {
+    late _DeepSearchTaskCenterController controller;
+    await tester.pumpWidget(
+      _worksApp(
+        controller: () => controller = _DeepSearchTaskCenterController(),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    await tester.enterText(
+      find.byKey(const Key('works-search')),
+      '山谷 image-fast',
+    );
+    await tester.testTextInput.receiveAction(TextInputAction.search);
+    await tester.pumpAndSettle();
+
+    expect(controller.loadMoreCount, 2);
+    expect(find.text('山谷风景壁纸'), findsOneWidget);
+    expect(find.text('没有匹配的作品'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
@@ -450,6 +596,26 @@ void main() {
     expect(find.text('夏日产品海报'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'opening a work carries its cached task into failed detail sync',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(390, 844));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(_worksRouterApp());
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byType(TaskCard).first);
+      await tester.pumpAndSettle();
+
+      expect(find.text('作品详情'), findsOneWidget);
+      expect(find.byKey(const Key('task-detail-cache-notice')), findsOneWidget);
+      expect(find.text('详情同步失败，已显示列表中的作品数据'), findsOneWidget);
+      expect(find.text('保存全部'), findsOneWidget);
+      expect(find.text('详情未同步'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('history uses two-column masonry', (tester) async {
     await tester.pumpWidget(

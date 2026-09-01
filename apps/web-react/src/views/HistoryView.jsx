@@ -3,6 +3,11 @@ import { Link, useNavigate } from "react-router";
 import { useVirtualMasonryFeed } from "../features/prompts/useVirtualMasonryFeed.js";
 import { taskFailureMessage } from "../features/history/taskFailureMessage.js";
 import {
+  historyTaskCanOpen,
+  historyTaskDurationLabel,
+  historyTaskStatus,
+} from "../features/history/historyTaskPresentation.js";
+import {
   deleteTask,
   listTasks,
   subscribeTask,
@@ -57,6 +62,7 @@ const STATUS_FILTERS = [
   ["running", "生成中"],
   ["queued", "排队中"],
   ["failed", "失败"],
+  ["canceled", "已取消"],
 ];
 const CANVAS_SOURCE = "react_canvas";
 const ASSISTANT_TYPE = "assistant";
@@ -156,6 +162,7 @@ function mergeTaskSnapshot(current, incoming) {
     incoming.shareSubmitted !== undefined ||
     incoming.shareSubmissionStatus !== undefined;
   return {
+    ...current,
     ...incoming,
     shareSubmitted: hasShare
       ? incoming.shareSubmitted === true
@@ -219,6 +226,7 @@ export function HistoryView() {
   const [confirm, setConfirm] = useState(null);
   const [publishTarget, setPublishTarget] = useState(null);
   const [publishBusy, setPublishBusy] = useState(false);
+  const [durationNow, setDurationNow] = useState(() => Date.now());
 
   const visibleTasks = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -234,11 +242,14 @@ export function HistoryView() {
       )
       .map((task) => ({
         ...task,
+        normalizedStatus: historyTaskStatus(task),
         cleanPrompt: taskPrompt(task) || "未填写提示词",
-        failureMessage:
-          String(task.status || "").toLowerCase() === "failed"
-            ? taskFailureMessage(task)
-            : "",
+        terminalMessage: ["failed", "canceled"].includes(historyTaskStatus(task))
+          ? taskFailureMessage(
+              task,
+              historyTaskStatus(task) === "canceled" ? "任务已取消" : "生成失败，请稍后重试",
+            )
+          : "",
       }));
   }, [search, statusFilter, tasks]);
   const masonryItems = useMemo(
@@ -357,6 +368,16 @@ export function HistoryView() {
     },
     [bulkBusy, cursor, loading, loadingMore, syncSubscriptions, typeFilter],
   );
+
+  useEffect(() => {
+    const hasActiveTask = visibleTasks.some((task) =>
+      ["queued", "running"].includes(task.normalizedStatus),
+    );
+    if (!hasActiveTask) return undefined;
+    setDurationNow(Date.now());
+    const timer = window.setInterval(() => setDurationNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [visibleTasks]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -539,7 +560,7 @@ export function HistoryView() {
       return next;
     });
   const openPreview = (task) => {
-    if (!taskCoverUrl(task) && task.status !== "failed") return;
+    if (!historyTaskCanOpen(task, Boolean(taskCoverUrl(task)))) return;
     setPreview(task);
     if (taskMediaModality(task) === "image") ensureMetadata(task);
   };
@@ -967,9 +988,10 @@ export function HistoryView() {
                 const selected = selectedIds.has(String(task.id));
                 const share = taskShareStatus(task);
                 const hasCachedMetadata = Boolean(metadata[String(task.id)]);
-                const cardMediaLabel = hasCachedMetadata
+                const mediaLabel = hasCachedMetadata
                   ? metadataLabel(task)
                   : formatTime(task.createdAt);
+                const durationLabel = historyTaskDurationLabel(task, durationNow);
                 return (
                   <article
                     key={item.key}
@@ -997,7 +1019,7 @@ export function HistoryView() {
                       type="button"
                       className="ch-card__media ch-prompt-card__media"
                       style={{ height: item.mediaHeight, aspectRatio: "auto" }}
-                      disabled={!selectMode && !src && task.status !== "failed"}
+                      disabled={!selectMode && !historyTaskCanOpen(task, Boolean(src))}
                       onClick={() =>
                         selectMode
                           ? taskOriginalUrl(task) && taskMediaModality(task) === "image" && toggleSelected(task.id)
@@ -1037,35 +1059,39 @@ export function HistoryView() {
                         />
                       ) : (
                         <div
-                          className={`ch-card__placeholder${isUserDeleted(task) ? " is-user-deleted" : ""}`}
+                          className={`ch-card__placeholder${isUserDeleted(task) ? " is-user-deleted" : task.normalizedStatus === "failed" ? " is-failed" : task.normalizedStatus === "canceled" ? " is-canceled" : ""}`}
                         >
                           <i
-                            className={`bi ${isUserDeleted(task) ? "bi-trash3" : task.status === "failed" ? "bi-x-circle" : task.status === "succeeded" ? "bi-image" : "bi-hourglass-split"}`}
+                            className={`bi ${isUserDeleted(task) ? "bi-trash3" : task.normalizedStatus === "failed" ? "bi-x-circle" : task.normalizedStatus === "canceled" ? "bi-stop-circle" : task.normalizedStatus === "succeeded" ? "bi-image" : "bi-hourglass-split"}`}
                           />
                           <span>
                             {isUserDeleted(task)
                               ? "产物已被用户删除"
-                              : task.status === "succeeded"
+                              : task.normalizedStatus === "succeeded"
                                 ? "缩略图暂不可用"
-                                : STATUS_LABELS[task.status] || task.status}
+                                : task.normalizedStatus === "failed"
+                                  ? "生成失败"
+                                  : task.normalizedStatus === "canceled"
+                                    ? "已取消生成"
+                                    : STATUS_LABELS[task.normalizedStatus] || task.status}
                           </span>
                         </div>
                       )}
                       <span className="ch-history-card__details">
                         <span
-                          className={`ch-history-card__prompt${task.failureMessage ? " is-failure" : ""}`}
-                          title={task.failureMessage || undefined}
+                          className={`ch-history-card__prompt${task.normalizedStatus === "failed" ? " is-failure" : task.normalizedStatus === "canceled" ? " is-canceled" : ""}`}
+                          title={task.terminalMessage || undefined}
                         >
-                          {task.failureMessage || cardPromptPreview(task.cleanPrompt)}
+                          {task.terminalMessage || cardPromptPreview(task.cleanPrompt)}
                         </span>
                         <span
                           className="ch-history-card__meta"
-                          title={cardMediaLabel}
+                          title={mediaLabel}
                         >
                           <i
                             className={`bi ${hasCachedMetadata ? "bi-aspect-ratio" : "bi-clock"}`}
                           />
-                          {cardMediaLabel}
+                          {mediaLabel}
                         </span>
                       </span>
                     </button>
@@ -1078,9 +1104,14 @@ export function HistoryView() {
                       <span className="ch-card__overlay-end">
                         <span
                           className="ch-card__share is-status"
-                          data-status={task.status}
+                          data-status={task.normalizedStatus}
+                          title={`生成耗时：${durationLabel}`}
                         >
-                          {STATUS_LABELS[task.status] || task.status}
+                          {STATUS_LABELS[task.normalizedStatus] || task.status}
+                          <span className="ch-history-card__duration" aria-label={`生成耗时 ${durationLabel}`}>
+                            <i className="bi bi-clock" aria-hidden="true" />
+                            {durationLabel}
+                          </span>
                         </span>
                         {share ? (
                           <span className="ch-card__share" data-status={share}>
@@ -1176,6 +1207,7 @@ export function HistoryView() {
                     <th className="is-file-size">大小</th>
                     <th className="is-transparency">透明</th>
                     <th className="is-status-cell">状态</th>
+                    <th className="is-duration">生成耗时</th>
                     <th className="is-created">创建时间</th>
                     <th className="is-actions">操作</th>
                   </tr>
@@ -1208,7 +1240,7 @@ export function HistoryView() {
                           <button
                             className="ch-table-preview"
                             type="button"
-                            disabled={!tableCoverSrc(task) && task.status !== "failed"}
+                            disabled={!historyTaskCanOpen(task, Boolean(tableCoverSrc(task)))}
                             onClick={() => openPreview(task)}
                           >
                             {tableCoverSrc(task) && taskMediaModality(task) === "video" ? (
@@ -1273,9 +1305,9 @@ export function HistoryView() {
                         <td className="is-status-cell" data-label="状态">
                           <span
                             className="ch-pill is-status"
-                            data-status={task.status}
+                            data-status={task.normalizedStatus}
                           >
-                            {STATUS_LABELS[task.status] || task.status}
+                            {STATUS_LABELS[task.normalizedStatus] || task.status}
                           </span>
                           {share && (
                             <span
@@ -1285,11 +1317,14 @@ export function HistoryView() {
                               {shareStatusLabel(share)}
                             </span>
                           )}
-                          {task.failureMessage ? (
-                            <small className="ch-table-failure" title={task.failureMessage}>
-                              {task.failureMessage}
+                          {task.terminalMessage ? (
+                            <small className={`ch-table-failure${task.normalizedStatus === "canceled" ? " is-canceled" : ""}`} title={task.terminalMessage}>
+                              {task.terminalMessage}
                             </small>
                           ) : null}
+                        </td>
+                        <td className="is-duration" data-label="生成耗时">
+                          {historyTaskDurationLabel(task, durationNow)}
                         </td>
                         <td className="is-created" data-label="创建时间">
                           {formatTime(task.createdAt)}
@@ -1441,9 +1476,9 @@ export function HistoryView() {
                   <span className="ch-pill">{taskTypeLabel(preview)}</span>
                   <span
                     className="ch-pill is-status"
-                    data-status={preview.status}
+                    data-status={historyTaskStatus(preview)}
                   >
-                    {STATUS_LABELS[preview.status] || preview.status}
+                    {STATUS_LABELS[historyTaskStatus(preview)] || preview.status}
                   </span>
                   {taskShareStatus(preview) ? (
                     <span
@@ -1462,12 +1497,12 @@ export function HistoryView() {
                 </div>
               </div>
               <div className="ch-preview__mid">
-                {preview.status === "failed" ? (
-                  <div className="ch-preview__failure" role="alert">
-                    <i className="bi bi-exclamation-triangle" />
+                {["failed", "canceled"].includes(historyTaskStatus(preview)) ? (
+                  <div className={`ch-preview__failure${historyTaskStatus(preview) === "canceled" ? " is-canceled" : ""}`} role="status">
+                    <i className={`bi ${historyTaskStatus(preview) === "canceled" ? "bi-stop-circle" : "bi-exclamation-triangle"}`} />
                     <span>
-                      <strong>失败原因</strong>
-                      <small>{taskFailureMessage(preview)}</small>
+                      <strong>{historyTaskStatus(preview) === "canceled" ? "取消原因" : "失败原因"}</strong>
+                      <small>{taskFailureMessage(preview, historyTaskStatus(preview) === "canceled" ? "任务已取消" : "生成失败，请稍后重试")}</small>
                     </span>
                   </div>
                 ) : null}
@@ -1475,6 +1510,10 @@ export function HistoryView() {
                   {taskPrompt(preview) || "未填写提示词"}
                 </p>
                 <dl className="ch-preview__specs">
+                  <div>
+                    <dt>生成耗时</dt>
+                    <dd>{historyTaskDurationLabel(preview, durationNow)}</dd>
+                  </div>
                   <div>
                     <dt>尺寸</dt>
                     <dd>

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:qr_flutter/qr_flutter.dart';
@@ -61,6 +62,18 @@ PurchaseOrder _completedOrder(String id) => PurchaseOrder.fromJson({
   'paymentMethod': 'alipay',
   'completedAt': '2026-08-24T09:05:00Z',
   'createdAt': '2026-08-24T09:00:00Z',
+});
+
+PurchaseOrder _expiredOrder(String id) => PurchaseOrder.fromJson({
+  'id': id,
+  'planId': _topup.id,
+  'status': 'expired',
+  'amountCents': 9900,
+  'grantPoints': 1000,
+  'bonusPoints': 100,
+  'provider': 'lanjing',
+  'paymentMethod': 'alipay',
+  'createdAt': '2026-08-24T08:00:00Z',
 });
 
 PurchaseCenterState _state({bool paymentEnabled = false}) =>
@@ -219,6 +232,22 @@ void main() {
     expect(order.requiresManualAmount, isTrue);
   });
 
+  test('order filters group active, completed and closed states', () {
+    expect(PurchaseOrderFilter.pending.includes(_pendingOrder()), isTrue);
+    expect(
+      PurchaseOrderFilter.completed.includes(_completedOrder('completed')),
+      isTrue,
+    );
+    expect(
+      PurchaseOrderFilter.closed.includes(_expiredOrder('expired')),
+      isTrue,
+    );
+    expect(
+      PurchaseOrderFilter.closed.includes(_completedOrder('completed')),
+      isFalse,
+    );
+  });
+
   testWidgets('disabled payments remain clear and fit narrow large text', (
     tester,
   ) async {
@@ -240,6 +269,71 @@ void main() {
     await tester.tap(find.text('订阅'));
     await tester.pumpAndSettle();
     expect(find.text('创作者月度订阅'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('disabled payment offers the redemption fallback', (
+    tester,
+  ) async {
+    final router = GoRouter(
+      initialLocation: '/profile/purchases',
+      routes: [
+        GoRoute(
+          path: '/profile/purchases',
+          builder: (context, state) => const PurchaseCenterScreen(),
+        ),
+        GoRoute(
+          path: '/profile/wallet',
+          builder: (context, state) => Scaffold(
+            body: Text(
+              state.uri.queryParameters['redeem'] == '1' ? '钱包兑换入口' : '积分钱包',
+            ),
+          ),
+        ),
+      ],
+    );
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          purchaseCenterControllerProvider.overrideWith(
+            _FakePurchaseController.new,
+          ),
+        ],
+        child: MaterialApp.router(routerConfig: router),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('purchase-redeem-code')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('钱包兑换入口'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('flat purchase center supports dark mode', (tester) async {
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          purchaseCenterControllerProvider.overrideWith(
+            _FakePurchaseController.new,
+          ),
+        ],
+        child: MaterialApp(
+          theme: ThemeData.light(),
+          darkTheme: ThemeData.dark(),
+          themeMode: ThemeMode.dark,
+          home: const PurchaseCenterScreen(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      Theme.of(tester.element(find.text('在线购买暂未开放'))).brightness,
+      Brightness.dark,
+    );
+    expect(find.byKey(const Key('purchase-redeem-code')), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -374,6 +468,68 @@ void main() {
     expect(find.byType(OrderCard), findsOneWidget);
     expect(find.text('已完成'), findsWidgets);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('orders page filters loaded orders by status', (tester) async {
+    await tester.pumpWidget(
+      _app(
+        ordersPage: true,
+        controller: () => _FakePurchaseController(
+          orders: [
+            _pendingOrder(),
+            _completedOrder('order-completed'),
+            _expiredOrder('order-expired'),
+          ],
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byType(OrderCard), findsNWidgets(3));
+    await tester.tap(find.byKey(const Key('order-filter-已完成')));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(OrderCard), findsOneWidget);
+    expect(find.text('已完成'), findsWidgets);
+    expect(find.text('待支付'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('order detail copies the full order id', (tester) async {
+    String? clipboardText;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') {
+          clipboardText = (call.arguments as Map)['text'] as String?;
+        }
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: PaymentOrderSheet(
+            order: _completedOrder('order-full-copy-id'),
+            plan: _topup,
+            onRefresh: (_) async => _completedOrder('order-full-copy-id'),
+            onClose: (_) async => _completedOrder('order-full-copy-id'),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.byTooltip('复制订单号'));
+    await tester.pump();
+
+    expect(clipboardText, 'order-full-copy-id');
+    expect(find.text('订单号已复制'), findsOneWidget);
   });
 
   testWidgets('notification deep link fetches and opens the exact order', (

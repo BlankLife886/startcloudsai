@@ -20,6 +20,8 @@ declare module 'vue' {
     ElCheckbox: typeof import('element-plus/es')['ElCheckbox']
     ElCheckboxButton: typeof import('element-plus/es')['ElCheckboxButton']
     ElCheckboxGroup: typeof import('element-plus/es')['ElCheckboxGroup']
+    ElCollapse: typeof import('element-plus/es')['ElCollapse']
+    ElCollapseItem: typeof import('element-plus/es')['ElCollapseItem']
     ElColorPicker: typeof import('element-plus/es')['ElColorPicker']
     ElConfigProvider: typeof import('element-plus/es')['ElConfigProvider']
     ElDatePicker: typeof import('element-plus/es')['ElDatePicker']
@@ -65,6 +67,9 @@ declare module 'vue' {
     StatCard: typeof import('./components/StatCard.vue')['default']
     TaskRuntimeSettingsDialog: typeof import('./components/settings/TaskRuntimeSettingsDialog.vue')['default']
     TrialCampaignSettingsDialog: typeof import('./components/settings/TrialCampaignSettingsDialog.vue')['default']
+    UserAnalyticsDrawer: typeof import('./components/UserAnalyticsDrawer.vue')['default']
+    UserProfilePanel: typeof import('./components/UserProfilePanel.vue')['default']
+    UserProfileRulesDialog: typeof import('./components/UserProfileRulesDialog.vue')['default']
   }
   export interface GlobalDirectives {
     vLoading: typeof import('element-plus/es')['ElLoadingDirective']

@@ -97,6 +97,24 @@ func (s *Server) adminStats(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
+	profitability, err := store.GetProfitabilitySummary(
+		ctx, s.St.Pool, todayStart, last7DaysStart, last30DaysStart,
+	)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	quality, err := store.GetDashboardQualitySummary(ctx, s.St.Pool, last7DaysStart, last30DaysStart, dayAgo)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	pageControls, err := settings.ResolvePageControls(ctx, s.St.Pool)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	quality.OpenAPI.Enabled = pageControls["developer_api"].Status == settings.PageStatusNormal
 	balanceTotal, err := store.SumWalletBalance(ctx, s.St.Pool)
 	if err != nil {
 		fail(c, err)
@@ -125,6 +143,8 @@ func (s *Server) adminStats(c *gin.Context, _ *store.User) {
 		"taskDaily":            taskDaily,
 		"revenueCents":         revenue,
 		"usageMetrics":         usageMetrics,
+		"profitability":        profitability,
+		"quality":              quality,
 		"walletBalanceCents":   balanceTotal,
 		"typeDistribution":     typeDistribution,
 		"operationalIncidents": incidents,
@@ -139,13 +159,28 @@ func (s *Server) adminListUsers(c *gin.Context, _ *store.User) {
 		fail(c, apperr.E("validation_error", "无效的用户状态", 422))
 		return
 	}
+	lifecycle := strings.TrimSpace(c.Query("lifecycle"))
+	if lifecycle != "" && !store.Contains([]string{"new", "activated", "active", "dormant", "churn_risk", "returned"}, lifecycle) {
+		fail(c, apperr.E("validation_error", "无效的生命周期", 422))
+		return
+	}
+	risk := strings.TrimSpace(c.Query("risk"))
+	if risk != "" && !store.Contains([]string{"low", "medium", "high"}, risk) {
+		fail(c, apperr.E("validation_error", "无效的风险等级", 422))
+		return
+	}
+	profileTag := strings.TrimSpace(c.Query("profileTag"))
+	if profileTag != "" && !store.Contains([]string{"high_value", "power_user", "canvas_power_user", "frequent_failure", "api_user", "loss_making", "churn_risk"}, profileTag) {
+		fail(c, apperr.E("validation_error", "无效的画像标签", 422))
+		return
+	}
 	limit, cursor, err := pageParams(c)
 	if err != nil {
 		fail(c, err)
 		return
 	}
 	ctx := c.Request.Context()
-	rows, err := store.ListUsers(ctx, s.St.Pool, strings.TrimSpace(c.Query("search")), status, limit, cursor)
+	rows, err := store.ListUsers(ctx, s.St.Pool, strings.TrimSpace(c.Query("search")), status, lifecycle, risk, profileTag, limit, cursor)
 	if err != nil {
 		fail(c, err)
 		return
@@ -164,6 +199,33 @@ func (s *Server) adminListUsers(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
+	profiles, err := store.UserProfileMetricsByUserIDs(ctx, s.St.Pool, ids)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	missingIDs := make([]uuid.UUID, 0)
+	for _, id := range ids {
+		if profiles[id] == nil {
+			missingIDs = append(missingIDs, id)
+		}
+	}
+	if len(missingIDs) > 0 {
+		rules, rulesErr := settings.UserProfileRules(ctx, s.St.Pool)
+		if rulesErr != nil {
+			fail(c, rulesErr)
+			return
+		}
+		if err := store.RefreshUserProfiles(ctx, s.St.Pool, missingIDs, rules, time.Now().UTC()); err != nil {
+			fail(c, err)
+			return
+		}
+		profiles, err = store.UserProfileMetricsByUserIDs(ctx, s.St.Pool, ids)
+		if err != nil {
+			fail(c, err)
+			return
+		}
+	}
 	ok(c, buildPage(rows, limit, func(u *store.User) gin.H {
 		d := adminUserDict(u, wallets[u.ID])
 		summary := usage[u.ID]
@@ -177,6 +239,7 @@ func (s *Server) adminListUsers(c *gin.Context, _ *store.User) {
 			"assets":         summary.Assets,
 			"orders":         summary.Orders,
 		}
+		d["profile"] = profiles[u.ID]
 		return d
 	}))
 }
@@ -2038,6 +2101,13 @@ var settingsCamel = map[string]string{
 	"growth_usage_milestones":                     "growthUsageMilestones",
 	"suggestion_reward_max_cents":                 "suggestionRewardMaxCents",
 	"page_controls":                               "pageControls",
+	"platform_logging_enabled":                    "platformLoggingEnabled",
+	"platform_log_security_enabled":               "platformLogSecurityEnabled",
+	"platform_log_operations_enabled":             "platformLogOperationsEnabled",
+	"platform_log_user_enabled":                   "platformLogUserEnabled",
+	"platform_log_retention_days":                 "platformLogRetentionDays",
+	"platform_log_max_mb":                         "platformLogMaxMb",
+	"user_profile_rules":                          "userProfileRules",
 	"submission_enabled":                          "submissionEnabled",
 	"auto_approve":                                "autoApprove",
 	"daily_limit":                                 "dailyLimit",
@@ -2326,7 +2396,19 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 				fail(c, apperr.E("validation_error", "growthFailureBonusDailyLimit: 须在 0-100 之间", 422))
 				return
 			}
-		case "registration_enabled", "submission_enabled", "auto_approve", "cross_provider_same_model_balancing_enabled", "checkin_enabled", "growth_group_enabled", "growth_failure_bonus_enabled", "growth_usage_rewards_enabled", "lanjing_pay_enabled", "lanjing_pay_alipay_enabled", "lanjing_pay_wechat_enabled":
+		case "platform_log_retention_days":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 1 || v > 90 {
+				fail(c, apperr.E("validation_error", "platformLogRetentionDays: 须在 1-90 天之间", 422))
+				return
+			}
+		case "platform_log_max_mb":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 32 || v > 4096 {
+				fail(c, apperr.E("validation_error", "platformLogMaxMb: 须在 32-4096 MB 之间", 422))
+				return
+			}
+		case "registration_enabled", "submission_enabled", "auto_approve", "cross_provider_same_model_balancing_enabled", "checkin_enabled", "growth_group_enabled", "growth_failure_bonus_enabled", "growth_usage_rewards_enabled", "lanjing_pay_enabled", "lanjing_pay_alipay_enabled", "lanjing_pay_wechat_enabled", "platform_logging_enabled", "platform_log_security_enabled", "platform_log_operations_enabled", "platform_log_user_enabled":
 			var v bool
 			if err := json.Unmarshal(raw, &v); err != nil {
 				fail(c, apperr.E("validation_error", camel+": 须为布尔值", 422))
@@ -2398,6 +2480,23 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 				return
 			}
 			raw, _ = json.Marshal(v)
+		case "user_profile_rules":
+			var rules store.UserProfileRules
+			if err := json.Unmarshal(raw, &rules); err != nil {
+				fail(c, apperr.E("validation_error", "userProfileRules: 格式不正确", 422))
+				return
+			}
+			if err := settings.ValidateUserProfileRules(rules); err != nil {
+				fail(c, apperr.E("validation_error", "userProfileRules: "+err.Error(), 422))
+				return
+			}
+			current, err := settings.UserProfileRules(c.Request.Context(), s.St.Pool)
+			if err != nil {
+				fail(c, err)
+				return
+			}
+			rules.Version = current.Version + 1
+			raw, _ = json.Marshal(rules)
 		case "growth_group_campaign_key":
 			var v string
 			if err := json.Unmarshal(raw, &v); err != nil {
@@ -2555,10 +2654,19 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
+	if err := s.validatePlatformLogSettings(ctx, updates); err != nil {
+		fail(c, err)
+		return
+	}
 	err := s.St.Tx(ctx, func(tx pgx.Tx) error {
 		for key, value := range updates {
 			if terr := settings.Set(ctx, tx, key, value); terr != nil {
 				return terr
+			}
+		}
+		if _, changed := updates["user_profile_rules"]; changed {
+			if err := store.EnqueueAllUserProfiles(ctx, tx); err != nil {
+				return err
 			}
 		}
 		return nil
@@ -2567,12 +2675,54 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
+	if _, changed := updates["page_controls"]; changed {
+		s.invalidatePageControls()
+	}
+	for key := range updates {
+		if strings.HasPrefix(key, "platform_log") && s.Logs != nil {
+			s.Logs.Invalidate()
+			break
+		}
+	}
 	out, err := s.settingsToCamel(c)
 	if err != nil {
 		fail(c, err)
 		return
 	}
 	ok(c, out)
+}
+
+func (s *Server) validatePlatformLogSettings(ctx context.Context, updates map[string]json.RawMessage) error {
+	readBool := func(key string) (bool, error) {
+		if raw, exists := updates[key]; exists {
+			var value bool
+			if err := json.Unmarshal(raw, &value); err != nil {
+				return false, err
+			}
+			return value, nil
+		}
+		return settings.GetBool(ctx, s.St.Pool, key)
+	}
+	enabled, err := readBool("platform_logging_enabled")
+	if err != nil || !enabled {
+		return err
+	}
+	securityEnabled, err := readBool("platform_log_security_enabled")
+	if err != nil {
+		return err
+	}
+	operationsEnabled, err := readBool("platform_log_operations_enabled")
+	if err != nil {
+		return err
+	}
+	userEnabled, err := readBool("platform_log_user_enabled")
+	if err != nil {
+		return err
+	}
+	if !securityEnabled && !operationsEnabled && !userEnabled {
+		return apperr.E("validation_error", "启用平台日志时至少开启一个日志分类", 422)
+	}
+	return nil
 }
 
 func (s *Server) validateAdminImageAnalysisSettings(ctx context.Context, updates map[string]json.RawMessage) error {

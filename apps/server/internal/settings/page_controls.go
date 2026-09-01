@@ -36,6 +36,7 @@ var PageControlKeys = []string{
 	"ecommerce.outpaint",
 	"ecommerce.enhance",
 	"assistant",
+	"developer_api",
 	"text_to_image",
 	"model_sheet",
 	"illustration_coloring",
@@ -68,6 +69,10 @@ func PageControlDefaults() map[string]PageControl {
 		"activity.failure",
 	} {
 		controls[key] = PageControl{Status: PageStatusRemoved, Reason: "活动已下架。"}
+	}
+	controls["developer_api"] = PageControl{
+		Status: PageStatusRemoved,
+		Reason: "开放 API 正在内部测试。",
 	}
 	return controls
 }

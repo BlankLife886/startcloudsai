@@ -24,6 +24,7 @@ type taskOutputCollector struct {
 	newIndexes        map[int]struct{}
 	completionClaimID string
 	leaseOwner        string
+	stageOnce         sync.Once
 }
 
 type taskOutputProcessingError struct {
@@ -135,6 +136,13 @@ func (c *taskOutputCollector) persist(index int, encoded string) error {
 	if encoded == "" {
 		return nil
 	}
+	c.stageOnce.Do(func() {
+		if err := store.SetTaskGenerationStage(c.ctx, c.w.St.Pool, c.task.ID, "saving_result"); err != nil {
+			log.Printf("task %s persist saving stage failed: %v", c.task.ID, err)
+		} else {
+			c.w.publishTaskEvent(c.ctx, c.task, taskstream.Event{Stage: "saving_result", Status: "running"})
+		}
+	})
 	c.mu.Lock()
 	if c.outputSlots[index] != "" && c.thumbnailSlots[index] != "" {
 		c.mu.Unlock()

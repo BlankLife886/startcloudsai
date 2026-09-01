@@ -5,6 +5,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/BlankLife886/startcloudsai/server/internal/platformlog"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/google/uuid"
 )
@@ -24,4 +25,27 @@ func (w *Worker) recordTimeline(ctx context.Context, taskID uuid.UUID, stage, st
 	if err := store.AppendTaskTimelineEvent(ctx, w.St.Pool, taskID, stage, status, message, durationMs, meta); err != nil {
 		log.Printf("task %s timeline write failed stage=%s: %v", taskID, stage, err)
 	}
+	level := "info"
+	if status == "error" {
+		level = "error"
+	} else if status == "warning" {
+		level = "warning"
+	}
+	var duration *int64
+	if durationMs >= 0 {
+		duration = &durationMs
+	}
+	if !w.Logs.Enabled(ctx, "operations") {
+		return
+	}
+	logMeta := make(map[string]any, len(meta)+2)
+	for key, value := range meta {
+		logMeta[key] = value
+	}
+	logMeta["stage"] = stage
+	logMeta["status"] = status
+	w.Logs.Record(ctx, platformlog.Event{
+		Category: "operations", Level: level, Event: "task." + stage,
+		Message: message, TaskID: &taskID, DurationMs: duration, Metadata: logMeta,
+	})
 }

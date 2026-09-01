@@ -3,6 +3,7 @@ package modelconfig
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -249,6 +250,31 @@ func TestResolveReasoningPriceUsesConfiguredScopeAndDiscount(t *testing.T) {
 	canvas := ResolveReasoningPrice(model, "high", ReasoningPriceScopeCanvasAgent)
 	if canvas.StandardCents != 24 || canvas.EffectiveCents != 19 {
 		t.Fatalf("canvas price = %#v", canvas)
+	}
+}
+
+func TestValidateReasoningPricingProtectsZeroAndLossMakingPrices(t *testing.T) {
+	model := Model{
+		Name: "推理模型", Kind: ModelKindChat, UpstreamModel: "gpt-5.6-luna",
+		Public: true, Enabled: true, UpstreamCostCents: 5,
+		SupportedReasoningEfforts: []string{"medium"}, supportedReasoningEffortsSet: true,
+		ReasoningPricing: &ReasoningPricing{
+			DefaultEffort: "medium",
+			Efforts: map[string]ReasoningEffortPricing{
+				"medium": {AssistantPriceCents: 0, CanvasAgentPriceCents: 8},
+			},
+		},
+	}
+	if err := validateModelReasoningPricing(model); err == nil || !strings.Contains(err.Error(), "允许零价") {
+		t.Fatalf("expected zero price guard, got %v", err)
+	}
+	model.AllowZeroPrice = true
+	if err := validateModelReasoningPricing(model); err == nil || !strings.Contains(err.Error(), "低于上游成本") {
+		t.Fatalf("expected loss guard, got %v", err)
+	}
+	model.AllowLossLeader = true
+	if err := validateModelReasoningPricing(model); err != nil {
+		t.Fatalf("explicit zero-price loss leader should be valid: %v", err)
 	}
 }
 

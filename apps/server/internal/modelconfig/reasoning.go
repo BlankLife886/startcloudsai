@@ -294,6 +294,28 @@ func validateModelReasoningPricing(model Model) error {
 		if err := validateDiscountPrice(model.Name, effort+"画布 Agent 积分", price.CanvasAgentPriceCents, price.CanvasAgentDiscountPriceCents); err != nil {
 			return err
 		}
+		if model.Enabled && model.Public && reasoningEffortEnabled(price) {
+			channels := []struct {
+				label    string
+				standard int64
+				discount *int64
+			}{
+				{label: "AI 助手", standard: price.AssistantPriceCents, discount: price.AssistantDiscountPriceCents},
+				{label: "画布 Agent", standard: price.CanvasAgentPriceCents, discount: price.CanvasAgentDiscountPriceCents},
+			}
+			for _, channel := range channels {
+				effective := channel.standard
+				if channel.discount != nil {
+					effective = *channel.discount
+				}
+				if effective == 0 && !model.AllowZeroPrice {
+					return fmt.Errorf("对话模型 %s 的%s档 %s 价格为 0；如确需免费，请显式开启允许零价", model.Name, ReasoningEffortLabel(effort), channel.label)
+				}
+				if effective < model.UpstreamCostCents && !model.AllowLossLeader {
+					return fmt.Errorf("对话模型 %s 的%s档 %s 价格低于上游成本；如确需补贴，请显式开启允许亏损", model.Name, ReasoningEffortLabel(effort), channel.label)
+				}
+			}
+		}
 	}
 	return nil
 }

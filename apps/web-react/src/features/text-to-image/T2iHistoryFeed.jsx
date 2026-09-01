@@ -16,10 +16,17 @@ function columnCount(width) {
 function statusLabel(task) {
   if (task.status === "queued") return "排队中";
   if (task.status === "waiting_provider") return "等待模型响应";
-  if (task.status === "running") return "正在生成";
+  if (task.status === "running") {
+    if (task.generationStage === "preparing") return "正在准备生成";
+    if (task.generationStage === "fetching_result") return "正在拉取结果";
+    if (task.generationStage === "saving_result") return "正在处理图片";
+    return "上游模型正在生成";
+  }
   if (task.status === "completed") return "已完成";
   if (task.status === "paused") return "已暂停";
-  if (["cancelled", "canceled"].includes(task.status)) return "已取消";
+  if (["cancelled", "canceled"].includes(task.status)) {
+    return String(task.error || "").includes("停止接收") ? "已停止接收结果" : "已取消";
+  }
   if (task.status === "failed") return "生成失败";
   return task.status || "处理中";
 }

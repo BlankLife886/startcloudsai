@@ -14,7 +14,12 @@ import 'wallet.dart';
 import 'wallet_screen.dart';
 
 class WalletLedgerScreen extends ConsumerStatefulWidget {
-  const WalletLedgerScreen({super.key});
+  const WalletLedgerScreen({
+    this.initialFilter = WalletEntryFilter.all,
+    super.key,
+  });
+
+  final WalletEntryFilter initialFilter;
 
   @override
   ConsumerState<WalletLedgerScreen> createState() => _WalletLedgerScreenState();
@@ -22,12 +27,13 @@ class WalletLedgerScreen extends ConsumerStatefulWidget {
 
 class _WalletLedgerScreenState extends ConsumerState<WalletLedgerScreen> {
   final _scrollController = ScrollController();
-  WalletEntryFilter _filter = WalletEntryFilter.all;
+  late WalletEntryFilter _filter;
   bool _exporting = false;
 
   @override
   void initState() {
     super.initState();
+    _filter = widget.initialFilter;
     _scrollController.addListener(_onScroll);
   }
 
@@ -247,9 +253,9 @@ class _WalletFilterChip extends StatelessWidget {
     final colors = Theme.of(context).colorScheme;
     return Material(
       color: selected ? colors.onSurface : colors.surfaceContainerLow,
-      shape: const StadiumBorder(),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
       child: InkWell(
-        customBorder: const StadiumBorder(),
+        borderRadius: BorderRadius.circular(8),
         onTap: onTap,
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
@@ -264,26 +270,6 @@ class _WalletFilterChip extends StatelessWidget {
       ),
     );
   }
-}
-
-enum WalletEntryFilter { all, income, spend, pending, refund }
-
-extension WalletEntryFilterPresentation on WalletEntryFilter {
-  String get label => switch (this) {
-    WalletEntryFilter.all => '全部',
-    WalletEntryFilter.income => '入账',
-    WalletEntryFilter.spend => '消费',
-    WalletEntryFilter.pending => '冻结',
-    WalletEntryFilter.refund => '退款',
-  };
-
-  bool includes(WalletLedgerEntry entry) => switch (this) {
-    WalletEntryFilter.all => true,
-    WalletEntryFilter.income => entry.category == WalletEntryCategory.income,
-    WalletEntryFilter.spend => entry.category == WalletEntryCategory.spend,
-    WalletEntryFilter.pending => entry.category == WalletEntryCategory.pending,
-    WalletEntryFilter.refund => entry.category == WalletEntryCategory.refund,
-  };
 }
 
 class WalletTimelineItem {

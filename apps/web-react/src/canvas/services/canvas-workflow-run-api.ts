@@ -10,18 +10,39 @@ export type CanvasWorkflowRunRecord = {
     canceledNodeIds: string[];
     currentNodeId?: string | null;
     errorMessage?: string;
+	errorNodeId?: string | null;
+	nodeMetrics: CanvasWorkflowNodeMetric[];
+	totalCostCents: number;
     leaseExpiresAt?: string | null;
     startedAt: string;
     updatedAt: string;
     finishedAt?: string | null;
 };
 
+export type CanvasWorkflowNodeMetric = {
+	nodeId: string;
+	title: string;
+	status: "queued" | "running" | "succeeded" | "failed" | "canceled";
+	startedAt?: string;
+	finishedAt?: string;
+	durationMs: number;
+	costCents: number;
+	errorMessage?: string;
+};
+
 export function getActiveCanvasWorkflowRun(projectId: string) {
     return starcloudsRequest<{ run: CanvasWorkflowRunRecord | null }>(`/canvas-projects/${encodeURIComponent(projectId)}/workflow-run`);
 }
 
-export function acquireCanvasWorkflowRun(projectId: string, ownerId: string, nodeIds: string[]) {
-    return starcloudsJson<{ run: CanvasWorkflowRunRecord; acquired: boolean }>(`/canvas-projects/${encodeURIComponent(projectId)}/workflow-runs`, "POST", { ownerId, nodeIds });
+export function acquireCanvasWorkflowRun(
+	projectId: string,
+	ownerId: string,
+	nodeIds: string[],
+) {
+	return starcloudsJson<{ run: CanvasWorkflowRunRecord; acquired: boolean }>(`/canvas-projects/${encodeURIComponent(projectId)}/workflow-runs`, "POST", {
+		ownerId,
+		nodeIds,
+	});
 }
 
 export function updateCanvasWorkflowRun(
@@ -34,6 +55,9 @@ export function updateCanvasWorkflowRun(
         canceledNodeIds?: string[];
         currentNodeId?: string;
         errorMessage?: string;
+		errorNodeId?: string;
+		nodeMetrics?: CanvasWorkflowNodeMetric[];
+		totalCostCents?: number;
     },
     options?: { keepalive?: boolean },
 ) {

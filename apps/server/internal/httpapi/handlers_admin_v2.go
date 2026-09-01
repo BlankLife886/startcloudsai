@@ -256,7 +256,7 @@ func (s *Server) adminRequeueAssistantRun(ctx context.Context, id uuid.UUID) (*s
 		if err != nil {
 			return err
 		}
-		if err := validateAssistantRunCapacity(active, run.ConversationID); err != nil {
+		if err := validateAssistantRunCapacity(active, run.ConversationID, false); err != nil {
 			return err
 		}
 		changed, err := assistantbilling.Requeue(ctx, tx, run)

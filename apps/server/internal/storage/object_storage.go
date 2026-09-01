@@ -4,8 +4,6 @@ package storage
 import (
 	"bytes"
 	"context"
-	"crypto/md5" // #nosec G501 -- Alibaba CDN Type A requires MD5 by protocol.
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -57,9 +55,6 @@ type Storage struct {
 	presigner     *s3.PresignClient
 	bucket        string
 	presignExpiry time.Duration
-	cdnBaseURL    *url.URL
-	cdnAuthKey    string
-	cdnAuthTTL    time.Duration
 }
 
 type limitedReadCloser struct {
@@ -107,23 +102,6 @@ func ValidateConfig(cfg *appconfig.Config) error {
 	if cfg.ObjectStoragePresignExpireSecs <= 0 {
 		return errors.New("OBJECT_STORAGE_PRESIGN_EXPIRE_SECS 必须为正整数")
 	}
-	if value := strings.TrimSpace(cfg.ObjectStorageCDNBaseURL); value != "" {
-		cdnURL, parseErr := url.Parse(value)
-		if parseErr != nil || cdnURL.Scheme != "https" || cdnURL.Host == "" || cdnURL.RawQuery != "" || cdnURL.Fragment != "" {
-			return errors.New("OBJECT_STORAGE_CDN_BASE_URL 必须是不含查询参数和片段的 HTTPS URL")
-		}
-	}
-	if cfg.ObjectStorageCDNAuthKey != "" {
-		if strings.TrimSpace(cfg.ObjectStorageCDNBaseURL) == "" {
-			return errors.New("OBJECT_STORAGE_CDN_AUTH_KEY 需要同时配置 OBJECT_STORAGE_CDN_BASE_URL")
-		}
-		if len([]byte(cfg.ObjectStorageCDNAuthKey)) < 8 || len([]byte(cfg.ObjectStorageCDNAuthKey)) > 128 {
-			return errors.New("OBJECT_STORAGE_CDN_AUTH_KEY 须为 8-128 字节")
-		}
-		if cfg.ObjectStorageCDNAuthTTLSecs < 60 || cfg.ObjectStorageCDNAuthTTLSecs > 86400 {
-			return errors.New("OBJECT_STORAGE_CDN_AUTH_TTL_SECS 须在 60-86400 之间")
-		}
-	}
 	return nil
 }
 
@@ -159,18 +137,11 @@ func New(cfg *appconfig.Config) (*Storage, error) {
 			o.UsePathStyle = cfg.ObjectStorageUsePathStyle
 		})
 	}
-	var cdnBaseURL *url.URL
-	if value := strings.TrimSpace(cfg.ObjectStorageCDNBaseURL); value != "" {
-		cdnBaseURL, _ = url.Parse(value)
-	}
 	return &Storage{
 		client:        client,
 		presigner:     s3.NewPresignClient(presignClient),
 		bucket:        cfg.ObjectStorageBucket,
 		presignExpiry: time.Duration(cfg.ObjectStoragePresignExpireSecs) * time.Second,
-		cdnBaseURL:    cdnBaseURL,
-		cdnAuthKey:    strings.TrimSpace(cfg.ObjectStorageCDNAuthKey),
-		cdnAuthTTL:    time.Duration(cfg.ObjectStorageCDNAuthTTLSecs) * time.Second,
 	}, nil
 }
 
@@ -190,7 +161,7 @@ func immutableDeliveryObjectKey(key string) bool {
 
 func objectUploadCacheControl(key string) string {
 	if immutableDeliveryObjectKey(key) {
-		return "public, max-age=31536000, immutable"
+		return "private, max-age=31536000, immutable"
 	}
 	return "private, max-age=300"
 }
@@ -204,31 +175,6 @@ func (s *Storage) UploadBytes(ctx context.Context, key string, data []byte, cont
 		CacheControl: aws.String(objectUploadCacheControl(key)),
 	})
 	return err
-}
-
-// SignedCDNURL returns an Alibaba CDN Type A authenticated URL. Timestamp is
-// the URL creation time; the CDN console validity period must match cdnAuthTTL.
-// The signature is calculated locally and never sends the auth key upstream.
-func (s *Storage) SignedCDNURL(key string, now time.Time) (string, time.Duration, bool) {
-	if s == nil || s.cdnBaseURL == nil || s.cdnAuthKey == "" || s.cdnAuthTTL <= 0 {
-		return "", 0, false
-	}
-	key = strings.TrimLeft(strings.TrimSpace(key), "/")
-	if key == "" || strings.Contains(key, "..") || strings.Contains(key, "\\") {
-		return "", 0, false
-	}
-	result := *s.cdnBaseURL
-	result.RawPath = ""
-	result.Path = strings.TrimRight(result.Path, "/") + "/" + key
-	timestamp := now.UTC().Unix()
-	const random, uid = "0", "0"
-	canonical := fmt.Sprintf("%s-%d-%s-%s-%s", result.EscapedPath(), timestamp, random, uid, s.cdnAuthKey)
-	digest := md5.Sum([]byte(canonical)) // #nosec G401 -- mandated by Alibaba CDN Type A.
-	authKey := fmt.Sprintf("%d-%s-%s-%s", timestamp, random, uid, hex.EncodeToString(digest[:]))
-	query := result.Query()
-	query.Set("auth_key", authKey)
-	result.RawQuery = query.Encode()
-	return result.String(), s.cdnAuthTTL, true
 }
 
 func (s *Storage) GetBytes(ctx context.Context, key string) ([]byte, error) {
@@ -549,18 +495,4 @@ func (s *Storage) PresignGet(ctx context.Context, key string) (string, error) {
 		return "", err
 	}
 	return req.URL, nil
-}
-
-// PublicURL returns a CDN URL only when a CDN base URL is explicitly
-// configured. Callers must use this only for objects whose authorization model
-// permits public immutable delivery; private inputs continue to use PresignGet.
-func (s *Storage) PublicURL(key string) (string, bool) {
-	if s == nil || s.cdnBaseURL == nil || strings.TrimSpace(key) == "" {
-		return "", false
-	}
-	result := *s.cdnBaseURL
-	basePath := strings.TrimRight(result.Path, "/")
-	result.RawPath = ""
-	result.Path = basePath + "/" + strings.TrimLeft(key, "/")
-	return result.String(), true
 }

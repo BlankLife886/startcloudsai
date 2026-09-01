@@ -58,7 +58,7 @@ Compose 服务：
 | `postgres` | 用户、钱包、任务和运营数据   | `pg_data`    |
 | `redis`    | 队列和限流状态               | `redis_data` |
 
-生成图片和上传文件保存在阿里云 OSS，不在服务器本地磁盘。香港 ECS 通过同地域内网 endpoint 上传和回读；允许公开缓存的输出可经 CDN 分发，私有参考图继续走站内鉴权或短期签名 URL。
+生成图片和上传文件保存在阿里云 OSS，不在服务器本地磁盘。香港 ECS 通过同地域内网 endpoint 上传和回读；浏览器始终访问站内文件接口，由服务端鉴权后从 OSS 流式返回。
 
 ## 2. 上线前准备
 
@@ -206,9 +206,6 @@ OBJECT_STORAGE_SECRET_ACCESS_KEY=<OSS RAM AccessKey Secret>
 OBJECT_STORAGE_BUCKET=starcloudsai
 OBJECT_STORAGE_USE_PATH_STYLE=false
 OBJECT_STORAGE_PRESIGN_EXPIRE_SECS=3600
-OBJECT_STORAGE_CDN_BASE_URL=https://<已配置私有 OSS 回源鉴权的 CDN 域名>
-OBJECT_STORAGE_CDN_AUTH_KEY=<阿里云 CDN Type A 主密钥>
-OBJECT_STORAGE_CDN_AUTH_TTL_SECS=900
 
 SMTP_ADDR=<SMTP服务器:端口>
 SMTP_USER=<完整邮箱地址>
@@ -234,31 +231,22 @@ GATEWAY_PORT=8080
 - `C2A_BASE_URL` 填 ChatGPT2API 根地址，不加后台路径。
 - `SUB2API_BASE_URL` 填 Sub2API 根地址，去掉 `/admin/accounts`。
 - 对象存储未配置时，上传和生成图片无法正常持久化。ECS 与 OSS bucket 必须同为香港地域才能使用 internal endpoint。
-- CDN 三项配置必须同时启用；`OBJECT_STORAGE_CDN_AUTH_KEY` 只放服务器 `.env`，不得写入后台设置、前端代码或接口响应。未配置密钥时 `/api/v1/files/*` 自动保持 Go 服务代理，不影响旧部署。
+- OSS bucket 保持私有。`OBJECT_STORAGE_PUBLIC_ENDPOINT` 仅用于生成浏览器或上游可访问的 OSS 预签名地址，不能填写内网 endpoint。
 - 生产环境未配置 SMTP 时，用户无法获取账号验证码。
 - `WORKER_CONCURRENCY=32` 是 Worker 启动时的物理槽位，不代表同时执行 32 个图片任务。图片实际并发在后台“全站同时执行”中调整，2 核 2 GB 服务器建议从 4 开始逐级压测。
 - `GOMEMLIMIT` 必须低于容器硬上限，数据库连接池只有在后台等待指标持续增长后才应调大。指标说明和 pprof/PGO 操作见 [Go 性能与实时可观测性](GO_PERFORMANCE_OBSERVABILITY.md)。
 - 不要把 `.env`、密钥或完整日志发布到 GitHub、聊天截图或工单。
 
-### 3.4 配置私有图片 CDN
+### 3.4 验证 OSS 文件交付
 
-OSS bucket 保持私有。在阿里云 CDN 中把源站设为该 OSS bucket，并开启“阿里云 OSS
-私有 Bucket 回源”；不要把 OSS 的预签名参数带到 CDN 地址。CDN 域名必须启用 HTTPS，
-然后开启“URL 鉴权”的 Type A 模式：
-
-1. CDN 控制台的 Type A 主密钥与 `OBJECT_STORAGE_CDN_AUTH_KEY` 完全一致。
-2. CDN 控制台的鉴权有效时长与 `OBJECT_STORAGE_CDN_AUTH_TTL_SECS` 一致，默认 900 秒。
-3. 缓存参数规则不能让每个 `auth_key` 形成独立缓存副本；配置查询参数过滤时忽略 `auth_key`，缓存按对象路径命中，但仍保留 CDN 节点的 URL 鉴权。
-4. `tasks/`、`uploads/`、`announcement-images/`、`canvas-template-assets/` 及带 UUID 子目录的版本化封面/电商素材可长期缓存。旧固定 key 只设短缓存，避免替换后仍看到旧图。
-5. 普通查看先通过 `/api/v1/files/{key}` 完成用户权限校验，再返回短期 CDN 地址；`?download=1` 保持源站代理和下载文件名，排障时可临时使用 `?origin=1` 强制源站代理。
+OSS bucket 保持私有，RAM 子账号只授予业务所需的对象读写权限。普通图片请求始终先访问
+`/api/v1/files/{key}`，由 Go 服务完成属主或公开权限校验，再从 OSS 流式返回内容；下载、
+Range、ETag 和缓存策略均由站内文件接口统一处理。
 
 部署后分别用无权限账号、文件属主和管理员验证：无权限请求必须为 `401/404`，有权限的
-普通查看应为 `302` 且响应头包含 `X-Storage-Delivery: cdn`，下载请求不得重定向。
-
-生产 CDN 域名 `img.starcloudisai.com` 当前使用手动 DNS 验证签发并自定义上传的
-Let's Encrypt 证书，证书到期时间为 `2026-11-26`。应在 `2026-11-01` 前重新签发并在
-阿里云 CDN HTTPS 配置中替换证书和私钥；在接入 DNS API 与 CDN API 自动续期前，不得
-假设宝塔或 CDN 会自动更新这张证书。
+普通查看和下载必须直接返回文件内容且不得跳转到第三方域名。香港 ECS 应使用同地域内网
+endpoint 回读 OSS，避免图片流量经过公网；`OBJECT_STORAGE_PUBLIC_ENDPOINT` 保留公网
+地址，供确实需要预签名 URL 的上游输入使用。
 
 ### 3.5 配置邮箱验证码
 
@@ -344,6 +332,10 @@ docker compose --env-file .env up -d
 正式产生数据后禁止使用 `down -v`。
 
 ## 4. 宝塔网站和 HTTPS
+
+如需使用 Cloudflare Free 代理网站，先按本节完成源站 HTTPS，再执行
+[`docs/CLOUDFLARE_SETUP.md`](./CLOUDFLARE_SETUP.md)。Cloudflare 接入不会替代宝塔证书，
+也不能把 API 或私有 OSS 图片设为公开缓存。
 
 ### 4.1 创建网站
 
@@ -460,6 +452,12 @@ docker compose --env-file .env logs --tail=100 server worker gateway
 docker compose --env-file .env logs -f server worker
 ```
 
+管理后台的“设置 -> 运行日志”控制脱敏后的安全、运维和用户事件，默认关闭；“运行日志”页面可查看容量、筛选详情、立即执行保留策略或清空。关闭后不会创建平台日志队列，也不会写 `platform_logs`，但不会关闭容器启动、崩溃和数据库连接错误等核心故障日志。
+
+“运行日志”页面同时读取现有系统指标，显示近 60 秒 API 请求速率/5xx/P95、任务排队、数据库连接池和图片拉回并发；这些实时指标不落日志表。页面只在浏览器标签可见时每 30 秒刷新，关闭页面后不继续访问聚合接口。
+
+Compose 对所有容器启用 `json-file` 轮转：单文件 `20m`、保留 `5` 个，单容器上限约 `100MB`。这是故障兜底，不能通过后台平台日志开关关闭。
+
 资源检查：
 
 ```bash
@@ -525,7 +523,7 @@ gzip -t /www/backup/startcloudsai/<备份文件>.sql.gz
 ### 8.2 其他必须备份的内容
 
 - `/www/wwwroot/startcloudsai/.env`
-- 阿里云 OSS bucket、RAM 最小权限访问密钥及 CDN 回源配置
+- 阿里云 OSS bucket 及 RAM 最小权限访问密钥
 - 宝塔站点 Nginx 和 SSL 配置
 - 当前生产 Git 提交：`git rev-parse HEAD`
 

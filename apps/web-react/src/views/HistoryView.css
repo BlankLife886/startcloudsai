@@ -62,6 +62,10 @@
   color: #ffd7d7;
   -webkit-line-clamp: 3;
 }
+.ch-page--history .ch-history-card__prompt.is-canceled {
+  color: #e2e8f0;
+  -webkit-line-clamp: 3;
+}
 .ch-page--history .ch-history-card__meta {
   display: flex;
   align-items: center;
@@ -91,6 +95,23 @@
   letter-spacing: 0;
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
+}
+.ch-page--history .ch-history-masonry__item .ch-card__share.is-status {
+  gap: 5px;
+}
+.ch-page--history .ch-history-card__duration {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding-left: 5px;
+  border-left: 1px solid rgba(255, 255, 255, 0.28);
+  color: rgba(255, 255, 255, 0.86);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.ch-page--history .ch-history-card__duration i {
+  font-size: 0.58rem;
 }
 .ch-page--history .ch-history-masonry__item .ch-card__body {
   display: flex;
@@ -217,6 +238,14 @@
   color: var(--ch-danger);
   background: color-mix(in srgb, var(--ch-danger) 6%, var(--ch-surface-soft));
 }
+.ch-page--history .ch-card__placeholder.is-failed {
+  color: var(--ch-danger);
+  background: color-mix(in srgb, var(--ch-danger) 8%, var(--ch-surface-soft));
+}
+.ch-page--history .ch-card__placeholder.is-canceled {
+  color: var(--ch-muted);
+  background: color-mix(in srgb, var(--ch-muted) 8%, var(--ch-surface-soft));
+}
 .ch-card__placeholder > span {
   display: block;
   text-align: center;
@@ -235,6 +264,9 @@
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
+.ch-page--history .ch-table-failure.is-canceled {
+  color: var(--ch-muted);
+}
 
 .ch-page--history .ch-preview__failure {
   display: flex;
@@ -250,6 +282,11 @@
 .ch-page--history .ch-preview__failure > i {
   margin-top: 1px;
   font-size: 1rem;
+}
+.ch-page--history .ch-preview__failure.is-canceled {
+  border-color: color-mix(in srgb, var(--ch-muted) 26%, var(--ch-line));
+  background: color-mix(in srgb, var(--ch-muted) 7%, var(--ch-surface-soft));
+  color: var(--ch-muted);
 }
 .ch-page--history .ch-preview__failure > span {
   display: grid;

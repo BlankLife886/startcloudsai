@@ -173,6 +173,35 @@ export function attachCanvasTaskId(node: CanvasNodeData, taskId: string, imageId
     };
 }
 
+export function canvasNodeHasTaskId(node: CanvasNodeData, taskId: string) {
+    return node.metadata?.taskId === taskId || Boolean(node.metadata?.images?.some((image) => image.taskId === taskId));
+}
+
+export function restartCanvasNodeGeneration(node: CanvasNodeData, startedAt = new Date().toISOString(), imageId?: string): CanvasNodeData {
+    return {
+        ...node,
+        metadata: {
+            ...node.metadata,
+            status: "loading",
+            errorDetails: undefined,
+            taskId: undefined,
+            taskKind: undefined,
+            generationStage: "preparing",
+            cancelPolicy: undefined,
+            executionStatus: "running",
+            generationQueuedAt: undefined,
+            generationStartedAt: startedAt,
+            generationCompletedAt: undefined,
+            generationDurationMs: undefined,
+            images: node.metadata?.images?.map((image) =>
+                imageId && image.id !== imageId
+                    ? image
+                    : { ...image, status: "loading", errorDetails: undefined, taskId: undefined },
+            ),
+        },
+    };
+}
+
 export function applyUploadedImageToNode(node: CanvasNodeData, uploaded: UploadedImage, imageId?: string): CanvasNodeData {
     if (imageId && node.metadata?.images?.some((image) => image.id === imageId)) {
         const item: CanvasNodeImage = {
@@ -279,6 +308,18 @@ export function isInFlightCanvasGeneration(node: CanvasNodeData) {
     if (execution === "running" || execution === "queued") return true;
     if (node.metadata?.status === "loading") return true;
     return Boolean(node.metadata?.images?.some((image) => image.status === "loading"));
+}
+
+export function shouldCancelCreatedCanvasTask(input: {
+    node?: CanvasNodeData;
+    workflowControlled: boolean;
+    workflowCancelQueued?: boolean;
+    workflowStopped?: boolean;
+    workflowNodeCanceled?: boolean;
+}) {
+    if (!input.node || !isInFlightCanvasGeneration(input.node)) return true;
+    if (!input.workflowControlled) return false;
+    return Boolean(input.workflowCancelQueued || input.workflowStopped || input.workflowNodeCanceled);
 }
 
 export function applyCanceledGenerationToNode(node: CanvasNodeData, errorDetails: string, completedAt = new Date().toISOString()): CanvasNodeData {

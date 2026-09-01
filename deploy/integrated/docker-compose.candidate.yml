@@ -1,5 +1,11 @@
 name: startcloudsai-integrated-candidate
 
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
 services:
   server:
     image: startcloudsai-integrated-candidate-server:${RELEASE_ID:-candidate}
@@ -32,6 +38,7 @@ services:
     cpus: 0.75
     cpuset: "0-3"
     pids_limit: 220
+    logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8000/api/v1/health"]
       interval: 5s
@@ -61,6 +68,7 @@ services:
     cpus: 0.15
     cpuset: "0-3"
     pids_limit: 100
+    logging: *default-logging
 
 networks:
   data:

@@ -94,6 +94,7 @@ import {
   saveAccessoryDraft,
 } from "@react/legacy-modules/features/ecommerce/accessoryDraftStorage.js";
 import { fetchRuntimeConfig } from "@react/legacy-modules/services/runtimeConfig.js";
+import { composePendingLaunchPrompt, takePendingPrompt } from "@react/legacy-modules/features/creator-hub/studioTools.js";
 import {
   generateAplusPlan,
   generateCommerceProductBrief,
@@ -685,6 +686,26 @@ function CostConfirmDialog({ cost, light = false, onCancel, onConfirm }) {
   );
 }
 
+function CancelGenerationDialog({ open, busy, light = false, message, onClose, onConfirm }) {
+  if (!open) return null;
+  return createPortal(
+    <div className={`delete-confirm__backdrop${light ? " is-light" : ""}`} role="presentation" onMouseDown={(event) => { if (!busy && event.target === event.currentTarget) onClose(); }}>
+      <section className="delete-confirm__dialog" role="dialog" aria-modal="true" aria-labelledby="ecommerce-stop-title" onMouseDown={(event) => event.stopPropagation()}>
+        <span className="delete-confirm__icon is-warning"><i className="bi bi-stop-circle" /></span>
+        <div className="delete-confirm__copy">
+          <h2 id="ecommerce-stop-title">停止本次生成？</h2>
+          <p>{message}</p>
+        </div>
+        <div className="delete-confirm__actions">
+          <button type="button" className="is-cancel" disabled={busy} onClick={onClose}>继续生成</button>
+          <button type="button" className="is-confirm is-warning" disabled={busy} onClick={onConfirm}>{busy ? "正在停止" : "确认停止"}</button>
+        </div>
+      </section>
+    </div>,
+    document.body,
+  );
+}
+
 function BriefDialog({
   state,
   setState,
@@ -1069,6 +1090,19 @@ export function EcommerceBusinessSession({
   const [shadow, setShadow] = useState(OPTIONS.shadow[0]);
   const [productName, setProductName] = useState("");
   const [sellingPoints, setSellingPoints] = useState("");
+  const assistantHandoffConsumedRef = useRef(false);
+  useEffect(() => {
+    if (assistantHandoffConsumedRef.current) return;
+    assistantHandoffConsumedRef.current = true;
+    const pending = takePendingPrompt(["ecommerce", "ecommerce_design"]);
+    if (!pending) return;
+    const brief = composePendingLaunchPrompt(pending).trim();
+    if (!brief) return;
+    const productTitle = brief.match(/^商品[：:]\s*([^\n]+)/)?.[1]?.trim();
+    if (productTitle) setProductName(productTitle.slice(0, 120));
+    setSellingPoints(brief.slice(0, 2000));
+    setPane("settings");
+  }, []);
   const [shootUseCase, setShootUseCase] = useState("listing");
   const [shootGoal, setShootGoal] = useState("conversion");
   const [shootAudience, setShootAudience] = useState("");
@@ -3060,7 +3094,10 @@ export function EcommerceBusinessSession({
     }
     const pending = (async () => {
       const ready = await prepareUploadFile(file);
-      const uploaded = await uploadFile(ready);
+      const uploaded = await uploadFile(ready, {
+        referenceUpload: true,
+        behaviorFeature: "ecommerce",
+      });
       const key = normalizeTaskImageKey(uploaded?.key || uploaded?.url || "");
       if (!isReusableTaskImageKey(key)) {
         throw new Error("图片上传未返回有效文件，请重试");
@@ -3577,7 +3614,10 @@ export function EcommerceBusinessSession({
         blob = await fetchAuthenticatedMediaBlob(source, { cache: "no-store" });
       }
       const ready = await prepareUploadFile(blob);
-      const uploaded = await uploadFile(ready);
+      const uploaded = await uploadFile(ready, {
+        referenceUpload: true,
+        behaviorFeature: "ecommerce",
+      });
       const key = normalizeTaskImageKey(uploaded?.key || uploaded?.url || "");
       if (!isReusableTaskImageKey(key)) continue;
       attachEcommerceUploadKey(file, key);
@@ -3632,7 +3672,10 @@ export function EcommerceBusinessSession({
           );
           return match
             ? decodeURIComponent(match[1])
-            : (await uploadFile(await prepareUploadFile(file))).key;
+            : (await uploadFile(await prepareUploadFile(file), {
+                referenceUpload: true,
+                behaviorFeature: "ecommerce",
+              })).key;
         }),
       );
       const result = await generateCommerceProductBrief({
@@ -6009,7 +6052,7 @@ export function EcommerceBusinessSession({
                   <span>{mode.label}</span>
                   <strong aria-live="polite">
                     {jobs.running
-                      ? `正在生成 ${completedCount}/${displayCount}`
+                      ? `生成中 ${completedCount}/${displayCount}`
                       : failedCount
                         ? `${completedCount}/${displayCount} 完成，${failedCount} 张失败`
                         : currentRow
@@ -6298,6 +6341,7 @@ export function EcommerceBusinessSession({
               }
               elapsedSeconds={ecommerceElapsedSeconds(tryonTimingTask)}
               runStartedAt={tryonTimingTask?.startedAt || ""}
+              generationStageLabel={jobs.generationStageLabel || "正在生成"}
               cancelling={jobs.cancelling}
               generateDisabled={auth.isAuthenticated && !canGenerate}
               generateHint={readiness}
@@ -6486,6 +6530,7 @@ export function EcommerceBusinessSession({
                   : handheldFailMessage
               }
               elapsedSeconds={ecommerceElapsedSeconds(currentRow?.task)}
+              generationStageLabel={jobs.generationStageLabel || "正在生成"}
               generateDisabled={auth.isAuthenticated && !canGenerate}
               generateHint={readiness}
               shotCount={generationPlan.length}
@@ -6551,6 +6596,7 @@ export function EcommerceBusinessSession({
               failMessage={submitError || jobs.error || ""}
               notice={accessoryNotice}
               elapsedSeconds={ecommerceElapsedSeconds(currentRow?.task)}
+              generationStageLabel={jobs.generationStageLabel || "正在生成"}
               generateDisabled={auth.isAuthenticated && !canGenerate}
               generateHint={readiness}
               shotCount={generationPlan.length}
@@ -6669,6 +6715,7 @@ export function EcommerceBusinessSession({
               failed={Boolean((submitError || jobs.error) && !currentRow)}
               failMessage={submitError || jobs.error || ""}
               elapsedSeconds={ecommerceElapsedSeconds(currentRow?.task)}
+              generationStageLabel={jobs.generationStageLabel || "正在生成"}
               generateDisabled={auth.isAuthenticated && !canGenerate}
               generateHint={readiness}
               shotCount={generationPlan.length}
@@ -6838,6 +6885,14 @@ export function EcommerceBusinessSession({
           finishTaskLaunch();
         }}
         onConfirm={(options) => void confirmCost(options)}
+      />
+      <CancelGenerationDialog
+        open={jobs.cancelConfirmOpen}
+        busy={jobs.cancelling}
+        light={!isDark}
+        message={jobs.cancelMessage}
+        onClose={jobs.closeCancelConfirm}
+        onConfirm={() => void jobs.confirmCancelAll()}
       />
       <ConfirmDelete
         open={Boolean(deleteRow)}

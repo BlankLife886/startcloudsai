@@ -4,19 +4,20 @@ import { MigrationPreview } from "./views/MigrationPreview.jsx";
 import { AppShell } from "./layout/AppShell.jsx";
 import { AuthAccountView } from "./views/auth/AuthAccountView.jsx";
 import { ProtectedCanvasRoute } from "./auth/ProtectedCanvasRoute.jsx";
+import { importWithRecovery } from "./utils/dynamicImportRecovery.js";
 
 const CanvasNativeLayout = lazy(() =>
-  import("@canvas/native-layout.tsx").then((module) => ({
+  importWithRecovery(() => import("@canvas/native-layout.tsx")).then((module) => ({
     default: module.CanvasNativeLayout,
   })),
 );
 const CanvasProjectRoute = lazy(() =>
-  import("@canvas/native-routes.tsx").then((module) => ({
+  importWithRecovery(() => import("@canvas/native-routes.tsx")).then((module) => ({
     default: module.CanvasProjectRoute,
   })),
 );
 const CanvasConfigRoute = lazy(() =>
-  import("@canvas/native-routes.tsx").then((module) => ({
+  importWithRecovery(() => import("@canvas/native-routes.tsx")).then((module) => ({
     default: module.CanvasConfigRoute,
   })),
 );
@@ -33,7 +34,7 @@ function canvasElement(Page) {
 
 function lazyView(importer, exportName) {
   return async () => {
-    const module = await importer();
+    const module = await importWithRecovery(importer);
     return { Component: module[exportName] };
   };
 }
@@ -70,6 +71,13 @@ export const router = createBrowserRouter([
         lazy: lazyView(
           () => import("./views/CommercialHomeView.jsx"),
           "CommercialHomeView",
+        ),
+      },
+      {
+        path: "/ai-tools",
+        lazy: lazyView(
+          () => import("./views/AIToolsCatalogView.jsx"),
+          "AIToolsCatalogView",
         ),
       },
       {
@@ -261,6 +269,13 @@ export const router = createBrowserRouter([
             lazy: lazyView(
               () => import("./views/AccountSettingsView.jsx"),
               "AccountSettingsView",
+            ),
+          },
+          {
+            path: "/developer-api",
+            lazy: lazyView(
+              () => import("./views/DeveloperAPIView.jsx"),
+              "DeveloperAPIView",
             ),
           },
           {

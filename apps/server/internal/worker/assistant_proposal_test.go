@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
@@ -8,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
+	"github.com/BlankLife886/startcloudsai/server/internal/sub2api"
 )
 
 func TestParseAssistantProposalAcceptsWrappedJSON(t *testing.T) {
@@ -76,6 +78,64 @@ func TestAssistantAgentInstructionsPreserveRequestedCount(t *testing.T) {
 	}
 	if !strings.Contains(instructions, "referenceMode=individual") || !strings.Contains(instructions, "一一对应") {
 		t.Fatalf("instructions lack reference mapping rules = %q", instructions)
+	}
+	if !strings.Contains(instructions, "web_search") || !strings.Contains(instructions, "实时信息") || !strings.Contains(instructions, "真实错误") {
+		t.Fatalf("instructions lack controlled web search rules = %q", instructions)
+	}
+	if !strings.Contains(instructions, "task_status") || !strings.Contains(instructions, "退款") || !strings.Contains(instructions, "内部任务 ID") {
+		t.Fatalf("instructions lack private task status rules = %q", instructions)
+	}
+}
+
+func TestAttachAssistantWebSearchesSkipsEmptyAndKeepsSources(t *testing.T) {
+	metadata := map[string]any{}
+	attachAssistantWebSearches(metadata, nil)
+	if _, exists := metadata["webSearches"]; exists {
+		t.Fatalf("empty searches must not be stored: %#v", metadata)
+	}
+	searches := []sub2api.WebSearchResult{{
+		Query: "latest", Text: "answer", Sources: []sub2api.WebSearchSource{{Title: "Example", URL: "https://example.com/latest"}},
+	}}
+	attachAssistantWebSearches(metadata, searches)
+	stored, ok := metadata["webSearches"].([]sub2api.WebSearchResult)
+	if !ok || len(stored) != 1 || len(stored[0].Sources) != 1 {
+		t.Fatalf("stored searches = %#v", metadata["webSearches"])
+	}
+}
+
+func TestAssistantPromptRequestsWebSearch(t *testing.T) {
+	tests := []struct {
+		prompt string
+		want   bool
+	}{
+		{prompt: "联网搜索最近的海报趋势，再帮我生成一张图", want: true},
+		{prompt: "search the web for current logo trends and create a poster", want: true},
+		{prompt: "生成一张极简天气图标", want: false},
+		{prompt: "查一下参考图中的文字并重新排版", want: false},
+	}
+	for _, test := range tests {
+		if got := assistantPromptRequestsWebSearch(test.prompt); got != test.want {
+			t.Fatalf("assistantPromptRequestsWebSearch(%q) = %v, want %v", test.prompt, got, test.want)
+		}
+	}
+}
+
+func TestAssistantExecutionModeRoutesExplicitSearchThroughAgent(t *testing.T) {
+	tests := []struct {
+		mode   string
+		prompt string
+		want   string
+	}{
+		{mode: "chat", prompt: "请联网搜索今天的官方消息", want: "agent"},
+		{mode: "chat", prompt: "我的生图任务为什么还在运行中", want: "agent"},
+		{mode: "chat", prompt: "解释一下什么是对象存储", want: "chat"},
+		{mode: "image", prompt: "你好", want: "chat"},
+		{mode: "image", prompt: "生成一张海报", want: "image"},
+	}
+	for _, test := range tests {
+		if got := assistantExecutionMode(test.mode, test.prompt); got != test.want {
+			t.Fatalf("assistantExecutionMode(%q, %q) = %q, want %q", test.mode, test.prompt, got, test.want)
+		}
 	}
 }
 
@@ -298,5 +358,158 @@ func TestNormalizeAssistantProposalUsesConfiguredCapabilities(t *testing.T) {
 	}
 	if proposal.Ratio != "1:1" || proposal.Resolution != "1K" || proposal.Count != 1 || proposal.Quality != "low" {
 		t.Fatalf("normalized capabilities = %#v", proposal)
+	}
+}
+
+func TestAssistantProposalFunctionToolIncludesPromptModesAndImageItems(t *testing.T) {
+	tool := assistantProposalFunctionTool(nil)
+	properties := tool.Parameters["properties"].(map[string]any)
+	for _, key := range []string{"promptMode", "faithfulPrompt", "enhancedPrompt", "items"} {
+		if _, ok := properties[key]; !ok {
+			t.Fatalf("proposal schema missing %q: %#v", key, properties)
+		}
+	}
+	required := tool.Parameters["required"].([]string)
+	for _, key := range []string{"promptMode", "faithfulPrompt", "enhancedPrompt", "items"} {
+		if !slices.Contains(required, key) {
+			t.Fatalf("proposal schema must require %q: %#v", key, required)
+		}
+	}
+	items := properties["items"].(map[string]any)
+	itemSchema := items["items"].(map[string]any)
+	itemProperties := itemSchema["properties"].(map[string]any)
+	for _, key := range []string{"title", "prompt", "referencedImageIds"} {
+		if _, ok := itemProperties[key]; !ok {
+			t.Fatalf("image plan item schema missing %q: %#v", key, itemProperties)
+		}
+	}
+}
+
+func TestAssistantHistoricalVisionCatalogSelectsNumberedImageAndRespectsLimit(t *testing.T) {
+	catalog := []assistantCatalogImage{
+		{ID: "image-1"}, {ID: "image-2"}, {ID: "image-3"}, {ID: "image-4"},
+	}
+	selected := assistantHistoricalVisionCatalog("修改图2的背景", catalog, 0)
+	if len(selected) != 1 || selected[0].ID != "image-2" {
+		t.Fatalf("numbered selection = %#v", selected)
+	}
+	limited := assistantHistoricalVisionCatalog("参考图1、图2和图3生成新版本", catalog, 2)
+	if len(limited) != 2 || limited[0].ID != "image-1" || limited[1].ID != "image-2" {
+		t.Fatalf("limited selection = %#v", limited)
+	}
+	if got := assistantHistoricalVisionCatalog("生成一张全新的海报", catalog, 0); len(got) != 0 {
+		t.Fatalf("fresh request loaded historical pixels: %#v", got)
+	}
+}
+
+func TestAssistantDefaultPromptMode(t *testing.T) {
+	tests := []struct {
+		name   string
+		run    *store.AssistantRun
+		action string
+		want   string
+	}{
+		{name: "new vague image", run: &store.AssistantRun{Prompt: "生成一张未来城市海报", Params: map[string]any{}}, action: "generate", want: assistantPromptModeEnhanced},
+		{name: "current reference", run: &store.AssistantRun{Prompt: "做成海报", Params: map[string]any{"referenceImages": []any{map[string]any{"id": "ref-1"}}}}, action: "edit", want: assistantPromptModeFaithful},
+		{name: "historical reference", run: &store.AssistantRun{Prompt: "修改图2的背景", Params: map[string]any{}}, action: "edit", want: assistantPromptModeFaithful},
+		{name: "exact wording", run: &store.AssistantRun{Prompt: "提示词一模一样，不要改", Params: map[string]any{}}, action: "generate", want: assistantPromptModeFaithful},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := assistantDefaultPromptMode(test.run, test.action); got != test.want {
+				t.Fatalf("assistantDefaultPromptMode() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeAssistantImagePlanItemsAssignsStableIDsAndCount(t *testing.T) {
+	items := normalizeAssistantImagePlanItems([]assistantImagePlanItem{
+		{Title: " 主图 ", Prompt: " 主图提示词 ", ReferencedImageIDs: []string{"ref-1", "ref-1"}},
+		{Title: "", Prompt: "场景图提示词", ReferencedImageIDs: []string{"ref-2"}},
+		{Title: "细节图", Prompt: "细节图提示词"},
+	}, 2, "备用提示词")
+	if len(items) != 2 || items[0].ID != "item-1" || items[1].ID != "item-2" {
+		t.Fatalf("normalized items = %#v", items)
+	}
+	if items[0].Title != "主图" || items[1].Title != "图片 2" || !slices.Equal(items[0].ReferencedImageIDs, []string{"ref-1"}) {
+		t.Fatalf("normalized item content = %#v", items)
+	}
+}
+
+func TestAttachAssistantProposalReferencesMapsEachPlanItem(t *testing.T) {
+	run := &store.AssistantRun{Prompt: "参考图1和图2制作主图与细节图", Params: map[string]any{}}
+	catalog := []assistantCatalogImage{
+		{ID: "ref-1", Image: map[string]any{"id": "ref-1", "fileKey": "tasks/u/1.png"}},
+		{ID: "ref-2", Image: map[string]any{"id": "ref-2", "fileKey": "tasks/u/2.png"}},
+	}
+	proposal := attachAssistantProposalReferences(assistantImageProposal{
+		Action: "edit", Count: 2, Items: []assistantImagePlanItem{
+			{ID: "item-1", Title: "主图", Prompt: "主图提示词", ReferencedImageIDs: []string{"ref-1"}},
+			{ID: "item-2", Title: "细节图", Prompt: "细节提示词", ReferencedImageIDs: []string{"ref-2"}},
+		},
+	}, run, catalog, nil)
+	if len(proposal.ReferenceImages) != 2 || len(proposal.Items) != 2 {
+		t.Fatalf("mapped proposal = %#v", proposal)
+	}
+	if len(proposal.Items[0].ReferenceImages) != 1 || assistantMapString(proposal.Items[0].ReferenceImages[0], "id") != "ref-1" {
+		t.Fatalf("first item mapping = %#v", proposal.Items[0])
+	}
+	if len(proposal.Items[1].ReferenceImages) != 1 || assistantMapString(proposal.Items[1].ReferenceImages[0], "id") != "ref-2" {
+		t.Fatalf("second item mapping = %#v", proposal.Items[1])
+	}
+}
+
+func TestAssistantImageExecutionPlanUsesIndependentPromptsAndReferences(t *testing.T) {
+	plan, err := assistantImageExecutionPlan(map[string]any{
+		"referenceImages": []map[string]any{
+			{"id": "ref-1", "fileKey": "tasks/u/1.png"},
+			{"id": "ref-2", "fileKey": "tasks/u/2.png"},
+		},
+		"imagePlanItems": []map[string]any{
+			{"title": "主图", "prompt": "主图提示词", "referenceImageIds": []string{"ref-2"}},
+			{"title": "细节图", "prompt": "细节图提示词", "referenceImageIds": []string{"ref-1", "ref-2"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("execution plan: %v", err)
+	}
+	if len(plan) != 2 || plan[0].Prompt != "主图提示词" || !slices.Equal(plan[0].ReferenceIndexes, []int{1}) {
+		t.Fatalf("first execution item = %#v", plan)
+	}
+	if plan[1].Prompt != "细节图提示词" || !slices.Equal(plan[1].ReferenceIndexes, []int{0, 1}) {
+		t.Fatalf("second execution item = %#v", plan)
+	}
+}
+
+func TestAssistantProposalGoalContractCapturesAcceptanceFacts(t *testing.T) {
+	run := &store.AssistantRun{Prompt: "联网查一下趋势，再严格按图1制作主图和细节图"}
+	proposal := assistantImageProposal{
+		Action: "edit", PromptMode: assistantPromptModeFaithful, Prompt: "原提示词", FaithfulPrompt: "原提示词",
+		Count: 2, ReferenceImages: []map[string]any{{"id": "ref-1"}}, InspectedImageIDs: []string{"history-1"},
+		Items: []assistantImagePlanItem{
+			{Title: "主图", Prompt: "主图提示词", ReferencedImageIDs: []string{"ref-1"}},
+			{Title: "细节图", Prompt: "细节图提示词", ReferencedImageIDs: []string{"ref-1"}},
+		},
+	}
+	contract := assistantProposalGoalContract(run, proposal, 1)
+	if contract.OutcomeKind != "image_proposal" || contract.DeliverableCount != 2 || len(contract.Deliverables) != 2 {
+		t.Fatalf("goal contract = %#v", contract)
+	}
+	if !contract.FaithfulPreserved || contract.ReferencedImageCount != 1 || contract.InspectedImageCount != 1 || contract.WebSearchCount != 1 {
+		t.Fatalf("goal acceptance facts = %#v", contract)
+	}
+}
+
+func TestAssistantToolArgumentsAlwaysProducesValidJSON(t *testing.T) {
+	if got := assistantToolArguments(`{"query":"最新趋势"}`); !json.Valid(got) || !strings.Contains(string(got), "最新趋势") {
+		t.Fatalf("valid arguments = %s", got)
+	}
+	if got := assistantToolArguments("not-json"); !json.Valid(got) || !strings.Contains(string(got), "not-json") {
+		t.Fatalf("wrapped arguments = %s", got)
+	}
+	oversized := `{"prompt":"` + strings.Repeat("x", 17_000) + `"}`
+	if got := assistantToolArguments(oversized); !json.Valid(got) || len(got) > 5_000 {
+		t.Fatalf("oversized arguments were not compacted: %d bytes", len(got))
 	}
 }

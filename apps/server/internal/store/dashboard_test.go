@@ -34,19 +34,28 @@ func TestGetDashboardUsageMetrics(t *testing.T) {
 	// second delivered image to dashboard totals.
 	insertDashboardTask(t, st, user.ID, todayStart.Add(3*time.Hour), 25, 1, 0, true)
 
-	todayRun := insertDashboardAssistantRun(t, st, user.ID, todayStart.Add(4*time.Hour), 40, []string{"assistant/a.png", "assistant/a.png", "assistant/b.png"}, map[string]any{
-		"inputTokens": 120, "outputTokens": 48, "reasoningTokens": 12, "totalTokens": 180,
+	todayRun := insertDashboardAssistantRun(t, st, user.ID, todayStart.Add(4*time.Hour), 40, "image", []string{"assistant/a.png", "assistant/a.png", "assistant/b.png"}, map[string]any{
+		"inputTokens": 999, "outputTokens": 999, "totalTokens": 1998,
 	})
 	insertDashboardSpend(t, st, user.ID, "assistant_run", todayRun.ID.String()+"/2", todayStart.Add(4*time.Hour), "AI 助手结算（image）")
+	todayTextRun := insertDashboardAssistantRun(t, st, user.ID, todayStart.Add(5*time.Hour), 20, "text", nil, map[string]any{
+		"inputTokens": 120, "outputTokens": 48, "reasoningTokens": 12, "totalTokens": 180,
+	})
+	insertDashboardSpend(t, st, user.ID, "assistant_run", todayTextRun.ID.String(), todayStart.Add(5*time.Hour), "AI 助手结算（text）")
 
 	previousDayRun := insertDashboardAssistantRun(
-		t, st, user.ID, todayStart.Add(-time.Minute), 10, []string{"assistant/yesterday.png"},
+		t, st, user.ID, todayStart.Add(-time.Minute), 10, "image", []string{"assistant/yesterday.png"},
 		map[string]any{"inputTokens": 8, "outputTokens": 2, "totalTokens": 10},
 	)
 	insertDashboardSpend(t, st, user.ID, "assistant_run", previousDayRun.ID.String(), todayStart.Add(-time.Minute), "AI 助手结算（image）")
 
 	olderTask := insertDashboardTask(t, st, user.ID, todayStart.AddDate(0, 0, -10), 15, 1, 0, false)
 	insertDashboardSpend(t, st, user.ID, "task", olderTask.ID.String(), todayStart.AddDate(0, 0, -10), "任务结算：消耗冻结 15 分")
+	olderTextRun := insertDashboardAssistantRun(
+		t, st, user.ID, todayStart.AddDate(0, 0, -10), 5, "text", nil,
+		map[string]any{"inputTokens": 20, "outputTokens": 10, "totalTokens": 30},
+	)
+	insertDashboardSpend(t, st, user.ID, "assistant_run", olderTextRun.ID.String(), todayStart.AddDate(0, 0, -10), "AI 助手结算（text）")
 
 	outsideTask := insertDashboardTask(t, st, user.ID, last30DaysStart.Add(-time.Second), 99, 4, 0, false)
 	insertDashboardSpend(t, st, user.ID, "task", outsideTask.ID.String(), last30DaysStart.Add(-time.Second), "任务结算：消耗冻结 99 分")
@@ -55,18 +64,28 @@ func TestGetDashboardUsageMetrics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if metrics.Today.SettledCents != 65 || metrics.Today.ImageCount != 5 {
+	if metrics.Today.SettledCents != 85 || metrics.Today.ImageCount != 5 ||
+		metrics.Today.Text.SettledCents != 20 || metrics.Today.Text.RequestCount != 1 ||
+		metrics.Today.Image.SettledCents != 65 || metrics.Today.Image.RequestCount != 2 {
 		t.Fatalf("today = %#v", metrics.Today)
 	}
-	if metrics.Last7Days.SettledCents != 75 || metrics.Last7Days.ImageCount != 6 {
+	if metrics.Last7Days.SettledCents != 95 || metrics.Last7Days.ImageCount != 6 ||
+		metrics.Last7Days.Text.SettledCents != 20 || metrics.Last7Days.Text.RequestCount != 1 ||
+		metrics.Last7Days.Image.SettledCents != 75 || metrics.Last7Days.Image.RequestCount != 3 {
 		t.Fatalf("last 7 days = %#v", metrics.Last7Days)
 	}
-	if metrics.Last30Days.SettledCents != 90 || metrics.Last30Days.ImageCount != 7 {
+	if metrics.Last30Days.SettledCents != 115 || metrics.Last30Days.ImageCount != 7 ||
+		metrics.Last30Days.Text.SettledCents != 25 || metrics.Last30Days.Text.RequestCount != 2 ||
+		metrics.Last30Days.Image.SettledCents != 90 || metrics.Last30Days.Image.RequestCount != 4 {
 		t.Fatalf("last 30 days = %#v", metrics.Last30Days)
 	}
 	if metrics.TodayToken.InputTokens != 120 || metrics.TodayToken.OutputTokens != 48 ||
 		metrics.TodayToken.ReasoningTokens != 12 || metrics.TodayToken.TotalTokens != 180 {
 		t.Fatalf("today token = %#v", metrics.TodayToken)
+	}
+	if metrics.Last30Days.Text.InputTokens != 140 || metrics.Last30Days.Text.OutputTokens != 58 ||
+		metrics.Last30Days.Text.ReasoningTokens != 12 || metrics.Last30Days.Text.TotalTokens != 210 {
+		t.Fatalf("last 30 days text = %#v", metrics.Last30Days.Text)
 	}
 }
 
@@ -111,6 +130,7 @@ func insertDashboardAssistantRun(
 	userID uuid.UUID,
 	finishedAt time.Time,
 	cost int64,
+	resolvedMode string,
 	imageKeys []string,
 	usage map[string]any,
 ) *store.AssistantRun {
@@ -133,9 +153,13 @@ func insertDashboardAssistantRun(
 	for _, key := range imageKeys {
 		images = append(images, map[string]any{"fileKey": key})
 	}
+	messageKind := resolvedMode
+	if messageKind != "image" {
+		messageKind = "text"
+	}
 	assistantMessage, err := store.InsertAssistantMessage(ctx, st.Pool, store.AssistantMessage{
-		ID: uuid.New(), ConversationID: conversation.ID, Role: "assistant", Kind: "image", Status: "complete",
-		Metadata: map[string]any{"images": images, "usage": usage}, CreatedAt: finishedAt,
+		ID: uuid.New(), ConversationID: conversation.ID, Role: "assistant", Kind: messageKind, Status: "complete",
+		Content: "dashboard result", Metadata: map[string]any{"images": images, "usage": usage}, CreatedAt: finishedAt,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -143,16 +167,17 @@ func insertDashboardAssistantRun(
 	run, err := store.InsertAssistantRun(ctx, st.Pool, store.AssistantRun{
 		ID: uuid.New(), UserID: userID, ConversationID: conversation.ID,
 		UserMessageID: userMessage.ID, AssistantMessageID: assistantMessage.ID,
-		Mode: "image", Prompt: "dashboard", Params: map[string]any{"count": len(imageKeys)}, ReservedCents: cost,
+		Mode:   map[bool]string{true: "image", false: "chat"}[resolvedMode == "image"],
+		Prompt: "dashboard", Params: map[string]any{"count": max(1, len(imageKeys))}, ReservedCents: cost,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.Pool.Exec(ctx, `UPDATE assistant_runs
-		SET status = 'succeeded', resolved_mode = 'image', stage = 'complete', cost_cents = $2,
+		SET status = 'succeeded', resolved_mode = $4, stage = 'complete', cost_cents = $2,
 			started_at = $3::timestamptz - interval '1 second', finished_at = $3::timestamptz,
 			created_at = $3::timestamptz - interval '2 seconds'
-		WHERE id = $1`, run.ID, cost, finishedAt); err != nil {
+		WHERE id = $1`, run.ID, cost, finishedAt, resolvedMode); err != nil {
 		t.Fatal(err)
 	}
 	return run

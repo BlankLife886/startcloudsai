@@ -1,4 +1,7 @@
 .git
+.env
+**/.env
+**/.env.*
 .artifacts
 **/node_modules
 **/dist

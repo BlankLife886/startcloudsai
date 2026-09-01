@@ -1,6 +1,6 @@
-import { Copy, Download, PencilLine, Search, Trash2, Upload } from "lucide-react";
+import { Copy, Download, FolderPlus, PencilLine, RotateCcw, Search, Trash2, Upload } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { App, Button, Card, Drawer, Empty, Form, Image, Input, Modal, Pagination, Select, Space, Tag, Typography } from "antd";
+import { App, Button, Card, Checkbox, Drawer, Empty, Form, Image, Input, Modal, Pagination, Select, Space, Tag, Typography } from "antd";
 import { saveAs } from "file-saver";
 
 import { useCopyText } from "@/hooks/use-copy-text";
@@ -8,6 +8,7 @@ import { formatBytes, readFileAsDataUrl } from "@/lib/image-utils";
 import { uploadImage } from "@/services/image-storage";
 import { cn } from "@/lib/utils";
 import { useAssetStore, type Asset, type AssetKind, type ImageAsset } from "@/stores/use-asset-store";
+import { batchCloudUserAssets, cloudUserAssetToCanvasImage, createCloudUserAssetGroup, deleteCloudUserAssetGroup, listCloudUserAssetGroups, listUserAssetsPage, permanentlyDeleteCloudUserAsset, type CloudUserAssetGroup } from "@/services/user-assets";
 import { exportAssets, readAssetPackage } from "./asset-transfer";
 
 type AssetFormValues = {
@@ -40,6 +41,7 @@ export default function AssetsPage() {
     const addAsset = useAssetStore((state) => state.addAsset);
     const updateAsset = useAssetStore((state) => state.updateAsset);
     const removeAsset = useAssetStore((state) => state.removeAsset);
+	const syncCloudImages = useAssetStore((state) => state.syncCloudImages);
     const [keyword, setKeyword] = useState("");
     const [kindFilter, setKindFilter] = useState<AssetKind | "all">("all");
     const [page, setPage] = useState(1);
@@ -50,20 +52,82 @@ export default function AssetsPage() {
     const [deletingAsset, setDeletingAsset] = useState<Asset | null>(null);
     const [formKind, setFormKind] = useState<AssetKind>("text");
     const [imageDraft, setImageDraft] = useState<ImageDraft>(null);
+	const [libraryView, setLibraryView] = useState<"active" | "trash">("active");
+	const [trashAssets, setTrashAssets] = useState<ImageAsset[]>([]);
+	const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+	const [groups, setGroups] = useState<CloudUserAssetGroup[]>([]);
+	const [groupFilter, setGroupFilter] = useState("all");
+	const [folderName, setFolderName] = useState("");
+	const [folderModalOpen, setFolderModalOpen] = useState(false);
+	const [bulkGroupOpen, setBulkGroupOpen] = useState(false);
     const coverUrl = Form.useWatch("coverUrl", form) || "";
     const title = Form.useWatch("title", form) || "";
     const tags = Form.useWatch("tags", form) || [];
     const content = Form.useWatch("content", form) || "";
-    const validAssets = useMemo(() => assets.filter((asset) => asset.kind === "text" || asset.kind === "image" || asset.kind === "video"), [assets]);
+    const validAssets = useMemo(() => (libraryView === "trash" ? trashAssets : assets).filter((asset) => asset.kind === "text" || asset.kind === "image" || asset.kind === "video"), [assets, libraryView, trashAssets]);
 
     const filteredAssets = useMemo(() => {
         const query = keyword.trim().toLowerCase();
         return validAssets.filter((asset) => {
             if (kindFilter !== "all" && asset.kind !== kindFilter) return false;
+			if (libraryView === "active" && groupFilter !== "all" && String(asset.metadata?.groupId || "ungrouped") !== groupFilter) return false;
             if (!query) return true;
             return assetSearchText(asset).includes(query);
         });
-    }, [validAssets, keyword, kindFilter]);
+    }, [validAssets, keyword, kindFilter, groupFilter, libraryView]);
+
+	const reloadDAM = async () => {
+		const groupResult = await listCloudUserAssetGroups();
+		setGroups(groupResult.items || []);
+		if (libraryView === "trash") {
+			const result = await listUserAssetsPage({ limit: 100, trash: true });
+			setTrashAssets((result.items || []).map((item) => cloudUserAssetToCanvasImage(item)));
+		} else {
+			await syncCloudImages();
+		}
+	};
+
+	useEffect(() => {
+		void reloadDAM().catch((error) => message.error(error instanceof Error ? error.message : "资产库加载失败"));
+		setSelectedIds(new Set());
+	}, [libraryView]); // eslint-disable-line react-hooks/exhaustive-deps
+
+	const cloudAssetId = (asset: Asset) => String(asset.metadata?.cloudAssetId || "");
+	const selectedAssets = validAssets.filter((asset) => selectedIds.has(asset.id));
+	const selectedCloudIds = selectedAssets.map(cloudAssetId).filter(Boolean);
+
+	const bulkTrash = async () => {
+		if (!selectedAssets.length) return;
+		if (selectedCloudIds.length) await batchCloudUserAssets({ action: "trash", ids: selectedCloudIds });
+		selectedAssets.filter((asset) => !cloudAssetId(asset)).forEach((asset) => removeAsset(asset.id));
+		setSelectedIds(new Set());
+		await reloadDAM();
+		message.success("已移入回收站");
+	};
+
+	const bulkRestore = async () => {
+		if (!selectedCloudIds.length) return;
+		await batchCloudUserAssets({ action: "restore", ids: selectedCloudIds });
+		setSelectedIds(new Set());
+		await reloadDAM();
+		message.success("资产已恢复");
+	};
+
+	const bulkPermanentDelete = async () => {
+		await Promise.all(selectedCloudIds.map((id) => permanentlyDeleteCloudUserAsset(id)));
+		setSelectedIds(new Set());
+		await reloadDAM();
+		message.success("资产已永久删除");
+	};
+
+	const moveSelected = async (groupId: string | null) => {
+		if (!selectedCloudIds.length) return;
+		await batchCloudUserAssets({ action: "update", ids: selectedCloudIds, groupId });
+		setBulkGroupOpen(false);
+		setSelectedIds(new Set());
+		await reloadDAM();
+		message.success("已移动");
+	};
 
     const visibleAssets = useMemo(() => {
         const start = (page - 1) * pageSize;
@@ -214,6 +278,18 @@ export default function AssetsPage() {
                     </div>
 
                     <div className="mx-auto mt-6 grid max-w-6xl gap-3 text-left">
+						<div className="flex flex-wrap items-center justify-between gap-3 border-b border-stone-200 pb-4 dark:border-stone-800">
+							<div className="flex flex-wrap items-center gap-2">
+								<Tag.CheckableTag checked={libraryView === "active"} onChange={() => setLibraryView("active")}>全部资产</Tag.CheckableTag>
+								<Tag.CheckableTag checked={libraryView === "trash"} onChange={() => setLibraryView("trash")}>回收站</Tag.CheckableTag>
+								{libraryView === "active" ? <Select size="small" className="w-40" value={groupFilter} onChange={setGroupFilter} options={[{ value: "all", label: "全部文件夹" }, { value: "ungrouped", label: "未分组" }, ...groups.map((group) => ({ value: group.id, label: `${group.name} (${group.assetCount})` }))]} /> : null}
+								{libraryView === "active" ? <Button size="small" type="text" icon={<FolderPlus className="size-3.5" />} onClick={() => setFolderModalOpen(true)}>新建文件夹</Button> : null}
+							</div>
+							{selectedAssets.length ? <Space size="small">
+								<span className="text-xs text-stone-500">已选 {selectedAssets.length} 项</span>
+								{libraryView === "active" ? <><Button size="small" disabled={!selectedCloudIds.length} onClick={() => setBulkGroupOpen(true)}>移动</Button><Button size="small" danger icon={<Trash2 className="size-3.5" />} onClick={() => void bulkTrash()}>移入回收站</Button></> : <><Button size="small" type="primary" icon={<RotateCcw className="size-3.5" />} onClick={() => void bulkRestore()}>恢复</Button><Button size="small" danger onClick={() => void bulkPermanentDelete()}>永久删除</Button></>}
+							</Space> : null}
+						</div>
                         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                             <div className="grid gap-2 md:grid-cols-[56px_minmax(0,1fr)] md:items-center">
                                 <div className="text-xs font-medium text-stone-500 dark:text-stone-400">类型</div>
@@ -259,7 +335,7 @@ export default function AssetsPage() {
                 <div className="mx-auto flex max-w-7xl flex-col gap-5">
                     <div className="grid gap-5 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                         {visibleAssets.map((asset) => (
-                            <AssetCard key={asset.id} asset={asset} onOpen={() => setPreviewAsset(asset)} onEdit={() => openEdit(asset)} onCopy={copyAssetText} onDownload={downloadImage} onDelete={() => setDeletingAsset(asset)} />
+							<AssetCard key={asset.id} asset={asset} trash={libraryView === "trash"} selected={selectedIds.has(asset.id)} onSelect={(checked) => setSelectedIds((current) => { const next = new Set(current); checked ? next.add(asset.id) : next.delete(asset.id); return next; })} onOpen={() => setPreviewAsset(asset)} onEdit={() => openEdit(asset)} onCopy={copyAssetText} onDownload={downloadImage} onDelete={() => setDeletingAsset(asset)} />
                         ))}
                     </div>
 
@@ -392,19 +468,26 @@ export default function AssetsPage() {
             <input ref={assetInputRef} type="file" accept="application/zip,.zip" className="hidden" onChange={(event) => void importAssetZip(event.target.files?.[0])} />
 
             <Modal title="删除资产" open={Boolean(deletingAsset)} onCancel={() => setDeletingAsset(null)} onOk={confirmDelete} okText="删除" okButtonProps={{ danger: true }} cancelText="取消">
-                确定删除「{deletingAsset?.title}」吗？删除后会从我的资产中移除。
+                确定删除「{deletingAsset?.title}」吗？云端图片会先移入回收站，可在回收站恢复。
             </Modal>
+			<Modal title="新建文件夹" open={folderModalOpen} onCancel={() => setFolderModalOpen(false)} okText="创建" onOk={async () => { const name = folderName.trim(); if (!name) return; await createCloudUserAssetGroup(name); setFolderName(""); setFolderModalOpen(false); await reloadDAM(); }}>
+				<Input value={folderName} maxLength={64} placeholder="文件夹名称" onChange={(event) => setFolderName(event.target.value)} />
+				{groups.length ? <div className="mt-4 space-y-1">{groups.map((group) => <div key={group.id} className="flex items-center justify-between py-1 text-sm"><span>{group.name} · {group.assetCount}</span><Button size="small" type="text" danger disabled={group.assetCount > 0} onClick={async () => { await deleteCloudUserAssetGroup(group.id); await reloadDAM(); }}>删除</Button></div>)}</div> : null}
+			</Modal>
+			<Modal title="移动到文件夹" open={bulkGroupOpen} footer={null} onCancel={() => setBulkGroupOpen(false)}>
+				<div className="grid gap-2"><Button onClick={() => void moveSelected(null)}>未分组</Button>{groups.map((group) => <Button key={group.id} onClick={() => void moveSelected(group.id)}>{group.name}</Button>)}</div>
+			</Modal>
         </div>
     );
 }
 
-function AssetCard({ asset, onOpen, onEdit, onCopy, onDownload, onDelete }: { asset: Asset; onOpen: () => void; onEdit: () => void; onCopy: (asset: Asset) => void; onDownload: (asset: Asset) => void; onDelete: () => void }) {
+function AssetCard({ asset, trash, selected, onSelect, onOpen, onEdit, onCopy, onDownload, onDelete }: { asset: Asset; trash: boolean; selected: boolean; onSelect: (checked: boolean) => void; onOpen: () => void; onEdit: () => void; onCopy: (asset: Asset) => void; onDownload: (asset: Asset) => void; onDelete: () => void }) {
     const cover = asset.coverUrl || (asset.kind === "image" ? asset.data.dataUrl : "");
     const summary = assetSummary(asset);
     return (
         <Card
             hoverable
-            className="overflow-hidden"
+            className="relative overflow-hidden"
             styles={{ body: { padding: 0 } }}
             cover={
                 <button type="button" className="block w-full text-left" onClick={onOpen}>
@@ -416,6 +499,7 @@ function AssetCard({ asset, onOpen, onEdit, onCopy, onDownload, onDelete }: { as
                 </button>
             }
         >
+			<div className="absolute left-2 top-2 z-10 rounded bg-white/90 p-1 shadow-sm dark:bg-stone-900/90"><Checkbox checked={selected} onChange={(event) => onSelect(event.target.checked)} /></div>
             <button type="button" className="block w-full text-left" onClick={onOpen}>
                 <div className="p-4">
                     <div className="flex items-start justify-between gap-3">
@@ -444,6 +528,7 @@ function AssetCard({ asset, onOpen, onEdit, onCopy, onDownload, onDelete }: { as
                 <Button size="small" onClick={onOpen}>
                     查看
                 </Button>
+				{trash ? <span className="text-xs text-stone-500">选择后可恢复或永久删除</span> : <>
                 {asset.kind !== "video" ? (
                     <Button size="small" icon={<PencilLine className="size-3.5" />} onClick={onEdit}>
                         编辑
@@ -462,6 +547,7 @@ function AssetCard({ asset, onOpen, onEdit, onCopy, onDownload, onDelete }: { as
                 <Button size="small" danger icon={<Trash2 className="size-3.5" />} onClick={onDelete}>
                     删除
                 </Button>
+				</>}
             </div>
         </Card>
     );

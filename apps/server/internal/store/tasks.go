@@ -809,7 +809,9 @@ func MarkTaskUpstreamPendingOwned(ctx context.Context, q Q, id uuid.UUID, owner 
 
 func markTaskUpstreamPending(ctx context.Context, q Q, id uuid.UUID, owner string) error {
 	_, err := q.Exec(ctx, `UPDATE tasks
-		SET params = jsonb_set(COALESCE(params, '{}'::jsonb), '{_upstreamStage}', '"async_pending"'::jsonb, true)
+		SET params = jsonb_set(
+			jsonb_set(COALESCE(params, '{}'::jsonb), '{_upstreamStage}', '"async_pending"'::jsonb, true),
+			'{_generationStage}', '"upstream_generating"'::jsonb, true)
 		WHERE id = $1 AND status = 'running' AND ($2 = '' OR lease_owner = $2)`, id, owner)
 	return err
 }
@@ -1421,6 +1423,7 @@ type TaskPerformanceSummary struct {
 	Created       int64 `json:"created"`
 	Succeeded     int64 `json:"succeeded"`
 	Failed        int64 `json:"failed"`
+	Canceled      int64 `json:"canceled"`
 	AvgQueueMs    int64 `json:"avgQueueMs"`
 	P95QueueMs    int64 `json:"p95QueueMs"`
 	AvgRunMs      int64 `json:"avgRunMs"`
@@ -1439,6 +1442,7 @@ func GetTaskPerformanceSummary(ctx context.Context, q Q, since time.Time) (*Task
 			count(*) FILTER (WHERE created_at >= $1),
 			count(*) FILTER (WHERE created_at >= $1 AND status = 'succeeded'),
 			count(*) FILTER (WHERE created_at >= $1 AND status = 'failed'),
+			count(*) FILTER (WHERE created_at >= $1 AND status = 'canceled'),
 			COALESCE(avg(extract(epoch FROM (started_at - created_at)) * 1000)
 				FILTER (WHERE created_at >= $1 AND started_at IS NOT NULL), 0)::bigint,
 			COALESCE(percentile_cont(0.95) WITHIN GROUP (
@@ -1460,7 +1464,7 @@ func GetTaskPerformanceSummary(ctx context.Context, q Q, since time.Time) (*Task
 					AND status IN ('succeeded', 'failed')), 0)::bigint
 		FROM tasks`, since).Scan(
 		&summary.QueuedNow, &summary.RunningNow,
-		&summary.Created, &summary.Succeeded, &summary.Failed,
+		&summary.Created, &summary.Succeeded, &summary.Failed, &summary.Canceled,
 		&summary.AvgQueueMs, &summary.P95QueueMs,
 		&summary.AvgRunMs, &summary.P95RunMs,
 		&summary.AvgEndToEndMs, &summary.P95EndToEndMs,
@@ -1593,6 +1597,37 @@ func SetTaskModel(ctx context.Context, q Q, id uuid.UUID, model string) error {
 func SetTaskModelOwned(ctx context.Context, q Q, id uuid.UUID, model, owner string) (bool, error) {
 	tag, err := q.Exec(ctx,
 		`UPDATE tasks SET model = $2 WHERE id = $1 AND status = 'running' AND model = '' AND lease_owner = $3`, id, model, owner)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// SetTaskGenerationStage records a user-facing execution phase while the task
+// is running. It deliberately lives in params so rolling deployments do not
+// require a schema migration and older workers can continue processing tasks.
+func SetTaskGenerationStage(ctx context.Context, q Q, id uuid.UUID, stage string) error {
+	_, err := setTaskGenerationStage(ctx, q, id, stage, "")
+	return err
+}
+
+func SetTaskGenerationStageOwned(ctx context.Context, q Q, id uuid.UUID, stage, owner string) (bool, error) {
+	if strings.TrimSpace(owner) == "" {
+		return false, errors.New("task lease owner is required")
+	}
+	return setTaskGenerationStage(ctx, q, id, stage, owner)
+}
+
+func setTaskGenerationStage(ctx context.Context, q Q, id uuid.UUID, stage, owner string) (bool, error) {
+	stage = strings.TrimSpace(stage)
+	switch stage {
+	case "preparing", "upstream_generating", "fetching_result", "saving_result":
+	default:
+		return false, errors.New("invalid task generation stage")
+	}
+	tag, err := q.Exec(ctx, `UPDATE tasks
+		SET params = jsonb_set(COALESCE(params, '{}'::jsonb), '{_generationStage}', to_jsonb($2::text), true)
+		WHERE id = $1 AND status = 'running' AND ($3 = '' OR lease_owner = $3)`, id, stage, owner)
 	if err != nil {
 		return false, err
 	}
@@ -1857,7 +1892,7 @@ func RequeueTask(ctx context.Context, q Q, id uuid.UUID) (bool, error) {
 			lease_owner = NULL, heartbeat_at = NULL, lease_until = NULL, finished_at = NULL,
 			output_keys = '[]'::jsonb, thumbnail_keys = '[]'::jsonb,
 			params = COALESCE(params, '{}'::jsonb)
-				- '_crunTaskIds' - '_upstreamStage' - '_failedProviderConfigIds'
+				- '_crunTaskIds' - '_upstreamStage' - '_generationStage' - '_failedProviderConfigIds'
 				- '_completionClaimId' - '_completionClaimedAtMs'
 		 WHERE id = $1 AND status = 'failed'`, id)
 	if err != nil {
@@ -1900,7 +1935,7 @@ func RequeueRunningTaskOwned(ctx context.Context, q Q, id uuid.UUID, owner strin
 func requeueRunningTask(ctx context.Context, q Q, id uuid.UUID, owner string) (bool, error) {
 	tag, err := q.Exec(ctx,
 		`UPDATE tasks SET status = 'queued', started_at = NULL, lease_owner = NULL, heartbeat_at = NULL, lease_until = NULL,
-			params = COALESCE(params, '{}'::jsonb) - '_completionClaimId' - '_completionClaimedAtMs'
+			params = COALESCE(params, '{}'::jsonb) - '_generationStage' - '_completionClaimId' - '_completionClaimedAtMs'
 		 WHERE id = $1 AND status = 'running' AND ($2 = '' OR lease_owner = $2)`, id, owner)
 	if err != nil {
 		return false, err
@@ -1936,7 +1971,7 @@ func RequeueExpiredRunningTasks(ctx context.Context, q Q, before time.Time) ([]u
 			LIMIT 500
 		)
 		UPDATE tasks AS task SET status = 'queued', started_at = NULL, lease_owner = NULL, heartbeat_at = NULL, lease_until = NULL,
-			params = COALESCE(params, '{}'::jsonb) - '_completionClaimId' - '_completionClaimedAtMs'
+			params = COALESCE(params, '{}'::jsonb) - '_generationStage' - '_completionClaimId' - '_completionClaimedAtMs'
 		FROM expired
 		WHERE task.id = expired.id AND task.status = 'running' AND (task.lease_until IS NULL OR task.lease_until <= $1)
 		  AND `+uiDesignAssetHistoryNotSQL+`
@@ -1989,7 +2024,7 @@ func RetryRunningTaskOwned(ctx context.Context, q Q, id uuid.UUID, owner string,
 		lease_owner = NULL, heartbeat_at = NULL, lease_until = NULL,
 		error_code = NULL, error_message = NULL,
 		params = jsonb_set(
-			COALESCE(params, '{}'::jsonb) - '_upstreamStage' - '_crunTaskIds',
+			COALESCE(params, '{}'::jsonb) - '_upstreamStage' - '_generationStage' - '_crunTaskIds',
 			'{_failedProviderConfigIds}', $4::jsonb, true)
 		WHERE id = $1 AND status = 'running' AND lease_owner = $2 AND attempt = $3
 		  AND COALESCE(params->>'_completionClaimId', '') = ''

@@ -14,10 +14,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
+	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/sub2api"
 )
@@ -54,12 +56,62 @@ func TestNormalizeAssistantReferenceMode(t *testing.T) {
 	}
 }
 
+func TestNormalizeAgentQualityWorkspace(t *testing.T) {
+	for input, expected := range map[string]string{"": "", " assistant ": "assistant", "CANVAS": "canvas"} {
+		actual, err := normalizeAgentQualityWorkspace(input)
+		if err != nil || actual != expected {
+			t.Fatalf("normalizeAgentQualityWorkspace(%q) = %q, %v; want %q", input, actual, err, expected)
+		}
+	}
+	if _, err := normalizeAgentQualityWorkspace("other"); err == nil {
+		t.Fatal("unsupported Agent workspace must fail validation")
+	}
+}
+
+func TestSanitizeAssistantImagePlanItems(t *testing.T) {
+	references := []map[string]any{
+		{"id": "ref-1", "fileKey": "uploads/user/1.png"},
+		{"id": "ref-2", "fileKey": "uploads/user/2.png"},
+	}
+	items, err := sanitizeAssistantImagePlanItems([]assistantRunImagePlanItem{
+		{Title: "主图", Prompt: "主图提示词", ReferenceImageIDs: []string{"ref-1"}},
+		{Title: "细节图", Prompt: "细节图提示词", ReferenceImageIDs: []string{"ref-2"}},
+	}, references, 2)
+	if err != nil {
+		t.Fatalf("sanitize image plan: %v", err)
+	}
+	if len(items) != 2 || assistantMapText(items[0], "id") != "item-1" || assistantMapText(items[1], "title") != "细节图" {
+		t.Fatalf("sanitized items = %#v", items)
+	}
+	if ids, ok := items[0]["referenceImageIds"].([]string); !ok || len(ids) != 1 || ids[0] != "ref-1" {
+		t.Fatalf("sanitized reference ids = %#v", items[0]["referenceImageIds"])
+	}
+
+	if _, err := sanitizeAssistantImagePlanItems([]assistantRunImagePlanItem{
+		{Prompt: "一", ReferenceImageIDs: []string{"missing"}}, {Prompt: "二"},
+	}, references, 2); err == nil {
+		t.Fatal("unknown reference id must fail validation")
+	}
+	if _, err := sanitizeAssistantImagePlanItems([]assistantRunImagePlanItem{
+		{Prompt: strings.Repeat("字", maxAssistantMessageRunes+1)}, {Prompt: "二"},
+	}, references, 2); err == nil {
+		t.Fatal("oversized item prompt must fail validation")
+	}
+	if _, err := sanitizeAssistantImagePlanItems([]assistantRunImagePlanItem{
+		{Prompt: "一"}, {Prompt: "二"},
+	}, references, 3); err == nil {
+		t.Fatal("plan count mismatch must fail validation")
+	}
+}
+
 func TestAssistantMessageDictKeepsContextStatsPrivateSummaryHidden(t *testing.T) {
 	message := &store.AssistantMessage{
 		ID: uuid.New(), Role: "assistant", Kind: "chat", Status: "complete", Content: "完成",
 		Metadata: map[string]any{
 			"context":                         map[string]any{"usagePercent": 42, "compactedMessages": 12},
 			"usage":                           map[string]any{"inputTokens": 120, "outputTokens": 48, "firstTokenMs": 210, "durationMs": 1800},
+			"_providerRouteKey":               "private-route",
+			"_chatUpstreamUnitCostCents":      int64(8),
 			"_contextSummary":                 "不应发送到浏览器的滚动摘要",
 			"_contextSummaryMessages":         12,
 			"_contextSummaryThroughMessageId": uuid.NewString(),
@@ -80,6 +132,27 @@ func TestAssistantMessageDictKeepsContextStatsPrivateSummaryHidden(t *testing.T)
 	}
 	if _, exists := payload["_contextSummaryThroughMessageId"]; exists {
 		t.Fatalf("private summary cursor leaked: %#v", payload)
+	}
+	if _, exists := payload["_providerRouteKey"]; exists {
+		t.Fatalf("private provider route leaked: %#v", payload)
+	}
+	if _, exists := payload["_chatUpstreamUnitCostCents"]; exists {
+		t.Fatalf("private upstream cost leaked: %#v", payload)
+	}
+}
+
+func TestAssistantStreamSnapshotIncludesPersistedStage(t *testing.T) {
+	message := &store.AssistantMessage{
+		Role: "assistant", Kind: "image", Status: "running",
+		Metadata: map[string]any{"statusStage": "fetching-image"},
+	}
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	if !writeAssistantMessageStreamSnapshot(context, message) {
+		t.Fatal("snapshot write failed")
+	}
+	if !strings.Contains(recorder.Body.String(), `"stage":"fetching-image"`) {
+		t.Fatalf("persisted stage missing from stream snapshot: %s", recorder.Body.String())
 	}
 }
 
@@ -721,7 +794,7 @@ func TestAssistantConversationLifecycle(t *testing.T) {
 	}
 }
 
-func TestAssistantPSDProcessingIsUnavailable(t *testing.T) {
+func TestAssistantPSDGenerationRequiresImageAndPSDUploadRemainsUnsupported(t *testing.T) {
 	env := newCommunityEnv(t)
 	_, token := env.newUserSession(t, "user")
 	created := env.do(t, http.MethodPost, "/api/v1/assistant/conversations", map[string]any{
@@ -735,12 +808,35 @@ func TestAssistantPSDProcessingIsUnavailable(t *testing.T) {
 		"conversationId": conversation["id"],
 		"prompt":         "把这张图片转换为 PSD",
 		"mode":           "agent",
-		"referenceImages": []map[string]any{{
-			"name": "source.png", "dataUrl": "data:image/png;base64,aW1hZ2U=",
-		}},
 	}, token)
 	if response.Code != http.StatusUnprocessableEntity ||
-		!strings.Contains(response.Body.String(), "assistant_psd_unavailable") {
+		!strings.Contains(response.Body.String(), "assistant_editable_files_disabled") {
+		t.Fatalf("disabled PSD conversion: status %d body %s", response.Code, response.Body.String())
+	}
+	encryptedKey, err := settings.EncryptSecret("editable-test-key", env.cfg.AppSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := modelconfig.Save(context.Background(), env.st.Pool, modelconfig.Config{
+		Version: modelconfig.Version,
+		Providers: []modelconfig.Provider{{
+			ID: "editable", Name: "Editable", Adapter: modelconfig.AdapterOpenAI, Enabled: true,
+			Routes: []modelconfig.ProviderRoute{{
+				ID: "editable-route", Name: "Editable Route", BaseURL: "https://editable.example.com",
+				APIKey: encryptedKey, MaxConcurrency: 1, Enabled: true,
+			}},
+		}},
+		EditableFiles: modelconfig.EditableFileConfig{Enabled: true, ProviderID: "editable", RouteID: "editable-route"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	response = env.do(t, http.MethodPost, "/api/v1/assistant/runs", map[string]any{
+		"conversationId": conversation["id"],
+		"prompt":         "把这张图片转换为 PSD",
+		"mode":           "agent",
+	}, token)
+	if response.Code != http.StatusUnprocessableEntity ||
+		!strings.Contains(response.Body.String(), "assistant_psd_reference_required") {
 		t.Fatalf("PSD conversion: status %d body %s", response.Code, response.Body.String())
 	}
 
@@ -772,6 +868,20 @@ func TestAssistantPSDProcessingIsUnavailable(t *testing.T) {
 	if recorder.Code != http.StatusBadRequest ||
 		!strings.Contains(recorder.Body.String(), "assistant_psd_unavailable") {
 		t.Fatalf("PSD upload: status %d body %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestAssistantToolExecutionMode(t *testing.T) {
+	for _, test := range []struct{ workspace, mode, prompt, want string }{
+		{modelconfig.WorkspaceAssistant, "chat", "重新查询最近失败的任务状态，说明失败原因、重试次数和退款情况。", "agent"},
+		{modelconfig.WorkspaceAssistant, "chat", "联网搜索最新消息", "agent"},
+		{modelconfig.WorkspaceAssistant, "chat", "解释对象存储", "chat"},
+		{modelconfig.WorkspaceCanvas, "chat", "最近失败的任务状态", "chat"},
+		{modelconfig.WorkspaceAssistant, "image", "生成图片", "image"},
+	} {
+		if got := assistantToolExecutionMode(test.workspace, test.mode, test.prompt); got != test.want {
+			t.Fatalf("assistantToolExecutionMode(%q, %q, %q) = %q, want %q", test.workspace, test.mode, test.prompt, got, test.want)
+		}
 	}
 }
 
@@ -1043,8 +1153,8 @@ func TestDeleteAssistantMessageImageRetainsSiblingsAndDeletesFinalMessage(t *tes
 
 func TestValidateAssistantRunCapacity(t *testing.T) {
 	conversationID := uuid.New()
-	active := []*store.AssistantRun{{ConversationID: conversationID}}
-	err := validateAssistantRunCapacity(active, conversationID)
+	active := []*store.AssistantRun{{ConversationID: conversationID, Status: "running"}}
+	err := validateAssistantRunCapacity(active, conversationID, false)
 	appErr, ok := apperr.As(err)
 	if !ok || appErr.Code != "assistant_conversation_busy" {
 		t.Fatalf("same conversation error = %#v", err)
@@ -1052,16 +1162,26 @@ func TestValidateAssistantRunCapacity(t *testing.T) {
 
 	active = make([]*store.AssistantRun, 0, assistantActiveRunLimit)
 	for range assistantActiveRunLimit {
-		active = append(active, &store.AssistantRun{ConversationID: uuid.New()})
+		active = append(active, &store.AssistantRun{ConversationID: uuid.New(), Status: "running"})
 	}
-	err = validateAssistantRunCapacity(active, conversationID)
+	err = validateAssistantRunCapacity(active, conversationID, false)
 	appErr, ok = apperr.As(err)
 	if !ok || appErr.Code != "assistant_run_limit" {
 		t.Fatalf("run limit error = %#v", err)
 	}
 
-	if err := validateAssistantRunCapacity(active[:assistantActiveRunLimit-1], conversationID); err != nil {
+	if err := validateAssistantRunCapacity(active[:assistantActiveRunLimit-1], conversationID, false); err != nil {
 		t.Fatalf("three other conversations should be allowed: %v", err)
+	}
+
+	queued := make([]*store.AssistantRun, 0, assistantUserQueueLimit)
+	for range assistantUserQueueLimit {
+		queued = append(queued, &store.AssistantRun{ConversationID: uuid.New(), Status: "queued"})
+	}
+	err = validateAssistantRunCapacity(queued, conversationID, true)
+	appErr, ok = apperr.As(err)
+	if !ok || appErr.Code != "assistant_queue_full" {
+		t.Fatalf("queue limit error = %#v", err)
 	}
 }
 
@@ -1493,6 +1613,16 @@ func TestCancelAssistantRunQueuesGeneratedImagesAtomically(t *testing.T) {
 
 	response := env.do(t, http.MethodPatch, "/api/v1/assistant/runs/"+run.ID.String(),
 		map[string]any{"status": "canceled"}, token)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "assistant_cancel_confirmation_required") {
+		t.Fatalf("unconfirmed assistant cancel: status %d body %s", response.Code, response.Body.String())
+	}
+	stillRunning, err := store.GetAssistantRun(ctx, env.st.Pool, run.ID)
+	if err != nil || stillRunning == nil || stillRunning.Status != "running" {
+		t.Fatalf("run changed before confirmation = %#v err=%v", stillRunning, err)
+	}
+
+	response = env.do(t, http.MethodPatch, "/api/v1/assistant/runs/"+run.ID.String(),
+		map[string]any{"status": "canceled", "acknowledgeUpstream": true}, token)
 	if response.Code != http.StatusOK {
 		t.Fatalf("cancel assistant run: status %d body %s", response.Code, response.Body.String())
 	}

@@ -21,6 +21,7 @@ const PAGE_KEYS = [
   "ecommerce.outpaint",
   "ecommerce.enhance",
   "assistant",
+  "developer_api",
   "text_to_image",
   "model_sheet",
   "illustration_coloring",
@@ -51,6 +52,7 @@ const PAGE_LABELS = Object.freeze({
   "ecommerce.outpaint": "智能扩图",
   "ecommerce.enhance": "清晰增强",
   assistant: "AI 助手",
+  developer_api: "开发者 API",
   text_to_image: "文生图",
   model_sheet: "模型设计",
   illustration_coloring: "插画染色",
@@ -104,6 +106,10 @@ export function getDefaultPageControls() {
   ]) {
     controls[key] = { status: PAGE_STATUS.REMOVED, reason: "活动已下架。" };
   }
+  controls.developer_api = {
+    status: PAGE_STATUS.REMOVED,
+    reason: "开放 API 正在内部测试。",
+  };
   return controls;
 }
 
@@ -130,6 +136,7 @@ export function pageKeyForLocation(pathname, search = "") {
   if (pathname === "/studio") return "studio";
   if (pathname === "/canvas" || pathname.startsWith("/canvas/")) return "canvas";
   if (pathname === "/assistant") return "assistant";
+  if (pathname === "/developer-api") return "developer_api";
   if (pathname === "/text-to-image") return "text_to_image";
   if (pathname === "/model-sheet") return "model_sheet";
   if (pathname === "/ai-illustration-coloring") return "illustration_coloring";

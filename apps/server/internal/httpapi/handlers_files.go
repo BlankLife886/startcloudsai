@@ -17,6 +17,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/media"
@@ -221,15 +222,24 @@ func mapTaskImageReadError(err error) error {
 // inspectOwnedUserUploadImage verifies the stored bytes instead of trusting a
 // client-provided content type or a key-shaped path.
 func (s *Server) inspectOwnedUserUploadImage(ctx context.Context, userID uuid.UUID, key string, maxBytes int64) (int64, string, error) {
+	size, contentType, _, err := s.inspectOwnedUserUploadImageWithHash(ctx, userID, key, maxBytes)
+	return size, contentType, err
+}
+
+func (s *Server) inspectOwnedUserUploadImageWithHash(ctx context.Context, userID uuid.UUID, key string, maxBytes int64) (int64, string, string, error) {
 	key = strings.TrimSpace(key)
 	if !isOwnedUserUploadImageKey(userID, key) {
-		return 0, "", fmt.Errorf("object key is not an owned upload image")
+		return 0, "", "", fmt.Errorf("object key is not an owned upload image")
 	}
 	var lastErr error
 	for attempt := 0; attempt < 4; attempt++ {
 		data, err := s.Storage.GetBytesLimit(ctx, key, maxBytes)
 		if err == nil {
-			return inspectUserUploadImageData(data)
+			size, contentType, inspectErr := inspectUserUploadImageData(data)
+			if inspectErr != nil {
+				return 0, "", "", inspectErr
+			}
+			return size, contentType, fmt.Sprintf("%x", sha256.Sum256(data)), nil
 		}
 		lastErr = err
 		if ctx.Err() != nil || !storagepkg.IsNotFound(err) || attempt == 3 {
@@ -239,14 +249,14 @@ func (s *Server) inspectOwnedUserUploadImage(ctx context.Context, userID uuid.UU
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return 0, "", ctx.Err()
+			return 0, "", "", ctx.Err()
 		case <-timer.C:
 		}
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("object read failed")
 	}
-	return 0, "", lastErr
+	return 0, "", "", lastErr
 }
 
 // inspectOwnedTaskImage verifies user uploads, task outputs, and public
@@ -331,6 +341,28 @@ func (s *Server) cleanupUploadedObjectKeys(keys []string) {
 	_ = s.Storage.DeleteKeys(cleanupCtx, keys)
 }
 
+func (s *Server) registerUploadWithinQuota(ctx context.Context, userID uuid.UUID, objects []store.UserUploadObjectSize) error {
+	incoming := int64(0)
+	for _, object := range objects {
+		if object.SizeBytes > 0 {
+			incoming += object.SizeBytes
+		}
+	}
+	return s.St.Tx(ctx, func(tx pgx.Tx) error {
+		if err := store.LockUserUploadQuota(ctx, tx, userID); err != nil {
+			return err
+		}
+		current, err := store.UserUploadStorageBytes(ctx, tx, userID)
+		if err != nil {
+			return err
+		}
+		if incoming > uploadStorageMaxBytes || current > uploadStorageMaxBytes-incoming {
+			return apperr.E("upload_storage_limit", "个人素材存储空间已满，请先删除不再使用的素材", 413)
+		}
+		return store.RegisterUserUploadObjectSizes(ctx, tx, userID, objects)
+	})
+}
+
 func (s *Server) upload(c *gin.Context) {
 	user, err := s.requireUser(c)
 	if err != nil {
@@ -340,6 +372,21 @@ func (s *Server) upload(c *gin.Context) {
 	fileHeader, err := c.FormFile("file")
 	if err != nil {
 		fail(c, apperr.E("validation_error", "file: 缺少上传文件", 422))
+		return
+	}
+	if !s.enforceUsageLimit(c, "upload-count-minute", user.ID.String(), uploadRequestsPerMinute, 1, time.Minute) {
+		return
+	}
+	if !s.enforceUsageLimit(c, "upload-bytes-day", user.ID.String(), uploadBytesPerDay, max(fileHeader.Size, 1), 24*time.Hour) {
+		return
+	}
+	storedBytes, err := store.UserUploadStorageBytes(c.Request.Context(), s.St.Pool, user.ID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if fileHeader.Size > uploadStorageMaxBytes || storedBytes > uploadStorageMaxBytes-fileHeader.Size {
+		fail(c, apperr.E("upload_storage_limit", "个人素材存储空间已满，请先删除不再使用的素材", 413))
 		return
 	}
 	if fileHeader.Size > s.Cfg.UploadMaxBytes {
@@ -373,10 +420,51 @@ func (s *Server) upload(c *gin.Context) {
 		fail(c, apperr.E("unsupported_file", "文件为空", 400))
 		return
 	}
+	contentHash := fmt.Sprintf("%x", sha256.Sum256(data))
+	blocked, blockReason, err := store.IsUploadHashBlocked(c.Request.Context(), s.St.Pool, contentHash)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if blocked {
+		s.recordRisk(c.Request.Context(), store.NewSecurityRiskEvent{UserID: &user.ID, ClientIP: c.ClientIP(),
+			Category: "blocked_upload", Severity: "high", Score: 80, Action: "blocked",
+			Reason: "上传内容命中安全黑名单", Metadata: map[string]any{"sha256": contentHash, "rule": blockReason}})
+		fail(c, apperr.E("upload_blocked", "该文件未通过安全检查", 422))
+		return
+	}
 	ext, contentType, isImage := sniffUploadMedia(data)
 	if ext == "" {
 		fail(c, apperr.E("unsupported_file", "仅支持 png / jpg / webp 图片、mp4 / webm 视频或 mp3 / wav / m4a / ogg 音频", 400))
 		return
+	}
+	if address := strings.TrimSpace(s.Cfg.UploadClamAVAddr); address != "" {
+		if err := scanWithClamAV(c.Request.Context(), address, data, s.Cfg.UploadScanTimeout); err != nil {
+			if strings.Contains(err.Error(), "malware detected") {
+				s.recordRisk(c.Request.Context(), store.NewSecurityRiskEvent{UserID: &user.ID, ClientIP: c.ClientIP(),
+					Category: "malware_upload", Severity: "critical", Score: 100, Action: "blocked",
+					Reason: "上传文件检出恶意内容", Metadata: map[string]any{"sha256": contentHash}})
+				fail(c, apperr.E("upload_malware_detected", "该文件未通过安全检查", 422))
+				return
+			}
+			fail(c, apperr.E("upload_scanner_unavailable", "文件安全检查服务暂时不可用，请稍后重试", 503))
+			return
+		}
+	}
+	if endpoint := strings.TrimSpace(s.Cfg.UploadReviewURL); endpoint != "" {
+		err := reviewUploadContent(c.Request.Context(), endpoint, s.Cfg.UploadReviewKey, contentType,
+			contentHash, data, s.Cfg.UploadScanTimeout, s.Cfg.AppEnv != "production")
+		if err != nil {
+			if strings.Contains(err.Error(), "content rejected") {
+				s.recordRisk(c.Request.Context(), store.NewSecurityRiskEvent{UserID: &user.ID, ClientIP: c.ClientIP(),
+					Category: "unsafe_upload", Severity: "high", Score: 90, Action: "blocked",
+					Reason: "上传内容未通过独立内容审核", Metadata: map[string]any{"sha256": contentHash, "contentType": contentType}})
+				fail(c, apperr.E("upload_content_rejected", "该文件未通过内容安全审核", 422))
+				return
+			}
+			fail(c, apperr.E("upload_review_unavailable", "内容安全审核服务暂时不可用，请稍后重试", 503))
+			return
+		}
 	}
 	fileID := uuid.NewString()
 	key := fmt.Sprintf("uploads/%s/original/%s.%s", user.ID, fileID, ext)
@@ -385,13 +473,13 @@ func (s *Server) upload(c *gin.Context) {
 			fail(c, err)
 			return
 		}
-		if err := store.RegisterUserUploadObjects(c.Request.Context(), s.St.Pool, user.ID, []string{key}); err != nil {
+		if err := s.registerUploadWithinQuota(c.Request.Context(), user.ID, []store.UserUploadObjectSize{{Key: key, SizeBytes: int64(len(data))}}); err != nil {
 			s.cleanupUploadedObjectKeys([]string{key})
 			fail(c, err)
 			return
 		}
 		respondCreated(c, gin.H{
-			"key": key, "url": "/api/v1/files/" + key,
+			"key": key, "url": storedFilePrefix(c) + key,
 			"contentType": contentType, "sizeBytes": len(data),
 		})
 		return
@@ -411,16 +499,17 @@ func (s *Server) upload(c *gin.Context) {
 	thumbnailKey := fmt.Sprintf("uploads/%s/thumb/%s", user.ID, fileID)
 	displayKey := store.DisplayKeyForOriginal(key)
 	type uploadResult struct {
-		key      string
-		err      error
-		optional bool
+		key       string
+		sizeBytes int64
+		err       error
+		optional  bool
 	}
 	results := make(chan uploadResult, 3)
 	go func() {
-		results <- uploadResult{key: key, err: s.Storage.UploadBytes(c.Request.Context(), key, data, contentType)}
+		results <- uploadResult{key: key, sizeBytes: int64(len(data)), err: s.Storage.UploadBytes(c.Request.Context(), key, data, contentType)}
 	}()
 	go func() {
-		results <- uploadResult{key: thumbnailKey, err: s.Storage.UploadBytes(c.Request.Context(), thumbnailKey, thumbnail.Data, thumbnail.ContentType)}
+		results <- uploadResult{key: thumbnailKey, sizeBytes: int64(len(thumbnail.Data)), err: s.Storage.UploadBytes(c.Request.Context(), thumbnailKey, thumbnail.Data, thumbnail.ContentType)}
 	}()
 	go func() {
 		// 展示图失败不阻断上传，前端会回退加载原图。
@@ -432,9 +521,10 @@ func (s *Server) upload(c *gin.Context) {
 			results <- uploadResult{key: displayKey, err: displayErr, optional: true}
 			return
 		}
-		results <- uploadResult{key: displayKey, err: s.Storage.UploadBytes(c.Request.Context(), displayKey, display.Data, display.ContentType), optional: true}
+		results <- uploadResult{key: displayKey, sizeBytes: int64(len(display.Data)), err: s.Storage.UploadBytes(c.Request.Context(), displayKey, display.Data, display.ContentType), optional: true}
 	}()
 	uploaded := make([]string, 0, 3)
+	uploadedObjects := make([]store.UserUploadObjectSize, 0, 3)
 	var uploadErr error
 	for range 3 {
 		result := <-results
@@ -447,21 +537,22 @@ func (s *Server) upload(c *gin.Context) {
 			continue
 		}
 		uploaded = append(uploaded, result.key)
+		uploadedObjects = append(uploadedObjects, store.UserUploadObjectSize{Key: result.key, SizeBytes: result.sizeBytes})
 	}
 	if uploadErr != nil {
 		s.cleanupUploadedObjectKeys(uploaded)
 		fail(c, uploadErr)
 		return
 	}
-	if err := store.RegisterUserUploadObjects(c.Request.Context(), s.St.Pool, user.ID, uploaded); err != nil {
+	if err := s.registerUploadWithinQuota(c.Request.Context(), user.ID, uploadedObjects); err != nil {
 		s.cleanupUploadedObjectKeys(uploaded)
 		fail(c, err)
 		return
 	}
 	respondCreated(c, gin.H{
-		"key": key, "url": "/api/v1/files/" + key,
-		"thumbnailKey": thumbnailKey, "thumbnailUrl": "/api/v1/files/" + thumbnailKey,
-		"displayKey": displayKey, "displayUrl": "/api/v1/files/" + displayKey,
+		"key": key, "url": storedFilePrefix(c) + key,
+		"thumbnailKey": thumbnailKey, "thumbnailUrl": storedFilePrefix(c) + thumbnailKey,
+		"displayKey": displayKey, "displayUrl": storedFilePrefix(c) + displayKey,
 		"contentType": contentType, "sizeBytes": len(data),
 	})
 }
@@ -550,7 +641,7 @@ func (s *Server) getFile(c *gin.Context) {
 		}
 		c.Header("Content-Disposition", disposition)
 	}
-	s.serveStoredObject(c, key)
+	s.serveStoredObject(c, key, user, admin != nil)
 }
 
 // adminGetFile 管理后台文件访问：sc_admin_session 的 Cookie Path 是
@@ -562,7 +653,7 @@ func (s *Server) adminGetFile(c *gin.Context, _ *store.User) {
 		fail(c, apperr.E("not_found", "文件不存在", 404))
 		return
 	}
-	s.serveStoredObject(c, key)
+	s.serveStoredObject(c, key, nil, true)
 }
 
 // compressCoverImage 按后台图片配置把纯展示封面（提示词封面等）压成展示尺寸。
@@ -601,25 +692,9 @@ func objectKeyETag(key string) string {
 	return `"` + hex.EncodeToString(sum[:16]) + `"`
 }
 
-// serveStoredObject 在权限校验完成后交付对象内容。配置私有 CDN 鉴权时，
-// 普通查看请求重定向到短期签名地址；下载、排障请求和未配置 CDN 的部署仍由
-// 应用服务代理，保证稳定的 /files URL 不变。
-func (s *Server) serveStoredObject(c *gin.Context, key string) {
-	// The stable /files URL remains the authorization boundary. Once access is
-	// approved, ordinary views can move the payload to private CDN delivery.
-	// Downloads stay proxied so Content-Disposition and the requested filename
-	// remain under application control.
-	if c.Query("download") != "1" && c.Query("origin") != "1" {
-		if target, ttl, ok := s.Storage.SignedCDNURL(key, time.Now().UTC()); ok {
-			maxAge := int(min(ttl/2, 5*time.Minute).Seconds())
-			maxAge = max(maxAge, 1)
-			c.Header("Cache-Control", fmt.Sprintf("private, max-age=%d", maxAge))
-			c.Header("Vary", "Cookie")
-			c.Header("X-Storage-Delivery", "cdn")
-			c.Redirect(http.StatusFound, target)
-			return
-		}
-	}
+// serveStoredObject 在权限校验完成后从对象存储流式交付内容，保持稳定的
+// /files URL，并由应用统一处理下载文件名、Range、ETag 与缓存策略。
+func (s *Server) serveStoredObject(c *gin.Context, key string, user *store.User, admin bool) {
 	immutable := isImmutableObjectKey(key)
 	cacheControl := "private, max-age=3600"
 	etag := ""
@@ -643,6 +718,16 @@ func (s *Server) serveStoredObject(c *gin.Context, key string) {
 			return
 		}
 	}
+	var egressLease *fileEgressLease
+	if !admin {
+		var err error
+		egressLease, err = s.beginFileEgress(c, user)
+		if err != nil {
+			fail(c, err)
+			return
+		}
+		defer egressLease.release()
+	}
 	rangeSpec := strings.TrimSpace(c.GetHeader("Range"))
 	openStartedAt := time.Now()
 	stream, err := s.Storage.OpenObjectRange(c.Request.Context(), key, rangeSpec, 32<<20)
@@ -661,6 +746,12 @@ func (s *Server) serveStoredObject(c *gin.Context, key string) {
 		return
 	}
 	defer stream.Body.Close()
+	if !admin {
+		if err := s.chargeFileEgress(c, user, stream.ContentLength); err != nil {
+			fail(c, err)
+			return
+		}
+	}
 	contentType := stream.ContentType
 	if contentType == "" {
 		contentType = mime.TypeByExtension(filepath.Ext(key))

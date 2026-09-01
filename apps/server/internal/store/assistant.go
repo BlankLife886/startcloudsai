@@ -15,7 +15,7 @@ const assistantConversationCols = `id, user_id, title, workspace, project_id, cr
 const assistantMessageCols = `id, conversation_id, role, content, kind, status, metadata, created_at, updated_at`
 const assistantRunCols = `id, user_id, conversation_id, user_message_id, assistant_message_id,
 	idempotency_key, request_fingerprint, mode, resolved_mode,
-	status, stage, prompt, params, reserved_cents, cost_cents, billing_generation, attempt,
+	status, stage, queue_position, prompt, params, reserved_cents, cost_cents, billing_generation, attempt,
 	lease_owner, lease_until, heartbeat_at,
 	error_code, error_message, started_at, finished_at, created_at`
 
@@ -40,7 +40,7 @@ func scanAssistantRun(row pgx.Row) (*AssistantRun, error) {
 	var item AssistantRun
 	if err := row.Scan(&item.ID, &item.UserID, &item.ConversationID, &item.UserMessageID,
 		&item.AssistantMessageID, &item.IdempotencyKey, &item.RequestFingerprint,
-		&item.Mode, &item.ResolvedMode, &item.Status, &item.Stage,
+		&item.Mode, &item.ResolvedMode, &item.Status, &item.Stage, &item.QueuePosition,
 		&item.Prompt, &item.Params, &item.ReservedCents, &item.CostCents, &item.BillingGeneration,
 		&item.Attempt, &item.LeaseOwner, &item.LeaseUntil, &item.HeartbeatAt,
 		&item.ErrorCode, &item.ErrorMessage, &item.StartedAt,
@@ -447,8 +447,10 @@ func InsertAssistantRun(ctx context.Context, q Q, item AssistantRun) (*Assistant
 	}
 	return scanAssistantRun(q.QueryRow(ctx,
 		`INSERT INTO assistant_runs (id, user_id, conversation_id, user_message_id, assistant_message_id,
-			 idempotency_key, request_fingerprint, mode, prompt, params, reserved_cents)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING `+assistantRunCols,
+			 idempotency_key, request_fingerprint, mode, prompt, params, reserved_cents, queue_position)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,
+			 COALESCE((SELECT max(queue_position) + 1 FROM assistant_runs WHERE conversation_id = $3), 1))
+		 RETURNING `+assistantRunCols,
 		item.ID, item.UserID, item.ConversationID, item.UserMessageID, item.AssistantMessageID,
 		item.IdempotencyKey, item.RequestFingerprint, item.Mode, item.Prompt, item.Params, item.ReservedCents))
 }
@@ -556,7 +558,31 @@ func GetAssistantRunForUpdate(ctx context.Context, q Q, id uuid.UUID) (*Assistan
 
 func ListActiveUserAssistantRuns(ctx context.Context, q Q, userID uuid.UUID) ([]*AssistantRun, error) {
 	rows, err := q.Query(ctx, `SELECT `+assistantRunCols+` FROM assistant_runs
-		WHERE user_id = $1 AND status IN ('queued','running') ORDER BY created_at DESC`, userID)
+		WHERE user_id = $1 AND status IN ('queued','running')
+		ORDER BY conversation_id, CASE WHEN status = 'running' THEN 0 ELSE 1 END,
+			queue_position ASC, created_at ASC, id ASC`, userID)
+	return scanAssistantRuns(rows, err)
+}
+
+func CountActiveAssistantRunsGlobal(ctx context.Context, q Q) (int, error) {
+	var count int
+	err := q.QueryRow(ctx, `SELECT count(*) FROM assistant_runs WHERE status IN ('queued','running')`).Scan(&count)
+	return count, err
+}
+
+// ListRecentUserAssistantRuns returns a bounded newest-first view for user-facing
+// status diagnostics. Callers still decide which run modes are relevant.
+func ListRecentUserAssistantRuns(ctx context.Context, q Q, userID uuid.UUID, limit int) ([]*AssistantRun, error) {
+	if limit < 1 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	rows, err := q.Query(ctx, `SELECT `+assistantRunCols+` FROM assistant_runs
+		WHERE user_id = $1
+		ORDER BY created_at DESC, id DESC
+		LIMIT $2`, userID, limit)
 	return scanAssistantRuns(rows, err)
 }
 
@@ -566,7 +592,8 @@ func ListActiveUserAssistantRunsByWorkspace(ctx context.Context, q Q, userID uui
 		AND conversation_id IN (
 			SELECT id FROM assistant_conversations WHERE user_id = $1 AND workspace = $2
 		)
-		ORDER BY created_at DESC`, userID, workspace)
+		ORDER BY conversation_id, CASE WHEN status = 'running' THEN 0 ELSE 1 END,
+			queue_position ASC, created_at ASC, id ASC`, userID, workspace)
 	return scanAssistantRuns(rows, err)
 }
 
@@ -636,17 +663,38 @@ func LockAssistantRunsForUser(ctx context.Context, q Q, userID uuid.UUID) error 
 	return err
 }
 
-func ClaimAssistantRunWithLease(ctx context.Context, q Q, id uuid.UUID, owner string, now time.Time, lease time.Duration) (*AssistantRun, error) {
-	item, err := scanAssistantRun(q.QueryRow(ctx, `UPDATE assistant_runs
+func ClaimAssistantRunWithLease(ctx context.Context, q Q, id uuid.UUID, owner string, now time.Time, lease time.Duration, maxUserRunning int) (*AssistantRun, error) {
+	if maxUserRunning < 1 {
+		maxUserRunning = 1
+	}
+	item, err := scanAssistantRun(q.QueryRow(ctx, `WITH claimed AS (
+		UPDATE assistant_runs target
 		SET status = 'running', stage = 'routing', started_at = COALESCE(started_at, $3),
 			attempt = attempt + 1, lease_owner = $2, heartbeat_at = $3, lease_until = $4
-		WHERE id = $1 AND status = 'queued'
-		RETURNING `+assistantRunCols, id, owner, now, now.Add(lease)))
+		WHERE target.id = $1 AND target.status = 'queued'
+			AND NOT EXISTS (
+				SELECT 1 FROM assistant_runs current
+				WHERE current.conversation_id = target.conversation_id AND current.status = 'running'
+			)
+			AND NOT EXISTS (
+				SELECT 1 FROM assistant_runs earlier
+				WHERE earlier.conversation_id = target.conversation_id AND earlier.status = 'queued'
+					AND (earlier.queue_position, earlier.created_at, earlier.id)
+						< (target.queue_position, target.created_at, target.id)
+			)
+			AND (SELECT count(*) FROM assistant_runs active
+				WHERE active.user_id = target.user_id AND active.status = 'running') < $5
+		RETURNING target.*
+	), activated_message AS (
+		UPDATE assistant_messages message SET status = 'complete', updated_at = $3
+		WHERE message.id = (SELECT user_message_id FROM claimed) AND message.status = 'queued'
+	)
+	SELECT `+assistantRunCols+` FROM claimed`, id, owner, now, now.Add(lease), maxUserRunning))
 	return nilOnNoRows(item, err)
 }
 
 func ClaimAssistantRun(ctx context.Context, q Q, id uuid.UUID) (bool, error) {
-	item, err := ClaimAssistantRunWithLease(ctx, q, id, "legacy:"+uuid.NewString(), time.Now().UTC(), 15*time.Minute)
+	item, err := ClaimAssistantRunWithLease(ctx, q, id, "legacy:"+uuid.NewString(), time.Now().UTC(), 15*time.Minute, 4)
 	return item != nil, err
 }
 
@@ -772,7 +820,11 @@ func CompleteAssistantRunAttempt(ctx context.Context, q Q, id uuid.UUID, attempt
 		WHERE id = $1 AND status = 'running'
 		AND ($4 = 0 OR (attempt = $4 AND lease_until > now()))
 		AND $3 >= 0 AND $3 <= reserved_cents`, id, resolvedMode, costCents, attempt)
-	return tag.RowsAffected() > 0, err
+	changed := tag.RowsAffected() > 0
+	if err == nil && changed {
+		err = FinishAgentExecutionTrace(ctx, q, id, "succeeded", time.Now().UTC())
+	}
+	return changed, err
 }
 
 func FailAssistantRun(ctx context.Context, q Q, id uuid.UUID, code, message string) (bool, error) {
@@ -787,7 +839,11 @@ func FailAssistantRunAttempt(ctx context.Context, q Q, id uuid.UUID, attempt int
 			($4 = 0 AND status IN ('queued','running'))
 			OR ($4 > 0 AND status = 'running' AND attempt = $4 AND lease_until > now())
 		)`, id, code, message, attempt)
-	return tag.RowsAffected() > 0, err
+	changed := tag.RowsAffected() > 0
+	if err == nil && changed {
+		err = FinishAgentExecutionTrace(ctx, q, id, "failed", time.Now().UTC())
+	}
+	return changed, err
 }
 
 func CancelAssistantRun(ctx context.Context, q Q, userID, id uuid.UUID) (bool, error) {
@@ -795,7 +851,11 @@ func CancelAssistantRun(ctx context.Context, q Q, userID, id uuid.UUID) (bool, e
 		error_code = 'user_canceled', error_message = '用户主动停止任务',
 		lease_owner = NULL, lease_until = NULL, heartbeat_at = NULL
 		WHERE id = $1 AND user_id = $2 AND status IN ('queued','running')`, id, userID)
-	return tag.RowsAffected() > 0, err
+	changed := tag.RowsAffected() > 0
+	if err == nil && changed {
+		err = FinishAgentExecutionTrace(ctx, q, id, "canceled", time.Now().UTC())
+	}
+	return changed, err
 }
 
 func CancelAssistantRunWithCost(ctx context.Context, q Q, userID, id uuid.UUID, costCents int64) (bool, error) {
@@ -804,7 +864,11 @@ func CancelAssistantRunWithCost(ctx context.Context, q Q, userID, id uuid.UUID, 
 		finished_at = now(), lease_owner = NULL, lease_until = NULL, heartbeat_at = NULL
 		WHERE id = $1 AND user_id = $2 AND status IN ('queued','running')
 		AND $3 >= 0 AND $3 <= reserved_cents`, id, userID, costCents)
-	return tag.RowsAffected() > 0, err
+	changed := tag.RowsAffected() > 0
+	if err == nil && changed {
+		err = FinishAgentExecutionTrace(ctx, q, id, "canceled", time.Now().UTC())
+	}
+	return changed, err
 }
 
 func RequeueAssistantRun(ctx context.Context, q Q, id uuid.UUID) (bool, error) {
@@ -923,6 +987,18 @@ func ListReadyAssistantRunOutboxIDs(ctx context.Context, q Q, now time.Time, lim
 	rows, err := q.Query(ctx, `SELECT outbox.run_id FROM assistant_run_outbox outbox
 		JOIN assistant_runs run ON run.id = outbox.run_id
 		WHERE outbox.next_attempt_at <= $1 AND run.status = 'queued'
+			AND NOT EXISTS (
+				SELECT 1 FROM assistant_runs current
+				WHERE current.conversation_id = run.conversation_id AND current.status = 'running'
+			)
+			AND NOT EXISTS (
+				SELECT 1 FROM assistant_runs earlier
+				WHERE earlier.conversation_id = run.conversation_id AND earlier.status = 'queued'
+					AND (earlier.queue_position, earlier.created_at, earlier.id)
+						< (run.queue_position, run.created_at, run.id)
+			)
+			AND (SELECT count(*) FROM assistant_runs active
+				WHERE active.user_id = run.user_id AND active.status = 'running') < 4
 		ORDER BY outbox.created_at ASC, outbox.run_id ASC LIMIT $2`, now, limit)
 	if err != nil {
 		return nil, err
@@ -947,7 +1023,21 @@ func RecordAssistantRunOutboxFailure(ctx context.Context, q Q, runID uuid.UUID, 
 }
 
 func ListQueuedAssistantRunIDs(ctx context.Context, q Q, limit int) ([]uuid.UUID, error) {
-	rows, err := q.Query(ctx, `SELECT id FROM assistant_runs WHERE status = 'queued' ORDER BY created_at ASC LIMIT $1`, limit)
+	rows, err := q.Query(ctx, `SELECT run.id FROM assistant_runs run
+		WHERE run.status = 'queued'
+			AND NOT EXISTS (
+				SELECT 1 FROM assistant_runs current
+				WHERE current.conversation_id = run.conversation_id AND current.status = 'running'
+			)
+			AND NOT EXISTS (
+				SELECT 1 FROM assistant_runs earlier
+				WHERE earlier.conversation_id = run.conversation_id AND earlier.status = 'queued'
+					AND (earlier.queue_position, earlier.created_at, earlier.id)
+						< (run.queue_position, run.created_at, run.id)
+			)
+			AND (SELECT count(*) FROM assistant_runs active
+				WHERE active.user_id = run.user_id AND active.status = 'running') < 4
+		ORDER BY run.created_at ASC, run.id ASC LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -961,4 +1051,73 @@ func ListQueuedAssistantRunIDs(ctx context.Context, q Q, limit int) ([]uuid.UUID
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+func AssistantRunDispatchable(ctx context.Context, q Q, id uuid.UUID, maxUserRunning int) (bool, error) {
+	if maxUserRunning < 1 {
+		maxUserRunning = 1
+	}
+	var ready bool
+	err := q.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM assistant_runs run
+		WHERE run.id = $1 AND run.status = 'queued'
+			AND NOT EXISTS (
+				SELECT 1 FROM assistant_runs current
+				WHERE current.conversation_id = run.conversation_id AND current.status = 'running'
+			)
+			AND NOT EXISTS (
+				SELECT 1 FROM assistant_runs earlier
+				WHERE earlier.conversation_id = run.conversation_id AND earlier.status = 'queued'
+					AND (earlier.queue_position, earlier.created_at, earlier.id)
+						< (run.queue_position, run.created_at, run.id)
+			)
+			AND (SELECT count(*) FROM assistant_runs active
+				WHERE active.user_id = run.user_id AND active.status = 'running') < $2
+	)`, id, maxUserRunning).Scan(&ready)
+	return ready, err
+}
+
+func UpdateQueuedAssistantRunPrompt(ctx context.Context, q Q, userID, id uuid.UUID, prompt, userContent string) (bool, error) {
+	tag, err := q.Exec(ctx, `WITH updated AS (
+		UPDATE assistant_runs SET prompt = $3,
+			params = jsonb_set(COALESCE(params, '{}'::jsonb), '{prompt}', to_jsonb($3::text), true)
+		WHERE id = $1 AND user_id = $2 AND status = 'queued'
+		RETURNING user_message_id
+	)
+	UPDATE assistant_messages message SET content = $4, updated_at = now()
+	WHERE message.id = (SELECT user_message_id FROM updated)`, id, userID, prompt, userContent)
+	return tag.RowsAffected() > 0, err
+}
+
+func MoveQueuedAssistantRun(ctx context.Context, q Q, userID, id uuid.UUID, direction int) (bool, error) {
+	if direction != -1 && direction != 1 {
+		return false, errors.New("invalid assistant queue direction")
+	}
+	var moved bool
+	err := q.QueryRow(ctx, `WITH target AS (
+		SELECT id, conversation_id, queue_position, created_at
+		FROM assistant_runs WHERE id = $1 AND user_id = $2 AND status = 'queued' FOR UPDATE
+	), neighbor AS (
+		SELECT candidate.id, candidate.queue_position
+		FROM assistant_runs candidate, target
+		WHERE candidate.conversation_id = target.conversation_id AND candidate.status = 'queued'
+			AND (($3 < 0 AND (candidate.queue_position, candidate.created_at, candidate.id)
+				< (target.queue_position, target.created_at, target.id))
+			OR ($3 > 0 AND (candidate.queue_position, candidate.created_at, candidate.id)
+				> (target.queue_position, target.created_at, target.id)))
+		ORDER BY CASE WHEN $3 < 0 THEN candidate.queue_position END DESC,
+			CASE WHEN $3 > 0 THEN candidate.queue_position END ASC,
+			CASE WHEN $3 < 0 THEN candidate.created_at END DESC,
+			CASE WHEN $3 > 0 THEN candidate.created_at END ASC
+		LIMIT 1 FOR UPDATE OF candidate
+	), swapped AS (
+		UPDATE assistant_runs run SET queue_position = CASE
+			WHEN run.id = target.id THEN neighbor.queue_position
+			WHEN run.id = neighbor.id THEN target.queue_position
+			ELSE run.queue_position END
+		FROM target, neighbor WHERE run.id IN (target.id, neighbor.id)
+		RETURNING run.id
+	)
+	SELECT EXISTS (SELECT 1 FROM swapped WHERE id = $1)`, id, userID, direction).Scan(&moved)
+	return moved, err
 }

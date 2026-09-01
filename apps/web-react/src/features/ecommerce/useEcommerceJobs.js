@@ -83,7 +83,11 @@ async function uploadKeyFromFile(file, signal) {
     targetBytes: ECOMMERCE_IMAGE_TARGET_BYTES,
     signal,
   });
-  const uploaded = await uploadFile(ready, { signal });
+  const uploaded = await uploadFile(ready, {
+    signal,
+    referenceUpload: true,
+    behaviorFeature: "ecommerce",
+  });
   const key = normalizeTaskImageKey(uploaded?.key || uploaded?.url || "");
   if (!isReusableTaskImageKey(key)) {
     throw new Error("图片上传未返回有效文件，请重试");
@@ -218,6 +222,25 @@ export function ecommerceTaskMatchesKind(task, taskKind = "") {
   return String(task?.kind || params._kind || "").trim() === expected;
 }
 
+export function ecommerceGenerationStage(tasks = [], submitting = false) {
+	const active = tasks.filter((task) => ACTIVE_STATUSES.has(task.status));
+	const stages = new Set(active.map((task) => String(task.generationStage || (task.status === "queued" ? "queued" : "upstream_generating"))));
+	for (const stage of ["saving_result", "fetching_result", "upstream_generating", "preparing", "queued"]) {
+		if (stages.has(stage)) return stage;
+	}
+	return submitting ? "preparing" : "";
+}
+
+export function ecommerceGenerationStageLabel(stage, running = false) {
+	return {
+		queued: "正在排队",
+		preparing: "正在准备参考图",
+		upstream_generating: "上游正在生成",
+		fetching_result: "正在获取生成结果",
+		saving_result: "正在保存图片",
+	}[stage] || (running ? "正在生成" : "");
+}
+
 export function useEcommerceJobs({ taskKind = "", models = [] } = {}) {
   const [tasks, setTasks] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(true);
@@ -226,6 +249,7 @@ export function useEcommerceJobs({ taskKind = "", models = [] } = {}) {
   const [runningIds, setRunningIds] = useState([]);
   const [submitting, setSubmitting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+	const [cancelConfirmOpen, setCancelConfirmOpen] = useState(false);
   const [lastError, setLastError] = useState("");
   const controllersRef = useRef(new Map());
   const preparationDoneRef = useRef(new Map());
@@ -449,7 +473,7 @@ export function useEcommerceJobs({ taskKind = "", models = [] } = {}) {
             });
             if (controller.signal.aborted) {
               try {
-                const canceled = await cancelTask(task.id);
+                const canceled = await cancelTask(task.id, { acknowledgeUpstream: true });
                 upsert(canceled);
               } catch {
                 upsert(task);
@@ -664,7 +688,7 @@ export function useEcommerceJobs({ taskKind = "", models = [] } = {}) {
     [scopedTasks],
   );
 
-  const cancelAll = useCallback(async () => {
+  const executeCancelAll = useCallback(async () => {
     const active = scopedTasks.filter((task) =>
       ACTIVE_STATUSES.has(task.status),
     );
@@ -679,12 +703,16 @@ export function useEcommerceJobs({ taskKind = "", models = [] } = {}) {
     try {
       pendingControllers.forEach(([, controller]) => controller.abort());
       const settled = await Promise.allSettled(
-        active.map((task) => cancelTask(task.id)),
+        active.map((task) => cancelTask(task.id, { acknowledgeUpstream: true })),
       );
       await Promise.allSettled(preparationDone);
       const canceledIds = [];
+		const failures = [];
       settled.forEach((result, index) => {
-        if (result.status !== "fulfilled") return;
+		if (result.status !== "fulfilled") {
+			failures.push(result.reason);
+			return;
+		}
         const taskId = active[index]?.id;
         upsert(result.value);
         if (taskId) {
@@ -697,10 +725,25 @@ export function useEcommerceJobs({ taskKind = "", models = [] } = {}) {
         const canceled = new Set(canceledIds);
         setRunningIds((current) => current.filter((id) => !canceled.has(id)));
       }
+		if (failures.length && mountedRef.current) {
+			setLastError(failures[0]?.message || "部分任务停止失败，请稍后重试");
+		}
     } finally {
       if (mountedRef.current) setCancelling(false);
     }
   }, [scopedTasks, upsert]);
+
+	const cancelAll = useCallback(() => {
+		const hasActive = scopedTasks.some((task) => ACTIVE_STATUSES.has(task.status));
+		const hasPreparing = [...controllersRef.current.keys()].some((key) => String(key).startsWith("prepare-"));
+		if (!hasActive && !hasPreparing) return;
+		setCancelConfirmOpen(true);
+	}, [scopedTasks]);
+
+	const confirmCancelAll = useCallback(async () => {
+		setCancelConfirmOpen(false);
+		await executeCancelAll();
+	}, [executeCancelAll]);
 
   const remove = useCallback(async (taskId) => {
     await deleteTask(taskId, { cascade: true });
@@ -714,6 +757,8 @@ export function useEcommerceJobs({ taskKind = "", models = [] } = {}) {
     submitting ||
     runningIds.some((id) => scopedTaskIds.has(id)) ||
     scopedTasks.some((task) => ACTIVE_STATUSES.has(task.status));
+	const generationStage = useMemo(() => ecommerceGenerationStage(scopedTasks, submitting), [scopedTasks, submitting]);
+	const generationStageLabel = ecommerceGenerationStageLabel(generationStage, running);
   const outputRows = useMemo(
     () =>
       scopedTasks.flatMap((task) =>
@@ -740,6 +785,12 @@ export function useEcommerceJobs({ taskKind = "", models = [] } = {}) {
     running,
     submitting,
     cancelling,
+	cancelConfirmOpen,
+	cancelMessage: "尚未提交上游的任务会立即停止并退回冻结积分；已经提交的任务只会停止等待和接收结果，上游可能仍会继续生成，本次积分不会退回。已完成图片会保留。",
+	confirmCancelAll,
+	closeCancelConfirm: () => !cancelling && setCancelConfirmOpen(false),
+	generationStage,
+	generationStageLabel,
     historyLoading,
     historyError,
     historyHasMore: Boolean(historyCursor),

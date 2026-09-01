@@ -67,6 +67,7 @@ export function AccessoryStudio({
   failMessage = "",
   notice = "",
   elapsedSeconds = 0,
+  generationStageLabel = "正在生成",
   generateDisabled,
   generateHint = "",
   shotCount = 1,
@@ -354,6 +355,7 @@ export function AccessoryStudio({
                   sceneImage={scene?.url || ""}
                   label={displayShot?.label || "饰品商业图"}
                   seconds={waitSeconds}
+                  generationStageLabel={generationStageLabel}
                 />
               ) : failed && !displayUrl ? (
                 <div className="handheld-frame__status" role="alert">
@@ -436,14 +438,16 @@ export function AccessoryStudio({
                     {running
                       ? cancelling
                         ? "停止中"
-                        : "生成中"
+                        : "停止"
                       : failed
                         ? "重试"
                         : "生成"}
                   </span>
                   <small>
                     {running
-                      ? "进行中"
+                      ? cancelling
+                        ? "正在停止"
+                        : generationStageLabel
                       : `${shotCount}张${costLabel ? ` · ${costLabel}` : ""}`}
                   </small>
                 </button>

@@ -930,6 +930,12 @@ html.color-scheme-dark .tryon-stage__fail span {
   opacity: 1;
   transition: opacity 0.28s ease;
 }
+.tryon-generating__time span {
+  align-self: end;
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 700;
+}
 .tryon-generating.is-opening .tryon-generating__time {
   opacity: 0;
 }

@@ -312,6 +312,40 @@ func TestWebSearchPreservesBothUpstreamFailures(t *testing.T) {
 	}
 }
 
+func TestWebSearchCanDisableUnsupportedChatFallback(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path != "/v1/responses" {
+			t.Fatalf("unexpected fallback path = %q", r.URL.Path)
+		}
+		http.Error(w, `{"error":{"message":"responses unavailable"}}`, http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client, _ := New(server.URL, "test-key", "gpt-test", "image-test", 300)
+	client = client.WithWebSearchModel("")
+	_, err := client.WebSearch(context.Background(), "failure", WebSearchOptions{})
+	if err == nil || !strings.Contains(err.Error(), "responses unavailable") || requests != 1 {
+		t.Fatalf("requests=%d err=%v", requests, err)
+	}
+}
+
+func TestWebSearchUsesLongerResponseHeaderTimeout(t *testing.T) {
+	client, err := New("https://example.com", "test-key", "gpt-test", "image-test", 300)
+	if err != nil {
+		t.Fatal(err)
+	}
+	normal, ok := client.httpClient.Transport.(*http.Transport)
+	if !ok || normal.ResponseHeaderTimeout != 30*time.Second {
+		t.Fatalf("normal response header timeout = %v", normal.ResponseHeaderTimeout)
+	}
+	search, ok := client.webSearchHTTP.Transport.(*http.Transport)
+	if !ok || search.ResponseHeaderTimeout != 75*time.Second || client.webSearchHTTP.Timeout != 90*time.Second {
+		t.Fatalf("search transport=%#v client timeout=%v", search, client.webSearchHTTP.Timeout)
+	}
+}
+
 func TestChatTextWithImagesPublishesCumulativeSSEDeltas(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

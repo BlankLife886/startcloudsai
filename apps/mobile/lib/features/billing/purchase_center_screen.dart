@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import 'package:qr_flutter/qr_flutter.dart';
@@ -145,6 +146,10 @@ class _PurchaseCenterScreenState extends ConsumerState<PurchaseCenterScreen> {
     GoRouter.maybeOf(context)?.push('/profile/purchases/orders');
   }
 
+  void _openRedeem() {
+    GoRouter.maybeOf(context)?.push('/profile/wallet?redeem=1');
+  }
+
   @override
   Widget build(BuildContext context) {
     final center = ref.watch(purchaseCenterControllerProvider);
@@ -186,7 +191,10 @@ class _PurchaseCenterScreenState extends ConsumerState<PurchaseCenterScreen> {
           SliverPadding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
             sliver: SliverToBoxAdapter(
-              child: _PaymentAvailability(catalog: state.catalog),
+              child: _PaymentAvailability(
+                catalog: state.catalog,
+                onRedeem: _openRedeem,
+              ),
             ),
           ),
           if (state.subscription.active)
@@ -272,41 +280,59 @@ extension on _PlanKind {
 }
 
 class _PaymentAvailability extends StatelessWidget {
-  const _PaymentAvailability({required this.catalog});
+  const _PaymentAvailability({required this.catalog, required this.onRedeem});
 
   final PlanCatalog catalog;
+  final VoidCallback onRedeem;
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     final enabled = catalog.paymentEnabled && catalog.paymentMethods.isNotEmpty;
-    return AppSoftCard(
-      color: enabled ? colors.primaryContainer : colors.surface,
-      radius: BorderRadius.circular(18),
-      padding: const EdgeInsets.all(14),
-      child: Row(
-        children: [
-          Icon(enabled ? Icons.lock_outline : Icons.schedule_outlined),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  enabled ? '支付由加密渠道处理' : '在线购买暂未开放',
-                  style: const TextStyle(fontWeight: FontWeight.w800),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  enabled
-                      ? catalog.paymentMethods.map(_paymentLabel).join(' · ')
-                      : '仍可浏览套餐、查看历史订单或使用兑换码',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              ],
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: colors.surface,
+        border: Border.all(color: colors.outlineVariant),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
+        child: Row(
+          children: [
+            Icon(
+              enabled ? Icons.lock_outline : Icons.schedule_outlined,
+              size: 20,
+              color: colors.onSurfaceVariant,
             ),
-          ),
-        ],
+            const SizedBox(width: 9),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    enabled ? '支付由加密渠道处理' : '在线购买暂未开放',
+                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    enabled
+                        ? catalog.paymentMethods.map(_paymentLabel).join(' · ')
+                        : '仍可浏览套餐、查看历史订单或使用兑换码',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+              ),
+            ),
+            if (!enabled) ...[
+              const SizedBox(width: 6),
+              TextButton(
+                key: const Key('purchase-redeem-code'),
+                onPressed: onRedeem,
+                child: const Text('兑换码'),
+              ),
+            ],
+          ],
+        ),
       ),
     );
   }
@@ -361,20 +387,21 @@ class _OrdersEntry extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return AppSoftCard(
-      radius: BorderRadius.circular(18),
-      padding: EdgeInsets.zero,
-      child: AppPressable(
+    return Material(
+      color: colors.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(8),
+        side: BorderSide(color: colors.outlineVariant),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
         onTap: onTap,
         child: ListTile(
           key: const Key('purchase-orders-entry'),
-          leading: CircleAvatar(
-            backgroundColor: colors.primaryContainer,
-            child: Icon(
-              Icons.receipt_long_outlined,
-              size: 20,
-              color: colors.onPrimaryContainer,
-            ),
+          leading: Icon(
+            Icons.receipt_long_outlined,
+            size: 20,
+            color: colors.onSurfaceVariant,
           ),
           title: const Text(
             '我的订单',
@@ -438,82 +465,95 @@ class PlanCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return AppSoftCard(
-      color: plan.recommended ? colors.secondaryContainer : colors.surface,
-      padding: EdgeInsets.all(plan.recommended ? 20 : 15),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
+    return AppAppear(
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: colors.surface,
+          border: Border.all(
+            color: plan.recommended ? colors.primary : colors.outlineVariant,
+          ),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Expanded(
-                child: Text(
-                  plan.name,
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w900,
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Text(
+                      plan.name,
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
                   ),
-                ),
+                  if (plan.badge.isNotEmpty)
+                    Text(
+                      plan.badge,
+                      style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                        color: colors.primary,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                ],
               ),
-              if (plan.badge.isNotEmpty)
-                Chip(
-                  visualDensity: VisualDensity.compact,
-                  label: Text(plan.badge),
+              const SizedBox(height: 4),
+              Text(
+                plan.isSubscription
+                    ? '每日 ${plan.dailyGrantPoints} 积分 · ${plan.durationDays} 天'
+                    : '${plan.totalPoints} 积分${plan.bonusPoints > 0 ? '（含赠送 ${plan.bonusPoints}）' : ''}',
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+              if (plan.description.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Text(
+                  plan.description,
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(height: 1.4),
                 ),
-            ],
-          ),
-          const SizedBox(height: 4),
-          Text(
-            plan.isSubscription
-                ? '每日 ${plan.dailyGrantPoints} 积分 · ${plan.durationDays} 天'
-                : '${plan.totalPoints} 积分${plan.bonusPoints > 0 ? '（含赠送 ${plan.bonusPoints}）' : ''}',
-            style: const TextStyle(fontWeight: FontWeight.w700),
-          ),
-          if (plan.description.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            Text(
-              plan.description,
-              maxLines: 3,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(height: 1.4),
-            ),
-          ],
-          if (plan.features.isNotEmpty) ...[
-            const SizedBox(height: 10),
-            Wrap(
-              spacing: 10,
-              runSpacing: 5,
-              children: [
-                for (final feature in plan.features.take(4))
-                  _PlanFeature(text: feature),
               ],
-            ),
-          ],
-          const SizedBox(height: 14),
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  _cny(plan.priceCents),
-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.w900,
-                    color: colors.primary,
-                  ),
+              if (plan.features.isNotEmpty) ...[
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 5,
+                  children: [
+                    for (final feature in plan.features.take(4))
+                      _PlanFeature(text: feature),
+                  ],
                 ),
-              ),
-              FilledButton.icon(
-                onPressed: paymentEnabled && !creating ? onPurchase : null,
-                icon: creating
-                    ? const SizedBox.square(
-                        dimension: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.qr_code_2),
-                label: Text(paymentEnabled ? '立即购买' : '暂未开放'),
+              ],
+              const SizedBox(height: 14),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      _cny(plan.priceCents),
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w900,
+                        color: colors.primary,
+                      ),
+                    ),
+                  ),
+                  FilledButton.icon(
+                    onPressed: paymentEnabled && !creating ? onPurchase : null,
+                    icon: creating
+                        ? const SizedBox.square(
+                            dimension: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.qr_code_2),
+                    label: Text(paymentEnabled ? '立即购买' : '暂未开放'),
+                  ),
+                ],
               ),
             ],
           ),
-        ],
+        ),
       ),
     );
   }
@@ -565,15 +605,23 @@ class OrderCard extends StatelessWidget {
       container: true,
       explicitChildNodes: true,
       label: highlighted ? '通知关联订单' : null,
-      child: AppSoftCard(
+      child: Material(
         color: highlighted
-            ? colors.primaryContainer.withValues(alpha: 0.42)
+            ? colors.primaryContainer.withValues(alpha: 0.28)
             : colors.surface,
-        radius: BorderRadius.circular(18),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(8),
+          side: BorderSide(
+            color: highlighted ? colors.primary : colors.outlineVariant,
+          ),
+        ),
+        clipBehavior: Clip.antiAlias,
         child: ListTile(
           onTap: busy ? null : onTap,
-          leading: CircleAvatar(
-            child: Icon(_orderIcon(order.status), size: 20),
+          leading: Icon(
+            _orderIcon(order.status),
+            size: 20,
+            color: _orderColor(context, order.status),
           ),
           title: Text(
             plan?.name ?? '套餐订单',
@@ -818,13 +866,47 @@ class _PaymentOrderSheetState extends State<PaymentOrderSheet> {
               '订单金额 ${_cny(_order.amountCents)} · '
               '${_paymentLabel(_order.paymentMethod ?? '')}',
             ),
+            const SizedBox(height: 10),
+            DecoratedBox(
+              decoration: BoxDecoration(
+                border: Border.all(
+                  color: Theme.of(context).colorScheme.outlineVariant,
+                ),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(10, 2, 2, 2),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        '订单号 ${_order.id}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ),
+                    IconButton(
+                      key: const Key('copy-order-id'),
+                      tooltip: '复制订单号',
+                      onPressed: () async {
+                        await Clipboard.setData(ClipboardData(text: _order.id));
+                        if (!context.mounted) return;
+                        AppNotice.success(context, '订单号已复制');
+                      },
+                      icon: const Icon(Icons.copy_outlined, size: 18),
+                    ),
+                  ],
+                ),
+              ),
+            ),
             if (_order.isPending && _order.payUrl != null) ...[
               const SizedBox(height: 18),
               Center(
                 child: DecoratedBox(
                   decoration: BoxDecoration(
                     color: Colors.white,
-                    borderRadius: BorderRadius.circular(18),
+                    borderRadius: BorderRadius.circular(8),
                   ),
                   child: Padding(
                     padding: const EdgeInsets.all(12),

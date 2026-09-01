@@ -4,6 +4,7 @@ const ERROR_CODE_MESSAGES = {
   upstream_rate_limited: "生成服务当前繁忙或额度不足，请稍后重试",
   upstream_auth_failed: "模型服务配置异常，请联系管理员处理",
   image_stream_timeout: "生成服务响应超时，请稍后重试",
+  image_poll_timeout: "图片生成超时，请稍后重试",
   storage_error: "图片保存失败，请重试",
   image_processing_error: "图片处理失败，请重试",
   upstream_text_reply: "上游返回了文本内容，没有生成图片",
@@ -29,10 +30,14 @@ function safeFailureText(value) {
 
 export function taskFailureMessage(task, fallback = "生成失败，请稍后重试") {
   const params = task?.params && typeof task.params === "object" ? task.params : {};
+  const code = String(task?.errorCode || params.errorCode || "").trim().toLowerCase();
   const message = safeFailureText(
     task?.errorMessage || task?.error || params.errorMessage || params.error,
   );
+  const knownMessage = ERROR_CODE_MESSAGES[code];
+  if (knownMessage && (!message || message.toLowerCase().startsWith(`${code}:`))) {
+    return knownMessage;
+  }
   if (message) return message;
-  const code = String(task?.errorCode || params.errorCode || "").trim().toLowerCase();
-  return ERROR_CODE_MESSAGES[code] || fallback;
+  return knownMessage || fallback;
 }

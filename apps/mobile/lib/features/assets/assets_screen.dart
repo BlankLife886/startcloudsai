@@ -21,7 +21,9 @@ class AssetsScreen extends ConsumerStatefulWidget {
 }
 
 class _AssetsScreenState extends ConsumerState<AssetsScreen> {
+  final _searchController = TextEditingController();
   final _scrollController = ScrollController();
+  String _query = '';
   String? _loadMoreError;
   bool _loadMoreInFlight = false;
 
@@ -33,6 +35,7 @@ class _AssetsScreenState extends ConsumerState<AssetsScreen> {
 
   @override
   void dispose() {
+    _searchController.dispose();
     _scrollController
       ..removeListener(_onScroll)
       ..dispose();
@@ -380,6 +383,8 @@ class _AssetsScreenState extends ConsumerState<AssetsScreen> {
   }
 
   Widget _buildAssets(AssetCenterState state) {
+    final visibleItems = searchUserAssets(state.items, _query);
+    final searching = _query.trim().isNotEmpty;
     return RefreshIndicator(
       onRefresh: _refresh,
       child: CustomScrollView(
@@ -398,12 +403,59 @@ class _AssetsScreenState extends ConsumerState<AssetsScreen> {
                   .selectGroup(groupId),
             ),
           ),
-          if (state.items.isEmpty)
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+            sliver: SliverToBoxAdapter(
+              child: TextField(
+                key: const Key('asset-search'),
+                controller: _searchController,
+                textInputAction: TextInputAction.search,
+                decoration: InputDecoration(
+                  hintText: '搜索已加载素材',
+                  prefixIcon: const Icon(Icons.search),
+                  suffixIcon: searching
+                      ? IconButton(
+                          key: const Key('asset-search-clear'),
+                          tooltip: '清除搜索',
+                          onPressed: () {
+                            _searchController.clear();
+                            setState(() => _query = '');
+                          },
+                          icon: const Icon(Icons.close),
+                        )
+                      : null,
+                  filled: true,
+                  fillColor: Theme.of(context).colorScheme.surfaceContainerLow,
+                ),
+                onChanged: (value) => setState(() => _query = value),
+              ),
+            ),
+          ),
+          if (searching)
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+              sliver: SliverToBoxAdapter(
+                child: _AssetResultSummary(
+                  visible: visibleItems.length,
+                  loaded: state.items.length,
+                  hasMore: state.hasMore,
+                ),
+              ),
+            ),
+          if (visibleItems.isEmpty)
             SliverFillRemaining(
               hasScrollBody: false,
               child: _AssetsEmpty(
+                searching: searching,
                 filtered: state.selectedGroup != assetGroupAll,
+                hasMore: state.hasMore,
+                loading: state.isLoadingMore,
                 onUpload: () => _startUpload(state),
+                onLoadMore: _loadMore,
+                onClearSearch: () {
+                  _searchController.clear();
+                  setState(() => _query = '');
+                },
               ),
             )
           else ...[
@@ -416,9 +468,9 @@ class _AssetsScreenState extends ConsumerState<AssetsScreen> {
                   mainAxisSpacing: 10,
                   childAspectRatio: 0.76,
                 ),
-                itemCount: state.items.length,
+                itemCount: visibleItems.length,
                 itemBuilder: (context, index) {
-                  final asset = state.items[index];
+                  final asset = visibleItems[index];
                   return AssetCard(
                     asset: asset,
                     busy: state.busyIds.contains(asset.id),
@@ -556,8 +608,9 @@ class AssetCapacityPanel extends StatelessWidget {
     final colors = Theme.of(context).colorScheme;
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: colors.primaryContainer,
-        borderRadius: BorderRadius.circular(18),
+        color: colors.surface,
+        border: Border.all(color: colors.outlineVariant),
+        borderRadius: BorderRadius.circular(8),
       ),
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -566,15 +619,7 @@ class AssetCapacityPanel extends StatelessWidget {
           children: [
             Row(
               children: [
-                Container(
-                  width: 42,
-                  height: 42,
-                  decoration: BoxDecoration(
-                    color: colors.primary,
-                    borderRadius: BorderRadius.circular(18),
-                  ),
-                  child: Icon(Icons.collections, color: colors.onPrimary),
-                ),
+                Icon(Icons.collections_outlined, color: colors.primary),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Column(
@@ -630,12 +675,18 @@ class AssetGroupFilterStrip extends StatelessWidget {
           key: const Key('asset-group-all'),
           label: Text('全部 ${state.totalAssetCount}'),
           selected: state.selectedGroup == assetGroupAll,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+          side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
+          showCheckmark: false,
           onSelected: (_) => onSelected(assetGroupAll),
         ),
         FilterChip(
           key: const Key('asset-group-ungrouped'),
           label: Text('未分组 ${state.ungroupedCount}'),
           selected: state.selectedGroup == assetGroupUngrouped,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+          side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
+          showCheckmark: false,
           onSelected: (_) => onSelected(assetGroupUngrouped),
         ),
         for (final group in state.groups)
@@ -643,6 +694,13 @@ class AssetGroupFilterStrip extends StatelessWidget {
             key: Key('asset-group-${group.id}'),
             label: Text('${group.name} ${group.assetCount}'),
             selected: state.selectedGroup == group.id,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(6),
+            ),
+            side: BorderSide(
+              color: Theme.of(context).colorScheme.outlineVariant,
+            ),
+            showCheckmark: false,
             onSelected: (_) => onSelected(group.id),
           ),
       ],
@@ -663,7 +721,13 @@ class AssetCard extends StatelessWidget {
   final VoidCallback onTap;
 
   @override
-  Widget build(BuildContext context) => Card(
+  Widget build(BuildContext context) => Material(
+    key: Key('asset-card-${asset.id}'),
+    color: Theme.of(context).colorScheme.surface,
+    shape: RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(8),
+      side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
+    ),
     clipBehavior: Clip.antiAlias,
     child: InkWell(
       onTap: busy ? null : onTap,
@@ -1410,11 +1474,60 @@ class AssetGroupPickerSheet extends StatelessWidget {
   );
 }
 
-class _AssetsEmpty extends StatelessWidget {
-  const _AssetsEmpty({required this.filtered, required this.onUpload});
+class _AssetResultSummary extends StatelessWidget {
+  const _AssetResultSummary({
+    required this.visible,
+    required this.loaded,
+    required this.hasMore,
+  });
 
+  final int visible;
+  final int loaded;
+  final bool hasMore;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Row(
+      children: [
+        Icon(Icons.filter_list, size: 16, color: colors.outline),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            '已显示 $visible / 已加载 $loaded',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ),
+        if (hasMore)
+          Text(
+            '还有更多',
+            style: Theme.of(
+              context,
+            ).textTheme.labelMedium?.copyWith(color: colors.primary),
+          ),
+      ],
+    );
+  }
+}
+
+class _AssetsEmpty extends StatelessWidget {
+  const _AssetsEmpty({
+    required this.searching,
+    required this.filtered,
+    required this.hasMore,
+    required this.loading,
+    required this.onUpload,
+    required this.onLoadMore,
+    required this.onClearSearch,
+  });
+
+  final bool searching;
   final bool filtered;
+  final bool hasMore;
+  final bool loading;
   final VoidCallback onUpload;
+  final Future<void> Function() onLoadMore;
+  final VoidCallback onClearSearch;
 
   @override
   Widget build(BuildContext context) => Center(
@@ -1423,15 +1536,44 @@ class _AssetsEmpty extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(Icons.collections_outlined, size: 46),
-          const SizedBox(height: 12),
-          Text(filtered ? '这个分组还没有素材' : '素材库还是空的'),
-          const SizedBox(height: 14),
-          FilledButton.icon(
-            onPressed: onUpload,
-            icon: const Icon(Icons.add_photo_alternate_outlined),
-            label: const Text('添加第一项素材'),
+          Icon(
+            searching ? Icons.search_off : Icons.collections_outlined,
+            size: 46,
           ),
+          const SizedBox(height: 12),
+          Text(
+            searching
+                ? '当前已加载素材中没有匹配项'
+                : filtered
+                ? '这个分组还没有素材'
+                : '素材库还是空的',
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 14),
+          if (searching) ...[
+            if (hasMore)
+              FilledButton.icon(
+                key: const Key('asset-search-load-more'),
+                onPressed: loading ? null : onLoadMore,
+                icon: loading
+                    ? const SizedBox.square(
+                        dimension: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.keyboard_arrow_down),
+                label: Text(loading ? '正在继续查找' : '继续加载查找'),
+              ),
+            TextButton(
+              key: const Key('asset-empty-clear-search'),
+              onPressed: onClearSearch,
+              child: const Text('清除搜索'),
+            ),
+          ] else
+            FilledButton.icon(
+              onPressed: onUpload,
+              icon: const Icon(Icons.add_photo_alternate_outlined),
+              label: const Text('添加第一项素材'),
+            ),
         ],
       ),
     ),

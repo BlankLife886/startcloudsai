@@ -239,9 +239,13 @@ class _RecoveringAssetController extends _FakeAssetController {
 Widget _app({
   required AssetCenterController Function() controller,
   double textScale = 1,
+  bool dark = false,
 }) => ProviderScope(
   overrides: [assetCenterControllerProvider.overrideWith(controller)],
   child: MaterialApp(
+    theme: ThemeData.light(),
+    darkTheme: ThemeData.dark(),
+    themeMode: dark ? ThemeMode.dark : ThemeMode.light,
     builder: (context, child) => MediaQuery(
       data: MediaQuery.of(
         context,
@@ -296,6 +300,27 @@ void main() {
     expect(validateAssetGroupName('  '), isNotNull);
     expect(validateAssetGroupName('品牌素材'), isNull);
     expect(validateAssetGroupName('x' * 65), contains('64'));
+  });
+
+  test('searches loaded assets with every title keyword', () {
+    const items = [
+      _asset,
+      UserAsset(
+        id: 'asset-product',
+        title: '蓝色 产品 主图',
+        url: '',
+        thumbnailUrl: '',
+        contentType: 'image/png',
+        sizeBytes: 2048,
+      ),
+    ];
+
+    expect(searchUserAssets(items, '人像').map((item) => item.id), ['asset-1']);
+    expect(searchUserAssets(items, '产品 蓝色').map((item) => item.id), [
+      'asset-product',
+    ]);
+    expect(searchUserAssets(items, '蓝色 人像'), isEmpty);
+    expect(searchUserAssets(items, '  '), items);
   });
 
   test('refresh supersedes an in-flight asset cursor page', () async {
@@ -429,6 +454,52 @@ void main() {
     expect(controller.state.requireValue.hasMore, isFalse);
     expect(find.byKey(const Key('asset-load-more-error')), findsNothing);
     expect(find.text('已加载全部素材'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('asset search can continue into the next page in dark mode', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(320, 760));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    late _FakeAssetController controller;
+    await tester.pumpWidget(
+      _app(
+        controller: () => controller = _FakeAssetController(),
+        textScale: 1.3,
+        dark: true,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byKey(const Key('asset-search')), '风景');
+    await tester.pump();
+    expect(find.text('已显示 0 / 已加载 1'), findsOneWidget);
+    expect(find.text('当前已加载素材中没有匹配项'), findsOneWidget);
+
+    final loadMore = find.byKey(const Key('asset-search-load-more'));
+    await tester.ensureVisible(loadMore);
+    await tester.pumpAndSettle();
+    await tester.tap(loadMore);
+    await tester.pumpAndSettle();
+
+    expect(controller.loadMoreCount, 1);
+    expect(find.text('风景参考'), findsOneWidget);
+    expect(find.text('已显示 1 / 已加载 2'), findsOneWidget);
+    final card = tester.widget<Material>(
+      find.byKey(const Key('asset-card-asset-2')),
+    );
+    final shape = card.shape! as RoundedRectangleBorder;
+    expect(shape.borderRadius, BorderRadius.circular(8));
+    expect(
+      Theme.of(tester.element(find.text('风景参考'))).brightness,
+      Brightness.dark,
+    );
+
+    await tester.tap(find.byKey(const Key('asset-search-clear')));
+    await tester.pump();
+    expect(find.text('人像参考'), findsOneWidget);
+    expect(find.text('风景参考'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 

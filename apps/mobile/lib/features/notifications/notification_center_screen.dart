@@ -80,11 +80,15 @@ class _NotificationCenterScreenState
     }
   }
 
-  Future<void> _markRead(AppNotification notification) async {
+  Future<void> _markRead(
+    AppNotification notification, {
+    bool showSuccess = false,
+  }) async {
     try {
       await ref
           .read(notificationCenterControllerProvider.notifier)
           .markRead(notification.id);
+      if (mounted && showSuccess) AppNotice.success(context, '已标记为已读');
     } catch (error) {
       if (mounted) _showError(error);
     }
@@ -303,6 +307,9 @@ class _NotificationCenterScreenState
                     notification: notification,
                     marking: state.markingIds.contains(notification.id),
                     onTap: () => _openNotification(notification),
+                    onMarkRead: notification.isRead
+                        ? null
+                        : () => _markRead(notification, showSuccess: true),
                   );
                 },
               ),
@@ -406,9 +413,14 @@ class _NotificationFilterChip extends StatelessWidget {
     final colors = Theme.of(context).colorScheme;
     return Material(
       color: selected ? colors.onSurface : colors.surfaceContainerLow,
-      shape: const StadiumBorder(),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(8),
+        side: BorderSide(
+          color: selected ? colors.onSurface : colors.outlineVariant,
+        ),
+      ),
       child: InkWell(
-        customBorder: const StadiumBorder(),
+        borderRadius: BorderRadius.circular(8),
         onTap: onTap,
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
@@ -467,125 +479,143 @@ class NotificationTimelineTile extends StatelessWidget {
   const NotificationTimelineTile({
     required this.notification,
     required this.onTap,
+    this.onMarkRead,
     this.marking = false,
     super.key,
   });
 
   final AppNotification notification;
   final VoidCallback? onTap;
+  final VoidCallback? onMarkRead;
   final bool marking;
 
   @override
   Widget build(BuildContext context) {
     final style = notificationKindStyle(notification.kind);
     final destination = notification.destination;
-    return Material(
-      color: notification.isRead
-          ? Colors.transparent
-          : style.color.withValues(alpha: 0.045),
-      child: InkWell(
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 12),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                width: 40,
-                height: 40,
-                decoration: BoxDecoration(
-                  color: style.color.withValues(alpha: 0.12),
-                  shape: BoxShape.circle,
+    final colors = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Material(
+        color: notification.isRead
+            ? colors.surface
+            : style.color.withValues(alpha: 0.04),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(8),
+          side: BorderSide(
+            color: notification.isRead
+                ? colors.outlineVariant
+                : style.color.withValues(alpha: 0.34),
+          ),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 8, 12),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SizedBox.square(
+                  dimension: 26,
+                  child: Icon(style.icon, size: 21, color: style.color),
                 ),
-                child: Icon(style.icon, size: 21, color: style.color),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Expanded(
-                          child: Text(
-                            notification.title,
-                            style: TextStyle(
-                              fontWeight: notification.isRead
-                                  ? FontWeight.w600
-                                  : FontWeight.w800,
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(
+                            child: Text(
+                              notification.title,
+                              style: TextStyle(
+                                fontWeight: notification.isRead
+                                    ? FontWeight.w600
+                                    : FontWeight.w800,
+                              ),
                             ),
                           ),
-                        ),
-                        if (!notification.isRead) ...[
-                          const SizedBox(width: 8),
-                          if (marking)
-                            const SizedBox.square(
-                              dimension: 14,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          else
-                            Container(
-                              width: 8,
-                              height: 8,
-                              margin: const EdgeInsets.only(top: 5),
-                              decoration: BoxDecoration(
-                                color: style.color,
-                                shape: BoxShape.circle,
+                          if (!notification.isRead) ...[
+                            const SizedBox(width: 4),
+                            if (marking)
+                              const Padding(
+                                padding: EdgeInsets.all(8),
+                                child: SizedBox.square(
+                                  dimension: 16,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                ),
+                              )
+                            else
+                              IconButton(
+                                key: Key(
+                                  'notification-mark-read-${notification.id}',
+                                ),
+                                tooltip: '标为已读',
+                                onPressed: onMarkRead,
+                                visualDensity: VisualDensity.compact,
+                                icon: const Icon(Icons.done, size: 18),
                               ),
+                          ],
+                        ],
+                      ),
+                      if (notification.body.isNotEmpty) ...[
+                        const SizedBox(height: 5),
+                        Text(
+                          notification.body,
+                          maxLines: 3,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.bodyMedium
+                              ?.copyWith(
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.onSurfaceVariant,
+                                height: 1.4,
+                              ),
+                        ),
+                      ],
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 12,
+                        runSpacing: 5,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          Text(
+                            _notificationTime(notification.createdAt),
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                          Text(
+                            notificationKindLabel(notification.kind),
+                            style: Theme.of(context).textTheme.labelSmall
+                                ?.copyWith(
+                                  color: style.color,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                          ),
+                          if (destination != null)
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  destination.label,
+                                  style: Theme.of(context).textTheme.labelSmall
+                                      ?.copyWith(fontWeight: FontWeight.w700),
+                                ),
+                                const SizedBox(width: 2),
+                                const Icon(Icons.chevron_right, size: 16),
+                              ],
                             ),
                         ],
-                      ],
-                    ),
-                    if (notification.body.isNotEmpty) ...[
-                      const SizedBox(height: 5),
-                      Text(
-                        notification.body,
-                        maxLines: 3,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                          height: 1.4,
-                        ),
                       ),
                     ],
-                    const SizedBox(height: 8),
-                    Wrap(
-                      spacing: 12,
-                      runSpacing: 5,
-                      crossAxisAlignment: WrapCrossAlignment.center,
-                      children: [
-                        Text(
-                          _notificationTime(notification.createdAt),
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
-                        Text(
-                          notificationKindLabel(notification.kind),
-                          style: Theme.of(context).textTheme.labelSmall
-                              ?.copyWith(
-                                color: style.color,
-                                fontWeight: FontWeight.w800,
-                              ),
-                        ),
-                        if (destination != null)
-                          Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Text(
-                                destination.label,
-                                style: Theme.of(context).textTheme.labelSmall
-                                    ?.copyWith(fontWeight: FontWeight.w700),
-                              ),
-                              const SizedBox(width: 2),
-                              const Icon(Icons.chevron_right, size: 16),
-                            ],
-                          ),
-                      ],
-                    ),
-                  ],
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

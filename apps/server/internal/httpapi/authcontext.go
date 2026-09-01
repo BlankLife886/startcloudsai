@@ -15,6 +15,11 @@ const renewThreshold = 15 * 24 * time.Hour
 
 // currentUser 从 cookie session 解析当前用户；未登录/失效返回 nil。
 func (s *Server) currentUser(c *gin.Context) (*store.User, error) {
+	if value, exists := c.Get(ctxOpenAPIUser); exists {
+		if user, ok := value.(*store.User); ok {
+			return user, nil
+		}
+	}
 	token, err := c.Cookie(s.Cfg.SessionCookieName)
 	if err != nil || token == "" {
 		return nil, nil
@@ -58,6 +63,7 @@ func (s *Server) requireUser(c *gin.Context) (*store.User, error) {
 	if user == nil {
 		return nil, apperr.E("auth_required", "请先登录", 401)
 	}
+	c.Set(ctxPlatformUserKey, user)
 	return user, nil
 }
 

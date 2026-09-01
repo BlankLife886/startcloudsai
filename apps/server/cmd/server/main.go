@@ -24,6 +24,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/config"
 	"github.com/BlankLife886/startcloudsai/server/internal/diagnostics"
 	"github.com/BlankLife886/startcloudsai/server/internal/httpapi"
+	"github.com/BlankLife886/startcloudsai/server/internal/platformlog"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/storage"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
@@ -36,6 +37,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: server <serve|worker|create-admin> [flags]")
 		os.Exit(2)
 	}
+	platformlog.ConfigureConsole(os.Args[1])
 	cfg := config.Load()
 
 	var err error

@@ -162,6 +162,8 @@ func (s *Server) assistantConfig(c *gin.Context) {
 		fail(c, err)
 		return
 	}
+	_, editableFilesConfigured := modelconfig.EditableFileProvider(modelCfg)
+	editableFilesEnabled := modelCfg.EditableFiles.Enabled && editableFilesConfigured
 	type modelOption struct {
 		Label                     string              `json:"label"`
 		Model                     string              `json:"model"`
@@ -259,6 +261,7 @@ func (s *Server) assistantConfig(c *gin.Context) {
 			"chatModel": chatModel, "imageModel": imageModel,
 			"conversationModels": conversationOptions, "imageModels": imageOptions,
 			"modelDiscoveryAvailable": true, "conversationModelMode": "configured",
+			"editableFilesEnabled": editableFilesEnabled,
 		})
 		return
 	}
@@ -269,6 +272,7 @@ func (s *Server) assistantConfig(c *gin.Context) {
 			"chatModel": "", "imageModel": "",
 			"conversationModels": []modelOption{}, "imageModels": []modelOption{},
 			"modelDiscoveryAvailable": false, "conversationModelMode": "configured",
+			"editableFilesEnabled": editableFilesEnabled,
 		})
 		return
 	}
@@ -329,6 +333,7 @@ func (s *Server) assistantConfig(c *gin.Context) {
 		"imageModels":             []modelOption{{Label: client.ImageModel(), Model: client.ImageModel(), Source: "legacy"}},
 		"modelDiscoveryAvailable": modelErr == nil,
 		"conversationModelMode":   modelMode,
+		"editableFilesEnabled":    editableFilesEnabled,
 	})
 }
 

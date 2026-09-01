@@ -47,6 +47,34 @@ bool _loopingMotionEnabled(BuildContext context) {
       'AutomatedTestWidgetsFlutterBinding';
 }
 
+class AssistantImageBatchSaveResult {
+  const AssistantImageBatchSaveResult({
+    required this.total,
+    required this.saved,
+  });
+
+  final int total;
+  final int saved;
+
+  int get failed => total - saved;
+}
+
+Future<AssistantImageBatchSaveResult> saveAssistantGeneratedImages(
+  List<AssistantGeneratedImage> images,
+  Future<void> Function(AssistantGeneratedImage image) saveOne,
+) async {
+  var saved = 0;
+  for (final image in images) {
+    try {
+      await saveOne(image);
+      saved += 1;
+    } catch (_) {
+      // Continue so one unavailable image does not block the remaining batch.
+    }
+  }
+  return AssistantImageBatchSaveResult(total: images.length, saved: saved);
+}
+
 int _replyFallbackCost(
   AssistantMessage message,
   AssistantRun? run,
@@ -179,6 +207,35 @@ List<AssistantReferenceImage> _agentProposalReferences(
   return const [];
 }
 
+String _assistantImagePromptFallback(
+  List<AssistantMessage> messages,
+  int imageMessageIndex,
+) {
+  if (imageMessageIndex < 0 || imageMessageIndex >= messages.length) return '';
+  final imageMessage = messages[imageMessageIndex];
+  final sourceId = imageMessage.proposalSourceMessageId.trim();
+  if (sourceId.isNotEmpty) {
+    for (final message in messages) {
+      if (message.id != sourceId) continue;
+      final prompt = message.proposal?.prompt.trim() ?? '';
+      if (prompt.isNotEmpty) return prompt;
+    }
+  }
+  var userFallback = '';
+  for (var index = imageMessageIndex - 1; index >= 0; index -= 1) {
+    final message = messages[index];
+    final proposalPrompt = message.proposal?.prompt.trim() ?? '';
+    if (proposalPrompt.isNotEmpty) return proposalPrompt;
+    if (!message.isUser) continue;
+    final content = message.content.trim();
+    if (content.isEmpty) continue;
+    userFallback = userFallback.isEmpty ? content : userFallback;
+    final approvingProposal = content.contains('执行') && content.contains('方案');
+    if (!approvingProposal) return content;
+  }
+  return userFallback;
+}
+
 class _AssistantScrollController extends ScrollController {
   _AssistantScrollController() : super();
 
@@ -309,6 +366,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   late final AssistantSpeechInput _speech;
   final List<ReferenceImageDraft> _references = [];
   final Set<String> _persistentDraftPaths = {};
+  final Set<String> _deletingTurnIds = {};
   AssistantQuotedMessage? _quoted;
   bool _selectingImages = false;
   bool _checkingBalance = false;
@@ -720,6 +778,27 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
         if (mounted) AppNotice.success(context, '图片已保存到系统相册');
       });
 
+  Future<void> _saveGeneratedImages(List<AssistantGeneratedImage> images) =>
+      _run(() async {
+        final result = await saveAssistantGeneratedImages(images, (
+          image,
+        ) async {
+          final file = await _downloadGeneratedImage(image);
+          await Gal.putImage(file.path);
+        });
+        if (!mounted) return;
+        if (result.failed == 0) {
+          AppNotice.success(context, '已保存 ${result.saved} 张图片到系统相册');
+        } else if (result.saved > 0) {
+          AppNotice.warning(
+            context,
+            '已保存 ${result.saved} 张，${result.failed} 张保存失败',
+          );
+        } else {
+          AppNotice.error(context, '图片保存失败，请稍后重试');
+        }
+      });
+
   Future<void> _shareGeneratedImage(
     AssistantGeneratedImage image,
     BuildContext buttonContext,
@@ -738,6 +817,55 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
       ),
     );
   });
+
+  Future<bool> _deleteGeneratedImage(
+    AssistantMessage message,
+    AssistantGeneratedImage image,
+  ) async {
+    final lastImage = message.images.length <= 1;
+    final confirmed = await showAppDialog<bool>(
+      context: context,
+      builder: (context) => AppDialog(
+        icon: Icon(
+          Icons.delete_outline,
+          color: Theme.of(context).colorScheme.error,
+        ),
+        title: const Text('删除这张图片？'),
+        content: Text(
+          lastImage ? '这是消息中最后一张图片，删除后该图片消息也会移除。' : '仅删除这张图片，同轮的其他图片会继续保留。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+              foregroundColor: Theme.of(context).colorScheme.onError,
+            ),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return false;
+    var deleted = false;
+    await _run(() async {
+      final identifier = image.id.trim().isNotEmpty
+          ? image.id.trim()
+          : image.fileKey.trim();
+      await ref
+          .read(assistantWorkspaceProvider.notifier)
+          .deleteGeneratedImage(message.id, identifier);
+      deleted = true;
+    });
+    if (deleted && mounted) {
+      AppNotice.success(context, '图片已删除');
+    }
+    return deleted;
+  }
 
   Future<bool> _useGeneratedImageAsReference(
     AssistantGeneratedImage image,
@@ -795,6 +923,33 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     _composerFocus.requestFocus();
     _scrollToBottom();
     AppNotice.success(context, '已加入参考图，可输入修改要求');
+    return true;
+  }
+
+  Future<bool> _useGeneratedImagePrompt(String value) async {
+    final prompt = value.trim();
+    if (prompt.isEmpty) return false;
+    final workspace = ref.read(assistantWorkspaceProvider).asData?.value;
+    if (workspace == null) return false;
+    if (workspace.selectedRun != null || workspace.isSending) {
+      AppNotice.info(context, '请先等待当前回复完成');
+      return false;
+    }
+    await _cancelSpeechInput();
+    if (!mounted) return false;
+    ref
+        .read(assistantWorkspaceProvider.notifier)
+        .selectMode(AssistantMode.image);
+    unawaited(HapticFeedback.selectionClick());
+    _composer.value = TextEditingValue(
+      text: prompt,
+      selection: TextSelection.collapsed(offset: prompt.length),
+    );
+    setState(() => _quoted = null);
+    _composerFocus.requestFocus();
+    _scheduleDraftSave();
+    _scrollToBottom();
+    AppNotice.success(context, '提示词已带入图片模式');
     return true;
   }
 
@@ -914,6 +1069,64 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     _scrollToBottom();
     _saveDraftNow();
     AppNotice.info(context, '已恢复上一次提问');
+  }
+
+  Future<void> _deleteTurn(
+    AssistantConversation conversation,
+    AssistantMessage message,
+  ) async {
+    if (_deletingTurnIds.contains(message.id)) return;
+    final index = conversation.messages.indexWhere(
+      (item) => item.id == message.id && item.isUser,
+    );
+    if (index < 0) return;
+    final removedIds = conversation.messages
+        .skip(index)
+        .map((item) => item.id)
+        .toSet();
+    final confirmed = await showAppDialog<bool>(
+      context: context,
+      builder: (context) => AppDialog(
+        icon: Icon(
+          Icons.delete_outline,
+          color: Theme.of(context).colorScheme.error,
+        ),
+        title: const Text('删除这轮对话？'),
+        content: const Text('这条提问及之后的回复和图片都会删除，且无法恢复。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+              foregroundColor: Theme.of(context).colorScheme.onError,
+            ),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _deletingTurnIds.add(message.id));
+    var deleted = false;
+    try {
+      await _run(() async {
+        await ref
+            .read(assistantWorkspaceProvider.notifier)
+            .deleteTurn(message.id);
+        deleted = true;
+      });
+      if (!mounted || !deleted) return;
+      if (_quoted != null && removedIds.contains(_quoted!.id)) {
+        setState(() => _quoted = null);
+      }
+      AppNotice.success(context, '已删除这轮及后续消息');
+    } finally {
+      if (mounted) setState(() => _deletingTurnIds.remove(message.id));
+    }
   }
 
   Future<void> _run(Future<void> Function() action) async {
@@ -1733,6 +1946,13 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
                       state.selectedModel?.maxReferenceImages ?? 0,
                     )
                   : null,
+              onDeleteTurn:
+                  message.isUser &&
+                      !state.isSending &&
+                      state.selectedRun == null
+                  ? () => _deleteTurn(conversation, message)
+                  : null,
+              deletingTurn: _deletingTurnIds.contains(message.id),
               onCopy: message.canUseAsCreationPrompt
                   ? () => _copyReply(message.content)
                   : null,
@@ -1741,8 +1961,20 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
                   : null,
               onQuote: message.canQuote ? () => _quoteReply(message) : null,
               onSaveImage: _saveGeneratedImage,
+              onSaveImages: _saveGeneratedImages,
+              imagePromptFallback: _assistantImagePromptFallback(
+                conversation.messages,
+                index,
+              ),
               onShareImage: _shareGeneratedImage,
               onUseImage: _useGeneratedImageAsReference,
+              onUseImagePrompt: _useGeneratedImagePrompt,
+              onDeleteImage:
+                  !state.isSending &&
+                      state.selectedRun == null &&
+                      message.images.isNotEmpty
+                  ? (image) => _deleteGeneratedImage(message, image)
+                  : null,
               imageModels: state.config.imageModels,
               proposalGenerating: state.isSending || state.selectedRun != null,
               proposalExecuted: proposalExecuted,
@@ -3278,12 +3510,18 @@ class _MessageBubble extends StatelessWidget {
     required this.message,
     required this.fallbackCostPoints,
     required this.onReuse,
+    required this.onDeleteTurn,
+    required this.deletingTurn,
     required this.onCopy,
     required this.onShare,
     required this.onQuote,
     required this.onSaveImage,
+    required this.onSaveImages,
+    required this.imagePromptFallback,
     required this.onShareImage,
     required this.onUseImage,
+    required this.onUseImagePrompt,
+    required this.onDeleteImage,
     required this.imageModels,
     required this.proposalGenerating,
     required this.proposalExecuted,
@@ -3295,13 +3533,19 @@ class _MessageBubble extends StatelessWidget {
   final AssistantMessage message;
   final int fallbackCostPoints;
   final VoidCallback? onReuse;
+  final VoidCallback? onDeleteTurn;
+  final bool deletingTurn;
   final VoidCallback? onCopy;
   final VoidCallback? onShare;
   final VoidCallback? onQuote;
   final Future<void> Function(AssistantGeneratedImage) onSaveImage;
+  final Future<void> Function(List<AssistantGeneratedImage>) onSaveImages;
+  final String imagePromptFallback;
   final Future<void> Function(AssistantGeneratedImage, BuildContext)
   onShareImage;
   final Future<bool> Function(AssistantGeneratedImage) onUseImage;
+  final Future<bool> Function(String) onUseImagePrompt;
+  final Future<bool> Function(AssistantGeneratedImage)? onDeleteImage;
   final List<AssistantModelOption> imageModels;
   final bool proposalGenerating;
   final bool proposalExecuted;
@@ -3377,7 +3621,10 @@ class _MessageBubble extends StatelessWidget {
                     ),
                   ),
                 ),
-                if (time != null || onReuse != null) ...[
+                if (time != null ||
+                    onReuse != null ||
+                    onDeleteTurn != null ||
+                    deletingTurn) ...[
                   const SizedBox(height: 4),
                   Row(
                     mainAxisSize: MainAxisSize.min,
@@ -3388,6 +3635,22 @@ class _MessageBubble extends StatelessWidget {
                           tooltip: '重新编辑',
                           icon: Icons.edit_outlined,
                           onPressed: onReuse!,
+                        ),
+                      if (deletingTurn)
+                        const SizedBox.square(
+                          dimension: 32,
+                          child: Padding(
+                            padding: EdgeInsets.all(8),
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                        )
+                      else if (onDeleteTurn != null)
+                        _MessageAction(
+                          key: ValueKey('assistant-delete-turn-${message.id}'),
+                          tooltip: '删除这轮及后续',
+                          icon: Icons.delete_outline,
+                          foregroundColor: colors.error,
+                          onPressed: onDeleteTurn!,
                         ),
                       if (time != null)
                         Padding(
@@ -3436,9 +3699,13 @@ class _MessageBubble extends StatelessWidget {
                     if (message.images.isNotEmpty) ...[
                       _GeneratedImageGrid(
                         images: message.images,
+                        promptFallback: imagePromptFallback,
                         onSave: onSaveImage,
+                        onSaveAll: onSaveImages,
                         onShare: onShareImage,
                         onUse: onUseImage,
+                        onUsePrompt: onUseImagePrompt,
+                        onDelete: onDeleteImage,
                       ),
                       if (content.isNotEmpty) ...[
                         const SizedBox(height: 8),
@@ -3495,63 +3762,124 @@ class _MessageBubble extends StatelessWidget {
   }
 }
 
-class _GeneratedImageGrid extends StatelessWidget {
+class _GeneratedImageGrid extends StatefulWidget {
   const _GeneratedImageGrid({
     required this.images,
+    required this.promptFallback,
     required this.onSave,
+    required this.onSaveAll,
     required this.onShare,
     required this.onUse,
+    required this.onUsePrompt,
+    required this.onDelete,
   });
 
   final List<AssistantGeneratedImage> images;
+  final String promptFallback;
   final Future<void> Function(AssistantGeneratedImage) onSave;
+  final Future<void> Function(List<AssistantGeneratedImage>) onSaveAll;
   final Future<void> Function(AssistantGeneratedImage, BuildContext) onShare;
   final Future<bool> Function(AssistantGeneratedImage) onUse;
+  final Future<bool> Function(String) onUsePrompt;
+  final Future<bool> Function(AssistantGeneratedImage)? onDelete;
+
+  @override
+  State<_GeneratedImageGrid> createState() => _GeneratedImageGridState();
+}
+
+class _GeneratedImageGridState extends State<_GeneratedImageGrid> {
+  bool _savingAll = false;
+
+  Future<void> _saveAll() async {
+    if (_savingAll) return;
+    unawaited(HapticFeedback.lightImpact());
+    setState(() => _savingAll = true);
+    try {
+      await widget.onSaveAll(widget.images);
+    } finally {
+      if (mounted) setState(() => _savingAll = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    final images = widget.images;
     final spacing = images.length == 1 ? 0.0 : 6.0;
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final width = images.length == 1
-            ? constraints.maxWidth
-            : (constraints.maxWidth - spacing) / 2;
-        return Wrap(
-          spacing: spacing,
-          runSpacing: 6,
-          children: [
-            for (var index = 0; index < images.length; index += 1)
-              SizedBox(
-                width: width,
-                child: _GeneratedImageTile(
-                  image: images[index],
-                  index: index,
-                  onSave: onSave,
-                  onShare: onShare,
-                  onUse: onUse,
-                ),
-              ),
-          ],
-        );
-      },
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final width = images.length == 1
+                ? constraints.maxWidth
+                : (constraints.maxWidth - spacing) / 2;
+            return Wrap(
+              spacing: spacing,
+              runSpacing: 6,
+              children: [
+                for (var index = 0; index < images.length; index += 1)
+                  SizedBox(
+                    width: width,
+                    child: _GeneratedImageTile(
+                      images: images,
+                      image: images[index],
+                      index: index,
+                      promptFallback: widget.promptFallback,
+                      onSave: widget.onSave,
+                      onShare: widget.onShare,
+                      onUse: widget.onUse,
+                      onUsePrompt: widget.onUsePrompt,
+                      onDelete: widget.onDelete,
+                    ),
+                  ),
+              ],
+            );
+          },
+        ),
+        if (images.length > 1) ...[
+          const SizedBox(height: 4),
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton.icon(
+              key: const Key('assistant-save-all-images'),
+              onPressed: _savingAll ? null : _saveAll,
+              icon: _savingAll
+                  ? const SizedBox.square(
+                      dimension: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.download_outlined, size: 18),
+              label: Text(_savingAll ? '正在保存' : '保存全部 ${images.length} 张'),
+            ),
+          ),
+        ],
+      ],
     );
   }
 }
 
 class _GeneratedImageTile extends StatelessWidget {
   const _GeneratedImageTile({
+    required this.images,
     required this.image,
     required this.index,
+    required this.promptFallback,
     required this.onSave,
     required this.onShare,
     required this.onUse,
+    required this.onUsePrompt,
+    required this.onDelete,
   });
 
+  final List<AssistantGeneratedImage> images;
   final AssistantGeneratedImage image;
   final int index;
+  final String promptFallback;
   final Future<void> Function(AssistantGeneratedImage) onSave;
   final Future<void> Function(AssistantGeneratedImage, BuildContext) onShare;
   final Future<bool> Function(AssistantGeneratedImage) onUse;
+  final Future<bool> Function(String) onUsePrompt;
+  final Future<bool> Function(AssistantGeneratedImage)? onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -3567,10 +3895,14 @@ class _GeneratedImageTile extends StatelessWidget {
         child: InkWell(
           onTap: () => _showGeneratedImage(
             context,
-            image,
+            images,
+            initialIndex: index,
+            promptFallback: promptFallback,
             onSave: onSave,
             onShare: onShare,
             onUse: onUse,
+            onUsePrompt: onUsePrompt,
+            onDelete: onDelete,
           ),
           child: AspectRatio(
             aspectRatio: 1,
@@ -3616,46 +3948,102 @@ class _GeneratedImageTile extends StatelessWidget {
 
 void _showGeneratedImage(
   BuildContext context,
-  AssistantGeneratedImage image, {
+  List<AssistantGeneratedImage> images, {
+  required int initialIndex,
+  required String promptFallback,
   required Future<void> Function(AssistantGeneratedImage) onSave,
   required Future<void> Function(AssistantGeneratedImage, BuildContext) onShare,
   required Future<bool> Function(AssistantGeneratedImage) onUse,
+  required Future<bool> Function(String) onUsePrompt,
+  required Future<bool> Function(AssistantGeneratedImage)? onDelete,
 }) {
   showDialog<void>(
     context: context,
     builder: (context) => Dialog.fullscreen(
       backgroundColor: Colors.black,
       child: _GeneratedImagePreview(
-        image: image,
+        images: images,
+        initialIndex: initialIndex,
+        promptFallback: promptFallback,
         onSave: onSave,
         onShare: onShare,
         onUse: onUse,
+        onUsePrompt: onUsePrompt,
+        onDelete: onDelete,
       ),
     ),
   );
 }
 
-enum _GeneratedImageAction { use, save, share }
+enum _GeneratedImageAction { use, prompt, save, share, delete }
 
 class _GeneratedImagePreview extends StatefulWidget {
   const _GeneratedImagePreview({
-    required this.image,
+    required this.images,
+    required this.initialIndex,
+    required this.promptFallback,
     required this.onSave,
     required this.onShare,
     required this.onUse,
+    required this.onUsePrompt,
+    required this.onDelete,
   });
 
-  final AssistantGeneratedImage image;
+  final List<AssistantGeneratedImage> images;
+  final int initialIndex;
+  final String promptFallback;
   final Future<void> Function(AssistantGeneratedImage) onSave;
   final Future<void> Function(AssistantGeneratedImage, BuildContext) onShare;
   final Future<bool> Function(AssistantGeneratedImage) onUse;
+  final Future<bool> Function(String) onUsePrompt;
+  final Future<bool> Function(AssistantGeneratedImage)? onDelete;
 
   @override
   State<_GeneratedImagePreview> createState() => _GeneratedImagePreviewState();
 }
 
 class _GeneratedImagePreviewState extends State<_GeneratedImagePreview> {
+  late final PageController _pageController;
+  late int _currentIndex;
   _GeneratedImageAction? _busyAction;
+  bool _showPrompt = false;
+
+  AssistantGeneratedImage get _currentImage => widget.images[_currentIndex];
+  String get _currentPrompt {
+    final revised = _currentImage.revisedPrompt.trim();
+    return revised.isNotEmpty ? revised : widget.promptFallback.trim();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _currentIndex = widget.initialIndex.clamp(0, widget.images.length - 1);
+    _pageController = PageController(initialPage: _currentIndex);
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  void _selectImage(int index) {
+    if (_busyAction != null || index == _currentIndex) return;
+    unawaited(HapticFeedback.selectionClick());
+    _pageController.animateToPage(
+      index,
+      duration: _motionDuration(context, 240),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
+  Future<void> _copyCurrentPrompt() async {
+    final prompt = _currentPrompt;
+    if (prompt.isEmpty) return;
+    unawaited(HapticFeedback.selectionClick());
+    await Clipboard.setData(ClipboardData(text: prompt));
+    if (mounted) AppNotice.success(context, '图片提示词已复制');
+  }
 
   Future<void> _runAction(
     _GeneratedImageAction action,
@@ -3676,14 +4064,22 @@ class _GeneratedImagePreviewState extends State<_GeneratedImagePreview> {
       child: Stack(
         children: [
           Positioned.fill(
-            child: InteractiveViewer(
-              minScale: 1,
-              maxScale: 4,
-              child: Center(
-                child: AuthenticatedImage(
-                  url: widget.image.url,
-                  fit: BoxFit.contain,
+            child: PageView.builder(
+              key: const Key('assistant-generated-image-page-view'),
+              controller: _pageController,
+              physics: _busyAction == null
+                  ? const PageScrollPhysics()
+                  : const NeverScrollableScrollPhysics(),
+              itemCount: widget.images.length,
+              onPageChanged: (index) => setState(() {
+                _currentIndex = index;
+                if (_currentPrompt.isEmpty) _showPrompt = false;
+              }),
+              itemBuilder: (context, index) => _GeneratedImagePage(
+                key: ValueKey(
+                  'assistant-preview-image-${widget.images[index].id}',
                 ),
+                image: widget.images[index],
               ),
             ),
           ),
@@ -3696,68 +4092,369 @@ class _GeneratedImagePreviewState extends State<_GeneratedImagePreview> {
               icon: const Icon(Icons.close),
             ),
           ),
-          Positioned(
-            right: 12,
-            bottom: 12,
-            child: Material(
-              color: Colors.black.withValues(alpha: .66),
-              borderRadius: BorderRadius.circular(8),
-              child: Padding(
-                padding: const EdgeInsets.all(4),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    IconButton(
-                      tooltip: '继续编辑',
-                      color: Colors.white,
-                      onPressed: _busyAction == null
-                          ? () =>
-                                _runAction(_GeneratedImageAction.use, () async {
-                                  final used = await widget.onUse(widget.image);
-                                  if (used && context.mounted) {
-                                    Navigator.pop(context);
-                                  }
-                                })
-                          : null,
-                      icon: _busyAction == _GeneratedImageAction.use
-                          ? const _PreviewActionProgress()
-                          : const Icon(Icons.edit_outlined),
-                    ),
-                    IconButton(
-                      tooltip: '保存图片',
-                      color: Colors.white,
-                      onPressed: _busyAction == null
-                          ? () => _runAction(
-                              _GeneratedImageAction.save,
-                              () => widget.onSave(widget.image),
-                            )
-                          : null,
-                      icon: _busyAction == _GeneratedImageAction.save
-                          ? const _PreviewActionProgress()
-                          : const Icon(Icons.download_outlined),
-                    ),
-                    Builder(
-                      builder: (buttonContext) => IconButton(
-                        tooltip: '分享图片',
-                        color: Colors.white,
-                        onPressed: _busyAction == null
-                            ? () => _runAction(
-                                _GeneratedImageAction.share,
-                                () =>
-                                    widget.onShare(widget.image, buttonContext),
-                              )
-                            : null,
-                        icon: _busyAction == _GeneratedImageAction.share
-                            ? const _PreviewActionProgress()
-                            : const Icon(Icons.share_outlined),
-                      ),
-                    ),
-                  ],
+          if (widget.images.length > 1)
+            Positioned(
+              top: 20,
+              left: 72,
+              right: 72,
+              child: IgnorePointer(
+                child: Text(
+                  '${_currentIndex + 1} / ${widget.images.length}',
+                  key: const Key('assistant-preview-page-count'),
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
               ),
             ),
+          if (widget.onDelete != null)
+            Positioned(
+              top: 8,
+              right: 8,
+              child: IconButton.filled(
+                tooltip: '删除图片',
+                style: IconButton.styleFrom(
+                  backgroundColor: Theme.of(context).colorScheme.error,
+                  foregroundColor: Theme.of(context).colorScheme.onError,
+                  disabledBackgroundColor: Theme.of(
+                    context,
+                  ).colorScheme.error.withValues(alpha: .72),
+                  disabledForegroundColor: Theme.of(
+                    context,
+                  ).colorScheme.onError,
+                ),
+                onPressed: _busyAction == null
+                    ? () => _runAction(_GeneratedImageAction.delete, () async {
+                        final deleted = await widget.onDelete!(_currentImage);
+                        if (deleted && context.mounted) {
+                          Navigator.pop(context);
+                        }
+                      })
+                    : null,
+                icon: _busyAction == _GeneratedImageAction.delete
+                    ? const _PreviewActionProgress()
+                    : const Icon(Icons.delete_outline),
+              ),
+            ),
+          if (_showPrompt && _currentPrompt.isNotEmpty)
+            Positioned(
+              left: 12,
+              right: 12,
+              bottom: widget.images.length > 1 ? 140 : 78,
+              child: TweenAnimationBuilder<double>(
+                duration: _motionDuration(context, 220),
+                curve: Curves.easeOutCubic,
+                tween: Tween(begin: 0, end: 1),
+                builder: (context, value, child) => Opacity(
+                  opacity: value,
+                  child: Transform.translate(
+                    offset: Offset(0, 8 * (1 - value)),
+                    child: child,
+                  ),
+                ),
+                child: _GeneratedImagePromptPanel(
+                  key: ValueKey('assistant-image-prompt-${_currentImage.id}'),
+                  prompt: _currentPrompt,
+                  onCopy: _copyCurrentPrompt,
+                  usingPrompt: _busyAction == _GeneratedImageAction.prompt,
+                  onUse: _busyAction == null
+                      ? () =>
+                            _runAction(_GeneratedImageAction.prompt, () async {
+                              final used = await widget.onUsePrompt(
+                                _currentPrompt,
+                              );
+                              if (used && context.mounted) {
+                                Navigator.pop(context);
+                              }
+                            })
+                      : null,
+                ),
+              ),
+            ),
+          Positioned(
+            left: 12,
+            right: 12,
+            bottom: 12,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (widget.images.length > 1) ...[
+                  _GeneratedImageThumbnailRail(
+                    images: widget.images,
+                    selectedIndex: _currentIndex,
+                    enabled: _busyAction == null,
+                    onSelected: _selectImage,
+                  ),
+                  const SizedBox(height: 10),
+                ],
+                Material(
+                  color: Colors.black.withValues(alpha: .66),
+                  borderRadius: BorderRadius.circular(8),
+                  child: Padding(
+                    padding: const EdgeInsets.all(4),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (_currentPrompt.isNotEmpty)
+                          IconButton(
+                            tooltip: _showPrompt ? '收起图片提示词' : '查看图片提示词',
+                            color: Colors.white,
+                            onPressed: _busyAction == null
+                                ? () =>
+                                      setState(() => _showPrompt = !_showPrompt)
+                                : null,
+                            icon: Icon(
+                              _showPrompt
+                                  ? Icons.info_rounded
+                                  : Icons.info_outline_rounded,
+                            ),
+                          ),
+                        IconButton(
+                          tooltip: '继续编辑',
+                          color: Colors.white,
+                          onPressed: _busyAction == null
+                              ? () => _runAction(
+                                  _GeneratedImageAction.use,
+                                  () async {
+                                    final used = await widget.onUse(
+                                      _currentImage,
+                                    );
+                                    if (used && context.mounted) {
+                                      Navigator.pop(context);
+                                    }
+                                  },
+                                )
+                              : null,
+                          icon: _busyAction == _GeneratedImageAction.use
+                              ? const _PreviewActionProgress()
+                              : const Icon(Icons.edit_outlined),
+                        ),
+                        IconButton(
+                          tooltip: '保存图片',
+                          color: Colors.white,
+                          onPressed: _busyAction == null
+                              ? () => _runAction(
+                                  _GeneratedImageAction.save,
+                                  () => widget.onSave(_currentImage),
+                                )
+                              : null,
+                          icon: _busyAction == _GeneratedImageAction.save
+                              ? const _PreviewActionProgress()
+                              : const Icon(Icons.download_outlined),
+                        ),
+                        Builder(
+                          builder: (buttonContext) => IconButton(
+                            tooltip: '分享图片',
+                            color: Colors.white,
+                            onPressed: _busyAction == null
+                                ? () => _runAction(
+                                    _GeneratedImageAction.share,
+                                    () => widget.onShare(
+                                      _currentImage,
+                                      buttonContext,
+                                    ),
+                                  )
+                                : null,
+                            icon: _busyAction == _GeneratedImageAction.share
+                                ? const _PreviewActionProgress()
+                                : const Icon(Icons.share_outlined),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _GeneratedImagePromptPanel extends StatelessWidget {
+  const _GeneratedImagePromptPanel({
+    required this.prompt,
+    required this.onCopy,
+    required this.onUse,
+    required this.usingPrompt,
+    super.key,
+  });
+
+  final String prompt;
+  final VoidCallback onCopy;
+  final VoidCallback? onUse;
+  final bool usingPrompt;
+
+  @override
+  Widget build(BuildContext context) {
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxHeight: 160),
+      child: Material(
+        color: Colors.black.withValues(alpha: .76),
+        borderRadius: BorderRadius.circular(8),
+        clipBehavior: Clip.antiAlias,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 6, 10),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '图片提示词',
+                      style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: '复制图片提示词',
+                    visualDensity: VisualDensity.compact,
+                    color: Colors.white,
+                    onPressed: onCopy,
+                    icon: const Icon(Icons.copy_outlined, size: 18),
+                  ),
+                  IconButton(
+                    tooltip: '使用图片提示词',
+                    visualDensity: VisualDensity.compact,
+                    color: Colors.white,
+                    onPressed: onUse,
+                    icon: usingPrompt
+                        ? const SizedBox.square(
+                            dimension: 18,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                        : const Icon(Icons.auto_fix_high_outlined, size: 18),
+                  ),
+                ],
+              ),
+              Flexible(
+                child: SingleChildScrollView(
+                  child: SelectableText(
+                    prompt,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Colors.white.withValues(alpha: .82),
+                      height: 1.45,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _GeneratedImagePage extends StatefulWidget {
+  const _GeneratedImagePage({required this.image, super.key});
+
+  final AssistantGeneratedImage image;
+
+  @override
+  State<_GeneratedImagePage> createState() => _GeneratedImagePageState();
+}
+
+class _GeneratedImagePageState extends State<_GeneratedImagePage> {
+  final _transformationController = TransformationController();
+  bool _zoomed = false;
+
+  @override
+  void dispose() {
+    _transformationController.dispose();
+    super.dispose();
+  }
+
+  void _syncZoomState() {
+    final zoomed = _transformationController.value.getMaxScaleOnAxis() > 1.01;
+    if (zoomed != _zoomed) setState(() => _zoomed = zoomed);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return InteractiveViewer(
+      transformationController: _transformationController,
+      minScale: 1,
+      maxScale: 4,
+      panEnabled: _zoomed,
+      onInteractionEnd: (_) => _syncZoomState(),
+      child: Center(
+        child: AuthenticatedImage(url: widget.image.url, fit: BoxFit.contain),
+      ),
+    );
+  }
+}
+
+class _GeneratedImageThumbnailRail extends StatelessWidget {
+  const _GeneratedImageThumbnailRail({
+    required this.images,
+    required this.selectedIndex,
+    required this.enabled,
+    required this.onSelected,
+  });
+
+  final List<AssistantGeneratedImage> images;
+  final int selectedIndex;
+  final bool enabled;
+  final ValueChanged<int> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 52,
+      child: Center(
+        child: ListView.separated(
+          shrinkWrap: true,
+          scrollDirection: Axis.horizontal,
+          itemCount: images.length,
+          separatorBuilder: (_, _) => const SizedBox(width: 8),
+          itemBuilder: (context, index) {
+            final image = images[index];
+            final selected = index == selectedIndex;
+            return Semantics(
+              button: true,
+              selected: selected,
+              enabled: enabled,
+              excludeSemantics: true,
+              label: '查看第 ${index + 1} 张图片',
+              child: AnimatedContainer(
+                duration: _motionDuration(context, 180),
+                width: 52,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: selected ? Colors.white : Colors.white38,
+                    width: selected ? 2 : 1,
+                  ),
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: Material(
+                  key: ValueKey('assistant-preview-thumbnail-${image.id}'),
+                  color: Colors.black,
+                  child: InkWell(
+                    onTap: enabled ? () => onSelected(index) : null,
+                    child: AuthenticatedImage(
+                      url: image.thumbnailUrl.isNotEmpty
+                          ? image.thumbnailUrl
+                          : image.url,
+                    ),
+                  ),
+                ),
+              ),
+            );
+          },
+        ),
       ),
     );
   }
@@ -4653,12 +5350,14 @@ class _MessageAction extends StatelessWidget {
     required this.tooltip,
     required this.icon,
     required this.onPressed,
+    this.foregroundColor,
     super.key,
   });
 
   final String tooltip;
   final IconData icon;
   final VoidCallback onPressed;
+  final Color? foregroundColor;
 
   @override
   Widget build(BuildContext context) {
@@ -4668,7 +5367,7 @@ class _MessageAction extends StatelessWidget {
       onPressed: onPressed,
       style: IconButton.styleFrom(
         backgroundColor: Colors.transparent,
-        foregroundColor: colors.onSurfaceVariant,
+        foregroundColor: foregroundColor ?? colors.onSurfaceVariant,
         overlayColor: Colors.transparent,
         splashFactory: NoSplash.splashFactory,
         minimumSize: const Size.square(32),

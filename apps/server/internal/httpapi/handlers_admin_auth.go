@@ -134,6 +134,7 @@ func (s *Server) adminLogin(c *gin.Context) {
 		return
 	}
 	s.setAdminSessionCookie(c, token, int(adminSessionTTL/time.Second))
+	c.Set(ctxAdminUserKey, adminAccountAsUser(admin))
 	respondCreated(c, gin.H{"admin": adminAccountDict(admin)})
 }
 

@@ -775,6 +775,11 @@ html.color-scheme-dark .ch-card__check {
   background: rgba(214, 69, 69, 0.12);
 }
 
+.ch-pill.is-status[data-status='canceled'] {
+  color: var(--ch-muted);
+  background: color-mix(in srgb, var(--ch-muted) 12%, transparent);
+}
+
 .ch-pill.is-status[data-status='running'],
 .ch-pill.is-status[data-status='queued'] {
   color: var(--ch-warn);
@@ -859,6 +864,10 @@ html.color-scheme-dark .ch-card__check {
 .ch-card__share[data-status='removed'],
 .ch-card__share[data-status='failed'] {
   background: rgba(214, 69, 69, 0.88);
+}
+
+.ch-card__share[data-status='canceled'] {
+  background: rgba(71, 85, 105, 0.88);
 }
 
 .ch-card__title {
@@ -1374,6 +1383,11 @@ html.color-scheme-dark .ch-card__actions a.is-primary {
   width: 108px;
 }
 
+.ch-history-table .is-duration {
+  width: 104px;
+  white-space: nowrap;
+}
+
 .ch-history-table .is-status-cell .ch-pill.is-share {
   margin-top: 4px;
 }
@@ -1601,6 +1615,7 @@ html.color-scheme-dark .ch-card__actions a.is-primary {
     grid-template-areas:
       "check work prompt actions"
       "check work status actions"
+      "check work duration actions"
       "check work created actions";
     column-gap: 10px;
     align-items: center;
@@ -1651,6 +1666,12 @@ html.color-scheme-dark .ch-card__actions a.is-primary {
     font-size: 0.68rem;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .ch-history-table td.is-duration {
+    grid-area: duration;
+    color: var(--ch-muted);
+    font-size: 0.68rem;
   }
 
   .ch-history-table td.is-actions {

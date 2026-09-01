@@ -24,6 +24,8 @@ import '../features/profile/profile_screen.dart';
 import '../features/shell/app_shell.dart';
 import '../features/tasks/works_screen.dart';
 import '../features/tasks/task_detail_screen.dart';
+import '../features/tasks/tasks.dart';
+import '../features/wallet/wallet.dart';
 import '../features/wallet/wallet_ledger_screen.dart';
 import '../features/wallet/wallet_screen.dart';
 
@@ -112,21 +114,28 @@ final appRouterProvider = Provider<GoRouter>(
                   GoRoute(
                     parentNavigatorKey: _rootNavigatorKey,
                     path: 'wallet',
-                    builder: (context, state) => const AuthenticatedRoute(
+                    builder: (context, state) => AuthenticatedRoute(
                       title: '积分钱包',
                       icon: Icons.account_balance_wallet_outlined,
                       fallbackLocation: '/profile',
-                      child: WalletScreen(),
+                      child: WalletScreen(
+                        initiallyOpenRedeem:
+                            state.uri.queryParameters['redeem'] == '1',
+                      ),
                     ),
                     routes: [
                       GoRoute(
                         parentNavigatorKey: _rootNavigatorKey,
                         path: 'ledger',
-                        builder: (context, state) => const AuthenticatedRoute(
+                        builder: (context, state) => AuthenticatedRoute(
                           title: '积分明细',
                           icon: Icons.receipt_long_outlined,
                           fallbackLocation: '/profile/wallet',
-                          child: WalletLedgerScreen(),
+                          child: WalletLedgerScreen(
+                            initialFilter: walletEntryFilterFromName(
+                              state.uri.queryParameters['filter'],
+                            ),
+                          ),
                         ),
                       ),
                     ],
@@ -300,7 +309,12 @@ final appRouterProvider = Provider<GoRouter>(
               title: '作品详情',
               icon: Icons.photo_outlined,
               fallbackLocation: '/works',
-              child: TaskDetailScreen(taskId: state.pathParameters['id'] ?? ''),
+              child: TaskDetailScreen(
+                taskId: state.pathParameters['id'] ?? '',
+                initialTask: state.extra is TaskItem
+                    ? state.extra! as TaskItem
+                    : null,
+              ),
             ),
           ),
         ],

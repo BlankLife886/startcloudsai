@@ -1,6 +1,7 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:starcloudsai_mobile/core/config/app_environment.dart';
@@ -123,8 +124,12 @@ void main() {
 
     expect(announcementsOnly.announcements.single.title, '线上公告');
     expect(announcementsOnly.changelog, isEmpty);
+    expect(announcementsOnly.changelogUnavailable, isTrue);
+    expect(announcementsOnly.announcementsUnavailable, isFalse);
     expect(changelogOnly.announcements, isEmpty);
     expect(changelogOnly.changelog.single.version, '3.5.0');
+    expect(changelogOnly.announcementsUnavailable, isTrue);
+    expect(changelogOnly.changelogUnavailable, isFalse);
   });
 
   test('meta feed still reports an error when both endpoints fail', () {
@@ -166,6 +171,14 @@ void main() {
     expect(changelog.summary, isEmpty);
     expect(changelog.items, ['第一项', '3']);
     expect(changelog.highlight, isTrue);
+  });
+
+  test('formats a complete changelog summary for copying', () {
+    expect(
+      changelogCopyText(_feed.changelog.first),
+      'v3.4.0 · 移动端公告中心\n集中查看服务公告和版本变化。\n'
+      '- 新增公告总览\n- 新增版本标签筛选',
+    );
   });
 
   testWidgets('updates screen expands latest entry and filters by tag', (
@@ -295,6 +308,85 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(find.text('新增版本标签筛选'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('expanded update copies its complete summary', (tester) async {
+    String? clipboardText;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') {
+          clipboardText = (call.arguments as Map)['text'] as String?;
+        }
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      ),
+    );
+    await tester.pumpWidget(_app());
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('copy-changelog-change-feature')),
+      260,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('copy-changelog-change-feature')));
+    await tester.pump();
+
+    expect(clipboardText, contains('v3.4.0 · 移动端公告中心'));
+    expect(clipboardText, contains('- 新增版本标签筛选'));
+    expect(find.text('更新内容已复制'), findsOneWidget);
+  });
+
+  testWidgets('flat update controls support dark mode', (tester) async {
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [metaFeedProvider.overrideWith((ref) async => _feed)],
+        child: MaterialApp(
+          theme: ThemeData.light(),
+          darkTheme: ThemeData.dark(),
+          themeMode: ThemeMode.dark,
+          home: const UpdatesScreen(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      Theme.of(tester.element(find.text('服务版本 v3.4.0'))).brightness,
+      Brightness.dark,
+    );
+    expect(find.byKey(const Key('updates-tag-fix')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('partial changelog failure stays distinct from an empty feed', (
+    tester,
+  ) async {
+    final partial = MetaFeed(
+      announcements: _feed.announcements,
+      changelog: const [],
+      changelogUnavailable: true,
+    );
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [metaFeedProvider.overrideWith((ref) async => partial)],
+        child: const MaterialApp(home: UpdatesScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('版本记录暂时不可用'), findsOneWidget);
+    expect(find.text('版本加载失败'), findsOneWidget);
+    expect(find.text('版本记录暂时不可用，请稍后刷新'), findsOneWidget);
+    expect(find.text('服务维护安排'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }

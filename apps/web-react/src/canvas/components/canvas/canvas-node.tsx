@@ -5,6 +5,7 @@ import { ChevronRight, Copy, Download, Group, Image as ImageIcon, MessageSquare,
 import { canvasThemes } from "@/lib/canvas-theme";
 import { canvasNodeShadow, CanvasIconWellStyle } from "@/lib/canvas-ui";
 import { formatGenerationDuration, useGenerationElapsed } from "@/lib/canvas/canvas-generation-elapsed";
+import { canvasGenerationStageLabel } from "@/lib/canvas/canvas-generation-stage";
 import { formatBytes } from "@/lib/image-utils";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { isCanvasExecutableNode } from "@/lib/canvas/canvas-operation-node";
@@ -445,9 +446,12 @@ export const CanvasNode = React.memo(function CanvasNode({
                             <span>
                                 {data.metadata?.uploading
                                     ? t("canvas.node.uploading")
-                                    : imageGenerationItems.length
-                                    ? t("canvas.node.regeneratingProgress", { completed: imageGenerationCompleted, total: imageGenerationItems.length })
-                                    : t("canvas.node.regenerating")}
+                                    : canvasGenerationStageLabel(
+                                          data.metadata?.generationStage,
+                                          imageGenerationItems.length
+                                              ? t("canvas.node.regeneratingProgress", { completed: imageGenerationCompleted, total: imageGenerationItems.length })
+                                              : t("canvas.node.regenerating"),
+                                      )}
                             </span>
                         </div>
                     </div>
@@ -531,7 +535,7 @@ function LoadingContent({ node, theme }: Pick<NodeContentRendererProps, "node" |
     return (
         <div className="flex h-full w-full flex-col items-center justify-center gap-3" style={{ color: theme.node.activeStroke }}>
             <div className="size-10 animate-spin rounded-full border-2" style={{ borderColor: theme.node.stroke, borderTopColor: theme.node.activeStroke }} />
-            <span className="text-[10px] tracking-[0.2em]">{t(node.metadata?.uploading ? "canvas.node.uploading" : "canvas.node.generating")}</span>
+            <span className="text-[11px] font-medium">{node.metadata?.uploading ? t("canvas.node.uploading") : canvasGenerationStageLabel(node.metadata?.generationStage, t("canvas.node.generating"))}</span>
             <span className="text-[11px] font-semibold tabular-nums tracking-normal">{formatGenerationDuration(elapsedMs)}</span>
         </div>
     );
@@ -780,7 +784,7 @@ function ImageContent({
                         className={`pointer-events-none block h-full w-full select-none ${node.metadata?.freeResize ? "object-fill" : "object-contain"}`}
                     />
                 ) : (
-                    <ImageSlotStatus image={primaryImage} startedAt={node.metadata?.generationStartedAt} />
+                    <ImageSlotStatus image={primaryImage} startedAt={node.metadata?.generationStartedAt} generationStage={node.metadata?.generationStage} />
                 )}
             </div>
             {primaryImage?.status === "error" ? <BatchImageFailureActions placement="left" onRetry={() => onRetryBatchImage?.(primaryImage.id)} onDelete={() => onDeleteBatchImage?.(primaryImage.id)} /> : null}
@@ -848,7 +852,7 @@ function ExpandedImageCard({ node, image, index, onView, onSetPrimary, onDuplica
                 if (image.content) onView();
             }}
         >
-            {image.content ? <CanvasPreviewImage src={image.content} storageKey={image.storageKey} thumbnailUrl={image.thumbnailUrl} alt={node.title} draggable={false} className="pointer-events-none h-full w-full select-none object-contain" /> : <ImageSlotStatus image={image} startedAt={node.metadata?.generationStartedAt} />}
+            {image.content ? <CanvasPreviewImage src={image.content} storageKey={image.storageKey} thumbnailUrl={image.thumbnailUrl} alt={node.title} draggable={false} className="pointer-events-none h-full w-full select-none object-contain" /> : <ImageSlotStatus image={image} startedAt={node.metadata?.generationStartedAt} generationStage={node.metadata?.generationStage} />}
             {image.content ? (
                 <div className="absolute inset-x-2 top-2 flex items-center gap-1">
                     <button type="button" className="canvas-node-overlay-btn flex h-7 min-w-0 flex-1 items-center justify-center gap-1 rounded-full border px-1.5 text-[10px] font-medium transition hover:opacity-90" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.activeText }} title={t("common.download")} onClick={(event) => (event.stopPropagation(), onDownload())}>
@@ -886,7 +890,7 @@ function BatchImageFailureActions({ placement, onRetry, onDelete }: { placement:
     );
 }
 
-function ImageSlotStatus({ image, startedAt }: { image?: CanvasNodeImage; startedAt?: string }) {
+function ImageSlotStatus({ image, startedAt, generationStage }: { image?: CanvasNodeImage; startedAt?: string; generationStage?: string }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const { t } = useTranslation();
     const failed = image?.status === "error";
@@ -895,7 +899,7 @@ function ImageSlotStatus({ image, startedAt }: { image?: CanvasNodeImage; starte
     return (
         <div className="flex h-full w-full flex-col items-center justify-center gap-3 px-6 text-center" style={{ background: theme.node.fill, color: failed ? theme.node.text : theme.node.activeStroke }}>
             {failed ? <span className="text-xs leading-5">{image.errorDetails || t("canvas.node.failed")}</span> : <div className="size-10 animate-spin rounded-full border-2" style={{ borderColor: theme.node.stroke, borderTopColor: theme.node.activeStroke }} />}
-            {!failed ? <span className="text-[10px] tracking-[0.2em]">{t("canvas.node.generating")}</span> : null}
+            {!failed ? <span className="text-[11px] font-medium">{canvasGenerationStageLabel(generationStage, t("canvas.node.generating"))}</span> : null}
             {!failed ? <span className="text-[11px] font-semibold tabular-nums tracking-normal">{formatGenerationDuration(elapsedMs)}</span> : null}
         </div>
     );

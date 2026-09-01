@@ -146,6 +146,47 @@ func TestAdminPutSettingsValidatesTaskFailureRetryCount(t *testing.T) {
 	}
 }
 
+func TestAdminPutSettingsValidatesPlatformLogging(t *testing.T) {
+	st := testdb.Setup(t)
+	srv := &Server{Cfg: &config.Config{}, St: st}
+	invalidBodies := []string{
+		`{"platformLoggingEnabled":true,"platformLogSecurityEnabled":false,"platformLogOperationsEnabled":false,"platformLogUserEnabled":false}`,
+		`{"platformLogRetentionDays":0}`,
+		`{"platformLogRetentionDays":91}`,
+		`{"platformLogMaxMb":31}`,
+		`{"platformLogMaxMb":4097}`,
+	}
+	for _, body := range invalidBodies {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPut, "/api/v1/admin/settings", strings.NewReader(body))
+		c.Request.Header.Set("Content-Type", "application/json")
+		srv.adminPutSettings(c, nil)
+		if recorder.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("body %s status = %d, want 422; response=%s", body, recorder.Code, recorder.Body.String())
+		}
+	}
+
+	const validBody = `{"platformLoggingEnabled":true,"platformLogSecurityEnabled":true,"platformLogOperationsEnabled":false,"platformLogUserEnabled":false,"platformLogRetentionDays":14,"platformLogMaxMb":512}`
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPut, "/api/v1/admin/settings", strings.NewReader(validBody))
+	c.Request.Header.Set("Content-Type", "application/json")
+	srv.adminPutSettings(c, nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("valid platform logging status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if enabled, err := settings.GetBool(context.Background(), st.Pool, "platform_logging_enabled"); err != nil || !enabled {
+		t.Fatalf("platform logging enabled = %v err=%v", enabled, err)
+	}
+	if days, err := settings.GetInt(context.Background(), st.Pool, "platform_log_retention_days"); err != nil || days != 14 {
+		t.Fatalf("retention days = %d err=%v", days, err)
+	}
+	if maxMB, err := settings.GetInt(context.Background(), st.Pool, "platform_log_max_mb"); err != nil || maxMB != 512 {
+		t.Fatalf("max MB = %d err=%v", maxMB, err)
+	}
+}
+
 func TestAdminPutSettingsRequiresCompleteImageAnalysisSelection(t *testing.T) {
 	st := testdb.Setup(t)
 	srv := &Server{Cfg: &config.Config{}, St: st}
@@ -318,7 +359,7 @@ func TestAdminPutSettingsValidatesPageControls(t *testing.T) {
 		}
 	}
 
-	const validBody = `{"pageControls":{"studio":{"status":"maintenance","reason":"  系统升级中  "},"pricing":{"status":"normal","reason":""}}}`
+	const validBody = `{"pageControls":{"studio":{"status":"maintenance","reason":"  系统升级中  "},"pricing":{"status":"normal","reason":""},"developer_api":{"status":"removed","reason":"内部测试"}}}`
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPut, "/api/v1/admin/settings", strings.NewReader(validBody))
@@ -337,6 +378,9 @@ func TestAdminPutSettingsValidatesPageControls(t *testing.T) {
 	}
 	if got := controls["activity.checkin"]; got.Status != settings.PageStatusRemoved {
 		t.Fatalf("default check-in control = %#v", got)
+	}
+	if got := controls["developer_api"]; got.Status != settings.PageStatusRemoved || got.Reason != "内部测试" {
+		t.Fatalf("developer API control = %#v", got)
 	}
 }
 

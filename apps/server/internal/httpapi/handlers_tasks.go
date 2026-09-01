@@ -49,10 +49,19 @@ func (s *Server) urlsForKeys(c *gin.Context, keys []string) []string {
 	for _, key := range keys {
 		key = strings.TrimLeft(strings.TrimSpace(key), "/")
 		if key != "" {
-			urls = append(urls, "/api/v1/files/"+key)
+			urls = append(urls, storedFilePrefix(c)+key)
 		}
 	}
 	return urls
+}
+
+func storedFilePrefix(c *gin.Context) string {
+	if value, exists := c.Get(ctxOpenAPI); exists {
+		if open, _ := value.(bool); open {
+			return "/api/open/v1/files/"
+		}
+	}
+	return "/api/v1/files/"
 }
 
 func parseUUIDParam(c *gin.Context, name string) (uuid.UUID, error) {
@@ -282,6 +291,9 @@ func (s *Server) createTask(c *gin.Context) {
 		fail(c, err)
 		return
 	}
+	if !s.enforceUsageLimit(c, "task-create-minute", user.ID.String(), highCostRequestsPerMinute, 1, time.Minute) {
+		return
+	}
 	var body taskCreateIn
 	if err := bindJSON(c, &body); err != nil {
 		fail(c, err)
@@ -289,6 +301,15 @@ func (s *Server) createTask(c *gin.Context) {
 	}
 	if body.Params == nil {
 		body.Params = map[string]any{}
+	}
+	if key := openAPIKeyFromContext(c); key != nil {
+		body.Params["_apiKeyId"] = key.ID.String()
+		body.Params["_source"] = "open_api"
+		if body.IdempotencyKey == nil {
+			if value := strings.TrimSpace(c.GetHeader("Idempotency-Key")); value != "" {
+				body.IdempotencyKey = &value
+			}
+		}
 	}
 	if !store.Contains(store.TaskTypes, body.Type) {
 		fail(c, apperr.E("validation_error", "type: 无效的任务类型", 422))
@@ -384,6 +405,9 @@ func (s *Server) quoteTask(c *gin.Context) {
 	user, err := s.requireUser(c)
 	if err != nil {
 		fail(c, err)
+		return
+	}
+	if !s.enforceUsageLimit(c, "task-quote-minute", user.ID.String(), highCostRequestsPerMinute*2, 1, time.Minute) {
 		return
 	}
 	var body taskCreateIn
@@ -567,7 +591,7 @@ func (s *Server) getTask(c *gin.Context) {
 	ok(c, attachShareSubmission(taskDict(task, s.outputURLsFor(c, task), s.originalURLsFor(c, task)), submission))
 }
 
-func (s *Server) cancelTask(c *gin.Context) {
+func (s *Server) cancelTask(c *gin.Context, acknowledgeUpstream bool) {
 	user, err := s.requireUser(c)
 	if err != nil {
 		fail(c, err)
@@ -578,7 +602,7 @@ func (s *Server) cancelTask(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	task, err := taskflow.CancelTask(c.Request.Context(), s.St, user.ID, taskID)
+	task, err := taskflow.CancelTaskConfirmed(c.Request.Context(), s.St, user.ID, taskID, acknowledgeUpstream)
 	if err != nil {
 		fail(c, err)
 		return
@@ -594,7 +618,8 @@ func (s *Server) cancelTask(c *gin.Context) {
 }
 
 type taskPatchIn struct {
-	Status string `json:"status"`
+	Status              string `json:"status"`
+	AcknowledgeUpstream bool   `json:"acknowledgeUpstream"`
 }
 
 func (s *Server) patchTask(c *gin.Context) {
@@ -607,7 +632,7 @@ func (s *Server) patchTask(c *gin.Context) {
 		fail(c, apperr.E("validation_error", "status: 仅支持更新为 canceled", 422))
 		return
 	}
-	s.cancelTask(c)
+	s.cancelTask(c, body.AcknowledgeUpstream)
 }
 
 func (s *Server) deleteTask(c *gin.Context) {

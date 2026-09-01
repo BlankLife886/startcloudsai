@@ -299,6 +299,7 @@ function TryonGeneratingStage({
   failMessage = "",
   startedAt = "",
   elapsedSeconds = 0,
+  generationStageLabel = "正在生成",
   onRevealEnd,
   onElapsed,
 }) {
@@ -411,8 +412,8 @@ function TryonGeneratingStage({
             ? "已停止生成"
             : "生成失败"
           : showClock
-            ? `正在生成，已等待 ${seconds} 秒`
-            : "正在生成"
+            ? `${generationStageLabel}，已等待 ${seconds} 秒`
+            : generationStageLabel
       }
     >
       {!running && failed ? (
@@ -556,6 +557,7 @@ export function TryonLiveStage({
   failMessage = "",
   elapsedSeconds = 0,
   runStartedAt = "",
+  generationStageLabel = "正在生成",
   onPreview,
   onUploadGarment,
   onGenerate,
@@ -925,6 +927,7 @@ export function TryonLiveStage({
               failMessage={failMessage}
               startedAt={runStartedAt}
               elapsedSeconds={elapsedSeconds}
+              generationStageLabel={generationStageLabel}
               onRevealEnd={() => setCurtainHold(false)}
               onElapsed={(value) => {
                 const seconds = Math.max(0, Number(value) || 0);
@@ -1181,7 +1184,9 @@ export function TryonLiveStage({
                     : t("生成")}
               <small>
                 {running
-                  ? t("进行中")
+                  ? cancelling
+                    ? t("正在停止")
+                    : generationStageLabel
                   : revisionReady
                     ? locale === "en"
                       ? "new version"

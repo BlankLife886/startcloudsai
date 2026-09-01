@@ -68,6 +68,14 @@ const COMMERCE_ITEMS = COMMERCE_ENTRY_GROUPS.map((group) => ({
 
 const LOCAL_TOOL_ITEMS = [
   {
+    id: "all-ai-tools",
+    to: "/ai-tools",
+    label: "全部工具",
+    tagline: "查看 AI 助手、无限画布和平台所有能力",
+    icon: "bi-grid-3x3-gap-fill",
+    minPoints: 0,
+  },
+  {
     id: "background-remove",
     to: "/tools/background-remove",
     label: "背景移除",
@@ -228,6 +236,7 @@ function CompactCard({ item }) {
             <em className={`home-card__status ${status.className}`}>{status.label}</em>
           ) : null}
         </strong>
+        {item.tagline ? <span>{item.tagline}</span> : null}
       </span>
       {price ? <b className="home-card__price">{price}</b> : null}
     </Link>

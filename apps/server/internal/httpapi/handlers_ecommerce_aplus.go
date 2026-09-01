@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -38,6 +39,9 @@ func (s *Server) generateEcommerceAplusPlan(c *gin.Context) {
 	user, err := s.requireUser(c)
 	if err != nil {
 		fail(c, err)
+		return
+	}
+	if !s.enforceUsageLimit(c, "ecommerce-plan-minute", user.ID.String(), highCostRequestsPerMinute, 1, time.Minute) {
 		return
 	}
 	if s.Storage == nil {

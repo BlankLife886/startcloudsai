@@ -85,6 +85,14 @@ export type CanvasNodeMetadata = {
     pluginColor?: string;
     taskId?: string;
     taskKind?: "image" | "assistant";
+	generationStage?: string;
+	cancelPolicy?: {
+		allowed?: boolean;
+		mode?: string;
+		upstreamSubmitted?: boolean;
+		refunded?: boolean;
+		message?: string;
+	};
     executionStatus?: CanvasNodeExecutionStatus;
     generationQueuedAt?: string;
     generationStartedAt?: string;

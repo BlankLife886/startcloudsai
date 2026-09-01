@@ -3,10 +3,16 @@ import { useLocation, useNavigation } from "react-router";
 import { ClientAnnouncementHost } from "../components/ClientAnnouncementHost.jsx";
 import { NavBar } from "./NavBar.jsx";
 import { AuthPromptProvider } from "../auth/AuthPromptContext.jsx";
+import { useAuth } from "../auth/AuthContext.jsx";
 import { useRouteMotion } from "../components/motion/RouteMotionController.jsx";
 import { PageAccessBoundary } from "../page-control/PageAccessBoundary.jsx";
 import { PageControlProvider } from "../page-control/PageControlContext.jsx";
 import { prefetchRoute } from "../routePrefetch.js";
+import {
+  behaviorFeatureFromPath,
+  setBehaviorTrackingEnabled,
+  trackBehaviorEvent,
+} from "@react/legacy-modules/services/behaviorTracker.js";
 import "@react/legacy-styles/generated/App.css";
 
 const documentScrollRoutes = new Set([
@@ -31,6 +37,7 @@ const incentiveCanvasRoutes = new Set([
 ]);
 
 export function AppShell() {
+  const auth = useAuth();
   const location = useLocation();
   const navigation = useNavigation();
   const mainRef = useRef(null);
@@ -52,6 +59,13 @@ export function AppShell() {
     );
     document.documentElement.classList.toggle("canvas-editor", canvasEditor);
   }, [canvasEditor, canvasHome]);
+
+  useEffect(() => {
+    setBehaviorTrackingEnabled(auth.isAuthenticated);
+    if (auth.isAuthenticated) {
+      trackBehaviorEvent("feature_open", behaviorFeatureFromPath(location.pathname));
+    }
+  }, [auth.isAuthenticated, location.pathname]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -103,6 +117,8 @@ export function AppShell() {
     mainClasses.push("main--wallet-console");
   if (location.pathname === "/account")
     mainClasses.push("main--settings-console");
+  if (location.pathname === "/developer-api")
+    mainClasses.push("main--developer-console");
   if (location.pathname === "/updates")
     mainClasses.push("main--updates-gallery");
   if (location.pathname === "/tools/image-compress") {

@@ -3,12 +3,15 @@ import { createPortal } from "react-dom";
 import gsap from "gsap";
 import { useGSAP } from "@gsap/react";
 import {
+  batchUserAssets,
   createUserAsset,
   createUserAssetGroup,
   deleteUserAsset,
   deleteUserAssetGroup,
   listUserAssetGroups,
   listUserAssets,
+  permanentlyDeleteUserAsset,
+  restoreUserAsset,
   updateUserAsset,
   updateUserAssetGroup,
 } from "@react/legacy-modules/services/meApi.js";
@@ -77,6 +80,20 @@ function materialTitle(file) {
     .replace(/\.[a-z0-9]+$/i, "")
     .trim()
     .slice(0, 120);
+}
+
+function assetSourceLabel(value) {
+  const source = String(value || "upload").trim().toLowerCase();
+  return (
+    {
+      upload: "手动上传",
+      assistant: "AI 助手",
+      workflow: "工作流",
+      canvas: "无限画布",
+      generation: "AI 生成",
+      derived: "派生资产",
+    }[source] || "其他来源"
+  );
 }
 
 function motionDisabled() {
@@ -230,6 +247,7 @@ export function MaterialsLibraryView() {
   const [editAsset, setEditAsset] = useState(null);
   const [editingTitle, setEditingTitle] = useState("");
   const [editingGroupId, setEditingGroupId] = useState("");
+  const [editingTags, setEditingTags] = useState("");
   const [savingEdit, setSavingEdit] = useState(false);
   const [moveMenuId, setMoveMenuId] = useState(null);
   const [creatingGroup, setCreatingGroup] = useState(false);
@@ -248,6 +266,9 @@ export function MaterialsLibraryView() {
   const [batchRenamePrefix, setBatchRenamePrefix] = useState("");
   const [pendingBulkDelete, setPendingBulkDelete] = useState(null);
   const [assetDimensions, setAssetDimensions] = useState({});
+  const [libraryView, setLibraryView] = useState("active");
+  const [pendingPermanentDelete, setPendingPermanentDelete] = useState(null);
+  const [searchQuery, setSearchQuery] = useState("");
 
   const applyMaterials = useCallback((next) => {
     const value =
@@ -315,7 +336,9 @@ export function MaterialsLibraryView() {
         const result = await listUserAssets({
           limit: 24,
           cursor: append ? cursorRef.current || "" : "",
-          groupId: filterRef.current || "all",
+          groupId: libraryView === "trash" ? "all" : filterRef.current || "all",
+          query: searchQuery,
+          trash: libraryView === "trash",
           signal: controller.signal,
         });
         if (!mountedRef.current || controller.signal.aborted) return;
@@ -347,8 +370,13 @@ export function MaterialsLibraryView() {
         }
       }
     },
-    [applyCursor, applyMaterials, auth.isAuthenticated],
+    [applyCursor, applyMaterials, auth.isAuthenticated, libraryView, searchQuery],
   );
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSearchQuery(query.trim()), 320);
+    return () => window.clearTimeout(timer);
+  }, [query]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -400,7 +428,7 @@ export function MaterialsLibraryView() {
   }, [cursor, loadList, query, showDuplicatesOnly]);
 
   useEffect(() => {
-    filterRef.current = activeFilter;
+    filterRef.current = libraryView === "trash" ? "all" : activeFilter;
     setMoveMenuId(null);
     setEditAsset(null);
     setSelectedIds(new Set());
@@ -421,6 +449,8 @@ export function MaterialsLibraryView() {
     auth.isAuthenticated,
     auth.loading,
     loadList,
+    libraryView,
+    searchQuery,
   ]);
 
   useEffect(() => {
@@ -498,17 +528,21 @@ export function MaterialsLibraryView() {
     [isDuplicateAsset, materials],
   );
   const visibleMaterials = useMemo(() => {
-    const keyword = query.trim().toLowerCase();
+    const keyword = searchQuery.toLowerCase();
     const items = materials.filter((asset) => {
       if (showDuplicatesOnly && !isDuplicateAsset(asset)) return false;
       if (!keyword) return true;
       const title = String(asset.title || "").toLowerCase();
       const shown = displayTitle(asset.title).toLowerCase();
       const group = groupNameOf(asset).toLowerCase();
+      const tags = Array.isArray(asset.tags) ? asset.tags.join(" ").toLowerCase() : "";
+      const source = String(asset.sourceType || "").toLowerCase();
       return (
         title.includes(keyword) ||
         shown.includes(keyword) ||
-        group.includes(keyword)
+        group.includes(keyword) ||
+        tags.includes(keyword) ||
+        source.includes(keyword)
       );
     });
     if (!showDuplicatesOnly) return items;
@@ -518,7 +552,7 @@ export function MaterialsLibraryView() {
       if (leftTitle !== rightTitle) return leftTitle.localeCompare(rightTitle);
       return Number(left.sizeBytes || 0) - Number(right.sizeBytes || 0);
     });
-  }, [groupNameOf, isDuplicateAsset, materials, query, showDuplicatesOnly]);
+  }, [groupNameOf, isDuplicateAsset, materials, searchQuery, showDuplicatesOnly]);
   const noVisible = !empty && loaded && !loading && !visibleMaterials.length;
   const selectedAssets = useMemo(
     () => materials.filter((asset) => selectedIds.has(asset.id)),
@@ -704,6 +738,7 @@ export function MaterialsLibraryView() {
     setEditAsset(asset);
     setEditingTitle(asset.title || "");
     setEditingGroupId(asset.groupId || "");
+    setEditingTags(Array.isArray(asset.tags) ? asset.tags.join(", ") : "");
   };
 
   const closeEdit = () => {
@@ -711,6 +746,7 @@ export function MaterialsLibraryView() {
     setEditAsset(null);
     setEditingTitle("");
     setEditingGroupId("");
+    setEditingTags("");
   };
 
   const saveEdit = async (event) => {
@@ -722,9 +758,15 @@ export function MaterialsLibraryView() {
       return;
     }
     const nextGroupId = editingGroupId || null;
+    const nextTags = [...new Set(editingTags.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean))];
+    if (nextTags.length > 30 || nextTags.some((tag) => [...tag].length > 32)) {
+      notificationService.warning("最多 30 个标签，每个标签不超过 32 个字符");
+      return;
+    }
     const titleChanged = title !== editAsset.title;
     const groupChanged = (editAsset.groupId || null) !== nextGroupId;
-    if (!titleChanged && !groupChanged) {
+    const tagsChanged = JSON.stringify(nextTags) !== JSON.stringify(editAsset.tags || []);
+    if (!titleChanged && !groupChanged && !tagsChanged) {
       closeEdit();
       return;
     }
@@ -733,6 +775,7 @@ export function MaterialsLibraryView() {
       const payload = {};
       if (titleChanged) payload.title = title;
       if (groupChanged) payload.groupId = nextGroupId;
+      if (tagsChanged) payload.tags = nextTags;
       const updated = await updateUserAsset(editAsset.id, payload);
       if (!mountedRef.current) return;
       applyAssetUpdate(updated);
@@ -748,6 +791,7 @@ export function MaterialsLibraryView() {
       setEditAsset(null);
       setEditingTitle("");
       setEditingGroupId("");
+      setEditingTags("");
       notificationService.success("资产已更新");
     } catch (error) {
       if (mountedRef.current)
@@ -945,14 +989,13 @@ export function MaterialsLibraryView() {
     const removed = new Set();
     let failed = 0;
     try {
-      await mapPool(ids, async (id) => {
-        try {
-          await deleteUserAsset(id);
-          removed.add(id);
-        } catch {
-          failed += 1;
-        }
-      });
+      try {
+        const result = await batchUserAssets({ action: "trash", ids });
+        ids.forEach((id) => removed.add(id));
+        failed = Math.max(0, ids.length - Number(result?.affected || 0));
+      } catch {
+        failed = ids.length;
+      }
       if (!mountedRef.current) return;
       applyMaterials(
         materialsRef.current.filter((item) => !removed.has(item.id)),
@@ -967,11 +1010,79 @@ export function MaterialsLibraryView() {
       await loadGroups();
       if (failed) {
         notificationService.error(
-          `已删除 ${removed.size} 项，${failed} 项失败`,
+          `已移入回收站 ${removed.size} 项，${failed} 项失败`,
         );
       } else {
-        notificationService.success(`已删除 ${removed.size} 项资产`);
+        notificationService.success(`已将 ${removed.size} 项移入回收站`);
       }
+    } finally {
+      if (mountedRef.current) setBulkBusy(false);
+    }
+  };
+
+  const restoreAsset = async (asset) => {
+    if (!asset || requireAssetLogin()) return;
+    try {
+      await restoreUserAsset(asset.id);
+      applyMaterials(materialsRef.current.filter((item) => item.id !== asset.id));
+      setPreviewMaterial((current) => (current?.id === asset.id ? null : current));
+      notificationService.success("资产已恢复");
+    } catch (error) {
+      notificationService.error(error?.message || "资产恢复失败");
+    }
+  };
+
+  const permanentlyDeleteAsset = async () => {
+    const asset = pendingPermanentDelete;
+    setPendingPermanentDelete(null);
+    if (!asset || requireAssetLogin()) return;
+    try {
+      await permanentlyDeleteUserAsset(asset.id);
+      applyMaterials(materialsRef.current.filter((item) => item.id !== asset.id));
+      setPreviewMaterial((current) => (current?.id === asset.id ? null : current));
+      notificationService.success("资产已永久删除");
+    } catch (error) {
+      notificationService.error(error?.message || "资产永久删除失败");
+    }
+  };
+
+  const restoreSelected = async () => {
+    const ids = [...selectedIds];
+    if (!ids.length || bulkBusy) return;
+    setBulkBusy(true);
+    try {
+      await batchUserAssets({ action: "restore", ids });
+      applyMaterials(materialsRef.current.filter((item) => !selectedIds.has(item.id)));
+      setSelectedIds(new Set());
+      notificationService.success(`已恢复 ${ids.length} 项资产`);
+    } catch (error) {
+      notificationService.error(error?.message || "批量恢复失败");
+    } finally {
+      if (mountedRef.current) setBulkBusy(false);
+    }
+  };
+
+  const permanentlyDeleteSelected = async () => {
+    const ids = pendingBulkDelete || [];
+    if (!ids.length || bulkBusy) return;
+    setBulkBusy(true);
+    const removed = new Set();
+    let failed = 0;
+    try {
+      await mapPool(ids, async (id) => {
+        try {
+          await permanentlyDeleteUserAsset(id);
+          removed.add(id);
+        } catch {
+          failed += 1;
+        }
+      });
+      applyMaterials(materialsRef.current.filter((item) => !removed.has(item.id)));
+      setSelectedIds(new Set());
+      setPendingBulkDelete(null);
+      failed
+        ? notificationService.error(`已永久删除 ${removed.size} 项，${failed} 项失败`)
+        : notificationService.success(`已永久删除 ${removed.size} 项资产`);
     } finally {
       if (mountedRef.current) setBulkBusy(false);
     }
@@ -1252,6 +1363,15 @@ export function MaterialsLibraryView() {
                   ))}
                 </select>
               </label>
+              <label>
+                <span>标签</span>
+                <input
+                  value={editingTags}
+                  placeholder="用逗号分隔，例如：产品图, 夏季"
+                  disabled={savingEdit}
+                  onChange={(event) => setEditingTags(event.target.value)}
+                />
+              </label>
               <p className="ml-edit__hint">
                 {formatBytes(editAsset.sizeBytes)} · 点击卡片可预览原图
               </p>
@@ -1304,12 +1424,12 @@ export function MaterialsLibraryView() {
               <input
                 type="search"
                 value={query}
-                placeholder="搜索标题或分组"
-                aria-label="搜索标题或分组"
+                placeholder="搜索标题、标签、来源或分组"
+                aria-label="搜索标题、标签、来源或分组"
                 onChange={(event) => setQuery(event.target.value)}
               />
             </label>
-            <button
+            {libraryView === "active" ? <button
               type="button"
               className="ch-btn is-primary"
               disabled={auth.isAuthenticated && !canUpload}
@@ -1319,7 +1439,7 @@ export function MaterialsLibraryView() {
                 className={`bi ${uploading ? "bi-arrow-repeat spin" : "bi-plus-lg"}`}
               />
               {uploading ? "上传中…" : "添加资产"}
-            </button>
+            </button> : null}
             <button
               type="button"
               className="ch-btn is-ghost"
@@ -1351,15 +1471,26 @@ export function MaterialsLibraryView() {
             >
               <button
                 type="button"
-                className={`ch-chip${activeFilter === "all" && !showDuplicatesOnly ? " is-active" : ""}`}
+                className={`ch-chip${libraryView === "active" ? " is-active" : ""}`}
                 onClick={() => {
                   setShowDuplicatesOnly(false);
+                  setLibraryView("active");
                   setActiveFilter("all");
                 }}
               >
-                全部 {totalAssetCount}
+                全部资产 {totalAssetCount}
               </button>
-              {showUngrouped && (
+              <button
+                type="button"
+                className={`ch-chip${libraryView === "trash" ? " is-active" : ""}`}
+                onClick={() => {
+                  setShowDuplicatesOnly(false);
+                  setLibraryView("trash");
+                }}
+              >
+                回收站
+              </button>
+              {libraryView === "active" && showUngrouped && (
                 <button
                   type="button"
                   className={`ch-chip${activeFilter === "ungrouped" ? " is-active" : ""}`}
@@ -1371,7 +1502,7 @@ export function MaterialsLibraryView() {
                   未分组 {ungroupedCount}
                 </button>
               )}
-              {visibleGroups.map((group) => (
+              {libraryView === "active" && visibleGroups.map((group) => (
                 <button
                   key={group.id}
                   type="button"
@@ -1385,7 +1516,7 @@ export function MaterialsLibraryView() {
                   {group.name} {group.assetCount || 0}
                 </button>
               ))}
-              {duplicateKeys.size > 0 && (
+              {libraryView === "active" && duplicateKeys.size > 0 && (
                 <button
                   type="button"
                   className={`ch-chip${showDuplicatesOnly ? " is-active" : ""}`}
@@ -1404,7 +1535,7 @@ export function MaterialsLibraryView() {
               >
                 {selectMode ? "退出多选" : "多选"}
               </button>
-              {activeCustomGroup && (
+              {libraryView === "active" && activeCustomGroup && (
                 <>
                   <button
                     type="button"
@@ -1423,7 +1554,7 @@ export function MaterialsLibraryView() {
                   </button>
                 </>
               )}
-              {canCreateGroup && (
+              {libraryView === "active" && canCreateGroup && (
                 <button
                   type="button"
                   className="ch-chip"
@@ -1450,7 +1581,7 @@ export function MaterialsLibraryView() {
               >
                 全选当前
               </button>
-              <div className="ml-bulk-move">
+              {libraryView === "active" ? <div className="ml-bulk-move">
                 <button
                   type="button"
                   className={`ch-chip${batchMoveOpen ? " is-active" : ""}`}
@@ -1489,22 +1620,30 @@ export function MaterialsLibraryView() {
                     </p>
                   )}
                 </AssetGroupMenu>
-              </div>
-              <button
+              </div> : null}
+              {libraryView === "active" ? <button
                 type="button"
                 className="ch-chip"
                 disabled={bulkBusy || !selectedCount}
                 onClick={openBatchRename}
               >
                 批量重命名
-              </button>
+              </button> : null}
+              {libraryView === "trash" ? <button
+                type="button"
+                className="ch-chip"
+                disabled={bulkBusy || !selectedCount}
+                onClick={() => void restoreSelected()}
+              >
+                恢复所选{selectedCount ? ` (${selectedCount})` : ""}
+              </button> : null}
               <button
                 type="button"
                 className="ch-chip is-danger"
                 disabled={bulkBusy || !selectedCount}
                 onClick={() => setPendingBulkDelete([...selectedIds])}
               >
-                删除所选{selectedCount ? ` (${selectedCount})` : ""}
+                {libraryView === "trash" ? "永久删除" : "移入回收站"}{selectedCount ? ` (${selectedCount})` : ""}
               </button>
             </div>
           )}
@@ -1574,6 +1713,7 @@ export function MaterialsLibraryView() {
                             </strong>
                             <span className="ml-card__overlay-group">
                               {groupNameOf(asset)}
+                              {asset.tags?.length ? ` · ${asset.tags.slice(0, 2).join(" / ")}` : ""}
                             </span>
                             <span className="ml-card__overlay-meta">
                               <em>{formatBytes(asset.sizeBytes)}</em>
@@ -1582,7 +1722,7 @@ export function MaterialsLibraryView() {
                           </div>
                           {!selectMode && (
                             <div className="ch-card__actions">
-                              <button
+                              {libraryView === "active" ? <button
                                 type="button"
                                 className="is-icon"
                                 title="编辑"
@@ -1590,8 +1730,8 @@ export function MaterialsLibraryView() {
                                 onClick={() => openEdit(asset)}
                               >
                                 <i className="bi bi-pencil" aria-hidden="true" />
-                              </button>
-                              <div className="ml-move">
+                              </button> : null}
+                              {libraryView === "active" ? <div className="ml-move">
                                 <button
                                   type="button"
                                   title="移动到分组"
@@ -1646,19 +1786,26 @@ export function MaterialsLibraryView() {
                                     </p>
                                   )}
                                 </AssetGroupMenu>
-                              </div>
+                              </div> : null}
                               <button
                                 type="button"
                                 className="is-icon is-danger"
-                                title="删除"
-                                aria-label="删除"
-                                onClick={() => setPendingDelete(asset)}
+                                title={libraryView === "trash" ? "永久删除" : "移入回收站"}
+                                aria-label={libraryView === "trash" ? "永久删除" : "移入回收站"}
+                                onClick={() => libraryView === "trash" ? setPendingPermanentDelete(asset) : setPendingDelete(asset)}
                               >
                                 <i
                                   className="bi bi-trash3"
                                   aria-hidden="true"
                                 />
                               </button>
+                              {libraryView === "trash" ? <button
+                                type="button"
+                                className="is-icon"
+                                title="恢复"
+                                aria-label="恢复"
+                                onClick={() => void restoreAsset(asset)}
+                              ><i className="bi bi-arrow-counterclockwise" aria-hidden="true" /></button> : null}
                             </div>
                           )}
                         </div>
@@ -1675,18 +1822,18 @@ export function MaterialsLibraryView() {
                   ? "没有匹配的资产"
                   : !auth.isAuthenticated
                     ? "登录后管理你的资产"
-                    : activeFilter === "all"
-                      ? "还没有资产"
-                      : "这个分组是空的"}
+                    : libraryView === "trash"
+                      ? "回收站是空的"
+                      : activeFilter === "all" ? "还没有资产" : "这个分组是空的"}
               </strong>
               <span>
                 {noVisible
                   ? "换个关键词试试，或清空筛选。"
                   : !auth.isAuthenticated
                     ? "资产会与账号同步，并可在全站创作工具中重复使用。"
-                    : activeFilter === "all"
-                      ? "上传图片，建立可在全站调用的个人资产库。"
-                      : "上传到这里，或把其他资产移入当前分组。"}
+                    : libraryView === "trash"
+                      ? "删除的资产会在这里保留 30 天，期间可以恢复。"
+                      : activeFilter === "all" ? "上传图片，建立可在全站调用的个人资产库。" : "上传到这里，或把其他资产移入当前分组。"}
               </span>
               {noVisible ? (
                 <button
@@ -1699,7 +1846,7 @@ export function MaterialsLibraryView() {
                 >
                   清空筛选
                 </button>
-              ) : (
+              ) : libraryView === "active" ? (
                 <button
                   type="button"
                   className="ch-btn is-primary"
@@ -1711,7 +1858,7 @@ export function MaterialsLibraryView() {
                       ? "添加资产"
                       : "上传到此分组"}
                 </button>
-              )}
+              ) : null}
             </div>
           )}
           {(cursor || loadingMore) && !showDuplicatesOnly && !query.trim() && (
@@ -1945,6 +2092,20 @@ export function MaterialsLibraryView() {
                         "—"}
                     </dd>
                   </div>
+                  <div>
+                    <dt>来源</dt>
+                    <dd>{assetSourceLabel(previewMaterial.sourceType)}</dd>
+                  </div>
+                  <div>
+                    <dt>标签</dt>
+                    <dd>{previewMaterial.tags?.length ? previewMaterial.tags.join("、") : "—"}</dd>
+                  </div>
+                  {previewMaterial.parentAssetId ? (
+                    <div>
+                      <dt>派生关系</dt>
+                      <dd>由其他资产派生</dd>
+                    </div>
+                  ) : null}
                 </dl>
               </div>
               <div className="ch-preview__bottom">
@@ -1959,10 +2120,10 @@ export function MaterialsLibraryView() {
                   </button>
                   <button
                     type="button"
-                    title="删除"
-                    onClick={() => setPendingDelete(previewMaterial)}
+                    title={libraryView === "trash" ? "永久删除" : "移入回收站"}
+                    onClick={() => libraryView === "trash" ? setPendingPermanentDelete(previewMaterial) : setPendingDelete(previewMaterial)}
                   >
-                    删除
+                    {libraryView === "trash" ? "永久删除" : "移入回收站"}
                   </button>
                   <button
                     type="button"
@@ -1981,8 +2142,8 @@ export function MaterialsLibraryView() {
       <ConfirmDialog
         open={Boolean(pendingDelete)}
         heading="删除这项资产？"
-        description="资产原图和缩略图都会移除，删除后无法恢复。"
-        confirmLabel="确认删除"
+        description="资产会移入回收站并保留 30 天，期间可以恢复。"
+        confirmLabel="移入回收站"
         icon="bi-trash3"
         light={!isDark}
         onConfirm={confirmDelete}
@@ -2001,16 +2162,26 @@ export function MaterialsLibraryView() {
       <ConfirmDialog
         open={Boolean(pendingBulkDelete?.length)}
         busy={bulkBusy}
-        heading={`删除选中的 ${pendingBulkDelete?.length || 0} 项资产？`}
-        description="资产原图和缩略图都会移除，删除后无法恢复。"
-        confirmLabel="删除所选"
+        heading={libraryView === "trash" ? `永久删除选中的 ${pendingBulkDelete?.length || 0} 项资产？` : `将选中的 ${pendingBulkDelete?.length || 0} 项移入回收站？`}
+        description={libraryView === "trash" ? "永久删除后无法恢复，对应文件会进入后台清理队列。" : "资产会保留 30 天，期间可以从回收站恢复。"}
+        confirmLabel={libraryView === "trash" ? "永久删除" : "移入回收站"}
         busyLabel="删除中…"
         icon="bi-trash3"
         light={!isDark}
-        onConfirm={confirmBulkDelete}
+        onConfirm={libraryView === "trash" ? permanentlyDeleteSelected : confirmBulkDelete}
         onClose={() => {
           if (!bulkBusy) setPendingBulkDelete(null);
         }}
+      />
+      <ConfirmDialog
+        open={Boolean(pendingPermanentDelete)}
+        heading="永久删除这项资产？"
+        description="永久删除后无法恢复，对应文件会进入后台清理队列。"
+        confirmLabel="永久删除"
+        icon="bi-trash3"
+        light={!isDark}
+        onConfirm={permanentlyDeleteAsset}
+        onClose={() => setPendingPermanentDelete(null)}
       />
     </main>
   );

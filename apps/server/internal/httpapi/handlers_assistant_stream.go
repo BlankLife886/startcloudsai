@@ -115,8 +115,9 @@ func writeAssistantMessageStreamSnapshot(c *gin.Context, message *store.Assistan
 		return true
 	}
 	reasoning, _ := message.Metadata["reasoning"].(string)
-	if message.Content != "" || reasoning != "" {
-		if !writeAssistantStreamEvent(c, assistantstream.Event{Content: message.Content, Reasoning: reasoning, Kind: message.Kind}) {
+	stage, _ := message.Metadata["statusStage"].(string)
+	if message.Content != "" || reasoning != "" || strings.TrimSpace(stage) != "" {
+		if !writeAssistantStreamEvent(c, assistantstream.Event{Content: message.Content, Reasoning: reasoning, Kind: message.Kind, Stage: stage}) {
 			return false
 		}
 	}
@@ -167,12 +168,52 @@ func (s *Server) postAssistantRunToolClaim(c *gin.Context) {
 		ok(c, gin.H{"claimed": false})
 		return
 	}
+	message, err := store.GetAssistantMessage(c.Request.Context(), s.St.Pool, run.AssistantMessageID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	pendingEvent, hasPendingEvent := assistantPendingToolEvent(message)
+	if !hasPendingEvent || pendingEvent.Tool == nil || pendingEvent.Tool.RequestID != requestID {
+		ok(c, gin.H{"claimed": false})
+		return
+	}
 	claimed, err := store.ClaimAssistantMessagePendingTool(c.Request.Context(), s.St.Pool, run.AssistantMessageID, requestID, executorID)
 	if err != nil {
 		fail(c, err)
 		return
 	}
+	if claimed {
+		arguments := json.RawMessage(pendingEvent.Tool.Arguments)
+		if !json.Valid(arguments) {
+			arguments, _ = json.Marshal(map[string]any{"raw": pendingEvent.Tool.Arguments})
+		}
+		_ = store.UpsertAgentToolStepClaim(c.Request.Context(), s.St.Pool, run.ID, requestID, pendingEvent.Tool.Name, arguments, executorID, agentToolRequiresConfirmation(pendingEvent.Tool.Name, arguments))
+	}
 	ok(c, gin.H{"claimed": claimed})
+}
+
+func agentToolRequiresConfirmation(name string, arguments json.RawMessage) bool {
+	if name == "canvas_delete_nodes" || name == "canvas_clear" || name == "canvas_restore_checkpoint" || name == "canvas_restore_agent_transaction" {
+		return true
+	}
+	if name != "canvas_apply_ops" {
+		return false
+	}
+	var payload struct {
+		Ops []struct {
+			Type string `json:"type"`
+		} `json:"ops"`
+	}
+	if json.Unmarshal(arguments, &payload) != nil {
+		return false
+	}
+	for _, op := range payload.Ops {
+		if op.Type == "delete_node" || op.Type == "clear_canvas" {
+			return true
+		}
+	}
+	return false
 }
 
 // postAssistantRunToolResult 收下浏览器执行画布工具后的观察结果，交给正在
@@ -259,6 +300,15 @@ func (s *Server) postAssistantRunToolResult(c *gin.Context) {
 	if _, err := store.ClearAssistantMessagePendingTool(c.Request.Context(), s.St.Pool, run.AssistantMessageID, requestID); err != nil {
 		fail(c, apperr.E("unavailable", "工具状态确认失败", 503))
 		return
+	}
+	_ = store.CompleteAgentToolStep(c.Request.Context(), s.St.Pool, run.ID, requestID, body.Result, strings.TrimSpace(body.Error), time.Now().UTC())
+	if len(body.Result) > 0 {
+		var result map[string]any
+		if json.Unmarshal(body.Result, &result) == nil {
+			if checkpointID, _ := result["agentCheckpointId"].(string); strings.TrimSpace(checkpointID) != "" {
+				_ = store.UpdateAgentTraceCheckpoint(c.Request.Context(), s.St.Pool, run.ID, checkpointID)
+			}
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }

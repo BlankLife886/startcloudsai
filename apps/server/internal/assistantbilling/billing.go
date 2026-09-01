@@ -5,6 +5,7 @@ package assistantbilling
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -16,6 +17,14 @@ import (
 )
 
 const SourceType = "assistant_run"
+
+type CancelPolicy struct {
+	Allowed           bool   `json:"allowed"`
+	Mode              string `json:"mode"`
+	UpstreamSubmitted bool   `json:"upstreamSubmitted"`
+	Refunded          bool   `json:"refunded"`
+	Message           string `json:"message"`
+}
 
 func strPtr(value string) *string { return &value }
 
@@ -68,6 +77,67 @@ func ResolvedCost(run *store.AssistantRun, resolvedMode string) int64 {
 		return paramInt64(run.Params, "_imageCostCents")
 	}
 	return paramInt64(run.Params, "_chatCostCents")
+}
+
+func isImageRun(run *store.AssistantRun) bool {
+	return run != nil && (run.Mode == "image" || run.ResolvedMode == "image")
+}
+
+func imageUpstreamSubmitted(run *store.AssistantRun) bool {
+	if !isImageRun(run) || run.Status != "running" {
+		return false
+	}
+	switch run.Stage {
+	case "submitting-image", "generating-image", "fetching-image", "saving-image":
+		return true
+	default:
+		return false
+	}
+}
+
+func editableFileUpstreamSubmitted(run *store.AssistantRun) bool {
+	if run == nil || run.Status != "running" {
+		return false
+	}
+	switch run.Stage {
+	case "submitting-file", "generating-file", "saving-file":
+		return true
+	default:
+		return false
+	}
+}
+
+func CancelPolicyForRun(run *store.AssistantRun) CancelPolicy {
+	policy := CancelPolicy{Mode: "unavailable", Message: "当前阶段不能停止"}
+	if run == nil {
+		return policy
+	}
+	if run.Status == "queued" || (isImageRun(run) && run.Status == "running" && !imageUpstreamSubmitted(run)) {
+		return CancelPolicy{
+			Allowed: true, Mode: "immediate", Refunded: true,
+			Message: "任务尚未提交图片上游，停止后冻结积分会立即退回。",
+		}
+	}
+	if run.Status != "running" {
+		return policy
+	}
+	if isImageRun(run) {
+		return CancelPolicy{
+			Allowed: true, Mode: "abandon_upstream", UpstreamSubmitted: true,
+			Message: "图片请求已经提交给上游。停止后平台不再等待或接收结果，但上游可能仍会继续生成，本轮积分不会退回。",
+		}
+	}
+	if editableFileUpstreamSubmitted(run) {
+		return CancelPolicy{
+			Allowed: true, Mode: "abandon_upstream", UpstreamSubmitted: true,
+			Message: "PPT/PSD 制作任务已经提交给上游。停止后平台不再等待或接收文件，但上游可能仍会继续制作，本轮积分不会退回。",
+		}
+	}
+	message := "本轮推理已经开始。停止后将不再接收结果，本轮已使用的积分不会退回。"
+	if run.Mode == "agent" && paramString(run.Params, "workspace") == "infinite_canvas" {
+		message = "Agent 已经开始执行。停止后会按已完成的画布操作结算，未使用的费用会退回。"
+	}
+	return CancelPolicy{Allowed: true, Mode: "abandon_execution", UpstreamSubmitted: true, Message: message}
 }
 
 func productName(run *store.AssistantRun) string {
@@ -174,6 +244,27 @@ func completeAttempt(ctx context.Context, st *store.Store, id uuid.UUID, expecte
 				return err
 			}
 		}
+		units := 1
+		unitCostKey := "_chatUpstreamUnitCostCents"
+		providerKey, modelKey := "_chatProviderConfigId", "_chatModelConfigId"
+		if resolvedMode == "image" {
+			unitCostKey = "_imageUpstreamUnitCostCents"
+			providerKey, modelKey = "_imageProviderConfigId", "_imageModelConfigId"
+			if actualImages != nil {
+				units = *actualImages
+			} else if requested := int(paramInt64(run.Params, "count")); requested > 0 {
+				units = requested
+			}
+		}
+		if err := store.InsertUsageProfitEntry(ctx, tx, store.UsageProfitEntry{
+			SourceType: SourceType, SourceID: run.ID.String(), BillingGeneration: run.BillingGeneration,
+			UserID: run.UserID, EventStatus: "succeeded", Workspace: paramString(run.Params, "workspace"),
+			ProviderID: paramString(run.Params, providerKey), ModelID: paramString(run.Params, modelKey), Units: units,
+			RevenueCents: cost, UpstreamCostCents: paramInt64(run.Params, unitCostKey) * int64(units),
+			Metadata: map[string]any{"mode": resolvedMode}, CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			return err
+		}
 		return nil
 	})
 	return changed, err
@@ -208,6 +299,24 @@ func FailTxAttempt(ctx context.Context, q store.Q, id uuid.UUID, expectedAttempt
 	if err := release(ctx, q, run, productReason(run, "%s失败，费用已退回")); err != nil {
 		return false, err
 	}
+	unitCostKey := "_chatUpstreamUnitCostCents"
+	providerKey, modelKey, units := "_chatProviderConfigId", "_chatModelConfigId", 1
+	if run.Mode == "image" {
+		unitCostKey = "_imageUpstreamUnitCostCents"
+		providerKey, modelKey = "_imageProviderConfigId", "_imageModelConfigId"
+		units = max(1, int(paramInt64(run.Params, "count")))
+	}
+	if run.Attempt > 0 && paramInt64(run.Params, unitCostKey) > 0 {
+		if err := store.InsertUsageProfitEntry(ctx, q, store.UsageProfitEntry{
+			SourceType: SourceType, SourceID: run.ID.String(), BillingGeneration: run.BillingGeneration,
+			UserID: run.UserID, EventStatus: "failed", Workspace: paramString(run.Params, "workspace"),
+			ProviderID: paramString(run.Params, providerKey), ModelID: paramString(run.Params, modelKey), Units: units,
+			UpstreamCostCents: paramInt64(run.Params, unitCostKey) * int64(units),
+			Metadata:          map[string]any{"mode": run.Mode, "errorCode": code}, CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			return false, err
+		}
+	}
 	latest, err := store.GetAssistantRun(ctx, q, id)
 	if err != nil {
 		return false, err
@@ -230,12 +339,26 @@ func CancelUser(ctx context.Context, st *store.Store, userID, id uuid.UUID) (*st
 }
 
 func CancelUserTx(ctx context.Context, q store.Q, userID, id uuid.UUID) (*store.AssistantRun, bool, error) {
+	return CancelUserTxConfirmed(ctx, q, userID, id, true)
+}
+
+func CancelUserTxConfirmed(ctx context.Context, q store.Q, userID, id uuid.UUID, acknowledgeUpstream bool) (*store.AssistantRun, bool, error) {
 	run, err := store.GetUserAssistantRunForUpdate(ctx, q, userID, id)
 	if err != nil || run == nil {
 		return run, false, err
 	}
+	policy := CancelPolicyForRun(run)
+	if !policy.Allowed {
+		return run, false, nil
+	}
+	if policy.UpstreamSubmitted && !acknowledgeUpstream {
+		return run, false, apperr.E("assistant_cancel_confirmation_required", policy.Message+"请确认后再停止。", 409)
+	}
 	canvasAgent := run.Mode == "agent" && paramString(run.Params, "workspace") == "infinite_canvas"
-	cost := run.ReservedCents
+	cost := int64(0)
+	if policy.UpstreamSubmitted {
+		cost = run.ReservedCents
+	}
 	if canvasAgent {
 		billable, err := hasBillableCanvasAgentAction(ctx, q, run)
 		if err != nil {
@@ -274,8 +397,14 @@ func CancelUserTx(ctx context.Context, q store.Q, userID, id uuid.UUID) (*store.
 				return run, false, err
 			}
 		}
-	} else if err := release(ctx, q, run, productReason(run, "%s由用户主动停止，未执行画布操作，费用已退回")); err != nil {
-		return run, false, err
+	} else {
+		reason := productReason(run, "%s在提交上游前停止，费用已退回")
+		if canvasAgent {
+			reason = productReason(run, "%s由用户主动停止，未执行画布操作，费用已退回")
+		}
+		if err := release(ctx, q, run, reason); err != nil {
+			return run, false, err
+		}
 	}
 	latest, syncErr := store.GetAssistantRun(ctx, q, id)
 	if syncErr != nil {

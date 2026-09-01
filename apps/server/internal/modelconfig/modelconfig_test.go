@@ -41,6 +41,29 @@ func TestSelectPublicUsesRequestedOrDefaultModel(t *testing.T) {
 	}
 }
 
+func TestEditableFileProviderRequiresExplicitEnabledRoute(t *testing.T) {
+	cfg := testConfig()
+	cfg.EditableFiles = EditableFileConfig{
+		Enabled: true, ProviderID: "provider", RouteID: "provider-default",
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("editable file config should be valid: %v", err)
+	}
+	provider, ok := EditableFileProvider(cfg)
+	if !ok || provider.ID != "provider" || provider.RouteID != "provider-default" || provider.BaseURL != "https://api.example.com" {
+		t.Fatalf("editable provider = %#v, ok=%v", provider, ok)
+	}
+
+	cfg.EditableFiles.RouteID = "missing"
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "线路") {
+		t.Fatalf("expected invalid editable route, got %v", err)
+	}
+	cfg.EditableFiles.Enabled = false
+	if _, ok := EditableFileProvider(cfg); ok {
+		t.Fatal("disabled editable files must not return a provider")
+	}
+}
+
 func TestChatModelContextDefaultsAndValidation(t *testing.T) {
 	cfg := testConfig()
 	selected, ok := SelectPublic(cfg, ModelKindChat, "chat")
@@ -50,6 +73,35 @@ func TestChatModelContextDefaultsAndValidation(t *testing.T) {
 	cfg.Models[2].ContextWindowTokens = 3_000
 	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "上下文窗口") {
 		t.Fatalf("expected invalid context window, got %v", err)
+	}
+}
+
+func TestValidatePublicImagePricingSafety(t *testing.T) {
+	cfg := testConfig()
+	cfg.Models[0].PriceCents = 0
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "允许零价") {
+		t.Fatalf("expected zero price guard, got %v", err)
+	}
+	cfg.Models[0].AllowZeroPrice = true
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("explicit free model should be valid: %v", err)
+	}
+
+	cfg = testConfig()
+	cfg.Models[0].UpstreamCostCents = 31
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "低于上游成本") {
+		t.Fatalf("expected loss leader guard, got %v", err)
+	}
+	cfg.Models[0].AllowLossLeader = true
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("explicit loss leader should be valid: %v", err)
+	}
+
+	// Chat prices are resolved per assistant mode and enforced at run creation.
+	cfg = testConfig()
+	cfg.Models[2].UpstreamCostCents = 10
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("chat model validation must not use image pricing rules: %v", err)
 	}
 }
 

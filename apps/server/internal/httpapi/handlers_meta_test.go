@@ -83,7 +83,10 @@ func TestRuntimeConfigExposesOnlyPublicModelMapping(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 	body := recorder.Body.String()
-	for _, secret := range []string{"secret-key", "secret.example.com", "private-upstream-id", "内部模型"} {
+	for _, secret := range []string{
+		"secret-key", "secret.example.com", "private-upstream-id", "内部模型", "RS Image",
+		`"providerId"`, `"providerName"`, `"adapter":"openai"`,
+	} {
 		if strings.Contains(body, secret) {
 			t.Fatalf("runtime config leaked %q: %s", secret, body)
 		}
@@ -247,6 +250,9 @@ func TestRuntimeConfigExposesResolvedPageControls(t *testing.T) {
 	}
 	if got := response.Data.PageControls["activity.failure"]; got.Status != settings.PageStatusRemoved {
 		t.Fatalf("default failure control = %#v", got)
+	}
+	if got := response.Data.PageControls["developer_api"]; got.Status != settings.PageStatusRemoved {
+		t.Fatalf("default developer API control = %#v", got)
 	}
 }
 

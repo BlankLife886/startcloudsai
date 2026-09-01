@@ -1,0 +1,71 @@
+services:
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: startclouds-local
+      MINIO_ROOT_PASSWORD: local-storage-password
+    volumes:
+      - minio_local_data:/data
+    ports:
+      - 127.0.0.1:9000:9000
+      - 127.0.0.1:9001:9001
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    networks: [data, edge]
+    mem_limit: 256m
+    cpus: 0.25
+    cpuset: "0-3"
+    pids_limit: 120
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        mc alias set local http://minio:9000 startclouds-local local-storage-password
+        mc mb --ignore-existing local/startcloudsai-local
+    networks: [data]
+    mem_limit: 64m
+    cpus: 0.10
+    cpuset: "0-3"
+    pids_limit: 40
+
+  server:
+    environment:
+      OBJECT_STORAGE_ENDPOINT: http://minio:9000
+      OBJECT_STORAGE_PUBLIC_ENDPOINT: http://127.0.0.1:9000
+      OBJECT_STORAGE_REGION: us-east-1
+      OBJECT_STORAGE_ACCESS_KEY_ID: startclouds-local
+      OBJECT_STORAGE_SECRET_ACCESS_KEY: local-storage-password
+      OBJECT_STORAGE_BUCKET: startcloudsai-local
+      OBJECT_STORAGE_USE_PATH_STYLE: "true"
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+
+  worker:
+    environment:
+      OBJECT_STORAGE_ENDPOINT: http://minio:9000
+      OBJECT_STORAGE_PUBLIC_ENDPOINT: http://127.0.0.1:9000
+      OBJECT_STORAGE_REGION: us-east-1
+      OBJECT_STORAGE_ACCESS_KEY_ID: startclouds-local
+      OBJECT_STORAGE_SECRET_ACCESS_KEY: local-storage-password
+      OBJECT_STORAGE_BUCKET: startcloudsai-local
+      OBJECT_STORAGE_USE_PATH_STYLE: "true"
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+
+volumes:
+  minio_local_data:

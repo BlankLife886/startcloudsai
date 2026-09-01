@@ -4,6 +4,7 @@ package settings
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -52,6 +53,16 @@ var Defaults = map[string]json.RawMessage{
 	"growth_usage_milestones":                     json.RawMessage(`[{"units":10,"rewardCents":20},{"units":30,"rewardCents":50},{"units":100,"rewardCents":150}]`),
 	"suggestion_reward_max_cents":                 json.RawMessage(`10000`),
 	"page_controls":                               mustMarshalPageControls(PageControlDefaults()),
+	// 可选平台日志。总开关默认关闭；分类开关只在总开关开启后生效。
+	"platform_logging_enabled":            json.RawMessage(`false`),
+	"platform_log_security_enabled":       json.RawMessage(`true`),
+	"platform_log_operations_enabled":     json.RawMessage(`true`),
+	"platform_log_user_enabled":           json.RawMessage(`false`),
+	"platform_log_retention_days":         json.RawMessage(`7`),
+	"platform_log_max_mb":                 json.RawMessage(`256`),
+	"user_profile_rules":                  json.RawMessage(`{"version":1,"newUserDays":3,"activationDays":7,"activeDays":7,"churnRiskDays":14,"dormantDays":30,"frequentFailureMinRuns":5,"frequentFailureRatePercent":40,"powerUserActiveDays30":7,"powerUserSuccessfulRuns30":20,"powerUserFeatureDiversity30":2,"highValuePercentile":90}`),
+	"user_profile_history_retention_days": json.RawMessage(`180`),
+	"user_behavior_retention_days":        json.RawMessage(`90`),
 	// 社区投稿（v3）：开关 / 自动过审 / 每日限额（0 = 不限）
 	"submission_enabled": json.RawMessage(`true`),
 	"auto_approve":       json.RawMessage(`false`),
@@ -213,6 +224,59 @@ func GetStrings(ctx context.Context, q store.Q, key string) ([]string, error) {
 		result = append(result, value)
 	}
 	return result, nil
+}
+
+func UserProfileRules(ctx context.Context, q store.Q) (store.UserProfileRules, error) {
+	rules := store.DefaultUserProfileRules()
+	raw, err := Get(ctx, q, "user_profile_rules")
+	if err != nil {
+		return rules, err
+	}
+	if raw != nil {
+		if err := json.Unmarshal(raw, &rules); err != nil {
+			return store.DefaultUserProfileRules(), err
+		}
+	}
+	if err := ValidateUserProfileRules(rules); err != nil {
+		return store.DefaultUserProfileRules(), err
+	}
+	return rules, nil
+}
+
+func ValidateUserProfileRules(rules store.UserProfileRules) error {
+	checks := []struct {
+		name    string
+		value   int
+		minimum int
+		maximum int
+	}{
+		{"新用户范围", rules.NewUserDays, 1, 14},
+		{"激活观察期", rules.ActivationDays, 1, 30},
+		{"活跃范围", rules.ActiveDays, 1, 30},
+		{"流失风险天数", rules.ChurnRiskDays, 2, 90},
+		{"沉默用户天数", rules.DormantDays, 7, 365},
+		{"失败最小样本", rules.FrequentFailureMinRuns, 3, 100},
+		{"高频失败率", rules.FrequentFailureRatePercent, 10, 100},
+		{"深度用户活跃天数", rules.PowerUserActiveDays30, 1, 30},
+		{"深度用户成功次数", rules.PowerUserSuccessfulRuns30, 1, 10000},
+		{"深度用户功能数量", rules.PowerUserFeatureDiversity30, 1, 10},
+		{"高价值百分位", rules.HighValuePercentile, 50, 99},
+	}
+	for _, check := range checks {
+		if check.value < check.minimum || check.value > check.maximum {
+			return fmt.Errorf("%s须在 %d-%d 之间", check.name, check.minimum, check.maximum)
+		}
+	}
+	if rules.ActivationDays < rules.NewUserDays {
+		return fmt.Errorf("激活观察期不能短于新用户范围")
+	}
+	if rules.ChurnRiskDays <= rules.ActiveDays {
+		return fmt.Errorf("流失风险天数必须大于活跃范围")
+	}
+	if rules.DormantDays <= rules.ChurnRiskDays {
+		return fmt.Errorf("沉默用户天数必须大于流失风险天数")
+	}
+	return nil
 }
 
 // TaskPrices 返回任务单价表（原始 JSON 对象）。

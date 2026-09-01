@@ -36,9 +36,11 @@ func fail(c *gin.Context, err error) {
 		return
 	}
 	if e, isApp := apperr.As(err); isApp {
+		c.Set(ctxPlatformErrorKey, e.Code)
 		c.AbortWithStatusJSON(e.Status, gin.H{"success": false, "code": e.Code, "error": e.Message})
 		return
 	}
+	c.Set(ctxPlatformErrorKey, "internal_error")
 	log.Printf("unhandled error on %s %s: %v", c.Request.Method, c.Request.URL.Path, err)
 	c.AbortWithStatusJSON(500, gin.H{"success": false, "code": "internal_error", "error": "服务器内部错误"})
 }

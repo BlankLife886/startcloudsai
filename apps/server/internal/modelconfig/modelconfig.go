@@ -153,6 +153,9 @@ type Model struct {
 	Description                  string               `json:"description,omitempty"`
 	PriceCents                   int64                `json:"priceCents"`
 	DiscountPriceCents           *int64               `json:"discountPriceCents"`
+	UpstreamCostCents            int64                `json:"upstreamCostCents"`
+	AllowZeroPrice               bool                 `json:"allowZeroPrice"`
+	AllowLossLeader              bool                 `json:"allowLossLeader"`
 	ImageUpscalePricing          *ImageUpscalePricing `json:"imageUpscalePricing,omitempty"`
 	FastMode                     bool                 `json:"fastMode"`
 	MinSeconds                   int                  `json:"minSeconds"`
@@ -187,6 +190,7 @@ type ImageUpscalePricing struct {
 	ThresholdPixels        int    `json:"thresholdPixels"`
 	HighPriceCents         int64  `json:"highPriceCents"`
 	HighDiscountPriceCents *int64 `json:"highDiscountPriceCents"`
+	HighUpstreamCostCents  int64  `json:"highUpstreamCostCents"`
 }
 
 func (m *Model) UnmarshalJSON(data []byte) error {
@@ -277,10 +281,17 @@ func (m Model) GenerationMaxImages() int {
 }
 
 type Config struct {
-	Version    int                         `json:"version"`
-	Providers  []Provider                  `json:"providers"`
-	Models     []Model                     `json:"models"`
-	Workspaces map[string]WorkspaceBinding `json:"workspaces"`
+	Version       int                         `json:"version"`
+	Providers     []Provider                  `json:"providers"`
+	Models        []Model                     `json:"models"`
+	Workspaces    map[string]WorkspaceBinding `json:"workspaces"`
+	EditableFiles EditableFileConfig          `json:"editableFiles"`
+}
+
+type EditableFileConfig struct {
+	Enabled    bool   `json:"enabled"`
+	ProviderID string `json:"providerId"`
+	RouteID    string `json:"routeId"`
 }
 
 type WorkspaceBinding struct {
@@ -345,6 +356,8 @@ func Save(ctx context.Context, q store.Q, cfg Config) error {
 
 func normalize(cfg *Config) {
 	cfg.Version = Version
+	cfg.EditableFiles.ProviderID = strings.TrimSpace(cfg.EditableFiles.ProviderID)
+	cfg.EditableFiles.RouteID = strings.TrimSpace(cfg.EditableFiles.RouteID)
 	if cfg.Providers == nil {
 		cfg.Providers = []Provider{}
 	}
@@ -705,6 +718,22 @@ func Validate(cfg Config) error {
 		}
 		providers[provider.ID] = provider
 	}
+	if cfg.EditableFiles.Enabled {
+		provider, exists := providers[cfg.EditableFiles.ProviderID]
+		if !exists || !provider.Enabled || provider.Adapter != AdapterOpenAI {
+			return errors.New("PPT/PSD 必须指定一个已启用的 ChatGPT2API 兼容服务商")
+		}
+		selectedRoute := false
+		for _, route := range executionRoutes(provider) {
+			if route.RouteID == cfg.EditableFiles.RouteID && strings.TrimSpace(route.APIKey) != "" {
+				selectedRoute = true
+				break
+			}
+		}
+		if !selectedRoute {
+			return errors.New("PPT/PSD 指定的服务商线路不存在、未启用或缺少 API Key")
+		}
+	}
 	models := make(map[string]Model, len(cfg.Models))
 	defaults := map[string]bool{}
 	for _, model := range cfg.Models {
@@ -737,8 +766,17 @@ func Validate(cfg Config) error {
 		if model.PriceCents < 0 || (model.DiscountPriceCents != nil && *model.DiscountPriceCents < 0) {
 			return fmt.Errorf("模型 %s 的价格不能为负", model.Name)
 		}
+		if model.UpstreamCostCents < 0 {
+			return fmt.Errorf("模型 %s 的上游成本不能为负", model.Name)
+		}
 		if model.DiscountPriceCents != nil && *model.DiscountPriceCents > model.PriceCents {
 			return fmt.Errorf("模型 %s 的折扣价不能高于标准价", model.Name)
+		}
+		if model.Kind != ModelKindChat && model.Enabled && model.Public && EffectivePrice(model) == 0 && !model.AllowZeroPrice {
+			return fmt.Errorf("模型 %s 的用户价格为 0；如确需免费，请显式开启允许零价", model.Name)
+		}
+		if model.Kind != ModelKindChat && model.Enabled && model.Public && EffectivePrice(model) < model.UpstreamCostCents && !model.AllowLossLeader {
+			return fmt.Errorf("模型 %s 的用户价格低于上游成本；如确需补贴，请显式开启允许亏损", model.Name)
 		}
 		if pricing := model.ImageUpscalePricing; pricing != nil {
 			if model.Kind != ModelKindImageTool || model.Tool != ImageToolUpscale {
@@ -749,6 +787,19 @@ func Validate(cfg Config) error {
 			}
 			if pricing.HighPriceCents < 0 || (pricing.HighDiscountPriceCents != nil && *pricing.HighDiscountPriceCents < 0) {
 				return fmt.Errorf("高清放大模型 %s 的 4096px 档价格不能为负", model.Name)
+			}
+			if pricing.HighUpstreamCostCents < 0 {
+				return fmt.Errorf("高清放大模型 %s 的 4096px 档上游成本不能为负", model.Name)
+			}
+			highEffective := pricing.HighPriceCents
+			if pricing.HighDiscountPriceCents != nil {
+				highEffective = *pricing.HighDiscountPriceCents
+			}
+			if model.Enabled && model.Public && highEffective == 0 && !model.AllowZeroPrice {
+				return fmt.Errorf("高清放大模型 %s 的 4096px 档用户价格为 0", model.Name)
+			}
+			if model.Enabled && model.Public && highEffective < pricing.HighUpstreamCostCents && !model.AllowLossLeader {
+				return fmt.Errorf("高清放大模型 %s 的 4096px 档用户价格低于上游成本", model.Name)
 			}
 			if pricing.HighDiscountPriceCents != nil && *pricing.HighDiscountPriceCents > pricing.HighPriceCents {
 				return fmt.Errorf("高清放大模型 %s 的 4096px 档折扣价不能高于标准价", model.Name)
@@ -863,6 +914,16 @@ func Validate(cfg Config) error {
 			}
 			if pricing.DiscountPriceCents != nil && *pricing.DiscountPriceCents > pricing.PriceCents {
 				return fmt.Errorf("页面 %s 的模型 %s 折扣价不能高于标准价", workspace, model.Name)
+			}
+			effective := pricing.PriceCents
+			if pricing.DiscountPriceCents != nil {
+				effective = *pricing.DiscountPriceCents
+			}
+			if effective == 0 && !model.AllowZeroPrice {
+				return fmt.Errorf("页面 %s 的模型 %s 用户价格为 0；如确需免费，请在模型中允许零价", workspace, model.Name)
+			}
+			if effective < model.UpstreamCostCents && !model.AllowLossLeader {
+				return fmt.Errorf("页面 %s 的模型 %s 用户价格低于上游成本", workspace, model.Name)
 			}
 		}
 	}
@@ -982,6 +1043,15 @@ func EffectivePrice(model Model) int64 {
 	return model.PriceCents
 }
 
+func ResolveUpstreamCost(model Model, inputLongEdge int, scaleFactor float64) int64 {
+	pricing := model.ImageUpscalePricing
+	if model.Kind == ModelKindImageTool && model.Tool == ImageToolUpscale && pricing != nil &&
+		(inputLongEdge <= 0 || scaleFactor <= 0 || float64(inputLongEdge)*scaleFactor > float64(pricing.ThresholdPixels)) {
+		return pricing.HighUpstreamCostCents
+	}
+	return model.UpstreamCostCents
+}
+
 // ResolveImageUpscalePrice resolves the two provider resolution tiers using
 // trusted input dimensions. Missing dimensions or scale select the high tier
 // so an incomplete client quote can never undercharge the task.
@@ -1070,6 +1140,25 @@ func executionRoutes(provider Provider) []Provider {
 }
 
 func ExecutionRoutes(provider Provider) []Provider { return executionRoutes(provider) }
+
+// EditableFileProvider returns the administrator-selected ChatGPT2API route.
+func EditableFileProvider(cfg Config) (Provider, bool) {
+	normalize(&cfg)
+	if !cfg.EditableFiles.Enabled || cfg.EditableFiles.ProviderID == "" || cfg.EditableFiles.RouteID == "" {
+		return Provider{}, false
+	}
+	for _, provider := range cfg.Providers {
+		if provider.ID != cfg.EditableFiles.ProviderID || !provider.Enabled || provider.Adapter != AdapterOpenAI {
+			continue
+		}
+		for _, route := range executionRoutes(provider) {
+			if route.RouteID == cfg.EditableFiles.RouteID && strings.TrimSpace(route.APIKey) != "" {
+				return route, true
+			}
+		}
+	}
+	return Provider{}, false
+}
 
 func ExecutionRouteKey(provider Provider) string {
 	if provider.RouteID == "" {

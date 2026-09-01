@@ -191,11 +191,71 @@ func variantURLForKey(key *string, derive func(string) string) *string {
 	return &urls[0]
 }
 
-func taskDict(t *store.Task, outputURLs, originalURLs []string) gin.H {
-	params := t.Params
-	if params == nil {
-		params = map[string]any{}
+func taskGenerationStage(t *store.Task) string {
+	if t == nil {
+		return ""
 	}
+	switch t.Status {
+	case "queued":
+		return "queued"
+	case "succeeded":
+		return "completed"
+	case "failed":
+		return "failed"
+	case "canceled":
+		return "canceled"
+	}
+	if t.Status != "running" {
+		return t.Status
+	}
+	if stage, _ := t.Params["_generationStage"].(string); stage != "" {
+		switch stage {
+		case "preparing", "upstream_generating", "fetching_result", "saving_result":
+			return stage
+		}
+	}
+	if len(t.OutputKeys) > 0 {
+		return "saving_result"
+	}
+	if stage, _ := t.Params["_upstreamStage"].(string); stage == "async_pending" {
+		return "upstream_generating"
+	}
+	// A running task without the new marker was created by an older worker or
+	// observed in the narrow claim-to-stage window. Treat it conservatively as
+	// submitted so the UI never promises a refund that the ledger cannot make.
+	return "upstream_generating"
+}
+
+func taskCancelPolicy(t *store.Task) gin.H {
+	stage := taskGenerationStage(t)
+	policy := gin.H{
+		"allowed":           false,
+		"mode":              "unavailable",
+		"upstreamSubmitted": false,
+		"refunded":          false,
+		"message":           "当前阶段不能取消",
+	}
+	if t == nil {
+		return policy
+	}
+	if t.Status == "queued" || (t.Status == "running" && stage == "preparing") {
+		policy["allowed"] = true
+		policy["mode"] = "immediate"
+		policy["refunded"] = true
+		policy["message"] = "任务尚未提交上游，取消后冻结积分会立即退回。"
+		return policy
+	}
+	if t.Status == "running" {
+		policy["allowed"] = true
+		policy["mode"] = "abandon_upstream"
+		policy["upstreamSubmitted"] = true
+		policy["message"] = "生成请求已经提交给上游。停止后平台不再等待或接收结果，但上游可能仍会继续生成，本次积分不会退回。"
+	}
+	return policy
+}
+
+func taskDict(t *store.Task, outputURLs, originalURLs []string) gin.H {
+	params := publicTaskParams(t.Params)
 	var deletionActor any
 	if t.DeletionActor != nil {
 		deletionActor = *t.DeletionActor
@@ -205,6 +265,8 @@ func taskDict(t *store.Task, outputURLs, originalURLs []string) gin.H {
 		"type":               t.Type,
 		"model":              t.Model,
 		"status":             t.Status,
+		"generationStage":    taskGenerationStage(t),
+		"cancelPolicy":       taskCancelPolicy(t),
 		"prompt":             t.Prompt,
 		"params":             params,
 		"count":              t.Count,
@@ -228,6 +290,26 @@ func taskDict(t *store.Task, outputURLs, originalURLs []string) gin.H {
 	}
 }
 
+// publicTaskParams keeps user-authored options while withholding execution
+// snapshots such as provider routes, upstream costs and API-key identifiers.
+func publicTaskParams(params map[string]any) map[string]any {
+	if params == nil {
+		return map[string]any{}
+	}
+	allowedInternal := map[string]bool{
+		"_source": true, "_kind": true, "_automatic": true,
+		"_parentTaskId": true, "_modelDisplayName": true,
+	}
+	out := make(map[string]any, len(params))
+	for key, value := range params {
+		if strings.HasPrefix(key, "_") && !allowedInternal[key] {
+			continue
+		}
+		out[key] = value
+	}
+	return out
+}
+
 func attachShareSubmission(d gin.H, submission *store.GallerySubmission) gin.H {
 	if submission == nil {
 		d["shareSubmitted"] = false
@@ -241,6 +323,9 @@ func attachShareSubmission(d gin.H, submission *store.GallerySubmission) gin.H {
 
 func adminTaskDict(t *store.Task, user *store.User) gin.H {
 	d := taskDict(t, nil, nil)
+	// The admin diagnostics view is authorization-protected and needs the full
+	// execution snapshot; only public/user task serializers are redacted.
+	d["params"] = t.Params
 	d["userId"] = t.UserID.String()
 	d["attempt"] = t.Attempt
 	d["serviceProvider"] = adminTaskServiceProvider(t)

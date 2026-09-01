@@ -897,19 +897,44 @@ func (w *Worker) checkpointCanvasAgentAction(ctx context.Context, run *store.Ass
 }
 
 func (w *Worker) runCanvasAgentWebSearch(ctx context.Context, run *store.AssistantRun, loop *canvasAgentLoopState, call *sub2api.ToolCall) string {
+	requestID := uuid.NewString()
+	rawArguments := ""
+	if call != nil {
+		rawArguments = call.Arguments
+		if strings.TrimSpace(call.ID) != "" {
+			requestID = strings.TrimSpace(call.ID)
+		}
+	}
+	traceAvailable := w != nil && w.St != nil && run != nil
+	var tracedResult json.RawMessage
+	var tracedError string
+	if traceAvailable {
+		_ = store.UpsertAgentToolStepClaim(ctx, w.St.Pool, run.ID, requestID, webSearchTool().Name,
+			assistantToolArguments(rawArguments), "server", false)
+		defer func() {
+			traceCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = store.CompleteAgentToolStep(traceCtx, w.St.Pool, run.ID, requestID, tracedResult, tracedError, time.Now().UTC())
+		}()
+	}
 	var arguments struct {
 		Query          string   `json:"query"`
 		RecencyDays    int      `json:"recencyDays"`
 		AllowedDomains []string `json:"allowedDomains"`
 	}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(call.Arguments)), &arguments); err != nil || strings.TrimSpace(arguments.Query) == "" {
+	if call == nil || json.Unmarshal([]byte(strings.TrimSpace(rawArguments)), &arguments) != nil || strings.TrimSpace(arguments.Query) == "" {
+		tracedError = "web_search 需要有效的 query"
 		return "执行失败：web_search 需要有效的 query。请按 {\"query\":\"完整检索问题\"} 重新调用。"
 	}
 	if loop == nil || loop.webSearchClient == nil {
-		return "执行失败：当前模型线路没有可用的联网搜索客户端，禁止凭记忆冒充联网结果。"
+		message := "当前对话模型不支持联网搜索"
+		if loop != nil && strings.TrimSpace(loop.webSearchError) != "" {
+			message = loop.webSearchError
+		}
+		tracedError = message
+		return "执行失败：" + message + "，禁止凭记忆冒充联网结果。"
 	}
 
-	requestID := uuid.NewString()
 	serverToolAvailable := w != nil && w.Stream != nil && w.St != nil && run != nil
 	if serverToolAvailable {
 		pendingTool := canvasAgentPendingTool(requestID, call.Name, call.Arguments)
@@ -937,6 +962,7 @@ func (w *Worker) runCanvasAgentWebSearch(ctx context.Context, run *store.Assista
 	})
 	if err != nil {
 		message := truncateForModel(err.Error(), 1000)
+		tracedError = message
 		loop.webSearchFailed = true
 		loop.webSearchError = "联网搜索失败：" + message
 		if serverToolAvailable {
@@ -949,8 +975,10 @@ func (w *Worker) runCanvasAgentWebSearch(ctx context.Context, run *store.Assista
 	}
 	raw, err := json.Marshal(result)
 	if err != nil {
+		tracedError = err.Error()
 		return "执行失败：联网搜索结果序列化失败：" + err.Error()
 	}
+	tracedResult = raw
 	if serverToolAvailable {
 		assistantstream.Publish(ctx, w.Stream, run.ID.String(), assistantstream.Event{
 			Kind: "agent", Stage: "web_search",
@@ -2621,7 +2649,11 @@ func (w *Worker) executeCanvasAgent(
 	}
 	reasoningEffort := assistantParamString(run.Params, "reasoningEffort", "")
 	reasoningClient := client.WithReasoningEffort(reasoningEffort)
-	loop := canvasAgentLoopState{summary: "", pendingOps: nil, webSearchClient: reasoningClient}
+	webSearchClient, webSearchErr := w.configuredAssistantWebSearchClient(ctx, run)
+	loop := canvasAgentLoopState{summary: "", pendingOps: nil, webSearchClient: webSearchClient}
+	if webSearchErr != nil {
+		loop.webSearchError = webSearchErr.Error()
+	}
 	intent, intentErr := classifyCanvasAgentIntent(ctx, client, payload)
 	if intentErr != nil {
 		// Keyword matching is deliberately limited to an availability fallback.

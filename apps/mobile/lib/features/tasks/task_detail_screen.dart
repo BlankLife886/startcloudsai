@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/services.dart';
 import 'package:gal/gal.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
@@ -22,9 +23,10 @@ import 'tasks.dart';
 import '../../core/widgets/app_chrome.dart';
 
 class TaskDetailScreen extends ConsumerStatefulWidget {
-  const TaskDetailScreen({required this.taskId, super.key});
+  const TaskDetailScreen({required this.taskId, this.initialTask, super.key});
 
   final String taskId;
+  final TaskItem? initialTask;
 
   @override
   ConsumerState<TaskDetailScreen> createState() => _TaskDetailScreenState();
@@ -154,12 +156,25 @@ class _TaskDetailScreenState extends ConsumerState<TaskDetailScreen>
   Future<void> _save(TaskItem task) async {
     setState(() => _busyAction = _TaskAction.save);
     try {
-      final file = await ref
-          .read(taskRepositoryProvider)
-          .downloadOriginal(task, _safeIndex(task));
-      await Gal.putImage(file.path);
+      final count = task.originalUrls.length;
+      final repository = ref.read(taskRepositoryProvider);
+      final result = await saveTaskImages(
+        count: count,
+        downloadPath: (index) async =>
+            (await repository.downloadOriginal(task, index)).path,
+        savePath: Gal.putImage,
+      );
       if (!mounted) return;
-      AppNotice.success(context, '已保存到系统相册');
+      if (result.isComplete) {
+        AppNotice.success(
+          context,
+          count > 1 ? '已保存 $count 张到系统相册' : '已保存到系统相册',
+        );
+      } else if (result.savedCount > 0) {
+        AppNotice.warning(context, '已保存 ${result.savedCount} 张，其余图片保存失败');
+      } else {
+        _showError(result.error!);
+      }
     } catch (error) {
       if (mounted) _showError(error);
     } finally {
@@ -191,6 +206,14 @@ class _TaskDetailScreenState extends ConsumerState<TaskDetailScreen>
     } finally {
       if (mounted) setState(() => _busyAction = null);
     }
+  }
+
+  Future<void> _copyPrompt(TaskItem task) async {
+    final prompt = task.displayPrompt.trim();
+    if (prompt.isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: prompt));
+    if (!mounted) return;
+    AppNotice.success(context, '提示词已复制');
   }
 
   Future<void> _submitToGallery(TaskItem task) async {
@@ -300,6 +323,16 @@ class _TaskDetailScreenState extends ConsumerState<TaskDetailScreen>
     return _pageIndex.clamp(0, task.originalUrls.length - 1);
   }
 
+  void _selectImage(int index) {
+    if (index == _pageIndex || !_pageController.hasClients) return;
+    setState(() => _pageIndex = index);
+    _pageController.animateToPage(
+      index,
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
   Future<void> _openFullscreen(TaskItem task) async {
     final urls = task.previewUrls;
     if (urls.isEmpty) return;
@@ -346,6 +379,17 @@ class _TaskDetailScreenState extends ConsumerState<TaskDetailScreen>
   @override
   Widget build(BuildContext context) {
     final detail = ref.watch(taskDetailProvider(widget.taskId));
+    final liveTask = switch (detail) {
+      AsyncData<TaskItem>(:final value) => value,
+      _ => null,
+    };
+    final task = liveTask ?? widget.initialTask;
+    final usingCachedTask = liveTask == null && widget.initialTask != null;
+    final cachedState = usingCachedTask
+        ? detail.hasError
+              ? _CachedTaskState.failed
+              : _CachedTaskState.syncing
+        : null;
     final submission = ref.watch(
       gallerySubmissionForTaskProvider(widget.taskId),
     );
@@ -378,20 +422,37 @@ class _TaskDetailScreenState extends ConsumerState<TaskDetailScreen>
           const SizedBox(width: 4),
         ],
       ),
-      body: detail.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (error, stackTrace) => Center(
-          child: OutlinedButton.icon(
-            onPressed: () => ref.invalidate(taskDetailProvider(widget.taskId)),
-            icon: const Icon(Icons.refresh),
-            label: const Text('重新加载'),
-          ),
-        ),
-        data: (task) => _buildContent(task, submission),
-      ),
-      bottomNavigationBar: detail.asData == null
+      body: task != null
+          ? Column(
+              children: [
+                AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 180),
+                  child: cachedState == null
+                      ? const SizedBox.shrink()
+                      : _CachedTaskNotice(
+                          state: cachedState,
+                          onRetry: () =>
+                              ref.invalidate(taskDetailProvider(widget.taskId)),
+                        ),
+                ),
+                Expanded(child: _buildContent(task, submission)),
+              ],
+            )
+          : detail.when(
+              loading: () => const Center(child: CircularProgressIndicator()),
+              error: (error, stackTrace) => Center(
+                child: OutlinedButton.icon(
+                  onPressed: () =>
+                      ref.invalidate(taskDetailProvider(widget.taskId)),
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('重新加载'),
+                ),
+              ),
+              data: (_) => const SizedBox.shrink(),
+            ),
+      bottomNavigationBar: task == null
           ? null
-          : _buildActions(detail.requireValue, submission),
+          : _buildActions(task, submission, serverAvailable: !usingCachedTask),
     );
   }
 
@@ -408,56 +469,13 @@ class _TaskDetailScreenState extends ConsumerState<TaskDetailScreen>
       padding: const EdgeInsets.only(bottom: 24),
       children: [
         if (urls.isNotEmpty)
-          AspectRatio(
-            aspectRatio: 1,
-            child: Stack(
-              children: [
-                PageView.builder(
-                  controller: _pageController,
-                  itemCount: urls.length,
-                  onPageChanged: (index) => setState(() => _pageIndex = index),
-                  itemBuilder: (context, index) => ColoredBox(
-                    color: Colors.black,
-                    child: AuthenticatedImage(
-                      url: urls[index],
-                      fit: BoxFit.contain,
-                    ),
-                  ),
-                ),
-                Positioned(
-                  right: 12,
-                  top: 12,
-                  child: IconButton.filled(
-                    tooltip: '全屏预览',
-                    onPressed: () => _openFullscreen(task),
-                    style: IconButton.styleFrom(
-                      backgroundColor: Colors.black54,
-                      foregroundColor: Colors.white,
-                    ),
-                    icon: const Icon(Icons.fullscreen),
-                  ),
-                ),
-                if (urls.length > 1)
-                  Positioned(
-                    right: 12,
-                    bottom: 12,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 9,
-                        vertical: 5,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.black54,
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: Text(
-                        '${_pageIndex + 1}/${urls.length}',
-                        style: const TextStyle(color: Colors.white),
-                      ),
-                    ),
-                  ),
-              ],
-            ),
+          _TaskImageGallery(
+            urls: urls,
+            pageController: _pageController,
+            selectedIndex: _pageIndex,
+            onPageChanged: (index) => setState(() => _pageIndex = index),
+            onSelect: _selectImage,
+            onFullscreen: () => _openFullscreen(task),
           )
         else
           Padding(
@@ -501,12 +519,11 @@ class _TaskDetailScreenState extends ConsumerState<TaskDetailScreen>
                 ],
               ),
               const SizedBox(height: 18),
-              Text(
-                task.displayPrompt.isEmpty ? '图片创作' : task.displayPrompt,
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w700,
-                  height: 1.5,
-                ),
+              _TaskPromptPanel(
+                prompt: task.displayPrompt,
+                onCopy: task.displayPrompt.trim().isEmpty
+                    ? null
+                    : () => _copyPrompt(task),
               ),
               if (urls.isNotEmpty && task.errorMessage?.isNotEmpty == true) ...[
                 const SizedBox(height: 14),
@@ -520,7 +537,8 @@ class _TaskDetailScreenState extends ConsumerState<TaskDetailScreen>
                 GallerySubmissionStatusPanel(submission: submission),
               ],
               const SizedBox(height: 22),
-              _InfoRow(label: '模型', value: _modelLabel(task)),
+              _TaskParametersPanel(items: taskGenerationParameters(task)),
+              const SizedBox(height: 12),
               _InfoRow(
                 label: '创建时间',
                 value: task.createdAt == null
@@ -550,8 +568,9 @@ class _TaskDetailScreenState extends ConsumerState<TaskDetailScreen>
 
   Widget? _buildActions(
     TaskItem task,
-    AsyncValue<GallerySubmission?> submissionState,
-  ) {
+    AsyncValue<GallerySubmission?> submissionState, {
+    bool serverAvailable = true,
+  }) {
     if (!task.canCancel && (!task.isSucceeded || task.previewUrls.isEmpty)) {
       return null;
     }
@@ -570,16 +589,14 @@ class _TaskDetailScreenState extends ConsumerState<TaskDetailScreen>
                     : const Icon(Icons.stop_circle_outlined),
                 label: const Text('停止生成'),
               )
-            : LayoutBuilder(
-                builder: (context, constraints) {
-                  final textScale = MediaQuery.textScalerOf(context).scale(1);
-                  final compact = constraints.maxWidth < 400 || textScale > 1.2;
+            : Builder(
+                builder: (context) {
                   final save = OutlinedButton.icon(
                     onPressed: _busy ? null : () => _save(task),
                     icon: _busyAction == _TaskAction.save
                         ? const _ButtonProgress()
                         : const Icon(Icons.download_outlined),
-                    label: const Text('保存'),
+                    label: Text(task.originalUrls.length > 1 ? '保存全部' : '保存'),
                   );
                   final share = Builder(
                     builder: (buttonContext) => OutlinedButton.icon(
@@ -592,29 +609,24 @@ class _TaskDetailScreenState extends ConsumerState<TaskDetailScreen>
                       label: const Text('分享'),
                     ),
                   );
-                  final submit = _buildSubmissionAction(task, submissionState);
-                  if (!compact) {
-                    return Row(
-                      children: [
-                        Expanded(child: save),
-                        const SizedBox(width: 8),
-                        Expanded(child: share),
-                        const SizedBox(width: 8),
-                        Expanded(child: submit),
-                      ],
-                    );
-                  }
-                  final halfWidth = (constraints.maxWidth - 8) / 2;
+                  final submit = serverAvailable
+                      ? _buildSubmissionAction(task, submissionState)
+                      : OutlinedButton.icon(
+                          onPressed: null,
+                          icon: const Icon(Icons.cloud_off_outlined),
+                          label: const Text('详情未同步'),
+                        );
                   return Column(
+                    mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       submit,
                       const SizedBox(height: 8),
                       Row(
                         children: [
-                          SizedBox(width: halfWidth, child: save),
+                          Expanded(child: save),
                           const SizedBox(width: 8),
-                          SizedBox(width: halfWidth, child: share),
+                          Expanded(child: share),
                         ],
                       ),
                     ],
@@ -692,6 +704,81 @@ CreationPreset creationPresetForTask(TaskItem task) {
   );
 }
 
+List<({String label, String value})> taskGenerationParameters(TaskItem task) {
+  String? parameter(Iterable<String> keys) {
+    for (final key in keys) {
+      final value = task.params[key]?.toString().trim();
+      if (value?.isNotEmpty == true) return value;
+    }
+    return null;
+  }
+
+  final ratio = parameter(const ['requestedAspectRatio', 'aspectRatio']);
+  final resolution = parameter(const ['resolutionScale', 'resolution']);
+  final quality = parameter(const ['quality']);
+  return [
+    (label: '模型', value: _modelLabel(task)),
+    if (ratio != null)
+      (label: '画幅', value: ratio.toLowerCase() == 'auto' ? '自动' : ratio),
+    if (resolution != null) (label: '清晰度', value: resolution),
+    if (quality != null)
+      (
+        label: '质量',
+        value: switch (quality.toLowerCase()) {
+          'low' => '快速',
+          'medium' || 'standard' => '标准',
+          'high' || 'hd' => '高清',
+          _ => quality,
+        },
+      ),
+    (label: '张数', value: '${task.batchSize} 张'),
+  ];
+}
+
+class TaskImageSaveResult {
+  const TaskImageSaveResult({
+    required this.savedCount,
+    required this.totalCount,
+    this.error,
+  });
+
+  final int savedCount;
+  final int totalCount;
+  final Object? error;
+
+  bool get isComplete => savedCount == totalCount && error == null;
+}
+
+Future<TaskImageSaveResult> saveTaskImages({
+  required int count,
+  required Future<String> Function(int index) downloadPath,
+  required Future<void> Function(String path) savePath,
+}) async {
+  final total = count.clamp(0, 100);
+  if (total == 0) {
+    return const TaskImageSaveResult(
+      savedCount: 0,
+      totalCount: 0,
+      error: FormatException('作品原图不存在'),
+    );
+  }
+  var saved = 0;
+  for (var index = 0; index < total; index++) {
+    try {
+      final path = await downloadPath(index);
+      await savePath(path);
+      saved += 1;
+    } catch (error) {
+      return TaskImageSaveResult(
+        savedCount: saved,
+        totalCount: total,
+        error: error,
+      );
+    }
+  }
+  return TaskImageSaveResult(savedCount: saved, totalCount: total);
+}
+
 ({String label, String location}) taskRecreationAction(TaskItem task) {
   final preset = creationPresetForTask(task);
   return (
@@ -704,6 +791,8 @@ CreationPreset creationPresetForTask(TaskItem task) {
 }
 
 enum _TaskAction { cancel, save, share, submit, deleteSubmission, deleteTask }
+
+enum _CachedTaskState { syncing, failed }
 
 enum TaskOutputState { generating, deleted, failed, canceled, missing }
 
@@ -858,6 +947,188 @@ class _ButtonProgress extends StatelessWidget {
   }
 }
 
+class _TaskImageGallery extends StatelessWidget {
+  const _TaskImageGallery({
+    required this.urls,
+    required this.pageController,
+    required this.selectedIndex,
+    required this.onPageChanged,
+    required this.onSelect,
+    required this.onFullscreen,
+  });
+
+  final List<String> urls;
+  final PageController pageController;
+  final int selectedIndex;
+  final ValueChanged<int> onPageChanged;
+  final ValueChanged<int> onSelect;
+  final VoidCallback onFullscreen;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        AspectRatio(
+          aspectRatio: 1,
+          child: Stack(
+            children: [
+              PageView.builder(
+                controller: pageController,
+                itemCount: urls.length,
+                onPageChanged: onPageChanged,
+                itemBuilder: (context, index) => ColoredBox(
+                  color: Colors.black,
+                  child: AuthenticatedImage(
+                    url: urls[index],
+                    fit: BoxFit.contain,
+                  ),
+                ),
+              ),
+              Positioned(
+                right: 12,
+                top: 12,
+                child: IconButton.filled(
+                  tooltip: '全屏预览',
+                  onPressed: onFullscreen,
+                  style: IconButton.styleFrom(
+                    backgroundColor: Colors.black54,
+                    foregroundColor: Colors.white,
+                  ),
+                  icon: const Icon(Icons.fullscreen),
+                ),
+              ),
+              if (urls.length > 1)
+                Positioned(
+                  right: 12,
+                  bottom: 12,
+                  child: Container(
+                    key: const Key('task-image-page-indicator'),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 9,
+                      vertical: 5,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.black54,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      '${selectedIndex + 1}/${urls.length}',
+                      style: const TextStyle(color: Colors.white),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+        if (urls.length > 1)
+          Container(
+            key: const Key('task-image-thumbnails'),
+            height: 78,
+            color: colors.surface,
+            alignment: Alignment.centerLeft,
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Row(
+                children: [
+                  for (var index = 0; index < urls.length; index++) ...[
+                    if (index > 0) const SizedBox(width: 8),
+                    Builder(
+                      builder: (context) {
+                        final selected = index == selectedIndex;
+                        return Semantics(
+                          label: '查看第 ${index + 1} 张图片',
+                          button: true,
+                          selected: selected,
+                          child: AnimatedContainer(
+                            duration: const Duration(milliseconds: 180),
+                            curve: Curves.easeOutCubic,
+                            width: 62,
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                color: selected
+                                    ? colors.primary
+                                    : colors.outlineVariant,
+                                width: selected ? 2 : 1,
+                              ),
+                            ),
+                            padding: EdgeInsets.all(selected ? 2 : 3),
+                            child: Material(
+                              color: colors.surfaceContainerLow,
+                              borderRadius: BorderRadius.circular(5),
+                              clipBehavior: Clip.antiAlias,
+                              child: InkWell(
+                                key: Key('task-image-thumbnail-$index'),
+                                onTap: () => onSelect(index),
+                                child: AuthenticatedImage(
+                                  url: urls[index],
+                                  fit: BoxFit.cover,
+                                ),
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _CachedTaskNotice extends StatelessWidget {
+  const _CachedTaskNotice({required this.state, required this.onRetry});
+
+  final _CachedTaskState state;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final failed = state == _CachedTaskState.failed;
+    return Container(
+      key: const Key('task-detail-cache-notice'),
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerLow,
+        border: Border(bottom: BorderSide(color: colors.outlineVariant)),
+      ),
+      padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
+      child: Row(
+        children: [
+          if (failed)
+            Icon(Icons.cloud_off_outlined, size: 18, color: colors.error)
+          else
+            const SizedBox.square(
+              dimension: 16,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              failed ? '详情同步失败，已显示列表中的作品数据' : '正在同步作品详情',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ),
+          if (failed)
+            IconButton(
+              key: const Key('task-detail-cache-retry'),
+              tooltip: '重试同步作品详情',
+              onPressed: onRetry,
+              icon: const Icon(Icons.refresh, size: 19),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
 class _InfoRow extends StatelessWidget {
   const _InfoRow({required this.label, required this.value});
 
@@ -880,6 +1151,106 @@ class _InfoRow extends StatelessWidget {
           ),
           Expanded(child: Text(value)),
         ],
+      ),
+    );
+  }
+}
+
+class _TaskParametersPanel extends StatelessWidget {
+  const _TaskParametersPanel({required this.items});
+
+  final List<({String label, String value})> items;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Material(
+      key: const Key('task-parameters-panel'),
+      color: colors.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(8),
+        side: BorderSide(color: colors.outlineVariant),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 13, 14, 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '生成参数',
+              style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                color: colors.onSurfaceVariant,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 7),
+            for (var index = 0; index < items.length; index++) ...[
+              _InfoRow(label: items[index].label, value: items[index].value),
+              if (index != items.length - 1)
+                Divider(height: 1, color: colors.outlineVariant),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TaskPromptPanel extends StatelessWidget {
+  const _TaskPromptPanel({required this.prompt, required this.onCopy});
+
+  final String prompt;
+  final VoidCallback? onCopy;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Material(
+      key: const Key('task-prompt-panel'),
+      color: colors.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(8),
+        side: BorderSide(color: colors.outlineVariant),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 8, 8, 14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    '提示词',
+                    style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                      color: colors.onSurfaceVariant,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                if (onCopy != null)
+                  IconButton(
+                    key: const Key('copy-task-prompt'),
+                    tooltip: '复制提示词',
+                    constraints: const BoxConstraints.tightFor(
+                      width: 40,
+                      height: 40,
+                    ),
+                    visualDensity: VisualDensity.compact,
+                    onPressed: onCopy,
+                    icon: const Icon(Icons.copy_outlined, size: 18),
+                  ),
+              ],
+            ),
+            SelectableText(
+              prompt.trim().isEmpty ? '图片创作' : prompt.trim(),
+              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                fontWeight: FontWeight.w600,
+                height: 1.5,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

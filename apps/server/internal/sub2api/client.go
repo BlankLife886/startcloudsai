@@ -34,6 +34,8 @@ type Client struct {
 	reasoningEffort   string
 	imageModel        string
 	httpClient        *http.Client
+	webSearchHTTP     *http.Client
+	webSearchModel    string
 	streamIdleTimeout time.Duration
 	maxOutputTokens   int
 }
@@ -184,12 +186,16 @@ func New(baseURL, apiKey, chatModel, imageModel string, timeoutSecs int) (*Clien
 	idleTimeout := min(timeout, 90*time.Second)
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.ResponseHeaderTimeout = min(timeout, 30*time.Second)
+	webSearchTransport := transport.Clone()
+	webSearchTransport.ResponseHeaderTimeout = min(timeout, 75*time.Second)
 	return &Client{
 		baseURL:           baseURL,
 		apiKey:            strings.TrimSpace(apiKey),
 		chatModel:         fallback(strings.TrimSpace(chatModel), "gpt-5.4"),
 		imageModel:        fallback(strings.TrimSpace(imageModel), "gpt-image-2"),
 		httpClient:        &http.Client{Timeout: timeout, Transport: transport},
+		webSearchHTTP:     &http.Client{Timeout: min(timeout, 90*time.Second), Transport: webSearchTransport},
+		webSearchModel:    "gpt-5-search-api",
 		streamIdleTimeout: idleTimeout,
 	}, nil
 }
@@ -213,6 +219,17 @@ func (c *Client) WithChatModel(model string) *Client {
 	}
 	clone := *c
 	clone.chatModel = strings.TrimSpace(model)
+	return &clone
+}
+
+// WithWebSearchModel selects the dedicated Chat Completions search fallback.
+// An empty model disables that fallback while keeping Responses web_search.
+func (c *Client) WithWebSearchModel(model string) *Client {
+	if c == nil {
+		return c
+	}
+	clone := *c
+	clone.webSearchModel = strings.TrimSpace(model)
 	return &clone
 }
 
@@ -330,6 +347,9 @@ func (c *Client) WebSearch(ctx context.Context, query string, options WebSearchO
 	if !webSearchFallbackAllowed(ctx, responsesErr) {
 		return WebSearchResult{}, responsesErr
 	}
+	if c.webSearchModel == "" {
+		return WebSearchResult{}, responsesErr
+	}
 	result, fallbackErr := c.webSearchChatCompletions(ctx, query, options)
 	if fallbackErr == nil {
 		return result, nil
@@ -360,7 +380,7 @@ func (c *Client) webSearchResponses(ctx context.Context, query string, options W
 	if err != nil {
 		return WebSearchResult{}, err
 	}
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.webSearchClient().Do(req)
 	if err != nil {
 		return WebSearchResult{}, err
 	}
@@ -377,7 +397,7 @@ func (c *Client) webSearchResponses(ctx context.Context, query string, options W
 
 func (c *Client) webSearchChatCompletions(ctx context.Context, query string, options WebSearchOptions) (WebSearchResult, error) {
 	payload := map[string]any{
-		"model": "gpt-5-search-api",
+		"model": c.webSearchModel,
 		"messages": []any{
 			map[string]any{"role": "system", "content": "必须先联网检索再回答。只使用检索到的事实，并保留引用来源。"},
 			map[string]any{"role": "user", "content": webSearchPrompt(query, options)},
@@ -391,7 +411,7 @@ func (c *Client) webSearchChatCompletions(ctx context.Context, query string, opt
 	if err != nil {
 		return WebSearchResult{}, err
 	}
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.webSearchClient().Do(req)
 	if err != nil {
 		return WebSearchResult{}, err
 	}
@@ -404,6 +424,13 @@ func (c *Client) webSearchChatCompletions(ctx context.Context, query string, opt
 		return WebSearchResult{}, fmt.Errorf("读取 Chat Completions 联网搜索结果：%w", err)
 	}
 	return parseChatWebSearch(raw, query)
+}
+
+func (c *Client) webSearchClient() *http.Client {
+	if c != nil && c.webSearchHTTP != nil {
+		return c.webSearchHTTP
+	}
+	return c.httpClient
 }
 
 func webSearchPrompt(query string, options WebSearchOptions) string {

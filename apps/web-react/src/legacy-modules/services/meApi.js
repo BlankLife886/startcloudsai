@@ -138,9 +138,17 @@ export async function deleteMyGallerySubmission(id) {
 }
 
 /** 用户自有素材库（原图仅在预览时读取，列表使用 thumbnailUrl）。 */
-export async function listUserAssets({ limit = 24, cursor = '', groupId = 'all', signal } = {}) {
+export async function listUserAssets({
+  limit = 24,
+  cursor = '',
+  groupId = 'all',
+  query = '',
+  tags = '',
+  trash = false,
+  signal,
+} = {}) {
   const data = await apiGet('/me/assets', {
-    query: { limit, cursor, groupId },
+    query: { limit, cursor, groupId, q: query, tags, trash },
     signal,
     fallbackMessage: '素材库读取失败',
   })
@@ -162,6 +170,22 @@ export async function updateUserAsset(id, payload) {
 
 export async function deleteUserAsset(id) {
   return apiDelete(`/me/assets/${encodeURIComponent(id)}`, { fallbackMessage: '素材删除失败' })
+}
+
+export async function batchUserAssets(payload) {
+  return apiPost('/me/assets/batch', payload, { fallbackMessage: '素材批量操作失败' })
+}
+
+export async function restoreUserAsset(id) {
+  return apiPost(`/me/assets/${encodeURIComponent(id)}/restore`, {}, {
+    fallbackMessage: '素材恢复失败',
+  })
+}
+
+export async function permanentlyDeleteUserAsset(id) {
+  return apiDelete(`/me/assets/${encodeURIComponent(id)}/permanent`, {
+    fallbackMessage: '素材永久删除失败',
+  })
 }
 
 export async function listUserAssetGroups({ signal } = {}) {

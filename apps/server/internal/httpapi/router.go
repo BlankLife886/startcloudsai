@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -16,6 +17,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
 	"github.com/BlankLife886/startcloudsai/server/internal/config"
 	"github.com/BlankLife886/startcloudsai/server/internal/lanjingpay"
+	"github.com/BlankLife886/startcloudsai/server/internal/platformlog"
 	"github.com/BlankLife886/startcloudsai/server/internal/promptsync"
 	"github.com/BlankLife886/startcloudsai/server/internal/storage"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
@@ -27,7 +29,7 @@ var writeMethods = map[string]bool{"POST": true, "PATCH": true, "DELETE": true, 
 func requestBodyLimit(path string, uploadMaxBytes int64) int64 {
 	limit := int64(1 << 20)
 	switch {
-	case path == "/api/v1/uploads":
+	case path == "/api/v1/uploads" || path == "/api/open/v1/uploads":
 		return uploadMaxBytes + (1 << 20)
 	case strings.HasPrefix(path, "/api/v1/assistant/"):
 		return 20 << 20
@@ -58,34 +60,43 @@ func requestBodyLimit(path string, uploadMaxBytes int64) int64 {
 }
 
 type Server struct {
-	Cfg               *config.Config
-	St                *store.Store
-	Storage           *storage.Storage
-	C2A               *c2a.Client
-	Queue             *taskflow.Queue
-	LoginLimiter      auth.AttemptLimiter
-	AdminLoginLimiter auth.AttemptLimiter
-	RedeemLimiter     auth.AttemptLimiter
-	PromptSync        *promptsync.Engine
-	Metrics           *systemMetrics
-	LanjingPay        *lanjingpay.Client
-	limiterClosers    []func() error
-	c2aCallbackRoutes func(context.Context, uuid.UUID) ([]store.AsyncPendingRoute, error)
-	enqueueImagePoll  func(context.Context, string, string, string, int, time.Duration) error
+	Cfg                *config.Config
+	St                 *store.Store
+	Storage            *storage.Storage
+	C2A                *c2a.Client
+	Queue              *taskflow.Queue
+	LoginLimiter       auth.AttemptLimiter
+	AdminLoginLimiter  auth.AttemptLimiter
+	RedeemLimiter      auth.AttemptLimiter
+	UsageLimiter       auth.UsageLimiter
+	ConcurrencyLimiter auth.ConcurrencyLimiter
+	PromptSync         *promptsync.Engine
+	Metrics            *systemMetrics
+	LanjingPay         *lanjingpay.Client
+	Logs               *platformlog.Recorder
+	limiterClosers     []func() error
+	c2aCallbackRoutes  func(context.Context, uuid.UUID) ([]store.AsyncPendingRoute, error)
+	enqueueImagePoll   func(context.Context, string, string, string, int, time.Duration) error
+	pageControls       pageControlCache
+	backgroundCancel   context.CancelFunc
+	backgroundWG       sync.WaitGroup
 }
 
 func New(cfg *config.Config, st *store.Store, stg *storage.Storage, c2aClient *c2a.Client, queue *taskflow.Queue) (*Server, error) {
 	s := &Server{
-		Cfg:               cfg,
-		St:                st,
-		Storage:           stg,
-		C2A:               c2aClient,
-		Queue:             queue,
-		LoginLimiter:      auth.NewLoginLimiter(),
-		AdminLoginLimiter: auth.NewLoginLimiter(),
-		RedeemLimiter:     auth.NewRedeemLimiter(),
-		PromptSync:        promptsync.New(st, cfg.AppEnv == "development"),
-		Metrics:           newSystemMetrics(time.Now()),
+		Cfg:                cfg,
+		St:                 st,
+		Storage:            stg,
+		C2A:                c2aClient,
+		Queue:              queue,
+		LoginLimiter:       auth.NewLoginLimiter(),
+		AdminLoginLimiter:  auth.NewLoginLimiter(),
+		RedeemLimiter:      auth.NewRedeemLimiter(),
+		UsageLimiter:       auth.NewMemoryUsageLimiter(),
+		ConcurrencyLimiter: auth.NewMemoryConcurrencyLimiter(),
+		PromptSync:         promptsync.New(st, cfg.AppEnv == "development"),
+		Metrics:            newSystemMetrics(time.Now()),
+		Logs:               platformlog.New(st.Pool, "api"),
 	}
 	if st != nil {
 		s.c2aCallbackRoutes = func(ctx context.Context, taskID uuid.UUID) ([]store.AsyncPendingRoute, error) {
@@ -112,12 +123,34 @@ func New(cfg *config.Config, st *store.Store, stg *storage.Storage, c2aClient *c
 			return nil, err
 		}
 		s.LoginLimiter, s.AdminLoginLimiter, s.RedeemLimiter = login, admin, redeem
-		s.limiterClosers = []func() error{login.Close, admin.Close, redeem.Close}
+		usage, err := auth.NewRedisUsageLimiter(cfg.RedisURL)
+		if err != nil {
+			_ = login.Close()
+			_ = admin.Close()
+			_ = redeem.Close()
+			return nil, err
+		}
+		s.UsageLimiter = usage
+		concurrency, err := auth.NewRedisConcurrencyLimiter(cfg.RedisURL)
+		if err != nil {
+			_ = login.Close()
+			_ = admin.Close()
+			_ = redeem.Close()
+			_ = usage.Close()
+			return nil, err
+		}
+		s.ConcurrencyLimiter = concurrency
+		s.limiterClosers = []func() error{login.Close, admin.Close, redeem.Close, usage.Close, concurrency.Close}
 	}
+	s.startBackgroundSecurityJobs()
 	return s, nil
 }
 
 func (s *Server) Close() {
+	if s.backgroundCancel != nil {
+		s.backgroundCancel()
+		s.backgroundWG.Wait()
+	}
 	for _, closeLimiter := range s.limiterClosers {
 		_ = closeLimiter()
 	}
@@ -137,7 +170,7 @@ func (s *Server) Router() *gin.Engine {
 		log.Printf("invalid TRUSTED_PROXIES %q: %v", s.Cfg.TrustedProxies, err)
 	}
 	r.HandleMethodNotAllowed = true
-	r.Use(gin.Logger())
+	r.Use(s.platformLoggingMiddleware)
 	r.Use(s.requestMetricsMiddleware)
 	r.Use(gin.CustomRecovery(func(c *gin.Context, err any) {
 		log.Printf("panic on %s %s: %v", c.Request.Method, c.Request.URL.Path, err)
@@ -189,6 +222,7 @@ func (s *Server) Router() *gin.Engine {
 	api.GET("/assistant/runs", s.assistantRuns)
 	api.POST("/assistant/runs", s.createAssistantRun)
 	api.GET("/assistant/runs/:id", s.assistantRun)
+	api.GET("/assistant/runs/:id/trace", s.assistantRunTrace)
 	api.GET("/assistant/runs/:id/events", s.assistantRunStream)
 	api.POST("/assistant/runs/:id/tool-claims", s.postAssistantRunToolClaim)
 	api.POST("/assistant/runs/:id/tool-results", s.postAssistantRunToolResult)
@@ -213,9 +247,23 @@ func (s *Server) Router() *gin.Engine {
 	api.GET("/me/gallery/submissions", s.mySubmissions)
 	api.DELETE("/me/gallery/submissions/:id", s.deleteSubmission)
 	api.GET("/me/assets", s.myAssets)
+	api.GET("/me/api-keys", s.developerAPIOnly(s.myAPIKeys))
+	api.POST("/me/api-keys", s.developerAPIOnly(s.createMyAPIKey))
+	api.POST("/me/api-keys/:id/rotate", s.developerAPIOnly(s.rotateMyAPIKey))
+	api.DELETE("/me/api-keys/:id", s.developerAPIOnly(s.revokeMyAPIKey))
+	api.GET("/me/api-models", s.developerAPIOnly(s.myOpenAPIModels))
+	api.GET("/me/webhooks", s.developerAPIOnly(s.myWebhooks))
+	api.POST("/me/webhooks", s.developerAPIOnly(s.createMyWebhook))
+	api.PATCH("/me/webhooks/:id", s.developerAPIOnly(s.patchMyWebhook))
+	api.DELETE("/me/webhooks/:id", s.developerAPIOnly(s.deleteMyWebhook))
+	api.GET("/me/webhook-deliveries", s.developerAPIOnly(s.myWebhookDeliveries))
+	api.POST("/me/webhook-deliveries/:id/retry", s.developerAPIOnly(s.retryMyWebhookDelivery))
 	api.POST("/me/assets", s.createUserAsset)
 	api.PATCH("/me/assets/:id", s.updateUserAsset)
 	api.DELETE("/me/assets/:id", s.deleteUserAsset)
+	api.POST("/me/assets/batch", s.batchUserAssets)
+	api.POST("/me/assets/:id/restore", s.restoreUserAsset)
+	api.DELETE("/me/assets/:id/permanent", s.permanentlyDeleteUserAsset)
 	api.GET("/me/asset-groups", s.myAssetGroups)
 	api.POST("/me/asset-groups", s.createUserAssetGroup)
 	api.PATCH("/me/asset-groups/:id", s.updateUserAssetGroup)
@@ -227,6 +275,7 @@ func (s *Server) Router() *gin.Engine {
 	api.GET("/me/growth", s.myGrowthPrograms)
 	api.POST("/me/growth/groups", s.createGrowthGroup)
 	api.POST("/me/growth/groups/join", s.joinGrowthGroup)
+	api.POST("/me/behavior-events", s.recordMyBehaviorEvents)
 
 	// tasks
 	api.POST("/tasks", s.createTask)
@@ -307,6 +356,13 @@ func (s *Server) Router() *gin.Engine {
 	api.GET("/announcements", s.metaAnnouncements)
 	api.GET("/health", s.health)
 
+	open := r.Group("/api/open/v1")
+	open.GET("/models", s.openAPIOnly("models:read", s.openAPIModels))
+	open.POST("/uploads", s.openAPIOnly("files:write", s.upload))
+	open.GET("/files/*key", s.openAPIOnly("tasks:read", s.getFile))
+	open.POST("/tasks", s.openAPIOnly("tasks:write", s.createTask))
+	open.GET("/tasks/:id", s.openAPIOnly("tasks:read", s.getTask))
+
 	// admin auth（独立账号、会话与 Cookie）
 	api.POST("/admin/auth/session", s.adminLogin)
 	api.GET("/admin/auth/session", s.adminAuthMe)
@@ -321,10 +377,31 @@ func (s *Server) Router() *gin.Engine {
 	admin.GET("/files/*key", s.adminOnly(s.adminGetFile))
 	admin.GET("/badge-counts", s.adminOnly(s.adminBadgeCounts))
 	admin.GET("/statistics", s.adminOnly(s.adminStats))
+	admin.GET("/profitability", s.adminOnly(s.adminProfitability))
+	admin.GET("/agent-quality", s.adminOnly(s.adminAgentQualityOverview))
+	admin.GET("/agent-quality/traces/:id", s.adminOnly(s.adminAgentTrace))
+	admin.PATCH("/agent-quality/eval-cases/:id", s.adminOnly(s.adminPatchAgentEvalCase))
+	admin.POST("/agent-quality/eval-runs", s.adminOnly(s.adminCreateAgentEvalRun))
+	admin.GET("/agent-quality/eval-runs/:id", s.adminOnly(s.adminAgentEvalRun))
 	admin.GET("/system/metrics", s.adminOnly(s.adminSystemMetrics))
+	admin.GET("/platform-logs", s.adminOnly(s.adminPlatformLogs))
+	admin.GET("/platform-logs/stats", s.adminOnly(s.adminPlatformLogStats))
+	admin.DELETE("/platform-logs", s.adminOnly(s.adminDeletePlatformLogs))
+	admin.POST("/platform-logs/cleanup", s.adminOnly(s.adminCleanupPlatformLogs))
+	admin.GET("/security/risks", s.adminOnly(s.adminSecurityRisks))
+	admin.POST("/security/risks/:id/resolve", s.adminOnly(s.adminResolveSecurityRisk))
+	admin.POST("/security/blocks/:id/revoke", s.adminOnly(s.adminRevokeSecurityBlock))
+	admin.POST("/security/api-keys/:id/unfreeze", s.adminOnly(s.adminUnfreezeAPIKey))
+	admin.GET("/security/upload-hashes", s.adminOnly(s.adminUploadHashBlocks))
+	admin.POST("/security/upload-hashes", s.adminOnly(s.adminAddUploadHashBlock))
+	admin.DELETE("/security/upload-hashes/:sha256", s.adminOnly(s.adminRemoveUploadHashBlock))
+	admin.GET("/payment-reconciliations", s.adminOnly(s.adminPaymentReconciliations))
+	admin.POST("/payment-reconciliations/run", s.adminOnly(s.adminRunPaymentReconciliation))
 	admin.GET("/users", s.adminOnly(s.adminListUsers))
+	admin.GET("/user-analytics", s.adminOnly(s.adminUserAnalytics))
 	admin.GET("/users/:id", s.adminOnly(s.adminGetUser))
 	admin.PATCH("/users/:id", s.adminOnly(s.adminPatchUser))
+	admin.POST("/users/:id/profile/refresh", s.adminOnly(s.adminRefreshUserProfile))
 	admin.GET("/users/:id/wallet/entries", s.adminOnly(s.adminUserLedger))
 	admin.POST("/users/:id/wallet/entries", s.adminOnly(s.adminWalletAdjust))
 	admin.GET("/wallet/entries", s.adminOnly(s.adminSiteLedger))

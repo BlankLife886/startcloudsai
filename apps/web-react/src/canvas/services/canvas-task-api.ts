@@ -13,17 +13,27 @@ import { modelOptionMeta, modelOptionName, type AiConfig } from "@/stores/use-co
 import { scheduleWalletRefresh } from "@react/legacy-modules/services/walletSync.js";
 import type { ReferenceImage } from "@/types/image";
 
-type CanvasTask = {
+export type CanvasTask = {
     id: string;
     status: "queued" | "running" | "succeeded" | "failed" | "canceled";
     outputKeys: string[];
     outputUrls: string[];
     originalUrls: string[];
-    errorMessage?: string;
+	errorMessage?: string;
+	generationStage?: "queued" | "preparing" | "upstream_generating" | "fetching_result" | "saving_result" | "completed" | "failed" | "canceled" | string;
+	cancelPolicy?: {
+		allowed?: boolean;
+		mode?: string;
+		upstreamSubmitted?: boolean;
+		refunded?: boolean;
+		message?: string;
+	};
+	costCents?: number;
+	settledCostCents?: number;
 };
 
-type CanvasAssistantResponse = {
-    run: { id: string; status: CanvasTask["status"]; stage?: string; errorMessage?: string };
+export type CanvasAssistantResponse = {
+	run: { id: string; status: CanvasTask["status"]; stage?: string; errorMessage?: string; costCents?: number; reservedCents?: number; cancelPolicy?: CanvasTask["cancelPolicy"] };
     assistantMessage?: {
         content?: string;
         canvasOps?: unknown;
@@ -35,6 +45,13 @@ type CanvasAssistantResponse = {
         pendingTool?: CanvasAgentToolCall;
     };
 };
+
+export const CANVAS_TASK_PROGRESS_EVENT = "starclouds:canvas-task-progress";
+
+function publishCanvasTaskProgress(task: CanvasTask) {
+	if (typeof window === "undefined" || !task?.id) return;
+	window.dispatchEvent(new CustomEvent(CANVAS_TASK_PROGRESS_EVENT, { detail: task }));
+}
 
 export type CanvasAssistantTaskOptions = {
     signal?: AbortSignal;
@@ -146,11 +163,11 @@ async function withCanvasTaskSlot<T>(signal: AbortSignal | undefined, run: () =>
 }
 
 /** Stop a queued or running task server-side and refresh all wallet consumers. */
-export async function cancelCanvasTask(id: string, options?: { keepalive?: boolean }) {
+export async function cancelCanvasTask(id: string, options?: { keepalive?: boolean; acknowledgeUpstream?: boolean }) {
     const task = await starcloudsRequest<CanvasTask>(`/tasks/${encodeURIComponent(id)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: "canceled" }),
+		body: JSON.stringify({ status: "canceled", acknowledgeUpstream: options?.acknowledgeUpstream === true }),
         keepalive: options?.keepalive,
     });
     scheduleWalletRefresh();
@@ -366,6 +383,7 @@ async function waitForTask(id: string, signal?: AbortSignal) {
                 }
             }
             if (task) {
+				publishCanvasTaskProgress(task);
                 const status = taskStatus(task.status);
                 if (taskSucceeded(status) && taskHasOutput(task)) {
                     scheduleWalletRefresh();
@@ -401,6 +419,14 @@ async function waitForTask(id: string, signal?: AbortSignal) {
 
 export function waitForCanvasTask(id: string, signal?: AbortSignal) {
     return waitForTask(id, signal);
+}
+
+export function getCanvasTaskRecord(id: string) {
+	return starcloudsRequest<CanvasTask>(`/tasks/${encodeURIComponent(id)}`);
+}
+
+export function getCanvasAssistantRunRecord(id: string) {
+	return starcloudsRequest<CanvasAssistantResponse>(`/assistant/runs/${encodeURIComponent(id)}`);
 }
 
 export function imagesFromCanvasTask(task: CanvasTask) {
@@ -844,14 +870,14 @@ async function ensureCanvasAgentConversation(projectId: string, prompt: string, 
     return conversation.id;
 }
 
-export async function cancelCanvasAssistantRun(runId: string, options?: { keepalive?: boolean }) {
-    await starcloudsRequest(`/assistant/runs/${encodeURIComponent(runId)}`, {
+export async function cancelCanvasAssistantRun(runId: string, options?: { keepalive?: boolean; acknowledgeUpstream?: boolean }) {
+	await starcloudsRequest(`/assistant/runs/${encodeURIComponent(runId)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: "canceled" }),
+		body: JSON.stringify({ status: "canceled", acknowledgeUpstream: options?.acknowledgeUpstream !== false }),
         keepalive: options?.keepalive,
-    });
-    scheduleWalletRefresh();
+	});
+	scheduleWalletRefresh();
 }
 
 type CanvasAgentStreamPayload = {

@@ -29,6 +29,9 @@ const (
 	assistantConversationLimit      = 40
 	assistantMessageLimit           = 160
 	assistantActiveRunLimit         = 4
+	assistantConversationQueueLimit = 10
+	assistantUserQueueLimit         = 20
+	assistantGlobalActiveLimit      = 5000
 	assistantCanvasSnapshotMaxBytes = 128 * 1024
 )
 
@@ -53,37 +56,46 @@ type importAssistantConversationsIn struct {
 }
 
 type assistantRunIn struct {
-	ConversationID           string           `json:"conversationId"`
-	IdempotencyKey           string           `json:"idempotencyKey"`
-	Prompt                   string           `json:"prompt"`
-	UserMessageContent       string           `json:"userMessageContent"`
-	Mode                     string           `json:"mode"`
-	ClientUserMessageID      string           `json:"clientUserMessageId"`
-	ClientAssistantMessageID string           `json:"clientAssistantMessageId"`
-	SourceUserMessageID      string           `json:"sourceUserMessageId"`
-	ReferenceImages          []map[string]any `json:"referenceImages"`
-	ReferenceMode            string           `json:"referenceMode"`
-	Attachments              []map[string]any `json:"attachments"`
-	Quoted                   map[string]any   `json:"quoted"`
-	Skill                    string           `json:"skill"`
-	Model                    string           `json:"model"`
-	Ratio                    string           `json:"ratio"`
-	Resolution               string           `json:"resolution"`
-	Count                    int              `json:"count"`
-	RequestSize              string           `json:"requestSize"`
-	Width                    int              `json:"width"`
-	Height                   int              `json:"height"`
-	Quality                  string           `json:"quality"`
-	ReasoningEffort          string           `json:"reasoningEffort"`
-	ServiceKey               string           `json:"serviceKey"`
-	Workspace                string           `json:"workspace"`
-	FastMode                 bool             `json:"fastMode"`
-	ProposalSourceMessageID  string           `json:"proposalSourceMessageId"`
-	ParentOutputURL          string           `json:"parentOutputUrl"`
-	MaskImage                map[string]any   `json:"maskImage"`
-	MaskBaseImage            map[string]any   `json:"maskBaseImage"`
-	MaskRect                 string           `json:"maskRect"`
-	CanvasSnapshot           json.RawMessage  `json:"canvasSnapshot"`
+	ConversationID           string                      `json:"conversationId"`
+	IdempotencyKey           string                      `json:"idempotencyKey"`
+	Prompt                   string                      `json:"prompt"`
+	UserMessageContent       string                      `json:"userMessageContent"`
+	Mode                     string                      `json:"mode"`
+	ClientUserMessageID      string                      `json:"clientUserMessageId"`
+	ClientAssistantMessageID string                      `json:"clientAssistantMessageId"`
+	SourceUserMessageID      string                      `json:"sourceUserMessageId"`
+	ReferenceImages          []map[string]any            `json:"referenceImages"`
+	ReferenceMode            string                      `json:"referenceMode"`
+	ImagePlanItems           []assistantRunImagePlanItem `json:"imagePlanItems"`
+	Attachments              []map[string]any            `json:"attachments"`
+	Quoted                   map[string]any              `json:"quoted"`
+	Skill                    string                      `json:"skill"`
+	Model                    string                      `json:"model"`
+	Ratio                    string                      `json:"ratio"`
+	Resolution               string                      `json:"resolution"`
+	Count                    int                         `json:"count"`
+	RequestSize              string                      `json:"requestSize"`
+	Width                    int                         `json:"width"`
+	Height                   int                         `json:"height"`
+	Quality                  string                      `json:"quality"`
+	ReasoningEffort          string                      `json:"reasoningEffort"`
+	ServiceKey               string                      `json:"serviceKey"`
+	Workspace                string                      `json:"workspace"`
+	FastMode                 bool                        `json:"fastMode"`
+	ProposalSourceMessageID  string                      `json:"proposalSourceMessageId"`
+	ParentOutputURL          string                      `json:"parentOutputUrl"`
+	MaskImage                map[string]any              `json:"maskImage"`
+	MaskBaseImage            map[string]any              `json:"maskBaseImage"`
+	MaskRect                 string                      `json:"maskRect"`
+	CanvasSnapshot           json.RawMessage             `json:"canvasSnapshot"`
+	Queue                    bool                        `json:"queue"`
+}
+
+type assistantRunImagePlanItem struct {
+	ID                string   `json:"id"`
+	Title             string   `json:"title"`
+	Prompt            string   `json:"prompt"`
+	ReferenceImageIDs []string `json:"referenceImageIds"`
 }
 
 func applyAssistantReasoningPriceSnapshot(
@@ -598,6 +610,9 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		fail(c, err)
 		return
 	}
+	if !s.enforceUsageLimit(c, "assistant-run-minute", user.ID.String(), highCostRequestsPerMinute, 1, time.Minute) {
+		return
+	}
 	var body assistantRunIn
 	if err := bindJSON(c, &body); err != nil {
 		fail(c, err)
@@ -741,15 +756,28 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	if workspace == modelconfig.WorkspaceAssistant && body.Mode != "image" &&
-		len(body.ReferenceImages) > 0 && assistanttools.ImageToPSDRequested(body.Prompt) {
-		fail(c, apperr.E("assistant_psd_unavailable", "AI 助手暂未开放 PSD 转换", 422))
-		return
-	}
 	modelCfg, err := modelconfig.Load(c.Request.Context(), s.St.Pool)
 	if err != nil {
 		fail(c, err)
 		return
+	}
+	editableKind := ""
+	if workspace == modelconfig.WorkspaceAssistant && body.Mode != "image" {
+		editableKind = assistanttools.EditableFileKindRequested(body.Prompt)
+	}
+	if editableKind != "" {
+		if !modelCfg.EditableFiles.Enabled {
+			fail(c, apperr.E("assistant_editable_files_disabled", "PPT/PSD 可编辑文件功能暂未开放", 422))
+			return
+		}
+		if _, configured := modelconfig.EditableFileProvider(modelCfg); !configured {
+			fail(c, apperr.E("assistant_editable_files_unavailable", "PPT/PSD 服务商配置不可用，请联系管理员", 503))
+			return
+		}
+		if editableKind == "psd" && len(body.ReferenceImages) == 0 {
+			fail(c, apperr.E("assistant_psd_reference_required", "制作分层 PSD 前，请先上传一张 JPG、PNG 或 WebP 参考图", 422))
+			return
+		}
 	}
 	body.Model = strings.TrimSpace(body.Model)
 	requestedKind := modelconfig.ModelKindChat
@@ -786,6 +814,13 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		} else {
 			body.Count = 1
 		}
+	}
+	if len(body.ImagePlanItems) > 0 {
+		if body.Mode != "image" || len(body.ImagePlanItems) < 2 {
+			fail(c, apperr.E("validation_error", "独立多图方案至少需要 2 张图片且仅支持生图模式", 422))
+			return
+		}
+		body.Count = len(body.ImagePlanItems)
 	}
 	maxImages := modelconfig.DefaultMaxImages
 	if body.Mode == "image" && modelConfigured {
@@ -891,6 +926,11 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		fail(c, err)
 		return
 	}
+	imagePlanItems, err := sanitizeAssistantImagePlanItems(body.ImagePlanItems, references, body.Count)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	if body.Mode == "image" {
 		if body.ReferenceMode == "" {
 			body.ReferenceMode = "shared"
@@ -942,6 +982,9 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		"serviceKey": body.ServiceKey, "fastMode": body.FastMode, "_serviceProvider": serviceProvider,
 		"requestedMode": body.Mode,
 		"workspace":     workspace,
+	}
+	if len(imagePlanItems) > 0 {
+		params["imagePlanItems"] = imagePlanItems
 	}
 	if body.ReferenceMode != "" {
 		params["referenceMode"] = body.ReferenceMode
@@ -1052,6 +1095,7 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		params["_unitPriceCents"] = imageWorkspacePrice.EffectiveCents
 		params["_billingUnitPriceCents"] = imageWorkspacePrice.EffectiveCents
 		params["_modelEffectivePriceCents"] = modelconfig.EffectivePrice(imageSelection.Model)
+		params["_imageUpstreamUnitCostCents"] = imageSelection.Model.UpstreamCostCents
 		params["_pricingWorkspace"] = workspace
 	}
 	if chatSelection != nil {
@@ -1064,6 +1108,7 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		params["_chatMaxOutputTokens"] = chatSelection.Model.MaxOutputTokens
 		params["_modelDisplayName"] = chatSelection.Model.Name
 		params["_chatModelEffectivePriceCents"] = modelconfig.EffectivePrice(chatSelection.Model)
+		params["_chatUpstreamUnitCostCents"] = chatSelection.Model.UpstreamCostCents
 	}
 	chatCostCents := int64(0)
 	if chatSelection != nil {
@@ -1085,6 +1130,25 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 	imageCostCents := int64(0)
 	if imageSelection != nil {
 		imageCostCents = modelconfig.EffectiveWorkspacePrice(modelCfg, workspace, imageSelection.Model) * int64(body.Count)
+		unitPrice := imageCostCents / int64(max(body.Count, 1))
+		if unitPrice == 0 && !imageSelection.Model.AllowZeroPrice {
+			fail(c, apperr.E("model_zero_price_blocked", "图片模型价格尚未配置，已阻止零积分调用", 503))
+			return
+		}
+		if unitPrice < imageSelection.Model.UpstreamCostCents && !imageSelection.Model.AllowLossLeader {
+			fail(c, apperr.E("model_price_inverted", "图片模型价格低于上游成本，已暂停调用，请联系管理员", 503))
+			return
+		}
+	}
+	if chatSelection != nil {
+		if chatCostCents == 0 && !chatSelection.Model.AllowZeroPrice {
+			fail(c, apperr.E("model_zero_price_blocked", "对话模型价格尚未配置，已阻止零积分调用", 503))
+			return
+		}
+		if chatCostCents < chatSelection.Model.UpstreamCostCents && !chatSelection.Model.AllowLossLeader {
+			fail(c, apperr.E("model_price_inverted", "对话模型价格低于上游成本，已暂停调用，请联系管理员", 503))
+			return
+		}
 	}
 	reservedCents := assistantRunReservedCost(body.Mode, chatCostCents, imageCostCents)
 	params["_chatCostCents"] = chatCostCents
@@ -1159,8 +1223,15 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		if err != nil {
 			return err
 		}
-		if err := validateAssistantRunCapacity(active, conversationID); err != nil {
+		if err := validateAssistantRunCapacity(active, conversationID, body.Queue); err != nil {
 			return err
+		}
+		globalActive, err := store.CountActiveAssistantRunsGlobal(c.Request.Context(), tx)
+		if err != nil {
+			return err
+		}
+		if globalActive >= assistantGlobalActiveLimit {
+			return apperr.E("assistant_system_capacity", "当前助手任务较多，请稍后再试；你的输入不会丢失", 429)
 		}
 		if body.SourceUserMessageID != "" {
 			sourceID, parseErr := uuid.Parse(body.SourceUserMessageID)
@@ -1186,7 +1257,7 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 			var insertErr error
 			userMessage, insertErr = store.InsertAssistantMessage(c.Request.Context(), tx, store.AssistantMessage{
 				ID: userMessageID, ConversationID: conversationID, Role: "user", Content: body.UserMessageContent,
-				Kind: "chat", Status: "complete", Metadata: userMetadata, CreatedAt: now,
+				Kind: "chat", Status: map[bool]string{true: "queued", false: "complete"}[body.Queue], Metadata: userMetadata, CreatedAt: now,
 			})
 			if insertErr != nil {
 				return insertErr
@@ -1208,10 +1279,12 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 			}
 			assistantMetadata[key] = value
 		}
+		executionMode := assistantToolExecutionMode(workspace, body.Mode, body.Prompt)
+		assistantAgentTrace := executionMode == "agent"
 		assistantMetadata["runId"] = runID.String()
 		assistantMetadata["pending"] = true
-		assistantMetadata["routing"] = body.Mode == "agent"
-		assistantMetadata["statusStage"] = map[bool]string{true: "routing", false: "thinking"}[body.Mode == "agent"]
+		assistantMetadata["routing"] = assistantAgentTrace
+		assistantMetadata["statusStage"] = map[bool]string{true: "routing", false: "thinking"}[assistantAgentTrace]
 		if body.Mode == "image" {
 			assistantMetadata["statusStage"] = "preparing-image"
 		}
@@ -1225,7 +1298,7 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		}
 		newRun := store.AssistantRun{
 			ID: runID, UserID: user.ID, ConversationID: conversationID, UserMessageID: userMessageID,
-			AssistantMessageID: assistantMessageID, Mode: body.Mode, Prompt: body.Prompt, Params: params,
+			AssistantMessageID: assistantMessageID, Mode: executionMode, Prompt: body.Prompt, Params: params,
 			ReservedCents: reservedCents,
 		}
 		if body.IdempotencyKey != "" {
@@ -1235,6 +1308,39 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		run, insertErr = store.InsertAssistantRun(c.Request.Context(), tx, newRun)
 		if insertErr != nil {
 			return insertErr
+		}
+		if assistantAgentTrace {
+			var projectID *uuid.UUID
+			var snapshotJSON json.RawMessage
+			if canvasAgent {
+				if snapshot := params["canvasSnapshot"]; snapshot != nil {
+					snapshotJSON, _ = json.Marshal(snapshot)
+					projectID = assistantCanvasSnapshotProjectID(snapshot)
+				}
+			} else {
+				snapshotJSON, _ = json.Marshal(map[string]any{
+					"goal":            truncateRunes(body.Prompt, 2000),
+					"requestedMode":   body.Mode,
+					"requestedCount":  body.Count,
+					"referenceCount":  len(references),
+					"attachmentCount": len(body.Attachments),
+				})
+			}
+			visualReferences := make([]map[string]any, 0, len(references))
+			for _, reference := range references {
+				visualReferences = append(visualReferences, map[string]any{
+					"id": assistantMapText(reference, "id"), "name": assistantMapText(reference, "name"),
+					"fileKey": assistantMapText(reference, "fileKey"),
+				})
+			}
+			visualSummary, _ := json.Marshal(map[string]any{"referenceImages": visualReferences})
+			if canvasAgent {
+				if err := store.InsertAgentExecutionTrace(c.Request.Context(), tx, run.ID, user.ID, projectID, body.Model, body.ReasoningEffort, snapshotJSON, visualSummary); err != nil {
+					return err
+				}
+			} else if err := store.InsertAssistantAgentExecutionTrace(c.Request.Context(), tx, run.ID, user.ID, body.Model, body.ReasoningEffort, snapshotJSON, visualSummary); err != nil {
+				return err
+			}
 		}
 		if err := store.InsertAssistantRunOutbox(c.Request.Context(), tx, run.ID); err != nil {
 			return err
@@ -1277,6 +1383,14 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 	respondCreated(c, payload)
 }
 
+func assistantToolExecutionMode(workspace, mode, prompt string) string {
+	if workspace == modelconfig.WorkspaceAssistant && mode == "chat" &&
+		(assistanttools.WebSearchRequested(prompt) || assistanttools.TaskStatusRequested(prompt)) {
+		return "agent"
+	}
+	return mode
+}
+
 func assistantRunReservedCost(mode string, chatCostCents, imageCostCents int64) int64 {
 	if mode == "image" {
 		return imageCostCents
@@ -1286,6 +1400,10 @@ func assistantRunReservedCost(mode string, chatCostCents, imageCostCents int64) 
 
 func (s *Server) enqueueAssistantRunFromOutbox(ctx context.Context, run *store.AssistantRun) bool {
 	if run == nil || run.Status != "queued" {
+		return false
+	}
+	ready, err := store.AssistantRunDispatchable(ctx, s.St.Pool, run.ID, assistantActiveRunLimit)
+	if err != nil || !ready {
 		return false
 	}
 	if err := s.Queue.EnqueueAssistantRun(ctx, run.ID.String()); err != nil {
@@ -1302,14 +1420,46 @@ func (s *Server) enqueueAssistantRunFromOutbox(ctx context.Context, run *store.A
 	return true
 }
 
-func validateAssistantRunCapacity(active []*store.AssistantRun, conversationID uuid.UUID) error {
+func (s *Server) dispatchReadyAssistantRuns(ctx context.Context) {
+	ids, err := store.ListReadyAssistantRunOutboxIDs(ctx, s.St.Pool, time.Now().UTC(), 32)
+	if err != nil {
+		log.Printf("assistant queue dispatch lookup failed: %v", err)
+		return
+	}
+	for _, id := range ids {
+		run, getErr := store.GetAssistantRun(ctx, s.St.Pool, id)
+		if getErr != nil || run == nil {
+			continue
+		}
+		s.enqueueAssistantRunFromOutbox(ctx, run)
+	}
+}
+
+func validateAssistantRunCapacity(active []*store.AssistantRun, conversationID uuid.UUID, allowQueue bool) error {
+	running := 0
+	queued := 0
+	conversationActive := 0
 	for _, run := range active {
+		if run.Status == "running" {
+			running++
+		} else if run.Status == "queued" {
+			queued++
+		}
 		if run.ConversationID == conversationID {
-			return apperr.E("assistant_conversation_busy", "该对话已有任务正在运行", 409)
+			conversationActive++
 		}
 	}
-	if len(active) >= assistantActiveRunLimit {
+	if !allowQueue && conversationActive > 0 {
+		return apperr.E("assistant_conversation_busy", "该对话已有任务正在运行", 409)
+	}
+	if !allowQueue && running >= assistantActiveRunLimit {
 		return apperr.E("assistant_run_limit", "最多可同时运行 4 个对话任务", 409)
+	}
+	if allowQueue && conversationActive >= assistantConversationQueueLimit {
+		return apperr.E("assistant_conversation_queue_full", "当前对话最多排队 10 个任务", 409)
+	}
+	if allowQueue && queued >= assistantUserQueueLimit {
+		return apperr.E("assistant_queue_full", "当前最多排队 20 个助手任务", 409)
 	}
 	return nil
 }
@@ -1351,8 +1501,14 @@ func (s *Server) assistantRuns(c *gin.Context) {
 		return
 	}
 	out := make([]gin.H, 0, len(runs))
+	queueIndexes := make(map[uuid.UUID]int)
 	for _, run := range runs {
-		out = append(out, assistantRunDict(run))
+		item := assistantRunDict(run)
+		if run.Status == "queued" {
+			queueIndexes[run.ConversationID]++
+			item["queueIndex"] = queueIndexes[run.ConversationID]
+		}
+		out = append(out, item)
 	}
 	ok(c, gin.H{"runs": out})
 }
@@ -1385,17 +1541,7 @@ func (s *Server) assistantRun(c *gin.Context) {
 	ok(c, gin.H{"run": assistantRunDict(run), "assistantMessage": assistantMessageDict(message)})
 }
 
-func (s *Server) cancelAssistantRun(c *gin.Context) {
-	user, err := s.requireUser(c)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	id, err := parseUUIDParam(c, "id")
-	if err != nil {
-		fail(c, err)
-		return
-	}
+func (s *Server) cancelAssistantRun(c *gin.Context, user *store.User, id uuid.UUID, body assistantRunPatchIn) {
 	run, err := store.GetUserAssistantRun(c.Request.Context(), s.St.Pool, user.ID, id)
 	if err != nil || run == nil {
 		if err != nil {
@@ -1405,10 +1551,14 @@ func (s *Server) cancelAssistantRun(c *gin.Context) {
 		}
 		return
 	}
+	if body.Status != "canceled" {
+		fail(c, apperr.E("validation_error", "status: 仅支持更新为 canceled", 422))
+		return
+	}
 	var canceled bool
 	err = s.St.Tx(c.Request.Context(), func(tx pgx.Tx) error {
 		var txErr error
-		run, canceled, txErr = assistantbilling.CancelUserTx(c.Request.Context(), tx, user.ID, id)
+		run, canceled, txErr = assistantbilling.CancelUserTxConfirmed(c.Request.Context(), tx, user.ID, id, body.AcknowledgeUpstream)
 		if txErr != nil || !canceled {
 			return txErr
 		}
@@ -1418,6 +1568,11 @@ func (s *Server) cancelAssistantRun(c *gin.Context) {
 		}
 		if message == nil {
 			return nil
+		}
+		if _, updateErr := tx.Exec(c.Request.Context(), `UPDATE assistant_messages
+			SET status = 'stopped', updated_at = now()
+			WHERE id = $1 AND status = 'queued'`, run.UserMessageID); updateErr != nil {
+			return updateErr
 		}
 		metadata := assistantMessageMetadataWithoutOutputs(message)
 		delete(metadata, "pendingTool")
@@ -1440,24 +1595,97 @@ func (s *Server) cancelAssistantRun(c *gin.Context) {
 		}
 	}
 	updated, _ := store.GetUserAssistantRun(c.Request.Context(), s.St.Pool, user.ID, id)
+	s.dispatchReadyAssistantRuns(c.Request.Context())
 	ok(c, gin.H{"run": assistantRunDict(updated), "canceled": canceled})
 }
 
 type assistantRunPatchIn struct {
-	Status string `json:"status"`
+	Status              string `json:"status"`
+	AcknowledgeUpstream bool   `json:"acknowledgeUpstream"`
+	Action              string `json:"action"`
+	Prompt              string `json:"prompt"`
+	UserMessageContent  string `json:"userMessageContent"`
 }
 
 func (s *Server) patchAssistantRun(c *gin.Context) {
+	user, err := s.requireUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	id, err := parseUUIDParam(c, "id")
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	var body assistantRunPatchIn
 	if err := bindJSON(c, &body); err != nil {
 		fail(c, err)
 		return
 	}
-	if body.Status != "canceled" {
-		fail(c, apperr.E("validation_error", "status: 仅支持更新为 canceled", 422))
+	if body.Status == "canceled" {
+		s.cancelAssistantRun(c, user, id, body)
 		return
 	}
-	s.cancelAssistantRun(c)
+	action := strings.ToLower(strings.TrimSpace(body.Action))
+	switch action {
+	case "edit":
+		prompt := strings.TrimSpace(body.Prompt)
+		content := strings.TrimSpace(body.UserMessageContent)
+		if content == "" {
+			content = prompt
+		}
+		if prompt == "" || len([]rune(prompt)) > maxAssistantMessageRunes || len([]rune(content)) > maxAssistantMessageRunes {
+			fail(c, apperr.E("validation_error", "排队消息长度须在 1-12000 之间", 422))
+			return
+		}
+		updated, updateErr := store.UpdateQueuedAssistantRunPrompt(c.Request.Context(), s.St.Pool, user.ID, id, prompt, content)
+		if updateErr != nil {
+			fail(c, updateErr)
+			return
+		}
+		if !updated {
+			fail(c, apperr.E("assistant_queue_item_unavailable", "任务已经开始，无法继续编辑", 409))
+			return
+		}
+	case "move_up", "move_down":
+		direction := 1
+		if action == "move_up" {
+			direction = -1
+		}
+		var moved bool
+		moveErr := s.St.Tx(c.Request.Context(), func(tx pgx.Tx) error {
+			if lockErr := store.LockAssistantRunsForUser(c.Request.Context(), tx, user.ID); lockErr != nil {
+				return lockErr
+			}
+			var err error
+			moved, err = store.MoveQueuedAssistantRun(c.Request.Context(), tx, user.ID, id, direction)
+			return err
+		})
+		if moveErr != nil {
+			fail(c, moveErr)
+			return
+		}
+		if !moved {
+			fail(c, apperr.E("assistant_queue_boundary", "任务已经位于队列边界或已经开始", 409))
+			return
+		}
+	default:
+		fail(c, apperr.E("validation_error", "action: 不支持的排队操作", 422))
+		return
+	}
+	s.dispatchReadyAssistantRuns(c.Request.Context())
+	run, getErr := store.GetUserAssistantRun(c.Request.Context(), s.St.Pool, user.ID, id)
+	if getErr != nil {
+		fail(c, getErr)
+		return
+	}
+	message, getErr := store.GetAssistantMessage(c.Request.Context(), s.St.Pool, run.UserMessageID)
+	if getErr != nil {
+		fail(c, getErr)
+		return
+	}
+	ok(c, gin.H{"run": assistantRunDict(run), "userMessage": assistantMessageDict(message)})
 }
 
 func assistantConversationDict(item *store.AssistantConversation, messages []*store.AssistantMessage) gin.H {
@@ -1534,7 +1762,7 @@ func assistantMessageDict(item *store.AssistantMessage) gin.H {
 	}
 	out := gin.H{}
 	for key, value := range item.Metadata {
-		if key == "_contextSummary" || key == "_contextSummaryMessages" || key == "_contextSummaryThroughMessageId" {
+		if strings.HasPrefix(key, "_") {
 			continue
 		}
 		out[key] = value
@@ -1544,7 +1772,7 @@ func assistantMessageDict(item *store.AssistantMessage) gin.H {
 	out["content"] = item.Content
 	out["kind"] = item.Kind
 	out["status"] = item.Status
-	out["pending"] = item.Status == "queued" || item.Status == "running"
+	out["pending"] = item.Role == "assistant" && (item.Status == "queued" || item.Status == "running")
 	out["createdAt"] = isoValue(item.CreatedAt)
 	out["updatedAt"] = isoValue(item.UpdatedAt)
 	return out
@@ -1577,10 +1805,12 @@ func assistantRunDict(item *store.AssistantRun) gin.H {
 	payload := gin.H{"id": item.ID.String(), "conversationId": item.ConversationID.String(),
 		"userMessageId": item.UserMessageID.String(), "assistantMessageId": item.AssistantMessageID.String(),
 		"mode": item.Mode, "resolvedMode": item.ResolvedMode, "status": item.Status, "stage": item.Stage,
+		"prompt": item.Prompt, "queuePosition": item.QueuePosition,
 		"reservedCents": item.ReservedCents, "costCents": item.CostCents,
 		"billingGeneration": item.BillingGeneration,
 		"errorCode":         item.ErrorCode, "errorMessage": item.ErrorMessage, "createdAt": isoValue(item.CreatedAt),
-		"startedAt": iso(item.StartedAt), "finishedAt": iso(item.FinishedAt)}
+		"startedAt": iso(item.StartedAt), "finishedAt": iso(item.FinishedAt),
+		"cancelPolicy": assistantbilling.CancelPolicyForRun(item)}
 	if item.Params != nil {
 		if parent, _ := item.Params["parentOutputUrl"].(string); strings.TrimSpace(parent) != "" {
 			payload["parentOutputUrl"] = strings.TrimSpace(parent)
@@ -1994,6 +2224,61 @@ func sanitizeAssistantReferences(items []map[string]any, userID uuid.UUID) ([]ma
 			copyItem["dataUrl"] = normalizedSources[candidate.sourceIndex]
 		}
 		out = append(out, copyItem)
+	}
+	return out, nil
+}
+
+func sanitizeAssistantImagePlanItems(items []assistantRunImagePlanItem, references []map[string]any, expected int) ([]map[string]any, error) {
+	if len(items) == 0 {
+		return nil, nil
+	}
+	if len(items) != expected {
+		return nil, apperr.E("validation_error", fmt.Sprintf("独立多图方案数量不一致：方案 %d 张，输出 %d 张", len(items), expected), 422)
+	}
+	allowed := map[string]bool{}
+	for _, reference := range references {
+		for _, key := range []string{"id", "fileKey"} {
+			if value := strings.TrimSpace(assistantMapText(reference, key)); value != "" {
+				allowed[value] = true
+			}
+		}
+	}
+	out := make([]map[string]any, 0, len(items))
+	for index, item := range items {
+		promptText := strings.TrimSpace(item.Prompt)
+		if promptText == "" || len([]rune(promptText)) > maxAssistantMessageRunes {
+			return nil, apperr.E("validation_error", fmt.Sprintf("第 %d 张图片的提示词长度须在 1-12000 之间", index+1), 422)
+		}
+		title := strings.TrimSpace(item.Title)
+		if title == "" {
+			title = fmt.Sprintf("图片 %d", index+1)
+		}
+		if len([]rune(title)) > 40 {
+			return nil, apperr.E("validation_error", fmt.Sprintf("第 %d 张图片的用途名称不能超过 40 个字符", index+1), 422)
+		}
+		referenceIDs := make([]string, 0, min(len(item.ReferenceImageIDs), 4))
+		seen := map[string]bool{}
+		for _, id := range item.ReferenceImageIDs {
+			id = strings.TrimSpace(id)
+			if id == "" || seen[id] {
+				continue
+			}
+			if !allowed[id] {
+				return nil, apperr.E("validation_error", fmt.Sprintf("第 %d 张图片引用了不存在的参考图", index+1), 422)
+			}
+			if len(referenceIDs) >= 4 {
+				return nil, apperr.E("validation_error", fmt.Sprintf("第 %d 张图片最多引用 4 张参考图", index+1), 422)
+			}
+			seen[id] = true
+			referenceIDs = append(referenceIDs, id)
+		}
+		id := strings.TrimSpace(item.ID)
+		if id == "" {
+			id = fmt.Sprintf("item-%d", index+1)
+		}
+		out = append(out, map[string]any{
+			"id": id, "title": title, "prompt": promptText, "referenceImageIds": referenceIDs,
+		})
 	}
 	return out, nil
 }

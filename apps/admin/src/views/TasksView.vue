@@ -264,16 +264,22 @@ function taskPreviewUrls(task: AdminTask) {
 }
 
 function taskDuration(task: AdminTask) {
-  if (!task.startedAt) return '未开始'
-  const start = new Date(task.startedAt).getTime()
+  const started = task.startedAt ? new Date(task.startedAt).getTime() : Number.NaN
+  const created = new Date(task.createdAt).getTime()
+  const start = Number.isFinite(started) ? started : created
   const end = task.finishedAt ? new Date(task.finishedAt).getTime() : Date.now()
   if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return '-'
   const seconds = Math.max(0, Math.round((end - start) / 1000))
-  if (seconds < 60) return `${seconds} 秒`
+  let value = ''
+  if (seconds < 60) value = `${seconds} 秒`
   const minutes = Math.floor(seconds / 60)
   const rest = seconds % 60
-  if (minutes < 60) return `${minutes} 分 ${rest} 秒`
-  return `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分`
+  if (!value && minutes < 60) value = `${minutes} 分 ${rest} 秒`
+  if (!value) value = `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分`
+  if (Number.isFinite(started)) return value
+  if (task.status === 'queued') return `排队中 · ${value}`
+  if (task.status === 'running') return `等待执行 · ${value}`
+  return `总历时 ${value}`
 }
 
 function taskRowClass({ row }: { row: AdminTask }) {

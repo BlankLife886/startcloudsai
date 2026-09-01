@@ -30,10 +30,13 @@ const (
 	// async task. Under concurrency that handoff can legitimately exceed one
 	// minute, so keep the POST alive long enough to receive the canonical task
 	// ID instead of cancelling valid work and trying to recover by client ID.
-	asyncSubmitTimeout                   = 2 * time.Minute
-	asyncPollTimeout                     = 15 * time.Second
-	asyncPollInterval                    = 2 * time.Second
-	maxImageDownloadTimeout              = 3 * time.Minute
+	asyncSubmitTimeout = 2 * time.Minute
+	asyncPollTimeout   = 15 * time.Second
+	asyncPollInterval  = 2 * time.Second
+	// Result images are already generated when this timeout applies. A stalled
+	// media connection must fail quickly so the poll loop can retry another
+	// connection instead of hiding a transient fetch failure for minutes.
+	maxImageDownloadTimeout              = 20 * time.Second
 	imagePollStatusTimeout               = 10 * time.Second
 	imageResultDownloadConcurrency int64 = 2
 )
@@ -588,6 +591,12 @@ func (c *Client) taskImagesB64(ctx context.Context, data []map[string]any) ([]st
 			results[index].ms = time.Since(startedAt).Milliseconds()
 			if err != nil {
 				results[index].err = err
+				host := "unknown"
+				if parsed, parseErr := url.Parse(strings.TrimSpace(rawURL)); parseErr == nil && parsed.Host != "" {
+					host = parsed.Host
+				}
+				log.Printf("c2a image download failed host=%s duration_ms=%d kind=%s retryable=%t",
+					host, results[index].ms, imageDownloadErrorKind(err), isRetryablePollError(err))
 				return
 			}
 			results[index].bytes = int64(base64.StdEncoding.DecodedLen(len(b64)))
@@ -607,6 +616,25 @@ func (c *Client) taskImagesB64(ctx context.Context, data []map[string]any) ([]st
 		}
 	}
 	return images, stats, firstErr
+}
+
+func imageDownloadErrorKind(err error) string {
+	var notReady *imageNotReadyError
+	if errors.As(err, &notReady) {
+		return "not_ready"
+	}
+	var networkErr *NetworkError
+	if errors.As(err, &networkErr) {
+		if networkErr.Timeout() || errors.Is(err, context.DeadlineExceeded) {
+			return "timeout"
+		}
+		return "network"
+	}
+	var upstreamErr *UpstreamError
+	if errors.As(err, &upstreamErr) && upstreamErr.StatusCode > 0 {
+		return fmt.Sprintf("http_%d", upstreamErr.StatusCode)
+	}
+	return "invalid_response"
 }
 
 func imageTaskError(task imageTask) error {

@@ -4,6 +4,7 @@ package taskflow
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"regexp"
@@ -606,6 +607,17 @@ func createTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 			modelEffectivePrice := modelconfig.EffectivePrice(selection.Model)
 			resolvedPrice := resolveSelectionPrice(modelCfg, workspace, selection.Model, params)
 			unitPrice = resolvedPrice.EffectiveCents
+			upstreamUnitCost := modelconfig.ResolveUpstreamCost(
+				selection.Model,
+				int(numericParam(params, "_inputImageLongEdge")),
+				numericParam(func() map[string]any { value, _ := params["toolInput"].(map[string]any); return value }(), "scale_factor"),
+			)
+			if unitPrice == 0 && !selection.Model.AllowZeroPrice {
+				return apperr.E("model_zero_price_blocked", "模型价格尚未配置，已阻止零积分调用", 503)
+			}
+			if unitPrice < upstreamUnitCost && !selection.Model.AllowLossLeader {
+				return apperr.E("model_price_inverted", "模型价格低于上游成本，已暂停调用，请联系管理员", 503)
+			}
 			params["_serviceProvider"] = provider
 			params["_modelConfigId"] = selection.Model.ID
 			params["_providerConfigId"] = selection.Provider.ID
@@ -627,6 +639,7 @@ func createTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 			params["_unitPriceCents"] = unitPrice
 			params["_billingUnitPriceCents"] = unitPrice
 			params["_modelEffectivePriceCents"] = modelEffectivePrice
+			params["_upstreamUnitCostCents"] = upstreamUnitCost
 			params["_pricingWorkspace"] = workspace
 		} else if isMediaTool {
 			return apperr.E("validation_error", "所选媒体工具尚未配置、未开放或已下线", 422)
@@ -694,6 +707,27 @@ func createTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 		if err != nil {
 			return err
 		}
+		if rawAPIKeyID, ok := params["_apiKeyId"].(string); ok && strings.TrimSpace(rawAPIKeyID) != "" {
+			apiKeyID, parseErr := uuid.Parse(strings.TrimSpace(rawAPIKeyID))
+			if parseErr != nil {
+				return apperr.E("api_key_invalid", "API Key 上下文无效", 401)
+			}
+			if usageErr := store.RecordAPIKeyTaskCreation(ctx, tx, apiKeyID, userID, task.ID,
+				stringParam(params, "_modelConfigId"), costCents, now()); usageErr != nil {
+				switch {
+				case errors.Is(usageErr, store.ErrAPIKeyInactive):
+					return apperr.E("api_key_invalid", "API Key 已失效", 401)
+				case errors.Is(usageErr, store.ErrAPIKeyDailyLimit):
+					return apperr.E("api_key_daily_limit", "API Key 今日调用或积分额度已用完", 429)
+				case errors.Is(usageErr, store.ErrAPIKeyMonthlyLimit):
+					return apperr.E("api_key_monthly_limit", "API Key 本月调用或积分额度已用完", 429)
+				case errors.Is(usageErr, store.ErrAPIKeyModelDenied):
+					return apperr.E("api_key_model_denied", "此 API Key 无权调用所选模型", 403)
+				default:
+					return usageErr
+				}
+			}
+		}
 		if err := store.AddUserUploadReferences(ctx, tx, userID, store.UploadReferenceTaskInput,
 			task.ID, taskUploadReferenceKeys(in.InputKeys, params)); err != nil {
 			return err
@@ -736,20 +770,28 @@ func createTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 	return task, created, nil
 }
 
-// CancelTask 用户主动停止：queued 解冻退回，running 视为已经提交并结算预留费用。
+// CancelTask is kept for trusted internal callers that already made the
+// cancellation consequence explicit to the user.
 func CancelTask(ctx context.Context, st *store.Store, userID, taskID uuid.UUID) (*store.Task, error) {
-	return cancelTask(ctx, st, &userID, taskID, cancelActorUser)
+	return cancelTask(ctx, st, &userID, taskID, cancelActorUser, true)
+}
+
+// CancelTaskConfirmed requires an explicit acknowledgement once an image task
+// may already be running upstream. The check happens under the task row lock,
+// so a queued-to-running race cannot silently bypass the warning.
+func CancelTaskConfirmed(ctx context.Context, st *store.Store, userID, taskID uuid.UUID, acknowledgeUpstream bool) (*store.Task, error) {
+	return cancelTask(ctx, st, &userID, taskID, cancelActorUser, acknowledgeUpstream)
 }
 
 // AdminCancelTask 管理员取消任意用户的 queued 任务并退回冻结费用。
 func AdminCancelTask(ctx context.Context, st *store.Store, taskID uuid.UUID) (*store.Task, error) {
-	return cancelTask(ctx, st, nil, taskID, cancelActorAdmin)
+	return cancelTask(ctx, st, nil, taskID, cancelActorAdmin, true)
 }
 
 // CancelQueuedTaskSilently is reserved for internal rollback before a queued
 // task is exposed to the user. It must not be presented as a user action.
 func CancelQueuedTaskSilently(ctx context.Context, st *store.Store, userID, taskID uuid.UUID) (*store.Task, error) {
-	return cancelTask(ctx, st, &userID, taskID, cancelActorSystem)
+	return cancelTask(ctx, st, &userID, taskID, cancelActorSystem, true)
 }
 
 type cancelActor string
@@ -760,9 +802,14 @@ const (
 	cancelActorSystem cancelActor = "system"
 )
 
+func imageTaskRequiresCancelConfirmation(taskType string) bool {
+	return store.Contains(modelconfig.ImageTaskTypes, taskType) ||
+		taskType == "background_remove" || taskType == "media_tool"
+}
+
 // cancelTask only lets an explicit user action stop running work. Admin and
 // internal rollback remain limited to queued tasks.
-func cancelTask(ctx context.Context, st *store.Store, owner *uuid.UUID, taskID uuid.UUID, actor cancelActor) (*store.Task, error) {
+func cancelTask(ctx context.Context, st *store.Store, owner *uuid.UUID, taskID uuid.UUID, actor cancelActor, acknowledgeUpstream bool) (*store.Task, error) {
 	var task *store.Task
 	err := st.Tx(ctx, func(tx pgx.Tx) error {
 		var t *store.Task
@@ -789,7 +836,15 @@ func cancelTask(ctx context.Context, st *store.Store, owner *uuid.UUID, taskID u
 			}
 			return apperr.E("task_not_cancelable", "仅排队中或运行中的任务可以停止", 400)
 		}
-		errorCode, errorMessage := "user_canceled", "用户主动停止任务"
+		generationStage := stringParam(t.Params, "_generationStage")
+		upstreamSubmitted := fromStatus == "running" && generationStage != "preparing"
+		if actor == cancelActorUser && imageTaskRequiresCancelConfirmation(t.Type) && upstreamSubmitted && !acknowledgeUpstream {
+			return apperr.E("task_cancel_confirmation_required", "生成请求已经提交给上游，取消只会停止等待和接收结果，上游可能仍会继续生成，本次积分不会退回。请确认后再停止", 409)
+		}
+		errorCode, errorMessage := "user_canceled", "任务已在提交上游前取消"
+		if upstreamSubmitted {
+			errorMessage = "已停止接收本次生成结果；请求已提交上游，可能仍会继续生成"
+		}
 		if actor == cancelActorAdmin {
 			errorCode, errorMessage = "admin_canceled", "管理员取消任务"
 		} else if actor == cancelActorSystem {
@@ -809,7 +864,7 @@ func cancelTask(ctx context.Context, st *store.Store, owner *uuid.UUID, taskID u
 			return err
 		}
 		if t.CostCents > 0 {
-			if fromStatus == "running" {
+			if upstreamSubmitted {
 				if _, err := wallet.SettleForTask(ctx, tx, t.UserID, taskID, t.CostCents, strPtr("用户主动停止：任务已提交，按预留积分结算")); err != nil {
 					return err
 				}
@@ -825,6 +880,11 @@ func cancelTask(ctx context.Context, st *store.Store, owner *uuid.UUID, taskID u
 				}
 			}
 		}
+		if upstreamSubmitted {
+			if err := recordTaskProfit(ctx, tx, t, t.CostCents, t.Count, "canceled", now()); err != nil {
+				return err
+			}
+		}
 		if actor == cancelActorAdmin {
 			body := taskNotifyName(t) + "已被管理员取消，费用已退回。"
 			if err := store.InsertNotification(ctx, tx, &t.UserID, "task", taskNotifyName(t)+"已取消", &body); err != nil {
@@ -833,7 +893,7 @@ func cancelTask(ctx context.Context, st *store.Store, owner *uuid.UUID, taskID u
 		} else if actor == cancelActorUser {
 			name := taskNotifyName(t)
 			body := "你已主动停止" + name + "任务。任务尚未提交，冻结积分已退回。"
-			if fromStatus == "running" {
+			if upstreamSubmitted {
 				body = "你已主动停止" + name + "任务。任务已提交，按本次预留积分结算，不按失败退款，也不会发放失败补偿。"
 			}
 			if err := store.InsertNotification(ctx, tx, &t.UserID, "task", name+"已主动停止", &body); err != nil {
@@ -907,13 +967,13 @@ func markSucceeded(ctx context.Context, q store.Q, task *store.Task, outputKeys,
 	if err != nil || !ok {
 		return false, err
 	}
+	settleCents := task.CostCents
+	if task.Count > 1 && len(outputKeys) > 0 && len(outputKeys) < task.Count {
+		settleCents = task.CostCents / int64(task.Count) * int64(len(outputKeys))
+	}
 	if task.CostCents > 0 {
 		// 按实际交付张数结算：上游部分成功（如 4 张只回 3 张）只收对应份额,
 		// 未交付部分显式退回（冻结时已扣余额,Settle 只消耗冻结,差额必须 Release）。
-		settleCents := task.CostCents
-		if task.Count > 1 && len(outputKeys) > 0 && len(outputKeys) < task.Count {
-			settleCents = task.CostCents / int64(task.Count) * int64(len(outputKeys))
-		}
 		if _, err := wallet.SettleForTask(ctx, q, task.UserID, task.ID, settleCents, nil); err != nil {
 			return false, err
 		}
@@ -923,6 +983,9 @@ func markSucceeded(ctx context.Context, q store.Q, task *store.Task, outputKeys,
 				return false, err
 			}
 		}
+	}
+	if err := recordTaskProfit(ctx, q, task, settleCents, len(outputKeys), "succeeded", finishedAt); err != nil {
+		return false, err
 	}
 	if err := growth.ApplyTaskSuccessMilestones(ctx, q, task, len(outputKeys), finishedAt); err != nil {
 		return false, err
@@ -968,10 +1031,45 @@ func markFailed(ctx context.Context, q store.Q, task *store.Task, errorCode, err
 			return false, err
 		}
 	}
+	if fromStatus == "running" {
+		failedTask := *task
+		failedTask.ErrorCode = strPtr(errorCode)
+		failedTask.ErrorMessage = strPtr(string(msg))
+		if err := recordTaskProfit(ctx, q, &failedTask, 0, task.Count, "failed", now()); err != nil {
+			return false, err
+		}
+	}
 	if err := growth.ApplyTaskFailureCompensation(ctx, q, task, errorCode, now()); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+func recordTaskProfit(ctx context.Context, q store.Q, task *store.Task, revenue int64, units int, status string, at time.Time) error {
+	if task == nil {
+		return nil
+	}
+	unitCost := int64(numericParam(task.Params, "_upstreamUnitCostCents"))
+	metadata := map[string]any{"taskType": task.Type, "requestedUnits": task.Count}
+	var apiKeyID *uuid.UUID
+	if rawAPIKeyID := stringParam(task.Params, "_apiKeyId"); rawAPIKeyID != "" {
+		metadata["apiKeyId"] = rawAPIKeyID
+		metadata["source"] = "open_api"
+		if parsed, err := uuid.Parse(rawAPIKeyID); err == nil {
+			apiKeyID = &parsed
+		}
+	}
+	if err := store.InsertUsageProfitEntry(ctx, q, store.UsageProfitEntry{
+		SourceType: "task", SourceID: task.ID.String(), BillingGeneration: max(task.Attempt, 0),
+		UserID: task.UserID, APIKeyID: apiKeyID,
+		EventStatus: status, Workspace: stringParam(task.Params, "_pricingWorkspace"),
+		ProviderID: stringParam(task.Params, "_providerConfigId"), RouteID: stringParam(task.Params, "_providerRouteId"),
+		ModelID: stringParam(task.Params, "_modelConfigId"), Units: units,
+		RevenueCents: revenue, UpstreamCostCents: unitCost * int64(max(units, 0)), Metadata: metadata, CreatedAt: at,
+	}); err != nil {
+		return err
+	}
+	return store.EnqueueTaskWebhookDeliveries(ctx, q, task, status, at)
 }
 
 // TaskDisplayName 用户可读的任务名称，画布来源显示为无限画布而不是文生图。

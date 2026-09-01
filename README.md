@@ -134,6 +134,7 @@ cd apps/admin && npm ci && npm run build
 - [4C8G 一体化部署与 PG18/OSS 迁移手册](docs/INTEGRATED_4C8G_MIGRATION.md)
 - [架构说明](docs/ARCHITECTURE.md)
 - [API 契约](docs/API_CONTRACT.md)
+- [开放 API 与 Webhook 接入](docs/OPEN_API.md)
 - [数据库设计](docs/DATABASE.md)
 - [全站图片加载与瀑布流滚动性能方案](docs/PROMPT_MASONRY_PERFORMANCE.md)
 - [高并发任务稳定性方案](docs/HIGH_CONCURRENCY_TASK_STABILITY.md)

@@ -40,7 +40,7 @@ export function nearestAspectLabel(width, height) {
   return (
     SUPPORTED_ASPECTS.map((label) => {
       const [aw, ah] = label.split(':').map(Number)
-      return {
+	return {
         label,
         diff: Math.abs(ratio - aw / ah),
       }
@@ -312,7 +312,12 @@ export function taskToLegacyJob(task = {}) {
     type: task.type,
     model: String(task.model || params.modelHint || '').trim(),
     gatewayModelId: String(params.publicModelKey || '').trim(),
-    status: STATUS_TO_LEGACY[String(task.status || '').toLowerCase()] || task.status || 'queued',
+		status: STATUS_TO_LEGACY[String(task.status || '').toLowerCase()] || task.status || 'queued',
+		generationStage: String(task.generationStage || ''),
+		cancelPolicy:
+			task.cancelPolicy && typeof task.cancelPolicy === 'object'
+				? { ...task.cancelPolicy }
+				: null,
     prompt: task.prompt || '',
     input: params,
     params,
@@ -355,7 +360,11 @@ function legacyResultFromTask(task = {}) {
 /** 上传参考图，返回可展示 URL（内部登记 URL→key 供 createServerAiJob 使用）。 */
 export async function uploadAiInputFile(file, options = {}) {
   if (!file) throw new Error('请先选择一张图片')
-  const uploaded = await uploadFile(file, { signal: options?.signal })
+  const uploaded = await uploadFile(file, {
+    signal: options?.signal,
+    referenceUpload: true,
+    behaviorFeature: options?.behaviorFeature,
+  })
   registerUrlKey(uploaded.url, uploaded.key)
   return uploaded.url
 }
@@ -506,8 +515,8 @@ export async function runServerAiJob(jobId) {
   return { job: taskToLegacyJob(task) }
 }
 
-export async function cancelServerAiJob(jobId) {
-  const task = await cancelTask(jobId)
+export async function cancelServerAiJob(jobId, options = {}) {
+	const task = await cancelTask(jobId, options)
   const job = taskToLegacyJob(task)
   return { cancelled: job.status === 'cancelled', job }
 }

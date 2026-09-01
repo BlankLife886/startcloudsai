@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:starcloudsai_mobile/core/config/app_environment.dart';
 import 'package:starcloudsai_mobile/core/network/api_client.dart';
@@ -325,6 +326,110 @@ void main() {
 
     expect(find.text('未通过'), findsOneWidget);
     expect(find.byTooltip('撤回投稿'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('rejected submission copies the complete review notice', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 844));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    const review = '标题与作品内容不一致，请删除画面中与主题无关的文字后重新投稿。';
+    String? clipboardText;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') {
+          clipboardText = (call.arguments as Map)['text'] as String?;
+        }
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: GallerySubmissionCard(
+            submission: GallerySubmission.fromJson({
+              'id': 'rejected-copy',
+              'taskId': 'task-copy',
+              'title': '需要调整的作品',
+              'status': 'rejected',
+              'rejectReason': review,
+            }),
+            onTap: () {},
+            onDelete: () {},
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(
+      find.byKey(const Key('copy-submission-review-rejected-copy')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(clipboardText, review);
+    expect(find.text('审核意见已复制'), findsOneWidget);
+    final notice = find.byKey(const Key('app-notice-card'));
+    expect(notice, findsOneWidget);
+    expect(tester.getCenter(notice).dx, closeTo(195, 1));
+    expect(tester.getCenter(notice).dy, closeTo(422, 1));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('flat submission card fits dark narrow large-text layout', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(320, 640));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData.light(),
+        darkTheme: ThemeData.dark(),
+        themeMode: ThemeMode.dark,
+        builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(
+            context,
+          ).copyWith(textScaler: const TextScaler.linear(1.6)),
+          child: child!,
+        ),
+        home: Scaffold(
+          body: Padding(
+            padding: const EdgeInsets.all(16),
+            child: GallerySubmissionCard(
+              submission: GallerySubmission.fromJson({
+                'id': 'dark-card',
+                'taskId': 'task-dark',
+                'title': '深色模式下的社区投稿作品',
+                'status': 'rejected',
+                'rejectReason': '请调整作品标题后重新投稿',
+              }),
+              onTap: () {},
+              onDelete: () {},
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('深色模式下的社区投稿作品'), findsOneWidget);
+    expect(find.byTooltip('复制审核意见'), findsOneWidget);
+    final material = tester.widget<Material>(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is Material && widget.shape is RoundedRectangleBorder,
+      ),
+    );
+    final shape = material.shape! as RoundedRectangleBorder;
+    expect(shape.borderRadius, BorderRadius.circular(8));
     expect(tester.takeException(), isNull);
   });
 

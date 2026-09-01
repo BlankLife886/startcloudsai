@@ -18,6 +18,45 @@ func TestTaskDictIncludesRecordedModel(t *testing.T) {
 	}
 }
 
+func TestTaskDictWithholdsInternalExecutionParams(t *testing.T) {
+	task := &store.Task{ID: uuid.New(), Type: "t2i", Params: map[string]any{
+		"_source": "text_to_image", "_kind": "wallpaper", "publicModelKey": "public-model",
+		"_providerConfigId": "private-provider", "_providerRouteKey": "private-route",
+		"_upstreamUnitCostCents": int64(9), "_apiKeyId": uuid.NewString(),
+	}}
+	params := taskDict(task, nil, nil)["params"].(map[string]any)
+	for _, key := range []string{"_providerConfigId", "_providerRouteKey", "_upstreamUnitCostCents", "_apiKeyId"} {
+		if _, exists := params[key]; exists {
+			t.Fatalf("public task params exposed %s: %#v", key, params)
+		}
+	}
+	if params["_source"] != "text_to_image" || params["_kind"] != "wallpaper" || params["publicModelKey"] != "public-model" {
+		t.Fatalf("safe public params were removed: %#v", params)
+	}
+}
+
+func TestTaskDictIncludesGenerationStageAndCancelPolicy(t *testing.T) {
+	task := &store.Task{
+		ID: uuid.New(), Type: "t2i", Status: "running",
+		Params: map[string]any{"_generationStage": "upstream_generating"},
+	}
+	dict := taskDict(task, nil, nil)
+	if dict["generationStage"] != "upstream_generating" {
+		t.Fatalf("generationStage = %#v", dict["generationStage"])
+	}
+	policy, ok := dict["cancelPolicy"].(gin.H)
+	if !ok || policy["mode"] != "abandon_upstream" || policy["upstreamSubmitted"] != true || policy["refunded"] != false {
+		t.Fatalf("cancelPolicy = %#v", dict["cancelPolicy"])
+	}
+
+	task.Params["_generationStage"] = "preparing"
+	dict = taskDict(task, nil, nil)
+	policy = dict["cancelPolicy"].(gin.H)
+	if policy["mode"] != "immediate" || policy["refunded"] != true {
+		t.Fatalf("preparing cancelPolicy = %#v", policy)
+	}
+}
+
 func TestTaskNotificationIncludesPreciseSource(t *testing.T) {
 	notification := &store.Notification{
 		ID: uuid.New(), Kind: "task", Title: "文生图已完成", CreatedAt: time.Now(),
@@ -98,6 +137,16 @@ func TestAdminTaskDictIncludesActualServiceProvider(t *testing.T) {
 				t.Fatalf("serviceProvider = %v, want %s", got, test.provider)
 			}
 		})
+	}
+}
+
+func TestAdminTaskDictRetainsInternalDiagnostics(t *testing.T) {
+	task := &store.Task{ID: uuid.New(), Type: "t2i", Params: map[string]any{
+		"_providerRouteKey": "provider/route", "_upstreamUnitCostCents": int64(9),
+	}}
+	params := adminTaskDict(task, nil)["params"].(map[string]any)
+	if params["_providerRouteKey"] != "provider/route" || params["_upstreamUnitCostCents"] != int64(9) {
+		t.Fatalf("admin diagnostics were redacted: %#v", params)
 	}
 }
 

@@ -6,6 +6,16 @@ export function uid() {
 
 export const IMAGE_COUNTS = [1, 2, 3, 4]
 
+export function assistantMessageMatchesRun(message, localAssistantId, run = {}, persisted = {}) {
+  const messageId = String(message?.id || '')
+  if (!messageId) return false
+  const candidateIds = [localAssistantId, run?.assistantMessageId, persisted?.id]
+    .map((value) => String(value || ''))
+    .filter(Boolean)
+  if (candidateIds.includes(messageId)) return true
+  return Boolean(run?.id && String(message?.runId || '') === String(run.id))
+}
+
 const ASSISTANT_SMALL_TALK =
   /^(你好|您好|嗨+|哈喽|在吗|在么|hello|hi+|hey|thanks?|thank you|谢谢(你|您)?(了)?|早上好|早安|晚上好|你是谁|你能做什么|在不在)[呀啊呢吧嘛]*[\s!！。.?？]*$/i
 
@@ -115,6 +125,24 @@ const MESSAGE_STATUS = {
     tone: 'working',
     progress: 42,
   },
+  web_search: {
+    label: '正在联网搜索',
+    detail: '正在检索公开网页并核对来源，完成后会在回答下方显示引用。',
+    tone: 'working',
+    progress: 48,
+  },
+  task_status: {
+    label: '正在查询任务状态',
+    detail: '正在核对真实阶段、重试记录和积分结算情况。',
+    tone: 'working',
+    progress: 48,
+  },
+  tool_action: {
+    label: '正在执行工具',
+    detail: '正在校验参数并准备可确认的操作结果。',
+    tone: 'working',
+    progress: 48,
+  },
   'analyzing-document': {
     label: '正在分析文档',
     detail: '正在检索附件中的相关内容并核对引用依据。',
@@ -133,6 +161,24 @@ const MESSAGE_STATUS = {
     tone: 'working',
     progress: 58,
   },
+  'submitting-file': {
+    label: '正在提交文件任务',
+    detail: '正在整理需求和参考图，并提交可编辑文件制作任务。',
+    tone: 'working',
+    progress: 24,
+  },
+  'generating-file': {
+    label: '正在制作可编辑文件',
+    detail: '上游正在生成版式、可编辑内容和配套素材。',
+    tone: 'working',
+    progress: 52,
+  },
+  'saving-file': {
+    label: '正在保存文件',
+    detail: '制作已完成，正在校验文件并保存到你的资产空间。',
+    tone: 'working',
+    progress: 86,
+  },
   answering: {
     label: '正在输入回答',
     detail: '回答正在实时生成并逐步呈现，你可以随时停止。',
@@ -145,6 +191,12 @@ const MESSAGE_STATUS = {
     tone: 'working',
     progress: 22,
   },
+  'submitting-image': {
+    label: '正在提交图片任务',
+    detail: '参考图与生成参数已准备完成，正在提交给图片服务。',
+    tone: 'working',
+    progress: 34,
+  },
   'planning-image': {
     label: '正在整理创作方案',
     detail: 'Agent 正在结合对话和参考图，准备可编辑的生成参数。',
@@ -155,7 +207,43 @@ const MESSAGE_STATUS = {
     label: '正在生成图片',
     detail: '图片任务已进入生成阶段，完成后会自动显示结果。',
     tone: 'working',
-    progress: 8,
+    progress: 56,
+  },
+  'fetching-image': {
+    label: '正在获取生成结果',
+    detail: '上游已经完成部分或全部图片，正在安全拉取结果。',
+    tone: 'working',
+    progress: 78,
+  },
+  'saving-image': {
+    label: '正在保存图片',
+    detail: '正在写入对象存储并生成预览图，完成后会自动显示。',
+    tone: 'working',
+    progress: 90,
+  },
+  preparing: {
+    label: '正在准备参考图',
+    detail: '正在读取并整理本次生成需要的参考图片。',
+    tone: 'working',
+    progress: 22,
+  },
+  upstream_generating: {
+    label: '上游正在生成',
+    detail: '图片任务已经提交，正在等待上游完成生成。',
+    tone: 'working',
+    progress: 56,
+  },
+  fetching_result: {
+    label: '正在获取生成结果',
+    detail: '上游已经出图，正在拉取原始结果。',
+    tone: 'working',
+    progress: 78,
+  },
+  saving_result: {
+    label: '正在保存图片',
+    detail: '正在写入对象存储并生成展示图片。',
+    tone: 'working',
+    progress: 90,
   },
   stopping: {
     label: '正在停止',
@@ -165,7 +253,7 @@ const MESSAGE_STATUS = {
   },
   stopped: {
     label: '已停止',
-    detail: '本次生成已由你手动停止，本轮积分不退还。',
+    detail: '本次任务已由你手动停止，费用以停止时的实际阶段为准。',
     tone: 'muted',
     progress: 0,
   },

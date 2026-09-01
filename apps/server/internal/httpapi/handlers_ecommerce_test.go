@@ -11,7 +11,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 )
 
-func TestDeleteUserAssetEnqueuesDeferredObjectCleanup(t *testing.T) {
+func TestUserAssetTrashRestoreAndPermanentCleanup(t *testing.T) {
 	env := newCommunityEnv(t)
 	user, token := env.newUserSession(t, "user")
 	fileKey := "uploads/" + user.ID.String() + "/original/asset.png"
@@ -32,8 +32,26 @@ func TestDeleteUserAssetEnqueuesDeferredObjectCleanup(t *testing.T) {
 		[]string{fileKey, thumbnailKey}).Scan(&cleanupJobs); err != nil {
 		t.Fatalf("count deferred cleanup jobs: %v", err)
 	}
+	if cleanupJobs != 0 {
+		t.Fatalf("soft delete queued %d cleanup jobs, want 0", cleanupJobs)
+	}
+	w = env.do(t, http.MethodPost, "/api/v1/me/assets/"+asset.ID.String()+"/restore", map[string]any{}, token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("restore asset: status %d body %s", w.Code, w.Body.String())
+	}
+	w = env.do(t, http.MethodDelete, "/api/v1/me/assets/"+asset.ID.String(), nil, token)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("trash again: status %d body %s", w.Code, w.Body.String())
+	}
+	w = env.do(t, http.MethodDelete, "/api/v1/me/assets/"+asset.ID.String()+"/permanent", nil, token)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("permanent delete: status %d body %s", w.Code, w.Body.String())
+	}
+	if err := env.st.Pool.QueryRow(context.Background(), `SELECT count(*) FROM object_cleanup_jobs WHERE object_key = ANY($1::text[])`, []string{fileKey, thumbnailKey}).Scan(&cleanupJobs); err != nil {
+		t.Fatalf("count permanent cleanup jobs: %v", err)
+	}
 	if cleanupJobs != 2 {
-		t.Fatalf("deferred cleanup jobs = %d, want 2", cleanupJobs)
+		t.Fatalf("permanent cleanup jobs = %d, want 2", cleanupJobs)
 	}
 }
 

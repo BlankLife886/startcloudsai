@@ -8,6 +8,14 @@ import '../../core/providers.dart';
 
 enum WalletEntryCategory { income, spend, pending, refund }
 
+enum WalletEntryFilter { all, income, spend, pending, refund, normal, trial }
+
+WalletEntryFilter walletEntryFilterFromName(String? name) =>
+    WalletEntryFilter.values.firstWhere(
+      (filter) => filter.name == name,
+      orElse: () => WalletEntryFilter.all,
+    );
+
 class WalletLedgerTask {
   const WalletLedgerTask({
     required this.id,
@@ -147,6 +155,28 @@ class WalletLedgerEntry {
           WalletEntryCategory.refund => '积分退回',
         };
   }
+}
+
+extension WalletEntryFilterPresentation on WalletEntryFilter {
+  String get label => switch (this) {
+    WalletEntryFilter.all => '全部',
+    WalletEntryFilter.income => '入账',
+    WalletEntryFilter.spend => '消费',
+    WalletEntryFilter.pending => '冻结',
+    WalletEntryFilter.refund => '退款',
+    WalletEntryFilter.normal => '普通积分',
+    WalletEntryFilter.trial => '体验积分',
+  };
+
+  bool includes(WalletLedgerEntry entry) => switch (this) {
+    WalletEntryFilter.all => true,
+    WalletEntryFilter.income => entry.category == WalletEntryCategory.income,
+    WalletEntryFilter.spend => entry.category == WalletEntryCategory.spend,
+    WalletEntryFilter.pending => entry.category == WalletEntryCategory.pending,
+    WalletEntryFilter.refund => entry.category == WalletEntryCategory.refund,
+    WalletEntryFilter.normal => entry.creditBucket != 'trial',
+    WalletEntryFilter.trial => entry.creditBucket == 'trial',
+  };
 }
 
 class WalletLedgerPage {

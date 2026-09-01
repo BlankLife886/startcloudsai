@@ -233,6 +233,20 @@ String? validateAssetGroupName(String? value) {
   return null;
 }
 
+List<UserAsset> searchUserAssets(Iterable<UserAsset> items, String query) {
+  final terms = query
+      .trim()
+      .toLowerCase()
+      .split(RegExp(r'\s+'))
+      .where((term) => term.isNotEmpty)
+      .toList();
+  if (terms.isEmpty) return items.toList();
+  return items.where((item) {
+    final title = item.title.toLowerCase();
+    return terms.every(title.contains);
+  }).toList();
+}
+
 class AssetRepository {
   const AssetRepository(this._apiClient);
 

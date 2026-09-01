@@ -379,6 +379,33 @@ void main() {
     );
   });
 
+  testWidgets('notification can be marked read without opening detail', (
+    tester,
+  ) async {
+    late _FakeNotificationController controller;
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          notificationCenterControllerProvider.overrideWith(
+            () => controller = _FakeNotificationController(),
+          ),
+        ],
+        child: const MaterialApp(home: NotificationCenterScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(
+      find.byKey(const Key('notification-mark-read-task-notification')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(controller.markReadCount, 1);
+    expect(controller.state.requireValue.unread, 0);
+    expect(find.byType(NotificationDetailSheet), findsNothing);
+    expect(find.text('已标记为已读'), findsOneWidget);
+  });
+
   testWidgets('notification search combines with unread filter on narrow UI', (
     tester,
   ) async {
@@ -490,6 +517,35 @@ void main() {
     );
 
     expect(find.text('查看体验权益'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('flat notification tile supports dark mode', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData.light(),
+        darkTheme: ThemeData.dark(),
+        themeMode: ThemeMode.dark,
+        home: Scaffold(
+          body: NotificationTimelineTile(
+            notification: _notification(
+              'dark-unread',
+              kind: 'reward',
+              title: '深色模式奖励通知',
+              body: '奖励已经到账。',
+            ),
+            onTap: () {},
+            onMarkRead: () {},
+          ),
+        ),
+      ),
+    );
+
+    expect(
+      Theme.of(tester.element(find.text('深色模式奖励通知'))).brightness,
+      Brightness.dark,
+    );
+    expect(find.byTooltip('标为已读'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }

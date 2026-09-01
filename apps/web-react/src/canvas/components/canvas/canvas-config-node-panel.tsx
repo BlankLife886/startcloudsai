@@ -11,6 +11,7 @@ import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
 import { canvasRaisedStyle, colorWash, nodeTypeColor } from "@/lib/canvas-ui";
 import { applyCanvasImageModelSettings, canvasImageSettingsFromModel } from "@/lib/canvas/canvas-image-model";
 import { formatGenerationDuration, useGenerationElapsed } from "@/lib/canvas/canvas-generation-elapsed";
+import { canvasGenerationStageLabel } from "@/lib/canvas/canvas-generation-stage";
 import { buildAngleLabel, isUnsubmittedCanvasGeneration } from "@/lib/canvas/canvas-generation-helpers";
 import { canvasLocalImageOperationOutputCount, isCanvasLocalImageOperation, normalizeCanvasLocalImageOperationParams } from "@/lib/canvas/canvas-local-image-operation";
 import { CanvasOperationNodeType } from "@/lib/canvas/canvas-operation-node";
@@ -236,7 +237,8 @@ function CanvasGenerationConfigNodePanel({ node, isRunning, inputSummary, inputs
             ) : generating ? (
                 <div className="mt-2.5 flex h-7 shrink-0 items-center gap-1.5 px-1 text-[11px]" style={{ color: theme.node.muted }}>
                     <Clock3 className="size-3.5" />
-                    <span className="tabular-nums">{t("canvas.configNode.generating", { duration: formatGenerationDuration(elapsedMs) })}</span>
+                    <span className="truncate">{canvasGenerationStageLabel(node.metadata?.generationStage)}</span>
+					<span className="tabular-nums opacity-70">{formatGenerationDuration(elapsedMs)}</span>
                 </div>
             ) : executionStatus === "succeeded" && completedAt ? (
                 <div className="mt-2.5 flex h-7 shrink-0 items-center gap-1.5 px-1 text-[11px]" style={{ color: theme.node.muted }}>
@@ -422,7 +424,7 @@ function CanvasAiOperationPanel({ node, isRunning, inputSummary, onConfigChange,
                 <span className="text-[12px] font-semibold" style={{ color: inputSummary.imageCount === 1 ? color : inputSummary.imageCount > 1 ? "#ef4444" : theme.node.muted }}>{t("canvas.configNode.images", { count: inputSummary.imageCount })}</span>
             </div>
             <div className="mt-auto min-h-7 px-1 pt-3 text-[11px]" style={{ color: executionStatus === "failed" ? "#ef4444" : theme.node.muted }}>
-                {queued ? t("canvas.configNode.queuedOperation", { operation: label }) : running ? t("canvas.configNode.processingOperation", { operation: label, duration: formatGenerationDuration(elapsedMs) }) : executionStatus === "succeeded" ? t("canvas.configNode.operationCompleted", { operation: label, duration: formatGenerationDuration(elapsedMs) }) : executionStatus === "failed" ? node.metadata?.errorDetails || t("canvas.configNode.operationFailed", { operation: label, duration: formatGenerationDuration(elapsedMs) }) : inputSummary.imageCount > 1 ? t("canvas.configNode.singleImageOnly") : t("canvas.configNode.operationReady", { operation: label })}
+                {queued ? t("canvas.configNode.queuedOperation", { operation: label }) : running ? `${canvasGenerationStageLabel(node.metadata?.generationStage)} · ${formatGenerationDuration(elapsedMs)}` : executionStatus === "succeeded" ? t("canvas.configNode.operationCompleted", { operation: label, duration: formatGenerationDuration(elapsedMs) }) : executionStatus === "failed" ? node.metadata?.errorDetails || t("canvas.configNode.operationFailed", { operation: label, duration: formatGenerationDuration(elapsedMs) }) : inputSummary.imageCount > 1 ? t("canvas.configNode.singleImageOnly") : t("canvas.configNode.operationReady", { operation: label })}
             </div>
             <button type="button" className="canvas-config-generate mt-2 inline-flex h-9 w-full shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-xl text-[13px] font-medium disabled:cursor-not-allowed disabled:opacity-60" style={{ background: queued ? "#d97706" : theme.scheme === "dark" ? colorWash(color, 0.16) : color, color: queued ? "#fff" : theme.scheme === "dark" ? color : "#fff" }} disabled={!queued && !running && !canRun} onMouseDown={(event) => event.stopPropagation()} onClick={() => queued ? onCancelQueued(node.id) : running ? onStopGeneration(node.id) : onGenerate(node.id)}>
                 {queued ? <><X className="size-4" />{t("canvas.configNode.cancelQueued")}</> : running ? <><Square className="size-3.5 fill-current" />{t("canvas.configNode.stopWithDuration", { duration: formatGenerationDuration(elapsedMs) })}</> : <><Play className="size-4 fill-current" />{t(hasOutput ? "canvas.configNode.regenerate" : "canvas.configNode.generate")}{cost.total > 0 ? <><span className="opacity-40">·</span><CanvasPriceMark price={`${cost.total.toLocaleString()} 积分`} /></> : null}</>}

@@ -20,6 +20,7 @@ const routePreloaders = new Map([
   ["/submissions", () => import("./views/SubmissionsView.jsx")],
   ["/wallet", () => import("./views/WalletView.jsx")],
   ["/account", () => import("./views/AccountSettingsView.jsx")],
+  ["/developer-api", () => import("./views/DeveloperAPIView.jsx")],
   ["/notifications", () => import("./views/NotificationsView.jsx")],
   ["/assets", () => import("./views/MaterialsLibraryView.jsx")],
   ["/tools/puzzle", () => import("./views/PuzzleView.jsx")],

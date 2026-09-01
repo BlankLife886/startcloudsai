@@ -187,11 +187,28 @@ export async function listActiveAssistantRuns({ workspace = '', signal } = {}) {
   return Array.isArray(data?.runs) ? data.runs : []
 }
 
-export async function cancelAssistantRun(id) {
+export async function cancelAssistantRun(id, { acknowledgeUpstream = true } = {}) {
   return apiPatch(
     `/assistant/runs/${encodeURIComponent(id)}`,
-    { status: 'canceled' },
+    { status: 'canceled', acknowledgeUpstream },
     { fallbackMessage: '停止任务失败' },
+  )
+}
+
+export async function editQueuedAssistantRun(id, prompt) {
+  return apiPatch(
+    `/assistant/runs/${encodeURIComponent(id)}`,
+    { action: 'edit', prompt, userMessageContent: prompt },
+    { fallbackMessage: '修改排队任务失败' },
+  )
+}
+
+export async function moveQueuedAssistantRun(id, direction) {
+  const action = direction === 'up' ? 'move_up' : 'move_down'
+  return apiPatch(
+    `/assistant/runs/${encodeURIComponent(id)}`,
+    { action },
+    { fallbackMessage: '调整排队顺序失败' },
   )
 }
 

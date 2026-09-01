@@ -107,8 +107,11 @@ func persistArtifact(
 	if ext == "" || len(data) == 0 || strings.TrimSpace(contentType) == "" {
 		return nil, errors.New("artifact data is incomplete")
 	}
-	sum := sha256.Sum256(append(append([]byte(name), 0), data...))
-	artifactID := uuid.NewSHA1(invocation.RunID, sum[:])
+	hasher := sha256.New()
+	_, _ = hasher.Write([]byte(name))
+	_, _ = hasher.Write([]byte{0})
+	_, _ = hasher.Write(data)
+	artifactID := uuid.NewSHA1(invocation.RunID, hasher.Sum(nil))
 	key := fmt.Sprintf("uploads/%s/original/%s.%s", invocation.UserID, artifactID, ext)
 	if err := storage.UploadBytes(ctx, key, data, contentType); err != nil {
 		return nil, fmt.Errorf("store generated file: %w", err)
@@ -131,6 +134,21 @@ func persistArtifact(
 		return nil, err
 	}
 	return artifact, nil
+}
+
+// PersistGeneratedArtifact stores a trusted generated file and binds it to the
+// current user, run, and assistant message. Callers must validate the file
+// signature and size before invoking it.
+func PersistGeneratedArtifact(
+	ctx context.Context,
+	st *store.Store,
+	storage ArtifactStorage,
+	invocation Invocation,
+	name string,
+	contentType string,
+	data []byte,
+) (map[string]any, error) {
+	return persistArtifact(ctx, st, storage, invocation, safeArtifactName(name, strings.TrimPrefix(strings.ToLower(filepath.Ext(name)), ".")), contentType, data)
 }
 
 func prepareArtifact(input artifactInput) (string, string, []byte, error) {

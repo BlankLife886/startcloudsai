@@ -70,6 +70,7 @@ interface ImageUpscalePricing {
   thresholdPixels: number;
   highPriceCents: number;
   highDiscountPriceCents: number | null;
+  highUpstreamCostCents: number;
 }
 
 interface ModelItem {
@@ -87,6 +88,9 @@ interface ModelItem {
   description: string;
   priceCents: number;
   discountPriceCents: number | null;
+  upstreamCostCents: number;
+  allowZeroPrice: boolean;
+  allowLossLeader: boolean;
   imageUpscalePricing: ImageUpscalePricing | null;
   fastMode: boolean;
   minSeconds: number;
@@ -115,6 +119,13 @@ interface ModelConfig {
   providers: ModelProvider[];
   models: ModelItem[];
   workspaces: Record<WorkspaceKey, WorkspaceBinding>;
+  editableFiles: EditableFileConfig;
+}
+
+interface EditableFileConfig {
+  enabled: boolean;
+  providerId: string;
+  routeId: string;
 }
 
 interface WorkspaceBinding {
@@ -178,14 +189,16 @@ function cloneJSON<T>(value: T): T {
 
 interface ModelDraft extends Omit<
   ModelItem,
-  "priceCents" | "discountPriceCents" | "imageUpscalePricing"
+  "priceCents" | "discountPriceCents" | "upstreamCostCents" | "imageUpscalePricing"
 > {
   pricePoints: number;
   discountEnabled: boolean;
   discountPoints: number;
+  upstreamCostPoints: number;
   upscaleHighPricePoints: number;
   upscaleHighDiscountEnabled: boolean;
   upscaleHighDiscountPoints: number;
+  upscaleHighUpstreamCostPoints: number;
   outputFormatsEnabled: boolean;
   moderationEnabled: boolean;
 }
@@ -477,6 +490,7 @@ const config = reactive<ModelConfig>({
   providers: [],
   models: [],
   workspaces: {} as Record<WorkspaceKey, WorkspaceBinding>,
+  editableFiles: { enabled: false, providerId: "", routeId: "" },
 });
 
 function signature() {
@@ -543,6 +557,11 @@ function hydrate(value: ModelConfig) {
 			  }],
   }));
 	for (const provider of config.providers) syncProviderPrimary(provider);
+  config.editableFiles = {
+    enabled: value.editableFiles?.enabled === true,
+    providerId: String(value.editableFiles?.providerId || "").trim(),
+    routeId: String(value.editableFiles?.routeId || "").trim(),
+  };
   config.models = (value.models || []).map((model) => ({
     ...model,
     upstreamInputFields: model.upstreamInputFields || [],
@@ -677,6 +696,7 @@ async function save() {
     return;
   }
   sanitizeWorkspaceBindings();
+  sanitizeEditableFileConfig();
   if (signature() === savedSignature.value) return;
   const payload = JSON.parse(JSON.stringify(config)) as ModelConfig;
   const submittedSignature = JSON.stringify(payload);
@@ -751,6 +771,64 @@ function providerName(id: string) {
 
 function providerModels(id: string) {
   return config.models.filter((item) => item.providerId === id);
+}
+
+const editableFileProviders = computed(() =>
+  config.providers.filter(
+    (provider) =>
+      provider.enabled &&
+      provider.adapter === "openai" &&
+      provider.routes.some((route) => route.enabled),
+  ),
+);
+
+const editableFileRoutes = computed(() => {
+  const provider = config.providers.find(
+    (item) => item.id === config.editableFiles.providerId,
+  );
+  return (provider?.routes || []).filter((route) => route.enabled);
+});
+
+function selectEditableFileProvider(providerId: string) {
+  config.editableFiles.providerId = providerId;
+  const provider = editableFileProviders.value.find(
+    (item) => item.id === providerId,
+  );
+  config.editableFiles.routeId =
+    provider?.routes.find((route) => route.enabled)?.id || "";
+}
+
+function toggleEditableFiles(value: string | number | boolean) {
+  const enabled = value === true;
+	config.editableFiles.enabled = enabled;
+	if (!enabled) return;
+  const selected = editableFileProviders.value.find(
+    (provider) => provider.id === config.editableFiles.providerId,
+  );
+  if (!selected) {
+    selectEditableFileProvider(editableFileProviders.value[0]?.id || "");
+    return;
+  }
+  if (!selected.routes.some((route) => route.enabled && route.id === config.editableFiles.routeId)) {
+    config.editableFiles.routeId =
+      selected.routes.find((route) => route.enabled)?.id || "";
+  }
+}
+
+function sanitizeEditableFileConfig() {
+  config.editableFiles.providerId = config.editableFiles.providerId.trim();
+  config.editableFiles.routeId = config.editableFiles.routeId.trim();
+  if (!config.editableFiles.enabled) return;
+  const provider = editableFileProviders.value.find(
+    (item) => item.id === config.editableFiles.providerId,
+  );
+  const validRoute = provider?.routes.some(
+    (route) => route.enabled && route.id === config.editableFiles.routeId,
+  );
+  if (provider && validRoute) return;
+  config.editableFiles.enabled = false;
+  config.editableFiles.providerId = "";
+  config.editableFiles.routeId = "";
 }
 
 function workspaceAvailableModels(workspace: (typeof workspaceMeta)[number]) {
@@ -1452,7 +1530,8 @@ async function importDiscoveredMediaTools() {
         upstreamRequiredInputFields: [...(entry.requiredInputFields || [])],
         upstreamInputSchema: cloneJSON(entry.inputSchema || {}), modality: entry.modality || "",
         operations: [...(entry.operations || [])], kind: "image_tool", tool: operation,
-        description: "", priceCents: 0, discountPriceCents: null, imageUpscalePricing: null, fastMode: false,
+        description: "", priceCents: 0, discountPriceCents: null, upstreamCostCents: 0,
+        allowZeroPrice: false, allowLossLeader: false, imageUpscalePricing: null, fastMode: false,
         minSeconds: 30, maxSeconds: 600, resolutions: [], aspectRatios: [],
         aspectRatiosByResolution: {}, qualities: [], transparentBackground: false,
         outputFormats: [], moderationLevels: [], maxReferenceImages: 0, maxImages: 0,
@@ -1642,7 +1721,7 @@ async function saveProviderDraft() {
 		ElMessage.warning("请填写服务商名称和每条线路的完整 Base URL");
 		return;
 	}
-	if (providerDraft.routes.some((route) => route.enabled && !route.apiKey.trim())) {
+  if (providerDraft.routes.some((route) => route.enabled && !route.apiKey.trim())) {
 		ElMessage.warning("请填写启用线路的 API Key");
     return;
   }
@@ -1704,9 +1783,13 @@ const modelDraft = reactive<ModelDraft>({
   pricePoints: 20,
   discountEnabled: false,
   discountPoints: 20,
+  upstreamCostPoints: 0,
+  allowZeroPrice: false,
+  allowLossLeader: false,
   upscaleHighPricePoints: 20,
   upscaleHighDiscountEnabled: false,
   upscaleHighDiscountPoints: 20,
+  upscaleHighUpstreamCostPoints: 0,
   fastMode: false,
   minSeconds: 30,
   maxSeconds: 90,
@@ -1795,11 +1878,17 @@ function openModel(index = -1) {
           pricePoints: normalizePoints(source.priceCents),
           discountEnabled: source.discountPriceCents !== null,
           discountPoints: normalizePoints(source.discountPriceCents),
+          upstreamCostPoints: normalizePoints(source.upstreamCostCents || 0),
+          allowZeroPrice: source.allowZeroPrice === true,
+          allowLossLeader: source.allowLossLeader === true,
           upscaleHighPricePoints: normalizePoints(source.imageUpscalePricing?.highPriceCents ?? source.priceCents),
           upscaleHighDiscountEnabled: source.imageUpscalePricing?.highDiscountPriceCents !== null
             && source.imageUpscalePricing?.highDiscountPriceCents !== undefined,
           upscaleHighDiscountPoints: normalizePoints(
             source.imageUpscalePricing?.highDiscountPriceCents ?? source.imageUpscalePricing?.highPriceCents ?? source.priceCents,
+          ),
+          upscaleHighUpstreamCostPoints: normalizePoints(
+            source.imageUpscalePricing?.highUpstreamCostCents ?? source.upstreamCostCents ?? 0,
           ),
         }
       : {
@@ -1823,9 +1912,13 @@ function openModel(index = -1) {
           pricePoints: 20,
           discountEnabled: false,
           discountPoints: 20,
+          upstreamCostPoints: 0,
+          allowZeroPrice: false,
+          allowLossLeader: false,
           upscaleHighPricePoints: 20,
           upscaleHighDiscountEnabled: false,
           upscaleHighDiscountPoints: 20,
+          upscaleHighUpstreamCostPoints: 0,
           fastMode: false,
           minSeconds: 30,
           maxSeconds: 90,
@@ -2346,6 +2439,31 @@ async function saveModelDraft() {
         ElMessage.warning(`${REASONING_EFFORT_LABELS[effort] || effort}档折扣积分不能高于标准积分`);
         return;
       }
+      if (modelDraft.enabled && modelDraft.public) {
+        const channels = [
+          {
+            label: "AI 助手",
+            standard: price.assistantPriceCents,
+            discount: price.assistantDiscountPriceCents,
+          },
+          {
+            label: "无限画布 Agent",
+            standard: price.canvasAgentPriceCents,
+            discount: price.canvasAgentDiscountPriceCents,
+          },
+        ];
+        for (const channel of channels) {
+          const effective = channel.discount ?? channel.standard;
+          if (effective === 0 && !modelDraft.allowZeroPrice) {
+            ElMessage.warning(`${REASONING_EFFORT_LABELS[effort] || effort}档 ${channel.label} 为 0 积分，请开启允许零积分`);
+            return;
+          }
+          if (effective < modelDraft.upstreamCostPoints && !modelDraft.allowLossLeader) {
+            ElMessage.warning(`${REASONING_EFFORT_LABELS[effort] || effort}档 ${channel.label} 价格低于上游成本`);
+            return;
+          }
+        }
+      }
     }
   }
   const value: ModelItem = {
@@ -2365,6 +2483,9 @@ async function saveModelDraft() {
     discountPriceCents: modelDraft.discountEnabled
       ? normalizePoints(modelDraft.discountPoints)
       : null,
+    upstreamCostCents: normalizePoints(modelDraft.upstreamCostPoints),
+    allowZeroPrice: modelDraft.allowZeroPrice,
+    allowLossLeader: modelDraft.allowLossLeader,
     imageUpscalePricing:
       modelDraft.kind === "image_tool" && modelDraft.tool === "image_upscale"
         ? {
@@ -2373,6 +2494,7 @@ async function saveModelDraft() {
             highDiscountPriceCents: modelDraft.upscaleHighDiscountEnabled
               ? normalizePoints(modelDraft.upscaleHighDiscountPoints)
               : null,
+            highUpstreamCostCents: normalizePoints(modelDraft.upscaleHighUpstreamCostPoints),
           }
         : null,
     fastMode: modelDraft.kind === "image" && modelDraft.fastMode,
@@ -3159,6 +3281,50 @@ onBeforeUnmount(() => {
       </section>
 
       <section v-else class="config-panel">
+      <div class="editable-file-control">
+        <div class="editable-file-control__identity">
+          <span class="editable-file-control__icon"><el-icon><Connection /></el-icon></span>
+          <div>
+            <strong>PPT / PSD</strong>
+            <small>{{ config.editableFiles.enabled ? "用户端已开放" : "用户端未开放" }}</small>
+          </div>
+        </div>
+        <div class="editable-file-control__fields">
+          <el-select
+            :model-value="config.editableFiles.providerId"
+            placeholder="选择服务商"
+            :disabled="!config.editableFiles.enabled"
+            @change="selectEditableFileProvider"
+          >
+            <el-option
+              v-for="provider in editableFileProviders"
+              :key="provider.id"
+              :label="provider.name"
+              :value="provider.id"
+            />
+          </el-select>
+          <el-select
+            v-model="config.editableFiles.routeId"
+            placeholder="选择线路"
+            :disabled="!config.editableFiles.enabled || !config.editableFiles.providerId"
+          >
+            <el-option
+              v-for="route in editableFileRoutes"
+              :key="route.id"
+              :label="route.name"
+              :value="route.id"
+            />
+          </el-select>
+          <el-switch
+            v-model="config.editableFiles.enabled"
+            :disabled="!editableFileProviders.length"
+            inline-prompt
+            active-text="开"
+            inactive-text="关"
+            @change="toggleEditableFiles"
+          />
+        </div>
+      </div>
       <AdminListShell
         class="config-list-shell"
         fill
@@ -3767,6 +3933,25 @@ onBeforeUnmount(() => {
               </div>
             </div>
           </div>
+          <div class="model-field-grid">
+            <el-form-item label="上游成本/次">
+              <el-input-number
+                v-model="modelDraft.upstreamCostPoints"
+                :min="0"
+                :precision="0"
+                :step="1"
+                style="width: 100%"
+              />
+            </el-form-item>
+            <el-form-item label="零价与亏损策略" class="is-wide">
+              <div class="discount-input">
+                <el-switch v-model="modelDraft.allowZeroPrice" />
+                <span>允许零积分</span>
+                <el-switch v-model="modelDraft.allowLossLeader" />
+                <span>允许价格低于成本</span>
+              </div>
+            </el-form-item>
+          </div>
         </section>
 
         <section class="model-section">
@@ -3888,6 +4073,15 @@ onBeforeUnmount(() => {
                 />
               </div>
             </el-form-item>
+            <el-form-item :label="modelDraft.kind === 'image_tool' && modelDraft.tool === 'image_upscale' ? '≤ 2048px 上游成本' : '上游成本/次'">
+              <el-input-number
+                v-model="modelDraft.upstreamCostPoints"
+                :min="0"
+                :precision="0"
+                :step="1"
+                style="width: 100%"
+              />
+            </el-form-item>
             <el-form-item
               v-if="modelDraft.kind === 'image_tool' && modelDraft.tool === 'image_upscale'"
               label="2049–4096px 标准积分"
@@ -3913,6 +4107,26 @@ onBeforeUnmount(() => {
                   :precision="0"
                   :step="1"
                 />
+              </div>
+            </el-form-item>
+            <el-form-item
+              v-if="modelDraft.kind === 'image_tool' && modelDraft.tool === 'image_upscale'"
+              label="2049–4096px 上游成本"
+            >
+              <el-input-number
+                v-model="modelDraft.upscaleHighUpstreamCostPoints"
+                :min="0"
+                :precision="0"
+                :step="1"
+                style="width: 100%"
+              />
+            </el-form-item>
+            <el-form-item label="零价与亏损策略" class="is-wide">
+              <div class="discount-input">
+                <el-switch v-model="modelDraft.allowZeroPrice" />
+                <span>允许零积分</span>
+                <el-switch v-model="modelDraft.allowLossLeader" />
+                <span>允许价格低于成本</span>
               </div>
             </el-form-item>
             <el-form-item
@@ -4766,6 +4980,72 @@ html.dark .status-tab.is-active {
   flex: 1;
   flex-direction: column;
   min-height: 0;
+}
+
+.editable-file-control {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(420px, auto);
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.editable-file-control__identity,
+.editable-file-control__fields {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.editable-file-control__icon {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  place-items: center;
+  border-radius: 7px;
+  background: var(--surface-2);
+  color: var(--accent-ink);
+}
+
+.editable-file-control__identity > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.editable-file-control__identity strong {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.editable-file-control__identity small {
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.editable-file-control__fields :deep(.el-select) {
+  width: 180px;
+}
+
+@media (max-width: 900px) {
+  .editable-file-control {
+    grid-template-columns: 1fr;
+  }
+
+  .editable-file-control__fields {
+    flex-wrap: wrap;
+  }
+
+  .editable-file-control__fields :deep(.el-select) {
+    width: min(100%, 240px);
+  }
 }
 
 .config-list-shell {

@@ -61,20 +61,6 @@ wait_for_url() {
   return 1
 }
 
-env_value() {
-  local name="$1"
-  awk -F= -v key="$name" '$1 == key {sub(/^[^=]*=/, ""); value=$0} END {sub(/\r$/, "", value); print value}' "$production_env"
-}
-
-cdn_base="$(env_value OBJECT_STORAGE_CDN_BASE_URL)"
-cdn_key="$(env_value OBJECT_STORAGE_CDN_AUTH_KEY)"
-cdn_ttl="$(env_value OBJECT_STORAGE_CDN_AUTH_TTL_SECS)"
-if [[ "$cdn_base" != "https://img.starcloudisai.com" || -z "$cdn_key" || "$cdn_ttl" != "900" ]]; then
-  echo "Production CDN settings are incomplete." >&2
-  echo "Expected CDN base https://img.starcloudisai.com, a non-empty auth key, and TTL 900." >&2
-  exit 1
-fi
-
 echo "[1/7] Verify release archive"
 (
   cd "$deploy_root"

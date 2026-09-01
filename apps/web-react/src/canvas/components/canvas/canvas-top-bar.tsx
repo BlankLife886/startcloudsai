@@ -46,6 +46,7 @@ export function CanvasTopBar({
         running?: number;
         queued?: number;
         canceling?: boolean;
+		generationStage?: string;
     };
     onRunWorkflow: () => void;
     onStopWorkflow: () => void;
@@ -150,6 +151,7 @@ function WorkflowControl({
         running?: number;
         queued?: number;
         canceling?: boolean;
+		generationStage?: string;
     };
     onRun: () => void;
     onStop: () => void;
@@ -160,6 +162,15 @@ function WorkflowControl({
     const progress = workflowRun.total > 0 ? Math.min(1, Math.max(0, workflowRun.completed / workflowRun.total)) : 0;
     const elapsedMs = useGenerationElapsed(workflowRun.startedAt, undefined, active);
     const elapsedLabel = formatGenerationDuration(elapsedMs);
+	const generationStageLabel = workflowRun.generationStage === "preparing"
+		? "正在准备参考图"
+		: workflowRun.generationStage === "upstream_generating"
+			? "上游正在生成"
+			: workflowRun.generationStage === "fetching_result"
+				? "正在获取结果"
+				: workflowRun.generationStage === "saving_result"
+					? "正在保存图片"
+					: "";
 
     if (active) {
         const locked = workflowRun.status === "locked";
@@ -176,7 +187,7 @@ function WorkflowControl({
               ? t("canvas.workflow.finishingSubmitted", { count: workflowRun.running || 0 })
               : (workflowRun.running || 0) > 1
                 ? t("canvas.workflow.parallelRunning", { count: workflowRun.running })
-                : workflowRun.currentNodeTitle || t("canvas.workflow.preparing");
+                : generationStageLabel || workflowRun.currentNodeTitle || t("canvas.workflow.preparing");
         return (
             <div className="canvas-workflow-pill is-running" style={{ color: theme.node.text }} title={detail}>
                 <WorkflowProgress value={progress} color={theme.node.activeStroke} />

@@ -6,7 +6,7 @@ import { localForageStorage } from "@/lib/localforage-storage";
 import { cleanupUnusedImages, uploadImage } from "@/services/image-storage";
 import { cleanupUnusedMedia } from "@/services/file-storage";
 import { canonicalImageSrc, cloudFileUrl, cloudThumbnailUrl, storageKeyFromUrl } from "@/lib/canvas/canvas-preview-url";
-import { cloudUserAssetToCanvasImage, createUserAsset, deleteUserAsset, isExistingUserAssetError, isUserUploadOriginalKey, listAllUserAssets, userUploadThumbnailKey } from "@/services/user-assets";
+import { cloudUserAssetToCanvasImage, createUserAsset, deleteUserAsset, isExistingUserAssetError, isUserUploadOriginalKey, listAllUserAssets, updateCloudUserAsset, userUploadThumbnailKey } from "@/services/user-assets";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 
 export type AssetKind = "text" | "image" | "video";
@@ -162,10 +162,14 @@ export const useAssetStore = create<AssetStore>()(
                     console.warn("Canvas asset cloud sync failed", error);
                 }
             },
-            updateAsset: (id, patch) =>
+            updateAsset: (id, patch) => {
+                const current = get().assets.find((asset) => asset.id === id);
+                const cloudId = current?.kind === "image" ? String(current.metadata?.cloudAssetId || (isCloudAssetId(id) ? id : "")) : "";
                 set((state) => ({
                     assets: state.assets.map((asset) => (asset.id === id ? ({ ...asset, ...patch, updatedAt: new Date().toISOString() } as Asset) : asset)),
-                })),
+                }));
+                if (cloudId) void updateCloudUserAsset(cloudId, { title: patch.title, tags: patch.tags }).catch((error) => console.warn("Canvas asset cloud update failed", error));
+            },
             removeAsset: (id) => {
                 const current = get().assets.find((asset) => asset.id === id);
                 const cloudId = current?.kind === "image" ? String(current.metadata?.cloudAssetId || (isCloudAssetId(id) ? id : "")) : "";
@@ -224,6 +228,11 @@ async function registerImageWithUserLibrary(asset: ImageAsset | ImageAssetDraft)
         fileKey,
         thumbnailKey,
         contentType,
+        tags: asset.tags || [],
+        sourceType: asset.source || String(asset.metadata?.sourceType || "canvas"),
+        sourceId: typeof asset.metadata?.sourceId === "string" ? asset.metadata.sourceId : undefined,
+        sourceMetadata: asset.metadata,
+        parentAssetId: typeof asset.metadata?.parentAssetId === "string" ? asset.metadata.parentAssetId : undefined,
     });
     return cloudUserAssetToCanvasImage(created, {
         ...asset,

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from "vue";
+import { useRoute } from "vue-router";
 import { Check, Connection, Delete, Plus, Refresh } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import { request } from "@/request";
@@ -52,8 +53,10 @@ type SettingsSection =
   | "account"
   | "growth"
   | "concurrency"
+  | "logging"
   | "retry";
 
+const route = useRoute();
 const loading = ref(false);
 const activeSection = ref<SettingsSection>("payment");
 const saving = ref(false);
@@ -74,6 +77,12 @@ const form = reactive({
   taskRetryFirstDelaySecs: 3,
   taskRetryBackoffSecs: 15,
   crossProviderSameModelBalancingEnabled: false,
+  platformLoggingEnabled: false,
+  platformLogSecurityEnabled: true,
+  platformLogOperationsEnabled: true,
+  platformLogUserEnabled: false,
+  platformLogRetentionDays: 7,
+  platformLogMaxMb: 256,
   adminImageAnalysisProviderId: "",
   adminImageAnalysisModelId: "",
   adminImageAnalysisReasoningEffort: "",
@@ -111,6 +120,12 @@ const settingsSignature = () =>
     taskRetryBackoffSecs: form.taskRetryBackoffSecs,
     crossProviderSameModelBalancingEnabled:
       form.crossProviderSameModelBalancingEnabled,
+    platformLoggingEnabled: form.platformLoggingEnabled,
+    platformLogSecurityEnabled: form.platformLogSecurityEnabled,
+    platformLogOperationsEnabled: form.platformLogOperationsEnabled,
+    platformLogUserEnabled: form.platformLogUserEnabled,
+    platformLogRetentionDays: form.platformLogRetentionDays,
+    platformLogMaxMb: form.platformLogMaxMb,
     adminImageAnalysisProviderId: form.adminImageAnalysisProviderId,
     adminImageAnalysisModelId: form.adminImageAnalysisModelId,
     adminImageAnalysisReasoningEffort: form.adminImageAnalysisReasoningEffort,
@@ -200,6 +215,14 @@ const sections = computed(() => [
     on: true,
   },
   {
+    id: "logging" as const,
+    label: "运行日志",
+    hint: form.platformLoggingEnabled
+      ? `${form.platformLogRetentionDays} 天 · ${form.platformLogMaxMb} MB`
+      : "已关闭",
+    on: form.platformLoggingEnabled,
+  },
+  {
     id: "retry" as const,
     label: "调度与重试",
     hint:
@@ -261,6 +284,12 @@ function hydrate(settings: AdminSettings & PaymentSettings) {
   form.taskRetryBackoffSecs = settings.taskRetryBackoffSecs ?? 15;
   form.crossProviderSameModelBalancingEnabled =
     settings.crossProviderSameModelBalancingEnabled ?? false;
+  form.platformLoggingEnabled = settings.platformLoggingEnabled ?? false;
+  form.platformLogSecurityEnabled = settings.platformLogSecurityEnabled ?? true;
+  form.platformLogOperationsEnabled = settings.platformLogOperationsEnabled ?? true;
+  form.platformLogUserEnabled = settings.platformLogUserEnabled ?? false;
+  form.platformLogRetentionDays = settings.platformLogRetentionDays ?? 7;
+  form.platformLogMaxMb = settings.platformLogMaxMb ?? 256;
   form.adminImageAnalysisProviderId = settings.adminImageAnalysisProviderId || "";
   form.adminImageAnalysisModelId = settings.adminImageAnalysisModelId || "";
   form.adminImageAnalysisReasoningEffort =
@@ -323,6 +352,15 @@ async function load() {
 
 async function save() {
   if (
+    form.platformLoggingEnabled &&
+    !form.platformLogSecurityEnabled &&
+    !form.platformLogOperationsEnabled &&
+    !form.platformLogUserEnabled
+  ) {
+    ElMessage.warning("启用日志时至少开启一个日志分类");
+    return;
+  }
+  if (
     Boolean(form.adminImageAnalysisProviderId) !==
     Boolean(form.adminImageAnalysisModelId)
   ) {
@@ -363,6 +401,12 @@ async function save() {
           taskRetryBackoffSecs: form.taskRetryBackoffSecs,
           crossProviderSameModelBalancingEnabled:
             form.crossProviderSameModelBalancingEnabled,
+          platformLoggingEnabled: form.platformLoggingEnabled,
+          platformLogSecurityEnabled: form.platformLogSecurityEnabled,
+          platformLogOperationsEnabled: form.platformLogOperationsEnabled,
+          platformLogUserEnabled: form.platformLogUserEnabled,
+          platformLogRetentionDays: form.platformLogRetentionDays,
+          platformLogMaxMb: form.platformLogMaxMb,
           adminImageAnalysisProviderId: form.adminImageAnalysisProviderId,
           adminImageAnalysisModelId: form.adminImageAnalysisModelId,
           adminImageAnalysisReasoningEffort:
@@ -437,7 +481,10 @@ function formatPaymentTime(value?: string | null) {
   return Number.isNaN(date.getTime()) ? "暂无记录" : date.toLocaleString("zh-CN");
 }
 
-onMounted(load);
+onMounted(() => {
+  if (route.query.section === "logging") activeSection.value = "logging";
+  void load();
+});
 </script>
 
 <template>
@@ -675,6 +722,70 @@ onMounted(load);
                       />
                     </el-select>
                   </label>
+                </div>
+              </div>
+            </template>
+
+            <template v-else-if="activeSection === 'logging'">
+              <div class="settings-card">
+                <div class="status-banner" :class="{ 'is-on': form.platformLoggingEnabled }">
+                  <div class="status-banner__copy">
+                    <span class="status-banner__dot" />
+                    <div>
+                      <strong>{{ form.platformLoggingEnabled ? "平台日志已开启" : "平台日志已关闭" }}</strong>
+                      <p>{{ form.platformLoggingEnabled ? "按分类保存脱敏事件并自动清理" : "不创建日志队列，不写平台日志表" }}</p>
+                    </div>
+                  </div>
+                  <el-switch v-model="form.platformLoggingEnabled" />
+                </div>
+
+                <div class="field-grid is-stack">
+                  <label class="field-row">
+                    <span>
+                      <strong>安全日志</strong>
+                      <small>登录、鉴权失败、限流与异常访问</small>
+                    </span>
+                    <el-switch v-model="form.platformLogSecurityEnabled" :disabled="!form.platformLoggingEnabled" />
+                  </label>
+                  <label class="field-row">
+                    <span>
+                      <strong>运维日志</strong>
+                      <small>任务阶段、重试、上游错误与慢请求</small>
+                    </span>
+                    <el-switch v-model="form.platformLogOperationsEnabled" :disabled="!form.platformLoggingEnabled" />
+                  </label>
+                  <label class="field-row">
+                    <span>
+                      <strong>用户日志</strong>
+                      <small>用户创建、修改和删除操作，不记录请求内容</small>
+                    </span>
+                    <el-switch v-model="form.platformLogUserEnabled" :disabled="!form.platformLoggingEnabled" />
+                  </label>
+                  <label class="field-row">
+                    <span>
+                      <strong>自动保留</strong>
+                      <small>每小时删除超过保留期的最旧日志</small>
+                    </span>
+                    <div class="field-unit">
+                      <el-input-number v-model="form.platformLogRetentionDays" :min="1" :max="90" :precision="0" />
+                      <em>天</em>
+                    </div>
+                  </label>
+                  <label class="field-row">
+                    <span>
+                      <strong>容量上限</strong>
+                      <small>达到后优先删除最旧记录</small>
+                    </span>
+                    <div class="field-unit">
+                      <el-input-number v-model="form.platformLogMaxMb" :min="32" :max="4096" :step="32" :precision="0" />
+                      <em>MB</em>
+                    </div>
+                  </label>
+                </div>
+
+                <div class="jump-row">
+                  <RouterLink class="jump-chip" to="/platform-logs">打开运行日志与容量</RouterLink>
+                  <span class="jump-note">关闭总开关后，核心错误仍写入受限的 Docker 容器日志</span>
                 </div>
               </div>
             </template>
@@ -1403,8 +1514,14 @@ onMounted(load);
 
 .jump-row {
   display: flex;
+  align-items: center;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.jump-note {
+  color: var(--ink-3);
+  font-size: 11px;
 }
 
 .jump-chip {

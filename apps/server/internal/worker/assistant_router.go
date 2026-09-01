@@ -91,7 +91,7 @@ func (w *Worker) claimAssistantRun(
 			assistantParamString(queued.Params, prefix+"ModelConfigId", "") != "" {
 			return nil, errAssistantRoutesExhausted
 		}
-		return store.ClaimAssistantRunWithLease(ctx, w.St.Pool, runID, leaseOwner, time.Now().UTC(), taskLease)
+		return store.ClaimAssistantRunWithLease(ctx, w.St.Pool, runID, leaseOwner, time.Now().UTC(), taskLease, 4)
 	}
 
 	var claimed *store.AssistantRun
@@ -157,7 +157,7 @@ func (w *Worker) claimAssistantRun(
 		if err != nil || !updated {
 			return err
 		}
-		claimed, err = store.ClaimAssistantRunWithLease(ctx, tx, runID, leaseOwner, time.Now().UTC(), taskLease)
+		claimed, err = store.ClaimAssistantRunWithLease(ctx, tx, runID, leaseOwner, time.Now().UTC(), taskLease, 4)
 		return err
 	})
 	return claimed, err
@@ -219,8 +219,33 @@ func (w *Worker) retryAssistantProviderRoute(
 		}
 	}
 	failedKeys = append(failedKeys, routeKey)
+	candidates, err := w.assistantExecutionCandidates(ctx, run)
+	if err != nil {
+		return false, err
+	}
+	hasAlternate := false
+	for _, candidate := range candidates {
+		candidateKey := modelconfig.ExecutionRouteKey(candidate.Provider)
+		if candidateKey == routeKey {
+			continue
+		}
+		failed := false
+		for _, key := range failedKeys {
+			if key == candidateKey {
+				failed = true
+				break
+			}
+		}
+		if !failed {
+			hasAlternate = true
+			break
+		}
+	}
+	if !hasAlternate {
+		return false, nil
+	}
 	requeued := false
-	err := w.St.Tx(ctx, func(tx pgx.Tx) error {
+	err = w.St.Tx(ctx, func(tx pgx.Tx) error {
 		var err error
 		requeued, err = store.RequeueRunningAssistantRunForRouteFailoverWithKey(
 			ctx, tx, run.ID, run.Attempt, failedRouteParam, failedKeys,

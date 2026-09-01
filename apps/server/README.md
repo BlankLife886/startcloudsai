@@ -40,7 +40,8 @@ scripts/                 # 运维/回填 SQL
 | 图片上游 | `C2A_BASE_URL`、`C2A_API_KEY`、`C2A_TIMEOUT_SECS` |
 | 对话与生图工作区 | `SUB2API_BASE_URL`、`SUB2API_API_KEY`、`SUB2API_CHAT_MODEL`、`SUB2API_IMAGE_MODEL` |
 | CRUN 异步生图 | `CRUN_BASE_URL`、`CRUN_API_KEY`、`CRUN_TIMEOUT_SECS` |
-| 对象存储 | `OBJECT_STORAGE_ENDPOINT`、`OBJECT_STORAGE_PUBLIC_ENDPOINT`、`OBJECT_STORAGE_REGION`、`OBJECT_STORAGE_ACCESS_KEY_ID`、`OBJECT_STORAGE_SECRET_ACCESS_KEY`、`OBJECT_STORAGE_BUCKET`、`OBJECT_STORAGE_USE_PATH_STYLE`、`OBJECT_STORAGE_PRESIGN_EXPIRE_SECS`、`OBJECT_STORAGE_CDN_BASE_URL` |
+| 对象存储 | `OBJECT_STORAGE_ENDPOINT`、`OBJECT_STORAGE_PUBLIC_ENDPOINT`、`OBJECT_STORAGE_REGION`、`OBJECT_STORAGE_ACCESS_KEY_ID`、`OBJECT_STORAGE_SECRET_ACCESS_KEY`、`OBJECT_STORAGE_BUCKET`、`OBJECT_STORAGE_USE_PATH_STYLE`、`OBJECT_STORAGE_PRESIGN_EXPIRE_SECS` |
+| 上传安全（可选） | `UPLOAD_CLAMAV_ADDR`、`UPLOAD_REVIEW_URL`、`UPLOAD_REVIEW_KEY`、`UPLOAD_SCAN_TIMEOUT` |
 | Worker | `WORKER_CONCURRENCY`（物理槽位）、`WORKER_IMAGE_MEMORY_MIB`；实际图片并发在后台实时配置 |
 | 诊断 | `API_PPROF_ADDR`、`WORKER_PPROF_ADDR`（仅允许回环地址） |
 
@@ -81,6 +82,7 @@ printf '%s' "$ADMIN_PASSWORD" | go run ./cmd/server create-admin --email admin@e
 - 浏览器写请求校验 `Origin`，代理地址只信任 `TRUSTED_PROXIES`。
 - `GET /api/v1/plans` 返回可售套餐与当前可用支付渠道；蓝鲸支付配置完整并启用后，订单创建、状态查询、关闭及异步通知路由可用。支付完成复用钱包账本幂等约束，重复通知不会重复入账。
 - `/api/v1/assistant/*` 使用服务端保存的 Sub2API Key 代理流式对话和图片生成，浏览器不会取得该 Key；当前只要求用户已登录，不从站内钱包重复扣费。
+- AI 助手识别明确的 PPT/PSD 制作请求后，会通过 ChatGPT2API 的 `/v1/editable-file-tasks` 异步生成主文件和素材 ZIP；结果完成格式校验后写入本站对象存储并绑定用户消息。PSD 必须先上传 JPG、PNG 或 WebP 参考图，PSD 文件本身不作为输入附件。
 - 数据库中的 C2A API Key 使用 `APP_SECRET` 派生密钥进行 AES-GCM 加密；启动时会自动迁移旧明文值。
 - 生产环境的登录与兑换限流保存在 Redis；开发和测试环境使用进程内限流。
 - Worker 对每张上游原图同时保存原图和最长边 512px 的 JPEG 缩略图；列表返回站内缩略图 URL，需要查看时再使用站内原图 URL。普通上传对象会登记业务引用，超过 7 天仍无引用的对象由 Worker 扫描 R2 后回收。`GET /api/v1/files/*` 完成权限校验后由 API 代理读取 R2，浏览器不再直接依赖 R2 网络可达性。

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -24,7 +25,10 @@ func newUserLoginTestServer(st *store.Store) *Server {
 	cfg.SMTPFrom = ""
 	// 回显验证码需要显式开关（不再随 development 自动开启），测试依赖回显取码。
 	cfg.DevLoginCodeEcho = true
-	return &Server{Cfg: cfg, St: st, LoginLimiter: auth.NewLoginLimiter(), AdminLoginLimiter: auth.NewLoginLimiter(), RedeemLimiter: auth.NewRedeemLimiter()}
+	return &Server{
+		Cfg: cfg, St: st, LoginLimiter: auth.NewLoginLimiter(), AdminLoginLimiter: auth.NewLoginLimiter(),
+		RedeemLimiter: auth.NewRedeemLimiter(), UsageLimiter: auth.NewMemoryUsageLimiter(),
+	}
 }
 
 func developmentCode(t *testing.T, responseBody []byte) string {
@@ -135,6 +139,29 @@ func TestUnifiedEmailAuthenticationPreservesCodeWhenRegistrationClosed(t *testin
 	retry := authRequest(t, engine, http.MethodPost, "/api/v1/auth/session", gin.H{"email": email, "code": code})
 	if retry.Code != http.StatusCreated {
 		t.Fatalf("code was consumed by rolled back registration = %d %s", retry.Code, retry.Body.String())
+	}
+}
+
+func TestUnifiedEmailAuthenticationLimitsNewAccountsPerIP(t *testing.T) {
+	st := testdb.Setup(t)
+	s := newUserLoginTestServer(st)
+	engine := s.Router()
+	for index := 0; index < registrationsPerIPDay; index++ {
+		email := fmt.Sprintf("security-registration-%d@qq.com", index)
+		code := requestDevelopmentCode(t, engine, email)
+		response := authRequest(t, engine, http.MethodPost, "/api/v1/auth/session", gin.H{"email": email, "code": code})
+		if response.Code != http.StatusCreated {
+			t.Fatalf("registration %d = %d %s", index, response.Code, response.Body.String())
+		}
+	}
+	email := "security-registration-overflow@qq.com"
+	code := requestDevelopmentCode(t, engine, email)
+	response := authRequest(t, engine, http.MethodPost, "/api/v1/auth/session", gin.H{"email": email, "code": code})
+	if response.Code != http.StatusTooManyRequests || !strings.Contains(response.Body.String(), `"code":"rate_limited"`) {
+		t.Fatalf("overflow registration = %d %s", response.Code, response.Body.String())
+	}
+	if user, err := store.GetUserByEmail(context.Background(), st.Pool, email); err != nil || user != nil {
+		t.Fatalf("limited account was created: user=%v err=%v", user, err)
 	}
 }
 

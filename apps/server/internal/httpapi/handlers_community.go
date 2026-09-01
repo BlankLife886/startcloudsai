@@ -155,6 +155,9 @@ func (s *Server) promptEngagement(c *gin.Context) {
 		fail(c, err)
 		return
 	}
+	if !s.enforceUsageLimit(c, "prompt-action-minute", user.ID.String(), promptActionsPerMinute, 1, time.Minute) {
+		return
+	}
 	promptID, err := parseUUIDParam(c, "id")
 	if err != nil {
 		fail(c, err)

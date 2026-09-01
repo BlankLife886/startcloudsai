@@ -109,6 +109,71 @@ func TestTaskRetryRequiresUpstreamIdempotency(t *testing.T) {
 	}
 }
 
+func TestRetryableTerminalTaskFailureOnlyRetriesTransientRouteFailures(t *testing.T) {
+	if !retryableTerminalTaskFailure("upstream_unreachable") {
+		t.Fatal("transient route failure should retry")
+	}
+	for _, code := range []string{"upstream_error", "storage_error", "model_config_error", ""} {
+		if retryableTerminalTaskFailure(code) {
+			t.Fatalf("deterministic failure %q must not retry", code)
+		}
+	}
+}
+
+func TestSingleRouteTransientFailureRetriesTheSameRoute(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	if err := settings.Set(ctx, st.Pool, "task_failure_retry_count", json.RawMessage(`2`)); err != nil {
+		t.Fatal(err)
+	}
+	user, err := store.InsertUser(ctx, st.Pool, fmt.Sprintf("single-route-retry-%s@test.dev", uuid.NewString()[:8]), "worker", "x", "user", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := "worker:" + uuid.NewString()
+	params := `{"_providerConfigId":"provider-a","_providerRouteId":"route-a","_providerRouteKey":"provider-a/route-a","_modelConfigId":"model-a","_serviceProvider":"openai"}`
+	var taskID uuid.UUID
+	if err := st.Pool.QueryRow(ctx,
+		`INSERT INTO tasks (user_id, type, model, prompt, params, status, cost_cents, lease_owner, heartbeat_at, lease_until, started_at)
+		 VALUES ($1, 't2i', 'gpt-image-2', 'test', $2, 'running', 0, $3, now(), now() + interval '2 minutes', now()) RETURNING id`,
+		user.ID, params, owner).Scan(&taskID); err != nil {
+		t.Fatal(err)
+	}
+	task, err := store.GetTask(ctx, st.Pool, taskID)
+	if err != nil || task == nil {
+		t.Fatalf("task=%#v err=%v", task, err)
+	}
+	w := &Worker{
+		St: st,
+		modelConfig: modelconfig.Config{
+			Version: modelconfig.Version,
+			Providers: []modelconfig.Provider{{
+				ID: "provider-a", Name: "Provider A", Adapter: modelconfig.AdapterOpenAI, Enabled: true,
+				Routes: []modelconfig.ProviderRoute{{ID: "route-a", Name: "Route A", BaseURL: "https://example.com", APIKey: "test", MaxConcurrency: 10, Enabled: true}},
+			}},
+			Models: []modelconfig.Model{{
+				ID: "model-a", Name: "Image", ProviderID: "provider-a", UpstreamModel: "gpt-image-2",
+				Kind: modelconfig.ModelKindImage, Enabled: true,
+			}},
+		},
+		modelConfigAt: time.Now(),
+	}
+	retried, err := w.scheduleTaskRetry(ctx, task, owner)
+	if err != nil || !retried {
+		t.Fatalf("retried=%v err=%v", retried, err)
+	}
+	stored, err := store.GetTask(ctx, st.Pool, taskID)
+	if err != nil || stored == nil {
+		t.Fatalf("stored=%#v err=%v", stored, err)
+	}
+	if stored.Status != "queued" || stored.Attempt != 1 {
+		t.Fatalf("retry state=%#v", stored)
+	}
+	if failed := taskParamStrings(stored.Params, "_failedProviderConfigIds"); len(failed) != 0 {
+		t.Fatalf("single route remained excluded: %#v", failed)
+	}
+}
+
 func TestTaskDispatchBackoffSpreadsSaturatedQueue(t *testing.T) {
 	id := uuid.MustParse("ff000000-0000-0000-0000-000000000000")
 	if got := taskDispatchBackoff("user_execution_limit", id); got < 5*time.Second || got > 10*time.Second {
@@ -1083,7 +1148,7 @@ func TestPendingPastFailoverWithoutAlternateClosesTask(t *testing.T) {
 func TestTextReviewWithFailureTextClosesTaskImmediately(t *testing.T) {
 	st := testdb.Setup(t)
 	ctx := context.Background()
-	if err := settings.Set(ctx, st.Pool, "task_failure_retry_count", json.RawMessage(`0`)); err != nil {
+	if err := settings.Set(ctx, st.Pool, "task_failure_retry_count", json.RawMessage(`2`)); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
@@ -1108,6 +1173,9 @@ func TestTextReviewWithFailureTextClosesTaskImmediately(t *testing.T) {
 	}
 	if task.Status != "failed" || task.ErrorCode == nil || *task.ErrorCode != "upstream_error" {
 		t.Fatalf("stale text_review remained active: %#v", task)
+	}
+	if task.Attempt != 0 {
+		t.Fatalf("content policy rejection consumed retry attempt: %d", task.Attempt)
 	}
 	const expectedMessage = "内容审核拒绝：参考图不符合服务政策"
 	if task.ErrorMessage == nil || *task.ErrorMessage != expectedMessage {

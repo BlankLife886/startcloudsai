@@ -11,6 +11,14 @@ export type CloudUserAsset = {
     sizeBytes?: number;
     createdAt?: string;
     groupId?: string | null;
+    tags?: string[];
+    contentHash?: string | null;
+    sourceType?: string;
+    sourceId?: string | null;
+    sourceMetadata?: Record<string, unknown>;
+    parentAssetId?: string | null;
+    deletedAt?: string | null;
+    updatedAt?: string;
 };
 
 export function isUserUploadOriginalKey(key = "") {
@@ -38,12 +46,12 @@ export function cloudUserAssetToCanvasImage(item: CloudUserAsset, extra?: Partia
         kind: "image",
         title: String(item.title || extra?.title || "").trim() || "图片",
         coverUrl: thumbUrl || url,
-        tags: extra?.tags || [],
-        source: extra?.source,
+        tags: item.tags || extra?.tags || [],
+        source: item.sourceType || extra?.source,
         note: extra?.note,
         createdAt: now,
         updatedAt: extra?.updatedAt || now,
-        metadata: { ...(extra?.metadata || {}), cloudAssetId: item.id, source: "user_assets" },
+        metadata: { ...(extra?.metadata || {}), ...(item.sourceMetadata || {}), cloudAssetId: item.id, groupId: item.groupId, source: "user_assets", sourceType: item.sourceType, sourceId: item.sourceId, parentAssetId: item.parentAssetId, contentHash: item.contentHash, deletedAt: item.deletedAt },
         data: {
             dataUrl: url,
             storageKey: fileKey,
@@ -55,9 +63,13 @@ export function cloudUserAssetToCanvasImage(item: CloudUserAsset, extra?: Partia
     };
 }
 
-export async function listUserAssetsPage(options: { limit?: number; cursor?: string; signal?: AbortSignal } = {}) {
+export async function listUserAssetsPage(options: { limit?: number; cursor?: string; signal?: AbortSignal; q?: string; tags?: string[]; groupId?: string; trash?: boolean } = {}) {
     const query = new URLSearchParams({ limit: String(options.limit || 100) });
     if (options.cursor) query.set("cursor", options.cursor);
+    if (options.q) query.set("q", options.q);
+    if (options.tags?.length) query.set("tags", options.tags.join(","));
+    if (options.groupId) query.set("groupId", options.groupId);
+    if (options.trash) query.set("trash", "true");
     const data = await starcloudsRequest<{ items?: CloudUserAsset[]; nextCursor?: string | null }>(`/me/assets?${query}`, { signal: options.signal });
     return {
         items: Array.isArray(data.items) ? data.items : [],
@@ -77,12 +89,46 @@ export async function listAllUserAssets(signal?: AbortSignal) {
     return items;
 }
 
-export function createUserAsset(payload: { title: string; fileKey: string; thumbnailKey: string; contentType?: string }) {
+export function createUserAsset(payload: { title: string; fileKey: string; thumbnailKey: string; contentType?: string; groupId?: string; tags?: string[]; sourceType?: string; sourceId?: string; sourceMetadata?: Record<string, unknown>; parentAssetId?: string }) {
     return starcloudsJson<CloudUserAsset>("/me/assets", "POST", payload);
 }
 
 export function deleteUserAsset(id: string) {
     return starcloudsRequest(`/me/assets/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export function updateCloudUserAsset(id: string, payload: { title?: string; groupId?: string | null; tags?: string[] }) {
+    return starcloudsJson<CloudUserAsset>(`/me/assets/${encodeURIComponent(id)}`, "PATCH", payload);
+}
+
+export function batchCloudUserAssets(payload: { action: "update" | "trash" | "restore"; ids: string[]; groupId?: string | null; addTags?: string[]; removeTags?: string[] }) {
+    return starcloudsJson<{ affected: number }>("/me/assets/batch", "POST", payload);
+}
+
+export function restoreCloudUserAsset(id: string) {
+    return starcloudsJson<CloudUserAsset>(`/me/assets/${encodeURIComponent(id)}/restore`, "POST", {});
+}
+
+export function permanentlyDeleteCloudUserAsset(id: string) {
+    return starcloudsRequest(`/me/assets/${encodeURIComponent(id)}/permanent`, { method: "DELETE" });
+}
+
+export type CloudUserAssetGroup = { id: string; name: string; sort: number; assetCount: number; createdAt: string; updatedAt: string };
+
+export function listCloudUserAssetGroups() {
+    return starcloudsRequest<{ items: CloudUserAssetGroup[]; ungroupedCount: number; totalAssetCount: number }>("/me/asset-groups");
+}
+
+export function createCloudUserAssetGroup(name: string, sort?: number) {
+    return starcloudsJson<CloudUserAssetGroup>("/me/asset-groups", "POST", { name, ...(sort === undefined ? {} : { sort }) });
+}
+
+export function updateCloudUserAssetGroup(id: string, payload: { name?: string; sort?: number }) {
+    return starcloudsJson<CloudUserAssetGroup>(`/me/asset-groups/${encodeURIComponent(id)}`, "PATCH", payload);
+}
+
+export function deleteCloudUserAssetGroup(id: string) {
+    return starcloudsRequest(`/me/asset-groups/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 export function isExistingUserAssetError(error: unknown) {

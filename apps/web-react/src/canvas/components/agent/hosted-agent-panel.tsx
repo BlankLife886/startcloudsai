@@ -8,7 +8,7 @@ import { canvasThemes } from "@/lib/canvas-theme";
 import { bindHostedAgentRunId, createHostedAgentRunScope, isHostedAgentRunIdRetired, isHostedAgentRunScopeActive, isHostedAgentStateForProject, registerHostedAgentRunStopper, retireHostedAgentRunId, settleHostedAgentMessagesOnStop, type HostedAgentRunScope } from "@/lib/agent/hosted-agent-run-scope";
 import { summarizeCanvasAgentOps, type CanvasAgentOp } from "@/lib/canvas/canvas-agent-ops";
 import { canExecuteApprovedCanvasAgentTool, waitForCanvasAgentToolPaint } from "@/lib/canvas/canvas-agent-tool-delivery";
-import { resolveCanvasReferenceImages } from "@/lib/canvas/canvas-resource-references";
+import { buildCanvasResourceReferences, resolveCanvasReferenceImages } from "@/lib/canvas/canvas-resource-references";
 import { runCanvasAgentTool } from "@/lib/canvas/canvas-hosted-agent";
 import { readImageMeta } from "@/lib/image-utils";
 import { randomId } from "@/lib/utils";
@@ -58,6 +58,7 @@ type HostedAgentRunBinding = HostedAgentRunScope & {
     attachments: AgentAttachment[];
     waitForRunId: Promise<string>;
     resolveRunId: (runId: string) => void;
+	checkpointId?: string;
 };
 
 function createHostedAgentRunBinding(projectId: string, attachments: AgentAttachment[], controller = new AbortController()): HostedAgentRunBinding {
@@ -66,6 +67,13 @@ function createHostedAgentRunBinding(projectId: string, attachments: AgentAttach
         resolveRunId = resolve;
     });
     return { ...createHostedAgentRunScope(projectId, controller), attachments, waitForRunId, resolveRunId };
+}
+
+function isHighRiskCanvasTool(call: CanvasAgentToolCall) {
+	if (call.name === "canvas_delete_nodes" || call.name === "canvas_clear" || call.name === "canvas_restore_checkpoint" || call.name === "canvas_restore_agent_transaction") return true;
+	if (call.name !== "canvas_apply_ops") return false;
+	const ops = hostedToolInput(call)?.ops || [];
+	return ops.some((op) => op.type === "delete_node");
 }
 
 function cancelHostedAgentRun(runId: string, options?: { keepalive?: boolean }) {
@@ -696,6 +704,9 @@ export function HostedAgentPanel() {
             requireOriginCanvas();
             if (verifyBeforeExecution && !(await verifyBeforeExecution())) throw new Error(t("agent.runtime.canvasToolExpired"));
             const canvas = requireOriginCanvas();
+			if ((isCanvasWriteTool(call.name) || call.name === "canvas_run_generation") && !scope.checkpointId && call.name !== "canvas_create_checkpoint") {
+				scope.checkpointId = canvas.createCheckpoint(`Agent 自动恢复点 ${new Date().toLocaleTimeString()}`).id;
+			}
             const observation = await runCanvasAgentTool(call, {
                 ...canvas,
                 readSnapshot: () => requireOriginCanvas().snapshot,
@@ -704,7 +715,9 @@ export function HostedAgentPanel() {
             });
             requireOriginCanvas();
             upsertToolMessage({ text: describeToolObservation(call.name, observation, t), detail: toolCallDetail(call.name, input, "completed") });
-            return observation;
+			return scope.checkpointId && observation && typeof observation === "object"
+				? { ...(observation as Record<string, unknown>), agentCheckpointId: scope.checkpointId }
+				: observation;
         } catch (error) {
             const detail = error instanceof Error ? error.message : t("agent.runtime.toolExecutionFailed");
             if (isHostedAgentRunScopeActive(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "")) {
@@ -761,7 +774,7 @@ export function HostedAgentPanel() {
             const allowed = await canExecuteApprovedCanvasAgentTool(call, scope.runId, claimCanvasAgentTool);
             return allowed && isHostedAgentRunScopeActive(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "");
         };
-        if (confirmToolsRef.current && isCanvasWriteTool(call.name)) {
+		if ((confirmToolsRef.current && isCanvasWriteTool(call.name)) || isHighRiskCanvasTool(call)) {
             return waitForHostedToolApproval(call)
                 .then(() => {
                     if (isHostedAgentRunScopeActive(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "")) {
@@ -783,7 +796,7 @@ export function HostedAgentPanel() {
         if (!ops.length) return;
         const currentProjectId = canvasContextRef.current?.snapshot.projectId || "";
         if (!isHostedAgentRunScopeActive(scope, activeRunRef.current, currentProjectId)) return;
-        if (confirmToolsRef.current) {
+        if (confirmToolsRef.current || ops.some((op) => op.type === "delete_node")) {
             const call: CanvasAgentToolCall = {
                 requestId: `completion:${randomId()}`,
                 name: "canvas_apply_ops",
@@ -804,7 +817,8 @@ export function HostedAgentPanel() {
         }
         const liveContext = canvasContextRef.current;
         if (!liveContext || !isHostedAgentRunScopeActive(scope, activeRunRef.current, liveContext.snapshot.projectId)) return;
-        const before = liveContext.snapshot.connections.length;
+		if (!scope.checkpointId) scope.checkpointId = liveContext.createCheckpoint(`Agent 自动恢复点 ${new Date().toLocaleTimeString()}`).id;
+		const before = liveContext.snapshot.connections.length;
         const next = liveContext.applyOps(ops);
         const linked = Math.max(0, next.connections.length - before);
         addMessage({
@@ -999,6 +1013,16 @@ export function HostedAgentPanel() {
                 const extra = await resolveCanvasReferenceImages(canvasReferences, context.snapshot.nodes || []);
                 referenceImages = [...referenceImages, ...extra.map((item) => ({ id: item.id, name: item.name, dataUrl: item.dataUrl }))].slice(0, MAX_ATTACHMENTS);
             }
+			if (referenceImages.length < MAX_ATTACHMENTS && context.snapshot.selectedNodeIds.length) {
+				const selectedIds = new Set(context.snapshot.selectedNodeIds);
+				const selectedReferences = buildCanvasResourceReferences(context.snapshot.nodes)
+					.filter((item) => item.kind === "image" && selectedIds.has(item.nodeId))
+					.slice(0, MAX_ATTACHMENTS - referenceImages.length);
+				if (selectedReferences.length) {
+					const visualInputs = await resolveCanvasReferenceImages(selectedReferences, context.snapshot.nodes);
+					referenceImages = [...referenceImages, ...visualInputs.map((item) => ({ id: item.id, name: item.name, dataUrl: item.dataUrl }))].slice(0, MAX_ATTACHMENTS);
+				}
+			}
             const requestPrompt = appendAttachmentCatalog(promptWithCanvasReferences(promptWithAttachments(text, files), canvasReferences), files);
             const result = await requestCanvasAgentTurn(requestPrompt, {
                 projectId: context.snapshot.projectId,

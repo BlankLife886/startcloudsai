@@ -13,7 +13,6 @@ func clearObjectStorageEnv(t *testing.T) {
 		"OBJECT_STORAGE_BUCKET",
 		"OBJECT_STORAGE_USE_PATH_STYLE",
 		"OBJECT_STORAGE_PRESIGN_EXPIRE_SECS",
-		"OBJECT_STORAGE_CDN_BASE_URL",
 		"R2_ENDPOINT",
 		"R2_REGION",
 		"R2_ACCESS_KEY_ID",
@@ -37,7 +36,6 @@ func TestLoadObjectStoragePrefersProviderNeutralVariables(t *testing.T) {
 	t.Setenv("OBJECT_STORAGE_BUCKET", "oss-bucket")
 	t.Setenv("OBJECT_STORAGE_USE_PATH_STYLE", "false")
 	t.Setenv("OBJECT_STORAGE_PRESIGN_EXPIRE_SECS", "900")
-	t.Setenv("OBJECT_STORAGE_CDN_BASE_URL", "https://media.example.com/")
 	t.Setenv("R2_ENDPOINT", "https://legacy.invalid")
 
 	cfg := Load()
@@ -45,8 +43,7 @@ func TestLoadObjectStoragePrefersProviderNeutralVariables(t *testing.T) {
 		cfg.ObjectStoragePublicEndpoint != "https://s3-public.oss-cn-hongkong.aliyuncs.com" ||
 		cfg.ObjectStorageRegion != "cn-hongkong" || cfg.ObjectStorageAccessKeyID != "oss-key" ||
 		cfg.ObjectStorageSecretAccessKey != "oss-secret" || cfg.ObjectStorageBucket != "oss-bucket" ||
-		cfg.ObjectStorageUsePathStyle || cfg.ObjectStoragePresignExpireSecs != 900 ||
-		cfg.ObjectStorageCDNBaseURL != "https://media.example.com" {
+		cfg.ObjectStorageUsePathStyle || cfg.ObjectStoragePresignExpireSecs != 900 {
 		t.Fatalf("unexpected object storage config: %+v", cfg)
 	}
 }

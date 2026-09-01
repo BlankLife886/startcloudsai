@@ -114,7 +114,7 @@ func TestLanjingPaymentCallbackCreditsOnce(t *testing.T) {
 		"param":       {order.ID.String()},
 		"type":        {"2"},
 		"price":       {"9.90"},
-		"reallyPrice": {"9.91"},
+		"reallyPrice": {"9.90"},
 	}
 	values.Set("sign", client.CallbackSignature(
 		values.Get("payId"), values.Get("param"), values.Get("type"), values.Get("price"), values.Get("reallyPrice"),

@@ -2,13 +2,13 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 
 import '../../core/network/api_exception.dart';
 import '../../core/widgets/app_notice.dart';
 import '../../core/widgets/app_top_bar.dart';
-import '../../core/widgets/app_visual.dart';
 import '../../core/widgets/authenticated_image.dart';
 import '../discover/discover.dart';
 import 'gallery.dart';
@@ -315,31 +315,38 @@ class _SubmissionOverview extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return AppSoftCard(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
-      child: Row(
-        children: [
-          _SummaryMetric(
-            label: '已加载',
-            value: summary.total,
-            color: colors.primary,
-          ),
-          _SummaryMetric(
-            label: '审核中',
-            value: summary.pending,
-            color: const Color(0xFFD97706),
-          ),
-          _SummaryMetric(
-            label: '已发布',
-            value: summary.approved,
-            color: const Color(0xFF0F766E),
-          ),
-          _SummaryMetric(
-            label: '需处理',
-            value: summary.needsAttention,
-            color: colors.error,
-          ),
-        ],
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: colors.surface,
+        border: Border.all(color: colors.outlineVariant),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+        child: Row(
+          children: [
+            _SummaryMetric(
+              label: '已加载',
+              value: summary.total,
+              color: colors.primary,
+            ),
+            _SummaryMetric(
+              label: '审核中',
+              value: summary.pending,
+              color: const Color(0xFFD97706),
+            ),
+            _SummaryMetric(
+              label: '已发布',
+              value: summary.approved,
+              color: const Color(0xFF0F766E),
+            ),
+            _SummaryMetric(
+              label: '需处理',
+              value: summary.needsAttention,
+              color: colors.error,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -434,8 +441,13 @@ class GallerySubmissionCard extends StatelessWidget {
     final cardHeight = MediaQuery.textScalerOf(
       context,
     ).scale(128).clamp(128.0, 230.0);
-    return Card(
-      margin: EdgeInsets.zero,
+    final colors = Theme.of(context).colorScheme;
+    return Material(
+      color: colors.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(8),
+        side: BorderSide(color: colors.outlineVariant),
+      ),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: onTap,
@@ -444,7 +456,7 @@ class GallerySubmissionCard extends StatelessWidget {
           child: Row(
             children: [
               SizedBox(
-                width: 116,
+                width: 108,
                 height: double.infinity,
                 child: submission.coverUrl?.isNotEmpty == true
                     ? AuthenticatedImage(
@@ -466,22 +478,12 @@ class GallerySubmissionCard extends StatelessWidget {
                     children: [
                       Row(
                         children: [
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 7,
-                              vertical: 3,
-                            ),
-                            decoration: BoxDecoration(
-                              color: style.color.withValues(alpha: 0.12),
-                              borderRadius: BorderRadius.circular(6),
-                            ),
-                            child: Text(
-                              style.buttonLabel,
-                              style: TextStyle(
-                                color: style.color,
-                                fontSize: 12,
-                                fontWeight: FontWeight.w700,
-                              ),
+                          Text(
+                            style.buttonLabel,
+                            style: TextStyle(
+                              color: style.color,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w800,
                             ),
                           ),
                           const Spacer(),
@@ -508,14 +510,39 @@ class GallerySubmissionCard extends StatelessWidget {
                       ),
                       const Spacer(),
                       if (submission.rejectReason?.isNotEmpty == true)
-                        Text(
-                          submission.rejectReason!,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            color: Theme.of(context).colorScheme.error,
-                            fontSize: 12,
-                          ),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                submission.rejectReason!,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: colors.error,
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ),
+                            IconButton(
+                              key: Key(
+                                'copy-submission-review-${submission.id}',
+                              ),
+                              tooltip: '复制审核意见',
+                              constraints: const BoxConstraints.tightFor(
+                                width: 40,
+                                height: 40,
+                              ),
+                              visualDensity: VisualDensity.compact,
+                              onPressed: () async {
+                                await Clipboard.setData(
+                                  ClipboardData(text: submission.rejectReason!),
+                                );
+                                if (!context.mounted) return;
+                                AppNotice.success(context, '审核意见已复制');
+                              },
+                              icon: const Icon(Icons.copy_outlined, size: 17),
+                            ),
+                          ],
                         )
                       else
                         Text(

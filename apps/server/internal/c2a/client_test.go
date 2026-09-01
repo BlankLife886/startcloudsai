@@ -16,12 +16,35 @@ import (
 	"time"
 )
 
-func TestImageDownloadTimeoutAllowsSlowCompletedImages(t *testing.T) {
-	if got := imageDownloadTimeout(5 * time.Minute); got != 3*time.Minute {
-		t.Fatalf("capped timeout = %s, want 3m", got)
+func TestImageDownloadTimeoutRetriesStalledCompletedImagesQuickly(t *testing.T) {
+	if got := imageDownloadTimeout(5 * time.Minute); got != 20*time.Second {
+		t.Fatalf("capped timeout = %s, want 20s", got)
 	}
-	if got := imageDownloadTimeout(2 * time.Minute); got != 2*time.Minute {
-		t.Fatalf("configured timeout = %s, want 2m", got)
+	if got := imageDownloadTimeout(8 * time.Second); got != 8*time.Second {
+		t.Fatalf("configured timeout = %s, want 8s", got)
+	}
+	if got := imageDownloadTimeout(0); got != 20*time.Second {
+		t.Fatalf("default timeout = %s, want 20s", got)
+	}
+}
+
+func TestImageDownloadErrorKindDoesNotExposeResultURL(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "not ready", err: &imageNotReadyError{err: &UpstreamError{StatusCode: http.StatusNotFound}}, want: "not_ready"},
+		{name: "timeout", err: &NetworkError{Err: context.DeadlineExceeded}, want: "timeout"},
+		{name: "network", err: &NetworkError{Err: io.ErrUnexpectedEOF}, want: "network"},
+		{name: "gateway", err: &UpstreamError{StatusCode: http.StatusBadGateway}, want: "http_502"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := imageDownloadErrorKind(test.err); got != test.want {
+				t.Fatalf("kind = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 

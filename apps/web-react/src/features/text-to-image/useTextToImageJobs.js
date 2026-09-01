@@ -48,7 +48,12 @@ function taskFromJob(job = {}, patch = {}) {
     id: String(job.id || job.taskId || ""),
     serverJobId: String(job.id || job.taskId || ""),
     kind: String(job.kind || "wallpaper-image-generation"),
-    status,
+		status,
+		generationStage: String(job.generationStage || ""),
+		cancelPolicy:
+			job.cancelPolicy && typeof job.cancelPolicy === "object"
+				? { ...job.cancelPolicy }
+				: null,
     prompt: String(input.userPrompt || params.userPrompt || job.prompt || ""),
     model: String(job.gatewayModelId || job.model || ""),
     publicModelKey: String(params.publicModelKey || input.publicModelKey || ""),
@@ -369,18 +374,19 @@ export function useTextToImageJobs({ authenticated, historyActive = false }) {
     [uploadReferences, upsertTask, watchJob],
   );
 
-  const cancelTask = useCallback(async (task) => {
-    const id = String(task?.serverJobId || "");
-    if (!id) return;
-    controllersRef.current.get(id)?.abort();
-    controllersRef.current.delete(id);
-    const response = await cancelServerAiJob(id);
-    upsertTask(
-      taskFromJob(
-        response.job || response.task || { ...task, id, status: "cancelled" },
-      ),
-    );
-  }, [upsertTask]);
+	const cancelTask = useCallback(async (task, { acknowledgeUpstream = false } = {}) => {
+		const id = String(task?.serverJobId || "");
+		if (!id) return;
+		const response = await cancelServerAiJob(id, { acknowledgeUpstream });
+		controllersRef.current.get(id)?.abort();
+		controllersRef.current.delete(id);
+		upsertTask(
+			taskFromJob(
+				response.job || response.task || { ...task, id, status: "cancelled" },
+			),
+		);
+		return response.job;
+	}, [upsertTask]);
 
   const removeTask = useCallback(async (task) => {
     const id = String(task?.serverJobId || "");

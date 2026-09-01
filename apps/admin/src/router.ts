@@ -51,6 +51,12 @@ const feedbackView = memoizeRouteLoader(
   () => import("@/views/FeedbackView.vue"),
 );
 const tasksView = memoizeRouteLoader(() => import("@/views/TasksView.vue"));
+const profitabilityView = memoizeRouteLoader(
+  () => import("@/views/ProfitabilityView.vue"),
+);
+const agentQualityView = memoizeRouteLoader(
+  () => import("@/views/AgentQualityView.vue"),
+);
 const modelConfigView = memoizeRouteLoader(
   () => import("@/views/ModelConfigView.vue"),
 );
@@ -76,6 +82,8 @@ const pageControlsView = memoizeRouteLoader(
   () => import("@/views/PageControlsView.vue"),
 );
 const auditView = memoizeRouteLoader(() => import("@/views/AuditView.vue"));
+const platformLogsView = memoizeRouteLoader(() => import("@/views/PlatformLogsView.vue"));
+const securityCenterView = memoizeRouteLoader(() => import("@/views/SecurityCenterView.vue"));
 const settingsView = memoizeRouteLoader(
   () => import("@/views/SettingsView.vue"),
 );
@@ -92,6 +100,8 @@ const routeLoaders = new Map<string, RouteLoader>([
   ["/growth-groups", growthGroupsView],
   ["/feedback", feedbackView],
   ["/tasks", tasksView],
+  ["/profitability", profitabilityView],
+  ["/agent-quality", agentQualityView],
   ["/model-config", modelConfigView],
   ["/canvas-templates", canvasTemplatesView],
   ["/prompt-library", promptLibraryView],
@@ -101,6 +111,8 @@ const routeLoaders = new Map<string, RouteLoader>([
   ["/content", contentView],
   ["/page-controls", pageControlsView],
   ["/audit", auditView],
+  ["/platform-logs", platformLogsView],
+  ["/security-center", securityCenterView],
   ["/settings", settingsView],
 ]);
 
@@ -179,6 +191,16 @@ const router = createRouter({
           meta: { title: "任务与调度" },
         },
         {
+          path: "profitability",
+          component: profitabilityView,
+          meta: { title: "成本利润" },
+        },
+        {
+          path: "agent-quality",
+          component: agentQualityView,
+          meta: { title: "Agent 质量" },
+        },
+        {
           path: "model-config",
           component: modelConfigView,
           meta: { title: "模型配置" },
@@ -222,6 +244,16 @@ const router = createRouter({
           path: "audit",
           component: auditView,
           meta: { title: "审计日志" },
+        },
+        {
+          path: "platform-logs",
+          component: platformLogsView,
+          meta: { title: "运行日志" },
+        },
+        {
+          path: "security-center",
+          component: securityCenterView,
+          meta: { title: "安全中心" },
         },
         {
           path: "settings",

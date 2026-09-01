@@ -90,6 +90,33 @@ func containsUploadKey(keys []string, requested string) bool {
 	return false
 }
 
+func TestUserUploadStorageBytesTracksLiveObjectSizes(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	user, err := store.InsertUser(ctx, st.Pool, "upload-quota-"+uuid.NewString()+"@example.com", "", "", "user", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	objects := []store.UserUploadObjectSize{
+		{Key: "uploads/" + user.ID.String() + "/original/a.png", SizeBytes: 100},
+		{Key: "uploads/" + user.ID.String() + "/thumb/a", SizeBytes: 25},
+	}
+	if err := store.RegisterUserUploadObjectSizes(ctx, st.Pool, user.ID, objects); err != nil {
+		t.Fatal(err)
+	}
+	total, err := store.UserUploadStorageBytes(ctx, st.Pool, user.ID)
+	if err != nil || total != 125 {
+		t.Fatalf("storage total=%d err=%v", total, err)
+	}
+	if _, err := st.Pool.Exec(ctx, `UPDATE user_upload_objects SET deleted_at=now() WHERE object_key=$1`, objects[1].Key); err != nil {
+		t.Fatal(err)
+	}
+	total, err = store.UserUploadStorageBytes(ctx, st.Pool, user.ID)
+	if err != nil || total != 100 {
+		t.Fatalf("live storage total=%d err=%v", total, err)
+	}
+}
+
 func TestGetUserAssetByFileKeyIsUserScoped(t *testing.T) {
 	st := testdb.Setup(t)
 	ctx := context.Background()

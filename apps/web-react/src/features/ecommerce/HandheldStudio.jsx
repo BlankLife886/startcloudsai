@@ -749,6 +749,7 @@ export function HandheldGeneratingStage({
   sceneImage = "",
   label = "",
   seconds = 0,
+  generationStageLabel = "正在生成",
 }) {
   const rootRef = useRef(null);
   const frame = productUrl || sceneImage;
@@ -803,8 +804,8 @@ export function HandheldGeneratingStage({
       aria-live="polite"
       aria-label={
         label
-          ? `正在生成${label}，已等待 ${formatSeconds(seconds)} 秒`
-          : `正在生成，已等待 ${formatSeconds(seconds)} 秒`
+          ? `${generationStageLabel}${label}，已等待 ${formatSeconds(seconds)} 秒`
+          : `${generationStageLabel}，已等待 ${formatSeconds(seconds)} 秒`
       }
     >
       <div className="handheld-generating__mesh" aria-hidden="true">
@@ -813,7 +814,6 @@ export function HandheldGeneratingStage({
         <span className="handheld-generating__blob is-c" />
       </div>
       <div className="handheld-generating__copy">
-        <em>正在生成</em>
         <strong key={seconds}>{formatSeconds(seconds)}</strong>
       </div>
     </div>
@@ -1524,6 +1524,7 @@ export function HandheldStudio({
   failCancelled = false,
   failMessage = "",
   elapsedSeconds = 0,
+  generationStageLabel = "正在生成",
   generateDisabled,
   generateHint,
   shotCount = 1,
@@ -1896,6 +1897,7 @@ export function HandheldStudio({
                     sceneImage={sceneImage}
                     label={shot.label || `第 ${index + 1} 张`}
                     seconds={waitSeconds}
+                    generationStageLabel={generationStageLabel}
                   />
                 ) : shotFailed ? (
                   <div className="handheld-frame__status" role="alert">
@@ -1985,7 +1987,7 @@ export function HandheldStudio({
                       <span>{running ? "生成中" : failed ? "重试" : "生成"}</span>
                       <small>
                         {running
-                          ? "进行中"
+                          ? generationStageLabel
                           : `${shotCount}张${costLabel ? ` · ${costLabel}` : ""}`}
                       </small>
                     </button>

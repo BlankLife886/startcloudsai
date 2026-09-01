@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"strings"
 	"unicode/utf8"
 
@@ -17,16 +18,30 @@ const maxUserAssets = 200
 const maxUserAssetImageBytes = 10 << 20
 
 type createUserAssetIn struct {
-	Title        string `json:"title"`
-	FileKey      string `json:"fileKey"`
-	ThumbnailKey string `json:"thumbnailKey"`
-	ContentType  string `json:"contentType"`
-	GroupID      string `json:"groupId"`
+	Title          string          `json:"title"`
+	FileKey        string          `json:"fileKey"`
+	ThumbnailKey   string          `json:"thumbnailKey"`
+	ContentType    string          `json:"contentType"`
+	GroupID        string          `json:"groupId"`
+	Tags           []string        `json:"tags"`
+	SourceType     string          `json:"sourceType"`
+	SourceID       string          `json:"sourceId"`
+	SourceMetadata json.RawMessage `json:"sourceMetadata"`
+	ParentAssetID  string          `json:"parentAssetId"`
 }
 
 type updateUserAssetIn struct {
-	Title   Opt[string] `json:"title"`
-	GroupID Opt[string] `json:"groupId"`
+	Title   Opt[string]   `json:"title"`
+	GroupID Opt[string]   `json:"groupId"`
+	Tags    Opt[[]string] `json:"tags"`
+}
+
+type batchUserAssetsIn struct {
+	Action     string      `json:"action"`
+	IDs        []string    `json:"ids"`
+	GroupID    Opt[string] `json:"groupId"`
+	AddTags    []string    `json:"addTags"`
+	RemoveTags []string    `json:"removeTags"`
 }
 
 type createUserAssetGroupIn struct {
@@ -45,13 +60,44 @@ func userAssetDict(asset *store.UserAsset) gin.H {
 		"url":          "/api/v1/files/" + asset.FileKey,
 		"thumbnailUrl": "/api/v1/files/" + asset.ThumbnailKey,
 		"contentType":  asset.ContentType, "sizeBytes": asset.SizeBytes,
-		"createdAt": isoValue(asset.CreatedAt),
-		"groupId":   nil,
+		"createdAt":      isoValue(asset.CreatedAt),
+		"updatedAt":      isoValue(asset.UpdatedAt),
+		"groupId":        nil,
+		"tags":           asset.Tags,
+		"contentHash":    asset.ContentHash,
+		"sourceType":     asset.SourceType,
+		"sourceId":       asset.SourceID,
+		"sourceMetadata": asset.SourceMetadata,
+		"parentAssetId":  nil,
+		"deletedAt":      isoPointer(asset.DeletedAt),
 	}
 	if asset.GroupID != nil {
 		out["groupId"] = asset.GroupID.String()
 	}
+	if asset.ParentAssetID != nil {
+		out["parentAssetId"] = asset.ParentAssetID.String()
+	}
 	return out
+}
+
+func normalizeAssetTags(values []string) ([]string, error) {
+	seen := make(map[string]bool, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		if utf8.RuneCountInString(value) > 32 {
+			return nil, apperr.E("validation_error", "标签不能超过 32 个字符", 422)
+		}
+		seen[value] = true
+		out = append(out, value)
+		if len(out) > 30 {
+			return nil, apperr.E("validation_error", "每个素材最多 30 个标签", 422)
+		}
+	}
+	return out, nil
 }
 
 func userAssetGroupDict(group *store.UserAssetGroup) gin.H {
@@ -110,7 +156,15 @@ func (s *Server) myAssets(c *gin.Context) {
 		groupFilter = &id
 	}
 
-	rows, err := store.ListUserAssets(c.Request.Context(), s.St.Pool, user.ID, limit, cursor, groupFilter)
+	tags, err := normalizeAssetTags(strings.Split(c.Query("tags"), ","))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	rows, err := store.ListUserAssetsDAM(c.Request.Context(), s.St.Pool, user.ID, store.UserAssetListOptions{
+		Limit: limit, Cursor: cursor, GroupFilter: groupFilter, Query: c.Query("q"), Tags: tags,
+		Trash: strings.EqualFold(c.Query("trash"), "true"),
+	})
 	if err != nil {
 		fail(c, err)
 		return
@@ -142,7 +196,7 @@ func (s *Server) createUserAsset(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
-	size, contentType, err := s.inspectOwnedUserUploadImage(ctx, user.ID, body.FileKey, maxUserAssetImageBytes)
+	size, contentType, contentHash, err := s.inspectOwnedUserUploadImageWithHash(ctx, user.ID, body.FileKey, maxUserAssetImageBytes)
 	if err != nil || size <= 0 {
 		fail(c, apperr.E("validation_error", "素材文件不存在、不是有效图片或超过 10MB", 422))
 		return
@@ -160,6 +214,51 @@ func (s *Server) createUserAsset(c *gin.Context) {
 		if err != nil {
 			return err
 		}
+		tags, err := normalizeAssetTags(body.Tags)
+		if err != nil {
+			return err
+		}
+		sourceType := strings.TrimSpace(body.SourceType)
+		if sourceType == "" {
+			sourceType = "upload"
+		}
+		if utf8.RuneCountInString(sourceType) > 40 {
+			return apperr.E("validation_error", "sourceType 无效", 422)
+		}
+		var sourceID *string
+		if value := strings.TrimSpace(body.SourceID); value != "" {
+			sourceID = &value
+		}
+		sourceMetadata := body.SourceMetadata
+		if len(sourceMetadata) == 0 {
+			sourceMetadata = json.RawMessage(`{}`)
+		}
+		var metadataObject map[string]any
+		if len(sourceMetadata) > 32<<10 || json.Unmarshal(sourceMetadata, &metadataObject) != nil {
+			return apperr.E("validation_error", "sourceMetadata 必须是 JSON 对象且不能超过 32KB", 422)
+		}
+		var parentAssetID *uuid.UUID
+		if raw := strings.TrimSpace(body.ParentAssetID); raw != "" {
+			id, parseErr := uuid.Parse(raw)
+			if parseErr != nil {
+				return apperr.E("validation_error", "parentAssetId 无效", 422)
+			}
+			parent, getErr := store.GetUserAsset(ctx, tx, user.ID, id)
+			if getErr != nil {
+				return getErr
+			}
+			if parent == nil {
+				return apperr.E("validation_error", "父素材不存在", 422)
+			}
+			parentAssetID = &id
+		}
+		duplicate, err := store.GetUserAssetByContentHash(ctx, tx, user.ID, contentHash)
+		if err != nil {
+			return err
+		}
+		if duplicate != nil {
+			return apperr.E("asset_duplicate_content", "相同图片已存在于资产库", 409)
+		}
 		count, err := store.CountUserAssets(ctx, tx, user.ID)
 		if err != nil {
 			return err
@@ -167,8 +266,8 @@ func (s *Server) createUserAsset(c *gin.Context) {
 		if count >= maxUserAssets {
 			return apperr.E("asset_limit_reached", "素材库最多保存 200 项", 409)
 		}
-		asset, err = store.InsertUserAsset(ctx, tx, user.ID, body.Title,
-			body.FileKey, body.ThumbnailKey, contentType, size, groupID)
+		asset, err = store.InsertUserAssetDAM(ctx, tx, user.ID, body.Title,
+			body.FileKey, body.ThumbnailKey, contentType, size, groupID, tags, contentHash, sourceType, sourceID, sourceMetadata, parentAssetID)
 		if err != nil {
 			return err
 		}
@@ -202,8 +301,8 @@ func (s *Server) updateUserAsset(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	if !body.Title.Set && !body.GroupID.Set {
-		fail(c, apperr.E("validation_error", "至少提供 title 或 groupId", 422))
+	if !body.Title.Set && !body.GroupID.Set && !body.Tags.Set {
+		fail(c, apperr.E("validation_error", "至少提供 title、groupId 或 tags", 422))
 		return
 	}
 	ctx := c.Request.Context()
@@ -240,8 +339,18 @@ func (s *Server) updateUserAsset(c *gin.Context) {
 				groupID = resolved
 			}
 		}
+		tags := asset.Tags
+		if body.Tags.Set {
+			if !body.Tags.Valid {
+				return apperr.E("validation_error", "tags 不能为空", 422)
+			}
+			tags, err = normalizeAssetTags(body.Tags.Value)
+			if err != nil {
+				return err
+			}
+		}
 
-		updated, err = store.UpdateUserAsset(ctx, tx, user.ID, id, title, groupID)
+		updated, err = store.UpdateUserAsset(ctx, tx, user.ID, id, title, groupID, tags)
 		if err != nil {
 			return err
 		}
@@ -269,7 +378,6 @@ func (s *Server) deleteUserAsset(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
-	var keys []string
 	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
 		asset, err := store.GetUserAssetForUpdate(ctx, tx, user.ID, id)
 		if err != nil {
@@ -285,13 +393,6 @@ func (s *Server) deleteUserAsset(c *gin.Context) {
 		if productCount > 0 {
 			return apperr.E("asset_in_use", "该素材仍被商品引用，请先移除商品关联", 409)
 		}
-		keys = []string{asset.FileKey, asset.ThumbnailKey}
-		if err := store.DeleteUserUploadReferences(ctx, tx, store.UploadReferenceUserAsset, asset.ID); err != nil {
-			return err
-		}
-		if err := store.EnqueueObjectCleanup(ctx, tx, keys); err != nil {
-			return err
-		}
 		return store.DeleteUserAsset(ctx, tx, user.ID, id)
 	})
 	if err != nil {
@@ -299,6 +400,149 @@ func (s *Server) deleteUserAsset(c *gin.Context) {
 		return
 	}
 	respondNoContent(c)
+}
+
+func (s *Server) restoreUserAsset(c *gin.Context) {
+	user, err := s.requireUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	id, err := parseUUIDParam(c, "id")
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	asset, err := store.RestoreUserAsset(c.Request.Context(), s.St.Pool, user.ID, id)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if asset == nil {
+		fail(c, apperr.E("not_found", "回收站中没有该素材", 404))
+		return
+	}
+	ok(c, userAssetDict(asset))
+}
+
+func (s *Server) permanentlyDeleteUserAsset(c *gin.Context) {
+	user, err := s.requireUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	id, err := parseUUIDParam(c, "id")
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ctx := c.Request.Context()
+	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
+		asset, err := store.GetUserAssetForUpdate(ctx, tx, user.ID, id)
+		if err != nil {
+			return err
+		}
+		if asset == nil || asset.DeletedAt == nil {
+			return apperr.E("not_found", "回收站中没有该素材", 404)
+		}
+		if err := store.DeleteUserUploadReferences(ctx, tx, store.UploadReferenceUserAsset, asset.ID); err != nil {
+			return err
+		}
+		if err := store.EnqueueObjectCleanup(ctx, tx, []string{asset.FileKey, asset.ThumbnailKey}); err != nil {
+			return err
+		}
+		return store.PermanentlyDeleteUserAsset(ctx, tx, user.ID, id)
+	})
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	respondNoContent(c)
+}
+
+func (s *Server) batchUserAssets(c *gin.Context) {
+	user, err := s.requireUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	var body batchUserAssetsIn
+	if err := bindJSON(c, &body); err != nil {
+		fail(c, err)
+		return
+	}
+	if len(body.IDs) == 0 || len(body.IDs) > 200 {
+		fail(c, apperr.E("validation_error", "ids 数量须在 1-200 之间", 422))
+		return
+	}
+	ids := make([]uuid.UUID, 0, len(body.IDs))
+	seen := make(map[uuid.UUID]bool, len(body.IDs))
+	for _, raw := range body.IDs {
+		id, parseErr := uuid.Parse(strings.TrimSpace(raw))
+		if parseErr != nil {
+			fail(c, apperr.E("validation_error", "ids 包含无效 ID", 422))
+			return
+		}
+		if !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	ctx := c.Request.Context()
+	var affected int64
+	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
+		items, err := store.GetUserAssetsByIDs(ctx, tx, user.ID, ids)
+		if err != nil {
+			return err
+		}
+		if body.Action != "restore" && int64(len(items)) != int64(len(ids)) {
+			return apperr.E("not_found", "部分素材不存在或已在回收站", 404)
+		}
+		switch body.Action {
+		case "update":
+			var groupID *uuid.UUID
+			if body.GroupID.Set {
+				if body.GroupID.Valid && strings.TrimSpace(body.GroupID.Value) != "" {
+					groupID, err = s.resolveOwnedAssetGroup(c, tx, user.ID, body.GroupID.Value)
+					if err != nil {
+						return err
+					}
+				}
+			}
+			addTags, err := normalizeAssetTags(body.AddTags)
+			if err != nil {
+				return err
+			}
+			removeTags, err := normalizeAssetTags(body.RemoveTags)
+			if err != nil {
+				return err
+			}
+			affected, err = store.BatchUpdateUserAssets(ctx, tx, user.ID, ids, body.GroupID.Set, groupID, addTags, removeTags)
+			return err
+		case "trash":
+			for _, item := range items {
+				count, err := store.CountEcommerceProductsUsingAsset(ctx, tx, user.ID, item.ID)
+				if err != nil {
+					return err
+				}
+				if count > 0 {
+					return apperr.E("asset_in_use", "选中的素材仍被商品引用", 409)
+				}
+			}
+			affected, err = store.BatchTrashUserAssets(ctx, tx, user.ID, ids)
+			return err
+		case "restore":
+			affected, err = store.BatchRestoreUserAssets(ctx, tx, user.ID, ids)
+			return err
+		default:
+			return apperr.E("validation_error", "action 必须是 update、trash 或 restore", 422)
+		}
+	})
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ok(c, gin.H{"affected": affected})
 }
 
 func (s *Server) myAssetGroups(c *gin.Context) {

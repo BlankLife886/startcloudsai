@@ -41,6 +41,22 @@ func leakedSearchResponse(prompt, suffix string) string {
 	return "search(" + strconv.QuoteToASCII(prompt) + ")" + suffix
 }
 
+func TestAssistantChatSystemPromptSupportsProgressiveClarification(t *testing.T) {
+	for _, want := range []string{
+		"简单且目标明确的请求直接回答或执行",
+		"最多 3 个具体、容易回答的关键问题",
+		"采用的合理假设并先给出可继续修改的方案",
+		"持续记住已确认的目标、偏好、素材、约束和否决项",
+	} {
+		if !strings.Contains(assistantChatSystemPrompt, want) {
+			t.Fatalf("assistant system prompt is missing %q", want)
+		}
+	}
+	if assistantChatSystemPromptVersion != "assistant-chat-v4" {
+		t.Fatalf("system prompt version = %q", assistantChatSystemPromptVersion)
+	}
+}
+
 func TestAssistantConversationPayloadAlwaysIncludesAuthoritativeCurrentPrompt(t *testing.T) {
 	run := &store.AssistantRun{
 		ID: uuid.New(), UserMessageID: uuid.New(), AssistantMessageID: uuid.New(), Prompt: "当前权威问题",
@@ -61,6 +77,27 @@ func TestAssistantConversationPayloadAlwaysIncludesAuthoritativeCurrentPrompt(t 
 	payload, _ = buildAssistantContext("", history, run, references, false)
 	if len(payload) != 3 || payload[2].Content != run.Prompt || len(payload[2].ReferenceImages) != 1 {
 		t.Fatalf("history payload = %#v", payload)
+	}
+}
+
+func TestAssistantConversationPayloadExcludesFutureQueuedMessages(t *testing.T) {
+	run := &store.AssistantRun{
+		ID: uuid.New(), UserMessageID: uuid.New(), AssistantMessageID: uuid.New(), Prompt: "当前任务",
+	}
+	history := []*store.AssistantMessage{
+		{ID: uuid.New(), Role: "user", Content: "已完成的问题", Status: "complete"},
+		{ID: uuid.New(), Role: "assistant", Content: "已完成的回答", Status: "complete"},
+		{ID: uuid.New(), Role: "user", Content: "未来排队问题", Status: "queued"},
+		{ID: uuid.New(), Role: "assistant", Content: "未来排队占位", Status: "queued"},
+	}
+	payload, _ := buildAssistantContext("", history, run, nil, false)
+	joined := ""
+	for _, message := range payload {
+		joined += message.Content
+	}
+	if strings.Contains(joined, "未来排队") || !strings.Contains(joined, "已完成的问题") ||
+		payload[len(payload)-1].Content != run.Prompt {
+		t.Fatalf("queued content leaked into context: %#v", payload)
 	}
 }
 

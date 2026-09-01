@@ -18,6 +18,7 @@ Map<String, dynamic> _entry({
   required String source,
   required String createdAt,
   String reason = '',
+  String creditBucket = 'normal',
   int balance = 100,
   Map<String, dynamic>? task,
 }) {
@@ -28,7 +29,7 @@ Map<String, dynamic> _entry({
     'balanceAfterCents': balance,
     'sourceType': source,
     'reason': reason,
-    'creditBucket': 'normal',
+    'creditBucket': creditBucket,
     'createdAt': createdAt,
   };
   if (task != null) value['task'] = task;
@@ -42,6 +43,7 @@ final _entries = [
     delta: 100,
     source: 'signup_bonus',
     reason: '新用户注册赠送',
+    creditBucket: 'trial',
     createdAt: '2026-08-24T08:00:00Z',
   ),
   _entry(
@@ -245,6 +247,15 @@ void main() {
     expect(items.where((item) => item.entry != null), hasLength(4));
   });
 
+  test('wallet entry filters distinguish normal and trial balances', () {
+    final entries = _entries.map(WalletLedgerEntry.fromJson).toList();
+
+    expect(walletEntryFilterFromName('trial'), WalletEntryFilter.trial);
+    expect(walletEntryFilterFromName('unknown'), WalletEntryFilter.all);
+    expect(entries.where(WalletEntryFilter.trial.includes), hasLength(1));
+    expect(entries.where(WalletEntryFilter.normal.includes), hasLength(3));
+  });
+
   testWidgets('wallet screen fits narrow width with large text', (
     tester,
   ) async {
@@ -372,6 +383,34 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('wallet deep link automatically opens redemption', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          walletProvider.overrideWith(
+            (ref) async => WalletSnapshot.fromJson({
+              'availableCents': 100,
+              'frozenCents': 0,
+              'trialBalanceCents': 0,
+            }),
+          ),
+          walletCenterControllerProvider.overrideWith(
+            _FakeWalletController.new,
+          ),
+          benefitsControllerProvider.overrideWith(_IdleBenefitsController.new),
+        ],
+        child: const MaterialApp(home: WalletScreen(initiallyOpenRedeem: true)),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byType(RedeemCodeSheet), findsOneWidget);
+    expect(find.text('立即兑换'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('ledger screen lists billed entries and export', (tester) async {
     await tester.binding.setSurfaceSize(const Size(320, 760));
     addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -398,6 +437,94 @@ void main() {
     expect(find.text('积分明细'), findsWidgets);
     expect(find.text('共 4 笔'), findsOneWidget);
     expect(find.text('导出账单'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('wallet composition opens the matching ledger filter', (
+    tester,
+  ) async {
+    WalletEntryFilter? opened;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: WalletCompositionGrid(
+            wallet: AsyncData(
+              WalletSnapshot.fromJson({
+                'availableCents': 100,
+                'frozenCents': 12,
+                'trialBalanceCents': 20,
+              }),
+            ),
+            onOpenLedger: (filter) => opened = filter,
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.byKey(const Key('wallet-composition-trial')));
+    expect(opened, WalletEntryFilter.trial);
+  });
+
+  testWidgets('flat wallet balance supports dark mode', (tester) async {
+    final snapshot = AsyncData(
+      WalletSnapshot.fromJson({
+        'availableCents': 100,
+        'frozenCents': 12,
+        'trialBalanceCents': 20,
+      }),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData.light(),
+        darkTheme: ThemeData.dark(),
+        themeMode: ThemeMode.dark,
+        home: Scaffold(
+          body: ListView(
+            padding: const EdgeInsets.all(16),
+            children: [
+              WalletBalancePanel(
+                wallet: snapshot,
+                onRedeem: () {},
+                onLedger: () {},
+                onPurchase: () {},
+              ),
+              const SizedBox(height: 12),
+              WalletCompositionGrid(wallet: snapshot, onOpenLedger: (_) {}),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      Theme.of(tester.element(find.text('可用余额'))).brightness,
+      Brightness.dark,
+    );
+    expect(find.text('普通积分'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('ledger restores a deep-linked initial filter', (tester) async {
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          walletProvider.overrideWith(
+            (ref) async => WalletSnapshot.fromJson({'availableCents': 100}),
+          ),
+          walletCenterControllerProvider.overrideWith(
+            _FakeWalletController.new,
+          ),
+        ],
+        child: const MaterialApp(
+          home: WalletLedgerScreen(initialFilter: WalletEntryFilter.trial),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('注册赠送'), findsOneWidget);
+    expect(find.text('一张夏日海报'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 

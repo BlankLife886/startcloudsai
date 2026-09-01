@@ -125,3 +125,24 @@ func CountOrdersByUser(ctx context.Context, q Q, userID uuid.UUID) (int64, error
 	err := q.QueryRow(ctx, `SELECT count(*) FROM orders WHERE user_id = $1`, userID).Scan(&n)
 	return n, err
 }
+
+// ListOrdersForReconciliation returns recent Lanjing orders that can carry
+// money. Failed create-order attempts without a provider ID are excluded.
+func ListOrdersForReconciliation(ctx context.Context, q Q, since time.Time, limit int) ([]*Order, error) {
+	rows, err := q.Query(ctx, `SELECT `+orderCols+` FROM orders
+		WHERE provider='lanjing' AND provider_order_id IS NOT NULL AND created_at >= $1
+		ORDER BY created_at DESC LIMIT $2`, since, min(max(limit, 1), 500))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []*Order{}
+	for rows.Next() {
+		item, err := scanOrder(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}

@@ -1004,7 +1004,7 @@ func TestUserCancelQueuedReleasesReservedCredits(t *testing.T) {
 	if canceled.ErrorCode == nil || *canceled.ErrorCode != "user_canceled" {
 		t.Fatalf("errorCode = %v, want user_canceled", canceled.ErrorCode)
 	}
-	if canceled.ErrorMessage == nil || *canceled.ErrorMessage != "用户主动停止任务" {
+	if canceled.ErrorMessage == nil || !strings.Contains(*canceled.ErrorMessage, "提交上游前") {
 		t.Fatalf("errorMessage = %v, want user cancellation message", canceled.ErrorMessage)
 	}
 	if len(canceled.OutputKeys) != 0 || len(canceled.ThumbnailKeys) != 0 {
@@ -1026,6 +1026,73 @@ func TestUserCancelQueuedReleasesReservedCredits(t *testing.T) {
 	replayed, err := taskflow.CancelTask(ctx, st, user.ID, task.ID)
 	if err != nil || replayed == nil || replayed.Status != "canceled" {
 		t.Fatalf("replayed cancel = %#v, err=%v, want idempotent canceled task", replayed, err)
+	}
+}
+
+func TestUserCancelRunningRequiresUpstreamAcknowledgement(t *testing.T) {
+	st := testdb.Setup(t)
+	user := newUserWithBalance(t, st, 100)
+	ctx := context.Background()
+	task, _, err := createT2I(t, st, user.ID, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forceRunning(t, st, task.ID)
+
+	_, err = taskflow.CancelTaskConfirmed(ctx, st, user.ID, task.ID, false)
+	mustAppErr(t, err, "task_cancel_confirmation_required")
+	current, err := store.GetTask(ctx, st.Pool, task.ID)
+	if err != nil || current == nil || current.Status != "running" {
+		t.Fatalf("task after rejected cancellation = %#v, err=%v", current, err)
+	}
+	w := getWallet(t, st, user.ID)
+	if w.BalanceCents != 80 || w.FrozenCents != 20 {
+		t.Fatalf("wallet changed before confirmation = (%d, %d)", w.BalanceCents, w.FrozenCents)
+	}
+}
+
+func TestEcommerceCancelRunningRequiresUpstreamAcknowledgement(t *testing.T) {
+	st := testdb.Setup(t)
+	user := newUserWithBalance(t, st, 100)
+	ctx := context.Background()
+	task, _, err := createT2I(t, st, user.ID, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Pool.Exec(ctx, `UPDATE tasks SET type = 'ecommerce_design', status = 'running', started_at = now(), params = jsonb_set(params, '{_generationStage}', '"upstream_generating"'::jsonb, true) WHERE id = $1`, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, err = taskflow.CancelTaskConfirmed(ctx, st, user.ID, task.ID, false)
+	mustAppErr(t, err, "task_cancel_confirmation_required")
+	current, err := store.GetTask(ctx, st.Pool, task.ID)
+	if err != nil || current == nil || current.Status != "running" {
+		t.Fatalf("ecommerce task after rejected cancellation = %#v err=%v", current, err)
+	}
+}
+
+func TestUserCancelPreparingTaskRefundsReservedCredits(t *testing.T) {
+	st := testdb.Setup(t)
+	user := newUserWithBalance(t, st, 100)
+	ctx := context.Background()
+	task, _, err := createT2I(t, st, user.ID, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forceRunning(t, st, task.ID)
+	if err := store.SetTaskGenerationStage(ctx, st.Pool, task.ID, "preparing"); err != nil {
+		t.Fatal(err)
+	}
+
+	canceled, err := taskflow.CancelTaskConfirmed(ctx, st, user.ID, task.ID, false)
+	if err != nil || canceled == nil || canceled.Status != "canceled" {
+		t.Fatalf("cancel preparing task = %#v, err=%v", canceled, err)
+	}
+	if canceled.ErrorMessage == nil || !strings.Contains(*canceled.ErrorMessage, "提交上游前") {
+		t.Fatalf("preparing cancellation message = %v", canceled.ErrorMessage)
+	}
+	w := getWallet(t, st, user.ID)
+	if w.BalanceCents != 100 || w.FrozenCents != 0 {
+		t.Fatalf("preparing cancellation wallet = (%d, %d), want (100, 0)", w.BalanceCents, w.FrozenCents)
 	}
 }
 
@@ -1057,7 +1124,7 @@ func TestUserCancelRunningSettlesWithoutFailureCompensation(t *testing.T) {
 	if canceled.Status != "canceled" || canceled.ErrorCode == nil || *canceled.ErrorCode != "user_canceled" {
 		t.Fatalf("canceled task = %#v, want canceled/user_canceled", canceled)
 	}
-	if canceled.ErrorMessage == nil || *canceled.ErrorMessage != "用户主动停止任务" {
+	if canceled.ErrorMessage == nil || !strings.Contains(*canceled.ErrorMessage, "已停止接收") || !strings.Contains(*canceled.ErrorMessage, "可能仍会继续生成") {
 		t.Fatalf("errorMessage = %v, want user cancellation message", canceled.ErrorMessage)
 	}
 	w := getWallet(t, st, user.ID)
@@ -1154,6 +1221,12 @@ func TestRequeueRefreezesThenSettles(t *testing.T) {
 	w = getWallet(t, st, user.ID)
 	if w.BalanceCents != 80 || w.FrozenCents != 0 {
 		t.Fatalf("wallet = (%d, %d), want (80, 0)", w.BalanceCents, w.FrozenCents)
+	}
+	var profitEntries int
+	if err := st.Pool.QueryRow(ctx,
+		`SELECT count(*) FROM usage_profit_ledger WHERE source_type='task' AND source_id=$1`, task.ID.String(),
+	).Scan(&profitEntries); err != nil || profitEntries != 2 {
+		t.Fatalf("profit ledger generations = %d err=%v", profitEntries, err)
 	}
 	// 全程只扣一次费：freeze×2 / release×1 / spend×1；第二代 freeze 账本键为 task_id/1
 	kinds := map[string]int{}

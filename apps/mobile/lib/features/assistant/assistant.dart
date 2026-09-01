@@ -1114,6 +1114,8 @@ abstract interface class AssistantRepository {
   Future<AssistantConversation> createConversation();
   Future<AssistantConversation> renameConversation(String id, String title);
   Future<void> deleteConversation(String id, {bool cancelActive = false});
+  Future<void> deleteTurn(String userMessageId);
+  Future<bool> deleteGeneratedImage(String messageId, String imageId);
   Future<AssistantRunSnapshot> createRun(CreateAssistantRunInput input);
   Future<AssistantRunSnapshot> getRun(String id);
   Future<AssistantRun> cancelRun(String id);
@@ -1189,6 +1191,23 @@ class ApiAssistantRepository implements AssistantRepository {
         '/assistant/conversations/${Uri.encodeComponent(id)}',
         queryParameters: {if (cancelActive) 'cancelActive': true},
       );
+
+  @override
+  Future<void> deleteTurn(String userMessageId) => _apiClient.delete(
+    '/assistant/messages/${Uri.encodeComponent(userMessageId)}',
+    queryParameters: const {'scope': 'turn'},
+  );
+
+  @override
+  Future<bool> deleteGeneratedImage(String messageId, String imageId) async {
+    final data = await _apiClient.delete(
+      '/assistant/messages/${Uri.encodeComponent(messageId)}/images/${Uri.encodeComponent(imageId)}',
+    );
+    final map = data is Map
+        ? Map<String, dynamic>.from(data)
+        : const <String, dynamic>{};
+    return map['messageDeleted'] == true;
+  }
 
   @override
   Future<AssistantRunSnapshot> createRun(CreateAssistantRunInput input) async =>
@@ -1613,6 +1632,96 @@ class AssistantWorkspaceController
     if (latest.pinnedIds.contains(id)) {
       unawaited(_savePinnedConversationIds({...latest.pinnedIds}..remove(id)));
     }
+  }
+
+  Future<void> deleteTurn(String userMessageId) async {
+    final current = state.asData?.value;
+    final conversation = current?.selectedConversation;
+    if (current == null || conversation == null) return;
+    if (current.isSending || current.selectedRun != null) {
+      throw const ApiException(
+        code: 'assistant_conversation_busy',
+        message: '请先停止当前任务',
+      );
+    }
+    final index = conversation.messages.indexWhere(
+      (message) => message.id == userMessageId && message.isUser,
+    );
+    if (index < 0) return;
+    await _repository.deleteTurn(userMessageId);
+    final latest = state.asData?.value;
+    if (latest == null) return;
+    state = AsyncData(
+      latest.copyWith(
+        conversations: latest.conversations.map((item) {
+          if (item.id != conversation.id) return item;
+          final latestIndex = item.messages.indexWhere(
+            (message) => message.id == userMessageId && message.isUser,
+          );
+          if (latestIndex < 0) return item;
+          return item.copyWith(
+            messages: item.messages.take(latestIndex).toList(),
+            updatedAt: DateTime.now(),
+          );
+        }).toList(),
+      ),
+    );
+  }
+
+  Future<void> deleteGeneratedImage(String messageId, String imageId) async {
+    final current = state.asData?.value;
+    final conversation = current?.selectedConversation;
+    if (current == null || conversation == null) return;
+    if (current.isSending || current.selectedRun != null) {
+      throw const ApiException(
+        code: 'assistant_conversation_busy',
+        message: '图片仍在生成，请先停止任务',
+      );
+    }
+    final message = conversation.messages
+        .where((item) => item.id == messageId && !item.isUser)
+        .firstOrNull;
+    if (message == null) return;
+    final target = message.images
+        .where((image) => image.id == imageId || image.fileKey == imageId)
+        .firstOrNull;
+    if (target == null) return;
+    final identifier = target.id.trim().isNotEmpty
+        ? target.id.trim()
+        : target.fileKey.trim();
+    if (identifier.isEmpty) {
+      throw const ApiException(code: 'validation_error', message: '图片 ID 无效');
+    }
+    final messageDeleted = await _repository.deleteGeneratedImage(
+      messageId,
+      identifier,
+    );
+    final latest = state.asData?.value;
+    if (latest == null) return;
+    state = AsyncData(
+      latest.copyWith(
+        conversations: latest.conversations.map((item) {
+          if (item.id != conversation.id) return item;
+          final messages = <AssistantMessage>[];
+          for (final candidate in item.messages) {
+            if (candidate.id != messageId) {
+              messages.add(candidate);
+              continue;
+            }
+            final remaining = candidate.images.where((image) {
+              final candidateIdentifier = image.id.trim().isNotEmpty
+                  ? image.id.trim()
+                  : image.fileKey.trim();
+              return candidateIdentifier != identifier;
+            }).toList();
+            if (!messageDeleted && remaining.isNotEmpty) {
+              messages.add(candidate.copyWith(images: remaining));
+            }
+          }
+          return item.copyWith(messages: messages, updatedAt: DateTime.now());
+        }).toList(),
+      ),
+    );
   }
 
   Future<void> togglePinned(String id) async {

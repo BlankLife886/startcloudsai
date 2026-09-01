@@ -68,6 +68,13 @@ const STATUS_OPTIONS: Array<{
 
 const PAGE_GROUPS: PageGroup[] = [
   {
+    title: "开放能力",
+    description: "仍在测试的能力可先下架，避免用户提前使用。",
+    pages: [
+      { key: "developer_api", label: "开发者 API", path: "/developer-api" },
+    ],
+  },
+  {
     title: "核心创作",
     description: "主创作入口与独立工作台。",
     pages: [
@@ -135,9 +142,16 @@ function emptyControls(): Record<string, PageControl> {
   return Object.fromEntries(
     ALL_PAGES.map((page) => [
       page.key,
-      { status: "normal", reason: "" } satisfies PageControl,
+      defaultControl(page.key),
     ]),
   );
+}
+
+function defaultControl(key: string): PageControl {
+  if (key === "developer_api") {
+    return { status: "removed", reason: "开放 API 正在内部测试。" };
+  }
+  return { status: "normal", reason: "" };
 }
 
 const loading = ref(false);
@@ -162,7 +176,9 @@ function cloneControls(values: Record<string, PageControl>) {
   return Object.fromEntries(
     ALL_PAGES.map((page) => [
       page.key,
-      { ...normalizeControl(values[page.key]) },
+      values[page.key]
+        ? { ...normalizeControl(values[page.key]) }
+        : defaultControl(page.key),
     ]),
   );
 }

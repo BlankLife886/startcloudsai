@@ -20,6 +20,7 @@ class PurchaseOrdersScreen extends ConsumerStatefulWidget {
 class _PurchaseOrdersScreenState extends ConsumerState<PurchaseOrdersScreen> {
   final _scrollController = ScrollController();
   String? _openedInitialOrderId;
+  PurchaseOrderFilter _filter = PurchaseOrderFilter.all;
 
   @override
   void initState() {
@@ -103,6 +104,7 @@ class _PurchaseOrdersScreenState extends ConsumerState<PurchaseOrdersScreen> {
 
   Widget _buildOrders(PurchaseCenterState state) {
     final plansById = {for (final plan in state.catalog.items) plan.id: plan};
+    final orders = state.orders.where(_filter.includes).toList();
     _maybeOpenInitialOrder();
     return RefreshIndicator(
       onRefresh: _refresh,
@@ -116,38 +118,125 @@ class _PurchaseOrdersScreenState extends ConsumerState<PurchaseOrdersScreen> {
               child: BillingEmpty(message: '还没有套餐订单'),
             )
           else ...[
-            SliverPadding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 10),
-              sliver: SliverList.separated(
-                itemCount: state.orders.length,
-                separatorBuilder: (_, _) => const SizedBox(height: 10),
-                itemBuilder: (context, index) {
-                  final order = state.orders[index];
-                  return OrderCard(
-                    key: Key('order-${order.id}'),
-                    order: order,
-                    plan: plansById[order.planId],
-                    busy: state.busyOrderIds.contains(order.id),
-                    highlighted: order.id == widget.initialOrderId?.trim(),
-                    onTap: () => openPurchaseOrder(
-                      context: context,
-                      ref: ref,
+            SliverToBoxAdapter(
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+                child: Row(
+                  children: [
+                    for (final filter in PurchaseOrderFilter.values) ...[
+                      if (filter != PurchaseOrderFilter.values.first)
+                        const SizedBox(width: 8),
+                      _OrderFilterButton(
+                        filter: filter,
+                        selected: _filter == filter,
+                        onTap: () => setState(() => _filter = filter),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+            if (orders.isEmpty)
+              SliverFillRemaining(
+                hasScrollBody: false,
+                child: BillingEmpty(message: '${_filter.label}暂无订单'),
+              )
+            else ...[
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+                sliver: SliverList.separated(
+                  itemCount: orders.length,
+                  separatorBuilder: (_, _) => const SizedBox(height: 8),
+                  itemBuilder: (context, index) {
+                    final order = orders[index];
+                    return OrderCard(
+                      key: Key('order-${order.id}'),
                       order: order,
                       plan: plansById[order.planId],
-                    ),
-                  );
-                },
+                      busy: state.busyOrderIds.contains(order.id),
+                      highlighted: order.id == widget.initialOrderId?.trim(),
+                      onTap: () => openPurchaseOrder(
+                        context: context,
+                        ref: ref,
+                        order: order,
+                        plan: plansById[order.planId],
+                      ),
+                    );
+                  },
+                ),
               ),
-            ),
-            SliverToBoxAdapter(
-              child: OrderFooter(
-                hasMore: state.hasMore,
-                loading: state.isLoadingMore,
-                onLoadMore: _loadMore,
+              SliverToBoxAdapter(
+                child: OrderFooter(
+                  hasMore: state.hasMore,
+                  loading: state.isLoadingMore,
+                  onLoadMore: _loadMore,
+                ),
               ),
-            ),
+            ],
           ],
         ],
+      ),
+    );
+  }
+}
+
+enum PurchaseOrderFilter { all, pending, completed, closed }
+
+extension PurchaseOrderFilterPresentation on PurchaseOrderFilter {
+  String get label => switch (this) {
+    PurchaseOrderFilter.all => '全部',
+    PurchaseOrderFilter.pending => '待处理',
+    PurchaseOrderFilter.completed => '已完成',
+    PurchaseOrderFilter.closed => '已关闭',
+  };
+
+  bool includes(PurchaseOrder order) => switch (this) {
+    PurchaseOrderFilter.all => true,
+    PurchaseOrderFilter.pending =>
+      order.status == 'pending' || order.status == 'paid',
+    PurchaseOrderFilter.completed => order.status == 'completed',
+    PurchaseOrderFilter.closed =>
+      order.status == 'expired' || order.status == 'failed',
+  };
+}
+
+class _OrderFilterButton extends StatelessWidget {
+  const _OrderFilterButton({
+    required this.filter,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final PurchaseOrderFilter filter;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Material(
+      color: selected ? colors.onSurface : colors.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(8),
+        side: BorderSide(
+          color: selected ? colors.onSurface : colors.outlineVariant,
+        ),
+      ),
+      child: InkWell(
+        key: Key('order-filter-${filter.label}'),
+        borderRadius: BorderRadius.circular(8),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+          child: Text(
+            filter.label,
+            style: Theme.of(context).textTheme.labelLarge?.copyWith(
+              color: selected ? colors.surface : colors.onSurface,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
       ),
     );
   }

@@ -2,7 +2,6 @@ package worker
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"testing"
@@ -268,22 +267,18 @@ func TestAssistantRouteFailoverExhaustionFailsAndReleasesReservation(t *testing.
 	}
 	requeued, err = w.retryAssistantProviderRoute(ctx, second,
 		&sub2api.UpstreamError{Status: http.StatusTooManyRequests, Message: "route b busy"})
-	if err != nil || !requeued {
-		t.Fatalf("second failover = %v err=%v", requeued, err)
-	}
-	if claimed, err := w.claimAssistantRun(ctx, run.ID, "worker-exhausted"); !errors.Is(err, errAssistantRoutesExhausted) || claimed != nil {
-		t.Fatalf("exhausted claim = %#v err=%v", claimed, err)
-	}
-	if err := w.failQueuedAssistantRun(ctx, run.ID, "all routes failed"); err != nil {
-		t.Fatal(err)
+	if err != nil || requeued {
+		t.Fatalf("last route must preserve its real error instead of requeueing: requeued=%v err=%v", requeued, err)
 	}
 	stored, err := store.GetAssistantRun(ctx, st.Pool, run.ID)
-	if err != nil || stored == nil || stored.Status != "failed" || stored.ErrorCode == nil || *stored.ErrorCode != "assistant_routes_exhausted" {
-		t.Fatalf("failed run = %#v err=%v", stored, err)
+	if err != nil || stored == nil || stored.Status != "running" || len(assistantParamStrings(stored.Params, "_failedChatProviderRouteKeys")) != 1 {
+		t.Fatalf("last route state = %#v err=%v", stored, err)
 	}
-	state, err := store.GetWallet(ctx, st.Pool, user.ID)
-	if err != nil || state == nil || state.BalanceCents != 100 || state.FrozenCents != 0 {
-		t.Fatalf("released wallet = %#v err=%v", state, err)
+	if model := assistantWebSearchFallbackModel([]string{"gpt-5.6-luna", "gpt-4o-search-preview"}); model != "gpt-4o-search-preview" {
+		t.Fatalf("search fallback model = %q", model)
+	}
+	if model := assistantWebSearchFallbackModel([]string{"gpt-5.6-luna"}); model != "" {
+		t.Fatalf("unsupported search fallback model = %q", model)
 	}
 }
 
@@ -300,5 +295,47 @@ func TestAssistantRouteFailoverStopsAfterOutputAndForCanvas(t *testing.T) {
 	}}
 	if requeued, err := w.retryAssistantProviderRoute(context.Background(), canvas, retryable); err != nil || requeued {
 		t.Fatalf("canvas failover = %v err=%v", requeued, err)
+	}
+}
+
+func TestAssistantEditableClientUsesSelectedProviderRoute(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	w := assistantRoutingTestWorker(t, st, 2)
+	const editableBaseURL = "https://editable.example.com"
+	editableKey, err := settings.EncryptSecret("editable-secret", w.Cfg.AppSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := modelconfig.Load(ctx, st.Pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Providers = append(cfg.Providers, modelconfig.Provider{
+		ID: "editable-provider", Name: "Editable Provider", Adapter: modelconfig.AdapterOpenAI,
+		Enabled: true, Routes: []modelconfig.ProviderRoute{{
+			ID: "editable-route", Name: "Editable Route", BaseURL: editableBaseURL,
+			APIKey: editableKey, MaxConcurrency: 2, Enabled: true,
+		}},
+	})
+	cfg.EditableFiles = modelconfig.EditableFileConfig{
+		Enabled: true, ProviderID: "editable-provider", RouteID: "editable-route",
+	}
+	if err := modelconfig.Save(ctx, st.Pool, cfg); err != nil {
+		t.Fatal(err)
+	}
+	user := assistantRoutingTestUser(t, st, 0)
+	run := insertAssistantRoutingTestRun(t, st, user.ID, "chat", modelconfig.WorkspaceAssistant, 0)
+
+	claimed, err := w.claimAssistantRun(ctx, run.ID, "editable-provider-test")
+	if err != nil || claimed == nil {
+		t.Fatalf("claim = %#v err=%v", claimed, err)
+	}
+	client, err := w.assistantEditableClient(ctx, claimed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.BaseURL != editableBaseURL || client.APIKey != "editable-secret" {
+		t.Fatalf("editable client route = %q key=%q", client.BaseURL, client.APIKey)
 	}
 }

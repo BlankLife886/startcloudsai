@@ -8,6 +8,7 @@
 import { apiDelete, apiGet, apiPatch, apiPost, apiRequest, buildApiPath } from './apiClient.js'
 import { listNotifications } from './meApi.js'
 import { scheduleWalletRefresh } from './walletSync.js'
+import { trackReferenceUpload } from './behaviorTracker.js'
 
 export const TASK_TYPES = [
   't2i',
@@ -303,9 +304,14 @@ export function subscribeUserTasks({ onUpdate = null, onError = null } = {}) {
   }
 }
 
-function taskSnapshotSignature(task) {
+export function taskSnapshotSignature(task) {
   return JSON.stringify([
     task?.status,
+    task?.generationStage,
+    task?.cancelPolicy?.mode,
+    task?.cancelPolicy?.upstreamSubmitted,
+    task?.cancelPolicy?.refunded,
+    task?.cancelPolicy?.message,
     task?.errorCode,
     task?.outputKeys,
     task?.thumbnailKeys,
@@ -448,11 +454,11 @@ export async function listTasks({ type = '', status = '', limit = 20, cursor = '
   }
 }
 
-/** 取消任务（仅 queued 状态可取消，解冻费用）。 */
-export async function cancelTask(id) {
-  const data = await apiPatch(
-    `/tasks/${encodeURIComponent(id)}`,
-    { status: 'canceled' },
+/** 取消任务；已提交上游的任务必须显式确认放弃结果与积分。 */
+export async function cancelTask(id, { acknowledgeUpstream = false } = {}) {
+	const data = await apiPatch(
+		`/tasks/${encodeURIComponent(id)}`,
+		{ status: 'canceled', acknowledgeUpstream },
     {
       fallbackMessage: '任务取消失败',
     },
@@ -471,15 +477,22 @@ export async function deleteTask(id, { cascade = false } = {}) {
  * 上传输入图片（≤15MB，png/jpg/webp）。
  * @returns {Promise<{key: string, url: string}>}
  */
-export async function uploadFile(file, { signal } = {}) {
+export async function uploadFile(file, { signal, referenceUpload = false, behaviorFeature } = {}) {
   if (!file) throw new Error('请先选择文件')
-  const formData = new FormData()
-  formData.append('file', file, file.name || `upload-${Date.now()}.png`)
-  return apiRequest('/uploads', {
-    method: 'POST',
-    body: formData,
-    signal,
-    fallbackMessage: '文件上传失败',
+  const operation = () => {
+    const formData = new FormData()
+    formData.append('file', file, file.name || `upload-${Date.now()}.png`)
+    return apiRequest('/uploads', {
+      method: 'POST',
+      body: formData,
+      signal,
+      fallbackMessage: '文件上传失败',
+    })
+  }
+  if (!referenceUpload) return operation()
+  return trackReferenceUpload(operation, {
+    feature: behaviorFeature,
+    metadata: { uploadKind: 'reference' },
   })
 }
 

@@ -36,9 +36,9 @@ var QueueWeights = map[string]int{
 	QueuePoll:      2,
 }
 
-// 后台允许把 C2A 超时动态调到 600 秒。队列超时必须覆盖这个上限，
-// 否则后台调大上游超时后，Asynq 仍会按启动时的较小默认值提前取消任务。
-const maxC2ATimeoutSecs = 600
+// 可编辑 PPT/PSD 最长会等待上游 20 分钟，队列还要为提交和结果入库
+// 留出余量。普通任务仍由各自的内部超时提前结束。
+const maxC2ATimeoutSecs = 840
 
 type RunTaskPayload struct {
 	TaskID string `json:"task_id"`

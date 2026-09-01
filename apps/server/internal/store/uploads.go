@@ -21,7 +21,13 @@ const (
 type UserUploadObject struct {
 	Key       string
 	UserID    uuid.UUID
+	SizeBytes int64
 	CreatedAt time.Time
+}
+
+type UserUploadObjectSize struct {
+	Key       string
+	SizeBytes int64
 }
 
 func isUserUploadObjectKey(userID uuid.UUID, key string) bool {
@@ -63,6 +69,32 @@ func RegisterUserUploadObjects(ctx context.Context, q Q, userID uuid.UUID, keys 
 	return err
 }
 
+func LockUserUploadQuota(ctx context.Context, q Q, userID uuid.UUID) error {
+	_, err := q.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 7))`, "upload-quota:"+userID.String())
+	return err
+}
+
+func UserUploadStorageBytes(ctx context.Context, q Q, userID uuid.UUID) (int64, error) {
+	var total int64
+	err := q.QueryRow(ctx, `SELECT COALESCE(SUM(size_bytes), 0) FROM user_upload_objects
+		WHERE user_id = $1 AND deleted_at IS NULL`, userID).Scan(&total)
+	return total, err
+}
+
+func RegisterUserUploadObjectSizes(ctx context.Context, q Q, userID uuid.UUID, objects []UserUploadObjectSize) error {
+	for _, object := range objects {
+		key := strings.TrimSpace(object.Key)
+		if !isUserUploadObjectKey(userID, key) || object.SizeBytes < 0 {
+			continue
+		}
+		if _, err := q.Exec(ctx, `INSERT INTO user_upload_objects (object_key, user_id, size_bytes)
+			VALUES ($1, $2, $3) ON CONFLICT (object_key) DO NOTHING`, key, userID, object.SizeBytes); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // RegisterUserUploadObjectsAt is used by the storage reconciler for objects
 // discovered in R2 after a process crashed before its database insert.
 func RegisterUserUploadObjectsAt(ctx context.Context, q Q, objects []UserUploadObject) error {
@@ -70,9 +102,9 @@ func RegisterUserUploadObjectsAt(ctx context.Context, q Q, objects []UserUploadO
 		if object.CreatedAt.IsZero() || !isUserUploadObjectKey(object.UserID, object.Key) {
 			continue
 		}
-		if _, err := q.Exec(ctx, `INSERT INTO user_upload_objects (object_key, user_id, created_at)
-			VALUES ($1, $2, $3) ON CONFLICT (object_key) DO NOTHING`,
-			strings.TrimSpace(object.Key), object.UserID, object.CreatedAt); err != nil {
+		if _, err := q.Exec(ctx, `INSERT INTO user_upload_objects (object_key, user_id, size_bytes, created_at)
+				VALUES ($1, $2, $3, $4) ON CONFLICT (object_key) DO NOTHING`,
+			strings.TrimSpace(object.Key), object.UserID, max(object.SizeBytes, 0), object.CreatedAt); err != nil {
 			return err
 		}
 	}

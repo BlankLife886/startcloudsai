@@ -22,6 +22,9 @@ const (
 	PermissionFilesMetadata Permission = "files.metadata"
 	PermissionFilesRead     Permission = "files.read"
 	PermissionFilesWrite    Permission = "files.write"
+	PermissionTasksRead     Permission = "tasks.read"
+	PermissionWebRead       Permission = "web.read"
+	PermissionActionsCreate Permission = "actions.create"
 )
 
 type Risk string

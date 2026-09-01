@@ -1148,18 +1148,21 @@ export function NavBar() {
                             ["/submissions", "bi-send-check", "我的投稿"],
                             ["/wallet", "bi-wallet2", "我的钱包"],
                             ["/account", "bi-person-gear", "账号设置"],
-                          ].map(([to, icon, label]) => (
-                            <Link
-                              key={to}
-                              className="account-menu__item"
-                              role="menuitem"
-                              to={to}
-                              onClick={closeMenu}
-                            >
-                              <i className={`bi ${icon}`} aria-hidden="true" />
-                              <span>{label}</span>
-                            </Link>
-                          ))}
+                            ["/developer-api", "bi-code-square", "开发者 API"],
+                          ]
+                            .filter(([to]) => isEntryVisible(to))
+                            .map(([to, icon, label]) => (
+                              <Link
+                                key={to}
+                                className="account-menu__item"
+                                role="menuitem"
+                                to={to}
+                                onClick={closeMenu}
+                              >
+                                <i className={`bi ${icon}`} aria-hidden="true" />
+                                <span>{label}</span>
+                              </Link>
+                            ))}
                           <button
                             type="button"
                             className="account-menu__item is-danger"

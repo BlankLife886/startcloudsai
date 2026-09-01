@@ -40,6 +40,7 @@ interface TaskPerformance {
 	created: number
 	succeeded: number
 	failed: number
+	canceled: number
 	avgQueueMs: number
 	p95QueueMs: number
 	avgRunMs: number
@@ -60,6 +61,19 @@ interface ProviderPerformance {
 interface PeriodUsageMetrics {
 	settledCents: number
 	imageCount: number
+	text: {
+		requestCount: number
+		settledCents: number
+		inputTokens: number
+		outputTokens: number
+		reasoningTokens: number
+		totalTokens: number
+	}
+	image: {
+		requestCount: number
+		imageCount: number
+		settledCents: number
+	}
 }
 
 interface DashboardUsageMetrics {
@@ -71,6 +85,50 @@ interface DashboardUsageMetrics {
 		outputTokens: number
 		reasoningTokens: number
 		totalTokens: number
+	}
+}
+
+interface ProfitPeriodMetrics {
+	revenueCents: number
+	upstreamCostCents: number
+	grossProfitCents: number
+	succeededUnits: number
+	failedUnits: number
+}
+
+interface ProfitabilitySummary {
+	today: ProfitPeriodMetrics
+	last7Days: ProfitPeriodMetrics
+	last30Days: ProfitPeriodMetrics
+}
+
+interface DashboardQualitySummary {
+	agent: {
+		traceCount: number
+		succeeded: number
+		failed: number
+		averageScore: number
+		failedSteps: number
+		unfinishedSteps: number
+	}
+	billing: {
+		anomalousEntries: number
+		zeroRevenueEntries: number
+		belowCostEntries: number
+		zeroCostEntries: number
+		missingRouteEntries: number
+	}
+	openApi: {
+		enabled: boolean
+		activeKeys: number
+		requests24Hours: number
+		pendingWebhooks: number
+		deadWebhooks: number
+	}
+	objectCleanup: {
+		pending: number
+		failed: number
+		oldestCreatedAt?: string | null
 	}
 }
 
@@ -96,6 +154,8 @@ interface AdminStats {
 	taskPerformance?: TaskPerformance
 	providerPerformance?: ProviderPerformance[]
 	usageMetrics?: DashboardUsageMetrics
+	profitability?: ProfitabilitySummary
+	quality?: DashboardQualitySummary
 	operationalIncidents?: OperationalIncident[]
 }
 
@@ -253,6 +313,7 @@ const performance = computed<TaskPerformance>(() => stats.value?.taskPerformance
 	created: 0,
 	succeeded: 0,
 	failed: 0,
+	canceled: 0,
 	avgQueueMs: 0,
 	p95QueueMs: 0,
 	avgRunMs: 0,
@@ -450,7 +511,8 @@ const trafficChartOption = computed<EChartOption>(() => {
 	}
 })
 
-const successRate24h = computed(() => percent(performance.value.succeeded, performance.value.created))
+const terminalTasks24h = computed(() => performance.value.succeeded + performance.value.failed)
+const successRate24h = computed(() => percent(performance.value.succeeded, terminalTasks24h.value))
 
 const queueState = computed(() => {
 	if (performance.value.queuedNow === 0) return { label: '队列畅通', tone: 'success' }
@@ -489,14 +551,16 @@ const heroCards = computed<KpiCard[]>(() => {
     {
 	  label: '近 24 小时任务',
 	  value: p.created,
-	  caption: `成功 ${p.succeeded} · 失败 ${p.failed}`,
+	  caption: `成功 ${p.succeeded} · 失败 ${p.failed} · 取消 ${p.canceled}`,
 	  icon: DataAnalysis,
 	  tone: 'accent',
     },
     {
 	  label: '近 24 小时成功率',
-	  value: `${successRate24h.value}%`,
-	  caption: p.created ? `失败 ${p.failed} · ${percent(p.failed, p.created)}%` : '暂无任务',
+	  value: terminalTasks24h.value ? `${successRate24h.value}%` : '-',
+	  caption: terminalTasks24h.value
+		? `成败终态 ${terminalTasks24h.value} · 取消 ${p.canceled}`
+		: p.created ? '暂时没有成败终态' : '暂无任务',
 	  icon: CircleCheck,
 	  tone: successRate24h.value >= 90 ? 'success' : successRate24h.value >= 70 ? 'warning' : 'danger',
     },
@@ -701,9 +765,9 @@ const businessMetrics = computed<KpiCard[]>(() => [
 	{ label: '累计用户', value: stats.value?.totalUsers ?? '-', caption: '平台注册规模', icon: User, tone: 'info' },
 	{ label: '今日新增', value: stats.value?.newUsersToday ?? '-', caption: '今日注册用户', icon: UserFilled, tone: 'success' },
 	{
-		label: '今日 Token',
+		label: '今日文本',
 		value: formatCount(stats.value?.usageMetrics?.todayToken.totalTokens),
-		caption: `输入 ${formatCount(stats.value?.usageMetrics?.todayToken.inputTokens)} · 输出 ${formatCount(stats.value?.usageMetrics?.todayToken.outputTokens)}`,
+		caption: `${formatCount(stats.value?.usageMetrics?.today.text.requestCount)} 次 · 输入 ${formatCount(stats.value?.usageMetrics?.todayToken.inputTokens)} · 输出 ${formatCount(stats.value?.usageMetrics?.todayToken.outputTokens)}`,
 		icon: DataAnalysis,
 		tone: 'violet',
 	},
@@ -718,27 +782,81 @@ const businessMetrics = computed<KpiCard[]>(() => [
 
 const periodMetrics = computed<KpiCard[]>(() => [
 	{
-		label: '今日实收',
-		value: formatMoney(stats.value?.usageMetrics?.today.settledCents),
-		caption: `生图 ${formatCount(stats.value?.usageMetrics?.today.imageCount)} 张`,
+		label: '今日毛利',
+		value: formatMoney(stats.value?.profitability?.today.grossProfitCents),
+		caption: `文本 ${formatMoney(stats.value?.usageMetrics?.today.text.settledCents)} · ${formatCount(stats.value?.usageMetrics?.today.text.requestCount)} 次/${formatCount(stats.value?.usageMetrics?.today.text.totalTokens)} Token · 图片 ${formatMoney(stats.value?.usageMetrics?.today.image.settledCents)} · ${formatCount(stats.value?.usageMetrics?.today.image.requestCount)} 次/${formatCount(stats.value?.usageMetrics?.today.image.imageCount)} 张`,
 		icon: Wallet,
 		tone: 'success',
 	},
 	{
-		label: '近 7 日实收',
-		value: formatMoney(stats.value?.usageMetrics?.last7Days.settledCents),
-		caption: `生图 ${formatCount(stats.value?.usageMetrics?.last7Days.imageCount)} 张`,
+		label: '近 7 日毛利',
+		value: formatMoney(stats.value?.profitability?.last7Days.grossProfitCents),
+		caption: `文本 ${formatMoney(stats.value?.usageMetrics?.last7Days.text.settledCents)} · ${formatCount(stats.value?.usageMetrics?.last7Days.text.requestCount)} 次/${formatCount(stats.value?.usageMetrics?.last7Days.text.totalTokens)} Token · 图片 ${formatMoney(stats.value?.usageMetrics?.last7Days.image.settledCents)} · ${formatCount(stats.value?.usageMetrics?.last7Days.image.requestCount)} 次/${formatCount(stats.value?.usageMetrics?.last7Days.image.imageCount)} 张`,
 		icon: Histogram,
 		tone: 'accent',
 	},
 	{
-		label: '近 30 日实收',
-		value: formatMoney(stats.value?.usageMetrics?.last30Days.settledCents),
-		caption: `生图 ${formatCount(stats.value?.usageMetrics?.last30Days.imageCount)} 张`,
+		label: '近 30 日毛利',
+		value: formatMoney(stats.value?.profitability?.last30Days.grossProfitCents),
+		caption: `文本 ${formatMoney(stats.value?.usageMetrics?.last30Days.text.settledCents)} · ${formatCount(stats.value?.usageMetrics?.last30Days.text.requestCount)} 次/${formatCount(stats.value?.usageMetrics?.last30Days.text.totalTokens)} Token · 图片 ${formatMoney(stats.value?.usageMetrics?.last30Days.image.settledCents)} · ${formatCount(stats.value?.usageMetrics?.last30Days.image.requestCount)} 次/${formatCount(stats.value?.usageMetrics?.last30Days.image.imageCount)} 张`,
 		icon: Picture,
 		tone: 'info',
 	},
 ])
+
+interface QualityMetric extends KpiCard {
+	to: string
+}
+
+const qualityMetrics = computed<QualityMetric[]>(() => {
+	const quality = stats.value?.quality
+	const agent = quality?.agent
+	const billing = quality?.billing
+	const openApi = quality?.openApi
+	const cleanup = quality?.objectCleanup
+	const agentIssues = (agent?.failedSteps || 0) + (agent?.unfinishedSteps || 0)
+	const webhookIssues = (openApi?.pendingWebhooks || 0) + (openApi?.deadWebhooks || 0)
+	return [
+		{
+			label: 'Agent 质量',
+			value: agent?.traceCount ? `${Number(agent.averageScore || 0).toFixed(0)} 分` : '暂无样本',
+			caption: agent?.traceCount
+				? `近 7 日 ${formatCount(agent.traceCount)} 次 · 异常步骤 ${formatCount(agentIssues)}`
+				: '运行画布 Agent 后自动记录',
+			icon: DataAnalysis,
+			tone: !agent?.traceCount ? 'info' : agentIssues > 0 || agent.failed > 0 ? 'warning' : 'success',
+			to: '/agent-quality',
+		},
+		{
+			label: '计费数据',
+			value: formatCount(billing?.anomalousEntries),
+			caption: `零积分 ${formatCount(billing?.zeroRevenueEntries)} · 低于成本 ${formatCount(billing?.belowCostEntries)} · 成本为 0 ${formatCount(billing?.zeroCostEntries)} · 无线路 ${formatCount(billing?.missingRouteEntries)}`,
+			icon: Wallet,
+			tone: (billing?.anomalousEntries || 0) > 0 ? 'danger' : 'success',
+			to: '/profitability',
+		},
+		{
+			label: '开放 API',
+			value: openApi?.enabled ? `${formatCount(openApi.activeKeys)} Key` : '已关闭',
+			caption: openApi?.enabled
+				? `24 小时 ${formatCount(openApi.requests24Hours)} 次 · Webhook 异常 ${formatCount(webhookIssues)}`
+				: '用户入口未开放',
+			icon: DataAnalysis,
+			tone: (openApi?.deadWebhooks || 0) > 0 ? 'danger' : openApi?.enabled ? 'info' : 'warning',
+			to: '/page-controls',
+		},
+		{
+			label: 'OSS 清理',
+			value: formatCount(cleanup?.pending),
+			caption: (cleanup?.failed || 0) > 0
+				? `失败 ${formatCount(cleanup?.failed)} · 最早等待 ${cleanup?.oldestCreatedAt ? formatDuration(Date.now() - new Date(cleanup.oldestCreatedAt).getTime()) : '-'}`
+				: (cleanup?.pending || 0) > 0 ? '等待系统空闲时清理' : '清理队列正常',
+			icon: Picture,
+			tone: (cleanup?.failed || 0) > 0 ? 'danger' : (cleanup?.pending || 0) > 0 ? 'warning' : 'success',
+			to: '/settings',
+		},
+	]
+})
 
 const todoItems = computed(() => [
 	{ label: '投稿待审核', caption: '画廊内容审核', value: todoCounts.value.pendingSubmissions, icon: Picture, to: '/gallery', tone: 'warning' },
@@ -858,14 +976,19 @@ onBeforeUnmount(() => {
       </div>
 
 		<button
-			v-if="operationalIncidents.length"
 			type="button"
 			class="status-rail__incidents"
-			:class="{ 'is-critical': criticalIncidentCount > 0 }"
+			:class="{
+				'is-clear': !operationalIncidents.length,
+				'is-critical': criticalIncidentCount > 0,
+			}"
 			@click="incidentsOpen = true"
 		>
-			<el-icon><WarningFilled /></el-icon>
-			<span>{{ operationalIncidents.length }} 项运行告警</span>
+			<el-icon>
+				<CircleCheck v-if="!operationalIncidents.length" />
+				<WarningFilled v-else />
+			</el-icon>
+			<span>{{ operationalIncidents.length ? `${operationalIncidents.length} 项运行告警` : '运行正常' }}</span>
 		</button>
 
       <div v-if="systemMetrics" class="status-rail__meta">
@@ -996,14 +1119,37 @@ onBeforeUnmount(() => {
             </div>
             <div>
               <dt>近 24 小时任务</dt>
-              <dd>过去 24 小时创建的任务总量，并附带成功 / 失败拆分。</dd>
+              <dd>过去 24 小时创建的任务总量，并附带成功、失败和用户取消数量。</dd>
             </div>
             <div>
               <dt>近 24 小时成功率</dt>
-              <dd>成功数 ÷ 创建数。偏低时结合失败数、服务商表现和上游容量排查。</dd>
+              <dd>成功数 ÷（成功数 + 失败数），排除仍在处理和已取消任务。偏低时结合服务商表现和上游容量排查。</dd>
             </div>
           </dl>
         </section>
+
+		<section class="help-section">
+		  <h3>质量与风险</h3>
+		  <p>四项摘要与业务统计一同每 20 秒刷新，点击即可进入对应管理页处理。</p>
+		  <dl>
+			<div>
+			  <dt>Agent 质量</dt>
+			  <dd>近 7 日 Agent 执行评分，以及失败或未完成的工具步骤。</dd>
+			</div>
+			<div>
+			  <dt>计费数据</dt>
+			  <dd>近 30 日零积分、低于成本、成本为 0 或缺少线路记录的异常账目。</dd>
+			</div>
+			<div>
+			  <dt>开放 API</dt>
+			  <dd>用户入口开关、有效 Key、近 24 小时请求量和 Webhook 异常。</dd>
+			</div>
+			<div>
+			  <dt>OSS 清理</dt>
+			  <dd>等待空闲清理和已重试的对象数量；持续积压时进入设置页检查。</dd>
+			</div>
+		  </dl>
+		</section>
 
         <section class="help-section">
           <h3>业务概览</h3>
@@ -1013,8 +1159,8 @@ onBeforeUnmount(() => {
               <dd>注册用户规模与今日净增，观察增长是否异常。</dd>
             </div>
             <div>
-			  <dt>今日 / 近 7 日 / 近 30 日实收与生图</dt>
-			  <dd>按北京时间自然日统计已结算任务积分与成功交付图片；1 积分按 1 分钱换算，镜像历史记录不会重复计数。</dd>
+			  <dt>今日 / 近 7 日 / 近 30 日文本与图片</dt>
+			  <dd>文本按成功调用次数与 Token 统计，图片按成功任务数与实际交付张数统计；两类实收分别记录，镜像历史不会重复计数。</dd>
 			</div>
 			<div>
 			  <dt>今日 Token</dt>
@@ -1176,6 +1322,26 @@ onBeforeUnmount(() => {
           />
         </div>
       </section>
+
+	  <section class="quality-strip" aria-label="质量与风险">
+		<button
+		  v-for="item in qualityMetrics"
+		  :key="item.label"
+		  type="button"
+		  class="quality-metric"
+		  :class="`is-${item.tone}`"
+		  :title="item.caption"
+		  @click="openDashboardTarget(item.to)"
+		>
+		  <span class="quality-metric__icon"><el-icon><component :is="item.icon" /></el-icon></span>
+		  <span class="quality-metric__copy">
+			<strong>{{ item.label }}</strong>
+			<small>{{ item.caption }}</small>
+		  </span>
+		  <b class="tnum">{{ item.value }}</b>
+		  <el-icon class="quality-metric__arrow"><ArrowRight /></el-icon>
+		</button>
+	  </section>
 
       <div class="board-main">
         <PageCard class="dash-panel panel--task-trend" title="近 7 日任务趋势">
@@ -1491,6 +1657,12 @@ onBeforeUnmount(() => {
 	color: var(--danger);
 }
 
+.status-rail__incidents.is-clear {
+	border-color: color-mix(in srgb, var(--success) 28%, var(--border));
+	background: var(--success-soft);
+	color: var(--success);
+}
+
 .incident-list {
 	display: grid;
 	gap: 8px;
@@ -1784,9 +1956,69 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
   min-height: 0;
   display: grid;
-  grid-template-rows: auto auto;
+  grid-template-rows: auto auto auto;
   gap: var(--dash-gap);
 }
+
+.quality-strip {
+	display: grid;
+	grid-template-columns: repeat(4, minmax(0, 1fr));
+	gap: var(--dash-gap);
+	min-width: 0;
+}
+
+.quality-metric {
+	display: grid;
+	grid-template-columns: 28px minmax(0, 1fr) auto 14px;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+	padding: 7px 9px;
+	border: 1px solid var(--border);
+	border-radius: calc(var(--radius-card) - 4px);
+	background: var(--surface);
+	color: var(--ink);
+	text-align: left;
+	cursor: pointer;
+	transition: border-color .15s ease, background .15s ease;
+}
+
+.quality-metric:hover {
+	border-color: var(--border-strong);
+	background: var(--surface-2);
+}
+
+.quality-metric__icon {
+	display: grid;
+	width: 28px;
+	height: 28px;
+	place-items: center;
+	border-radius: 7px;
+	background: var(--accent-soft);
+	color: var(--accent-ink);
+}
+
+.quality-metric.is-success .quality-metric__icon { color: var(--success); background: var(--success-soft); }
+.quality-metric.is-warning .quality-metric__icon { color: var(--warning); background: var(--warning-soft); }
+.quality-metric.is-danger .quality-metric__icon { color: var(--danger); background: var(--danger-soft); }
+
+.quality-metric__copy {
+	display: grid;
+	gap: 2px;
+	min-width: 0;
+}
+
+.quality-metric__copy strong,
+.quality-metric__copy small {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.quality-metric__copy strong { font-size: 11px; font-weight: 650; }
+.quality-metric__copy small { color: var(--ink-3); font-size: 9px; }
+.quality-metric > b { font-size: 15px; font-weight: 750; white-space: nowrap; }
+.quality-metric__arrow { color: var(--ink-3); font-size: 12px; }
 
 .board-top {
   display: grid;
@@ -1830,6 +2062,11 @@ onBeforeUnmount(() => {
 
 .dashboard :deep(.stat-card__icon .el-icon) {
   font-size: 14px !important;
+}
+
+.dashboard :deep(.board-strip--period .stat-card__caption) {
+	display: block;
+	white-space: normal;
 }
 
 .dashboard :deep(.stat-card__label) {
@@ -2147,6 +2384,10 @@ onBeforeUnmount(() => {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .quality-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .board-main {
     grid-template-columns: 1fr;
     grid-template-rows: auto;
@@ -2204,6 +2445,7 @@ onBeforeUnmount(() => {
   .board-strip--business-primary,
 	.board-strip--period,
   .board-strip--business,
+	.quality-strip,
   .todo-list {
     grid-template-columns: 1fr;
   }

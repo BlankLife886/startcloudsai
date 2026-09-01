@@ -79,7 +79,8 @@ func validateCanvasDocument(raw json.RawMessage) (json.RawMessage, error) {
 func canvasProjectJSON(item *store.CanvasProject) gin.H {
 	return gin.H{
 		"id": item.ID.String(), "title": item.Title, "document": item.Document,
-		"revision": item.Revision, "createdAt": isoValue(item.CreatedAt), "updatedAt": isoValue(item.UpdatedAt),
+		"revision":  item.Revision,
+		"createdAt": isoValue(item.CreatedAt), "updatedAt": isoValue(item.UpdatedAt),
 	}
 }
 

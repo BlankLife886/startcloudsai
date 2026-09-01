@@ -32,6 +32,7 @@ class _WorksScreenState extends ConsumerState<WorksScreen> {
   String _query = '';
   String? _loadMoreError;
   bool _loadMoreInFlight = false;
+  bool _searchingOlder = false;
   final Set<String> _removedTaskIds = {};
   final Set<String> _deletingTaskIds = {};
 
@@ -81,6 +82,48 @@ class _WorksScreenState extends ConsumerState<WorksScreen> {
       if (showErrorNotice) AppNotice.error(context, message);
     } finally {
       _loadMoreInFlight = false;
+    }
+  }
+
+  Future<void> _findMatchingOlder() async {
+    if (_searchingOlder || _loadMoreInFlight) return;
+    final query = _query;
+    final filter = _filter;
+    final type = _typeFilter;
+    final current = ref.read(taskCenterControllerProvider).asData?.value;
+    if (current == null || !current.hasMore) return;
+    final loadedMatches = filterTasksForWorks(
+      current.items.where((item) => !_removedTaskIds.contains(item.id)),
+      filter: filter,
+      type: type,
+      query: query,
+    );
+    if (loadedMatches.isNotEmpty) return;
+    setState(() => _searchingOlder = true);
+    try {
+      for (var page = 0; page < 4; page += 1) {
+        if (!mounted ||
+            query != _query ||
+            filter != _filter ||
+            type != _typeFilter) {
+          return;
+        }
+        final before = ref.read(taskCenterControllerProvider).asData?.value;
+        if (before == null || !before.hasMore) return;
+        await _loadMore();
+        if (_loadMoreError != null) return;
+        final after = ref.read(taskCenterControllerProvider).asData?.value;
+        if (after == null) return;
+        final matches = filterTasksForWorks(
+          after.items.where((item) => !_removedTaskIds.contains(item.id)),
+          filter: filter,
+          type: type,
+          query: query,
+        );
+        if (matches.isNotEmpty || !after.hasMore) return;
+      }
+    } finally {
+      if (mounted) setState(() => _searchingOlder = false);
     }
   }
 
@@ -134,7 +177,10 @@ class _WorksScreenState extends ConsumerState<WorksScreen> {
   }
 
   Future<void> _openTask(TaskItem task) async {
-    final deleted = await context.push<List<String>>('/works/${task.id}');
+    final deleted = await context.push<List<String>>(
+      '/works/${task.id}',
+      extra: task,
+    );
     if (deleted != null && mounted) _applyDeleted(deleted);
   }
 
@@ -204,7 +250,7 @@ class _WorksScreenState extends ConsumerState<WorksScreen> {
                           controller: _searchController,
                           textInputAction: TextInputAction.search,
                           decoration: InputDecoration(
-                            hintText: '搜索提示词',
+                            hintText: '搜索提示词、模型',
                             prefixIcon: const Icon(
                               Icons.search_rounded,
                               size: 20,
@@ -233,19 +279,23 @@ class _WorksScreenState extends ConsumerState<WorksScreen> {
                               vertical: 10,
                             ),
                             border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(12),
+                              borderRadius: BorderRadius.circular(8),
                               borderSide: BorderSide.none,
                             ),
                             enabledBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(12),
+                              borderRadius: BorderRadius.circular(8),
                               borderSide: BorderSide.none,
                             ),
                             focusedBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(12),
+                              borderRadius: BorderRadius.circular(8),
                               borderSide: BorderSide.none,
                             ),
                           ),
                           onChanged: (value) => setState(() => _query = value),
+                          onSubmitted: (_) {
+                            FocusScope.of(context).unfocus();
+                            unawaited(_findMatchingOlder());
+                          },
                         ),
                       ),
                     ),
@@ -303,8 +353,9 @@ class _WorksScreenState extends ConsumerState<WorksScreen> {
                             : _FilteredEmpty(
                                 query: _query,
                                 hasMore: taskCenter.hasMore,
-                                loading: taskCenter.isLoadingMore,
-                                onLoadMore: _loadMore,
+                                loading:
+                                    _searchingOlder || taskCenter.isLoadingMore,
+                                onLoadMore: _findMatchingOlder,
                               ),
                       )
                     else ...[
@@ -461,15 +512,23 @@ List<TaskItem> filterTasksForWorks(
   String type = '',
   String query = '',
 }) {
-  final normalized = query.trim().toLowerCase();
+  final terms = query
+      .trim()
+      .toLowerCase()
+      .split(RegExp(r'\s+'))
+      .where((term) => term.isNotEmpty)
+      .toList();
   return items.where((task) {
     if (!filter.includes(task)) return false;
     if (!matchesWorksTypeFilter(task, type)) return false;
-    if (normalized.isEmpty) return true;
-    return task.prompt.toLowerCase().contains(normalized) ||
-        task.model.toLowerCase().contains(normalized) ||
-        task.type.toLowerCase().contains(normalized) ||
-        worksTaskTypeLabel(task).toLowerCase().contains(normalized);
+    if (terms.isEmpty) return true;
+    final searchable = [
+      task.displayPrompt,
+      task.model,
+      task.type,
+      worksTaskTypeLabel(task),
+    ].join(' ').toLowerCase();
+    return terms.every(searchable.contains);
   }).toList();
 }
 
@@ -876,20 +935,34 @@ class _FilteredEmpty extends StatelessWidget {
             const Icon(Icons.filter_alt_off_outlined, size: 42),
             const SizedBox(height: 10),
             Text(
-              query.trim().isEmpty ? '暂无记录' : '没有匹配的作品',
+              query.trim().isEmpty ? '当前筛选暂无作品' : '没有匹配的作品',
               textAlign: TextAlign.center,
+              style: Theme.of(
+                context,
+              ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 5),
+            Text(
+              hasMore ? '还可以继续查找更早的历史记录' : '已查找全部历史记录',
+              textAlign: TextAlign.center,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
             ),
             if (hasMore) ...[
               const SizedBox(height: 14),
               OutlinedButton.icon(
+                key: const Key('works-search-older'),
                 onPressed: loading ? null : onLoadMore,
                 icon: loading
                     ? const SizedBox.square(
                         dimension: 16,
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
-                    : const Icon(Icons.expand_more),
-                label: Text(loading ? '正在加载' : '继续加载更多作品'),
+                    : const Icon(Icons.manage_search_outlined),
+                label: Text(loading ? '正在查找历史' : '查找更多历史'),
               ),
             ],
           ],

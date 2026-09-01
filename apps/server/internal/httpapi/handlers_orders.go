@@ -346,10 +346,17 @@ func (s *Server) closeOrder(c *gin.Context) {
 }
 
 func (s *Server) lanjingPaymentNotify(c *gin.Context) {
-	client, _, err := s.resolveLanjingPay(c.Request.Context())
-	if err != nil || client == nil {
-		c.String(http.StatusServiceUnavailable, "payment_unavailable")
-		return
+	if s.UsageLimiter != nil {
+		_, allowed, err := s.UsageLimiter.Take(c.Request.Context(), "payment-callback-ip", c.ClientIP(), 120, 1, time.Minute)
+		if err != nil {
+			c.String(http.StatusServiceUnavailable, "callback_protection_unavailable")
+			return
+		}
+		if !allowed {
+			c.Header("Retry-After", "60")
+			c.String(http.StatusTooManyRequests, "rate_limited")
+			return
+		}
 	}
 	payID := strings.TrimSpace(c.Query("payId"))
 	param := strings.TrimSpace(c.Query("param"))
@@ -357,49 +364,85 @@ func (s *Server) lanjingPaymentNotify(c *gin.Context) {
 	price := strings.TrimSpace(c.Query("price"))
 	reallyPrice := strings.TrimSpace(c.Query("reallyPrice"))
 	signature := strings.TrimSpace(c.Query("sign"))
+	fingerprint := paymentCallbackFingerprint(payID, param, paymentType, price, reallyPrice, signature)
+	outcome, detail := "invalid_request", ""
+	var orderID *uuid.UUID
+	var amountCents, paidAmountCents *int64
+	signatureValid := false
+	defer func() {
+		_, _ = store.InsertPaymentCallbackEvent(context.Background(), s.St.Pool, fingerprint, orderID, "",
+			amountCents, paidAmountCents, c.ClientIP(), signatureValid, outcome, detail)
+	}()
+	client, _, err := s.resolveLanjingPay(c.Request.Context())
+	if err != nil || client == nil {
+		outcome, detail = "provider_unavailable", "支付配置不可用"
+		c.String(http.StatusServiceUnavailable, "payment_unavailable")
+		return
+	}
 	if payID == "" || param == "" || price == "" || reallyPrice == "" || signature == "" {
 		c.String(http.StatusBadRequest, "invalid_request")
 		return
 	}
 	if paymentType != strconv.Itoa(int(lanjingpay.Wechat)) && paymentType != strconv.Itoa(int(lanjingpay.Alipay)) {
+		outcome = "invalid_type"
 		c.String(http.StatusBadRequest, "invalid_type")
 		return
 	}
-	if !client.VerifyCallback(payID, param, paymentType, price, reallyPrice, signature) {
+	signatureValid = client.VerifyCallback(payID, param, paymentType, price, reallyPrice, signature)
+	if !signatureValid {
+		outcome = "invalid_signature"
 		c.String(http.StatusUnauthorized, "error_sign")
 		return
 	}
-	orderID, err := uuid.Parse(payID)
+	parsedOrderID, err := uuid.Parse(payID)
 	if err != nil || param != payID {
+		outcome = "invalid_order"
 		c.String(http.StatusBadRequest, "invalid_order")
 		return
 	}
+	orderID = &parsedOrderID
 	priceCents, err := lanjingpay.ParseCents(price)
 	if err != nil {
+		outcome = "invalid_price"
 		c.String(http.StatusBadRequest, "invalid_price")
 		return
 	}
+	amountCents = &priceCents
 	reallyPriceCents, err := lanjingpay.ParseCents(reallyPrice)
 	if err != nil || reallyPriceCents <= 0 {
+		outcome = "invalid_paid_amount"
 		c.String(http.StatusBadRequest, "invalid_really_price")
 		return
 	}
+	paidAmountCents = &reallyPriceCents
 	ctx := c.Request.Context()
-	order, err := store.GetOrder(ctx, s.St.Pool, orderID)
+	order, err := store.GetOrder(ctx, s.St.Pool, parsedOrderID)
 	if err != nil {
+		outcome, detail = "database_error", err.Error()
 		log.Printf("read callback order %s: %v", payID, err)
 		c.String(http.StatusInternalServerError, "error")
 		return
 	}
 	if order == nil || order.Provider != "lanjing" || order.AmountCents != priceCents {
+		outcome = "order_mismatch"
 		c.String(http.StatusBadRequest, "invalid_order")
 		return
 	}
+	if reallyPriceCents != order.AmountCents {
+		outcome, detail = "amount_mismatch", "实付金额与订单金额不一致"
+		s.recordRisk(ctx, store.NewSecurityRiskEvent{UserID: &order.UserID, ClientIP: c.ClientIP(),
+			Category: "payment_amount_mismatch", Severity: "critical", Score: 100, Action: "blocked",
+			Reason: detail, Metadata: map[string]any{"orderId": order.ID.String(), "expected": order.AmountCents, "paid": reallyPriceCents}})
+		c.String(http.StatusBadRequest, "invalid_really_price")
+		return
+	}
 	if _, err := s.completeOrder(ctx, order); err != nil {
+		outcome, detail = "completion_failed", err.Error()
 		log.Printf("complete callback order %s: %v", payID, err)
 		c.String(http.StatusInternalServerError, "error")
 		return
 	}
+	outcome, detail = "completed", ""
 	c.String(http.StatusOK, "success")
 }
 

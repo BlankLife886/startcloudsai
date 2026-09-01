@@ -315,12 +315,56 @@ function downloadFilename(task, index = 0) {
 function statusLabel(task) {
   if (task.status === "queued") return "排队中";
   if (task.status === "waiting_provider") return "等待模型响应";
-  if (task.status === "running") return "正在生成";
+  if (task.status === "running") {
+    if (task.generationStage === "preparing") return "正在准备生成";
+    if (task.generationStage === "fetching_result") return "正在拉取结果";
+    if (task.generationStage === "saving_result") return "正在处理图片";
+    return "上游模型正在生成";
+  }
   if (task.status === "completed") return "已完成";
   if (task.status === "paused") return "已暂停";
-  if (["cancelled", "canceled"].includes(task.status)) return "已取消";
+  if (["cancelled", "canceled"].includes(task.status)) {
+    return String(task.error || "").includes("停止接收") ? "已停止接收结果" : "已取消";
+  }
   if (task.status === "failed") return "生成失败";
   return task.status || "处理中";
+}
+
+function generationStageDetail(task) {
+  if (task?.status === "queued") return "等待可用生成资源";
+  if (["cancelled", "canceled"].includes(task?.status)) return "任务已取消";
+  switch (task?.generationStage) {
+    case "preparing":
+      return "正在读取参数与参考图";
+    case "fetching_result":
+      return "图片已生成，正在从上游拉取";
+    case "saving_result":
+      return "正在压缩并保存图片";
+    default:
+      return "上游模型正在绘制画面";
+  }
+}
+
+function cancelDialogContent(task) {
+  const policy = task?.cancelPolicy;
+  const upstreamSubmitted =
+    policy?.upstreamSubmitted === true ||
+    (task?.status === "running" && task?.generationStage !== "preparing");
+  if (upstreamSubmitted) {
+    return {
+      heading: "仍要停止这次生成？",
+      description:
+        policy?.message ||
+        "生成请求已经提交给上游。停止后平台不再等待或接收结果，但上游可能仍会继续生成，本次积分不会退回。",
+      confirmLabel: "确认停止",
+    };
+  }
+  return {
+    heading: task?.status === "queued" ? "取消排队任务？" : "停止这次生成？",
+    description:
+      policy?.message || "任务尚未提交上游，取消后会立即停止，冻结积分会退回。",
+    confirmLabel: "确认取消",
+  };
 }
 
 function useClock(enabled) {
@@ -687,6 +731,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   const [actionBusyId, setActionBusyId] = useState("");
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [regenerateTarget, setRegenerateTarget] = useState(null);
+  const [cancelTarget, setCancelTarget] = useState(null);
   const [pendingRegenerate, setPendingRegenerate] = useState(null);
   const modelMenuPresence = usePopoverPresence(modelOpen, 240, "model");
   const skillPanelPresence = usePopoverPresence(skillOpen, 150, "skills");
@@ -1742,6 +1787,30 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     if (failed) notificationService.warning(`已删除 ${results.length - failed} 项，${failed} 项失败`);
   };
 
+  const requestCancel = (task) => {
+    if (!task || actionBusyId) return;
+    setCancelTarget(task);
+  };
+
+  const confirmCancel = async () => {
+    if (!cancelTarget || actionBusyId) return;
+    const upstreamSubmitted =
+      cancelTarget.cancelPolicy?.upstreamSubmitted === true ||
+      (cancelTarget.status === "running" && cancelTarget.generationStage !== "preparing");
+    setActionBusyId(cancelTarget.id);
+    try {
+      await jobs.cancelTask(cancelTarget, { acknowledgeUpstream: true });
+      setCancelTarget(null);
+      notificationService.success(
+        upstreamSubmitted ? "已停止接收本次生成结果" : "任务已取消，冻结积分已退回",
+      );
+    } catch (error) {
+      notificationService.error(error?.message || "任务停止失败，请重试");
+    } finally {
+      setActionBusyId("");
+    }
+  };
+
   const editTask = (task) => {
     applyTaskToInputs(task);
     notificationService.success("已填回左侧，可修改后重新生成");
@@ -1774,7 +1843,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     reference: useAsReference,
     edit: (item) => editTask(item.task),
     regenerate: (item) => setRegenerateTarget(item.task),
-    cancel: (item) => void jobs.cancelTask(item.task),
+    cancel: (item) => requestCancel(item.task),
     delete: (item) => requestDelete([item.task]),
     error: markImageUnavailable,
   };
@@ -2095,7 +2164,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                           <button type="button" className="is-danger is-icon" aria-label="删除" title="删除" onClick={() => requestDelete(featuredGroup.items.map((item) => item.task), featuredGroup.items.length > 1 ? "整组图片" : "这张图片")}><span className="t2i-icon-delete" /></button>
                         </>
                       ) : ACTIVE_STATUSES.has(activeTask.status) ? (
-                        <button type="button" aria-label="取消" disabled={actionBusyId === activeTask.id} onClick={() => void jobs.cancelTask(activeTask)}>取消生成</button>
+                        <button type="button" aria-label="取消" disabled={actionBusyId === activeTask.id} onClick={() => requestCancel(activeTask)}>取消生成</button>
                       ) : (
                         <button type="button" className="is-primary" disabled={!prompt.trim()} onClick={() => void requestGeneration()}>生成下一张</button>
                       )}
@@ -2251,6 +2320,17 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
         onCancel={() => setRegenerateTarget(null)}
         onConfirm={confirmRegenerate}
       />
+      <ActionConfirmDialog
+        open={Boolean(cancelTarget)}
+        heading={cancelDialogContent(cancelTarget).heading}
+        description={cancelDialogContent(cancelTarget).description}
+        confirmLabel={cancelDialogContent(cancelTarget).confirmLabel}
+        busy={actionBusyId === cancelTarget?.id}
+        tone="warning"
+        light={!isDark}
+        onCancel={() => !actionBusyId && setCancelTarget(null)}
+        onConfirm={() => void confirmCancel()}
+      />
       {previewItem && (
         <WallevenImagePreview
           sourceUrl={previewItem.url}
@@ -2326,7 +2406,7 @@ function PendingStage({ task, now, batchIndex }) {
     <div className={isCell ? "t2i-stage-cell-pending" : "t2i-stage-pending"} role="status">
       <span className="t2i-pending-orb"><i className="bi bi-stars" /></span>
       <strong>{isCell ? `第 ${Number(batchIndex) + 1} 张` : statusLabel(task)}</strong>
-      <em className="t2i-pending-stage">{task?.status === "queued" ? "等待可用生成资源" : ["cancelled", "canceled"].includes(task?.status) ? "任务已取消" : "模型正在绘制画面"}</em>
+      <em className="t2i-pending-stage">{generationStageDetail(task)}</em>
       <span className="t2i-pending-bar"><i /></span>
       {elapsedLabel(task, now) && <em className="t2i-pending-elapsed">{elapsedLabel(task, now)}</em>}
       {!isCell && <span className="t2i-pending-prompt">{task?.prompt}</span>}
@@ -2341,7 +2421,7 @@ function TaskStatusStage({ task, batchIndex }) {
   const message = failed
     ? taskFailureMessage(task)
     : canceled
-      ? "任务已取消，没有生成图片"
+      ? task?.error || "任务已取消，没有生成图片"
       : task?.status === "paused"
         ? "任务已暂停，没有生成图片"
         : "任务已结束，没有可用图片";
@@ -2374,6 +2454,7 @@ function ImageQuickActions({ cell = false, onEdit, onRegenerate, onDownload, onR
 }
 
 function ActionConfirmDialog({ open, heading, description, confirmLabel, busy = false, tone = "accent", light = false, onCancel, onConfirm }) {
+  const icon = tone === "danger" ? "bi-trash3" : tone === "warning" ? "bi-stop-circle" : "bi-arrow-clockwise";
   return (
     <DialogMotion
       open={open}
@@ -2385,7 +2466,7 @@ function ActionConfirmDialog({ open, heading, description, confirmLabel, busy = 
       closeDisabled={busy}
       onClose={onCancel}
     >
-        <div className={`delete-confirm__icon is-${tone}`}><i className={`bi ${tone === "danger" ? "bi-trash3" : "bi-arrow-clockwise"}`} /></div>
+        <div className={`delete-confirm__icon is-${tone}`}><i className={`bi ${icon}`} /></div>
         <div className="delete-confirm__copy"><h2 id="delete-confirm-title">{heading}</h2><p id="delete-confirm-description">{description}</p></div>
         <footer className="delete-confirm__actions"><button type="button" className="is-cancel" disabled={busy} onClick={onCancel}>取消</button><button type="button" className={`is-confirm is-${tone}`} disabled={busy} onClick={onConfirm}>{busy && <i className="bi bi-arrow-repeat spin" />} {busy ? "处理中…" : confirmLabel}</button></footer>
     </DialogMotion>

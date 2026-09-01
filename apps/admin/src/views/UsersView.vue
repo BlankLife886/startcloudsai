@@ -5,8 +5,19 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, Wallet } from '@element-plus/icons-vue'
 import AdminDialog from '@/components/AdminDialog.vue'
 import RegistrationSettingsDialog from '@/components/settings/RegistrationSettingsDialog.vue'
+import UserProfilePanel from '@/components/UserProfilePanel.vue'
+import UserProfileRulesDialog from '@/components/UserProfileRulesDialog.vue'
+import UserAnalyticsDrawer from '@/components/UserAnalyticsDrawer.vue'
 import { request, type Page } from '@/request'
 import { usePagedList } from '@/usePagedList'
+import {
+  formatProfileMoney,
+  lifecycleLabels,
+  profileTagLabels,
+  workspaceLabels,
+  type UserProfileDetail,
+  type UserProfileMetrics,
+} from '@/userProfile'
 import {
   adminMediaUrl,
   formatPoints,
@@ -101,6 +112,7 @@ interface AdminUser {
   balanceCents?: number
   createdAt: string
   usage?: UserUsage
+  profile?: UserProfileMetrics | null
 }
 
 function displayName(user: AdminUser | null | undefined) {
@@ -116,19 +128,6 @@ function maskedDisplayName(user: AdminUser | null | undefined) {
 
 function avatarInitial(user: AdminUser | null | undefined) {
   return displayName(user).slice(0, 1).toUpperCase() || '?'
-}
-
-function usageOf(user: AdminUser | null | undefined): UserUsage {
-  return {
-    tasksTotal: user?.usage?.tasksTotal ?? 0,
-    tasksSucceeded: user?.usage?.tasksSucceeded ?? 0,
-    tasksFailed: user?.usage?.tasksFailed ?? 0,
-    tasksRunning: user?.usage?.tasksRunning ?? 0,
-    tasksCanceled: user?.usage?.tasksCanceled ?? 0,
-    submissions: user?.usage?.submissions ?? 0,
-    assets: user?.usage?.assets ?? 0,
-    orders: user?.usage?.orders ?? 0,
-  }
 }
 
 /** 头像加载失败时回退到首字母占位 */
@@ -175,7 +174,10 @@ function websiteHref(value: string | null | undefined) {
   return /^https?:\/\//i.test(url) ? url : ''
 }
 
-const filters = reactive({ search: '', status: '' })
+const filters = reactive({ search: '', status: '', lifecycle: '', risk: '', profileTag: '' })
+
+const lifecycleOptions = Object.entries(lifecycleLabels).map(([value, label]) => ({ value, label }))
+const profileTagOptions = Object.entries(profileTagLabels).map(([value, label]) => ({ value, label }))
 
 const statusTabs = [
   { label: '全部', value: '' },
@@ -187,7 +189,15 @@ const { items, loading, error, total, page, hasPrev, hasNext, reset, next, prev,
   usePagedList<AdminUser>(
     (cursor) =>
       request<Page<AdminUser>>('/api/v1/admin/users', {
-        query: { search: filters.search, status: filters.status, limit: 20, cursor },
+        query: {
+          search: filters.search,
+          status: filters.status,
+          lifecycle: filters.lifecycle,
+          risk: filters.risk,
+          profileTag: filters.profileTag,
+          limit: 20,
+          cursor,
+        },
       }),
     () => filters,
   )
@@ -201,6 +211,9 @@ function setStatusTab(value: string) {
 function clearFilters() {
   filters.search = ''
   filters.status = ''
+  filters.lifecycle = ''
+  filters.risk = ''
+  filters.profileTag = ''
   reset()
 }
 
@@ -291,6 +304,7 @@ interface UserDetail {
     lastSessionAt: string | null
     lastSessionExpiresAt: string | null
   }
+  profile: UserProfileDetail
 }
 
 interface LedgerEntry {
@@ -331,6 +345,7 @@ const loadedTabs = new Set<string>()
 
 const overviewLoading = ref(false)
 const overview = ref<UserDetail | null>(null)
+const profileRefreshing = ref(false)
 
 const ledgerList = usePagedList<LedgerEntry>(
   (cursor) =>
@@ -355,6 +370,22 @@ async function loadOverview() {
     overview.value = await request<UserDetail>(`/api/v1/admin/users/${drawerUser.value.id}`)
   } finally {
     overviewLoading.value = false
+  }
+}
+
+async function refreshProfile() {
+  if (!drawerUser.value || !overview.value) return
+  profileRefreshing.value = true
+  try {
+    overview.value.profile = await request<UserProfileDetail>(
+      `/api/v1/admin/users/${drawerUser.value.id}/profile/refresh`,
+      { method: 'POST' },
+    )
+    const listed = items.value.find((item) => item.id === drawerUser.value?.id)
+    if (listed) listed.profile = overview.value.profile.metrics
+    ElMessage.success('用户画像已重新计算')
+  } finally {
+    profileRefreshing.value = false
   }
 }
 
@@ -457,6 +488,37 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
         </div>
 
         <div class="users-toolbar__actions">
+          <el-select
+            v-model="filters.lifecycle"
+            class="profile-filter"
+            placeholder="生命周期"
+            clearable
+            @change="reset"
+          >
+            <el-option v-for="option in lifecycleOptions" :key="option.value" :label="option.label" :value="option.value" />
+          </el-select>
+          <el-select
+            v-model="filters.risk"
+            class="profile-filter"
+            placeholder="风险"
+            clearable
+            @change="reset"
+          >
+            <el-option label="状态正常" value="low" />
+            <el-option label="需关注" value="medium" />
+            <el-option label="高风险" value="high" />
+          </el-select>
+          <el-select
+            v-model="filters.profileTag"
+            class="profile-filter is-wide"
+            placeholder="画像标签"
+            clearable
+            @change="reset"
+          >
+            <el-option v-for="option in profileTagOptions" :key="option.value" :label="option.label" :value="option.value" />
+          </el-select>
+          <UserAnalyticsDrawer />
+          <UserProfileRulesDialog />
           <RegistrationSettingsDialog />
           <el-input
             v-model="filters.search"
@@ -549,7 +611,43 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
               </template>
             </el-table-column>
 
-            <el-table-column label="余额/冻结" width="120" align="left" header-align="left">
+            <el-table-column label="用户画像" min-width="170" align="left" header-align="left">
+              <template #default="{ row }">
+                <div v-if="row.profile" class="list-profile">
+                  <span class="lifecycle-badge" :class="`is-${row.profile.lifecycle}`">
+                    {{ lifecycleLabels[row.profile.lifecycle] || row.profile.lifecycle }}
+                  </span>
+                  <span class="list-profile__tags">
+                    {{ row.profile.tags.slice(0, 2).map((tag: string) => profileTagLabels[tag] || tag).join(' · ') || (workspaceLabels[row.profile.primaryWorkspace] || '暂无偏好') }}
+                  </span>
+                </div>
+                <span v-else class="cell-muted">待计算</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="30日质量" width="126" align="left" header-align="left">
+              <template #default="{ row }">
+                <div v-if="row.profile" class="quality-cell">
+                  <strong>{{ (row.profile.successRateBps30 / 100).toFixed(1) }}%</strong>
+                  <small>{{ row.profile.successfulRuns30 }} 成功 / {{ row.profile.failedRuns30 }} 失败</small>
+                </div>
+                <span v-else class="cell-muted">-</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="30日价值" width="130" align="left" header-align="left">
+              <template #default="{ row }">
+                <div v-if="row.profile" class="value-cell">
+                  <strong>{{ formatProfileMoney(row.profile.revenueCents30) }}</strong>
+                  <small :class="{ 'is-negative': row.profile.grossProfitCents30 < 0 }">
+                    毛利 {{ formatProfileMoney(row.profile.grossProfitCents30) }}
+                  </small>
+                </div>
+                <span v-else class="cell-muted">-</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="余额/冻结" width="112" align="left" header-align="left">
               <template #default="{ row }">
                 <span class="pair-cell tnum">
                   <em class="cell-num">{{ formatPoints(walletOf(row as AdminUser).balanceCents) }}</em>
@@ -559,55 +657,11 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
               </template>
             </el-table-column>
 
-            <el-table-column label="任务总数" width="88" align="left" header-align="left">
+            <el-table-column label="最近活跃" width="110" align="left" header-align="left">
               <template #default="{ row }">
-                <span class="cell-num tnum">{{ usageOf(row as AdminUser).tasksTotal }}</span>
-              </template>
-            </el-table-column>
-
-            <el-table-column label="成功/失败" width="100" align="left" header-align="left">
-              <template #default="{ row }">
-                <span class="pair-cell tnum">
-                  <em class="cell-ok">{{ usageOf(row as AdminUser).tasksSucceeded }}</em>
-                  <span class="pair-sep">/</span>
-                  <em class="cell-fail">{{ usageOf(row as AdminUser).tasksFailed }}</em>
+                <span class="cell-text tnum">
+                  {{ row.profile?.lastActivityAt ? formatShortTime(row.profile.lastActivityAt) : row.lastLoginAt ? formatShortTime(row.lastLoginAt) : '暂无活动' }}
                 </span>
-              </template>
-            </el-table-column>
-
-            <el-table-column label="进行中" width="72" align="left" header-align="left">
-              <template #default="{ row }">
-                <span class="cell-muted tnum">{{ usageOf(row as AdminUser).tasksRunning }}</span>
-              </template>
-            </el-table-column>
-
-            <el-table-column label="已取消" width="72" align="left" header-align="left">
-              <template #default="{ row }">
-                <span class="cell-muted tnum">{{ usageOf(row as AdminUser).tasksCanceled }}</span>
-              </template>
-            </el-table-column>
-
-            <el-table-column label="投稿" width="64" align="left" header-align="left">
-              <template #default="{ row }">
-                <span class="cell-muted tnum">{{ usageOf(row as AdminUser).submissions }}</span>
-              </template>
-            </el-table-column>
-
-            <el-table-column label="素材" width="64" align="left" header-align="left">
-              <template #default="{ row }">
-                <span class="cell-muted tnum">{{ usageOf(row as AdminUser).assets }}</span>
-              </template>
-            </el-table-column>
-
-            <el-table-column label="订单" width="64" align="left" header-align="left">
-              <template #default="{ row }">
-                <span class="cell-muted tnum">{{ usageOf(row as AdminUser).orders }}</span>
-              </template>
-            </el-table-column>
-
-            <el-table-column label="最近登录" width="110" align="left" header-align="left">
-              <template #default="{ row }">
-                <span class="cell-text tnum">{{ row.lastLoginAt ? formatShortTime(row.lastLoginAt) : '从未登录' }}</span>
               </template>
             </el-table-column>
 
@@ -721,6 +775,14 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
           <el-tab-pane label="资料概览" name="overview" class="overview-tab">
             <div v-loading="overviewLoading" class="overview-panel">
               <template v-if="overview">
+                <section class="detail-section profile-detail-section">
+                  <UserProfilePanel
+                    :profile="overview.profile"
+                    :refreshing="profileRefreshing"
+                    @refresh="refreshProfile"
+                  />
+                </section>
+
                 <section class="detail-section profile-overview">
                   <div class="profile-overview__copy">
                     <strong>资料完整度 {{ profileCompleteness(overview.user) }}%</strong>
@@ -1134,6 +1196,14 @@ html.dark .status-tab.is-active {
   width: min(280px, 70vw);
 }
 
+.profile-filter {
+  width: 112px;
+}
+
+.profile-filter.is-wide {
+  width: 128px;
+}
+
 .users-search :deep(.el-input__wrapper) {
   min-height: 36px;
   border-radius: 999px;
@@ -1365,6 +1435,66 @@ html.dark .status-tab.is-active {
   font-size: 12px;
 }
 
+.list-profile,
+.quality-cell,
+.value-cell {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.lifecycle-badge {
+  width: fit-content;
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--ink-2);
+  font-size: 11px;
+  font-weight: 700;
+  background: var(--surface-2);
+}
+
+.lifecycle-badge.is-active,
+.lifecycle-badge.is-returned {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 10%, transparent);
+}
+
+.lifecycle-badge.is-churn_risk {
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+}
+
+.lifecycle-badge.is-new,
+.lifecycle-badge.is-activated {
+  color: var(--info);
+  background: color-mix(in srgb, var(--info) 10%, transparent);
+}
+
+.list-profile__tags,
+.quality-cell small,
+.value-cell small {
+  overflow: hidden;
+  color: var(--ink-3);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quality-cell strong,
+.value-cell strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.value-cell small.is-negative {
+  color: var(--danger);
+}
+
+.profile-detail-section {
+  padding-bottom: 22px;
+  border-bottom: 1px solid var(--border);
+}
+
 .kind-text {
   color: var(--ink-2);
   font-size: 12px;
@@ -1416,6 +1546,12 @@ html.dark .status-tab.is-active {
   .users-search {
     flex: 1;
     width: auto;
+  }
+
+  .profile-filter,
+  .profile-filter.is-wide {
+    flex: 1;
+    width: min(150px, 45vw);
   }
 }
 

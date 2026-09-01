@@ -82,7 +82,7 @@ func TestAssistantRunIdempotencyLeaseAndOutbox(t *testing.T) {
 		t.Fatalf("ready outbox = %#v err=%v", ready, err)
 	}
 
-	claimed, err := store.ClaimAssistantRunWithLease(ctx, st.Pool, run.ID, "worker-a", now, time.Minute)
+	claimed, err := store.ClaimAssistantRunWithLease(ctx, st.Pool, run.ID, "worker-a", now, time.Minute, 4)
 	if err != nil || claimed == nil || claimed.Attempt != 1 || claimed.LeaseOwner == nil || *claimed.LeaseOwner != "worker-a" {
 		t.Fatalf("claimed run = %#v err=%v", claimed, err)
 	}
@@ -130,7 +130,7 @@ func TestAssistantRunIdempotencyLeaseAndOutbox(t *testing.T) {
 	if err != nil || len(ready) != 1 || ready[0] != run.ID {
 		t.Fatalf("requeued outbox = %#v err=%v", ready, err)
 	}
-	second, err := store.ClaimAssistantRunWithLease(ctx, st.Pool, run.ID, "worker-b", now.Add(2*time.Minute), time.Minute)
+	second, err := store.ClaimAssistantRunWithLease(ctx, st.Pool, run.ID, "worker-b", now.Add(2*time.Minute), time.Minute, 4)
 	if err != nil || second == nil || second.Attempt != 2 {
 		t.Fatalf("second claim = %#v err=%v", second, err)
 	}
@@ -180,5 +180,116 @@ func TestAssistantRunIdempotencyLeaseAndOutbox(t *testing.T) {
 	}
 	if err := store.DeleteAssistantRunOutbox(ctx, st.Pool, run.ID); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestAssistantConversationQueueIsStrictlySerialAndEditable(t *testing.T) {
+	ctx := context.Background()
+	st := testdb.Setup(t)
+	user, err := store.InsertUser(ctx, st.Pool, "assistant-queue-"+uuid.NewString()+"@test.dev", "queue-user", "x", "user", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	conversation, err := store.InsertAssistantConversation(ctx, st.Pool, uuid.New(), user.ID, "队列测试", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertRun := func(conversationID uuid.UUID, prompt string, offset time.Duration) *store.AssistantRun {
+		t.Helper()
+		userMessage, insertErr := store.InsertAssistantMessage(ctx, st.Pool, store.AssistantMessage{
+			ID: uuid.New(), ConversationID: conversationID, Role: "user", Content: prompt,
+			Kind: "chat", Status: "queued", CreatedAt: now.Add(offset),
+		})
+		if insertErr != nil {
+			t.Fatal(insertErr)
+		}
+		assistantMessage, insertErr := store.InsertAssistantMessage(ctx, st.Pool, store.AssistantMessage{
+			ID: uuid.New(), ConversationID: conversationID, Role: "assistant", Kind: "chat",
+			Status: "queued", CreatedAt: now.Add(offset + time.Millisecond),
+		})
+		if insertErr != nil {
+			t.Fatal(insertErr)
+		}
+		run, insertErr := store.InsertAssistantRun(ctx, st.Pool, store.AssistantRun{
+			ID: uuid.New(), UserID: user.ID, ConversationID: conversationID,
+			UserMessageID: userMessage.ID, AssistantMessageID: assistantMessage.ID,
+			Mode: "chat", Prompt: prompt,
+		})
+		if insertErr != nil {
+			t.Fatal(insertErr)
+		}
+		return run
+	}
+
+	first := insertRun(conversation.ID, "第一项", 0)
+	second := insertRun(conversation.ID, "第二项", 10*time.Millisecond)
+	third := insertRun(conversation.ID, "第三项", 20*time.Millisecond)
+	if !(first.QueuePosition < second.QueuePosition && second.QueuePosition < third.QueuePosition) {
+		t.Fatalf("initial positions = %d, %d, %d", first.QueuePosition, second.QueuePosition, third.QueuePosition)
+	}
+	if updated, err := store.UpdateQueuedAssistantRunPrompt(ctx, st.Pool, user.ID, third.ID, "第三项（已修改）", "第三项（已修改）"); err != nil || !updated {
+		t.Fatalf("edit third = %v err=%v", updated, err)
+	}
+	thirdMessage, err := store.GetAssistantMessage(ctx, st.Pool, third.UserMessageID)
+	if err != nil || thirdMessage == nil || thirdMessage.Content != "第三项（已修改）" {
+		t.Fatalf("edited user message = %#v err=%v", thirdMessage, err)
+	}
+	if moved, err := store.MoveQueuedAssistantRun(ctx, st.Pool, user.ID, third.ID, -1); err != nil || !moved {
+		t.Fatalf("move third up = %v err=%v", moved, err)
+	}
+	second, _ = store.GetAssistantRun(ctx, st.Pool, second.ID)
+	third, _ = store.GetAssistantRun(ctx, st.Pool, third.ID)
+	if third.QueuePosition >= second.QueuePosition {
+		t.Fatalf("reordered positions third=%d second=%d", third.QueuePosition, second.QueuePosition)
+	}
+
+	for _, item := range []*store.AssistantRun{second, third} {
+		if ready, err := store.AssistantRunDispatchable(ctx, st.Pool, item.ID, 4); err != nil || ready {
+			t.Fatalf("non-head run %s dispatchable=%v err=%v", item.ID, ready, err)
+		}
+	}
+	claimed, err := store.ClaimAssistantRunWithLease(ctx, st.Pool, first.ID, "queue-worker", now, time.Minute, 4)
+	if err != nil || claimed == nil {
+		t.Fatalf("claim first = %#v err=%v", claimed, err)
+	}
+	if blocked, err := store.ClaimAssistantRunWithLease(ctx, st.Pool, third.ID, "queue-worker", now, time.Minute, 4); err != nil || blocked != nil {
+		t.Fatalf("claim while conversation running = %#v err=%v", blocked, err)
+	}
+	if changed, err := store.CompleteAssistantRun(ctx, st.Pool, first.ID, "chat", 0); err != nil || !changed {
+		t.Fatalf("complete first = %v err=%v", changed, err)
+	}
+	if ready, err := store.AssistantRunDispatchable(ctx, st.Pool, third.ID, 4); err != nil || !ready {
+		t.Fatalf("reordered head dispatchable=%v err=%v", ready, err)
+	}
+	if ready, err := store.AssistantRunDispatchable(ctx, st.Pool, second.ID, 4); err != nil || ready {
+		t.Fatalf("last item dispatchable=%v err=%v", ready, err)
+	}
+	claimed, err = store.ClaimAssistantRunWithLease(ctx, st.Pool, third.ID, "queue-worker", now, time.Minute, 4)
+	if err != nil || claimed == nil || claimed.Prompt != "第三项（已修改）" {
+		t.Fatalf("claim edited third = %#v err=%v", claimed, err)
+	}
+	claimedUserMessage, err := store.GetAssistantMessage(ctx, st.Pool, third.UserMessageID)
+	if err != nil || claimedUserMessage == nil || claimedUserMessage.Status != "complete" {
+		t.Fatalf("claimed user message = %#v err=%v", claimedUserMessage, err)
+	}
+	queuedUserMessage, err := store.GetAssistantMessage(ctx, st.Pool, second.UserMessageID)
+	if err != nil || queuedUserMessage == nil || queuedUserMessage.Status != "queued" {
+		t.Fatalf("waiting user message = %#v err=%v", queuedUserMessage, err)
+	}
+
+	otherConversation, err := store.InsertAssistantConversation(ctx, st.Pool, uuid.New(), user.ID, "另一对话", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := insertRun(otherConversation.ID, "另一项", 30*time.Millisecond)
+	if blocked, err := store.ClaimAssistantRunWithLease(ctx, st.Pool, other.ID, "queue-worker", now, time.Minute, 1); err != nil || blocked != nil {
+		t.Fatalf("user running limit = %#v err=%v", blocked, err)
+	}
+	if changed, err := store.CompleteAssistantRun(ctx, st.Pool, third.ID, "chat", 0); err != nil || !changed {
+		t.Fatalf("complete third = %v err=%v", changed, err)
+	}
+	if claimed, err := store.ClaimAssistantRunWithLease(ctx, st.Pool, other.ID, "queue-worker", now, time.Minute, 1); err != nil || claimed == nil {
+		t.Fatalf("claim after capacity frees = %#v err=%v", claimed, err)
 	}
 }

@@ -88,6 +88,9 @@ class _FakeAssistantRepository implements AssistantRepository {
   List<AssistantConversation> initialConversations = const [];
   int createConversationCount = 0;
   int runReads = 0;
+  final deletedTurnIds = <String>[];
+  final deletedImageRequests = <({String imageId, String messageId})>[];
+  bool deleteImageRemovesMessage = false;
   bool returnTerminalRun = true;
   final streamController = StreamController<AssistantStreamEvent>.broadcast();
 
@@ -130,6 +133,17 @@ class _FakeAssistantRepository implements AssistantRepository {
     String id, {
     bool cancelActive = false,
   }) async {}
+
+  @override
+  Future<void> deleteTurn(String userMessageId) async {
+    deletedTurnIds.add(userMessageId);
+  }
+
+  @override
+  Future<bool> deleteGeneratedImage(String messageId, String imageId) async {
+    deletedImageRequests.add((messageId: messageId, imageId: imageId));
+    return deleteImageRemovesMessage;
+  }
 
   @override
   Future<AssistantRunSnapshot> createRun(CreateAssistantRunInput input) async {
@@ -223,6 +237,8 @@ class _ScreenAssistantController extends AssistantWorkspaceController {
   AssistantQuotedMessage? sentQuoted;
   String? renamedTitle;
   final deletedIds = <String>[];
+  final deletedTurnIds = <String>[];
+  final deletedImageRequests = <({String imageId, String messageId})>[];
   final pinnedToggles = <String>[];
   AssistantProposal? submittedProposal;
   String? proposalSourceMessageId;
@@ -298,6 +314,58 @@ class _ScreenAssistantController extends AssistantWorkspaceController {
         clearSelectedConversation:
             current.selectedConversationId == id && conversations.isEmpty,
         pinnedIds: {...current.pinnedIds}..remove(id),
+      ),
+    );
+  }
+
+  @override
+  Future<void> deleteTurn(String userMessageId) async {
+    deletedTurnIds.add(userMessageId);
+    final current = state.requireValue;
+    final selectedId = current.selectedConversationId;
+    state = AsyncData(
+      current.copyWith(
+        conversations: current.conversations.map((conversation) {
+          if (conversation.id != selectedId) return conversation;
+          final index = conversation.messages.indexWhere(
+            (message) => message.id == userMessageId,
+          );
+          if (index < 0) return conversation;
+          return conversation.copyWith(
+            messages: conversation.messages.take(index).toList(),
+          );
+        }).toList(),
+      ),
+    );
+  }
+
+  @override
+  Future<void> deleteGeneratedImage(String messageId, String imageId) async {
+    deletedImageRequests.add((messageId: messageId, imageId: imageId));
+    final current = state.requireValue;
+    final selectedId = current.selectedConversationId;
+    state = AsyncData(
+      current.copyWith(
+        conversations: current.conversations.map((conversation) {
+          if (conversation.id != selectedId) return conversation;
+          final messages = <AssistantMessage>[];
+          for (final message in conversation.messages) {
+            if (message.id != messageId) {
+              messages.add(message);
+              continue;
+            }
+            final images = message.images.where((image) {
+              final identifier = image.id.trim().isNotEmpty
+                  ? image.id.trim()
+                  : image.fileKey.trim();
+              return identifier != imageId;
+            }).toList();
+            if (images.isNotEmpty) {
+              messages.add(message.copyWith(images: images));
+            }
+          }
+          return conversation.copyWith(messages: messages);
+        }).toList(),
       ),
     );
   }
@@ -443,6 +511,43 @@ Widget _screen(
 }
 
 void main() {
+  test('batch image saving continues after one image fails', () async {
+    const images = [
+      AssistantGeneratedImage(
+        id: 'save-1',
+        fileKey: 'tasks/save-1.png',
+        url: '/files/save-1.png',
+        thumbnailUrl: '',
+        revisedPrompt: '',
+      ),
+      AssistantGeneratedImage(
+        id: 'save-2',
+        fileKey: 'tasks/save-2.png',
+        url: '/files/save-2.png',
+        thumbnailUrl: '',
+        revisedPrompt: '',
+      ),
+      AssistantGeneratedImage(
+        id: 'save-3',
+        fileKey: 'tasks/save-3.png',
+        url: '/files/save-3.png',
+        thumbnailUrl: '',
+        revisedPrompt: '',
+      ),
+    ];
+    final attempted = <String>[];
+
+    final result = await saveAssistantGeneratedImages(images, (image) async {
+      attempted.add(image.id);
+      if (image.id == 'save-2') throw StateError('unavailable');
+    });
+
+    expect(attempted, ['save-1', 'save-2', 'save-3']);
+    expect(result.total, 3);
+    expect(result.saved, 2);
+    expect(result.failed, 1);
+  });
+
   test('pinned conversations stay at the top of history', () {
     const first = AssistantConversation(
       id: 'a',
@@ -1308,6 +1413,7 @@ void main() {
     expect(find.byTooltip('继续编辑'), findsOneWidget);
     expect(find.byTooltip('保存图片'), findsOneWidget);
     expect(find.byTooltip('分享图片'), findsOneWidget);
+    expect(find.byTooltip('删除图片'), findsOneWidget);
     expect(find.byKey(const Key('assistant-use-for-creation')), findsNothing);
     expect(tester.takeException(), isNull);
 
@@ -1341,6 +1447,269 @@ void main() {
     expect(find.byKey(const Key('assistant-remove-reference-1')), findsNothing);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('generated image preview browses pages and thumbnails', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(320, 760));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    String? copiedPrompt;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') {
+          copiedPrompt = (call.arguments as Map)['text']?.toString();
+        }
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      ),
+    );
+    const firstImage = AssistantGeneratedImage(
+      id: 'browse-image-1',
+      fileKey: 'tasks/user/assistant/run/browse-1.png',
+      url: '/api/v1/files/tasks/user/assistant/run/display/browse-1.webp',
+      thumbnailUrl:
+          '/api/v1/files/tasks/user/assistant/run/thumb/browse-1.webp',
+      revisedPrompt: '第一张预览图',
+    );
+    const secondImage = AssistantGeneratedImage(
+      id: 'browse-image-2',
+      fileKey: 'tasks/user/assistant/run/browse-2.png',
+      url: '/api/v1/files/tasks/user/assistant/run/display/browse-2.webp',
+      thumbnailUrl:
+          '/api/v1/files/tasks/user/assistant/run/thumb/browse-2.webp',
+      revisedPrompt: '',
+    );
+    final conversation = AssistantConversation(
+      id: 'conversation-browse-images',
+      title: '浏览生成图片',
+      messages: [
+        _message('user-browse-images', 'user', '第二张预览图'),
+        _message(
+          'assistant-browse-images',
+          'assistant',
+          '图片已生成',
+          kind: 'image',
+          images: const [firstImage, secondImage],
+        ),
+      ],
+      updatedAt: DateTime(2026, 8, 24, 10),
+    );
+    late _ScreenAssistantController controller;
+    await tester.pumpWidget(
+      _screen(
+        textScale: 1.6,
+        () => controller = _ScreenAssistantController(
+          AssistantWorkspaceState(
+            config: _config,
+            conversations: [conversation],
+            selectedConversationId: conversation.id,
+            selectedModelId: 'chat-pro',
+            selectedImageModelId: 'image-pro',
+            imageResolution: '2K',
+            imageRatio: 'auto',
+            imageQuality: 'high',
+            imageCount: 2,
+            reasoningEffort: 'medium',
+            activeRuns: const {},
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byKey(const Key('assistant-save-all-images')), findsOneWidget);
+    expect(find.text('保存全部 2 张'), findsOneWidget);
+
+    final secondTile = find.byKey(
+      const ValueKey('assistant-generated-image-browse-image-2'),
+    );
+    tester
+        .widget<InkWell>(
+          find.descendant(of: secondTile, matching: find.byType(InkWell)),
+        )
+        .onTap!();
+    await tester.pumpAndSettle();
+
+    expect(find.text('2 / 2'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('assistant-preview-thumbnail-browse-image-1')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('assistant-preview-thumbnail-browse-image-2')),
+      findsOneWidget,
+    );
+    expect(find.bySemanticsLabel('查看第 1 张图片'), findsOneWidget);
+    expect(find.bySemanticsLabel('查看第 2 张图片'), findsOneWidget);
+    expect(find.byTooltip('查看图片提示词'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('查看图片提示词'));
+    await tester.pump(const Duration(milliseconds: 250));
+    var promptPanel = find.byKey(
+      const ValueKey('assistant-image-prompt-browse-image-2'),
+    );
+    expect(find.text('图片提示词'), findsOneWidget);
+    expect(
+      find.descendant(of: promptPanel, matching: find.text('第二张预览图')),
+      findsOneWidget,
+    );
+    expect(find.byTooltip('复制图片提示词'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('复制图片提示词'));
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(copiedPrompt, '第二张预览图');
+    expect(find.text('图片提示词已复制'), findsOneWidget);
+
+    await tester.tap(
+      find.byKey(const ValueKey('assistant-preview-thumbnail-browse-image-1')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('1 / 2'), findsOneWidget);
+    promptPanel = find.byKey(
+      const ValueKey('assistant-image-prompt-browse-image-1'),
+    );
+    expect(
+      find.descendant(of: promptPanel, matching: find.text('第一张预览图')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: promptPanel, matching: find.text('第二张预览图')),
+      findsNothing,
+    );
+
+    await tester.drag(
+      find.byKey(const Key('assistant-generated-image-page-view')),
+      const Offset(-240, 0),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('2 / 2'), findsOneWidget);
+    promptPanel = find.byKey(
+      const ValueKey('assistant-image-prompt-browse-image-2'),
+    );
+    expect(
+      find.descendant(of: promptPanel, matching: find.text('第二张预览图')),
+      findsOneWidget,
+    );
+    expect(find.byTooltip('使用图片提示词'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('使用图片提示词'));
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('关闭图片'), findsNothing);
+    expect(controller.state.requireValue.selectedMode, AssistantMode.image);
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('assistant-composer')))
+          .controller
+          ?.text,
+      '第二张预览图',
+    );
+    expect(find.text('提示词已带入图片模式'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'generated image deletion confirms and updates a dark large-text grid',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(320, 760));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      const firstImage = AssistantGeneratedImage(
+        id: 'delete-image-1',
+        fileKey: 'tasks/user/assistant/run/delete-1.png',
+        url: '/api/v1/files/tasks/user/assistant/run/display/delete-1.webp',
+        thumbnailUrl:
+            '/api/v1/files/tasks/user/assistant/run/thumb/delete-1.webp',
+        revisedPrompt: '待删除图片',
+      );
+      const secondImage = AssistantGeneratedImage(
+        id: 'delete-image-2',
+        fileKey: 'tasks/user/assistant/run/delete-2.png',
+        url: '/api/v1/files/tasks/user/assistant/run/display/delete-2.webp',
+        thumbnailUrl:
+            '/api/v1/files/tasks/user/assistant/run/thumb/delete-2.webp',
+        revisedPrompt: '保留图片',
+      );
+      final conversation = AssistantConversation(
+        id: 'conversation-delete-image',
+        title: '删除生成图片',
+        messages: [
+          _message('user-delete-image', 'user', '生成两张图片'),
+          _message(
+            'assistant-delete-images',
+            'assistant',
+            '图片已生成',
+            kind: 'image',
+            images: const [firstImage, secondImage],
+          ),
+        ],
+        updatedAt: DateTime(2026, 8, 24, 10),
+      );
+      late _ScreenAssistantController controller;
+      await tester.pumpWidget(
+        _screen(
+          brightness: Brightness.dark,
+          textScale: 1.5,
+          () => controller = _ScreenAssistantController(
+            AssistantWorkspaceState(
+              config: _config,
+              conversations: [conversation],
+              selectedConversationId: conversation.id,
+              selectedModelId: 'chat-pro',
+              selectedImageModelId: 'image-pro',
+              imageResolution: '2K',
+              imageRatio: 'auto',
+              imageQuality: 'high',
+              imageCount: 2,
+              reasoningEffort: 'medium',
+              activeRuns: const {},
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      final tile = find.byKey(
+        const ValueKey('assistant-generated-image-delete-image-1'),
+      );
+      tester
+          .widget<InkWell>(
+            find.descendant(of: tile, matching: find.byType(InkWell)),
+          )
+          .onTap!();
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('删除图片'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.text('删除这张图片？'), findsOneWidget);
+      expect(find.textContaining('同轮的其他图片会继续保留'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+
+      await tester.tap(find.widgetWithText(FilledButton, '删除'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+
+      expect(controller.deletedImageRequests, [
+        (messageId: 'assistant-delete-images', imageId: 'delete-image-1'),
+      ]);
+      expect(find.byTooltip('关闭图片'), findsNothing);
+      expect(
+        find.byKey(const ValueKey('assistant-generated-image-delete-image-1')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const ValueKey('assistant-generated-image-delete-image-2')),
+        findsOneWidget,
+      );
+      expect(find.text('图片已删除'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('Agent proposal is readable on a narrow large-text screen', (
     tester,
@@ -1549,6 +1918,131 @@ void main() {
       'empty-1',
     );
   });
+
+  test(
+    'deleting a turn removes that user message and everything after it',
+    () async {
+      final repository = _FakeAssistantRepository()
+        ..initialConversations = [
+          AssistantConversation(
+            id: 'conversation-trim',
+            title: '分支对话',
+            messages: [
+              _message('user-1', 'user', '第一个问题'),
+              _message('assistant-1', 'assistant', '第一个回答'),
+              _message('user-2', 'user', '第二个问题'),
+              _message('assistant-2', 'assistant', '第二个回答'),
+            ],
+            updatedAt: DateTime(2026, 8, 24, 10),
+          ),
+        ];
+      addTearDown(repository.dispose);
+      final container = ProviderContainer(
+        overrides: [assistantRepositoryProvider.overrideWithValue(repository)],
+      );
+      addTearDown(container.dispose);
+      final subscription = container.listen(
+        assistantWorkspaceProvider,
+        (_, _) {},
+        fireImmediately: true,
+      );
+      addTearDown(subscription.close);
+
+      await container.read(assistantWorkspaceProvider.future);
+      await container
+          .read(assistantWorkspaceProvider.notifier)
+          .deleteTurn('user-2');
+
+      expect(repository.deletedTurnIds, ['user-2']);
+      expect(
+        container
+            .read(assistantWorkspaceProvider)
+            .requireValue
+            .selectedConversation!
+            .messages
+            .map((message) => message.id),
+        ['user-1', 'assistant-1'],
+      );
+    },
+  );
+
+  test(
+    'deleting generated images keeps siblings and removes the final message',
+    () async {
+      const firstImage = AssistantGeneratedImage(
+        id: 'image-1',
+        fileKey: 'tasks/user/assistant/run/1.png',
+        url: '/api/v1/files/tasks/user/assistant/run/display/1.webp',
+        thumbnailUrl: '/api/v1/files/tasks/user/assistant/run/thumb/1.webp',
+        revisedPrompt: '第一张图片',
+      );
+      const secondImage = AssistantGeneratedImage(
+        id: 'image-2',
+        fileKey: 'tasks/user/assistant/run/2.png',
+        url: '/api/v1/files/tasks/user/assistant/run/display/2.webp',
+        thumbnailUrl: '/api/v1/files/tasks/user/assistant/run/thumb/2.webp',
+        revisedPrompt: '第二张图片',
+      );
+      final repository = _FakeAssistantRepository()
+        ..initialConversations = [
+          AssistantConversation(
+            id: 'conversation-images',
+            title: '图片对话',
+            messages: [
+              _message('user-image', 'user', '生成两张图片'),
+              _message(
+                'assistant-images',
+                'assistant',
+                '图片已生成',
+                kind: 'image',
+                images: const [firstImage, secondImage],
+              ),
+            ],
+            updatedAt: DateTime(2026, 8, 24, 10),
+          ),
+        ];
+      addTearDown(repository.dispose);
+      final container = ProviderContainer(
+        overrides: [assistantRepositoryProvider.overrideWithValue(repository)],
+      );
+      addTearDown(container.dispose);
+      final subscription = container.listen(
+        assistantWorkspaceProvider,
+        (_, _) {},
+        fireImmediately: true,
+      );
+      addTearDown(subscription.close);
+
+      await container.read(assistantWorkspaceProvider.future);
+      final controller = container.read(assistantWorkspaceProvider.notifier);
+      await controller.deleteGeneratedImage('assistant-images', 'image-1');
+
+      var messages = container
+          .read(assistantWorkspaceProvider)
+          .requireValue
+          .selectedConversation!
+          .messages;
+      expect(repository.deletedImageRequests, [
+        (messageId: 'assistant-images', imageId: 'image-1'),
+      ]);
+      expect(messages.last.id, 'assistant-images');
+      expect(messages.last.images.map((image) => image.id), ['image-2']);
+
+      repository.deleteImageRemovesMessage = true;
+      await controller.deleteGeneratedImage('assistant-images', 'image-2');
+
+      messages = container
+          .read(assistantWorkspaceProvider)
+          .requireValue
+          .selectedConversation!
+          .messages;
+      expect(repository.deletedImageRequests, [
+        (messageId: 'assistant-images', imageId: 'image-1'),
+        (messageId: 'assistant-images', imageId: 'image-2'),
+      ]);
+      expect(messages.map((message) => message.id), ['user-image']);
+    },
+  );
 
   test('image mode submits selected image model and parameters', () async {
     final repository = _FakeAssistantRepository();
@@ -2570,6 +3064,65 @@ void main() {
     expect(controller.sentQuoted?.id, 'quote-assistant');
     expect(controller.sentQuoted?.kind, '回复');
     expect(controller.sentQuoted?.content, '这是一段可引用的回答');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('user message can delete its turn and all following content', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 844));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    late _ScreenAssistantController controller;
+    final conversation = AssistantConversation(
+      id: 'conversation-delete-turn',
+      title: '删除分支',
+      messages: [
+        _message('user-delete-1', 'user', '保留这个问题'),
+        _message('assistant-delete-1', 'assistant', '保留这个回答'),
+        _message('user-delete-2', 'user', '删除这个问题'),
+        _message('assistant-delete-2', 'assistant', '删除这个回答'),
+      ],
+      updatedAt: DateTime(2026, 8, 24, 10),
+    );
+    await tester.pumpWidget(
+      _screen(
+        brightness: Brightness.dark,
+        textScale: 1.3,
+        () => controller = _ScreenAssistantController(
+          AssistantWorkspaceState(
+            config: _config,
+            conversations: [conversation],
+            selectedConversationId: conversation.id,
+            selectedModelId: 'chat-pro',
+            reasoningEffort: 'medium',
+            activeRuns: const {},
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final delete = find.byKey(
+      const ValueKey('assistant-delete-turn-user-delete-2'),
+    );
+    await tester.ensureVisible(delete);
+    await tester.pumpAndSettle();
+    await tester.tap(delete);
+    await tester.pumpAndSettle();
+
+    expect(find.text('删除这轮对话？'), findsOneWidget);
+    expect(find.textContaining('之后的回复和图片都会删除'), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilledButton, '删除'));
+    await tester.pumpAndSettle();
+
+    expect(controller.deletedTurnIds, ['user-delete-2']);
+    expect(
+      controller.state.requireValue.selectedConversation!.messages.map(
+        (message) => message.id,
+      ),
+      ['user-delete-1', 'assistant-delete-1'],
+    );
+    expect(find.text('已删除这轮及后续消息'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
