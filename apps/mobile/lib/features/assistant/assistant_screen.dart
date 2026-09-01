@@ -59,6 +59,18 @@ class AssistantImageBatchSaveResult {
   int get failed => total - saved;
 }
 
+class AssistantImageBatchShareResult {
+  const AssistantImageBatchShareResult({
+    required this.total,
+    required this.files,
+  });
+
+  final int total;
+  final List<File> files;
+
+  int get failed => total - files.length;
+}
+
 Future<AssistantImageBatchSaveResult> saveAssistantGeneratedImages(
   List<AssistantGeneratedImage> images,
   Future<void> Function(AssistantGeneratedImage image) saveOne,
@@ -73,6 +85,21 @@ Future<AssistantImageBatchSaveResult> saveAssistantGeneratedImages(
     }
   }
   return AssistantImageBatchSaveResult(total: images.length, saved: saved);
+}
+
+Future<AssistantImageBatchShareResult> prepareAssistantGeneratedImagesForShare(
+  List<AssistantGeneratedImage> images,
+  Future<File> Function(AssistantGeneratedImage image) prepareOne,
+) async {
+  final files = <File>[];
+  for (final image in images) {
+    try {
+      files.add(await prepareOne(image));
+    } catch (_) {
+      // Keep successfully prepared files shareable when one download fails.
+    }
+  }
+  return AssistantImageBatchShareResult(total: images.length, files: files);
 }
 
 int _replyFallbackCost(
@@ -816,6 +843,38 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
         sharePositionOrigin: origin,
       ),
     );
+  });
+
+  Future<void> _shareGeneratedImages(
+    List<AssistantGeneratedImage> images,
+    BuildContext buttonContext,
+  ) => _run(() async {
+    final box = buttonContext.findRenderObject() as RenderBox?;
+    final origin = box == null
+        ? null
+        : box.localToGlobal(Offset.zero) & box.size;
+    final result = await prepareAssistantGeneratedImagesForShare(
+      images,
+      _downloadGeneratedImage,
+    );
+    if (!mounted) return;
+    if (result.files.isEmpty) {
+      AppNotice.error(context, '图片准备失败，请稍后重试');
+      return;
+    }
+    await SharePlus.instance.share(
+      ShareParams(
+        files: [for (final file in result.files) XFile(file.path)],
+        title: '分享 AI 图片',
+        sharePositionOrigin: origin,
+      ),
+    );
+    if (mounted && result.failed > 0) {
+      AppNotice.warning(
+        context,
+        '已准备 ${result.files.length} 张，${result.failed} 张下载失败',
+      );
+    }
   });
 
   Future<bool> _deleteGeneratedImage(
@@ -1967,6 +2026,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
                 index,
               ),
               onShareImage: _shareGeneratedImage,
+              onShareImages: _shareGeneratedImages,
               onUseImage: _useGeneratedImageAsReference,
               onUseImagePrompt: _useGeneratedImagePrompt,
               onDeleteImage:
@@ -3519,6 +3579,7 @@ class _MessageBubble extends StatelessWidget {
     required this.onSaveImages,
     required this.imagePromptFallback,
     required this.onShareImage,
+    required this.onShareImages,
     required this.onUseImage,
     required this.onUseImagePrompt,
     required this.onDeleteImage,
@@ -3543,6 +3604,8 @@ class _MessageBubble extends StatelessWidget {
   final String imagePromptFallback;
   final Future<void> Function(AssistantGeneratedImage, BuildContext)
   onShareImage;
+  final Future<void> Function(List<AssistantGeneratedImage>, BuildContext)
+  onShareImages;
   final Future<bool> Function(AssistantGeneratedImage) onUseImage;
   final Future<bool> Function(String) onUseImagePrompt;
   final Future<bool> Function(AssistantGeneratedImage)? onDeleteImage;
@@ -3703,6 +3766,7 @@ class _MessageBubble extends StatelessWidget {
                         onSave: onSaveImage,
                         onSaveAll: onSaveImages,
                         onShare: onShareImage,
+                        onShareAll: onShareImages,
                         onUse: onUseImage,
                         onUsePrompt: onUseImagePrompt,
                         onDelete: onDeleteImage,
@@ -3769,6 +3833,7 @@ class _GeneratedImageGrid extends StatefulWidget {
     required this.onSave,
     required this.onSaveAll,
     required this.onShare,
+    required this.onShareAll,
     required this.onUse,
     required this.onUsePrompt,
     required this.onDelete,
@@ -3779,6 +3844,8 @@ class _GeneratedImageGrid extends StatefulWidget {
   final Future<void> Function(AssistantGeneratedImage) onSave;
   final Future<void> Function(List<AssistantGeneratedImage>) onSaveAll;
   final Future<void> Function(AssistantGeneratedImage, BuildContext) onShare;
+  final Future<void> Function(List<AssistantGeneratedImage>, BuildContext)
+  onShareAll;
   final Future<bool> Function(AssistantGeneratedImage) onUse;
   final Future<bool> Function(String) onUsePrompt;
   final Future<bool> Function(AssistantGeneratedImage)? onDelete;
@@ -3789,15 +3856,27 @@ class _GeneratedImageGrid extends StatefulWidget {
 
 class _GeneratedImageGridState extends State<_GeneratedImageGrid> {
   bool _savingAll = false;
+  bool _sharingAll = false;
 
   Future<void> _saveAll() async {
-    if (_savingAll) return;
+    if (_savingAll || _sharingAll) return;
     unawaited(HapticFeedback.lightImpact());
     setState(() => _savingAll = true);
     try {
       await widget.onSaveAll(widget.images);
     } finally {
       if (mounted) setState(() => _savingAll = false);
+    }
+  }
+
+  Future<void> _shareAll(BuildContext buttonContext) async {
+    if (_savingAll || _sharingAll) return;
+    unawaited(HapticFeedback.lightImpact());
+    setState(() => _sharingAll = true);
+    try {
+      await widget.onShareAll(widget.images, buttonContext);
+    } finally {
+      if (mounted) setState(() => _sharingAll = false);
     }
   }
 
@@ -3837,19 +3916,42 @@ class _GeneratedImageGridState extends State<_GeneratedImageGrid> {
           },
         ),
         if (images.length > 1) ...[
-          const SizedBox(height: 4),
+          const SizedBox(height: 6),
           Align(
             alignment: Alignment.centerRight,
-            child: TextButton.icon(
-              key: const Key('assistant-save-all-images'),
-              onPressed: _savingAll ? null : _saveAll,
-              icon: _savingAll
-                  ? const SizedBox.square(
-                      dimension: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.download_outlined, size: 18),
-              label: Text(_savingAll ? '正在保存' : '保存全部 ${images.length} 张'),
+            child: Wrap(
+              alignment: WrapAlignment.end,
+              runAlignment: WrapAlignment.end,
+              spacing: 2,
+              runSpacing: 0,
+              children: [
+                TextButton.icon(
+                  key: const Key('assistant-save-all-images'),
+                  onPressed: _savingAll || _sharingAll ? null : _saveAll,
+                  icon: _savingAll
+                      ? const SizedBox.square(
+                          dimension: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.download_outlined, size: 18),
+                  label: Text(_savingAll ? '正在保存' : '保存全部 ${images.length} 张'),
+                ),
+                Builder(
+                  builder: (buttonContext) => TextButton.icon(
+                    key: const Key('assistant-share-all-images'),
+                    onPressed: _savingAll || _sharingAll
+                        ? null
+                        : () => _shareAll(buttonContext),
+                    icon: _sharingAll
+                        ? const SizedBox.square(
+                            dimension: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.ios_share_outlined, size: 18),
+                    label: Text(_sharingAll ? '正在准备' : '分享全部'),
+                  ),
+                ),
+              ],
             ),
           ),
         ],

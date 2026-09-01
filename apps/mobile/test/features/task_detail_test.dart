@@ -136,10 +136,10 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('multi-image action bar offers one save-all command', (
+  testWidgets('multi-image action bar offers compact batch commands', (
     tester,
   ) async {
-    await tester.binding.setSurfaceSize(const Size(390, 844));
+    await tester.binding.setSurfaceSize(const Size(320, 844));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.pumpWidget(
       _app(
@@ -148,13 +148,17 @@ void main() {
           originalUrls: const ['original-1', 'original-2', 'original-3'],
           count: 3,
         ),
+        textScale: 1.6,
       ),
     );
     await tester.pumpAndSettle();
 
     expect(find.text('保存全部'), findsOneWidget);
     expect(find.text('保存'), findsNothing);
-    expect(find.text('分享'), findsOneWidget);
+    expect(find.text('分享全部'), findsOneWidget);
+    expect(find.text('分享'), findsNothing);
+    expect(find.byKey(const Key('task-save-images')), findsOneWidget);
+    expect(find.byKey(const Key('task-share-images')), findsOneWidget);
     expect(find.text('投稿'), findsOneWidget);
     expect(
       tester.getSize(find.byType(ListView).first).height,
@@ -194,7 +198,7 @@ void main() {
     expect(find.text('详情同步失败，已显示列表中的作品数据'), findsOneWidget);
     expect(find.byKey(const Key('task-detail-cache-retry')), findsOneWidget);
     expect(find.text('保存全部'), findsOneWidget);
-    expect(find.text('分享'), findsOneWidget);
+    expect(find.text('分享全部'), findsOneWidget);
     expect(find.text('详情未同步'), findsOneWidget);
     expect(tester.getSize(find.text('详情未同步')).height, lessThan(30));
     expect(find.text('投稿'), findsNothing);
@@ -240,6 +244,24 @@ void main() {
     expect(missing.savedCount, 0);
     expect(missing.isComplete, isFalse);
     expect(missing.error, isA<FormatException>());
+  });
+
+  test('batch image sharing continues after one download fails', () async {
+    final attempted = <int>[];
+    final result = await prepareTaskImagesForShare(
+      count: 4,
+      downloadPath: (index) async {
+        attempted.add(index);
+        if (index == 1) throw StateError('download failed');
+        return 'image-$index.png';
+      },
+    );
+
+    expect(attempted, [0, 1, 2, 3]);
+    expect(result.paths, ['image-0.png', 'image-2.png', 'image-3.png']);
+    expect(result.totalCount, 4);
+    expect(result.failedCount, 1);
+    expect(result.error, isA<StateError>());
   });
 
   testWidgets('prompt panel copies complete text in centered notice', (

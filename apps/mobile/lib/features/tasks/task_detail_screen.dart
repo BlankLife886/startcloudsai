@@ -189,18 +189,32 @@ class _TaskDetailScreenState extends ConsumerState<TaskDetailScreen>
         : box.localToGlobal(Offset.zero) & box.size;
     setState(() => _busyAction = _TaskAction.share);
     try {
-      final file = await ref
-          .read(taskRepositoryProvider)
-          .downloadOriginal(task, _safeIndex(task));
+      final repository = ref.read(taskRepositoryProvider);
+      final imageCount = task.originalUrls.length;
+      final result = await prepareTaskImagesForShare(
+        count: imageCount,
+        downloadPath: (index) async =>
+            (await repository.downloadOriginal(task, index)).path,
+      );
       if (!mounted) return;
+      if (result.paths.isEmpty) {
+        _showError(result.error ?? const FormatException('作品原图不存在'));
+        return;
+      }
       await SharePlus.instance.share(
         ShareParams(
-          files: [XFile(file.path)],
+          files: [for (final path in result.paths) XFile(path)],
           text: task.prompt.isEmpty ? '星空云绘作品' : task.prompt,
           title: '分享作品',
           sharePositionOrigin: origin,
         ),
       );
+      if (mounted && result.failedCount > 0) {
+        AppNotice.warning(
+          context,
+          '已准备 ${result.paths.length} 张，${result.failedCount} 张下载失败',
+        );
+      }
     } catch (error) {
       if (mounted) _showError(error);
     } finally {
@@ -316,11 +330,6 @@ class _TaskDetailScreenState extends ConsumerState<TaskDetailScreen>
     ref.invalidate(gallerySubmissionForTaskProvider(taskId));
     ref.invalidate(discoverFeedProvider);
     ref.invalidate(discoverGalleryPageProvider);
-  }
-
-  int _safeIndex(TaskItem task) {
-    if (task.originalUrls.isEmpty) return 0;
-    return _pageIndex.clamp(0, task.originalUrls.length - 1);
   }
 
   void _selectImage(int index) {
@@ -592,7 +601,11 @@ class _TaskDetailScreenState extends ConsumerState<TaskDetailScreen>
             : Builder(
                 builder: (context) {
                   final save = OutlinedButton.icon(
+                    key: const Key('task-save-images'),
                     onPressed: _busy ? null : () => _save(task),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                    ),
                     icon: _busyAction == _TaskAction.save
                         ? const _ButtonProgress()
                         : const Icon(Icons.download_outlined),
@@ -600,13 +613,17 @@ class _TaskDetailScreenState extends ConsumerState<TaskDetailScreen>
                   );
                   final share = Builder(
                     builder: (buttonContext) => OutlinedButton.icon(
+                      key: const Key('task-share-images'),
                       onPressed: _busy
                           ? null
                           : () => _share(task, buttonContext),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                      ),
                       icon: _busyAction == _TaskAction.share
                           ? const _ButtonProgress()
                           : const Icon(Icons.share_outlined),
-                      label: const Text('分享'),
+                      label: Text(task.originalUrls.length > 1 ? '分享全部' : '分享'),
                     ),
                   );
                   final submit = serverAvailable
@@ -747,6 +764,48 @@ class TaskImageSaveResult {
   final Object? error;
 
   bool get isComplete => savedCount == totalCount && error == null;
+}
+
+class TaskImageShareResult {
+  const TaskImageShareResult({
+    required this.paths,
+    required this.totalCount,
+    this.error,
+  });
+
+  final List<String> paths;
+  final int totalCount;
+  final Object? error;
+
+  int get failedCount => totalCount - paths.length;
+}
+
+Future<TaskImageShareResult> prepareTaskImagesForShare({
+  required int count,
+  required Future<String> Function(int index) downloadPath,
+}) async {
+  final total = count.clamp(0, 100);
+  if (total == 0) {
+    return const TaskImageShareResult(
+      paths: [],
+      totalCount: 0,
+      error: FormatException('作品原图不存在'),
+    );
+  }
+  final paths = <String>[];
+  Object? firstError;
+  for (var index = 0; index < total; index += 1) {
+    try {
+      paths.add(await downloadPath(index));
+    } catch (error) {
+      firstError ??= error;
+    }
+  }
+  return TaskImageShareResult(
+    paths: paths,
+    totalCount: total,
+    error: firstError,
+  );
 }
 
 Future<TaskImageSaveResult> saveTaskImages({

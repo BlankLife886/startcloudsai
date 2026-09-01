@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:ui' show SemanticsAction, Tristate;
 
 import 'package:flutter/material.dart';
@@ -545,6 +546,49 @@ void main() {
     expect(attempted, ['save-1', 'save-2', 'save-3']);
     expect(result.total, 3);
     expect(result.saved, 2);
+    expect(result.failed, 1);
+  });
+
+  test('batch image sharing keeps files prepared around one failure', () async {
+    const images = [
+      AssistantGeneratedImage(
+        id: 'share-1',
+        fileKey: 'tasks/share-1.png',
+        url: '/files/share-1.png',
+        thumbnailUrl: '',
+        revisedPrompt: '',
+      ),
+      AssistantGeneratedImage(
+        id: 'share-2',
+        fileKey: 'tasks/share-2.png',
+        url: '/files/share-2.png',
+        thumbnailUrl: '',
+        revisedPrompt: '',
+      ),
+      AssistantGeneratedImage(
+        id: 'share-3',
+        fileKey: 'tasks/share-3.png',
+        url: '/files/share-3.png',
+        thumbnailUrl: '',
+        revisedPrompt: '',
+      ),
+    ];
+    final attempted = <String>[];
+
+    final result = await prepareAssistantGeneratedImagesForShare(images, (
+      image,
+    ) async {
+      attempted.add(image.id);
+      if (image.id == 'share-2') throw StateError('unavailable');
+      return File('/tmp/${image.id}.png');
+    });
+
+    expect(attempted, ['share-1', 'share-2', 'share-3']);
+    expect(result.total, 3);
+    expect(result.files.map((file) => file.path), [
+      '/tmp/share-1.png',
+      '/tmp/share-3.png',
+    ]);
     expect(result.failed, 1);
   });
 
@@ -1524,7 +1568,10 @@ void main() {
     await tester.pump();
 
     expect(find.byKey(const Key('assistant-save-all-images')), findsOneWidget);
+    expect(find.byKey(const Key('assistant-share-all-images')), findsOneWidget);
     expect(find.text('保存全部 2 张'), findsOneWidget);
+    expect(find.text('分享全部'), findsOneWidget);
+    expect(tester.takeException(), isNull);
 
     final secondTile = find.byKey(
       const ValueKey('assistant-generated-image-browse-image-2'),
