@@ -436,6 +436,38 @@ type PromptCoverDimensionCandidate struct {
 	CoverURL string
 }
 
+type ExternalPromptCoverCandidate struct {
+	ID       uuid.UUID
+	CoverURL string
+}
+
+func ListExternalPromptCoverCandidates(ctx context.Context, q Q, limit int) ([]ExternalPromptCoverCandidate, error) {
+	rows, err := q.Query(ctx, `SELECT id, cover_key
+		FROM prompt_library
+		WHERE cover_key ~* '^https?://'
+		ORDER BY created_at ASC, id ASC
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]ExternalPromptCoverCandidate, 0, limit)
+	for rows.Next() {
+		var item ExternalPromptCoverCandidate
+		if err := rows.Scan(&item.ID, &item.CoverURL); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func CountExternalPromptCovers(ctx context.Context, q Q) (int, error) {
+	var count int
+	err := q.QueryRow(ctx, `SELECT count(*) FROM prompt_library WHERE cover_key ~* '^https?://'`).Scan(&count)
+	return count, err
+}
+
 func ListPromptCoverDimensionCandidates(ctx context.Context, q Q, limit int) ([]PromptCoverDimensionCandidate, error) {
 	rows, err := q.Query(ctx, `SELECT id, cover_key
 		FROM prompt_library

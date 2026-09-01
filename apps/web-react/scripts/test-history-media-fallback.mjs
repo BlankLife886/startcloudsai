@@ -11,7 +11,7 @@ import {
 } from "../src/features/history/historyTaskPresentation.js";
 import { taskFailureMessage } from "../src/features/history/taskFailureMessage.js";
 
-test("history table uses the original when a completed task has no thumbnail", () => {
+test("history table uses the server-derived thumbnail for an old completed task", () => {
   const task = {
     originalUrls: ["/api/v1/files/tasks/user/task/original/1.png"],
     displayUrls: ["/api/v1/files/tasks/user/task/display/1"],
@@ -20,7 +20,12 @@ test("history table uses the original when a completed task has no thumbnail", (
   };
   assert.equal(taskOriginalUrl(task), task.originalUrls[0]);
   assert.equal(taskDisplayUrl(task), task.displayUrls[0]);
-  assert.equal(taskCoverUrl(task), task.originalUrls[0]);
+  assert.equal(taskCoverUrl(task), task.thumbnailUrls[0]);
+});
+
+test("history falls back to the original when neither keys nor derived thumbnail URL exist", () => {
+  const original = "/api/v1/files/tasks/user/task/original/1.png";
+  assert.equal(taskCoverUrl({ originalUrls: [original], thumbnailKeys: [], thumbnailUrls: [] }), original);
 });
 
 test("history presents failed and canceled image tasks as distinct terminal states", () => {

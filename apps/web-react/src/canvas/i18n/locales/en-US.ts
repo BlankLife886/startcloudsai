@@ -209,7 +209,7 @@ export default {
         },
         project: {
             untitled: "Untitled canvas", imported: "Imported canvas",
-            select: "Select {{name}}", stats: "{{nodes}} nodes · {{connections}} connections", updated: "Updated {{date}}", saveName: "Save name", cancelRename: "Cancel rename", export: "Export", rename: "Rename", delete: "Delete", close: "Close",
+            select: "Select {{name}}", stats: "{{nodes}} nodes · {{connections}} connections", loadingPreview: "Loading node preview…", loadingStats: "Loading nodes", updated: "Updated {{date}}", saveName: "Save name", cancelRename: "Cancel rename", export: "Export", rename: "Rename", delete: "Delete", close: "Close",
             editEyebrow: "Edit details", editTitle: "Edit canvas name", editDescription: "Change the canvas name. Nodes and connections stay as they are.", nameLabel: "Canvas name", namePlaceholder: "Enter a canvas name",
             deleteEyebrow: "Delete confirmation", deleteTitle: "Delete this canvas?", deleteDescription: "This will delete {{count}} canvases along with their nodes and connections.", moreCount: "{{count}} more",
         },

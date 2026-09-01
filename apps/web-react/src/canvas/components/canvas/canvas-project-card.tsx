@@ -1,8 +1,9 @@
 import { ArrowUpRight, Check, Download, Pencil, Trash2 } from "lucide-react";
+import { useEffect } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { useTranslation } from "react-i18next";
 
-import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
+import { prefetchCanvasProjectDocument, type CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { useCanvasUiStore } from "@/stores/canvas/use-canvas-ui-store";
 import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
@@ -194,7 +195,15 @@ function PreviewNodeContent({ node, x, y, width, height, palette, enabled }: { n
 
 function CanvasTopologyPreview({ project }: { project: CanvasProject }) {
     const { t } = useTranslation();
-    const { elementRef, shouldLoad } = useViewportMedia(true);
+    const { elementRef, shouldLoad } = useViewportMedia(!project.documentPending && project.nodes.length > 0);
+
+    if (project.documentPending) {
+        return (
+            <div className="canvas-blank-preview" aria-busy="true">
+                <span>{t("canvas.project.loadingPreview")}</span>
+            </div>
+        );
+    }
 
     if (!project.nodes.length) {
         return (
@@ -316,11 +325,16 @@ export function CanvasProjectCard({ project }: { project: CanvasProject }) {
     const toggleSelected = useCanvasUiStore((state) => state.toggleSelectedProjectId);
     const setDeleteIds = useCanvasUiStore((state) => state.setDeleteProjectIds);
     const selected = selectedIds.includes(project.id);
+    const { elementRef, shouldLoad } = useViewportMedia(Boolean(project.documentPending || project.documentStale));
     const updatedAt = new Date(project.updatedAt).toLocaleDateString(i18n.language, { month: "2-digit", day: "2-digit" });
     const open = () => navigate(`/canvas/${project.id}${searchParams.toString() ? `?${searchParams.toString()}` : ""}`);
 
+    useEffect(() => {
+        if (shouldLoad) prefetchCanvasProjectDocument(project.id);
+    }, [project.id, shouldLoad]);
+
     return (
-        <article className={cn("canvas-project-tile group", selected && "is-selected")}>
+        <article ref={(node) => { elementRef.current = node; }} className={cn("canvas-project-tile group", selected && "is-selected")}>
             <div className="canvas-project-tile__preview cursor-pointer" onClick={open}>
                 <button
                     type="button"
@@ -389,7 +403,11 @@ export function CanvasProjectCard({ project }: { project: CanvasProject }) {
                         <ArrowUpRight className="size-3.5 shrink-0 text-violet-400 opacity-0 transition group-hover:opacity-100" />
                     </span>
                     <span className="canvas-project-tile__pills">
-                        <span className="canvas-project-tile__pill">{t("canvas.project.stats", { nodes: project.nodes.length, connections: project.connections.length })}</span>
+                        <span className="canvas-project-tile__pill">
+                            {project.documentPending
+                                ? t("canvas.project.loadingStats")
+                                : t("canvas.project.stats", { nodes: project.nodes.length, connections: project.connections.length })}
+                        </span>
                         <span className="canvas-project-tile__pill">{t("canvas.project.updated", { date: updatedAt })}</span>
                     </span>
                 </button>

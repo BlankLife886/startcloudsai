@@ -7,6 +7,35 @@ import {
 } from "@react/legacy-modules/services/authenticatedMedia.js";
 import "@react/legacy-styles/generated/components/common/AuthenticatedImage.css";
 
+const loadedMediaSources = new Set();
+const MAX_REMEMBERED_MEDIA_SOURCES = 512;
+
+function rememberLoadedMediaSource(value) {
+  loadedMediaSources.delete(value);
+  loadedMediaSources.add(value);
+  while (loadedMediaSources.size > MAX_REMEMBERED_MEDIA_SOURCES) {
+    loadedMediaSources.delete(loadedMediaSources.values().next().value);
+  }
+}
+
+function retryableExternalUrl(value, attempt) {
+  if (!/^https?:\/\//i.test(value) || attempt <= 0) return value;
+  try {
+    const url = new URL(value);
+    if (
+      url.searchParams.has("X-Amz-Signature") ||
+      url.searchParams.has("Signature") ||
+      url.searchParams.has("OSSAccessKeyId")
+    ) {
+      return value;
+    }
+    url.searchParams.set("__sc_image_retry", String(attempt));
+    return url.toString();
+  } catch {
+    return value;
+  }
+}
+
 export function AuthenticatedImage({
   src = "",
   alt = "",
@@ -27,11 +56,14 @@ export function AuthenticatedImage({
   const rootRef = useRef(null);
   const tokenRef = useRef(0);
   const retryRef = useRef(0);
+  const displayRetryRef = useRef(0);
   const timerRef = useRef(0);
   const resolvedRef = useRef("");
   const [active, setActive] = useState(loading === "eager");
   const [resolved, setResolved] = useState("");
-  const [state, setState] = useState("placeholder");
+  const [state, setState] = useState(() =>
+    loadedMediaSources.has(src) ? "loaded" : "placeholder",
+  );
 
   useEffect(() => {
     const root = rootRef.current;
@@ -71,9 +103,10 @@ export function AuthenticatedImage({
     const token = ++tokenRef.current;
     let disposed = false;
     retryRef.current = 0;
+    displayRetryRef.current = 0;
     if (!keepLoaded || !resolvedRef.current) {
       setResolved("");
-      setState("loading");
+      if (!loadedMediaSources.has(src)) setState("loading");
     }
 
     const resolve = async () => {
@@ -134,10 +167,26 @@ export function AuthenticatedImage({
           decoding="async"
           draggable="false"
           onLoad={(event) => {
+            rememberLoadedMediaSource(src);
             setState("loaded");
             onLoad?.(event);
           }}
           onError={(event) => {
+            const maxRetries = Math.max(0, Number(retryCount) || 0);
+            if (
+              !isAuthenticatedAiMediaUrl(src) &&
+              displayRetryRef.current < maxRetries
+            ) {
+              displayRetryRef.current += 1;
+              const attempt = displayRetryRef.current;
+              setState("loading");
+              setResolved("");
+              if (timerRef.current) window.clearTimeout(timerRef.current);
+              timerRef.current = window.setTimeout(() => {
+                setResolved(retryableExternalUrl(resolved || src, attempt));
+              }, 300 * attempt);
+              return;
+            }
             setState("failed");
             onError?.(event);
           }}

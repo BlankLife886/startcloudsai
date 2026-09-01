@@ -603,7 +603,8 @@ html.color-scheme-dark .ch-chip.is-active {
   min-height: 0;
 }
 
-.ch-prompt-card__media > img {
+.ch-prompt-card__media > img,
+.ch-prompt-card__media > .authenticated-image {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -612,20 +613,6 @@ html.color-scheme-dark .ch-chip.is-active {
 }
 
 .ch-prompt-card__image {
-  opacity: 0;
-}
-
-.ch-prompt-card__image.is-loaded {
-  opacity: 1;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .ch-prompt-card__image:not(.is-loaded) {
-    opacity: 1;
-  }
-}
-
-html.settings-no-animations .ch-prompt-card__image:not(.is-loaded) {
   opacity: 1;
 }
 
@@ -1428,7 +1415,8 @@ html.color-scheme-dark .ch-card__actions a.is-primary {
   cursor: pointer;
 }
 
-.ch-table-preview > img {
+.ch-table-preview > img,
+.ch-table-preview > .authenticated-image {
   flex: 0 0 52px;
   width: 52px;
   height: 52px;

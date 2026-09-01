@@ -20,12 +20,15 @@ export function taskDisplayUrl(task) {
 }
 
 export function taskThumbnailUrl(task) {
-  // 后端用空 thumbnailKeys 表示暂时没有缩略图
+  // 新后端会为旧任务根据原图 key 派生 thumbnailUrls，即使原始
+  // thumbnailKeys 为空也可直接使用。必须先尊重服务端给出的 URL。
+  const serverThumbnailUrl = firstUrl(task?.thumbnailUrls)
+  if (serverThumbnailUrl) return serverThumbnailUrl
+  // 只有服务端也没有返回缩略地址时，空 keys 才表示确实没有小图。
   if (Array.isArray(task?.thumbnailKeys) && task.thumbnailKeys.length === 0) {
     return ''
   }
   return (
-    firstUrl(task?.thumbnailUrls) ||
     firstUrl(task?.outputUrls) ||
     firstOutputField(task?.outputs, 'thumbnailUrl') ||
     firstOutputField(task?.outputs, 'url') ||

@@ -219,6 +219,10 @@ async function hydrateCloudProjects(userId: string, localProjects: CanvasProject
 }
 
 const documentLoads = new Map<string, Promise<CanvasProject | null>>();
+const CANVAS_DOCUMENT_PREFETCH_CONCURRENCY = 2;
+const documentPrefetchQueue: string[] = [];
+const queuedDocumentPrefetches = new Set<string>();
+let activeDocumentPrefetches = 0;
 
 /**
  * Make sure a project's full document is available locally before it is used.
@@ -227,7 +231,9 @@ const documentLoads = new Map<string, Promise<CanvasProject | null>>();
  * into it. Returns the up-to-date project, or null when it no longer exists.
  */
 export function ensureCanvasProjectDocument(id: string): Promise<CanvasProject | null> {
-    const project = useCanvasStore.getState().projects.find((item) => item.id === id);
+    const initialState = useCanvasStore.getState();
+    const ownerUserId = initialState.ownerUserId;
+    const project = initialState.projects.find((item) => item.id === id);
     if (!project) return Promise.resolve(null);
     if (!project.documentPending && !project.documentStale) return Promise.resolve(project);
     const running = documentLoads.get(id);
@@ -240,7 +246,9 @@ export function ensureCanvasProjectDocument(id: string): Promise<CanvasProject |
             console.error("Canvas cloud document load failed", error);
             remote = undefined;
         }
-        const current = useCanvasStore.getState().projects.find((item) => item.id === id);
+        const currentState = useCanvasStore.getState();
+        if (currentState.ownerUserId !== ownerUserId) return null;
+        const current = currentState.projects.find((item) => item.id === id);
         if (!current) return null;
         if (remote === undefined) {
             // Transient load failure: a stub has nothing usable to show, but a
@@ -264,6 +272,37 @@ export function ensureCanvasProjectDocument(id: string): Promise<CanvasProject |
     })().finally(() => documentLoads.delete(id));
     documentLoads.set(id, load);
     return load;
+}
+
+function pumpCanvasDocumentPrefetches() {
+    while (activeDocumentPrefetches < CANVAS_DOCUMENT_PREFETCH_CONCURRENCY && documentPrefetchQueue.length) {
+        const id = documentPrefetchQueue.shift();
+        if (!id) continue;
+        queuedDocumentPrefetches.delete(id);
+        const project = useCanvasStore.getState().projects.find((item) => item.id === id);
+        if (!project?.documentPending && !project?.documentStale) continue;
+        activeDocumentPrefetches += 1;
+        void ensureCanvasProjectDocument(id)
+            .catch((error) => console.error("Canvas project preview prefetch failed", error))
+            .finally(() => {
+                activeDocumentPrefetches = Math.max(0, activeDocumentPrefetches - 1);
+                pumpCanvasDocumentPrefetches();
+            });
+    }
+}
+
+/**
+ * Queue a lightweight, viewport-driven document prefetch for a project card.
+ * The global limit prevents a long project list from competing with normal API
+ * traffic, while documentLoads still deduplicates a simultaneous card open.
+ */
+export function prefetchCanvasProjectDocument(id: string) {
+    const project = useCanvasStore.getState().projects.find((item) => item.id === id);
+    if (!project || (!project.documentPending && !project.documentStale)) return;
+    if (documentLoads.has(id) || queuedDocumentPrefetches.has(id)) return;
+    queuedDocumentPrefetches.add(id);
+    documentPrefetchQueue.push(id);
+    pumpCanvasDocumentPrefetches();
 }
 
 const canvasStorage: PersistStorage<CanvasStore> = {
@@ -448,6 +487,8 @@ export function prepareCanvasCloudSync(userId: string) {
 
 export function disconnectCanvasCloudSync() {
     cloudSyncUserId = "";
+    documentPrefetchQueue.length = 0;
+    queuedDocumentPrefetches.clear();
     cloudSaveTimers.forEach((timer) => clearTimeout(timer));
     cloudSaveTimers.clear();
     useCanvasStore.setState({ hydrated: true });

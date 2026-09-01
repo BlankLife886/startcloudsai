@@ -465,6 +465,7 @@ func (s *Server) Router() *gin.Engine {
 	admin.PATCH("/prompts/:id", s.adminOnly(s.adminPatchPrompt))
 	admin.DELETE("/prompts/:id", s.adminOnly(s.adminDeletePrompt))
 	admin.PUT("/prompts/:id/cover", s.adminOnly(s.adminUploadPromptCover))
+	admin.POST("/prompts/external-covers/cache", s.adminOnly(s.adminCacheExternalPromptCovers))
 	admin.POST("/gallery/submissions/:id/prompts", s.adminOnly(s.adminCreatePromptFromSubmission))
 	admin.GET("/prompt-sources", s.adminOnly(s.adminListPromptSources))
 	admin.POST("/prompt-sources", s.adminOnly(s.adminCreatePromptSource))

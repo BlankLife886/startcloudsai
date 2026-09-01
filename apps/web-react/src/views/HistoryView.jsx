@@ -1248,25 +1248,17 @@ export function HistoryView() {
                             ) : tableCoverSrc(task) && taskMediaModality(task) === "audio" ? (
                               <i className="bi bi-soundwave" aria-hidden="true" />
                             ) : tableCoverSrc(task) ? (
-                              <img
+                              <AuthenticatedImage
                                 src={tableCoverSrc(task)}
+                                fallbackSrc={taskOriginalUrl(task)}
                                 alt={task.cleanPrompt}
                                 loading="lazy"
-                                decoding="async"
-                                width={52}
-                                height={52}
+                                rootMargin="720px 0px"
+                                maxDimension={160}
+                                retryCount={2}
+                                keepLoaded
                                 onLoad={() => ensureMetadata(task)}
-                                onError={(event) => {
-                                  const original = taskOriginalUrl(task);
-                                  if (
-                                    original &&
-                                    event.currentTarget.getAttribute("src") !== original
-                                  ) {
-                                    event.currentTarget.src = original;
-                                    return;
-                                  }
-                                  void ensureMetadata(task);
-                                }}
+                                onError={() => void ensureMetadata(task)}
                               />
                             ) : null}
                             <span>{taskTypeLabel(task)}</span>

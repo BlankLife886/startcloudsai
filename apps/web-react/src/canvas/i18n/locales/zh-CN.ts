@@ -209,7 +209,7 @@ export default {
         },
         project: {
             untitled: "未命名画布", imported: "导入画布",
-            select: "选择 {{name}}", stats: "{{nodes}} 个节点 · {{connections}} 条连线", updated: "更新于 {{date}}", saveName: "保存名称", cancelRename: "取消重命名", export: "导出", rename: "重命名", delete: "删除", close: "关闭",
+            select: "选择 {{name}}", stats: "{{nodes}} 个节点 · {{connections}} 条连线", loadingPreview: "正在加载节点预览…", loadingStats: "正在读取节点", updated: "更新于 {{date}}", saveName: "保存名称", cancelRename: "取消重命名", export: "导出", rename: "重命名", delete: "删除", close: "关闭",
             editEyebrow: "编辑信息", editTitle: "编辑画布名称", editDescription: "修改画布名称，节点和连线不会受影响。", nameLabel: "画布名称", namePlaceholder: "输入画布名称",
             deleteEyebrow: "删除确认", deleteTitle: "删除这张画布？", deleteDescription: "将删除 {{count}} 个画布，里面的节点和连线也会一起移除。", moreCount: "还有 {{count}} 个",
         },

@@ -25,6 +25,7 @@ import {
 } from "@react/legacy-modules/features/creator-hub/studioTools.js";
 import { setBodyScrollLock } from "@react/legacy-modules/utils/bodyScrollLock.js";
 import { DialogMotion } from "../components/motion/DialogMotion.jsx";
+import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
 import "@react/legacy-static/features/creator-hub/creator-hub.css";
 
 gsap.registerPlugin(useGSAP);
@@ -306,7 +307,7 @@ export function PromptLibraryView() {
     const alreadyLoaded = loadedCoverKeysRef.current.has(key);
     loadedCoverKeysRef.current.add(key);
     if (!alreadyLoaded && !hasServerAspect) masonry.measureFromEvent(key, event);
-    image.classList.add("is-loaded");
+    (image.closest(".authenticated-image") || image).classList.add("is-loaded");
     gsap.killTweensOf(image);
     gsap.set(image, { autoAlpha: 1, clearProps: "transform" });
   }, [masonry]);
@@ -541,7 +542,7 @@ export function PromptLibraryView() {
                     onClick={() => openPreview(entry.item)}
                   >
                     {entry.cover ? (
-                      <img
+                      <AuthenticatedImage
                         className={`ch-prompt-card__image${loadedCoverKeysRef.current.has(entry.key) ? " is-loaded" : ""}`}
                         src={entry.cover}
                         alt={entry.item.title || "提示词"}
@@ -555,9 +556,10 @@ export function PromptLibraryView() {
                             ? "high"
                             : "low"
                         }
-                        decoding="async"
-                        width={Math.max(1, Math.round(entry.width))}
-                        height={Math.max(1, entry.mediaHeight)}
+                        rootMargin="720px 0px"
+                        maxDimension={720}
+                        retryCount={2}
+                        keepLoaded
                         onLoad={(event) =>
                           revealPromptImage(
                             event,
@@ -565,9 +567,6 @@ export function PromptLibraryView() {
                             Number(entry.item.coverWidth) > 0 &&
                               Number(entry.item.coverHeight) > 0,
                           )
-                        }
-                        onError={(event) =>
-                          revealPromptImage(event, entry.key, true)
                         }
                       />
                     ) : (

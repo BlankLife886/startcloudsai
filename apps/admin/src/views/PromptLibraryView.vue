@@ -175,6 +175,7 @@ const promptScopeTotal = ref(0)
 const categoryCounts = ref<Record<string, number>>({})
 const loading = ref(false)
 const loadingMore = ref(false)
+const cachingExternalCovers = ref(false)
 const error = ref<string | null>(null)
 const nextCursor = ref<string | null>(null)
 const promptContentRef = ref<HTMLElement | null>(null)
@@ -674,10 +675,51 @@ function resetFilters() {
 
 function onLibraryMore(command: string | number | object) {
   if (command === 'import') importFileRef.value?.click()
+  else if (command === 'cache-external-covers') void cacheExternalCovers()
   else if (command === 'export-json') exportPromptLibrary('json')
   else if (command === 'export-csv') exportPromptLibrary('csv')
   else if (command === 'sort') openSortDrawer()
   else if (command === 'categories') categoryManagerOpen.value = true
+}
+
+async function cacheExternalCovers() {
+  if (cachingExternalCovers.value) return
+  try {
+    await ElMessageBox.confirm(
+      '系统会低并发下载外链封面并存入当前 OSS。原提示词内容不变，失败项会保留外链，可稍后重试。',
+      '缓存外链封面到 OSS',
+      { type: 'info', confirmButtonText: '开始缓存', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  cachingExternalCovers.value = true
+  let succeeded = 0
+  let failed = 0
+  let remaining = 0
+  try {
+    do {
+      const result = await request<{ processed: number; succeeded: number; failed: number; remaining: number }>(
+        '/api/v1/admin/prompts/external-covers/cache',
+        { method: 'POST', body: { limit: 20 }, silent: true },
+      )
+      succeeded += result.succeeded
+      failed += result.failed
+      remaining = result.remaining
+      if (!result.processed || !result.succeeded) break
+      if (remaining > 0) await new Promise((resolve) => window.setTimeout(resolve, 500))
+    } while (remaining > 0)
+    if (failed || remaining) {
+      ElMessage.warning(`已缓存 ${succeeded} 张，${failed} 张本轮失败，剩余 ${remaining} 张可稍后重试`)
+    } else {
+      ElMessage.success(`外链封面已全部缓存到 OSS，共 ${succeeded} 张`)
+    }
+    await refresh()
+  } catch (cause) {
+    ElMessage.error(cause instanceof Error ? cause.message : '外链封面缓存失败')
+  } finally {
+    cachingExternalCovers.value = false
+  }
 }
 
 /* 大规模排序管理：服务端分页，每次只渲染一小段；跨页移动直接输入目标名次。
@@ -1585,7 +1627,10 @@ onBeforeUnmount(() => {
               <el-dropdown-item command="export-csv" :icon="Download">
                 导出 CSV
               </el-dropdown-item>
-              <el-dropdown-item command="sort" :icon="Rank" divided>
+              <el-dropdown-item command="cache-external-covers" :icon="Picture" divided :disabled="cachingExternalCovers">
+                {{ cachingExternalCovers ? '正在缓存外链封面…' : '缓存外链封面到 OSS' }}
+              </el-dropdown-item>
+              <el-dropdown-item command="sort" :icon="Rank">
                 排序
               </el-dropdown-item>
               <el-dropdown-item command="categories" :icon="CollectionTag">
