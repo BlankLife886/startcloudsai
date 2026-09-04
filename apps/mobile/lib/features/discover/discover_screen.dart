@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../../core/network/api_exception.dart';
 import '../../core/providers.dart';
@@ -44,12 +45,14 @@ class DiscoverScreen extends ConsumerStatefulWidget {
     this.communityOnly = false,
     this.promptLibraryOnly = false,
     this.initialTab = HomeDiscoverTab.home,
+    this.initialFavoritesOnly = false,
   });
 
   final Duration searchDebounce;
   final bool communityOnly;
   final bool promptLibraryOnly;
   final HomeDiscoverTab initialTab;
+  final bool initialFavoritesOnly;
 
   @override
   ConsumerState<DiscoverScreen> createState() => _DiscoverScreenState();
@@ -70,7 +73,7 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen>
   String _search = '';
   String? _promptCategory;
   String? _galleryCategory;
-  bool _favoritesOnly = false;
+  late bool _favoritesOnly;
   PromptQuery? _promptPaginationQuery;
   GalleryQuery? _galleryPaginationQuery;
   List<PromptItem> _morePrompts = const [];
@@ -81,6 +84,7 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen>
   bool _loadingMoreGallery = false;
   bool _promptLoadMoreFailed = false;
   bool _galleryLoadMoreFailed = false;
+  final Set<String> _blockedGalleryAuthors = {};
 
   HomeDiscoverTab get _activeTab {
     if (widget.promptLibraryOnly) return HomeDiscoverTab.prompts;
@@ -126,6 +130,7 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen>
       vsync: this,
       initialIndex: widget.initialTab.index,
     );
+    _favoritesOnly = widget.initialFavoritesOnly;
     _openedTabs = {widget.initialTab.index};
     _tabs.addListener(_onTabChanged);
     _promptScrollController.addListener(_onPromptScroll);
@@ -135,6 +140,13 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen>
   @override
   void didUpdateWidget(covariant DiscoverScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.initialFavoritesOnly != widget.initialFavoritesOnly) {
+      setState(() {
+        _favoritesOnly = widget.initialFavoritesOnly;
+        if (_favoritesOnly) _promptCategory = null;
+        _resetPromptPaginationState();
+      });
+    }
     if (_applyingRouteTab || oldWidget.initialTab == widget.initialTab) {
       return;
     }
@@ -347,12 +359,14 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen>
     GalleryPage firstPage,
     GalleryQuery query,
   ) {
-    if (_galleryPaginationQuery != query) return firstPage.items;
     final seen = <String>{};
-    return [
-      ...firstPage.items,
-      ..._moreGallery,
-    ].where((item) => seen.add(item.id)).toList();
+    final items = _galleryPaginationQuery != query
+        ? firstPage.items
+        : [...firstPage.items, ..._moreGallery];
+    return items
+        .where((item) => !_blockedGalleryAuthors.contains(item.authorId))
+        .where((item) => seen.add(item.id))
+        .toList();
   }
 
   String? _nextPromptCursor(PromptPage firstPage, PromptQuery query) =>
@@ -613,6 +627,8 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen>
 
   Future<void> _openGallery(GalleryItem item) async {
     final apiClient = ref.read(apiClientProvider);
+    final session = ref.read(sessionControllerProvider).valueOrNull;
+    final authenticated = session?.isAuthenticated == true;
     final imageUrls = item.previewUrls
         .map(apiClient.resolveUrl)
         .where((url) => url.isNotEmpty)
@@ -620,8 +636,40 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen>
     await showAppSheet<void>(
       context: context,
       isScrollControlled: true,
-      builder: (context) =>
-          GalleryDetailSheet(item: item, imageUrls: imageUrls),
+      builder: (sheetContext) => GalleryDetailSheet(
+        item: item,
+        imageUrls: imageUrls,
+        authenticated: authenticated,
+        currentUserId: session?.user?.id,
+        onLogin: () {
+          Navigator.of(sheetContext).pop();
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) context.push('/login');
+          });
+        },
+        onReport: (reason, detail) async {
+          await ref
+              .read(discoverRepositoryProvider)
+              .reportGallerySubmission(item.id, reason: reason, detail: detail);
+          if (mounted) AppNotice.success(context, '举报已提交，我们会尽快处理');
+        },
+        onBlock: () async {
+          await ref
+              .read(discoverRepositoryProvider)
+              .blockGalleryAuthor(item.authorId);
+          if (!mounted) return;
+          setState(() {
+            _blockedGalleryAuthors.add(item.authorId);
+            _moreGallery = _moreGallery
+                .where((entry) => entry.authorId != item.authorId)
+                .toList();
+          });
+          ref.invalidate(discoverGalleryPageProvider(_galleryQuery));
+          ref.invalidate(discoverFeedProvider);
+          AppNotice.success(context, '已屏蔽 ${item.authorName}');
+        },
+        onBlocked: () => Navigator.of(sheetContext).pop(),
+      ),
     );
   }
 
@@ -985,7 +1033,7 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen>
               ),
               side: const WidgetStatePropertyAll(BorderSide.none),
               shape: WidgetStatePropertyAll(
-                RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
               ),
               constraints: const BoxConstraints(minHeight: 48, maxHeight: 48),
               trailing: [
@@ -1239,9 +1287,12 @@ class _HomeTabButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
+    final selected = emphasis > 0.5;
+    return AppPressable(
       onTap: onTap,
+      semanticLabel: label,
+      selected: selected,
+      excludeChildSemantics: true,
       child: Center(
         child: Text(
           label,
@@ -1249,7 +1300,7 @@ class _HomeTabButton extends StatelessWidget {
           overflow: TextOverflow.ellipsis,
           style: TextStyle(
             color: Color.lerp(muted, color, emphasis),
-            fontWeight: emphasis > 0.5 ? FontWeight.w800 : FontWeight.w600,
+            fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
             fontSize: 16,
             height: 1,
             letterSpacing: -0.3,
@@ -1423,9 +1474,7 @@ class _PrimaryCreationCard extends StatelessWidget {
         onTap: onTap,
         child: Material(
           color: const Color(0xFFDCE3FF),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(22),
-          ),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
           clipBehavior: Clip.antiAlias,
           child: Stack(
             fit: StackFit.expand,
@@ -1504,9 +1553,7 @@ class _AssistantActionCard extends StatelessWidget {
         onTap: onTap,
         child: Material(
           color: colors.surfaceContainerLow,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(18),
-          ),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
           clipBehavior: Clip.antiAlias,
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 10, 8),
@@ -1794,9 +1841,11 @@ class _HomeTextTab extends StatelessWidget {
     final color = inverted
         ? (selected ? Colors.white : Colors.white54)
         : (selected ? colors.onSurface : colors.onSurfaceVariant);
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
+    return AppPressable(
       onTap: onTap,
+      semanticLabel: label,
+      selected: selected,
+      excludeChildSemantics: true,
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -2052,7 +2101,7 @@ class _PromptTextCover extends StatelessWidget {
     return DecoratedBox(
       decoration: BoxDecoration(
         color: dark ? colors.surfaceContainerHigh : const Color(0xFFF2F2F7),
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(8),
         border: Border.all(
           color: dark ? Colors.white10 : const Color(0x14000000),
         ),
@@ -2218,7 +2267,7 @@ class _PromptCover extends StatelessWidget {
     return DecoratedBox(
       decoration: BoxDecoration(
         color: fill,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(8),
         border: Border.all(
           color: dark ? Colors.white10 : const Color(0x14000000),
         ),
@@ -2394,7 +2443,7 @@ class _PromptLoadMoreCard extends StatelessWidget {
                 color: Theme.of(context).brightness == Brightness.dark
                     ? colors.surfaceContainerHigh
                     : const Color(0xFFF2F2F7),
-                borderRadius: BorderRadius.circular(16),
+                borderRadius: BorderRadius.circular(8),
                 border: Border.all(
                   color: Theme.of(context).brightness == Brightness.dark
                       ? Colors.white10
@@ -2631,7 +2680,7 @@ class _PromptDetailSheetState extends State<PromptDetailSheet> {
                       color: dark
                           ? const Color(0xFF1C1E26)
                           : const Color(0xFFF2F2F7),
-                      borderRadius: BorderRadius.circular(16),
+                      borderRadius: BorderRadius.circular(8),
                     ),
                     child: Padding(
                       padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
@@ -2706,7 +2755,7 @@ class _PromptDetailSheetState extends State<PromptDetailSheet> {
                 minimumSize: const Size(0, 48),
                 padding: const EdgeInsets.symmetric(horizontal: 18),
                 shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(16),
+                  borderRadius: BorderRadius.circular(8),
                 ),
               ),
               icon: const Icon(Icons.auto_awesome_rounded, size: 18),
@@ -2936,7 +2985,7 @@ class _PromptIconAction extends StatelessWidget {
             : const Color(0xFFF2F2F7),
         minimumSize: const Size.square(44),
         maximumSize: const Size.square(48),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
       ),
       icon: busy
           ? SizedBox.square(
@@ -3080,7 +3129,7 @@ class _GalleryCard extends ConsumerWidget {
     if (fill) {
       return _HomePressable(
         onTap: onOpen,
-        child: ClipRRect(borderRadius: BorderRadius.circular(20), child: cover),
+        child: ClipRRect(borderRadius: BorderRadius.circular(8), child: cover),
       );
     }
     final card = AppSoftCard(
@@ -3153,11 +3202,26 @@ class GalleryDetailSheet extends StatefulWidget {
   const GalleryDetailSheet({
     required this.item,
     required this.imageUrls,
+    this.authenticated = false,
+    this.currentUserId,
+    this.onReport,
+    this.onBlock,
+    this.onBlocked,
+    this.onLogin,
+    this.share,
     super.key,
   });
 
   final GalleryItem item;
   final List<String> imageUrls;
+  final bool authenticated;
+  final String? currentUserId;
+  final Future<void> Function(GalleryReportReason reason, String detail)?
+  onReport;
+  final Future<void> Function()? onBlock;
+  final VoidCallback? onBlocked;
+  final VoidCallback? onLogin;
+  final Future<void> Function(String text, Rect? origin)? share;
 
   @override
   State<GalleryDetailSheet> createState() => _GalleryDetailSheetState();
@@ -3166,6 +3230,7 @@ class GalleryDetailSheet extends StatefulWidget {
 class _GalleryDetailSheetState extends State<GalleryDetailSheet> {
   late final PageController _pageController = PageController();
   int _index = 0;
+  bool _sharing = false;
 
   List<String> get _urls =>
       widget.imageUrls.isEmpty ? const [''] : widget.imageUrls;
@@ -3185,6 +3250,81 @@ class _GalleryDetailSheetState extends State<GalleryDetailSheet> {
     );
   }
 
+  bool get _canModerate =>
+      widget.item.authorId.isNotEmpty &&
+      widget.item.authorId != widget.currentUserId;
+
+  Future<void> _share(BuildContext buttonContext) async {
+    if (_sharing) return;
+    final box = buttonContext.findRenderObject() as RenderBox?;
+    final origin = box == null
+        ? null
+        : box.localToGlobal(Offset.zero) & box.size;
+    setState(() => _sharing = true);
+    try {
+      final text = galleryShareText(widget.item);
+      final share = widget.share;
+      if (share != null) {
+        await share(text, origin);
+      } else {
+        await SharePlus.instance.share(
+          ShareParams(text: text, title: '分享社区作品', sharePositionOrigin: origin),
+        );
+      }
+    } catch (_) {
+      if (mounted) AppNotice.error(context, '分享失败，请稍后重试');
+    } finally {
+      if (mounted) setState(() => _sharing = false);
+    }
+  }
+
+  Future<void> _handleSafetyAction(_GallerySafetyAction action) async {
+    if (!widget.authenticated) {
+      widget.onLogin?.call();
+      return;
+    }
+    if (action == _GallerySafetyAction.report) {
+      final onReport = widget.onReport;
+      if (onReport == null) return;
+      await showAppDialog<void>(
+        context: context,
+        builder: (context) => GalleryReportDialog(onSubmit: onReport),
+      );
+      return;
+    }
+    final onBlock = widget.onBlock;
+    if (onBlock == null) return;
+    final confirmed = await showAppDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AppDialog(
+        icon: const Icon(Icons.person_off_outlined),
+        title: Text('屏蔽 ${widget.item.authorName}？'),
+        content: const Text('该作者的社区作品将不再向你展示。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('确认屏蔽'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      await onBlock();
+      if (mounted) widget.onBlocked?.call();
+    } catch (error) {
+      if (!mounted) return;
+      AppNotice.error(
+        context,
+        error is ApiException ? error.message : '屏蔽失败，请稍后重试',
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final item = widget.item;
@@ -3198,7 +3338,7 @@ class _GalleryDetailSheetState extends State<GalleryDetailSheet> {
             AspectRatio(
               aspectRatio: 1,
               child: ClipRRect(
-                borderRadius: BorderRadius.circular(18),
+                borderRadius: BorderRadius.circular(8),
                 child: Stack(
                   children: [
                     Positioned.fill(
@@ -3289,19 +3429,59 @@ class _GalleryDetailSheetState extends State<GalleryDetailSheet> {
                     ],
                   ),
                 ),
-                if (item.categoryName?.isNotEmpty == true)
-                  Chip(
-                    label: Text(item.categoryName!),
-                    visualDensity: VisualDensity.compact,
+                Builder(
+                  builder: (buttonContext) => IconButton(
+                    key: const Key('gallery-share'),
+                    tooltip: '分享作品',
+                    onPressed: _sharing ? null : () => _share(buttonContext),
+                    icon: _sharing
+                        ? const SizedBox.square(
+                            dimension: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.ios_share_outlined),
+                  ),
+                ),
+                if (_canModerate)
+                  PopupMenuButton<_GallerySafetyAction>(
+                    key: const Key('gallery-safety-menu'),
+                    tooltip: '社区安全操作',
+                    onSelected: _handleSafetyAction,
+                    itemBuilder: (context) => const [
+                      PopupMenuItem(
+                        value: _GallerySafetyAction.report,
+                        child: ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: Icon(Icons.flag_outlined),
+                          title: Text('举报作品'),
+                        ),
+                      ),
+                      PopupMenuItem(
+                        value: _GallerySafetyAction.block,
+                        child: ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: Icon(Icons.person_off_outlined),
+                          title: Text('屏蔽此作者'),
+                        ),
+                      ),
+                    ],
+                    icon: const Icon(Icons.more_horiz_rounded),
                   ),
               ],
             ),
-            if (item.tags.isNotEmpty) ...[
+            if (item.categoryName?.isNotEmpty == true ||
+                item.tags.isNotEmpty) ...[
               const SizedBox(height: 14),
               Wrap(
                 spacing: 8,
                 runSpacing: 7,
                 children: [
+                  if (item.categoryName?.isNotEmpty == true)
+                    Chip(
+                      avatar: const Icon(Icons.category_outlined, size: 16),
+                      label: Text(item.categoryName!),
+                      visualDensity: VisualDensity.compact,
+                    ),
                   for (final tag in item.tags)
                     Chip(
                       label: Text(tag),
@@ -3313,6 +3493,116 @@ class _GalleryDetailSheetState extends State<GalleryDetailSheet> {
           ],
         ),
       ),
+    );
+  }
+}
+
+String galleryShareText(GalleryItem item) {
+  final link = Uri.https('starcloudisai.com', '/share', {'item': item.id});
+  return '${item.title}\n来自 ${item.authorName} 的星空云绘社区作品\n$link';
+}
+
+enum _GallerySafetyAction { report, block }
+
+class GalleryReportDialog extends StatefulWidget {
+  const GalleryReportDialog({required this.onSubmit, super.key});
+
+  final Future<void> Function(GalleryReportReason reason, String detail)
+  onSubmit;
+
+  @override
+  State<GalleryReportDialog> createState() => _GalleryReportDialogState();
+}
+
+class _GalleryReportDialogState extends State<GalleryReportDialog> {
+  final _detailController = TextEditingController();
+  GalleryReportReason _reason = GalleryReportReason.inappropriate;
+  bool _submitting = false;
+
+  @override
+  void dispose() {
+    _detailController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (_submitting) return;
+    final detail = _detailController.text.trim();
+    if (_reason == GalleryReportReason.other && detail.isEmpty) {
+      AppNotice.warning(context, '请补充说明具体问题');
+      return;
+    }
+    setState(() => _submitting = true);
+    try {
+      await widget.onSubmit(_reason, detail);
+      if (mounted) Navigator.pop(context);
+    } catch (error) {
+      if (!mounted) return;
+      AppNotice.error(
+        context,
+        error is ApiException ? error.message : '举报提交失败，请稍后重试',
+      );
+      setState(() => _submitting = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AppDialog(
+      icon: const Icon(Icons.flag_outlined),
+      title: const Text('举报作品'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Text('请选择最符合的原因，我们会进行审核。'),
+          const SizedBox(height: 14),
+          DropdownButtonFormField<GalleryReportReason>(
+            key: const Key('gallery-report-reason'),
+            initialValue: _reason,
+            decoration: const InputDecoration(labelText: '举报原因'),
+            items: [
+              for (final reason in GalleryReportReason.values)
+                DropdownMenuItem(value: reason, child: Text(reason.label)),
+            ],
+            onChanged: _submitting
+                ? null
+                : (value) => setState(() => _reason = value ?? _reason),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            key: const Key('gallery-report-detail'),
+            controller: _detailController,
+            enabled: !_submitting,
+            minLines: 2,
+            maxLines: 4,
+            maxLength: 500,
+            decoration: InputDecoration(
+              labelText: _reason == GalleryReportReason.other
+                  ? '补充说明（必填）'
+                  : '补充说明（选填）',
+              alignLabelWithHint: true,
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: _submitting ? null : () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
+        FilledButton.icon(
+          key: const Key('gallery-report-submit'),
+          onPressed: _submitting ? null : _submit,
+          icon: _submitting
+              ? const SizedBox.square(
+                  dimension: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.send_outlined, size: 18),
+          label: Text(_submitting ? '提交中' : '提交举报'),
+        ),
+      ],
     );
   }
 }
@@ -3507,7 +3797,7 @@ class _SectionLoading extends StatelessWidget {
                 : colors.surfaceContainerLow,
           );
           return ClipRRect(
-            borderRadius: BorderRadius.circular(18),
+            borderRadius: BorderRadius.circular(8),
             child: SizedBox(
               width: width,
               child: overlay

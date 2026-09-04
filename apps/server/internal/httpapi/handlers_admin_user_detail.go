@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
+	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/subscription"
@@ -184,6 +185,9 @@ func (s *Server) adminUserProfileData(ctx context.Context, userID uuid.UUID, now
 	if err != nil {
 		return nil, err
 	}
+	if cfg, cfgErr := modelconfig.Load(ctx, s.St.Pool); cfgErr == nil {
+		resolveProfileModelLabels(cfg, models)
+	}
 	failures, err := store.UserProfileFailureBreakdown(ctx, s.St.Pool, userID)
 	if err != nil {
 		return nil, err
@@ -209,6 +213,48 @@ func (s *Server) adminUserProfileData(ctx context.Context, userID uuid.UUID, now
 		"funnel":     funnel,
 		"history":    history,
 	}, nil
+}
+
+var profileUpstreamModelLabels = map[string]string{
+	"image-background-remove": "背景移除",
+	"image-upscale":           "图片高清放大",
+	"image-watermark-remove":  "图片去水印",
+	"video-enhance":           "视频增强",
+	"video-watermark-remove":  "视频去水印",
+	"vidu/lip-sync":           "口型同步",
+}
+
+func resolveProfileModelLabels(cfg modelconfig.Config, items []store.UserProfileBreakdown) {
+	byID := make(map[string]string, len(cfg.Models))
+	byUpstream := make(map[string]string, len(cfg.Models))
+	for _, model := range cfg.Models {
+		name := strings.TrimSpace(model.Name)
+		if name == "" {
+			continue
+		}
+		if id := strings.TrimSpace(model.ID); id != "" {
+			byID[id] = name
+		}
+		if upstream := strings.TrimSpace(model.UpstreamModel); upstream != "" {
+			if _, exists := byUpstream[upstream]; !exists {
+				byUpstream[upstream] = name
+			}
+		}
+	}
+	for i := range items {
+		key := strings.TrimSpace(items[i].Key)
+		if name := byID[key]; name != "" {
+			items[i].Label = name
+			continue
+		}
+		if name := byUpstream[key]; name != "" {
+			items[i].Label = name
+			continue
+		}
+		if name := profileUpstreamModelLabels[key]; name != "" {
+			items[i].Label = name
+		}
+	}
 }
 
 func ptrString(value *string) string {

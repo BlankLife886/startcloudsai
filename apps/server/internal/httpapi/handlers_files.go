@@ -692,6 +692,27 @@ func objectKeyETag(key string) string {
 	return `"` + hex.EncodeToString(sum[:16]) + `"`
 }
 
+func isSmallPreviewObjectKey(key string) bool {
+	key = strings.Trim(strings.TrimSpace(key), "/")
+	if key == "" {
+		return false
+	}
+	// Only server-generated thumbnail layouts bypass active-download controls.
+	// Original and display variants remain metered even if callers alter the query.
+	parts := strings.Split(key, "/")
+	if len(parts) == 5 && parts[0] == "tasks" && parts[2] == "assistant" && strings.HasSuffix(parts[4], "-thumb") {
+		return true
+	}
+	if len(parts) == 4 && parts[0] == "uploads" && parts[2] == "thumb" {
+		return true
+	}
+	return len(parts) == 5 && parts[0] == "tasks" && parts[3] == "thumb"
+}
+
+func shouldApplyFileEgressLimits(key string, download bool) bool {
+	return download || !isSmallPreviewObjectKey(key)
+}
+
 // serveStoredObject 在权限校验完成后从对象存储流式交付内容，保持稳定的
 // /files URL，并由应用统一处理下载文件名、Range、ETag 与缓存策略。
 func (s *Server) serveStoredObject(c *gin.Context, key string, user *store.User, admin bool) {
@@ -718,8 +739,9 @@ func (s *Server) serveStoredObject(c *gin.Context, key string, user *store.User,
 			return
 		}
 	}
+	limitEgress := !admin && shouldApplyFileEgressLimits(key, c.Query("download") == "1")
 	var egressLease *fileEgressLease
-	if !admin {
+	if limitEgress {
 		var err error
 		egressLease, err = s.beginFileEgress(c, user)
 		if err != nil {
@@ -734,6 +756,12 @@ func (s *Server) serveStoredObject(c *gin.Context, key string, user *store.User,
 	openMs := time.Since(openStartedAt).Milliseconds()
 	if err != nil {
 		if storagepkg.IsNotFound(err) {
+			if c.Query("soft_missing") == "1" && c.Query("download") != "1" {
+				c.Header("Cache-Control", "private, no-store")
+				c.Header("X-StarCloud-Media-Missing", "1")
+				c.Status(http.StatusNoContent)
+				return
+			}
 			fail(c, apperr.E("not_found", "文件不存在", 404))
 			return
 		}
@@ -746,7 +774,7 @@ func (s *Server) serveStoredObject(c *gin.Context, key string, user *store.User,
 		return
 	}
 	defer stream.Body.Close()
-	if !admin {
+	if limitEgress {
 		if err := s.chargeFileEgress(c, user, stream.ContentLength); err != nil {
 			fail(c, err)
 			return

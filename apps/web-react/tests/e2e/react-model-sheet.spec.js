@@ -1,4 +1,6 @@
 import { expect, test } from '@playwright/test'
+import { readFile } from 'node:fs/promises'
+import { strFromU8, unzipSync } from 'fflate'
 import { fulfillJson } from './helpers/authMocks.js'
 
 const user = { id: 'react-model-sheet-user', email: 'model-sheet@example.com', username: '模型设计用户' }
@@ -21,6 +23,7 @@ async function mockBase(page) {
     routes: {},
     features: { 'ai.ultraModelSheet': { enabled: true, config: { publicModels: [model] } } },
     aiModelCatalog: { providers: [], publicModels: [model], featurePublicModels: [model] },
+    pageControls: { model_sheet: { status: 'normal' } },
     blacklist: { blocked: false },
   }))
 }
@@ -30,6 +33,7 @@ async function mockRuntime(page, publicModel = model) {
     routes: {},
     features: { 'ai.ultraModelSheet': { enabled: true, config: { publicModels: [publicModel] } } },
     aiModelCatalog: { providers: [], publicModels: [publicModel], featurePublicModels: [publicModel] },
+    pageControls: { model_sheet: { status: 'normal' } },
     blacklist: { blocked: false },
   }))
 }
@@ -58,9 +62,10 @@ test.describe('React model sheet interactions', () => {
           prompt: body.prompt,
           params: body.params,
           inputKeys: body.inputKeys,
-          outputUrls: [`/visual/${id}.png`],
-          originalUrls: [`/visual/${id}.png`],
-          thumbnailUrls: [`/visual/${id}.png`],
+          outputUrls: [`/visual/${id}-thumbnail.png`],
+          originalUrls: [`/visual/${id}-original.png`],
+          thumbnailUrls: [`/visual/${id}-thumbnail.png`],
+          displayUrls: [`/visual/${id}-display.png`],
           createdAt: new Date().toISOString(),
           startedAt: new Date().toISOString(),
           finishedAt: new Date().toISOString(),
@@ -75,9 +80,8 @@ test.describe('React model sheet interactions', () => {
 
     await page.goto('/model-sheet', { waitUntil: 'domcontentloaded' })
     await page.locator('input[type="file"]').setInputFiles({ name: 'reference.png', mimeType: 'image/png', buffer: tinyPng })
-    await page.getByRole('button', { name: '多张独立视图' }).click()
-    await page.getByRole('button', { name: '背面' }).click()
-    await page.getByRole('button', { name: '3/4' }).click()
+    await page.getByRole('radio', { name: /自定义/ }).click()
+    await page.locator('.ms3-view-chip', { hasText: '背面' }).click()
     await page.getByRole('button', { name: /生成 2 张视图/ }).click()
 
     await expect.poll(() => created.length).toBe(2)
@@ -89,7 +93,23 @@ test.describe('React model sheet interactions', () => {
     expect(created.every((item) => item.params.publicModelKey === model.id)).toBe(true)
     expect(created.every((item) => item.inputKeys[0] === 'uploads/model-sheet/reference.png')).toBe(true)
     await expect(page.getByAltText('模型设计')).toBeVisible()
-    await expect(page.locator('.ms3-groupbar')).toBeVisible()
+    await expect(page.locator('.ms3-slot.has-output')).toHaveCount(2)
+
+    const downloadPromise = page.waitForEvent('download')
+    await page.getByTitle('导出客户与 Codex 可读取的模型交付包').click()
+    const download = await downloadPromise
+    expect(download.suggestedFilename()).toMatch(/-handoff\.zip$/)
+    const files = unzipSync(await readFile(await download.path()))
+    expect(Object.keys(files)).toEqual(expect.arrayContaining([
+      'README.md',
+      'model-sheet.json',
+      'prompt.txt',
+    ]))
+    expect(Object.keys(files).filter((name) => name.startsWith('views/'))).toHaveLength(2)
+    const manifest = JSON.parse(strFromU8(files['model-sheet.json']))
+    expect(manifest.kind).toBe('starclouds-model-sheet')
+    expect(manifest.files).toHaveLength(2)
+    expect(manifest.files.every((item) => !('url' in item))).toBe(true)
   })
 
   test('pending reference upload does not block route navigation', async ({ page }) => {
@@ -98,7 +118,7 @@ test.describe('React model sheet interactions', () => {
     await page.route('**/api/v1/uploads', () => new Promise(() => {}))
     await page.goto('/model-sheet', { waitUntil: 'domcontentloaded' })
     await page.locator('input[type="file"]').setInputFiles({ name: 'reference.png', mimeType: 'image/png', buffer: tinyPng })
-    await page.getByRole('button', { name: /生成设定板/ }).click()
+    await page.getByRole('button', { name: /生成 3 张视图/ }).click()
     await expect(page.locator('.ms3-hud-status')).toContainText('准备参考图')
     await page.evaluate(() => history.pushState({}, '', '/pricing'))
     await page.dispatchEvent('body', 'popstate')
@@ -139,7 +159,7 @@ test.describe('React model sheet interactions', () => {
   test('does not expose the previous account model sheet data to guests', async ({ page }) => {
     await page.addInitScript(() => {
       localStorage.setItem('walleven_active_account_scope', 'user_previous')
-      localStorage.setItem('walleven_user_previous_local_ultra-model-sheet-studio-v1', JSON.stringify({
+      localStorage.setItem('walleven_user_previous_local_ultra-model-sheet-studio-v2', JSON.stringify({
         prompt: 'PREVIOUS_ACCOUNT_PRIVATE_PROMPT',
         referenceItems: [{ id: 'private-ref', type: 'url', url: '/visual/private-reference.png' }],
         activeSubjectId: 'private-subject',
@@ -177,6 +197,7 @@ test.describe('React model sheet interactions', () => {
     await page.route('**/api/v1/tasks**', (route) => fulfillJson(route, { items: [], nextCursor: null }))
 
     await page.goto('/model-sheet', { waitUntil: 'domcontentloaded' })
+    await page.locator('.ms3-more > summary').filter({ hasText: '画面设置' }).click()
     await page.getByRole('button', { name: '输出比例' }).click()
 
     await expect(page.locator('.ratio-select__option')).toHaveCount(1)
@@ -216,7 +237,7 @@ test.describe('React model sheet interactions', () => {
     })
 
     await page.goto('/model-sheet', { waitUntil: 'domcontentloaded' })
-    await page.getByRole('button', { name: /生成设定板/ }).click()
+    await page.getByRole('button', { name: /生成 3 张视图/ }).click()
 
     await expect(page.locator('.ms3-render-timer')).toHaveText('--:--')
     await expect.poll(() => pollCount, { timeout: 7_000 }).toBeGreaterThanOrEqual(2)

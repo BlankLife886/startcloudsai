@@ -6,9 +6,10 @@ import { localForageStorage } from "@/lib/localforage-storage";
 import type { CanvasBackgroundMode } from "@/lib/canvas-theme";
 import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, ViewportTransform } from "@/types/canvas";
 import type { CanvasWorkflowCheckpoint } from "@/lib/canvas/canvas-workflow";
-import { canvasProjectNeedsCloudRetry, mergeCanvasProjectDocuments, mergeCanvasProjectSnapshots, type CanvasCloudProjectSummary } from "@/lib/canvas/canvas-project-sync";
+import { canvasProjectNeedsCloudRetry, markCanvasProjectMediaDeleted, mergeCanvasProjectDocuments, mergeCanvasProjectSnapshots, type CanvasCloudProjectSummary } from "@/lib/canvas/canvas-project-sync";
 import { createCloudCanvasProject, deleteCloudCanvasProject, getCloudCanvasProject, listCloudCanvasProjectSummaries, updateCloudCanvasProject } from "@/services/canvas-cloud-repository";
 import { StarcloudsApiError } from "@/services/starclouds-api";
+import { HISTORY_MEDIA_REMOVED_EVENT } from "@react/legacy-modules/services/tasksApi.js";
 
 export type CanvasProject = {
     id: string;
@@ -458,6 +459,23 @@ export const useCanvasStore = create<CanvasStore>()(
         },
     ),
 );
+
+function handleHistoryMediaRemoved(event: Event) {
+    const detail = (event as CustomEvent<{ keys?: string[]; deletedAt?: string }>).detail;
+    const keys = Array.isArray(detail?.keys) ? detail.keys : [];
+    if (!keys.length) return;
+    const deletedAt = String(detail?.deletedAt || new Date().toISOString());
+    useCanvasStore.setState((state) => ({
+        projects: state.projects.map((project) => markCanvasProjectMediaDeleted(project, keys, deletedAt)),
+    }));
+}
+
+if (typeof window !== "undefined") {
+    window.addEventListener(HISTORY_MEDIA_REMOVED_EVENT, handleHistoryMediaRemoved);
+    if (import.meta.hot) {
+        import.meta.hot.dispose(() => window.removeEventListener(HISTORY_MEDIA_REMOVED_EVENT, handleHistoryMediaRemoved));
+    }
+}
 
 export function prepareCanvasCloudSync(userId: string) {
     const normalizedUserId = String(userId || "").trim();

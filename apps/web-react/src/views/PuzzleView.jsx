@@ -15,6 +15,7 @@ import {
 } from "@react/legacy-modules/features/ai-puzzle/domain/collageTemplates.js";
 import "@react/legacy-static/features/ai-puzzle/styles/collage-studio.css";
 import { useCollageEditor } from "../features/puzzle/useCollageEditor.js";
+import { DownloadIcon } from "../components/common/DownloadIcon.jsx";
 
 const EXPORT_SIZES = [
   { label: "标准 1600px", value: 1600 },
@@ -283,7 +284,7 @@ export function PuzzleView() {
             <button type="button" className="collage-top-btn" disabled={!editor.uploads.length} onClick={editor.autoFillFromUploads}><Icon name="grid-3x3-gap" /><span>自动填充</span></button>
             <button type="button" className="collage-top-btn" disabled={editor.filledCount < 2} onClick={editor.shuffleCells}><Icon name="shuffle" /><span>打乱</span></button>
             <div className="collage-export-group">
-              <button type="button" className="collage-top-btn primary" disabled={editor.exporting || !editor.filledCount} onClick={handleExport}><Icon name={editor.exporting ? "arrow-repeat" : "download"} className={editor.exporting ? "spin" : ""} /><span>{editor.exporting ? "导出中…" : "导出"}</span></button>
+              <button type="button" className="collage-top-btn primary" disabled={editor.exporting || !editor.filledCount} onClick={handleExport}>{editor.exporting ? <Icon name="arrow-repeat" className="spin" /> : <DownloadIcon />}<span>{editor.exporting ? "导出中…" : "导出"}</span></button>
               <button type="button" className="collage-top-btn primary collage-export-caret" disabled={editor.exporting} onClick={() => setExportMenuOpen((open) => !open)}><Icon name="chevron-down" /></button>
               {exportMenuOpen && <div className="collage-export-menu">
                 <div className="collage-export-menu__title">格式</div>

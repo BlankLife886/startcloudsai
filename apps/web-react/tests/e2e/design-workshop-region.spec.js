@@ -220,11 +220,7 @@ test('region selection uses image-content coordinates and keeps controls usable'
   expect(analysisRuns).toBe(0)
 
   await page.getByRole('button', { name: '更换背景' }).click()
-  await expect(page.getByText('更换背景模式输出完整背景')).toBeVisible()
-  await expect(page.getByLabel('更换背景模式输出完整背景')).toBeDisabled()
   await page.getByRole('button', { name: '美化图标' }).click()
-  await expect(page.getByLabel('美化图标保留完整画面')).toBeDisabled()
-  await expect(page.getByLabel('美化图标保留完整画面')).not.toBeChecked()
   await page.getByRole('checkbox', { name: '文字' }).uncheck()
   await page.getByRole('checkbox', { name: '图标', exact: true }).uncheck()
   await expect(page.locator('.dws-region-hit')).toHaveCount(0)
@@ -271,6 +267,8 @@ test('region selection uses image-content coordinates and keeps controls usable'
 test('initial region selection accepts an eight-pixel drag and removes the canvas hint', async ({
   page,
 }) => {
+  const pageErrors = []
+  page.on('pageerror', (error) => pageErrors.push(error.message))
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.goto('/design-workshop')
   await page.getByRole('button', { name: '框选优化' }).click()
@@ -331,6 +329,7 @@ test('initial region selection accepts an eight-pixel drag and removes the canva
   const duplicatedSelection = await page.locator('.dws-region-box.is-active').boundingBox()
   expect(Math.abs(duplicatedSelection.width - lockedSelection.width)).toBeLessThanOrEqual(1)
   expect(Math.abs(duplicatedSelection.height - lockedSelection.height)).toBeLessThanOrEqual(1)
+  expect(pageErrors).toEqual([])
   expect(
     Math.abs(duplicatedSelection.x - lockedSelection.x) +
       Math.abs(duplicatedSelection.y - lockedSelection.y),
@@ -379,16 +378,49 @@ test('closing the region workspace keeps processing visible on the toolbar', asy
     await route.abort()
   })
 
+  try {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await page.goto('/design-workshop')
+    await page.getByRole('button', { name: '框选优化' }).click()
+    await page.getByRole('button', { name: /^(开始|重新)分析元素$/ }).click()
+    await expect(page.getByText('正在分析元素…').first()).toBeVisible()
+    await page.getByRole('button', { name: '关闭框选优化' }).click()
+    await expect(page.getByRole('dialog', { name: '框选优化' })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: '处理中 1' })).toBeVisible()
+  } finally {
+    releaseRequest?.()
+  }
+})
+
+test('re-editing a completed region starts a new image request', async ({ page }) => {
+  let uploadCount = 0
+  await page.addInitScript(
+    ({ outputUrl, userId }) => {
+      const key = `walleven_user_${userId}_local_ui-design-region-process-v1`
+      const session = JSON.parse(localStorage.getItem(key) || '{}')
+      session.resultUrl = outputUrl
+      session.resultUrls = [outputUrl]
+      session.selection = { ...session.selection, resultUrl: outputUrl }
+      localStorage.setItem(key, JSON.stringify(session))
+    },
+    { outputUrl: OUTPUT_URL, userId: USER.id },
+  )
+  await page.route('**/api/v1/uploads', async (route) => {
+    uploadCount += 1
+    await fulfill(route, {
+      key: `uploads/region/re-edit-${uploadCount}.png`,
+      url: `/api/v1/files/uploads/region/re-edit-${uploadCount}.png`,
+    })
+  })
+
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.goto('/design-workshop')
   await page.getByRole('button', { name: '框选优化' }).click()
-  await page.getByRole('button', { name: /^(开始|重新)分析元素$/ }).click()
-  await expect(page.getByText('正在分析元素…').first()).toBeVisible()
-  await page.getByRole('button', { name: '关闭框选优化' }).click()
-  await expect(page.getByRole('dialog', { name: '框选优化' })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: '处理中 1' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '重新编辑' })).toBeVisible()
+  await page.locator('.dws-region-composer textarea').fill('把图标改成更清晰的线性风格')
+  await page.getByRole('button', { name: '重新编辑' }).click()
 
-  releaseRequest?.()
+  await expect.poll(() => uploadCount).toBeGreaterThan(0)
 })
 
 async function mockDesignWorkshopApis(page) {

@@ -12,6 +12,23 @@ function fileUrl(key: string) {
 
 const FILE_MARKER = "/api/v1/files/";
 
+function assistantVariantKey(key: string, variant: "thumb" | "display") {
+    const match = key.match(/^(tasks\/[^/]+\/assistant\/[^/]+)\/([^/]+)$/i);
+    if (!match) return "";
+    const baseName = match[2]
+        .replace(/-(?:thumb|display)$/i, "")
+        .replace(/\.[^/.]+$/, "");
+    return baseName ? `${match[1]}/${baseName}-${variant}` : "";
+}
+
+export function softMissingFileUrl(value = "") {
+    if (!value || !value.includes(FILE_MARKER) || /(?:^|[?&])soft_missing=/.test(value)) return value;
+    const hashIndex = value.indexOf("#");
+    const base = hashIndex >= 0 ? value.slice(0, hashIndex) : value;
+    const hash = hashIndex >= 0 ? value.slice(hashIndex) : "";
+    return `${base}${base.includes("?") ? "&" : "?"}soft_missing=1${hash}`;
+}
+
 export function storageKeyFromUrl(value = "") {
     if (!value) return "";
     if (value.startsWith("uploads/") || value.startsWith("tasks/") || value.startsWith("canvas-template-assets/")) return value;
@@ -24,6 +41,8 @@ export function cloudThumbnailKey(storageKeyOrUrl = "") {
     if (!key) return "";
     // 已是小图 key：新式不带扩展名，旧数据为 .jpg，都原样返回。
     if (/\/thumb\/[^/]+$/i.test(key)) return key;
+    const assistant = assistantVariantKey(key, "thumb");
+    if (assistant) return assistant;
     // 新式小图 key 不带扩展名（格式可在后台切换，内容类型由对象元数据决定）。
     const upload = key.match(/^(uploads\/[^/]+)\/original\/(.+)\.([^/.]+)$/);
     if (upload) return `${upload[1]}/thumb/${upload[2]}`;
@@ -42,6 +61,8 @@ export function cloudDisplayKey(storageKeyOrUrl = "") {
     const key = storageKeyFromUrl(storageKeyOrUrl);
     if (!key) return "";
     if (/\/display\/[^/]+$/i.test(key)) return key;
+    const assistant = assistantVariantKey(key, "display");
+    if (assistant) return assistant;
     const upload = key.match(/^(uploads\/[^/]+)\/original\/(.+)\.([^/.]+)$/);
     if (upload) return `${upload[1]}/display/${upload[2]}`;
     const task = key.match(/^(tasks\/[^/]+\/[^/]+)\/original\/(.+)\.([^/.]+)$/);
@@ -55,7 +76,7 @@ export function cloudDisplayUrl(storageKeyOrUrl = "") {
 }
 
 export function isCloudThumbnailUrl(value = "") {
-    return /\/thumb\/[^/]+(?:[?#]|$)/i.test(storageKeyFromUrl(value) || value);
+    return /(?:\/thumb\/[^/]+|\/assistant\/[^/]+\/[^/]+-thumb)$/i.test(storageKeyFromUrl(value) || value);
 }
 
 export function isLocalImageKey(value = "") {

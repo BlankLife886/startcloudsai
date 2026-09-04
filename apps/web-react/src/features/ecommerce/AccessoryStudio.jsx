@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { AuthenticatedImage } from "../../components/AuthenticatedImage.jsx";
+import { RegenerateIcon } from "../../components/common/RegenerateIcon.jsx";
 import { CommerceSelect } from "./CommerceSelect.jsx";
 import { accessoryShotBlueprints } from "./accessory/accessoryCommerce.js";
 import {
@@ -428,11 +429,10 @@ export function AccessoryStudio({
                       className="handheld-submit__spinner"
                       aria-hidden="true"
                     />
+                  ) : failed ? (
+                    <RegenerateIcon />
                   ) : (
-                    <i
-                      className={`bi ${failed ? "bi-arrow-clockwise" : "bi-stars"}`}
-                      aria-hidden="true"
-                    />
+                    <i className="bi bi-stars" aria-hidden="true" />
                   )}
                   <span>
                     {running
@@ -523,10 +523,7 @@ export function AccessoryStudio({
                         />
                       ) : thumbFailed ? (
                         <span className="handheld-frame__thumb-failed">
-                          <i
-                            className="bi bi-arrow-clockwise"
-                            aria-hidden="true"
-                          />
+                          <RegenerateIcon />
                           <small>重试</small>
                         </span>
                       ) : thumbPending ? (

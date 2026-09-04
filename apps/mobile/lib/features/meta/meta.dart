@@ -1,4 +1,6 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/network/api_client.dart';
 import '../../core/providers.dart';
@@ -14,6 +16,15 @@ class AppAnnouncement {
     this.imageUrl,
     this.ctaText,
     this.ctaUrl,
+    this.placement = 'modal',
+    this.closeText = '稍后查看',
+    this.allowClose = true,
+    this.frequency = 'session_once',
+    this.version = 1,
+    this.dismissHours = 24,
+    this.latestAppVersion,
+    this.minimumSupportedAppVersion,
+    this.targetPlatforms = const [],
   });
 
   factory AppAnnouncement.fromJson(Map<String, dynamic> json) {
@@ -41,6 +52,30 @@ class AppAnnouncement {
           (assets.isEmpty ? null : optional(assets.first['url'])),
       ctaText: optional(json['ctaText']) ?? optional(config['ctaText']),
       ctaUrl: optional(json['ctaUrl']) ?? optional(config['ctaUrl']),
+      placement: _oneOf(config['placement'], const {
+        'modal',
+        'banner',
+      }, 'modal'),
+      closeText: optional(config['closeText']) ?? '稍后查看',
+      allowClose: config['allowClose'] != false,
+      frequency: _oneOf(config['frequency'], const {
+        'session_once',
+        'every_open',
+        'once_per_version',
+        'daily',
+        'dismiss_hours',
+      }, 'session_once'),
+      version: _positiveInt(config['version'], 1),
+      dismissHours: _positiveInt(config['dismissHours'], 24).clamp(1, 720),
+      latestAppVersion:
+          optional(json['latestAppVersion']) ??
+          optional(config['latestAppVersion']),
+      minimumSupportedAppVersion:
+          optional(json['minimumSupportedAppVersion']) ??
+          optional(config['minimumSupportedAppVersion']),
+      targetPlatforms: _platforms(
+        json['targetPlatforms'] ?? config['targetPlatforms'],
+      ),
     );
   }
 
@@ -53,6 +88,157 @@ class AppAnnouncement {
   final String? imageUrl;
   final String? ctaText;
   final String? ctaUrl;
+  final String placement;
+  final String closeText;
+  final bool allowClose;
+  final String frequency;
+  final int version;
+  final int dismissHours;
+  final String? latestAppVersion;
+  final String? minimumSupportedAppVersion;
+  final List<String> targetPlatforms;
+
+  bool get hasAction =>
+      ctaText?.trim().isNotEmpty == true && ctaUrl?.trim().isNotEmpty == true;
+}
+
+List<String> _platforms(dynamic value) {
+  if (value is! List) return const [];
+  return value
+      .map((item) => item.toString().trim().toLowerCase())
+      .where((item) => item == 'ios' || item == 'android')
+      .toSet()
+      .toList();
+}
+
+String appAnnouncementPlatformName(TargetPlatform platform) =>
+    switch (platform) {
+      TargetPlatform.iOS => 'ios',
+      TargetPlatform.android => 'android',
+      TargetPlatform.macOS ||
+      TargetPlatform.windows ||
+      TargetPlatform.linux ||
+      TargetPlatform.fuchsia => 'unsupported',
+    };
+
+int compareAppVersions(String left, String right) {
+  List<int> parts(String value) {
+    final core = value.trim().split(RegExp(r'[+-]')).first;
+    return core.split('.').map((part) {
+      final match = RegExp(r'^\d+').firstMatch(part.trim());
+      return int.tryParse(match?.group(0) ?? '') ?? 0;
+    }).toList();
+  }
+
+  final leftParts = parts(left);
+  final rightParts = parts(right);
+  final length = leftParts.length > rightParts.length
+      ? leftParts.length
+      : rightParts.length;
+  for (var index = 0; index < length; index += 1) {
+    final leftPart = index < leftParts.length ? leftParts[index] : 0;
+    final rightPart = index < rightParts.length ? rightParts[index] : 0;
+    if (leftPart != rightPart) return leftPart.compareTo(rightPart);
+  }
+  return 0;
+}
+
+bool announcementTargetsInstalledApp(
+  AppAnnouncement announcement, {
+  required String? installedVersion,
+  required TargetPlatform platform,
+}) {
+  if (announcement.targetPlatforms.isNotEmpty &&
+      !announcement.targetPlatforms.contains(
+        appAnnouncementPlatformName(platform),
+      )) {
+    return false;
+  }
+  final latest = announcement.latestAppVersion?.trim();
+  final minimum = announcement.minimumSupportedAppVersion?.trim();
+  final targetVersion = latest?.isNotEmpty == true ? latest : minimum;
+  if (targetVersion == null || targetVersion.isEmpty) return true;
+  final current = installedVersion?.trim();
+  if (current == null || current.isEmpty) return false;
+  return compareAppVersions(current, targetVersion) < 0;
+}
+
+bool announcementRequiresUpdate(
+  AppAnnouncement announcement, {
+  required String? installedVersion,
+  required TargetPlatform platform,
+}) {
+  if (!announcementTargetsInstalledApp(
+    announcement,
+    installedVersion: installedVersion,
+    platform: platform,
+  )) {
+    return false;
+  }
+  final minimum = announcement.minimumSupportedAppVersion?.trim();
+  final current = installedVersion?.trim();
+  return announcement.hasAction &&
+      minimum?.isNotEmpty == true &&
+      current?.isNotEmpty == true &&
+      compareAppVersions(current!, minimum!) < 0;
+}
+
+class AppUpdateAvailability {
+  const AppUpdateAvailability({
+    required this.announcement,
+    required this.latestVersion,
+    required this.required,
+  });
+
+  final AppAnnouncement announcement;
+  final String latestVersion;
+  final bool required;
+}
+
+AppUpdateAvailability? findAvailableAppUpdate(
+  Iterable<AppAnnouncement> announcements, {
+  required String installedVersion,
+  required TargetPlatform platform,
+}) {
+  AppUpdateAvailability? selected;
+  for (final announcement in announcements) {
+    final latest = announcement.latestAppVersion?.trim().isNotEmpty == true
+        ? announcement.latestAppVersion!.trim()
+        : announcement.minimumSupportedAppVersion?.trim() ?? '';
+    if (latest.isEmpty ||
+        !announcementTargetsInstalledApp(
+          announcement,
+          installedVersion: installedVersion,
+          platform: platform,
+        )) {
+      continue;
+    }
+    final candidate = AppUpdateAvailability(
+      announcement: announcement,
+      latestVersion: latest,
+      required: announcementRequiresUpdate(
+        announcement,
+        installedVersion: installedVersion,
+        platform: platform,
+      ),
+    );
+    if (selected == null ||
+        compareAppVersions(candidate.latestVersion, selected.latestVersion) >
+            0) {
+      selected = candidate;
+    }
+  }
+  return selected;
+}
+
+String _oneOf(dynamic value, Set<String> allowed, String fallback) {
+  final normalized = value?.toString().trim().toLowerCase() ?? '';
+  return allowed.contains(normalized) ? normalized : fallback;
+}
+
+int _positiveInt(dynamic value, int fallback) {
+  final parsed = value is num ? value.toInt() : int.tryParse('$value');
+  return parsed != null && parsed > 0 ? parsed : fallback;
 }
 
 class ChangelogEntry {
@@ -201,4 +387,45 @@ final metaFeedProvider = FutureProvider<MetaFeed>(
 
 final latestChangelogProvider = FutureProvider<ChangelogEntry?>(
   (ref) => ref.watch(metaRepositoryProvider).latestChangelog(),
+);
+
+final startupAnnouncementsProvider = FutureProvider<List<AppAnnouncement>>(
+  (ref) => ref.watch(metaRepositoryProvider).announcements(),
+);
+
+abstract interface class AnnouncementReceiptStore {
+  Future<DateTime?> lastShown(AppAnnouncement announcement);
+
+  Future<void> recordShown(AppAnnouncement announcement, DateTime shownAt);
+}
+
+class SharedPreferencesAnnouncementReceiptStore
+    implements AnnouncementReceiptStore {
+  const SharedPreferencesAnnouncementReceiptStore();
+
+  String _key(AppAnnouncement announcement) =>
+      'startup_announcement.${announcement.id}.v${announcement.version}';
+
+  @override
+  Future<DateTime?> lastShown(AppAnnouncement announcement) async {
+    final value = (await SharedPreferences.getInstance()).getString(
+      _key(announcement),
+    );
+    return DateTime.tryParse(value ?? '')?.toLocal();
+  }
+
+  @override
+  Future<void> recordShown(
+    AppAnnouncement announcement,
+    DateTime shownAt,
+  ) async {
+    await (await SharedPreferences.getInstance()).setString(
+      _key(announcement),
+      shownAt.toUtc().toIso8601String(),
+    );
+  }
+}
+
+final announcementReceiptStoreProvider = Provider<AnnouncementReceiptStore>(
+  (ref) => const SharedPreferencesAnnouncementReceiptStore(),
 );

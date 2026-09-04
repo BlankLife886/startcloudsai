@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../app/starclouds_theme.dart';
 import 'app_sheet.dart';
@@ -75,7 +76,7 @@ class AppDialog extends StatelessWidget {
             constraints: const BoxConstraints(maxWidth: 400),
             child: DecoratedBox(
               decoration: BoxDecoration(
-                borderRadius: StarCloudsRadii.card,
+                borderRadius: BorderRadius.circular(8),
                 boxShadow: [
                   BoxShadow(
                     color: visual.shadow.withValues(
@@ -95,7 +96,7 @@ class AppDialog extends StatelessWidget {
                 shadowColor: Colors.transparent,
                 surfaceTintColor: Colors.transparent,
                 shape: RoundedRectangleBorder(
-                  borderRadius: StarCloudsRadii.card,
+                  borderRadius: BorderRadius.circular(8),
                 ),
                 clipBehavior: Clip.antiAlias,
                 child: Padding(
@@ -226,9 +227,12 @@ class AppPickerTile extends StatelessWidget {
             ? accent.withValues(alpha: .10)
             : colors.surfaceContainerLow,
         borderRadius: StarCloudsRadii.control,
-        child: InkWell(
+        clipBehavior: Clip.antiAlias,
+        child: AppPressable(
           onTap: onTap,
-          borderRadius: StarCloudsRadii.control,
+          semanticLabel: selected ? '$label，已选择' : label,
+          selected: selected,
+          excludeChildSemantics: true,
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
             child: Row(
@@ -366,9 +370,11 @@ class AppSelectField<T> extends StatelessWidget {
     return Material(
       color: enabled ? colors.surfaceContainerLow : colors.surfaceContainer,
       borderRadius: StarCloudsRadii.control,
-      child: InkWell(
+      clipBehavior: Clip.antiAlias,
+      child: AppPressable(
         onTap: enabled ? () => _open(context) : null,
-        borderRadius: StarCloudsRadii.control,
+        semanticLabel: '$label，${selected?.label ?? '请选择'}',
+        excludeChildSemantics: true,
         child: Padding(
           padding: const EdgeInsets.fromLTRB(14, 12, 12, 12),
           child: Row(
@@ -418,6 +424,7 @@ class AppChoicePill extends StatelessWidget {
     required this.selected,
     this.onSelected,
     this.avatar,
+    this.semanticLabel,
     super.key,
   });
 
@@ -425,6 +432,7 @@ class AppChoicePill extends StatelessWidget {
   final Widget? avatar;
   final bool selected;
   final ValueChanged<bool>? onSelected;
+  final String? semanticLabel;
 
   @override
   Widget build(BuildContext context) {
@@ -432,9 +440,12 @@ class AppChoicePill extends StatelessWidget {
     return Material(
       color: selected ? colors.primary : colors.surfaceContainerLow,
       shape: const StadiumBorder(),
-      child: InkWell(
+      clipBehavior: Clip.antiAlias,
+      child: AppPressable(
         onTap: onSelected == null ? null : () => onSelected!(!selected),
-        customBorder: const StadiumBorder(),
+        semanticLabel: semanticLabel,
+        selected: selected,
+        excludeChildSemantics: semanticLabel != null,
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
           child: DefaultTextStyle(
@@ -462,6 +473,74 @@ class AppChoicePill extends StatelessWidget {
   }
 }
 
+class AppFilterChip extends StatelessWidget {
+  const AppFilterChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+    this.icon,
+    super.key,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+  final IconData? icon;
+
+  void _activate() {
+    HapticFeedback.selectionClick();
+    onTap();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final reduce = MediaQuery.disableAnimationsOf(context);
+    return AppPressable(
+      onTap: _activate,
+      semanticLabel: selected ? '$label，已选择' : label,
+      selected: selected,
+      excludeChildSemantics: true,
+      child: AnimatedContainer(
+        key: const Key('app-filter-chip-surface'),
+        height: 36,
+        duration: reduce ? Duration.zero : AppMotion.press,
+        curve: AppMotion.ease,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: selected ? colors.onSurface : colors.surfaceContainerLow,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (icon != null) ...[
+              Icon(
+                icon,
+                size: 15,
+                color: selected ? colors.surface : colors.onSurfaceVariant,
+              ),
+              const SizedBox(width: 5),
+            ],
+            Flexible(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                  color: selected ? colors.surface : colors.onSurface,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class AppBackButton extends StatelessWidget {
   const AppBackButton({required this.onPressed, super.key});
 
@@ -475,6 +554,8 @@ class AppBackButton extends StatelessWidget {
       child: AppPressable(
         key: const Key('app-top-bar-back'),
         onTap: onPressed,
+        semanticLabel: '返回',
+        excludeChildSemantics: true,
         child: SizedBox(
           width: 48,
           height: 44,
@@ -516,12 +597,94 @@ class AppIconWell extends StatelessWidget {
       child: DecoratedBox(
         decoration: BoxDecoration(
           color: color ?? visual.brandSoft,
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(8),
         ),
         child: IconTheme(
           data: IconThemeData(color: colors.primary, size: size * 0.48),
           child: Center(child: child),
         ),
+      ),
+    );
+  }
+}
+
+class AppStatusView extends StatelessWidget {
+  const AppStatusView({
+    required this.icon,
+    required this.title,
+    required this.message,
+    this.iconKey,
+    this.actionLabel,
+    this.actionKey,
+    this.actionIcon = Icons.refresh_rounded,
+    this.onAction,
+    this.primaryAction = false,
+    this.embedded = false,
+    super.key,
+  });
+
+  final IconData icon;
+  final Key? iconKey;
+  final String title;
+  final String message;
+  final String? actionLabel;
+  final Key? actionKey;
+  final IconData actionIcon;
+  final VoidCallback? onAction;
+  final bool primaryAction;
+  final bool embedded;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final content = ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 360),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, key: iconKey, size: 40, color: colors.onSurfaceVariant),
+          const SizedBox(height: 16),
+          Text(
+            title,
+            textAlign: TextAlign.center,
+            style: Theme.of(
+              context,
+            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            message,
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: colors.onSurfaceVariant,
+              height: 1.45,
+            ),
+          ),
+          if (actionLabel != null && onAction != null) ...[
+            const SizedBox(height: 20),
+            if (primaryAction)
+              FilledButton.icon(
+                key: actionKey,
+                onPressed: onAction,
+                icon: Icon(actionIcon),
+                label: Text(actionLabel!),
+              )
+            else
+              OutlinedButton.icon(
+                key: actionKey,
+                onPressed: onAction,
+                icon: Icon(actionIcon),
+                label: Text(actionLabel!),
+              ),
+          ],
+        ],
+      ),
+    );
+    if (embedded) return content;
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(28, 40, 28, 40),
+        child: content,
       ),
     );
   }

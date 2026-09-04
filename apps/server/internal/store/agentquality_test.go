@@ -89,6 +89,75 @@ func TestAgentExecutionTraceRecordsToolsAndScore(t *testing.T) {
 	}
 }
 
+func TestAgentExecutionTraceNonSucceededTerminalStatesScoreZero(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	user, err := store.InsertUser(ctx, st.Pool, "agent-terminal-score-"+uuid.NewString()+"@example.com", "", "", "user", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	conversation, err := store.InsertAssistantConversationWithWorkspace(ctx, st.Pool, uuid.New(), user.ID, "Agent terminal scores", "infinite_canvas", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	newTrace := func(t *testing.T) *store.AssistantRun {
+		t.Helper()
+		userMessage, err := store.InsertAssistantMessage(ctx, st.Pool, store.AssistantMessage{
+			ID: uuid.New(), ConversationID: conversation.ID, Role: "user", Kind: "chat", Status: "complete", CreatedAt: now,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assistantMessage, err := store.InsertAssistantMessage(ctx, st.Pool, store.AssistantMessage{
+			ID: uuid.New(), ConversationID: conversation.ID, Role: "assistant", Kind: "agent", Status: "queued", CreatedAt: now.Add(time.Millisecond),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		run, err := store.InsertAssistantRun(ctx, st.Pool, store.AssistantRun{
+			ID: uuid.New(), UserID: user.ID, ConversationID: conversation.ID, UserMessageID: userMessage.ID,
+			AssistantMessageID: assistantMessage.ID, Mode: "agent", Prompt: "执行任务", ReservedCents: 10,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.InsertAgentExecutionTrace(ctx, st.Pool, run.ID, user.ID, nil, "gpt-test", "high", nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		return run
+	}
+
+	t.Run("failed with all tools succeeded", func(t *testing.T) {
+		run := newTrace(t)
+		if err := store.UpsertAgentToolStepClaim(ctx, st.Pool, run.ID, "tool-success", "canvas_get_state", json.RawMessage(`{}`), "browser", false); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.CompleteAgentToolStep(ctx, st.Pool, run.ID, "tool-success", json.RawMessage(`{"ok":true}`), "", now.Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.FinishAgentExecutionTrace(ctx, st.Pool, run.ID, "failed", now.Add(2*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		trace, err := store.GetUserAgentExecutionTrace(ctx, st.Pool, user.ID, run.ID)
+		if err != nil || trace == nil || trace.Score == nil || trace.Status != "failed" || *trace.Score != 0 {
+			t.Fatalf("trace=%#v err=%v", trace, err)
+		}
+	})
+
+	t.Run("canceled with no tools", func(t *testing.T) {
+		run := newTrace(t)
+		if err := store.FinishAgentExecutionTrace(ctx, st.Pool, run.ID, "canceled", now.Add(2*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		trace, err := store.GetUserAgentExecutionTrace(ctx, st.Pool, user.ID, run.ID)
+		if err != nil || trace == nil || trace.Score == nil || trace.Status != "canceled" || *trace.Score != 0 {
+			t.Fatalf("trace=%#v err=%v", trace, err)
+		}
+	})
+}
+
 func TestAssistantAgentTraceKeepsWorkspaceAndGoalContract(t *testing.T) {
 	st := testdb.Setup(t)
 	ctx := context.Background()

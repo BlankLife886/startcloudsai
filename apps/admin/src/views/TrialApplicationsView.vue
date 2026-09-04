@@ -137,6 +137,8 @@ const campaignState = computed(() => {
   return { label: "活动已关闭", tone: "muted" };
 });
 
+const pageSize = ref(20);
+
 const {
   items,
   loading,
@@ -146,8 +148,7 @@ const {
   hasPrev,
   hasNext,
   reset,
-  next,
-  prev,
+  goToPage,
   refresh,
   retry,
 } = usePagedList<TrialApplication>(
@@ -159,7 +160,7 @@ const {
           status: filters.status,
           campaignId: filters.campaignId,
           search: filters.search.trim(),
-          limit: 20,
+          limit: pageSize.value,
           cursor,
         },
       },
@@ -167,7 +168,7 @@ const {
     campaign.value = result.campaign || null;
     return result;
   },
-  () => filters,
+  () => ({ ...filters, limit: pageSize.value }),
 );
 
 const hasFilters = computed(
@@ -499,8 +500,9 @@ onMounted(async () => {
         :page="page"
         :count="items.length"
         :total="total"
-        @prev="prev"
-        @next="next"
+        :page-size="pageSize"
+        @update:page="goToPage"
+        @update:page-size="(size: number) => { pageSize = size; reset() }"
       />
     </footer>
 

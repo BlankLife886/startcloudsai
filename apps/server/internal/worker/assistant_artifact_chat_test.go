@@ -134,6 +134,11 @@ func TestAssistantPPTXRequestCreatesAndPersistsDownload(t *testing.T) {
 	if !bytes.HasPrefix(uploaded, []byte{'P', 'K', 3, 4}) || uploadedContentType != "application/vnd.openxmlformats-officedocument.presentationml.presentation" {
 		t.Fatalf("uploaded bytes=%d contentType=%q", len(uploaded), uploadedContentType)
 	}
+	finalMetadata := assistantMessageMetadata(run, nil, "complete", "")
+	attachAssistantArtifacts(finalMetadata, artifacts)
+	if err := store.UpdateAssistantMessage(ctx, st.Pool, message.ID, text, "chat", "complete", finalMetadata); err != nil {
+		t.Fatal(err)
+	}
 	persisted, err := store.GetAssistantMessage(ctx, st.Pool, message.ID)
 	if err != nil {
 		t.Fatal(err)

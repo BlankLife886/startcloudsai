@@ -48,7 +48,25 @@ void main() {
         colors.surfaceContainerLowest,
       );
       expect(theme.inputDecorationTheme.fillColor, colors.surfaceContainerLow);
+      expect(theme.textTheme.headlineLarge?.letterSpacing, 0);
+      expect(theme.textTheme.titleMedium?.letterSpacing, 0);
+      expect(theme.appBarTheme.titleTextStyle?.letterSpacing, 0);
+      final cardShape = theme.cardTheme.shape! as RoundedRectangleBorder;
+      expect(cardShape.borderRadius, BorderRadius.circular(8));
+      final inputBorder =
+          theme.inputDecorationTheme.enabledBorder! as OutlineInputBorder;
+      expect(inputBorder.borderRadius, BorderRadius.circular(8));
+      expect(
+        theme.pageTransitionsTheme.builders[TargetPlatform.iOS],
+        isA<StarCloudsPageTransitionsBuilder>(),
+      );
+      expect(
+        theme.pageTransitionsTheme.builders[TargetPlatform.android],
+        isA<StarCloudsPageTransitionsBuilder>(),
+      );
     }
+    expect(StarCloudsRadii.control, BorderRadius.circular(8));
+    expect(StarCloudsRadii.card, BorderRadius.circular(8));
   });
 
   test('system chrome stays legible in both modes', () {
@@ -61,5 +79,63 @@ void main() {
     expect(darkStyle?.systemNavigationBarIconBrightness, Brightness.light);
     expect(lightStyle?.statusBarColor, Colors.transparent);
     expect(darkStyle?.statusBarColor, Colors.transparent);
+  });
+
+  testWidgets('page transitions respect the system reduce motion setting', (
+    tester,
+  ) async {
+    const childKey = ValueKey('route-child');
+    const builder = StarCloudsPageTransitionsBuilder();
+    late Widget transition;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MediaQuery(
+          data: const MediaQueryData(disableAnimations: true),
+          child: Builder(
+            builder: (context) {
+              transition = builder.buildTransitions<void>(
+                MaterialPageRoute<void>(builder: (_) => const SizedBox()),
+                context,
+                const AlwaysStoppedAnimation(.4),
+                const AlwaysStoppedAnimation(0),
+                const SizedBox(key: childKey),
+              );
+              return transition;
+            },
+          ),
+        ),
+      ),
+    );
+
+    expect(transition, isA<SizedBox>());
+    expect(find.byKey(childKey), findsOneWidget);
+  });
+
+  testWidgets('page transitions keep motion when animations are enabled', (
+    tester,
+  ) async {
+    const builder = StarCloudsPageTransitionsBuilder();
+    late Widget transition;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) {
+            transition = builder.buildTransitions<void>(
+              MaterialPageRoute<void>(builder: (_) => const SizedBox()),
+              context,
+              const AlwaysStoppedAnimation(.4),
+              const AlwaysStoppedAnimation(0),
+              const SizedBox(),
+            );
+            return transition;
+          },
+        ),
+      ),
+    );
+
+    expect(transition, isA<FadeTransition>());
+    expect((transition as FadeTransition).child, isA<SlideTransition>());
   });
 }

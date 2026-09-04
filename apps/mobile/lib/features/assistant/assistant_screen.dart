@@ -370,6 +370,7 @@ class DeviceAssistantSpeechInput implements AssistantSpeechInput {
 class AssistantScreen extends ConsumerStatefulWidget {
   const AssistantScreen({
     this.initialPrompt,
+    this.initialReference,
     this.showBackButton = false,
     this.fallbackLocation = '/discover',
     this.speechInput,
@@ -377,6 +378,7 @@ class AssistantScreen extends ConsumerStatefulWidget {
   });
 
   final String? initialPrompt;
+  final ReferenceImageDraft? initialReference;
   final bool showBackButton;
   final String fallbackLocation;
   final AssistantSpeechInput? speechInput;
@@ -394,6 +396,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   final List<ReferenceImageDraft> _references = [];
   final Set<String> _persistentDraftPaths = {};
   final Set<String> _deletingTurnIds = {};
+  final Set<String> _feedbackMessageIds = {};
   AssistantQuotedMessage? _quoted;
   bool _selectingImages = false;
   bool _checkingBalance = false;
@@ -410,6 +413,10 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   bool _disposing = false;
   bool _creatingConversation = false;
   bool _historyDrawerOpen = false;
+  bool _referenceModelSwitchScheduled = false;
+  bool _deferredReferenceModelNoticeShown = false;
+  bool _unsupportedReferenceNoticeShown = false;
+  String? _pendingReferenceModelId;
   String _speechPrefix = '';
   int _speechSession = 0;
   Timer? _draftTimer;
@@ -438,9 +445,38 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
         text: next,
         selection: TextSelection.collapsed(offset: next.length),
       );
-      setState(_references.clear);
+      setState(() {
+        _references
+          ..clear()
+          ..addAll(
+            _mergeReferences(
+              widget.initialReference,
+              const <ReferenceImageDraft>[],
+              _incomingReferenceLimit,
+            ),
+          );
+      });
       _persistentDraftPaths.clear();
       if (_draftLoaded) _saveDraftNow();
+      return;
+    }
+    final incoming = widget.initialReference;
+    if (incoming != null &&
+        !_sameReference(incoming, oldWidget.initialReference) &&
+        _draftLoaded) {
+      final merged = _mergeReferences(
+        incoming,
+        _references,
+        _incomingReferenceLimit,
+      );
+      if (!_sameReferenceLists(merged, _references)) {
+        setState(() {
+          _references
+            ..clear()
+            ..addAll(merged);
+        });
+        _saveDraftNow();
+      }
     }
   }
 
@@ -551,9 +587,144 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     updatedAt: DateTime.now(),
   );
 
+  int get _referenceLimit {
+    final configured = ref
+        .read(assistantWorkspaceProvider)
+        .asData
+        ?.value
+        .selectedModel
+        ?.maxReferenceImages;
+    if (configured == null) return maxAssistantDraftReferences;
+    return configured.clamp(0, maxAssistantDraftReferences);
+  }
+
+  int get _incomingReferenceLimit {
+    final workspace = ref.read(assistantWorkspaceProvider).asData?.value;
+    if (workspace == null) return maxAssistantDraftReferences;
+    final selected = workspace.selectedModel;
+    if ((selected?.maxReferenceImages ?? 0) > 0) {
+      return selected!.maxReferenceImages.clamp(0, maxAssistantDraftReferences);
+    }
+    final capable = workspace.availableModels
+        .where((model) => model.maxReferenceImages > 0)
+        .firstOrNull;
+    if (capable == null) {
+      _showUnsupportedReferenceNotice();
+      return 0;
+    }
+    _pendingReferenceModelId = capable.id;
+    _scheduleReferenceModelSwitch();
+    return capable.maxReferenceImages.clamp(0, maxAssistantDraftReferences);
+  }
+
+  void _scheduleReferenceModelSwitch() {
+    if (_referenceModelSwitchScheduled || _pendingReferenceModelId == null) {
+      return;
+    }
+    _referenceModelSwitchScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _referenceModelSwitchScheduled = false;
+      if (!mounted || _pendingReferenceModelId == null) return;
+      final workspace = ref.read(assistantWorkspaceProvider).asData?.value;
+      if (workspace == null) return;
+      if (workspace.selectedRun != null) {
+        if (!_deferredReferenceModelNoticeShown) {
+          _deferredReferenceModelNoticeShown = true;
+          final label = workspace.availableModels
+              .where((model) => model.maxReferenceImages > 0)
+              .firstOrNull
+              ?.label;
+          if (label != null) {
+            AppNotice.info(context, '当前回复结束后切换到 $label');
+          }
+        }
+        return;
+      }
+      if ((workspace.selectedModel?.maxReferenceImages ?? 0) > 0) {
+        _pendingReferenceModelId = null;
+        return;
+      }
+      final capable = workspace.availableModels
+          .where((model) => model.maxReferenceImages > 0)
+          .firstOrNull;
+      if (capable == null) {
+        _pendingReferenceModelId = null;
+        _showUnsupportedReferenceNotice();
+        return;
+      }
+      ref.read(assistantWorkspaceProvider.notifier).selectModel(capable.id);
+      _pendingReferenceModelId = null;
+      _deferredReferenceModelNoticeShown = false;
+      AppNotice.info(context, '已切换到支持图片的 ${capable.label}');
+    });
+  }
+
+  void _showUnsupportedReferenceNotice() {
+    if (_unsupportedReferenceNoticeShown) return;
+    _unsupportedReferenceNoticeShown = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) AppNotice.warning(context, '当前模式暂无支持图片的模型');
+    });
+  }
+
+  int _composerReferenceLimit(AssistantWorkspaceState state) {
+    final selectedLimit = state.selectedModel?.maxReferenceImages ?? 0;
+    if (selectedLimit > 0 || _references.isEmpty) return selectedLimit;
+    final capable = state.availableModels
+        .where((model) => model.maxReferenceImages > 0)
+        .firstOrNull;
+    return capable?.maxReferenceImages ?? 0;
+  }
+
+  bool _sameReference(ReferenceImageDraft? first, ReferenceImageDraft? second) {
+    if (first == null || second == null) return first == second;
+    final firstKey = first.remoteKey?.trim() ?? '';
+    final secondKey = second.remoteKey?.trim() ?? '';
+    if (firstKey.isNotEmpty && secondKey.isNotEmpty) {
+      return firstKey == secondKey;
+    }
+    final firstAsset = first.sourceAssetId?.trim() ?? '';
+    final secondAsset = second.sourceAssetId?.trim() ?? '';
+    if (firstAsset.isNotEmpty && secondAsset.isNotEmpty) {
+      return firstAsset == secondAsset;
+    }
+    if (first.localPath.isNotEmpty && second.localPath.isNotEmpty) {
+      return File(first.localPath).absolute.path ==
+          File(second.localPath).absolute.path;
+    }
+    return false;
+  }
+
+  bool _sameReferenceLists(
+    List<ReferenceImageDraft> first,
+    List<ReferenceImageDraft> second,
+  ) {
+    if (first.length != second.length) return false;
+    for (var index = 0; index < first.length; index += 1) {
+      if (!_sameReference(first[index], second[index])) return false;
+    }
+    return true;
+  }
+
+  List<ReferenceImageDraft> _mergeReferences(
+    ReferenceImageDraft? incoming,
+    Iterable<ReferenceImageDraft> existing,
+    int limit,
+  ) {
+    if (limit <= 0) return const <ReferenceImageDraft>[];
+    final merged = <ReferenceImageDraft>[];
+    for (final item in [?incoming, ...existing]) {
+      if (merged.any((candidate) => _sameReference(candidate, item))) continue;
+      merged.add(item);
+      if (merged.length == limit) break;
+    }
+    return merged;
+  }
+
   Future<void> _restoreDraft() async {
     _restoringDraft = true;
     final incoming = widget.initialPrompt?.trim() ?? '';
+    final incomingReference = widget.initialReference;
     try {
       final store = ref.read(assistantDraftStoreProvider);
       final draft = await store.read();
@@ -562,6 +733,15 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
         if (!mounted) return;
         _persistentDraftPaths.clear();
         setState(() {
+          _references
+            ..clear()
+            ..addAll(
+              _mergeReferences(
+                incomingReference,
+                const <ReferenceImageDraft>[],
+                _incomingReferenceLimit,
+              ),
+            );
           _draftLoaded = true;
           _draftRestored = false;
         });
@@ -570,24 +750,18 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
         return;
       }
       if (!mounted) return;
-      final configuredLimit = ref
-          .read(assistantWorkspaceProvider)
-          .asData
-          ?.value
-          .selectedModel
-          ?.maxReferenceImages;
-      final restoreLimit = configuredLimit == null
-          ? maxAssistantDraftReferences
-          : configuredLimit < 0
-          ? 0
-          : configuredLimit > maxAssistantDraftReferences
-          ? maxAssistantDraftReferences
-          : configuredLimit;
-      final references = (draft?.references ?? const <ReferenceImageDraft>[])
-          .take(restoreLimit)
-          .toList();
+      final restoreLimit = incomingReference == null
+          ? _referenceLimit
+          : _incomingReferenceLimit;
+      final references = _mergeReferences(
+        incomingReference,
+        draft?.references ?? const <ReferenceImageDraft>[],
+        restoreLimit,
+      );
       final trimmedReferences =
-          draft != null && references.length < draft.references.length;
+          draft != null &&
+          references.length <
+              draft.references.length + (incomingReference == null ? 0 : 1);
       _composer.value = TextEditingValue(
         text: draft?.prompt ?? '',
         selection: TextSelection.collapsed(offset: draft?.prompt.length ?? 0),
@@ -607,7 +781,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
         _draftLoaded = true;
         _draftRestored = draft != null && !draft.isEmpty;
       });
-      if (trimmedReferences) {
+      if (trimmedReferences || incomingReference != null) {
         _restoringDraft = false;
         _saveDraftNow();
       }
@@ -778,6 +952,28 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
         ShareParams(text: content.trim(), title: 'AI 助手回复'),
       );
     });
+  }
+
+  Future<void> _setMessageFeedback(
+    AssistantMessage message,
+    AssistantFeedback? feedback,
+  ) async {
+    if (_feedbackMessageIds.contains(message.id)) return;
+    setState(() => _feedbackMessageIds.add(message.id));
+    try {
+      await ref
+          .read(assistantWorkspaceProvider.notifier)
+          .setMessageFeedback(message.id, feedback);
+      if (!mounted) return;
+      unawaited(HapticFeedback.selectionClick());
+      AppNotice.success(context, feedback == null ? '已取消反馈' : '感谢你的反馈');
+    } catch (error) {
+      if (!mounted) return;
+      final detail = error is ApiException ? error.message : '反馈提交失败，请稍后重试';
+      AppNotice.error(context, detail);
+    } finally {
+      if (mounted) setState(() => _feedbackMessageIds.remove(message.id));
+    }
   }
 
   Future<File> _downloadGeneratedImage(AssistantGeneratedImage image) async {
@@ -1298,7 +1494,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
             color: Theme.of(context).colorScheme.errorContainer,
-            borderRadius: BorderRadius.circular(18),
+            borderRadius: BorderRadius.circular(8),
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -1559,7 +1755,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
                         child: Material(
                           color: colors.surfaceContainerLow,
                           shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(18),
+                            borderRadius: BorderRadius.circular(8),
                             side: BorderSide(
                               color: colors.outlineVariant.withValues(
                                 alpha: .55,
@@ -1733,11 +1929,22 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
       } else if (newCount != oldCount && !_showJumpToLatest) {
         _scrollToBottom();
       }
-      final nextLimit = next.asData?.value.selectedModel?.maxReferenceImages;
-      if (nextLimit != null && _references.length > nextLimit) {
+      var nextLimit = nextState?.selectedModel?.maxReferenceImages;
+      if (_references.isNotEmpty && (nextLimit ?? 0) <= 0) {
+        final capable = nextState?.availableModels
+            .where((model) => model.maxReferenceImages > 0)
+            .firstOrNull;
+        if (capable != null) {
+          nextLimit = capable.maxReferenceImages;
+          _pendingReferenceModelId = capable.id;
+          _scheduleReferenceModelSwitch();
+        }
+      }
+      final limit = nextLimit;
+      if (limit != null && _references.length > limit) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted && _references.length > nextLimit) {
-            _trimReferences(nextLimit);
+          if (mounted && _references.length > limit) {
+            _trimReferences(limit);
           }
         });
       }
@@ -1937,7 +2144,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
           quoted: _quoted,
           onClearQuote: () => setState(() => _quoted = null),
           references: _references,
-          maxReferences: state.selectedModel?.maxReferenceImages ?? 0,
+          maxReferences: _composerReferenceLimit(state),
           speechInitializing: _speechInitializing,
           speechListening: _speechListening,
           onChanged: _scheduleDraftSave,
@@ -2019,6 +2226,13 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
                   ? () => _shareReply(message.content)
                   : null,
               onQuote: message.canQuote ? () => _quoteReply(message) : null,
+              onFeedback:
+                  !message.isUser &&
+                      !message.isPending &&
+                      message.status == 'complete'
+                  ? (feedback) => _setMessageFeedback(message, feedback)
+                  : null,
+              feedbackBusy: _feedbackMessageIds.contains(message.id),
               onSaveImage: _saveGeneratedImage,
               onSaveImages: _saveGeneratedImages,
               imagePromptFallback: _assistantImagePromptFallback(
@@ -2357,7 +2571,7 @@ class _AssistantToolIcon extends StatelessWidget {
           color: color.withValues(
             alpha: colors.brightness == Brightness.dark ? .22 : .12,
           ),
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(8),
         ),
         child: Icon(icon, size: 22, color: color),
       ),
@@ -3575,6 +3789,8 @@ class _MessageBubble extends StatelessWidget {
     required this.onCopy,
     required this.onShare,
     required this.onQuote,
+    required this.onFeedback,
+    required this.feedbackBusy,
     required this.onSaveImage,
     required this.onSaveImages,
     required this.imagePromptFallback,
@@ -3599,6 +3815,8 @@ class _MessageBubble extends StatelessWidget {
   final VoidCallback? onCopy;
   final VoidCallback? onShare;
   final VoidCallback? onQuote;
+  final ValueChanged<AssistantFeedback?>? onFeedback;
+  final bool feedbackBusy;
   final Future<void> Function(AssistantGeneratedImage) onSaveImage;
   final Future<void> Function(List<AssistantGeneratedImage>) onSaveImages;
   final String imagePromptFallback;
@@ -3629,7 +3847,8 @@ class _MessageBubble extends StatelessWidget {
         onShare != null ||
         onQuote != null ||
         onRetry != null ||
-        onReuse != null;
+        onReuse != null ||
+        onFeedback != null;
     final time = message.createdAt == null
         ? null
         : DateFormat('HH:mm').format(message.createdAt!);
@@ -3815,6 +4034,9 @@ class _MessageBubble extends StatelessWidget {
                   onShare: onShare,
                   onQuote: onQuote,
                   onRetry: onRetry,
+                  feedback: message.feedback,
+                  onFeedback: onFeedback,
+                  feedbackBusy: feedbackBusy,
                   time: time,
                 ),
               ],
@@ -3992,7 +4214,7 @@ class _GeneratedImageTile extends StatelessWidget {
       child: Material(
         key: ValueKey('assistant-generated-image-${image.id}'),
         color: colors.surfaceContainerHigh,
-        borderRadius: BorderRadius.circular(22),
+        borderRadius: BorderRadius.circular(8),
         clipBehavior: Clip.antiAlias,
         child: InkWell(
           onTap: () => _showGeneratedImage(
@@ -4692,7 +4914,7 @@ class _AgentProposalPanelState extends State<_AgentProposalPanel> {
               return ListTile(
                 minTileHeight: 52,
                 shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(18),
+                  borderRadius: BorderRadius.circular(8),
                 ),
                 selected: selected,
                 title: Text(option.label),
@@ -4818,11 +5040,11 @@ class _AgentProposalPanelState extends State<_AgentProposalPanel> {
         key: const Key('assistant-agent-proposal'),
         color: colors.surfaceContainerLow,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(18),
+          borderRadius: BorderRadius.circular(8),
           side: BorderSide(color: colors.outlineVariant),
         ),
         child: InkWell(
-          borderRadius: BorderRadius.circular(18),
+          borderRadius: BorderRadius.circular(8),
           onTap: () => setState(() => _dismissed = false),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
@@ -4849,7 +5071,7 @@ class _AgentProposalPanelState extends State<_AgentProposalPanel> {
       key: const Key('assistant-agent-proposal'),
       color: colors.surface,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(8),
         side: BorderSide(color: colors.outlineVariant),
       ),
       clipBehavior: Clip.antiAlias,
@@ -4927,10 +5149,10 @@ class _AgentProposalPanelState extends State<_AgentProposalPanel> {
             const SizedBox(height: 14),
             Material(
               color: colors.surfaceContainerLow,
-              borderRadius: BorderRadius.circular(18),
+              borderRadius: BorderRadius.circular(8),
               child: InkWell(
                 key: const Key('assistant-edit-agent-prompt'),
-                borderRadius: BorderRadius.circular(18),
+                borderRadius: BorderRadius.circular(8),
                 onTap: busy ? null : _editPrompt,
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(12, 10, 10, 12),
@@ -5206,9 +5428,9 @@ class _ProposalControl extends StatelessWidget {
     final colors = Theme.of(context).colorScheme;
     return Material(
       color: colors.surfaceContainerLow,
-      borderRadius: BorderRadius.circular(18),
+      borderRadius: BorderRadius.circular(8),
       child: InkWell(
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(8),
         onTap: onTap,
         child: ConstrainedBox(
           constraints: const BoxConstraints(minHeight: 62),
@@ -5359,6 +5581,9 @@ class _MessageActions extends StatelessWidget {
     required this.onShare,
     required this.onQuote,
     required this.onRetry,
+    required this.feedback,
+    required this.onFeedback,
+    required this.feedbackBusy,
     this.time,
   });
 
@@ -5366,12 +5591,20 @@ class _MessageActions extends StatelessWidget {
   final VoidCallback? onShare;
   final VoidCallback? onQuote;
   final VoidCallback? onRetry;
+  final AssistantFeedback? feedback;
+  final ValueChanged<AssistantFeedback?>? onFeedback;
+  final bool feedbackBusy;
   final String? time;
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return Row(
+    final positive = feedback == AssistantFeedback.positive;
+    final negative = feedback == AssistantFeedback.negative;
+    return Wrap(
+      crossAxisAlignment: WrapCrossAlignment.center,
+      spacing: 2,
+      runSpacing: 2,
       children: [
         if (onRetry != null)
           _MessageAction(
@@ -5401,6 +5634,32 @@ class _MessageActions extends StatelessWidget {
             icon: Icons.format_quote_rounded,
             onPressed: onQuote!,
           ),
+        if (onFeedback != null) ...[
+          _MessageAction(
+            key: const Key('assistant-feedback-positive'),
+            tooltip: positive ? '取消赞同' : '赞同',
+            icon: positive
+                ? Icons.thumb_up_alt_rounded
+                : Icons.thumb_up_alt_outlined,
+            selected: positive,
+            onPressed: feedbackBusy
+                ? null
+                : () =>
+                      onFeedback!(positive ? null : AssistantFeedback.positive),
+          ),
+          _MessageAction(
+            key: const Key('assistant-feedback-negative'),
+            tooltip: negative ? '取消不赞同' : '不赞同',
+            icon: negative
+                ? Icons.thumb_down_alt_rounded
+                : Icons.thumb_down_alt_outlined,
+            selected: negative,
+            onPressed: feedbackBusy
+                ? null
+                : () =>
+                      onFeedback!(negative ? null : AssistantFeedback.negative),
+          ),
+        ],
         if (time != null)
           Padding(
             padding: const EdgeInsets.only(left: 4),
@@ -5453,13 +5712,15 @@ class _MessageAction extends StatelessWidget {
     required this.icon,
     required this.onPressed,
     this.foregroundColor,
+    this.selected = false,
     super.key,
   });
 
   final String tooltip;
   final IconData icon;
-  final VoidCallback onPressed;
+  final VoidCallback? onPressed;
   final Color? foregroundColor;
+  final bool selected;
 
   @override
   Widget build(BuildContext context) {
@@ -5468,12 +5729,16 @@ class _MessageAction extends StatelessWidget {
       tooltip: tooltip,
       onPressed: onPressed,
       style: IconButton.styleFrom(
-        backgroundColor: Colors.transparent,
-        foregroundColor: foregroundColor ?? colors.onSurfaceVariant,
+        backgroundColor: selected
+            ? colors.primary.withValues(alpha: .1)
+            : Colors.transparent,
+        foregroundColor:
+            foregroundColor ??
+            (selected ? colors.primary : colors.onSurfaceVariant),
         overlayColor: Colors.transparent,
         splashFactory: NoSplash.splashFactory,
-        minimumSize: const Size.square(32),
-        maximumSize: const Size.square(32),
+        minimumSize: const Size.square(36),
+        maximumSize: const Size.square(36),
         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
         padding: EdgeInsets.zero,
         visualDensity: VisualDensity.standard,
@@ -5581,7 +5846,7 @@ class _MessageReferenceStrip extends StatelessWidget {
         label: items[index].name,
         image: true,
         child: ClipRRect(
-          borderRadius: BorderRadius.circular(18),
+          borderRadius: BorderRadius.circular(8),
           child: SizedBox(
             width: 92,
             child: AuthenticatedImage(url: items[index].url),
@@ -5756,7 +6021,7 @@ class _ComposerQuote extends StatelessWidget {
       key: const Key('assistant-composer-quote'),
       decoration: BoxDecoration(
         color: colors.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(8),
       ),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(10, 8, 4, 8),
@@ -6366,7 +6631,7 @@ class AssistantReferenceStrip extends StatelessWidget {
             fit: StackFit.expand,
             children: [
               ClipRRect(
-                borderRadius: BorderRadius.circular(18),
+                borderRadius: BorderRadius.circular(8),
                 child: image.localPath.isNotEmpty
                     ? Image.file(File(image.localPath), fit: BoxFit.cover)
                     : AuthenticatedImage(url: image.remoteUrl ?? ''),
@@ -6387,7 +6652,7 @@ class AssistantReferenceStrip extends StatelessWidget {
                   icon: const Icon(Icons.close, size: 17),
                 ),
               ),
-              if (image.sourceAssetId != null)
+              if (index == 0 || image.sourceAssetId != null)
                 Positioned(
                   left: 4,
                   bottom: 4,
@@ -6396,13 +6661,23 @@ class AssistantReferenceStrip extends StatelessWidget {
                       color: Colors.black.withValues(alpha: .68),
                       borderRadius: BorderRadius.circular(4),
                     ),
-                    child: const Padding(
+                    child: Padding(
                       padding: EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-                      child: Icon(
-                        Icons.collections_outlined,
-                        size: 13,
-                        color: Colors.white,
-                      ),
+                      child: index == 0
+                          ? const Text(
+                              '主参考',
+                              key: Key('assistant-reference-primary'),
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 10,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            )
+                          : const Icon(
+                              Icons.collections_outlined,
+                              size: 13,
+                              color: Colors.white,
+                            ),
                     ),
                   ),
                 ),
@@ -6679,15 +6954,15 @@ class _AssistantHistoryDrawerState
                               vertical: 10,
                             ),
                             border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(12),
+                              borderRadius: BorderRadius.circular(8),
                               borderSide: BorderSide.none,
                             ),
                             enabledBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(12),
+                              borderRadius: BorderRadius.circular(8),
                               borderSide: BorderSide.none,
                             ),
                             focusedBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(12),
+                              borderRadius: BorderRadius.circular(8),
                               borderSide: BorderSide.none,
                             ),
                           ),
@@ -6875,25 +7150,7 @@ class _HistoryFilterChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return Material(
-      color: selected ? colors.onSurface : _historyQuietFill(context),
-      shape: const StadiumBorder(),
-      child: InkWell(
-        customBorder: const StadiumBorder(),
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-          child: Text(
-            label,
-            style: Theme.of(context).textTheme.labelLarge?.copyWith(
-              color: selected ? colors.surface : colors.onSurface,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-        ),
-      ),
-    );
+    return AppFilterChip(label: label, selected: selected, onTap: onTap);
   }
 }
 
@@ -7173,7 +7430,7 @@ class _HistoryConversationTileState extends State<_HistoryConversationTile> {
           color: widget.menuOpen || (widget.selected && !widget.selecting)
               ? _historyQuietFill(context)
               : Colors.transparent,
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(8),
           clipBehavior: Clip.antiAlias,
           child: InkWell(
             onTap: widget.selecting

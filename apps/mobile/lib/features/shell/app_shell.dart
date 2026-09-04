@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 
 import '../auth/auth.dart';
@@ -283,7 +286,10 @@ class AppBottomNavigationBar extends StatelessWidget {
                     selected: selected,
                     showLabel: destination.showLabel,
                     icon: icon,
-                    onTap: () => onDestinationSelected(index),
+                    onTap: () {
+                      unawaited(HapticFeedback.selectionClick());
+                      onDestinationSelected(index);
+                    },
                   ),
                 );
               }),
@@ -317,6 +323,9 @@ class _BottomNavigationItem extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     final foreground = selected ? colors.primary : colors.onSurfaceVariant;
+    final motionDuration = MediaQuery.disableAnimationsOf(context)
+        ? Duration.zero
+        : const Duration(milliseconds: 160);
     return Semantics(
       label: semanticsLabel,
       button: true,
@@ -338,7 +347,13 @@ class _BottomNavigationItem extends StatelessWidget {
                         color: foreground,
                         size: showLabel ? 24 : 28,
                       ),
-                      child: icon,
+                      child: AnimatedScale(
+                        key: const Key('bottom-nav-icon-motion'),
+                        scale: selected ? 1.08 : 1,
+                        duration: motionDuration,
+                        curve: Curves.easeOutCubic,
+                        child: icon,
+                      ),
                     ),
                   ),
                 ),

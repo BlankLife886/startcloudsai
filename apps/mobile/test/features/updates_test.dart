@@ -1,3 +1,5 @@
+import 'dart:ui' show Tristate;
+
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -205,8 +207,19 @@ void main() {
       scrollable: find.byType(Scrollable).first,
     );
     await tester.pumpAndSettle();
+    final filterSemantics = tester
+        .getSemantics(find.bySemanticsLabel('修复'))
+        .getSemanticsData();
+    expect(filterSemantics.flagsCollection.isButton, isTrue);
+    expect(filterSemantics.flagsCollection.isSelected, Tristate.isFalse);
     await tester.tap(find.byKey(const Key('updates-tag-fix')));
     await tester.pumpAndSettle();
+
+    final selectedFilterSemantics = tester
+        .getSemantics(find.bySemanticsLabel('修复，已选择'))
+        .getSemanticsData();
+    expect(selectedFilterSemantics.flagsCollection.isButton, isTrue);
+    expect(selectedFilterSemantics.flagsCollection.isSelected, Tristate.isTrue);
 
     await tester.scrollUntilVisible(
       find.byKey(const Key('changelog-change-fix')),
@@ -217,6 +230,14 @@ void main() {
     expect(find.textContaining('创作稳定性修复'), findsOneWidget);
     expect(find.byKey(const Key('changelog-change-feature')), findsNothing);
     expect(find.text('修复断线重连后的重复提示'), findsOneWidget);
+    expect(
+      tester
+          .getSemantics(find.bySemanticsLabel(RegExp('v3.3.1 · 创作稳定性修复')))
+          .getSemanticsData()
+          .flagsCollection
+          .isButton,
+      isTrue,
+    );
     expect(tester.takeException(), isNull);
   });
 

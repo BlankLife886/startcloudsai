@@ -6,6 +6,7 @@ import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/providers.dart';
+import '../../core/widgets/app_chrome.dart';
 import '../../core/widgets/app_notice.dart';
 import '../../core/widgets/app_top_bar.dart';
 import 'meta.dart';
@@ -160,7 +161,6 @@ class _UpdatesOverview extends StatelessWidget {
       decoration: BoxDecoration(
         color: colors.surfaceContainerLow,
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: colors.outlineVariant),
       ),
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -412,42 +412,11 @@ class _UpdateTagButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return Material(
-      color: selected ? colors.onSurface : colors.surface,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(8),
-        side: BorderSide(
-          color: selected ? colors.onSurface : colors.outlineVariant,
-        ),
-      ),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(8),
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (icon != null) ...[
-                Icon(
-                  icon,
-                  size: 15,
-                  color: selected ? colors.surface : colors.onSurfaceVariant,
-                ),
-                const SizedBox(width: 5),
-              ],
-              Text(
-                label,
-                style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                  color: selected ? colors.surface : colors.onSurface,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
+    return AppFilterChip(
+      label: label,
+      icon: icon,
+      selected: selected,
+      onTap: onTap,
     );
   }
 }
@@ -473,6 +442,8 @@ class _ChangelogCard extends StatelessWidget {
       clipBehavior: Clip.antiAlias,
       child: ExpansionTile(
         initiallyExpanded: initiallyExpanded,
+        internalAddSemanticForOnTap: true,
+        onExpansionChanged: (_) => HapticFeedback.selectionClick(),
         tilePadding: const EdgeInsets.fromLTRB(12, 4, 8, 4),
         leading: SizedBox.square(
           dimension: 26,

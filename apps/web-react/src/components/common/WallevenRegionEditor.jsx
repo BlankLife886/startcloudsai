@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { fetchAuthenticatedMediaBlob } from "@react/legacy-modules/services/authenticatedMedia.js";
 import "./WallevenRegionEditor.css";
+import { SoftMark } from "./SoftMark.jsx";
 
 const PRESETS = [
   ["移除", "移除选中区域的内容，并根据周围画面自然补全"],
@@ -297,7 +298,7 @@ export function WallevenRegionEditor({
     <div className="walleven-region-editor" role="dialog" aria-modal="true" aria-label="图片局部编辑">
       <header className="walleven-region-editor__header">
         <div><span>REGION EDIT</span><strong>{title}</strong></div>
-        <span className="walleven-region-editor__model"><i className="bi bi-cpu" />{modelLabel}</span>
+        <span className="walleven-region-editor__model"><SoftMark name="cpu" size="xs" />{modelLabel}</span>
         <button type="button" aria-label="关闭局部编辑" title="关闭" disabled={busy} onClick={onClose}><i className="bi bi-x-lg" /></button>
       </header>
       <main className="walleven-region-editor__main">

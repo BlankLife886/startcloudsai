@@ -33,10 +33,16 @@ int estimatedCreationCost(ImageModelOption model, int count) =>
     model.pricePoints * count.clamp(1, model.maxImages);
 
 class CreateScreen extends ConsumerStatefulWidget {
-  const CreateScreen({this.initialPrompt, this.initialPreset, super.key});
+  const CreateScreen({
+    this.initialPrompt,
+    this.initialPreset,
+    this.initialReference,
+    super.key,
+  });
 
   final String? initialPrompt;
   final CreationPreset? initialPreset;
+  final ReferenceImageDraft? initialReference;
 
   @override
   ConsumerState<CreateScreen> createState() => _CreateScreenState();
@@ -77,6 +83,9 @@ class _CreateScreenState extends ConsumerState<CreateScreen>
     _resolution = preset?.resolution;
     _quality = preset?.quality;
     _count = preset?.count ?? 1;
+    if (widget.initialReference case final reference?) {
+      _references.add(reference);
+    }
     _promptController.addListener(_onPromptChanged);
     WidgetsBinding.instance.addObserver(this);
     _pollTimer = Timer.periodic(const Duration(seconds: 2), (_) => _poll());
@@ -89,6 +98,19 @@ class _CreateScreenState extends ConsumerState<CreateScreen>
   @override
   void didUpdateWidget(covariant CreateScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
+    final reference = widget.initialReference;
+    if (reference != null && reference != oldWidget.initialReference) {
+      final duplicate = _references.any(
+        (item) =>
+            (reference.remoteKey?.isNotEmpty == true &&
+                item.remoteKey == reference.remoteKey) ||
+            (reference.sourceAssetId?.isNotEmpty == true &&
+                item.sourceAssetId == reference.sourceAssetId) ||
+            (reference.localPath.isNotEmpty &&
+                item.localPath == reference.localPath),
+      );
+      if (!duplicate) setState(() => _references.insert(0, reference));
+    }
     if (widget.initialPreset != null &&
         widget.initialPreset != oldWidget.initialPreset) {
       final preset = widget.initialPreset!;
@@ -311,13 +333,11 @@ class _CreateScreenState extends ConsumerState<CreateScreen>
       AppNotice.warning(context, '这张图还不能作为参考图');
       return;
     }
-    if (key != null &&
-        _references.any((image) => image.remoteKey == key)) {
+    if (key != null && _references.any((image) => image.remoteKey == key)) {
       AppNotice.success(context, '已经在参考图里了');
       return;
     }
-    if (url != null &&
-        _references.any((image) => image.remoteUrl == url)) {
+    if (url != null && _references.any((image) => image.remoteUrl == url)) {
       AppNotice.success(context, '已经在参考图里了');
       return;
     }
@@ -749,7 +769,7 @@ class _CreateScreenState extends ConsumerState<CreateScreen>
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
             color: Theme.of(context).colorScheme.errorContainer,
-            borderRadius: BorderRadius.circular(18),
+            borderRadius: BorderRadius.circular(8),
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -1037,10 +1057,18 @@ class _CreateScreenState extends ConsumerState<CreateScreen>
           if (!data.enabled || data.models.isEmpty) {
             return const Center(child: Text('文生图当前未开放'));
           }
-          final model = data.models.firstWhere(
+          final requestedModel = data.models.firstWhere(
             (item) => item.id == _modelId,
             orElse: () => data.models.first,
           );
+          final model =
+              _references.isNotEmpty &&
+                  creationReferenceLimit(requestedModel) == 0
+              ? data.models.firstWhere(
+                  (item) => creationReferenceLimit(item) > 0,
+                  orElse: () => requestedModel,
+                )
+              : requestedModel;
           final ratio = _selected(_aspectRatio, model.aspectRatios);
           final resolution = _selected(_resolution, model.resolutions);
           final quality = _selected(_quality, model.qualities);
@@ -2024,13 +2052,13 @@ class _CreationVariantStrip extends StatelessWidget {
   Widget build(BuildContext context) {
     return Center(
       child: ClipRRect(
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(8),
         child: BackdropFilter(
           filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
           child: DecoratedBox(
             decoration: BoxDecoration(
               color: Colors.black.withValues(alpha: .38),
-              borderRadius: BorderRadius.circular(14),
+              borderRadius: BorderRadius.circular(8),
               border: Border.all(color: Colors.white.withValues(alpha: .16)),
             ),
             child: Padding(
@@ -2542,6 +2570,8 @@ class _PromptComposer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final compactActionSpacing =
+        MediaQuery.textScalerOf(context).scale(1) > 1.3;
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
       child: DecoratedBox(
@@ -2594,7 +2624,7 @@ class _PromptComposer extends StatelessWidget {
                       enabled: !submitting,
                       onPressed: onAddReference,
                     ),
-                    const SizedBox(width: 8),
+                    SizedBox(width: compactActionSpacing ? 4 : 8),
                   ],
                   if (references.isNotEmpty) ...[
                     CreationReferenceStrip(
@@ -2610,7 +2640,7 @@ class _PromptComposer extends StatelessWidget {
                       onReorder: onReorderReferences,
                       onExpand: () => _openReferencesSheet(context),
                     ),
-                    const SizedBox(width: 8),
+                    SizedBox(width: compactActionSpacing ? 4 : 8),
                   ],
                   const Spacer(),
                   _CreateSubmitButton(
@@ -2793,7 +2823,7 @@ class _CreationSettingsDock extends StatelessWidget {
           child: DecoratedBox(
             decoration: BoxDecoration(
               color: dark ? const Color(0xFF16181F) : const Color(0xFFF5F5F7),
-              borderRadius: BorderRadius.circular(18),
+              borderRadius: BorderRadius.circular(8),
             ),
             child: Padding(
               padding: const EdgeInsets.fromLTRB(12, 10, 10, 10),
@@ -3076,7 +3106,7 @@ class _CountDock extends StatelessWidget {
       alignment: Alignment.centerLeft,
       child: Material(
         color: dark ? const Color(0xFF22242C) : const Color(0xFFF2F2F7),
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(8),
         child: SizedBox(
           height: 36,
           child: Row(

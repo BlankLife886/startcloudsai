@@ -43,6 +43,7 @@ export function useContentReveal({
       let firstFrame = 0;
       let secondFrame = 0;
       let animation;
+      let pending = [];
       const isUnseen = (element) => {
         const id = identityAttribute
           ? String(element.getAttribute(identityAttribute) || "")
@@ -63,6 +64,7 @@ export function useContentReveal({
         const unseen = candidates
           .filter(isUnseen)
           .slice(0, Math.max(1, maxItems));
+        pending = unseen;
         if (!unseen.length) {
           root.setAttribute(stateAttribute, "entered");
           return;
@@ -71,6 +73,7 @@ export function useContentReveal({
         root.setAttribute(stateAttribute, "entering");
         if (animationsDisabled()) {
           gsap.set(unseen, { clearProps: "opacity,visibility" });
+          unseen.forEach((element) => element.removeAttribute("data-content-reveal-target"));
           root.setAttribute(stateAttribute, "entered");
           return;
         }
@@ -83,7 +86,10 @@ export function useContentReveal({
             stagger: 0.035,
             ease: "power2.out",
             clearProps: "opacity,visibility",
-            onComplete: () => root.setAttribute(stateAttribute, "entered"),
+            onComplete: () => {
+              unseen.forEach((element) => element.removeAttribute("data-content-reveal-target"));
+              root.setAttribute(stateAttribute, "entered");
+            },
           },
         );
       };
@@ -95,8 +101,10 @@ export function useContentReveal({
         window.cancelAnimationFrame(firstFrame);
         window.cancelAnimationFrame(secondFrame);
         animation?.kill();
-        const targets = gsap.utils.toArray(selector, root);
-        gsap.set(targets, { clearProps: "opacity,visibility" });
+        if (pending.length) {
+          gsap.set(pending, { clearProps: "opacity,visibility" });
+          pending.forEach((element) => element.removeAttribute("data-content-reveal-target"));
+        }
       };
     },
     {

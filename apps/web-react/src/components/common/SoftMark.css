@@ -1,0 +1,68 @@
+.sc-soft-mark {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: var(--sc-mark-size, 22px);
+  height: var(--sc-mark-size, 22px);
+  border-radius: 38%;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  color: inherit;
+  line-height: 0;
+}
+
+.sc-soft-mark svg {
+  width: 58%;
+  height: 58%;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.85;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.sc-soft-mark--xs {
+  --sc-mark-size: 16px;
+}
+
+.sc-soft-mark--sm {
+  --sc-mark-size: 22px;
+}
+
+.sc-soft-mark--md {
+  --sc-mark-size: 26px;
+}
+
+.sc-soft-mark--lg {
+  --sc-mark-size: 28px;
+}
+
+.sc-soft-mark--image {
+  background: transparent;
+  border-radius: 50%;
+  overflow: hidden;
+}
+
+.sc-soft-mark--image img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.t2i-model-icon .sc-soft-mark,
+.coloring-model-engine-icon .sc-soft-mark,
+.dws-engine-icon .sc-soft-mark {
+  width: 100%;
+  height: 100%;
+  background: transparent;
+}
+
+.ga-model-pick > .sc-soft-mark {
+  margin-left: 8px;
+  color: var(--acid, currentColor);
+}
+
+.ratio-select__option .sc-soft-mark,
+.walleven-region-editor__model .sc-soft-mark {
+  color: inherit;
+}

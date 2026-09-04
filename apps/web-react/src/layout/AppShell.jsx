@@ -14,6 +14,9 @@ import {
   trackBehaviorEvent,
 } from "@react/legacy-modules/services/behaviorTracker.js";
 import "@react/legacy-styles/generated/App.css";
+import "../components/common/DownloadIcon.css";
+import "../components/common/RegenerateIcon.css";
+import "../components/common/SoftMark.css";
 
 const documentScrollRoutes = new Set([
   "/",

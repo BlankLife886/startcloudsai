@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { gsap } from "gsap";
 import { useGSAP } from "@gsap/react";
 import { AuthenticatedImage } from "../../components/AuthenticatedImage.jsx";
+import { RegenerateIcon } from "../../components/common/RegenerateIcon.jsx";
 import { useIsDark } from "../../hooks/useIsDark.js";
 import { DialogMotion } from "../../components/motion/DialogMotion.jsx";
 import { CommerceSelect } from "./CommerceSelect.jsx";
@@ -1978,11 +1979,10 @@ export function HandheldStudio({
                     >
                       {running ? (
                         <span className="handheld-submit__spinner" aria-hidden="true" />
+                      ) : failed ? (
+                        <RegenerateIcon />
                       ) : (
-                        <i
-                          className={`bi ${failed ? "bi-arrow-clockwise" : "bi-stars"}`}
-                          aria-hidden="true"
-                        />
+                        <i className="bi bi-stars" aria-hidden="true" />
                       )}
                       <span>{running ? "生成中" : failed ? "重试" : "生成"}</span>
                       <small>
@@ -2076,10 +2076,7 @@ export function HandheldStudio({
                             />
                           ) : thumbFailed ? (
                             <span className="handheld-frame__thumb-failed">
-                              <i
-                                className="bi bi-arrow-clockwise"
-                                aria-hidden="true"
-                              />
+                              <RegenerateIcon />
                               <small>重试</small>
                             </span>
                           ) : thumbPending ? (

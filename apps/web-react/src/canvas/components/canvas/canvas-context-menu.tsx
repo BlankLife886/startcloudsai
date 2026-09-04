@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import type { ReactNode } from "react";
-import { Download, Eye, Pencil, Settings2, Trash2 } from "lucide-react";
+import { Eye, Pencil, Settings2, Trash2 } from "lucide-react";
+import { DownloadIcon } from "@react/components/common/DownloadIcon.jsx";
 import { useTranslation } from "react-i18next";
 
 import { canvasThemes } from "@/lib/canvas-theme";
@@ -39,7 +40,7 @@ export function CanvasNodeContextMenu({ menu, connectionCount = 1, onClose, onRe
                     {onRename ? <MenuButton icon={<Pencil className="size-4" />} label={t("canvas.nodeToolbar.rename")} onClick={onRename} /> : null}
                     {onEdit ? <MenuButton icon={<Settings2 className="size-4" />} label={t("common.edit")} onClick={onEdit} /> : null}
                     {onPreview ? <MenuButton icon={<Eye className="size-4" />} label={t("canvas.imageTools.view")} onClick={onPreview} /> : null}
-                    {onDownload ? <MenuButton icon={<Download className="size-4" />} label={t("common.download")} onClick={onDownload} /> : null}
+                    {onDownload ? <MenuButton icon={<DownloadIcon className="size-4" />} label={t("common.download")} onClick={onDownload} /> : null}
                     <div className="my-1 h-px" style={{ background: theme.toolbar.border }} />
                 </>
             ) : null}

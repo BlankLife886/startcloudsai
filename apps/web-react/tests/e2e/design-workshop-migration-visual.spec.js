@@ -115,6 +115,7 @@ test.describe('Design workshop Vue to React visual contract @visual', () => {
   test('page type picker desktop', async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 })
     await page.goto('/design-workshop', { waitUntil: 'domcontentloaded' })
+    await page.getByRole('button', { name: /设计系统|页面设定|Design system|Page settings/ }).click()
     await page.getByRole('button', { name: '页面类型' }).click()
     await stabilizeVisualPage(page, '.dws-page-type-picker')
     await expect(page).toHaveScreenshot('design-workshop-page-types-desktop.png', { fullPage: true })
@@ -123,6 +124,7 @@ test.describe('Design workshop Vue to React visual contract @visual', () => {
   test('style picker desktop', async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 })
     await page.goto('/design-workshop', { waitUntil: 'domcontentloaded' })
+    await page.getByRole('button', { name: /设计系统|页面设定|Design system|Page settings/ }).click()
     await page.getByRole('button', { name: '视觉风格' }).click()
     await stabilizeVisualPage(page, '.dws-config-picker.is-style')
     await expect(page).toHaveScreenshot('design-workshop-styles-desktop.png', { fullPage: true })
@@ -131,6 +133,7 @@ test.describe('Design workshop Vue to React visual contract @visual', () => {
   test('specification picker desktop', async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 })
     await page.goto('/design-workshop', { waitUntil: 'domcontentloaded' })
+    await page.getByRole('button', { name: /设计系统|页面设定|Design system|Page settings/ }).click()
     await page.getByRole('button', { name: /设计规范/ }).click()
     await stabilizeVisualPage(page, '.dws-config-picker.is-specification')
     await expect(page).toHaveScreenshot('design-workshop-specification-desktop.png', { fullPage: true })

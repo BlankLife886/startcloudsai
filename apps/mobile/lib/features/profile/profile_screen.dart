@@ -17,6 +17,7 @@ import '../meta/meta.dart';
 import '../notifications/notifications.dart';
 import 'profile.dart';
 import 'profile_avatar.dart';
+import 'app_info.dart';
 
 Future<void> _refreshProfile(WidgetRef ref) async {
   ref.invalidate(walletProvider);
@@ -271,7 +272,7 @@ class _SignedInProfile extends ConsumerWidget {
             child: _ProfileActionGrid(
               children: [
                 _SubmissionTile(overview: overview),
-                _NotificationTile(overview: overview),
+                const _FavoritePromptsTile(),
               ],
             ),
           ),
@@ -280,6 +281,12 @@ class _SignedInProfile extends ConsumerWidget {
             child: _ProfileActionGrid(
               children: [
                 const _AppearanceTile(),
+                _ProfileActionCell(
+                  icon: Icons.security_outlined,
+                  title: '账号与安全',
+                  accent: const Color(0xFF0F766E),
+                  onTap: () => context.push('/profile/security'),
+                ),
                 _ProfileActionCell(
                   icon: Icons.feedback_outlined,
                   title: '问题反馈',
@@ -762,7 +769,7 @@ class _PurchaseBanner extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      '套餐与订单',
+                      '会员与订单',
                       style: TextStyle(
                         color: Colors.white,
                         fontWeight: FontWeight.w800,
@@ -772,7 +779,7 @@ class _PurchaseBanner extends StatelessWidget {
                     ),
                     SizedBox(height: 2),
                     Text(
-                      '购买积分，查看历史订单',
+                      '查看当前权益与历史订单',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
@@ -991,6 +998,7 @@ class _ProfileActionCell extends StatelessWidget {
     required this.onTap,
     this.detail,
     this.badgeCount = 0,
+    super.key,
   });
 
   final IconData icon;
@@ -1017,7 +1025,7 @@ class _ProfileActionCell extends StatelessWidget {
                 child: DecoratedBox(
                   decoration: BoxDecoration(
                     color: accent.withValues(alpha: .12),
-                    borderRadius: BorderRadius.circular(16),
+                    borderRadius: BorderRadius.circular(8),
                   ),
                   child: SizedBox.square(
                     dimension: _ProfileLayout.iconWell,
@@ -1129,30 +1137,18 @@ class _ProfileMetaChip extends StatelessWidget {
   }
 }
 
-class _NotificationTile extends StatelessWidget {
-  const _NotificationTile({required this.overview});
-
-  final AsyncValue<ProfileOverview> overview;
+class _FavoritePromptsTile extends StatelessWidget {
+  const _FavoritePromptsTile();
 
   @override
-  Widget build(BuildContext context) {
-    final count = overview.asData?.value.unreadNotifications ?? 0;
-    final detail = overview.when(
-      loading: () => '同步中',
-      error: (error, stackTrace) => '暂不可用',
-      data: (value) => value.unreadNotifications == 0
-          ? '无未读'
-          : '${value.unreadNotifications} 条未读',
-    );
-    return _ProfileActionCell(
-      icon: Icons.notifications_outlined,
-      title: '通知中心',
-      accent: const Color(0xFF4F67D6),
-      detail: detail,
-      badgeCount: count,
-      onTap: () => context.push('/profile/notifications'),
-    );
-  }
+  Widget build(BuildContext context) => _ProfileActionCell(
+    key: const Key('profile-favorite-prompts'),
+    icon: Icons.bookmark_outline_rounded,
+    title: '我的收藏',
+    accent: const Color(0xFF4F67D6),
+    detail: '提示词收藏',
+    onTap: () => context.go('/discover?tab=prompts&favorites=1'),
+  );
 }
 
 class _SubmissionTile extends StatelessWidget {
@@ -1202,8 +1198,12 @@ class ProfileCreationOverviewCard extends StatelessWidget {
       clipBehavior: Clip.antiAlias,
       child: Column(
         children: [
-          InkWell(
+          AppPressable(
             onTap: onOpenWorks,
+            semanticLabel: overview.taskStats.running > 0
+                ? '创作概览，${overview.taskStats.running} 个任务正在生成'
+                : '创作概览，创作状态已同步',
+            excludeChildSemantics: true,
             child: Padding(
               padding: const EdgeInsets.fromLTRB(16, 15, 12, 14),
               child: Row(
@@ -1213,7 +1213,7 @@ class ProfileCreationOverviewCard extends StatelessWidget {
                     height: 40,
                     decoration: BoxDecoration(
                       color: Theme.of(context).colorScheme.secondaryContainer,
-                      borderRadius: BorderRadius.circular(18),
+                      borderRadius: BorderRadius.circular(8),
                     ),
                     child: const Icon(Icons.insights_outlined),
                   ),
@@ -1340,8 +1340,11 @@ class _RecentTaskTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final status = _profileTaskStatus(task.status);
-    return InkWell(
+    final title = task.prompt.isEmpty ? '未命名创作' : task.prompt;
+    return AppPressable(
       onTap: onTap,
+      semanticLabel: '$title，${status.label}',
+      excludeChildSemantics: true,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         child: Row(
@@ -1366,7 +1369,7 @@ class _RecentTaskTile extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    task.prompt.isEmpty ? '未命名创作' : task.prompt,
+                    title,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontWeight: FontWeight.w800),
@@ -1407,15 +1410,17 @@ class _AboutTile extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final latest = ref.watch(latestChangelogProvider).asData?.value;
+    final packageInfo = ref.watch(appPackageInfoProvider);
     return _ProfileActionCell(
       icon: Icons.info_outline_rounded,
       title: '关于星空云绘',
       accent: const Color(0xFF64748B),
-      detail: latest == null
-          ? 'v0.1.0 · $environmentLabel'
-          : 'v${latest.version}',
-      onTap: () => context.push('/updates'),
+      detail: packageInfo.when(
+        loading: () => '读取版本中',
+        error: (error, stackTrace) => '版本信息不可用',
+        data: (info) => installedVersionLabel(info, environmentLabel),
+      ),
+      onTap: () => context.push('/about'),
     );
   }
 }

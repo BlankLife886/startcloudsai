@@ -369,6 +369,27 @@ func TestThumbURLsForTaskPrefersStoredThumbsAndDerivesWhenMissing(t *testing.T) 
 	}
 }
 
+func TestTaskDictUsesDerivedThumbnailURLs(t *testing.T) {
+	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	taskID := uuid.MustParse("22222222-2222-2222-2222-222222222222")
+	original := "tasks/" + userID.String() + "/assistant/" + taskID.String() + "/1.png"
+	task := &store.Task{OutputKeys: []string{original}}
+
+	dict := taskDict(
+		task,
+		[]string{"/api/v1/files/" + original},
+		[]string{"/api/v1/files/" + original},
+	)
+	thumbs, ok := dict["thumbnailUrls"].([]string)
+	if !ok || len(thumbs) != 1 {
+		t.Fatalf("thumbnailUrls = %#v", dict["thumbnailUrls"])
+	}
+	want := "/api/v1/files/tasks/" + userID.String() + "/assistant/" + taskID.String() + "/1-thumb"
+	if thumbs[0] != want {
+		t.Fatalf("thumbnailUrls = %#v, want %q", thumbs, want)
+	}
+}
+
 func TestDisplayURLsForTaskFallsBackToOriginalWithoutStoredThumbnail(t *testing.T) {
 	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 	taskID := uuid.MustParse("22222222-2222-2222-2222-222222222222")
@@ -385,5 +406,12 @@ func TestDisplayURLsForTaskFallsBackToOriginalWithoutStoredThumbnail(t *testing.
 	want := prefix + "tasks/" + userID.String() + "/" + taskID.String() + "/display/0"
 	if len(derived) != 1 || derived[0] != want {
 		t.Fatalf("display variant = %#v, want %q", derived, want)
+	}
+
+	assistantOriginal := "tasks/" + userID.String() + "/assistant/" + taskID.String() + "/1.png"
+	assistant := displayURLsForTask(&store.Task{OutputKeys: []string{assistantOriginal}}, prefix)
+	assistantWant := prefix + "tasks/" + userID.String() + "/assistant/" + taskID.String() + "/1-display"
+	if len(assistant) != 1 || assistant[0] != assistantWant {
+		t.Fatalf("assistant display variant = %#v, want %q", assistant, assistantWant)
 	}
 }

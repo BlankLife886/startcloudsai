@@ -199,6 +199,7 @@ func ReviewSubmission(ctx context.Context, q Q, id uuid.UUID, status string, rej
 // SubmissionFilter 投稿列表可选筛选。
 type SubmissionFilter struct {
 	UserID     *uuid.UUID
+	ViewerID   *uuid.UUID
 	Status     string
 	Featured   *bool
 	CategoryID *uuid.UUID
@@ -211,6 +212,13 @@ func ListSubmissions(ctx context.Context, q Q, f SubmissionFilter, limit int, cu
 	if f.UserID != nil {
 		args = append(args, *f.UserID)
 		sql += fmt.Sprintf(` AND user_id = $%d`, len(args))
+	}
+	if f.ViewerID != nil {
+		args = append(args, *f.ViewerID)
+		sql += fmt.Sprintf(` AND NOT EXISTS (
+			SELECT 1 FROM user_blocks block
+			WHERE block.blocker_user_id = $%d AND block.blocked_user_id = gallery_submissions.user_id
+		)`, len(args))
 	}
 	if f.Status != "" {
 		args = append(args, f.Status)

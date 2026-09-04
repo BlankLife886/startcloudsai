@@ -10,6 +10,17 @@ import 'package:starcloudsai_mobile/core/storage/session_store.dart';
 import 'package:starcloudsai_mobile/core/widgets/app_notice.dart';
 import 'package:starcloudsai_mobile/features/auth/auth.dart';
 
+class _MemorySessionStore extends SessionStore {
+  _MemorySessionStore() : super(namespace: 'test');
+
+  int clearCount = 0;
+
+  @override
+  Future<void> clear() async {
+    clearCount += 1;
+  }
+}
+
 class _SessionApiClient extends ApiClient {
   _SessionApiClient()
     : super(
@@ -21,6 +32,8 @@ class _SessionApiClient extends ApiClient {
       );
 
   bool failLogout = false;
+  String? lastDeletePath;
+  Object? lastDeleteData;
 
   @override
   Future<dynamic> get(
@@ -38,6 +51,8 @@ class _SessionApiClient extends ApiClient {
     Map<String, dynamic>? queryParameters,
     dynamic cancelToken,
   }) async {
+    lastDeletePath = path;
+    lastDeleteData = data;
     if (failLogout) throw StateError('network unavailable');
     return null;
   }
@@ -170,6 +185,62 @@ void main() {
     final state = container.read(sessionControllerProvider).requireValue;
     expect(state.isAuthenticated, isFalse);
     expect(state.expired, isFalse);
+  });
+
+  test(
+    'account deletion clears the session only after server success',
+    () async {
+      final api = _SessionApiClient();
+      final sessionStore = _MemorySessionStore();
+      final container = ProviderContainer(
+        overrides: [
+          authRepositoryProvider.overrideWithValue(
+            AuthRepository(api, sessionStore),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      await container.read(sessionControllerProvider.future);
+
+      await container
+          .read(sessionControllerProvider.notifier)
+          .deleteAccount(' 123456 ');
+
+      expect(api.lastDeletePath, '/me/account');
+      expect(api.lastDeleteData, {'code': '123456', 'confirmation': 'DELETE'});
+      expect(sessionStore.clearCount, 1);
+      expect(
+        container.read(sessionControllerProvider).requireValue.isAuthenticated,
+        isFalse,
+      );
+    },
+  );
+
+  test('failed account deletion preserves the authenticated session', () async {
+    final api = _SessionApiClient()..failLogout = true;
+    final sessionStore = _MemorySessionStore();
+    final container = ProviderContainer(
+      overrides: [
+        authRepositoryProvider.overrideWithValue(
+          AuthRepository(api, sessionStore),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+    await container.read(sessionControllerProvider.future);
+
+    await expectLater(
+      container
+          .read(sessionControllerProvider.notifier)
+          .deleteAccount('123456'),
+      throwsStateError,
+    );
+
+    expect(
+      container.read(sessionControllerProvider).requireValue.isAuthenticated,
+      isTrue,
+    );
+    expect(sessionStore.clearCount, 0);
   });
 
   testWidgets('expired-session notice fits narrow width with large text', (

@@ -131,8 +131,23 @@ test('authenticated navbar redeem button opens the existing redeem dialog', asyn
 })
 
 test('authenticated navbar check-in button enters the check-in page', async ({ page }) => {
+  await page.route('**/api/v1/runtime-config', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        success: true,
+        data: {
+          pageControls: {
+            'activity.checkin': { status: 'normal', reason: '' },
+          },
+        },
+      }),
+    }),
+  )
   await page.goto('/')
-  await page.locator('.nav-checkin-btn').click()
+  await page.getByTitle('个人中心').click()
+  await page.getByRole('menuitem', { name: '签到' }).click()
 
   await expect(page).toHaveURL(/\/check-in$/)
   await expect(page.locator('.ck-dashboard')).toBeVisible()
@@ -185,6 +200,34 @@ test('notification hover shows recent messages and remains interactive', async (
   await expect(preview).toBeVisible()
   await preview.getByRole('link', { name: /查看全部通知/ }).click()
   await expect(page).toHaveURL(/\/notifications$/)
+})
+
+test('account cluster hover shows the profile menu and click still works', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto('/')
+
+  const trigger = page.locator('.account-cluster')
+  const menu = page.getByRole('menu', { name: '个人中心菜单' })
+
+  await trigger.hover()
+  await expect(menu).toBeVisible()
+  await expect(trigger.locator('.account-cluster__plan')).toHaveText('未订阅')
+  await expect(menu.getByRole('menuitem', { name: '我的资产' })).toBeVisible()
+
+  await menu.hover()
+  await page.waitForTimeout(220)
+  await expect(menu).toBeVisible()
+
+  await page.mouse.move(24, 400)
+  await expect(menu).toHaveCount(0)
+
+  await trigger.click()
+  await expect(menu).toBeVisible()
+  await page.mouse.move(24, 400)
+  await page.waitForTimeout(220)
+  await expect(menu).toBeVisible()
+  await page.mouse.click(24, 400)
+  await expect(menu).toHaveCount(0)
 })
 
 test('navbar logout requires confirmation before deleting the session', async ({ page }) => {

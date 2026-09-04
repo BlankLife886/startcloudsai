@@ -1,4 +1,4 @@
-import type { CanvasNodeData } from "@/types/canvas";
+import type { CanvasNodeData, ViewportTransform } from "@/types/canvas";
 
 export type CanvasQueryRect = {
     left: number;
@@ -7,9 +7,31 @@ export type CanvasQueryRect = {
     bottom: number;
 };
 
+type CanvasViewportSize = {
+    width: number;
+    height: number;
+};
+
 const DEFAULT_CELL_SIZE = 320;
 const MAX_BUCKETS_PER_NODE = 256;
 const MAX_QUERY_BUCKETS = 4096;
+
+export function canvasViewportQueryRect(viewport: ViewportTransform, size: CanvasViewportSize, overscanPx = 0): CanvasQueryRect {
+    const scale = Number.isFinite(viewport.k) && viewport.k > 0 ? viewport.k : 1;
+    const overscan = Number.isFinite(overscanPx) ? Math.max(0, overscanPx) : 0;
+    return {
+        left: (-viewport.x - overscan) / scale,
+        top: (-viewport.y - overscan) / scale,
+        right: (Math.max(0, size.width) - viewport.x + overscan) / scale,
+        bottom: (Math.max(0, size.height) - viewport.y + overscan) / scale,
+    };
+}
+
+export function shouldRefreshCanvasRenderViewport(previous: ViewportTransform, next: ViewportTransform, translationThreshold: number, scaleThreshold: number) {
+    const translationDelta = Math.max(Math.abs(next.x - previous.x), Math.abs(next.y - previous.y));
+    const scaleDelta = Math.abs(next.k - previous.k) / Math.max(previous.k, 0.05);
+    return translationDelta >= translationThreshold || scaleDelta >= scaleThreshold;
+}
 
 function normalizedRect(rect: CanvasQueryRect): CanvasQueryRect {
     return {

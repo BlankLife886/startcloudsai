@@ -4,6 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../../core/providers.dart';
+import '../../core/storage/user_storage_namespace.dart';
+import '../auth/auth.dart';
 
 class CreationDraft {
   const CreationDraft({
@@ -71,12 +73,15 @@ abstract interface class CreationDraftStore {
 class SecureCreationDraftStore implements CreationDraftStore {
   SecureCreationDraftStore({
     required String namespace,
+    String? legacyNamespace,
     FlutterSecureStorage? storage,
   }) : _storage = storage ?? const FlutterSecureStorage(),
-       _key = keyFor(namespace);
+       _key = keyFor(namespace),
+       _legacyKey = legacyNamespace == null ? null : keyFor(legacyNamespace);
 
   final FlutterSecureStorage _storage;
   final String _key;
+  final String? _legacyKey;
 
   static String keyFor(String namespace) {
     final normalized = namespace.trim().toLowerCase();
@@ -85,11 +90,21 @@ class SecureCreationDraftStore implements CreationDraftStore {
 
   @override
   Future<CreationDraft?> read() async {
-    final raw = await _storage.read(key: _key);
+    var raw = await _storage.read(key: _key);
+    var migrated = false;
+    if ((raw == null || raw.trim().isEmpty) && _legacyKey != null) {
+      raw = await _storage.read(key: _legacyKey);
+      migrated = raw?.trim().isNotEmpty == true;
+    }
     if (raw == null || raw.trim().isEmpty) return null;
     try {
       final draft = CreationDraft.fromJson(jsonDecode(raw));
-      return draft.isEmpty ? null : draft;
+      if (draft.isEmpty) {
+        await clear();
+        return null;
+      }
+      if (migrated) await write(draft);
+      return draft;
     } catch (_) {
       await clear();
       return null;
@@ -97,15 +112,28 @@ class SecureCreationDraftStore implements CreationDraftStore {
   }
 
   @override
-  Future<void> write(CreationDraft draft) =>
-      _storage.write(key: _key, value: jsonEncode(draft.toJson()));
+  Future<void> write(CreationDraft draft) async {
+    await _storage.write(key: _key, value: jsonEncode(draft.toJson()));
+    if (_legacyKey != null && _legacyKey != _key) {
+      await _storage.delete(key: _legacyKey);
+    }
+  }
 
   @override
-  Future<void> clear() => _storage.delete(key: _key);
+  Future<void> clear() async {
+    await _storage.delete(key: _key);
+    if (_legacyKey != null && _legacyKey != _key) {
+      await _storage.delete(key: _legacyKey);
+    }
+  }
 }
 
-final creationDraftStoreProvider = Provider<CreationDraftStore>(
-  (ref) => SecureCreationDraftStore(
-    namespace: ref.watch(appEnvironmentProvider).name.name,
-  ),
-);
+final creationDraftStoreProvider = Provider<CreationDraftStore>((ref) {
+  final environment = ref.watch(appEnvironmentProvider).name.name;
+  final session = ref.watch(sessionControllerProvider);
+  final userId = session.valueOrNull?.user?.id;
+  return SecureCreationDraftStore(
+    namespace: userStorageNamespace(environment: environment, userId: userId),
+    legacyNamespace: session.hasValue ? environment : null,
+  );
+});

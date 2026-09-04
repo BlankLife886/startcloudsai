@@ -1,3 +1,65 @@
+.t2i-page .t2i-main,
+.t2i-page .t2i-sidebar,
+.t2i-page.is-light .t2i-main,
+.t2i-page.is-light .t2i-sidebar {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.t2i-page .t2i-main {
+  background-color: var(--t2i-panel);
+}
+
+.t2i-page.is-light .t2i-main {
+  background-color: #ffffff;
+}
+
+.t2i-page .t2i-panel {
+  overflow-anchor: none;
+  scrollbar-gutter: stable;
+  transform: translateZ(0);
+}
+
+.t2i-library-view .authenticated-image.is-loading,
+.t2i-library-view .authenticated-image.is-placeholder,
+.t2i-library-view .authenticated-image.is-loaded,
+.t2i-panel--history .authenticated-image.is-loading,
+.t2i-panel--history .authenticated-image.is-placeholder,
+.t2i-panel--history .authenticated-image.is-loaded {
+  animation: none;
+}
+
+.t2i-panel--history .t2i-history-card {
+  contain: none;
+  content-visibility: visible;
+}
+
+.t2i-stage--empty {
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.t2i-stage--empty .t2i-empty {
+  height: auto;
+  min-height: 0;
+}
+
+.t2i-filmstrip--placeholder {
+  pointer-events: none;
+}
+
+.t2i-film-placeholder {
+  flex: 0 0 104px;
+  height: 72px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.045);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+.t2i-page.is-light .t2i-film-placeholder {
+  background: rgba(28, 30, 43, 0.045);
+  box-shadow: inset 0 0 0 1px rgba(28, 30, 43, 0.08);
+}
+
 .t2i-page .t2i-stage-cell > .t2i-stage-cell-delete,
 .t2i-page .t2i-stage-quick-actions button,
 .t2i-page .t2i-entry-actions button,

@@ -566,12 +566,26 @@ func (s *Server) cancelPendingLanjingOrder(ctx context.Context, order *store.Ord
 	if configErr != nil || client == nil || order.Provider != "lanjing" || order.ProviderOrderID == nil {
 		return order, fmt.Errorf("payment provider unavailable")
 	}
-	if err := client.CloseOrder(ctx, *order.ProviderOrderID); err != nil {
+	if closeErr := client.CloseOrder(ctx, *order.ProviderOrderID); closeErr != nil {
+		confirmation, checkErr := client.CheckOrder(ctx, *order.ProviderOrderID)
+		if checkErr == nil {
+			if err := validatePaymentConfirmation(order, confirmation); err != nil {
+				return order, fmt.Errorf("invalid lanjing payment confirmation: %w", err)
+			}
+			return s.completeOrder(ctx, order)
+		}
 		fresh, _, syncErr := s.syncLanjingOrder(ctx, order)
 		if syncErr == nil && fresh != nil && (fresh.Status == "completed" || fresh.Status == "expired") {
 			return fresh, nil
 		}
-		return order, err
+		if lanjingpay.IsTerminalOrderError(closeErr) || lanjingpay.IsTerminalOrderError(checkErr) ||
+			lanjingpay.IsTerminalOrderError(syncErr) {
+			if _, err := store.TransitionPendingOrderStatus(ctx, s.St.Pool, order.ID, "expired"); err != nil {
+				return order, err
+			}
+			return store.GetOrder(ctx, s.St.Pool, order.ID)
+		}
+		return order, closeErr
 	}
 	if _, err := store.TransitionPendingOrderStatus(ctx, s.St.Pool, order.ID, "expired"); err != nil {
 		return order, err

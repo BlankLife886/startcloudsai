@@ -18,6 +18,7 @@ import { CanvasHostProvider } from "@/components/layout/canvas-host-context";
 import UserLayout from "@/layouts/user-layout";
 import canvasI18n, { changeAppLocale } from "@/i18n";
 import { useThemeStore } from "@/stores/use-theme-store";
+import { useAssetStore } from "@/stores/use-asset-store";
 import { CanvasDeleteProjectsDialog } from "@/components/canvas/canvas-delete-projects-dialog";
 import { CanvasRenameProjectDialog } from "@/components/canvas/canvas-rename-project-dialog";
 import { disconnectCanvasCloudSync, flushCanvasPersistence, prepareCanvasCloudSync } from "@/stores/canvas/use-canvas-store";
@@ -89,6 +90,7 @@ export function CanvasNativeLayout({ children }: { children?: ReactNode }) {
     const isDark = useIsDark();
     const { locale } = useLocale();
     const theme = isDark ? "dark" : "light";
+    const syncCloudImages = useAssetStore((state) => state.syncCloudImages);
 
     if (useThemeStore.getState().theme !== theme) {
         useThemeStore.setState({ theme });
@@ -130,12 +132,16 @@ export function CanvasNativeLayout({ children }: { children?: ReactNode }) {
     }, [locale]);
 
     useLayoutEffect(() => {
+        const controller = new AbortController();
         if (auth.isAuthenticated && auth.user?.id) {
-            void prepareCanvasCloudSync(String(auth.user.id));
-            return;
+            const userId = String(auth.user.id);
+            void prepareCanvasCloudSync(userId);
+            void syncCloudImages(controller.signal, userId);
+            return () => controller.abort();
         }
         disconnectCanvasCloudSync();
-    }, [auth.isAuthenticated, auth.user?.id]);
+        return () => controller.abort();
+    }, [auth.isAuthenticated, auth.user?.id, syncCloudImages]);
 
     useEffect(() => {
         const persist = () => {

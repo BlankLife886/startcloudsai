@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { CanvasSpatialIndex, pickLargestCanvasNodes } from "../src/canvas/lib/canvas/canvas-spatial-index.ts";
+import { CanvasSpatialIndex, canvasViewportQueryRect, pickLargestCanvasNodes, shouldRefreshCanvasRenderViewport } from "../src/canvas/lib/canvas/canvas-spatial-index.ts";
 
 const node = (id, x, y, width = 100, height = 100) => ({ id, type: "image", title: id, position: { x, y }, width, height });
 
@@ -15,6 +15,22 @@ test("spatial index supports negative coordinates and oversized groups", () => {
     const index = new CanvasSpatialIndex([node("negative", -500, -400), node("group", -10000, -10000, 20000, 20000)]);
     assert.deepEqual(index.queryPoint(-450, -350).map((item) => item.id), ["group", "negative"]);
     assert.deepEqual(index.queryPoint(9000, 9000).map((item) => item.id), ["group"]);
+});
+
+test("viewport query converts screen bounds and overscan into world coordinates", () => {
+    assert.deepEqual(canvasViewportQueryRect({ x: 100, y: -50, k: 2 }, { width: 800, height: 600 }, 120), {
+        left: -110,
+        top: -35,
+        right: 410,
+        bottom: 385,
+    });
+});
+
+test("render viewport refreshes only after meaningful pan or zoom movement", () => {
+    const previous = { x: 100, y: 200, k: 1 };
+    assert.equal(shouldRefreshCanvasRenderViewport(previous, { x: 150, y: 250, k: 1.05 }, 96, 0.08), false);
+    assert.equal(shouldRefreshCanvasRenderViewport(previous, { x: 196, y: 200, k: 1 }, 96, 0.08), true);
+    assert.equal(shouldRefreshCanvasRenderViewport(previous, { x: 100, y: 200, k: 1.08 }, 96, 0.08), true);
 });
 
 test("huge sparse selections fall back to a bounded node scan", () => {

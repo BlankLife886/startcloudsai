@@ -233,6 +233,234 @@ func TestEditImagesWithOptionsForwardsInputFidelity(t *testing.T) {
 	if payload["input_fidelity"] != "high" {
 		t.Fatalf("input_fidelity = %#v", payload["input_fidelity"])
 	}
+	images, ok := payload["images"].([]any)
+	if !ok || len(images) != 1 {
+		t.Fatalf("images = %#v", payload["images"])
+	}
+	image, ok := images[0].(map[string]any)
+	if !ok || image["b64_json"] != "aW1hZ2U=" {
+		t.Fatalf("image = %#v, want b64_json", images[0])
+	}
+}
+
+func TestOpenAIImageEditsUseMultipartFiles(t *testing.T) {
+	reference := png1x1()
+	encoded := base64.StdEncoding.EncodeToString(reference)
+	tests := []struct {
+		name        string
+		count       int
+		field       string
+		callTracked bool
+	}{
+		{name: "single", count: 1, field: "image"},
+		{name: "multiple", count: 2, field: "image[]", callTracked: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/images/edits" {
+					t.Fatalf("path = %q, want /v1/images/edits", r.URL.Path)
+				}
+				if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data; boundary=") {
+					t.Fatalf("content type = %q", r.Header.Get("Content-Type"))
+				}
+				if err := r.ParseMultipartForm(8 << 20); err != nil {
+					t.Fatal(err)
+				}
+				for key, want := range map[string]string{
+					"model": "gpt-image-2-high", "prompt": "refine UI", "n": fmt.Sprint(test.count),
+					"response_format": "b64_json", "size": "1024x576", "quality": "high",
+				} {
+					if got := r.FormValue(key); got != want {
+						t.Fatalf("%s = %q, want %q", key, got, want)
+					}
+				}
+				files := r.MultipartForm.File[test.field]
+				if len(files) != test.count {
+					t.Fatalf("%s file count = %d, want %d", test.field, len(files), test.count)
+				}
+				for _, file := range files {
+					if file.Header.Get("Content-Type") != "image/png" {
+						t.Fatalf("file content type = %q", file.Header.Get("Content-Type"))
+					}
+					opened, err := file.Open()
+					if err != nil {
+						t.Fatal(err)
+					}
+					data, err := io.ReadAll(opened)
+					_ = opened.Close()
+					if err != nil {
+						t.Fatal(err)
+					}
+					if string(data) != string(reference) {
+						t.Fatal("multipart reference image changed")
+					}
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"data":[{"b64_json":"done"}]}`))
+			}))
+			defer server.Close()
+
+			client := NewWithPolicy(server.URL+"/v1", "test-key", 30, true).WithOpenAIImageEdits()
+			inputs := make([]string, test.count)
+			for index := range inputs {
+				inputs[index] = encoded
+			}
+			var images []string
+			var err error
+			if test.callTracked {
+				var pending bool
+				var upstreamTaskID string
+				images, pending, upstreamTaskID, err = client.SubmitEditImagesTracked(
+					context.Background(), "local-id", "refine UI", "gpt-image-2-high", test.count,
+					inputs, "1024x576", ImageOptions{Quality: "high"},
+				)
+				if pending || upstreamTaskID != "" {
+					t.Fatalf("pending=%v upstreamTaskID=%q, want synchronous result", pending, upstreamTaskID)
+				}
+			} else {
+				images, err = client.EditImagesWithOptions(
+					context.Background(), "local-id", "refine UI", "gpt-image-2-high", test.count,
+					inputs, "1024x576", ImageOptions{Quality: "high"},
+				)
+			}
+			if err != nil || len(images) != 1 || images[0] != "done" {
+				t.Fatalf("images=%#v err=%v", images, err)
+			}
+		})
+	}
+}
+
+func TestEditImagesWithOptionsRetriesWithImageURL(t *testing.T) {
+	reference := base64.StdEncoding.EncodeToString(png1x1())
+	var payloads []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/image-tasks/edits" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		payloads = append(payloads, payload)
+		w.Header().Set("Content-Type", "application/json")
+		if len(payloads) == 1 {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = w.Write([]byte(`{"detail":"images[].image_url is required"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"edit-url","status":"success","data":[{"b64_json":"done"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	images, err := client.EditImagesWithOptions(
+		context.Background(), "edit-url", "keep identity", "gpt-image-2", 1,
+		[]string{reference}, "1024x1024", ImageOptions{InputFidelity: "high"},
+	)
+	if err != nil || len(images) != 1 || images[0] != "done" {
+		t.Fatalf("images=%#v err=%v", images, err)
+	}
+	assertImageEditCompatibilityPayloads(t, payloads, "edit-url", reference)
+}
+
+func TestSubmitEditImagesTrackedRetriesWithImageURL(t *testing.T) {
+	reference := base64.StdEncoding.EncodeToString(png1x1())
+	var payloads []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/image-tasks/edits" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		payloads = append(payloads, payload)
+		w.Header().Set("Content-Type", "application/json")
+		if len(payloads) == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"images[].image_url is required"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"canonical-edit-id","status":"processing"}`))
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	images, pending, upstreamTaskID, err := client.SubmitEditImagesTracked(
+		context.Background(), "local-edit-id", "keep identity", "gpt-image-2", 1,
+		[]string{reference}, "1024x1024", ImageOptions{},
+	)
+	if err != nil || !pending || len(images) != 0 || upstreamTaskID != "canonical-edit-id" {
+		t.Fatalf("images=%#v pending=%v upstreamTaskID=%q err=%v", images, pending, upstreamTaskID, err)
+	}
+	assertImageEditCompatibilityPayloads(t, payloads, "local-edit-id", reference)
+}
+
+func TestEditImagesSyncFallbackRetriesWithImageURL(t *testing.T) {
+	reference := base64.StdEncoding.EncodeToString(png1x1())
+	var syncPayloads []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/image-tasks/edits":
+			http.NotFound(w, r)
+		case "/v1/images/edits":
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			syncPayloads = append(syncPayloads, payload)
+			w.Header().Set("Content-Type", "application/json")
+			if len(syncPayloads) == 1 {
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				_, _ = w.Write([]byte(`{"detail":"images[].image_url is required"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"data":[{"b64_json":"sync-done"}]}`))
+		default:
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	images, err := client.EditImagesWithOptions(
+		context.Background(), "sync-edit", "keep identity", "gpt-image-2", 1,
+		[]string{reference}, "1024x1024", ImageOptions{},
+	)
+	if err != nil || len(images) != 1 || images[0] != "sync-done" {
+		t.Fatalf("images=%#v err=%v", images, err)
+	}
+	assertImageEditCompatibilityPayloads(t, syncPayloads, "sync-edit", reference)
+}
+
+func assertImageEditCompatibilityPayloads(t *testing.T, payloads []map[string]any, taskID, reference string) {
+	t.Helper()
+	if len(payloads) != 2 {
+		t.Fatalf("payload count = %d, want 2", len(payloads))
+	}
+	for index, payload := range payloads {
+		if payload["client_task_id"] != taskID {
+			t.Fatalf("payload %d client_task_id = %#v, want %q", index, payload["client_task_id"], taskID)
+		}
+	}
+	firstImages, ok := payloads[0]["images"].([]any)
+	if !ok || len(firstImages) != 1 {
+		t.Fatalf("first images = %#v", payloads[0]["images"])
+	}
+	first, ok := firstImages[0].(map[string]any)
+	if !ok || first["b64_json"] != reference || first["image_url"] != nil {
+		t.Fatalf("first image = %#v, want b64_json only", firstImages[0])
+	}
+	secondImages, ok := payloads[1]["images"].([]any)
+	if !ok || len(secondImages) != 1 {
+		t.Fatalf("second images = %#v", payloads[1]["images"])
+	}
+	second, ok := secondImages[0].(map[string]any)
+	wantURL := "data:image/png;base64," + reference
+	if !ok || second["image_url"] != wantURL || second["b64_json"] != nil {
+		t.Fatalf("second image = %#v, want image_url %q only", secondImages[0], wantURL)
+	}
 }
 
 func TestGenerateImagesRecoversCompletedImageBeforeTaskTerminalState(t *testing.T) {
@@ -324,6 +552,20 @@ func TestDownloadImageDoesNotForwardAPIKeyCrossOrigin(t *testing.T) {
 	}
 	if len(images) != 1 {
 		t.Fatalf("images = %#v", images)
+	}
+}
+
+func TestNormalizeImageURLRewritesChatGPT2APIInternalOrigin(t *testing.T) {
+	client := NewWithPolicy("https://upstream.example.com/v1", "secret-key", 30, false)
+	target, sameOrigin, err := client.normalizeImageURL("http://chatgpt2api:80/images/generated.png?version=2")
+	if err != nil {
+		t.Fatalf("normalizeImageURL: %v", err)
+	}
+	if got, want := target.String(), "https://upstream.example.com/images/generated.png?version=2"; got != want {
+		t.Fatalf("target = %q, want %q", got, want)
+	}
+	if !sameOrigin {
+		t.Fatal("rewritten internal result URL must use the configured upstream origin")
 	}
 }
 

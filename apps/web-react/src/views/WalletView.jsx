@@ -10,6 +10,7 @@ import notificationService from "@react/legacy-modules/services/notification.js"
 import { publishWalletSnapshot } from "@react/legacy-modules/services/walletSync.js";
 import { TASK_UPDATE_EVENT, isTerminalTaskStatus } from "@react/legacy-modules/services/tasksApi.js";
 import "@react/legacy-styles/generated/views/WalletView.css";
+import { DownloadIcon } from "../components/common/DownloadIcon.jsx";
 import { RedeemCodeDialog } from "../components/RedeemCodeDialog.jsx";
 import "./WalletView.css";
 import { useIsDark } from "../hooks/useIsDark.js";
@@ -772,7 +773,7 @@ export function WalletView() {
                 disabled={exporting}
                 onClick={exportBill}
               >
-                <i className="bi bi-download" aria-hidden="true" />
+                <DownloadIcon />
                 {exporting ? "导出中…" : "导出账单"}
               </button>
             </div>

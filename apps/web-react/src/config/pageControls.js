@@ -93,7 +93,7 @@ export function getDefaultPageControls() {
   const controls = Object.fromEntries(
     PAGE_KEYS.map((key) => [key, { status: PAGE_STATUS.NORMAL, reason: "" }]),
   );
-  for (const key of ["model_sheet", "illustration_coloring", "game_art"]) {
+  for (const key of ["illustration_coloring", "game_art"]) {
     controls[key] = {
       status: PAGE_STATUS.DEVELOPING,
       reason: "功能正在开发中，敬请期待。",

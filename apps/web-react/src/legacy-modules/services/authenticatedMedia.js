@@ -259,23 +259,49 @@ export function isAuthenticatedAiMediaUrl(value = '') {
   return /\/api\/v1\/files\//i.test(url)
 }
 
+function optionalMediaFetchUrl(url, enabled) {
+  if (!enabled || !isAuthenticatedAiMediaUrl(url)) return url
+  return `${url}${url.includes('?') ? '&' : '?'}soft_missing=1`
+}
+
+function mediaReadError(status, retryable = false) {
+  const error = new Error(`任务图片读取失败(${status})`)
+  error.status = status
+  error.retryable = retryable
+  return error
+}
+
+export function isRetryableAuthenticatedMediaError(error) {
+  if (error?.name === 'AbortError') return false
+  if (error?.retryable === true) return true
+  const status = Number(error?.status || 0)
+  return status === 0 || status >= 500
+}
+
 export async function fetchAuthenticatedMediaBlob(value = '', options = {}) {
   const url = String(value || '').trim()
   if (!url) throw new Error('没有可读取的图片')
 
-  const response = await fetch(url, {
+  const response = await fetch(optionalMediaFetchUrl(url, options.softMissing === true), {
     method: 'GET',
     credentials: 'include',
+    // soft_missing 响应由服务端用 no-store 标记；成功的不可变图片仍应进入
+    // 浏览器私有缓存，避免每次进入历史页都重新经过应用服务器和 OSS。
     cache: options.cache || 'default',
     signal: options.signal,
   })
-  if (!response.ok) {
-    // 旧数据可能没有小图/展示图变体：404 时回退到调用方给的原图地址。
+  const missing = response.status === 404 || (
+    response.status === 204 && response.headers.get('X-StarCloud-Media-Missing') === '1'
+  )
+  if (missing) {
     const fallbackUrl = String(options.fallbackUrl || '').trim()
-    if (response.status === 404 && fallbackUrl && fallbackUrl !== url) {
+    if (fallbackUrl && fallbackUrl !== url) {
       return fetchAuthenticatedMediaBlob(fallbackUrl, { ...options, fallbackUrl: '' })
     }
-    throw new Error(`任务图片读取失败(${response.status})`)
+    throw mediaReadError(404, options.softMissing === true)
+  }
+  if (!response.ok) {
+    throw mediaReadError(response.status)
   }
 
   const blob = await response.blob()
@@ -295,11 +321,19 @@ export async function fetchAuthenticatedMediaBlob(value = '', options = {}) {
 function fetchAuthenticatedMediaBlobShared(url, fallbackUrl = '') {
   const cached = inFlightMediaFetches.get(url)
   if (cached) return cached
-  const promise = fetchAuthenticatedMediaBlob(url, { fallbackUrl }).finally(() => {
-    window.setTimeout(() => {
+  const promise = fetchAuthenticatedMediaBlob(url, { fallbackUrl, softMissing: true }).then(
+    (blob) => {
+      window.setTimeout(() => {
+        if (inFlightMediaFetches.get(url) === promise) inFlightMediaFetches.delete(url)
+      }, 1200)
+      return blob
+    },
+    (error) => {
+      // A rejected shared promise must not consume the caller's next retry.
       if (inFlightMediaFetches.get(url) === promise) inFlightMediaFetches.delete(url)
-    }, 1200)
-  })
+      throw error
+    },
+  )
   inFlightMediaFetches.set(url, promise)
   return promise
 }

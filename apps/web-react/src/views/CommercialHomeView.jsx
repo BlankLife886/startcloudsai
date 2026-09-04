@@ -30,6 +30,18 @@ const UPCOMING_ITEMS = [
     icon: "bi-android2",
   },
   {
+    id: "payment-subscription",
+    label: "支付订阅",
+    tagline: "在线购买套餐并自动续费",
+    icon: "bi-credit-card-2-front-fill",
+  },
+  {
+    id: "canvas-scheduled-task",
+    label: "无限画布定时任务",
+    tagline: "按计划自动跑画布工作流",
+    icon: "bi-clock",
+  },
+  {
     id: "skill",
     label: "Skill",
     tagline: "可复用的创作技能包",
@@ -166,12 +178,13 @@ function priceLabel(points) {
 
 function CoverCard({ item, badge = "" }) {
   const status = STATUS_META[item.status] || STATUS_META[PAGE_STATUS.NORMAL];
-  const shownBadge = badge || (item.status && item.status !== PAGE_STATUS.NORMAL ? status.label : "");
+  const blocked = !badge && (item.status === PAGE_STATUS.DEVELOPING || item.status === PAGE_STATUS.MAINTENANCE);
+  const shownBadge = badge || (blocked ? status.label : "");
   const badgeClass = badge ? "is-developing" : status.className;
   const price = priceLabel(item.minPoints);
   const className = [
     "home-card",
-    badge ? "is-developing" : status.className,
+    blocked ? status.className : "",
     item.cover ? "" : "is-icon",
     item.to ? "" : "is-static",
   ]
@@ -189,12 +202,18 @@ function CoverCard({ item, badge = "" }) {
           <ImageIcon aria-hidden="true" />
         )}
       </span>
-      {shownBadge ? <em className={`home-card__status ${badgeClass}`}>{shownBadge}</em> : null}
+      {blocked ? (
+        <span className={`home-card__mask ${badgeClass}`} aria-hidden="true">
+          <strong>{shownBadge}</strong>
+        </span>
+      ) : shownBadge ? (
+        <em className={`home-card__status ${badgeClass}`}>{shownBadge}</em>
+      ) : null}
       {price ? <b className="home-card__price">{price}</b> : null}
       <span className="home-card__body">
         <strong>{item.label}</strong>
-        {item.status !== PAGE_STATUS.NORMAL && item.reason ? <small>{item.reason}</small> : null}
-        {item.to ? (
+        {blocked && item.reason ? <small>{item.reason}</small> : null}
+        {item.to && !blocked ? (
           <i>
             进入
             <ArrowRight aria-hidden="true" />
@@ -219,26 +238,28 @@ function CoverCard({ item, badge = "" }) {
 
 function CompactCard({ item }) {
   const status = STATUS_META[item.status] || STATUS_META[PAGE_STATUS.NORMAL];
+  const blocked = item.status === PAGE_STATUS.DEVELOPING || item.status === PAGE_STATUS.MAINTENANCE;
   const price = priceLabel(item.minPoints);
   return (
     <Link
-      className={`home-compact ${status.className}`}
+      className={`home-compact ${blocked ? status.className : ""}`}
       to={item.to}
-      aria-label={[item.label, status.label, price].filter(Boolean).join("，")}
+      aria-label={[item.label, blocked ? status.label : "", price].filter(Boolean).join("，")}
     >
       <span className="home-compact__icon" aria-hidden="true">
         <i className={`bi ${item.icon || "bi-tools"}`} />
       </span>
       <span className="home-compact__copy">
-        <strong>
-          {item.label}
-          {item.status !== PAGE_STATUS.NORMAL ? (
-            <em className={`home-card__status ${status.className}`}>{status.label}</em>
-          ) : null}
-        </strong>
+        <strong>{item.label}</strong>
         {item.tagline ? <span>{item.tagline}</span> : null}
       </span>
-      {price ? <b className="home-card__price">{price}</b> : null}
+      {blocked ? (
+        <span className={`home-compact__mask ${status.className}`} aria-hidden="true">
+          <strong>{status.label}</strong>
+        </span>
+      ) : price ? (
+        <b className="home-card__price">{price}</b>
+      ) : null}
     </Link>
   );
 }
@@ -336,7 +357,7 @@ export function CommercialHomeView() {
         <HomeSection
           id="upcoming"
           title="即将上线"
-          description="客户端与开放能力"
+          description="客户端、支付、画布与开放能力"
           kind="预告"
         >
           <div className="home-card-grid is-upcoming">

@@ -8,6 +8,13 @@ import {
   historyTaskStatus,
 } from "../features/history/historyTaskPresentation.js";
 import {
+  HISTORY_CANVAS_SOURCE as CANVAS_SOURCE,
+  historyTaskDeleteTarget,
+  historyTaskQueryScope,
+  historyScopeMayRequireForceMediaRemoval,
+  historyTaskRequiresForceMediaRemoval,
+} from "../features/history/historyTaskQuery.js";
+import {
   deleteTask,
   listTasks,
   subscribeTask,
@@ -36,13 +43,15 @@ import { ConfirmDialog } from "../components/ConfirmDialog.jsx";
 import { DialogMotion } from "../components/motion/DialogMotion.jsx";
 import { SharePublishDialog } from "../components/SharePublishDialog.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";
+import { ProductGuideTour, useProductGuide } from "./shared/ProductGuideTour.jsx";
+import { HISTORY_GUIDE_STEPS, PRODUCT_GUIDE_KEYS } from "./shared/productGuides.js";
+import { DownloadIcon } from "../components/common/DownloadIcon.jsx";
 import "./HistoryView.css";
 
 const HISTORY_LAYOUT_KEY = "creation-history-layout-v3";
 const HISTORY_PREVIEW_LOCK = "react-creation-history-preview";
 const HISTORY_CARD_MEDIA_ASPECT = 4 / 5;
 const HISTORY_CARD_BODY_HEIGHT = 40;
-const DELETABLE_STATUSES = new Set(["succeeded", "failed", "canceled"]);
 const STATUS_LABELS = {
   succeeded: "已完成",
   running: "生成中",
@@ -64,7 +73,6 @@ const STATUS_FILTERS = [
   ["failed", "失败"],
   ["canceled", "已取消"],
 ];
-const CANVAS_SOURCE = "react_canvas";
 const ASSISTANT_TYPE = "assistant";
 const TYPE_FILTERS = [
   ["", "全部"],
@@ -89,10 +97,7 @@ function isAssistantTask(task) {
 }
 
 function isHistoryTaskDeletable(task) {
-  return (
-    !isAssistantTask(task) &&
-    DELETABLE_STATUSES.has(String(task?.status || "").toLowerCase())
-  );
+  return Boolean(historyTaskDeleteTarget(task));
 }
 
 function readStoredLayout() {
@@ -193,9 +198,26 @@ function isUserDeleted(task) {
   return task?.deletionActor === "user" && Boolean(task?.deletedAt);
 }
 
+function taskPreviewMediaKey(task) {
+  const cover = taskCoverUrl(task);
+  if (!cover) return "";
+  return `${String(task?.id || "")}\n${cover}\n${taskOriginalUrl(task)}`;
+}
+
+function historyMediaMaxDimension(task, src, requestedDimension) {
+  const thumbnail = taskThumbnailUrl(task);
+  if (src && thumbnail && src === thumbnail && src !== taskOriginalUrl(task)) {
+    return 0;
+  }
+  return requestedDimension;
+}
+
 export function HistoryView() {
   const navigate = useNavigate();
   const isDark = useIsDark();
+  const { open: guideOpen, setOpen: setGuideOpen } = useProductGuide({
+    storageKey: PRODUCT_GUIDE_KEYS.history,
+  });
   const stored = useMemo(readStoredLayout, []);
   const mountedRef = useRef(true);
   const listControllerRef = useRef(null);
@@ -218,6 +240,9 @@ export function HistoryView() {
   const [metadata, setMetadata] = useState({});
   const metadataPendingRef = useRef(new Set());
   const [failedThumbIds, setFailedThumbIds] = useState(new Set());
+  const [unavailablePreviewMedia, setUnavailablePreviewMedia] = useState(
+    new Set(),
+  );
   const loadedImageIdsRef = useRef(new Set());
   const [actionBusyIds, setActionBusyIds] = useState(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
@@ -252,6 +277,20 @@ export function HistoryView() {
           : "",
       }));
   }, [search, statusFilter, tasks]);
+  const canOpenPreview = useCallback(
+    (task) => {
+      const mediaKey = taskPreviewMediaKey(task);
+      return (
+        historyTaskCanOpen(task, Boolean(mediaKey)) &&
+        !unavailablePreviewMedia.has(mediaKey)
+      );
+    },
+    [unavailablePreviewMedia],
+  );
+  const previewableTasks = useMemo(
+    () => visibleTasks.filter(canOpenPreview),
+    [canOpenPreview, visibleTasks],
+  );
   const masonryItems = useMemo(
     () =>
       visibleTasks.map((task, index) => ({
@@ -281,7 +320,9 @@ export function HistoryView() {
     )
     .map((task) => String(task.id));
   const previewIndex = preview
-    ? visibleTasks.findIndex((task) => String(task.id) === String(preview.id))
+    ? previewableTasks.findIndex(
+        (task) => String(task.id) === String(preview.id),
+      )
     : -1;
 
   const syncSubscriptions = useCallback((rows) => {
@@ -337,14 +378,9 @@ export function HistoryView() {
       } else setLoadingMore(true);
       try {
         const page = await listTasks({
-          type: typeFilter === CANVAS_SOURCE ? "" : typeFilter,
+          ...historyTaskQueryScope(typeFilter),
           limit: 24,
           cursor: append ? cursor || "" : "",
-          excludeSource:
-            typeFilter === "t2i" || typeFilter === "background_remove"
-              ? CANVAS_SOURCE
-              : "",
-          source: typeFilter === CANVAS_SOURCE ? CANVAS_SOURCE : "",
           signal: listControllerRef.current?.signal,
         });
         if (!mountedRef.current) return;
@@ -431,15 +467,18 @@ export function HistoryView() {
     setBodyScrollLock(HISTORY_PREVIEW_LOCK, true, { freezeViewport: false });
     const keydown = (event) => {
       if (event.key === "ArrowLeft" && previewIndex > 0)
-        setPreview(visibleTasks[previewIndex - 1]);
-      if (event.key === "ArrowRight" && previewIndex < visibleTasks.length - 1)
-        setPreview(visibleTasks[previewIndex + 1]);
+        setPreview(previewableTasks[previewIndex - 1]);
+      if (
+        event.key === "ArrowRight" &&
+        previewIndex < previewableTasks.length - 1
+      )
+        setPreview(previewableTasks[previewIndex + 1]);
     };
     document.addEventListener("keydown", keydown);
     return () => {
       document.removeEventListener("keydown", keydown);
     };
-  }, [preview, previewIndex, visibleTasks]);
+  }, [preview, previewIndex, previewableTasks]);
 
   const resetForType = (value) => {
     setTypeFilter(value);
@@ -452,11 +491,8 @@ export function HistoryView() {
       listControllerRef.current = new AbortController();
       setLoading(true);
       listTasks({
-        type: value === CANVAS_SOURCE ? "" : value,
+        ...historyTaskQueryScope(value),
         limit: 24,
-        excludeSource:
-          value === "t2i" || value === "background_remove" ? CANVAS_SOURCE : "",
-        source: value === CANVAS_SOURCE ? CANVAS_SOURCE : "",
         signal: listControllerRef.current.signal,
       })
         .then((page) => {
@@ -503,10 +539,6 @@ export function HistoryView() {
       metadataPendingRef.current.delete(id);
     }
   };
-  useEffect(() => {
-    if (layoutMode !== "table") return;
-    visibleTasks.slice(0, 24).forEach((task) => void ensureMetadata(task));
-  }, [layoutMode, visibleTasks]);
   const metadataLabel = (task) => {
     if (taskMediaModality(task) === "video") return "视频结果";
     if (taskMediaModality(task) === "audio") return "音频结果";
@@ -530,6 +562,19 @@ export function HistoryView() {
     loadedImageIdsRef.current.add(key);
     root?.classList.add("is-loaded");
   };
+  const markPreviewMediaUnavailable = (task) => {
+    const mediaKey = taskPreviewMediaKey(task);
+    if (!mediaKey) return;
+    setUnavailablePreviewMedia((current) => {
+      if (current.has(mediaKey)) return current;
+      const next = new Set(current);
+      next.add(mediaKey);
+      return next;
+    });
+    setPreview((current) =>
+      String(current?.id || "") === String(task?.id || "") ? null : current,
+    );
+  };
   const recoverHistoryImage = (task, event) => {
     const key = String(task.id);
     const display = taskDisplayUrl(task);
@@ -544,13 +589,12 @@ export function HistoryView() {
       setFailedThumbIds((current) => new Set(current).add(key));
       return;
     }
-    revealHistoryImage(task, event);
+    markPreviewMediaUnavailable(task);
   };
   const setLayout = (mode, columns = gridColumns) => {
     setLayoutMode(mode);
     setGridColumns(columns);
     localStorage.setItem(HISTORY_LAYOUT_KEY, `${mode}:${columns}`);
-    if (mode === "table") visibleTasks.slice(0, 24).forEach(ensureMetadata);
   };
   const toggleSelected = (id) =>
     setSelectedIds((current) => {
@@ -560,7 +604,7 @@ export function HistoryView() {
       return next;
     });
   const openPreview = (task) => {
-    if (!historyTaskCanOpen(task, Boolean(taskCoverUrl(task)))) return;
+    if (!canOpenPreview(task)) return;
     setPreview(task);
     if (taskMediaModality(task) === "image") ensureMetadata(task);
   };
@@ -613,36 +657,54 @@ export function HistoryView() {
     }
   };
   const removeTask = (task) => {
-    if (isAssistantTask(task))
-      return notificationService.info("请在 AI 助手中管理这条对话记录");
     if (!isHistoryTaskDeletable(task))
       return notificationService.info("进行中的任务结束后才能删除");
+    const forceMedia = historyTaskRequiresForceMediaRemoval(task);
     openConfirm(
       {
-        heading: "删除这条历史记录？",
-        description: taskPrompt(task)
-          ? `删除后无法恢复：“${taskPrompt(task).slice(0, 72)}”`
-          : "删除后产物也会一并清除，且无法恢复。",
-        confirmLabel: "确认删除",
+        heading: forceMedia ? "强制移除这张图片？" : "删除这条历史记录？",
+        description: forceMedia
+          ? `原图将被永久移除，AI 助手对话和无限画布结构会保留，原位置显示“该图片已被删除”。之后无法预览、下载或继续引用这张图片；直接使用它生成的后续任务记录也会一并清理，且不可撤销。`
+          : taskPrompt(task)
+            ? `删除后无法恢复：“${taskPrompt(task).slice(0, 72)}”`
+            : "删除后产物也会一并清除，且无法恢复。",
+        confirmLabel: forceMedia ? "强制移除" : "确认删除",
         busyLabel: "删除中…",
       },
       async () => {
-        await deleteTask(task.id);
+        await deleteHistoryTask(task);
         setTasks((current) => current.filter((item) => item.id !== task.id));
         notificationService.success("已删除");
       },
     );
   };
-  const deleteIds = async (ids) => {
+  const deleteHistoryTask = async (task) => {
+    const target = historyTaskDeleteTarget(task);
+    if (!target) throw new Error("当前记录暂时无法删除");
+    const forceMedia = historyTaskRequiresForceMediaRemoval(task);
+    await deleteTask(target.id, {
+      history: true,
+      cascade: forceMedia,
+      forceMedia,
+    });
+  };
+  const deleteTasks = async (items) => {
     let succeeded = 0;
     let failed = 0;
-    const queue = [...new Set(ids)];
+    const queue = [
+      ...new Map(
+        items
+          .map((task) => ({ task, target: historyTaskDeleteTarget(task) }))
+          .filter(({ target }) => Boolean(target))
+          .map(({ task, target }) => [`${target.kind}:${target.id}`, task]),
+      ).values(),
+    ];
     await Promise.all(
       Array.from({ length: Math.min(4, queue.length) }, async () => {
         while (queue.length) {
-          const id = queue.shift();
+          const task = queue.shift();
           try {
-            await deleteTask(id);
+            await deleteHistoryTask(task);
             succeeded += 1;
           } catch {
             failed += 1;
@@ -652,26 +714,37 @@ export function HistoryView() {
     );
     return { succeeded, failed };
   };
-  const fetchAll = async ({ status = "" } = {}) => {
+  const fetchAll = async ({ status = "", scopeType = typeFilter } = {}) => {
     const all = [];
     let pageCursor = "";
     do {
-      const page = await listTasks({ status, limit: 50, cursor: pageCursor });
+      const page = await listTasks({
+        ...historyTaskQueryScope(scopeType),
+        status,
+        limit: 50,
+        cursor: pageCursor,
+      });
       all.push(...page.items);
       pageCursor = page.nextCursor || "";
     } while (pageCursor);
     return all;
   };
-  const batchDelete = (ids) =>
-    openConfirm(
+  const batchDelete = (ids) => {
+    const items = visibleTasks.filter((task) => ids.includes(String(task.id)));
+    const forceMedia = items.some(historyTaskRequiresForceMediaRemoval);
+    return openConfirm(
       {
-        heading: `删除选中的 ${ids.length} 条记录？`,
-        description: "产物也会一并删除，删除后无法恢复。",
-        confirmLabel: "删除所选",
+        heading: forceMedia
+          ? `强制移除选中的 ${ids.length} 条记录？`
+          : `删除选中的 ${ids.length} 条记录？`,
+        description: forceMedia
+          ? "其中包含 AI 助手或无限画布图片。原图将被永久移除，对话和画布结构会保留并显示删除占位；这些图片之后无法预览、下载或继续引用，直接使用它们生成的后续任务记录也会一并清理。"
+          : "产物也会一并删除，删除后无法恢复。",
+        confirmLabel: forceMedia ? "强制移除" : "删除所选",
         busyLabel: "删除中…",
       },
       async () => {
-        const result = await deleteIds(ids);
+        const result = await deleteTasks(items);
         setSelectedIds(new Set());
         setSelectMode(false);
         await loadTasks();
@@ -682,34 +755,51 @@ export function HistoryView() {
           : notificationService.success(`已删除 ${result.succeeded} 条`);
       },
     );
-  const clearByStatus = (all) =>
-    openConfirm(
+  };
+  const clearByStatus = (all) => {
+    const scopeType = typeFilter;
+    const scopeLabel = TYPE_FILTERS.find(([id]) => id === scopeType)?.[1] || "";
+    const scoped = Boolean(scopeType && scopeLabel);
+    const forceMedia = historyScopeMayRequireForceMediaRemoval(scopeType);
+    return openConfirm(
       {
-        heading: all ? "删除全部历史记录？" : "清除全部失败记录？",
-        description: all
-          ? "仅已结束的普通任务会被删除，进行中的任务和 AI 助手记录会保留。产物也会一并删除，且不可撤销。"
-          : "将删除账号下所有失败任务及其产物，此操作不可撤销。",
-        confirmLabel: all ? "清空全部" : "全部清除",
+        heading: forceMedia
+          ? all
+            ? scoped
+              ? `强制清空「${scopeLabel}」历史记录？`
+              : "强制清空全部历史记录？"
+            : scoped
+              ? `强制清除「${scopeLabel}」失败记录？`
+              : "强制清除全部失败记录？"
+          : all
+            ? `清空「${scopeLabel}」历史记录？`
+            : `清除「${scopeLabel}」失败记录？`,
+        description: forceMedia
+          ? `范围内如有 AI 助手或无限画布图片，原图将被永久移除；对话和画布结构会保留，原位置显示“该图片已被删除”。之后无法预览、下载或继续引用这些图片，直接使用它们生成的后续任务记录也会一并清理。进行中的任务会保留。`
+          : all
+            ? `仅删除「${scopeLabel}」中已结束的记录，进行中的任务会保留。产物也会一并删除，且不可撤销。`
+            : `将删除账号下「${scopeLabel}」中的失败任务及其产物，此操作不可撤销。`,
+        confirmLabel: forceMedia ? "确认强制移除" : all ? "清空全部" : "全部清除",
         busyLabel: "清除中…",
       },
       async () => {
-        const rows = await fetchAll(all ? {} : { status: "failed" });
-        const targets = rows.filter((task) =>
-          all
-            ? isHistoryTaskDeletable(task)
-            : !isAssistantTask(task),
-        );
+        const rows = await fetchAll({
+          status: all ? "" : "failed",
+          scopeType,
+        });
+        const targets = rows.filter(isHistoryTaskDeletable);
         if (!targets.length)
           return notificationService.info(
             all ? "没有可删除的已结束任务" : "没有失败记录",
           );
-        const result = await deleteIds(targets.map((task) => task.id));
+        const result = await deleteTasks(targets);
         await loadTasks();
         notificationService.success(
           `已删除 ${result.succeeded} 条记录${result.failed ? `，${result.failed} 条失败` : ""}`,
         );
       },
     );
+  };
   const downloadSelected = async () => {
     if (!selectedDownloadTasks.length || batchBusy) return;
     setBatchBusy(true);
@@ -796,7 +886,7 @@ export function HistoryView() {
     >
       <div className="ch-shell">
         <div className="ch-sticky-bar">
-          <div className="ch-toolbar">
+          <div className="ch-toolbar" data-guide="history-toolbar">
             <label className="ch-search">
               <i className="bi bi-search" />
               <input
@@ -933,7 +1023,7 @@ export function HistoryView() {
               </button>
             </div>
           </div>
-          <div className="ch-chips">
+          <div className="ch-chips" data-guide="history-filters">
             {TYPE_FILTERS.map(([id, label]) => (
               <button
                 key={id || "all"}
@@ -946,7 +1036,7 @@ export function HistoryView() {
             ))}
           </div>
         </div>
-        <section className="ch-section">
+        <section className="ch-section" data-guide="history-results">
           {loading && !visibleTasks.length ? (
             <div className="ch-loading">正在加载历史…</div>
           ) : !visibleTasks.length ? (
@@ -1019,7 +1109,7 @@ export function HistoryView() {
                       type="button"
                       className="ch-card__media ch-prompt-card__media"
                       style={{ height: item.mediaHeight, aspectRatio: "auto" }}
-                      disabled={!selectMode && !historyTaskCanOpen(task, Boolean(src))}
+                      disabled={!selectMode && !canOpenPreview(task)}
                       onClick={() =>
                         selectMode
                           ? taskOriginalUrl(task) && taskMediaModality(task) === "image" && toggleSelected(task.id)
@@ -1033,6 +1123,7 @@ export function HistoryView() {
                           muted
                           playsInline
                           preload="metadata"
+                          onError={() => markPreviewMediaUnavailable(task)}
                         />
                       ) : src && taskMediaModality(task) === "audio" ? (
                         <div className="ch-card__placeholder">
@@ -1043,13 +1134,15 @@ export function HistoryView() {
                         <AuthenticatedImage
                           className={`ch-prompt-card__image${loadedImageIdsRef.current.has(String(task.id)) ? " is-loaded" : ""}`}
                           src={src}
-                          fallbackSrc={
-                            taskOriginalUrl(task)
-                          }
+                          fallbackSrc={taskDisplayUrl(task) || taskOriginalUrl(task)}
                           alt={task.cleanPrompt}
-                          maxDimension={Math.min(
-                            640,
-                            Math.max(320, Math.ceil(item.width * 2)),
+                          maxDimension={historyMediaMaxDimension(
+                            task,
+                            src,
+                            Math.min(
+                              640,
+                              Math.max(320, Math.ceil(item.width * 2)),
+                            ),
                           )}
                           loading={
                             item.index < masonry.columnCount ? "eager" : "lazy"
@@ -1132,10 +1225,7 @@ export function HistoryView() {
                           }
                           onClick={() => downloadTask(task)}
                         >
-                          <span
-                            className="ch-history-icon is-download"
-                            aria-hidden="true"
-                          />
+                          <DownloadIcon />
                         </button>
                         <button
                           type="button"
@@ -1240,25 +1330,33 @@ export function HistoryView() {
                           <button
                             className="ch-table-preview"
                             type="button"
-                            disabled={!historyTaskCanOpen(task, Boolean(tableCoverSrc(task)))}
+                            disabled={!canOpenPreview(task)}
                             onClick={() => openPreview(task)}
                           >
                             {tableCoverSrc(task) && taskMediaModality(task) === "video" ? (
-                              <video src={taskOriginalUrl(task)} muted playsInline preload="metadata" />
+                              <video
+                                src={taskOriginalUrl(task)}
+                                muted
+                                playsInline
+                                preload="metadata"
+                                onError={() => markPreviewMediaUnavailable(task)}
+                              />
                             ) : tableCoverSrc(task) && taskMediaModality(task) === "audio" ? (
                               <i className="bi bi-soundwave" aria-hidden="true" />
                             ) : tableCoverSrc(task) ? (
                               <AuthenticatedImage
                                 src={tableCoverSrc(task)}
-                                fallbackSrc={taskOriginalUrl(task)}
+                                fallbackSrc={taskDisplayUrl(task) || taskOriginalUrl(task)}
                                 alt={task.cleanPrompt}
                                 loading="lazy"
                                 rootMargin="720px 0px"
-                                maxDimension={160}
+                                maxDimension={historyMediaMaxDimension(
+                                  task,
+                                  tableCoverSrc(task),
+                                  160,
+                                )}
                                 retryCount={2}
-                                keepLoaded
-                                onLoad={() => ensureMetadata(task)}
-                                onError={() => void ensureMetadata(task)}
+                                onError={() => markPreviewMediaUnavailable(task)}
                               />
                             ) : null}
                             <span>{taskTypeLabel(task)}</span>
@@ -1278,7 +1376,9 @@ export function HistoryView() {
                               ? `${meta.width}×${meta.height}`
                               : meta?.error
                                 ? "不可用"
-                                : "读取中…"}
+                                : meta?.pending
+                                  ? "读取中…"
+                                  : "—"}
                         </td>
                         <td className="is-file-size" data-label="大小">
                           {meta?.bytes ? formatBytes(meta.bytes) : "—"}
@@ -1328,7 +1428,7 @@ export function HistoryView() {
                               disabled={!taskOriginalUrl(task)}
                               onClick={() => downloadTask(task)}
                             >
-                              <i className="bi bi-download" />
+                              <DownloadIcon />
                             </button>
                             <button
                               title={
@@ -1402,7 +1502,9 @@ export function HistoryView() {
                     type="button"
                     className="ch-preview__nav is-prev"
                     disabled={previewIndex <= 0}
-                    onClick={() => setPreview(visibleTasks[previewIndex - 1])}
+                    onClick={() =>
+                      setPreview(previewableTasks[previewIndex - 1])
+                    }
                   >
                     <i className="bi bi-chevron-left" />
                   </button>
@@ -1411,9 +1513,11 @@ export function HistoryView() {
                     className="ch-preview__nav is-next"
                     disabled={
                       previewIndex < 0 ||
-                      previewIndex >= visibleTasks.length - 1
+                      previewIndex >= previewableTasks.length - 1
                     }
-                    onClick={() => setPreview(visibleTasks[previewIndex + 1])}
+                    onClick={() =>
+                      setPreview(previewableTasks[previewIndex + 1])
+                    }
                   >
                     <i className="bi bi-chevron-right" />
                   </button>
@@ -1432,6 +1536,7 @@ export function HistoryView() {
                   controls
                   playsInline
                   preload="metadata"
+                  onError={() => markPreviewMediaUnavailable(preview)}
                 />
               ) : taskCoverUrl(preview) && taskMediaModality(preview) === "audio" ? (
                 <audio
@@ -1439,6 +1544,7 @@ export function HistoryView() {
                   src={taskOriginalUrl(preview) || taskCoverUrl(preview)}
                   controls
                   preload="metadata"
+                  onError={() => markPreviewMediaUnavailable(preview)}
                 />
               ) : taskCoverUrl(preview) ? (
                 <img
@@ -1452,10 +1558,16 @@ export function HistoryView() {
                     // 旧任务的展示图可能 404：回退到原图重试一次。
                     const fallback = taskOriginalUrl(preview);
                     const image = event.currentTarget;
-                    if (fallback && !image.dataset.fallbackApplied) {
+                    if (
+                      fallback &&
+                      taskDisplayUrl(preview) !== fallback &&
+                      !image.dataset.fallbackApplied
+                    ) {
                       image.dataset.fallbackApplied = "1";
                       image.src = fallback;
+                      return;
                     }
+                    markPreviewMediaUnavailable(preview);
                   }}
                 />
               ) : (
@@ -1587,6 +1699,13 @@ export function HistoryView() {
         light={!isDark}
         onClose={() => !confirm?.busy && setConfirm(null)}
         onConfirm={runConfirm}
+      />
+      <ProductGuideTour
+        open={guideOpen}
+        dark={isDark}
+        steps={HISTORY_GUIDE_STEPS}
+        storageKey={PRODUCT_GUIDE_KEYS.history}
+        onClose={() => setGuideOpen(false)}
       />
     </main>
   );

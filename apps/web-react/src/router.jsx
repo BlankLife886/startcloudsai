@@ -63,6 +63,18 @@ export const router = createBrowserRouter([
     element: <MigrationPreview />,
   },
   {
+    path: "/privacy",
+    lazy: lazyView(() => import("./views/LegalPages.jsx"), "PrivacyPolicyPage"),
+  },
+  {
+    path: "/terms",
+    lazy: lazyView(() => import("./views/LegalPages.jsx"), "TermsOfServicePage"),
+  },
+  {
+    path: "/support",
+    lazy: lazyView(() => import("./views/LegalPages.jsx"), "SupportPage"),
+  },
+  {
     element: <AppShell />,
     HydrateFallback: RouteHydrationFallback,
     children: [
@@ -138,6 +150,10 @@ export const router = createBrowserRouter([
       {
         path: "/tools/puzzle",
         lazy: lazyView(() => import("./views/PuzzleView.jsx"), "PuzzleView"),
+      },
+      {
+        path: "/ai-wallpaper",
+        element: <Navigate replace to="/text-to-image" />,
       },
       {
         path: "/ai-puzzle",

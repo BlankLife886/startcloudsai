@@ -178,11 +178,18 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('task-fullscreen-page-view')), findsOneWidget);
     expect(find.byKey(const Key('task-fullscreen-thumbnails')), findsOneWidget);
+    expect(find.byKey(const Key('task-fullscreen-actions')), findsOneWidget);
+    expect(find.byKey(const Key('task-fullscreen-save')), findsOneWidget);
+    expect(find.byKey(const Key('task-fullscreen-share')), findsOneWidget);
     expect(find.text('3 / 3'), findsOneWidget);
+    expect(find.text('保存第 3 张'), findsOneWidget);
+    expect(find.text('分享第 3 张'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('task-fullscreen-thumbnail-0')));
     await tester.pumpAndSettle();
     expect(find.text('1 / 3'), findsOneWidget);
+    expect(find.text('保存第 1 张'), findsOneWidget);
+    expect(find.text('分享第 1 张'), findsOneWidget);
 
     await tester.drag(
       find.byKey(const Key('task-fullscreen-page-view')),
@@ -190,6 +197,8 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(find.text('2 / 3'), findsOneWidget);
+    expect(find.text('保存第 2 张'), findsOneWidget);
+    expect(find.text('分享第 2 张'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('task-fullscreen-close')));
     await tester.pumpAndSettle();

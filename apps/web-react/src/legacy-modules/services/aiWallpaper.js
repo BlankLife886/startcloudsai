@@ -371,6 +371,14 @@ export async function uploadAiInputFile(file, options = {}) {
 
 /** 创建任务：旧 job payload → 新 createTask 契约。 */
 export async function createServerAiJob(payload = {}) {
+  const signal = payload.signal
+  const throwIfAborted = () => {
+    if (!signal?.aborted) return
+    throw signal.reason instanceof Error
+      ? signal.reason
+      : new DOMException('Aborted', 'AbortError')
+  }
+  throwIfAborted()
   const kind = String(payload.kind || '').trim()
   const type = mapJobKindToTaskType(kind)
   const input = payload.input && typeof payload.input === 'object' ? payload.input : {}
@@ -407,6 +415,7 @@ export async function createServerAiJob(payload = {}) {
     ),
   )
   const resolvedSourceKeys = await Promise.all(sourceUrls.map((url) => resolveInputKeyForUrl(url)))
+  throwIfAborted()
   for (const key of resolvedSourceKeys) {
     if (key && !inputKeys.includes(key)) inputKeys.push(key)
   }
@@ -416,6 +425,7 @@ export async function createServerAiJob(payload = {}) {
     maskUrl ? resolveInputKeyForUrl(maskUrl) : '',
     maskBaseUrl ? resolveInputKeyForUrl(maskBaseUrl) : '',
   ])
+  throwIfAborted()
 
   const source = String(input._source || legacyParams._source || '').trim()
   const storedKind = String(input._kind || legacyParams._kind || '').trim()
@@ -436,6 +446,12 @@ export async function createServerAiJob(payload = {}) {
     idempotencyKey: String(payload.clientRequestId || '').trim() || undefined,
     expectedUnitPriceCents: payload.expectedUnitPriceCents,
   })
+  if (signal?.aborted) {
+    // The server may have accepted an idempotent POST while the user was leaving or
+    // stopping the batch. We now have the task id, so cancel it instead of orphaning it.
+    await cancelTask(task.id, { acknowledgeUpstream: true }).catch(() => undefined)
+    throwIfAborted()
+  }
   // 冻结额度已变化，让下一次余额预检重新读取。
   invalidateStudioCreditSnapshot()
   return { job: taskToLegacyJob(task) }

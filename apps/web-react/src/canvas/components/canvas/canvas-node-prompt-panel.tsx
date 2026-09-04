@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { ArrowUp, ChevronDown, Cpu, Expand, PenLine, Shrink, Settings2, Square } from "lucide-react";
+import { ArrowUp, ChevronDown, Expand, PenLine, Shrink, Settings2, Square } from "lucide-react";
+import { SoftMark } from "@react/components/common/SoftMark.jsx";
 import { Modal, Tooltip } from "antd";
 import { useTranslation } from "react-i18next";
 
@@ -289,7 +290,7 @@ function PromptDockModel({
     if (!options.length) {
         return (
             <button type="button" className="flex h-8 min-w-0 max-w-[148px] items-center gap-1.5 rounded-full px-2.5 text-left" style={{ background: surface, color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()} onClick={onMissingConfig}>
-                <Cpu className="size-3.5 shrink-0 opacity-50" />
+                <SoftMark name="cpu" size="xs" />
                 <span className="min-w-0 truncate text-[12px] font-medium">{placeholder}</span>
             </button>
         );
@@ -347,7 +348,7 @@ function PromptModelMark({ model }: { model: string }) {
                 : name.includes("glm")
                   ? "/icons/glm.svg"
                   : "";
-    return icon ? <img src={icon} alt="" className="size-3.5 shrink-0 dark:invert" /> : <Cpu className="size-3.5 shrink-0 opacity-50" />;
+    return icon ? <img src={icon} alt="" className="size-3.5 shrink-0 dark:invert" /> : <SoftMark name="cpu" size="xs" />;
 }
 
 function DockSettingsLabel({ theme, children }: { theme: CanvasTheme; children?: ReactNode }) {

@@ -175,6 +175,14 @@ class AuthRepository {
       await _sessionStore.clear();
     }
   }
+
+  Future<void> deleteAccount(String code) async {
+    await _apiClient.delete(
+      '/me/account',
+      data: {'code': code.trim(), 'confirmation': 'DELETE'},
+    );
+    await _sessionStore.clear();
+  }
 }
 
 final authRepositoryProvider = Provider<AuthRepository>(
@@ -245,6 +253,12 @@ class SessionController extends AsyncNotifier<SessionState> {
     } finally {
       state = const AsyncData(SessionState());
     }
+  }
+
+  Future<void> deleteAccount(String code) async {
+    await _repository.deleteAccount(code);
+    _authenticated = false;
+    state = const AsyncData(SessionState());
   }
 }
 

@@ -8,7 +8,6 @@ import 'package:share_plus/share_plus.dart';
 
 import '../../app/starclouds_theme.dart';
 import '../../core/network/api_exception.dart';
-import '../../core/widgets/app_chrome.dart';
 import '../../core/widgets/app_notice.dart';
 import '../../core/widgets/app_top_bar.dart';
 import '../../core/widgets/app_visual.dart';
@@ -37,25 +36,13 @@ String walletPoints(int value, {bool withUnit = false}) {
 }
 
 class WalletScreen extends ConsumerStatefulWidget {
-  const WalletScreen({this.initiallyOpenRedeem = false, super.key});
-
-  final bool initiallyOpenRedeem;
+  const WalletScreen({super.key});
 
   @override
   ConsumerState<WalletScreen> createState() => _WalletScreenState();
 }
 
 class _WalletScreenState extends ConsumerState<WalletScreen> {
-  @override
-  void initState() {
-    super.initState();
-    if (widget.initiallyOpenRedeem) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _openRedeem();
-      });
-    }
-  }
-
   Future<void> _refresh() async {
     ref.invalidate(walletProvider);
     ref.invalidate(profileOverviewProvider);
@@ -64,26 +51,6 @@ class _WalletScreenState extends ConsumerState<WalletScreen> {
       ref.read(walletProvider.future),
       ref.read(walletCenterControllerProvider.notifier).refresh(),
     ]);
-  }
-
-  Future<void> _openRedeem() async {
-    final result = await showAppSheet<WalletRedemption>(
-      context: context,
-      isScrollControlled: true,
-      builder: (context) => RedeemCodeSheet(
-        onSubmit: ref.read(walletCenterControllerProvider.notifier).redeem,
-      ),
-    );
-    if (result == null || !mounted) return;
-    ref.invalidate(walletProvider);
-    ref.invalidate(profileOverviewProvider);
-    try {
-      await ref.read(walletProvider.future);
-    } catch (_) {
-      // The redemption result remains authoritative if balance refresh fails.
-    }
-    if (!mounted) return;
-    AppNotice.success(context, '兑换成功，${result.grantPoints} 积分已入账');
   }
 
   Future<void> _claimTrial() async {
@@ -128,9 +95,8 @@ class _WalletScreenState extends ConsumerState<WalletScreen> {
           children: [
             WalletBalancePanel(
               wallet: wallet,
-              onRedeem: _openRedeem,
               onLedger: () => context.push('/profile/wallet/ledger'),
-              onPurchase: () => context.push('/profile/purchases'),
+              onOrders: () => context.push('/profile/purchases/orders'),
             ),
             if (benefits.asData?.value.application case final application?
                 when application.status == 'approved' &&
@@ -160,16 +126,14 @@ class _WalletScreenState extends ConsumerState<WalletScreen> {
 class WalletBalancePanel extends StatelessWidget {
   const WalletBalancePanel({
     required this.wallet,
-    required this.onRedeem,
     required this.onLedger,
-    required this.onPurchase,
+    required this.onOrders,
     super.key,
   });
 
   final AsyncValue<WalletSnapshot> wallet;
-  final VoidCallback onRedeem;
   final VoidCallback onLedger;
-  final VoidCallback onPurchase;
+  final VoidCallback onOrders;
 
   @override
   Widget build(BuildContext context) {
@@ -274,19 +238,14 @@ class WalletBalancePanel extends StatelessWidget {
                   child: Row(
                     children: [
                       _WalletHeroAction(
-                        icon: Icons.redeem_outlined,
-                        label: '兑换积分',
-                        onTap: onRedeem,
-                      ),
-                      _WalletHeroAction(
                         icon: Icons.receipt_long_outlined,
                         label: '积分明细',
                         onTap: onLedger,
                       ),
                       _WalletHeroAction(
-                        icon: Icons.workspace_premium_outlined,
-                        label: '购买套餐',
-                        onTap: onPurchase,
+                        icon: Icons.receipt_long_outlined,
+                        label: '订单记录',
+                        onTap: onOrders,
                       ),
                     ],
                   ),

@@ -78,6 +78,7 @@ const summary = ref<TaskSummary>({
 })
 const lastUpdatedAt = ref<Date | null>(null)
 const autoRefresh = ref(true)
+const pageSize = ref(20)
 
 const {
   items,
@@ -88,8 +89,7 @@ const {
   hasPrev,
   hasNext,
   reset,
-  next,
-  prev,
+  goToPage,
   refresh,
   retry,
 } = usePagedList<AdminTask>(
@@ -100,7 +100,7 @@ const {
         status: filters.status,
         user: filters.user,
         errorCode: filters.errorCode,
-        limit: 20,
+        limit: pageSize.value,
         cursor,
       },
     })
@@ -113,6 +113,7 @@ const {
     status: filters.status,
     user: filters.user,
     errorCode: filters.errorCode,
+    limit: pageSize.value,
   }),
 )
 
@@ -218,12 +219,6 @@ function taskPrompt(task: AdminTask) {
         ? '无限画布任务'
         : '未填写提示词')
   )
-}
-
-/** 列表展示：任务内容最多 4 字 */
-function taskPromptBrief(task: AdminTask) {
-  const text = taskPrompt(task)
-  return text.length > 4 ? `${text.slice(0, 4)}…` : text
 }
 
 function taskMediaUrls(task: AdminTask) {
@@ -357,13 +352,19 @@ function taskServiceProviderMeta(task: AdminTask) {
   ]
     .map((value) => String(value || '').trim())
     .filter((value, index, values) => value && values.indexOf(value) === index)
-  const modelNames = [
-    params._modelDisplayName,
-    params._chatModelDisplayName,
-    params._imageModelDisplayName,
-  ]
-    .map((value) => String(value || '').trim())
-    .filter((value, index, values) => value && values.indexOf(value) === index)
+  const chatModel = String(params._chatModelDisplayName || '').trim()
+  const imageModel = String(params._imageModelDisplayName || '').trim()
+  const genericModel = String(params._modelDisplayName || '').trim()
+  let textModel = chatModel
+  let pictureModel = imageModel
+  if (!textModel && !pictureModel && genericModel) {
+    if (isTextModelTask(task)) textModel = genericModel
+    else pictureModel = genericModel
+  } else {
+    if (!textModel && genericModel && genericModel !== pictureModel) textModel = genericModel
+    if (!pictureModel && genericModel && genericModel !== textModel) pictureModel = genericModel
+  }
+  const modelNames = [textModel, pictureModel].filter(Boolean)
   const endpoints = [
     params._providerEndpoint,
     params._chatProviderEndpoint,
@@ -379,23 +380,62 @@ function taskServiceProviderMeta(task: AdminTask) {
     .map((value) => String(value || '').trim())
     .filter((value, index, values) => value && values.indexOf(value) === index)
   const reasoningEffort = String(params.reasoningEffort || '').trim().toLowerCase()
-  const reasoningLabel = reasoningEffort
-    ? `推理强度：${reasoningEffortLabels[reasoningEffort] || reasoningEffort}`
+  const reasoning = reasoningEffort
+    ? reasoningEffortLabels[reasoningEffort] || reasoningEffort
     : ''
+  const models = modelNames.join(' / ')
+  const endpoint = endpoints.join(' / ') || routeNames.join(' / ')
   if (providerNames.length) {
-    const routeDetail = endpoints.join(' / ') || routeNames.join(' / ') || '历史线路（端点未留存）'
+    const routeDetail = endpoint || '历史线路（端点未留存）'
     return {
       name: providerNames.join(' / '),
-      detail: [modelNames.join(' / '), reasoningLabel, routeDetail].filter(Boolean).join(' · '),
+      models,
+      textModel,
+      imageModel: pictureModel,
+      reasoning,
+      endpoint: routeDetail,
+      detail: [models, reasoning ? `推理强度：${reasoning}` : '', routeDetail].filter(Boolean).join(' · '),
     }
   }
   if (
     String(params._kind || '') === 'ui-design-region-edit' ||
     String(params.assistantRunId || '')
   ) {
-    return { name: '未记录', detail: '线路未记录' }
+    return {
+      name: '未记录',
+      models: '',
+      textModel: '',
+      imageModel: '',
+      reasoning: '',
+      endpoint: '线路未记录',
+      detail: '线路未记录',
+    }
   }
-  return serviceProviderMeta[taskServiceProvider(task)]
+  const fallback = serviceProviderMeta[taskServiceProvider(task)]
+  return {
+    name: fallback.name,
+    models: '',
+    textModel: '',
+    imageModel: '',
+    reasoning: '',
+    endpoint: fallback.detail,
+    detail: fallback.detail,
+  }
+}
+
+function isTextModelTask(task: AdminTask) {
+  if (task.source !== 'assistant' && task.type !== 'assistant') return false
+  const mode = String(task.params?.resolvedMode || task.params?.mode || '').trim()
+  return mode !== 'image'
+}
+
+function taskPreviewModels(task: AdminTask) {
+  const meta = taskServiceProviderMeta(task)
+  return {
+    image: meta.imageModel,
+    text: meta.textModel,
+    reasoning: meta.reasoning,
+  }
 }
 
 function taskOutputCount(task: AdminTask) {
@@ -913,7 +953,7 @@ async function forceFail(task: AdminTask) {
       <ListError :error="error" :loading="loading" @retry="retry" />
 
       <AdminListShell
-        class="tasks-list-shell"
+        class="tasks-board"
         fill
         :has-prev="hasPrev"
         :has-next="hasNext"
@@ -921,8 +961,9 @@ async function forceFail(task: AdminTask) {
         :page="page"
         :count="items.length"
         :total="total"
-        @prev="prev"
-        @next="next"
+        :page-size="pageSize"
+        @update:page="goToPage"
+        @update:page-size="(size: number) => { pageSize = size; reset() }"
       >
         <div class="tasks-table-shell">
           <el-table
@@ -931,6 +972,7 @@ async function forceFail(task: AdminTask) {
             :data="items"
             height="100%"
             size="small"
+            table-layout="auto"
             :row-class-name="taskRowClass"
             @row-click="(row: AdminTask) => openDetail(row)"
           >
@@ -940,43 +982,61 @@ async function forceFail(task: AdminTask) {
               </el-empty>
             </template>
 
-            <el-table-column label="预览" width="72" align="left" header-align="left">
+            <el-table-column label="预览" min-width="240" align="left" header-align="left">
               <template #default="{ row }">
-                <el-image
-                  v-if="taskThumbSrc(row as AdminTask) || taskMediaUrls(row as AdminTask).length"
-                  :src="taskThumbSrc(row as AdminTask)"
-                  :preview-src-list="taskPreviewUrls(row as AdminTask)"
-                  fit="cover"
-                  class="task-thumb"
-                  preview-teleported
-                  hide-on-click-modal
-                  @click.stop
-                  @error="onTaskThumbError(row as AdminTask)"
-                >
-                  <template #error>
-                    <div class="media-ph media-ph--sm" title="图片加载失败">
-                      <el-icon><Picture /></el-icon>
-                    </div>
-                  </template>
-                </el-image>
-                <div
-                  v-else
-                  class="media-ph media-ph--sm is-empty"
-                  :class="{ 'is-user-deleted': isUserDeletedTask(row as AdminTask) }"
-                  :title="isUserDeletedTask(row as AdminTask) ? '产物已被用户删除' : '暂无预览'"
-                >
-                  <el-icon>
-                    <Delete v-if="isUserDeletedTask(row as AdminTask)" />
-                    <Picture v-else />
-                  </el-icon>
+                <div class="task-preview">
+                  <el-image
+                    v-if="taskThumbSrc(row as AdminTask) || taskMediaUrls(row as AdminTask).length"
+                    :src="taskThumbSrc(row as AdminTask)"
+                    :preview-src-list="taskPreviewUrls(row as AdminTask)"
+                    fit="cover"
+                    class="task-thumb"
+                    preview-teleported
+                    hide-on-click-modal
+                    @click.stop
+                    @error="onTaskThumbError(row as AdminTask)"
+                  >
+                    <template #error>
+                      <div class="media-ph media-ph--sm" title="图片加载失败">
+                        <el-icon><Picture /></el-icon>
+                      </div>
+                    </template>
+                  </el-image>
+                  <div
+                    v-else
+                    class="media-ph media-ph--sm is-empty"
+                    :class="{ 'is-user-deleted': isUserDeletedTask(row as AdminTask) }"
+                    :title="isUserDeletedTask(row as AdminTask) ? '产物已被用户删除' : '暂无预览'"
+                  >
+                    <el-icon>
+                      <Delete v-if="isUserDeletedTask(row as AdminTask)" />
+                      <Picture v-else />
+                    </el-icon>
+                  </div>
+                  <div
+                    v-for="models in [taskPreviewModels(row as AdminTask)]"
+                    :key="`${row.id}-models`"
+                    class="task-preview__models"
+                    :title="[
+                      models.image ? `图片 ${models.image}` : '',
+                      models.text ? `文本 ${models.text}` : '',
+                      models.reasoning ? `推理强度 ${models.reasoning}` : '',
+                    ].filter(Boolean).join(' · ')"
+                  >
+                    <span v-if="models.image">{{ models.image }}</span>
+                    <span v-if="models.text">
+                      {{ models.text }}<i v-if="models.reasoning"> · {{ models.reasoning }}</i>
+                    </span>
+                    <span v-if="!models.image && !models.text">—</span>
+                  </div>
                 </div>
               </template>
             </el-table-column>
 
-            <el-table-column label="状态" width="96" align="left" header-align="left">
+            <el-table-column label="状态" width="108" align="left" header-align="left">
               <template #default="{ row }">
                 <div class="task-status-cell">
-                  <span class="kind-text" :class="`is-status-${row.status}`">
+                  <span class="kind-text" :class="`is-status-${(row as AdminTask).status}`">
                     {{ taskStatusLabel(row as AdminTask) }}
                   </span>
                   <small v-if="isUserDeletedTask(row as AdminTask)" class="deletion-mark">用户已删除</small>
@@ -986,13 +1046,13 @@ async function forceFail(task: AdminTask) {
 
             <el-table-column label="耗时" width="110" align="left" header-align="left">
               <template #default="{ row }">
-                <span class="metric metric-time tnum">{{ taskDuration(row as AdminTask) }}</span>
+                <span class="cell-text tnum">{{ taskDuration(row as AdminTask) }}</span>
               </template>
             </el-table-column>
 
-            <el-table-column label="积分" width="88" align="left" header-align="left">
+            <el-table-column label="积分" width="72" align="left" header-align="left" class-name="col-num">
               <template #default="{ row }">
-                <span class="metric metric-cost tnum">{{ formatPoints(row.costCents) }}</span>
+                <span class="cell-num tnum">{{ formatPoints(row.costCents) }}</span>
               </template>
             </el-table-column>
 
@@ -1041,28 +1101,11 @@ async function forceFail(task: AdminTask) {
               </template>
             </el-table-column>
 
-            <el-table-column
-              label="模型 / 端点"
-              min-width="160"
-              align="left"
-              header-align="left"
-              show-overflow-tooltip
-            >
+            <el-table-column label="端点" min-width="220" align="left" header-align="left">
               <template #default="{ row }">
-                <span class="cell-muted">{{ taskServiceProviderMeta(row as AdminTask).detail }}</span>
-              </template>
-            </el-table-column>
-
-            <el-table-column label="任务内容" width="96" align="left" header-align="left">
-              <template #default="{ row }">
-                <button
-                  type="button"
-                  class="task-prompt-btn cell-text"
-                  :title="`点击复制：${taskPrompt(row as AdminTask)}`"
-                  @click.stop="copyTaskPrompt(row as AdminTask)"
-                >
-                  {{ taskPromptBrief(row as AdminTask) }}
-                </button>
+                <span class="cell-muted mono" :title="taskServiceProviderMeta(row as AdminTask).endpoint">
+                  {{ taskServiceProviderMeta(row as AdminTask).endpoint || '—' }}
+                </span>
               </template>
             </el-table-column>
 
@@ -1136,27 +1179,23 @@ async function forceFail(task: AdminTask) {
       <template #header>
         <div v-if="detail" class="drawer-header">
           <div class="drawer-heading">
-            <span class="drawer-status" :class="`is-${detail.status}`">
-              {{ taskStatusLabel(detail) }}
-            </span>
-            <strong>{{ taskTypeLabel(detail.type, detail.params) }}</strong>
-            <small>{{ taskServiceProviderMeta(detail).name }} · {{ taskServiceProviderMeta(detail).detail }}</small>
-          </div>
-        </div>
-      </template>
-
-      <div v-if="detail" class="drawer-body">
-        <div class="drawer-toolbar">
-          <div class="drawer-toolbar__user">
-            <span class="drawer-toolbar__value">{{ taskUser(detail) }}</span>
-            <button type="button" class="drawer-id-chip" @click="copyTaskId(detail.id)">
-              <span class="mono">{{ detail.id }}</span>
-              <el-icon><CopyDocument /></el-icon>
-            </button>
+            <div class="drawer-heading__line">
+              <span class="kind-text" :class="`is-status-${detail.status}`">
+                {{ taskStatusLabel(detail) }}
+              </span>
+              <strong>{{ taskTypeLabel(detail.type, detail.params) }}</strong>
+            </div>
+            <div class="drawer-heading__meta">
+              <span>{{ taskUser(detail) }}</span>
+              <button type="button" class="drawer-id-chip" @click="copyTaskId(detail.id)">
+                <span class="mono">{{ detail.id }}</span>
+                <el-icon><CopyDocument /></el-icon>
+              </button>
+            </div>
           </div>
           <div class="drawer-toolbar__actions">
             <el-button
-			  v-if="detail.status === 'failed'"
+              v-if="detail.status === 'failed'"
               size="small"
               type="warning"
               :loading="acting"
@@ -1184,37 +1223,9 @@ async function forceFail(task: AdminTask) {
             </el-button>
           </div>
         </div>
+      </template>
 
-        <div class="drawer-stats">
-          <span class="stat-item">
-            <small>产出/请求</small>
-            <em class="tnum">
-              <b class="metric-result">{{ taskOutputCount(detail) }}</b>
-              <i>/</i>
-              <b class="metric-request">{{ taskCount(detail) }}</b>
-            </em>
-          </span>
-          <span class="stat-item">
-            <small>失败</small>
-            <em
-              class="metric-fail tnum"
-              :class="{ 'is-zero': taskFailedCount(detail) === 0 }"
-            >{{ taskFailedCount(detail) }}</em>
-          </span>
-          <span class="stat-item" :class="{ 'is-ref': taskInputCount(detail) > 0 }">
-            <small>参考图</small>
-            <em class="tnum">{{ taskInputCount(detail) }}</em>
-          </span>
-          <span class="stat-item">
-            <small>耗时</small>
-            <em class="metric-time tnum">{{ taskDuration(detail) }}</em>
-          </span>
-          <span class="stat-item">
-            <small>积分</small>
-            <em class="metric-cost tnum">{{ formatPoints(detail.costCents) }}</em>
-          </span>
-        </div>
-
+      <div v-if="detail" class="drawer-body">
         <el-alert
           v-if="isUserDeletedTask(detail)"
           class="drawer-alert"
@@ -1235,74 +1246,139 @@ async function forceFail(task: AdminTask) {
           :description="isUserCanceledTask(detail) ? '该任务由用户主动停止，不属于模型或系统执行失败。' : detail.errorMessage || ''"
         />
 
-        <section class="detail-section">
-          <header class="detail-section__title">
-            <div class="detail-media-tabs">
-              <button
-                v-if="detailOutputUrls.length"
-                type="button"
-                :class="{ 'is-active': detailMediaMode === 'output' }"
-                @click="setDetailMediaMode('output')"
-              >
-                产出图 <em>{{ detailOutputUrls.length }}</em>
-              </button>
-              <button
-                v-if="detailInputUrls.length"
-                type="button"
-                :class="{ 'is-active': detailMediaMode === 'input' }"
-                @click="setDetailMediaMode('input')"
-              >
-                参考图 <em>{{ detailInputUrls.length }}</em>
-              </button>
-              <span v-if="!detailOutputUrls.length && !detailInputUrls.length" class="cell-muted">
-                暂无图片
-              </span>
-            </div>
-            <small v-if="detailMediaUrls.length" class="detail-section__hint">点击查看大图</small>
-          </header>
-          <div v-if="detailMediaUrls.length" class="media-grid">
+        <section class="drawer-hero">
+          <div
+            v-if="detailOutputUrls.length || detailInputUrls.length"
+            class="detail-media-tabs"
+          >
+            <button
+              v-if="detailOutputUrls.length"
+              type="button"
+              :class="{ 'is-active': detailMediaMode === 'output' }"
+              @click="setDetailMediaMode('output')"
+            >
+              产出 <em>{{ detailOutputUrls.length }}</em>
+            </button>
+            <button
+              v-if="detailInputUrls.length"
+              type="button"
+              :class="{ 'is-active': detailMediaMode === 'input' }"
+              @click="setDetailMediaMode('input')"
+            >
+              参考 <em>{{ detailInputUrls.length }}</em>
+            </button>
+          </div>
+          <div class="drawer-hero__visual">
             <el-image
-              v-for="(url, index) in detailMediaUrls"
-              :key="`${detailMediaMode}-${url}-${index}`"
-              :src="detailMediaMode === 'output' && detail ? taskThumbSrc(detail, index) : url"
+              v-if="detailMediaUrls.length"
+              :src="detailMediaMode === 'output' ? taskThumbSrc(detail, 0) : detailMediaUrls[0]"
               :preview-src-list="detailPreviewUrls"
-              :initial-index="index"
               fit="cover"
-              class="media-grid__item"
+              class="drawer-hero__shot"
               preview-teleported
               hide-on-click-modal
-              @error="detailMediaMode === 'output' && detail ? onTaskThumbError(detail, index) : undefined"
+              @error="detailMediaMode === 'output' ? onTaskThumbError(detail, 0) : undefined"
             >
               <template #error>
-                <div class="media-ph media-ph--sm">
+                <div class="media-ph">
                   <el-icon><Picture /></el-icon>
                 </div>
               </template>
             </el-image>
+            <div
+              v-else
+              class="drawer-hero__shot is-empty"
+              :class="{ 'is-user-deleted': isUserDeletedTask(detail) }"
+            >
+              <el-icon>
+                <Delete v-if="isUserDeletedTask(detail)" />
+                <Picture v-else />
+              </el-icon>
+              <span>{{
+                isUserDeletedTask(detail)
+                  ? '产物已删除'
+                  : detail.status === 'failed'
+                    ? '无产出图'
+                    : '暂无预览'
+              }}</span>
+            </div>
+            <div v-if="detailMediaUrls.length > 1" class="drawer-hero__thumbs">
+              <el-image
+                v-for="(url, index) in detailMediaUrls.slice(1)"
+                :key="`${detailMediaMode}-${url}-${index + 1}`"
+                :src="detailMediaMode === 'output' ? taskThumbSrc(detail, index + 1) : url"
+                :preview-src-list="detailPreviewUrls"
+                :initial-index="index + 1"
+                fit="cover"
+                class="drawer-hero__thumb"
+                preview-teleported
+                hide-on-click-modal
+                @error="detailMediaMode === 'output' ? onTaskThumbError(detail, index + 1) : undefined"
+              >
+                <template #error>
+                  <div class="media-ph media-ph--sm">
+                    <el-icon><Picture /></el-icon>
+                  </div>
+                </template>
+              </el-image>
+            </div>
           </div>
-          <div v-else class="media-grid-empty">
-            {{ isUserDeletedTask(detail) ? '产物已被用户删除' : detail.status === 'failed' ? '任务失败，无产出图' : '对话任务或仍在生成中' }}
+
+          <div class="drawer-hero__copy">
+            <div
+              v-for="models in [taskPreviewModels(detail)]"
+              :key="`${detail.id}-hero-models`"
+              class="drawer-hero__models"
+            >
+              <span v-if="models.image">{{ models.image }}</span>
+              <span v-if="models.text">
+                {{ models.text }}<i v-if="models.reasoning"> · {{ models.reasoning }}</i>
+              </span>
+              <span v-if="!models.image && !models.text">未记录模型</span>
+            </div>
+            <p class="drawer-hero__route">
+              {{ taskServiceProviderMeta(detail).name }}
+              <em v-if="taskServiceProviderMeta(detail).endpoint">
+                {{ taskServiceProviderMeta(detail).endpoint }}
+              </em>
+            </p>
+            <div class="drawer-stats">
+              <span class="stat-item">
+                <small>产出/请求</small>
+                <em class="tnum">
+                  <b class="metric-result">{{ taskOutputCount(detail) }}</b>
+                  <i>/</i>
+                  <b class="metric-request">{{ taskCount(detail) }}</b>
+                </em>
+              </span>
+              <span class="stat-item">
+                <small>失败</small>
+                <em
+                  class="metric-fail tnum"
+                  :class="{ 'is-zero': taskFailedCount(detail) === 0 }"
+                >{{ taskFailedCount(detail) }}</em>
+              </span>
+              <span class="stat-item">
+                <small>参考</small>
+                <em class="tnum">{{ taskInputCount(detail) }}</em>
+              </span>
+              <span class="stat-item">
+                <small>耗时</small>
+                <em class="tnum">{{ taskDuration(detail) }}</em>
+              </span>
+              <span class="stat-item">
+                <small>积分</small>
+                <em class="tnum">{{ formatPoints(detail.costCents) }}</em>
+              </span>
+            </div>
           </div>
         </section>
 
         <section class="detail-section">
-          <header class="detail-section__title">任务信息</header>
-          <dl class="info-rows info-rows--flat">
-            <div class="info-row">
-              <dt>类型</dt>
-              <dd>{{ taskTypeLabel(detail.type, detail.params) }}</dd>
-            </div>
+          <dl class="info-rows info-rows--facts">
             <div class="info-row">
               <dt>来源</dt>
               <dd>{{ taskSourceLabel(detail) }}</dd>
-            </div>
-            <div class="info-row">
-              <dt>服务商</dt>
-              <dd>{{ taskServiceProviderMeta(detail).name }}</dd>
-            </div>
-            <div class="info-row">
-              <dt>模型</dt>
-              <dd>{{ taskServiceProviderMeta(detail).detail }}</dd>
             </div>
             <div class="info-row">
               <dt>创建</dt>
@@ -1331,7 +1407,7 @@ async function forceFail(task: AdminTask) {
           <div v-if="timelineLoading" class="timeline-empty">加载中…</div>
           <div v-else-if="timelineError" class="timeline-empty">{{ timelineError }}</div>
           <div v-else-if="!timelineEvents.length" class="timeline-empty">
-            暂无耗时记录（仅在时间线功能上线后执行的任务会记录）
+            暂无耗时记录
           </div>
           <ol v-else class="timeline">
             <li
@@ -1524,7 +1600,7 @@ async function forceFail(task: AdminTask) {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
 }
 
 .status-tabs {
@@ -1596,7 +1672,13 @@ html.dark .status-tab.is-active em {
 }
 
 .tasks-search {
-  width: 200px;
+  width: min(220px, 40vw);
+}
+
+.tasks-search :deep(.el-input__wrapper) {
+  min-height: 36px;
+  border-radius: 999px;
+  box-shadow: 0 0 0 1px var(--border) inset;
 }
 
 .tasks-type {
@@ -1607,20 +1689,28 @@ html.dark .status-tab.is-active em {
   width: 120px;
 }
 
-.tasks-list-shell {
+.tasks-board {
   flex: 1;
   min-height: 0;
   overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: calc(var(--radius-card) - 4px);
+  border-radius: var(--radius-control);
   background: var(--surface);
-  box-shadow: var(--shadow-sm);
 }
 
-.tasks-list-shell :deep(.admin-list-shell__footer) {
-  min-height: 56px;
-  padding: 8px 18px;
-  background: var(--surface);
+.tasks-board :deep(.admin-list-shell) {
+  border-top: 0;
+}
+
+.tasks-board :deep(.admin-list-shell__viewport) {
+  overflow: hidden;
+  scrollbar-gutter: auto;
+}
+
+.tasks-board :deep(.admin-list-shell__footer) {
+  min-height: 52px;
+  padding: 0 16px;
+  background: var(--surface-2);
 }
 
 .tasks-table-shell {
@@ -1629,40 +1719,46 @@ html.dark .status-tab.is-active em {
   overflow: hidden;
 }
 
-.tasks-table :deep(.el-table__inner-wrapper::before) {
+.tasks-table {
+  --el-table-border-color: transparent;
+}
+
+.tasks-table :deep(.el-table__inner-wrapper::before),
+.tasks-table :deep(.el-table__inner-wrapper::after),
+.tasks-table :deep(.el-table__border-left-patch) {
   display: none;
 }
 
-.tasks-table :deep(.el-table__header-wrapper th.el-table__cell),
-.tasks-table :deep(.el-table__body td.el-table__cell),
-.tasks-table :deep(.el-table .cell) {
-  text-align: left !important;
+.tasks-table :deep(.el-table__header-wrapper) {
+  padding-right: 0 !important;
 }
 
 .tasks-table :deep(.el-table .cell) {
-  display: block;
-  padding-left: 12px;
-  padding-right: 12px;
+  overflow: hidden;
+  padding: 0 12px;
+}
+
+.tasks-table :deep(.el-table td.el-table__cell),
+.tasks-table :deep(.el-table th.el-table__cell) {
+  border: 0;
 }
 
 .tasks-table :deep(.el-table__header-wrapper th.el-table__cell) {
-  height: 48px;
+  height: 40px;
   padding: 0;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface);
+  background: var(--surface-2);
   color: var(--ink-3);
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 650;
   letter-spacing: 0.01em;
 }
 
 .tasks-table :deep(.el-table__body .el-table__cell) {
-  padding: 10px 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  padding: 8px 0;
 }
 
 .tasks-table :deep(.el-table__row td.el-table__cell) {
-  height: 64px;
+  height: 56px;
 }
 
 .tasks-table :deep(.el-table__row) {
@@ -1673,20 +1769,60 @@ html.dark .status-tab.is-active em {
   background: var(--surface-2);
 }
 
-.tasks-table :deep(.el-table__body tr.el-table__row:last-child td.el-table__cell) {
-  border-bottom-color: transparent;
+.tasks-table :deep(th.el-table__cell.gutter),
+.tasks-table :deep(col[name='gutter']) {
+  display: none;
+  width: 0 !important;
 }
 
-.tasks-table :deep(.task-row.is-failed > td.el-table__cell) {
-  background: color-mix(in srgb, var(--danger) 5%, var(--surface));
+.tasks-table :deep(.col-num .cell) {
+  font-variant-numeric: tabular-nums;
 }
 
-.tasks-table :deep(.task-row.is-running > td.el-table__cell) {
-  background: color-mix(in srgb, var(--info) 5%, var(--surface));
+.tasks-table :deep(.badge) {
+  height: 20px;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 20px;
+}
+
+.task-preview {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.task-preview .media-ph--sm {
+  flex: 0 0 auto;
+}
+
+.task-preview__models {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.task-preview__models span,
+.task-preview__models i {
+  overflow: hidden;
+  color: var(--ink-2);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-preview__models i {
+  font-weight: 400;
 }
 
 .task-thumb {
   display: block;
+  flex: 0 0 auto;
   width: 40px;
   height: 40px;
   overflow: hidden;
@@ -1864,6 +2000,15 @@ html.dark .status-tab.is-active em {
   color: var(--warning);
 }
 
+.provider-text,
+.cell-text,
+.cell-muted {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .provider-text {
   color: var(--ink-2);
   font-size: 13px;
@@ -1893,9 +2038,29 @@ html.dark .status-tab.is-active em {
   color: var(--warning);
 }
 
-.task-status-cell {
+.task-status-cell,
+.task-metric {
   display: grid;
+  min-width: 0;
   gap: 2px;
+}
+
+.task-model {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.task-model .cell-text {
+  min-width: 0;
+}
+
+.model-hint {
+  flex: 0 0 auto;
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 500;
 }
 
 .deletion-mark {
@@ -1916,6 +2081,16 @@ html.dark .status-tab.is-active em {
   font-weight: 700;
 }
 
+.cell-num.is-fail {
+  color: var(--danger);
+}
+
+.cell-time {
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 600;
+}
+
 .cell-muted {
   color: var(--ink-3);
   font-size: 12px;
@@ -1923,8 +2098,12 @@ html.dark .status-tab.is-active em {
 }
 
 .cell-fail {
+  display: block;
+  overflow: hidden;
   color: var(--danger);
   font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .drawer-id {
@@ -1939,47 +2118,46 @@ html.dark .status-tab.is-active em {
 }
 
 .drawer-header {
+  display: flex;
   min-width: 0;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
   padding-right: 8px;
 }
 
 .drawer-heading {
   display: grid;
   min-width: 0;
+  flex: 1;
   gap: 4px;
 }
 
-.drawer-status {
-  justify-self: start;
-  color: var(--success);
-  font-size: 11px;
-  font-weight: 650;
-}
-
-.drawer-status.is-failed {
-  color: var(--danger);
-}
-
-.drawer-status.is-running,
-.drawer-status.is-queued {
-  color: var(--info);
-}
-
-.drawer-status.is-canceled {
-  color: var(--warning);
+.drawer-heading__line,
+.drawer-heading__meta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
 }
 
 .drawer-heading strong {
-  color: var(--el-text-color-primary);
-  font-size: 17px;
-  font-weight: 650;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 700;
   letter-spacing: -0.02em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.drawer-heading small {
-  overflow: hidden;
+.drawer-heading__meta {
   color: var(--ink-3);
   font-size: 12px;
+}
+
+.drawer-heading__meta > span {
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1987,46 +2165,20 @@ html.dark .status-tab.is-active em {
 .drawer-body {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding-bottom: 24px;
-}
-
-.drawer-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 10px;
-}
-
-.drawer-toolbar__user {
-  display: flex;
-  min-width: 0;
-  flex: 1;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-}
-
-.drawer-toolbar__value {
-  overflow: hidden;
-  color: var(--ink);
-  font-size: 13px;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  gap: 18px;
+  padding-bottom: 28px;
 }
 
 .drawer-id-chip {
   display: inline-flex;
-  max-width: min(100%, 260px);
+  max-width: min(100%, 220px);
   align-items: center;
   gap: 4px;
-  padding: 2px 6px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  padding: 0;
+  border: 0;
   color: var(--ink-3);
   font-size: 11px;
-  background: var(--surface-2);
+  background: transparent;
   cursor: pointer;
 }
 
@@ -2037,7 +2189,7 @@ html.dark .status-tab.is-active em {
 }
 
 .drawer-id-chip:hover {
-  color: var(--ink);
+  color: var(--ink-2);
 }
 
 .drawer-toolbar__actions {
@@ -2047,38 +2199,145 @@ html.dark .status-tab.is-active em {
   margin-left: auto;
 }
 
-.drawer-stats {
+.drawer-hero {
+  display: grid;
+  grid-template-columns: 148px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.drawer-hero .detail-media-tabs {
+  grid-column: 1 / -1;
+}
+
+.drawer-hero__visual {
+  display: grid;
+  gap: 8px;
+}
+
+.drawer-hero__shot {
+  display: block;
+  width: 148px;
+  height: 148px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-2);
+  cursor: zoom-in;
+}
+
+.drawer-hero__shot.is-empty {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 6px;
+  color: var(--ink-3);
+  font-size: 12px;
+  cursor: default;
+}
+
+.drawer-hero__shot.is-user-deleted {
+  color: var(--warning);
+}
+
+.drawer-hero__shot :deep(.el-image__wrapper),
+.drawer-hero__shot :deep(.el-image__inner),
+.drawer-hero__shot :deep(.el-image__error),
+.drawer-hero__shot :deep(.media-ph) {
+  width: 100%;
+  height: 100%;
+}
+
+.drawer-hero__thumbs {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px 4px;
-  padding: 8px 10px;
+  gap: 6px;
+}
+
+.drawer-hero__thumb {
+  width: 44px;
+  height: 44px;
+  overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface-2);
+  cursor: zoom-in;
+}
+
+.drawer-hero__thumb :deep(.el-image__wrapper),
+.drawer-hero__thumb :deep(.el-image__inner),
+.drawer-hero__thumb :deep(.el-image__error),
+.drawer-hero__thumb :deep(.media-ph--sm) {
+  width: 100%;
+  height: 100%;
+}
+
+.drawer-hero__copy {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: 12px;
+}
+
+.drawer-hero__models {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.drawer-hero__models span,
+.drawer-hero__models i {
+  overflow: hidden;
+  color: var(--ink-2);
+  font-size: 13px;
+  font-style: normal;
+  font-weight: 500;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drawer-hero__models i {
+  font-weight: 400;
+}
+
+.drawer-hero__route {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  margin: 0;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.drawer-hero__route em {
+  overflow: hidden;
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drawer-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
 }
 
 .stat-item {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 5px;
-  padding: 0 8px;
-  border-right: 1px solid var(--border);
-}
-
-.stat-item:last-child {
-  border-right: 0;
+  display: grid;
+  gap: 2px;
 }
 
 .stat-item small {
   color: var(--ink-3);
   font-size: 11px;
-  font-weight: 600;
 }
 
 .stat-item em {
-  font-size: 14px;
+  color: var(--ink-2);
+  font-size: 13px;
   font-style: normal;
-  font-weight: 750;
+  font-weight: 600;
   letter-spacing: -0.02em;
   line-height: 1.2;
 }
@@ -2094,10 +2353,6 @@ html.dark .status-tab.is-active em {
   font-weight: inherit;
 }
 
-.stat-item.is-ref em {
-  color: var(--info);
-}
-
 .drawer-alert {
   margin: 0;
 }
@@ -2108,13 +2363,9 @@ html.dark .status-tab.is-active em {
   margin: 0;
 }
 
-.info-rows--flat {
+.info-rows--facts {
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px 16px;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
+  gap: 10px 20px;
 }
 
 .params-open-link {
@@ -2140,21 +2391,20 @@ html.dark .status-tab.is-active em {
 
 .info-row {
   display: grid;
-  grid-template-columns: 40px minmax(0, 1fr);
-  gap: 8px;
+  grid-template-columns: 36px minmax(0, 1fr);
+  gap: 10px;
   align-items: baseline;
 }
 
 .info-row dt {
   margin: 0;
   color: var(--ink-3);
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 12px;
 }
 
 .info-row dd {
   margin: 0;
-  color: var(--ink);
+  color: var(--ink-2);
   font-size: 12px;
   word-break: break-word;
 }
@@ -2167,10 +2417,10 @@ html.dark .status-tab.is-active em {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 8px;
-  color: var(--el-text-color-primary);
+  margin-bottom: 10px;
+  color: var(--ink-2);
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 650;
 }
 
 .detail-section__hint {
@@ -2184,13 +2434,13 @@ html.dark .status-tab.is-active em {
   margin: 0;
   max-height: 160px;
   overflow: auto;
-  padding: 10px 12px;
+  padding: 12px 14px;
   border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface-2);
+  border-radius: 10px;
+  background: var(--surface);
   color: var(--ink-2);
   font-size: 12px;
-  line-height: 1.55;
+  line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -2211,13 +2461,13 @@ html.dark .status-tab.is-active em {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  height: 26px;
-  padding: 0 10px;
-  border: 1px solid var(--border);
+  height: 22px;
+  padding: 0 8px;
+  border: 0;
   border-radius: 999px;
-  background: var(--surface);
-  color: var(--ink-2);
-  font-size: 12px;
+  background: var(--surface-2);
+  color: var(--ink-3);
+  font-size: 11px;
   font-weight: 600;
   cursor: pointer;
 }
@@ -2305,7 +2555,7 @@ html.dark .status-tab.is-active em {
 
 .task-detail-drawer .el-drawer__header {
   margin-bottom: 0;
-  padding: 18px 22px 14px;
+  padding: 16px 20px 14px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -2316,7 +2566,7 @@ html.dark .status-tab.is-active em {
 .task-detail-drawer .el-drawer__body {
   flex: 1;
   min-height: 0;
-  padding: 16px 22px 0;
+  padding: 18px 20px 0;
   overflow: auto;
   overscroll-behavior: contain;
 }

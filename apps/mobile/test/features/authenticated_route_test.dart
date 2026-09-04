@@ -105,6 +105,17 @@ void main() {
     expect(privateBuilds, 0);
     expect(find.text('登录后查看积分钱包'), findsOneWidget);
     expect(find.text('账号验证完成后将自动返回当前页面'), findsOneWidget);
+    final icon = tester.widget<Icon>(
+      find.byKey(const Key('authenticated-route-icon')),
+    );
+    expect(icon.size, 40);
+    expect(
+      find.ancestor(
+        of: find.byKey(const Key('authenticated-route-icon')),
+        matching: find.byType(DecoratedBox),
+      ),
+      findsNothing,
+    );
     expect(tester.takeException(), isNull);
 
     await tester.tap(find.byKey(const Key('authenticated-route-login')));
@@ -130,9 +141,12 @@ void main() {
   testWidgets('session check error retries and restores destination', (
     tester,
   ) async {
+    await tester.binding.setSurfaceSize(const Size(320, 640));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
     late _FakeSessionController controller;
     await tester.pumpWidget(
       _app(
+        textScale: 1.6,
         controller: () =>
             controller = _FakeSessionController(failInitial: true),
         child: const Scaffold(body: Text('私有钱包内容')),
@@ -141,7 +155,9 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('账号状态暂不可用'), findsOneWidget);
-    await tester.tap(find.text('重新检查'));
+    expect(find.text('请检查网络连接后重新验证账号状态'), findsOneWidget);
+    expect(find.byKey(const Key('authenticated-route-retry')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('authenticated-route-retry')));
     await tester.pumpAndSettle();
 
     expect(controller.refreshCount, 1);
@@ -173,6 +189,70 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('account data export deep link checks authentication first', (
+    tester,
+  ) async {
+    final container = ProviderContainer(
+      overrides: [
+        sessionControllerProvider.overrideWith(_FakeSessionController.new),
+      ],
+    );
+    addTearDown(container.dispose);
+    final router = container.read(appRouterProvider);
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: MaterialApp.router(routerConfig: router),
+      ),
+    );
+    router.go('/profile/security/data-export');
+    await tester.pumpAndSettle();
+
+    expect(find.text('登录后查看账号数据'), findsOneWidget);
+    expect(find.byKey(const Key('authenticated-route-login')), findsOneWidget);
+    expect(find.byKey(const Key('account-data-export-action')), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('all account security deep links check authentication first', (
+    tester,
+  ) async {
+    final container = ProviderContainer(
+      overrides: [
+        sessionControllerProvider.overrideWith(_FakeSessionController.new),
+      ],
+    );
+    addTearDown(container.dispose);
+    final router = container.read(appRouterProvider);
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: MaterialApp.router(routerConfig: router),
+      ),
+    );
+
+    for (final route in const [
+      ('/profile/security', '登录后查看账号与安全'),
+      ('/profile/security/sessions', '登录后查看登录设备'),
+      ('/profile/security/blocked-users', '登录后查看已屏蔽用户'),
+      ('/profile/security/delete', '登录后查看注销账号'),
+    ]) {
+      router.go(route.$1);
+      await tester.pumpAndSettle();
+      expect(find.text(route.$2), findsOneWidget, reason: route.$1);
+      expect(
+        find.byKey(const Key('authenticated-route-login')),
+        findsOneWidget,
+        reason: route.$1,
+      );
+      expect(tester.takeException(), isNull, reason: route.$1);
+    }
+
+    expect(find.byTooltip('刷新设备'), findsNothing);
+    expect(find.byTooltip('刷新列表'), findsNothing);
+    expect(find.byKey(const Key('delete-account-submit')), findsNothing);
+  });
+
   testWidgets('real ledger deep link is guarded before private API screens', (
     tester,
   ) async {
@@ -198,6 +278,31 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('works deep link uses the shared authentication gate', (
+    tester,
+  ) async {
+    final container = ProviderContainer(
+      overrides: [
+        sessionControllerProvider.overrideWith(_FakeSessionController.new),
+      ],
+    );
+    addTearDown(container.dispose);
+    final router = container.read(appRouterProvider);
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: MaterialApp.router(routerConfig: router),
+      ),
+    );
+    router.go('/works');
+    await tester.pumpAndSettle();
+
+    expect(find.text('登录后查看历史记录'), findsOneWidget);
+    expect(find.byKey(const Key('authenticated-route-login')), findsOneWidget);
+    expect(find.byKey(const Key('works-search')), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('orders deep link is guarded before private API screens', (
     tester,
   ) async {
@@ -219,6 +324,32 @@ void main() {
 
     expect(find.text('登录后查看我的订单'), findsOneWidget);
     expect(find.byKey(const Key('authenticated-route-login')), findsOneWidget);
+    expect(find.byKey(const Key('app-top-bar-back')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('membership deep link keeps its title and fallback navigation', (
+    tester,
+  ) async {
+    final container = ProviderContainer(
+      overrides: [
+        sessionControllerProvider.overrideWith(_FakeSessionController.new),
+      ],
+    );
+    addTearDown(container.dispose);
+    final router = container.read(appRouterProvider);
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: MaterialApp.router(routerConfig: router),
+      ),
+    );
+    router.go('/profile/purchases');
+    await tester.pumpAndSettle();
+
+    expect(find.text('会员与订单'), findsOneWidget);
+    expect(find.text('登录后查看会员与订单'), findsOneWidget);
+    expect(find.textContaining('套餐与订单'), findsNothing);
     expect(find.byKey(const Key('app-top-bar-back')), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
@@ -320,69 +451,72 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('home tabs switch prompts and community without leaving discover', (
-    tester,
-  ) async {
-    final container = ProviderContainer(
-      overrides: [
-        sessionControllerProvider.overrideWith(_FakeSessionController.new),
-        discoverPromptCategoriesProvider.overrideWith((ref) async => const []),
-        discoverPromptPageProvider.overrideWith(
-          (ref, query) async => const PromptPage(
-            items: [],
-            total: 0,
-            categoryCounts: {},
-            tags: [],
+  testWidgets(
+    'home tabs switch prompts and community without leaving discover',
+    (tester) async {
+      final container = ProviderContainer(
+        overrides: [
+          sessionControllerProvider.overrideWith(_FakeSessionController.new),
+          discoverPromptCategoriesProvider.overrideWith(
+            (ref) async => const [],
           ),
+          discoverPromptPageProvider.overrideWith(
+            (ref, query) async => const PromptPage(
+              items: [],
+              total: 0,
+              categoryCounts: {},
+              tags: [],
+            ),
+          ),
+          galleryCategoriesProvider.overrideWith((ref) async => const []),
+          discoverGalleryPageProvider.overrideWith(
+            (ref, query) async => const GalleryPage(items: []),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      final router = container.read(appRouterProvider);
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: MaterialApp.router(routerConfig: router),
         ),
-        galleryCategoriesProvider.overrideWith((ref) async => const []),
-        discoverGalleryPageProvider.overrideWith(
-          (ref, query) async => const GalleryPage(items: []),
-        ),
-      ],
-    );
-    addTearDown(container.dispose);
-    final router = container.read(appRouterProvider);
-    await tester.pumpWidget(
-      UncontrolledProviderScope(
-        container: container,
-        child: MaterialApp.router(routerConfig: router),
-      ),
-    );
+      );
 
-    await tester.pumpAndSettle();
-    expect(router.state.uri.path, '/discover');
-    expect(find.byKey(const Key('home-tabs')), findsOneWidget);
-    expect(find.byKey(const Key('home-tab-home')), findsOneWidget);
-    expect(find.byKey(const Key('home-tab-prompts')), findsOneWidget);
-    expect(find.byKey(const Key('home-tab-community')), findsOneWidget);
+      await tester.pumpAndSettle();
+      expect(router.state.uri.path, '/discover');
+      expect(find.byKey(const Key('home-tabs')), findsOneWidget);
+      expect(find.byKey(const Key('home-tab-home')), findsOneWidget);
+      expect(find.byKey(const Key('home-tab-prompts')), findsOneWidget);
+      expect(find.byKey(const Key('home-tab-community')), findsOneWidget);
 
-    await tester.tap(find.byKey(const Key('all-prompts-action')));
-    await tester.pumpAndSettle();
-    expect(router.state.uri.path, '/discover');
-    expect(router.state.uri.queryParameters['tab'], 'prompts');
-    expect(find.byType(SearchBar), findsOneWidget);
-    expect(find.byKey(const Key('app-top-bar-back')), findsNothing);
-    expect(find.byKey(const Key('home-tabs')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('all-prompts-action')));
+      await tester.pumpAndSettle();
+      expect(router.state.uri.path, '/discover');
+      expect(router.state.uri.queryParameters['tab'], 'prompts');
+      expect(find.byType(SearchBar), findsOneWidget);
+      expect(find.byKey(const Key('app-top-bar-back')), findsNothing);
+      expect(find.byKey(const Key('home-tabs')), findsOneWidget);
 
-    await tester.tap(find.byKey(const Key('home-tab-community')));
-    await tester.pumpAndSettle();
-    expect(router.state.uri.path, '/discover');
-    expect(router.state.uri.queryParameters['tab'], 'community');
-    expect(find.byKey(const Key('home-tabs')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('home-tab-community')));
+      await tester.pumpAndSettle();
+      expect(router.state.uri.path, '/discover');
+      expect(router.state.uri.queryParameters['tab'], 'community');
+      expect(find.byKey(const Key('home-tabs')), findsOneWidget);
 
-    router.go('/prompts');
-    await tester.pumpAndSettle();
-    expect(router.state.uri.path, '/discover');
-    expect(router.state.uri.queryParameters['tab'], 'prompts');
-    expect(find.byType(SearchBar), findsOneWidget);
+      router.go('/prompts');
+      await tester.pumpAndSettle();
+      expect(router.state.uri.path, '/discover');
+      expect(router.state.uri.queryParameters['tab'], 'prompts');
+      expect(find.byType(SearchBar), findsOneWidget);
 
-    router.go('/community');
-    await tester.pumpAndSettle();
-    expect(router.state.uri.path, '/discover');
-    expect(router.state.uri.queryParameters['tab'], 'community');
-    expect(tester.takeException(), isNull);
-  });
+      router.go('/community');
+      await tester.pumpAndSettle();
+      expect(router.state.uri.path, '/discover');
+      expect(router.state.uri.queryParameters['tab'], 'community');
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('retired design tools redirect to the design hub', (
     tester,

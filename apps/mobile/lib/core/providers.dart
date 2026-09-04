@@ -14,6 +14,10 @@ final sessionStoreProvider = Provider<SessionStore>(
 
 final sessionExpiredSignalProvider = StateProvider<int>((ref) => 0);
 
+final apiNetworkStatusProvider = StateProvider<ApiNetworkStatus>(
+  (ref) => ApiNetworkStatus.unknown,
+);
+
 final apiClientProvider = Provider<ApiClient>(
   (ref) => ApiClient(
     environment: ref.watch(appEnvironmentProvider),
@@ -21,6 +25,9 @@ final apiClientProvider = Provider<ApiClient>(
     onUnauthorized: () {
       final notifier = ref.read(sessionExpiredSignalProvider.notifier);
       notifier.state += 1;
+    },
+    onNetworkStatusChanged: (status) {
+      ref.read(apiNetworkStatusProvider.notifier).state = status;
     },
   ),
 );

@@ -461,10 +461,7 @@ export function ShareView() {
                   画
                 </span>
               </h1>
-              <p className="community-copy__lead">
-                灵感在此汇聚。浏览创作者分享并通过审核的 AI
-                作品，也把你的创作挂上展墙。
-              </p>
+              <p className="community-copy__lead">灵感在此汇聚</p>
               <div className="community-copy__actions">
                 <button
                   type="button"
@@ -472,9 +469,6 @@ export function ShareView() {
                   onClick={scrollFeed}
                 >
                   进入画廊<span aria-hidden="true">→</span>
-                </button>
-                <button type="button" className="is-text" onClick={goSubmit}>
-                  我要投稿
                 </button>
               </div>
             </div>
@@ -545,7 +539,6 @@ export function ShareView() {
                 <span className="community-featured__tag">
                   {shortDate(currentHero.createdAt)}
                 </span>
-                <strong>{currentHero.title}</strong>
                 <small>{currentHero.authorName}</small>
               </div>
               <button
@@ -659,11 +652,6 @@ export function ShareView() {
             <i className={`bi bi-arrow-clockwise${loading ? " spin" : ""}`} />
             刷新馆藏
           </button>
-          <span className="community-categories__split" aria-hidden="true" />
-          <button type="button" onClick={goSubmit}>
-            <i className="bi bi-plus-square" />
-            我要投稿
-          </button>
         </nav>
         <div className="community-main" data-share-motion>
           <div className="community-feed-head">
@@ -717,11 +705,9 @@ export function ShareView() {
                 <strong>
                   {activeCategory ? "该分类暂时没有作品" : "画廊还没有作品"}
                 </strong>
-                <span>
-                  {activeCategory
-                    ? "切换其他分类，或成为这个分类的第一位创作者。"
-                    : "去工作台创作，并在个人中心把满意的一幅投稿进来。"}
-                </span>
+                {activeCategory ? (
+                  <span>切换其他分类，或成为这个分类的第一位创作者。</span>
+                ) : null}
                 <button
                   type="button"
                   onClick={() => navigate("/text-to-image")}

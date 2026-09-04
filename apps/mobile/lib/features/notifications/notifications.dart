@@ -200,6 +200,7 @@ class NotificationCenterState {
     this.markingIds = const {},
     this.isMarkingAll = false,
     this.isClearing = false,
+    this.deletingIds = const {},
   });
 
   final List<AppNotification> items;
@@ -209,9 +210,10 @@ class NotificationCenterState {
   final Set<String> markingIds;
   final bool isMarkingAll;
   final bool isClearing;
+  final Set<String> deletingIds;
 
   bool get hasMore => nextCursor != null;
-  bool get isBusy => isMarkingAll || isClearing;
+  bool get isBusy => isMarkingAll || isClearing || deletingIds.isNotEmpty;
 
   NotificationCenterState copyWith({
     List<AppNotification>? items,
@@ -222,6 +224,7 @@ class NotificationCenterState {
     Set<String>? markingIds,
     bool? isMarkingAll,
     bool? isClearing,
+    Set<String>? deletingIds,
   }) => NotificationCenterState(
     items: items ?? this.items,
     nextCursor: clearCursor ? null : nextCursor ?? this.nextCursor,
@@ -230,6 +233,7 @@ class NotificationCenterState {
     markingIds: markingIds ?? this.markingIds,
     isMarkingAll: isMarkingAll ?? this.isMarkingAll,
     isClearing: isClearing ?? this.isClearing,
+    deletingIds: deletingIds ?? this.deletingIds,
   );
 }
 
@@ -253,6 +257,9 @@ class NotificationRepository {
       _apiClient.patch('/me/notifications', data: {'ids': ids});
 
   Future<void> clear() => _apiClient.delete('/me/notifications');
+
+  Future<void> dismiss(String id) =>
+      _apiClient.delete('/me/notifications/${Uri.encodeComponent(id)}');
 }
 
 final notificationRepositoryProvider = Provider<NotificationRepository>(
@@ -373,6 +380,34 @@ class NotificationCenterController
       ref.invalidate(notificationSummaryProvider);
     } catch (error, stackTrace) {
       state = AsyncData(current.copyWith(isClearing: false));
+      Error.throwWithStackTrace(error, stackTrace);
+    }
+  }
+
+  Future<void> dismiss(String id) async {
+    final current = state.asData?.value;
+    final target = current?.items.where((item) => item.id == id).firstOrNull;
+    if (current == null || target == null || current.isBusy) return;
+    state = AsyncData(
+      current.copyWith(
+        items: current.items.where((item) => item.id != id).toList(),
+        unread: !target.isRead && current.unread > 0
+            ? current.unread - 1
+            : current.unread,
+        deletingIds: {...current.deletingIds, id},
+      ),
+    );
+    try {
+      await _repository.dismiss(id);
+      final latest = state.asData?.value;
+      if (latest != null) {
+        state = AsyncData(
+          latest.copyWith(deletingIds: {...latest.deletingIds}..remove(id)),
+        );
+      }
+      ref.invalidate(notificationSummaryProvider);
+    } catch (error, stackTrace) {
+      state = AsyncData(current);
       Error.throwWithStackTrace(error, stackTrace);
     }
   }

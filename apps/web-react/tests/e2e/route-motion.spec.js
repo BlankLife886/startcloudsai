@@ -92,8 +92,8 @@ test("switches cleanly between shared and dedicated motion during client navigat
   await expect(main).toHaveAttribute("data-route-motion-mode", "custom");
   await expect(main.locator(":scope > [data-route-motion-target]")).toHaveCount(0);
 
-  await page.locator(".main-nav > .nav-link").filter({ hasText: "我的资产" }).click();
-  await expect(page).toHaveURL(/\/assets$/);
+  await page.locator(".main-nav > .nav-link").filter({ hasText: "历史记录" }).click();
+  await expect(page).toHaveURL(/\/history$/);
   await expect(main).toHaveAttribute("data-route-motion-mode", "page");
   await expect(main).toHaveAttribute("data-route-motion-state", "entered");
   await expect(main.locator(":scope > [data-route-motion-target]")).toHaveCSS(

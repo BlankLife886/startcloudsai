@@ -6,7 +6,7 @@ import {
   listActiveAssistantRuns,
   openAssistantRunStream,
   waitForAssistantRun,
-} from '../../services/assistantApi.js'
+} from '@react/features/assistant/services/assistantApi.js'
 import { withTransparentPngInstruction } from '../ai-shared/transparentPng.js'
 import { stabilizeAnalysisNodes } from './analysisNodeGeometry.js'
 import { normalizeCropElementItems } from './regionGeometry.js'

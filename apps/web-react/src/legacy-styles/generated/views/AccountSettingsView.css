@@ -265,10 +265,50 @@
 }
 .account-side {
   display: grid;
-  grid-template-rows: auto 1fr;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 12px;
   min-height: 0;
   height: 100%;
+  overflow: auto;
+}
+.account-guide {
+  min-height: 0;
+  overflow: auto;
+}
+.account-guide__row,
+.account-guide__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.account-guide__row small,
+.account-guide__item small {
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+.account-guide__list {
+  display: grid;
+  gap: 0;
+}
+.account-guide__item {
+  align-items: flex-start;
+  padding: 9px 0;
+  border-top: 1px solid color-mix(in srgb, var(--line, #e6e3ee) 80%, transparent);
+}
+.account-guide__item:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+.account-guide__item strong {
+  display: block;
+  margin-bottom: 2px;
+  font-size: 0.78rem;
+  font-weight: 760;
+}
+.account-guide__item .account-btn {
+  flex-shrink: 0;
+  margin-top: 1px;
 }
 .account-side h2 {
   margin: 0;

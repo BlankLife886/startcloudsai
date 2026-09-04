@@ -125,6 +125,26 @@ test.describe('React assistant workspace contract', () => {
     expect(createCount).toBe(0)
   })
 
+  test('empty state follows the selected creation mode', async ({ page }) => {
+    await mockAssistant(page)
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    const emptyState = page.locator('.assistant-empty-state')
+    await expect(emptyState.getByRole('heading', { level: 1 })).toHaveText('今天想聊点什么？')
+    await expect(emptyState.locator('.empty-mode-chip')).toContainText('问答模式')
+    await expect(emptyState.locator('.empty-mode-hint')).toHaveText('只进行对话，不会调用图片生成')
+    await expect(emptyState.locator('.suggestion-grid')).toContainText('用三句话介绍你能帮我做什么')
+    await expect(emptyState.locator('.suggestion-grid')).not.toContainText('画一张星空下的雪山桌面壁纸')
+
+    await page.locator('.agent-mode-button').click()
+    await page.getByRole('button', { name: '图片生成' }).click()
+    await expect(emptyState.getByRole('heading', { level: 1 })).toHaveText('今天想画什么？')
+    await expect(emptyState.locator('.empty-mode-chip')).toContainText('图片生成')
+    await expect(emptyState.locator('.suggestion-grid')).toContainText('画一张星空下的雪山桌面壁纸')
+    await emptyState.getByRole('button', { name: '设计一个极简风格的天气 App 图标' }).click()
+    await expect(page.getByLabel('消息输入')).toHaveValue('设计一个极简风格的天气 App 图标')
+  })
+
   test('first send creates a conversation and uses the assistant run contract', async ({ page }) => {
     let conversationBody = null
     let runBody = null
@@ -162,15 +182,18 @@ test.describe('React assistant workspace contract', () => {
       conversationId: 'conversation-new',
       prompt: '请帮我设计一个简洁的品牌图标',
       userMessageContent: '请帮我设计一个简洁的品牌图标',
-      mode: 'chat',
+      mode: 'agent',
       referenceImages: [],
       model: 'chat-basic',
       count: 1,
       serviceKey: 'assistant_image',
+      ratio: 'auto',
+      resolution: '1K',
+      requestSize: 'auto',
+      width: 1024,
+      height: 1024,
+      quality: 'low',
     })
-    for (const field of ['ratio', 'resolution', 'requestSize', 'width', 'height', 'quality']) {
-      expect(runBody).not.toHaveProperty(field)
-    }
     expect(runBody.clientUserMessageId).toMatch(/^[0-9a-f-]{36}$/)
     expect(runBody.clientAssistantMessageId).toMatch(/^[0-9a-f-]{36}$/)
   })
@@ -344,16 +367,15 @@ test.describe('React assistant workspace contract', () => {
     const panel = page.locator('.image-mode-preferences')
     await expect(panel).toBeVisible()
     await expect(panel.locator('.ratio-options button')).toHaveCount(5)
-    await expect(panel.locator('.image-count-options').first().locator('button')).toHaveCount(16)
+    await expect(panel.locator('.image-count-options button')).toHaveCount(16)
+    await expect(panel.locator('.image-quality-options button')).toHaveCount(3)
 
     const layout = await panel.evaluate((element) => {
       const columns = (selector) =>
         getComputedStyle(element.querySelector(selector))
           .gridTemplateColumns.split(/\s+/)
           .filter(Boolean).length
-      const countButtons = Array.from(
-        element.querySelectorAll('.preferences-split .image-count-options button'),
-      )
+      const countButtons = Array.from(element.querySelectorAll('.image-count-options button'))
       const rowSizes = Array.from(
         countButtons.reduce((rows, button) => {
           const top = Math.round(button.getBoundingClientRect().top)
@@ -361,12 +383,13 @@ test.describe('React assistant workspace contract', () => {
           return rows
         }, new Map()).values(),
       )
+      const ratioWidth = element.querySelector('.ratio-options button')?.getBoundingClientRect().width || 0
       const rect = element.getBoundingClientRect()
       return {
-        ratioColumns: columns('.ratio-options'),
+        ratioWidth,
         resolutionColumns: columns('.image-resolution-options'),
-        countColumns: columns('.preferences-split .image-count-options'),
-        qualityColumns: columns(':scope > .preferences-block:last-child .image-count-options'),
+        countColumns: columns('.image-count-options'),
+        qualityColumns: columns('.image-quality-options'),
         countRows: rowSizes,
         panelTop: rect.top,
         panelBottom: rect.bottom,
@@ -374,8 +397,8 @@ test.describe('React assistant workspace contract', () => {
       }
     })
 
+    expect(layout.ratioWidth).toBeGreaterThan(48)
     expect(layout).toMatchObject({
-      ratioColumns: 5,
       resolutionColumns: 1,
       countColumns: 8,
       qualityColumns: 3,
@@ -626,6 +649,201 @@ test.describe('React assistant workspace contract', () => {
 
     await expect(page.locator('[data-conversation-id="conversation-two"]')).toHaveCount(0)
     expect(deleted).toEqual([expect.stringMatching(/\/assistant\/conversations\/conversation-two$/)])
+  })
+
+  test('isolates composer drafts and clears transient context between conversations', async ({ page }) => {
+    let runBody = null
+    const deletedDocuments = []
+    const conversations = [
+      {
+        id: 'conversation-a',
+        title: '会话 A',
+        messages: [
+          message('a-user', 'user', 'A 的问题'),
+          message('a-assistant', 'assistant', 'A 的可引用回答'),
+        ],
+        updatedAt: '2026-08-11T08:00:00Z',
+      },
+      {
+        id: 'conversation-b',
+        title: '会话 B',
+        messages: [message('b-user', 'user', 'B 的问题')],
+        updatedAt: '2026-08-10T08:00:00Z',
+      },
+    ]
+    await mockAssistant(page, { conversations })
+    await page.route('**/api/v1/uploads', (route) =>
+      fulfillJson(route, {
+        key: 'uploads/assistant/conversation-a.png',
+        url: '/api/v1/files/uploads/assistant/conversation-a.png',
+        thumbnailUrl: '/sucai/home-intro-03.png',
+      }),
+    )
+    await page.route('**/api/v1/assistant/files**', async (route) => {
+      if (route.request().method() === 'DELETE') {
+        deletedDocuments.push(route.request().url())
+        await fulfillJson(route, {})
+        return
+      }
+      await fulfillJson(route, {
+        file: {
+          id: 'conversation-a-document',
+          name: 'conversation-a-notes.md',
+          contentType: 'text/markdown',
+          sizeBytes: 1024,
+          status: 'ready',
+          pageCount: 1,
+          charCount: 120,
+          segmentCount: 1,
+        },
+      }, route.request().method() === 'POST' ? 201 : 200)
+    })
+    await page.route('**/api/v1/assistant/runs', async (route) => {
+      if (route.request().method() !== 'POST') {
+        await fulfillJson(route, { runs: [] })
+        return
+      }
+      runBody = route.request().postDataJSON()
+      await fulfillJson(route, succeededRun(runBody), 201)
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    const input = page.getByLabel('消息输入')
+    await expect(page.locator('.message--assistant')).toContainText('A 的可引用回答')
+    await page.locator('input.reference-file-input').setInputFiles({
+      name: 'conversation-a.png', mimeType: 'image/png', buffer: Buffer.from('conversation-a-image'),
+    })
+    await expect(page.locator('.reference-card')).toHaveCount(1)
+    await page.locator('input.reference-file-input').setInputFiles({
+      name: 'conversation-a-notes.md', mimeType: 'text/markdown', buffer: Buffer.from('# Conversation A'),
+    })
+    await expect(page.locator('.reference-document-card.is-ready')).toHaveCount(1)
+    await page.getByRole('button', { name: '引用', exact: true }).click()
+    await expect(page.locator('.composer-quote')).toContainText('A 的可引用回答')
+    await input.fill('A 会话草稿')
+
+    await page.locator('[data-conversation-id="conversation-b"] .conversation-select').click()
+    await expect(input).toHaveValue('')
+    await expect(page.locator('.reference-card')).toHaveCount(0)
+    await expect(page.locator('.reference-document-card')).toHaveCount(0)
+    await expect(page.locator('.composer-quote')).toHaveCount(0)
+    await expect.poll(() => deletedDocuments).toEqual([
+      expect.stringMatching(/\/assistant\/files\/conversation-a-document$/),
+    ])
+
+    await input.fill('B 会话草稿')
+    await page.locator('[data-conversation-id="conversation-a"] .conversation-select').click()
+    await expect(input).toHaveValue('A 会话草稿')
+    await expect(page.locator('.reference-card, .reference-document-card, .composer-quote')).toHaveCount(0)
+
+    await page.locator('[data-conversation-id="conversation-b"] .conversation-select').click()
+    await expect(input).toHaveValue('B 会话草稿')
+    await page.getByRole('button', { name: '发送' }).click()
+    await expect.poll(() => runBody).not.toBeNull()
+    expect(runBody).toMatchObject({
+      conversationId: 'conversation-b',
+      referenceImages: [],
+      attachments: [],
+      quoted: null,
+    })
+  })
+
+  test('keeps a persisted draft with its saved conversation when a URL opens another conversation', async ({ page }) => {
+    const conversations = [
+      { id: 'persisted-a', title: '持久化会话 A', messages: [message('persisted-a-user', 'user', 'A 的历史')], updatedAt: '2026-08-11T08:00:00Z' },
+      { id: 'requested-b', title: '链接会话 B', messages: [message('requested-b-user', 'user', 'B 的历史')], updatedAt: '2026-08-10T08:00:00Z' },
+    ]
+    await page.addInitScript(() => {
+      localStorage.setItem('starclouds-assistant-workspace:user:assistant-user', JSON.stringify({
+        activeId: 'persisted-a',
+        draft: 'A 的持久化草稿',
+        creationType: 'chat',
+      }))
+    })
+    await mockAssistant(page, { conversations })
+    await page.goto('/assistant?c=requested-b', { waitUntil: 'domcontentloaded' })
+
+    const input = page.getByLabel('消息输入')
+    await expect(page.locator('.message--user')).toContainText('B 的历史')
+    await expect(input).toHaveValue('')
+
+    await page.locator('[data-conversation-id="persisted-a"] .conversation-select').click()
+    await expect(input).toHaveValue('A 的持久化草稿')
+  })
+
+  test('cancels a pending cost check when the user switches conversations', async ({ page }) => {
+    let releaseWallet
+    let markWalletStarted
+    let markWalletFinished
+    let runCreates = 0
+    const walletStarted = new Promise((resolve) => { markWalletStarted = resolve })
+    const walletGate = new Promise((resolve) => { releaseWallet = resolve })
+    const walletFinished = new Promise((resolve) => { markWalletFinished = resolve })
+    const conversations = [
+      { id: 'cost-a', title: '费用会话 A', messages: [message('cost-a-user', 'user', 'A 的历史')], updatedAt: '2026-08-11T08:00:00Z' },
+      { id: 'cost-b', title: '费用会话 B', messages: [message('cost-b-user', 'user', 'B 的历史')], updatedAt: '2026-08-10T08:00:00Z' },
+    ]
+    await mockAssistant(page, { user: { ...account, requireCostConfirm: true }, conversations })
+    await page.route('**/api/v1/me/wallet', async (route) => {
+      markWalletStarted()
+      await walletGate
+      try {
+        await fulfillJson(route, { availableCents: 100, balanceCents: 100 })
+      } catch {
+        // The expected conversation switch aborts this in-flight request.
+      } finally {
+        markWalletFinished()
+      }
+    })
+    await page.route('**/api/v1/assistant/runs', async (route) => {
+      if (route.request().method() === 'POST') runCreates += 1
+      await fulfillJson(route, { runs: [] })
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    const input = page.getByLabel('消息输入')
+    await input.fill('A 中等待费用确认的草稿')
+    await page.getByRole('button', { name: '发送' }).click()
+    await walletStarted
+    await page.locator('[data-conversation-id="cost-b"] .conversation-select').click()
+    releaseWallet()
+    await walletFinished
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+
+    await expect(page.getByRole('dialog', { name: '确认本轮费用' })).toHaveCount(0)
+    expect(runCreates).toBe(0)
+    await expect(input).toHaveValue('')
+    await page.locator('[data-conversation-id="cost-a"] .conversation-select').click()
+    await expect(input).toHaveValue('A 中等待费用确认的草稿')
+  })
+
+  test('does not persist an authenticated draft into the anonymous workspace on logout', async ({ page }) => {
+    let currentUser = account
+    const conversations = [
+      { id: 'private-conversation', title: '私有会话', messages: [message('private-user', 'user', '私有历史')], updatedAt: '2026-08-11T08:00:00Z' },
+    ]
+    await mockAssistant(page, { conversations })
+    await page.route('**/api/v1/auth/session', async (route) => {
+      if (route.request().method() === 'DELETE') {
+        currentUser = null
+        await fulfillJson(route, {})
+        return
+      }
+      await fulfillJson(route, { user: currentUser })
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    const privateDraft = '不能进入匿名空间的私有草稿'
+    await page.getByLabel('消息输入').fill(privateDraft)
+    await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('starclouds-assistant-workspace:user:assistant-user') || '{}').draft)).toBe(privateDraft)
+    await page.locator('.account-cluster').click()
+    await page.getByRole('menuitem', { name: '退出登录' }).click()
+    await page.getByRole('button', { name: '确认退出' }).click()
+
+    await expect(page.locator('.account-login')).toBeVisible()
+    await expect(page.getByLabel('消息输入')).toHaveValue('')
+    const anonymousDraft = await page.evaluate(() => JSON.parse(localStorage.getItem('starclouds-assistant-workspace:user:anonymous') || '{}').draft || '')
+    expect(anonymousDraft).not.toBe(privateDraft)
   })
 
   test('stops an active run and settles the pending message', async ({ page }) => {
@@ -1201,8 +1419,45 @@ test.describe('React assistant workspace contract', () => {
     expect(deletedUrl).toMatch(new RegExp(`/assistant/messages/${retryBody.clientAssistantMessageId}$`))
   })
 
+  test('replays a failed local Agent request with the identical idempotent payload', async ({ page }) => {
+    const runBodies = []
+    const conversations = [{
+      id: 'local-replay-conversation',
+      title: '本地重放',
+      messages: [message('local-replay-seed', 'user', '已有内容')],
+    }]
+    await mockAssistant(page, { conversations })
+    await page.route('**/api/v1/assistant/runs', async (route) => {
+      if (route.request().method() !== 'POST') {
+        await fulfillJson(route, { runs: [] })
+        return
+      }
+      const body = route.request().postDataJSON()
+      runBodies.push(body)
+      if (runBodies.length === 1) {
+        await route.abort('failed')
+        return
+      }
+      await fulfillJson(route, succeededRun(body, '幂等重放成功'), 200)
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    await page.getByLabel('消息输入').fill('生成两张品牌海报')
+    await page.getByRole('button', { name: '发送' }).click()
+    await expect.poll(() => runBodies.length).toBe(1)
+    await expect(page.getByRole('button', { name: '重新生成' })).toBeEnabled()
+    await page.getByRole('button', { name: '重新生成' }).click()
+
+    await expect.poll(() => runBodies.length).toBe(2)
+    expect(runBodies[0]).toMatchObject({ mode: 'agent', count: 2 })
+    expect(runBodies[1]).toEqual(runBodies[0])
+    await expect(page.locator('.message--assistant')).toContainText('幂等重放成功')
+  })
+
   test('renders and executes an editable agent image proposal', async ({ page }) => {
+    test.slow()
     let runBody = null
+    let uploadCount = 0
     const proposal = {
       action: 'generate',
       prompt: '一张极简品牌主视觉',
@@ -1224,6 +1479,14 @@ test.describe('React assistant workspace contract', () => {
       ],
     }]
     await mockAssistant(page, { conversations })
+    await page.route('**/api/v1/uploads', async (route) => {
+      uploadCount += 1
+      await fulfillJson(route, {
+        key: `uploads/proposal/edit-${uploadCount}.png`,
+        url: `/api/v1/files/uploads/proposal/edit-${uploadCount}.png`,
+        thumbnailUrl: '/sucai/home-intro-03.png',
+      })
+    })
     await page.route('**/api/v1/assistant/runs', async (route) => {
       if (route.request().method() !== 'POST') {
         await fulfillJson(route, { runs: [] })
@@ -1234,10 +1497,29 @@ test.describe('React assistant workspace contract', () => {
     })
     await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
 
-    await expect(page.locator('.agent-proposal')).toContainText('图片生成方案')
+    await expect(page.locator('.agent-proposal')).toContainText('图片生成方案', { timeout: 20_000 })
+    const proposalReferences = page.locator('.agent-proposal-refs')
+    const proposalReferenceInput = proposalReferences.locator('input.reference-file-input')
+    await expect(proposalReferences.locator('.agent-proposal-ref')).toHaveCount(1)
+    await proposalReferences.getByLabel('替换参考图 1').click()
+    await proposalReferenceInput.setInputFiles({
+      name: 'replacement.png', mimeType: 'image/png', buffer: Buffer.from('replacement'),
+    })
+    await expect.poll(() => uploadCount).toBe(1)
+    await proposalReferences.getByLabel('添加参考图').click()
+    await proposalReferenceInput.setInputFiles([
+      { name: 'detail-a.png', mimeType: 'image/png', buffer: Buffer.from('detail-a') },
+      { name: 'detail-b.png', mimeType: 'image/png', buffer: Buffer.from('detail-b') },
+    ])
+    await expect(proposalReferences.locator('.agent-proposal-ref')).toHaveCount(3)
+    await proposalReferences.getByLabel('移除参考图 2').click()
+    await expect(proposalReferences.locator('.agent-proposal-ref')).toHaveCount(2)
+    await expect(proposalReferences.locator('img').nth(0)).toHaveAttribute('alt', 'replacement.png')
+    await expect(proposalReferences.locator('img').nth(1)).toHaveAttribute('alt', 'detail-b.png')
     await page.locator('.agent-proposal-prompt-preview').click()
     await page.locator('.agent-proposal-prompt-dialog textarea').fill('修改后的横版品牌主视觉')
     await page.locator('.agent-proposal-prompt-dialog').getByRole('button', { name: '完成' }).click()
+    await expect(page.locator('.agent-proposal-prompt-preview')).toContainText('修改后的横版品牌主视觉')
     await page.locator('.agent-proposal').getByLabel('生成数量').click()
     await page.locator('.agent-proposal-menu').getByRole('option', { name: '3 张' }).click()
     await page.getByRole('button', { name: '开始生成' }).click()
@@ -1253,6 +1535,10 @@ test.describe('React assistant workspace contract', () => {
       requestSize: '2048x1152',
       width: 2048,
       height: 1152,
+      referenceImages: [
+        { fileKey: 'uploads/proposal/edit-1.png' },
+        { fileKey: 'uploads/proposal/edit-3.png' },
+      ],
     })
   })
 
@@ -1274,8 +1560,10 @@ test.describe('React assistant workspace contract', () => {
     await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
 
     await expect(page.getByText('图片加载失败')).toBeVisible()
+    expect(imageRequests).toBe(4)
+    const requestsBeforeManualRetry = imageRequests
     await page.getByRole('button', { name: '重新加载' }).click()
-    await expect.poll(() => imageRequests).toBeGreaterThan(1)
+    await expect.poll(() => imageRequests).toBeGreaterThan(requestsBeforeManualRetry)
   })
 
   test('keeps long-thread scrolling, collapsed sidebar preview, assets, and context clearing usable', async ({ page }) => {
@@ -1301,7 +1589,7 @@ test.describe('React assistant workspace contract', () => {
     await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
 
     await expect(page.locator('.message--assistant')).toHaveCount(12)
-    await expect(page.locator('.composer-context-row .assistant-context-meter')).toContainText('42%')
+    await expect(page.locator('.topbar-context-clear .assistant-context-meter')).toContainText('42%')
     await page.locator('.assistant-messages').evaluate((element) => { element.scrollTop = 0; element.dispatchEvent(new Event('scroll')) })
     await expect(page.getByRole('button', { name: '回到底部' })).toBeVisible()
     await page.getByRole('button', { name: '回到底部' }).click()
@@ -1318,7 +1606,7 @@ test.describe('React assistant workspace contract', () => {
     await page.getByRole('button', { name: '关闭资产库' }).click()
     await page.getByRole('button', { name: '清除上文并保留可见历史' }).click()
     await expect(page.getByText('已从这里开始新的上下文')).toBeVisible()
-    await expect(page.locator('.composer-context-row .assistant-context-meter')).toContainText('--')
+    await expect(page.locator('.topbar-context-clear .assistant-context-meter')).toContainText('--')
   })
 
   test('searches current conversation history from the thread topbar', async ({ page }) => {
@@ -1521,7 +1809,9 @@ test.describe('React assistant workspace contract', () => {
     await page.getByRole('button', { name: '发送' }).click()
 
     await expect.poll(() => postBodies.length).toBe(2)
-    await expect(page.locator('.conversation-run-indicator')).toHaveCount(2)
+    await expect(page.getByRole('button', { name: '停止生成' })).toBeVisible()
+    await page.locator('[data-conversation-id="parallel-one"] .conversation-select').click()
+    await expect(page.getByRole('button', { name: '停止生成' })).toBeVisible()
     expect(postBodies.map((item) => item.conversationId).sort()).toEqual(['parallel-one', 'parallel-two'])
   })
 
@@ -1592,7 +1882,7 @@ test.describe('React assistant workspace contract', () => {
     await expect(page.locator('.message--assistant')).toContainText('SSE 增量回答')
     await expect(page.locator('.assistant-reasoning')).toContainText('正在思考')
     await expect(page.locator('.assistant-reasoning-body')).toContainText('先拆开问题，再组织成可直接阅读的回答。')
-    await expect(page.locator('.composer-context-row .assistant-context-meter')).toContainText('42%')
+    await expect(page.locator('.topbar-context-clear .assistant-context-meter')).toContainText('42%')
     const topbarLayout = await page.locator('.assistant-topbar').evaluate((element) => {
       const boxes = [...element.children].map((child) => child.getBoundingClientRect())
       return boxes.map((box) => ({ left: box.left, right: box.right, top: box.top, bottom: box.bottom }))
@@ -1608,6 +1898,95 @@ test.describe('React assistant workspace contract', () => {
     await page.locator('.message--assistant .message-status-toggle').click()
     await expect(page.locator('.message--assistant .message-context-stats')).toContainText('18 条近期消息')
     await expect(page.locator('.message--assistant .message-context-stats')).toContainText('12 条已压缩')
+  })
+
+  test('does not let a late running poll overwrite a terminal SSE answer', async ({ page }) => {
+    await page.addInitScript(() => {
+      window.EventSource = class FakeEventSource {
+        constructor(url) {
+          if (String(url).includes('/assistant/runs/')) {
+            window.setTimeout(() => this.onmessage?.({ data: JSON.stringify({
+              content: '终态短答',
+              reasoning: '终态推理',
+              kind: 'chat',
+              stage: 'complete',
+              done: true,
+              status: 'succeeded',
+            }) }), 100)
+          }
+        }
+        addEventListener() {}
+        removeEventListener() {}
+        close() {}
+      }
+    })
+    let assistantId = ''
+    let polls = 0
+    let releaseStalePoll
+    let markStalePollStarted
+    let markStalePollFinished
+    let releaseTerminalPoll
+    const stalePollStarted = new Promise((resolve) => { markStalePollStarted = resolve })
+    const stalePollGate = new Promise((resolve) => { releaseStalePoll = resolve })
+    const stalePollFinished = new Promise((resolve) => { markStalePollFinished = resolve })
+    const terminalPollGate = new Promise((resolve) => { releaseTerminalPoll = resolve })
+    await mockAssistant(page)
+    await page.route('**/api/v1/assistant/conversations', (route) =>
+      fulfillJson(route, { id: 'terminal-race-conversation', title: '新对话', messages: [] }, 201),
+    )
+    await page.route('**/api/v1/assistant/runs**', async (route) => {
+      const method = route.request().method()
+      const url = new URL(route.request().url())
+      if (method === 'POST' && url.pathname.endsWith('/assistant/runs')) {
+        const body = route.request().postDataJSON()
+        assistantId = body.clientAssistantMessageId
+        await fulfillJson(route, {
+          run: { id: 'terminal-race-run', conversationId: body.conversationId, assistantMessageId: assistantId, status: 'running', stage: 'answering', mode: 'chat' },
+          userMessage: message(body.clientUserMessageId, 'user', body.userMessageContent),
+          assistantMessage: message(assistantId, 'assistant', '', { status: 'running', pending: true }),
+        }, 201)
+        return
+      }
+      if (method === 'GET' && url.pathname.endsWith('/terminal-race-run')) {
+        polls += 1
+        if (polls === 1) {
+          markStalePollStarted()
+          await stalePollGate
+          await fulfillJson(route, {
+            run: { id: 'terminal-race-run', conversationId: 'terminal-race-conversation', assistantMessageId: assistantId, status: 'running', stage: 'answering', resolvedMode: 'chat' },
+            assistantMessage: message(assistantId, 'assistant', '这是明显更长的过期运行态检查点，不应覆盖已经到达的终态回答。', {
+              status: 'running', pending: true, reasoning: '过期运行态推理也不能覆盖终态推理',
+            }),
+          })
+          markStalePollFinished()
+          return
+        }
+        await terminalPollGate
+        await fulfillJson(route, {
+          run: { id: 'terminal-race-run', conversationId: 'terminal-race-conversation', assistantMessageId: assistantId, status: 'succeeded', stage: 'complete', resolvedMode: 'chat' },
+          assistantMessage: message(assistantId, 'assistant', '终态短答', {
+            status: 'complete', pending: false, reasoning: '终态推理',
+          }),
+        })
+        return
+      }
+      await fulfillJson(route, { runs: [] })
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+    await page.getByLabel('消息输入').fill('验证终态竞态')
+    await page.getByRole('button', { name: '发送' }).click()
+
+    await stalePollStarted
+    await expect(page.locator('.message--assistant')).toContainText('终态短答')
+    releaseStalePoll()
+    await stalePollFinished
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    const textAfterStalePoll = await page.locator('.message--assistant').innerText()
+    releaseTerminalPoll()
+
+    expect(textAfterStalePoll).toContain('终态短答')
+    expect(textAfterStalePoll).not.toContain('过期运行态检查点')
+    await expect(page.locator('.message--assistant')).toContainText('终态短答')
   })
 
   test('provides model search when the configured model list is long', async ({ page }) => {

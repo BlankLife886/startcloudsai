@@ -135,6 +135,8 @@ function isExternalPage(raw?: string | null) {
 const route = useRoute();
 const filters = reactive({ status: "open", category: "", search: "" });
 
+const pageSize = ref(20);
+
 const {
   items,
   loading,
@@ -144,8 +146,7 @@ const {
   hasPrev,
   hasNext,
   reset,
-  next,
-  prev,
+  goToPage,
   refresh,
   retry,
 } = usePagedList<FeedbackItem>(
@@ -155,11 +156,11 @@ const {
         status: filters.status,
         category: filters.category,
         search: filters.search.trim(),
-        limit: 20,
+        limit: pageSize.value,
         cursor,
       },
     }),
-  () => filters,
+  () => ({ ...filters, limit: pageSize.value }),
 );
 
 const hasFilters = computed(
@@ -443,8 +444,9 @@ onMounted(() => {
         :page="page"
         :count="items.length"
         :total="total"
-        @prev="prev"
-        @next="next"
+        :page-size="pageSize"
+        @update:page="goToPage"
+        @update:page-size="(size: number) => { pageSize = size; reset() }"
       />
     </footer>
 

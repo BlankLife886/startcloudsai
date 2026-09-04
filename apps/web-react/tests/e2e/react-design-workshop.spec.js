@@ -1,4 +1,6 @@
 import { expect, test } from '@playwright/test'
+import { readFile } from 'node:fs/promises'
+import { strFromU8, unzipSync } from 'fflate'
 import { fulfillJson } from './helpers/authMocks.js'
 
 const user = {
@@ -99,7 +101,9 @@ test.describe('React design workshop interactions', () => {
 
     await page.goto('/design-workshop', { waitUntil: 'domcontentloaded' })
     await page.getByLabel(/产品与页面描述|Product and page description/).fill('为设计团队创建项目工作台')
+    await page.getByRole('button', { name: /设计系统|页面设定|Design system|Page settings/ }).click()
     await page.getByRole('button', { name: '手机端 9:16' }).click()
+    await expect(page.getByRole('button', { name: /设计系统|页面设定|Design system|Page settings/ })).toContainText('手机端')
     await page.locator('input[type="file"]').first().setInputFiles({
       name: 'reference.png',
       mimeType: 'image/png',
@@ -115,7 +119,10 @@ test.describe('React design workshop interactions', () => {
     expect(created.every((item) => item.params.publicModelKey === model.id)).toBe(true)
     expect(created.every((item) => item.inputKeys[0] === 'uploads/design/reference.png')).toBe(true)
     await expect(page.getByAltText('UI 设计稿预览')).toBeVisible()
-    await expect(page.locator('.dws-stage-meta')).toContainText('手机端')
+    await expect(page.getByRole('button', { name: '框选优化' })).toBeVisible()
+    await expect(page.getByRole('button', { name: '迭代此版本' })).toBeVisible()
+    await expect(page.getByRole('button', { name: '下载' })).toBeVisible()
+    await expect(page.getByRole('button', { name: /打开 V1 侧边栏/ })).toBeVisible()
 
     await page.getByRole('button', { name: '查看当前设计稿大图' }).click()
     const preview = page.getByRole('dialog', { name: /全屏预览/ })
@@ -278,5 +285,217 @@ test.describe('React design workshop interactions', () => {
     await page.evaluate(() => history.pushState({}, '', '/pricing'))
     await page.dispatchEvent('body', 'popstate')
     await expect(page).toHaveURL(/\/pricing$/)
+  })
+
+  test('downloads one offline handoff archive with the artboard and machine-readable files', async ({
+    page,
+  }) => {
+    await mockBase(page)
+    const task = {
+      id: 'handoff-task',
+      type: 'ui_design',
+      status: 'succeeded',
+      input: {
+        batchId: 'handoff-batch',
+        batchIndex: 0,
+        deviceId: 'web',
+        viewLabel: '桌面端',
+      },
+      originalUrls: ['/visual/handoff-original.png'],
+      thumbnailUrls: ['/visual/handoff-thumbnail.png'],
+      displayUrls: ['/visual/handoff-display.png'],
+      outputUrls: ['/visual/handoff-thumbnail.png'],
+      createdAt: new Date().toISOString(),
+    }
+    await page.route('**/api/v1/tasks**', (route) =>
+      fulfillJson(route, { items: [task], nextCursor: null }),
+    )
+    await page.route('**/api/v1/assistant/runs**', (route) =>
+      fulfillJson(route, { runs: [] }),
+    )
+    await page.route('**/visual/handoff-*.png', (route) =>
+      route.fulfill({ body: tinyPng, contentType: 'image/png' }),
+    )
+
+    await page.goto('/design-workshop', { waitUntil: 'domcontentloaded' })
+    await expect(page.getByAltText('UI 设计稿预览')).toBeVisible()
+    await page.getByRole('button', { name: '交付' }).click()
+    await expect(page.getByRole('dialog', { name: '设计交付' })).toBeVisible()
+
+    const downloadPromise = page.waitForEvent('download')
+    await page.getByRole('button', { name: '导出交付包' }).click()
+    const download = await downloadPromise
+    expect(download.suggestedFilename()).toMatch(/-handoff\.zip$/)
+    const archivePath = await download.path()
+    const files = unzipSync(await readFile(archivePath))
+    expect(Object.keys(files).sort()).toEqual([
+      'README.md',
+      'design-system.json',
+      'design.png',
+      'tokens.css',
+    ])
+    const handoff = JSON.parse(strFromU8(files['design-system.json']))
+    expect(handoff.coordinateSpace).toBe('source-image-pixels')
+    expect(handoff.source).toEqual({ width: 1, height: 1 })
+    expect(handoff.imageUrl).toBe('design.png')
+    expect(strFromU8(files['README.md'])).toContain('design.png')
+    expect(strFromU8(files['tokens.css'])).toContain('--color-brand')
+  })
+
+  test('resumes an active ui design task after loading history', async ({ page }) => {
+    await mockBase(page)
+    let batchPolls = 0
+    const activeTask = {
+      id: 'resumed-ui-task',
+      type: 'ui_design',
+      status: 'running',
+      input: { batchId: 'resume-batch', batchIndex: 0, deviceId: 'web', viewLabel: '桌面端' },
+      outputUrls: [],
+      originalUrls: [],
+      createdAt: new Date().toISOString(),
+      startedAt: new Date().toISOString(),
+    }
+    await page.route('**/api/v1/tasks**', (route) => {
+      const request = route.request()
+      const url = new URL(request.url())
+      if (url.searchParams.get('ids')) {
+        batchPolls += 1
+        return fulfillJson(route, {
+          items: [{
+            ...activeTask,
+            status: 'succeeded',
+            originalUrls: ['/visual/resumed-ui-original.png'],
+            thumbnailUrls: ['/visual/resumed-ui-thumbnail.png'],
+            outputUrls: ['/visual/resumed-ui-thumbnail.png'],
+            finishedAt: new Date().toISOString(),
+          }],
+        })
+      }
+      return fulfillJson(route, { items: [activeTask], nextCursor: null })
+    })
+    await page.route('**/api/v1/assistant/runs**', (route) =>
+      fulfillJson(route, { runs: [] }),
+    )
+    await page.route('**/visual/resumed-ui-*.png', (route) =>
+      route.fulfill({ body: tinyPng, contentType: 'image/png' }),
+    )
+
+    await page.goto('/design-workshop', { waitUntil: 'domcontentloaded' })
+
+    await expect.poll(() => batchPolls).toBeGreaterThan(0)
+    await expect(page.getByAltText('UI 设计稿预览')).toBeVisible()
+    await expect(page.locator('.dws-running')).toHaveCount(0)
+  })
+
+  test('requires explicit confirmation before abandoning an upstream ui task', async ({ page }) => {
+    await mockBase(page)
+    let cancelRequests = 0
+    const runningTask = {
+      id: 'cancel-ui-task',
+      type: 'ui_design',
+      status: 'running',
+      input: { batchId: 'cancel-batch', batchIndex: 0, deviceId: 'web', viewLabel: '桌面端' },
+      outputUrls: [],
+      originalUrls: [],
+      createdAt: new Date().toISOString(),
+      startedAt: new Date().toISOString(),
+    }
+    await page.route('**/api/v1/tasks**', (route) => {
+      const request = route.request()
+      const url = new URL(request.url())
+      if (request.method() === 'POST') {
+        return fulfillJson(route, { task: { ...runningTask, status: 'queued' } })
+      }
+      if (request.method() === 'PATCH') {
+        cancelRequests += 1
+        const body = request.postDataJSON()
+        if (!body.acknowledgeUpstream) {
+          return route.fulfill({
+            status: 409,
+            contentType: 'application/json',
+            body: JSON.stringify({
+              success: false,
+              code: 'task_cancel_confirmation_required',
+              error: '任务已提交上游',
+            }),
+          })
+        }
+        return fulfillJson(route, { task: { ...runningTask, status: 'canceled' } })
+      }
+      if (url.searchParams.get('ids')) {
+        return fulfillJson(route, { items: [runningTask] })
+      }
+      return fulfillJson(route, { items: [], nextCursor: null })
+    })
+    await page.route('**/api/v1/assistant/runs**', (route) =>
+      fulfillJson(route, { runs: [] }),
+    )
+
+    await page.goto('/design-workshop', { waitUntil: 'domcontentloaded' })
+    await page.getByLabel(/产品与页面描述|Product and page description/).fill('需要取消确认的工作台')
+    await page.getByRole('button', { name: /生成设计稿/ }).click()
+    await expect(page.locator('.dws-running')).toBeVisible()
+    await page.getByRole('button', { name: '停止生成' }).click()
+
+    const dialog = page.getByRole('alertdialog', { name: '停止接收这次生成结果？' })
+    await expect(dialog).toBeVisible()
+    await expect(page.locator('.dws-running')).toBeVisible()
+    await dialog.getByRole('button', { name: '仍然停止' }).click()
+
+    await expect.poll(() => cancelRequests).toBe(2)
+    await expect(dialog).toHaveCount(0)
+    await expect(page.locator('.dws-running')).toHaveCount(0)
+  })
+
+  test('tablet and phone workspace tabs keep controls and canvas in separate geometry', async ({ page }) => {
+    await mockBase(page)
+    await page.route('**/api/v1/tasks**', (route) =>
+      fulfillJson(route, { items: [], nextCursor: null }),
+    )
+    await page.route('**/api/v1/assistant/runs**', (route) =>
+      fulfillJson(route, { items: [] }),
+    )
+
+    for (const viewport of [
+      { width: 1024, height: 768 },
+      { width: 390, height: 844 },
+    ]) {
+      await page.setViewportSize(viewport)
+      await page.goto('/design-workshop', { waitUntil: 'domcontentloaded' })
+
+      const controlsTab = page.getByRole('tab', { name: '需求与规范' })
+      const canvasTab = page.getByRole('tab', { name: /画布/ })
+      const panel = page.locator('.dws-panel')
+      const stage = page.locator('.dws-stage')
+
+      await expect(controlsTab).toHaveAttribute('aria-selected', 'true')
+      await expect(panel).toBeVisible()
+      await expect(stage).toBeHidden()
+
+      await canvasTab.click()
+      await expect(canvasTab).toHaveAttribute('aria-selected', 'true')
+      await expect(panel).toBeHidden()
+      await expect(stage).toBeVisible()
+
+      const geometry = await page.evaluate(() => {
+        const root = document.querySelector('.dws')
+        const shell = document.querySelector('.dws-shell')
+        const stage = document.querySelector('.dws-stage').getBoundingClientRect()
+        return {
+          rootRight: root.getBoundingClientRect().right,
+          shellRight: shell.getBoundingClientRect().right,
+          stage: { left: stage.left, right: stage.right, top: stage.top, bottom: stage.bottom },
+          viewport: { width: innerWidth, height: innerHeight },
+          overflow: document.documentElement.scrollWidth - innerWidth,
+        }
+      })
+      expect(geometry.rootRight).toBeLessThanOrEqual(geometry.viewport.width)
+      expect(geometry.shellRight).toBeLessThanOrEqual(geometry.viewport.width)
+      expect(geometry.stage.left).toBeGreaterThanOrEqual(0)
+      expect(geometry.stage.right).toBeLessThanOrEqual(geometry.viewport.width)
+      expect(geometry.stage.top).toBeGreaterThanOrEqual(0)
+      expect(geometry.stage.bottom).toBeLessThanOrEqual(geometry.viewport.height)
+      expect(geometry.overflow).toBeLessThanOrEqual(1)
+    }
   })
 })

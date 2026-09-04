@@ -10,6 +10,8 @@ import '../../core/network/api_client.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/network/sse.dart';
 import '../../core/providers.dart';
+import '../../core/storage/user_storage_namespace.dart';
+import '../auth/auth.dart';
 
 enum AssistantMode {
   chat('chat'),
@@ -393,6 +395,19 @@ class AssistantQuotedMessage {
   Map<String, dynamic> toJson() => {'id': id, 'kind': kind, 'content': content};
 }
 
+enum AssistantFeedback { positive, negative }
+
+extension AssistantFeedbackValue on AssistantFeedback {
+  String get wireValue => name;
+}
+
+AssistantFeedback? assistantFeedbackFromValue(dynamic value) =>
+    switch (value?.toString().trim().toLowerCase()) {
+      'positive' => AssistantFeedback.positive,
+      'negative' => AssistantFeedback.negative,
+      _ => null,
+    };
+
 class AssistantMessage {
   const AssistantMessage({
     required this.id,
@@ -411,6 +426,7 @@ class AssistantMessage {
     this.quoted,
     this.costPoints = 0,
     this.contextInputTokens = 0,
+    this.feedback,
   });
 
   factory AssistantMessage.fromJson(dynamic data) {
@@ -464,6 +480,7 @@ class AssistantMessage {
           0,
       contextInputTokens:
           (context['estimatedInputTokens'] as num?)?.toInt() ?? 0,
+      feedback: assistantFeedbackFromValue(map['feedback']),
     );
   }
 
@@ -483,6 +500,7 @@ class AssistantMessage {
   final AssistantQuotedMessage? quoted;
   final int costPoints;
   final int contextInputTokens;
+  final AssistantFeedback? feedback;
 
   bool get isUser => role == 'user';
   bool get isPending => status == 'queued' || status == 'running';
@@ -510,6 +528,8 @@ class AssistantMessage {
     AssistantQuotedMessage? quoted,
     int? costPoints,
     int? contextInputTokens,
+    AssistantFeedback? feedback,
+    bool clearFeedback = false,
   }) => AssistantMessage(
     id: id,
     role: role,
@@ -528,6 +548,7 @@ class AssistantMessage {
     quoted: quoted ?? this.quoted,
     costPoints: costPoints ?? this.costPoints,
     contextInputTokens: contextInputTokens ?? this.contextInputTokens,
+    feedback: clearFeedback ? null : feedback ?? this.feedback,
   );
 }
 
@@ -809,27 +830,42 @@ String assistantConversationMark(String title) {
   return (match?.group(0) ?? '新').toUpperCase();
 }
 
-const _pinnedConversationIdsKey = 'assistant_pinned_conversation_ids';
+const _legacyPinnedConversationIdsKey = 'assistant_pinned_conversation_ids';
 
-Future<Set<String>> _loadPinnedConversationIds() async {
+String assistantPinnedConversationIdsKey(String namespace) =>
+    'assistant_pinned_conversation_ids.${namespace.trim().toLowerCase()}';
+
+Future<Set<String>> _loadPinnedConversationIds(String namespace) async {
   try {
-    final stored =
-        (await SharedPreferences.getInstance()).getStringList(
-          _pinnedConversationIdsKey,
-        ) ??
-        const <String>[];
-    return stored.where((id) => id.trim().isNotEmpty).toSet();
+    final preferences = await SharedPreferences.getInstance();
+    final key = assistantPinnedConversationIdsKey(namespace);
+    var stored = preferences.getStringList(key);
+    if (stored == null) {
+      stored = preferences.getStringList(_legacyPinnedConversationIdsKey);
+      if (stored != null) {
+        await preferences.setStringList(key, stored);
+        await preferences.remove(_legacyPinnedConversationIdsKey);
+      }
+    }
+    return (stored ?? const <String>[])
+        .where((id) => id.trim().isNotEmpty)
+        .toSet();
   } catch (_) {
     return {};
   }
 }
 
-Future<void> _savePinnedConversationIds(Set<String> ids) async {
+Future<void> _savePinnedConversationIds(
+  String namespace,
+  Set<String> ids,
+) async {
   try {
-    await (await SharedPreferences.getInstance()).setStringList(
-      _pinnedConversationIdsKey,
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setStringList(
+      assistantPinnedConversationIdsKey(namespace),
       ids.toList(),
     );
+    await preferences.remove(_legacyPinnedConversationIdsKey);
   } catch (_) {}
 }
 
@@ -1116,6 +1152,10 @@ abstract interface class AssistantRepository {
   Future<void> deleteConversation(String id, {bool cancelActive = false});
   Future<void> deleteTurn(String userMessageId);
   Future<bool> deleteGeneratedImage(String messageId, String imageId);
+  Future<AssistantMessage> setMessageFeedback(
+    String messageId,
+    AssistantFeedback? feedback,
+  );
   Future<AssistantRunSnapshot> createRun(CreateAssistantRunInput input);
   Future<AssistantRunSnapshot> getRun(String id);
   Future<AssistantRun> cancelRun(String id);
@@ -1208,6 +1248,17 @@ class ApiAssistantRepository implements AssistantRepository {
         : const <String, dynamic>{};
     return map['messageDeleted'] == true;
   }
+
+  @override
+  Future<AssistantMessage> setMessageFeedback(
+    String messageId,
+    AssistantFeedback? feedback,
+  ) async => AssistantMessage.fromJson(
+    await _apiClient.put(
+      '/assistant/messages/${Uri.encodeComponent(messageId)}/feedback',
+      data: {'rating': feedback?.wireValue ?? ''},
+    ),
+  );
 
   @override
   Future<AssistantRunSnapshot> createRun(CreateAssistantRunInput input) async =>
@@ -1372,6 +1423,11 @@ class AssistantWorkspaceController
 
   AssistantRepository get _repository => ref.read(assistantRepositoryProvider);
 
+  String get _storageNamespace => userStorageNamespace(
+    environment: ref.read(appEnvironmentProvider).name.name,
+    userId: ref.read(sessionControllerProvider).valueOrNull?.user?.id,
+  );
+
   @override
   Future<AssistantWorkspaceState> build() async {
     ref.onDispose(() {
@@ -1405,9 +1461,9 @@ class AssistantWorkspaceController
         ? 'high'
         : imageModel?.qualities.firstOrNull ?? 'high';
     final selectedMode = AssistantMode.fromWire(runs.firstOrNull?.mode);
-    final pinnedIds = (await _loadPinnedConversationIds()).intersection({
-      for (final item in conversations) item.id,
-    });
+    final pinnedIds = (await _loadPinnedConversationIds(
+      _storageNamespace,
+    )).intersection({for (final item in conversations) item.id});
     for (final run in runs) {
       unawaited(_pollRun(run.id));
     }
@@ -1630,7 +1686,12 @@ class AssistantWorkspaceController
       ),
     );
     if (latest.pinnedIds.contains(id)) {
-      unawaited(_savePinnedConversationIds({...latest.pinnedIds}..remove(id)));
+      unawaited(
+        _savePinnedConversationIds(
+          _storageNamespace,
+          {...latest.pinnedIds}..remove(id),
+        ),
+      );
     }
   }
 
@@ -1724,6 +1785,41 @@ class AssistantWorkspaceController
     );
   }
 
+  Future<void> setMessageFeedback(
+    String messageId,
+    AssistantFeedback? feedback,
+  ) async {
+    final current = state.asData?.value;
+    final conversation = current?.selectedConversation;
+    final message = conversation?.messages
+        .where(
+          (item) => item.id == messageId && !item.isUser && !item.isPending,
+        )
+        .firstOrNull;
+    if (current == null || conversation == null || message == null) return;
+    final updated = await _repository.setMessageFeedback(messageId, feedback);
+    if (updated.id != messageId) {
+      throw const ApiException(code: 'invalid_response', message: '反馈状态同步失败');
+    }
+    final latest = state.asData?.value;
+    if (latest == null) return;
+    state = AsyncData(
+      latest.copyWith(
+        conversations: latest.conversations.map((item) {
+          if (item.id != conversation.id) return item;
+          return item.copyWith(
+            messages: item.messages
+                .map(
+                  (candidate) =>
+                      candidate.id == messageId ? updated : candidate,
+                )
+                .toList(),
+          );
+        }).toList(),
+      ),
+    );
+  }
+
   Future<void> togglePinned(String id) async {
     final current = state.asData?.value;
     if (current == null ||
@@ -1733,7 +1829,7 @@ class AssistantWorkspaceController
     final next = {...current.pinnedIds};
     if (!next.remove(id)) next.add(id);
     state = AsyncData(current.copyWith(pinnedIds: next));
-    await _savePinnedConversationIds(next);
+    await _savePinnedConversationIds(_storageNamespace, next);
   }
 
   Future<void> send(

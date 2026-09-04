@@ -5,6 +5,8 @@ import '../config/app_environment.dart';
 import '../storage/session_store.dart';
 import 'api_exception.dart';
 
+enum ApiNetworkStatus { unknown, available, unavailable }
+
 class ApiPayload {
   const ApiPayload({
     required this.data,
@@ -23,9 +25,16 @@ class ApiClient {
     required SessionStore sessionStore,
     Dio? dio,
     VoidCallback? onUnauthorized,
+    ValueChanged<ApiNetworkStatus>? onNetworkStatusChanged,
+    int maxGetRetries = 1,
+    Future<void> Function(Duration duration)? retryDelay,
   }) : _environment = environment,
        _sessionStore = sessionStore,
        _onUnauthorized = onUnauthorized,
+       _onNetworkStatusChanged = onNetworkStatusChanged,
+       _maxGetRetries = maxGetRetries < 0 ? 0 : maxGetRetries,
+       _retryDelay =
+           retryDelay ?? ((duration) => Future<void>.delayed(duration)),
        _dio =
            dio ??
            Dio(
@@ -59,7 +68,26 @@ class ApiClient {
   final AppEnvironment _environment;
   final SessionStore _sessionStore;
   final VoidCallback? _onUnauthorized;
+  final ValueChanged<ApiNetworkStatus>? _onNetworkStatusChanged;
+  final int _maxGetRetries;
+  final Future<void> Function(Duration duration) _retryDelay;
   final Dio _dio;
+  ApiNetworkStatus _networkStatus = ApiNetworkStatus.unknown;
+
+  void _reportNetworkStatus(ApiNetworkStatus status) {
+    if (_networkStatus == status) return;
+    _networkStatus = status;
+    if (kDebugMode) debugPrint('[API] network=${status.name}');
+    _onNetworkStatusChanged?.call(status);
+  }
+
+  void _reportConnectionFailure(DioException error) {
+    if (error.type == DioExceptionType.connectionError ||
+        error.type == DioExceptionType.connectionTimeout ||
+        (error.type == DioExceptionType.unknown && error.response == null)) {
+      _reportNetworkStatus(ApiNetworkStatus.unavailable);
+    }
+  }
 
   Future<void> _expireSession() async {
     await _sessionStore.clear();
@@ -122,6 +150,21 @@ class ApiClient {
     )).data;
   }
 
+  Future<dynamic> put(
+    String path, {
+    Object? data,
+    Map<String, dynamic>? queryParameters,
+    CancelToken? cancelToken,
+  }) async {
+    return (await request(
+      path,
+      method: 'PUT',
+      data: data,
+      queryParameters: queryParameters,
+      cancelToken: cancelToken,
+    )).data;
+  }
+
   Future<dynamic> delete(
     String path, {
     Object? data,
@@ -145,27 +188,53 @@ class ApiClient {
     CancelToken? cancelToken,
   }) async {
     late Response<dynamic> response;
-    try {
-      response = await _dio.request<dynamic>(
-        path,
-        data: data,
-        queryParameters: queryParameters,
-        cancelToken: cancelToken,
-        options: Options(method: method),
-      );
-    } on DioException catch (error) {
-      if (CancelToken.isCancel(error)) rethrow;
-      throw const ApiException(
-        code: 'network_error',
-        message: '网络连接失败，请检查网络后重试',
-      );
+    final normalizedMethod = method.toUpperCase();
+    var attempt = 0;
+    while (true) {
+      try {
+        response = await _dio.request<dynamic>(
+          path,
+          data: data,
+          queryParameters: queryParameters,
+          cancelToken: cancelToken,
+          options: Options(method: normalizedMethod),
+        );
+      } on DioException catch (error) {
+        if (CancelToken.isCancel(error)) rethrow;
+        if (_shouldRetryGet(
+          method: normalizedMethod,
+          attempt: attempt,
+          error: error,
+        )) {
+          await _waitBeforeRetry(normalizedMethod, path, attempt);
+          attempt += 1;
+          continue;
+        }
+        _reportConnectionFailure(error);
+        throw const ApiException(
+          code: 'network_error',
+          message: '网络连接失败，请检查网络后重试',
+        );
+      }
+      final statusCode = response.statusCode ?? 0;
+      if (_shouldRetryGet(
+        method: normalizedMethod,
+        attempt: attempt,
+        statusCode: statusCode,
+      )) {
+        await _waitBeforeRetry(normalizedMethod, path, attempt);
+        attempt += 1;
+        continue;
+      }
+      break;
     }
+    _reportNetworkStatus(ApiNetworkStatus.available);
 
     final statusCode = response.statusCode ?? 0;
     final setCookies = response.headers.map['set-cookie'] ?? const <String>[];
     if (kDebugMode) {
       debugPrint(
-        '[API] $method $path -> $statusCode setCookies=${setCookies.length}',
+        '[API] $normalizedMethod $path -> $statusCode setCookies=${setCookies.length}',
       );
     }
     if (statusCode == 204) {
@@ -202,6 +271,35 @@ class ApiClient {
     );
   }
 
+  bool _shouldRetryGet({
+    required String method,
+    required int attempt,
+    DioException? error,
+    int? statusCode,
+  }) {
+    if (method != 'GET' || attempt >= _maxGetRetries) return false;
+    if (statusCode != null) {
+      return statusCode == 408 ||
+          statusCode == 502 ||
+          statusCode == 503 ||
+          statusCode == 504;
+    }
+    if (error == null) return false;
+    return error.type == DioExceptionType.connectionError ||
+        error.type == DioExceptionType.connectionTimeout ||
+        error.type == DioExceptionType.sendTimeout ||
+        error.type == DioExceptionType.receiveTimeout ||
+        (error.type == DioExceptionType.unknown && error.response == null);
+  }
+
+  Future<void> _waitBeforeRetry(String method, String path, int attempt) async {
+    final delay = Duration(milliseconds: 300 * (attempt + 1));
+    if (kDebugMode) {
+      debugPrint('[API] $method $path retry=${attempt + 1}');
+    }
+    await _retryDelay(delay);
+  }
+
   Future<List<int>> getBytes(
     String url, {
     CancelToken? cancelToken,
@@ -212,29 +310,51 @@ class ApiClient {
     if (resolved.isEmpty) {
       throw ApiException(code: 'invalid_file_url', message: invalidUrlMessage);
     }
-    try {
-      final response = await _dio.get<List<int>>(
-        resolved,
-        cancelToken: cancelToken,
-        options: Options(responseType: ResponseType.bytes),
-      );
-      final statusCode = response.statusCode ?? 0;
-      if (statusCode >= 200 && statusCode < 300 && response.data != null) {
-        return response.data!;
+    late Response<List<int>> response;
+    var attempt = 0;
+    while (true) {
+      try {
+        response = await _dio.get<List<int>>(
+          resolved,
+          cancelToken: cancelToken,
+          options: Options(responseType: ResponseType.bytes),
+        );
+      } on DioException catch (error) {
+        if (CancelToken.isCancel(error)) rethrow;
+        if (_shouldRetryGet(method: 'GET', attempt: attempt, error: error)) {
+          await _waitBeforeRetry('GET', resolved, attempt);
+          attempt += 1;
+          continue;
+        }
+        _reportConnectionFailure(error);
+        throw ApiException(
+          code: 'network_error',
+          message: '$downloadFailedMessage，请检查网络后重试',
+        );
       }
-      if (statusCode == 401) await _expireSession();
-      throw ApiException(
+      final statusCode = response.statusCode ?? 0;
+      if (_shouldRetryGet(
+        method: 'GET',
+        attempt: attempt,
         statusCode: statusCode,
-        code: 'file_download_failed',
-        message: '$downloadFailedMessage（$statusCode）',
-      );
-    } on DioException catch (error) {
-      if (CancelToken.isCancel(error)) rethrow;
-      throw ApiException(
-        code: 'network_error',
-        message: '$downloadFailedMessage，请检查网络后重试',
-      );
+      )) {
+        await _waitBeforeRetry('GET', resolved, attempt);
+        attempt += 1;
+        continue;
+      }
+      break;
     }
+    _reportNetworkStatus(ApiNetworkStatus.available);
+    final statusCode = response.statusCode ?? 0;
+    if (statusCode >= 200 && statusCode < 300 && response.data != null) {
+      return response.data!;
+    }
+    if (statusCode == 401) await _expireSession();
+    throw ApiException(
+      statusCode: statusCode,
+      code: 'file_download_failed',
+      message: '$downloadFailedMessage（$statusCode）',
+    );
   }
 
   Future<ResponseBody> openEventStream(
@@ -251,6 +371,7 @@ class ApiClient {
           headers: const {'Accept': 'text/event-stream'},
         ),
       );
+      _reportNetworkStatus(ApiNetworkStatus.available);
       final statusCode = response.statusCode ?? 0;
       if (statusCode >= 200 && statusCode < 300 && response.data != null) {
         return response.data!;

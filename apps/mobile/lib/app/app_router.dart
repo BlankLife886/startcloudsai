@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import 'route_error_screen.dart';
+
 import '../features/auth/login_screen.dart';
 import '../features/auth/authenticated_route.dart';
 import '../features/assistant/assistant_screen.dart';
@@ -12,6 +14,7 @@ import '../features/benefits/benefits_screen.dart';
 import '../features/checkin/checkin_screen.dart';
 import '../features/create/create.dart';
 import '../features/create/create_screen.dart';
+import '../features/create/reference_image_service.dart';
 import '../features/design/design_screen.dart';
 import '../features/discover/discover_screen.dart';
 import '../features/feedback/feedback_screen.dart';
@@ -20,6 +23,17 @@ import '../features/meta/updates_screen.dart';
 import '../features/notifications/notification_center_screen.dart';
 import '../features/profile/edit_profile_screen.dart';
 import '../features/profile/appearance_settings_screen.dart';
+import '../features/profile/about_screen.dart';
+import '../features/profile/help_center_screen.dart';
+import '../features/profile/account_security_screen.dart';
+import '../features/profile/account_data_export_screen.dart';
+import '../features/profile/account_sessions_screen.dart';
+import '../features/profile/app_permissions_screen.dart';
+import '../features/profile/blocked_users_screen.dart';
+import '../features/profile/delete_account_screen.dart';
+import '../features/profile/legal_document_screen.dart';
+import '../features/profile/local_storage_screen.dart';
+import '../features/profile/open_source_licenses_screen.dart';
 import '../features/profile/profile_screen.dart';
 import '../features/shell/app_shell.dart';
 import '../features/tasks/works_screen.dart';
@@ -31,10 +45,13 @@ import '../features/wallet/wallet_screen.dart';
 
 final _rootNavigatorKey = GlobalKey<NavigatorState>();
 
+BuildContext? get rootNavigatorContext => _rootNavigatorKey.currentContext;
+
 final appRouterProvider = Provider<GoRouter>(
   (ref) => GoRouter(
     navigatorKey: _rootNavigatorKey,
     initialLocation: '/discover',
+    errorBuilder: (context, state) => RouteErrorScreen(error: state.error),
     routes: [
       GoRoute(path: '/', redirect: (context, state) => '/discover'),
       StatefulShellRoute.indexedStack(
@@ -49,6 +66,8 @@ final appRouterProvider = Provider<GoRouter>(
                   initialTab: HomeDiscoverTab.fromQuery(
                     state.uri.queryParameters['tab'],
                   ),
+                  initialFavoritesOnly:
+                      state.uri.queryParameters['favorites'] == '1',
                 ),
               ),
             ],
@@ -118,10 +137,7 @@ final appRouterProvider = Provider<GoRouter>(
                       title: '积分钱包',
                       icon: Icons.account_balance_wallet_outlined,
                       fallbackLocation: '/profile',
-                      child: WalletScreen(
-                        initiallyOpenRedeem:
-                            state.uri.queryParameters['redeem'] == '1',
-                      ),
+                      child: const WalletScreen(),
                     ),
                     routes: [
                       GoRoute(
@@ -150,7 +166,7 @@ final appRouterProvider = Provider<GoRouter>(
                       return '/profile/purchases/orders?order=${Uri.encodeQueryComponent(order)}';
                     },
                     builder: (context, state) => const AuthenticatedRoute(
-                      title: '套餐与订单',
+                      title: '会员与订单',
                       icon: Icons.shopping_bag_outlined,
                       fallbackLocation: '/profile',
                       child: PurchaseCenterScreen(),
@@ -240,6 +256,68 @@ final appRouterProvider = Provider<GoRouter>(
                   ),
                   GoRoute(
                     parentNavigatorKey: _rootNavigatorKey,
+                    path: 'security',
+                    builder: (context, state) => const AuthenticatedRoute(
+                      title: '账号与安全',
+                      icon: Icons.security_outlined,
+                      fallbackLocation: '/profile',
+                      child: AccountSecurityScreen(),
+                    ),
+                    routes: [
+                      GoRoute(
+                        parentNavigatorKey: _rootNavigatorKey,
+                        path: 'sessions',
+                        builder: (context, state) => const AuthenticatedRoute(
+                          title: '登录设备',
+                          icon: Icons.devices_outlined,
+                          fallbackLocation: '/profile/security',
+                          child: AccountSessionsScreen(),
+                        ),
+                      ),
+                      GoRoute(
+                        parentNavigatorKey: _rootNavigatorKey,
+                        path: 'data-export',
+                        builder: (context, state) => const AuthenticatedRoute(
+                          title: '账号数据',
+                          icon: Icons.file_download_outlined,
+                          fallbackLocation: '/profile/security',
+                          child: AccountDataExportScreen(),
+                        ),
+                      ),
+                      GoRoute(
+                        parentNavigatorKey: _rootNavigatorKey,
+                        path: 'blocked-users',
+                        builder: (context, state) => const AuthenticatedRoute(
+                          title: '已屏蔽用户',
+                          icon: Icons.person_off_outlined,
+                          fallbackLocation: '/profile/security',
+                          child: BlockedUsersScreen(),
+                        ),
+                      ),
+                      GoRoute(
+                        parentNavigatorKey: _rootNavigatorKey,
+                        path: 'storage',
+                        builder: (context, state) => const AuthenticatedRoute(
+                          title: '本地存储',
+                          icon: Icons.storage_outlined,
+                          fallbackLocation: '/profile/security',
+                          child: LocalStorageScreen(),
+                        ),
+                      ),
+                      GoRoute(
+                        parentNavigatorKey: _rootNavigatorKey,
+                        path: 'delete',
+                        builder: (context, state) => const AuthenticatedRoute(
+                          title: '注销账号',
+                          icon: Icons.delete_forever_outlined,
+                          fallbackLocation: '/profile/security',
+                          child: DeleteAccountScreen(),
+                        ),
+                      ),
+                    ],
+                  ),
+                  GoRoute(
+                    parentNavigatorKey: _rootNavigatorKey,
                     path: 'edit',
                     builder: (context, state) => const AuthenticatedRoute(
                       title: '编辑资料',
@@ -264,6 +342,9 @@ final appRouterProvider = Provider<GoRouter>(
                 ? state.uri.queryParameters['prompt']
                 : null,
             initialPreset: preset,
+            initialReference: state.extra is ReferenceImageDraft
+                ? state.extra! as ReferenceImageDraft
+                : null,
           );
         },
       ),
@@ -293,6 +374,9 @@ final appRouterProvider = Provider<GoRouter>(
           ),
           child: AssistantScreen(
             initialPrompt: state.uri.queryParameters['prompt'],
+            initialReference: state.extra is ReferenceImageDraft
+                ? state.extra! as ReferenceImageDraft
+                : null,
             showBackButton: true,
             fallbackLocation: '/discover',
           ),
@@ -301,7 +385,12 @@ final appRouterProvider = Provider<GoRouter>(
       GoRoute(
         parentNavigatorKey: _rootNavigatorKey,
         path: '/works',
-        builder: (context, state) => const WorksScreen(),
+        builder: (context, state) => const AuthenticatedRoute(
+          title: '历史记录',
+          icon: Icons.history_rounded,
+          fallbackLocation: '/profile',
+          child: WorksScreen(),
+        ),
         routes: [
           GoRoute(
             path: ':id',
@@ -325,6 +414,38 @@ final appRouterProvider = Provider<GoRouter>(
       ),
       GoRoute(path: '/coloring', redirect: (context, state) => '/design'),
       GoRoute(path: '/model-sheet', redirect: (context, state) => '/design'),
+      GoRoute(
+        parentNavigatorKey: _rootNavigatorKey,
+        path: '/about',
+        builder: (context, state) => const AboutScreen(),
+      ),
+      GoRoute(
+        parentNavigatorKey: _rootNavigatorKey,
+        path: '/help',
+        builder: (context, state) => const HelpCenterScreen(),
+      ),
+      GoRoute(
+        parentNavigatorKey: _rootNavigatorKey,
+        path: '/permissions',
+        builder: (context, state) => const AppPermissionsScreen(),
+      ),
+      GoRoute(
+        parentNavigatorKey: _rootNavigatorKey,
+        path: '/legal/privacy',
+        builder: (context, state) =>
+            const LegalDocumentScreen(kind: LegalDocumentKind.privacy),
+      ),
+      GoRoute(
+        parentNavigatorKey: _rootNavigatorKey,
+        path: '/legal/terms',
+        builder: (context, state) =>
+            const LegalDocumentScreen(kind: LegalDocumentKind.terms),
+      ),
+      GoRoute(
+        parentNavigatorKey: _rootNavigatorKey,
+        path: '/licenses',
+        builder: (context, state) => const OpenSourceLicensesScreen(),
+      ),
       GoRoute(
         parentNavigatorKey: _rootNavigatorKey,
         path: '/updates',

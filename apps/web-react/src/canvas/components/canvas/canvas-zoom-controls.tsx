@@ -1,6 +1,6 @@
 import type { CSSProperties, ReactNode } from "react";
 import { Compass, Focus, HelpCircle } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Tooltip } from "antd";
 import { useTranslation } from "react-i18next";
 
@@ -23,13 +23,19 @@ type CanvasZoomControlsProps = {
 export function CanvasZoomControls({ scale, onScaleChange, onReset, isMiniMapOpen, onToggleMiniMap, children }: CanvasZoomControlsProps) {
     const [shortcutsOpen, setShortcutsOpen] = useState(false);
     const [liveScale, setLiveScale] = useState(scale);
+    const liveScaleRef = useRef(scale);
     const { t } = useTranslation();
 
-    useEffect(() => setLiveScale(scale), [scale]);
+    useEffect(() => {
+        liveScaleRef.current = scale;
+        setLiveScale(scale);
+    }, [scale]);
     useEffect(() => {
         const stop = onCanvasEvent(CANVAS_VIEWPORT_LIVE_EVENT, (payload) => {
             const next = payload && typeof payload === "object" && "k" in payload ? Number((payload as { k: number }).k) : NaN;
-            if (Number.isFinite(next)) setLiveScale(next);
+            if (!Number.isFinite(next) || next === liveScaleRef.current) return;
+            liveScaleRef.current = next;
+            setLiveScale(next);
         });
         return () => {
             stop();
@@ -50,7 +56,7 @@ export function CanvasZoomControls({ scale, onScaleChange, onReset, isMiniMapOpe
             onMouseDown={(event) => event.stopPropagation()}
             onPointerDown={(event) => event.stopPropagation()}
         >
-            <div className="canvas-editor-chrome canvas-nav-dock overflow-hidden rounded-[20px] border backdrop-blur-2xl" data-theme={colorTheme} style={{ ...dockStyle, borderColor: theme.toolbar.border }}>
+            <div className="canvas-editor-chrome canvas-nav-dock overflow-hidden rounded-[20px] border backdrop-blur-2xl" data-theme={colorTheme} data-guide="canvas-nav" style={{ ...dockStyle, borderColor: theme.toolbar.border }}>
                 <div className={`canvas-nav-map${isMiniMapOpen ? " is-open" : ""}`}>
                     <div className="canvas-nav-map__inner">
                         <div className="canvas-nav-map__frame" style={{ boxShadow: `inset 0 0 0 1px ${theme.toolbar.border}` }}>

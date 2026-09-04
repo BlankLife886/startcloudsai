@@ -28,7 +28,7 @@ import {
   listOrders,
 } from "@react/legacy-modules/services/billingApi.js";
 import { refreshWalletSnapshot } from "@react/legacy-modules/services/walletSync.js";
-import "@react/legacy-styles/generated/views/OrdersView.css";
+import "./OrdersView.css";
 
 const PAGE_SIZE = 12;
 const STATUS_OPTIONS = [
@@ -70,6 +70,10 @@ function paymentMethodLabel(method) {
   if (method === "wechat") return "微信支付";
   if (method === "alipay") return "支付宝";
   return "在线支付";
+}
+
+function planKindLabel(kind) {
+  return kind === "subscription" ? "订阅" : "充值";
 }
 
 function orderBenefit(order) {
@@ -308,144 +312,187 @@ export function OrdersView() {
 	return (
     <div className={`orders-page${isDark ? " is-dark" : ""}`}>
       <div className="orders-shell">
-        <header className="orders-head">
-          <div>
-            <span className="orders-eyebrow">账户与交易</span>
-            <h1>我的订单</h1>
-            <p>查看套餐购买、支付状态和权益到账记录</p>
-          </div>
-          <div className="orders-head__actions">
-            <Link className="orders-button is-secondary" to="/wallet">
-              <WalletCards size={17} aria-hidden="true" />
-              我的钱包
-            </Link>
-            <Link className="orders-button is-primary" to="/pricing">
-              <ShoppingBag size={17} aria-hidden="true" />
-              购买套餐
-            </Link>
-          </div>
-        </header>
+        <section className="orders-board">
+          <header className="orders-head">
+            <div>
+              <p className="orders-kicker">账户与交易</p>
+              <h1>我的订单</h1>
+              <p>套餐购买、支付状态和权益到账</p>
+            </div>
+            <div className="orders-head__actions">
+              <Link className="orders-btn" to="/wallet">
+                <WalletCards size={16} aria-hidden="true" />
+                我的钱包
+              </Link>
+              <Link className="orders-btn is-primary" to="/pricing">
+                <ShoppingBag size={16} aria-hidden="true" />
+                购买套餐
+              </Link>
+            </div>
+          </header>
 
-		{user && <section className="orders-toolbar" aria-label="订单筛选">
-          <div className="orders-tabs" role="tablist">
-            {STATUS_OPTIONS.map(([value, label]) => (
-              <button
-                key={value || "all"}
-                type="button"
-                role="tab"
-                aria-selected={status === value}
-                className={status === value ? "is-active" : ""}
-                onClick={() => setStatus(value)}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-          <div className="orders-page-meta">
-            <span>本页 {orders.length} 笔</span>
-            {pageStats.pending > 0 && <span className="is-pending">待处理 {pageStats.pending}</span>}
-            {pageStats.completed > 0 && <span className="is-success">已完成 {pageStats.completed}</span>}
-            <button type="button" title="刷新订单" onClick={() => void load(cursor)} disabled={loading}>
-              <RefreshCw className={loading ? "is-spinning" : ""} size={16} aria-hidden="true" />
-            </button>
-          </div>
-		</section>}
-
-		{user && error && (
-          <div className="orders-alert" role="alert">
-            <CircleAlert size={18} aria-hidden="true" />
-            <span>{error}</span>
-            <button type="button" onClick={() => void load(cursor)}>重试</button>
-          </div>
-        )}
-
-		{authLoading ? (
-			<div className="orders-loading">
-				<LoaderCircle className="is-spinning" size={24} aria-hidden="true" />
-				正在确认登录状态
-			</div>
-		) : !user ? (
-			<section className="orders-auth">
-				<LogIn size={28} aria-hidden="true" />
-				<strong>登录后查看订单</strong>
-				<span>支付状态和套餐到账记录会保存在你的账户中</span>
-				<Link to="/auth?mode=login&redirect=%2Forders">登录账号</Link>
-			</section>
-		) : loading && !orders.length ? (
-          <div className="orders-loading">
-            <LoaderCircle className="is-spinning" size={24} aria-hidden="true" />
-            正在读取订单
-          </div>
-        ) : orders.length ? (
-          <section className="orders-list" aria-live="polite">
-            {orders.map((order) => {
-              const actualAmount = order.payAmountCents ?? order.amountCents;
-              const adjusted = Number(actualAmount) !== Number(order.amountCents);
-              return (
-                <article className="order-row" key={order.id}>
-                  <div className="order-row__identity">
-                    <div className="order-row__icon"><PackageCheck size={20} aria-hidden="true" /></div>
-                    <div>
-                      <strong>{order.planName || "套餐订单"}</strong>
-                      <button
-                        type="button"
-                        className="order-id"
-                        title="复制订单号"
-						onClick={() => void copyOrderID(order.id)}
-					>
-						<span>{shortOrderID(order.id)}</span>
-						{copiedOrderID === order.id ? (
-							<span className="order-id__feedback" role="status"><Check size={12} aria-hidden="true" />已复制</span>
-						) : <Copy size={12} aria-hidden="true" />}
-					</button>
-                    </div>
-                  </div>
-                  <div className="order-row__cell">
-                    <span>权益</span>
-                    <strong>{orderBenefit(order)}</strong>
-                  </div>
-                  <div className="order-row__cell">
-                    <span>实付金额</span>
-                    <strong>{formatCents(actualAmount)}</strong>
-                    {adjusted && <small>标价 {formatCents(order.amountCents)}</small>}
-                  </div>
-                  <div className="order-row__cell">
-                    <span>支付方式</span>
-                    <strong>{paymentMethodLabel(order.paymentMethod)}</strong>
-                  </div>
-                  <div className="order-row__cell">
-                    <span>创建时间</span>
-                    <strong>{formatDate(order.createdAt)}</strong>
-                  </div>
-                  <div className="order-row__state">
-                    <StatusBadge status={order.status} />
-                    <button type="button" onClick={() => void openOrder(order)}>
-                      {order.status === "pending" ? "继续支付" : "查看详情"}
-                    </button>
-                  </div>
+          {user ? (
+            <>
+              <div className="orders-kpis" aria-label="本页概况">
+                <article>
+                  <span>本页订单</span>
+                  <strong>{orders.length}</strong>
+                  <small>当前筛选</small>
                 </article>
-              );
-            })}
-          </section>
-        ) : (
-          <section className="orders-empty">
-            <ShoppingBag size={28} aria-hidden="true" />
-            <strong>{status ? "当前筛选没有订单" : "还没有套餐订单"}</strong>
-            <Link to="/pricing">查看套餐</Link>
-          </section>
-        )}
+                <article className={pageStats.pending ? "is-pending" : ""}>
+                  <span>待处理</span>
+                  <strong>{pageStats.pending}</strong>
+                  <small>{pageStats.pending ? "待支付或确认中" : "没有待处理"}</small>
+                </article>
+                <article className={pageStats.completed ? "is-success" : ""}>
+                  <span>已完成</span>
+                  <strong>{pageStats.completed}</strong>
+                  <small>{pageStats.completed ? "权益已到账" : "本页暂无完成"}</small>
+                </article>
+              </div>
 
-		{user && <footer className="orders-pager">
-          <span>第 {page} 页</span>
-          <div>
-            <button type="button" title="上一页" disabled={!historyRef.current.length || loading} onClick={goPrev}>
-              <ChevronLeft size={17} aria-hidden="true" />
-            </button>
-            <button type="button" title="下一页" disabled={!nextCursor || loading} onClick={goNext}>
-              <ChevronRight size={17} aria-hidden="true" />
-            </button>
-          </div>
-		</footer>}
+              <div className="orders-toolbar" aria-label="订单筛选">
+                <div className="orders-tabs" role="tablist">
+                  {STATUS_OPTIONS.map(([value, label]) => (
+                    <button
+                      key={value || "all"}
+                      type="button"
+                      role="tab"
+                      aria-selected={status === value}
+                      className={`orders-tabs__btn${status === value ? " is-active" : ""}`}
+                      onClick={() => setStatus(value)}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  className="orders-btn is-icon"
+                  title="刷新订单"
+                  onClick={() => void load(cursor)}
+                  disabled={loading}
+                >
+                  <RefreshCw className={loading ? "is-spinning" : ""} size={16} aria-hidden="true" />
+                </button>
+              </div>
+            </>
+          ) : null}
+
+          {user && error ? (
+            <div className="orders-alert" role="alert">
+              <CircleAlert size={18} aria-hidden="true" />
+              <span>{error}</span>
+              <button type="button" onClick={() => void load(cursor)}>重试</button>
+            </div>
+          ) : null}
+
+          {authLoading ? (
+            <div className="orders-loading">
+              <LoaderCircle className="is-spinning" size={24} aria-hidden="true" />
+              正在确认登录状态
+            </div>
+          ) : !user ? (
+            <section className="orders-auth">
+              <LogIn size={28} aria-hidden="true" />
+              <strong>登录后查看订单</strong>
+              <span>支付状态和套餐到账记录会保存在你的账户中</span>
+              <Link className="orders-btn is-primary" to="/auth?mode=login&redirect=%2Forders">登录账号</Link>
+            </section>
+          ) : loading && !orders.length ? (
+            <div className="orders-loading">
+              <LoaderCircle className="is-spinning" size={24} aria-hidden="true" />
+              正在读取订单
+            </div>
+          ) : orders.length ? (
+            <div className="orders-scroll">
+              <div className="orders-cols" aria-hidden="true">
+                <span>订单</span>
+                <span>权益</span>
+                <span>实付金额</span>
+                <span>支付方式</span>
+                <span>创建时间</span>
+                <span>状态</span>
+              </div>
+              <section className="orders-list" aria-live="polite">
+                {orders.map((order) => {
+                  const actualAmount = order.payAmountCents ?? order.amountCents;
+                  const adjusted = Number(actualAmount) !== Number(order.amountCents);
+                  const subscription = order.planKind === "subscription";
+                  return (
+                    <article className="order-row" key={order.id}>
+                      <div className="order-row__identity">
+                        <div className={`order-row__icon${subscription ? " is-sub" : ""}`}>
+                          {subscription ? <WalletCards size={18} aria-hidden="true" /> : <PackageCheck size={18} aria-hidden="true" />}
+                        </div>
+                        <div>
+                          <strong>
+                            <span>{order.planName || "套餐订单"}</span>
+                            <em>{planKindLabel(order.planKind)}</em>
+                          </strong>
+                          <button
+                            type="button"
+                            className="order-id"
+                            title="复制订单号"
+                            onClick={() => void copyOrderID(order.id)}
+                          >
+                            <span>{shortOrderID(order.id)}</span>
+                            {copiedOrderID === order.id ? (
+                              <span className="order-id__feedback" role="status"><Check size={12} aria-hidden="true" />已复制</span>
+                            ) : <Copy size={12} aria-hidden="true" />}
+                          </button>
+                        </div>
+                      </div>
+                      <div className="order-row__cell">
+                        <span>权益</span>
+                        <strong>{orderBenefit(order)}</strong>
+                      </div>
+                      <div className="order-row__cell">
+                        <span>实付金额</span>
+                        <strong>{formatCents(actualAmount)}</strong>
+                        {adjusted ? <small>标价 {formatCents(order.amountCents)}</small> : null}
+                      </div>
+                      <div className="order-row__cell">
+                        <span>支付方式</span>
+                        <strong>{paymentMethodLabel(order.paymentMethod)}</strong>
+                      </div>
+                      <div className="order-row__cell">
+                        <span>创建时间</span>
+                        <strong>{formatDate(order.createdAt)}</strong>
+                      </div>
+                      <div className="order-row__state">
+                        <StatusBadge status={order.status} />
+                        <button type="button" onClick={() => void openOrder(order)}>
+                          {order.status === "pending" ? "继续支付" : "查看详情"}
+                        </button>
+                      </div>
+                    </article>
+                  );
+                })}
+              </section>
+            </div>
+          ) : (
+            <section className="orders-empty">
+              <ShoppingBag size={28} aria-hidden="true" />
+              <strong>{status ? "当前筛选没有订单" : "还没有套餐订单"}</strong>
+              <Link className="orders-btn is-primary" to="/pricing">查看套餐</Link>
+            </section>
+          )}
+
+          {user ? (
+            <footer className="orders-pager">
+              <span>第 {page} 页</span>
+              <div>
+                <button type="button" className="orders-btn is-icon" title="上一页" disabled={!historyRef.current.length || loading} onClick={goPrev}>
+                  <ChevronLeft size={17} aria-hidden="true" />
+                </button>
+                <button type="button" className="orders-btn is-icon" title="下一页" disabled={!nextCursor || loading} onClick={goNext}>
+                  <ChevronRight size={17} aria-hidden="true" />
+                </button>
+              </div>
+            </footer>
+          ) : null}
+        </section>
       </div>
 
       {selected && (

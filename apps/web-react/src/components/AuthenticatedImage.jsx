@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   cancelAuthenticatedMediaResolve,
   isAuthenticatedAiMediaUrl,
+  isRetryableAuthenticatedMediaError,
   releaseAuthenticatedMediaUrl,
   resolveAuthenticatedMediaUrl,
 } from "@react/legacy-modules/services/authenticatedMedia.js";
@@ -59,7 +60,7 @@ export function AuthenticatedImage({
   const displayRetryRef = useRef(0);
   const timerRef = useRef(0);
   const resolvedRef = useRef("");
-  const [active, setActive] = useState(loading === "eager");
+  const [active, setActive] = useState(loading === "eager" || keepLoaded);
   const [resolved, setResolved] = useState("");
   const [state, setState] = useState(() =>
     loadedMediaSources.has(src) ? "loaded" : "placeholder",
@@ -67,6 +68,10 @@ export function AuthenticatedImage({
 
   useEffect(() => {
     const root = rootRef.current;
+    if (keepLoaded) {
+      setActive(Boolean(src));
+      return undefined;
+    }
     if (
       !src ||
       loading === "eager" ||
@@ -104,9 +109,11 @@ export function AuthenticatedImage({
     let disposed = false;
     retryRef.current = 0;
     displayRetryRef.current = 0;
-    if (!keepLoaded || !resolvedRef.current) {
+    if (!keepLoaded) {
       setResolved("");
       if (!loadedMediaSources.has(src)) setState("loading");
+    } else if (!resolvedRef.current && !loadedMediaSources.has(src)) {
+      setState("loading");
     }
 
     const resolve = async () => {
@@ -120,7 +127,10 @@ export function AuthenticatedImage({
         setResolved(value);
       } catch (error) {
         if (disposed || token !== tokenRef.current) return;
-        if (retryRef.current < Math.max(0, Number(retryCount) || 0)) {
+        if (
+          isRetryableAuthenticatedMediaError(error) &&
+          retryRef.current < Math.max(0, Number(retryCount) || 0)
+        ) {
           retryRef.current += 1;
           timerRef.current = window.setTimeout(resolve, 240 * retryRef.current);
           return;
@@ -154,7 +164,7 @@ export function AuthenticatedImage({
       className={`authenticated-image is-${state}${className ? ` ${className}` : ""}`}
       role="img"
       aria-label={
-        alt || (state === "failed" ? "图片暂时无法读取" : "图片加载中")
+        alt || (state === "failed" ? "图片暂时无法读取" : state === "loaded" ? "图片已加载" : "图片加载中")
       }
     >
       {resolved && (
@@ -163,7 +173,7 @@ export function AuthenticatedImage({
           className="authenticated-image-media"
           src={resolved}
           alt={alt}
-          loading={isAuthenticatedAiMediaUrl(src) ? "eager" : loading}
+          loading={keepLoaded || isAuthenticatedAiMediaUrl(src) ? "eager" : loading}
           decoding="async"
           draggable="false"
           onLoad={(event) => {

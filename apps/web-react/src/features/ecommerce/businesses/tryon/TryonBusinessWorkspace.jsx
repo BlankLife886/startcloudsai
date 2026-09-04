@@ -11,6 +11,7 @@ import { useGSAP } from "@gsap/react";
 import { useIsDark } from "../../../../hooks/useIsDark.js";
 import { useLocale } from "../../../../i18n/index.js";
 import { AuthenticatedImage } from "../../../../components/AuthenticatedImage.jsx";
+import { RegenerateIcon } from "../../../../components/common/RegenerateIcon.jsx";
 import { CommerceSelect } from "../../CommerceSelect.jsx";
 
 const TRYON_STAGE_COPY = {
@@ -1164,15 +1165,7 @@ export function TryonLiveStage({
               }
               onClick={running ? onCancel : onGenerate}
             >
-              <i
-                className={`bi ${
-                  running
-                    ? "bi-stop-fill"
-                    : failed
-                      ? "bi-arrow-repeat"
-                      : "bi-stars"
-                }`}
-              />
+              {running ? <i className="bi bi-stop-fill" /> : failed ? <RegenerateIcon /> : <i className="bi bi-stars" />}
               {running
                 ? t("停止")
                 : failed

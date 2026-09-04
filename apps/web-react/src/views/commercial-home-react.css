@@ -136,7 +136,7 @@ html.color-scheme-dark .home-catalog__aurora {
   gap: 8px;
 }
 .home-card-grid.is-upcoming {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 10px;
 }
 .home-card {
@@ -295,6 +295,9 @@ html.color-scheme-dark .home-catalog__aurora {
   font-style: normal;
   font-weight: 760;
 }
+.home-compact__copy .home-card__status {
+  position: static;
+}
 .home-card__status.is-maintenance {
   color: #915a09;
   background: #fff2d8;
@@ -302,6 +305,37 @@ html.color-scheme-dark .home-catalog__aurora {
 .home-card__status.is-developing {
   color: #7654a5;
   background: #f1eafa;
+}
+.home-card__mask,
+.home-compact__mask {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  background: rgba(28, 20, 48, 0.22);
+  pointer-events: none;
+}
+.home-card__mask strong,
+.home-compact__mask strong {
+  padding: 5px 10px;
+  border-radius: 999px;
+  color: #5b3d8a;
+  background: rgba(255, 247, 255, 0.94);
+  box-shadow: 0 4px 12px rgba(16, 12, 28, 0.1);
+  font-size: 0.78rem;
+  font-style: normal;
+  font-weight: 760;
+  letter-spacing: 0.02em;
+}
+.home-card__mask.is-maintenance strong,
+.home-compact__mask.is-maintenance strong {
+  color: #8a4b08;
+  background: rgba(255, 246, 220, 0.96);
+}
+.home-card-grid.is-dense .home-card__mask strong {
+  padding: 4px 8px;
+  font-size: 0.7rem;
 }
 .home-card__price {
   position: absolute;
@@ -384,11 +418,15 @@ html.color-scheme-dark .home-catalog__aurora {
   height: 16px;
   color: var(--home-faint);
 }
-.home-card.is-maintenance,
-.home-card.is-developing,
-.home-compact.is-maintenance,
-.home-compact.is-developing {
-  opacity: 0.88;
+.home-card.is-maintenance .home-card__media,
+.home-card.is-developing .home-card__media {
+  filter: saturate(0.85);
+}
+.home-catalog.is-dark .home-card__mask,
+.home-catalog.is-dark .home-compact__mask,
+html.color-scheme-dark .home-card__mask,
+html.color-scheme-dark .home-compact__mask {
+  background: rgba(8, 6, 16, 0.28);
 }
 @media (max-width: 1100px) {
   .home-card-grid.is-dense,

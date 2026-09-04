@@ -1,7 +1,8 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { App, Modal, Popconfirm, Spin, Tag } from "antd";
 import { useQuery } from "@tanstack/react-query";
-import { Check, ChevronDown, ChevronRight, Download, Ellipsis, Eye, FileClock, FileText, Image as ImageIcon, Info, ListChecks, Music2, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Settings2, Square, Trash2, Type, Video } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Ellipsis, Eye, FileClock, FileText, Image as ImageIcon, Info, ListChecks, Music2, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Settings2, Square, Trash2, Type, Video } from "lucide-react";
+import { DownloadIcon } from "@react/components/common/DownloadIcon.jsx";
 import { AnimatePresence, motion } from "motion/react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router";
@@ -31,6 +32,7 @@ const PANEL_MOTION_SECONDS = CANVAS_SIDE_PANEL_MOTION_MS / 1000;
 const PANEL_EASE = [0.22, 1, 0.36, 1] as const;
 const CAPSULE_HEIGHT = 44;
 const CAPSULE_WIDTH = 320;
+const VIRTUAL_NODE_ROW_STYLE = { contentVisibility: "auto", containIntrinsicSize: "44px" } satisfies CSSProperties;
 
 type PanelTab = "canvas" | "assets" | "prompts" | "recent";
 
@@ -73,6 +75,7 @@ export const CanvasSidePanel = memo(function CanvasSidePanel({ projectId, nodes,
     const openPanel = useCanvasSidePanelStore((state) => state.openPanel);
     const closePanel = useCanvasSidePanelStore((state) => state.closePanel);
     const [resizing, setResizing] = useState(false);
+    const [panelBodyMounted, setPanelBodyMounted] = useState(panelOpen);
     const tabs = [
         { id: "canvas" as const, label: t("canvas.sidePanel.canvas") },
         { id: "assets" as const, label: t("canvas.sidePanel.assets") },
@@ -98,6 +101,15 @@ export const CanvasSidePanel = memo(function CanvasSidePanel({ projectId, nodes,
         observer.observe(host);
         return () => observer.disconnect();
     }, []);
+
+    useEffect(() => {
+        if (panelOpen) {
+            setPanelBodyMounted(true);
+            return;
+        }
+        const timer = window.setTimeout(() => setPanelBodyMounted(false), CANVAS_SIDE_PANEL_MOTION_MS);
+        return () => window.clearTimeout(timer);
+    }, [panelOpen]);
 
     const startResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
         event.preventDefault();
@@ -132,6 +144,7 @@ export const CanvasSidePanel = memo(function CanvasSidePanel({ projectId, nodes,
                 transition={{ duration: resizing ? 0 : PANEL_MOTION_SECONDS, ease: PANEL_EASE }}
                 style={{ background: theme.toolbar.panel, color: theme.node.text, boxShadow: theme.toolbar.shadow, border: `1px solid ${theme.toolbar.border}`, overflow: "hidden" }}
                 data-canvas-no-zoom
+                data-guide="canvas-side-panel"
             >
                 <div className="flex h-11 shrink-0 items-center gap-0.5 px-1.5" style={panelOpen ? { boxShadow: `inset 0 -1px 0 ${theme.toolbar.border}` } : undefined}>
                     {tabs.map((item) => {
@@ -170,27 +183,29 @@ export const CanvasSidePanel = memo(function CanvasSidePanel({ projectId, nodes,
                     animate={panelOpen ? { opacity: 1, y: 0 } : { opacity: 0, y: 0 }}
                     transition={{ duration: panelOpen ? 0.32 : 0, delay: panelOpen ? 0.08 : 0, ease: PANEL_EASE }}
                 >
-                    <AnimatePresence initial={false} custom={tabDirection}>
-                        <motion.div
-                            key={tab}
-                            className="absolute inset-0"
-                            custom={tabDirection}
-                            initial={{ opacity: 0, x: tabDirection * 18 }}
-                            animate={{ opacity: 1, x: 0 }}
-                            exit={{ opacity: 0, x: tabDirection * -16 }}
-                            transition={{ duration: 0.24, ease: PANEL_EASE }}
-                        >
-                            {tab === "canvas" ? (
-                                <CanvasNodesTab nodes={nodes} connections={connections} selectedNodeIds={selectedNodeIds} onFocusNode={onFocusNode} onPreviewNode={onPreviewNode} onRenameNode={onRenameNode} onDeleteNodes={onDeleteNodes} theme={theme} />
-                            ) : tab === "assets" ? (
-                                <CanvasAssetsTab onInsert={onInsertAsset} theme={theme} />
-                            ) : tab === "prompts" ? (
-                                <CanvasPromptsTab onInsert={onInsertAsset} theme={theme} />
-                            ) : (
-                                <CanvasRecentProjectsTab projectId={projectId} theme={theme} />
-                            )}
-                        </motion.div>
-                    </AnimatePresence>
+                    {panelBodyMounted ? (
+                        <AnimatePresence initial={false} custom={tabDirection}>
+                            <motion.div
+                                key={tab}
+                                className="absolute inset-0"
+                                custom={tabDirection}
+                                initial={{ opacity: 0, x: tabDirection * 18 }}
+                                animate={{ opacity: 1, x: 0 }}
+                                exit={{ opacity: 0, x: tabDirection * -16 }}
+                                transition={{ duration: 0.24, ease: PANEL_EASE }}
+                            >
+                                {tab === "canvas" ? (
+                                    <CanvasNodesTab nodes={nodes} connections={connections} selectedNodeIds={selectedNodeIds} onFocusNode={onFocusNode} onPreviewNode={onPreviewNode} onRenameNode={onRenameNode} onDeleteNodes={onDeleteNodes} theme={theme} />
+                                ) : tab === "assets" ? (
+                                    <CanvasAssetsTab onInsert={onInsertAsset} theme={theme} />
+                                ) : tab === "prompts" ? (
+                                    <CanvasPromptsTab onInsert={onInsertAsset} theme={theme} />
+                                ) : (
+                                    <CanvasRecentProjectsTab projectId={projectId} theme={theme} />
+                                )}
+                            </motion.div>
+                        </AnimatePresence>
+                    ) : null}
                 </motion.div>
                 {panelOpen ? <button type="button" className="absolute inset-y-0 right-0 z-40 w-4 translate-x-1/2 cursor-col-resize" onPointerDown={startResize} aria-label={t("canvas.sidePanel.resize")} /> : null}
             </motion.aside>
@@ -382,7 +397,7 @@ function CanvasNodesTab({ nodes, connections, selectedNodeIds, onFocusNode, onPr
                                                         const isChecked = checked.has(node.id);
                                                         const active = selectMode ? isChecked : selectedNodeIds.has(node.id);
                                                         return (
-                                                            <div key={node.id} className="group flex w-full items-center rounded-lg transition-colors duration-150 hover:bg-black/[.04] dark:hover:bg-white/[.05]" style={active ? { background: theme.toolbar.activeBg } : undefined}>
+                                                            <div key={node.id} className="group flex w-full items-center rounded-lg transition-colors duration-150 hover:bg-black/[.04] dark:hover:bg-white/[.05]" style={active ? { ...VIRTUAL_NODE_ROW_STYLE, background: theme.toolbar.activeBg } : VIRTUAL_NODE_ROW_STYLE}>
                                                                 <button type="button" onClick={() => (selectMode ? toggleChecked(node.id) : onFocusNode(node.id))} className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left" title={selectMode ? undefined : t("canvas.sidePanel.focusNode")}>
                                                                     {selectMode ? <CheckMark checked={isChecked} theme={theme} /> : null}
                                                                     <span className="grid size-8 shrink-0 place-items-center overflow-hidden rounded-lg" style={isImage ? { background: theme.node.fill } : CanvasIconWellStyle(nodeTypeColor(node.type))}>
@@ -436,7 +451,7 @@ function CanvasNodesTab({ nodes, connections, selectedNodeIds, onFocusNode, onPr
                         aria-label={t("canvas.exportSelected")}
                         title={t("canvas.exportSelected")}
                     >
-                        <Download className="size-3.5" />
+                        <DownloadIcon className="size-3.5" />
                     </button>
                     <button type="button" onClick={() => (onDeleteNodes(new Set(checked)), exitSelect())} disabled={!checked.size} className="grid size-7 place-items-center rounded-full text-red-500 disabled:opacity-30" title={t("common.delete")}>
                         <Trash2 className="size-3.5" />
@@ -910,7 +925,7 @@ function AssetCover({ asset }: { asset: Asset }) {
         if (asset.coverUrl) return <CanvasPreviewImage src={asset.coverUrl} storageKey={asset.data.storageKey} maxEdge={160} allowOriginalFallback={false} alt="" className="size-full object-cover transition duration-300 group-hover:scale-[1.04]" />;
         return <div className="size-full bg-black/80" />;
     }
-    return <CanvasPreviewImage storageKey={asset.data.storageKey} thumbnailUrl={asset.coverUrl} maxEdge={160} allowOriginalFallback={false} alt="" className="size-full object-cover transition duration-300 group-hover:scale-[1.04]" />;
+    return <CanvasPreviewImage src={asset.data.dataUrl} storageKey={asset.data.storageKey} thumbnailUrl={asset.coverUrl} maxEdge={160} alt="" className="size-full object-cover transition duration-300 group-hover:scale-[1.04]" />;
 }
 
 // ---------------------------------------------------------------------------

@@ -1,10 +1,17 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../core/widgets/app_notice.dart';
+import '../core/widgets/app_privacy_boundary.dart';
+import '../core/widgets/app_keyboard_dismiss.dart';
+import '../core/network/api_client.dart';
+import '../core/providers.dart';
 import '../features/auth/auth.dart';
 import '../features/notifications/notifications.dart';
+import '../features/meta/startup_announcements.dart';
 import '../features/tasks/task_sync.dart';
 import 'app_router.dart';
 import 'appearance.dart';
@@ -12,6 +19,19 @@ import 'starclouds_theme.dart';
 import 'user_session_cache.dart';
 
 final _appNoticeKey = GlobalKey<AppNoticeHostState>();
+
+bool shouldShowNetworkStatusNotice(
+  ApiNetworkStatus? previous,
+  ApiNetworkStatus next,
+) {
+  if (previous == null ||
+      previous == ApiNetworkStatus.unknown ||
+      previous == next ||
+      next == ApiNetworkStatus.unknown) {
+    return false;
+  }
+  return true;
+}
 
 class StarCloudsApp extends ConsumerStatefulWidget {
   const StarCloudsApp({super.key});
@@ -79,6 +99,12 @@ class _StarCloudsAppState extends ConsumerState<StarCloudsApp>
         if (mounted) _showSessionExpired(router);
       });
     });
+    ref.listen<ApiNetworkStatus>(apiNetworkStatusProvider, (previous, next) {
+      if (!shouldShowNetworkStatusNotice(previous, next)) return;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _showNetworkNotice(next);
+      });
+    });
     return MaterialApp.router(
       title: '星空云绘',
       debugShowCheckedModeBanner: false,
@@ -88,9 +114,16 @@ class _StarCloudsAppState extends ConsumerState<StarCloudsApp>
       themeAnimationDuration: const Duration(milliseconds: 260),
       themeAnimationCurve: Curves.easeOutCubic,
       routerConfig: router,
-      builder: (context, child) => AppNoticeHost(
-        key: _appNoticeKey,
-        child: child ?? const SizedBox.shrink(),
+      builder: (context, child) => AppKeyboardDismiss(
+        child: AppPrivacyBoundary(
+          child: AppNoticeHost(
+            key: _appNoticeKey,
+            child: StartupAnnouncements(
+              navigatorContext: () => rootNavigatorContext,
+              child: child ?? const SizedBox.shrink(),
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -104,6 +137,41 @@ class _StarCloudsAppState extends ConsumerState<StarCloudsApp>
       actionLabel: '重新登录',
       onAction: () => router.push('/login'),
     );
+  }
+
+  void _showNetworkNotice(ApiNetworkStatus status) {
+    if (status == ApiNetworkStatus.available) {
+      _appNoticeKey.currentState?.show(
+        '可以继续浏览和创作',
+        title: '网络已恢复',
+        type: AppNoticeType.success,
+      );
+      return;
+    }
+    _appNoticeKey.currentState?.show(
+      '请检查 Wi-Fi 或移动网络后再试',
+      title: '网络连接不可用',
+      type: AppNoticeType.warning,
+      duration: Duration.zero,
+      actionLabel: '重试',
+      onAction: () => unawaited(_retryNetwork()),
+    );
+  }
+
+  Future<void> _retryNetwork() async {
+    try {
+      await ref.read(apiClientProvider).get('/auth/providers');
+    } catch (_) {
+      if (!mounted) return;
+      _appNoticeKey.currentState?.show(
+        '仍无法连接服务器，请稍后重试',
+        title: '网络未恢复',
+        type: AppNoticeType.warning,
+        duration: Duration.zero,
+        actionLabel: '重试',
+        onAction: () => unawaited(_retryNetwork()),
+      );
+    }
   }
 
   void _showTaskNotice(TaskSyncNotice notice, GoRouter router) {

@@ -1,4 +1,5 @@
-import { Copy, Download, FolderPlus, PencilLine, RotateCcw, Search, Trash2, Upload } from "lucide-react";
+import { Copy, FolderPlus, PencilLine, RotateCcw, Search, Trash2, Upload } from "lucide-react";
+import { DownloadIcon } from "@react/components/common/DownloadIcon.jsx";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { App, Button, Card, Checkbox, Drawer, Empty, Form, Image, Input, Modal, Pagination, Select, Space, Tag, Typography } from "antd";
 import { saveAs } from "file-saver";
@@ -540,7 +541,7 @@ function AssetCard({ asset, trash, selected, onSelect, onOpen, onEdit, onCopy, o
                     </Button>
                 ) : null}
                 {asset.kind === "image" || asset.kind === "video" ? (
-                    <Button size="small" icon={<Download className="size-3.5" />} onClick={() => onDownload(asset)}>
+                    <Button size="small" icon={<DownloadIcon className="size-3.5" />} onClick={() => onDownload(asset)}>
                         下载
                     </Button>
                 ) : null}
@@ -602,7 +603,7 @@ function AssetDrawer({ asset, onClose, onCopy, onDownload }: { asset: Asset | nu
                             </Button>
                         ) : null}
                         {asset.kind === "image" || asset.kind === "video" ? (
-                            <Button type="primary" icon={<Download className="size-4" />} onClick={() => onDownload(asset)}>
+                            <Button type="primary" icon={<DownloadIcon className="size-4" />} onClick={() => onDownload(asset)}>
                                 {asset.kind === "video" ? "下载视频" : "下载图片"}
                             </Button>
                         ) : null}

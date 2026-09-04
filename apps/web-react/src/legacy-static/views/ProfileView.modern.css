@@ -169,6 +169,14 @@
     width: min(54%, 560px, 50vh);
   }
 
+  .pp-soft-hero:has(.pp-soft-hero-links) .pp-soft-character {
+    left: 51%;
+  }
+
+  .pp-soft-hero-links {
+    width: min(200px, 22%);
+  }
+
   .pp-soft-event {
     right: 6%;
     width: min(360px, 34%);
@@ -190,6 +198,10 @@
   .pp-soft-character {
     left: 42%;
     width: min(52%, 620px, 54vh);
+  }
+
+  .pp-soft-hero:has(.pp-soft-hero-links) .pp-soft-character {
+    left: 50%;
   }
 
   .pp-soft-event {
@@ -229,6 +241,25 @@
 
   .pp-soft-event h2 {
     font-size: clamp(28px, 3.2vh, 40px);
+  }
+
+  .pp-soft-hero-links {
+    top: 16px;
+    bottom: 16px;
+    gap: 8px;
+  }
+
+  .pp-soft-hero-link {
+    padding: 10px 12px 10px;
+    border-radius: 18px;
+  }
+
+  .pp-soft-hero-link__mark {
+    font-size: 68px;
+  }
+
+  .pp-soft-hero-link__copy {
+    padding: 4px 0 4px;
   }
 }
 
@@ -595,6 +626,15 @@
   .pp-soft-event__led,
   .pp-soft-character.is-busy::before {
     animation: none;
+  }
+
+  .pp-soft-hero-link__go svg {
+    transition: none;
+  }
+
+  .pp-soft-hero-link:hover .pp-soft-hero-link__go svg,
+  .pp-soft-hero-link:focus-visible .pp-soft-hero-link__go svg {
+    transform: none;
   }
 }
 
@@ -1000,6 +1040,230 @@
   cursor: wait;
 }
 
+.pp-soft-hero-links {
+  position: absolute;
+  z-index: 4;
+  top: 18px;
+  left: 16px;
+  bottom: 18px;
+  width: min(220px, 26%);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pp-soft-hero-link {
+  --link-accent: var(--mech-cyan);
+  --link-accent-rgb: var(--mech-cyan-rgb);
+  position: relative;
+  isolation: isolate;
+  flex: 1 1 0;
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 14px 16px 15px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 22px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.22), transparent 42%),
+    linear-gradient(165deg, rgba(255, 255, 255, 0.4) 0%, rgba(236, 242, 248, 0.18) 58%, rgba(var(--link-accent-rgb), 0.12) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.28),
+    0 12px 28px rgba(28, 46, 82, 0.08);
+  color: inherit;
+  text-decoration: none;
+  backdrop-filter: blur(26px) saturate(1.4);
+  -webkit-backdrop-filter: blur(26px) saturate(1.4);
+}
+
+.pp-page.is-dark .pp-soft-hero-link {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), transparent 40%),
+    linear-gradient(165deg, rgba(24, 32, 46, 0.5) 0%, rgba(10, 14, 22, 0.3) 58%, rgba(var(--link-accent-rgb), 0.16) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.1),
+    0 14px 30px rgba(0, 0, 0, 0.26);
+}
+
+.pp-soft-hero-link::before {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  left: 0;
+  top: 18px;
+  width: 3px;
+  height: 28px;
+  border-radius: 0 3px 3px 0;
+  background: var(--link-accent);
+  box-shadow: 0 0 14px rgba(var(--link-accent-rgb), 0.55);
+}
+
+.pp-soft-hero-link::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  opacity: 0.2;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.8' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 140px 140px;
+}
+
+.pp-page.is-dark .pp-soft-hero-link::after {
+  opacity: 0.16;
+  mix-blend-mode: soft-light;
+}
+
+.pp-soft-hero-link.is-assets {
+  --link-accent: #4c8dff;
+  --link-accent-rgb: 76, 141, 255;
+}
+
+.pp-soft-hero-link.is-submissions {
+  --link-accent: #e0b15a;
+  --link-accent-rgb: 224, 177, 90;
+}
+
+.pp-soft-hero-link.is-wallet {
+  --link-accent: #2ec7a8;
+  --link-accent-rgb: 46, 199, 168;
+}
+
+.pp-soft-hero-link.is-orders {
+  --link-accent: #9b86ff;
+  --link-accent-rgb: 155, 134, 255;
+}
+
+.pp-soft-hero-link__glow,
+.pp-soft-hero-link__mark,
+.pp-soft-hero-link__head,
+.pp-soft-hero-link__copy,
+.pp-soft-hero-link__go {
+  position: relative;
+  z-index: 1;
+}
+
+.pp-soft-hero-link__glow {
+  position: absolute;
+  z-index: 0;
+  top: -36%;
+  right: -22%;
+  width: 132px;
+  height: 132px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(var(--link-accent-rgb), 0.3), transparent 70%);
+  pointer-events: none;
+}
+
+.pp-page.is-dark .pp-soft-hero-link__glow {
+  background: radial-gradient(circle, rgba(var(--link-accent-rgb), 0.36), transparent 72%);
+}
+
+.pp-soft-hero-link__mark {
+  position: absolute;
+  z-index: 0;
+  right: 8px;
+  bottom: -8px;
+  color: var(--link-accent);
+  font-size: 58px;
+  line-height: 1;
+  opacity: 0.08;
+  pointer-events: none;
+}
+
+.pp-page.is-dark .pp-soft-hero-link__mark {
+  opacity: 0.12;
+}
+
+.pp-soft-hero-link__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pp-soft-hero-link__index {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: rgba(var(--link-accent-rgb), 0.14);
+  color: var(--link-accent);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  font-variant-numeric: tabular-nums;
+}
+
+.pp-soft-hero-link__copy {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 3px;
+  padding: 10px 0 0;
+}
+
+.pp-soft-hero-link__copy strong {
+  color: var(--pc-text);
+  font-size: 13px;
+  font-weight: 750;
+  letter-spacing: 0.01em;
+  line-height: 1.2;
+}
+
+.pp-soft-hero-link__copy b {
+  color: var(--pc-text);
+  font-size: clamp(24px, 3vh, 32px);
+  font-weight: 800;
+  letter-spacing: -0.05em;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.pp-soft-hero-link.is-bare .pp-soft-hero-link__copy {
+  gap: 6px;
+}
+
+.pp-soft-hero-link__copy small {
+  color: var(--pc-muted);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.3;
+}
+
+.pp-soft-hero-link__go {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  margin: -2px -2px 0 0;
+  color: var(--link-accent);
+}
+
+.pp-soft-hero-link__go svg {
+  display: block;
+  width: 28px;
+  height: 28px;
+  transition: transform 0.34s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.pp-soft-hero-link:hover .pp-soft-hero-link__go svg,
+.pp-soft-hero-link:focus-visible .pp-soft-hero-link__go svg {
+  transform: translate3d(3px, -3px, 0);
+}
+
+.pp-soft-hero:has(.pp-soft-hero-links) .pp-soft-character {
+  left: 53%;
+}
 
 .pp-soft-performance {
   --mech-radius: 28px;
@@ -1675,6 +1939,10 @@
     min-height: calc(100svh - var(--app-header-offset, 82px) - var(--app-page-content-top-gap, 8px) - 154px);
   }
 
+  .pp-soft-hero-links {
+    width: min(196px, 26%);
+  }
+
   .pp-soft-performance {
     overflow: visible;
   }
@@ -1708,6 +1976,26 @@
     gap: 14px;
   }
 
+  .pp-soft-hero-links {
+    width: min(168px, 30%);
+    top: 14px;
+    left: 12px;
+    bottom: 14px;
+  }
+
+  .pp-soft-hero-link {
+    padding: 10px 12px 10px;
+    border-radius: 18px;
+  }
+
+  .pp-soft-hero-link__copy b {
+    font-size: 22px;
+  }
+
+  .pp-soft-hero:has(.pp-soft-hero-links) .pp-soft-character {
+    left: 54%;
+  }
+
   .pp-soft-stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1718,6 +2006,44 @@
 }
 
 @media (max-width: 560px) {
+  .pp-soft-hero-links {
+    top: 12px;
+    left: 12px;
+    right: 12px;
+    bottom: auto;
+    width: auto;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .pp-soft-hero-link {
+    min-height: 92px;
+    padding: 11px 12px 10px;
+  }
+
+  .pp-soft-hero-link__copy {
+    padding: 4px 0 2px;
+  }
+
+  .pp-soft-hero-link__copy b {
+    font-size: 22px;
+  }
+
+  .pp-soft-hero-link__mark {
+    font-size: 58px;
+    bottom: -12px;
+  }
+
+  .pp-soft-hero:has(.pp-soft-hero-links) .pp-soft-character {
+    left: 50%;
+  }
+
+  .pp-soft-event {
+    top: auto;
+    bottom: 16%;
+  }
+
   .pp-soft-stats {
     grid-template-columns: 1fr;
   }
@@ -5185,6 +5511,7 @@ button.pp-stats__foot {
 
 .pp-canvas-tabs button:focus-visible,
 .pp-soft-hero__logout:focus-visible,
+.pp-soft-hero-link:focus-visible,
 .pp-soft-event__figure-tools button:focus-visible,
 .pp-soft-stat:focus-visible,
 .pp-soft-event__actions a:focus-visible,

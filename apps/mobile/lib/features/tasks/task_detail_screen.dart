@@ -222,6 +222,52 @@ class _TaskDetailScreenState extends ConsumerState<TaskDetailScreen>
     }
   }
 
+  Future<void> _saveCurrentImage(TaskItem task, int index) async {
+    try {
+      if (task.originalUrls.isEmpty) {
+        throw const FormatException('作品原图不存在');
+      }
+      final safeIndex = index.clamp(0, task.originalUrls.length - 1);
+      final file = await ref
+          .read(taskRepositoryProvider)
+          .downloadOriginal(task, safeIndex);
+      await Gal.putImage(file.path);
+      if (mounted) AppNotice.success(context, '当前图片已保存到系统相册');
+    } catch (error) {
+      if (mounted) _showError(error);
+    }
+  }
+
+  Future<void> _shareCurrentImage(
+    TaskItem task,
+    int index,
+    BuildContext buttonContext,
+  ) async {
+    final box = buttonContext.findRenderObject() as RenderBox?;
+    final origin = box == null
+        ? null
+        : box.localToGlobal(Offset.zero) & box.size;
+    try {
+      if (task.originalUrls.isEmpty) {
+        throw const FormatException('作品原图不存在');
+      }
+      final safeIndex = index.clamp(0, task.originalUrls.length - 1);
+      final file = await ref
+          .read(taskRepositoryProvider)
+          .downloadOriginal(task, safeIndex);
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(file.path)],
+          text: task.prompt.isEmpty ? '星空云绘作品' : task.prompt,
+          title: '分享作品',
+          sharePositionOrigin: origin,
+        ),
+      );
+    } catch (error) {
+      if (mounted) _showError(error);
+    }
+  }
+
   Future<void> _copyPrompt(TaskItem task) async {
     final prompt = task.displayPrompt.trim();
     if (prompt.isEmpty) return;
@@ -350,7 +396,13 @@ class _TaskDetailScreenState extends ConsumerState<TaskDetailScreen>
       useSafeArea: false,
       builder: (context) => Dialog.fullscreen(
         backgroundColor: Colors.black,
-        child: _TaskFullscreenPreview(urls: urls, initialIndex: _pageIndex),
+        child: _TaskFullscreenPreview(
+          urls: urls,
+          initialIndex: _pageIndex,
+          onSave: (index) => _saveCurrentImage(task, index),
+          onShare: (index, buttonContext) =>
+              _shareCurrentImage(task, index, buttonContext),
+        ),
       ),
     );
     if (!mounted || selectedIndex == null || selectedIndex == _pageIndex) {
@@ -984,10 +1036,14 @@ class _TaskFullscreenPreview extends StatefulWidget {
   const _TaskFullscreenPreview({
     required this.urls,
     required this.initialIndex,
+    required this.onSave,
+    required this.onShare,
   });
 
   final List<String> urls;
   final int initialIndex;
+  final Future<void> Function(int index) onSave;
+  final Future<void> Function(int index, BuildContext buttonContext) onShare;
 
   @override
   State<_TaskFullscreenPreview> createState() => _TaskFullscreenPreviewState();
@@ -996,6 +1052,7 @@ class _TaskFullscreenPreview extends StatefulWidget {
 class _TaskFullscreenPreviewState extends State<_TaskFullscreenPreview> {
   late final PageController _pageController;
   late int _selectedIndex;
+  _TaskFullscreenAction? _busyAction;
 
   @override
   void initState() {
@@ -1011,7 +1068,7 @@ class _TaskFullscreenPreviewState extends State<_TaskFullscreenPreview> {
   }
 
   void _select(int index) {
-    if (index == _selectedIndex) return;
+    if (_busyAction != null || index == _selectedIndex) return;
     unawaited(HapticFeedback.selectionClick());
     _pageController.animateToPage(
       index,
@@ -1022,7 +1079,23 @@ class _TaskFullscreenPreviewState extends State<_TaskFullscreenPreview> {
     );
   }
 
-  void _close() => Navigator.pop(context, _selectedIndex);
+  void _close() {
+    if (_busyAction == null) Navigator.pop(context, _selectedIndex);
+  }
+
+  Future<void> _runAction(
+    _TaskFullscreenAction action,
+    Future<void> Function() callback,
+  ) async {
+    if (_busyAction != null) return;
+    unawaited(HapticFeedback.lightImpact());
+    setState(() => _busyAction = action);
+    try {
+      await callback();
+    } finally {
+      if (mounted) setState(() => _busyAction = null);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1034,6 +1107,9 @@ class _TaskFullscreenPreviewState extends State<_TaskFullscreenPreview> {
             child: PageView.builder(
               key: const Key('task-fullscreen-page-view'),
               controller: _pageController,
+              physics: _busyAction == null
+                  ? const PageScrollPhysics()
+                  : const NeverScrollableScrollPhysics(),
               itemCount: widget.urls.length,
               onPageChanged: (index) => setState(() => _selectedIndex = index),
               itemBuilder: (context, index) => _TaskFullscreenImage(
@@ -1048,7 +1124,7 @@ class _TaskFullscreenPreviewState extends State<_TaskFullscreenPreview> {
             child: IconButton.filledTonal(
               key: const Key('task-fullscreen-close'),
               tooltip: '关闭预览',
-              onPressed: _close,
+              onPressed: _busyAction == null ? _close : null,
               style: IconButton.styleFrom(
                 backgroundColor: Colors.black54,
                 foregroundColor: Colors.white,
@@ -1073,64 +1149,147 @@ class _TaskFullscreenPreviewState extends State<_TaskFullscreenPreview> {
                 ),
               ),
             ),
-          if (multiple)
-            Positioned(
-              left: 12,
-              right: 12,
-              bottom: 12,
-              child: SizedBox(
-                height: 54,
-                child: Center(
-                  child: ListView.separated(
-                    key: const Key('task-fullscreen-thumbnails'),
-                    shrinkWrap: true,
-                    scrollDirection: Axis.horizontal,
-                    itemCount: widget.urls.length,
-                    separatorBuilder: (_, _) => const SizedBox(width: 8),
-                    itemBuilder: (context, index) {
-                      final selected = index == _selectedIndex;
-                      return Semantics(
-                        button: true,
-                        selected: selected,
-                        excludeSemantics: true,
-                        label: '全屏查看第 ${index + 1} 张图片',
-                        child: AnimatedContainer(
-                          duration: MediaQuery.disableAnimationsOf(context)
-                              ? Duration.zero
-                              : const Duration(milliseconds: 180),
-                          width: 54,
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(
-                              color: selected ? Colors.white : Colors.white38,
-                              width: selected ? 2 : 1,
-                            ),
-                          ),
-                          padding: EdgeInsets.all(selected ? 2 : 3),
-                          child: Material(
-                            key: Key('task-fullscreen-thumbnail-$index'),
-                            color: Colors.black,
-                            borderRadius: BorderRadius.circular(5),
-                            clipBehavior: Clip.antiAlias,
-                            child: InkWell(
-                              onTap: () => _select(index),
-                              child: AuthenticatedImage(
-                                url: widget.urls[index],
-                                fit: BoxFit.cover,
+          Positioned(
+            left: 12,
+            right: 12,
+            bottom: 12,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (multiple) ...[
+                  SizedBox(
+                    height: 54,
+                    child: Center(
+                      child: ListView.separated(
+                        key: const Key('task-fullscreen-thumbnails'),
+                        shrinkWrap: true,
+                        scrollDirection: Axis.horizontal,
+                        itemCount: widget.urls.length,
+                        separatorBuilder: (_, _) => const SizedBox(width: 8),
+                        itemBuilder: (context, index) {
+                          final selected = index == _selectedIndex;
+                          return Semantics(
+                            button: true,
+                            selected: selected,
+                            enabled: _busyAction == null,
+                            excludeSemantics: true,
+                            label: '全屏查看第 ${index + 1} 张图片',
+                            child: AnimatedContainer(
+                              duration: MediaQuery.disableAnimationsOf(context)
+                                  ? Duration.zero
+                                  : const Duration(milliseconds: 180),
+                              width: 54,
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(
+                                  color: selected
+                                      ? Colors.white
+                                      : Colors.white38,
+                                  width: selected ? 2 : 1,
+                                ),
+                              ),
+                              padding: EdgeInsets.all(selected ? 2 : 3),
+                              child: Material(
+                                key: Key('task-fullscreen-thumbnail-$index'),
+                                color: Colors.black,
+                                borderRadius: BorderRadius.circular(5),
+                                clipBehavior: Clip.antiAlias,
+                                child: InkWell(
+                                  onTap: _busyAction == null
+                                      ? () => _select(index)
+                                      : null,
+                                  child: AuthenticatedImage(
+                                    url: widget.urls[index],
+                                    fit: BoxFit.cover,
+                                  ),
+                                ),
                               ),
                             ),
+                          );
+                        },
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                ],
+                Material(
+                  key: const Key('task-fullscreen-actions'),
+                  color: Colors.black.withValues(alpha: .68),
+                  borderRadius: BorderRadius.circular(8),
+                  child: Padding(
+                    padding: const EdgeInsets.all(4),
+                    child: Wrap(
+                      alignment: WrapAlignment.center,
+                      runAlignment: WrapAlignment.center,
+                      spacing: 2,
+                      runSpacing: 0,
+                      children: [
+                        TextButton.icon(
+                          key: const Key('task-fullscreen-save'),
+                          onPressed: _busyAction == null
+                              ? () => _runAction(
+                                  _TaskFullscreenAction.save,
+                                  () => widget.onSave(_selectedIndex),
+                                )
+                              : null,
+                          style: _taskFullscreenActionStyle(),
+                          icon: _busyAction == _TaskFullscreenAction.save
+                              ? const _TaskFullscreenProgress()
+                              : const Icon(Icons.download_outlined, size: 19),
+                          label: Text('保存第 ${_selectedIndex + 1} 张'),
+                        ),
+                        Builder(
+                          builder: (buttonContext) => TextButton.icon(
+                            key: const Key('task-fullscreen-share'),
+                            onPressed: _busyAction == null
+                                ? () => _runAction(
+                                    _TaskFullscreenAction.share,
+                                    () => widget.onShare(
+                                      _selectedIndex,
+                                      buttonContext,
+                                    ),
+                                  )
+                                : null,
+                            style: _taskFullscreenActionStyle(),
+                            icon: _busyAction == _TaskFullscreenAction.share
+                                ? const _TaskFullscreenProgress()
+                                : const Icon(
+                                    Icons.ios_share_outlined,
+                                    size: 19,
+                                  ),
+                            label: Text('分享第 ${_selectedIndex + 1} 张'),
                           ),
                         ),
-                      );
-                    },
+                      ],
+                    ),
                   ),
                 ),
-              ),
+              ],
             ),
+          ),
         ],
       ),
     );
   }
+}
+
+enum _TaskFullscreenAction { save, share }
+
+ButtonStyle _taskFullscreenActionStyle() => TextButton.styleFrom(
+  foregroundColor: Colors.white,
+  disabledForegroundColor: Colors.white70,
+  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+);
+
+class _TaskFullscreenProgress extends StatelessWidget {
+  const _TaskFullscreenProgress();
+
+  @override
+  Widget build(BuildContext context) => const SizedBox.square(
+    dimension: 17,
+    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+  );
 }
 
 class _TaskFullscreenImage extends StatefulWidget {

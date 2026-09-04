@@ -1106,8 +1106,9 @@ onMounted(() => {
           :page="currentPager.page.value"
           :count="currentPager.items.value.length"
           :total="currentPager.total.value"
-          @prev="currentPager.prev"
-          @next="currentPager.next"
+          :page-size="currentPager.pageSize.value"
+          @update:page="currentPager.goToPage"
+          @update:page-size="currentPager.setPageSize"
         />
       </footer>
     </PageCard>

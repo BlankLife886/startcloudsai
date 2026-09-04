@@ -1,10 +1,122 @@
+import 'dart:ui' show Tristate;
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:starcloudsai_mobile/app/starclouds_theme.dart';
 import 'package:starcloudsai_mobile/core/widgets/app_chrome.dart';
 import 'package:starcloudsai_mobile/features/shell/app_shell.dart';
 
 void main() {
+  testWidgets('common picker controls expose state and keyboard actions', (
+    tester,
+  ) async {
+    String selected = '快速';
+    var pillSelected = false;
+    var filterSelected = false;
+    var backCount = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: StarCloudsTheme.light(),
+        home: StatefulBuilder(
+          builder: (context, setState) => Scaffold(
+            body: Column(
+              children: [
+                AppBackButton(onPressed: () => backCount += 1),
+                AppPickerTile(label: '深度思考', selected: true, onTap: () {}),
+                AppSelectField<String>(
+                  label: '推理强度',
+                  value: selected,
+                  options: const [
+                    AppSelectOption(value: '快速', label: '快速'),
+                    AppSelectOption(value: '深入', label: '深入'),
+                  ],
+                  onChanged: (value) {
+                    if (value != null) setState(() => selected = value);
+                  },
+                ),
+                AppChoicePill(
+                  semanticLabel: '只看未读',
+                  label: const Text('未读'),
+                  selected: pillSelected,
+                  onSelected: (value) => setState(() => pillSelected = value),
+                ),
+                AppFilterChip(
+                  label: '只看收藏',
+                  icon: Icons.bookmark_outline,
+                  selected: filterSelected,
+                  onTap: () => setState(() => filterSelected = true),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final pickerSemantics = tester
+        .getSemantics(find.bySemanticsLabel('深度思考，已选择'))
+        .getSemanticsData();
+    expect(pickerSemantics.label, '深度思考，已选择');
+    expect(pickerSemantics.flagsCollection.isButton, isTrue);
+    expect(pickerSemantics.flagsCollection.isSelected, Tristate.isTrue);
+
+    final selectSemantics = tester
+        .getSemantics(find.bySemanticsLabel('推理强度，快速'))
+        .getSemanticsData();
+    expect(selectSemantics.label, '推理强度，快速');
+    expect(selectSemantics.flagsCollection.isButton, isTrue);
+
+    final pillSemantics = tester
+        .getSemantics(find.bySemanticsLabel('只看未读'))
+        .getSemanticsData();
+    expect(pillSemantics.label, '只看未读');
+    expect(pillSemantics.flagsCollection.isSelected, Tristate.isFalse);
+
+    final filterSemantics = tester
+        .getSemantics(find.bySemanticsLabel('只看收藏'))
+        .getSemanticsData();
+    expect(filterSemantics.flagsCollection.isButton, isTrue);
+    expect(filterSemantics.flagsCollection.isSelected, Tristate.isFalse);
+    final filterBox = tester.widget<AnimatedContainer>(
+      find.byKey(const Key('app-filter-chip-surface')),
+    );
+    expect(filterBox.constraints?.maxHeight, 36);
+
+    await tester.tap(find.byType(AppChoicePill));
+    await tester.pump();
+    expect(pillSelected, isTrue);
+    expect(
+      tester
+          .getSemantics(find.bySemanticsLabel('只看未读'))
+          .getSemanticsData()
+          .flagsCollection
+          .isSelected,
+      Tristate.isTrue,
+    );
+
+    await tester.tap(find.byType(AppFilterChip));
+    await tester.pumpAndSettle();
+    expect(filterSelected, isTrue);
+    expect(
+      tester
+          .getSemantics(find.bySemanticsLabel('只看收藏，已选择'))
+          .getSemanticsData()
+          .flagsCollection
+          .isSelected,
+      Tristate.isTrue,
+    );
+
+    await tester.tap(find.byType(AppBackButton));
+    await tester.pump();
+    expect(backCount, 1);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('app sheets cover a parent bottom navigation bar', (
     tester,
   ) async {

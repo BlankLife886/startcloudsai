@@ -18,7 +18,7 @@ export type CanvasTask = {
     status: "queued" | "running" | "succeeded" | "failed" | "canceled";
     outputKeys: string[];
     outputUrls: string[];
-    originalUrls: string[];
+	originalUrls: string[];
 	errorMessage?: string;
 	generationStage?: "queued" | "preparing" | "upstream_generating" | "fetching_result" | "saving_result" | "completed" | "failed" | "canceled" | string;
 	cancelPolicy?: {

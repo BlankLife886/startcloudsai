@@ -129,7 +129,69 @@ func TouchAssistantConversation(ctx context.Context, q Q, userID, id uuid.UUID, 
 	return err
 }
 
+// archiveAssistantRunsForUserDeletion preserves the execution and billing
+// audit before conversation/message foreign keys cascade-delete assistant_runs.
+// User-owned files and message content still follow the existing hard-delete
+// path; the tombstone intentionally contains no input or output object keys.
+func archiveAssistantRunsForUserDeletion(ctx context.Context, q Q, condition string, args ...any) error {
+	values := make([]any, 0, len(args)+1)
+	values = append(values, time.Now().UTC())
+	values = append(values, args...)
+	query := `INSERT INTO tasks (
+			id, user_id, type, model, status, prompt, params, count,
+			input_keys, output_keys, thumbnail_keys, cost_cents, work_units,
+			error_code, error_message, attempt, started_at, finished_at, created_at,
+			deleted_at, deletion_actor, deleted_output_count
+		)
+		SELECT run.id, run.user_id, 'assistant', COALESCE(run.params->>'model', ''),
+			run.status, run.prompt,
+			(run.params - 'referenceImages' - 'canvasSnapshot' - '_maskKey' - '_maskBaseKey') || jsonb_build_object(
+				'conversationId', run.conversation_id::text,
+				'mode', run.mode,
+				'resolvedMode', run.resolved_mode,
+				'stage', run.stage,
+				'workspace', conversation.workspace,
+				'_source', CASE WHEN conversation.workspace = 'infinite_canvas'
+					THEN 'react_canvas' ELSE conversation.workspace END,
+				'_archivedAssistantRun', true
+			),
+			CASE WHEN COALESCE(run.params->>'count', '') ~ '^[1-4]$'
+				THEN (run.params->>'count')::integer ELSE 1 END,
+			'[]'::jsonb, '[]'::jsonb, '[]'::jsonb,
+			CASE WHEN run.status IN ('queued', 'running') AND run.cost_cents <= 0
+				THEN COALESCE(run.reserved_cents, 0) ELSE run.cost_cents END,
+			1, run.error_code, run.error_message, run.attempt,
+			run.started_at, run.finished_at, run.created_at,
+			$1, 'user',
+			COALESCE((
+				SELECT count(DISTINCT image.value->>'fileKey')::integer
+				FROM jsonb_array_elements(
+					(CASE WHEN jsonb_typeof(message.metadata->'images') = 'array'
+						THEN message.metadata->'images' ELSE '[]'::jsonb END)
+					|| (CASE WHEN jsonb_typeof(message.metadata->'proposal'->'images') = 'array'
+						THEN message.metadata->'proposal'->'images' ELSE '[]'::jsonb END)
+				) image(value)
+				WHERE COALESCE(image.value->>'fileKey', '') <> ''
+			), 0)
+		FROM assistant_runs run
+		JOIN assistant_conversations conversation ON conversation.id = run.conversation_id
+		LEFT JOIN assistant_messages message ON message.id = run.assistant_message_id
+		WHERE run.admin_cleared_at IS NULL AND (` + condition + `)
+		  AND NOT EXISTS (
+			SELECT 1 FROM tasks existing
+			WHERE existing.id = run.id
+			   OR existing.idempotency_key = '` + UIDesignAssetHistoryIdemPrefix + `' || run.id::text
+		  )
+		ON CONFLICT (id) DO NOTHING`
+	_, err := q.Exec(ctx, query, values...)
+	return err
+}
+
 func DeleteUserAssistantConversation(ctx context.Context, q Q, userID, id uuid.UUID) (bool, error) {
+	if err := archiveAssistantRunsForUserDeletion(ctx, q,
+		"conversation.user_id = $2 AND run.conversation_id = $3", userID, id); err != nil {
+		return false, err
+	}
 	keys, err := listAssistantOutputKeys(ctx, q, userID, "conversation.id = $2", id)
 	if err != nil {
 		return false, err
@@ -149,6 +211,10 @@ func listAssistantOutputKeys(ctx context.Context, q Q, userID uuid.UUID, conditi
 	values = append(values, userID)
 	values = append(values, args...)
 	return listAssistantOutputKeysWithCondition(ctx, q, "conversation.user_id = $1 AND "+condition, values...)
+}
+
+func ListUserAssistantMessageOutputKeys(ctx context.Context, q Q, userID, messageID uuid.UUID) ([]string, error) {
+	return listAssistantOutputKeys(ctx, q, userID, "message.id = $2", messageID)
 }
 
 func listAssistantOutputKeysWithCondition(ctx context.Context, q Q, condition string, args ...any) ([]string, error) {
@@ -317,8 +383,34 @@ func UpdateAssistantMessage(ctx context.Context, q Q, id uuid.UUID, content, kin
 		metadata = map[string]any{}
 	}
 	_, err := q.Exec(ctx, `UPDATE assistant_messages SET content = $2, kind = $3, status = $4,
-		metadata = $5, updated_at = now() WHERE id = $1`, id, content, kind, status, metadata)
+		metadata = $5::jsonb || CASE WHEN COALESCE(metadata, '{}'::jsonb) ? 'feedback'
+			THEN jsonb_build_object('feedback', metadata->'feedback') ELSE '{}'::jsonb END,
+		updated_at = now() WHERE id = $1`, id, content, kind, status, metadata)
 	return err
+}
+
+func SetUserAssistantMessageFeedback(
+	ctx context.Context,
+	q Q,
+	userID, messageID uuid.UUID,
+	rating string,
+) (*AssistantMessage, error) {
+	item, err := scanAssistantMessage(q.QueryRow(ctx, `
+		UPDATE assistant_messages
+		SET metadata = CASE
+				WHEN $3 = '' THEN COALESCE(metadata, '{}'::jsonb) - 'feedback'
+				ELSE jsonb_set(COALESCE(metadata, '{}'::jsonb), '{feedback}', to_jsonb($3::text), true)
+			END,
+			updated_at = now()
+		WHERE id = $2
+			AND role = 'assistant'
+			AND EXISTS (
+				SELECT 1 FROM assistant_conversations conversation
+				WHERE conversation.id = assistant_messages.conversation_id
+					AND conversation.user_id = $1
+			)
+		RETURNING `+assistantMessageCols, userID, messageID, rating))
+	return nilOnNoRows(item, err)
 }
 
 func MergeAssistantMessageMetadata(ctx context.Context, q Q, id uuid.UUID, fields map[string]any) error {
@@ -390,6 +482,18 @@ func AppendAssistantMessageArtifact(ctx context.Context, q Q, id uuid.UUID, arti
 }
 
 func DeleteAssistantMessagesAfter(ctx context.Context, q Q, conversationID, messageID uuid.UUID) error {
+	if err := archiveAssistantRunsForUserDeletion(ctx, q, `
+		run.conversation_id = $2 AND EXISTS (
+			SELECT 1 FROM assistant_messages target
+			WHERE target.conversation_id = $2 AND target.id <> $3
+			  AND target.created_at >= (
+				SELECT source.created_at FROM assistant_messages source
+				WHERE source.id = $3 AND source.conversation_id = $2
+			  )
+			  AND (run.user_message_id = target.id OR run.assistant_message_id = target.id)
+		)`, conversationID, messageID); err != nil {
+		return err
+	}
 	keys, err := assistantOutputCleanupKeysForWindow(ctx, q, conversationID, messageID, false)
 	if err != nil {
 		return err
@@ -407,6 +511,18 @@ func DeleteAssistantMessagesAfter(ctx context.Context, q Q, conversationID, mess
 }
 
 func DeleteAssistantMessagesFrom(ctx context.Context, q Q, conversationID, messageID uuid.UUID) error {
+	if err := archiveAssistantRunsForUserDeletion(ctx, q, `
+		run.conversation_id = $2 AND EXISTS (
+			SELECT 1 FROM assistant_messages target
+			WHERE target.conversation_id = $2
+			  AND target.created_at >= (
+				SELECT source.created_at FROM assistant_messages source
+				WHERE source.id = $3 AND source.conversation_id = $2
+			  )
+			  AND (run.user_message_id = target.id OR run.assistant_message_id = target.id)
+		)`, conversationID, messageID); err != nil {
+		return err
+	}
 	keys, err := assistantOutputCleanupKeysForWindow(ctx, q, conversationID, messageID, true)
 	if err != nil {
 		return err
@@ -430,6 +546,10 @@ func UpdateAssistantUserMessage(ctx context.Context, q Q, id uuid.UUID, content 
 }
 
 func DeleteUserAssistantMessage(ctx context.Context, q Q, userID, id uuid.UUID) (bool, error) {
+	if err := archiveAssistantRunsForUserDeletion(ctx, q,
+		"conversation.user_id = $2 AND (run.user_message_id = $3 OR run.assistant_message_id = $3)", userID, id); err != nil {
+		return false, err
+	}
 	if err := EnqueueAssistantMessageOutputCleanup(ctx, q, userID, id); err != nil {
 		return false, err
 	}
@@ -548,6 +668,43 @@ func GetUserAssistantRunForUpdate(ctx context.Context, q Q, userID, id uuid.UUID
 	item, err := scanAssistantRun(q.QueryRow(ctx, `SELECT `+assistantRunCols+`
 		FROM assistant_runs WHERE id = $1 AND user_id = $2 FOR UPDATE`, id, userID))
 	return nilOnNoRows(item, err)
+}
+
+// GetUserAssistantHistoryRunForUpdate only returns virtual image-history runs.
+// Materialized gallery tasks continue through normal task deletion.
+func GetUserAssistantHistoryRunForUpdate(ctx context.Context, q Q, userID, id uuid.UUID) (*AssistantRun, error) {
+	item, err := scanAssistantRun(q.QueryRow(ctx, `SELECT `+assistantRunCols+`
+		FROM assistant_runs
+		WHERE id = $1 AND user_id = $2
+		  AND (mode = 'image' OR resolved_mode = 'image')
+		  AND EXISTS (
+			SELECT 1 FROM assistant_conversations conversation
+			WHERE conversation.id = assistant_runs.conversation_id
+			  AND conversation.user_id = $2
+			  AND conversation.workspace = 'assistant'
+		  )
+		  AND NOT EXISTS (SELECT 1 FROM tasks task WHERE task.id = assistant_runs.id)
+		FOR UPDATE`, id, userID))
+	return nilOnNoRows(item, err)
+}
+
+// MarkAssistantHistoryRunDeletedByUser hides one virtual history row by
+// creating an audit tombstone. The conversation, messages, and output objects
+// remain untouched because clearing history is not conversation deletion.
+func MarkAssistantHistoryRunDeletedByUser(ctx context.Context, q Q, userID, id uuid.UUID, deletedAt time.Time, deletedOutputCount int) (bool, error) {
+	if err := archiveAssistantRunsForUserDeletion(ctx, q,
+		`conversation.user_id = $2 AND run.id = $3
+		 AND conversation.workspace = 'assistant'
+		 AND (run.mode = 'image' OR run.resolved_mode = 'image')`, userID, id); err != nil {
+		return false, err
+	}
+	tag, err := q.Exec(ctx, `UPDATE tasks SET
+		deleted_at = $3,
+		deletion_actor = 'user',
+		deleted_output_count = $4,
+		params = COALESCE(params, '{}'::jsonb) || '{"_historyOnlyDelete":true}'::jsonb
+		WHERE id = $1 AND user_id = $2 AND type = 'assistant'`, id, userID, deletedAt, deletedOutputCount)
+	return tag.RowsAffected() > 0, err
 }
 
 func GetAssistantRunForUpdate(ctx context.Context, q Q, id uuid.UUID) (*AssistantRun, error) {

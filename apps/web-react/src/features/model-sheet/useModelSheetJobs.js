@@ -12,43 +12,13 @@ import {
   normalizeImageModelCapabilities,
 } from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
 import { resolveT2iOutputSize } from "@react/legacy-modules/features/ai-wallpaper/composables/wallpaperStudioConstants.js";
+import { resolveTaskMedia } from "../task-media/taskMediaResults.js";
 
 const HISTORY_LIMIT = 24;
 const ACTIVE_STATUSES = new Set(["queued", "running", "waiting_provider"]);
 
 function resultUrls(job = {}, result = null) {
-  const originals = [
-    ...(Array.isArray(job.originalMediaUrls) ? job.originalMediaUrls : []),
-    job.originalMediaUrl,
-  ];
-  const resultValues = [
-    ...(Array.isArray(result?.outputs) ? result.outputs : []),
-    ...(Array.isArray(job.resultMediaUrls) ? job.resultMediaUrls : []),
-    job.resultMediaUrl,
-  ];
-  const values = originals.some(Boolean) ? [...originals, ...resultValues] : resultValues;
-  return [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))].slice(0, 4);
-}
-
-function previewUrls(job = {}, originals = []) {
-  const thumbnails = [
-    ...(Array.isArray(job.resultMediaUrls) ? job.resultMediaUrls : []),
-    job.resultMediaUrl,
-  ].filter(Boolean);
-  return Object.fromEntries(
-    originals.map((url, index) => [url, thumbnails[index] || thumbnails[0] || url]),
-  );
-}
-
-// 展示图（服务端压缩大图）与原图按下标对应；旧任务没有，取用时回退原图。
-function displayUrls(job = {}, originals = []) {
-  const values = [
-    ...(Array.isArray(job.displayMediaUrls) ? job.displayMediaUrls : []),
-    job.displayMediaUrl,
-  ].filter(Boolean);
-  return Object.fromEntries(
-    originals.map((url, index) => [url, values[index] || ""]),
-  );
+  return resolveTaskMedia(job, result).urls;
 }
 
 function taskMeta(job = {}) {
@@ -58,6 +28,7 @@ function taskMeta(job = {}) {
     index: Math.max(0, Number(input.batchIndex) || 0),
     size: Math.max(1, Number(input.batchSize) || Number(job.count) || 1),
     label: String(input.viewLabel || "").trim() || "设定板",
+    viewId: String(input.viewId || "").trim(),
     aspectRatio: String(input.aspectRatio || "16:9"),
     outputMode: String(input.outputMode || "board"),
   };
@@ -73,6 +44,11 @@ export function useModelSheetJobs({ model, isAuthenticated }) {
   const historyControllerRef = useRef(null);
   const generationControllerRef = useRef(null);
   const activeJobIdsRef = useRef(new Set());
+  const resumeJobIdsRef = useRef(new Set());
+  const generationActiveRef = useRef(false);
+  const runningRef = useRef(false);
+  const pendingActivationGroupRef = useRef("");
+  const resumeControllerRef = useRef(null);
   const cursorRef = useRef("");
   const [entries, setEntries] = useState([]);
   const [activeOutput, setActiveOutput] = useState("");
@@ -84,6 +60,7 @@ export function useModelSheetJobs({ model, isAuthenticated }) {
   const [historyHasMore, setHistoryHasMore] = useState(false);
   const [batchProgress, setBatchProgress] = useState([]);
   const [executionStartedAt, setExecutionStartedAt] = useState(0);
+  const [cancelConfirmationRequired, setCancelConfirmationRequired] = useState(false);
 
   const markExecutionStarted = useCallback((job = {}) => {
     const currentStatus = String(job.status || "").toLowerCase();
@@ -93,41 +70,69 @@ export function useModelSheetJobs({ model, isAuthenticated }) {
   }, []);
 
   const ingestJob = useCallback((job, { activate = false, prepend = false } = {}) => {
-    const urls = resultUrls(job);
+    const media = resolveTaskMedia(job);
+    const urls = media.urls;
     if (!urls.length) return [];
     const meta = taskMeta(job);
-    const previews = previewUrls(job, urls);
-    const displays = displayUrls(job, urls);
     const incoming = urls.map((url, offset) => ({
       url,
-      displayUrl: displays[url] || "",
-      previewUrl: previews[url] || url,
+      displayUrl: media.displayByUrl[url] || "",
+      previewUrl: media.previewByUrl[url] || url,
       jobId: String(job.id || ""),
       groupId: meta.groupId,
       groupIndex: meta.index + offset,
       groupSize: Math.max(meta.size, urls.length),
       label: meta.label,
+      viewId: meta.viewId,
       aspectRatio: meta.aspectRatio,
       outputMode: meta.outputMode,
       createdAt: String(job.createdAt || ""),
     }));
     if (mountedRef.current) {
       setEntries((current) => mergeEntries(current, incoming, prepend));
-      if (activate) setActiveOutput(urls[0]);
+      if (activate === "if-empty") {
+        setActiveOutput((current) => current || urls[0]);
+      } else if (activate) {
+        setActiveOutput(urls[0]);
+      }
     }
     return urls;
   }, []);
 
   const resumeJob = useCallback(async (job, signal) => {
     const jobId = String(job?.id || "");
-    if (!jobId) return;
+    if (!jobId || resumeJobIdsRef.current.has(jobId)) return;
+    resumeJobIdsRef.current.add(jobId);
     activeJobIdsRef.current.add(jobId);
+    runningRef.current = true;
+    if (mountedRef.current) {
+      const meta = taskMeta(job);
+      setRunning(true);
+      setStatus("正在恢复未完成的模型图任务");
+      setBatchProgress((current) => {
+        if (current.some((item) => item.jobId === jobId)) return current;
+        return [...current, {
+          jobId,
+          label: meta.label,
+          status: String(job.status || "queued").toLowerCase() === "running" ? "running" : "pending",
+        }];
+      });
+    }
     try {
       const completed = await waitForServerAiJob(jobId, {
         intervalMs: 2500,
         maxPolls: 260,
         signal,
-        onUpdate: markExecutionStarted,
+        onUpdate: (currentJob) => {
+          markExecutionStarted(currentJob);
+          if (!mountedRef.current) return;
+          const nextStatus = String(currentJob?.status || "").toLowerCase();
+          setBatchProgress((current) => current.map((item) =>
+            item.jobId === jobId
+              ? { ...item, status: nextStatus === "running" ? "running" : "pending" }
+              : item,
+          ));
+        },
         onImage: (_partialOutputs, partialJob, partialResult) => {
           if (signal.aborted || !mountedRef.current) return;
           const urls = resultUrls(partialJob, partialResult);
@@ -136,22 +141,38 @@ export function useModelSheetJobs({ model, isAuthenticated }) {
             ...partialJob,
             id: jobId,
             originalMediaUrls: urls,
-          }, { activate: !activeOutput, prepend: true });
+          }, { activate: "if-empty", prepend: true });
         },
       });
       if (signal.aborted || !mountedRef.current) return;
       const completedJob = completed?.job || job;
       const urls = resultUrls(completedJob, completed?.result);
       if (!urls.length) return;
-      ingestJob(completedJob, { activate: !activeOutput, prepend: true });
+      ingestJob(completedJob, { activate: "if-empty", prepend: true });
+      setBatchProgress((current) => current.map((item) =>
+        item.jobId === jobId ? { ...item, status: "done" } : item,
+      ));
     } catch (caught) {
       if (caught?.name !== "AbortError" && mountedRef.current) {
         setError(caught?.message || "运行中的任务恢复失败");
+        setBatchProgress((current) => current.map((item) =>
+          item.jobId === jobId
+            ? { ...item, status: "failed", message: caught?.message || "恢复失败" }
+            : item,
+        ));
       }
     } finally {
+      resumeJobIdsRef.current.delete(jobId);
       activeJobIdsRef.current.delete(jobId);
+      if (!resumeJobIdsRef.current.size && !generationActiveRef.current) {
+        runningRef.current = false;
+        if (mountedRef.current) {
+          setRunning(false);
+          setStatus("");
+        }
+      }
     }
-  }, [activeOutput, ingestJob, markExecutionStarted]);
+  }, [ingestJob, markExecutionStarted]);
 
   const loadHistory = useCallback(async ({ reset = true } = {}) => {
     if (!isAuthenticated || historyLoading) return [];
@@ -173,23 +194,26 @@ export function useModelSheetJobs({ model, isAuthenticated }) {
       const completedEntries = [];
       jobs.forEach((job) => {
         if (ACTIVE_STATUSES.has(String(job.status || "").toLowerCase())) {
-          void resumeJob(job, controller.signal);
+          if (!resumeControllerRef.current || resumeControllerRef.current.signal.aborted) {
+            resumeControllerRef.current = new AbortController();
+          }
+          void resumeJob(job, resumeControllerRef.current.signal);
           return;
         }
         if (!["completed", "done", "succeeded"].includes(String(job.status || "").toLowerCase())) return;
         const urls = resultUrls(job);
         const meta = taskMeta(job);
-        const previews = previewUrls(job, urls);
-        const displays = displayUrls(job, urls);
+        const media = resolveTaskMedia(job);
         urls.forEach((url, offset) => completedEntries.push({
           url,
-          displayUrl: displays[url] || "",
-          previewUrl: previews[url] || url,
+          displayUrl: media.displayByUrl[url] || "",
+          previewUrl: media.previewByUrl[url] || url,
           jobId: String(job.id || ""),
           groupId: meta.groupId,
           groupIndex: meta.index + offset,
           groupSize: Math.max(meta.size, urls.length),
           label: meta.label,
+          viewId: meta.viewId,
           aspectRatio: meta.aspectRatio,
           outputMode: meta.outputMode,
           createdAt: String(job.createdAt || ""),
@@ -268,6 +292,7 @@ export function useModelSheetJobs({ model, isAuthenticated }) {
         executionMode: "server",
       },
       units: 1,
+      signal,
     });
     const jobId = String(response?.job?.id || "");
     if (!jobId) throw new Error("任务创建后未返回任务 ID");
@@ -285,12 +310,14 @@ export function useModelSheetJobs({ model, isAuthenticated }) {
           const urls = resultUrls(partialJob, partialResult);
           if (!urls.length) return;
           streamedUrls = [...new Set([...streamedUrls, ...urls])];
+          const activate = pendingActivationGroupRef.current === groupId;
+          if (activate) pendingActivationGroupRef.current = "";
           ingestJob({
             ...partialJob,
             id: jobId,
             originalMediaUrls: urls,
             input: { ...(partialJob?.input || shared), ...shared },
-          }, { activate: true, prepend: true });
+          }, { activate, prepend: true });
         },
       });
       const job = completed?.job || response.job;
@@ -304,7 +331,9 @@ export function useModelSheetJobs({ model, isAuthenticated }) {
         originalMediaUrls: urls,
         input: { ...(job.input || shared), ...shared },
       };
-      ingestJob(normalizedJob, { activate: true, prepend: true });
+      const activate = pendingActivationGroupRef.current === groupId;
+      if (activate) pendingActivationGroupRef.current = "";
+      ingestJob(normalizedJob, { activate, prepend: true });
       return { item, jobId, urls, job: normalizedJob };
     } finally {
       activeJobIdsRef.current.delete(jobId);
@@ -319,7 +348,10 @@ export function useModelSheetJobs({ model, isAuthenticated }) {
     chainFirstOutputAsSource = false,
     groupId = crypto.randomUUID(),
   }) => {
-    if (running || !model || !items?.length) return { outputs: [], failures: [], groupId };
+    if (runningRef.current || !model || !items?.length) return { outputs: [], failures: [], results: [], groupId };
+    runningRef.current = true;
+    generationActiveRef.current = true;
+    pendingActivationGroupRef.current = groupId;
     generationControllerRef.current?.abort();
     const controller = new AbortController();
     generationControllerRef.current = controller;
@@ -386,20 +418,27 @@ export function useModelSheetJobs({ model, isAuthenticated }) {
       return {
         outputs: results.filter(Boolean).flatMap((result) => result.urls),
         failures,
+        results: results.filter(Boolean),
         groupId,
       };
     } catch (caught) {
       if (caught?.name !== "AbortError" && mountedRef.current) {
         setError(caught?.message || "模型图生成失败");
       }
-      return { outputs: [], failures: [], groupId };
+      return { outputs: [], failures: [], results: [], groupId };
     } finally {
+      generationActiveRef.current = false;
+      runningRef.current = false;
+      if (pendingActivationGroupRef.current === groupId) pendingActivationGroupRef.current = "";
       if (mountedRef.current) setRunning(false);
     }
-  }, [model, runOne, running]);
+  }, [model, runOne]);
 
   const generateMaskedEdit = useCallback(async ({ sourceUrl, maskFile, prompt, aspectRatio, quality, groupId, groupIndex }) => {
     if (!(maskFile instanceof File) || !maskFile.size) throw new Error("蒙版无效，请重新涂抹");
+    if (runningRef.current) throw new Error("当前任务仍在运行，请完成或停止后再试");
+    runningRef.current = true;
+    generationActiveRef.current = true;
     const controller = new AbortController();
     generationControllerRef.current = controller;
     setRunning(true);
@@ -429,22 +468,43 @@ export function useModelSheetJobs({ model, isAuthenticated }) {
         signal: controller.signal,
       });
       setStatus("修正完成");
+      if (result.urls[0]) setActiveOutput(result.urls[0]);
       return result.urls;
     } finally {
+      generationActiveRef.current = false;
+      runningRef.current = false;
       if (mountedRef.current) setRunning(false);
     }
   }, [runOne]);
 
-  const cancel = useCallback(async () => {
+  const cancel = useCallback(async ({ acknowledgeUpstream = false } = {}) => {
     if (!running || cancelling) return;
     setCancelling(true);
-    setStatus("正在停止后续生成");
+    setStatus(acknowledgeUpstream ? "正在停止任务" : "正在确认任务阶段");
     const ids = [...activeJobIdsRef.current];
-    await Promise.allSettled(ids.map((jobId) => cancelServerAiJob(jobId)));
+    const settled = await Promise.allSettled(
+      ids.map((jobId) => cancelServerAiJob(jobId, { acknowledgeUpstream })),
+    );
+    const needsConfirmation = settled.some(
+      (item) => item.status === "rejected" && item.reason?.code === "task_cancel_confirmation_required",
+    );
+    if (needsConfirmation && !acknowledgeUpstream) {
+      if (mountedRef.current) {
+        setCancelConfirmationRequired(true);
+        setCancelling(false);
+        setStatus("任务已提交上游，请确认是否停止接收结果");
+      }
+      return;
+    }
     generationControllerRef.current?.abort();
+    resumeControllerRef.current?.abort();
+    resumeJobIdsRef.current.clear();
+    generationActiveRef.current = false;
+    runningRef.current = false;
     if (mountedRef.current) {
       setRunning(false);
       setCancelling(false);
+      setCancelConfirmationRequired(false);
       setStatus("已停止提交后续任务");
     }
   }, [cancelling, running]);
@@ -463,6 +523,9 @@ export function useModelSheetJobs({ model, isAuthenticated }) {
       mountedRef.current = false;
       historyControllerRef.current?.abort();
       generationControllerRef.current?.abort();
+      resumeControllerRef.current?.abort();
+      resumeJobIdsRef.current.clear();
+      generationActiveRef.current = false;
     };
   }, []);
 
@@ -473,7 +536,11 @@ export function useModelSheetJobs({ model, isAuthenticated }) {
     }
     historyControllerRef.current?.abort();
     generationControllerRef.current?.abort();
+    resumeControllerRef.current?.abort();
     activeJobIdsRef.current.clear();
+    resumeJobIdsRef.current.clear();
+    generationActiveRef.current = false;
+    runningRef.current = false;
     cursorRef.current = "";
     setEntries([]);
     setActiveOutput("");
@@ -485,6 +552,7 @@ export function useModelSheetJobs({ model, isAuthenticated }) {
     setHistoryHasMore(false);
     setBatchProgress([]);
     setExecutionStartedAt(0);
+    setCancelConfirmationRequired(false);
     return undefined;
     // Authentication changes own history refreshes; polling owns later updates.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -503,6 +571,8 @@ export function useModelSheetJobs({ model, isAuthenticated }) {
     historyHasMore,
     batchProgress,
     executionStartedAt,
+    cancelConfirmationRequired,
+    dismissCancelConfirmation: () => setCancelConfirmationRequired(false),
     loadHistory,
     loadMoreHistory: () => loadHistory({ reset: false }),
     generateBatch,

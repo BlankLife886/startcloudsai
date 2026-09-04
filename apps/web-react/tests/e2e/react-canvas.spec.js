@@ -39,7 +39,7 @@ async function mockCanvasBase(page, { pendingProjects = false, nodes = [] } = {}
     ...project,
     document: { version: 3, nodes, connections: [], chatSessions: [], activeChatId: null, backgroundMode: 'lines', showImageInfo: false, viewport: { x: 0, y: 0, k: 1 } },
   }))
-  await page.route('**/api/v1/prompts**', (route) => fulfillJson(route, { items: [], page: 1, pageSize: 20, total: 0, hasMore: false }))
+    await page.route('**/api/v1/prompts**', (route) => fulfillJson(route, { items: [], page: 1, pageSize: 20, total: 0, hasMore: false }))
 }
 
 test.describe('React native canvas integration', () => {
@@ -54,7 +54,9 @@ test.describe('React native canvas integration', () => {
     await page.goto('/canvas', { waitUntil: 'domcontentloaded' })
 
     await expect(page.getByRole('heading', { name: '无限画布', exact: true })).toBeVisible()
-    await expect(page.getByRole('button', { name: '开始使用' })).toBeVisible()
+    await expect(page.getByRole('button', { name: '新建画布' })).toBeVisible()
+    await expect(page.getByRole('button', { name: '模板库' })).toBeVisible()
+    await expect(page.getByRole('button', { name: '导入画布' })).toBeVisible()
     await expect(page.getByRole('button', { name: '打开画布' })).toHaveCount(0)
     await expect(page.getByRole('heading', { name: '今天想在无限画布创作什么？' })).toHaveCount(0)
     await expect(page.getByRole('textbox', { name: '画布创作需求' })).toHaveCount(0)
@@ -65,7 +67,7 @@ test.describe('React native canvas integration', () => {
     await expect(page.locator('.canvas-native-route-entry')).toHaveAttribute('data-canvas-route-motion', 'home')
     await expect(page.locator('.canvas-home-pattern')).toHaveAttribute('data-canvas-home-motion-state', 'entered')
     await expect(page.locator('.canvas-home-pattern')).toHaveAttribute('data-canvas-card-motion-state', 'entered')
-    await expect(page.locator('[data-canvas-entry-item]')).toHaveCount(4)
+    await expect(page.locator('[data-canvas-entry-item]')).toHaveCount(2)
     const canvasSurface = await page.locator('.canvas-native-route-entry').evaluate((element) => {
       const style = getComputedStyle(element)
       return { background: style.backgroundColor, opacity: style.opacity, visibility: style.visibility }
@@ -250,7 +252,8 @@ test.describe('React native canvas integration', () => {
     await page.setViewportSize({ width: 1440, height: 900 })
     await page.goto('/canvas', { waitUntil: 'domcontentloaded' })
     await expect(page.getByRole('heading', { name: '无限画布', exact: true })).toBeVisible()
-    await page.locator('.site-header a[href="/pricing"]').click()
+    await page.getByTitle('个人中心').click()
+    await page.getByRole('menuitem', { name: '创作价格' }).click()
     await expect(page).toHaveURL(/\/pricing$/, { timeout: 2_000 })
     await expectPricingPageIsolated(page)
     await expect(page.locator('.canvas-native-mount')).toHaveCount(0)

@@ -154,6 +154,29 @@ class _RecoveringFeedbackController extends FeedbackCenterController {
   }
 }
 
+class _FakeFeedbackDraftStore implements FeedbackDraftStore {
+  _FakeFeedbackDraftStore({this.draft});
+
+  FeedbackDraft? draft;
+  var writes = 0;
+  var clears = 0;
+
+  @override
+  Future<FeedbackDraft?> read() async => draft;
+
+  @override
+  Future<void> write(FeedbackDraft value) async {
+    writes += 1;
+    draft = value.isEmpty ? null : value;
+  }
+
+  @override
+  Future<void> clear() async {
+    clears += 1;
+    draft = null;
+  }
+}
+
 void main() {
   test('parses feedback status, reply and adoption reward', () {
     final item = UserFeedbackItem.fromJson(
@@ -383,12 +406,14 @@ void main() {
   });
 
   testWidgets('submitting feedback prepends it to the list', (tester) async {
+    final draftStore = _FakeFeedbackDraftStore();
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
           feedbackCenterControllerProvider.overrideWith(
             _FakeFeedbackController.new,
           ),
+          feedbackDraftStoreProvider.overrideWithValue(draftStore),
         ],
         child: const MaterialApp(home: FeedbackScreen()),
       ),
@@ -408,6 +433,116 @@ void main() {
     expect(find.byType(FeedbackComposerSheet), findsNothing);
     expect(find.text('希望增加作品批量管理功能'), findsOneWidget);
     expect(find.text('反馈已提交，我们会尽快处理'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('feedback composer restores, saves and clears a private draft', (
+    tester,
+  ) async {
+    final store = _FakeFeedbackDraftStore(
+      draft: FeedbackDraft(
+        category: FeedbackCategory.suggestion,
+        title: '希望改进批量管理体验',
+        content: '这是离开反馈页面前尚未提交的完整问题描述。',
+        updatedAt: DateTime(2026, 9, 2),
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: FeedbackComposerSheet(
+            draftStore: store,
+            saveDelay: const Duration(milliseconds: 20),
+            onSubmit:
+                ({required category, required title, required content}) async =>
+                    UserFeedbackItem.fromJson(
+                      _feedbackJson(
+                        id: 'draft-feedback',
+                        status: 'open',
+                        category: category.apiValue,
+                        title: title,
+                        content: content,
+                      ),
+                    ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    final fields = find.byType(TextFormField);
+    expect(
+      tester.widget<TextFormField>(fields.at(0)).controller?.text,
+      '希望改进批量管理体验',
+    );
+    expect(
+      tester.widget<TextFormField>(fields.at(1)).controller?.text,
+      '这是离开反馈页面前尚未提交的完整问题描述。',
+    );
+    expect(find.text('产品建议'), findsOneWidget);
+    expect(find.byKey(const Key('feedback-draft-saved')), findsOneWidget);
+
+    await tester.enterText(fields.at(1), '这是编辑后会自动保存的完整问题描述内容。');
+    await tester.pump(const Duration(milliseconds: 30));
+    expect(store.writes, greaterThan(0));
+    expect(store.draft?.content, '这是编辑后会自动保存的完整问题描述内容。');
+    expect(find.byKey(const Key('feedback-draft-saved')), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(FilledButton, '提交反馈'));
+    await tester.pumpAndSettle();
+    expect(store.clears, 1);
+    expect(store.draft, isNull);
+    expect(find.byType(FeedbackComposerSheet), findsNothing);
+  });
+
+  testWidgets('feedback composer attaches diagnostics once and saves them', (
+    tester,
+  ) async {
+    final store = _FakeFeedbackDraftStore();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: FeedbackComposerSheet(
+            draftStore: store,
+            saveDelay: const Duration(milliseconds: 20),
+            loadDiagnostics: () async =>
+                ['星空云绘', '版本：1.2.3 (45)', '平台：iOS', '运行环境：正式环境'].join('\n'),
+            onSubmit:
+                ({required category, required title, required content}) async =>
+                    UserFeedbackItem.fromJson(
+                      _feedbackJson(id: 'diagnostic-feedback', status: 'open'),
+                    ),
+          ),
+        ),
+      ),
+    );
+    final fields = find.byType(TextFormField);
+    await tester.enterText(fields.at(0), '反馈问题诊断测试');
+    await tester.enterText(fields.at(1), '这里是用户主动填写的完整问题描述内容。');
+
+    await tester.tap(find.byKey(const Key('feedback-attach-diagnostics')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 30));
+
+    final attached = tester
+        .widget<TextFormField>(fields.at(1))
+        .controller!
+        .text;
+    expect(attached, contains('诊断信息（不包含账号与创作内容）'));
+    expect(attached, contains('版本：1.2.3 (45)'));
+    expect(attached, contains('平台：iOS'));
+    expect(store.draft?.content, attached);
+    expect(find.text('诊断信息已附加，可在正文中查看'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('feedback-attach-diagnostics')));
+    await tester.pump();
+    final afterSecondTap = tester
+        .widget<TextFormField>(fields.at(1))
+        .controller!
+        .text;
+    expect(RegExp('诊断信息（不包含账号与创作内容）').allMatches(afterSecondTap), hasLength(1));
+    expect(find.text('诊断信息已经附加'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 

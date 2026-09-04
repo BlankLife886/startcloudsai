@@ -67,6 +67,7 @@ AssistantMessage _message(
   AssistantQuotedMessage? quoted,
   int costPoints = 0,
   DateTime? updatedAt,
+  AssistantFeedback? feedback,
 }) => AssistantMessage(
   id: id,
   role: role,
@@ -82,6 +83,7 @@ AssistantMessage _message(
   usage: usage,
   quoted: quoted,
   costPoints: costPoints,
+  feedback: feedback,
 );
 
 class _FakeAssistantRepository implements AssistantRepository {
@@ -144,6 +146,24 @@ class _FakeAssistantRepository implements AssistantRepository {
   Future<bool> deleteGeneratedImage(String messageId, String imageId) async {
     deletedImageRequests.add((messageId: messageId, imageId: imageId));
     return deleteImageRemovesMessage;
+  }
+
+  @override
+  Future<AssistantMessage> setMessageFeedback(
+    String messageId,
+    AssistantFeedback? feedback,
+  ) async {
+    for (final conversation in initialConversations) {
+      for (final message in conversation.messages) {
+        if (message.id == messageId) {
+          return message.copyWith(
+            feedback: feedback,
+            clearFeedback: feedback == null,
+          );
+        }
+      }
+    }
+    return _message(messageId, 'assistant', '反馈测试回复', feedback: feedback);
   }
 
   @override
@@ -241,6 +261,7 @@ class _ScreenAssistantController extends AssistantWorkspaceController {
   final deletedTurnIds = <String>[];
   final deletedImageRequests = <({String imageId, String messageId})>[];
   final pinnedToggles = <String>[];
+  final feedbackChanges = <({String messageId, AssistantFeedback? feedback})>[];
   AssistantProposal? submittedProposal;
   String? proposalSourceMessageId;
   List<AssistantReferenceImage> proposalReferences = const [];
@@ -372,12 +393,40 @@ class _ScreenAssistantController extends AssistantWorkspaceController {
   }
 
   @override
+  Future<void> setMessageFeedback(
+    String messageId,
+    AssistantFeedback? feedback,
+  ) async {
+    feedbackChanges.add((messageId: messageId, feedback: feedback));
+    final current = state.requireValue;
+    state = AsyncData(
+      current.copyWith(
+        conversations: current.conversations.map((conversation) {
+          return conversation.copyWith(
+            messages: conversation.messages.map((message) {
+              if (message.id != messageId) return message;
+              return message.copyWith(
+                feedback: feedback,
+                clearFeedback: feedback == null,
+              );
+            }).toList(),
+          );
+        }).toList(),
+      ),
+    );
+  }
+
+  @override
   Future<void> togglePinned(String id) async {
     pinnedToggles.add(id);
     final current = state.requireValue;
     final next = {...current.pinnedIds};
     if (!next.remove(id)) next.add(id);
     state = AsyncData(current.copyWith(pinnedIds: next));
+  }
+
+  void finishSelectedRun() {
+    state = AsyncData(state.requireValue.copyWith(activeRuns: const {}));
   }
 }
 
@@ -473,6 +522,7 @@ Widget _screen(
   AssistantWorkspaceController Function() controller, {
   double textScale = 1,
   String? initialPrompt,
+  ReferenceImageDraft? initialReference,
   int availablePoints = 100,
   AssistantDraftStore? draftStore,
   AssistantSpeechInput? speechInput,
@@ -505,6 +555,7 @@ Widget _screen(
       ),
       home: AssistantScreen(
         initialPrompt: initialPrompt,
+        initialReference: initialReference,
         speechInput: speechInput,
       ),
     ),
@@ -3040,6 +3091,8 @@ void main() {
     expect(find.byTooltip('分享回复'), findsOneWidget);
     expect(find.byTooltip('重新提问'), findsOneWidget);
     expect(find.byTooltip('引用'), findsOneWidget);
+    expect(find.byTooltip('赞同'), findsOneWidget);
+    expect(find.byTooltip('不赞同'), findsOneWidget);
     expect(find.byTooltip('带入文生图'), findsNothing);
     expect(find.byKey(const Key('assistant-copy-reply')), findsOneWidget);
     expect(find.byKey(const Key('assistant-share-reply')), findsOneWidget);
@@ -3064,6 +3117,60 @@ void main() {
     expect(find.text('已复制助手回复'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'assistant reply feedback toggles and persists its selected state',
+    (tester) async {
+      late _ScreenAssistantController controller;
+      final conversation = AssistantConversation(
+        id: 'conversation-feedback',
+        title: '回答反馈',
+        messages: [
+          _message('feedback-user', 'user', '这个回答有帮助吗？'),
+          _message('feedback-assistant', 'assistant', '这是可评价的完整回答。'),
+        ],
+        updatedAt: DateTime(2026, 9, 2, 11),
+      );
+      await tester.pumpWidget(
+        _screen(
+          () => controller = _ScreenAssistantController(
+            AssistantWorkspaceState(
+              config: _config,
+              conversations: [conversation],
+              selectedConversationId: conversation.id,
+              selectedModelId: 'chat-pro',
+              reasoningEffort: 'medium',
+              activeRuns: const {},
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byTooltip('赞同'));
+      await tester.pumpAndSettle();
+      expect(
+        controller.feedbackChanges.single.feedback,
+        AssistantFeedback.positive,
+      );
+      expect(find.byTooltip('取消赞同'), findsOneWidget);
+      expect(find.text('感谢你的反馈'), findsOneWidget);
+
+      await tester.tap(find.byTooltip('取消赞同'));
+      await tester.pumpAndSettle();
+      expect(controller.feedbackChanges.last.feedback, isNull);
+      expect(find.byTooltip('赞同'), findsOneWidget);
+
+      await tester.tap(find.byTooltip('不赞同'));
+      await tester.pumpAndSettle();
+      expect(
+        controller.feedbackChanges.last.feedback,
+        AssistantFeedback.negative,
+      );
+      expect(find.byTooltip('取消不赞同'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('quoting a reply sends the quote with the next message', (
     tester,
@@ -3543,6 +3650,158 @@ void main() {
     expect(draftStore.draft?.prompt, '从文生图带入的新提示词');
     expect(draftStore.draft?.references, isEmpty);
   });
+
+  testWidgets(
+    'incoming asset is primary without replacing text or duplicating references',
+    (tester) async {
+      const incoming = ReferenceImageDraft(
+        localPath: '',
+        filename: '当前素材',
+        remoteKey: 'uploads/user/current.jpg',
+        remoteUrl: '/files/current.jpg',
+        sourceAssetId: 'asset-current',
+      );
+      final draftStore = _FakeAssistantDraftStore(
+        draft: AssistantDraft(
+          prompt: '保留这段尚未发送的提问',
+          references: const [
+            ReferenceImageDraft(
+              localPath: '',
+              filename: '当前素材的旧副本',
+              remoteKey: 'uploads/user/current.jpg',
+              sourceAssetId: 'asset-current',
+            ),
+            ReferenceImageDraft(
+              localPath: '',
+              filename: '已有素材',
+              remoteKey: 'uploads/user/existing.jpg',
+              sourceAssetId: 'asset-existing',
+            ),
+          ],
+          updatedAt: DateTime(2026, 8, 24, 11),
+        ),
+      );
+      await tester.binding.setSurfaceSize(const Size(320, 700));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(
+        _screen(
+          textScale: 1.6,
+          initialReference: incoming,
+          draftStore: draftStore,
+          () => _ScreenAssistantController(
+            const AssistantWorkspaceState(
+              config: _config,
+              conversations: [],
+              selectedConversationId: null,
+              selectedModelId: 'chat-pro',
+              reasoningEffort: 'medium',
+              activeRuns: {},
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final composer = tester.widget<TextField>(
+        find.byKey(const Key('assistant-composer')),
+      );
+      expect(composer.controller?.text, '保留这段尚未发送的提问');
+      expect(find.text('参考图 2/4'), findsOneWidget);
+      expect(find.byTooltip('移除当前素材'), findsOneWidget);
+      expect(find.byTooltip('移除当前素材的旧副本'), findsNothing);
+      expect(find.byTooltip('移除已有素材'), findsOneWidget);
+      expect(
+        find.byKey(const Key('assistant-reference-primary')),
+        findsOneWidget,
+      );
+      expect(draftStore.draft?.references, hasLength(2));
+      expect(draftStore.draft?.references.first.filename, '当前素材');
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'incoming asset waits for an active run then selects an image capable model',
+    (tester) async {
+      const textOnly = AssistantModelOption(
+        id: 'text-only',
+        label: '纯文本模型',
+        description: '',
+        pricePoints: 2,
+        standardPricePoints: 2,
+        reasoningEfforts: [],
+        defaultReasoningEffort: '',
+        isDefault: true,
+        maxReferenceImages: 0,
+      );
+      const vision = AssistantModelOption(
+        id: 'vision',
+        label: '视觉模型',
+        description: '',
+        pricePoints: 4,
+        standardPricePoints: 4,
+        reasoningEfforts: [],
+        defaultReasoningEffort: '',
+        isDefault: false,
+        maxReferenceImages: 2,
+      );
+      const config = AssistantConfig(
+        models: [textOnly, vision],
+        defaultModelId: 'text-only',
+      );
+      const conversation = AssistantConversation(
+        id: 'conversation-active',
+        title: '正在回复',
+        messages: [],
+        updatedAt: null,
+      );
+      const run = AssistantRun(
+        id: 'run-active',
+        conversationId: 'conversation-active',
+        status: 'running',
+        stage: 'thinking',
+        errorMessage: '',
+        costPoints: 0,
+      );
+      late _ScreenAssistantController controller;
+      await tester.pumpWidget(
+        _screen(
+          initialReference: const ReferenceImageDraft(
+            localPath: '',
+            filename: '待分析素材',
+            remoteKey: 'uploads/user/vision.jpg',
+            sourceAssetId: 'asset-vision',
+          ),
+          () => controller = _ScreenAssistantController(
+            const AssistantWorkspaceState(
+              config: config,
+              conversations: [conversation],
+              selectedConversationId: 'conversation-active',
+              selectedModelId: 'text-only',
+              reasoningEffort: '',
+              activeRuns: {'conversation-active': run},
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+
+      expect(controller.state.requireValue.selectedModelId, 'text-only');
+      expect(find.text('参考图 1/2'), findsOneWidget);
+      expect(find.byTooltip('移除待分析素材'), findsOneWidget);
+      expect(find.text('当前回复结束后切换到 视觉模型'), findsOneWidget);
+
+      controller.finishSelectedRun();
+      await tester.pump();
+      await tester.pump();
+
+      expect(controller.state.requireValue.selectedModelId, 'vision');
+      expect(find.text('参考图 1/2'), findsOneWidget);
+      expect(find.text('已切换到支持图片的 视觉模型'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('erasing a restored draft clears local unsent content', (
     tester,

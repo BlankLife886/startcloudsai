@@ -169,6 +169,14 @@ func TestUIDesignAssetHistoryPersistsRunningThenSucceeded(t *testing.T) {
 	if err != nil || remaining == nil || remaining.Status != "succeeded" {
 		t.Fatalf("history task after conversation delete = %#v err=%v", remaining, err)
 	}
+	var auditRows int
+	if err := st.Pool.QueryRow(ctx, `SELECT count(*) FROM tasks
+		WHERE id = $1 OR idempotency_key = $2`, run.ID, store.UIDesignAssetHistoryIdempotencyKey(run.ID)).Scan(&auditRows); err != nil {
+		t.Fatal(err)
+	}
+	if auditRows != 1 {
+		t.Fatalf("UI design run created duplicate audit rows: %d", auditRows)
+	}
 }
 
 func TestListTasksIncludesUIDesignAssetAssistantRuns(t *testing.T) {

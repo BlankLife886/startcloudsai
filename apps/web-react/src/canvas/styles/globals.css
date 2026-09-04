@@ -1941,31 +1941,25 @@
 
 @media (prefers-reduced-motion: reduce) {
     [data-canvas-entry-item],
-    .canvas-project-grid > *,
-    .canvas-hero-stage,
-    .canvas-home-orb {
+    .canvas-project-grid > * {
         opacity: 1 !important;
         visibility: visible !important;
         transform: none !important;
     }
 
-    .ai-title-aurora,
-    .canvas-hero__cta::after {
+    .ai-title-aurora {
         animation: none !important;
     }
 }
 
 html.settings-no-animations [data-canvas-entry-item],
-html.settings-no-animations .canvas-project-grid > *,
-html.settings-no-animations .canvas-hero-stage,
-html.settings-no-animations .canvas-home-orb {
+html.settings-no-animations .canvas-project-grid > * {
     opacity: 1 !important;
     visibility: visible !important;
     transform: none !important;
 }
 
 html.settings-no-animations .ai-title-aurora,
-html.settings-no-animations .canvas-hero__cta::after,
 html.settings-no-animations .canvas-editor-chrome {
     animation: none !important;
 }
@@ -2346,66 +2340,114 @@ html.settings-no-animations .canvas-nav-map {
 }
 
 .canvas-home-pattern__inner {
-    padding-top: calc(var(--app-header-offset, 82px) + 16px);
+    min-height: 0;
+    padding-top: calc(var(--starclouds-host-header-offset, 62px) + 12px);
+    padding-bottom: 20px;
 }
 
-.canvas-home-orb {
-    pointer-events: none;
-    position: absolute;
-    border-radius: 999px;
-    filter: blur(40px);
-    opacity: 0.7;
-    will-change: transform;
-}
-
-.canvas-hero {
-    display: grid;
-    grid-template-columns: minmax(0, 1.05fr) minmax(440px, 0.95fr);
+.canvas-home-toolbar {
+    display: flex;
     align-items: center;
-    gap: 56px;
-    min-height: 428px;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 2px 2px 14px;
 }
 
-.canvas-hero__copy {
-    position: relative;
-    z-index: 1;
-    max-width: 720px;
-    text-align: left;
+.canvas-home-toolbar__copy h1 {
+    margin: 0;
+    color: #1f1b2e;
+    font-size: 1.35rem;
+    font-weight: 680;
+    letter-spacing: -0.03em;
+    line-height: 1.2;
 }
 
-.canvas-hero__cta.ant-btn-primary {
-    position: relative;
-    overflow: hidden;
+.canvas-home-toolbar__copy p {
+    margin: 4px 0 0;
+    color: #7a738f;
+    font-size: 13px;
+    line-height: 1.45;
+}
+
+.dark .canvas-home-toolbar__copy h1 {
+    color: #f4f2ff;
+}
+
+.dark .canvas-home-toolbar__copy p {
+    color: #a8a1c2;
+}
+
+.canvas-home-toolbar__actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.canvas-home-cta.ant-btn-primary {
     border-color: #6d5cff !important;
     background: #6d5cff !important;
     color: #fff !important;
 }
 
-.canvas-hero__cta.ant-btn-primary:hover,
-.canvas-hero__cta.ant-btn-primary:focus-visible {
+.canvas-home-cta.ant-btn-primary:hover,
+.canvas-home-cta.ant-btn-primary:focus-visible {
     border-color: #5b4dff !important;
     background: #5b4dff !important;
     color: #fff !important;
 }
 
-.canvas-hero__cta::after {
-    content: "";
-    position: absolute;
-    inset: 0 auto 0 -40%;
-    width: 36%;
-    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.28), transparent);
-    transform: translateX(-120%) skewX(-18deg);
-    animation: canvas-hero-shimmer 3.6s ease-in-out infinite;
+.canvas-home-library {
+    min-height: 0;
+    flex: 1;
 }
 
-.canvas-hero-stage {
-    position: relative;
+.canvas-home-start {
+    display: grid;
+    width: min(420px, 100%);
+    margin-top: 12px;
+    padding: 28px 24px 26px;
+    place-items: center;
+    gap: 10px;
+    border: 1px dashed rgba(109, 92, 255, 0.28);
+    border-radius: 20px;
+    background:
+        radial-gradient(circle at 50% 28%, rgba(124, 58, 237, 0.1), transparent 42%),
+        rgba(255, 255, 255, 0.72);
+    color: inherit;
+    text-align: center;
+    cursor: pointer;
 }
 
-.canvas-hero-stage img {
-    display: block;
-    width: 100%;
-    height: auto;
+.canvas-home-start:hover,
+.canvas-home-start:focus-visible {
+    border-color: rgba(109, 92, 255, 0.5);
+    background:
+        radial-gradient(circle at 50% 28%, rgba(124, 58, 237, 0.14), transparent 46%),
+        #fff;
+}
+
+.canvas-home-start strong {
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+}
+
+.canvas-home-start > span:last-child {
+    color: #7a738f;
+    font-size: 13px;
+}
+
+.dark .canvas-home-start {
+    border-color: rgba(167, 139, 250, 0.24);
+    background:
+        radial-gradient(circle at 50% 28%, rgba(124, 58, 237, 0.16), transparent 42%),
+        rgba(255, 255, 255, 0.04);
+}
+
+.dark .canvas-home-start > span:last-child {
+    color: #a8a1c2;
 }
 
 .canvas-recent-bar {
@@ -2824,17 +2866,6 @@ html.settings-no-animations .canvas-nav-map {
 .canvas-home-layer__actions .canvas-home-btn.is-danger-solid {
     border-color: transparent;
     color: #fff;
-}
-
-@keyframes canvas-hero-shimmer {
-    0%,
-    55% {
-        transform: translateX(-120%) skewX(-18deg);
-    }
-    80%,
-    100% {
-        transform: translateX(380%) skewX(-18deg);
-    }
 }
 
 .canvas-project-tile {
@@ -3626,10 +3657,11 @@ html.settings-no-animations .canvas-nav-map {
 }
 
 .canvas-grid {
+    inset: -256px;
     contain: strict;
     background-repeat: repeat;
     background-size: var(--canvas-grid-size, 48px) var(--canvas-grid-size, 48px);
-    background-position: var(--canvas-grid-x, 0) var(--canvas-grid-y, 0);
+    background-position: var(--canvas-grid-origin, 16px) var(--canvas-grid-origin, 16px);
 }
 
 .canvas-stage--panning,
@@ -3644,7 +3676,9 @@ body.canvas-tool-dragging * {
 }
 
 .canvas-stage--zooming .canvas-world,
-.canvas-stage--panning .canvas-world {
+.canvas-stage--panning .canvas-world,
+.canvas-stage--zooming .canvas-grid,
+.canvas-stage--panning .canvas-grid {
     will-change: transform;
 }
 

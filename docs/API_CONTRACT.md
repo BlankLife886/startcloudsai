@@ -1,6 +1,6 @@
 # 项目完整 API 接口文档
 
-本文是当前项目服务端接口的统一入口，与 `apps/server/internal/httpapi/router.go` 的实际注册结果对齐。统计时间为 `2026-09-01`，当前共注册 `287` 个方法路由：站内 `/api/v1` 路由 `140` 个、管理员分组路由 `141` 个、开放 API 路由 `5` 个、内部回调 `1` 个。其中 `GET 117`、`POST 88`、`PATCH 39`、`DELETE 32`、`PUT 11`。
+本文是当前项目服务端接口的统一入口，与 `apps/server/internal/httpapi/router.go` 的实际注册结果对齐。统计时间为 `2026-09-02`，当前共注册 `294` 个方法路由：站内 `/api/v1` 路由 `147` 个、管理员分组路由 `141` 个、开放 API 路由 `5` 个、内部回调 `1` 个。其中 `GET 119`、`POST 90`、`PATCH 39`、`DELETE 35`、`PUT 11`。
 
 所有站内业务接口使用 `/api/v1` 前缀，JSON 字段使用 camelCase，时间使用 RFC 3339/ISO 8601，金额使用整数分并以 `Cents` 结尾。当前版本不注册旧 `/api/*` 兼容路由。
 
@@ -61,7 +61,7 @@
 | DELETE | `/api/v1/auth/session`       | 可匿名 | 删除当前 session 并清 Cookie                                                                       |
 | GET  | `/api/v1/auth/session`           | 可匿名 | 返回 `{user}`；未登录时 `user:null`                                                                |
 
-用户状态为 banned 时不能登录或调用受保护能力。邮箱验证码只保存规范化 email 与 code 的 HMAC，不保存明文。首次自动建号受 `registrationEnabled` 控制，已有用户登录不受该开关影响。验证码 10 分钟有效、最多错误 5 次且成功后一次性消费。开发环境未配置 SMTP 时 `/auth/email-verification-codes` 会额外返回 `developmentCode`，生产环境不会返回。
+用户状态为 banned 或 deleted 时不能登录或调用受保护能力。邮箱验证码只保存规范化 email 与 code 的 HMAC，不保存明文。首次自动建号受 `registrationEnabled` 控制，已有用户登录不受该开关影响。验证码 3 分钟有效、最多错误 5 次且成功后一次性消费。开发环境未配置 SMTP 时 `/auth/email-verification-codes` 会额外返回 `developmentCode`，生产环境不会返回。
 
 ## 管理员认证
 
@@ -78,7 +78,12 @@
 
 | 方法   | 路径                               | 说明                                                                                                                                                                                                             |
 | ------ | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| PATCH  | `/api/v1/me/profile`                  | 更新 `{username?,avatarUrl?,bio?,location?,websiteUrl?,password?:{old,new}}`；简介上限 280 字、所在地 80 字、网站仅允许完整 http/https 地址；改密后撤销旧 session 并签发当前新 session，头像只能引用本人站内上传 |
+| DELETE | `/api/v1/me/account`                  | `{code,confirmation:"DELETE"}`；当前邮箱验证码二次认证后原子注销。进行中的任务返回 `account_has_active_tasks`；成功后全部 session/API 凭证失效、身份匿名化、公开投稿隐藏并释放原邮箱，必要交易和安全记录以匿名账号留存 |
+| GET    | `/api/v1/me/data-export`              | 下载当前用户的 JSON 数据副本；包含账号资料、钱包/账本、订单/订阅、任务、AI 对话、素材元数据、投稿、反馈和社区安全记录；不包含密码、会话凭证、内部风控数据或图片二进制 |
+| GET    | `/api/v1/me/sessions`                 | 当前用户有效会话列表；返回设备识别所需的 `id,current,ip,userAgent,createdAt,expiresAt`，不返回 Cookie 或令牌；当前会话置顶 |
+| DELETE | `/api/v1/me/sessions/{id}`            | 撤销指定的本人有效会话；不能通过该接口操作其他用户的会话 |
+| DELETE | `/api/v1/me/sessions?scope=others`    | 撤销当前用户除本次请求会话以外的所有有效会话，返回 `{revoked}` |
+| PATCH  | `/api/v1/me/profile`                  | 更新 `{username?,avatarUrl?,studioFigureUrl?,bio?,location?,websiteUrl?,requireCostConfirm?}`；简介上限 280 字、所在地 80 字、网站仅允许完整 http/https 地址，头像与形象图只能引用本人站内上传；用户端不支持密码 |
 | GET    | `/api/v1/me/overview`                 | 钱包、任务汇总/分类型统计、未读数和最近任务                                                                                                                                                                      |
 | GET    | `/api/v1/me/wallet`                   | `{availableCents,balanceCents,frozenCents,totalCents,...}`；`balanceCents` 是 `availableCents` 的兼容别名，禁止再次减去冻结额                                                                                   |
 | GET    | `/api/v1/me/wallet/entries`            | 当前用户账本 cursor 分页                                                                                                                                                                                         |
@@ -98,6 +103,7 @@
 | PATCH  | `/api/v1/me/notifications`       | `{ids?:[]}`；省略 ids 表示全部已读；成功返回 204                                                                                                                                                                 |
 | GET    | `/api/v1/me/gallery/submissions`      | 我的投稿 cursor 分页                                                                                                                                                                                             |
 | DELETE | `/api/v1/me/gallery/submissions/{id}` | 删除自己的投稿                                                                                                                                                                                                   |
+| GET    | `/api/v1/me/blocked-users`             | 当前用户已屏蔽社区作者的 cursor 分页；返回 `id,username,avatarUrl,blockedAt`                                                                                                                                      |
 | GET    | `/api/v1/me/assets`                   | 个人素材 cursor 分页；支持 `q`、逗号分隔 `tags`、`groupId=all\|ungrouped\|{uuid}` 和 `trash=true`；返回标签、来源、派生关系、哈希与回收站时间 |
 | POST   | `/api/v1/me/assets`                   | 保存素材及可选 `groupId,tags,sourceType,sourceId,sourceMetadata,parentAssetId`；按真实文件 SHA-256 在用户范围去重 |
 | PATCH  | `/api/v1/me/assets/{id}`              | 更新 `{title?,groupId?,tags?}`；`groupId: null` 表示移出分组 |
@@ -241,9 +247,12 @@ task 主要字段：
 
 | 方法 | 路径                       | 认证 | 说明                                                |
 | ---- | -------------------------- | ---- | --------------------------------------------------- |
-| GET  | `/api/v1/gallery/submissions` | 公开 | 已审核作品；支持 `category`、`featured=1` 和 cursor |
+| GET  | `/api/v1/gallery/submissions` | 公开 | 已审核作品；支持 `category`、`featured=1` 和 cursor；登录用户自动过滤已屏蔽作者 |
 | GET  | `/api/v1/gallery/categories`  | 公开 | active 分类                                         |
 | POST | `/api/v1/gallery/submissions` | 用户 | `{taskId,title,categoryId?}` 投稿成功任务           |
+| POST | `/api/v1/gallery/submissions/{id}/reports` | 用户 | `{reason,detail?}` 幂等举报公开作品；reason 为 `inappropriate|copyright|spam|harassment|other`，其他问题必须填写说明 |
+| POST | `/api/v1/gallery/users/{id}/block` | 用户 | 幂等屏蔽指定社区作者；不能屏蔽自己 |
+| DELETE | `/api/v1/gallery/users/{id}/block` | 用户 | 幂等解除指定社区作者屏蔽 |
 | GET  | `/api/v1/prompts`             | 公开 | 仅返回 active 且图片资产已验证（或无封面）的提示词；支持 `type`、`category`、`search`、重复 `tag` 和 cursor；`scope=today` 表示滚动 24 小时最新 |
 | GET  | `/api/v1/prompts/categories`  | 公开 | active 提示词分类；支持 `type`，返回名称、排序和实时数量 |
 | POST | `/api/v1/prompts/{id}/engagements` | 用户 | 记录允许的提示词互动事件，用于热度和使用统计；事件类型由服务端白名单校验 |
@@ -584,6 +593,8 @@ settings 请求/响应：
 | GET | `/api/v1/me/wallet/export` | 导出当前用户账本；响应为下载文件，不返回 JSON 包装。 |
 | GET | `/api/v1/me/subscription` | 返回当前有效订阅、套餐权益和到期状态；无订阅时返回空状态。 |
 | DELETE | `/api/v1/me/notifications` | 清空当前用户可删除通知；成功返回 `204 No Content`。 |
+| DELETE | `/api/v1/me/notifications/:id` | 删除当前用户的单条个人通知，或仅为当前用户隐藏单条全站通知；幂等成功返回 `204 No Content`。 |
+| PUT | `/api/v1/assistant/messages/:id/feedback` | 为当前用户会话中的助手回复设置 `positive` / `negative` 反馈；空字符串取消反馈，返回更新后的消息。 |
 | POST | `/api/v1/me/behavior-events` | `{events:[...]}`，每批 `1-50` 条脱敏行为事件；返回 `{accepted}`。 |
 | POST | `/api/v1/me/api-keys/{id}/rotate` | 轮换本人 API Key；旧 Key 立即失效，新明文 Secret 仅在本次响应显示。受 `developer_api` 页面开关保护。 |
 

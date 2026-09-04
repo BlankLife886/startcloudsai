@@ -5,6 +5,7 @@ import { useNavigate, useParams } from "react-router";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
+import { DownloadIcon } from "../components/common/DownloadIcon.jsx";
 import { fetchRuntimeConfig } from "@react/legacy-modules/services/runtimeConfig.js";
 import { createTask, quoteTaskPrice, uploadFile, waitForTask } from "@react/legacy-modules/services/tasksApi.js";
 import notificationService from "@react/legacy-modules/services/notification.js";
@@ -275,7 +276,7 @@ function ResultPreview({ task, tool, sourcePreview, upscale, busy }) {
               />
             </div>
             <span className="mt-result-veil" aria-hidden="true" />
-            <a className="mt-button is-secondary mt-result-actions" href={`${url}${url.includes("?") ? "&" : "?"}download=1`}><i className="bi bi-download" />下载结果</a>
+            <a className="mt-button is-secondary mt-result-actions" href={`${url}${url.includes("?") ? "&" : "?"}download=1`}><DownloadIcon />下载结果</a>
           </>
         ) : (
           <div className="mt-result-copy">
@@ -301,7 +302,7 @@ function ResultPreview({ task, tool, sourcePreview, upscale, busy }) {
   return (
     <div className="mt-result-ready">
       {modality === "video" ? <video src={url} controls playsInline /> : modality === "audio" ? <audio src={url} controls /> : <AuthenticatedImage src={url} alt="工具处理结果" maxDimension={1800} />}
-      <a className="mt-button is-secondary" href={`${url}${url.includes("?") ? "&" : "?"}download=1`}><i className="bi bi-download" />下载结果</a>
+      <a className="mt-button is-secondary" href={`${url}${url.includes("?") ? "&" : "?"}download=1`}><DownloadIcon />下载结果</a>
     </div>
   );
 }

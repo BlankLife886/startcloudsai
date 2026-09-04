@@ -57,7 +57,7 @@ func PageControlDefaults() map[string]PageControl {
 		controls[key] = PageControl{Status: PageStatusNormal}
 	}
 	// These workspaces were already presented as under development before page controls existed.
-	for _, key := range []string{"model_sheet", "illustration_coloring", "game_art"} {
+	for _, key := range []string{"illustration_coloring", "game_art"} {
 		controls[key] = PageControl{Status: PageStatusDeveloping, Reason: "功能正在开发中，敬请期待。"}
 	}
 	for _, key := range []string{

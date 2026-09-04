@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { CircleAlert, Download, Eraser, Info, LoaderCircle, Palette, Pencil, Play, RotateCcw, Square, Upload } from "lucide-react";
+import { CircleAlert, Eraser, Info, LoaderCircle, Palette, Pencil, Play, RotateCcw, Square, Upload } from "lucide-react";
+import { DownloadIcon } from "@react/components/common/DownloadIcon.jsx";
 import { Switch, Tooltip } from "antd";
 import { useTranslation } from "react-i18next";
 
@@ -81,7 +82,7 @@ export function CanvasTopBar({
             >
                 {children ? <div className="pointer-events-none absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2" style={{ width: "clamp(260px, calc(100% - 822px), 720px)" }}><div className="pointer-events-auto">{children}</div></div> : null}
 
-                <div className="pointer-events-auto ml-auto flex items-center gap-2" data-canvas-topbar-actions>
+                <div className="pointer-events-auto ml-auto flex items-center gap-2" data-canvas-topbar-actions data-guide="canvas-actions">
                     <div className="canvas-workflow-control-slot relative z-20 shrink-0">
                         <WorkflowControl theme={theme} workflowRun={workflowRun} onRun={onRunWorkflow} onStop={onStopWorkflow} onRefresh={onRefreshWorkflow} />
                     </div>
@@ -93,7 +94,7 @@ export function CanvasTopBar({
                             <Upload className="size-3.5" />
                         </ChromeAction>
                         <ChromeAction title={t("canvas.exportCurrent")} theme={theme} onClick={onExportProject}>
-                            <Download className="size-3.5" />
+                            <DownloadIcon className="size-3.5" />
                         </ChromeAction>
                         <ChromeAction title={t("canvas.toolbar.appearance")} theme={theme} active={appearanceOpen} onClick={() => setAppearanceOpen((value) => !value)}>
                             <Palette className="size-3.5" />

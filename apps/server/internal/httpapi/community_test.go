@@ -308,6 +308,140 @@ func TestTaskListIncludesGalleryShareStatus(t *testing.T) {
 	}
 }
 
+func TestCommunityReportAndBlockSafetyFlow(t *testing.T) {
+	env := newCommunityEnv(t)
+	ctx := context.Background()
+	author, authorToken := env.newUserSession(t, "user")
+	viewer, viewerToken := env.newUserSession(t, "user")
+	taskID := env.newSucceededTask(t, author.ID)
+	title := "需要安全操作的公开作品"
+	submission, err := store.InsertSubmission(
+		ctx,
+		env.st.Pool,
+		author.ID,
+		taskID,
+		&title,
+		nil,
+		[]string{},
+		nil,
+		"approved",
+	)
+	if err != nil {
+		t.Fatalf("insert approved submission: %v", err)
+	}
+
+	// Anonymous and signed-in viewers can initially see the approved work.
+	for _, token := range []string{"", viewerToken} {
+		w := env.do(t, "GET", "/api/v1/gallery/submissions?limit=20", nil, token)
+		data, _ := decode(t, w)
+		items, _ := data["items"].([]any)
+		if w.Code != http.StatusOK || len(items) != 1 {
+			t.Fatalf("initial gallery token=%t: status %d data %#v", token != "", w.Code, data)
+		}
+	}
+
+	path := "/api/v1/gallery/submissions/" + submission.ID.String() + "/reports"
+	w := env.do(t, "POST", path, gin.H{"reason": "spam"}, "")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous report status = %d, want 401", w.Code)
+	}
+	w = env.do(t, "POST", path, gin.H{"reason": "spam"}, authorToken)
+	if _, code := decode(t, w); w.Code != http.StatusUnprocessableEntity || code != "validation_error" {
+		t.Fatalf("self report status=%d code=%s", w.Code, code)
+	}
+	w = env.do(t, "POST", path, gin.H{"reason": "unknown"}, viewerToken)
+	if _, code := decode(t, w); w.Code != http.StatusUnprocessableEntity || code != "validation_error" {
+		t.Fatalf("invalid report status=%d code=%s", w.Code, code)
+	}
+	w = env.do(t, "POST", path, gin.H{"reason": "spam", "detail": "重复推广内容"}, viewerToken)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("report status=%d body=%s", w.Code, w.Body.String())
+	}
+	// Re-reporting updates the same row instead of creating report spam.
+	w = env.do(t, "POST", path, gin.H{"reason": "other", "detail": "补充后的具体问题"}, viewerToken)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("update report status=%d body=%s", w.Code, w.Body.String())
+	}
+	var reportCount int
+	var reason, detail string
+	if err := env.st.Pool.QueryRow(ctx, `
+		SELECT count(*), max(reason), max(detail)
+		FROM gallery_submission_reports
+		WHERE submission_id = $1 AND reporter_user_id = $2`,
+		submission.ID, viewer.ID).Scan(&reportCount, &reason, &detail); err != nil {
+		t.Fatalf("read report: %v", err)
+	}
+	if reportCount != 1 || reason != "other" || detail != "补充后的具体问题" {
+		t.Fatalf("report count=%d reason=%q detail=%q", reportCount, reason, detail)
+	}
+
+	blockPath := "/api/v1/gallery/users/" + author.ID.String() + "/block"
+	w = env.do(t, "POST", blockPath, nil, "")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous block status = %d, want 401", w.Code)
+	}
+	w = env.do(t, "POST", "/api/v1/gallery/users/"+viewer.ID.String()+"/block", nil, viewerToken)
+	if _, code := decode(t, w); w.Code != http.StatusUnprocessableEntity || code != "validation_error" {
+		t.Fatalf("self block status=%d code=%s", w.Code, code)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		w = env.do(t, "POST", blockPath, nil, viewerToken)
+		if w.Code != http.StatusNoContent {
+			t.Fatalf("block attempt %d status=%d body=%s", attempt+1, w.Code, w.Body.String())
+		}
+	}
+
+	w = env.do(t, "GET", "/api/v1/gallery/submissions?limit=20", nil, viewerToken)
+	data, _ := decode(t, w)
+	items, _ := data["items"].([]any)
+	if w.Code != http.StatusOK || len(items) != 0 {
+		t.Fatalf("blocked viewer gallery status=%d data=%#v", w.Code, data)
+	}
+	w = env.do(t, "GET", "/api/v1/me/blocked-users?limit=20", nil, "")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous blocked list status=%d, want 401", w.Code)
+	}
+	w = env.do(t, "GET", "/api/v1/me/blocked-users?limit=20", nil, viewerToken)
+	data, _ = decode(t, w)
+	items, _ = data["items"].([]any)
+	if w.Code != http.StatusOK || len(items) != 1 {
+		t.Fatalf("blocked list status=%d data=%#v", w.Code, data)
+	}
+	blocked, _ := items[0].(map[string]any)
+	if blocked["id"] != author.ID.String() || blocked["username"] != author.Username || blocked["blockedAt"] == nil {
+		t.Fatalf("blocked item=%#v", blocked)
+	}
+
+	w = env.do(t, "DELETE", blockPath, nil, "")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous unblock status=%d, want 401", w.Code)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		w = env.do(t, "DELETE", blockPath, nil, viewerToken)
+		if w.Code != http.StatusNoContent {
+			t.Fatalf("unblock attempt %d status=%d body=%s", attempt+1, w.Code, w.Body.String())
+		}
+	}
+	w = env.do(t, "GET", "/api/v1/me/blocked-users?limit=20", nil, viewerToken)
+	data, _ = decode(t, w)
+	items, _ = data["items"].([]any)
+	if w.Code != http.StatusOK || len(items) != 0 {
+		t.Fatalf("blocked list after unblock status=%d data=%#v", w.Code, data)
+	}
+	w = env.do(t, "GET", "/api/v1/gallery/submissions?limit=20", nil, viewerToken)
+	data, _ = decode(t, w)
+	items, _ = data["items"].([]any)
+	if w.Code != http.StatusOK || len(items) != 1 {
+		t.Fatalf("viewer gallery after unblock status=%d data=%#v", w.Code, data)
+	}
+	w = env.do(t, "GET", "/api/v1/gallery/submissions?limit=20", nil, "")
+	data, _ = decode(t, w)
+	items, _ = data["items"].([]any)
+	if w.Code != http.StatusOK || len(items) != 1 {
+		t.Fatalf("anonymous gallery after block status=%d data=%#v", w.Code, data)
+	}
+}
+
 func TestAssistantImageRunCanBeSubmittedToGallery(t *testing.T) {
 	env := newCommunityEnv(t)
 	user, token := env.newUserSession(t, "user")

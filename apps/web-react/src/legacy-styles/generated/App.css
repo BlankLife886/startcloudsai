@@ -281,6 +281,33 @@ html.color-scheme-dark .main-content.main--wallet-console {
   padding-top: calc(var(--app-header-offset, 82px) + 12px);
 }
 
+.main-content.main--orders-console {
+  padding-top: 0;
+  padding-bottom: 0;
+  height: 100svh;
+  max-height: 100svh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: #ffffff;
+}
+html.color-scheme-dark .main-content.main--orders-console {
+  background: #0d0e14;
+}
+.main-content.main--orders-console > * {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+@media (max-width: 820px) {
+  .main-content.main--orders-console {
+    display: block;
+    height: auto;
+    max-height: none;
+    overflow: visible;
+  }
+}
+
 .main-content.main--profile-console {
   padding-top: 0;
   padding-bottom: 0;

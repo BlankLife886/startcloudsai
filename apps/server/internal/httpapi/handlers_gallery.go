@@ -41,6 +41,14 @@ func (s *Server) publicGallery(c *gin.Context) {
 		return
 	}
 	filter := store.SubmissionFilter{Status: "approved"}
+	viewer, err := s.currentUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if viewer != nil {
+		filter.ViewerID = &viewer.ID
+	}
 	if raw := c.Query("category"); raw != "" {
 		categoryID, perr := uuid.Parse(raw)
 		if perr != nil {
@@ -104,6 +112,163 @@ func (s *Server) publicGallery(c *gin.Context) {
 			"createdAt":        isoValue(sub.CreatedAt),
 		}
 	}))
+}
+
+var galleryReportReasons = map[string]bool{
+	"inappropriate": true,
+	"copyright":     true,
+	"spam":          true,
+	"harassment":    true,
+	"other":         true,
+}
+
+type galleryReportIn struct {
+	Reason string `json:"reason"`
+	Detail string `json:"detail"`
+}
+
+func (s *Server) reportGallerySubmission(c *gin.Context) {
+	user, err := s.requireUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	submissionID, err := parseUUIDParam(c, "id")
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	var body galleryReportIn
+	if err := bindJSON(c, &body); err != nil {
+		fail(c, err)
+		return
+	}
+	body.Reason = strings.TrimSpace(body.Reason)
+	body.Detail = strings.TrimSpace(body.Detail)
+	if !galleryReportReasons[body.Reason] {
+		fail(c, apperr.E("validation_error", "reason: 举报理由无效", 422))
+		return
+	}
+	if len([]rune(body.Detail)) > 500 {
+		fail(c, apperr.E("validation_error", "detail: 长度不能超过 500", 422))
+		return
+	}
+	if body.Reason == "other" && body.Detail == "" {
+		fail(c, apperr.E("validation_error", "detail: 其他问题需要补充说明", 422))
+		return
+	}
+	submission, err := store.GetSubmission(c.Request.Context(), s.St.Pool, submissionID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if submission == nil || submission.Status != "approved" {
+		fail(c, apperr.E("not_found", "社区作品不存在", 404))
+		return
+	}
+	if submission.UserID == user.ID {
+		fail(c, apperr.E("validation_error", "不能举报自己的作品", 422))
+		return
+	}
+	if err := store.UpsertGallerySubmissionReport(
+		c.Request.Context(),
+		s.St.Pool,
+		submission.ID,
+		user.ID,
+		submission.UserID,
+		body.Reason,
+		body.Detail,
+	); err != nil {
+		fail(c, err)
+		return
+	}
+	respondNoContent(c)
+}
+
+func (s *Server) blockGalleryUser(c *gin.Context) {
+	user, err := s.requireUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	blockedUserID, err := parseUUIDParam(c, "id")
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if blockedUserID == user.ID {
+		fail(c, apperr.E("validation_error", "不能屏蔽自己", 422))
+		return
+	}
+	blockedUser, err := store.GetUserByID(c.Request.Context(), s.St.Pool, blockedUserID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if blockedUser == nil || blockedUser.Status != "active" || blockedUser.Role != "user" {
+		fail(c, apperr.E("not_found", "用户不存在", 404))
+		return
+	}
+	if err := store.BlockGalleryUser(c.Request.Context(), s.St.Pool, user.ID, blockedUserID); err != nil {
+		fail(c, err)
+		return
+	}
+	respondNoContent(c)
+}
+
+func (s *Server) myBlockedGalleryUsers(c *gin.Context) {
+	user, err := s.requireUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	limit, cursor, err := pageParams(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	rows, err := store.ListBlockedGalleryUsers(
+		c.Request.Context(),
+		s.St.Pool,
+		user.ID,
+		limit,
+		cursor,
+	)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ok(c, buildPage(rows, limit, func(item *store.BlockedGalleryUser) gin.H {
+		return gin.H{
+			"id":        item.UserID.String(),
+			"username":  item.Username,
+			"avatarUrl": item.AvatarURL,
+			"blockedAt": isoValue(item.CreatedAt),
+		}
+	}))
+}
+
+func (s *Server) unblockGalleryUser(c *gin.Context) {
+	user, err := s.requireUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	blockedUserID, err := parseUUIDParam(c, "id")
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if err := store.UnblockGalleryUser(
+		c.Request.Context(),
+		s.St.Pool,
+		user.ID,
+		blockedUserID,
+	); err != nil {
+		fail(c, err)
+		return
+	}
+	respondNoContent(c)
 }
 
 // categoriesFor 批量取投稿引用的分类。

@@ -199,4 +199,56 @@ void main() {
     expect(find.textContaining('雨夜霓虹街道'), findsNothing);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('saved draft can be cleared before starting a new creation', (
+    tester,
+  ) async {
+    final store = _DraftStore(
+      CreationDraft(
+        prompt: '需要放弃的旧草稿',
+        count: 1,
+        updatedAt: DateTime(2026, 9, 2, 10),
+      ),
+    );
+    final router = GoRouter(
+      initialLocation: '/design',
+      routes: [
+        GoRoute(
+          path: '/design',
+          builder: (context, state) => const DesignScreen(),
+        ),
+        GoRoute(
+          path: '/create',
+          builder: (context, state) => const Scaffold(body: Text('空白创作页')),
+        ),
+        GoRoute(
+          path: '/works',
+          builder: (context, state) => const SizedBox.shrink(),
+        ),
+        GoRoute(
+          path: '/profile/assets',
+          builder: (context, state) => const SizedBox.shrink(),
+        ),
+      ],
+    );
+    addTearDown(router.dispose);
+    await tester.pumpWidget(
+      _scope(MaterialApp.router(routerConfig: router), store: store),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byTooltip('新建文生图'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('design-new-creation')));
+    await tester.pumpAndSettle();
+    expect(find.text('新建文生图？'), findsOneWidget);
+    expect(router.state.uri.path, '/design');
+
+    await tester.tap(find.widgetWithText(FilledButton, '清除并新建'));
+    await tester.pumpAndSettle();
+
+    expect(store.draft, isNull);
+    expect(router.state.uri.path, '/create');
+    expect(find.text('空白创作页'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 }

@@ -132,5 +132,5 @@ export function deleteCloudUserAssetGroup(id: string) {
 }
 
 export function isExistingUserAssetError(error: unknown) {
-    return error instanceof StarcloudsApiError && error.code === "asset_exists";
+    return error instanceof StarcloudsApiError && (error.code === "asset_exists" || error.code === "asset_duplicate_content");
 }

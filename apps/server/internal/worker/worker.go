@@ -1056,7 +1056,7 @@ func (w *Worker) callConfiguredUpstream(ctx context.Context, task *store.Task, s
 	timeout := provider.TimeoutSecs
 	switch provider.Adapter {
 	case modelconfig.AdapterOpenAI:
-		client := c2a.NewWithPolicy(provider.BaseURL, provider.APIKey, timeout, w.Cfg.C2APrivateNetworkAllowed())
+		client := c2a.NewWithPolicy(provider.BaseURL, provider.APIKey, timeout, w.Cfg.C2APrivateNetworkAllowed()).WithOpenAIImageEdits()
 		finalPrompt, size := prompt.Compile(task.Type, task.Prompt, task.Params)
 		imageOptions := c2a.ImageOptions{
 			Quality:               taskParamString(task.Params, "quality"),

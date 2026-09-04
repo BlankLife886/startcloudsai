@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 
 import '../../core/network/api_exception.dart';
+import '../../core/widgets/app_chrome.dart';
 import '../../core/widgets/app_notice.dart';
 import '../../core/widgets/app_top_bar.dart';
 import '../../core/widgets/authenticated_image.dart';
@@ -626,25 +627,7 @@ class _WorksFilterChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return Material(
-      color: selected ? colors.onSurface : colors.surfaceContainerLow,
-      shape: const StadiumBorder(),
-      child: InkWell(
-        customBorder: const StadiumBorder(),
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-          child: Text(
-            label,
-            style: Theme.of(context).textTheme.labelLarge?.copyWith(
-              color: selected ? colors.surface : colors.onSurface,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-        ),
-      ),
-    );
+    return AppFilterChip(label: label, selected: selected, onTap: onTap);
   }
 }
 
@@ -710,7 +693,7 @@ class TaskCard extends StatelessWidget {
         : DateFormat('HH:mm').format(item.createdAt!);
     return Material(
       color: colors.surfaceContainerLow,
-      borderRadius: BorderRadius.circular(14),
+      borderRadius: BorderRadius.circular(8),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: onTap,
@@ -985,32 +968,15 @@ class _LoginRequired extends StatelessWidget {
   const _LoginRequired();
 
   @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(28),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.history, size: 48),
-            const SizedBox(height: 14),
-            Text(
-              '登录后查看历史记录',
-              style: Theme.of(
-                context,
-              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
-            ),
-            const SizedBox(height: 18),
-            FilledButton.icon(
-              onPressed: () => context.push('/login'),
-              icon: const Icon(Icons.login),
-              label: const Text('登录'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => AppStatusView(
+    icon: Icons.history_rounded,
+    title: '登录后查看历史记录',
+    message: '账号验证完成后将自动返回当前页面',
+    actionLabel: '邮箱验证码登录',
+    actionIcon: Icons.login_rounded,
+    onAction: () => context.push('/login'),
+    primaryAction: true,
+  );
 }
 
 class _EmptyWorks extends StatelessWidget {
@@ -1203,13 +1169,11 @@ class _SessionError extends StatelessWidget {
   final VoidCallback onRetry;
 
   @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: OutlinedButton.icon(
-        onPressed: onRetry,
-        icon: const Icon(Icons.refresh),
-        label: const Text('重新检查登录状态'),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => AppStatusView(
+    icon: Icons.cloud_off_outlined,
+    title: '账号状态暂不可用',
+    message: '请检查网络连接后重新验证账号状态',
+    actionLabel: '重新检查登录状态',
+    onAction: onRetry,
+  );
 }

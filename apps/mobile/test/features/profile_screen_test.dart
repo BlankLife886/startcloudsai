@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:starcloudsai_mobile/app/appearance.dart';
 import 'package:starcloudsai_mobile/features/auth/auth.dart';
 import 'package:starcloudsai_mobile/features/checkin/checkin.dart';
 import 'package:starcloudsai_mobile/features/meta/meta.dart';
 import 'package:starcloudsai_mobile/features/profile/profile.dart';
+import 'package:starcloudsai_mobile/features/profile/app_info.dart';
 import 'package:starcloudsai_mobile/features/profile/profile_screen.dart';
 
 const _user = AppUser(
@@ -84,6 +86,14 @@ Widget _screen({
     checkinControllerProvider.overrideWith(_ProfileCheckinController.new),
     appearanceControllerProvider.overrideWith(_ProfileAppearanceController.new),
     latestChangelogProvider.overrideWith((ref) async => null),
+    appPackageInfoProvider.overrideWith(
+      (ref) async => PackageInfo(
+        appName: '星空云绘',
+        packageName: 'com.starcloudisai.app',
+        version: '1.2.3',
+        buildNumber: '45',
+      ),
+    ),
   ],
   child: MaterialApp(
     builder: (context, child) => MediaQuery(
@@ -111,6 +121,18 @@ void main() {
     expect(profileWebsiteUri('  '), isNull);
   });
 
+  test('formats installed release and non-production versions accurately', () {
+    final info = PackageInfo(
+      appName: '星空云绘',
+      packageName: 'com.starcloudisai.app',
+      version: '1.2.3',
+      buildNumber: '45',
+    );
+
+    expect(installedVersionLabel(info, '正式环境'), 'v1.2.3 (45)');
+    expect(installedVersionLabel(info, '预发布环境'), 'v1.2.3 (45) · 预发布环境');
+  });
+
   testWidgets('profile website opens safely from a flat metadata action', (
     tester,
   ) async {
@@ -128,10 +150,13 @@ void main() {
 
     final website = find.byKey(const Key('profile-website'));
     expect(website, findsOneWidget);
-    expect(
+    final focusSurface = tester.widget<DecoratedBox>(
       find.descendant(of: website, matching: find.byType(DecoratedBox)),
-      findsNothing,
     );
+    final focusDecoration = focusSurface.decoration as BoxDecoration;
+    expect(focusDecoration.color, isNull);
+    expect(focusDecoration.boxShadow, isNull);
+    expect(focusDecoration.border?.top.color, Colors.transparent);
     final hero = tester.widget<ColoredBox>(
       find.byKey(const Key('profile-hero-surface')),
     );
@@ -183,13 +208,14 @@ void main() {
     for (final unique in [
       '内容管理',
       '我的投稿',
-      '通知中心',
+      '我的收藏',
       '权益与服务',
       '每日签到',
       '福利中心',
-      '套餐与订单',
+      '会员与订单',
       '设置与支持',
       '外观设置',
+      '账号与安全',
       '问题反馈',
       '关于星空云绘',
     ]) {
@@ -208,7 +234,10 @@ void main() {
       }
     }
     expect(find.byTooltip('刷新'), findsNothing);
+    expect(find.byKey(const Key('profile-favorite-prompts')), findsOneWidget);
+    expect(find.text('通知中心'), findsNothing);
     expect(find.text('退出登录'), findsNothing);
+    expect(find.text('v1.2.3 (45) · 开发环境'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 

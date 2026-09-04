@@ -36,7 +36,7 @@ test("workflow controls live with the right-side canvas actions", async () => {
     const topBar = await readCanvasSource("components/canvas/canvas-top-bar.tsx");
     assert.match(topBar, /data-canvas-topbar-actions/);
     assert.match(topBar, /canvas-workflow-control-slot/);
-    assert.match(topBar, /data-canvas-topbar-actions>[\s\S]*canvas-workflow-control-slot[\s\S]*canvas-chrome-cluster/);
+    assert.match(topBar, /data-canvas-topbar-actions[^>]*>[\s\S]*canvas-workflow-control-slot[\s\S]*canvas-chrome-cluster/);
 });
 
 test("text node keeps edit and font controls in its dedicated bottom action row", async () => {

@@ -227,6 +227,23 @@ func TestVerifyCallback(t *testing.T) {
 	}
 }
 
+func TestIsTerminalOrderError(t *testing.T) {
+	for _, message := range []string{"云端订单编号不存在", "订单已过期", "订单已关闭", "order not found", "order expired"} {
+		if !IsTerminalOrderError(&APIError{Code: -1, Message: message}) {
+			t.Fatalf("terminal error %q not recognized", message)
+		}
+	}
+	for _, err := range []error{
+		&APIError{Code: -1, Message: "订单未支付"},
+		&APIError{Code: -1, Message: "服务繁忙"},
+		errors.New("network unavailable"),
+	} {
+		if IsTerminalOrderError(err) {
+			t.Fatalf("non-terminal error recognized: %v", err)
+		}
+	}
+}
+
 func TestGetServerStateSignsTimestamp(t *testing.T) {
 	secret := "state-secret"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

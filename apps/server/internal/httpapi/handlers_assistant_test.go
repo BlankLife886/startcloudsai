@@ -875,6 +875,13 @@ func TestAssistantToolExecutionMode(t *testing.T) {
 	for _, test := range []struct{ workspace, mode, prompt, want string }{
 		{modelconfig.WorkspaceAssistant, "chat", "重新查询最近失败的任务状态，说明失败原因、重试次数和退款情况。", "agent"},
 		{modelconfig.WorkspaceAssistant, "chat", "联网搜索最新消息", "agent"},
+		{modelconfig.WorkspaceAssistant, "chat", "请帮我设计一张简洁的品牌海报", "agent"},
+		{modelconfig.WorkspaceAssistant, "chat", "先分析这张图，然后生成一张产品海报", "agent"},
+		{modelconfig.WorkspaceAssistant, "chat", "把这张图高清放大", "agent"},
+		{modelconfig.WorkspaceAssistant, "chat", "不要生成图片，只分析构图", "chat"},
+		{modelconfig.WorkspaceAssistant, "chat", "如何生成一张海报", "chat"},
+		{modelconfig.WorkspaceAssistant, "chat", "设计一个图片数据库表结构", "chat"},
+		{modelconfig.WorkspaceAssistant, "chat", "解释网页截图工具的实现原理", "chat"},
 		{modelconfig.WorkspaceAssistant, "chat", "解释对象存储", "chat"},
 		{modelconfig.WorkspaceCanvas, "chat", "最近失败的任务状态", "chat"},
 		{modelconfig.WorkspaceAssistant, "image", "生成图片", "image"},
@@ -882,6 +889,184 @@ func TestAssistantToolExecutionMode(t *testing.T) {
 		if got := assistantToolExecutionMode(test.workspace, test.mode, test.prompt); got != test.want {
 			t.Fatalf("assistantToolExecutionMode(%q, %q, %q) = %q, want %q", test.workspace, test.mode, test.prompt, got, test.want)
 		}
+	}
+}
+
+func TestAssistantRunAutoUpgradePreparesAgentCapabilities(t *testing.T) {
+	env := newCommunityEnv(t)
+	env.cfg.Sub2APIAPIKey = "test-key"
+	env.cfg.Sub2APIBaseURL = "https://sub2api.test"
+	user, token := env.newUserSession(t, "user")
+	created := env.do(t, http.MethodPost, "/api/v1/assistant/conversations", map[string]any{
+		"title": "Server-side agent routing",
+	}, token)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create conversation: status %d body %s", created.Code, created.Body.String())
+	}
+	conversation, _ := decode(t, created)
+
+	response := env.do(t, http.MethodPost, "/api/v1/assistant/runs", map[string]any{
+		"conversationId": conversation["id"],
+		"prompt":         "请帮我设计一张简洁的品牌海报",
+		"mode":           "chat",
+		"count":          1,
+	}, token)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create run: status %d body %s", response.Code, response.Body.String())
+	}
+	payload, _ := decode(t, response)
+	runPayload, _ := payload["run"].(map[string]any)
+	runID, err := uuid.Parse(fmt.Sprint(runPayload["id"]))
+	if err != nil {
+		t.Fatalf("run id = %#v: %v", runPayload["id"], err)
+	}
+	run, err := store.GetAssistantRun(context.Background(), env.st.Pool, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run == nil || run.UserID != user.ID || run.Mode != "agent" {
+		t.Fatalf("auto-routed run = %#v, want owned agent run", run)
+	}
+	if got := fmt.Sprint(run.Params["requestedMode"]); got != "chat" {
+		t.Fatalf("requestedMode = %q, want chat", got)
+	}
+	if _, ok := run.Params["_imageModelCatalog"]; !ok {
+		t.Fatalf("auto-routed agent did not receive image model catalog: %#v", run.Params)
+	}
+}
+
+func TestAssistantAgentAcceptsReadyDocumentAttachments(t *testing.T) {
+	env := newCommunityEnv(t)
+	env.cfg.Sub2APIAPIKey = "test-key"
+	env.cfg.Sub2APIBaseURL = "https://sub2api.test"
+	user, token := env.newUserSession(t, "user")
+	ctx := context.Background()
+	fileID := uuid.New()
+	objectKey := "uploads/" + user.ID.String() + "/original/" + fileID.String() + ".md"
+	if err := store.RegisterUserUploadObjects(ctx, env.st.Pool, user.ID, []string{objectKey}); err != nil {
+		t.Fatal(err)
+	}
+	file, err := store.InsertAssistantFile(ctx, env.st.Pool, store.AssistantFile{
+		ID: fileID, UserID: user.ID, ObjectKey: objectKey,
+		Name: "agent-notes.md", ContentType: "text/markdown", SizeBytes: 128, SHA256: strings.Repeat("a", 64),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.st.Pool.Exec(ctx, `UPDATE assistant_files SET status='ready', char_count=64, segment_count=1 WHERE id=$1`, file.ID); err != nil {
+		t.Fatal(err)
+	}
+	created := env.do(t, http.MethodPost, "/api/v1/assistant/conversations", map[string]any{
+		"title": "Agent document workflow",
+	}, token)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create conversation: status %d body %s", created.Code, created.Body.String())
+	}
+	conversation, _ := decode(t, created)
+	response := env.do(t, http.MethodPost, "/api/v1/assistant/runs", map[string]any{
+		"conversationId": conversation["id"],
+		"prompt":         "读取附件，联网核对最新资料并导出 CSV 文件",
+		"mode":           "agent",
+		"attachments":    []map[string]any{{"id": file.ID.String()}},
+		"count":          1,
+	}, token)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create agent run with attachment: status %d body %s", response.Code, response.Body.String())
+	}
+	payload, _ := decode(t, response)
+	runPayload, _ := payload["run"].(map[string]any)
+	runID, err := uuid.Parse(fmt.Sprint(runPayload["id"]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := store.GetAssistantRun(ctx, env.st.Pool, runID)
+	if err != nil || run == nil {
+		t.Fatalf("load run: run=%#v err=%v", run, err)
+	}
+	fileIDs, _ := run.Params["_assistantFileIds"].([]any)
+	if run.Mode != "agent" || len(fileIDs) != 1 || fmt.Sprint(fileIDs[0]) != file.ID.String() {
+		t.Fatalf("agent attachment context = mode %q params %#v", run.Mode, run.Params)
+	}
+}
+
+func TestAssistantPPTProviderValidationOnlyAppliesToDedicatedRequests(t *testing.T) {
+	env := newCommunityEnv(t)
+	env.cfg.Sub2APIAPIKey = "test-key"
+	env.cfg.Sub2APIBaseURL = "https://sub2api.test"
+	user, token := env.newUserSession(t, "user")
+	createConversation := func(title string) map[string]any {
+		t.Helper()
+		response := env.do(t, http.MethodPost, "/api/v1/assistant/conversations", map[string]any{"title": title}, token)
+		if response.Code != http.StatusCreated {
+			t.Fatalf("create %s conversation: status %d body %s", title, response.Code, response.Body.String())
+		}
+		conversation, _ := decode(t, response)
+		return conversation
+	}
+
+	pureConversation := createConversation("Dedicated PPT")
+	pure := env.do(t, http.MethodPost, "/api/v1/assistant/runs", map[string]any{
+		"conversationId": pureConversation["id"], "prompt": "制作一份产品发布会 PPT", "mode": "chat",
+	}, token)
+	if pure.Code != http.StatusUnprocessableEntity || !strings.Contains(pure.Body.String(), "assistant_editable_files_disabled") {
+		t.Fatalf("pure PPT without provider: status %d body %s", pure.Code, pure.Body.String())
+	}
+
+	webConversation := createConversation("Web PPT")
+	web := env.do(t, http.MethodPost, "/api/v1/assistant/runs", map[string]any{
+		"conversationId": webConversation["id"], "prompt": "联网搜索最新资料并生成可编辑 PPT", "mode": "chat",
+	}, token)
+	if web.Code != http.StatusCreated {
+		t.Fatalf("web PPT without editable provider: status %d body %s", web.Code, web.Body.String())
+	}
+	webPayload, _ := decode(t, web)
+	webRunPayload, _ := webPayload["run"].(map[string]any)
+	webRunID, err := uuid.Parse(fmt.Sprint(webRunPayload["id"]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	webRun, err := store.GetAssistantRun(context.Background(), env.st.Pool, webRunID)
+	if err != nil || webRun == nil || webRun.Mode != "agent" {
+		t.Fatalf("web PPT run = %#v err=%v", webRun, err)
+	}
+
+	ctx := context.Background()
+	fileID := uuid.New()
+	objectKey := "uploads/" + user.ID.String() + "/original/" + fileID.String() + ".md"
+	if err := store.RegisterUserUploadObjects(ctx, env.st.Pool, user.ID, []string{objectKey}); err != nil {
+		t.Fatal(err)
+	}
+	file, err := store.InsertAssistantFile(ctx, env.st.Pool, store.AssistantFile{
+		ID: fileID, UserID: user.ID, ObjectKey: objectKey,
+		Name: "ppt-source.md", ContentType: "text/markdown", SizeBytes: 128, SHA256: strings.Repeat("b", 64),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.st.Pool.Exec(ctx, `UPDATE assistant_files SET status='ready', char_count=64, segment_count=1 WHERE id=$1`, file.ID); err != nil {
+		t.Fatal(err)
+	}
+	attachmentConversation := createConversation("Attachment PPT")
+	attached := env.do(t, http.MethodPost, "/api/v1/assistant/runs", map[string]any{
+		"conversationId": attachmentConversation["id"], "prompt": "根据附件制作一份可编辑 PPT", "mode": "chat",
+		"attachments": []map[string]any{{"id": file.ID.String()}},
+	}, token)
+	if attached.Code != http.StatusCreated {
+		t.Fatalf("attachment PPT without editable provider: status %d body %s", attached.Code, attached.Body.String())
+	}
+	attachedPayload, _ := decode(t, attached)
+	attachedRunPayload, _ := attachedPayload["run"].(map[string]any)
+	attachedRunID, err := uuid.Parse(fmt.Sprint(attachedRunPayload["id"]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachedRun, err := store.GetAssistantRun(ctx, env.st.Pool, attachedRunID)
+	if err != nil || attachedRun == nil {
+		t.Fatalf("attachment PPT run = %#v err=%v", attachedRun, err)
+	}
+	fileIDs, _ := attachedRun.Params["_assistantFileIds"].([]any)
+	if attachedRun.Mode != "chat" || len(fileIDs) != 1 || fmt.Sprint(fileIDs[0]) != file.ID.String() {
+		t.Fatalf("attachment PPT context = mode %q params %#v", attachedRun.Mode, attachedRun.Params)
 	}
 }
 
@@ -1417,7 +1602,7 @@ func TestDeleteActiveAssistantConversationRequiresConfirmation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = store.InsertAssistantRun(ctx, env.st.Pool, store.AssistantRun{
+	run, err := store.InsertAssistantRun(ctx, env.st.Pool, store.AssistantRun{
 		ID: uuid.New(), UserID: user.ID, ConversationID: conversation.ID,
 		UserMessageID: userMessage.ID, AssistantMessageID: assistantMessage.ID,
 		Mode: "image", Prompt: "生成图片",
@@ -1434,6 +1619,12 @@ func TestDeleteActiveAssistantConversationRequiresConfirmation(t *testing.T) {
 	if _, code := decode(t, refused); code != "assistant_conversation_busy" {
 		t.Fatalf("delete active conversation code = %q", code)
 	}
+	refusedMessage := env.do(t, http.MethodDelete,
+		"/api/v1/assistant/messages/"+assistantMessage.ID.String(), nil, token)
+	if refusedMessage.Code != http.StatusConflict {
+		t.Fatalf("delete active assistant message: status %d body %s",
+			refusedMessage.Code, refusedMessage.Body.String())
+	}
 
 	confirmed := env.do(t, http.MethodDelete, path+"?cancelActive=true", nil, token)
 	if confirmed.Code != http.StatusNoContent {
@@ -1442,6 +1633,15 @@ func TestDeleteActiveAssistantConversationRequiresConfirmation(t *testing.T) {
 	stored, err := store.GetUserAssistantConversation(ctx, env.st.Pool, user.ID, conversation.ID)
 	if err != nil || stored != nil {
 		t.Fatalf("conversation after confirmed delete = %#v, err = %v", stored, err)
+	}
+	archivedRun, err := store.GetAssistantRun(ctx, env.st.Pool, run.ID)
+	if err != nil || archivedRun != nil {
+		t.Fatalf("assistant run after confirmed delete = %#v, err = %v", archivedRun, err)
+	}
+	auditTask, err := store.GetTask(ctx, env.st.Pool, run.ID)
+	if err != nil || auditTask == nil || auditTask.Status != "canceled" ||
+		auditTask.DeletedAt == nil || auditTask.DeletionActor == nil || *auditTask.DeletionActor != "user" {
+		t.Fatalf("assistant deletion audit task = %#v, err = %v", auditTask, err)
 	}
 }
 

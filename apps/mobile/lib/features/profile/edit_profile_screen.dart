@@ -5,7 +5,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../app/starclouds_theme.dart';
-import '../../app/user_session_cache.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/widgets/app_chrome.dart';
 import '../../core/widgets/app_notice.dart';
@@ -56,11 +55,29 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
   final _locationController = TextEditingController();
   final _websiteController = TextEditingController();
   bool _initialized = false;
+  String _savedUsername = '';
+  String _savedBio = '';
+  String _savedLocation = '';
+  String _savedWebsite = '';
+  bool _savedRequireCostConfirm = true;
   bool _requireCostConfirm = true;
   bool _selectingAvatar = false;
   bool _saving = false;
+  bool _allowPop = false;
+  bool _discardDialogOpen = false;
   bool _removeAvatar = false;
   ProfileImageDraft? _avatarDraft;
+
+  bool get _hasUnsavedChanges {
+    if (!_initialized) return false;
+    return _usernameController.text.trim() != _savedUsername ||
+        _bioController.text.trim() != _savedBio ||
+        _locationController.text.trim() != _savedLocation ||
+        _websiteController.text.trim() != _savedWebsite ||
+        _requireCostConfirm != _savedRequireCostConfirm ||
+        _removeAvatar ||
+        _avatarDraft != null;
+  }
 
   @override
   void dispose() {
@@ -80,6 +97,19 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
     _locationController.text = user.location;
     _websiteController.text = user.websiteUrl;
     _requireCostConfirm = user.requireCostConfirm;
+    _rememberSaved(user);
+  }
+
+  void _rememberSaved(AppUser user) {
+    _savedUsername = user.username.trim();
+    _savedBio = user.bio.trim();
+    _savedLocation = user.location.trim();
+    _savedWebsite = user.websiteUrl.trim();
+    _savedRequireCostConfirm = user.requireCostConfirm;
+  }
+
+  void _onFieldChanged(String _) {
+    setState(() {});
   }
 
   Future<void> _chooseAvatar(AppUser user) async {
@@ -218,6 +248,7 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
       requireCostConfirm: updated.requireCostConfirm,
     );
     ref.read(sessionControllerProvider.notifier).replaceUser(saved);
+    _rememberSaved(saved);
     return saved;
   }
 
@@ -254,7 +285,7 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
       );
       if (!mounted) return;
       AppNotice.success(context, '个人资料已更新');
-      context.pop(true);
+      _popAfterAllowing(true);
     } catch (error) {
       if (mounted) _showError(error, fallback: '资料保存失败，请稍后重试');
     } finally {
@@ -271,38 +302,62 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
     AppNotice.error(context, message);
   }
 
-  Future<void> _signOut() async {
-    if (_saving) return;
-    await ref.read(sessionControllerProvider.notifier).signOut();
-    ref.read(userSessionCacheProvider).clear();
-    if (mounted) context.go('/discover');
+  Future<bool> _confirmDiscardChanges() async {
+    if (_discardDialogOpen) return false;
+    _discardDialogOpen = true;
+    try {
+      return await showAppDialog<bool>(
+            context: context,
+            builder: (dialogContext) => AppDialog(
+              icon: Icon(
+                Icons.edit_note_rounded,
+                color: Theme.of(dialogContext).colorScheme.primary,
+              ),
+              title: const Text('放弃未保存的修改？'),
+              content: const Text('当前资料尚未保存，退出后本次修改将丢失。'),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext, false),
+                  child: const Text('继续编辑'),
+                ),
+                FilledButton(
+                  key: const Key('discard-profile-changes'),
+                  onPressed: () => Navigator.pop(dialogContext, true),
+                  child: const Text('放弃修改'),
+                ),
+              ],
+            ),
+          ) ??
+          false;
+    } finally {
+      _discardDialogOpen = false;
+    }
   }
 
-  Future<void> _confirmSignOut() async {
-    if (_saving) return;
-    final confirmed = await showAppDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AppDialog(
-        icon: const Icon(Icons.logout_rounded),
-        title: const Text('退出当前账号？'),
-        content: const Text('本机登录状态将被清除，作品、积分和素材仍保存在账号中。'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: Theme.of(dialogContext).colorScheme.error,
-              foregroundColor: Theme.of(dialogContext).colorScheme.onError,
-            ),
-            onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('确认退出'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed == true && mounted) await _signOut();
+  Future<void> _handlePop(bool didPop, bool? result) async {
+    if (didPop || _allowPop) return;
+    await _requestExit();
+  }
+
+  Future<void> _requestExit() async {
+    if (_saving) {
+      AppNotice.warning(context, '资料正在保存，请稍候');
+      return;
+    }
+    if (!_hasUnsavedChanges) {
+      _popAfterAllowing();
+      return;
+    }
+    if (!await _confirmDiscardChanges() || !mounted) return;
+    _popAfterAllowing();
+  }
+
+  void _popAfterAllowing([bool? result]) {
+    if (!mounted) return;
+    setState(() => _allowPop = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) context.pop(result);
+    });
   }
 
   @override
@@ -311,22 +366,31 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
     final user = session.asData?.value.user;
     if (user != null) _initialize(user);
     final colors = Theme.of(context).colorScheme;
-    return Scaffold(
-      backgroundColor: colors.surface,
-      appBar: const AppTopBar(
-        title: Text('编辑资料'),
-        fallbackLocation: '/profile',
+    return PopScope<bool>(
+      canPop: _allowPop || (!_saving && !_hasUnsavedChanges),
+      onPopInvokedWithResult: _handlePop,
+      child: Scaffold(
+        backgroundColor: colors.surface,
+        appBar: AppTopBar(
+          title: const Text('编辑资料'),
+          fallbackLocation: '/profile',
+          leading: AppBackButton(onPressed: _requestExit),
+        ),
+        body: session.when(
+          loading: () => const Center(child: CircularProgressIndicator()),
+          error: (error, stackTrace) => const Center(child: Text('账号资料加载失败')),
+          data: (state) => state.user == null
+              ? const Center(child: Text('请先登录'))
+              : _buildForm(state.user!),
+        ),
+        bottomNavigationBar: user == null
+            ? null
+            : _EditSaveBar(
+                saving: _saving,
+                dirty: _hasUnsavedChanges,
+                onSave: () => _save(user),
+              ),
       ),
-      body: session.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (error, stackTrace) => const Center(child: Text('账号资料加载失败')),
-        data: (state) => state.user == null
-            ? const Center(child: Text('请先登录'))
-            : _buildForm(state.user!),
-      ),
-      bottomNavigationBar: user == null
-          ? null
-          : _EditSaveBar(saving: _saving, onSave: () => _save(user)),
     );
   }
 
@@ -390,7 +454,7 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
                       label: '用户名',
                       child: TextFormField(
                         controller: _usernameController,
-                        onChanged: (_) => setState(() {}),
+                        onChanged: _onFieldChanged,
                         maxLength: 64,
                         textInputAction: TextInputAction.next,
                         autofillHints: const [AutofillHints.name],
@@ -430,6 +494,7 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
                         maxLength: 80,
                         textInputAction: TextInputAction.next,
                         validator: validateProfileLocation,
+                        onChanged: _onFieldChanged,
                         decoration: _editInput(hint: '选填'),
                       ),
                     ),
@@ -444,6 +509,7 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
                         textInputAction: TextInputAction.next,
                         autofillHints: const [AutofillHints.url],
                         validator: validateProfileWebsite,
+                        onChanged: _onFieldChanged,
                         decoration: _editInput(hint: '选填，需包含 https://'),
                       ),
                     ),
@@ -459,6 +525,7 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
                         maxLength: 280,
                         textInputAction: TextInputAction.newline,
                         validator: validateProfileBio,
+                        onChanged: _onFieldChanged,
                         decoration: _editInput(hint: '选填'),
                       ),
                     ),
@@ -473,17 +540,7 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
                       ? null
                       : (value) => setState(() => _requireCostConfirm = value),
                 ),
-                const SizedBox(height: 28),
-                TextButton.icon(
-                  key: const Key('profile-sign-out'),
-                  style: TextButton.styleFrom(
-                    foregroundColor: colors.error,
-                    minimumSize: const Size.fromHeight(48),
-                  ),
-                  onPressed: _saving ? null : _confirmSignOut,
-                  icon: const Icon(Icons.logout),
-                  label: const Text('退出登录'),
-                ),
+                const SizedBox(height: 16),
               ],
             ),
           ),
@@ -796,9 +853,14 @@ class _EditPreferenceCard extends StatelessWidget {
 }
 
 class _EditSaveBar extends StatelessWidget {
-  const _EditSaveBar({required this.saving, required this.onSave});
+  const _EditSaveBar({
+    required this.saving,
+    required this.dirty,
+    required this.onSave,
+  });
 
   final bool saving;
+  final bool dirty;
   final VoidCallback onSave;
 
   @override
@@ -820,15 +882,69 @@ class _EditSaveBar extends StatelessWidget {
           top: false,
           child: Padding(
             padding: const EdgeInsets.fromLTRB(20, 12, 20, 12),
-            child: FilledButton(
-              onPressed: saving ? null : onSave,
-              style: FilledButton.styleFrom(
-                minimumSize: const Size.fromHeight(48),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                SizedBox(
+                  height: 22,
+                  child: AnimatedOpacity(
+                    key: const Key('edit-unsaved-state'),
+                    opacity: dirty || saving ? 1 : 0,
+                    duration: const Duration(milliseconds: 160),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          saving ? Icons.sync_rounded : Icons.circle_rounded,
+                          size: saving ? 15 : 7,
+                          color: colors.primary,
+                        ),
+                        const SizedBox(width: 7),
+                        Flexible(
+                          child: Text(
+                            saving ? '正在安全保存' : '有未保存的修改',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.labelMedium
+                                ?.copyWith(
+                                  color: colors.onSurfaceVariant,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
-              ),
-              child: Text(saving ? '保存中' : '保存资料'),
+                const SizedBox(height: 6),
+                FilledButton.icon(
+                  onPressed: saving || !dirty ? null : onSave,
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size.fromHeight(48),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                  icon: saving
+                      ? const SizedBox.square(
+                          dimension: 17,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : Icon(
+                          dirty
+                              ? Icons.save_outlined
+                              : Icons.check_circle_outline_rounded,
+                        ),
+                  label: Text(
+                    saving
+                        ? '保存中'
+                        : dirty
+                        ? '保存修改'
+                        : '已保存',
+                  ),
+                ),
+              ],
             ),
           ),
         ),

@@ -421,7 +421,38 @@ func (s *Server) deleteAssistantMessage(c *gin.Context) {
 		respondNoContent(c)
 		return
 	}
-	deleted, err := store.DeleteUserAssistantMessage(c.Request.Context(), s.St.Pool, user.ID, id)
+	deleted := false
+	err = s.St.Tx(c.Request.Context(), func(tx pgx.Tx) error {
+		if lockErr := store.LockAssistantRunsForUser(c.Request.Context(), tx, user.ID); lockErr != nil {
+			return lockErr
+		}
+		message, getErr := store.GetAssistantMessage(c.Request.Context(), tx, id)
+		if getErr != nil {
+			return getErr
+		}
+		if message != nil {
+			conversation, conversationErr := store.GetUserAssistantConversation(
+				c.Request.Context(), tx, user.ID, message.ConversationID,
+			)
+			if conversationErr != nil {
+				return conversationErr
+			}
+			if conversation != nil {
+				active, activeErr := store.ListActiveUserAssistantRuns(c.Request.Context(), tx, user.ID)
+				if activeErr != nil {
+					return activeErr
+				}
+				for _, run := range active {
+					if run.UserMessageID == id || run.AssistantMessageID == id {
+						return apperr.E("assistant_conversation_busy", "请先停止当前任务", 409)
+					}
+				}
+			}
+		}
+		var deleteErr error
+		deleted, deleteErr = store.DeleteUserAssistantMessage(c.Request.Context(), tx, user.ID, id)
+		return deleteErr
+	})
 	if err != nil {
 		fail(c, err)
 		return
@@ -431,6 +462,49 @@ func (s *Server) deleteAssistantMessage(c *gin.Context) {
 		return
 	}
 	respondNoContent(c)
+}
+
+type assistantMessageFeedbackIn struct {
+	Rating string `json:"rating"`
+}
+
+func (s *Server) setAssistantMessageFeedback(c *gin.Context) {
+	user, err := s.requireUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	messageID, err := parseUUIDParam(c, "id")
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	var body assistantMessageFeedbackIn
+	if err := bindJSON(c, &body); err != nil {
+		fail(c, err)
+		return
+	}
+	body.Rating = strings.ToLower(strings.TrimSpace(body.Rating))
+	if body.Rating != "" && body.Rating != "positive" && body.Rating != "negative" {
+		fail(c, apperr.E("validation_error", "rating: 仅支持 positive 或 negative", 422))
+		return
+	}
+	message, err := store.SetUserAssistantMessageFeedback(
+		c.Request.Context(),
+		s.St.Pool,
+		user.ID,
+		messageID,
+		body.Rating,
+	)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if message == nil {
+		fail(c, apperr.E("not_found", "助手回复不存在", 404))
+		return
+	}
+	ok(c, assistantMessageDict(message))
 }
 
 func (s *Server) deleteAssistantMessageImage(c *gin.Context) {
@@ -635,13 +709,14 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		fail(c, apperr.E("validation_error", "无效的创作模式", 422))
 		return
 	}
+	requestedMode := body.Mode
 	body.Attachments, err = normalizeAssistantFileAttachments(body.Attachments)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	if len(body.Attachments) > 0 && body.Mode != "chat" {
-		fail(c, apperr.E("validation_error", "文档附件仅支持对话分析模式", 422))
+	if len(body.Attachments) > 0 && body.Mode == "image" {
+		fail(c, apperr.E("validation_error", "文档附件不支持直接生图，请使用对话或 Agent 模式", 422))
 		return
 	}
 	body.Skill = strings.TrimSpace(body.Skill)
@@ -694,6 +769,8 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		}
 		workspace = requestedWorkspace
 	}
+	executionMode := assistantToolExecutionMode(workspace, requestedMode, body.Prompt)
+	body.Mode = executionMode
 	canvasAgent := workspace == modelconfig.WorkspaceCanvas && body.Mode == "agent"
 	body.ReasoningEffort, err = normalizeAssistantReasoningEffort(body.ReasoningEffort, false)
 	if err != nil {
@@ -763,7 +840,7 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 	}
 	editableKind := ""
 	if workspace == modelconfig.WorkspaceAssistant && body.Mode != "image" {
-		editableKind = assistanttools.EditableFileKindRequested(body.Prompt)
+		editableKind = assistanttools.DedicatedEditableFileKindRequested(body.Prompt, len(body.Attachments) > 0)
 	}
 	if editableKind != "" {
 		if !modelCfg.EditableFiles.Enabled {
@@ -980,7 +1057,7 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 	params := map[string]any{
 		"referenceImages": references, "prompt": body.Prompt, "model": body.Model, "count": body.Count,
 		"serviceKey": body.ServiceKey, "fastMode": body.FastMode, "_serviceProvider": serviceProvider,
-		"requestedMode": body.Mode,
+		"requestedMode": requestedMode,
 		"workspace":     workspace,
 	}
 	if len(imagePlanItems) > 0 {
@@ -1279,7 +1356,6 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 			}
 			assistantMetadata[key] = value
 		}
-		executionMode := assistantToolExecutionMode(workspace, body.Mode, body.Prompt)
 		assistantAgentTrace := executionMode == "agent"
 		assistantMetadata["runId"] = runID.String()
 		assistantMetadata["pending"] = true
@@ -1320,7 +1396,7 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 			} else {
 				snapshotJSON, _ = json.Marshal(map[string]any{
 					"goal":            truncateRunes(body.Prompt, 2000),
-					"requestedMode":   body.Mode,
+					"requestedMode":   requestedMode,
 					"requestedCount":  body.Count,
 					"referenceCount":  len(references),
 					"attachmentCount": len(body.Attachments),
@@ -1384,8 +1460,7 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 }
 
 func assistantToolExecutionMode(workspace, mode, prompt string) string {
-	if workspace == modelconfig.WorkspaceAssistant && mode == "chat" &&
-		(assistanttools.WebSearchRequested(prompt) || assistanttools.TaskStatusRequested(prompt)) {
+	if workspace == modelconfig.WorkspaceAssistant && mode == "chat" && assistanttools.AgentExecutionRequested(prompt) {
 		return "agent"
 	}
 	return mode
@@ -1400,6 +1475,10 @@ func assistantRunReservedCost(mode string, chatCostCents, imageCostCents int64) 
 
 func (s *Server) enqueueAssistantRunFromOutbox(ctx context.Context, run *store.AssistantRun) bool {
 	if run == nil || run.Status != "queued" {
+		return false
+	}
+	if s.Queue == nil {
+		log.Printf("assistant run %s enqueue deferred to outbox: queue is unavailable", run.ID)
 		return false
 	}
 	ready, err := store.AssistantRunDispatchable(ctx, s.St.Pool, run.ID, assistantActiveRunLimit)

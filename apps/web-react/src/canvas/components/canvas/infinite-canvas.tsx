@@ -11,6 +11,7 @@ export const MAX_CANVAS_SCALE = 5;
 const VIEWPORT_COMMIT_MS = 450;
 const LOW_ZOOM = 0.14;
 const GRID_BASE = 48;
+const GRID_OVERSCAN = 256;
 let liveCanvasScale = 1;
 
 export function getCanvasLiveScale(fallback = 1) {
@@ -67,9 +68,15 @@ function paintViewport(world: HTMLElement | null, grid: HTMLElement | null, stag
     if (world) world.style.transform = worldTransform(viewport);
     if (grid) {
         const size = GRID_BASE * viewport.k * gridStep(viewport.k);
-        grid.style.setProperty("--canvas-grid-size", `${size}px`);
-        grid.style.setProperty("--canvas-grid-x", `${wrapOffset(viewport.x, size)}px`);
-        grid.style.setProperty("--canvas-grid-y", `${wrapOffset(viewport.y, size)}px`);
+        const sizeValue = `${size}px`;
+        if (grid.dataset.canvasGridSize !== sizeValue) {
+            grid.dataset.canvasGridSize = sizeValue;
+            grid.style.setProperty("--canvas-grid-size", sizeValue);
+            grid.style.setProperty("--canvas-grid-origin", `${wrapOffset(GRID_OVERSCAN, size)}px`);
+        }
+        const offsetX = wrapOffset(viewport.x, size) - size;
+        const offsetY = wrapOffset(viewport.y, size) - size;
+        grid.style.transform = `translate3d(${offsetX}px, ${offsetY}px, 0)`;
     }
     stage?.classList.toggle("canvas-stage--low-zoom", viewport.k <= LOW_ZOOM);
 }
@@ -378,6 +385,7 @@ export function InfiniteCanvas({
         <div
             ref={containerRef}
             className="canvas-stage relative h-full w-full select-none overflow-hidden"
+            data-guide="canvas-board"
             style={{ background: theme.canvas.background, cursor: activeTool === "pan" ? "grab" : undefined }}
             onPointerDown={handlePointerDown}
             onContextMenu={(event) => {

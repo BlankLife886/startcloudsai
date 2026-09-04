@@ -98,5 +98,5 @@ export function repairMisappliedCanvasWorkflowOutputs(nodes: CanvasNodeData[]) {
 }
 
 function hasUsableImage(image: CanvasNodeImage) {
-    return Boolean(image.taskId && image.status === "loading") || isUsableCanvasImageSource(image.content) || isUsableCanvasImageStorageKey(image.storageKey);
+    return Boolean(image.deletedByHistory) || Boolean(image.taskId && image.status === "loading") || isUsableCanvasImageSource(image.content) || isUsableCanvasImageStorageKey(image.storageKey);
 }

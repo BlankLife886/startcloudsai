@@ -77,6 +77,10 @@ printf '%s' "$ADMIN_PASSWORD" | go run ./cmd/server create-admin --email admin@e
 - Worker 启动时会把上一个进程遗留的 `running` 任务恢复为 `queued`，并使用新的 Asynq 恢复记录接管同一个上游任务；不会重新生成或重复扣费。已归档的旧 Asynq TaskID 不会再造成“看似入队成功、实际没有待执行任务”。每 10 分钟也会接管超时的孤儿任务和补投滞留队列。
 - Worker 每小时清理过期 session、超期审计日志和无引用的普通上传对象，每 30 分钟扫描到期的提示词数据源，每 5 分钟重试任务/助手产物的对象清理作业。
 - 用户端仅支持 Gmail、Googlemail、QQ 邮箱验证码认证。`POST /api/v1/auth/session` 会在同一事务内验证验证码，并为首次邮箱自动创建用户、钱包、初始积分和 session；已有用户直接创建 session。Gmail 点号、加号标签和 Googlemail 地址统一规范化。不提供用户密码或第三方 OAuth 登录。用户 Cookie 为 `sc_session`，有效期 30 天。
+- `GET /api/v1/me/sessions` 只返回当前用户的有效登录设备摘要，不返回 Cookie 或令牌；可通过 `DELETE /api/v1/me/sessions/{id}` 撤销指定本人会话，或通过 `DELETE /api/v1/me/sessions?scope=others` 保留当前会话并撤销其他设备。
+- `GET /api/v1/me/data-export` 返回当前用户可携带的 JSON 数据副本，覆盖账号资料、交易、创作、AI 对话、素材元数据、投稿、反馈和社区安全记录；密码、会话凭证、内部风控信息及图片二进制不会进入导出文件。
+- 社区作品支持登录用户通过 `POST /api/v1/gallery/submissions/{id}/reports` 幂等举报，并通过 `POST /api/v1/gallery/users/{id}/block` 屏蔽作者；公开画廊会为登录用户自动过滤其已屏蔽作者，匿名画廊保持公开数据不变。用户可通过 `GET /api/v1/me/blocked-users` 分页管理屏蔽列表，并以 `DELETE /api/v1/gallery/users/{id}/block` 幂等解除。
+- `DELETE /api/v1/me/account` 必须在已登录会话中再次验证当前邮箱验证码；成功后匿名化账号身份、清理所有会话和 API 凭证、隐藏公开投稿并释放原邮箱。进行中的创作或助手任务会阻止注销，订单与必要安全记录仅保留匿名关联。
 - 管理员使用独立账号、密码和 `sc_admin_session`；不使用管理员密钥。管理员与用户的账号表、密码、会话和 Cookie 均不能交叉访问。
 - `create-admin` 只创建或更新 `admin_accounts`，不会创建普通用户或钱包；更新密码时会撤销该管理员的全部旧会话。
 - 浏览器写请求校验 `Origin`，代理地址只信任 `TRUSTED_PROXIES`。

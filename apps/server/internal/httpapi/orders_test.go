@@ -439,6 +439,98 @@ func TestCloseLanjingOrderTreatsProviderExpiryAsSuccess(t *testing.T) {
 	}
 }
 
+func TestCloseLanjingOrderTreatsMissingProviderOrderAsExpired(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	user, order := makeOrder(t, st)
+	order = prepareLanjingOrder(t, st, order, "provider-missing", order.AmountCents, "alipay")
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/closeOrder", "/getOrder", "/checkOrder":
+			_ = json.NewEncoder(w).Encode(gin.H{"code": -1, "msg": "云端订单编号不存在", "data": nil})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer provider.Close()
+	client, err := lanjingpay.New(provider.URL, "missing-secret", provider.URL+"/notify", time.Second, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Load()
+	token := auth.NewSessionToken()
+	if err := store.InsertSession(ctx, st.Pool, user.ID, auth.HashToken(token), time.Now().Add(time.Hour), nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{Cfg: cfg, St: st, LanjingPay: client}
+	recorder := authRequest(t, srv.Router(), http.MethodPost, "/api/v1/orders/"+order.ID.String()+"/close", nil,
+		&http.Cookie{Name: cfg.SessionCookieName, Value: token})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("close missing provider order = %d %s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Data struct {
+			Status string `json:"status"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil || response.Data.Status != "expired" {
+		t.Fatalf("close missing response = %+v err=%v", response.Data, err)
+	}
+}
+
+func TestCloseLanjingOrderCompletesPaidRaceFromCheckOrder(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	user, order := makeOrder(t, st)
+	order = prepareLanjingOrder(t, st, order, "provider-paid-race", order.AmountCents, "alipay")
+	const secret = "close-paid-secret"
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/closeOrder":
+			_ = json.NewEncoder(w).Encode(gin.H{"code": -1, "msg": "订单已支付，无法关闭", "data": nil})
+		case "/checkOrder":
+			values := url.Values{
+				"payId": {order.ID.String()}, "param": {order.ID.String()}, "type": {"2"},
+				"price": {"9.90"}, "reallyPrice": {"9.90"},
+			}
+			values.Set("sign", lanjingpay.MD5(order.ID.String(), order.ID.String(), "2", "9.90", "9.90", secret))
+			_ = json.NewEncoder(w).Encode(gin.H{"code": 1, "msg": "ok", "data": "https://app.example/notify?" + values.Encode()})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer provider.Close()
+	client, err := lanjingpay.New(provider.URL, secret, provider.URL+"/notify", time.Second, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Load()
+	token := auth.NewSessionToken()
+	if err := store.InsertSession(ctx, st.Pool, user.ID, auth.HashToken(token), time.Now().Add(time.Hour), nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{Cfg: cfg, St: st, LanjingPay: client}
+	recorder := authRequest(t, srv.Router(), http.MethodPost, "/api/v1/orders/"+order.ID.String()+"/close", nil,
+		&http.Cookie{Name: cfg.SessionCookieName, Value: token})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("close paid race = %d %s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Data struct {
+			Status string `json:"status"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil || response.Data.Status != "completed" {
+		t.Fatalf("close paid response = %+v err=%v", response.Data, err)
+	}
+	wallet, err := store.GetWallet(ctx, st.Pool, user.ID)
+	if err != nil || wallet.BalanceCents != order.GrantCents+order.BonusCents {
+		t.Fatalf("wallet after paid race = %+v err=%v", wallet, err)
+	}
+}
+
 func TestGetOrderCompletesFromSignedCheckOrderConfirmation(t *testing.T) {
 	st := testdb.Setup(t)
 	ctx := context.Background()

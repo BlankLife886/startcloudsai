@@ -165,11 +165,83 @@ const paymentStateLabel = computed(() => {
   if (paymentTest.value) return `监听端${paymentTest.value.stateLabel}`;
   return form.lanjingPayEnabled ? "等待检测" : "支付已停用";
 });
+type ImageAnalysisStatus =
+  | "empty"
+  | "incomplete"
+  | "missing-provider"
+  | "disabled-provider"
+  | "missing-model"
+  | "invalid-model"
+  | "disabled-model"
+  | "ready";
+
+const REASONING_EFFORT_LABELS: Record<string, string> = {
+  none: "关闭",
+  minimal: "最低",
+  low: "低",
+  medium: "中",
+  high: "高",
+  xhigh: "更高",
+  extra_high: "更高",
+  max: "最高",
+};
+
+const IMAGE_ANALYSIS_COPY: Record<
+  ImageAnalysisStatus,
+  { title: string; summary: string; hint: string }
+> = {
+  empty: {
+    title: "尚未配置分析模型",
+    summary: "电商素材标题、画布模板和提示词导入都依赖这里绑定的视觉对话模型。",
+    hint: "尚未配置",
+  },
+  incomplete: {
+    title: "配置不完整",
+    summary: "服务商和图片理解模型必须同时选择后才能保存。",
+    hint: "配置不完整",
+  },
+  "missing-provider": {
+    title: "服务商已不存在",
+    summary: "当前绑定的服务商已从模型目录移除，请重新选择后保存。",
+    hint: "配置已失效",
+  },
+  "disabled-provider": {
+    title: "服务商已停用",
+    summary: "已绑定的服务商当前未启用，后台图片分析会返回不可用。",
+    hint: "服务商已停用",
+  },
+  "missing-model": {
+    title: "模型已不存在",
+    summary: "当前绑定的模型已从目录移除，请重新选择后保存。",
+    hint: "配置已失效",
+  },
+  "invalid-model": {
+    title: "模型与服务商不匹配",
+    summary: "请选择当前服务商下、支持视觉输入的对话模型。",
+    hint: "模型无效",
+  },
+  "disabled-model": {
+    title: "分析模型已停用",
+    summary: "已绑定的模型当前未启用，相关后台分析入口会失败。",
+    hint: "模型已停用",
+  },
+  ready: {
+    title: "后台图片分析已就绪",
+    summary: "电商素材、画布模板和提示词导入会复用这个模型。",
+    hint: "已就绪",
+  },
+};
+
 const imageAnalysisModels = computed(() =>
   modelDirectory.value.models.filter(
     (model) =>
       model.providerId === form.adminImageAnalysisProviderId &&
       model.kind === "chat",
+  ),
+);
+const selectedImageAnalysisProvider = computed(() =>
+  modelDirectory.value.providers.find(
+    (provider) => provider.id === form.adminImageAnalysisProviderId,
   ),
 );
 const selectedImageAnalysisModel = computed(() =>
@@ -180,6 +252,50 @@ const selectedImageAnalysisModel = computed(() =>
 const imageAnalysisReasoningEfforts = computed(
   () => selectedImageAnalysisModel.value?.supportedReasoningEfforts || [],
 );
+const imageAnalysisStatus = computed((): ImageAnalysisStatus => {
+  const providerId = form.adminImageAnalysisProviderId;
+  const modelId = form.adminImageAnalysisModelId;
+  if (!providerId && !modelId) return "empty";
+  if (!providerId || !modelId) return "incomplete";
+  const provider = selectedImageAnalysisProvider.value;
+  if (!provider) return "missing-provider";
+  if (!provider.enabled) return "disabled-provider";
+  const model = selectedImageAnalysisModel.value;
+  if (!model) return "missing-model";
+  if (model.kind !== "chat" || model.providerId !== providerId) {
+    return "invalid-model";
+  }
+  if (!model.enabled) return "disabled-model";
+  return "ready";
+});
+const imageAnalysisCopy = computed(
+  () => IMAGE_ANALYSIS_COPY[imageAnalysisStatus.value],
+);
+const imageAnalysisReady = computed(
+  () => imageAnalysisStatus.value === "ready",
+);
+const imageAnalysisConfigured = computed(
+  () =>
+    Boolean(form.adminImageAnalysisProviderId) ||
+    Boolean(form.adminImageAnalysisModelId),
+);
+const enabledProviderCount = computed(
+  () => modelDirectory.value.providers.filter((provider) => provider.enabled)
+    .length,
+);
+const enabledChatModelCount = computed(
+  () =>
+    modelDirectory.value.models.filter(
+      (model) => model.kind === "chat" && model.enabled,
+    ).length,
+);
+const selectedReasoningEffortLabel = computed(() => {
+  const effort = form.adminImageAnalysisReasoningEffort;
+  if (effort) return reasoningEffortLabel(effort);
+  return selectedImageAnalysisModel.value?.reasoningPricing?.defaultEffort
+    ? `默认 ${reasoningEffortLabel(selectedImageAnalysisModel.value.reasoningPricing.defaultEffort)}`
+    : "模型默认";
+});
 
 const sections = computed(() => [
   {
@@ -191,8 +307,10 @@ const sections = computed(() => [
   {
     id: "image-ai" as const,
     label: "AI 模型",
-    hint: selectedImageAnalysisModel.value?.name || "后台图片分析",
-    on: true,
+    hint: imageAnalysisReady.value
+      ? selectedImageAnalysisModel.value?.name || imageAnalysisCopy.value.hint
+      : imageAnalysisCopy.value.hint,
+    on: imageAnalysisReady.value,
   },
   {
     id: "account" as const,
@@ -270,6 +388,30 @@ function changeImageAnalysisModel() {
     model?.reasoningPricing?.defaultEffort ||
     model?.supportedReasoningEfforts?.[0] ||
     "";
+}
+
+function reasoningEffortLabel(effort: string) {
+  return REASONING_EFFORT_LABELS[effort] || effort;
+}
+
+function toggleImageAnalysisReasoning(effort: string) {
+  form.adminImageAnalysisReasoningEffort =
+    form.adminImageAnalysisReasoningEffort === effort ? "" : effort;
+}
+
+function clearImageAnalysis() {
+  form.adminImageAnalysisProviderId = "";
+  form.adminImageAnalysisModelId = "";
+  form.adminImageAnalysisReasoningEffort = "";
+}
+
+function modelOptionLabel(model: ModelOption) {
+  const state = model.enabled ? "" : " · 已停用";
+  return `${model.name} · ${model.upstreamModel}${state}`;
+}
+
+function providerOptionLabel(provider: ModelProviderOption) {
+  return provider.enabled ? provider.name : `${provider.name} · 已停用`;
 }
 
 function hydrate(settings: AdminSettings & PaymentSettings) {
@@ -482,7 +624,10 @@ function formatPaymentTime(value?: string | null) {
 }
 
 onMounted(() => {
-  if (route.query.section === "logging") activeSection.value = "logging";
+  const section = String(route.query.section || "");
+  if (sections.value.some((item) => item.id === section)) {
+    activeSection.value = section as SettingsSection;
+  }
   void load();
 });
 </script>
@@ -637,11 +782,13 @@ onMounted(() => {
             </template>
 
             <template v-else-if="activeSection === 'image-ai'">
-              <div class="settings-card">
+              <div class="settings-card image-ai-card">
                 <div
                   class="status-banner"
                   :class="{
-                    'is-on': form.adminImageAnalysisProviderId && form.adminImageAnalysisModelId,
+                    'is-on': imageAnalysisReady,
+                    'is-warn':
+                      imageAnalysisConfigured && !imageAnalysisReady,
                   }"
                 >
                   <div class="status-banner__copy">
@@ -650,20 +797,42 @@ onMounted(() => {
                       <strong>后台图片分析</strong>
                       <p>
                         {{
-                          selectedImageAnalysisModel
-                            ? `使用 ${selectedImageAnalysisModel.name}`
-                            : "尚未配置分析模型"
+                          imageAnalysisReady && selectedImageAnalysisModel
+                            ? `已就绪 · 使用 ${selectedImageAnalysisModel.name}`
+                            : imageAnalysisCopy.summary
                         }}
                       </p>
                     </div>
                   </div>
+                  <el-button
+                    v-if="imageAnalysisConfigured"
+                    text
+                    @click="clearImageAnalysis"
+                  >
+                    清除配置
+                  </el-button>
                 </div>
 
-                <div class="field-grid is-stack">
+                <div class="usage-grid" aria-label="使用位置">
+                  <RouterLink class="usage-tile" to="/ecommerce">
+                    <strong>电商素材</strong>
+                    <small>上传时生成图片标题</small>
+                  </RouterLink>
+                  <RouterLink class="usage-tile" to="/canvas-templates">
+                    <strong>画布模板</strong>
+                    <small>导入模板时分析结构</small>
+                  </RouterLink>
+                  <RouterLink class="usage-tile" to="/prompt-library">
+                    <strong>提示词导入</strong>
+                    <small>批量封面与条目分析</small>
+                  </RouterLink>
+                </div>
+
+                <div class="field-grid image-ai-fields">
                   <label class="field-row">
                     <span>
                       <strong>服务商</strong>
-                      <small>供电商素材等后台页面复用</small>
+                      <small>从模型目录选择已启用的服务商</small>
                     </span>
                     <el-select
                       v-model="form.adminImageAnalysisProviderId"
@@ -675,7 +844,7 @@ onMounted(() => {
                       <el-option
                         v-for="provider in modelDirectory.providers"
                         :key="provider.id"
-                        :label="provider.name"
+                        :label="providerOptionLabel(provider)"
                         :value="provider.id"
                         :disabled="!provider.enabled"
                       />
@@ -691,37 +860,84 @@ onMounted(() => {
                       clearable
                       filterable
                       :disabled="!form.adminImageAnalysisProviderId"
-                      placeholder="选择模型"
+                      :placeholder="
+                        form.adminImageAnalysisProviderId
+                          ? imageAnalysisModels.length
+                            ? '选择模型'
+                            : '该服务商没有对话模型'
+                          : '先选择服务商'
+                      "
                       @change="changeImageAnalysisModel"
                     >
                       <el-option
                         v-for="model in imageAnalysisModels"
                         :key="model.id"
-                        :label="`${model.name} · ${model.upstreamModel}`"
+                        :label="modelOptionLabel(model)"
                         :value="model.id"
                         :disabled="!model.enabled"
                       />
                     </el-select>
                   </label>
-                  <label class="field-row">
+                  <div class="field-row is-wide">
                     <span>
                       <strong>推理强度</strong>
-                      <small>随分析请求发送给支持推理的模型</small>
+                      <small>随分析请求发送；留空则用模型默认</small>
                     </span>
-                    <el-select
-                      v-model="form.adminImageAnalysisReasoningEffort"
-                      clearable
-                      :disabled="!imageAnalysisReasoningEfforts.length"
-                      placeholder="模型默认"
+                    <div
+                      v-if="imageAnalysisReasoningEfforts.length"
+                      class="method-pills"
                     >
-                      <el-option
+                      <button
                         v-for="effort in imageAnalysisReasoningEfforts"
                         :key="effort"
-                        :label="effort"
-                        :value="effort"
-                      />
-                    </el-select>
-                  </label>
+                        type="button"
+                        class="method-pill"
+                        :class="{
+                          'is-on':
+                            form.adminImageAnalysisReasoningEffort === effort,
+                        }"
+                        @click="toggleImageAnalysisReasoning(effort)"
+                      >
+                        {{ reasoningEffortLabel(effort) }}
+                      </button>
+                    </div>
+                    <em v-else class="field-empty">
+                      当前模型不支持单独设置推理强度
+                    </em>
+                  </div>
+                </div>
+
+                <div
+                  v-if="selectedImageAnalysisModel"
+                  class="model-identity"
+                  :class="{ 'is-off': !imageAnalysisReady }"
+                >
+                  <div>
+                    <strong>{{ selectedImageAnalysisModel.name }}</strong>
+                    <small class="mono">
+                      {{ selectedImageAnalysisModel.upstreamModel }}
+                    </small>
+                  </div>
+                  <div class="model-identity__meta">
+                    <span>{{
+                      selectedImageAnalysisProvider?.name || "未知服务商"
+                    }}</span>
+                    <span>{{
+                      selectedImageAnalysisModel.enabled ? "已启用" : "已停用"
+                    }}</span>
+                    <span>{{ selectedReasoningEffortLabel }}</span>
+                  </div>
+                </div>
+
+                <div class="jump-row">
+                  <RouterLink class="jump-chip" to="/model-config">
+                    打开模型配置
+                  </RouterLink>
+                  <span class="jump-note">
+                    {{ enabledChatModelCount.toLocaleString("zh-CN") }} 个可用对话模型
+                    ·
+                    {{ enabledProviderCount.toLocaleString("zh-CN") }} 个启用服务商
+                  </span>
                 </div>
               </div>
             </template>
@@ -1324,6 +1540,125 @@ onMounted(() => {
   min-width: 0;
 }
 
+.usage-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.usage-tile {
+  display: grid;
+  gap: 4px;
+  min-height: 72px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-2);
+  color: inherit;
+  text-decoration: none;
+
+  strong,
+  small {
+    display: block;
+  }
+
+  strong {
+    color: var(--ink);
+    font-size: 13px;
+    font-weight: 700;
+  }
+
+  small {
+    color: var(--ink-3);
+    font-size: 11px;
+    line-height: 1.45;
+  }
+
+  &:hover {
+    border-color: var(--border-strong);
+    background: var(--surface);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+}
+
+.image-ai-fields {
+  .field-row {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+    gap: 8px;
+
+    :deep(.el-select),
+    :deep(.el-input),
+    :deep(.el-input-number) {
+      width: 100%;
+    }
+  }
+}
+
+.field-empty {
+  color: var(--ink-3);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 650;
+}
+
+.model-identity {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--success) 28%, var(--border));
+  border-radius: 14px;
+  background: var(--success-soft);
+
+  strong,
+  small {
+    display: block;
+  }
+
+  strong {
+    color: var(--ink);
+    font-size: 14px;
+    font-weight: 750;
+  }
+
+  small {
+    margin-top: 4px;
+    color: var(--ink-2);
+    font-size: 12px;
+  }
+
+  &.is-off {
+    border-color: color-mix(in srgb, var(--warning) 28%, var(--border));
+    background: var(--warning-soft);
+  }
+}
+
+.model-identity__meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+
+  span {
+    display: inline-flex;
+    align-items: center;
+    height: 26px;
+    padding: 0 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-pill);
+    background: var(--surface);
+    color: var(--ink-2);
+    font-size: 11px;
+    font-weight: 650;
+  }
+}
+
 .status-banner {
   display: flex;
   align-items: center;
@@ -1412,6 +1747,15 @@ onMounted(() => {
     grid-column: 1 / -1;
   }
 
+  &.is-textarea {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+
+    :deep(.el-input) {
+      width: 100%;
+    }
+  }
+
   &:last-child {
     border-bottom: 0;
   }
@@ -1471,10 +1815,26 @@ onMounted(() => {
   border: 1px solid var(--border);
   border-radius: var(--radius-pill);
   background: var(--surface-2);
+  color: var(--ink-2);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+
+  &:hover {
+    border-color: var(--border-strong);
+    color: var(--ink);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
 
   &.is-on {
     border-color: color-mix(in srgb, var(--accent) 36%, var(--border));
     background: var(--accent-soft);
+    color: var(--accent-ink);
   }
 
   :deep(.el-checkbox) {

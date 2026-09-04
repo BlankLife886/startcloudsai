@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/widgets/app_chrome.dart';
 import '../../core/widgets/app_top_bar.dart';
 import 'billing.dart';
 import 'purchase_center_screen.dart';
@@ -214,30 +215,11 @@ class _OrderFilterButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return Material(
-      color: selected ? colors.onSurface : colors.surface,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(8),
-        side: BorderSide(
-          color: selected ? colors.onSurface : colors.outlineVariant,
-        ),
-      ),
-      child: InkWell(
-        key: Key('order-filter-${filter.label}'),
-        borderRadius: BorderRadius.circular(8),
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-          child: Text(
-            filter.label,
-            style: Theme.of(context).textTheme.labelLarge?.copyWith(
-              color: selected ? colors.surface : colors.onSurface,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-        ),
-      ),
+    return AppFilterChip(
+      key: Key('order-filter-${filter.label}'),
+      label: filter.label,
+      selected: selected,
+      onTap: onTap,
     );
   }
 }

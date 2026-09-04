@@ -230,7 +230,7 @@
 
 .dws-analysis-canvas {
   position: relative;
-  width: min(100%, 1050px);
+  width: min(100%, 72vh);
   max-height: 100%;
   aspect-ratio: 16 / 9;
 }
@@ -245,14 +245,15 @@
 .dws-analysis-elements {
   position: absolute;
   inset: 0;
-  pointer-events: none;
 }
 
-.dws-analysis-elements > span {
+.dws-analysis-elements > span,
+.dws-analysis-elements > button {
   position: absolute;
   border: 1px solid #5ee0b1;
   background: rgba(29, 195, 140, 0.08);
   color: #d8fff1;
+  pointer-events: auto;
 }
 
 .dws-analysis-elements b {
@@ -1007,5 +1008,386 @@
   .dws-region-composer {
     border-top: 1px solid rgba(255, 255, 255, 0.08);
     border-left: 0;
+  }
+}
+
+.dws-settings-summary,
+.dws-iteration-exit {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 48px;
+  padding: 8px 11px;
+  border: 0;
+  border-radius: 13px;
+  background: var(--dws-fill-deep);
+  color: var(--dws-ink);
+  cursor: pointer;
+  text-align: left;
+}
+
+.dws-settings-summary > span {
+  min-width: 0;
+}
+
+.dws-settings-summary strong {
+  display: block;
+  font-size: 0.75rem;
+  line-height: 1.3;
+}
+
+.dws-iteration-exit {
+  justify-content: center;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.dws-settings-summary small {
+  display: block;
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--dws-faint);
+  font: 600 0.58rem/1.25 monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dws-settings-summary > .bi {
+  color: var(--dws-faint);
+  font-size: 0.66rem;
+}
+
+.dws-settings-summary.is-open {
+  background: var(--dws-fill);
+}
+
+.dws-iteration-bar {
+  padding: 0;
+}
+
+.dws-generate-copy {
+  align-content: center;
+  gap: 0;
+}
+
+.dws-stage-actions {
+  max-width: calc(100% - 32px);
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.dws-stage-actions button.is-secondary,
+.dws-stage-actions button.is-editor.is-secondary {
+  background: transparent;
+  color: var(--dws-muted);
+}
+
+.dws-stage-actions button.is-secondary:hover:not(:disabled),
+.dws-stage-actions button.is-editor.is-secondary:hover:not(:disabled) {
+  background: var(--dws-accent-soft);
+  color: #fff;
+}
+
+.dws-devices button em {
+  max-width: 100%;
+  overflow: hidden;
+  color: inherit;
+  font: 650 0.58rem/1.1 sans-serif;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dws-analysis-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.dws-analysis-panel footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.dws-system-hint {
+  display: block;
+  margin-top: 6px;
+  color: var(--dws-faint);
+  font-size: 0.62rem;
+}
+
+.dws-spec-tokens {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 11px 10px;
+}
+
+.dws-spec-tokens span {
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: var(--dws-fill);
+  color: var(--dws-muted);
+  font: 600 0.58rem/1.2 monospace;
+}
+
+.dws-spec-states {
+  padding: 0 11px 10px;
+}
+
+.dws-spec-states > div {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+  margin-top: 6px;
+}
+
+.dws-spec-states button {
+  min-height: 30px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--dws-fill);
+  color: var(--dws-faint);
+  font-size: 0.64rem;
+  cursor: pointer;
+}
+
+.dws-spec-states button.is-on {
+  background: var(--dws-accent-soft);
+  color: #c9c1ff;
+}
+
+.dws-spec-rules {
+  margin: 0;
+  padding: 0 14px 12px;
+  color: var(--dws-faint);
+  font-size: 0.62rem;
+  line-height: 1.45;
+}
+
+.dws-analysis-elements button {
+  position: absolute;
+  padding: 0;
+  border: 1px solid rgba(124, 108, 255, 0.7);
+  background: rgba(109, 92, 255, 0.16);
+  color: #fff;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dws-analysis-elements button.is-on {
+  border-color: #fff;
+  background: rgba(109, 92, 255, 0.36);
+}
+
+.dws-analysis-panel footer {
+  flex-wrap: wrap;
+}
+
+/* Keep portalled model/profile menus stable outside the workshop root. */
+.dws-select-menu {
+  box-sizing: border-box;
+  max-width: calc(100vw - 24px);
+  z-index: 10040;
+}
+
+.dws-select-menu .ratio-select__option,
+.dws-select-menu .ratio-select__option.has-icon {
+  grid-template-columns: 24px minmax(0, 1fr) 20px;
+  column-gap: 8px;
+  min-height: 42px;
+}
+
+.dws-select-menu .ratio-select__option > :first-child {
+  justify-self: center;
+}
+
+.dws-select-menu .ratio-select__option > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dws-select-menu .ratio-select__option > .bi-check2 {
+  justify-self: end;
+}
+
+.dws-error {
+  flex-wrap: wrap;
+}
+
+.dws-error > .bi {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.dws-error > span {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+
+.dws-retry {
+  display: inline-flex;
+  min-height: 30px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-left: 20px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--dws-accent) 42%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--dws-accent) 14%, transparent);
+  color: var(--dws-ink);
+  font: inherit;
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.dws-retry:hover:not(:disabled),
+.dws-retry:focus-visible {
+  border-color: color-mix(in srgb, var(--dws-accent) 68%, transparent);
+  background: color-mix(in srgb, var(--dws-accent) 24%, transparent);
+  outline: none;
+}
+
+.dws-retry:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.dws-retry > .bi,
+.dws-tablet-tabs button > .bi,
+.dws-workspace-tabs button > .bi,
+.dws-stage-actions button > .bi,
+.dws-stage-actions button > svg {
+  display: block;
+  flex: 0 0 auto;
+  line-height: 1;
+}
+
+@media (max-width: 1080px) {
+  .dws {
+    height: 100dvh;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .dws-shell {
+    box-sizing: border-box;
+    grid-template-areas:
+      "workspace-tabs"
+      "workspace";
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 48px minmax(0, 1fr);
+    width: 100%;
+    height: 100dvh;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .dws-tablet-tabs,
+  .dws-workspace-tabs {
+    grid-area: workspace-tabs;
+    width: 100%;
+    min-width: 0;
+    height: 48px;
+  }
+
+  .dws-tablet-tabs button,
+  .dws-workspace-tabs button {
+    min-width: 0;
+    min-height: 36px;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+
+  .dws-panel,
+  .dws-stage {
+    grid-area: workspace;
+    width: 100%;
+    max-width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+  }
+
+  .dws.is-tablet-controls .dws-panel,
+  .dws.is-tablet-canvas .dws-stage {
+    display: flex;
+  }
+
+  .dws.is-tablet-controls .dws-stage,
+  .dws.is-tablet-canvas .dws-panel {
+    display: none;
+  }
+
+  .dws-panel-scroll,
+  .dws-canvas {
+    min-width: 0;
+    min-height: 0;
+  }
+
+  .dws-stage-actions {
+    max-width: calc(100% - 24px);
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+  }
+
+  .dws-stage-actions::-webkit-scrollbar {
+    display: none;
+  }
+
+  .dws-stage-actions button {
+    width: 36px;
+    min-width: 36px;
+    height: 36px;
+    justify-content: center;
+    padding: 0;
+  }
+}
+
+@media (max-width: 600px) {
+  .dws-tablet-tabs,
+  .dws-workspace-tabs {
+    gap: 4px;
+    padding: 6px 8px;
+  }
+
+  .dws-tablet-tabs button,
+  .dws-workspace-tabs button {
+    gap: 6px;
+    padding-inline: 8px;
+    font-size: 0.7rem;
+  }
+
+  .dws-panel-scroll {
+    padding-bottom: max(8px, env(safe-area-inset-bottom));
+  }
+
+  .dws-generate-dock {
+    padding-bottom: max(14px, env(safe-area-inset-bottom));
+  }
+
+  .dws-stage-actions {
+    top: 12px;
+    right: 12px;
+  }
+
+  .dws-error > span {
+    flex-basis: calc(100% - 24px);
+  }
+
+  .dws-retry {
+    margin-left: 20px;
   }
 }

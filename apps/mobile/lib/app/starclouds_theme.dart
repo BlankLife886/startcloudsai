@@ -84,10 +84,10 @@ class StarCloudsVisualStyle extends ThemeExtension<StarCloudsVisualStyle> {
 }
 
 abstract final class StarCloudsRadii {
-  static const double sm = 12;
-  static const double md = 16;
-  static const double lg = 22;
-  static const double xl = 28;
+  static const double sm = 6;
+  static const double md = 8;
+  static const double lg = 8;
+  static const double xl = 12;
   static const double pill = 999;
 
   static BorderRadius get control => BorderRadius.circular(md);
@@ -98,7 +98,9 @@ abstract final class StarCloudsRadii {
 }
 
 class StarCloudsPageTransitionsBuilder extends PageTransitionsBuilder {
-  const StarCloudsPageTransitionsBuilder();
+  const StarCloudsPageTransitionsBuilder({this.delegate});
+
+  final PageTransitionsBuilder? delegate;
 
   @override
   Widget buildTransitions<T>(
@@ -108,6 +110,19 @@ class StarCloudsPageTransitionsBuilder extends PageTransitionsBuilder {
     Animation<double> secondaryAnimation,
     Widget child,
   ) {
+    if (MediaQuery.disableAnimationsOf(context)) return child;
+
+    final transitionDelegate = delegate;
+    if (transitionDelegate != null) {
+      return transitionDelegate.buildTransitions(
+        route,
+        context,
+        animation,
+        secondaryAnimation,
+        child,
+      );
+    }
+
     final curved = CurvedAnimation(
       parent: animation,
       curve: Curves.easeOutCubic,
@@ -254,8 +269,16 @@ abstract final class StarCloudsTheme {
       dividerColor: visualStyle.hairline,
       pageTransitionsTheme: PageTransitionsTheme(
         builders: {
-          for (final platform in TargetPlatform.values)
-            platform: const StarCloudsPageTransitionsBuilder(),
+          TargetPlatform.android: const StarCloudsPageTransitionsBuilder(),
+          TargetPlatform.fuchsia: const StarCloudsPageTransitionsBuilder(),
+          TargetPlatform.linux: const StarCloudsPageTransitionsBuilder(),
+          TargetPlatform.windows: const StarCloudsPageTransitionsBuilder(),
+          TargetPlatform.iOS: const StarCloudsPageTransitionsBuilder(
+            delegate: CupertinoPageTransitionsBuilder(),
+          ),
+          TargetPlatform.macOS: const StarCloudsPageTransitionsBuilder(
+            delegate: CupertinoPageTransitionsBuilder(),
+          ),
         },
       ),
       appBarTheme: AppBarTheme(
@@ -271,7 +294,7 @@ abstract final class StarCloudsTheme {
         titleTextStyle: textTheme.titleMedium?.copyWith(
           fontWeight: FontWeight.w800,
           fontSize: 17,
-          letterSpacing: -0.45,
+          letterSpacing: 0,
           color: scheme.onSurface,
         ),
         iconTheme: IconThemeData(color: scheme.onSurface, size: 22),
@@ -347,7 +370,7 @@ abstract final class StarCloudsTheme {
           shape: controlShape,
           textStyle: textTheme.labelLarge?.copyWith(
             fontWeight: FontWeight.w800,
-            letterSpacing: 0.1,
+            letterSpacing: 0,
           ),
           elevation: 0,
           shadowColor: Colors.transparent,
@@ -473,7 +496,7 @@ abstract final class StarCloudsTheme {
         titleTextStyle: textTheme.titleLarge?.copyWith(
           color: scheme.onSurface,
           fontWeight: FontWeight.w800,
-          letterSpacing: -0.2,
+          letterSpacing: 0,
         ),
         contentTextStyle: textTheme.bodyMedium?.copyWith(
           color: scheme.onSurfaceVariant,
@@ -600,7 +623,7 @@ abstract final class StarCloudsTheme {
           color: dark
               ? scheme.surfaceContainerHighest
               : const Color(0xFF1C1E27),
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(8),
         ),
         textStyle: textTheme.labelMedium?.copyWith(color: Colors.white),
       ),
@@ -649,42 +672,42 @@ abstract final class StarCloudsTheme {
         displayLarge: source.displayLarge?.copyWith(
           color: colors.onSurface,
           fontWeight: FontWeight.w800,
-          letterSpacing: -0.6,
+          letterSpacing: 0,
         ),
         displayMedium: source.displayMedium?.copyWith(
           color: colors.onSurface,
           fontWeight: FontWeight.w800,
-          letterSpacing: -0.5,
+          letterSpacing: 0,
         ),
         displaySmall: source.displaySmall?.copyWith(
           color: colors.onSurface,
           fontWeight: FontWeight.w800,
-          letterSpacing: -0.4,
+          letterSpacing: 0,
         ),
         headlineLarge: source.headlineLarge?.copyWith(
           color: colors.onSurface,
           fontWeight: FontWeight.w800,
-          letterSpacing: -0.4,
+          letterSpacing: 0,
         ),
         headlineMedium: source.headlineMedium?.copyWith(
           color: colors.onSurface,
           fontWeight: FontWeight.w800,
-          letterSpacing: -0.3,
+          letterSpacing: 0,
         ),
         headlineSmall: source.headlineSmall?.copyWith(
           color: colors.onSurface,
           fontWeight: FontWeight.w800,
-          letterSpacing: -0.2,
+          letterSpacing: 0,
         ),
         titleLarge: source.titleLarge?.copyWith(
           color: colors.onSurface,
           fontWeight: FontWeight.w800,
-          letterSpacing: -0.2,
+          letterSpacing: 0,
         ),
         titleMedium: source.titleMedium?.copyWith(
           color: colors.onSurface,
           fontWeight: FontWeight.w700,
-          letterSpacing: -0.1,
+          letterSpacing: 0,
         ),
         titleSmall: source.titleSmall?.copyWith(
           color: colors.onSurface,
@@ -708,16 +731,16 @@ abstract final class StarCloudsTheme {
         ),
         labelLarge: source.labelLarge?.copyWith(
           color: colors.onSurface,
-          letterSpacing: 0.1,
+          letterSpacing: 0,
           fontWeight: FontWeight.w700,
         ),
         labelMedium: source.labelMedium?.copyWith(
           color: colors.onSurfaceVariant,
-          letterSpacing: 0.1,
+          letterSpacing: 0,
         ),
         labelSmall: source.labelSmall?.copyWith(
           color: colors.onSurfaceVariant,
-          letterSpacing: 0.2,
+          letterSpacing: 0,
         ),
       );
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,11 +17,11 @@ type Cursor struct {
 	ID        uuid.UUID
 }
 
-const userCols = `id, email, username, password_hash, avatar_url, studio_figure_url, bio, location, website_url, require_cost_confirm, role, status, last_login_at, submission_banned_until, created_at`
+const userCols = `id, email, username, password_hash, avatar_url, studio_figure_url, bio, location, website_url, require_cost_confirm, role, status, last_login_at, submission_banned_until, deleted_at, created_at`
 
 func scanUser(row pgx.Row) (*User, error) {
 	var u User
-	err := row.Scan(&u.ID, &u.Email, &u.Username, &u.PasswordHash, &u.AvatarURL, &u.StudioFigureURL, &u.Bio, &u.Location, &u.WebsiteURL, &u.RequireCostConfirm, &u.Role, &u.Status, &u.LastLoginAt, &u.SubmissionBannedUntil, &u.CreatedAt)
+	err := row.Scan(&u.ID, &u.Email, &u.Username, &u.PasswordHash, &u.AvatarURL, &u.StudioFigureURL, &u.Bio, &u.Location, &u.WebsiteURL, &u.RequireCostConfirm, &u.Role, &u.Status, &u.LastLoginAt, &u.SubmissionBannedUntil, &u.DeletedAt, &u.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -78,6 +79,49 @@ func UpdateUserStatus(ctx context.Context, q Q, id uuid.UUID, status *string) er
 	return err
 }
 
+// AnonymizeUserAccount irreversibly removes login/profile identity while
+// retaining de-identified financial and security records linked by UUID.
+func AnonymizeUserAccount(ctx context.Context, q Q, id uuid.UUID, passwordHash string, deletedAt time.Time) (bool, error) {
+	anonymousEmail := "deleted+" + strings.ReplaceAll(id.String(), "-", "") + "@deleted.invalid"
+	tag, err := q.Exec(ctx, `UPDATE users SET
+			email = $2,
+			username = '已注销用户',
+			password_hash = $3,
+			avatar_url = NULL,
+			studio_figure_url = NULL,
+			bio = '',
+			location = '',
+			website_url = '',
+			status = 'deleted',
+			last_login_at = NULL,
+			submission_banned_until = NULL,
+			deleted_at = $4
+		 WHERE id = $1 AND role = 'user' AND status = 'active'`, id, anonymousEmail, passwordHash, deletedAt)
+	if err != nil {
+		return false, err
+	}
+	if tag.RowsAffected() == 0 {
+		return false, nil
+	}
+	statements := []string{
+		`DELETE FROM sessions WHERE user_id = $1`,
+		`DELETE FROM user_identities WHERE user_id = $1`,
+		`DELETE FROM user_api_keys WHERE user_id = $1`,
+		`DELETE FROM api_webhook_endpoints WHERE user_id = $1`,
+		`DELETE FROM assistant_conversations WHERE user_id = $1`,
+		`DELETE FROM user_feedback WHERE user_id = $1`,
+		`UPDATE gallery_submissions SET status = 'removed', title = NULL,
+			reject_reason = NULL, cover_key = NULL, media_keys = '[]'::jsonb
+		 WHERE user_id = $1`,
+	}
+	for _, statement := range statements {
+		if _, err := q.Exec(ctx, statement, id); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
 func UpdateUserPassword(ctx context.Context, q Q, id uuid.UUID, passwordHash string) error {
 	_, err := q.Exec(ctx, `UPDATE users SET password_hash = $2 WHERE id = $1`, id, passwordHash)
 	return err
@@ -106,9 +150,8 @@ func CountUsersSince(ctx context.Context, q Q, since time.Time) (int64, error) {
 	return n, err
 }
 
-// ListUsers 后台用户搜索分页（limit+1 行）。画像筛选读取预聚合快照，不扫描历史任务。
-func ListUsers(ctx context.Context, q Q, search, status, lifecycle, risk, profileTag string, limit int, cursor *Cursor) ([]*User, error) {
-	sql := `SELECT ` + userCols + ` FROM users WHERE role = 'user'`
+func userListWhere(search, status, lifecycle, risk, profileTag string) (string, []any) {
+	sql := ` FROM users WHERE role = 'user'`
 	args := []any{}
 	if search != "" {
 		args = append(args, "%"+search+"%")
@@ -130,7 +173,51 @@ func ListUsers(ctx context.Context, q Q, search, status, lifecycle, risk, profil
 		args = append(args, profileTag)
 		sql += fmt.Sprintf(` AND EXISTS (SELECT 1 FROM user_profile_metrics profile WHERE profile.user_id=users.id AND profile.tags ? $%d)`, len(args))
 	}
-	sql, args = appendCursor(sql, args, cursor, limit)
+	return sql, args
+}
+
+// CountUsersFiltered 与 ListUsers 使用同一套筛选。
+func CountUsersFiltered(ctx context.Context, q Q, search, status, lifecycle, risk, profileTag string) (int64, error) {
+	where, args := userListWhere(search, status, lifecycle, risk, profileTag)
+	var n int64
+	err := q.QueryRow(ctx, `SELECT count(*)`+where, args...).Scan(&n)
+	return n, err
+}
+
+// ListUsers 后台用户搜索分页（limit+1 行）。画像筛选读取预聚合快照，不扫描历史任务。
+func ListUsers(ctx context.Context, q Q, search, status, lifecycle, risk, profileTag string, limit int, cursor *Cursor) ([]*User, error) {
+	where, args := userListWhere(search, status, lifecycle, risk, profileTag)
+	sql, args := appendCursor(`SELECT `+userCols+where, args, cursor, limit)
+	rows, err := q.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*User
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+// ListUsersOffset 按页码偏移取用户，条数与 CountUsersFiltered 对应。
+func ListUsersOffset(ctx context.Context, q Q, search, status, lifecycle, risk, profileTag string, limit, offset int) ([]*User, error) {
+	if limit < 1 {
+		limit = 20
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	where, args := userListWhere(search, status, lifecycle, risk, profileTag)
+	args = append(args, limit, offset)
+	sql := fmt.Sprintf(
+		`SELECT %s%s ORDER BY created_at DESC, id DESC LIMIT $%d OFFSET $%d`,
+		userCols, where, len(args)-1, len(args),
+	)
 	rows, err := q.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, err

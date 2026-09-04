@@ -1,3 +1,5 @@
+import 'dart:ui' show Tristate;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:starcloudsai_mobile/features/profile/profile.dart';
@@ -123,6 +125,16 @@ void main() {
     expect(find.text('2 个任务正在生成'), findsOneWidget);
     expect(find.text('18'), findsOneWidget);
     expect(find.text('14'), findsOneWidget);
+    final overviewSemantics = tester
+        .getSemantics(find.bySemanticsLabel('创作概览，2 个任务正在生成'))
+        .getSemanticsData();
+    expect(overviewSemantics.flagsCollection.isButton, isTrue);
+    expect(overviewSemantics.flagsCollection.isEnabled, Tristate.isTrue);
+    final taskSemantics = tester
+        .getSemantics(find.bySemanticsLabel('夏日海边产品海报，生成中'))
+        .getSemanticsData();
+    expect(taskSemantics.flagsCollection.isButton, isTrue);
+    expect(taskSemantics.flagsCollection.isEnabled, Tristate.isTrue);
     await tester.tap(find.text('创作概览'));
     expect(worksOpened, isTrue);
 

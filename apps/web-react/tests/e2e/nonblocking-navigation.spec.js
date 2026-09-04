@@ -51,7 +51,7 @@ test('slow lazy route shows navigation progress while keeping the current page',
     fulfillJson(route, { routes: {}, features: {}, pageControls: {}, blacklist: { blocked: false } }),
   )
   await page.route('**/api/v1/auth/session', (route) => fulfillJson(route, { user: CACHED_USER }))
-  await page.route('**/src/views/MaterialsLibraryView.jsx*', async (route) => {
+  await page.route('**/src/views/HistoryView.jsx*', async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 1_000))
     await route.continue()
   })
@@ -59,12 +59,12 @@ test('slow lazy route shows navigation progress while keeping the current page',
   await page.goto('/studio')
   await expect(page.locator('.studio-hub')).toBeVisible()
 
-  await page.locator('.main-nav a[href="/assets"]').dispatchEvent('click')
+  await page.locator('.main-nav a[href="/history"]').dispatchEvent('click')
   await expect(page.locator('.route-navigation-progress')).toBeVisible()
   await expect(page.locator('main.main-content')).toHaveAttribute('aria-busy', 'true')
   await expect(page.locator('.studio-hub')).toBeVisible()
 
-  await expect(page).toHaveURL(/\/assets$/)
+  await expect(page).toHaveURL(/\/history$/)
   await expect(page.locator('.route-navigation-progress')).toHaveCount(0)
 })
 

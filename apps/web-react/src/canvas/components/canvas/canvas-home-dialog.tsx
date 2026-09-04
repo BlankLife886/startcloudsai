@@ -488,7 +488,7 @@ export function CanvasHomeDialog({
                 centered
                 width={variant === "cost" ? 480 : 520}
                 zIndex={12000}
-                maskClosable
+                mask={{ closable: true }}
                 getContainer={() => document.body}
                 rootClassName={light ? "sc-cd-root is-light" : "sc-cd-root"}
                 styles={{

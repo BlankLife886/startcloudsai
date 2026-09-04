@@ -544,6 +544,87 @@ void main() {
     expect(capturedGroupId, _group.id);
   });
 
+  testWidgets('asset media actions expose progress and resume safely', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(320, 740));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final saveGate = Completer<void>();
+    var useCount = 0;
+    var useAssistantCount = 0;
+    var saveCount = 0;
+    var shareCount = 0;
+    await tester.pumpWidget(
+      ProviderScope(
+        child: MaterialApp(
+          theme: ThemeData.light(),
+          darkTheme: ThemeData.dark(),
+          themeMode: ThemeMode.dark,
+          home: Scaffold(
+            body: MediaQuery(
+              data: const MediaQueryData(
+                size: Size(320, 740),
+                textScaler: TextScaler.linear(1.6),
+              ),
+              child: AssetDetailSheet(
+                asset: _asset,
+                groupName: _group.name,
+                busy: false,
+                onUseForCreation: () => useCount += 1,
+                onUseForAssistant: () => useAssistantCount += 1,
+                onSave: () {
+                  saveCount += 1;
+                  return saveGate.future;
+                },
+                onShare: (_) async => shareCount += 1,
+                onRename: () {},
+                onMove: () {},
+                onDelete: () {},
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byKey(const Key('asset-use-for-creation')), findsOneWidget);
+    expect(find.byKey(const Key('asset-use-for-assistant')), findsOneWidget);
+    await tester.ensureVisible(find.byKey(const Key('asset-save-original')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('asset-save-original')));
+    await tester.pump();
+    expect(saveCount, 1);
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('asset-save-original')),
+        matching: find.byType(CircularProgressIndicator),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      tester
+          .widget<OutlinedButton>(find.byKey(const Key('asset-share')))
+          .onPressed,
+      isNull,
+    );
+
+    saveGate.complete();
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('asset-share')));
+    await tester.pumpAndSettle();
+    expect(shareCount, 1);
+    await tester.ensureVisible(
+      find.byKey(const Key('asset-use-for-assistant')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('asset-use-for-assistant')));
+    await tester.pumpAndSettle();
+    expect(useAssistantCount, 1);
+    expect(useCount, 0);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets(
     'asset detail actions rename, move and delete through controller',
     (tester) async {
@@ -554,6 +635,26 @@ void main() {
       await tester.pumpAndSettle();
 
       await tester.tap(find.text('人像参考'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('asset-save-original')), findsOneWidget);
+      expect(find.byKey(const Key('asset-share')), findsOneWidget);
+      expect(find.byKey(const Key('asset-use-for-creation')), findsOneWidget);
+      expect(find.byKey(const Key('asset-use-for-assistant')), findsOneWidget);
+      expect(find.byTooltip('全屏预览素材'), findsOneWidget);
+      await tester.tap(find.byTooltip('全屏预览素材'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('asset-fullscreen-actions')), findsOneWidget);
+      expect(find.byKey(const Key('asset-fullscreen-save')), findsOneWidget);
+      expect(find.byKey(const Key('asset-fullscreen-share')), findsOneWidget);
+      expect(
+        find.byKey(const Key('asset-fullscreen-use-for-creation')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const Key('asset-fullscreen-use-for-assistant')),
+        findsOneWidget,
+      );
+      await tester.tap(find.byKey(const Key('asset-fullscreen-close')));
       await tester.pumpAndSettle();
       await tester.ensureVisible(find.byTooltip('重命名'));
       await tester.pumpAndSettle();
@@ -623,6 +724,36 @@ void main() {
     await tester.tap(find.text('删除分组'));
     await tester.pumpAndSettle();
     expect(controller.deletedGroupId, _group.id);
+  });
+
+  test('asset file extension follows content type and url', () {
+    expect(assetFileExtension(_asset), 'jpg');
+    expect(
+      assetFileExtension(
+        const UserAsset(
+          id: 'png',
+          title: 'PNG',
+          url: '/api/v1/files/uploads/image.bin',
+          thumbnailUrl: '',
+          contentType: 'image/png',
+          sizeBytes: 1,
+        ),
+      ),
+      'png',
+    );
+    expect(
+      assetFileExtension(
+        const UserAsset(
+          id: 'webp',
+          title: 'WebP',
+          url: '/api/v1/files/uploads/image.webp',
+          thumbnailUrl: '',
+          contentType: 'application/octet-stream',
+          sizeBytes: 1,
+        ),
+      ),
+      'webp',
+    );
   });
 
   testWidgets('asset summary and cards fit narrow large-text layout', (

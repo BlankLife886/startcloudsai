@@ -112,30 +112,5 @@ func assistantToolActionMaps(value any) []map[string]any {
 }
 
 func assistantForcedWorkspaceTool(prompt string) string {
-	text := strings.ToLower(strings.TrimSpace(prompt))
-	containsAny := func(values ...string) bool {
-		for _, value := range values {
-			if strings.Contains(text, value) {
-				return true
-			}
-		}
-		return false
-	}
-	switch {
-	case containsAny("网页截图", "网站截图", "截取网页", "capture webpage", "website screenshot"):
-		return assistanttools.ToolWebpageCapture
-	case containsAny("搜索图片", "找参考图", "找些参考图", "找一些参考图", "图片素材", "image search") || (strings.Contains(text, "参考图") && containsAny("找", "搜索", "寻找", "缺少")):
-		return assistanttools.ToolImageSearch
-	case containsAny("导入商品链接", "导入商品页", "商品链接导入", "product import"):
-		return assistanttools.ToolProductImport
-	case containsAny("导出交付包", "打包交付", "打包所有图片", "delivery export"):
-		return assistanttools.ToolDeliveryExport
-	case containsAny("参考图复刻", "复刻参考图", "照这个图做工作流", "reference rebuild"):
-		return assistanttools.ToolReferenceRebuild
-	case containsAny("发送到无限画布", "发到无限画布", "发送到ai电商", "发送到 ai 电商", "send to workspace"):
-		return assistanttools.ToolSendToWorkspace
-	case containsAny("抠图", "移除背景", "压缩图片", "高清放大", "图片裁剪", "切图"):
-		return assistanttools.ToolMediaAction
-	}
-	return ""
+	return assistanttools.WorkspaceToolForPrompt(prompt)
 }

@@ -104,9 +104,11 @@ export function DialogMotion({
       if (!open) {
         setMotionState("exiting");
         settleTimerRef.current = window.setTimeout(finishExit, Math.ceil(settings.exitDuration * 1000) + 80);
-        gsap
-          .timeline({ onComplete: finishExit })
-          .to(items, { autoAlpha: 0, y: -4, duration: 0.1, stagger: 0.01, ease: "power1.in" }, 0)
+        const timeline = gsap.timeline({ onComplete: finishExit });
+        if (items.length) {
+          timeline.to(items, { autoAlpha: 0, y: -4, duration: 0.1, stagger: 0.01, ease: "power1.in" }, 0);
+        }
+        timeline
           .to(panel, {
             autoAlpha: 0,
             y: settings.exitY,
@@ -125,11 +127,11 @@ export function DialogMotion({
         (initialFocusRef?.current || panel).focus?.({ preventScroll: true });
       });
       settleTimerRef.current = window.setTimeout(finishEnter, Math.ceil(settings.enterDuration * 1000) + 80);
-      gsap
-        .timeline({
-          defaults: { ease: "power3.out" },
-          onComplete: finishEnter,
-        })
+      const timeline = gsap.timeline({
+        defaults: { ease: "power3.out" },
+        onComplete: finishEnter,
+      });
+      timeline
         .fromTo(layer, { autoAlpha: 0 }, { autoAlpha: 1, duration: 0.22 }, 0)
         .fromTo(panel, {
           autoAlpha: 0,
@@ -141,14 +143,16 @@ export function DialogMotion({
           scale: 1,
           duration: settings.enterDuration,
           clearProps: "transform",
-        }, 0.025)
-        .fromTo(items, { autoAlpha: 0, y: 9 }, {
+        }, 0.025);
+      if (items.length) {
+        timeline.fromTo(items, { autoAlpha: 0, y: 9 }, {
           autoAlpha: 1,
           y: 0,
           duration: 0.28,
           stagger: 0.025,
           clearProps: "transform",
         }, 0.12);
+      }
       return () => window.clearTimeout(settleTimerRef.current);
     },
     { dependencies: [open, present, variant], scope: layerRef, revertOnUpdate: true },

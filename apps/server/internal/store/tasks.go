@@ -503,6 +503,13 @@ func LockTasksReferencingOutputKeys(ctx context.Context, q Q, userID uuid.UUID, 
 // task still uses as a reference image (for example, a revision in a version
 // chain).
 func CountTasksReferencingInputKeys(ctx context.Context, q Q, userID, excludeID uuid.UUID, keys []string) (int64, error) {
+	return CountTasksReferencingInputKeysExceptAssistantOutput(ctx, q, userID, excludeID, uuid.Nil, keys)
+}
+
+// CountTasksReferencingInputKeysExceptAssistantOutput ignores only the output
+// message owned by excludeAssistantRunID. Reference inputs in that same run and
+// every reference from other runs/messages continue to protect the object.
+func CountTasksReferencingInputKeysExceptAssistantOutput(ctx context.Context, q Q, userID, excludeID, excludeAssistantRunID uuid.UUID, keys []string) (int64, error) {
 	if len(keys) == 0 {
 		return 0, nil
 	}
@@ -549,21 +556,31 @@ func CountTasksReferencingInputKeys(ctx context.Context, q Q, userID, excludeID 
 						) AS proposal_reference(value)
 						WHERE proposal_reference.value->>'fileKey' = ANY($3::text[])
 					)
-					OR EXISTS (
-						SELECT 1
-						FROM jsonb_array_elements(
-							CASE WHEN jsonb_typeof(message.metadata->'images') = 'array'
-								THEN message.metadata->'images' ELSE '[]'::jsonb END
-						) AS image(value)
-						WHERE image.value->>'fileKey' = ANY($3::text[])
-					)
-					OR EXISTS (
-						SELECT 1
-						FROM jsonb_array_elements(
-							CASE WHEN jsonb_typeof(message.metadata->'proposal'->'images') = 'array'
-								THEN message.metadata->'proposal'->'images' ELSE '[]'::jsonb END
-						) AS proposal_image(value)
-						WHERE proposal_image.value->>'fileKey' = ANY($3::text[])
+					OR (
+						NOT EXISTS (
+							SELECT 1 FROM assistant_runs output_run
+							WHERE output_run.id = $4
+							  AND output_run.user_id = $1
+							  AND output_run.assistant_message_id = message.id
+						)
+						AND (
+							EXISTS (
+								SELECT 1
+								FROM jsonb_array_elements(
+									CASE WHEN jsonb_typeof(message.metadata->'images') = 'array'
+										THEN message.metadata->'images' ELSE '[]'::jsonb END
+								) AS image(value)
+								WHERE image.value->>'fileKey' = ANY($3::text[])
+							)
+							OR EXISTS (
+								SELECT 1
+								FROM jsonb_array_elements(
+									CASE WHEN jsonb_typeof(message.metadata->'proposal'->'images') = 'array'
+										THEN message.metadata->'proposal'->'images' ELSE '[]'::jsonb END
+								) AS proposal_image(value)
+								WHERE proposal_image.value->>'fileKey' = ANY($3::text[])
+							)
+						)
 					)
 				  )
 			)
@@ -579,7 +596,7 @@ func CountTasksReferencingInputKeys(ctx context.Context, q Q, userID, excludeID 
 					) AS reference(value)
 					WHERE reference.value->>'fileKey' = ANY($3::text[])
 				  )
-			)`, userID, excludeID, keys).Scan(&count)
+			)`, userID, excludeID, keys, excludeAssistantRunID).Scan(&count)
 	return count, err
 }
 
@@ -1062,7 +1079,7 @@ const adminTaskSourceSQL = `
 		SELECT id, user_id, type, model, status, prompt, params, count, input_keys,
 			output_keys, thumbnail_keys, cost_cents, work_units, idempotency_key, error_code,
 			error_message, attempt, started_at, lease_owner, heartbeat_at, lease_until, finished_at, created_at,
-			deleted_at, deletion_actor, deleted_output_count
+			deleted_at, deletion_actor, deleted_output_count, 'task'::text AS record_source
 		FROM tasks
 		WHERE admin_cleared_at IS NULL
 		UNION ALL
@@ -1111,10 +1128,63 @@ const adminTaskSourceSQL = `
 			run.started_at, NULL::text AS lease_owner, NULL::timestamptz AS heartbeat_at,
 			NULL::timestamptz AS lease_until, run.finished_at, run.created_at,
 			NULL::timestamptz AS deleted_at, NULL::text AS deletion_actor,
-			0::integer AS deleted_output_count
+			0::integer AS deleted_output_count, 'assistant_run'::text AS record_source
 		FROM assistant_runs run
 		JOIN assistant_conversations conversation ON conversation.id = run.conversation_id
 		LEFT JOIN assistant_messages message ON message.id = run.assistant_message_id
+		WHERE run.admin_cleared_at IS NULL
+		  AND NOT EXISTS (
+			SELECT 1 FROM tasks task
+			WHERE task.deleted_at IS NULL
+			  AND task.admin_cleared_at IS NULL
+			  AND task.idempotency_key = '` + UIDesignAssetHistoryIdemPrefix + `' || run.id::text
+		  )
+	`
+
+// dashboardWorkSQL unions generation tasks with workspace assistant runs so
+// homepage volume, latency, provider, and type charts match the admin task list.
+// History-mirror tasks and UI-design asset history copies are excluded to avoid
+// counting the same delivery twice.
+const dashboardWorkSQL = `
+		SELECT created_at, started_at, finished_at, status,
+			CASE
+				WHEN type = 'assistant' AND (
+					params->>'_source' = 'react_canvas'
+					OR params->>'source' = 'react_canvas'
+					OR params->>'workspace' = 'infinite_canvas'
+					OR params->>'_kind' LIKE 'canvas-%'
+				) THEN 'infinite_canvas'
+				WHEN type = 'assistant' AND params->>'workspace' = 'ui_design' THEN 'ui_design'
+				WHEN type = 'assistant' AND params->>'workspace' IN ('ecommerce', 'ecommerce_design') THEN 'ecommerce_design'
+				ELSE type
+			END AS type,
+			COALESCE(
+				NULLIF(params->>'_providerDisplayName', ''),
+				NULLIF(params->>'_chatProviderDisplayName', ''),
+				NULLIF(params->>'_imageProviderDisplayName', ''),
+				NULLIF(params->>'_serviceProvider', ''),
+				'未标记'
+			) AS provider
+		FROM tasks
+		WHERE admin_cleared_at IS NULL
+		  AND lower(COALESCE(params->>'_historyMirror', '')) <> 'true'
+		UNION ALL
+		SELECT run.created_at, run.started_at, run.finished_at, run.status,
+			CASE
+				WHEN conversation.workspace = 'infinite_canvas' THEN 'infinite_canvas'
+				WHEN conversation.workspace = 'ui_design' THEN 'ui_design'
+				WHEN conversation.workspace IN ('ecommerce', 'ecommerce_design') THEN 'ecommerce_design'
+				ELSE 'assistant'
+			END AS type,
+			COALESCE(
+				NULLIF(run.params->>'_providerDisplayName', ''),
+				NULLIF(run.params->>'_chatProviderDisplayName', ''),
+				NULLIF(run.params->>'_imageProviderDisplayName', ''),
+				NULLIF(run.params->>'_serviceProvider', ''),
+				'未标记'
+			) AS provider
+		FROM assistant_runs run
+		JOIN assistant_conversations conversation ON conversation.id = run.conversation_id
 		WHERE run.admin_cleared_at IS NULL
 		  AND NOT EXISTS (
 			SELECT 1 FROM tasks task
@@ -1245,7 +1315,7 @@ func purgeFinishedAdminTasksTx(ctx context.Context, q Q, taskType, status, error
 	if taskType == PromptTaskTypeAssistant && source == "" {
 		source = PromptTaskTypeAssistant
 	}
-	sql := `SELECT id, type FROM (` + adminTaskSourceSQL + `) admin_tasks WHERE true`
+	sql := `SELECT id, record_source FROM (` + adminTaskSourceSQL + `) admin_tasks WHERE true`
 	args := []any{}
 	if taskType != "" {
 		args = append(args, taskType)
@@ -1276,15 +1346,15 @@ func purgeFinishedAdminTasksTx(ctx context.Context, q Q, taskType, status, error
 	runIDs := make([]uuid.UUID, 0)
 	for rows.Next() {
 		var id uuid.UUID
-		var rowType string
-		if err := rows.Scan(&id, &rowType); err != nil {
+		var recordSource string
+		if err := rows.Scan(&id, &recordSource); err != nil {
 			return nil, err
 		}
-		if rowType == PromptTaskTypeAssistant {
+		if recordSource == "assistant_run" {
 			runIDs = append(runIDs, id)
-			continue
+		} else {
+			taskIDs = append(taskIDs, id)
 		}
-		taskIDs = append(taskIDs, id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -1401,7 +1471,7 @@ func TaskDailySince(ctx context.Context, q Q, since time.Time) (map[string]TaskD
 		        count(*),
 		        count(*) FILTER (WHERE status = 'succeeded'),
 		        count(*) FILTER (WHERE status = 'failed')
-		 FROM tasks WHERE created_at >= $1 GROUP BY day`, since)
+		 FROM (`+dashboardWorkSQL+`) work WHERE created_at >= $1 GROUP BY day`, since)
 	if err != nil {
 		return nil, err
 	}
@@ -1462,7 +1532,7 @@ func GetTaskPerformanceSummary(ctx context.Context, q Q, since time.Time) (*Task
 				ORDER BY extract(epoch FROM (finished_at - created_at)) * 1000)
 				FILTER (WHERE created_at >= $1 AND finished_at IS NOT NULL
 					AND status IN ('succeeded', 'failed')), 0)::bigint
-		FROM tasks`, since).Scan(
+		FROM (`+dashboardWorkSQL+`) work`, since).Scan(
 		&summary.QueuedNow, &summary.RunningNow,
 		&summary.Created, &summary.Succeeded, &summary.Failed, &summary.Canceled,
 		&summary.AvgQueueMs, &summary.P95QueueMs,
@@ -1484,8 +1554,7 @@ type ProviderPerformanceRow struct {
 func TaskProviderPerformanceSince(ctx context.Context, q Q, since time.Time) ([]ProviderPerformanceRow, error) {
 	rows, err := q.Query(ctx, `
 		SELECT
-			COALESCE(NULLIF(params ->> '_providerDisplayName', ''),
-				NULLIF(params ->> '_serviceProvider', ''), '未标记') AS provider,
+			provider,
 			count(*),
 			count(*) FILTER (WHERE status = 'succeeded'),
 			count(*) FILTER (WHERE status = 'failed'),
@@ -1494,7 +1563,7 @@ func TaskProviderPerformanceSince(ctx context.Context, q Q, since time.Time) ([]
 			COALESCE(percentile_cont(0.95) WITHIN GROUP (
 				ORDER BY extract(epoch FROM (finished_at - created_at)) * 1000)
 				FILTER (WHERE finished_at IS NOT NULL AND status IN ('succeeded', 'failed')), 0)::bigint
-		FROM tasks
+		FROM (`+dashboardWorkSQL+`) work
 		WHERE created_at >= $1
 		GROUP BY 1
 		ORDER BY count(*) DESC, provider
@@ -1518,7 +1587,7 @@ func TaskProviderPerformanceSince(ctx context.Context, q Q, since time.Time) ([]
 // TaskTypeCountsSince 近 N 日全站任务量按类型聚合。
 func TaskTypeCountsSince(ctx context.Context, q Q, since time.Time) (map[string]int64, error) {
 	rows, err := q.Query(ctx,
-		`SELECT type, count(*) FROM tasks WHERE created_at >= $1 GROUP BY type`, since)
+		`SELECT type, count(*) FROM (`+dashboardWorkSQL+`) work WHERE created_at >= $1 GROUP BY type`, since)
 	if err != nil {
 		return nil, err
 	}
@@ -1894,7 +1963,7 @@ func RequeueTask(ctx context.Context, q Q, id uuid.UUID) (bool, error) {
 			params = COALESCE(params, '{}'::jsonb)
 				- '_crunTaskIds' - '_upstreamStage' - '_generationStage' - '_failedProviderConfigIds'
 				- '_completionClaimId' - '_completionClaimedAtMs'
-		 WHERE id = $1 AND status = 'failed'`, id)
+		 WHERE id = $1 AND status = 'failed' AND deleted_at IS NULL`, id)
 	if err != nil {
 		return false, err
 	}

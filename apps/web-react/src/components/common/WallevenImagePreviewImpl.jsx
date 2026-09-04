@@ -22,6 +22,7 @@ import "@react/legacy-static/components/wallpaper/fullscreen-preview/features/fi
 import "@react/components/common/WallevenImagePreview.css";
 import { usePreviewViewport } from "@react/components/common/usePreviewViewport.js";
 import notificationService from "@react/legacy-modules/services/notification.js";
+import { DownloadIcon } from "./DownloadIcon.jsx";
 import { WallevenRegionEditor } from "./WallevenRegionEditor.jsx";
 
 const FILTERS = [
@@ -1183,7 +1184,7 @@ export function WallevenImagePreviewImpl({
               disabled={options.disabled}
               onClick={() => action(id)}
             >
-              <i className={`bi ${icon}`} style={{ pointerEvents: "none" }} />
+              {icon === "bi-download" ? <DownloadIcon style={{ pointerEvents: "none" }} /> : <i className={`bi ${icon}`} style={{ pointerEvents: "none" }} />}
             </button>
           ))}
           {cropMode && (
@@ -1764,7 +1765,7 @@ export function WallevenImagePreviewImpl({
                 disabled={!decomposedTiles.some((tile) => tile.selected)}
                 onClick={downloadDecomposedTiles}
               >
-                <i className="bi bi-download" aria-hidden="true" />
+                <DownloadIcon />
                 下载已选
                 <span className="decompose-download-count">{decomposedTiles.filter((tile) => tile.selected).length}</span>
               </button>

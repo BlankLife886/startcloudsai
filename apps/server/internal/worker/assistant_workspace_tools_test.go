@@ -24,4 +24,7 @@ func TestAssistantForcedWorkspaceTool(t *testing.T) {
 	if got := assistantForcedWorkspaceTool("你好，介绍一下你自己"); got != "" {
 		t.Fatalf("ordinary chat forced tool = %q", got)
 	}
+	if got := assistantForcedWorkspaceTool("解释网页截图工具的实现原理"); got != "" {
+		t.Fatalf("tool explanation forced tool = %q", got)
+	}
 }

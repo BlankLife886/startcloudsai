@@ -3,9 +3,15 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/services.dart';
+import 'package:gal/gal.dart';
+import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../../core/network/api_exception.dart';
+import '../../core/providers.dart';
 import '../../core/widgets/app_notice.dart';
 import '../../core/widgets/app_top_bar.dart';
 import '../../core/widgets/authenticated_image.dart';
@@ -313,6 +319,93 @@ class _AssetsScreenState extends ConsumerState<AssetsScreen> {
     }
   }
 
+  Future<File> _downloadAsset(UserAsset asset) async {
+    final bytes = await ref
+        .read(apiClientProvider)
+        .getBytes(
+          asset.url,
+          invalidUrlMessage: '素材文件地址无效',
+          downloadFailedMessage: '素材下载失败',
+        );
+    final directory = await getTemporaryDirectory();
+    final safeId = asset.id.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '-');
+    final file = File(
+      '${directory.path}/starclouds-asset-${safeId.isEmpty ? 'image' : safeId}.${assetFileExtension(asset)}',
+    );
+    await file.writeAsBytes(bytes, flush: true);
+    return file;
+  }
+
+  Future<void> _saveAsset(UserAsset asset) async {
+    try {
+      final file = await _downloadAsset(asset);
+      await Gal.putImage(file.path);
+      if (mounted) AppNotice.success(context, '素材已保存到系统相册');
+    } catch (error) {
+      if (mounted) _showError(error, '素材保存失败');
+    }
+  }
+
+  Future<void> _shareAsset(UserAsset asset, BuildContext buttonContext) async {
+    final box = buttonContext.findRenderObject() as RenderBox?;
+    final origin = box == null
+        ? null
+        : box.localToGlobal(Offset.zero) & box.size;
+    try {
+      final file = await _downloadAsset(asset);
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(file.path)],
+          text: asset.title,
+          title: '分享素材',
+          sharePositionOrigin: origin,
+        ),
+      );
+    } catch (error) {
+      if (mounted) _showError(error, '素材分享失败');
+    }
+  }
+
+  void _useAssetForCreation(UserAsset asset) {
+    final key = asset.inputKey;
+    if (key == null || key.isEmpty) {
+      AppNotice.warning(context, '这项素材暂时无法作为参考图');
+      return;
+    }
+    context.go(
+      '/create',
+      extra: ReferenceImageDraft(
+        localPath: '',
+        filename: asset.title,
+        remoteKey: key,
+        remoteUrl: asset.thumbnailUrl.isNotEmpty
+            ? asset.thumbnailUrl
+            : asset.url,
+        sourceAssetId: asset.id,
+      ),
+    );
+  }
+
+  void _useAssetForAssistant(UserAsset asset) {
+    final key = asset.inputKey;
+    if (key == null || key.isEmpty) {
+      AppNotice.warning(context, '这项素材暂时无法发送给 AI 助手');
+      return;
+    }
+    context.go(
+      '/assistant',
+      extra: ReferenceImageDraft(
+        localPath: '',
+        filename: asset.title,
+        remoteKey: key,
+        remoteUrl: asset.thumbnailUrl.isNotEmpty
+            ? asset.thumbnailUrl
+            : asset.url,
+        sourceAssetId: asset.id,
+      ),
+    );
+  }
+
   Future<void> _openAsset(UserAsset asset, AssetCenterState state) async {
     await showAppSheet<void>(
       context: context,
@@ -324,6 +417,10 @@ class _AssetsScreenState extends ConsumerState<AssetsScreen> {
             .firstOrNull
             ?.name,
         busy: state.busyIds.contains(asset.id),
+        onUseForCreation: () => _useAssetForCreation(asset),
+        onUseForAssistant: () => _useAssetForAssistant(asset),
+        onSave: () => _saveAsset(asset),
+        onShare: (buttonContext) => _shareAsset(asset, buttonContext),
         onRename: () {
           Navigator.pop(sheetContext);
           _renameAsset(asset);
@@ -920,7 +1017,7 @@ class _AssetPickerSheetState extends ConsumerState<AssetPickerSheet> {
                                       : Theme.of(
                                           context,
                                         ).colorScheme.surfaceContainerLow,
-                                  borderRadius: BorderRadius.circular(18),
+                                  borderRadius: BorderRadius.circular(8),
                                   clipBehavior: Clip.antiAlias,
                                   child: InkWell(
                                     key: Key('asset-picker-${asset.id}'),
@@ -1066,11 +1163,24 @@ class _AssetPickerEmpty extends StatelessWidget {
   );
 }
 
-class AssetDetailSheet extends StatelessWidget {
+String assetFileExtension(UserAsset asset) {
+  final type = asset.contentType.toLowerCase();
+  final path = Uri.tryParse(asset.url)?.path.toLowerCase() ?? '';
+  if (type.contains('webp') || path.endsWith('.webp')) return 'webp';
+  if (type.contains('png') || path.endsWith('.png')) return 'png';
+  if (type.contains('gif') || path.endsWith('.gif')) return 'gif';
+  return 'jpg';
+}
+
+class AssetDetailSheet extends StatefulWidget {
   const AssetDetailSheet({
     required this.asset,
     required this.groupName,
     required this.busy,
+    required this.onUseForCreation,
+    required this.onUseForAssistant,
+    required this.onSave,
+    required this.onShare,
     required this.onRename,
     required this.onMove,
     required this.onDelete,
@@ -1080,9 +1190,70 @@ class AssetDetailSheet extends StatelessWidget {
   final UserAsset asset;
   final String? groupName;
   final bool busy;
+  final VoidCallback onUseForCreation;
+  final VoidCallback onUseForAssistant;
+  final Future<void> Function() onSave;
+  final Future<void> Function(BuildContext buttonContext) onShare;
   final VoidCallback onRename;
   final VoidCallback onMove;
   final VoidCallback onDelete;
+
+  @override
+  State<AssetDetailSheet> createState() => _AssetDetailSheetState();
+}
+
+enum _AssetMediaAction { useForCreation, useForAssistant, save, share }
+
+class _AssetDetailSheetState extends State<AssetDetailSheet> {
+  _AssetMediaAction? _mediaAction;
+
+  bool get _busy => widget.busy || _mediaAction != null;
+
+  Future<void> _runMediaAction(
+    _AssetMediaAction action,
+    Future<void> Function() callback,
+  ) async {
+    if (_busy) return;
+    unawaited(HapticFeedback.lightImpact());
+    setState(() => _mediaAction = action);
+    try {
+      await callback();
+    } finally {
+      if (mounted) setState(() => _mediaAction = null);
+    }
+  }
+
+  Future<void> _openPreview() => showDialog<void>(
+    context: context,
+    useSafeArea: false,
+    builder: (previewContext) => Dialog.fullscreen(
+      backgroundColor: Colors.black,
+      child: _AssetFullscreenPreview(
+        asset: widget.asset,
+        onUseForCreation: () {
+          Navigator.pop(previewContext);
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) _leaveFor(widget.onUseForCreation);
+          });
+        },
+        onUseForAssistant: () {
+          Navigator.pop(previewContext);
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) _leaveFor(widget.onUseForAssistant);
+          });
+        },
+        onSave: widget.onSave,
+        onShare: widget.onShare,
+      ),
+    ),
+  );
+
+  void _leaveFor(VoidCallback callback) {
+    if (_busy) return;
+    unawaited(HapticFeedback.selectionClick());
+    Navigator.pop(context);
+    WidgetsBinding.instance.addPostFrameCallback((_) => callback());
+  }
 
   @override
   Widget build(BuildContext context) => SafeArea(
@@ -1093,18 +1264,40 @@ class AssetDetailSheet extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           ClipRRect(
-            borderRadius: BorderRadius.circular(18),
+            borderRadius: BorderRadius.circular(8),
             child: AspectRatio(
               aspectRatio: 1,
-              child: ColoredBox(
-                color: Colors.black,
-                child: AuthenticatedImage(url: asset.url, fit: BoxFit.contain),
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  ColoredBox(
+                    color: Colors.black,
+                    child: AuthenticatedImage(
+                      url: widget.asset.url,
+                      fit: BoxFit.contain,
+                    ),
+                  ),
+                  Positioned(
+                    right: 10,
+                    top: 10,
+                    child: IconButton.filled(
+                      key: const Key('asset-fullscreen-open'),
+                      tooltip: '全屏预览素材',
+                      onPressed: _busy ? null : _openPreview,
+                      style: IconButton.styleFrom(
+                        backgroundColor: Colors.black54,
+                        foregroundColor: Colors.white,
+                      ),
+                      icon: const Icon(Icons.fullscreen),
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
           const SizedBox(height: 16),
           Text(
-            asset.title,
+            widget.asset.title,
             style: Theme.of(
               context,
             ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
@@ -1116,33 +1309,109 @@ class AssetDetailSheet extends StatelessWidget {
             children: [
               Chip(
                 avatar: const Icon(Icons.folder_outlined, size: 16),
-                label: Text(groupName ?? '未分组'),
+                label: Text(widget.groupName ?? '未分组'),
               ),
-              Chip(label: Text(formatAssetSize(asset.sizeBytes))),
-              if (asset.createdAt != null)
+              Chip(label: Text(formatAssetSize(widget.asset.sizeBytes))),
+              if (widget.asset.createdAt != null)
                 Chip(
-                  label: Text(DateFormat('yyyy年M月d日').format(asset.createdAt!)),
+                  label: Text(
+                    DateFormat('yyyy年M月d日').format(widget.asset.createdAt!),
+                  ),
                 ),
             ],
           ),
           const SizedBox(height: 16),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final stacked =
+                  constraints.maxWidth < 340 ||
+                  MediaQuery.textScalerOf(context).scale(16) > 21;
+              final buttonWidth = stacked
+                  ? constraints.maxWidth
+                  : (constraints.maxWidth - 8) / 2;
+              return Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  SizedBox(
+                    width: buttonWidth,
+                    child: FilledButton.icon(
+                      key: const Key('asset-use-for-creation'),
+                      onPressed: _busy
+                          ? null
+                          : () => _leaveFor(widget.onUseForCreation),
+                      icon: const Icon(Icons.auto_fix_high_outlined),
+                      label: const Text('用于文生图'),
+                    ),
+                  ),
+                  SizedBox(
+                    width: buttonWidth,
+                    child: FilledButton.tonalIcon(
+                      key: const Key('asset-use-for-assistant'),
+                      onPressed: _busy
+                          ? null
+                          : () => _leaveFor(widget.onUseForAssistant),
+                      icon: const Icon(Icons.chat_bubble_outline),
+                      label: const Text('用于 AI 助手'),
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              OutlinedButton.icon(
+                key: const Key('asset-save-original'),
+                onPressed: _busy
+                    ? null
+                    : () => _runMediaAction(
+                        _AssetMediaAction.save,
+                        widget.onSave,
+                      ),
+                icon: _mediaAction == _AssetMediaAction.save
+                    ? const _AssetActionProgress()
+                    : const Icon(Icons.download_outlined),
+                label: const Text('保存原图'),
+              ),
+              Builder(
+                builder: (buttonContext) => OutlinedButton.icon(
+                  key: const Key('asset-share'),
+                  onPressed: _busy
+                      ? null
+                      : () => _runMediaAction(
+                          _AssetMediaAction.share,
+                          () => widget.onShare(buttonContext),
+                        ),
+                  icon: _mediaAction == _AssetMediaAction.share
+                      ? const _AssetActionProgress()
+                      : const Icon(Icons.ios_share_outlined),
+                  label: const Text('分享素材'),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
           Row(
             children: [
               IconButton.filledTonal(
                 tooltip: '重命名',
-                onPressed: busy ? null : onRename,
+                onPressed: _busy ? null : widget.onRename,
                 icon: const Icon(Icons.edit_outlined),
               ),
               const SizedBox(width: 8),
               IconButton.filledTonal(
                 tooltip: '移动分组',
-                onPressed: busy ? null : onMove,
+                onPressed: _busy ? null : widget.onMove,
                 icon: const Icon(Icons.drive_file_move_outlined),
               ),
               const Spacer(),
               IconButton.filledTonal(
                 tooltip: '删除素材',
-                onPressed: busy ? null : onDelete,
+                onPressed: _busy ? null : widget.onDelete,
                 style: IconButton.styleFrom(
                   foregroundColor: Theme.of(context).colorScheme.error,
                 ),
@@ -1153,6 +1422,174 @@ class AssetDetailSheet extends StatelessWidget {
         ],
       ),
     ),
+  );
+}
+
+class _AssetFullscreenPreview extends StatefulWidget {
+  const _AssetFullscreenPreview({
+    required this.asset,
+    required this.onUseForCreation,
+    required this.onUseForAssistant,
+    required this.onSave,
+    required this.onShare,
+  });
+
+  final UserAsset asset;
+  final VoidCallback onUseForCreation;
+  final VoidCallback onUseForAssistant;
+  final Future<void> Function() onSave;
+  final Future<void> Function(BuildContext buttonContext) onShare;
+
+  @override
+  State<_AssetFullscreenPreview> createState() =>
+      _AssetFullscreenPreviewState();
+}
+
+class _AssetFullscreenPreviewState extends State<_AssetFullscreenPreview> {
+  _AssetMediaAction? _action;
+
+  Future<void> _run(
+    _AssetMediaAction action,
+    Future<void> Function() callback,
+  ) async {
+    if (_action != null) return;
+    unawaited(HapticFeedback.lightImpact());
+    setState(() => _action = action);
+    try {
+      await callback();
+    } finally {
+      if (mounted) setState(() => _action = null);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => SafeArea(
+    child: Stack(
+      children: [
+        Positioned.fill(
+          child: InteractiveViewer(
+            minScale: 1,
+            maxScale: 5,
+            child: Center(
+              child: AuthenticatedImage(
+                url: widget.asset.url,
+                fit: BoxFit.contain,
+              ),
+            ),
+          ),
+        ),
+        Positioned(
+          left: 8,
+          top: 8,
+          child: IconButton.filledTonal(
+            key: const Key('asset-fullscreen-close'),
+            tooltip: '关闭素材预览',
+            onPressed: _action == null ? () => Navigator.pop(context) : null,
+            style: IconButton.styleFrom(
+              backgroundColor: Colors.black54,
+              foregroundColor: Colors.white,
+            ),
+            icon: const Icon(Icons.close),
+          ),
+        ),
+        Positioned(
+          left: 12,
+          right: 12,
+          bottom: 12,
+          child: Center(
+            child: Material(
+              key: const Key('asset-fullscreen-actions'),
+              color: Colors.black.withValues(alpha: .68),
+              borderRadius: BorderRadius.circular(8),
+              child: Padding(
+                padding: const EdgeInsets.all(4),
+                child: Wrap(
+                  alignment: WrapAlignment.center,
+                  spacing: 2,
+                  runSpacing: 0,
+                  children: [
+                    TextButton.icon(
+                      key: const Key('asset-fullscreen-use-for-creation'),
+                      onPressed: _action == null
+                          ? () => _run(
+                              _AssetMediaAction.useForCreation,
+                              () async => widget.onUseForCreation(),
+                            )
+                          : null,
+                      style: _assetFullscreenActionStyle(),
+                      icon: _action == _AssetMediaAction.useForCreation
+                          ? const _AssetActionProgress(color: Colors.white)
+                          : const Icon(Icons.auto_fix_high_outlined, size: 19),
+                      label: const Text('用于文生图'),
+                    ),
+                    TextButton.icon(
+                      key: const Key('asset-fullscreen-use-for-assistant'),
+                      onPressed: _action == null
+                          ? () => _run(
+                              _AssetMediaAction.useForAssistant,
+                              () async => widget.onUseForAssistant(),
+                            )
+                          : null,
+                      style: _assetFullscreenActionStyle(),
+                      icon: _action == _AssetMediaAction.useForAssistant
+                          ? const _AssetActionProgress(color: Colors.white)
+                          : const Icon(Icons.chat_bubble_outline, size: 19),
+                      label: const Text('AI 助手'),
+                    ),
+                    TextButton.icon(
+                      key: const Key('asset-fullscreen-save'),
+                      onPressed: _action == null
+                          ? () => _run(_AssetMediaAction.save, widget.onSave)
+                          : null,
+                      style: _assetFullscreenActionStyle(),
+                      icon: _action == _AssetMediaAction.save
+                          ? const _AssetActionProgress(color: Colors.white)
+                          : const Icon(Icons.download_outlined, size: 19),
+                      label: const Text('保存原图'),
+                    ),
+                    Builder(
+                      builder: (buttonContext) => TextButton.icon(
+                        key: const Key('asset-fullscreen-share'),
+                        onPressed: _action == null
+                            ? () => _run(
+                                _AssetMediaAction.share,
+                                () => widget.onShare(buttonContext),
+                              )
+                            : null,
+                        style: _assetFullscreenActionStyle(),
+                        icon: _action == _AssetMediaAction.share
+                            ? const _AssetActionProgress(color: Colors.white)
+                            : const Icon(Icons.ios_share_outlined, size: 19),
+                        label: const Text('分享素材'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+ButtonStyle _assetFullscreenActionStyle() => TextButton.styleFrom(
+  foregroundColor: Colors.white,
+  disabledForegroundColor: Colors.white70,
+  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+);
+
+class _AssetActionProgress extends StatelessWidget {
+  const _AssetActionProgress({this.color});
+
+  final Color? color;
+
+  @override
+  Widget build(BuildContext context) => SizedBox.square(
+    dimension: 17,
+    child: CircularProgressIndicator(strokeWidth: 2, color: color),
   );
 }
 
@@ -1243,7 +1680,7 @@ class _AssetUploadSheetState extends State<AssetUploadSheet> {
             ),
             const SizedBox(height: 14),
             ClipRRect(
-              borderRadius: BorderRadius.circular(18),
+              borderRadius: BorderRadius.circular(8),
               child: AspectRatio(
                 aspectRatio: 16 / 9,
                 child:

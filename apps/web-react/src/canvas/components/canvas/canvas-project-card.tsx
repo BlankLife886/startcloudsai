@@ -1,4 +1,5 @@
-import { ArrowUpRight, Check, Download, Pencil, Trash2 } from "lucide-react";
+import { ArrowUpRight, Check, Pencil, Trash2 } from "lucide-react";
+import { DownloadIcon } from "@react/components/common/DownloadIcon.jsx";
 import { useEffect } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { useTranslation } from "react-i18next";
@@ -140,7 +141,7 @@ function PreviewTypeIcon({ type, x, y, size, color }: { type: string; x: number;
 
 function PreviewNodeContent({ node, x, y, width, height, palette, enabled }: { node: CanvasNodeData; x: number; y: number; width: number; height: number; palette: PreviewPalette; enabled: boolean }) {
     const media = node.metadata?.content;
-    const preview = useCanvasPreviewSrc(node.type === CanvasNodeType.Image ? media : undefined, { storageKey: node.metadata?.storageKey, thumbnailUrl: node.metadata?.thumbnailUrl, maxEdge: 256, enabled });
+    const preview = useCanvasPreviewSrc(node.type === CanvasNodeType.Image ? media : undefined, { storageKey: node.metadata?.storageKey, thumbnailUrl: node.metadata?.thumbnailUrl, maxEdge: 256, enabled, allowOriginalFallback: false });
     if (node.type === CanvasNodeType.Image && media) {
         return preview.src ? <image href={preview.src} x={x} y={y} width={width} height={height} preserveAspectRatio="xMidYMid slice" /> : <rect x={x} y={y} width={width} height={height} fill={palette.wash} />;
     }
@@ -359,7 +360,7 @@ export function CanvasProjectCard({ project }: { project: CanvasProject }) {
                     onClick={(event) => event.stopPropagation()}
                 >
                     <button type="button" className="canvas-project-icon-btn" onClick={() => void exportCanvasProjects([project], project.title || t("canvas.export.defaultProjectName"))} aria-label={t("canvas.project.export")}>
-                        <Download className="size-3.5" />
+                        <DownloadIcon className="size-3.5" />
                     </button>
                     <button
                         type="button"

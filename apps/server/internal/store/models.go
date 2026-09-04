@@ -48,6 +48,7 @@ type User struct {
 	Status                string
 	LastLoginAt           *time.Time
 	SubmissionBannedUntil *time.Time
+	DeletedAt             *time.Time
 	CreatedAt             time.Time
 }
 

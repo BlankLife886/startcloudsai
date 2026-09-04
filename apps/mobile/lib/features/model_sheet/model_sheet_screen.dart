@@ -354,7 +354,7 @@ class _ModelSheetScreenState extends ConsumerState<ModelSheetScreen>
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
             color: Theme.of(context).colorScheme.surfaceContainerLow,
-            borderRadius: BorderRadius.circular(18),
+            borderRadius: BorderRadius.circular(8),
             border: Border.all(
               color: Theme.of(context).colorScheme.outlineVariant,
             ),
@@ -496,7 +496,7 @@ class _ModelSheetScreenState extends ConsumerState<ModelSheetScreen>
                   padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
                     color: colors.secondaryContainer.withValues(alpha: 0.52),
-                    borderRadius: BorderRadius.circular(18),
+                    borderRadius: BorderRadius.circular(8),
                     border: Border.all(color: colors.outlineVariant),
                   ),
                   child: Row(
@@ -628,7 +628,7 @@ class _ModelSheetScreenState extends ConsumerState<ModelSheetScreen>
                               style: OutlinedButton.styleFrom(
                                 padding: EdgeInsets.zero,
                                 shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(18),
+                                  borderRadius: BorderRadius.circular(8),
                                 ),
                               ),
                               child: _selecting
@@ -679,7 +679,7 @@ class _ModelSheetScreenState extends ConsumerState<ModelSheetScreen>
                               ),
                               decoration: BoxDecoration(
                                 color: colors.secondaryContainer,
-                                borderRadius: BorderRadius.circular(18),
+                                borderRadius: BorderRadius.circular(8),
                               ),
                               child: Text(
                                 '${model.pricePoints * units} 积分',
@@ -1165,7 +1165,7 @@ class _ModelSheetStage extends StatelessWidget {
                     color: selected
                         ? colors.secondaryContainer
                         : colors.surfaceContainerLow,
-                    borderRadius: BorderRadius.circular(18),
+                    borderRadius: BorderRadius.circular(8),
                     clipBehavior: Clip.antiAlias,
                     child: InkWell(
                       key: Key('model-sheet-output-$index'),
@@ -1309,7 +1309,7 @@ class _ReferenceThumbnail extends StatelessWidget {
       fit: StackFit.expand,
       children: [
         ClipRRect(
-          borderRadius: BorderRadius.circular(18),
+          borderRadius: BorderRadius.circular(8),
           child: image.localPath.isNotEmpty
               ? Image.file(File(image.localPath), fit: BoxFit.cover)
               : AuthenticatedImage(url: image.remoteUrl ?? ''),
@@ -1463,7 +1463,7 @@ class _InlineError extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Material(
     color: Theme.of(context).colorScheme.errorContainer,
-    borderRadius: BorderRadius.circular(18),
+    borderRadius: BorderRadius.circular(8),
     child: ListTile(
       leading: const Icon(Icons.cloud_off_outlined),
       title: const Text('模型设计状态读取失败'),

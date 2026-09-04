@@ -22,13 +22,15 @@ interface AuditLog {
 const filters = reactive({ admin: '', path: '' })
 const tableRef = ref<TableInstance>()
 
-const { items, loading, error, total, page, hasPrev, hasNext, reset, next, prev, retry } =
+const pageSize = ref(20)
+
+const { items, loading, error, total, page, hasPrev, hasNext, reset, goToPage, retry } =
   usePagedList<AuditLog>(
     (cursor) =>
       request<Page<AuditLog>>('/api/v1/admin/audit-logs', {
-        query: { admin: filters.admin, path: filters.path, limit: 20, cursor },
+        query: { admin: filters.admin, path: filters.path, limit: pageSize.value, cursor },
       }),
-    () => filters,
+    () => ({ ...filters, limit: pageSize.value }),
   )
 
 onMounted(reset)
@@ -108,8 +110,9 @@ const METHOD_TAG: Record<string, 'primary' | 'success' | 'warning' | 'danger' | 
         :page="page"
         :count="items.length"
         :total="total"
-        @prev="prev"
-        @next="next"
+        :page-size="pageSize"
+        @update:page="goToPage"
+        @update:page-size="(size: number) => { pageSize = size; reset() }"
       >
         <div class="audit-table-shell">
           <el-table
@@ -254,10 +257,6 @@ const METHOD_TAG: Record<string, 'primary' | 'success' | 'warning' | 'danger' | 
   min-height: 56px;
   padding: 8px 18px;
   background: var(--surface);
-}
-
-.audit-list-shell :deep(.cursor-pager__meta strong) {
-  color: var(--ink);
 }
 
 .audit-table-shell {

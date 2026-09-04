@@ -57,6 +57,8 @@ const statusMeta: Record<string, { label: string; type: "success" | "warning" | 
   failed: { label: "失败", type: "danger" },
 };
 
+const pageSize = ref(20);
+
 const {
   items,
   loading,
@@ -66,8 +68,7 @@ const {
   hasPrev,
   hasNext,
   reset,
-  next,
-  prev,
+  goToPage,
   refresh,
   retry,
 } = usePagedList<AdminOrder>(
@@ -77,10 +78,22 @@ const {
         status: filters.status,
         search: filters.search.trim(),
         cursor,
-        limit: 30,
+        limit: pageSize.value,
       },
     }),
-  () => ({ ...filters }),
+  () => ({ ...filters, limit: pageSize.value }),
+);
+
+const matchedTotal = computed(() => total.value ?? items.value.length);
+
+const pagePaidCents = computed(() =>
+  items.value.reduce((sum, order) => sum + Number(paidAmount(order)), 0),
+);
+
+const pageCompleted = computed(() => items.value.filter((order) => order.status === "completed").length);
+
+const pagePending = computed(() =>
+  items.value.filter((order) => order.status === "pending" || order.status === "paid").length,
 );
 
 const adjustedCount = computed(() =>
@@ -89,6 +102,10 @@ const adjustedCount = computed(() =>
       order.providerPayAmountCents !== null &&
       Number(order.providerPayAmountCents) !== Number(order.amountCents),
   ).length,
+);
+
+const statusLabel = computed(
+  () => statusOptions.find((option) => option.value === filters.status)?.label || "全部",
 );
 
 function formatMoney(cents: number | null | undefined) {
@@ -164,8 +181,8 @@ onMounted(reset);
 </script>
 
 <template>
-  <div class="orders-admin page-stack">
-    <PageCard title="订单管理" subtitle="套餐支付、上游收款金额与到账状态">
+  <div class="page orders-page">
+    <PageCard>
       <template #actions>
         <el-button :icon="Refresh" :loading="loading" @click="refresh">刷新</el-button>
         <el-button type="primary" :icon="Search" :loading="reconciling" @click="runReconciliation">
@@ -173,18 +190,56 @@ onMounted(reset);
         </el-button>
       </template>
 
+      <section class="orders-kpis" aria-label="订单摘要">
+        <article>
+          <small>匹配订单</small>
+          <strong class="tnum">{{ matchedTotal }}</strong>
+        </article>
+        <article>
+          <small>本页实付</small>
+          <strong class="tnum">{{ formatMoney(pagePaidCents) }}</strong>
+        </article>
+        <article>
+          <small>本页已完成</small>
+          <strong class="tnum">{{ pageCompleted }}</strong>
+        </article>
+        <article>
+          <small>本页待处理</small>
+          <strong class="tnum">{{ pagePending }}</strong>
+        </article>
+        <article :class="{ 'is-warn': adjustedCount > 0 }">
+          <small>金额差异</small>
+          <strong class="tnum">{{ adjustedCount }}</strong>
+        </article>
+      </section>
+
+      <p class="orders-legend">
+        当前筛选
+        <em>{{ statusLabel }}</em>
+        共
+        <em class="tnum">{{ matchedTotal }}</em>
+        笔。本页
+        <em class="tnum">{{ items.length }}</em>
+        笔实付
+        <em class="tnum">{{ formatMoney(pagePaidCents) }}</em>
+        。
+        <span v-if="adjustedCount" class="is-warn">{{ adjustedCount }} 笔实际收款与套餐标价不同。</span>
+      </p>
+
       <div class="orders-toolbar">
-        <div class="orders-status-tabs" role="tablist" aria-label="订单状态">
+        <div class="orders-tabs" role="tablist" aria-label="订单状态">
           <button
             v-for="option in statusOptions"
             :key="option.value || 'all'"
             type="button"
             role="tab"
-            :aria-selected="filters.status === option.value"
+            class="orders-tab"
             :class="{ 'is-active': filters.status === option.value }"
+            :aria-selected="filters.status === option.value"
             @click="filters.status = option.value; reset()"
           >
             {{ option.label }}
+            <em v-if="filters.status === option.value" class="tnum">{{ matchedTotal }}</em>
           </button>
         </div>
         <div class="orders-toolbar__search">
@@ -201,24 +256,22 @@ onMounted(reset);
         </div>
       </div>
 
-      <div v-if="adjustedCount" class="orders-adjusted-note">
-        本页有 {{ adjustedCount }} 笔订单的实际收款金额与套餐标价不同
-      </div>
-
       <ListError :error="error" :loading="loading" @retry="retry" />
 
       <AdminListShell
-        viewport-height="clamp(390px, calc(100vh - 260px), 720px)"
+        class="orders-board"
+        fill
         :has-prev="hasPrev"
         :has-next="hasNext"
         :loading="loading"
         :page="page"
         :count="items.length"
         :total="total"
-        @prev="prev"
-        @next="next"
+        :page-size="pageSize"
+        @update:page="goToPage"
+        @update:page-size="(size: number) => { pageSize = size; reset() }"
       >
-        <el-table v-loading="loading" :data="items" height="100%" size="small" table-layout="fixed">
+        <el-table v-loading="loading" class="orders-table" :data="items" height="100%" size="small" table-layout="fixed">
           <template #empty>
             <el-empty description="暂无订单" :image-size="64" />
           </template>
@@ -251,9 +304,9 @@ onMounted(reset);
               </div>
             </template>
           </el-table-column>
-			<el-table-column label="发放权益" width="180">
-				<template #default="{ row }">
-					<span class="tnum">{{ orderBenefit(row as AdminOrder) }}</span>
+          <el-table-column label="发放权益" width="180">
+            <template #default="{ row }">
+              <span class="tnum">{{ orderBenefit(row as AdminOrder) }}</span>
             </template>
           </el-table-column>
           <el-table-column label="支付渠道" width="130">
@@ -296,16 +349,20 @@ onMounted(reset);
       @confirm="detailVisible = false"
     >
       <div v-if="detail" class="order-detail">
-        <div class="order-detail__head">
+        <div class="order-detail__kpis">
           <div>
-            <span>订单状态</span>
+            <small>订单状态</small>
             <el-tag :type="orderStatus(detail.status).type" effect="light">
               {{ orderStatus(detail.status).label }}
             </el-tag>
           </div>
           <div>
-            <span>实际收款</span>
-            <strong>{{ formatMoney(paidAmount(detail)) }}</strong>
+            <small>实际收款</small>
+            <strong class="tnum">{{ formatMoney(paidAmount(detail)) }}</strong>
+          </div>
+          <div>
+            <small>套餐权益</small>
+            <strong>{{ orderBenefit(detail) }}</strong>
           </div>
         </div>
         <dl>
@@ -315,8 +372,7 @@ onMounted(reset);
           <div><dt>套餐</dt><dd>{{ detail.planName || detail.planId }}</dd></div>
           <div><dt>套餐标价</dt><dd>{{ formatMoney(detail.amountCents) }}</dd></div>
           <div><dt>实际应付</dt><dd>{{ formatMoney(paidAmount(detail)) }}</dd></div>
-          <div><dt>支付渠道</dt><dd>{{ paymentMethodLabel(detail.paymentMethod) }}</dd></div>
-			<div><dt>套餐权益</dt><dd>{{ orderBenefit(detail) }}</dd></div>
+          <div><dt>支付渠道</dt><dd>{{ paymentMethodLabel(detail.paymentMethod) }} · {{ detail.provider || "—" }}</dd></div>
           <div><dt>创建时间</dt><dd>{{ formatTime(detail.createdAt) }}</dd></div>
           <div><dt>支付时间</dt><dd>{{ detail.paidAt ? formatTime(detail.paidAt) : "—" }}</dd></div>
           <div><dt>完成时间</dt><dd>{{ detail.completedAt ? formatTime(detail.completedAt) : "—" }}</dd></div>
@@ -327,32 +383,304 @@ onMounted(reset);
 </template>
 
 <style scoped>
-.orders-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 14px; }
-.orders-status-tabs { display: inline-flex; gap: 3px; padding: 3px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-2); }
-.orders-status-tabs button { min-width: 62px; height: 31px; padding: 0 10px; border: 0; border-radius: 4px; color: var(--ink-3); background: transparent; font: inherit; font-size: 12px; cursor: pointer; }
-.orders-status-tabs button.is-active { color: var(--ink-1); background: var(--surface); box-shadow: inset 0 0 0 1px var(--border-strong); font-weight: 650; }
-.orders-toolbar__search { display: flex; align-items: center; gap: 7px; }
-.orders-toolbar__search :deep(.el-input) { width: 240px; }
-.orders-adjusted-note { margin-bottom: 12px; padding: 9px 11px; border-left: 3px solid var(--warning); color: var(--ink-2); background: var(--warning-soft); font-size: 12px; }
-.order-main, .order-user, .order-money, .order-channel { display: grid; min-width: 0; gap: 3px; }
-.order-main strong, .order-user strong, .order-channel strong { overflow: hidden; color: var(--ink-1); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.order-main button { display: inline-flex; width: fit-content; max-width: 100%; align-items: center; gap: 5px; padding: 0; overflow: hidden; border: 0; color: var(--ink-3); background: transparent; font: inherit; font-size: 10px; cursor: pointer; }
-.order-user small, .order-money small, .order-channel small { color: var(--ink-3); font-size: 10px; }
-.order-money strong { color: var(--success); font-size: 13px; font-variant-numeric: tabular-nums; }
-.order-money small { color: var(--warning); }
-.order-time { color: var(--ink-2); font-size: 11px; }
-.order-detail__head { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
-.order-detail__head > div { display: flex; min-height: 64px; align-items: center; justify-content: space-between; gap: 10px; padding: 0 14px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-2); }
-.order-detail__head span { color: var(--ink-3); font-size: 11px; }
-.order-detail__head strong { color: var(--success); font-size: 19px; font-variant-numeric: tabular-nums; }
-.order-detail dl { display: grid; margin: 0; }
-.order-detail dl > div { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 14px; padding: 9px 2px; border-bottom: 1px solid var(--border); }
-.order-detail dt { color: var(--ink-3); font-size: 11px; }
-.order-detail dd { margin: 0; overflow-wrap: anywhere; color: var(--ink-1); font-size: 12px; text-align: right; }
+.orders-page {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+}
+.orders-page :deep(.page-card) {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.orders-page :deep(.page-card__header) {
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+.orders-page :deep(.page-card__actions) {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.orders-page :deep(.page-card__body) {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  gap: 14px;
+  overflow: hidden;
+}
+.orders-kpis {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--surface-2);
+}
+.orders-kpis article {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 14px 16px;
+  border-right: 1px solid var(--border);
+}
+.orders-kpis article:last-child {
+  border-right: 0;
+}
+.orders-kpis small {
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 650;
+}
+.orders-kpis strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 22px;
+  font-weight: 750;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.orders-kpis article.is-warn strong,
+.orders-legend .is-warn {
+  color: var(--warning);
+}
+.orders-legend {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.orders-legend em {
+  margin: 0 2px;
+  color: var(--ink);
+  font-style: normal;
+  font-weight: 750;
+}
+.orders-toolbar {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.orders-tabs {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 360px;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  scrollbar-width: none;
+}
+.orders-tabs::-webkit-scrollbar {
+  display: none;
+}
+.orders-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.orders-tab em {
+  color: var(--ink-3);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 700;
+}
+.orders-tab.is-active {
+  background: var(--accent);
+  color: var(--accent-on);
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+.orders-tab.is-active em {
+  color: color-mix(in srgb, var(--accent-on) 72%, transparent);
+}
+.orders-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.orders-toolbar__search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.orders-toolbar__search :deep(.el-input) {
+  width: 240px;
+}
+.orders-board {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-top: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+}
+.orders-board :deep(.admin-list-shell__footer) {
+  min-height: 56px;
+  padding: 8px 18px;
+  background: var(--surface);
+}
+.order-main,
+.order-user,
+.order-money,
+.order-channel {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+.order-main strong,
+.order-user strong,
+.order-channel strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.order-main button {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  align-items: center;
+  gap: 5px;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  color: var(--ink-3);
+  background: transparent;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.order-user small,
+.order-money small,
+.order-channel small {
+  color: var(--ink-3);
+  font-size: 11px;
+}
+.order-money strong {
+  color: var(--success);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.order-money small {
+  color: var(--warning);
+}
+.order-time {
+  color: var(--ink-2);
+  font-size: 12px;
+}
+.order-detail__kpis {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.order-detail__kpis > div {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  min-height: 72px;
+  align-content: center;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--surface-2);
+}
+.order-detail__kpis small {
+  color: var(--ink-3);
+  font-size: 12px;
+}
+.order-detail__kpis strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.order-detail__kpis > div:nth-child(2) strong {
+  color: var(--success);
+}
+.order-detail dl {
+  display: grid;
+  margin: 0;
+}
+.order-detail dl > div {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 14px;
+  padding: 10px 2px;
+  border-bottom: 1px solid var(--border);
+}
+.order-detail dt {
+  color: var(--ink-3);
+  font-size: 12px;
+}
+.order-detail dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-size: 13px;
+  text-align: right;
+}
+@media (max-width: 1080px) {
+  .orders-kpis {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .orders-kpis article:nth-child(3) {
+    border-right: 0;
+  }
+  .orders-kpis article:nth-child(4),
+  .orders-kpis article:nth-child(5) {
+    border-top: 1px solid var(--border);
+  }
+}
 @media (max-width: 860px) {
-  .orders-toolbar { align-items: stretch; flex-direction: column; }
-  .orders-status-tabs { display: grid; grid-template-columns: repeat(6, 1fr); }
-  .orders-status-tabs button { min-width: 0; padding: 0 5px; }
-  .orders-toolbar__search :deep(.el-input) { width: min(100%, 280px); }
+  .orders-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .orders-kpis article:nth-child(odd) {
+    border-right: 1px solid var(--border);
+  }
+  .orders-kpis article:nth-child(even) {
+    border-right: 0;
+  }
+  .orders-kpis article:nth-child(3) {
+    border-top: 1px solid var(--border);
+  }
+  .orders-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .orders-toolbar__search :deep(.el-input) {
+    width: min(100%, 280px);
+  }
+  .order-detail__kpis {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

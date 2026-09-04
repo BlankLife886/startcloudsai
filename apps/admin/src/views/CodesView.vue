@@ -54,7 +54,9 @@ const STATUS_FILTERS = [
 // ---------- 码列表 ----------
 const filters = reactive({ status: '', batchId: '', search: '' })
 
-const { items, loading, error, total, page, hasPrev, hasNext, reset, next, prev, refresh, retry } =
+const pageSize = ref(20)
+
+const { items, loading, error, total, page, hasPrev, hasNext, reset, goToPage, refresh, retry } =
   usePagedList<RedemptionCode>(
     (cursor) =>
       request<Page<RedemptionCode>>('/api/v1/admin/redemption-codes', {
@@ -62,11 +64,11 @@ const { items, loading, error, total, page, hasPrev, hasNext, reset, next, prev,
           status: filters.status,
           batchId: filters.batchId,
           search: filters.search.trim(),
-          limit: 20,
+          limit: pageSize.value,
           cursor,
         },
       }),
-    () => filters,
+    () => ({ ...filters, limit: pageSize.value }),
   )
 
 function clearFilters() {
@@ -321,8 +323,9 @@ function downloadCodes() {
         :page="page"
         :count="items.length"
         :total="total"
-        @prev="prev"
-        @next="next"
+        :page-size="pageSize"
+        @update:page="goToPage"
+        @update:page-size="(size: number) => { pageSize = size; reset() }"
       >
         <div class="codes-table-shell">
           <el-table
@@ -606,10 +609,6 @@ html.dark .status-tab.is-active {
   min-height: 56px;
   padding: 8px 18px;
   background: var(--surface);
-}
-
-.codes-list-shell :deep(.cursor-pager__meta strong) {
-  color: var(--ink);
 }
 
 .codes-table-shell {

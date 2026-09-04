@@ -74,6 +74,7 @@ export function CanvasToolbar({
             <div
                 ref={wrapRef}
                 className="canvas-editor-chrome canvas-chrome-cluster thin-scrollbar pointer-events-auto flex h-10 max-w-full items-center gap-0.5 overflow-x-auto overscroll-x-contain rounded-full px-1.5 [&>*]:shrink-0"
+                data-guide="canvas-toolbar"
                 style={dockStyle}
                 onWheel={(event) => {
                     event.stopPropagation();

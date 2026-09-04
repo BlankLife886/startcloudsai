@@ -5,6 +5,7 @@ import notificationService from "@react/legacy-modules/services/notification.js"
 import "@react/legacy-styles/generated/views/AccountSettingsView.css";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";
+import { isProductGuidesEnabled, setProductGuidesEnabled } from "./shared/productGuides.js";
 
 function profileFromUser(user) {
   return {
@@ -83,6 +84,7 @@ async function createAvatarUpload(file) {
 export function AccountSettingsView() {
   const auth = useAuth();
   const isDark = useIsDark();
+  const [guidesEnabled, setGuidesEnabled] = useState(() => isProductGuidesEnabled());
   const avatarInputRef = useRef(null);
   const mountedRef = useRef(true);
   const [profile, setProfile] = useState(() => profileFromUser(auth.user));
@@ -195,7 +197,7 @@ export function AccountSettingsView() {
       <header className="account-top">
         <div>
           <h1>账号设置</h1>
-          <p>公开资料、创作偏好与账号信息</p>
+          <p>公开资料、创作偏好、操作引导与账号信息</p>
         </div>
         <div className="account-top__meta">
           <span className={dirty ? "is-dirty" : ""}>
@@ -348,16 +350,35 @@ export function AccountSettingsView() {
               {preferenceSaving ? "正在保存…" : "已同步到当前账号"}
             </small>
           </section>
+          <section className="account-panel account-guide">
+            <h2>操作引导</h2>
+            <p>打开后，每次进入对应页面都会显示操作引导。关闭后不再自动弹出，可在引导最后一步或头像菜单里重新打开。</p>
+            <label className="account-switch">
+              <span>
+                <strong>全站操作引导</strong>
+                <small>{guidesEnabled ? "每次进入页面都会显示引导" : "已关闭，各页面不再弹出"}</small>
+              </span>
+              <input
+                type="checkbox"
+                checked={guidesEnabled}
+                aria-label="全站操作引导"
+                onChange={(event) => {
+                  const next = event.target.checked;
+                  setProductGuidesEnabled(next);
+                  setGuidesEnabled(next);
+                }}
+              />
+              <i aria-hidden="true">
+                <em />
+              </i>
+            </label>
+          </section>
           <section className="account-panel account-identity">
             <h2>账号信息</h2>
             <dl>
               <div>
                 <dt>登录邮箱</dt>
                 <dd data-no-translate>{auth.user?.email || "—"}</dd>
-              </div>
-              <div>
-                <dt>账号 ID</dt>
-                <dd data-no-translate>{auth.user?.id || "—"}</dd>
               </div>
               <div>
                 <dt>注册时间</dt>

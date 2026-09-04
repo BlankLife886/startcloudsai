@@ -85,6 +85,11 @@ func TestAssistantAgentInstructionsPreserveRequestedCount(t *testing.T) {
 	if !strings.Contains(instructions, "task_status") || !strings.Contains(instructions, "退款") || !strings.Contains(instructions, "内部任务 ID") {
 		t.Fatalf("instructions lack private task status rules = %q", instructions)
 	}
+	for _, requirement := range []string{"通用执行 Agent", "全部子目标", "同一轮持续推进", "修正后重试", "最终回答前逐项检查"} {
+		if !strings.Contains(instructions, requirement) {
+			t.Fatalf("instructions lack orchestration requirement %q: %q", requirement, instructions)
+		}
+	}
 }
 
 func TestAttachAssistantWebSearchesSkipsEmptyAndKeepsSources(t *testing.T) {
@@ -159,6 +164,10 @@ func TestBuildAssistantImageCatalogAndResolveSemanticReference(t *testing.T) {
 	last := resolveAssistantProposalReferences(nil, catalog, "继续编辑上一张")
 	if len(last) != 1 || assistantMapString(last[0], "id") != "image-b" {
 		t.Fatalf("last = %#v", last)
+	}
+	implicit := resolveAssistantProposalReferences(nil, catalog, "布局也要改一下，要美观")
+	if len(implicit) != 1 || assistantMapString(implicit[0], "id") != "image-b" {
+		t.Fatalf("implicit = %#v", implicit)
 	}
 }
 
@@ -308,6 +317,18 @@ func TestAttachAssistantProposalReferencesUsesHistoryWhenUserDidNotAttach(t *tes
 	}
 }
 
+func TestAttachAssistantProposalReferencesRecoversImplicitVisualIteration(t *testing.T) {
+	run := &store.AssistantRun{Prompt: "布局也要改一下，要美观", Params: map[string]any{}}
+	catalog := []assistantCatalogImage{
+		{ID: "old-1", Image: map[string]any{"id": "old-1", "fileKey": "tasks/u/1.png", "dataUrl": "/api/v1/files/tasks/u/1.png"}},
+		{ID: "latest", Image: map[string]any{"id": "latest", "fileKey": "tasks/u/2.png", "dataUrl": "/api/v1/files/tasks/u/2.png"}},
+	}
+	got := attachAssistantProposalReferences(assistantImageProposal{Action: "edit"}, run, catalog, nil)
+	if len(got.ReferenceImages) != 1 || assistantMapString(got.ReferenceImages[0], "id") != "latest" {
+		t.Fatalf("refs = %#v", got.ReferenceImages)
+	}
+}
+
 func TestAttachAssistantProposalReferencesRejectsUnrelatedHistoryForFreshImage(t *testing.T) {
 	run := &store.AssistantRun{Prompt: "创建一张蓝天白云图", Params: map[string]any{}}
 	catalog := []assistantCatalogImage{
@@ -329,6 +350,8 @@ func TestAssistantPromptAllowsHistoricalReferences(t *testing.T) {
 		{name: "previous image", prompt: "沿用之前图片的风格做一张海报", action: "generate", want: true},
 		{name: "numbered image", prompt: "参考图2的构图生成一个新版本", action: "generate", want: true},
 		{name: "implicit edit", prompt: "把人物头发改成红色", action: "edit", want: true},
+		{name: "implicit layout iteration", prompt: "布局也要改一下，要美观", action: "edit", want: true},
+		{name: "standalone continuation", prompt: "继续调整", action: "edit", want: true},
 		{name: "fresh landscape", prompt: "创建一张蓝天白云图", action: "generate", want: false},
 		{name: "fresh logo", prompt: "设计一个全新的 logo", action: "generate", want: false},
 		{name: "unrelated edit action", prompt: "把标题改成更简洁的说法", action: "edit", want: false},
@@ -399,6 +422,27 @@ func TestAssistantHistoricalVisionCatalogSelectsNumberedImageAndRespectsLimit(t 
 	}
 	if got := assistantHistoricalVisionCatalog("生成一张全新的海报", catalog, 0); len(got) != 0 {
 		t.Fatalf("fresh request loaded historical pixels: %#v", got)
+	}
+	iteration := assistantHistoricalVisionCatalog("不太满意，再更新一版", catalog, 0)
+	if len(iteration) != 1 || iteration[0].ID != "image-4" {
+		t.Fatalf("feedback iteration = %#v, want latest image", iteration)
+	}
+}
+
+func TestAttachAssistantProposalReferencesRecoversLatestForEllipticalEdit(t *testing.T) {
+	run := &store.AssistantRun{Prompt: "换个感觉", Params: map[string]any{}}
+	catalog := []assistantCatalogImage{
+		{ID: "older", Image: map[string]any{"id": "older", "fileKey": "tasks/u/older.png"}},
+		{ID: "latest", Image: map[string]any{"id": "latest", "fileKey": "tasks/u/latest.png"}},
+	}
+	proposal := attachAssistantProposalReferences(assistantImageProposal{
+		Action: "edit", Prompt: "换个感觉",
+	}, run, catalog, nil)
+	if len(proposal.ReferenceImages) != 1 || assistantMapString(proposal.ReferenceImages[0], "id") != "latest" {
+		t.Fatalf("proposal references = %#v, want latest image", proposal.ReferenceImages)
+	}
+	if !slices.Equal(proposal.ReferencedImageIDs, []string{"latest"}) {
+		t.Fatalf("referenced image IDs = %#v", proposal.ReferencedImageIDs)
 	}
 }
 
@@ -483,7 +527,7 @@ func TestAssistantImageExecutionPlanUsesIndependentPromptsAndReferences(t *testi
 }
 
 func TestAssistantProposalGoalContractCapturesAcceptanceFacts(t *testing.T) {
-	run := &store.AssistantRun{Prompt: "联网查一下趋势，再严格按图1制作主图和细节图"}
+	run := &store.AssistantRun{Prompt: "联网查一下趋势，导出 CSV，再严格按图1制作主图和细节图"}
 	proposal := assistantImageProposal{
 		Action: "edit", PromptMode: assistantPromptModeFaithful, Prompt: "原提示词", FaithfulPrompt: "原提示词",
 		Count: 2, ReferenceImages: []map[string]any{{"id": "ref-1"}}, InspectedImageIDs: []string{"history-1"},
@@ -492,11 +536,11 @@ func TestAssistantProposalGoalContractCapturesAcceptanceFacts(t *testing.T) {
 			{Title: "细节图", Prompt: "细节图提示词", ReferencedImageIDs: []string{"ref-1"}},
 		},
 	}
-	contract := assistantProposalGoalContract(run, proposal, 1)
+	contract := assistantProposalGoalContract(run, proposal, 1, 1)
 	if contract.OutcomeKind != "image_proposal" || contract.DeliverableCount != 2 || len(contract.Deliverables) != 2 {
 		t.Fatalf("goal contract = %#v", contract)
 	}
-	if !contract.FaithfulPreserved || contract.ReferencedImageCount != 1 || contract.InspectedImageCount != 1 || contract.WebSearchCount != 1 {
+	if !contract.FaithfulPreserved || contract.ReferencedImageCount != 1 || contract.InspectedImageCount != 1 || contract.WebSearchCount != 1 || !contract.ArtifactRequested || contract.ArtifactCount != 1 {
 		t.Fatalf("goal acceptance facts = %#v", contract)
 	}
 }

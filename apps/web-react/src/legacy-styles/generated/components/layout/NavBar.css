@@ -1205,6 +1205,10 @@ html.settings-no-animations .nav-link.is-pending::after {
   border-color: rgb(255 255 255 / 72%);
   box-shadow: 0 3px 8px rgb(109 92 255 / 34%);
 }
+.account-cluster.is-receiving,
+.account-login.is-receiving {
+  transform: scale(1.06);
+}
 .nav-trial-btn:hover {
   color: #fff;
   transform: translateY(-1px);

@@ -3,6 +3,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/network/api_client.dart';
 import '../../core/providers.dart';
 
+/// Store-distributed mobile builds must not unlock digital features through
+/// external payment links, QR codes or redemption keys.
+const mobileStoreExternalCommerceEnabled = false;
+
 class PurchasePlan {
   const PurchasePlan({
     required this.id,

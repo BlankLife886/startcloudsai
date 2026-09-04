@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { assistantRunGuidance } from "../src/legacy-modules/features/assistant/domain/assistantGuidance.js"
+import { assistantRunGuidance } from "../src/features/assistant/domain/assistantGuidance.js"
 
 test("offers source-oriented follow-ups for live web work", () => {
   assert.deepEqual(

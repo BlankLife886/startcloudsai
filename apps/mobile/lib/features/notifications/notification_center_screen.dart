@@ -125,6 +125,43 @@ class _NotificationCenterScreenState
     }
   }
 
+  Future<bool> _confirmDelete(AppNotification notification) async {
+    final confirmed = await showAppDialog<bool>(
+      context: context,
+      builder: (context) => AppDialog(
+        icon: const Icon(Icons.delete_outline),
+        title: const Text('删除这条通知？'),
+        content: Text('“${notification.title}”将从通知列表中移除。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+              foregroundColor: Theme.of(context).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    return confirmed == true;
+  }
+
+  Future<void> _deleteNotification(AppNotification notification) async {
+    try {
+      await ref
+          .read(notificationCenterControllerProvider.notifier)
+          .dismiss(notification.id);
+      if (mounted) AppNotice.success(context, '通知已删除');
+    } catch (error) {
+      if (mounted) _showError(error);
+    }
+  }
+
   Future<void> _clearAll() async {
     final confirmed = await showAppDialog<bool>(
       context: context,
@@ -303,13 +340,23 @@ class _NotificationCenterScreenState
                     return _DateHeader(label: entry.header!);
                   }
                   final notification = entry.notification!;
-                  return NotificationTimelineTile(
-                    notification: notification,
-                    marking: state.markingIds.contains(notification.id),
-                    onTap: () => _openNotification(notification),
-                    onMarkRead: notification.isRead
-                        ? null
-                        : () => _markRead(notification, showSuccess: true),
+                  return Dismissible(
+                    key: Key('notification-dismiss-${notification.id}'),
+                    direction: state.isBusy
+                        ? DismissDirection.none
+                        : DismissDirection.endToStart,
+                    confirmDismiss: (_) => _confirmDelete(notification),
+                    onDismissed: (_) =>
+                        unawaited(_deleteNotification(notification)),
+                    background: const _NotificationDeleteBackground(),
+                    child: NotificationTimelineTile(
+                      notification: notification,
+                      marking: state.markingIds.contains(notification.id),
+                      onTap: () => _openNotification(notification),
+                      onMarkRead: notification.isRead
+                          ? null
+                          : () => _markRead(notification, showSuccess: true),
+                    ),
                   );
                 },
               ),
@@ -324,6 +371,41 @@ class _NotificationCenterScreenState
             ),
           ],
         ],
+      ),
+    );
+  }
+}
+
+class _NotificationDeleteBackground extends StatelessWidget {
+  const _NotificationDeleteBackground();
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: colors.errorContainer,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 18),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              Icon(Icons.delete_outline, color: colors.onErrorContainer),
+              const SizedBox(width: 6),
+              Text(
+                '删除',
+                style: TextStyle(
+                  color: colors.onErrorContainer,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -410,30 +492,7 @@ class _NotificationFilterChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return Material(
-      color: selected ? colors.onSurface : colors.surfaceContainerLow,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(8),
-        side: BorderSide(
-          color: selected ? colors.onSurface : colors.outlineVariant,
-        ),
-      ),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(8),
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-          child: Text(
-            label,
-            style: Theme.of(context).textTheme.labelLarge?.copyWith(
-              color: selected ? colors.surface : colors.onSurface,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-        ),
-      ),
-    );
+    return AppFilterChip(label: label, selected: selected, onTap: onTap);
   }
 }
 
@@ -680,7 +739,7 @@ class NotificationDetailSheet extends StatelessWidget {
                   height: 44,
                   decoration: BoxDecoration(
                     color: style.color.withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(18),
+                    borderRadius: BorderRadius.circular(8),
                   ),
                   child: Icon(style.icon, color: style.color),
                 ),

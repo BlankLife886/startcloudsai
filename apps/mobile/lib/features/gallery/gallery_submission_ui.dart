@@ -57,7 +57,7 @@ class GallerySubmissionStatusPanel extends StatelessWidget {
       padding: const EdgeInsets.all(13),
       decoration: BoxDecoration(
         color: style.color.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(8),
         border: Border.all(color: style.color.withValues(alpha: 0.25)),
       ),
       child: Row(
@@ -246,7 +246,7 @@ class _GallerySubmissionSheetState extends State<_GallerySubmissionSheet> {
                     ),
                     decoration: BoxDecoration(
                       color: Theme.of(context).colorScheme.surfaceContainerLow,
-                      borderRadius: BorderRadius.circular(18),
+                      borderRadius: BorderRadius.circular(8),
                     ),
                     child: const Row(
                       children: [

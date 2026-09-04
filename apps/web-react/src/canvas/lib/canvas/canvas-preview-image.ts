@@ -1,4 +1,4 @@
-import { isLocalImageKey, isRemoteOriginalSource } from "@/lib/canvas/canvas-preview-url";
+import { isCloudThumbnailUrl, isLocalImageKey, isRemoteOriginalSource, softMissingFileUrl } from "@/lib/canvas/canvas-preview-url";
 import { dataUrlToBlob } from "@/lib/data-url";
 import { getImageBlob } from "@/services/image-storage";
 
@@ -6,9 +6,11 @@ export const CANVAS_PREVIEW_MIN_EDGE = 160;
 export const CANVAS_PREVIEW_MAX_EDGE = 384;
 export const CANVAS_PREVIEW_QUALITY = 0.5;
 export const CANVAS_PREVIEW_TYPE = "image/webp";
-export const CANVAS_PREVIEW_CACHE_LIMIT = 96;
+export const CANVAS_PREVIEW_CACHE_LIMIT = 48;
+export const CANVAS_PREVIEW_CACHE_PIXEL_BUDGET = CANVAS_PREVIEW_CACHE_LIMIT * CANVAS_PREVIEW_MAX_EDGE * CANVAS_PREVIEW_MAX_EDGE;
 const PREVIEW_CACHE_HARD_LIMIT = CANVAS_PREVIEW_CACHE_LIMIT * 4;
-const FAILED_SOURCE_TTL_MS = 15_000;
+const PREVIEW_CACHE_HARD_PIXEL_BUDGET = CANVAS_PREVIEW_CACHE_PIXEL_BUDGET * 4;
+const FAILED_SOURCE_TTL_MS = 60_000;
 
 let liveScale = 1;
 const scaleListeners = new Set<() => void>();
@@ -39,10 +41,13 @@ export function getCanvasPreviewEdge(maxEdge = CANVAS_PREVIEW_MAX_EDGE) {
 const inflight = new Map<string, Promise<string | undefined>>();
 const blobUrls = new Map<string, string>();
 const blobRefs = new Map<string, number>();
+const previewPixels = new Map<string, number>();
 const recent = new Set<string>();
 const failedSources = new Map<string, number>();
 const MAX_DOWNSCALE_JOBS = 2;
 let activeJobs = 0;
+let cachedPreviewPixels = 0;
+let previewCacheGeneration = 0;
 const downscaleQueue: Array<() => void> = [];
 
 function runDownscaleJob<T>(work: () => Promise<T>) {
@@ -75,13 +80,26 @@ async function loadPreviewBlob(src: string) {
     if (isLocalImageKey(src)) return (await getImageBlob(src)) || undefined;
     if (src.startsWith("data:")) return dataUrlToBlob(src);
     const credentials = src.startsWith("blob:") ? ("omit" as const) : ("include" as const);
-    const response = await fetch(src, { cache: "force-cache", credentials });
+    const response = await fetch(softMissingFileUrl(src), { cache: "force-cache", credentials });
+    const missing = response.status === 204 || response.headers.get("X-StarCloud-Media-Missing") === "1";
     if (!response.ok) {
-        if (response.status === 404 && /\/thumb\/[^/.?#]+$/.test(src)) {
-            const legacy = await fetch(`${src}.jpg`, { cache: "force-cache", credentials });
-            if (legacy.ok) return legacy.blob();
+        if (response.status === 404 && isCloudThumbnailUrl(src)) {
+            if (/\/thumb\/[^/.?#]+$/.test(src)) {
+                const legacy = await fetch(softMissingFileUrl(`${src}.jpg`), { cache: "force-cache", credentials });
+                const legacyMissing = legacy.status === 204 || legacy.headers.get("X-StarCloud-Media-Missing") === "1";
+                if (legacy.ok && !legacyMissing) return legacy.blob();
+            }
+            return;
         }
         throw new Error(`Preview image fetch failed: ${response.status}`);
+    }
+    if (missing) {
+        if (/\/thumb\/[^/.?#]+$/.test(src)) {
+            const legacy = await fetch(softMissingFileUrl(`${src}.jpg`), { cache: "force-cache", credentials });
+            const legacyMissing = legacy.status === 204 || legacy.headers.get("X-StarCloud-Media-Missing") === "1";
+            if (legacy.ok && !legacyMissing) return legacy.blob();
+        }
+        return;
     }
     return response.blob();
 }
@@ -130,14 +148,16 @@ function touch(key: string) {
 function revokePreview(key: string) {
     const url = blobUrls.get(key);
     if (url) URL.revokeObjectURL(url);
+    cachedPreviewPixels = Math.max(0, cachedPreviewPixels - (previewPixels.get(key) || 0));
     blobUrls.delete(key);
     blobRefs.delete(key);
+    previewPixels.delete(key);
     recent.delete(key);
     inflight.delete(key);
 }
 
 function evict() {
-    while (recent.size > CANVAS_PREVIEW_CACHE_LIMIT) {
+    while (recent.size > CANVAS_PREVIEW_CACHE_LIMIT || cachedPreviewPixels > CANVAS_PREVIEW_CACHE_PIXEL_BUDGET) {
         let oldest: string | undefined;
         for (const key of recent) {
             if (!blobRefs.get(key)) {
@@ -146,7 +166,7 @@ function evict() {
             }
         }
         if (!oldest) {
-            if (recent.size <= PREVIEW_CACHE_HARD_LIMIT) return;
+            if (recent.size <= PREVIEW_CACHE_HARD_LIMIT && cachedPreviewPixels <= PREVIEW_CACHE_HARD_PIXEL_BUDGET) return;
             oldest = recent.keys().next().value;
         }
         if (!oldest) return;
@@ -167,8 +187,10 @@ export function retainPreviewUrl(url: string) {
     blobRefs.set(retainedKey, (blobRefs.get(retainedKey) || 0) + 1);
     return () => {
         const next = (blobRefs.get(retainedKey) || 1) - 1;
-        if (next <= 0) blobRefs.delete(retainedKey);
-        else blobRefs.set(retainedKey, next);
+        if (next <= 0) {
+            blobRefs.delete(retainedKey);
+            evict();
+        } else blobRefs.set(retainedKey, next);
         return undefined;
     };
 }
@@ -187,11 +209,21 @@ export async function buildLightweightPreview(src: string, maxEdge = CANVAS_PREV
     }
     const pending = inflight.get(key);
     if (pending) return pending;
+    const generation = previewCacheGeneration;
 
     const task = runDownscaleJob(async () => {
+        if (generation !== previewCacheGeneration) return;
         const blob = await loadPreviewBlob(src);
-        if (!blob) return;
+        if (generation !== previewCacheGeneration) return;
+        if (!blob) {
+            failedSources.set(src, Date.now());
+            return;
+        }
         const bitmap = await decodePreviewBitmap(blob, edge);
+        if (generation !== previewCacheGeneration) {
+            bitmap.close();
+            return;
+        }
         const canvas = document.createElement("canvas");
         canvas.width = Math.max(1, bitmap.width);
         canvas.height = Math.max(1, bitmap.height);
@@ -206,20 +238,28 @@ export async function buildLightweightPreview(src: string, maxEdge = CANVAS_PREV
         context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
         bitmap.close();
         const preview = await encodePreviewBlob(canvas);
+        const pixelCount = canvas.width * canvas.height;
         canvas.width = 0;
         canvas.height = 0;
-        if (!preview) return;
+        if (!preview || generation !== previewCacheGeneration) return;
         const previous = blobUrls.get(key);
-        if (previous) URL.revokeObjectURL(previous);
+        if (previous) {
+            URL.revokeObjectURL(previous);
+            cachedPreviewPixels = Math.max(0, cachedPreviewPixels - (previewPixels.get(key) || 0));
+        }
         const url = URL.createObjectURL(preview);
         blobUrls.set(key, url);
+        previewPixels.set(key, pixelCount);
+        cachedPreviewPixels += pixelCount;
         touch(key);
         evict();
         return url;
     })
         .catch((error) => {
-            if (!isTransientPreviewError(error)) failedSources.set(src, Date.now());
-            console.warn("[CanvasPreviewImage] failed to build lightweight preview", error);
+            if (generation === previewCacheGeneration) {
+                if (!isTransientPreviewError(error)) failedSources.set(src, Date.now());
+                console.warn("[CanvasPreviewImage] failed to build lightweight preview", error);
+            }
             return undefined;
         })
         .finally(() => {
@@ -236,10 +276,13 @@ export function shouldDownscalePreview(src: string) {
 }
 
 export function clearPreviewCache() {
+    previewCacheGeneration += 1;
     blobUrls.forEach((url) => URL.revokeObjectURL(url));
     blobUrls.clear();
     blobRefs.clear();
+    previewPixels.clear();
     recent.clear();
     inflight.clear();
     failedSources.clear();
+    cachedPreviewPixels = 0;
 }

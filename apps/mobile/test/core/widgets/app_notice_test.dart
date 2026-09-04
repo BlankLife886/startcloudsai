@@ -123,4 +123,41 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('短提示'), findsNothing);
   });
+
+  testWidgets('persistent notice can be dismissed without an action', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(320, 640));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    late BuildContext noticeContext;
+    await tester.pumpWidget(
+      _app(
+        brightness: Brightness.dark,
+        textScale: 1.6,
+        child: Builder(
+          builder: (context) {
+            noticeContext = context;
+            return const SizedBox.expand();
+          },
+        ),
+      ),
+    );
+
+    AppNotice.show(
+      noticeContext,
+      '正在等待网络恢复，当前内容已经保留',
+      title: '网络连接不可用',
+      type: AppNoticeType.warning,
+      duration: Duration.zero,
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.bySemanticsLabel('关闭提示'), findsOneWidget);
+    expect(find.byKey(const Key('app-notice-close')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await tester.tap(find.byKey(const Key('app-notice-close')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('app-notice-card')), findsNothing);
+  });
 }

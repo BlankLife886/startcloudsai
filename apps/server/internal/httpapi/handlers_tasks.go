@@ -648,15 +648,74 @@ func (s *Server) deleteTask(c *gin.Context) {
 	}
 	ctx := c.Request.Context()
 	var deletedTaskIDs []uuid.UUID
+	var deletedMediaKeys []string
+	deletedMediaKeySet := make(map[string]struct{})
+	recordDeletedMediaKeys := func(keys []string) {
+		for _, key := range keys {
+			if key = strings.TrimSpace(key); key == "" {
+				continue
+			}
+			if _, exists := deletedMediaKeySet[key]; exists {
+				continue
+			}
+			deletedMediaKeySet[key] = struct{}{}
+			deletedMediaKeys = append(deletedMediaKeys, key)
+		}
+	}
 	deletedAt := time.Now().UTC()
 	cascade := c.Query("cascade") == "true"
+	historyDelete := c.Query("history") == "true"
+	forceMedia := c.Query("forceMedia") == "true"
 	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
 		root, err := store.GetUserTaskForUpdate(ctx, tx, user.ID, taskID)
 		if err != nil {
 			return err
 		}
 		if root == nil {
-			return apperr.E("task_not_found", "任务不存在", 404)
+			run, err := store.GetUserAssistantHistoryRunForUpdate(ctx, tx, user.ID, taskID)
+			if err != nil {
+				return err
+			}
+			if run == nil {
+				return apperr.E("task_not_found", "任务不存在", 404)
+			}
+			if run.Status != "succeeded" && run.Status != "failed" && run.Status != "canceled" {
+				return apperr.E("task_not_cancelable", "仅已结束的任务可以删除", 400)
+			}
+			if !historyDelete || !forceMedia {
+				return apperr.E("force_media_required", "AI 助手图片仍属于对话内容，请确认强制移除图片", 409)
+			}
+			keys, err := store.ListUserAssistantMessageOutputKeys(ctx, tx, user.ID, run.AssistantMessageID)
+			if err != nil {
+				return err
+			}
+			if err := store.LockObjectReferenceKeys(ctx, tx, keys); err != nil {
+				return err
+			}
+			if err := store.ReplaceUserMediaReferencesWithDeletedPlaceholders(ctx, tx, user.ID, keys, deletedAt); err != nil {
+				return err
+			}
+			if err := store.EnqueueObjectCleanup(ctx, tx, keys); err != nil {
+				return err
+			}
+			deletedOutputCount := 0
+			if len(keys) > 0 {
+				deletedOutputCount = 1
+			}
+			deleted, err := store.MarkAssistantHistoryRunDeletedByUser(ctx, tx, user.ID, taskID, deletedAt, deletedOutputCount)
+			if err != nil {
+				return err
+			}
+			if !deleted {
+				return apperr.E("task_not_found", "任务不存在", 404)
+			}
+			recordDeletedMediaKeys(keys)
+			deletedTaskIDs = append(deletedTaskIDs, taskID)
+			return nil
+		}
+		protectedHistoryMedia := historyDelete && (store.IsCanvasOrigin(root.Params) || store.IsAssistantOrigin(root.Params))
+		if protectedHistoryMedia && !forceMedia {
+			return apperr.E("force_media_required", "图片仍被 AI 助手或无限画布使用，请确认强制移除图片", 409)
 		}
 
 		tasks := []*store.Task{root}
@@ -694,7 +753,17 @@ func (s *Server) deleteTask(c *gin.Context) {
 				taskKeys := append([]string(nil), task.OutputKeys...)
 				taskKeys = append(taskKeys, task.ThumbnailKeys...)
 				taskKeys = store.WithDisplayKeys(taskKeys)
-				referencingTasks, err := store.CountTasksReferencingInputKeys(ctx, tx, user.ID, task.ID, taskKeys)
+				if protectedHistoryMedia && forceMedia {
+					if err := store.LockObjectReferenceKeys(ctx, tx, taskKeys); err != nil {
+						return err
+					}
+					if err := store.ReplaceUserMediaReferencesWithDeletedPlaceholders(ctx, tx, user.ID, taskKeys, deletedAt); err != nil {
+						return err
+					}
+				}
+				referencingTasks, err := store.CountTasksReferencingInputKeysExceptAssistantOutput(
+					ctx, tx, user.ID, task.ID, uiDesignMirrorAssistantRunID(task), taskKeys,
+				)
 				if err != nil {
 					return err
 				}
@@ -712,6 +781,9 @@ func (s *Server) deleteTask(c *gin.Context) {
 				}
 				if err := store.MarkTaskDeletedByUser(ctx, tx, task.ID, deletedAt); err != nil {
 					return err
+				}
+				if protectedHistoryMedia && forceMedia {
+					recordDeletedMediaKeys(taskKeys)
 				}
 				deletedTaskIDs = append(deletedTaskIDs, task.ID)
 				delete(remaining, task.ID)
@@ -732,7 +804,7 @@ func (s *Server) deleteTask(c *gin.Context) {
 	for _, id := range deletedTaskIDs {
 		ids = append(ids, id.String())
 	}
-	ok(c, gin.H{"deletedTaskIds": ids})
+	ok(c, gin.H{"deletedTaskIds": ids, "deletedMediaKeys": deletedMediaKeys})
 }
 
 func (s *Server) deleteTaskOutput(c *gin.Context) {
@@ -780,7 +852,9 @@ func (s *Server) deleteTaskOutput(c *gin.Context) {
 			removed = append(removed, thumb)
 		}
 		removed = store.WithDisplayKeys(removed)
-		referencing, err := store.CountTasksReferencingInputKeys(ctx, tx, user.ID, task.ID, removed)
+		referencing, err := store.CountTasksReferencingInputKeysExceptAssistantOutput(
+			ctx, tx, user.ID, task.ID, uiDesignMirrorAssistantRunID(task), removed,
+		)
 		if err != nil {
 			return err
 		}
@@ -819,3 +893,15 @@ func (s *Server) deleteTaskOutput(c *gin.Context) {
 }
 
 var errDeleteWholeTask = errors.New("delete whole task")
+
+func uiDesignMirrorAssistantRunID(task *store.Task) uuid.UUID {
+	if task == nil || task.Type != "ui_design" || task.Params == nil {
+		return uuid.Nil
+	}
+	historyMirror, _ := task.Params["_historyMirror"].(bool)
+	serviceKey, _ := task.Params["serviceKey"].(string)
+	if !historyMirror || strings.TrimSpace(serviceKey) != "ui_design_asset" {
+		return uuid.Nil
+	}
+	return assistantRunIDFromParams(task.Params)
+}

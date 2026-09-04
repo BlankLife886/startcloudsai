@@ -6,6 +6,8 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../../core/providers.dart';
+import '../../core/storage/user_storage_namespace.dart';
+import '../auth/auth.dart';
 import '../create/reference_image_service.dart';
 
 const maxAssistantDraftReferences = 4;
@@ -96,10 +98,13 @@ abstract interface class AssistantDraftStore {
 class SecureAssistantDraftStore implements AssistantDraftStore {
   SecureAssistantDraftStore({
     required String namespace,
+    String? legacyNamespace,
     FlutterSecureStorage? storage,
     Future<Directory> Function()? draftDirectory,
+    Future<Directory> Function()? legacyDraftDirectory,
   }) : _storage = storage ?? const FlutterSecureStorage(),
        _key = keyFor(namespace),
+       _legacyKey = legacyNamespace == null ? null : keyFor(legacyNamespace),
        _draftDirectory =
            draftDirectory ??
            (() async {
@@ -107,11 +112,22 @@ class SecureAssistantDraftStore implements AssistantDraftStore {
              return Directory(
                '${support.path}/assistant-drafts/${directoryNameFor(namespace)}',
              );
-           });
+           }),
+       _legacyDraftDirectory = legacyNamespace == null
+           ? null
+           : legacyDraftDirectory ??
+                 (() async {
+                   final support = await getApplicationSupportDirectory();
+                   return Directory(
+                     '${support.path}/assistant-drafts/${directoryNameFor(legacyNamespace)}',
+                   );
+                 });
 
   final FlutterSecureStorage _storage;
   final String _key;
+  final String? _legacyKey;
   final Future<Directory> Function() _draftDirectory;
+  final Future<Directory> Function()? _legacyDraftDirectory;
 
   static String keyFor(String namespace) {
     final normalized = _normalizedNamespace(namespace);
@@ -123,7 +139,12 @@ class SecureAssistantDraftStore implements AssistantDraftStore {
 
   @override
   Future<AssistantDraft?> read() async {
-    final raw = await _storage.read(key: _key);
+    var raw = await _storage.read(key: _key);
+    var migrated = false;
+    if ((raw == null || raw.trim().isEmpty) && _legacyKey != null) {
+      raw = await _storage.read(key: _legacyKey);
+      migrated = raw?.trim().isNotEmpty == true;
+    }
     if (raw == null || raw.trim().isEmpty) return null;
     try {
       final draft = AssistantDraft.fromJson(jsonDecode(raw));
@@ -151,7 +172,12 @@ class SecureAssistantDraftStore implements AssistantDraftStore {
         references: references,
         updatedAt: draft.updatedAt,
       );
-      return restored.isEmpty ? null : restored;
+      if (restored.isEmpty) {
+        await clear();
+        return null;
+      }
+      if (migrated) await write(restored);
+      return restored;
     } catch (_) {
       await clear();
       return null;
@@ -170,6 +196,10 @@ class SecureAssistantDraftStore implements AssistantDraftStore {
       return;
     }
     await _storage.write(key: _key, value: jsonEncode(staged.toJson()));
+    if (_legacyKey != null && _legacyKey != _key) {
+      await _storage.delete(key: _legacyKey);
+      await _deleteDirectory(_legacyDraftDirectory);
+    }
   }
 
   @override
@@ -177,7 +207,17 @@ class SecureAssistantDraftStore implements AssistantDraftStore {
     await _storage.delete(key: _key);
     final directory = await _draftDirectory();
     if (await directory.exists()) await directory.delete(recursive: true);
+    if (_legacyKey != null && _legacyKey != _key) {
+      await _storage.delete(key: _legacyKey);
+      await _deleteDirectory(_legacyDraftDirectory);
+    }
   }
+}
+
+Future<void> _deleteDirectory(Future<Directory> Function()? loader) async {
+  if (loader == null) return;
+  final directory = await loader();
+  if (await directory.exists()) await directory.delete(recursive: true);
 }
 
 Future<AssistantDraft> stageAssistantDraft(
@@ -246,8 +286,12 @@ String _normalizedNamespace(String value) {
   return normalized.isEmpty ? 'production' : normalized;
 }
 
-final assistantDraftStoreProvider = Provider<AssistantDraftStore>(
-  (ref) => SecureAssistantDraftStore(
-    namespace: ref.watch(appEnvironmentProvider).name.name,
-  ),
-);
+final assistantDraftStoreProvider = Provider<AssistantDraftStore>((ref) {
+  final environment = ref.watch(appEnvironmentProvider).name.name;
+  final session = ref.watch(sessionControllerProvider);
+  final userId = session.valueOrNull?.user?.id;
+  return SecureAssistantDraftStore(
+    namespace: userStorageNamespace(environment: environment, userId: userId),
+    legacyNamespace: session.hasValue ? environment : null,
+  );
+});

@@ -6,6 +6,7 @@ import 'package:starcloudsai_mobile/features/notifications/notifications.dart';
 
 class _FakeNotificationController extends NotificationCenterController {
   int markReadCount = 0;
+  int dismissCount = 0;
 
   @override
   Future<NotificationCenterState> build() async => NotificationCenterState(
@@ -32,6 +33,19 @@ class _FakeNotificationController extends NotificationCenterController {
             .map((item) => item.id == id ? item.markRead() : item)
             .toList(),
         unread: 0,
+      ),
+    );
+  }
+
+  @override
+  Future<void> dismiss(String id) async {
+    dismissCount += 1;
+    final current = state.requireValue;
+    final target = current.items.firstWhere((item) => item.id == id);
+    state = AsyncData(
+      current.copyWith(
+        items: current.items.where((item) => item.id != id).toList(),
+        unread: target.isRead ? current.unread : current.unread - 1,
       ),
     );
   }
@@ -405,6 +419,43 @@ void main() {
     expect(find.byType(NotificationDetailSheet), findsNothing);
     expect(find.text('已标记为已读'), findsOneWidget);
   });
+
+  testWidgets(
+    'notification swipe delete requires confirmation and updates unread',
+    (tester) async {
+      late _FakeNotificationController controller;
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            notificationCenterControllerProvider.overrideWith(
+              () => controller = _FakeNotificationController(),
+            ),
+          ],
+          child: const MaterialApp(home: NotificationCenterScreen()),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final dismissible = find.byKey(
+        const Key('notification-dismiss-task-notification'),
+      );
+      await tester.drag(dismissible, const Offset(-500, 0));
+      await tester.pumpAndSettle();
+
+      expect(find.text('删除这条通知？'), findsOneWidget);
+      expect(find.textContaining('作品已完成'), findsWidgets);
+      expect(controller.dismissCount, 0);
+
+      await tester.tap(find.widgetWithText(FilledButton, '删除'));
+      await tester.pumpAndSettle();
+
+      expect(controller.dismissCount, 1);
+      expect(controller.state.requireValue.items, isEmpty);
+      expect(controller.state.requireValue.unread, 0);
+      expect(find.text('通知已删除'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('notification search combines with unread filter on narrow UI', (
     tester,

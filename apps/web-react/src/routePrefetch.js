@@ -12,8 +12,6 @@ const routePreloaders = new Map([
   ["/design-workshop", () => import("./views/DesignWorkshopView.jsx")],
   ["/model-sheet", () => import("./views/ModelSheetStudioView.jsx")],
   ["/game-art", () => import("./views/GameArtStudioView.jsx")],
-  ["/canvas", () => import("@canvas/native-index-route.tsx")],
-  ["/canvas/config", () => import("@canvas/native-routes.tsx")],
   ["/check-in", () => import("./views/CheckinView.jsx")],
   ["/history", () => import("./views/HistoryView.jsx")],
   ["/profile", () => import("./views/ProfileView.jsx")],
@@ -41,7 +39,9 @@ const prefetchedRoutes = new Map();
 function preloaderForPath(pathname) {
   const exactPreloader = routePreloaders.get(pathname);
   if (exactPreloader) return exactPreloader;
-  if (pathname.startsWith("/canvas/")) return routePreloaders.get("/canvas/config");
+  // Canvas modules hydrate persisted stores and may start authenticated sync.
+  // Only load them after navigation, never from a homepage hover/focus prefetch.
+  if (pathname === "/canvas" || pathname.startsWith("/canvas/")) return undefined;
   if (pathname.startsWith("/tools/")) return () => import("./views/MediaToolsView.jsx");
   if (pathname.startsWith("/incentive-plans/")) {
     return () => import("./views/incentives/CreatorIncentiveDetailRoute.jsx");

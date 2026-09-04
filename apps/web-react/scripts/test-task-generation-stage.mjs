@@ -16,7 +16,7 @@ try {
   const [{ taskToLegacyJob }, { taskSnapshotSignature }, { assistantMessageMatchesRun, messageStatus }, { ecommerceGenerationStage, ecommerceGenerationStageLabel }, { canvasNodeHasTaskId, restartCanvasNodeGeneration, shouldCancelCreatedCanvasTask }, { canvasGenerationStageLabel }] = await Promise.all([
     vite.ssrLoadModule('/src/legacy-modules/services/aiWallpaper.js'),
     vite.ssrLoadModule('/src/legacy-modules/services/tasksApi.js'),
-	vite.ssrLoadModule('/src/legacy-modules/features/assistant/domain/assistantMessages.js'),
+	vite.ssrLoadModule('/src/features/assistant/domain/assistantMessages.js'),
 	vite.ssrLoadModule('/src/features/ecommerce/useEcommerceJobs.js'),
     vite.ssrLoadModule('/src/canvas/lib/canvas/canvas-generation-helpers.ts'),
     vite.ssrLoadModule('/src/canvas/lib/canvas/canvas-generation-stage.ts'),
@@ -64,6 +64,10 @@ try {
 	assert.equal(messageStatus({ pending: true, kind: 'image', statusStage: 'saving-image' }).label, '正在保存图片')
 	assert.equal(messageStatus({ pending: true, kind: 'image', statusStage: 'upstream_generating' }).label, '上游正在生成')
 	assert.equal(messageStatus({ pending: true, kind: 'chat', statusStage: 'web_search' }).label, '正在联网搜索')
+	assert.equal(messageStatus({ pending: true, kind: 'agent', status: 'queued', statusStage: 'routing', routing: true }).label, '正在理解你的问题')
+	assert.equal(messageStatus({ pending: true, kind: 'agent', status: 'queued', statusStage: 'queued', routing: true }).label, '排队中')
+	assert.equal(messageStatus({ pending: true, kind: 'chat', statusStage: 'queued' }).label, '排队中')
+	assert.equal(messageStatus({ pending: true, kind: 'agent', status: 'running', statusStage: 'routing', routing: true }).label, '正在理解你的问题')
 	assert.equal(assistantMessageMatchesRun({ id: 'local-message' }, 'local-message', { id: 'run-1', assistantMessageId: 'stored-message' }), true)
 	assert.equal(assistantMessageMatchesRun({ id: 'stored-message', runId: 'run-1' }, 'local-message', { id: 'run-1', assistantMessageId: 'stored-message' }), true)
 	const ecommerceStage = ecommerceGenerationStage([
@@ -77,7 +81,12 @@ try {
     readFile(new URL('../src/features/ecommerce/HandheldStudio.jsx', import.meta.url), 'utf8'),
     readFile(new URL('../src/features/ecommerce/DetailStudio.jsx', import.meta.url), 'utf8'),
     readFile(new URL('../src/views/EcommerceBusinessSession.jsx', import.meta.url), 'utf8'),
-    readFile(new URL('../src/views/AssistantWorkspaceView.jsx', import.meta.url), 'utf8'),
+    Promise.all([
+      readFile(new URL('../src/features/assistant/assistantWorkspaceCore.jsx', import.meta.url), 'utf8'),
+      readFile(new URL('../src/features/assistant/AssistantMessageComponents.jsx', import.meta.url), 'utf8'),
+      readFile(new URL('../src/features/assistant/useAssistantWorkspaceController.js', import.meta.url), 'utf8'),
+      readFile(new URL('../src/features/assistant/AssistantWorkspaceLayout.jsx', import.meta.url), 'utf8'),
+    ]).then((parts) => parts.join('\n')),
   ])
   assert.equal(tryonSource.includes('<span>{generationStageLabel}</span>'), false, '虚拟试穿画布不应重复显示真实阶段')
   assert.ok(tryonSource.includes(': generationStageLabel\n                  : revisionReady'), '虚拟试穿底部按钮应显示真实阶段')
@@ -87,7 +96,9 @@ try {
   assert.equal(ecommerceSessionSource.includes('<span className="commerce-cost" role="status" aria-live="polite">'), false, 'AI 电商页头不应重复显示真实阶段')
   assert.equal(assistantWorkspaceSource.includes('className="image-generation-elapsed"'), false, 'AI 助手参数行不应重复显示生成耗时')
   assert.equal(assistantWorkspaceSource.includes('className="image-generation-stage-elapsed"'), true, 'AI 助手耗时应显示在真实流程当前阶段内')
-  assert.equal(assistantWorkspaceSource.includes('status && !(message.pending && message.kind === "image")'), true, 'AI 助手图片生成中不应重复显示顶部状态行')
+  assert.equal(assistantWorkspaceSource.includes('status && !showImageStage'), true, 'AI 助手图片生成中不应重复显示顶部状态行')
+  assert.ok(assistantWorkspaceSource.includes('className="assistant-followup-queue"'), '排队中的后续消息应只出现在输入框上方的紧凑队列')
+  assert.ok(assistantWorkspaceSource.includes('hiddenQueuedMessageIds.has(message.id)'), '尚未开始的排队回合不应出现在对话线程里')
   assert.equal(assistantWorkspaceSource.includes('className="image-generation-queue"'), false, 'AI 助手图片生成中不应重复显示中间状态行')
   assert.equal(assistantWorkspaceSource.includes('className="image-generation-flow"'), false, 'AI 助手不应显示四阶段流程')
   assert.equal(assistantWorkspaceSource.includes('className="image-generation-current-stage"'), true, 'AI 助手只应显示当前真实阶段')

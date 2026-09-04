@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useState } from "react";
-import { ChevronDown, Cpu } from "lucide-react";
+import { ChevronDown } from "lucide-react";
+import { SoftMark } from "@react/components/common/SoftMark.jsx";
 
 import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select";
 import { canvasThemes } from "@/lib/canvas-theme";
@@ -123,7 +124,7 @@ function ModelLabel({ config, model, capability }: { config: AiConfig; model: st
 
 function ModelIcon({ model, large = false, surface }: { model: string; capability?: ModelCapability; large?: boolean; surface?: string }) {
     const icon = resolveModelIcon(modelOptionName(model));
-    const image = icon ? <img src={icon} alt="" className={large ? "size-5 dark:invert" : "size-4 dark:invert"} /> : <Cpu className={large ? "size-5 opacity-70" : "size-4 opacity-70"} />;
+    const image = icon ? <img src={icon} alt="" className={large ? "size-5 dark:invert" : "size-4 dark:invert"} /> : <SoftMark name="cpu" size={large ? "md" : "sm"} />;
     if (!large) return <span className="shrink-0">{image}</span>;
     return (
         <span

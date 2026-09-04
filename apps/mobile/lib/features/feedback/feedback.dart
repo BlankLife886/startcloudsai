@@ -1,7 +1,12 @@
+import 'dart:convert';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../../core/network/api_client.dart';
 import '../../core/providers.dart';
+import '../../core/storage/user_storage_namespace.dart';
+import '../auth/auth.dart';
 
 enum FeedbackCategory { bug, generation, account, billing, suggestion, other }
 
@@ -155,6 +160,128 @@ String? validateFeedbackContent(String? value) {
   if (length > 3000) return '问题描述不能超过 3000 个字符';
   return null;
 }
+
+class FeedbackDraft {
+  const FeedbackDraft({
+    required this.category,
+    required this.title,
+    required this.content,
+    required this.updatedAt,
+  });
+
+  factory FeedbackDraft.fromJson(dynamic data) {
+    final map = data is Map
+        ? Map<String, dynamic>.from(data)
+        : const <String, dynamic>{};
+    return FeedbackDraft(
+      category: feedbackCategoryFrom(map['category']?.toString() ?? ''),
+      title: _limited(map['title'], 120),
+      content: _limited(map['content'], 3000),
+      updatedAt:
+          DateTime.tryParse(map['updatedAt']?.toString() ?? '')?.toLocal() ??
+          DateTime.now(),
+    );
+  }
+
+  final FeedbackCategory category;
+  final String title;
+  final String content;
+  final DateTime updatedAt;
+
+  bool get isEmpty => title.trim().isEmpty && content.trim().isEmpty;
+
+  Map<String, dynamic> toJson() => {
+    'category': category.apiValue,
+    'title': title,
+    'content': content,
+    'updatedAt': updatedAt.toUtc().toIso8601String(),
+  };
+}
+
+String _limited(dynamic value, int limit) {
+  final text = value?.toString() ?? '';
+  return text.runes.length <= limit
+      ? text
+      : String.fromCharCodes(text.runes.take(limit));
+}
+
+abstract interface class FeedbackDraftStore {
+  Future<FeedbackDraft?> read();
+  Future<void> write(FeedbackDraft draft);
+  Future<void> clear();
+}
+
+class SecureFeedbackDraftStore implements FeedbackDraftStore {
+  SecureFeedbackDraftStore({
+    required String namespace,
+    String? legacyNamespace,
+    FlutterSecureStorage? storage,
+  }) : _storage = storage ?? const FlutterSecureStorage(),
+       _key = keyFor(namespace),
+       _legacyKey = legacyNamespace == null ? null : keyFor(legacyNamespace);
+
+  final FlutterSecureStorage _storage;
+  final String _key;
+  final String? _legacyKey;
+
+  static String keyFor(String namespace) {
+    final normalized = namespace.trim().toLowerCase();
+    return 'starclouds.feedback_draft.${normalized.isEmpty ? 'production' : normalized}';
+  }
+
+  @override
+  Future<FeedbackDraft?> read() async {
+    var raw = await _storage.read(key: _key);
+    var migrated = false;
+    if ((raw == null || raw.trim().isEmpty) && _legacyKey != null) {
+      raw = await _storage.read(key: _legacyKey);
+      migrated = raw?.trim().isNotEmpty == true;
+    }
+    if (raw == null || raw.trim().isEmpty) return null;
+    try {
+      final draft = FeedbackDraft.fromJson(jsonDecode(raw));
+      if (draft.isEmpty) {
+        await clear();
+        return null;
+      }
+      if (migrated) await write(draft);
+      return draft;
+    } catch (_) {
+      await clear();
+      return null;
+    }
+  }
+
+  @override
+  Future<void> write(FeedbackDraft draft) async {
+    if (draft.isEmpty) {
+      await clear();
+      return;
+    }
+    await _storage.write(key: _key, value: jsonEncode(draft.toJson()));
+    if (_legacyKey != null && _legacyKey != _key) {
+      await _storage.delete(key: _legacyKey);
+    }
+  }
+
+  @override
+  Future<void> clear() async {
+    await _storage.delete(key: _key);
+    if (_legacyKey != null && _legacyKey != _key) {
+      await _storage.delete(key: _legacyKey);
+    }
+  }
+}
+
+final feedbackDraftStoreProvider = Provider<FeedbackDraftStore>((ref) {
+  final environment = ref.watch(appEnvironmentProvider).name.name;
+  final session = ref.watch(sessionControllerProvider);
+  final userId = session.valueOrNull?.user?.id;
+  return SecureFeedbackDraftStore(
+    namespace: userStorageNamespace(environment: environment, userId: userId),
+    legacyNamespace: session.hasValue ? environment : null,
+  );
+});
 
 class FeedbackRepository {
   const FeedbackRepository(this._apiClient);

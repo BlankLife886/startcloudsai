@@ -21,13 +21,15 @@ test.describe('Model sheet Vue to React visual contract @visual', () => {
   test.beforeEach(async ({ page }) => {
     await installVisualBaseline(page)
     await page.addInitScript(() => {
-      localStorage.removeItem('walleven_user_model-sheet-visual-user_local_ultra-model-sheet-studio-v1')
+      localStorage.removeItem('walleven_user_model-sheet-visual-user_local_ultra-model-sheet-studio-v2')
       localStorage.removeItem('walleven_user_model-sheet-visual-user_local_ultra-model-sheet-subjects-v1')
     })
     await page.route('**/api/v1/auth/session', (route) => fulfillJson(route, { user }))
     await page.route('**/api/v1/runtime-config', (route) => fulfillJson(route, {
       routes: {}, features: { 'ai.ultraModelSheet': { enabled: true, config: { publicModels: [model] } } },
-      aiModelCatalog: { providers: [], publicModels: [model], featurePublicModels: [model] }, blacklist: { blocked: false },
+      aiModelCatalog: { providers: [], publicModels: [model], featurePublicModels: [model] },
+      pageControls: { model_sheet: { status: 'normal' } },
+      blacklist: { blocked: false },
     }))
     await page.route('**/api/v1/pricing', (route) => fulfillJson(route, { taskPointPrices: { model_sheet: 3 } }))
     await page.route('**/api/v1/tasks**', (route) => {
@@ -55,6 +57,7 @@ test.describe('Model sheet Vue to React visual contract @visual', () => {
   test('model picker desktop', async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 })
     await page.goto('/model-sheet', { waitUntil: 'domcontentloaded' })
+    await page.locator('.ms3-more > summary').filter({ hasText: '画面设置' }).click()
     await page.locator('.ms3-panel-scroll').evaluate((element) => {
       element.scrollTop = element.scrollHeight
     })

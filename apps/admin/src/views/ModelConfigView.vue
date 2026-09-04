@@ -2751,8 +2751,9 @@ onBeforeUnmount(() => {
           :page="modelPagination.page.value"
           :count="modelPagination.items.value.length"
           :total="modelPagination.total.value"
-          @prev="modelPagination.prev"
-          @next="modelPagination.next"
+          :page-size="modelPagination.pageSize.value"
+          @update:page="modelPagination.goToPage"
+          @update:page-size="modelPagination.setPageSize"
         >
           <div
             v-if="modelPagination.items.value.length"
@@ -3334,8 +3335,9 @@ onBeforeUnmount(() => {
         :page="providerPagination.page.value"
         :count="providerPagination.items.value.length"
         :total="providerPagination.total.value"
-        @prev="providerPagination.prev"
-        @next="providerPagination.next"
+        :page-size="providerPagination.pageSize.value"
+        @update:page="providerPagination.goToPage"
+        @update:page-size="providerPagination.setPageSize"
       >
         <div class="config-table-shell">
       <el-table

@@ -13,8 +13,8 @@ import (
 const (
 	CanvasAgentPromptVersion    = "canvas-agent-2026-08-29"
 	CanvasAgentToolVersion      = "canvas-tools-2026-08-29"
-	AssistantAgentPromptVersion = "assistant-agent-2026-08-31"
-	AssistantAgentToolVersion   = "assistant-tools-2026-08-31"
+	AssistantAgentPromptVersion = "assistant-agent-2026-09-03-orchestration-v2"
+	AssistantAgentToolVersion   = "assistant-tools-2026-09-03-files-v1"
 )
 
 type AgentExecutionTrace struct {
@@ -482,7 +482,7 @@ func FinishAgentExecutionTrace(ctx context.Context, q Q, runID uuid.UUID, status
 		WHERE trace.run_id=$1 GROUP BY trace.id
 	)
 	UPDATE agent_execution_traces trace SET status=$2, finished_at=$3,
-		score=CASE WHEN stats.total=0 THEN CASE WHEN $2='succeeded' THEN 100 ELSE 0 END ELSE
+		score=CASE WHEN $2<>'succeeded' THEN 0 WHEN stats.total=0 THEN 100 ELSE
 			LEAST(100, GREATEST(0,
 				(50.0*stats.succeeded/stats.total) +
 				(CASE WHEN stats.unfinished=0 THEN 20 ELSE 0 END) +

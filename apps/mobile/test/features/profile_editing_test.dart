@@ -24,16 +24,8 @@ const _profileUser = AppUser(
 );
 
 class _ProfileSessionController extends SessionController {
-  bool signOutCalled = false;
-
   @override
   FutureOr<SessionState> build() => const SessionState(user: _profileUser);
-
-  @override
-  Future<void> signOut() async {
-    signOutCalled = true;
-    state = const AsyncData(SessionState());
-  }
 }
 
 void main() {
@@ -202,61 +194,76 @@ void main() {
       scrollable: find.byType(Scrollable).first,
     );
     expect(find.text('创作费用确认'), findsOneWidget);
-    await tester.scrollUntilVisible(
-      find.text('退出登录'),
-      300,
-      scrollable: find.byType(Scrollable).first,
+    expect(find.text('退出登录'), findsNothing);
+    expect(find.widgetWithText(FilledButton, '已保存'), findsOneWidget);
+    expect(
+      tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
+      isNull,
     );
-    expect(find.byKey(const Key('profile-sign-out')), findsOneWidget);
-    expect(find.widgetWithText(FilledButton, '保存资料'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('sign out requires confirmation before clearing the session', (
-    tester,
-  ) async {
-    final controller = _ProfileSessionController();
-    final router = GoRouter(
-      initialLocation: '/profile/edit',
-      routes: [
-        GoRoute(
-          path: '/profile/edit',
-          builder: (context, state) => const EditProfileScreen(),
+  testWidgets(
+    'profile editor protects unsaved changes from every back action',
+    (tester) async {
+      final router = GoRouter(
+        routes: [
+          GoRoute(
+            path: '/',
+            builder: (context, state) => Scaffold(
+              body: Center(
+                child: FilledButton(
+                  onPressed: () => context.push('/edit'),
+                  child: const Text('打开资料编辑'),
+                ),
+              ),
+            ),
+          ),
+          GoRoute(
+            path: '/edit',
+            builder: (context, state) => const EditProfileScreen(),
+          ),
+        ],
+      );
+      addTearDown(router.dispose);
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            sessionControllerProvider.overrideWith(
+              _ProfileSessionController.new,
+            ),
+          ],
+          child: MaterialApp.router(routerConfig: router),
         ),
-        GoRoute(
-          path: '/discover',
-          builder: (context, state) => const Scaffold(body: Text('首页目标页')),
-        ),
-      ],
-    );
-    addTearDown(router.dispose);
-    await tester.pumpWidget(
-      ProviderScope(
-        overrides: [sessionControllerProvider.overrideWith(() => controller)],
-        child: MaterialApp.router(routerConfig: router),
-      ),
-    );
-    await tester.pumpAndSettle();
+      );
 
-    await tester.ensureVisible(find.byKey(const Key('profile-sign-out')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('profile-sign-out')));
-    await tester.pumpAndSettle();
-    expect(find.text('退出当前账号？'), findsOneWidget);
-    expect(controller.signOutCalled, isFalse);
+      await tester.tap(find.text('打开资料编辑'));
+      await tester.pumpAndSettle();
+      final fields = find.byType(TextFormField);
+      await tester.enterText(fields.first, '更新后的昵称');
+      await tester.pump();
 
-    await tester.tap(find.text('取消'));
-    await tester.pumpAndSettle();
-    expect(controller.signOutCalled, isFalse);
+      expect(find.text('有未保存的修改'), findsOneWidget);
+      expect(find.widgetWithText(FilledButton, '保存修改'), findsOneWidget);
 
-    await tester.tap(find.byKey(const Key('profile-sign-out')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('确认退出'));
-    await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('app-top-bar-back')));
+      await tester.pumpAndSettle();
+      expect(find.text('放弃未保存的修改？'), findsOneWidget);
+      expect(find.byType(EditProfileScreen), findsOneWidget);
 
-    expect(controller.signOutCalled, isTrue);
-    expect(router.state.uri.path, '/discover');
-    expect(find.text('首页目标页'), findsOneWidget);
-    expect(tester.takeException(), isNull);
-  });
+      await tester.tap(find.text('继续编辑'));
+      await tester.pumpAndSettle();
+      expect(find.byType(EditProfileScreen), findsOneWidget);
+
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.text('放弃未保存的修改？'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('discard-profile-changes')));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(EditProfileScreen), findsNothing);
+      expect(find.text('打开资料编辑'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
 }

@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useGSAP } from "@gsap/react";
 import { gsap } from "gsap";
 import { useNavigate } from "react-router";
+import { ProductGuideTour, useProductGuide } from "./shared/ProductGuideTour.jsx";
+import { PRODUCT_GUIDE_KEYS, T2I_GUIDE_STEPS } from "./shared/productGuides.js";
 import {
   buildWallpaperSkillPrompt,
   resolveActiveWallpaperSkills,
@@ -60,12 +62,14 @@ import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
 import { ProgressiveAuthenticatedImage } from "../components/ProgressiveAuthenticatedImage.jsx";
 import { DialogMotion } from "../components/motion/DialogMotion.jsx";
-import { useContentReveal } from "../components/motion/useContentReveal.js";
 import { useTextToImageJobs } from "../features/text-to-image/useTextToImageJobs.js";
 import { T2iHistoryFeed } from "../features/text-to-image/T2iHistoryFeed.jsx";
 import { taskFailureMessage } from "../features/history/taskFailureMessage.js";
 import { summarizeGalleryGroup } from "../features/text-to-image/galleryGroupState.js";
 import { WallevenImagePreview } from "../components/common/WallevenImagePreview.jsx";
+import { DownloadIcon } from "../components/common/DownloadIcon.jsx";
+import { SoftMark } from "../components/common/SoftMark.jsx";
+import { RegenerateIcon } from "../components/common/RegenerateIcon.jsx";
 import "./TextToImageView.css";
 
 gsap.registerPlugin(useGSAP);
@@ -96,17 +100,39 @@ function promptAspectScore(aspect) {
   return 1 / Math.max(0.35, Math.min(width / height, 3.2));
 }
 
-function buildBalancedPromptColumns(items, columnCount) {
+function assignStablePromptColumns(items, columnCount, assignmentRef) {
   const count = Math.max(1, Number(columnCount) || 1);
+  const assignment = assignmentRef.current;
+  if (assignment.columnCount !== count) {
+    assignment.columnCount = count;
+    assignment.columns = new Map();
+  }
+
+  const liveIds = new Set(items.map((entry) => entry.item.id));
+  for (const id of [...assignment.columns.keys()]) {
+    if (!liveIds.has(id)) assignment.columns.delete(id);
+  }
+
   const columns = Array.from({ length: count }, () => []);
   const heights = Array.from({ length: count }, () => 0);
-  items.forEach((item) => {
+  const fresh = [];
+  items.forEach((entry) => {
+    const column = assignment.columns.get(entry.item.id);
+    if (column == null || column >= count) {
+      fresh.push(entry);
+      return;
+    }
+    columns[column].push(entry);
+    heights[column] += promptAspectScore(entry.aspect);
+  });
+  fresh.forEach((entry) => {
     let target = 0;
     for (let index = 1; index < heights.length; index += 1) {
       if (heights[index] < heights[target]) target = index;
     }
-    columns[target].push(item);
-    heights[target] += promptAspectScore(item.aspect);
+    assignment.columns.set(entry.item.id, target);
+    columns[target].push(entry);
+    heights[target] += promptAspectScore(entry.aspect);
   });
   return columns;
 }
@@ -118,12 +144,82 @@ function denseMasonryColumnCount(width) {
   return 5;
 }
 
-function imageNaturalAspect(event) {
-  const width = Number(event.currentTarget?.naturalWidth || event.target?.naturalWidth || 0);
-  const height = Number(event.currentTarget?.naturalHeight || event.target?.naturalHeight || 0);
-  if (width <= 0 || height <= 0) return "";
-  return `${width} / ${height}`;
-}
+const PromptLibraryCard = memo(function PromptLibraryCard({
+  item,
+  aspect,
+  categoryLabel,
+  viewportRef,
+  onUse,
+  onToggleEngagement,
+}) {
+  const cover = item.coverUrl || item.imageUrl;
+  return (
+    <article className="t2i-masonry-card t2i-collection-card" data-prompt-id={item.id}>
+      <button
+        type="button"
+        className={`t2i-masonry-cover${cover ? "" : " t2i-masonry-placeholder"}`}
+        style={{ aspectRatio: aspect }}
+        onClick={() => onUse(item)}
+      >
+        {cover ? (
+          <AuthenticatedImage
+            src={cover}
+            alt={item.title || item.label || "提示词封面"}
+            loading="eager"
+            keepLoaded
+            observerRoot={viewportRef}
+          />
+        ) : (
+          <span className="t2i-collection-placeholder">
+            <i className="bi bi-stars" />
+            <small>点击使用提示词</small>
+          </span>
+        )}
+        <span className="t2i-history-image-overlay">
+          <span className="t2i-history-image-prompt">{item.prompt}</span>
+        </span>
+      </button>
+      <div className="t2i-masonry-body">
+        <header className="t2i-history-meta">
+          <strong>{item.title || item.label}</strong>
+          <small>{categoryLabel} · 使用 {item.useCount || 0} 次</small>
+        </header>
+      </div>
+      <footer className="t2i-entry-actions t2i-prompt-card-actions">
+        <button
+          type="button"
+          className={`t2i-prompt-card-actions__metric${item.liked ? " is-active" : ""}`}
+          disabled={item.local}
+          aria-label={item.liked ? "取消点赞" : "点赞"}
+          title={item.liked ? "取消点赞" : "点赞"}
+          onClick={() => void onToggleEngagement(item, "like")}
+        >
+          <i className={`bi ${item.liked ? "bi-hand-thumbs-up-fill" : "bi-hand-thumbs-up"}`} aria-hidden="true" />
+          <span>{item.likeCount || 0}</span>
+        </button>
+        <button
+          type="button"
+          className={`t2i-prompt-card-actions__metric${item.favorited ? " is-active" : ""}`}
+          disabled={item.local}
+          aria-label={item.favorited ? "取消收藏" : "收藏"}
+          title={item.favorited ? "取消收藏" : "收藏"}
+          onClick={() => void onToggleEngagement(item, "favorite")}
+        >
+          <i className={`bi ${item.favorited ? "bi-heart-fill" : "bi-heart"}`} aria-hidden="true" />
+          <span>{item.favoriteCount || 0}</span>
+        </button>
+        <button
+          type="button"
+          className="t2i-prompt-card-actions__use"
+          onClick={() => onUse(item)}
+        >
+          <i className="bi bi-stars" aria-hidden="true" />
+          <span>使用</span>
+        </button>
+      </footer>
+    </article>
+  );
+});
 
 function storedRuntimeConfig() {
   try {
@@ -665,6 +761,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   const skillPanelRef = useRef(null);
   const promptInputRef = useRef(null);
   const promptViewportRef = useRef(null);
+  const promptColumnAssignmentRef = useRef({ columnCount: 0, columns: new Map() });
   const promptMoreRef = useRef(null);
   const promptSentinelRef = useRef(null);
   const historyViewportRef = useRef(null);
@@ -672,6 +769,9 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   const stageCanvasRef = useRef(null);
   const filmstripRef = useRef(null);
   const isDark = useIsDark();
+  const { open: guideOpen, setOpen: setGuideOpen } = useProductGuide({
+    storageKey: PRODUCT_GUIDE_KEYS.t2i,
+  });
   const fileInputRef = useRef(null);
   const pendingRef = useRef(null);
   const quotedUnitPriceRef = useRef(null);
@@ -719,7 +819,6 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   const [promptSort, setPromptSort] = useState("recommended");
   const [promptCategoryMoreOpen, setPromptCategoryMoreOpen] = useState(false);
   const [promptViewportWidth, setPromptViewportWidth] = useState(() => window.innerWidth);
-  const [promptMeasuredAspects, setPromptMeasuredAspects] = useState({});
   const [activeTaskId, setActiveTaskId] = useState("");
   const [activeGalleryKey, setActiveGalleryKey] = useState("");
   const [activeGroupKey, setActiveGroupKey] = useState("");
@@ -909,7 +1008,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
         },
       );
     },
-    { scope: rootRef },
+    { scope: rootRef, dependencies: [] },
   );
 
   useEffect(() => {
@@ -1466,28 +1565,16 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     ].find((item) => item.value === key)?.label || "其他";
   }, [managedPromptCategories]);
   const promptColumnCount = denseMasonryColumnCount(promptViewportWidth);
-  const promptFeedItems = useMemo(() => visiblePromptItems.map((item) => {
-    const key = `prompt-${item.id}`;
-    const declaredAspect = Number(item.coverWidth) > 0 && Number(item.coverHeight) > 0
+  const promptFeedItems = useMemo(() => visiblePromptItems.map((item) => ({
+    key: `prompt-${item.id}`,
+    item,
+    aspect: Number(item.coverWidth) > 0 && Number(item.coverHeight) > 0
       ? `${Number(item.coverWidth)} / ${Number(item.coverHeight)}`
-      : "16 / 10";
-    return {
-      key,
-      item,
-      aspect: promptMeasuredAspects[key] || declaredAspect,
-    };
-  }), [promptMeasuredAspects, visiblePromptItems]);
-  useContentReveal({
-    rootRef,
-    selector: ".t2i-library-view .t2i-collection-card",
-    ready: mainTab === "prompts" && !promptLibraryLoading,
-    resetKey: `${mainTab}:${promptCategory}:${promptSort}`,
-    contentKey: visiblePromptItems.map((item) => item.id).join("|"),
-    stateAttribute: "data-t2i-prompts-motion-state",
-  });
-  const promptColumns = useMemo(() => {
-    return buildBalancedPromptColumns(promptFeedItems, promptColumnCount);
-  }, [promptColumnCount, promptFeedItems]);
+      : "16 / 10",
+  })), [visiblePromptItems]);
+  const promptColumns = useMemo(() => (
+    assignStablePromptColumns(promptFeedItems, promptColumnCount, promptColumnAssignmentRef)
+  ), [promptColumnCount, promptFeedItems]);
   const promptEmptyTitle = promptCategory === "today"
     ? "最近24小时暂无新增提示词"
     : promptCategory === "my-favorites"
@@ -1501,14 +1588,6 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     if (promptViewportRef.current) promptViewportRef.current.scrollTop = 0;
     setPromptCategory(value);
     setPromptCategoryMoreOpen(false);
-  };
-
-  const measurePromptLibraryImage = (entry, event) => {
-    const aspect = imageNaturalAspect(event);
-    if (!entry?.key || !aspect) return;
-    setPromptMeasuredAspects((current) => current[entry.key] === aspect
-      ? current
-      : { ...current, [entry.key]: aspect });
   };
 
   const loadMorePrompts = async () => {
@@ -1557,7 +1636,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     return () => observer.disconnect();
   }, [mainTab, promptHasMore, promptLibraryLoading, promptLibraryLoadingMore, promptPage, promptCategory, promptSort]);
 
-  const usePromptLibraryEntry = (item) => {
+  const usePromptLibraryEntry = useCallback((item) => {
     if (!item?.prompt) return;
     setPrompt(item.prompt);
     promptInputRef.current?.focus();
@@ -1566,9 +1645,9 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     void recordPromptEngagement(item.id, "use").then((result) => {
       setPromptItems((current) => current.map((entry) => entry.id === item.id ? { ...entry, ...result } : entry));
     }).catch(() => undefined);
-  };
+  }, []);
 
-  const togglePromptEngagement = async (item, action) => {
+  const togglePromptEngagement = useCallback(async (item, action) => {
     if (!item?.id || item.local) return;
     if (!authenticated) {
       onRequireAuth?.();
@@ -1596,7 +1675,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
       } : entry));
       notificationService.error("操作失败，请稍后重试");
     }
-  };
+  }, [authenticated, onRequireAuth, promptCategory]);
   const failedOrPausedTasks = jobs.historyTasks.filter((task) =>
     ["failed", "paused"].includes(task.status),
   );
@@ -1850,10 +1929,10 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
 
   return (
     <div ref={rootRef} className={`t2i-page${isDark ? "" : " is-light"}`} onClick={() => { setSkillOpen(false); setModelOpen(false); setOpenLayer(""); }}>
-      <aside className="t2i-sidebar" aria-label="生成设置" onClick={(event) => event.stopPropagation()}>
+      <aside className="t2i-sidebar" aria-label="生成设置" data-guide="t2i-sidebar" onClick={(event) => event.stopPropagation()}>
         <div className="t2i-model" data-motion>
           <div className={`t2i-model-badge${loading ? " is-loading" : ""}`}>
-            <span className="t2i-model-icon"><i className="bi bi-stars" /></span>
+            <span className="t2i-model-icon"><SoftMark name="cpu" size="md" /></span>
             {loading ? <span className="t2i-model-copy t2i-model-skeleton"><span /></span> : (
               <div className={`ratio-select t2i-model-select${modelOpen ? " is-open" : ""}${isDark ? "" : " is-light"}`}>
                 <button
@@ -1890,12 +1969,13 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                     type="button"
                     role="option"
                     aria-selected={model.id === modelId}
-                    className={`ratio-select__option${model.id === modelId ? " is-selected" : ""}${resolveModelPointPricing(model).configured ? " has-price" : ""}`}
+                    className={`ratio-select__option has-icon${model.id === modelId ? " is-selected" : ""}${resolveModelPointPricing(model).configured ? " has-price" : ""}`}
                     onClick={() => {
                       setModelId(model.id);
                       setModelOpen(false);
                     }}
                   >
+                    <SoftMark name="cpu" size="sm" />
                     <span className="ratio-select__option-content">
                       <span className="ratio-select__option-label">{model.label}</span>
                     </span>
@@ -1908,7 +1988,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
           </div>
         </div>
         <div className="t2i-side-scroll">
-          <div className="t2i-prompt-box" data-motion>
+          <div className="t2i-prompt-box" data-guide="t2i-prompt" data-motion>
             <textarea
               ref={promptInputRef}
               aria-label="创作描述"
@@ -1950,7 +2030,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
               </div>
             </div>
           </div>
-          <div className="t2i-control-layers" data-motion>
+          <div className="t2i-control-layers" data-guide="t2i-params" data-motion>
             <div className="t2i-control-layer-bar" aria-label="生成参数分类">
               {[
                 ["frame", "bi-aspect-ratio", "画面", frameSummary],
@@ -2013,7 +2093,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
         )}
       </aside>
 
-      <main className="t2i-main" aria-label="创作结果">
+      <main className="t2i-main" aria-label="创作结果" data-guide="t2i-results">
         <header className="t2i-main-head" data-motion>
           <div className="t2i-center-tabs" role="tablist" aria-label="主视图切换">
             {[['prompts', '提示词库'], ['images', '图片生成'], ['history', '历史记录']].map(([id, label]) => (
@@ -2048,7 +2128,15 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
           <section className="t2i-panel t2i-panel--stage">
             <div className="t2i-stage-workspace" data-motion>
               {loading || jobs.stageLoading ? <StageSkeleton aspect={ratio} /> : !featuredItem ? (
-                <div className="t2i-empty"><div className="t2i-empty-icon"><i className="bi bi-image" /></div><strong>还没有作品</strong><span>点左侧「立即生成」，作品会显示在这里和底部栏。</span></div>
+                <div className="t2i-stage t2i-stage--empty">
+                  <div className="t2i-empty">
+                    <div className="t2i-empty-icon"><i className="bi bi-image" /></div>
+                    <strong>还没有作品</strong>
+                  </div>
+                  <div className="t2i-filmstrip t2i-filmstrip--placeholder" aria-hidden="true">
+                    <span className="t2i-film-placeholder" />
+                  </div>
+                </div>
               ) : (
                 <div className="t2i-stage">
                   <div ref={stageCanvasRef} className="t2i-stage-canvas">
@@ -2160,7 +2248,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                     <div className="t2i-image-actions">
                       {featuredItem.kind === "image" ? (
                         <>
-                          <button type="button" className="is-icon" aria-label="重新生成" title="重新生成" onClick={() => setRegenerateTarget(activeTask)}><span className="t2i-icon-regenerate" /></button>
+                          <button type="button" className="is-icon" aria-label="重新生成" title="重新生成" onClick={() => setRegenerateTarget(activeTask)}><RegenerateIcon /></button>
                           <button type="button" className="is-danger is-icon" aria-label="删除" title="删除" onClick={() => requestDelete(featuredGroup.items.map((item) => item.task), featuredGroup.items.length > 1 ? "整组图片" : "这张图片")}><span className="t2i-icon-delete" /></button>
                         </>
                       ) : ACTIVE_STATUSES.has(activeTask.status) ? (
@@ -2245,47 +2333,17 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                 {promptCategory !== "today" && <label className="t2i-library-sort"><i className="bi bi-sort-down" /><select value={promptSort} aria-label="提示词排序" onChange={(event) => setPromptSort(event.target.value)}><option value="recommended">智能推荐</option><option value="favorites">收藏最多</option><option value="likes">点赞最多</option><option value="usage">使用最多</option></select></label>}
               </div>
               {promptLibraryLoading && !visiblePromptItems.length ? <div className="t2i-history-skeleton t2i-history-skeleton--feed" aria-label="提示词库加载中">{[1, 2, 3, 4, 5].map((column) => <div key={column} className="t2i-history-skeleton-col">{[1, 2, 3].map((row) => <article key={row} className="t2i-history-skeleton-card"><div className="t2i-skeleton-shine" /></article>)}</div>)}</div> : !visiblePromptItems.length ? <div className="t2i-empty t2i-collection-empty"><div className="t2i-empty-icon"><i className="bi bi-filter" /></div><strong>{promptEmptyTitle}</strong><span>{promptEmptyDescription}</span></div> : <div className="t2i-masonry" style={{ "--t2i-masonry-cols": promptColumnCount }}>
-                {promptColumns.map((column, columnIndex) => <div key={columnIndex} className="t2i-masonry-col">{column.map((entry) => {
-                  const { item } = entry;
-                  return (
-                  <article key={entry.key} className="t2i-masonry-card t2i-collection-card">
-                    <button type="button" className={`t2i-masonry-cover${item.coverUrl || item.imageUrl ? "" : " t2i-masonry-placeholder"}`} style={{ aspectRatio: entry.aspect }} onClick={() => usePromptLibraryEntry(item)}>{item.coverUrl || item.imageUrl ? <AuthenticatedImage src={item.coverUrl || item.imageUrl} alt={item.title || item.label || "提示词封面"} loading="lazy" maxDimension={720} onLoad={(event) => measurePromptLibraryImage(entry, event)} /> : <span className="t2i-collection-placeholder"><i className="bi bi-stars" /><small>点击使用提示词</small></span>}<span className="t2i-history-image-overlay"><span className="t2i-history-image-prompt">{item.prompt}</span></span></button>
-                    <div className="t2i-masonry-body"><header className="t2i-history-meta"><strong>{item.title || item.label}</strong><small>{promptCategoryLabel(item.categoryKey || item.category)} · 使用 {item.useCount || 0} 次</small></header></div>
-                    <footer className="t2i-entry-actions t2i-prompt-card-actions">
-                      <button
-                        type="button"
-                        className={`t2i-prompt-card-actions__metric${item.liked ? " is-active" : ""}`}
-                        disabled={item.local}
-                        aria-label={item.liked ? "取消点赞" : "点赞"}
-                        title={item.liked ? "取消点赞" : "点赞"}
-                        onClick={() => void togglePromptEngagement(item, "like")}
-                      >
-                        <i className={`bi ${item.liked ? "bi-hand-thumbs-up-fill" : "bi-hand-thumbs-up"}`} aria-hidden="true" />
-                        <span>{item.likeCount || 0}</span>
-                      </button>
-                      <button
-                        type="button"
-                        className={`t2i-prompt-card-actions__metric${item.favorited ? " is-active" : ""}`}
-                        disabled={item.local}
-                        aria-label={item.favorited ? "取消收藏" : "收藏"}
-                        title={item.favorited ? "取消收藏" : "收藏"}
-                        onClick={() => void togglePromptEngagement(item, "favorite")}
-                      >
-                        <i className={`bi ${item.favorited ? "bi-heart-fill" : "bi-heart"}`} aria-hidden="true" />
-                        <span>{item.favoriteCount || 0}</span>
-                      </button>
-                      <button
-                        type="button"
-                        className="t2i-prompt-card-actions__use"
-                        onClick={() => usePromptLibraryEntry(item)}
-                      >
-                        <i className="bi bi-stars" aria-hidden="true" />
-                        <span>使用</span>
-                      </button>
-                    </footer>
-                  </article>
-                  );
-                })}</div>)}
+                {promptColumns.map((column, columnIndex) => <div key={columnIndex} className="t2i-masonry-col">{column.map((entry) => (
+                  <PromptLibraryCard
+                    key={entry.key}
+                    item={entry.item}
+                    aspect={entry.aspect}
+                    categoryLabel={promptCategoryLabel(entry.item.categoryKey || entry.item.category)}
+                    viewportRef={promptViewportRef}
+                    onUse={usePromptLibraryEntry}
+                    onToggleEngagement={togglePromptEngagement}
+                  />
+                ))}</div>)}
               </div>}
               {promptHasMore && <div ref={promptSentinelRef} className="t2i-masonry-sentinel" aria-hidden="true" />}
               {promptLibraryLoadingMore ? <p className="t2i-feed-loading"><i className="bi bi-arrow-repeat spin" />正在加载更多提示词…</p> : promptHasMore ? <button type="button" className="t2i-feed-more" onClick={() => void loadMorePrompts()}>加载更多</button> : visiblePromptItems.length > 0 && <p className="t2i-feed-end">没有更多数据了</p>}
@@ -2360,6 +2418,13 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
           onDelete={() => requestDelete([previewItem.task])}
         />
       )}
+      <ProductGuideTour
+        open={guideOpen}
+        dark={isDark}
+        steps={T2I_GUIDE_STEPS}
+        storageKey={PRODUCT_GUIDE_KEYS.t2i}
+        onClose={() => setGuideOpen(false)}
+      />
     </div>
   );
 }
@@ -2446,8 +2511,8 @@ function ImageQuickActions({ cell = false, onEdit, onRegenerate, onDownload, onR
   return (
     <div className={`t2i-stage-quick-actions${cell ? " is-cell" : ""}`} aria-label="图片快捷操作">
       <button type="button" aria-label="编辑图片" title="编辑" onClick={onEdit}><span className="t2i-icon-edit-image" /></button>
-      <button type="button" aria-label="重新生成" title="重新生成" onClick={onRegenerate}><span className="t2i-icon-regenerate" /></button>
-      <button type="button" aria-label="下载图片" title="下载" onClick={onDownload}><span className="t2i-icon-download" /></button>
+      <button type="button" aria-label="重新生成" title="重新生成" onClick={onRegenerate}><RegenerateIcon /></button>
+      <button type="button" aria-label="下载图片" title="下载" onClick={onDownload}><DownloadIcon /></button>
       <button type="button" aria-label="设为参考图" title="设为参考图" onClick={onReference}><span className="t2i-icon-reference" /></button>
     </div>
   );

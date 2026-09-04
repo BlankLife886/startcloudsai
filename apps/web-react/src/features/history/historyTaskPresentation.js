@@ -40,6 +40,6 @@ export function historyTaskDurationLabel(task, now = Date.now()) {
   return "准备中";
 }
 
-export function historyTaskCanOpen(task, hasCover = false) {
-  return Boolean(hasCover) || ["failed", "canceled"].includes(historyTaskStatus(task));
+export function historyTaskCanOpen(_task, hasCover = false) {
+  return Boolean(hasCover);
 }

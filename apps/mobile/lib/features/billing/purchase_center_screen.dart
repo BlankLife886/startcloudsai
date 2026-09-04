@@ -3,7 +3,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
-import 'package:qr_flutter/qr_flutter.dart';
 
 import '../../core/network/api_exception.dart';
 import '../../core/widgets/app_chrome.dart';
@@ -111,43 +110,11 @@ class PurchaseCenterScreen extends ConsumerStatefulWidget {
 }
 
 class _PurchaseCenterScreenState extends ConsumerState<PurchaseCenterScreen> {
-  _PlanKind _kind = _PlanKind.topup;
-
   Future<void> _refresh() =>
       ref.read(purchaseCenterControllerProvider.notifier).refresh();
 
-  Future<void> _startPurchase(PurchasePlan plan, PlanCatalog catalog) async {
-    if (!catalog.paymentEnabled || catalog.paymentMethods.isEmpty) return;
-    final method = await showAppSheet<String>(
-      context: context,
-      isScrollControlled: true,
-      builder: (context) =>
-          PaymentMethodSheet(plan: plan, methods: catalog.paymentMethods),
-    );
-    if (method == null || !mounted) return;
-    try {
-      final order = await ref
-          .read(purchaseCenterControllerProvider.notifier)
-          .createOrder(plan, method);
-      if (mounted) {
-        await showPurchaseOrderSheet(
-          context: context,
-          ref: ref,
-          order: order,
-          plan: plan,
-        );
-      }
-    } catch (error) {
-      if (mounted) showBillingError(context, error, '订单创建失败，请稍后重试');
-    }
-  }
-
   void _openOrders() {
     GoRouter.maybeOf(context)?.push('/profile/purchases/orders');
-  }
-
-  void _openRedeem() {
-    GoRouter.maybeOf(context)?.push('/profile/wallet?redeem=1');
   }
 
   @override
@@ -155,7 +122,7 @@ class _PurchaseCenterScreenState extends ConsumerState<PurchaseCenterScreen> {
     final center = ref.watch(purchaseCenterControllerProvider);
     return Scaffold(
       appBar: AppTopBar(
-        title: const Text('套餐与订单'),
+        title: const Text('会员与订单'),
         fallbackLocation: '/profile',
         actions: [
           IconButton(
@@ -175,14 +142,6 @@ class _PurchaseCenterScreenState extends ConsumerState<PurchaseCenterScreen> {
   }
 
   Widget _buildCenter(PurchaseCenterState state) {
-    final kinds = <_PlanKind>{
-      for (final plan in state.catalog.items)
-        plan.isSubscription ? _PlanKind.subscription : _PlanKind.topup,
-    };
-    final selectedKind = kinds.contains(_kind)
-        ? _kind
-        : kinds.firstOrNull ?? _PlanKind.topup;
-    final plans = state.catalog.items.where(selectedKind.includes).toList();
     return RefreshIndicator(
       onRefresh: _refresh,
       child: CustomScrollView(
@@ -190,60 +149,13 @@ class _PurchaseCenterScreenState extends ConsumerState<PurchaseCenterScreen> {
         slivers: [
           SliverPadding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-            sliver: SliverToBoxAdapter(
-              child: _PaymentAvailability(
-                catalog: state.catalog,
-                onRedeem: _openRedeem,
-              ),
-            ),
+            sliver: SliverToBoxAdapter(child: const _MobileStoreNotice()),
           ),
           if (state.subscription.active)
             SliverPadding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 18),
               sliver: SliverToBoxAdapter(
                 child: _SubscriptionPanel(subscription: state.subscription),
-              ),
-            ),
-          const _BillingSectionTitle(title: '选择套餐', icon: Icons.sell_outlined),
-          if (kinds.length > 1)
-            SliverPadding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
-              sliver: SliverToBoxAdapter(
-                child: SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: SegmentedButton<_PlanKind>(
-                    segments: _PlanKind.values
-                        .map(
-                          (kind) => ButtonSegment<_PlanKind>(
-                            value: kind,
-                            icon: Icon(kind.icon),
-                            label: Text(kind.label),
-                          ),
-                        )
-                        .toList(),
-                    selected: {selectedKind},
-                    showSelectedIcon: false,
-                    onSelectionChanged: (selection) =>
-                        setState(() => _kind = selection.first),
-                  ),
-                ),
-              ),
-            ),
-          if (plans.isEmpty)
-            const SliverToBoxAdapter(child: BillingEmpty(message: '暂时没有可用套餐'))
-          else
-            SliverPadding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 22),
-              sliver: SliverList.separated(
-                itemCount: plans.length,
-                separatorBuilder: (_, _) => const SizedBox(height: 10),
-                itemBuilder: (context, index) => PlanCard(
-                  key: Key('plan-${plans[index].id}'),
-                  plan: plans[index],
-                  paymentEnabled: state.catalog.paymentEnabled,
-                  creating: state.creatingPlanId == plans[index].id,
-                  onPurchase: () => _startPurchase(plans[index], state.catalog),
-                ),
               ),
             ),
           SliverPadding(
@@ -261,34 +173,12 @@ class _PurchaseCenterScreenState extends ConsumerState<PurchaseCenterScreen> {
   }
 }
 
-enum _PlanKind { topup, subscription }
-
-extension on _PlanKind {
-  String get label => switch (this) {
-    _PlanKind.topup => '充值包',
-    _PlanKind.subscription => '订阅',
-  };
-
-  IconData get icon => switch (this) {
-    _PlanKind.topup => Icons.toll_outlined,
-    _PlanKind.subscription => Icons.workspace_premium_outlined,
-  };
-
-  bool includes(PurchasePlan plan) => this == _PlanKind.subscription
-      ? plan.isSubscription
-      : !plan.isSubscription;
-}
-
-class _PaymentAvailability extends StatelessWidget {
-  const _PaymentAvailability({required this.catalog, required this.onRedeem});
-
-  final PlanCatalog catalog;
-  final VoidCallback onRedeem;
+class _MobileStoreNotice extends StatelessWidget {
+  const _MobileStoreNotice();
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final enabled = catalog.paymentEnabled && catalog.paymentMethods.isNotEmpty;
     return DecoratedBox(
       decoration: BoxDecoration(
         color: colors.surface,
@@ -300,7 +190,7 @@ class _PaymentAvailability extends StatelessWidget {
         child: Row(
           children: [
             Icon(
-              enabled ? Icons.lock_outline : Icons.schedule_outlined,
+              Icons.verified_user_outlined,
               size: 20,
               color: colors.onSurfaceVariant,
             ),
@@ -310,27 +200,19 @@ class _PaymentAvailability extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    enabled ? '支付由加密渠道处理' : '在线购买暂未开放',
+                    '我的会员权益',
                     style: const TextStyle(fontWeight: FontWeight.w800),
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    enabled
-                        ? catalog.paymentMethods.map(_paymentLabel).join(' · ')
-                        : '仍可浏览套餐、查看历史订单或使用兑换码',
+                    mobileStoreExternalCommerceEnabled
+                        ? '可使用已配置的移动端商店购买'
+                        : '查看已生效权益、积分余额与历史订单',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ],
               ),
             ),
-            if (!enabled) ...[
-              const SizedBox(width: 6),
-              TextButton(
-                key: const Key('purchase-redeem-code'),
-                onPressed: onRedeem,
-                child: const Text('兑换码'),
-              ),
-            ],
           ],
         ),
       ),
@@ -418,168 +300,6 @@ class _OrdersEntry extends StatelessWidget {
       ),
     );
   }
-}
-
-class _BillingSectionTitle extends StatelessWidget {
-  const _BillingSectionTitle({required this.title, required this.icon});
-
-  final String title;
-  final IconData icon;
-
-  @override
-  Widget build(BuildContext context) => SliverPadding(
-    padding: const EdgeInsets.fromLTRB(16, 2, 16, 10),
-    sliver: SliverToBoxAdapter(
-      child: Row(
-        children: [
-          Icon(icon, size: 20),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              title,
-              style: Theme.of(
-                context,
-              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
-            ),
-          ),
-        ],
-      ),
-    ),
-  );
-}
-
-class PlanCard extends StatelessWidget {
-  const PlanCard({
-    required this.plan,
-    required this.paymentEnabled,
-    required this.creating,
-    required this.onPurchase,
-    super.key,
-  });
-
-  final PurchasePlan plan;
-  final bool paymentEnabled;
-  final bool creating;
-  final VoidCallback onPurchase;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return AppAppear(
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: colors.surface,
-          border: Border.all(
-            color: plan.recommended ? colors.primary : colors.outlineVariant,
-          ),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.all(14),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(
-                    child: Text(
-                      plan.name,
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w900,
-                      ),
-                    ),
-                  ),
-                  if (plan.badge.isNotEmpty)
-                    Text(
-                      plan.badge,
-                      style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                        color: colors.primary,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                ],
-              ),
-              const SizedBox(height: 4),
-              Text(
-                plan.isSubscription
-                    ? '每日 ${plan.dailyGrantPoints} 积分 · ${plan.durationDays} 天'
-                    : '${plan.totalPoints} 积分${plan.bonusPoints > 0 ? '（含赠送 ${plan.bonusPoints}）' : ''}',
-                style: const TextStyle(fontWeight: FontWeight.w700),
-              ),
-              if (plan.description.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                Text(
-                  plan.description,
-                  maxLines: 3,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(height: 1.4),
-                ),
-              ],
-              if (plan.features.isNotEmpty) ...[
-                const SizedBox(height: 10),
-                Wrap(
-                  spacing: 10,
-                  runSpacing: 5,
-                  children: [
-                    for (final feature in plan.features.take(4))
-                      _PlanFeature(text: feature),
-                  ],
-                ),
-              ],
-              const SizedBox(height: 14),
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      _cny(plan.priceCents),
-                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.w900,
-                        color: colors.primary,
-                      ),
-                    ),
-                  ),
-                  FilledButton.icon(
-                    onPressed: paymentEnabled && !creating ? onPurchase : null,
-                    icon: creating
-                        ? const SizedBox.square(
-                            dimension: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.qr_code_2),
-                    label: Text(paymentEnabled ? '立即购买' : '暂未开放'),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _PlanFeature extends StatelessWidget {
-  const _PlanFeature({required this.text});
-
-  final String text;
-
-  @override
-  Widget build(BuildContext context) => Row(
-    mainAxisSize: MainAxisSize.min,
-    children: [
-      Icon(
-        Icons.check_circle_outline,
-        size: 16,
-        color: Theme.of(context).colorScheme.primary,
-      ),
-      const SizedBox(width: 4),
-      ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 230),
-        child: Text(text, style: Theme.of(context).textTheme.bodySmall),
-      ),
-    ],
-  );
 }
 
 class OrderCard extends StatelessWidget {
@@ -684,87 +404,6 @@ class OrderCard extends StatelessWidget {
   }
 }
 
-class PaymentMethodSheet extends StatefulWidget {
-  const PaymentMethodSheet({
-    required this.plan,
-    required this.methods,
-    super.key,
-  });
-
-  final PurchasePlan plan;
-  final List<String> methods;
-
-  @override
-  State<PaymentMethodSheet> createState() => _PaymentMethodSheetState();
-}
-
-class _PaymentMethodSheetState extends State<PaymentMethodSheet> {
-  late String _method = widget.methods.first;
-
-  @override
-  Widget build(BuildContext context) => SafeArea(
-    child: Padding(
-      padding: EdgeInsets.fromLTRB(
-        20,
-        4,
-        20,
-        20 + MediaQuery.viewInsetsOf(context).bottom,
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text(
-            '确认套餐',
-            style: Theme.of(
-              context,
-            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
-          ),
-          const SizedBox(height: 14),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            title: Text(widget.plan.name),
-            subtitle: Text(
-              widget.plan.isSubscription
-                  ? '${widget.plan.durationDays} 天 · 每日 ${widget.plan.dailyGrantPoints} 积分'
-                  : '${widget.plan.totalPoints} 积分',
-            ),
-            trailing: Text(
-              _cny(widget.plan.priceCents),
-              style: const TextStyle(fontWeight: FontWeight.w900),
-            ),
-          ),
-          const SizedBox(height: 8),
-          SegmentedButton<String>(
-            segments: widget.methods
-                .map(
-                  (method) => ButtonSegment<String>(
-                    value: method,
-                    icon: Icon(
-                      method == 'alipay'
-                          ? Icons.account_balance_wallet_outlined
-                          : Icons.chat_bubble_outline,
-                    ),
-                    label: Text(_paymentLabel(method)),
-                  ),
-                )
-                .toList(),
-            selected: {_method},
-            onSelectionChanged: (selection) =>
-                setState(() => _method = selection.first),
-          ),
-          const SizedBox(height: 18),
-          FilledButton.icon(
-            onPressed: () => Navigator.pop(context, _method),
-            icon: const Icon(Icons.lock_outline),
-            label: Text('确认下单 · ${_cny(widget.plan.priceCents)}'),
-          ),
-        ],
-      ),
-    ),
-  );
-}
-
 class PaymentOrderSheet extends StatefulWidget {
   const PaymentOrderSheet({
     required this.order,
@@ -841,7 +480,6 @@ class _PaymentOrderSheetState extends State<PaymentOrderSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final payAmount = _order.payAmountCents ?? _order.amountCents;
     return SafeArea(
       child: SingleChildScrollView(
         padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
@@ -900,58 +538,11 @@ class _PaymentOrderSheetState extends State<PaymentOrderSheet> {
                 ),
               ),
             ),
-            if (_order.isPending && _order.payUrl != null) ...[
-              const SizedBox(height: 18),
-              Center(
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: QrImageView(
-                      data: _order.payUrl!,
-                      size: 210,
-                      backgroundColor: Colors.white,
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 12),
-              Text(
-                '扫码支付 ${_cny(payAmount)}',
-                textAlign: TextAlign.center,
-                style: Theme.of(
-                  context,
-                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
-              ),
-              if (_order.requiresManualAmount)
-                Padding(
-                  padding: const EdgeInsets.only(top: 8),
-                  child: Text(
-                    '扫码后请手动输入 ${_cny(payAmount)}，付款金额必须完全一致',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.error,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                ),
-              if (_order.expiresAt != null)
-                Padding(
-                  padding: const EdgeInsets.only(top: 5),
-                  child: Text(
-                    '二维码有效至 ${_dateTime(_order.expiresAt!)}',
-                    textAlign: TextAlign.center,
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                ),
-            ] else if (_order.isPending) ...[
+            if (_order.isPending) ...[
               const SizedBox(height: 22),
-              const Icon(Icons.qr_code_scanner, size: 42),
+              const Icon(Icons.receipt_long_outlined, size: 42),
               const SizedBox(height: 8),
-              const Text('支付信息暂不可用', textAlign: TextAlign.center),
+              const Text('此版本仅支持查看订单状态', textAlign: TextAlign.center),
             ] else ...[
               const SizedBox(height: 20),
               Icon(_orderIcon(_order.status), size: 52),
@@ -979,7 +570,7 @@ class _PaymentOrderSheetState extends State<PaymentOrderSheet> {
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
                     : const Icon(Icons.sync),
-                label: const Text('我已支付，刷新状态'),
+                label: const Text('刷新订单状态'),
               ),
             if (_order.isPending)
               TextButton(
@@ -1075,7 +666,7 @@ class BillingError extends StatelessWidget {
         children: [
           const Icon(Icons.cloud_off_outlined, size: 42),
           const SizedBox(height: 12),
-          const Text('套餐与订单加载失败'),
+          const Text('会员与订单加载失败'),
           const SizedBox(height: 14),
           OutlinedButton.icon(
             onPressed: onRetry,

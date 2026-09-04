@@ -3,7 +3,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
-import 'package:qr_flutter/qr_flutter.dart';
 import 'package:starcloudsai_mobile/features/billing/billing.dart';
 import 'package:starcloudsai_mobile/features/billing/purchase_center_screen.dart';
 import 'package:starcloudsai_mobile/features/billing/purchase_orders_screen.dart';
@@ -248,7 +247,7 @@ void main() {
     );
   });
 
-  testWidgets('disabled payments remain clear and fit narrow large text', (
+  testWidgets('mobile store commerce stays read only on narrow large text', (
     tester,
   ) async {
     await tester.binding.setSurfaceSize(const Size(320, 760));
@@ -258,56 +257,35 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('在线购买暂未开放'), findsOneWidget);
-    expect(find.text('暂未开放'), findsOneWidget);
-    expect(find.text('灵感积分包'), findsOneWidget);
+    expect(find.text('会员与订单'), findsOneWidget);
+    expect(find.text('我的会员权益'), findsOneWidget);
+    expect(find.text('查看已生效权益、积分余额与历史订单'), findsOneWidget);
+    expect(find.text('灵感积分包'), findsNothing);
     expect(find.byKey(const Key('purchase-orders-entry')), findsOneWidget);
     expect(find.text('还没有套餐订单'), findsOneWidget);
     expect(find.byType(OrderCard), findsNothing);
     expect(tester.takeException(), isNull);
-
-    await tester.tap(find.text('订阅'));
-    await tester.pumpAndSettle();
-    expect(find.text('创作者月度订阅'), findsOneWidget);
-    expect(tester.takeException(), isNull);
   });
 
-  testWidgets('disabled payment offers the redemption fallback', (
+  testWidgets('server payment flags cannot expose external store commerce', (
     tester,
   ) async {
-    final router = GoRouter(
-      initialLocation: '/profile/purchases',
-      routes: [
-        GoRoute(
-          path: '/profile/purchases',
-          builder: (context, state) => const PurchaseCenterScreen(),
-        ),
-        GoRoute(
-          path: '/profile/wallet',
-          builder: (context, state) => Scaffold(
-            body: Text(
-              state.uri.queryParameters['redeem'] == '1' ? '钱包兑换入口' : '积分钱包',
-            ),
-          ),
-        ),
-      ],
-    );
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
           purchaseCenterControllerProvider.overrideWith(
-            _FakePurchaseController.new,
+            () => _FakePurchaseController(paymentEnabled: true),
           ),
         ],
-        child: MaterialApp.router(routerConfig: router),
+        child: const MaterialApp(home: PurchaseCenterScreen()),
       ),
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byKey(const Key('purchase-redeem-code')));
-    await tester.pumpAndSettle();
-
-    expect(find.text('钱包兑换入口'), findsOneWidget);
+    expect(mobileStoreExternalCommerceEnabled, isFalse);
+    expect(find.text('立即购买'), findsNothing);
+    expect(find.text('兑换码'), findsNothing);
+    expect(find.text('灵感积分包'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
@@ -330,42 +308,10 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(
-      Theme.of(tester.element(find.text('在线购买暂未开放'))).brightness,
+      Theme.of(tester.element(find.text('我的会员权益'))).brightness,
       Brightness.dark,
     );
-    expect(find.byKey(const Key('purchase-redeem-code')), findsOneWidget);
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('payment method selection creates QR order with exact amount', (
-    tester,
-  ) async {
-    late _FakePurchaseController controller;
-    await tester.pumpWidget(
-      _app(
-        controller: () =>
-            controller = _FakePurchaseController(paymentEnabled: true),
-      ),
-    );
-    await tester.pumpAndSettle();
-
-    await tester.tap(find.widgetWithText(FilledButton, '立即购买'));
-    await tester.pumpAndSettle();
-    expect(find.byType(PaymentMethodSheet), findsOneWidget);
-
-    await tester.tap(find.text('微信支付'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.textContaining('确认下单'));
-    await tester.pumpAndSettle();
-
-    expect(controller.selectedMethod, 'wechat');
-    expect(find.byType(PaymentOrderSheet), findsOneWidget);
-    expect(find.byType(QrImageView), findsOneWidget);
-    expect(find.text('扫码支付 ¥98.00'), findsOneWidget);
-    expect(
-      find.textContaining('扫码后请手动输入 ¥98.00，付款金额必须完全一致'),
-      findsOneWidget,
-    );
+    expect(find.text('立即购买'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
@@ -409,7 +355,7 @@ void main() {
 
     await tester.tap(find.text('打开支付单'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('我已支付，刷新状态'));
+    await tester.tap(find.text('刷新订单状态'));
     await tester.pumpAndSettle();
 
     expect(find.byType(PaymentOrderSheet), findsNothing);

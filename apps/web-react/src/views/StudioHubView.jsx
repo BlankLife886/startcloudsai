@@ -4,7 +4,7 @@ import { useGSAP } from "@gsap/react";
 import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 import { Link, useNavigate } from "react-router";
-import { fetchAssistantConfig } from "@react/legacy-modules/services/assistantApi.js";
+import { fetchAssistantConfig } from "../features/assistant/services/assistantApi.js";
 import { getWallet } from "@react/legacy-modules/services/meApi.js";
 import {
   listPromptCategories,
@@ -23,7 +23,7 @@ import {
   setScopedLocalItem,
 } from "@react/legacy-modules/services/scopedLocalStorage.js";
 import notificationService from "@react/legacy-modules/services/notification.js";
-import { imageCountFromPrompt } from "@react/legacy-modules/features/assistant/domain/assistantMessages.js";
+import { imageCountFromPrompt } from "../features/assistant/domain/assistantMessages.js";
 import { ECOMMERCE_MODES } from "@react/legacy-modules/features/ecommerce/ecommerceTools.js";
 import {
   studioLaunchDefaults,
@@ -51,7 +51,11 @@ import "@react/legacy-styles/generated/features/home-commercial/components/TypeL
 import "@react/legacy-styles/generated/features/ai-shared/AiCostConfirmDialog.css";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
+import { useIsDark } from "../hooks/useIsDark.js";
+import { ProductGuideTour, useProductGuide } from "./shared/ProductGuideTour.jsx";
+import { PRODUCT_GUIDE_KEYS, STUDIO_GUIDE_STEPS } from "./shared/productGuides.js";
 import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
+import { SoftMark } from "../components/common/SoftMark.jsx";
 import { useLocale } from "../i18n/index.js";
 import {
   ECOMMERCE_PAGE_KEYS,
@@ -66,6 +70,15 @@ const LEAD_LINES = [
   "提示词可复用，进度可回看，结果可继续迭代。",
 ];
 const COMPOSER_TOOLS = new Set(["assistant", "t2i"]);
+const COMPOSER_TOOL_MARK = {
+  assistant: "chat",
+  t2i: "sparkles",
+};
+const CREATION_TYPE_MARK = {
+  chat: "chat",
+  agent: "agent",
+  image: "image",
+};
 const COMPOSER_DRAFT_KEY = "studio-hub-composer-draft-v1";
 const MAX_COMPOSER_REFS = 4;
 const TOOL_WALL_ORDER = ["assistant", "t2i", "model", "coloring", "ui", "game"];
@@ -585,6 +598,10 @@ export function StudioHubView() {
   const { requestAuth } = useAuthPrompt();
   const { t } = useLocale();
   const navigate = useNavigate();
+  const isDark = useIsDark();
+  const { open: guideOpen, setOpen: setGuideOpen } = useProductGuide({
+    storageKey: PRODUCT_GUIDE_KEYS.studio,
+  });
   const leadLines = useMemo(() => LEAD_LINES.map((line) => t(line)), [t]);
   const rootRef = useRef(null);
   const composerRef = useRef(null);
@@ -977,9 +994,13 @@ export function StudioHubView() {
                 </>
               ) : (
                 <>
-                  {option.icon && (
+                  {field.key === "model" ? (
+                    <SoftMark name="cpu" size="sm" />
+                  ) : field.key === "skill" && CREATION_TYPE_MARK[option.value] ? (
+                    <SoftMark name={CREATION_TYPE_MARK[option.value]} size="sm" />
+                  ) : field.key !== "skill" && option.icon ? (
                     <i className={`bi ${option.icon}`} aria-hidden="true" />
-                  )}
+                  ) : null}
                   <span className="studio-composer__field-option-copy">
                     <strong>{option.label}</strong>
                     {option.description && (
@@ -1659,6 +1680,7 @@ export function StudioHubView() {
               {maxReferences > 0 && (
                 <div
                   className={`studio-composer__ref-dock${references.length || referenceUploading ? " has-refs" : ""}`}
+                  data-guide="studio-input"
                   aria-label="参考图"
                 >
                   {references.map((item, index) => (
@@ -1709,6 +1731,7 @@ export function StudioHubView() {
                 </div>
               )}
               <div className="studio-composer__prompt">
+                <div className="studio-composer__write" data-guide="studio-input">
                 <textarea
                   value={draftPrompt}
                   className="studio-composer__input"
@@ -1718,8 +1741,9 @@ export function StudioHubView() {
                   aria-label="创作描述"
                   onChange={(event) => setDraftPrompt(event.target.value)}
                 />
+                </div>
                 <div className="studio-composer__dock">
-                  <div className="studio-composer__controls">
+                  <div className="studio-composer__controls" data-guide="studio-params">
                     <div className="studio-composer__rail">
                     <div className="studio-composer__workflow-wrap">
                       <button
@@ -1733,7 +1757,7 @@ export function StudioHubView() {
                           );
                         }}
                       >
-                        <i className={`bi ${selectedTool?.icon || "bi-stars"}`} />
+                        <SoftMark name={COMPOSER_TOOL_MARK[selectedTool?.id] || "chat"} size="sm" />
                         <span>{selectedTool?.label}</span>
                         <i className="bi bi-chevron-down" />
                       </button>
@@ -1757,7 +1781,7 @@ export function StudioHubView() {
                                   setActivePanel("");
                                 }}
                               >
-                                <i className={`bi ${tool.icon}`} />
+                                <SoftMark name={COMPOSER_TOOL_MARK[tool.id] || "sparkles"} size="sm" />
                                 <span>
                                   <strong>{tool.label}</strong>
                                   <small>{tool.tagline}</small>
@@ -1798,7 +1822,7 @@ export function StudioHubView() {
                       }}
                     />
                   </div>
-                  <div className="studio-composer__commit">
+                  <div className="studio-composer__commit" data-guide="studio-send">
                     {voiceListening && (
                       <span className="studio-composer__voice-status">
                         正在聆听
@@ -1890,9 +1914,7 @@ export function StudioHubView() {
                       />
                     )}
                     <div className="studio-bento__copy">
-                      <strong>
-                        <i className={`bi ${tool.icon}`} /> {tool.label}
-                      </strong>
+                      <strong>{tool.label}</strong>
                       {tool.tagline && <span>{tool.tagline}</span>}
                     </div>
                   </Link>
@@ -2253,6 +2275,13 @@ export function StudioHubView() {
           setCost(null);
           setPendingLaunch(null);
         }}
+      />
+      <ProductGuideTour
+        open={guideOpen}
+        dark={isDark}
+        steps={STUDIO_GUIDE_STEPS}
+        storageKey={PRODUCT_GUIDE_KEYS.studio}
+        onClose={() => setGuideOpen(false)}
       />
     </>
   );

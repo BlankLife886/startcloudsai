@@ -823,6 +823,25 @@ async function changeSortPage(direction: -1 | 1) {
   await loadSortItems()
 }
 
+async function goToSortPage(target: number) {
+  if (target === sortPage.value) return
+  if (sortDirty.value) {
+    ElMessage.warning('请先保存或撤销当前页的拖拽调整')
+    return
+  }
+  if (target === 1) {
+    await loadSortItems(true)
+    return
+  }
+  if (target === sortPage.value + 1) {
+    await changeSortPage(1)
+    return
+  }
+  if (target === sortPage.value - 1) {
+    await changeSortPage(-1)
+  }
+}
+
 async function saveSortOrder(refreshLibrary = true) {
   if (!sortItems.value.length || !sortDirty.value || sortSaving.value) return false
   sortSaving.value = true
@@ -2065,8 +2084,9 @@ onBeforeUnmount(() => {
             :page="sortPage"
             :count="sortItems.length"
             :total="sortMatchTotal"
-            @prev="changeSortPage(-1)"
-            @next="changeSortPage(1)"
+            :page-size="SORT_PAGE_SIZE"
+            :page-sizes="[SORT_PAGE_SIZE]"
+            @update:page="goToSortPage"
           />
         </div>
       </div>
@@ -2652,13 +2672,17 @@ onBeforeUnmount(() => {
 
       <template #footer>
         <div class="import-review-footer">
-          <el-pagination
+          <CursorPager
             v-if="importTotal > 50"
-            v-model:current-page="importPage"
-            :page-size="50"
+            :has-prev="importPage > 1"
+            :has-next="importPage * 50 < importTotal"
+            :loading="importItemsLoading"
+            :page="importPage"
+            :count="importItems.length"
             :total="importTotal"
-            layout="prev, pager, next, total"
-            @current-change="loadImportItems"
+            :page-size="50"
+            :page-sizes="[50]"
+            @update:page="(page: number) => { importPage = page; loadImportItems() }"
           />
           <span v-else />
           <el-button type="primary" @click="importReviewOpen = false">关闭</el-button>

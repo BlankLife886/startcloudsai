@@ -28,6 +28,10 @@ func IsCanvasOrigin(params map[string]any) bool {
 		strings.HasPrefix(strings.ToLower(kind), "canvas-")
 }
 
+func IsAssistantOrigin(params map[string]any) bool {
+	return strings.EqualFold(paramText(params, "_source", "source", "workspace"), PromptTaskTypeAssistant)
+}
+
 func AssistantProductName(params map[string]any) string {
 	if IsCanvasOrigin(params) {
 		return "无限画布"

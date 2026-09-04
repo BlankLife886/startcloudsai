@@ -2,13 +2,13 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Search, Wallet } from '@element-plus/icons-vue'
+import { CircleClose, Search, Unlock, Wallet } from '@element-plus/icons-vue'
 import AdminDialog from '@/components/AdminDialog.vue'
 import RegistrationSettingsDialog from '@/components/settings/RegistrationSettingsDialog.vue'
 import UserProfilePanel from '@/components/UserProfilePanel.vue'
 import UserProfileRulesDialog from '@/components/UserProfileRulesDialog.vue'
 import UserAnalyticsDrawer from '@/components/UserAnalyticsDrawer.vue'
-import { request, type Page } from '@/request'
+import { normalizeList, request, type Page } from '@/request'
 import { usePagedList } from '@/usePagedList'
 import {
   formatProfileMoney,
@@ -113,6 +113,8 @@ interface AdminUser {
   createdAt: string
   usage?: UserUsage
   profile?: UserProfileMetrics | null
+  subscription?: { active?: boolean } | null
+  lastSessionIp?: string | null
 }
 
 function displayName(user: AdminUser | null | undefined) {
@@ -145,6 +147,16 @@ function showAvatar(user: AdminUser | null | undefined) {
   return Boolean(url && user?.id && !brokenAvatars.value.has(user.id))
 }
 
+function walletListParts(user: AdminUser) {
+  const wallet = walletOf(user)
+  return {
+    normal: formatPoints(wallet.normalBalanceCents),
+    trial: formatPoints(wallet.trialBalanceCents),
+    frozen: formatPoints(wallet.frozenCents),
+    total: formatPoints(wallet.balanceCents + wallet.frozenCents),
+  }
+}
+
 function walletOf(user: AdminUser | null | undefined): UserWallet {
   return {
     balanceCents: user?.wallet?.balanceCents ?? user?.balanceCents ?? 0,
@@ -163,10 +175,30 @@ function isSubmissionBanned(user: AdminUser | null | undefined) {
   return new Date(user.submissionBannedUntil).getTime() > Date.now()
 }
 
-function profileCompleteness(user: AdminUser | null | undefined) {
-  if (!user) return 0
-  const fields = [user.username, user.avatarUrl, user.bio, user.location, user.websiteUrl]
-  return Math.round((fields.filter((value) => String(value || '').trim()).length / fields.length) * 100)
+function userStatusMeta(user: AdminUser | null | undefined) {
+  if (user?.status === 'banned') return { label: '已封禁', tone: 'danger' as const }
+  if (isSubmissionBanned(user)) return { label: '禁投稿', tone: 'warning' as const }
+  return { label: '正常', tone: 'success' as const }
+}
+
+function lifecycleTone(lifecycle?: string) {
+  if (lifecycle === 'active' || lifecycle === 'returned') return 'success'
+  if (lifecycle === 'churn_risk') return 'warning'
+  if (lifecycle === 'new' || lifecycle === 'activated') return 'info'
+  return 'neutral'
+}
+
+function profileTagText(profile: UserProfileMetrics) {
+  const tags = profile.tags
+    .slice(0, 2)
+    .map((tag) => profileTagLabels[tag] || tag)
+    .filter(Boolean)
+  return tags.join(' · ') || workspaceLabels[profile.primaryWorkspace] || '暂无偏好'
+}
+
+function lastActiveLabel(user: AdminUser) {
+  const value = user.profile?.lastActivityAt || user.lastLoginAt || ''
+  return value ? formatShortTime(value) : '暂无活动'
 }
 
 function websiteHref(value: string | null | undefined) {
@@ -185,9 +217,11 @@ const statusTabs = [
   { label: '已封禁', value: 'banned' },
 ] as const
 
-const { items, loading, error, total, page, hasPrev, hasNext, reset, next, prev, refresh, retry } =
+const currentPage = ref(1)
+const pageSize = ref(20)
+const { items, loading, error, total, reset, refresh, retry } =
   usePagedList<AdminUser>(
-    (cursor) =>
+    () =>
       request<Page<AdminUser>>('/api/v1/admin/users', {
         query: {
           search: filters.search,
@@ -195,17 +229,37 @@ const { items, loading, error, total, page, hasPrev, hasNext, reset, next, prev,
           lifecycle: filters.lifecycle,
           risk: filters.risk,
           profileTag: filters.profileTag,
-          limit: 20,
-          cursor,
+          limit: pageSize.value,
+          page: currentPage.value,
         },
-      }),
-    () => filters,
+      }).then(normalizeList),
+    () => ({ ...filters, limit: pageSize.value, page: currentPage.value }),
   )
+
+const listCount = computed(() => items.value.length)
+const listTotal = computed(() => total.value ?? listCount.value)
+
+function changePage(value: number) {
+  if (value === currentPage.value) return
+  currentPage.value = value
+  reset()
+}
+
+function changePageSize(value: number) {
+  pageSize.value = value
+  currentPage.value = 1
+  reset()
+}
+
+function queryUsers() {
+  currentPage.value = 1
+  reset()
+}
 
 function setStatusTab(value: string) {
   if (filters.status === value) return
   filters.status = value
-  reset()
+  queryUsers()
 }
 
 function clearFilters() {
@@ -214,10 +268,10 @@ function clearFilters() {
   filters.lifecycle = ''
   filters.risk = ''
   filters.profileTag = ''
-  reset()
+  queryUsers()
 }
 
-onMounted(reset)
+onMounted(queryUsers)
 
 async function toggleBan(user: AdminUser) {
   const banning = user.status !== 'banned'
@@ -347,20 +401,23 @@ const overviewLoading = ref(false)
 const overview = ref<UserDetail | null>(null)
 const profileRefreshing = ref(false)
 
+const ledgerPageSize = ref(20)
+const taskPageSize = ref(20)
+
 const ledgerList = usePagedList<LedgerEntry>(
   (cursor) =>
     request<Page<LedgerEntry>>(`/api/v1/admin/users/${drawerUser.value?.id}/wallet/entries`, {
-      query: { limit: 20, cursor },
+      query: { limit: ledgerPageSize.value, cursor },
     }),
-  () => drawerUser.value?.id ?? '',
+  () => `${drawerUser.value?.id ?? ''}:${ledgerPageSize.value}`,
 )
 
 const taskList = usePagedList<UserTask>(
   (cursor) =>
     request<Page<UserTask>>('/api/v1/admin/tasks', {
-      query: { user: drawerUser.value?.id, limit: 20, cursor },
+      query: { user: drawerUser.value?.id, limit: taskPageSize.value, cursor },
     }),
-  () => drawerUser.value?.id ?? '',
+  () => `${drawerUser.value?.id ?? ''}:${taskPageSize.value}`,
 )
 
 async function loadOverview() {
@@ -469,7 +526,7 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
 </script>
 
 <template>
-  <div class="page">
+  <div class="users-page">
     <PageCard title="用户管理" subtitle="查看账号资料、资金状态、使用情况与安全信息">
       <div class="users-toolbar">
         <div class="status-tabs" role="tablist" aria-label="账号状态">
@@ -493,7 +550,7 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
             class="profile-filter"
             placeholder="生命周期"
             clearable
-            @change="reset"
+            @change="queryUsers"
           >
             <el-option v-for="option in lifecycleOptions" :key="option.value" :label="option.label" :value="option.value" />
           </el-select>
@@ -502,7 +559,7 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
             class="profile-filter"
             placeholder="风险"
             clearable
-            @change="reset"
+            @change="queryUsers"
           >
             <el-option label="状态正常" value="low" />
             <el-option label="需关注" value="medium" />
@@ -513,7 +570,7 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
             class="profile-filter is-wide"
             placeholder="画像标签"
             clearable
-            @change="reset"
+            @change="queryUsers"
           >
             <el-option v-for="option in profileTagOptions" :key="option.value" :label="option.label" :value="option.value" />
           </el-select>
@@ -526,10 +583,10 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
             placeholder="搜索邮箱 / 用户名"
             clearable
             :prefix-icon="Search"
-            @keyup.enter="reset"
-            @clear="reset"
+            @keyup.enter="queryUsers"
+            @clear="queryUsers"
           />
-          <el-button @click="reset">查询</el-button>
+          <el-button @click="queryUsers">查询</el-button>
           <el-button text @click="clearFilters">重置</el-button>
         </div>
       </div>
@@ -537,15 +594,17 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
       <ListError :error="error" :loading="loading" @retry="retry" />
 
       <AdminListShell
-        class="users-list-shell"
-        :has-prev="hasPrev"
-        :has-next="hasNext"
+        class="users-board"
+        fill
+        :has-prev="currentPage > 1"
+        :has-next="currentPage * pageSize < listTotal"
         :loading="loading"
-        :page="page"
-        :count="items.length"
-        :total="total"
-        @prev="prev"
-        @next="next"
+        :page="currentPage"
+        :count="listCount"
+        :total="listTotal"
+        :page-size="pageSize"
+        @update:page="changePage"
+        @update:page-size="changePageSize"
       >
         <div class="users-table-shell">
           <el-table
@@ -554,6 +613,7 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
             :data="items"
             height="100%"
             size="small"
+            table-layout="fixed"
             row-class-name="row-clickable"
             @row-click="(row: AdminUser) => openDrawer(row)"
           >
@@ -563,12 +623,12 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
               </el-empty>
             </template>
 
-            <el-table-column label="用户" min-width="150" align="left" header-align="left">
+            <el-table-column label="用户" min-width="248">
               <template #default="{ row }">
                 <button
                   type="button"
                   class="user-cell"
-                  :title="displayName(row as AdminUser)"
+                  :title="`${displayName(row as AdminUser)} · ${row.email}`"
                   @click.stop="openDrawer(row as AdminUser)"
                 >
                   <span class="user-avatar" :class="{ 'has-image': showAvatar(row as AdminUser) }">
@@ -581,64 +641,64 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
                     <template v-else>{{ avatarInitial(row as AdminUser) }}</template>
                   </span>
                   <span class="user-meta">
-                    <span
-                      class="user-status"
-                      :class="
-                        row.status === 'banned'
-                          ? 'is-danger'
-                          : isSubmissionBanned(row as AdminUser)
-                            ? 'is-warning'
-                            : 'is-success'
-                      "
-                    >
-                      {{
-                        row.status === 'banned'
-                          ? '已封禁'
-                          : isSubmissionBanned(row as AdminUser)
-                            ? '禁投稿'
-                            : '正常'
-                      }}
+                    <span class="user-meta__line">
+                      <strong>{{ maskedDisplayName(row as AdminUser) }}</strong>
+                      <span
+                        class="badge"
+                        :class="`badge--${userStatusMeta(row as AdminUser).tone}`"
+                      >
+                        {{ userStatusMeta(row as AdminUser).label }}
+                      </span>
                     </span>
-                    <span class="user-name">{{ maskedDisplayName(row as AdminUser) }}</span>
+                    <span class="user-meta__email">{{ row.email }}</span>
                   </span>
                 </button>
               </template>
             </el-table-column>
 
-            <el-table-column label="邮箱" min-width="180" align="left" header-align="left" show-overflow-tooltip>
+            <el-table-column label="任务" width="88" class-name="col-num col-group">
               <template #default="{ row }">
-                <span class="cell-text">{{ row.email }}</span>
+                <span class="tnum cell-num">{{ row.usage?.tasksTotal ?? 0 }}</span>
               </template>
             </el-table-column>
 
-            <el-table-column label="用户画像" min-width="170" align="left" header-align="left">
+            <el-table-column label="成功 / 失败" width="108" class-name="col-num">
               <template #default="{ row }">
-                <div v-if="row.profile" class="list-profile">
-                  <span class="lifecycle-badge" :class="`is-${row.profile.lifecycle}`">
-                    {{ lifecycleLabels[row.profile.lifecycle] || row.profile.lifecycle }}
-                  </span>
-                  <span class="list-profile__tags">
-                    {{ row.profile.tags.slice(0, 2).map((tag: string) => profileTagLabels[tag] || tag).join(' · ') || (workspaceLabels[row.profile.primaryWorkspace] || '暂无偏好') }}
-                  </span>
-                </div>
-                <span v-else class="cell-muted">待计算</span>
+                <span class="pair-cell tnum">
+                  <em>{{ row.usage?.tasksSucceeded ?? 0 }}</em>
+                  <span class="pair-sep">/</span>
+                  <em :class="{ 'is-fail': (row.usage?.tasksFailed ?? 0) > 0 }">
+                    {{ row.usage?.tasksFailed ?? 0 }}
+                  </em>
+                </span>
               </template>
             </el-table-column>
 
-            <el-table-column label="30日质量" width="126" align="left" header-align="left">
+            <el-table-column label="订阅" width="88" align="center">
               <template #default="{ row }">
-                <div v-if="row.profile" class="quality-cell">
-                  <strong>{{ (row.profile.successRateBps30 / 100).toFixed(1) }}%</strong>
+                <span
+                  class="badge"
+                  :class="row.subscription?.active ? 'badge--success' : 'badge--neutral'"
+                >
+                  {{ row.subscription?.active ? '已订阅' : '未订阅' }}
+                </span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="30日质量" width="140" class-name="col-num col-group">
+              <template #default="{ row }">
+                <div v-if="row.profile" class="metric-cell">
+                  <strong class="tnum">{{ (row.profile.successRateBps30 / 100).toFixed(1) }}%</strong>
                   <small>{{ row.profile.successfulRuns30 }} 成功 / {{ row.profile.failedRuns30 }} 失败</small>
                 </div>
                 <span v-else class="cell-muted">-</span>
               </template>
             </el-table-column>
 
-            <el-table-column label="30日价值" width="130" align="left" header-align="left">
+            <el-table-column label="30日价值" width="128" class-name="col-num">
               <template #default="{ row }">
-                <div v-if="row.profile" class="value-cell">
-                  <strong>{{ formatProfileMoney(row.profile.revenueCents30) }}</strong>
+                <div v-if="row.profile" class="metric-cell">
+                  <strong class="tnum">{{ formatProfileMoney(row.profile.revenueCents30) }}</strong>
                   <small :class="{ 'is-negative': row.profile.grossProfitCents30 < 0 }">
                     毛利 {{ formatProfileMoney(row.profile.grossProfitCents30) }}
                   </small>
@@ -647,27 +707,57 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
               </template>
             </el-table-column>
 
-            <el-table-column label="余额/冻结" width="112" align="left" header-align="left">
+            <el-table-column label="普通" width="88" class-name="col-num col-group">
               <template #default="{ row }">
-                <span class="pair-cell tnum">
-                  <em class="cell-num">{{ formatPoints(walletOf(row as AdminUser).balanceCents) }}</em>
-                  <span class="pair-sep">/</span>
-                  <em class="cell-frozen">{{ formatPoints(walletOf(row as AdminUser).frozenCents) }}</em>
-                </span>
+                <span class="tnum cell-num">{{ walletListParts(row as AdminUser).normal }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="体验" width="88" class-name="col-num">
+              <template #default="{ row }">
+                <span class="tnum cell-num">{{ walletListParts(row as AdminUser).trial }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="冻结" width="88" class-name="col-num">
+              <template #default="{ row }">
+                <span class="tnum cell-num">{{ walletListParts(row as AdminUser).frozen }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="合计" width="88" class-name="col-num">
+              <template #default="{ row }">
+                <span class="tnum cell-num">{{ walletListParts(row as AdminUser).total }}</span>
               </template>
             </el-table-column>
 
-            <el-table-column label="最近活跃" width="110" align="left" header-align="left">
+            <el-table-column label="最近活跃" width="120" class-name="col-group">
               <template #default="{ row }">
-                <span class="cell-text tnum">
-                  {{ row.profile?.lastActivityAt ? formatShortTime(row.profile.lastActivityAt) : row.lastLoginAt ? formatShortTime(row.lastLoginAt) : '暂无活动' }}
-                </span>
+                <span class="cell-time tnum">{{ lastActiveLabel(row as AdminUser) }}</span>
               </template>
             </el-table-column>
 
-            <el-table-column label="注册时间" width="110" align="left" header-align="left">
+            <el-table-column label="注册时间" width="120">
               <template #default="{ row }">
-                <span class="cell-text tnum">{{ formatShortTime(row.createdAt) }}</span>
+                <span class="cell-time tnum">{{ formatShortTime(row.createdAt) }}</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="用户画像" width="168" class-name="col-group">
+              <template #default="{ row }">
+                <div v-if="row.profile" class="list-profile">
+                  <span class="badge" :class="`badge--${lifecycleTone(row.profile.lifecycle)}`">
+                    {{ lifecycleLabels[row.profile.lifecycle] || row.profile.lifecycle }}
+                  </span>
+                  <span class="list-profile__tags">{{ profileTagText(row.profile) }}</span>
+                </div>
+                <span v-else class="cell-muted">待计算</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="IP" width="118" class-name="col-ip">
+              <template #default="{ row }">
+                <span v-if="row.lastSessionIp" class="cell-ip mono" :title="row.lastSessionIp">
+                  {{ row.lastSessionIp }}
+                </span>
+                <span v-else class="cell-muted">-</span>
               </template>
             </el-table-column>
           </el-table>
@@ -679,18 +769,20 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
     <AdminDialog
       v-model="adjustVisible"
       title="调整积分"
-      :subtitle="
-        adjustTarget
-          ? `${adjustTarget.email} · 当前余额 ${formatPoints(walletOf(adjustTarget).balanceCents)} 积分`
-          : '正数入账、负数扣减，记入钱包账本'
-      "
+      subtitle="正数入账、负数扣减，记入钱包账本"
       :icon="Wallet"
-      width="440px"
+      width="420px"
+      footer-hint="单次范围 ±100000 积分"
       confirm-text="确认调整"
       :confirm-loading="adjustSubmitting"
       @confirm="submitAdjust"
     >
-      <el-form label-width="90px">
+      <template v-if="adjustTarget" #meta>
+        <span class="admin-dialog__chip tnum">
+          当前 {{ formatPoints(walletOf(adjustTarget).balanceCents) }} 积分
+        </span>
+      </template>
+      <el-form label-position="top" class="adjust-form">
         <el-form-item label="积分" required>
           <el-input-number
             v-model="adjustForm.deltaPoints"
@@ -698,14 +790,10 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
             :max="100000"
             :precision="0"
             :step="1"
-            style="width: 200px"
           />
-          <div class="text-muted">
-            正数入账、负数扣减，单次范围 ±100000 积分，记入钱包账本
-          </div>
         </el-form-item>
         <el-form-item label="原因" required>
-          <el-input v-model="adjustForm.reason" type="textarea" :rows="2" placeholder="必填，例如：活动补偿" />
+          <el-input v-model="adjustForm.reason" type="textarea" :rows="3" placeholder="例如：活动补偿" />
         </el-form-item>
       </el-form>
     </AdminDialog>
@@ -730,106 +818,70 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
             <template v-else>{{ avatarInitial(drawerUserInfo) }}</template>
           </span>
           <span class="drawer-heading">
-            <span
-              class="drawer-status"
-              :class="
-                drawerUserInfo.status === 'banned'
-                  ? 'is-danger'
-                  : isSubmissionBanned(drawerUserInfo)
-                    ? 'is-warning'
-                    : 'is-success'
-              "
-            >
-              {{
-                drawerUserInfo.status === 'banned'
-                  ? '已封禁'
-                  : isSubmissionBanned(drawerUserInfo)
-                    ? '禁投稿'
-                    : '正常'
-              }}
+            <span class="drawer-heading__line">
+              <strong>{{ displayName(drawerUserInfo) }}</strong>
+              <span class="badge" :class="`badge--${userStatusMeta(drawerUserInfo).tone}`">
+                {{ userStatusMeta(drawerUserInfo).label }}
+              </span>
+              <span v-if="drawerUserInfo.location" class="drawer-heading__fact">{{ drawerUserInfo.location }}</span>
+              <a
+                v-if="websiteHref(drawerUserInfo.websiteUrl)"
+                class="drawer-heading__fact drawer-heading__site"
+                :href="websiteHref(drawerUserInfo.websiteUrl)"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                {{ drawerUserInfo.websiteUrl }}
+              </a>
+              <span class="drawer-heading__fact">{{ formatTime(drawerUserInfo.createdAt) }}</span>
             </span>
-            <strong>{{ displayName(drawerUserInfo) }}</strong>
-            <small>{{ drawerUserInfo.email }}</small>
+            <small class="drawer-heading__meta">
+              <span>{{ drawerUserInfo.email }}</span>
+              <code class="drawer-heading__id mono" :title="drawerUserInfo.id">{{ drawerUserInfo.id }}</code>
+            </small>
           </span>
         </div>
       </template>
 
       <div v-if="drawerUser" class="drawer-body">
-        <div class="drawer-actions">
-          <span class="drawer-actions__id">
-            用户 ID：
-            <code class="mono" :title="drawerUser.id">{{ drawerUser.id }}</code>
-          </span>
-          <el-button size="small" @click="openAdjust(drawerUser)">调整余额</el-button>
-          <el-button
-            size="small"
-            :type="drawerUserInfo?.status === 'banned' ? 'success' : 'danger'"
-            plain
-            @click="drawerUserInfo && toggleBan(drawerUserInfo)"
-          >
-            {{ drawerUserInfo?.status === 'banned' ? '解封' : '封禁' }}
-          </el-button>
-        </div>
-
         <el-tabs v-model="activeTab" class="user-detail-tabs">
           <el-tab-pane label="资料概览" name="overview" class="overview-tab">
             <div v-loading="overviewLoading" class="overview-panel">
+              <section class="overview-toolbar">
+                <div v-if="overview" class="overview-toolbar__meta">
+                  <span>
+                    <em>消耗确认</em>
+                    {{ overview.user.requireCostConfirm ? '开启' : '关闭' }}
+                  </span>
+                  <span>
+                    <em>投稿限制</em>
+                    {{
+                      isSubmissionBanned(overview.user)
+                        ? `禁投至 ${formatTime(overview.user.submissionBannedUntil)}`
+                        : '未限制'
+                    }}
+                  </span>
+                </div>
+                <div class="overview-toolbar__actions">
+                  <button type="button" class="overview-btn" @click="openAdjust(drawerUser)">
+                    <el-icon><Wallet /></el-icon>
+                    调整余额
+                  </button>
+                  <button
+                    type="button"
+                    class="overview-btn"
+                    :class="drawerUserInfo?.status === 'banned' ? 'is-success' : 'is-danger'"
+                    @click="drawerUserInfo && toggleBan(drawerUserInfo)"
+                  >
+                    <el-icon>
+                      <Unlock v-if="drawerUserInfo?.status === 'banned'" />
+                      <CircleClose v-else />
+                    </el-icon>
+                    {{ drawerUserInfo?.status === 'banned' ? '解封' : '封禁' }}
+                  </button>
+                </div>
+              </section>
               <template v-if="overview">
-                <section class="detail-section profile-detail-section">
-                  <UserProfilePanel
-                    :profile="overview.profile"
-                    :refreshing="profileRefreshing"
-                    @refresh="refreshProfile"
-                  />
-                </section>
-
-                <section class="detail-section profile-overview">
-                  <div class="profile-overview__copy">
-                    <strong>资料完整度 {{ profileCompleteness(overview.user) }}%</strong>
-                    <small>{{ overview.user.bio || '用户尚未填写个人简介' }}</small>
-                  </div>
-                  <el-progress
-                    :percentage="profileCompleteness(overview.user)"
-                    :stroke-width="7"
-                    :show-text="false"
-                  />
-                </section>
-
-                <section class="detail-section">
-                  <header class="detail-section__title">账号与个人资料</header>
-                  <el-descriptions :column="2" size="small" border>
-                    <el-descriptions-item label="用户 ID" :span="2">
-                      <code class="mono" :title="overview.user.id">{{ overview.user.id }}</code>
-                    </el-descriptions-item>
-                    <el-descriptions-item label="邮箱">{{ overview.user.email }}</el-descriptions-item>
-                    <el-descriptions-item label="用户名">{{ overview.user.username || '-' }}</el-descriptions-item>
-                    <el-descriptions-item label="所在地">{{ overview.user.location || '-' }}</el-descriptions-item>
-                    <el-descriptions-item label="个人网站">
-                      <a
-                        v-if="websiteHref(overview.user.websiteUrl)"
-                        :href="websiteHref(overview.user.websiteUrl)"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                      >
-                        {{ overview.user.websiteUrl }}
-                      </a>
-                      <template v-else>-</template>
-                    </el-descriptions-item>
-                    <el-descriptions-item label="注册时间">{{ formatTime(overview.user.createdAt) }}</el-descriptions-item>
-                    <el-descriptions-item label="最近登录">{{ formatTime(overview.user.lastLoginAt) }}</el-descriptions-item>
-                    <el-descriptions-item label="消耗确认">
-                      {{ overview.user.requireCostConfirm ? '开启' : '关闭' }}
-                    </el-descriptions-item>
-                    <el-descriptions-item label="投稿限制">
-                      {{
-                        isSubmissionBanned(overview.user)
-                          ? `禁投至 ${formatTime(overview.user.submissionBannedUntil)}`
-                          : '未限制'
-                      }}
-                    </el-descriptions-item>
-                  </el-descriptions>
-                </section>
-
                 <section class="detail-section">
                   <header class="detail-section__title">资金概览</header>
                   <div class="wallet-overview">
@@ -861,132 +913,187 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
 
                 <section class="detail-section">
                   <header class="detail-section__title">套餐与活动</header>
-                  <el-descriptions :column="2" size="small" border>
-                    <el-descriptions-item label="当前套餐">
-                      {{ overview.subscription?.active ? overview.subscription.planName || overview.subscription.planCode : '无订阅' }}
-                    </el-descriptions-item>
-                    <el-descriptions-item label="到期时间">
-                      {{ overview.subscription?.active ? formatTime(overview.subscription.endsAt) : '-' }}
-                    </el-descriptions-item>
-                    <el-descriptions-item label="每日发放">
-                      {{
-                        overview.subscription?.active
-                          ? `${formatPoints(overview.subscription.dailyGrantCents ?? 0)} 积分`
-                          : '-'
-                      }}
-                    </el-descriptions-item>
-                    <el-descriptions-item label="今日发放">
-                      {{
-                        overview.subscription?.active
-                          ? overview.subscription.grantedToday
-                            ? '已发放'
-                            : '未发放'
-                          : '-'
-                      }}
-                    </el-descriptions-item>
-                    <el-descriptions-item label="体验申请">
-                      <button
-                        v-if="overview.trialAccess"
-                        type="button"
-                        class="detail-link"
-                        @click="openRelatedPage('/trial-applications', overview.user.email)"
-                      >
-                        {{ trialStatusLabel(overview.trialAccess.status) }}
-                      </button>
-                      <template v-else>未申请</template>
-                    </el-descriptions-item>
-                    <el-descriptions-item label="体验功能">
-                      {{ trialFeatureLabels(overview.trialAccess) }}
-                    </el-descriptions-item>
-                    <el-descriptions-item label="体验礼包">
-                      {{ trialRewardLabel(overview.trialAccess) }}
-                    </el-descriptions-item>
-                    <el-descriptions-item label="签到">
-                      {{ checkinLabel(overview.checkin) }}
-                    </el-descriptions-item>
-                    <el-descriptions-item label="拼团">
-                      <button
-                        v-if="overview.growthGroup"
-                        type="button"
-                        class="detail-link"
-                        @click="openRelatedPage('/growth-groups')"
-                      >
-                        {{ growthLabel(overview.growthGroup) }}
-                      </button>
-                      <template v-else>未参与</template>
-                    </el-descriptions-item>
-                    <el-descriptions-item label="反馈">
-                      <button
-                        type="button"
-                        class="detail-link"
-                        @click="openRelatedPage('/feedback', overview.user.email)"
-                      >
-                        {{ overview.counts.feedback ?? 0 }} 条
-                      </button>
-                    </el-descriptions-item>
-                  </el-descriptions>
+                  <dl class="detail-fields">
+                    <div>
+                      <dt>当前套餐</dt>
+                      <dd>{{ overview.subscription?.active ? overview.subscription.planName || overview.subscription.planCode : '无订阅' }}</dd>
+                    </div>
+                    <div>
+                      <dt>到期时间</dt>
+                      <dd>{{ overview.subscription?.active ? formatTime(overview.subscription.endsAt) : '-' }}</dd>
+                    </div>
+                    <div>
+                      <dt>每日发放</dt>
+                      <dd>
+                        {{
+                          overview.subscription?.active
+                            ? `${formatPoints(overview.subscription.dailyGrantCents ?? 0)} 积分`
+                            : '-'
+                        }}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>今日发放</dt>
+                      <dd>
+                        {{
+                          overview.subscription?.active
+                            ? overview.subscription.grantedToday
+                              ? '已发放'
+                              : '未发放'
+                            : '-'
+                        }}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>体验申请</dt>
+                      <dd>
+                        <button
+                          v-if="overview.trialAccess"
+                          type="button"
+                          class="detail-link"
+                          @click="openRelatedPage('/trial-applications', overview.user.email)"
+                        >
+                          {{ trialStatusLabel(overview.trialAccess.status) }}
+                        </button>
+                        <template v-else>未申请</template>
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>体验功能</dt>
+                      <dd>{{ trialFeatureLabels(overview.trialAccess) }}</dd>
+                    </div>
+                    <div>
+                      <dt>体验礼包</dt>
+                      <dd>{{ trialRewardLabel(overview.trialAccess) }}</dd>
+                    </div>
+                    <div>
+                      <dt>签到</dt>
+                      <dd>{{ checkinLabel(overview.checkin) }}</dd>
+                    </div>
+                    <div>
+                      <dt>拼团</dt>
+                      <dd>
+                        <button
+                          v-if="overview.growthGroup"
+                          type="button"
+                          class="detail-link"
+                          @click="openRelatedPage('/growth-groups')"
+                        >
+                          {{ growthLabel(overview.growthGroup) }}
+                        </button>
+                        <template v-else>未参与</template>
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>反馈</dt>
+                      <dd>
+                        <button
+                          type="button"
+                          class="detail-link"
+                          @click="openRelatedPage('/feedback', overview.user.email)"
+                        >
+                          {{ overview.counts.feedback ?? 0 }} 条
+                        </button>
+                      </dd>
+                    </div>
+                  </dl>
                 </section>
 
                 <section class="detail-section">
                   <header class="detail-section__title">使用情况</header>
                   <div class="count-cards">
                     <button type="button" class="count-card is-emphasis" @click="openDrawerTab('tasks')">
-                      <div class="count-value tnum">{{ overview.counts.tasksTotal }}</div>
-                      <div class="count-label">任务总数</div>
+                      <span>任务总数</span>
+                      <strong class="tnum">{{ overview.counts.tasksTotal }}</strong>
                     </button>
                     <button type="button" class="count-card" @click="openDrawerTab('tasks')">
-                      <div class="count-value tnum">{{ taskSuccessRate }}%</div>
-                      <div class="count-label">任务成功率</div>
+                      <span>成功率</span>
+                      <strong class="tnum">{{ taskSuccessRate }}%</strong>
                     </button>
                     <button type="button" class="count-card" @click="openDrawerTab('tasks')">
-                      <div class="count-value tnum">{{ overview.counts.tasksSucceeded }}</div>
-                      <div class="count-label">成功任务</div>
+                      <span>成功</span>
+                      <strong class="tnum">{{ overview.counts.tasksSucceeded }}</strong>
+                    </button>
+                    <button
+                      type="button"
+                      class="count-card"
+                      :class="{ 'is-warn': overview.counts.tasksFailed > 0 }"
+                      @click="openDrawerTab('tasks')"
+                    >
+                      <span>失败</span>
+                      <strong class="tnum">{{ overview.counts.tasksFailed }}</strong>
+                    </button>
+                    <button
+                      type="button"
+                      class="count-card"
+                      :class="{ 'is-live': overview.counts.tasksRunning > 0 }"
+                      @click="openDrawerTab('tasks')"
+                    >
+                      <span>运行中</span>
+                      <strong class="tnum">{{ overview.counts.tasksRunning }}</strong>
                     </button>
                     <button type="button" class="count-card" @click="openDrawerTab('tasks')">
-                      <div class="count-value tnum">{{ overview.counts.tasksFailed }}</div>
-                      <div class="count-label">失败任务</div>
-                    </button>
-                    <button type="button" class="count-card" @click="openDrawerTab('tasks')">
-                      <div class="count-value tnum">{{ overview.counts.tasksRunning }}</div>
-                      <div class="count-label">运行中</div>
-                    </button>
-                    <button type="button" class="count-card" @click="openDrawerTab('tasks')">
-                      <div class="count-value tnum">{{ overview.counts.tasksCanceled }}</div>
-                      <div class="count-label">已取消</div>
+                      <span>已取消</span>
+                      <strong class="tnum">{{ overview.counts.tasksCanceled }}</strong>
                     </button>
                     <div class="count-card">
-                      <div class="count-value tnum">{{ overview.counts.submissions }}</div>
-                      <div class="count-label">投稿</div>
+                      <span>投稿</span>
+                      <strong class="tnum">{{ overview.counts.submissions }}</strong>
                     </div>
                     <div class="count-card">
-                      <div class="count-value tnum">{{ overview.counts.assets }}</div>
-                      <div class="count-label">素材</div>
+                      <span>素材</span>
+                      <strong class="tnum">{{ overview.counts.assets }}</strong>
                     </div>
                     <button type="button" class="count-card" @click="openDrawerTab('ledger')">
-                      <div class="count-value tnum">{{ overview.counts.orders }}</div>
-                      <div class="count-label">订单记录</div>
+                      <span>订单</span>
+                      <strong class="tnum">{{ overview.counts.orders }}</strong>
                     </button>
                   </div>
                 </section>
 
                 <section class="detail-section">
                   <header class="detail-section__title">登录与会话</header>
-                  <el-descriptions :column="2" size="small" border>
-                    <el-descriptions-item label="有效会话">{{ overview.security.activeSessions }}</el-descriptions-item>
-                    <el-descriptions-item label="最近会话">{{ formatTime(overview.security.lastSessionAt) }}</el-descriptions-item>
-                    <el-descriptions-item label="最近 IP">{{ overview.security.lastSessionIp || '-' }}</el-descriptions-item>
-                    <el-descriptions-item label="会话到期">
-                      {{ formatTime(overview.security.lastSessionExpiresAt) }}
-                    </el-descriptions-item>
-                    <el-descriptions-item label="最近设备" :span="2">
-                      <span class="device-text" :title="overview.security.lastSessionUserAgent || ''">
-                        {{ overview.security.lastSessionUserAgent || '-' }}
-                      </span>
-                    </el-descriptions-item>
-                  </el-descriptions>
+                  <dl class="detail-fields">
+                    <div>
+                      <dt>有效会话</dt>
+                      <dd>{{ overview.security.activeSessions }}</dd>
+                    </div>
+                    <div>
+                      <dt>最近会话</dt>
+                      <dd>{{ formatTime(overview.security.lastSessionAt) }}</dd>
+                    </div>
+                    <div>
+                      <dt>最近 IP</dt>
+                      <dd>{{ overview.security.lastSessionIp || '-' }}</dd>
+                    </div>
+                    <div>
+                      <dt>会话到期</dt>
+                      <dd>{{ formatTime(overview.security.lastSessionExpiresAt) }}</dd>
+                    </div>
+                    <div class="is-wide">
+                      <dt>最近设备</dt>
+                      <dd>
+                        <span class="device-text" :title="overview.security.lastSessionUserAgent || ''">
+                          {{ overview.security.lastSessionUserAgent || '-' }}
+                        </span>
+                      </dd>
+                    </div>
+                  </dl>
                 </section>
               </template>
               <el-empty v-else-if="!overviewLoading" description="暂无概览数据" :image-size="56" />
+            </div>
+          </el-tab-pane>
+
+          <el-tab-pane label="用户画像" name="profile" class="overview-tab">
+            <div v-loading="overviewLoading" class="overview-panel">
+              <UserProfilePanel
+                v-if="overview?.profile"
+                :profile="overview.profile"
+                :refreshing="profileRefreshing"
+                @refresh="refreshProfile"
+              />
+              <el-empty v-else-if="!overviewLoading" description="暂无画像数据" :image-size="56" />
             </div>
           </el-tab-pane>
 
@@ -1000,8 +1107,9 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
               :page="ledgerList.page.value"
               :count="ledgerList.items.value.length"
               :total="ledgerList.total.value"
-              @prev="ledgerList.prev"
-              @next="ledgerList.next"
+              :page-size="ledgerPageSize"
+              @update:page="ledgerList.goToPage"
+              @update:page-size="(size: number) => { ledgerPageSize = size; ledgerList.reset() }"
             >
               <div class="users-table-shell">
                 <el-table
@@ -1069,8 +1177,9 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
               :page="taskList.page.value"
               :count="taskList.items.value.length"
               :total="taskList.total.value"
-              @prev="taskList.prev"
-              @next="taskList.next"
+              :page-size="taskPageSize"
+              @update:page="taskList.goToPage"
+              @update:page-size="(size: number) => { taskPageSize = size; taskList.reset() }"
             >
               <div class="users-table-shell">
                 <el-table
@@ -1137,13 +1246,39 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
   cursor: pointer;
 }
 
+.users-page {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+}
+
+.users-page :deep(.page-card) {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.users-page :deep(.page-card__body) {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  gap: 14px;
+  overflow: hidden;
+}
+
 .users-toolbar {
   display: flex;
+  flex: 0 0 auto;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 14px;
 }
 
 .status-tabs {
@@ -1189,7 +1324,7 @@ html.dark .status-tab.is-active {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
 
 .users-search {
@@ -1210,22 +1345,28 @@ html.dark .status-tab.is-active {
   box-shadow: 0 0 0 1px var(--border) inset;
 }
 
-.users-list-shell {
+.users-board {
+  flex: 1;
+  min-height: 0;
   overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: calc(var(--radius-card) - 4px);
-  background: var(--surface);
-  box-shadow: var(--shadow-sm);
-}
-
-.users-list-shell :deep(.admin-list-shell__footer) {
-  min-height: 56px;
-  padding: 8px 18px;
+  border-radius: var(--radius-control);
   background: var(--surface);
 }
 
-.users-list-shell :deep(.cursor-pager__meta strong) {
-  color: var(--ink);
+.users-board :deep(.admin-list-shell) {
+  border-top: 0;
+}
+
+.users-board :deep(.admin-list-shell__viewport) {
+  overflow: hidden;
+  scrollbar-gutter: auto;
+}
+
+.users-board :deep(.admin-list-shell__footer) {
+  min-height: 52px;
+  padding: 0 16px;
+  background: var(--surface-2);
 }
 
 .users-table-shell {
@@ -1234,37 +1375,46 @@ html.dark .status-tab.is-active {
   overflow: hidden;
 }
 
-.users-table :deep(.el-table__inner-wrapper::before) {
+.users-table {
+  --el-table-border-color: transparent;
+}
+
+.users-table :deep(.el-table__inner-wrapper::before),
+.users-table :deep(.el-table__inner-wrapper::after),
+.users-table :deep(.el-table__border-left-patch) {
   display: none;
 }
 
-.users-table :deep(.el-table__header-wrapper th.el-table__cell),
-.users-table :deep(.el-table__body td.el-table__cell),
-.users-table :deep(.el-table .cell) {
-  text-align: left !important;
+.users-table :deep(.el-table__header-wrapper) {
+  padding-right: 0 !important;
 }
 
 .users-table :deep(.el-table .cell) {
-  display: block;
-  justify-content: flex-start;
-  padding-left: 12px;
-  padding-right: 12px;
+  overflow: hidden;
+  padding: 0 12px;
+}
+
+.users-table :deep(.col-group .cell) {
+  padding-left: 20px;
+}
+
+.users-table :deep(.el-table td.el-table__cell),
+.users-table :deep(.el-table th.el-table__cell) {
+  border: 0;
 }
 
 .users-table :deep(.el-table__header-wrapper th.el-table__cell) {
-  height: 48px;
+  height: 40px;
   padding: 0;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface);
+  background: var(--surface-2);
   color: var(--ink-3);
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 650;
   letter-spacing: 0.01em;
 }
 
 .users-table :deep(.el-table__body .el-table__cell) {
-  padding: 10px 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  padding: 8px 0;
 }
 
 .users-table :deep(.el-table__row td.el-table__cell) {
@@ -1275,8 +1425,21 @@ html.dark .status-tab.is-active {
   background: var(--surface-2);
 }
 
-.users-table :deep(.el-table__body tr.el-table__row:last-child td.el-table__cell) {
-  border-bottom-color: transparent;
+.users-table :deep(th.el-table__cell.gutter),
+.users-table :deep(col[name='gutter']) {
+  display: none;
+  width: 0 !important;
+}
+
+.users-table :deep(.col-num .cell) {
+  font-variant-numeric: tabular-nums;
+}
+
+.users-table :deep(.badge) {
+  height: 20px;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 20px;
 }
 
 .ledger-reason,
@@ -1309,17 +1472,22 @@ html.dark .status-tab.is-active {
   cursor: pointer;
 }
 
+.user-cell:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .user-avatar,
 .drawer-avatar {
   display: grid;
   flex: 0 0 auto;
   place-items: center;
   overflow: hidden;
-  border-radius: 10px;
-  color: var(--accent-on);
-  font-weight: 700;
-  background: linear-gradient(145deg, var(--accent), var(--accent-hover));
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-on) 8%, transparent);
+  border-radius: 50%;
+  color: var(--accent-ink);
+  font-weight: 750;
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
 .user-avatar {
@@ -1346,47 +1514,50 @@ html.dark .status-tab.is-active {
 .user-meta {
   display: grid;
   min-width: 0;
-  gap: 2px;
-  text-align: left;
+  gap: 3px;
 }
 
-.user-status,
-.user-name,
+.user-meta__line {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.user-meta__line strong,
+.user-meta__email,
 .cell-text,
 .cell-num,
-.cell-muted {
+.cell-muted,
+.cell-time {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.user-status {
-  font-size: 11px;
-  font-weight: 650;
-  line-height: 1.2;
-}
-
-.user-status.is-success {
-  color: var(--success);
-}
-
-.user-status.is-danger {
-  color: var(--danger);
-}
-
-.user-status.is-warning {
-  color: var(--warning);
-}
-
-.user-name {
+.user-meta__line strong {
   min-width: 0;
   color: var(--ink);
   font-size: 13px;
-  font-weight: 400;
+  font-weight: 650;
   letter-spacing: -0.01em;
 }
 
-.cell-text {
+.user-meta__line .badge {
+  flex: 0 0 auto;
+  height: 18px;
+  padding: 0 6px;
+  font-size: 10px;
+  line-height: 18px;
+}
+
+.user-meta__email {
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.cell-text,
+.cell-time {
   color: var(--ink-2);
   font-size: 12px;
 }
@@ -1395,6 +1566,14 @@ html.dark .status-tab.is-active {
   color: var(--ink);
   font-size: 13px;
   font-weight: 700;
+}
+
+.cell-num.is-negative {
+  color: var(--danger);
+}
+
+.cell-num.is-frozen {
+  color: var(--warning);
 }
 
 .cell-muted {
@@ -1406,23 +1585,64 @@ html.dark .status-tab.is-active {
 .pair-cell {
   display: inline-flex;
   align-items: baseline;
+  justify-content: flex-start;
   gap: 4px;
   white-space: nowrap;
 }
 
 .pair-cell em {
+  color: var(--ink);
+  font-size: 13px;
   font-style: normal;
   font-weight: 700;
 }
 
+.pair-cell em.is-frozen,
 .pair-sep {
   color: var(--ink-3);
-  font-weight: 500;
+  font-weight: 600;
 }
 
-.cell-frozen {
+.pair-cell em.is-frozen {
   color: var(--warning);
   font-size: 12px;
+}
+
+.pair-cell em.is-fail {
+  color: var(--danger);
+}
+
+.wallet-line {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.wallet-line em {
+  color: var(--ink);
+  font-size: 13px;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.wallet-line small {
+  overflow: hidden;
+  color: var(--ink-3);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cell-ip {
+  display: block;
+  overflow: hidden;
+  color: var(--ink-2);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .cell-ok {
@@ -1436,63 +1656,43 @@ html.dark .status-tab.is-active {
 }
 
 .list-profile,
-.quality-cell,
-.value-cell {
+.metric-cell {
   display: grid;
   min-width: 0;
   gap: 3px;
 }
 
-.lifecycle-badge {
+.list-profile .badge {
   width: fit-content;
-  padding: 2px 6px;
-  border-radius: 4px;
-  color: var(--ink-2);
+  height: 20px;
+  padding: 0 7px;
   font-size: 11px;
-  font-weight: 700;
-  background: var(--surface-2);
-}
-
-.lifecycle-badge.is-active,
-.lifecycle-badge.is-returned {
-  color: var(--success);
-  background: color-mix(in srgb, var(--success) 10%, transparent);
-}
-
-.lifecycle-badge.is-churn_risk {
-  color: var(--warning);
-  background: color-mix(in srgb, var(--warning) 12%, transparent);
-}
-
-.lifecycle-badge.is-new,
-.lifecycle-badge.is-activated {
-  color: var(--info);
-  background: color-mix(in srgb, var(--info) 10%, transparent);
+  line-height: 20px;
 }
 
 .list-profile__tags,
-.quality-cell small,
-.value-cell small {
+.metric-cell small {
   overflow: hidden;
   color: var(--ink-3);
   font-size: 11px;
+  line-height: 1.3;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.quality-cell strong,
-.value-cell strong {
+.metric-cell {
+  justify-items: start;
+}
+
+.metric-cell strong {
   color: var(--ink);
-  font-size: 12px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
 }
 
-.value-cell small.is-negative {
+.metric-cell small.is-negative {
   color: var(--danger);
-}
-
-.profile-detail-section {
-  padding-bottom: 22px;
-  border-bottom: 1px solid var(--border);
 }
 
 .kind-text {
@@ -1558,15 +1758,15 @@ html.dark .status-tab.is-active {
 .drawer-header {
   display: flex;
   min-width: 0;
-  align-items: center;
+  align-items: flex-start;
   gap: 12px;
   width: 100%;
   padding-right: 8px;
 }
 
 .drawer-avatar {
-  width: 42px;
-  height: 42px;
+  width: 40px;
+  height: 40px;
   font-size: 14px;
 }
 
@@ -1574,42 +1774,74 @@ html.dark .status-tab.is-active {
   display: grid;
   min-width: 0;
   flex: 1;
-  gap: 2px;
+  gap: 3px;
 }
 
-.drawer-status {
-  justify-self: start;
-  margin-bottom: 1px;
-  color: var(--success);
+.drawer-heading__line {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.drawer-heading__line .badge {
+  flex: none;
+  height: 20px;
+  padding: 0 7px;
   font-size: 11px;
-  font-weight: 650;
+  line-height: 20px;
+}
+
+.drawer-heading__fact {
+  flex: none;
+  overflow: hidden;
+  max-width: 220px;
+  color: var(--ink-3);
+  font-size: 12px;
   line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.drawer-status.is-warning {
-  color: var(--warning);
-}
-
-.drawer-status.is-danger {
-  color: var(--danger);
+.drawer-heading__site {
+  color: var(--accent);
 }
 
 .drawer-heading strong,
-.drawer-heading small {
+.drawer-heading__meta {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .drawer-heading strong {
-  color: var(--el-text-color-primary);
-  font-size: 15px;
-  font-weight: 600;
+  min-width: 0;
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 750;
+  letter-spacing: -0.02em;
 }
 
-.drawer-heading small {
+.drawer-heading small,
+.drawer-heading__meta {
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.drawer-heading__meta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.drawer-heading__id {
+  overflow: hidden;
   color: var(--ink-3);
   font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: all;
 }
 
 .drawer-body {
@@ -1619,35 +1851,106 @@ html.dark .status-tab.is-active {
   min-height: 0;
 }
 
-.drawer-actions {
+.overview-toolbar {
   display: flex;
-  min-height: 36px;
+  min-height: 44px;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-bottom: 12px;
-  padding: 8px 10px;
+  justify-content: space-between;
+  gap: 10px 16px;
+  margin-bottom: 14px;
+  padding: 8px 12px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 12px;
   background: var(--surface-2);
 }
 
-.drawer-actions > span {
-  min-width: 0;
-  flex: 1;
-  color: var(--ink-3);
-  font-size: 11px;
-}
-
-.drawer-actions__id {
+.overview-toolbar__meta {
   display: flex;
   min-width: 0;
-  align-items: baseline;
-  gap: 4px;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 20px;
 }
 
-.drawer-actions__id code,
+.overview-toolbar__meta > span {
+  display: inline-flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.overview-toolbar__meta em {
+  flex: none;
+  color: var(--ink-3);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 650;
+}
+
+.overview-toolbar__actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.overview-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+}
+
+.overview-btn:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-3);
+}
+
+.overview-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.overview-btn.is-danger {
+  border-color: transparent;
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.overview-btn.is-danger:hover {
+  background: color-mix(in srgb, var(--danger) 16%, var(--surface));
+}
+
+.overview-btn.is-success {
+  border-color: transparent;
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.overview-btn.is-success:hover {
+  background: color-mix(in srgb, var(--success) 16%, var(--surface));
+}
+
+.overview-btn .el-icon {
+  font-size: 14px;
+}
+
 .drawer-id {
   display: inline-block;
   max-width: 100%;
@@ -1657,66 +1960,85 @@ html.dark .status-tab.is-active {
   user-select: all;
 }
 
-.drawer-actions code {
-  color: var(--ink-2);
-}
-
 .overview-panel {
   display: flex;
   flex-direction: column;
   gap: 0;
   min-height: 0;
-  padding-bottom: 24px;
+  padding-bottom: 20px;
 }
 
 .detail-section {
-  margin-bottom: 18px;
+  margin-bottom: 14px;
 }
 
 .detail-section__title {
-  margin-bottom: 8px;
-  color: var(--el-text-color-primary);
+  margin-bottom: 6px;
+  color: var(--ink);
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 750;
 }
 
-.profile-overview {
+.detail-fields {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 150px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--border);
+}
+
+.detail-fields > div {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
   align-items: center;
-  gap: 16px;
-  padding: 12px 14px;
-  border-radius: 8px;
-  background: var(--accent-soft);
-}
-
-.profile-overview__copy {
-  display: grid;
+  gap: 10px;
   min-width: 0;
-  gap: 3px;
+  min-height: 36px;
+  padding: 6px 12px;
+  background: var(--surface);
 }
 
-.profile-overview__copy strong {
-  color: var(--accent-ink);
-  font-size: 12px;
+.detail-fields > div.is-wide {
+  grid-column: 1 / -1;
 }
 
-.profile-overview__copy small {
-  display: -webkit-box;
+.detail-fields dt {
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.detail-fields dd {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail-fields .is-wide dd {
+  white-space: normal;
+}
+
+.detail-fields code {
+  display: block;
   overflow: hidden;
   color: var(--ink-2);
-  font-size: 11px;
-  line-height: 1.45;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .wallet-overview {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  gap: 8px;
 }
 
 .wallet-overview > div {
@@ -1725,10 +2047,9 @@ html.dark .status-tab.is-active {
   align-items: baseline;
   gap: 3px 6px;
   padding: 12px 14px;
-}
-
-.wallet-overview > div + div {
-  border-left: 1px solid var(--border);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-2);
 }
 
 .wallet-overview small {
@@ -1776,16 +2097,24 @@ html.dark .status-tab.is-active {
 .count-cards {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--border);
 }
 
 .count-card {
+  display: flex;
   min-width: 0;
-  padding: 10px 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 36px;
+  padding: 6px 12px;
+  border: 0;
+  background: var(--surface);
   text-align: left;
-  background: var(--surface-2);
 }
 
 button.count-card {
@@ -1796,26 +2125,41 @@ button.count-card {
 }
 
 button.count-card:hover {
-  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  background: var(--surface-2);
 }
 
 .count-card.is-emphasis {
-  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
   background: var(--accent-soft);
 }
 
-.count-value {
-  overflow: hidden;
-  font-size: 17px;
-  font-weight: 700;
-  text-overflow: ellipsis;
-  font-variant-numeric: tabular-nums;
+button.count-card.is-emphasis:hover {
+  background: color-mix(in srgb, var(--accent) 18%, var(--surface));
 }
 
-.count-label {
-  margin-top: 2px;
+.count-card span {
+  flex: none;
   color: var(--ink-3);
-  font-size: 12px;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.count-card strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.count-card.is-warn strong {
+  color: var(--danger);
+}
+
+.count-card.is-live strong {
+  color: var(--info);
 }
 
 .device-text {
@@ -1849,30 +2193,38 @@ button.count-card:hover {
   min-height: 0;
 }
 
-:deep(.detail-section .el-descriptions__label) {
-  min-width: 82px;
-  width: 96px;
-  color: var(--ink-3);
-  font-weight: 500;
-  white-space: nowrap;
-}
-
-:deep(.detail-section .el-descriptions__content) {
-  min-width: 0;
-  word-break: break-word;
-}
-
-.detail-section a {
+.detail-fields a {
   display: block;
-  max-width: 230px;
   overflow: hidden;
   color: var(--accent-ink);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.adjust-form :deep(.el-form-item) {
+  margin-bottom: 14px;
+}
 
+.adjust-form :deep(.el-form-item:last-child) {
+  margin-bottom: 0;
+}
 
+.adjust-form :deep(.el-form-item__label) {
+  margin-bottom: 6px;
+  padding: 0;
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.2;
+}
+
+.adjust-form :deep(.el-input-number) {
+  width: 100%;
+}
+
+.adjust-form :deep(.el-textarea__inner) {
+  min-height: 76px;
+}
 </style>
 
 <!-- append-to-body 后抽屉挂到 body，需非 scoped 才能控滚动 -->
@@ -1887,7 +2239,7 @@ button.count-card:hover {
 
 .user-detail-drawer .el-drawer__header {
   margin-bottom: 0;
-  padding: 16px 20px 12px;
+  padding: 14px 20px 12px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -1911,10 +2263,6 @@ button.count-card:hover {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-}
-
-.user-detail-drawer .drawer-actions {
-  margin: 0 20px 12px;
 }
 
 .user-detail-drawer .user-detail-tabs {

@@ -1,4 +1,4 @@
-import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, CanvasNodeMetadata } from "@/types/canvas";
+import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, CanvasNodeImage, CanvasNodeMetadata } from "@/types/canvas";
 
 type CanvasProjectSnapshot = {
     id: string;
@@ -74,6 +74,10 @@ function nodeHasOutput(node: CanvasNodeData) {
     return metadata.status === "success" && Boolean(metadata.content || metadata.storageKey);
 }
 
+function nodeHasDeletedMedia(node: CanvasNodeData) {
+    return Boolean(node.metadata?.deletedByHistory || node.metadata?.images?.some((image) => image.deletedByHistory));
+}
+
 function nodeOutputTimestamp(node: CanvasNodeData) {
     return node.metadata?.generationCompletedAt || node.metadata?.generationStartedAt || "";
 }
@@ -84,6 +88,9 @@ function outputMetadata(metadata: CanvasNodeMetadata = {}): Partial<CanvasNodeMe
         content: metadata.content,
         status: metadata.status,
         errorDetails: metadata.errorDetails,
+        deletedByHistory: metadata.deletedByHistory,
+        deletedAt: metadata.deletedAt,
+        deletionMessage: metadata.deletionMessage,
         storageKey: metadata.storageKey,
         thumbnailUrl: metadata.thumbnailUrl,
         thumbnailKey: metadata.thumbnailKey,
@@ -109,9 +116,81 @@ function mergeCanvasNodes(local: CanvasNodeData, remote: CanvasNodeData): Canvas
     // Output fields go to the side that actually produced something; when both
     // sides have an output, the more recently completed one wins. Position,
     // size, and configuration always stay local.
-    const preferRemoteOutput = remoteHasOutput && (!localHasOutput || nodeOutputTimestamp(remote) > nodeOutputTimestamp(local));
+    const preferRemoteOutput = nodeHasDeletedMedia(remote) || (remoteHasOutput && (!localHasOutput || nodeOutputTimestamp(remote) > nodeOutputTimestamp(local)));
     if (!preferRemoteOutput) return local;
-    return { ...local, metadata: { ...local.metadata, ...outputMetadata(remote.metadata) } };
+    const metadata = { ...local.metadata, ...outputMetadata(remote.metadata) };
+    if (nodeHasDeletedMedia(remote)) {
+        metadata.content = remote.metadata?.content;
+        metadata.storageKey = remote.metadata?.storageKey;
+        metadata.thumbnailUrl = remote.metadata?.thumbnailUrl;
+        metadata.thumbnailKey = remote.metadata?.thumbnailKey;
+        metadata.taskId = remote.metadata?.taskId;
+    }
+    return { ...local, metadata };
+}
+
+function canvasMediaValueMatches(value: string | undefined, keys: Set<string>) {
+    if (!value) return false;
+    for (const key of keys) {
+        if (value === key || value.includes(key)) return true;
+    }
+    return false;
+}
+
+function canvasImageReferencesKeys(image: CanvasNodeImage, keys: Set<string>) {
+    return [image.content, image.storageKey, image.thumbnailUrl, image.thumbnailKey].some((value) => canvasMediaValueMatches(value, keys));
+}
+
+export function markCanvasProjectMediaDeleted<T extends CanvasProjectDocument>(project: T, removedKeys: string[], deletedAt: string): T {
+    const keys = new Set(removedKeys.map((key) => String(key || "").trim()).filter(Boolean));
+    if (!keys.size) return project;
+    let projectChanged = false;
+    const nodes = project.nodes.map((node) => {
+        const metadata = node.metadata;
+        if (!metadata) return node;
+        const images = metadata.images?.map((image) => {
+            if (!canvasImageReferencesKeys(image, keys)) return image;
+            projectChanged = true;
+            return {
+                ...image,
+                content: "",
+                storageKey: "",
+                thumbnailUrl: undefined,
+                thumbnailKey: undefined,
+                taskId: undefined,
+                status: "error" as const,
+                errorDetails: "该图片已被删除",
+                deletedByHistory: true,
+                deletedAt,
+                deletionMessage: "该图片已被删除",
+            };
+        });
+        const directMatch = [metadata.content, metadata.storageKey, metadata.thumbnailUrl, metadata.thumbnailKey]
+            .some((value) => canvasMediaValueMatches(value, keys));
+        const imagesChanged = Boolean(images?.some((image, index) => image !== metadata.images?.[index]));
+        if (!directMatch && !imagesChanged) return node;
+        projectChanged = true;
+        return {
+            ...node,
+            metadata: {
+                ...metadata,
+                ...(directMatch ? {
+                    content: undefined,
+                    storageKey: undefined,
+                    thumbnailUrl: undefined,
+                    thumbnailKey: undefined,
+                    taskId: undefined,
+                    status: "error" as const,
+                    errorDetails: "该图片已被删除",
+                    deletedByHistory: true,
+                    deletedAt,
+                    deletionMessage: "该图片已被删除",
+                } : {}),
+                images,
+            },
+        };
+    });
+    return projectChanged ? { ...project, nodes, updatedAt: deletedAt } : project;
 }
 
 /**

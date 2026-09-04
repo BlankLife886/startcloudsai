@@ -299,9 +299,10 @@ void main() {
     expect(find.text('入账'), findsOneWidget);
     expect(find.text('消耗'), findsOneWidget);
     expect(find.text('退回'), findsOneWidget);
-    expect(find.text('兑换积分'), findsOneWidget);
     expect(find.text('积分明细'), findsOneWidget);
-    expect(find.text('购买套餐'), findsOneWidget);
+    expect(find.text('订单记录'), findsOneWidget);
+    expect(find.text('兑换积分'), findsNothing);
+    expect(find.text('购买套餐'), findsNothing);
     expect(find.text('共 4 笔'), findsNothing);
     expect(tester.takeException(), isNull);
   });
@@ -346,68 +347,6 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('兑换码不存在，请检查后重试'), findsOneWidget);
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('successful redemption closes the sheet and confirms credit', (
-    tester,
-  ) async {
-    await tester.pumpWidget(
-      ProviderScope(
-        overrides: [
-          walletProvider.overrideWith(
-            (ref) async => WalletSnapshot.fromJson({
-              'availableCents': 100,
-              'frozenCents': 0,
-              'trialBalanceCents': 0,
-            }),
-          ),
-          walletCenterControllerProvider.overrideWith(
-            _FakeWalletController.new,
-          ),
-          benefitsControllerProvider.overrideWith(_IdleBenefitsController.new),
-        ],
-        child: const MaterialApp(home: WalletScreen()),
-      ),
-    );
-    await tester.pumpAndSettle();
-
-    await tester.tap(find.text('兑换积分'));
-    await tester.pumpAndSettle();
-    await tester.enterText(find.byType(TextFormField), 'SC-ABCD-EFGH-JK23');
-    await tester.tap(find.text('立即兑换'));
-    await tester.pumpAndSettle();
-
-    expect(find.byType(RedeemCodeSheet), findsNothing);
-    expect(find.text('兑换成功，50 积分已入账'), findsOneWidget);
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('wallet deep link automatically opens redemption', (
-    tester,
-  ) async {
-    await tester.pumpWidget(
-      ProviderScope(
-        overrides: [
-          walletProvider.overrideWith(
-            (ref) async => WalletSnapshot.fromJson({
-              'availableCents': 100,
-              'frozenCents': 0,
-              'trialBalanceCents': 0,
-            }),
-          ),
-          walletCenterControllerProvider.overrideWith(
-            _FakeWalletController.new,
-          ),
-          benefitsControllerProvider.overrideWith(_IdleBenefitsController.new),
-        ],
-        child: const MaterialApp(home: WalletScreen(initiallyOpenRedeem: true)),
-      ),
-    );
-    await tester.pumpAndSettle();
-
-    expect(find.byType(RedeemCodeSheet), findsOneWidget);
-    expect(find.text('立即兑换'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -484,9 +423,8 @@ void main() {
             children: [
               WalletBalancePanel(
                 wallet: snapshot,
-                onRedeem: () {},
                 onLedger: () {},
-                onPurchase: () {},
+                onOrders: () {},
               ),
               const SizedBox(height: 12),
               WalletCompositionGrid(wallet: snapshot, onOpenLedger: (_) {}),

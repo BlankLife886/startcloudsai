@@ -79,7 +79,16 @@ func nonNilStrings(s []string) []string {
 // 旧任务没有展示图对象时前端加载 404 会回退到原图。
 func displayURLsForTask(t *store.Task, prefix string) []string {
 	if !hasDedicatedThumbKeys(t.ThumbnailKeys, t.OutputKeys) {
-		return prefixedObjectURLs(t.OutputKeys, prefix)
+		allAssistantOutputs := len(t.OutputKeys) > 0
+		for _, key := range t.OutputKeys {
+			if len(store.AssistantVariantKeys(key)) != 2 {
+				allAssistantOutputs = false
+				break
+			}
+		}
+		if !allAssistantOutputs {
+			return prefixedObjectURLs(t.OutputKeys, prefix)
+		}
 	}
 	return variantURLsForTask(t, prefix, outputVariantDisplay)
 }
@@ -274,7 +283,7 @@ func taskDict(t *store.Task, outputURLs, originalURLs []string) gin.H {
 		"inputKeys":          nonNilStrings(t.InputKeys),
 		"outputKeys":         nonNilStrings(t.OutputKeys),
 		"outputUrls":         nonNilStrings(outputURLs),
-		"thumbnailUrls":      nonNilStrings(outputURLs),
+		"thumbnailUrls":      thumbURLsForTask(t, "/api/v1/files/"),
 		"originalUrls":       nonNilStrings(originalURLs),
 		"displayUrls":        displayURLsForTask(t, "/api/v1/files/"),
 		"thumbnailKeys":      nonNilStrings(t.ThumbnailKeys),

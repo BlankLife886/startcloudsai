@@ -367,7 +367,7 @@ class _ColoringScreenState extends ConsumerState<ColoringScreen>
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
             color: Theme.of(context).colorScheme.surfaceContainerLow,
-            borderRadius: BorderRadius.circular(18),
+            borderRadius: BorderRadius.circular(8),
             border: Border.all(
               color: Theme.of(context).colorScheme.outlineVariant,
             ),
@@ -482,7 +482,7 @@ class _ColoringScreenState extends ConsumerState<ColoringScreen>
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
               color: colors.tertiaryContainer.withValues(alpha: 0.5),
-              borderRadius: BorderRadius.circular(18),
+              borderRadius: BorderRadius.circular(8),
               border: Border.all(color: colors.outlineVariant),
             ),
             child: Row(
@@ -612,7 +612,7 @@ class _ColoringScreenState extends ConsumerState<ColoringScreen>
                         style: OutlinedButton.styleFrom(
                           padding: EdgeInsets.zero,
                           shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(18),
+                            borderRadius: BorderRadius.circular(8),
                           ),
                         ),
                         child: _selecting
@@ -661,7 +661,7 @@ class _ColoringScreenState extends ConsumerState<ColoringScreen>
                         ),
                         decoration: BoxDecoration(
                           color: colors.secondaryContainer,
-                          borderRadius: BorderRadius.circular(18),
+                          borderRadius: BorderRadius.circular(8),
                         ),
                         child: Text(
                           '${model.pricePoints * count} 积分',
@@ -938,7 +938,7 @@ class _ColoringStage extends StatelessWidget {
                 return SizedBox(
                   height: constraints.maxWidth * 0.75 + extraHeight,
                   child: ClipRRect(
-                    borderRadius: BorderRadius.circular(18),
+                    borderRadius: BorderRadius.circular(8),
                     child: DecoratedBox(
                       decoration: BoxDecoration(
                         color: Theme.of(
@@ -1143,7 +1143,7 @@ class _ReferenceThumbnail extends StatelessWidget {
       fit: StackFit.expand,
       children: [
         ClipRRect(
-          borderRadius: BorderRadius.circular(18),
+          borderRadius: BorderRadius.circular(8),
           child: image.localPath.isNotEmpty
               ? Image.file(File(image.localPath), fit: BoxFit.cover)
               : AuthenticatedImage(url: image.remoteUrl ?? ''),
@@ -1241,7 +1241,7 @@ class _InlineError extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Material(
     color: Theme.of(context).colorScheme.errorContainer,
-    borderRadius: BorderRadius.circular(18),
+    borderRadius: BorderRadius.circular(8),
     child: ListTile(
       leading: const Icon(Icons.cloud_off_outlined),
       title: const Text('染色状态读取失败'),

@@ -7,6 +7,8 @@ withDefaults(
     page?: number
     count?: number
     total?: number | null
+    pageSize?: number
+    pageSizes?: number[]
     /** 视口固定高度；与 fill 互斥 */
     viewportHeight?: string
     /** 填满父级剩余高度（抽屉内列表用） */
@@ -17,14 +19,16 @@ withDefaults(
     page: 1,
     count: 0,
     total: null,
+    pageSize: 20,
+    pageSizes: () => [10, 20, 50],
     viewportHeight: 'clamp(360px, calc(100vh - 300px), 680px)',
     fill: false,
   },
 )
 
 defineEmits<{
-  prev: []
-  next: []
+  'update:page': [value: number]
+  'update:pageSize': [value: number]
 }>()
 </script>
 
@@ -46,8 +50,10 @@ defineEmits<{
         :page="page"
         :count="count"
         :total="total"
-        @prev="$emit('prev')"
-        @next="$emit('next')"
+        :page-size="pageSize"
+        :page-sizes="pageSizes"
+        @update:page="$emit('update:page', $event)"
+        @update:page-size="$emit('update:pageSize', $event)"
       />
     </footer>
   </section>

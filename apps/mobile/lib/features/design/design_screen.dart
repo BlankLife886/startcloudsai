@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../core/widgets/app_chrome.dart';
+import '../../core/widgets/app_notice.dart';
 import '../../core/widgets/app_top_bar.dart';
 import '../../core/widgets/app_visual.dart';
 import '../create/creation_draft.dart';
@@ -51,6 +53,42 @@ class _DesignScreenState extends ConsumerState<DesignScreen> {
     setState(() => _draft = draft);
   }
 
+  Future<void> _startNewCreation() async {
+    final draft = _draft;
+    if (draft == null || draft.isEmpty) {
+      context.push('/create');
+      return;
+    }
+    final confirmed = await showAppDialog<bool>(
+      context: context,
+      builder: (context) => AppDialog(
+        icon: const Icon(Icons.add_photo_alternate_outlined),
+        title: const Text('新建文生图？'),
+        content: const Text('当前草稿会被清除，此操作无法撤销。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('继续编辑草稿'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('清除并新建'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      await ref.read(creationDraftStoreProvider).clear();
+    } catch (_) {
+      if (mounted) AppNotice.error(context, '草稿清理失败，请稍后重试');
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _draft = null);
+    context.push('/create');
+  }
+
   @override
   Widget build(BuildContext context) {
     final featured = _tools.first;
@@ -74,15 +112,27 @@ class _DesignScreenState extends ConsumerState<DesignScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      '创作工具',
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w800,
-                      ),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            '创作工具',
+                            style: Theme.of(context).textTheme.titleMedium
+                                ?.copyWith(fontWeight: FontWeight.w800),
+                          ),
+                        ),
+                        if (_draft != null && !_draft!.isEmpty)
+                          IconButton(
+                            key: const Key('design-new-creation'),
+                            tooltip: '新建文生图',
+                            onPressed: _startNewCreation,
+                            icon: const Icon(Icons.add_circle_outline),
+                          ),
+                      ],
                     ),
-                    const SizedBox(height: 10),
+                    const SizedBox(height: 6),
                     SizedBox(
-                      height: 126 + ((textScale - 1).clamp(0.0, .6) * 36),
+                      height: 112 + ((textScale - 1).clamp(0.0, .6) * 56),
                       width: double.infinity,
                       child: _DesignFeaturedCard(
                         tool: featured,
@@ -253,7 +303,7 @@ class _DesignToolRow extends StatelessWidget {
           key: Key('design-tool-${tool.keyName}'),
           onTap: onTap,
           child: AppSoftCard(
-            radius: BorderRadius.circular(18),
+            radius: BorderRadius.circular(8),
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
             child: Row(
               children: [
@@ -262,7 +312,7 @@ class _DesignToolRow extends StatelessWidget {
                   height: 42,
                   decoration: BoxDecoration(
                     color: tool.accent.withValues(alpha: .12),
-                    borderRadius: BorderRadius.circular(14),
+                    borderRadius: BorderRadius.circular(8),
                   ),
                   child: Icon(tool.icon, size: 22, color: tool.accent),
                 ),

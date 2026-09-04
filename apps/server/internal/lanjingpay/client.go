@@ -91,6 +91,20 @@ func (e *APIError) Error() string {
 	return e.Message
 }
 
+func IsTerminalOrderError(err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	message := strings.ToLower(strings.TrimSpace(apiErr.Message))
+	for _, marker := range []string{"不存在", "已过期", "已关闭", "not found", "expired", "closed"} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 func New(baseURL, secret, notifyURL string, timeout time.Duration, allowPrivate bool) (*Client, error) {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	secret = strings.TrimSpace(secret)

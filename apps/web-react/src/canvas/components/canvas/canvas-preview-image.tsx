@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type DragEventHandler, type Ref } from "react";
 
-import { buildLightweightPreview, getCanvasPreviewEdge, retainPreviewUrl, subscribeCanvasPreviewScale } from "@/lib/canvas/canvas-preview-image";
-import { canvasCompressSource, cloudFileUrl } from "@/lib/canvas/canvas-preview-url";
+import { buildLightweightPreview, getCanvasPreviewEdge, retainPreviewUrl, shouldDownscalePreview, subscribeCanvasPreviewScale } from "@/lib/canvas/canvas-preview-image";
+import { canvasCompressSource, cloudFileUrl, softMissingFileUrl } from "@/lib/canvas/canvas-preview-url";
 import { resolveMediaUrl } from "@/services/file-storage";
 
 const VIEWPORT_MARGIN = 160;
@@ -47,8 +47,12 @@ export function useCanvasPreviewSrc(src?: string, options?: { storageKey?: strin
     const allowOriginalFallback = options?.allowOriginalFallback !== false;
     const [maxEdge, setMaxEdge] = useState(() => getCanvasPreviewEdge(options?.maxEdge));
     const compressSrc = canvasCompressSource({ src, storageKey: options?.storageKey, thumbnailUrl: options?.thumbnailUrl });
-    const originalSrc = src && !src.startsWith("data:") ? src : cloudFileUrl(options?.storageKey || "") || src || "";
-    const placeholderSrc = isUsableImageSrc(compressSrc) ? compressSrc : "";
+    const source = src || "";
+    const rawOriginalSrc = source && !source.startsWith("data:") && isUsableImageSrc(source)
+        ? source
+        : cloudFileUrl(options?.storageKey || source) || source;
+    const originalSrc = softMissingFileUrl(rawOriginalSrc);
+    const placeholderSrc = isUsableImageSrc(compressSrc) ? softMissingFileUrl(compressSrc) : "";
     const [previewSrc, setPreviewSrc] = useState<string>();
     const [useOriginal, setUseOriginal] = useState(false);
 
@@ -91,7 +95,8 @@ export function useCanvasPreviewSrc(src?: string, options?: { storageKey?: strin
         };
     }, [previewSrc]);
 
-    const displaySrc = useOriginal && allowOriginalFallback && isUsableImageSrc(originalSrc) ? originalSrc : previewSrc || placeholderSrc;
+    const directPreviewSrc = shouldDownscalePreview(compressSrc) ? "" : placeholderSrc;
+    const displaySrc = useOriginal && allowOriginalFallback && isUsableImageSrc(originalSrc) ? originalSrc : previewSrc || directPreviewSrc;
 
     return {
         remote: allowOriginalFallback ? originalSrc : "",

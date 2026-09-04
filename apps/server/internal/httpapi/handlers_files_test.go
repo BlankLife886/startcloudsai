@@ -13,6 +13,8 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+
+	storagepkg "github.com/BlankLife886/startcloudsai/server/internal/storage"
 )
 
 func TestSniffUploadMedia(t *testing.T) {
@@ -254,6 +256,73 @@ func TestGetFileOSSDeliverySupportsViewAndDownload(t *testing.T) {
 			}
 			if disposition := response.Header().Get("Content-Disposition"); test.wantDisposition != (disposition != "") {
 				t.Fatalf("Content-Disposition = %q, expected presence %v", disposition, test.wantDisposition)
+			}
+		})
+	}
+}
+
+func TestGetFileOptionalMissingPreviewReturnsNoContent(t *testing.T) {
+	env := newCommunityEnv(t)
+	objectStoreServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`<Error><Code>NoSuchKey</Code><Message>missing</Message></Error>`))
+	}))
+	defer objectStoreServer.Close()
+	env.cfg.ObjectStorageEndpoint = objectStoreServer.URL
+	env.cfg.ObjectStoragePublicEndpoint = ""
+	env.cfg.ObjectStorageRegion = "ap-northeast-1"
+	env.cfg.ObjectStorageAccessKeyID = "test-access-key"
+	env.cfg.ObjectStorageSecretAccessKey = "test-secret-key"
+	env.cfg.ObjectStorageBucket = "starcloudsai-test"
+	env.cfg.ObjectStorageUsePathStyle = true
+	env.cfg.ObjectStoragePresignExpireSecs = 900
+	objectStore, err := storagepkg.New(env.cfg)
+	if err != nil {
+		t.Fatalf("init object storage stub: %v", err)
+	}
+	env.engine = (&Server{Cfg: env.cfg, St: env.st, Storage: objectStore}).Router()
+
+	owner, token := env.newUserSession(t, "user")
+	key := "uploads/" + owner.ID.String() + "/thumb/missing.jpg"
+
+	optional := env.do(t, http.MethodGet, "/api/v1/files/"+key+"?soft_missing=1", nil, token)
+	if optional.Code != http.StatusNoContent {
+		t.Fatalf("optional missing preview status = %d, want 204; body=%s", optional.Code, optional.Body.String())
+	}
+	if got := optional.Header().Get("X-StarCloud-Media-Missing"); got != "1" {
+		t.Fatalf("optional missing preview header = %q, want 1", got)
+	}
+	if got := optional.Header().Get("Cache-Control"); got != "private, no-store" {
+		t.Fatalf("optional missing preview cache control = %q, want private, no-store", got)
+	}
+
+	regular := env.do(t, http.MethodGet, "/api/v1/files/"+key, nil, token)
+	if regular.Code != http.StatusNotFound {
+		t.Fatalf("regular missing file status = %d, want 404; body=%s", regular.Code, regular.Body.String())
+	}
+}
+
+func TestSmallPreviewObjectKeysBypassOnlyInlineEgressLimits(t *testing.T) {
+	tests := []struct {
+		name     string
+		key      string
+		download bool
+		want     bool
+	}{
+		{name: "assistant thumbnail", key: "tasks/user/assistant/run/1-thumb"},
+		{name: "upload thumbnail", key: "uploads/user/thumb/image"},
+		{name: "task thumbnail", key: "tasks/user/task/thumb/1.webp"},
+		{name: "explicit thumbnail download", key: "tasks/user/assistant/run/1-thumb", download: true, want: true},
+		{name: "assistant display", key: "tasks/user/assistant/run/1-display", want: true},
+		{name: "assistant original", key: "tasks/user/assistant/run/1.png", want: true},
+		{name: "upload display", key: "uploads/user/display/image", want: true},
+		{name: "thumbnail word in filename", key: "uploads/user/original/thumb/image.png", want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := shouldApplyFileEgressLimits(test.key, test.download); got != test.want {
+				t.Fatalf("shouldApplyFileEgressLimits(%q, %v) = %v, want %v", test.key, test.download, got, test.want)
 			}
 		})
 	}

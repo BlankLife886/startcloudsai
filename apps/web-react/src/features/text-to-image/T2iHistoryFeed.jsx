@@ -1,17 +1,9 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef } from "react";
 import { AuthenticatedImage } from "../../components/AuthenticatedImage.jsx";
+import { RegenerateIcon } from "../../components/common/RegenerateIcon.jsx";
 import { taskFailureMessage } from "../history/taskFailureMessage.js";
 
 const ACTIVE_STATUSES = new Set(["queued", "running", "waiting_provider"]);
-const GRID_GAP = 10;
-const OVERSCAN_ROWS = 2;
-
-function columnCount(width) {
-  if (width <= 520) return 2;
-  if (width <= 760) return 3;
-  if (width <= 1020) return 4;
-  return 5;
-}
 
 function statusLabel(task) {
   if (task.status === "queued") return "排队中";
@@ -43,17 +35,6 @@ function elapsedLabel(task, now) {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
-function offsetTopWithin(el, root) {
-  const rootRect = root.getBoundingClientRect();
-  const elRect = el.getBoundingClientRect();
-  return elRect.top - rootRect.top + root.scrollTop;
-}
-
-function estimateRowHeight(innerWidth, cols) {
-  const cell = cols > 0 ? (innerWidth - GRID_GAP * (cols - 1)) / cols : innerWidth;
-  return Math.round(Math.max(96, cell) + 32);
-}
-
 export const T2iHistoryFeed = memo(function T2iHistoryFeed({
   items,
   activeTaskId,
@@ -64,106 +45,32 @@ export const T2iHistoryFeed = memo(function T2iHistoryFeed({
   onLoadMore,
   scrollRootRef,
 }) {
-  const gridRef = useRef(null);
+  const sentinelRef = useRef(null);
   const onLoadMoreRef = useRef(onLoadMore);
-  const metricsRef = useRef({ start: 0, end: 0, cols: 5, stride: 180, startRow: 0, rows: 1 });
-  const [range, setRange] = useState(() => ({
-    start: 0,
-    end: 30,
-    cols: 5,
-    stride: 180,
-    startRow: 0,
-    rows: 1,
-  }));
-
   onLoadMoreRef.current = onLoadMore;
 
-  const syncRange = useCallback(() => {
-    const root = scrollRootRef?.current;
-    const grid = gridRef.current;
-    if (!root || !grid) return;
-    const innerWidth = Math.max(160, grid.clientWidth);
-    const cols = columnCount(innerWidth);
-    const measured = Math.round(grid.querySelector(".t2i-history-card")?.getBoundingClientRect().height || 0);
-    const rowHeight = measured > 72 ? measured : estimateRowHeight(innerWidth, cols);
-    const stride = rowHeight + GRID_GAP;
-    const rows = Math.max(1, Math.ceil(items.length / cols));
-    const gridTop = offsetTopWithin(grid, root);
-    const startRow = Math.max(0, Math.floor((root.scrollTop - gridTop) / stride) - OVERSCAN_ROWS);
-    const visibleRows = Math.ceil(root.clientHeight / stride) + OVERSCAN_ROWS * 2;
-    const endRow = Math.min(rows - 1, startRow + visibleRows);
-    const next = {
-      start: startRow * cols,
-      end: Math.min(items.length, (endRow + 1) * cols),
-      cols,
-      stride,
-      startRow,
-      rows,
-    };
-    const prev = metricsRef.current;
-    if (
-      prev.start === next.start &&
-      prev.end === next.end &&
-      prev.cols === next.cols &&
-      prev.stride === next.stride &&
-      prev.rows === next.rows
-    ) {
-      return;
-    }
-    metricsRef.current = next;
-    setRange(next);
-  }, [items.length, scrollRootRef]);
-
-  useLayoutEffect(() => {
-    syncRange();
-  }, [items.length, syncRange]);
-
   useEffect(() => {
-    const root = scrollRootRef?.current;
-    const grid = gridRef.current;
-    if (!root) return undefined;
-    let frame = 0;
-    const onScroll = () => {
-      if (frame) return;
-      frame = globalThis.requestAnimationFrame(() => {
-        frame = 0;
-        syncRange();
-      });
-    };
-    syncRange();
-    root.addEventListener("scroll", onScroll, { passive: true });
-    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(onScroll);
-    observer?.observe(root);
-    if (grid) observer?.observe(grid);
-    return () => {
-      if (frame) globalThis.cancelAnimationFrame(frame);
-      root.removeEventListener("scroll", onScroll);
-      observer?.disconnect();
-    };
-  }, [scrollRootRef, syncRange]);
-
-  useEffect(() => {
-    if (!items.length || !hasMore || loadingMore || range.end < items.length) return;
-    onLoadMoreRef.current?.();
-  }, [hasMore, items.length, loadingMore, range.end]);
-
-  const visible = items.slice(range.start, range.end);
-  const visibleRows = Math.ceil(visible.length / range.cols) || 0;
-  const padTop = range.startRow * range.stride;
-  const padBottom = Math.max(0, (range.rows - range.startRow - visibleRows) * range.stride);
+    if (!hasMore || loadingMore) return undefined;
+    const sentinel = sentinelRef.current;
+    if (!sentinel || typeof IntersectionObserver === "undefined") return undefined;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) onLoadMoreRef.current?.();
+      },
+      {
+        root: scrollRootRef?.current || sentinel.closest(".t2i-panel") || null,
+        rootMargin: "520px 0px",
+        threshold: 0.01,
+      },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasMore, items.length, loadingMore, scrollRootRef]);
 
   return (
     <div className="t2i-masonry-wrap">
-      <div
-        ref={gridRef}
-        className="t2i-history-grid t2i-history-grid--virtual"
-        style={{
-          "--t2i-history-cols": range.cols,
-          paddingTop: padTop,
-          paddingBottom: padBottom,
-        }}
-      >
-        {visible.map((item) => (
+      <div className="t2i-history-grid">
+        {items.map((item) => (
           <HistoryCard
             key={item.key}
             item={item}
@@ -173,6 +80,7 @@ export const T2iHistoryFeed = memo(function T2iHistoryFeed({
           />
         ))}
       </div>
+      {hasMore && <div ref={sentinelRef} className="t2i-masonry-sentinel" aria-hidden="true" />}
       {loadingMore ? (
         <p className="t2i-feed-loading"><i className="bi bi-arrow-repeat spin" />正在加载更多历史记录…</p>
       ) : hasMore ? (
@@ -201,6 +109,7 @@ const HistoryCard = memo(function HistoryCard({ item, isActive, now, onAction })
             fallbackSrc={item.url}
             alt=""
             loading="eager"
+            keepLoaded
             onError={() => onAction("error", item)}
           />
           {item.total > 1 && (
@@ -231,7 +140,7 @@ const HistoryCard = memo(function HistoryCard({ item, isActive, now, onAction })
           <span className="t2i-icon-edit-image" />
         </button>
         <button type="button" aria-label="重新生成" title="重新生成" onClick={() => onAction("regenerate", item)}>
-          <span className="t2i-icon-regenerate" />
+          <RegenerateIcon />
         </button>
         {running && (
           <button type="button" aria-label="取消任务" title="取消" onClick={() => onAction("cancel", item)}>

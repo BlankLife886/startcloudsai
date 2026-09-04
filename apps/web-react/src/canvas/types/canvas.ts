@@ -40,6 +40,9 @@ export type CanvasNodeImage = {
     bytes: number;
     mimeType: string;
     taskId?: string;
+    deletedByHistory?: boolean;
+    deletedAt?: string;
+    deletionMessage?: string;
 };
 
 export type CanvasNodeMetadata = {
@@ -49,6 +52,9 @@ export type CanvasNodeMetadata = {
     status?: CanvasNodeStatus;
     uploading?: boolean;
     errorDetails?: string;
+    deletedByHistory?: boolean;
+    deletedAt?: string;
+    deletionMessage?: string;
     fontSize?: number;
     generationMode?: CanvasGenerationMode;
     generationType?: CanvasImageGenerationType;

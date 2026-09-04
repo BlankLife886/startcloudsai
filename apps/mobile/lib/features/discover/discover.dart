@@ -272,6 +272,19 @@ class GalleryPage {
   final String? nextCursor;
 }
 
+enum GalleryReportReason {
+  inappropriate('inappropriate', '不适宜内容'),
+  copyright('copyright', '侵犯版权'),
+  spam('spam', '广告或垃圾内容'),
+  harassment('harassment', '骚扰或攻击'),
+  other('other', '其他问题');
+
+  const GalleryReportReason(this.apiValue, this.label);
+
+  final String apiValue;
+  final String label;
+}
+
 @immutable
 class PromptQuery {
   const PromptQuery({
@@ -433,6 +446,18 @@ class DiscoverRepository {
     );
     return GalleryPage.fromJson(data);
   }
+
+  Future<void> reportGallerySubmission(
+    String submissionId, {
+    required GalleryReportReason reason,
+    String detail = '',
+  }) => _apiClient.post(
+    '/gallery/submissions/$submissionId/reports',
+    data: {'reason': reason.apiValue, 'detail': detail.trim()},
+  );
+
+  Future<void> blockGalleryAuthor(String authorId) =>
+      _apiClient.post('/gallery/users/$authorId/block');
 
   Future<DiscoverFeed> load() async {
     final results = await Future.wait([prompts(limit: 12), gallery(limit: 10)]);

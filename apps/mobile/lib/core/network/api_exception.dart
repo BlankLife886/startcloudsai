@@ -11,6 +11,8 @@ class ApiException implements Exception {
 
   bool get isUnauthorized => statusCode == 401 && code == 'auth_required';
 
+  bool get isNotFound => statusCode == 404 || code == 'not_found';
+
   @override
   String toString() => message;
 }

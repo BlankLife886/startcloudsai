@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { AuthenticatedImage } from "../../components/AuthenticatedImage.jsx";
+import { RegenerateIcon } from "../../components/common/RegenerateIcon.jsx";
 import { CommerceSelect } from "./CommerceSelect.jsx";
 import {
   APLUS_CATEGORIES,
@@ -624,9 +625,7 @@ export function DetailStudio({
               title={!running && generateDisabled ? generateHint : undefined}
               onClick={running ? onCancel : onGenerate}
             >
-              <i
-                className={`bi ${running ? "bi-stop-fill" : failed ? "bi-arrow-clockwise" : "bi-layout-text-window-reverse"}`}
-              />
+              {running ? <i className="bi bi-stop-fill" /> : failed ? <RegenerateIcon /> : <i className="bi bi-layout-text-window-reverse" />}
               <span>
                 {running
                   ? cancelling

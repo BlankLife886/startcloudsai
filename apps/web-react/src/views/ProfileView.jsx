@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useGSAP } from "@gsap/react";
 import { gsap } from "gsap";
+import { ArrowUpRight } from "lucide-react";
 import { Link, useLocation, useNavigate } from "react-router";
 import { getOverview, getWallet, listUserAssets, updateProfile } from "@react/legacy-modules/services/meApi.js";
 import { logoutAccount } from "@react/legacy-modules/services/auth.js";
@@ -1032,7 +1033,6 @@ export function ProfileView() {
   const skipProfilePreviewRef = useRef(false);
   const [overview, setOverview] = useState(null);
   const [unreadCount, setUnreadCount] = useState(0);
-  const [preferenceSaving, setPreferenceSaving] = useState(false);
   const [figureBusy, setFigureBusy] = useState("");
   const [figurePreviewUrl, setFigurePreviewUrl] = useState("");
   const [figureNote, setFigureNote] = useState("");
@@ -1142,6 +1142,7 @@ export function ProfileView() {
           const targets = [
             ".pp-soft-hero",
             ".pp-bento-hero-figure",
+            ".pp-soft-hero-link",
             ".pp-soft-event",
             ".pp-soft-performance",
             ".pp-soft-stat",
@@ -1157,6 +1158,15 @@ export function ProfileView() {
               ".pp-bento-hero-figure",
               { autoAlpha: 0, y: 20, duration: 0.55, clearProps: "transform" },
               0.12,
+            )
+            .from(
+              ".pp-soft-hero-link",
+              {
+                autoAlpha: 0,
+                duration: 0.4,
+                stagger: 0.05,
+              },
+              0.16,
             )
             .from(
               ".pp-soft-event",
@@ -1221,7 +1231,6 @@ export function ProfileView() {
   const walletNormal = numeric(overview?.wallet?.normalBalanceCents);
   const balanceCents = numeric(overview?.wallet?.balanceCents);
   const pointsDisplay = formatPoints(balanceCents, { withUnit: false });
-  const requireCostConfirm = auth.user?.requireCostConfirm !== false;
   const customFigure = Boolean(auth.user?.studioFigureUrl || figurePreviewUrl);
   const rawFigureSrc = figurePreviewUrl || auth.user?.studioFigureUrl || DEFAULT_STUDIO_FIGURE;
   const figureSrc = isAuthenticatedAiMediaUrl(rawFigureSrc)
@@ -1796,29 +1805,6 @@ export function ProfileView() {
     await requestStudioFigureGenerate(file);
   };
 
-  const setCostConfirmPreference = async (enabled) => {
-    if (preferenceSaving) return;
-    const previous = requireCostConfirm;
-    const next = Boolean(enabled);
-    auth.setUser((user) => ({ ...user, requireCostConfirm: next }));
-    setPreferenceSaving(true);
-    try {
-      const result = await updateProfile({ requireCostConfirm: next });
-      if (!mountedRef.current) return;
-      const patch = result?.user || { requireCostConfirm: next };
-      auth.setUser((user) => ({ ...user, ...patch }));
-      notificationService.success(
-        next ? "已开启生成前费用确认" : "已关闭生成前费用确认",
-      );
-    } catch (error) {
-      if (!mountedRef.current) return;
-      auth.setUser((user) => ({ ...user, requireCostConfirm: previous }));
-      notificationService.error(error?.message || "创作偏好保存失败");
-    } finally {
-      if (mountedRef.current) setPreferenceSaving(false);
-    }
-  };
-
   const confirmLogout = async () => {
     if (loggingOut) return;
     setLoggingOut(true);
@@ -1863,6 +1849,68 @@ export function ProfileView() {
                   <div className="pp-soft-hero__rim" />
                 </div>
               </div>
+              <nav className="pp-soft-hero-links" aria-label="个人入口">
+                {[
+                  {
+                    to: "/assets",
+                    icon: "bi-collection",
+                    tone: "assets",
+                    title: "我的资产",
+                    value: String(materialCount),
+                    hint: "件素材",
+                  },
+                  {
+                    to: "/submissions",
+                    icon: "bi-send-check",
+                    tone: "submissions",
+                    title: "我的投稿",
+                    value: String(submissionStats.total),
+                    hint: submissionStats.pending
+                      ? `待审 ${submissionStats.pending}`
+                      : "社区投稿",
+                  },
+                  {
+                    to: "/wallet",
+                    icon: "bi-wallet2",
+                    tone: "wallet",
+                    title: "我的钱包",
+                    value: pointsDisplay,
+                    hint: "可用积分",
+                  },
+                  {
+                    to: "/orders",
+                    icon: "bi-receipt",
+                    tone: "orders",
+                    title: "我的订单",
+                    value: "",
+                    hint: "充值与订阅",
+                  },
+                ].map((item, index) => (
+                  <Link
+                    key={item.to}
+                    to={item.to}
+                    className={`pp-soft-hero-link is-${item.tone}${item.value ? "" : " is-bare"}`}
+                  >
+                    <span className="pp-soft-hero-link__glow" aria-hidden="true" />
+                    <span className="pp-soft-hero-link__mark" aria-hidden="true">
+                      <i className={`bi ${item.icon}`} />
+                    </span>
+                    <span className="pp-soft-hero-link__head">
+                      <span className="pp-soft-hero-link__index">
+                        {String(index + 1).padStart(2, "0")}
+                      </span>
+                      <span className="pp-soft-hero-link__go" aria-hidden="true">
+                        <ArrowUpRight size={28} strokeWidth={2.1} />
+                      </span>
+                    </span>
+                    <span className="pp-soft-hero-link__copy">
+                      <strong>{item.title}</strong>
+                      {item.value ? <b>{item.value}</b> : null}
+                      <small>{item.hint}</small>
+                    </span>
+                  </Link>
+                ))}
+              </nav>
               <div className={`pp-soft-character${figureSaving ? " is-busy" : ""}`}>
                 {isAuthenticatedAiMediaUrl(figureSrc) ? (
                   <AuthenticatedImage
@@ -1919,21 +1967,8 @@ export function ProfileView() {
                     {profileJoined ? <li>加入于 {profileJoined}</li> : null}
                   </ul>
                 ) : null}
-                <p className="pp-soft-event__date">
-                  <span>
-                    可用积分 <b>{pointsDisplay}</b>
-                  </span>
-                  <span>
-                    累计任务 <b>{taskStats.total}</b>
-                  </span>
-                  {walletFrozen > 0 ? (
-                    <span>
-                      冻结 <b>{formatPoints(walletFrozen, { withUnit: false })}</b>
-                    </span>
-                  ) : null}
-                </p>
                 <div className="pp-soft-event__actions">
-                  <Link to="/ai-wallpaper">+ 开始创作</Link>
+                  <Link to="/studio">+ 开始创作</Link>
                   <Link to="/pricing">+ 充值积分</Link>
                 </div>
                 <div className="pp-soft-event__figure-tools">
@@ -2080,22 +2115,6 @@ export function ProfileView() {
                   </div>
                 </div>
               ) : null}
-              <label
-                className={`pp-soft-switch${requireCostConfirm ? " is-on" : ""}${preferenceSaving ? " is-saving" : ""}`}
-              >
-                <span>
-                  <em>生成前确认费用</em>
-                  <small>{requireCostConfirm ? "已开启" : "已关闭"}</small>
-                </span>
-                <input
-                  type="checkbox"
-                  checked={requireCostConfirm}
-                  disabled={preferenceSaving}
-                  onChange={(event) =>
-                    setCostConfirmPreference(event.target.checked)
-                  }
-                />
-              </label>
               <div className="pp-soft-perf-foot">
                 <Link to="/history">创作历史</Link>
                 <Link to="/account">账号设置</Link>

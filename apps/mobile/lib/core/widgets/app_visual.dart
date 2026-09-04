@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../app/starclouds_theme.dart';
 
@@ -13,12 +14,18 @@ class AppPressable extends StatefulWidget {
     required this.child,
     this.onTap,
     this.onLongPress,
+    this.semanticLabel,
+    this.selected,
+    this.excludeChildSemantics = false,
     super.key,
   });
 
   final Widget child;
   final VoidCallback? onTap;
   final VoidCallback? onLongPress;
+  final String? semanticLabel;
+  final bool? selected;
+  final bool excludeChildSemantics;
 
   @override
   State<AppPressable> createState() => _AppPressableState();
@@ -26,6 +33,7 @@ class AppPressable extends StatefulWidget {
 
 class _AppPressableState extends State<AppPressable> {
   var _pressed = false;
+  var _focused = false;
 
   void _setPressed(bool value) {
     if (_pressed == value ||
@@ -38,20 +46,66 @@ class _AppPressableState extends State<AppPressable> {
   @override
   Widget build(BuildContext context) {
     final reduce = MediaQuery.disableAnimationsOf(context);
-    return Listener(
-      behavior: HitTestBehavior.opaque,
-      onPointerDown: (_) => _setPressed(true),
-      onPointerUp: (_) => _setPressed(false),
-      onPointerCancel: (_) => _setPressed(false),
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: widget.onTap,
-        onLongPress: widget.onLongPress,
-        child: AnimatedScale(
-          scale: _pressed ? .98 : 1,
-          duration: reduce ? Duration.zero : AppMotion.press,
-          curve: AppMotion.ease,
-          child: widget.child,
+    final interactive = widget.onTap != null || widget.onLongPress != null;
+    final duration = reduce ? Duration.zero : AppMotion.press;
+    return Semantics(
+      button: interactive,
+      enabled: interactive,
+      label: widget.semanticLabel,
+      selected: widget.selected,
+      excludeSemantics: widget.excludeChildSemantics,
+      onTap: widget.onTap,
+      onLongPress: widget.onLongPress,
+      child: FocusableActionDetector(
+        enabled: interactive,
+        mouseCursor: interactive
+            ? SystemMouseCursors.click
+            : SystemMouseCursors.basic,
+        shortcuts: const {
+          SingleActivator(LogicalKeyboardKey.enter): ActivateIntent(),
+          SingleActivator(LogicalKeyboardKey.space): ActivateIntent(),
+        },
+        actions: {
+          ActivateIntent: CallbackAction<ActivateIntent>(
+            onInvoke: (_) {
+              widget.onTap?.call();
+              return null;
+            },
+          ),
+        },
+        onShowFocusHighlight: (value) {
+          if (_focused != value) setState(() => _focused = value);
+        },
+        child: Listener(
+          behavior: HitTestBehavior.opaque,
+          onPointerDown: (_) => _setPressed(true),
+          onPointerUp: (_) => _setPressed(false),
+          onPointerCancel: (_) => _setPressed(false),
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            excludeFromSemantics: true,
+            onTap: widget.onTap,
+            onLongPress: widget.onLongPress,
+            child: AnimatedScale(
+              scale: _pressed ? .98 : 1,
+              duration: duration,
+              curve: AppMotion.ease,
+              child: AnimatedContainer(
+                duration: duration,
+                curve: AppMotion.ease,
+                foregroundDecoration: BoxDecoration(
+                  border: Border.all(
+                    color: _focused
+                        ? Theme.of(context).colorScheme.primary
+                        : Colors.transparent,
+                    width: 2,
+                  ),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: widget.child,
+              ),
+            ),
+          ),
         ),
       ),
     );

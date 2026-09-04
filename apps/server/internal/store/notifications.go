@@ -212,3 +212,24 @@ func ClearUserNotifications(ctx context.Context, q Q, userID uuid.UUID) error {
 		ON CONFLICT (user_id, notification_id) DO NOTHING`, userID)
 	return err
 }
+
+// DismissUserNotification deletes a personal notification or hides a broadcast
+// notification for one user without affecting anyone else's inbox.
+func DismissUserNotification(ctx context.Context, q Q, userID, notificationID uuid.UUID) error {
+	result, err := q.Exec(ctx,
+		`DELETE FROM notifications
+		 WHERE id = $2 AND user_id = $1 AND kind <> 'announcement'`,
+		userID, notificationID)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() > 0 {
+		return nil
+	}
+	_, err = q.Exec(ctx, `
+		INSERT INTO notification_dismissals (user_id, notification_id)
+		SELECT $1, id FROM notifications
+		 WHERE id = $2 AND user_id IS NULL AND kind <> 'announcement'
+		ON CONFLICT (user_id, notification_id) DO NOTHING`, userID, notificationID)
+	return err
+}

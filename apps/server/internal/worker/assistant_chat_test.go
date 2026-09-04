@@ -3,12 +3,14 @@ package worker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 
+	"github.com/BlankLife886/startcloudsai/server/internal/assistanttools"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/sub2api"
 )
@@ -52,7 +54,7 @@ func TestAssistantChatSystemPromptSupportsProgressiveClarification(t *testing.T)
 			t.Fatalf("assistant system prompt is missing %q", want)
 		}
 	}
-	if assistantChatSystemPromptVersion != "assistant-chat-v4" {
+	if assistantChatSystemPromptVersion != "assistant-chat-v5" {
 		t.Fatalf("system prompt version = %q", assistantChatSystemPromptVersion)
 	}
 }
@@ -245,6 +247,131 @@ func TestBuildAssistantContextCarriesForwardPersistedSummary(t *testing.T) {
 	if public["policyVersion"] != assistantContextPolicyVersion || run.Params["_contextSummaryMessages"] != 18 ||
 		run.Params["_contextSummaryThroughMessageId"] != summaryThroughID.String() {
 		t.Fatalf("public=%#v params=%#v", public, run.Params)
+	}
+}
+
+func TestCompactAssistantHistoryPrioritizesDurableUserMemory(t *testing.T) {
+	turns := []assistantContextTurn{{
+		messages: []sub2api.Message{
+			{Role: "user", Content: "项目必须使用品牌蓝色，禁止渐变背景。"},
+			{Role: "assistant", Content: strings.Repeat("普通旧回答", 240)},
+		},
+		messageIDs: []string{"constraint-old", "answer-old"},
+	}}
+	for index := 0; index < 12; index++ {
+		userContent := strings.Repeat("普通讨论内容", 160)
+		if index == 4 {
+			userContent = "用户修正：主色改为品牌红色，但仍然禁止渐变。"
+		}
+		turns = append(turns, assistantContextTurn{
+			messages: []sub2api.Message{
+				{Role: "user", Content: userContent},
+				{Role: "assistant", Content: strings.Repeat("一般回复", 180)},
+			},
+			messageIDs: []string{fmt.Sprintf("user-%d", index), fmt.Sprintf("assistant-%d", index)},
+		})
+	}
+
+	summary, represented := compactAssistantHistory("", 0, turns, 512)
+	oldIndex := strings.Index(summary, "品牌蓝色")
+	newIndex := strings.Index(summary, "品牌红色")
+	if represented < 2 || oldIndex < 0 || newIndex < 0 || oldIndex >= newIndex ||
+		!strings.Contains(summary, "冲突时以后出现者为准") {
+		t.Fatalf("durable memory was not retained in order: represented=%d summary=%q", represented, summary)
+	}
+}
+
+func TestBuildAssistantContextPreservesStructuredConversationState(t *testing.T) {
+	currentUserID := uuid.New()
+	run := &store.AssistantRun{
+		ID: uuid.New(), UserMessageID: currentUserID, AssistantMessageID: uuid.New(),
+		Prompt: "按我引用的版本继续",
+		Params: map[string]any{"_chatContextWindowTokens": 16_384, "_chatMaxOutputTokens": 2_048},
+	}
+	history := []*store.AssistantMessage{
+		{
+			ID: uuid.New(), Role: "user", Content: "先做一套主视觉", Status: "complete",
+			Metadata: map[string]any{
+				"referenceImages": []any{map[string]any{"id": "ref-1", "name": "品牌参考.png"}},
+				"attachments":     []any{map[string]any{"id": "file-1", "name": "品牌规范.pdf"}},
+			},
+		},
+		{
+			ID: uuid.New(), Role: "assistant", Content: "方案已准备", Kind: "proposal", Status: "complete",
+			Metadata: map[string]any{
+				"proposal": map[string]any{
+					"action": "generate", "count": float64(2), "promptMode": "faithful", "model": "image-pro",
+					"planningSummary": "主图与细节图各一张", "prompt": "保留品牌红色与极简排版",
+				},
+				"toolActions": []any{map[string]any{"title": "发送到无限画布", "tool": "send_to_workspace"}},
+			},
+		},
+		{
+			ID: currentUserID, Role: "user", Content: "按我引用的版本继续", Status: "complete",
+			Metadata: map[string]any{"quoted": map[string]any{
+				"role": "assistant", "content": "品牌红色必须保留，背景不要使用渐变。",
+			}},
+		},
+		{ID: run.AssistantMessageID, Role: "assistant", Status: "running"},
+	}
+
+	payload, stats := buildAssistantContext("system", history, run, nil, false)
+	joined := ""
+	for _, message := range payload {
+		joined += message.Content + "\n"
+	}
+	for _, expected := range []string{
+		"品牌参考.png", "品牌规范.pdf", "主图与细节图各一张", "保留品牌红色与极简排版",
+		"不代表已经执行", "品牌红色必须保留，背景不要使用渐变",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("structured context lost %q: %#v", expected, payload)
+		}
+	}
+	if !strings.Contains(payload[len(payload)-1].Content, "本轮引用了 assistant 消息") ||
+		stats.EstimatedTokens > stats.InputBudget {
+		t.Fatalf("current context or budget invalid: payload=%#v stats=%#v", payload, stats)
+	}
+}
+
+func TestAssistantRecentDocumentContextSupportsFollowUp(t *testing.T) {
+	firstID := uuid.NewString()
+	secondID := uuid.NewString()
+	history := []*store.AssistantMessage{
+		{ID: uuid.New(), Role: "user", Content: "旧附件", Status: "complete", Metadata: map[string]any{
+			"attachments": []any{map[string]any{"id": uuid.NewString(), "status": "ready"}},
+		}},
+		{ID: uuid.New(), Role: "assistant", Content: "已分析", Status: "complete"},
+		{ID: uuid.New(), Role: "user", Content: "分析这两份", Status: "complete", Metadata: map[string]any{
+			"attachments": []any{
+				map[string]any{"id": firstID, "status": "ready"},
+				map[string]any{"id": secondID, "status": "ready"},
+				map[string]any{"id": uuid.NewString(), "status": "failed"},
+			},
+		}},
+		{ID: uuid.New(), Role: "assistant", Content: "第一轮结论", Status: "complete"},
+	}
+	if !assistantPromptContinuesDocument("继续分析第二章，并引用原文") ||
+		!assistantPromptContinuesDocument("PDF 第 8 页讲了什么") ||
+		assistantPromptContinuesDocument("画一张新的产品海报") {
+		t.Fatal("document continuation classifier is incorrect")
+	}
+	ids := assistantRecentDocumentFileIDs(history, 8)
+	if len(ids) != 2 || ids[0] != firstID || ids[1] != secondID {
+		t.Fatalf("recent document ids = %#v", ids)
+	}
+	run := &store.AssistantRun{Prompt: "继续分析第二章，并引用原文", Params: map[string]any{}}
+	if !inheritAssistantDocumentContext(run, history) {
+		t.Fatal("expected historical document handles to be inherited")
+	}
+	inherited := assistantRunFileIDs(run)
+	if len(inherited) != 2 || inherited[0].String() != firstID || inherited[1].String() != secondID ||
+		run.Params["skill"] != assistanttools.SkillDocumentAnalysis {
+		t.Fatalf("inherited document context = %#v params=%#v", inherited, run.Params)
+	}
+	unrelated := &store.AssistantRun{Prompt: "解释对象存储", Params: map[string]any{}}
+	if inheritAssistantDocumentContext(unrelated, history) || len(assistantRunFileIDs(unrelated)) != 0 {
+		t.Fatalf("unrelated request inherited files: %#v", unrelated.Params)
 	}
 }
 

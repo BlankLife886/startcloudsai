@@ -3,7 +3,6 @@ import { fulfillJson } from './helpers/authMocks.js'
 
 const maskedStudios = [
   ['/ai-illustration-coloring', '插画染色'],
-  ['/model-sheet', '模型设计'],
   ['/game-art', '游戏设计'],
 ]
 

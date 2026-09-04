@@ -243,7 +243,7 @@ class _BackgroundRemoveScreenState extends ConsumerState<BackgroundRemoveScreen>
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
             color: Theme.of(context).colorScheme.surfaceContainerLow,
-            borderRadius: BorderRadius.circular(18),
+            borderRadius: BorderRadius.circular(8),
             border: Border.all(
               color: Theme.of(context).colorScheme.outlineVariant,
             ),
@@ -349,7 +349,7 @@ class _BackgroundRemoveScreenState extends ConsumerState<BackgroundRemoveScreen>
                     padding: const EdgeInsets.all(16),
                     decoration: BoxDecoration(
                       color: colors.primaryContainer.withValues(alpha: 0.45),
-                      borderRadius: BorderRadius.circular(18),
+                      borderRadius: BorderRadius.circular(8),
                       border: Border.all(color: colors.outlineVariant),
                     ),
                     child: Row(
@@ -439,7 +439,7 @@ class _BackgroundRemoveScreenState extends ConsumerState<BackgroundRemoveScreen>
                                 ),
                                 decoration: BoxDecoration(
                                   color: colors.secondaryContainer,
-                                  borderRadius: BorderRadius.circular(18),
+                                  borderRadius: BorderRadius.circular(8),
                                 ),
                                 child: Text(
                                   '${model.pricePoints} 积分',
@@ -618,7 +618,7 @@ class _ComparisonPanel extends StatelessWidget {
         AspectRatio(
           aspectRatio: 4 / 3,
           child: ClipRRect(
-            borderRadius: BorderRadius.circular(18),
+            borderRadius: BorderRadius.circular(8),
             child: DecoratedBox(
               decoration: BoxDecoration(
                 color: colors.surfaceContainerLow,
@@ -823,7 +823,7 @@ class _InlineError extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Material(
     color: Theme.of(context).colorScheme.errorContainer,
-    borderRadius: BorderRadius.circular(18),
+    borderRadius: BorderRadius.circular(8),
     child: ListTile(
       leading: const Icon(Icons.cloud_off_outlined),
       title: const Text('任务状态读取失败'),

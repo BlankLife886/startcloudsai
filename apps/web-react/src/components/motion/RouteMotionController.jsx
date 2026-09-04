@@ -116,7 +116,9 @@ export function useRouteMotion({ pathname, rootRef }) {
         observer?.disconnect();
         animation?.kill();
         const targets = routeChildren(root);
-        gsap.set(targets, { clearProps: "opacity,visibility,transform" });
+        if (targets.length) {
+          gsap.set(targets, { clearProps: "opacity,visibility,transform" });
+        }
         for (const target of targets) delete target.dataset.routeMotionTarget;
       };
     },

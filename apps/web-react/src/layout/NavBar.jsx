@@ -12,6 +12,7 @@ import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";
 import {
   getWallet,
+  getSubscription,
   listNotifications,
   markNotificationsRead,
 } from "@react/legacy-modules/services/meApi.js";
@@ -27,7 +28,7 @@ import { displayNotification, isAnnouncementNotification } from "../utils/notifi
 import { usePageControls } from "../page-control/PageControlContext.jsx";
 import "@react/legacy-styles/generated/components/layout/NavBar.css";
 import "@react/legacy-styles/generated/components/layout/NavNotificationsMenu.css";
-
+import "./NavBar.account-menu.css";
 gsap.registerPlugin(useGSAP);
 
 const imageLinks = [
@@ -122,12 +123,6 @@ const navItems = [
     icon: "bi-bounding-box-circles",
   },
   {
-    type: "link",
-    to: "/assets",
-    label: "我的资产",
-    icon: "bi-collection",
-  },
-  {
     type: "group",
     name: "ecommerce",
     label: "AI 电商",
@@ -173,6 +168,8 @@ const navItems = [
   },
 ];
 
+const accountMenuNavHrefs = new Set(["/pricing", "/incentive-plans"]);
+
 function routePath(to) {
   return String(to || "").split("?")[0];
 }
@@ -206,10 +203,14 @@ export function NavBar() {
     location.pathname === "/canvas" || location.pathname.startsWith("/canvas/");
   const rootRef = useRef(null);
   const notificationCloseTimerRef = useRef(0);
+  const accountCloseTimerRef = useRef(0);
+  const accountOpenRef = useRef(false);
+  const accountPinnedRef = useRef(false);
   const [activeDropdown, setActiveDropdown] = useState("");
   const [mobileOpen, setMobileOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   const [balance, setBalance] = useState(0);
+  const [subscription, setSubscription] = useState(null);
   const [notificationUnread, setNotificationUnread] = useState(0);
   const [notificationItems, setNotificationItems] = useState([]);
   const [notificationLoading, setNotificationLoading] = useState(false);
@@ -259,12 +260,13 @@ export function NavBar() {
     () =>
       resolvedNavItems.flatMap((item) => {
         if (item.type === "link") {
+          if (auth.isAuthenticated && accountMenuNavHrefs.has(item.to)) return [];
           return isEntryVisible(item.to) ? [item] : [];
         }
         const links = item.links.filter((link) => isEntryVisible(link.to));
         return links.length ? [{ ...item, links }] : [];
       }),
-    [isEntryVisible, resolvedNavItems],
+    [auth.isAuthenticated, isEntryVisible, resolvedNavItems],
   );
 
   const isActive = (to) => {
@@ -293,6 +295,16 @@ export function NavBar() {
     if (!item.mega) return item.label;
     return item.links.find((link) => isActive(link.to))?.label || item.label;
   };
+  const accountInitial = String(
+    auth.user?.username || auth.user?.email || "创",
+  )
+    .trim()
+    .slice(0, 1)
+    .toUpperCase();
+  const subscriptionLabel =
+    subscription?.active && String(subscription.planName || "").trim()
+      ? String(subscription.planName).trim()
+      : "未订阅";
 
   useLayoutEffect(() => {
     const publish = () => {
@@ -313,11 +325,17 @@ export function NavBar() {
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 10);
     const onPointerDown = (event) => {
-      if (!rootRef.current?.contains(event.target)) {
+      const target = event.target;
+      const root = rootRef.current;
+      if (!root?.contains(target)) {
         setActiveDropdown("");
         setMobileOpen(false);
         setNotificationOpen(false);
+        closeAccountMenu();
+        return;
       }
+      if (!target.closest(".account-menu")) closeAccountMenu();
+      if (!target.closest(".nav-notify")) setNotificationOpen(false);
     };
     onScroll();
     window.addEventListener("scroll", onScroll, { passive: true });
@@ -331,7 +349,7 @@ export function NavBar() {
   useEffect(() => {
     setActiveDropdown("");
     setMobileOpen(false);
-    setAccountOpen(false);
+    closeAccountMenu();
     setNotificationOpen(false);
   }, [location.pathname, location.search]);
 
@@ -474,6 +492,7 @@ export function NavBar() {
   useEffect(() => {
     if (!auth.isAuthenticated) {
       setBalance(0);
+      setSubscription(null);
       return undefined;
     }
     const controller = new AbortController();
@@ -498,6 +517,9 @@ export function NavBar() {
         ),
       )
       .catch(() => null);
+    getSubscription({ signal: controller.signal })
+      .then((next) => setSubscription(next && typeof next === "object" ? next : null))
+      .catch(() => setSubscription(null));
     return () => {
       controller.abort();
       window.removeEventListener("starclouds:wallet-updated", onWalletUpdated);
@@ -612,6 +634,7 @@ export function NavBar() {
     return () => {
       controller.abort();
       window.clearTimeout(notificationCloseTimerRef.current);
+      window.clearTimeout(accountCloseTimerRef.current);
       window.removeEventListener("starclouds:notifications-updated", onUpdated);
     };
   }, [auth.isAuthenticated]);
@@ -620,16 +643,51 @@ export function NavBar() {
     setActiveDropdown((current) => (current === name ? "" : name));
   }
 
+  function closeAccountMenu() {
+    accountPinnedRef.current = false;
+    accountOpenRef.current = false;
+    window.clearTimeout(accountCloseTimerRef.current);
+    setAccountOpen(false);
+  }
+
+  function showAccountMenu() {
+    window.clearTimeout(accountCloseTimerRef.current);
+    setNotificationOpen(false);
+    setActiveDropdown("");
+    accountOpenRef.current = true;
+    setAccountOpen(true);
+  }
+
+  function scheduleAccountClose() {
+    if (accountPinnedRef.current) return;
+    window.clearTimeout(accountCloseTimerRef.current);
+    accountCloseTimerRef.current = window.setTimeout(closeAccountMenu, 160);
+  }
+
+  function toggleAccountMenu(event) {
+    event.stopPropagation();
+    window.clearTimeout(accountCloseTimerRef.current);
+    setNotificationOpen(false);
+    setActiveDropdown("");
+    if (accountOpenRef.current && accountPinnedRef.current) {
+      closeAccountMenu();
+      return;
+    }
+    accountPinnedRef.current = true;
+    accountOpenRef.current = true;
+    setAccountOpen(true);
+  }
+
   function closeMenu() {
     setActiveDropdown("");
     setMobileOpen(false);
-    setAccountOpen(false);
+    closeAccountMenu();
     setNotificationOpen(false);
   }
 
   function showNotifications() {
     window.clearTimeout(notificationCloseTimerRef.current);
-    setAccountOpen(false);
+    closeAccountMenu();
     setNotificationOpen(true);
   }
 
@@ -665,7 +723,7 @@ export function NavBar() {
   }
 
   function requestLogout() {
-    setAccountOpen(false);
+    closeAccountMenu();
     setLogoutOpen(true);
   }
 
@@ -873,13 +931,7 @@ export function NavBar() {
                               <img src={link.cover} alt="" decoding="async" />
                             </span>
                             <span className="nav-bento-card__copy">
-                              <strong>
-                                <i
-                                  className={`bi ${link.icon}`}
-                                  aria-hidden="true"
-                                />
-                                {link.label}
-                              </strong>
+                              <strong>{link.label}</strong>
                             </span>
                           </Link>
                         ))}
@@ -914,7 +966,7 @@ export function NavBar() {
 
           <div className="header-tools">
             <div className="tool-actions">
-              {checkinVisible && (
+              {!auth.isAuthenticated && checkinVisible && (
                 <Link
                   to="/check-in"
                   className="nav-checkin-btn"
@@ -938,7 +990,7 @@ export function NavBar() {
                 </span>
                 <span className="nav-redeem-btn__label">兑换</span>
               </button>
-              {trialVisible && trialCampaign && (
+              {!auth.isAuthenticated && trialVisible && trialCampaign && (
                 <button
                   type="button"
                   className="nav-trial-btn"
@@ -972,7 +1024,7 @@ export function NavBar() {
                       aria-haspopup="dialog"
                       onClick={() => {
                         setNotificationOpen(false);
-                        setAccountOpen(false);
+                        closeAccountMenu();
                       }}
                     >
                       <i className="bi bi-bell" aria-hidden="true" />
@@ -1074,110 +1126,170 @@ export function NavBar() {
                       </aside>
                     )}
                   </div>
-                  <div className={`account-menu${accountOpen ? " open" : ""}`}>
+                  <div
+                    className={`account-menu${accountOpen ? " open" : ""}`}
+                    onMouseEnter={showAccountMenu}
+                    onMouseLeave={scheduleAccountClose}
+                    onFocusCapture={showAccountMenu}
+                    onBlurCapture={(event) => {
+                      if (!event.currentTarget.contains(event.relatedTarget))
+                        scheduleAccountClose();
+                    }}
+                  >
                     <button
                       type="button"
                       className={`account-cluster${accountOpen || isActive("/profile") ? " active" : ""}`}
+                      data-guide-dock
                       aria-expanded={accountOpen}
                       aria-haspopup="menu"
                       title="个人中心"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        setAccountOpen((open) => !open);
-                        setNotificationOpen(false);
-                        setActiveDropdown("");
-                      }}
+                      onClick={toggleAccountMenu}
                     >
-                      <span className="account-cluster__credits">
-                        <span
-                          className="account-cluster__icon"
-                          aria-hidden="true"
-                        >
-                          <svg viewBox="0 0 16 16" fill="currentColor">
-                            <path d="M9.15 1.08 3.42 8.55c-.22.29 0 .72.36.72h3.35l-1.2 5.55c-.12.54.53.9.84.46l5.73-7.47c.22-.29 0-.72-.36-.72H8.79l1.2-5.55c.12-.54-.53-.9-.84-.46Z" />
-                          </svg>
-                        </span>
-                        <span className="account-cluster__value">
-                          {Math.round(balance).toLocaleString("zh-CN")}
-                        </span>
-                      </span>
                       <span
-                        className="account-cluster__divider"
+                        className={`account-chip${auth.user?.avatarUrl ? "" : " is-initial"}`}
                         aria-hidden="true"
-                      />
-                      <span className="account-chip" aria-hidden="true">
-                        <img
-                          className="account-chip__avatar"
-                          src={
-                            auth.user?.avatarUrl ||
-                            "/brand/avatar-placeholder.svg"
-                          }
-                          alt=""
-                        />
+                      >
+                        {auth.user?.avatarUrl ? (
+                          <img
+                            className="account-chip__avatar"
+                            src={auth.user.avatarUrl}
+                            alt=""
+                          />
+                        ) : (
+                          <span className="account-chip__mark">{accountInitial}</span>
+                        )}
+                      </span>
+                      <span className="account-cluster__meta">
+                        <span className="account-cluster__credits">
+                          <span className="account-cluster__value">
+                            {Math.round(balance).toLocaleString("zh-CN")}
+                          </span>
+                        </span>
+                        <span
+                          className={`account-cluster__plan${subscription?.active ? " is-active" : ""}`}
+                        >
+                          {subscriptionLabel}
+                        </span>
                       </span>
                     </button>
                     {accountOpen && (
-                      <div
-                        className="account-menu__panel"
-                        role="menu"
-                        aria-label="个人中心菜单"
-                      >
-                        <div className="account-menu__head">
-                          <img
-                            className="account-menu__avatar"
-                            src={
-                              auth.user?.avatarUrl ||
-                              "/brand/avatar-placeholder.svg"
-                            }
-                            alt=""
-                          />
-                          <div className="account-menu__copy">
-                            <strong>
-                              {auth.user?.username ||
-                                auth.user?.email ||
-                                "创作者"}
-                            </strong>
-                            <small>
-                              {Math.round(balance).toLocaleString("zh-CN")} 积分
-                            </small>
+                      <>
+                        <span className="account-menu__bridge" aria-hidden="true" />
+                        <div
+                          className="account-menu__panel"
+                          role="menu"
+                          aria-label="个人中心菜单"
+                        >
+                          <Link
+                            className="account-menu__head"
+                            to="/profile"
+                            role="menuitem"
+                            onClick={closeMenu}
+                          >
+                            <span className="account-menu__avatar-wrap">
+                              <img
+                                className="account-menu__avatar"
+                                src={
+                                  auth.user?.avatarUrl ||
+                                  "/brand/avatar-placeholder.svg"
+                                }
+                                alt=""
+                              />
+                            </span>
+                            <div className="account-menu__copy">
+                              <strong>
+                                {auth.user?.username ||
+                                  auth.user?.email ||
+                                  "创作者"}
+                              </strong>
+                              <small className="account-menu__points">
+                                {Math.round(balance).toLocaleString("zh-CN")} 积分
+                              </small>
+                            </div>
+                            <i className="bi bi-chevron-right" aria-hidden="true" />
+                          </Link>
+                          <div className="account-menu__list">
+                            {[
+                              ["/assets", "bi-collection", "我的资产"],
+                              ["/submissions", "bi-send-check", "我的投稿"],
+                              ["/wallet", "bi-wallet2", "我的钱包"],
+                              ["/orders", "bi-receipt", "我的订单"],
+                              ["/account", "bi-person-gear", "账号设置"],
+                              ["/developer-api", "bi-code-square", "开发者 API"],
+                            ]
+                              .filter(([to]) => isEntryVisible(to))
+                              .map(([to, icon, label]) => (
+                                <Link
+                                  key={to}
+                                  className="account-menu__item"
+                                  role="menuitem"
+                                  to={to}
+                                  onClick={closeMenu}
+                                >
+                                  <i className={`bi ${icon}`} aria-hidden="true" />
+                                  <span>{label}</span>
+                                </Link>
+                              ))}
                           </div>
-                        </div>
-                        <div className="account-menu__list">
-                          {[
-                            ["/profile", "bi-person-circle", "个人中心"],
-                            ["/submissions", "bi-send-check", "我的投稿"],
-                            ["/wallet", "bi-wallet2", "我的钱包"],
-                            ["/orders", "bi-receipt", "我的订单"],
-                            ["/account", "bi-person-gear", "账号设置"],
-                            ["/developer-api", "bi-code-square", "开发者 API"],
-                          ]
-                            .filter(([to]) => isEntryVisible(to))
-                            .map(([to, icon, label]) => (
-                              <Link
-                                key={to}
-                                className="account-menu__item"
-                                role="menuitem"
-                                to={to}
-                                onClick={closeMenu}
-                              >
-                                <i className={`bi ${icon}`} aria-hidden="true" />
-                                <span>{label}</span>
-                              </Link>
-                            ))}
+                          {["/pricing", "/incentive-plans"].some((to) =>
+                            isEntryVisible(to),
+                          ) ? (
+                            <div className="account-menu__list is-secondary">
+                              {[
+                                ["/pricing", "bi-credit-card-2-front", "创作价格"],
+                                ["/incentive-plans", "bi-gift", "创作激励"],
+                              ]
+                                .filter(([to]) => isEntryVisible(to))
+                                .map(([to, icon, label]) => (
+                                  <Link
+                                    key={to}
+                                    className="account-menu__item"
+                                    role="menuitem"
+                                    to={to}
+                                    onClick={closeMenu}
+                                  >
+                                    <i className={`bi ${icon}`} aria-hidden="true" />
+                                    <span>{label}</span>
+                                  </Link>
+                                ))}
+                            </div>
+                          ) : null}
+                          {checkinVisible || (trialVisible && trialCampaign) ? (
+                            <div className="account-menu__modules">
+                              {checkinVisible ? (
+                                <Link
+                                  className="account-menu__module is-checkin"
+                                  role="menuitem"
+                                  to="/check-in"
+                                  onClick={openCheckin}
+                                >
+                                  <i className="bi bi-calendar-check" aria-hidden="true" />
+                                  <span>签到</span>
+                                </Link>
+                              ) : null}
+                              {trialVisible && trialCampaign ? (
+                                <button
+                                  type="button"
+                                  className="account-menu__module is-trial"
+                                  role="menuitem"
+                                  onClick={openTrialDialog}
+                                >
+                                  <i className="bi bi-stars" aria-hidden="true" />
+                                  <span>申请体验</span>
+                                </button>
+                              ) : null}
+                            </div>
+                          ) : null}
                           <button
                             type="button"
                             className="account-menu__item is-danger"
                             role="menuitem"
                             onClick={requestLogout}
                           >
-                            <i
-                              className="bi bi-box-arrow-right"
-                              aria-hidden="true"
-                            />
                             <span>退出登录</span>
                           </button>
                         </div>
-                      </div>
+                      </>
                     )}
                   </div>
                 </>
@@ -1185,6 +1297,7 @@ export function NavBar() {
                 <Link
                   to={`/auth?redirect=${encodeURIComponent(location.pathname + location.search)}&mode=login`}
                   className="account-login"
+                  data-guide-dock
                   onClick={closeMenu}
                 >
                   <i className="bi bi-box-arrow-in-right" aria-hidden="true" />

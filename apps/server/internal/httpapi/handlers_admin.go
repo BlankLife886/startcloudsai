@@ -115,7 +115,7 @@ func (s *Server) adminStats(c *gin.Context, _ *store.User) {
 		return
 	}
 	quality.OpenAPI.Enabled = pageControls["developer_api"].Status == settings.PageStatusNormal
-	balanceTotal, err := store.SumWalletBalance(ctx, s.St.Pool)
+	creditTotals, err := store.GetPlatformCreditTotals(ctx, s.St.Pool)
 	if err != nil {
 		fail(c, err)
 		return
@@ -131,8 +131,13 @@ func (s *Server) adminStats(c *gin.Context, _ *store.User) {
 		return
 	}
 	typeDistribution := gin.H{}
-	for _, t := range store.TaskTypes {
+	for _, t := range store.PromptTaskTypes {
 		typeDistribution[t] = byType[t]
+	}
+	for taskType, count := range byType {
+		if _, exists := typeDistribution[taskType]; !exists {
+			typeDistribution[taskType] = count
+		}
 	}
 	ok(c, gin.H{
 		"totalUsers":           totalUsers,
@@ -145,7 +150,8 @@ func (s *Server) adminStats(c *gin.Context, _ *store.User) {
 		"usageMetrics":         usageMetrics,
 		"profitability":        profitability,
 		"quality":              quality,
-		"walletBalanceCents":   balanceTotal,
+		"walletBalanceCents":   creditTotals.RemainingCents,
+		"creditTotals":         creditTotals,
 		"typeDistribution":     typeDistribution,
 		"operationalIncidents": incidents,
 	})
@@ -179,8 +185,24 @@ func (s *Server) adminListUsers(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
+	pageNum, err := pageNumber(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	ctx := c.Request.Context()
-	rows, err := store.ListUsers(ctx, s.St.Pool, strings.TrimSpace(c.Query("search")), status, lifecycle, risk, profileTag, limit, cursor)
+	search := strings.TrimSpace(c.Query("search"))
+	total, err := store.CountUsersFiltered(ctx, s.St.Pool, search, status, lifecycle, risk, profileTag)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	var rows []*store.User
+	if pageNum > 0 {
+		rows, err = store.ListUsersOffset(ctx, s.St.Pool, search, status, lifecycle, risk, profileTag, limit, (pageNum-1)*limit)
+	} else {
+		rows, err = store.ListUsers(ctx, s.St.Pool, search, status, lifecycle, risk, profileTag, limit, cursor)
+	}
 	if err != nil {
 		fail(c, err)
 		return
@@ -226,7 +248,18 @@ func (s *Server) adminListUsers(c *gin.Context, _ *store.User) {
 			return
 		}
 	}
-	ok(c, buildPage(rows, limit, func(u *store.User) gin.H {
+	now := time.Now().UTC()
+	subscribed, err := store.ActiveSubscriptionFlagsByUserIDs(ctx, s.St.Pool, ids, now)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	lastIPs, err := store.LastSessionIPsByUserIDs(ctx, s.St.Pool, ids)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	serialize := func(u *store.User) gin.H {
 		d := adminUserDict(u, wallets[u.ID])
 		summary := usage[u.ID]
 		d["usage"] = gin.H{
@@ -240,8 +273,25 @@ func (s *Server) adminListUsers(c *gin.Context, _ *store.User) {
 			"orders":         summary.Orders,
 		}
 		d["profile"] = profiles[u.ID]
+		d["subscription"] = gin.H{"active": subscribed[u.ID]}
+		if ip := lastIPs[u.ID]; ip != "" {
+			d["lastSessionIp"] = ip
+		} else {
+			d["lastSessionIp"] = nil
+		}
 		return d
-	}))
+	}
+	if pageNum > 0 {
+		items := make([]gin.H, 0, len(rows))
+		for _, u := range rows {
+			items = append(items, serialize(u))
+		}
+		ok(c, gin.H{"items": items, "nextCursor": nil, "total": total})
+		return
+	}
+	page := buildPage(rows, limit, serialize)
+	page["total"] = total
+	ok(c, page)
 }
 
 type adminUserPatchIn struct {

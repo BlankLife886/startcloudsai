@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { App, Button } from "antd";
 import { gsap } from "gsap";
 import { useGSAP } from "@gsap/react";
-import { ArrowRight, Download, FileUp, LayoutTemplate, Plus, Search, Trash2, X } from "lucide-react";
-import { Trans, useTranslation } from "react-i18next";
+import { FileUp, LayoutTemplate, Plus, Search, Trash2, X } from "lucide-react";
+import { DownloadIcon } from "@react/components/common/DownloadIcon.jsx";
+import { useTranslation } from "react-i18next";
 
 import { readZip } from "@/lib/zip";
 import { setMediaBlob } from "@/services/file-storage";
@@ -22,27 +23,6 @@ gsap.registerPlugin(useGSAP);
 
 function canvasMotionDisabled() {
     return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches || document.documentElement.classList.contains("settings-no-animations");
-}
-
-function Highlighter({ action, color, children }: { action: "highlight" | "underline"; color: string; children?: ReactNode }) {
-    return (
-        <span className="relative inline-block px-1">
-            {action === "highlight" ? (
-                <span className="absolute inset-x-0 bottom-0 top-1 rounded-sm opacity-45" style={{ backgroundColor: color }} />
-            ) : (
-                <span className="absolute inset-x-0 bottom-0 h-1 rounded-full opacity-80" style={{ backgroundColor: color }} />
-            )}
-            <span className="relative font-medium text-stone-800 dark:text-zinc-100">{children}</span>
-        </span>
-    );
-}
-
-function CanvasHeroStage() {
-    return (
-        <div className="canvas-hero-stage" data-canvas-hero-stage aria-hidden="true">
-            <img src="/sucai/canvas-hero.webp" alt="" width="1530" height="1028" />
-        </div>
-    );
 }
 
 export default function CanvasPage() {
@@ -90,39 +70,17 @@ export default function CanvasPage() {
             const finish = (contextSafe || ((callback) => callback))(() => setEntryState("entered"));
             gsap.fromTo(
                 targets,
-                { autoAlpha: 0, y: 18 },
+                { autoAlpha: 0, y: 10 },
                 {
                     autoAlpha: 1,
                     y: 0,
-                    duration: 0.56,
-                    stagger: 0.08,
-                    ease: "power3.out",
+                    duration: 0.32,
+                    stagger: 0.05,
+                    ease: "power2.out",
                     clearProps: "opacity,visibility,transform",
                     onComplete: finish,
                 },
             );
-            const stage = root.querySelector("[data-canvas-hero-stage]");
-            if (stage) {
-                gsap.fromTo(stage, { autoAlpha: 0, x: 24, scale: 0.98 }, { autoAlpha: 1, x: 0, scale: 1, duration: 0.7, delay: 0.12, ease: "power3.out" });
-            }
-            const orbs = gsap.utils.toArray<HTMLElement>("[data-canvas-orb]", root);
-            const moveOrb = orbs.map((orb, index) => ({
-                x: gsap.quickTo(orb, "x", { duration: 0.9 + index * 0.12, ease: "power3" }),
-                y: gsap.quickTo(orb, "y", { duration: 0.9 + index * 0.12, ease: "power3" }),
-            }));
-            const onMove = (contextSafe || ((callback) => callback))((event: MouseEvent) => {
-                const rect = root.getBoundingClientRect();
-                const nx = (event.clientX - rect.left) / rect.width - 0.5;
-                const ny = (event.clientY - rect.top) / rect.height - 0.5;
-                moveOrb.forEach((orb, index) => {
-                    const strength = 18 + index * 10;
-                    orb.x(nx * strength);
-                    orb.y(ny * strength);
-                });
-                if (stage) gsap.to(stage, { x: nx * 10, y: ny * 8, duration: 0.8, ease: "power3", overwrite: "auto" });
-            });
-            root.addEventListener("mousemove", onMove);
-            return () => root.removeEventListener("mousemove", onMove);
         },
         { scope: pageRef },
     );
@@ -231,40 +189,29 @@ export default function CanvasPage() {
             data-canvas-home-motion-state={entryState}
             data-canvas-card-motion-state={cardEntryState}
         >
-            <div className="pointer-events-none absolute inset-0 z-[1] overflow-hidden">
-                <div data-canvas-orb className="canvas-home-orb left-[8%] top-[12%] size-52 bg-violet-400/25" />
-                <div data-canvas-orb className="canvas-home-orb right-[10%] top-[8%] size-40 bg-sky-300/20" />
-                <div data-canvas-orb className="canvas-home-orb bottom-[18%] right-[22%] size-48 bg-orange-300/16" />
-            </div>
-            <div className="canvas-home-pattern__inner relative z-[2] mx-auto flex w-full max-w-[1560px] flex-col px-7 pb-14">
-                <section className="canvas-hero">
-                    <div className="canvas-hero__copy">
-                        <h1 data-canvas-entry-item className="ai-title-aurora max-w-4xl text-balance text-5xl font-semibold tracking-normal lg:text-7xl">{t("canvas.title")}</h1>
-                        <p data-canvas-entry-item className="mt-7 max-w-2xl text-balance text-lg leading-8 text-stone-500 dark:text-stone-400">
-                            <Trans
-                                i18nKey="home.description"
-                                components={{
-                                    canvas: <Highlighter action="underline" color="#FF9800" />,
-                                    content: <Highlighter action="highlight" color="#87CEFA" />,
-                                }}
-                            />
-                        </p>
-                        <div data-canvas-entry-item className="mt-9 flex flex-wrap items-center gap-3">
-                            <Button className="canvas-hero__cta" type="primary" size="large" disabled={!hydrated} onClick={createAndEnter} icon={<ArrowRight className="size-4" />} iconPlacement="end">
-                                {t("home.start")}
-                            </Button>
-                            <Button size="large" disabled={!hydrated} onClick={() => setTemplateLibraryOpen(true)} icon={<LayoutTemplate className="size-4" />}>
-                                {t("canvas.workflowTemplates")}
-                            </Button>
-                        </div>
+            <div className="canvas-home-pattern__inner relative z-[2] mx-auto flex h-full w-full max-w-[1560px] flex-col px-7">
+                <header data-canvas-entry-item className="canvas-home-toolbar">
+                    <div className="canvas-home-toolbar__copy">
+                        <h1>{t("canvas.title")}</h1>
+                        <p>{t("canvas.createDescription")}</p>
                     </div>
-                    <CanvasHeroStage />
-                </section>
+                    <div className="canvas-home-toolbar__actions">
+                        <Button className="canvas-home-cta" type="primary" disabled={!hydrated} onClick={createAndEnter} icon={<Plus className="size-4" />}>
+                            {t("canvas.create")}
+                        </Button>
+                        <Button disabled={!hydrated} onClick={() => setTemplateLibraryOpen(true)} icon={<LayoutTemplate className="size-4" />}>
+                            {t("canvas.templateLibrary")}
+                        </Button>
+                        <Button disabled={!hydrated} onClick={() => (isAuthenticated ? inputRef.current?.click() : requestAuth())} icon={<FileUp className="size-4" />}>
+                            {t("canvas.import")}
+                        </Button>
+                    </div>
+                </header>
 
-                <section data-canvas-entry-item className="mt-8">
-                    <div className="canvas-recent-bar">
+                <section data-canvas-entry-item className="canvas-home-library">
+                    {hydrated && !visibleProjects.length && !projectQuery.trim() ? null : <div className="canvas-recent-bar">
                         <div className="flex shrink-0 items-baseline gap-3">
-                            <h2 className="text-[22px] font-semibold tracking-tight">{t("canvas.recent")}</h2>
+                            <h2 className="text-[15px] font-semibold tracking-tight">{t("canvas.recent")}</h2>
                             <span className="inline-flex h-6 min-w-6 items-center justify-center rounded-full bg-violet-500/10 px-2 text-xs font-medium tabular-nums text-violet-700 dark:bg-violet-400/10 dark:text-violet-300">
                                 {projectQuery.trim() ? filteredProjects.length : visibleProjects.length}
                             </span>
@@ -304,7 +251,7 @@ export default function CanvasPage() {
                                         }
                                     >
                                         <span className="canvas-home-btn__icon">
-                                            <Download className="size-3.5" />
+                                            <DownloadIcon className="size-3.5" />
                                         </span>
                                         {t("canvas.exportSelected")}
                                     </button>
@@ -312,32 +259,26 @@ export default function CanvasPage() {
                                         <Trash2 className="size-3.5" />
                                     </button>
                                 </>
-                            ) : (
-                                <>
-                                    <button type="button" className="canvas-home-btn" disabled={!hydrated} onClick={() => setTemplateLibraryOpen(true)}>
-                                        <span className="canvas-home-btn__icon"><LayoutTemplate className="size-3.5" /></span>
-                                        {t("canvas.templateLibrary")}
-                                    </button>
-                                    <button type="button" className="canvas-home-btn" disabled={!hydrated} onClick={() => (isAuthenticated ? inputRef.current?.click() : requestAuth())}>
-                                        <span className="canvas-home-btn__icon">
-                                            <FileUp className="size-3.5" />
-                                        </span>
-                                        {t("canvas.import")}
-                                    </button>
-                                    {visibleProjects.length ? (
-                                        <button type="button" className="canvas-home-btn is-danger" disabled={!hydrated} onClick={() => setDeleteIds(visibleProjects.map((project) => project.id))} aria-label={t("canvas.deleteAll")} title={t("canvas.deleteAll")}>
-                                            <Trash2 className="size-3.5" />
-                                        </button>
-                                    ) : null}
-                                </>
-                            )}
+                            ) : visibleProjects.length ? (
+                                <button type="button" className="canvas-home-btn is-danger" disabled={!hydrated} onClick={() => setDeleteIds(visibleProjects.map((project) => project.id))} aria-label={t("canvas.deleteAll")} title={t("canvas.deleteAll")}>
+                                    <Trash2 className="size-3.5" />
+                                </button>
+                            ) : null}
                         </div>
-                    </div>
+                    </div>}
 
                     {!hydrated ? (
                         <div className="mt-5 flex min-h-52 items-center justify-center rounded-[18px] border border-dashed border-stone-200 bg-white/70 text-sm text-stone-500 dark:border-white/10 dark:bg-white/[0.03]">{t("canvas.loading")}</div>
                     ) : projectQuery.trim() && !filteredProjects.length ? (
                         <div className="mt-5 flex min-h-40 items-center justify-center rounded-[18px] border border-dashed border-stone-200 bg-white/70 text-sm text-stone-500 dark:border-white/10 dark:bg-white/[0.03]">{t("canvas.noMatchingProjects")}</div>
+                    ) : !filteredProjects.length ? (
+                        <button type="button" className="canvas-home-start" onClick={createAndEnter}>
+                            <span className="canvas-project-tile__plus">
+                                <Plus className="size-5" />
+                            </span>
+                            <strong>{t("canvas.create")}</strong>
+                            <span>{t("canvas.createDescription")}</span>
+                        </button>
                     ) : (
                         <div className="canvas-project-grid mt-4 grid grid-cols-6 gap-3">
                             {projectQuery.trim() ? null : (

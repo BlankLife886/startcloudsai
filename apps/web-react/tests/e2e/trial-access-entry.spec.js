@@ -116,7 +116,8 @@ test('authenticated user can submit an application from the restored entry', asy
   })
 
   await page.goto('/')
-  await page.getByRole('button', { name: '申请体验' }).click()
+  await page.getByTitle('个人中心').click()
+  await page.getByRole('menuitem', { name: '申请体验' }).click()
   await page.getByRole('button', { name: 'UI 设计师' }).click()
   await page.getByPlaceholder('请说明你想创作什么，以及准备如何使用平台…').fill('希望测试真实文生图工作流并完成商业设计素材。')
   await page.getByRole('button', { name: /提交申请/ }).click()

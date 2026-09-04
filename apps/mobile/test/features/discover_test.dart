@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:ui' show Tristate;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/services.dart';
@@ -101,6 +104,8 @@ Widget _app({
   bool emptyGallery = false,
   bool communityOnly = false,
   bool promptLibraryOnly = false,
+  bool initialFavoritesOnly = false,
+  HomeDiscoverTab initialTab = HomeDiscoverTab.home,
   Brightness brightness = Brightness.light,
   EdgeInsets padding = EdgeInsets.zero,
   List<PromptPageRequest>? promptPageRequests,
@@ -111,6 +116,8 @@ Widget _app({
     searchDebounce: const Duration(milliseconds: 100),
     communityOnly: communityOnly,
     promptLibraryOnly: promptLibraryOnly,
+    initialFavoritesOnly: initialFavoritesOnly,
+    initialTab: initialTab,
   );
   return ProviderScope(
     overrides: [
@@ -254,6 +261,30 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('home tabs expose button and selected semantics', (tester) async {
+    await tester.pumpWidget(_app(promptRequests: [], galleryRequests: []));
+    await tester.pumpAndSettle();
+
+    final homeSemantics = tester
+        .getSemantics(find.byKey(const Key('home-tab-home')))
+        .getSemanticsData();
+    final promptSemantics = tester
+        .getSemantics(find.byKey(const Key('home-tab-prompts')))
+        .getSemanticsData();
+    expect(homeSemantics.flagsCollection.isButton, isTrue);
+    expect(homeSemantics.flagsCollection.isSelected, Tristate.isTrue);
+    expect(promptSemantics.flagsCollection.isButton, isTrue);
+    expect(promptSemantics.flagsCollection.isSelected, Tristate.isFalse);
+
+    await tester.tap(find.byKey(const Key('home-tab-prompts')));
+    await tester.pumpAndSettle();
+    final selectedPromptSemantics = tester
+        .getSemantics(find.byKey(const Key('home-tab-prompts')))
+        .getSemanticsData();
+    expect(selectedPromptSemantics.flagsCollection.isSelected, Tristate.isTrue);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('home primary actions expose creation and assistant workflows', (
     tester,
   ) async {
@@ -295,7 +326,7 @@ void main() {
           .first,
     );
     final createShape = createMaterial.shape! as RoundedRectangleBorder;
-    expect(createShape.borderRadius, BorderRadius.circular(22));
+    expect(createShape.borderRadius, BorderRadius.circular(8));
     expect(createMaterial.color, const Color(0xFFDCE3FF));
     final visualBounds = tester.getRect(
       find.byKey(const Key('home-creation-visual')),
@@ -580,6 +611,33 @@ void main() {
     expect(find.text('点赞 2'), findsOneWidget);
     expect(find.text('收藏 4'), findsOneWidget);
     expect(find.text('使用 9'), findsOneWidget);
+  });
+
+  testWidgets('favorite deep link opens prompts with collection selected', (
+    tester,
+  ) async {
+    final promptRequests = <PromptQuery>[];
+    await tester.pumpWidget(
+      _app(
+        promptRequests: promptRequests,
+        galleryRequests: [],
+        authenticated: true,
+        initialTab: HomeDiscoverTab.prompts,
+        initialFavoritesOnly: true,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(promptRequests.last.favoritesOnly, isTrue);
+    final favorites = tester.widget<FilterChip>(
+      find.descendant(
+        of: find.byKey(const Key('prompt-favorites-filter')),
+        matching: find.byType(FilterChip),
+      ),
+    );
+    expect(favorites.selected, isTrue);
+    expect(find.text('默认灵感'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('prompt favorites and category filters are exclusive', (
@@ -942,6 +1000,208 @@ void main() {
     await tester.ensureVisible(find.text('长标签布局测试'));
     await tester.pumpAndSettle();
     expect(find.text(item.authorName), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('gallery safety actions require login and hide on own work', (
+    tester,
+  ) async {
+    final item = _galleryPage(const GalleryQuery()).items.single;
+    var loginRequested = false;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: GalleryDetailSheet(
+            item: item,
+            imageUrls: const [''],
+            onLogin: () => loginRequested = true,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.byTooltip('社区安全操作'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('社区安全操作'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('举报作品'));
+    await tester.pumpAndSettle();
+    expect(loginRequested, isTrue);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: GalleryDetailSheet(
+            item: item,
+            imageUrls: const [''],
+            authenticated: true,
+            currentUserId: item.authorId,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('gallery-safety-menu')), findsNothing);
+  });
+
+  testWidgets('gallery sharing uses a public deep link and locks duplicates', (
+    tester,
+  ) async {
+    final item = _galleryPage(const GalleryQuery()).items.single;
+    final gate = Completer<void>();
+    var calls = 0;
+    String? sharedText;
+    Rect? sharedOrigin;
+    await tester.pumpWidget(
+      MaterialApp(
+        builder: (context, child) => AppNoticeHost(child: child!),
+        home: Scaffold(
+          body: GalleryDetailSheet(
+            item: item,
+            imageUrls: const [''],
+            share: (text, origin) async {
+              calls += 1;
+              sharedText = text;
+              sharedOrigin = origin;
+              await gate.future;
+            },
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byTooltip('分享作品'));
+    await tester.pumpAndSettle();
+
+    final button = tester.widget<IconButton>(
+      find.byKey(const Key('gallery-share')),
+    );
+    button.onPressed?.call();
+    button.onPressed?.call();
+    await tester.pump();
+
+    expect(calls, 1);
+    expect(sharedText, galleryShareText(item));
+    expect(
+      sharedText,
+      contains('https://starcloudisai.com/share?item=${item.id}'),
+    );
+    expect(sharedOrigin, isNotNull);
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+
+    gate.complete();
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('分享作品'), findsOneWidget);
+  });
+
+  testWidgets('gallery share failure uses the centered notice', (tester) async {
+    final item = _galleryPage(const GalleryQuery()).items.single;
+    await tester.pumpWidget(
+      MaterialApp(
+        builder: (context, child) => AppNoticeHost(child: child!),
+        home: Scaffold(
+          body: GalleryDetailSheet(
+            item: item,
+            imageUrls: const [''],
+            share: (text, origin) async => throw StateError('unavailable'),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byTooltip('分享作品'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('分享作品'));
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.text('分享失败，请稍后重试'), findsOneWidget);
+    expect(find.byKey(const Key('app-notice-card')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('gallery report validates details and block confirms', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(320, 760));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final item = _galleryPage(const GalleryQuery()).items.single;
+    GalleryReportReason? submittedReason;
+    String? submittedDetail;
+    var blockCalls = 0;
+    var blocked = false;
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: StarCloudsTheme.dark(),
+        builder: (context, child) => AppNoticeHost(
+          child: MediaQuery(
+            data: MediaQuery.of(
+              context,
+            ).copyWith(textScaler: const TextScaler.linear(1.25)),
+            child: child!,
+          ),
+        ),
+        home: Scaffold(
+          body: GalleryDetailSheet(
+            item: item,
+            imageUrls: const [''],
+            authenticated: true,
+            currentUserId: 'viewer-1',
+            onReport: (reason, detail) async {
+              submittedReason = reason;
+              submittedDetail = detail;
+            },
+            onBlock: () async => blockCalls += 1,
+            onBlocked: () => blocked = true,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('社区安全操作'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('举报作品'));
+    await tester.pumpAndSettle();
+    expect(find.byType(GalleryReportDialog), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('gallery-report-reason')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('其他问题').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('gallery-report-submit')));
+    await tester.pump();
+    expect(find.text('请补充说明具体问题'), findsOneWidget);
+    expect(submittedReason, isNull);
+
+    await tester.enterText(
+      find.byKey(const Key('gallery-report-detail')),
+      '这个作品存在需要人工判断的问题',
+    );
+    await tester.tap(find.byKey(const Key('gallery-report-submit')));
+    await tester.pumpAndSettle();
+    expect(submittedReason, GalleryReportReason.other);
+    expect(submittedDetail, '这个作品存在需要人工判断的问题');
+    expect(find.byType(GalleryReportDialog), findsNothing);
+
+    await tester.tap(find.byTooltip('社区安全操作'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('屏蔽此作者'));
+    await tester.pumpAndSettle();
+    expect(find.text('屏蔽 星空用户？'), findsOneWidget);
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+    expect(blockCalls, 0);
+
+    await tester.tap(find.byTooltip('社区安全操作'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('屏蔽此作者'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('确认屏蔽'));
+    await tester.pumpAndSettle();
+    expect(blockCalls, 1);
+    expect(blocked, isTrue);
     expect(tester.takeException(), isNull);
   });
 

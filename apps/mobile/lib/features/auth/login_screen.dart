@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/config/app_environment.dart';
@@ -26,11 +27,14 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
   final _formKey = GlobalKey<FormState>();
   final _emailController = TextEditingController();
   final _codeController = TextEditingController();
+  final _emailFocusNode = FocusNode();
+  final _codeFocusNode = FocusNode();
   Timer? _timer;
   DateTime? _resendDeadline;
   int _resendSeconds = 0;
   bool _sendingCode = false;
   bool _signingIn = false;
+  bool _acceptedLegal = false;
   String? _developmentCode;
 
   DateTime get _now => (widget.now ?? DateTime.now)();
@@ -45,6 +49,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _timer?.cancel();
+    _emailFocusNode.dispose();
+    _codeFocusNode.dispose();
     _emailController.dispose();
     _codeController.dispose();
     super.dispose();
@@ -103,6 +109,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
   }
 
   Future<void> _requestCode() async {
+    if (_sendingCode || _signingIn) return;
     if (!_ensureEmailLoginAvailable()) return;
     if (_resendSeconds > 0 ||
         validateLoginEmail(_emailController.text, _providers!) != null) {
@@ -113,7 +120,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
     try {
       final delivery = await ref
           .read(sessionControllerProvider.notifier)
-          .requestCode(_emailController.text);
+          .requestCode(_emailController.text.trim());
       if (!mounted) return;
       setState(() {
         _developmentCode = delivery.developmentCode;
@@ -122,6 +129,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
         }
       });
       _startResendCountdown(delivery.resendAfter);
+      if (delivery.developmentCode == null) _codeFocusNode.requestFocus();
     } catch (error) {
       _showError(error);
     } finally {
@@ -130,14 +138,26 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
   }
 
   Future<void> _submit() async {
+    if (_signingIn || _sendingCode) return;
     if (!_ensureEmailLoginAvailable()) return;
     if (!_formKey.currentState!.validate()) return;
+    if (!_acceptedLegal) {
+      AppNotice.warning(context, '请先阅读并同意用户协议和隐私政策');
+      return;
+    }
+    FocusScope.of(context).unfocus();
     setState(() => _signingIn = true);
     try {
       await ref
           .read(sessionControllerProvider.notifier)
-          .signIn(_emailController.text, _codeController.text);
-      if (mounted) context.pop(true);
+          .signIn(_emailController.text.trim(), _codeController.text.trim());
+      if (!mounted) return;
+      TextInput.finishAutofillContext(shouldSave: true);
+      if (context.canPop()) {
+        context.pop(true);
+      } else {
+        context.go('/discover');
+      }
     } catch (error) {
       _showError(error);
     } finally {
@@ -163,156 +183,258 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
             padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 440),
-              child: Form(
-                key: _formKey,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    const AppAppear(
-                      child: Align(
-                        alignment: Alignment.centerLeft,
-                        child: _BrandMark(),
-                      ),
-                    ),
-                    const SizedBox(height: 20),
-                    if (isDevelopment) ...[
-                      _DevelopmentEnvironmentNotice(environment: environment),
-                      const SizedBox(height: 18),
-                    ],
-                    Text(
-                      isDevelopment ? '本地账号登录' : '登录星空云绘',
-                      style: Theme.of(context).textTheme.headlineSmall
-                          ?.copyWith(
-                            fontWeight: FontWeight.w900,
-                            letterSpacing: -0.6,
-                          ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      '验证码将在 3 分钟内有效',
-                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    _AuthProviderStatus(
-                      providers: providers,
-                      onRetry: () => ref.invalidate(authProvidersProvider),
-                    ),
-                    const SizedBox(height: 20),
-                    TextFormField(
-                      controller: _emailController,
-                      keyboardType: TextInputType.emailAddress,
-                      autofillHints: const [AutofillHints.email],
-                      textInputAction: TextInputAction.next,
-                      validator: (value) => emailProviders == null
-                          ? null
-                          : validateLoginEmail(value, emailProviders),
-                      decoration: const InputDecoration(
-                        labelText: '邮箱',
-                        prefixIcon: Icon(Icons.alternate_email),
-                      ),
-                    ),
-                    const SizedBox(height: 14),
-                    LayoutBuilder(
-                      builder: (context, constraints) {
-                        final textScale = MediaQuery.textScalerOf(
-                          context,
-                        ).scale(1);
-                        final compact =
-                            constraints.maxWidth < 360 || textScale > 1.3;
-                        final codeField = TextFormField(
-                          controller: _codeController,
-                          keyboardType: TextInputType.number,
-                          autofillHints: const [AutofillHints.oneTimeCode],
-                          maxLength: 6,
-                          textInputAction: TextInputAction.done,
-                          onFieldSubmitted: (_) => _submit(),
-                          validator: (value) =>
-                              RegExp(r'^\d{6}$').hasMatch(value?.trim() ?? '')
-                              ? null
-                              : '请输入六位验证码',
-                          decoration: const InputDecoration(
-                            labelText: '验证码',
-                            counterText: '',
-                            prefixIcon: Icon(Icons.password),
-                          ),
-                        );
-                        final sendButton = OutlinedButton.icon(
-                          key: const Key('send-login-code'),
-                          onPressed:
-                              _sendingCode ||
-                                  _resendSeconds > 0 ||
-                                  !canUseEmailCode
-                              ? null
-                              : _requestCode,
-                          icon: _sendingCode
-                              ? const SizedBox.square(
-                                  dimension: 16,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                )
-                              : const Icon(Icons.send_outlined, size: 18),
-                          label: Text(
-                            _sendingCode
-                                ? '发送中'
-                                : _resendSeconds > 0
-                                ? '${_resendSeconds}s 后重试'
-                                : '获取验证码',
-                          ),
-                        );
-                        if (compact) {
-                          return Column(
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            children: [
-                              codeField,
-                              const SizedBox(height: 10),
-                              sendButton,
-                            ],
-                          );
-                        }
-                        return Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Expanded(child: codeField),
-                            const SizedBox(width: 10),
-                            SizedBox(width: 126, child: sendButton),
-                          ],
-                        );
-                      },
-                    ),
-                    if (_developmentCode != null) ...[
-                      const SizedBox(height: 10),
-                      Text(
-                        '开发环境验证码已自动填入',
-                        style: TextStyle(
-                          color: Theme.of(context).colorScheme.tertiary,
+              child: AutofillGroup(
+                child: Form(
+                  key: _formKey,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const AppAppear(
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: _BrandMark(),
                         ),
                       ),
-                    ],
-                    const SizedBox(height: 22),
-                    FilledButton(
-                      onPressed: _signingIn || !canUseEmailCode
-                          ? null
-                          : _submit,
-                      style: FilledButton.styleFrom(
-                        minimumSize: const Size.fromHeight(52),
+                      const SizedBox(height: 20),
+                      if (isDevelopment) ...[
+                        _DevelopmentEnvironmentNotice(environment: environment),
+                        const SizedBox(height: 18),
+                      ],
+                      Text(
+                        isDevelopment ? '本地账号登录' : '登录星空云绘',
+                        style: Theme.of(context).textTheme.headlineSmall
+                            ?.copyWith(fontWeight: FontWeight.w900),
                       ),
-                      child: _signingIn
-                          ? const SizedBox.square(
-                              dimension: 20,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Text('登录'),
-                    ),
-                  ],
+                      const SizedBox(height: 8),
+                      Text(
+                        '验证码将在 3 分钟内有效',
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      _AuthProviderStatus(
+                        providers: providers,
+                        onRetry: () => ref.invalidate(authProvidersProvider),
+                      ),
+                      const SizedBox(height: 20),
+                      TextFormField(
+                        key: const Key('login-email-field'),
+                        controller: _emailController,
+                        focusNode: _emailFocusNode,
+                        keyboardType: TextInputType.emailAddress,
+                        autofillHints: const [AutofillHints.email],
+                        autocorrect: false,
+                        enableSuggestions: false,
+                        textInputAction: TextInputAction.next,
+                        onFieldSubmitted: (_) => _codeFocusNode.requestFocus(),
+                        validator: (value) => emailProviders == null
+                            ? null
+                            : validateLoginEmail(value, emailProviders),
+                        decoration: const InputDecoration(
+                          labelText: '邮箱',
+                          prefixIcon: Icon(Icons.alternate_email),
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      LayoutBuilder(
+                        builder: (context, constraints) {
+                          final textScale = MediaQuery.textScalerOf(
+                            context,
+                          ).scale(1);
+                          final compact =
+                              constraints.maxWidth < 360 || textScale > 1.3;
+                          final codeField = TextFormField(
+                            key: const Key('login-code-field'),
+                            controller: _codeController,
+                            focusNode: _codeFocusNode,
+                            keyboardType: TextInputType.number,
+                            autofillHints: const [AutofillHints.oneTimeCode],
+                            inputFormatters: [
+                              FilteringTextInputFormatter.digitsOnly,
+                              LengthLimitingTextInputFormatter(6),
+                            ],
+                            maxLength: 6,
+                            textInputAction: TextInputAction.done,
+                            onChanged: (_) => setState(() {}),
+                            onFieldSubmitted: (_) => _submit(),
+                            validator: (value) =>
+                                RegExp(r'^\d{6}$').hasMatch(value?.trim() ?? '')
+                                ? null
+                                : '请输入六位验证码',
+                            decoration: InputDecoration(
+                              labelText: '验证码',
+                              counterText: '',
+                              prefixIcon: const Icon(Icons.password),
+                              suffixIcon: AnimatedSwitcher(
+                                duration: const Duration(milliseconds: 160),
+                                child: _codeController.text.length == 6
+                                    ? Icon(
+                                        Icons.check_circle,
+                                        key: const Key('login-code-complete'),
+                                        color: Theme.of(
+                                          context,
+                                        ).colorScheme.primary,
+                                      )
+                                    : const SizedBox.shrink(),
+                              ),
+                            ),
+                          );
+                          final sendButton = OutlinedButton.icon(
+                            key: const Key('send-login-code'),
+                            onPressed:
+                                _sendingCode ||
+                                    _signingIn ||
+                                    _resendSeconds > 0 ||
+                                    !canUseEmailCode
+                                ? null
+                                : _requestCode,
+                            icon: _sendingCode
+                                ? const SizedBox.square(
+                                    dimension: 16,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Icon(Icons.send_outlined, size: 18),
+                            label: Text(
+                              _sendingCode
+                                  ? '发送中'
+                                  : _resendSeconds > 0
+                                  ? '${_resendSeconds}s 后重试'
+                                  : '获取验证码',
+                            ),
+                          );
+                          if (compact) {
+                            return Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                codeField,
+                                const SizedBox(height: 10),
+                                sendButton,
+                              ],
+                            );
+                          }
+                          return Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(child: codeField),
+                              const SizedBox(width: 10),
+                              SizedBox(width: 126, child: sendButton),
+                            ],
+                          );
+                        },
+                      ),
+                      if (_developmentCode != null) ...[
+                        const SizedBox(height: 10),
+                        Text(
+                          '开发环境验证码已自动填入',
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.tertiary,
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 22),
+                      FilledButton(
+                        onPressed:
+                            _signingIn ||
+                                _sendingCode ||
+                                !canUseEmailCode ||
+                                !_acceptedLegal
+                            ? null
+                            : _submit,
+                        style: FilledButton.styleFrom(
+                          minimumSize: const Size.fromHeight(52),
+                        ),
+                        child: _signingIn
+                            ? const SizedBox.square(
+                                dimension: 20,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Text('登录'),
+                      ),
+                      const SizedBox(height: 12),
+                      _LegalConsent(
+                        accepted: _acceptedLegal,
+                        onChanged: (value) {
+                          setState(() => _acceptedLegal = value);
+                        },
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
           ),
         ),
       ),
+    );
+  }
+}
+
+class _LegalConsent extends StatelessWidget {
+  const _LegalConsent({required this.accepted, required this.onChanged});
+
+  final bool accepted;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final style = TextButton.styleFrom(
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      minimumSize: const Size(44, 36),
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      visualDensity: VisualDensity.compact,
+    );
+    final muted = Theme.of(context).colorScheme.onSurfaceVariant;
+    return Row(
+      key: const Key('login-legal-consent'),
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Checkbox(
+          key: const Key('login-legal-checkbox'),
+          value: accepted,
+          onChanged: (value) => onChanged(value ?? false),
+          visualDensity: VisualDensity.compact,
+          materialTapTargetSize: MaterialTapTargetSize.padded,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+        ),
+        const SizedBox(width: 2),
+        Expanded(
+          child: Wrap(
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 1,
+            children: [
+              Text(
+                '我已阅读并同意',
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: muted),
+              ),
+              TextButton(
+                key: const Key('login-terms'),
+                style: style,
+                onPressed: () => context.push('/legal/terms'),
+                child: const Text('用户协议'),
+              ),
+              Text(
+                '和',
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: muted),
+              ),
+              TextButton(
+                key: const Key('login-privacy-policy'),
+                style: style,
+                onPressed: () => context.push('/legal/privacy'),
+                child: const Text('隐私政策'),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }

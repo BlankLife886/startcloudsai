@@ -85,11 +85,12 @@ abstract final class AppNotice {
       type: type,
       actionLabel: actionLabel?.trim(),
       onAction: onAction,
+      persistent: duration <= Duration.zero,
     );
     final entry = OverlayEntry(
       builder: (context) => Positioned.fill(
         child: IgnorePointer(
-          ignoring: onAction == null,
+          ignoring: !data.interactive,
           child: SafeArea(
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -154,6 +155,7 @@ class AppNoticeHostState extends State<AppNoticeHost> {
         type: type,
         actionLabel: actionLabel?.trim(),
         onAction: onAction,
+        persistent: duration <= Duration.zero,
       );
     });
     if (duration > Duration.zero) {
@@ -187,7 +189,7 @@ class AppNoticeHostState extends State<AppNoticeHost> {
           widget.child,
           Positioned.fill(
             child: IgnorePointer(
-              ignoring: notice?.onAction == null,
+              ignoring: notice?.interactive != true,
               child: SafeArea(
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -250,6 +252,7 @@ class _AppNoticeData {
     required this.type,
     required this.actionLabel,
     required this.onAction,
+    required this.persistent,
   });
 
   final int sequence;
@@ -258,6 +261,9 @@ class _AppNoticeData {
   final AppNoticeType type;
   final String? actionLabel;
   final VoidCallback? onAction;
+  final bool persistent;
+
+  bool get interactive => persistent || onAction != null;
 }
 
 class _AppNoticeFallback extends StatefulWidget {
@@ -334,6 +340,7 @@ class _AppNoticeCard extends StatelessWidget {
     final onAction = data.onAction;
     return Semantics(
       container: true,
+      explicitChildNodes: true,
       liveRegion: true,
       label: [data.title, data.message].whereType<String>().join('，'),
       child: ConstrainedBox(
@@ -341,10 +348,10 @@ class _AppNoticeCard extends StatelessWidget {
         child: Material(
           key: const Key('app-notice-card'),
           color: colors.surfaceContainerLowest,
-          elevation: 8,
+          elevation: 4,
           shadowColor: visual.shadow,
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(18),
+            borderRadius: BorderRadius.circular(8),
             side: BorderSide(
               color: dark
                   ? colors.outlineVariant.withValues(alpha: .55)
@@ -409,6 +416,24 @@ class _AppNoticeCard extends StatelessWidget {
                       onAction();
                     },
                     child: Text(actionLabel!),
+                  ),
+                ],
+                if (data.persistent) ...[
+                  const SizedBox(width: 2),
+                  Semantics(
+                    button: true,
+                    label: '关闭提示',
+                    excludeSemantics: true,
+                    child: IconButton(
+                      key: const Key('app-notice-close'),
+                      onPressed: onHide,
+                      icon: const Icon(Icons.close_rounded, size: 18),
+                      style: IconButton.styleFrom(
+                        minimumSize: const Size.square(36),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        foregroundColor: colors.onSurfaceVariant,
+                      ),
+                    ),
                   ),
                 ],
               ],

@@ -1319,23 +1319,34 @@ test.describe('React authenticated account pages', () => {
     await expect(page.locator('.commercial-home')).toBeVisible()
   })
 
-  test('profile renders overview data and saves the cost confirmation preference', async ({
+  test('profile renders overview data', async ({
     page,
   }) => {
-    let profileBody = null
     await page.route('**/api/v1/auth/session', (route) =>
       fulfillJson(route, { user: accountProfile }),
     )
     await page.route('**/api/v1/me/wallet', (route) => fulfillJson(route, walletSnapshot))
     await page.route('**/api/v1/me/overview', (route) => fulfillJson(route, profileOverview))
     await page.route('**/api/v1/me/profile', async (route) => {
-      profileBody = route.request().postDataJSON()
-      await fulfillJson(route, { user: { ...accountProfile, ...profileBody } })
+      await fulfillJson(route, { user: accountProfile })
     })
     await page.goto('/profile', { waitUntil: 'domcontentloaded' })
 
     await expect(page.locator('.pp-soft-event')).toContainText('星云创作者')
-    await expect(page.locator('.pp-soft-event')).toContainText('累计任务 18')
+    await expect(page.locator('.pp-soft-event')).toContainText('开始创作')
+    const personalNav = page.getByRole('navigation', { name: '个人入口' })
+    await expect(personalNav.getByRole('link', { name: /我的资产/ })).toHaveAttribute('href', '/assets')
+    await expect(personalNav.getByRole('link', { name: /我的投稿/ })).toHaveAttribute('href', '/submissions')
+    await expect(personalNav.getByRole('link', { name: /我的钱包/ })).toHaveAttribute('href', '/wallet')
+    await expect(personalNav.getByRole('link', { name: /我的订单/ })).toHaveAttribute('href', '/orders')
+    await expect(personalNav).toContainText('件素材')
+    await expect(personalNav).toContainText('待审 2')
+    await expect(personalNav).toContainText('充值与订阅')
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await page.locator('.pp-soft-hero-link.is-submissions').screenshot({
+      path: '/tmp/profile-hero-round-arrow.png',
+      animations: 'disabled',
+    })
     await expect(page.getByRole('button', { name: '更换形象' })).toBeVisible()
     await expect(page.getByRole('button', { name: '参考生成' })).toBeVisible()
     await expect(page.getByRole('button', { name: '装扮' })).toBeVisible()
@@ -1354,11 +1365,7 @@ test.describe('React authenticated account pages', () => {
     await expect(dressup).toBeHidden()
     await expect(page.locator('.pp-soft-performance')).toContainText('成功率 80%')
     await expect(page.locator('.pp-soft-stats')).toContainText('过审投稿')
-    const preference = page.locator('.pp-soft-switch input')
-    await expect(preference).toBeChecked()
-    await preference.uncheck()
-    await expect(preference).not.toBeChecked()
-    expect(profileBody).toEqual({ requireCostConfirm: false })
+    await expect(page.locator('.pp-soft-switch')).toHaveCount(0)
 
     await page.getByRole('button', { name: '查看投稿' }).click()
     await expect(page).toHaveURL(/\/submissions$/)
@@ -1402,7 +1409,8 @@ test.describe('React authenticated account pages', () => {
     await page.goto('/profile', { waitUntil: 'domcontentloaded' })
     await expect(page.locator('.pp-page')).toBeVisible()
 
-    await page.locator('.site-header a[href="/pricing"]').click()
+    await page.getByTitle('个人中心').click()
+    await page.getByRole('menuitem', { name: '创作价格' }).click()
     await expect(page).toHaveURL(/\/pricing$/)
     await expectPricingPageIsolated(page)
     await expect(page.locator('.pp-page')).toHaveCount(0)

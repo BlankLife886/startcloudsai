@@ -29,3 +29,18 @@ func EditableFileKindRequested(prompt string) string {
 	}
 	return ""
 }
+
+// DedicatedEditableFileKindRequested returns a kind only when the specialized
+// editable-file provider should own the whole request. Tool-assisted PPT
+// workflows stay with the general assistant so their evidence can flow into
+// files_create. PSD remains specialized because files_create cannot produce it.
+func DedicatedEditableFileKindRequested(prompt string, hasDocumentAttachments bool) string {
+	kind := EditableFileKindRequested(prompt)
+	if kind == "" || hasDocumentAttachments {
+		return ""
+	}
+	if kind == "ppt" && AgentExecutionRequested(prompt) {
+		return ""
+	}
+	return kind
+}

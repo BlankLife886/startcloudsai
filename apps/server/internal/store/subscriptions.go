@@ -42,6 +42,30 @@ func GetActiveSubscriptionForPlanLocked(ctx context.Context, q Q, userID, planID
 	return nilOnNoRows(s, err)
 }
 
+// ActiveSubscriptionFlagsByUserIDs 批量判断用户是否有未到期的 active 订阅。
+func ActiveSubscriptionFlagsByUserIDs(ctx context.Context, q Q, ids []uuid.UUID, now time.Time) (map[uuid.UUID]bool, error) {
+	out := make(map[uuid.UUID]bool, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := q.Query(ctx, `
+		SELECT DISTINCT user_id
+		FROM subscriptions
+		WHERE user_id = ANY($1) AND status = 'active' AND ends_at > $2`, ids, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
+}
+
 // GetCurrentSubscription 用户当前生效订阅（active 且未到期，ends_at 最晚的一条）。
 func GetCurrentSubscription(ctx context.Context, q Q, userID uuid.UUID, now time.Time) (*Subscription, error) {
 	s, err := scanSubscription(q.QueryRow(ctx,

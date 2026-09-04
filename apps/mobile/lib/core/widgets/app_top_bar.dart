@@ -60,7 +60,7 @@ class AppTopBar extends StatelessWidget implements PreferredSizeWidget {
           fontWeight: FontWeight.w800,
           fontSize: 17,
           height: 1.15,
-          letterSpacing: -0.45,
+          letterSpacing: 0,
           color: foregroundColor ?? colors.onSurface,
         );
 

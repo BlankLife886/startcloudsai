@@ -535,6 +535,10 @@ async function submitPassword() {
             '/tasks',
             '/profitability',
             '/agent-quality',
+            '/orders',
+            '/users',
+            '/platform-logs',
+            '/security-center',
             '/plans',
             '/growth-groups',
             '/checkin-activity',
@@ -1185,6 +1189,7 @@ async function submitPassword() {
 
 .content.content--workspace {
   overflow: hidden;
+  scrollbar-gutter: auto;
 }
 
 .content-inner {

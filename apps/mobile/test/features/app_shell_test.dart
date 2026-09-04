@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:starcloudsai_mobile/features/auth/auth.dart';
 import 'package:starcloudsai_mobile/features/notifications/notifications.dart';
@@ -22,6 +23,22 @@ void main() {
     tester,
   ) async {
     var selected = -1;
+    final haptics = <Object?>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'HapticFeedback.vibrate') {
+          haptics.add(call.arguments);
+        }
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      ),
+    );
     await tester.binding.setSurfaceSize(const Size(320, 120));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.pumpWidget(
@@ -62,6 +79,14 @@ void main() {
       );
     }
     expect(find.byKey(const Key('bottom-nav-item-4')), findsNothing);
+    final selectedMotion = tester.widget<AnimatedScale>(
+      find.descendant(
+        of: find.byKey(const Key('bottom-nav-item-0')),
+        matching: find.byKey(const Key('bottom-nav-icon-motion')),
+      ),
+    );
+    expect(selectedMotion.scale, 1.08);
+    expect(selectedMotion.duration, const Duration(milliseconds: 160));
     final navigation = tester.getRect(
       find.byKey(const Key('app-bottom-navigation')),
     );
@@ -70,8 +95,40 @@ void main() {
     expect(navigation.bottom, 120);
     await tester.tap(find.byKey(const Key('bottom-nav-item-2')));
     expect(selected, 2);
+    expect(haptics, ['HapticFeedbackType.selectionClick']);
     expect(find.text('2'), findsOneWidget);
     expect(find.bySemanticsLabel('设计，2 个正在生成'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('bottom navigation removes motion when the system requests it', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(context).copyWith(disableAnimations: true),
+          child: child!,
+        ),
+        home: Scaffold(
+          bottomNavigationBar: AppBottomNavigationBar(
+            selectedIndex: 1,
+            onDestinationSelected: (_) {},
+            activeCount: 0,
+            unreadNotifications: 0,
+          ),
+        ),
+      ),
+    );
+
+    final motion = tester.widget<AnimatedScale>(
+      find.descendant(
+        of: find.byKey(const Key('bottom-nav-item-1')),
+        matching: find.byKey(const Key('bottom-nav-icon-motion')),
+      ),
+    );
+    expect(motion.scale, 1.08);
+    expect(motion.duration, Duration.zero);
     expect(tester.takeException(), isNull);
   });
 

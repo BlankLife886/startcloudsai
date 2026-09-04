@@ -28,6 +28,8 @@ import { DialogMotion } from "../components/motion/DialogMotion.jsx";
 import { useContentReveal } from "../components/motion/useContentReveal.js";
 import { useIsDark } from "../hooks/useIsDark.js";
 import { useLocale } from "../i18n/index.js";
+import { ProductGuideTour, useProductGuide } from "./shared/ProductGuideTour.jsx";
+import { ASSETS_GUIDE_STEPS, PRODUCT_GUIDE_KEYS } from "./shared/productGuides.js";
 import "./MaterialsLibraryView.css";
 
 gsap.registerPlugin(useGSAP);
@@ -211,6 +213,9 @@ export function MaterialsLibraryView() {
   const { requestAuth } = useAuthPrompt();
   const { t } = useLocale();
   const isDark = useIsDark();
+  const { open: guideOpen, setOpen: setGuideOpen } = useProductGuide({
+    storageKey: PRODUCT_GUIDE_KEYS.assets,
+  });
   const mountedRef = useRef(true);
   const assetsControllerRef = useRef(null);
   const groupsControllerRef = useRef(null);
@@ -1418,7 +1423,7 @@ export function MaterialsLibraryView() {
     >
       <div className="ch-shell">
         <div className="ch-sticky-bar">
-          <div className="ch-toolbar">
+          <div className="ch-toolbar" data-guide="assets-toolbar">
             <label className="ch-search">
               <i className="bi bi-search" aria-hidden="true" />
               <input
@@ -1463,7 +1468,7 @@ export function MaterialsLibraryView() {
               onChange={onMaterialsSelected}
             />
           </div>
-          <div className="ml-group-bar">
+          <div className="ml-group-bar" data-guide="assets-groups">
             <nav
               className="ch-chips"
               aria-label="资产分组"
@@ -1649,7 +1654,7 @@ export function MaterialsLibraryView() {
           )}
         </div>
 
-        <section className="ch-section" aria-live="polite">
+        <section className="ch-section" aria-live="polite" data-guide="assets-library">
           {loading && !materials.length ? (
             <div className="ch-loading">正在加载资产…</div>
           ) : visibleMaterials.length ? (
@@ -2182,6 +2187,13 @@ export function MaterialsLibraryView() {
         light={!isDark}
         onConfirm={permanentlyDeleteAsset}
         onClose={() => setPendingPermanentDelete(null)}
+      />
+      <ProductGuideTour
+        open={guideOpen}
+        dark={isDark}
+        steps={ASSETS_GUIDE_STEPS}
+        storageKey={PRODUCT_GUIDE_KEYS.assets}
+        onClose={() => setGuideOpen(false)}
       />
     </main>
   );

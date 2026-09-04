@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Button, Dropdown, Popover, Tooltip } from "antd";
-import { ArrowUp, Check, ChevronDown, ChevronUp, FileText, Gauge, Group, Hand, Image as ImageIcon, ImagePlus, Layers3, LoaderCircle, Music2, PenLine, RefreshCw, Settings2, Shield, ShieldAlert, ShieldCheck, ShieldOff, SlidersHorizontal, Sparkles, Square, Video, X } from "lucide-react";
+import { ArrowUp, Check, ChevronDown, ChevronUp, FileText, Gauge, Group, Hand, Image as ImageIcon, ImagePlus, Layers3, LoaderCircle, Music2, PenLine, RefreshCw, Settings2, Shield, ShieldAlert, ShieldCheck, ShieldOff, SlidersHorizontal, Square, Video, X } from "lucide-react";
+import { SoftMark } from "@react/components/common/SoftMark.jsx";
 import { AnimatePresence, motion } from "motion/react";
 import { useTranslation } from "react-i18next";
 
@@ -527,7 +528,7 @@ function ComposerSettingsMenu({
                         </div>
                         <div className="thin-scrollbar min-h-0 flex-1 overflow-y-auto px-2.5 pb-2.5">
                         {currentChat && onChatModelChange ? (
-                            <ComposerSettingsSection icon={<Sparkles className="size-3.5" />} title={t("agent.composer.modelSection")} theme={theme}>
+                            <ComposerSettingsSection icon={<SoftMark name="cpu" size="xs" />} title={t("agent.composer.modelSection")} theme={theme}>
                                 <ComposerModelSelect
                                     theme={theme}
                                     value={currentChat.value}
@@ -538,7 +539,7 @@ function ComposerSettingsMenu({
                             </ComposerSettingsSection>
                         ) : null}
                         {currentLocal && onModelChange ? (
-                            <ComposerSettingsSection icon={<Sparkles className="size-3.5" />} title={t("agent.composer.modelSection")} theme={theme}>
+                            <ComposerSettingsSection icon={<SoftMark name="cpu" size="xs" />} title={t("agent.composer.modelSection")} theme={theme}>
                                 <ComposerModelSelect
                                     theme={theme}
                                     value={currentLocal.model}

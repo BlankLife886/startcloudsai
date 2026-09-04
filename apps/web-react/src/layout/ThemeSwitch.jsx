@@ -17,6 +17,7 @@ export function ThemeSwitch() {
     <label className="theme-dn-switch nav-theme-switch" title={dark ? "切换亮色模式" : "切换暗色模式"}>
       <input
         className="theme-dn-switch__input"
+        name="appearance-theme"
         type="checkbox"
         role="switch"
         checked={dark}

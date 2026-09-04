@@ -1,4 +1,5 @@
-import { CheckCircle2, ChevronDown, ChevronRight, Clock3, Cpu, Crop, Grid2x2, Image as ImageIcon, Maximize2, MessageSquare, Music2, Play, Settings2, SlidersHorizontal, Square, Video, X } from "lucide-react";
+import { CheckCircle2, ChevronDown, ChevronRight, Clock3, Crop, Grid2x2, Image as ImageIcon, Maximize2, MessageSquare, Music2, Play, Settings2, SlidersHorizontal, Square, Video, X } from "lucide-react";
+import { SoftMark } from "@react/components/common/SoftMark.jsx";
 import { useTranslation } from "react-i18next";
 
 import { ImageSettingsPanel } from "@/components/image-settings-panel";
@@ -489,7 +490,7 @@ function ConfigModelField({
     if (!options.length) {
         return (
             <button type="button" className="canvas-config-field flex h-9 w-full min-w-0 items-center gap-2.5 rounded-[10px] px-3 text-left" style={{ background: surface, color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()} onClick={onMissingConfig}>
-                <Cpu className="size-4 shrink-0 opacity-50" />
+                <SoftMark name="cpu" size="sm" />
                 <span className="min-w-0 flex-1 truncate text-[13px] font-semibold">{placeholder}</span>
                 <ChevronDown className="size-3.5 shrink-0 opacity-35" />
             </button>
@@ -536,7 +537,7 @@ function ConfigModelField({
 
 function ModelMark({ model }: { model: string }) {
     const icon = modelIcon(modelOptionName(model));
-    return icon ? <img src={icon} alt="" className="size-4 shrink-0 dark:invert" /> : <Cpu className="size-4 shrink-0 opacity-50" />;
+    return icon ? <img src={icon} alt="" className="size-4 shrink-0 dark:invert" /> : <SoftMark name="cpu" size="sm" />;
 }
 
 function modelIcon(model: string) {

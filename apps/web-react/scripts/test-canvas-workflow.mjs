@@ -27,7 +27,7 @@ import {
     workflowPlanMatchesCheckpoint,
 } from "../src/canvas/lib/canvas/canvas-workflow.ts";
 import { pendingCanvasTasks } from "../src/canvas/lib/canvas/canvas-pending-tasks.ts";
-import { canvasProjectNeedsCloudRetry, mergeCanvasProjectDocuments, mergeCanvasProjectSnapshots } from "../src/canvas/lib/canvas/canvas-project-sync.ts";
+import { canvasProjectNeedsCloudRetry, markCanvasProjectMediaDeleted, mergeCanvasProjectDocuments, mergeCanvasProjectSnapshots } from "../src/canvas/lib/canvas/canvas-project-sync.ts";
 import { buildCanvasSidePanelWorkflowGroups } from "../src/canvas/lib/canvas/canvas-workflow-groups.ts";
 import { shouldPromoteGeneratedImage } from "../src/canvas/lib/canvas/canvas-image-primary.ts";
 import { shouldBlockCanvasNavigation } from "../src/canvas/lib/canvas/canvas-leave-guard.ts";
@@ -594,4 +594,26 @@ test("node-merges conflicting canvas documents instead of overwriting", () => {
     );
     // The merged document saves on top of the remote revision.
     assert.equal(merged.revision, 5);
+});
+
+test("history media deletion survives stale canvas caches as a placeholder", () => {
+    const key = "tasks/user/canvas/output.png";
+    const document = {
+        title: "p",
+        revision: 1,
+        updatedAt: "2026-08-17T00:00:00.000Z",
+        nodes: [node("image", "image", { status: "success", content: `/api/v1/files/${key}`, storageKey: key })],
+        connections: [],
+        chatSessions: [],
+    };
+    const deletedAt = "2026-08-17T00:00:10.000Z";
+    const marked = markCanvasProjectMediaDeleted(document, [key], deletedAt);
+    assert.equal(marked.nodes[0].metadata.content, undefined);
+    assert.equal(marked.nodes[0].metadata.storageKey, undefined);
+    assert.equal(marked.nodes[0].metadata.deletedByHistory, true);
+    assert.equal(marked.nodes[0].metadata.errorDetails, "该图片已被删除");
+
+    const merged = mergeCanvasProjectDocuments(document, { ...marked, revision: 2 });
+    assert.equal(merged.nodes[0].metadata.deletedByHistory, true);
+    assert.equal(merged.nodes[0].metadata.content, undefined);
 });

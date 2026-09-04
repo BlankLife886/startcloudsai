@@ -46,9 +46,16 @@ func GetWalletsByUserIDs(ctx context.Context, q Q, ids []uuid.UUID) (map[uuid.UU
 }
 
 func SumWalletBalance(ctx context.Context, q Q) (int64, error) {
-	var n int64
-	err := q.QueryRow(ctx, `SELECT COALESCE(SUM(balance_cents + trial_balance_cents), 0) FROM wallets`).Scan(&n)
-	return n, err
+	remaining, _, err := SumWalletBalances(ctx, q)
+	return remaining, err
+}
+
+func SumWalletBalances(ctx context.Context, q Q) (remaining, frozen int64, err error) {
+	err = q.QueryRow(ctx, `
+		SELECT COALESCE(SUM(balance_cents + trial_balance_cents), 0),
+		       COALESCE(SUM(frozen_cents + trial_frozen_cents), 0)
+		FROM wallets`).Scan(&remaining, &frozen)
+	return remaining, frozen, err
 }
 
 const ledgerCols = `id, user_id, kind, delta_cents, balance_after_cents, source_type, source_id, reason, credit_bucket, created_at`
@@ -323,9 +330,41 @@ type WalletLedgerStats struct {
 	Income        []WalletSourceTotal
 }
 
+type PlatformCreditTotals struct {
+	IncomeCents    int64 `json:"incomeCents"`
+	ConsumedCents  int64 `json:"consumedCents"`
+	RefundCents    int64 `json:"refundCents"`
+	RemainingCents int64 `json:"remainingCents"`
+	FrozenCents    int64 `json:"frozenCents"`
+}
+
 // UserWalletLedgerStats 按来源汇总当前用户的入账、结算消耗与失败退回。
 func UserWalletLedgerStats(ctx context.Context, q Q, userID uuid.UUID) (*WalletLedgerStats, error) {
+	return queryWalletLedgerStats(ctx, q, &userID)
+}
+
+// GetPlatformCreditTotals 全站累计入账、已结算消耗和当前剩余/冻结积分。
+func GetPlatformCreditTotals(ctx context.Context, q Q) (*PlatformCreditTotals, error) {
+	remaining, frozen, err := SumWalletBalances(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	stats, err := queryWalletLedgerStats(ctx, q, nil)
+	if err != nil {
+		return nil, err
+	}
+	return &PlatformCreditTotals{
+		IncomeCents:    stats.IncomeCents,
+		ConsumedCents:  stats.ConsumedCents,
+		RefundCents:    stats.RefundCents,
+		RemainingCents: remaining,
+		FrozenCents:    frozen,
+	}, nil
+}
+
+func queryWalletLedgerStats(ctx context.Context, q Q, userID *uuid.UUID) (*WalletLedgerStats, error) {
 	stats := &WalletLedgerStats{Income: []WalletSourceTotal{}}
+	where, args := ledgerUserFilter("", userID)
 	err := q.QueryRow(ctx,
 		`SELECT
 			COUNT(*),
@@ -351,7 +390,7 @@ func UserWalletLedgerStats(ctx context.Context, q Q, userID uuid.UUID) (*WalletL
 			COALESCE(SUM(delta_cents) FILTER (
 				WHERE kind = 'grant' OR kind = 'refund' OR (kind = 'admin_adjust' AND delta_cents > 0)
 			), 0)
-		 FROM wallet_ledger WHERE user_id = $1`, userID).Scan(
+		 FROM wallet_ledger WHERE `+where, args...).Scan(
 		&stats.EntryCount,
 		&stats.ConsumedCount,
 		&stats.ConsumedCents,
@@ -364,13 +403,14 @@ func UserWalletLedgerStats(ctx context.Context, q Q, userID uuid.UUID) (*WalletL
 		return nil, err
 	}
 
+	incomeWhere, incomeArgs := ledgerUserFilter("", userID)
 	rows, err := q.Query(ctx,
 		`SELECT source_type, COUNT(*), COALESCE(SUM(delta_cents), 0)
 		 FROM wallet_ledger
-		 WHERE user_id = $1
+		 WHERE `+incomeWhere+`
 		   AND (kind = 'grant' OR kind = 'refund' OR (kind = 'admin_adjust' AND delta_cents > 0))
 		 GROUP BY source_type
-		 ORDER BY SUM(delta_cents) DESC`, userID)
+		 ORDER BY SUM(delta_cents) DESC`, incomeArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -387,6 +427,7 @@ func UserWalletLedgerStats(ctx context.Context, q Q, userID uuid.UUID) (*WalletL
 	}
 
 	// spend 账本 delta 常为 0，补上关联任务 / 助手运行的实扣。
+	spendWhere, spendArgs := ledgerUserFilter("l", userID)
 	var joinedSpend int64
 	err = q.QueryRow(ctx,
 		`SELECT COALESCE(SUM(GREATEST(COALESCE(t.cost_cents, 0), COALESCE(a.cost_cents, 0))), 0)
@@ -394,14 +435,25 @@ func UserWalletLedgerStats(ctx context.Context, q Q, userID uuid.UUID) (*WalletL
 		 LEFT JOIN tasks t ON l.source_type = 'task' AND t.id::text = l.source_id
 		 LEFT JOIN assistant_runs a ON l.source_type = 'assistant_run'
 		      AND a.id::text = split_part(COALESCE(l.source_id, ''), '/', 1)
-		 WHERE l.user_id = $1 AND l.kind = 'spend' AND l.delta_cents = 0
+		 WHERE `+spendWhere+` AND l.kind = 'spend' AND l.delta_cents = 0
 		   AND COALESCE((regexp_match(COALESCE(l.reason, ''), '消耗冻结 ([0-9]+)'))[1], '') = ''`,
-		userID).Scan(&joinedSpend)
+		spendArgs...).Scan(&joinedSpend)
 	if err != nil {
 		return nil, err
 	}
 	stats.ConsumedCents += joinedSpend
 	return stats, nil
+}
+
+func ledgerUserFilter(alias string, userID *uuid.UUID) (string, []any) {
+	if userID == nil {
+		return "true", nil
+	}
+	column := "user_id"
+	if alias != "" {
+		column = alias + ".user_id"
+	}
+	return column + " = $1", []any{*userID}
 }
 
 // ListAllUserLedger 导出用：按时间倒序拉齐当前用户账本，最多 walletLedgerExportMax 条。

@@ -172,10 +172,6 @@
   -webkit-mask-size: contain;
   mask-size: contain;
 }
-.ch-history-icon.is-download {
-  -webkit-mask-image: url("../legacy-static/assets/icons/download.png");
-  mask-image: url("../legacy-static/assets/icons/download.png");
-}
 .ch-history-icon.is-publish {
   -webkit-mask-image: url("../legacy-static/assets/icons/publish.png");
   mask-image: url("../legacy-static/assets/icons/publish.png");

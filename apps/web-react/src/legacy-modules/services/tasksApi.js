@@ -466,11 +466,24 @@ export async function cancelTask(id, { acknowledgeUpstream = false } = {}) {
   return data?.task || data
 }
 
+export const HISTORY_MEDIA_REMOVED_EVENT = 'starclouds:history-media-removed'
+
 /** 删除终态任务记录（同时删除产物）。 */
-export async function deleteTask(id, { cascade = false } = {}) {
-  return apiDelete(`/tasks/${encodeURIComponent(id)}${cascade ? '?cascade=true' : ''}`, {
+export async function deleteTask(id, { cascade = false, history = false, forceMedia = false } = {}) {
+  const query = new URLSearchParams()
+  if (cascade) query.set('cascade', 'true')
+  if (history) query.set('history', 'true')
+  if (forceMedia) query.set('forceMedia', 'true')
+  const result = await apiDelete(`/tasks/${encodeURIComponent(id)}${query.size ? `?${query}` : ''}`, {
     fallbackMessage: '任务删除失败',
   })
+  const deletedMediaKeys = Array.isArray(result?.deletedMediaKeys) ? result.deletedMediaKeys.filter(Boolean) : []
+  if (deletedMediaKeys.length && typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(HISTORY_MEDIA_REMOVED_EVENT, {
+      detail: { keys: deletedMediaKeys, deletedAt: new Date().toISOString() },
+    }))
+  }
+  return result
 }
 
 /**

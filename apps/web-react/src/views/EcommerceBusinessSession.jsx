@@ -136,6 +136,8 @@ import {
   HandheldProductPopover,
   HandheldPosePopover,
 } from "../features/ecommerce/HandheldStudio.jsx";
+import { DownloadIcon } from "../components/common/DownloadIcon.jsx";
+import { RegenerateIcon } from "../components/common/RegenerateIcon.jsx";
 import { AccessoryStudio } from "../features/ecommerce/AccessoryStudio.jsx";
 import { DetailStudio } from "../features/ecommerce/DetailStudio.jsx";
 import { DetailTopToolbar } from "../features/ecommerce/businesses/detail/DetailTopToolbar.jsx";
@@ -803,7 +805,7 @@ function BriefDialog({
             disabled={state.busy}
             onClick={onRegenerate}
           >
-            <i className="bi bi-arrow-repeat" />
+            <RegenerateIcon />
             {state.name || state.points ? "重新生成" : "重试"}
           </button>
           <button
@@ -6093,7 +6095,7 @@ export function EcommerceBusinessSession({
                         aria-label="下载当前结果"
                         onClick={() => downloadOutput(currentRow)}
                       >
-                        <i className="bi bi-download" />
+                        <DownloadIcon />
                       </button>
                     </>
                   ) : null}

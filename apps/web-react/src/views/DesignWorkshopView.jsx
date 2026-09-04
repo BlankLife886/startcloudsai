@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { PackageCheck } from "lucide-react";
 import { useIsDark } from "../hooks/useIsDark.js";
 import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
@@ -11,6 +12,20 @@ import {
   SPEC_OPTIONS,
   COMPONENT_STATES,
 } from "../features/design-workshop/options.js";
+import {
+  DEFAULT_DESIGN_SPEC,
+  MOBILE_SYSTEMS,
+  buildCodexHandoff,
+  buildDesignHandoffMarkdown,
+  buildDesignSystemPrompt,
+  buildDesignTokensCss,
+  cropElementFromImage,
+  downloadBlobFile,
+  getPhoneProfiles,
+  resolveDesignSystem,
+  slugFileName,
+} from "../features/design-workshop/designSystem.js";
+import { resolveTaskMedia } from "../features/task-media/taskMediaResults.js";
 import { fetchRuntimeConfig } from "@react/legacy-modules/services/runtimeConfig.js";
 import {
   getModelAspectRatiosForResolution,
@@ -25,11 +40,14 @@ import {
   uploadAiInputFile,
   waitForServerAiJob,
 } from "@react/legacy-modules/services/aiWallpaper.js";
-import { downloadAuthenticatedMedia } from "@react/legacy-modules/services/authenticatedMedia.js";
+import {
+  downloadAuthenticatedMedia,
+  fetchAuthenticatedMediaBlob,
+} from "@react/legacy-modules/services/authenticatedMedia.js";
 import {
   cancelAssistantRun,
   listActiveAssistantRuns,
-} from "@react/legacy-modules/services/assistantApi.js";
+} from "../features/assistant/services/assistantApi.js";
 import {
   getScopedLocalItem,
   setScopedLocalItem,
@@ -43,7 +61,7 @@ import {
   getDesignDevice,
   normalizeSelectedDeviceIds,
 } from "@react/legacy-modules/features/design-workshop/designDevices.js";
-import { metricsForDeviceOption } from "@react/legacy-modules/features/design-workshop/multiDeviceConsistency.js";
+import { orderDevicesForConsistency } from "@react/legacy-modules/features/design-workshop/multiDeviceConsistency.js";
 import {
   buildVersionForest,
   canIterate,
@@ -82,16 +100,21 @@ import notificationService from "@react/legacy-modules/services/notification.js"
 import "@react/legacy-styles/generated/views/DesignWorkshopView.css";
 import "@react/legacy-styles/generated/features/ai-wallpaper/components/AspectRatioSelect.css";
 import "@react/legacy-styles/generated/features/design-workshop/components/DesignVersionDrawer.css";
+import { DownloadIcon } from "../components/common/DownloadIcon.jsx";
+import { SoftMark } from "../components/common/SoftMark.jsx";
+import { ConfirmDialog } from "../components/ConfirmDialog.jsx";
 import "./DesignWorkshopView.css";
 
 const SETTINGS_KEY = "ui-design-workshop-v2";
 const UPLOADS_KEY = "ui-design-workshop-uploads-v1";
 const MAX_REFERENCES = 6;
-const IMAGE_NAME_PATTERN = /\.(png|jpe?g|webp|gif|bmp|heic|heif|avif)$/i;
+const ACTIVE_JOB_STATUSES = new Set(["queued", "running", "waiting_provider"]);
+const IMAGE_NAME_PATTERN = /\.(png|jpe?g|webp)$/i;
+const IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
 
 function isImageFile(file) {
   if (!file) return false;
-  if (String(file.type || "").startsWith("image/")) return true;
+  if (IMAGE_MIME_TYPES.has(String(file.type || "").toLowerCase())) return true;
   return IMAGE_NAME_PATTERN.test(file.name || "");
 }
 
@@ -129,16 +152,123 @@ function readSavedUploads() {
     return [];
   }
 }
+
+function forgetSavedUploads(urls) {
+  const removed = urls instanceof Set ? urls : new Set(urls || []);
+  const next = readSavedUploads().filter((item) => !removed.has(item.url));
+  setScopedLocalItem(UPLOADS_KEY, JSON.stringify(next));
+}
+
+async function decodeImageBlob(blob) {
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    return await new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error("设计稿读取失败"));
+      image.src = objectUrl;
+    });
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+function canvasToPngBlob(canvas) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => (blob ? resolve(blob) : reject(new Error("PNG 导出失败"))),
+      "image/png",
+    );
+  });
+}
+
+function renderImageAsPng(image) {
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, image.naturalWidth);
+  canvas.height = Math.max(1, image.naturalHeight);
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("无法创建设计稿画布");
+  context.drawImage(image, 0, 0);
+  return canvasToPngBlob(canvas);
+}
+
+function remapElementsToSource(nodes, fromSize, sourceSize) {
+  const fromWidth = Math.max(1, Number(fromSize?.width || sourceSize?.width || 1));
+  const fromHeight = Math.max(1, Number(fromSize?.height || sourceSize?.height || 1));
+  const scaleX = Math.max(1, Number(sourceSize?.width || fromWidth)) / fromWidth;
+  const scaleY = Math.max(1, Number(sourceSize?.height || fromHeight)) / fromHeight;
+  return (nodes || []).map((node) => ({
+    ...node,
+    x: Number(node.x || 0) * scaleX,
+    y: Number(node.y || 0) * scaleY,
+    width: Number(node.width || 0) * scaleX,
+    height: Number(node.height || 0) * scaleY,
+  }));
+}
 const REGION_HANDLES = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
 const DEFAULT_SPEC = {
-  audience: "consumer",
-  goal: "conversion",
-  navigation: "auto",
-  density: "balanced",
-  typography: "neutral",
-  radius: "medium",
-  responsive: "adaptive",
+  ...DEFAULT_DESIGN_SPEC,
+  states: ["interaction", "empty", "error"],
 };
+
+function DesignSystemFields({ spec, onSpec, onState }) {
+  const fieldKeys = [
+    "audience",
+    "goal",
+    "navigation",
+    "density",
+    "typography",
+    "radius",
+    "responsive",
+  ];
+  const labels = {
+    audience: "目标用户",
+    goal: "核心目标",
+    navigation: "导航结构",
+    density: "信息密度",
+    typography: "字体气质",
+    radius: "组件圆角",
+    responsive: "响应策略",
+  };
+  return (
+    <>
+      <div className="dws-spec-grid">
+        {fieldKeys.map((key) => (
+          <div key={key} className="dws-select-field">
+            <span className="dws-label">{labels[key]}</span>
+            <WorkshopSelect
+              value={spec[key]}
+              options={SPEC_OPTIONS[key].map(([id, label]) => ({
+                value: id,
+                label,
+                icon: "bi-sliders2",
+              }))}
+              onChange={(next) => onSpec(key, next)}
+              label={labels[key]}
+              className="dws-control-select"
+              icon="bi-sliders2"
+            />
+          </div>
+        ))}
+      </div>
+      <div className="dws-spec-states">
+        <span className="dws-label">必须覆盖的组件状态</span>
+        <div>
+          {COMPONENT_STATES.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className={(spec.states || []).includes(item.id) ? "is-on" : ""}
+              onClick={() => onState(item.id)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      </div>
+    </>
+  );
+}
 
 function featureModels(config = {}) {
   const feature = config.features?.["ai.uiDesign"] || {};
@@ -188,20 +318,15 @@ function isRegionEditJob(job = {}) {
 }
 
 function jobOutputUrls(job = {}) {
-  const urls = job.originalMediaUrls?.length
-    ? job.originalMediaUrls
-    : job.resultMediaUrls || [];
-  return urls.filter(Boolean);
+  return resolveTaskMedia(job).urls;
 }
 
-function jobToEntries(job = {}) {
-  const urls = jobOutputUrls(job);
-  const displays = Array.isArray(job.displayMediaUrls)
-    ? job.displayMediaUrls
-    : [];
+function jobToEntries(job = {}, result = null) {
+  const media = resolveTaskMedia(job, result);
+  const urls = media.urls;
   return urls.map((url, index) => ({
     url,
-    displayUrl: displays[index] || "",
+    displayUrl: media.displayByUrl[url] || "",
     jobId: job.id,
     createdAt: job.createdAt || "",
     groupId: String(
@@ -277,12 +402,42 @@ function WorkshopSelect({
   const [open, setOpen] = useState(false);
   const [menuStyle, setMenuStyle] = useState({});
   const selected = options.find((item) => item.value === value) || options[0];
+  const positionMenu = useCallback(() => {
+    const rect = triggerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const spaceBelow = window.innerHeight - rect.bottom - 18;
+    const opensUp = spaceBelow < 180 && rect.top > spaceBelow;
+    const maxHeight = Math.max(
+      140,
+      Math.min(360, opensUp ? rect.top - 18 : spaceBelow),
+    );
+    setMenuStyle({
+      left: Math.round(Math.min(rect.left, window.innerWidth - rect.width - 12)),
+      ...(opensUp
+        ? { bottom: Math.round(window.innerHeight - rect.top + 6), top: "auto" }
+        : { top: Math.round(rect.bottom + 6), bottom: "auto" }),
+      width: Math.round(rect.width),
+      maxHeight,
+    });
+  }, []);
   useEffect(() => {
     if (!open) return undefined;
-    const close = () => setOpen(false);
+    const close = (event) => {
+      if (!triggerRef.current?.contains(event.target)) setOpen(false);
+    };
+    const escape = (event) => event.key === "Escape" && setOpen(false);
+    positionMenu();
     window.addEventListener("pointerdown", close);
-    return () => window.removeEventListener("pointerdown", close);
-  }, [open]);
+    window.addEventListener("keydown", escape);
+    window.addEventListener("resize", positionMenu);
+    window.addEventListener("scroll", positionMenu, true);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("keydown", escape);
+      window.removeEventListener("resize", positionMenu);
+      window.removeEventListener("scroll", positionMenu, true);
+    };
+  }, [open, positionMenu]);
   return (
     <div
       className={`ratio-select ${className}${open ? " is-open" : ""}`}
@@ -295,38 +450,31 @@ function WorkshopSelect({
         aria-label={label}
         aria-haspopup="listbox"
         aria-expanded={open}
+        disabled={!options.length}
         onClick={() => {
-          const rect = triggerRef.current?.getBoundingClientRect();
-          if (rect) {
-            setMenuStyle({
-              left: Math.round(rect.left),
-              top: Math.round(rect.bottom + 6),
-              width: Math.round(rect.width),
-              maxHeight: Math.max(
-                140,
-                Math.min(360, window.innerHeight - rect.bottom - 18),
-              ),
-            });
-          }
+          positionMenu();
           setOpen((current) => !current);
         }}
       >
         <span className="ratio-select__value">
-          <span>{selected?.label || "请选择"}</span>
+          <span>
+            {selected?.label || (options.length ? "请选择" : "加载中…")}
+          </span>
         </span>
         <i className="bi bi-chevron-down ratio-select__chevron" />
       </button>
-      {open && (
+      {open && createPortal(
         <div
-          className="ratio-select__menu is-glass"
+          className="ratio-select__menu is-glass dws-select-menu"
           role="listbox"
           style={menuStyle}
+          onPointerDown={(event) => event.stopPropagation()}
         >
           {options.map((item) => (
             <button
               key={item.value}
               type="button"
-              className={`ratio-select__option${item.value === value ? " is-active" : ""}`}
+              className={`ratio-select__option has-icon${item.value === value ? " is-selected" : ""}`}
               role="option"
               aria-selected={item.value === value}
               onClick={() => {
@@ -334,18 +482,22 @@ function WorkshopSelect({
                 setOpen(false);
               }}
             >
-              <i className={`bi ${item.icon || icon}`} />
+              {(item.icon || icon) === "bi-cpu" ? (
+                <SoftMark name="cpu" size="sm" />
+              ) : (
+                <i className={`bi ${item.icon || icon}`} />
+              )}
               <span>{item.label}</span>
               {item.value === value && <i className="bi bi-check2" />}
             </button>
           ))}
         </div>
-      )}
+      , document.body)}
     </div>
   );
 }
 
-function EmptyCanvas({ device, pageType, uploading, onUpload }) {
+function EmptyCanvas({ uploading, onUpload }) {
   return (
     <div className="dws-empty">
       <div className="dws-empty-sketch" aria-hidden="true">
@@ -373,10 +525,8 @@ function EmptyCanvas({ device, pageType, uploading, onUpload }) {
           </div>
         </div>
       </div>
-      <strong>画布等待第一稿</strong>
-      <span>
-        {device.label} · {device.ratio} · {pageType.label}
-      </span>
+      <strong>描述左侧需求后生成</strong>
+      <span>也可以上传已有设计稿</span>
       <button
         type="button"
         className="dws-empty-editor"
@@ -408,10 +558,8 @@ function PageTypePicker({ light, style, value, onSelect, onClose }) {
       >
         <header className="dws-page-type-header">
           <span>
-            <small>PAGE ARCHETYPE</small>
             <strong id="dws-page-type-title">选择页面类型</strong>
           </span>
-          <em>20 种结构</em>
           <button type="button" aria-label="关闭页面类型选择" onClick={onClose}>
             <i className="bi bi-x-lg" />
           </button>
@@ -430,8 +578,6 @@ function PageTypePicker({ light, style, value, onSelect, onClose }) {
               </span>
               <span className="dws-page-type-copy">
                 <strong>{item.label}</strong>
-                <small>{item.description}</small>
-                <em>{item.prompt || "根据业务自由组合导航、内容和操作区域"}</em>
               </span>
               <i
                 className={`bi ${value === item.id ? "bi-check-circle-fill" : "bi-arrow-up-right"}`}
@@ -451,7 +597,6 @@ function ConfigPicker({
   style,
   value,
   spec,
-  states,
   device,
   onSelect,
   onSpec,
@@ -463,27 +608,8 @@ function ConfigPicker({
       ? "选择视觉风格"
       : type === "brand"
         ? "选择品牌主色"
-        : "配置设计规范";
-  const eyebrow =
-    type === "style"
-      ? "VISUAL LANGUAGE"
-      : type === "brand"
-        ? "COLOR SYSTEM"
-        : "DESIGN SYSTEM";
-  const metrics = metricsForDeviceOption(device, {
-    densityId: spec.density,
-    radiusLabel:
-      SPEC_OPTIONS.radius.find(([id]) => id === spec.radius)?.[1] || "标准 8px",
-  });
-  const labels = {
-    audience: "目标用户",
-    goal: "核心目标",
-    navigation: "导航结构",
-    density: "信息密度",
-    typography: "字体气质",
-    radius: "组件圆角",
-    responsive: "响应式策略",
-  };
+        : "配置设计系统";
+  const system = resolveDesignSystem(device, spec);
   return createPortal(
     <div
       className="dws-config-scrim"
@@ -498,16 +624,8 @@ function ConfigPicker({
       >
         <header className="dws-config-header">
           <span>
-            <small>{eyebrow}</small>
             <strong id={`dws-${type}-title`}>{title}</strong>
           </span>
-          <em>
-            {type === "style"
-              ? "12 种风格"
-              : type === "brand"
-                ? "12 套色板"
-                : `${metrics.columns} 列 · 8pt`}
-          </em>
           <button
             type="button"
             aria-label={`关闭${title}选择`}
@@ -534,7 +652,6 @@ function ConfigPicker({
                 <span className="dws-style-copy">
                   <i className={`bi ${item.icon}`} />
                   <strong>{item.label}</strong>
-                  <small>{item.description}</small>
                 </span>
                 <i
                   className={`bi ${value === item.id ? "bi-check-circle-fill" : "bi-arrow-up-right"}`}
@@ -559,8 +676,6 @@ function ConfigPicker({
                 />
                 <span>
                   <strong>{item.label}</strong>
-                  <small>{item.description}</small>
-                  <em>{item.value}</em>
                 </span>
                 <span className="dws-brand-tones">
                   <i />
@@ -578,75 +693,35 @@ function ConfigPicker({
           <div className="dws-spec-editor">
             <div className="dws-spec-overview">
               <span>
-                <i className="bi bi-grid-3x3-gap" />
-                <b>{metrics.columns} 列</b>
-                <small>{metrics.margin}px 边距</small>
+                <i className="bi bi-phone" />
+                <b>{system.platformLabel}</b>
+                <small>
+                  {system.profile?.label || system.deviceLabel} ·{" "}
+                  {system.viewport.width}×{system.viewport.height}
+                </small>
               </span>
               <span>
-                <i className="bi bi-distribute-vertical" />
-                <b>{metrics.spacing}pt</b>
-                <small>{metrics.gutter}px 列距</small>
+                <i className="bi bi-grid-3x3-gap" />
+                <b>{system.tokens.layout.columns} 列</b>
+                <small>{system.tokens.space.margin}px 边距</small>
               </span>
               <span>
                 <i className="bi bi-input-cursor-text" />
-                <b>{metrics.controlHeight}px</b>
-                <small>控件高度</small>
+                <b>{system.tokens.control.height}px</b>
+                <small>点击 {system.tokens.control.touch}px</small>
               </span>
               <span>
-                <i className="bi bi-bounding-box-circles" />
-                <b>{metrics.radius}</b>
-                <small>组件圆角</small>
+                <i className="bi bi-fonts" />
+                <b>{system.typographyLabel}</b>
+                <small>{system.tokens.type.body}px 正文</small>
               </span>
             </div>
-            <p className="dws-spec-hint">
-              当前按「{device.label} {device.ratio}
-              」计算栅格；多端生成时各端会自动适配列数与边距。
-            </p>
-            <div className="dws-spec-grid">
-              {Object.entries(SPEC_OPTIONS).map(([key, options]) => (
-                <div
-                  key={key}
-                  className={`dws-select-field${key === "responsive" ? " is-wide" : ""}`}
-                >
-                  <span className="dws-label">{labels[key]}</span>
-                  <WorkshopSelect
-                    value={spec[key]}
-                    options={options.map(([id, label]) => ({
-                      value: id,
-                      label,
-                      icon: "bi-sliders2",
-                    }))}
-                    onChange={(next) => onSpec(key, next)}
-                    label={labels[key]}
-                    className="dws-control-select"
-                    icon="bi-sliders2"
-                  />
-                </div>
+            <DesignSystemFields spec={spec} onSpec={onSpec} onState={onState} />
+            <ul className="dws-spec-rules">
+              {system.chromeLines.slice(0, 4).map((line) => (
+                <li key={line}>{line}</li>
               ))}
-            </div>
-            <div className="dws-state-field">
-              <span className="dws-label">必须覆盖的组件状态</span>
-              <div
-                className="dws-state-options"
-                role="group"
-                aria-label="必须覆盖的组件状态"
-              >
-                {COMPONENT_STATES.map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    className={states.includes(item.id) ? "is-on" : ""}
-                    aria-pressed={states.includes(item.id)}
-                    onClick={() => onState(item.id)}
-                  >
-                    <i
-                      className={`bi ${states.includes(item.id) ? "bi-check2" : "bi-plus"}`}
-                    />
-                    <span>{item.label}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
+            </ul>
           </div>
         )}
       </section>
@@ -699,7 +774,6 @@ function VersionDrawer({
         </div>
         <header className="dvd-header">
           <div className="dvd-heading">
-            <small>VERSION HISTORY</small>
             <div className="dvd-title-row">
               <strong id="dvd-title">设计版本</strong>
               <span className="dvd-stats">
@@ -716,22 +790,6 @@ function VersionDrawer({
             <i className="bi bi-x-lg" />
           </button>
         </header>
-        <div className="dvd-legend">
-          <span>
-            <b>V14</b>大版本
-          </span>
-          <span>
-            <b>V14.1</b>迭代
-          </span>
-          <span>
-            <i className="bi bi-phone" />
-            多端
-          </span>
-          <span>
-            <i className="bi bi-bounding-box-circles" />
-            元素分析
-          </span>
-        </div>
         <div className="dvd-toolbar">
           <div className="dvd-toolbar-left">
             <strong>
@@ -946,7 +1004,11 @@ export function DesignWorkshopView() {
   const mountedRef = useRef(true);
   const taskControllerRef = useRef(null);
   const historyControllerRef = useRef(null);
+  const recoveryControllerRef = useRef(null);
+  const analysisControllerRef = useRef(null);
   const activeJobIdsRef = useRef(new Set());
+  const resumeJobIdsRef = useRef(new Set());
+  const generationRunRef = useRef(false);
   const previewUrlsRef = useRef(new Set());
   const regionStartRef = useRef(null);
   const regionAdjustRef = useRef(null);
@@ -967,9 +1029,6 @@ export function DesignWorkshopView() {
   const [brandColor, setBrandColor] = useState(BRAND_COLORS[0].value);
   const [colorScheme, setColorScheme] = useState("light");
   const [spec, setSpec] = useState(DEFAULT_SPEC);
-  const [componentStates, setComponentStates] = useState(
-    COMPONENT_STATES.map((item) => item.id),
-  );
   const [references, setReferences] = useState([]);
   const [iterationSource, setIterationSource] = useState("");
   const [entries, setEntries] = useState([]);
@@ -977,13 +1036,15 @@ export function DesignWorkshopView() {
   const [uploadingDesign, setUploadingDesign] = useState(false);
   const [running, setRunning] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [cancelConfirmationOpen, setCancelConfirmationOpen] = useState(false);
+  const [failedDeviceIds, setFailedDeviceIds] = useState([]);
   const [status, setStatus] = useState("");
   const [localError, setLocalError] = useState("");
   const [mediaError, setMediaError] = useState("");
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyPage, setHistoryPage] = useState(0);
-  const [tabletPane, setTabletPane] = useState("controls");
-  const [promptPreviewOpen, setPromptPreviewOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [workspaceView, setWorkspaceView] = useState("controls");
   const [pageTypePicker, setPageTypePicker] = useState(null);
   const [configPicker, setConfigPicker] = useState(null);
   const [fullscreenOpen, setFullscreenOpen] = useState(false);
@@ -993,8 +1054,11 @@ export function DesignWorkshopView() {
   const [analysisBusy, setAnalysisBusy] = useState(false);
   const [analysisError, setAnalysisError] = useState("");
   const [analysisElements, setAnalysisElements] = useState([]);
+  const [analysisSelectedId, setAnalysisSelectedId] = useState("");
+  const [analysisExporting, setAnalysisExporting] = useState(false);
   const [analysisTypes, setAnalysisTypes] = useState(["text", "icon", "image"]);
   const [activeImageDimensions, setActiveImageDimensions] = useState(null);
+  const [analysisImageDimensions, setAnalysisImageDimensions] = useState(null);
   const [regionDialogOpen, setRegionDialogOpen] = useState(false);
   const [regionMode, setRegionMode] = useState(false);
   const [regions, setRegions] = useState([]);
@@ -1020,14 +1084,33 @@ export function DesignWorkshopView() {
   const device = getDesignDevice(viewDeviceId);
   const radiusLabel =
     SPEC_OPTIONS.radius.find(([id]) => id === spec.radius)?.[1] || "标准 8px";
-  const designMetrics = metricsForDeviceOption(device, {
-    densityId: spec.density,
-    radiusLabel,
-  });
+  const densityLabel =
+    SPEC_OPTIONS.density.find(([id]) => id === spec.density)?.[1] || "均衡";
+  const brandLabel =
+    BRAND_COLORS.find((item) => item.value === brandColor)?.label || "主色";
+  const selectedDeviceLabel = selectedDeviceIds
+    .map((id) => getDesignDevice(id)?.label)
+    .filter(Boolean)
+    .join(" / ");
+  const activeSystem = useMemo(
+    () =>
+      resolveDesignSystem(device, {
+        ...spec,
+        brandColor,
+        colorScheme,
+      }),
+    [brandColor, colorScheme, device, spec],
+  );
   const isIteration = Boolean(iterationSource);
   const hasReference = isIteration || references.length > 0;
   const activeModel =
     models.find((item) => item.id === modelId) || models[0] || null;
+  const referenceLimit = activeModel
+    ? Math.min(
+        MAX_REFERENCES,
+        Math.max(0, Number(activeModel.maxReferenceImages || 0)),
+      )
+    : MAX_REFERENCES;
   const unitCost = Math.max(0, Number(activeModel?.creditCost || 0));
   const totalCost =
     unitCost * Math.max(1, isIteration ? 1 : selectedDeviceIds.length);
@@ -1160,45 +1243,67 @@ export function DesignWorkshopView() {
             : regionActionGuide.next;
 
   const buildPrompt = useCallback(
-    (targetDevice = device) => {
-      if (isIteration)
-        return [
-          "任务类型：基于参考图的受控 UI 迭代，不是重新设计整张页面。",
-          `本次唯一修改：${iterationBrief.trim() || "保持当前设计，仅提升文字和边缘清晰度"}。`,
-          "锁定规则：除上述修改外，原图的画布比例、页面结构、组件位置与尺寸、间距、圆角、颜色、图标和装饰必须保持不变，不要新增、删除或移动任何元素。",
-          `输出要求：${targetDevice.label} ${targetDevice.ratio}，正视图，整张图就是设计稿本身，不要样机、透视、倾斜、拼贴或设计软件界面。`,
-        ].join("\n");
-      const pagePrompt =
-        pageTypeId === "custom" ? customPageType.trim() : pageType.prompt;
-      return [
-        references.length
-          ? `基于提供的 ${references.length} 张参考界面进行重新设计：${brief.trim() || "在保持信息结构与视觉系统的前提下提升视觉质量"}。`
-          : `为「${brief.trim() || "一款现代数字产品"}」设计一张高保真 UI 设计稿。`,
-        `设备载体：${targetDevice.prompt}（生成画幅 ${targetDevice.ratio}）。`,
-        `页面结构：${pagePrompt || "根据业务自由组合导航、内容和操作区域"}。`,
-        `视觉风格：${visualStyle.prompt}。`,
-        `配色规范：品牌主色 ${brandColor}，${colorScheme === "dark" ? "深色" : "浅色"}模式。`,
-        `栅格与间距：${designMetrics.columns} 列栅格，左右安全边距 ${designMetrics.margin}px，列间距 ${designMetrics.gutter}px。`,
-        `组件规范：按钮、输入框统一为 ${designMetrics.controlHeight}px 高，${radiusLabel}。`,
-        "整张图就是设计稿本身，铺满画布；不要设备样机、透视、多页拼贴、设计软件窗口或水印。",
-      ].join("\n");
-    },
+    (targetDevice = device, { isAnchor = false } = {}) =>
+      buildDesignSystemPrompt({
+        device: targetDevice,
+        spec,
+        brief,
+        pageType,
+        pageTypeId,
+        customPageType,
+        visualStyle,
+        brandColor,
+        colorScheme,
+        references,
+        isIteration,
+        iterationBrief,
+        selectedDeviceLabels: selectedDeviceIds
+          .map((id) => getDesignDevice(id)?.label)
+          .filter(Boolean),
+        isAnchor,
+      }),
     [
       brandColor,
       brief,
       colorScheme,
       customPageType,
-      designMetrics,
       device,
       isIteration,
       iterationBrief,
       pageType,
       pageTypeId,
-      radiusLabel,
-      references.length,
-      visualStyle.prompt,
+      references,
+      selectedDeviceIds,
+      spec,
+      visualStyle,
     ],
   );
+
+  const patchSpec = useCallback((key, value) => {
+    setSpec((current) => {
+      if (key === "mobileSystem") {
+        const profile = getPhoneProfiles(value)[0];
+        return {
+          ...current,
+          mobileSystem: value,
+          phoneProfile: profile?.id || current.phoneProfile,
+        };
+      }
+      return { ...current, [key]: value };
+    });
+  }, []);
+
+  const toggleSpecState = useCallback((id) => {
+    setSpec((current) => {
+      const states = current.states || [];
+      const next = states.includes(id)
+        ? states.length > 1
+          ? states.filter((item) => item !== id)
+          : states
+        : [...states, id];
+      return { ...current, states: next };
+    });
+  }, []);
 
   const persistRegionProcess = useCallback((patch = {}) => {
     const snapshot = {
@@ -1214,6 +1319,55 @@ export function DesignWorkshopView() {
     regionPersistRef.current = snapshot;
     return writeRegionProcessSession(snapshot);
   }, []);
+
+  const ingestDesignJob = useCallback((job, result = null, { activate = true } = {}) => {
+    const incoming = jobToEntries(job, result);
+    if (!incoming.length || !mountedRef.current) return [];
+    const urls = new Set(incoming.map((item) => item.url));
+    setEntries((current) => [
+      ...incoming,
+      ...current.filter((item) => !urls.has(item.url)),
+    ]);
+    if (activate) {
+      setActiveOutput(incoming[0].url);
+      setViewDeviceId(incoming[0].deviceId || "web");
+      setWorkspaceView("canvas");
+    }
+    return incoming;
+  }, []);
+
+  const resumeActiveJob = useCallback(async (job, signal) => {
+    const jobId = String(job?.id || "");
+    if (!jobId || resumeJobIdsRef.current.has(jobId)) return;
+    resumeJobIdsRef.current.add(jobId);
+    activeJobIdsRef.current.add(jobId);
+    if (mountedRef.current) {
+      setRunning(true);
+      setWorkspaceView("canvas");
+      setStatus(`正在恢复 ${String(job.input?.viewLabel || "未完成设计稿")}`);
+    }
+    try {
+      const completed = await waitForServerAiJob(jobId, {
+        signal,
+        onStatus: (message) => mountedRef.current && setStatus(`恢复任务 · ${message}`),
+        onImage: (_urls, partialJob, partialResult) => {
+          if (!signal.aborted) ingestDesignJob(partialJob, partialResult);
+        },
+      });
+      if (!signal.aborted) ingestDesignJob(completed.job || job, completed.result);
+    } catch (error) {
+      if (error?.name !== "AbortError" && mountedRef.current) {
+        setLocalError(error?.message || "未完成任务恢复失败");
+      }
+    } finally {
+      resumeJobIdsRef.current.delete(jobId);
+      activeJobIdsRef.current.delete(jobId);
+      if (!resumeJobIdsRef.current.size && !generationRunRef.current && mountedRef.current) {
+        setRunning(false);
+        setStatus("");
+      }
+    }
+  }, [ingestDesignJob]);
 
   const applyRegionSession = useCallback((session, boxes) => {
     if (!session?.outputUrl || !boxes?.length) return;
@@ -1275,6 +1429,17 @@ export function DesignWorkshopView() {
           .map((job) => String(job.input?.parentOutputUrl || ""))
           .filter(Boolean),
       ]);
+      const activeJobs = response.jobs.filter((job) =>
+        ACTIVE_JOB_STATUSES.has(String(job.status || "").toLowerCase()),
+      );
+      if (activeJobs.length) {
+        if (!recoveryControllerRef.current || recoveryControllerRef.current.signal.aborted) {
+          recoveryControllerRef.current = new AbortController();
+        }
+        activeJobs.forEach((job) => {
+          void resumeActiveJob(job, recoveryControllerRef.current.signal);
+        });
+      }
       const urls = new Set(next.map((item) => item.url));
       const parentPool = [
         ...next.map((item) => item.url),
@@ -1357,7 +1522,7 @@ export function DesignWorkshopView() {
         }
       }
     }
-  }, [persistRegionProcess]);
+  }, [persistRegionProcess, resumeActiveJob]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -1389,6 +1554,21 @@ export function DesignWorkshopView() {
         setBrandColor(saved.brandColor);
       if (["light", "dark"].includes(saved.colorScheme))
         setColorScheme(saved.colorScheme);
+      if (saved && typeof saved === "object") {
+        setSpec((current) => ({
+          ...current,
+          audience: saved.audience || current.audience,
+          goal: saved.goal || current.goal,
+          navigation: saved.navigation || current.navigation,
+          density: saved.density || current.density,
+          typography: saved.typography || current.typography,
+          radius: saved.radius || current.radius,
+          responsive: saved.responsive || current.responsive,
+          mobileSystem: saved.mobileSystem || current.mobileSystem,
+          phoneProfile: saved.phoneProfile || current.phoneProfile,
+          states: Array.isArray(saved.states) ? saved.states : current.states,
+        }));
+      }
     }
     const session = readRegionProcessSession();
     if (session) {
@@ -1419,11 +1599,17 @@ export function DesignWorkshopView() {
           if (prompt) setBrief(prompt);
         }
       })
-      .catch(() => undefined);
+      .catch((error) => {
+        if (mountedRef.current) {
+          setLocalError(error?.message || "设计模型配置加载失败，请刷新后重试");
+        }
+      });
     return () => {
       mountedRef.current = false;
       taskControllerRef.current?.abort();
       historyControllerRef.current?.abort();
+      recoveryControllerRef.current?.abort();
+      analysisControllerRef.current?.abort();
       for (const url of previewUrlsRef.current) URL.revokeObjectURL(url);
     };
   }, [applyRegionSession, loadHistory]);
@@ -1440,7 +1626,6 @@ export function DesignWorkshopView() {
         brandColor,
         colorScheme,
         ...spec,
-        componentStates,
         designSpecVersion: 2,
       }),
     );
@@ -1448,7 +1633,6 @@ export function DesignWorkshopView() {
     brandColor,
     brief,
     colorScheme,
-    componentStates,
     customPageType,
     pageTypeId,
     selectedDeviceIds,
@@ -1457,11 +1641,75 @@ export function DesignWorkshopView() {
   ]);
 
   useEffect(() => {
+    analysisControllerRef.current?.abort();
+    analysisControllerRef.current = null;
+    setAnalysisBusy(false);
     setActiveImageDimensions(null);
+    setAnalysisImageDimensions(null);
+    setAnalysisElements([]);
+    setAnalysisSelectedId("");
+    setAnalysisError("");
+    setMediaError("");
+
+    const savedRegionOutput = String(regionPersistRef.current.outputUrl || "");
+    if (activeOutput && savedRegionOutput === activeOutput) {
+      const restored = normalizeRegionBoxesFromSession(regionPersistRef.current);
+      if (restored.length) {
+        setRegions(restored);
+        setActiveRegionId((current) =>
+          restored.some((item) => item.id === current) ? current : restored[0].id,
+        );
+        setRegionMode(true);
+        setRegionPrompt(regionPersistRef.current.prompt || "");
+        setRegionRecognition(regionPersistRef.current.recognitionTypes || []);
+        setRegionAction(regionPersistRef.current.editAction || "remove");
+        setRegionPreviewUrl(
+          regionPersistRef.current.resultUrl || restored[0]?.resultUrl || "",
+        );
+        setRegionStatus(regionPersistRef.current.stage || "");
+        setRegionError(regionPersistRef.current.error || "");
+        setRegionBusy(Boolean(regionPersistRef.current.loading));
+      }
+      return;
+    }
+
+    setRegionDialogOpen(false);
+    setRegionMode(false);
+    setRegions([]);
+    setActiveRegionId("");
+    setRegionDraft(null);
+    setManualMode(false);
+    setManualDraft(null);
+    setRegionPrompt("");
+    setRegionRecognition([]);
+    setRegionAction("remove");
+    setRegionPreviewUrl("");
+    setRegionStatus("");
+    setRegionError("");
+    setRegionBusy(false);
+    setRegionReferences((current) => {
+      for (const item of current) {
+        if (!item.preview) continue;
+        URL.revokeObjectURL(item.preview);
+        previewUrlsRef.current.delete(item.preview);
+      }
+      return [];
+    });
   }, [activeOutput]);
 
   useEffect(() => {
+    const nextDeviceId = outputMaps.devices[activeOutput];
+    if (nextDeviceId) setViewDeviceId(nextDeviceId);
+  }, [activeOutput, outputMaps.devices]);
+
+  useEffect(() => {
+    if (running || activeOutput) setWorkspaceView("canvas");
+  }, [activeOutput, running]);
+
+  useEffect(() => {
     if (!activeOutput || !regions.length) return;
+    const savedRegionOutput = String(regionPersistRef.current.outputUrl || "");
+    if (savedRegionOutput && savedRegionOutput !== activeOutput) return;
     persistRegionProcess({
       outputUrl: activeOutput,
       selection: region,
@@ -1518,10 +1766,15 @@ export function DesignWorkshopView() {
       else if (pageTypePicker) setPageTypePicker(null);
       else if (configPicker) setConfigPicker(null);
       else if (regionDialogOpen) setRegionDialogOpen(false);
+      else if (analysisOpen) {
+        analysisControllerRef.current?.abort();
+        setAnalysisOpen(false);
+      }
     };
     window.addEventListener("keydown", onEscape);
     return () => window.removeEventListener("keydown", onEscape);
   }, [
+    analysisOpen,
     configPicker,
     pageTypePicker,
     regionDialogOpen,
@@ -1590,8 +1843,8 @@ export function DesignWorkshopView() {
   const addFiles = useCallback(
     (files) => {
       const images = [...files]
-        .filter((file) => file.type?.startsWith("image/"))
-        .slice(0, Math.max(0, MAX_REFERENCES - references.length));
+        .filter(isImageFile)
+        .slice(0, Math.max(0, referenceLimit - references.length));
       if (!images.length) return;
       const next = images.map((file) => {
         const preview = URL.createObjectURL(file);
@@ -1599,11 +1852,11 @@ export function DesignWorkshopView() {
         return { id: crypto.randomUUID(), file, preview, name: file.name };
       });
       setReferences((current) =>
-        [...current, ...next].slice(0, MAX_REFERENCES),
+        [...current, ...next].slice(0, referenceLimit),
       );
       setIterationSource("");
     },
-    [references.length],
+    [referenceLimit, references.length],
   );
 
   const rememberUpload = useCallback((entry) => {
@@ -1660,12 +1913,13 @@ export function DesignWorkshopView() {
     [rememberUpload, requestAuth, selectedDeviceIds, viewDeviceId],
   );
 
-  const generate = useCallback(async () => {
+  const generate = useCallback(async (retryDeviceIds = null) => {
     if (requestAuth({ featureLabel: "UI 设计稿" })) return;
+    if (running || generationRunRef.current) return;
     setLocalError("");
+    setFailedDeviceIds([]);
     if (isIteration && !iterationBrief.trim()) {
       setLocalError("请描述本次迭代只需要修改的内容");
-      setTabletPane("controls");
       return;
     }
     if (!brief.trim() && !hasReference) {
@@ -1677,31 +1931,53 @@ export function DesignWorkshopView() {
       return;
     }
     const maxReferenceImages = Math.max(0, Number(activeModel.maxReferenceImages || 0));
+    if (!isIteration && references.length > maxReferenceImages) {
+      setLocalError(
+        `当前模型最多支持 ${maxReferenceImages} 张参考图，请移除多余图片后再生成。`,
+      );
+      return;
+    }
     if (hasReference && maxReferenceImages < 1) {
       setLocalError("当前模型不支持参考图，请在后台切换模型后重试。");
       return;
     }
+    const requestedDeviceIds = Array.isArray(retryDeviceIds) && retryDeviceIds.length
+      ? retryDeviceIds
+      : selectedDeviceIds;
     const devices = isIteration
       ? [
           getDesignDevice(
             tree.metaByOutput[iterationSource]?.deviceId || viewDeviceId,
           ),
         ]
-      : selectedDeviceIds.map(getDesignDevice);
+      : orderDevicesForConsistency(requestedDeviceIds.map(getDesignDevice));
+    const canUseSeriesAnchor = !isIteration && devices.length > 1 && maxReferenceImages > 0;
+    const retryAnchor = Array.isArray(retryDeviceIds) && activeOutput ? activeOutput : "";
+    const reservedReferences = (iterationSource ? 1 : 0) + (canUseSeriesAnchor || retryAnchor ? 1 : 0);
+    const referenceCapacity = Math.max(0, maxReferenceImages - reservedReferences);
+    if (references.length > referenceCapacity) {
+      setLocalError(
+        `当前模型本次最多读取 ${referenceCapacity} 张用户参考图，请移除多余图片后再生成。`,
+      );
+      return;
+    }
     const controller = new AbortController();
     taskControllerRef.current?.abort();
     taskControllerRef.current = controller;
+    generationRunRef.current = true;
     setRunning(true);
+    setWorkspaceView("canvas");
     setStatus("正在上传参考图...");
-    setTabletPane("canvas");
     const groupId = `ui-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`;
     try {
       const uploaded = [];
-      const referenceCapacity = Math.max(0, maxReferenceImages - (iterationSource ? 1 : 0));
-      for (const item of references.slice(0, referenceCapacity))
+      for (const item of references)
         uploaded.push(
           await uploadAiInputFile(item.file, { signal: controller.signal }),
         );
+      let seriesAnchorUrl = retryAnchor;
+      const failures = [];
+      let completedCount = 0;
       for (let index = 0; index < devices.length; index += 1) {
         if (controller.signal.aborted)
           throw new DOMException("Aborted", "AbortError");
@@ -1709,115 +1985,163 @@ export function DesignWorkshopView() {
         setStatus(`正在生成 ${target.label}（${index + 1}/${devices.length}）`);
         const sourceUrls = [
           ...(iterationSource ? [iterationSource] : []),
+          ...(seriesAnchorUrl ? [seriesAnchorUrl] : []),
           ...uploaded,
         ].slice(0, maxReferenceImages);
         const modelOutputParams = modelOutputParamsForRatio(activeModel, target.ratio);
-        const created = await createServerAiJob({
-          kind: iterationSource ? "ui-design-edit" : "ui-design-generation",
-          clientRequestId: crypto.randomUUID(),
-          prompt: buildPrompt(target),
-          input: {
-            source: "ui-design-workshop",
-            sourceUrls,
-            ...modelOutputParams,
-            platform: target.label,
-            deviceId: target.id,
-            viewId: target.id,
-            viewLabel: target.label,
-            parentOutputUrl: iterationSource,
-            iterationMode: Boolean(iterationSource),
-            batchId: groupId,
-            groupId,
-            batchIndex: index,
-            batchSize: devices.length,
-          },
-          params: {
-            publicModelKey: activeModel.publicModelKey,
-            modelHint: activeModel.id,
-            ...modelOutputParams,
-            deviceId: target.id,
-            viewId: target.id,
-            viewLabel: target.label,
-            parentOutputUrl: iterationSource,
-            batchId: groupId,
-            groupId,
-            batchIndex: index,
-            batchSize: devices.length,
-          },
-          units: 1,
-        });
-        const jobId = created.job?.id;
-        if (!jobId) throw new Error("任务创建后未返回任务 ID");
-        activeJobIdsRef.current.add(jobId);
-        const completed = await waitForServerAiJob(jobId, {
-          signal: controller.signal,
-          onStatus: setStatus,
-        });
-        activeJobIdsRef.current.delete(jobId);
-        const url =
-          completed.result?.outputs?.[0] ||
-          completed.job?.originalMediaUrls?.[0] ||
-          "";
-        if (!url) throw new Error("任务已完成，但没有返回可用图片");
-        const entry = {
-          url,
-          displayUrl: completed.job?.displayMediaUrls?.[0] || "",
-          jobId,
-          groupId,
-          groupIndex: index,
-          parent: iterationSource,
-          deviceId: target.id,
-          createdAt: completed.job?.createdAt || new Date().toISOString(),
-        };
-        setEntries((current) => [
-          entry,
-          ...current.filter((item) => item.url !== url),
-        ]);
-        setActiveOutput(url);
-        setViewDeviceId(target.id);
+        let jobId = "";
+        try {
+          const targetSystem = resolveDesignSystem(target, {
+            ...spec,
+            brandColor,
+            colorScheme,
+          });
+          const created = await createServerAiJob({
+            kind: iterationSource ? "ui-design-edit" : "ui-design-generation",
+            clientRequestId: crypto.randomUUID(),
+            prompt: buildPrompt(target, { isAnchor: devices.length > 1 && index === 0 }),
+            input: {
+              source: "ui-design-workshop",
+              sourceUrls,
+              ...modelOutputParams,
+              platform: targetSystem.platformLabel,
+              designSystem: targetSystem.platformId,
+              phoneProfile: spec.phoneProfile,
+              deviceId: target.id,
+              viewId: target.id,
+              viewLabel: target.label,
+              parentOutputUrl: iterationSource,
+              iterationMode: Boolean(iterationSource),
+              batchId: groupId,
+              groupId,
+              batchIndex: index,
+              batchSize: devices.length,
+            },
+            params: {
+              publicModelKey: activeModel.publicModelKey,
+              modelHint: activeModel.id,
+              ...modelOutputParams,
+              deviceId: target.id,
+              viewId: target.id,
+              viewLabel: target.label,
+              parentOutputUrl: iterationSource,
+              batchId: groupId,
+              groupId,
+              batchIndex: index,
+              batchSize: devices.length,
+            },
+            units: 1,
+            signal: controller.signal,
+          });
+          jobId = String(created.job?.id || "");
+          if (!jobId) throw new Error("任务创建后未返回任务 ID");
+          activeJobIdsRef.current.add(jobId);
+          const completed = await waitForServerAiJob(jobId, {
+            signal: controller.signal,
+            onStatus: (message) => setStatus(`${target.label} · ${message}`),
+            onImage: (_urls, partialJob, partialResult) =>
+              ingestDesignJob(partialJob, partialResult),
+          });
+          const incoming = ingestDesignJob(completed.job || created.job, completed.result);
+          if (!incoming.length) throw new Error("任务已完成，但没有返回可用图片");
+          if (!seriesAnchorUrl && canUseSeriesAnchor) seriesAnchorUrl = incoming[0].url;
+          completedCount += 1;
+        } catch (error) {
+          if (error?.name === "AbortError") throw error;
+          failures.push({ deviceId: target.id, message: error?.message || `${target.label} 生成失败` });
+        } finally {
+          if (jobId) activeJobIdsRef.current.delete(jobId);
+        }
       }
-      if (iterationSource) {
+      if (iterationSource && completedCount) {
         setIterationSource("");
         setIterationBrief("");
       }
-      notificationService.success("设计稿生成完成");
+      setFailedDeviceIds(failures.map((item) => item.deviceId));
+      if (failures.length) {
+        setLocalError(
+          `${completedCount ? `已完成 ${completedCount} 张，` : ""}${failures.length} 个设备生成失败：${failures[0].message}`,
+        );
+      }
+      if (completedCount) notificationService.success(`已完成 ${completedCount} 张设计稿`);
     } catch (error) {
       if (error?.name !== "AbortError" && mountedRef.current)
         setLocalError(error?.message || "设计稿生成失败");
     } finally {
+      generationRunRef.current = false;
       if (mountedRef.current && taskControllerRef.current === controller) {
-        setRunning(false);
-        setStatus("");
+        if (!resumeJobIdsRef.current.size) {
+          setRunning(false);
+          setStatus("");
+        }
       }
     }
   }, [
     requestAuth,
+    activeOutput,
     activeModel,
+    brandColor,
     brief,
     buildPrompt,
+    colorScheme,
     hasReference,
     isIteration,
     iterationBrief,
     iterationSource,
+    ingestDesignJob,
     references,
+    running,
     selectedDeviceIds,
+    spec,
     tree.metaByOutput,
     viewDeviceId,
   ]);
 
-  const cancelGeneration = useCallback(async () => {
+  const cancelGeneration = useCallback(async ({ acknowledgeUpstream = false } = {}) => {
+    if (cancelling) return;
     setCancelling(true);
-    taskControllerRef.current?.abort();
-    await Promise.allSettled(
-      [...activeJobIdsRef.current].map((id) => cancelServerAiJob(id)),
+    setStatus(acknowledgeUpstream ? "正在停止任务" : "正在确认任务阶段");
+    const jobIds = [...activeJobIdsRef.current];
+    const settled = await Promise.allSettled(
+      jobIds.map((id) =>
+        cancelServerAiJob(id, { acknowledgeUpstream }),
+      ),
     );
+    settled.forEach((item, index) => {
+      if (item.status === "fulfilled") activeJobIdsRef.current.delete(jobIds[index]);
+    });
+    const needsConfirmation = settled.some(
+      (item) => item.status === "rejected" && item.reason?.code === "task_cancel_confirmation_required",
+    );
+    if (needsConfirmation && !acknowledgeUpstream) {
+      if (mountedRef.current) {
+        setCancelConfirmationOpen(true);
+        setCancelling(false);
+        setStatus("任务已提交上游，请确认是否停止接收结果");
+      }
+      return;
+    }
+    const failed = settled.find((item) => item.status === "rejected");
+    if (failed) {
+      if (mountedRef.current) {
+        setCancelling(false);
+        setLocalError(failed.reason?.message || "停止任务失败，任务仍在继续");
+        setStatus("任务仍在运行，完成后会自动显示");
+      }
+      return;
+    }
+    taskControllerRef.current?.abort();
+    recoveryControllerRef.current?.abort();
     activeJobIdsRef.current.clear();
+    resumeJobIdsRef.current.clear();
+    generationRunRef.current = false;
     if (mountedRef.current) {
       setRunning(false);
       setCancelling(false);
+      setCancelConfirmationOpen(false);
       setStatus("");
     }
-  }, []);
+  }, [cancelling]);
 
   const openPicker = (type, ref) => {
     const rect = ref.current?.getBoundingClientRect();
@@ -1929,7 +2253,7 @@ export function DesignWorkshopView() {
     };
     regionStartRef.current = point;
     setRegionDraft({ ...point, width: 0, height: 0 });
-    layer.setPointerCapture?.(event.pointerId);
+    event.currentTarget.setPointerCapture?.(event.pointerId);
   };
   const moveRegion = (event) => {
     const start = regionStartRef.current;
@@ -1978,6 +2302,9 @@ export function DesignWorkshopView() {
       return;
     }
     box.id = crypto.randomUUID();
+    if (regionPersistRef.current.outputUrl !== activeOutput) {
+      regionPersistRef.current = { outputUrl: activeOutput };
+    }
     setRegions((current) => [...current, box]);
     setActiveRegionId(box.id);
     setRegionError("");
@@ -2598,14 +2925,6 @@ export function DesignWorkshopView() {
         regions.find((item) => item.conversationId)?.conversationId || "";
       for (let index = 0; index < regions.length; index += 1) {
         const box = regions[index];
-        if (box.resultUrl) {
-          if (!firstStyleReferenceUrl) {
-            firstStyleReferenceUrl =
-              (await flattenPngAlphaOntoSolid(box.resultUrl).catch(() => "")) ||
-              box.resultUrl;
-          }
-          continue;
-        }
         const elements = (box.elements || []).filter((item) =>
           (box.marked || []).includes(item.id),
         );
@@ -2790,33 +3109,181 @@ export function DesignWorkshopView() {
 
   const runFullAnalysis = useCallback(async () => {
     if (!activeOutput || analysisBusy || !analysisTypes.length) return;
+    analysisControllerRef.current?.abort();
+    const controller = new AbortController();
+    analysisControllerRef.current = controller;
     setAnalysisBusy(true);
     setAnalysisError("");
     try {
       const width =
-        activeImageDimensions?.width || device.viewport?.width || 1440;
+        analysisImageDimensions?.width || activeImageDimensions?.width || device.viewport?.width || 1440;
       const height =
-        activeImageDimensions?.height || device.viewport?.height || 810;
+        analysisImageDimensions?.height || activeImageDimensions?.height || device.viewport?.height || 810;
       const document = await analyzeDesignCropElements({
         cropImage: activeOutput,
         width,
         height,
         recognitionTypes: analysisTypes,
         model: analysisModelId,
+        signal: controller.signal,
       });
+      if (controller.signal.aborted) return;
       setAnalysisElements(document.nodes || []);
+      setAnalysisSelectedId(document.nodes?.[0]?.id || "");
     } catch (error) {
-      setAnalysisError(error?.message || "元素分析失败");
+      if (error?.name !== "AbortError") {
+        setAnalysisError(error?.message || "元素分析失败");
+      }
     } finally {
-      setAnalysisBusy(false);
+      if (analysisControllerRef.current === controller) {
+        analysisControllerRef.current = null;
+        setAnalysisBusy(false);
+      }
     }
   }, [
     activeImageDimensions,
+    analysisImageDimensions,
     activeOutput,
     analysisBusy,
     analysisModelId,
     analysisTypes,
     device.viewport,
+  ]);
+
+  const loadAnalysisImage = useCallback(async () => {
+    const blob = await fetchAuthenticatedMediaBlob(
+      activeOutput,
+      { fallbackUrl: outputMaps.displays[activeOutput] || "" },
+    );
+    return decodeImageBlob(blob);
+  }, [activeOutput, outputMaps.displays]);
+
+  const cropAnalysisNodes = useCallback(
+    async (nodes) => {
+      const image = await loadAnalysisImage();
+      const sourceSize = analysisImageDimensions || activeImageDimensions || {
+        width: image.naturalWidth,
+        height: image.naturalHeight,
+      };
+      for (const node of nodes) {
+        const canvas = cropElementFromImage(image, node, sourceSize);
+        const blob = await new Promise((resolve, reject) => {
+          canvas.toBlob(
+            (value) =>
+              value ? resolve(value) : reject(new Error("切片导出失败")),
+            "image/png",
+          );
+        });
+        downloadBlobFile(
+          blob,
+          `${slugFileName(node.name || node.type || node.id)}.png`,
+        );
+      }
+    },
+    [activeImageDimensions, analysisImageDimensions, loadAnalysisImage],
+  );
+
+  const exportAnalysisNodes = useCallback(
+    async (nodes) => {
+      if (!activeOutput || !nodes.length || analysisExporting) return;
+      setAnalysisExporting(true);
+      setAnalysisError("");
+      try {
+        await cropAnalysisNodes(nodes);
+        notificationService.success(
+          nodes.length > 1 ? `已导出 ${nodes.length} 个 PNG` : "已导出 PNG",
+        );
+      } catch (error) {
+        setAnalysisError(error?.message || "导出 PNG 失败");
+      } finally {
+        setAnalysisExporting(false);
+      }
+    },
+    [activeOutput, analysisExporting, cropAnalysisNodes],
+  );
+
+  const exportCodexPack = useCallback(async () => {
+    if (!activeOutput || analysisExporting) return;
+    setAnalysisExporting(true);
+    setAnalysisError("");
+    try {
+      const sourceBlob = await fetchAuthenticatedMediaBlob(activeOutput, {
+        fallbackUrl: outputMaps.displays[activeOutput] || "",
+      });
+      const sourceImage = await decodeImageBlob(sourceBlob);
+      const sourceSize = {
+        width: sourceImage.naturalWidth,
+        height: sourceImage.naturalHeight,
+      };
+      const coordinateBasis =
+        analysisImageDimensions || activeImageDimensions || sourceSize;
+      const sourceElements = remapElementsToSource(
+        analysisElements,
+        coordinateBasis,
+        sourceSize,
+      );
+      const system = resolveDesignSystem(device, {
+        ...spec,
+        brandColor,
+        colorScheme,
+      });
+      const handoff = buildCodexHandoff({
+        brief,
+        pageType,
+        visualStyle,
+        system,
+        prompt: buildPrompt(device),
+        imageUrl: "design.png",
+        elements: sourceElements,
+        sourceSize,
+      });
+      const [{ strToU8, zipSync }, artboardPng] = await Promise.all([
+        import("fflate"),
+        sourceBlob.type.startsWith("image/png")
+          ? Promise.resolve(sourceBlob)
+          : renderImageAsPng(sourceImage),
+      ]);
+      const files = {
+        "design.png": new Uint8Array(await artboardPng.arrayBuffer()),
+        "design-system.json": strToU8(JSON.stringify(handoff, null, 2)),
+        "tokens.css": strToU8(buildDesignTokensCss(system)),
+        "README.md": strToU8(buildDesignHandoffMarkdown(handoff)),
+      };
+      for (const node of handoff.elements) {
+        const canvas = cropElementFromImage(sourceImage, node, sourceSize);
+        const blob = await canvasToPngBlob(canvas);
+        files[node.file] = new Uint8Array(await blob.arrayBuffer());
+      }
+      const archive = zipSync(files, { level: 6 });
+      downloadBlobFile(
+        new Blob([archive], { type: "application/zip" }),
+        `${slugFileName(brief || pageType?.label || "ui-design")}-handoff.zip`,
+      );
+      notificationService.success(
+        handoff.elements.length
+          ? `交付包已生成，包含 ${handoff.elements.length} 个元素 PNG`
+          : "交付包已生成",
+      );
+    } catch (error) {
+      setAnalysisError(error?.message || "导出规范包失败");
+    } finally {
+      setAnalysisExporting(false);
+    }
+  }, [
+    activeOutput,
+    activeImageDimensions,
+    analysisElements,
+    analysisExporting,
+    analysisImageDimensions,
+    brandColor,
+    brief,
+    buildPrompt,
+    colorScheme,
+    device,
+    outputMaps.displays,
+    pageType,
+    spec,
+    visualStyle,
   ]);
 
   const approveRegionResult = useCallback(async () => {
@@ -2826,9 +3293,7 @@ export function DesignWorkshopView() {
     try {
       const baseTitle = (regionPrompt.trim() || "框选优化素材").slice(0, 100);
       for (const [index, url] of regionResultUrls.entries()) {
-        const response = await fetch(url);
-        if (!response.ok) throw new Error("框选结果读取失败");
-        const blob = await response.blob();
+        const blob = await fetchAuthenticatedMediaBlob(url);
         const file = new File([blob], `ui-region-${Date.now()}-${index + 1}.png`, {
           type: blob.type || "image/png",
         });
@@ -2857,12 +3322,14 @@ export function DesignWorkshopView() {
     }
   }, [clearRegionSession, regionApproving, regionPrompt, regionResultUrls]);
 
-  const artboardRatio = device.ratio.split(":").map(Number);
+  const artboardRatio = [
+    activeSystem.viewport.width,
+    activeSystem.viewport.height,
+  ];
   const artboardStyle = {
     aspectRatio: `${artboardRatio[0]} / ${artboardRatio[1]}`,
     width: `min(100%, calc((100dvh - var(--app-header-offset, 64px) - 128px) * ${artboardRatio[0] / artboardRatio[1]}))`,
   };
-  const assembledPrompt = buildPrompt(device);
   const regionSelectionLayer = activeImageDimensions ? (
     <div
       className={`dws-region-layer${regionMode && !regionBusy ? " is-drawing" : " has-selection"}`}
@@ -2993,36 +3460,23 @@ export function DesignWorkshopView() {
   return (
     <main
       ref={rootRef}
-      className={`dws${!entries.length && !running ? " is-blank" : ""} is-tablet-${tabletPane}${isDark ? "" : " is-light"}`}
+      className={`dws is-tablet-${workspaceView}${!entries.length && !running ? " is-blank" : ""}${isDark ? "" : " is-light"}`}
       style={{ "--dws-brand": brandColor }}
     >
       <div className="dws-shell">
-        <nav className="dws-tablet-tabs" aria-label="平板工作区视图">
-          <button
-            type="button"
-            className={tabletPane === "controls" ? "is-on" : ""}
-            aria-pressed={tabletPane === "controls"}
-            onClick={() => setTabletPane("controls")}
-          >
-            <i className="bi bi-sliders2" />
-            <span>参数</span>
+        <nav className="dws-tablet-tabs" role="tablist" aria-label="UI 设计工作区">
+          <button type="button" role="tab" aria-selected={workspaceView === "controls"} className={workspaceView === "controls" ? "is-on" : ""} onClick={() => setWorkspaceView("controls")}>
+            <i className="bi bi-sliders" />需求与规范
           </button>
-          <button
-            type="button"
-            className={tabletPane === "canvas" ? "is-on" : ""}
-            aria-pressed={tabletPane === "canvas"}
-            onClick={() => setTabletPane("canvas")}
-          >
-            <i className="bi bi-easel2" />
-            <span>画布</span>
-            {majors.length > 0 && <em>{majors.length}</em>}
+          <button type="button" role="tab" aria-selected={workspaceView === "canvas"} className={workspaceView === "canvas" ? "is-on" : ""} onClick={() => setWorkspaceView("canvas")}>
+            <i className="bi bi-easel2" />画布{running ? <em>运行中</em> : activeOutput ? <em>1</em> : null}
           </button>
         </nav>
         <aside className="dws-panel">
           <div className="dws-panel-scroll">
             <section className="dws-engine">
               <span className="dws-engine-icon">
-                <i className="bi bi-cpu" />
+                <SoftMark name="cpu" size="md" />
               </span>
               <div className="dws-engine-control">
                 <WorkshopSelect
@@ -3084,7 +3538,6 @@ export function DesignWorkshopView() {
                           <strong>
                             基于 {activeVersionLabel || "当前版本"} 迭代
                           </strong>
-                          <small>仅修改明确描述的内容</small>
                         </div>
                       </div>
                     ) : (
@@ -3099,11 +3552,15 @@ export function DesignWorkshopView() {
                               type="button"
                               aria-label={`移除参考图 ${index + 1}`}
                               onClick={() =>
-                                setReferences((current) =>
-                                  current.filter(
+                                setReferences((current) => {
+                                  if (item.preview) {
+                                    URL.revokeObjectURL(item.preview);
+                                    previewUrlsRef.current.delete(item.preview);
+                                  }
+                                  return current.filter(
                                     (entry) => entry.id !== item.id,
-                                  ),
-                                )
+                                  );
+                                })
                               }
                             >
                               <i className="bi bi-x" />
@@ -3119,9 +3576,9 @@ export function DesignWorkshopView() {
                     type="button"
                     className="dws-composer-add"
                     disabled={
-                      isIteration || references.length >= MAX_REFERENCES
+                      isIteration || references.length >= referenceLimit
                     }
-                    aria-label={`添加参考图，还可添加 ${MAX_REFERENCES - references.length} 张`}
+                    aria-label={`添加参考图，还可添加 ${Math.max(0, referenceLimit - references.length)} 张`}
                     onClick={() => fileInputRef.current?.click()}
                   >
                     <i className="bi bi-plus-lg" />
@@ -3146,7 +3603,7 @@ export function DesignWorkshopView() {
                 ref={fileInputRef}
                 hidden
                 type="file"
-                accept="image/*"
+                accept="image/png,image/jpeg,image/webp"
                 multiple
                 onChange={(event) => {
                   addFiles(event.target.files);
@@ -3166,45 +3623,45 @@ export function DesignWorkshopView() {
               />
             </section>
             {isIteration ? (
-              <section className="dws-block dws-iteration-guide">
-                <header>
-                  <div>
-                    <small>CONTROLLED ITERATION</small>
-                    <strong>受控迭代进行中</strong>
-                  </div>
-                  <button
-                    type="button"
-                    className="dws-iteration-exit"
-                    onClick={() => {
-                      setIterationSource("");
-                      setIterationBrief("");
-                    }}
-                  >
-                    退出迭代
-                  </button>
-                </header>
-                <ol>
-                  <li>
-                    <b>1</b>
-                    <span>
-                      基准成稿 <em>{activeVersionLabel || "当前版本"}</em>
-                      ，只出这一端
-                    </span>
-                  </li>
-                  <li>
-                    <b>2</b>
-                    <span>在上方输入框写「只改什么」</span>
-                  </li>
-                  <li>
-                    <b>3</b>
-                    <span>其余布局、配色、组件、文案全部锁定</span>
-                  </li>
-                </ol>
+              <section className="dws-block dws-iteration-bar">
+                <button
+                  type="button"
+                  className="dws-iteration-exit"
+                  onClick={() => {
+                    setIterationSource("");
+                    setIterationBrief("");
+                  }}
+                >
+                  退出迭代
+                </button>
               </section>
             ) : (
               <>
                 <section className="dws-block">
-                  <span className="dws-label">设备载体 · 可多选同版生成</span>
+                  <button
+                    type="button"
+                    className={`dws-settings-summary${settingsOpen ? " is-open" : ""}`}
+                    aria-expanded={settingsOpen}
+                    onClick={() => setSettingsOpen((current) => !current)}
+                  >
+                    <span>
+                      <strong>设计系统</strong>
+                      <small>
+                        {selectedDeviceLabel}
+                        {activeSystem.profile
+                          ? ` · ${activeSystem.profile.label}`
+                          : ""}{" "}
+                        · {pageType.label} · {visualStyle.label}
+                      </small>
+                    </span>
+                    <i
+                      className={`bi ${settingsOpen ? "bi-chevron-up" : "bi-chevron-down"}`}
+                    />
+                  </button>
+                </section>
+                {settingsOpen ? (
+                <section className="dws-block">
+                  <span className="dws-label">设备</span>
                   <div
                     className="dws-devices"
                     role="group"
@@ -3231,11 +3688,48 @@ export function DesignWorkshopView() {
                         }
                       >
                         <i className={`bi ${item.icon}`} />
+                        <em>{item.label}</em>
                         <small>{item.ratio}</small>
                       </button>
                     ))}
                   </div>
                 </section>
+                ) : null}
+                {settingsOpen && selectedDeviceIds.includes("phone") ? (
+                <section className="dws-block">
+                  <div className="dws-select-field">
+                    <span className="dws-label">手机系统</span>
+                    <div className="dws-scheme" role="group" aria-label="手机系统">
+                      {MOBILE_SYSTEMS.map((item) => (
+                        <button
+                          key={item.id}
+                          type="button"
+                          className={spec.mobileSystem === item.id ? "is-on" : ""}
+                          onClick={() => patchSpec("mobileSystem", item.id)}
+                        >
+                          {item.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="dws-select-field">
+                    <span className="dws-label">机型规范</span>
+                    <WorkshopSelect
+                      value={spec.phoneProfile}
+                      options={getPhoneProfiles(spec.mobileSystem).map((item) => ({
+                        value: item.id,
+                        label: `${item.label} · ${item.width}×${item.height}`,
+                        icon: "bi-phone",
+                      }))}
+                      onChange={(value) => patchSpec("phoneProfile", value)}
+                      label="机型规范"
+                      className="dws-control-select"
+                      icon="bi-phone"
+                    />
+                  </div>
+                </section>
+                ) : null}
+                {settingsOpen ? (
                 <section className="dws-block dws-quick-settings">
                   <div className="dws-select-field">
                     <span className="dws-label">页面类型</span>
@@ -3285,6 +3779,8 @@ export function DesignWorkshopView() {
                     />
                   )}
                 </section>
+                ) : null}
+                {settingsOpen ? (
                 <section className="dws-block dws-color-row">
                   <div className="dws-color-brand dws-select-field">
                     <span className="dws-label">品牌主色</span>
@@ -3338,6 +3834,8 @@ export function DesignWorkshopView() {
                     </div>
                   </div>
                 </section>
+                ) : null}
+                {settingsOpen ? (
                 <section className="dws-block dws-specification">
                   <button
                     ref={specTriggerRef}
@@ -3354,35 +3852,25 @@ export function DesignWorkshopView() {
                       <i className="bi bi-sliders" />
                       <strong>设计规范</strong>
                       <small>
-                        {designMetrics.columns} 列 ·{" "}
-                        {designMetrics.controlHeight}px · 大众用户 · 转化 · 均衡
-                        · 标准
+                        {activeSystem.platformLabel} · {densityLabel} ·{" "}
+                        {radiusLabel} · 点击 {activeSystem.tokens.control.touch}px
                       </small>
                     </span>
                     <i className="bi bi-chevron-right" />
                   </button>
                 </section>
+                ) : null}
               </>
             )}
-            <details className="dws-prompt-preview" open={promptPreviewOpen}>
-              <summary
-                onClick={(event) => {
-                  event.preventDefault();
-                  setPromptPreviewOpen((current) => !current);
-                }}
-              >
-                <i className="bi bi-braces" />
-                查看将要发送的完整提示词
-                <i
-                  className={`bi bi-chevron-down${promptPreviewOpen ? " is-open" : ""}`}
-                />
-              </summary>
-              <pre>{assembledPrompt}</pre>
-            </details>
             {localError && (
               <p className="dws-error" role="alert">
                 <i className="bi bi-exclamation-circle" />
-                {localError}
+                <span>{localError}</span>
+                {failedDeviceIds.length > 0 && !running && (
+                  <button type="button" className="dws-retry" onClick={() => generate(failedDeviceIds)}>
+                    <i className="bi bi-arrow-clockwise" />重试失败设备
+                  </button>
+                )}
               </p>
             )}
           </div>
@@ -3392,7 +3880,7 @@ export function DesignWorkshopView() {
               type="button"
               disabled={running}
               aria-label={`${isIteration ? "生成迭代稿" : references.length ? "参考图重绘" : "生成设计稿"}，${costLabel}`}
-              onClick={generate}
+              onClick={() => generate()}
             >
               <span className="dws-generate-icon">
                 <i
@@ -3409,9 +3897,6 @@ export function DesignWorkshopView() {
                         ? "参考图重绘"
                         : "生成设计稿"}
                 </strong>
-                <small>
-                  {running ? "正在创建界面结构与视觉细节" : "预计扣费"}
-                </small>
               </span>
               <span className="dws-generate-price">
                 <strong>{costLabel}</strong>
@@ -3421,80 +3906,66 @@ export function DesignWorkshopView() {
         </aside>
         <section className="dws-stage">
           <div className="dws-stage-ambient" />
-          <div className="dws-stage-meta" aria-hidden="true">
-            <span>{device.label}</span>
-            <b>{device.ratio}</b>
-            {activeVersionLabel && <em>{activeVersionLabel}</em>}
-          </div>
-          <div className="dws-stage-spec" aria-hidden="true">
-            <span>
-              <i className="bi bi-grid-3x3-gap" />
-              {designMetrics.columns} COL
-            </span>
-            <span>{designMetrics.spacing} PT</span>
-            <span>{designMetrics.controlHeight} PX</span>
-            <span>{radiusLabel}</span>
-          </div>
+          {activeOutput ? (
           <div className="dws-stage-actions">
-            <button
-              type="button"
-              disabled={running || uploadingDesign}
-              onClick={openDesignPicker}
-            >
-              <i
-                className={`bi ${uploadingDesign ? "bi-arrow-repeat spin" : "bi-upload"}`}
-              />
-              <span>{uploadingDesign ? "上传中" : "上传设计稿"}</span>
-            </button>
-            <button
-              type="button"
-              className="is-editor"
-              disabled={!activeOutput || running}
-              onClick={() => setAnalysisOpen(true)}
-            >
-              <i className="bi bi-bounding-box" />
-              <span>分析元素</span>
-            </button>
-            <button
-              type="button"
-              className={`is-region${regionBusy || hasRegionSelection ? " is-on" : ""}`}
-              disabled={!activeOutput || running}
-              onClick={() => {
-                if (!hasRegionSelection) setRegionMode(true);
-                setManualMode(false);
-                setRegionDialogOpen(true);
-              }}
-            >
-              <i className="bi bi-bounding-box-circles" />
-              <span>{regionBusy ? `处理中 ${regionPendingCount}` : "框选优化"}</span>
-            </button>
-            <button
-              type="button"
-              disabled={!activeOutput || running || activeNode?.canIterate === false}
-              onClick={() => {
-                setIterationSource(activeOutput);
-                setIterationBrief("");
-                setReferences([]);
-                setTabletPane("controls");
-              }}
-            >
-              <i className="bi bi-arrow-repeat" />
-              <span>迭代此版本</span>
-            </button>
-            <button
-              type="button"
-              disabled={!activeOutput}
-              onClick={() =>
-                downloadAuthenticatedMedia(
-                  activeOutput,
-                  `ui-design-${Date.now()}.png`,
-                )
-              }
-            >
-              <i className="bi bi-download" />
-              <span>下载</span>
-            </button>
+                <button
+                  type="button"
+                  className={`is-region${regionBusy || hasRegionSelection ? " is-on" : ""}`}
+                  disabled={running}
+                  onClick={() => {
+                    if (!hasRegionSelection) setRegionMode(true);
+                    setManualMode(false);
+                    setRegionDialogOpen(true);
+                  }}
+                >
+                  <i className="bi bi-bounding-box-circles" />
+                  <span>{regionBusy ? `处理中 ${regionPendingCount}` : "框选优化"}</span>
+                </button>
+                <button
+                  type="button"
+                  aria-label="迭代此版本"
+                  disabled={running || activeNode?.canIterate === false}
+                  onClick={() => {
+                    setIterationSource(activeOutput);
+                    setIterationBrief("");
+                    setReferences([]);
+                  }}
+                >
+                  <i className="bi bi-arrow-repeat" />
+                  <span>迭代</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => downloadAuthenticatedMedia(
+                    activeOutput,
+                    `ui-design-${Date.now()}.png`,
+                  ).catch((error) => setMediaError(error?.message || "设计稿下载失败"))}
+                >
+                  <DownloadIcon />
+                  <span>下载</span>
+                </button>
+                <button
+                  type="button"
+                  className="is-editor is-secondary"
+                  disabled={running}
+                  onClick={() => setAnalysisOpen(true)}
+                >
+                  <PackageCheck size={15} aria-hidden="true" />
+                  <span>交付</span>
+                </button>
+                <button
+                  type="button"
+                  className="is-secondary"
+                  disabled={running || uploadingDesign}
+                  onClick={openDesignPicker}
+                >
+                  <i
+                    className={`bi ${uploadingDesign ? "bi-arrow-repeat spin" : "bi-upload"}`}
+                  />
+                  <span>{uploadingDesign ? "上传中" : "上传"}</span>
+                </button>
           </div>
+          ) : null}
           <div
             className="dws-canvas"
             onDragOver={(event) => {
@@ -3522,6 +3993,11 @@ export function DesignWorkshopView() {
                 activeOutput &&
                 canOpenWallevenImagePreview() && setFullscreenOpen(true)
               }
+              onKeyDown={(event) => {
+                if (!activeOutput || running || !["Enter", " "].includes(event.key)) return;
+                event.preventDefault();
+                if (canOpenWallevenImagePreview()) setFullscreenOpen(true);
+              }}
             >
               {activeOutput ? (
                 <div className="dws-artboard-stage">
@@ -3533,12 +4009,13 @@ export function DesignWorkshopView() {
                       alt="UI 设计稿预览"
                       loading="eager"
                       maxDimension={2200}
-                      onLoad={(event) =>
+                      onLoad={(event) => {
+                        setMediaError("");
                         setActiveImageDimensions({
                           width: event.currentTarget.naturalWidth,
                           height: event.currentTarget.naturalHeight,
-                        })
-                      }
+                        });
+                      }}
                       onError={() =>
                         setMediaError("图片加载失败，请切换版本或重新生成")
                       }
@@ -3547,8 +4024,6 @@ export function DesignWorkshopView() {
                 </div>
               ) : (
                 <EmptyCanvas
-                  device={device}
-                  pageType={pageType}
                   uploading={uploadingDesign}
                   onUpload={openDesignPicker}
                 />
@@ -3558,17 +4033,16 @@ export function DesignWorkshopView() {
                   <span className="dws-running-scan" />
                   <i className="bi bi-stars" />
                   <strong>{status || "正在生成设计稿…"}</strong>
-                  <span>正在组织布局、组件与视觉层级</span>
                   <button
                     type="button"
                     className="dws-running-cancel"
                     disabled={cancelling}
-                    onClick={cancelGeneration}
+                    onClick={() => cancelGeneration()}
                   >
                     <i
                       className={`bi ${cancelling ? "bi-arrow-repeat spin" : "bi-stop-fill"}`}
                     />
-                    {cancelling ? "正在确认" : "停止后续生成"}
+                    {cancelling ? "正在确认" : "停止生成"}
                   </button>
                 </div>
               )}
@@ -3695,25 +4169,14 @@ export function DesignWorkshopView() {
           style={configPicker.style}
           value={configPicker.type === "style" ? styleId : brandColor}
           spec={spec}
-          states={componentStates}
           device={device}
           onSelect={(value) => {
             if (configPicker.type === "style") setStyleId(value);
             else setBrandColor(value);
             setConfigPicker(null);
           }}
-          onSpec={(key, value) =>
-            setSpec((current) => ({ ...current, [key]: value }))
-          }
-          onState={(id) =>
-            setComponentStates((current) =>
-              current.includes(id)
-                ? current.length > 1
-                  ? current.filter((item) => item !== id)
-                  : current
-                : [...current, id],
-            )
-          }
+          onSpec={patchSpec}
+          onState={toggleSpecState}
           onClose={() => setConfigPicker(null)}
         />
       )}
@@ -3724,14 +4187,17 @@ export function DesignWorkshopView() {
           title="UI 设计稿"
           filename="ui-design.png"
           metadata={{
-            id: activeVersionLabel || "ui-design",
+            id: activeVersionLabel || majors[0]?.label || "ui-design",
             category: pageType.label,
-            ratio: device.ratio,
+            ratio: activeSystem.ratio,
             style: visualStyle.label,
           }}
           gallery={outputMaps.outputs}
           displaySources={outputMaps.displays}
-          onSelect={setActiveOutput}
+          onSelect={(url) => {
+            setActiveOutput(url);
+            setViewDeviceId(outputMaps.devices[url] || viewDeviceId);
+          }}
           onClose={() => setFullscreenOpen(false)}
           onDownload={() =>
             downloadAuthenticatedMedia(activeOutput, "ui-design.png")
@@ -3746,7 +4212,7 @@ export function DesignWorkshopView() {
           metadata={{
             id: "region-optimize",
             category: "框选优化",
-            ratio: device.ratio,
+            ratio: activeSystem.ratio,
           }}
           gallery={regionResultUrls}
           onSelect={setRegionPreviewUrl}
@@ -3785,6 +4251,11 @@ export function DesignWorkshopView() {
               return;
             }
             setActiveOutput(url);
+            setViewDeviceId(
+              tree.metaByOutput[url]?.deviceId ||
+                entry?.deviceId ||
+                viewDeviceId,
+            );
             setVersionDrawerOpen(false);
           }}
           onIterate={(node) => {
@@ -3795,9 +4266,13 @@ export function DesignWorkshopView() {
                 ? entry.parent || url
                 : url;
             setActiveOutput(source);
+            setViewDeviceId(
+              tree.metaByOutput[source]?.deviceId ||
+                entry?.deviceId ||
+                viewDeviceId,
+            );
             setIterationSource(source);
             setVersionDrawerOpen(false);
-            setTabletPane("controls");
           }}
           onDelete={async (value) => {
             const nodes = Array.isArray(value) ? value : [value];
@@ -3808,21 +4283,40 @@ export function DesignWorkshopView() {
                 ),
               ),
             );
+            const removedEntries = entries.filter((item) => urls.has(item.url));
             const ids = [
               ...new Set(
-                entries
-                  .filter((item) => urls.has(item.url))
+                removedEntries
                   .map((item) => item.jobId)
-                  .filter(Boolean),
+                  .filter(
+                    (id) => id && !String(id).startsWith("upload-"),
+                  ),
               ),
             ];
-            await Promise.all(
-              ids.map((id) => deleteServerAiJob(id, { cascade: true })),
-            );
+            setLocalError("");
+            try {
+              await Promise.all(
+                ids.map((id) => deleteServerAiJob(id, { cascade: true })),
+              );
+            } catch (error) {
+              const message = error?.message || "删除版本失败，请稍后重试";
+              setLocalError(message);
+              notificationService.error(message);
+              return;
+            }
+            forgetSavedUploads(urls);
             setEntries((current) =>
               current.filter((item) => !urls.has(item.url)),
             );
+            if (urls.has(activeOutput)) {
+              const fallback = entries.find((item) => !urls.has(item.url));
+              setActiveOutput(fallback?.url || "");
+              if (fallback?.deviceId) setViewDeviceId(fallback.deviceId);
+            }
             setVersionDrawerOpen(false);
+            notificationService.success(
+              removedEntries.length > 1 ? "版本组已删除" : "版本已删除",
+            );
           }}
           onClose={() => setVersionDrawerOpen(false)}
         />
@@ -3998,7 +4492,11 @@ export function DesignWorkshopView() {
                       if (canOpenWallevenImagePreview()) setRegionFullscreen(true);
                     }}
                   >
-                    <img src={url} alt={`编辑结果 ${index + 1}`} />
+                    <AuthenticatedImage
+                      src={url}
+                      alt={`编辑结果 ${index + 1}`}
+                      maxDimension={720}
+                    />
                     {regionResultUrls.length > 1 && <em>{index + 1}</em>}
                     <button
                       type="button"
@@ -4098,7 +4596,7 @@ export function DesignWorkshopView() {
                 ref={regionFileInputRef}
                 hidden
                 type="file"
-                accept="image/*"
+                accept="image/png,image/jpeg,image/webp"
                 multiple
                 onChange={(event) => {
                   addRegionFiles(event.target.files);
@@ -4173,33 +4671,16 @@ export function DesignWorkshopView() {
                 </div>
               )}
             </div>
+            {(regionError || regionStatus) && (
             <p
               className={`dws-region-composer__status${regionError ? " is-error" : regionResult ? " is-done" : ""}`}
             >
-              {regionError || regionStatus || regionNextStep}
+              {regionError || regionStatus}
             </p>
-            <label className="dws-region-composer__option">
-              <input
-                type="checkbox"
-                checked={regionWantsTransparent}
-                disabled
-              />
-              <span>
-                {regionWantsTransparent
-                  ? "输出真透明 PNG，不要白底或棋盘格"
-                  : regionAction === "replace-background"
-                    ? "更换背景模式输出完整背景"
-                    : regionAction === "improve-icon"
-                      ? "美化图标保留完整画面"
-                      : regionAction === "remove"
-                        ? "移除元素后保留完整画面"
-                        : "透明背景"}
-              </span>
-            </label>
+            )}
             <p className="dws-region-composer__cost">
               图片编辑 · 输出 {regionOutputSizeLabel} · 预计消耗{" "}
               {regions.length} 张图费用
-              <em> ⌘/Ctrl + Enter</em>
             </p>
             <div className="dws-region-composer__actions">
               <button
@@ -4252,18 +4733,20 @@ export function DesignWorkshopView() {
             className="dws-analysis-layer"
             role="dialog"
             aria-modal="true"
-            aria-label="元素分析"
+            aria-label="设计交付"
           >
             <section className="dws-analysis-panel">
               <header>
                 <div>
-                  <small>AI DESIGN CANVAS</small>
-                  <strong>分析设计元素</strong>
+                  <strong>设计交付</strong>
                 </div>
                 <button
                   type="button"
-                  aria-label="关闭元素分析"
-                  onClick={() => setAnalysisOpen(false)}
+                  aria-label="关闭设计交付"
+                  onClick={() => {
+                    analysisControllerRef.current?.abort();
+                    setAnalysisOpen(false);
+                  }}
                 >
                   <i className="bi bi-x-lg" />
                 </button>
@@ -4295,27 +4778,43 @@ export function DesignWorkshopView() {
                 </span>
               </div>
               <div className="dws-analysis-stage">
-                <div className="dws-analysis-canvas">
+                <div
+                  className="dws-analysis-canvas"
+                  style={{
+                    aspectRatio: `${analysisImageDimensions?.width || activeImageDimensions?.width || 16} / ${analysisImageDimensions?.height || activeImageDimensions?.height || 9}`,
+                  }}
+                >
                   <AuthenticatedImage
                     src={activeOutput}
                     alt="待分析设计稿"
                     loading="eager"
                     maxDimension={1800}
+                    onLoad={(event) =>
+                      setAnalysisImageDimensions({
+                        width: event.currentTarget.naturalWidth,
+                        height: event.currentTarget.naturalHeight,
+                      })
+                    }
                   />
                   <div className="dws-analysis-elements">
                     {analysisElements.map((node, index) => (
-                      <span
+                      <button
                         key={node.id}
+                        type="button"
+                        className={
+                          analysisSelectedId === node.id ? "is-on" : ""
+                        }
                         style={{
-                          left: `${(node.x / (activeImageDimensions?.width || device.viewport.width)) * 100}%`,
-                          top: `${(node.y / (activeImageDimensions?.height || device.viewport.height)) * 100}%`,
-                          width: `${(node.width / (activeImageDimensions?.width || device.viewport.width)) * 100}%`,
-                          height: `${(node.height / (activeImageDimensions?.height || device.viewport.height)) * 100}%`,
+                          left: `${(node.x / (analysisImageDimensions?.width || activeImageDimensions?.width || device.viewport.width)) * 100}%`,
+                          top: `${(node.y / (analysisImageDimensions?.height || activeImageDimensions?.height || device.viewport.height)) * 100}%`,
+                          width: `${(node.width / (analysisImageDimensions?.width || activeImageDimensions?.width || device.viewport.width)) * 100}%`,
+                          height: `${(node.height / (analysisImageDimensions?.height || activeImageDimensions?.height || device.viewport.height)) * 100}%`,
                         }}
+                        onClick={() => setAnalysisSelectedId(node.id)}
                       >
                         <b>{index + 1}</b>
                         <em>{node.name || node.type}</em>
-                      </span>
+                      </button>
                     ))}
                   </div>
                 </div>
@@ -4323,9 +4822,14 @@ export function DesignWorkshopView() {
               <footer>
                 <span>
                   {analysisBusy
-                    ? "正在调用分析模型识别元素…"
-                    : "识别文字、图标、大图和页面模块"}
+                    ? "正在识别元素…"
+                    : analysisExporting
+                      ? "正在导出…"
+                      : analysisElements.length
+                        ? "元素已就绪"
+                        : "设计稿可直接打包，也可先分析元素"}
                 </span>
+                <div className="dws-analysis-actions">
                 <button
                   type="button"
                   disabled={analysisBusy || !analysisTypes.length}
@@ -4339,18 +4843,52 @@ export function DesignWorkshopView() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => {
-                    setAnalysisOpen(false);
-                    setRegionMode(true);
-                  }}
+                  disabled={
+                    analysisBusy ||
+                    analysisExporting ||
+                    !analysisElements.some((item) => item.id === analysisSelectedId)
+                  }
+                  onClick={() =>
+                    exportAnalysisNodes(
+                      analysisElements.filter(
+                        (item) => item.id === analysisSelectedId,
+                      ),
+                    )
+                  }
                 >
-                  框选局部分析
+                  导出 PNG
                 </button>
+                <button
+                  type="button"
+                  disabled={
+                    analysisBusy ||
+                    analysisExporting
+                  }
+                  onClick={exportCodexPack}
+                >
+                  <PackageCheck size={14} aria-hidden="true" />导出交付包
+                </button>
+                </div>
               </footer>
             </section>
           </div>,
           document.body,
         )}
+      <ConfirmDialog
+        open={cancelConfirmationOpen}
+        busy={cancelling}
+        heading="停止接收这次生成结果？"
+        description="任务已经提交给模型服务。停止后不再接收结果，本次积分不会退回。"
+        confirmLabel="仍然停止"
+        busyLabel="正在停止…"
+        icon="bi-stop-circle"
+        light={!isDark}
+        onClose={() => {
+          setCancelConfirmationOpen(false);
+          setStatus("任务继续运行，完成后会自动显示");
+        }}
+        onConfirm={() => cancelGeneration({ acknowledgeUpstream: true })}
+      />
     </main>
   );
 }

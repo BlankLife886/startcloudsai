@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { ChevronRight, Copy, Download, Group, Image as ImageIcon, MessageSquare, Minus, Music2, Plus, Puzzle, RefreshCw, Star, Trash2, Video } from "lucide-react";
+import { ChevronRight, Copy, Group, Image as ImageIcon, MessageSquare, Minus, Music2, Plus, Puzzle, RefreshCw, Star, Trash2, Video } from "lucide-react";
+import { DownloadIcon } from "@react/components/common/DownloadIcon.jsx";
+import { RegenerateIcon } from "@react/components/common/RegenerateIcon.jsx";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { canvasNodeShadow, CanvasIconWellStyle } from "@/lib/canvas-ui";
@@ -556,7 +558,7 @@ function ErrorContent({ node, theme, onRetry }: Pick<NodeContentRendererProps, "
                 }}
                 onMouseDown={(event) => event.stopPropagation()}
             >
-                <RefreshCw className="size-3.5" />
+                <RegenerateIcon className="size-3.5" />
                 {t("canvas.node.retry")}
             </button>
         </div>
@@ -688,12 +690,13 @@ function ImageNodeContent(props: NodeContentRendererProps) {
     );
 }
 
-function EmptyImageContent({ theme }: NodeContentRendererProps) {
+function EmptyImageContent({ node, theme }: NodeContentRendererProps) {
     const { t } = useTranslation();
+    const deleted = node.metadata?.deletedByHistory;
     return (
         <div className="flex h-full w-full flex-col items-center justify-center gap-2" style={{ color: theme.node.placeholder }}>
             <ImageIcon className="size-5 opacity-45" />
-            <span className="text-[12px] font-medium opacity-50">{t("canvas.node.emptyImage")}</span>
+            <span className="text-[12px] font-medium opacity-50">{deleted ? node.metadata?.deletionMessage || "该图片已被删除" : t("canvas.node.emptyImage")}</span>
         </div>
     );
 }
@@ -790,7 +793,7 @@ function ImageContent({
             {primaryImage?.status === "error" ? <BatchImageFailureActions placement="left" onRetry={() => onRetryBatchImage?.(primaryImage.id)} onDelete={() => onDeleteBatchImage?.(primaryImage.id)} /> : null}
             {primaryImage?.content ? (
                 <button type="button" className="canvas-node-overlay-btn absolute left-2.5 top-2.5 z-30 flex h-7 items-center gap-1 rounded-full border px-2 text-[10px] font-medium transition hover:opacity-90" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.activeText }} title={t("common.download")} onClick={(event) => (event.stopPropagation(), onDownloadBatchImage?.(primaryImage.id))}>
-                    <Download className="size-3" />
+                    <DownloadIcon className="size-3" />
                     {t("common.download")}
                 </button>
             ) : null}
@@ -856,7 +859,7 @@ function ExpandedImageCard({ node, image, index, onView, onSetPrimary, onDuplica
             {image.content ? (
                 <div className="absolute inset-x-2 top-2 flex items-center gap-1">
                     <button type="button" className="canvas-node-overlay-btn flex h-7 min-w-0 flex-1 items-center justify-center gap-1 rounded-full border px-1.5 text-[10px] font-medium transition hover:opacity-90" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.activeText }} title={t("common.download")} onClick={(event) => (event.stopPropagation(), onDownload())}>
-                        <Download className="size-3 shrink-0" />
+                        <DownloadIcon className="size-3 shrink-0" />
                         <span className="truncate">{t("common.download")}</span>
                     </button>
                     <button type="button" className="canvas-node-overlay-btn flex h-7 min-w-0 flex-1 items-center justify-center gap-1 rounded-full border px-1.5 text-[10px] font-medium transition hover:opacity-90" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.activeText }} title={t("canvas.node.createCopy")} onClick={(event) => (event.stopPropagation(), onDuplicate())}>
@@ -880,7 +883,7 @@ function BatchImageFailureActions({ placement, onRetry, onDelete }: { placement:
     return (
         <div className={`absolute top-3 z-30 flex items-center gap-1.5 ${placement === "left" ? "left-3" : "right-3"}`}>
             <button type="button" className="flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium shadow-sm transition hover:scale-[1.02]" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }} onClick={(event) => (event.stopPropagation(), onRetry())}>
-                <RefreshCw className="size-3.5" />
+                <RegenerateIcon className="size-3.5" />
                 {t("canvas.node.retry")}
             </button>
             <button type="button" className="grid size-8 place-items-center rounded-lg border shadow-sm transition hover:scale-[1.02]" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }} onClick={(event) => (event.stopPropagation(), onDelete())} aria-label={t("common.delete")} title={t("common.delete")}>

@@ -168,6 +168,10 @@ Worker 每 5 分钟锁定一批到期作业，在 R2 删除前再次检查任务
 
 每个任务最多一条投稿（`task_id UNIQUE`）。保存用户、标题、封面/媒体 key、`pending|approved|rejected|removed` 状态、拒绝原因、审核人/时间、精选标记、分类、展示排序及 JSON 标签数组；`reviewed_by` 指向 `admin_accounts`。作品标签最多 20 个，单项不超过 32 个字符，由管理接口统一清洗和去重。索引覆盖状态、精选、分类与用户时间线。
 
+### `gallery_submission_reports` / `user_blocks`
+
+作品举报按 `(submission_id, reporter_user_id)` 唯一，同一用户重复举报会更新理由、说明并重新进入 `open` 状态，不制造重复记录；举报保留作品作者快照关联，并由数据库约束禁止自举报。用户屏蔽以 `(blocker_user_id, blocked_user_id)` 为主键，幂等写入并禁止屏蔽自己；登录用户查询公开画廊时通过 `NOT EXISTS` 过滤已屏蔽作者，匿名访问不套用个人过滤。
+
 ### `notifications` 与 `notification_reads`
 
 通知可属于单个用户，也可在 `user_id IS NULL` 时代表全站通知。个人通知直接使用 `read_at`；全站通知通过 `(user_id, notification_id)` 复合主键表记录每个用户的已读状态。

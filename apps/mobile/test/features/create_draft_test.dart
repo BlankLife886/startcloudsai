@@ -88,6 +88,7 @@ Widget _app(
   _FakeDraftStore store, {
   String? initialPrompt,
   CreationPreset? initialPreset,
+  ReferenceImageDraft? initialReference,
   List<ImageModelOption> models = _models,
   List<TaskItem> tasks = const [],
   bool authenticated = false,
@@ -117,6 +118,7 @@ Widget _app(
     home: CreateScreen(
       initialPrompt: initialPrompt,
       initialPreset: initialPreset,
+      initialReference: initialReference,
     ),
   ),
 );
@@ -416,6 +418,44 @@ void main() {
     expect(find.text('当前任务最多使用 6 张参考图'), findsNothing);
     expect(find.byKey(const Key('creation-reference-api-limit')), findsNothing);
     expect(find.byKey(const Key('creation-add-reference')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('incoming asset becomes a reference on a capable model', (
+    tester,
+  ) async {
+    const referenceModel = ImageModelOption(
+      id: 'reference-model',
+      name: '参考图模型',
+      description: '',
+      resolutions: ['1K'],
+      aspectRatios: ['1:1'],
+      qualities: ['medium'],
+      maxImages: 1,
+      maxReferenceImages: 4,
+      pricePoints: 3,
+    );
+    await tester.binding.setSurfaceSize(const Size(320, 760));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(
+      _app(
+        _FakeDraftStore(),
+        textScale: 1.6,
+        models: [_models.first, referenceModel],
+        initialReference: const ReferenceImageDraft(
+          localPath: '',
+          filename: '产品主图',
+          remoteKey: 'uploads/user/product.png',
+          remoteUrl: '/api/v1/files/uploads/user/product-thumb.webp',
+          sourceAssetId: 'asset-product',
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('creation-reference-strip')), findsOneWidget);
+    expect(find.text('参考图模型'), findsWidgets);
+    expect(find.byTooltip('移除主参考'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -775,7 +815,9 @@ void main() {
             'type': 't2i',
             'status': 'succeeded',
             'count': 1,
-            'originalUrls': ['/api/v1/files/tasks/user/task-ref/original/0.png'],
+            'originalUrls': [
+              '/api/v1/files/tasks/user/task-ref/original/0.png',
+            ],
             'outputKeys': ['tasks/user/task-ref/original/0.png'],
             'params': {
               'userPrompt': '青色草地图',
@@ -792,7 +834,10 @@ void main() {
 
     await tester.longPress(find.byKey(const Key('creation-current-task-ref')));
     await tester.pumpAndSettle();
-    expect(find.byKey(const Key('creation-turn-task-ref-reference')), findsOneWidget);
+    expect(
+      find.byKey(const Key('creation-turn-task-ref-reference')),
+      findsOneWidget,
+    );
     await tester.tap(find.byKey(const Key('creation-turn-task-ref-reference')));
     await tester.pumpAndSettle();
 

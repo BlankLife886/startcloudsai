@@ -18,6 +18,11 @@ export async function getWallet({ signal } = {}) {
   return apiGet('/me/wallet', { signal, fallbackMessage: '钱包读取失败' })
 }
 
+/** 当前生效订阅；无订阅时 active=false。 */
+export async function getSubscription({ signal } = {}) {
+  return apiGet('/me/subscription', { signal, fallbackMessage: '订阅读取失败' })
+}
+
 /**
  * 兑换码入账：返回 grantCents 和完整钱包快照。
  * 错误码：code_invalid / code_redeemed / code_expired / code_disabled / rate_limited。

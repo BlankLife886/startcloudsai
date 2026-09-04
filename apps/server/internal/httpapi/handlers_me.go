@@ -1,8 +1,12 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"log"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -12,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
+	"github.com/BlankLife886/startcloudsai/server/internal/auth"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
 	"github.com/BlankLife886/startcloudsai/server/internal/userupload"
@@ -26,6 +31,212 @@ type profilePatch struct {
 	WebsiteURL         Opt[string] `json:"websiteUrl"`
 	RequireCostConfirm Opt[bool]   `json:"requireCostConfirm"`
 	Password           Opt[any]    `json:"password"`
+}
+
+type deleteAccountIn struct {
+	Code         string `json:"code"`
+	Confirmation string `json:"confirmation"`
+}
+
+func (s *Server) exportPersonalData(c *gin.Context) {
+	user, err := s.requireUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	now := time.Now().UTC()
+	raw, err := store.BuildPersonalDataExport(c.Request.Context(), s.St.Pool, user.ID, now)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	var formatted bytes.Buffer
+	if err := json.Indent(&formatted, raw, "", "  "); err != nil {
+		fail(c, err)
+		return
+	}
+	formatted.WriteByte('\n')
+	c.Header("Cache-Control", "private, no-store")
+	c.Header("Content-Disposition", fmt.Sprintf(
+		`attachment; filename="starclouds-data-%s.json"`,
+		now.Format("20060102-150405"),
+	))
+	c.Data(http.StatusOK, "application/json; charset=utf-8", formatted.Bytes())
+}
+
+func (s *Server) cookieSession(c *gin.Context, userID uuid.UUID) (*store.Session, error) {
+	token, err := c.Cookie(s.Cfg.SessionCookieName)
+	if err != nil || token == "" {
+		return nil, apperr.E("auth_required", "请使用登录设备管理会话", 401)
+	}
+	session, err := store.GetSessionByTokenHash(c.Request.Context(), s.St.Pool, auth.HashToken(token))
+	if err != nil {
+		return nil, err
+	}
+	if session == nil || session.UserID != userID || !session.ExpiresAt.After(time.Now().UTC()) {
+		return nil, apperr.E("auth_required", "登录状态已失效", 401)
+	}
+	return session, nil
+}
+
+func userSessionDict(item *store.Session, currentID uuid.UUID) gin.H {
+	return gin.H{
+		"id":        item.ID.String(),
+		"current":   item.ID == currentID,
+		"ip":        optionalString(item.IP),
+		"userAgent": optionalString(item.UserAgent),
+		"createdAt": isoValue(item.CreatedAt),
+		"expiresAt": isoValue(item.ExpiresAt),
+	}
+}
+
+func (s *Server) userSessions(c *gin.Context) {
+	user, err := s.requireUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	current, err := s.cookieSession(c, user.ID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	items, err := store.ListActiveUserSessions(c.Request.Context(), s.St.Pool, user.ID, time.Now().UTC())
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	out := make([]gin.H, 0, len(items))
+	for _, item := range items {
+		out = append(out, userSessionDict(item, current.ID))
+	}
+	ok(c, gin.H{"items": out})
+}
+
+func (s *Server) deleteUserSession(c *gin.Context) {
+	user, err := s.requireUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	current, err := s.cookieSession(c, user.ID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	sessionID, err := parseUUIDParam(c, "id")
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	deleted, err := store.DeleteUserSession(c.Request.Context(), s.St.Pool, user.ID, sessionID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if !deleted {
+		fail(c, apperr.E("not_found", "登录设备不存在或已退出", 404))
+		return
+	}
+	if sessionID == current.ID {
+		clearSessionCookie(s, c)
+	}
+	respondNoContent(c)
+}
+
+func (s *Server) deleteUserSessions(c *gin.Context) {
+	user, err := s.requireUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if strings.TrimSpace(c.Query("scope")) != "others" {
+		fail(c, apperr.E("validation_error", "scope 仅支持 others", 422))
+		return
+	}
+	current, err := s.cookieSession(c, user.ID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	revoked, err := store.DeleteOtherUserSessions(c.Request.Context(), s.St.Pool, user.ID, current.ID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ok(c, gin.H{"revoked": revoked})
+}
+
+func clearSessionCookie(s *Server, c *gin.Context) {
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie(s.Cfg.SessionCookieName, "", -1, "/", "", s.Cfg.AppEnv == "production", true)
+}
+
+func (s *Server) deleteAccount(c *gin.Context) {
+	user, err := s.requireUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	var body deleteAccountIn
+	if err := bindJSON(c, &body); err != nil {
+		fail(c, err)
+		return
+	}
+	code := strings.TrimSpace(body.Code)
+	if len(code) != 6 || body.Confirmation != "DELETE" {
+		fail(c, apperr.E("validation_error", "请完成邮箱验证并确认注销", 422))
+		return
+	}
+	ctx := c.Request.Context()
+	activeTasks, err := store.CountActiveTasks(ctx, s.St.Pool, user.ID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	activeRuns, err := store.ListActiveUserAssistantRuns(ctx, s.St.Pool, user.ID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if activeTasks > 0 || len(activeRuns) > 0 {
+		fail(c, apperr.E("account_has_active_tasks", "仍有创作或助手任务进行中，请先停止或等待完成", 409))
+		return
+	}
+	passwordHash, err := auth.HashPassword(auth.NewSessionToken())
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	codeState := emailCodeValid
+	deleted := false
+	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
+		var consumeErr error
+		codeState, consumeErr = s.consumeEmailCodeTx(ctx, tx, user.Email, code)
+		if consumeErr != nil || codeState != emailCodeValid {
+			return consumeErr
+		}
+		deleted, consumeErr = store.AnonymizeUserAccount(ctx, tx, user.ID, passwordHash, time.Now().UTC())
+		return consumeErr
+	})
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if codeState == emailCodeLocked {
+		fail(c, apperr.E("rate_limited", "验证码错误次数过多，请重新获取", 429))
+		return
+	}
+	if codeState != emailCodeValid {
+		fail(c, apperr.E("invalid_code", "验证码错误或已过期", 401))
+		return
+	}
+	if !deleted {
+		fail(c, apperr.E("account_not_deletable", "账号当前无法注销，请重新登录后再试", 409))
+		return
+	}
+	clearSessionCookie(s, c)
+	respondNoContent(c)
 }
 
 func (s *Server) ownedProfileImageURL(ctx context.Context, userID uuid.UUID, raw, field string) (string, string, error) {
@@ -584,6 +795,29 @@ func (s *Server) clearNotifications(c *gin.Context) {
 		return
 	}
 	if err := store.ClearUserNotifications(c.Request.Context(), s.St.Pool, user.ID); err != nil {
+		fail(c, err)
+		return
+	}
+	respondNoContent(c)
+}
+
+func (s *Server) dismissNotification(c *gin.Context) {
+	user, err := s.requireUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	notificationID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		fail(c, apperr.E("validation_error", "id: 无效的 UUID", 422))
+		return
+	}
+	if err := store.DismissUserNotification(
+		c.Request.Context(),
+		s.St.Pool,
+		user.ID,
+		notificationID,
+	); err != nil {
 		fail(c, err)
 		return
 	}

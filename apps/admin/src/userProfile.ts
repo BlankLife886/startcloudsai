@@ -154,3 +154,53 @@ export function formatDurationMs(ms: number | null | undefined) {
   if (seconds < 60) return `${seconds}s`
   return `${Math.floor(seconds / 60)}m ${seconds % 60}s`
 }
+
+export const profileModelLabels: Record<string, string> = {
+  'image-background-remove': '背景移除',
+  'image-upscale': '图片高清放大',
+  'image-watermark-remove': '图片去水印',
+  'video-enhance': '视频增强',
+  'video-watermark-remove': '视频去水印',
+  'vidu/lip-sync': '口型同步',
+}
+
+function catalogName(catalog: Record<string, string> | undefined, value: string) {
+  return String(catalog?.[value] || '').trim()
+}
+
+export function buildModelCatalog(
+  models?: Array<{ id?: string; name?: string; upstreamModel?: string }>,
+) {
+  const next: Record<string, string> = {}
+  for (const model of models || []) {
+    const name = String(model.name || '').trim()
+    if (!name) continue
+    if (model.id) next[model.id] = name
+    if (model.upstreamModel && !next[model.upstreamModel]) next[model.upstreamModel] = name
+  }
+  return next
+}
+
+export function catalogModelName(value: string | null | undefined, catalog?: Record<string, string>) {
+  const key = String(value || '').trim()
+  if (!key) return '默认模型'
+  if (key === '*') return '全部模型'
+  return catalogName(catalog, key) || profileModelLabels[key] || key
+}
+
+export function profileModelLabel(
+  item: Pick<UserProfileBreakdown, 'key' | 'label'>,
+  catalog?: Record<string, string>,
+) {
+  const key = String(item.key || '').trim()
+  const label = String(item.label || '').trim()
+  return (
+    catalogName(catalog, key) ||
+    catalogName(catalog, label) ||
+    profileModelLabels[key] ||
+    profileModelLabels[label] ||
+    label ||
+    key ||
+    '未记录'
+  )
+}

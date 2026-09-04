@@ -6,9 +6,11 @@ import 'package:intl/intl.dart';
 
 import '../../core/network/api_exception.dart';
 import '../../app/starclouds_theme.dart';
+import '../../core/providers.dart';
 import '../../core/widgets/app_notice.dart';
 import '../../core/widgets/app_top_bar.dart';
 import '../../core/widgets/app_visual.dart';
+import '../profile/app_info.dart';
 import '../profile/profile.dart';
 import 'feedback.dart';
 import '../../core/widgets/app_chrome.dart';
@@ -87,6 +89,16 @@ class _FeedbackScreenState extends ConsumerState<FeedbackScreen> {
       context: context,
       isScrollControlled: true,
       builder: (context) => FeedbackComposerSheet(
+        draftStore: ref.read(feedbackDraftStoreProvider),
+        loadDiagnostics: () async {
+          final info = await ref.read(appPackageInfoProvider.future);
+          if (!mounted) return null;
+          return supportDiagnosticText(
+            info,
+            ref.read(appEnvironmentProvider),
+            Theme.of(this.context).platform,
+          );
+        },
         onSubmit: ({required category, required title, required content}) => ref
             .read(feedbackCenterControllerProvider.notifier)
             .submit(category: category, title: title, content: content),
@@ -327,25 +339,7 @@ class _FeedbackFilterChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return Material(
-      color: selected ? colors.onSurface : colors.surfaceContainerLow,
-      shape: const StadiumBorder(),
-      child: InkWell(
-        customBorder: const StadiumBorder(),
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-          child: Text(
-            label,
-            style: Theme.of(context).textTheme.labelLarge?.copyWith(
-              color: selected ? colors.surface : colors.onSurface,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-        ),
-      ),
-    );
+    return AppFilterChip(label: label, selected: selected, onTap: onTap);
   }
 }
 
@@ -586,7 +580,7 @@ class FeedbackDetailSheet extends StatelessWidget {
               DecoratedBox(
                 decoration: BoxDecoration(
                   color: Theme.of(context).colorScheme.surfaceContainerLow,
-                  borderRadius: BorderRadius.circular(18),
+                  borderRadius: BorderRadius.circular(8),
                   border: Border.all(
                     color: Theme.of(context).colorScheme.outlineVariant,
                   ),
@@ -605,7 +599,7 @@ class FeedbackDetailSheet extends StatelessWidget {
               DecoratedBox(
                 decoration: BoxDecoration(
                   color: Theme.of(context).colorScheme.secondaryContainer,
-                  borderRadius: BorderRadius.circular(18),
+                  borderRadius: BorderRadius.circular(8),
                 ),
                 child: Padding(
                   padding: const EdgeInsets.all(14),
@@ -690,10 +684,21 @@ typedef FeedbackSubmitCallback =
       required String content,
     });
 
+typedef FeedbackDiagnosticsLoader = Future<String?> Function();
+
 class FeedbackComposerSheet extends StatefulWidget {
-  const FeedbackComposerSheet({required this.onSubmit, super.key});
+  const FeedbackComposerSheet({
+    required this.onSubmit,
+    this.draftStore,
+    this.loadDiagnostics,
+    this.saveDelay = const Duration(milliseconds: 450),
+    super.key,
+  });
 
   final FeedbackSubmitCallback onSubmit;
+  final FeedbackDraftStore? draftStore;
+  final FeedbackDiagnosticsLoader? loadDiagnostics;
+  final Duration saveDelay;
 
   @override
   State<FeedbackComposerSheet> createState() => _FeedbackComposerSheetState();
@@ -705,10 +710,113 @@ class _FeedbackComposerSheetState extends State<FeedbackComposerSheet> {
   final _contentController = TextEditingController();
   FeedbackCategory _category = FeedbackCategory.bug;
   bool _submitting = false;
+  bool _submitted = false;
+  bool _edited = false;
+  bool _saved = false;
+  bool _restoring = false;
+  bool _attachingDiagnostics = false;
   String? _error;
+  Timer? _saveTimer;
+  Future<void>? _pendingSave;
+
+  @override
+  void initState() {
+    super.initState();
+    _titleController.addListener(_onEdited);
+    _contentController.addListener(_onEdited);
+    unawaited(_restoreDraft());
+  }
+
+  void _onEdited() {
+    if (_restoring) return;
+    _edited = true;
+    _scheduleSave();
+  }
+
+  Future<void> _restoreDraft() async {
+    try {
+      final draft = await widget.draftStore?.read();
+      if (!mounted || draft == null || _edited) return;
+      _restoring = true;
+      try {
+        _category = draft.category;
+        _titleController.text = draft.title;
+        _contentController.text = draft.content;
+      } finally {
+        _restoring = false;
+      }
+      _edited = false;
+      setState(() => _saved = true);
+    } catch (_) {}
+  }
+
+  void _scheduleSave() {
+    _saveTimer?.cancel();
+    if (_saved && mounted) setState(() => _saved = false);
+    _saveTimer = Timer(widget.saveDelay, () {
+      final pending = _persistDraft();
+      _pendingSave = pending;
+      unawaited(
+        pending.whenComplete(() {
+          if (identical(_pendingSave, pending)) _pendingSave = null;
+        }),
+      );
+    });
+  }
+
+  Future<void> _persistDraft() async {
+    try {
+      final draft = FeedbackDraft(
+        category: _category,
+        title: _titleController.text,
+        content: _contentController.text,
+        updatedAt: DateTime.now(),
+      );
+      await widget.draftStore?.write(draft);
+      if (mounted) setState(() => _saved = !draft.isEmpty);
+    } catch (_) {}
+  }
+
+  Future<void> _attachDiagnostics() async {
+    if (_attachingDiagnostics || _submitting) return;
+    const marker = '诊断信息（不包含账号与创作内容）';
+    if (_contentController.text.contains(marker)) {
+      AppNotice.info(context, '诊断信息已经附加');
+      return;
+    }
+    setState(() => _attachingDiagnostics = true);
+    try {
+      final diagnostics = (await widget.loadDiagnostics?.call())?.trim() ?? '';
+      if (!mounted) return;
+      if (diagnostics.isEmpty) {
+        AppNotice.error(context, '诊断信息读取失败，请稍后重试');
+        return;
+      }
+      final current = _contentController.text.trimRight();
+      final separator = current.isEmpty ? '' : '\n\n';
+      final combined = '$current$separator$marker\n$diagnostics';
+      if (combined.runes.length > 3000) {
+        AppNotice.warning(context, '正文空间不足，请精简描述后再附加');
+        return;
+      }
+      _contentController.value = TextEditingValue(
+        text: combined,
+        selection: TextSelection.collapsed(offset: combined.length),
+      );
+      AppNotice.success(context, '诊断信息已附加，可在正文中查看');
+    } catch (_) {
+      if (mounted) AppNotice.error(context, '诊断信息读取失败，请稍后重试');
+    } finally {
+      if (mounted) setState(() => _attachingDiagnostics = false);
+    }
+  }
 
   @override
   void dispose() {
+    _saveTimer?.cancel();
+    if (_edited && !_submitted) unawaited(_persistDraft());
+    _titleController.removeListener(_onEdited);
+    _contentController.removeListener(_onEdited);
     _titleController.dispose();
     _contentController.dispose();
     super.dispose();
@@ -716,6 +824,7 @@ class _FeedbackComposerSheetState extends State<FeedbackComposerSheet> {
 
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate() || _submitting) return;
+    _saveTimer?.cancel();
     setState(() {
       _submitting = true;
       _error = null;
@@ -726,6 +835,13 @@ class _FeedbackComposerSheetState extends State<FeedbackComposerSheet> {
         title: _titleController.text,
         content: _contentController.text,
       );
+      _submitted = true;
+      await _pendingSave;
+      try {
+        await widget.draftStore?.clear();
+      } catch (_) {
+        // Draft cleanup must not turn a successful server submission into an error.
+      }
       if (mounted) Navigator.pop(context, item);
     } catch (error) {
       if (!mounted) return;
@@ -772,7 +888,13 @@ class _FeedbackComposerSheetState extends State<FeedbackComposerSheet> {
                     AppSelectOption(value: item, label: item.label),
                 ],
                 onChanged: (value) {
-                  if (value != null) setState(() => _category = value);
+                  if (value != null) {
+                    setState(() {
+                      _category = value;
+                      _edited = true;
+                    });
+                    _scheduleSave();
+                  }
                 },
               ),
               const SizedBox(height: 12),
@@ -802,6 +924,23 @@ class _FeedbackComposerSheetState extends State<FeedbackComposerSheet> {
                   ),
                 ),
               ),
+              if (widget.loadDiagnostics != null)
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                    key: const Key('feedback-attach-diagnostics'),
+                    onPressed: _attachingDiagnostics || _submitting
+                        ? null
+                        : _attachDiagnostics,
+                    icon: _attachingDiagnostics
+                        ? const SizedBox.square(
+                            dimension: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.add_link_rounded, size: 19),
+                    label: Text(_attachingDiagnostics ? '读取中' : '附加诊断信息'),
+                  ),
+                ),
               if (_error != null) ...[
                 const SizedBox(height: 8),
                 Text(
@@ -809,6 +948,34 @@ class _FeedbackComposerSheetState extends State<FeedbackComposerSheet> {
                   style: TextStyle(color: Theme.of(context).colorScheme.error),
                 ),
               ],
+              AnimatedSize(
+                duration: const Duration(milliseconds: 160),
+                child: _saved
+                    ? Row(
+                        key: const Key('feedback-draft-saved'),
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.check_circle_outline_rounded,
+                            size: 15,
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.onSurfaceVariant,
+                          ),
+                          const SizedBox(width: 5),
+                          Text(
+                            '草稿已自动保存',
+                            style: Theme.of(context).textTheme.bodySmall
+                                ?.copyWith(
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.onSurfaceVariant,
+                                ),
+                          ),
+                        ],
+                      )
+                    : const SizedBox.shrink(),
+              ),
               const SizedBox(height: 14),
               SizedBox(
                 width: double.infinity,
