@@ -15,7 +15,7 @@ if [[ ! "$release_id" =~ ^[0-9a-f]{12}$ ]]; then
   exit 2
 fi
 
-for command in curl docker flock gzip readlink; do
+for command in curl docker flock grep gzip readlink; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "Missing required command: $command" >&2
     exit 1
@@ -62,6 +62,7 @@ active_work_count() {
 SELECT
     (SELECT count(*) FROM tasks WHERE status IN ('queued','running'))
   + (SELECT count(*) FROM assistant_runs WHERE status IN ('queued','running'))
+  + (SELECT count(*) FROM assistant_files WHERE status IN ('queued','processing'))
   + (SELECT count(*) FROM canvas_workflow_runs WHERE status = 'running')
   + (SELECT count(*) FROM canvas_workflow_batches WHERE status IN ('queued','running'));
 SQL
@@ -82,12 +83,30 @@ wait_for_url() {
   return 1
 }
 
+wait_for_worker() {
+  local attempts="${1:-36}"
+  local delay="${2:-5}"
+  local container_id
+  local i
+  for ((i = 1; i <= attempts; i++)); do
+    container_id="$(release_dc ps -q worker)"
+    if [[ -n "$container_id" ]] &&
+      [[ "$(docker inspect -f '{{.State.Status}}' "$container_id" 2>/dev/null)" == "running" ]] &&
+      docker logs --tail=200 "$container_id" 2>&1 | grep -q "worker ready"; then
+      return 0
+    fi
+    sleep "$delay"
+  done
+  echo "Worker readiness check failed." >&2
+  return 1
+}
+
 mkdir -p "$backup_root"
 backup="$backup_root/predeploy-$release_id.sql.gz"
 state="$backup_root/predeploy-$release_id.state"
 
 declare -A old_images
-for service in server web admin gateway; do
+for service in server worker web admin gateway; do
   container_id="$(production_dc ps -q "$service")"
   if [[ -z "$container_id" ]]; then
     echo "Production service is not running: $service" >&2
@@ -101,6 +120,7 @@ RELEASE_ID=$release_id
 OLD_PRODUCTION_DIR=$production_dir
 RELEASE_DIR=$release_dir
 OLD_SERVER_IMAGE=${old_images[server]}
+OLD_WORKER_IMAGE=${old_images[worker]}
 OLD_WEB_IMAGE=${old_images[web]}
 OLD_ADMIN_IMAGE=${old_images[admin]}
 OLD_GATEWAY_IMAGE=${old_images[gateway]}
@@ -113,10 +133,12 @@ rollback() {
   rollback_required=0
   echo "Deployment failed; restoring previous app images." >&2
   docker tag "${old_images[server]}" startcloudsai-integrated-server:latest
+  docker tag "${old_images[worker]}" startcloudsai-integrated-worker:latest
   docker tag "${old_images[web]}" startcloudsai-integrated-web:latest
   docker tag "${old_images[admin]}" startcloudsai-integrated-admin:latest
-  production_dc up -d --no-deps --no-build server web admin gateway
+  production_dc up -d --no-deps --no-build server worker web admin gateway
   wait_for_url http://127.0.0.1:8080/api/v1/health
+  wait_for_worker
   wait_for_url http://127.0.0.1:8080/
   wait_for_url http://127.0.0.1:8080/admin/
   echo "ROLLBACK_COMPLETED" >&2
@@ -150,12 +172,13 @@ production_dc exec -T postgres sh -ec \
 test -s "$backup"
 gzip -t "$backup"
 
-for service in server web admin; do
+for service in server worker web admin; do
   docker tag "${old_images[$service]}" "startcloudsai-rollback-$service:$release_id"
 done
 
-echo "[$release_id] Build server, web, and admin one at a time"
+echo "[$release_id] Build server, worker, web, and admin one at a time"
 release_dc build server
+release_dc build worker
 release_dc build web
 release_dc build admin
 
@@ -171,6 +194,10 @@ rollback_required=1
 echo "[$release_id] Promote API"
 release_dc up -d --no-deps --no-build server
 wait_for_url http://127.0.0.1:8080/api/v1/health
+
+echo "[$release_id] Promote worker"
+release_dc up -d --no-deps --no-build worker
+wait_for_worker
 
 echo "[$release_id] Promote user web and admin"
 release_dc up -d --no-deps --no-build web admin
@@ -201,7 +228,7 @@ fi
 test "$(readlink -f "$production_link")" = "$release_dir"
 
 release_dc ps
-release_dc logs --tail=60 server web admin gateway
+release_dc logs --tail=60 server worker web admin gateway
 
 touch "$backup_root/DEPLOY_SUCCESS-$release_id"
 trap - EXIT
@@ -209,4 +236,4 @@ trap - EXIT
 echo "DEPLOY_SUCCESS release=$release_id"
 echo "Database backup: $backup"
 echo "Rollback state: $state"
-echo "Worker, ChatGPT2API, PostgreSQL, and Redis were not restarted."
+echo "ChatGPT2API, PostgreSQL, and Redis were not restarted."
