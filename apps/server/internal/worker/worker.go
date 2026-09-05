@@ -737,9 +737,9 @@ func ensureUpstreamOutputError(callErr error, outputKeys []string) error {
 	return callErr
 }
 
-func shouldRecoverEmptyOpenAISubmit(attemptID uuid.UUID, adapter string, images []string, callErr error) bool {
+func shouldRecoverEmptyOpenAISubmit(attemptID uuid.UUID, adapter string, hasInputImages bool, images []string, callErr error) bool {
 	return attemptID != uuid.Nil && adapter == modelconfig.AdapterOpenAI &&
-		callErr == nil && nonEmptyImageCount(images) == 0
+		!hasInputImages && callErr == nil && nonEmptyImageCount(images) == 0
 }
 
 func (w *Worker) callSub2APIClient(ctx context.Context, task *store.Task, client *sub2api.Client, model string, onImage imageReadyFunc) ([]string, error) {
@@ -1071,9 +1071,9 @@ func (w *Worker) callConfiguredUpstream(ctx context.Context, task *store.Task, s
 		var err error
 		if len(task.InputKeys) > 0 {
 			inputStartedAt := time.Now()
-			inputs, err := w.loadInputImagesB64(ctx, task.InputKeys)
-			if err != nil {
-				return nil, err
+			inputs, loadErr := w.loadInputImagesB64(ctx, task.InputKeys)
+			if loadErr != nil {
+				return nil, loadErr
 			}
 			logTaskStage(task.ID.String(), "input_prepare", inputStartedAt, "count=%d", len(inputs))
 			w.recordTimeline(ctx, task.ID, "input_prepare", "info",
@@ -1801,13 +1801,13 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 	// processed. Treat that outcome as ambiguous and recover it through polling;
 	// declaring success-without-output here caused false failures at the 30s
 	// submit boundary under concurrent load.
-	if shouldRecoverEmptyOpenAISubmit(attemptID, attemptAdapter, imagesB64, callErr) {
+	if shouldRecoverEmptyOpenAISubmit(attemptID, attemptAdapter, len(task.InputKeys) > 0, imagesB64, callErr) {
 		callErr = &asyncImagePendingError{}
 	}
 	var netErr *c2a.NetworkError
 	var pendingErr *asyncImagePendingError
 	ambiguousOpenAISubmit := attemptID != uuid.Nil && attemptAdapter == modelconfig.AdapterOpenAI &&
-		callErr != nil && isRetryableTaskError(callErr)
+		len(task.InputKeys) == 0 && callErr != nil && isRetryableTaskError(callErr)
 	if errors.As(callErr, &pendingErr) || ambiguousOpenAISubmit {
 		delay := time.Second
 		providerID := taskParamString(task.Params, "_providerConfigId")

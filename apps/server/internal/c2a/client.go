@@ -230,6 +230,10 @@ func (c *Client) doRequest(ctx context.Context, method, path string, payload any
 }
 
 func extractB64List(body []byte) ([]string, error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, &UpstreamError{Message: "上游未返回图片数据"}
+	}
 	var payload struct {
 		Data []map[string]any `json:"data"`
 	}
@@ -249,6 +253,9 @@ func extractB64List(body []byte) ([]string, error) {
 		}
 	}
 	if len(images) == 0 {
+		if textResult := imageTaskResultText(raw); textResult != "" {
+			return nil, &UpstreamError{Message: textResult, StatusCode: http.StatusUnprocessableEntity}
+		}
 		return nil, &UpstreamError{Message: "上游未返回图片数据"}
 	}
 	return images, nil
@@ -262,6 +269,7 @@ type imageTask struct {
 	Progress     string           `json:"progress"`
 	Error        string           `json:"error"`
 	ErrorCode    string           `json:"error_code"`
+	TextResult   string           `json:"-"`
 	Data         []map[string]any `json:"data"`
 	Results      []map[string]any `json:"results"`
 }
@@ -304,9 +312,13 @@ func (t *imageTask) UnmarshalJSON(buf []byte) error {
 	t.Terminal = readBool("terminal", "done")
 	t.Progress = readString("progress")
 	t.ErrorCode = readString("error_code", "errorCode")
+	t.TextResult = imageTaskResultText(raw)
 	t.Error = readString("error", "message", "public_error", "publicError", "error_message", "errorMessage")
 	if t.Error == "" {
 		t.Error = imageTaskFailureMessage(raw)
+	}
+	if t.Error == "" {
+		t.Error = t.TextResult
 	}
 	t.Data = decodeImageObjectArray(raw["data"])
 	t.Results = decodeImageObjectArray(raw["results"])
@@ -334,6 +346,24 @@ func imageTaskFailureMessage(raw map[string]json.RawMessage) string {
 		"public_error", "publicError", "error_message", "errorMessage",
 		"output_text", "outputText", "text", "response",
 	} {
+		if message := imageTaskTextValue(raw[key], 0); message != "" {
+			return message
+		}
+	}
+	for _, key := range []string{"result", "output", "data", "results"} {
+		if message := imageTaskTextValue(raw[key], 0); message != "" {
+			return message
+		}
+	}
+	return ""
+}
+
+// imageTaskResultText intentionally excludes top-level message/error fields:
+// gateways commonly use message for acknowledgements such as "task accepted".
+// Text nested in result/output/data/results is response content and, when no
+// image is present, is a terminal non-image result regardless of status.
+func imageTaskResultText(raw map[string]json.RawMessage) string {
+	for _, key := range []string{"output_text", "outputText", "text", "response"} {
 		if message := imageTaskTextValue(raw[key], 0); message != "" {
 			return message
 		}
@@ -672,14 +702,38 @@ func imageTaskError(task imageTask) error {
 	if task.ErrorCode != "" {
 		message = task.ErrorCode + ": " + message
 	}
-	return &UpstreamError{Message: truncate(message, 2000), StatusCode: http.StatusBadGateway}
+	statusCode := http.StatusBadGateway
+	if imageTaskIsTextFailure(task) {
+		// A text response is an explicit business result, not an ambiguous gateway
+		// failure. Mark it non-retryable so workers do not re-enter async polling.
+		statusCode = http.StatusUnprocessableEntity
+	}
+	return &UpstreamError{Message: truncate(message, 2000), StatusCode: statusCode}
 }
 
 func imageTaskResults(task imageTask) []map[string]any {
+	if imagePayloadHasImage(task.Data) {
+		return task.Data
+	}
+	if imagePayloadHasImage(task.Results) {
+		return task.Results
+	}
 	if len(task.Data) > 0 {
 		return task.Data
 	}
 	return task.Results
+}
+
+func imagePayloadHasImage(results []map[string]any) bool {
+	for _, item := range results {
+		if b64, ok := item["b64_json"].(string); ok && strings.TrimSpace(b64) != "" {
+			return true
+		}
+		if rawURL, ok := item["url"].(string); ok && strings.TrimSpace(rawURL) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func imagePayloadNeedsHTTP(results []map[string]any) bool {
@@ -738,6 +792,14 @@ func ImagePollHoldsForReview(status string) bool {
 }
 
 func imageTaskIsTextFailure(task imageTask) bool {
+	// A provider may include explanatory text alongside a valid image. The image
+	// is the requested result and must win over the auxiliary text.
+	if imagePayloadHasImage(imageTaskResults(task)) {
+		return false
+	}
+	if strings.TrimSpace(task.TextResult) != "" {
+		return true
+	}
 	status := normalizedImageTaskStatus(task)
 	if imageTaskStatusFailed(status) {
 		switch status {

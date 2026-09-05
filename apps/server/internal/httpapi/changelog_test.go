@@ -26,8 +26,8 @@ func TestChangelogSeedAndLatestRelease(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed changelog: %v", err)
 	}
-	if inserted != 63 {
-		t.Fatalf("inserted changelog = %d, want 63", inserted)
+	if inserted != 96 {
+		t.Fatalf("inserted changelog = %d, want 96", inserted)
 	}
 	inserted, err = store.SeedDefaultChangelogEntries(ctx, env.st)
 	if err != nil || inserted != 0 {
@@ -40,8 +40,8 @@ func TestChangelogSeedAndLatestRelease(t *testing.T) {
 	}
 	listData, _ := decode(t, listed)
 	items, _ := listData["items"].([]any)
-	if len(items) != 63 {
-		t.Fatalf("public changelog items = %d, want 63", len(items))
+	if len(items) != 96 {
+		t.Fatalf("public changelog items = %d, want 96", len(items))
 	}
 
 	latest := env.do(t, http.MethodGet, "/api/v1/changelog/latest", nil, "")
@@ -49,14 +49,14 @@ func TestChangelogSeedAndLatestRelease(t *testing.T) {
 		t.Fatalf("latest changelog: status %d body %s", latest.Code, latest.Body.String())
 	}
 	latestData, _ := decode(t, latest)
-	if latestData["version"] != "3.2.2" {
-		t.Fatalf("seeded latest version = %#v, want 3.2.2", latestData["version"])
+	if latestData["version"] != "4.3.0" {
+		t.Fatalf("seeded latest version = %#v, want 4.3.0", latestData["version"])
 	}
 
 	_, adminToken := env.newUserSession(t, "admin")
 	created := env.do(t, http.MethodPost, "/api/v1/admin/changelog", map[string]any{
-		"version":   "3.3.0",
-		"date":      "2026-08-20",
+		"version":   "4.4.0",
+		"date":      "2026-09-06",
 		"tag":       "feature",
 		"title":     "画布工作流模板上线",
 		"summary":   "后台发版后，打开中的页面会提醒刷新。",
@@ -69,18 +69,18 @@ func TestChangelogSeedAndLatestRelease(t *testing.T) {
 
 	nextLatest := env.do(t, http.MethodGet, "/api/v1/changelog/latest", nil, "")
 	nextData, _ := decode(t, nextLatest)
-	if nextData["version"] != "3.3.0" || nextData["title"] != "画布工作流模板上线" {
+	if nextData["version"] != "4.4.0" || nextData["title"] != "画布工作流模板上线" {
 		t.Fatalf("published latest = %#v", nextData)
 	}
 
 	listed = env.do(t, http.MethodGet, "/api/v1/changelog", nil, "")
 	listData, _ = decode(t, listed)
 	items, _ = listData["items"].([]any)
-	if len(items) != 64 {
-		t.Fatalf("changelog after publish = %d, want 64", len(items))
+	if len(items) != 97 {
+		t.Fatalf("changelog after publish = %d, want 97", len(items))
 	}
 	first, _ := items[0].(map[string]any)
-	if first["version"] != "3.3.0" || first["highlight"] != true {
+	if first["version"] != "4.4.0" || first["highlight"] != true {
 		t.Fatalf("newest changelog = %#v", first)
 	}
 	highlights := 0

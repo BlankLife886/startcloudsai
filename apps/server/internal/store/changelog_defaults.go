@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const changelogSeedVersion = 1
+const changelogSeedVersion = 3
 
 //go:embed changelog_defaults.json
 var changelogDefaultsJSON []byte
@@ -35,8 +35,8 @@ func SeedDefaultChangelogEntries(ctx context.Context, st *Store) (int, error) {
 	if err := json.Unmarshal(changelogDefaultsJSON, &defaults); err != nil {
 		return 0, fmt.Errorf("decode default changelog entries: %w", err)
 	}
-	if len(defaults) != 63 {
-		return 0, fmt.Errorf("decode default changelog entries: got %d entries, want 63", len(defaults))
+	if len(defaults) != 96 {
+		return 0, fmt.Errorf("decode default changelog entries: got %d entries, want 96", len(defaults))
 	}
 
 	inserted := 0
@@ -66,8 +66,9 @@ func SeedDefaultChangelogEntries(ctx context.Context, st *Store) (int, error) {
 			if trimmed := strings.TrimSpace(item.Summary); trimmed != "" {
 				summary = &trimmed
 			}
-			createdAt := time.Date(date.Year(), date.Month(), date.Day(), 12, 0, 0, 0, time.UTC).
-				Add(time.Duration(item.Sort) * time.Second)
+			publishedDay := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0,
+				time.FixedZone("Asia/Shanghai", 8*60*60))
+			createdAt := publishedDay.UTC().Add(time.Duration(item.Sort) * time.Millisecond)
 			tag, err := tx.Exec(ctx, `INSERT INTO changelog_entries
 				(source_key, version, date, tag, title, summary, items, highlight, sort, created_at)
 				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)

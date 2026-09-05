@@ -117,6 +117,14 @@ func TestExtractB64ListRejectsTooManyImages(t *testing.T) {
 	}
 }
 
+func TestExtractB64ListReturnsStructuredTextImmediately(t *testing.T) {
+	body := []byte(`{"output":{"content":[{"type":"output_text","text":"内容审核拒绝：请修改提示词"}]}}`)
+	_, err := extractB64List(body)
+	if err == nil || err.Error() != "内容审核拒绝：请修改提示词" || IsRetryableError(err) {
+		t.Fatalf("err=%v, want upstream text result", err)
+	}
+}
+
 func TestGenerateImagesUsesNonStreamingContract(t *testing.T) {
 	var payload map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -900,6 +908,47 @@ func TestCompletedTaskImagesTreatsUpstreamTextMessageAsFailure(t *testing.T) {
 	}
 }
 
+func TestCompletedTaskImagesTreatsStructuredTextAsTerminalRegardlessOfStatus(t *testing.T) {
+	client := NewWithPolicy("https://example.com", "test-key", 30, true)
+	for _, status := range []string{"processing", "queued", "mystery_new_state"} {
+		t.Run(status, func(t *testing.T) {
+			body := []byte(`{"id":"task-text","status":"` + status + `","output":{"content":[{"type":"output_text","text":"请修改图片描述"}]}}`)
+			task, err := parseImageTask(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _, done, taskErr := client.completedTaskImages(context.Background(), task, 1)
+			if !done || taskErr == nil || taskErr.Error() != "请修改图片描述" || IsRetryableError(taskErr) || !imageTaskIsTextFailure(task) {
+				t.Fatalf("task=%#v done=%v err=%v, want immediate text terminal", task, done, taskErr)
+			}
+		})
+	}
+}
+
+func TestCompletedTaskImagesKeepsAcknowledgementMessagePending(t *testing.T) {
+	client := NewWithPolicy("https://example.com", "test-key", 30, true)
+	task, err := parseImageTask([]byte(`{"id":"task-pending","status":"processing","message":"task accepted"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, done, taskErr := client.completedTaskImages(context.Background(), task, 1)
+	if done || taskErr != nil || task.TextResult != "" || imageTaskIsTextFailure(task) {
+		t.Fatalf("task=%#v done=%v err=%v, want pending acknowledgement", task, done, taskErr)
+	}
+}
+
+func TestCompletedTaskImagesPrefersImageOverStructuredText(t *testing.T) {
+	client := NewWithPolicy("https://example.com", "test-key", 30, true)
+	task, err := parseImageTask([]byte(`{"id":"task-image","status":"processing","data":[{"b64_json":"image-data"}],"output":{"content":[{"type":"output_text","text":"auxiliary text"}]}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	images, _, done, taskErr := client.completedTaskImages(context.Background(), task, 1)
+	if !done || taskErr != nil || len(images) != 1 || images[0] != "image-data" || imageTaskIsTextFailure(task) {
+		t.Fatalf("task=%#v images=%#v done=%v err=%v, want image success", task, images, done, taskErr)
+	}
+}
+
 func TestPollImageTasksEachEmitsCompletedResults(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -921,6 +970,23 @@ func TestPollImageTasksEachEmitsCompletedResults(t *testing.T) {
 	})
 	if got["task-a"] != "a" || got["task-b"] != "b" {
 		t.Fatalf("results = %#v", got)
+	}
+}
+
+func TestPollImageTasksEachTreatsProcessingTextAsTerminal(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"id":"task-text","status":"processing","output":{"content":[{"type":"output_text","text":"无法按当前描述生成图片"}]}}]}`))
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	var got ImageTaskPollResult
+	client.PollImageTasksEach(context.Background(), []string{"task-text"}, map[string]int{"task-text": 1}, func(_ string, result ImageTaskPollResult) {
+		got = result
+	})
+	if got.Pending || !got.ExplicitFailure || got.Err == nil || got.ErrorMessage != "无法按当前描述生成图片" {
+		t.Fatalf("result=%#v, want immediate terminal text result", got)
 	}
 }
 
