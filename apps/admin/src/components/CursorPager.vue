@@ -1,77 +1,86 @@
 <script setup lang="ts">
-import { ArrowLeft, ArrowRight } from '@element-plus/icons-vue'
+import { computed } from 'vue'
 
-withDefaults(defineProps<{
+const props = withDefaults(defineProps<{
   hasPrev: boolean
   hasNext: boolean
   loading?: boolean
   page?: number
   count?: number
   total?: number | null
+  pageSize?: number
+  pageSizes?: number[]
 }>(), {
   loading: false,
   page: 1,
   count: 0,
   total: null,
+  pageSize: 20,
+  pageSizes: () => [10, 20, 50],
 })
 
 defineEmits<{
-  prev: []
-  next: []
+  'update:page': [value: number]
+  'update:pageSize': [value: number]
 }>()
+
+const resolvedTotal = computed(() => {
+  if (props.total != null) return props.total
+  return (props.page - 1) * props.pageSize + props.count + (props.hasNext ? 1 : 0)
+})
 </script>
 
 <template>
   <div class="cursor-pager" aria-label="分页">
-    <div class="cursor-pager__meta">
-      <span>本页 <strong>{{ count }}</strong> 条</span>
-      <span v-if="total !== null">共 <strong>{{ total }}</strong> 条</span>
-      <i />
-      <span>第 <strong>{{ page }}</strong> 页</span>
-    </div>
-    <el-button-group>
-      <el-button :icon="ArrowLeft" size="small" :disabled="!hasPrev || loading" @click="$emit('prev')">上一页</el-button>
-      <el-button size="small" :disabled="!hasNext || loading" @click="$emit('next')">下一页<el-icon class="cursor-pager__next"><ArrowRight /></el-icon></el-button>
-    </el-button-group>
+    <el-pagination
+      background
+      :current-page="page"
+      :page-size="pageSize"
+      :page-sizes="pageSizes"
+      :total="resolvedTotal"
+      :disabled="loading"
+      :pager-count="7"
+      layout="total, sizes, prev, pager, next, jumper"
+      @current-change="$emit('update:page', $event)"
+      @size-change="$emit('update:pageSize', $event)"
+    />
   </div>
 </template>
 
 <style scoped>
 .cursor-pager {
   display: flex;
-  min-height: 42px;
+  width: 100%;
+  min-height: 48px;
   align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  color: var(--ink-3);
-  font-size: 11px;
+  justify-content: flex-end;
 }
-.cursor-pager__meta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  white-space: nowrap;
+
+.cursor-pager :deep(.el-pagination) {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  padding: 0;
+  --el-pagination-font-size: 13px;
+  --el-pagination-button-width: 32px;
+  --el-pagination-button-height: 32px;
+  --el-pagination-bg-color: var(--surface);
+  --el-pagination-hover-color: var(--accent-ink);
+  --el-pagination-button-bg-color: var(--surface);
 }
-.cursor-pager__meta strong {
-  color: var(--ink-1);
+
+.cursor-pager :deep(.el-pagination__total),
+.cursor-pager :deep(.el-pagination__jump) {
+  color: var(--ink-2);
   font-variant-numeric: tabular-nums;
 }
-.cursor-pager__meta i {
-  width: 1px;
-  height: 12px;
-  background: var(--border);
+
+.cursor-pager :deep(.el-pager li.is-active) {
+  background-color: var(--accent) !important;
+  color: var(--accent-on) !important;
+  font-weight: 700;
 }
-.cursor-pager__next {
-  margin-left: 5px;
-}
-@media (max-width: 560px) {
-  .cursor-pager {
-    align-items: stretch;
-    flex-direction: column;
-  }
-  .cursor-pager :deep(.el-button-group) {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-  }
+
+.cursor-pager :deep(.el-pagination__sizes .el-select) {
+  width: 108px;
 }
 </style>

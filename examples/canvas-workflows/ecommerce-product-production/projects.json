@@ -1,0 +1,185 @@
+{
+  "app": "infinite-canvas",
+  "version": 3,
+  "exportedAt": "2026-08-16T15:00:00.000Z",
+  "projects": [
+    {
+      "project": {
+        "id": "3e22cd98-cf31-4d87-a9ab-930ea2e767c1",
+        "title": "模板｜商品图一键生产：透明底 → 白底主图 → 场景视觉",
+        "createdAt": "2026-08-16T15:00:00.000Z",
+        "updatedAt": "2026-08-16T15:00:00.000Z",
+        "nodes": [
+          {
+            "id": "workflow-guide",
+            "type": "text",
+            "title": "使用说明｜只需替换一张图",
+            "position": { "x": -650, "y": -540 },
+            "width": 470,
+            "height": 330,
+            "metadata": {
+              "content": "电商商品图可重复生产工作流\n\n1. 选中下方【01｜替换成你的商品原图】\n2. 点击图片节点工具栏中的【替换图片】\n3. 确认三个生成配置中的模型、尺寸和积分\n4. 点击画布右上角【运行工作流】\n5. 后续只需再次替换原图并重新运行\n\n输出节点会原位更新，不会重复新增节点。视频和音频未使用。",
+              "status": "success",
+              "fontSize": 16
+            }
+          },
+          {
+            "id": "workflow-map",
+            "type": "text",
+            "title": "生产链路",
+            "position": { "x": -80, "y": -540 },
+            "width": 720,
+            "height": 250,
+            "metadata": {
+              "content": "01 商品原图\n    ↓\n02 透明 PNG 母资产（1 张）\n    ↓\n03 平台白底主图候选（3 张）\n    ↓\n04 详情页 / 社媒场景主视觉候选（3 张）\n\n适合美妆、食品、数码、小家电、家居与饰品类商品。",
+              "status": "success",
+              "fontSize": 16
+            }
+          },
+          {
+            "id": "input-product-image",
+            "type": "image",
+            "title": "01｜替换成你的商品原图",
+            "position": { "x": -650, "y": -100 },
+            "width": 360,
+            "height": 420,
+            "metadata": {
+              "content": "",
+              "status": "idle",
+              "freeResize": false
+            }
+          },
+          {
+            "id": "config-transparent-master",
+            "type": "config",
+            "title": "02｜生成透明商品母资产",
+            "position": { "x": -90, "y": -100 },
+            "width": 360,
+            "height": 414,
+            "metadata": {
+              "status": "idle",
+              "generationMode": "image",
+              "model": "gpt-image-2",
+              "quality": "low",
+              "size": "1024x1024",
+              "resolution": "1K",
+              "background": "transparent",
+              "count": 1,
+              "composerContent": "Use the connected product photo as the only product reference. Extract the exact product and create a clean transparent-background PNG master asset. Preserve the original geometry, proportions, logo, label text, colors, materials, reflections, glass or metal highlights, and realistic edge detail. Keep the complete product centered with safe margins. No cropping, no props, no added text, no watermark, and no redesign.",
+              "workflowOutputNodeIds": ["output-transparent-master"]
+            }
+          },
+          {
+            "id": "output-transparent-master",
+            "type": "image",
+            "title": "输出 A｜透明 PNG 商品母资产",
+            "position": { "x": 470, "y": -100 },
+            "width": 360,
+            "height": 420,
+            "metadata": {
+              "content": "",
+              "status": "idle",
+              "freeResize": false,
+              "workflowProducerNodeId": "config-transparent-master"
+            }
+          },
+          {
+            "id": "config-white-packshot",
+            "type": "config",
+            "title": "03｜生成平台白底主图",
+            "position": { "x": 1030, "y": -100 },
+            "width": 360,
+            "height": 414,
+            "metadata": {
+              "status": "idle",
+              "generationMode": "image",
+              "model": "gpt-image-2",
+              "quality": "low",
+              "size": "1024x1024",
+              "resolution": "1K",
+              "background": "",
+              "count": 3,
+              "composerContent": "Create a marketplace-ready square packshot from the connected transparent product asset. Preserve the exact product identity, proportions, packaging, logo, label text, colors, and material. Use a pure #FFFFFF background with only a subtle realistic contact shadow. Keep the full product centered and occupying about 78-84% of the frame with balanced margins. Clean catalog lighting, crisp edges, no props, no people, no extra text, no watermark.",
+              "workflowOutputNodeIds": ["output-white-packshot"]
+            }
+          },
+          {
+            "id": "output-white-packshot",
+            "type": "image",
+            "title": "输出 B｜白底主图候选 3 张",
+            "position": { "x": 1590, "y": -100 },
+            "width": 360,
+            "height": 420,
+            "metadata": {
+              "content": "",
+              "status": "idle",
+              "freeResize": false,
+              "workflowProducerNodeId": "config-white-packshot"
+            }
+          },
+          {
+            "id": "config-hero-scene",
+            "type": "config",
+            "title": "04｜生成详情页场景主视觉",
+            "position": { "x": 2150, "y": -100 },
+            "width": 360,
+            "height": 414,
+            "metadata": {
+              "status": "idle",
+              "generationMode": "image",
+              "model": "gpt-image-2",
+              "quality": "low",
+              "size": "1024x1024",
+              "resolution": "1K",
+              "background": "",
+              "count": 3,
+              "composerContent": "Create a premium ecommerce detail-page hero image using the connected product packshot as the product reference. Preserve the exact product identity, shape, packaging, logo, label text, colors, and material. Place it upright on a restrained studio pedestal with soft neutral or brand-compatible tones, diffused directional light, natural shadows, and generous clean copy space. Commercial art direction, realistic product photography, crisp product edges. No people, no hands, no competing brands, no added text, no watermark.",
+              "workflowOutputNodeIds": ["output-hero-scene"]
+            }
+          },
+          {
+            "id": "output-hero-scene",
+            "type": "image",
+            "title": "输出 C｜场景主视觉候选 3 张",
+            "position": { "x": 2710, "y": -100 },
+            "width": 360,
+            "height": 420,
+            "metadata": {
+              "content": "",
+              "status": "idle",
+              "freeResize": false,
+              "workflowProducerNodeId": "config-hero-scene"
+            }
+          },
+          {
+            "id": "qa-checklist",
+            "type": "text",
+            "title": "交付质检清单",
+            "position": { "x": 1590, "y": 470 },
+            "width": 560,
+            "height": 330,
+            "metadata": {
+              "content": "交付前检查\n\n✓ 商品主体完整，无裁切与结构变形\n✓ Logo、标签文字、包装颜色保持一致\n✓ 透明 PNG 边缘干净，无白边或黑边\n✓ 白底为纯白，接触阴影自然、不漂浮\n✓ 主体占比约 78-84%，适合平台主图\n✓ 场景图保留文案空间，无额外品牌或水印\n\n不满意时修改对应配置提示词，再运行整条工作流。",
+              "status": "success",
+              "fontSize": 15
+            }
+          }
+        ],
+        "connections": [
+          { "id": "edge-input-to-transparent", "fromNodeId": "input-product-image", "toNodeId": "config-transparent-master" },
+          { "id": "edge-transparent-to-output", "fromNodeId": "config-transparent-master", "toNodeId": "output-transparent-master" },
+          { "id": "edge-transparent-to-packshot", "fromNodeId": "output-transparent-master", "toNodeId": "config-white-packshot" },
+          { "id": "edge-packshot-to-output", "fromNodeId": "config-white-packshot", "toNodeId": "output-white-packshot" },
+          { "id": "edge-packshot-to-hero", "fromNodeId": "output-white-packshot", "toNodeId": "config-hero-scene" },
+          { "id": "edge-hero-to-output", "fromNodeId": "config-hero-scene", "toNodeId": "output-hero-scene" }
+        ],
+        "chatSessions": [],
+        "activeChatId": null,
+        "backgroundMode": "lines",
+        "showImageInfo": true,
+        "viewport": { "x": 260, "y": 300, "k": 0.28 }
+      },
+      "files": []
+    }
+  ]
+}

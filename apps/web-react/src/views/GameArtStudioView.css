@@ -1,0 +1,122 @@
+.ga-card-view > .authenticated-image,
+.ga-composer-ref-pick > .authenticated-image,
+.clock-filmstrip__rail .authenticated-image,
+.ga-history-pick .authenticated-image,
+.ga-prompt-cover .authenticated-image,
+.ga-shelf-pick .authenticated-image {
+  width: 100%;
+  height: 100%;
+}
+
+.ga-card-view .authenticated-image img,
+.ga-composer-ref-pick .authenticated-image img,
+.clock-filmstrip__rail .authenticated-image img,
+.ga-history-pick .authenticated-image img,
+.ga-prompt-cover .authenticated-image img,
+.ga-shelf-pick .authenticated-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.ga-card-view .authenticated-image img {
+  object-fit: contain;
+}
+
+.ga-terrain-background {
+  position: absolute;
+  inset: 10px 12px 12px;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.ga-composer {
+  position: relative;
+  z-index: 40;
+}
+
+.delete-history-confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 5400;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(5, 7, 11, 0.68);
+  backdrop-filter: blur(5px);
+}
+
+.delete-history-confirm-dialog {
+  width: min(410px, 100%);
+  padding: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 18px;
+  background: #17191d;
+  color: #f5f7f8;
+  text-align: center;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.46);
+}
+
+.delete-history-confirm-backdrop.is-light .delete-history-confirm-dialog {
+  border-color: rgba(34, 36, 50, 0.1);
+  background: #fff;
+  color: #242531;
+}
+
+.delete-history-confirm-icon {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  margin: 0 auto 12px;
+  place-items: center;
+  border-radius: 50%;
+  background: rgba(244, 63, 94, 0.14);
+  color: #fb7185;
+  font-size: 20px;
+}
+
+.delete-history-confirm-dialog h3 {
+  margin: 0 0 8px;
+}
+
+.delete-history-confirm-dialog p {
+  margin: 0;
+  color: #949aa2;
+  line-height: 1.6;
+}
+
+.delete-history-confirm-dialog footer {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.delete-history-confirm-dialog footer button {
+  min-width: 104px;
+  padding: 9px 16px;
+  border: 1px solid rgba(128, 136, 145, 0.3);
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.delete-history-confirm-dialog footer .danger {
+  border-color: #e04c5c;
+  background: #e04c5c;
+  color: #fff;
+}
+
+@media (max-width: 900px) {
+  .main-content.main--studio-console {
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .main-content.main--studio-console > .game-art-studio {
+    min-height: auto;
+    overflow: visible;
+  }
+}

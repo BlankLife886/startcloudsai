@@ -9,17 +9,36 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/hibiken/asynq"
+	"github.com/redis/go-redis/v9"
 )
 
 const (
-	TypeRunTask       = "task:run"
-	TypePollImageTask = "task:poll-image"
-	TypeRunAssistant  = "assistant:run"
+	TypeRunTask             = "task:run"
+	TypePollImageTask       = "task:poll-image"
+	TypeRunAssistant        = "assistant:run"
+	TypeIngestAssistantFile = "assistant:file-ingest"
 )
 
-// 后台允许把 C2A 超时动态调到 600 秒。队列超时必须覆盖这个上限，
-// 否则后台调大上游超时后，Asynq 仍会按启动时的较小默认值提前取消任务。
-const maxC2ATimeoutSecs = 600
+// Weighted queues keep short, latency-sensitive work from being stuck behind
+// long-running image generation. Assistant runs (interactive) get the highest
+// weight, image tasks + cron use the default queue, and the high-frequency
+// image poll loop runs on its own queue so it is never starved.
+const (
+	QueueDefault   = "default"
+	QueueAssistant = "assistant"
+	QueuePoll      = "poll"
+)
+
+// QueueWeights is consumed by the worker's asynq.Config.Queues.
+var QueueWeights = map[string]int{
+	QueueAssistant: 6,
+	QueueDefault:   3,
+	QueuePoll:      2,
+}
+
+// 可编辑 PPT/PSD 最长会等待上游 20 分钟，队列还要为提交和结果入库
+// 留出余量。普通任务仍由各自的内部超时提前结束。
+const maxC2ATimeoutSecs = 840
 
 type RunTaskPayload struct {
 	TaskID string `json:"task_id"`
@@ -36,11 +55,33 @@ type RunAssistantPayload struct {
 	RunID string `json:"run_id"`
 }
 
+type IngestAssistantFilePayload struct {
+	FileID string `json:"file_id"`
+}
+
 // Queue 封装 Asynq 客户端入队 run_task。
 type Queue struct {
 	client    *asynq.Client
 	inspector *asynq.Inspector
+	metrics   *redis.Client
 	timeout   time.Duration
+}
+
+type ImageFetchWorkerMetrics struct {
+	WorkerID          string    `json:"workerId"`
+	Active            int64     `json:"active"`
+	EffectiveLimit    int64     `json:"effectiveLimit"`
+	ConfiguredCeiling int64     `json:"configuredCeiling"`
+	UpdatedAt         time.Time `json:"updatedAt"`
+}
+
+type ImageFetchMetrics struct {
+	Available         bool                      `json:"available"`
+	Active            int64                     `json:"active"`
+	EffectiveLimit    int64                     `json:"effectiveLimit"`
+	ConfiguredCeiling int64                     `json:"configuredCeiling"`
+	Workers           []ImageFetchWorkerMetrics `json:"workers"`
+	Error             string                    `json:"error,omitempty"`
 }
 
 type WorkerMetrics struct {
@@ -83,9 +124,14 @@ func NewQueue(redisURL string, c2aTimeoutSecs int) (*Queue, error) {
 	if c2aTimeoutSecs < maxC2ATimeoutSecs {
 		c2aTimeoutSecs = maxC2ATimeoutSecs
 	}
+	metricsOpt, err := redis.ParseURL(redisURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse metrics redis url: %w", err)
+	}
 	return &Queue{
 		client:    asynq.NewClient(opt),
 		inspector: asynq.NewInspector(opt),
+		metrics:   redis.NewClient(metricsOpt),
 		timeout:   time.Duration(c2aTimeoutSecs*2+120) * time.Second,
 	}, nil
 }
@@ -93,10 +139,71 @@ func NewQueue(redisURL string, c2aTimeoutSecs int) (*Queue, error) {
 func (q *Queue) Close() error {
 	clientErr := q.client.Close()
 	inspectorErr := q.inspector.Close()
+	var metricsErr error
+	if q.metrics != nil {
+		metricsErr = q.metrics.Close()
+	}
 	if clientErr != nil {
 		return clientErr
 	}
-	return inspectorErr
+	if inspectorErr != nil {
+		return inspectorErr
+	}
+	return metricsErr
+}
+
+const imageFetchMetricsKeyPrefix = "startclouds:metrics:image-fetch:"
+
+func (q *Queue) PublishImageFetchMetrics(ctx context.Context, snapshot ImageFetchWorkerMetrics) error {
+	if q == nil || q.metrics == nil || snapshot.WorkerID == "" {
+		return nil
+	}
+	snapshot.UpdatedAt = time.Now().UTC()
+	payload, err := json.Marshal(snapshot)
+	if err != nil {
+		return err
+	}
+	return q.metrics.Set(ctx, imageFetchMetricsKeyPrefix+snapshot.WorkerID, payload, 20*time.Second).Err()
+}
+
+func (q *Queue) ImageFetchMetrics(ctx context.Context) ImageFetchMetrics {
+	out := ImageFetchMetrics{Workers: []ImageFetchWorkerMetrics{}}
+	if q == nil || q.metrics == nil {
+		out.Error = "image_fetch_metrics_unavailable"
+		return out
+	}
+	var cursor uint64
+	for {
+		keys, next, err := q.metrics.Scan(ctx, cursor, imageFetchMetricsKeyPrefix+"*", 100).Result()
+		if err != nil {
+			out.Error = "image_fetch_metrics_unavailable"
+			return out
+		}
+		out.Available = true
+		if len(keys) > 0 {
+			values, err := q.metrics.MGet(ctx, keys...).Result()
+			if err != nil {
+				out.Error = "image_fetch_metrics_unavailable"
+				return out
+			}
+			for _, value := range values {
+				text, _ := value.(string)
+				var worker ImageFetchWorkerMetrics
+				if text == "" || json.Unmarshal([]byte(text), &worker) != nil || worker.WorkerID == "" {
+					continue
+				}
+				out.Workers = append(out.Workers, worker)
+				out.Active += worker.Active
+				out.EffectiveLimit += worker.EffectiveLimit
+				out.ConfiguredCeiling += worker.ConfiguredCeiling
+			}
+		}
+		cursor = next
+		if cursor == 0 {
+			break
+		}
+	}
+	return out
 }
 
 // Ping 检查 Redis 连通性（健康检查用）。
@@ -110,25 +217,32 @@ func (q *Queue) Metrics() QueueMetrics {
 		out.Error = "queue_unavailable"
 		return out
 	}
-	info, err := q.inspector.GetQueueInfo("default")
-	if errors.Is(err, asynq.ErrQueueNotFound) {
+	// Aggregate across all weighted queues so the dashboard reflects total
+	// backlog rather than just the default queue.
+	for _, queueName := range []string{QueueDefault, QueueAssistant, QueuePoll} {
+		info, err := q.inspector.GetQueueInfo(queueName)
+		if errors.Is(err, asynq.ErrQueueNotFound) {
+			out.Available = true
+			continue
+		}
+		if err != nil {
+			out.Error = "queue_unavailable"
+			return out
+		}
 		out.Available = true
-	} else if err != nil {
-		out.Error = "queue_unavailable"
-		return out
-	} else {
-		out.Available = true
-		out.Paused = info.Paused
-		out.LatencyMs = info.Latency.Milliseconds()
-		out.MemoryBytes = info.MemoryUsage
-		out.Size = info.Size
-		out.Pending = info.Pending
-		out.Active = info.Active
-		out.Scheduled = info.Scheduled
-		out.Retry = info.Retry
-		out.Archived = info.Archived
-		out.ProcessedToday = info.Processed
-		out.FailedToday = info.Failed
+		out.Paused = out.Paused || info.Paused
+		if info.Latency.Milliseconds() > out.LatencyMs {
+			out.LatencyMs = info.Latency.Milliseconds()
+		}
+		out.MemoryBytes += info.MemoryUsage
+		out.Size += info.Size
+		out.Pending += info.Pending
+		out.Active += info.Active
+		out.Scheduled += info.Scheduled
+		out.Retry += info.Retry
+		out.Archived += info.Archived
+		out.ProcessedToday += info.Processed
+		out.FailedToday += info.Failed
 	}
 
 	servers, err := q.inspector.Servers()
@@ -188,7 +302,7 @@ func (q *Queue) EnqueueImagePoll(ctx context.Context, providerID, routeID, route
 		return err
 	}
 	_, err = q.client.EnqueueContext(ctx, asynq.NewTask(TypePollImageTask, payload),
-		asynq.MaxRetry(0), asynq.Timeout(2*time.Minute), asynq.ProcessIn(delay), asynq.Unique(5*time.Second))
+		asynq.Queue(QueuePoll), asynq.MaxRetry(5), asynq.Timeout(10*time.Minute), asynq.ProcessIn(delay), asynq.Unique(5*time.Second))
 	if errors.Is(err, asynq.ErrDuplicateTask) {
 		return nil
 	}
@@ -254,13 +368,37 @@ func (q *Queue) EnqueueAssistantRunRecovery(ctx context.Context, runID string) e
 	return q.enqueueAssistantRun(ctx, runID, runID+":recover:"+uuid.NewString())
 }
 
+func (q *Queue) EnqueueAssistantFile(ctx context.Context, fileID string) error {
+	payload, err := json.Marshal(IngestAssistantFilePayload{FileID: fileID})
+	if err != nil {
+		return err
+	}
+	_, err = q.client.EnqueueContext(ctx, asynq.NewTask(TypeIngestAssistantFile, payload),
+		asynq.Queue(QueueAssistant), asynq.MaxRetry(0), asynq.Timeout(q.timeout), asynq.TaskID("assistant-file:"+fileID))
+	if errors.Is(err, asynq.ErrTaskIDConflict) {
+		return nil
+	}
+	return err
+}
+
+func (q *Queue) EnqueueAssistantFileRecovery(ctx context.Context, fileID string) error {
+	payload, err := json.Marshal(IngestAssistantFilePayload{FileID: fileID})
+	if err != nil {
+		return err
+	}
+	_, err = q.client.EnqueueContext(ctx, asynq.NewTask(TypeIngestAssistantFile, payload),
+		asynq.Queue(QueueAssistant), asynq.MaxRetry(0), asynq.Timeout(q.timeout),
+		asynq.TaskID("assistant-file:"+fileID+":"+uuid.NewString()))
+	return err
+}
+
 func (q *Queue) enqueueAssistantRun(ctx context.Context, runID, queueTaskID string) error {
 	payload, err := json.Marshal(RunAssistantPayload{RunID: runID})
 	if err != nil {
 		return err
 	}
 	_, err = q.client.EnqueueContext(ctx, asynq.NewTask(TypeRunAssistant, payload),
-		asynq.MaxRetry(0), asynq.Timeout(q.timeout), asynq.TaskID(queueTaskID))
+		asynq.Queue(QueueAssistant), asynq.MaxRetry(0), asynq.Timeout(q.timeout), asynq.TaskID(queueTaskID))
 	if errors.Is(err, asynq.ErrTaskIDConflict) {
 		return nil
 	}
@@ -271,14 +409,14 @@ func (q *Queue) enqueueAssistantRun(ctx context.Context, runID, queueTaskID stri
 // Either operation may report that the task is not in that state, which is harmless.
 func (q *Queue) CancelAssistantRun(runID string) {
 	_ = q.inspector.CancelProcessing(runID)
-	_ = q.inspector.DeleteTask("default", runID)
+	_ = q.inspector.DeleteTask(QueueAssistant, runID)
 	// 恢复任务使用唯一的 Asynq TaskID（runID:recover:*）。按载荷补充查找，
 	// 否则 Worker 重启后的图片请求只能改数据库状态，无法立刻取消上下文。
 	for _, list := range []func(string, ...asynq.ListOption) ([]*asynq.TaskInfo, error){
 		q.inspector.ListActiveTasks,
 		q.inspector.ListPendingTasks,
 	} {
-		tasks, err := list("default", asynq.PageSize(100))
+		tasks, err := list(QueueAssistant, asynq.PageSize(100))
 		if err != nil {
 			continue
 		}

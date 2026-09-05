@@ -7,9 +7,17 @@ import (
 	"github.com/google/uuid"
 )
 
+const (
+	PromptTaskTypeCanvas    = "infinite_canvas"
+	PromptTaskTypeAssistant = "assistant"
+	CanvasTaskSource        = "react_canvas"
+)
+
 var (
-	TaskTypes          = []string{"t2i", "coloring", "ui_design", "model_sheet", "game_art", "puzzle"}
+	TaskTypes          = []string{"t2i", "coloring", "ui_design", "ecommerce_design", "model_sheet", "game_art", "puzzle", "background_remove", "media_tool"}
+	PromptTaskTypes    = []string{"t2i", "coloring", "ui_design", "ecommerce_design", "model_sheet", "game_art", "puzzle", "background_remove", "media_tool", PromptTaskTypeCanvas, PromptTaskTypeAssistant}
 	AdminTaskTypes     = append(append([]string{}, TaskTypes...), "assistant")
+	AdminTaskFilters   = append(append([]string{}, AdminTaskTypes...), PromptTaskTypeCanvas)
 	TaskStatuses       = []string{"queued", "running", "succeeded", "failed", "canceled"}
 	OrderStatuses      = []string{"pending", "paid", "completed", "failed", "expired"}
 	SubmissionStatuses = []string{"pending", "approved", "rejected", "removed"}
@@ -31,6 +39,7 @@ type User struct {
 	Username              string
 	PasswordHash          string
 	AvatarURL             *string
+	StudioFigureURL       *string
 	Bio                   string
 	Location              string
 	WebsiteURL            string
@@ -39,21 +48,178 @@ type User struct {
 	Status                string
 	LastLoginAt           *time.Time
 	SubmissionBannedUntil *time.Time
+	DeletedAt             *time.Time
 	CreatedAt             time.Time
 }
 
 type UserAsset struct {
-	ID           uuid.UUID
-	UserID       uuid.UUID
-	Title        string
-	FileKey      string
-	ThumbnailKey string
-	ContentType  string
-	SizeBytes    int64
-	CreatedAt    time.Time
+	ID             uuid.UUID
+	UserID         uuid.UUID
+	GroupID        *uuid.UUID
+	Title          string
+	FileKey        string
+	ThumbnailKey   string
+	ContentType    string
+	SizeBytes      int64
+	Tags           []string
+	ContentHash    *string
+	SourceType     string
+	SourceID       *string
+	SourceMetadata json.RawMessage
+	ParentAssetID  *uuid.UUID
+	DeletedAt      *time.Time
+	UpdatedAt      time.Time
+	CreatedAt      time.Time
 }
 
 func (a *UserAsset) CursorKey() (time.Time, uuid.UUID) { return a.CreatedAt, a.ID }
+
+type EcommerceProduct struct {
+	ID                uuid.UUID
+	UserID            uuid.UUID
+	SKU               string
+	Title             string
+	Brand             string
+	Category          string
+	SellingPoints     string
+	TargetAudience    string
+	Material          string
+	Color             string
+	Dimensions        string
+	Platform          string
+	Market            string
+	Language          string
+	AssetIDs          []string
+	ProtectedElements []string
+	Status            string
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
+
+func (p *EcommerceProduct) CursorKey() (time.Time, uuid.UUID) { return p.UpdatedAt, p.ID }
+
+type EcommerceAssetReview struct {
+	ID         uuid.UUID
+	UserID     uuid.UUID
+	TaskID     uuid.UUID
+	Status     string
+	Checklist  map[string]any
+	Note       string
+	Channel    string
+	ReviewedAt *time.Time
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
+type EcommerceTryonCatalogItem struct {
+	ID        uuid.UUID
+	Kind      string
+	Label     string
+	ImageKey  string
+	Apparel   string
+	Metadata  map[string]any
+	Sort      int
+	Active    bool
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+type EcommerceHandheldCatalogItem struct {
+	ID        uuid.UUID
+	Kind      string
+	Label     string
+	ImageKey  string
+	Metadata  map[string]any
+	Sort      int
+	Active    bool
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+type EcommerceHandheldProject struct {
+	ID              uuid.UUID
+	UserID          uuid.UUID
+	ProductID       *uuid.UUID
+	Name            string
+	ProductSnapshot map[string]any
+	Draft           map[string]any
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+type EcommerceHandheldBatch struct {
+	ID              uuid.UUID
+	UserID          uuid.UUID
+	ProjectID       *uuid.UUID
+	ProductID       *uuid.UUID
+	ParentBatchID   *uuid.UUID
+	Status          string
+	ModelID         string
+	ProductSnapshot map[string]any
+	JobSpec         map[string]any
+	ItemCount       int
+	TotalCostCents  int64
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+type EcommerceHandheldItem struct {
+	ID           uuid.UUID
+	BatchID      uuid.UUID
+	UserID       uuid.UUID
+	TaskID       *uuid.UUID
+	ParentItemID *uuid.UUID
+	ItemIndex    int
+	Label        string
+	Prompt       string
+	ShotSpec     map[string]any
+	Status       string
+	QAStatus     string
+	ReviewStatus string
+	ReviewNote   string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+type EcommerceHandheldInput struct {
+	ID        uuid.UUID
+	BatchID   uuid.UUID
+	ItemID    *uuid.UUID
+	Role      string
+	ObjectKey string
+	Ordinal   int
+	CreatedAt time.Time
+}
+
+type EcommerceHandheldQualityReport struct {
+	ID        uuid.UUID
+	ItemID    uuid.UUID
+	Status    string
+	Detector  string
+	Checks    []map[string]any
+	Score     *float64
+	Summary   string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+var EcommerceHandheldCatalogKinds = []string{"model", "scene", "hand"}
+var EcommerceHandheldInputRoles = []string{"product_front", "product_side", "product_back", "logo_detail", "colorway", "hand_or_model", "scene", "layout"}
+
+var EcommerceCatalogKinds = []string{"model", "scene", "garment", "hand"}
+var EcommerceTryonCatalogKinds = EcommerceCatalogKinds
+
+const MaxEcommerceTryonCatalogPerKind = 40
+
+type UserAssetGroup struct {
+	ID         uuid.UUID
+	UserID     uuid.UUID
+	Name       string
+	Sort       int
+	AssetCount int64
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
 
 type Session struct {
 	ID        uuid.UUID
@@ -94,10 +260,13 @@ type AdminSession struct {
 }
 
 type Wallet struct {
-	UserID       uuid.UUID
-	BalanceCents int64
-	FrozenCents  int64
-	UpdatedAt    *time.Time
+	UserID            uuid.UUID
+	BalanceCents      int64
+	FrozenCents       int64
+	TrialBalanceCents int64
+	TrialFrozenCents  int64
+	TrialFeatureKey   *string
+	UpdatedAt         *time.Time
 }
 
 type LedgerEntry struct {
@@ -109,13 +278,40 @@ type LedgerEntry struct {
 	SourceType        string
 	SourceID          *string
 	Reason            *string
+	CreditBucket      string
 	CreatedAt         time.Time
+}
+
+type TaskCreditReservation struct {
+	TaskID               uuid.UUID
+	Generation           int
+	NormalCents          int64
+	TrialCents           int64
+	NormalRemainingCents int64
+	TrialRemainingCents  int64
+	TrialFeatureKey      *string
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+}
+
+type CreditReservation struct {
+	SourceType           string
+	SourceID             string
+	NormalCents          int64
+	TrialCents           int64
+	NormalRemainingCents int64
+	TrialRemainingCents  int64
+	TrialFeatureKey      *string
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
 }
 
 type Plan struct {
 	ID              uuid.UUID
 	Code            string
 	Name            string
+	Description     string
+	Badge           string
 	Kind            string // topup 充值包 / subscription 订阅
 	PriceCents      int64
 	GrantCents      int64
@@ -124,8 +320,15 @@ type Plan struct {
 	DailyGrantCents int64 // subscription：每日发放额度
 	Features        []string
 	Active          bool
+	Recommended     bool
 	Sort            int
 	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+type PlanUsage struct {
+	OrderCount        int64
+	SubscriptionCount int64
 }
 
 // Subscription 订阅期（续购同套餐 = ends_at 顺延）。
@@ -158,47 +361,106 @@ type RedemptionCode struct {
 	RedeemedByEmail *string
 }
 
+type TrialCampaign struct {
+	ID                uuid.UUID
+	Title             string
+	FeatureKeys       []string
+	AccessMode        string
+	Capacity          int64
+	DisplayOffset     int64
+	Status            string
+	CreatedBy         *uuid.UUID
+	ActivatedAt       *time.Time
+	ClosedAt          *time.Time
+	ExpiresAt         time.Time
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+	AppliedCount      int64
+	NextApplicationNo int64
+}
+
+// TrialAccessApplication 用户体验资格申请；用户信息与兑换码字段来自列表 JOIN。
+type TrialAccessApplication struct {
+	ID                uuid.UUID
+	UserID            uuid.UUID
+	CampaignID        uuid.UUID
+	ApplicationNo     int64
+	FeatureKey        string
+	FeatureKeys       []string
+	Occupation        string
+	Reason            string
+	Status            string // pending / approved / rejected
+	ReviewNote        *string
+	ReviewedBy        *uuid.UUID
+	ReviewedAt        *time.Time
+	RedemptionCodeID  *uuid.UUID
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+	UserEmail         string
+	Username          string
+	RedemptionCode    *string
+	GrantCents        *int64
+	CodeExpiresAt     *time.Time
+	CodeStatus        *string
+	CodeRedeemedAt    *time.Time
+	ActiveFeatureKeys []string
+}
+
 type Order struct {
-	ID              uuid.UUID
-	UserID          uuid.UUID
-	PlanID          uuid.UUID
-	AmountCents     int64
-	GrantCents      int64
-	BonusCents      int64
-	Status          string
-	Provider        string
-	ProviderOrderID *string
-	PaidAt          *time.Time
-	CompletedAt     *time.Time
-	CreatedAt       time.Time
+	ID                     uuid.UUID
+	UserID                 uuid.UUID
+	PlanID                 uuid.UUID
+	AmountCents            int64
+	GrantCents             int64
+	BonusCents             int64
+	Status                 string
+	Provider               string
+	ProviderOrderID        *string
+	ProviderPayAmountCents *int64
+	PaymentMethod          *string
+	ProviderPayURL         *string
+	RequiresManualAmount   *bool
+	ProviderExpiresAt      *time.Time
+	PaidAt                 *time.Time
+	CompletedAt            *time.Time
+	CreatedAt              time.Time
 }
 
 type Task struct {
-	ID             uuid.UUID
-	UserID         uuid.UUID
-	Type           string
-	Model          string
-	Status         string
-	Prompt         string
-	Params         map[string]any
-	Count          int
-	InputKeys      []string
-	OutputKeys     []string
-	ThumbnailKeys  []string
-	CostCents      int64
-	IdempotencyKey *string
-	ErrorCode      *string
-	ErrorMessage   *string
-	Attempt        int
-	StartedAt      *time.Time
-	FinishedAt     *time.Time
-	CreatedAt      time.Time
+	ID                 uuid.UUID
+	UserID             uuid.UUID
+	Type               string
+	Model              string
+	Status             string
+	Prompt             string
+	Params             map[string]any
+	Count              int
+	InputKeys          []string
+	OutputKeys         []string
+	ThumbnailKeys      []string
+	CostCents          int64
+	WorkUnits          int
+	IdempotencyKey     *string
+	ErrorCode          *string
+	ErrorMessage       *string
+	Attempt            int
+	StartedAt          *time.Time
+	LeaseOwner         *string
+	HeartbeatAt        *time.Time
+	LeaseUntil         *time.Time
+	FinishedAt         *time.Time
+	CreatedAt          time.Time
+	DeletedAt          *time.Time
+	DeletionActor      *string
+	DeletedOutputCount int
 }
 
 type AssistantConversation struct {
 	ID        uuid.UUID
 	UserID    uuid.UUID
 	Title     string
+	Workspace string
+	ProjectID *uuid.UUID
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -221,12 +483,22 @@ type AssistantRun struct {
 	ConversationID     uuid.UUID
 	UserMessageID      uuid.UUID
 	AssistantMessageID uuid.UUID
+	IdempotencyKey     *string
+	RequestFingerprint *string
 	Mode               string
 	ResolvedMode       string
 	Status             string
 	Stage              string
+	QueuePosition      int64
 	Prompt             string
 	Params             map[string]any
+	ReservedCents      int64
+	CostCents          int64
+	BillingGeneration  int
+	Attempt            int
+	LeaseOwner         *string
+	LeaseUntil         *time.Time
+	HeartbeatAt        *time.Time
 	ErrorCode          *string
 	ErrorMessage       *string
 	StartedAt          *time.Time
@@ -260,6 +532,17 @@ type GalleryCategory struct {
 	CreatedAt time.Time
 }
 
+type PromptCategory struct {
+	ID        uuid.UUID
+	Key       string
+	Label     string
+	Sort      int
+	Active    bool
+	Builtin   bool
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
 type PromptEntry struct {
 	ID                  uuid.UUID
 	Title               string
@@ -276,6 +559,10 @@ type PromptEntry struct {
 	FavoriteCount       int
 	UseCount            int
 	Active              bool
+	AssetOrigin         string
+	AssetVerified       bool
+	AssetVerifiedAt     *time.Time
+	AssetNote           string
 	CreatedAt           time.Time
 }
 
@@ -293,13 +580,92 @@ type GalleryAuthor struct {
 }
 
 type Notification struct {
-	ID        uuid.UUID
-	UserID    *uuid.UUID
-	Kind      string
-	Title     string
-	Body      *string
-	ReadAt    *time.Time
-	CreatedAt time.Time
+	ID         uuid.UUID
+	UserID     *uuid.UUID
+	Kind       string
+	Title      string
+	Body       *string
+	ReadAt     *time.Time
+	CreatedAt  time.Time
+	SourceType *string
+	SourceID   *uuid.UUID
+}
+
+type UserFeedback struct {
+	ID          uuid.UUID
+	UserID      uuid.UUID
+	Category    string
+	Title       string
+	Content     string
+	PageURL     *string
+	UserAgent   *string
+	Status      string
+	AdminReply  *string
+	HandledBy   *uuid.UUID
+	HandledAt   *time.Time
+	Adopted     bool
+	RewardCents int64
+	RewardedAt  *time.Time
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	UserEmail   string
+	Username    string
+}
+
+type GrowthGroupMember struct {
+	UserID    uuid.UUID
+	Username  string
+	AvatarURL *string
+	Role      string
+	JoinedAt  time.Time
+}
+
+type GrowthGroup struct {
+	ID            uuid.UUID
+	CampaignKey   string
+	Code          string
+	OwnerID       uuid.UUID
+	Status        string
+	TargetMembers int
+	RewardCents   int64
+	ExpiresAt     time.Time
+	CompletedAt   *time.Time
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	Members       []*GrowthGroupMember
+}
+
+type GrowthGroupAdminSummary struct {
+	TotalGroups     int64
+	ActiveGroups    int64
+	CompletedGroups int64
+	ExpiredGroups   int64
+	Participations  int64
+}
+
+type GrowthGroupAdminItem struct {
+	ID             uuid.UUID
+	Code           string
+	OwnerID        uuid.UUID
+	OwnerUsername  string
+	OwnerAvatarURL *string
+	Status         string
+	TargetMembers  int
+	MemberCount    int
+	RewardCents    int64
+	ExpiresAt      time.Time
+	CompletedAt    *time.Time
+	CreatedAt      time.Time
+}
+
+type DailyCheckin struct {
+	ID          uuid.UUID
+	UserID      uuid.UUID
+	CheckinDate time.Time
+	Streak      int
+	CycleDay    int
+	RewardCents int64
+	CreatedAt   time.Time
 }
 
 type Announcement struct {
@@ -324,6 +690,7 @@ type ChangelogEntry struct {
 	Highlight bool
 	Sort      int
 	CreatedAt time.Time
+	SourceKey *string
 }
 
 type AdminAuditLog struct {
@@ -351,3 +718,7 @@ func (l *AdminAuditLog) CursorKey() (time.Time, uuid.UUID)     { return l.Create
 func (p *PromptEntry) CursorKey() (time.Time, uuid.UUID)       { return p.CreatedAt, p.ID }
 func (a *GalleryAuthor) CursorKey() (time.Time, uuid.UUID)     { return a.CreatedAt, a.UserID }
 func (r *RedemptionCode) CursorKey() (time.Time, uuid.UUID)    { return r.CreatedAt, r.ID }
+func (a *TrialAccessApplication) CursorKey() (time.Time, uuid.UUID) {
+	return a.CreatedAt, a.ID
+}
+func (f *UserFeedback) CursorKey() (time.Time, uuid.UUID) { return f.CreatedAt, f.ID }

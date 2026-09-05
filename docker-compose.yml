@@ -1,3 +1,9 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
 services:
   postgres:
     image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
@@ -17,6 +23,7 @@ services:
     mem_limit: 1g
     cpus: 1.0
     pids_limit: 200
+    logging: *default-logging
 
   redis:
     image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
@@ -35,6 +42,7 @@ services:
     mem_limit: 512m
     cpus: 0.5
     pids_limit: 100
+    logging: *default-logging
 
   server:
     build: ./apps/server
@@ -66,6 +74,7 @@ services:
     mem_limit: 1g
     cpus: 1.0
     pids_limit: 200
+    logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8000/api/v1/health"]
       interval: 10s
@@ -76,11 +85,15 @@ services:
   worker:
     build: ./apps/server
     restart: unless-stopped
+    stop_grace_period: 15m
     env_file: ${APP_ENV_FILE:-.env}
     environment:
       REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set}@redis:6379/0
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-32}
       WORKER_IMAGE_MEMORY_MIB: ${WORKER_IMAGE_MEMORY_MIB:-1024}
+      ASSISTANT_OCR_ENABLED: ${ASSISTANT_OCR_ENABLED:-true}
+      ASSISTANT_OCR_PDFTOPPM_PATH: /usr/bin/pdftoppm
+      ASSISTANT_OCR_TESSERACT_PATH: /usr/bin/tesseract
       GOMEMLIMIT: ${WORKER_GOMEMLIMIT:-1700MiB}
       DB_MAX_CONNS: ${WORKER_DB_MAX_CONNS:-5}
       DB_MIN_CONNS: ${WORKER_DB_MIN_CONNS:-1}
@@ -103,14 +116,18 @@ services:
     mem_limit: 2g
     cpus: 2.0
     pids_limit: 300
+    logging: *default-logging
 
   web:
-    build: ./apps/web
+    build:
+      context: .
+      dockerfile: apps/web-react/Dockerfile
     restart: unless-stopped
     networks: [frontend]
     mem_limit: 256m
     cpus: 0.5
     pids_limit: 100
+    logging: *default-logging
 
   admin:
     build: ./apps/admin
@@ -119,6 +136,7 @@ services:
     mem_limit: 256m
     cpus: 0.5
     pids_limit: 100
+    logging: *default-logging
 
   gateway:
     image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
@@ -142,6 +160,7 @@ services:
     mem_limit: 256m
     cpus: 0.5
     pids_limit: 100
+    logging: *default-logging
 
 volumes:
   pg_data:

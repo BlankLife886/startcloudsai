@@ -1,0 +1,15 @@
+import { App } from "antd";
+import copy from "copy-to-clipboard";
+import { useTranslation } from "react-i18next";
+
+export function useCopyText() {
+    const { message } = App.useApp();
+    const { t } = useTranslation();
+
+    return (value: string, successText = t("common.copied")) => {
+        void Promise.resolve(copy(value)).then((ok) => {
+            if (ok) message.success(successText);
+            else message.error(t("common.copyFailed"));
+        });
+    };
+}

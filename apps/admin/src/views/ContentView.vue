@@ -1,11 +1,33 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
+import {
+  Bell,
+  Delete,
+  Download,
+  Document,
+  EditPen,
+  Picture,
+  Plus,
+  Refresh,
+  Search,
+  UploadFilled,
+} from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
+import AdminDialog from "@/components/AdminDialog.vue";
 import { normalizeList, request } from "@/request";
 import { useClientPagination } from "@/useClientPagination";
-import { formatTime } from "@/utils";
+import { formatShortTime } from "@/utils";
 
-const activeTab = ref("announcements");
+type ContentTab = "announcements" | "changelog";
+type AnnStatusFilter = "all" | "live" | "pending" | "ended" | "disabled";
+type LogTagFilter = "all" | "feature" | "experience" | "highlight";
+
+const activeTab = ref<ContentTab>("announcements");
+const query = ref("");
+const annStatusFilter = ref<AnnStatusFilter>("all");
+const logTagFilter = ref<LogTagFilter>("all");
+const switchingAnnId = ref("");
+const switchingLogId = ref("");
 
 // ---------- 公告 ----------
 interface Announcement {
@@ -70,7 +92,6 @@ interface AnnouncementForm extends AnnouncementConfig {
   active: boolean;
   startsAt: string;
   endsAt: string;
-  assetsText: string;
 }
 
 const PLACEMENT_LABELS = { modal: "居中弹窗", banner: "顶部横幅" } as const;
@@ -100,7 +121,6 @@ function defaultAnnouncementForm(): AnnouncementForm {
     placement: "modal",
     layout: "text_only",
     assets: [],
-    assetsText: "",
     decorImageUrl: "",
     ctaText: "",
     ctaUrl: "",
@@ -117,10 +137,6 @@ function defaultAnnouncementForm(): AnnouncementForm {
 const annLoading = ref(false);
 const annError = ref("");
 const announcements = ref<Announcement[]>([]);
-const announcementPagination = useClientPagination(
-  () => announcements.value,
-  10,
-);
 
 async function loadAnnouncements() {
   annLoading.value = true;
@@ -148,7 +164,7 @@ const annSubmitting = ref(false);
 const annForm = reactive<AnnouncementForm>(defaultAnnouncementForm());
 
 const annPreviewAssets = computed(() =>
-  parseAnnouncementAssets(annForm.assetsText),
+  annForm.assets.filter((asset) => Boolean(asset.url)),
 );
 const annPreviewImage = computed(() => annPreviewAssets.value[0]?.url || "");
 const annPreviewClass = computed(() => ({
@@ -157,16 +173,135 @@ const annPreviewClass = computed(() => ({
   "has-media": annPreviewAssets.value.length > 0,
 }));
 
-function parseAnnouncementAssets(value: string): AnnouncementAsset[] {
-  return value
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .slice(0, 4)
-    .map((line) => {
-      const [url, alt = ""] = line.split("|").map((part) => part.trim());
-      return { url, alt };
-    });
+const ANN_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
+const SINGLE_IMAGE_LAYOUTS = new Set(["image_top", "image_left", "image_right"]);
+const MULTI_IMAGE_LAYOUTS = new Set(["grid", "carousel"]);
+const annAssetsInputRef = ref<HTMLInputElement | null>(null);
+const annDecorInputRef = ref<HTMLInputElement | null>(null);
+const annImageUploading = ref(0);
+const annDecorUploading = ref(false);
+
+const isBannerPlacement = computed(() => annForm.placement === "banner");
+const showContentImages = computed(
+  () => !isBannerPlacement.value && annForm.layout !== "text_only",
+);
+const showDecorImage = computed(() => isBannerPlacement.value);
+const showCarouselOptions = computed(
+  () => showContentImages.value && annForm.layout === "carousel",
+);
+const annAssetLimit = computed(() =>
+  MULTI_IMAGE_LAYOUTS.has(annForm.layout) ? 4 : 1,
+);
+const contentImageLabel = computed(() => {
+  if (annForm.layout === "grid") return "宫格图片";
+  if (annForm.layout === "carousel") return "轮播图片";
+  if (annForm.layout === "image_top") return "海报图片";
+  if (annForm.layout === "image_left") return "左侧配图";
+  if (annForm.layout === "image_right") return "右侧配图";
+  return "内容图片";
+});
+const contentImageHint = computed(() => {
+  if (annForm.layout === "grid") return "最多 4 张，按从左到右排列";
+  if (annForm.layout === "carousel") return "最多 4 张，顺序即播放顺序";
+  if (annForm.layout === "image_top")
+    return "建议透明 PNG，弹窗无底色，只显示图片和底部按钮";
+  if (SINGLE_IMAGE_LAYOUTS.has(annForm.layout)) return "该布局只使用 1 张图片";
+  return "PNG / JPG / WebP · 8MB";
+});
+
+watch(
+  () => [annForm.placement, annForm.layout] as const,
+  () => {
+    if (!showContentImages.value) return;
+    if (annForm.assets.length > annAssetLimit.value) {
+      annForm.assets.splice(annAssetLimit.value);
+    }
+  },
+);
+
+function validateAnnouncementImage(file: File) {
+  const allowed =
+    ["image/png", "image/jpeg", "image/webp"].includes(file.type) ||
+    /\.(png|jpe?g|webp)$/i.test(file.name);
+  if (!allowed) {
+    ElMessage.warning("仅支持 PNG / JPG / WebP");
+    return false;
+  }
+  if (file.size > ANN_IMAGE_MAX_BYTES) {
+    ElMessage.warning("图片不能超过 8MB");
+    return false;
+  }
+  return true;
+}
+
+async function uploadAnnouncementImage(file: File) {
+  const body = new FormData();
+  body.append("file", file);
+  const res = await fetch("/api/v1/admin/announcements/images", {
+    method: "POST",
+    credentials: "include",
+    body,
+  });
+  const payload = (await res.json().catch(() => null)) as
+    | { success?: boolean; data?: { url?: string }; error?: string }
+    | null;
+  if (!res.ok || !payload?.success || !payload.data?.url) {
+    throw new Error(payload?.error || `图片上传失败（HTTP ${res.status}）`);
+  }
+  return payload.data.url;
+}
+
+function triggerAnnAssetsPick() {
+  if (annImageUploading.value || annForm.assets.length >= annAssetLimit.value)
+    return;
+  annAssetsInputRef.value?.click();
+}
+
+function triggerAnnDecorPick() {
+  if (annDecorUploading.value) return;
+  annDecorInputRef.value?.click();
+}
+
+async function onAnnAssetsPick(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const files = Array.from(input.files || []);
+  input.value = "";
+  const room = annAssetLimit.value - annForm.assets.length;
+  for (const file of files.slice(0, room)) {
+    if (!validateAnnouncementImage(file)) continue;
+    annImageUploading.value += 1;
+    try {
+      const url = await uploadAnnouncementImage(file);
+      annForm.assets.push({ url, alt: "" });
+    } catch (error) {
+      ElMessage.error(error instanceof Error ? error.message : "图片上传失败");
+    } finally {
+      annImageUploading.value -= 1;
+    }
+  }
+}
+
+async function onAnnDecorPick(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file || !validateAnnouncementImage(file)) return;
+  annDecorUploading.value = true;
+  try {
+    annForm.decorImageUrl = await uploadAnnouncementImage(file);
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "图片上传失败");
+  } finally {
+    annDecorUploading.value = false;
+  }
+}
+
+function removeAnnAsset(index: number) {
+  annForm.assets.splice(index, 1);
+}
+
+function clearAnnDecor() {
+  annForm.decorImageUrl = "";
 }
 
 function announcementConfigOf(item: Announcement): AnnouncementConfig {
@@ -192,14 +327,23 @@ function announcementConfigOf(item: Announcement): AnnouncementConfig {
 
 function announcementState(item: Announcement) {
   const now = Date.now();
-  if (item.active === false) return { label: "已停用", type: "info" as const };
+  if (item.active === false) {
+    return { key: "disabled" as const, label: "已停用", tone: "info" as const };
+  }
   if (item.startsAt && new Date(item.startsAt).getTime() > now) {
-    return { label: "待生效", type: "warning" as const };
+    return { key: "pending" as const, label: "待生效", tone: "warning" as const };
   }
   if (item.endsAt && new Date(item.endsAt).getTime() < now) {
-    return { label: "已结束", type: "info" as const };
+    return { key: "ended" as const, label: "已结束", tone: "info" as const };
   }
-  return { label: "展示中", type: "success" as const };
+  return { key: "live" as const, label: "展示中", tone: "success" as const };
+}
+
+function scheduleLabel(item: Announcement) {
+  if (!item.startsAt && !item.endsAt) return "长期有效";
+  const start = item.startsAt ? formatShortTime(item.startsAt) : "立即开始";
+  const end = item.endsAt ? formatShortTime(item.endsAt) : "不限期";
+  return `${start} → ${end}`;
 }
 
 function openAnnCreate() {
@@ -219,21 +363,31 @@ function openAnnEdit(item: Announcement) {
     startsAt: item.startsAt || "",
     endsAt: item.endsAt || "",
     ...config,
-    assetsText: config.assets
-      .map((asset) => `${asset.url}${asset.alt ? ` | ${asset.alt}` : ""}`)
-      .join("\n"),
+    assets: config.assets.map((asset) => ({
+      url: asset.url,
+      alt: asset.alt || "",
+    })),
   });
   annDialogVisible.value = true;
 }
 
 async function submitAnn() {
+  if (annImageUploading.value || annDecorUploading.value) {
+    ElMessage.warning("图片还在上传，请稍后再保存");
+    return;
+  }
   if (!annForm.title.trim() || !annForm.body.trim()) {
     ElMessage.warning("请填写标题与内容");
     return;
   }
-  const assets = parseAnnouncementAssets(annForm.assetsText);
-  if (annForm.layout !== "text_only" && assets.length === 0) {
-    ElMessage.warning("当前图文布局至少需要配置一张图片");
+  const assets = annForm.assets
+    .map((asset) => ({ url: asset.url.trim(), alt: asset.alt?.trim() || "" }))
+    .filter((asset) => asset.url);
+  const visibleAssets = showContentImages.value
+    ? assets.slice(0, annAssetLimit.value)
+    : [];
+  if (showContentImages.value && visibleAssets.length === 0) {
+    ElMessage.warning("当前图文布局至少需要上传一张图片");
     return;
   }
   if (
@@ -252,7 +406,7 @@ async function submitAnn() {
     config: {
       placement: annForm.placement,
       layout: annForm.layout,
-      assets,
+      assets: visibleAssets,
       decorImageUrl: annForm.decorImageUrl.trim(),
       ctaText: annForm.ctaText.trim(),
       ctaUrl: annForm.ctaUrl.trim(),
@@ -308,6 +462,14 @@ interface ChangelogEntry {
   title: string;
   summary: string;
   items: string[];
+  highlight?: boolean;
+}
+
+interface ChangelogImportResult {
+  total: number;
+  created: number;
+  updated: number;
+  unchanged: number;
 }
 
 const TAG_LABELS: Record<string, string> = {
@@ -318,7 +480,8 @@ const TAG_LABELS: Record<string, string> = {
 const logLoading = ref(false);
 const logError = ref("");
 const changelog = ref<ChangelogEntry[]>([]);
-const changelogPagination = useClientPagination(() => changelog.value, 10);
+const logImportInputRef = ref<HTMLInputElement | null>(null);
+const logImporting = ref(false);
 
 async function loadChangelog() {
   logLoading.value = true;
@@ -339,6 +502,72 @@ async function loadChangelog() {
   }
 }
 
+function exportChangelog() {
+  const link = document.createElement("a");
+  link.href = "/api/v1/admin/changelog/export";
+  link.download = "";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+function triggerChangelogImport() {
+  logImportInputRef.value?.click();
+}
+
+async function importChangelogFile(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file) return;
+  if (file.size > 1024 * 1024) {
+    ElMessage.warning("更新说明导入文件不能超过 1MB");
+    return;
+  }
+  try {
+    const parsed = JSON.parse(await file.text()) as
+      | { format?: string; schemaVersion?: number; entries?: unknown[] }
+      | unknown[];
+    const entries = Array.isArray(parsed) ? parsed : parsed?.entries;
+    if (!Array.isArray(entries) || entries.length === 0) {
+      throw new Error("文件中没有可导入的更新说明");
+    }
+    if (entries.length > 500) {
+      throw new Error("一次最多导入 500 条更新说明");
+    }
+    await ElMessageBox.confirm(
+      `将导入 ${entries.length} 条更新说明。相同 ID 或相同“版本号 + 日期 + 标题”的记录会更新，其余记录会新建；现有其他记录不会删除。`,
+      "确认导入更新说明",
+      {
+        type: "warning",
+        confirmButtonText: "开始导入",
+        cancelButtonText: "取消",
+      },
+    );
+    const body = Array.isArray(parsed)
+      ? {
+          format: "startcloudsai-changelog",
+          schemaVersion: 1,
+          entries,
+        }
+      : parsed;
+    logImporting.value = true;
+    const result = await request<ChangelogImportResult>(
+      "/api/v1/admin/changelog/import",
+      { method: "POST", body, silent: true },
+    );
+    await loadChangelog();
+    ElMessage.success(
+      `导入完成：新建 ${result.created} 条，更新 ${result.updated} 条，未变化 ${result.unchanged} 条`,
+    );
+  } catch (error) {
+    if (error === "cancel" || error === "close") return;
+    ElMessage.error(error instanceof Error ? error.message : "更新说明导入失败");
+  } finally {
+    logImporting.value = false;
+  }
+}
+
 const logDialogVisible = ref(false);
 const logEditingId = ref<string | null>(null);
 const logSubmitting = ref(false);
@@ -349,17 +578,64 @@ const logForm = reactive({
   title: "",
   summary: "",
   itemsText: "",
+  highlight: false,
 });
+
+function parseVersionParts(version: string) {
+  return String(version || "")
+    .trim()
+    .split(".")
+    .map((part) => Number.parseInt(part.replace(/\D.*$/, ""), 10))
+    .filter((part) => Number.isFinite(part));
+}
+
+function compareVersions(left: string, right: string) {
+  const a = parseVersionParts(left);
+  const b = parseVersionParts(right);
+  const length = Math.max(a.length, b.length, 3);
+  for (let index = 0; index < length; index += 1) {
+    const diff = (a[index] ?? 0) - (b[index] ?? 0);
+    if (diff) return diff;
+  }
+  return 0;
+}
+
+function formatVersion(parts: number[]) {
+  const [major = 1, minor = 0, patch = 0] = parts;
+  return `${major}.${minor}.${patch}`;
+}
+
+function nextChangelogVersion() {
+  const versions = changelog.value
+    .map((entry) => entry.version.trim())
+    .filter(Boolean);
+  if (!versions.length) return "1.0.0";
+  const latest = versions.reduce((best, current) =>
+    compareVersions(current, best) > 0 ? current : best,
+  );
+  const parts = parseVersionParts(latest);
+  if (!parts.length) return "1.0.0";
+  while (parts.length < 3) parts.push(0);
+  parts[2] += 1;
+  const used = new Set(versions);
+  let next = formatVersion(parts);
+  while (used.has(next)) {
+    parts[2] += 1;
+    next = formatVersion(parts);
+  }
+  return next;
+}
 
 function openLogCreate() {
   logEditingId.value = null;
   Object.assign(logForm, {
-    version: "",
+    version: nextChangelogVersion(),
     date: new Date().toISOString().slice(0, 10),
     tag: "feature",
     title: "",
     summary: "",
     itemsText: "",
+    highlight: true,
   });
   logDialogVisible.value = true;
 }
@@ -373,6 +649,7 @@ function openLogEdit(entry: ChangelogEntry) {
     title: entry.title,
     summary: entry.summary,
     itemsText: (entry.items ?? []).join("\n"),
+    highlight: Boolean(entry.highlight),
   });
   logDialogVisible.value = true;
 }
@@ -392,6 +669,7 @@ async function submitLog() {
       .split("\n")
       .map((line) => line.trim())
       .filter(Boolean),
+    highlight: logForm.highlight,
   };
   logSubmitting.value = true;
   try {
@@ -403,7 +681,7 @@ async function submitLog() {
       ElMessage.success("更新说明已保存");
     } else {
       await request("/api/v1/admin/changelog", { method: "POST", body });
-      ElMessage.success("更新说明已发布");
+      ElMessage.success("版本已发布，打开中的用户端会收到刷新提示");
     }
     logDialogVisible.value = false;
     await loadChangelog();
@@ -431,6 +709,139 @@ async function removeLog(entry: ChangelogEntry) {
   await loadChangelog();
 }
 
+const filteredAnnouncements = computed(() => {
+  const needle = query.value.trim().toLowerCase();
+  return announcements.value.filter((item) => {
+    if (
+      annStatusFilter.value !== "all" &&
+      announcementState(item).key !== annStatusFilter.value
+    ) {
+      return false;
+    }
+    if (!needle) return true;
+    const config = announcementConfigOf(item);
+    return [item.title, item.body, PLACEMENT_LABELS[config.placement], FREQUENCY_LABELS[config.frequency]]
+      .join(" ")
+      .toLowerCase()
+      .includes(needle);
+  });
+});
+
+const filteredChangelog = computed(() => {
+  const needle = query.value.trim().toLowerCase();
+  return changelog.value.filter((entry) => {
+    if (logTagFilter.value === "highlight" && !entry.highlight) return false;
+    if (
+      (logTagFilter.value === "feature" || logTagFilter.value === "experience") &&
+      entry.tag !== logTagFilter.value
+    ) {
+      return false;
+    }
+    if (!needle) return true;
+    return [
+      entry.version,
+      entry.title,
+      entry.summary,
+      entry.date,
+      TAG_LABELS[entry.tag],
+      ...(entry.items ?? []),
+    ]
+      .join(" ")
+      .toLowerCase()
+      .includes(needle);
+  });
+});
+
+const announcementPagination = useClientPagination(
+  () => filteredAnnouncements.value,
+  10,
+);
+const changelogPagination = useClientPagination(() => filteredChangelog.value, 10);
+
+const liveAnnCount = computed(
+  () => announcements.value.filter((item) => announcementState(item).key === "live").length,
+);
+const highlightCount = computed(
+  () => changelog.value.filter((entry) => entry.highlight).length,
+);
+
+const hasFilters = computed(() => {
+  if (query.value.trim()) return true;
+  return activeTab.value === "announcements"
+    ? annStatusFilter.value !== "all"
+    : logTagFilter.value !== "all";
+});
+
+const currentError = computed(() =>
+  activeTab.value === "announcements" ? annError.value : logError.value,
+);
+const currentLoading = computed(() =>
+  activeTab.value === "announcements" ? annLoading.value : logLoading.value,
+);
+const currentPager = computed(() =>
+  activeTab.value === "announcements" ? announcementPagination : changelogPagination,
+);
+
+function clearFilters() {
+  query.value = "";
+  annStatusFilter.value = "all";
+  logTagFilter.value = "all";
+}
+
+function refreshAll() {
+  void loadAnnouncements();
+  void loadChangelog();
+}
+
+function retryCurrent() {
+  if (activeTab.value === "announcements") return loadAnnouncements();
+  return loadChangelog();
+}
+
+function openCreate() {
+  if (activeTab.value === "announcements") openAnnCreate();
+  else openLogCreate();
+}
+
+async function toggleAnnActive(item: Announcement, active: boolean) {
+  if (switchingAnnId.value) return;
+  switchingAnnId.value = item.id;
+  try {
+    await request(`/api/v1/admin/announcements/${item.id}`, {
+      method: "PATCH",
+      body: { active },
+    });
+    item.active = active;
+    ElMessage.success(active ? "公告已启用" : "公告已停用");
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "公告状态更新失败");
+  } finally {
+    switchingAnnId.value = "";
+  }
+}
+
+async function toggleLogHighlight(entry: ChangelogEntry, highlight: boolean) {
+  if (switchingLogId.value) return;
+  switchingLogId.value = entry.id;
+  try {
+    await request(`/api/v1/admin/changelog/${entry.id}`, {
+      method: "PATCH",
+      body: { highlight },
+    });
+    entry.highlight = highlight;
+    ElMessage.success(highlight ? "已设为焦点版本" : "已取消焦点");
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "更新说明保存失败");
+  } finally {
+    switchingLogId.value = "";
+  }
+}
+
+watch([query, annStatusFilter, logTagFilter, activeTab], () => {
+  announcementPagination.reset();
+  changelogPagination.reset();
+});
+
 onMounted(() => {
   void loadAnnouncements();
   void loadChangelog();
@@ -438,215 +849,290 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="page">
-    <el-tabs v-model="activeTab">
-      <el-tab-pane label="公告" name="announcements">
-        <PageCard
-          title="全站公告"
-          subtitle="配置用户端公告的内容、展示形式、频率与有效期"
+  <div class="page content-admin-page">
+    <PageCard>
+      <div class="content-toolbar">
+        <div class="content-tabs" role="tablist" aria-label="内容类型">
+          <button
+            type="button"
+            role="tab"
+            class="content-tab"
+            :class="{ 'is-active': activeTab === 'announcements' }"
+            :aria-selected="activeTab === 'announcements'"
+            @click="activeTab = 'announcements'"
+          >
+            公告
+            <em class="tnum">{{ announcements.length }}</em>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            class="content-tab"
+            :class="{ 'is-active': activeTab === 'changelog' }"
+            :aria-selected="activeTab === 'changelog'"
+            @click="activeTab = 'changelog'"
+          >
+            更新说明
+            <em class="tnum">{{ changelog.length }}</em>
+          </button>
+        </div>
+        <div class="content-toolbar__right">
+          <input
+            v-if="activeTab === 'changelog'"
+            ref="logImportInputRef"
+            class="content-transfer-input"
+            type="file"
+            accept=".json,application/json"
+            @change="importChangelogFile"
+          />
+          <el-input
+            v-model="query"
+            :prefix-icon="Search"
+            clearable
+            :placeholder="
+              activeTab === 'announcements'
+                ? '搜索公告标题或正文'
+                : '搜索版本、标题或条目'
+            "
+          />
+          <el-select
+            v-if="activeTab === 'announcements'"
+            v-model="annStatusFilter"
+            aria-label="公告状态"
+          >
+            <el-option label="全部状态" value="all" />
+            <el-option label="展示中" value="live" />
+            <el-option label="待生效" value="pending" />
+            <el-option label="已结束" value="ended" />
+            <el-option label="已停用" value="disabled" />
+          </el-select>
+          <el-select v-else v-model="logTagFilter" aria-label="更新类型">
+            <el-option label="全部类型" value="all" />
+            <el-option label="新功能" value="feature" />
+            <el-option label="体验优化" value="experience" />
+            <el-option label="焦点版本" value="highlight" />
+          </el-select>
+          <el-button v-if="hasFilters" @click="clearFilters">清除筛选</el-button>
+          <el-button
+            v-if="activeTab === 'changelog'"
+            :icon="UploadFilled"
+            :loading="logImporting"
+            @click="triggerChangelogImport"
+          >
+            导入
+          </el-button>
+          <el-button
+            v-if="activeTab === 'changelog'"
+            :icon="Download"
+            :disabled="!changelog.length || logImporting"
+            @click="exportChangelog"
+          >
+            导出
+          </el-button>
+          <el-button :icon="Refresh" :loading="currentLoading" @click="refreshAll">
+            刷新
+          </el-button>
+          <el-button type="primary" :icon="Plus" @click="openCreate">
+            {{ activeTab === "announcements" ? "发布公告" : "发布版本" }}
+          </el-button>
+        </div>
+      </div>
+
+      <p class="content-legend">
+        <template v-if="activeTab === 'announcements'">
+          公告出现在用户通知中心，不会混进通知列表。当前展示中
+          <em class="tnum">{{ liveAnnCount }}</em>
+          / {{ announcements.length }} 条。
+        </template>
+        <template v-else>
+          发布后同步到用户端更新说明页，打开中的用户会收到刷新提示。焦点版本
+          <em class="tnum">{{ highlightCount }}</em>
+          条。
+        </template>
+      </p>
+
+      <ListError
+        :error="currentError || null"
+        :loading="currentLoading"
+        @retry="retryCurrent"
+      />
+
+      <div v-loading="currentLoading" class="content-board">
+        <div
+          v-if="activeTab === 'announcements' && announcementPagination.items.value.length"
+          class="ann-grid"
         >
-          <template #actions>
-            <el-button type="primary" size="small" @click="openAnnCreate"
-              >发布公告</el-button
-            >
-          </template>
-          <el-alert
-            v-if="annError"
-            class="content-load-error"
-            type="error"
-            :title="annError"
-            show-icon
-            :closable="false"
+          <article
+            v-for="item in announcementPagination.items.value"
+            :key="item.id"
+            class="ann-card"
+            :class="`is-${announcementState(item).key}`"
           >
-            <template #default>
-              <el-button size="small" @click="loadAnnouncements"
-                >重新加载</el-button
+            <header class="ann-card__head">
+              <div>
+                <h3>{{ item.title }}</h3>
+                <p>{{ item.body || "未填写正文" }}</p>
+              </div>
+              <span
+                class="status-chip"
+                :class="`is-${announcementState(item).tone}`"
               >
-            </template>
-          </el-alert>
-          <AdminListShell
-            :has-prev="announcementPagination.hasPrev.value"
-            :has-next="announcementPagination.hasNext.value"
-            :loading="annLoading"
-            :page="announcementPagination.page.value"
-            :count="announcementPagination.items.value.length"
-            :total="announcementPagination.total.value"
-            @prev="announcementPagination.prev"
-            @next="announcementPagination.next"
-          >
-          <el-table v-loading="annLoading" :data="announcementPagination.items.value" height="100%" size="small">
-            <template #empty>
-              <el-empty description="暂无公告" :image-size="60">
-                <div class="empty-sub">
-                  点击右上角「发布公告」创建第一条公告
-                </div>
-              </el-empty>
-            </template>
-            <el-table-column prop="title" label="标题" min-width="190" />
-            <el-table-column
-              prop="body"
-              label="内容"
-              min-width="240"
-              show-overflow-tooltip
-            />
-            <el-table-column label="展示方式" width="120">
-              <template #default="{ row }">
-                {{
-                  PLACEMENT_LABELS[
-                    announcementConfigOf(row as Announcement).placement
-                  ]
-                }}
-              </template>
-            </el-table-column>
-            <el-table-column label="展示频率" width="150">
-              <template #default="{ row }">
-                {{
-                  FREQUENCY_LABELS[
-                    announcementConfigOf(row as Announcement).frequency
-                  ]
-                }}
-              </template>
-            </el-table-column>
-            <el-table-column label="状态" width="90">
-              <template #default="{ row }">
-                <el-tag
-                  :type="announcementState(row as Announcement).type"
-                  size="small"
-                >
-                  {{ announcementState(row as Announcement).label }}
-                </el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column label="创建时间" width="170">
-              <template #default="{ row }">{{
-                formatTime(row.createdAt)
-              }}</template>
-            </el-table-column>
-            <el-table-column label="操作" width="140" fixed="right">
-              <template #default="{ row }">
+                {{ announcementState(item).label }}
+              </span>
+            </header>
+            <div class="ann-card__meta">
+              <span>{{ PLACEMENT_LABELS[announcementConfigOf(item).placement] }}</span>
+              <span>{{ FREQUENCY_LABELS[announcementConfigOf(item).frequency] }}</span>
+              <span>{{ LAYOUT_LABELS[announcementConfigOf(item).layout] }}</span>
+              <span>{{ scheduleLabel(item) }}</span>
+              <span class="tnum">{{ formatShortTime(item.createdAt) }}</span>
+            </div>
+            <footer class="ann-card__foot">
+              <label class="content-switch">
+                <span>{{ item.active === false ? "已停用" : "已启用" }}</span>
+                <el-switch
+                  :model-value="item.active !== false"
+                  :loading="switchingAnnId === item.id"
+                  @change="toggleAnnActive(item, Boolean($event))"
+                />
+              </label>
+              <div class="content-actions">
+                <el-button :icon="EditPen" @click="openAnnEdit(item)">编辑</el-button>
                 <el-button
-                  size="small"
-                  @click="openAnnEdit(row as Announcement)"
-                  >编辑</el-button
-                >
-                <el-button
-                  size="small"
                   type="danger"
                   plain
-                  @click="removeAnn(row as Announcement)"
-                  >删除</el-button
-                >
-              </template>
-            </el-table-column>
-          </el-table>
-          </AdminListShell>
-        </PageCard>
-      </el-tab-pane>
+                  :icon="Delete"
+                  aria-label="删除公告"
+                  @click="removeAnn(item)"
+                />
+              </div>
+            </footer>
+          </article>
+        </div>
 
-      <el-tab-pane label="更新说明" name="changelog">
-        <PageCard title="更新说明" subtitle="用户端「更新说明」页的版本条目">
-          <template #actions>
-            <el-button type="primary" size="small" @click="openLogCreate"
-              >新增条目</el-button
-            >
-          </template>
-          <el-alert
-            v-if="logError"
-            class="content-load-error"
-            type="error"
-            :title="logError"
-            show-icon
-            :closable="false"
+        <div
+          v-else-if="activeTab === 'changelog' && changelogPagination.items.value.length"
+          class="log-list"
+        >
+          <article
+            v-for="entry in changelogPagination.items.value"
+            :key="entry.id"
+            class="log-card"
+            :class="{ 'is-highlight': entry.highlight }"
           >
-            <template #default>
-              <el-button size="small" @click="loadChangelog"
-                >重新加载</el-button
-              >
-            </template>
-          </el-alert>
-          <AdminListShell
-            :has-prev="changelogPagination.hasPrev.value"
-            :has-next="changelogPagination.hasNext.value"
-            :loading="logLoading"
-            :page="changelogPagination.page.value"
-            :count="changelogPagination.items.value.length"
-            :total="changelogPagination.total.value"
-            @prev="changelogPagination.prev"
-            @next="changelogPagination.next"
-          >
-          <el-table v-loading="logLoading" :data="changelogPagination.items.value" height="100%" size="small">
-            <template #empty>
-              <el-empty description="暂无更新说明" :image-size="60">
-                <div class="empty-sub">
-                  点击右上角「新增条目」发布第一条更新说明
+            <div class="log-card__version">
+              <strong>{{ entry.version }}</strong>
+              <span class="tnum">{{ entry.date }}</span>
+            </div>
+            <div class="log-card__body">
+              <header>
+                <h3>{{ entry.title }}</h3>
+                <div class="log-card__tags">
+                  <span
+                    class="status-chip"
+                    :class="entry.tag === 'feature' ? 'is-violet' : 'is-success'"
+                  >
+                    {{ TAG_LABELS[entry.tag] ?? entry.tag }}
+                  </span>
+                  <span v-if="entry.highlight" class="status-chip is-warning">
+                    焦点
+                  </span>
                 </div>
-              </el-empty>
-            </template>
-            <el-table-column prop="version" label="版本" width="100" />
-            <el-table-column prop="date" label="日期" width="120" />
-            <el-table-column label="类型" width="100">
-              <template #default="{ row }">
-                <el-tag
-                  :type="row.tag === 'feature' ? 'primary' : 'success'"
-                  size="small"
-                >
-                  {{ TAG_LABELS[row.tag] ?? row.tag }}
-                </el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column prop="title" label="标题" min-width="160" />
-            <el-table-column
-              prop="summary"
-              label="摘要"
-              min-width="220"
-              show-overflow-tooltip
-            />
-            <el-table-column
-              label="条目数"
-              width="80"
-              align="right"
-              class-name="col-num"
-            >
-              <template #default="{ row }">{{
-                row.items?.length ?? 0
-              }}</template>
-            </el-table-column>
-            <el-table-column label="操作" width="140" fixed="right">
-              <template #default="{ row }">
+              </header>
+              <p>{{ entry.summary || "未填写摘要" }}</p>
+              <span class="log-card__count tnum">
+                {{ entry.items?.length || 0 }} 条改动
+              </span>
+            </div>
+            <footer class="log-card__foot">
+              <label class="content-switch">
+                <span>焦点</span>
+                <el-switch
+                  :model-value="Boolean(entry.highlight)"
+                  :loading="switchingLogId === entry.id"
+                  @change="toggleLogHighlight(entry, Boolean($event))"
+                />
+              </label>
+              <div class="content-actions">
+                <el-button :icon="EditPen" @click="openLogEdit(entry)">编辑</el-button>
                 <el-button
-                  size="small"
-                  @click="openLogEdit(row as ChangelogEntry)"
-                  >编辑</el-button
-                >
-                <el-button
-                  size="small"
                   type="danger"
                   plain
-                  @click="removeLog(row as ChangelogEntry)"
-                  >删除</el-button
-                >
-              </template>
-            </el-table-column>
-          </el-table>
-          </AdminListShell>
-        </PageCard>
-      </el-tab-pane>
-    </el-tabs>
+                  :icon="Delete"
+                  aria-label="删除更新说明"
+                  @click="removeLog(entry)"
+                />
+              </div>
+            </footer>
+          </article>
+        </div>
 
-    <el-dialog
+        <div v-else class="content-empty">
+          <el-icon>
+            <component :is="activeTab === 'announcements' ? Bell : Document" />
+          </el-icon>
+          <strong>
+            {{
+              activeTab === "announcements"
+                ? announcements.length
+                  ? "没有匹配的公告"
+                  : "还没有公告"
+                : changelog.length
+                  ? "没有匹配的更新说明"
+                  : "还没有更新说明"
+            }}
+          </strong>
+          <span>
+            {{
+              hasFilters
+                ? "调整筛选条件后再试"
+                : activeTab === "announcements"
+                  ? "发布后会出现在用户通知中心的公告页签"
+                  : "发布版本后，打开中的用户端会收到刷新提示"
+            }}
+          </span>
+          <el-button v-if="hasFilters" @click="clearFilters">清除筛选</el-button>
+          <el-button v-else type="primary" :icon="Plus" @click="openCreate">
+            {{ activeTab === "announcements" ? "发布公告" : "发布版本" }}
+          </el-button>
+        </div>
+      </div>
+
+      <footer class="content-footer">
+        <CursorPager
+          :has-prev="currentPager.hasPrev.value"
+          :has-next="currentPager.hasNext.value"
+          :loading="currentLoading"
+          :page="currentPager.page.value"
+          :count="currentPager.items.value.length"
+          :total="currentPager.total.value"
+          :page-size="currentPager.pageSize.value"
+          @update:page="currentPager.goToPage"
+          @update:page-size="currentPager.setPageSize"
+        />
+      </footer>
+    </PageCard>
+
+    <AdminDialog
       v-model="annDialogVisible"
-      class="announcement-config-dialog"
       :title="annEditingId ? '编辑公告配置' : '发布公告'"
-      width="min(1060px, calc(100vw - 32px))"
-      top="5vh"
+      subtitle="左侧编辑，右侧实时预览用户端效果"
+      :icon="Bell"
+      width="min(1280px, calc(100vw - 40px))"
+      panel-class="announcement-dialog"
+      nested-scroll
+      confirm-text="保存"
+      :confirm-loading="annSubmitting"
+      :confirm-disabled="annImageUploading > 0 || annDecorUploading"
+      @confirm="submitAnn"
     >
       <div class="announcement-editor">
         <el-form class="announcement-editor__form" label-position="top">
           <section class="announcement-editor__section">
-            <div class="announcement-editor__heading">
-              <strong>公告内容</strong>
-              <span>用户首先看到的信息</span>
-            </div>
+            <header class="announcement-editor__head">
+              <strong>文案</strong>
+              <small>用户第一眼看到的标题和正文</small>
+            </header>
             <el-form-item label="标题" required>
               <el-input
                 v-model="annForm.title"
@@ -659,7 +1145,7 @@ onMounted(() => {
               <el-input
                 v-model="annForm.body"
                 type="textarea"
-                :rows="5"
+                :autosize="{ minRows: 7, maxRows: 14 }"
                 maxlength="3000"
                 show-word-limit
                 placeholder="支持换行，建议只保留与用户相关的重点内容"
@@ -668,10 +1154,10 @@ onMounted(() => {
           </section>
 
           <section class="announcement-editor__section">
-            <div class="announcement-editor__heading">
-              <strong>展示样式</strong>
-              <span>视觉会实时同步到右侧预览</span>
-            </div>
+            <header class="announcement-editor__head">
+              <strong>展示</strong>
+              <small>决定公告出现的位置和版式</small>
+            </header>
             <div class="announcement-editor__row">
               <el-form-item label="展示位置">
                 <el-radio-group v-model="annForm.placement">
@@ -679,11 +1165,8 @@ onMounted(() => {
                   <el-radio-button value="banner">顶部横幅</el-radio-button>
                 </el-radio-group>
               </el-form-item>
-              <el-form-item label="内容布局">
-                <el-select
-                  v-model="annForm.layout"
-                  :disabled="annForm.placement === 'banner'"
-                >
+              <el-form-item v-if="!isBannerPlacement" label="内容布局">
+                <el-select v-model="annForm.layout">
                   <el-option
                     v-for="(label, value) in LAYOUT_LABELS"
                     :key="value"
@@ -693,22 +1176,108 @@ onMounted(() => {
                 </el-select>
               </el-form-item>
             </div>
-            <el-form-item label="内容图片">
-              <el-input
-                v-model="annForm.assetsText"
-                type="textarea"
-                :rows="3"
-                placeholder="每行一张：图片地址 | 图片说明（最多 4 张）"
-              />
-            </el-form-item>
-            <el-form-item label="装饰图片">
-              <el-input
-                v-model="annForm.decorImageUrl"
-                placeholder="可选，用作横幅缩略图或弹窗轻量装饰"
-              />
-            </el-form-item>
             <div
-              v-if="annForm.layout === 'carousel'"
+              v-if="showContentImages || showDecorImage"
+              class="announcement-editor__media"
+              :class="{
+                'is-single': !showContentImages || !showDecorImage,
+                'is-multi': annAssetLimit > 1,
+              }"
+            >
+              <el-form-item v-if="showContentImages" :label="contentImageLabel">
+                <div
+                  class="ann-upload-grid"
+                  :class="{ 'is-single': annAssetLimit === 1 }"
+                >
+                  <div
+                    v-for="(asset, index) in annForm.assets"
+                    :key="`${asset.url}-${index}`"
+                    class="ann-upload-tile"
+                  >
+                    <img :src="asset.url" :alt="asset.alt || '公告图片'" />
+                    <button
+                      type="button"
+                      class="ann-upload-tile__remove"
+                      aria-label="移除图片"
+                      @click="removeAnnAsset(index)"
+                    >
+                      移除
+                    </button>
+                    <el-input
+                      v-model="asset.alt"
+                      maxlength="200"
+                      placeholder="图片说明（可选）"
+                    />
+                  </div>
+                  <button
+                    v-if="annForm.assets.length < annAssetLimit"
+                    type="button"
+                    class="ann-upload-empty"
+                    :disabled="annImageUploading > 0"
+                    @click="triggerAnnAssetsPick"
+                  >
+                    <el-icon :size="20"><Picture /></el-icon>
+                    <strong>{{
+                      annImageUploading > 0 ? "上传中…" : "上传图片"
+                    }}</strong>
+                    <small>{{ contentImageHint }}</small>
+                  </button>
+                </div>
+                <input
+                  ref="annAssetsInputRef"
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  :multiple="annAssetLimit > 1"
+                  hidden
+                  @change="onAnnAssetsPick"
+                />
+              </el-form-item>
+              <el-form-item v-if="showDecorImage" label="横幅配图">
+                <div
+                  class="ann-upload-tile is-single"
+                  :class="{ 'has-image': Boolean(annForm.decorImageUrl) }"
+                >
+                  <button
+                    v-if="annForm.decorImageUrl"
+                    type="button"
+                    class="ann-upload-tile__preview"
+                    @click="triggerAnnDecorPick"
+                  >
+                    <img :src="annForm.decorImageUrl" alt="横幅配图" />
+                  </button>
+                  <button
+                    v-else
+                    type="button"
+                    class="ann-upload-empty"
+                    :disabled="annDecorUploading"
+                    @click="triggerAnnDecorPick"
+                  >
+                    <el-icon :size="20"><Picture /></el-icon>
+                    <strong>{{
+                      annDecorUploading ? "上传中…" : "上传配图"
+                    }}</strong>
+                    <small>显示在顶部横幅左侧</small>
+                  </button>
+                  <button
+                    v-if="annForm.decorImageUrl"
+                    type="button"
+                    class="ann-upload-tile__remove"
+                    @click="clearAnnDecor"
+                  >
+                    移除
+                  </button>
+                </div>
+                <input
+                  ref="annDecorInputRef"
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  hidden
+                  @change="onAnnDecorPick"
+                />
+              </el-form-item>
+            </div>
+            <div
+              v-if="showCarouselOptions"
               class="announcement-editor__row"
             >
               <el-form-item label="自动轮播">
@@ -728,11 +1297,11 @@ onMounted(() => {
           </section>
 
           <section class="announcement-editor__section">
-            <div class="announcement-editor__heading">
-              <strong>交互与频率</strong>
-              <span>控制按钮、关闭方式和重复展示</span>
-            </div>
-            <div class="announcement-editor__row">
+            <header class="announcement-editor__head">
+              <strong>行动</strong>
+              <small>按钮文案、跳转和再次出现的规则</small>
+            </header>
+            <div class="announcement-editor__row is-3">
               <el-form-item label="行动按钮文案">
                 <el-input
                   v-model="annForm.ctaText"
@@ -746,8 +1315,6 @@ onMounted(() => {
                   placeholder="/wallpaper 或 https://..."
                 />
               </el-form-item>
-            </div>
-            <div class="announcement-editor__row">
               <el-form-item label="关闭按钮文案">
                 <el-input
                   v-model="annForm.closeText"
@@ -755,11 +1322,11 @@ onMounted(() => {
                   placeholder="我知道了"
                 />
               </el-form-item>
+            </div>
+            <div class="announcement-editor__row is-3">
               <el-form-item label="允许关闭">
                 <el-switch v-model="annForm.allowClose" />
               </el-form-item>
-            </div>
-            <div class="announcement-editor__row">
               <el-form-item label="展示频率">
                 <el-select v-model="annForm.frequency">
                   <el-option
@@ -797,11 +1364,11 @@ onMounted(() => {
           </section>
 
           <section class="announcement-editor__section">
-            <div class="announcement-editor__heading">
-              <strong>发布排期</strong>
-              <span>留空时间表示立即开始或长期有效</span>
-            </div>
-            <div class="announcement-editor__row">
+            <header class="announcement-editor__head">
+              <strong>投放</strong>
+              <small>生效时间和是否对用户可见</small>
+            </header>
+            <div class="announcement-editor__row is-3">
               <el-form-item label="开始时间">
                 <el-date-picker
                   v-model="annForm.startsAt"
@@ -818,13 +1385,15 @@ onMounted(() => {
                   placeholder="长期有效"
                 />
               </el-form-item>
-            </div>
-            <div class="announcement-publish-switch">
-              <div>
-                <strong>启用公告</strong>
-                <span>关闭后用户端不会读取到这条公告</span>
-              </div>
-              <el-switch v-model="annForm.active" />
+              <el-form-item label="启用公告">
+                <div class="announcement-publish-switch">
+                  <div>
+                    <strong>{{ annForm.active ? "已启用" : "已停用" }}</strong>
+                    <span>关闭后用户端不会读取到这条公告</span>
+                  </div>
+                  <el-switch v-model="annForm.active" />
+                </div>
+              </el-form-item>
             </div>
           </section>
         </el-form>
@@ -836,6 +1405,14 @@ onMounted(() => {
           </div>
           <div class="announcement-preview-canvas">
             <article class="announcement-preview" :class="annPreviewClass">
+              <button
+                v-if="annForm.placement === 'modal' && annForm.layout === 'image_top' && annForm.allowClose"
+                class="announcement-preview__close"
+                type="button"
+                aria-label="关闭"
+              >
+                ×
+              </button>
               <img
                 v-if="annForm.placement === 'banner' && annForm.decorImageUrl"
                 class="announcement-preview__decor"
@@ -860,7 +1437,10 @@ onMounted(() => {
                 </template>
                 <img v-else :src="annPreviewImage" alt="公告预览" />
               </div>
-              <div class="announcement-preview__copy">
+              <div
+                v-if="annForm.placement !== 'modal' || annForm.layout !== 'image_top'"
+                class="announcement-preview__copy"
+              >
                 <small>ANNOUNCEMENT</small>
                 <strong>{{ annForm.title || "公告标题" }}</strong>
                 <p>{{ annForm.body || "公告正文会显示在这里。" }}</p>
@@ -871,121 +1451,521 @@ onMounted(() => {
                   </button>
                 </div>
               </div>
+              <span
+                v-else-if="annForm.ctaText"
+                class="announcement-preview__poster-cta"
+              >
+                {{ annForm.ctaText }}
+              </span>
             </article>
           </div>
         </aside>
       </div>
-      <template #footer>
-        <el-button @click="annDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="annSubmitting" @click="submitAnn"
-          >保存</el-button
-        >
-      </template>
-    </el-dialog>
+    </AdminDialog>
 
-    <el-dialog
+    <AdminDialog
       v-model="logDialogVisible"
-      :title="logEditingId ? '编辑更新说明' : '新增更新说明'"
-      width="560px"
+      :title="logEditingId ? '编辑更新说明' : '发布版本'"
+      subtitle="发布新版本后，已打开网站的用户会收到刷新提示"
+      :icon="Document"
+      width="min(960px, calc(100vw - 32px))"
+      nested-scroll
+      :confirm-text="logEditingId ? '保存' : '发布'"
+      :confirm-loading="logSubmitting"
+      @confirm="submitLog"
     >
-      <el-form label-width="80px">
-        <el-form-item label="版本号" required>
-          <el-input
-            v-model="logForm.version"
-            placeholder="如 1.4.0"
-            style="width: 200px"
-          />
-        </el-form-item>
-        <el-form-item label="日期" required>
-          <el-date-picker
-            v-model="logForm.date"
-            type="date"
-            value-format="YYYY-MM-DD"
-          />
-        </el-form-item>
-        <el-form-item label="类型">
-          <el-select v-model="logForm.tag" style="width: 200px">
-            <el-option label="新功能" value="feature" />
-            <el-option label="体验优化" value="experience" />
-          </el-select>
-        </el-form-item>
+      <el-form class="changelog-editor" label-position="top">
+        <div class="changelog-editor__meta">
+          <el-form-item label="版本号" required>
+            <el-input
+              v-model="logForm.version"
+              maxlength="32"
+              placeholder="如 3.3.1"
+            />
+            <small v-if="!logEditingId" class="changelog-editor__hint">
+              已按上一版自动递增，可直接修改
+            </small>
+          </el-form-item>
+          <el-form-item label="日期" required>
+            <el-date-picker
+              v-model="logForm.date"
+              type="date"
+              value-format="YYYY-MM-DD"
+              style="width: 100%"
+            />
+          </el-form-item>
+          <el-form-item label="类型">
+            <el-select v-model="logForm.tag" style="width: 100%">
+              <el-option label="新功能" value="feature" />
+              <el-option label="体验优化" value="experience" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="本期焦点">
+            <div class="changelog-editor__highlight">
+              <el-switch v-model="logForm.highlight" />
+              <span>置顶到用户端更新页</span>
+            </div>
+          </el-form-item>
+        </div>
         <el-form-item label="标题" required>
-          <el-input v-model="logForm.title" />
+          <el-input
+            v-model="logForm.title"
+            maxlength="200"
+            show-word-limit
+            placeholder="这一版用户能感知到的变化"
+          />
         </el-form-item>
         <el-form-item label="摘要">
-          <el-input v-model="logForm.summary" type="textarea" :rows="2" />
+          <el-input
+            v-model="logForm.summary"
+            type="textarea"
+            :autosize="{ minRows: 4, maxRows: 8 }"
+            placeholder="一两段话说明这次发版的重点"
+          />
         </el-form-item>
-        <el-form-item label="条目">
+        <el-form-item class="changelog-editor__items" label="条目">
           <el-input
             v-model="logForm.itemsText"
             type="textarea"
-            :rows="4"
-            placeholder="一行一条改动说明"
+            :autosize="{ minRows: 12, maxRows: 24 }"
+            placeholder="一行一条改动说明，会显示在用户端更新时间线里"
           />
         </el-form-item>
       </el-form>
-      <template #footer>
-        <el-button @click="logDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="logSubmitting" @click="submitLog"
-          >保存</el-button
-        >
-      </template>
-    </el-dialog>
+    </AdminDialog>
   </div>
 </template>
 
 <style scoped>
-.content-load-error {
-  margin-bottom: 12px;
+.content-admin-page {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
 }
 
-:deep(.announcement-config-dialog .el-dialog__body) {
-  padding: 0;
+.content-admin-page :deep(.page-card) {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
   overflow: hidden;
 }
 
-:deep(.announcement-config-dialog .el-dialog__footer) {
+.content-admin-page :deep(.page-card__body) {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.content-toolbar {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.content-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+}
+
+.content-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--ink-2);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.content-tab em {
+  font-style: normal;
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.content-tab.is-active {
+  background: var(--accent);
+  color: var(--accent-on);
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+.content-tab.is-active em {
+  color: color-mix(in srgb, var(--accent-on) 72%, transparent);
+}
+
+.content-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.content-toolbar__right {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.content-toolbar__right .el-input {
+  width: 220px;
+}
+
+.content-toolbar__right .el-select {
+  width: 128px;
+}
+
+.content-transfer-input {
+  display: none;
+}
+
+.content-legend {
+  flex: 0 0 auto;
+  margin: 12px 0 14px;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.content-legend em {
+  color: var(--ink);
+  font-style: normal;
+  font-weight: 700;
+}
+
+.content-board {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.ann-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+  align-content: start;
+  gap: 12px;
+}
+
+.ann-card,
+.log-card {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface-2);
+  box-shadow: inset 3px 0 0 transparent;
+}
+
+.ann-card:hover,
+.log-card:hover {
+  border-color: var(--border-strong);
+}
+
+.ann-card.is-live {
+  box-shadow: inset 3px 0 0 var(--success);
+}
+
+.ann-card.is-pending {
+  box-shadow: inset 3px 0 0 var(--warning);
+}
+
+.ann-card.is-disabled,
+.ann-card.is-ended {
+  opacity: 0.78;
+}
+
+.log-card {
+  display: grid;
+  grid-template-columns: 108px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+}
+
+.log-card.is-highlight {
+  border-color: color-mix(in srgb, var(--warning) 28%, var(--border));
+  background: color-mix(in srgb, var(--warning-soft) 45%, var(--surface-2));
+}
+
+.ann-card__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ann-card__head h3,
+.log-card__body h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.35;
+}
+
+.log-card__body h3 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ann-card__head p,
+.log-card__body p {
+  margin: 6px 0 0;
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.55;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.log-card__body p {
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
+}
+
+.log-card__count {
+  display: inline-flex;
+  margin-top: 8px;
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.ann-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.ann-card__foot,
+.log-card__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: auto;
+}
+
+.log-card__version {
+  display: grid;
+  gap: 4px;
+}
+
+.log-card__version strong {
+  font-size: 18px;
+  font-weight: 760;
+  letter-spacing: -0.04em;
+}
+
+.log-card__version span {
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.log-card__body header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.log-card__tags {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-3);
+  color: var(--ink-2);
+  font-size: 11px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.status-chip.is-success {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.status-chip.is-warning {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.status-chip.is-info {
+  background: var(--info-soft);
+  color: var(--info);
+}
+
+.status-chip.is-violet {
+  background: var(--violet-soft);
+  color: var(--violet);
+}
+
+.content-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.content-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.content-empty {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  min-height: 100%;
+  color: var(--ink-3);
+  text-align: center;
+}
+
+.content-empty .el-icon {
+  font-size: 32px;
+}
+
+.content-empty strong {
+  color: var(--ink);
+}
+
+.content-footer {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  min-height: 52px;
+  margin-top: 12px;
+  padding-top: 8px;
   border-top: 1px solid var(--border);
-  padding: 14px 20px;
+}
+
+.log-list {
+  display: grid;
+  gap: 10px;
+  align-content: start;
 }
 
 .announcement-editor {
   display: grid;
-  grid-template-columns: minmax(0, 1.08fr) minmax(320px, 0.92fr);
-  height: min(76vh, 780px);
-  min-height: 560px;
+  flex: 1;
+  grid-template-columns: minmax(0, 1fr) 400px;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface);
 }
 
 .announcement-editor__form {
   min-width: 0;
+  overflow-x: hidden;
   overflow-y: auto;
-  padding: 20px;
+  overscroll-behavior: contain;
+  padding: 18px 20px 20px;
+}
+
+.announcement-editor__form :deep(.el-form-item) {
+  margin-bottom: 14px;
+}
+
+.announcement-editor__form :deep(.el-form-item__label) {
+  color: var(--ink-2);
+  font-weight: 650;
+}
+
+.announcement-editor__form :deep(.el-input),
+.announcement-editor__form :deep(.el-textarea),
+.announcement-editor__form :deep(.el-select),
+.announcement-editor__form :deep(.el-date-editor),
+.announcement-editor__form :deep(.el-input-number),
+.announcement-editor__form :deep(.el-radio-group) {
+  width: 100%;
 }
 
 .announcement-editor__section {
-  padding: 0 0 20px;
-  margin: 0 0 20px;
+  padding: 0 0 4px;
+  margin: 0 0 6px;
+}
+
+.announcement-editor__section:not(:last-child) {
+  margin-bottom: 14px;
+  padding-bottom: 8px;
   border-bottom: 1px solid var(--border);
 }
 
 .announcement-editor__section:last-child {
   margin-bottom: 0;
+  padding-bottom: 0;
   border-bottom: 0;
 }
 
-.announcement-editor__heading {
+.announcement-editor__head {
   display: grid;
-  gap: 3px;
-  margin-bottom: 16px;
+  gap: 2px;
+  margin-bottom: 12px;
+
+  strong,
+  small {
+    display: block;
+  }
+
+  strong {
+    color: var(--ink);
+    font-size: 13px;
+    font-weight: 750;
+  }
+
+  small {
+    color: var(--ink-3);
+    font-size: 12px;
+    line-height: 1.45;
+  }
 }
 
-.announcement-editor__heading strong {
-  color: var(--ink-1);
-  font-size: 14px;
-  font-weight: 650;
-}
-
-.announcement-editor__heading span,
 .announcement-publish-switch span {
   color: var(--ink-3);
   font-size: 12px;
@@ -994,12 +1974,119 @@ onMounted(() => {
 .announcement-editor__row {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
+  gap: 0 16px;
+}
+
+.announcement-editor__row.is-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .announcement-editor__row :deep(.el-select),
 .announcement-editor__row :deep(.el-date-editor) {
   width: 100%;
+}
+
+.announcement-editor__media {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0 16px;
+}
+
+.announcement-editor__media:not(.is-single) {
+  grid-template-columns: minmax(0, 1.4fr) minmax(180px, 0.6fr);
+}
+
+.ann-upload-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.ann-upload-grid.is-single {
+  grid-template-columns: minmax(0, 280px);
+}
+
+.ann-upload-tile,
+.ann-upload-empty {
+  position: relative;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ann-upload-tile img,
+.ann-upload-tile__preview {
+  display: block;
+  width: 100%;
+  height: 108px;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+
+.ann-upload-tile__preview {
+  padding: 0;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.ann-upload-tile__preview img {
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+}
+
+.ann-upload-tile.is-single .ann-upload-empty,
+.ann-upload-tile.is-single .ann-upload-tile__preview {
+  min-height: 132px;
+}
+
+.ann-upload-empty {
+  display: grid;
+  min-height: 108px;
+  place-items: center;
+  align-content: center;
+  gap: 4px;
+  padding: 12px 10px;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  background: var(--surface-2);
+  color: var(--ink-3);
+  cursor: pointer;
+  text-align: center;
+}
+
+.ann-upload-empty:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.ann-upload-empty strong {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.ann-upload-empty small {
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.ann-upload-tile__remove {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 1;
+  height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: rgb(18 20 26 / 0.72);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 650;
+  cursor: pointer;
 }
 
 .form-unit {
@@ -1010,14 +2097,10 @@ onMounted(() => {
 
 .announcement-publish-switch {
   display: flex;
-  min-height: 54px;
+  min-height: 32px;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface-2);
+  gap: 12px;
 }
 
 .announcement-publish-switch > div {
@@ -1033,13 +2116,10 @@ onMounted(() => {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  padding: 20px;
+  padding: 16px;
   color: rgba(255, 255, 255, 0.94);
-  background-color: #09090c;
-  background-image:
-    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
-  background-size: 24px 24px;
+  background: var(--surface-2);
+  border-left: 1px solid var(--border);
 }
 
 .announcement-preview-stage__meta {
@@ -1047,21 +2127,24 @@ onMounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
+  color: var(--ink-2);
 }
 
 .announcement-preview-stage__meta span {
+  color: var(--ink);
   font-size: 13px;
   font-weight: 650;
 }
 
 .announcement-preview-stage__meta em {
-  padding: 4px 8px;
-  border: 1px solid rgba(139, 123, 255, 0.36);
-  border-radius: 999px;
-  color: #b8adff;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
   font-size: 11px;
   font-style: normal;
+  font-weight: 650;
 }
 
 .announcement-preview-canvas {
@@ -1069,11 +2152,15 @@ onMounted(() => {
   min-height: 0;
   display: grid;
   place-items: center;
-  padding: 22px;
+  padding: 16px;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 18px;
-  background: rgba(18, 18, 24, 0.84);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+    #0c0c10;
+  background-size: 24px 24px, 24px 24px, auto;
 }
 
 .announcement-preview {
@@ -1102,6 +2189,78 @@ onMounted(() => {
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   border-radius: 14px;
+}
+
+.announcement-preview.is-image-top {
+  position: relative;
+  width: min(280px, 100%);
+  overflow: visible;
+  padding-top: 28px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.announcement-preview.is-image-top .announcement-preview__media {
+  height: auto;
+  background: transparent;
+}
+
+.announcement-preview.is-image-top .announcement-preview__media img {
+  height: auto;
+  max-height: 280px;
+  object-fit: contain;
+}
+
+.announcement-preview__close {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  padding: 0;
+  border: 1.5px solid rgb(255 255 255 / 0.86);
+  border-radius: 50%;
+  background: transparent;
+  color: transparent;
+  font-size: 0;
+  line-height: 0;
+}
+
+.announcement-preview__close::before,
+.announcement-preview__close::after {
+  content: "";
+  position: absolute;
+  width: 10px;
+  height: 1.5px;
+  border-radius: 1px;
+  background: #fff;
+}
+
+.announcement-preview__close::before {
+  transform: rotate(45deg);
+}
+
+.announcement-preview__close::after {
+  transform: rotate(-45deg);
+}
+
+.announcement-preview__poster-cta {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  justify-content: center;
+  justify-self: center;
+  margin-top: 12px;
+  padding: 0 18px;
+  border-radius: 999px;
+  background: linear-gradient(108deg, #5f4bf3, #8b5cf6 62%, #c052d5);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .announcement-preview__decor {
@@ -1221,9 +2380,22 @@ onMounted(() => {
   color: rgba(255, 255, 255, 0.78);
 }
 
+@media (max-width: 1100px) {
+  .announcement-editor {
+    grid-template-columns: minmax(0, 1fr) 340px;
+  }
+
+  .announcement-editor__row.is-3 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .announcement-editor__media {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 860px) {
   .announcement-editor {
-    height: min(82vh, 900px);
     grid-template-columns: 1fr;
     overflow-y: auto;
   }
@@ -1232,20 +2404,92 @@ onMounted(() => {
     overflow: visible;
   }
 
+  .announcement-editor__row,
+  .announcement-editor__row.is-3,
+  .announcement-editor__media {
+    grid-template-columns: 1fr;
+  }
+
   .announcement-preview-stage {
-    min-height: 460px;
+    min-height: 420px;
+    border-left: 0;
+    border-top: 1px solid var(--border);
   }
 }
 
-@media (max-width: 560px) {
-  .announcement-editor__row {
-    grid-template-columns: 1fr;
-    gap: 0;
+.changelog-editor {
+  display: flex;
+  flex-direction: column;
+  min-height: min(72vh, 760px);
+  padding: 8px 8px 4px;
+}
+
+.changelog-editor__meta {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.changelog-editor__highlight {
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 10px;
+}
+
+.changelog-editor__highlight span {
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.changelog-editor__hint {
+  display: block;
+  margin-top: 6px;
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.changelog-editor :deep(.el-form-item) {
+  margin-bottom: 16px;
+}
+
+.changelog-editor :deep(.el-form-item__label) {
+  color: var(--ink-2);
+  font-weight: 650;
+}
+
+.changelog-editor :deep(.el-textarea__inner) {
+  line-height: 1.55;
+}
+
+.changelog-editor__items {
+  flex: 1 1 auto;
+}
+
+.changelog-editor__items :deep(.el-form-item__content),
+.changelog-editor__items :deep(.el-textarea),
+.changelog-editor__items :deep(.el-textarea__inner) {
+  min-height: 280px;
+}
+
+@media (max-width: 860px) {
+  .changelog-editor {
+    min-height: 0;
   }
 
-  .announcement-editor__form,
-  .announcement-preview-stage {
-    padding: 16px;
+  .changelog-editor__meta {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+}
+
+</style>
+
+<style>
+.admin-dialog.announcement-dialog.el-dialog {
+  width: min(1280px, calc(100vw - 40px)) !important;
+  max-width: calc(100vw - 40px);
+  height: min(880px, calc(100dvh - 40px));
 }
 </style>

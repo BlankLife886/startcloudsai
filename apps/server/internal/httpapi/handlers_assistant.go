@@ -75,8 +75,85 @@ func (s *Server) requireAssistant(c *gin.Context) (*sub2api.Client, error) {
 	return s.assistantClient(c)
 }
 
+func optionalDiscountPoints(standard, effective int64) any {
+	if effective < standard {
+		return effective
+	}
+	return nil
+}
+
+func workspaceReasoningPrice(
+	cfg *modelconfig.Config,
+	workspace string,
+	model modelconfig.Model,
+	effort string,
+	scope string,
+) modelconfig.ResolvedReasoningPrice {
+	if cfg != nil {
+		price := modelconfig.ResolveWorkspacePrice(*cfg, workspace, model)
+		if price.Overridden {
+			return modelconfig.ResolvedReasoningPrice{
+				StandardCents: price.PriceCents, EffectiveCents: price.EffectiveCents,
+				Scope: scope, Effort: effort,
+			}
+		}
+	}
+	return modelconfig.ResolveReasoningPrice(model, effort, scope)
+}
+
+func reasoningModelPayload(model modelconfig.Model, cfg *modelconfig.Config) ([]string, string, gin.H, []gin.H) {
+	efforts := append([]string{}, model.SupportedReasoningEfforts...)
+	if len(efforts) == 0 {
+		return []string{}, "", gin.H{}, []gin.H{}
+	}
+	defaultEffort := ""
+	if model.ReasoningPricing != nil {
+		defaultEffort = model.ReasoningPricing.DefaultEffort
+	}
+	if defaultEffort == "" {
+		if containsString(efforts, "medium") {
+			defaultEffort = "medium"
+		} else {
+			defaultEffort = efforts[0]
+		}
+	}
+	prices := gin.H{}
+	options := make([]gin.H, 0, len(efforts))
+	for _, effort := range efforts {
+		assistantPrice := workspaceReasoningPrice(cfg, modelconfig.WorkspaceAssistant, model, effort, modelconfig.ReasoningPriceScopeAssistant)
+		canvasPrice := workspaceReasoningPrice(cfg, modelconfig.WorkspaceCanvas, model, effort, modelconfig.ReasoningPriceScopeCanvasAgent)
+		assistantDiscount := optionalDiscountPoints(assistantPrice.StandardCents, assistantPrice.EffectiveCents)
+		canvasDiscount := optionalDiscountPoints(canvasPrice.StandardCents, canvasPrice.EffectiveCents)
+		price := gin.H{
+			"assistantStandardPricePoints":   assistantPrice.StandardCents,
+			"assistantPricePoints":           assistantPrice.EffectiveCents,
+			"canvasAgentStandardPricePoints": canvasPrice.StandardCents,
+			"canvasAgentPricePoints":         canvasPrice.EffectiveCents,
+		}
+		if assistantDiscount != nil {
+			price["assistantDiscountPricePoints"] = assistantDiscount
+		}
+		if canvasDiscount != nil {
+			price["canvasAgentDiscountPricePoints"] = canvasDiscount
+		}
+		prices[effort] = price
+		option := gin.H{
+			"id":                  effort,
+			"label":               modelconfig.ReasoningEffortLabel(effort),
+			"standardPricePoints": assistantPrice.StandardCents,
+			"pricePoints":         assistantPrice.EffectiveCents,
+		}
+		if assistantDiscount != nil {
+			option["discountPricePoints"] = assistantDiscount
+		}
+		options = append(options, option)
+	}
+	return efforts, defaultEffort, prices, options
+}
+
 func (s *Server) assistantConfig(c *gin.Context) {
-	if _, err := s.requireUser(c); err != nil {
+	user, err := s.currentUser(c)
+	if err != nil {
 		fail(c, err)
 		return
 	}
@@ -85,25 +162,45 @@ func (s *Server) assistantConfig(c *gin.Context) {
 		fail(c, err)
 		return
 	}
+	_, editableFilesConfigured := modelconfig.EditableFileProvider(modelCfg)
+	editableFilesEnabled := modelCfg.EditableFiles.Enabled && editableFilesConfigured
 	type modelOption struct {
-		Label                    string              `json:"label"`
-		Model                    string              `json:"model"`
-		Source                   string              `json:"source"`
-		Provider                 string              `json:"provider"`
-		Description              string              `json:"description"`
-		StandardPricePoints      *int64              `json:"standardPricePoints,omitempty"`
-		DiscountPricePoints      *int64              `json:"discountPricePoints"`
-		PricePoints              *int64              `json:"pricePoints,omitempty"`
-		Resolutions              []string            `json:"resolutions,omitempty"`
-		Default                  bool                `json:"default,omitempty"`
-		FastMode                 bool                `json:"fastMode,omitempty"`
-		AspectRatios             []string            `json:"aspectRatios,omitempty"`
-		AspectRatiosByResolution map[string][]string `json:"aspectRatiosByResolution,omitempty"`
-		Qualities                []string            `json:"qualities,omitempty"`
-		TransparentBackground    bool                `json:"transparentBackground"`
-		OutputFormats            []string            `json:"outputFormats"`
-		ModerationLevels         []string            `json:"moderationLevels"`
-		MaxReferenceImages       int                 `json:"maxReferenceImages"`
+		Label                     string              `json:"label"`
+		Model                     string              `json:"model"`
+		Source                    string              `json:"source"`
+		Provider                  string              `json:"provider"`
+		Description               string              `json:"description"`
+		StandardPricePoints       *int64              `json:"standardPricePoints,omitempty"`
+		DiscountPricePoints       *int64              `json:"discountPricePoints"`
+		PricePoints               *int64              `json:"pricePoints,omitempty"`
+		Resolutions               []string            `json:"resolutions"`
+		Default                   bool                `json:"default,omitempty"`
+		FastMode                  bool                `json:"fastMode,omitempty"`
+		AspectRatios              []string            `json:"aspectRatios"`
+		AspectRatiosByResolution  map[string][]string `json:"aspectRatiosByResolution,omitempty"`
+		Qualities                 []string            `json:"qualities"`
+		InputFields               []string            `json:"inputFields"`
+		RequiredInputFields       []string            `json:"requiredInputFields"`
+		InputSchema               map[string]any      `json:"inputSchema"`
+		TransparentBackground     bool                `json:"transparentBackground"`
+		OutputFormats             []string            `json:"outputFormats"`
+		ModerationLevels          []string            `json:"moderationLevels"`
+		MaxReferenceImages        int                 `json:"maxReferenceImages"`
+		MaxImages                 int                 `json:"maxImages,omitempty"`
+		SupportedReasoningEfforts []string            `json:"supportedReasoningEfforts"`
+		DefaultReasoningEffort    string              `json:"defaultReasoningEffort,omitempty"`
+		ReasoningPrices           gin.H               `json:"reasoningPrices,omitempty"`
+		ReasoningEfforts          []gin.H             `json:"reasoningEfforts,omitempty"`
+	}
+	reasoningOptions := func(model string) ([]string, string) {
+		efforts := modelconfig.ReasoningEffortsForModel(model)
+		defaultEffort := ""
+		if containsString(efforts, "medium") {
+			defaultEffort = "medium"
+		} else if len(efforts) > 0 {
+			defaultEffort = efforts[0]
+		}
+		return efforts, defaultEffort
 	}
 	buildOptions := func(kind string) []modelOption {
 		selections := modelconfig.PublicModelsForWorkspace(modelCfg, modelconfig.WorkspaceAssistant, kind)
@@ -111,6 +208,11 @@ func (s *Server) assistantConfig(c *gin.Context) {
 		for index, selection := range selections {
 			standardPrice := selection.Model.PriceCents
 			effectivePrice := modelconfig.EffectivePrice(selection.Model)
+			discountPrice := selection.Model.DiscountPriceCents
+			workspacePrice := modelconfig.ResolveWorkspacePrice(modelCfg, modelconfig.WorkspaceAssistant, selection.Model)
+			standardPrice = workspacePrice.PriceCents
+			effectivePrice = workspacePrice.EffectiveCents
+			discountPrice = workspacePrice.DiscountPriceCents
 			description := selection.Model.Description
 			if description == "" {
 				if kind == modelconfig.ModelKindImage {
@@ -119,18 +221,28 @@ func (s *Server) assistantConfig(c *gin.Context) {
 					description = "对话与图片理解模型"
 				}
 			}
+			reasoningEfforts, defaultReasoningEffort, reasoningPrices, reasoningEffortItems := []string(nil), "", gin.H(nil), []gin.H(nil)
+			if kind == modelconfig.ModelKindChat {
+				reasoningEfforts, defaultReasoningEffort, reasoningPrices, reasoningEffortItems = reasoningModelPayload(selection.Model, &modelCfg)
+			}
 			options = append(options, modelOption{
 				Label: selection.Model.Name, Model: selection.Model.ID, Source: "configured",
 				Provider: selection.Provider.Name, Description: description,
 				StandardPricePoints: &standardPrice,
-				DiscountPricePoints: selection.Model.DiscountPriceCents,
+				DiscountPricePoints: discountPrice,
 				PricePoints:         &effectivePrice,
 				Resolutions:         selection.Model.Resolutions, Default: index == 0, FastMode: selection.Model.FastMode,
 				AspectRatios: selection.Model.AspectRatios, AspectRatiosByResolution: selection.Model.AspectRatiosByResolution,
 				Qualities:             selection.Model.Qualities,
+				InputFields:           selection.Model.UpstreamInputFields,
+				RequiredInputFields:   selection.Model.UpstreamRequiredInputFields,
+				InputSchema:           selection.Model.UpstreamInputSchema,
 				TransparentBackground: selection.Model.TransparentBackground,
 				OutputFormats:         selection.Model.OutputFormats, ModerationLevels: selection.Model.ModerationLevels,
-				MaxReferenceImages: selection.Model.MaxReferenceImages,
+				MaxReferenceImages:        selection.Model.MaxReferenceImages,
+				MaxImages:                 selection.Model.GenerationMaxImages(),
+				SupportedReasoningEfforts: reasoningEfforts, DefaultReasoningEffort: defaultReasoningEffort,
+				ReasoningPrices: reasoningPrices, ReasoningEfforts: reasoningEffortItems,
 			})
 		}
 		return options
@@ -149,6 +261,18 @@ func (s *Server) assistantConfig(c *gin.Context) {
 			"chatModel": chatModel, "imageModel": imageModel,
 			"conversationModels": conversationOptions, "imageModels": imageOptions,
 			"modelDiscoveryAvailable": true, "conversationModelMode": "configured",
+			"editableFilesEnabled": editableFilesEnabled,
+		})
+		return
+	}
+	// Anonymous visitors may inspect explicitly assigned public model metadata,
+	// but must never fall back to legacy provider discovery.
+	if user == nil {
+		ok(c, gin.H{
+			"chatModel": "", "imageModel": "",
+			"conversationModels": []modelOption{}, "imageModels": []modelOption{},
+			"modelDiscoveryAvailable": false, "conversationModelMode": "configured",
+			"editableFilesEnabled": editableFilesEnabled,
 		})
 		return
 	}
@@ -176,11 +300,13 @@ func (s *Server) assistantConfig(c *gin.Context) {
 		if model == "" {
 			continue
 		}
-		options = append(options, modelOption{Label: label, Model: model, Source: "legacy"})
+		reasoningEfforts, defaultReasoningEffort := reasoningOptions(model)
+		options = append(options, modelOption{Label: label, Model: model, Source: "legacy", SupportedReasoningEfforts: reasoningEfforts, DefaultReasoningEffort: defaultReasoningEffort})
 		seenModels[model] = true
 	}
 	if !seenModels[client.ChatModel()] {
-		options = append(options, modelOption{Label: client.ChatModel(), Model: client.ChatModel(), Source: "default"})
+		reasoningEfforts, defaultReasoningEffort := reasoningOptions(client.ChatModel())
+		options = append(options, modelOption{Label: client.ChatModel(), Model: client.ChatModel(), Source: "default", SupportedReasoningEfforts: reasoningEfforts, DefaultReasoningEffort: defaultReasoningEffort})
 		seenModels[client.ChatModel()] = true
 	}
 	modelCtx, cancel := context.WithTimeout(c.Request.Context(), 6*time.Second)
@@ -192,7 +318,8 @@ func (s *Server) assistantConfig(c *gin.Context) {
 			if seenModels[model] || !assistantConversationModel(model, client.ImageModel()) {
 				continue
 			}
-			options = append(options, modelOption{Label: model, Model: model, Source: "upstream"})
+			reasoningEfforts, defaultReasoningEffort := reasoningOptions(model)
+			options = append(options, modelOption{Label: model, Model: model, Source: "upstream", SupportedReasoningEfforts: reasoningEfforts, DefaultReasoningEffort: defaultReasoningEffort})
 			seenModels[model] = true
 		}
 	}
@@ -206,6 +333,7 @@ func (s *Server) assistantConfig(c *gin.Context) {
 		"imageModels":             []modelOption{{Label: client.ImageModel(), Model: client.ImageModel(), Source: "legacy"}},
 		"modelDiscoveryAvailable": modelErr == nil,
 		"conversationModelMode":   modelMode,
+		"editableFilesEnabled":    editableFilesEnabled,
 	})
 }
 

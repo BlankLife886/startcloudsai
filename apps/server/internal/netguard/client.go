@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -33,9 +34,29 @@ func ValidateURL(raw string, allowPrivate, httpsOnly bool) error {
 	return nil
 }
 
-func NewHTTPClient(timeout time.Duration, allowPrivate, httpsOnly bool) *http.Client {
+// Transports are cached per SSRF policy so that the underlying connection pool
+// (keep-alive sockets, TLS sessions) is reused across requests. The connection
+// pool lives in http.Transport; sharing it is what lets hot paths such as the
+// per-second image polling loop avoid a fresh TCP+TLS handshake every request.
+// Only DialContext depends on allowPrivate, so that is the sole cache key; the
+// per-request timeout and httpsOnly redirect policy live on http.Client and do
+// not affect pooling.
+var (
+	sharedTransportsMu sync.Mutex
+	sharedTransports   = map[bool]*http.Transport{}
+)
+
+func sharedTransport(allowPrivate bool) *http.Transport {
+	sharedTransportsMu.Lock()
+	defer sharedTransportsMu.Unlock()
+	if t, ok := sharedTransports[allowPrivate]; ok {
+		return t
+	}
 	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConns = 256
+	transport.MaxIdleConnsPerHost = 64
+	transport.IdleConnTimeout = 90 * time.Second
 	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
 		if allowPrivate {
 			return dialer.DialContext(ctx, network, address)
@@ -58,9 +79,18 @@ func NewHTTPClient(timeout time.Duration, allowPrivate, httpsOnly bool) *http.Cl
 		}
 		return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
 	}
+	sharedTransports[allowPrivate] = transport
+	return transport
+}
+
+// NewHTTPClient returns an *http.Client that reuses a process-wide connection
+// pool for the given SSRF policy. Callers may pass timeout=0 and rely on a
+// per-request context deadline instead (preferred for hot paths so a single
+// client instance can be held for the process lifetime).
+func NewHTTPClient(timeout time.Duration, allowPrivate, httpsOnly bool) *http.Client {
 	return &http.Client{
 		Timeout:   timeout,
-		Transport: transport,
+		Transport: sharedTransport(allowPrivate),
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 5 {
 				return fmt.Errorf("too many redirects")

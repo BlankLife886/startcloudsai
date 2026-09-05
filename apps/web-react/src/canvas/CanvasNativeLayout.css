@@ -1,0 +1,343 @@
+.canvas-native-view {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--canvas-app-surface, oklch(1 0 0));
+}
+
+.canvas-native-view > .canvas-native-mount {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  background: var(--canvas-app-surface, oklch(1 0 0));
+}
+
+.canvas-overlay-root {
+  position: fixed;
+  inset: 0;
+  z-index: 12000;
+  pointer-events: none;
+  background: transparent;
+}
+
+.canvas-overlay-root .ant-modal-root,
+.canvas-overlay-root .ant-modal-wrap,
+.canvas-overlay-root .ant-modal-mask,
+.canvas-overlay-root .ant-image-preview-root,
+.canvas-overlay-root .ant-tooltip,
+.canvas-overlay-root .ant-dropdown,
+.canvas-overlay-root .ant-select-dropdown,
+.canvas-overlay-root .ant-popover,
+.canvas-overlay-root .ant-picker-dropdown,
+.canvas-overlay-root .canvas-float-menu,
+.canvas-overlay-root .canvas-anchor-popover,
+.canvas-overlay-root [data-canvas-resource-mention-menu] {
+  pointer-events: auto;
+}
+
+.canvas-native-mount > .ant-app {
+  width: 100%;
+  height: 100%;
+}
+
+.canvas-native-route-entry {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--canvas-app-surface, oklch(1 0 0));
+}
+
+.canvas-native-route-entry[data-canvas-route-motion-state="entering"] {
+  will-change: opacity;
+}
+
+.canvas-native-mount h1.font-semibold,
+.canvas-native-mount h2.font-semibold {
+  --font-weight-semibold: 500;
+}
+
+.canvas-native-mount textarea.text-base {
+  --text-base: 14px;
+  --text-base--line-height: 22px;
+  --leading-6: 22px;
+}
+
+.canvas-native-mount .canvas-liquid-glass button.h-8.text-xs {
+  --text-xs: 14px;
+  --text-xs--line-height: 22px;
+  --color-stone-300: var(--foreground);
+  --color-stone-600: var(--foreground);
+}
+
+html.dark .canvas-native-view,
+html.dark .canvas-native-view > .canvas-native-mount,
+html.dark .canvas-native-route-entry,
+html.color-scheme-dark .canvas-native-view,
+html.color-scheme-dark .canvas-native-view > .canvas-native-mount,
+html.color-scheme-dark .canvas-native-route-entry,
+.dark .canvas-native-view,
+.dark .canvas-native-view > .canvas-native-mount,
+.dark .canvas-native-route-entry {
+  --canvas-app-surface: #0c0d11;
+  background: #0c0d11;
+}
+
+.main--canvas-home .canvas-native-view,
+.main--canvas-home .canvas-native-view > .canvas-native-mount,
+.main--canvas-home .canvas-native-route-entry,
+.main--canvas-home .canvas-home-shell,
+.main--canvas-home .canvas-app-content,
+html.dark .main--canvas-home .canvas-native-view,
+html.dark .main--canvas-home .canvas-native-view > .canvas-native-mount,
+html.dark .main--canvas-home .canvas-native-route-entry,
+html.color-scheme-dark .main--canvas-home .canvas-native-view,
+html.color-scheme-dark .main--canvas-home .canvas-native-view > .canvas-native-mount,
+html.color-scheme-dark .main--canvas-home .canvas-native-route-entry {
+  background: transparent;
+}
+
+.canvas-home-shell {
+  background: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .canvas-native-route-entry {
+    opacity: 1 !important;
+    visibility: visible !important;
+  }
+}
+
+html.settings-no-animations .canvas-native-route-entry {
+  opacity: 1 !important;
+  visibility: visible !important;
+}
+
+html.canvas-editor .site-header,
+html.canvas-editor .site-header.is-canvas,
+html.canvas-editor .site-header.is-scrolled,
+html.canvas-editor .site-header.is-dark,
+html.canvas-editor .site-header.is-canvas.is-scrolled,
+html.canvas-editor .site-header.is-canvas.is-dark,
+html.canvas-editor .site-header.is-dark.is-scrolled,
+html.canvas-editor .site-header.is-canvas.is-dark.is-scrolled {
+  z-index: 5000 !important;
+  background: rgba(255, 255, 255, 0.92) !important;
+  backdrop-filter: blur(16px) saturate(1.15) !important;
+  -webkit-backdrop-filter: blur(16px) saturate(1.15) !important;
+}
+
+html.canvas-editor.dark .site-header,
+html.canvas-editor.dark .site-header.is-canvas,
+html.canvas-editor.dark .site-header.is-scrolled,
+html.canvas-editor.dark .site-header.is-dark,
+html.canvas-editor.dark .site-header.is-canvas.is-scrolled,
+html.canvas-editor.dark .site-header.is-canvas.is-dark,
+html.canvas-editor.dark .site-header.is-dark.is-scrolled,
+html.canvas-editor.dark .site-header.is-canvas.is-dark.is-scrolled,
+html.canvas-editor.color-scheme-dark .site-header,
+html.canvas-editor.color-scheme-dark .site-header.is-canvas,
+html.canvas-editor.color-scheme-dark .site-header.is-scrolled,
+html.canvas-editor.color-scheme-dark .site-header.is-dark,
+html.canvas-editor.color-scheme-dark .site-header.is-canvas.is-scrolled,
+html.canvas-editor.color-scheme-dark .site-header.is-canvas.is-dark,
+html.canvas-editor.color-scheme-dark .site-header.is-dark.is-scrolled,
+html.canvas-editor.color-scheme-dark .site-header.is-canvas.is-dark.is-scrolled {
+  background: rgba(12, 13, 17, 0.92) !important;
+}
+
+html.settings-no-blur.canvas-editor .site-header,
+html.settings-no-blur.canvas-editor .site-header.is-canvas,
+html.settings-no-blur.canvas-editor .site-header.is-canvas.is-dark.is-scrolled {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  background: #ffffff !important;
+}
+
+html.settings-no-blur.canvas-editor.dark .site-header,
+html.settings-no-blur.canvas-editor.dark .site-header.is-canvas,
+html.settings-no-blur.canvas-editor.color-scheme-dark .site-header,
+html.settings-no-blur.canvas-editor.color-scheme-dark .site-header.is-canvas {
+  background: #121218 !important;
+}
+
+html.color-scheme-dark [data-canvas-node-shell],
+html.dark [data-canvas-node-shell],
+.dark [data-canvas-node-shell] {
+  background: #14161c !important;
+  border-radius: 12px !important;
+  backdrop-filter: none !important;
+}
+
+html.color-scheme-dark [data-canvas-node-shell] > .relative,
+html.dark [data-canvas-node-shell] > .relative,
+.dark [data-canvas-node-shell] > .relative {
+  background: transparent !important;
+}
+
+html.color-scheme-dark [data-canvas-node-shell="image"],
+html.dark [data-canvas-node-shell="image"],
+.dark [data-canvas-node-shell="image"],
+html.color-scheme-dark [data-canvas-node-shell="video"],
+html.dark [data-canvas-node-shell="video"],
+.dark [data-canvas-node-shell="video"] {
+  background: #101218 !important;
+}
+
+html.color-scheme-dark [data-canvas-node-shell="group"],
+html.dark [data-canvas-node-shell="group"],
+.dark [data-canvas-node-shell="group"] {
+  background: rgba(20, 22, 28, 0.28) !important;
+}
+
+html.color-scheme-dark .canvas-config-node,
+html.dark .canvas-config-node,
+.dark .canvas-config-node {
+  color: #e6e9f2;
+}
+
+html.color-scheme-dark .canvas-config-modes,
+html.dark .canvas-config-modes,
+.dark .canvas-config-modes,
+html.color-scheme-dark .canvas-config-efforts,
+html.dark .canvas-config-efforts,
+.dark .canvas-config-efforts,
+html.color-scheme-dark .canvas-config-field,
+html.dark .canvas-config-field,
+.dark .canvas-config-field {
+  background: rgba(255, 255, 255, 0.045) !important;
+  box-shadow: none !important;
+}
+
+html.color-scheme-dark .canvas-config-mode-thumb,
+html.dark .canvas-config-mode-thumb,
+.dark .canvas-config-mode-thumb {
+  background: rgba(255, 255, 255, 0.08) !important;
+  box-shadow: none !important;
+}
+
+html.color-scheme-dark .canvas-config-effort,
+html.dark .canvas-config-effort,
+.dark .canvas-config-effort {
+  color: #8b93a8 !important;
+  background: transparent !important;
+}
+
+html.color-scheme-dark .canvas-config-effort.is-selected,
+html.dark .canvas-config-effort.is-selected,
+.dark .canvas-config-effort.is-selected {
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: #f2f4fa !important;
+  box-shadow: none !important;
+}
+
+html.color-scheme-dark .canvas-config-price,
+html.dark .canvas-config-price,
+.dark .canvas-config-price {
+  color: #f2f4fa;
+}
+
+html.color-scheme-dark .canvas-config-generate,
+html.dark .canvas-config-generate,
+.dark .canvas-config-generate {
+  height: 32px !important;
+  border-radius: 999px !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.01em;
+  box-shadow: none !important;
+  filter: none !important;
+}
+
+html.color-scheme-dark .canvas-config-generate .canvas-config-price,
+html.dark .canvas-config-generate .canvas-config-price,
+.dark .canvas-config-generate .canvas-config-price {
+  color: inherit;
+}
+
+html.color-scheme-dark .canvas-node-overlay-btn,
+html.dark .canvas-node-overlay-btn,
+.dark .canvas-node-overlay-btn {
+  background: rgba(12, 13, 17, 0.72) !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  box-shadow: none !important;
+  color: #e8ebf4 !important;
+  backdrop-filter: blur(10px) !important;
+}
+
+[data-canvas-resource-mention-menu] {
+  transform-origin: 16px 100%;
+  animation: canvas-mention-in 180ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+[data-canvas-resource-mention-menu][data-side="below"] {
+  transform-origin: 16px 0;
+  animation-name: canvas-mention-in-below;
+}
+
+[data-canvas-resource-mention-menu] > button {
+  animation: canvas-mention-item-in 160ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation-delay: calc(30ms + var(--mention-i, 0) * 22ms);
+}
+
+[data-canvas-resource-mention-menu][data-side="below"] > button {
+  animation-name: canvas-mention-item-in-below;
+}
+
+@keyframes canvas-mention-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes canvas-mention-in-below {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes canvas-mention-item-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes canvas-mention-item-in-below {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-canvas-resource-mention-menu],
+  [data-canvas-resource-mention-menu] > button {
+    animation: none !important;
+  }
+}
+
+html.settings-no-animations [data-canvas-resource-mention-menu],
+html.settings-no-animations [data-canvas-resource-mention-menu] > button {
+  animation: none !important;
+}

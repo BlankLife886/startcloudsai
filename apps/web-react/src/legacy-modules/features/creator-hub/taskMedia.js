@@ -1,0 +1,64 @@
+/** 创作台 / 历史页共用的任务封面 URL 解析 */
+
+export function taskOriginalUrl(task) {
+  return (
+    firstUrl(task?.originalUrls) ||
+    firstUrl(task?.outputUrls) ||
+    firstOutputField(task?.outputs, 'url') ||
+    firstOutputField(task?.outputs, 'originalUrl') ||
+    ''
+  )
+}
+
+/**
+ * 展示图（服务端压缩过的大图）：点开大图/放大预览用。
+ * 旧任务可能没有展示图对象，调用方应把 taskOriginalUrl 作为回退
+ * （AuthenticatedImage 的 fallbackSrc）。
+ */
+export function taskDisplayUrl(task) {
+  return firstUrl(task?.displayUrls) || taskOriginalUrl(task)
+}
+
+export function taskThumbnailUrl(task) {
+  // 新后端会为旧任务根据原图 key 派生 thumbnailUrls，即使原始
+  // thumbnailKeys 为空也可直接使用。必须先尊重服务端给出的 URL。
+  const serverThumbnailUrl = firstUrl(task?.thumbnailUrls)
+  if (serverThumbnailUrl) return serverThumbnailUrl
+  // 只有服务端也没有返回缩略地址时，空 keys 才表示确实没有小图。
+  if (Array.isArray(task?.thumbnailKeys) && task.thumbnailKeys.length === 0) {
+    return ''
+  }
+  return (
+    firstUrl(task?.outputUrls) ||
+    firstOutputField(task?.outputs, 'thumbnailUrl') ||
+    firstOutputField(task?.outputs, 'url') ||
+    ''
+  )
+}
+
+/** 列表封面：优先缩略图，没有再退回原图 */
+export function taskCoverUrl(task, { preferOriginal = false } = {}) {
+  if (preferOriginal) {
+    return taskOriginalUrl(task) || taskThumbnailUrl(task)
+  }
+  return taskThumbnailUrl(task) || taskOriginalUrl(task)
+}
+
+function firstUrl(list) {
+  if (!Array.isArray(list)) return ''
+  for (const item of list) {
+    const value = String(item || '').trim()
+    if (value) return value
+  }
+  return ''
+}
+
+function firstOutputField(outputs, field) {
+  if (!Array.isArray(outputs)) return ''
+  for (const item of outputs) {
+    if (!item || typeof item !== 'object') continue
+    const value = String(item[field] || '').trim()
+    if (value) return value
+  }
+  return ''
+}

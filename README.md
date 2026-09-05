@@ -2,13 +2,15 @@
 
 星空云绘是一个 AI 图像创作与作品社区平台，提供文生图、插画染色、UI 设计稿、超高清模型图、游戏美术和 AI 拼图工作台，并包含共享画廊、提示词库、价格页、兑换码钱包与独立运营后台。价格页和只读套餐展示已恢复；支付、订单创建和套餐购买当前在所有环境中停用。
 
-项目由两个 Vue 3 单页应用和一个 Go 服务组成，生产环境通过 Docker Compose 统一部署。
+项目由 React 主站（内置无限画布模块）、Vue 管理端和 Go 服务组成，生产环境通过 Docker Compose 统一部署。
+
+> UI 产品边界：本项目只面向桌面浏览器，最低支持视口为 `1280x720`，不开发或验收手机/平板适配。具体约束见 [桌面端 UI 支持策略](docs/DESKTOP_UI_POLICY.md)。
 
 ## 仓库结构
 
 ```text
 .
-├── apps/web/       # 用户端：Vue 3 + Vite + Pinia
+├── apps/web-react/ # 用户端与内置无限画布：React 19 + Vite + Zustand
 ├── apps/admin/     # 管理端：Vue 3 + Vite + TypeScript + Element Plus
 ├── apps/server/    # API 与 Worker：Go + Gin + pgx + Asynq
 ├── deploy/         # 统一 nginx 网关配置
@@ -20,15 +22,15 @@
 
 | 服务 | 职责 |
 | --- | --- |
-| `gateway` | 唯一入口；`/` 转发用户端，`/admin/` 转发管理端，`/api/v1/` 转发 API |
-| `web` | 用户端静态站 |
+| `gateway` | 唯一入口；`/`（包含 `/canvas`）转发用户端，`/admin/` 转发管理端，`/api/v1/` 转发 API |
+| `web` | 用户端静态站；构建时直接编译无限画布源码，运行时不依赖独立画布服务 |
 | `admin` | 管理端静态站 |
 | `server` | Gin API；启动时自动执行 Goose 数据库迁移 |
 | `worker` | Asynq Worker；执行图片任务和定时维护任务 |
 | `postgres` | 业务数据、钱包账本和运营内容 |
 | `redis` | Asynq 队列 |
 
-外部依赖为 `chatgpt2api` 图片任务接口和 Cloudflare R2（S3 兼容对象存储）。Worker 使用幂等异步提交和轮询回收图片，避免长连接中断后图片已在上游生成、用户端却无法取得；图片对用户统一通过站内鉴权文件接口交付，不要求用户浏览器能够直接访问 R2。
+外部依赖包括 `chatgpt2api`/OpenAI 兼容图片服务、Sub2API 对话服务、CRUN 异步图片工具、S3 兼容对象存储（生产推荐阿里云香港 OSS）和 SMTP 邮件服务。Worker 使用幂等异步提交和轮询回收图片，避免长连接中断后图片已在上游生成、用户端却无法取得；私有图片对用户统一通过站内鉴权文件接口交付，不要求用户浏览器能够直接访问对象存储。
 
 ## Docker 本地启动
 
@@ -75,7 +77,7 @@ docker compose down -v          # 删除数据卷；会清空本地业务数据
 
 ## 生产部署
 
-生产和开发必须使用不同环境文件、数据库、Redis、R2 bucket、OAuth 应用和密钥。复制 `.env.example` 为 `.env`，替换数据库密码、`APP_SECRET`、C2A/R2 凭据、OAuth/SMTP 配置与域名后再启动。生产模式会拒绝弱 `APP_SECRET` 或非 HTTPS Origin；登录与兑换限流使用 Redis 共享状态。
+生产和开发必须使用不同环境文件、数据库、Redis、对象存储 bucket 和密钥。复制 `.env.example` 为 `.env`，替换数据库密码、`APP_SECRET`、C2A/对象存储凭据、SMTP 配置与域名后再启动。生产模式会拒绝弱 `APP_SECRET` 或非 HTTPS Origin；登录与兑换限流使用 Redis 共享状态。
 
 ```bash
 cp .env.example .env
@@ -89,7 +91,7 @@ Compose 默认把网关绑定到 `127.0.0.1`。线上必须由宿主机或独立
 
 ## 本地开发
 
-推荐 Node.js 22、npm 10+、Go 1.26.5，并准备 PostgreSQL 16/17 与 Redis 7。前端默认把 `/api` 代理到 `http://localhost:8000`。
+推荐 Node.js 22、npm 10+、Go 1.26.6，并准备 PostgreSQL 16/17 与 Redis 7。前端默认把 `/api` 代理到 `http://localhost:8000`。
 
 ```bash
 # API（自动迁移；环境变量默认连接 localhost）
@@ -100,8 +102,8 @@ go run ./cmd/server serve
 cd apps/server
 go run ./cmd/server worker
 
-# 用户端：http://localhost:3102
-cd apps/web
+# 用户端：http://localhost:3105
+cd apps/web-react
 npm ci
 npm run dev
 
@@ -111,7 +113,7 @@ npm ci
 npm run dev
 ```
 
-根目录 `.env` 由 Docker Compose 读取；直接运行 Go 命令时需要在 shell 中导出相应变量。开发环境至少需要可连接的 `DATABASE_URL`、`REDIS_URL`，图片上传和生成还需要有效的 `R2_*`、`C2A_*`。
+根目录 `.env` 由 Docker Compose 读取；直接运行 Go 命令时需要在 shell 中导出相应变量。开发环境至少需要可连接的 `DATABASE_URL`、`REDIS_URL`，图片上传和生成还需要有效的 `OBJECT_STORAGE_*`、`C2A_*`。
 
 ## 验证
 
@@ -119,23 +121,29 @@ CI 使用 Node.js 22、Go module 中声明的 Go 版本和 PostgreSQL 17，执�
 
 ```bash
 cd apps/server && go vet ./... && go test ./...
-cd apps/web && npm ci && npm run check:imports && npm run lint && npm run build
+cd apps/web-react && npm ci && npm run typecheck:canvas && npm run test:domain && npm run build
 cd apps/admin && npm ci && npm run build
 ```
 
-用户端还提供图片处理验证脚本。Playwright 配置目前保留了旧 monorepo 启动命令，尚不能作为本仓库的有效测试入口；详见 [apps/web/README.md](apps/web/README.md)。
+用户端还提供 Playwright 交互与视觉回归。`cd apps/web-react && npm run test:e2e` 会启动 React Vite 服务并通过路由拦截提供确定性的登录、模型、历史和商品库数据，不依赖真实图片上游。完整说明见 [apps/web-react/README.md](apps/web-react/README.md)。
 
 ## 文档索引
 
+- [本地开发启动手册](docs/LOCAL_DEVELOPMENT.md)
 - [生产部署与运维手册](docs/DEPLOYMENT.md)
+- [4C8G 一体化部署与 PG18/OSS 迁移手册](docs/INTEGRATED_4C8G_MIGRATION.md)
+- [旧服务器到新服务器的数据迁移](docs/PRODUCTION_DATA_MIGRATION.md)
 - [架构说明](docs/ARCHITECTURE.md)
 - [API 契约](docs/API_CONTRACT.md)
+- [开放 API 与 Webhook 接入](docs/OPEN_API.md)
 - [数据库设计](docs/DATABASE.md)
 - [全站图片加载与瀑布流滚动性能方案](docs/PROMPT_MASONRY_PERFORMANCE.md)
 - [高并发任务稳定性方案](docs/HIGH_CONCURRENCY_TASK_STABILITY.md)
 - [Go 性能与实时可观测性](docs/GO_PERFORMANCE_OBSERVABILITY.md)
 - [管理端 UI 规范](docs/ADMIN_UI_STYLE.md)
-- [用户端首页设计规范](apps/web/DESIGN.md)
-- [用户端开发说明](apps/web/README.md)
+- [桌面端 UI 支持策略](docs/DESKTOP_UI_POLICY.md)
+- [用户端迁移与视觉基线记录](apps/web-react/REACT_MIGRATION.md)
+- [用户端首页历史设计基线](apps/web-react/DESIGN.md)
+- [用户端开发说明](apps/web-react/README.md)
 - [管理端开发说明](apps/admin/README.md)
 - [服务端开发说明](apps/server/README.md)

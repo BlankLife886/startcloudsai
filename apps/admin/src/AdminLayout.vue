@@ -1,13 +1,24 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import {
+  computed,
+  onBeforeUnmount,
+  onMounted,
+  reactive,
+  ref,
+  watch,
+} from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import {
   Bell,
+  Box,
+  Calendar,
   ChatDotRound,
   CollectionTag,
+  DataAnalysis,
   Document,
   Expand,
+  Files,
   Fold,
   List,
   Lock,
@@ -15,21 +26,46 @@ import {
   Monitor,
   Moon,
   Odometer,
+  Operation,
   Picture,
+  ShoppingBag,
   Setting,
   Sunny,
   SwitchButton,
   Ticket,
+  TrendCharts,
+  Star,
   User,
+  UserFilled,
+  Wallet,
 } from "@element-plus/icons-vue";
+import AdminDialog from "@/components/AdminDialog.vue";
 import { useAuthStore } from "@/stores/auth";
 import { request } from "@/request";
+import { preloadAdminRoute } from "@/router";
+import { loadAdminBadgeCounts } from "@/services/adminBadgeCounts";
 import { isDark, toggleTheme } from "@/theme";
+import { useAdminShellMotion } from "@/composables/useAdminShellMotion";
 
 const route = useRoute();
 const router = useRouter();
 const auth = useAuthStore();
-const sidebarCollapsed = ref(false);
+const sidebarCollapsed = ref(
+  window.localStorage.getItem("startclouds-admin:sidebar-collapsed") === "true",
+);
+
+const layoutRef = ref<HTMLElement | null>(null);
+const asideRef = ref<HTMLElement | null>(null);
+const contentInnerRef = ref<HTMLElement | null>(null);
+const routePath = computed(() => route.path);
+
+const { animateSidebar, pulse } = useAdminShellMotion({
+  root: layoutRef,
+  aside: asideRef,
+  content: contentInnerRef,
+  collapsed: sidebarCollapsed,
+  routePath,
+});
 
 function toggleSidebar() {
   sidebarCollapsed.value = !sidebarCollapsed.value;
@@ -37,41 +73,57 @@ function toggleSidebar() {
     "startclouds-admin:sidebar-collapsed",
     String(sidebarCollapsed.value),
   );
+  animateSidebar(sidebarCollapsed.value);
 }
 
 const NAV_GROUPS = [
   {
     title: "总览",
-    items: [{ path: "/", label: "仪表盘", icon: Odometer }],
+    items: [
+      { path: "/", label: "仪表盘", icon: Odometer },
+      { path: "/settings", label: "系统设置", icon: Setting },
+    ],
   },
   {
     title: "业务",
     items: [
       { path: "/users", label: "用户管理", icon: User },
-      { path: "/tasks", label: "任务监控", icon: Monitor },
+      { path: "/tasks", label: "任务与调度", icon: Monitor },
       { path: "/model-config", label: "模型配置", icon: MagicStick },
+      { path: "/agent-quality", label: "Agent 质量", icon: DataAnalysis },
+      { path: "/canvas-templates", label: "画布模板", icon: Files },
     ],
   },
   {
-    title: "社区运营",
+    title: "内容运营",
     items: [
+      { path: "/page-controls", label: "页面控制", icon: Operation },
+      { path: "/content", label: "内容管理", icon: Document },
       { path: "/prompt-library", label: "提示词库", icon: CollectionTag },
+      { path: "/ecommerce", label: "电商素材", icon: ShoppingBag },
       { path: "/community", label: "社区管理", icon: ChatDotRound },
       { path: "/gallery", label: "投稿审核", icon: Picture },
+      { path: "/feedback", label: "用户反馈", icon: ChatDotRound },
     ],
   },
   {
-    title: "资金",
+    title: "活动与增长",
     items: [
+      { path: "/trial-applications", label: "体验活动", icon: Star },
+      { path: "/checkin-activity", label: "签到活动", icon: Calendar },
+      { path: "/growth-groups", label: "好友拼团", icon: UserFilled },
+    ],
+  },
+  {
+    title: "交易与审计",
+    items: [
+      { path: "/profitability", label: "成本利润", icon: TrendCharts },
+      { path: "/orders", label: "订单管理", icon: Wallet },
+      { path: "/plans", label: "套餐管理", icon: Box },
       { path: "/codes", label: "兑换码", icon: Ticket },
       { path: "/audit", label: "审计日志", icon: List },
-    ],
-  },
-  {
-    title: "系统",
-    items: [
-      { path: "/content", label: "内容管理", icon: Document },
-      { path: "/settings", label: "系统设置", icon: Setting },
+      { path: "/platform-logs", label: "运行日志", icon: Monitor },
+      { path: "/security-center", label: "安全中心", icon: Lock },
     ],
   },
 ];
@@ -82,48 +134,36 @@ const displayName = computed(
 const avatarInitial = computed(() =>
   displayName.value.slice(0, 1).toUpperCase(),
 );
+const pageTitle = computed(() => String(route.meta.title || "管理后台"));
 
 /* ---------- 待办数（侧边栏徽标 + 通知铃），失败静默 ---------- */
 
 const pendingSubmissions = ref(0);
-/** 待审数超出单页时展示 N+ */
-const pendingHasMore = ref(false);
 const runningTasks = ref(0);
+const pendingTrialApplications = ref(0);
+const pendingFeedback = ref(0);
 
+/** 聚合端点一次返回全部徽标计数，替代原先的多次独立请求。 */
 async function loadTodoCounts() {
   try {
-    const data = await request<{
-      items: unknown[];
-      nextCursor: string | null;
-      total?: number;
-    }>("/api/v1/admin/gallery/submissions", {
-      query: { status: "pending", limit: 50 },
-      silent: true,
-    });
-    if (typeof data.total === "number") {
-      pendingSubmissions.value = data.total;
-      pendingHasMore.value = false;
-    } else {
-      pendingSubmissions.value = data.items?.length ?? 0;
-      pendingHasMore.value = Boolean(data.nextCursor);
-    }
+    const data = await loadAdminBadgeCounts();
+    if (typeof data.pendingSubmissions === "number")
+      pendingSubmissions.value = data.pendingSubmissions;
+    if (typeof data.runningTasks === "number")
+      runningTasks.value = data.runningTasks;
+    if (typeof data.pendingTrialApplications === "number")
+      pendingTrialApplications.value = data.pendingTrialApplications;
+    if (typeof data.pendingFeedback === "number")
+      pendingFeedback.value = data.pendingFeedback;
   } catch {
-    // 静默：徽标缺失不影响使用
-  }
-  try {
-    const stats = await request<{ runningTasks?: number }>("/api/v1/admin/statistics", {
-      silent: true,
-    });
-    runningTasks.value = stats.runningTasks ?? 0;
-  } catch {
-    // 静默
+    // 静默：读取失败保持旧值，徽标缺失不影响使用
   }
 }
 
 const pendingBadgeText = computed(() => {
   if (pendingSubmissions.value <= 0) return "";
-  return pendingHasMore.value
-    ? `${pendingSubmissions.value}+`
+  return pendingSubmissions.value > 99
+    ? "99+"
     : String(pendingSubmissions.value);
 });
 
@@ -137,6 +177,24 @@ const notifyItems = computed(() =>
       tone: "warning",
       icon: Picture,
       to: "/gallery",
+    },
+    {
+      key: "trial",
+      label: "体验资格待审核",
+      count: pendingTrialApplications.value,
+      countText: String(pendingTrialApplications.value),
+      tone: "warning",
+      icon: Star,
+      to: "/trial-applications",
+    },
+    {
+      key: "feedback",
+      label: "用户反馈待处理",
+      count: pendingFeedback.value,
+      countText: String(pendingFeedback.value),
+      tone: "warning",
+      icon: ChatDotRound,
+      to: "/feedback",
     },
     {
       key: "running",
@@ -155,12 +213,66 @@ const notifyTotal = computed(() =>
 );
 
 onMounted(() => {
-  sidebarCollapsed.value =
-    window.localStorage.getItem("startclouds-admin:sidebar-collapsed") ===
-    "true";
   void loadTodoCounts();
 });
-watch(() => route.path, loadTodoCounts);
+watch(
+  () => route.path,
+  () => void loadTodoCounts(),
+);
+
+/* ---------- 路由预取 / 切页反馈 ---------- */
+
+const navigatingTo = ref("");
+let routePreloadTimer: number | null = null;
+
+function cancelScheduledPreload() {
+  if (routePreloadTimer === null) return;
+  window.clearTimeout(routePreloadTimer);
+  routePreloadTimer = null;
+}
+
+function preloadRouteNow(path: string) {
+  cancelScheduledPreload();
+  if (path !== route.path) void preloadAdminRoute(path);
+}
+
+function scheduleRoutePreload(path: string) {
+  cancelScheduledPreload();
+  if (path === route.path) return;
+  routePreloadTimer = window.setTimeout(() => {
+    routePreloadTimer = null;
+    void preloadAdminRoute(path);
+  }, 150);
+}
+
+function onNavClick(path: string, event: MouseEvent) {
+  if (
+    event.defaultPrevented ||
+    event.button !== 0 ||
+    event.metaKey ||
+    event.ctrlKey ||
+    event.shiftKey ||
+    event.altKey ||
+    path === route.path
+  ) {
+    navigatingTo.value = "";
+    return;
+  }
+  navigatingTo.value = path;
+}
+
+const removeNavigationCompleteHook = router.afterEach(() => {
+  navigatingTo.value = "";
+});
+const removeNavigationErrorHook = router.onError(() => {
+  navigatingTo.value = "";
+});
+
+onBeforeUnmount(() => {
+  cancelScheduledPreload();
+  removeNavigationCompleteHook();
+  removeNavigationErrorHook();
+});
 
 function goTodo(to: string) {
   router.push(to);
@@ -169,8 +281,23 @@ function goTodo(to: string) {
 /* ---------- 主题 / 用户菜单 ---------- */
 
 async function onLogout() {
+  try {
+    await ElMessageBox.confirm("确定退出当前管理员账号？", "退出登录", {
+      type: "warning",
+      confirmButtonText: "退出",
+      cancelButtonText: "取消",
+    });
+  } catch {
+    return;
+  }
   await auth.logout();
   router.push("/login");
+}
+
+function setTheme(dark: boolean, event: MouseEvent) {
+  if (isDark.value === dark) return;
+  pulse(event.currentTarget);
+  void toggleTheme(event);
 }
 
 function onUserCommand(command: string) {
@@ -221,72 +348,99 @@ async function submitPassword() {
 </script>
 
 <template>
-  <div class="layout">
+  <div ref="layoutRef" class="layout">
     <!-- ==== 侧边栏 ==== -->
-    <aside class="aside" :class="{ 'is-collapsed': sidebarCollapsed }">
-      <div class="logo">
-        <span class="logo-mark">
-          <el-icon :size="18"><MagicStick /></el-icon>
-        </span>
-        <span class="logo-copy">
-          <strong>星空云绘</strong>
-          <small>StartClouds · 管理后台</small>
-        </span>
-      </div>
+    <aside
+      ref="asideRef"
+      class="aside"
+      :class="{ 'is-collapsed': sidebarCollapsed }"
+    >
+      <div class="aside-inner">
+        <div class="logo" title="StartClouds">
+          <span class="logo-mark" aria-hidden="true">
+            <el-icon :size="18"><MagicStick /></el-icon>
+          </span>
+          <span class="logo-copy">
+            <strong>StartClouds</strong>
+          </span>
+        </div>
 
-      <nav class="nav">
-        <div v-for="group in NAV_GROUPS" :key="group.title" class="nav-group">
-          <div class="nav-group__title">{{ group.title }}</div>
-          <router-link
-            v-for="item in group.items"
-            :key="item.path"
-            :to="item.path"
-            class="nav-item"
-            :class="{ 'is-active': route.path === item.path }"
+        <nav class="nav">
+          <div v-for="group in NAV_GROUPS" :key="group.title" class="nav-group">
+            <div class="nav-group__title">{{ group.title }}</div>
+            <div class="nav-group__items">
+              <router-link
+                v-for="item in group.items"
+                :key="item.path"
+                :to="item.path"
+                class="nav-item"
+                :class="{
+                  'is-active': route.path === item.path,
+                  'is-pending': navigatingTo === item.path,
+                }"
+                @mouseenter="scheduleRoutePreload(item.path)"
+                @mouseleave="cancelScheduledPreload"
+                @focus="preloadRouteNow(item.path)"
+                @pointerdown="preloadRouteNow(item.path)"
+                @touchstart.passive="preloadRouteNow(item.path)"
+                @click="onNavClick(item.path, $event)"
+              >
+                <span class="nav-item__icon">
+                  <el-icon :size="18"><component :is="item.icon" /></el-icon>
+                </span>
+                <span class="nav-item__label">{{ item.label }}</span>
+                <em
+                  v-if="
+                    (item.path === '/gallery' && pendingBadgeText) ||
+                    (item.path === '/trial-applications' &&
+                      pendingTrialApplications > 0) ||
+                    (item.path === '/feedback' && pendingFeedback > 0)
+                  "
+                  class="nav-badge tnum"
+                >
+                  {{
+                    item.path === "/trial-applications"
+                      ? pendingTrialApplications > 99
+                        ? "99+"
+                        : pendingTrialApplications
+					  : item.path === "/feedback"
+                        ? pendingFeedback > 99
+                          ? "99+"
+                          : pendingFeedback
+                        : pendingBadgeText
+                  }}
+                </em>
+              </router-link>
+            </div>
+          </div>
+        </nav>
+
+        <div class="aside-footer">
+          <button
+            type="button"
+            class="sidebar-toggle"
+            :title="sidebarCollapsed ? '展开侧栏' : '收起侧栏'"
+            :aria-label="sidebarCollapsed ? '展开侧栏' : '收起侧栏'"
+            @click="toggleSidebar"
           >
-            <el-icon :size="17"><component :is="item.icon" /></el-icon>
-            <span>{{ item.label }}</span>
-            <em
-              v-if="item.path === '/gallery' && pendingBadgeText"
-              class="nav-badge tnum"
-            >
-              {{ pendingBadgeText }}
-            </em>
-          </router-link>
+            <el-icon :size="15"
+              ><component :is="sidebarCollapsed ? Expand : Fold"
+            /></el-icon>
+            <span>{{ sidebarCollapsed ? "展开" : "收起" }}</span>
+          </button>
         </div>
-      </nav>
-
-      <div class="user-card">
-        <span class="user-avatar">{{ avatarInitial }}</span>
-        <div class="user-meta">
-          <strong :title="displayName">{{ displayName }}</strong>
-          <span class="badge badge--accent">管理员</span>
-        </div>
-        <button
-          type="button"
-          class="sidebar-toggle"
-          :title="sidebarCollapsed ? '展开侧栏' : '收起侧栏'"
-          :aria-label="sidebarCollapsed ? '展开侧栏' : '收起侧栏'"
-          @click="toggleSidebar"
-        >
-          <el-icon :size="15"
-            ><component :is="sidebarCollapsed ? Expand : Fold"
-          /></el-icon>
-        </button>
       </div>
     </aside>
 
     <!-- ==== 主区域 ==== -->
     <div class="main-col">
+      <div v-if="navigatingTo" class="route-progress" aria-hidden="true">
+        <span />
+      </div>
       <header class="topbar">
-        <div class="crumb">
-          <span>星空云绘</span>
-          <span class="crumb-sep">/</span>
-          <span class="crumb-current">{{ route.meta.title }}</span>
-        </div>
+        <h1 class="page-title">{{ pageTitle }}</h1>
 
         <div class="topbar-actions">
-          <!-- 通知铃 -->
           <el-popover
             placement="bottom-end"
             :width="300"
@@ -324,23 +478,36 @@ async function submitPassword() {
             </div>
           </el-popover>
 
-          <!-- 主题切换 -->
-          <button
-            type="button"
-            class="icon-btn"
-            :title="isDark ? '切换为浅色' : '切换为深色'"
-            @click="toggleTheme"
-          >
-            <el-icon :size="16"
-              ><component :is="isDark ? Sunny : Moon"
-            /></el-icon>
-          </button>
+          <div class="theme-switch" role="group" aria-label="主题切换">
+            <button
+              type="button"
+              class="theme-switch__btn"
+              :class="{ 'is-active': !isDark }"
+              title="浅色模式"
+              :aria-pressed="!isDark"
+              @click="setTheme(false, $event)"
+            >
+              <el-icon :size="15"><Sunny /></el-icon>
+            </button>
+            <button
+              type="button"
+              class="theme-switch__btn"
+              :class="{ 'is-active': isDark }"
+              title="深色模式"
+              :aria-pressed="isDark"
+              @click="setTheme(true, $event)"
+            >
+              <el-icon :size="15"><Moon /></el-icon>
+            </button>
+          </div>
 
-          <!-- 用户菜单 -->
           <el-dropdown trigger="click" @command="onUserCommand">
-            <button type="button" class="user-btn">
-              <span class="user-btn__avatar">{{ avatarInitial }}</span>
-              <span class="user-btn__name">{{ displayName }}</span>
+            <button type="button" class="profile-chip" :title="displayName">
+              <span class="user-avatar">{{ avatarInitial }}</span>
+              <span class="user-meta">
+                <strong>{{ displayName }}</strong>
+                <small>管理员</small>
+              </span>
             </button>
             <template #dropdown>
               <el-dropdown-menu>
@@ -359,19 +526,48 @@ async function submitPassword() {
       <main
         class="content"
         :class="{
-          'content--workspace': ['/prompt-library', '/tasks'].includes(
-            route.path,
-          ),
+          'content--workspace': [
+            '/',
+            '/prompt-library',
+            '/ecommerce',
+            '/community',
+            '/gallery',
+            '/tasks',
+            '/profitability',
+            '/agent-quality',
+            '/orders',
+            '/users',
+            '/platform-logs',
+            '/security-center',
+            '/plans',
+            '/growth-groups',
+            '/checkin-activity',
+            '/settings',
+            '/model-config',
+            '/page-controls',
+            '/canvas-templates',
+            '/content',
+            '/feedback',
+            '/trial-applications',
+          ].includes(route.path),
         }"
       >
-        <div :key="route.path" class="anim-fade-up content-inner">
+        <div :key="route.path" ref="contentInnerRef" class="content-inner">
           <router-view />
         </div>
       </main>
     </div>
 
-    <!-- 修改密码 -->
-    <el-dialog v-model="passwordOpen" title="修改密码" width="420px">
+    <AdminDialog
+      v-model="passwordOpen"
+      title="修改密码"
+      subtitle="修改成功后需要重新登录"
+      :icon="Lock"
+      width="420px"
+      confirm-text="确认修改"
+      :confirm-loading="passwordSubmitting"
+      @confirm="submitPassword"
+    >
       <el-form label-width="90px" @submit.prevent="submitPassword">
         <el-form-item label="旧密码" required>
           <el-input
@@ -386,7 +582,7 @@ async function submitPassword() {
             v-model="passwordForm.next"
             type="password"
             show-password
-            placeholder="至少 8 位"
+            placeholder="至少 12 位"
             autocomplete="new-password"
           />
         </el-form-item>
@@ -399,17 +595,7 @@ async function submitPassword() {
           />
         </el-form-item>
       </el-form>
-      <p class="text-muted" style="margin: 0">修改成功后需要重新登录。</p>
-      <template #footer>
-        <el-button @click="passwordOpen = false">取消</el-button>
-        <el-button
-          type="primary"
-          :loading="passwordSubmitting"
-          @click="submitPassword"
-          >确认修改</el-button
-        >
-      </template>
-    </el-dialog>
+    </AdminDialog>
   </div>
 </template>
 
@@ -418,337 +604,352 @@ async function submitPassword() {
   position: fixed;
   inset: 0;
   display: flex;
+  gap: 12px;
   width: 100%;
   height: 100dvh;
   min-height: 0;
   overflow: hidden;
   overscroll-behavior: none;
+  padding: 12px;
   background: var(--bg);
 }
 
 /* ---- 侧边栏 ---- */
 .aside {
+  --aside-pad-x: 14px;
+  --aside-item-h: 42px;
+  --aside-icon: 20px;
+  --aside-expanded: 252px;
+  --aside-collapsed: 78px;
+  display: flex;
+  width: var(--aside-expanded);
+  min-height: 0;
+  flex-shrink: 0;
+  overflow: hidden;
+  contain: layout paint;
+}
+
+.aside-inner {
   display: flex;
   flex-direction: column;
-  width: 236px;
+  width: var(--aside-expanded);
+  min-width: var(--aside-expanded);
   min-height: 0;
   flex-shrink: 0;
   overflow: hidden;
   background: var(--surface);
-  border-right: 1px solid var(--border);
-  will-change: width;
-  transition: width 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  box-shadow: var(--shadow-sm);
 }
 
-.aside.is-collapsed {
-  width: 72px;
-}
+/* 折叠：外层宽度由 GSAP 动画；加上 .is-collapsed 后内层同步收窄并居中图标 */
 
 .logo {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 20px 20px 16px;
-  transition: padding 0.18s ease;
+  flex-shrink: 0;
+  gap: 12px;
+  height: 68px;
+  padding: 0 var(--aside-pad-x);
+  border-bottom: 1px solid var(--border);
+}
+
+.aside.is-collapsed .aside-inner {
+  width: 100%;
+  min-width: 0;
 }
 
 .aside.is-collapsed .logo {
   justify-content: center;
-  padding-right: 10px;
-  padding-left: 10px;
+  padding: 0;
 }
 
 .logo-mark {
   display: grid;
   place-items: center;
-  width: 36px;
-  height: 36px;
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
   border-radius: 12px;
   background: var(--accent);
-  color: #fff;
-  box-shadow: var(--shadow-md);
+  color: var(--accent-on);
 }
 
 .logo-copy {
-  display: grid;
-  gap: 1px;
   min-width: 0;
-  opacity: 1;
-  transition: opacity 0.12s ease;
+  display: flex;
+  align-items: center;
 }
 
 .aside.is-collapsed .logo-copy,
 .aside.is-collapsed .nav-group__title,
-.aside.is-collapsed .nav-item span,
-.aside.is-collapsed .user-meta {
+.aside.is-collapsed .nav-item__label,
+.aside.is-collapsed .sidebar-toggle span {
   display: none;
 }
 
-.aside.is-collapsed .logo-copy,
-.aside.is-collapsed .user-meta {
-  opacity: 0;
-}
-
 .logo-copy strong {
-  font-size: 15px;
+  font-size: 18px;
   font-weight: 700;
-  letter-spacing: -0.02em;
-  line-height: 1.2;
-}
-
-.logo-copy small {
-  color: var(--ink-3);
-  font-size: 11px;
+  letter-spacing: -0.03em;
+  line-height: 1;
 }
 
 .nav {
   flex: 1;
   overflow-y: auto;
   overscroll-behavior: contain;
-  scrollbar-gutter: stable;
-  padding: 12px;
+  padding: 14px var(--aside-pad-x) 10px;
   display: grid;
-  gap: 20px;
+  gap: 18px;
   align-content: start;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.nav::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.nav-group {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
 }
 
 .nav-group__title {
-  padding: 0 10px 6px;
+  padding: 0 12px;
   color: var(--ink-3);
   font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.04em;
+  line-height: 1;
+}
+
+.nav-group__items {
+  display: grid;
+  gap: 2px;
 }
 
 .nav-item {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin: 2px 0;
-  padding: 8px 10px;
+  gap: 12px;
+  height: var(--aside-item-h);
+  padding: 0 12px;
   border-radius: 12px;
   color: var(--ink-2);
   font-size: 13.5px;
   font-weight: 500;
   text-decoration: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
   transition:
-    background-color 0.15s ease,
-    color 0.15s ease,
-    padding 0.18s ease;
+    background-color 0.2s ease,
+    color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.nav-item__icon {
+  display: grid;
+  place-items: center;
+  width: var(--aside-icon);
+  height: var(--aside-icon);
+  flex-shrink: 0;
+  color: var(--ink-3);
+  transition: color 0.2s ease;
+}
+
+.nav-item__label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.2;
 }
 
 .aside.is-collapsed .nav {
-  padding-right: 10px;
-  padding-left: 10px;
+  padding: 12px 0 8px;
+  gap: 8px;
+  justify-items: center;
+}
+
+.aside.is-collapsed .nav-group {
+  width: 100%;
+  justify-items: center;
+}
+
+.aside.is-collapsed .nav-group__items {
+  width: 100%;
+  justify-items: center;
 }
 
 .aside.is-collapsed .nav-item {
   justify-content: center;
-  padding-right: 10px;
-  padding-left: 10px;
+  width: 44px;
+  padding: 0;
 }
 
 .aside.is-collapsed .nav-badge {
   position: absolute;
-  top: 1px;
-  right: 1px;
+  top: 2px;
+  right: 2px;
+  left: auto;
   min-width: 16px;
   height: 16px;
   padding: 0 4px;
   font-size: 10px;
 }
 
-.aside.is-collapsed .nav-item {
-  position: relative;
+@media (hover: hover) and (pointer: fine) {
+  .nav-item:hover {
+    background: var(--surface-3);
+    color: var(--ink);
+  }
+
+  .nav-item:hover .nav-item__icon {
+    color: var(--ink);
+  }
+
+  .nav-item.is-active:hover {
+    background: var(--accent-hover);
+    color: var(--accent-on);
+    box-shadow: 0 4px 14px color-mix(in srgb, var(--accent) 28%, transparent);
+  }
+
+  .nav-item.is-active:hover .nav-item__icon {
+    color: var(--accent-on);
+  }
 }
 
-.nav-item .el-icon {
-  color: var(--ink-3);
-  transition: color 0.15s ease;
+.nav-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
-.nav-item:hover {
+.nav-item.is-active {
+  background: var(--accent);
+  color: var(--accent-on);
+  font-weight: 600;
+}
+
+.nav-item.is-active .nav-item__icon {
+  color: var(--accent-on);
+}
+
+.nav-item.is-pending:not(.is-active) {
   background: var(--surface-3);
   color: var(--ink);
 }
 
-.nav-item:hover .el-icon {
-  color: var(--ink-2);
+.nav-item.is-pending:not(.is-active) .nav-item__icon {
+  color: var(--accent);
+  animation: nav-pending-pulse 0.7s ease-in-out infinite alternate;
 }
 
-.nav-item.is-active {
-  background: var(--accent-soft);
-  color: var(--accent-ink);
+@keyframes nav-pending-pulse {
+  from {
+    opacity: 0.45;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
-.nav-item.is-active .el-icon {
-  color: var(--accent-ink);
+.nav-item.is-active .nav-badge {
+  background: var(--accent-on);
+  color: var(--accent);
 }
 
 .nav-badge {
   display: flex;
   align-items: center;
   justify-content: center;
-  min-width: 20px;
-  height: 20px;
+  min-width: 22px;
+  height: 22px;
   margin-left: auto;
-  padding: 0 6px;
-  border-radius: 999px;
-  background: var(--danger);
-  color: #fff;
+  padding: 0 7px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: var(--accent-on);
   font-size: 11px;
   font-style: normal;
-  font-weight: 600;
+  font-weight: 700;
   line-height: 1;
 }
 
-.user-card {
+.aside-footer {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 14px;
+  flex-shrink: 0;
+  padding: 10px var(--aside-pad-x) 14px;
   border-top: 1px solid var(--border);
 }
 
-.user-avatar {
-  display: grid;
-  place-items: center;
-  width: 32px;
-  height: 32px;
-  flex-shrink: 0;
-  border-radius: 50%;
-  background: linear-gradient(135deg, var(--accent), var(--accent-hover));
-  color: #fff;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.user-meta {
-  min-width: 0;
-  flex: 1;
-  display: grid;
-  gap: 3px;
-  justify-items: start;
-}
-
-.user-meta strong {
-  max-width: 100%;
-  overflow: hidden;
-  font-size: 13px;
-  font-weight: 500;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .sidebar-toggle {
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  flex-shrink: 0;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--ink-3);
-  cursor: pointer;
-  transition:
-    background-color 0.15s ease,
-    color 0.15s ease;
-}
-
-.sidebar-toggle:hover {
-  background: var(--surface-3);
-  color: var(--ink);
-}
-
-.aside.is-collapsed .user-card {
+  display: flex;
+  align-items: center;
   justify-content: center;
   gap: 8px;
-  padding-right: 10px;
-  padding-left: 10px;
+  width: 100%;
+  height: var(--aside-item-h);
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  transition:
+    background-color 0.2s ease,
+    color 0.2s ease,
+    border-color 0.2s ease;
 }
 
-@media (max-width: 720px) {
-  .aside {
-    width: 64px;
+@media (hover: hover) and (pointer: fine) {
+  .sidebar-toggle:hover {
+    background: var(--surface-3);
+    border-color: var(--border);
+    color: var(--ink);
   }
+}
 
-  .logo {
-    justify-content: center;
-    padding: 14px 8px 10px;
-  }
+.sidebar-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 
-  .logo-copy,
-  .nav-group__title,
-  .nav-item span,
-  .user-meta,
-  .sidebar-toggle {
-    display: none;
-  }
+.aside.is-collapsed .aside-footer {
+  padding: 10px 0 14px;
+  justify-content: center;
+}
 
-  .nav {
-    gap: 12px;
-    padding: 8px;
-    scrollbar-gutter: auto;
-  }
-
-  .nav-item {
-    position: relative;
-    justify-content: center;
-    padding: 9px 8px;
-  }
-
-  .nav-badge {
-    position: absolute;
-    top: 1px;
-    right: 1px;
-    min-width: 15px;
-    height: 15px;
-    padding: 0 3px;
-    font-size: 9px;
-  }
-
-  .user-card {
-    justify-content: center;
-    padding: 9px 8px;
-  }
-
-  .topbar {
-    height: 48px;
-    padding: 0 10px;
-  }
-
-  .crumb {
-    gap: 5px;
-    font-size: 11px;
-  }
-
-  .crumb > span:first-child,
-  .crumb-sep {
-    display: none;
-  }
-
-  .topbar-actions {
-    gap: 2px;
-  }
-
-  .icon-btn {
-    width: 30px;
-    height: 30px;
-  }
+.aside.is-collapsed .sidebar-toggle {
+  width: 44px;
+  margin: 0;
+  padding: 0;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .aside,
-  .logo,
-  .logo-copy,
-  .nav-item {
-    transition: none;
+  .aside {
+    width: var(--aside-expanded);
+  }
+
+  .aside.is-collapsed {
+    width: var(--aside-collapsed);
   }
 }
 
 /* ---- 顶栏 ---- */
 .main-col {
+  position: relative;
   display: flex;
   flex-direction: column;
   flex: 1;
@@ -757,75 +958,108 @@ async function submitPassword() {
   overflow: hidden;
 }
 
+.route-progress {
+  position: absolute;
+  z-index: 30;
+  top: 0;
+  right: 8px;
+  left: 4px;
+  height: 2px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.route-progress span {
+  display: block;
+  width: 32%;
+  height: 100%;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  animation: route-progress-move 0.85s ease-in-out infinite;
+}
+
+@keyframes route-progress-move {
+  from {
+    transform: translateX(-110%);
+  }
+  to {
+    transform: translateX(420%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nav-item.is-pending:not(.is-active) .nav-item__icon,
+  .route-progress span {
+    animation: none;
+  }
+
+  .route-progress span {
+    width: 100%;
+    opacity: 0.65;
+  }
+}
+
 .topbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 56px;
+  height: 64px;
   flex-shrink: 0;
-  padding: 0 24px;
-  border-bottom: 1px solid var(--border);
-  background: color-mix(in srgb, var(--surface) 70%, transparent);
-  backdrop-filter: blur(12px);
+  padding: 0 8px 0 4px;
   position: relative;
   z-index: 10;
 }
 
-.crumb {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--ink-3);
-  font-size: 13px;
-}
-
-.crumb-sep {
-  color: var(--border-strong);
-}
-
-.crumb-current {
+.page-title {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.035em;
+  line-height: 1.15;
   color: var(--ink);
-  font-weight: 500;
 }
 
 .topbar-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 10px;
 }
 
 .icon-btn {
   position: relative;
   display: grid;
   place-items: center;
-  width: 34px;
-  height: 34px;
-  border: 0;
-  border-radius: 12px;
-  background: transparent;
-  color: var(--ink-3);
+  width: 42px;
+  height: 42px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  color: var(--ink-2);
   cursor: pointer;
+  box-shadow: var(--shadow-sm);
   transition:
     background-color 0.15s ease,
-    color 0.15s ease;
+    color 0.15s ease,
+    border-color 0.15s ease;
 }
 
 .icon-btn:hover {
-  background: var(--surface-3);
+  background: var(--surface-2);
   color: var(--ink);
+  border-color: var(--border-strong);
 }
 
 .icon-btn__dot {
   position: absolute;
-  top: -1px;
-  right: -1px;
+  top: -3px;
+  right: -3px;
   display: flex;
   align-items: center;
   justify-content: center;
   min-width: 17px;
   height: 17px;
   padding: 0 4px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--danger);
   color: #fff;
   font-size: 10px;
@@ -834,43 +1068,114 @@ async function submitPassword() {
   line-height: 1;
 }
 
-.user-btn {
-  display: flex;
+.theme-switch {
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  height: 34px;
-  padding: 0 10px 0 5px;
-  border: 0;
-  border-radius: 12px;
-  background: transparent;
-  color: var(--ink);
-  cursor: pointer;
-  transition: background-color 0.15s ease;
-  outline: none;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
 }
 
-.user-btn:hover {
-  background: var(--surface-3);
-}
-
-.user-btn__avatar {
+.theme-switch__btn {
   display: grid;
   place-items: center;
-  width: 26px;
-  height: 26px;
+  width: 34px;
+  height: 34px;
+  border: 0;
   border-radius: 50%;
-  background: linear-gradient(135deg, var(--accent), var(--accent-hover));
-  color: #fff;
-  font-size: 11px;
-  font-weight: 600;
+  background: transparent;
+  color: var(--ink-3);
+  cursor: pointer;
+  transition:
+    background-color 0.18s ease,
+    color 0.18s ease,
+    box-shadow 0.18s ease,
+    transform 0.18s ease;
 }
 
-.user-btn__name {
-  max-width: 160px;
+.theme-switch__btn:hover {
+  color: var(--ink);
+}
+
+.theme-switch__btn.is-active {
+  background: var(--accent);
+  color: var(--accent-on);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--accent) 35%, transparent);
+  transform: scale(1.02);
+}
+
+.profile-chip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 200px;
+  height: 48px;
+  padding: 6px 14px 6px 6px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  color: var(--ink);
+  cursor: pointer;
+  outline: none;
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.profile-chip:hover {
+  background: var(--surface-2);
+  border-color: var(--border-strong);
+}
+
+.user-avatar {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-on);
+  font-size: 14px;
+  font-weight: 700;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.user-meta {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+  text-align: left;
+}
+
+.user-meta strong {
+  max-width: 120px;
   overflow: hidden;
   font-size: 13px;
+  font-weight: 700;
+  line-height: 1.25;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.user-meta small {
+  color: var(--ink-3);
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .theme-switch__btn {
+    transition: none;
+  }
+
+  .theme-switch__btn.is-active {
+    transform: none;
+  }
 }
 
 /* ---- 内容区 ---- */
@@ -884,15 +1189,112 @@ async function submitPassword() {
 
 .content.content--workspace {
   overflow: hidden;
+  scrollbar-gutter: auto;
 }
 
 .content-inner {
   min-height: 100%;
+  transform: translateZ(0);
 }
 
 .content--workspace .content-inner {
   height: 100%;
   min-height: 0;
+}
+
+@media (max-width: 720px) {
+  .layout {
+    gap: 6px;
+    padding: 6px;
+  }
+
+  .aside,
+  .aside.is-collapsed {
+    width: 64px !important;
+    --aside-collapsed: 64px;
+  }
+
+  .aside-inner,
+  .aside.is-collapsed .aside-inner {
+    width: 64px;
+    min-width: 64px;
+  }
+
+  .logo {
+    justify-content: center;
+    padding: 0;
+  }
+
+  .logo-copy,
+  .nav-group__title,
+  .nav-item__label,
+  .sidebar-toggle span {
+    display: none;
+  }
+
+  .nav,
+  .aside.is-collapsed .nav {
+    padding: 12px 0 8px;
+    gap: 8px;
+    justify-items: center;
+  }
+
+  .nav-group,
+  .nav-group__items {
+    width: 100%;
+    justify-items: center;
+  }
+
+  .nav-item,
+  .aside.is-collapsed .nav-item {
+    justify-content: center;
+    width: 44px;
+    padding: 0;
+  }
+
+  .aside-footer,
+  .aside.is-collapsed .aside-footer {
+    justify-content: center;
+    padding: 10px 0 14px;
+  }
+
+  .sidebar-toggle,
+  .aside.is-collapsed .sidebar-toggle {
+    width: 44px;
+    margin: 0;
+    padding: 0;
+  }
+
+  .topbar {
+    height: 58px;
+    justify-content: flex-end;
+    padding: 0;
+  }
+
+  .page-title,
+  .profile-chip .user-meta {
+    display: none;
+  }
+
+  .topbar-actions {
+    gap: 6px;
+  }
+
+  .icon-btn {
+    width: 38px;
+    height: 38px;
+  }
+
+  .theme-switch__btn {
+    width: 30px;
+    height: 30px;
+  }
+
+  .profile-chip {
+    width: 40px;
+    height: 40px;
+    padding: 2px;
+  }
 }
 
 /* ---- 通知面板 ---- */
@@ -923,7 +1325,7 @@ async function submitPassword() {
   width: 100%;
   padding: 9px 10px;
   border: 0;
-  border-radius: 12px;
+  border-radius: 14px;
   background: transparent;
   color: var(--ink);
   text-align: left;
@@ -941,7 +1343,7 @@ async function submitPassword() {
   width: 30px;
   height: 30px;
   flex-shrink: 0;
-  border-radius: 8px;
+  border-radius: 10px;
 }
 
 .notify-row__icon.is-warning {
@@ -967,9 +1369,8 @@ async function submitPassword() {
 </style>
 
 <style>
-/* popover 自定义外观（teleport 到 body） */
 .notify-popper.el-popper {
-  border-radius: 16px;
+  border-radius: 18px;
   box-shadow: var(--shadow-lg);
   padding: 8px;
   animation: pop-in 0.28s cubic-bezier(0.21, 1.02, 0.73, 1) both;

@@ -1,0 +1,12 @@
+.git
+.env
+**/.env
+**/.env.*
+.artifacts
+**/node_modules
+**/dist
+**/.eslintcache
+**/playwright-report
+**/test-results
+apps/web/tests
+*.log

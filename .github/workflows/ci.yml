@@ -56,22 +56,17 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: apps/web/package-lock.json
+          cache-dependency-path: apps/web-react/package-lock.json
       - name: Install
-        working-directory: apps/web
-        run: npm ci --no-audit --no-fund
-      - name: Check imports
-        working-directory: apps/web
-        run: node scripts/check-imports.mjs
-      - name: Lint
-        working-directory: apps/web
-        run: npm run lint
-      - name: Build
-        working-directory: apps/web
-        run: npm run build
+        run: npm --prefix apps/web-react ci --no-audit --no-fund
+      - name: React main site domain tests
+        run: npm --prefix apps/web-react run test:domain
+      - name: Typecheck integrated canvas module
+        run: npm --prefix apps/web-react run typecheck:canvas
+      - name: Build React main site
+        run: npm --prefix apps/web-react run build
       - name: Dependency audit
-        working-directory: apps/web
-        run: npm audit --audit-level=high
+        run: npm --prefix apps/web-react audit --audit-level=high
 
   admin:
     runs-on: ubuntu-latest
@@ -92,6 +87,31 @@ jobs:
         working-directory: apps/admin
         run: npm audit --audit-level=high
 
+  mobile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: 3.41.6
+          channel: stable
+          cache: true
+      - name: Install
+        working-directory: apps/mobile
+        run: flutter pub get
+      - name: Format
+        working-directory: apps/mobile
+        run: dart format --output=none --set-exit-if-changed lib test
+      - name: Analyze
+        working-directory: apps/mobile
+        run: flutter analyze --fatal-infos
+      - name: Test
+        working-directory: apps/mobile
+        run: flutter test
+      - name: Build Android debug APK
+        working-directory: apps/mobile
+        run: flutter build apk --debug
+
   security:
     runs-on: ubuntu-latest
     steps:
@@ -105,6 +125,48 @@ jobs:
         with:
           scan-type: fs
           scan-ref: .
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+      - name: Generate CycloneDX SBOM
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: cyclonedx
+          output: sbom.cdx.json
+          exit-code: '0'
+      - name: Upload SBOM
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: repository-sbom
+          path: sbom.cdx.json
+          retention-days: 30
+
+  container-security:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: server
+            context: apps/server
+            dockerfile: apps/server/Dockerfile
+          - name: web
+            context: .
+            dockerfile: apps/web-react/Dockerfile
+          - name: admin
+            context: apps/admin
+            dockerfile: apps/admin/Dockerfile
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Build ${{ matrix.name }} image
+        run: docker build --file "${{ matrix.dockerfile }}" --tag "starclouds-ci:${{ matrix.name }}" "${{ matrix.context }}"
+      - name: Scan ${{ matrix.name }} image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: starclouds-ci:${{ matrix.name }}
+          format: table
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: '1'

@@ -1,0 +1,448 @@
+import { applyCanvasImageModelSettings, CANVAS_IMAGE_HARD_MAX_COUNT } from "@/lib/canvas/canvas-image-model";
+import { shouldPromoteGeneratedImage } from "@/lib/canvas/canvas-image-primary";
+import { defaultConfig, modelOptionMeta, resolveModelForCapability, type AiConfig } from "@/stores/use-config-store";
+import i18n from "@/i18n";
+import { resolveImageUrl, uploadImage, type UploadedImage } from "@/services/image-storage";
+import { imageMetadata, referenceUrl } from "@/lib/canvas/canvas-node-factory";
+import { resultNodeSize } from "@/lib/canvas/canvas-node-size";
+import { canonicalImageSrc, cloudFileUrl, cloudThumbnailUrl } from "@/lib/canvas/canvas-preview-url";
+import { isUsableCanvasImageSource, isUsableCanvasImageStorageKey, normalizeHydratedCanvasImageMetadata } from "@/lib/canvas/canvas-image-hydration";
+export { pendingCanvasTasks, type PendingCanvasTask } from "./canvas-pending-tasks.ts";
+export { repairMisappliedCanvasWorkflowOutputs } from "@/lib/canvas/canvas-image-hydration";
+import type { NodeGenerationInput } from "@/components/canvas/canvas-node-generation";
+import type { CanvasNodeGenerationMode } from "@/components/canvas/canvas-node-prompt-panel";
+import type { CanvasImageAngleParams } from "@/components/canvas/canvas-node-angle-dialog";
+import type { ReferenceImage } from "@/types/image";
+import { CanvasNodeType, type CanvasAssistantSession, type CanvasConnection, type CanvasNodeData, type CanvasNodeImage, type CanvasNodeMetadata } from "@/types/canvas";
+import { isCanvasExecutableNode } from "@/lib/canvas/canvas-operation-node";
+
+export function imageExtension(dataUrl: string) {
+    return dataUrl.match(/^data:image[/]([^;]+)/)?.[1] || dataUrl.match(/image[/]([^;]+)/)?.[1] || "png";
+}
+
+export function audioExtension(mimeType?: string) {
+    if (mimeType?.includes("wav")) return "wav";
+    if (mimeType?.includes("opus")) return "opus";
+    if (mimeType?.includes("aac")) return "aac";
+    if (mimeType?.includes("flac")) return "flac";
+    if (mimeType?.includes("pcm")) return "pcm";
+    return "mp3";
+}
+
+export function generationReferenceUrls(context: { referenceImages: ReferenceImage[]; referenceVideos: Array<{ storageKey?: string; url?: string }>; referenceAudios?: Array<{ storageKey?: string; url?: string }> }) {
+    return [
+        ...context.referenceImages.map(referenceUrl).filter((url): url is string => Boolean(url)),
+        ...context.referenceVideos.map((video) => video.storageKey || video.url).filter((url): url is string => Boolean(url)),
+        ...(context.referenceAudios || []).map((audio) => audio.storageKey || audio.url).filter((url): url is string => Boolean(url)),
+    ];
+}
+
+export async function resolveMetadataReferences(metadata: CanvasNodeMetadata) {
+    if (metadata.generationType !== "edit") return [];
+    if (!metadata.references?.length) return null;
+    const references = await Promise.all(
+        metadata.references.map(async (url, index) => {
+            const dataUrl = url.startsWith("image:") ? await resolveImageUrl(url, "") : url;
+            return dataUrl ? { id: `${index}`, name: `reference-${index}.png`, type: "image/png", dataUrl, storageKey: url.startsWith("image:") ? url : undefined } : null;
+        }),
+    );
+    return references.every(Boolean) ? (references as ReferenceImage[]) : null;
+}
+
+function displayMediaSrc(storageKey?: string, content = "") {
+    if (storageKey?.startsWith("uploads/") || storageKey?.startsWith("tasks/")) return cloudFileUrl(storageKey);
+    if (content.startsWith("blob:")) return storageKey || "";
+    return content;
+}
+
+export async function hydrateCanvasImages(nodes: CanvasNodeData[]) {
+    return Promise.all(
+        nodes.map(async (node) => {
+            const content = node.metadata?.content;
+            if ((node.type === CanvasNodeType.Video || node.type === CanvasNodeType.Audio) && (node.metadata?.storageKey || content)) {
+                return { ...node, metadata: { ...node.metadata, content: displayMediaSrc(node.metadata?.storageKey, content) } };
+            }
+            if (node.type !== CanvasNodeType.Image) return node;
+            const normalizedMetadata = normalizeHydratedCanvasImageMetadata(node.metadata);
+            const normalizedContent = normalizedMetadata.content;
+            const normalizedImages = normalizedMetadata.images || [];
+            const uploadedByDataUrl = new Map<string, Awaited<ReturnType<typeof uploadImage>>>();
+            const hydrateDataUrl = async (dataUrl: string) => {
+                const cached = uploadedByDataUrl.get(dataUrl);
+                if (cached) return cached;
+                const uploaded = await uploadImage(dataUrl);
+                uploadedByDataUrl.set(dataUrl, uploaded);
+                return uploaded;
+            };
+            const hydratedImages = await Promise.all(
+                normalizedImages.map(async (image) => {
+                    if (image.content?.startsWith("data:image/")) {
+                        const uploaded = await hydrateDataUrl(image.content);
+                        return { ...image, content: uploaded.url, storageKey: uploaded.storageKey, thumbnailUrl: uploaded.thumbnailUrl, thumbnailKey: uploaded.thumbnailKey };
+                    }
+                    const nextContent = hydratedCanvasImageSrc(image.content, image.storageKey);
+                    return { ...image, content: nextContent, thumbnailUrl: image.thumbnailUrl || cloudThumbnailUrl(image.storageKey || nextContent) || undefined };
+                }),
+            );
+            if (normalizedContent?.startsWith("data:image/")) return { ...node, metadata: { ...normalizedMetadata, ...imageMetadata(await hydrateDataUrl(normalizedContent)), images: hydratedImages } };
+            const nextContent = hydratedCanvasImageSrc(normalizedContent, normalizedMetadata.storageKey);
+            if (!nextContent && !hydratedImages.length) return { ...node, metadata: normalizedMetadata };
+            return { ...node, metadata: { ...normalizedMetadata, content: nextContent || undefined, thumbnailUrl: normalizedMetadata.thumbnailUrl || cloudThumbnailUrl(normalizedMetadata.storageKey || nextContent) || undefined, images: hydratedImages } };
+        }),
+    );
+}
+
+function hydratedCanvasImageSrc(content?: string, storageKey?: string) {
+    if (isUsableCanvasImageSource(content)) return canonicalImageSrc({ src: content, storageKey });
+    if (!isUsableCanvasImageStorageKey(storageKey)) return "";
+    return storageKey?.startsWith("image:") ? storageKey : cloudFileUrl(storageKey);
+}
+
+export async function hydrateAssistantImages(sessions: CanvasAssistantSession[]) {
+    const hydrateItem = async <T extends { dataUrl?: string; storageKey?: string }>(item: T) => {
+        if (item.dataUrl?.startsWith("data:image/")) {
+            const image = await uploadImage(item.dataUrl);
+            return { ...item, dataUrl: image.url, storageKey: image.storageKey };
+        }
+        if (item.dataUrl?.startsWith("blob:")) return { ...item, dataUrl: canonicalImageSrc({ src: item.dataUrl, storageKey: item.storageKey }) };
+        return item;
+    };
+    return Promise.all(
+        sessions.map(async (session) => ({
+            ...session,
+            messages: await Promise.all(
+                session.messages.map(async (message) => ({
+                    ...message,
+                    references: await Promise.all((message.references || []).map(hydrateItem)),
+                })),
+            ),
+        })),
+    );
+}
+
+export function getGenerationCount(count: string, maxCount = CANVAS_IMAGE_HARD_MAX_COUNT) {
+    const cap = Math.max(1, Math.min(CANVAS_IMAGE_HARD_MAX_COUNT, Math.floor(Number(maxCount)) || CANVAS_IMAGE_HARD_MAX_COUNT));
+    return Math.max(1, Math.min(cap, Math.floor(Math.abs(Number(count)) || 1)));
+}
+
+export function getInputSummary(inputs: NodeGenerationInput[]) {
+    return {
+        textCount: inputs.filter((input) => input.type === "text").length,
+        imageCount: inputs.filter((input) => input.type === "image").length,
+        videoCount: inputs.filter((input) => input.type === "video").length,
+        audioCount: inputs.filter((input) => input.type === "audio").length,
+    };
+}
+
+export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | undefined, mode: CanvasNodeGenerationMode): AiConfig {
+    const next = {
+        ...config,
+        model: resolveModelForCapability(config, node?.metadata?.model, mode),
+        reasoningEffort: node?.metadata?.reasoningEffort || config.reasoningEffort || defaultConfig.reasoningEffort,
+        quality: node?.metadata?.quality || config.quality || defaultConfig.quality,
+        size: node?.metadata?.size || config.size || defaultConfig.size,
+        resolution: node?.metadata?.resolution || config.resolution || defaultConfig.resolution,
+        background: node?.metadata?.background ?? "",
+        videoSeconds: node?.metadata?.seconds || config.videoSeconds || defaultConfig.videoSeconds,
+        vquality: node?.metadata?.vquality || config.vquality || defaultConfig.vquality,
+        videoGenerateAudio: node?.metadata?.generateAudio || config.videoGenerateAudio || defaultConfig.videoGenerateAudio,
+        videoWatermark: node?.metadata?.watermark || config.videoWatermark || defaultConfig.videoWatermark,
+        audioVoice: node?.metadata?.audioVoice || config.audioVoice || defaultConfig.audioVoice,
+        audioFormat: node?.metadata?.audioFormat || config.audioFormat || defaultConfig.audioFormat,
+        audioSpeed: node?.metadata?.audioSpeed || config.audioSpeed || defaultConfig.audioSpeed,
+        audioInstructions: node?.metadata?.audioInstructions || config.audioInstructions || defaultConfig.audioInstructions,
+        count: String(node?.metadata?.count || (mode === "image" ? config.canvasImageCount || config.count : config.count) || defaultConfig.count),
+    };
+    return mode === "image" ? applyCanvasImageModelSettings(next, modelOptionMeta(next, next.model)) : next;
+}
+
+function hasResumableTask(node: CanvasNodeData) {
+    return Boolean(node.metadata?.taskId) || Boolean(node.metadata?.images?.some((image) => image.status === "loading" && image.taskId));
+}
+
+export function attachCanvasTaskId(node: CanvasNodeData, taskId: string, imageId?: string, taskKind: "image" | "assistant" = "image"): CanvasNodeData {
+    const images = node.metadata?.images?.map((image) => (image.id === imageId ? { ...image, taskId } : image));
+    const matchedImage = Boolean(imageId && images?.some((image) => image.id === imageId));
+    return {
+        ...node,
+        metadata: {
+            ...node.metadata,
+            ...(matchedImage ? {} : { taskId, taskKind }),
+            images,
+        },
+    };
+}
+
+export function canvasNodeHasTaskId(node: CanvasNodeData, taskId: string) {
+    return node.metadata?.taskId === taskId || Boolean(node.metadata?.images?.some((image) => image.taskId === taskId));
+}
+
+export function restartCanvasNodeGeneration(node: CanvasNodeData, startedAt = new Date().toISOString(), imageId?: string): CanvasNodeData {
+    return {
+        ...node,
+        metadata: {
+            ...node.metadata,
+            status: "loading",
+            errorDetails: undefined,
+            taskId: undefined,
+            taskKind: undefined,
+            generationStage: "preparing",
+            cancelPolicy: undefined,
+            executionStatus: "running",
+            generationQueuedAt: undefined,
+            generationStartedAt: startedAt,
+            generationCompletedAt: undefined,
+            generationDurationMs: undefined,
+            images: node.metadata?.images?.map((image) =>
+                imageId && image.id !== imageId
+                    ? image
+                    : { ...image, status: "loading", errorDetails: undefined, taskId: undefined },
+            ),
+        },
+    };
+}
+
+export function applyUploadedImageToNode(node: CanvasNodeData, uploaded: UploadedImage, imageId?: string): CanvasNodeData {
+    if (imageId && node.metadata?.images?.some((image) => image.id === imageId)) {
+        const item: CanvasNodeImage = {
+            id: imageId,
+            status: "success",
+            content: uploaded.url,
+            storageKey: uploaded.storageKey,
+            thumbnailUrl: uploaded.thumbnailUrl,
+            thumbnailKey: uploaded.thumbnailKey,
+            naturalWidth: uploaded.width,
+            naturalHeight: uploaded.height,
+            bytes: uploaded.bytes,
+            mimeType: uploaded.mimeType,
+        };
+        const images = node.metadata.images.map((image) => (image.id === imageId ? item : image));
+        const stillLoading = images.some((image) => image.status === "loading");
+        const hasSuccess = images.some((image) => image.status === "success");
+        if (!shouldPromoteGeneratedImage(node.metadata.primaryImageId, imageId, images.map((image) => image.id))) {
+            return {
+                ...node,
+                metadata: {
+                    ...node.metadata,
+                    images,
+                    status: stillLoading ? "loading" : hasSuccess ? "success" : "error",
+                    errorDetails: stillLoading || hasSuccess ? undefined : node.metadata.errorDetails,
+                    taskId: stillLoading ? node.metadata.taskId : undefined,
+                    taskKind: stillLoading ? node.metadata.taskKind : undefined,
+                },
+            };
+        }
+        const imageSize = resultNodeSize(node, uploaded.width, uploaded.height);
+        const center = { x: node.position.x + node.width / 2, y: node.position.y + node.height / 2 };
+        return {
+            ...node,
+            position: { x: center.x - imageSize.width / 2, y: center.y - imageSize.height / 2 },
+            ...imageSize,
+            metadata: {
+                ...node.metadata,
+                ...imageMetadata(uploaded),
+                images,
+                primaryImageId: imageId,
+                status: stillLoading ? "loading" : hasSuccess ? "success" : "error",
+                errorDetails: stillLoading || hasSuccess ? undefined : node.metadata.errorDetails,
+                taskId: stillLoading ? node.metadata.taskId : undefined,
+                taskKind: stillLoading ? node.metadata.taskKind : undefined,
+            },
+        };
+    }
+    return {
+        ...node,
+        metadata: {
+            ...node.metadata,
+            ...imageMetadata(uploaded),
+            taskId: undefined,
+            taskKind: undefined,
+            errorDetails: undefined,
+        },
+    };
+}
+
+export function applyFailedCanvasTaskToNode(node: CanvasNodeData, errorDetails: string, imageId?: string): CanvasNodeData {
+    if (imageId && node.metadata?.images?.some((image) => image.id === imageId)) {
+        const images = node.metadata.images.map((image) => (image.id === imageId ? { ...image, status: "error" as const, errorDetails, taskId: undefined } : image));
+        const stillLoading = images.some((image) => image.status === "loading");
+        const hasSuccess = images.some((image) => image.status === "success") || Boolean(node.metadata.content);
+        return {
+            ...node,
+            metadata: {
+                ...node.metadata,
+                images,
+                status: stillLoading ? "loading" : hasSuccess ? "success" : "error",
+                errorDetails: stillLoading || hasSuccess ? undefined : errorDetails,
+                taskId: stillLoading ? node.metadata.taskId : undefined,
+                taskKind: stillLoading ? node.metadata.taskKind : undefined,
+            },
+        };
+    }
+    return {
+        ...node,
+        metadata: {
+            ...node.metadata,
+            status: "error",
+            errorDetails,
+            taskId: undefined,
+            taskKind: undefined,
+        },
+    };
+}
+
+export function hasSubmittedCanvasTask(node: CanvasNodeData, nodes: CanvasNodeData[] = []) {
+    if (node.metadata?.taskId) return true;
+    if (node.metadata?.images?.some((image) => image.taskId)) return true;
+    const outputIds = new Set(node.metadata?.workflowOutputNodeIds || []);
+    return nodes.some((item) => (item.metadata?.workflowProducerNodeId === node.id || outputIds.has(item.id)) && (item.metadata?.taskId || item.metadata?.images?.some((image) => image.taskId)));
+}
+
+export function isUnsubmittedCanvasGeneration(node: CanvasNodeData) {
+    if (node.metadata?.executionStatus === "queued") return true;
+    return isInFlightCanvasGeneration(node) && !hasSubmittedCanvasTask(node);
+}
+
+export function isInFlightCanvasGeneration(node: CanvasNodeData) {
+    const execution = node.metadata?.executionStatus;
+    if (execution === "running" || execution === "queued") return true;
+    if (node.metadata?.status === "loading") return true;
+    return Boolean(node.metadata?.images?.some((image) => image.status === "loading"));
+}
+
+export function shouldCancelCreatedCanvasTask(input: {
+    node?: CanvasNodeData;
+    workflowControlled: boolean;
+    workflowCancelQueued?: boolean;
+    workflowStopped?: boolean;
+    workflowNodeCanceled?: boolean;
+}) {
+    if (!input.node || !isInFlightCanvasGeneration(input.node)) return true;
+    if (!input.workflowControlled) return false;
+    return Boolean(input.workflowCancelQueued || input.workflowStopped || input.workflowNodeCanceled);
+}
+
+export function applyCanceledGenerationToNode(node: CanvasNodeData, errorDetails: string, completedAt = new Date().toISOString()): CanvasNodeData {
+    if (!isInFlightCanvasGeneration(node)) return node;
+    const images = node.metadata?.images?.map((image) => (image.status === "loading" ? { ...image, status: "error" as const, errorDetails, taskId: undefined } : image));
+    const hasSuccess = Boolean(node.metadata?.content) || Boolean(images?.some((image) => image.status === "success"));
+    const wasLoading = node.metadata?.status === "loading";
+    const wasRunning = node.metadata?.executionStatus === "running" || node.metadata?.executionStatus === "queued";
+    const isConfig = isCanvasExecutableNode(node);
+    const status = wasLoading ? (hasSuccess ? ("success" as const) : isConfig ? ("idle" as const) : ("error" as const)) : node.metadata?.status;
+    const startedAt = node.metadata?.generationStartedAt ? new Date(node.metadata.generationStartedAt) : new Date(completedAt);
+    return {
+        ...node,
+        metadata: {
+            ...node.metadata,
+            images,
+            status,
+            errorDetails: status === "error" && !hasSuccess ? errorDetails : hasSuccess || status === "idle" ? undefined : node.metadata?.errorDetails,
+            taskId: undefined,
+            taskKind: undefined,
+            ...(wasRunning
+                ? {
+                      executionStatus: "canceled" as const,
+                      generationCompletedAt: completedAt,
+                      generationDurationMs: Math.max(0, new Date(completedAt).getTime() - startedAt.getTime()),
+                  }
+                : {}),
+        },
+    };
+}
+
+export function applyCanceledGenerationToNodes(nodes: CanvasNodeData[], errorDetails: string, nodeIds?: Set<string>) {
+    const completedAt = new Date().toISOString();
+    return nodes.map((node) => (nodeIds && !nodeIds.has(node.id) ? node : applyCanceledGenerationToNode(node, errorDetails, completedAt)));
+}
+
+export function resetInterruptedGeneration(nodes: CanvasNodeData[]) {
+    const interrupted = i18n.t("canvas.generation.interrupted");
+    return nodes.map((node) => {
+        const images = node.metadata?.images?.map((image) => (image.status === "loading" && !image.taskId ? { ...image, status: "error" as const, errorDetails: interrupted } : image));
+        if (hasResumableTask(node)) {
+            return images ? { ...node, metadata: { ...node.metadata, images } } : node;
+        }
+        const wasLoading = node.metadata?.status === "loading";
+        const wasRunning = node.metadata?.executionStatus === "running" || node.metadata?.executionStatus === "queued";
+        if (!wasLoading && !wasRunning) {
+            return images ? { ...node, metadata: { ...node.metadata, images } } : node;
+        }
+        const hasSuccess = Boolean(node.metadata?.content) || Boolean(images?.some((image) => image.status === "success"));
+        const isConfig = isCanvasExecutableNode(node);
+        return {
+            ...node,
+            metadata: {
+                ...node.metadata,
+                images,
+                ...(wasLoading
+                    ? {
+                          status: hasSuccess ? ("success" as const) : isConfig ? ("idle" as const) : ("error" as const),
+                          errorDetails: hasSuccess || isConfig ? undefined : interrupted,
+                      }
+                    : {}),
+                ...(wasRunning
+                    ? {
+                          executionStatus: "canceled" as const,
+                          generationCompletedAt: node.metadata?.generationCompletedAt || new Date().toISOString(),
+                          generationDurationMs: node.metadata?.generationDurationMs ?? 0,
+                      }
+                    : {}),
+                taskId: undefined,
+                taskKind: undefined,
+            },
+        };
+    });
+}
+
+export function isGenerationCanceled(error: unknown) {
+    if ((error instanceof DOMException || error instanceof Error) && error.name === "AbortError") return true;
+    if (!(error instanceof Error)) return false;
+    return (
+        error.message === i18n.t("common.requestCanceled") ||
+        error.message === i18n.t("canvas.generation.canceled") ||
+        error.message === "任务已取消" ||
+        error.message === "Request canceled"
+    );
+}
+
+export function findRetrySourceNode(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
+    const queue = connections.filter((connection) => connection.toNodeId === nodeId).map((connection) => connection.fromNodeId);
+    const visited = new Set<string>();
+    while (queue.length) {
+        const id = queue.shift()!;
+        if (visited.has(id)) continue;
+        visited.add(id);
+        const node = nodes.find((item) => item.id === id);
+        if (isCanvasExecutableNode(node)) return node;
+        connections.filter((connection) => connection.toNodeId === id).forEach((connection) => queue.push(connection.fromNodeId));
+    }
+    return null;
+}
+
+export function sourceNodeReferenceImages(node: CanvasNodeData | null) {
+    if (!node || node.type !== CanvasNodeType.Image || !node.metadata?.content) return [];
+    return [
+        {
+            id: node.id,
+            name: `${node.title || node.id}.png`,
+            type: node.metadata.mimeType || "image/png",
+            dataUrl: node.metadata.content,
+            storageKey: node.metadata.storageKey,
+        },
+    ];
+}
+
+export function isAudioFile(file: File) {
+    return file.type.startsWith("audio/") || /\.(mp3|wav)$/i.test(file.name);
+}
+
+export function buildAngleLabel(params: CanvasImageAngleParams) {
+    const horizontal = params.horizontalAngle === 0 ? i18n.t("canvas.generation.front") : params.horizontalAngle > 0 ? i18n.t("canvas.generation.rotateRight", { angle: params.horizontalAngle }) : i18n.t("canvas.generation.rotateLeft", { angle: Math.abs(params.horizontalAngle) });
+    const pitch = params.pitchAngle === 0 ? i18n.t("canvas.generation.level") : params.pitchAngle > 0 ? i18n.t("canvas.generation.topDown", { angle: params.pitchAngle }) : i18n.t("canvas.generation.lowAngle", { angle: Math.abs(params.pitchAngle) });
+    return i18n.t("canvas.generation.angleLabel", { horizontal, pitch, distance: params.cameraDistance.toFixed(1), lens: i18n.t(params.wideAngle ? "canvas.editors.wide" : "canvas.editors.standard") });
+}
+
+export function buildAnglePrompt(params: CanvasImageAngleParams) {
+    return i18n.t("canvas.generation.anglePrompt", { angle: buildAngleLabel(params) });
+}

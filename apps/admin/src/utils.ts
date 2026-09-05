@@ -22,31 +22,74 @@ export function formatTime(iso: string | null | undefined): string {
   return d.toLocaleString("zh-CN", { hour12: false });
 }
 
+/** 列表用短时间：`MM-DD HH:mm` */
+export function formatShortTime(iso: string | null | undefined): string {
+  if (!iso) return "-";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 export function shortId(id: string | null | undefined): string {
   if (!id) return "-";
   return id.length > 8 ? `${id.slice(0, 8)}…` : id;
 }
 
+/**
+ * 管理后台查看用户文件统一走管理员鉴权路由（避免用户会话 401），
+ * 与用户端 /api/v1/files/*key 返回相同内容。
+ */
+export function adminFileUrl(key: string): string {
+  return `/api/v1/admin/files/${key}`;
+}
+
+/** 把用户端 `/api/v1/files/...` 头像地址转成后台可带管理员 Cookie 的地址。 */
+export function adminMediaUrl(url: string | null | undefined): string {
+  const raw = String(url || "").trim();
+  if (!raw) return "";
+  const marker = "/api/v1/files/";
+  const index = raw.indexOf(marker);
+  if (index >= 0) {
+    return adminFileUrl(raw.slice(index + marker.length).replace(/^\/+/, ""));
+  }
+  if (raw.startsWith("/api/v1/admin/files/")) return raw;
+  if (!/^https?:\/\//i.test(raw) && !raw.startsWith("/")) {
+    return adminFileUrl(raw.replace(/^\/+/, ""));
+  }
+  return raw;
+}
+
 /** 任务类型 */
 export const TASK_TYPES = [
   "t2i",
+  "infinite_canvas",
   "coloring",
   "ui_design",
+  "ecommerce_design",
   "model_sheet",
   "game_art",
   "puzzle",
 ] as const;
 
+export const PROMPT_TASK_TYPES = ["assistant", ...TASK_TYPES] as const;
+
 export const IMAGE_SERVICE_ROUTES = [
   { key: "t2i", label: "文生图", detail: "文字生成与参考图编辑" },
+  { key: "infinite_canvas", label: "无限画布", detail: "画布节点生成与改图" },
   { key: "coloring", label: "插画染色", detail: "线稿与配色参考图" },
-  { key: "ui_design", label: "UI 设计稿", detail: "整张设计稿生成" },
+  {
+    key: "ui_design",
+    label: "UI 设计稿",
+    detail: "整张设计稿生成（工作区 ui_design 图片价）",
+  },
+  { key: "ecommerce_design", label: "AI 电商", detail: "商品图、详情页与营销视觉" },
   {
     key: "ui_design_asset",
-    label: "UI 素材重建",
-    detail: "选区 PNG / 透明素材",
+    label: "UI 框选优化 / 素材重建",
+    detail: "设计稿框选二次处理与局部素材重建，计费同 ui_design 图片模型单价 × 1",
   },
-  { key: "model_sheet", label: "超高清模型图", detail: "多视角模型参考" },
+  { key: "model_sheet", label: "模型设计", detail: "多视角模型参考" },
   { key: "game_art", label: "游戏设计", detail: "角色、场景、道具与 UI" },
   {
     key: "assistant_image",
@@ -58,24 +101,43 @@ export const IMAGE_SERVICE_ROUTES = [
 export type ImageServiceRouteKey = (typeof IMAGE_SERVICE_ROUTES)[number]["key"];
 
 export const TASK_TYPE_LABELS: Record<string, string> = {
-  assistant: "AI助手",
+  assistant: "AI 助手",
   t2i: "文生图",
+  infinite_canvas: "无限画布",
   coloring: "插画染色",
   ui_design: "UI设计稿",
-  model_sheet: "超高清模型图",
+  ecommerce_design: "AI电商",
+  model_sheet: "模型设计",
   game_art: "游戏设计",
-  puzzle: "AI拼图",
+  puzzle: "拼图",
+  background_remove: "背景移除",
+  media_tool: "媒体工具",
 };
 
-export function taskTypeLabel(type: string): string {
+export function taskTypeLabel(
+  type: string,
+  params?: Record<string, unknown> | null,
+  source?: string,
+): string {
+  const origin = String(params?._source || params?.source || source || "");
+  const kind = String(params?._kind || "");
+  const workspace = String(params?.workspace || "");
+  if (
+    origin === "react_canvas" ||
+    origin === "infinite_canvas" ||
+    workspace === "infinite_canvas" ||
+    kind.startsWith("canvas-")
+  ) {
+    return kind === "canvas-background-remove" ? "画布去背" : "无限画布";
+  }
   return TASK_TYPE_LABELS[type] ?? type;
 }
 
 export const TASK_STATUS_LABELS: Record<string, string> = {
   queued: "排队中",
   running: "生成中",
-  succeeded: "成功",
-  failed: "失败",
+  succeeded: "已成功",
+  failed: "已失败",
   canceled: "已取消",
 };
 
@@ -98,12 +160,37 @@ export const LEDGER_KIND_LABELS: Record<string, string> = {
   signup_bonus: "注册赠送",
   task_spend: "任务消耗",
   spend: "消耗",
+  freeze: "冻结",
+  release: "解冻",
   task_refund: "任务退款",
   refund: "退款",
 };
 
 export function ledgerKindLabel(kind: string): string {
   return LEDGER_KIND_LABELS[kind] ?? kind;
+}
+
+export function ledgerReasonLabel(
+  reason?: string | null,
+  task?: { displayName?: string; source?: string; type?: string } | null,
+): string {
+  const text = String(reason || "").trim();
+  const displayName = String(task?.displayName || "").trim();
+  const source = String(task?.source || "").trim();
+  const canvas =
+    displayName === "无限画布" ||
+    displayName === "画布去背" ||
+    source === "react_canvas" ||
+    source === "infinite_canvas";
+  if (canvas && text) {
+    return text
+      .replaceAll("AI 助手", displayName || "无限画布")
+      .replaceAll("任务冻结", "无限画布冻结")
+      .replaceAll("任务结算", "无限画布结算")
+      .replaceAll("任务解冻", "无限画布解冻")
+      .replaceAll("任务重跑冻结", "无限画布重跑冻结");
+  }
+  return text || displayName || "-";
 }
 
 export const SUBMISSION_STATUS_LABELS: Record<string, string> = {

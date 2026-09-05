@@ -1,37 +1,198 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
+	"fmt"
+	"mime/multipart"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
+	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/sub2api"
 )
 
+func TestNormalizeAssistantConfiguredImageParametersClearsUnsupportedFields(t *testing.T) {
+	body := assistantRunIn{
+		Mode: "image", Ratio: "16:9", Resolution: "4K", Quality: "high",
+		RequestSize: "4096x2304", Width: 4096, Height: 2304,
+	}
+	model := modelconfig.Model{AspectRatios: []string{"auto", "16:9"}, Resolutions: []string{}, Qualities: []string{}}
+	auto, err := normalizeAssistantConfiguredImageParameters(&body, model)
+	if err != nil {
+		t.Fatalf("normalize parameters: %v", err)
+	}
+	if auto || body.Ratio != "16:9" {
+		t.Fatalf("ratio = %q, auto = %v", body.Ratio, auto)
+	}
+	if body.Resolution != "" || body.Quality != "" || body.RequestSize != "" || body.Width != 0 || body.Height != 0 {
+		t.Fatalf("unsupported parameters leaked: %#v", body)
+	}
+}
+
+func TestNormalizeAssistantReferenceMode(t *testing.T) {
+	for input, expected := range map[string]string{
+		"": "", " shared ": "shared", "INDIVIDUAL": "individual",
+	} {
+		actual, err := normalizeAssistantReferenceMode(input)
+		if err != nil || actual != expected {
+			t.Fatalf("normalizeAssistantReferenceMode(%q) = %q, %v; want %q", input, actual, err, expected)
+		}
+	}
+	if _, err := normalizeAssistantReferenceMode("auto"); err == nil {
+		t.Fatal("unsupported reference mode must fail validation")
+	}
+}
+
+func TestNormalizeAgentQualityWorkspace(t *testing.T) {
+	for input, expected := range map[string]string{"": "", " assistant ": "assistant", "CANVAS": "canvas"} {
+		actual, err := normalizeAgentQualityWorkspace(input)
+		if err != nil || actual != expected {
+			t.Fatalf("normalizeAgentQualityWorkspace(%q) = %q, %v; want %q", input, actual, err, expected)
+		}
+	}
+	if _, err := normalizeAgentQualityWorkspace("other"); err == nil {
+		t.Fatal("unsupported Agent workspace must fail validation")
+	}
+}
+
+func TestSanitizeAssistantImagePlanItems(t *testing.T) {
+	references := []map[string]any{
+		{"id": "ref-1", "fileKey": "uploads/user/1.png"},
+		{"id": "ref-2", "fileKey": "uploads/user/2.png"},
+	}
+	items, err := sanitizeAssistantImagePlanItems([]assistantRunImagePlanItem{
+		{Title: "主图", Prompt: "主图提示词", ReferenceImageIDs: []string{"ref-1"}},
+		{Title: "细节图", Prompt: "细节图提示词", ReferenceImageIDs: []string{"ref-2"}},
+	}, references, 2)
+	if err != nil {
+		t.Fatalf("sanitize image plan: %v", err)
+	}
+	if len(items) != 2 || assistantMapText(items[0], "id") != "item-1" || assistantMapText(items[1], "title") != "细节图" {
+		t.Fatalf("sanitized items = %#v", items)
+	}
+	if ids, ok := items[0]["referenceImageIds"].([]string); !ok || len(ids) != 1 || ids[0] != "ref-1" {
+		t.Fatalf("sanitized reference ids = %#v", items[0]["referenceImageIds"])
+	}
+
+	if _, err := sanitizeAssistantImagePlanItems([]assistantRunImagePlanItem{
+		{Prompt: "一", ReferenceImageIDs: []string{"missing"}}, {Prompt: "二"},
+	}, references, 2); err == nil {
+		t.Fatal("unknown reference id must fail validation")
+	}
+	if _, err := sanitizeAssistantImagePlanItems([]assistantRunImagePlanItem{
+		{Prompt: strings.Repeat("字", maxAssistantMessageRunes+1)}, {Prompt: "二"},
+	}, references, 2); err == nil {
+		t.Fatal("oversized item prompt must fail validation")
+	}
+	if _, err := sanitizeAssistantImagePlanItems([]assistantRunImagePlanItem{
+		{Prompt: "一"}, {Prompt: "二"},
+	}, references, 3); err == nil {
+		t.Fatal("plan count mismatch must fail validation")
+	}
+}
+
+func TestAssistantMessageDictKeepsContextStatsPrivateSummaryHidden(t *testing.T) {
+	message := &store.AssistantMessage{
+		ID: uuid.New(), Role: "assistant", Kind: "chat", Status: "complete", Content: "完成",
+		Metadata: map[string]any{
+			"context":                         map[string]any{"usagePercent": 42, "compactedMessages": 12},
+			"usage":                           map[string]any{"inputTokens": 120, "outputTokens": 48, "firstTokenMs": 210, "durationMs": 1800},
+			"_providerRouteKey":               "private-route",
+			"_chatUpstreamUnitCostCents":      int64(8),
+			"_contextSummary":                 "不应发送到浏览器的滚动摘要",
+			"_contextSummaryMessages":         12,
+			"_contextSummaryThroughMessageId": uuid.NewString(),
+		},
+	}
+	payload := assistantMessageDict(message)
+	if payload["context"] == nil {
+		t.Fatalf("context stats missing: %#v", payload)
+	}
+	if payload["usage"] == nil {
+		t.Fatalf("usage missing: %#v", payload)
+	}
+	if _, exists := payload["_contextSummary"]; exists {
+		t.Fatalf("private summary leaked: %#v", payload)
+	}
+	if _, exists := payload["_contextSummaryMessages"]; exists {
+		t.Fatalf("private summary count leaked: %#v", payload)
+	}
+	if _, exists := payload["_contextSummaryThroughMessageId"]; exists {
+		t.Fatalf("private summary cursor leaked: %#v", payload)
+	}
+	if _, exists := payload["_providerRouteKey"]; exists {
+		t.Fatalf("private provider route leaked: %#v", payload)
+	}
+	if _, exists := payload["_chatUpstreamUnitCostCents"]; exists {
+		t.Fatalf("private upstream cost leaked: %#v", payload)
+	}
+}
+
+func TestAssistantStreamSnapshotIncludesPersistedStage(t *testing.T) {
+	message := &store.AssistantMessage{
+		Role: "assistant", Kind: "image", Status: "running",
+		Metadata: map[string]any{"statusStage": "fetching-image"},
+	}
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	if !writeAssistantMessageStreamSnapshot(context, message) {
+		t.Fatal("snapshot write failed")
+	}
+	if !strings.Contains(recorder.Body.String(), `"stage":"fetching-image"`) {
+		t.Fatalf("persisted stage missing from stream snapshot: %s", recorder.Body.String())
+	}
+}
+
 func TestAssistantConfigIncludesStandardAndDiscountPointPrices(t *testing.T) {
 	env := newCommunityEnv(t)
 	_, token := env.newUserSession(t, "user")
-	discount := int64(3)
+	discount, assistantDiscount, canvasDiscount := int64(3), int64(8), int64(29)
 	cfg := modelconfig.Empty()
 	cfg.Providers = []modelconfig.Provider{{
 		ID: "provider", Name: "Provider", Adapter: modelconfig.AdapterOpenAI, Enabled: true,
 	}}
-	cfg.Models = []modelconfig.Model{{
-		ID: "image-model", Name: "Image Model", ProviderID: "provider", UpstreamModel: "image-2",
-		Kind: modelconfig.ModelKindImage, PriceCents: 20, DiscountPriceCents: &discount,
-		Public: true, Enabled: true,
-	}}
+	cfg.Models = []modelconfig.Model{
+		{
+			ID: "chat-model", Name: "Chat Model", ProviderID: "provider", UpstreamModel: "gpt-5.6-luna",
+			Kind: modelconfig.ModelKindChat, PriceCents: 5, Public: true, Enabled: true,
+			SupportedReasoningEfforts: []string{"low", "medium", "high", "xhigh", "max"},
+			ReasoningPricing: &modelconfig.ReasoningPricing{
+				DefaultEffort: "medium",
+				Efforts: map[string]modelconfig.ReasoningEffortPricing{
+					"high": {
+						AssistantPriceCents: 11, AssistantDiscountPriceCents: &assistantDiscount,
+						CanvasAgentPriceCents: 41, CanvasAgentDiscountPriceCents: &canvasDiscount,
+					},
+				},
+			},
+		},
+		{
+			ID: "image-model", Name: "Image Model", ProviderID: "provider", UpstreamModel: "image-2",
+			Kind: modelconfig.ModelKindImage, PriceCents: 20, DiscountPriceCents: &discount,
+			UpstreamInputFields:         []string{"prompt", "aspect_ratio", "img_urls", "output_format"},
+			UpstreamRequiredInputFields: []string{"prompt"},
+			UpstreamInputSchema: map[string]any{"type": "object", "properties": map[string]any{
+				"prompt": map[string]any{"type": "string"}, "aspect_ratio": map[string]any{"type": "string", "enum": []any{"auto", "16:9"}},
+			}},
+			AspectRatios: []string{"auto", "16:9"}, Resolutions: []string{}, Qualities: []string{},
+			Public: true, Enabled: true,
+		},
+	}
 	cfg.Workspaces = map[string]modelconfig.WorkspaceBinding{
-		modelconfig.WorkspaceAssistant: {ModelIDs: []string{"image-model"}},
+		modelconfig.WorkspaceAssistant: {ModelIDs: []string{"chat-model", "image-model"}},
 	}
 	if err := modelconfig.Save(context.Background(), env.st.Pool, cfg); err != nil {
 		t.Fatal(err)
@@ -42,9 +203,52 @@ func TestAssistantConfigIncludesStandardAndDiscountPointPrices(t *testing.T) {
 		t.Fatalf("status = %d body = %s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, field := range []string{`"pricePoints":3`, `"standardPricePoints":20`, `"discountPricePoints":3`} {
+	for _, field := range []string{
+		`"pricePoints":3`, `"standardPricePoints":20`, `"discountPricePoints":3`,
+		`"supportedReasoningEfforts":["low","medium","high","xhigh","max"]`, `"defaultReasoningEffort":"medium"`,
+		`"reasoningPrices":`, `"assistantStandardPricePoints":11`, `"assistantPricePoints":8`,
+		`"assistantDiscountPricePoints":8`, `"canvasAgentStandardPricePoints":41`, `"canvasAgentPricePoints":29`,
+		`"canvasAgentDiscountPricePoints":29`, `"reasoningEfforts":`,
+		`"resolutions":[]`, `"qualities":[]`, `"inputFields":["aspect_ratio","img_urls","output_format","prompt"]`,
+	} {
 		if !strings.Contains(body, field) {
 			t.Fatalf("assistant model price missing %s: %s", field, body)
+		}
+	}
+}
+
+func TestAssistantConfigExposesAssignedPublicModelsWithoutLogin(t *testing.T) {
+	env := newCommunityEnv(t)
+	discount := int64(3)
+	cfg := modelconfig.Empty()
+	cfg.Providers = []modelconfig.Provider{{
+		ID: "provider", Name: "Provider", Adapter: modelconfig.AdapterOpenAI,
+		BaseURL: "https://private.example.com", APIKey: "private-key", Enabled: true,
+	}}
+	cfg.Models = []modelconfig.Model{
+		{ID: "chat-model", Name: "Chat Model", ProviderID: "provider", UpstreamModel: "private-chat", Kind: modelconfig.ModelKindChat, PriceCents: 5, Public: true, Enabled: true},
+		{ID: "image-model", Name: "Image Model", ProviderID: "provider", UpstreamModel: "private-image", Kind: modelconfig.ModelKindImage, PriceCents: 20, DiscountPriceCents: &discount, Public: true, Enabled: true},
+	}
+	cfg.Workspaces = map[string]modelconfig.WorkspaceBinding{
+		modelconfig.WorkspaceAssistant: {ModelIDs: []string{"chat-model", "image-model"}},
+	}
+	if err := modelconfig.Save(context.Background(), env.st.Pool, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	response := env.do(t, http.MethodGet, "/api/v1/assistant/config", nil, "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, field := range []string{`"model":"chat-model"`, `"model":"image-model"`, `"pricePoints":3`} {
+		if !strings.Contains(body, field) {
+			t.Fatalf("assistant public model field missing %s: %s", field, body)
+		}
+	}
+	for _, secret := range []string{"private-key", "private-chat", "private-image", "private.example.com"} {
+		if strings.Contains(body, secret) {
+			t.Fatalf("assistant config leaked private value %q: %s", secret, body)
 		}
 	}
 }
@@ -83,6 +287,87 @@ func TestAssistantRunIsTerminal(t *testing.T) {
 	}
 }
 
+func TestNormalizeAssistantReasoningEffort(t *testing.T) {
+	tests := []struct {
+		name            string
+		value           string
+		defaultStandard bool
+		want            string
+		wantErr         bool
+	}{
+		{name: "canvas agent default", defaultStandard: true, want: "medium"},
+		{name: "explicit maximum", value: " MAX ", defaultStandard: true, want: "max"},
+		{name: "non agent remains unset"},
+		{name: "unsupported", value: "ultra", defaultStandard: true, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := normalizeAssistantReasoningEffort(tt.value, tt.defaultStandard)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Fatalf("effort = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeAssistantReasoningEffortForModel(t *testing.T) {
+	tests := []struct {
+		name            string
+		value           string
+		model           string
+		defaultStandard bool
+		want            string
+		wantErr         bool
+	}{
+		{name: "gpt 5.4 agent default", model: "gpt-5.4", defaultStandard: true, want: "medium"},
+		{name: "gpt 5.4 xhigh", value: " XHIGH ", model: "gpt-5.4", want: "xhigh"},
+		{name: "gpt 5.4 rejects max", value: "max", model: "gpt-5.4", wantErr: true},
+		{name: "gpt 5.4 pro rejects low", value: "low", model: "gpt-5.4-pro", wantErr: true},
+		{name: "gpt 5.6 luna remains unset without config", model: "gpt-5.6-luna", defaultStandard: true},
+		{name: "gpt 5.6 terra rejects effort without config", value: "max", model: "gpt-5.6-terra", wantErr: true},
+		{name: "gpt 5.6 sol remains unset without config", model: "gpt-5.6-sol", defaultStandard: true},
+		{name: "gpt 5.6 alias remains unset", model: "gpt-5-6", defaultStandard: true},
+		{name: "gpt 5.6 alias rejects explicit effort", value: "xhigh", model: "gpt-5-6", wantErr: true},
+		{name: "gpt 5.5 alias remains unset", model: "gpt-5-5", defaultStandard: true},
+		{name: "gpt 5.5 alias rejects explicit effort", value: "xhigh", model: "gpt-5-5", wantErr: true},
+		{name: "gpt 5 uses minimal rather than none", value: "minimal", model: "gpt-5", want: "minimal"},
+		{name: "gpt 5 rejects none", value: "none", model: "gpt-5", wantErr: true},
+		{name: "gpt 5.1 rejects xhigh", value: "xhigh", model: "gpt-5.1", wantErr: true},
+		{name: "gpt 5.3 codex rejects none", value: "none", model: "gpt-5.3-codex", wantErr: true},
+		{name: "unknown model rejects explicit effort", value: "medium", model: "custom-chat", wantErr: true},
+		{name: "unknown model remains unset", model: "custom-chat", defaultStandard: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := normalizeAssistantReasoningEffortForModel(tt.value, tt.model, tt.defaultStandard)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Fatalf("effort = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeAssistantReasoningEffortForSupported(t *testing.T) {
+	if got, err := normalizeAssistantReasoningEffortForSupported("", nil, true); err != nil || got != "" {
+		t.Fatalf("all-off empty: got=%q err=%v", got, err)
+	}
+	if got, err := normalizeAssistantReasoningEffortForSupported("high", nil, true); err == nil || got != "" {
+		t.Fatalf("all-off explicit: got=%q err=%v", got, err)
+	}
+	if got, err := normalizeAssistantReasoningEffortForSupported("max", []string{"low", "medium"}, false); err == nil || got != "" {
+		t.Fatalf("disabled effort: got=%q err=%v", got, err)
+	}
+	if got, err := normalizeAssistantReasoningEffortForSupported("low", []string{"low", "high"}, false); err != nil || got != "low" {
+		t.Fatalf("enabled effort: got=%q err=%v", got, err)
+	}
+}
+
 func TestValidateAssistantReferenceImages(t *testing.T) {
 	valid := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte("image"))
 	tests := []struct {
@@ -104,6 +389,133 @@ func TestValidateAssistantReferenceImages(t *testing.T) {
 				t.Fatalf("error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestSanitizeAssistantReferencesPreservesValidatedInlineImage(t *testing.T) {
+	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	inline := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte("image"))
+	references, err := sanitizeAssistantReferences([]map[string]any{{
+		"id": "crop", "name": "框选截图", "dataUrl": inline,
+	}}, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(references) != 1 || references[0]["dataUrl"] != inline {
+		t.Fatalf("references = %#v, want inline image", references)
+	}
+	if _, err := sanitizeAssistantReferences([]map[string]any{{
+		"id": "broken", "dataUrl": "data:image/png;base64,not-base64",
+	}}, userID); err == nil {
+		t.Fatal("broken inline image must be rejected")
+	}
+}
+
+func TestAssistantTaskOutputReferenceKeys(t *testing.T) {
+	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	items := []map[string]any{
+		{"fileKey": "tasks/11111111-1111-1111-1111-111111111111/task-ignored/original/0.png"},
+		{"fileKey": "tasks/" + userID.String() + "/11111111-1111-1111-1111-111111111111/original/0.png"},
+		{"fileKey": "tasks/" + userID.String() + "/assistant/run/1.png"},
+		{"fileKey": "tasks/" + userID.String() + "/11111111-1111-1111-1111-111111111111/original/0.png"},
+	}
+	got := assistantTaskOutputReferenceKeys(items, userID)
+	want := "tasks/" + userID.String() + "/11111111-1111-1111-1111-111111111111/original/0.png"
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("task output references = %#v, want [%q]", got, want)
+	}
+}
+
+func TestAssistantUploadReferenceKeysFromMetadataIncludesAllImageCollections(t *testing.T) {
+	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	prefix := "uploads/" + userID.String() + "/original/"
+	metadata := map[string]any{
+		"referenceImages": []map[string]any{{"fileKey": prefix + "reference.png"}},
+		"images":          []any{map[string]any{"fileKey": prefix + "image.png"}},
+		"proposal": map[string]any{
+			"referenceImages": []any{map[string]any{"fileKey": prefix + "proposal-reference.png"}},
+			"images":          []map[string]any{{"fileKey": prefix + "proposal-image.png"}},
+		},
+	}
+
+	got := assistantUploadReferenceKeysFromMetadata(metadata, userID)
+	if len(got) != 4 {
+		t.Fatalf("upload references = %#v, want 4 keys", got)
+	}
+	for _, key := range []string{
+		prefix + "reference.png",
+		prefix + "image.png",
+		prefix + "proposal-reference.png",
+		prefix + "proposal-image.png",
+	} {
+		if !containsString(got, key) {
+			t.Fatalf("upload references = %#v, missing %q", got, key)
+		}
+	}
+}
+
+func TestAssistantConversationImportRegistersAllImageReferences(t *testing.T) {
+	env := newCommunityEnv(t)
+	user, token := env.newUserSession(t, "user")
+	ctx := context.Background()
+	prefix := "uploads/" + user.ID.String() + "/original/"
+	keys := []string{
+		prefix + "reference.png",
+		prefix + "image.png",
+		prefix + "proposal-reference.png",
+		prefix + "proposal-image.png",
+	}
+	if err := store.RegisterUserUploadObjects(ctx, env.st.Pool, user.ID, keys); err != nil {
+		t.Fatalf("register upload objects: %v", err)
+	}
+
+	conversationID := uuid.New()
+	messageID := uuid.New()
+	response := env.do(t, http.MethodPost, "/api/v1/assistant/conversation-imports", map[string]any{
+		"conversations": []map[string]any{{
+			"id": conversationID.String(), "title": "图片引用迁移",
+			"messages": []map[string]any{{
+				"id": messageID.String(), "role": "assistant", "kind": "chat", "content": "历史图片",
+				"referenceImages": []map[string]any{{"fileKey": keys[0]}},
+				"images":          []map[string]any{{"fileKey": keys[1]}},
+				"proposal": map[string]any{
+					"referenceImages": []map[string]any{{"fileKey": keys[2]}},
+					"images":          []map[string]any{{"fileKey": keys[3]}},
+				},
+			}},
+		}},
+	}, token)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("import conversations: status %d body %s", response.Code, response.Body.String())
+	}
+
+	var count int
+	if err := env.st.Pool.QueryRow(ctx, `
+		SELECT count(*) FROM user_upload_references
+		WHERE reference_type = $1 AND reference_id = $2 AND object_key = ANY($3::text[])`,
+		store.UploadReferenceAssistantMsg, messageID, keys).Scan(&count); err != nil {
+		t.Fatalf("count imported references: %v", err)
+	}
+	if count != len(keys) {
+		t.Fatalf("imported reference count = %d, want %d", count, len(keys))
+	}
+}
+
+func TestAssistantConversationImportRejectsOversizedMessageHistory(t *testing.T) {
+	env := newCommunityEnv(t)
+	_, token := env.newUserSession(t, "user")
+	messages := make([]map[string]any, assistantMessageLimit+1)
+	for index := range messages {
+		messages[index] = map[string]any{
+			"id": uuid.NewString(), "role": "user", "content": "历史消息",
+		}
+	}
+
+	response := env.do(t, http.MethodPost, "/api/v1/assistant/conversation-imports", map[string]any{
+		"conversations": []map[string]any{{"id": uuid.NewString(), "messages": messages}},
+	}, token)
+	if _, code := decode(t, response); response.Code != http.StatusUnprocessableEntity || code != "validation_error" {
+		t.Fatalf("oversized import: status %d code %s body %s", response.Code, code, response.Body.String())
 	}
 }
 
@@ -181,9 +593,35 @@ func TestValidateAssistantImageSize(t *testing.T) {
 	}
 }
 
+func TestSanitizeAssistantCanvasSnapshot(t *testing.T) {
+	snapshot, err := sanitizeAssistantCanvasSnapshot(nil)
+	if err != nil || snapshot != nil {
+		t.Fatalf("empty snapshot = %#v err=%v", snapshot, err)
+	}
+	snapshot, err = sanitizeAssistantCanvasSnapshot([]byte(`{"title":"测试","nodes":[{"id":"n1"}]}`))
+	if err != nil {
+		t.Fatalf("valid snapshot: %v", err)
+	}
+	payload, _ := snapshot.(map[string]any)
+	if payload["title"] != "测试" {
+		t.Fatalf("snapshot = %#v", snapshot)
+	}
+	if _, err := sanitizeAssistantCanvasSnapshot([]byte(`{`)); err == nil {
+		t.Fatal("expected invalid snapshot error")
+	}
+	largeValid := []byte(`{"title":"` + strings.Repeat("画", 8_000) + `"}`)
+	if _, err := sanitizeAssistantCanvasSnapshot(largeValid); err != nil {
+		t.Fatalf("ordinary multi-byte canvas snapshot should be accepted: %v", err)
+	}
+	oversized := []byte(`{"title":"` + strings.Repeat("a", assistantCanvasSnapshotMaxBytes) + `"}`)
+	if _, err := sanitizeAssistantCanvasSnapshot(oversized); err == nil {
+		t.Fatal("expected oversized snapshot error")
+	}
+}
+
 func TestAssistantConversationLifecycle(t *testing.T) {
 	env := newCommunityEnv(t)
-	_, token := env.newUserSession(t, "user")
+	user, token := env.newUserSession(t, "user")
 
 	created := env.do(t, http.MethodPost, "/api/v1/assistant/conversations", map[string]any{"title": "持久化测试"}, token)
 	if created.Code != http.StatusCreated {
@@ -191,8 +629,59 @@ func TestAssistantConversationLifecycle(t *testing.T) {
 	}
 	data, _ := decode(t, created)
 	id, _ := data["id"].(string)
-	if id == "" || data["title"] != "持久化测试" {
+	if id == "" || data["title"] != "持久化测试" || data["workspace"] != "assistant" {
 		t.Fatalf("created conversation = %#v", data)
+	}
+	renamed := env.do(t, http.MethodPatch, "/api/v1/assistant/conversations/"+id, map[string]any{"title": "已改名"}, token)
+	if renamed.Code != http.StatusOK {
+		t.Fatalf("rename conversation: status %d body %s", renamed.Code, renamed.Body.String())
+	}
+	renamedData, _ := decode(t, renamed)
+	if renamedData["title"] != "已改名" {
+		t.Fatalf("renamed conversation = %#v", renamedData)
+	}
+
+	designCreated := env.do(t, http.MethodPost, "/api/v1/assistant/conversations", map[string]any{
+		"title": "框选图片编辑", "workspace": "ui_design",
+	}, token)
+	if designCreated.Code != http.StatusCreated {
+		t.Fatalf("create ui design conversation: status %d body %s", designCreated.Code, designCreated.Body.String())
+	}
+	designData, _ := decode(t, designCreated)
+	designID, _ := designData["id"].(string)
+	if designID == "" || designData["workspace"] != "ui_design" {
+		t.Fatalf("created ui design conversation = %#v", designData)
+	}
+
+	canvasCreated := env.do(t, http.MethodPost, "/api/v1/assistant/conversations", map[string]any{
+		"title": "画布文字节点", "workspace": "infinite_canvas",
+	}, token)
+	if canvasCreated.Code != http.StatusCreated {
+		t.Fatalf("create canvas conversation: status %d body %s", canvasCreated.Code, canvasCreated.Body.String())
+	}
+	canvasData, _ := decode(t, canvasCreated)
+	canvasID, _ := canvasData["id"].(string)
+	if canvasID == "" || canvasData["workspace"] != "infinite_canvas" {
+		t.Fatalf("created canvas conversation = %#v", canvasData)
+	}
+	mismatchedRun := env.do(t, http.MethodPost, "/api/v1/assistant/runs", map[string]any{
+		"conversationId": canvasID, "prompt": "画布分析", "mode": "chat",
+	}, token)
+	if mismatchedRun.Code != http.StatusUnprocessableEntity || !strings.Contains(mismatchedRun.Body.String(), "与对话工作区不一致") {
+		t.Fatalf("mismatched canvas run: status %d body %s", mismatchedRun.Code, mismatchedRun.Body.String())
+	}
+	invalidRunWorkspace := env.do(t, http.MethodPost, "/api/v1/assistant/runs", map[string]any{
+		"conversationId": canvasID, "prompt": "画布分析", "mode": "chat", "workspace": "unknown",
+	}, token)
+	if invalidRunWorkspace.Code != http.StatusUnprocessableEntity || !strings.Contains(invalidRunWorkspace.Body.String(), "不支持的会话工作区") {
+		t.Fatalf("invalid run workspace: status %d body %s", invalidRunWorkspace.Code, invalidRunWorkspace.Body.String())
+	}
+
+	invalid := env.do(t, http.MethodPost, "/api/v1/assistant/conversations", map[string]any{
+		"title": "非法工作区", "workspace": "unknown",
+	}, token)
+	if invalid.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("invalid workspace: status %d body %s", invalid.Code, invalid.Body.String())
 	}
 
 	listed := env.do(t, http.MethodGet, "/api/v1/assistant/conversations", nil, token)
@@ -211,17 +700,646 @@ func TestAssistantConversationLifecycle(t *testing.T) {
 	if len(response.Data.Conversations) != 1 || response.Data.Conversations[0]["id"] != id {
 		t.Fatalf("listed conversations = %#v", response.Data.Conversations)
 	}
+	designUUID, err := uuid.Parse(designID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	designConversation, err := store.GetUserAssistantConversation(
+		context.Background(), env.st.Pool, user.ID, designUUID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if designConversation == nil || designConversation.Workspace != "ui_design" {
+		t.Fatalf("ui design conversation is not recoverable by id: %#v", designConversation)
+	}
+	canvasUUID, err := uuid.Parse(canvasID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canvasConversation, err := store.GetUserAssistantConversation(
+		context.Background(), env.st.Pool, user.ID, canvasUUID,
+	)
+	if err != nil || canvasConversation == nil || canvasConversation.Workspace != "infinite_canvas" {
+		t.Fatalf("canvas conversation is not isolated: %#v, err=%v", canvasConversation, err)
+	}
+	now := time.Now().UTC()
+	userMessage, err := store.InsertAssistantMessage(context.Background(), env.st.Pool, store.AssistantMessage{
+		ID: uuid.New(), ConversationID: designUUID, Role: "user", Content: "框选任务", Kind: "text",
+		Status: "complete", CreatedAt: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assistantMessage, err := store.InsertAssistantMessage(context.Background(), env.st.Pool, store.AssistantMessage{
+		ID: uuid.New(), ConversationID: designUUID, Role: "assistant", Kind: "text",
+		Status: "queued", CreatedAt: now.Add(time.Millisecond),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	designRun, err := store.InsertAssistantRun(context.Background(), env.st.Pool, store.AssistantRun{
+		ID: uuid.New(), UserID: user.ID, ConversationID: designUUID,
+		UserMessageID: userMessage.ID, AssistantMessageID: assistantMessage.ID,
+		Mode: "chat", Prompt: "框选任务",
+		Params: map[string]any{
+			"serviceKey":      "ui_design_asset",
+			"workspace":       "ui_design",
+			"parentOutputUrl": "/api/v1/files/tasks/parent.png",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	designRunResponse := env.do(t, http.MethodGet, "/api/v1/assistant/runs/"+designRun.ID.String(), nil, token)
+	if designRunResponse.Code != http.StatusOK {
+		t.Fatalf("recover ui design run by id: status %d body %s", designRunResponse.Code, designRunResponse.Body.String())
+	}
+	activeRunsResponse := env.do(t, http.MethodGet, "/api/v1/assistant/runs", nil, token)
+	if activeRunsResponse.Code != http.StatusOK {
+		t.Fatalf("list assistant runs: status %d body %s", activeRunsResponse.Code, activeRunsResponse.Body.String())
+	}
+	activeRunsData, _ := decode(t, activeRunsResponse)
+	activeRuns, _ := activeRunsData["runs"].([]any)
+	if len(activeRuns) != 0 {
+		t.Fatalf("assistant active runs leaked ui design tasks: %#v", activeRuns)
+	}
+	designActiveResponse := env.do(t, http.MethodGet, "/api/v1/assistant/runs?workspace=ui_design", nil, token)
+	if designActiveResponse.Code != http.StatusOK {
+		t.Fatalf("list ui design runs: status %d body %s", designActiveResponse.Code, designActiveResponse.Body.String())
+	}
+	designActiveData, _ := decode(t, designActiveResponse)
+	designActiveRuns, _ := designActiveData["runs"].([]any)
+	if len(designActiveRuns) != 1 {
+		t.Fatalf("ui design active runs: %#v", designActiveRuns)
+	}
+	designActiveRun, _ := designActiveRuns[0].(map[string]any)
+	if designActiveRun["id"] != designRun.ID.String() ||
+		designActiveRun["parentOutputUrl"] != "/api/v1/files/tasks/parent.png" ||
+		designActiveRun["serviceKey"] != "ui_design_asset" {
+		t.Fatalf("ui design active run payload: %#v", designActiveRun)
+	}
 
 	deleted := env.do(t, http.MethodDelete, "/api/v1/assistant/conversations/"+id, nil, token)
 	if deleted.Code != http.StatusNoContent {
 		t.Fatalf("delete conversation: status %d body %s", deleted.Code, deleted.Body.String())
 	}
+	designDeleted := env.do(t, http.MethodDelete, "/api/v1/assistant/conversations/"+designID+"?cancelActive=true", nil, token)
+	if designDeleted.Code != http.StatusNoContent {
+		t.Fatalf("delete ui design conversation: status %d body %s", designDeleted.Code, designDeleted.Body.String())
+	}
+	canvasDeleted := env.do(t, http.MethodDelete, "/api/v1/assistant/conversations/"+canvasID, nil, token)
+	if canvasDeleted.Code != http.StatusNoContent {
+		t.Fatalf("delete canvas conversation: status %d body %s", canvasDeleted.Code, canvasDeleted.Body.String())
+	}
+}
+
+func TestAssistantPSDGenerationRequiresImageAndPSDUploadRemainsUnsupported(t *testing.T) {
+	env := newCommunityEnv(t)
+	_, token := env.newUserSession(t, "user")
+	created := env.do(t, http.MethodPost, "/api/v1/assistant/conversations", map[string]any{
+		"title": "PSD disabled",
+	}, token)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create conversation: status %d body %s", created.Code, created.Body.String())
+	}
+	conversation, _ := decode(t, created)
+	response := env.do(t, http.MethodPost, "/api/v1/assistant/runs", map[string]any{
+		"conversationId": conversation["id"],
+		"prompt":         "把这张图片转换为 PSD",
+		"mode":           "agent",
+	}, token)
+	if response.Code != http.StatusUnprocessableEntity ||
+		!strings.Contains(response.Body.String(), "assistant_editable_files_disabled") {
+		t.Fatalf("disabled PSD conversion: status %d body %s", response.Code, response.Body.String())
+	}
+	encryptedKey, err := settings.EncryptSecret("editable-test-key", env.cfg.AppSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := modelconfig.Save(context.Background(), env.st.Pool, modelconfig.Config{
+		Version: modelconfig.Version,
+		Providers: []modelconfig.Provider{{
+			ID: "editable", Name: "Editable", Adapter: modelconfig.AdapterOpenAI, Enabled: true,
+			Routes: []modelconfig.ProviderRoute{{
+				ID: "editable-route", Name: "Editable Route", BaseURL: "https://editable.example.com",
+				APIKey: encryptedKey, MaxConcurrency: 1, Enabled: true,
+			}},
+		}},
+		EditableFiles: modelconfig.EditableFileConfig{Enabled: true, ProviderID: "editable", RouteID: "editable-route"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	response = env.do(t, http.MethodPost, "/api/v1/assistant/runs", map[string]any{
+		"conversationId": conversation["id"],
+		"prompt":         "把这张图片转换为 PSD",
+		"mode":           "agent",
+	}, token)
+	if response.Code != http.StatusUnprocessableEntity ||
+		!strings.Contains(response.Body.String(), "assistant_psd_reference_required") {
+		t.Fatalf("PSD conversion: status %d body %s", response.Code, response.Body.String())
+	}
+
+	var upload bytes.Buffer
+	writer := multipart.NewWriter(&upload)
+	part, err := writer.CreateFormFile("file", "layout.psd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	header := make([]byte, 26)
+	copy(header[:4], "8BPS")
+	binary.BigEndian.PutUint16(header[4:6], 1)
+	binary.BigEndian.PutUint16(header[12:14], 4)
+	binary.BigEndian.PutUint32(header[14:18], 1)
+	binary.BigEndian.PutUint32(header[18:22], 1)
+	binary.BigEndian.PutUint16(header[22:24], 8)
+	binary.BigEndian.PutUint16(header[24:26], 3)
+	if _, err := part.Write(header); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/assistant/files", &upload)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.AddCookie(&http.Cookie{Name: env.cfg.SessionCookieName, Value: token})
+	recorder := httptest.NewRecorder()
+	env.engine.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusBadRequest ||
+		!strings.Contains(recorder.Body.String(), "assistant_psd_unavailable") {
+		t.Fatalf("PSD upload: status %d body %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestAssistantToolExecutionMode(t *testing.T) {
+	for _, test := range []struct{ workspace, mode, prompt, want string }{
+		{modelconfig.WorkspaceAssistant, "chat", "重新查询最近失败的任务状态，说明失败原因、重试次数和退款情况。", "agent"},
+		{modelconfig.WorkspaceAssistant, "chat", "联网搜索最新消息", "agent"},
+		{modelconfig.WorkspaceAssistant, "chat", "请帮我设计一张简洁的品牌海报", "agent"},
+		{modelconfig.WorkspaceAssistant, "chat", "先分析这张图，然后生成一张产品海报", "agent"},
+		{modelconfig.WorkspaceAssistant, "chat", "把这张图高清放大", "agent"},
+		{modelconfig.WorkspaceAssistant, "chat", "不要生成图片，只分析构图", "chat"},
+		{modelconfig.WorkspaceAssistant, "chat", "如何生成一张海报", "chat"},
+		{modelconfig.WorkspaceAssistant, "chat", "设计一个图片数据库表结构", "chat"},
+		{modelconfig.WorkspaceAssistant, "chat", "解释网页截图工具的实现原理", "chat"},
+		{modelconfig.WorkspaceAssistant, "chat", "解释对象存储", "chat"},
+		{modelconfig.WorkspaceCanvas, "chat", "最近失败的任务状态", "chat"},
+		{modelconfig.WorkspaceAssistant, "image", "生成图片", "image"},
+	} {
+		if got := assistantToolExecutionMode(test.workspace, test.mode, test.prompt); got != test.want {
+			t.Fatalf("assistantToolExecutionMode(%q, %q, %q) = %q, want %q", test.workspace, test.mode, test.prompt, got, test.want)
+		}
+	}
+}
+
+func TestAssistantRunAutoUpgradePreparesAgentCapabilities(t *testing.T) {
+	env := newCommunityEnv(t)
+	env.cfg.Sub2APIAPIKey = "test-key"
+	env.cfg.Sub2APIBaseURL = "https://sub2api.test"
+	user, token := env.newUserSession(t, "user")
+	created := env.do(t, http.MethodPost, "/api/v1/assistant/conversations", map[string]any{
+		"title": "Server-side agent routing",
+	}, token)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create conversation: status %d body %s", created.Code, created.Body.String())
+	}
+	conversation, _ := decode(t, created)
+
+	response := env.do(t, http.MethodPost, "/api/v1/assistant/runs", map[string]any{
+		"conversationId": conversation["id"],
+		"prompt":         "请帮我设计一张简洁的品牌海报",
+		"mode":           "chat",
+		"count":          1,
+	}, token)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create run: status %d body %s", response.Code, response.Body.String())
+	}
+	payload, _ := decode(t, response)
+	runPayload, _ := payload["run"].(map[string]any)
+	runID, err := uuid.Parse(fmt.Sprint(runPayload["id"]))
+	if err != nil {
+		t.Fatalf("run id = %#v: %v", runPayload["id"], err)
+	}
+	run, err := store.GetAssistantRun(context.Background(), env.st.Pool, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run == nil || run.UserID != user.ID || run.Mode != "agent" {
+		t.Fatalf("auto-routed run = %#v, want owned agent run", run)
+	}
+	if got := fmt.Sprint(run.Params["requestedMode"]); got != "chat" {
+		t.Fatalf("requestedMode = %q, want chat", got)
+	}
+	if _, ok := run.Params["_imageModelCatalog"]; !ok {
+		t.Fatalf("auto-routed agent did not receive image model catalog: %#v", run.Params)
+	}
+}
+
+func TestAssistantAgentAcceptsReadyDocumentAttachments(t *testing.T) {
+	env := newCommunityEnv(t)
+	env.cfg.Sub2APIAPIKey = "test-key"
+	env.cfg.Sub2APIBaseURL = "https://sub2api.test"
+	user, token := env.newUserSession(t, "user")
+	ctx := context.Background()
+	fileID := uuid.New()
+	objectKey := "uploads/" + user.ID.String() + "/original/" + fileID.String() + ".md"
+	if err := store.RegisterUserUploadObjects(ctx, env.st.Pool, user.ID, []string{objectKey}); err != nil {
+		t.Fatal(err)
+	}
+	file, err := store.InsertAssistantFile(ctx, env.st.Pool, store.AssistantFile{
+		ID: fileID, UserID: user.ID, ObjectKey: objectKey,
+		Name: "agent-notes.md", ContentType: "text/markdown", SizeBytes: 128, SHA256: strings.Repeat("a", 64),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.st.Pool.Exec(ctx, `UPDATE assistant_files SET status='ready', char_count=64, segment_count=1 WHERE id=$1`, file.ID); err != nil {
+		t.Fatal(err)
+	}
+	created := env.do(t, http.MethodPost, "/api/v1/assistant/conversations", map[string]any{
+		"title": "Agent document workflow",
+	}, token)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create conversation: status %d body %s", created.Code, created.Body.String())
+	}
+	conversation, _ := decode(t, created)
+	response := env.do(t, http.MethodPost, "/api/v1/assistant/runs", map[string]any{
+		"conversationId": conversation["id"],
+		"prompt":         "读取附件，联网核对最新资料并导出 CSV 文件",
+		"mode":           "agent",
+		"attachments":    []map[string]any{{"id": file.ID.String()}},
+		"count":          1,
+	}, token)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create agent run with attachment: status %d body %s", response.Code, response.Body.String())
+	}
+	payload, _ := decode(t, response)
+	runPayload, _ := payload["run"].(map[string]any)
+	runID, err := uuid.Parse(fmt.Sprint(runPayload["id"]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := store.GetAssistantRun(ctx, env.st.Pool, runID)
+	if err != nil || run == nil {
+		t.Fatalf("load run: run=%#v err=%v", run, err)
+	}
+	fileIDs, _ := run.Params["_assistantFileIds"].([]any)
+	if run.Mode != "agent" || len(fileIDs) != 1 || fmt.Sprint(fileIDs[0]) != file.ID.String() {
+		t.Fatalf("agent attachment context = mode %q params %#v", run.Mode, run.Params)
+	}
+}
+
+func TestAssistantPPTProviderValidationOnlyAppliesToDedicatedRequests(t *testing.T) {
+	env := newCommunityEnv(t)
+	env.cfg.Sub2APIAPIKey = "test-key"
+	env.cfg.Sub2APIBaseURL = "https://sub2api.test"
+	user, token := env.newUserSession(t, "user")
+	createConversation := func(title string) map[string]any {
+		t.Helper()
+		response := env.do(t, http.MethodPost, "/api/v1/assistant/conversations", map[string]any{"title": title}, token)
+		if response.Code != http.StatusCreated {
+			t.Fatalf("create %s conversation: status %d body %s", title, response.Code, response.Body.String())
+		}
+		conversation, _ := decode(t, response)
+		return conversation
+	}
+
+	pureConversation := createConversation("Dedicated PPT")
+	pure := env.do(t, http.MethodPost, "/api/v1/assistant/runs", map[string]any{
+		"conversationId": pureConversation["id"], "prompt": "制作一份产品发布会 PPT", "mode": "chat",
+	}, token)
+	if pure.Code != http.StatusUnprocessableEntity || !strings.Contains(pure.Body.String(), "assistant_editable_files_disabled") {
+		t.Fatalf("pure PPT without provider: status %d body %s", pure.Code, pure.Body.String())
+	}
+
+	webConversation := createConversation("Web PPT")
+	web := env.do(t, http.MethodPost, "/api/v1/assistant/runs", map[string]any{
+		"conversationId": webConversation["id"], "prompt": "联网搜索最新资料并生成可编辑 PPT", "mode": "chat",
+	}, token)
+	if web.Code != http.StatusCreated {
+		t.Fatalf("web PPT without editable provider: status %d body %s", web.Code, web.Body.String())
+	}
+	webPayload, _ := decode(t, web)
+	webRunPayload, _ := webPayload["run"].(map[string]any)
+	webRunID, err := uuid.Parse(fmt.Sprint(webRunPayload["id"]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	webRun, err := store.GetAssistantRun(context.Background(), env.st.Pool, webRunID)
+	if err != nil || webRun == nil || webRun.Mode != "agent" {
+		t.Fatalf("web PPT run = %#v err=%v", webRun, err)
+	}
+
+	ctx := context.Background()
+	fileID := uuid.New()
+	objectKey := "uploads/" + user.ID.String() + "/original/" + fileID.String() + ".md"
+	if err := store.RegisterUserUploadObjects(ctx, env.st.Pool, user.ID, []string{objectKey}); err != nil {
+		t.Fatal(err)
+	}
+	file, err := store.InsertAssistantFile(ctx, env.st.Pool, store.AssistantFile{
+		ID: fileID, UserID: user.ID, ObjectKey: objectKey,
+		Name: "ppt-source.md", ContentType: "text/markdown", SizeBytes: 128, SHA256: strings.Repeat("b", 64),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.st.Pool.Exec(ctx, `UPDATE assistant_files SET status='ready', char_count=64, segment_count=1 WHERE id=$1`, file.ID); err != nil {
+		t.Fatal(err)
+	}
+	attachmentConversation := createConversation("Attachment PPT")
+	attached := env.do(t, http.MethodPost, "/api/v1/assistant/runs", map[string]any{
+		"conversationId": attachmentConversation["id"], "prompt": "根据附件制作一份可编辑 PPT", "mode": "chat",
+		"attachments": []map[string]any{{"id": file.ID.String()}},
+	}, token)
+	if attached.Code != http.StatusCreated {
+		t.Fatalf("attachment PPT without editable provider: status %d body %s", attached.Code, attached.Body.String())
+	}
+	attachedPayload, _ := decode(t, attached)
+	attachedRunPayload, _ := attachedPayload["run"].(map[string]any)
+	attachedRunID, err := uuid.Parse(fmt.Sprint(attachedRunPayload["id"]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachedRun, err := store.GetAssistantRun(ctx, env.st.Pool, attachedRunID)
+	if err != nil || attachedRun == nil {
+		t.Fatalf("attachment PPT run = %#v err=%v", attachedRun, err)
+	}
+	fileIDs, _ := attachedRun.Params["_assistantFileIds"].([]any)
+	if attachedRun.Mode != "chat" || len(fileIDs) != 1 || fmt.Sprint(fileIDs[0]) != file.ID.String() {
+		t.Fatalf("attachment PPT context = mode %q params %#v", attachedRun.Mode, attachedRun.Params)
+	}
+}
+
+func TestAssistantAgentRejectsImageCountAboveModelLimit(t *testing.T) {
+	env := newCommunityEnv(t)
+	env.cfg.Sub2APIAPIKey = "test-key"
+	env.cfg.Sub2APIBaseURL = "https://sub2api.test"
+	_, token := env.newUserSession(t, "user")
+	created := env.do(t, http.MethodPost, "/api/v1/assistant/conversations", map[string]any{
+		"title": "Agent count validation",
+	}, token)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create conversation: status %d body %s", created.Code, created.Body.String())
+	}
+	conversation, _ := decode(t, created)
+	response := env.do(t, http.MethodPost, "/api/v1/assistant/runs", map[string]any{
+		"conversationId": conversation["id"],
+		"prompt":         "生成五张图片",
+		"mode":           "agent",
+		"count":          modelconfig.DefaultMaxImages + 1,
+	}, token)
+	if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "图片数量须在 1-4 之间") {
+		t.Fatalf("agent image count: status %d body %s", response.Code, response.Body.String())
+	}
+}
+
+func TestCanvasAssistantConversationFollowsProject(t *testing.T) {
+	env := newCommunityEnv(t)
+	_, token := env.newUserSession(t, "user")
+	_, otherToken := env.newUserSession(t, "user")
+	projectID := uuid.NewString()
+
+	created := env.do(t, http.MethodPost, "/api/v1/assistant/conversations", map[string]any{
+		"title": "画布助手", "workspace": "infinite_canvas", "projectId": projectID,
+	}, token)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create canvas conversation: status %d body %s", created.Code, created.Body.String())
+	}
+	data, _ := decode(t, created)
+	id, _ := data["id"].(string)
+	if id == "" || data["workspace"] != "infinite_canvas" || data["projectId"] != projectID {
+		t.Fatalf("created canvas conversation = %#v", data)
+	}
+
+	rejected := env.do(t, http.MethodPost, "/api/v1/assistant/conversations", map[string]any{
+		"title": "串项目", "workspace": "assistant", "projectId": projectID,
+	}, token)
+	if rejected.Code != http.StatusUnprocessableEntity || !strings.Contains(rejected.Body.String(), "仅支持无限画布会话") {
+		t.Fatalf("assistant workspace with projectId: status %d body %s", rejected.Code, rejected.Body.String())
+	}
+
+	listed := env.do(t, http.MethodGet, "/api/v1/assistant/conversations?workspace=infinite_canvas&projectId="+projectID, nil, token)
+	if listed.Code != http.StatusOK {
+		t.Fatalf("list canvas conversations: status %d body %s", listed.Code, listed.Body.String())
+	}
+	listedData, _ := decode(t, listed)
+	conversations, _ := listedData["conversations"].([]any)
+	if len(conversations) != 1 {
+		t.Fatalf("listed canvas conversations = %#v", listedData["conversations"])
+	}
+	first, _ := conversations[0].(map[string]any)
+	if first["id"] != id {
+		t.Fatalf("latest canvas conversation = %#v", first)
+	}
+
+	got := env.do(t, http.MethodGet, "/api/v1/assistant/conversations/"+id, nil, token)
+	if got.Code != http.StatusOK {
+		t.Fatalf("get canvas conversation: status %d body %s", got.Code, got.Body.String())
+	}
+	gotData, _ := decode(t, got)
+	if gotData["id"] != id || gotData["projectId"] != projectID {
+		t.Fatalf("got canvas conversation = %#v", gotData)
+	}
+	mismatchedProject := env.do(t, http.MethodGet, "/api/v1/assistant/conversations/"+id+"?projectId="+uuid.NewString(), nil, token)
+	if mismatchedProject.Code != http.StatusNotFound || !strings.Contains(mismatchedProject.Body.String(), "不属于当前画布") {
+		t.Fatalf("cross-project conversation read: status %d body %s", mismatchedProject.Code, mismatchedProject.Body.String())
+	}
+
+	other := env.do(t, http.MethodGet, "/api/v1/assistant/conversations/"+id, nil, otherToken)
+	if other.Code != http.StatusNotFound {
+		t.Fatalf("other user get conversation: status %d body %s", other.Code, other.Body.String())
+	}
+
+	legacy := env.do(t, http.MethodPost, "/api/v1/assistant/conversations", map[string]any{
+		"title": "未绑定画布", "workspace": "infinite_canvas",
+	}, token)
+	if legacy.Code != http.StatusCreated {
+		t.Fatalf("create unbound canvas conversation: status %d body %s", legacy.Code, legacy.Body.String())
+	}
+	legacyData, _ := decode(t, legacy)
+	legacyID, _ := legacyData["id"].(string)
+	bound := env.do(t, http.MethodGet, "/api/v1/assistant/conversations/"+legacyID+"?projectId="+projectID, nil, token)
+	if bound.Code != http.StatusOK {
+		t.Fatalf("bind canvas conversation: status %d body %s", bound.Code, bound.Body.String())
+	}
+	boundData, _ := decode(t, bound)
+	if boundData["projectId"] != projectID {
+		t.Fatalf("bound canvas conversation = %#v", boundData)
+	}
+
+	newer := env.do(t, http.MethodPost, "/api/v1/assistant/conversations", map[string]any{
+		"title": "新对话", "workspace": "infinite_canvas", "projectId": projectID,
+	}, token)
+	if newer.Code != http.StatusCreated {
+		t.Fatalf("create newer canvas conversation: status %d body %s", newer.Code, newer.Body.String())
+	}
+	newerData, _ := decode(t, newer)
+	newerID, _ := newerData["id"].(string)
+	latest := env.do(t, http.MethodGet, "/api/v1/assistant/conversations?workspace=infinite_canvas&projectId="+projectID, nil, token)
+	latestData, _ := decode(t, latest)
+	latestConversations, _ := latestData["conversations"].([]any)
+	if len(latestConversations) < 2 {
+		t.Fatalf("expected multiple project conversations, got %#v", latestData["conversations"])
+	}
+	latestFirst, _ := latestConversations[0].(map[string]any)
+	if latestFirst["id"] != newerID {
+		t.Fatalf("newest canvas conversation should be first: %#v", latestFirst)
+	}
+}
+
+func TestDeleteAssistantConversationQueuesGeneratedImages(t *testing.T) {
+	env := newCommunityEnv(t)
+	user, token := env.newUserSession(t, "user")
+	ctx := context.Background()
+	now := time.Now().UTC()
+	conversation, err := store.InsertAssistantConversation(ctx, env.st.Pool, uuid.New(), user.ID, "清理测试", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "tasks/" + user.ID.String() + "/assistant/" + uuid.NewString() + "/1.png"
+	if _, err := store.InsertAssistantMessage(ctx, env.st.Pool, store.AssistantMessage{
+		ID: uuid.New(), ConversationID: conversation.ID, Role: "assistant", Kind: "image", Status: "complete",
+		Metadata: map[string]any{"images": []map[string]any{{"fileKey": key}}}, CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	response := env.do(t, http.MethodDelete, "/api/v1/assistant/conversations/"+conversation.ID.String(), nil, token)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("delete conversation: status %d body %s", response.Code, response.Body.String())
+	}
+	var count int
+	if err := env.st.Pool.QueryRow(ctx,
+		`SELECT count(*) FROM object_cleanup_jobs WHERE object_key = $1`, key).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("cleanup job count = %d, want 1", count)
+	}
+}
+
+func TestDeleteAssistantMessageQueuesLaterGeneratedImages(t *testing.T) {
+	env := newCommunityEnv(t)
+	user, token := env.newUserSession(t, "user")
+	ctx := context.Background()
+	now := time.Now().UTC()
+	conversation, err := store.InsertAssistantConversation(ctx, env.st.Pool, uuid.New(), user.ID, "消息裁剪", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := store.InsertAssistantMessage(ctx, env.st.Pool, store.AssistantMessage{
+		ID: uuid.New(), ConversationID: conversation.ID, Role: "user", Content: "生成一张图",
+		Kind: "chat", Status: "complete", CreatedAt: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := fmt.Sprintf("tasks/%s/assistant/%s/1.png", user.ID, uuid.New())
+	if _, err := store.InsertAssistantMessage(ctx, env.st.Pool, store.AssistantMessage{
+		ID: uuid.New(), ConversationID: conversation.ID, Role: "assistant", Kind: "image",
+		Status: "complete", Metadata: map[string]any{"images": []map[string]any{{"fileKey": key}}},
+		CreatedAt: now.Add(time.Millisecond),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.InsertAssistantMessage(ctx, env.st.Pool, store.AssistantMessage{
+		ID: uuid.New(), ConversationID: conversation.ID, Role: "assistant", Content: "后续消息",
+		Kind: "chat", Status: "complete", CreatedAt: now.Add(2 * time.Millisecond),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	response := env.do(t, http.MethodDelete, "/api/v1/assistant/messages/"+source.ID.String()+"?scope=turn", nil, token)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("delete assistant message: status %d body %s", response.Code, response.Body.String())
+	}
+	var messageCount int
+	if err := env.st.Pool.QueryRow(ctx,
+		`SELECT count(*) FROM assistant_messages WHERE conversation_id = $1`, conversation.ID).Scan(&messageCount); err != nil {
+		t.Fatal(err)
+	}
+	if messageCount != 0 {
+		t.Fatalf("remaining assistant messages = %d, want 0", messageCount)
+	}
+	locked, err := store.LockReadyObjectCleanupJobs(ctx, env.st.Pool, time.Now().UTC(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 原图 + 约定推导的小图/展示图变体一并入队清理。
+	if len(locked) != 3 || !containsString(locked, key) {
+		t.Fatalf("message cleanup candidates = %#v, want %q plus 2 variants", locked, key)
+	}
+}
+
+func TestDeleteAssistantMessageImageRetainsSiblingsAndDeletesFinalMessage(t *testing.T) {
+	env := newCommunityEnv(t)
+	user, token := env.newUserSession(t, "user")
+	ctx := context.Background()
+	now := time.Now().UTC()
+	conversation, err := store.InsertAssistantConversation(ctx, env.st.Pool, uuid.New(), user.ID, "单图删除", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstKey := fmt.Sprintf("tasks/%s/assistant/%s/1.png", user.ID, uuid.New())
+	secondKey := fmt.Sprintf("tasks/%s/assistant/%s/2.png", user.ID, uuid.New())
+	message, err := store.InsertAssistantMessage(ctx, env.st.Pool, store.AssistantMessage{
+		ID: uuid.New(), ConversationID: conversation.ID, Role: "assistant", Kind: "image", Status: "complete",
+		Metadata: map[string]any{"images": []map[string]any{
+			{"id": "first", "fileKey": firstKey},
+			{"id": "second", "fileKey": secondKey},
+		}}, CreatedAt: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	response := env.do(t, http.MethodDelete, "/api/v1/assistant/messages/"+message.ID.String()+"/images/first", nil, token)
+	data, code := decode(t, response)
+	if response.Code != http.StatusOK || code != "" || data["messageDeleted"] != false {
+		t.Fatalf("delete first image: status %d data %#v body %s", response.Code, data, response.Body.String())
+	}
+	stored, err := store.GetAssistantMessage(ctx, env.st.Pool, message.ID)
+	if err != nil || stored == nil {
+		t.Fatalf("remaining message = %#v, err = %v", stored, err)
+	}
+	remaining := assistantReferenceItems(stored.Metadata["images"])
+	if len(remaining) != 1 || assistantMapText(remaining[0], "id") != "second" {
+		t.Fatalf("remaining images = %#v, want only second", remaining)
+	}
+	for _, key := range append([]string{firstKey}, store.AssistantVariantKeys(firstKey)...) {
+		var count int
+		if err := env.st.Pool.QueryRow(ctx, `SELECT count(*) FROM object_cleanup_jobs WHERE object_key = $1`, key).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("cleanup count for %q = %d, want 1", key, count)
+		}
+	}
+
+	response = env.do(t, http.MethodDelete, "/api/v1/assistant/messages/"+message.ID.String()+"/images/second", nil, token)
+	data, code = decode(t, response)
+	if response.Code != http.StatusOK || code != "" || data["messageDeleted"] != true {
+		t.Fatalf("delete final image: status %d data %#v body %s", response.Code, data, response.Body.String())
+	}
+	stored, err = store.GetAssistantMessage(ctx, env.st.Pool, message.ID)
+	if err != nil || stored != nil {
+		t.Fatalf("message after final image deletion = %#v, err = %v", stored, err)
+	}
+	for _, key := range append([]string{secondKey}, store.AssistantVariantKeys(secondKey)...) {
+		var count int
+		if err := env.st.Pool.QueryRow(ctx, `SELECT count(*) FROM object_cleanup_jobs WHERE object_key = $1`, key).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("cleanup count for %q = %d, want 1", key, count)
+		}
+	}
 }
 
 func TestValidateAssistantRunCapacity(t *testing.T) {
 	conversationID := uuid.New()
-	active := []*store.AssistantRun{{ConversationID: conversationID}}
-	err := validateAssistantRunCapacity(active, conversationID)
+	active := []*store.AssistantRun{{ConversationID: conversationID, Status: "running"}}
+	err := validateAssistantRunCapacity(active, conversationID, false)
 	appErr, ok := apperr.As(err)
 	if !ok || appErr.Code != "assistant_conversation_busy" {
 		t.Fatalf("same conversation error = %#v", err)
@@ -229,16 +1347,235 @@ func TestValidateAssistantRunCapacity(t *testing.T) {
 
 	active = make([]*store.AssistantRun, 0, assistantActiveRunLimit)
 	for range assistantActiveRunLimit {
-		active = append(active, &store.AssistantRun{ConversationID: uuid.New()})
+		active = append(active, &store.AssistantRun{ConversationID: uuid.New(), Status: "running"})
 	}
-	err = validateAssistantRunCapacity(active, conversationID)
+	err = validateAssistantRunCapacity(active, conversationID, false)
 	appErr, ok = apperr.As(err)
 	if !ok || appErr.Code != "assistant_run_limit" {
 		t.Fatalf("run limit error = %#v", err)
 	}
 
-	if err := validateAssistantRunCapacity(active[:assistantActiveRunLimit-1], conversationID); err != nil {
+	if err := validateAssistantRunCapacity(active[:assistantActiveRunLimit-1], conversationID, false); err != nil {
 		t.Fatalf("three other conversations should be allowed: %v", err)
+	}
+
+	queued := make([]*store.AssistantRun, 0, assistantUserQueueLimit)
+	for range assistantUserQueueLimit {
+		queued = append(queued, &store.AssistantRun{ConversationID: uuid.New(), Status: "queued"})
+	}
+	err = validateAssistantRunCapacity(queued, conversationID, true)
+	appErr, ok = apperr.As(err)
+	if !ok || appErr.Code != "assistant_queue_full" {
+		t.Fatalf("queue limit error = %#v", err)
+	}
+}
+
+func TestAssistantRunIdempotencyKeyAndFingerprint(t *testing.T) {
+	key, err := normalizeAssistantIdempotencyKey("", " client-message-id ")
+	if err != nil || key != "client-message-id" {
+		t.Fatalf("fallback key = %q err=%v", key, err)
+	}
+	if _, err := normalizeAssistantIdempotencyKey("bad\nkey", ""); err == nil {
+		t.Fatal("expected control-character key rejection")
+	}
+	body := assistantRunIn{ConversationID: uuid.NewString(), IdempotencyKey: key, Prompt: "问题", Mode: "chat"}
+	first, err := assistantRunRequestFingerprint(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := assistantRunRequestFingerprint(body)
+	if err != nil || first != second || len(first) != 64 {
+		t.Fatalf("fingerprints = %q %q err=%v", first, second, err)
+	}
+	body.Prompt = "另一个问题"
+	changed, err := assistantRunRequestFingerprint(body)
+	if err != nil || changed == first {
+		t.Fatalf("changed fingerprint = %q err=%v", changed, err)
+	}
+}
+
+func TestSelectAssistantRunModelFallsBackForHistoricalRetry(t *testing.T) {
+	cfg := modelconfig.Empty()
+	cfg.Providers = []modelconfig.Provider{{
+		ID: "provider", Name: "Provider", Adapter: modelconfig.AdapterOpenAI,
+		BaseURL: "https://example.com", APIKey: "test-key", Enabled: true,
+	}}
+	cfg.Models = []modelconfig.Model{{
+		ID: "current-image", Name: "Current Image", ProviderID: "provider", UpstreamModel: "image-current",
+		Kind: modelconfig.ModelKindImage, Public: true, Default: true, Enabled: true,
+	}}
+	cfg.Workspaces = map[string]modelconfig.WorkspaceBinding{
+		modelconfig.WorkspaceAssistant: {
+			ModelIDs:        []string{"current-image"},
+			DefaultModelIDs: map[string]string{modelconfig.ModelKindImage: "current-image"},
+		},
+	}
+
+	if selection, ok := selectAssistantRunModel(
+		cfg, modelconfig.WorkspaceAssistant, modelconfig.ModelKindImage, "removed-image", false,
+	); ok || selection != nil {
+		t.Fatalf("new request must reject removed model: %#v, %v", selection, ok)
+	}
+	selection, ok := selectAssistantRunModel(
+		cfg, modelconfig.WorkspaceAssistant, modelconfig.ModelKindImage, "removed-image", true,
+	)
+	if !ok || selection == nil || selection.Model.ID != "current-image" {
+		t.Fatalf("historical retry fallback = %#v, %v", selection, ok)
+	}
+}
+
+func TestUIDesignAnalysisCanUseAssistantChatFallback(t *testing.T) {
+	cfg := modelconfig.Empty()
+	cfg.Providers = []modelconfig.Provider{{
+		ID: "provider", Name: "Provider", Adapter: modelconfig.AdapterOpenAI,
+		BaseURL: "https://example.com", APIKey: "test-key", Enabled: true,
+	}}
+	cfg.Models = []modelconfig.Model{{
+		ID: "assistant-chat", Name: "Assistant Chat", ProviderID: "provider", UpstreamModel: "chat-current",
+		Kind: modelconfig.ModelKindChat, Public: true, Default: true, Enabled: true,
+	}}
+	cfg.Workspaces = map[string]modelconfig.WorkspaceBinding{
+		modelconfig.WorkspaceAssistant: {
+			ModelIDs:        []string{"assistant-chat"},
+			DefaultModelIDs: map[string]string{modelconfig.ModelKindChat: "assistant-chat"},
+		},
+		modelconfig.WorkspaceUIDesign: {ModelIDs: []string{}},
+	}
+
+	selection, ok := selectAssistantServiceModel(
+		cfg, modelconfig.WorkspaceUIDesign, modelconfig.ModelKindChat, "assistant-chat", false,
+	)
+	if !ok || selection == nil || selection.Model.ID != "assistant-chat" {
+		t.Fatalf("assistant chat fallback = %#v, %v", selection, ok)
+	}
+}
+
+func TestInfiniteCanvasSelectsItsAssignedChatModel(t *testing.T) {
+	cfg := modelconfig.Empty()
+	cfg.Providers = []modelconfig.Provider{{
+		ID: "provider", Name: "Provider", Adapter: modelconfig.AdapterOpenAI,
+		BaseURL: "https://example.com", APIKey: "test-key", Enabled: true,
+	}}
+	cfg.Models = []modelconfig.Model{
+		{ID: "assistant-chat", Name: "Assistant", ProviderID: "provider", UpstreamModel: "assistant-upstream", Kind: modelconfig.ModelKindChat, Public: true, Enabled: true},
+		{ID: "canvas-chat", Name: "Canvas", ProviderID: "provider", UpstreamModel: "canvas-upstream", Kind: modelconfig.ModelKindChat, Public: true, Enabled: true},
+	}
+	cfg.Workspaces = map[string]modelconfig.WorkspaceBinding{
+		modelconfig.WorkspaceAssistant: {ModelIDs: []string{"assistant-chat"}},
+		modelconfig.WorkspaceCanvas: {
+			ModelIDs:        []string{"canvas-chat"},
+			DefaultModelIDs: map[string]string{modelconfig.ModelKindChat: "canvas-chat"},
+		},
+	}
+
+	selection, ok := selectAssistantServiceModel(cfg, modelconfig.WorkspaceCanvas, modelconfig.ModelKindChat, "canvas-chat", false)
+	if !ok || selection == nil || selection.Model.ID != "canvas-chat" {
+		t.Fatalf("canvas chat selection = %#v, %v", selection, ok)
+	}
+	if selection, ok := selectAssistantServiceModel(cfg, modelconfig.WorkspaceCanvas, modelconfig.ModelKindChat, "assistant-chat", false); ok || selection != nil {
+		t.Fatalf("assistant model must not leak into canvas assignment: %#v, %v", selection, ok)
+	}
+}
+
+func TestCanvasAgentReasoningPrice(t *testing.T) {
+	model := modelconfig.Model{
+		Kind: modelconfig.ModelKindChat, UpstreamModel: "gpt-5.6-sol", PriceCents: 7,
+		SupportedReasoningEfforts: []string{"low", "medium", "high", "xhigh", "max"},
+	}
+	tests := []struct {
+		effort    string
+		wantPrice int64
+	}{
+		{effort: "medium", wantPrice: 21},
+		{effort: "low", wantPrice: 21},
+		{effort: "xhigh", wantPrice: 35},
+		{effort: "high", wantPrice: 35},
+		{effort: "max", wantPrice: 35},
+	}
+	for _, tt := range tests {
+		price := modelconfig.ResolveReasoningPrice(model, tt.effort, modelconfig.ReasoningPriceScopeCanvasAgent)
+		if price.StandardCents != tt.wantPrice || price.EffectiveCents != tt.wantPrice {
+			t.Fatalf("canvas Agent price for %q = %#v, want %d", tt.effort, price, tt.wantPrice)
+		}
+	}
+}
+
+func TestApplyAssistantReasoningPriceSnapshotUsesConfiguredScope(t *testing.T) {
+	assistantDiscount, canvasDiscount := int64(8), int64(29)
+	model := modelconfig.Model{
+		Kind: modelconfig.ModelKindChat, UpstreamModel: "gpt-5.6-sol", PriceCents: 5,
+		ReasoningPricing: &modelconfig.ReasoningPricing{
+			DefaultEffort: "high",
+			Efforts: map[string]modelconfig.ReasoningEffortPricing{
+				"high": {
+					AssistantPriceCents: 11, AssistantDiscountPriceCents: &assistantDiscount,
+					CanvasAgentPriceCents: 41, CanvasAgentDiscountPriceCents: &canvasDiscount,
+				},
+			},
+		},
+	}
+	tests := []struct {
+		scope         string
+		wantStandard  int64
+		wantEffective int64
+	}{
+		{scope: modelconfig.ReasoningPriceScopeAssistant, wantStandard: 11, wantEffective: 8},
+		{scope: modelconfig.ReasoningPriceScopeCanvasAgent, wantStandard: 41, wantEffective: 29},
+	}
+	for _, tt := range tests {
+		params := map[string]any{}
+		got := applyAssistantReasoningPriceSnapshot(params, model, "high", tt.scope, 5)
+		if got != tt.wantEffective || params["_chatCostCents"] != tt.wantEffective ||
+			params["_reasoningStandardPriceCents"] != tt.wantStandard ||
+			params["_reasoningPriceScope"] != tt.scope || params["_reasoningPricingVersion"] != 5 {
+			t.Fatalf("snapshot for %s = %#v, effective=%d", tt.scope, params, got)
+		}
+	}
+}
+
+func TestWorkspaceReasoningPriceOverridesConfiguredEffortPrice(t *testing.T) {
+	discount := int64(6)
+	model := modelconfig.Model{
+		ID: "chat", Kind: modelconfig.ModelKindChat, UpstreamModel: "gpt-5.6-sol", PriceCents: 5,
+		SupportedReasoningEfforts: []string{"high"},
+		ReasoningPricing: &modelconfig.ReasoningPricing{
+			DefaultEffort: "high",
+			Efforts: map[string]modelconfig.ReasoningEffortPricing{
+				"high": {AssistantPriceCents: 30, CanvasAgentPriceCents: 40},
+			},
+		},
+	}
+	cfg := modelconfig.Config{Workspaces: map[string]modelconfig.WorkspaceBinding{
+		modelconfig.WorkspaceAssistant: {
+			ModelIDs: []string{"chat"},
+			ModelPricing: map[string]modelconfig.WorkspaceModelPricing{
+				"chat": {PriceCents: 9, DiscountPriceCents: &discount},
+			},
+		},
+	}}
+	assistant := workspaceReasoningPrice(&cfg, modelconfig.WorkspaceAssistant, model, "high", modelconfig.ReasoningPriceScopeAssistant)
+	if assistant.StandardCents != 9 || assistant.EffectiveCents != 6 {
+		t.Fatalf("assistant workspace reasoning price = %#v", assistant)
+	}
+	canvas := workspaceReasoningPrice(&cfg, modelconfig.WorkspaceCanvas, model, "high", modelconfig.ReasoningPriceScopeCanvasAgent)
+	if canvas.StandardCents != 40 || canvas.EffectiveCents != 40 {
+		t.Fatalf("canvas inherited reasoning price = %#v", canvas)
+	}
+}
+
+func TestAssistantRunReservedCostDoesNotPreauthorizeImageForAgent(t *testing.T) {
+	tests := []struct {
+		mode string
+		want int64
+	}{
+		{mode: "chat", want: 1},
+		{mode: "agent", want: 1},
+		{mode: "image", want: 20},
+	}
+	for _, tt := range tests {
+		if got := assistantRunReservedCost(tt.mode, 1, 20); got != tt.want {
+			t.Fatalf("reserved cost for %s = %d, want %d", tt.mode, got, tt.want)
+		}
 	}
 }
 
@@ -265,7 +1602,7 @@ func TestDeleteActiveAssistantConversationRequiresConfirmation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = store.InsertAssistantRun(ctx, env.st.Pool, store.AssistantRun{
+	run, err := store.InsertAssistantRun(ctx, env.st.Pool, store.AssistantRun{
 		ID: uuid.New(), UserID: user.ID, ConversationID: conversation.ID,
 		UserMessageID: userMessage.ID, AssistantMessageID: assistantMessage.ID,
 		Mode: "image", Prompt: "生成图片",
@@ -282,6 +1619,12 @@ func TestDeleteActiveAssistantConversationRequiresConfirmation(t *testing.T) {
 	if _, code := decode(t, refused); code != "assistant_conversation_busy" {
 		t.Fatalf("delete active conversation code = %q", code)
 	}
+	refusedMessage := env.do(t, http.MethodDelete,
+		"/api/v1/assistant/messages/"+assistantMessage.ID.String(), nil, token)
+	if refusedMessage.Code != http.StatusConflict {
+		t.Fatalf("delete active assistant message: status %d body %s",
+			refusedMessage.Code, refusedMessage.Body.String())
+	}
 
 	confirmed := env.do(t, http.MethodDelete, path+"?cancelActive=true", nil, token)
 	if confirmed.Code != http.StatusNoContent {
@@ -290,6 +1633,15 @@ func TestDeleteActiveAssistantConversationRequiresConfirmation(t *testing.T) {
 	stored, err := store.GetUserAssistantConversation(ctx, env.st.Pool, user.ID, conversation.ID)
 	if err != nil || stored != nil {
 		t.Fatalf("conversation after confirmed delete = %#v, err = %v", stored, err)
+	}
+	archivedRun, err := store.GetAssistantRun(ctx, env.st.Pool, run.ID)
+	if err != nil || archivedRun != nil {
+		t.Fatalf("assistant run after confirmed delete = %#v, err = %v", archivedRun, err)
+	}
+	auditTask, err := store.GetTask(ctx, env.st.Pool, run.ID)
+	if err != nil || auditTask == nil || auditTask.Status != "canceled" ||
+		auditTask.DeletedAt == nil || auditTask.DeletionActor == nil || *auditTask.DeletionActor != "user" {
+		t.Fatalf("assistant deletion audit task = %#v, err = %v", auditTask, err)
 	}
 }
 
@@ -319,7 +1671,7 @@ func TestAssistantRunStatePersistence(t *testing.T) {
 	run, err := store.InsertAssistantRun(ctx, env.st.Pool, store.AssistantRun{
 		ID: uuid.New(), UserID: user.ID, ConversationID: conversation.ID,
 		UserMessageID: userMessage.ID, AssistantMessageID: assistantMessage.ID,
-		Mode: "agent", Prompt: "你好", Params: map[string]any{"count": 2},
+		Mode: "agent", Prompt: "你好", Params: map[string]any{"count": 2}, ReservedCents: 7,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -331,7 +1683,7 @@ func TestAssistantRunStatePersistence(t *testing.T) {
 	if err := store.SetAssistantRunStage(ctx, env.st.Pool, run.ID, "chat", "answering"); err != nil {
 		t.Fatal(err)
 	}
-	completed, err := store.CompleteAssistantRun(ctx, env.st.Pool, run.ID, "chat")
+	completed, err := store.CompleteAssistantRun(ctx, env.st.Pool, run.ID, "chat", 7)
 	if err != nil || !completed {
 		t.Fatalf("complete = %v, err = %v", completed, err)
 	}
@@ -339,7 +1691,7 @@ func TestAssistantRunStatePersistence(t *testing.T) {
 	if err != nil || stored == nil || stored.Status != "succeeded" || stored.Stage != "complete" {
 		t.Fatalf("stored run = %#v, err = %v", stored, err)
 	}
-	adminTasks, err := store.ListAdminTasks(ctx, env.st.Pool, "assistant", "succeeded", "", nil, 20, nil)
+	adminTasks, err := store.ListAdminTasks(ctx, env.st.Pool, "assistant", "succeeded", "", nil, 20, nil, "")
 	if err != nil {
 		t.Fatalf("list admin assistant tasks: %v", err)
 	}
@@ -353,14 +1705,249 @@ func TestAssistantRunStatePersistence(t *testing.T) {
 	if listed == nil || listed.Type != "assistant" || listed.Status != "succeeded" {
 		t.Fatalf("admin assistant task = %#v", listed)
 	}
+	if listed.CostCents != 7 {
+		t.Fatalf("admin assistant cost = %d, want 7", listed.CostCents)
+	}
 	if listed.Params["stage"] != "complete" || listed.Params["resolvedMode"] != "chat" {
 		t.Fatalf("admin assistant params = %#v", listed.Params)
 	}
-	overview, err := store.GetAdminTaskOverview(ctx, env.st.Pool, "assistant", "", []uuid.UUID{user.ID})
+	overview, err := store.GetAdminTaskOverview(ctx, env.st.Pool, "assistant", "", []uuid.UUID{user.ID}, "")
 	if err != nil {
 		t.Fatalf("admin assistant overview: %v", err)
 	}
 	if overview.Total != 1 || overview.Succeeded != 1 || overview.Failed != 0 || overview.Today != 1 {
 		t.Fatalf("admin assistant overview = %+v", overview)
+	}
+
+	canvasConversation, err := store.InsertAssistantConversationWithWorkspace(
+		ctx, env.st.Pool, uuid.New(), user.ID, "画布任务", store.PromptTaskTypeCanvas, now.Add(time.Second),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canvasUserMessage, err := store.InsertAssistantMessage(ctx, env.st.Pool, store.AssistantMessage{
+		ID: uuid.New(), ConversationID: canvasConversation.ID, Role: "user", Content: "分析商品图",
+		Kind: "chat", Status: "complete", CreatedAt: now.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	canvasAssistantMessage, err := store.InsertAssistantMessage(ctx, env.st.Pool, store.AssistantMessage{
+		ID: uuid.New(), ConversationID: canvasConversation.ID, Role: "assistant", Kind: "chat",
+		Status: "queued", CreatedAt: now.Add(time.Second + time.Millisecond),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	canvasRun, err := store.InsertAssistantRun(ctx, env.st.Pool, store.AssistantRun{
+		ID: uuid.New(), UserID: user.ID, ConversationID: canvasConversation.ID,
+		UserMessageID: canvasUserMessage.ID, AssistantMessageID: canvasAssistantMessage.ID,
+		Mode: "chat", Prompt: "分析商品图", Params: map[string]any{"count": 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed, claimErr := store.ClaimAssistantRun(ctx, env.st.Pool, canvasRun.ID); claimErr != nil || !claimed {
+		t.Fatalf("claim canvas run = %v, err = %v", claimed, claimErr)
+	}
+	if completed, completeErr := store.CompleteAssistantRun(ctx, env.st.Pool, canvasRun.ID, "chat", 0); completeErr != nil || !completed {
+		t.Fatalf("complete canvas run = %v, err = %v", completed, completeErr)
+	}
+
+	assistantOnly, err := store.ListAdminTasks(ctx, env.st.Pool, "assistant", "succeeded", "", nil, 20, nil, "")
+	if err != nil || len(assistantOnly) != 1 || assistantOnly[0].ID != run.ID {
+		t.Fatalf("assistant tasks polluted by canvas run: %#v, err=%v", assistantOnly, err)
+	}
+	canvasOnly, err := store.ListAdminTasks(ctx, env.st.Pool, "", "succeeded", "", nil, 20, nil, store.CanvasTaskSource)
+	if err != nil || len(canvasOnly) != 1 || canvasOnly[0].ID != canvasRun.ID {
+		t.Fatalf("canvas task classification = %#v, err=%v", canvasOnly, err)
+	}
+	canvasAdminDict := adminTaskDict(canvasOnly[0], nil)
+	if canvasAdminDict["source"] != store.PromptTaskTypeCanvas {
+		t.Fatalf("canvas admin source = %#v", canvasAdminDict)
+	}
+}
+
+func TestCancelAssistantRunQueuesGeneratedImagesAtomically(t *testing.T) {
+	env := newCommunityEnv(t)
+	user, token := env.newUserSession(t, "user")
+	ctx := context.Background()
+	now := time.Now().UTC()
+	conversation, err := store.InsertAssistantConversation(ctx, env.st.Pool, uuid.New(), user.ID, "取消清理", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userMessage, err := store.InsertAssistantMessage(ctx, env.st.Pool, store.AssistantMessage{
+		ID: uuid.New(), ConversationID: conversation.ID, Role: "user", Content: "生成图片",
+		Kind: "chat", Status: "complete", CreatedAt: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assistantMessageID := uuid.New()
+	imageKey := fmt.Sprintf("tasks/%s/assistant/%s/1.png", user.ID, uuid.New())
+	proposalImageKey := fmt.Sprintf("tasks/%s/assistant/%s/2.png", user.ID, uuid.New())
+	assistantMessage, err := store.InsertAssistantMessage(ctx, env.st.Pool, store.AssistantMessage{
+		ID: assistantMessageID, ConversationID: conversation.ID, Role: "assistant", Kind: "image",
+		Status: "running", Metadata: map[string]any{
+			"images": []map[string]any{{"fileKey": imageKey}},
+			"proposal": map[string]any{
+				"images": []map[string]any{{"fileKey": proposalImageKey}},
+			},
+		}, CreatedAt: now.Add(time.Millisecond),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := store.InsertAssistantRun(ctx, env.st.Pool, store.AssistantRun{
+		ID: uuid.New(), UserID: user.ID, ConversationID: conversation.ID,
+		UserMessageID: userMessage.ID, AssistantMessageID: assistantMessage.ID,
+		Mode: "image", Prompt: "生成图片",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.st.Pool.Exec(ctx, `UPDATE assistant_runs SET status = 'running', stage = 'generating-image' WHERE id = $1`, run.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	response := env.do(t, http.MethodPatch, "/api/v1/assistant/runs/"+run.ID.String(),
+		map[string]any{"status": "canceled"}, token)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "assistant_cancel_confirmation_required") {
+		t.Fatalf("unconfirmed assistant cancel: status %d body %s", response.Code, response.Body.String())
+	}
+	stillRunning, err := store.GetAssistantRun(ctx, env.st.Pool, run.ID)
+	if err != nil || stillRunning == nil || stillRunning.Status != "running" {
+		t.Fatalf("run changed before confirmation = %#v err=%v", stillRunning, err)
+	}
+
+	response = env.do(t, http.MethodPatch, "/api/v1/assistant/runs/"+run.ID.String(),
+		map[string]any{"status": "canceled", "acknowledgeUpstream": true}, token)
+	if response.Code != http.StatusOK {
+		t.Fatalf("cancel assistant run: status %d body %s", response.Code, response.Body.String())
+	}
+	storedRun, err := store.GetAssistantRun(ctx, env.st.Pool, run.ID)
+	if err != nil || storedRun == nil || storedRun.Status != "canceled" || storedRun.ErrorCode == nil || *storedRun.ErrorCode != "user_canceled" || storedRun.ErrorMessage == nil || *storedRun.ErrorMessage != "用户主动停止任务" {
+		t.Fatalf("stored canceled run = %#v, err = %v", storedRun, err)
+	}
+	adminTasks, err := store.ListAdminTasks(ctx, env.st.Pool, store.PromptTaskTypeAssistant, "canceled", "user_canceled", []uuid.UUID{user.ID}, 20, nil, "")
+	if err != nil || len(adminTasks) != 1 || adminTasks[0].ID != run.ID || adminTasks[0].ErrorCode == nil || *adminTasks[0].ErrorCode != "user_canceled" || adminTasks[0].ErrorMessage == nil || *adminTasks[0].ErrorMessage != "用户主动停止任务" {
+		t.Fatalf("admin canceled task = %#v, err = %v", adminTasks, err)
+	}
+	storedMessage, err := store.GetAssistantMessage(ctx, env.st.Pool, assistantMessageID)
+	if err != nil || storedMessage == nil || storedMessage.Status != "stopped" {
+		t.Fatalf("stored stopped message = %#v, err = %v", storedMessage, err)
+	}
+	var hasImages, hasProposalImages bool
+	if err := env.st.Pool.QueryRow(ctx,
+		`SELECT metadata ? 'images', COALESCE((metadata->'proposal') ? 'images', false)
+		 FROM assistant_messages WHERE id = $1`, assistantMessageID).Scan(&hasImages, &hasProposalImages); err != nil {
+		t.Fatal(err)
+	}
+	if hasImages || hasProposalImages {
+		t.Fatalf("stopped message still references outputs: images=%v proposalImages=%v", hasImages, hasProposalImages)
+	}
+	locked, err := store.LockReadyObjectCleanupJobs(ctx, env.st.Pool, time.Now().UTC(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 每个原图都会带 2 个变体 key 入队清理。
+	if len(locked) != 6 || !containsString(locked, imageKey) || !containsString(locked, proposalImageKey) {
+		t.Fatalf("assistant cleanup candidates = %#v, want %q and %q plus variants", locked, imageKey, proposalImageKey)
+	}
+}
+
+func TestAdminAssistantTerminalActionsQueueGeneratedImagesAtomically(t *testing.T) {
+	env := newCommunityEnv(t)
+	user, _ := env.newUserSession(t, "user")
+	_, adminToken := env.newUserSession(t, "admin")
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	createRun := func(status string) (uuid.UUID, uuid.UUID, string) {
+		t.Helper()
+		conversation, err := store.InsertAssistantConversation(ctx, env.st.Pool, uuid.New(), user.ID, "后台终态清理", now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		userMessage, err := store.InsertAssistantMessage(ctx, env.st.Pool, store.AssistantMessage{
+			ID: uuid.New(), ConversationID: conversation.ID, Role: "user", Content: "生成图片",
+			Kind: "chat", Status: "complete", CreatedAt: now,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		messageID := uuid.New()
+		key := fmt.Sprintf("tasks/%s/assistant/%s/1.png", user.ID, uuid.New())
+		message, err := store.InsertAssistantMessage(ctx, env.st.Pool, store.AssistantMessage{
+			ID: messageID, ConversationID: conversation.ID, Role: "assistant", Kind: "image",
+			Status: status, Metadata: map[string]any{"images": []map[string]any{{"fileKey": key}}},
+			CreatedAt: now.Add(time.Millisecond),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		run, err := store.InsertAssistantRun(ctx, env.st.Pool, store.AssistantRun{
+			ID: uuid.New(), UserID: user.ID, ConversationID: conversation.ID,
+			UserMessageID: userMessage.ID, AssistantMessageID: message.ID,
+			Mode: "image", Prompt: "生成图片",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status == "running" {
+			if _, err := env.st.Pool.Exec(ctx,
+				`UPDATE assistant_runs SET status = 'running', stage = 'generating-image' WHERE id = $1`, run.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return run.ID, messageID, key
+	}
+
+	queuedRunID, queuedMessageID, queuedKey := createRun("queued")
+	runningRunID, runningMessageID, runningKey := createRun("running")
+	canceled := env.do(t, http.MethodPatch, "/api/v1/admin/tasks/"+queuedRunID.String(),
+		map[string]any{"status": "canceled"}, adminToken)
+	if canceled.Code != http.StatusOK {
+		t.Fatalf("admin cancel assistant run: status %d body %s", canceled.Code, canceled.Body.String())
+	}
+	failed := env.do(t, http.MethodPatch, "/api/v1/admin/tasks/"+runningRunID.String(),
+		map[string]any{"status": "failed"}, adminToken)
+	if failed.Code != http.StatusOK {
+		t.Fatalf("admin force-fail assistant run: status %d body %s", failed.Code, failed.Body.String())
+	}
+
+	for _, item := range []struct {
+		runID     uuid.UUID
+		messageID uuid.UUID
+		status    string
+	}{
+		{queuedRunID, queuedMessageID, "canceled"},
+		{runningRunID, runningMessageID, "failed"},
+	} {
+		run, err := store.GetAssistantRun(ctx, env.st.Pool, item.runID)
+		if err != nil || run == nil || run.Status != item.status {
+			t.Fatalf("admin terminal run = %#v err=%v, want %s", run, err, item.status)
+		}
+		message, err := store.GetAssistantMessage(ctx, env.st.Pool, item.messageID)
+		if err != nil || message == nil {
+			t.Fatalf("admin terminal message = %#v err=%v", message, err)
+		}
+		var hasImages bool
+		if err := env.st.Pool.QueryRow(ctx,
+			`SELECT metadata ? 'images' FROM assistant_messages WHERE id = $1`, item.messageID).Scan(&hasImages); err != nil {
+			t.Fatal(err)
+		}
+		if hasImages {
+			t.Fatalf("admin terminal message %s still references images", item.messageID)
+		}
+	}
+	locked, err := store.LockReadyObjectCleanupJobs(ctx, env.st.Pool, time.Now().UTC(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 每个原图都会带 2 个变体 key 入队清理。
+	if len(locked) != 6 || !containsString(locked, queuedKey) || !containsString(locked, runningKey) {
+		t.Fatalf("admin cleanup candidates = %#v, want %q and %q plus variants", locked, queuedKey, runningKey)
 	}
 }

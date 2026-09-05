@@ -5,10 +5,70 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
+
+func TestImageDownloadTimeoutRetriesStalledCompletedImagesQuickly(t *testing.T) {
+	if got := imageDownloadTimeout(5 * time.Minute); got != 20*time.Second {
+		t.Fatalf("capped timeout = %s, want 20s", got)
+	}
+	if got := imageDownloadTimeout(8 * time.Second); got != 8*time.Second {
+		t.Fatalf("configured timeout = %s, want 8s", got)
+	}
+	if got := imageDownloadTimeout(0); got != 20*time.Second {
+		t.Fatalf("default timeout = %s, want 20s", got)
+	}
+}
+
+func TestImageDownloadErrorKindDoesNotExposeResultURL(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "not ready", err: &imageNotReadyError{err: &UpstreamError{StatusCode: http.StatusNotFound}}, want: "not_ready"},
+		{name: "timeout", err: &NetworkError{Err: context.DeadlineExceeded}, want: "timeout"},
+		{name: "network", err: &NetworkError{Err: io.ErrUnexpectedEOF}, want: "network"},
+		{name: "gateway", err: &UpstreamError{StatusCode: http.StatusBadGateway}, want: "http_502"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := imageDownloadErrorKind(test.err); got != test.want {
+				t.Fatalf("kind = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestTaskImagesSupportsPlatformSixteenImageLimit(t *testing.T) {
+	items := make([]map[string]any, maxTaskImages)
+	for index := range items {
+		items[index] = map[string]any{"b64_json": "YQ=="}
+	}
+	client := NewWithPolicy("http://example.test", "test", 30, true)
+	images, _, err := client.taskImagesB64(context.Background(), items)
+	if err != nil || len(images) != maxTaskImages {
+		t.Fatalf("images=%d err=%v, want %d images", len(images), err, maxTaskImages)
+	}
+	items = append(items, map[string]any{"b64_json": "YQ=="})
+	if _, _, err := client.taskImagesB64(context.Background(), items); err == nil {
+		t.Fatal("seventeen-image response must be rejected")
+	}
+}
+
+func TestAsyncSubmitTimeoutCoversSlowReferenceHandoff(t *testing.T) {
+	if asyncSubmitTimeout < 2*time.Minute {
+		t.Fatalf("async submit timeout=%s, want at least 2m", asyncSubmitTimeout)
+	}
+}
 
 func TestEndpointURLAvoidsDuplicateVersionPath(t *testing.T) {
 	tests := []struct {
@@ -44,9 +104,24 @@ func TestEndpointURLUsesOriginForAsyncAPIAndPreservesQuery(t *testing.T) {
 }
 
 func TestExtractB64ListRejectsTooManyImages(t *testing.T) {
-	body := []byte(`{"data":[{"b64_json":"a"},{"b64_json":"b"},{"b64_json":"c"},{"b64_json":"d"},{"b64_json":"e"}]}`)
+	items := make([]map[string]string, maxTaskImages+1)
+	for index := range items {
+		items[index] = map[string]string{"b64_json": "a"}
+	}
+	body, err := json.Marshal(map[string]any{"data": items})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := extractB64List(body); err == nil {
 		t.Fatal("expected too-many-images error")
+	}
+}
+
+func TestExtractB64ListReturnsStructuredTextImmediately(t *testing.T) {
+	body := []byte(`{"output":{"content":[{"type":"output_text","text":"内容审核拒绝：请修改提示词"}]}}`)
+	_, err := extractB64List(body)
+	if err == nil || err.Error() != "内容审核拒绝：请修改提示词" || IsRetryableError(err) {
+		t.Fatalf("err=%v, want upstream text result", err)
 	}
 }
 
@@ -127,7 +202,7 @@ func TestGenerateImagesWithOptionsForwardsConfiguredCapabilities(t *testing.T) {
 	client := NewWithPolicy(server.URL, "test-key", 30, true)
 	_, err := client.GenerateImagesWithOptions(
 		context.Background(), "task-options", "draw a logo", "gpt-image-2", 1, "1024x1024",
-		ImageOptions{Quality: "medium", TransparentBackground: true, OutputFormat: "webp", ModerationLevel: "low"},
+		ImageOptions{Quality: "medium", InputFidelity: "high", TransparentBackground: true, OutputFormat: "webp", ModerationLevel: "low"},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -138,6 +213,261 @@ func TestGenerateImagesWithOptionsForwardsConfiguredCapabilities(t *testing.T) {
 		if payload[key] != want {
 			t.Fatalf("%s = %#v, want %#v", key, payload[key], want)
 		}
+	}
+	if _, exists := payload["input_fidelity"]; exists {
+		t.Fatal("generation payload must not include input_fidelity without reference images")
+	}
+}
+
+func TestEditImagesWithOptionsForwardsInputFidelity(t *testing.T) {
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"edit-fidelity","status":"success","data":[{"b64_json":"done"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	_, err := client.EditImagesWithOptions(
+		context.Background(), "edit-fidelity", "keep identity", "gpt-image-2", 1,
+		[]string{"aW1hZ2U="}, "1024x1024", ImageOptions{InputFidelity: "high"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload["input_fidelity"] != "high" {
+		t.Fatalf("input_fidelity = %#v", payload["input_fidelity"])
+	}
+	images, ok := payload["images"].([]any)
+	if !ok || len(images) != 1 {
+		t.Fatalf("images = %#v", payload["images"])
+	}
+	image, ok := images[0].(map[string]any)
+	if !ok || image["b64_json"] != "aW1hZ2U=" {
+		t.Fatalf("image = %#v, want b64_json", images[0])
+	}
+}
+
+func TestOpenAIImageEditsUseMultipartFiles(t *testing.T) {
+	reference := png1x1()
+	encoded := base64.StdEncoding.EncodeToString(reference)
+	tests := []struct {
+		name        string
+		count       int
+		field       string
+		callTracked bool
+	}{
+		{name: "single", count: 1, field: "image"},
+		{name: "multiple", count: 2, field: "image[]", callTracked: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/images/edits" {
+					t.Fatalf("path = %q, want /v1/images/edits", r.URL.Path)
+				}
+				if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data; boundary=") {
+					t.Fatalf("content type = %q", r.Header.Get("Content-Type"))
+				}
+				if err := r.ParseMultipartForm(8 << 20); err != nil {
+					t.Fatal(err)
+				}
+				for key, want := range map[string]string{
+					"model": "gpt-image-2-high", "prompt": "refine UI", "n": fmt.Sprint(test.count),
+					"response_format": "b64_json", "size": "1024x576", "quality": "high",
+				} {
+					if got := r.FormValue(key); got != want {
+						t.Fatalf("%s = %q, want %q", key, got, want)
+					}
+				}
+				files := r.MultipartForm.File[test.field]
+				if len(files) != test.count {
+					t.Fatalf("%s file count = %d, want %d", test.field, len(files), test.count)
+				}
+				for _, file := range files {
+					if file.Header.Get("Content-Type") != "image/png" {
+						t.Fatalf("file content type = %q", file.Header.Get("Content-Type"))
+					}
+					opened, err := file.Open()
+					if err != nil {
+						t.Fatal(err)
+					}
+					data, err := io.ReadAll(opened)
+					_ = opened.Close()
+					if err != nil {
+						t.Fatal(err)
+					}
+					if string(data) != string(reference) {
+						t.Fatal("multipart reference image changed")
+					}
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"data":[{"b64_json":"done"}]}`))
+			}))
+			defer server.Close()
+
+			client := NewWithPolicy(server.URL+"/v1", "test-key", 30, true).WithOpenAIImageEdits()
+			inputs := make([]string, test.count)
+			for index := range inputs {
+				inputs[index] = encoded
+			}
+			var images []string
+			var err error
+			if test.callTracked {
+				var pending bool
+				var upstreamTaskID string
+				images, pending, upstreamTaskID, err = client.SubmitEditImagesTracked(
+					context.Background(), "local-id", "refine UI", "gpt-image-2-high", test.count,
+					inputs, "1024x576", ImageOptions{Quality: "high"},
+				)
+				if pending || upstreamTaskID != "" {
+					t.Fatalf("pending=%v upstreamTaskID=%q, want synchronous result", pending, upstreamTaskID)
+				}
+			} else {
+				images, err = client.EditImagesWithOptions(
+					context.Background(), "local-id", "refine UI", "gpt-image-2-high", test.count,
+					inputs, "1024x576", ImageOptions{Quality: "high"},
+				)
+			}
+			if err != nil || len(images) != 1 || images[0] != "done" {
+				t.Fatalf("images=%#v err=%v", images, err)
+			}
+		})
+	}
+}
+
+func TestEditImagesWithOptionsRetriesWithImageURL(t *testing.T) {
+	reference := base64.StdEncoding.EncodeToString(png1x1())
+	var payloads []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/image-tasks/edits" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		payloads = append(payloads, payload)
+		w.Header().Set("Content-Type", "application/json")
+		if len(payloads) == 1 {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = w.Write([]byte(`{"detail":"images[].image_url is required"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"edit-url","status":"success","data":[{"b64_json":"done"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	images, err := client.EditImagesWithOptions(
+		context.Background(), "edit-url", "keep identity", "gpt-image-2", 1,
+		[]string{reference}, "1024x1024", ImageOptions{InputFidelity: "high"},
+	)
+	if err != nil || len(images) != 1 || images[0] != "done" {
+		t.Fatalf("images=%#v err=%v", images, err)
+	}
+	assertImageEditCompatibilityPayloads(t, payloads, "edit-url", reference)
+}
+
+func TestSubmitEditImagesTrackedRetriesWithImageURL(t *testing.T) {
+	reference := base64.StdEncoding.EncodeToString(png1x1())
+	var payloads []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/image-tasks/edits" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		payloads = append(payloads, payload)
+		w.Header().Set("Content-Type", "application/json")
+		if len(payloads) == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"images[].image_url is required"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"canonical-edit-id","status":"processing"}`))
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	images, pending, upstreamTaskID, err := client.SubmitEditImagesTracked(
+		context.Background(), "local-edit-id", "keep identity", "gpt-image-2", 1,
+		[]string{reference}, "1024x1024", ImageOptions{},
+	)
+	if err != nil || !pending || len(images) != 0 || upstreamTaskID != "canonical-edit-id" {
+		t.Fatalf("images=%#v pending=%v upstreamTaskID=%q err=%v", images, pending, upstreamTaskID, err)
+	}
+	assertImageEditCompatibilityPayloads(t, payloads, "local-edit-id", reference)
+}
+
+func TestEditImagesSyncFallbackRetriesWithImageURL(t *testing.T) {
+	reference := base64.StdEncoding.EncodeToString(png1x1())
+	var syncPayloads []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/image-tasks/edits":
+			http.NotFound(w, r)
+		case "/v1/images/edits":
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			syncPayloads = append(syncPayloads, payload)
+			w.Header().Set("Content-Type", "application/json")
+			if len(syncPayloads) == 1 {
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				_, _ = w.Write([]byte(`{"detail":"images[].image_url is required"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"data":[{"b64_json":"sync-done"}]}`))
+		default:
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	images, err := client.EditImagesWithOptions(
+		context.Background(), "sync-edit", "keep identity", "gpt-image-2", 1,
+		[]string{reference}, "1024x1024", ImageOptions{},
+	)
+	if err != nil || len(images) != 1 || images[0] != "sync-done" {
+		t.Fatalf("images=%#v err=%v", images, err)
+	}
+	assertImageEditCompatibilityPayloads(t, syncPayloads, "sync-edit", reference)
+}
+
+func assertImageEditCompatibilityPayloads(t *testing.T, payloads []map[string]any, taskID, reference string) {
+	t.Helper()
+	if len(payloads) != 2 {
+		t.Fatalf("payload count = %d, want 2", len(payloads))
+	}
+	for index, payload := range payloads {
+		if payload["client_task_id"] != taskID {
+			t.Fatalf("payload %d client_task_id = %#v, want %q", index, payload["client_task_id"], taskID)
+		}
+	}
+	firstImages, ok := payloads[0]["images"].([]any)
+	if !ok || len(firstImages) != 1 {
+		t.Fatalf("first images = %#v", payloads[0]["images"])
+	}
+	first, ok := firstImages[0].(map[string]any)
+	if !ok || first["b64_json"] != reference || first["image_url"] != nil {
+		t.Fatalf("first image = %#v, want b64_json only", firstImages[0])
+	}
+	secondImages, ok := payloads[1]["images"].([]any)
+	if !ok || len(secondImages) != 1 {
+		t.Fatalf("second images = %#v", payloads[1]["images"])
+	}
+	second, ok := secondImages[0].(map[string]any)
+	wantURL := "data:image/png;base64," + reference
+	if !ok || second["image_url"] != wantURL || second["b64_json"] != nil {
+		t.Fatalf("second image = %#v, want image_url %q only", secondImages[0], wantURL)
 	}
 }
 
@@ -233,6 +563,57 @@ func TestDownloadImageDoesNotForwardAPIKeyCrossOrigin(t *testing.T) {
 	}
 }
 
+func TestNormalizeImageURLRewritesChatGPT2APIInternalOrigin(t *testing.T) {
+	client := NewWithPolicy("https://upstream.example.com/v1", "secret-key", 30, false)
+	target, sameOrigin, err := client.normalizeImageURL("http://chatgpt2api:80/images/generated.png?version=2")
+	if err != nil {
+		t.Fatalf("normalizeImageURL: %v", err)
+	}
+	if got, want := target.String(), "https://upstream.example.com/images/generated.png?version=2"; got != want {
+		t.Fatalf("target = %q, want %q", got, want)
+	}
+	if !sameOrigin {
+		t.Fatal("rewritten internal result URL must use the configured upstream origin")
+	}
+}
+
+func TestPollImageTaskRetriesReturnedImageBeforeItIsAvailable(t *testing.T) {
+	png, err := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nQAAAABJRU5ErkJggg==")
+	if err != nil {
+		t.Fatal(err)
+	}
+	downloads := 0
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/image-tasks":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"items":[{"id":"task-media-lag","status":"success","data":[{"url":"`+server.URL+`/generated.png"}]}]}`)
+		case "/generated.png":
+			downloads++
+			if downloads == 1 {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(png)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	images, pending, firstErr := client.PollImageTask(context.Background(), "task-media-lag", 1)
+	if !pending || nonEmptyImageCount(images) != 0 || !IsRetryableError(firstErr) {
+		t.Fatalf("first poll images=%#v pending=%v err=%v, want retryable media lag", images, pending, firstErr)
+	}
+	images, pending, err = client.PollImageTask(context.Background(), "task-media-lag", 1)
+	if err != nil || pending || len(images) != 1 || downloads != 2 {
+		t.Fatalf("second poll images=%#v pending=%v downloads=%d err=%v", images, pending, downloads, err)
+	}
+}
+
 func TestGenerateImagesRecoversPartialDataClearedByTerminalError(t *testing.T) {
 	png, err := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nQAAAABJRU5ErkJggg==")
 	if err != nil {
@@ -295,6 +676,43 @@ func TestGenerateImagesKeepsPollingAfterTransientGatewayFailure(t *testing.T) {
 	}
 }
 
+func TestGenerateImagesPollsDeterministicIDAfterAmbiguousSubmitFailure(t *testing.T) {
+	polls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/image-tasks/generations":
+			http.Error(w, `{"detail":"submit gateway timeout"}`, http.StatusGatewayTimeout)
+		case "/api/image-tasks":
+			polls++
+			if polls == 1 {
+				_, _ = w.Write([]byte(`{"items":[],"missing_ids":["task-ambiguous"]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"items":[{"id":"task-ambiguous","status":"success","data":[{"b64_json":"recovered-image"}]}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 10, true)
+	images, err := client.GenerateImagesWithID(context.Background(), "task-ambiguous", "draw a cat", "gpt-image-2", 1, "")
+	if err != nil {
+		t.Fatalf("GenerateImagesWithID: %v", err)
+	}
+	if polls < 2 || len(images) != 1 || images[0] != "recovered-image" {
+		t.Fatalf("polls=%d images=%#v", polls, images)
+	}
+}
+
+func TestNetworkErrorReportsTimeout(t *testing.T) {
+	err := &NetworkError{Message: "上游图片任务等待超时"}
+	if !err.Timeout() {
+		t.Fatal("NetworkError.Timeout() = false, want true")
+	}
+}
+
 func TestSubmitAndPollImageTaskAreOneShotOperations(t *testing.T) {
 	submits, polls := 0, 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -339,5 +757,473 @@ func TestPollImageTasksBatchesMultipleIDs(t *testing.T) {
 	results := client.PollImageTasks(context.Background(), []string{"task-a", "task-b"}, map[string]int{"task-a": 1, "task-b": 1})
 	if requests != 1 || !results["task-a"].Pending || results["task-b"].Pending || len(results["task-b"].Images) != 1 {
 		t.Fatalf("requests=%d results=%#v", requests, results)
+	}
+}
+
+func TestSubmitGenerateImagesTrackedReturnsCanonicalUpstreamID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/image-tasks/generations" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"canonical-upstream-id","client_task_id":"local-id","status":"processing"}`))
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	images, pending, upstreamTaskID, err := client.SubmitGenerateImagesTracked(
+		context.Background(), "local-id", "draw", "gpt-image-2", 1, "", ImageOptions{})
+	if err != nil || !pending || len(images) != 0 || upstreamTaskID != "canonical-upstream-id" {
+		t.Fatalf("images=%#v pending=%v upstreamTaskID=%q err=%v", images, pending, upstreamTaskID, err)
+	}
+}
+
+func TestPollImageTasksHandlesTwentyCanonicalIDs(t *testing.T) {
+	const count = 20
+	taskIDs := make([]string, 0, count)
+	expected := make(map[string]int, count)
+	for index := 0; index < count; index++ {
+		id := fmt.Sprintf("upstream-%02d", index)
+		taskIDs = append(taskIDs, id)
+		expected[id] = 1
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := strings.Split(r.URL.Query().Get("ids"), ","); len(got) != count {
+			t.Fatalf("polled %d ids, want %d", len(got), count)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"items":[`)
+		for index, id := range taskIDs {
+			if index > 0 {
+				_, _ = io.WriteString(w, ",")
+			}
+			fmt.Fprintf(w, `{"id":%q,"status":"success","data":[{"b64_json":%q}]}`, id, "image-"+id)
+		}
+		_, _ = io.WriteString(w, `]}`)
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	results := client.PollImageTasks(context.Background(), taskIDs, expected)
+	if len(results) != count {
+		t.Fatalf("results=%d, want %d", len(results), count)
+	}
+	for _, id := range taskIDs {
+		result := results[id]
+		if result.Pending || result.Missing || result.Err != nil || len(result.Images) != 1 || result.Images[0] != "image-"+id {
+			t.Fatalf("task %s result=%#v", id, result)
+		}
+	}
+}
+
+func TestPollImageTasksAcceptsResultsField(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"id":"task-results","status":"success","succeeded_count":1,"results":[{"b64_json":"done-from-results"}]}]}`))
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	images, pending, err := client.PollImageTask(context.Background(), "task-results", 1)
+	if err != nil || pending || len(images) != 1 || images[0] != "done-from-results" {
+		t.Fatalf("images=%#v pending=%v err=%v", images, pending, err)
+	}
+}
+
+func TestPollImageTasksClassifiesMissingAndExplicitFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"id":"failed","status":"failed","error_code":"rejected","error":"rejected upstream"}],"missing_ids":["missing"]}`))
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	results := client.PollImageTasks(context.Background(), []string{"failed", "missing"}, map[string]int{"failed": 1, "missing": 1})
+	if results["failed"].Pending || !results["failed"].ExplicitFailure || results["failed"].Err == nil {
+		t.Fatalf("explicit failure misclassified: %#v", results["failed"])
+	}
+	if !strings.Contains(results["failed"].Err.Error(), "rejected: rejected upstream") {
+		t.Fatalf("explicit failure lost upstream details: %v", results["failed"].Err)
+	}
+	if !results["missing"].Pending || !results["missing"].Missing || results["missing"].ExplicitFailure {
+		t.Fatalf("missing task misclassified: %#v", results["missing"])
+	}
+}
+
+func TestCompletedTaskImagesNormalizesProviderStatuses(t *testing.T) {
+	client := NewWithPolicy("https://example.com", "test-key", 30, true)
+	tests := []struct {
+		status          string
+		pending         bool
+		explicitFailure bool
+	}{
+		{status: "pending", pending: true},
+		{status: "processing", pending: true},
+		{status: "text_review", explicitFailure: true},
+		{status: "moderating", pending: true},
+		{status: "mystery_new_state", pending: true},
+		{status: "text", explicitFailure: true},
+		{status: "text_result", explicitFailure: true},
+		{status: "文本", explicitFailure: true},
+		{status: "succeeded"},
+		{status: "completed"},
+		{status: "failed", explicitFailure: true},
+		{status: "cancelled", explicitFailure: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.status, func(t *testing.T) {
+			task := imageTask{ID: "task-" + tc.status, Status: tc.status}
+			if !tc.pending && !tc.explicitFailure {
+				task.Data = []map[string]any{{"b64_json": "image-data"}}
+			}
+			images, _, done, err := client.completedTaskImages(context.Background(), task, 1)
+			if tc.pending {
+				if done || err != nil {
+					t.Fatalf("done=%v err=%v, want pending", done, err)
+				}
+				return
+			}
+			if !done {
+				t.Fatal("terminal status was left pending")
+			}
+			if tc.explicitFailure {
+				if err == nil || !imageTaskStatusFailed(normalizedImageTaskStatus(task)) {
+					t.Fatalf("err=%v, want explicit failure", err)
+				}
+				return
+			}
+			if err != nil || len(images) != 1 || images[0] != "image-data" {
+				t.Fatalf("images=%#v err=%v, want successful image", images, err)
+			}
+		})
+	}
+}
+
+func TestCompletedTaskImagesTreatsUpstreamTextMessageAsFailure(t *testing.T) {
+	client := NewWithPolicy("https://example.com", "test-key", 30, true)
+	task := imageTask{ID: "task-text-msg", Status: "processing", Error: "上游返回文本"}
+	_, _, done, err := client.completedTaskImages(context.Background(), task, 1)
+	if !done || err == nil || !imageTaskIsTextFailure(task) {
+		t.Fatalf("done=%v err=%v, want explicit text failure", done, err)
+	}
+}
+
+func TestCompletedTaskImagesTreatsStructuredTextAsTerminalRegardlessOfStatus(t *testing.T) {
+	client := NewWithPolicy("https://example.com", "test-key", 30, true)
+	for _, status := range []string{"processing", "queued", "mystery_new_state"} {
+		t.Run(status, func(t *testing.T) {
+			body := []byte(`{"id":"task-text","status":"` + status + `","output":{"content":[{"type":"output_text","text":"请修改图片描述"}]}}`)
+			task, err := parseImageTask(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _, done, taskErr := client.completedTaskImages(context.Background(), task, 1)
+			if !done || taskErr == nil || taskErr.Error() != "请修改图片描述" || IsRetryableError(taskErr) || !imageTaskIsTextFailure(task) {
+				t.Fatalf("task=%#v done=%v err=%v, want immediate text terminal", task, done, taskErr)
+			}
+		})
+	}
+}
+
+func TestCompletedTaskImagesKeepsAcknowledgementMessagePending(t *testing.T) {
+	client := NewWithPolicy("https://example.com", "test-key", 30, true)
+	task, err := parseImageTask([]byte(`{"id":"task-pending","status":"processing","message":"task accepted"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, done, taskErr := client.completedTaskImages(context.Background(), task, 1)
+	if done || taskErr != nil || task.TextResult != "" || imageTaskIsTextFailure(task) {
+		t.Fatalf("task=%#v done=%v err=%v, want pending acknowledgement", task, done, taskErr)
+	}
+}
+
+func TestCompletedTaskImagesPrefersImageOverStructuredText(t *testing.T) {
+	client := NewWithPolicy("https://example.com", "test-key", 30, true)
+	task, err := parseImageTask([]byte(`{"id":"task-image","status":"processing","data":[{"b64_json":"image-data"}],"output":{"content":[{"type":"output_text","text":"auxiliary text"}]}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	images, _, done, taskErr := client.completedTaskImages(context.Background(), task, 1)
+	if !done || taskErr != nil || len(images) != 1 || images[0] != "image-data" || imageTaskIsTextFailure(task) {
+		t.Fatalf("task=%#v images=%#v done=%v err=%v, want image success", task, images, done, taskErr)
+	}
+}
+
+func TestPollImageTasksEachEmitsCompletedResults(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"id":"task-a","status":"success","data":[{"b64_json":"a"}]},{"id":"task-b","status":"success","data":[{"b64_json":"b"}]}]}`))
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	got := map[string]string{}
+	var mu sync.Mutex
+	client.PollImageTasksEach(context.Background(), []string{"task-a", "task-b"}, map[string]int{"task-a": 1, "task-b": 1}, func(taskID string, result ImageTaskPollResult) {
+		if result.Err != nil || result.Pending || len(result.Images) != 1 {
+			t.Errorf("task %s result = %#v", taskID, result)
+			return
+		}
+		mu.Lock()
+		got[taskID] = result.Images[0]
+		mu.Unlock()
+	})
+	if got["task-a"] != "a" || got["task-b"] != "b" {
+		t.Fatalf("results = %#v", got)
+	}
+}
+
+func TestPollImageTasksEachTreatsProcessingTextAsTerminal(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"id":"task-text","status":"processing","output":{"content":[{"type":"output_text","text":"无法按当前描述生成图片"}]}}]}`))
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	var got ImageTaskPollResult
+	client.PollImageTasksEach(context.Background(), []string{"task-text"}, map[string]int{"task-text": 1}, func(_ string, result ImageTaskPollResult) {
+		got = result
+	})
+	if got.Pending || !got.ExplicitFailure || got.Err == nil || got.ErrorMessage != "无法按当前描述生成图片" {
+		t.Fatalf("result=%#v, want immediate terminal text result", got)
+	}
+}
+
+func TestPollImageTasksEachGuardedClaimsOnlyTerminalResults(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"id":"pending","status":"running","data":[]},{"id":"done","status":"success","data":[{"b64_json":"image"}]}]}`))
+	}))
+	defer server.Close()
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	var claimed []string
+	results := map[string]ImageTaskPollResult{}
+	var mu sync.Mutex
+	client.PollImageTasksEachGuarded(context.Background(), []string{"pending", "done"}, map[string]int{"pending": 1, "done": 1}, func(taskID string) bool {
+		claimed = append(claimed, taskID)
+		return true
+	}, func(taskID string, result ImageTaskPollResult) {
+		mu.Lock()
+		results[taskID] = result
+		mu.Unlock()
+	})
+	if strings.Join(claimed, ",") != "done" {
+		t.Fatalf("completion claims = %#v, want only done", claimed)
+	}
+	if !results["pending"].Pending || results["done"].Pending || len(results["done"].Images) != 1 {
+		t.Fatalf("results = %#v", results)
+	}
+}
+
+func png1x1() []byte {
+	return []byte{
+		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+		0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+		0x89, 0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41, 0x54,
+		0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01,
+		0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+		0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+	}
+}
+
+func TestCompletedTaskImagesKeepsRetryableDownloadPending(t *testing.T) {
+	var statusOpen atomic.Bool
+	statusOpen.Store(true)
+	var overlappingDownload atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/api/image-tasks"):
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"items":[{"id":"task-ok","status":"success","data":[{"url":"%s/img-ok.png"},{"url":"%s/img-missing.png"}]}]}`, "http://"+r.Host, "http://"+r.Host)
+			statusOpen.Store(false)
+		case r.URL.Path == "/img-ok.png":
+			if statusOpen.Load() {
+				overlappingDownload.Store(true)
+			}
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(png1x1())
+		case r.URL.Path == "/img-missing.png":
+			http.NotFound(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	results := client.PollImageTasks(context.Background(), []string{"task-ok"}, map[string]int{"task-ok": 2})
+	result := results["task-ok"]
+	if overlappingDownload.Load() {
+		t.Fatal("image download started before the status response finished")
+	}
+	if !result.Pending || result.Err == nil || nonEmptyImageCount(result.Images) != 1 {
+		t.Fatalf("result = %#v, want pending with one recovered image", result)
+	}
+	if result.CompletedAt.IsZero() {
+		t.Fatal("succeeded poll should record CompletedAt before download")
+	}
+}
+
+func TestTaskImagesB64DownloadsInParallel(t *testing.T) {
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started <- struct{}{}
+		<-release
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(png1x1())
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	data := []map[string]any{
+		{"url": server.URL + "/a.png"},
+		{"url": server.URL + "/b.png"},
+	}
+	done := make(chan struct{})
+	var images []string
+	var err error
+	go func() {
+		defer close(done)
+		images, _, err = client.taskImagesB64(context.Background(), data)
+	}()
+	waitStarted := time.After(2 * time.Second)
+	for i := 0; i < 2; i++ {
+		select {
+		case <-started:
+		case <-waitStarted:
+			t.Fatal("downloads did not overlap")
+		}
+	}
+	close(release)
+	<-done
+	if err != nil || nonEmptyImageCount(images) != 2 {
+		t.Fatalf("images=%#v err=%v", images, err)
+	}
+}
+
+func TestPollImageTaskStatusesGuardedDoesNotDownloadURLs(t *testing.T) {
+	var downloads atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/api/image-tasks"):
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"items":[{"id":"task-url","status":"success","data":[{"url":"%s/img.png"}]}]}`, "http://"+r.Host)
+		case r.URL.Path == "/img.png":
+			downloads.Add(1)
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(png1x1())
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	var result ImageTaskPollResult
+	client.PollImageTaskStatusesGuarded(context.Background(), []string{"task-url"}, map[string]int{"task-url": 1}, func(string) bool {
+		return true
+	}, func(_ string, got ImageTaskPollResult) {
+		result = got
+	})
+	if downloads.Load() != 0 {
+		t.Fatalf("status poll downloaded %d images", downloads.Load())
+	}
+	if result.Pending || result.Err != nil || len(result.ImagePayload) != 1 || nonEmptyImageCount(result.Images) != 0 {
+		t.Fatalf("status result = %#v", result)
+	}
+}
+
+func TestPollImageTasksMatchClientTaskIDWhenUpstreamIDDiffers(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"id":"c2a-internal","client_task_id":"local-task","status":"success","data":[{"b64_json":"matched"}]}]}`))
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	var result ImageTaskPollResult
+	var gotID string
+	client.PollImageTasksEach(context.Background(), []string{"local-task"}, map[string]int{"local-task": 1}, func(taskID string, got ImageTaskPollResult) {
+		gotID = taskID
+		result = got
+	})
+	if gotID != "local-task" || result.Pending || result.Missing || result.Err != nil || len(result.Images) != 1 || result.Images[0] != "matched" {
+		t.Fatalf("id=%q result=%#v, want local-task image", gotID, result)
+	}
+}
+
+func TestPollImageTasksTreatsPartialSuccessAsTerminalDelivery(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"id":"partial","status":"partial_success","terminal":true,"results":[{"b64_json":"one"},{"b64_json":"two"}]}]}`))
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	var result ImageTaskPollResult
+	client.PollImageTasksEach(context.Background(), []string{"partial"}, map[string]int{"partial": 4}, func(_ string, got ImageTaskPollResult) {
+		result = got
+	})
+	if result.Pending || result.Err != nil || len(result.Images) != 2 {
+		t.Fatalf("partial result = %#v, want terminal two-image delivery", result)
+	}
+}
+
+func TestPollImageTasksReadNestedResultData(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"id":"nested","status":"success","result":{"data":[{"b64_json":"nested-img"}]}}]}`))
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	var result ImageTaskPollResult
+	client.PollImageTasksEach(context.Background(), []string{"nested"}, map[string]int{"nested": 1}, func(_ string, got ImageTaskPollResult) {
+		result = got
+	})
+	if result.Pending || result.Err != nil || len(result.Images) != 1 || result.Images[0] != "nested-img" {
+		t.Fatalf("nested result = %#v, want nested-img", result)
+	}
+}
+
+func TestPollImageTasksReadsNestedTextReviewReason(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"id":"reviewed","status":"text_review","output":{"content":[{"type":"output_text","text":"内容审核拒绝：参考图不符合服务政策"}]}}]}`))
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	var result ImageTaskPollResult
+	client.PollImageTasksEach(context.Background(), []string{"reviewed"}, map[string]int{"reviewed": 1}, func(_ string, got ImageTaskPollResult) {
+		result = got
+	})
+	if result.Pending || !result.ExplicitFailure || result.Err == nil || result.Status != "text_review" || result.ErrorMessage != "内容审核拒绝：参考图不符合服务政策" {
+		t.Fatalf("text review result = %#v", result)
+	}
+}
+
+func TestPollImageTasksReturnsPublicTerminalError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"id":"reviewed","status":"text_review","terminal":true,"error_code":"upstream_text_reply","public_error":"请上传需要重新设计的 APP 首页参考图"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true)
+	var result ImageTaskPollResult
+	client.PollImageTasksEach(context.Background(), []string{"reviewed"}, map[string]int{"reviewed": 1}, func(_ string, got ImageTaskPollResult) {
+		result = got
+	})
+	if result.Pending || !result.ExplicitFailure || result.Err == nil {
+		t.Fatalf("terminal text result = %#v", result)
+	}
+	if result.ErrorMessage != "请上传需要重新设计的 APP 首页参考图" ||
+		!strings.Contains(result.Err.Error(), "upstream_text_reply: 请上传需要重新设计的 APP 首页参考图") {
+		t.Fatalf("terminal text error was not preserved: %#v", result)
 	}
 }

@@ -1,0 +1,503 @@
+// 新后端产物为短期 presigned URL 或 /api/v1/files/{key} 站内地址，
+// 鉴权靠 HttpOnly Cookie，无需附加 Authorization 头。
+
+const mediaCache = new Map()
+const inFlightMediaFetches = new Map()
+const MAX_MEDIA_CACHE_ENTRIES = 72
+const MAX_MEDIA_CACHE_BYTES = 48 * 1024 * 1024
+const MAX_THUMBNAIL_DIMENSION = 1200
+const THUMBNAIL_RESIZE_CONCURRENCY = 3
+// HTTP/1.1 下浏览器同域最多 6 个并发连接。图片取数若不设上限，会把连接
+// 全部占满，页面切换所需的 API 请求被排在几十张图后面，表现为“图片没
+// 加载完就无法进下一页”。留出至少 2 个连接给 API/文档请求。
+const MEDIA_FETCH_CONCURRENCY = 4
+let mediaCacheBytes = 0
+let trimScheduled = false
+let activeThumbnailResizes = 0
+const thumbnailResizeWaiters = []
+let activeMediaFetches = 0
+const mediaFetchQueue = []
+
+function pumpMediaFetchQueue() {
+  while (activeMediaFetches < MEDIA_FETCH_CONCURRENCY && mediaFetchQueue.length) {
+    // LIFO：最新排队的图片最可能仍在视口内，优先出队。
+    mediaFetchQueue.pop().start()
+  }
+}
+
+/**
+ * 把取图任务放进并发闸。返回 { promise, cancel }；cancel 仅对“仍在排队、
+ * 尚未发起请求”的任务生效（返回 true），已在传输中的任务会跑完并进缓存。
+ */
+function scheduleMediaFetch(run) {
+  let started = false
+  let cancelled = false
+  let settle
+  const promise = new Promise((resolve, reject) => {
+    settle = { resolve, reject }
+  })
+  const job = {
+    start() {
+      started = true
+      activeMediaFetches += 1
+      Promise.resolve()
+        .then(run)
+        .then(settle.resolve, settle.reject)
+        .finally(() => {
+          activeMediaFetches = Math.max(0, activeMediaFetches - 1)
+          pumpMediaFetchQueue()
+        })
+    },
+  }
+  const cancel = () => {
+    if (started || cancelled) return false
+    cancelled = true
+    const index = mediaFetchQueue.indexOf(job)
+    if (index >= 0) mediaFetchQueue.splice(index, 1)
+    settle.reject(new DOMException('media fetch cancelled', 'AbortError'))
+    return true
+  }
+  mediaFetchQueue.push(job)
+  pumpMediaFetchQueue()
+  return { promise, cancel }
+}
+
+function normalizedMaxDimension(options = {}) {
+  const value = Math.round(Number(options?.maxDimension || 0))
+  if (!Number.isFinite(value) || value <= 0) return 0
+  return Math.min(MAX_THUMBNAIL_DIMENSION, Math.max(96, value))
+}
+
+function mediaCacheKey(url, options = {}) {
+  const maxDimension = normalizedMaxDimension(options)
+  return maxDimension ? `${url}::thumbnail:${maxDimension}` : url
+}
+
+function findReusableThumbnail(url, maxDimension) {
+  if (!maxDimension) return null
+  let best = null
+  for (const [key, entry] of mediaCache) {
+    if (!key.startsWith(`${url}::thumbnail:`)) continue
+    const cachedDimension = Number(entry?.maxDimension || key.split('::thumbnail:').at(-1) || 0)
+    if (cachedDimension < maxDimension) continue
+    if (!best || cachedDimension < best.maxDimension) {
+      best = { entry, maxDimension: cachedDimension }
+    }
+  }
+  return best?.entry || null
+}
+
+async function withThumbnailResizeSlot(task) {
+  if (activeThumbnailResizes >= THUMBNAIL_RESIZE_CONCURRENCY) {
+    await new Promise((resolve) => thumbnailResizeWaiters.push(resolve))
+  }
+  activeThumbnailResizes += 1
+  try {
+    return await task()
+  } finally {
+    activeThumbnailResizes = Math.max(0, activeThumbnailResizes - 1)
+    thumbnailResizeWaiters.shift()?.()
+  }
+}
+
+async function decodeImageBlob(blob) {
+  if (typeof createImageBitmap === 'function') {
+    try {
+      const bitmap = await createImageBitmap(blob, { imageOrientation: 'from-image' })
+      return {
+        width: bitmap.width,
+        height: bitmap.height,
+        draw(context, width, height) {
+          context.drawImage(bitmap, 0, 0, width, height)
+        },
+        dispose() {
+          bitmap.close?.()
+        },
+      }
+    } catch {
+      // Fall through to HTMLImageElement for browsers with partial bitmap support.
+    }
+  }
+
+  if (typeof document === 'undefined') return null
+  const objectUrl = URL.createObjectURL(blob)
+  const image = new Image()
+  image.decoding = 'async'
+  try {
+    await new Promise((resolve, reject) => {
+      image.onload = resolve
+      image.onerror = reject
+      image.src = objectUrl
+    })
+    return {
+      width: image.naturalWidth,
+      height: image.naturalHeight,
+      draw(context, width, height) {
+        context.drawImage(image, 0, 0, width, height)
+      },
+      dispose() {
+        image.onload = null
+        image.onerror = null
+        image.removeAttribute('src')
+        URL.revokeObjectURL(objectUrl)
+      },
+    }
+  } catch {
+    image.removeAttribute('src')
+    URL.revokeObjectURL(objectUrl)
+    return null
+  }
+}
+
+async function createThumbnailBlob(blob, maxDimension) {
+  if (!maxDimension || typeof document === 'undefined') {
+    return { blob, width: 0, height: 0, displayWidth: 0, displayHeight: 0 }
+  }
+  return withThumbnailResizeSlot(async () => {
+    const decoded = await decodeImageBlob(blob)
+    if (!decoded?.width || !decoded?.height) {
+      return { blob, width: 0, height: 0, displayWidth: 0, displayHeight: 0 }
+    }
+    try {
+      const largestDimension = Math.max(decoded.width, decoded.height)
+      if (largestDimension <= maxDimension) {
+        return {
+          blob,
+          width: decoded.width,
+          height: decoded.height,
+          displayWidth: decoded.width,
+          displayHeight: decoded.height,
+        }
+      }
+      const scale = maxDimension / largestDimension
+      const width = Math.max(1, Math.round(decoded.width * scale))
+      const height = Math.max(1, Math.round(decoded.height * scale))
+      const canvas = document.createElement('canvas')
+      canvas.width = width
+      canvas.height = height
+      const context = canvas.getContext('2d', { alpha: true })
+      if (!context) {
+        return {
+          blob,
+          width: decoded.width,
+          height: decoded.height,
+          displayWidth: decoded.width,
+          displayHeight: decoded.height,
+        }
+      }
+      context.imageSmoothingEnabled = true
+      context.imageSmoothingQuality = 'high'
+      decoded.draw(context, width, height)
+      const thumbnail = await new Promise((resolve) => {
+        canvas.toBlob(resolve, 'image/webp', maxDimension <= 400 ? 0.78 : 0.84)
+      })
+      canvas.width = 1
+      canvas.height = 1
+      return {
+        blob: thumbnail?.size ? thumbnail : blob,
+        width: decoded.width,
+        height: decoded.height,
+        displayWidth: thumbnail?.size ? width : decoded.width,
+        displayHeight: thumbnail?.size ? height : decoded.height,
+      }
+    } finally {
+      decoded.dispose()
+    }
+  })
+}
+
+function touchMediaCache(key, entry) {
+  mediaCache.delete(key)
+  mediaCache.set(key, entry)
+}
+
+function isObjectUrlInUse(objectUrl = '') {
+  if (!objectUrl || typeof document === 'undefined') return false
+  for (const image of document.images || []) {
+    if (image.currentSrc === objectUrl || image.src === objectUrl) return true
+  }
+  return false
+}
+
+function deleteMediaCacheEntry(key, entry = mediaCache.get(key)) {
+  if (!entry || entry.promise) return false
+  if (entry.objectUrl) URL.revokeObjectURL(entry.objectUrl)
+  mediaCacheBytes = Math.max(0, mediaCacheBytes - Number(entry.displayBytes || entry.bytes || 0))
+  mediaCache.delete(key)
+  return true
+}
+
+function trimMediaCache(protectedKey = '') {
+  if (mediaCache.size <= MAX_MEDIA_CACHE_ENTRIES && mediaCacheBytes <= MAX_MEDIA_CACHE_BYTES) {
+    return
+  }
+  for (const [key, entry] of mediaCache) {
+    if (mediaCache.size <= MAX_MEDIA_CACHE_ENTRIES && mediaCacheBytes <= MAX_MEDIA_CACHE_BYTES) {
+      break
+    }
+    if (entry?.promise || !entry?.objectUrl) continue
+    if (key === protectedKey) continue
+    // Never revoke a Blob URL while an <img> is still displaying it. Lazy image
+    // components clear their src after leaving the retention area, then ask the
+    // cache to trim again.
+    if (isObjectUrlInUse(entry.objectUrl)) continue
+    deleteMediaCacheEntry(key, entry)
+  }
+}
+
+function scheduleMediaCacheTrim() {
+  if (trimScheduled) return
+  trimScheduled = true
+  queueMicrotask(() => {
+    trimScheduled = false
+    trimMediaCache()
+  })
+}
+
+export function isAuthenticatedAiMediaUrl(value = '') {
+  const url = String(value || '')
+  return /\/api\/v1\/files\//i.test(url)
+}
+
+function optionalMediaFetchUrl(url, enabled) {
+  if (!enabled || !isAuthenticatedAiMediaUrl(url)) return url
+  return `${url}${url.includes('?') ? '&' : '?'}soft_missing=1`
+}
+
+function mediaReadError(status, retryable = false) {
+  const error = new Error(`任务图片读取失败(${status})`)
+  error.status = status
+  error.retryable = retryable
+  return error
+}
+
+export function isRetryableAuthenticatedMediaError(error) {
+  if (error?.name === 'AbortError') return false
+  if (error?.retryable === true) return true
+  const status = Number(error?.status || 0)
+  return status === 0 || status >= 500
+}
+
+export async function fetchAuthenticatedMediaBlob(value = '', options = {}) {
+  const url = String(value || '').trim()
+  if (!url) throw new Error('没有可读取的图片')
+
+  const response = await fetch(optionalMediaFetchUrl(url, options.softMissing === true), {
+    method: 'GET',
+    credentials: 'include',
+    // soft_missing 响应由服务端用 no-store 标记；成功的不可变图片仍应进入
+    // 浏览器私有缓存，避免每次进入历史页都重新经过应用服务器和 OSS。
+    cache: options.cache || 'default',
+    signal: options.signal,
+  })
+  const missing = response.status === 404 || (
+    response.status === 204 && response.headers.get('X-StarCloud-Media-Missing') === '1'
+  )
+  if (missing) {
+    const fallbackUrl = String(options.fallbackUrl || '').trim()
+    if (fallbackUrl && fallbackUrl !== url) {
+      return fetchAuthenticatedMediaBlob(fallbackUrl, { ...options, fallbackUrl: '' })
+    }
+    throw mediaReadError(404, options.softMissing === true)
+  }
+  if (!response.ok) {
+    throw mediaReadError(response.status)
+  }
+
+  const blob = await response.blob()
+  if (!blob.size) throw new Error('任务图片内容无效')
+  const type = String(blob.type || '').toLowerCase()
+  if (
+    type &&
+    !type.startsWith('image/') &&
+    type !== 'application/octet-stream' &&
+    type !== 'binary/octet-stream'
+  ) {
+    throw new Error('任务图片内容无效')
+  }
+  return blob
+}
+
+function fetchAuthenticatedMediaBlobShared(url, fallbackUrl = '') {
+  const cached = inFlightMediaFetches.get(url)
+  if (cached) return cached
+  const promise = fetchAuthenticatedMediaBlob(url, { fallbackUrl, softMissing: true }).then(
+    (blob) => {
+      window.setTimeout(() => {
+        if (inFlightMediaFetches.get(url) === promise) inFlightMediaFetches.delete(url)
+      }, 1200)
+      return blob
+    },
+    (error) => {
+      // A rejected shared promise must not consume the caller's next retry.
+      if (inFlightMediaFetches.get(url) === promise) inFlightMediaFetches.delete(url)
+      throw error
+    },
+  )
+  inFlightMediaFetches.set(url, promise)
+  return promise
+}
+
+// 任务媒体支持服务端缩略（?w=，Cloudflare Images 边缘缩放）。
+// 缩略图直接取小图，省掉整张原图的下载与本地解码。
+function thumbnailFetchUrl(url, maxDimension) {
+  if (!maxDimension) return url
+  if (!/\/api\/client\/business\/ai\/jobs\/[^/]+\/media\//i.test(url)) return url
+  return `${url}${url.includes('?') ? '&' : '?'}w=${maxDimension}`
+}
+
+export async function resolveAuthenticatedMediaUrl(value = '', options = {}) {
+  const url = String(value || '').trim()
+  if (!url || !isAuthenticatedAiMediaUrl(url)) return url
+  const maxDimension = normalizedMaxDimension(options)
+  const cacheKey = mediaCacheKey(url, { maxDimension })
+
+  const cached = mediaCache.get(cacheKey)
+  if (cached?.objectUrl) {
+    touchMediaCache(cacheKey, cached)
+    return cached.objectUrl
+  }
+  if (cached?.promise) {
+    cached.waiters = (cached.waiters || 1) + 1
+    return cached.promise
+  }
+  // The stage preview is mounted before its filmstrip/history variants. Reuse
+  // that decoded thumbnail instead of downloading and decoding the same 8K
+  // file again for every smaller viewport.
+  const reusable = findReusableThumbnail(url, maxDimension)
+  if (reusable?.objectUrl) return reusable.objectUrl
+  if (reusable?.promise) return reusable.promise
+
+  const fallbackUrl = String(options?.fallbackUrl || '').trim()
+  const scheduled = scheduleMediaFetch(() =>
+    fetchAuthenticatedMediaBlobShared(thumbnailFetchUrl(url, maxDimension), fallbackUrl).then(async (blob) => {
+      // 服务端已缩好时这里等于直通；仅在服务端缩放不可用时才本地兜底压缩。
+      const thumbnail = await createThumbnailBlob(blob, maxDimension)
+      const displayBlob = thumbnail.blob
+      const objectUrl = URL.createObjectURL(displayBlob)
+      mediaCacheBytes += displayBlob.size
+      touchMediaCache(cacheKey, {
+        objectUrl,
+        blob: displayBlob,
+        maxDimension,
+        bytes: blob.size,
+        displayBytes: displayBlob.size,
+        width: thumbnail.width,
+        height: thumbnail.height,
+        displayWidth: thumbnail.displayWidth,
+        displayHeight: thumbnail.displayHeight,
+      })
+      trimMediaCache(cacheKey)
+      return objectUrl
+    }),
+  )
+  const promise = scheduled.promise.catch((error) => {
+    if (mediaCache.get(cacheKey)?.promise === promise) mediaCache.delete(cacheKey)
+    throw error
+  })
+
+  mediaCache.set(cacheKey, { promise, maxDimension, waiters: 1, cancel: scheduled.cancel })
+  return promise
+}
+
+/**
+ * 视口外/已卸载的图片调用此函数注销等待。当同一资源再无等待者且请求仍在
+ * 排队时，直接从并发闸队列移除，把连接让给仍可见的图片与 API 请求。
+ */
+export function cancelAuthenticatedMediaResolve(value = '', options = {}) {
+  const url = String(value || '').trim()
+  if (!url || !isAuthenticatedAiMediaUrl(url)) return
+  const cacheKey = mediaCacheKey(url, options)
+  const entry = mediaCache.get(cacheKey)
+  if (!entry?.promise) return
+  entry.waiters = Math.max(0, (entry.waiters || 1) - 1)
+  if (entry.waiters === 0 && typeof entry.cancel === 'function' && entry.cancel()) {
+    mediaCache.delete(cacheKey)
+  }
+}
+
+export function getAuthenticatedMediaMetadata(value = '', options = {}) {
+  const url = String(value || '').trim()
+  if (!url || !isAuthenticatedAiMediaUrl(url)) return null
+  const maxDimension = normalizedMaxDimension(options)
+  const entry =
+    mediaCache.get(mediaCacheKey(url, { maxDimension })) || findReusableThumbnail(url, maxDimension)
+  if (!entry?.objectUrl) return null
+  return {
+    bytes: Math.max(0, Number(entry.bytes || 0)),
+    displayBytes: Math.max(0, Number(entry.displayBytes || 0)),
+    width: Math.max(0, Number(entry.width || 0)),
+    height: Math.max(0, Number(entry.height || 0)),
+    displayWidth: Math.max(0, Number(entry.displayWidth || 0)),
+    displayHeight: Math.max(0, Number(entry.displayHeight || 0)),
+  }
+}
+
+export function getCachedAuthenticatedMediaBlob(value = '', options = {}) {
+  const url = String(value || '').trim()
+  if (!url || !isAuthenticatedAiMediaUrl(url)) return null
+  const maxDimension = normalizedMaxDimension(options)
+  const entry = mediaCache.get(mediaCacheKey(url, { maxDimension }))
+  return entry?.blob instanceof Blob && entry.blob.size ? entry.blob : null
+}
+
+export async function downloadAuthenticatedMedia(value = '', filename = 'ai-image.png', options = {}) {
+  const source = String(value || '').trim()
+  if (!source) throw new Error('没有可下载的图片')
+  const blob = await fetchAuthenticatedMediaBlob(source, {
+    cache: 'no-store',
+    fallbackUrl: options.fallbackUrl,
+  })
+  const objectUrl = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = objectUrl
+  anchor.download = resolveMediaDownloadFilename(filename, blob.type)
+  anchor.rel = 'noopener'
+  anchor.style.display = 'none'
+  document.body.appendChild(anchor)
+  try {
+    anchor.click()
+  } finally {
+    anchor.remove()
+    // Large 4K/8K blobs may still be consumed by the browser download process
+    // after the synthetic click returns. Revoking after one second can abort it.
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000)
+  }
+  return {
+    bytes: blob.size,
+    contentType: blob.type,
+    filename: anchor.download,
+  }
+}
+
+function resolveMediaDownloadFilename(filename, contentType) {
+  const requested = String(filename || 'ai-image').trim() || 'ai-image'
+  const extension =
+    String(contentType || '').toLowerCase() === 'image/webp'
+      ? '.webp'
+      : String(contentType || '').toLowerCase() === 'image/jpeg'
+        ? '.jpg'
+        : String(contentType || '').toLowerCase() === 'image/gif'
+          ? '.gif'
+          : String(contentType || '').toLowerCase() === 'image/avif'
+            ? '.avif'
+            : '.png'
+  return `${requested.replace(/\.(?:png|jpe?g|webp|gif|avif)$/i, '')}${extension}`
+}
+
+export function releaseAuthenticatedMediaUrl(value = '', objectUrl = '', options = {}) {
+  const url = String(value || '').trim()
+  if (!url || !isAuthenticatedAiMediaUrl(url)) return
+  const cached = mediaCache.get(mediaCacheKey(url, options))
+  if (!cached?.objectUrl || (objectUrl && cached.objectUrl !== objectUrl)) return
+  scheduleMediaCacheTrim()
+}
+
+export function clearAuthenticatedMediaCache() {
+  mediaCache.forEach((entry) => {
+    if (entry?.objectUrl) URL.revokeObjectURL(entry.objectUrl)
+  })
+  mediaCache.clear()
+  inFlightMediaFetches.clear()
+  mediaCacheBytes = 0
+}

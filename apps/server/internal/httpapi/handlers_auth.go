@@ -109,6 +109,9 @@ func (s *Server) verifyEmailCode(c *gin.Context) {
 		}
 		now := time.Now().UTC()
 		if user == nil {
+			if limitErr := s.takeUsageLimit(c, "registration-ip-day", clientIP, registrationsPerIPDay, 1, 24*time.Hour); limitErr != nil {
+				return limitErr
+			}
 			enabled, settingErr := settings.GetBool(ctx, tx, "registration_enabled")
 			if settingErr != nil {
 				return settingErr
@@ -152,14 +155,25 @@ func (s *Server) verifyEmailCode(c *gin.Context) {
 		return
 	}
 	if codeState == emailCodeLocked {
+		s.LoginLimiter.Fail(email, clientIP)
 		fail(c, apperr.E("rate_limited", "验证码错误次数过多，请重新获取", 429))
 		return
 	}
 	if codeState != emailCodeValid {
+		// 失败才计数：错误验证码计入邮箱/IP 失败窗口，配合下方成功时的
+		// SuccessAttempt 重置，形成 fail-to-count + success-to-reset。
+		s.LoginLimiter.Fail(email, clientIP)
 		fail(c, apperr.E("invalid_code", "验证码错误或已过期", 401))
 		return
 	}
-	s.LoginLimiter.SuccessAttempt(email, clientIP)
+	if created {
+		// Keep the IP-side login-code counter after registration. Clearing it here
+		// allowed sequential valid mailboxes to bypass the IP anti-farming window.
+		s.LoginLimiter.Success(email)
+	} else {
+		s.LoginLimiter.SuccessAttempt(email, clientIP)
+	}
+	c.Set(ctxPlatformUserKey, user)
 	s.setSessionCookie(c, token)
 	respondCreated(c, gin.H{"user": userDict(user), "isNewUser": created})
 }

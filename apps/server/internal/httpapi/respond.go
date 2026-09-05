@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -28,10 +30,17 @@ func respondNoContent(c *gin.Context) {
 
 // fail 输出统一错误格式；非 apperr 记录日志并回 500 internal_error。
 func fail(c *gin.Context, err error) {
+	if errors.Is(err, context.Canceled) ||
+		(c.Request != nil && errors.Is(c.Request.Context().Err(), context.Canceled)) {
+		c.Abort()
+		return
+	}
 	if e, isApp := apperr.As(err); isApp {
+		c.Set(ctxPlatformErrorKey, e.Code)
 		c.AbortWithStatusJSON(e.Status, gin.H{"success": false, "code": e.Code, "error": e.Message})
 		return
 	}
+	c.Set(ctxPlatformErrorKey, "internal_error")
 	log.Printf("unhandled error on %s %s: %v", c.Request.Method, c.Request.URL.Path, err)
 	c.AbortWithStatusJSON(500, gin.H{"success": false, "code": "internal_error", "error": "服务器内部错误"})
 }

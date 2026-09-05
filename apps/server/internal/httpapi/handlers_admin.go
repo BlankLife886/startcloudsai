@@ -1,11 +1,16 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
+	"mime/multipart"
+	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -17,6 +22,8 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
 	"github.com/BlankLife886/startcloudsai/server/internal/crun"
+	"github.com/BlankLife886/startcloudsai/server/internal/lanjingpay"
+	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/netguard"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
@@ -27,10 +34,20 @@ import (
 
 // ---------- stats ----------
 
+var dashboardDayLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
+
+func dashboardPeriodStarts(now time.Time) (today, last7Days, last30Days time.Time) {
+	businessNow := now.In(dashboardDayLocation)
+	businessToday := time.Date(
+		businessNow.Year(), businessNow.Month(), businessNow.Day(), 0, 0, 0, 0, dashboardDayLocation,
+	)
+	return businessToday.UTC(), businessToday.AddDate(0, 0, -6).UTC(), businessToday.AddDate(0, 0, -29).UTC()
+}
+
 func (s *Server) adminStats(c *gin.Context, _ *store.User) {
 	ctx := c.Request.Context()
 	now := time.Now().UTC()
-	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	todayStart, last7DaysStart, last30DaysStart := dashboardPeriodStarts(now)
 	weekAgo := now.AddDate(0, 0, -7)
 	monthAgo := now.AddDate(0, 0, -30)
 	dayAgo := now.Add(-24 * time.Hour)
@@ -73,7 +90,32 @@ func (s *Server) adminStats(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	balanceTotal, err := store.SumWalletBalance(ctx, s.St.Pool)
+	usageMetrics, err := store.GetDashboardUsageMetrics(
+		ctx, s.St.Pool, todayStart, last7DaysStart, last30DaysStart,
+	)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	profitability, err := store.GetProfitabilitySummary(
+		ctx, s.St.Pool, todayStart, last7DaysStart, last30DaysStart,
+	)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	quality, err := store.GetDashboardQualitySummary(ctx, s.St.Pool, last7DaysStart, last30DaysStart, dayAgo)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	pageControls, err := settings.ResolvePageControls(ctx, s.St.Pool)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	quality.OpenAPI.Enabled = pageControls["developer_api"].Status == settings.PageStatusNormal
+	creditTotals, err := store.GetPlatformCreditTotals(ctx, s.St.Pool)
 	if err != nil {
 		fail(c, err)
 		return
@@ -83,20 +125,35 @@ func (s *Server) adminStats(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
+	incidents, err := store.ListOpenOperationalIncidents(ctx, s.St.Pool, 20)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	typeDistribution := gin.H{}
-	for _, t := range store.TaskTypes {
+	for _, t := range store.PromptTaskTypes {
 		typeDistribution[t] = byType[t]
 	}
+	for taskType, count := range byType {
+		if _, exists := typeDistribution[taskType]; !exists {
+			typeDistribution[taskType] = count
+		}
+	}
 	ok(c, gin.H{
-		"totalUsers":          totalUsers,
-		"newUsersToday":       newUsersToday,
-		"runningTasks":        performance.QueuedNow + performance.RunningNow,
-		"taskPerformance":     performance,
-		"providerPerformance": providerPerformance,
-		"taskDaily":           taskDaily,
-		"revenueCents":        revenue,
-		"walletBalanceCents":  balanceTotal,
-		"typeDistribution":    typeDistribution,
+		"totalUsers":           totalUsers,
+		"newUsersToday":        newUsersToday,
+		"runningTasks":         performance.QueuedNow + performance.RunningNow,
+		"taskPerformance":      performance,
+		"providerPerformance":  providerPerformance,
+		"taskDaily":            taskDaily,
+		"revenueCents":         revenue,
+		"usageMetrics":         usageMetrics,
+		"profitability":        profitability,
+		"quality":              quality,
+		"walletBalanceCents":   creditTotals.RemainingCents,
+		"creditTotals":         creditTotals,
+		"typeDistribution":     typeDistribution,
+		"operationalIncidents": incidents,
 	})
 }
 
@@ -108,13 +165,44 @@ func (s *Server) adminListUsers(c *gin.Context, _ *store.User) {
 		fail(c, apperr.E("validation_error", "无效的用户状态", 422))
 		return
 	}
+	lifecycle := strings.TrimSpace(c.Query("lifecycle"))
+	if lifecycle != "" && !store.Contains([]string{"new", "activated", "active", "dormant", "churn_risk", "returned"}, lifecycle) {
+		fail(c, apperr.E("validation_error", "无效的生命周期", 422))
+		return
+	}
+	risk := strings.TrimSpace(c.Query("risk"))
+	if risk != "" && !store.Contains([]string{"low", "medium", "high"}, risk) {
+		fail(c, apperr.E("validation_error", "无效的风险等级", 422))
+		return
+	}
+	profileTag := strings.TrimSpace(c.Query("profileTag"))
+	if profileTag != "" && !store.Contains([]string{"high_value", "power_user", "canvas_power_user", "frequent_failure", "api_user", "loss_making", "churn_risk"}, profileTag) {
+		fail(c, apperr.E("validation_error", "无效的画像标签", 422))
+		return
+	}
 	limit, cursor, err := pageParams(c)
 	if err != nil {
 		fail(c, err)
 		return
 	}
+	pageNum, err := pageNumber(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	ctx := c.Request.Context()
-	rows, err := store.ListUsers(ctx, s.St.Pool, strings.TrimSpace(c.Query("search")), status, limit, cursor)
+	search := strings.TrimSpace(c.Query("search"))
+	total, err := store.CountUsersFiltered(ctx, s.St.Pool, search, status, lifecycle, risk, profileTag)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	var rows []*store.User
+	if pageNum > 0 {
+		rows, err = store.ListUsersOffset(ctx, s.St.Pool, search, status, lifecycle, risk, profileTag, limit, (pageNum-1)*limit)
+	} else {
+		rows, err = store.ListUsers(ctx, s.St.Pool, search, status, lifecycle, risk, profileTag, limit, cursor)
+	}
 	if err != nil {
 		fail(c, err)
 		return
@@ -128,9 +216,82 @@ func (s *Server) adminListUsers(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	ok(c, buildPage(rows, limit, func(u *store.User) gin.H {
-		return adminUserDict(u, wallets[u.ID])
-	}))
+	usage, err := store.UsageSummariesByUserIDs(ctx, s.St.Pool, ids)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	profiles, err := store.UserProfileMetricsByUserIDs(ctx, s.St.Pool, ids)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	missingIDs := make([]uuid.UUID, 0)
+	for _, id := range ids {
+		if profiles[id] == nil {
+			missingIDs = append(missingIDs, id)
+		}
+	}
+	if len(missingIDs) > 0 {
+		rules, rulesErr := settings.UserProfileRules(ctx, s.St.Pool)
+		if rulesErr != nil {
+			fail(c, rulesErr)
+			return
+		}
+		if err := store.RefreshUserProfiles(ctx, s.St.Pool, missingIDs, rules, time.Now().UTC()); err != nil {
+			fail(c, err)
+			return
+		}
+		profiles, err = store.UserProfileMetricsByUserIDs(ctx, s.St.Pool, ids)
+		if err != nil {
+			fail(c, err)
+			return
+		}
+	}
+	now := time.Now().UTC()
+	subscribed, err := store.ActiveSubscriptionFlagsByUserIDs(ctx, s.St.Pool, ids, now)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	lastIPs, err := store.LastSessionIPsByUserIDs(ctx, s.St.Pool, ids)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	serialize := func(u *store.User) gin.H {
+		d := adminUserDict(u, wallets[u.ID])
+		summary := usage[u.ID]
+		d["usage"] = gin.H{
+			"tasksTotal":     summary.TasksTotal,
+			"tasksSucceeded": summary.TasksSucceeded,
+			"tasksFailed":    summary.TasksFailed,
+			"tasksRunning":   summary.TasksRunning,
+			"tasksCanceled":  summary.TasksCanceled,
+			"submissions":    summary.Submissions,
+			"assets":         summary.Assets,
+			"orders":         summary.Orders,
+		}
+		d["profile"] = profiles[u.ID]
+		d["subscription"] = gin.H{"active": subscribed[u.ID]}
+		if ip := lastIPs[u.ID]; ip != "" {
+			d["lastSessionIp"] = ip
+		} else {
+			d["lastSessionIp"] = nil
+		}
+		return d
+	}
+	if pageNum > 0 {
+		items := make([]gin.H, 0, len(rows))
+		for _, u := range rows {
+			items = append(items, serialize(u))
+		}
+		ok(c, gin.H{"items": items, "nextCursor": nil, "total": total})
+		return
+	}
+	page := buildPage(rows, limit, serialize)
+	page["total"] = total
+	ok(c, page)
 }
 
 type adminUserPatchIn struct {
@@ -309,8 +470,14 @@ func (s *Server) adminListOrders(c *gin.Context, _ *store.User) {
 		}
 		if plan != nil {
 			d["planName"] = plan.Name
+			d["planKind"] = plan.Kind
+			d["durationDays"] = plan.DurationDays
+			d["dailyGrantCents"] = plan.DailyGrantCents
 		} else {
 			d["planName"] = nil
+			d["planKind"] = nil
+			d["durationDays"] = nil
+			d["dailyGrantCents"] = nil
 		}
 		return d
 	}))
@@ -348,16 +515,31 @@ func (s *Server) adminListPlans(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
+	usageByPlan, err := store.ListPlanUsage(c.Request.Context(), s.St.Pool)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	items := make([]gin.H, 0, len(plans))
 	for _, p := range plans {
-		items = append(items, planDict(p, true))
+		items = append(items, adminPlanDict(p, usageByPlan[p.ID]))
 	}
 	ok(c, gin.H{"items": items})
+}
+
+func adminPlanDict(plan *store.Plan, usage store.PlanUsage) gin.H {
+	dict := planDict(plan, true)
+	dict["orderCount"] = usage.OrderCount
+	dict["subscriptionCount"] = usage.SubscriptionCount
+	dict["deletable"] = usage.OrderCount == 0 && usage.SubscriptionCount == 0
+	return dict
 }
 
 type planIn struct {
 	Code            string   `json:"code"`
 	Name            string   `json:"name"`
+	Description     string   `json:"description"`
+	Badge           string   `json:"badge"`
 	Kind            *string  `json:"kind"`
 	PriceCents      *int64   `json:"priceCents"`
 	GrantCents      *int64   `json:"grantCents"`
@@ -366,20 +548,100 @@ type planIn struct {
 	DailyGrantCents *int64   `json:"dailyGrantCents"`
 	Features        []string `json:"features"`
 	Active          *bool    `json:"active"`
+	Recommended     *bool    `json:"recommended"`
 	Sort            *int     `json:"sort"`
 }
 
-// validatePlanKind kind=subscription 时 durationDays 与 dailyGrantCents 必须为正。
-func validatePlanKind(kind string, durationDays int, dailyGrantCents int64) error {
-	if kind != "topup" && kind != "subscription" {
+func cleanPlanFeatures(features []string) ([]string, error) {
+	if len(features) > 12 {
+		return nil, apperr.E("validation_error", "features: 最多配置 12 条权益", 422)
+	}
+	out := make([]string, 0, len(features))
+	seen := make(map[string]struct{}, len(features))
+	for _, feature := range features {
+		feature = strings.TrimSpace(feature)
+		if feature == "" {
+			continue
+		}
+		if len([]rune(feature)) > 120 {
+			return nil, apperr.E("validation_error", "features: 单条权益最多 120 字", 422)
+		}
+		if _, ok := seen[feature]; ok {
+			continue
+		}
+		seen[feature] = struct{}{}
+		out = append(out, feature)
+	}
+	return out, nil
+}
+
+func validPlanCode(code string) bool {
+	if len(code) < 1 || len(code) > 64 {
+		return false
+	}
+	for index, char := range code {
+		valid := char >= 'a' && char <= 'z' || char >= '0' && char <= '9' || (index > 0 && (char == '-' || char == '_'))
+		if !valid {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizePlan(plan *store.Plan) error {
+	plan.Code = strings.ToLower(strings.TrimSpace(plan.Code))
+	plan.Name = strings.TrimSpace(plan.Name)
+	plan.Description = strings.TrimSpace(plan.Description)
+	plan.Badge = strings.TrimSpace(plan.Badge)
+	plan.Kind = strings.ToLower(strings.TrimSpace(plan.Kind))
+	features, err := cleanPlanFeatures(plan.Features)
+	if err != nil {
+		return err
+	}
+	plan.Features = features
+	if !validPlanCode(plan.Code) {
+		return apperr.E("validation_error", "code: 仅支持小写字母、数字、短横线和下划线，长度 1-64", 422)
+	}
+	if plan.Name == "" || len([]rune(plan.Name)) > 128 {
+		return apperr.E("validation_error", "name: 长度须在 1-128 之间", 422)
+	}
+	if len([]rune(plan.Description)) > 500 {
+		return apperr.E("validation_error", "description: 最多 500 字", 422)
+	}
+	if len([]rune(plan.Badge)) > 24 {
+		return apperr.E("validation_error", "badge: 最多 24 字", 422)
+	}
+	if plan.Kind != "topup" && plan.Kind != "subscription" {
 		return apperr.E("validation_error", "kind: 须为 topup/subscription", 422)
 	}
-	if kind == "subscription" {
-		if durationDays <= 0 {
+	if plan.PriceCents < 0 || plan.PriceCents > 1000000000 {
+		return apperr.E("validation_error", "priceCents: 须在 0-1000000000 之间", 422)
+	}
+	for name, value := range map[string]int64{
+		"grantCents": plan.GrantCents, "bonusCents": plan.BonusCents, "dailyGrantCents": plan.DailyGrantCents,
+	} {
+		if value < 0 || value > 1000000000 {
+			return apperr.E("validation_error", name+": 须在 0-1000000000 之间", 422)
+		}
+	}
+	if plan.DurationDays < 0 || plan.DurationDays > 3650 {
+		return apperr.E("validation_error", "durationDays: 须在 0-3650 之间", 422)
+	}
+	if plan.Sort < 0 || plan.Sort > 1000000 {
+		return apperr.E("validation_error", "sort: 须在 0-1000000 之间", 422)
+	}
+	if plan.Kind == "subscription" {
+		if plan.DurationDays <= 0 {
 			return apperr.E("validation_error", "durationDays: 订阅套餐须为正整数", 422)
 		}
-		if dailyGrantCents <= 0 {
+		if plan.DailyGrantCents <= 0 {
 			return apperr.E("validation_error", "dailyGrantCents: 订阅套餐须为正整数", 422)
+		}
+	} else {
+		plan.DurationDays = 0
+		plan.DailyGrantCents = 0
+		if plan.GrantCents+plan.BonusCents <= 0 {
+			return apperr.E("validation_error", "topup 套餐的发放积分必须大于 0", 422)
 		}
 	}
 	return nil
@@ -389,14 +651,6 @@ func (s *Server) adminCreatePlan(c *gin.Context, _ *store.User) {
 	var body planIn
 	if err := bindJSON(c, &body); err != nil {
 		fail(c, err)
-		return
-	}
-	if body.Code == "" || len([]rune(body.Code)) > 64 {
-		fail(c, apperr.E("validation_error", "code: 长度须在 1-64 之间", 422))
-		return
-	}
-	if body.Name == "" || len([]rune(body.Name)) > 128 {
-		fail(c, apperr.E("validation_error", "name: 长度须在 1-128 之间", 422))
 		return
 	}
 	if body.PriceCents == nil || *body.PriceCents < 0 {
@@ -435,10 +689,6 @@ func (s *Server) adminCreatePlan(c *gin.Context, _ *store.User) {
 		}
 		dailyGrant = *body.DailyGrantCents
 	}
-	if err := validatePlanKind(kind, durationDays, dailyGrant); err != nil {
-		fail(c, err)
-		return
-	}
 	active := true
 	if body.Active != nil {
 		active = *body.Active
@@ -447,19 +697,15 @@ func (s *Server) adminCreatePlan(c *gin.Context, _ *store.User) {
 	if body.Sort != nil {
 		sortVal = *body.Sort
 	}
-	ctx := c.Request.Context()
-	existing, err := store.GetPlanByCode(ctx, s.St.Pool, body.Code)
-	if err != nil {
-		fail(c, err)
-		return
+	recommended := false
+	if body.Recommended != nil {
+		recommended = *body.Recommended
 	}
-	if existing != nil {
-		fail(c, apperr.E("validation_error", "套餐 code 已存在", 409))
-		return
-	}
-	plan, err := store.InsertPlan(ctx, s.St.Pool, &store.Plan{
+	planInput := &store.Plan{
 		Code:            body.Code,
 		Name:            body.Name,
+		Description:     body.Description,
+		Badge:           body.Badge,
 		Kind:            kind,
 		PriceCents:      *body.PriceCents,
 		GrantCents:      *body.GrantCents,
@@ -468,9 +714,41 @@ func (s *Server) adminCreatePlan(c *gin.Context, _ *store.User) {
 		DailyGrantCents: dailyGrant,
 		Features:        body.Features,
 		Active:          active,
+		Recommended:     recommended,
 		Sort:            sortVal,
-	})
+	}
+	if err := normalizePlan(planInput); err != nil {
+		fail(c, err)
+		return
+	}
+	ctx := c.Request.Context()
+	existing, err := store.GetPlanByCode(ctx, s.St.Pool, planInput.Code)
 	if err != nil {
+		fail(c, err)
+		return
+	}
+	if existing != nil {
+		fail(c, apperr.E("validation_error", "套餐 code 已存在", 409))
+		return
+	}
+	var plan *store.Plan
+	if planInput.Recommended {
+		err = s.St.Tx(ctx, func(tx pgx.Tx) error {
+			if clearErr := store.ClearRecommendedPlans(ctx, tx, uuid.Nil); clearErr != nil {
+				return clearErr
+			}
+			var insertErr error
+			plan, insertErr = store.InsertPlan(ctx, tx, planInput)
+			return insertErr
+		})
+	} else {
+		plan, err = store.InsertPlan(ctx, s.St.Pool, planInput)
+	}
+	if err != nil {
+		if store.IsUniqueViolation(err, "uq_plans_one_recommended") {
+			fail(c, apperr.E("validation_error", "推荐套餐发生并发冲突，请重试", 409))
+			return
+		}
 		if store.IsUniqueViolation(err, "") {
 			fail(c, apperr.E("validation_error", "套餐 code 已存在", 409))
 			return
@@ -478,12 +756,53 @@ func (s *Server) adminCreatePlan(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	ok(c, planDict(plan, true))
+	ok(c, adminPlanDict(plan, store.PlanUsage{}))
+}
+
+type reorderPlansIn struct {
+	Kind string   `json:"kind"`
+	IDs  []string `json:"ids"`
+}
+
+func (s *Server) adminReorderPlans(c *gin.Context, _ *store.User) {
+	var body reorderPlansIn
+	if err := bindJSON(c, &body); err != nil {
+		fail(c, err)
+		return
+	}
+	kind := strings.ToLower(strings.TrimSpace(body.Kind))
+	if kind != "topup" && kind != "subscription" {
+		fail(c, apperr.E("validation_error", "kind: 须为 topup/subscription", 422))
+		return
+	}
+	if len(body.IDs) == 0 || len(body.IDs) > 200 {
+		fail(c, apperr.E("validation_error", "ids: 数量须在 1-200 之间", 422))
+		return
+	}
+	ids := make([]uuid.UUID, 0, len(body.IDs))
+	for _, raw := range body.IDs {
+		id, err := uuid.Parse(strings.TrimSpace(raw))
+		if err != nil {
+			fail(c, apperr.E("validation_error", "ids: 包含无效 UUID", 422))
+			return
+		}
+		ids = append(ids, id)
+	}
+	ctx := c.Request.Context()
+	if err := s.St.Tx(ctx, func(tx pgx.Tx) error {
+		return store.ReorderPlans(ctx, tx, kind, ids)
+	}); err != nil {
+		fail(c, apperr.E("plan_reorder_failed", "套餐排序保存失败，请刷新后重试", 409))
+		return
+	}
+	ok(c, gin.H{"updated": len(ids), "kind": kind})
 }
 
 type planPatchIn struct {
 	Code            Opt[string]   `json:"code"`
 	Name            Opt[string]   `json:"name"`
+	Description     Opt[string]   `json:"description"`
+	Badge           Opt[string]   `json:"badge"`
 	Kind            Opt[string]   `json:"kind"`
 	PriceCents      Opt[int64]    `json:"priceCents"`
 	GrantCents      Opt[int64]    `json:"grantCents"`
@@ -492,6 +811,7 @@ type planPatchIn struct {
 	DailyGrantCents Opt[int64]    `json:"dailyGrantCents"`
 	Features        Opt[[]string] `json:"features"`
 	Active          Opt[bool]     `json:"active"`
+	Recommended     Opt[bool]     `json:"recommended"`
 	Sort            Opt[int]      `json:"sort"`
 }
 
@@ -506,13 +826,8 @@ func (s *Server) adminPatchPlan(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	if body.Code.Valid && (body.Code.Value == "" || len([]rune(body.Code.Value)) > 64) {
-		fail(c, apperr.E("validation_error", "code: 长度须在 1-64 之间", 422))
-		return
-	}
-	if body.Name.Valid && (body.Name.Value == "" || len([]rune(body.Name.Value)) > 128) {
-		fail(c, apperr.E("validation_error", "name: 长度须在 1-128 之间", 422))
-		return
+	if body.Code.Valid {
+		body.Code.Value = strings.ToLower(strings.TrimSpace(body.Code.Value))
 	}
 	for name, v := range map[string]Opt[int64]{"priceCents": body.PriceCents, "grantCents": body.GrantCents, "bonusCents": body.BonusCents, "dailyGrantCents": body.DailyGrantCents} {
 		if v.Valid && v.Value < 0 {
@@ -551,6 +866,12 @@ func (s *Server) adminPatchPlan(c *gin.Context, _ *store.User) {
 	if body.Name.Valid {
 		plan.Name = body.Name.Value
 	}
+	if body.Description.Valid {
+		plan.Description = body.Description.Value
+	}
+	if body.Badge.Valid {
+		plan.Badge = body.Badge.Value
+	}
 	if body.Kind.Valid {
 		plan.Kind = body.Kind.Value
 	}
@@ -575,19 +896,50 @@ func (s *Server) adminPatchPlan(c *gin.Context, _ *store.User) {
 	if body.Active.Valid {
 		plan.Active = body.Active.Value
 	}
+	if body.Recommended.Valid {
+		plan.Recommended = body.Recommended.Value
+	}
 	if body.Sort.Valid {
 		plan.Sort = body.Sort.Value
 	}
-	// patch 后按最终值整体校验 kind 组合
-	if err := validatePlanKind(plan.Kind, plan.DurationDays, plan.DailyGrantCents); err != nil {
+	if err := normalizePlan(plan); err != nil {
 		fail(c, err)
 		return
 	}
-	if err := store.UpdatePlan(ctx, s.St.Pool, plan); err != nil {
+	updatePlan := func(q store.Q) error { return store.UpdatePlan(ctx, q, plan) }
+	if plan.Recommended {
+		err = s.St.Tx(ctx, func(tx pgx.Tx) error {
+			if clearErr := store.ClearRecommendedPlans(ctx, tx, plan.ID); clearErr != nil {
+				return clearErr
+			}
+			return updatePlan(tx)
+		})
+	} else {
+		err = updatePlan(s.St.Pool)
+	}
+	if err != nil {
+		if store.IsUniqueViolation(err, "uq_plans_one_recommended") {
+			fail(c, apperr.E("validation_error", "推荐套餐发生并发冲突，请重试", 409))
+			return
+		}
+		if store.IsUniqueViolation(err, "") {
+			fail(c, apperr.E("validation_error", "套餐 code 已存在", 409))
+			return
+		}
 		fail(c, err)
 		return
 	}
-	ok(c, planDict(plan, true))
+	plan, err = store.GetPlan(ctx, s.St.Pool, plan.ID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	usage, err := store.GetPlanUsage(ctx, s.St.Pool, plan.ID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ok(c, adminPlanDict(plan, usage))
 }
 
 func (s *Server) adminDeletePlan(c *gin.Context, _ *store.User) {
@@ -606,13 +958,25 @@ func (s *Server) adminDeletePlan(c *gin.Context, _ *store.User) {
 		fail(c, apperr.E("plan_not_found", "套餐不存在", 404))
 		return
 	}
-	// 有历史订单外键引用，下架而非物理删除
-	plan.Active = false
-	if err := store.UpdatePlan(ctx, s.St.Pool, plan); err != nil {
+	usage, err := store.GetPlanUsage(ctx, s.St.Pool, plan.ID)
+	if err != nil {
 		fail(c, err)
 		return
 	}
-	ok(c, gin.H{})
+	if usage.OrderCount > 0 || usage.SubscriptionCount > 0 {
+		fail(c, apperr.E("plan_in_use", "套餐已有历史订单或订阅，不能删除；请改为下架", 409))
+		return
+	}
+	deleted, err := store.DeletePlan(ctx, s.St.Pool, plan.ID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if !deleted {
+		fail(c, apperr.E("plan_in_use", "套餐已被业务记录引用，不能删除；请改为下架", 409))
+		return
+	}
+	c.Status(204)
 }
 
 // ---------- tasks ----------
@@ -621,7 +985,12 @@ func (s *Server) adminListTasks(c *gin.Context, _ *store.User) {
 	taskType := c.Query("type")
 	status := c.Query("status")
 	errorCode := strings.TrimSpace(c.Query("errorCode"))
-	if taskType != "" && !store.Contains(store.AdminTaskTypes, taskType) {
+	source := ""
+	if taskType == store.PromptTaskTypeCanvas || taskType == store.CanvasTaskSource {
+		source = store.CanvasTaskSource
+		taskType = ""
+	}
+	if taskType != "" && !store.Contains(store.AdminTaskFilters, taskType) {
 		fail(c, apperr.E("validation_error", "无效的任务类型", 422))
 		return
 	}
@@ -647,12 +1016,12 @@ func (s *Server) adminListTasks(c *gin.Context, _ *store.User) {
 		}
 	}
 	ctx := c.Request.Context()
-	rows, err := store.ListAdminTasks(ctx, s.St.Pool, taskType, status, errorCode, userIDs, limit, cursor)
+	rows, err := store.ListAdminTasks(ctx, s.St.Pool, taskType, status, errorCode, userIDs, limit, cursor, source)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	overview, err := store.GetAdminTaskOverview(ctx, s.St.Pool, taskType, errorCode, userIDs)
+	overview, err := store.GetAdminTaskOverview(ctx, s.St.Pool, taskType, errorCode, userIDs, source)
 	if err != nil {
 		fail(c, err)
 		return
@@ -673,10 +1042,12 @@ func (s *Server) adminListTasks(c *gin.Context, _ *store.User) {
 	page := buildPage(rows, limit, func(t *store.Task) gin.H {
 		user := users[t.UserID]
 		d := adminTaskDict(t, user)
-		outputURLs := s.urlsForKeys(c, t.OutputKeys)
-		d["outputUrls"] = outputURLs
-		d["thumbnailUrls"] = outputURLs
-		d["originalUrls"] = outputURLs
+		thumbURLs := thumbURLsForTask(t, "/api/v1/admin/files/")
+		originalURLs := adminURLsForKeys(t.OutputKeys)
+		d["outputUrls"] = originalURLs
+		d["thumbnailUrls"] = thumbURLs
+		d["originalUrls"] = originalURLs
+		d["displayUrls"] = displayURLsForTask(t, "/api/v1/admin/files/")
 		if user != nil {
 			d["userEmail"] = user.Email
 		} else {
@@ -686,6 +1057,51 @@ func (s *Server) adminListTasks(c *gin.Context, _ *store.User) {
 	})
 	page["summary"] = overview
 	ok(c, page)
+}
+
+func (s *Server) adminPurgeTasks(c *gin.Context, _ *store.User) {
+	taskType := c.Query("type")
+	status := c.Query("status")
+	errorCode := strings.TrimSpace(c.Query("errorCode"))
+	source := ""
+	if taskType == store.PromptTaskTypeCanvas || taskType == store.CanvasTaskSource {
+		source = store.CanvasTaskSource
+		taskType = ""
+	}
+	if taskType != "" && !store.Contains(store.AdminTaskFilters, taskType) {
+		fail(c, apperr.E("validation_error", "无效的任务类型", 422))
+		return
+	}
+	if status != "" && !store.Contains(store.TaskStatuses, status) {
+		fail(c, apperr.E("validation_error", "无效的任务状态", 422))
+		return
+	}
+	if status == "queued" || status == "running" {
+		fail(c, apperr.E("validation_error", "只能清空已结束的任务记录", 422))
+		return
+	}
+	if len([]rune(errorCode)) > 120 {
+		fail(c, apperr.E("validation_error", "错误码筛选不能超过 120 个字符", 422))
+		return
+	}
+	var userIDs []uuid.UUID
+	var err error
+	if userQuery := c.Query("user"); userQuery != "" {
+		userIDs, err = s.matchUserIDsOrImpossible(c, userQuery)
+		if err != nil {
+			fail(c, err)
+			return
+		}
+	}
+	result, err := store.PurgeFinishedAdminTasks(c.Request.Context(), s.St, taskType, status, errorCode, userIDs, source)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ok(c, gin.H{
+		"deleted": result.Deleted,
+		"skipped": result.Skipped,
+	})
 }
 
 func (s *Server) adminRequeueTask(c *gin.Context, _ *store.User) {
@@ -714,15 +1130,32 @@ func (s *Server) adminRequeueTask(c *gin.Context, _ *store.User) {
 		return
 	}
 	if err := s.Queue.EnqueueRunTaskRecovery(c.Request.Context(), task.ID.String()); err != nil {
-		// C1 补偿：重跑入队失败 → queued→failed + 解冻，返回 500 让管理员重试
-		log.Printf("task %s requeue enqueue failed, compensating: %v", task.ID, err)
-		if _, cerr := taskflow.FailQueuedEnqueue(c.Request.Context(), s.St, task.ID); cerr != nil {
-			log.Printf("task %s requeue compensation failed (queued reaper will pick up): %v", task.ID, cerr)
-		}
-		fail(c, apperr.E("enqueue_failed", "任务入队失败，费用已退回，请重试", 500))
-		return
+		log.Printf("task %s admin requeue deferred; durable queued recovery will retry: %v", task.ID, err)
 	}
 	ok(c, adminTaskDict(task, nil))
+}
+
+// adminURLsForKeys builds admin-scoped file URLs. The sc_admin_session cookie
+// is scoped to Path=/api/v1/admin, so the admin UI can only fetch stored
+// objects through /api/v1/admin/files/ — user-scoped /api/v1/files/ URLs would
+// always 401 in the admin browser.
+func adminURLsForKeys(keys []string) []string {
+	urls := make([]string, 0, len(keys))
+	for _, key := range keys {
+		key = strings.TrimLeft(strings.TrimSpace(key), "/")
+		if key != "" {
+			urls = append(urls, "/api/v1/admin/files/"+key)
+		}
+	}
+	return urls
+}
+
+func adminFileURL(key *string) *string {
+	if key == nil || strings.TrimSpace(*key) == "" {
+		return nil
+	}
+	u := "/api/v1/admin/files/" + strings.TrimLeft(strings.TrimSpace(*key), "/")
+	return &u
 }
 
 // ---------- gallery ----------
@@ -783,13 +1216,9 @@ func (s *Server) adminSubmissions(c *gin.Context, _ *store.User) {
 		return
 	}
 	ok(c, buildPage(rows, limit, func(sub *store.GallerySubmission) gin.H {
-		d := submissionDict(sub, s.mediaURLsFor(c, sub.MediaKeys))
-		d["coverUrl"] = s.presignSafe(c, sub.CoverKey)
-		if task := tasks[sub.TaskID]; task != nil {
-			d["taskType"] = task.Type
-			d["taskPrompt"] = task.Prompt
-			d["taskModel"] = task.Model
-		}
+		d := submissionDict(sub, adminURLsForKeys(sub.MediaKeys))
+		d["coverUrl"] = adminFileURL(sub.CoverKey)
+		attachSubmissionTask(d, tasks[sub.TaskID])
 		if promptEntry := promptBySubmission[sub.ID]; promptEntry != nil {
 			d["promptEntryId"] = promptEntry.ID.String()
 		}
@@ -1084,11 +1513,7 @@ func (s *Server) adminCreateAnnouncement(c *gin.Context, _ *store.User) {
 	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
 		var ierr error
 		announcement, ierr = store.InsertAnnouncement(ctx, tx, body.Title, body.Body, active, startsAt, endsAt, config)
-		if ierr != nil {
-			return ierr
-		}
-		// 同步生成一条全站通知（user_id NULL），进入用户通知合并流
-		return store.InsertNotification(ctx, tx, nil, "announcement", body.Title, body.Body)
+		return ierr
 	})
 	if err != nil {
 		fail(c, err)
@@ -1202,11 +1627,75 @@ func (s *Server) adminDeleteAnnouncement(c *gin.Context, _ *store.User) {
 		fail(c, apperr.E("not_found", "公告不存在", 404))
 		return
 	}
-	if err := store.DeleteAnnouncement(ctx, s.St.Pool, announcementID); err != nil {
+	if err := s.St.Tx(ctx, func(tx pgx.Tx) error {
+		if ierr := store.DeleteNotificationsBySource(ctx, tx, store.AnnouncementNotificationSource, announcementID); ierr != nil {
+			return ierr
+		}
+		return store.DeleteAnnouncement(ctx, tx, announcementID)
+	}); err != nil {
 		fail(c, err)
 		return
 	}
 	respondNoContent(c)
+}
+
+func (s *Server) adminUploadAnnouncementImage(c *gin.Context, _ *store.User) {
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		log.Printf("announcement image multipart parse failed: path=%s content_length=%d body_limit=%d err=%v",
+			c.Request.URL.Path, c.Request.ContentLength,
+			requestBodyLimit(c.Request.URL.Path, s.Cfg.UploadMaxBytes), err)
+		var maxBytesError *http.MaxBytesError
+		if errors.As(err, &maxBytesError) || errors.Is(err, multipart.ErrMessageTooLarge) {
+			fail(c, apperr.E("upload_too_large", "公告图片不能超过 8MB", 413))
+			return
+		}
+		if errors.Is(err, io.ErrUnexpectedEOF) {
+			fail(c, apperr.E("invalid_upload", "图片上传数据不完整，请重新选择后重试", 400))
+			return
+		}
+		fail(c, apperr.E("validation_error", "file: 缺少上传文件", 422))
+		return
+	}
+	if fileHeader.Size > promptCoverMaxBytes {
+		fail(c, apperr.E("upload_too_large", "公告图片不能超过 8MB", 413))
+		return
+	}
+	f, err := fileHeader.Open()
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, promptCoverMaxBytes+1))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if int64(len(data)) > promptCoverMaxBytes {
+		fail(c, apperr.E("upload_too_large", "公告图片不能超过 8MB", 413))
+		return
+	}
+	if len(data) == 0 {
+		fail(c, apperr.E("unsupported_file", "文件为空", 400))
+		return
+	}
+	ext, contentType := sniffImage(data)
+	if ext == "" {
+		fail(c, apperr.E("unsupported_file", "仅支持 png / jpg / webp 图片", 400))
+		return
+	}
+	ctx := c.Request.Context()
+	data, ext, contentType = s.compressCoverImage(ctx, data, ext, contentType)
+	newKey := fmt.Sprintf("announcement-images/%s.%s", uuid.NewString(), ext)
+	if err := s.Storage.UploadBytes(ctx, newKey, data, contentType); err != nil {
+		fail(c, err)
+		return
+	}
+	respondCreated(c, gin.H{
+		"key": newKey,
+		"url": "/api/v1/files/" + newKey,
+	})
 }
 
 // ---------- changelog ----------
@@ -1233,6 +1722,220 @@ type changelogIn struct {
 	Items     []string `json:"items"`
 	Highlight *bool    `json:"highlight"`
 	Sort      *int     `json:"sort"`
+}
+
+const (
+	changelogTransferFormat     = "startcloudsai-changelog"
+	changelogTransferVersion    = 1
+	changelogImportMaxEntries   = 500
+	changelogImportMaxItems     = 100
+	changelogImportMaxItemRunes = 500
+)
+
+type changelogTransferEntry struct {
+	ID        string   `json:"id,omitempty"`
+	Version   string   `json:"version"`
+	Date      string   `json:"date"`
+	Tag       string   `json:"tag"`
+	Title     string   `json:"title"`
+	Summary   string   `json:"summary"`
+	Items     []string `json:"items"`
+	Highlight bool     `json:"highlight"`
+	Sort      int      `json:"sort"`
+}
+
+type changelogTransferFile struct {
+	Format        string                   `json:"format"`
+	SchemaVersion int                      `json:"schemaVersion"`
+	ExportedAt    string                   `json:"exportedAt,omitempty"`
+	Entries       []changelogTransferEntry `json:"entries"`
+}
+
+func changelogSummaryText(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func changelogTransferEntryFromStore(entry *store.ChangelogEntry) changelogTransferEntry {
+	return changelogTransferEntry{
+		ID: entry.ID.String(), Version: entry.Version, Date: entry.Date.Format("2006-01-02"),
+		Tag: entry.Tag, Title: entry.Title, Summary: changelogSummaryText(entry.Summary),
+		Items: nonNilStrings(entry.Items), Highlight: entry.Highlight, Sort: entry.Sort,
+	}
+}
+
+func normalizeChangelogTransferEntry(input changelogTransferEntry) (*store.ChangelogEntry, error) {
+	version := strings.TrimSpace(input.Version)
+	dateText := strings.TrimSpace(input.Date)
+	tag := strings.TrimSpace(input.Tag)
+	title := strings.TrimSpace(input.Title)
+	date, err := validateChangelogIn(version, dateText, tag, title)
+	if err != nil {
+		return nil, err
+	}
+	summary := strings.TrimSpace(input.Summary)
+	if len([]rune(summary)) > 4000 {
+		return nil, apperr.E("validation_error", "summary: 不能超过 4000 个字符", 422)
+	}
+	if len(input.Items) > changelogImportMaxItems {
+		return nil, apperr.E("validation_error", "items: 每个版本最多 100 条", 422)
+	}
+	items := make([]string, 0, len(input.Items))
+	for _, raw := range input.Items {
+		item := strings.TrimSpace(raw)
+		if item == "" {
+			continue
+		}
+		if len([]rune(item)) > changelogImportMaxItemRunes {
+			return nil, apperr.E("validation_error", "items: 单条不能超过 500 个字符", 422)
+		}
+		items = append(items, item)
+	}
+	if input.Sort < -1_000_000 || input.Sort > 1_000_000 {
+		return nil, apperr.E("validation_error", "sort: 超出允许范围", 422)
+	}
+	var id uuid.UUID
+	if idText := strings.TrimSpace(input.ID); idText != "" {
+		parsed, parseErr := uuid.Parse(idText)
+		if parseErr != nil {
+			return nil, apperr.E("validation_error", "id: 格式无效", 422)
+		}
+		id = parsed
+	}
+	return &store.ChangelogEntry{
+		ID: id, Version: version, Date: date, Tag: tag, Title: title,
+		Summary: &summary, Items: items, Highlight: input.Highlight, Sort: input.Sort,
+	}, nil
+}
+
+func changelogEntriesEqual(left, right *store.ChangelogEntry) bool {
+	return left.Version == right.Version && left.Date.Format("2006-01-02") == right.Date.Format("2006-01-02") &&
+		left.Tag == right.Tag && left.Title == right.Title && changelogSummaryText(left.Summary) == changelogSummaryText(right.Summary) &&
+		slices.Equal(left.Items, right.Items) && left.Highlight == right.Highlight && left.Sort == right.Sort
+}
+
+func (s *Server) adminExportChangelog(c *gin.Context, _ *store.User) {
+	rows, err := store.ListChangelog(c.Request.Context(), s.St.Pool)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	entries := make([]changelogTransferEntry, 0, len(rows))
+	for _, entry := range rows {
+		entries = append(entries, changelogTransferEntryFromStore(entry))
+	}
+	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="startcloudsai-changelog-%s.json"`, time.Now().UTC().Format("20060102-150405")))
+	c.JSON(http.StatusOK, changelogTransferFile{
+		Format: changelogTransferFormat, SchemaVersion: changelogTransferVersion,
+		ExportedAt: isoValue(time.Now()), Entries: entries,
+	})
+}
+
+func (s *Server) adminImportChangelog(c *gin.Context, _ *store.User) {
+	var body changelogTransferFile
+	if err := bindJSON(c, &body); err != nil {
+		fail(c, err)
+		return
+	}
+	if body.Format != "" && body.Format != changelogTransferFormat {
+		fail(c, apperr.E("validation_error", "format: 不是 StarCloudsAI 更新说明文件", 422))
+		return
+	}
+	if body.SchemaVersion != 0 && body.SchemaVersion != changelogTransferVersion {
+		fail(c, apperr.E("validation_error", "schemaVersion: 暂不支持该文件版本", 422))
+		return
+	}
+	if len(body.Entries) == 0 || len(body.Entries) > changelogImportMaxEntries {
+		fail(c, apperr.E("validation_error", "entries: 数量须在 1-500 之间", 422))
+		return
+	}
+
+	normalized := make([]*store.ChangelogEntry, 0, len(body.Entries))
+	seenIDs := make(map[uuid.UUID]bool, len(body.Entries))
+	seenIdentities := make(map[string]bool, len(body.Entries))
+	highlights := 0
+	for index, input := range body.Entries {
+		entry, err := normalizeChangelogTransferEntry(input)
+		if err != nil {
+			fail(c, apperr.E("validation_error", fmt.Sprintf("第 %d 条：%s", index+1, err.Error()), 422))
+			return
+		}
+		if entry.ID != uuid.Nil {
+			if seenIDs[entry.ID] {
+				fail(c, apperr.E("validation_error", fmt.Sprintf("第 %d 条：ID 重复", index+1), 422))
+				return
+			}
+			seenIDs[entry.ID] = true
+		}
+		identity := entry.Version + "\x00" + entry.Date.Format("2006-01-02") + "\x00" + entry.Title
+		if seenIdentities[identity] {
+			fail(c, apperr.E("validation_error", fmt.Sprintf("第 %d 条：版本、日期与标题重复", index+1), 422))
+			return
+		}
+		seenIdentities[identity] = true
+		if entry.Highlight {
+			highlights++
+		}
+		normalized = append(normalized, entry)
+	}
+	if highlights > 1 {
+		fail(c, apperr.E("validation_error", "entries: 一次导入只能包含一个焦点版本", 422))
+		return
+	}
+
+	created, updated, unchanged := 0, 0, 0
+	err := s.St.Tx(c.Request.Context(), func(tx pgx.Tx) error {
+		for _, incoming := range normalized {
+			var existing *store.ChangelogEntry
+			var lookupErr error
+			if incoming.ID != uuid.Nil {
+				existing, lookupErr = store.GetChangelog(c.Request.Context(), tx, incoming.ID)
+				if lookupErr != nil {
+					return lookupErr
+				}
+			}
+			if existing == nil {
+				existing, lookupErr = store.GetChangelogByIdentity(c.Request.Context(), tx, incoming.Version, incoming.Date, incoming.Title)
+				if lookupErr != nil {
+					return lookupErr
+				}
+			}
+			if existing == nil {
+				incoming.ID = uuid.Nil
+				inserted, insertErr := store.InsertChangelog(c.Request.Context(), tx, incoming)
+				if insertErr != nil {
+					return insertErr
+				}
+				incoming = inserted
+				created++
+			} else if changelogEntriesEqual(existing, incoming) {
+				incoming = existing
+				unchanged++
+			} else {
+				existing.Version, existing.Date, existing.Tag, existing.Title = incoming.Version, incoming.Date, incoming.Tag, incoming.Title
+				existing.Summary, existing.Items = incoming.Summary, incoming.Items
+				existing.Highlight, existing.Sort = incoming.Highlight, incoming.Sort
+				if updateErr := store.UpdateChangelog(c.Request.Context(), tx, existing); updateErr != nil {
+					return updateErr
+				}
+				incoming = existing
+				updated++
+			}
+			if incoming.Highlight {
+				if clearErr := store.ClearOtherChangelogHighlights(c.Request.Context(), tx, incoming.ID); clearErr != nil {
+					return clearErr
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ok(c, gin.H{"total": len(normalized), "created": created, "updated": updated, "unchanged": unchanged})
 }
 
 func validateChangelogIn(version, date, tag, title string) (time.Time, error) {
@@ -1271,15 +1974,27 @@ func (s *Server) adminCreateChangelog(c *gin.Context, _ *store.User) {
 	if body.Sort != nil {
 		sortVal = *body.Sort
 	}
-	entry, err := store.InsertChangelog(c.Request.Context(), s.St.Pool, &store.ChangelogEntry{
-		Version:   body.Version,
-		Date:      date,
-		Tag:       body.Tag,
-		Title:     body.Title,
-		Summary:   body.Summary,
-		Items:     body.Items,
-		Highlight: highlight,
-		Sort:      sortVal,
+	ctx := c.Request.Context()
+	var entry *store.ChangelogEntry
+	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
+		created, ierr := store.InsertChangelog(ctx, tx, &store.ChangelogEntry{
+			Version:   body.Version,
+			Date:      date,
+			Tag:       body.Tag,
+			Title:     body.Title,
+			Summary:   body.Summary,
+			Items:     body.Items,
+			Highlight: highlight,
+			Sort:      sortVal,
+		})
+		if ierr != nil {
+			return ierr
+		}
+		entry = created
+		if highlight {
+			return store.ClearOtherChangelogHighlights(ctx, tx, created.ID)
+		}
+		return nil
 	})
 	if err != nil {
 		fail(c, err)
@@ -1361,7 +2076,16 @@ func (s *Server) adminPatchChangelog(c *gin.Context, _ *store.User) {
 	if body.Sort.Valid {
 		entry.Sort = body.Sort.Value
 	}
-	if err := store.UpdateChangelog(ctx, s.St.Pool, entry); err != nil {
+	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
+		if ierr := store.UpdateChangelog(ctx, tx, entry); ierr != nil {
+			return ierr
+		}
+		if entry.Highlight {
+			return store.ClearOtherChangelogHighlights(ctx, tx, entry.ID)
+		}
+		return nil
+	})
+	if err != nil {
 		fail(c, err)
 		return
 	}
@@ -1394,31 +2118,74 @@ func (s *Server) adminDeleteChangelog(c *gin.Context, _ *store.User) {
 // ---------- settings ----------
 
 var settingsCamel = map[string]string{
-	"task_prices":                 "taskPrices",
-	"user_max_running_tasks":      "userMaxRunningTasks",
-	"user_max_concurrent_tasks":   "userMaxConcurrentTasks",
-	"global_max_concurrent_tasks": "globalMaxConcurrentTasks",
-	"global_max_active_tasks":     "globalMaxActiveTasks",
-	"signup_bonus_cents":          "signupBonusCents",
-	"registration_enabled":        "registrationEnabled",
-	"task_models":                 "taskModels",
-	"image_service_routes":        "imageServiceRoutes",
-	"free_daily_cents":            "freeDailyCents",
-	"submission_enabled":          "submissionEnabled",
-	"auto_approve":                "autoApprove",
-	"daily_limit":                 "dailyLimit",
-	"c2a_base_url":                "c2aBaseUrl",
-	"c2a_api_key":                 "c2aApiKey",
-	"c2a_timeout_secs":            "c2aTimeoutSecs",
-	"sub2api_base_url":            "sub2apiBaseUrl",
-	"sub2api_api_key":             "sub2apiApiKey",
-	"sub2api_chat_model":          "sub2apiChatModel",
-	"sub2api_chat_models":         "sub2apiChatModels",
-	"sub2api_image_model":         "sub2apiImageModel",
-	"sub2api_timeout_secs":        "sub2apiTimeoutSecs",
-	"crun_base_url":               "crunBaseUrl",
-	"crun_api_key":                "crunApiKey",
-	"crun_timeout_secs":           "crunTimeoutSecs",
+	"task_prices":                                 "taskPrices",
+	"user_max_running_tasks":                      "userMaxRunningTasks",
+	"user_max_running_images":                     "userMaxRunningImages",
+	"user_max_concurrent_tasks":                   "userMaxConcurrentTasks",
+	"global_max_concurrent_tasks":                 "globalMaxConcurrentTasks",
+	"global_max_active_tasks":                     "globalMaxActiveTasks",
+	"global_max_active_images":                    "globalMaxActiveImages",
+	"task_failure_retry_count":                    "taskFailureRetryCount",
+	"task_retry_first_delay_secs":                 "taskRetryFirstDelaySecs",
+	"task_retry_backoff_secs":                     "taskRetryBackoffSecs",
+	"image_variant_format":                        "imageVariantFormat",
+	"image_display_lossless":                      "imageDisplayLossless",
+	"image_display_quality":                       "imageDisplayQuality",
+	"image_display_max_edge":                      "imageDisplayMaxEdge",
+	"image_thumb_max_edge":                        "imageThumbMaxEdge",
+	"image_fetch_concurrency":                     "imageFetchConcurrency",
+	"cross_provider_same_model_balancing_enabled": "crossProviderSameModelBalancingEnabled",
+	"admin_image_analysis_provider_id":            "adminImageAnalysisProviderId",
+	"admin_image_analysis_model_id":               "adminImageAnalysisModelId",
+	"admin_image_analysis_reasoning_effort":       "adminImageAnalysisReasoningEffort",
+	"signup_bonus_cents":                          "signupBonusCents",
+	"registration_enabled":                        "registrationEnabled",
+	"task_models":                                 "taskModels",
+	"image_service_routes":                        "imageServiceRoutes",
+	"checkin_enabled":                             "checkinEnabled",
+	"checkin_campaign_title":                      "checkinCampaignTitle",
+	"checkin_rewards":                             "checkinRewards",
+	"growth_group_enabled":                        "growthGroupEnabled",
+	"growth_group_campaign_key":                   "growthGroupCampaignKey",
+	"growth_group_target_members":                 "growthGroupTargetMembers",
+	"growth_group_reward_cents":                   "growthGroupRewardCents",
+	"growth_group_duration_hours":                 "growthGroupDurationHours",
+	"growth_failure_bonus_enabled":                "growthFailureBonusEnabled",
+	"growth_failure_bonus_cents":                  "growthFailureBonusCents",
+	"growth_failure_bonus_daily_limit":            "growthFailureBonusDailyLimit",
+	"growth_usage_rewards_enabled":                "growthUsageRewardsEnabled",
+	"growth_usage_milestones":                     "growthUsageMilestones",
+	"suggestion_reward_max_cents":                 "suggestionRewardMaxCents",
+	"page_controls":                               "pageControls",
+	"platform_logging_enabled":                    "platformLoggingEnabled",
+	"platform_log_security_enabled":               "platformLogSecurityEnabled",
+	"platform_log_operations_enabled":             "platformLogOperationsEnabled",
+	"platform_log_user_enabled":                   "platformLogUserEnabled",
+	"platform_log_retention_days":                 "platformLogRetentionDays",
+	"platform_log_max_mb":                         "platformLogMaxMb",
+	"user_profile_rules":                          "userProfileRules",
+	"submission_enabled":                          "submissionEnabled",
+	"auto_approve":                                "autoApprove",
+	"daily_limit":                                 "dailyLimit",
+	"c2a_base_url":                                "c2aBaseUrl",
+	"c2a_api_key":                                 "c2aApiKey",
+	"c2a_timeout_secs":                            "c2aTimeoutSecs",
+	"sub2api_base_url":                            "sub2apiBaseUrl",
+	"sub2api_api_key":                             "sub2apiApiKey",
+	"sub2api_chat_model":                          "sub2apiChatModel",
+	"sub2api_chat_models":                         "sub2apiChatModels",
+	"sub2api_image_model":                         "sub2apiImageModel",
+	"sub2api_timeout_secs":                        "sub2apiTimeoutSecs",
+	"crun_base_url":                               "crunBaseUrl",
+	"crun_api_key":                                "crunApiKey",
+	"crun_timeout_secs":                           "crunTimeoutSecs",
+	"lanjing_pay_enabled":                         "lanjingPayEnabled",
+	"lanjing_pay_base_url":                        "lanjingPayBaseUrl",
+	"lanjing_pay_secret":                          "lanjingPaySecret",
+	"lanjing_pay_notify_url":                      "lanjingPayNotifyUrl",
+	"lanjing_pay_timeout_secs":                    "lanjingPayTimeoutSecs",
+	"lanjing_pay_alipay_enabled":                  "lanjingPayAlipayEnabled",
+	"lanjing_pay_wechat_enabled":                  "lanjingPayWechatEnabled",
 }
 
 // maskSecret 敏感值掩码：保留末 4 位，返回 "****abcd"；空值原样。
@@ -1465,7 +2232,7 @@ func (s *Server) settingsToCamel(c *gin.Context) (gin.H, error) {
 		if camel == "" {
 			camel = k
 		}
-		if k == "c2a_api_key" || k == "sub2api_api_key" || k == "crun_api_key" {
+		if k == "c2a_api_key" || k == "sub2api_api_key" || k == "crun_api_key" || k == "lanjing_pay_secret" {
 			// Key 永不明文回传，只返回掩码（前端留空或提交掩码 = 不修改）
 			var stored string
 			_ = json.Unmarshal(v, &stored)
@@ -1484,6 +2251,25 @@ func (s *Server) settingsToCamel(c *gin.Context) (gin.H, error) {
 	ceiling := int64(s.workerConcurrencyCeiling())
 	out["workerConcurrencyCeiling"] = ceiling
 	out["effectiveGlobalConcurrency"] = max(configured, 1)
+	payment, err := settings.ResolveLanjingPay(c.Request.Context(), s.St.Pool, settings.LanjingPayConfig{
+		Enabled:       s.Cfg.LanjingPayEnabled(),
+		BaseURL:       s.Cfg.LanjingPayBaseURL,
+		Secret:        s.Cfg.LanjingPaySecret,
+		NotifyURL:     s.Cfg.LanjingPayNotifyURL,
+		TimeoutSecs:   s.Cfg.LanjingPayTimeoutSecs,
+		AlipayEnabled: true,
+		WechatEnabled: true,
+	}, s.Cfg.AppSecret)
+	if err != nil {
+		return nil, err
+	}
+	out["lanjingPayEnabled"] = payment.Enabled
+	out["lanjingPayBaseUrl"] = payment.BaseURL
+	out["lanjingPaySecret"] = maskSecret(payment.Secret)
+	out["lanjingPayNotifyUrl"] = payment.NotifyURL
+	out["lanjingPayTimeoutSecs"] = payment.TimeoutSecs
+	out["lanjingPayAlipayEnabled"] = payment.AlipayEnabled
+	out["lanjingPayWechatEnabled"] = payment.WechatEnabled
 	return out, nil
 }
 
@@ -1537,10 +2323,19 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 				fail(c, apperr.E("validation_error", "未知任务类型："+strings.Join(invalid, ", "), 422))
 				return
 			}
+			// 拼图没有服务端调用，后台不能把本地工具误配成收费任务。
+			prices["puzzle"] = 0
+			raw, _ = json.Marshal(prices)
 		case "user_max_running_tasks":
 			var v int64
 			if err := json.Unmarshal(raw, &v); err != nil || v < 1 || v > 10000 {
 				fail(c, apperr.E("validation_error", "userMaxRunningTasks: 须在 1-10000 之间", 422))
+				return
+			}
+		case "user_max_running_images":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 1 || v > 100000 {
+				fail(c, apperr.E("validation_error", "userMaxRunningImages: 须在 1-100000 之间", 422))
 				return
 			}
 		case "user_max_concurrent_tasks":
@@ -1561,13 +2356,115 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 				fail(c, apperr.E("validation_error", "globalMaxActiveTasks: 须在 10-10000000 之间", 422))
 				return
 			}
-		case "signup_bonus_cents", "free_daily_cents", "daily_limit":
+		case "global_max_active_images":
 			var v int64
-			if err := json.Unmarshal(raw, &v); err != nil || v < 0 {
+			if err := json.Unmarshal(raw, &v); err != nil || v < 10 || v > 10000000 {
+				fail(c, apperr.E("validation_error", "globalMaxActiveImages: 须在 10-10000000 之间", 422))
+				return
+			}
+		case "task_failure_retry_count":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 0 || v > 100 {
+				fail(c, apperr.E("validation_error", "taskFailureRetryCount: 须在 0-100 之间", 422))
+				return
+			}
+		case "task_retry_first_delay_secs":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 1 || v > 600 {
+				fail(c, apperr.E("validation_error", "taskRetryFirstDelaySecs: 须在 1-600 之间", 422))
+				return
+			}
+		case "task_retry_backoff_secs":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 1 || v > 600 {
+				fail(c, apperr.E("validation_error", "taskRetryBackoffSecs: 须在 1-600 之间", 422))
+				return
+			}
+		case "admin_image_analysis_provider_id", "admin_image_analysis_model_id", "admin_image_analysis_reasoning_effort":
+			var v string
+			if err := json.Unmarshal(raw, &v); err != nil {
+				fail(c, apperr.E("validation_error", camel+": 格式不正确", 422))
+				return
+			}
+			v = strings.TrimSpace(v)
+			if len([]rune(v)) > 128 {
+				fail(c, apperr.E("validation_error", camel+": 长度不能超过 128", 422))
+				return
+			}
+			raw, _ = json.Marshal(v)
+		case "image_variant_format":
+			var v string
+			if err := json.Unmarshal(raw, &v); err != nil || (v != "webp" && v != "png") {
+				fail(c, apperr.E("validation_error", "imageVariantFormat: 仅支持 webp 或 png", 422))
+				return
+			}
+		case "image_display_lossless":
+			var v bool
+			if err := json.Unmarshal(raw, &v); err != nil {
+				fail(c, apperr.E("validation_error", "imageDisplayLossless: 须为布尔值", 422))
+				return
+			}
+		case "image_display_quality":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 1 || v > 100 {
+				fail(c, apperr.E("validation_error", "imageDisplayQuality: 须在 1-100 之间", 422))
+				return
+			}
+		case "image_display_max_edge":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 512 || v > 8192 {
+				fail(c, apperr.E("validation_error", "imageDisplayMaxEdge: 须在 512-8192 之间", 422))
+				return
+			}
+		case "image_thumb_max_edge":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 128 || v > 1024 {
+				fail(c, apperr.E("validation_error", "imageThumbMaxEdge: 须在 128-1024 之间", 422))
+				return
+			}
+		case "image_fetch_concurrency":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 1 || v > 32 {
+				fail(c, apperr.E("validation_error", "imageFetchConcurrency: 须在 1-32 之间", 422))
+				return
+			}
+		case "signup_bonus_cents", "daily_limit", "growth_group_reward_cents", "growth_failure_bonus_cents", "suggestion_reward_max_cents":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 0 || v > 1_000_000 {
 				fail(c, apperr.E("validation_error", camel+": 须为非负整数", 422))
 				return
 			}
-		case "registration_enabled", "submission_enabled", "auto_approve":
+		case "growth_group_target_members":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 2 || v > 10 {
+				fail(c, apperr.E("validation_error", "growthGroupTargetMembers: 须在 2-10 之间", 422))
+				return
+			}
+		case "growth_group_duration_hours":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 1 || v > 720 {
+				fail(c, apperr.E("validation_error", "growthGroupDurationHours: 须在 1-720 之间", 422))
+				return
+			}
+		case "growth_failure_bonus_daily_limit":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 0 || v > 100 {
+				fail(c, apperr.E("validation_error", "growthFailureBonusDailyLimit: 须在 0-100 之间", 422))
+				return
+			}
+		case "platform_log_retention_days":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 1 || v > 90 {
+				fail(c, apperr.E("validation_error", "platformLogRetentionDays: 须在 1-90 天之间", 422))
+				return
+			}
+		case "platform_log_max_mb":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 32 || v > 4096 {
+				fail(c, apperr.E("validation_error", "platformLogMaxMb: 须在 32-4096 MB 之间", 422))
+				return
+			}
+		case "registration_enabled", "submission_enabled", "auto_approve", "cross_provider_same_model_balancing_enabled", "checkin_enabled", "growth_group_enabled", "growth_failure_bonus_enabled", "growth_usage_rewards_enabled", "lanjing_pay_enabled", "lanjing_pay_alipay_enabled", "lanjing_pay_wechat_enabled", "platform_logging_enabled", "platform_log_security_enabled", "platform_log_operations_enabled", "platform_log_user_enabled":
 			var v bool
 			if err := json.Unmarshal(raw, &v); err != nil {
 				fail(c, apperr.E("validation_error", camel+": 须为布尔值", 422))
@@ -1609,20 +2506,142 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 				}
 				raw, _ = json.Marshal(cleaned)
 			}
-		case "c2a_base_url", "sub2api_base_url", "crun_base_url":
+		case "checkin_rewards":
+			var rewards []int64
+			if err := json.Unmarshal(raw, &rewards); err != nil || len(rewards) != 7 {
+				fail(c, apperr.E("validation_error", "checkinRewards: 必须配置连续 7 天奖励", 422))
+				return
+			}
+			positive := false
+			for _, reward := range rewards {
+				if reward < 0 || reward > 1000000 {
+					fail(c, apperr.E("validation_error", "checkinRewards: 单日奖励须在 0-1000000 之间", 422))
+					return
+				}
+				positive = positive || reward > 0
+			}
+			if !positive {
+				fail(c, apperr.E("validation_error", "checkinRewards: 至少一天奖励须大于 0", 422))
+				return
+			}
+		case "checkin_campaign_title":
+			var v string
+			if err := json.Unmarshal(raw, &v); err != nil {
+				fail(c, apperr.E("validation_error", "checkinCampaignTitle: 格式不正确", 422))
+				return
+			}
+			v = strings.TrimSpace(v)
+			if len([]rune(v)) < 2 || len([]rune(v)) > 40 {
+				fail(c, apperr.E("validation_error", "checkinCampaignTitle: 长度须在 2-40 之间", 422))
+				return
+			}
+			raw, _ = json.Marshal(v)
+		case "user_profile_rules":
+			var rules store.UserProfileRules
+			if err := json.Unmarshal(raw, &rules); err != nil {
+				fail(c, apperr.E("validation_error", "userProfileRules: 格式不正确", 422))
+				return
+			}
+			if err := settings.ValidateUserProfileRules(rules); err != nil {
+				fail(c, apperr.E("validation_error", "userProfileRules: "+err.Error(), 422))
+				return
+			}
+			current, err := settings.UserProfileRules(c.Request.Context(), s.St.Pool)
+			if err != nil {
+				fail(c, err)
+				return
+			}
+			rules.Version = current.Version + 1
+			raw, _ = json.Marshal(rules)
+		case "growth_group_campaign_key":
+			var v string
+			if err := json.Unmarshal(raw, &v); err != nil {
+				fail(c, apperr.E("validation_error", "growthGroupCampaignKey: 格式不正确", 422))
+				return
+			}
+			v = strings.TrimSpace(v)
+			if len(v) < 2 || len(v) > 64 {
+				fail(c, apperr.E("validation_error", "growthGroupCampaignKey: 长度须在 2-64 之间", 422))
+				return
+			}
+			raw, _ = json.Marshal(v)
+		case "growth_usage_milestones":
+			var milestones []struct {
+				Units       int64 `json:"units"`
+				RewardCents int64 `json:"rewardCents"`
+			}
+			if err := json.Unmarshal(raw, &milestones); err != nil || len(milestones) < 1 || len(milestones) > 12 {
+				fail(c, apperr.E("validation_error", "growthUsageMilestones: 须配置 1-12 个里程碑", 422))
+				return
+			}
+			seen := map[int64]bool{}
+			for _, milestone := range milestones {
+				if milestone.Units < 1 || milestone.Units > 1_000_000 || milestone.RewardCents < 1 || milestone.RewardCents > 1_000_000 || seen[milestone.Units] {
+					fail(c, apperr.E("validation_error", "growthUsageMilestones: 张数或奖励无效且张数不能重复", 422))
+					return
+				}
+				seen[milestone.Units] = true
+			}
+		case "page_controls":
+			var controls map[string]settings.PageControl
+			if err := json.Unmarshal(raw, &controls); err != nil {
+				fail(c, apperr.E("validation_error", "pageControls: 格式不正确", 422))
+				return
+			}
+			if len(controls) > len(settings.PageControlKeys) {
+				fail(c, apperr.E("validation_error", "pageControls: 页面数量无效", 422))
+				return
+			}
+			cleaned := make(map[string]settings.PageControl, len(controls))
+			for key, control := range controls {
+				control.Status = strings.TrimSpace(control.Status)
+				control.Reason = strings.TrimSpace(control.Reason)
+				if !settings.ValidPageControlKey(key) {
+					fail(c, apperr.E("validation_error", "pageControls: 未知页面 "+key, 422))
+					return
+				}
+				if !settings.ValidPageStatus(control.Status) {
+					fail(c, apperr.E("validation_error", "pageControls: "+key+" 的状态无效", 422))
+					return
+				}
+				if len([]rune(control.Reason)) > 200 {
+					fail(c, apperr.E("validation_error", "pageControls: 原因不能超过 200 字", 422))
+					return
+				}
+				cleaned[key] = control
+			}
+			raw, _ = json.Marshal(cleaned)
+		case "c2a_base_url", "sub2api_base_url", "crun_base_url", "lanjing_pay_base_url":
 			var v string
 			if err := json.Unmarshal(raw, &v); err != nil {
 				fail(c, apperr.E("validation_error", camel+": 格式不正确", 422))
 				return
 			}
 			v = strings.TrimRight(strings.TrimSpace(v), "/")
-			if v != "" && netguard.ValidateURL(v, s.Cfg.AppEnv == "development", false) != nil {
+			allowPrivate := s.Cfg.AppEnv == "development"
+			if snake == "c2a_base_url" {
+				allowPrivate = s.Cfg.C2APrivateNetworkAllowed()
+			}
+			if v != "" && netguard.ValidateURL(v, allowPrivate, false) != nil {
 				fail(c, apperr.E("validation_error", camel+": 地址无效或指向受限网络", 422))
 				return
 			}
 			normalized, _ := json.Marshal(v)
 			raw = normalized
-		case "c2a_api_key", "sub2api_api_key", "crun_api_key":
+		case "lanjing_pay_notify_url":
+			var v string
+			if err := json.Unmarshal(raw, &v); err != nil {
+				fail(c, apperr.E("validation_error", camel+": 格式不正确", 422))
+				return
+			}
+			v = strings.TrimSpace(v)
+			if v != "" && netguard.ValidateURL(v, s.Cfg.AppEnv == "development", s.Cfg.AppEnv == "production") != nil {
+				fail(c, apperr.E("validation_error", camel+": 必须是有效的公网 HTTPS 地址", 422))
+				return
+			}
+			normalized, _ := json.Marshal(v)
+			raw = normalized
+		case "c2a_api_key", "sub2api_api_key", "crun_api_key", "lanjing_pay_secret":
 			var v string
 			if err := json.Unmarshal(raw, &v); err != nil {
 				fail(c, apperr.E("validation_error", camel+": 格式不正确", 422))
@@ -1650,6 +2669,12 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 				fail(c, apperr.E("validation_error", camel+": 须在 0-1800 之间（0 = 使用默认）", 422))
 				return
 			}
+		case "lanjing_pay_timeout_secs":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 1 || v > 60 {
+				fail(c, apperr.E("validation_error", camel+": 须在 1-60 之间", 422))
+				return
+			}
 		case "sub2api_chat_model", "sub2api_image_model":
 			var v string
 			if err := json.Unmarshal(raw, &v); err != nil {
@@ -1665,11 +2690,39 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 		}
 		updates[snake] = raw
 	}
+	if raw, exists := updates["trial_campaign_feature_keys"]; exists {
+		var values []string
+		_ = json.Unmarshal(raw, &values)
+		if len(values) > 0 {
+			updates["trial_campaign_feature_key"], _ = json.Marshal(values[0])
+		}
+	} else if raw, exists := updates["trial_campaign_feature_key"]; exists {
+		var value string
+		_ = json.Unmarshal(raw, &value)
+		updates["trial_campaign_feature_keys"], _ = json.Marshal([]string{value})
+	}
 	ctx := c.Request.Context()
+	if err := s.validateAdminImageAnalysisSettings(ctx, updates); err != nil {
+		fail(c, err)
+		return
+	}
+	if err := s.validateLanjingPaySettings(ctx, updates); err != nil {
+		fail(c, err)
+		return
+	}
+	if err := s.validatePlatformLogSettings(ctx, updates); err != nil {
+		fail(c, err)
+		return
+	}
 	err := s.St.Tx(ctx, func(tx pgx.Tx) error {
 		for key, value := range updates {
 			if terr := settings.Set(ctx, tx, key, value); terr != nil {
 				return terr
+			}
+		}
+		if _, changed := updates["user_profile_rules"]; changed {
+			if err := store.EnqueueAllUserProfiles(ctx, tx); err != nil {
+				return err
 			}
 		}
 		return nil
@@ -1678,12 +2731,161 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
+	if _, changed := updates["page_controls"]; changed {
+		s.invalidatePageControls()
+	}
+	for key := range updates {
+		if strings.HasPrefix(key, "platform_log") && s.Logs != nil {
+			s.Logs.Invalidate()
+			break
+		}
+	}
 	out, err := s.settingsToCamel(c)
 	if err != nil {
 		fail(c, err)
 		return
 	}
 	ok(c, out)
+}
+
+func (s *Server) validatePlatformLogSettings(ctx context.Context, updates map[string]json.RawMessage) error {
+	readBool := func(key string) (bool, error) {
+		if raw, exists := updates[key]; exists {
+			var value bool
+			if err := json.Unmarshal(raw, &value); err != nil {
+				return false, err
+			}
+			return value, nil
+		}
+		return settings.GetBool(ctx, s.St.Pool, key)
+	}
+	enabled, err := readBool("platform_logging_enabled")
+	if err != nil || !enabled {
+		return err
+	}
+	securityEnabled, err := readBool("platform_log_security_enabled")
+	if err != nil {
+		return err
+	}
+	operationsEnabled, err := readBool("platform_log_operations_enabled")
+	if err != nil {
+		return err
+	}
+	userEnabled, err := readBool("platform_log_user_enabled")
+	if err != nil {
+		return err
+	}
+	if !securityEnabled && !operationsEnabled && !userEnabled {
+		return apperr.E("validation_error", "启用平台日志时至少开启一个日志分类", 422)
+	}
+	return nil
+}
+
+func (s *Server) validateAdminImageAnalysisSettings(ctx context.Context, updates map[string]json.RawMessage) error {
+	_, providerUpdated := updates["admin_image_analysis_provider_id"]
+	_, modelUpdated := updates["admin_image_analysis_model_id"]
+	_, effortUpdated := updates["admin_image_analysis_reasoning_effort"]
+	if !providerUpdated && !modelUpdated && !effortUpdated {
+		return nil
+	}
+	read := func(key string) (string, error) {
+		if raw, exists := updates[key]; exists {
+			var value string
+			if err := json.Unmarshal(raw, &value); err != nil {
+				return "", err
+			}
+			return strings.TrimSpace(value), nil
+		}
+		return settings.GetString(ctx, s.St.Pool, key)
+	}
+	providerID, err := read("admin_image_analysis_provider_id")
+	if err != nil {
+		return err
+	}
+	modelID, err := read("admin_image_analysis_model_id")
+	if err != nil {
+		return err
+	}
+	reasoningEffort, err := read("admin_image_analysis_reasoning_effort")
+	if err != nil {
+		return err
+	}
+	if providerID == "" && modelID == "" && reasoningEffort == "" {
+		return nil
+	}
+	if providerID == "" || modelID == "" {
+		return apperr.E("validation_error", "后台图片分析的服务商和模型必须同时配置", 422)
+	}
+	cfg, err := modelconfig.Runtime(ctx, s.St.Pool, s.Cfg.AppSecret)
+	if err != nil {
+		return err
+	}
+	if _, _, ok := selectAdminImageAnalysisModel(cfg, providerID, modelID, reasoningEffort); !ok {
+		return apperr.E("validation_error", "后台图片分析的服务商、模型或推理强度无效", 422)
+	}
+	return nil
+}
+
+func (s *Server) validateLanjingPaySettings(ctx context.Context, updates map[string]json.RawMessage) error {
+	current, err := settings.ResolveLanjingPay(ctx, s.St.Pool, settings.LanjingPayConfig{
+		Enabled:       s.Cfg.LanjingPayEnabled(),
+		BaseURL:       s.Cfg.LanjingPayBaseURL,
+		Secret:        s.Cfg.LanjingPaySecret,
+		NotifyURL:     s.Cfg.LanjingPayNotifyURL,
+		TimeoutSecs:   s.Cfg.LanjingPayTimeoutSecs,
+		AlipayEnabled: true,
+		WechatEnabled: true,
+	}, s.Cfg.AppSecret)
+	if err != nil {
+		return err
+	}
+	for key, target := range map[string]*string{
+		"lanjing_pay_base_url":   &current.BaseURL,
+		"lanjing_pay_notify_url": &current.NotifyURL,
+	} {
+		if raw := updates[key]; raw != nil {
+			_ = json.Unmarshal(raw, target)
+		}
+	}
+	if raw := updates["lanjing_pay_secret"]; raw != nil {
+		var stored string
+		_ = json.Unmarshal(raw, &stored)
+		plain, decryptErr := settings.DecryptSecret(stored, s.Cfg.AppSecret)
+		if decryptErr != nil {
+			return decryptErr
+		}
+		current.Secret = plain
+	}
+	for key, target := range map[string]*bool{
+		"lanjing_pay_enabled":        &current.Enabled,
+		"lanjing_pay_alipay_enabled": &current.AlipayEnabled,
+		"lanjing_pay_wechat_enabled": &current.WechatEnabled,
+	} {
+		if raw := updates[key]; raw != nil {
+			_ = json.Unmarshal(raw, target)
+		}
+	}
+	if raw := updates["lanjing_pay_timeout_secs"]; raw != nil {
+		_ = json.Unmarshal(raw, &current.TimeoutSecs)
+	}
+	if !current.Enabled {
+		return nil
+	}
+	if !current.AlipayEnabled && !current.WechatEnabled {
+		return apperr.E("validation_error", "蓝鲸支付启用时至少开放一种支付方式", 422)
+	}
+	if current.Secret == "" || current.NotifyURL == "" || current.BaseURL == "" {
+		return apperr.E("validation_error", "蓝鲸支付启用时接口地址、通讯密钥和异步回调均为必填", 422)
+	}
+	_, err = lanjingpay.New(
+		current.BaseURL, current.Secret, current.NotifyURL,
+		time.Duration(current.TimeoutSecs)*time.Second,
+		s.Cfg.AppEnv != "production",
+	)
+	if err != nil {
+		return apperr.E("validation_error", "蓝鲸支付配置无效："+err.Error(), 422)
+	}
+	return nil
 }
 
 func (s *Server) adminTestC2A(c *gin.Context, _ *store.User) {
@@ -1701,7 +2903,7 @@ func (s *Server) adminTestC2A(c *gin.Context, _ *store.User) {
 		return
 	}
 	if v := strings.TrimRight(strings.TrimSpace(override.BaseURL), "/"); v != "" {
-		if netguard.ValidateURL(v, s.Cfg.AppEnv == "development", false) != nil {
+		if netguard.ValidateURL(v, s.Cfg.C2APrivateNetworkAllowed(), false) != nil {
 			fail(c, apperr.E("validation_error", "baseUrl: 地址无效或指向受限网络", 422))
 			return
 		}
@@ -1710,7 +2912,7 @@ func (s *Server) adminTestC2A(c *gin.Context, _ *store.User) {
 	if v := strings.TrimSpace(override.APIKey); v != "" && !strings.HasPrefix(v, "****") {
 		resolved.APIKey = v
 	}
-	client := c2a.NewWithPolicy(resolved.BaseURL, resolved.APIKey, resolved.TimeoutSecs, s.Cfg.AppEnv == "development")
+	client := c2a.NewWithPolicy(resolved.BaseURL, resolved.APIKey, resolved.TimeoutSecs, s.Cfg.C2APrivateNetworkAllowed())
 	result, err := client.ListModels(ctx)
 	if err != nil {
 		msg := err.Error()
@@ -1842,6 +3044,72 @@ func (s *Server) adminTestCRUN(c *gin.Context, _ *store.User) {
 		return
 	}
 	ok(c, gin.H{"ok": true, "balance": balance, "model": crun.DefaultModel})
+}
+
+func (s *Server) adminTestLanjingPay(c *gin.Context, _ *store.User) {
+	var override struct {
+		BaseURL     string `json:"baseUrl"`
+		Secret      string `json:"secret"`
+		NotifyURL   string `json:"notifyUrl"`
+		TimeoutSecs int    `json:"timeoutSecs"`
+	}
+	_ = c.ShouldBindJSON(&override)
+	ctx := c.Request.Context()
+	resolved, err := settings.ResolveLanjingPay(ctx, s.St.Pool, settings.LanjingPayConfig{
+		Enabled:       s.Cfg.LanjingPayEnabled(),
+		BaseURL:       s.Cfg.LanjingPayBaseURL,
+		Secret:        s.Cfg.LanjingPaySecret,
+		NotifyURL:     s.Cfg.LanjingPayNotifyURL,
+		TimeoutSecs:   s.Cfg.LanjingPayTimeoutSecs,
+		AlipayEnabled: true,
+		WechatEnabled: true,
+	}, s.Cfg.AppSecret)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if value := strings.TrimRight(strings.TrimSpace(override.BaseURL), "/"); value != "" {
+		resolved.BaseURL = value
+	}
+	if value := strings.TrimSpace(override.Secret); value != "" && !strings.HasPrefix(value, "****") {
+		resolved.Secret = value
+	}
+	if value := strings.TrimSpace(override.NotifyURL); value != "" {
+		resolved.NotifyURL = value
+	}
+	if override.TimeoutSecs > 0 {
+		resolved.TimeoutSecs = override.TimeoutSecs
+	}
+	client, err := lanjingpay.New(
+		resolved.BaseURL, resolved.Secret, resolved.NotifyURL,
+		time.Duration(resolved.TimeoutSecs)*time.Second,
+		s.Cfg.AppEnv != "production",
+	)
+	if err != nil {
+		fail(c, apperr.E("validation_error", err.Error(), 422))
+		return
+	}
+	state, err := client.GetServerState(ctx)
+	if err != nil {
+		message := err.Error()
+		if runes := []rune(message); len(runes) > 500 {
+			message = string(runes[:500])
+		}
+		fail(c, apperr.E("lanjing_pay_test_failed", message, 502))
+		return
+	}
+	stateLabel := map[int]string{-1: "未绑定", 0: "离线", 1: "在线"}[state.State]
+	var heartbeatAt, lastPaymentAt any
+	if !state.LastHeartbeat.IsZero() {
+		heartbeatAt = isoValue(state.LastHeartbeat)
+	}
+	if !state.LastPayment.IsZero() {
+		lastPaymentAt = isoValue(state.LastPayment)
+	}
+	ok(c, gin.H{
+		"ok": true, "online": state.State == 1, "state": state.State,
+		"stateLabel": stateLabel, "lastHeartbeatAt": heartbeatAt, "lastPaymentAt": lastPaymentAt,
+	})
 }
 
 // adminModelList cleans, de-duplicates and sorts model IDs before exposing them

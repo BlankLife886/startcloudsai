@@ -1,0 +1,1031 @@
+/* Generated from apps/web/src/App.vue. */
+/* 全局样式 */
+:root {
+  --primary-color: #4caf50;
+  --secondary-color: #2196f3;
+  --background-color: transparent;
+  --text-color: #f0f0f0;
+  --text-muted-color: rgba(240, 240, 240, 0.72);
+  --card-bg-color: #1e1e1e;
+  --navbar-bg-color: rgba(18, 18, 18, 0.9);
+  --border-color: #333;
+  --hover-color: #2c2c2c;
+  --app-header-offset: 82px;
+  --app-main-block-padding: 48px;
+  --app-bottom-floating-clearance: 112px;
+  --page-scroll-ratio: 0;
+}
+body {
+  font-family: 'Rajdhani', 'Share Tech Mono', monospace, sans-serif;
+  background-color: var(--background-color);
+  color: var(--text-color);
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  max-width: 100%;
+  min-height: 100vh;
+  overflow-x: clip;
+}
+html,
+#app {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: clip;
+  background: transparent;
+}
+html {
+  scroll-padding-top: calc(var(--app-header-offset, 82px) + 16px);
+  scrollbar-gutter: stable;
+}
+/* 画布 / Ant Design 的 html、body 锁定会在路由离开后残留，文档流页面必须能纵向滚动。 */
+html:not(.starclouds-hosted):not(.canvas-entry),
+html:not(.starclouds-hosted):not(.canvas-entry) body {
+  height: auto;
+  max-height: none;
+  overflow-x: clip;
+  overflow-y: visible;
+}
+body.download-session-locked {
+  overflow: hidden;
+}
+.app-container {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: clip;
+}
+.app-container.app--share-gallery,
+.app-container.app--wallpaper-detail,
+.app-container.app--search-gallery {
+  overflow: visible;
+}
+.app-container.app--document-scroll {
+  overflow-x: clip;
+  overflow-y: visible;
+}
+.app-container.app--search-gallery {
+  background:
+    radial-gradient(circle at 10% 0%, rgba(160, 139, 255, 0.12), transparent 22%),
+    linear-gradient(180deg, #f7f7ff 0%, #fff 48%, #fafaff 100%);
+}
+html.color-scheme-dark .app-container.app--search-gallery,
+html.color-scheme-dark.search-gallery-page .app-container.app--search-gallery {
+  background:
+    radial-gradient(circle at 12% 0%, rgba(106, 79, 224, 0.16), transparent 28%),
+    linear-gradient(180deg, #0d0f18 0%, #12141f 52%, #0f111a 100%);
+}
+html.color-scheme-dark .main-content.main--search-gallery {
+  background: transparent;
+}
+.app-container.app--downloads-gallery,
+.app-container.app--favorites-gallery,
+.app-container.app--users-gallery,
+.app-container.app--author-gallery,
+.app-container.app--tags-gallery,
+.app-container.app--history-gallery {
+  height: 100svh;
+  max-height: 100svh;
+  overflow: hidden;
+}
+.main-content {
+  flex: 1;
+  min-width: 0;
+  max-width: 100%;
+  /* 顶栏参与文档流，页面无需再重复预留 Header 高度。 */
+  padding-top: 0;
+  padding-bottom: 2rem;
+  overflow-x: clip;
+}
+.main-content.main--canvas-home {
+  padding-top: 0;
+  padding-bottom: 0;
+  height: 100svh;
+  max-height: 100svh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: transparent;
+}
+.app-container > .main-content.main--canvas-home > .canvas-app-view {
+  position: relative;
+  inset: auto;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 0 !important;
+  background: transparent;
+}
+.main-content.main--canvas-app {
+  --canvas-app-surface: oklch(1 0 0);
+  padding: 0;
+  overflow: hidden;
+  background: var(--canvas-app-surface);
+}
+html.color-scheme-dark .main-content.main--canvas-app {
+  --canvas-app-surface: oklch(0.145 0 0);
+}
+.app-container > .main-content.main--canvas-app > .canvas-app-view {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+}
+
+/* 默认页面：根背景延伸到透明 Header 后方，根内容从 Header 下沿开始。 */
+.app-container > .main-content:not(.main--no-header) > * {
+  box-sizing: border-box;
+  padding-top: calc(var(--app-header-offset, 82px) + var(--app-page-content-top-gap, 0px));
+}
+.main-content.main--studio-console > .game-art-studio {
+  --app-page-content-top-gap: 10px;
+}
+.main-content.main--studio-console > .coloring-studio-page {
+  --app-page-content-top-gap: 4px;
+}
+.main-content.main--studio-console > .ms3 {
+  --app-page-content-top-gap: 12px;
+}
+.main-content.main--studio-console > .t2i-page {
+  --app-page-content-top-gap: 20px;
+}
+.main-content.main--profile-console > .pp-page {
+  --app-page-content-top-gap: 8px;
+}
+
+/* 拼图台：顶栏表面延伸到 Header 后方 */
+.app-container > .main-content.main--studio-console > .collage-studio-page {
+  padding-top: 0;
+}
+.main-content.main--studio-console > .collage-studio-page .collage-topbar {
+  min-height: calc(54px + var(--app-header-offset, 82px));
+  padding: var(--app-header-offset, 82px) 14px 0;
+  background: #101119;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/*
+ * AI 助手：整页统一底色垫到顶栏后方，
+ * 避免侧栏/主区分列在顶栏下形成竖缝。
+ */
+.app-container > .main-content.main--studio-console > .assistant-workspace {
+  padding-top: var(--app-header-offset, 82px);
+}
+
+body:has(.assistant-workspace) .site-header:not(.is-home-dark):not(.is-scrolled) {
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.main-content.main--browse-dock {
+  padding-bottom: calc(2rem + var(--app-bottom-floating-clearance, 112px));
+}
+
+/* Share / 壁纸详情 / 更新说明：整页可滚，避免 overflow-x:clip 破坏 sticky */
+.main-content.main--share-gallery,
+.main-content.main--wallpaper-detail,
+.main-content.main--search-gallery,
+.main-content.main--updates-gallery,
+.main-content.main--document-scroll {
+  padding-bottom: 0;
+  overflow-x: clip;
+  overflow-y: visible;
+}
+
+/* Share：顶栏贴齐，去掉默认 +0.5rem 白缝 */
+.main-content.main--share-gallery {
+  padding-top: 0;
+  background: #f7f7ff;
+}
+.main-content.main--search-gallery.main--browse-dock {
+  padding-bottom: calc(2rem + var(--app-bottom-floating-clearance, 112px));
+  background: transparent;
+  overflow: visible;
+}
+.main-content.main--wallpaper-detail {
+  background: #f7f7ff;
+}
+html.color-scheme-dark .main-content.main--share-gallery,
+html.color-scheme-dark .main-content.main--wallpaper-detail,
+html.color-scheme-dark .main-content.main--updates-gallery {
+  background: #0d0f18;
+}
+
+/* 下载管理 / 收藏 / 关注作者 / 作者详情 / 收藏标签 / 浏览历史：整页不滚，仅内容区滚动 */
+.main-content.main--downloads-gallery,
+.main-content.main--favorites-gallery,
+.main-content.main--users-gallery,
+.main-content.main--author-gallery,
+.main-content.main--tags-gallery,
+.main-content.main--history-gallery {
+  padding-top: 0;
+  padding-bottom: 0;
+  overflow: hidden;
+  height: 100svh;
+  max-height: 100svh;
+  display: flex;
+  flex-direction: column;
+  background: #f7f7ff;
+}
+.main-content.main--downloads-gallery > *,
+.main-content.main--favorites-gallery > *,
+.main-content.main--users-gallery > *,
+.main-content.main--author-gallery > *,
+.main-content.main--tags-gallery > *,
+.main-content.main--history-gallery > * {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+html.color-scheme-dark .main-content.main--downloads-gallery,
+html.color-scheme-dark .main-content.main--favorites-gallery,
+html.color-scheme-dark .main-content.main--users-gallery,
+html.color-scheme-dark .main-content.main--author-gallery,
+html.color-scheme-dark .main-content.main--tags-gallery,
+html.color-scheme-dark .main-content.main--history-gallery {
+  background: #0d0f18;
+}
+.main-content.main--pricing-console {
+  padding-top: 0;
+  padding-bottom: 0;
+  overflow-x: clip;
+  overflow-y: visible;
+  background: transparent;
+}
+html:not(.color-scheme-dark) .main-content.main--pricing-console {
+  background: transparent;
+}
+
+/* 个人中心：底色交给页面科幻氛围层，壳层保持透明 */
+.main-content.main--wallet-console {
+  padding-top: 0;
+  padding-bottom: 0;
+  height: 100svh;
+  max-height: 100svh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: #ffffff;
+}
+html.color-scheme-dark .main-content.main--wallet-console {
+  background: #0d0e14;
+}
+.main-content.main--wallet-console > * {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding-top: calc(var(--app-header-offset, 82px) + 12px);
+}
+
+.main-content.main--orders-console {
+  padding-top: 0;
+  padding-bottom: 0;
+  height: 100svh;
+  max-height: 100svh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: #ffffff;
+}
+html.color-scheme-dark .main-content.main--orders-console {
+  background: #0d0e14;
+}
+.main-content.main--orders-console > * {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+@media (max-width: 820px) {
+  .main-content.main--orders-console {
+    display: block;
+    height: auto;
+    max-height: none;
+    overflow: visible;
+  }
+}
+
+.main-content.main--profile-console {
+  padding-top: 0;
+  padding-bottom: 0;
+  height: 100svh;
+  max-height: 100svh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: transparent;
+}
+html.color-scheme-dark .main-content.main--profile-console {
+  background: #0d0f18;
+}
+html:not(.color-scheme-dark) .main-content.main--profile-console {
+  background: #f7f7ff;
+}
+body:has(.main--profile-console) .site-header:not(.is-scrolled) {
+  background: transparent;
+}
+.main-content.main--profile-console > * {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+@media (max-width: 1400px) {
+.main-content.main--profile-console {
+    display: block;
+    height: auto;
+    max-height: none;
+    overflow: visible;
+}
+.main-content.main--profile-console > .pp-page {
+    height: auto;
+    min-height: calc(100svh - var(--app-header-offset, 82px));
+}
+}
+.main-content.main--ziwei-console {
+  padding-top: 0;
+  padding-bottom: 0;
+  overflow: hidden;
+  background: #f7f7ff;
+}
+html.color-scheme-dark .main-content.main--ziwei-console {
+  background: #0d0f18;
+}
+.main-content.main--settings-console {
+  padding-top: 0;
+  padding-bottom: 0;
+  overflow: hidden;
+  height: 100svh;
+  max-height: 100svh;
+  display: flex;
+  flex-direction: column;
+  background: #ffffff;
+}
+html.color-scheme-dark .main-content.main--settings-console {
+  background: #0d0e14;
+}
+.main-content.main--settings-console > * {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+.main-content.main--studio-console {
+  padding-top: 0;
+  padding-bottom: 0;
+  overflow: hidden;
+  height: 100svh;
+  max-height: 100svh;
+  display: flex;
+  flex-direction: column;
+  /* 底色由各工作台页面自己负责，避免顶栏后方再叠一层壳色 */
+  background: transparent;
+}
+html.color-scheme-dark .main-content.main--studio-console {
+  background: transparent;
+}
+.main-content.main--studio-console > * {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+.main-content.main--no-header {
+  padding-top: 0;
+  padding-bottom: 0;
+}
+html.is-page-scrolled .site-header {
+  border-bottom-color: color-mix(in srgb, var(--nav-accent) 20%, var(--nav-line));
+  box-shadow: none;
+}
+.site-header {
+  transition:
+    border-color 180ms ease,
+    box-shadow 220ms cubic-bezier(0.22, 0.8, 0.24, 1);
+}
+html.color-scheme-dark.is-page-scrolled .site-header {
+  box-shadow: none;
+}
+html.is-page-scrolled .site-header .header-shell {
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+html.settings-no-blur.is-page-scrolled .site-header .header-shell {
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* 回到顶部：进度环同步展示当前页面位置 */
+#back-to-top,
+.back-to-top-btn {
+  position: fixed;
+  right: max(16px, env(safe-area-inset-right, 0px));
+  bottom: max(16px, env(safe-area-inset-bottom, 0px));
+  z-index: 1050;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: conic-gradient(
+    #795eea calc(var(--page-scroll-ratio, 0) * 1turn),
+    rgba(21, 26, 45, 0.18) 0
+  );
+  color: #fff;
+  box-shadow: 0 10px 28px rgba(41, 35, 84, 0.2);
+  font-size: 1.05rem;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background 0.16s ease,
+    color 0.16s ease,
+    box-shadow 0.16s ease,
+    transform 0.2s cubic-bezier(0.22, 0.8, 0.24, 1);
+}
+#back-to-top::before,
+.back-to-top-btn::before {
+  position: absolute;
+  inset: 2px;
+  border-radius: 50%;
+  background: #151a2d;
+  content: '';
+}
+#back-to-top > i,
+.back-to-top-btn > i {
+  position: relative;
+  z-index: 1;
+}
+#back-to-top.is-browse-dock,
+.back-to-top-btn.is-browse-dock {
+  bottom: calc(var(--app-bottom-floating-clearance, 112px) + 8px);
+}
+#back-to-top:hover,
+#back-to-top:focus-visible,
+.back-to-top-btn:hover,
+.back-to-top-btn:focus-visible {
+  background: #6a4fe0;
+  color: #fff;
+  outline: none;
+  box-shadow: 0 14px 32px rgba(62, 44, 151, 0.3);
+  transform: translateY(-3px);
+}
+html.color-scheme-dark #back-to-top,
+html.color-scheme-dark .back-to-top-btn {
+  background: conic-gradient(
+    #b4a4ff calc(var(--page-scroll-ratio, 0) * 1turn),
+    rgba(255, 255, 255, 0.15) 0
+  );
+  color: #151a2d;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.3);
+}
+html.color-scheme-dark #back-to-top::before,
+html.color-scheme-dark .back-to-top-btn::before {
+  background: #f0ecff;
+}
+html.color-scheme-dark #back-to-top:hover,
+html.color-scheme-dark #back-to-top:focus-visible,
+html.color-scheme-dark .back-to-top-btn:hover,
+html.color-scheme-dark .back-to-top-btn:focus-visible {
+  background: conic-gradient(
+    #c8bcff calc(var(--page-scroll-ratio, 0) * 1turn),
+    rgba(255, 255, 255, 0.22) 0
+  );
+  color: #151a2d;
+  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.34);
+}
+.backtop-enter-active,
+.backtop-leave-active {
+  transition:
+    opacity 180ms ease,
+    transform 220ms cubic-bezier(0.22, 0.8, 0.24, 1);
+}
+.backtop-enter-from,
+.backtop-leave-to {
+  opacity: 0;
+  transform: translateY(12px) scale(0.88);
+}
+
+/* 主题按钮样式 */
+.theme-button {
+  background-color: var(--primary-color);
+  color: white;
+  border: none;
+}
+.theme-button:hover {
+  background-color: var(--secondary-color);
+  color: white;
+}
+
+/* 链接样式 */
+a {
+  color: var(--secondary-color);
+  text-decoration: none;
+}
+a:hover {
+  color: var(--primary-color);
+}
+
+/* 卡片样式 */
+.theme-card {
+  background-color: var(--card-bg-color);
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  transition: transform 0.3s ease;
+}
+.theme-card:hover {
+  transform: translateY(-5px);
+}
+
+/* 导航栏样式 */
+.theme-navbar {
+  background-color: var(--navbar-bg-color);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--border-color);
+}
+
+/* 页脚样式 */
+.theme-footer {
+  background-color: var(--card-bg-color);
+  color: var(--text-color);
+  padding: 2rem 0;
+  margin-top: 2rem;
+  border-top: 1px solid var(--border-color);
+}
+
+/* 标题样式 */
+.theme-title {
+  color: var(--primary-color);
+  font-weight: bold;
+}
+
+/* 链接样式 */
+.theme-link {
+  color: var(--text-color);
+  text-decoration: none;
+  transition: color 0.3s ease;
+}
+.theme-link:hover {
+  color: var(--primary-color);
+}
+.download-guard-modal,
+.download-lock-modal {
+  --dg-ink: #18203b;
+  --dg-muted: #79809a;
+  --dg-accent: #6a4fe0;
+  --dg-active: #151a2d;
+  --dg-surface: #ffffff;
+  --dg-line: rgba(21, 26, 45, 0.12);
+  --dg-field: rgba(21, 26, 45, 0.04);
+
+  position: fixed;
+  inset: 0;
+  z-index: 12000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.download-guard-backdrop,
+.download-lock-backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  padding: 0;
+  background: rgba(12, 14, 22, 0.48);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  cursor: pointer;
+}
+.download-lock-backdrop {
+  cursor: default;
+}
+.download-guard-panel,
+.download-lock-panel {
+  position: relative;
+  z-index: 1;
+  width: min(480px, 100%);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 0;
+  color: var(--dg-ink);
+  background: var(--dg-surface);
+  box-shadow:
+    0 0 0 1px rgba(21, 26, 45, 0.1),
+    8px 8px 0 rgba(106, 79, 224, 0.28);
+}
+.download-guard-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 16px 12px;
+  border-bottom: 1px solid var(--dg-line);
+}
+.download-guard-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.download-guard-icon {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  color: #fff;
+  background: var(--dg-active);
+  box-shadow: 3px 3px 0 rgba(106, 79, 224, 0.7);
+  font-size: 1rem;
+}
+.download-guard-title,
+.download-lock-title {
+  margin: 0;
+  color: var(--dg-ink);
+  font-size: 1.05rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+}
+.download-guard-close {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  border: none;
+  border-radius: 0;
+  color: var(--dg-muted);
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--dg-line);
+  cursor: pointer;
+}
+.download-guard-close:hover {
+  color: var(--dg-accent);
+  background: rgba(106, 79, 224, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(106, 79, 224, 0.4);
+}
+.download-guard-body {
+  padding: 14px 16px 8px;
+}
+.download-guard-text,
+.download-lock-text {
+  margin: 0 0 10px;
+  color: var(--dg-ink);
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+.download-guard-hint {
+  margin: -2px 0 12px;
+  color: var(--dg-muted);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+.download-guard-count {
+  margin-bottom: 1rem;
+  font-weight: 600;
+}
+.download-mode-field {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.download-mode-option {
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 0;
+  color: var(--dg-ink);
+  background: var(--dg-field);
+  box-shadow: inset 0 0 0 1px var(--dg-line);
+  font-weight: 700;
+  cursor: pointer;
+}
+.download-mode-option.active {
+  color: #fff;
+  background: var(--dg-active);
+  box-shadow: 3px 3px 0 rgba(106, 79, 224, 0.75);
+}
+.download-mode-option:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+.download-name-field {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.download-name-field span {
+  color: var(--dg-muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.download-name-field input {
+  min-height: 40px;
+  border: 0;
+  border-radius: 0;
+  background: var(--dg-field);
+  color: var(--dg-ink);
+  padding: 0 12px;
+  font: inherit;
+  font-size: 0.9rem;
+  box-shadow: inset 0 0 0 1px var(--dg-line);
+}
+.download-name-field input:focus {
+  outline: none;
+  box-shadow: inset 0 0 0 1px rgba(106, 79, 224, 0.55);
+  background: rgba(106, 79, 224, 0.04);
+}
+.download-guard-actions,
+.download-lock-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 12px 16px 16px;
+  border-top: 1px solid var(--dg-line);
+}
+.download-modal-btn {
+  min-width: 92px;
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 14px;
+  border: none;
+  border-radius: 0;
+  color: var(--dg-accent);
+  background: transparent;
+  box-shadow: inset 0 0 0 1px rgba(106, 79, 224, 0.35);
+  font-size: 0.86rem;
+  font-weight: 750;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  transition:
+    color 0.16s ease,
+    background 0.16s ease,
+    box-shadow 0.16s ease;
+}
+.download-modal-btn:hover:not(:disabled) {
+  background: rgba(106, 79, 224, 0.06);
+}
+.download-modal-btn.is-primary {
+  color: #fff;
+  background: var(--dg-active);
+  box-shadow: 3px 3px 0 rgba(106, 79, 224, 0.75);
+}
+.download-modal-btn.is-primary:hover:not(:disabled) {
+  background: #1c2238;
+}
+.download-modal-btn.is-danger {
+  color: #b03a3a;
+  box-shadow: inset 0 0 0 1px rgba(176, 58, 58, 0.4);
+}
+.download-modal-btn.is-danger:hover:not(:disabled) {
+  background: rgba(176, 58, 58, 0.06);
+}
+.download-modal-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+.download-lock-progress {
+  position: relative;
+  height: 28px;
+  margin-bottom: 12px;
+  overflow: hidden;
+  background: var(--dg-field);
+  box-shadow: inset 0 0 0 1px var(--dg-line);
+}
+.download-lock-progress__bar {
+  height: 100%;
+  background: linear-gradient(90deg, #6a4fe0, #8568f7);
+  transition: width 0.2s ease;
+}
+.download-lock-progress__label {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+.download-lock-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  color: var(--dg-muted);
+  font-size: 0.82rem;
+}
+.download-lock-status {
+  font-size: 0.95rem;
+}
+.download-lock-current {
+  margin-top: 0.5rem;
+  font-size: 0.95rem;
+  color: var(--dg-accent);
+}
+html.color-scheme-dark .download-guard-modal,
+html.color-scheme-dark .download-lock-modal {
+  --dg-ink: #e8eaf4;
+  --dg-muted: #9aa1b8;
+  --dg-accent: #cfc7ff;
+  --dg-active: #cfc7ff;
+  --dg-surface: #161925;
+  --dg-line: rgba(170, 178, 210, 0.16);
+  --dg-field: rgba(255, 255, 255, 0.05);
+}
+html.color-scheme-dark .download-guard-panel,
+html.color-scheme-dark .download-lock-panel {
+  box-shadow:
+    0 0 0 1px rgba(170, 178, 210, 0.14),
+    8px 8px 0 rgba(133, 104, 247, 0.35);
+}
+html.color-scheme-dark .download-guard-icon {
+  color: #12141f;
+  background: #cfc7ff;
+  box-shadow: 3px 3px 0 rgba(133, 104, 247, 0.7);
+}
+html.color-scheme-dark .download-modal-btn.is-primary {
+  color: #12141f;
+  background: #cfc7ff;
+  box-shadow: 3px 3px 0 rgba(133, 104, 247, 0.7);
+}
+html.color-scheme-dark .download-modal-btn.is-primary:hover:not(:disabled) {
+  background: #ddd7ff;
+}
+html.color-scheme-dark .download-mode-option.active {
+  color: #12141f;
+  background: #cfc7ff;
+}
+html.color-scheme-dark .download-lock-progress__bar {
+  background: linear-gradient(90deg, #8568f7, #cfc7ff);
+}
+
+/* 自定义滚动条 */
+html {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+html.is-page-scrolling {
+  scrollbar-color: rgba(255, 255, 255, 0.34) transparent;
+}
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+html.is-page-scrolling ::-webkit-scrollbar-thumb {
+  background: rgba(140, 119, 232, 0.46);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(126, 99, 239, 0.72);
+}
+@media (prefers-reduced-motion: reduce) {
+html {
+    scroll-behavior: auto !important;
+}
+.backtop-enter-active,
+  .backtop-leave-active,
+  #back-to-top,
+  .back-to-top-btn {
+    transition: none !important;
+}
+}
+
+/* 设置页「关闭动效」：尽量压平过渡，避免大段动画拖慢交互 */
+html.settings-no-animations * {
+  scroll-behavior: auto !important;
+}
+@media (prefers-reduced-motion: no-preference) {
+html.settings-no-animations * {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+}
+
+  /* 图片揭幕特效保留：即使关闭全局动效也允许此类动画正常播放 */
+html.settings-no-animations .reveal-motion {
+    animation-duration: var(--reveal-animation-duration, 0.5s) !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: var(--reveal-transition-duration, 0.28s) !important;
+}
+}
+
+/* 设置页「关闭模糊」：顶栏、下载锁层等去掉毛玻璃 */
+html.settings-no-blur .site-header .header-shell,
+html.settings-no-blur .theme-navbar,
+html.settings-no-blur .download-guard-panel,
+html.settings-no-blur .download-lock-panel,
+html.settings-no-blur .settings-save-dock-inner {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+.app-bottom-floating-dock {
+  position: fixed;
+  left: 50%;
+  bottom: max(12px, env(safe-area-inset-bottom, 0px));
+  z-index: 1040;
+  width: fit-content;
+  max-width: calc(100% - 28px);
+  min-width: 0;
+  transform: translateX(-50%);
+  pointer-events: none;
+  opacity: 1;
+  transition:
+    opacity 0.36s ease,
+    transform 0.42s ease;
+}
+.app-bottom-floating-dock.is-dock-scroll-hidden {
+  opacity: 0;
+  transform: translateX(-50%) translateY(10px);
+  pointer-events: none;
+}
+.app-bottom-floating-dock-inner {
+  --dock-progress-color: #22c55e;
+  position: relative;
+  overflow: visible;
+  pointer-events: auto;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: 0;
+  border: 1px solid rgba(21, 26, 45, 0.14);
+  background: rgba(247, 247, 255, 0.96);
+  box-shadow: 4px 4px 0 rgba(106, 79, 224, 0.55);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+html.color-scheme-dark .app-bottom-floating-dock-inner {
+  border-color: rgba(160, 139, 255, 0.22);
+  background: rgba(18, 20, 31, 0.96);
+  box-shadow: 4px 4px 0 rgba(106, 79, 224, 0.45);
+}
+
+/* API 搜索窗口占用：底栏左到右柔和色带 */
+.app-bottom-floating-dock-inner::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: calc(var(--api-border-progress, 0) * 100%);
+  border-radius: inherit;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--dock-progress-color) 26%, transparent) 0%,
+    color-mix(in srgb, var(--dock-progress-color) 10%, transparent) 76%,
+    transparent 100%
+  );
+  pointer-events: none;
+  z-index: 0;
+  transition: width 0.42s cubic-bezier(0.25, 0.82, 0.25, 1);
+}
+.app-bottom-dock-slot {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+}
+.app-bottom-floating-dock-inner.is-api-border-ok {
+  --dock-progress-color: #22c55e;
+}
+.app-bottom-floating-dock-inner.is-api-border-info {
+  --dock-progress-color: #0ea5e9;
+}
+.app-bottom-floating-dock-inner.is-api-border-warning {
+  --dock-progress-color: #eab308;
+}
+.app-bottom-floating-dock-inner.is-api-border-danger {
+  --dock-progress-color: #ef4444;
+}
+html.settings-no-blur .app-bottom-floating-dock-inner {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}

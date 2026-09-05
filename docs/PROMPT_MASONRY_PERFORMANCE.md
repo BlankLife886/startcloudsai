@@ -146,9 +146,12 @@ Asynq 周期任务 `cron:backfill_prompt_cover_dimensions` 每 10 分钟执行�
 
 新上传的站内封面无需等待回填。迁移前已经存在的站内 R2 封面如果缺少尺寸，会继续使用客户端测量；当前后台任务只主动抓取远程 URL。
 
-## 前端虚拟瀑布流
+## 前端虚拟瀑布流（历史 Vue 实现）
 
-实现：`apps/web/src/features/creator-hub/useVirtualMasonryFeed.js`。
+以下路径记录迁移前的 Vue 实现，仅用于追溯性能方案；当前生产用户端位于
+`apps/web-react`，旧路径已随 Vue 主站下线而删除。
+
+历史实现：`apps/web/src/features/creator-hub/useVirtualMasonryFeed.js`。
 
 ### 布局计算
 
@@ -339,7 +342,7 @@ npm run build
 
 页面验证至少覆盖：
 
-- 桌面 4 列和移动端 1 列。
+- `1280x720` 与 `1440x900` 桌面视口下的稳定列布局；不验收移动端列数。
 - 横图、方图、竖图、约 1:3 长图。
 - 图片内容无裁切。
 - 卡片矩形不重叠。
@@ -359,13 +362,13 @@ npm run build
 - API 序列化：`apps/server/internal/httpapi/serialize.go`
 - 历史回填：`apps/server/internal/promptsync/sync.go`
 - Worker 调度：`apps/server/internal/worker/worker.go`
-- 用户端数据适配：`apps/web/src/services/promptsApi.js`、`promptLibrary.js`
-- 虚拟瀑布流：`apps/web/src/features/creator-hub/useVirtualMasonryFeed.js`
-- 共享图片组件：`apps/web/src/components/common/OptimizedImage.vue`、`AuthenticatedImage.vue`、`ProgressiveAuthenticatedImage.vue`
-- 原图/缩略图映射：`apps/web/src/features/creative-studios/useCreativeImageJob.js`
-- 页面接入：`apps/web/src/views/PromptLibraryView.vue`、`CreationHistoryView.vue`、`GameArtStudioView.vue`、`ModelSheetStudioView.vue`
-- 卡片样式：`apps/web/src/features/creator-hub/creator-hub.css`
+- 历史 Vue 用户端数据适配：`apps/web/src/services/promptsApi.js`、`promptLibrary.js`
+- 历史 Vue 虚拟瀑布流：`apps/web/src/features/creator-hub/useVirtualMasonryFeed.js`
+- 历史 Vue 共享图片组件：`apps/web/src/components/common/OptimizedImage.vue`、`AuthenticatedImage.vue`、`ProgressiveAuthenticatedImage.vue`
+- 历史 Vue 原图/缩略图映射：`apps/web/src/features/creative-studios/useCreativeImageJob.js`
+- 历史 Vue 页面接入：`apps/web/src/views/PromptLibraryView.vue`、`CreationHistoryView.vue`、`GameArtStudioView.vue`、`ModelSheetStudioView.vue`
+- 历史 Vue 卡片样式：`apps/web/src/features/creator-hub/creator-hub.css`
 
 ## 调整参数时的判断顺序
 
-出现滚动空白时，先增加 `overscan` 或分页预取距离；出现网络突发时，减少 eager 数量或回填批量；出现内存上涨时，先检查 DOM 卡片数量和图片解码尺寸，不要直接缩小原图显示比例。任何调参都需要同时比较桌面、移动端、快速滚动和弱网场景。
+出现滚动空白时，先增加 `overscan` 或分页预取距离；出现网络突发时，减少 eager 数量或回填批量；出现内存上涨时，先检查 DOM 卡片数量和图片解码尺寸，不要直接缩小原图显示比例。任何调参都需要比较受支持的桌面视口、快速滚动和弱网场景；移动端不属于验收范围。

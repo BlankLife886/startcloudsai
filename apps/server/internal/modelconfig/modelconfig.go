@@ -15,20 +15,26 @@ import (
 
 const (
 	SettingKey = "model_dispatch_config"
-	Version    = 3
+	Version    = 7
 
 	AdapterOpenAI = "openai"
 	AdapterCRUN   = "crun"
 
-	ModelKindImage = "image"
-	ModelKindChat  = "chat"
+	ModelKindImage     = "image"
+	ModelKindChat      = "chat"
+	ModelKindImageTool = "image_tool"
+
+	ImageToolBackgroundRemove = "background_remove"
+	ImageToolUpscale          = "image_upscale"
 
 	WorkspaceAssistant  = "assistant"
 	WorkspaceT2I        = "t2i"
 	WorkspaceColoring   = "coloring"
 	WorkspaceUIDesign   = "ui_design"
+	WorkspaceEcommerce  = "ecommerce_design"
 	WorkspaceModelSheet = "model_sheet"
 	WorkspaceGameArt    = "game_art"
+	WorkspaceCanvas     = "infinite_canvas"
 )
 
 var WorkspaceKeys = []string{
@@ -36,12 +42,14 @@ var WorkspaceKeys = []string{
 	WorkspaceT2I,
 	WorkspaceColoring,
 	WorkspaceUIDesign,
+	WorkspaceEcommerce,
 	WorkspaceModelSheet,
 	WorkspaceGameArt,
+	WorkspaceCanvas,
 }
 
 var ImageTaskTypes = []string{
-	"t2i", "coloring", "ui_design", "ui_design_asset", "model_sheet", "game_art",
+	"t2i", "infinite_canvas", "coloring", "ui_design", "ui_design_asset", "ecommerce_design", "model_sheet", "game_art",
 }
 
 var ImageAspectRatios = []string{
@@ -51,6 +59,11 @@ var ImageAspectRatios = []string{
 var ImageQualities = []string{"low", "medium", "high"}
 var ImageOutputFormats = []string{"png", "jpeg", "webp"}
 var ImageModerationLevels = []string{"auto", "low"}
+
+const (
+	DefaultMaxImages = 4
+	MaxImagesLimit   = 16
+)
 
 type Provider struct {
 	ID               string          `json:"id"`
@@ -126,32 +139,58 @@ func (p *Provider) UnmarshalJSON(data []byte) error {
 }
 
 type Model struct {
-	ID                          string              `json:"id"`
-	Name                        string              `json:"name"`
-	ProviderID                  string              `json:"providerId"`
-	UpstreamModel               string              `json:"upstreamModel"`
-	Kind                        string              `json:"kind"`
-	Description                 string              `json:"description,omitempty"`
-	PriceCents                  int64               `json:"priceCents"`
-	DiscountPriceCents          *int64              `json:"discountPriceCents"`
-	FastMode                    bool                `json:"fastMode"`
-	MinSeconds                  int                 `json:"minSeconds"`
-	MaxSeconds                  int                 `json:"maxSeconds"`
-	Resolutions                 []string            `json:"resolutions"`
-	AspectRatios                []string            `json:"aspectRatios"`
-	AspectRatiosByResolution    map[string][]string `json:"aspectRatiosByResolution"`
-	Qualities                   []string            `json:"qualities"`
-	TransparentBackground       bool                `json:"transparentBackground"`
-	OutputFormats               []string            `json:"outputFormats"`
-	ModerationLevels            []string            `json:"moderationLevels"`
-	MaxReferenceImages          int                 `json:"maxReferenceImages"`
-	Public                      bool                `json:"public"`
-	Default                     bool                `json:"default"`
-	Enabled                     bool                `json:"enabled"`
-	transparentBackgroundSet    bool
-	maxReferenceImagesSet       bool
-	aspectRatiosByResolutionSet bool
-	legacyAutoAspectRatios      map[string][]string
+	ID                           string               `json:"id"`
+	Name                         string               `json:"name"`
+	ProviderID                   string               `json:"providerId"`
+	UpstreamModel                string               `json:"upstreamModel"`
+	UpstreamInputFields          []string             `json:"upstreamInputFields,omitempty"`
+	UpstreamRequiredInputFields  []string             `json:"upstreamRequiredInputFields,omitempty"`
+	UpstreamInputSchema          map[string]any       `json:"upstreamInputSchema,omitempty"`
+	Modality                     string               `json:"modality,omitempty"`
+	Operations                   []string             `json:"operations,omitempty"`
+	Kind                         string               `json:"kind"`
+	Tool                         string               `json:"tool,omitempty"`
+	Description                  string               `json:"description,omitempty"`
+	PriceCents                   int64                `json:"priceCents"`
+	DiscountPriceCents           *int64               `json:"discountPriceCents"`
+	UpstreamCostCents            int64                `json:"upstreamCostCents"`
+	AllowZeroPrice               bool                 `json:"allowZeroPrice"`
+	AllowLossLeader              bool                 `json:"allowLossLeader"`
+	ImageUpscalePricing          *ImageUpscalePricing `json:"imageUpscalePricing,omitempty"`
+	FastMode                     bool                 `json:"fastMode"`
+	MinSeconds                   int                  `json:"minSeconds"`
+	MaxSeconds                   int                  `json:"maxSeconds"`
+	Resolutions                  []string             `json:"resolutions"`
+	AspectRatios                 []string             `json:"aspectRatios"`
+	AspectRatiosByResolution     map[string][]string  `json:"aspectRatiosByResolution"`
+	Qualities                    []string             `json:"qualities"`
+	TransparentBackground        bool                 `json:"transparentBackground"`
+	OutputFormats                []string             `json:"outputFormats"`
+	ModerationLevels             []string             `json:"moderationLevels"`
+	MaxReferenceImages           int                  `json:"maxReferenceImages"`
+	MaxImages                    int                  `json:"maxImages"`
+	ContextWindowTokens          int                  `json:"contextWindowTokens,omitempty"`
+	MaxOutputTokens              int                  `json:"maxOutputTokens,omitempty"`
+	SupportedReasoningEfforts    []string             `json:"supportedReasoningEfforts"`
+	ReasoningPricing             *ReasoningPricing    `json:"reasoningPricing,omitempty"`
+	Public                       bool                 `json:"public"`
+	Default                      bool                 `json:"default"`
+	Enabled                      bool                 `json:"enabled"`
+	transparentBackgroundSet     bool
+	maxReferenceImagesSet        bool
+	maxImagesSet                 bool
+	aspectRatiosByResolutionSet  bool
+	supportedReasoningEffortsSet bool
+	legacyAutoAspectRatios       map[string][]string
+}
+
+// ImageUpscalePricing keeps the platform credit price separate from the
+// provider's USD cost. PriceCents on Model is the <= threshold tier.
+type ImageUpscalePricing struct {
+	ThresholdPixels        int    `json:"thresholdPixels"`
+	HighPriceCents         int64  `json:"highPriceCents"`
+	HighDiscountPriceCents *int64 `json:"highDiscountPriceCents"`
+	HighUpstreamCostCents  int64  `json:"highUpstreamCostCents"`
 }
 
 func (m *Model) UnmarshalJSON(data []byte) error {
@@ -161,6 +200,7 @@ func (m *Model) UnmarshalJSON(data []byte) error {
 		Public                   *bool                      `json:"public"`
 		TransparentBackground    *bool                      `json:"transparentBackground"`
 		MaxReferenceImages       *int                       `json:"maxReferenceImages"`
+		MaxImages                *int                       `json:"maxImages"`
 		AspectRatiosByResolution map[string]json.RawMessage `json:"aspectRatiosByResolution"`
 		AutoAspectRatios         map[string]json.RawMessage `json:"autoAspectRatios"`
 	}
@@ -168,6 +208,11 @@ func (m *Model) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*m = Model(raw.alias)
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(data, &keys); err != nil {
+		return err
+	}
+	_, m.supportedReasoningEffortsSet = keys["supportedReasoningEfforts"]
 	decodeRatioMap := func(source map[string]json.RawMessage) (map[string][]string, error) {
 		result := make(map[string][]string, len(source))
 		for resolution, encoded := range source {
@@ -213,19 +258,58 @@ func (m *Model) UnmarshalJSON(data []byte) error {
 		m.MaxReferenceImages = *raw.MaxReferenceImages
 		m.maxReferenceImagesSet = true
 	}
+	if raw.MaxImages == nil && m.Kind == ModelKindImage {
+		m.MaxImages = DefaultMaxImages
+	} else if raw.MaxImages != nil {
+		m.MaxImages = *raw.MaxImages
+		m.maxImagesSet = true
+	}
 	return nil
 }
 
+func (m Model) GenerationMaxImages() int {
+	if m.Kind == ModelKindImageTool {
+		return 1
+	}
+	if m.MaxImages <= 0 {
+		return DefaultMaxImages
+	}
+	if m.MaxImages > MaxImagesLimit {
+		return MaxImagesLimit
+	}
+	return m.MaxImages
+}
+
 type Config struct {
-	Version    int                         `json:"version"`
-	Providers  []Provider                  `json:"providers"`
-	Models     []Model                     `json:"models"`
-	Workspaces map[string]WorkspaceBinding `json:"workspaces"`
+	Version       int                         `json:"version"`
+	Providers     []Provider                  `json:"providers"`
+	Models        []Model                     `json:"models"`
+	Workspaces    map[string]WorkspaceBinding `json:"workspaces"`
+	EditableFiles EditableFileConfig          `json:"editableFiles"`
+}
+
+type EditableFileConfig struct {
+	Enabled    bool   `json:"enabled"`
+	ProviderID string `json:"providerId"`
+	RouteID    string `json:"routeId"`
 }
 
 type WorkspaceBinding struct {
-	ModelIDs        []string          `json:"modelIds"`
-	DefaultModelIDs map[string]string `json:"defaultModelIds"`
+	ModelIDs        []string                         `json:"modelIds"`
+	DefaultModelIDs map[string]string                `json:"defaultModelIds"`
+	ModelPricing    map[string]WorkspaceModelPricing `json:"modelPricing,omitempty"`
+}
+
+type WorkspaceModelPricing struct {
+	PriceCents         int64  `json:"priceCents"`
+	DiscountPriceCents *int64 `json:"discountPriceCents"`
+}
+
+type ResolvedWorkspacePrice struct {
+	PriceCents         int64
+	DiscountPriceCents *int64
+	EffectiveCents     int64
+	Overridden         bool
 }
 
 type Selection struct {
@@ -272,6 +356,8 @@ func Save(ctx context.Context, q store.Q, cfg Config) error {
 
 func normalize(cfg *Config) {
 	cfg.Version = Version
+	cfg.EditableFiles.ProviderID = strings.TrimSpace(cfg.EditableFiles.ProviderID)
+	cfg.EditableFiles.RouteID = strings.TrimSpace(cfg.EditableFiles.RouteID)
 	if cfg.Providers == nil {
 		cfg.Providers = []Provider{}
 	}
@@ -325,11 +411,31 @@ func normalize(cfg *Config) {
 		model.Name = strings.TrimSpace(model.Name)
 		model.ProviderID = strings.TrimSpace(model.ProviderID)
 		model.UpstreamModel = strings.TrimSpace(model.UpstreamModel)
+		model.UpstreamInputFields = cleanStrings(model.UpstreamInputFields)
+		model.UpstreamRequiredInputFields = cleanStrings(model.UpstreamRequiredInputFields)
+		model.Modality = strings.ToLower(strings.TrimSpace(model.Modality))
+		model.Operations = cleanStrings(model.Operations)
 		model.Kind = strings.TrimSpace(model.Kind)
+		model.Tool = strings.TrimSpace(model.Tool)
 		if model.Kind == "" {
 			model.Kind = ModelKindImage
 		}
+		if model.Kind != ModelKindImageTool {
+			model.Tool = ""
+		}
+		normalizeModelReasoningPricing(model)
 		model.Description = strings.TrimSpace(model.Description)
+		if model.Kind == ModelKindChat {
+			if model.ContextWindowTokens <= 0 {
+				model.ContextWindowTokens = 128_000
+			}
+			if model.MaxOutputTokens <= 0 {
+				model.MaxOutputTokens = 8_192
+			}
+		} else {
+			model.ContextWindowTokens = 0
+			model.MaxOutputTokens = 0
+		}
 		model.Resolutions = cleanStrings(model.Resolutions)
 		if model.Kind == ModelKindImage {
 			if !model.transparentBackgroundSet {
@@ -337,6 +443,9 @@ func normalize(cfg *Config) {
 			}
 			if !model.maxReferenceImagesSet {
 				model.MaxReferenceImages = 4
+			}
+			if !model.maxImagesSet {
+				model.MaxImages = DefaultMaxImages
 			}
 			if model.AspectRatios == nil {
 				model.AspectRatios = append([]string(nil), ImageAspectRatios...)
@@ -370,7 +479,7 @@ func normalize(cfg *Config) {
 			}
 		}
 	}
-	for _, kind := range []string{ModelKindImage, ModelKindChat} {
+	for _, kind := range []string{ModelKindImage, ModelKindChat, ModelKindImageTool} {
 		if defaultKinds[kind] {
 			continue
 		}
@@ -395,6 +504,14 @@ func normalize(cfg *Config) {
 			}
 		}
 		binding.DefaultModelIDs = defaultModelIDs
+		modelPricing := make(map[string]WorkspaceModelPricing, len(binding.ModelPricing))
+		for modelID, pricing := range binding.ModelPricing {
+			modelID = strings.TrimSpace(modelID)
+			if modelID != "" {
+				modelPricing[modelID] = pricing
+			}
+		}
+		binding.ModelPricing = modelPricing
 		normalizedWorkspaces[strings.TrimSpace(key)] = binding
 	}
 	cfg.Workspaces = normalizedWorkspaces
@@ -532,7 +649,21 @@ func ValidAdapter(value string) bool {
 }
 
 func ValidModelKind(value string) bool {
-	return value == ModelKindImage || value == ModelKindChat
+	return value == ModelKindImage || value == ModelKindChat || value == ModelKindImageTool
+}
+
+func ValidImageTool(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 100 {
+		return false
+	}
+	for _, char := range value {
+		if (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || char == '_' || char == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func ValidWorkspace(value string) bool {
@@ -545,7 +676,8 @@ func ValidWorkspace(value string) bool {
 }
 
 func workspaceAllowsKind(workspace, kind string) bool {
-	return kind == ModelKindImage || (workspace == WorkspaceAssistant && kind == ModelKindChat)
+	return kind == ModelKindImage ||
+		((workspace == WorkspaceAssistant || workspace == WorkspaceUIDesign || workspace == WorkspaceEcommerce || workspace == WorkspaceCanvas) && kind == ModelKindChat)
 }
 
 func Validate(cfg Config) error {
@@ -586,6 +718,22 @@ func Validate(cfg Config) error {
 		}
 		providers[provider.ID] = provider
 	}
+	if cfg.EditableFiles.Enabled {
+		provider, exists := providers[cfg.EditableFiles.ProviderID]
+		if !exists || !provider.Enabled || provider.Adapter != AdapterOpenAI {
+			return errors.New("PPT/PSD 必须指定一个已启用的 ChatGPT2API 兼容服务商")
+		}
+		selectedRoute := false
+		for _, route := range executionRoutes(provider) {
+			if route.RouteID == cfg.EditableFiles.RouteID && strings.TrimSpace(route.APIKey) != "" {
+				selectedRoute = true
+				break
+			}
+		}
+		if !selectedRoute {
+			return errors.New("PPT/PSD 指定的服务商线路不存在、未启用或缺少 API Key")
+		}
+	}
 	models := make(map[string]Model, len(cfg.Models))
 	defaults := map[string]bool{}
 	for _, model := range cfg.Models {
@@ -598,14 +746,78 @@ func Validate(cfg Config) error {
 		if _, exists := providers[model.ProviderID]; !exists {
 			return fmt.Errorf("模型 %s 没有关联有效服务商", model.Name)
 		}
+		if model.Kind == ModelKindImageTool {
+			if !ValidImageTool(model.Tool) {
+				return fmt.Errorf("图片工具 %s 的工具能力无效", model.Name)
+			}
+			if providers[model.ProviderID].Adapter != AdapterCRUN {
+				return fmt.Errorf("图片工具 %s 当前只支持 CRUN 服务商", model.Name)
+			}
+			properties, _ := model.UpstreamInputSchema["properties"].(map[string]any)
+			if len(model.UpstreamInputFields) == 0 || len(properties) == 0 {
+				return fmt.Errorf("媒体工具 %s 缺少已验证的上游参数 schema", model.Name)
+			}
+			for _, field := range model.UpstreamInputFields {
+				if _, ok := properties[field]; !ok {
+					return fmt.Errorf("媒体工具 %s 的参数 %s 不在上游 schema 中", model.Name, field)
+				}
+			}
+		}
 		if model.PriceCents < 0 || (model.DiscountPriceCents != nil && *model.DiscountPriceCents < 0) {
 			return fmt.Errorf("模型 %s 的价格不能为负", model.Name)
+		}
+		if model.UpstreamCostCents < 0 {
+			return fmt.Errorf("模型 %s 的上游成本不能为负", model.Name)
 		}
 		if model.DiscountPriceCents != nil && *model.DiscountPriceCents > model.PriceCents {
 			return fmt.Errorf("模型 %s 的折扣价不能高于标准价", model.Name)
 		}
+		if model.Kind != ModelKindChat && model.Enabled && model.Public && EffectivePrice(model) == 0 && !model.AllowZeroPrice {
+			return fmt.Errorf("模型 %s 的用户价格为 0；如确需免费，请显式开启允许零价", model.Name)
+		}
+		if model.Kind != ModelKindChat && model.Enabled && model.Public && EffectivePrice(model) < model.UpstreamCostCents && !model.AllowLossLeader {
+			return fmt.Errorf("模型 %s 的用户价格低于上游成本；如确需补贴，请显式开启允许亏损", model.Name)
+		}
+		if pricing := model.ImageUpscalePricing; pricing != nil {
+			if model.Kind != ModelKindImageTool || model.Tool != ImageToolUpscale {
+				return fmt.Errorf("模型 %s 不是高清放大工具，不能配置分辨率分档价格", model.Name)
+			}
+			if pricing.ThresholdPixels != 2048 {
+				return fmt.Errorf("高清放大模型 %s 的价格分档阈值必须为 2048px", model.Name)
+			}
+			if pricing.HighPriceCents < 0 || (pricing.HighDiscountPriceCents != nil && *pricing.HighDiscountPriceCents < 0) {
+				return fmt.Errorf("高清放大模型 %s 的 4096px 档价格不能为负", model.Name)
+			}
+			if pricing.HighUpstreamCostCents < 0 {
+				return fmt.Errorf("高清放大模型 %s 的 4096px 档上游成本不能为负", model.Name)
+			}
+			highEffective := pricing.HighPriceCents
+			if pricing.HighDiscountPriceCents != nil {
+				highEffective = *pricing.HighDiscountPriceCents
+			}
+			if model.Enabled && model.Public && highEffective == 0 && !model.AllowZeroPrice {
+				return fmt.Errorf("高清放大模型 %s 的 4096px 档用户价格为 0", model.Name)
+			}
+			if model.Enabled && model.Public && highEffective < pricing.HighUpstreamCostCents && !model.AllowLossLeader {
+				return fmt.Errorf("高清放大模型 %s 的 4096px 档用户价格低于上游成本", model.Name)
+			}
+			if pricing.HighDiscountPriceCents != nil && *pricing.HighDiscountPriceCents > pricing.HighPriceCents {
+				return fmt.Errorf("高清放大模型 %s 的 4096px 档折扣价不能高于标准价", model.Name)
+			}
+		}
 		if model.MinSeconds < 0 || model.MaxSeconds < model.MinSeconds || model.MaxSeconds > 3600 {
 			return fmt.Errorf("模型 %s 的预计耗时无效", model.Name)
+		}
+		if model.Kind == ModelKindChat {
+			if model.ContextWindowTokens < 4_096 || model.ContextWindowTokens > 2_000_000 {
+				return fmt.Errorf("对话模型 %s 的上下文窗口须在 4096-2000000 tokens 之间", model.Name)
+			}
+			if model.MaxOutputTokens < 256 || model.MaxOutputTokens >= model.ContextWindowTokens {
+				return fmt.Errorf("对话模型 %s 的最大输出 tokens 无效", model.Name)
+			}
+			if err := validateModelReasoningPricing(model); err != nil {
+				return err
+			}
 		}
 		if model.Default {
 			if !model.Enabled || !model.Public {
@@ -643,11 +855,24 @@ func Validate(cfg Config) error {
 					}
 				}
 			}
-			if len(model.Qualities) == 0 {
+			requiresQuality := true
+			if providers[model.ProviderID].Adapter == AdapterCRUN && len(model.UpstreamInputFields) > 0 {
+				requiresQuality = false
+				for _, field := range model.UpstreamInputFields {
+					if field == "quality" {
+						requiresQuality = true
+						break
+					}
+				}
+			}
+			if requiresQuality && len(model.Qualities) == 0 {
 				return fmt.Errorf("模型 %s 至少需要一个输出质量", model.Name)
 			}
 			if model.MaxReferenceImages < 0 || model.MaxReferenceImages > 16 {
 				return fmt.Errorf("模型 %s 的参考图数量须在 0-16 之间", model.Name)
+			}
+			if model.MaxImages < 1 || model.MaxImages > MaxImagesLimit {
+				return fmt.Errorf("模型 %s 的单次生成张数须在 1-%d 之间", model.Name, MaxImagesLimit)
 			}
 		}
 		models[model.ID] = model
@@ -677,6 +902,28 @@ func Validate(cfg Config) error {
 			model, exists := models[modelID]
 			if !exists || !assigned[modelID] || model.Kind != kind {
 				return fmt.Errorf("页面 %s 的默认模型必须包含在该页面的可选模型中", workspace)
+			}
+		}
+		for modelID, pricing := range binding.ModelPricing {
+			model, exists := models[modelID]
+			if !exists || !assigned[modelID] {
+				return fmt.Errorf("页面 %s 的价格模型必须包含在该页面的可选模型中：%s", workspace, modelID)
+			}
+			if pricing.PriceCents < 0 || (pricing.DiscountPriceCents != nil && *pricing.DiscountPriceCents < 0) {
+				return fmt.Errorf("页面 %s 的模型 %s 价格不能为负", workspace, model.Name)
+			}
+			if pricing.DiscountPriceCents != nil && *pricing.DiscountPriceCents > pricing.PriceCents {
+				return fmt.Errorf("页面 %s 的模型 %s 折扣价不能高于标准价", workspace, model.Name)
+			}
+			effective := pricing.PriceCents
+			if pricing.DiscountPriceCents != nil {
+				effective = *pricing.DiscountPriceCents
+			}
+			if effective == 0 && !model.AllowZeroPrice {
+				return fmt.Errorf("页面 %s 的模型 %s 用户价格为 0；如确需免费，请在模型中允许零价", workspace, model.Name)
+			}
+			if effective < model.UpstreamCostCents && !model.AllowLossLeader {
+				return fmt.Errorf("页面 %s 的模型 %s 用户价格低于上游成本", workspace, model.Name)
 			}
 		}
 	}
@@ -796,6 +1043,67 @@ func EffectivePrice(model Model) int64 {
 	return model.PriceCents
 }
 
+func ResolveUpstreamCost(model Model, inputLongEdge int, scaleFactor float64) int64 {
+	pricing := model.ImageUpscalePricing
+	if model.Kind == ModelKindImageTool && model.Tool == ImageToolUpscale && pricing != nil &&
+		(inputLongEdge <= 0 || scaleFactor <= 0 || float64(inputLongEdge)*scaleFactor > float64(pricing.ThresholdPixels)) {
+		return pricing.HighUpstreamCostCents
+	}
+	return model.UpstreamCostCents
+}
+
+// ResolveImageUpscalePrice resolves the two provider resolution tiers using
+// trusted input dimensions. Missing dimensions or scale select the high tier
+// so an incomplete client quote can never undercharge the task.
+func ResolveImageUpscalePrice(model Model, inputLongEdge int, scaleFactor float64) ResolvedWorkspacePrice {
+	pricing := model.ImageUpscalePricing
+	if model.Kind != ModelKindImageTool || model.Tool != ImageToolUpscale || pricing == nil {
+		return ResolvedWorkspacePrice{
+			PriceCents: model.PriceCents, DiscountPriceCents: model.DiscountPriceCents,
+			EffectiveCents: EffectivePrice(model),
+		}
+	}
+	if inputLongEdge > 0 && scaleFactor > 0 && float64(inputLongEdge)*scaleFactor <= float64(pricing.ThresholdPixels) {
+		return ResolvedWorkspacePrice{
+			PriceCents: model.PriceCents, DiscountPriceCents: model.DiscountPriceCents,
+			EffectiveCents: EffectivePrice(model),
+		}
+	}
+	effective := pricing.HighPriceCents
+	if pricing.HighDiscountPriceCents != nil {
+		effective = *pricing.HighDiscountPriceCents
+	}
+	return ResolvedWorkspacePrice{
+		PriceCents: pricing.HighPriceCents, DiscountPriceCents: pricing.HighDiscountPriceCents,
+		EffectiveCents: effective,
+	}
+}
+
+func ResolveWorkspacePrice(cfg Config, workspace string, model Model) ResolvedWorkspacePrice {
+	standard := model.PriceCents
+	discount := model.DiscountPriceCents
+	overridden := false
+	if binding, ok := cfg.Workspaces[strings.TrimSpace(workspace)]; ok {
+		if pricing, ok := binding.ModelPricing[model.ID]; ok {
+			standard = pricing.PriceCents
+			discount = pricing.DiscountPriceCents
+			overridden = true
+		}
+	}
+	effective := standard
+	if discount != nil {
+		effective = *discount
+	}
+	return ResolvedWorkspacePrice{
+		PriceCents: standard, DiscountPriceCents: discount,
+		EffectiveCents: effective, Overridden: overridden,
+	}
+}
+
+func EffectiveWorkspacePrice(cfg Config, workspace string, model Model) int64 {
+	return ResolveWorkspacePrice(cfg, workspace, model).EffectiveCents
+}
+
 func activeProviders(cfg Config) map[string]Provider {
 	providers := make(map[string]Provider, len(cfg.Providers))
 	for _, provider := range cfg.Providers {
@@ -833,6 +1141,25 @@ func executionRoutes(provider Provider) []Provider {
 
 func ExecutionRoutes(provider Provider) []Provider { return executionRoutes(provider) }
 
+// EditableFileProvider returns the administrator-selected ChatGPT2API route.
+func EditableFileProvider(cfg Config) (Provider, bool) {
+	normalize(&cfg)
+	if !cfg.EditableFiles.Enabled || cfg.EditableFiles.ProviderID == "" || cfg.EditableFiles.RouteID == "" {
+		return Provider{}, false
+	}
+	for _, provider := range cfg.Providers {
+		if provider.ID != cfg.EditableFiles.ProviderID || !provider.Enabled || provider.Adapter != AdapterOpenAI {
+			continue
+		}
+		for _, route := range executionRoutes(provider) {
+			if route.RouteID == cfg.EditableFiles.RouteID && strings.TrimSpace(route.APIKey) != "" {
+				return route, true
+			}
+		}
+	}
+	return Provider{}, false
+}
+
 func ExecutionRouteKey(provider Provider) string {
 	if provider.RouteID == "" {
 		return provider.ID
@@ -869,6 +1196,39 @@ func SelectPublic(cfg Config, kind, requestedModelID string) (*Selection, bool) 
 		return nil, false
 	}
 	return fallback, fallback != nil
+}
+
+func PublicImageTools(cfg Config, tool string) []Selection {
+	models := PublicModels(cfg, ModelKindImageTool)
+	out := make([]Selection, 0, len(models))
+	for _, selection := range models {
+		if selection.Model.Tool == tool {
+			out = append(out, selection)
+		}
+	}
+	return out
+}
+
+func SelectPublicImageTool(cfg Config, tool, requestedModelID string) (*Selection, bool) {
+	requestedModelID = strings.TrimSpace(requestedModelID)
+	models := PublicImageTools(cfg, tool)
+	if requestedModelID != "" {
+		for index := range models {
+			if models[index].Model.ID == requestedModelID {
+				return &models[index], true
+			}
+		}
+		return nil, false
+	}
+	for index := range models {
+		if models[index].Model.Default {
+			return &models[index], true
+		}
+	}
+	if len(models) == 0 {
+		return nil, false
+	}
+	return &models[0], true
 }
 
 // PublicModelsForWorkspace returns only the models explicitly assigned to a
@@ -946,10 +1306,14 @@ func WorkspaceForTaskType(taskType string) (string, bool) {
 	switch strings.TrimSpace(taskType) {
 	case "t2i":
 		return WorkspaceT2I, true
+	case "infinite_canvas":
+		return WorkspaceCanvas, true
 	case "coloring":
 		return WorkspaceColoring, true
 	case "ui_design", "ui_design_asset":
 		return WorkspaceUIDesign, true
+	case "ecommerce_design":
+		return WorkspaceEcommerce, true
 	case "model_sheet":
 		return WorkspaceModelSheet, true
 	case "game_art":
@@ -1009,6 +1373,16 @@ func ExecutionCandidates(cfg Config, providerID, modelID string) []Selection {
 }
 
 func ExecutionCandidatesRoute(cfg Config, providerID, modelID, routeID string) []Selection {
+	return executionCandidatesRoute(cfg, providerID, modelID, routeID, false, 0)
+}
+
+// ExecutionCandidatesRouteAcrossProviders expands execution capacity to enabled
+// public models with the same type, display name and effective task price.
+func ExecutionCandidatesRouteAcrossProviders(cfg Config, providerID, modelID, routeID string, expectedPrice int64) []Selection {
+	return executionCandidatesRoute(cfg, providerID, modelID, routeID, true, expectedPrice)
+}
+
+func executionCandidatesRoute(cfg Config, providerID, modelID, routeID string, acrossProviders bool, expectedPrice int64) []Selection {
 	normalize(&cfg)
 	var selected Model
 	found := false
@@ -1021,27 +1395,34 @@ func ExecutionCandidatesRoute(cfg Config, providerID, modelID, routeID string) [
 	if !found {
 		return nil
 	}
-	var selectedProvider Provider
-	for _, provider := range cfg.Providers {
-		if provider.ID == selected.ProviderID {
-			selectedProvider = provider
-			break
+	models := []Model{selected}
+	seenProviders := map[string]bool{selected.ProviderID: true}
+	if acrossProviders && EffectivePrice(selected) == expectedPrice {
+		for _, model := range cfg.Models {
+			if seenProviders[model.ProviderID] || !model.Enabled || !model.Public || model.Kind != selected.Kind || model.Tool != selected.Tool ||
+				!strings.EqualFold(strings.TrimSpace(model.Name), strings.TrimSpace(selected.Name)) ||
+				EffectivePrice(model) != expectedPrice {
+				continue
+			}
+			models = append(models, model)
+			seenProviders[model.ProviderID] = true
 		}
 	}
-	if selectedProvider.ID == "" {
-		return nil
-	}
-	routes := executionRoutes(selectedProvider)
-	out := make([]Selection, 0, len(routes))
-	for _, route := range routes {
-		if strings.TrimSpace(route.APIKey) == "" {
-			continue
+	out := make([]Selection, 0)
+	for _, model := range models {
+		provider := cfgProviderByID(cfg, model.ProviderID)
+		for _, route := range executionRoutes(provider) {
+			if strings.TrimSpace(route.APIKey) == "" {
+				continue
+			}
+			out = append(out, Selection{Provider: route, Model: model})
 		}
-		out = append(out, Selection{Provider: route, Model: selected})
 	}
 	if routeID != "" {
 		sort.SliceStable(out, func(i, j int) bool {
-			return out[i].Provider.RouteID == routeID && out[j].Provider.RouteID != routeID
+			leftPreferred := out[i].Provider.ID == providerID && out[i].Provider.RouteID == routeID
+			rightPreferred := out[j].Provider.ID == providerID && out[j].Provider.RouteID == routeID
+			return leftPreferred && !rightPreferred
 		})
 	}
 	return out
@@ -1078,9 +1459,10 @@ func OverlayTaskPrices(cfg Config, legacy map[string]int64) (map[string]int64, m
 		if len(models) == 0 {
 			continue
 		}
-		rangeValue := PriceRange{MinCents: EffectivePrice(models[0].Model), MaxCents: EffectivePrice(models[0].Model)}
+		firstPrice := EffectiveWorkspacePrice(cfg, workspace, models[0].Model)
+		rangeValue := PriceRange{MinCents: firstPrice, MaxCents: firstPrice}
 		for _, selection := range models[1:] {
-			price := EffectivePrice(selection.Model)
+			price := EffectiveWorkspacePrice(cfg, workspace, selection.Model)
 			if price < rangeValue.MinCents {
 				rangeValue.MinCents = price
 			}

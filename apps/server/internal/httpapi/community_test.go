@@ -38,6 +38,14 @@ func TestPromptTodayRangeUsesBeijingCalendarDay(t *testing.T) {
 	}
 }
 
+func TestNormalizePromptQueryTagsDropsEmptyAndDuplicateValues(t *testing.T) {
+	got := normalizePromptQueryTags([]string{"", " portrait ", "  ", "design", "portrait"})
+	want := []string{"portrait", "design"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("normalized tags = %v, want %v", got, want)
+	}
+}
+
 func newCommunityEnv(t *testing.T) *communityEnv {
 	t.Helper()
 	st := testdb.Setup(t)
@@ -255,6 +263,247 @@ func TestAutoApprovePassThrough(t *testing.T) {
 	}
 }
 
+func TestTaskListIncludesGalleryShareStatus(t *testing.T) {
+	env := newCommunityEnv(t)
+	user, userToken := env.newUserSession(t, "user")
+	submitted := env.newSucceededTask(t, user.ID)
+	plain := env.newSucceededTask(t, user.ID)
+
+	w := env.do(t, "POST", "/api/v1/gallery/submissions", gin.H{
+		"taskId": submitted.String(), "title": "历史状态",
+	}, userToken)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("submit: status %d body %s", w.Code, w.Body.String())
+	}
+
+	w = env.do(t, "GET", "/api/v1/tasks?limit=20", nil, userToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list tasks: status %d body %s", w.Code, w.Body.String())
+	}
+	data, _ := decode(t, w)
+	items, _ := data["items"].([]any)
+	byID := map[string]map[string]any{}
+	for _, raw := range items {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		id, _ := item["id"].(string)
+		byID[id] = item
+	}
+	if byID[submitted.String()]["shareSubmitted"] != true || byID[submitted.String()]["shareSubmissionStatus"] != "pending" {
+		t.Fatalf("submitted task = %#v", byID[submitted.String()])
+	}
+	if byID[plain.String()]["shareSubmitted"] != false || byID[plain.String()]["shareSubmissionStatus"] != "" {
+		t.Fatalf("plain task = %#v", byID[plain.String()])
+	}
+
+	w = env.do(t, "GET", "/api/v1/tasks/"+submitted.String(), nil, userToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get task: status %d body %s", w.Code, w.Body.String())
+	}
+	data, _ = decode(t, w)
+	if data["shareSubmitted"] != true || data["shareSubmissionStatus"] != "pending" {
+		t.Fatalf("get submitted task = %#v", data)
+	}
+}
+
+func TestCommunityReportAndBlockSafetyFlow(t *testing.T) {
+	env := newCommunityEnv(t)
+	ctx := context.Background()
+	author, authorToken := env.newUserSession(t, "user")
+	viewer, viewerToken := env.newUserSession(t, "user")
+	taskID := env.newSucceededTask(t, author.ID)
+	title := "需要安全操作的公开作品"
+	submission, err := store.InsertSubmission(
+		ctx,
+		env.st.Pool,
+		author.ID,
+		taskID,
+		&title,
+		nil,
+		[]string{},
+		nil,
+		"approved",
+	)
+	if err != nil {
+		t.Fatalf("insert approved submission: %v", err)
+	}
+
+	// Anonymous and signed-in viewers can initially see the approved work.
+	for _, token := range []string{"", viewerToken} {
+		w := env.do(t, "GET", "/api/v1/gallery/submissions?limit=20", nil, token)
+		data, _ := decode(t, w)
+		items, _ := data["items"].([]any)
+		if w.Code != http.StatusOK || len(items) != 1 {
+			t.Fatalf("initial gallery token=%t: status %d data %#v", token != "", w.Code, data)
+		}
+	}
+
+	path := "/api/v1/gallery/submissions/" + submission.ID.String() + "/reports"
+	w := env.do(t, "POST", path, gin.H{"reason": "spam"}, "")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous report status = %d, want 401", w.Code)
+	}
+	w = env.do(t, "POST", path, gin.H{"reason": "spam"}, authorToken)
+	if _, code := decode(t, w); w.Code != http.StatusUnprocessableEntity || code != "validation_error" {
+		t.Fatalf("self report status=%d code=%s", w.Code, code)
+	}
+	w = env.do(t, "POST", path, gin.H{"reason": "unknown"}, viewerToken)
+	if _, code := decode(t, w); w.Code != http.StatusUnprocessableEntity || code != "validation_error" {
+		t.Fatalf("invalid report status=%d code=%s", w.Code, code)
+	}
+	w = env.do(t, "POST", path, gin.H{"reason": "spam", "detail": "重复推广内容"}, viewerToken)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("report status=%d body=%s", w.Code, w.Body.String())
+	}
+	// Re-reporting updates the same row instead of creating report spam.
+	w = env.do(t, "POST", path, gin.H{"reason": "other", "detail": "补充后的具体问题"}, viewerToken)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("update report status=%d body=%s", w.Code, w.Body.String())
+	}
+	var reportCount int
+	var reason, detail string
+	if err := env.st.Pool.QueryRow(ctx, `
+		SELECT count(*), max(reason), max(detail)
+		FROM gallery_submission_reports
+		WHERE submission_id = $1 AND reporter_user_id = $2`,
+		submission.ID, viewer.ID).Scan(&reportCount, &reason, &detail); err != nil {
+		t.Fatalf("read report: %v", err)
+	}
+	if reportCount != 1 || reason != "other" || detail != "补充后的具体问题" {
+		t.Fatalf("report count=%d reason=%q detail=%q", reportCount, reason, detail)
+	}
+
+	blockPath := "/api/v1/gallery/users/" + author.ID.String() + "/block"
+	w = env.do(t, "POST", blockPath, nil, "")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous block status = %d, want 401", w.Code)
+	}
+	w = env.do(t, "POST", "/api/v1/gallery/users/"+viewer.ID.String()+"/block", nil, viewerToken)
+	if _, code := decode(t, w); w.Code != http.StatusUnprocessableEntity || code != "validation_error" {
+		t.Fatalf("self block status=%d code=%s", w.Code, code)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		w = env.do(t, "POST", blockPath, nil, viewerToken)
+		if w.Code != http.StatusNoContent {
+			t.Fatalf("block attempt %d status=%d body=%s", attempt+1, w.Code, w.Body.String())
+		}
+	}
+
+	w = env.do(t, "GET", "/api/v1/gallery/submissions?limit=20", nil, viewerToken)
+	data, _ := decode(t, w)
+	items, _ := data["items"].([]any)
+	if w.Code != http.StatusOK || len(items) != 0 {
+		t.Fatalf("blocked viewer gallery status=%d data=%#v", w.Code, data)
+	}
+	w = env.do(t, "GET", "/api/v1/me/blocked-users?limit=20", nil, "")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous blocked list status=%d, want 401", w.Code)
+	}
+	w = env.do(t, "GET", "/api/v1/me/blocked-users?limit=20", nil, viewerToken)
+	data, _ = decode(t, w)
+	items, _ = data["items"].([]any)
+	if w.Code != http.StatusOK || len(items) != 1 {
+		t.Fatalf("blocked list status=%d data=%#v", w.Code, data)
+	}
+	blocked, _ := items[0].(map[string]any)
+	if blocked["id"] != author.ID.String() || blocked["username"] != author.Username || blocked["blockedAt"] == nil {
+		t.Fatalf("blocked item=%#v", blocked)
+	}
+
+	w = env.do(t, "DELETE", blockPath, nil, "")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous unblock status=%d, want 401", w.Code)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		w = env.do(t, "DELETE", blockPath, nil, viewerToken)
+		if w.Code != http.StatusNoContent {
+			t.Fatalf("unblock attempt %d status=%d body=%s", attempt+1, w.Code, w.Body.String())
+		}
+	}
+	w = env.do(t, "GET", "/api/v1/me/blocked-users?limit=20", nil, viewerToken)
+	data, _ = decode(t, w)
+	items, _ = data["items"].([]any)
+	if w.Code != http.StatusOK || len(items) != 0 {
+		t.Fatalf("blocked list after unblock status=%d data=%#v", w.Code, data)
+	}
+	w = env.do(t, "GET", "/api/v1/gallery/submissions?limit=20", nil, viewerToken)
+	data, _ = decode(t, w)
+	items, _ = data["items"].([]any)
+	if w.Code != http.StatusOK || len(items) != 1 {
+		t.Fatalf("viewer gallery after unblock status=%d data=%#v", w.Code, data)
+	}
+	w = env.do(t, "GET", "/api/v1/gallery/submissions?limit=20", nil, "")
+	data, _ = decode(t, w)
+	items, _ = data["items"].([]any)
+	if w.Code != http.StatusOK || len(items) != 1 {
+		t.Fatalf("anonymous gallery after block status=%d data=%#v", w.Code, data)
+	}
+}
+
+func TestAssistantImageRunCanBeSubmittedToGallery(t *testing.T) {
+	env := newCommunityEnv(t)
+	user, token := env.newUserSession(t, "user")
+	ctx := context.Background()
+	now := time.Now().UTC()
+	conversation, err := store.InsertAssistantConversation(ctx, env.st.Pool, uuid.New(), user.ID, "助手投稿", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userMessage, err := store.InsertAssistantMessage(ctx, env.st.Pool, store.AssistantMessage{
+		ID: uuid.New(), ConversationID: conversation.ID, Role: "user", Content: "生成海报",
+		Kind: "chat", Status: "complete", CreatedAt: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outputKey := fmt.Sprintf("tasks/%s/assistant/%s/1.png", user.ID, uuid.New())
+	assistantMessage, err := store.InsertAssistantMessage(ctx, env.st.Pool, store.AssistantMessage{
+		ID: uuid.New(), ConversationID: conversation.ID, Role: "assistant", Kind: "image", Status: "complete",
+		Metadata:  map[string]any{"images": []map[string]any{{"id": "result-1", "fileKey": outputKey}}},
+		CreatedAt: now.Add(time.Millisecond),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := store.InsertAssistantRun(ctx, env.st.Pool, store.AssistantRun{
+		ID: uuid.New(), UserID: user.ID, ConversationID: conversation.ID,
+		UserMessageID: userMessage.ID, AssistantMessageID: assistantMessage.ID,
+		Mode: "image", Prompt: "生成海报", ReservedCents: 20, Params: map[string]any{
+			"model": "image-pro", "count": 1, "referenceImages": []map[string]any{}, "_maskKey": "private",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.st.Pool.Exec(ctx,
+		`UPDATE assistant_runs SET status = 'succeeded', resolved_mode = 'image', stage = 'complete', cost_cents = 20, started_at = $2, finished_at = $2 WHERE id = $1`,
+		run.ID, now); err != nil {
+		t.Fatal(err)
+	}
+
+	response := env.do(t, http.MethodPost, "/api/v1/gallery/submissions", gin.H{
+		"taskId": run.ID.String(), "title": "助手生成海报",
+	}, token)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("submit assistant run: status %d body %s", response.Code, response.Body.String())
+	}
+	task, err := store.GetUserTask(ctx, env.st.Pool, user.ID, run.ID)
+	if err != nil || task == nil {
+		t.Fatalf("assistant gallery task = %#v, err = %v", task, err)
+	}
+	if len(task.OutputKeys) != 1 || task.OutputKeys[0] != outputKey || task.Type != "t2i" || task.Status != "succeeded" {
+		t.Fatalf("assistant gallery task fields = %#v", task)
+	}
+	if task.Params["_source"] != "assistant" || task.Params["assistantRunId"] != run.ID.String() || task.Params["_maskKey"] != nil {
+		t.Fatalf("assistant gallery task params = %#v", task.Params)
+	}
+	if submission, err := store.GetSubmissionByTaskID(ctx, env.st.Pool, run.ID); err != nil || submission == nil {
+		t.Fatalf("assistant gallery submission = %#v, err = %v", submission, err)
+	}
+}
+
 func TestAdminPromptCoverReportsOversizeInsteadOfMissingFile(t *testing.T) {
 	env := newCommunityEnv(t)
 	_, adminToken := env.newUserSession(t, "admin")
@@ -320,8 +569,10 @@ func TestAdminSubmissionsIncludeRenderableMediaURLs(t *testing.T) {
 	}
 	coverURL, _ := item["coverUrl"].(string)
 	mediaURLs, _ := item["mediaUrls"].([]any)
-	if !strings.HasPrefix(coverURL, "/api/v1/files/tasks/"+user.ID.String()+"/") {
-		t.Fatalf("coverUrl = %q, want an in-app file URL", coverURL)
+	// 管理端资源必须走 /api/v1/admin/files/：sc_admin_session cookie 的
+	// Path=/api/v1/admin，用户态 /api/v1/files/ 在后台浏览器中恒为 401。
+	if !strings.HasPrefix(coverURL, "/api/v1/admin/files/tasks/"+user.ID.String()+"/") {
+		t.Fatalf("coverUrl = %q, want an admin-scoped file URL", coverURL)
 	}
 	if len(mediaURLs) != 1 || mediaURLs[0] != coverURL {
 		t.Fatalf("mediaUrls = %#v, want [%q]", mediaURLs, coverURL)
@@ -382,6 +633,9 @@ func TestMySubmissionsIncludeRenderableCoverAndMediaURLs(t *testing.T) {
 		if item["status"] != want.status || item["taskType"] != want.taskType {
 			t.Fatalf("submission %q status/taskType = %#v/%#v, want %q/%q", title, item["status"], item["taskType"], want.status, want.taskType)
 		}
+		if strings.TrimSpace(fmt.Sprint(item["prompt"])) == "" || item["prompt"] == nil {
+			t.Fatalf("submission %q missing prompt", title)
+		}
 		coverURL, _ := item["coverUrl"].(string)
 		mediaURLs, _ := item["mediaUrls"].([]any)
 		if !strings.HasPrefix(coverURL, "/api/v1/files/tasks/"+user.ID.String()+"/") {
@@ -390,6 +644,49 @@ func TestMySubmissionsIncludeRenderableCoverAndMediaURLs(t *testing.T) {
 		if len(mediaURLs) != 1 {
 			t.Fatalf("mediaUrls = %#v, want one original image", mediaURLs)
 		}
+	}
+}
+
+func TestGallerySubmissionsExposeCanvasOrigin(t *testing.T) {
+	env := newCommunityEnv(t)
+	user, userToken := env.newUserSession(t, "user")
+	_, adminToken := env.newUserSession(t, "admin")
+	ctx := context.Background()
+	taskID := env.newSucceededTask(t, user.ID)
+	if _, err := env.st.Pool.Exec(ctx, `UPDATE tasks SET params = jsonb_build_object('_source', 'react_canvas') WHERE id = $1`, taskID); err != nil {
+		t.Fatalf("mark canvas origin: %v", err)
+	}
+	w := env.do(t, "POST", "/api/v1/gallery/submissions", gin.H{"taskId": taskID.String(), "title": "画布投稿"}, userToken)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("submit canvas: status %d body %s", w.Code, w.Body.String())
+	}
+
+	mine := env.do(t, "GET", "/api/v1/me/gallery/submissions?limit=20", nil, userToken)
+	if mine.Code != http.StatusOK {
+		t.Fatalf("my submissions: status %d body %s", mine.Code, mine.Body.String())
+	}
+	mineData, _ := decode(t, mine)
+	mineItems, _ := mineData["items"].([]any)
+	if len(mineItems) != 1 {
+		t.Fatalf("my items = %#v", mineData["items"])
+	}
+	mineItem, _ := mineItems[0].(map[string]any)
+	if mineItem["taskType"] != "t2i" || mineItem["source"] != store.CanvasTaskSource || mineItem["displayName"] != "无限画布" {
+		t.Fatalf("my canvas submission = %#v", mineItem)
+	}
+
+	admin := env.do(t, "GET", "/api/v1/admin/gallery/submissions?limit=20", nil, adminToken)
+	if admin.Code != http.StatusOK {
+		t.Fatalf("admin submissions: status %d body %s", admin.Code, admin.Body.String())
+	}
+	adminData, _ := decode(t, admin)
+	adminItems, _ := adminData["items"].([]any)
+	if len(adminItems) != 1 {
+		t.Fatalf("admin items = %#v", adminData["items"])
+	}
+	adminItem, _ := adminItems[0].(map[string]any)
+	if adminItem["taskType"] != "t2i" || adminItem["source"] != store.CanvasTaskSource || adminItem["displayName"] != "无限画布" {
+		t.Fatalf("admin canvas submission = %#v", adminItem)
 	}
 }
 
@@ -408,7 +705,7 @@ func TestAdminUserDetailIncludesProfileSecurityAndCompleteCounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update profile: %v", err)
 	}
-	if _, err := store.InsertUserAsset(ctx, env.st.Pool, user.ID, "测试素材", "assets/a.png", "assets/a.jpg", "image/png", 128); err != nil {
+	if _, err := store.InsertUserAsset(ctx, env.st.Pool, user.ID, "测试素材", "assets/a.png", "assets/a.jpg", "image/png", 128, nil); err != nil {
 		t.Fatalf("insert asset: %v", err)
 	}
 	env.newSucceededTask(t, user.ID)
@@ -435,13 +732,119 @@ func TestAdminUserDetailIncludesProfileSecurityAndCompleteCounts(t *testing.T) {
 	if userData["lastLoginAt"] == nil || userData["submissionBannedUntil"] == nil {
 		t.Fatalf("account timestamps missing: %#v", userData)
 	}
+	if userData["requireCostConfirm"] != true {
+		t.Fatalf("requireCostConfirm = %#v", userData["requireCostConfirm"])
+	}
 	counts := data["counts"].(map[string]any)
-	if counts["assets"] != float64(1) || counts["tasksSucceeded"] != float64(1) || counts["tasksCanceled"] != float64(1) {
+	if counts["assets"] != float64(1) || counts["tasksSucceeded"] != float64(1) || counts["tasksCanceled"] != float64(1) || counts["feedback"] != float64(0) {
 		t.Fatalf("counts = %#v", counts)
 	}
 	security := data["security"].(map[string]any)
 	if security["activeSessions"] != float64(2) || security["lastSessionIp"] != ip || security["lastSessionUserAgent"] != agent {
 		t.Fatalf("security = %#v", security)
+	}
+	subscription := data["subscription"].(map[string]any)
+	if subscription["active"] != false {
+		t.Fatalf("subscription = %#v", subscription)
+	}
+	if data["trialAccess"] != nil || data["growthGroup"] != nil {
+		t.Fatalf("empty entitlements = trial %#v growth %#v", data["trialAccess"], data["growthGroup"])
+	}
+	checkin := data["checkin"].(map[string]any)
+	if checkin["totalDays"] != float64(0) {
+		t.Fatalf("checkin = %#v", checkin)
+	}
+}
+
+func TestAdminUserDetailIncludesEntitlementsAndWalletSplit(t *testing.T) {
+	env := newCommunityEnv(t)
+	ctx := context.Background()
+	user, _ := env.newUserSession(t, "user")
+	admin, adminToken := env.newUserSession(t, "admin")
+	now := time.Now().UTC()
+
+	if err := store.InsertWallet(ctx, env.st.Pool, user.ID); err != nil {
+		t.Fatalf("insert wallet: %v", err)
+	}
+	if _, err := env.st.Pool.Exec(ctx,
+		`UPDATE wallets SET balance_cents = 80, trial_balance_cents = 20, trial_feature_key = 'ui_design' WHERE user_id = $1`,
+		user.ID); err != nil {
+		t.Fatalf("update wallet: %v", err)
+	}
+
+	plan, err := store.InsertPlan(ctx, env.st.Pool, &store.Plan{
+		Code: "sub-" + uuid.NewString()[:6], Name: "月度订阅", Kind: "subscription",
+		PriceCents: 2900, DurationDays: 30, DailyGrantCents: 150, Active: true,
+	})
+	if err != nil {
+		t.Fatalf("insert plan: %v", err)
+	}
+	sub, err := store.InsertSubscription(ctx, env.st.Pool, &store.Subscription{
+		UserID: user.ID, PlanID: plan.ID, StartsAt: now, EndsAt: now.Add(30 * 24 * time.Hour), DailyGrantCents: 150,
+	})
+	if err != nil {
+		t.Fatalf("insert subscription: %v", err)
+	}
+	if _, err := env.st.Pool.Exec(ctx,
+		`UPDATE subscriptions SET last_granted_date = (now() AT TIME ZONE 'Asia/Shanghai')::date WHERE id = $1`,
+		sub.ID); err != nil {
+		t.Fatalf("mark granted today: %v", err)
+	}
+
+	campaign, err := store.InsertTrialCampaign(ctx, env.st.Pool, "体验活动", []string{"ui_design"},
+		"restricted", 100, 0, now.Add(72*time.Hour), admin.ID, now)
+	if err != nil {
+		t.Fatalf("insert campaign: %v", err)
+	}
+	if _, err := store.InsertTrialAccessApplication(ctx, env.st.Pool, user.ID, campaign.ID, 1,
+		[]string{"ui_design"}, "设计师", "想试用 UI 设计功能"); err != nil {
+		t.Fatalf("insert trial application: %v", err)
+	}
+	if _, err := store.InsertDailyCheckin(ctx, env.st.Pool, user.ID, "2026-08-17", 3, 3, 10); err != nil {
+		t.Fatalf("insert checkin: %v", err)
+	}
+	if _, err := store.InsertUserFeedback(ctx, env.st.Pool, user.ID, "bug", "生成失败了", "提示报错，无法继续生成", nil, nil); err != nil {
+		t.Fatalf("insert feedback: %v", err)
+	}
+	group, err := store.InsertGrowthGroup(ctx, env.st.Pool, "launch-2026", "ABCD12", user.ID, 3, 50, now.Add(48*time.Hour))
+	if err != nil {
+		t.Fatalf("insert growth group: %v", err)
+	}
+	if err := store.InsertGrowthGroupMember(ctx, env.st.Pool, group.ID, "launch-2026", user.ID, "owner"); err != nil {
+		t.Fatalf("insert growth member: %v", err)
+	}
+
+	w := env.do(t, "GET", "/api/v1/admin/users/"+user.ID.String(), nil, adminToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("admin user detail: status %d body %s", w.Code, w.Body.String())
+	}
+	data, _ := decode(t, w)
+	wallet := data["wallet"].(map[string]any)
+	if wallet["normalBalanceCents"] != float64(80) || wallet["trialBalanceCents"] != float64(20) ||
+		wallet["balanceCents"] != float64(100) || wallet["trialFeatureKey"] != "ui_design" ||
+		wallet["trialFeatureLabel"] != "UI 设计稿" {
+		t.Fatalf("wallet = %#v", wallet)
+	}
+	subscription := data["subscription"].(map[string]any)
+	if subscription["active"] != true || subscription["planName"] != "月度订阅" ||
+		subscription["dailyGrantCents"] != float64(150) || subscription["grantedToday"] != true {
+		t.Fatalf("subscription = %#v", subscription)
+	}
+	trial := data["trialAccess"].(map[string]any)
+	if trial["status"] != "pending" || trial["featureKey"] != "ui_design" {
+		t.Fatalf("trialAccess = %#v", trial)
+	}
+	checkin := data["checkin"].(map[string]any)
+	if checkin["totalDays"] != float64(1) || checkin["streak"] != float64(3) || checkin["lastDate"] != "2026-08-17" {
+		t.Fatalf("checkin = %#v", checkin)
+	}
+	growth := data["growthGroup"].(map[string]any)
+	if growth["code"] != "ABCD12" || growth["role"] != "owner" || growth["memberCount"] != float64(1) || growth["status"] != "active" {
+		t.Fatalf("growthGroup = %#v", growth)
+	}
+	counts := data["counts"].(map[string]any)
+	if counts["feedback"] != float64(1) {
+		t.Fatalf("counts = %#v", counts)
 	}
 }
 
@@ -588,6 +991,99 @@ func TestCommunityTagsBatchCurateAndReorder(t *testing.T) {
 	second, _ := store.GetSubmission(context.Background(), env.st.Pool, uuid.MustParse(ids[0]))
 	if first.Sort != 10 || second.Sort != 20 {
 		t.Fatalf("sorts = %d, %d; want 10, 20", first.Sort, second.Sort)
+	}
+}
+
+func TestPromptCategoryCRUDAndDeleteReassignsPrompts(t *testing.T) {
+	env := newCommunityEnv(t)
+	_, adminToken := env.newUserSession(t, "admin")
+
+	findCategory := func(items []any, key string) map[string]any {
+		t.Helper()
+		for _, raw := range items {
+			item, _ := raw.(map[string]any)
+			if item["key"] == key {
+				return item
+			}
+		}
+		return nil
+	}
+
+	w := env.do(t, http.MethodGet, "/api/v1/admin/prompt-categories", nil, adminToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list prompt categories: status %d body %s", w.Code, w.Body.String())
+	}
+	data, _ := decode(t, w)
+	builtinItems, _ := data["items"].([]any)
+	other := findCategory(builtinItems, "other")
+	if other == nil || other["builtin"] != true {
+		t.Fatalf("other category = %#v, want builtin category", other)
+	}
+
+	w = env.do(t, http.MethodPost, "/api/v1/admin/prompt-categories", gin.H{
+		"key": "concept-art", "label": "概念艺术", "active": true,
+	}, adminToken)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create prompt category: status %d body %s", w.Code, w.Body.String())
+	}
+	created, _ := decode(t, w)
+	categoryID, _ := created["id"].(string)
+	if categoryID == "" || created["key"] != "concept-art" {
+		t.Fatalf("created category = %#v", created)
+	}
+
+	w = env.do(t, http.MethodGet, "/api/v1/prompts/categories?type=t2i", nil, "")
+	publicData, _ := decode(t, w)
+	publicItems, _ := publicData["items"].([]any)
+	if findCategory(publicItems, "concept-art") == nil {
+		t.Fatalf("public categories = %#v, want concept-art", publicItems)
+	}
+
+	w = env.do(t, http.MethodPatch, "/api/v1/admin/prompt-categories/"+categoryID, gin.H{
+		"label": "概念设计", "active": false,
+	}, adminToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("patch prompt category: status %d body %s", w.Code, w.Body.String())
+	}
+	patched, _ := decode(t, w)
+	if patched["label"] != "概念设计" || patched["active"] != false {
+		t.Fatalf("patched category = %#v", patched)
+	}
+	w = env.do(t, http.MethodGet, "/api/v1/prompts/categories?type=t2i", nil, "")
+	publicData, _ = decode(t, w)
+	publicItems, _ = publicData["items"].([]any)
+	if findCategory(publicItems, "concept-art") != nil {
+		t.Fatalf("inactive category is still public: %#v", publicItems)
+	}
+
+	w = env.do(t, http.MethodPost, "/api/v1/admin/prompts", gin.H{
+		"title": "分类删除迁移测试", "prompt": "concept art prompt", "taskType": "t2i",
+		"category": "concept-art", "active": true,
+	}, adminToken)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create prompt in custom category: status %d body %s", w.Code, w.Body.String())
+	}
+	promptData, _ := decode(t, w)
+	promptID, err := uuid.Parse(promptData["id"].(string))
+	if err != nil {
+		t.Fatalf("parse prompt id: %v", err)
+	}
+
+	w = env.do(t, http.MethodDelete, "/api/v1/admin/prompt-categories/"+categoryID, nil, adminToken)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("delete prompt category: status %d body %s", w.Code, w.Body.String())
+	}
+	entry, err := store.GetPromptEntry(context.Background(), env.st.Pool, promptID)
+	if err != nil {
+		t.Fatalf("get reassigned prompt: %v", err)
+	}
+	if entry == nil || entry.Category == nil || *entry.Category != "other" {
+		t.Fatalf("prompt category = %#v, want other", entry)
+	}
+
+	w = env.do(t, http.MethodDelete, "/api/v1/admin/prompt-categories/"+other["id"].(string), nil, adminToken)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("delete builtin category: status %d body %s, want 409", w.Code, w.Body.String())
 	}
 }
 

@@ -12,10 +12,12 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
+	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
 )
 
 const requestMetricsWindow = 60
@@ -211,11 +213,17 @@ func (s *Server) adminSystemMetrics(c *gin.Context, _ *store.User) {
 	queue := s.Queue.Metrics()
 	pressure, pressureErr := store.GetTaskPressure(c.Request.Context(), s.St.Pool)
 	globalLimit, globalLimitErr := settings.GetInt(c.Request.Context(), s.St.Pool, "global_max_active_tasks")
+	globalImageLimit, globalImageLimitErr := settings.GetInt(c.Request.Context(), s.St.Pool, "global_max_active_images")
 	globalConcurrency, globalConcurrencyErr := settings.GetInt(c.Request.Context(), s.St.Pool, "global_max_concurrent_tasks")
 	userConcurrency, userConcurrencyErr := settings.GetInt(c.Request.Context(), s.St.Pool, "user_max_concurrent_tasks")
 	workerCeiling := int64(s.workerConcurrencyCeiling())
 	profilingEnabled := s.Cfg.APIPprofAddr != "" || s.Cfg.WorkerPprofAddr != ""
 	providerCapacity := s.providerCapacityMetrics(c.Request.Context())
+	imageFetch := s.Queue.ImageFetchMetrics(c.Request.Context())
+	executionPressure, executionPressureErr := store.GetTaskExecutionPressure(
+		c.Request.Context(), s.St.Pool, uuid.Nil, now.UTC(), now.UTC().Add(10*time.Second),
+	)
+	imageFetchForecast := imageFetchForecastSnapshot(imageFetch, executionPressure, executionPressureErr)
 
 	ok(c, gin.H{
 		"sampledAt": now.UTC().Format(time.RFC3339Nano),
@@ -242,10 +250,32 @@ func (s *Server) adminSystemMetrics(c *gin.Context, _ *store.User) {
 			"acquireDurationMs":       roundMetric(float64(pool.AcquireDuration())/float64(time.Millisecond), 2),
 		},
 		"queue":        queue,
-		"taskPressure": taskPressureSnapshot(now, pressure, pressureErr, globalLimit, globalLimitErr, globalConcurrency, globalConcurrencyErr, userConcurrency, userConcurrencyErr, workerCeiling),
+		"taskPressure": taskPressureSnapshot(now, pressure, pressureErr, globalLimit, globalLimitErr, globalImageLimit, globalImageLimitErr, globalConcurrency, globalConcurrencyErr, userConcurrency, userConcurrencyErr, workerCeiling),
 		"providers":    providerCapacity,
+		"imageFetch":   imageFetchForecast,
 		"profiling":    gin.H{"enabled": profilingEnabled},
 	})
+}
+
+func imageFetchForecastSnapshot(metrics taskflow.ImageFetchMetrics, pressure store.TaskExecutionPressure, pressureErr error) gin.H {
+	forecastCapacity := metrics.EffectiveLimit * 4 * 2
+	out := gin.H{
+		"available":             metrics.Available,
+		"active":                metrics.Active,
+		"effectiveLimit":        metrics.EffectiveLimit,
+		"configuredCeiling":     metrics.ConfiguredCeiling,
+		"workers":               len(metrics.Workers),
+		"activeUsers":           pressure.ActiveUsers,
+		"waitingUsers":          pressure.WaitingOtherUsers,
+		"forecastWindowSeconds": 10,
+		"forecastImageUnits":    pressure.ForecastUnitsNear,
+		"forecastCapacity":      forecastCapacity,
+		"forecastPressure":      pressure.WaitingOtherUsers > 0 && forecastCapacity > 0 && pressure.ForecastUnitsNear >= forecastCapacity,
+	}
+	if metrics.Error != "" || pressureErr != nil {
+		out["error"] = "image_fetch_metrics_unavailable"
+	}
+	return out
 }
 
 func (s *Server) providerCapacityMetrics(ctx context.Context) []gin.H {
@@ -278,12 +308,18 @@ func (s *Server) providerCapacityMetrics(ctx context.Context) []gin.H {
 	return out
 }
 
-func taskPressureSnapshot(now time.Time, pressure store.TaskPressure, pressureErr error, globalLimit int64, globalLimitErr error, globalConcurrency int64, globalConcurrencyErr error, userConcurrency int64, userConcurrencyErr error, workerCeiling int64) gin.H {
+func taskPressureSnapshot(now time.Time, pressure store.TaskPressure, pressureErr error,
+	globalLimit int64, globalLimitErr error, globalImageLimit int64, globalImageLimitErr error,
+	globalConcurrency int64, globalConcurrencyErr error, userConcurrency int64, userConcurrencyErr error,
+	workerCeiling int64) gin.H {
 	out := gin.H{
 		"queued":                     pressure.Queued,
 		"running":                    pressure.Running,
 		"active":                     pressure.Queued + pressure.Running,
+		"activeImageUnits":           pressure.ActiveUnits,
 		"globalLimit":                globalLimit,
+		"globalImageLimit":           globalImageLimit,
+		"imageUtilizationPercent":    roundMetric(percentOf64(pressure.ActiveUnits, globalImageLimit), 2),
 		"userConcurrencyLimit":       userConcurrency,
 		"globalConcurrencyLimit":     globalConcurrency,
 		"workerConcurrencyCeiling":   workerCeiling,
@@ -295,7 +331,7 @@ func taskPressureSnapshot(now time.Time, pressure store.TaskPressure, pressureEr
 	} else {
 		out["oldestQueuedSeconds"] = int64(0)
 	}
-	if pressureErr != nil || globalLimitErr != nil || globalConcurrencyErr != nil || userConcurrencyErr != nil {
+	if pressureErr != nil || globalLimitErr != nil || globalImageLimitErr != nil || globalConcurrencyErr != nil || userConcurrencyErr != nil {
 		out["error"] = "task_pressure_unavailable"
 	}
 	return out

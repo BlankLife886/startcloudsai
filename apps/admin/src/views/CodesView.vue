@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { CopyDocument, Download, Hide, Plus, Refresh, Search, View } from '@element-plus/icons-vue'
+import { CopyDocument, Download, Hide, Plus, Refresh, Search, Ticket, View } from '@element-plus/icons-vue'
+import AdminDialog from '@/components/AdminDialog.vue'
 import { normalizeList, request, type Page } from '@/request'
 import { usePagedList } from '@/usePagedList'
 import { formatPoints, formatTime, normalizePoints } from '@/utils'
@@ -53,7 +54,9 @@ const STATUS_FILTERS = [
 // ---------- 码列表 ----------
 const filters = reactive({ status: '', batchId: '', search: '' })
 
-const { items, loading, error, total, page, hasPrev, hasNext, reset, next, prev, refresh, retry } =
+const pageSize = ref(20)
+
+const { items, loading, error, total, page, hasPrev, hasNext, reset, goToPage, refresh, retry } =
   usePagedList<RedemptionCode>(
     (cursor) =>
       request<Page<RedemptionCode>>('/api/v1/admin/redemption-codes', {
@@ -61,11 +64,11 @@ const { items, loading, error, total, page, hasPrev, hasNext, reset, next, prev,
           status: filters.status,
           batchId: filters.batchId,
           search: filters.search.trim(),
-          limit: 20,
+          limit: pageSize.value,
           cursor,
         },
       }),
-    () => filters,
+    () => ({ ...filters, limit: pageSize.value }),
   )
 
 function clearFilters() {
@@ -249,17 +252,8 @@ function downloadCodes() {
 </script>
 
 <template>
-  <div class="codes-page">
-    <header class="codes-header">
-      <div class="codes-header__copy">
-        <span>REDEMPTION CODES</span>
-        <h2>兑换码</h2>
-        <p>{{ batches.length }} 个批次 · 当前列表 {{ items.length }} 条</p>
-      </div>
-      <el-button type="primary" :icon="Plus" @click="openGenerate">生成兑换码</el-button>
-    </header>
-
-    <section class="codes-list-panel">
+  <div class="page">
+    <PageCard>
       <div class="codes-toolbar">
         <div class="status-tabs" role="tablist" aria-label="兑换码状态">
           <button
@@ -267,15 +261,16 @@ function downloadCodes() {
             :key="option.value || 'all'"
             type="button"
             role="tab"
-            :aria-selected="filters.status === option.value"
+            class="status-tab"
             :class="{ 'is-active': filters.status === option.value }"
+            :aria-selected="filters.status === option.value"
             @click="setStatus(option.value)"
           >
             {{ option.label }}
           </button>
         </div>
 
-        <div class="codes-toolbar__filters">
+        <div class="codes-toolbar__actions">
           <el-select
             v-model="filters.batchId"
             filterable
@@ -294,18 +289,17 @@ function downloadCodes() {
           </el-select>
           <el-input
             v-model="filters.search"
+            class="codes-search"
             :prefix-icon="Search"
             placeholder="搜索完整兑换码"
             clearable
-            class="code-search"
             @keyup.enter="reset"
             @clear="reset"
           />
-          <el-button type="primary" @click="reset">查询</el-button>
-          <el-button v-if="filters.status || filters.batchId || filters.search" text @click="clearFilters">重置</el-button>
-          <el-tooltip content="刷新列表" placement="top">
-            <el-button :icon="Refresh" circle :loading="loading" aria-label="刷新列表" @click="refresh" />
-          </el-tooltip>
+          <el-button @click="reset">查询</el-button>
+          <el-button text @click="clearFilters">重置</el-button>
+          <el-button :icon="Refresh" :loading="loading" @click="refresh">刷新</el-button>
+          <el-button type="primary" :icon="Plus" @click="openGenerate">生成兑换码</el-button>
         </div>
       </div>
 
@@ -321,103 +315,125 @@ function downloadCodes() {
       <ListError :error="error" :loading="loading" @retry="retry" />
 
       <AdminListShell
+        class="codes-list-shell"
+        viewport-height="clamp(360px, calc(100vh - 250px), 710px)"
         :has-prev="hasPrev"
         :has-next="hasNext"
         :loading="loading"
         :page="page"
         :count="items.length"
         :total="total"
-        @prev="prev"
-        @next="next"
+        :page-size="pageSize"
+        @update:page="goToPage"
+        @update:page-size="(size: number) => { pageSize = size; reset() }"
       >
         <div class="codes-table-shell">
-        <el-table v-loading="loading" :data="items" height="100%" size="small" table-layout="fixed">
-        <template #empty>
-          <el-empty description="暂无兑换码" :image-size="60">
-            <div class="empty-sub">调整筛选条件，或生成新的兑换码</div>
-          </el-empty>
-        </template>
-        <el-table-column label="兑换码" min-width="230">
-          <template #default="{ row }">
-            <span class="code-cell">
-              <span class="mono">{{ revealed[row.id] ? row.code : maskCode(row.code) }}</span>
-              <span class="code-cell__actions">
+          <el-table
+            v-loading="loading"
+            class="codes-table"
+            :data="items"
+            height="100%"
+            size="small"
+            table-layout="fixed"
+          >
+            <template #empty>
+              <el-empty description="暂无兑换码" :image-size="60">
+                <div class="empty-sub">调整筛选条件，或生成新的兑换码</div>
+              </el-empty>
+            </template>
+            <el-table-column label="兑换码" min-width="230" align="left" header-align="left">
+              <template #default="{ row }">
+                <span class="code-cell">
+                  <span class="mono cell-num">{{ revealed[row.id] ? row.code : maskCode(row.code) }}</span>
+                  <span class="code-cell__actions">
+                    <el-button
+                      text
+                      size="small"
+                      :icon="revealed[row.id] ? Hide : View"
+                      :title="revealed[row.id] ? '隐藏完整码' : '查看完整码'"
+                      @click="toggleReveal(row.id)"
+                    />
+                    <el-button
+                      text
+                      size="small"
+                      :icon="CopyDocument"
+                      title="复制完整码"
+                      @click="copyCode(row as RedemptionCode)"
+                    />
+                  </span>
+                </span>
+              </template>
+            </el-table-column>
+            <el-table-column label="面值(积分)" width="120" align="left" header-align="left">
+              <template #default="{ row }">
+                <span class="cell-num tnum">{{ formatPoints(row.grantCents) }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="兑换信息" min-width="190" align="left" header-align="left">
+              <template #default="{ row }">
+                <span v-if="row.redeemedByEmail" class="redeem-cell">
+                  <strong class="cell-text" :title="row.redeemedByEmail">{{ row.redeemedByEmail }}</strong>
+                  <small class="cell-muted tnum">{{ formatTime(row.redeemedAt) }}</small>
+                </span>
+                <span v-else class="cell-muted">尚未兑换</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="状态" width="92" align="left" header-align="left">
+              <template #default="{ row }">
+                <el-tag :type="displayStatus(row as RedemptionCode).type" size="small" effect="light">
+                  {{ displayStatus(row as RedemptionCode).label }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="有效期" width="155" align="left" header-align="left">
+              <template #default="{ row }">
+                <span class="cell-text tnum" :class="{ 'is-expired': isExpired(row as RedemptionCode) }">
+                  {{ row.expiresAt ? formatTime(row.expiresAt) : '长期有效' }}
+                </span>
+              </template>
+            </el-table-column>
+            <el-table-column label="批次" min-width="160" align="left" header-align="left" show-overflow-tooltip>
+              <template #default="{ row }">
+                <span class="mono cell-text" :title="row.batchId">{{ row.batchId }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="备注" min-width="140" align="left" header-align="left" show-overflow-tooltip>
+              <template #default="{ row }">
+                <span class="cell-muted" :title="row.note ?? ''">{{ row.note || '—' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="88" fixed="right" align="left" header-align="left">
+              <template #default="{ row }">
                 <el-button
-                  text
+                  v-if="row.status === 'active'"
                   size="small"
-                  :icon="revealed[row.id] ? Hide : View"
-                  :title="revealed[row.id] ? '隐藏完整码' : '查看完整码'"
-                  @click="toggleReveal(row.id)"
-                />
-                <el-button
-                  text
-                  size="small"
-                  :icon="CopyDocument"
-                  title="复制完整码"
-                  @click="copyCode(row as RedemptionCode)"
-                />
-              </span>
-            </span>
-          </template>
-        </el-table-column>
-        <el-table-column label="批次" min-width="185">
-          <template #default="{ row }">
-            <span class="batch-cell">
-              <strong class="mono" :title="row.batchId">{{ row.batchId }}</strong>
-              <small :title="row.note ?? ''">{{ row.note || '无备注' }}</small>
-            </span>
-          </template>
-        </el-table-column>
-        <el-table-column label="面值" width="92" align="right" class-name="col-num">
-          <template #default="{ row }"><strong class="value-cell tnum">{{ formatPoints(row.grantCents) }} 积分</strong></template>
-        </el-table-column>
-        <el-table-column label="状态" width="92">
-          <template #default="{ row }">
-            <el-tag :type="displayStatus(row as RedemptionCode).type" size="small" effect="light">
-              {{ displayStatus(row as RedemptionCode).label }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="有效期" width="155">
-          <template #default="{ row }">
-            <span class="time-cell" :class="{ 'is-expired': isExpired(row as RedemptionCode) }">
-              {{ row.expiresAt ? formatTime(row.expiresAt) : '长期有效' }}
-            </span>
-          </template>
-        </el-table-column>
-        <el-table-column label="兑换信息" min-width="190">
-          <template #default="{ row }">
-            <span v-if="row.redeemedByEmail" class="redeem-cell">
-              <strong :title="row.redeemedByEmail">{{ row.redeemedByEmail }}</strong>
-              <small>{{ formatTime(row.redeemedAt) }}</small>
-            </span>
-            <span v-else class="cell-muted">尚未兑换</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="78" fixed="right" align="right">
-          <template #default="{ row }">
-            <el-button
-              v-if="row.status === 'active'"
-              size="small"
-              type="danger"
-              plain
-              @click="disableCode(row as RedemptionCode)"
-            >
-              禁用
-            </el-button>
-          </template>
-        </el-table-column>
-        </el-table>
+                  type="danger"
+                  plain
+                  @click="disableCode(row as RedemptionCode)"
+                >
+                  禁用
+                </el-button>
+              </template>
+            </el-table-column>
+          </el-table>
         </div>
       </AdminListShell>
-    </section>
+    </PageCard>
 
-    <!-- 生成兑换码 -->
-    <el-dialog v-model="genVisible" title="生成兑换码" width="480px">
-      <el-form label-width="100px">
+    <AdminDialog
+      v-model="genVisible"
+      title="生成兑换码"
+      subtitle="按批次生成，明文码仅在下一屏展示一次"
+      :icon="Ticket"
+      width="480px"
+      confirm-text="生成"
+      :confirm-loading="genSubmitting"
+      @confirm="submitGenerate"
+    >
+      <el-form label-position="top" class="codes-dialog-form">
         <el-form-item label="数量" required>
-          <el-input-number v-model="genForm.count" :min="1" :max="1000" :step="10" style="width: 180px" />
-          <span class="text-muted" style="margin-left: 8px">单批 1 - 1000 个</span>
+          <el-input-number v-model="genForm.count" :min="1" :max="1000" :step="10" style="width: 100%" />
+          <span class="codes-dialog-hint">单批 1 - 1000 个</span>
         </el-form-item>
         <el-form-item label="面值（积分）" required>
           <el-input-number
@@ -426,9 +442,9 @@ function downloadCodes() {
             :max="100000"
             :precision="0"
             :step="100"
-            style="width: 180px"
+            style="width: 100%"
           />
-          <span class="text-muted" style="margin-left: 8px">每个兑换码入账积分</span>
+          <span class="codes-dialog-hint">每个兑换码入账积分</span>
         </el-form-item>
         <el-form-item label="有效期">
           <el-date-picker
@@ -436,23 +452,28 @@ function downloadCodes() {
             type="datetime"
             placeholder="留空 = 长期有效"
             :disabled-date="(date: Date) => date.getTime() < Date.now() - 86400000"
-            style="width: 220px"
+            style="width: 100%"
           />
         </el-form-item>
         <el-form-item label="备注">
           <el-input v-model="genForm.note" placeholder="如：618 活动兑换码" maxlength="100" show-word-limit />
         </el-form-item>
       </el-form>
-      <template #footer>
-        <el-button @click="genVisible = false">取消</el-button>
-        <el-button type="primary" :loading="genSubmitting" @click="submitGenerate">生成</el-button>
-      </template>
-    </el-dialog>
+    </AdminDialog>
 
-    <!-- 生成结果（明文码仅此一次） -->
-    <el-dialog v-model="resultVisible" title="生成成功" width="520px" :close-on-click-modal="false">
+    <AdminDialog
+      v-model="resultVisible"
+      title="生成成功"
+      subtitle="明文码仅此一次展示，关闭后无法再次查看"
+      :icon="Ticket"
+      width="520px"
+      :close-on-click-modal="false"
+      footer-hint="请立即复制或下载保存"
+      confirm-text="我已保存，关闭"
+      :show-cancel="false"
+      @confirm="resultVisible = false"
+    >
       <template v-if="genResult">
-        <p class="result-warning">明文码仅此一次展示，关闭后无法再次查看，请立即复制或下载保存。</p>
         <div class="result-meta text-muted">
           批次 <span class="mono">{{ genResult.batchId }}</span> · 共 {{ genResult.codes.length }} 个 · 面值
           {{ formatPoints(genResult.grantCents) }} 积分 / 码
@@ -465,142 +486,96 @@ function downloadCodes() {
           <el-button :icon="Download" @click="downloadCodes">下载 .txt</el-button>
         </div>
       </template>
-      <template #footer>
-        <el-button type="primary" @click="resultVisible = false">我已保存，关闭</el-button>
-      </template>
-    </el-dialog>
+    </AdminDialog>
   </div>
 </template>
 
 <style scoped>
-.codes-page {
-  display: grid;
-  min-width: 0;
-  gap: 12px;
-  padding: 24px 28px;
-}
-
-.codes-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  min-width: 0;
-}
-
-.codes-header__copy {
-  display: grid;
-  min-width: 0;
-  gap: 2px;
-}
-
-.codes-header__copy > span {
-  color: var(--accent-ink);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0;
-}
-
-.codes-header h2 {
-  margin: 0;
-  color: var(--ink);
-  font-size: 20px;
-  line-height: 1.3;
-}
-
-.codes-header p {
-  margin: 0;
-  color: var(--ink-3);
-  font-size: 12px;
-}
-
-.codes-list-panel {
-  min-width: 0;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--surface);
-  box-shadow: var(--shadow-sm);
-}
-
 .codes-toolbar {
   display: flex;
-  min-width: 0;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--border);
+  gap: 12px;
+  margin-bottom: 14px;
 }
 
 .status-tabs {
   display: inline-flex;
-  flex: 0 0 auto;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 3px;
-  padding: 3px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  gap: 6px;
+  padding: 4px;
+  border-radius: 999px;
   background: var(--surface-2);
+  border: 1px solid var(--border);
 }
 
-.status-tabs button {
-  min-width: 58px;
-  height: 30px;
-  padding: 0 10px;
+.status-tab {
+  height: 32px;
+  padding: 0 14px;
   border: 0;
-  border-radius: 6px;
-  color: var(--ink-2);
-  font: inherit;
-  font-size: 12px;
+  border-radius: 999px;
   background: transparent;
+  color: var(--ink-2);
+  font-size: 13px;
+  font-weight: 600;
   cursor: pointer;
   transition:
+    background 0.15s ease,
     color 0.15s ease,
-    background-color 0.15s ease,
     box-shadow 0.15s ease;
 }
 
-.status-tabs button:hover {
-  color: var(--ink);
-  background: var(--surface-3);
-}
-
-.status-tabs button.is-active {
-  color: var(--accent-ink);
-  font-weight: 650;
-  background: var(--surface);
+.status-tab.is-active {
+  background: var(--ink);
+  color: var(--surface);
   box-shadow: var(--shadow-sm);
 }
 
-.codes-toolbar__filters {
+html.dark .status-tab.is-active {
+  background: var(--surface-3);
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+
+.codes-toolbar__actions {
   display: flex;
-  min-width: 0;
-  flex: 1 1 540px;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: flex-end;
   gap: 8px;
 }
 
 .batch-select {
-  width: min(300px, 36vw);
+  width: min(220px, 34vw);
 }
 
-.code-search {
-  width: min(240px, 30vw);
+.codes-search {
+  width: min(240px, 36vw);
+}
+
+.codes-search :deep(.el-input__wrapper) {
+  min-height: 36px;
+  border-radius: 999px;
+  box-shadow: 0 0 0 1px var(--border) inset;
+}
+
+.batch-select :deep(.el-select__wrapper) {
+  min-height: 36px;
+  border-radius: 999px;
 }
 
 .batch-context {
-  display: grid;
-  grid-template-columns: minmax(150px, 220px) minmax(120px, 1fr) minmax(260px, auto);
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
-  padding: 8px 14px;
-  color: var(--ink-2);
-  border-bottom: 1px solid var(--border);
+  gap: 8px 14px;
+  margin: -4px 0 14px;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
+  border-radius: calc(var(--radius-card) - 6px);
   background: var(--accent-soft);
+  color: var(--ink-2);
 }
 
 .batch-context span,
@@ -613,13 +588,27 @@ function downloadCodes() {
 
 .batch-context strong {
   color: var(--ink);
-  font-size: 12px;
+  font-size: 13px;
+  font-weight: 650;
 }
 
 .batch-context small {
   color: var(--ink-2);
-  font-size: 11px;
-  text-align: right;
+  font-size: 12px;
+}
+
+.codes-list-shell {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius-card) - 4px);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.codes-list-shell :deep(.admin-list-shell__footer) {
+  min-height: 56px;
+  padding: 8px 18px;
+  background: var(--surface);
 }
 
 .codes-table-shell {
@@ -628,22 +617,49 @@ function downloadCodes() {
   overflow: hidden;
 }
 
-.codes-table-shell :deep(.el-table__header-wrapper th.el-table__cell) {
-  height: 42px;
+.codes-table :deep(.el-table__inner-wrapper::before) {
+  display: none;
+}
+
+.codes-table :deep(.el-table__header-wrapper th.el-table__cell),
+.codes-table :deep(.el-table__body td.el-table__cell),
+.codes-table :deep(.el-table .cell) {
+  text-align: left !important;
+}
+
+.codes-table :deep(.el-table .cell) {
+  display: block;
+  justify-content: flex-start;
+  padding-left: 12px;
+  padding-right: 12px;
+}
+
+.codes-table :deep(.el-table__header-wrapper th.el-table__cell) {
+  height: 48px;
+  padding: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
   color: var(--ink-3);
-  font-size: 11px;
-  font-weight: 650;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.codes-table :deep(.el-table__body .el-table__cell) {
+  padding: 10px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+}
+
+.codes-table :deep(.el-table__row td.el-table__cell) {
+  height: 56px;
+}
+
+.codes-table :deep(.el-table__row:hover > td.el-table__cell) {
   background: var(--surface-2);
 }
 
-.codes-table-shell :deep(.el-table__row td.el-table__cell) {
-  height: 52px;
-  padding-top: 6px;
-  padding-bottom: 6px;
-}
-
-.codes-table-shell :deep(.el-table__row:hover > td.el-table__cell) {
-  background: var(--surface-2);
+.codes-table :deep(.el-table__body tr.el-table__row:last-child td.el-table__cell) {
+  border-bottom-color: transparent;
 }
 
 .code-cell {
@@ -657,7 +673,6 @@ function downloadCodes() {
 
 .code-cell > .mono {
   overflow: hidden;
-  color: var(--ink);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -677,15 +692,12 @@ function downloadCodes() {
   margin-left: 0;
 }
 
-.batch-cell,
 .redeem-cell {
   display: grid;
   min-width: 0;
   gap: 2px;
 }
 
-.batch-cell strong,
-.batch-cell small,
 .redeem-cell strong,
 .redeem-cell small {
   overflow: hidden;
@@ -693,41 +705,45 @@ function downloadCodes() {
   white-space: nowrap;
 }
 
-.batch-cell strong,
-.redeem-cell strong {
+.cell-text,
+.cell-num,
+.cell-muted {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cell-text {
   color: var(--ink-2);
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.batch-cell small,
-.redeem-cell small {
-  color: var(--ink-3);
-  font-size: 10px;
-}
-
-.value-cell {
-  color: var(--ink);
   font-size: 12px;
+}
+
+.cell-text.is-expired {
+  color: var(--warning);
+  font-weight: 650;
+}
+
+.cell-num {
+  color: var(--ink);
+  font-size: 13px;
   font-weight: 700;
 }
 
-.time-cell,
 .cell-muted {
   color: var(--ink-3);
-  font-size: 11px;
-}
-
-.time-cell.is-expired {
-  color: var(--warning);
-}
-
-/* ---- 生成结果 ---- */
-.result-warning {
-  margin: 0 0 8px;
-  color: var(--danger);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
+}
+
+.codes-dialog-form :deep(.el-form-item) {
+  margin-bottom: 14px;
+}
+
+.codes-dialog-hint {
+  display: block;
+  margin-top: 4px;
+  color: var(--ink-3);
+  font-size: 11px;
 }
 
 .result-meta {
@@ -753,52 +769,21 @@ function downloadCodes() {
   margin-top: 12px;
 }
 
-@media (max-width: 1180px) {
+@media (max-width: 900px) {
   .codes-toolbar {
     align-items: stretch;
+    flex-direction: column;
   }
 
-  .codes-toolbar__filters {
-    flex-basis: 100%;
-    justify-content: flex-start;
-  }
-
-  .batch-select,
-  .code-search {
-    width: min(280px, 38vw);
-  }
-}
-
-@media (max-width: 720px) {
-  .codes-page {
-    padding: 12px;
-  }
-
-  .codes-header {
-    align-items: flex-end;
-  }
-
-  .status-tabs {
+  .codes-toolbar__actions {
     width: 100%;
   }
 
-  .status-tabs button {
+  .batch-select,
+  .codes-search {
+    flex: 1;
+    width: auto;
     min-width: 0;
-    flex: 1 1 0;
-  }
-
-  .batch-select,
-  .code-search {
-    width: 100%;
-  }
-
-  .batch-context {
-    grid-template-columns: 1fr;
-    gap: 3px;
-  }
-
-  .batch-context small {
-    text-align: left;
   }
 }
 </style>

@@ -17,8 +17,9 @@ func InsertWallet(ctx context.Context, q Q, userID uuid.UUID) error {
 func GetWallet(ctx context.Context, q Q, userID uuid.UUID) (*Wallet, error) {
 	var w Wallet
 	err := q.QueryRow(ctx,
-		`SELECT user_id, balance_cents, frozen_cents, updated_at FROM wallets WHERE user_id = $1`, userID).
-		Scan(&w.UserID, &w.BalanceCents, &w.FrozenCents, &w.UpdatedAt)
+		`SELECT user_id, balance_cents, frozen_cents, trial_balance_cents, trial_frozen_cents, trial_feature_key, updated_at
+		 FROM wallets WHERE user_id = $1`, userID).
+		Scan(&w.UserID, &w.BalanceCents, &w.FrozenCents, &w.TrialBalanceCents, &w.TrialFrozenCents, &w.TrialFeatureKey, &w.UpdatedAt)
 	return nilOnNoRows(&w, err)
 }
 
@@ -28,14 +29,15 @@ func GetWalletsByUserIDs(ctx context.Context, q Q, ids []uuid.UUID) (map[uuid.UU
 		return out, nil
 	}
 	rows, err := q.Query(ctx,
-		`SELECT user_id, balance_cents, frozen_cents, updated_at FROM wallets WHERE user_id = ANY($1)`, ids)
+		`SELECT user_id, balance_cents, frozen_cents, trial_balance_cents, trial_frozen_cents, trial_feature_key, updated_at
+			 FROM wallets WHERE user_id = ANY($1)`, ids)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var w Wallet
-		if err := rows.Scan(&w.UserID, &w.BalanceCents, &w.FrozenCents, &w.UpdatedAt); err != nil {
+		if err := rows.Scan(&w.UserID, &w.BalanceCents, &w.FrozenCents, &w.TrialBalanceCents, &w.TrialFrozenCents, &w.TrialFeatureKey, &w.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out[w.UserID] = &w
@@ -44,16 +46,23 @@ func GetWalletsByUserIDs(ctx context.Context, q Q, ids []uuid.UUID) (map[uuid.UU
 }
 
 func SumWalletBalance(ctx context.Context, q Q) (int64, error) {
-	var n int64
-	err := q.QueryRow(ctx, `SELECT COALESCE(SUM(balance_cents), 0) FROM wallets`).Scan(&n)
-	return n, err
+	remaining, _, err := SumWalletBalances(ctx, q)
+	return remaining, err
 }
 
-const ledgerCols = `id, user_id, kind, delta_cents, balance_after_cents, source_type, source_id, reason, created_at`
+func SumWalletBalances(ctx context.Context, q Q) (remaining, frozen int64, err error) {
+	err = q.QueryRow(ctx, `
+		SELECT COALESCE(SUM(balance_cents + trial_balance_cents), 0),
+		       COALESCE(SUM(frozen_cents + trial_frozen_cents), 0)
+		FROM wallets`).Scan(&remaining, &frozen)
+	return remaining, frozen, err
+}
+
+const ledgerCols = `id, user_id, kind, delta_cents, balance_after_cents, source_type, source_id, reason, credit_bucket, created_at`
 
 func scanLedger(row pgx.Row) (*LedgerEntry, error) {
 	var e LedgerEntry
-	err := row.Scan(&e.ID, &e.UserID, &e.Kind, &e.DeltaCents, &e.BalanceAfterCents, &e.SourceType, &e.SourceID, &e.Reason, &e.CreatedAt)
+	err := row.Scan(&e.ID, &e.UserID, &e.Kind, &e.DeltaCents, &e.BalanceAfterCents, &e.SourceType, &e.SourceID, &e.Reason, &e.CreditBucket, &e.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -67,14 +76,71 @@ func GetLedgerEntry(ctx context.Context, q Q, kind, sourceType, sourceID string)
 	return nilOnNoRows(e, err)
 }
 
-func InsertLedgerEntry(ctx context.Context, q Q, userID uuid.UUID, kind string, deltaCents, balanceAfterCents int64, sourceType string, sourceID, reason *string) (*LedgerEntry, error) {
+func InsertLedgerEntry(ctx context.Context, q Q, userID uuid.UUID, kind string, deltaCents, balanceAfterCents int64, sourceType string, sourceID, reason *string, creditBucket string) (*LedgerEntry, error) {
 	return scanLedger(q.QueryRow(ctx,
-		`INSERT INTO wallet_ledger (user_id, kind, delta_cents, balance_after_cents, source_type, source_id, reason)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING `+ledgerCols,
-		userID, kind, deltaCents, balanceAfterCents, sourceType, sourceID, reason))
+		`INSERT INTO wallet_ledger (user_id, kind, delta_cents, balance_after_cents, source_type, source_id, reason, credit_bucket)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING `+ledgerCols,
+		userID, kind, deltaCents, balanceAfterCents, sourceType, sourceID, reason, creditBucket))
+}
+
+// #nosec G101 -- this constant contains SQL column names, not credentials.
+const taskCreditReservationCols = `task_id, generation, normal_cents, trial_cents,
+	normal_remaining_cents, trial_remaining_cents, trial_feature_key, created_at, updated_at`
+
+func scanTaskCreditReservation(row pgx.Row) (*TaskCreditReservation, error) {
+	var reservation TaskCreditReservation
+	err := row.Scan(
+		&reservation.TaskID, &reservation.Generation,
+		&reservation.NormalCents, &reservation.TrialCents,
+		&reservation.NormalRemainingCents, &reservation.TrialRemainingCents,
+		&reservation.TrialFeatureKey,
+		&reservation.CreatedAt, &reservation.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &reservation, nil
+}
+
+func InsertTaskCreditReservation(ctx context.Context, q Q, taskID uuid.UUID, generation int, normalCents, trialCents int64, trialFeatureKey string) (*TaskCreditReservation, error) {
+	return scanTaskCreditReservation(q.QueryRow(ctx,
+		`INSERT INTO task_credit_reservations (
+			task_id, generation, normal_cents, trial_cents,
+			normal_remaining_cents, trial_remaining_cents, trial_feature_key
+		 ) VALUES ($1, $2, $3, $4, $3, $4, NULLIF($5, '')) RETURNING `+taskCreditReservationCols,
+		taskID, generation, normalCents, trialCents, trialFeatureKey))
+}
+
+func GetTaskCreditReservationForUpdate(ctx context.Context, q Q, taskID uuid.UUID, generation int) (*TaskCreditReservation, error) {
+	item, err := scanTaskCreditReservation(q.QueryRow(ctx,
+		`SELECT `+taskCreditReservationCols+`
+		 FROM task_credit_reservations
+		 WHERE task_id = $1 AND generation = $2
+		 FOR UPDATE`, taskID, generation))
+	return nilOnNoRows(item, err)
+}
+
+func GetActiveTaskCreditReservationForUpdate(ctx context.Context, q Q, taskID uuid.UUID) (*TaskCreditReservation, error) {
+	item, err := scanTaskCreditReservation(q.QueryRow(ctx,
+		`SELECT `+taskCreditReservationCols+`
+		 FROM task_credit_reservations
+		 WHERE task_id = $1 AND normal_remaining_cents + trial_remaining_cents > 0
+		 ORDER BY generation DESC LIMIT 1
+		 FOR UPDATE`, taskID))
+	return nilOnNoRows(item, err)
+}
+
+func UpdateTaskCreditReservationRemaining(ctx context.Context, q Q, taskID uuid.UUID, generation int, normalRemainingCents, trialRemainingCents int64, at time.Time) error {
+	_, err := q.Exec(ctx,
+		`UPDATE task_credit_reservations
+		 SET normal_remaining_cents = $3, trial_remaining_cents = $4, updated_at = $5
+		 WHERE task_id = $1 AND generation = $2`,
+		taskID, generation, normalRemainingCents, trialRemainingCents, at)
+	return err
 }
 
 // CountTaskLedger 统计任务同 kind 账本条数（source_id = task_id 或 task_id/n）。
+// 前缀匹配依赖 ix_wallet_ledger_task_source(text_pattern_ops) 走索引扫描。
 func CountTaskLedger(ctx context.Context, q Q, taskID uuid.UUID, kind string) (int, error) {
 	var n int
 	err := q.QueryRow(ctx,
@@ -82,6 +148,59 @@ func CountTaskLedger(ctx context.Context, q Q, taskID uuid.UUID, kind string) (i
 		 WHERE kind = $1 AND source_type = 'task' AND (source_id = $2 OR source_id LIKE $3)`,
 		kind, taskID.String(), taskID.String()+"/%").Scan(&n)
 	return n, err
+}
+
+// CountTaskCreditReservations 返回任务的冻结代数（等于 freeze 账本条数）。
+// 每次 FreezeForTask 恰好插入一条 reservation，所以其行数即代数；走
+// task_credit_reservations 主键前缀，避免 wallet_ledger 上的前缀扫描。
+func CountTaskCreditReservations(ctx context.Context, q Q, taskID uuid.UUID) (int, error) {
+	var n int
+	err := q.QueryRow(ctx,
+		`SELECT count(*) FROM task_credit_reservations WHERE task_id = $1`, taskID).Scan(&n)
+	return n, err
+}
+
+// #nosec G101 -- this constant contains SQL column names, not credentials.
+const creditReservationCols = `source_type, source_id, normal_cents, trial_cents,
+	normal_remaining_cents, trial_remaining_cents, trial_feature_key, created_at, updated_at`
+
+func scanCreditReservation(row pgx.Row) (*CreditReservation, error) {
+	var reservation CreditReservation
+	err := row.Scan(
+		&reservation.SourceType, &reservation.SourceID,
+		&reservation.NormalCents, &reservation.TrialCents,
+		&reservation.NormalRemainingCents, &reservation.TrialRemainingCents,
+		&reservation.TrialFeatureKey, &reservation.CreatedAt, &reservation.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &reservation, nil
+}
+
+func InsertCreditReservation(ctx context.Context, q Q, sourceType, sourceID string, normalCents, trialCents int64, trialFeatureKey string) (*CreditReservation, error) {
+	return scanCreditReservation(q.QueryRow(ctx,
+		`INSERT INTO credit_reservations (
+			source_type, source_id, normal_cents, trial_cents,
+			normal_remaining_cents, trial_remaining_cents, trial_feature_key
+		 ) VALUES ($1, $2, $3, $4, $3, $4, NULLIF($5, '')) RETURNING `+creditReservationCols,
+		sourceType, sourceID, normalCents, trialCents, trialFeatureKey))
+}
+
+func GetCreditReservationForUpdate(ctx context.Context, q Q, sourceType, sourceID string) (*CreditReservation, error) {
+	item, err := scanCreditReservation(q.QueryRow(ctx,
+		`SELECT `+creditReservationCols+` FROM credit_reservations
+		 WHERE source_type = $1 AND source_id = $2 FOR UPDATE`, sourceType, sourceID))
+	return nilOnNoRows(item, err)
+}
+
+func UpdateCreditReservationRemaining(ctx context.Context, q Q, sourceType, sourceID string, normalRemainingCents, trialRemainingCents int64, at time.Time) error {
+	_, err := q.Exec(ctx,
+		`UPDATE credit_reservations
+		 SET normal_remaining_cents = $3, trial_remaining_cents = $4, updated_at = $5
+		 WHERE source_type = $1 AND source_id = $2`,
+		sourceType, sourceID, normalRemainingCents, trialRemainingCents, at)
+	return err
 }
 
 // ListLedger 用户账本分页（limit+1 行）。
@@ -127,15 +246,52 @@ func ListLedgerFiltered(ctx context.Context, q Q, userID *uuid.UUID, kind, sourc
 	return out, rows.Err()
 }
 
+func CountUserLedger(ctx context.Context, q Q, userID uuid.UUID) (int64, error) {
+	var n int64
+	err := q.QueryRow(ctx, `SELECT count(*) FROM wallet_ledger WHERE user_id = $1`, userID).Scan(&n)
+	return n, err
+}
+
+func ListLedgerPage(ctx context.Context, q Q, userID uuid.UUID, limit, offset int) ([]*LedgerEntry, error) {
+	if limit < 1 {
+		limit = 20
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err := q.Query(ctx,
+		`SELECT `+ledgerCols+` FROM wallet_ledger
+		 WHERE user_id = $1
+		 ORDER BY created_at DESC, id DESC
+		 LIMIT $2 OFFSET $3`, userID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*LedgerEntry
+	for rows.Next() {
+		e, err := scanLedger(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // SpendDailySince 每日任务结算消耗（UTC 日期 → 分）。
-// spend 账本 delta 为 0（结算只消耗冻结额），金额取关联任务的 cost_cents；
-// 任务被删除时退化为 ABS(delta_cents)。
+// spend 账本 delta 为 0（结算只消耗冻结额），金额取关联图片任务或助手运行的
+// cost_cents；记录被删除时退化为 ABS(delta_cents)。
 func SpendDailySince(ctx context.Context, q Q, since time.Time) (map[string]int64, error) {
 	rows, err := q.Query(ctx,
 		`SELECT (l.created_at AT TIME ZONE 'UTC')::date::text AS day,
-		        COALESCE(SUM(GREATEST(ABS(l.delta_cents), COALESCE(t.cost_cents, 0))), 0)
+		        COALESCE(SUM(GREATEST(
+		            ABS(l.delta_cents), COALESCE(t.cost_cents, 0), COALESCE(a.cost_cents, 0)
+		        )), 0)
 		 FROM wallet_ledger l
 		 LEFT JOIN tasks t ON l.source_type = 'task' AND t.id::text = l.source_id
+		 LEFT JOIN assistant_runs a ON l.source_type = 'assistant_run'
+		      AND a.id::text = split_part(l.source_id, '/', 1)
 		 WHERE l.kind = 'spend' AND l.created_at >= $1
 		 GROUP BY day`, since)
 	if err != nil {
@@ -152,6 +308,179 @@ func FinanceTotalsSince(ctx context.Context, q Q, since time.Time) (grantCents, 
 		        COALESCE(SUM(delta_cents) FILTER (WHERE kind = 'release'), 0)
 		 FROM wallet_ledger WHERE created_at >= $1`, since).Scan(&grantCents, &refundCents)
 	return grantCents, refundCents, err
+}
+
+const walletLedgerExportBatch = 200
+const walletLedgerExportMax = 8000
+
+type WalletSourceTotal struct {
+	SourceType string
+	Cents      int64
+	Count      int64
+}
+
+type WalletLedgerStats struct {
+	ConsumedCents int64
+	ConsumedCount int64
+	RefundCents   int64
+	RefundCount   int64
+	IncomeCents   int64
+	IncomeCount   int64
+	EntryCount    int64
+	Income        []WalletSourceTotal
+}
+
+type PlatformCreditTotals struct {
+	IncomeCents    int64 `json:"incomeCents"`
+	ConsumedCents  int64 `json:"consumedCents"`
+	RefundCents    int64 `json:"refundCents"`
+	RemainingCents int64 `json:"remainingCents"`
+	FrozenCents    int64 `json:"frozenCents"`
+}
+
+// UserWalletLedgerStats 按来源汇总当前用户的入账、结算消耗与失败退回。
+func UserWalletLedgerStats(ctx context.Context, q Q, userID uuid.UUID) (*WalletLedgerStats, error) {
+	return queryWalletLedgerStats(ctx, q, &userID)
+}
+
+// GetPlatformCreditTotals 全站累计入账、已结算消耗和当前剩余/冻结积分。
+func GetPlatformCreditTotals(ctx context.Context, q Q) (*PlatformCreditTotals, error) {
+	remaining, frozen, err := SumWalletBalances(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	stats, err := queryWalletLedgerStats(ctx, q, nil)
+	if err != nil {
+		return nil, err
+	}
+	return &PlatformCreditTotals{
+		IncomeCents:    stats.IncomeCents,
+		ConsumedCents:  stats.ConsumedCents,
+		RefundCents:    stats.RefundCents,
+		RemainingCents: remaining,
+		FrozenCents:    frozen,
+	}, nil
+}
+
+func queryWalletLedgerStats(ctx context.Context, q Q, userID *uuid.UUID) (*WalletLedgerStats, error) {
+	stats := &WalletLedgerStats{Income: []WalletSourceTotal{}}
+	where, args := ledgerUserFilter("", userID)
+	err := q.QueryRow(ctx,
+		`SELECT
+			COUNT(*),
+			COUNT(*) FILTER (
+				WHERE kind = 'spend' OR (kind = 'admin_adjust' AND delta_cents < 0)
+			),
+			COALESCE(SUM(
+				CASE
+					WHEN kind = 'spend' AND ABS(delta_cents) > 0 THEN ABS(delta_cents)
+					WHEN kind = 'spend' THEN COALESCE(
+						NULLIF((regexp_match(COALESCE(reason, ''), '消耗冻结 ([0-9]+)'))[1], '')::bigint,
+						0
+					)
+					WHEN kind = 'admin_adjust' AND delta_cents < 0 THEN ABS(delta_cents)
+					ELSE 0
+				END
+			), 0),
+			COUNT(*) FILTER (WHERE kind = 'release'),
+			COALESCE(SUM(delta_cents) FILTER (WHERE kind = 'release'), 0),
+			COUNT(*) FILTER (
+				WHERE kind = 'grant' OR kind = 'refund' OR (kind = 'admin_adjust' AND delta_cents > 0)
+			),
+			COALESCE(SUM(delta_cents) FILTER (
+				WHERE kind = 'grant' OR kind = 'refund' OR (kind = 'admin_adjust' AND delta_cents > 0)
+			), 0)
+		 FROM wallet_ledger WHERE `+where, args...).Scan(
+		&stats.EntryCount,
+		&stats.ConsumedCount,
+		&stats.ConsumedCents,
+		&stats.RefundCount,
+		&stats.RefundCents,
+		&stats.IncomeCount,
+		&stats.IncomeCents,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	incomeWhere, incomeArgs := ledgerUserFilter("", userID)
+	rows, err := q.Query(ctx,
+		`SELECT source_type, COUNT(*), COALESCE(SUM(delta_cents), 0)
+		 FROM wallet_ledger
+		 WHERE `+incomeWhere+`
+		   AND (kind = 'grant' OR kind = 'refund' OR (kind = 'admin_adjust' AND delta_cents > 0))
+		 GROUP BY source_type
+		 ORDER BY SUM(delta_cents) DESC`, incomeArgs...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item WalletSourceTotal
+		if err := rows.Scan(&item.SourceType, &item.Count, &item.Cents); err != nil {
+			return nil, err
+		}
+		stats.Income = append(stats.Income, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// spend 账本 delta 常为 0，补上关联任务 / 助手运行的实扣。
+	spendWhere, spendArgs := ledgerUserFilter("l", userID)
+	var joinedSpend int64
+	err = q.QueryRow(ctx,
+		`SELECT COALESCE(SUM(GREATEST(COALESCE(t.cost_cents, 0), COALESCE(a.cost_cents, 0))), 0)
+		 FROM wallet_ledger l
+		 LEFT JOIN tasks t ON l.source_type = 'task' AND t.id::text = l.source_id
+		 LEFT JOIN assistant_runs a ON l.source_type = 'assistant_run'
+		      AND a.id::text = split_part(COALESCE(l.source_id, ''), '/', 1)
+		 WHERE `+spendWhere+` AND l.kind = 'spend' AND l.delta_cents = 0
+		   AND COALESCE((regexp_match(COALESCE(l.reason, ''), '消耗冻结 ([0-9]+)'))[1], '') = ''`,
+		spendArgs...).Scan(&joinedSpend)
+	if err != nil {
+		return nil, err
+	}
+	stats.ConsumedCents += joinedSpend
+	return stats, nil
+}
+
+func ledgerUserFilter(alias string, userID *uuid.UUID) (string, []any) {
+	if userID == nil {
+		return "true", nil
+	}
+	column := "user_id"
+	if alias != "" {
+		column = alias + ".user_id"
+	}
+	return column + " = $1", []any{*userID}
+}
+
+// ListAllUserLedger 导出用：按时间倒序拉齐当前用户账本，最多 walletLedgerExportMax 条。
+func ListAllUserLedger(ctx context.Context, q Q, userID uuid.UUID) ([]*LedgerEntry, error) {
+	out := make([]*LedgerEntry, 0, 64)
+	var cursor *Cursor
+	for len(out) < walletLedgerExportMax {
+		limit := walletLedgerExportBatch
+		if remain := walletLedgerExportMax - len(out); remain < limit {
+			limit = remain
+		}
+		batch, err := ListLedger(ctx, q, userID, limit, cursor)
+		if err != nil {
+			return nil, err
+		}
+		hasMore := len(batch) > limit
+		if hasMore {
+			batch = batch[:limit]
+		}
+		out = append(out, batch...)
+		if !hasMore || len(batch) == 0 {
+			break
+		}
+		createdAt, id := batch[len(batch)-1].CursorKey()
+		cursor = &Cursor{CreatedAt: createdAt, ID: id}
+	}
+	return out, nil
 }
 
 func scanDailyCents(rows pgx.Rows) (map[string]int64, error) {

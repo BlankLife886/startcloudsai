@@ -13,29 +13,142 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
-const maxImageResponseBytes = 32 << 20
+const (
+	maxImageResponseBytes     = 32 << 20
+	maxWebSearchResponseBytes = 2 << 20
+	maxWebSearchTextBytes     = 48 << 10
+	maxWebSearchSources       = 12
+	chatStreamAttempts        = 2
+	chatStreamRetryDelay      = 200 * time.Millisecond
+)
 
 type Client struct {
-	baseURL      string
-	apiKey       string
-	apiKeyHeader string
-	chatModel    string
-	imageModel   string
-	httpClient   *http.Client
+	baseURL           string
+	apiKey            string
+	apiKeyHeader      string
+	chatModel         string
+	reasoningEffort   string
+	imageModel        string
+	httpClient        *http.Client
+	webSearchHTTP     *http.Client
+	webSearchModel    string
+	streamIdleTimeout time.Duration
+	maxOutputTokens   int
 }
 
 type Message struct {
-	Role            string   `json:"role"`
-	Content         string   `json:"content"`
-	ReferenceImages []string `json:"referenceImages,omitempty"`
+	Role            string     `json:"role"`
+	Content         string     `json:"content"`
+	ReferenceImages []string   `json:"referenceImages,omitempty"`
+	Name            string     `json:"name,omitempty"`
+	ToolCallID      string     `json:"toolCallId,omitempty"`
+	ToolCalls       []ToolCall `json:"toolCalls,omitempty"`
+}
+
+type FunctionTool struct {
+	Name        string
+	Description string
+	Parameters  map[string]any
+	Strict      bool
+}
+
+const RequiredToolChoice = "required"
+
+type ToolCall struct {
+	ID        string
+	Name      string
+	Arguments string
+}
+
+type ChatUsage struct {
+	PromptTokens     int64
+	CompletionTokens int64
+	TotalTokens      int64
+	ReasoningTokens  int64
+	FirstTokenMs     int64
+	DurationMs       int64
+}
+
+func (u ChatUsage) Add(other ChatUsage) ChatUsage {
+	out := ChatUsage{
+		PromptTokens:     u.PromptTokens + other.PromptTokens,
+		CompletionTokens: u.CompletionTokens + other.CompletionTokens,
+		TotalTokens:      u.TotalTokens + other.TotalTokens,
+		ReasoningTokens:  u.ReasoningTokens + other.ReasoningTokens,
+		DurationMs:       u.DurationMs + other.DurationMs,
+	}
+	if u.FirstTokenMs > 0 {
+		out.FirstTokenMs = u.FirstTokenMs
+	} else {
+		out.FirstTokenMs = other.FirstTokenMs
+	}
+	return out
+}
+
+func (u ChatUsage) Map() map[string]any {
+	out := make(map[string]any, 6)
+	if u.PromptTokens > 0 {
+		out["inputTokens"] = u.PromptTokens
+	}
+	if u.CompletionTokens > 0 {
+		out["outputTokens"] = u.CompletionTokens
+	}
+	if u.TotalTokens > 0 {
+		out["totalTokens"] = u.TotalTokens
+	}
+	if u.ReasoningTokens > 0 {
+		out["reasoningTokens"] = u.ReasoningTokens
+	}
+	if u.FirstTokenMs > 0 {
+		out["firstTokenMs"] = u.FirstTokenMs
+	}
+	if u.DurationMs > 0 {
+		out["durationMs"] = u.DurationMs
+	}
+	return out
+}
+
+type ChatCompletion struct {
+	Text      string
+	Reasoning string
+	Usage     ChatUsage
+}
+
+type AgentChatResult struct {
+	Text            string
+	Reasoning       string
+	ReasoningTokens int64
+	ToolCall        *ToolCall
+	Usage           ChatUsage
+}
+
+type WebSearchOptions struct {
+	RecencyDays    int
+	AllowedDomains []string
+}
+
+type WebSearchSource struct {
+	Title string `json:"title"`
+	URL   string `json:"url"`
+}
+
+type WebSearchResult struct {
+	Text    string            `json:"text"`
+	Query   string            `json:"query"`
+	Sources []WebSearchSource `json:"sources"`
 }
 
 type Image struct {
 	DataURL       string `json:"dataUrl"`
 	RevisedPrompt string `json:"revisedPrompt,omitempty"`
+}
+
+type ImageOptions struct {
+	InputFidelity string
 }
 
 type UpstreamError struct {
@@ -44,6 +157,14 @@ type UpstreamError struct {
 }
 
 func (e *UpstreamError) Error() string { return e.Message }
+
+var (
+	errChatStreamIncomplete = errors.New("chat stream ended before a completion marker")
+	errChatStreamTruncated  = errors.New("chat stream reached the model output limit")
+	errChatStreamFiltered   = errors.New("chat stream was blocked by content filtering")
+	errChatStreamEmpty      = errors.New("chat stream completed without output")
+	errChatStreamIdle       = errors.New("chat stream timed out while waiting for data")
+)
 
 func New(baseURL, apiKey, chatModel, imageModel string, timeoutSecs int) (*Client, error) {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
@@ -61,12 +182,21 @@ func New(baseURL, apiKey, chatModel, imageModel string, timeoutSecs int) (*Clien
 	if timeoutSecs < 30 {
 		timeoutSecs = 300
 	}
+	timeout := time.Duration(timeoutSecs) * time.Second
+	idleTimeout := min(timeout, 90*time.Second)
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = min(timeout, 30*time.Second)
+	webSearchTransport := transport.Clone()
+	webSearchTransport.ResponseHeaderTimeout = min(timeout, 75*time.Second)
 	return &Client{
-		baseURL:    baseURL,
-		apiKey:     strings.TrimSpace(apiKey),
-		chatModel:  fallback(strings.TrimSpace(chatModel), "gpt-5.4"),
-		imageModel: fallback(strings.TrimSpace(imageModel), "gpt-image-2"),
-		httpClient: &http.Client{Timeout: time.Duration(timeoutSecs) * time.Second},
+		baseURL:           baseURL,
+		apiKey:            strings.TrimSpace(apiKey),
+		chatModel:         fallback(strings.TrimSpace(chatModel), "gpt-5.4"),
+		imageModel:        fallback(strings.TrimSpace(imageModel), "gpt-image-2"),
+		httpClient:        &http.Client{Timeout: timeout, Transport: transport},
+		webSearchHTTP:     &http.Client{Timeout: min(timeout, 90*time.Second), Transport: webSearchTransport},
+		webSearchModel:    "gpt-5-search-api",
+		streamIdleTimeout: idleTimeout,
 	}, nil
 }
 
@@ -89,6 +219,37 @@ func (c *Client) WithChatModel(model string) *Client {
 	}
 	clone := *c
 	clone.chatModel = strings.TrimSpace(model)
+	return &clone
+}
+
+// WithWebSearchModel selects the dedicated Chat Completions search fallback.
+// An empty model disables that fallback while keeping Responses web_search.
+func (c *Client) WithWebSearchModel(model string) *Client {
+	if c == nil {
+		return c
+	}
+	clone := *c
+	clone.webSearchModel = strings.TrimSpace(model)
+	return &clone
+}
+
+// WithReasoningEffort returns a request-scoped client that forwards the
+// OpenAI-compatible reasoning_effort parameter on chat requests.
+func (c *Client) WithReasoningEffort(effort string) *Client {
+	if c == nil {
+		return c
+	}
+	clone := *c
+	clone.reasoningEffort = strings.ToLower(strings.TrimSpace(effort))
+	return &clone
+}
+
+func (c *Client) WithMaxOutputTokens(tokens int) *Client {
+	if c == nil || tokens <= 0 {
+		return c
+	}
+	clone := *c
+	clone.maxOutputTokens = tokens
 	return &clone
 }
 
@@ -161,6 +322,297 @@ func (c *Client) ListModels(ctx context.Context) ([]string, error) {
 	return models, nil
 }
 
+// WebSearch performs a real hosted web search through the configured model
+// provider. Responses API is preferred because it lets the model use the
+// built-in web_search tool and returns structured URL citations. Older
+// OpenAI-compatible gateways fall back to the dedicated search chat model.
+func (c *Client) WebSearch(ctx context.Context, query string, options WebSearchOptions) (WebSearchResult, error) {
+	if !c.Configured() {
+		return WebSearchResult{}, errors.New("Sub2API API key is not configured")
+	}
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return WebSearchResult{}, errors.New("web search query is empty")
+	}
+	if len([]rune(query)) > 2000 {
+		return WebSearchResult{}, errors.New("web search query exceeds 2000 characters")
+	}
+	options.RecencyDays = min(max(options.RecencyDays, 0), 3650)
+	options.AllowedDomains = normalizeWebSearchDomains(options.AllowedDomains)
+
+	result, responsesErr := c.webSearchResponses(ctx, query, options)
+	if responsesErr == nil {
+		return result, nil
+	}
+	if !webSearchFallbackAllowed(ctx, responsesErr) {
+		return WebSearchResult{}, responsesErr
+	}
+	if c.webSearchModel == "" {
+		return WebSearchResult{}, responsesErr
+	}
+	result, fallbackErr := c.webSearchChatCompletions(ctx, query, options)
+	if fallbackErr == nil {
+		return result, nil
+	}
+	message := fmt.Sprintf("Responses API 联网搜索失败：%v；Chat Completions 搜索回退失败：%v", responsesErr, fallbackErr)
+	var upstream *UpstreamError
+	if errors.As(fallbackErr, &upstream) {
+		return WebSearchResult{}, &UpstreamError{Status: upstream.Status, Message: message}
+	}
+	return WebSearchResult{}, fmt.Errorf("%s", message)
+}
+
+func (c *Client) webSearchResponses(ctx context.Context, query string, options WebSearchOptions) (WebSearchResult, error) {
+	tool := map[string]any{"type": "web_search"}
+	if len(options.AllowedDomains) > 0 {
+		tool["filters"] = map[string]any{"allowed_domains": options.AllowedDomains}
+	}
+	payload := map[string]any{
+		"model":       c.chatModel,
+		"input":       webSearchPrompt(query, options),
+		"tools":       []any{tool},
+		"tool_choice": "required",
+	}
+	if c.maxOutputTokens > 0 {
+		payload["max_output_tokens"] = c.maxOutputTokens
+	}
+	req, err := c.newJSONRequest(ctx, "/v1/responses", payload)
+	if err != nil {
+		return WebSearchResult{}, err
+	}
+	resp, err := c.webSearchClient().Do(req)
+	if err != nil {
+		return WebSearchResult{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return WebSearchResult{}, decodeUpstreamError(resp)
+	}
+	raw, err := readLimitedBody(resp.Body, maxWebSearchResponseBytes)
+	if err != nil {
+		return WebSearchResult{}, fmt.Errorf("读取 Responses 联网搜索结果：%w", err)
+	}
+	return parseResponsesWebSearch(raw, query)
+}
+
+func (c *Client) webSearchChatCompletions(ctx context.Context, query string, options WebSearchOptions) (WebSearchResult, error) {
+	payload := map[string]any{
+		"model": c.webSearchModel,
+		"messages": []any{
+			map[string]any{"role": "system", "content": "必须先联网检索再回答。只使用检索到的事实，并保留引用来源。"},
+			map[string]any{"role": "user", "content": webSearchPrompt(query, options)},
+		},
+		"stream": false,
+	}
+	if c.maxOutputTokens > 0 {
+		payload["max_completion_tokens"] = c.maxOutputTokens
+	}
+	req, err := c.newJSONRequest(ctx, "/v1/chat/completions", payload)
+	if err != nil {
+		return WebSearchResult{}, err
+	}
+	resp, err := c.webSearchClient().Do(req)
+	if err != nil {
+		return WebSearchResult{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return WebSearchResult{}, decodeUpstreamError(resp)
+	}
+	raw, err := readLimitedBody(resp.Body, maxWebSearchResponseBytes)
+	if err != nil {
+		return WebSearchResult{}, fmt.Errorf("读取 Chat Completions 联网搜索结果：%w", err)
+	}
+	return parseChatWebSearch(raw, query)
+}
+
+func (c *Client) webSearchClient() *http.Client {
+	if c != nil && c.webSearchHTTP != nil {
+		return c.webSearchHTTP
+	}
+	return c.httpClient
+}
+
+func webSearchPrompt(query string, options WebSearchOptions) string {
+	parts := []string{"联网检索并回答以下问题：" + strings.TrimSpace(query)}
+	if options.RecencyDays > 0 {
+		parts = append(parts, fmt.Sprintf("优先使用最近 %d 天发布或更新的资料；如果没有足够的新资料，请明确说明。", options.RecencyDays))
+	}
+	if len(options.AllowedDomains) > 0 {
+		parts = append(parts, "仅使用这些域名的来源："+strings.Join(options.AllowedDomains, ", "))
+	}
+	parts = append(parts, "回答必须基于实际搜索结果，不得凭记忆补写；保留可核验的来源链接。")
+	return strings.Join(parts, "\n")
+}
+
+func normalizeWebSearchDomains(values []string) []string {
+	out := make([]string, 0, min(len(values), 10))
+	seen := map[string]bool{}
+	for _, value := range values {
+		if len(out) >= 10 {
+			break
+		}
+		value = strings.TrimSpace(strings.ToLower(value))
+		if value == "" {
+			continue
+		}
+		if !strings.Contains(value, "://") {
+			value = "https://" + value
+		}
+		parsed, err := url.Parse(value)
+		if err != nil || parsed.User != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			continue
+		}
+		host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+		if host == "" || seen[host] {
+			continue
+		}
+		seen[host] = true
+		out = append(out, host)
+	}
+	return out
+}
+
+func webSearchFallbackAllowed(ctx context.Context, err error) bool {
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var upstream *UpstreamError
+	if errors.As(err, &upstream) && (upstream.Status == http.StatusUnauthorized || upstream.Status == http.StatusForbidden || upstream.Status == http.StatusTooManyRequests) {
+		return false
+	}
+	return true
+}
+
+func readLimitedBody(reader io.Reader, limit int64) ([]byte, error) {
+	raw, err := io.ReadAll(io.LimitReader(reader, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(raw)) > limit {
+		return nil, fmt.Errorf("response exceeds %d bytes", limit)
+	}
+	return raw, nil
+}
+
+func parseResponsesWebSearch(raw []byte, fallbackQuery string) (WebSearchResult, error) {
+	var payload struct {
+		OutputText string `json:"output_text"`
+		Output     []struct {
+			Type   string `json:"type"`
+			Action struct {
+				Query   string   `json:"query"`
+				Queries []string `json:"queries"`
+			} `json:"action"`
+			Content []struct {
+				Type        string                `json:"type"`
+				Text        string                `json:"text"`
+				Annotations []webSearchAnnotation `json:"annotations"`
+			} `json:"content"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return WebSearchResult{}, fmt.Errorf("解析 Responses 联网搜索结果：%w", err)
+	}
+	result := WebSearchResult{Text: strings.TrimSpace(payload.OutputText), Query: strings.TrimSpace(fallbackQuery)}
+	for _, item := range payload.Output {
+		if item.Type == "web_search_call" {
+			if query := strings.TrimSpace(item.Action.Query); query != "" {
+				result.Query = query
+			} else if len(item.Action.Queries) > 0 && strings.TrimSpace(item.Action.Queries[0]) != "" {
+				result.Query = strings.TrimSpace(item.Action.Queries[0])
+			}
+		}
+		for _, content := range item.Content {
+			if text := strings.TrimSpace(content.Text); text != "" {
+				if result.Text == "" {
+					result.Text = text
+				} else if !strings.Contains(result.Text, text) {
+					result.Text += "\n" + text
+				}
+			}
+			result.Sources = appendWebSearchAnnotations(result.Sources, content.Annotations)
+		}
+	}
+	return finishWebSearchResult(result)
+}
+
+type webSearchAnnotation struct {
+	Type        string `json:"type"`
+	URL         string `json:"url"`
+	Title       string `json:"title"`
+	URLCitation *struct {
+		URL   string `json:"url"`
+		Title string `json:"title"`
+	} `json:"url_citation"`
+}
+
+func parseChatWebSearch(raw []byte, fallbackQuery string) (WebSearchResult, error) {
+	var payload struct {
+		Choices []struct {
+			Message struct {
+				Content     string                `json:"content"`
+				Annotations []webSearchAnnotation `json:"annotations"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return WebSearchResult{}, fmt.Errorf("解析 Chat Completions 联网搜索结果：%w", err)
+	}
+	if len(payload.Choices) == 0 {
+		return WebSearchResult{}, errors.New("Chat Completions 联网搜索没有返回 choices")
+	}
+	result := WebSearchResult{Text: strings.TrimSpace(payload.Choices[0].Message.Content), Query: strings.TrimSpace(fallbackQuery)}
+	result.Sources = appendWebSearchAnnotations(nil, payload.Choices[0].Message.Annotations)
+	return finishWebSearchResult(result)
+}
+
+func appendWebSearchAnnotations(sources []WebSearchSource, annotations []webSearchAnnotation) []WebSearchSource {
+	for _, annotation := range annotations {
+		urlValue, title := annotation.URL, annotation.Title
+		if annotation.URLCitation != nil {
+			urlValue, title = annotation.URLCitation.URL, annotation.URLCitation.Title
+		}
+		sources = appendWebSearchSource(sources, title, urlValue)
+	}
+	return sources
+}
+
+func appendWebSearchSource(sources []WebSearchSource, title, urlValue string) []WebSearchSource {
+	if len(sources) >= maxWebSearchSources {
+		return sources
+	}
+	parsed, err := url.Parse(strings.TrimSpace(urlValue))
+	if err != nil || parsed.User != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return sources
+	}
+	canonical := parsed.String()
+	for _, source := range sources {
+		if strings.EqualFold(source.URL, canonical) {
+			return sources
+		}
+	}
+	title = strings.TrimSpace(title)
+	if title == "" {
+		title = parsed.Hostname()
+	}
+	if len([]rune(title)) > 200 {
+		title = string([]rune(title)[:200])
+	}
+	return append(sources, WebSearchSource{Title: title, URL: canonical})
+}
+
+func finishWebSearchResult(result WebSearchResult) (WebSearchResult, error) {
+	result.Text = strings.TrimSpace(result.Text)
+	if result.Text == "" {
+		return WebSearchResult{}, errors.New("联网搜索完成但没有返回文本结果")
+	}
+	if len(result.Text) > maxWebSearchTextBytes {
+		result.Text = result.Text[:maxWebSearchTextBytes] + "…（搜索结果已截断）"
+	}
+	return result, nil
+}
+
 func (c *Client) newJSONRequest(ctx context.Context, path string, body any) (*http.Request, error) {
 	raw, err := json.Marshal(body)
 	if err != nil {
@@ -184,88 +636,827 @@ func (c *Client) ChatStream(ctx context.Context, messages []Message) (*http.Resp
 // ChatTextWithImages consumes the streaming API server-side. The callback is
 // used by durable assistant jobs to checkpoint partial output in PostgreSQL.
 func (c *Client) ChatTextWithImages(ctx context.Context, messages []Message, imageURLs []string, onText func(string) error) (string, error) {
-	resp, err := c.ChatStreamWithImages(ctx, messages, imageURLs)
+	var onUpdate func(string, string) error
+	if onText != nil {
+		onUpdate = func(text, _ string) error { return onText(text) }
+	}
+	result, err := c.CompleteChatTextWithImages(ctx, messages, imageURLs, onUpdate)
+	return result.Text, err
+}
+
+func (c *Client) CompleteChatTextWithImages(ctx context.Context, messages []Message, imageURLs []string, onUpdate func(text, reasoning string) error) (ChatCompletion, error) {
+	var lastErr error
+	for attempt := 0; attempt < chatStreamAttempts; attempt++ {
+		result, receivedOutput, err := c.chatTextWithImages(ctx, messages, imageURLs, onUpdate)
+		if err == nil {
+			return result, nil
+		}
+		lastErr = err
+		if receivedOutput || !transientChatError(ctx, err) || attempt == chatStreamAttempts-1 {
+			return result, err
+		}
+		timer := time.NewTimer(chatStreamRetryDelay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return result, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return ChatCompletion{}, lastErr
+}
+
+func (c *Client) chatTextWithImages(ctx context.Context, messages []Message, imageURLs []string, onUpdate func(text, reasoning string) error) (ChatCompletion, bool, error) {
+	streamCtx, cancelStream, idleTimer, idleTimedOut := c.chatStreamContext(ctx)
+	defer cancelStream()
+	defer idleTimer.Stop()
+	started := time.Now()
+	resp, err := c.ChatStreamWithImages(streamCtx, messages, imageURLs)
 	if err != nil {
-		return "", err
+		return ChatCompletion{}, false, err
 	}
 	defer resp.Body.Close()
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), 2<<20)
-	fullText := ""
+	result := ChatCompletion{}
+	receivedOutput := false
+	var firstToken time.Time
+	completed := false
 	for scanner.Scan() {
+		idleTimer.Reset(c.effectiveStreamIdleTimeout())
 		line := strings.TrimSpace(scanner.Text())
 		if !strings.HasPrefix(line, "data:") {
 			continue
 		}
 		raw := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if raw == "" || raw == "[DONE]" {
+		if raw == "" {
+			continue
+		}
+		if raw == "[DONE]" {
+			completed = true
 			continue
 		}
 		var payload map[string]any
 		if err := json.Unmarshal([]byte(raw), &payload); err != nil {
-			continue
+			return result, receivedOutput, fmt.Errorf("decode chat stream event: %w", err)
 		}
-		if message := streamError(payload); message != "" {
-			return fullText, errors.New(message)
+		if streamErr := streamUpstreamError(payload); streamErr != nil {
+			return result, receivedOutput, streamErr
 		}
-		delta := streamDelta(payload)
-		if delta == "" {
-			continue
+		if reason := streamFinishReason(payload); reason != "" {
+			if err := validateChatFinishReason(reason); err != nil {
+				return result, receivedOutput, err
+			}
+			completed = true
 		}
-		fullText += delta
-		if onText != nil {
-			if err := onText(fullText); err != nil {
-				return fullText, err
+		if usage := streamUsage(payload); usage.PromptTokens > 0 || usage.CompletionTokens > 0 || usage.TotalTokens > 0 || usage.ReasoningTokens > 0 {
+			result.Usage.PromptTokens = usage.PromptTokens
+			result.Usage.CompletionTokens = usage.CompletionTokens
+			result.Usage.TotalTokens = usage.TotalTokens
+			result.Usage.ReasoningTokens = usage.ReasoningTokens
+		}
+		changed := false
+		for _, fragment := range streamTextFragments(payload) {
+			receivedOutput = true
+			if firstToken.IsZero() {
+				firstToken = time.Now()
+			}
+			before := result.Text
+			if fragment.replace {
+				result.Text = fragment.value
+			} else {
+				result.Text += fragment.value
+			}
+			changed = changed || result.Text != before
+		}
+		for _, fragment := range streamReasoningFragments(payload) {
+			receivedOutput = true
+			if firstToken.IsZero() {
+				firstToken = time.Now()
+			}
+			before := result.Reasoning
+			result.Reasoning = applyReasoningFragment(result.Reasoning, fragment)
+			changed = changed || result.Reasoning != before
+		}
+		if changed && onUpdate != nil {
+			if err := onUpdate(result.Text, result.Reasoning); err != nil {
+				return result, receivedOutput, err
 			}
 		}
 	}
+	finishChatUsage(&result.Usage, started, firstToken)
 	if err := scanner.Err(); err != nil {
-		return fullText, err
+		if idleTimedOut.Load() && ctx.Err() == nil {
+			return result, receivedOutput, errChatStreamIdle
+		}
+		return result, receivedOutput, err
 	}
-	return fullText, nil
+	if !completed {
+		return result, receivedOutput, errChatStreamIncomplete
+	}
+	if strings.TrimSpace(result.Text) == "" {
+		return result, receivedOutput, errChatStreamEmpty
+	}
+	return result, receivedOutput, nil
 }
 
-func streamDelta(payload map[string]any) string {
-	if value, ok := payload["delta"].(string); ok {
-		return value
+// ChatAgentWithImages performs one streamed chat-completions request that can
+// either answer normally or return a structured function call. Text and
+// reasoning snapshots are delivered while the tool arguments are still being
+// assembled, so callers do not need a separate intent-classification request.
+func (c *Client) ChatAgentWithImages(
+	ctx context.Context,
+	messages []Message,
+	imageURLs []string,
+	tool FunctionTool,
+	forceTool bool,
+	onUpdate func(text, reasoning string) error,
+) (AgentChatResult, error) {
+	forced := ""
+	if forceTool {
+		forced = tool.Name
 	}
-	if value, ok := payload["output_text"].(string); ok {
-		return value
+	return c.ChatAgentWithTools(ctx, messages, imageURLs, []FunctionTool{tool}, forced, onUpdate)
+}
+
+// ChatAgentWithTools exposes several function tools in one streamed request so
+// callers can drive a multi-step tool loop. toolChoice may be empty for auto,
+// RequiredToolChoice to require any declared tool, or a tool name to force it.
+func (c *Client) ChatAgentWithTools(
+	ctx context.Context,
+	messages []Message,
+	imageURLs []string,
+	tools []FunctionTool,
+	toolChoice string,
+	onUpdate func(text, reasoning string) error,
+) (AgentChatResult, error) {
+	if len(tools) == 0 {
+		return AgentChatResult{}, errors.New("no tools provided")
 	}
+	declarations := make([]any, 0, len(tools))
+	for _, tool := range tools {
+		function := map[string]any{
+			"name": tool.Name, "description": tool.Description, "parameters": tool.Parameters,
+		}
+		if tool.Strict {
+			function["strict"] = true
+		}
+		declarations = append(declarations, map[string]any{
+			"type": "function", "function": function,
+		})
+	}
+	payload := map[string]any{
+		"model":               c.chatModel,
+		"messages":            chatPayloadMessages(messages, imageURLs),
+		"stream":              true,
+		"stream_options":      map[string]any{"include_usage": true},
+		"tools":               declarations,
+		"tool_choice":         "auto",
+		"parallel_tool_calls": false,
+	}
+	c.applyChatOutputLimit(payload)
+	c.applyReasoningRequest(payload)
+	choice := strings.TrimSpace(toolChoice)
+	if choice == RequiredToolChoice {
+		payload["tool_choice"] = RequiredToolChoice
+	} else if choice != "" {
+		payload["tool_choice"] = map[string]any{
+			"type": "function", "function": map[string]any{"name": choice},
+		}
+	}
+	var lastErr error
+	for attempt := 0; attempt < chatStreamAttempts; attempt++ {
+		result, receivedOutput, err := c.chatAgentWithPayload(ctx, payload, onUpdate)
+		if err == nil {
+			return result, nil
+		}
+		lastErr = err
+		if receivedOutput || !transientChatError(ctx, err) || attempt == chatStreamAttempts-1 {
+			return result, err
+		}
+		timer := time.NewTimer(chatStreamRetryDelay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return result, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return AgentChatResult{}, lastErr
+}
+
+func (c *Client) chatAgentWithPayload(
+	ctx context.Context,
+	payload map[string]any,
+	onUpdate func(text, reasoning string) error,
+) (AgentChatResult, bool, error) {
+	streamCtx, cancelStream, idleTimer, idleTimedOut := c.chatStreamContext(ctx)
+	defer cancelStream()
+	defer idleTimer.Stop()
+	started := time.Now()
+	resp, err := c.chatStreamWithPayload(streamCtx, payload)
+	if err != nil {
+		return AgentChatResult{}, false, err
+	}
+	defer resp.Body.Close()
+
+	result := AgentChatResult{}
+	receivedOutput := false
+	var firstToken time.Time
+	toolNames := map[int]string{}
+	toolArguments := map[int]string{}
+	toolIDs := map[int]string{}
+	minToolIndex := -1
+	completed := false
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64*1024), 2<<20)
+	for scanner.Scan() {
+		idleTimer.Reset(c.effectiveStreamIdleTimeout())
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		raw := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if raw == "" {
+			continue
+		}
+		if raw == "[DONE]" {
+			completed = true
+			continue
+		}
+		var event map[string]any
+		if err := json.Unmarshal([]byte(raw), &event); err != nil {
+			return result, receivedOutput, fmt.Errorf("decode chat agent stream event: %w", err)
+		}
+		if streamErr := streamUpstreamError(event); streamErr != nil {
+			return result, receivedOutput, streamErr
+		}
+		if reason := streamFinishReason(event); reason != "" {
+			if err := validateChatFinishReason(reason); err != nil {
+				return result, receivedOutput, err
+			}
+			completed = true
+		}
+		if usage := streamUsage(event); usage.PromptTokens > 0 || usage.CompletionTokens > 0 || usage.TotalTokens > 0 || usage.ReasoningTokens > 0 {
+			result.Usage.PromptTokens = usage.PromptTokens
+			result.Usage.CompletionTokens = usage.CompletionTokens
+			result.Usage.TotalTokens = usage.TotalTokens
+			result.Usage.ReasoningTokens = usage.ReasoningTokens
+			result.ReasoningTokens = usage.ReasoningTokens
+		}
+		changed := false
+		for _, fragment := range streamTextFragments(event) {
+			before := result.Text
+			if fragment.replace {
+				result.Text = fragment.value
+			} else {
+				result.Text += fragment.value
+			}
+			changed = changed || result.Text != before
+			receivedOutput = true
+			if firstToken.IsZero() {
+				firstToken = time.Now()
+			}
+		}
+		for _, fragment := range streamReasoningFragments(event) {
+			before := result.Reasoning
+			result.Reasoning = applyReasoningFragment(result.Reasoning, fragment)
+			changed = changed || result.Reasoning != before
+			receivedOutput = true
+			if firstToken.IsZero() {
+				firstToken = time.Now()
+			}
+		}
+		for _, fragment := range streamToolCallFragments(event) {
+			receivedOutput = true
+			if firstToken.IsZero() {
+				firstToken = time.Now()
+			}
+			if minToolIndex < 0 || fragment.index < minToolIndex {
+				minToolIndex = fragment.index
+			}
+			if fragment.name != "" {
+				toolNames[fragment.index] = fragment.name
+			}
+			if fragment.id != "" {
+				toolIDs[fragment.index] = fragment.id
+			}
+			if fragment.replace {
+				toolArguments[fragment.index] = fragment.arguments
+			} else {
+				toolArguments[fragment.index] += fragment.arguments
+			}
+		}
+		if changed && onUpdate != nil {
+			if err := onUpdate(result.Text, result.Reasoning); err != nil {
+				return result, receivedOutput, err
+			}
+		}
+	}
+	finishChatUsage(&result.Usage, started, firstToken)
+	if err := scanner.Err(); err != nil {
+		if idleTimedOut.Load() && ctx.Err() == nil {
+			return result, receivedOutput, errChatStreamIdle
+		}
+		return result, receivedOutput, err
+	}
+	if !completed {
+		return result, receivedOutput, errChatStreamIncomplete
+	}
+	if len(toolNames) > 1 || len(toolArguments) > 1 {
+		return result, receivedOutput, errors.New("provider returned multiple tool calls while parallel tool calls are disabled")
+	}
+	if minToolIndex >= 0 {
+		callID := toolIDs[minToolIndex]
+		if callID == "" {
+			callID = fmt.Sprintf("call_%d", minToolIndex)
+		}
+		result.ToolCall = &ToolCall{ID: callID, Name: toolNames[minToolIndex], Arguments: toolArguments[minToolIndex]}
+	}
+	return result, receivedOutput, nil
+}
+
+func (c *Client) effectiveStreamIdleTimeout() time.Duration {
+	if c != nil && c.streamIdleTimeout > 0 {
+		return c.streamIdleTimeout
+	}
+	return 90 * time.Second
+}
+
+func (c *Client) chatStreamContext(ctx context.Context) (context.Context, context.CancelFunc, *time.Timer, *atomic.Bool) {
+	streamCtx, cancel := context.WithCancel(ctx)
+	timedOut := &atomic.Bool{}
+	timer := time.AfterFunc(c.effectiveStreamIdleTimeout(), func() {
+		timedOut.Store(true)
+		cancel()
+	})
+	return streamCtx, cancel, timer, timedOut
+}
+
+func streamFinishReason(payload map[string]any) string {
 	choices, _ := payload["choices"].([]any)
 	if len(choices) == 0 {
 		return ""
 	}
 	choice, _ := choices[0].(map[string]any)
+	reason, _ := choice["finish_reason"].(string)
+	return strings.TrimSpace(reason)
+}
+
+func validateChatFinishReason(reason string) error {
+	switch strings.ToLower(strings.TrimSpace(reason)) {
+	case "stop", "tool_calls", "function_call":
+		return nil
+	case "length", "max_tokens":
+		return errChatStreamTruncated
+	case "content_filter", "safety":
+		return errChatStreamFiltered
+	default:
+		return fmt.Errorf("unsupported chat finish reason %q", reason)
+	}
+}
+
+type streamStringFragment struct {
+	value   string
+	replace bool
+}
+
+func streamTextFragments(payload map[string]any) []streamStringFragment {
+	fragments := make([]streamStringFragment, 0, 2)
+	for _, field := range []string{"delta", "output_text"} {
+		if value, ok := payload[field].(string); ok && value != "" {
+			return append(fragments, streamStringFragment{value: value})
+		}
+	}
+	choices, _ := payload["choices"].([]any)
+	if len(choices) == 0 {
+		return fragments
+	}
+	choice, _ := choices[0].(map[string]any)
 	if delta, ok := choice["delta"].(map[string]any); ok {
-		if content, ok := delta["content"].(string); ok {
-			return content
+		if value, ok := delta["content"].(string); ok && value != "" {
+			fragments = append(fragments, streamStringFragment{value: value})
 		}
 	}
 	if message, ok := choice["message"].(map[string]any); ok {
-		if content, ok := message["content"].(string); ok {
-			return content
+		if value, ok := message["content"].(string); ok {
+			fragments = append(fragments, streamStringFragment{value: value, replace: true})
+		}
+	}
+	return fragments
+}
+
+func streamReasoningFragments(payload map[string]any) []streamStringFragment {
+	fragments := make([]streamStringFragment, 0, 4)
+	fragments = append(fragments, collectReasoningValue(payload["reasoning_content"], false)...)
+	if len(fragments) == 0 {
+		fragments = append(fragments, collectReasoningValue(payload["reasoning"], false)...)
+		fragments = append(fragments, collectReasoningValue(payload["reasoning_summary"], false)...)
+	}
+	choices, _ := payload["choices"].([]any)
+	if len(choices) == 0 {
+		return fragments
+	}
+	choice, _ := choices[0].(map[string]any)
+	for _, containerName := range []string{"delta", "message"} {
+		container, _ := choice[containerName].(map[string]any)
+		if container == nil {
+			continue
+		}
+		replace := containerName == "message"
+		content := collectReasoningValue(container["reasoning_content"], replace)
+		content = append(content, collectReasoningValue(container["reasoning_text"], replace)...)
+		content = append(content, collectReasoningValue(container["thinking"], replace)...)
+		if len(content) > 0 {
+			fragments = append(fragments, content...)
+			continue
+		}
+		fragments = append(fragments, collectReasoningValue(container["reasoning"], replace)...)
+		fragments = append(fragments, collectReasoningValue(container["reasoning_summary"], replace)...)
+	}
+	return fragments
+}
+
+func collectReasoningValue(raw any, replace bool) []streamStringFragment {
+	switch value := raw.(type) {
+	case string:
+		if strings.TrimSpace(value) == "" {
+			return nil
+		}
+		return []streamStringFragment{{value: value, replace: replace}}
+	case []any:
+		out := make([]streamStringFragment, 0, len(value))
+		for _, item := range value {
+			out = append(out, collectReasoningValue(item, replace)...)
+		}
+		return out
+	case map[string]any:
+		if typ, _ := value["type"].(string); strings.Contains(strings.ToLower(typ), "summary") {
+			if text := reasoningTextFromMap(value); text != "" {
+				return []streamStringFragment{{value: text, replace: replace}}
+			}
+		}
+		for _, key := range []string{"reasoning_content", "reasoning_text", "thinking", "text", "content", "summary", "summary_text"} {
+			if inner, ok := value[key]; ok {
+				if fragments := collectReasoningValue(inner, replace); len(fragments) > 0 {
+					return fragments
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func reasoningTextFromMap(value map[string]any) string {
+	for _, key := range []string{"text", "content", "summary", "reasoning_content"} {
+		if text, ok := value[key].(string); ok && strings.TrimSpace(text) != "" {
+			return text
 		}
 	}
 	return ""
 }
 
-func streamError(payload map[string]any) string {
-	if payload["type"] == "error" {
-		if item, ok := payload["error"].(map[string]any); ok {
-			if message, ok := item["message"].(string); ok {
-				return message
+func applyReasoningFragment(current string, fragment streamStringFragment) string {
+	next := fragment.value
+	if strings.TrimSpace(next) == "" {
+		return current
+	}
+	if fragment.replace {
+		if current == "" || len(next) >= len(current) {
+			return next
+		}
+		return current
+	}
+	return joinReasoningChunks(current, next)
+}
+
+func joinReasoningChunks(current, next string) string {
+	if current == "" {
+		return next
+	}
+	if next == "" {
+		return current
+	}
+	if strings.HasPrefix(next, current) {
+		return next
+	}
+	if len(next) > 16 && strings.Contains(current, next) {
+		return current
+	}
+	currentTrim := strings.TrimSpace(current)
+	nextTrim := strings.TrimSpace(next)
+	if strings.HasSuffix(currentTrim, "**") && strings.HasPrefix(nextTrim, "**") {
+		return strings.TrimRight(current, " \t") + "\n\n" + nextTrim
+	}
+	return current + next
+}
+
+func streamUsage(payload map[string]any) ChatUsage {
+	raw, _ := payload["usage"].(map[string]any)
+	if raw == nil {
+		return ChatUsage{}
+	}
+	usage := ChatUsage{
+		PromptTokens:     jsonInt64(raw, "prompt_tokens", "input_tokens", "promptTokens", "inputTokens"),
+		CompletionTokens: jsonInt64(raw, "completion_tokens", "output_tokens", "completionTokens", "outputTokens"),
+		TotalTokens:      jsonInt64(raw, "total_tokens", "totalTokens"),
+	}
+	details, _ := raw["completion_tokens_details"].(map[string]any)
+	usage.ReasoningTokens = jsonInt64(details, "reasoning_tokens", "reasoningTokens")
+	if usage.TotalTokens == 0 && (usage.PromptTokens > 0 || usage.CompletionTokens > 0) {
+		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	}
+	return usage
+}
+
+func jsonInt64(raw map[string]any, keys ...string) int64 {
+	if raw == nil {
+		return 0
+	}
+	for _, key := range keys {
+		switch value := raw[key].(type) {
+		case int:
+			if value > 0 {
+				return int64(value)
+			}
+		case int64:
+			if value > 0 {
+				return value
+			}
+		case float64:
+			if value > 0 {
+				return int64(value)
+			}
+		case json.Number:
+			parsed, err := value.Int64()
+			if err == nil && parsed > 0 {
+				return parsed
 			}
 		}
 	}
-	if item, ok := payload["error"].(map[string]any); ok {
-		if message, ok := item["message"].(string); ok {
-			return message
+	return 0
+}
+
+func finishChatUsage(usage *ChatUsage, started, firstToken time.Time) {
+	if usage == nil {
+		return
+	}
+	if !started.IsZero() && usage.DurationMs <= 0 {
+		elapsed := time.Since(started).Milliseconds()
+		if elapsed <= 0 {
+			elapsed = 1
+		}
+		usage.DurationMs = elapsed
+	}
+	if !firstToken.IsZero() && !started.IsZero() && usage.FirstTokenMs <= 0 {
+		elapsed := firstToken.Sub(started).Milliseconds()
+		if elapsed <= 0 {
+			elapsed = 1
+		}
+		usage.FirstTokenMs = elapsed
+	}
+	if usage.TotalTokens == 0 && (usage.PromptTokens > 0 || usage.CompletionTokens > 0) {
+		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	}
+}
+
+func streamReasoningTokens(payload map[string]any) int64 {
+	return streamUsage(payload).ReasoningTokens
+}
+
+func transientChatError(ctx context.Context, err error) bool {
+	if err == nil || ctx.Err() != nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	if errors.Is(err, errChatStreamIncomplete) || errors.Is(err, errChatStreamIdle) || errors.Is(err, errChatStreamEmpty) {
+		return true
+	}
+	var upstream *UpstreamError
+	if errors.As(err, &upstream) {
+		return upstream.Status == http.StatusTooManyRequests || upstream.Status >= http.StatusInternalServerError
+	}
+	var netErr interface {
+		Timeout() bool
+		Temporary() bool
+	}
+	if errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary()) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "timeout") ||
+		strings.Contains(message, "temporarily unavailable") ||
+		strings.Contains(message, "service unavailable") ||
+		strings.Contains(message, "overloaded") ||
+		strings.Contains(message, "rate limit") ||
+		strings.Contains(message, "connection reset") ||
+		strings.Contains(message, "unexpected eof")
+}
+
+func RetryableOnAlternateRoute(ctx context.Context, err error) bool {
+	if transientChatError(ctx, err) {
+		return true
+	}
+	var upstream *UpstreamError
+	if errors.As(err, &upstream) {
+		return upstream.Status == http.StatusUnauthorized || upstream.Status == http.StatusForbidden ||
+			upstream.Status == http.StatusRequestTimeout
+	}
+	return false
+}
+
+// FailureCode turns provider and streaming failures into stable operational
+// categories without exposing upstream response bodies or request content.
+func FailureCode(err error) string {
+	if err == nil {
+		return ""
+	}
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "assistant_interrupted"
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, errChatStreamIdle):
+		return "upstream_timeout"
+	case errors.Is(err, errChatStreamTruncated):
+		return "output_limit_reached"
+	case errors.Is(err, errChatStreamFiltered):
+		return "content_filtered"
+	case errors.Is(err, errChatStreamIncomplete), errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		return "upstream_stream_incomplete"
+	case errors.Is(err, errChatStreamEmpty):
+		return "upstream_empty_response"
+	}
+	var upstream *UpstreamError
+	if errors.As(err, &upstream) {
+		switch {
+		case upstream.Status == http.StatusUnauthorized || upstream.Status == http.StatusForbidden:
+			return "upstream_auth_failed"
+		case upstream.Status == http.StatusTooManyRequests:
+			return "upstream_rate_limited"
+		case upstream.Status >= http.StatusInternalServerError:
+			return "upstream_unavailable"
+		default:
+			return "upstream_rejected"
 		}
 	}
-	if message, ok := payload["error"].(string); ok {
-		return message
+	var netErr interface{ Timeout() bool }
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "upstream_timeout"
+	}
+	return "assistant_run_failed"
+}
+
+type toolCallFragment struct {
+	index     int
+	id        string
+	name      string
+	arguments string
+	replace   bool
+}
+
+func streamToolCallFragments(payload map[string]any) []toolCallFragment {
+	choices, _ := payload["choices"].([]any)
+	if len(choices) == 0 {
+		return nil
+	}
+	choice, _ := choices[0].(map[string]any)
+	fragments := make([]toolCallFragment, 0, 1)
+	for _, containerName := range []string{"delta", "message"} {
+		container, _ := choice[containerName].(map[string]any)
+		if legacy, ok := container["function_call"].(map[string]any); ok {
+			name, _ := legacy["name"].(string)
+			arguments, _ := legacy["arguments"].(string)
+			if name != "" || arguments != "" {
+				fragments = append(fragments, toolCallFragment{
+					index: 0, id: "call_0", name: name, arguments: arguments, replace: containerName == "message",
+				})
+			}
+		}
+		calls, _ := container["tool_calls"].([]any)
+		for _, rawCall := range calls {
+			call, _ := rawCall.(map[string]any)
+			function, _ := call["function"].(map[string]any)
+			id, _ := call["id"].(string)
+			index := 0
+			switch value := call["index"].(type) {
+			case float64:
+				index = int(value)
+			case int:
+				index = value
+			}
+			name, _ := function["name"].(string)
+			arguments, _ := function["arguments"].(string)
+			if name == "" && arguments == "" {
+				continue
+			}
+			fragments = append(fragments, toolCallFragment{
+				index: index, id: id, name: name, arguments: arguments, replace: containerName == "message",
+			})
+		}
+	}
+	return fragments
+}
+
+func streamUpstreamError(payload map[string]any) error {
+	rawError, hasError := payload["error"]
+	if !hasError && strings.ToLower(strings.TrimSpace(stringValue(payload["type"]))) != "error" {
+		return nil
+	}
+
+	containers := []map[string]any{payload}
+	if item, ok := rawError.(map[string]any); ok {
+		containers = append([]map[string]any{item}, containers...)
+	}
+	message := firstStreamErrorString(containers, "message", "detail", "error_description")
+	if message == "" {
+		message = strings.TrimSpace(stringValue(rawError))
+	}
+	code := firstStreamErrorString(containers, "code", "error_code")
+	errorType := firstStreamErrorString(containers, "type", "error_type")
+	if message == "" {
+		message = firstNonEmpty(code, errorType, "upstream stream error")
+	}
+
+	status := firstStreamErrorStatus(containers)
+	if status == 0 {
+		status = inferStreamErrorStatus(code, errorType, message)
+	}
+	return &UpstreamError{Status: status, Message: message}
+}
+
+func firstStreamErrorString(containers []map[string]any, keys ...string) string {
+	for _, container := range containers {
+		for _, key := range keys {
+			if value := strings.TrimSpace(stringValue(container[key])); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func firstStreamErrorStatus(containers []map[string]any) int {
+	for _, container := range containers {
+		for _, key := range []string{"status", "status_code", "statusCode", "http_status", "httpStatus", "code"} {
+			if status := httpStatusValue(container[key]); status >= 400 && status <= 599 {
+				return status
+			}
+		}
+	}
+	return 0
+}
+
+func httpStatusValue(value any) int {
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	case json.Number:
+		parsed, _ := strconv.Atoi(typed.String())
+		return parsed
+	case string:
+		parsed, _ := strconv.Atoi(strings.TrimSpace(typed))
+		return parsed
+	default:
+		return 0
+	}
+}
+
+func inferStreamErrorStatus(code, errorType, message string) int {
+	value := strings.ToLower(strings.Join([]string{code, errorType, message}, " "))
+	switch {
+	case strings.Contains(value, "invalid_request"), strings.Contains(value, "bad_request"), strings.Contains(value, "unprocessable"):
+		return http.StatusBadRequest
+	case strings.Contains(value, "authentication"), strings.Contains(value, "invalid_api_key"), strings.Contains(value, "unauthorized"), strings.Contains(value, "token_invalidated"):
+		return http.StatusUnauthorized
+	case strings.Contains(value, "permission"), strings.Contains(value, "forbidden"):
+		return http.StatusForbidden
+	case strings.Contains(value, "rate_limit"), strings.Contains(value, "rate limit"), strings.Contains(value, "too many requests"), strings.Contains(value, "quota"):
+		return http.StatusTooManyRequests
+	default:
+		// An error delivered inside a successful SSE response is still an
+		// upstream failure. sub2api uses 502 for unclassified provider events.
+		return http.StatusBadGateway
+	}
+}
+
+func stringValue(value any) string {
+	if text, ok := value.(string); ok {
+		return text
+	}
+	return ""
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
 	}
 	return ""
 }
@@ -276,6 +1467,54 @@ func (c *Client) ChatStreamWithImages(ctx context.Context, messages []Message, i
 	if !c.Configured() {
 		return nil, errors.New("Sub2API API key is not configured")
 	}
+	payload := map[string]any{
+		"model": c.chatModel, "messages": chatPayloadMessages(messages, imageURLs), "stream": true,
+		"stream_options": map[string]any{"include_usage": true},
+	}
+	c.applyChatOutputLimit(payload)
+	c.applyReasoningRequest(payload)
+	return c.chatStreamWithPayload(ctx, payload)
+}
+
+func (c *Client) applyChatOutputLimit(payload map[string]any) {
+	if c == nil || c.maxOutputTokens <= 0 || payload == nil {
+		return
+	}
+	if c.usesCompletionTokenLimit() {
+		payload["max_completion_tokens"] = c.maxOutputTokens
+		return
+	}
+	payload["max_tokens"] = c.maxOutputTokens
+}
+
+func (c *Client) usesCompletionTokenLimit() bool {
+	if c == nil {
+		return false
+	}
+	model := strings.ToLower(strings.TrimSpace(c.chatModel))
+	return strings.HasPrefix(model, "gpt-5") || strings.HasPrefix(model, "o1") ||
+		strings.HasPrefix(model, "o3") || strings.HasPrefix(model, "o4")
+}
+
+func (c *Client) applyReasoningRequest(payload map[string]any) {
+	if c == nil || payload == nil {
+		return
+	}
+	effort := strings.TrimSpace(c.reasoningEffort)
+	if effort != "" {
+		payload["reasoning_effort"] = effort
+	}
+	if !c.usesCompletionTokenLimit() {
+		return
+	}
+	reasoning := map[string]any{"summary": "detailed"}
+	if effort != "" {
+		reasoning["effort"] = effort
+	}
+	payload["reasoning"] = reasoning
+}
+
+func chatPayloadMessages(messages []Message, imageURLs []string) []any {
 	payloadMessages := make([]any, len(messages))
 	lastUserIndex := -1
 	for index := len(messages) - 1; index >= 0; index-- {
@@ -285,6 +1524,27 @@ func (c *Client) ChatStreamWithImages(ctx context.Context, messages []Message, i
 		}
 	}
 	for index, message := range messages {
+		item := map[string]any{"role": message.Role, "content": message.Content}
+		if message.Name != "" {
+			item["name"] = message.Name
+		}
+		if message.ToolCallID != "" {
+			item["tool_call_id"] = message.ToolCallID
+		}
+		if len(message.ToolCalls) > 0 {
+			calls := make([]any, 0, len(message.ToolCalls))
+			for callIndex, call := range message.ToolCalls {
+				callID := strings.TrimSpace(call.ID)
+				if callID == "" {
+					callID = fmt.Sprintf("call_%d", callIndex)
+				}
+				calls = append(calls, map[string]any{
+					"id": callID, "type": "function",
+					"function": map[string]any{"name": call.Name, "arguments": call.Arguments},
+				})
+			}
+			item["tool_calls"] = calls
+		}
 		content := any(message.Content)
 		messageImages := append([]string(nil), message.ReferenceImages...)
 		if index == lastUserIndex {
@@ -305,11 +1565,17 @@ func (c *Client) ChatStreamWithImages(ctx context.Context, messages []Message, i
 			}
 			content = parts
 		}
-		payloadMessages[index] = map[string]any{"role": message.Role, "content": content}
+		item["content"] = content
+		payloadMessages[index] = item
 	}
-	req, err := c.newJSONRequest(ctx, "/v1/chat/completions", map[string]any{
-		"model": c.chatModel, "messages": payloadMessages, "stream": true,
-	})
+	return payloadMessages
+}
+
+func (c *Client) chatStreamWithPayload(ctx context.Context, payload map[string]any) (*http.Response, error) {
+	if !c.Configured() {
+		return nil, errors.New("Sub2API API key is not configured")
+	}
+	req, err := c.newJSONRequest(ctx, "/v1/chat/completions", payload)
 	if err != nil {
 		return nil, err
 	}
@@ -339,13 +1605,17 @@ func contains(values []string, value string) bool {
 }
 
 func (c *Client) GenerateImage(ctx context.Context, prompt, size, quality string, count int, referenceImages []string) ([]Image, error) {
-	return c.GenerateImageProgressive(ctx, prompt, size, quality, count, referenceImages, nil)
+	return c.GenerateImageProgressiveWithOptions(ctx, prompt, size, quality, count, referenceImages, ImageOptions{}, nil)
 }
 
 // GenerateImageProgressive fans out multi-image requests and calls onImage as
 // soon as each indexed result is available. The returned slice remains ordered
 // by requested index for callers that only need the final aggregate.
 func (c *Client) GenerateImageProgressive(ctx context.Context, prompt, size, quality string, count int, referenceImages []string, onImage func(index int, image Image) error) ([]Image, error) {
+	return c.GenerateImageProgressiveWithOptions(ctx, prompt, size, quality, count, referenceImages, ImageOptions{}, onImage)
+}
+
+func (c *Client) GenerateImageProgressiveWithOptions(ctx context.Context, prompt, size, quality string, count int, referenceImages []string, options ImageOptions, onImage func(index int, image Image) error) ([]Image, error) {
 	if !c.Configured() {
 		return nil, errors.New("Sub2API API key is not configured")
 	}
@@ -353,7 +1623,7 @@ func (c *Client) GenerateImageProgressive(ctx context.Context, prompt, size, qua
 		return nil, errors.New("image count must be between 1 and 4")
 	}
 	if count == 1 {
-		generated, err := c.generateSingleImageWithRetry(ctx, prompt, size, quality, referenceImages)
+		generated, err := c.generateSingleImageWithRetry(ctx, prompt, size, quality, referenceImages, options)
 		if err != nil {
 			return nil, err
 		}
@@ -375,7 +1645,7 @@ func (c *Client) GenerateImageProgressive(ctx context.Context, prompt, size, qua
 	results := make(chan result, count)
 	for index := 0; index < count; index++ {
 		go func(index int) {
-			generated, err := c.generateSingleImageWithRetry(ctx, prompt, size, quality, referenceImages)
+			generated, err := c.generateSingleImageWithRetry(ctx, prompt, size, quality, referenceImages, options)
 			if err != nil {
 				results <- result{index: index, err: err}
 				return
@@ -417,10 +1687,10 @@ func (c *Client) GenerateImageProgressive(ctx context.Context, prompt, size, qua
 	return nil, firstErr
 }
 
-func (c *Client) generateSingleImageWithRetry(ctx context.Context, prompt, size, quality string, referenceImages []string) ([]Image, error) {
+func (c *Client) generateSingleImageWithRetry(ctx context.Context, prompt, size, quality string, referenceImages []string, options ImageOptions) ([]Image, error) {
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
-		images, err := c.generateSingleImage(ctx, prompt, size, quality, referenceImages)
+		images, err := c.generateSingleImage(ctx, prompt, size, quality, referenceImages, options)
 		if err == nil {
 			return images, nil
 		}
@@ -455,7 +1725,7 @@ func transientImageError(err error) bool {
 	return errors.As(err, &netErr) && netErr.Temporary()
 }
 
-func (c *Client) generateSingleImage(ctx context.Context, prompt, size, quality string, referenceImages []string) ([]Image, error) {
+func (c *Client) generateSingleImage(ctx context.Context, prompt, size, quality string, referenceImages []string, options ImageOptions) ([]Image, error) {
 	prompt = buildImagePrompt(prompt, size, quality)
 	path := "/v1/images/generations"
 	payload := map[string]any{
@@ -469,6 +1739,10 @@ func (c *Client) generateSingleImage(ctx context.Context, prompt, size, quality 
 			images = append(images, map[string]string{"image_url": imageURL})
 		}
 		payload["images"] = images
+		switch fidelity := strings.ToLower(strings.TrimSpace(options.InputFidelity)); fidelity {
+		case "low", "high":
+			payload["input_fidelity"] = fidelity
+		}
 	}
 	req, err := c.newJSONRequest(ctx, path, payload)
 	if err != nil {

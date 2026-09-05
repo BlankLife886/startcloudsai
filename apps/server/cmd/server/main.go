@@ -24,6 +24,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/config"
 	"github.com/BlankLife886/startcloudsai/server/internal/diagnostics"
 	"github.com/BlankLife886/startcloudsai/server/internal/httpapi"
+	"github.com/BlankLife886/startcloudsai/server/internal/platformlog"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/storage"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
@@ -36,6 +37,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: server <serve|worker|create-admin> [flags]")
 		os.Exit(2)
 	}
+	platformlog.ConfigureConsole(os.Args[1])
 	cfg := config.Load()
 
 	var err error
@@ -46,8 +48,10 @@ func main() {
 		err = runWorker(cfg)
 	case "create-admin":
 		err = runCreateAdmin(cfg, os.Args[2:])
+	case "seed":
+		err = runSeed(cfg)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q\nusage: server <serve|worker|create-admin> [flags]\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "unknown command %q\nusage: server <serve|worker|create-admin|seed> [flags]\n", os.Args[1])
 		os.Exit(2)
 	}
 	if err != nil {
@@ -55,7 +59,27 @@ func main() {
 	}
 }
 
-func runServe(cfg *config.Config) error {
+func seedBuiltinContent(ctx context.Context, st *store.Store) error {
+	seededTemplates, err := store.SeedDefaultCanvasWorkflowTemplates(ctx, st)
+	if err != nil {
+		return err
+	}
+	if seededTemplates > 0 {
+		log.Printf("seeded %d default canvas workflow templates", seededTemplates)
+	}
+	seededChangelog, err := store.SeedDefaultChangelogEntries(ctx, st)
+	if err != nil {
+		return err
+	}
+	if seededChangelog > 0 {
+		log.Printf("seeded %d changelog entries", seededChangelog)
+	} else {
+		log.Printf("changelog seed skipped or already applied")
+	}
+	return nil
+}
+
+func runSeed(cfg *config.Config) error {
 	if err := store.Migrate(cfg.DatabaseURL); err != nil {
 		return fmt.Errorf("run migrations: %w", err)
 	}
@@ -65,6 +89,25 @@ func runServe(cfg *config.Config) error {
 		return err
 	}
 	defer st.Close()
+	return seedBuiltinContent(ctx, st)
+}
+
+func runServe(cfg *config.Config) error {
+	if err := storage.ValidateConfig(cfg); err != nil {
+		return err
+	}
+	if err := store.Migrate(cfg.DatabaseURL); err != nil {
+		return fmt.Errorf("run migrations: %w", err)
+	}
+	ctx := context.Background()
+	st, err := newStore(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	if err := seedBuiltinContent(ctx, st); err != nil {
+		return err
+	}
 	if err := settings.EncryptStoredSecrets(ctx, st.Pool, cfg.AppSecret); err != nil {
 		return fmt.Errorf("encrypt stored settings: %w", err)
 	}
@@ -79,7 +122,7 @@ func runServe(cfg *config.Config) error {
 	}
 	defer queue.Close()
 
-	c2aClient := c2a.NewWithPolicy(cfg.C2ABaseURL, cfg.C2AAPIKey, cfg.C2ATimeoutSecs, cfg.AppEnv == "development")
+	c2aClient := c2a.NewWithPolicy(cfg.C2ABaseURL, cfg.C2AAPIKey, cfg.C2ATimeoutSecs, cfg.C2APrivateNetworkAllowed())
 	server, err := httpapi.New(cfg, st, stg, c2aClient, queue)
 	if err != nil {
 		return fmt.Errorf("initialize HTTP server: %w", err)
@@ -129,6 +172,9 @@ func runServe(cfg *config.Config) error {
 }
 
 func runWorker(cfg *config.Config) error {
+	if err := storage.ValidateConfig(cfg); err != nil {
+		return err
+	}
 	ctx := context.Background()
 	st, err := newStore(ctx, cfg)
 	if err != nil {
@@ -146,7 +192,7 @@ func runWorker(cfg *config.Config) error {
 	}
 	defer queue.Close()
 
-	c2aClient := c2a.NewWithPolicy(cfg.C2ABaseURL, cfg.C2AAPIKey, cfg.C2ATimeoutSecs, cfg.AppEnv == "development")
+	c2aClient := c2a.NewWithPolicy(cfg.C2ABaseURL, cfg.C2AAPIKey, cfg.C2ATimeoutSecs, cfg.C2APrivateNetworkAllowed())
 	stopPprof := diagnostics.StartPprof(cfg.WorkerPprofAddr, "worker")
 	defer stopPprof()
 	return worker.New(cfg, st, stg, c2aClient, queue).Run()

@@ -9,23 +9,46 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/netguard"
 	"github.com/google/uuid"
+	"golang.org/x/sync/semaphore"
 )
 
 const (
-	maxResponseBytes   int64 = 64 << 20
-	maxImageBytes      int64 = 20 << 20
-	asyncSubmitTimeout       = 30 * time.Second
-	asyncPollTimeout         = 15 * time.Second
-	asyncPollInterval        = 2 * time.Second
+	maxResponseBytes int64 = 64 << 20
+	maxImageBytes    int64 = 20 << 20
+	maxTaskImages          = 16
+	// Reference images are uploaded by the upstream before it acknowledges an
+	// async task. Under concurrency that handoff can legitimately exceed one
+	// minute, so keep the POST alive long enough to receive the canonical task
+	// ID instead of cancelling valid work and trying to recover by client ID.
+	asyncSubmitTimeout = 2 * time.Minute
+	asyncPollTimeout   = 15 * time.Second
+	asyncPollInterval  = 2 * time.Second
+	// Result images are already generated when this timeout applies. A stalled
+	// media connection must fail quickly so the poll loop can retry another
+	// connection instead of hiding a transient fetch failure for minutes.
+	maxImageDownloadTimeout              = 20 * time.Second
+	imagePollStatusTimeout               = 10 * time.Second
+	imageResultDownloadConcurrency int64 = 2
 )
+
+func imageDownloadTimeout(configured time.Duration) time.Duration {
+	if configured <= 0 || configured > maxImageDownloadTimeout {
+		return maxImageDownloadTimeout
+	}
+	return configured
+}
 
 // UpstreamError 上游返回的业务错误（不重试）。
 type UpstreamError struct {
@@ -38,16 +61,46 @@ func (e *UpstreamError) Error() string { return e.Message }
 // NetworkError 连接/超时类错误（可重试一次）。
 type NetworkError struct {
 	Message string
+	Err     error
 }
 
 func (e *NetworkError) Error() string { return e.Message }
+func (e *NetworkError) Unwrap() error { return e.Err }
+func (e *NetworkError) Timeout() bool {
+	var timeout interface{ Timeout() bool }
+	if errors.As(e.Err, &timeout) && timeout.Timeout() {
+		return true
+	}
+	message := strings.ToLower(e.Message)
+	return strings.Contains(message, "timeout") || strings.Contains(message, "deadline exceeded") ||
+		strings.Contains(message, "超时")
+}
+
+type imageNotReadyError struct {
+	err error
+}
+
+func (e *imageNotReadyError) Error() string { return e.err.Error() }
+func (e *imageNotReadyError) Unwrap() error { return e.err }
 
 type Client struct {
-	BaseURL      string
-	APIKey       string
-	Timeout      time.Duration
-	HTTPClient   *http.Client
-	AllowPrivate bool
+	BaseURL          string
+	APIKey           string
+	Timeout          time.Duration
+	HTTPClient       *http.Client
+	AllowPrivate     bool
+	openAIImageEdits bool
+}
+
+// WithOpenAIImageEdits uses the standard multipart /v1/images/edits contract.
+// The default client keeps the legacy chatgpt2api JSON task protocol.
+func (c *Client) WithOpenAIImageEdits() *Client {
+	if c == nil {
+		return c
+	}
+	clone := *c
+	clone.openAIImageEdits = true
+	return &clone
 }
 
 func New(baseURL, apiKey string, timeoutSecs int) *Client {
@@ -57,10 +110,14 @@ func New(baseURL, apiKey string, timeoutSecs int) *Client {
 func NewWithPolicy(baseURL, apiKey string, timeoutSecs int, allowPrivate bool) *Client {
 	timeout := time.Duration(timeoutSecs) * time.Second
 	return &Client{
-		BaseURL:      strings.TrimRight(baseURL, "/"),
-		APIKey:       apiKey,
-		Timeout:      timeout,
-		HTTPClient:   netguard.NewHTTPClient(timeout, allowPrivate, false),
+		BaseURL: strings.TrimRight(baseURL, "/"),
+		APIKey:  apiKey,
+		Timeout: timeout,
+		// Timeout=0: a single pooled client is held for the client's lifetime and
+		// every request drives its own deadline via context.WithTimeout, so
+		// submit/poll/download all reuse keep-alive connections instead of
+		// allocating a fresh Transport (and handshaking) per request.
+		HTTPClient:   netguard.NewHTTPClient(0, allowPrivate, false),
 		AllowPrivate: allowPrivate,
 	}
 }
@@ -139,7 +196,13 @@ func (c *Client) doRequest(ctx context.Context, method, path string, payload any
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
+	reqCtx := ctx
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		reqCtx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	req, err := http.NewRequestWithContext(reqCtx, method, endpoint, body)
 	if err != nil {
 		return nil, err
 	}
@@ -148,13 +211,9 @@ func (c *Client) doRequest(ctx context.Context, method, path string, payload any
 	}
 	req.Header.Set("Authorization", "Bearer "+c.APIKey)
 
-	client := c.HTTPClient
-	if timeout != c.Timeout {
-		client = netguard.NewHTTPClient(timeout, c.AllowPrivate, false)
-	}
-	resp, err := client.Do(req)
+	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return nil, &NetworkError{Message: fmt.Sprintf("上游连接失败：%v", err)}
+		return nil, &NetworkError{Message: fmt.Sprintf("上游连接失败：%v", err), Err: err}
 	}
 	defer resp.Body.Close()
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
@@ -171,6 +230,10 @@ func (c *Client) doRequest(ctx context.Context, method, path string, payload any
 }
 
 func extractB64List(body []byte) ([]string, error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, &UpstreamError{Message: "上游未返回图片数据"}
+	}
 	var payload struct {
 		Data []map[string]any `json:"data"`
 	}
@@ -180,7 +243,7 @@ func extractB64List(body []byte) ([]string, error) {
 	var images []string
 	for _, item := range payload.Data {
 		if b64, ok := item["b64_json"].(string); ok && b64 != "" {
-			if len(images) >= 4 {
+			if len(images) >= maxTaskImages {
 				return nil, &UpstreamError{Message: "上游返回图片数量超过限制"}
 			}
 			if len(b64) > 32<<20 {
@@ -190,18 +253,204 @@ func extractB64List(body []byte) ([]string, error) {
 		}
 	}
 	if len(images) == 0 {
+		if textResult := imageTaskResultText(raw); textResult != "" {
+			return nil, &UpstreamError{Message: textResult, StatusCode: http.StatusUnprocessableEntity}
+		}
 		return nil, &UpstreamError{Message: "上游未返回图片数据"}
 	}
 	return images, nil
 }
 
 type imageTask struct {
-	ID        string           `json:"id"`
-	Status    string           `json:"status"`
-	Progress  string           `json:"progress"`
-	Error     string           `json:"error"`
-	ErrorCode string           `json:"error_code"`
-	Data      []map[string]any `json:"data"`
+	ID           string           `json:"id"`
+	ClientTaskID string           `json:"client_task_id"`
+	Status       string           `json:"status"`
+	Terminal     bool             `json:"terminal"`
+	Progress     string           `json:"progress"`
+	Error        string           `json:"error"`
+	ErrorCode    string           `json:"error_code"`
+	TextResult   string           `json:"-"`
+	Data         []map[string]any `json:"data"`
+	Results      []map[string]any `json:"results"`
+}
+
+func (t *imageTask) UnmarshalJSON(buf []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(buf, &raw); err != nil {
+		return err
+	}
+	readString := func(keys ...string) string {
+		for _, key := range keys {
+			val, ok := raw[key]
+			if !ok {
+				continue
+			}
+			var text string
+			if json.Unmarshal(val, &text) == nil {
+				text = strings.TrimSpace(text)
+				if text != "" {
+					return text
+				}
+			}
+		}
+		return ""
+	}
+	readBool := func(keys ...string) bool {
+		for _, key := range keys {
+			if value, ok := raw[key]; ok {
+				var result bool
+				if json.Unmarshal(value, &result) == nil {
+					return result
+				}
+			}
+		}
+		return false
+	}
+	t.ID = readString("id")
+	t.ClientTaskID = readString("client_task_id", "clientTaskId")
+	t.Status = readString("status", "state")
+	t.Terminal = readBool("terminal", "done")
+	t.Progress = readString("progress")
+	t.ErrorCode = readString("error_code", "errorCode")
+	t.TextResult = imageTaskResultText(raw)
+	t.Error = readString("error", "message", "public_error", "publicError", "error_message", "errorMessage")
+	if t.Error == "" {
+		t.Error = imageTaskFailureMessage(raw)
+	}
+	if t.Error == "" {
+		t.Error = t.TextResult
+	}
+	t.Data = decodeImageObjectArray(raw["data"])
+	t.Results = decodeImageObjectArray(raw["results"])
+	if len(t.Data) == 0 && len(t.Results) == 0 {
+		t.Data = decodeImageObjectArray(raw["images"])
+	}
+	if len(t.Data) == 0 && len(t.Results) == 0 {
+		t.Data = imagesFromNestedPayload(raw["result"])
+	}
+	if len(t.Data) == 0 && len(t.Results) == 0 {
+		t.Data = imagesFromNestedPayload(raw["output"])
+	}
+	if url := readString("image_url", "imageUrl"); url != "" && len(t.Data) == 0 && len(t.Results) == 0 {
+		t.Data = []map[string]any{{"url": url}}
+	}
+	return nil
+}
+
+// imageTaskFailureMessage reads only known text-bearing fields. Some C2A
+// deployments return a final review/refusal explanation under result/output/data
+// while keeping status=text_review and leaving error empty.
+func imageTaskFailureMessage(raw map[string]json.RawMessage) string {
+	for _, key := range []string{
+		"error", "message", "detail", "reason", "error_description", "errorDescription",
+		"public_error", "publicError", "error_message", "errorMessage",
+		"output_text", "outputText", "text", "response",
+	} {
+		if message := imageTaskTextValue(raw[key], 0); message != "" {
+			return message
+		}
+	}
+	for _, key := range []string{"result", "output", "data", "results"} {
+		if message := imageTaskTextValue(raw[key], 0); message != "" {
+			return message
+		}
+	}
+	return ""
+}
+
+// imageTaskResultText intentionally excludes top-level message/error fields:
+// gateways commonly use message for acknowledgements such as "task accepted".
+// Text nested in result/output/data/results is response content and, when no
+// image is present, is a terminal non-image result regardless of status.
+func imageTaskResultText(raw map[string]json.RawMessage) string {
+	for _, key := range []string{"output_text", "outputText", "text", "response"} {
+		if message := imageTaskTextValue(raw[key], 0); message != "" {
+			return message
+		}
+	}
+	for _, key := range []string{"result", "output", "data", "results"} {
+		if message := imageTaskTextValue(raw[key], 0); message != "" {
+			return message
+		}
+	}
+	return ""
+}
+
+func imageTaskTextValue(raw json.RawMessage, depth int) string {
+	if len(raw) == 0 || depth >= 5 {
+		return ""
+	}
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return truncate(strings.TrimSpace(text), 2000)
+	}
+	var object map[string]json.RawMessage
+	if json.Unmarshal(raw, &object) == nil {
+		for _, key := range []string{
+			"error", "message", "detail", "reason", "error_description", "errorDescription",
+			"public_error", "publicError", "error_message", "errorMessage",
+			"output_text", "outputText", "text", "response", "content",
+		} {
+			if message := imageTaskTextValue(object[key], depth+1); message != "" {
+				return message
+			}
+		}
+		for _, key := range []string{"result", "output", "data", "results"} {
+			if message := imageTaskTextValue(object[key], depth+1); message != "" {
+				return message
+			}
+		}
+		return ""
+	}
+	var array []json.RawMessage
+	if json.Unmarshal(raw, &array) == nil {
+		if len(array) > 20 {
+			array = array[:20]
+		}
+		for _, item := range array {
+			if message := imageTaskTextValue(item, depth+1); message != "" {
+				return message
+			}
+		}
+	}
+	return ""
+}
+
+func decodeImageObjectArray(raw json.RawMessage) []map[string]any {
+	if len(raw) == 0 {
+		return nil
+	}
+	var items []map[string]any
+	if json.Unmarshal(raw, &items) == nil && len(items) > 0 {
+		return items
+	}
+	return nil
+}
+
+func imagesFromNestedPayload(raw json.RawMessage) []map[string]any {
+	if len(raw) == 0 {
+		return nil
+	}
+	if items := decodeImageObjectArray(raw); len(items) > 0 {
+		return items
+	}
+	var payload map[string]any
+	if json.Unmarshal(raw, &payload) != nil {
+		return nil
+	}
+	for _, key := range []string{"data", "images", "results"} {
+		nested, _ := json.Marshal(payload[key])
+		if items := decodeImageObjectArray(nested); len(items) > 0 {
+			return items
+		}
+	}
+	if url, ok := payload["url"].(string); ok && strings.TrimSpace(url) != "" {
+		return []map[string]any{{"url": strings.TrimSpace(url)}}
+	}
+	if url, ok := payload["image_url"].(string); ok && strings.TrimSpace(url) != "" {
+		return []map[string]any{{"url": strings.TrimSpace(url)}}
+	}
+	return nil
 }
 
 type imageTaskList struct {
@@ -210,9 +459,29 @@ type imageTaskList struct {
 }
 
 type ImageTaskPollResult struct {
-	Images  []string
-	Pending bool
-	Err     error
+	Images          []string
+	Pending         bool
+	Missing         bool
+	ExplicitFailure bool
+	Status          string
+	ErrorMessage    string
+	Err             error
+	// CompletedAt 是轮询首次看到上游 succeeded 的时刻（下载开始前）。
+	// 时间线用它计算真实上游耗时，避免把本地串行下载/入库算进“上游生成”。
+	CompletedAt time.Time
+	// ImagePayload 是上游返回的 url / b64 列表。状态轮询可以只带回这个字段，
+	// 由 worker 按配置的并发去下载，避免询问进度被拉图堵住。
+	ImagePayload []map[string]any
+	// DownloadMs / DownloadBytes 记录本次结果图从上游下载回来的耗时与体积，
+	// 供任务时间线区分“上游生成慢”与“回传网络慢”。
+	DownloadMs    int64
+	DownloadBytes int64
+}
+
+// downloadStats 累计一次轮询中结果图的下载耗时与字节数。
+type downloadStats struct {
+	Ms    int64
+	Bytes int64
 }
 
 func parseImageTask(body []byte) (imageTask, error) {
@@ -229,11 +498,31 @@ func parseImageTaskList(body []byte, taskID string) (imageTask, error) {
 		return imageTask{}, &UpstreamError{Message: "上游未返回有效的图片任务状态"}
 	}
 	for _, task := range payload.Items {
-		if task.ID == taskID {
+		if imageTaskMatchesID(task, taskID) {
 			return task, nil
 		}
 	}
 	return imageTask{}, &NetworkError{Message: "上游图片任务暂时不可查询"}
+}
+
+func imageTaskMatchesID(task imageTask, taskID string) bool {
+	if task.ID == taskID {
+		return true
+	}
+	return strings.TrimSpace(task.ClientTaskID) == taskID
+}
+
+func imageTaskRequestedID(task imageTask, requested map[string]struct{}) (string, bool) {
+	if _, ok := requested[task.ID]; ok {
+		return task.ID, true
+	}
+	clientID := strings.TrimSpace(task.ClientTaskID)
+	if clientID != "" {
+		if _, ok := requested[clientID]; ok {
+			return clientID, true
+		}
+	}
+	return "", false
 }
 
 func (c *Client) normalizeImageURL(raw string) (*url.URL, bool, error) {
@@ -249,6 +538,14 @@ func (c *Client) normalizeImageURL(raw string) (*url.URL, bool, error) {
 		origin := *base
 		origin.Path, origin.RawPath, origin.RawQuery, origin.Fragment = "/", "", "", ""
 		target = origin.ResolveReference(target)
+	}
+	// Some chatgpt2api deployments serialize their Docker service name in the
+	// result URL. Route that known internal origin through the configured public
+	// endpoint while preserving the generated image path and query string.
+	if strings.EqualFold(strings.TrimSuffix(target.Hostname(), "."), "chatgpt2api") {
+		target.Scheme = base.Scheme
+		target.Host = base.Host
+		target.User = nil
 	}
 	if err := netguard.ValidateURL(target.String(), c.AllowPrivate, false); err != nil {
 		return nil, false, &UpstreamError{Message: "上游图片地址不安全"}
@@ -269,11 +566,12 @@ func (c *Client) downloadImageB64(ctx context.Context, rawURL string) (string, e
 	if sameOrigin {
 		req.Header.Set("Authorization", "Bearer "+c.APIKey)
 	}
-	timeout := c.Timeout
-	if timeout <= 0 || timeout > time.Minute {
-		timeout = time.Minute
-	}
-	resp, err := netguard.NewHTTPClient(timeout, c.AllowPrivate, false).Do(req)
+	timeout := imageDownloadTimeout(c.Timeout)
+	dlCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	req = req.WithContext(dlCtx)
+	downloadStartedAt := time.Now()
+	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
 		return "", &NetworkError{Message: fmt.Sprintf("下载上游图片失败：%v", err)}
 	}
@@ -282,7 +580,11 @@ func (c *Client) downloadImageB64(ctx context.Context, rawURL string) (string, e
 		return "", &UpstreamError{Message: "上游图片下载跳转地址不安全"}
 	}
 	if resp.StatusCode >= 400 {
-		return "", &UpstreamError{Message: fmt.Sprintf("下载上游图片失败（HTTP %d）", resp.StatusCode), StatusCode: resp.StatusCode}
+		err := &UpstreamError{Message: fmt.Sprintf("下载上游图片失败（HTTP %d）", resp.StatusCode), StatusCode: resp.StatusCode}
+		if resp.StatusCode == http.StatusNotFound {
+			return "", &imageNotReadyError{err: err}
+		}
+		return "", err
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxImageBytes+1))
 	if err != nil {
@@ -294,65 +596,254 @@ func (c *Client) downloadImageB64(ctx context.Context, rawURL string) (string, e
 	if !strings.HasPrefix(http.DetectContentType(data), "image/") {
 		return "", &UpstreamError{Message: "上游图片格式无效"}
 	}
+	log.Printf("c2a image download host=%s bytes=%d duration_ms=%d",
+		target.Host, len(data), time.Since(downloadStartedAt).Milliseconds())
 	return base64.StdEncoding.EncodeToString(data), nil
 }
 
-func (c *Client) taskImagesB64(ctx context.Context, data []map[string]any) ([]string, error) {
-	images := make([]string, 0, len(data))
-	for _, item := range data {
-		if len(images) >= 4 {
-			return nil, &UpstreamError{Message: "上游返回图片数量超过限制"}
-		}
-		if b64, ok := item["b64_json"].(string); ok && b64 != "" {
-			if len(b64) > 32<<20 {
-				return nil, &UpstreamError{Message: "上游返回的单张图片超过限制"}
-			}
-			images = append(images, b64)
-			continue
-		}
-		if rawURL, ok := item["url"].(string); ok && rawURL != "" {
-			b64, err := c.downloadImageB64(ctx, rawURL)
-			if err != nil {
-				return nil, err
-			}
-			images = append(images, b64)
+func nonEmptyImageCount(images []string) int {
+	count := 0
+	for _, image := range images {
+		if image != "" {
+			count++
 		}
 	}
-	return images, nil
+	return count
+}
+
+func (c *Client) taskImagesB64(ctx context.Context, data []map[string]any) ([]string, downloadStats, error) {
+	if len(data) > maxTaskImages {
+		return nil, downloadStats{}, &UpstreamError{Message: "上游返回图片数量超过限制"}
+	}
+	images := make([]string, len(data))
+	type downloadResult struct {
+		ms    int64
+		bytes int64
+		err   error
+	}
+	results := make([]downloadResult, len(data))
+	var wg sync.WaitGroup
+	for index, item := range data {
+		if b64, ok := item["b64_json"].(string); ok && b64 != "" {
+			if len(b64) > 32<<20 {
+				return nil, downloadStats{}, &UpstreamError{Message: "上游返回的单张图片超过限制"}
+			}
+			images[index] = b64
+			continue
+		}
+		rawURL, _ := item["url"].(string)
+		if strings.TrimSpace(rawURL) == "" {
+			continue
+		}
+		wg.Add(1)
+		go func(index int, rawURL string) {
+			defer wg.Done()
+			startedAt := time.Now()
+			b64, err := c.downloadImageB64(ctx, rawURL)
+			results[index].ms = time.Since(startedAt).Milliseconds()
+			if err != nil {
+				results[index].err = err
+				host := "unknown"
+				if parsed, parseErr := url.Parse(strings.TrimSpace(rawURL)); parseErr == nil && parsed.Host != "" {
+					host = parsed.Host
+				}
+				log.Printf("c2a image download failed host=%s duration_ms=%d kind=%s retryable=%t",
+					host, results[index].ms, imageDownloadErrorKind(err), isRetryablePollError(err))
+				return
+			}
+			results[index].bytes = int64(base64.StdEncoding.DecodedLen(len(b64)))
+			images[index] = b64
+		}(index, rawURL)
+	}
+	wg.Wait()
+	var stats downloadStats
+	var firstErr error
+	for _, result := range results {
+		if result.ms > stats.Ms {
+			stats.Ms = result.ms
+		}
+		stats.Bytes += result.bytes
+		if result.err != nil && firstErr == nil {
+			firstErr = result.err
+		}
+	}
+	return images, stats, firstErr
+}
+
+func imageDownloadErrorKind(err error) string {
+	var notReady *imageNotReadyError
+	if errors.As(err, &notReady) {
+		return "not_ready"
+	}
+	var networkErr *NetworkError
+	if errors.As(err, &networkErr) {
+		if networkErr.Timeout() || errors.Is(err, context.DeadlineExceeded) {
+			return "timeout"
+		}
+		return "network"
+	}
+	var upstreamErr *UpstreamError
+	if errors.As(err, &upstreamErr) && upstreamErr.StatusCode > 0 {
+		return fmt.Sprintf("http_%d", upstreamErr.StatusCode)
+	}
+	return "invalid_response"
 }
 
 func imageTaskError(task imageTask) error {
 	message := strings.TrimSpace(task.Error)
 	if message == "" {
-		message = "上游图片任务失败"
+		switch normalizedImageTaskStatus(task) {
+		case "text_review", "text", "text_result", "text_response", "文本":
+			message = "上游返回文本，未生成图片"
+		default:
+			message = "上游图片任务失败"
+		}
 	}
 	if task.ErrorCode != "" {
 		message = task.ErrorCode + ": " + message
 	}
-	return &UpstreamError{Message: truncate(message, 2000), StatusCode: http.StatusBadGateway}
+	statusCode := http.StatusBadGateway
+	if imageTaskIsTextFailure(task) {
+		// A text response is an explicit business result, not an ambiguous gateway
+		// failure. Mark it non-retryable so workers do not re-enter async polling.
+		statusCode = http.StatusUnprocessableEntity
+	}
+	return &UpstreamError{Message: truncate(message, 2000), StatusCode: statusCode}
 }
 
-func (c *Client) completedTaskImages(ctx context.Context, task imageTask, expected int) ([]string, bool, error) {
-	status := strings.ToLower(strings.TrimSpace(task.Status))
-	if len(task.Data) > 0 && (status == "success" || status == "error" || len(task.Data) >= expected) {
-		images, err := c.taskImagesB64(ctx, task.Data)
-		if err != nil {
-			return nil, true, err
+func imageTaskResults(task imageTask) []map[string]any {
+	if imagePayloadHasImage(task.Data) {
+		return task.Data
+	}
+	if imagePayloadHasImage(task.Results) {
+		return task.Results
+	}
+	if len(task.Data) > 0 {
+		return task.Data
+	}
+	return task.Results
+}
+
+func imagePayloadHasImage(results []map[string]any) bool {
+	for _, item := range results {
+		if b64, ok := item["b64_json"].(string); ok && strings.TrimSpace(b64) != "" {
+			return true
 		}
-		if len(images) > 0 {
-			return images, true, nil
+		if rawURL, ok := item["url"].(string); ok && strings.TrimSpace(rawURL) != "" {
+			return true
 		}
 	}
+	return false
+}
+
+func imagePayloadNeedsHTTP(results []map[string]any) bool {
+	for _, item := range results {
+		if b64, ok := item["b64_json"].(string); ok && strings.TrimSpace(b64) != "" {
+			continue
+		}
+		if rawURL, ok := item["url"].(string); ok && strings.TrimSpace(rawURL) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// DownloadTaskImages 把上游返回的 url / b64 列表转成本地 base64。
+func (c *Client) DownloadTaskImages(ctx context.Context, data []map[string]any) ([]string, int64, int64, error) {
+	images, stats, err := c.taskImagesB64(ctx, data)
+	return images, stats.Ms, stats.Bytes, err
+}
+
+func normalizedImageTaskStatus(task imageTask) string {
+	return strings.ToLower(strings.TrimSpace(task.Status))
+}
+
+func imageTaskStatusPending(status string) bool {
+	// 只有明确成功/失败才是终态。moderating 等审核中间态和上游新增的
+	// 未知状态继续轮询；text_review 表示图片请求返回了文本，直接失败。
+	return !imageTaskStatusSucceeded(status) && !imageTaskStatusFailed(status)
+}
+
+func imageTaskStatusSucceeded(status string) bool {
 	switch status {
-	case "queued", "running", "":
-		return nil, false, nil
-	case "success":
-		return nil, true, &UpstreamError{Message: "上游图片任务成功但未返回图片", StatusCode: http.StatusBadGateway}
-	case "error":
-		return nil, true, imageTaskError(task)
+	case "success", "succeeded", "successful", "partial_success", "partially_succeeded", "completed", "complete", "done", "ok", "finished", "finished_successfully":
+		return true
 	default:
-		return nil, true, &UpstreamError{Message: "上游返回未知图片任务状态：" + status, StatusCode: http.StatusBadGateway}
+		return false
 	}
+}
+
+func imageTaskStatusFailed(status string) bool {
+	switch status {
+	case "error", "failed", "canceled", "cancelled", "expired", "text_review", "text", "text_result", "text_response", "文本":
+		return true
+	default:
+		return false
+	}
+}
+
+func ImagePollHoldsForReview(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "moderating", "reviewing":
+		return true
+	default:
+		return false
+	}
+}
+
+func imageTaskIsTextFailure(task imageTask) bool {
+	// A provider may include explanatory text alongside a valid image. The image
+	// is the requested result and must win over the auxiliary text.
+	if imagePayloadHasImage(imageTaskResults(task)) {
+		return false
+	}
+	if strings.TrimSpace(task.TextResult) != "" {
+		return true
+	}
+	status := normalizedImageTaskStatus(task)
+	if imageTaskStatusFailed(status) {
+		switch status {
+		case "text_review", "text", "text_result", "text_response", "文本":
+			return true
+		}
+	}
+	message := strings.TrimSpace(task.Error)
+	return strings.Contains(message, "上游返回文本") || strings.Contains(strings.ToLower(message), "returned text")
+}
+
+func (c *Client) completedTaskImages(ctx context.Context, task imageTask, expected int) ([]string, downloadStats, bool, error) {
+	if imageTaskIsTextFailure(task) {
+		return nil, downloadStats{}, true, imageTaskError(task)
+	}
+	status := normalizedImageTaskStatus(task)
+	results := imageTaskResults(task)
+	var stats downloadStats
+	if len(results) > 0 && (imageTaskStatusSucceeded(status) || imageTaskStatusFailed(status) || len(results) >= expected) {
+		images, dlStats, err := c.taskImagesB64(ctx, results)
+		stats = dlStats
+		if err != nil {
+			if isRetryablePollError(err) {
+				return images, stats, false, err
+			}
+			return images, stats, true, err
+		}
+		if nonEmptyImageCount(images) > 0 {
+			return images, stats, true, nil
+		}
+	}
+	if imageTaskStatusPending(status) {
+		return nil, stats, false, nil
+	}
+	if imageTaskStatusSucceeded(status) {
+		return nil, stats, true, &UpstreamError{Message: "上游图片任务成功但未返回图片", StatusCode: http.StatusBadGateway}
+	}
+	if task.Terminal {
+		return nil, stats, true, imageTaskError(task)
+	}
+	if imageTaskStatusFailed(status) {
+		return nil, stats, true, imageTaskError(task)
+	}
+	return nil, stats, false, nil
 }
 
 func (c *Client) submitAndPollImageTask(ctx context.Context, endpoint, taskID string, payload map[string]any, expected int) ([]string, error) {
@@ -364,26 +855,34 @@ func (c *Client) submitAndPollImageTask(ctx context.Context, endpoint, taskID st
 	defer cancel()
 
 	body, err := c.doRequest(taskCtx, http.MethodPost, endpoint, payload, asyncSubmitTimeout)
-	if err != nil {
+	if err != nil && !isRetryablePollError(err) {
 		return nil, err
 	}
-	task, err := parseImageTask(body)
-	if err != nil {
-		return nil, err
+	var task imageTask
+	if err == nil {
+		task, err = parseImageTask(body)
+		if err != nil {
+			return nil, err
+		}
 	}
-	bestData := task.Data
-	if images, done, err := c.completedTaskImages(taskCtx, task, expected); done {
-		return images, err
+	// A submit timeout/5xx is ambiguous: the upstream may have accepted the
+	// deterministic client_task_id and continued after our connection closed.
+	// Poll that id instead of resubmitting or declaring a false failure.
+	bestData := imageTaskResults(task)
+	if task.ID != "" {
+		if images, _, done, taskErr := c.completedTaskImages(taskCtx, task, expected); done {
+			return images, taskErr
+		}
 	}
 	recoverBest := func(fallback error) ([]string, error) {
 		if len(bestData) == 0 {
 			return nil, fallback
 		}
-		images, imageErr := c.taskImagesB64(ctx, bestData)
+		images, _, imageErr := c.taskImagesB64(ctx, bestData)
 		if imageErr != nil {
 			return nil, imageErr
 		}
-		if len(images) == 0 {
+		if nonEmptyImageCount(images) == 0 {
 			return nil, fallback
 		}
 		return images, nil
@@ -418,10 +917,10 @@ func (c *Client) submitAndPollImageTask(ctx context.Context, endpoint, taskID st
 				return recoverBest(err)
 			}
 			lastPollError = nil
-			if len(task.Data) > len(bestData) {
-				bestData = task.Data
+			if results := imageTaskResults(task); len(results) > len(bestData) {
+				bestData = results
 			}
-			if images, done, err := c.completedTaskImages(taskCtx, task, expected); done {
+			if images, _, done, err := c.completedTaskImages(taskCtx, task, expected); done {
 				if err != nil {
 					return recoverBest(err)
 				}
@@ -432,20 +931,28 @@ func (c *Client) submitAndPollImageTask(ctx context.Context, endpoint, taskID st
 }
 
 // SubmitImageTask submits once and reports whether the upstream task still
-// needs polling. It is used by queue workers so upstream wait time does not
-// occupy a worker goroutine.
-func (c *Client) SubmitImageTask(ctx context.Context, endpoint, taskID string, payload map[string]any, expected int) ([]string, bool, error) {
+// needs polling. Queue workers wait only for the upstream acknowledgement;
+// generation itself continues through the lightweight poll queue.
+func (c *Client) submitImageTaskTracked(ctx context.Context, endpoint, taskID string, payload map[string]any, expected int) ([]string, bool, string, error) {
 	payload["client_task_id"] = taskID
 	body, err := c.doRequest(ctx, http.MethodPost, endpoint, payload, asyncSubmitTimeout)
 	if err != nil {
-		return nil, false, err
+		return nil, false, "", err
 	}
 	task, err := parseImageTask(body)
 	if err != nil {
-		return nil, false, err
+		return nil, false, "", err
 	}
-	images, done, err := c.completedTaskImages(ctx, task, expected)
-	return images, !done, err
+	images, _, done, err := c.completedTaskImages(ctx, task, expected)
+	if !done {
+		return images, true, strings.TrimSpace(task.ID), nil
+	}
+	return images, false, strings.TrimSpace(task.ID), err
+}
+
+func (c *Client) SubmitImageTask(ctx context.Context, endpoint, taskID string, payload map[string]any, expected int) ([]string, bool, error) {
+	images, pending, _, err := c.submitImageTaskTracked(ctx, endpoint, taskID, payload, expected)
+	return images, pending, err
 }
 
 // PollImageTask performs exactly one status request.
@@ -455,44 +962,229 @@ func (c *Client) PollImageTask(ctx context.Context, taskID string, expected int)
 	return result.Images, result.Pending, result.Err
 }
 
-// PollImageTasks fetches up to 100 task states in one upstream request.
-func (c *Client) PollImageTasks(ctx context.Context, taskIDs []string, expected map[string]int) map[string]ImageTaskPollResult {
-	results := make(map[string]ImageTaskPollResult, len(taskIDs))
-	if len(taskIDs) == 0 {
-		return results
+// PollImageTasksEach reads one batch status response, then downloads any
+// completed images with bounded concurrency. emit may be invoked concurrently.
+func (c *Client) PollImageTasksEach(ctx context.Context, taskIDs []string, expected map[string]int, emit func(string, ImageTaskPollResult)) {
+	c.pollImageTasksEach(ctx, taskIDs, expected, nil, emit, true)
+}
+
+// PollImageTasksEachGuarded invokes beforeImages immediately before a terminal
+// task's image payload is downloaded or decoded. Returning false skips that
+// task, allowing workers to acquire a database completion claim only when the
+// task can actually produce a result. emit may be invoked concurrently.
+func (c *Client) PollImageTasksEachGuarded(ctx context.Context, taskIDs []string, expected map[string]int, beforeImages func(string) bool, emit func(string, ImageTaskPollResult)) {
+	c.pollImageTasksEach(ctx, taskIDs, expected, beforeImages, emit, true)
+}
+
+// PollImageTaskStatusesGuarded only decodes task status. URL payloads are
+// returned on ImagePayload so callers can download them outside the poll loop.
+func (c *Client) PollImageTaskStatusesGuarded(ctx context.Context, taskIDs []string, expected map[string]int, beforeImages func(string) bool, emit func(string, ImageTaskPollResult)) {
+	c.pollImageTasksEach(ctx, taskIDs, expected, beforeImages, emit, false)
+}
+
+func (c *Client) pollImageTasksEach(ctx context.Context, taskIDs []string, expected map[string]int, beforeImages func(string) bool, emit func(string, ImageTaskPollResult), fetchImages bool) {
+	if len(taskIDs) == 0 || emit == nil {
+		return
 	}
 	if len(taskIDs) > 100 {
 		taskIDs = taskIDs[:100]
 	}
-	statusPath := "/api/image-tasks?ids=" + url.QueryEscape(strings.Join(taskIDs, ","))
-	body, err := c.doRequest(ctx, http.MethodGet, statusPath, nil, asyncPollTimeout)
-	if err != nil {
-		for _, taskID := range taskIDs {
-			results[taskID] = ImageTaskPollResult{Err: err}
-		}
-		return results
-	}
-	var payload imageTaskList
-	if err := json.Unmarshal(body, &payload); err != nil {
-		pollErr := &UpstreamError{Message: "上游未返回有效的图片任务状态"}
-		for _, taskID := range taskIDs {
-			results[taskID] = ImageTaskPollResult{Err: pollErr}
-		}
-		return results
-	}
-	byID := make(map[string]imageTask, len(payload.Items))
-	for _, task := range payload.Items {
-		byID[task.ID] = task
-	}
+	requested := make(map[string]struct{}, len(taskIDs))
 	for _, taskID := range taskIDs {
-		task, ok := byID[taskID]
-		if !ok {
-			results[taskID] = ImageTaskPollResult{Pending: true}
+		requested[taskID] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(taskIDs))
+	emitRemaining := func(result ImageTaskPollResult) {
+		for _, taskID := range taskIDs {
+			if _, ok := seen[taskID]; ok {
+				continue
+			}
+			seen[taskID] = struct{}{}
+			emit(taskID, result)
+		}
+	}
+
+	statusPath := "/api/image-tasks?ids=" + url.QueryEscape(strings.Join(taskIDs, ","))
+	endpoint, err := c.endpointURL(statusPath)
+	if err != nil {
+		emitRemaining(ImageTaskPollResult{Err: err})
+		return
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		emitRemaining(ImageTaskPollResult{Err: err})
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	// Status JSON is fully decoded before any image download so the upstream
+	// connection is not held idle while we persist results.
+	streamCtx, cancel := context.WithTimeout(ctx, imagePollStatusTimeout)
+	defer cancel()
+	req = req.WithContext(streamCtx)
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		emitRemaining(ImageTaskPollResult{Err: &NetworkError{Message: fmt.Sprintf("上游连接失败：%v", err)}})
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+		if readErr != nil {
+			emitRemaining(ImageTaskPollResult{Err: &NetworkError{Message: fmt.Sprintf("上游连接失败：%v", readErr)}})
+			return
+		}
+		emitRemaining(ImageTaskPollResult{Err: &UpstreamError{Message: errorMessage(body), StatusCode: resp.StatusCode}})
+		return
+	}
+
+	limited := &io.LimitedReader{R: resp.Body, N: maxResponseBytes + 1}
+	decoder := json.NewDecoder(limited)
+	failDecode := func(decodeErr error) error {
+		if limited.N <= 0 {
+			return &UpstreamError{Message: "上游响应超过 64 MiB 限制", StatusCode: http.StatusBadGateway}
+		}
+		return &UpstreamError{Message: "上游未返回有效的图片任务状态：" + truncate(decodeErr.Error(), 500)}
+	}
+	var items []imageTask
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		if err == nil {
+			err = errors.New("invalid response object")
+		}
+		emitRemaining(ImageTaskPollResult{Err: failDecode(err)})
+		return
+	}
+	for decoder.More() {
+		keyToken, keyErr := decoder.Token()
+		if keyErr != nil {
+			emitRemaining(ImageTaskPollResult{Err: failDecode(keyErr)})
+			return
+		}
+		key, _ := keyToken.(string)
+		if key != "items" {
+			var discard json.RawMessage
+			if err := decoder.Decode(&discard); err != nil {
+				emitRemaining(ImageTaskPollResult{Err: failDecode(err)})
+				return
+			}
 			continue
 		}
-		images, done, taskErr := c.completedTaskImages(ctx, task, expected[taskID])
-		results[taskID] = ImageTaskPollResult{Images: images, Pending: !done, Err: taskErr}
+		arrayToken, arrayErr := decoder.Token()
+		if arrayErr != nil || arrayToken != json.Delim('[') {
+			if arrayErr == nil {
+				arrayErr = errors.New("invalid items array")
+			}
+			emitRemaining(ImageTaskPollResult{Err: failDecode(arrayErr)})
+			return
+		}
+		for decoder.More() {
+			var task imageTask
+			if err := decoder.Decode(&task); err != nil {
+				emitRemaining(ImageTaskPollResult{Err: failDecode(err)})
+				return
+			}
+			requestedID, wanted := imageTaskRequestedID(task, requested)
+			if !wanted {
+				continue
+			}
+			task.ID = requestedID
+			items = append(items, task)
+		}
+		if _, err := decoder.Token(); err != nil {
+			emitRemaining(ImageTaskPollResult{Err: failDecode(err)})
+			return
+		}
 	}
+	if _, err := decoder.Token(); err != nil {
+		emitRemaining(ImageTaskPollResult{Err: failDecode(err)})
+		return
+	}
+	_ = resp.Body.Close()
+
+	type downloadJob struct {
+		task        imageTask
+		completedAt time.Time
+	}
+	var jobs []downloadJob
+	emitPollResult := func(task imageTask, images []string, payload []map[string]any, stats downloadStats, done bool, taskErr error, completedAt time.Time) {
+		emit(task.ID, ImageTaskPollResult{
+			Images: images, ImagePayload: payload, Pending: !done,
+			ExplicitFailure: imageTaskStatusFailed(normalizedImageTaskStatus(task)) || imageTaskIsTextFailure(task),
+			Status:          normalizedImageTaskStatus(task),
+			ErrorMessage:    strings.TrimSpace(task.Error),
+			Err:             taskErr,
+			CompletedAt:     completedAt,
+			DownloadMs:      stats.Ms,
+			DownloadBytes:   stats.Bytes,
+		})
+	}
+	for _, task := range items {
+		seen[task.ID] = struct{}{}
+		if imageTaskNeedsCompletionClaim(task, expected[task.ID]) {
+			if beforeImages != nil && !beforeImages(task.ID) {
+				continue
+			}
+			completedAt := time.Time{}
+			if imageTaskStatusSucceeded(normalizedImageTaskStatus(task)) {
+				completedAt = time.Now()
+			}
+			payload := imageTaskResults(task)
+			if !fetchImages && imagePayloadNeedsHTTP(payload) {
+				emitPollResult(task, nil, payload, downloadStats{}, true, nil, completedAt)
+				continue
+			}
+			jobs = append(jobs, downloadJob{task: task, completedAt: completedAt})
+			continue
+		}
+		images, dlStats, done, taskErr := c.completedTaskImages(ctx, task, expected[task.ID])
+		emitPollResult(task, images, nil, dlStats, done, taskErr, time.Time{})
+	}
+
+	downloadSem := semaphore.NewWeighted(imageResultDownloadConcurrency)
+	var wg sync.WaitGroup
+	for _, job := range jobs {
+		job := job
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := downloadSem.Acquire(ctx, 1); err != nil {
+				emitPollResult(job.task, nil, nil, downloadStats{}, false, err, job.completedAt)
+				return
+			}
+			defer downloadSem.Release(1)
+			images, dlStats, done, taskErr := c.completedTaskImages(ctx, job.task, expected[job.task.ID])
+			emitPollResult(job.task, images, nil, dlStats, done, taskErr, job.completedAt)
+		}()
+	}
+	wg.Wait()
+
+	// A requested task omitted from items is not evidence of success or
+	// failure. Expose it as an explicit unknown/missing outcome so callers can
+	// apply a short consistency grace and then fail over without hanging.
+	emitRemaining(ImageTaskPollResult{Pending: true, Missing: true})
+}
+
+func imageTaskNeedsCompletionClaim(task imageTask, expected int) bool {
+	if task.Terminal || imageTaskIsTextFailure(task) {
+		return true
+	}
+	status := normalizedImageTaskStatus(task)
+	if !imageTaskStatusPending(status) {
+		return true
+	}
+	results := imageTaskResults(task)
+	return len(results) > 0 && len(results) >= expected
+}
+
+// PollImageTasks fetches up to 100 task states in one upstream request.
+func (c *Client) PollImageTasks(ctx context.Context, taskIDs []string, expected map[string]int) map[string]ImageTaskPollResult {
+	results := make(map[string]ImageTaskPollResult, len(taskIDs))
+	var mu sync.Mutex
+	c.PollImageTasksEach(ctx, taskIDs, expected, func(taskID string, result ImageTaskPollResult) {
+		mu.Lock()
+		results[taskID] = result
+		mu.Unlock()
+	})
 	return results
 }
 
@@ -512,14 +1204,211 @@ func imageGenerationPayload(prompt, model string, n int, size string, options Im
 func imageEditPayload(prompt, model string, n int, inputImagesB64 []string, size string, options ImageOptions) map[string]any {
 	images := make([]map[string]string, 0, len(inputImagesB64))
 	for _, b64 := range inputImagesB64 {
-		images = append(images, map[string]string{"b64_json": b64})
+		images = append(images, map[string]string{"b64_json": imageBase64Value(b64)})
 	}
 	payload := imageGenerationPayload(prompt, model, n, size, options)
 	payload["images"] = images
+	switch fidelity := strings.ToLower(strings.TrimSpace(options.InputFidelity)); fidelity {
+	case "low", "high":
+		payload["input_fidelity"] = fidelity
+	}
 	return payload
 }
 
+func imageBase64Value(value string) string {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(strings.ToLower(value), "data:") {
+		if comma := strings.IndexByte(value, ','); comma >= 0 {
+			return strings.TrimSpace(value[comma+1:])
+		}
+	}
+	return value
+}
+
+func imageEditURLPayload(prompt, model string, n int, inputImagesB64 []string, size string, options ImageOptions) (map[string]any, error) {
+	images := make([]map[string]string, 0, len(inputImagesB64))
+	for _, input := range inputImagesB64 {
+		value := strings.TrimSpace(input)
+		if strings.HasPrefix(strings.ToLower(value), "data:image/") {
+			images = append(images, map[string]string{"image_url": value})
+			continue
+		}
+		raw := imageBase64Value(value)
+		data, err := base64.StdEncoding.DecodeString(raw)
+		if err != nil {
+			return nil, &UpstreamError{Message: "参考图 Base64 数据无效"}
+		}
+		contentType := http.DetectContentType(data)
+		if !strings.HasPrefix(contentType, "image/") {
+			return nil, &UpstreamError{Message: "参考图格式无效"}
+		}
+		images = append(images, map[string]string{"image_url": "data:" + contentType + ";base64," + raw})
+	}
+	payload := imageGenerationPayload(prompt, model, n, size, options)
+	payload["images"] = images
+	switch fidelity := strings.ToLower(strings.TrimSpace(options.InputFidelity)); fidelity {
+	case "low", "high":
+		payload["input_fidelity"] = fidelity
+	}
+	return payload, nil
+}
+
+func imageURLRequiredError(err error) bool {
+	var upstream *UpstreamError
+	if !errors.As(err, &upstream) || upstream.StatusCode < 400 || upstream.StatusCode >= 500 {
+		return false
+	}
+	message := strings.ToLower(upstream.Message)
+	return strings.Contains(message, "image_url") && strings.Contains(message, "required")
+}
+
+func imageContentExtension(contentType string) string {
+	switch strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0])) {
+	case "image/jpeg":
+		return "jpg"
+	case "image/gif":
+		return "gif"
+	case "image/webp":
+		return "webp"
+	default:
+		return "png"
+	}
+}
+
+func writeMultipartImage(writer *multipart.Writer, field string, index int, encoded string) error {
+	raw := imageBase64Value(encoded)
+	data, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		return &UpstreamError{Message: "参考图 Base64 数据无效"}
+	}
+	if len(data) == 0 || int64(len(data)) > maxImageBytes {
+		return &UpstreamError{Message: "参考图为空或超过 20 MiB 限制"}
+	}
+	contentType := http.DetectContentType(data)
+	if !strings.HasPrefix(contentType, "image/") {
+		return &UpstreamError{Message: "参考图格式无效"}
+	}
+	header := make(textproto.MIMEHeader)
+	header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="reference-%d.%s"`,
+		field, index+1, imageContentExtension(contentType)))
+	header.Set("Content-Type", contentType)
+	part, err := writer.CreatePart(header)
+	if err != nil {
+		return err
+	}
+	_, err = part.Write(data)
+	return err
+}
+
+func writeMultipartImageOptions(writer *multipart.Writer, options ImageOptions) error {
+	fields := map[string]string{"quality": normalizedImageQuality(options.Quality)}
+	switch fidelity := strings.ToLower(strings.TrimSpace(options.InputFidelity)); fidelity {
+	case "low", "high":
+		fields["input_fidelity"] = fidelity
+	}
+	if options.TransparentBackground {
+		fields["background"] = "transparent"
+	}
+	switch format := strings.ToLower(strings.TrimSpace(options.OutputFormat)); format {
+	case "jpg":
+		fields["output_format"] = "jpeg"
+	case "png", "jpeg", "webp":
+		fields["output_format"] = format
+	}
+	switch moderation := strings.ToLower(strings.TrimSpace(options.ModerationLevel)); moderation {
+	case "auto", "low":
+		fields["moderation"] = moderation
+	}
+	for key, value := range fields {
+		if err := writer.WriteField(key, value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Client) editImagesMultipart(
+	ctx context.Context,
+	prompt, model string,
+	n int,
+	inputImagesB64 []string,
+	size string,
+	options ImageOptions,
+) ([]string, error) {
+	if len(inputImagesB64) == 0 {
+		return nil, &UpstreamError{Message: "图像编辑至少需要一张参考图"}
+	}
+	if len(inputImagesB64) > maxTaskImages {
+		return nil, &UpstreamError{Message: "参考图数量超过限制"}
+	}
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for key, value := range map[string]string{
+		"model": model, "prompt": prompt, "n": fmt.Sprint(n), "response_format": "b64_json",
+	} {
+		if err := writer.WriteField(key, value); err != nil {
+			return nil, err
+		}
+	}
+	if strings.TrimSpace(size) != "" {
+		if err := writer.WriteField("size", size); err != nil {
+			return nil, err
+		}
+	}
+	if err := writeMultipartImageOptions(writer, options); err != nil {
+		return nil, err
+	}
+	imageField := "image"
+	if len(inputImagesB64) > 1 {
+		imageField = "image[]"
+	}
+	for index, encoded := range inputImagesB64 {
+		if err := writeMultipartImage(writer, imageField, index, encoded); err != nil {
+			return nil, err
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return nil, err
+	}
+	endpoint, err := c.endpointURL("/v1/images/edits")
+	if err != nil {
+		return nil, err
+	}
+	requestCtx := ctx
+	if c.Timeout > 0 {
+		var cancel context.CancelFunc
+		requestCtx, cancel = context.WithTimeout(ctx, c.Timeout)
+		defer cancel()
+	}
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, endpoint, &body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, &NetworkError{Message: fmt.Sprintf("上游连接失败：%v", err), Err: err}
+	}
+	defer resp.Body.Close()
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+	if err != nil {
+		return nil, &NetworkError{Message: fmt.Sprintf("上游连接失败：%v", err), Err: err}
+	}
+	if int64(len(responseBody)) > maxResponseBytes {
+		return nil, &UpstreamError{Message: "上游响应超过 64 MiB 限制", StatusCode: http.StatusBadGateway}
+	}
+	if resp.StatusCode >= 400 {
+		return nil, &UpstreamError{Message: errorMessage(responseBody), StatusCode: resp.StatusCode}
+	}
+	return extractB64List(responseBody)
+}
+
 func isRetryablePollError(err error) bool {
+	var imageNotReady *imageNotReadyError
+	if errors.As(err, &imageNotReady) {
+		return true
+	}
 	var networkErr *NetworkError
 	if errors.As(err, &networkErr) {
 		return true
@@ -556,6 +1445,7 @@ func (c *Client) GenerateImages(ctx context.Context, prompt, model string, n int
 
 type ImageOptions struct {
 	Quality               string
+	InputFidelity         string
 	TransparentBackground bool
 	OutputFormat          string
 	ModerationLevel       string
@@ -601,17 +1491,24 @@ func (c *Client) GenerateImagesWithOptions(ctx context.Context, taskID, prompt, 
 }
 
 func (c *Client) SubmitGenerateImages(ctx context.Context, taskID, prompt, model string, n int, size string, options ImageOptions) ([]string, bool, error) {
+	images, pending, _, err := c.SubmitGenerateImagesTracked(ctx, taskID, prompt, model, n, size, options)
+	return images, pending, err
+}
+
+// SubmitGenerateImagesTracked also returns the canonical upstream task ID so
+// queue workers never have to assume that it equals client_task_id.
+func (c *Client) SubmitGenerateImagesTracked(ctx context.Context, taskID, prompt, model string, n int, size string, options ImageOptions) ([]string, bool, string, error) {
 	payload := imageGenerationPayload(prompt, model, n, size, options)
-	images, pending, err := c.SubmitImageTask(ctx, "/api/image-tasks/generations", taskID, payload, n)
+	images, pending, upstreamTaskID, err := c.submitImageTaskTracked(ctx, "/api/image-tasks/generations", taskID, payload, n)
 	if err == nil || !shouldFallbackToSync(err) {
-		return images, pending, err
+		return images, pending, upstreamTaskID, err
 	}
 	body, err := c.doRequest(ctx, http.MethodPost, "/v1/images/generations", payload, c.Timeout)
 	if err != nil {
-		return nil, false, err
+		return nil, false, "", err
 	}
 	images, err = extractB64List(body)
-	return images, false, err
+	return images, false, "", err
 }
 
 // EditImages 图生图 /v1/images/edits（JSON base64 引用）→ base64 列表。
@@ -629,12 +1526,32 @@ func (c *Client) EditImagesWithID(ctx context.Context, taskID, prompt, model str
 }
 
 func (c *Client) EditImagesWithOptions(ctx context.Context, taskID, prompt, model string, n int, inputImagesB64 []string, size string, options ImageOptions) ([]string, error) {
+	if c.openAIImageEdits {
+		return c.editImagesMultipart(ctx, prompt, model, n, inputImagesB64, size, options)
+	}
 	payload := imageEditPayload(prompt, model, n, inputImagesB64, size, options)
+	usingImageURL := false
 	result, err := c.submitAndPollImageTask(ctx, "/api/image-tasks/edits", taskID, payload, n)
+	if imageURLRequiredError(err) {
+		payload, err = imageEditURLPayload(prompt, model, n, inputImagesB64, size, options)
+		if err != nil {
+			return nil, err
+		}
+		usingImageURL = true
+		result, err = c.submitAndPollImageTask(ctx, "/api/image-tasks/edits", taskID, payload, n)
+	}
 	if err == nil || !shouldFallbackToSync(err) {
 		return result, err
 	}
 	body, err := c.doRequest(ctx, http.MethodPost, "/v1/images/edits", payload, c.Timeout)
+	if !usingImageURL && imageURLRequiredError(err) {
+		payload, err = imageEditURLPayload(prompt, model, n, inputImagesB64, size, options)
+		if err != nil {
+			return nil, err
+		}
+		payload["client_task_id"] = taskID
+		body, err = c.doRequest(ctx, http.MethodPost, "/v1/images/edits", payload, c.Timeout)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -642,17 +1559,45 @@ func (c *Client) EditImagesWithOptions(ctx context.Context, taskID, prompt, mode
 }
 
 func (c *Client) SubmitEditImages(ctx context.Context, taskID, prompt, model string, n int, inputImagesB64 []string, size string, options ImageOptions) ([]string, bool, error) {
+	images, pending, _, err := c.SubmitEditImagesTracked(ctx, taskID, prompt, model, n, inputImagesB64, size, options)
+	return images, pending, err
+}
+
+// SubmitEditImagesTracked is the edit equivalent of
+// SubmitGenerateImagesTracked.
+func (c *Client) SubmitEditImagesTracked(ctx context.Context, taskID, prompt, model string, n int, inputImagesB64 []string, size string, options ImageOptions) ([]string, bool, string, error) {
+	if c.openAIImageEdits {
+		images, err := c.editImagesMultipart(ctx, prompt, model, n, inputImagesB64, size, options)
+		return images, false, "", err
+	}
 	payload := imageEditPayload(prompt, model, n, inputImagesB64, size, options)
-	images, pending, err := c.SubmitImageTask(ctx, "/api/image-tasks/edits", taskID, payload, n)
+	usingImageURL := false
+	images, pending, upstreamTaskID, err := c.submitImageTaskTracked(ctx, "/api/image-tasks/edits", taskID, payload, n)
+	if imageURLRequiredError(err) {
+		payload, err = imageEditURLPayload(prompt, model, n, inputImagesB64, size, options)
+		if err != nil {
+			return nil, false, "", err
+		}
+		usingImageURL = true
+		images, pending, upstreamTaskID, err = c.submitImageTaskTracked(ctx, "/api/image-tasks/edits", taskID, payload, n)
+	}
 	if err == nil || !shouldFallbackToSync(err) {
-		return images, pending, err
+		return images, pending, upstreamTaskID, err
 	}
 	body, err := c.doRequest(ctx, http.MethodPost, "/v1/images/edits", payload, c.Timeout)
+	if !usingImageURL && imageURLRequiredError(err) {
+		payload, err = imageEditURLPayload(prompt, model, n, inputImagesB64, size, options)
+		if err != nil {
+			return nil, false, "", err
+		}
+		payload["client_task_id"] = taskID
+		body, err = c.doRequest(ctx, http.MethodPost, "/v1/images/edits", payload, c.Timeout)
+	}
 	if err != nil {
-		return nil, false, err
+		return nil, false, "", err
 	}
 	images, err = extractB64List(body)
-	return images, false, err
+	return images, false, "", err
 }
 
 func normalizedImageQuality(values ...string) string {

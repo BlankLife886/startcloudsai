@@ -8,12 +8,12 @@
 flowchart LR
   U[用户浏览器] --> G[nginx gateway]
   A[管理员浏览器] --> G
-  G -->|/| W[用户端 Vue SPA]
+  G -->|/ 和 /canvas| W[用户端 React SPA（内置无限画布）]
   G -->|/admin/| M[管理端 Vue SPA]
   G -->|/api/v1/| S[Go API / Gin]
   S --> P[(PostgreSQL)]
   S --> R[(Redis / Asynq)]
-  S --> O[(Cloudflare R2)]
+  S --> O[(S3-compatible object storage)]
   K[Go Worker / Asynq] --> P
   K --> R
   K --> C[chatgpt2api]
@@ -27,7 +27,7 @@ Compose 中的 `server` 与 `worker` 来自同一个 Go 镜像，分别执行 `/
 
 | 组件         | 技术                            | 主要职责                                        |
 | ------------ | ------------------------------- | ----------------------------------------------- |
-| `apps/web`   | Vue 3、Vite、Pinia              | 创作工作台、画廊、兑换码钱包与个人中心          |
+| `apps/web-react` | React 19、Vite、Zustand、Ant Design | 创作工作台、画廊、个人中心，以及 `src/canvas` 内的画布编排、素材与 Agent 交互 |
 | `apps/admin` | Vue 3、TypeScript、Element Plus | 用户、任务、社区、内容、安全与系统运营          |
 | API          | Go、Gin、pgx                    | 认证、校验、同步业务事务、R2 文件访问和队列投递 |
 | Worker       | Go、Asynq                       | 图片生成、缩略图处理、超时回收和提示词源同步    |
@@ -35,7 +35,9 @@ Compose 中的 `server` 与 `worker` 来自同一个 Go 镜像，分别执行 `/
 | Redis        | 7                               | Asynq 队列和调度                                |
 | R2           | S3 API                          | 用户上传、任务产物和提示词封面                  |
 
-前端业务请求只访问同源 `/api/v1`。用户端 Vite 开发服务器默认监听 `3102`，管理端监听 `3200`，两者通过 `/api` 代理规则转发到 `localhost:8000`。
+前端业务请求只访问同源 `/api/v1`。用户端和管理端开发服务器分别监听 `3105`、`3200`，并通过 `/api` 代理到 `localhost:8000`。`/canvas` 由 React 主站直接编译并原生挂载画布模块，不存在独立画布开发服务或生产容器；旧 `/canvas-app/` 地址只重定向到 `/canvas`。
+
+画布项目以 v3 JSON 文档保存到 `canvas_projects`，使用 `revision` 做乐观并发控制；浏览器 IndexedDB 只作为离线缓存。图片和视频上传进入 S3 兼容对象存储，生图、改图与文本助手复用现有任务、钱包和模型路由。上游 `basketikun/infinite-canvas` 的 MIT 许可证及来源信息保存在 `apps/web-react/CANVAS_UPSTREAM_LICENSE` 和 `CANVAS_UPSTREAM.md`。
 
 ## 请求与鉴权
 
@@ -82,7 +84,9 @@ sequenceDiagram
 
 chatgpt2api 的文生图优先调用 `/api/image-tasks/generations`，带参考图的任务优先调用 `/api/image-tasks/edits`，再通过 `/api/image-tasks?ids=...` 轮询。业务 task UUID 同时作为 `client_task_id`，因此提交响应丢失、Worker 重试或进程重启接管都不会重复生成；轮询遇到临时网络错误、408/425/429/5xx 时继续等待，直到任务总超时。一旦已经拿到请求数量的图片就立即回收，即使上游最终状态稍后失败，也会保留已返回的图片。旧版上游仅在异步端点返回 404/405 时回退 `/v1/images/generations` 或 `/v1/images/edits`。客户端会规范化 base URL，避免 `/v1/v1` 和 `/v1/api`。类型差异由 `internal/prompt` 编译成 prompt 和参数；模型默认 `gpt-image-2`，可由 `app_settings.task_models` 按任务类型覆盖。上游 URL、Key、超时也可由后台设置覆盖环境变量，空值/0 时回落到 `C2A_*`；管理 API 对已保存 Key 只返回末四位掩码。
 
-Worker 下载 chatgpt2api 返回的图片 URL 时限制单张 20 MiB，并再次校验响应大小和图片格式；认证头只发送给配置的 chatgpt2api 同源地址，跨域媒体地址不携带 Key，且所有地址和重定向都经过 SSRF 防护。原图原样写入 `output_keys`，同时生成缩略图写入 `thumbnail_keys`。列表只使用站内缩略图地址，需要预览或下载时才请求站内原图地址；`/api/v1/files` 在鉴权后由 Server 代理读取 R2，避免用户网络无法直连对象存储时出现“任务成功但图片空白”。任务输入最多 4 张，校验归属、去重、单张与累计大小；远程输入和提示词源请求禁止私网、重定向到私网和 HTTPS 降级。
+CRUN 背景移除作为 `image_tool/background_remove` 独立执行：任务创建时要求一张本人存储中的输入图并按工具模型价格冻结积分；Worker 生成短时签名地址后调用 `CreateTask`，固定传入后台模型配置中的上游模型名，再复用 CRUN `TaskInfo` 轮询、结果下载、R2 入库、结算、失败重试和退款链路。客户端只能看到公开工具 ID，无法指定 CRUN 地址、密钥或上游模型名。
+
+Worker 下载 chatgpt2api 返回的图片 URL 时限制单张 20 MiB，并再次校验响应大小和图片格式；认证头只发送给配置的 chatgpt2api 同源地址，跨域媒体地址不携带 Key，且所有地址和重定向都经过 SSRF 防护。原图原样写入 `output_keys`，同时生成缩略图写入 `thumbnail_keys`。列表只使用站内缩略图地址，需要预览或下载时才请求站内原图地址；`/api/v1/files` 在鉴权后由 Server 代理读取 R2，避免用户网络无法直连对象存储时出现“任务成功但图片空白”。任务输入最多 6 张，校验归属、去重、单张与累计大小，具体模型还可以施加更低的参考图上限；远程输入和提示词源请求禁止私网、重定向到私网和 HTTPS 降级。
 
 ## 钱包与支付边界
 
@@ -122,5 +126,5 @@ Worker 每 30 分钟领取到期且启用自动同步的数据源。同步使用
 - API 健康检查会验证数据库和 Redis；它不代表 R2 或图片上游一定可用。
 - 网关把 `/api/v1/` 的读取超时设置为 300 秒，并允许最大 20 MB 请求；应用上传限制为 15 MB。
 - Compose 使用 `data`、`api`、`frontend` 三个内部网络；`edge` 只连接 Gateway 并负责宿主机端口发布；`outbound` 只提供给确实需要访问 C2A、R2、OAuth、SMTP 或外部提示词源的 Server/Worker。
-- 线上与线下必须使用不同环境文件、数据库/Redis、R2 bucket、OAuth client、SMTP 凭据和 `APP_SECRET`。开发环境可以在 SMTP 缺失时回传调试验证码，生产环境禁止该行为。
+- 线上与线下必须使用不同环境文件、数据库/Redis、对象存储 bucket、SMTP 凭据和 `APP_SECRET`。开发环境可以在 SMTP 缺失时回传调试验证码，生产环境禁止该行为。
 - 生产环境必须在网关外提供 HTTPS；Compose 网关默认只绑定回环地址。生产模式强制使用强 `APP_SECRET`、HTTPS Origin 和 Redis 分布式限流。

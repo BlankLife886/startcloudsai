@@ -4,6 +4,7 @@ dist/
 .env.local
 .env.development
 .env.production
+deploy/integrated/.env.integrated
 *.local
 __pycache__/
 *.pyc
@@ -15,3 +16,5 @@ __pycache__/
 .ruff_cache/
 data/
 coverage/
+.codegraph/
+.artifacts/

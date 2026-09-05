@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
+	"github.com/BlankLife886/startcloudsai/server/internal/assistantbilling"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
 	"github.com/BlankLife886/startcloudsai/server/internal/taskstream"
@@ -38,85 +39,8 @@ func (s *Server) adminPatchTask(c *gin.Context, admin *store.User) {
 	case "failed":
 		s.adminForceFailTask(c, admin)
 	default:
-		fail(c, apperr.E("validation_error", "status: 仅支持 queued、canceled 或 failed", 422))
+		fail(c, apperr.E("validation_error", "status: 操作不受支持", 422))
 	}
-}
-
-func (s *Server) adminGetUser(c *gin.Context, _ *store.User) {
-	userID, err := parseUUIDParam(c, "id")
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	ctx := c.Request.Context()
-	user, err := store.GetUserByID(ctx, s.St.Pool, userID)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	if user == nil || user.Role != "user" {
-		fail(c, apperr.E("not_found", "用户不存在", 404))
-		return
-	}
-	wallet, err := store.GetWallet(ctx, s.St.Pool, userID)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	byStatus, err := store.TaskCountsBy(ctx, s.St.Pool, userID, "status")
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	orders, err := store.CountOrdersByUser(ctx, s.St.Pool, userID)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	submissions, err := store.CountSubmissionsByUser(ctx, s.St.Pool, userID)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	assets, err := store.CountUserAssets(ctx, s.St.Pool, userID)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	sessions, err := store.GetUserSessionSummary(ctx, s.St.Pool, userID, time.Now().UTC())
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	var tasksTotal int64
-	for _, n := range byStatus {
-		tasksTotal += n
-	}
-	walletOut := walletDict(0, 0)
-	if wallet != nil {
-		walletOut = walletDict(wallet.BalanceCents, wallet.FrozenCents)
-	}
-	ok(c, gin.H{
-		"user":   adminUserDict(user, nil),
-		"wallet": walletOut,
-		"security": gin.H{
-			"activeSessions":       sessions.ActiveCount,
-			"lastSessionIp":        sessions.LastIP,
-			"lastSessionUserAgent": sessions.LastUserAgent,
-			"lastSessionAt":        iso(sessions.LastCreatedAt),
-			"lastSessionExpiresAt": iso(sessions.LastExpiresAt),
-		},
-		"counts": gin.H{
-			"orders":         orders,
-			"tasksTotal":     tasksTotal,
-			"tasksSucceeded": byStatus["succeeded"],
-			"tasksFailed":    byStatus["failed"],
-			"tasksRunning":   byStatus["running"] + byStatus["queued"],
-			"tasksCanceled":  byStatus["canceled"],
-			"submissions":    submissions,
-			"assets":         assets,
-		},
-	})
 }
 
 func (s *Server) adminUserLedger(c *gin.Context, _ *store.User) {
@@ -145,7 +69,14 @@ func (s *Server) adminUserLedger(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	ok(c, buildPage(rows, limit, ledgerDict))
+	tasksByID, runsByID, err := loadLedgerRelated(ctx, s.St.Pool, rows)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ok(c, buildPage(rows, limit, func(entry *store.LedgerEntry) gin.H {
+		return decorateLedgerEntry(entry, tasksByID, runsByID)
+	}))
 }
 
 // ---------- ledger（全站） ----------
@@ -188,8 +119,13 @@ func (s *Server) adminSiteLedger(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
+	tasksByID, runsByID, err := loadLedgerRelated(ctx, s.St.Pool, rows)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	ok(c, buildPage(rows, limit, func(e *store.LedgerEntry) gin.H {
-		d := ledgerDict(e)
+		d := decorateLedgerEntry(e, tasksByID, runsByID)
 		d["userId"] = e.UserID.String()
 		if user := users[e.UserID]; user != nil {
 			d["userEmail"] = user.Email
@@ -282,20 +218,18 @@ func adminAssistantRunDict(run *store.AssistantRun) gin.H {
 	params["stage"] = run.Stage
 	return gin.H{
 		"id": run.ID.String(), "userId": run.UserID.String(), "type": "assistant",
-		"source": "assistant", "model": run.Params["model"], "status": run.Status,
+		"source": assistantRunTaskSource(params), "model": run.Params["model"], "status": run.Status,
 		"prompt": run.Prompt, "params": params, "count": run.Params["count"],
 		"inputKeys": []string{}, "outputKeys": []string{}, "outputUrls": []string{},
-		"costCents": 0, "errorCode": run.ErrorCode, "errorMessage": run.ErrorMessage,
+		"costCents": run.CostCents, "reservedCents": run.ReservedCents,
+		"errorCode": run.ErrorCode, "errorMessage": run.ErrorMessage,
 		"attempt": 0, "createdAt": isoValue(run.CreatedAt), "startedAt": iso(run.StartedAt),
 		"finishedAt": iso(run.FinishedAt),
 	}
 }
 
 func assistantAdminMetadata(message *store.AssistantMessage, run *store.AssistantRun, stage, errorMessage string) map[string]any {
-	metadata := make(map[string]any, len(message.Metadata)+5)
-	for key, value := range message.Metadata {
-		metadata[key] = value
-	}
+	metadata := assistantMessageMetadataWithoutOutputs(message)
 	metadata["runId"] = run.ID.String()
 	metadata["statusStage"] = stage
 	metadata["pending"] = stage == "queued"
@@ -308,7 +242,7 @@ func (s *Server) adminRequeueAssistantRun(ctx context.Context, id uuid.UUID) (*s
 	var run *store.AssistantRun
 	err := s.St.Tx(ctx, func(tx pgx.Tx) error {
 		var err error
-		run, err = store.GetAssistantRun(ctx, tx, id)
+		run, err = store.GetAssistantRunForUpdate(ctx, tx, id)
 		if err != nil {
 			return err
 		}
@@ -322,10 +256,10 @@ func (s *Server) adminRequeueAssistantRun(ctx context.Context, id uuid.UUID) (*s
 		if err != nil {
 			return err
 		}
-		if err := validateAssistantRunCapacity(active, run.ConversationID); err != nil {
+		if err := validateAssistantRunCapacity(active, run.ConversationID, false); err != nil {
 			return err
 		}
-		changed, err := store.RequeueAssistantRun(ctx, tx, id)
+		changed, err := assistantbilling.Requeue(ctx, tx, run)
 		if err != nil {
 			return err
 		}
@@ -337,8 +271,10 @@ func (s *Server) adminRequeueAssistantRun(ctx context.Context, id uuid.UUID) (*s
 			return err
 		}
 		if message != nil {
+			if err := store.EnqueueAssistantMessageOutputCleanup(ctx, tx, run.UserID, message.ID); err != nil {
+				return err
+			}
 			metadata := assistantAdminMetadata(message, run, "queued", "")
-			delete(metadata, "images")
 			if err := store.UpdateAssistantMessage(ctx, tx, message.ID, "", run.Mode, "queued", metadata); err != nil {
 				return err
 			}
@@ -350,7 +286,9 @@ func (s *Server) adminRequeueAssistantRun(ctx context.Context, id uuid.UUID) (*s
 	}
 	if err := s.Queue.EnqueueAssistantRunRecovery(ctx, id.String()); err != nil {
 		message := "任务入队失败，请稍后重试"
-		_, _ = store.FailAssistantRun(ctx, s.St.Pool, id, "queue_error", message)
+		if _, failErr := assistantbilling.Fail(ctx, s.St, id, "queue_error", message); failErr != nil {
+			return nil, failErr
+		}
 		if assistantMessage, getErr := store.GetAssistantMessage(ctx, s.St.Pool, run.AssistantMessageID); getErr == nil && assistantMessage != nil {
 			_ = store.UpdateAssistantMessage(ctx, s.St.Pool, assistantMessage.ID, message, run.Mode, "failed",
 				assistantAdminMetadata(assistantMessage, run, "failed", message))
@@ -361,55 +299,71 @@ func (s *Server) adminRequeueAssistantRun(ctx context.Context, id uuid.UUID) (*s
 }
 
 func (s *Server) adminCancelAssistantRun(ctx context.Context, id uuid.UUID) (*store.AssistantRun, error) {
-	run, err := store.GetAssistantRun(ctx, s.St.Pool, id)
+	var run *store.AssistantRun
+	var changed bool
+	err := s.St.Tx(ctx, func(tx pgx.Tx) error {
+		var txErr error
+		run, changed, txErr = assistantbilling.CancelAdminQueuedTx(ctx, tx, id)
+		if txErr != nil || !changed || run == nil {
+			return txErr
+		}
+		message, messageErr := store.GetAssistantMessage(ctx, tx, run.AssistantMessageID)
+		if messageErr != nil || message == nil {
+			return messageErr
+		}
+		content := message.Content
+		if content == "" {
+			content = "已停止生成"
+		}
+		return store.ClearAssistantMessageOutputMetadata(ctx, tx, run.UserID, message.ID, content,
+			message.Kind, "stopped", assistantAdminMetadata(message, run, "stopped", ""))
+	})
 	if err != nil {
 		return nil, err
 	}
 	if run == nil {
 		return nil, apperr.E("task_not_found", "任务不存在", 404)
 	}
-	changed, err := store.AdminCancelAssistantRun(ctx, s.St.Pool, id)
-	if err != nil {
-		return nil, err
-	}
 	if !changed {
 		return nil, apperr.E("task_not_cancelable", "仅排队中的任务可以取消", 400)
 	}
-	s.Queue.CancelAssistantRun(id.String())
-	if message, getErr := store.GetAssistantMessage(ctx, s.St.Pool, run.AssistantMessageID); getErr == nil && message != nil {
-		content := message.Content
-		if content == "" {
-			content = "已停止生成"
-		}
-		_ = store.UpdateAssistantMessage(ctx, s.St.Pool, message.ID, content, message.Kind, "stopped",
-			assistantAdminMetadata(message, run, "stopped", ""))
+	if s.Queue != nil {
+		s.Queue.CancelAssistantRun(id.String())
 	}
 	return store.GetAssistantRun(ctx, s.St.Pool, id)
 }
 
 func (s *Server) adminForceFailAssistantRun(ctx context.Context, id uuid.UUID) (*store.AssistantRun, error) {
-	run, err := store.GetAssistantRun(ctx, s.St.Pool, id)
+	var run *store.AssistantRun
+	var changed bool
+	err := s.St.Tx(ctx, func(tx pgx.Tx) error {
+		var txErr error
+		run, changed, txErr = assistantbilling.ForceFailAdminTx(ctx, tx, id)
+		if txErr != nil || !changed || run == nil {
+			return txErr
+		}
+		message, messageErr := store.GetAssistantMessage(ctx, tx, run.AssistantMessageID)
+		if messageErr != nil || message == nil {
+			return messageErr
+		}
+		content := message.Content
+		if content == "" {
+			content = "管理员已终止任务"
+		}
+		return store.ClearAssistantMessageOutputMetadata(ctx, tx, run.UserID, message.ID, content,
+			message.Kind, "failed", assistantAdminMetadata(message, run, "failed", "管理员强制终止任务"))
+	})
 	if err != nil {
 		return nil, err
 	}
 	if run == nil {
 		return nil, apperr.E("task_not_found", "任务不存在", 404)
 	}
-	changed, err := store.AdminForceFailAssistantRun(ctx, s.St.Pool, id)
-	if err != nil {
-		return nil, err
-	}
 	if !changed {
 		return nil, apperr.E("task_not_cancelable", "仅运行中的任务可以强制失败", 400)
 	}
-	s.Queue.CancelAssistantRun(id.String())
-	if message, getErr := store.GetAssistantMessage(ctx, s.St.Pool, run.AssistantMessageID); getErr == nil && message != nil {
-		content := message.Content
-		if content == "" {
-			content = "管理员已终止任务"
-		}
-		_ = store.UpdateAssistantMessage(ctx, s.St.Pool, message.ID, content, message.Kind, "failed",
-			assistantAdminMetadata(message, run, "failed", "管理员强制终止任务"))
+	if s.Queue != nil {
+		s.Queue.CancelAssistantRun(id.String())
 	}
 	return store.GetAssistantRun(ctx, s.St.Pool, id)
 }
