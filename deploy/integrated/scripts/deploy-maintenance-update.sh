@@ -35,7 +35,7 @@ SELECT (SELECT count(*) FROM tasks WHERE status IN ('queued','running'))
 +(SELECT count(*) FROM assistant_files WHERE status IN ('queued','processing'))
 +(SELECT count(*) FROM canvas_workflow_runs WHERE status='running')
 +(SELECT count(*) FROM canvas_workflow_batches WHERE status IN ('queued','running'))
-+(SELECT count(*) FROM task_upstream_attempts WHERE status IN ('submitting','pending'));
++(SELECT count(*) FROM task_upstream_attempts attempt JOIN tasks task ON task.id=attempt.task_id WHERE attempt.status IN ('submitting','pending') AND task.status IN ('queued','running'));
 SQL
 }
 counts() {
