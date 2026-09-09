@@ -1,7 +1,6 @@
 <script setup lang="ts">
 /**
- * 通用内容卡片：灰底之上的白色容器（16px 圆角 + 细边 + shadow-sm）。
- * header 可选：title（15px semibold）+ subtitle（12px ink-3）+ actions 插槽。
+ * 通用内容卡片：大圆角 surface 容器 + 可选 header。
  */
 defineProps<{
   title?: string
@@ -43,17 +42,24 @@ const hasHeader = (title?: string, subtitle?: string) =>
 .page-card {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 16px;
+  border-radius: var(--radius-card);
   box-shadow: var(--shadow-sm);
   min-width: 0;
+  overflow: hidden;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.page-card:hover {
+  border-color: var(--border-strong);
 }
 
 .page-card__header {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 14px 18px;
-  border-bottom: 1px solid var(--border);
+  padding: 18px 20px 0;
 }
 
 .page-card__copy {
@@ -64,7 +70,7 @@ const hasHeader = (title?: string, subtitle?: string) =>
 
 .page-card__title {
   font-size: 15px;
-  font-weight: 600;
+  font-weight: 650;
   letter-spacing: -0.01em;
   line-height: 1.4;
 }
@@ -83,10 +89,14 @@ const hasHeader = (title?: string, subtitle?: string) =>
 }
 
 .page-card__body {
-  padding: 16px 18px;
+  padding: 16px 20px 20px;
 }
 
 .page-card__body.is-flush {
   padding: 0;
+}
+
+.page-card__header + .page-card__body.is-flush {
+  padding-top: 12px;
 }
 </style>

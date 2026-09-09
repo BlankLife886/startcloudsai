@@ -3,5 +3,7 @@ package migrations
 
 import "embed"
 
-//go:embed *.sql
+// Only numbered migrations are embedded. This excludes AppleDouble files such
+// as ._00001_initial_schema.sql that some archive extractors create.
+//go:embed 0*.sql
 var FS embed.FS

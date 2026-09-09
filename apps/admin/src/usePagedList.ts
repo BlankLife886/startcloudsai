@@ -31,22 +31,33 @@ export function usePagedList<T>(
   let lastParamsKey = paramsKey()
   /** 最近一次尝试加载的 cursor（失败后供 retry 重放） */
   let attemptedCursor: string | null = null
+  let generation = 0
 
   async function load(cursor: string | null) {
+    const ownGeneration = ++generation
     attemptedCursor = cursor
     loading.value = true
     error.value = null
     try {
       const page = await fetcher(cursor)
-      items.value = page.items
-      nextCursor.value = page.nextCursor
-      total.value = page.total ?? page.scopeTotal ?? null
+      if (ownGeneration !== generation) return
+      items.value = page.items ?? []
+      nextCursor.value = page.nextCursor ?? null
+      const reported = page.total ?? page.scopeTotal
+      if (reported != null) {
+        total.value = reported
+      } else if (!page.nextCursor && cursor == null) {
+        total.value = items.value.length
+      } else {
+        total.value = null
+      }
       currentCursor.value = cursor
     } catch (e) {
+      if (ownGeneration !== generation) return
       // request.ts 已弹过 toast，这里落地为可见的错误条状态
       error.value = e instanceof Error && e.message ? e.message : '加载失败，请重试'
     } finally {
-      loading.value = false
+      if (ownGeneration === generation) loading.value = false
     }
   }
 
@@ -85,6 +96,22 @@ export function usePagedList<T>(
     return load(attemptedCursor)
   }
 
+  async function goToPage(target: number) {
+    if (paramsChanged()) return reset()
+    const current = () => prevCursors.value.length + 1
+    if (target < 1 || target === current()) return
+    if (target === 1) return reset()
+    if (target < current()) {
+      while (current() > target && prevCursors.value.length > 0) {
+        await prev()
+      }
+      return
+    }
+    while (current() < target && nextCursor.value) {
+      await next()
+    }
+  }
+
   return {
     items,
     loading,
@@ -96,6 +123,7 @@ export function usePagedList<T>(
     reset,
     next,
     prev,
+    goToPage,
     refresh,
     retry,
   }

@@ -17,12 +17,13 @@ export interface CommunityWork {
 </script>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Check, CollectionTag, Delete, Plus, Rank, Search, User } from '@element-plus/icons-vue'
 import draggable from 'vuedraggable'
+import AdminDialog from '@/components/AdminDialog.vue'
+import { useVirtualMasonryFeed } from '@/composables/useVirtualMasonryFeed'
 import { request, normalizeList, type Page } from '@/request'
-import { usePagedList } from '@/usePagedList'
 import { formatTime } from '@/utils'
 import CommunityWorkCard from './CommunityWorkCard.vue'
 
@@ -50,30 +51,98 @@ interface CommunityAuthor {
   bannedUntil: string | null
 }
 
+/** 优先原图（mediaUrls），封面次之 */
+function workImageUrl(item: Pick<CommunityWork, 'coverUrl' | 'mediaUrls'>): string {
+  return String(item.mediaUrls?.[0] || item.coverUrl || '').trim()
+}
+
 /* ---------- 作品管理 ---------- */
 
 const workQuery = ref('')
 const workFilter = ref('all') // all | featured | 分类 id
 const workOperating = ref('')
 const workOrderSaving = ref(false)
+const sortOpen = ref(false)
+const sortList = ref<CommunityWork[]>([])
 
-const {
-  items: works,
-  loading,
-  error: worksError,
-  total: worksTotal,
-  page: worksPage,
-  hasPrev,
-  hasNext,
-  reset: reloadWorks,
-  next,
-  prev,
-  retry: retryWorks,
-} = usePagedList<CommunityWork>((cursor) =>
-  request<CommunityWork[] | Page<CommunityWork>>('/api/v1/admin/gallery/submissions', {
-    query: { status: 'approved', limit: 100, cursor },
-  }).then(normalizeList),
-)
+const works = ref<CommunityWork[]>([])
+const loading = ref(false)
+const loadingMore = ref(false)
+const worksError = ref<string | null>(null)
+const nextCursor = ref<string | null>(null)
+let worksRequestVersion = 0
+
+const hasMore = computed(() => nextCursor.value !== null)
+const communityFeedRef = ref<HTMLElement | null>(null)
+const isGridScrolling = ref(false)
+let scrollIdleTimer: ReturnType<typeof setTimeout> | null = null
+
+async function loadWorksPage(cursor: string | null, mode: 'replace' | 'append' = 'replace') {
+  const version = ++worksRequestVersion
+  const append = mode === 'append'
+  if (append) {
+    if (!cursor || loading.value || loadingMore.value) return
+    loadingMore.value = true
+  } else {
+    loading.value = true
+    worksError.value = null
+  }
+  try {
+    const page = normalizeList(
+      await request<CommunityWork[] | Page<CommunityWork>>('/api/v1/admin/gallery/submissions', {
+        query: { status: 'approved', limit: 24, cursor },
+      }),
+    )
+    if (version !== worksRequestVersion) return
+    if (append) {
+      const seen = new Set(works.value.map((item) => item.id))
+      works.value = [...works.value, ...page.items.filter((item) => !seen.has(item.id))]
+    } else {
+      works.value = page.items
+      await nextTick()
+      communityFeedRef.value?.scrollTo({ top: 0, behavior: 'auto' })
+    }
+    nextCursor.value = page.nextCursor
+  } catch (cause) {
+    if (version !== worksRequestVersion) return
+    if (!append) {
+      works.value = []
+      worksError.value =
+        cause instanceof Error && cause.message ? cause.message : '加载失败，请重试'
+    } else {
+      ElMessage.error('加载更多失败，请重试')
+    }
+  } finally {
+    if (version !== worksRequestVersion) return
+    if (append) loadingMore.value = false
+    else loading.value = false
+    await nextTick()
+    scheduleViewportMeasure()
+    void fillViewportIfNeeded()
+  }
+}
+
+/** 列表区不足一屏时继续拉取 */
+async function fillViewportIfNeeded() {
+  const el = communityFeedRef.value
+  if (!el || !hasMore.value || loading.value || loadingMore.value) return
+  if (el.scrollHeight > el.clientHeight + 120) return
+  await loadMoreWorks()
+}
+
+function reloadWorks() {
+  nextCursor.value = null
+  return loadWorksPage(null, 'replace')
+}
+
+function loadMoreWorks() {
+  if (!nextCursor.value || loading.value || loadingMore.value) return
+  return loadWorksPage(nextCursor.value, 'append')
+}
+
+function retryWorks() {
+  return reloadWorks()
+}
 
 const orderedWorks = computed(() =>
   [...works.value].sort((a, b) => {
@@ -84,7 +153,7 @@ const orderedWorks = computed(() =>
   }),
 )
 
-/** 分类/精选/搜索为当前加载范围内筛选。 */
+/** 分类/精选/搜索为当前已加载范围内筛选。 */
 const visibleWorks = computed(() => {
   let list = orderedWorks.value
   if (workFilter.value === 'featured') list = list.filter((item) => item.featured)
@@ -101,22 +170,78 @@ const visibleWorks = computed(() => {
   return list
 })
 
-const workDragList = ref<CommunityWork[]>([])
-const canDragWorks = computed(
-  () => workFilter.value === 'all' && !workQuery.value.trim() && !hasPrev.value && !hasNext.value && !workOrderSaving.value,
+const canSortWorks = computed(
+  () =>
+    workFilter.value === 'all' &&
+    !workQuery.value.trim() &&
+    !hasMore.value &&
+    works.value.length > 0 &&
+    !workOrderSaving.value,
 )
 
-watch(
-  visibleWorks,
-  (list) => {
-    workDragList.value = [...list]
-  },
-  { immediate: true },
+/* 与用户端提示词页同款：最短列瀑布流 + 像素高度占位 + measureFromEvent */
+const masonryItems = computed(() =>
+  visibleWorks.value.map((item, index) => ({
+    key: item.id,
+    item,
+    index,
+    aspect: '3 / 4',
+    cover: workImageUrl(item),
+  })),
 )
+
+const {
+  containerRef: masonryRef,
+  visibleItems: visibleMasonryItems,
+  columnCount,
+  totalHeight: masonryHeight,
+  measureFromEvent,
+  scheduleViewportMeasure,
+} = useVirtualMasonryFeed({
+  items: masonryItems,
+  fallbackAspect: 3 / 4,
+  bodyHeight: 74,
+  mediaInset: 8,
+  minColumnWidth: 168,
+  maxColumns: 6,
+  overscan: 960,
+  getAspect: (entry) => entry.aspect,
+  scrollParent: communityFeedRef,
+})
+
+function imageLoadingMode(index: number) {
+  return index < Math.max(6, columnCount.value * 2) ? 'eager' : 'lazy'
+}
+
+function onCommunityScroll() {
+  if (!isGridScrolling.value) isGridScrolling.value = true
+  if (scrollIdleTimer) clearTimeout(scrollIdleTimer)
+  scrollIdleTimer = setTimeout(() => {
+    scrollIdleTimer = null
+    isGridScrolling.value = false
+  }, 140)
+
+  scheduleViewportMeasure()
+
+  const el = communityFeedRef.value
+  if (!el || !hasMore.value || loading.value || loadingMore.value) return
+  if (el.scrollTop + el.clientHeight >= el.scrollHeight - 320) {
+    void loadMoreWorks()
+  }
+}
+
+function openSortDialog() {
+  if (!canSortWorks.value) {
+    ElMessage.warning(hasMore.value ? '请先滚动加载完全部作品后再排序' : '请清除筛选后再排序')
+    return
+  }
+  sortList.value = [...orderedWorks.value]
+  sortOpen.value = true
+}
 
 async function persistWorkOrder() {
-  if (!canDragWorks.value) return
-  const ordered = [...workDragList.value]
+  if (!canSortWorks.value) return
+  const ordered = [...sortList.value]
   const sortByID = new Map(ordered.map((item, index) => [item.id, (index + 1) * 10]))
   works.value = works.value.map((item) => ({ ...item, sort: sortByID.get(item.id) ?? item.sort }))
   workOrderSaving.value = true
@@ -125,6 +250,7 @@ async function persistWorkOrder() {
       method: 'PATCH',
       body: { ids: ordered.map((item) => item.id) },
     })
+    sortOpen.value = false
     ElMessage.success('作品顺序已更新')
   } catch {
     await reloadWorks()
@@ -134,7 +260,12 @@ async function persistWorkOrder() {
 }
 
 const selectedWorkIds = ref<Set<string>>(new Set())
+const workSelectionMode = ref(false)
 const selectedCount = computed(() => selectedWorkIds.value.size)
+const featuredCount = computed(() => works.value.filter((item) => item.featured).length)
+function worksInCategory(id: string) {
+  return works.value.filter((item) => item.category?.id === id).length
+}
 const allVisibleSelected = computed(
   () => visibleWorks.value.length > 0 && visibleWorks.value.every((item) => selectedWorkIds.value.has(item.id)),
 )
@@ -157,6 +288,15 @@ function clearSelection() {
   selectedWorkIds.value = new Set()
 }
 
+function enterWorkSelectionMode() {
+  workSelectionMode.value = true
+}
+
+function exitWorkSelectionMode() {
+  workSelectionMode.value = false
+  clearSelection()
+}
+
 watch(works, (list) => {
   const valid = new Set(list.map((item) => item.id))
   selectedWorkIds.value = new Set([...selectedWorkIds.value].filter((id) => valid.has(id)))
@@ -172,7 +312,11 @@ const previewUrls = ref<string[]>([])
 const previewVisible = ref(false)
 
 function openPreview(item: CommunityWork) {
-  const list = item.mediaUrls?.length ? item.mediaUrls : item.coverUrl ? [item.coverUrl] : []
+  const list = item.mediaUrls?.length
+    ? item.mediaUrls
+    : item.coverUrl
+      ? [item.coverUrl]
+      : []
   if (!list.length) return
   previewUrls.value = list
   previewVisible.value = true
@@ -251,7 +395,7 @@ const batchForm = reactive({
 })
 
 function openBatchEdit() {
-  if (!selectedCount.value) return
+  if (!workSelectionMode.value || !selectedCount.value) return
   batchForm.setFeatured = false
   batchForm.featured = true
   batchForm.setCategory = false
@@ -306,7 +450,7 @@ async function saveBatchEdit() {
       return { ...item, ...patch }
     })
     batchOpen.value = false
-    clearSelection()
+    exitWorkSelectionMode()
     ElMessage.success(`已更新 ${ids.length} 个作品`)
   } finally {
     batchSaving.value = false
@@ -550,179 +694,239 @@ onMounted(() => {
   void loadAuthors().catch(() => undefined)
   void loadSettings().catch(() => undefined)
 })
+
+onUnmounted(() => {
+  if (scrollIdleTimer) clearTimeout(scrollIdleTimer)
+})
 </script>
 
 <template>
   <div class="community-ops-page">
-    <div class="ops-toolbar-panel">
-      <div class="community-toolbar">
-        <div class="community-toolbar__left">
-          <strong>社区管理</strong>
+    <header class="community-toolbar">
+      <div class="community-tabs" role="tablist" aria-label="作品分类">
+        <button
+          type="button"
+          role="tab"
+          class="community-tab"
+          :class="{ 'is-active': workFilter === 'all' }"
+          :aria-selected="workFilter === 'all'"
+          @click="workFilter = 'all'"
+        >
+          全部
+          <em class="tnum">{{ works.length }}</em>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          class="community-tab"
+          :class="{ 'is-active': workFilter === 'featured' }"
+          :aria-selected="workFilter === 'featured'"
+          @click="workFilter = 'featured'"
+        >
+          精选
+          <em class="tnum">{{ featuredCount }}</em>
+        </button>
+        <button
+          v-for="category in enabledCategories"
+          :key="category.id"
+          type="button"
+          role="tab"
+          class="community-tab"
+          :class="{ 'is-active': workFilter === category.id }"
+          :aria-selected="workFilter === category.id"
+          @click="workFilter = category.id"
+        >
+          {{ category.name }}
+          <em class="tnum">{{ worksInCategory(category.id) }}</em>
+        </button>
+      </div>
+
+      <div class="community-toolbar__right">
+        <el-input
+          v-model="workQuery"
+          :prefix-icon="Search"
+          clearable
+          class="community-search"
+          placeholder="搜索标题、作者或标签"
+        />
+        <div class="community-setting-pill" :class="{ 'is-on': settings.submissionEnabled }">
+          <span>开放投稿</span>
+          <el-switch
+            v-model="settings.submissionEnabled"
+            :loading="settingsSaving"
+            size="small"
+            @change="saveSettings(settings.submissionEnabled ? '社区投稿已开启' : '社区投稿已关闭')"
+          />
         </div>
-        <div class="community-toolbar__actions">
-          <div class="community-setting-pill" :class="{ 'is-on': settings.submissionEnabled }">
-            <span>开放投稿</span>
-            <el-switch
-              v-model="settings.submissionEnabled"
-              :loading="settingsSaving"
-              size="small"
-              @change="saveSettings(settings.submissionEnabled ? '社区投稿已开启' : '社区投稿已关闭')"
-            />
-          </div>
-          <div class="community-setting-pill" :class="{ 'is-on': settings.autoApprove }">
-            <span>自动过审</span>
-            <el-switch
-              v-model="settings.autoApprove"
-              :loading="settingsSaving"
-              size="small"
-              @change="saveSettings(settings.autoApprove ? '新投稿将自动过审' : '已恢复人工审核')"
-            />
-          </div>
-          <div class="community-setting-pill is-limit">
-            <span>每日限额</span>
-            <el-input-number
-              v-model="settings.dailyLimit"
-              :min="0"
-              :max="999"
-              size="small"
-              :controls="false"
-              @change="saveSettings('每日投稿限额已更新')"
-            />
-          </div>
-          <button type="button" class="community-config-btn is-category" @click="categoryOpen = true">
-            <el-icon :size="15"><CollectionTag /></el-icon>
-            <span>分类</span>
-            <em v-if="categories.length">{{ categories.length }}</em>
-          </button>
-          <button type="button" class="community-config-btn is-author" @click="authorsOpen = true">
-            <el-icon :size="15"><User /></el-icon>
-            <span>创作者</span>
-            <em v-if="authors.length">{{ authors.length }}</em>
-          </button>
+        <div class="community-setting-pill" :class="{ 'is-on': settings.autoApprove }">
+          <span>自动过审</span>
+          <el-switch
+            v-model="settings.autoApprove"
+            :loading="settingsSaving"
+            size="small"
+            @change="saveSettings(settings.autoApprove ? '新投稿将自动过审' : '已恢复人工审核')"
+          />
         </div>
+        <div class="community-setting-pill is-limit">
+          <span>每日限额</span>
+          <el-input-number
+            v-model="settings.dailyLimit"
+            :min="0"
+            :max="999"
+            size="small"
+            :controls="false"
+            @change="saveSettings('每日投稿限额已更新')"
+          />
+        </div>
+        <el-button :icon="CollectionTag" @click="categoryOpen = true">
+          分类
+        </el-button>
+        <el-button :icon="User" @click="authorsOpen = true">
+          创作者
+        </el-button>
+        <el-button
+          :icon="Rank"
+          :disabled="!canSortWorks || workOrderSaving"
+          @click="openSortDialog"
+        >
+          排序
+        </el-button>
+        <el-button
+          :type="workSelectionMode ? 'primary' : 'default'"
+          :icon="Check"
+          @click="workSelectionMode ? exitWorkSelectionMode() : enterWorkSelectionMode()"
+        >
+          {{ workSelectionMode ? '退出多选' : '多选' }}
+        </el-button>
+      </div>
+    </header>
+
+    <div v-if="workSelectionMode" class="community-selection-bar">
+      <el-checkbox :model-value="allVisibleSelected" @change="toggleSelectVisible">
+        {{ allVisibleSelected ? '取消全选' : '全选当前结果' }}
+      </el-checkbox>
+      <span class="community-selection-bar__count">已选 {{ selectedCount }} 个作品</span>
+      <div class="community-selection-bar__actions">
+        <el-button text :disabled="!selectedCount" @click="clearSelection">清空选择</el-button>
+        <el-button
+          type="primary"
+          :icon="Check"
+          :disabled="!selectedCount"
+          @click="openBatchEdit"
+        >
+          批量编辑
+        </el-button>
       </div>
     </div>
 
-    <div class="community-pane">
-      <div class="community-pane__bar">
-        <div class="community-filters">
-          <button
-            type="button"
-            class="community-filter"
-            :class="{ 'is-active': workFilter === 'all' }"
-            @click="workFilter = 'all'"
-          >
-            全部作品
-          </button>
-          <button
-            type="button"
-            class="community-filter"
-            :class="{ 'is-active': workFilter === 'featured' }"
-            @click="workFilter = 'featured'"
-          >
-            ★ 精选
-          </button>
-          <button
-            v-for="category in enabledCategories"
-            :key="category.id"
-            type="button"
-            class="community-filter"
-            :class="{ 'is-active': workFilter === category.id }"
-            @click="workFilter = category.id"
-          >
-            {{ category.name }}
-          </button>
-        </div>
-        <div class="community-bar-aside">
-          <label class="community-search">
-            <el-icon class="community-search__icon" :size="15"><Search /></el-icon>
-            <el-input v-model="workQuery" clearable placeholder="搜索标题、作者、邮箱或标签" />
-          </label>
-        </div>
-      </div>
+    <ListError :error="worksError" :loading="loading" @retry="retryWorks" />
 
-      <div class="community-selection-bar" :class="{ 'has-selection': selectedCount > 0 }">
-        <div class="community-selection-bar__left">
-          <el-checkbox :model-value="allVisibleSelected" @change="toggleSelectVisible">
-            {{ allVisibleSelected ? '取消全选' : '全选当前结果' }}
-          </el-checkbox>
-          <span v-if="selectedCount">已选 {{ selectedCount }} 个作品</span>
-          <span v-else-if="canDragWorks" class="is-hint">拖动卡片右上角手柄调整展示顺序</span>
-          <span v-else class="is-hint">清除筛选并加载全部作品后可拖动排序</span>
-        </div>
-        <div v-if="selectedCount" class="community-selection-bar__actions">
-          <el-button text @click="clearSelection">取消选择</el-button>
-          <el-button type="primary" :icon="Check" @click="openBatchEdit">批量编辑</el-button>
-        </div>
-      </div>
-
-      <ListError :error="worksError" :loading="loading" @retry="retryWorks" />
-
-      <AdminListShell
-        :has-prev="hasPrev"
-        :has-next="hasNext"
-        :loading="loading"
-        :page="worksPage"
-        :count="visibleWorks.length"
-        :total="worksTotal"
-        viewport-height="clamp(420px, calc(100vh - 350px), 720px)"
-        @prev="prev"
-        @next="next"
+    <div class="community-board">
+      <div
+        ref="communityFeedRef"
+        v-loading="loading && works.length > 0"
+        class="community-feed"
+        :class="{ 'is-scrolling': isGridScrolling }"
+        @scroll.passive="onCommunityScroll"
       >
-      <div v-loading="loading && works.length > 0" class="community-pane__scroll">
-        <div v-if="loading && !works.length" class="community-board" aria-label="正在加载作品">
-          <article v-for="index in 8" :key="`sk-${index}`" class="community-card-skeleton">
-            <div />
-            <footer><span /><small /><em /></footer>
-          </article>
+        <div v-if="loading && !works.length" class="community-grid__loading">正在加载作品…</div>
+
+        <div v-else-if="!visibleWorks.length" class="community-empty">
+          <el-icon><CollectionTag /></el-icon>
+          <strong>{{ works.length ? '没有匹配的作品' : '还没有社区作品' }}</strong>
+          <span>{{ works.length ? '调整分类或搜索后再试' : '过审作品会显示在这里' }}</span>
         </div>
 
-        <el-empty v-else-if="!visibleWorks.length" description="当前筛选下暂无作品" />
-
-        <draggable
+        <div
           v-else
-          v-model="workDragList"
-          class="community-board"
-          item-key="id"
-          handle=".community-card__drag"
-          :animation="180"
-          :disabled="!canDragWorks"
-          ghost-class="is-work-ghost"
-          drag-class="is-work-drag"
-          @end="persistWorkOrder"
+          ref="masonryRef"
+          class="community-masonry"
+          :style="{ height: `${masonryHeight}px` }"
         >
-          <template #item="{ element: item }">
-            <CommunityWorkCard
-              :item="item"
-              :operating="workOperating === item.id"
-              :category-label="categoryLabelOf(item)"
-              :selected="selectedWorkIds.has(item.id)"
-              :draggable="canDragWorks"
-              @edit="openEdit"
-              @feature="toggleFeatured"
-              @preview="openPreview"
-              @select="setWorkSelected"
-            />
-          </template>
-        </draggable>
+          <CommunityWorkCard
+            v-for="entry in visibleMasonryItems"
+            :key="entry.key"
+            :style="{
+              position: 'absolute',
+              top: '0',
+              left: '0',
+              width: `${entry.width}px`,
+              height: `${entry.height}px`,
+              transform: `translate3d(${entry.left}px, ${entry.top}px, 0)`,
+              willChange: 'transform',
+            }"
+            :item="entry.item"
+            :operating="workOperating === entry.item.id"
+            :category-label="categoryLabelOf(entry.item)"
+            :selected="selectedWorkIds.has(entry.item.id)"
+            :selection-mode="workSelectionMode"
+            :media-height="entry.mediaHeight"
+            :card-width="entry.width"
+            :image-loading="imageLoadingMode(entry.index)"
+            @edit="openEdit"
+            @feature="toggleFeatured"
+            @preview="openPreview"
+            @select="setWorkSelected"
+            @measure="(item, event) => measureFromEvent(item.id, event)"
+          />
+        </div>
+
+        <div v-if="visibleWorks.length" class="community-load-status" :class="{ 'is-loading': loadingMore }">
+          <span v-if="loadingMore">正在加载更多…</span>
+          <span v-else-if="!hasMore">已加载全部 {{ works.length }} 条</span>
+        </div>
       </div>
-      </AdminListShell>
     </div>
 
     <el-image-viewer
       v-if="previewVisible"
       :url-list="previewUrls"
       teleported
+      hide-on-click-modal
       @close="previewVisible = false"
     />
 
-    <el-dialog
+    <AdminDialog
+      v-model="sortOpen"
+      title="调整作品顺序"
+      subtitle="拖动缩略图排序，保存后同步到社区展示"
+      :icon="Rank"
+      width="min(520px, 94vw)"
+      nested-scroll
+      confirm-text="保存顺序"
+      :confirm-loading="workOrderSaving"
+      :confirm-disabled="!sortList.length"
+      @confirm="persistWorkOrder"
+    >
+      <draggable
+        v-model="sortList"
+        item-key="id"
+        handle=".community-sort-handle"
+        :animation="180"
+        ghost-class="is-work-ghost"
+        drag-class="is-work-drag"
+        class="community-sort-list"
+      >
+        <template #item="{ element: item, index }">
+          <article class="community-sort-row">
+            <span class="community-sort-index">{{ index + 1 }}</span>
+            <button type="button" class="community-sort-handle community-sort-cover" :aria-label="`拖动第 ${index + 1} 项`">
+              <img v-if="workImageUrl(item)" :src="workImageUrl(item)" :alt="item.title || '作品'" />
+            </button>
+          </article>
+        </template>
+      </draggable>
+    </AdminDialog>
+
+    <AdminDialog
       v-model="categoryOpen"
+      panel-class="community-manage-dialog"
       title="分类管理"
+      subtitle="启停、改名与拖动排序；删除后作品变为未分类"
+      :icon="CollectionTag"
       width="720px"
-      append-to-body
-      destroy-on-close
-      class="community-manage-dialog"
+      hide-footer
+      nested-scroll
     >
       <div class="cm-dialog">
         <div class="cm-toolbar">
@@ -761,7 +965,7 @@ onMounted(() => {
           </el-button>
         </div>
 
-        <p class="cm-tip">点击名称改名；停用后前台不再展示。在「全部」下可拖动手柄排序。删除分类后作品变为未分类。</p>
+        <p class="cm-tip">点击名称改名；停用后前台不再展示。在「全部」下可拖动手柄排序。</p>
 
         <div class="cm-list">
           <el-empty v-if="!categoryDragList.length" description="暂无分类" />
@@ -835,15 +1039,17 @@ onMounted(() => {
           </draggable>
         </div>
       </div>
-    </el-dialog>
+    </AdminDialog>
 
-    <el-dialog
+    <AdminDialog
       v-model="categoryEditorOpen"
+      panel-class="community-config-editor-dialog"
       title="新增分类"
+      :icon="Plus"
       width="420px"
-      append-to-body
-      destroy-on-close
-      class="community-config-editor-dialog"
+      confirm-text="添加"
+      :confirm-loading="Boolean(categorySaving)"
+      @confirm="submitCategoryEditor"
     >
       <div class="cm-editor">
         <label>
@@ -855,84 +1061,106 @@ onMounted(() => {
           <el-switch v-model="categoryEditorForm.active" />
         </label>
       </div>
-      <template #footer>
-        <el-button @click="categoryEditorOpen = false">取消</el-button>
-        <el-button type="primary" :loading="Boolean(categorySaving)" @click="submitCategoryEditor">添加</el-button>
-      </template>
-    </el-dialog>
+    </AdminDialog>
 
-    <el-dialog
+    <AdminDialog
       v-model="authorsOpen"
+      panel-class="community-authors-dialog"
       title="创作者管理"
-      width="880px"
-      append-to-body
-      destroy-on-close
-      class="community-authors-dialog"
+      subtitle="查看投稿数据，并解除禁投限制"
+      :icon="User"
+      width="800px"
+      hide-footer
+      nested-scroll
     >
-      <div class="authors-overview">
-        <div><strong>{{ authorSummary.creators }}</strong><span>当前创作者</span></div>
-        <div><strong>{{ authorSummary.submissions }}</strong><span>累计投稿</span></div>
-        <div><strong>{{ authorSummary.approved }}</strong><span>已通过</span></div>
-        <div :class="{ 'is-alert': authorSummary.banned > 0 }">
-          <strong>{{ authorSummary.banned }}</strong><span>禁投中</span>
+      <div class="authors-panel">
+        <div class="authors-overview">
+          <div>
+            <strong class="tnum">{{ authorSummary.creators }}</strong>
+            <span>当前创作者</span>
+          </div>
+          <div>
+            <strong class="tnum">{{ authorSummary.submissions }}</strong>
+            <span>累计投稿</span>
+          </div>
+          <div>
+            <strong class="tnum">{{ authorSummary.approved }}</strong>
+            <span>已通过</span>
+          </div>
+          <div :class="{ 'is-alert': authorSummary.banned > 0 }">
+            <strong class="tnum">{{ authorSummary.banned }}</strong>
+            <span>禁投中</span>
+          </div>
         </div>
-      </div>
-      <div class="authors-toolbar">
-        <label class="authors-search">
-          <el-icon :size="16"><Search /></el-icon>
+
+        <div class="authors-toolbar">
           <el-input
             v-model="authorQuery"
+            :prefix-icon="Search"
             clearable
             placeholder="搜索创作者名称或邮箱"
             @keyup.enter="loadAuthors"
             @clear="loadAuthors"
           />
-        </label>
-        <el-button type="primary" :loading="authorsLoading" @click="loadAuthors">查询</el-button>
-      </div>
-      <div v-loading="authorsLoading" class="authors-list">
-        <el-empty v-if="!authorsLoading && !authors.length" description="暂无创作者" />
-        <article v-for="row in authors" :key="row.userId" class="author-row" :class="{ 'is-banned': isBanned(row) }">
-          <el-avatar class="author-row__avatar" :size="44" :src="row.avatarUrl || undefined">
-            {{ authorInitial(row) }}
-          </el-avatar>
-          <div class="author-row__identity">
-            <div class="author-row__name-line">
-              <strong>{{ row.username || '未设置昵称' }}</strong>
-              <el-tag v-if="isBanned(row)" type="danger" size="small" effect="light">禁投中</el-tag>
-              <el-tag v-else type="success" size="small" effect="plain">正常</el-tag>
-            </div>
-            <small :title="row.email">{{ row.email }}</small>
-          </div>
-          <div class="author-row__metrics">
-            <span><small>投稿</small><strong>{{ row.submissions }}</strong></span>
-            <span><small>通过</small><strong>{{ row.approved }}</strong></span>
-            <span><small>下架</small><strong>{{ row.removed }}</strong></span>
-          </div>
-          <div class="author-row__state">
-            <small v-if="isBanned(row)">至 {{ formatTime(row.bannedUntil) }}</small>
-            <el-button
-              v-if="isBanned(row)"
-              size="small"
-              type="warning"
-              plain
-              :loading="unbanning === row.userId"
-              @click="unbanAuthor(row)"
-            >
-              解除禁投
-            </el-button>
-          </div>
-        </article>
-      </div>
-    </el-dialog>
+          <el-button type="primary" :loading="authorsLoading" @click="loadAuthors">查询</el-button>
+        </div>
 
-    <el-dialog
+        <div v-loading="authorsLoading" class="authors-list">
+          <div v-if="!authorsLoading && !authors.length" class="authors-empty">
+            <el-icon><User /></el-icon>
+            <strong>暂无创作者</strong>
+            <span>调整搜索后再试</span>
+          </div>
+          <article
+            v-for="row in authors"
+            :key="row.userId"
+            class="author-row"
+            :class="{ 'is-banned': isBanned(row) }"
+          >
+            <el-avatar class="author-row__avatar" :size="40" :src="row.avatarUrl || undefined">
+              {{ authorInitial(row) }}
+            </el-avatar>
+            <div class="author-row__identity">
+              <div class="author-row__name-line">
+                <strong>{{ row.username || '未设置昵称' }}</strong>
+                <span class="author-row__status" :class="{ 'is-banned': isBanned(row) }">
+                  {{ isBanned(row) ? '禁投中' : '正常' }}
+                </span>
+              </div>
+              <small :title="row.email">{{ row.email }}</small>
+            </div>
+            <div class="author-row__metrics">
+              <span>投稿 <strong class="tnum">{{ row.submissions }}</strong></span>
+              <span>通过 <strong class="tnum">{{ row.approved }}</strong></span>
+              <span>下架 <strong class="tnum">{{ row.removed }}</strong></span>
+            </div>
+            <div v-if="isBanned(row)" class="author-row__state">
+              <small>至 {{ formatTime(row.bannedUntil) }}</small>
+              <el-button
+                size="small"
+                type="warning"
+                plain
+                :loading="unbanning === row.userId"
+                @click="unbanAuthor(row)"
+              >
+                解除禁投
+              </el-button>
+            </div>
+          </article>
+        </div>
+      </div>
+    </AdminDialog>
+
+    <AdminDialog
       v-model="batchOpen"
+      panel-class="community-batch-dialog"
       :title="`批量编辑 · ${selectedCount} 个作品`"
+      subtitle="勾选需要更新的字段后应用"
+      :icon="Check"
       width="600px"
-      append-to-body
-      destroy-on-close
-      class="community-batch-dialog"
+      confirm-text="应用更新"
+      :confirm-loading="batchSaving"
+      @confirm="saveBatchEdit"
     >
       <div class="community-batch">
         <div class="community-batch__row">
@@ -979,26 +1207,25 @@ onMounted(() => {
           />
         </div>
       </div>
-      <template #footer>
-        <el-button @click="batchOpen = false">取消</el-button>
-        <el-button type="primary" :loading="batchSaving" @click="saveBatchEdit">应用更新</el-button>
-      </template>
-    </el-dialog>
+    </AdminDialog>
 
-    <el-dialog
+    <AdminDialog
       v-model="editOpen"
+      panel-class="community-edit-dialog"
       title="作品详情"
-      width="820px"
-      append-to-body
-      destroy-on-close
-      class="community-edit-dialog"
+      subtitle="调整分类、标签与精选状态"
+      width="min(820px, 94vw)"
+      nested-scroll
+      confirm-text="保存"
+      :confirm-loading="editSaving"
+      @confirm="saveCurate"
     >
       <div v-if="editTarget" class="community-edit">
         <div class="community-edit__layout">
           <button type="button" class="community-edit__cover" title="打开全屏预览" @click="openPreview(editTarget)">
             <img
-              v-if="editTarget.coverUrl || editTarget.mediaUrls?.[0]"
-              :src="editTarget.coverUrl ?? editTarget.mediaUrls?.[0]"
+              v-if="workImageUrl(editTarget)"
+              :src="workImageUrl(editTarget)"
               :alt="editTarget.title"
             />
             <span v-else class="community-edit__empty">无图片</span>
@@ -1046,348 +1273,267 @@ onMounted(() => {
           </div>
         </div>
       </div>
-      <template #footer>
-        <el-button @click="editOpen = false">取消</el-button>
-        <el-button type="primary" :loading="editSaving" @click="saveCurate">保存</el-button>
-      </template>
-    </el-dialog>
+    </AdminDialog>
   </div>
 </template>
 
 <style scoped lang="scss">
 .community-ops-page {
-  --community-accent: var(--accent);
-  --community-line: var(--border);
-
-  display: grid;
+  box-sizing: border-box;
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
   gap: 12px;
-  min-width: 0;
-  padding: 24px 28px;
-}
-
-.ops-toolbar-panel {
-  min-height: 52px;
-  padding: 8px 10px;
-  border: 1px solid var(--community-line);
-  border-radius: 16px;
-  background: var(--surface);
-  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+  padding: 0;
+  background: var(--bg);
 }
 
 .community-toolbar {
   display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  min-width: 0;
 }
 
-.community-toolbar__left {
-  display: flex;
+.community-tabs {
+  display: inline-flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 14px;
+  gap: 2px;
   min-width: 0;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+}
 
-  > strong {
-    position: relative;
-    padding-left: 10px;
-    color: var(--el-text-color-primary);
-    font-size: 13px;
-    font-weight: 760;
+.community-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--ink-2);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
 
-    &::before {
-      position: absolute;
-      top: 50%;
-      left: 0;
-      width: 3px;
-      height: 16px;
-      content: '';
-      background: var(--community-accent);
-      transform: translateY(-50%);
+  em {
+    color: var(--ink-3);
+    font-size: 12px;
+    font-style: normal;
+    font-weight: 700;
+  }
+
+  &:hover:not(.is-active) {
+    color: var(--ink);
+    background: var(--surface);
+  }
+
+  &.is-active {
+    background: var(--accent);
+    color: var(--accent-on);
+
+    em {
+      color: color-mix(in srgb, var(--accent-on) 72%, transparent);
     }
   }
 }
 
-.community-toolbar__actions {
+.community-toolbar__right {
   display: flex;
+  flex: 0 1 auto;
   flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
+  margin-left: auto;
+}
+
+.community-search {
+  width: 220px;
 }
 
 .community-setting-pill {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  height: 34px;
-  padding: 4px 10px;
-  border: 1px solid var(--community-line);
-  border-radius: 10px;
-  color: var(--ink-3);
+  gap: 7px;
+  height: 32px;
+  padding: 0 10px 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--ink-2);
   font-size: 12px;
-  background: var(--surface);
+  font-weight: 650;
+  background: var(--surface-2);
 
   &.is-on {
-    border-color: color-mix(in srgb, var(--success) 30%, transparent);
+    border-color: color-mix(in srgb, var(--success) 28%, var(--border));
     background: var(--success-soft);
     color: var(--success);
   }
 
   &.is-limit :deep(.el-input-number) {
-    width: 64px;
+    width: 56px;
   }
-}
 
-.community-config-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 34px;
-  padding: 0 12px 0 10px;
-  border: 1px solid var(--community-line);
-  border-radius: 10px;
-  background: var(--surface);
-  color: var(--ink-2);
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 1;
-  cursor: pointer;
-  transition:
-    background 0.16s ease,
-    border-color 0.16s ease,
-    color 0.16s ease,
-    box-shadow 0.16s ease;
-
-  em {
-    min-width: 18px;
-    height: 18px;
-    padding: 0 5px;
-    border-radius: 999px;
-    background: color-mix(in srgb, currentColor 12%, transparent);
-    color: inherit;
-    font-size: 11px;
-    font-style: normal;
-    font-weight: 700;
-    line-height: 18px;
+  &.is-limit :deep(.el-input__inner) {
     text-align: center;
   }
-
-  &:hover {
-    border-color: color-mix(in srgb, var(--accent) 42%, transparent);
-    background: var(--accent-soft);
-    color: var(--accent-ink);
-    box-shadow: var(--shadow-sm);
-  }
-
-  &.is-category {
-    color: var(--accent-ink);
-  }
-
-  &.is-author {
-    color: var(--warning);
-  }
-}
-
-.community-pane {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-width: 0;
-  padding: 12px;
-  border: 1px solid var(--community-line);
-  border-radius: 16px;
-  background: var(--surface);
-  box-shadow: var(--shadow-sm);
-}
-
-.community-pane__bar {
-  display: flex;
-  flex-shrink: 0;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 12px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid var(--community-line);
-}
-
-.community-filters {
-  display: flex;
-  flex: 1 1 auto;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-
-.community-filter {
-  min-height: 30px;
-  padding: 0 11px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--surface);
-  color: var(--ink-2);
-  font-size: 12px;
-  font-weight: 650;
-  cursor: pointer;
-  transition:
-    background-color 0.15s ease,
-    color 0.15s ease,
-    border-color 0.15s ease;
-
-  &:hover {
-    background: var(--surface-3);
-    color: var(--ink);
-  }
-
-  &.is-active {
-    border-color: var(--accent);
-    background: var(--accent);
-    color: #fff;
-  }
-}
-
-.community-bar-aside {
-  display: flex;
-  flex-shrink: 0;
-  align-items: center;
-  margin-left: auto;
-}
-
-.community-search {
-  display: flex;
-  align-items: center;
-  width: min(320px, 42vw);
-  height: 34px;
-  padding: 3px 3px 3px 10px;
-  border: 1px solid var(--community-line);
-  border-radius: 10px;
-  background: var(--surface-2);
-  transition:
-    border-color 0.16s ease,
-    box-shadow 0.16s ease;
-
-  &:focus-within {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 3px var(--accent-soft);
-  }
-
-  :deep(.el-input) {
-    flex: 1 1 auto;
-    min-width: 0;
-  }
-
-  :deep(.el-input__wrapper) {
-    padding: 0 8px 0 6px;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-    box-shadow: none !important;
-  }
-
-  :deep(.el-input__inner) {
-    height: 28px;
-    font-size: 13px;
-  }
-}
-
-.community-search__icon {
-  flex-shrink: 0;
-  color: var(--el-text-color-placeholder);
 }
 
 .community-selection-bar {
   display: flex;
-  min-height: 38px;
+  flex: 0 0 auto;
+  min-height: 40px;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 4px 8px;
-  border: 1px solid transparent;
-  border-radius: 10px;
-  background: var(--surface-2);
-
-  &.has-selection {
-    border-color: color-mix(in srgb, var(--accent) 28%, transparent);
-    background: var(--accent-soft);
-  }
-}
-
-.community-selection-bar__left,
-.community-selection-bar__actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
+  padding: 6px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  border-radius: 14px;
+  background: var(--accent-soft);
   font-size: 12px;
   font-weight: 650;
 }
 
-.community-selection-bar__left .is-hint {
-  overflow: hidden;
-  color: var(--el-text-color-secondary);
-  font-weight: 500;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.community-selection-bar__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
-.community-pane__scroll {
-  flex: 0 1 auto;
-  min-height: 200px;
+.community-selection-bar__count {
+  margin-right: auto;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
 }
 
 .community-board {
-  display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 10px;
-  align-content: start;
-  grid-auto-rows: 1fr;
-}
-
-@media (max-width: 1280px) {
-  .community-board {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 800px) {
-  .community-board {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-.community-board :deep(.community-card) {
-  border-color: var(--community-line);
-  border-radius: 14px;
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface);
   box-shadow: var(--shadow-sm);
 }
 
-.community-board :deep(.is-work-ghost) {
-  opacity: 0.35;
-  border-style: dashed;
+.community-feed {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding: 14px;
 }
 
-.community-board :deep(.is-work-drag) {
-  box-shadow: 0 14px 32px rgb(15 23 42 / 18%);
+.community-feed.is-scrolling :deep(.community-card) {
+  pointer-events: none;
+  box-shadow: none;
+  transition: none;
+}
+
+.community-feed.is-scrolling :deep(.community-cover img) {
+  transform: none;
+  transition: none;
+}
+
+.community-grid__loading,
+.community-empty {
+  display: grid;
+  min-height: 280px;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  color: var(--ink-3);
+  text-align: center;
+}
+
+.community-empty {
+  .el-icon {
+    font-size: 30px;
+  }
+
+  strong {
+    color: var(--ink);
+  }
+
+  span {
+    max-width: 280px;
+    font-size: 12px;
+    line-height: 1.45;
+  }
+}
+
+.community-masonry {
+  position: relative;
+  width: 100%;
+}
+
+.community-masonry__item {
+  position: absolute;
+  top: 0;
+  left: 0;
+  will-change: transform;
+}
+
+.community-load-status {
+  display: grid;
+  place-items: center;
+  min-height: 40px;
+  padding: 8px 0 4px;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.community-load-status.is-loading {
+  color: var(--accent-ink);
 }
 
 .community-card-skeleton {
+  display: grid;
+  gap: 8px;
+  padding: 8px;
   overflow: hidden;
-  border: 1px solid var(--community-line);
-  border-radius: 14px;
-  background: var(--surface);
-  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface-2);
 
   > div {
-    aspect-ratio: 4 / 3;
+    height: 168px;
+    border-radius: 12px;
     background: linear-gradient(90deg, var(--el-fill-color-light), var(--el-fill-color), var(--el-fill-color-light));
     background-size: 200% 100%;
     animation: community-shimmer 1.2s linear infinite;
+
+    &.is-variant-2 {
+      height: 204px;
+    }
+
+    &.is-variant-3 {
+      height: 148px;
+    }
   }
 
   footer {
     display: grid;
-    grid-template-rows: 18px 16px 16px 28px;
+    grid-template-rows: 18px 16px 16px;
     gap: 4px;
-    padding: 8px;
+    padding: 2px;
   }
 
   footer span,
@@ -1412,6 +1558,77 @@ onMounted(() => {
   }
 }
 
+.community-sort-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  gap: 10px;
+  max-height: min(60vh, 520px);
+  overflow: auto;
+  padding: 4px 2px;
+}
+
+.community-sort-row {
+  display: grid;
+  gap: 6px;
+  justify-items: center;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.community-sort-handle {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: grab;
+
+  &:active {
+    cursor: grabbing;
+  }
+}
+
+.community-sort-index {
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  text-align: center;
+}
+
+.community-sort-cover {
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+  box-shadow: var(--shadow-sm);
+
+  img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    pointer-events: none;
+  }
+}
+
+.is-work-ghost {
+  opacity: 0.35;
+
+  .community-sort-cover {
+    border-style: dashed;
+  }
+}
+
+.is-work-drag {
+  .community-sort-cover {
+    box-shadow: 0 14px 32px rgb(15 23 42 / 18%);
+  }
+}
+
 @keyframes community-shimmer {
   0% {
     background-position: 100% 0;
@@ -1423,18 +1640,15 @@ onMounted(() => {
 }
 
 @media (max-width: 900px) {
-  .community-toolbar {
-    align-items: stretch;
-    flex-direction: column;
+  .community-toolbar__right {
+    width: 100%;
+    margin-left: 0;
+    justify-content: flex-start;
   }
 
-  .community-pane {
-    padding: 8px;
-  }
-
-  .community-selection-bar {
-    align-items: flex-start;
-    flex-direction: column;
+  .community-search {
+    width: 100%;
+    max-width: none;
   }
 }
 </style>
@@ -1646,102 +1860,113 @@ onMounted(() => {
 }
 
 .community-authors-dialog {
-  .el-dialog__body {
-    padding-top: 8px;
+  .authors-panel {
+    display: flex;
+    min-height: 0;
+    flex: 1;
+    flex-direction: column;
+    gap: 12px;
   }
 
   .authors-overview {
     display: grid;
+    flex: 0 0 auto;
     grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 1px;
-    overflow: hidden;
-    margin-bottom: 14px;
-    border: 1px solid var(--community-dialog-line);
-    border-radius: 10px;
-    background: var(--community-dialog-line);
+    gap: 8px;
 
     > div {
       display: grid;
-      gap: 2px;
+      gap: 4px;
       padding: 12px 14px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
       background: var(--surface-2);
 
       strong {
         color: var(--ink);
-        font-size: 20px;
-        line-height: 1.2;
+        font-size: 22px;
+        font-weight: 700;
+        line-height: 1.15;
       }
 
       span {
         color: var(--ink-3);
-        font-size: 11px;
+        font-size: 12px;
       }
 
-      &.is-alert strong {
-        color: var(--danger);
+      &.is-alert {
+        border-color: color-mix(in srgb, var(--danger) 28%, var(--border));
+        background: var(--danger-soft);
+
+        strong {
+          color: var(--danger);
+        }
       }
     }
   }
 
   .authors-toolbar {
     display: flex;
+    flex: 0 0 auto;
     gap: 8px;
-    margin-bottom: 12px;
-  }
 
-  .authors-search {
-    display: flex;
-    flex: 1;
-    align-items: center;
-    gap: 6px;
-    height: 36px;
-    padding-left: 10px;
-    border: 1px solid var(--community-dialog-line);
-    border-radius: 9px;
-    color: var(--ink-3);
-    background: var(--surface-2);
-
-    &:focus-within {
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px var(--accent-soft);
-    }
-
-    .el-input__wrapper {
-      background: transparent;
-      box-shadow: none;
+    .el-input {
+      flex: 1;
     }
   }
 
   .authors-list {
     display: grid;
-    gap: 6px;
-    min-height: 160px;
-    max-height: min(56vh, 520px);
-    padding-right: 3px;
+    flex: 1 1 auto;
+    align-content: start;
+    gap: 8px;
+    min-height: 180px;
     overflow: auto;
+  }
+
+  .authors-empty {
+    display: grid;
+    min-height: 180px;
+    place-content: center;
+    justify-items: center;
+    gap: 6px;
+    color: var(--ink-3);
+    text-align: center;
+
+    .el-icon {
+      font-size: 28px;
+    }
+
+    strong {
+      color: var(--ink);
+    }
+
+    span {
+      font-size: 12px;
+    }
   }
 
   .author-row {
     display: grid;
-    grid-template-columns: 44px minmax(180px, 1fr) auto minmax(88px, auto);
+    grid-template-columns: 40px minmax(160px, 1fr) auto auto;
     align-items: center;
-    gap: 14px;
-    min-height: 68px;
-    padding: 10px 14px;
-    border: 1px solid var(--community-dialog-line);
-    border-radius: 9px;
-    background: var(--surface);
+    gap: 12px;
+    min-height: 64px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--surface-2);
 
     &.is-banned {
-      border-color: color-mix(in srgb, var(--danger) 30%, transparent);
+      border-color: color-mix(in srgb, var(--danger) 28%, var(--border));
       background: var(--danger-soft);
     }
   }
 
   .author-row__avatar {
     flex-shrink: 0;
-    background: var(--accent);
-    color: #fff;
+    background: var(--accent-soft);
+    color: var(--accent-ink);
     font-size: 14px;
     font-weight: 700;
   }
@@ -1753,8 +1978,8 @@ onMounted(() => {
       display: block;
       overflow: hidden;
       margin-top: 3px;
-      color: var(--el-text-color-secondary);
-      font-size: 11px;
+      color: var(--ink-3);
+      font-size: 12px;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
@@ -1763,39 +1988,58 @@ onMounted(() => {
   .author-row__name-line {
     display: flex;
     align-items: center;
-    gap: 7px;
+    gap: 8px;
     min-width: 0;
 
     strong {
       overflow: hidden;
       color: var(--ink);
-      font-size: 13px;
+      font-size: 14px;
+      font-weight: 700;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
   }
 
+  .author-row__status {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    min-height: 22px;
+    padding: 0 8px;
+    border-radius: var(--radius-pill);
+    background: var(--success-soft);
+    color: var(--success);
+    font-size: 11px;
+    font-weight: 700;
+
+    &.is-banned {
+      background: var(--surface);
+      color: var(--danger);
+    }
+  }
+
   .author-row__metrics {
     display: flex;
-    gap: 5px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px;
 
     > span {
-      display: flex;
-      min-width: 62px;
+      display: inline-flex;
       align-items: baseline;
-      justify-content: space-between;
-      gap: 7px;
-      padding: 5px 8px;
-      border-radius: 7px;
-      background: var(--surface-2);
+      gap: 4px;
+      min-height: 24px;
+      padding: 0 8px;
+      border-radius: var(--radius-pill);
+      background: var(--surface);
+      color: var(--ink-3);
+      font-size: 12px;
 
       strong {
+        color: var(--ink);
         font-size: 13px;
-      }
-
-      small {
-        color: var(--el-text-color-secondary);
-        font-size: 10px;
+        font-weight: 700;
       }
     }
   }
@@ -1803,27 +2047,11 @@ onMounted(() => {
   .author-row__state {
     display: grid;
     justify-items: end;
-    gap: 5px;
+    gap: 4px;
 
     > small {
       color: var(--danger);
-      font-size: 10px;
-    }
-  }
-
-  @media (max-width: 760px) {
-    .authors-overview {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-
-    .author-row {
-      grid-template-columns: 44px minmax(0, 1fr) auto;
-    }
-
-    .author-row__metrics {
-      grid-column: 2 / -1;
-      grid-row: 2;
-      flex-wrap: wrap;
+      font-size: 11px;
     }
   }
 }
@@ -1855,15 +2083,6 @@ onMounted(() => {
     }
   }
 
-  @media (max-width: 640px) {
-    .community-batch__row {
-      grid-template-columns: 1fr;
-
-      &.is-tags .el-select {
-        grid-column: 1;
-      }
-    }
-  }
 }
 
 .community-edit-dialog {
@@ -1884,15 +2103,16 @@ onMounted(() => {
     padding: 0;
     overflow: hidden;
     border: 1px solid var(--community-dialog-line);
-    border-radius: 10px;
-    background: var(--el-fill-color-light);
+    border-radius: 12px;
+    background: var(--surface-2);
     cursor: zoom-in;
 
     img {
       display: block;
       width: 100%;
       height: 100%;
-      object-fit: cover;
+      max-height: 420px;
+      object-fit: contain;
     }
   }
 

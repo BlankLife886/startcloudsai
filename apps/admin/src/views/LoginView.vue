@@ -594,17 +594,5 @@ async function onSubmit() {
   }
 }
 
-@media (max-width: 480px) {
-  .hero-plate--se {
-    display: none;
-  }
 
-  .captcha-row {
-    grid-template-columns: 1fr;
-  }
-
-  .captcha-image {
-    width: 100%;
-  }
-}
 </style>

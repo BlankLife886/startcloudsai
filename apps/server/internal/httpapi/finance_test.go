@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
 	"github.com/BlankLife886/startcloudsai/server/internal/testdb"
 	"github.com/BlankLife886/startcloudsai/server/internal/wallet"
@@ -123,5 +124,31 @@ func TestFinanceSummaryDaysClamp(t *testing.T) {
 		if totals[key].(int64) != 0 {
 			t.Fatalf("%s = %v, want 0", key, totals[key])
 		}
+	}
+}
+
+func TestRevenueUsesProviderPayAmount(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	_, order := makeOrder(t, st)
+	if _, err := st.Pool.Exec(ctx, `UPDATE orders SET provider_pay_amount_cents = 991 WHERE id = $1`, order.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&Server{St: st}).completeOrder(ctx, order); err != nil {
+		t.Fatal(err)
+	}
+	revenue, err := store.RevenueSince(ctx, st.Pool, time.Now().UTC().Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revenue != 991 {
+		t.Fatalf("revenue = %d, want 991", revenue)
+	}
+	daily, err := store.RevenueDailySince(ctx, st.Pool, time.Now().UTC().Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := daily[time.Now().UTC().Format("2006-01-02")]; got != 991 {
+		t.Fatalf("daily revenue = %d, want 991", got)
 	}
 }

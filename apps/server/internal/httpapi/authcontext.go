@@ -15,6 +15,11 @@ const renewThreshold = 15 * 24 * time.Hour
 
 // currentUser 从 cookie session 解析当前用户；未登录/失效返回 nil。
 func (s *Server) currentUser(c *gin.Context) (*store.User, error) {
+	if value, exists := c.Get(ctxOpenAPIUser); exists {
+		if user, ok := value.(*store.User); ok {
+			return user, nil
+		}
+	}
 	token, err := c.Cookie(s.Cfg.SessionCookieName)
 	if err != nil || token == "" {
 		return nil, nil
@@ -41,6 +46,10 @@ func (s *Server) currentUser(c *gin.Context) (*store.User, error) {
 		if err := store.UpdateSessionExpiry(ctx, s.St.Pool, session.ID, newExpiry); err != nil {
 			return nil, err
 		}
+		// 数据库与浏览器必须同时续期：Cookie 的 Max-Age 是登录时刻起算的固定
+		// 值，若只延长 DB 里的 expires_at，浏览器会在 Max-Age 到期时删除
+		// Cookie，导致服务端会话仍有效但用户已“掉线”。属性与登录时完全一致。
+		s.setSessionCookie(c, token)
 	}
 	return user, nil
 }
@@ -54,6 +63,7 @@ func (s *Server) requireUser(c *gin.Context) (*store.User, error) {
 	if user == nil {
 		return nil, apperr.E("auth_required", "请先登录", 401)
 	}
+	c.Set(ctxPlatformUserKey, user)
 	return user, nil
 }
 
@@ -79,9 +89,13 @@ func (s *Server) currentAdminAccount(c *gin.Context) (*store.AdminAccount, error
 		return nil, nil
 	}
 	if session.ExpiresAt.Sub(now) < adminRenewThreshold {
-		if err := store.UpdateAdminSessionExpiry(ctx, s.St.Pool, session.ID, now.Add(adminSessionTTL)); err != nil {
+		newExpiry := now.Add(adminSessionTTL)
+		if err := store.UpdateAdminSessionExpiry(ctx, s.St.Pool, session.ID, newExpiry); err != nil {
 			return nil, err
 		}
+		// 数据库与浏览器必须同时续期，否则 Cookie 会在首次登录满 12 小时后
+		// 被浏览器删除，即使服务端 session 仍然有效。
+		s.setAdminSessionCookie(c, token, int(adminSessionTTL/time.Second))
 	}
 	return admin, nil
 }

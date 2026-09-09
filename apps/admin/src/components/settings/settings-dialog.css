@@ -1,0 +1,240 @@
+.module-settings-form {
+  display: grid;
+  gap: 18px;
+  min-height: 120px;
+}
+
+.module-settings-section {
+  display: grid;
+  gap: 10px;
+}
+
+.module-settings-section + .module-settings-section {
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.module-settings-section__head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.module-settings-section__head > div {
+  min-width: 0;
+}
+
+.module-settings-section__head strong,
+.module-settings-section__head small {
+  display: block;
+}
+
+.module-settings-section__head strong {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.module-settings-section__head small {
+  margin-top: 3px;
+  color: var(--ink-3);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.module-settings-section__meta {
+  flex: 0 0 auto;
+  color: var(--accent-ink);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.module-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px 20px;
+  overflow: hidden;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.module-settings-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+  min-height: 72px;
+  padding: 11px 2px;
+  border-bottom: 1px solid var(--border);
+}
+
+.module-settings-grid > .module-settings-field:nth-last-child(-n + 2) {
+  border-bottom: 0;
+}
+
+.module-settings-field--wide {
+  grid-column: 1 / -1;
+}
+
+.module-settings-field--stack {
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+}
+
+.module-settings-field__copy {
+  min-width: 0;
+}
+
+.module-settings-field__copy strong,
+.module-settings-field__copy small {
+  display: block;
+}
+
+.module-settings-field__copy strong {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.module-settings-field__copy small {
+  margin-top: 4px;
+  color: var(--ink-3);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.module-settings-control {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
+.module-settings-control > span {
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.module-settings-control .el-input-number {
+  width: 138px;
+}
+
+.module-settings-control .el-input,
+.module-settings-control .el-select {
+  width: 100%;
+}
+
+.module-settings-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.module-settings-metric {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.module-settings-metric span {
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.module-settings-metric strong {
+  color: var(--ink);
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+.module-settings-milestones {
+  display: grid;
+  gap: 7px;
+}
+
+.module-settings-milestone {
+  display: grid;
+  grid-template-columns: 26px 1fr 1fr 32px;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.module-settings-milestone__index {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.module-settings-milestone label {
+  display: grid;
+  grid-template-columns: 52px minmax(100px, 1fr) 28px;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.module-settings-milestone .el-input-number {
+  width: 100%;
+}
+
+.module-settings-feature-select {
+  width: 100%;
+}
+
+.module-settings-feature-popper .el-select-dropdown__item {
+  height: 58px;
+  padding: 7px 12px;
+}
+
+.module-settings-feature-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  line-height: 1.25;
+}
+
+.module-settings-feature-option > i {
+  width: 28px;
+  color: var(--el-color-primary);
+  font-size: 18px;
+  text-align: center;
+}
+
+.module-settings-feature-option > span {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.module-settings-feature-option strong {
+  color: var(--el-text-color-primary);
+  font-size: 14px;
+}
+
+.module-settings-feature-option small {
+  overflow: hidden;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

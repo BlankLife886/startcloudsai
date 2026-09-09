@@ -1,0 +1,345 @@
+/* Generated from apps/web/src/components/ecommerce/EcommerceBriefAssistantDialog.vue. */
+
+.brief-dialog__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10100;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgb(7 8 14 / 58%);
+  backdrop-filter: blur(14px) saturate(0.88);
+  -webkit-backdrop-filter: blur(14px) saturate(0.88);
+}
+.brief-dialog {
+  width: min(560px, 100%);
+  max-height: min(680px, calc(100vh - 40px));
+  overflow: auto;
+  color: #f1f1f5;
+  background: #17171f;
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: 18px;
+  box-shadow: 0 28px 80px rgb(0 0 0 / 42%);
+}
+.brief-dialog > header {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) 34px;
+  align-items: center;
+  gap: 11px;
+  padding: 20px 22px 18px;
+  border-bottom: 1px solid rgb(255 255 255 / 9%);
+}
+.brief-dialog > header > span {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  color: #9ac1ff;
+  background: #172a46;
+  border-radius: 12px;
+}
+.brief-dialog h2 {
+  margin: 2px 0 0;
+  font-size: 16px;
+}
+.brief-dialog header small {
+  color: #a5a4b1;
+  font-size: 10px;
+}
+.brief-dialog header button {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  color: #a5a4b1;
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: color 160ms ease, background-color 160ms ease;
+}
+.brief-dialog header button:hover:not(:disabled),
+.brief-dialog header button:focus-visible:not(:disabled) {
+  color: #f1f1f5;
+  background: rgb(255 255 255 / 8%);
+  outline: none;
+}
+.brief-dialog__loading {
+  display: grid;
+  min-height: 248px;
+  align-items: center;
+  justify-items: center;
+  align-content: center;
+  gap: 16px;
+  padding: 36px 32px 42px;
+  text-align: center;
+}
+.brief-dialog__loading-mark {
+  position: relative;
+  display: grid;
+  width: 72px;
+  height: 72px;
+  place-items: center;
+}
+.brief-dialog__loading-mark > span {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  width: 54px;
+  height: 54px;
+  place-items: center;
+  color: #9ac1ff;
+  background: #172a46;
+  border-radius: 15px;
+  box-shadow: 0 12px 30px rgb(12 27 49 / 34%);
+  animation: brief-pulse 1.8s ease-in-out infinite;
+}
+.brief-dialog__loading-mark > span i {
+  font-size: 20px;
+}
+.brief-dialog__loading-orbit {
+  position: absolute;
+  inset: 0;
+  border: 1px solid rgb(154 193 255 / 18%);
+  border-top-color: #9ac1ff;
+  border-radius: 50%;
+  animation: brief-spin 1.25s linear infinite;
+}
+.brief-dialog__loading-copy {
+  display: grid;
+  gap: 7px;
+}
+.brief-dialog__loading-copy strong {
+  font-size: 15px;
+}
+.brief-dialog__loading-copy small {
+  color: #a5a4b1;
+  font-size: 11px;
+}
+.brief-dialog__progress {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  width: min(390px, 100%);
+  margin-top: 6px;
+  color: #777783;
+}
+.brief-dialog__progress::before {
+  position: absolute;
+  top: 12px;
+  right: 17%;
+  left: 17%;
+  height: 1px;
+  content: '';
+  background: rgb(255 255 255 / 10%);
+}
+.brief-dialog__progress span {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  justify-items: center;
+  gap: 7px;
+  font-size: 9px;
+}
+.brief-dialog__progress i {
+  display: grid;
+  width: 25px;
+  height: 25px;
+  place-items: center;
+  border: 1px solid rgb(255 255 255 / 10%);
+  border-radius: 50%;
+  background: #17171f;
+}
+.brief-dialog__progress .is-active {
+  color: #9ac1ff;
+}
+.brief-dialog__progress .is-active i {
+  border-color: rgb(154 193 255 / 38%);
+  background: #172a46;
+  animation: brief-stage 1.5s ease-in-out infinite;
+}
+.brief-dialog__content {
+  display: grid;
+  gap: 15px;
+  padding: 18px;
+}
+.brief-dialog__content label {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.brief-dialog__content label > span {
+  color: #c5c5ce;
+  font-size: 11px;
+  font-weight: 700;
+}
+.brief-dialog__content input,
+.brief-dialog__content textarea {
+  width: 100%;
+  color: inherit;
+  background: #222228;
+  border: 1px solid #303039;
+  border-radius: 7px;
+  outline: none;
+  font: inherit;
+  font-size: 12px;
+}
+.brief-dialog__content input {
+  height: 40px;
+  padding: 0 12px;
+}
+.brief-dialog__content textarea {
+  min-height: 180px;
+  padding: 12px 12px 28px;
+  resize: vertical;
+  line-height: 1.65;
+}
+.brief-dialog__content label > small {
+  position: absolute;
+  right: 10px;
+  bottom: 9px;
+  color: #8d8d99;
+  font-size: 9px;
+}
+.brief-dialog__error {
+  margin: 0;
+  padding: 10px 11px;
+  color: #ffaaaa;
+  background: rgb(233 95 103 / 10%);
+  border-radius: 7px;
+  font-size: 11px;
+}
+.brief-dialog__error i {
+  margin-right: 6px;
+}
+.brief-dialog > footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+  padding: 0 18px 18px;
+}
+.brief-dialog > footer.is-busy {
+  display: none;
+}
+.brief-dialog > footer button {
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 15px;
+  border: 0;
+  border-radius: 7px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 750;
+}
+.brief-dialog__regenerate {
+  color: #c5c5ce;
+  background: #27272e;
+}
+.brief-dialog__confirm {
+  color: #fff;
+  background: #2f7ef7;
+}
+.brief-dialog > footer button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+.brief-dialog__backdrop.light {
+  background: rgb(34 37 52 / 26%);
+}
+.brief-dialog__backdrop.light .brief-dialog {
+  color: #17191d;
+  background: #fff;
+  border-color: rgb(84 90 112 / 13%);
+  box-shadow: 0 30px 90px rgb(39 43 64 / 18%);
+}
+.brief-dialog__backdrop.light .brief-dialog > header {
+  border-bottom-color: #e2e6ec;
+}
+.brief-dialog__backdrop.light .brief-dialog header button,
+.brief-dialog__backdrop.light .brief-dialog header small {
+  color: #737985;
+}
+.brief-dialog__backdrop.light .brief-dialog__content label > span {
+  color: #555b66;
+}
+.brief-dialog__backdrop.light .brief-dialog__content input,
+.brief-dialog__backdrop.light .brief-dialog__content textarea {
+  color: #17191d;
+  background: #f4f5f7;
+  border-color: transparent;
+}
+.brief-dialog__backdrop.light .brief-dialog__regenerate {
+  color: #555b66;
+  background: #f0f2f5;
+}
+.brief-dialog__backdrop.light .brief-dialog__loading-mark > span {
+  color: #527fc0;
+  background: #eaf2ff;
+  box-shadow: 0 12px 30px rgb(82 127 192 / 16%);
+}
+.brief-dialog__backdrop.light .brief-dialog__loading-orbit {
+  border-color: rgb(82 127 192 / 14%);
+  border-top-color: #527fc0;
+}
+.brief-dialog__backdrop.light .brief-dialog__progress::before {
+  background: rgb(30 43 67 / 10%);
+}
+.brief-dialog__backdrop.light .brief-dialog__progress i {
+  border-color: rgb(30 43 67 / 12%);
+  background: #fff;
+}
+.brief-dialog__backdrop.light .brief-dialog__progress .is-active {
+  color: #527fc0;
+}
+.brief-dialog__backdrop.light .brief-dialog__progress .is-active i {
+  border-color: rgb(82 127 192 / 30%);
+  background: #eaf2ff;
+}
+.brief-dialog-enter-active,
+.brief-dialog-leave-active {
+  transition: opacity 180ms ease;
+}
+.brief-dialog-enter-from,
+.brief-dialog-leave-to {
+  opacity: 0;
+}
+@keyframes brief-pulse {
+50% {
+    transform: scale(1.045);
+    opacity: 0.84;
+}
+}
+@keyframes brief-spin {
+to {
+    transform: rotate(360deg);
+}
+}
+@keyframes brief-stage {
+50% {
+    box-shadow: 0 0 0 5px rgb(154 193 255 / 8%);
+}
+}
+@media (prefers-reduced-motion: reduce) {
+.brief-dialog__loading-mark > span,
+.brief-dialog__loading-orbit,
+.brief-dialog__progress .is-active i {
+    animation: none;
+}
+}
+@media (max-width: 560px) {
+.brief-dialog__backdrop {
+    padding: 10px;
+}
+.brief-dialog > footer {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+}
+.brief-dialog__loading {
+    min-height: 230px;
+    padding: 30px 18px 36px;
+}
+}

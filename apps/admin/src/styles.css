@@ -5,7 +5,7 @@
 }
 
 .page {
-  padding: 24px 28px;
+  padding: 4px 8px 28px;
 }
 
 .page-header {
@@ -13,12 +13,12 @@
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
-  margin-bottom: 16px;
+  margin-bottom: 18px;
 }
 
 .page-header .title {
-  font-size: 20px;
-  font-weight: 600;
+  font-size: 18px;
+  font-weight: 700;
   letter-spacing: -0.02em;
   margin-right: auto;
 }
@@ -71,7 +71,7 @@
 .bar {
   position: relative;
   height: 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-pill);
   background: var(--surface-3);
   overflow: hidden;
 }
@@ -81,8 +81,8 @@
   left: 0;
   top: 0;
   height: 100%;
-  border-radius: 4px;
-  background: var(--success);
+  border-radius: var(--radius-pill);
+  background: var(--accent);
   transition: width 0.3s;
 }
 

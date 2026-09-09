@@ -85,3 +85,15 @@ func buildPage[T cursorItem](rows []T, limit int, serialize func(T) gin.H) gin.H
 	}
 	return gin.H{"items": items, "nextCursor": next}
 }
+
+func pageNumber(c *gin.Context) (int, error) {
+	s := strings.TrimSpace(c.Query("page"))
+	if s == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 1 || n > 10000 {
+		return 0, apperr.E("validation_error", "page: 须在 1-10000 之间", 422)
+	}
+	return n, nil
+}

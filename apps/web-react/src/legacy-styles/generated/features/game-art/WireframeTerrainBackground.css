@@ -1,0 +1,25 @@
+/* Generated from apps/web/src/features/game-art/WireframeTerrainBackground.vue. */
+
+.wireframe-terrain {
+  position: relative;
+  overflow: hidden;
+  border-radius: 24px;
+  background: #07121b;
+}
+.wireframe-terrain canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.wireframe-terrain__vignette {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(circle at 50% 46%, transparent 52%, rgb(2 8 13 / 48%) 100%);
+}
+.wireframe-terrain.is-light {
+  background: #e8eff2;
+}
+.wireframe-terrain.is-light .wireframe-terrain__vignette {
+  background: radial-gradient(circle at 50% 46%, transparent 56%, rgb(63 85 98 / 14%) 100%);
+}

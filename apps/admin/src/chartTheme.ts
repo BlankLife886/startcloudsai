@@ -1,10 +1,10 @@
-/** echarts 统一配色（规范第 3 节）：主色序列 + 令牌化 tooltip / 轴线样式 */
+/** echarts 统一配色：霓虹绿主序列 + 令牌化 tooltip / 轴线样式 */
 import { isDark } from '@/theme'
 
 export const CHART_COLORS = [
-  '#6366f1',
+  '#b6ff00',
+  '#fb923c',
   '#38bdf8',
-  '#34d399',
   '#fbbf24',
   '#f472b6',
   '#a78bfa',
@@ -18,7 +18,7 @@ function token(name: string): string {
 /** #rrggbb → rgba(...)，非法值原样兜底为主色 */
 function withAlpha(hex: string, alpha: number): string {
   const m = /^#([0-9a-f]{6})$/i.exec(hex)
-  if (!m) return `rgba(99, 102, 241, ${alpha})`
+  if (!m) return `rgba(182, 255, 0, ${alpha})`
   const n = parseInt(m[1], 16)
   return `rgba(${(n >> 16) & 0xff}, ${(n >> 8) & 0xff}, ${n & 0xff}, ${alpha})`
 }
@@ -32,21 +32,41 @@ export function chartBase() {
   const ink2 = token('--ink-2')
   const ink3 = token('--ink-3')
   const surface = token('--surface')
+  const accent = token('--accent') || CHART_COLORS[0]
   return {
-    color: [...CHART_COLORS],
+    color: [accent, ...CHART_COLORS.slice(1)],
     /** 折线图面积填充：主题色低透明度（跟随明暗主题的 --accent） */
-    areaStyle: { color: withAlpha(token('--accent'), 0.08) },
+    areaStyle: {
+      color: {
+        type: 'linear' as const,
+        x: 0,
+        y: 0,
+        x2: 0,
+        y2: 1,
+        colorStops: [
+          { offset: 0, color: withAlpha(accent, isDark.value ? 0.28 : 0.22) },
+          { offset: 1, color: withAlpha(accent, 0.02) },
+        ],
+      },
+    },
+    lineStyle: { width: 2.5 },
     tooltip: {
       backgroundColor: surface,
       borderColor: border,
       borderWidth: 1,
-      padding: [8, 12] as [number, number],
+      padding: [10, 14] as [number, number],
       textStyle: { color: token('--ink'), fontSize: 12 },
-      extraCssText: 'border-radius:12px;box-shadow:0 1px 2px rgb(16 24 40 / .04),0 4px 12px rgb(16 24 40 / .12);',
+      extraCssText:
+        'border-radius:16px;box-shadow:0 4px 16px rgb(0 0 0 / .28);backdrop-filter:blur(8px);',
     },
     legendText: { color: ink2, fontSize: 12 },
     axisLabel: { color: ink3, fontSize: 11 },
     axisLine: { lineStyle: { color: border } },
-    splitLine: { lineStyle: { color: border } },
+    splitLine: {
+      lineStyle: {
+        color: isDark.value ? 'rgb(255 255 255 / 0.06)' : border,
+        type: 'dashed' as const,
+      },
+    },
   }
 }

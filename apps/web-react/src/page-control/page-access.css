@@ -1,0 +1,26 @@
+.page-access-loading,
+.page-access-state {
+  min-height: calc(100dvh - var(--app-header-offset, 62px));
+}
+
+.page-access-loading {
+  display: grid;
+  place-items: center;
+}
+
+.page-access-loading span {
+  width: 28px;
+  height: 28px;
+  border: 2px solid color-mix(in srgb, currentColor 18%, transparent);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: page-access-spin 0.75s linear infinite;
+}
+
+@keyframes page-access-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page-access-loading span { animation: none; }
+}

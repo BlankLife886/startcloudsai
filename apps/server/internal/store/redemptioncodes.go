@@ -46,6 +46,10 @@ func RedeemCodeUpdate(ctx context.Context, q Q, code string, userID uuid.UUID, n
 	r, err := scanRedemptionCode(q.QueryRow(ctx,
 		`UPDATE redemption_codes SET status = 'redeemed', redeemed_by = $2, redeemed_at = $3
 		 WHERE code = $1 AND status = 'active' AND (expires_at IS NULL OR expires_at > $3)
+		   AND NOT EXISTS (
+		       SELECT 1 FROM trial_access_applications a
+		       WHERE a.redemption_code_id = redemption_codes.id AND a.user_id <> $2
+		   )
 		 RETURNING `+redemptionCols, code, userID, now))
 	return nilOnNoRows(r, err)
 }

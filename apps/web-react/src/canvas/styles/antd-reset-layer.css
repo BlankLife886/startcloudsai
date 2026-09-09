@@ -1,0 +1,4 @@
+/* Ant Design reset is otherwise global and stays after leaving /canvas. */
+@layer antd-reset {
+  @import "antd/dist/reset.css";
+}

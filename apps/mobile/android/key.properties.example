@@ -1,0 +1,4 @@
+storeFile=/absolute/path/to/starclouds-upload.jks
+storePassword=replace-with-store-password
+keyAlias=starclouds-upload
+keyPassword=replace-with-key-password

@@ -7,9 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"math/big"
-	"net/smtp"
 	"strings"
 	"time"
 
@@ -21,7 +19,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 )
 
-const emailCodeTTL = 10 * time.Minute
+const emailCodeTTL = 3 * time.Minute
 
 func normalizeLoginEmail(raw string) (string, bool) {
 	email := strings.ToLower(strings.TrimSpace(raw))
@@ -60,7 +58,7 @@ func randomDigits(n int) string {
 		if err != nil {
 			panic(err)
 		}
-		buf[i] = byte('0' + v.Int64())
+		buf[i] = "0123456789"[v.Int64()]
 	}
 	return string(buf)
 }
@@ -70,31 +68,17 @@ func randomProfileName() string {
 }
 
 func (s *Server) sendLoginCode(email, code string) error {
-	if s.Cfg.SMTPAddr == "" || s.Cfg.SMTPFrom == "" {
-		if s.Cfg.AppEnv == "development" {
-			return nil
-		}
-		return fmt.Errorf("SMTP 未配置")
-	}
-	host := s.Cfg.SMTPAddr
-	if colon := strings.LastIndex(host, ":"); colon > 0 {
-		host = host[:colon]
-	}
-	var smtpAuth smtp.Auth
-	if s.Cfg.SMTPUser != "" {
-		smtpAuth = smtp.PlainAuth("", s.Cfg.SMTPUser, s.Cfg.SMTPPassword, host)
-	}
-	message := []byte("From: " + s.Cfg.SMTPFrom + "\r\n" +
-		"To: " + email + "\r\n" +
-		"Subject: StarCloudsAI verification code\r\n" +
-		"MIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n" +
-		"Your login code is: " + code + "\r\nIt expires in 10 minutes.\r\n")
-	return smtp.SendMail(s.Cfg.SMTPAddr, smtpAuth, s.Cfg.SMTPFrom, []string{email}, message)
+	return s.sendPlainEmail(
+		email,
+		"StarCloudsAI verification code",
+		"Your login code is: "+code+"\nIt expires in 3 minutes.\n",
+	)
 }
 
 func (s *Server) authProviders(c *gin.Context) {
+	developmentCodeEcho := s.Cfg.AppEnv == "development" && s.Cfg.DevLoginCodeEcho && !s.smtpConfigured()
 	ok(c, gin.H{
-		"email":            s.Cfg.AppEnv == "development" || (s.Cfg.SMTPAddr != "" && s.Cfg.SMTPFrom != ""),
+		"email":            developmentCodeEcho || s.smtpConfigured(),
 		"verificationCode": true,
 		"emailDomains":     []string{"gmail.com", "googlemail.com", "qq.com"},
 	})
@@ -113,31 +97,44 @@ func (s *Server) requestEmailLoginCode(c *gin.Context) {
 		fail(c, apperr.E("validation_error", "仅支持 Gmail、Googlemail 和 QQ 邮箱", 422))
 		return
 	}
+	developmentCodeEcho := s.Cfg.AppEnv == "development" && s.Cfg.DevLoginCodeEcho && !s.smtpConfigured()
+	if !developmentCodeEcho && !s.smtpConfigured() {
+		fail(c, apperr.E("email_unavailable", "邮箱验证码服务暂不可用，请联系管理员", 503))
+		return
+	}
 	if remain, allowed := s.LoginLimiter.Reserve(email, c.ClientIP()); !allowed {
 		fail(c, apperr.E("rate_limited", auth.LockMessage(remain), 429))
 		return
 	}
 	ctx := c.Request.Context()
-	if _, _, _, _, created, err := store.GetEmailLoginCodeForUpdate(ctx, s.St.Pool, email); err == nil && time.Since(created) < time.Minute {
-		fail(c, apperr.E("rate_limited", "验证码发送过于频繁，请稍后再试", 429))
-		return
-	}
 	code := randomDigits(6)
 	var ip *string
 	if v := c.ClientIP(); v != "" {
 		ip = &v
 	}
-	if err := store.UpsertEmailLoginCode(ctx, s.St.Pool, email, "authenticate", s.loginCodeHash(email, code), time.Now().UTC().Add(emailCodeTTL), ip); err != nil {
+	// 重发间隔检查与写入新码在同一条语句内完成，并发同邮箱请求只有一个能
+	// 写入，不会出现两条邮件里的验证码互相覆盖导致先发的失效。
+	written, err := store.UpsertEmailLoginCodeIfStale(ctx, s.St.Pool, email, "authenticate",
+		s.loginCodeHash(email, code), time.Now().UTC().Add(emailCodeTTL), ip, time.Minute)
+	if err != nil {
 		fail(c, err)
 		return
 	}
-	if err := s.sendLoginCode(email, code); err != nil {
-		_ = store.DeleteEmailLoginCode(ctx, s.St.Pool, email)
-		fail(c, apperr.E("email_unavailable", "验证码邮件发送失败，请稍后重试", 503))
+	if !written {
+		fail(c, apperr.E("rate_limited", "验证码发送过于频繁，请稍后再试", 429))
 		return
 	}
+	if !developmentCodeEcho {
+		if err := s.sendLoginCode(email, code); err != nil {
+			_ = store.DeleteEmailLoginCode(ctx, s.St.Pool, email)
+			fail(c, apperr.E("email_unavailable", "验证码邮件发送失败，请稍后重试", 503))
+			return
+		}
+	}
 	result := gin.H{"expiresIn": int(emailCodeTTL.Seconds()), "resendAfter": 60}
-	if s.Cfg.AppEnv == "development" && s.Cfg.SMTPAddr == "" {
+	// 验证码回显必须由 DEV_LOGIN_CODE_ECHO 显式开启（生产环境在 config 层强制
+	// 关闭），APP_ENV=development 本身不再触发回显。
+	if developmentCodeEcho {
 		result["developmentCode"] = code
 	}
 	respondCreated(c, result)

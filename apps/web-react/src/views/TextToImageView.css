@@ -1,0 +1,258 @@
+.t2i-page .t2i-main,
+.t2i-page .t2i-sidebar,
+.t2i-page.is-light .t2i-main,
+.t2i-page.is-light .t2i-sidebar {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.t2i-page .t2i-main {
+  background-color: var(--t2i-panel);
+}
+
+.t2i-page.is-light .t2i-main {
+  background-color: #ffffff;
+}
+
+.t2i-page .t2i-panel {
+  overflow-anchor: none;
+  scrollbar-gutter: stable;
+  transform: translateZ(0);
+}
+
+.t2i-library-view .authenticated-image.is-loading,
+.t2i-library-view .authenticated-image.is-placeholder,
+.t2i-library-view .authenticated-image.is-loaded,
+.t2i-panel--history .authenticated-image.is-loading,
+.t2i-panel--history .authenticated-image.is-placeholder,
+.t2i-panel--history .authenticated-image.is-loaded {
+  animation: none;
+}
+
+.t2i-panel--history .t2i-history-card {
+  contain: none;
+  content-visibility: visible;
+}
+
+.t2i-stage--empty {
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.t2i-stage--empty .t2i-empty {
+  height: auto;
+  min-height: 0;
+}
+
+.t2i-filmstrip--placeholder {
+  pointer-events: none;
+}
+
+.t2i-film-placeholder {
+  flex: 0 0 104px;
+  height: 72px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.045);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+.t2i-page.is-light .t2i-film-placeholder {
+  background: rgba(28, 30, 43, 0.045);
+  box-shadow: inset 0 0 0 1px rgba(28, 30, 43, 0.08);
+}
+
+.t2i-page .t2i-stage-cell > .t2i-stage-cell-delete,
+.t2i-page .t2i-stage-quick-actions button,
+.t2i-page .t2i-entry-actions button,
+.t2i-page .t2i-image-actions button {
+  cursor: pointer;
+}
+
+.t2i-page .t2i-history-error:empty {
+  display: none;
+}
+
+.t2i-page .t2i-pending-elapsed {
+  color: var(--t2i-muted);
+}
+
+.t2i-page .t2i-history-cleanup {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 32px;
+  padding: 7px 11px;
+  border: 1px solid var(--t2i-line);
+  border-radius: 9px;
+  background: var(--t2i-panel-2);
+  color: var(--t2i-muted);
+  font: inherit;
+  font-weight: 500;
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
+}
+
+.t2i-page .t2i-history-cleanup svg,
+.t2i-page .t2i-history-cleanup i {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.t2i-page .t2i-history-cleanup:hover:not(:disabled) {
+  border-color: var(--t2i-faint);
+  background: var(--t2i-field);
+  color: var(--t2i-ink);
+}
+
+.t2i-page .t2i-history-cleanup:focus-visible {
+  outline: 2px solid var(--t2i-accent);
+  outline-offset: 3px;
+}
+
+.t2i-page .t2i-history-cleanup:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.t2i-page .t2i-history-cleanup[aria-busy="true"] {
+  cursor: wait;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t2i-page .t2i-history-cleanup {
+    transition: none;
+  }
+}
+
+.t2i-page .t2i-stage-copy {
+  flex: 0 1 50%;
+  max-width: 50%;
+}
+
+.t2i-page .t2i-stage-copy strong,
+.t2i-page .t2i-stage-copy small {
+  min-width: 0;
+}
+
+.t2i-page .t2i-stage-status,
+.t2i-page .t2i-stage-cell-status {
+  align-content: safe center;
+  overflow-y: auto;
+}
+
+.t2i-page .t2i-status-prompt {
+  -webkit-line-clamp: 1;
+}
+
+.t2i-page .t2i-status-actions {
+  justify-content: center;
+  max-width: 100%;
+  margin-top: 6px;
+}
+
+.t2i-page .t2i-stage-cell-status .t2i-status-actions {
+  gap: 6px;
+}
+
+.t2i-page .t2i-stage-cell-status .t2i-status-actions button {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 0.72rem;
+}
+
+.t2i-page .t2i-stage-frame,
+.t2i-page .t2i-stage-media,
+.t2i-page .t2i-stage-grid {
+  border-radius: 22px;
+  overflow: hidden;
+  clip-path: inset(0 round 22px);
+}
+
+.t2i-page .t2i-stage-media .authenticated-image,
+.t2i-page .t2i-stage-media .authenticated-image-media,
+.t2i-page .t2i-stage-media img {
+  border-radius: 22px;
+  clip-path: inset(0 round 22px);
+}
+
+/* Portaled React popovers cannot inherit Vue SFC scoped transition selectors. */
+.ratio-popover-enter-active,
+.ratio-popover-leave-active {
+  transition:
+    opacity 210ms ease,
+    transform 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.ratio-popover-enter-from,
+.ratio-popover-leave-to {
+  opacity: 0;
+  transform: translateY(10px) scale(0.96);
+}
+
+.ratio-select__menu.opens-down.ratio-popover-enter-from,
+.ratio-select__menu.opens-down.ratio-popover-leave-to {
+  transform: translateY(-10px) scale(0.96);
+}
+
+.t2i-control-popover-enter-active,
+.t2i-control-popover-leave-active {
+  transition:
+    opacity 160ms ease,
+    transform 190ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.t2i-control-popover-enter-from,
+.t2i-control-popover-leave-to {
+  opacity: 0;
+  transform: translateY(-5px);
+}
+
+.t2i-skill-popover-enter-active,
+.t2i-skill-popover-leave-active {
+  transition:
+    opacity 150ms ease,
+    transform 150ms ease;
+}
+
+.t2i-batch-recovery {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid currentColor;
+  border-radius: 12px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.t2i-batch-recovery button {
+  justify-self: start;
+  padding: 0;
+  color: inherit;
+  background: none;
+  border: 0;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.t2i-skill-popover-enter-from,
+.t2i-skill-popover-leave-to {
+  opacity: 0;
+  transform: translateY(5px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ratio-popover-enter-active,
+  .ratio-popover-leave-active,
+  .t2i-control-popover-enter-active,
+  .t2i-control-popover-leave-active,
+  .t2i-skill-popover-enter-active,
+  .t2i-skill-popover-leave-active {
+    transition: none;
+  }
+}

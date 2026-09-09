@@ -35,11 +35,28 @@ func promptTodayRange(now time.Time) (time.Time, time.Time) {
 	return start.UTC(), start.AddDate(0, 0, 1).UTC()
 }
 
+func normalizePromptQueryTags(values []string) []string {
+	tags := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		tag := strings.TrimSpace(value)
+		if tag == "" {
+			continue
+		}
+		if _, exists := seen[tag]; exists {
+			continue
+		}
+		seen[tag] = struct{}{}
+		tags = append(tags, tag)
+	}
+	return tags
+}
+
 // ---------- 提示词库（公开） ----------
 
 func (s *Server) publicPrompts(c *gin.Context) {
 	taskType := c.Query("type")
-	if taskType != "" && !store.Contains(store.TaskTypes, taskType) {
+	if taskType != "" && !store.Contains(store.PromptTaskTypes, taskType) {
 		fail(c, apperr.E("validation_error", "无效的任务类型", 422))
 		return
 	}
@@ -63,7 +80,15 @@ func (s *Server) publicPrompts(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	filter := store.PromptFilter{TaskType: taskType, Category: c.Query("category"), Order: order, ActiveOnly: true}
+	tags := normalizePromptQueryTags(c.QueryArray("tag"))
+	if len(tags) > 20 {
+		fail(c, apperr.E("validation_error", "tag: 最多允许 20 项", 422))
+		return
+	}
+	filter := store.PromptFilter{
+		TaskType: taskType, Category: c.Query("category"), Search: strings.TrimSpace(c.Query("search")),
+		Tags: tags, Order: order, ActiveOnly: true,
+	}
 	if scope == "favorites" {
 		if user == nil {
 			fail(c, apperr.E("auth_required", "请先登录后查看收藏", 401))
@@ -72,9 +97,7 @@ func (s *Server) publicPrompts(c *gin.Context) {
 		filter.FavoritedBy = user.ID
 	}
 	if scope == "today" {
-		from, before := promptTodayRange(time.Now())
-		filter.CreatedFrom = &from
-		filter.CreatedBefore = &before
+		filter.NewOnly = true
 	}
 	rows, err := store.ListPromptEntries(c.Request.Context(), s.St.Pool, filter, limit, cursor)
 	if err != nil {
@@ -82,6 +105,16 @@ func (s *Server) publicPrompts(c *gin.Context) {
 		return
 	}
 	categoryCounts, err := store.CountPromptEntriesByCategory(c.Request.Context(), s.St.Pool, filter)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	total, err := store.CountPromptEntries(c.Request.Context(), s.St.Pool, filter)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	promptTags, err := store.ListPromptTags(c.Request.Context(), s.St.Pool, filter)
 	if err != nil {
 		fail(c, err)
 		return
@@ -106,6 +139,8 @@ func (s *Server) publicPrompts(c *gin.Context) {
 		return d
 	})
 	page["categoryCounts"] = categoryCounts
+	page["tags"] = promptTags
+	page["total"] = total
 	ok(c, page)
 }
 
@@ -118,6 +153,9 @@ func (s *Server) promptEngagement(c *gin.Context) {
 	user, err := s.requireUser(c)
 	if err != nil {
 		fail(c, err)
+		return
+	}
+	if !s.enforceUsageLimit(c, "prompt-action-minute", user.ID.String(), promptActionsPerMinute, 1, time.Minute) {
 		return
 	}
 	promptID, err := parseUUIDParam(c, "id")
@@ -175,7 +213,7 @@ func (s *Server) promptEngagement(c *gin.Context) {
 
 func (s *Server) adminListPrompts(c *gin.Context, _ *store.User) {
 	taskType := c.Query("type")
-	if taskType != "" && !store.Contains(store.TaskTypes, taskType) {
+	if taskType != "" && !store.Contains(store.PromptTaskTypes, taskType) {
 		fail(c, apperr.E("validation_error", "无效的任务类型", 422))
 		return
 	}
@@ -184,13 +222,34 @@ func (s *Server) adminListPrompts(c *gin.Context, _ *store.User) {
 		fail(c, apperr.E("validation_error", "无效的状态筛选", 422))
 		return
 	}
+	order := c.DefaultQuery("sort", "manual")
+	if order != "manual" && order != "recommended" && order != "latest" && order != "favorites" && order != "likes" && order != "usage" {
+		fail(c, apperr.E("validation_error", "无效的提示词排序", 422))
+		return
+	}
+	source := c.Query("source")
+	if source != "" && source != "synced" && source != "local" {
+		fail(c, apperr.E("validation_error", "无效的来源筛选", 422))
+		return
+	}
+	tags := normalizePromptQueryTags(c.QueryArray("tag"))
+	if len(tags) > 20 {
+		fail(c, apperr.E("validation_error", "tag: 最多允许 20 项", 422))
+		return
+	}
 	limit, cursor, err := pageParams(c)
 	if err != nil {
 		fail(c, err)
 		return
 	}
 	filter := store.PromptFilter{
-		TaskType: taskType, Category: c.Query("category"), Search: c.Query("search"), Status: status,
+		TaskType: taskType,
+		Category: c.Query("category"),
+		Search:   c.Query("search"),
+		Status:   status,
+		Source:   source,
+		Tags:     tags,
+		Order:    order,
 	}
 	rows, err := store.ListPromptEntries(c.Request.Context(), s.St.Pool, filter, limit, cursor)
 	if err != nil {
@@ -209,11 +268,25 @@ func (s *Server) adminListPrompts(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
+	categoryCounts, err := store.CountPromptEntriesByCategory(c.Request.Context(), s.St.Pool, filter)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	tagScope := filter
+	tagScope.Tags = nil
+	promptTags, err := store.ListPromptTags(c.Request.Context(), s.St.Pool, tagScope)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	page := buildPage(rows, limit, func(p *store.PromptEntry) gin.H {
 		return promptDict(p, true)
 	})
 	page["total"] = total
 	page["scopeTotal"] = scopeTotal
+	page["categoryCounts"] = categoryCounts
+	page["tags"] = promptTags
 	ok(c, page)
 }
 
@@ -244,7 +317,7 @@ func validatePromptFields(title, prompt, taskType string, category *string, tags
 	if prompt == "" || len([]rune(prompt)) > 10000 {
 		return apperr.E("validation_error", "prompt: 长度须在 1-10000 之间", 422)
 	}
-	if !store.Contains(store.TaskTypes, taskType) {
+	if !store.Contains(store.PromptTaskTypes, taskType) {
 		return apperr.E("validation_error", "taskType: 无效的任务类型", 422)
 	}
 	if category != nil && len([]rune(*category)) > 64 {
@@ -268,6 +341,10 @@ func (s *Server) adminCreatePrompt(c *gin.Context, _ *store.User) {
 		return
 	}
 	if err := validatePromptFields(body.Title, body.Prompt, body.TaskType, body.Category, body.Tags); err != nil {
+		fail(c, err)
+		return
+	}
+	if err := validatePromptCategoryReference(c.Request.Context(), s.St.Pool, body.Category); err != nil {
 		fail(c, err)
 		return
 	}
@@ -356,6 +433,10 @@ func (s *Server) adminCreatePromptFromSubmission(c *gin.Context, _ *store.User) 
 		fail(c, err)
 		return
 	}
+	if err := validatePromptCategoryReference(c.Request.Context(), s.St.Pool, body.Category); err != nil {
+		fail(c, err)
+		return
+	}
 	mediaKeys := submission.MediaKeys
 	if len(mediaKeys) == 0 && submission.CoverKey != nil && *submission.CoverKey != "" {
 		mediaKeys = []string{*submission.CoverKey}
@@ -392,6 +473,8 @@ func (s *Server) adminCreatePromptFromSubmission(c *gin.Context, _ *store.User) 
 		fail(c, apperr.E("unsupported_file", "审核图片格式不支持", 400))
 		return
 	}
+	// 封面是纯展示素材：按后台图片配置压缩后落库，页面加载更快。
+	data, ext, contentType = s.compressCoverImage(ctx, data, ext, contentType)
 	coverWidth, coverHeight, err := media.Dimensions(data)
 	if err != nil {
 		fail(c, apperr.E("unsupported_file", "审核图片尺寸过大或内容无法读取", 400))
@@ -411,7 +494,7 @@ func (s *Server) adminCreatePromptFromSubmission(c *gin.Context, _ *store.User) 
 		Category: body.Category, Tags: body.Tags, GallerySubmissionID: &submissionID,
 		Sort: maxSort + 10, Active: active,
 	}
-	coverKey := fmt.Sprintf("prompt-covers/%s.%s", entry.ID, ext)
+	coverKey := fmt.Sprintf("prompt-covers/%s/%s.%s", entry.ID, uuid.NewString(), ext)
 	if err := s.Storage.UploadBytes(ctx, coverKey, data, contentType); err != nil {
 		fail(c, err)
 		return
@@ -446,7 +529,7 @@ type movePromptIn struct {
 }
 
 func validatePromptSortScope(taskType, status string) error {
-	if taskType != "" && !store.Contains(store.TaskTypes, taskType) {
+	if taskType != "" && !store.Contains(store.PromptTaskTypes, taskType) {
 		return apperr.E("validation_error", "taskType: 无效的任务类型", 422)
 	}
 	if status != "" && status != "enabled" && status != "disabled" && status != "missing-cover" {
@@ -623,6 +706,10 @@ func (s *Server) adminPatchPrompt(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
+	if err := validatePromptCategoryReference(ctx, s.St.Pool, entry.Category); err != nil {
+		fail(c, err)
+		return
+	}
 	if entry.LikeCount < 0 || entry.FavoriteCount < 0 || entry.UseCount < 0 {
 		fail(c, apperr.E("validation_error", "热度数据不能小于 0", 422))
 		return
@@ -725,12 +812,14 @@ func (s *Server) adminUploadPromptCover(c *gin.Context, _ *store.User) {
 		fail(c, apperr.E("unsupported_file", "仅支持 png / jpg / webp 图片", 400))
 		return
 	}
+	// 封面是纯展示素材：按后台图片配置压缩后落库。
+	data, ext, contentType = s.compressCoverImage(ctx, data, ext, contentType)
 	coverWidth, coverHeight, err := media.Dimensions(data)
 	if err != nil {
 		fail(c, apperr.E("unsupported_file", "图片尺寸过大或内容无法读取", 400))
 		return
 	}
-	newKey := fmt.Sprintf("prompt-covers/%s.%s", entry.ID, ext)
+	newKey := fmt.Sprintf("prompt-covers/%s/%s.%s", entry.ID, uuid.NewString(), ext)
 	oldKey := ""
 	if entry.CoverKey != nil {
 		oldKey = *entry.CoverKey

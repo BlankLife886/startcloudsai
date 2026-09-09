@@ -1,0 +1,15 @@
+[data-dialog-motion-state="entering"],
+[data-dialog-motion-state="exiting"] {
+  will-change: opacity;
+}
+
+[data-dialog-motion-state="entering"] > [role="dialog"],
+[data-dialog-motion-state="entering"] > [role="alertdialog"],
+[data-dialog-motion-state="exiting"] > [role="dialog"],
+[data-dialog-motion-state="exiting"] > [role="alertdialog"] {
+  will-change: transform, opacity;
+}
+
+[data-dialog-motion-state="exiting"] {
+  pointer-events: none;
+}

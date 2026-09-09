@@ -73,6 +73,53 @@ func TestPromptCoverDimensionsPersist(t *testing.T) {
 	}
 }
 
+func TestPublicPromptFilterDoesNotDependOnAssetReview(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	missing, err := store.InsertPromptEntry(ctx, st.Pool, &store.PromptEntry{
+		Title: "无封面", Prompt: "missing cover", TaskType: "t2i", Sort: 10, Active: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unverified, err := store.InsertPromptEntry(ctx, st.Pool, &store.PromptEntry{
+		Title: "外部未确认", Prompt: "unverified external", TaskType: "t2i", Sort: 20, Active: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Pool.Exec(ctx, `UPDATE prompt_library
+		SET cover_key = 'https://example.com/unverified.webp', asset_origin = 'external', asset_verified = false
+		WHERE id = $1`, unverified.ID); err != nil {
+		t.Fatal(err)
+	}
+	verified, err := store.InsertPromptEntry(ctx, st.Pool, &store.PromptEntry{
+		Title: "本站已验证", Prompt: "verified storage", TaskType: "t2i", Sort: 30, Active: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdatePromptCover(ctx, st.Pool, verified.ID, "prompt-covers/verified.webp", 800, 600); err != nil {
+		t.Fatal(err)
+	}
+
+	filter := store.PromptFilter{ActiveOnly: true}
+	rows, err := store.ListPromptEntries(ctx, st.Pool, filter, 10, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 3 || rows[0].ID != missing.ID || rows[1].ID != unverified.ID || rows[2].ID != verified.ID {
+		t.Fatalf("public rows = %#v, want every active prompt", rows)
+	}
+	count, err := store.CountPromptEntries(ctx, st.Pool, filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 3 {
+		t.Fatalf("public count = %d, want 3", count)
+	}
+}
+
 func TestReorderPromptEntriesKeepsUnselectedRelativeSlots(t *testing.T) {
 	st := testdb.Setup(t)
 	ctx := context.Background()

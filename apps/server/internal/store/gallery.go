@@ -52,6 +52,26 @@ func GetSubmissionByTaskID(ctx context.Context, q Q, taskID uuid.UUID) (*Gallery
 	return nilOnNoRows(s, err)
 }
 
+func GetSubmissionsByTaskIDs(ctx context.Context, q Q, taskIDs []uuid.UUID) (map[uuid.UUID]*GallerySubmission, error) {
+	out := make(map[uuid.UUID]*GallerySubmission, len(taskIDs))
+	if len(taskIDs) == 0 {
+		return out, nil
+	}
+	rows, err := q.Query(ctx, `SELECT `+submissionCols+` FROM gallery_submissions WHERE task_id = ANY($1)`, taskIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		submission, err := scanSubmission(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[submission.TaskID] = submission
+	}
+	return out, rows.Err()
+}
+
 func DeleteSubmission(ctx context.Context, q Q, id uuid.UUID) error {
 	_, err := q.Exec(ctx, `DELETE FROM gallery_submissions WHERE id = $1`, id)
 	return err
@@ -67,6 +87,28 @@ func CountSubmissionsByUser(ctx context.Context, q Q, userID uuid.UUID) (int64, 
 	var n int64
 	err := q.QueryRow(ctx, `SELECT count(*) FROM gallery_submissions WHERE user_id = $1`, userID).Scan(&n)
 	return n, err
+}
+
+// SubmissionCountsByStatus aggregates all of a user's submissions, independent
+// of the paginated list used by the profile detail tab.
+func SubmissionCountsByStatus(ctx context.Context, q Q, userID uuid.UUID) (map[string]int64, error) {
+	rows, err := q.Query(ctx,
+		`SELECT status, count(*) FROM gallery_submissions WHERE user_id = $1 GROUP BY status`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	counts := make(map[string]int64)
+	for rows.Next() {
+		var status string
+		var count int64
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, err
+		}
+		counts[status] = count
+	}
+	return counts, rows.Err()
 }
 
 // CountSubmissionsByUserSince 用户自 since 起创建的投稿数（每日限额用）。
@@ -157,6 +199,7 @@ func ReviewSubmission(ctx context.Context, q Q, id uuid.UUID, status string, rej
 // SubmissionFilter 投稿列表可选筛选。
 type SubmissionFilter struct {
 	UserID     *uuid.UUID
+	ViewerID   *uuid.UUID
 	Status     string
 	Featured   *bool
 	CategoryID *uuid.UUID
@@ -169,6 +212,13 @@ func ListSubmissions(ctx context.Context, q Q, f SubmissionFilter, limit int, cu
 	if f.UserID != nil {
 		args = append(args, *f.UserID)
 		sql += fmt.Sprintf(` AND user_id = $%d`, len(args))
+	}
+	if f.ViewerID != nil {
+		args = append(args, *f.ViewerID)
+		sql += fmt.Sprintf(` AND NOT EXISTS (
+			SELECT 1 FROM user_blocks block
+			WHERE block.blocker_user_id = $%d AND block.blocked_user_id = gallery_submissions.user_id
+		)`, len(args))
 	}
 	if f.Status != "" {
 		args = append(args, f.Status)

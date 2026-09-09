@@ -1,0 +1,11 @@
+.holo-feedback-position { position:absolute;left:50%;top:28px;transform:translateX(-50%);z-index:50;pointer-events:none; }
+.holo-feedback { display:flex;align-items:center;gap:10px;background:rgba(28,25,43,.95);backdrop-filter:blur(22px);box-shadow:0 10px 35px #0005;border-radius:30px;padding:9px 10px 9px 13px;color:#e3d2f4;font-size:12px;pointer-events:auto;white-space:nowrap; }
+.holo-feedback-mark { display:grid;place-items:center;width:24px;height:24px;border-radius:50%;color:#d6eadf;background:#bfd8c416; }
+.holo-feedback button { min-height:24px!important;width:24px;padding:4px!important;color:#9585a4!important; }
+.holo-card-loading { position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:18px;pointer-events:none;color:#c1a9d6;font-size:11px;letter-spacing:2px;z-index:4; }
+.holo-loading-glyph { display:grid;place-items:center;width:70px;height:70px;border-radius:50%;background:radial-gradient(circle,#b890e423,transparent 68%);position:relative;animation:holo-loading-breathe 2s ease-in-out infinite; }
+.holo-loading-glyph::before { content:'';position:absolute;inset:1px;border-radius:50%;background:conic-gradient(from 0deg,transparent 0 40%,#a583cf70 75%,transparent 96%);mask:radial-gradient(circle,transparent 67%,#000 69%);animation:holo-loading-orbit 2.5s linear infinite; }
+@keyframes holo-loading-breathe { 0%,100% { opacity:.5;transform:scale(.94); } 50% { opacity:1;transform:scale(1.04); } }
+@keyframes holo-loading-orbit { to { transform:rotate(360deg); } }
+@media(max-width:760px) { .holo-feedback-position { top:74px; }.holo-feedback { max-width:calc(100vw - 30px);white-space:normal;font-size:11px; } }
+@media(prefers-reduced-motion:reduce) { .holo-loading-glyph,.holo-loading-glyph::before { animation:none;opacity:.8; } }

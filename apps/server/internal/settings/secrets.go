@@ -71,7 +71,7 @@ func DecryptSecret(value, masterKey string) (string, error) {
 
 // EncryptStoredSecrets upgrades legacy plaintext settings in place at startup.
 func EncryptStoredSecrets(ctx context.Context, q store.Q, masterKey string) error {
-	for _, key := range []string{"c2a_api_key", "sub2api_api_key"} {
+	for _, key := range []string{"c2a_api_key", "sub2api_api_key", "crun_api_key", "lanjing_pay_secret"} {
 		raw, err := store.GetAppSetting(ctx, q, key)
 		if err != nil {
 			return err

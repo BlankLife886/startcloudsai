@@ -12,6 +12,7 @@ import (
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/auth"
+	"github.com/BlankLife886/startcloudsai/server/internal/referral"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/wallet"
@@ -67,8 +68,10 @@ func (s *Server) createSession(c *gin.Context, q store.Q, userID uuid.UUID) (str
 }
 
 type verifyEmailIn struct {
-	Email string `json:"email"`
-	Code  string `json:"code"`
+	Email        string `json:"email"`
+	Code         string `json:"code"`
+	ReferralCode string `json:"referralCode"`
+	SkipReferral bool   `json:"skipReferral"`
 }
 
 func (s *Server) verifyEmailCode(c *gin.Context) {
@@ -96,6 +99,8 @@ func (s *Server) verifyEmailCode(c *gin.Context) {
 	var user *store.User
 	var token string
 	created := false
+	referralCode := s.referralCodeForRegistration(c, body)
+	referralStatus := "none"
 	codeState := emailCodeValid
 	err := s.St.Tx(ctx, func(tx pgx.Tx) error {
 		var txErr error
@@ -109,6 +114,9 @@ func (s *Server) verifyEmailCode(c *gin.Context) {
 		}
 		now := time.Now().UTC()
 		if user == nil {
+			if limitErr := s.takeUsageLimit(c, "registration-ip-day", clientIP, registrationsPerIPDay, 1, 24*time.Hour); limitErr != nil {
+				return limitErr
+			}
 			enabled, settingErr := settings.GetBool(ctx, tx, "registration_enabled")
 			if settingErr != nil {
 				return settingErr
@@ -137,6 +145,9 @@ func (s *Server) verifyEmailCode(c *gin.Context) {
 					return txErr
 				}
 			}
+			if referralStatus, txErr = referral.BindNewAccountResult(ctx, tx, user.ID, referralCode); txErr != nil {
+				return txErr
+			}
 			created = true
 		} else if user.Role != "user" || user.Status != "active" {
 			return apperr.E("invalid_credentials", "账号已被禁用", 403)
@@ -152,16 +163,31 @@ func (s *Server) verifyEmailCode(c *gin.Context) {
 		return
 	}
 	if codeState == emailCodeLocked {
+		s.LoginLimiter.Fail(email, clientIP)
 		fail(c, apperr.E("rate_limited", "验证码错误次数过多，请重新获取", 429))
 		return
 	}
 	if codeState != emailCodeValid {
+		// 失败才计数：错误验证码计入邮箱/IP 失败窗口，配合下方成功时的
+		// SuccessAttempt 重置，形成 fail-to-count + success-to-reset。
+		s.LoginLimiter.Fail(email, clientIP)
 		fail(c, apperr.E("invalid_code", "验证码错误或已过期", 401))
 		return
 	}
-	s.LoginLimiter.SuccessAttempt(email, clientIP)
+	if created {
+		// Keep the IP-side login-code counter after registration. Clearing it here
+		// allowed sequential valid mailboxes to bypass the IP anti-farming window.
+		s.LoginLimiter.Success(email)
+	} else {
+		s.LoginLimiter.SuccessAttempt(email, clientIP)
+	}
+	c.Set(ctxPlatformUserKey, user)
 	s.setSessionCookie(c, token)
-	respondCreated(c, gin.H{"user": userDict(user), "isNewUser": created})
+	if !created && referralCode != "" {
+		referralStatus = "existing_account"
+	}
+	s.clearReferralCookie(c)
+	respondCreated(c, gin.H{"user": userDict(user), "isNewUser": created, "referral": gin.H{"status": referralStatus, "message": referralBindingMessage(referralStatus)}})
 }
 
 func (s *Server) logout(c *gin.Context) {

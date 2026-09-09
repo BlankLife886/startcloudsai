@@ -1,0 +1,27 @@
+.br .authenticated-image-media,
+.br-history .authenticated-image-media {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.br-history {
+  --br-ink: #14201f;
+  --br-muted: #5f726e;
+  --br-line: #d7e4e0;
+  --br-surface: #ffffff;
+  --br-soft: #e8f3f0;
+  --br-accent: #0f9d8a;
+  --br-accent-soft: rgb(15 157 138 / 12%);
+}
+
+.br-history.is-dark {
+  --br-ink: #eef7f4;
+  --br-muted: #9bb0aa;
+  --br-line: #2a3633;
+  --br-surface: #171c1b;
+  --br-soft: #1c2623;
+  --br-accent: #2dd4bf;
+  --br-accent-soft: rgb(45 212 191 / 14%);
+}

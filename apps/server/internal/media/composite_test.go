@@ -17,6 +17,24 @@ func encodePNG(t *testing.T, img image.Image) []byte {
 	return buf.Bytes()
 }
 
+func fillRGBA(img *image.RGBA, value color.RGBA) {
+	for y := img.Bounds().Min.Y; y < img.Bounds().Max.Y; y++ {
+		for x := img.Bounds().Min.X; x < img.Bounds().Max.X; x++ {
+			img.SetRGBA(x, y, value)
+		}
+	}
+}
+
+func assertColorRGBA(t *testing.T, actual color.Color, expected color.RGBA) {
+	t.Helper()
+	r, g, b, a := actual.RGBA()
+	if uint8(r>>8) != expected.R || uint8(g>>8) != expected.G ||
+		uint8(b>>8) != expected.B || uint8(a>>8) != expected.A {
+		t.Fatalf("unexpected color: got (%d,%d,%d,%d), want (%d,%d,%d,%d)",
+			r>>8, g>>8, b>>8, a>>8, expected.R, expected.G, expected.B, expected.A)
+	}
+}
+
 func TestParseMaskRect(t *testing.T) {
 	rect, err := ParseMaskRect("10,20,30,40")
 	if err != nil {
@@ -126,4 +144,24 @@ func TestCompositeMaskedEditScalesResult(t *testing.T) {
 	if r>>8 < 200 {
 		t.Fatalf("center should be edited red, got r=%d", r>>8)
 	}
+}
+
+func TestCompositePreservedCanvasRestoresCenteredSource(t *testing.T) {
+	source := image.NewRGBA(image.Rect(0, 0, 100, 100))
+	fillRGBA(source, color.RGBA{R: 230, G: 20, B: 30, A: 255})
+	result := image.NewRGBA(image.Rect(0, 0, 200, 100))
+	fillRGBA(result, color.RGBA{R: 10, G: 40, B: 220, A: 255})
+
+	out, err := CompositePreservedCanvas(encodePNG(t, source), encodePNG(t, result))
+	if err != nil {
+		t.Fatalf("CompositePreservedCanvas: %v", err)
+	}
+	decoded, err := png.Decode(bytes.NewReader(out))
+	if err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+
+	assertColorRGBA(t, decoded.At(10, 50), color.RGBA{R: 10, G: 40, B: 220, A: 255})
+	assertColorRGBA(t, decoded.At(100, 50), color.RGBA{R: 230, G: 20, B: 30, A: 255})
+	assertColorRGBA(t, decoded.At(190, 50), color.RGBA{R: 10, G: 40, B: 220, A: 255})
 }

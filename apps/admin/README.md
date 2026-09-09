@@ -23,12 +23,15 @@ Vite 的 `base` 固定为 `/admin/`。直接打开开发地址时应保留尾部
 | `/` | 用户、任务、余额、任务类型分布与运行中任务概览 |
 | `/users` | 用户搜索、封禁、角色、钱包调整、详情与账本 |
 | `/tasks` | 全站任务筛选、详情、取消、强制失败和失败任务重入队 |
+| `/canvas-templates` | 上传、编辑、排序、发布和下架无限画布 v3 模板 |
 | `/prompt-library` | 提示词条 CRUD、封面上传、外部数据源和手动同步 |
+| `/ecommerce` | 电商素材分类、多图上传、AI 图片标题、多选删除、拖拽排序与上下架 |
 | `/community` | 画廊分类、投稿规则、创作者聚合与解禁 |
 | `/gallery` | 投稿审核、策展、违规下架与禁投 |
 | `/codes` | 批量生成、查询和停用兑换码，查看批次统计 |
 | `/audit` | 管理端写操作审计日志 |
-| `/content` | 公告和更新说明 CRUD |
+| `/content` | 公告和更新说明 CRUD，生效公告可立即推送到在线页面 |
+| `/page-controls` | 51 项页面控制，支持分组/搜索/状态筛选、整组调整和访问提示 |
 | `/settings` | 任务价格/模型、并发、注册与赠送配置、管理员改密、测试 chatgpt2api |
 
 ## 实现约定
@@ -56,3 +59,7 @@ docker run --rm -p 8081:80 starcloudsai-admin
 访问 `http://localhost:8081/admin/`。单独运行容器时不会代理 `/api`；完整部署应使用根目录 Compose 和统一网关。
 
 API 见 [../../docs/API_CONTRACT.md](../../docs/API_CONTRACT.md)，视觉规范见 [../../docs/ADMIN_UI_STYLE.md](../../docs/ADMIN_UI_STYLE.md)。
+
+页面控制的覆盖范围、默认状态及验证方式见 [../../docs/PAGE_CONTROLS.md](../../docs/PAGE_CONTROLS.md)。
+
+公告实时同步与立即推送的行为及发布要求见 [../../docs/ANNOUNCEMENT_PUSH.md](../../docs/ANNOUNCEMENT_PUSH.md)。

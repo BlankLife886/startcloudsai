@@ -1,0 +1,37 @@
+/* Generated from apps/web/src/features/home-commercial/components/TypeLine.vue. */
+
+.type-line {
+  display: inline-flex;
+  min-height: 1.5em;
+  align-items: center;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.type-line i {
+  display: inline-block;
+  width: 2px;
+  height: 0.9em;
+  margin-left: 5px;
+  vertical-align: -0.08em;
+  background: currentColor;
+  animation: type-cursor 0.84s steps(1, end) infinite;
+}
+@keyframes type-cursor {
+50% { opacity: 0;
+}
+}
+@media (prefers-reduced-motion: reduce) {
+.type-line i { display: none;
+}
+}
+:global(html.settings-no-animations) .type-line i { display: none;
+}

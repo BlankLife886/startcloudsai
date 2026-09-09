@@ -1,0 +1,3 @@
+/* Keep the foundational rules first so React-specific rules retain their existing precedence. */
+@import "./assistant-workspace-foundation.css";
+@import "./assistant-workspace-react.css";
