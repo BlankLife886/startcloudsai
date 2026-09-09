@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"os"
 
@@ -30,11 +29,21 @@ func checkWorker(cfg *config.Config) error {
 	if !workerPoolsReady(servers, host) {
 		return fmt.Errorf("image/chat consumers are not both active on this container")
 	}
+	queues, err := i.Queues()
+	if err != nil {
+		return fmt.Errorf("cannot read queue registry")
+	}
+	known := make(map[string]bool, len(queues))
+	for _, name := range queues {
+		known[name] = true
+	}
 	for _, name := range []string{taskflow.QueueDefault, taskflow.QueueAssistantChat, taskflow.QueueAssistantImage} {
-		q, err := i.GetQueueInfo(name)
-		if errors.Is(err, asynq.ErrQueueNotFound) {
+		// Asynq 0.26 GetQueueInfo returns an internal NotFound error rather
+		// than the public ErrQueueNotFound sentinel for never-enqueued queues.
+		if !known[name] {
 			continue
-		} // Never-used queues need no backlog key.
+		}
+		q, err := i.GetQueueInfo(name)
 		if err != nil || q.Paused {
 			return fmt.Errorf("queue %s is unavailable or paused", name)
 		}
