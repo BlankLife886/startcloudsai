@@ -11,6 +11,8 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
+	"github.com/BlankLife886/startcloudsai/server/internal/contractpricing"
+	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/trialfeature"
 	"github.com/BlankLife886/startcloudsai/server/internal/wallet"
@@ -24,6 +26,9 @@ type CancelPolicy struct {
 	UpstreamSubmitted bool   `json:"upstreamSubmitted"`
 	Refunded          bool   `json:"refunded"`
 	Message           string `json:"message"`
+	ChargedPoints     int64  `json:"chargedPoints"`
+	RefundedPoints    int64  `json:"refundedPoints"`
+	CanceledFrom      string `json:"canceledFrom,omitempty"`
 }
 
 func strPtr(value string) *string { return &value }
@@ -84,7 +89,13 @@ func isImageRun(run *store.AssistantRun) bool {
 }
 
 func imageUpstreamSubmitted(run *store.AssistantRun) bool {
-	if !isImageRun(run) || run.Status != "running" {
+	if !isImageRun(run) {
+		return false
+	}
+	if store.AssistantRunHasKnownImageJobs(run) {
+		return true
+	}
+	if run.Status != "running" {
 		return false
 	}
 	switch run.Stage {
@@ -96,7 +107,13 @@ func imageUpstreamSubmitted(run *store.AssistantRun) bool {
 }
 
 func editableFileUpstreamSubmitted(run *store.AssistantRun) bool {
-	if run == nil || run.Status != "running" {
+	if run == nil {
+		return false
+	}
+	if paramString(run.Params, "_editableTaskId") != "" && paramInt64(run.Params, "_editableTaskGeneration") == int64(run.BillingGeneration) {
+		return true
+	}
+	if run.Status != "running" {
 		return false
 	}
 	switch run.Stage {
@@ -112,13 +129,20 @@ func CancelPolicyForRun(run *store.AssistantRun) CancelPolicy {
 	if run == nil {
 		return policy
 	}
-	if run.Status == "queued" || (isImageRun(run) && run.Status == "running" && !imageUpstreamSubmitted(run)) {
+	if run.Status == "canceled" {
+		if submitted, recorded := run.Params["_cancelUpstreamSubmitted"].(bool); recorded {
+			charged, refunded := paramInt64(run.Params, "_cancelChargedPoints"), paramInt64(run.Params, "_cancelRefundedPoints")
+			return CancelPolicy{Mode: "unavailable", UpstreamSubmitted: submitted, Refunded: charged == 0, ChargedPoints: charged, RefundedPoints: refunded, CanceledFrom: paramString(run.Params, "_cancelFromStatus"), Message: fmt.Sprintf("任务已停止，已结算 %d 积分，已退回 %d 积分。", charged, refunded)}
+		}
+		return policy
+	}
+	if (run.Status == "queued" && !imageUpstreamSubmitted(run) && !editableFileUpstreamSubmitted(run)) || (isImageRun(run) && run.Status == "running" && !imageUpstreamSubmitted(run)) || (run.Status == "running" && run.Stage == "preparing-file" && !editableFileUpstreamSubmitted(run)) {
 		return CancelPolicy{
 			Allowed: true, Mode: "immediate", Refunded: true,
-			Message: "任务尚未提交图片上游，停止后冻结积分会立即退回。",
+			Message: "任务尚未提交上游，停止后冻结积分会立即退回。",
 		}
 	}
-	if run.Status != "running" {
+	if run.Status != "running" && !(run.Status == "queued" && (imageUpstreamSubmitted(run) || editableFileUpstreamSubmitted(run))) {
 		return policy
 	}
 	if isImageRun(run) {
@@ -164,6 +188,8 @@ func Reserve(ctx context.Context, q store.Q, run *store.AssistantRun) error {
 	if run == nil || run.ReservedCents <= 0 {
 		return nil
 	}
+	model, _ := run.Params["_modelConfigId"].(string)
+	ctx = wallet.WithSubscriptionScope(ctx, "web", model)
 	_, err := wallet.FreezeFeatureCredits(ctx, q, run.UserID, run.ReservedCents, trialFeatureKey(run),
 		SourceType, sourceID(run, run.BillingGeneration), strPtr(productReason(run, "%s费用预留")))
 	return err
@@ -381,6 +407,9 @@ func CancelUserTxConfirmed(ctx context.Context, q store.Q, userID, id uuid.UUID,
 	if err != nil || !changed {
 		return run, changed, err
 	}
+	if _, err := q.Exec(ctx, `UPDATE assistant_runs SET params=COALESCE(params,'{}'::jsonb)||jsonb_build_object('_cancelUpstreamSubmitted',$2::boolean,'_cancelFromStatus',$3::text,'_cancelChargedPoints',$4::bigint,'_cancelRefundedPoints',$5::bigint) WHERE id=$1`, id, policy.UpstreamSubmitted, run.Status, cost, run.ReservedCents-cost); err != nil {
+		return run, false, err
+	}
 	if cost > 0 {
 		billingID := sourceID(run, run.BillingGeneration)
 		settlementReason := productReason(run, "%s由用户主动停止，本轮积分不退还")
@@ -413,7 +442,7 @@ func CancelUserTxConfirmed(ctx context.Context, q store.Q, userID, id uuid.UUID,
 	if _, _, err := store.SyncUIDesignAssetHistoryFromRun(ctx, q, latest, nil); err != nil {
 		return run, false, err
 	}
-	return run, true, nil
+	return latest, true, nil
 }
 
 func CancelAdminQueued(ctx context.Context, st *store.Store, id uuid.UUID) (*store.AssistantRun, bool, error) {
@@ -432,11 +461,17 @@ func CancelAdminQueuedTx(ctx context.Context, q store.Q, id uuid.UUID) (*store.A
 	if err != nil || run == nil {
 		return run, false, err
 	}
+	if imageUpstreamSubmitted(run) || editableFileUpstreamSubmitted(run) {
+		return run, false, apperr.E("task_not_cancelable", "该任务已经提交上游，不能作为未提交的排队任务取消", 400)
+	}
 	changed, err := store.AdminCancelAssistantRun(ctx, q, id)
 	if err != nil || !changed {
 		return run, changed, err
 	}
 	if err := release(ctx, q, run, productReason(run, "%s已被管理员取消，费用已退回")); err != nil {
+		return run, false, err
+	}
+	if _, err := q.Exec(ctx, `UPDATE assistant_runs SET params=COALESCE(params,'{}'::jsonb)||jsonb_build_object('_cancelUpstreamSubmitted',false,'_cancelFromStatus','queued','_cancelChargedPoints',0,'_cancelRefundedPoints',$2::bigint) WHERE id=$1`, id, run.ReservedCents); err != nil {
 		return run, false, err
 	}
 	latest, syncErr := store.GetAssistantRun(ctx, q, id)
@@ -446,7 +481,7 @@ func CancelAdminQueuedTx(ctx context.Context, q store.Q, id uuid.UUID) (*store.A
 	if _, _, err := store.SyncUIDesignAssetHistoryFromRun(ctx, q, latest, nil); err != nil {
 		return run, false, err
 	}
-	return run, true, nil
+	return latest, true, nil
 }
 
 func ForceFailAdmin(ctx context.Context, st *store.Store, id uuid.UUID) (*store.AssistantRun, bool, error) {
@@ -488,11 +523,65 @@ func Requeue(ctx context.Context, q store.Q, run *store.AssistantRun) (bool, err
 		return false, nil
 	}
 	nextGeneration := run.BillingGeneration + 1
+	modelID := paramString(run.Params, "_modelConfigId")
+	if modelID != "" {
+		cfg, err := modelconfig.Load(ctx, q)
+		if err != nil {
+			return false, err
+		}
+		var model *modelconfig.Model
+		for i := range cfg.Models {
+			if cfg.Models[i].ID == modelID && cfg.Models[i].Enabled && cfg.Models[i].Public {
+				model = &cfg.Models[i]
+				break
+			}
+		}
+		if model == nil {
+			return false, apperr.E("price_changed", "模型已下线，请重新创建任务", 409)
+		}
+		workspace := paramString(run.Params, "workspace")
+		price := modelconfig.ResolveWorkspacePrice(cfg, workspace, *model)
+		unit, count, scope := price.EffectiveCents, int64(1), ""
+		if run.Mode == "image" {
+			count = max(paramInt64(run.Params, "count"), 1)
+		} else {
+			scope = modelconfig.ReasoningPriceScopeAssistant
+			if workspace == modelconfig.WorkspaceCanvas && run.Mode == "agent" {
+				scope = modelconfig.ReasoningPriceScopeCanvasAgent
+			}
+			if !price.Overridden {
+				unit = modelconfig.ResolveReasoningPrice(*model, paramString(run.Params, "reasoningEffort"), scope).EffectiveCents
+			}
+		}
+		d, err := contractpricing.Resolve(ctx, q, contractpricing.Request{UserID: run.UserID, Feature: trialFeatureKey(run), Workspace: workspace, ModelID: modelID, Channel: "web", PublicUnitPoints: unit, Count: count, ReasoningScope: scope, ReasoningEffort: paramString(run.Params, "reasoningEffort")})
+		if err != nil {
+			return false, err
+		}
+		if d.UnitPoints*count > run.ReservedCents {
+			return false, apperr.E("price_changed", "当前价格或订阅权益已变化，请重新创建任务并确认费用", 409)
+		}
+		run.ReservedCents = d.UnitPoints * count
+		run.Params["_billing"] = d
+		run.Params["_reservedCostCents"] = run.ReservedCents
+		if run.Mode == "image" {
+			run.Params["_imageCostCents"] = run.ReservedCents
+			run.Params["_billingUnitPriceCents"] = d.UnitPoints
+			run.Params["_unitPriceCents"] = d.UnitPoints
+		} else {
+			run.Params["_chatCostCents"] = run.ReservedCents
+		}
+		ctx = store.WithBillingDecision(ctx, d)
+	}
 	if run.ReservedCents > 0 {
+		model, _ := run.Params["_modelConfigId"].(string)
+		ctx = wallet.WithSubscriptionScope(ctx, "web", model)
 		if _, err := wallet.FreezeFeatureCredits(ctx, q, run.UserID, run.ReservedCents, trialFeatureKey(run),
 			SourceType, sourceID(run, nextGeneration), strPtr(productReason(run, "%s重试费用预留"))); err != nil {
 			return false, err
 		}
+	}
+	if _, err := q.Exec(ctx, `UPDATE assistant_runs SET reserved_cents=$2,params=$3 WHERE id=$1`, run.ID, run.ReservedCents, run.Params); err != nil {
+		return false, err
 	}
 	return store.RequeueAssistantRun(ctx, q, run.ID)
 }

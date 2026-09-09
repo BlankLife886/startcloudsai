@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { assistantClipboardFiles, isImageToPSDRequest, isPSDFile } from "../src/features/assistant/domain/assistantAttachments.js";
-import { assistantSendMode } from "../src/features/assistant/domain/assistantMessages.js";
+import { assistantSendMode, generatedImageRatioLabel, imageRatioFromPrompt } from "../src/features/assistant/domain/assistantMessages.js";
 import { promptNeedsRecentVisual, resolveVisualContext } from "../src/features/assistant/domain/visualContext.js";
 
 test("collects pasted documents and images without duplicate clipboard entries", () => {
@@ -137,4 +137,18 @@ test("routes document-backed compound work through the agent", () => {
   assert.equal(assistantSendMode("chat", 1, "根据附件生成一张产品海报"), "agent");
   assert.equal(assistantSendMode("agent", 1, "分析附件并给出执行建议"), "agent");
   assert.equal(assistantSendMode("image", 1, "根据这份品牌规范制作视觉稿"), "agent");
+});
+
+test("maps textual ratios and pixel sizes to supported image ratios", () => {
+  const supported = ["auto", "1:1", "3:2", "16:9"];
+  assert.deepEqual(imageRatioFromPrompt("生成 16:9 的横版海报", supported)?.ratio, "16:9");
+  assert.deepEqual(imageRatioFromPrompt("尺寸 1200×800", supported)?.ratio, "3:2");
+  assert.deepEqual(imageRatioFromPrompt("尺寸 1080x1920", ["1:1", "9:16", "16:9"])?.ratio, "9:16");
+  assert.equal(imageRatioFromPrompt("生成一张海报", supported), null);
+});
+
+test("shows actual generated image ratio before falling back to request settings", () => {
+  assert.equal(generatedImageRatioLabel({ width: 1536, height: 1024 }, { ratio: "16:9" }), "3:2");
+  assert.equal(generatedImageRatioLabel({}, { ratio: "9:16" }), "9:16");
+  assert.equal(generatedImageRatioLabel({}, { ratio: "auto" }), "Auto");
 });

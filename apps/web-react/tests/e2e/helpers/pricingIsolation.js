@@ -12,7 +12,9 @@ export async function expectPricingPageIsolated(page) {
     return {
       display: computed.display,
       overflowY: computed.overflowY,
-      marginLeft: computed.marginLeft,
+      left: el.getBoundingClientRect().left,
+      width: el.getBoundingClientRect().width,
+      viewportWidth: window.innerWidth,
     }
   })
   expect(styles.display, 'profile .pp-shell grid must not leak into pricing').not.toBe(
@@ -23,9 +25,10 @@ export async function expectPricingPageIsolated(page) {
     'profile .pp-shell overflow must not leak into pricing',
   ).not.toBe('hidden')
   expect(
-    Number.parseFloat(styles.marginLeft),
+    styles.left,
     'pricing shell must stay centered, not full-bleed like profile',
   ).toBeGreaterThan(0)
+  expect(Math.abs(styles.left + styles.width / 2 - styles.viewportWidth / 2)).toBeLessThan(1)
 
   const pageOverflow = await page.evaluate(() => ({
     html: getComputedStyle(document.documentElement).overflowY,

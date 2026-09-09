@@ -1,3 +1,5 @@
+import { normalizeExactSizeCapabilities } from '../../../config/exactImageSize.js'
+
 export const IMAGE_ASPECT_RATIOS = [
   'auto',
   '16:9',
@@ -113,6 +115,7 @@ export function normalizeImageModelCapabilities(model = {}) {
     : globalAspectRatios
 
   return {
+    ...normalizeExactSizeCapabilities(safeModel),
     resolutions: supportedResolutions,
     aspectRatios: aspectRatios.length
       ? aspectRatios

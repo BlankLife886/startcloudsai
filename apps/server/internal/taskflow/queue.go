@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/google/uuid"
 	"github.com/hibiken/asynq"
 	"github.com/redis/go-redis/v9"
@@ -19,21 +20,34 @@ const (
 	TypeIngestAssistantFile = "assistant:file-ingest"
 )
 
-// Weighted queues keep short, latency-sensitive work from being stuck behind
-// long-running image generation. Assistant runs (interactive) get the highest
-// weight, image tasks + cron use the default queue, and the high-frequency
-// image poll loop runs on its own queue so it is never starved.
+// Image work, chat and polling have distinct queues. The legacy assistant queue
+// remains readable during upgrades and is redirected before run execution.
 const (
-	QueueDefault   = "default"
-	QueueAssistant = "assistant"
-	QueuePoll      = "poll"
+	QueueDefault        = "default"
+	QueueAssistant      = "assistant"
+	QueueAssistantChat  = "assistant-chat"
+	QueueAssistantImage = "assistant-image"
+	QueuePoll           = "poll"
 )
 
-// QueueWeights is consumed by the worker's asynq.Config.Queues.
+// QueueWeights lists all queues for compatibility and operational consumers.
 var QueueWeights = map[string]int{
-	QueueAssistant: 6,
-	QueueDefault:   3,
-	QueuePoll:      2,
+	QueueAssistant:      6,
+	QueueDefault:        3,
+	QueuePoll:           2,
+	QueueAssistantChat:  6,
+	QueueAssistantImage: 3,
+}
+
+// Chat has a separate Asynq server; image work and slow ingestion cannot occupy it.
+var ImageQueueWeights = map[string]int{QueueDefault: 3, QueuePoll: 2, QueueAssistantImage: 3, QueueAssistant: 1}
+var ChatQueueWeights = map[string]int{QueueAssistantChat: 1}
+
+func AssistantQueue(mode string) string {
+	if mode == "image" {
+		return QueueAssistantImage
+	}
+	return QueueAssistantChat
 }
 
 // 可编辑 PPT/PSD 最长会等待上游 20 分钟，队列还要为提交和结果入库
@@ -219,7 +233,7 @@ func (q *Queue) Metrics() QueueMetrics {
 	}
 	// Aggregate across all weighted queues so the dashboard reflects total
 	// backlog rather than just the default queue.
-	for _, queueName := range []string{QueueDefault, QueueAssistant, QueuePoll} {
+	for _, queueName := range []string{QueueDefault, QueueAssistant, QueuePoll, QueueAssistantChat, QueueAssistantImage} {
 		info, err := q.inspector.GetQueueInfo(queueName)
 		if errors.Is(err, asynq.ErrQueueNotFound) {
 			out.Available = true
@@ -294,6 +308,21 @@ func (q *Queue) EnqueueRunTaskRecoveryIn(ctx context.Context, taskID string, del
 	return err
 }
 
+// Wake records are deduplicated separately from delayed recovery records. The
+// database claim still fences each upstream submission across both deliveries.
+func (q *Queue) WakeUserTaskQueue(ctx context.Context, db store.Q, userID uuid.UUID) error {
+	ids, err := store.ListUserDispatchableTaskIDs(ctx, db, userID, 16)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if err := q.enqueueRunTask(ctx, id.String(), id.String()+":wake"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (q *Queue) EnqueueImagePoll(ctx context.Context, providerID, routeID, routeKey string, generation int, delay time.Duration) error {
 	payload, err := json.Marshal(PollImageTasksPayload{
 		ProviderID: providerID, RouteID: routeID, RouteKey: routeKey, Generation: generation % 2,
@@ -360,12 +389,12 @@ func (q *Queue) enqueueRunTask(ctx context.Context, taskID, queueTaskID string) 
 	return err
 }
 
-func (q *Queue) EnqueueAssistantRun(ctx context.Context, runID string) error {
-	return q.enqueueAssistantRun(ctx, runID, runID)
+func (q *Queue) EnqueueAssistantRun(ctx context.Context, runID string, mode ...string) error {
+	return q.enqueueAssistantRun(ctx, runID, runID, mode...)
 }
 
-func (q *Queue) EnqueueAssistantRunRecovery(ctx context.Context, runID string) error {
-	return q.enqueueAssistantRun(ctx, runID, runID+":recover:"+uuid.NewString())
+func (q *Queue) EnqueueAssistantRunRecovery(ctx context.Context, runID string, mode ...string) error {
+	return q.enqueueAssistantRun(ctx, runID, runID+":recover:"+uuid.NewString(), mode...)
 }
 
 func (q *Queue) EnqueueAssistantFile(ctx context.Context, fileID string) error {
@@ -392,13 +421,17 @@ func (q *Queue) EnqueueAssistantFileRecovery(ctx context.Context, fileID string)
 	return err
 }
 
-func (q *Queue) enqueueAssistantRun(ctx context.Context, runID, queueTaskID string) error {
+func (q *Queue) enqueueAssistantRun(ctx context.Context, runID, queueTaskID string, mode ...string) error {
 	payload, err := json.Marshal(RunAssistantPayload{RunID: runID})
 	if err != nil {
 		return err
 	}
+	executionMode := "chat"
+	if len(mode) > 0 {
+		executionMode = mode[0]
+	}
 	_, err = q.client.EnqueueContext(ctx, asynq.NewTask(TypeRunAssistant, payload),
-		asynq.Queue(QueueAssistant), asynq.MaxRetry(0), asynq.Timeout(q.timeout), asynq.TaskID(queueTaskID))
+		asynq.Queue(AssistantQueue(executionMode)), asynq.MaxRetry(0), asynq.Timeout(q.timeout), asynq.TaskID(queueTaskID))
 	if errors.Is(err, asynq.ErrTaskIDConflict) {
 		return nil
 	}
@@ -409,27 +442,29 @@ func (q *Queue) enqueueAssistantRun(ctx context.Context, runID, queueTaskID stri
 // Either operation may report that the task is not in that state, which is harmless.
 func (q *Queue) CancelAssistantRun(runID string) {
 	_ = q.inspector.CancelProcessing(runID)
-	_ = q.inspector.DeleteTask(QueueAssistant, runID)
-	// 恢复任务使用唯一的 Asynq TaskID（runID:recover:*）。按载荷补充查找，
-	// 否则 Worker 重启后的图片请求只能改数据库状态，无法立刻取消上下文。
-	for _, list := range []func(string, ...asynq.ListOption) ([]*asynq.TaskInfo, error){
-		q.inspector.ListActiveTasks,
-		q.inspector.ListPendingTasks,
-	} {
-		tasks, err := list(QueueAssistant, asynq.PageSize(100))
-		if err != nil {
-			continue
-		}
-		for _, task := range tasks {
-			if task == nil || task.Type != TypeRunAssistant || task.ID == runID {
+	for _, queueName := range []string{QueueAssistant, QueueAssistantChat, QueueAssistantImage} {
+		_ = q.inspector.DeleteTask(queueName, runID)
+		// 恢复任务使用唯一的 Asynq TaskID（runID:recover:*）。按载荷补充查找，
+		// 否则 Worker 重启后的图片请求只能改数据库状态，无法立刻取消上下文。
+		for _, list := range []func(string, ...asynq.ListOption) ([]*asynq.TaskInfo, error){
+			q.inspector.ListActiveTasks,
+			q.inspector.ListPendingTasks,
+		} {
+			tasks, err := list(queueName, asynq.PageSize(100))
+			if err != nil {
 				continue
 			}
-			var payload RunAssistantPayload
-			if json.Unmarshal(task.Payload, &payload) != nil || payload.RunID != runID {
-				continue
+			for _, task := range tasks {
+				if task == nil || task.Type != TypeRunAssistant || task.ID == runID {
+					continue
+				}
+				var payload RunAssistantPayload
+				if json.Unmarshal(task.Payload, &payload) != nil || payload.RunID != runID {
+					continue
+				}
+				_ = q.inspector.CancelProcessing(task.ID)
+				_ = q.inspector.DeleteTask(task.Queue, task.ID)
 			}
-			_ = q.inspector.CancelProcessing(task.ID)
-			_ = q.inspector.DeleteTask(task.Queue, task.ID)
 		}
 	}
 }

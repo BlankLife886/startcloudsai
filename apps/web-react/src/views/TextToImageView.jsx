@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useGSAP } from "@gsap/react";
 import { gsap } from "gsap";
@@ -11,6 +11,7 @@ import {
 } from "@react/legacy-modules/features/ai-wallpaper/skills/wallpaperSkills.js";
 import { normalizeSelectedWallpaperSkillIds } from "@react/legacy-modules/features/ai-wallpaper/skills/wallpaperSkillSelection.js";
 import {
+  SHOW_GENERATION_SKILL_CONTROLS,
   T2I_ASPECT_OPTIONS,
   T2I_COUNT_OPTIONS,
   T2I_MODERATION_OPTIONS,
@@ -33,11 +34,11 @@ import {
 import {
   fetchRuntimeConfig,
   getDefaultRuntimeConfig,
-  normalizeRuntimeConfig,
 } from "@react/legacy-modules/services/runtimeConfig.js";
 import { getWallet, updateProfile } from "@react/legacy-modules/services/meApi.js";
 import { getFeatureUnitPriceCents } from "@react/legacy-modules/services/pricing.js";
 import { quoteServerAiJob, registerUploadedUrl } from "@react/legacy-modules/services/aiWallpaper.js";
+import { buildApiPath } from "@react/legacy-modules/services/apiClient.js";
 import { downloadAuthenticatedMedia } from "@react/legacy-modules/services/authenticatedMedia.js";
 import {
   listPromptCategories,
@@ -49,6 +50,7 @@ import { AI_WALLPAPER_STUDIO_DRAFT_KEY } from "@react/legacy-modules/services/ai
 import { resolveModelPointPricing } from "@react/legacy-modules/features/ai-shared/modelPointPricing.js";
 import {
   getScopedLocalItem,
+  getScopedLocalStorageKey,
   setScopedLocalItem,
 } from "@react/legacy-modules/services/scopedLocalStorage.js";
 import "@react/legacy-static/features/ai-wallpaper/styles/t2i-page.css";
@@ -63,13 +65,26 @@ import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
 import { ProgressiveAuthenticatedImage } from "../components/ProgressiveAuthenticatedImage.jsx";
 import { DialogMotion } from "../components/motion/DialogMotion.jsx";
 import { useTextToImageJobs } from "../features/text-to-image/useTextToImageJobs.js";
+import { batchQuotePayload, historyTaskReferences, pendingBatchEntries } from "../features/text-to-image/submissionBatch.js";
+import { isEmptyHistoryTask } from "../features/history/historyCleanup.js";
+import { LOCAL_SUBMISSION_STATUSES, QUEUE_CAPACITY_CODES, serverTaskCounts, taskStatePresentation } from "../features/text-to-image/submissionState.js";
+import { TaskStateIndicator, GenerationButtonContent } from "../features/text-to-image/TaskStateIndicator.jsx";
+import { generationButtonState } from "../features/text-to-image/generationButtonState.js";
+import { GenerationAtmosphere } from "../features/text-to-image/GenerationAtmosphere.jsx";
+import { GenerationStateVisual } from "../features/text-to-image/GenerationStateVisual.jsx";
+import { GenerationParticleField } from "../features/text-to-image/GenerationParticleField.jsx";
+import { GenerationReveal } from "../features/text-to-image/GenerationReveal.jsx";
+import { useReferenceDraft } from "../features/text-to-image/useReferenceDraft.js";
+import { taskTimestamp, taskGenerationElapsedMs } from "../legacy-modules/features/ai-wallpaper/domain/taskGenerationTiming.js";
 import { T2iHistoryFeed } from "../features/text-to-image/T2iHistoryFeed.jsx";
 import { taskFailureMessage } from "../features/history/taskFailureMessage.js";
 import { summarizeGalleryGroup } from "../features/text-to-image/galleryGroupState.js";
 import { WallevenImagePreview } from "../components/common/WallevenImagePreview.jsx";
 import { DownloadIcon } from "../components/common/DownloadIcon.jsx";
-import { SoftMark } from "../components/common/SoftMark.jsx";
+import { ModelCatalogIcon, ModelMaintenanceBadge, availableCatalogModels, isCatalogModelMaintenance } from "../components/common/ModelCatalogIcon.jsx";
 import { RegenerateIcon } from "../components/common/RegenerateIcon.jsx";
+import { ExactImageSizeControl } from "../components/ExactImageSizeControl.jsx";
+import { exactImageSizeParams, validateExactImageSize } from "../config/exactImageSize.js";
 import "./TextToImageView.css";
 
 gsap.registerPlugin(useGSAP);
@@ -221,20 +236,9 @@ const PromptLibraryCard = memo(function PromptLibraryCard({
   );
 });
 
-function storedRuntimeConfig() {
+function storedDraft(storageKey) {
   try {
-    const value = JSON.parse(
-      sessionStorage.getItem("walleven.runtime-config.v2") || "null",
-    );
-    return normalizeRuntimeConfig(value?.config || getDefaultRuntimeConfig());
-  } catch {
-    return getDefaultRuntimeConfig();
-  }
-}
-
-function storedDraft() {
-  try {
-    return JSON.parse(localStorage.getItem(DRAFT_KEY) || "null") || {};
+    return JSON.parse(localStorage.getItem(storageKey) || "null") || {};
   } catch {
     return {};
   }
@@ -381,9 +385,8 @@ function taskModelLabel(task, models = []) {
   return keys.find((key) => !looksLikeInternalModelId(key)) || "文生图模型";
 }
 
-function taskMeta(task, now, models = [], totalElapsed = "") {
+function taskMeta(task, models = []) {
   const size = task.actualOutputSize || task.outputSize || "";
-  const elapsed = totalElapsed || elapsedLabel(task, now);
   return [
     taskModelLabel(task, models),
     task.resolutionScale,
@@ -397,7 +400,6 @@ function taskMeta(task, now, models = [], totalElapsed = "") {
           minute: "2-digit",
         })
       : "",
-    elapsed ? `总耗时 ${elapsed}` : "",
   ]
     .filter(Boolean)
     .join(" · ");
@@ -409,7 +411,8 @@ function downloadFilename(task, index = 0) {
 }
 
 function statusLabel(task) {
-  if (task.status === "queued") return "排队中";
+  if (LOCAL_SUBMISSION_STATUSES.has(task.status)) return taskStatePresentation(task).label;
+  if (task.status === "queued") return task.cancelPolicy?.upstreamSubmitted === true ? "等待上游结果" : "排队中";
   if (task.status === "waiting_provider") return "等待模型响应";
   if (task.status === "running") {
     if (task.generationStage === "preparing") return "正在准备生成";
@@ -427,7 +430,7 @@ function statusLabel(task) {
 }
 
 function generationStageDetail(task) {
-  if (task?.status === "queued") return "等待可用生成资源";
+  if (task?.status === "queued" || LOCAL_SUBMISSION_STATUSES.has(task?.status)) return taskStatePresentation(task).detail;
   if (["cancelled", "canceled"].includes(task?.status)) return "任务已取消";
   switch (task?.generationStage) {
     case "preparing":
@@ -442,10 +445,22 @@ function generationStageDetail(task) {
 }
 
 function cancelDialogContent(task) {
+  if (Array.isArray(task?.tasks)) {
+    const submitted = task.tasks.filter(item => cancelDialogContent(item).acknowledgeUpstream);
+    const waiting = task.tasks.length - submitted.length;
+    return {
+      heading: `取消本组剩余 ${task.tasks.length} 张生成？`,
+      description: [waiting ? `${waiting} 张尚未提交上游，取消后冻结积分退回。` : "", submitted.length ? `${submitted.length} 张已提交上游，停止接收结果后，这些图片的本次积分不退回，上游可能仍继续生成。` : "", "已完成的图片会保留。若其他图片的提交阶段发生变化，会再次提示确认。"].filter(Boolean).join(""),
+      confirmLabel: "确认取消本组",
+      acknowledgeUpstream: false,
+      acknowledgedTaskIds: submitted.map(item => item.serverJobId || item.id),
+    };
+  }
   const policy = task?.cancelPolicy;
   const upstreamSubmitted =
-    policy?.upstreamSubmitted === true ||
-    (task?.status === "running" && task?.generationStage !== "preparing");
+    typeof policy?.upstreamSubmitted === "boolean"
+      ? policy.upstreamSubmitted
+      : task?.status === "running" && task?.generationStage !== "preparing";
   if (upstreamSubmitted) {
     return {
       heading: "仍要停止这次生成？",
@@ -453,6 +468,7 @@ function cancelDialogContent(task) {
         policy?.message ||
         "生成请求已经提交给上游。停止后平台不再等待或接收结果，但上游可能仍会继续生成，本次积分不会退回。",
       confirmLabel: "确认停止",
+      acknowledgeUpstream: true,
     };
   }
   return {
@@ -460,6 +476,7 @@ function cancelDialogContent(task) {
     description:
       policy?.message || "任务尚未提交上游，取消后会立即停止，冻结积分会退回。",
     confirmLabel: "确认取消",
+    acknowledgeUpstream: false,
   };
 }
 
@@ -478,37 +495,14 @@ function formatElapsed(seconds) {
   return `${Math.floor(value / 60)}:${String(value % 60).padStart(2, "0")}`;
 }
 
-function elapsedSeconds(task, now) {
-  // queued 没有真正 startedAt，不能计入生成耗时。
-  if (!task || task.status === "queued" || !task.startedAt) return 0;
-  const started = Date.parse(task.startedAt);
-  if (!Number.isFinite(started)) return 0;
-  const finished = Date.parse(task.finishedAt || "");
-  return Math.max(
-    0,
-    Math.floor(((Number.isFinite(finished) ? finished : now) - started) / 1000),
-  );
-}
-
-function elapsedLabel(task, now) {
-  if (task.status === "queued" || !task.startedAt) return "";
-  return formatElapsed(elapsedSeconds(task, now));
-}
-
-function groupTotalElapsedLabel(items, now) {
-  const seen = new Set();
-  let total = 0;
-  let counted = false;
-  for (const item of items || []) {
-    const task = item?.task;
-    const id = String(task?.id || "");
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
-    const seconds = elapsedSeconds(task, now);
-    if (seconds > 0 || (task.startedAt && task.status !== "queued")) counted = true;
-    total += seconds;
-  }
-  return counted ? formatElapsed(total) : "";
+function generationElapsedLabel(task, now) {
+  if (LOCAL_SUBMISSION_STATUSES.has(task?.status)) return "";
+  if (!ACTIVE_STATUSES.has(task?.status) && !taskTimestamp(task?.finishedAt)) return "";
+  if (task.status === "queued" && task.cancelPolicy?.upstreamSubmitted !== true) return "";
+  if (!taskTimestamp(task.startedAt)) return "";
+  // 已提交上游的恢复任务仍属于执行阶段；普通排队绝不使用创建时间计时。
+  const executing = task.status === "queued" ? { ...task, status: "waiting_provider" } : task;
+  return formatElapsed(taskGenerationElapsedMs(executing, now) / 1000);
 }
 
 function buildGalleryItems(tasks, unavailableImageKeys = {}, { limit = 120 } = {}) {
@@ -522,7 +516,7 @@ function buildGalleryItems(tasks, unavailableImageKeys = {}, { limit = 120 } = {
       outputs.forEach((url, index) => {
         if (unavailableImageKeys[`${task.id}::${index}::${url}`]) return;
         items.push({
-          key: `${task.id}-${index}`,
+          key: `${task.clientRequestId || task.id}-${index}`,
           kind: "image",
           task,
           url,
@@ -538,14 +532,14 @@ function buildGalleryItems(tasks, unavailableImageKeys = {}, { limit = 120 } = {
       });
       continue;
     }
-    if (ACTIVE_STATUSES.has(task.status)) {
+    if (ACTIVE_STATUSES.has(task.status) || task.status === "submitting") {
       const batchSize = Math.max(1, Number(task.batchSize || 1));
       const slots = batchSize > 1
         ? 1
         : Math.min(4, Math.max(1, Number(task.count || 1)));
       for (let index = 0; index < slots; index += 1) {
         items.push({
-          key: `pending-${task.id}-${index}`,
+          key: `${task.clientRequestId || task.id}-${index}`,
           kind: "pending",
           task,
           index,
@@ -556,9 +550,9 @@ function buildGalleryItems(tasks, unavailableImageKeys = {}, { limit = 120 } = {
       }
       continue;
     }
-    if (["failed", "paused", "cancelled", "canceled"].includes(task.status)) {
+    if (["failed", "paused", "cancelled", "canceled"].includes(task.status) || LOCAL_SUBMISSION_STATUSES.has(task.status)) {
       items.push({
-        key: `status-${task.id}`,
+        key: `${task.clientRequestId || task.id}-0`,
         kind: "status",
         task,
         index: 0,
@@ -726,6 +720,7 @@ function CostConfirmDialog({ cost, light = false, onCancel, onConfirm }) {
             <div className={insufficient ? "danger" : ""}><span>支付后余额</span><strong>{available == null ? "待计算" : insufficient ? "余额不足" : `${remaining.toLocaleString("zh-CN")} 积分`}</strong></div>
           </div>
         </div>
+        {activeCost.batch && <p className="ai-cost-confirm-warn">原批次已接受 {activeCost.batch.batchSize - activeCost.count} 张，本次仅补交剩余 {activeCost.count} 张，沿用原模型和参数。</p>}
         {activeCost.priceUpdated && <p className="ai-cost-confirm-warn"><i className="bi bi-arrow-repeat" />任务价格已更新，请确认最新费用后再提交。</p>}
         {activeCost.pricingUnavailable && <p className="ai-cost-confirm-warn"><i className="bi bi-info-circle" />暂时读取不到单价，本次费用以服务端结算为准。</p>}
         {insufficient && <p className="ai-cost-confirm-warn is-danger"><i className="bi bi-exclamation-circle" />钱包余额不足，请充值后再提交任务。</p>}
@@ -745,6 +740,7 @@ export function TextToImageView() {
   const { requestAuth } = useAuthPrompt();
   return (
     <TextToImageWorkspace
+      key={auth.user?.id || "guest"}
       user={auth.user}
       authenticated={auth.isAuthenticated}
       onRequireAuth={() => requestAuth({ featureLabel: "文生图" })}
@@ -775,10 +771,19 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   const fileInputRef = useRef(null);
   const pendingRef = useRef(null);
   const quotedUnitPriceRef = useRef(null);
+  const workspaceActiveRef = useRef(true);
+  const quoteRequestRef = useRef(0);
+  const quoteBusyRef = useRef(0);
+  const [quotingCost, setQuotingCost] = useState(false);
+  useEffect(() => {
+    workspaceActiveRef.current = true;
+    return () => { workspaceActiveRef.current = false; quoteRequestRef.current += 1; };
+  }, []);
   const promptLibraryRequestRef = useRef(0);
   const storedPromptCategoryRef = useRef(readStoredPromptCategory());
-  const draft = useMemo(storedDraft, []);
-  const [runtime, setRuntime] = useState(storedRuntimeConfig);
+  const draftStorageKey = useMemo(() => getScopedLocalStorageKey(DRAFT_KEY, user?.id ? `user_${user.id}` : "guest"), [user?.id]);
+  const draft = useMemo(() => storedDraft(draftStorageKey), [draftStorageKey]);
+  const [runtime, setRuntime] = useState(getDefaultRuntimeConfig);
   const [loading, setLoading] = useState(true);
   const [prompt, setPrompt] = useState(
     String(
@@ -789,6 +794,11 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   const [modelId, setModelId] = useState(String(draft.selectedPublicModel || ""));
   const [ratio, setRatio] = useState(String(draft.aspectRatio || "1:1"));
   const [resolution, setResolution] = useState(String(draft.resolutionScale || "1K"));
+  const [imageSize, setImageSize] = useState(() => ({
+    sizeMode: draft.sizeMode === "exact" ? "exact" : "ratio",
+    exactWidth: draft.sizeMode === "exact" ? String(draft.exactWidth || "") : "",
+    exactHeight: draft.sizeMode === "exact" ? String(draft.exactHeight || "") : "",
+  }));
   const [quality, setQuality] = useState(String(draft.imageQuality || "medium"));
   const [count, setCount] = useState(Math.min(4, Math.max(1, Number(draft.imageCount) || 1)));
   const [outputFormat, setOutputFormat] = useState(String(draft.upscaleOutputFormat || "auto"));
@@ -800,7 +810,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   const [selectedSkillIds, setSelectedSkillIds] = useState(() =>
     normalizeSelectedWallpaperSkillIds(draft.skillIds, WALLPAPER_SKILL_OPTIONS),
   );
-  const [references, setReferences] = useState([]);
+  const { references, setReferences, referencesReady, referenceStorageError } = useReferenceDraft(user?.id);
   const [openLayer, setOpenLayer] = useState("");
   const [modelOpen, setModelOpen] = useState(false);
   const [modelMenuStyle, setModelMenuStyle] = useState({});
@@ -828,6 +838,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   const [cost, setCost] = useState(null);
   const [previewKey, setPreviewKey] = useState("");
   const [actionBusyId, setActionBusyId] = useState("");
+  const deletionInFlightRef = useRef(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [regenerateTarget, setRegenerateTarget] = useState(null);
   const [cancelTarget, setCancelTarget] = useState(null);
@@ -841,6 +852,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   );
   const promptMorePresence = usePopoverPresence(promptCategoryMoreOpen, 150, "prompt-more");
   const models = useMemo(() => featureModels(runtime), [runtime]);
+  const availableModels = useMemo(() => availableCatalogModels(models), [models]);
   const feature = useMemo(() => wallpaperFeature(runtime), [runtime]);
   const backgroundRemovalModels = useMemo(() => {
     const raw = runtime.features?.["ai.imageTools"] || {};
@@ -853,12 +865,27 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     backgroundRemovalModels.find((item) => item.default === true) ||
     backgroundRemovalModels[0] ||
     null;
-  const currentModel = models.find((item) => item.id === modelId) || models[0] || null;
+  const currentModel = availableModels.find((item) => item.id === modelId)
+    || (imageSize.sizeMode === "exact" ? null : availableModels.find((item) => item.default) || availableModels[0] || null);
+  const exactSize = imageSize.sizeMode === "exact"
+    ? validateExactImageSize(currentModel, imageSize.exactWidth, imageSize.exactHeight)
+    : null;
   const hasPricedModels = models.some(
     (model) => resolveModelPointPricing(model).configured,
   );
   const maxReferences = Math.max(0, Number(currentModel?.maxReferenceImages ?? 4));
-  const jobs = useTextToImageJobs({ authenticated, historyActive: mainTab === "history" });
+  const jobs = useTextToImageJobs({ authenticated, userId: user?.id, historyActive: mainTab === "history" });
+  const remainingBatchCount = pendingBatchEntries(jobs.pendingBatch).length;
+  const taskCounts = serverTaskCounts(jobs.tasks);
+  const queueFull = pendingBatchEntries(jobs.pendingBatch).some(entry => QUEUE_CAPACITY_CODES.has(entry.error?.code));
+  const submissionBusy = jobs.submitting || jobs.submissionPhase === "recovering";
+  useLayoutEffect(() => {
+    if (!jobs.latestBatchId) return;
+    setActiveGroupKey(`batch:${jobs.latestBatchId}`);
+    setActiveGalleryKey("");
+    setActiveTaskId("");
+    setMainTab("images");
+  }, [jobs.latestBatchId]);
   const isRunning =
     jobs.tasks.some((task) => ACTIVE_STATUSES.has(task.status)) ||
     (mainTab === "history" && jobs.historyTasks.some((task) => ACTIVE_STATUSES.has(task.status)));
@@ -1025,9 +1052,13 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   }, []);
 
   useEffect(() => {
-    if (!models.length) return;
-    if (!models.some((item) => item.id === modelId)) setModelId(models[0].id);
-  }, [modelId, models]);
+    if (imageSize.sizeMode === "exact") return;
+    if (!availableModels.length) {
+      if (modelId) setModelId("");
+      return;
+    }
+    if (!availableModels.some((item) => item.id === modelId)) setModelId(availableModels.find((item) => item.default)?.id || availableModels[0].id);
+  }, [availableModels, imageSize.sizeMode, modelId]);
 
   const ratioOptions = useMemo(() => {
     const allowed = getModelAspectRatiosForResolution(currentModel || {}, resolution);
@@ -1104,6 +1135,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     if (config.model) setModelId(config.model);
     if (config.ratio) setRatio(config.ratio);
     if (config.resolution) setResolution(String(config.resolution));
+    if (config.sizeMode === "exact") setImageSize({ sizeMode: "exact", exactWidth: String(config.exactWidth || ""), exactHeight: String(config.exactHeight || "") });
     if (config.quality) setQuality(config.quality);
     if (config.count) setCount(Math.min(4, Math.max(1, Number(config.count) || 1)));
     if (Array.isArray(config.skills)) {
@@ -1231,20 +1263,21 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   }, [mainTab, promptCategory, promptSort]);
 
   useEffect(() => {
-    const current = storedDraft();
-    localStorage.setItem(DRAFT_KEY, JSON.stringify({
+    const current = storedDraft(draftStorageKey);
+    localStorage.setItem(draftStorageKey, JSON.stringify({
       ...current,
       skillIds: selectedSkillIds,
     }));
-  }, [selectedSkillIds]);
+  }, [draftStorageKey, selectedSkillIds]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      localStorage.setItem(DRAFT_KEY, JSON.stringify({
+      localStorage.setItem(draftStorageKey, JSON.stringify({
         prompt,
         selectedPublicModel: modelId,
         aspectRatio: ratio,
         resolutionScale: resolution,
+        ...imageSize,
         imageQuality: quality,
         imageCount: count,
         upscaleOutputFormat: outputFormat,
@@ -1257,7 +1290,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
       }));
     }, 240);
     return () => window.clearTimeout(timer);
-  }, [autoRemove, count, modelId, moderation, outputFormat, polish, prompt, quality, ratio, resolution, selectedSkillIds, translate, transparent]);
+  }, [autoRemove, count, draftStorageKey, imageSize, modelId, moderation, outputFormat, polish, prompt, quality, ratio, resolution, selectedSkillIds, translate, transparent]);
 
   useEffect(() => {
     if (!activeTaskId && jobs.tasks[0]) setActiveTaskId(jobs.tasks[0].id);
@@ -1300,10 +1333,12 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
 
   const buildPayload = useCallback(({ sourceUrls, batchId, batchIndex, batchSize, batchCreatedAt }) => {
     const capabilities = normalizeImageModelCapabilities(currentModel || {});
-    const supportsResolution = capabilities.resolutions.includes(resolution);
+    const exact = imageSize.sizeMode === "exact";
+    const exactParams = exact ? exactImageSizeParams(currentModel, imageSize.exactWidth, imageSize.exactHeight) : {};
+    const supportsResolution = !exact && capabilities.resolutions.includes(resolution);
     const supportsQuality = capabilities.qualities.includes(quality);
     const supportedRatios = getModelAspectRatiosForResolution(currentModel || {}, resolution);
-    const supportsRatio = supportedRatios.includes(ratio);
+    const supportsRatio = !exact && supportedRatios.includes(ratio);
     const activeSkills = resolveActiveWallpaperSkills({
       outputType: "image",
       resolutionScale: supportsResolution ? resolution : "",
@@ -1312,7 +1347,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
       customSkills: [],
     });
     const skillPrompt = buildWallpaperSkillPrompt(activeSkills);
-    const outputSize = supportsResolution && supportsRatio
+    const outputSize = exact ? `${exactParams.exactWidth}x${exactParams.exactHeight}` : supportsResolution && supportsRatio
       ? resolveT2iOutputSize(ratio, resolution)
       : "";
     const publicModelKey = currentModel?.id || modelId;
@@ -1330,6 +1365,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     const input = {
       sourceUrl: sourceUrls[0] || "",
       sourceUrls,
+      ...exactParams,
       ...(supportsRatio ? { aspectRatio: ratio, requestedAspectRatio: ratio } : {}),
       ...(supportsRatio && ratio === "auto"
         ? { autoAspectRatioCandidates: getModelAutoAspectRatioCandidates(currentModel || {}, resolution) }
@@ -1375,77 +1411,103 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
       units: 1,
       expectedUnitPriceCents: quotedUnitPriceRef.current,
     };
-  }, [autoRemove, backgroundRemovalModel?.id, currentModel, feature.superResolutionEnabled, modelId, moderation, outputFormat, polish, prompt, quality, ratio, resolution, selectedSkillIds, translate, transparent]);
+  }, [autoRemove, backgroundRemovalModel?.id, currentModel, feature.superResolutionEnabled, imageSize, modelId, moderation, outputFormat, polish, prompt, quality, ratio, resolution, selectedSkillIds, translate, transparent]);
 
-  const refreshGenerationCost = useCallback(async ({ authoritativeOnly = false, priceUpdated = false } = {}) => {
-    const quotePayload = buildPayload({
-      sourceUrls: [], batchId: "", batchIndex: 0, batchSize: 1,
-      batchCreatedAt: new Date().toISOString(),
-    });
-    const [walletResult, quoteResult, featurePrice] = await Promise.allSettled([
-      getWallet(),
-      quoteServerAiJob(quotePayload),
-      getFeatureUnitPriceCents("wallpaper"),
-    ]);
-    const modelPriceConfigured = currentModel?.pointPricing?.configured === true;
-    const quotedGenerationUnit = quoteResult.status === "fulfilled"
-      ? Number(quoteResult.value?.unitPriceCents)
-      : Number.NaN;
-    const hasAuthoritativeQuote = Number.isFinite(quotedGenerationUnit);
-    quotedUnitPriceRef.current = hasAuthoritativeQuote ? quotedGenerationUnit : null;
-    if (authoritativeOnly && !hasAuthoritativeQuote) {
-      throw quoteResult.status === "rejected"
-        ? quoteResult.reason
-        : new Error("服务端未返回有效的最新价格，请稍后重试");
-    }
-    const serverPriceAvailable = featurePrice.status === "fulfilled";
-    const generationUnit = Math.max(
-      0,
-      Number(
-        hasAuthoritativeQuote
-          ? quotedGenerationUnit
-          : modelPriceConfigured
-          ? currentModel.creditCost
-          : serverPriceAvailable
-            ? featurePrice.value
-            : feature.creditCost,
-      ) || 0,
-    );
-    const removalUnit = autoRemove
-      ? Math.max(0, Number(backgroundRemovalModel?.pricePoints || 0))
-      : 0;
-    const unit = generationUnit + removalUnit;
-    const available = walletResult.status === "fulfilled"
-      ? Math.max(0, Number(walletResult.value?.availableCents ?? walletResult.value?.balanceCents ?? 0))
-      : null;
-    setCost({
-      unit,
-      count,
-      total: unit * count,
-      available,
-      priceUpdated,
-      pricingUnavailable:
-        !hasAuthoritativeQuote && !modelPriceConfigured && !serverPriceAvailable && !Number.isFinite(Number(feature.creditCost)),
-    });
-  }, [autoRemove, backgroundRemovalModel?.pricePoints, buildPayload, count, currentModel, feature.creditCost]);
-
-  const submitGeneration = useCallback(async () => {
-    if (!prompt.trim()) return;
+  const refreshGenerationCost = useCallback(async ({ authoritativeOnly = false, priceUpdated = false, batch = null } = {}) => {
+    const requestId = ++quoteRequestRef.current;
+    quoteBusyRef.current = requestId;
+    setQuotingCost(true);
     try {
-      await jobs.createBatch({ count, references, buildPayload });
+      const quotePayload = batchQuotePayload(batch) || buildPayload({
+        sourceUrls: [], batchId: "", batchIndex: 0, batchSize: 1,
+        batchCreatedAt: new Date().toISOString(),
+      });
+      const quotedCount = batch ? pendingBatchEntries(batch).length : count;
+      const [walletResult, quoteResult, featurePrice] = await Promise.allSettled([
+        getWallet(),
+        quoteServerAiJob(quotePayload),
+        getFeatureUnitPriceCents("wallpaper"),
+      ]);
+      if (!workspaceActiveRef.current || requestId !== quoteRequestRef.current) return;
+      const modelPriceConfigured = currentModel?.pointPricing?.configured === true;
+      const quotedGenerationUnit = quoteResult.status === "fulfilled"
+        ? Number(quoteResult.value?.unitPriceCents)
+        : Number.NaN;
+      const hasAuthoritativeQuote = Number.isFinite(quotedGenerationUnit);
+      quotedUnitPriceRef.current = hasAuthoritativeQuote ? quotedGenerationUnit : null;
+      if (authoritativeOnly && !hasAuthoritativeQuote) {
+        throw quoteResult.status === "rejected"
+          ? quoteResult.reason
+          : new Error("服务端未返回有效的最新价格，请稍后重试");
+      }
+      const serverPriceAvailable = featurePrice.status === "fulfilled";
+      const generationUnit = Math.max(
+        0,
+        Number(
+          hasAuthoritativeQuote
+            ? quotedGenerationUnit
+            : modelPriceConfigured
+            ? currentModel.creditCost
+            : serverPriceAvailable
+              ? featurePrice.value
+              : feature.creditCost,
+        ) || 0,
+      );
+      const removalEnabled = batch ? quotePayload.input?.autoBackgroundRemovalEnabled === true : autoRemove;
+      const removalModel = batch
+        ? backgroundRemovalModels.find((model) => model.id === quotePayload.input?.autoBackgroundRemovalModelKey)
+        : backgroundRemovalModel;
+      const removalUnit = removalEnabled
+        ? Math.max(0, Number(removalModel?.pricePoints || 0))
+        : 0;
+      const unit = generationUnit + removalUnit;
+      const available = walletResult.status === "fulfilled"
+        ? Math.max(0, Number(walletResult.value?.availableCents ?? walletResult.value?.balanceCents ?? 0))
+        : null;
+      setCost({
+        unit,
+        count: quotedCount,
+        total: unit * quotedCount,
+        batch,
+        quotedGenerationUnit: hasAuthoritativeQuote ? quotedGenerationUnit : null,
+        available,
+        priceUpdated,
+        pricingUnavailable:
+          !hasAuthoritativeQuote && !modelPriceConfigured && !serverPriceAvailable && !Number.isFinite(Number(feature.creditCost)),
+      });
+    } finally {
+      if (quoteBusyRef.current === requestId) {
+        quoteBusyRef.current = 0;
+        if (workspaceActiveRef.current) setQuotingCost(false);
+      }
+    }
+  }, [autoRemove, backgroundRemovalModel, backgroundRemovalModels, buildPayload, count, currentModel, feature.creditCost]);
+
+  const submitGeneration = useCallback(async ({ retryBatch = jobs.pendingBatch, confirmedUnitPrice = null } = {}) => {
+    if (!workspaceActiveRef.current || (!retryBatch && !prompt.trim())) return;
+    try {
+      await jobs.createBatch({ count, references, buildPayload, retryBatch, confirmedUnitPrice,
+        onReferencePrepared: (id, prepared) => setReferences(current => current.map(item => item.id === id ? { ...item, ...prepared } : item)),
+      });
+      if (!workspaceActiveRef.current) return;
       setMainTab("images");
     } catch (error) {
+      if (!workspaceActiveRef.current || (error?.name === "AbortError" && !error.batch)) return;
+      if (QUEUE_CAPACITY_CODES.has(error?.code)) {
+        notificationService.warning(`${error.message}；已保存待提交任务，名额释放后可重试`);
+        return;
+      }
       if (error?.code === "price_changed") {
         quotedUnitPriceRef.current = null;
         try {
-          await refreshGenerationCost({ authoritativeOnly: true, priceUpdated: true });
-          notificationService.warning("任务价格已更新，请确认最新费用");
+          await refreshGenerationCost({ authoritativeOnly: true, priceUpdated: true, batch: error.batch });
+          if (workspaceActiveRef.current) notificationService.warning(`还有 ${error.remainingCount} 张待补交，请确认最新费用`);
         } catch (quoteError) {
-          notificationService.error(quoteError?.message || "最新价格读取失败，请稍后重试");
+          if (workspaceActiveRef.current) notificationService.error(quoteError?.message || "最新价格读取失败，请稍后重试");
         }
         return;
       }
-      notificationService.error(error?.message || "任务提交失败");
+      notificationService.error(error.batch ? `${error?.message || "部分任务提交失败"}；还有 ${error.remainingCount} 张可补交，已接受的任务会继续执行` : error?.message || "任务提交失败");
     }
   }, [buildPayload, count, jobs, prompt, references, refreshGenerationCost]);
 
@@ -1454,7 +1516,22 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
       onRequireAuth?.();
       return;
     }
-    if (!prompt.trim() || !currentModel) return;
+    if (quoteBusyRef.current || jobs.submitting || jobs.submissionPhase === "recovering" || !referencesReady) return;
+    if (jobs.pendingBatch) {
+      try {
+        await refreshGenerationCost({ authoritativeOnly: true, batch: jobs.pendingBatch });
+      } catch (error) {
+        if (workspaceActiveRef.current) notificationService.error(error?.message || "补交价格读取失败");
+      }
+      return;
+    }
+    if (!prompt.trim()) return;
+    if (exactSize && !exactSize.valid) {
+      notificationService.warning(exactSize.error);
+      setOpenLayer("frame");
+      return;
+    }
+    if (!currentModel) return;
     if (user?.requireCostConfirm === false || pendingRef.current?.value?.config?.costConfirmed) {
       quotedUnitPriceRef.current = null;
       pendingRef.current = { consumed: true, value: null };
@@ -1462,7 +1539,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
       return;
     }
     await refreshGenerationCost();
-  }, [authenticated, currentModel, onRequireAuth, prompt, refreshGenerationCost, submitGeneration, user?.requireCostConfirm]);
+  }, [authenticated, currentModel, exactSize, jobs.pendingBatch, jobs.submitting, jobs.submissionPhase, referencesReady, onRequireAuth, prompt, refreshGenerationCost, submitGeneration, user?.requireCostConfirm]);
 
   useEffect(() => {
     const pending = pendingRef.current?.value;
@@ -1487,9 +1564,10 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     featuredGroup?.items.find((item) => item.kind === "image") ||
     featuredGroup?.cover || null;
   const activeTask = featuredItem?.task || null;
+  const cancelableGroupTasks = [...new Map((featuredGroup?.items || []).filter(item => item.task.serverJobId && ACTIVE_STATUSES.has(item.task.status)).map(item => [item.task.id, item.task])).values()];
+  const groupSubmissionUnconfirmed = (featuredGroup?.items || []).some(item => ["submitting", "submission_unknown"].includes(item.task.status));
   const activeOutput = featuredItem?.url || "";
   const stageGridItems = featuredGroup?.items.length > 1 ? featuredGroup.items : [];
-  const featuredTotalElapsed = groupTotalElapsedLabel(featuredGroup?.items, now);
   const featuredAspect = stageAspectValue(
     activeTask,
     featuredItem?.key ? featuredImageAspects[featuredItem.key] : "",
@@ -1676,9 +1754,6 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
       notificationService.error("操作失败，请稍后重试");
     }
   }, [authenticated, onRequireAuth, promptCategory]);
-  const failedOrPausedTasks = jobs.historyTasks.filter((task) =>
-    ["failed", "paused"].includes(task.status),
-  );
   const previewItems = (mainTab === "history" ? historyItems : galleryItems).filter(
     (item) => item.kind === "image",
   );
@@ -1700,9 +1775,17 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     ) +
     (autoRemove ? Math.max(0, Number(backgroundRemovalModel?.pricePoints || 0)) : 0)
   ) * count;
+  const generationButton = generationButtonState({
+    authenticated, loading, referencesReady, hasPrompt: Boolean(prompt.trim()), modelReady: Boolean(currentModel),
+    invalidSize: Boolean(exactSize && !exactSize.valid), quoting: quotingCost, confirmation: cost,
+    submitting: jobs.submitting, submissionPhase: jobs.submissionPhase, pendingBatch: jobs.pendingBatch,
+    taskCounts,
+    generationCost: (currentModel?.pointPricing?.configured ? currentModel.creditCost : feature.creditCost) == null ? null : generationCost,
+    count,
+  });
   const qualityLabel =
     qualityOptions.find((item) => item.value === quality)?.label || "";
-  const frameSummary = [qualityLabel, ratio, resolution, `${count}张`]
+  const frameSummary = [qualityLabel, ...(imageSize.sizeMode === "exact" ? [`${imageSize.exactWidth || "—"}×${imageSize.exactHeight || "—"} px`] : [ratio, resolution]), `${count}张`]
     .filter(Boolean)
     .join(" · ");
   const enhanceSummary = [
@@ -1720,18 +1803,40 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
 
   const applyTaskToInputs = useCallback((task) => {
     if (!task) return null;
-    const nextModel = models.some((model) => model.id === task.publicModelKey)
-      ? task.publicModelKey
-      : modelId;
+    let nextReferences;
+    try {
+      nextReferences = historyTaskReferences(task, (key) => buildApiPath(`/files/${key.split("/").map(encodeURIComponent).join("/")}`));
+    } catch (error) {
+      notificationService.error(error.message);
+      return null;
+    }
+    const sourceSize = task.input?.sizeMode ? task.input : task.params?.sizeMode ? task.params : task;
+    const nextModel = sourceSize.sizeMode === "exact"
+      ? task.publicModelKey || modelId
+      : models.some((model) => model.id === task.publicModelKey) ? task.publicModelKey : modelId;
     const nextRatio = task.aspectRatio || ratio;
     const nextResolution = task.resolutionScale || resolution;
     const nextQuality = task.imageQuality || quality;
     const nextFormat = task.outputFormat || outputFormat;
     const nextModeration = task.moderationLevel || moderation;
+    const nextImageSize = sourceSize.sizeMode === "exact"
+      ? { sizeMode: "exact", exactWidth: String(sourceSize.exactWidth || ""), exactHeight: String(sourceSize.exactHeight || "") }
+      : { sizeMode: "ratio", exactWidth: "", exactHeight: "" };
+    nextReferences.forEach((reference) => {
+      if (reference.key) registerUploadedUrl(reference.url, reference.key);
+    });
+    setReferences((current) => {
+      current.forEach((reference) => {
+        if (reference.preview?.startsWith("blob:")) URL.revokeObjectURL(reference.preview);
+      });
+      return nextReferences;
+    });
+    jobs.discardPendingBatch();
     setPrompt(task.prompt || "");
     setModelId(nextModel);
     setRatio(nextRatio);
     setResolution(nextResolution);
+    setImageSize(nextImageSize);
     setQuality(nextQuality);
     setCount(1);
     if (nextFormat) setOutputFormat(nextFormat);
@@ -1740,9 +1845,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     setTranslate(task.autoTranslateEnabled === true);
     setTransparent(task.transparentPngEnabled === true);
     setAutoRemove(task.autoBackgroundRemovalEnabled === true);
-    if (Array.isArray(task.input?.skillIds)) {
-      setSelectedSkillIds(normalizeSelectedWallpaperSkillIds(task.input.skillIds, WALLPAPER_SKILL_OPTIONS));
-    }
+    setSelectedSkillIds(normalizeSelectedWallpaperSkillIds(task.input?.skillIds || [], WALLPAPER_SKILL_OPTIONS));
     setMainTab("images");
     window.requestAnimationFrame(() => promptInputRef.current?.focus());
     return {
@@ -1751,8 +1854,10 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
       ratio: nextRatio,
       resolution: nextResolution,
       quality: nextQuality,
+      referenceSignature: JSON.stringify(nextReferences.map((reference) => reference.url)),
+      ...nextImageSize,
     };
-  }, [modelId, models, moderation, outputFormat, quality, ratio, resolution]);
+  }, [jobs.discardPendingBatch, modelId, models, moderation, outputFormat, quality, ratio, resolution]);
 
   useEffect(() => {
     if (!pendingRegenerate) return;
@@ -1761,11 +1866,15 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
       modelId !== pendingRegenerate.modelId ||
       ratio !== pendingRegenerate.ratio ||
       resolution !== pendingRegenerate.resolution ||
-      quality !== pendingRegenerate.quality
+      quality !== pendingRegenerate.quality ||
+      imageSize.sizeMode !== pendingRegenerate.sizeMode ||
+      imageSize.exactWidth !== pendingRegenerate.exactWidth ||
+      imageSize.exactHeight !== pendingRegenerate.exactHeight ||
+      JSON.stringify(references.map((reference) => reference.url)) !== pendingRegenerate.referenceSignature
     ) return;
     setPendingRegenerate(null);
     void requestGeneration();
-  }, [modelId, pendingRegenerate, prompt, quality, ratio, requestGeneration, resolution]);
+  }, [imageSize, modelId, pendingRegenerate, prompt, quality, ratio, references, requestGeneration, resolution]);
 
   const focusGroup = (group, event) => {
     if (!group?.cover) return;
@@ -1846,53 +1955,120 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     notificationService.success("已添加到左侧参考图");
   };
 
+  const deleteTasks = async (tasksToDelete, options = {}) => {
+    if (!tasksToDelete.length || actionBusyId || deletionInFlightRef.current) return;
+    deletionInFlightRef.current = true;
+    setActionBusyId(tasksToDelete[0].id);
+    try {
+      const results = await Promise.allSettled(tasksToDelete.map(async (task) => jobs.removeTask(task, options)));
+      if (!workspaceActiveRef.current) return;
+      const failed = results.filter((result) => result.status === "rejected").length;
+      setDeleteTarget(null);
+      setActiveTaskId("");
+      if (failed) notificationService.warning(`已删除 ${results.length - failed} 项，${failed} 项失败`);
+    } finally {
+      deletionInFlightRef.current = false;
+      if (workspaceActiveRef.current) setActionBusyId("");
+    }
+  };
+
   const requestDelete = (tasksToDelete, label = "这张图片") => {
+    if (actionBusyId || deletionInFlightRef.current) return;
     const unique = Array.from(
       new Map(tasksToDelete.filter(Boolean).map((task) => [task.id, task])).values(),
     );
-    if (unique.length) setDeleteTarget({ tasks: unique, label });
+    if (!unique.length) return;
+    if (unique.every(task => !task.serverJobId || isEmptyHistoryTask(task))) {
+      void deleteTasks(unique, { onlyEmpty: true });
+    } else {
+      setDeleteTarget({ tasks: unique, label });
+    }
   };
 
-  const confirmDelete = async () => {
-    if (!deleteTarget?.tasks?.length || actionBusyId) return;
-    setActionBusyId(deleteTarget.tasks[0].id);
-    const results = await Promise.allSettled(
-      deleteTarget.tasks.map((task) => jobs.removeTask(task)),
-    );
-    const failed = results.filter((result) => result.status === "rejected").length;
-    setActionBusyId("");
-    setDeleteTarget(null);
-    setActiveTaskId("");
-    if (failed) notificationService.warning(`已删除 ${results.length - failed} 项，${failed} 项失败`);
+  const confirmDelete = () => deleteTasks(deleteTarget?.tasks || []);
+
+  const clearEmptyHistory = async () => {
+    if (actionBusyId || deletionInFlightRef.current) return;
+    deletionInFlightRef.current = true;
+    setActionBusyId("clear-empty-history");
+    try {
+      const { removed, failed } = await jobs.clearEmptyHistory();
+      if (!workspaceActiveRef.current) return;
+      if (failed) notificationService.warning(`已清除 ${removed} 条无图片记录，${failed} 条清除失败，可稍后重试`);
+      else notificationService.success(removed ? `已清除 ${removed} 条无图片记录` : "没有可清除的无图片记录");
+    } catch (error) {
+      if (workspaceActiveRef.current && error?.name !== "AbortError") notificationService.error(error?.message || "清除失败，请稍后重试");
+    } finally {
+      deletionInFlightRef.current = false;
+      if (workspaceActiveRef.current) setActionBusyId("");
+    }
   };
 
   const requestCancel = (task) => {
     if (!task || actionBusyId) return;
+    if (Array.isArray(task)) {
+      if (!task.length) return;
+      setCancelTarget({ id: task[0].id, tasks: task });
+      return;
+    }
     setCancelTarget(task);
   };
 
   const confirmCancel = async () => {
     if (!cancelTarget || actionBusyId) return;
-    const upstreamSubmitted =
-      cancelTarget.cancelPolicy?.upstreamSubmitted === true ||
-      (cancelTarget.status === "running" && cancelTarget.generationStage !== "preparing");
+    const acknowledgeUpstream = cancelDialogContent(cancelTarget).acknowledgeUpstream;
     setActionBusyId(cancelTarget.id);
     try {
-      await jobs.cancelTask(cancelTarget, { acknowledgeUpstream: true });
+      const grouped = Array.isArray(cancelTarget.tasks);
+      const result = grouped
+        ? await jobs.cancelTasks(cancelTarget.tasks, { acknowledgedTaskIds: cancelDialogContent(cancelTarget).acknowledgedTaskIds })
+        : await jobs.cancelTask(cancelTarget, { acknowledgeUpstream });
+      if (!workspaceActiveRef.current) return;
       setCancelTarget(null);
-      notificationService.success(
-        upstreamSubmitted ? "已停止接收本次生成结果" : "任务已取消，冻结积分已退回",
+      if (grouped) {
+        const canceled = result.filter(task => ["canceled", "cancelled"].includes(task.status));
+        const refunded = canceled.filter(task => task.cancelPolicy?.refunded === true).length;
+        const charged = canceled.filter(task => task.cancelPolicy?.upstreamSubmitted === true).length;
+        notificationService.success([`本组已取消 ${canceled.length} 张`, refunded && `${refunded} 张的冻结积分已退回`, charged && `${charged} 张已提交上游，按确认结果结算`, result.length > canceled.length && `${result.length - canceled.length} 张已结束并保留`].filter(Boolean).join("；"));
+      } else notificationService.success(
+        result?.cancelPolicy?.refunded === true ? "任务已取消，冻结积分已退回"
+          : result?.cancelPolicy?.upstreamSubmitted === true ? "已停止接收本次生成结果，本次积分不会退回"
+            : "任务已取消，请在钱包明细中查看积分处理结果",
       );
     } catch (error) {
+      if (!workspaceActiveRef.current || error?.name === "AbortError") return;
+      if (error?.code === "task_cancel_confirmation_required") {
+        try {
+          if (Array.isArray(cancelTarget.tasks)) {
+            const refreshed = await Promise.all(cancelTarget.tasks.map(task => jobs.refreshTask(task)));
+            if (!workspaceActiveRef.current) return;
+            const active = refreshed.filter(task => ACTIVE_STATUSES.has(task.status));
+            setCancelTarget(active.length ? { id: active[0].id, tasks: active } : null);
+            notificationService.warning(active.length ? "本组部分图片已提交上游，请确认新的停止说明" : "本组任务已结束，请查看最新结果");
+            return;
+          }
+          const current = await jobs.refreshTask(cancelTarget);
+          if (!workspaceActiveRef.current) return;
+          if (ACTIVE_STATUSES.has(current.status)) {
+            setCancelTarget(current);
+            notificationService.warning("任务已经提交上游，请确认新的停止说明");
+          } else {
+            setCancelTarget(null);
+            notificationService.warning("任务状态已更新，请查看最新结果");
+          }
+        } catch (refreshError) {
+          if (workspaceActiveRef.current) notificationService.error(refreshError?.message || "任务状态读取失败，请稍后重试");
+        }
+        return;
+      }
       notificationService.error(error?.message || "任务停止失败，请重试");
     } finally {
-      setActionBusyId("");
+      if (workspaceActiveRef.current) setActionBusyId("");
     }
   };
 
   const editTask = (task) => {
-    applyTaskToInputs(task);
-    notificationService.success("已填回左侧，可修改后重新生成");
+    if (applyTaskToInputs(task)) notificationService.success("已填回左侧，可修改后重新生成");
   };
 
   const confirmRegenerate = () => {
@@ -1902,16 +2078,18 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   };
 
   const confirmGenerationCost = async ({ skipEveryTime = false } = {}) => {
+    const confirmedCost = cost;
     setCost(null);
     if (skipEveryTime) {
       try {
         const result = await updateProfile({ requireCostConfirm: false });
+        if (!workspaceActiveRef.current) return;
         onUserPatch?.(result?.user || { requireCostConfirm: false });
       } catch {
         // Preference persistence must not block the confirmed generation.
       }
     }
-    await submitGeneration();
+    if (workspaceActiveRef.current) await submitGeneration({ retryBatch: confirmedCost?.batch || null, confirmedUnitPrice: confirmedCost?.quotedGenerationUnit });
   };
 
   historyActionRef.current = {
@@ -1932,7 +2110,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
       <aside className="t2i-sidebar" aria-label="生成设置" data-guide="t2i-sidebar" onClick={(event) => event.stopPropagation()}>
         <div className="t2i-model" data-motion>
           <div className={`t2i-model-badge${loading ? " is-loading" : ""}`}>
-            <span className="t2i-model-icon"><SoftMark name="cpu" size="md" /></span>
+            <span className="t2i-model-icon"><ModelCatalogIcon model={currentModel} size="md" /></span>
             {loading ? <span className="t2i-model-copy t2i-model-skeleton"><span /></span> : (
               <div className={`ratio-select t2i-model-select${modelOpen ? " is-open" : ""}${isDark ? "" : " is-light"}`}>
                 <button
@@ -1969,16 +2147,20 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                     type="button"
                     role="option"
                     aria-selected={model.id === modelId}
+                    disabled={isCatalogModelMaintenance(model)}
+                    title={isCatalogModelMaintenance(model) ? "模型维护中，暂不可选择" : undefined}
                     className={`ratio-select__option has-icon${model.id === modelId ? " is-selected" : ""}${resolveModelPointPricing(model).configured ? " has-price" : ""}`}
                     onClick={() => {
                       setModelId(model.id);
+                      if (model.supportsExactSize !== true) setImageSize({ sizeMode: "ratio", exactWidth: "", exactHeight: "" });
                       setModelOpen(false);
                     }}
                   >
-                    <SoftMark name="cpu" size="sm" />
+                    <ModelCatalogIcon model={model} size="sm" />
                     <span className="ratio-select__option-content">
                       <span className="ratio-select__option-label">{model.label}</span>
                     </span>
+                    <ModelMaintenanceBadge model={model} />
                     <ModelPointPrice model={model} compact prominent light={!isDark} />
                   </button>
                 ))}
@@ -2021,11 +2203,13 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                 <input ref={fileInputRef} hidden type="file" accept="image/*" multiple onChange={(event) => { addReferenceFiles(event.target.files); event.target.value = ""; }} />
               </div>
               <div className="t2i-prompt-foot-actions">
-                <div className="t2i-skill-tools">
-                  <button ref={skillTriggerRef} type="button" className={`t2i-skill-trigger${skillOpen ? " is-open" : ""}${selectedSkillIds.length ? " has-items" : ""}`} aria-expanded={skillOpen} onClick={(event) => { event.stopPropagation(); const next = !skillOpen; if (next) updateSkillPanelPosition(); setSkillOpen(next); }}>
-                    <i className="bi bi-lightning-charge" /><span>Skills</span><em>{selectedSkillIds.length}</em><i className="bi bi-chevron-down" />
-                  </button>
-                </div>
+                {SHOW_GENERATION_SKILL_CONTROLS && (
+                  <div className="t2i-skill-tools">
+                    <button ref={skillTriggerRef} type="button" className={`t2i-skill-trigger${skillOpen ? " is-open" : ""}${selectedSkillIds.length ? " has-items" : ""}`} aria-expanded={skillOpen} onClick={(event) => { event.stopPropagation(); const next = !skillOpen; if (next) updateSkillPanelPosition(); setSkillOpen(next); }}>
+                      <i className="bi bi-lightning-charge" /><span>Skills</span><em>{selectedSkillIds.length}</em><i className="bi bi-chevron-down" />
+                    </button>
+                  </div>
+                )}
                 <div className="t2i-prompt-tools"><button type="button" className="t2i-icon-btn" title="清空提示词" onClick={() => setPrompt("")}><i className="bi bi-trash" /></button></div>
               </div>
             </div>
@@ -2045,11 +2229,12 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
             {controlLayerPresence.mounted && controlLayerPresence.key === "frame" && (
               <section className={`t2i-control-layer-panel is-frame ${transitionClasses("t2i-control-popover", controlLayerPresence.phase)}`} aria-label="画面参数">
                 <CompactSegments label="质量" value={quality} options={qualityOptions} onChange={setQuality} />
-                <div className="t2i-compact-field is-ratio-field"><span>比例</span><div className="t2i-compact-ratio-grid">
+                <ExactImageSizeControl model={currentModel} mode={imageSize.sizeMode} width={imageSize.exactWidth} height={imageSize.exactHeight} onChange={(patch) => setImageSize((current) => ({ ...current, ...patch }))} />
+                {imageSize.sizeMode !== "exact" && <div className="t2i-compact-field is-ratio-field"><span>比例</span><div className="t2i-compact-ratio-grid">
                   {ratioOptions.map((option) => <button key={option.value} type="button" className={ratio === option.value ? "is-selected" : ""} aria-pressed={ratio === option.value} title={option.label} onClick={() => setRatio(option.value)}><i className={compactRatioClass(option.value)} style={ratioStyle(option.value)} /><small>{option.value === "auto" ? "自动" : option.value}</small></button>)}
-                </div></div>
+                </div></div>}
                 <div className="t2i-compact-field-row">
-                  <CompactSegments label="分辨率" value={resolution} options={resolutionOptions} onChange={setResolution} />
+                  {imageSize.sizeMode !== "exact" && <CompactSegments label="分辨率" value={resolution} options={resolutionOptions} onChange={setResolution} />}
                   <CompactSegments label="张数" value={count} options={T2I_COUNT_OPTIONS} onChange={(value) => setCount(Number(value))} />
                 </div>
               </section>
@@ -2072,12 +2257,20 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
             )}
           </div>
         </div>
-        <button type="button" className="t2i-generate" data-motion disabled={authenticated && (!prompt.trim() || !currentModel || jobs.submitting)} onClick={() => void requestGeneration()}>
-          <span>{jobs.submitting ? "正在提交" : isRunning ? "再生成一张" : "立即生成"}</span>
-          {currentModel && <small>{generationCost > 0 ? `${generationCost.toLocaleString("zh-CN")} 积分` : "免费"}</small>}
-          <i className={`bi ${jobs.submitting ? "bi-arrow-repeat spin" : isRunning ? "bi-plus-lg" : "bi-stars"}`} />
+        {remainingBatchCount > 0 && <div className="t2i-batch-recovery" role="status">
+          <small>{queueFull ? "排队容量已满。" : ""}已接受 {jobs.pendingBatch.entries.filter(entry => entry.task).length} 张，还有 {remainingBatchCount} 张待提交。原模型、参数和参考图已保留，刷新后可继续。</small>
+          <button type="button" disabled={submissionBusy || quotingCost} onClick={() => { quoteRequestRef.current += 1; setCost(null); jobs.discardPendingBatch(); }}>不再补交，开始新一批</button>
+        </div>}
+        {referenceStorageError && <p className="t2i-reference-warning" role="alert">{referenceStorageError}</p>}
+        {!loading && imageSize.sizeMode === "exact" && currentModel?.supportsExactSize !== true && openLayer !== "frame" && <p className="exact-size-control__error" role="alert">原精确尺寸模型暂不可用，请重新选择支持精确尺寸的可用模型。已保留当前宽高。</p>}
+        <button type="button" className="t2i-generate" data-motion data-state={generationButton.state} aria-busy={generationButton.busy} disabled={generationButton.disabled} title={generationButton.title} onClick={() => void requestGeneration()}>
+          <GenerationButtonContent
+            state={generationButton.state}
+            label={generationButton.label}
+            points={generationButton.points}
+          />
         </button>
-        {skillPanelPresence.mounted && createPortal(
+        {SHOW_GENERATION_SKILL_CONTROLS && skillPanelPresence.mounted && createPortal(
           <section ref={skillPanelRef} className={`t2i-skill-panel is-floating ${transitionClasses("t2i-skill-popover", skillPanelPresence.phase)}${isDark ? "" : " is-light"}`} style={skillPanelStyle} aria-label="生成 Skills" onClick={(event) => event.stopPropagation()}>
             <header><div><strong>生成 Skills</strong><small>仅将已选择的 Skill 注入当前任务</small></div><button type="button" aria-label="关闭 Skill" title="关闭 Skills" onClick={() => setSkillOpen(false)}><i className="bi bi-x-lg" /></button></header>
             <div className="t2i-skill-list" role="listbox" aria-label="Skills" aria-multiselectable="true">
@@ -2101,21 +2294,30 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
             ))}
           </div>
           <div className="t2i-main-status">
-            {mainTab === "history" && failedOrPausedTasks.length > 0 && (
+            {mainTab === "history" && (historyItems.length > 0 || jobs.historyHasMore) && (
               <button
                 type="button"
-                className="t2i-clear-failed"
-                onClick={() => requestDelete(failedOrPausedTasks, "全部失败/暂停任务")}
+                className="t2i-history-cleanup"
+                title="清除已结束且没有生成图片的历史记录"
+                aria-busy={jobs.clearingEmptyHistory}
+                disabled={Boolean(actionBusyId) || jobs.historyLoading || jobs.clearingEmptyHistory}
+                onClick={() => void clearEmptyHistory()}
               >
-                <i className="bi bi-trash3" />清除失败/暂停
-                <em>{failedOrPausedTasks.length}</em>
+                {jobs.clearingEmptyHistory ? (
+                  <i className="bi bi-arrow-repeat spin" aria-hidden="true" />
+                ) : (
+                  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M3 6h14M8 6V4h4v2M5 6l1 11h8l1-11M8 9v5M12 9v5" />
+                  </svg>
+                )}
+                <span>{jobs.clearingEmptyHistory ? "正在清除…" : "清除无图片记录"}</span>
               </button>
             )}
             <span>
               {loading
                 ? "数据加载中"
-                : isRunning
-                  ? `任务处理中 · ${jobs.tasks.filter((task) => ACTIVE_STATUSES.has(task.status)).length} 个任务`
+                : taskCounts.running || taskCounts.queued || taskCounts.submitting || taskCounts.pending
+                  ? [taskCounts.running && `生成中 ${taskCounts.running} 张`, taskCounts.queued && `排队 ${taskCounts.queued} 张`, taskCounts.submitting && `提交中 ${taskCounts.submitting} 张`, taskCounts.pending && `待提交 ${taskCounts.pending} 张`].filter(Boolean).join(" · ")
                   : mainTab === "images"
                     ? completed.length ? `${completed.length} 张` : "暂无作品"
                     : mainTab === "history"
@@ -2149,12 +2351,17 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                         >
                           {stageGridItems.map((item) => (
                             <div key={item.key} className={`t2i-stage-cell${item.kind === "pending" ? " is-pending" : item.kind === "status" ? " is-status" : ""}${item.kind === "image" && showsTransparentCanvas(item.task) ? " is-transparent-output" : ""}`}>
-                              {item.kind === "pending" ? (
-                                <PendingStage task={item.task} now={now} batchIndex={item.batchIndex} />
-                              ) : item.kind === "status" ? (
-                                <TaskStatusStage task={item.task} batchIndex={item.batchIndex} />
+                              {item.kind === "status" ? (
+                                <TaskStatusStage
+                                  task={item.task}
+                                  batchIndex={item.batchIndex}
+                                  busy={Boolean(actionBusyId) || jobs.submitting}
+                                  onEdit={() => editTask(item.task)}
+                                  onDelete={() => requestDelete([item.task], "这条任务")}
+                                />
                               ) : (
-                                <>
+                                <GenerationReveal complete={item.kind === "image"} sourceKey={item.url || ""} pending={<PendingStage task={item.kind === "image" ? { ...item.task, status: "running", generationStage: "fetching_result" } : item.task} now={now} batchIndex={item.batchIndex ?? item.task.batchIndex} />}>
+                                  {({ onReady, onPreviewReady, onFailure }) => <>
                                   <button type="button" className="t2i-stage-cell-media" onClick={() => openPreview(item)}>
                                     <ProgressiveAuthenticatedImage
                                       src={item.displayUrl || item.url}
@@ -2164,11 +2371,14 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                                       loading="eager"
                                       loadOriginal
                                       hideStatus
-                                      onError={() => markImageUnavailable(item)}
+                                      onLoad={onReady}
+                                      onPreviewLoad={onPreviewReady}
+                                      onOriginalError={onFailure}
+                                      onError={() => { onFailure(); markImageUnavailable(item); }}
                                     />
                                   </button>
-                                  {elapsedLabel(item.task, now) ? (
-                                    <span className="t2i-stage-elapsed">{elapsedLabel(item.task, now)}</span>
+                                  {generationElapsedLabel(item.task, now) ? (
+                                    <span className="t2i-stage-elapsed">生成用时 {generationElapsedLabel(item.task, now)}</span>
                                   ) : null}
                                   <button
                                     type="button"
@@ -2187,13 +2397,15 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                                     onDownload={() => void downloadItem(item)}
                                     onReference={() => useAsReference(item)}
                                   />
-                                </>
+                                  </>}
+                                </GenerationReveal>
                               )}
                             </div>
                           ))}
                         </div>
-                      ) : featuredItem.kind === "image" ? (
-                        <>
+                      ) : featuredItem.kind !== "status" ? (
+                        <GenerationReveal key={featuredItem.key} complete={featuredItem.kind === "image"} sourceKey={activeOutput} pending={<PendingStage task={featuredItem.kind === "image" ? { ...activeTask, status: "running", generationStage: "fetching_result" } : activeTask} now={now} />}>
+                          {({ onReady, onPreviewReady, onFailure }) => <>
                           <button type="button" className={`t2i-stage-media${showsTransparentCanvas(activeTask) ? " is-transparent-output" : ""}`} onClick={() => openPreview(featuredItem)}>
                             <ProgressiveAuthenticatedImage
                               src={featuredItem.displayUrl || activeOutput}
@@ -2204,6 +2416,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                               loadOriginal
                               hideStatus
                               onLoad={(event) => {
+                                void onReady(event);
                                 const width = Number(event.currentTarget?.naturalWidth || 0);
                                 const height = Number(event.currentTarget?.naturalHeight || 0);
                                 if (!featuredItem?.key || width <= 0 || height <= 0) return;
@@ -2214,11 +2427,13 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                                     : { ...current, [featuredItem.key]: nextAspect },
                                 );
                               }}
-                              onError={() => markImageUnavailable(featuredItem)}
+                              onPreviewLoad={onPreviewReady}
+                              onOriginalError={onFailure}
+                              onError={() => { onFailure(); markImageUnavailable(featuredItem); }}
                             />
                           </button>
-                          {elapsedLabel(activeTask, now) ? (
-                            <span className="t2i-stage-elapsed">{elapsedLabel(activeTask, now)}</span>
+                          {generationElapsedLabel(activeTask, now) ? (
+                            <span className="t2i-stage-elapsed">生成用时 {generationElapsedLabel(activeTask, now)}</span>
                           ) : null}
                           <ImageQuickActions
                             item={featuredItem}
@@ -2227,15 +2442,16 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                             onDownload={() => void downloadItem(featuredItem)}
                             onReference={() => useAsReference(featuredItem)}
                           />
-                        </>
-                      ) : featuredItem.kind === "pending" ? (
-                        <div className="t2i-stage-media is-skeleton" role="status">
-                          <div className="t2i-skeleton-shine" />
-                          <PendingStage task={activeTask} now={now} />
-                        </div>
+                          </>}
+                        </GenerationReveal>
                       ) : (
                         <div className="t2i-stage-media is-status">
-                          <TaskStatusStage task={activeTask} />
+                          <TaskStatusStage
+                            task={activeTask}
+                            busy={Boolean(actionBusyId) || jobs.submitting}
+                            onEdit={() => editTask(activeTask)}
+                            onDelete={() => requestDelete([activeTask], "这条任务")}
+                          />
                         </div>
                       )}
                     </div>
@@ -2243,19 +2459,16 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                   <div className="t2i-stage-bar">
                     <div className="t2i-stage-copy">
                       <strong title={activeTask.prompt}>{activeTask.prompt || "图片生成"}</strong>
-                      <small>{featuredItem.kind !== "image" ? `${statusLabel(activeTask)}${featuredTotalElapsed ? ` · 总耗时 ${featuredTotalElapsed}` : ""}` : taskMeta(activeTask, now, models, featuredTotalElapsed)}</small>
+                      <small>{featuredItem.kind !== "image" ? statusLabel(activeTask) : taskMeta(activeTask, models)}</small>
                     </div>
                     <div className="t2i-image-actions">
+                      {cancelableGroupTasks.length > 0 && <button type="button" aria-label="取消本组生成" title={groupSubmissionUnconfirmed ? "请先核对本组尚未确认的提交" : `取消本组剩余 ${cancelableGroupTasks.length} 张`} disabled={Boolean(actionBusyId) || groupSubmissionUnconfirmed} onClick={() => requestCancel(cancelableGroupTasks)}>取消整组</button>}
                       {featuredItem.kind === "image" ? (
                         <>
                           <button type="button" className="is-icon" aria-label="重新生成" title="重新生成" onClick={() => setRegenerateTarget(activeTask)}><RegenerateIcon /></button>
                           <button type="button" className="is-danger is-icon" aria-label="删除" title="删除" onClick={() => requestDelete(featuredGroup.items.map((item) => item.task), featuredGroup.items.length > 1 ? "整组图片" : "这张图片")}><span className="t2i-icon-delete" /></button>
                         </>
-                      ) : ACTIVE_STATUSES.has(activeTask.status) ? (
-                        <button type="button" aria-label="取消" disabled={actionBusyId === activeTask.id} onClick={() => requestCancel(activeTask)}>取消生成</button>
-                      ) : (
-                        <button type="button" className="is-primary" disabled={!prompt.trim()} onClick={() => void requestGeneration()}>生成下一张</button>
-                      )}
+                      ) : null}
                       {filmstripGroups.length > 1 && <button type="button" className="t2i-nav-btn" data-click-guard="off" onClick={() => stepFeatured(-1)}>上一张</button>}
                       {filmstripGroups.length > 1 && <button type="button" className="t2i-nav-btn" data-click-guard="off" onClick={() => stepFeatured(1)}>下一张</button>}
                     </div>
@@ -2273,7 +2486,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                           onDoubleClick={() => group.items.length === 1 && group.cover.kind === "image" && useAsReference(group.cover)}
                         >
                           {group.kind === "pending" ? (
-                            <span className="t2i-film-pending"><span className="t2i-film-pending-spinner" /><em>{elapsedLabel(group.cover.task, now)}</em></span>
+                            <span className="t2i-film-pending"><TaskStateIndicator state={taskStatePresentation(group.cover.task).motion} compact /><em>{taskStatePresentation(group.cover.task).label}</em></span>
                           ) : group.cover.kind === "status" ? (
                             <span className="t2i-film-status">
                               <i className={`bi ${group.cover.task.status === "failed" ? "bi-exclamation-triangle" : "bi-x-circle"}`} />
@@ -2378,13 +2591,9 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
         onCancel={() => setRegenerateTarget(null)}
         onConfirm={confirmRegenerate}
       />
-      <ActionConfirmDialog
-        open={Boolean(cancelTarget)}
-        heading={cancelDialogContent(cancelTarget).heading}
-        description={cancelDialogContent(cancelTarget).description}
-        confirmLabel={cancelDialogContent(cancelTarget).confirmLabel}
+      <TaskCancelDialog
+        target={cancelTarget}
         busy={actionBusyId === cancelTarget?.id}
-        tone="warning"
         light={!isDark}
         onCancel={() => !actionBusyId && setCancelTarget(null)}
         onConfirm={() => void confirmCancel()}
@@ -2435,6 +2644,7 @@ function CompactSegments({ label, value, options, onChange }) {
 }
 
 function ModelPointPrice({ model, compact = false, prominent = false, light = false }) {
+  if (isCatalogModelMaintenance(model)) return null;
   const price = resolveModelPointPricing(model);
   if (!price.configured) return null;
   const classes = [
@@ -2465,25 +2675,32 @@ function Toggle({ label, icon, value, disabled = false, onChange }) {
   return <button type="button" className={`t2i-prompt-toggle${value ? " is-on" : ""}`} role="switch" aria-checked={value} disabled={disabled} onClick={() => onChange(!value)}><span className="t2i-prompt-toggle-copy"><i className={`bi ${icon}`} />{label}</span><span className="t2i-mini-switch"><span /></span></button>;
 }
 
-function PendingStage({ task, now, batchIndex }) {
+export function PendingStage({ task, now, batchIndex, motionStyle = "particle-logo" }) {
   const isCell = Number.isFinite(Number(batchIndex));
+  const presentation = taskStatePresentation(task);
+  const generationElapsed = generationElapsedLabel(task, now);
   return (
-    <div className={isCell ? "t2i-stage-cell-pending" : "t2i-stage-pending"} role="status">
-      <span className="t2i-pending-orb"><i className="bi bi-stars" /></span>
-      <strong>{isCell ? `第 ${Number(batchIndex) + 1} 张` : statusLabel(task)}</strong>
-      <em className="t2i-pending-stage">{generationStageDetail(task)}</em>
-      <span className="t2i-pending-bar"><i /></span>
-      {elapsedLabel(task, now) && <em className="t2i-pending-elapsed">{elapsedLabel(task, now)}</em>}
-      {!isCell && <span className="t2i-pending-prompt">{task?.prompt}</span>}
+    <div className={`${isCell ? "t2i-stage-cell-pending" : "t2i-stage-pending"} t2i-generation-stage`} data-motion-style={motionStyle} role="group" aria-label={isCell ? `第 ${Number(batchIndex) + 1} 张` : "图片生成"}>
+      {motionStyle.startsWith("particle-")
+        ? <GenerationParticleField state={presentation.motion} variant={isCell ? Number(batchIndex) : 0} mode={motionStyle} />
+        : motionStyle === "ambient"
+        ? <GenerationAtmosphere state={presentation.motion} variant={isCell ? Number(batchIndex) : 0} />
+        : <GenerationStateVisual state={presentation.motion} variant={isCell ? Number(batchIndex) : 0} style={motionStyle} />}
+      {isCell && <span className="t2i-generation-index" aria-hidden="true">{String(Number(batchIndex) + 1).padStart(2, "0")}</span>}
+      <div className="t2i-generation-caption">
+        <span className="t2i-generation-label" role="status">{presentation.label}</span>
+        {generationElapsed && <span className="t2i-generation-time" role="timer" aria-live="off" aria-label={`生成用时 ${generationElapsed}`} title="生成用时">{generationElapsed}</span>}
+      </div>
     </div>
   );
 }
 
-function TaskStatusStage({ task, batchIndex }) {
+export function TaskStatusStage({ task, batchIndex, busy = false, onEdit, onDelete }) {
   const isCell = Number.isFinite(Number(batchIndex));
   const failed = task?.status === "failed";
   const canceled = ["cancelled", "canceled"].includes(task?.status);
-  const message = failed
+  const localSubmission = LOCAL_SUBMISSION_STATUSES.has(task?.status);
+  const message = localSubmission ? taskStatePresentation(task).detail : failed
     ? taskFailureMessage(task)
     : canceled
       ? task?.error || "任务已取消，没有生成图片"
@@ -2495,14 +2712,18 @@ function TaskStatusStage({ task, batchIndex }) {
       className={`${isCell ? "t2i-stage-cell-status" : "t2i-stage-status"}${failed ? " is-failed" : ""}`}
       role={failed ? "alert" : "status"}
     >
-      <span className="t2i-status-icon">
+      {localSubmission ? <TaskStateIndicator state={taskStatePresentation(task).motion} /> : <span className="t2i-status-icon">
         <i className={`bi ${failed ? "bi-exclamation-triangle" : "bi-x-circle"}`} />
-      </span>
+      </span>}
       <strong>
         {isCell ? `第 ${Number(batchIndex) + 1} 张 · ${statusLabel(task)}` : statusLabel(task)}
       </strong>
       <em className="t2i-terminal-message" title={message}>{message}</em>
-      {!isCell && task?.prompt ? <span className="t2i-status-prompt">{task.prompt}</span> : null}
+      {!isCell && task?.prompt ? <span className="t2i-status-prompt" title={task.prompt}>{task.prompt}</span> : null}
+      <div className="t2i-status-actions t2i-image-actions" aria-label="任务操作">
+        <button type="button" disabled={busy} onClick={onEdit}>编辑提示词</button>
+        <button type="button" className="is-danger" disabled={busy} onClick={onDelete}>删除</button>
+      </div>
     </div>
   );
 }
@@ -2516,6 +2737,11 @@ function ImageQuickActions({ cell = false, onEdit, onRegenerate, onDownload, onR
       <button type="button" aria-label="设为参考图" title="设为参考图" onClick={onReference}><span className="t2i-icon-reference" /></button>
     </div>
   );
+}
+
+export function TaskCancelDialog({ target, busy = false, light = false, onCancel, onConfirm }) {
+  const content = cancelDialogContent(target);
+  return <ActionConfirmDialog open={Boolean(target)} heading={content.heading} description={content.description} confirmLabel={content.confirmLabel} busy={busy} tone="warning" light={light} onCancel={onCancel} onConfirm={onConfirm} />;
 }
 
 function ActionConfirmDialog({ open, heading, description, confirmLabel, busy = false, tone = "accent", light = false, onCancel, onConfirm }) {

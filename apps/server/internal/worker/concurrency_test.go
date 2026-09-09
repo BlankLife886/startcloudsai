@@ -144,7 +144,7 @@ func TestSingleRouteTransientFailureRetriesTheSameRoute(t *testing.T) {
 		t.Fatalf("task=%#v err=%v", task, err)
 	}
 	w := &Worker{
-		St: st,
+		St: st, Cfg: &config.Config{},
 		modelConfig: modelconfig.Config{
 			Version: modelconfig.Version,
 			Providers: []modelconfig.Provider{{
@@ -157,6 +157,9 @@ func TestSingleRouteTransientFailureRetriesTheSameRoute(t *testing.T) {
 			}},
 		},
 		modelConfigAt: time.Now(),
+	}
+	if err := modelconfig.Save(ctx, st.Pool, w.modelConfig); err != nil {
+		t.Fatal(err)
 	}
 	retried, err := w.scheduleTaskRetry(ctx, task, owner)
 	if err != nil || !retried {
@@ -803,6 +806,11 @@ func TestRegisterOpenAIUpstreamAttemptStartsSubmitting(t *testing.T) {
 			}},
 		},
 		modelConfigAt: time.Now(),
+	}
+	// Execution now binds durable configuration; a worker-local cache alone
+	// does not represent a configured model in a newly created database.
+	if err := modelconfig.Save(ctx, st.Pool, w.modelConfig); err != nil {
+		t.Fatal(err)
 	}
 	task := &store.Task{ID: taskID, UserID: user.ID, Type: "t2i", Model: "gpt-image-2", Params: map[string]any{
 		"_providerConfigId": "provider-a", "_providerRouteId": "route-a",

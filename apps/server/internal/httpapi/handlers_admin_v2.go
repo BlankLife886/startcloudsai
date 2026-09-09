@@ -222,7 +222,8 @@ func adminAssistantRunDict(run *store.AssistantRun) gin.H {
 		"prompt": run.Prompt, "params": params, "count": run.Params["count"],
 		"inputKeys": []string{}, "outputKeys": []string{}, "outputUrls": []string{},
 		"costCents": run.CostCents, "reservedCents": run.ReservedCents,
-		"errorCode": run.ErrorCode, "errorMessage": run.ErrorMessage,
+		"cancelPolicy": assistantbilling.CancelPolicyForRun(run),
+		"errorCode":    run.ErrorCode, "errorMessage": run.ErrorMessage,
 		"attempt": 0, "createdAt": isoValue(run.CreatedAt), "startedAt": iso(run.StartedAt),
 		"finishedAt": iso(run.FinishedAt),
 	}
@@ -284,7 +285,7 @@ func (s *Server) adminRequeueAssistantRun(ctx context.Context, id uuid.UUID) (*s
 	if err != nil {
 		return nil, err
 	}
-	if err := s.Queue.EnqueueAssistantRunRecovery(ctx, id.String()); err != nil {
+	if err := s.Queue.EnqueueAssistantRunRecovery(ctx, id.String(), run.Mode); err != nil {
 		message := "任务入队失败，请稍后重试"
 		if _, failErr := assistantbilling.Fail(ctx, s.St, id, "queue_error", message); failErr != nil {
 			return nil, failErr

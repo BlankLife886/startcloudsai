@@ -1,10 +1,18 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { getActiveAnnouncements } from "@react/legacy-modules/services/metaApi.js";
+import { useLocation } from "react-router";
 import { useLocale } from "../i18n/index.js";
+import { usePageControls } from "../page-control/PageControlContext.jsx";
+import { useLiveAnnouncements } from "../features/announcements/useLiveAnnouncements.js";
+import {
+  ANNOUNCEMENT_STORAGE_PREFIX,
+  announcementDismissRecord,
+  announcementIdentity,
+  shouldShowAnnouncement,
+} from "../features/announcements/announcementPolicy.js";
 import "./ClientAnnouncementHost.css";
 
-const STORAGE_PREFIX = "starclouds-announcement:";
+const STORAGE_PREFIX = ANNOUNCEMENT_STORAGE_PREFIX;
 
 function assetsOf(item) {
   return (Array.isArray(item?.assets) ? item.assets : [])
@@ -15,12 +23,18 @@ function assetsOf(item) {
     .filter((asset) => asset.url);
 }
 
-function announcementCta(item) {
+function announcementCta(item, isEntryVisible) {
   const text = String(item?.ctaText || "").trim();
   const url = String(item?.ctaUrl || "").trim();
   if (!text || !url || url.startsWith("//")) return null;
-  if (/^https?:\/\//i.test(url) || url.startsWith("/")) return { text, url };
-  return null;
+  if (!/^https?:\/\//i.test(url) && !url.startsWith("/")) return null;
+  try {
+    const target = new URL(url, window.location.href);
+    if (target.origin === window.location.origin && !isEntryVisible(`${target.pathname}${target.search}`)) return null;
+    return { text, url };
+  } catch {
+    return null;
+  }
 }
 
 function readLocal(id) {
@@ -56,33 +70,11 @@ function markSessionSeen(id) {
   }
 }
 
-function shouldShow(item) {
-  const frequency = item.frequency || "session_once";
-  const version = Number(item.version) || 1;
-  if (frequency === "every_open") return true;
-  if (frequency === "session_once") return !sessionSeen(item.id);
-  const saved = readLocal(item.id);
-  if (!saved) return true;
-  if (frequency === "once_per_version") return Number(saved.version) !== version;
-  if (frequency === "daily") {
-    return saved.day !== new Date().toISOString().slice(0, 10);
-  }
-  if (frequency === "dismiss_hours") {
-    const hours = Math.max(1, Number(item.dismissHours) || 24);
-    return Date.now() - Number(saved.dismissedAt || 0) >= hours * 3600 * 1000;
-  }
-  return !sessionSeen(item.id);
-}
-
 function rememberDismiss(item) {
-  const frequency = item.frequency || "session_once";
   markSessionSeen(item.id);
-  if (frequency === "every_open" || frequency === "session_once") return;
-  writeLocal(item.id, {
-    version: Number(item.version) || 1,
-    day: new Date().toISOString().slice(0, 10),
-    dismissedAt: Date.now(),
-  });
+  const record = announcementDismissRecord(item);
+  writeLocal(item.id, record);
+  if (record.pushId) writeLocal(announcementIdentity(item), record);
 }
 
 function useCarouselIndex(item, count, autoplay) {
@@ -176,9 +168,8 @@ function PromoBannerCopy({ title, body }) {
   );
 }
 
-function PromoBanner({ item, onDismiss }) {
+function PromoBanner({ item, cta, onDismiss }) {
   const { t } = useLocale();
-  const cta = announcementCta(item);
   const canClose = item.allowClose !== false || !cta;
   const title = String(item.title || "").trim();
   const body = String(item.body || "").trim();
@@ -220,7 +211,7 @@ function PromoBanner({ item, onDismiss }) {
   );
 }
 
-function AnnouncementCard({ item, onDismiss }) {
+function AnnouncementCard({ item, cta, onDismiss }) {
   const { t } = useLocale();
   const placement = item.placement === "banner" ? "banner" : "modal";
   const layout = placement === "banner" ? "text_only" : item.layout || "text_only";
@@ -231,7 +222,6 @@ function AnnouncementCard({ item, onDismiss }) {
     assets.length,
     isCarousel && item.carouselEnabled !== false,
   );
-  const cta = announcementCta(item);
   const canClose = item.allowClose !== false || !cta;
   const closeText = String(item.closeText || "").trim() || t("我知道了");
 
@@ -389,42 +379,37 @@ function AnnouncementCard({ item, onDismiss }) {
 }
 
 export function ClientAnnouncementHost() {
-  const [items, setItems] = useState([]);
+  const location = useLocation();
+  const { isEntryVisible } = usePageControls();
+  const { items } = useLiveAnnouncements();
   const [hiddenIds, setHiddenIds] = useState(() => new Set());
   const [bannerSlot, setBannerSlot] = useState(null);
 
-  useEffect(() => {
-    let active = true;
-    getActiveAnnouncements()
-      .then((rows) => {
-        if (active) setItems(Array.isArray(rows) ? rows : []);
-      })
-      .catch(() => {
-        if (active) setItems([]);
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
-
   useLayoutEffect(() => {
     setBannerSlot(document.getElementById("site-announcement-slot"));
-  }, [items]);
+  }, [items, location.pathname]);
 
   const visible = useMemo(
     () =>
       items.filter(
-        (item) => item?.id && !hiddenIds.has(item.id) && shouldShow(item),
+        (item) => shouldShowAnnouncement(item, {
+          dismissedInPage: hiddenIds.has(announcementIdentity(item)),
+          seenInSession: sessionSeen(item.id),
+          dismissed: readLocal(item.id),
+          hasDismissedPush: Boolean(item.pushId && readLocal(announcementIdentity(item))),
+        }),
       ),
     [hiddenIds, items],
   );
   const banner = visible.find((item) => item.placement === "banner") || null;
   const modal = visible.find((item) => item.placement !== "banner") || null;
+  const bannerCta = banner ? announcementCta(banner, isEntryVisible) : null;
+  const modalCta = modal ? announcementCta(modal, isEntryVisible) : null;
 
   const dismiss = (item) => {
     if (!item?.id) return;
     rememberDismiss(item);
-    setHiddenIds((current) => new Set(current).add(item.id));
+    setHiddenIds((current) => new Set(current).add(announcementIdentity(item)));
   };
 
   if (!banner && !modal) return null;
@@ -433,7 +418,7 @@ export function ClientAnnouncementHost() {
     <>
       {banner && bannerSlot
         ? createPortal(
-            <PromoBanner item={banner} onDismiss={() => dismiss(banner)} />,
+            <PromoBanner item={banner} cta={bannerCta} onDismiss={() => dismiss(banner)} />,
             bannerSlot,
           )
         : null}
@@ -448,13 +433,13 @@ export function ClientAnnouncementHost() {
             type="button"
             className="client-announcement-modal__backdrop"
             aria-label="关闭公告"
-            disabled={modal.allowClose === false && Boolean(announcementCta(modal))}
+            disabled={modal.allowClose === false && Boolean(modalCta)}
             onClick={() => {
-              if (modal.allowClose === false && announcementCta(modal)) return;
+              if (modal.allowClose === false && modalCta) return;
               dismiss(modal);
             }}
           />
-          <AnnouncementCard item={modal} onDismiss={() => dismiss(modal)} />
+          <AnnouncementCard item={modal} cta={modalCta} onDismiss={() => dismiss(modal)} />
         </div>
       ) : null}
     </>

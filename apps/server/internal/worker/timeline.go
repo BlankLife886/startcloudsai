@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -12,6 +13,15 @@ import (
 )
 
 var assistantStageClock sync.Map
+
+func taskClaimTimeline(attempt int, createdAt, claimedAt time.Time) (stage, message string, durationMs int64) {
+	if attempt > 0 {
+		// The task creation time includes earlier generation attempts, not just
+		// this retry's queue wait. No per-retry enqueue timestamp is available.
+		return "retry_started", fmt.Sprintf("开始第 %d 次生成尝试", attempt+1), -1
+	}
+	return "queued", "任务被处理线程接单，排队结束（第 1 次尝试）", max(claimedAt.Sub(createdAt).Milliseconds(), 0)
+}
 
 func markAssistantStageClock(id uuid.UUID, at time.Time) {
 	if id == uuid.Nil {
@@ -142,6 +152,9 @@ func (w *Worker) recordAssistantImageFinish(ctx context.Context, run *store.Assi
 	w.recordTimeline(ctx, run.ID, stage, status, message, duration,
 		map[string]any{"source": "assistant_image", "attempt": run.Attempt})
 	clearAssistantStageClock(run.ID)
+	if stage == "succeeded" || stage == "failed" || stage == "canceled" {
+		w.wakeUserTaskQueue(run.UserID)
+	}
 }
 
 func (w *Worker) copyTaskTimeline(ctx context.Context, from, to uuid.UUID) {

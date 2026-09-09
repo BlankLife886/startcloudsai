@@ -111,8 +111,9 @@ func TestExecuteAssistantEditableFileStoresPPTXAndAssets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.Pool.Exec(ctx, `UPDATE assistant_runs SET status = 'running', stage = 'thinking' WHERE id = $1`, run.ID); err != nil {
-		t.Fatal(err)
+	run, err = store.ClaimAssistantRunWithLease(ctx, st.Pool, run.ID, "editable-test-worker", time.Now().UTC(), time.Minute, 4)
+	if err != nil || run == nil {
+		t.Fatalf("claim editable run: %v", err)
 	}
 
 	pptxData := testPPTXBytes(t)

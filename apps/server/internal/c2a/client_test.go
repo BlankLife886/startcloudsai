@@ -339,6 +339,71 @@ func TestOpenAIImageEditsUseMultipartFiles(t *testing.T) {
 	}
 }
 
+func TestAsyncImageEditsRecoverAfterSubmitGatewayTimeout(t *testing.T) {
+	reference := base64.StdEncoding.EncodeToString(png1x1())
+	var submitted, polled, syncCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/image-tasks/edits":
+			submitted++
+			w.WriteHeader(http.StatusGatewayTimeout)
+			_, _ = w.Write([]byte("<html><body>504 Gateway Time-out</body></html>"))
+		case "/api/image-tasks":
+			polled++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"items":[{"client_task_id":"assistant-edit","status":"success","data":[{"b64_json":"recovered"}]}]}`))
+		case "/v1/images/edits":
+			syncCalls++
+			http.Error(w, "unexpected synchronous fallback", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 10, true).WithAsyncImageEdits()
+	images, err := client.EditImagesWithOptions(context.Background(), "assistant-edit", "refine", "gpt-image-2", 1,
+		[]string{reference}, "1024x1024", ImageOptions{Quality: "high"})
+	if err != nil || len(images) != 1 || images[0] != "recovered" {
+		t.Fatalf("images=%#v err=%v", images, err)
+	}
+	if submitted != 1 || polled < 1 || syncCalls != 0 {
+		t.Fatalf("submitted=%d polled=%d syncCalls=%d", submitted, polled, syncCalls)
+	}
+}
+
+func TestAsyncImageEditsFallbackToOpenAIMultipart(t *testing.T) {
+	reference := base64.StdEncoding.EncodeToString(png1x1())
+	var asyncCalls, syncCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/image-tasks/edits":
+			asyncCalls++
+			http.NotFound(w, r)
+		case "/v1/images/edits":
+			syncCalls++
+			if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data; boundary=") {
+				t.Fatalf("content type = %q", r.Header.Get("Content-Type"))
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"b64_json":"fallback"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 10, true).WithAsyncImageEdits()
+	images, pending, upstreamTaskID, err := client.SubmitEditImagesTracked(context.Background(), "assistant-edit", "refine", "gpt-image-2", 1,
+		[]string{reference}, "1024x1024", ImageOptions{Quality: "high"})
+	if err != nil || pending || upstreamTaskID != "" || len(images) != 1 || images[0] != "fallback" {
+		t.Fatalf("images=%#v pending=%v upstreamTaskID=%q err=%v", images, pending, upstreamTaskID, err)
+	}
+	if asyncCalls != 1 || syncCalls != 1 {
+		t.Fatalf("asyncCalls=%d syncCalls=%d", asyncCalls, syncCalls)
+	}
+}
+
 func TestEditImagesWithOptionsRetriesWithImageURL(t *testing.T) {
 	reference := base64.StdEncoding.EncodeToString(png1x1())
 	var payloads []map[string]any

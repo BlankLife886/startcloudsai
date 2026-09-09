@@ -10,6 +10,7 @@ import "@react/legacy-static/assets/css/global-theme-fixes.css";
 import "@react/legacy-static/assets/css/image-reveal.css";
 import { router } from "./router.jsx";
 import { AuthProvider } from "./auth/AuthContext.jsx";
+import { PageControlProvider } from "./page-control/PageControlContext.jsx";
 import { LocaleProvider } from "./i18n/index.js";
 import { ClientReleaseBanner } from "./components/ClientReleaseBanner.jsx";
 import { NotificationContainer } from "./components/toast/NotificationContainer.jsx";
@@ -28,9 +29,11 @@ createRoot(document.getElementById("root")).render(
   <React.StrictMode>
     <LocaleProvider>
       <AuthProvider>
-        <ClientReleaseBanner />
-        <NotificationContainer />
-        <RouterProvider router={router} />
+        <PageControlProvider>
+          <ClientReleaseBanner />
+          <NotificationContainer />
+          <RouterProvider router={router} />
+        </PageControlProvider>
       </AuthProvider>
     </LocaleProvider>
   </React.StrictMode>,

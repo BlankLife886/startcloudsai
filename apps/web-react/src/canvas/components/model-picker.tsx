@@ -1,13 +1,13 @@
 import { useEffect, useId, useMemo, useState } from "react";
 import { ChevronDown } from "lucide-react";
-import { SoftMark } from "@react/components/common/SoftMark.jsx";
+import { ModelCatalogIcon, ModelMaintenanceBadge } from "@react/components/common/ModelCatalogIcon.jsx";
 
 import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { colorWash, nodeTypeColor } from "@/lib/canvas-ui";
 import { cn } from "@/lib/utils";
 import { useThemeStore } from "@/stores/use-theme-store";
-import { formatModelDiscount, formatModelPrice, modelOptionLabel, modelOptionMeta, modelOptionName, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
+import { catalogModelsByCapability, formatModelDiscount, formatModelPrice, modelMaintenance, modelOptionLabel, modelOptionMeta, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
 
 type ModelPickerProps = {
     config: AiConfig;
@@ -24,7 +24,8 @@ type ModelPickerProps = {
 export function ModelPicker({ config, value, onChange, capability, className, fullWidth = false, size = "default", placeholder = "选择模型", onMissingConfig }: ModelPickerProps) {
     const pickerId = useId();
     const [open, setOpen] = useState(false);
-    const options = useMemo(() => Array.from(new Set(selectableModelsByCapability(config, capability))), [capability, config]);
+    const options = useMemo(() => Array.from(new Set(catalogModelsByCapability(config, capability))), [capability, config]);
+    const availableOptions = useMemo(() => selectableModelsByCapability(config, capability), [capability, config]);
     const current = value || "";
     const currentMeta = current ? modelOptionMeta(config, current) : undefined;
     const large = size === "lg";
@@ -44,7 +45,7 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
             open={open}
             value={current}
             onOpenChange={(nextOpen) => {
-                if (nextOpen && !options.length) onMissingConfig?.();
+                if (nextOpen && !availableOptions.length) onMissingConfig?.();
                 if (nextOpen) window.dispatchEvent(new CustomEvent("model-picker-open", { detail: pickerId }));
                 setOpen(nextOpen);
             }}
@@ -63,7 +64,7 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
                 onPointerDown={(event) => event.stopPropagation()}
                 title={current ? modelOptionLabel(config, current) : placeholder}
             >
-                <ModelIcon model={current} capability={capability} large={large} surface={theme.node.panel} />
+                <ModelIcon meta={currentMeta} large={large} surface={theme.node.panel} />
                 {large ? (
                     <span className="canvas-model-picker-text flex min-w-0 flex-1 items-center gap-2 text-left">
                         <span className="min-w-0 flex-1 truncate text-[14px] font-semibold tracking-tight">{current ? modelOptionLabel(config, current) : placeholder}</span>
@@ -90,7 +91,7 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
             >
                 {options.length ? (
                     options.map((model) => (
-                        <SelectItem key={model} value={model} textValue={modelOptionLabel(config, model)} className="rounded-xl py-2">
+                        <SelectItem key={model} value={model} textValue={modelOptionLabel(config, model)} disabled={modelMaintenance(modelOptionMeta(config, model))} className="rounded-xl py-2">
                             <ModelLabel config={config} model={model} capability={capability} />
                         </SelectItem>
                     ))
@@ -112,19 +113,20 @@ function emptyModelLabel(config: AiConfig, capability?: ModelCapability) {
 
 function ModelLabel({ config, model, capability }: { config: AiConfig; model: string; capability?: ModelCapability }) {
     const meta = modelOptionMeta(config, model);
+    const maintenance = modelMaintenance(meta);
     return (
         <span className="flex min-w-0 flex-1 items-center gap-2.5">
-            <ModelIcon model={model} capability={capability} />
+            <ModelIcon meta={meta} />
             <span className="min-w-0 flex-1 truncate">{modelOptionLabel(config, model)}</span>
-            <span className="shrink-0 text-xs text-muted-foreground">{formatModelPrice(meta)}</span>
-            {formatModelDiscount(meta) ? <span className="shrink-0 rounded bg-red-50 px-1 py-0.5 text-[11px] font-medium text-red-600 dark:bg-red-950/40 dark:text-red-300">{formatModelDiscount(meta)}</span> : null}
+            <ModelMaintenanceBadge model={meta} />
+            {!maintenance ? <span className="shrink-0 text-xs text-muted-foreground">{formatModelPrice(meta)}</span> : null}
+            {!maintenance && formatModelDiscount(meta) ? <span className="shrink-0 rounded bg-red-50 px-1 py-0.5 text-[11px] font-medium text-red-600 dark:bg-red-950/40 dark:text-red-300">{formatModelDiscount(meta)}</span> : null}
         </span>
     );
 }
 
-function ModelIcon({ model, large = false, surface }: { model: string; capability?: ModelCapability; large?: boolean; surface?: string }) {
-    const icon = resolveModelIcon(modelOptionName(model));
-    const image = icon ? <img src={icon} alt="" className={large ? "size-5 dark:invert" : "size-4 dark:invert"} /> : <SoftMark name="cpu" size={large ? "md" : "sm"} />;
+function ModelIcon({ meta, large = false, surface }: { meta?: ReturnType<typeof modelOptionMeta>; large?: boolean; surface?: string }) {
+    const image = <ModelCatalogIcon model={meta} size={large ? "md" : "sm"} />;
     if (!large) return <span className="shrink-0">{image}</span>;
     return (
         <span
@@ -137,15 +139,4 @@ function ModelIcon({ model, large = false, surface }: { model: string; capabilit
             {image}
         </span>
     );
-}
-
-function resolveModelIcon(model: string) {
-    const name = model.toLowerCase();
-    if (name.includes("claude") || name.includes("anthropic")) return "/icons/claude.svg";
-    if (name.includes("gemini") || name.includes("google")) return "/icons/gemini.svg";
-    if (name.includes("gpt") || name.includes("openai")) return "/icons/openai.svg";
-    if (name.includes("grok") || name.includes("grok")) return "/icons/grok.svg";
-    if (name.includes("deepseek") || name.includes("deepseek")) return "/icons/deepseek.svg";
-    if (name.includes("glm") || name.includes("glm")) return "/icons/glm.svg";
-    return "";
 }

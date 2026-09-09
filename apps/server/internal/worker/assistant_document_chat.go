@@ -132,7 +132,9 @@ func (w *Worker) requestAssistantDocumentText(
 		messages = append(messages, sub2api.Message{
 			Role: "tool", Name: call.Name, ToolCallID: call.ID, Content: content,
 		})
-		used = append(used, call.Name)
+		if toolErr == nil {
+			used = append(used, call.Name)
+		}
 		if artifact, ok := toolResult.Meta["artifact"].(map[string]any); ok && toolErr == nil {
 			artifacts = append(artifacts, artifact)
 		}

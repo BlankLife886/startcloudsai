@@ -1,317 +1,145 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router";
-import {
-  Activity,
-  Check,
-  Copy,
-  FileCode2,
-  KeyRound,
-  Plus,
-  RefreshCw,
-  RotateCw,
-  Trash2,
-  Webhook,
-  X,
-} from "lucide-react";
-import { useAuth } from "../auth/AuthContext.jsx";
-import { useIsDark } from "../hooks/useIsDark.js";
-import {
-  createAPIKey,
-  createWebhook,
-  deleteWebhook,
-  listAPIKeys,
-  listDeveloperModels,
-  listWebhookDeliveries,
-  listWebhooks,
-  retryWebhookDelivery,
-  revokeAPIKey,
-  rotateAPIKey,
-  updateWebhook,
-} from "@react/legacy-modules/services/developerApi.js";
-import notificationService from "@react/legacy-modules/services/notification.js";
-import "./DeveloperAPIView.css";
+import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
+import {Link} from 'react-router';
+import {Activity,ArrowDownToLine,ArrowRight,BookOpen,Box,Check,ChevronLeft,ChevronRight,Code2,Copy,ExternalLink,FileCode2,KeyRound,LayoutDashboard,MoreHorizontal,Pause,Play,Plus,RefreshCw,RotateCw,Search,ShieldCheck,Terminal,Trash2,TriangleAlert,Webhook} from 'lucide-react';
+import {useAuth} from '../auth/AuthContext.jsx';
+import {useIsDark} from '../hooks/useIsDark.js';
+import {usePageControls} from '../page-control/PageControlContext.jsx';
+import * as liveClient from '../legacy-modules/services/developerApi.js';
+import {createDeveloperDemoClient} from '../features/developer-api/demoClient.js';
+import {Modal,KeyForm,WebhookForm,Secret} from '../features/developer-api/Dialogs.jsx';
+import {SCOPES,EVENTS,KEY_STATUSES,DELIVERY_STATUSES,keyStatus,expiresSoon,number,time,bytes,ratio,copyText,curlExample,imageCurlExample,imageResponseExample} from '../features/developer-api/presentation.js';
+import './DeveloperAPIView.css';
+import {OverviewHighlights} from '../features/developer-api/OverviewHighlights.jsx';
+import {ConsoleSelect} from '../features/developer-api/Controls.jsx';
+import {useConsoleMotion} from '../features/developer-api/motion.js';
 
-const SCOPES = [
-  ["models:read", "读取模型"],
-  ["files:write", "上传文件"],
-  ["tasks:write", "创建任务"],
-  ["tasks:read", "读取任务与文件"],
-];
+const NAV=[['overview','概览',LayoutDashboard],['keys','API Keys',KeyRound],['webhooks','Webhooks',Webhook],['deliveries','投递记录',Activity],['models','模型目录',Box],['quickstart','快速接入',Terminal]];
+const EMPTY={keys:[],models:[],webhooks:[],deliveries:[],requests:[]};
+const RESOURCE_LABELS={keys:'API Key',models:'模型',webhooks:'Webhook',deliveries:'投递记录',requests:'请求示例'};
+const supportsStarterExample=model=>model?.kind==='image'&&(!model.tool||['text2img','text_to_image','generation'].includes(model.tool));
 
-const EVENTS = [
-  ["task.succeeded", "任务成功"],
-  ["task.failed", "任务失败"],
-  ["task.canceled", "任务取消"],
-];
+function Badge({status,children}){return <span className={`dap-badge ${status}`}><i/>{children}</span>}
+function Meter({used,limit,label}){const percent=ratio(used,limit);return <div className={`dap-meter${percent>=85?' warning':''}`}><div><span>{label}</span><b>{number(used)} <small>/ {number(limit)}</small></b></div><div className="dap-meter-track" role="meter" aria-label={label} aria-valuemin={0} aria-valuemax={Number(limit)||1} aria-valuenow={Math.min(Number(used)||0,Number(limit)||1)}><span style={{width:percent+'%'}}/></div></div>}
+function Pager({page,total,onChange}){const pages=Math.max(1,Math.ceil(total/8));return <footer className="dap-pagination"><span>共 {total} 条</span><div><button className="dap-icon" title="上一页" aria-label="上一页" disabled={page<=1} onClick={()=>onChange(page-1)}><ChevronLeft size={16}/></button><span>{page} / {pages}</span><button className="dap-icon" title="下一页" aria-label="下一页" disabled={page>=pages} onClick={()=>onChange(page+1)}><ChevronRight size={16}/></button></div></footer>}
+function Empty({icon:Icon=KeyRound,title,description,action}){return <div className="dap-empty"><span><Icon size={25}/></span><h3>{title}</h3><p>{description}</p>{action}</div>}
+function DetailRow({label,children}){return <div className="dap-detail-row"><dt>{label}</dt><dd>{children===undefined||children===null||children===''?'—':children}</dd></div>}
 
-const emptyKeyDraft = () => ({
-  label: "生产环境",
-  scopes: SCOPES.map(([value]) => value),
-  allowedModelIds: [],
-  dailyTaskLimit: 100,
-  monthlyTaskLimit: 2000,
-  dailySpendLimitCents: 10000,
-  monthlySpendLimitCents: 200000,
-  expiresAt: "",
-  ipAllowlistText: "",
-  rateLimitPerMinute: 120,
-  dailyByteLimitGiB: 2,
-});
+export function DeveloperAPIView(){const auth=useAuth();return <DeveloperConsole key={`live:${auth.user?.id||'guest'}`} demo={false} auth={auth}/>}
+export function DeveloperAPIDemoView(){return <DeveloperConsole demo/>}
 
-const emptyWebhookDraft = () => ({
-  id: "",
-  label: "任务回调",
-  url: "",
-  events: EVENTS.map(([value]) => value),
-  enabled: true,
-  rotateSecret: false,
-});
+function DeveloperConsole({demo=false,auth}){
+ const isDark=useIsDark(),{controlForKey}=usePageControls();
+ const client=useMemo(()=>demo?createDeveloperDemoClient():liveClient,[demo]);
+ const [data,setData]=useState(EMPTY),[ready,setReady]=useState({}),[errors,setErrors]=useState({});
+ const [loading,setLoading]=useState(true),[busy,setBusy]=useState(false),[tab,setTab]=useState('overview');
+ const [query,setQuery]=useState(''),[filter,setFilter]=useState('all'),[endpoint,setEndpoint]=useState('all'),[page,setPage]=useState(1);
+ const [scenario,setScenario]=useState('normal'),[dialog,setDialog]=useState(null),[detail,setDetail]=useState(null),[secret,setSecret]=useState(null),[confirmation,setConfirmation]=useState(null),[actionError,setActionError]=useState('');
+ const [notice,setNotice]=useState(''),[updated,setUpdated]=useState(null),[selectedModel,setSelectedModel]=useState(''),[sampleResponse,setSampleResponse]=useState(null),[protocol,setProtocol]=useState('images');
+ const alive=useRef(true),generation=useRef(0),pendingRead=useRef(null),mutating=useRef(false);
+ const signedIn=demo||Boolean(auth?.isAuthenticated);
+ const consoleRef=useRef(null);
+ useConsoleMotion(consoleRef,tab,Object.values(ready).some(Boolean),signedIn);
+ useEffect(()=>{const previous=document.title;document.title=`${demo?'开发者 API 演示':'开发者 API'} · 星空云绘`;return()=>{document.title=previous}},[demo]);
+ useEffect(()=>{alive.current=true;return()=>{alive.current=false;generation.current++;pendingRead.current?.abort()}},[]);
+ useEffect(()=>{if(!notice)return;const timer=setTimeout(()=>setNotice(''),3200);return()=>clearTimeout(timer)},[notice]);
 
-function formatTime(value) {
-  if (!value) return "从未";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime())
-    ? "—"
-    : date.toLocaleString("zh-CN", { hour12: false });
-}
-
-function formatPoints(value) {
-  return Math.max(0, Number(value) || 0).toLocaleString("zh-CN");
-}
-
-async function copyText(value) {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(value);
-    return;
-  }
-  const input = document.createElement("textarea");
-  input.value = value;
-  input.style.position = "fixed";
-  input.style.opacity = "0";
-  document.body.appendChild(input);
-  input.select();
-  document.execCommand("copy");
-  input.remove();
-}
-
-function SecretDialog({ value, title, onClose }) {
-  const [copied, setCopied] = useState(false);
-  const copy = async () => {
-    await copyText(value);
-    setCopied(true);
-    notificationService.success("密钥已复制");
-  };
-  return (
-    <div className="devapi-dialog-layer" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <section className="devapi-dialog devapi-secret" role="dialog" aria-modal="true" aria-labelledby="devapi-secret-title" onMouseDown={(event) => event.stopPropagation()}>
-        <header>
-          <span className="devapi-dialog__icon"><KeyRound size={20} /></span>
-          <div><h2 id="devapi-secret-title">{title}</h2><p>关闭后无法再次查看，请立即保存到安全位置。</p></div>
-          <button type="button" className="devapi-icon-button" aria-label="关闭" onClick={onClose}><X size={18} /></button>
-        </header>
-        <code data-no-translate>{value}</code>
-        <footer>
-          <button type="button" className="devapi-button is-primary" onClick={copy}>{copied ? <Check size={16} /> : <Copy size={16} />}{copied ? "已复制" : "复制密钥"}</button>
-          <button type="button" className="devapi-button" onClick={onClose}>我已保存</button>
-        </footer>
-      </section>
-    </div>
-  );
-}
-
-function KeyDialog({ models, onClose, onCreated }) {
-  const [draft, setDraft] = useState(emptyKeyDraft);
-  const [saving, setSaving] = useState(false);
-  const toggle = (field, value) => setDraft((current) => ({
-    ...current,
-    [field]: current[field].includes(value)
-      ? current[field].filter((item) => item !== value)
-      : [...current[field], value],
+ const load=useCallback(async()=>{
+  if(!signedIn){setLoading(false);return}
+  const ticket=++generation.current;pendingRead.current?.abort();const controller=new AbortController();pendingRead.current=controller;
+  let timedOut=false;const timeout=setTimeout(()=>{timedOut=true;controller.abort()},15000);setLoading(true);setErrors({});
+  const methods={keys:'listAPIKeys',models:'listDeveloperModels',webhooks:'listWebhooks',deliveries:'listWebhookDeliveries',...(demo?{requests:'listRequestSamples'}:{})};
+  await Promise.allSettled(Object.entries(methods).map(async([key,method])=>{
+   try{const items=await client[method]({signal:controller.signal});if(alive.current&&ticket===generation.current&&!controller.signal.aborted){setData(current=>({...current,[key]:items}));setReady(current=>({...current,[key]:true}))}}
+   catch(error){if(alive.current&&ticket===generation.current)setErrors(current=>({...current,[key]:timedOut?'读取超时，请重试':error.message||'读取失败'}))}
   }));
-  const submit = async (event) => {
-    event.preventDefault();
-    if (!draft.label.trim() || !draft.scopes.length || saving) return;
-    setSaving(true);
-    try {
-      const payload = {
-        ...draft,
-        label: draft.label.trim(),
-        expiresAt: draft.expiresAt ? new Date(`${draft.expiresAt}T23:59:59`).toISOString() : null,
-        ipAllowlist: draft.ipAllowlistText.split(/[\s,]+/).map((value) => value.trim()).filter(Boolean),
-        dailyByteLimit: Math.round(Math.max(0, draft.dailyByteLimitGiB) * (1024 ** 3)),
-      };
-	  delete payload.ipAllowlistText;
-	  delete payload.dailyByteLimitGiB;
-      const result = await createAPIKey(payload);
-      onCreated(result);
-    } catch (error) {
-      notificationService.error(error?.message || "API Key 创建失败");
-    } finally {
-      setSaving(false);
-    }
-  };
-  return (
-    <div className="devapi-dialog-layer" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <form className="devapi-dialog devapi-form-dialog" onSubmit={submit} onMouseDown={(event) => event.stopPropagation()}>
-        <header><div><h2>创建 API Key</h2><p>权限、模型和额度均可独立限制。</p></div><button type="button" className="devapi-icon-button" aria-label="关闭" onClick={onClose}><X size={18} /></button></header>
-        <div className="devapi-form-grid">
-          <label className="is-wide"><span>名称</span><input value={draft.label} maxLength={80} onChange={(event) => setDraft({ ...draft, label: event.target.value })} /></label>
-          <fieldset className="is-wide"><legend>权限</legend><div className="devapi-check-grid">{SCOPES.map(([value, label]) => <label key={value}><input type="checkbox" checked={draft.scopes.includes(value)} onChange={() => toggle("scopes", value)} /><span>{label}<small data-no-translate>{value}</small></span></label>)}</div></fieldset>
-          <fieldset className="is-wide"><legend>模型范围</legend><p>不选择代表允许所有已开放模型。</p><div className="devapi-model-grid">{models.map((model) => <label key={model.id}><input type="checkbox" checked={draft.allowedModelIds.includes(model.id)} onChange={() => toggle("allowedModelIds", model.id)} /><span>{model.name}<small>{formatPoints(model.priceCents)} 积分/次</small></span></label>)}</div></fieldset>
-          <label><span>每日任务上限</span><input type="number" min="1" max="100000" value={draft.dailyTaskLimit} onChange={(event) => setDraft({ ...draft, dailyTaskLimit: Number(event.target.value) })} /></label>
-          <label><span>每月任务上限</span><input type="number" min="1" max="1000000" value={draft.monthlyTaskLimit} onChange={(event) => setDraft({ ...draft, monthlyTaskLimit: Number(event.target.value) })} /></label>
-          <label><span>每日积分额度</span><input type="number" min="1" value={draft.dailySpendLimitCents} onChange={(event) => setDraft({ ...draft, dailySpendLimitCents: Number(event.target.value) })} /></label>
-          <label><span>每月积分额度</span><input type="number" min="1" value={draft.monthlySpendLimitCents} onChange={(event) => setDraft({ ...draft, monthlySpendLimitCents: Number(event.target.value) })} /></label>
-          <label><span>每分钟请求上限</span><input type="number" min="1" max="10000" value={draft.rateLimitPerMinute} onChange={(event) => setDraft({ ...draft, rateLimitPerMinute: Number(event.target.value) })} /></label>
-          <label><span>每日流量额度（GiB）</span><input type="number" min="0.001" max="1024" step="0.5" value={draft.dailyByteLimitGiB} onChange={(event) => setDraft({ ...draft, dailyByteLimitGiB: Number(event.target.value) })} /></label>
-          <label className="is-wide"><span>IP 白名单（可选）</span><input placeholder="203.0.113.10, 10.0.0.0/24" value={draft.ipAllowlistText} onChange={(event) => setDraft({ ...draft, ipAllowlistText: event.target.value })} /><small>留空允许所有 IP，支持 IP 和 CIDR，最多 20 项。</small></label>
-          <label className="is-wide"><span>到期日期（可选）</span><input type="date" value={draft.expiresAt} min={new Date().toISOString().slice(0, 10)} onChange={(event) => setDraft({ ...draft, expiresAt: event.target.value })} /></label>
-        </div>
-        <footer><button type="button" className="devapi-button" onClick={onClose}>取消</button><button type="submit" className="devapi-button is-primary" disabled={saving || !draft.scopes.length}>{saving ? "创建中…" : "创建"}</button></footer>
-      </form>
-    </div>
-  );
-}
+  clearTimeout(timeout);if(alive.current&&ticket===generation.current){setLoading(false);setUpdated(new Date());pendingRead.current=null}
+ },[client,demo,signedIn]);
+ useEffect(()=>{void load()},[load]);
+ useEffect(()=>{setPage(1)},[tab,query,filter,endpoint]);
+ const navigateTab=next=>{setTab(next);setQuery('');setFilter('all');setEndpoint('all');setPage(1);setSampleResponse(null)};
+ async function copy(value,message='已复制'){try{await copyText(value);if(alive.current)setNotice(message)}catch(error){if(alive.current)setNotice(error.message)}}
+ async function reset(next=scenario){pendingRead.current?.abort();generation.current++;client.reset(next);setScenario(next);setDetail(null);setDialog(null);setSecret(null);setConfirmation(null);setReady({});setData(EMPTY);setSampleResponse(null);setPage(1);setQuery('');setFilter('all');setEndpoint('all');await load();setNotice('演示数据已重置')}
+ function ask(kind,item){setDetail(null);setActionError('');setConfirmation({kind,item})}
+ async function confirm(){
+  if(mutating.current||!confirmation)return;mutating.current=true;setBusy(true);setActionError('');
+  const {kind,item}=confirmation;
+  try{
+   let result;
+   if(kind==='rotate')result=await client.rotateAPIKey(item.id);
+   else if(kind==='revoke')await client.revokeAPIKey(item.id);
+   else if(kind==='delete-hook')await client.deleteWebhook(item.id);
+   else if(kind==='toggle-hook')await client.updateWebhook(item.id,{label:item.label,url:item.url,events:item.events,enabled:!item.enabled,rotateSecret:false});
+   else if(kind==='retry')await client.retryWebhookDelivery(item.id);
+   if(!alive.current)return;setConfirmation(null);if(result?.secret)setSecret({title:'新密钥已生成',value:result.secret});setNotice(kind==='retry'?'已加入投递队列，刷新可查看最新状态':'操作已完成');await load();
+  }catch(error){if(alive.current)setActionError(error.message||'操作失败')}
+  finally{mutating.current=false;if(alive.current)setBusy(false)}
+ }
+ function saved(result,title){if(!alive.current)return;setDialog(null);if(result?.secret)setSecret({title,value:result.secret});setNotice('已保存');void load()}
 
-function WebhookDialog({ initialValue, onClose, onSaved }) {
-  const [draft, setDraft] = useState(() => initialValue ? { ...emptyWebhookDraft(), ...initialValue, rotateSecret: false } : emptyWebhookDraft());
-  const [saving, setSaving] = useState(false);
-  const toggleEvent = (value) => setDraft((current) => ({ ...current, events: current.events.includes(value) ? current.events.filter((item) => item !== value) : [...current.events, value] }));
-  const submit = async (event) => {
-    event.preventDefault();
-    if (!draft.label.trim() || !draft.url.trim() || !draft.events.length || saving) return;
-    setSaving(true);
-    try {
-      const payload = { label: draft.label.trim(), url: draft.url.trim(), events: draft.events, enabled: draft.enabled, rotateSecret: draft.rotateSecret };
-      const result = draft.id ? await updateWebhook(draft.id, payload) : await createWebhook(payload);
-      onSaved(result);
-    } catch (error) {
-      notificationService.error(error?.message || "Webhook 保存失败");
-    } finally {
-      setSaving(false);
-    }
-  };
-  return (
-    <div className="devapi-dialog-layer" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <form className="devapi-dialog devapi-form-dialog is-compact" onSubmit={submit} onMouseDown={(event) => event.stopPropagation()}>
-        <header><div><h2>{draft.id ? "编辑 Webhook" : "创建 Webhook"}</h2><p>仅支持公网 HTTPS 地址。</p></div><button type="button" className="devapi-icon-button" aria-label="关闭" onClick={onClose}><X size={18} /></button></header>
-        <div className="devapi-form-grid">
-          <label className="is-wide"><span>名称</span><input value={draft.label} maxLength={80} onChange={(event) => setDraft({ ...draft, label: event.target.value })} /></label>
-          <label className="is-wide"><span>回调地址</span><input type="url" placeholder="https://example.com/webhooks/starcloud" value={draft.url} onChange={(event) => setDraft({ ...draft, url: event.target.value })} /></label>
-          <fieldset className="is-wide"><legend>订阅事件</legend><div className="devapi-check-grid">{EVENTS.map(([value, label]) => <label key={value}><input type="checkbox" checked={draft.events.includes(value)} onChange={() => toggleEvent(value)} /><span>{label}<small data-no-translate>{value}</small></span></label>)}</div></fieldset>
-          <label className="devapi-switch is-wide"><input type="checkbox" checked={draft.enabled} onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })} /><span>启用此 Webhook</span></label>
-          {draft.id && <label className="devapi-switch is-wide"><input type="checkbox" checked={draft.rotateSecret} onChange={(event) => setDraft({ ...draft, rotateSecret: event.target.checked })} /><span>保存时轮换签名密钥</span></label>}
-        </div>
-        <footer><button type="button" className="devapi-button" onClick={onClose}>取消</button><button type="submit" className="devapi-button is-primary" disabled={saving || !draft.events.length}>{saving ? "保存中…" : "保存"}</button></footer>
-      </form>
-    </div>
-  );
-}
+ const usable=data.keys.filter(key=>keyStatus(key)==='active');
+ const retained=data.keys.filter(key=>['active','frozen'].includes(key.status)).length;
+ const todayTasks=data.keys.reduce((sum,key)=>sum+Number(key.usage?.todayTasks||0),0);
+ const todayBudget=data.keys.reduce((sum,key)=>sum+Number(key.usage?.todaySpendCents||0),0);
+ const pendingDeliveries=data.deliveries.filter(item=>item.status==='pending').length;
+ const failures=data.deliveries.filter(item=>item.status==='dead').length;
+ const hooks=new Map(data.webhooks.map(item=>[item.id,item]));
+ const createDisabled=!ready.keys||!ready.models||Boolean(errors.keys||errors.models)||retained>=10;
+ const keyList=data.keys.filter(key=>(filter==='all'||keyStatus(key)===filter)&&`${key.label} ${key.prefix} ${key.id}`.toLowerCase().includes(query.toLowerCase().trim()));
+ const hookList=data.webhooks.filter(item=>(filter==='all'||(filter==='active'?item.enabled:!item.enabled))&&`${item.label} ${item.url}`.toLowerCase().includes(query.toLowerCase().trim()));
+ const deliveryList=data.deliveries.filter(item=>(filter==='all'||item.status===filter)&&(endpoint==='all'||item.endpointId===endpoint)&&`${item.sourceId} ${item.id} ${hooks.get(item.endpointId)?.label||''} ${item.lastError||''}`.toLowerCase().includes(query.toLowerCase().trim()));
+ const modelList=data.models.filter(item=>`${item.name} ${item.id}`.toLowerCase().includes(query.toLowerCase().trim()));
+ const pageItems=items=>items.slice((Math.min(page,Math.max(1,Math.ceil(items.length/8)))-1)*8,page*8);
+ const quoteModels=data.models.filter(supportsStarterExample);
+ const model=quoteModels.find(item=>item.id===selectedModel)||quoteModels[0];
+ const serviceOrigin=demo?'https://api.example.com':window.location.origin;
+ const imageBase=`${serviceOrigin}/v1`,taskBase=`${serviceOrigin}/api/open/v1`;
+ const apiBase=protocol==='images'?imageBase:taskBase;
+ const snippet=protocol==='images'?imageCurlExample(imageBase,model):curlExample(taskBase,model);
+ const title=NAV.find(([id])=>id===tab)?.[1]||'概览';
+ const showCreate=()=>setDialog({kind:'key'});
+ const actions=<button className="dap-button primary" onClick={showCreate} disabled={createDisabled} title={retained>=10?'保留Key已达10个，请先撤销旧Key':undefined}><Plus size={16}/>创建 Key</button>;
+ const canRetry=item=>item.status==='dead'&&hooks.get(item.endpointId)?.enabled&&!errors.webhooks;
 
-export function DeveloperAPIView() {
-  const auth = useAuth();
-  const isDark = useIsDark();
-  const [tab, setTab] = useState("keys");
-  const [keys, setKeys] = useState([]);
-  const [models, setModels] = useState([]);
-  const [webhooks, setWebhooks] = useState([]);
-  const [deliveries, setDeliveries] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [keyDialog, setKeyDialog] = useState(false);
-  const [webhookDialog, setWebhookDialog] = useState(null);
-  const [secret, setSecret] = useState(null);
+ if(!demo&&!auth?.loading&&!signedIn)return <main className={`dap${isDark?' is-dark':''}`}><div className="dap-inner"><Empty icon={ShieldCheck} title="开发者 API" description="登录后管理真实访问凭据，或先体验演示工作区。" action={<div className="dap-action-row"><Link className="dap-button primary" to="/auth?redirect=%2Fdeveloper-api">登录控制台</Link><Link className="dap-button" to="/developer-api/demo">查看演示</Link></div>}/></div></main>;
 
-  const load = useCallback(async ({ quiet = false } = {}) => {
-    if (!auth.isAuthenticated) return;
-    quiet ? setRefreshing(true) : setLoading(true);
-    try {
-      const [nextKeys, nextModels, nextWebhooks, nextDeliveries] = await Promise.all([
-        listAPIKeys(), listDeveloperModels(), listWebhooks(), listWebhookDeliveries(),
-      ]);
-      setKeys(nextKeys); setModels(nextModels); setWebhooks(nextWebhooks); setDeliveries(nextDeliveries);
-    } catch (error) {
-      notificationService.error(error?.message || "开发者配置读取失败");
-    } finally {
-      setLoading(false); setRefreshing(false);
-    }
-  }, [auth.isAuthenticated]);
-
-  useEffect(() => { void load(); }, [load]);
-
-  const activeKeys = useMemo(() => keys.filter((item) => item.status === "active"), [keys]);
-  const pendingDeliveries = useMemo(() => deliveries.filter((item) => item.status === "pending").length, [deliveries]);
-
-  const revoke = async (item) => {
-    if (!window.confirm(`撤销 API Key「${item.label}」？撤销后立即失效。`)) return;
-    try { await revokeAPIKey(item.id); notificationService.success("API Key 已撤销"); await load({ quiet: true }); }
-    catch (error) { notificationService.error(error?.message || "撤销失败"); }
-  };
-
-  const rotate = async (item) => {
-    if (!window.confirm(`轮换「${item.label}」后，旧 Key 会立即失效。继续吗？`)) return;
-    try {
-      const result = await rotateAPIKey(item.id);
-      setSecret({ title: "API Key 已轮换", value: result.secret });
-      await load({ quiet: true });
-    } catch (error) {
-      notificationService.error(error?.message || "API Key 轮换失败");
-    }
-  };
-  const removeWebhook = async (item) => {
-    if (!window.confirm(`删除 Webhook「${item.label}」及其投递记录？`)) return;
-    try { await deleteWebhook(item.id); notificationService.success("Webhook 已删除"); await load({ quiet: true }); }
-    catch (error) { notificationService.error(error?.message || "删除失败"); }
-  };
-  const retry = async (item) => {
-    try { await retryWebhookDelivery(item.id); notificationService.success("已重新加入投递队列"); await load({ quiet: true }); }
-    catch (error) { notificationService.error(error?.message || "重试失败"); }
-  };
-  const copyBaseURL = async () => {
-    await copyText(`${window.location.origin}/api/open/v1`);
-    notificationService.success("Open API 地址已复制");
-  };
-
-  if (!auth.loading && !auth.isAuthenticated) {
-    return <main className={`devapi${isDark ? " is-dark" : ""}`}><section className="devapi-auth"><KeyRound size={28} /><h1>开发者 API</h1><p>登录后管理 API Key、Webhook 和投递记录。</p><Link className="devapi-button is-primary" to="/auth?mode=login">登录账号</Link></section></main>;
-  }
-
-  return (
-    <main className={`devapi${isDark ? " is-dark" : ""}`}>
-      <header className="devapi-top">
-        <div><h1>开发者 API</h1><p>通过稳定接口接入模型任务与结果回调</p></div>
-        <div className="devapi-top__actions"><button type="button" className="devapi-button" onClick={() => void copyBaseURL()}><FileCode2 size={16} />复制 API 地址</button><button type="button" className="devapi-icon-button" title="刷新" aria-label="刷新" disabled={refreshing} onClick={() => void load({ quiet: true })}><RefreshCw size={17} className={refreshing ? "is-spin" : ""} /></button></div>
-      </header>
-      <section className="devapi-summary" aria-label="开发者 API 概览">
-        <div><KeyRound size={18} /><span>有效 Key</span><strong>{activeKeys.length}</strong></div>
-        <div><Webhook size={18} /><span>Webhook</span><strong>{webhooks.length}</strong></div>
-        <div><Activity size={18} /><span>待投递</span><strong>{pendingDeliveries}</strong></div>
-      </section>
-      <nav className="devapi-tabs" role="tablist">
-        {[["keys", KeyRound, "API Key"], ["webhooks", Webhook, "Webhook"], ["deliveries", Activity, "投递记录"]].map(([id, Icon, label]) => <button key={id} type="button" role="tab" aria-selected={tab === id} className={tab === id ? "is-active" : ""} onClick={() => setTab(id)}><Icon size={16} />{label}</button>)}
-      </nav>
-      <section className="devapi-workspace">
-        {loading ? <div className="devapi-empty"><RefreshCw size={22} className="is-spin" /><p>正在读取开发者配置…</p></div> : tab === "keys" ? <>
-          <header className="devapi-section-head"><div><h2>API Key</h2><p>密钥仅在创建时显示一次，最多保留 10 个有效 Key。</p></div><button type="button" className="devapi-button is-primary" onClick={() => setKeyDialog(true)}><Plus size={16} />创建 Key</button></header>
-          <div className="devapi-list">{keys.map((item) => <article key={item.id} className={`devapi-row${item.status !== "active" ? " is-muted" : ""}`}>
-            <span className="devapi-row__mark"><KeyRound size={17} /></span><div className="devapi-row__main"><div><strong>{item.label}</strong><span className={`devapi-status is-${item.status}`}>{item.status === "active" ? "有效" : item.status === "frozen" ? "已冻结" : "已撤销"}</span></div><code data-no-translate>{item.prefix}••••••••</code><small>{item.allowedModelIds?.length ? `${item.allowedModelIds.length} 个指定模型` : "全部开放模型"} · 最近使用 {formatTime(item.lastUsedAt)}{item.lastUsedIp ? ` · ${item.lastUsedIp}` : ""}</small>{item.freezeReason && <small>{item.freezeReason}</small>}</div>
-            <div className="devapi-usage"><span>今日 {item.usage?.todayTasks || 0}/{item.dailyTaskLimit}</span><span>{formatPoints(item.usage?.todaySpendCents)}/{formatPoints(item.dailySpendLimitCents)} 积分</span><span>{((item.usage?.todayBytes || 0) / (1024 ** 3)).toFixed(2)}/{(item.dailyByteLimit / (1024 ** 3)).toFixed(1)} GiB</span></div>
-            {item.status !== "revoked" && <div className="devapi-row__actions"><button type="button" className="devapi-icon-button" title="轮换 Key" aria-label={`轮换 ${item.label}`} onClick={() => void rotate(item)}><RotateCw size={16} /></button><button type="button" className="devapi-icon-button is-danger" title="撤销" aria-label={`撤销 ${item.label}`} onClick={() => void revoke(item)}><Trash2 size={16} /></button></div>}
-          </article>)}{!keys.length && <div className="devapi-empty"><KeyRound size={24} /><strong>还没有 API Key</strong><p>创建后即可通过 Open API 提交任务。</p></div>}</div>
-        </> : tab === "webhooks" ? <>
-          <header className="devapi-section-head"><div><h2>Webhook</h2><p>任务终态会签名投递到公网 HTTPS 地址。</p></div><button type="button" className="devapi-button is-primary" onClick={() => setWebhookDialog(emptyWebhookDraft())}><Plus size={16} />添加 Webhook</button></header>
-          <div className="devapi-list">{webhooks.map((item) => <article key={item.id} className={`devapi-row${!item.enabled ? " is-muted" : ""}`}>
-            <span className="devapi-row__mark"><Webhook size={17} /></span><div className="devapi-row__main"><div><strong>{item.label}</strong><span className={`devapi-status is-${item.enabled ? "active" : "paused"}`}>{item.enabled ? "启用" : "停用"}</span></div><code data-no-translate>{item.url}</code><small>{item.events?.map((value) => EVENTS.find(([id]) => id === value)?.[1] || value).join("、")}</small></div>
-            <div className="devapi-row__actions"><button type="button" className="devapi-button is-small" onClick={() => setWebhookDialog(item)}>编辑</button><button type="button" className="devapi-icon-button is-danger" title="删除" aria-label={`删除 ${item.label}`} onClick={() => void removeWebhook(item)}><Trash2 size={16} /></button></div>
-          </article>)}{!webhooks.length && <div className="devapi-empty"><Webhook size={24} /><strong>还没有 Webhook</strong><p>添加后可接收任务成功、失败和取消事件。</p></div>}</div>
-        </> : <>
-          <header className="devapi-section-head"><div><h2>投递记录</h2><p>系统自动指数退避重试；死信可手动重新投递。</p></div></header>
-          <div className="devapi-delivery-table"><div className="devapi-delivery-head"><span>事件</span><span>状态</span><span>响应</span><span>尝试</span><span>时间</span><span /></div>{deliveries.map((item) => <div key={item.id} className="devapi-delivery-row"><span><strong>{EVENTS.find(([id]) => id === item.eventType)?.[1] || item.eventType}</strong><small data-no-translate>{item.sourceId}</small></span><span><em className={`devapi-status is-${item.status}`}>{item.status === "delivered" ? "已送达" : item.status === "dead" ? "失败" : "等待中"}</em></span><span>{item.responseStatus || "—"}{item.lastError && <small title={item.lastError}>{item.lastError}</small>}</span><span>{item.attempts}</span><span>{formatTime(item.deliveredAt || item.createdAt)}</span><span>{item.status === "dead" && <button type="button" className="devapi-icon-button" title="重新投递" aria-label="重新投递" onClick={() => void retry(item)}><RotateCw size={16} /></button>}</span></div>)}{!deliveries.length && <div className="devapi-empty"><Activity size={24} /><strong>暂无投递记录</strong><p>通过 API 创建的任务进入终态后会显示在这里。</p></div>}</div>
-        </>}
-      </section>
-      {keyDialog && <KeyDialog models={models} onClose={() => setKeyDialog(false)} onCreated={(result) => { setKeyDialog(false); setSecret({ title: "API Key 已创建", value: result.secret }); void load({ quiet: true }); }} />}
-      {webhookDialog && <WebhookDialog initialValue={webhookDialog.id ? webhookDialog : null} onClose={() => setWebhookDialog(null)} onSaved={(result) => { setWebhookDialog(null); if (result.secret) setSecret({ title: "Webhook 签名密钥", value: result.secret }); notificationService.success("Webhook 已保存"); void load({ quiet: true }); }} />}
-      {secret && <SecretDialog title={secret.title} value={secret.value} onClose={() => setSecret(null)} />}
-    </main>
-  );
+ return <main ref={consoleRef} className={`dap${isDark?' is-dark':''}`} data-testid="developer-console" data-tab={tab} data-mode={demo?'demo':'live'}><div className="dap-inner">
+  <header className="dap-header"><div className="dap-heading"><span className="dap-brand-mark"><Code2 size={25}/></span><div><h1>开发者 API</h1><p>访问凭据、模型与回调，一处管理。</p></div></div><div className="dap-header-actions"><div className="dap-mode" aria-label="数据环境">{demo?<><span className="selected"><span/>演示数据</span>{controlForKey('developer_api').status==='normal'?<Link to="/developer-api">真实数据</Link>:<span className="unavailable" title="真实API仍在内部测试">真实数据</span>}</>:<><Link to="/developer-api/demo">演示数据</Link><span className="selected"><span/>真实数据</span></>}</div><Link to="/developer-api/docs" className="dap-button"><BookOpen size={16}/>API 文档<ExternalLink size={13}/></Link><button className="dap-icon" aria-label="刷新数据" title="刷新数据" disabled={loading||busy} onClick={()=>void load()}><RefreshCw size={16} className={loading?'dap-spin':''}/></button></div></header>
+  {demo&&<div className="dap-demo-strip"><div><Terminal size={16}/><strong>演示工作区</strong><span>示例数据，操作仅在当前页面生效</span></div><div><ConsoleSelect label="演示场景" value={scenario} disabled={busy} onChange={next=>void reset(next)} options={[{value:'normal',label:'常规运行'},{value:'issues',label:'异常状态'},{value:'empty',label:'空白空间'}]}/><button className="dap-text-button" onClick={()=>void reset()} disabled={busy}><RotateCw size={14}/>重置</button></div></div>}
+  <div className="dap-layout"><aside className="dap-sidebar" aria-label="开发者导航"><nav>{NAV.map(([id,label,Icon])=><button key={id} className={tab===id?'active':''} aria-current={tab===id?'page':undefined} onClick={()=>navigateTab(id)}><span className="dap-nav-icon"><Icon size={17}/></span><span className="dap-nav-copy">{label}</span>{id==='deliveries'&&failures>0&&<b>{failures}</b>}</button>)}</nav></aside>
+  <div className="dap-content"><div className="dap-content-heading"><div><h2>{title}</h2><p>{tab==='overview'?'访问凭据、提交用量与回调运行情况':tab==='keys'?'为不同应用配置独立凭据和权限':tab==='webhooks'?'接收任务完成、失败和取消事件':tab==='deliveries'?'最近100条记录，可筛选并检查投递失败原因':tab==='models'?'查看当前账号可通过API调用的模型':'使用 OpenAI Images 协议接入，也可先查看任务报价'}</p></div></div>
+   {Object.entries(errors).map(([resource,message])=><div className="dap-error" role="alert" key={resource}><TriangleAlert size={16}/><span>{RESOURCE_LABELS[resource]}读取失败：{message}</span><button onClick={()=>void load()} disabled={loading}>重试</button></div>)}
+   {loading&&!Object.values(ready).some(Boolean)?<div className="dap-loading" role="status"><RefreshCw size={20} className="dap-spin"/>正在读取工作区…</div>:<>
+    {tab==='overview'&&<>
+     <OverviewHighlights data={data} ready={ready} summary={{usableKeys:usable.length,retained,todayTasks,todayBudget}} onKeys={()=>navigateTab('keys')} onQuickstart={()=>navigateTab('quickstart')} onDeliveries={status=>{navigateTab('deliveries');setFilter(status)}}/>
+     <div className="dap-overview-grid"><section className="dap-panel"><header><h3>额度使用</h3><button className="dap-text-button" onClick={()=>navigateTab('keys')}>管理 Key<ArrowRight size={14}/></button></header>{data.keys.filter(item=>item.status!=='revoked').slice(0,3).map(key=><div className="dap-usage-row" key={key.id}><div><span className="dap-glyph"><KeyRound size={15}/></span><strong>{key.label}</strong><Badge status={keyStatus(key)}>{KEY_STATUSES[keyStatus(key)]}</Badge></div><Meter used={key.usage?.todaySpendCents} limit={key.dailySpendLimitCents} label="今日提交预算"/></div>)}{!data.keys.length&&<Empty title="创建第一把 Key" description="独立管理应用权限和使用额度。" action={actions}/>}<footer className="dap-panel-note">任务与预算按 UTC 重置（北京时间 08:00）</footer></section>
+     <section className="dap-panel dap-start"><header><h3>快速接入</h3><span className="dap-small-label">OpenAI Images · v1</span></header><div className="dap-start-copy"><h3>把创作能力，接入你的应用</h3><p>从查询模型开始，完成你的第一个 API 请求。</p></div><div className="dap-start-terminal"><div className="dap-terminal-chrome"><span><i/><i/><i/></span><small>Terminal</small></div><pre><span className="dap-command-word">curl</span>{' '+imageBase+'/models'+' '+String.fromCharCode(92,10)}<span className="dap-command-option">  -H</span>{' "Authorization: Bearer YOUR_API_KEY"'}</pre></div><div className="dap-endpoint"><span>GET</span><code>/v1/models</code><button aria-label="复制模型接口地址" title="复制模型接口地址" onClick={()=>copy(imageBase+'/models')}><Copy size={14}/></button></div><button className="dap-button" onClick={()=>navigateTab('quickstart')}>查看接入示例<ArrowRight size={15}/></button></section></div>
+     <section className="dap-panel dap-recent"><header><h3>{demo?'模拟请求记录':'最近回调'}</h3>{demo?<span className="dap-small-label">示例数据</span>:<button className="dap-text-button" onClick={()=>navigateTab('deliveries')}>全部记录<ArrowRight size={14}/></button>}</header>
+      {demo?<div className="dap-table-wrap"><table><thead><tr><th>请求</th><th>模型</th><th>状态</th><th>耗时</th><th>时间</th><th/></tr></thead><tbody>{data.requests.slice(0,5).map(item=><tr key={item.id}><td><span className="dap-method">{item.method}</span><code>{item.path}</code></td><td>{data.models.find(model=>model.id===item.modelId)?.name||item.modelId||'—'}</td><td><Badge status={item.statusCode>=400?'dead':'delivered'}>{item.statusCode}</Badge></td><td className="numeric">{item.durationMs} ms</td><td>{time(item.createdAt,true)}</td><td><button className="dap-icon" aria-label={`查看请求 ${item.id}`} onClick={()=>setDetail({kind:'request',item})}><MoreHorizontal size={16}/></button></td></tr>)}</tbody></table>{!data.requests.length&&<Empty icon={Activity} title="暂无请求" description="切换演示场景可查看请求效果。"/>}</div>:<div className="dap-recent-deliveries">{data.deliveries.slice(0,4).map(item=><button key={item.id} onClick={()=>setDetail({kind:'delivery',item})}><Webhook size={16}/><span>{hooks.get(item.endpointId)?.label||'回调端点'}<small>{item.eventType}</small></span><Badge status={item.status}>{DELIVERY_STATUSES[item.status]}</Badge><time>{time(item.createdAt,true)}</time></button>)}{!data.deliveries.length&&<Empty icon={Webhook} title="暂无回调记录" description="通过API创建的任务完成后可在此查看。"/>}</div>}
+     </section>
+    </>}
+    {['keys','webhooks','deliveries','models'].includes(tab)&&<div className="dap-filterbar"><label className="dap-search"><Search size={16}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder={tab==='keys'?'搜索名称或 Key 标识':tab==='models'?'搜索模型名称或 ID':tab==='webhooks'?'搜索名称或回调地址':'搜索任务、端点或错误'} aria-label="搜索当前列表"/>{query&&<button onClick={()=>setQuery('')} aria-label="清除搜索">×</button>}</label>
+     {tab!=='models'&&<ConsoleSelect label="状态筛选" value={filter} onChange={setFilter} options={[{value:'all',label:'全部状态'},...Object.entries(tab==='keys'?KEY_STATUSES:tab==='deliveries'?DELIVERY_STATUSES:{active:'启用',paused:'停用'}).map(([value,label])=>({value,label}))]}/>}
+     {tab==='deliveries'&&<ConsoleSelect label="端点筛选" value={endpoint} onChange={setEndpoint} options={[{value:'all',label:'全部端点'},...data.webhooks.map(hook=>({value:hook.id,label:hook.label}))]}/>}
+     <span className="dap-filter-spacer"/>{tab==='keys'?actions:tab==='webhooks'?<button className="dap-button primary" disabled={!ready.webhooks||Boolean(errors.webhooks)} onClick={()=>setDialog({kind:'webhook'})}><Plus size={16}/>添加 Webhook</button>:null}
+    </div>}
+    {tab==='keys'&&<section className="dap-panel"><div className="dap-table-wrap"><table className="dap-keys-table"><thead><tr><th>名称 / Key 标识</th><th>状态</th><th>权限与模型</th><th>今日提交预算</th><th>最近使用</th><th/></tr></thead><tbody>{pageItems(keyList).map(key=><tr key={key.id}><td><button className="dap-row-title" onClick={()=>setDetail({kind:'key',item:key})}>{key.label}</button><code className="dap-subtext">{key.prefix}••••••••</code>{expiresSoon(key)&&<small className="dap-expiry">{time(key.expiresAt,true)} 到期</small>}</td><td><Badge status={keyStatus(key)}>{KEY_STATUSES[keyStatus(key)]}</Badge></td><td><span>{key.scopes?.length||0} 项权限</span><small className="dap-subtext">{key.allowedModelIds?.length?`${key.allowedModelIds.length} 个指定模型`:'全部开放模型'}</small></td><td><Meter used={key.usage?.todaySpendCents} limit={key.dailySpendLimitCents} label="积分"/></td><td>{time(key.lastUsedAt,true)}<small className="dap-subtext">{key.lastUsedIp||(key.lastUsedAt?'IP 未记录':'尚未使用')}</small></td><td><button className="dap-icon" aria-label={`查看 ${key.label}`} title="查看详情" onClick={()=>setDetail({kind:'key',item:key})}><MoreHorizontal size={18}/></button></td></tr>)}</tbody></table></div>{!keyList.length&&<Empty title={data.keys.length?'没有匹配的 Key':'还没有 API Key'} description={data.keys.length?'换个关键词或状态试试。':'创建一把Key开始接入。'}/>}<Pager page={Math.min(page,Math.max(1,Math.ceil(keyList.length/8)))} total={keyList.length} onChange={setPage}/></section>}
+    {tab==='webhooks'&&<section className="dap-panel"><div className="dap-hook-list">{pageItems(hookList).map(item=><article key={item.id}><span className="dap-glyph"><Webhook size={20}/></span><div className="dap-hook-copy"><h3>{item.label}<Badge status={item.enabled?'active':'paused'}>{item.enabled?'启用':'停用'}</Badge></h3><code>{item.url}</code><div className="dap-event-tags">{item.events.map(event=><span key={event}>{EVENTS.find(([id])=>id===event)?.[1]||event}</span>)}</div></div><div className="dap-hook-actions"><button className="dap-button" onClick={()=>setDialog({kind:'webhook',item})}>编辑</button><button className="dap-icon" title={item.enabled?'暂停端点':'启用端点'} aria-label={`${item.enabled?'暂停':'启用'} ${item.label}`} onClick={()=>ask('toggle-hook',item)}>{item.enabled?<Pause size={15}/>:<Play size={15}/>}</button><button className="dap-icon danger" title="删除端点" aria-label={`删除 ${item.label}`} onClick={()=>ask('delete-hook',item)}><Trash2 size={15}/></button></div></article>)}</div>{!hookList.length&&<Empty icon={Webhook} title="暂无匹配的 Webhook" description="为任务结果配置一个回调地址。"/>}<Pager page={Math.min(page,Math.max(1,Math.ceil(hookList.length/8)))} total={hookList.length} onChange={setPage}/></section>}
+    {tab==='deliveries'&&<section className="dap-panel"><div className="dap-table-wrap"><table><thead><tr><th>事件 / 任务</th><th>端点</th><th>状态</th><th>HTTP</th><th>尝试</th><th>时间</th><th/></tr></thead><tbody>{pageItems(deliveryList).map(item=><tr key={item.id}><td><button className="dap-row-title" onClick={()=>setDetail({kind:'delivery',item})}>{EVENTS.find(([id])=>id===item.eventType)?.[1]||item.eventType}</button><code className="dap-subtext">{item.sourceId}</code></td><td>{hooks.get(item.endpointId)?.label||'已移除端点'}</td><td><Badge status={item.status}>{DELIVERY_STATUSES[item.status]}</Badge></td><td className="numeric">{item.responseStatus||'—'}</td><td className="numeric">{item.attempts}</td><td>{time(item.deliveredAt||item.createdAt,true)}</td><td><button className="dap-icon" aria-label={`查看投递 ${item.id}`} title="查看投递详情" onClick={()=>setDetail({kind:'delivery',item})}><MoreHorizontal size={16}/></button></td></tr>)}</tbody></table></div>{!deliveryList.length&&<Empty icon={Activity} title="暂无匹配的投递记录" description="这里只显示服务端返回的最近100条记录。"/>}<Pager page={Math.min(page,Math.max(1,Math.ceil(deliveryList.length/8)))} total={deliveryList.length} onChange={setPage}/></section>}
+    {tab==='models'&&<section className="dap-panel"><div className="dap-table-wrap"><table><thead><tr><th>模型</th><th>起始价格</th><th>单次张数</th><th>参考图上限</th><th>分辨率</th><th/></tr></thead><tbody>{modelList.map(item=><tr key={item.id}><td><strong>{item.name}</strong><code className="dap-subtext">{item.id}</code></td><td>{number(item.priceCents)} 积分</td><td>{item.maxImages||1}</td><td>{item.maxReferenceImages||0}</td><td>{item.resolutions?.join(' / ')||'由模型决定'}</td><td>{supportsStarterExample(item)?<button className="dap-text-button" onClick={()=>{setSelectedModel(item.id);navigateTab('quickstart')}}>接入示例<ArrowRight size={14}/></button>:<Link className="dap-text-button" to="/developer-api/docs">接口文档<ExternalLink size={13}/></Link>}</td></tr>)}</tbody></table></div>{!modelList.length&&<Empty icon={Box} title="暂无可用模型" description="模型开放状态由平台配置决定。"/>}</section>}
+    {tab==='quickstart'&&<div className="dap-quickstart"><section className="dap-panel"><header><h3>{protocol==='images'?'OpenAI 兼容图片调用':'预估文生图积分'}</h3><Badge status="active">{protocol==='images'?'只复制示例':'不创建任务'}</Badge></header><div className="dap-quick-form"><label>接入方式<ConsoleSelect label="接入协议" value={protocol} onChange={value=>{setProtocol(value);setSampleResponse(null)}} options={[{value:'images',label:'OpenAI Images · 生图'},{value:'quote',label:'任务 API · 报价'}]}/></label><label>模型<ConsoleSelect label="示例模型" value={model?.id||''} disabled={!quoteModels.length} placeholder="PUBLIC_MODEL_ID" onChange={value=>{setSelectedModel(value);setSampleResponse(null)}} options={quoteModels.map(item=>({value:item.id,label:item.name}))}/></label><p>{protocol==='images'?'统一地址与 Key，切换模型只改 model。执行以下生图请求会消耗积分，当前页面不会发送请求。':'报价不创建任务、不预留积分。核对价格后，再按完整文档提交图片任务。'}</p><div className="dap-endpoint"><span>BASE</span><code>{apiBase}</code><button aria-label="复制 Base URL" title="复制 Base URL" onClick={()=>copy(apiBase)}><Copy size={14}/></button></div><button className="dap-button" onClick={()=>copy(snippet,'cURL 示例已复制')}><Copy size={15}/>复制 cURL</button>{demo&&<><button className="dap-button primary" disabled={!model} onClick={()=>{setProtocol('images');setSampleResponse(imageResponseExample())}}><Play size={15}/>模拟图片返回</button><button className="dap-button" disabled={!model} onClick={()=>{setProtocol('quote');setSampleResponse({success:true,data:{currency:'credits',modelId:model.id,unitPriceCents:model.priceCents,count:1,totalPriceCents:model.priceCents,authoritative:true}})}}><Play size={15}/>模拟报价返回</button></>}</div><div className="dap-code"><div><span>cURL</span><small>{demo?'演示地址与模型':'服务端调用'}</small></div><pre>{snippet}</pre></div><footer className="dap-panel-note">{protocol==='images'?'新请求使用新幂等键；同一次请求重试时复用。保存响应 X-Task-ID，等待超时后可查询任务。':'报价接口沿用 /api/open/v1；它的返回格式与 OpenAI Images 不同。'}</footer></section>
+     <section className="dap-panel"><header><h3>{sampleResponse?'演示响应':'接入流程'}</h3>{sampleResponse&&<span className="dap-small-label">示例数据</span>}</header>{sampleResponse?<><pre className="dap-response">{JSON.stringify(sampleResponse,null,2)}</pre>{protocol==='images'&&<p className="dap-panel-note">固定的 1×1 PNG 占位图片，仅展示返回格式。没有发送生图请求或消耗积分。</p>}</>:<ol className="dap-steps"><li><b>01</b><div><strong>创建测试 Key</strong><p>在真实控制台设置较小额度，开通模型读取、任务创建和结果读取权限。</p></div></li><li><b>02</b><div><strong>查询模型，配置接入地址</strong><p>{protocol==='images'?'使用 /v1 作为 Base URL，model 填模型目录的真实 ID。OpenAI SDK 可复用。':'使用公开模型 ID，先通过报价核对参数和预计积分。'}</p></div></li><li><b>03</b><div><strong>{protocol==='images'?'生成图片并保存结果':'提交任务并接收结果'}</strong><p>{protocol==='images'?'默认返回 b64_json，解码后保存。504 只表示等待超时，服务端任务会继续。':'重试复用幂等键，通过轮询或 Webhook 读取终态。'}</p></div></li></ol>}<footer className="dap-panel-note"><Link to="/developer-api/docs">查看 Python、cURL 与图片编辑示例 <ExternalLink size={13}/></Link></footer></section></div>}
+   </>}
+   <footer className="dap-content-footer"><span><span className="dap-status-dot"/>{demo?'示例工作区':Object.keys(errors).length?'部分数据未更新':'数据已同步'}</span><span>{updated?`更新于 ${time(updated,true)}`:''}</span></footer>
+  </div></div>
+  {notice&&<div className="dap-toast" role="status"><Check size={16}/>{notice}</div>}
+  {dialog?.kind==='key'&&<KeyForm client={client} models={data.models} demo={demo} onClose={()=>setDialog(null)} onSaved={result=>saved(result,'API Key 已创建')}/>}
+  {dialog?.kind==='webhook'&&<WebhookForm client={client} initial={dialog.item} demo={demo} onClose={()=>setDialog(null)} onSaved={result=>saved(result,'Webhook 签名密钥')}/>}
+  {secret&&<Secret secret={secret} demo={demo} onClose={()=>setSecret(null)}/>}
+  {detail&&<Modal title={detail.kind==='key'?'Key 详情':detail.kind==='delivery'?'投递详情':'模拟请求详情'} onClose={()=>setDetail(null)} wide footer={detail.kind==='key'?<><button className="dap-button danger" disabled={detail.item.status==='revoked'} onClick={()=>ask('revoke',detail.item)}><Trash2 size={15}/>撤销 Key</button><button className="dap-button primary" disabled={keyStatus(detail.item)!=='active'} onClick={()=>ask('rotate',detail.item)}><RotateCw size={15}/>轮换 Key</button></>:detail.kind==='delivery'?<button className="dap-button primary" disabled={!canRetry(detail.item)} title={!hooks.get(detail.item.endpointId)?.enabled?'请先启用回调端点':undefined} onClick={()=>ask('retry',detail.item)}><RotateCw size={15}/>重新投递</button>:<button className="dap-button" onClick={()=>copy(JSON.stringify(detail.item.response,null,2))}><Copy size={15}/>复制示例响应</button>}>
+    {detail.kind==='key'?<><div className="dap-detail-head"><span className="dap-glyph"><KeyRound size={22}/></span><div><h3>{detail.item.label}</h3><code>{detail.item.prefix}••••••••</code></div><Badge status={keyStatus(detail.item)}>{KEY_STATUSES[keyStatus(detail.item)]}</Badge></div>{detail.item.freezeReason&&<p className="dap-form-error">{detail.item.freezeReason}</p>}<dl className="dap-details"><DetailRow label="权限">{(detail.item.scopes||[]).map(scope=><span className="dap-code-tag" key={scope}>{scope}</span>)}</DetailRow><DetailRow label="模型范围">{detail.item.allowedModelIds?.length?detail.item.allowedModelIds.map(id=>data.models.find(model=>model.id===id)?.name||id).join('、'):'全部开放模型'}</DetailRow><DetailRow label="IP 白名单">{detail.item.ipAllowlist?.join('、')||'未限制'}</DetailRow><DetailRow label="创建时间">{time(detail.item.createdAt)}</DetailRow><DetailRow label="到期时间">{detail.item.expiresAt?time(detail.item.expiresAt):'长期有效'}</DetailRow><DetailRow label="最近使用 IP">{detail.item.lastUsedIp}</DetailRow><DetailRow label="每分钟请求上限">{number(detail.item.rateLimitPerMinute)}</DetailRow></dl><div className="dap-detail-quotas"><Meter used={detail.item.usage?.todayTasks} limit={detail.item.dailyTaskLimit} label="每日任务数"/><Meter used={detail.item.usage?.monthTasks} limit={detail.item.monthlyTaskLimit} label="每月任务数"/><Meter used={detail.item.usage?.todaySpendCents} limit={detail.item.dailySpendLimitCents} label="每日提交预算"/><Meter used={detail.item.usage?.monthSpendCents} limit={detail.item.monthlySpendLimitCents} label="每月提交预算"/></div><p className="dap-muted">今日流量 {bytes(detail.item.usage?.todayBytes)} / {bytes(detail.item.dailyByteLimit)} · 过期但未撤销的Key仍占保留名额。</p></>:detail.kind==='delivery'?<><div className="dap-detail-head"><span className="dap-glyph"><Webhook size={22}/></span><h3>{EVENTS.find(([id])=>id===detail.item.eventType)?.[1]||detail.item.eventType}</h3><Badge status={detail.item.status}>{DELIVERY_STATUSES[detail.item.status]}</Badge></div><dl className="dap-details"><DetailRow label="投递 ID">{detail.item.id}</DetailRow><DetailRow label="来源任务">{detail.item.sourceId}</DetailRow><DetailRow label="回调端点">{hooks.get(detail.item.endpointId)?.label||'端点不可用'}</DetailRow><DetailRow label="回调地址">{hooks.get(detail.item.endpointId)?.url}</DetailRow><DetailRow label="HTTP 响应">{detail.item.responseStatus||'—'}</DetailRow><DetailRow label="累计尝试">{detail.item.attempts}</DetailRow><DetailRow label="创建时间">{time(detail.item.createdAt)}</DetailRow><DetailRow label="送达时间">{time(detail.item.deliveredAt)}</DetailRow></dl>{detail.item.lastError&&<div className="dap-form-error"><strong>最近错误</strong><p>{detail.item.lastError}</p></div>}<p className="dap-muted">只有失败记录可以重投；停用端点需先启用。手动重投不重置累计尝试次数。</p></>:<><p className="dap-muted">此处请求与响应均为演示数据。</p><dl className="dap-details"><DetailRow label="请求 ID">{detail.item.requestId}</DetailRow><DetailRow label="接口">{detail.item.method} {detail.item.path}</DetailRow><DetailRow label="状态 / 耗时">{detail.item.statusCode} / {detail.item.durationMs} ms</DetailRow></dl><h3 className="dap-small-heading">请求</h3><pre className="dap-response">{JSON.stringify(detail.item.request,null,2)}</pre><h3 className="dap-small-heading">响应</h3><pre className="dap-response">{JSON.stringify(detail.item.response,null,2)}</pre></>}
+  </Modal>}
+  {confirmation&&<Modal title={confirmation.kind==='rotate'?'轮换访问密钥':confirmation.kind==='revoke'?'撤销访问密钥':confirmation.kind==='delete-hook'?'删除回调端点':confirmation.kind==='retry'?'重新投递事件':confirmation.item.enabled?'暂停回调端点':'启用回调端点'} onClose={()=>setConfirmation(null)} busy={busy} footer={<><button className="dap-button" disabled={busy} onClick={()=>setConfirmation(null)}>取消</button><button className="dap-button primary" disabled={busy} onClick={confirm}>{busy?'处理中…':'确认操作'}</button></>}>
+   <p className="dap-confirm-subject">{confirmation.item.label||confirmation.item.eventType}</p><p>{confirmation.kind==='rotate'?'旧Key将立即失效，新密钥只显示一次。请及时更新调用方配置。':confirmation.kind==='revoke'?'撤销后无法恢复，使用这把Key的应用将不能继续调用接口。':confirmation.kind==='delete-hook'?'将删除此回调端点及其投递记录。':confirmation.kind==='retry'?'将这条失败记录重新加入投递队列，累计尝试次数不会重置。':confirmation.item.enabled?'暂停后不再领取新的投递，已经发出的请求无法撤回。':'启用后将继续处理此端点等待中的投递。'}</p>{demo&&<span className="dap-small-label">仅修改演示数据</span>}{actionError&&<p className="dap-form-error" role="alert">{actionError}</p>}
+  </Modal>}
+ </div></main>;
 }

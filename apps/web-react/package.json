@@ -32,7 +32,7 @@
     "test:history-pagination": "node --test scripts/test-history-pagination.mjs",
     "test:history-media-fallback": "node --test scripts/test-history-media-fallback.mjs",
     "test:task-media-results": "node --test scripts/test-task-media-results.mjs",
-    "test:task-concurrency": "node --test scripts/test-task-concurrency.mjs",
+    "test:task-concurrency": "node --test scripts/test-task-concurrency.mjs scripts/test-task-client-lifecycle.mjs scripts/test-t2i-recovery.mjs",
     "test:task-generation-timing": "node scripts/test-task-generation-timing.mjs",
     "test:task-generation-stage": "node scripts/test-task-generation-stage.mjs",
     "test:dynamic-import-recovery": "node scripts/test-dynamic-import-recovery.mjs",
@@ -49,6 +49,9 @@
     "test:region-process-session": "node scripts/test-region-process-session.mjs",
     "test:version-tree": "node scripts/test-version-tree.mjs",
     "test:e2e": "playwright test",
+    "test:holo-card": "node --test scripts/test-holo-card.mjs scripts/test-holo-visual-effects.mjs scripts/test-card-motion-presets.mjs scripts/test-holo-template-input.mjs scripts/test-subject-fitting.mjs",
+    "test:holo-skins": "node --test scripts/test-card-skin-input.mjs scripts/test-card-skin-art.mjs scripts/test-card-skin-settings.mjs",
+    "test:pricing-faqs": "node --test scripts/test-pricing-faqs.mjs",
     "test:e2e:visual": "playwright test --grep @visual --project visual-desktop --project visual-mobile",
     "preview": "vite preview --host 127.0.0.1 --port 3105 --strictPort"
   },

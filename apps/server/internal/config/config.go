@@ -73,6 +73,7 @@ type Config struct {
 	ObjectStoragePresignExpireSecs int
 
 	WorkerConcurrency      int
+	WorkerChatConcurrency  int
 	WorkerPollConcurrency  int
 	UserMaxRunningTasks    int
 	WorkerImageMemoryMiB   int64
@@ -243,6 +244,7 @@ func Load() *Config {
 		ObjectStoragePresignExpireSecs: getenvInt("OBJECT_STORAGE_PRESIGN_EXPIRE_SECS", getenvInt("R2_PRESIGN_EXPIRE_SECS", 3600)),
 
 		WorkerConcurrency:      getenvInt("WORKER_CONCURRENCY", 32),
+		WorkerChatConcurrency:  getenvInt("WORKER_CHAT_CONCURRENCY", 8),
 		WorkerPollConcurrency:  getenvInt("WORKER_POLL_CONCURRENCY", 0),
 		UserMaxRunningTasks:    getenvInt("USER_MAX_RUNNING_TASKS", 100),
 		WorkerImageMemoryMiB:   int64(getenvInt("WORKER_IMAGE_MEMORY_MIB", 1024)),

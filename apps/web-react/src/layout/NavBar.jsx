@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import gsap from "gsap";
 import { useGSAP } from "@gsap/react";
-import { Link, useLocation, useNavigate, useNavigation } from "react-router";
+import { useLocation, useNavigate, useNavigation } from "react-router";
+import { PageEntryLink as Link } from "../page-control/PageEntryLink.jsx";
 import { LocaleSwitcher } from "./LocaleSwitcher.jsx";
 import { ThemeSwitch } from "./ThemeSwitch.jsx";
 import { TrialAccessDialog } from "../components/TrialAccessDialog.jsx";
@@ -26,6 +27,7 @@ import {
 } from "@react/legacy-modules/features/creator-hub/studioTools.js";
 import { displayNotification, isAnnouncementNotification } from "../utils/notificationDisplay.js";
 import { usePageControls } from "../page-control/PageControlContext.jsx";
+import { REFERRALS_ENABLED } from "../config/referrals.js";
 import "@react/legacy-styles/generated/components/layout/NavBar.css";
 import "@react/legacy-styles/generated/components/layout/NavNotificationsMenu.css";
 import "./NavBar.account-menu.css";
@@ -105,6 +107,7 @@ const commerceGroups = COMMERCE_ENTRY_GROUPS.map((group) => ({
 }));
 
 const baseTools = [
+  ["/holo-card", "闪光卡", "bi-stars"],
   ["/tools/background-remove", "背景移除", "bi-person-bounding-box"],
   ["/tools/image-compress", "图片压缩", "bi-file-zip"],
   ["/tools/puzzle", "拼图", "bi-puzzle-fill"],
@@ -209,6 +212,7 @@ export function NavBar() {
   const [activeDropdown, setActiveDropdown] = useState("");
   const [mobileOpen, setMobileOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
+  const homeOverlay = location.pathname === "/" && !scrolled;
   const [balance, setBalance] = useState(0);
   const [subscription, setSubscription] = useState(null);
   const [notificationUnread, setNotificationUnread] = useState(0);
@@ -301,10 +305,7 @@ export function NavBar() {
     .trim()
     .slice(0, 1)
     .toUpperCase();
-  const subscriptionLabel =
-    subscription?.active && String(subscription.planName || "").trim()
-      ? String(subscription.planName).trim()
-      : "未订阅";
+  const subscriptionLabel = subscription?.active ? "已订阅" : subscription?.blockingPurchase ? "退订处理中" : "未订阅";
 
   useLayoutEffect(() => {
     const publish = () => {
@@ -505,6 +506,7 @@ export function NavBar() {
           Number(wallet?.availableCents ?? wallet?.balanceCents ?? 0),
         ),
       );
+      getSubscription({ signal: controller.signal }).then(next => { if (!controller.signal.aborted) setSubscription(next); }).catch(() => null);
     };
     window.addEventListener("starclouds:wallet-updated", onWalletUpdated);
     getWallet({ signal: controller.signal })
@@ -524,7 +526,7 @@ export function NavBar() {
       controller.abort();
       window.removeEventListener("starclouds:wallet-updated", onWalletUpdated);
     };
-  }, [auth.isAuthenticated]);
+  }, [auth.isAuthenticated,auth.user?.id]);
 
   useEffect(() => {
     if (!trialVisible) {
@@ -589,6 +591,12 @@ export function NavBar() {
     const refreshPreview = () =>
       listNotifications({ limit: 8, signal: controller.signal })
         .then((result) => {
+          if (controller.signal.aborted) return;
+          if (Number(result.unread) !== lastUnread && result.items.some(item => String(item.sourceType || "").startsWith("subscription_"))) {
+            getWallet({ signal: controller.signal }).then(wallet => {
+              if (!controller.signal.aborted) window.dispatchEvent(new CustomEvent("starclouds:wallet-updated", { detail: wallet }));
+            }).catch(() => null);
+          }
           lastUnread = Math.max(0, Number(result.unread) || 0);
           setNotificationUnread(lastUnread);
           setNotificationItems(
@@ -599,7 +607,7 @@ export function NavBar() {
         })
         .catch(() => null);
     const onUpdated = (event) => {
-      if (!Number.isFinite(Number(event?.detail?.unreadCount))) return;
+      if (!Number.isFinite(Number(event?.detail?.unreadCount))) { if (event?.detail?.source === "subscription-change") void refreshPreview(); return; }
       const nextUnread = Math.max(0, Number(event.detail.unreadCount));
       setNotificationUnread(nextUnread);
       if (event?.detail?.source === "clear-all") {
@@ -637,7 +645,7 @@ export function NavBar() {
       window.clearTimeout(accountCloseTimerRef.current);
       window.removeEventListener("starclouds:notifications-updated", onUpdated);
     };
-  }, [auth.isAuthenticated]);
+  }, [auth.isAuthenticated, auth.user?.id]);
 
   function toggleDropdown(name) {
     setActiveDropdown((current) => (current === name ? "" : name));
@@ -786,7 +794,7 @@ export function NavBar() {
   return (
     <header
       ref={rootRef}
-      className={`site-header${isDark ? " is-dark" : ""}${isCanvas ? " is-canvas" : ""}${scrolled ? " is-scrolled" : ""}${mobileOpen ? " is-mobile-open" : ""}`}
+      className={`site-header${isDark || homeOverlay ? " is-dark" : ""}${homeOverlay ? " is-home-overlay" : ""}${isCanvas ? " is-canvas" : ""}${scrolled ? " is-scrolled" : ""}${mobileOpen ? " is-mobile-open" : ""}`}
     >
       <div id="site-announcement-slot" />
       <div className="header-shell">
@@ -1005,7 +1013,7 @@ export function NavBar() {
               <LocaleSwitcher />
               {auth.isAuthenticated ? (
                 <>
-                  <div
+                  {isEntryVisible("/notifications") && <div
                     className={`nav-notify${notificationUnread > 0 ? " has-unread" : ""}${notificationOpen ? " open" : ""}`}
                     onMouseEnter={showNotifications}
                     onMouseLeave={scheduleNotificationClose}
@@ -1086,8 +1094,13 @@ export function NavBar() {
                                 >
                                   <Link
                                     className="nav-notify__item"
-                                    to="/notifications"
-                                    onClick={closeMenu}
+                                    to={String(item.targetPath || "").startsWith("/subscriptions?") && isEntryVisible(item.targetPath) ? item.targetPath : "/notifications"}
+                                    onClick={() => {
+                                      closeMenu();
+                                      if (!item.readAt && String(item.targetPath || "").startsWith("/subscriptions?")) {
+                                        markNotificationsRead([item.id]).then(() => window.dispatchEvent(new CustomEvent("starclouds:notifications-updated", { detail: { source: "subscription-change" } }))).catch(() => null);
+                                      }
+                                    }}
                                   >
                                     <span className="nav-notify__copy">
                                       <strong>{title}</strong>
@@ -1125,7 +1138,7 @@ export function NavBar() {
                         </footer>
                       </aside>
                     )}
-                  </div>
+                  </div>}
                   <div
                     className={`account-menu${accountOpen ? " open" : ""}`}
                     onMouseEnter={showAccountMenu}
@@ -1213,9 +1226,11 @@ export function NavBar() {
                               ["/assets", "bi-collection", "我的资产"],
                               ["/submissions", "bi-send-check", "我的投稿"],
                               ["/wallet", "bi-wallet2", "我的钱包"],
+                              ["/subscriptions", "bi-calendar-check", "我的订阅"],
                               ["/orders", "bi-receipt", "我的订单"],
                               ["/account", "bi-person-gear", "账号设置"],
                               ["/developer-api", "bi-code-square", "开发者 API"],
+                              ...(REFERRALS_ENABLED ? [["/invite", "bi-person-plus", "邀请好友"]] : []),
                             ]
                               .filter(([to]) => isEntryVisible(to))
                               .map(([to, icon, label]) => (

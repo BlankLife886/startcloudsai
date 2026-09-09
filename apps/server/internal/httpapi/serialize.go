@@ -3,12 +3,14 @@ package httpapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"github.com/BlankLife886/startcloudsai/server/internal/assistantbilling"
 	"github.com/BlankLife886/startcloudsai/server/internal/lanjingpay"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
@@ -54,17 +56,25 @@ func walletDict(wallet *store.Wallet) gin.H {
 	if wallet == nil {
 		wallet = &store.Wallet{}
 	}
-	balancePoints := wallet.BalanceCents + wallet.TrialBalanceCents
-	frozenPoints := wallet.FrozenCents + wallet.TrialFrozenCents
+	balancePoints := wallet.BalanceCents + wallet.TrialBalanceCents + wallet.SubscriptionBalanceCents
+	frozenPoints := wallet.FrozenCents + wallet.TrialFrozenCents + wallet.SubscriptionHeldCents + wallet.SubscriptionUpgradeHeldCents
 	return gin.H{
 		"balancePoints": balancePoints, "frozenPoints": frozenPoints,
 		"balanceCents": balancePoints, "frozenCents": frozenPoints,
 		"availableCents": balancePoints, "totalCents": balancePoints + frozenPoints,
-		"normalBalanceCents": wallet.BalanceCents,
-		"trialBalanceCents":  wallet.TrialBalanceCents,
-		"normalFrozenCents":  wallet.FrozenCents,
-		"trialFrozenCents":   wallet.TrialFrozenCents,
-		"trialFeatureKey":    wallet.TrialFeatureKey,
+		"normalBalanceCents":          wallet.BalanceCents,
+		"eligibleTopupPoints":         wallet.EligibleTopupPoints,
+		"ordinaryTopupPoints":         wallet.OrdinaryTopupPoints,
+		"trialBalanceCents":           wallet.TrialBalanceCents,
+		"normalFrozenCents":           wallet.FrozenCents - wallet.SubscriptionFrozenCents,
+		"subscriptionBalanceCents":    wallet.SubscriptionBalanceCents,
+		"subscriptionFrozenCents":     wallet.SubscriptionFrozenCents + wallet.SubscriptionHeldCents + wallet.SubscriptionUpgradeHeldCents,
+		"upgradeHeldCents":            wallet.SubscriptionUpgradeHeldCents,
+		"subscriptionTaskFrozenCents": wallet.SubscriptionFrozenCents,
+		"refundHeldCents":             wallet.SubscriptionHeldCents,
+		"taskFrozenCents":             wallet.FrozenCents + wallet.TrialFrozenCents,
+		"trialFrozenCents":            wallet.TrialFrozenCents,
+		"trialFeatureKey":             wallet.TrialFeatureKey,
 	}
 }
 
@@ -207,6 +217,9 @@ func taskGenerationStage(t *store.Task) string {
 	}
 	switch t.Status {
 	case "queued":
+		if store.TaskUpstreamSubmitted(t) {
+			return "upstream_generating"
+		}
 		return "queued"
 	case "succeeded":
 		return "completed"
@@ -237,7 +250,16 @@ func taskGenerationStage(t *store.Task) string {
 }
 
 func taskCancelPolicy(t *store.Task) gin.H {
-	stage := taskGenerationStage(t)
+	if t != nil && t.Type == "assistant" {
+		text := func(key string) string { value, _ := t.Params[key].(string); return value }
+		generation := 0
+		if value, ok := t.Params["_editableTaskGeneration"].(float64); ok {
+			generation = int(value)
+		}
+		run := &store.AssistantRun{ID: t.ID, UserID: t.UserID, Status: t.Status, Mode: text("mode"), ResolvedMode: text("resolvedMode"), Stage: text("stage"), Params: t.Params, CostCents: t.CostCents, ReservedCents: t.CostCents, BillingGeneration: generation}
+		p := assistantbilling.CancelPolicyForRun(run)
+		return gin.H{"allowed": p.Allowed, "mode": p.Mode, "upstreamSubmitted": p.UpstreamSubmitted, "refunded": p.Refunded, "message": p.Message, "chargedPoints": p.ChargedPoints, "refundedPoints": p.RefundedPoints, "canceledFrom": p.CanceledFrom}
+	}
 	policy := gin.H{
 		"allowed":           false,
 		"mode":              "unavailable",
@@ -248,14 +270,48 @@ func taskCancelPolicy(t *store.Task) gin.H {
 	if t == nil {
 		return policy
 	}
-	if t.Status == "queued" || (t.Status == "running" && stage == "preparing") {
+	if t.Status == "canceled" {
+		submitted, recorded := t.Params["_cancelUpstreamSubmitted"].(bool)
+		if recorded {
+			policy["upstreamSubmitted"] = submitted
+			policy["refunded"] = !submitted
+			policy["chargedPoints"] = int64(0)
+			policy["refundedPoints"] = t.CostCents
+			policy["canceledFrom"] = t.Params["_cancelFromStatus"]
+			if submitted {
+				policy["chargedPoints"] = t.CostCents
+				policy["refundedPoints"] = int64(0)
+				policy["message"] = "任务已停止接收结果，上游已提交，本次积分未退回。"
+			} else {
+				policy["message"] = "任务已取消，尚未提交上游，冻结积分已退回。"
+			}
+			if raw, exists := t.Params["_cancelChargedPoints"]; exists {
+				amount := func(value any) int64 {
+					switch n := value.(type) {
+					case float64:
+						return int64(n)
+					case int64:
+						return n
+					case int:
+						return int64(n)
+					}
+					return 0
+				}
+				charged, refunded := amount(raw), amount(t.Params["_cancelRefundedPoints"])
+				policy["chargedPoints"], policy["refundedPoints"], policy["refunded"] = charged, refunded, charged == 0
+				policy["message"] = fmt.Sprintf("任务已停止，已结算 %d 积分，已退回 %d 积分。", charged, refunded)
+			}
+		}
+		return policy
+	}
+	if !store.TaskUpstreamSubmitted(t) && (t.Status == "queued" || t.Status == "running") {
 		policy["allowed"] = true
 		policy["mode"] = "immediate"
 		policy["refunded"] = true
 		policy["message"] = "任务尚未提交上游，取消后冻结积分会立即退回。"
 		return policy
 	}
-	if t.Status == "running" {
+	if t.Status == "running" || t.Status == "queued" {
 		policy["allowed"] = true
 		policy["mode"] = "abandon_upstream"
 		policy["upstreamSubmitted"] = true
@@ -272,10 +328,12 @@ func taskDict(t *store.Task, outputURLs, originalURLs []string) gin.H {
 	}
 	return gin.H{
 		"id":                 t.ID.String(),
+		"clientRequestId":    t.IdempotencyKey,
 		"type":               t.Type,
 		"model":              t.Model,
 		"status":             t.Status,
 		"generationStage":    taskGenerationStage(t),
+		"queueReason":        t.Params["_queueWaitReason"],
 		"cancelPolicy":       taskCancelPolicy(t),
 		"prompt":             t.Prompt,
 		"params":             params,
@@ -433,6 +491,7 @@ func adminTaskServiceProvider(t *store.Task) string {
 
 func ledgerDict(e *store.LedgerEntry) gin.H {
 	return gin.H{
+		"settledPoints":      e.SettledPoints,
 		"id":                 e.ID.String(),
 		"kind":               e.Kind,
 		"deltaCents":         e.DeltaCents,
@@ -545,23 +604,31 @@ func ledgerDictWithAssistantRun(e *store.LedgerEntry, run *store.AssistantRun) g
 
 func planDict(p *store.Plan, includeAdmin bool) gin.H {
 	d := gin.H{
-		"id":               p.ID.String(),
-		"code":             p.Code,
-		"name":             p.Name,
-		"description":      p.Description,
-		"badge":            p.Badge,
-		"kind":             p.Kind,
-		"priceCents":       p.PriceCents,
-		"grantCents":       p.GrantCents,
-		"bonusCents":       p.BonusCents,
-		"grantPoints":      p.GrantCents,
-		"bonusPoints":      p.BonusCents,
-		"durationDays":     p.DurationDays,
-		"dailyGrantCents":  p.DailyGrantCents,
-		"dailyGrantPoints": p.DailyGrantCents,
-		"features":         nonNilStrings(p.Features),
-		"recommended":      p.Recommended,
-		"sort":             p.Sort,
+		"rechargePolicy":     p.RechargePolicy,
+		"priceLockEligible":  p.PriceLockEligible,
+		"revision":           p.Revision,
+		"subscriptionPolicy": p.SubscriptionPolicy,
+		"id":                 p.ID.String(),
+		"code":               p.Code,
+		"name":               p.Name,
+		"description":        p.Description,
+		"badge":              p.Badge,
+		"kind":               p.Kind,
+		"priceCents":         p.PriceCents,
+		"grantCents":         p.GrantCents,
+		"bonusCents":         p.BonusCents,
+		"grantPoints":        p.GrantCents,
+		"bonusPoints":        p.BonusCents,
+		"durationDays":       p.DurationDays,
+		"dailyGrantCents":    p.DailyGrantCents,
+		"dailyGrantPoints":   p.DailyGrantCents,
+		"features":           nonNilStrings(p.Features),
+		"recommended":        p.Recommended,
+		"sort":               p.Sort,
+	}
+	if p.RechargePolicy != nil {
+		d["minRechargeYuan"] = 1
+		d["maxRechargeYuan"] = p.RechargePolicy.MaxYuan()
 	}
 	if includeAdmin {
 		d["active"] = p.Active
@@ -573,9 +640,21 @@ func planDict(p *store.Plan, includeAdmin bool) gin.H {
 
 func orderDict(o *store.Order, payURL *string) gin.H {
 	return gin.H{
+		"planRevision":           o.PlanRevision,
+		"rechargePolicy":         o.RechargePolicy,
+		"priceLockEligible":      o.PriceLockEligible,
+		"subscriptionChangeId":   o.SubscriptionChangeID,
 		"id":                     o.ID.String(),
 		"planId":                 o.PlanID.String(),
+		"planName":               o.PlanName,
+		"planKind":               o.PlanKind,
+		"durationDays":           o.PlanDurationDays,
+		"dailyGrantCents":        o.PlanDailyGrantCents,
+		"planSnapshotAvailable":  o.PlanKind != nil,
+		"subscriptionEndsAt":     iso(o.SubscriptionEndsAt),
+		"subscriptionStartsAt":   iso(o.SubscriptionStartsAt),
 		"status":                 o.Status,
+		"recoveryRequired":       o.Status == "uncertain",
 		"amountCents":            o.AmountCents,
 		"grantCents":             o.GrantCents,
 		"bonusCents":             o.BonusCents,
@@ -644,6 +723,9 @@ func notificationDict(n *store.Notification, globalReadAt *string) gin.H {
 	}
 	if n.SourceID != nil && *n.SourceID != uuid.Nil {
 		d["sourceId"] = n.SourceID.String()
+	}
+	if n.TargetPath != nil {
+		d["targetPath"] = *n.TargetPath
 	}
 	return d
 }
@@ -767,6 +849,9 @@ func announcementDict(a *store.Announcement) gin.H {
 	for key, value := range config {
 		d[key] = value
 	}
+	// Push identity is server-owned and cannot be overridden by display config.
+	d["pushId"] = a.PushID
+	d["pushedAt"] = iso(a.PushedAt)
 	return d
 }
 

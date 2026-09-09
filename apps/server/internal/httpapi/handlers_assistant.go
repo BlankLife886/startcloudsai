@@ -18,8 +18,10 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
+	"github.com/BlankLife886/startcloudsai/server/internal/executionconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
+	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/sub2api"
 )
 
@@ -152,6 +154,7 @@ func reasoningModelPayload(model modelconfig.Model, cfg *modelconfig.Config) ([]
 }
 
 func (s *Server) assistantConfig(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	user, err := s.currentUser(c)
 	if err != nil {
 		fail(c, err)
@@ -162,35 +165,67 @@ func (s *Server) assistantConfig(c *gin.Context) {
 		fail(c, err)
 		return
 	}
+	globalLimits, err := store.GetGlobalExecutionLimits(c.Request.Context(), s.St.Pool)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	baseLimit, err := store.BaseUserConcurrency(c.Request.Context(), s.St.Pool)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	var concurrency *store.UserConcurrency
+	imageBatchLimit := min(int64(baseLimit), globalLimits.ImageLimit)
+	if user != nil {
+		account, accountErr := store.GetUserConcurrency(c.Request.Context(), s.St.Pool, user.ID)
+		if accountErr != nil {
+			fail(c, accountErr)
+			return
+		}
+		concurrency = &account
+		imageBatchLimit = min(int64(account.ImageLimit), globalLimits.ImageLimit)
+	}
+	acrossProviders, err := settings.GetBool(c.Request.Context(), s.St.Pool, "cross_provider_same_model_balancing_enabled")
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	_, editableFilesConfigured := modelconfig.EditableFileProvider(modelCfg)
 	editableFilesEnabled := modelCfg.EditableFiles.Enabled && editableFilesConfigured
 	type modelOption struct {
-		Label                     string              `json:"label"`
-		Model                     string              `json:"model"`
-		Source                    string              `json:"source"`
-		Provider                  string              `json:"provider"`
-		Description               string              `json:"description"`
-		StandardPricePoints       *int64              `json:"standardPricePoints,omitempty"`
-		DiscountPricePoints       *int64              `json:"discountPricePoints"`
-		PricePoints               *int64              `json:"pricePoints,omitempty"`
-		Resolutions               []string            `json:"resolutions"`
-		Default                   bool                `json:"default,omitempty"`
-		FastMode                  bool                `json:"fastMode,omitempty"`
-		AspectRatios              []string            `json:"aspectRatios"`
-		AspectRatiosByResolution  map[string][]string `json:"aspectRatiosByResolution,omitempty"`
-		Qualities                 []string            `json:"qualities"`
-		InputFields               []string            `json:"inputFields"`
-		RequiredInputFields       []string            `json:"requiredInputFields"`
-		InputSchema               map[string]any      `json:"inputSchema"`
-		TransparentBackground     bool                `json:"transparentBackground"`
-		OutputFormats             []string            `json:"outputFormats"`
-		ModerationLevels          []string            `json:"moderationLevels"`
-		MaxReferenceImages        int                 `json:"maxReferenceImages"`
-		MaxImages                 int                 `json:"maxImages,omitempty"`
-		SupportedReasoningEfforts []string            `json:"supportedReasoningEfforts"`
-		DefaultReasoningEffort    string              `json:"defaultReasoningEffort,omitempty"`
-		ReasoningPrices           gin.H               `json:"reasoningPrices,omitempty"`
-		ReasoningEfforts          []gin.H             `json:"reasoningEfforts,omitempty"`
+		Label                     string                       `json:"label"`
+		Model                     string                       `json:"model"`
+		Source                    string                       `json:"source"`
+		Provider                  string                       `json:"provider"`
+		Description               string                       `json:"description"`
+		IconURL                   string                       `json:"iconUrl,omitempty"`
+		Status                    string                       `json:"status,omitempty"`
+		Maintenance               bool                         `json:"maintenance,omitempty"`
+		StandardPricePoints       *int64                       `json:"standardPricePoints,omitempty"`
+		DiscountPricePoints       *int64                       `json:"discountPricePoints"`
+		PricePoints               *int64                       `json:"pricePoints,omitempty"`
+		Resolutions               []string                     `json:"resolutions"`
+		Default                   bool                         `json:"default,omitempty"`
+		FastMode                  bool                         `json:"fastMode,omitempty"`
+		AspectRatios              []string                     `json:"aspectRatios"`
+		AspectRatiosByResolution  map[string][]string          `json:"aspectRatiosByResolution,omitempty"`
+		SupportsExactSize         bool                         `json:"supportsExactSize"`
+		ExactSizeLimits           *modelconfig.ExactSizeLimits `json:"exactSizeLimits,omitempty"`
+		Qualities                 []string                     `json:"qualities"`
+		InputFields               []string                     `json:"inputFields"`
+		RequiredInputFields       []string                     `json:"requiredInputFields"`
+		InputSchema               map[string]any               `json:"inputSchema"`
+		TransparentBackground     bool                         `json:"transparentBackground"`
+		OutputFormats             []string                     `json:"outputFormats"`
+		ModerationLevels          []string                     `json:"moderationLevels"`
+		MaxReferenceImages        int                          `json:"maxReferenceImages"`
+		MaxImages                 int                          `json:"maxImages,omitempty"`
+		ImageBatchLimit           int64                        `json:"imageBatchLimit,omitempty"`
+		SupportedReasoningEfforts []string                     `json:"supportedReasoningEfforts"`
+		DefaultReasoningEffort    string                       `json:"defaultReasoningEffort,omitempty"`
+		ReasoningPrices           gin.H                        `json:"reasoningPrices,omitempty"`
+		ReasoningEfforts          []gin.H                      `json:"reasoningEfforts,omitempty"`
 	}
 	reasoningOptions := func(model string) ([]string, string) {
 		efforts := modelconfig.ReasoningEffortsForModel(model)
@@ -206,6 +241,19 @@ func (s *Server) assistantConfig(c *gin.Context) {
 		selections := modelconfig.PublicModelsForWorkspace(modelCfg, modelconfig.WorkspaceAssistant, kind)
 		options := make([]modelOption, 0, len(selections))
 		for index, selection := range selections {
+			batchLimit := int64(0)
+			if kind == modelconfig.ModelKindImage {
+				batchLimit = min(imageBatchLimit, int64(selection.Model.GenerationMaxImages()))
+				candidates := executionconfig.AuthorizedCandidates(modelCfg, modelconfig.WorkspaceAssistant,
+					selection.Provider.ID, selection.Model.ID, selection.Provider.RouteID, acrossProviders, modelconfig.EffectivePrice(selection.Model))
+				var routeLimit int64
+				for _, candidate := range candidates {
+					routeLimit = max(routeLimit, int64(candidate.Provider.MaxConcurrency))
+				}
+				if routeLimit > 0 {
+					batchLimit = min(batchLimit, routeLimit)
+				}
+			}
 			standardPrice := selection.Model.PriceCents
 			effectivePrice := modelconfig.EffectivePrice(selection.Model)
 			discountPrice := selection.Model.DiscountPriceCents
@@ -228,11 +276,14 @@ func (s *Server) assistantConfig(c *gin.Context) {
 			options = append(options, modelOption{
 				Label: selection.Model.Name, Model: selection.Model.ID, Source: "configured",
 				Provider: selection.Provider.Name, Description: description,
+				IconURL: selection.Model.IconURL, Status: selection.Model.Status,
+				Maintenance:         !selection.Model.Available(),
 				StandardPricePoints: &standardPrice,
 				DiscountPricePoints: discountPrice,
 				PricePoints:         &effectivePrice,
 				Resolutions:         selection.Model.Resolutions, Default: index == 0, FastMode: selection.Model.FastMode,
 				AspectRatios: selection.Model.AspectRatios, AspectRatiosByResolution: selection.Model.AspectRatiosByResolution,
+				SupportsExactSize: selection.Model.SupportsExactSize, ExactSizeLimits: selection.Model.ExactSizeLimits,
 				Qualities:             selection.Model.Qualities,
 				InputFields:           selection.Model.UpstreamInputFields,
 				RequiredInputFields:   selection.Model.UpstreamRequiredInputFields,
@@ -241,6 +292,7 @@ func (s *Server) assistantConfig(c *gin.Context) {
 				OutputFormats:         selection.Model.OutputFormats, ModerationLevels: selection.Model.ModerationLevels,
 				MaxReferenceImages:        selection.Model.MaxReferenceImages,
 				MaxImages:                 selection.Model.GenerationMaxImages(),
+				ImageBatchLimit:           batchLimit,
 				SupportedReasoningEfforts: reasoningEfforts, DefaultReasoningEffort: defaultReasoningEffort,
 				ReasoningPrices: reasoningPrices, ReasoningEfforts: reasoningEffortItems,
 			})
@@ -262,6 +314,7 @@ func (s *Server) assistantConfig(c *gin.Context) {
 			"conversationModels": conversationOptions, "imageModels": imageOptions,
 			"modelDiscoveryAvailable": true, "conversationModelMode": "configured",
 			"editableFilesEnabled": editableFilesEnabled,
+			"concurrency":          concurrency, "imageBatchLimit": imageBatchLimit,
 		})
 		return
 	}
@@ -273,6 +326,7 @@ func (s *Server) assistantConfig(c *gin.Context) {
 			"conversationModels": []modelOption{}, "imageModels": []modelOption{},
 			"modelDiscoveryAvailable": false, "conversationModelMode": "configured",
 			"editableFilesEnabled": editableFilesEnabled,
+			"concurrency":          concurrency, "imageBatchLimit": imageBatchLimit,
 		})
 		return
 	}
@@ -330,10 +384,11 @@ func (s *Server) assistantConfig(c *gin.Context) {
 	ok(c, gin.H{
 		"chatModel": client.ChatModel(), "imageModel": client.ImageModel(),
 		"conversationModels":      options,
-		"imageModels":             []modelOption{{Label: client.ImageModel(), Model: client.ImageModel(), Source: "legacy"}},
+		"imageModels":             []modelOption{{Label: client.ImageModel(), Model: client.ImageModel(), Source: "legacy", ImageBatchLimit: imageBatchLimit}},
 		"modelDiscoveryAvailable": modelErr == nil,
 		"conversationModelMode":   modelMode,
 		"editableFilesEnabled":    editableFilesEnabled,
+		"concurrency":             concurrency, "imageBatchLimit": imageBatchLimit,
 	})
 }
 

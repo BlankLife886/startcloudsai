@@ -2,9 +2,9 @@ import { nanoid } from "nanoid";
 
 import i18n from "@/i18n";
 import { storageKeyFromUrl } from "@/lib/canvas/canvas-preview-url";
-import { canvasImageRequestSize, canvasImageMaxCount, coerceCanvasImageSettings } from "@/lib/canvas/canvas-image-model";
+import { canvasImageSizeParams, canvasImageMaxCount, coerceCanvasImageSettings } from "@/lib/canvas/canvas-image-model";
 import type { CanvasAgentOp, CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
-import { createCanvasAgentToolDelivery, type CanvasAgentToolResultEnvelope } from "@/lib/canvas/canvas-agent-tool-delivery";
+import { createCanvasAgentToolDelivery, createCanvasAgentToolJournal, type CanvasAgentToolResultEnvelope } from "@/lib/canvas/canvas-agent-tool-delivery";
 import { compactCanvasSnapshot, resolveCanvasAgentCompletion } from "@/lib/canvas/canvas-hosted-agent";
 import { uploadImage } from "@/services/image-storage";
 import { StarcloudsApiError, starcloudsApiUrl, starcloudsFileUrl, starcloudsJson, starcloudsRequest } from "@/services/starclouds-api";
@@ -56,6 +56,8 @@ function publishCanvasTaskProgress(task: CanvasTask) {
 export type CanvasAssistantTaskOptions = {
     signal?: AbortSignal;
     onCreated?: (runId: string) => void | Promise<void>;
+    idempotencyKey?: string;
+    onBeforeCreate?: () => void;
 };
 
 function abortError() {
@@ -271,13 +273,8 @@ export async function requestCanvasBackgroundRemoval(reference: ReferenceImage, 
 function imageTaskParams(config: AiConfig) {
     const settings = coerceCanvasImageSettings(modelOptionMeta(config, config.model), config);
     const quality = settings.quality === "standard" ? "medium" : settings.quality === "hd" ? "high" : settings.quality;
-    const aspectRatio = settings.size;
-    const resolutionScale = settings.resolution;
-    const outputSize = resolutionScale ? canvasImageRequestSize(aspectRatio, resolutionScale) : "";
     return {
-        ...(aspectRatio ? { aspectRatio, requestedAspectRatio: aspectRatio } : {}),
-        ...(resolutionScale ? { resolutionScale } : {}),
-        ...(outputSize ? { size: outputSize, outputSize } : {}),
+        ...canvasImageSizeParams(modelOptionMeta(config, config.model), config),
         ...(quality ? { quality } : {}),
         ...(settings.background === "transparent" ? { transparentBackground: true } : {}),
         ...(config.model ? { publicModelKey: modelOptionName(config.model) } : {}),
@@ -443,6 +440,7 @@ export function imagesFromCanvasTask(task: CanvasTask) {
 
 export async function requestCanvasImages(config: AiConfig, prompt: string, references: ReferenceImage[] = [], mask?: ReferenceImage, options?: AbortSignal | CanvasTaskOptions) {
     const { signal, onCreated, idempotencyKey, onBeforeCreate } = normalizeTaskOptions(options);
+    const params = imageTaskParams(config);
     const inputKeys = await Promise.all(references.slice(0, 4).map(ensureReferenceKey));
     const maskKey = mask ? await ensureReferenceKey(mask) : "";
     if (signal?.aborted) throw abortError();
@@ -454,7 +452,7 @@ export async function requestCanvasImages(config: AiConfig, prompt: string, refe
             type: "t2i",
             prompt: prompt.trim(),
             params: {
-                ...imageTaskParams(config),
+                ...params,
                 ...(maskKey ? { maskKey, maskBaseKey: inputKeys[0] } : {}),
             },
             inputKeys,
@@ -541,12 +539,24 @@ export async function waitForCanvasAssistantRun(runId: string, onDelta: (text: s
 export async function requestCanvasAssistant(messages: Array<{ role: string; content: unknown }>, onDelta: (text: string) => void, options?: CanvasAssistantTaskOptions, model = "", reasoningEffort = "") {
     const prompt = flattenMessages(messages).slice(-12_000);
     const referenceImages = collectMessageReferenceImages(messages);
-    const conversation = await starcloudsJson<{ id: string }>("/assistant/conversations", "POST", {
-        title: prompt.slice(0, 42) || "画布助手",
-        workspace: "infinite_canvas",
-    });
+    const idempotencyKey = options?.idempotencyKey || crypto.randomUUID();
+    const conversationKey = options?.idempotencyKey ? `startclouds:canvas-assistant-request:${encodeURIComponent(idempotencyKey)}` : "";
+    let conversationId = conversationKey ? localStorage.getItem(conversationKey) : "";
+    if (options?.signal?.aborted) throw abortError();
+    options?.onBeforeCreate?.();
+    if (!conversationId) {
+        const conversation = await starcloudsJson<{ id: string }>("/assistant/conversations", "POST", {
+            title: prompt.slice(0, 42) || "画布助手",
+            workspace: "infinite_canvas",
+        });
+        conversationId = conversation.id;
+        // Conversation identity is part of the server request fingerprint.
+        if (conversationKey) localStorage.setItem(conversationKey, conversationId);
+    }
+    if (options?.signal?.aborted) throw abortError();
+    options?.onBeforeCreate?.();
     const created = await starcloudsJson<CanvasAssistantResponse>("/assistant/runs", "POST", {
-        conversationId: conversation.id,
+        conversationId,
         prompt,
         mode: "chat",
         workspace: "infinite_canvas",
@@ -554,7 +564,7 @@ export async function requestCanvasAssistant(messages: Array<{ role: string; con
         ...(referenceImages.length ? { referenceImages } : {}),
         count: 1,
         ...(reasoningEffort ? { reasoningEffort } : {}),
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey,
     });
     scheduleWalletRefresh();
     await options?.onCreated?.(created.run.id);
@@ -871,13 +881,14 @@ async function ensureCanvasAgentConversation(projectId: string, prompt: string, 
 }
 
 export async function cancelCanvasAssistantRun(runId: string, options?: { keepalive?: boolean; acknowledgeUpstream?: boolean }) {
-	await starcloudsRequest(`/assistant/runs/${encodeURIComponent(runId)}`, {
+	const result = await starcloudsRequest<{ canceled: boolean; run?: { status?: string } }>(`/assistant/runs/${encodeURIComponent(runId)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ status: "canceled", acknowledgeUpstream: options?.acknowledgeUpstream !== false }),
+		body: JSON.stringify({ status: "canceled", acknowledgeUpstream: options?.acknowledgeUpstream === true }),
         keepalive: options?.keepalive,
 	});
 	scheduleWalletRefresh();
+    return result;
 }
 
 type CanvasAgentStreamPayload = {
@@ -947,6 +958,11 @@ export async function claimCanvasAgentTool(runId: string, requestId: string) {
 }
 
 const canvasAgentToolResultCache = new Map<string, { envelope: CanvasAgentToolResultEnvelope; successful: boolean }>();
+const canvasAgentToolJournal = createCanvasAgentToolJournal({
+    getItem: (key) => localStorage.getItem(key),
+    setItem: (key, value) => localStorage.setItem(key, value),
+    removeItem: (key) => localStorage.removeItem(key),
+});
 
 async function withCanvasAgentToolLock<T>(name: string, task: () => Promise<T>): Promise<T | undefined> {
     if (typeof navigator === "undefined" || !navigator.locks?.request) return task();
@@ -996,6 +1012,7 @@ export async function waitForCanvasAgentRun(
             isPending: (call) => claimCanvasAgentTool(runId, call.requestId),
             withLock: withCanvasAgentToolLock,
             resultCache: canvasAgentToolResultCache,
+            journal: canvasAgentToolJournal,
         })
         : null;
     const serveToolCall = (call: CanvasAgentToolCall) => {

@@ -592,7 +592,7 @@ func TestPaidCallbackRepairsCancelledOrder(t *testing.T) {
 	ctx := context.Background()
 	user, order := makeOrder(t, st)
 	order = prepareLanjingOrder(t, st, order, "provider-race", order.AmountCents, "alipay")
-	if _, err := store.TransitionPendingOrderStatus(ctx, st.Pool, order.ID, "expired"); err != nil {
+	if _, err := store.TransitionPendingOrderStatus(ctx, st.Pool, order.ID, "cancelled"); err != nil {
 		t.Fatal(err)
 	}
 	provider := httptest.NewServer(http.NotFoundHandler())
@@ -618,7 +618,7 @@ func TestPaidCallbackRepairsCancelledOrder(t *testing.T) {
 	}
 }
 
-func TestListOrdersIncludesPlanAndStatusFilter(t *testing.T) {
+func TestListOrdersPreservesPlanSnapshotAndStatusFilter(t *testing.T) {
 	st := testdb.Setup(t)
 	ctx := context.Background()
 	user, order := makeOrder(t, st)
@@ -655,8 +655,8 @@ func TestListOrdersIncludesPlanAndStatusFilter(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(response.Data.Items) != 1 || response.Data.Items[0].ID != order.ID.String() ||
-		response.Data.Items[0].PlanName != "基础包" || response.Data.Items[0].PlanKind != "subscription" ||
-		response.Data.Items[0].DurationDays != 30 || response.Data.Items[0].DailyGrantCents != 150 ||
+		response.Data.Items[0].PlanName != "基础包" || response.Data.Items[0].PlanKind != "topup" ||
+		response.Data.Items[0].DurationDays != 0 || response.Data.Items[0].DailyGrantCents != 0 ||
 		response.Data.Items[0].Status != "pending" {
 		t.Fatalf("listed orders = %+v", response.Data.Items)
 	}
@@ -943,6 +943,9 @@ func TestCompleteSubscriptionOrderForks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert order: %v", err)
 	}
+	if _, err := st.Pool.Exec(ctx, `UPDATE plans SET duration_days=90, daily_grant_cents=900 WHERE id=$1`, plan.ID); err != nil {
+		t.Fatal(err)
+	}
 
 	completed, err := srv.completeOrder(ctx, order)
 	if err != nil {
@@ -950,6 +953,9 @@ func TestCompleteSubscriptionOrderForks(t *testing.T) {
 	}
 	if completed.Status != "completed" {
 		t.Fatalf("status = %s, want completed", completed.Status)
+	}
+	if completed.SubscriptionEndsAt == nil || completed.SubscriptionEndsAt.Sub(*completed.CompletedAt) < 29*24*time.Hour || completed.SubscriptionEndsAt.Sub(*completed.CompletedAt) > 31*24*time.Hour {
+		t.Fatalf("subscription end must reflect the purchased 30 days: %+v", completed)
 	}
 	// 不走订单本金入账
 	var orderGrants int
@@ -970,8 +976,8 @@ func TestCompleteSubscriptionOrderForks(t *testing.T) {
 		t.Fatalf("dailyGrantCents = %d, want 150", sub.DailyGrantCents)
 	}
 	wallet, _ := store.GetWallet(ctx, st.Pool, user.ID)
-	if wallet.BalanceCents != 150 {
-		t.Fatalf("balance = %d, want 150 (first-day grant)", wallet.BalanceCents)
+	if wallet.SubscriptionBalanceCents != 150 || wallet.BalanceCents != 0 {
+		t.Fatalf("subscription balance = %d, normal=%d", wallet.SubscriptionBalanceCents, wallet.BalanceCents)
 	}
 
 	// 重复补单：幂等返回，不顺延不重复发放
@@ -984,8 +990,8 @@ func TestCompleteSubscriptionOrderForks(t *testing.T) {
 		t.Fatalf("ends_at changed on replay: %v → %v", sub.EndsAt, sub2.EndsAt)
 	}
 	wallet, _ = store.GetWallet(ctx, st.Pool, user.ID)
-	if wallet.BalanceCents != 150 {
-		t.Fatalf("balance = %d, want 150 after replay", wallet.BalanceCents)
+	if wallet.SubscriptionBalanceCents != 150 || wallet.BalanceCents != 0 {
+		t.Fatalf("subscription balance = %d, normal=%d after replay", wallet.SubscriptionBalanceCents, wallet.BalanceCents)
 	}
 }
 

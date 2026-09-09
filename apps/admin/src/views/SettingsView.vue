@@ -61,7 +61,6 @@ const loading = ref(false);
 const activeSection = ref<SettingsSection>("payment");
 const saving = ref(false);
 const savedSignature = ref("");
-const workerConcurrencyCeiling = ref(1);
 const testingPayment = ref(false);
 const paymentTest = ref<PaymentTestResult | null>(null);
 const modelDirectory = ref<ModelDirectory>({ providers: [], models: [] });
@@ -69,8 +68,10 @@ const modelDirectory = ref<ModelDirectory>({ providers: [], models: [] });
 const form = reactive({
   userMaxRunningTasks: 100,
   userMaxRunningImages: 400,
-  userMaxConcurrentTasks: 20,
+  userMaxConcurrentTasks: 4,
+  userMaxConcurrentChats: 4,
   globalMaxConcurrentTasks: 2000,
+  globalMaxConcurrentChats: 32,
   globalMaxActiveTasks: 12000,
   globalMaxActiveImages: 12000,
   taskFailureRetryCount: 2,
@@ -112,7 +113,9 @@ const settingsSignature = () =>
     userMaxRunningTasks: form.userMaxRunningTasks,
     userMaxRunningImages: form.userMaxRunningImages,
     userMaxConcurrentTasks: form.userMaxConcurrentTasks,
+    userMaxConcurrentChats: form.userMaxConcurrentChats,
     globalMaxConcurrentTasks: form.globalMaxConcurrentTasks,
+    globalMaxConcurrentChats: form.globalMaxConcurrentChats,
     globalMaxActiveTasks: form.globalMaxActiveTasks,
     globalMaxActiveImages: form.globalMaxActiveImages,
     taskFailureRetryCount: form.taskFailureRetryCount,
@@ -153,7 +156,7 @@ const isDirty = computed(
     settingsSignature() !== savedSignature.value,
 );
 const effectiveGlobalConcurrency = computed(() =>
-  Math.min(form.globalMaxConcurrentTasks, workerConcurrencyCeiling.value),
+  Math.max(1, form.globalMaxConcurrentTasks),
 );
 const usageRewardTotal = computed(() =>
   form.growthUsageMilestones.reduce(
@@ -328,8 +331,8 @@ const sections = computed(() => [
   },
   {
     id: "concurrency" as const,
-    label: "任务并发",
-    hint: `${effectiveGlobalConcurrency.value} / ${workerConcurrencyCeiling.value}`,
+    label: "图片与对话并发",
+    hint: `图片 ${effectiveGlobalConcurrency.value} 张 · 对话 ${form.globalMaxConcurrentChats} 次`,
     on: true,
   },
   {
@@ -417,8 +420,11 @@ function providerOptionLabel(provider: ModelProviderOption) {
 function hydrate(settings: AdminSettings & PaymentSettings) {
   form.userMaxRunningTasks = settings.userMaxRunningTasks ?? 100;
   form.userMaxRunningImages = settings.userMaxRunningImages ?? 400;
-  form.userMaxConcurrentTasks = settings.userMaxConcurrentTasks ?? 20;
-  form.globalMaxConcurrentTasks = settings.globalMaxConcurrentTasks ?? 2000;
+  form.userMaxConcurrentTasks = settings.userMaxConcurrentTasks ?? 4;
+  form.userMaxConcurrentChats = settings.userMaxConcurrentChats ?? 4;
+  form.globalMaxConcurrentTasks = settings.globalMaxConcurrentTasks != null && settings.globalMaxConcurrentTasks > 0
+    ? settings.globalMaxConcurrentTasks : settings.effectiveGlobalConcurrency ?? 2000;
+  form.globalMaxConcurrentChats = settings.globalMaxConcurrentChats ?? 32;
   form.globalMaxActiveTasks = settings.globalMaxActiveTasks ?? 12000;
   form.globalMaxActiveImages = settings.globalMaxActiveImages ?? 12000;
   form.taskFailureRetryCount = settings.taskFailureRetryCount ?? 2;
@@ -436,10 +442,6 @@ function hydrate(settings: AdminSettings & PaymentSettings) {
   form.adminImageAnalysisModelId = settings.adminImageAnalysisModelId || "";
   form.adminImageAnalysisReasoningEffort =
     settings.adminImageAnalysisReasoningEffort || "";
-  workerConcurrencyCeiling.value = Math.max(
-    1,
-    settings.workerConcurrencyCeiling ?? 1,
-  );
   form.registrationEnabled = settings.registrationEnabled ?? true;
   form.signupBonusPoints = normalizePoints(settings.signupBonusCents);
   form.growthFailureBonusEnabled = settings.growthFailureBonusEnabled ?? true;
@@ -535,7 +537,9 @@ async function save() {
           userMaxRunningTasks: form.userMaxRunningTasks,
           userMaxRunningImages: form.userMaxRunningImages,
           userMaxConcurrentTasks: form.userMaxConcurrentTasks,
+          userMaxConcurrentChats: form.userMaxConcurrentChats,
           globalMaxConcurrentTasks: form.globalMaxConcurrentTasks,
+          globalMaxConcurrentChats: form.globalMaxConcurrentChats,
           globalMaxActiveTasks: form.globalMaxActiveTasks,
           globalMaxActiveImages: form.globalMaxActiveImages,
           taskFailureRetryCount: form.taskFailureRetryCount,
@@ -1163,26 +1167,34 @@ onMounted(() => {
         <div class="field-grid is-stack">
           <label class="field-row">
             <span>
-              <strong>全站同时执行</strong>
-              <small>上游在途上限</small>
+              <strong>全站图片并发（张）</strong>
+              <small>全部生图场景共享，按实际图片数量占用</small>
             </span>
             <el-input-number
               v-model="form.globalMaxConcurrentTasks"
               :min="1"
               :max="10000000"
-              :step="100"
+              :step="1"
             />
           </label>
           <label class="field-row">
             <span>
-              <strong>单用户同时执行</strong>
-              <small>账号同时处于上游执行的任务</small>
+              <strong>个人基础图片并发（张）</strong>
+              <small>生图、助手生图、画布和 API 共用；订阅增加图片额度</small>
             </span>
             <el-input-number
               v-model="form.userMaxConcurrentTasks"
               :min="1"
               :max="10000"
             />
+          </label>
+          <label class="field-row">
+            <span><strong>全站对话并发（次）</strong><small>对话单独占用额度，不计入图片并发</small></span>
+            <el-input-number v-model="form.globalMaxConcurrentChats" :min="1" :max="10000000" />
+          </label>
+          <label class="field-row">
+            <span><strong>个人对话并发（次）</strong><small>同一账号允许同时执行的对话次数</small></span>
+            <el-input-number v-model="form.userMaxConcurrentChats" :min="1" :max="10000" />
           </label>
           <label class="field-row">
             <span>

@@ -114,10 +114,13 @@ function withSubmissionSlot(operation) {
   })
 }
 
-async function postTaskWithRecovery(body, idempotencyKey) {
+async function postTaskWithRecovery(body, idempotencyKey, isCurrentSession) {
   const attempts = idempotencyKey ? 2 : 1
   let lastError = null
   for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (typeof isCurrentSession === 'function' && !isCurrentSession()) {
+      throw new DOMException('账号已切换或页面已关闭', 'AbortError')
+    }
     const controller = new AbortController()
     const timeout = globalThis.setTimeout(() => controller.abort(), 30000)
     try {
@@ -131,7 +134,10 @@ async function postTaskWithRecovery(body, idempotencyKey) {
         error?.name === 'AbortError' ||
         error?.code === 'network_error' ||
         Number(error?.status) >= 500
-      if (!retryable || attempt + 1 >= attempts) throw error
+      if (!retryable || attempt + 1 >= attempts) {
+        if (retryable) throw Object.assign(new Error('提交结果暂未确认，请核对后继续提交'), { code: 'task_submission_uncertain', status: 0 })
+        throw error
+      }
       await new Promise((resolve) => globalThis.setTimeout(resolve, 300))
     } finally {
       globalThis.clearTimeout(timeout)
@@ -152,6 +158,7 @@ export async function createTask({
   count = 1,
   idempotencyKey = '',
   expectedUnitPriceCents = null,
+  isCurrentSession = null,
 } = {}) {
   const body = {
     type,
@@ -165,18 +172,18 @@ export async function createTask({
       ? { expectedUnitPriceCents: Math.max(0, Number(expectedUnitPriceCents)) }
       : {}),
   }
-  const data = await withSubmissionSlot(() => postTaskWithRecovery(body, idempotencyKey))
+  const data = await withSubmissionSlot(() => postTaskWithRecovery(body, idempotencyKey, isCurrentSession))
   scheduleWalletRefresh()
   return data?.task || data
 }
 
-export async function quoteTaskPrice({ type, params = {}, inputKeys = [], count = 1 } = {}) {
+export async function quoteTaskPrice({ type, params = {}, inputKeys = [], count = 1 } = {}, { signal } = {}) {
   return apiPost('/tasks/quote', {
     type,
     params: params && typeof params === 'object' ? params : {},
     inputKeys: (Array.isArray(inputKeys) ? inputKeys : []).filter(Boolean),
     count: Math.max(1, Math.min(Number(count) || 1, 16)),
-  }, { fallbackMessage: '任务价格读取失败' })
+  }, { signal, fallbackMessage: '任务价格读取失败' })
 }
 
 /** 任务详情（轮询用），支持 AbortSignal。 */
@@ -186,6 +193,11 @@ export async function getTask(id, { signal } = {}) {
     fallbackMessage: '任务读取失败',
   })
   return data?.task || data
+}
+
+export async function getTaskByIdempotencyKey(key, { signal } = {}) {
+  const data = await apiGet('/tasks/by-idempotency', { query: { key }, signal, cache: 'no-store', fallbackMessage: '任务提交状态读取失败' })
+  return data?.task || null
 }
 
 /** 批量读取任务快照，供高并发等待协调器使用。 */
@@ -208,23 +220,45 @@ export async function getTasksBatch(ids, { signal } = {}) {
  */
 export function subscribeTask(id, { onUpdate = null, onError = null } = {}) {
   if (!id || typeof EventSource === 'undefined') return () => {}
-  const source = new EventSource(buildApiPath(`/tasks/${encodeURIComponent(id)}/events`))
-  source.onmessage = (event) => {
-    try {
-      const payload = JSON.parse(event.data || '{}')
-      const task = payload?.task || payload
+  const unsubscribe = subscribeUserTasks({
+    onUpdate(task, payload) {
+      if (String(task?.id || '') !== String(id)) return
       if (typeof onUpdate === 'function') onUpdate(task, payload)
-      dispatchTaskUpdate(task, payload)
-      if (isTerminalTaskStatus(task?.status)) source.close()
-    } catch {
-      // Ignore malformed transient events; the polling path remains authoritative.
+      if (isTerminalTaskStatus(task?.status)) unsubscribe()
+    },
+    onError,
+  })
+  return unsubscribe
+}
+
+const userTaskSubscribers = new Set()
+let stopUserTaskStream = null
+
+/** All task consumers in this page share the account stream, including callers
+ * that previously requested one persistent HTTP connection per task. */
+export function subscribeUserTasks(listener = {}) {
+  if (typeof EventSource === 'undefined') return () => {}
+  const subscriber = { ...listener }
+  userTaskSubscribers.add(subscriber)
+  if (!stopUserTaskStream) {
+    const notify = (method, ...args) => {
+      for (const entry of [...userTaskSubscribers]) {
+        if (!userTaskSubscribers.has(entry)) continue
+        try { entry[method]?.(...args) } catch { /* isolate UI callbacks */ }
+      }
+    }
+    stopUserTaskStream = openUserTaskStream({
+      onUpdate: (...args) => notify('onUpdate', ...args),
+      onError: (...args) => notify('onError', ...args),
+    })
+  }
+  return () => {
+    userTaskSubscribers.delete(subscriber)
+    if (!userTaskSubscribers.size && stopUserTaskStream) {
+      stopUserTaskStream()
+      stopUserTaskStream = null
     }
   }
-  source.onerror = (event) => {
-    source.close()
-    if (typeof onError === 'function') onError(event)
-  }
-  return () => source.close()
 }
 
 function publishUnreadCount(unreadCount, sourceTag) {
@@ -243,7 +277,7 @@ function publishUnreadCount(unreadCount, sourceTag) {
  * for the navbar badge; while the stream is down we fall back to a
  * low-frequency unread-count poll and stop it as soon as SSE recovers.
  */
-export function subscribeUserTasks({ onUpdate = null, onError = null } = {}) {
+function openUserTaskStream({ onUpdate = null, onError = null } = {}) {
   if (typeof EventSource === 'undefined') return () => {}
   const source = new EventSource(buildApiPath('/me/tasks/events'))
   let fallbackTimer = 0
@@ -308,6 +342,7 @@ export function taskSnapshotSignature(task) {
   return JSON.stringify([
     task?.status,
     task?.generationStage,
+    task?.queueReason,
     task?.cancelPolicy?.mode,
     task?.cancelPolicy?.upstreamSubmitted,
     task?.cancelPolicy?.refunded,
@@ -407,7 +442,11 @@ async function pollWaitingTasks() {
   }
   taskPollRunning = true
   try {
-    const tasks = await getTasksBatch(dueIDs)
+    const controller = new AbortController()
+    const timer = globalThis.setTimeout(() => controller.abort(), 12000)
+    let tasks
+    try { tasks = await getTasksBatch(dueIDs, { signal: controller.signal }) }
+    finally { globalThis.clearTimeout(timer) }
     const received = new Set()
     for (const task of tasks) {
       const id = String(task?.id || '')
@@ -463,17 +502,25 @@ export async function cancelTask(id, { acknowledgeUpstream = false } = {}) {
       fallbackMessage: '任务取消失败',
     },
   )
+  scheduleWalletRefresh()
   return data?.task || data
+}
+
+export async function cancelTaskGroup(ids, { acknowledgedTaskIds = [] } = {}) {
+  const data = await apiPost('/tasks/cancel-group', { ids: [...new Set(ids)], acknowledgedTaskIds }, { fallbackMessage: '本组任务取消失败' })
+  scheduleWalletRefresh()
+  return Array.isArray(data?.items) ? data.items : []
 }
 
 export const HISTORY_MEDIA_REMOVED_EVENT = 'starclouds:history-media-removed'
 
 /** 删除终态任务记录（同时删除产物）。 */
-export async function deleteTask(id, { cascade = false, history = false, forceMedia = false } = {}) {
+export async function deleteTask(id, { cascade = false, history = false, forceMedia = false, onlyEmpty = false } = {}) {
   const query = new URLSearchParams()
   if (cascade) query.set('cascade', 'true')
   if (history) query.set('history', 'true')
   if (forceMedia) query.set('forceMedia', 'true')
+  if (onlyEmpty) query.set('onlyEmpty', 'true')
   const result = await apiDelete(`/tasks/${encodeURIComponent(id)}${query.size ? `?${query}` : ''}`, {
     fallbackMessage: '任务删除失败',
   })
@@ -524,7 +571,7 @@ export async function waitForTask(
   { signal, onUpdate = null, intervalMs = 2000, maxWaitMs = 15 * 60 * 1000 } = {},
 ) {
   const pollEvery = Math.max(500, Number(intervalMs) || 2000)
-  const timeoutAfter = Math.max(pollEvery, Number(maxWaitMs) || 15 * 60 * 1000)
+  const timeoutAfter = maxWaitMs === null ? null : Math.max(pollEvery, Number(maxWaitMs) || 15 * 60 * 1000)
   ensureTaskUpdateBridge()
   return new Promise((resolve, reject) => {
     let settled = false
@@ -567,7 +614,7 @@ export async function waitForTask(
     }
     entry.waiters.add(waiter)
     if (!entry.unsubscribe) entry.unsubscribe = subscribeTask(taskID)
-    const timeoutTimer = globalThis.setTimeout(() => {
+    const timeoutTimer = timeoutAfter === null ? null : globalThis.setTimeout(() => {
       finish(reject, new Error('任务等待超时，请稍后在历史记录中查看结果'))
     }, timeoutAfter)
     signal?.addEventListener('abort', abort, { once: true })

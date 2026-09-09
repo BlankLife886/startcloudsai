@@ -17,6 +17,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
+	"github.com/BlankLife886/startcloudsai/server/internal/taskstream"
 )
 
 var handheldEnums = map[string][]string{
@@ -81,11 +82,12 @@ type handheldSpecIn struct {
 	Shots               []handheldShotIn       `json:"shots"`
 }
 type handheldJobIn struct {
-	ProjectID     *string        `json:"projectId"`
-	ProductID     *string        `json:"productId"`
-	ParentBatchID *string        `json:"parentBatchId"`
-	ModelID       string         `json:"modelId"`
-	Spec          handheldSpecIn `json:"spec"`
+	IdempotencyKey string         `json:"idempotencyKey"`
+	ProjectID      *string        `json:"projectId"`
+	ProductID      *string        `json:"productId"`
+	ParentBatchID  *string        `json:"parentBatchId"`
+	ModelID        string         `json:"modelId"`
+	Spec           handheldSpecIn `json:"spec"`
 }
 type handheldQuoteIn struct {
 	ModelID     string `json:"modelId"`
@@ -713,6 +715,18 @@ func (s *Server) createHandheldJob(c *gin.Context) {
 		fail(c, err)
 		return
 	}
+	batchID, requestHash, err := handheldRequestIdentity(user.ID, body, c.GetHeader("Idempotency-Key"))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if existing, err := loadHandheldBatchResult(c.Request.Context(), s.St.Pool, user.ID, batchID, requestHash); err != nil {
+		fail(c, err)
+		return
+	} else if existing != nil {
+		ok(c, s.handheldBatchResponse(c, existing.batch, existing.items, existing.tasks))
+		return
+	}
 	_, productID, snapshot, err := s.resolveHandheldProduct(c.Request.Context(), user.ID, body.ProductID)
 	if err != nil {
 		fail(c, err)
@@ -768,77 +782,25 @@ func (s *Server) createHandheldJob(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	params := map[string]any{"aspectRatio": body.Spec.AspectRatio, "publicModelKey": body.ModelID}
-	unit, err := s.handheldUnitPrice(c.Request.Context(), body.ModelID, params, len(keys))
+	batch := &store.EcommerceHandheldBatch{ID: batchID, UserID: user.ID, ProjectID: projectID, ProductID: productID, ParentBatchID: parentBatchID, Status: "queued", ModelID: body.ModelID, ProductSnapshot: snapshot, JobSpec: handheldSpecMap(body.Spec), ItemCount: len(body.Spec.Shots)}
+	result, err := s.createHandheldBatchAtomic(c.Request.Context(), batch, body.Spec, requestHash)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	batch := &store.EcommerceHandheldBatch{UserID: user.ID, ProjectID: projectID, ProductID: productID, ParentBatchID: parentBatchID, Status: "queued", ModelID: body.ModelID, ProductSnapshot: snapshot, JobSpec: handheldSpecMap(body.Spec), ItemCount: len(body.Spec.Shots), TotalCostCents: unit * int64(len(body.Spec.Shots))}
-	if err := store.InsertEcommerceHandheldBatch(c.Request.Context(), s.St.Pool, batch); err != nil {
-		fail(c, err)
-		return
-	}
-	for ordinal, input := range body.Spec.Inputs {
-		if err := store.InsertEcommerceHandheldInput(c.Request.Context(), s.St.Pool, &store.EcommerceHandheldInput{BatchID: batch.ID, Role: input.Role, ObjectKey: input.Key, Ordinal: ordinal}); err != nil {
-			s.compensateHandheldTasks(c.Request.Context(), user.ID, batch.ID, nil)
-			fail(c, err)
-			return
-		}
-	}
-	createdTasks := []*store.Task{}
-	items := []*store.EcommerceHandheldItem{}
-	for index, shot := range body.Spec.Shots {
-		prompt := compileHandheldPrompt(snapshot, body.Spec, shot)
-		item := &store.EcommerceHandheldItem{BatchID: batch.ID, UserID: user.ID, ItemIndex: index, Label: shot.Label, Prompt: prompt, ShotSpec: map[string]any{"id": shot.ID, "label": shot.Label, "direction": shot.Direction, "aspectRatio": shot.AspectRatio, "prompt": prompt}, Status: "queued", QAStatus: "pending", ReviewStatus: "unreviewed"}
-		if err := store.InsertEcommerceHandheldItem(c.Request.Context(), s.St.Pool, item); err != nil {
-			s.compensateHandheldTasks(c.Request.Context(), user.ID, batch.ID, createdTasks)
-			fail(c, err)
-			return
-		}
-		idem := "handheld:" + item.ID.String()
-		commerceProductID := ""
-		if productID != nil {
-			commerceProductID = productID.String()
-		}
-		taskParams := handheldGenerationParams(nil, body.ModelID, shot.AspectRatio, batch.ID, item.ID, index, len(body.Spec.Shots), commerceProductID, snapshot, batch.JobSpec, body.Spec.Inputs)
-		task, _, err := taskflow.CreateTask(c.Request.Context(), s.St, user.ID, taskflow.CreateInput{Type: "ecommerce_design", Prompt: prompt, Params: taskParams, InputKeys: keys, Count: 1, IdempotencyKey: &idem})
-		if err != nil {
-			s.compensateHandheldTasks(c.Request.Context(), user.ID, batch.ID, createdTasks)
-			fail(c, err)
-			return
-		}
-		item.TaskID = &task.ID
-		if err := store.AttachEcommerceHandheldItemTask(c.Request.Context(), s.St.Pool, user.ID, item.ID, task.ID); err != nil {
-			s.compensateHandheldTasks(c.Request.Context(), user.ID, batch.ID, append(createdTasks, task))
-			fail(c, err)
-			return
-		}
-		_ = store.InsertEcommerceHandheldQualityReport(c.Request.Context(), s.St.Pool, item.ID)
-		createdTasks = append(createdTasks, task)
-		items = append(items, item)
-	}
-	if err := store.UpdateEcommerceHandheldBatchStatus(c.Request.Context(), s.St.Pool, user.ID, batch.ID, "generating"); err != nil {
-		s.compensateHandheldTasks(c.Request.Context(), user.ID, batch.ID, createdTasks)
-		fail(c, err)
-		return
-	}
-	batch.Status = "generating"
-	for _, task := range createdTasks {
-		if s.Queue != nil {
+	for _, task := range result.tasks {
+		if s.Queue != nil && task.Status == "queued" {
 			if err := s.Queue.EnqueueRunTask(c.Request.Context(), task.ID.String()); err != nil {
 				log.Printf("handheld task %s enqueue deferred: %v", task.ID, err)
 			}
 		}
 	}
-	respondCreated(c, s.handheldBatchResponse(c, batch, items, createdTasks))
-}
-
-func (s *Server) compensateHandheldTasks(ctx context.Context, userID, batchID uuid.UUID, tasks []*store.Task) {
-	for _, task := range tasks {
-		_, _ = taskflow.CancelQueuedTaskSilently(ctx, s.St, userID, task.ID)
+	response := s.handheldBatchResponse(c, result.batch, result.items, result.tasks)
+	if result.created {
+		respondCreated(c, response)
+	} else {
+		ok(c, response)
 	}
-	_ = store.UpdateEcommerceHandheldBatchStatus(ctx, s.St.Pool, userID, batchID, "failed")
 }
 
 func (s *Server) handheldBatchResponse(c *gin.Context, b *store.EcommerceHandheldBatch, items []*store.EcommerceHandheldItem, tasks []*store.Task) gin.H {
@@ -858,7 +820,13 @@ func (s *Server) handheldBatchResponse(c *gin.Context, b *store.EcommerceHandhel
 		}
 		rows = append(rows, row)
 	}
-	return gin.H{"id": b.ID.String(), "projectId": b.ProjectID, "productId": b.ProductID, "parentBatchId": b.ParentBatchID, "status": b.Status, "modelId": b.ModelID, "productSnapshot": b.ProductSnapshot, "jobSpec": b.JobSpec, "itemCount": b.ItemCount, "totalCostCents": b.TotalCostCents, "items": rows, "createdAt": isoValue(b.CreatedAt), "updatedAt": isoValue(b.UpdatedAt)}
+	spec := make(map[string]any, len(b.JobSpec))
+	for key, value := range b.JobSpec {
+		if key != "_requestHash" {
+			spec[key] = value
+		}
+	}
+	return gin.H{"id": b.ID.String(), "projectId": b.ProjectID, "productId": b.ProductID, "parentBatchId": b.ParentBatchID, "status": b.Status, "modelId": b.ModelID, "productSnapshot": b.ProductSnapshot, "jobSpec": spec, "itemCount": b.ItemCount, "totalCostCents": b.TotalCostCents, "items": rows, "createdAt": isoValue(b.CreatedAt), "updatedAt": isoValue(b.UpdatedAt)}
 }
 
 func (s *Server) getHandheldJob(c *gin.Context) {
@@ -958,24 +926,91 @@ func (s *Server) cancelHandheldJob(c *gin.Context) {
 		fail(c, apperr.E("not_found", "手持批次不存在", 404))
 		return
 	}
-	items, _ := store.ListEcommerceHandheldItems(c.Request.Context(), s.St.Pool, user.ID, id)
+	items, err := store.ListEcommerceHandheldItems(c.Request.Context(), s.St.Pool, user.ID, id)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	queuedIDs := []uuid.UUID{}
 	for _, item := range items {
 		if item.TaskID == nil {
 			continue
 		}
-		task, _ := store.GetTask(c.Request.Context(), s.St.Pool, *item.TaskID)
+		task, err := store.GetTask(c.Request.Context(), s.St.Pool, *item.TaskID)
+		if err != nil {
+			fail(c, err)
+			return
+		}
 		if task != nil && task.Status == "queued" {
-			_, _ = taskflow.CancelTask(c.Request.Context(), s.St, user.ID, task.ID)
+			queuedIDs = append(queuedIDs, task.ID)
+		}
+	}
+	canceledIDs := []string{}
+	if len(queuedIDs) > 0 {
+		tasks, err := taskflow.CancelTaskGroupConfirmed(c.Request.Context(), s.St, user.ID, queuedIDs, nil)
+		if err != nil {
+			fail(c, err)
+			return
+		}
+		for _, task := range tasks {
+			if task.Status == "canceled" {
+				canceledIDs = append(canceledIDs, task.ID.String())
+				event := taskstream.Event{TaskID: task.ID.String(), Stage: "canceled", Status: "canceled", Done: true}
+				taskstream.Publish(c.Request.Context(), s.assistantStreamRedis(), task.ID.String(), event)
+				taskstream.PublishUser(c.Request.Context(), s.assistantStreamRedis(), user.ID.String(), event)
+			}
 		}
 	}
 	status := b.Status
-	if refreshed, refreshErr := store.GetEcommerceHandheldBatch(c.Request.Context(), s.St.Pool, user.ID, id); refreshErr != nil {
-		fail(c, refreshErr)
-		return
-	} else if refreshed != nil {
-		status = refreshed.Status
+	ids := []uuid.UUID{}
+	for _, item := range items {
+		if item.TaskID != nil {
+			ids = append(ids, *item.TaskID)
+		}
 	}
-	ok(c, gin.H{"id": id.String(), "status": status})
+	fresh, readErr := store.GetTasksByIDs(c.Request.Context(), s.St.Pool, ids)
+	if readErr != nil {
+		fail(c, readErr)
+		return
+	}
+	succeeded, failed, active, canceled := 0, 0, 0, 0
+	for _, item := range items {
+		if item.TaskID == nil {
+			continue
+		}
+		task := fresh[*item.TaskID]
+		if task == nil {
+			continue
+		}
+		switch task.Status {
+		case "succeeded":
+			succeeded++
+		case "failed":
+			failed++
+		case "canceled":
+			canceled++
+		default:
+			active++
+		}
+	}
+	if active > 0 {
+		status = "generating"
+	} else if len(items) > 0 && succeeded == len(items) {
+		status = "review_ready"
+	} else if succeeded > 0 {
+		status = "partial"
+	} else if canceled == len(items) {
+		status = "canceled"
+	} else if failed > 0 {
+		status = "failed"
+	}
+	if status != b.Status {
+		if err := store.UpdateEcommerceHandheldBatchStatus(c.Request.Context(), s.St.Pool, user.ID, id, status); err != nil {
+			fail(c, err)
+			return
+		}
+	}
+	ok(c, gin.H{"id": id.String(), "status": status, "canceledTaskIds": canceledIDs})
 }
 
 func (s *Server) retryHandheldItem(c *gin.Context) {

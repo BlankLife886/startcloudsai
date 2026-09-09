@@ -2,11 +2,12 @@ import { memo, useEffect, useRef } from "react";
 import { AuthenticatedImage } from "../../components/AuthenticatedImage.jsx";
 import { RegenerateIcon } from "../../components/common/RegenerateIcon.jsx";
 import { taskFailureMessage } from "../history/taskFailureMessage.js";
+import { taskTotalElapsedMs } from "../../legacy-modules/features/ai-wallpaper/domain/taskGenerationTiming.js";
 
 const ACTIVE_STATUSES = new Set(["queued", "running", "waiting_provider"]);
 
 function statusLabel(task) {
-  if (task.status === "queued") return "排队中";
+  if (task.status === "queued") return task.cancelPolicy?.upstreamSubmitted === true ? "等待上游结果" : "排队中";
   if (task.status === "waiting_provider") return "等待模型响应";
   if (task.status === "running") {
     if (task.generationStage === "preparing") return "正在准备生成";
@@ -24,14 +25,8 @@ function statusLabel(task) {
 }
 
 function elapsedLabel(task, now) {
-  if (task.status === "queued" || !task.startedAt) return "";
-  const started = Date.parse(task.startedAt);
-  if (!Number.isFinite(started)) return "";
-  const finished = Date.parse(task.finishedAt || "");
-  const seconds = Math.max(
-    0,
-    Math.floor(((Number.isFinite(finished) ? finished : now) - started) / 1000),
-  );
+  if (!task.createdAt && !task.startedAt) return "";
+  const seconds = Math.floor(taskTotalElapsedMs(task, now) / 1000);
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
@@ -139,9 +134,11 @@ const HistoryCard = memo(function HistoryCard({ item, isActive, now, onAction })
         <button type="button" aria-label="编辑任务" title="编辑" onClick={() => onAction("edit", item)}>
           <span className="t2i-icon-edit-image" />
         </button>
-        <button type="button" aria-label="重新生成" title="重新生成" onClick={() => onAction("regenerate", item)}>
-          <RegenerateIcon />
-        </button>
+        {item.kind === "image" && (
+          <button type="button" aria-label="重新生成" title="重新生成" onClick={() => onAction("regenerate", item)}>
+            <RegenerateIcon />
+          </button>
+        )}
         {running && (
           <button type="button" aria-label="取消任务" title="取消" onClick={() => onAction("cancel", item)}>
             <i className="bi bi-stop-circle" />

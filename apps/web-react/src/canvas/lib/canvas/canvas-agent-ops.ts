@@ -16,7 +16,7 @@ export type CanvasAgentOp =
     | { type: "delete_node"; id?: string; ids?: string[]; nodeType?: CanvasNodeTypeId }
     | { type: "delete_connections"; id?: string; ids?: string[]; all?: boolean }
     | { type: "connect_nodes"; id?: string; fromNodeId?: string; toNodeId?: string; from?: string; to?: string }
-    | { type: "create_generation_flow"; id?: string; prompt?: string; title?: string; x?: number; y?: number; position?: { x: number; y: number } }
+    | { type: "create_generation_flow"; id?: string; prompt?: string; title?: string; x?: number; y?: number; position?: { x: number; y: number }; metadata?: CanvasNodeMetadata }
     | { type: "create_graph"; nodes?: CanvasAgentGraphNode[]; edges?: CanvasAgentGraphEdge[]; x?: number; y?: number; position?: { x: number; y: number } }
     | { type: "arrange_nodes"; scope?: "all" | "selection" | "workflow"; workflowId?: string; direction?: "LR" | "TB" }
     | { type: "set_viewport"; viewport: ViewportTransform }
@@ -25,7 +25,7 @@ export type CanvasAgentOp =
     | { type: "move_nodes"; items?: Array<{ id: string; x?: number; y?: number; dx?: number; dy?: number }> }
     | { type: "resize_node"; id: string; width?: number; height?: number; freeResize?: boolean };
 
-export type CanvasAgentGraphNode = { key?: string; type?: CanvasNodeTypeId; title?: string; text?: string; composerContent?: string; generationMode?: "text" | "image" | "video" | "audio" };
+export type CanvasAgentGraphNode = Pick<CanvasNodeMetadata, "model" | "size" | "sizeMode" | "exactWidth" | "exactHeight" | "resolution" | "quality" | "count" | "background"> & { key?: string; type?: CanvasNodeTypeId; title?: string; text?: string; composerContent?: string; generationMode?: "text" | "image" | "video" | "audio"; metadata?: CanvasNodeMetadata };
 export type CanvasAgentGraphEdge = { from?: string; to?: string };
 
 export type CanvasAgentSnapshot = {
@@ -265,7 +265,7 @@ function generationFlowOps(op: Extract<CanvasAgentOp, { type: "create_generation
         position: origin,
         nodes: [
             { key: "prompt", type: CanvasNodeType.Text, title: op.title, text: String(op.prompt || "").trim() },
-            { key: "config", type: CanvasNodeType.Config },
+            { key: "config", type: CanvasNodeType.Config, metadata: op.metadata },
             { key: "result", type: CanvasNodeType.Image },
         ],
         edges: [{ from: "prompt", to: "config" }, { from: "config", to: "result" }],
@@ -277,7 +277,11 @@ function graphOps(op: Extract<CanvasAgentOp, { type: "create_graph" }>, snapshot
         .map((node, order) => {
             const type = node?.type && isRegisteredNodeType(node.type) ? node.type : CanvasNodeType.Text;
             const spec = getNodeSpec(type);
-            return { key: String(node?.key || `n${order + 1}`).trim() || `n${order + 1}`, type, spec, title: node?.title, text: String(node?.text || "").trim(), composerContent: String(node?.composerContent || "").trim(), generationMode: node?.generationMode };
+            const metadata = { ...node.metadata };
+            for (const key of ["model", "size", "sizeMode", "exactWidth", "exactHeight", "resolution", "quality", "count", "background"] as const) {
+                if (node[key] !== undefined) Object.assign(metadata, { [key]: node[key] });
+            }
+            return { key: String(node?.key || `n${order + 1}`).trim() || `n${order + 1}`, type, spec, title: node?.title, text: String(node?.text || "").trim(), composerContent: String(node?.composerContent || "").trim(), generationMode: node?.generationMode || metadata.generationMode, metadata };
         })
         .filter((plan) => isCanvasNodeTypeEnabled(plan.type));
     if (!plans.length) return [];
@@ -298,7 +302,7 @@ function graphOps(op: Extract<CanvasAgentOp, { type: "create_graph" }>, snapshot
     const ops: CanvasAgentOp[] = plans.map((plan) => {
         const graphTextMetadata = canvasAgentGraphTextMetadata(plan.type, plan.text);
         const metadata = plan.type === CanvasNodeType.Config
-            ? { ...(plan.composerContent ? { composerContent: plan.composerContent } : {}), generationMode: generationModes.get(plan.key) || "image" }
+            ? { ...plan.metadata, ...(plan.composerContent ? { composerContent: plan.composerContent } : {}), generationMode: generationModes.get(plan.key) || "image" }
             : graphTextMetadata;
         return {
             type: "add_node",

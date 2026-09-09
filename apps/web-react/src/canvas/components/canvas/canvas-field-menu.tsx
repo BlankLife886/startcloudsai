@@ -8,6 +8,7 @@ import { AnchorPopoverPanel, AnchorPopoverTrigger, useAnchorPopover, type Anchor
 export type CanvasFieldOption<T extends string = string> = {
     value: T;
     label: ReactNode;
+    disabled?: boolean;
 };
 
 type CanvasFieldMenuProps<T extends string> = {
@@ -52,14 +53,16 @@ export function CanvasFieldMenu<T extends string>({ value, options, onChange, th
                                         type="button"
                                         className={cn(
                                             "flex min-h-10 w-full items-center gap-2.5 rounded-[12px] px-3 py-2 text-left text-[13px] font-medium",
-                                            !selected && "hover:bg-black/[.04] dark:hover:bg-white/[.08]",
+                                            option.disabled ? "cursor-not-allowed opacity-55" : !selected && "hover:bg-black/[.04] dark:hover:bg-white/[.08]",
                                         )}
+                                        disabled={option.disabled}
                                         style={{
                                             background: selected ? theme.toolbar.activeBg : "transparent",
                                             color: selected ? theme.toolbar.activeText : theme.node.text,
                                         }}
                                         onMouseDown={(event) => event.stopPropagation()}
                                         onClick={() => {
+                                            if (option.disabled) return;
                                             onChange(option.value);
                                             updateOpen(false);
                                         }}

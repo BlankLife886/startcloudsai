@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unicode"
@@ -46,6 +47,8 @@ const (
 	assistantAgentToolErrorRunes     = 800
 	assistantAgentReplayResultRunes  = 4000
 	assistantSynchronousImageLimit   = 5 * time.Minute
+	assistantC2AMinTaskTimeout       = 3 * time.Minute
+	assistantC2APollInterval         = 2 * time.Second
 	assistantReferenceModeShared     = "shared"
 	assistantReferenceModeIndividual = "individual"
 	assistantPromptModeFaithful      = "faithful"
@@ -80,6 +83,15 @@ type assistantImageExecutionItem struct {
 	Title            string
 	Prompt           string
 	ReferenceIndexes []int
+	Ratio            string
+	Resolution       string
+	Quality          string
+	RequestSize      string
+	SizeMode         string
+	ExactWidth       int
+	ExactHeight      int
+	Width            int
+	Height           int
 }
 
 type assistantStorageError struct{ err error }
@@ -102,6 +114,8 @@ func assistantFailureCode(err error) string {
 	var c2aErr *c2a.UpstreamError
 	if errors.As(err, &c2aErr) {
 		switch {
+		case c2aErr.StatusCode == http.StatusRequestTimeout || c2aErr.StatusCode == http.StatusGatewayTimeout:
+			return "upstream_timeout"
 		case c2aErr.StatusCode == http.StatusTooManyRequests:
 			return "upstream_rate_limited"
 		case c2aErr.StatusCode == http.StatusUnauthorized || c2aErr.StatusCode == http.StatusForbidden:
@@ -140,7 +154,7 @@ func (w *Worker) recoverAssistantRuns(ctx context.Context) error {
 	seen := make(map[uuid.UUID]bool, len(running))
 	for _, id := range running {
 		seen[id] = true
-		if err := w.Queue.EnqueueAssistantRunRecovery(ctx, id.String()); err != nil {
+		if err := w.enqueueAssistantRunRecovery(ctx, id); err != nil {
 			log.Printf("recover assistant run %s failed: %v", id, err)
 			continue
 		}
@@ -150,7 +164,7 @@ func (w *Worker) recoverAssistantRuns(ctx context.Context) error {
 		if seen[id] {
 			continue
 		}
-		if err := w.Queue.EnqueueAssistantRunRecovery(ctx, id.String()); err != nil {
+		if err := w.enqueueAssistantRunRecovery(ctx, id); err != nil {
 			log.Printf("recover queued assistant run %s failed: %v", id, err)
 			continue
 		}
@@ -165,7 +179,7 @@ func (w *Worker) dispatchAssistantRunOutbox(ctx context.Context) error {
 		return err
 	}
 	for _, id := range ids {
-		if err := w.Queue.EnqueueAssistantRunRecovery(ctx, id.String()); err != nil {
+		if err := w.enqueueAssistantRunRecovery(ctx, id); err != nil {
 			_ = store.RecordAssistantRunOutboxFailure(ctx, w.St.Pool, id, err.Error(), time.Now().UTC().Add(5*time.Second))
 			continue
 		}
@@ -426,14 +440,21 @@ func (w *Worker) setAssistantRunStage(ctx context.Context, run *store.AssistantR
 }
 
 func (w *Worker) setAssistantImageStage(ctx context.Context, run *store.AssistantRun, stage string, images []map[string]any) error {
-	if err := w.setAssistantRunStage(ctx, run, "image", stage); err != nil {
+	if err := w.St.Tx(ctx, func(tx pgx.Tx) error {
+		changed, err := store.SetAssistantRunStageAttempt(ctx, tx, run.ID, run.Attempt, "image", stage)
+		if err != nil {
+			return err
+		}
+		if !changed {
+			return context.Canceled
+		}
+		return store.UpdateAssistantMessage(ctx, tx, run.AssistantMessageID, "", "image", "running", assistantMessageMetadata(run, images, stage, ""))
+	}); err != nil {
 		return err
 	}
+	run.ResolvedMode = "image"
+	run.Stage = stage
 	w.recordAssistantImageStage(ctx, run, stage)
-	if err := store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, "", "image", "running",
-		assistantMessageMetadata(run, images, stage, "")); err != nil {
-		return err
-	}
 	assistantstream.Publish(ctx, w.Stream, run.ID.String(), assistantstream.Event{Kind: "image", Stage: stage})
 	return nil
 }
@@ -472,6 +493,15 @@ func (w *Worker) clearAssistantMessageOutputMetadataTx(ctx context.Context, q st
 
 func (w *Worker) executeAssistantRun(ctx context.Context, run *store.AssistantRun) error {
 	mode := assistantExecutionMode(run.Mode, run.Prompt)
+	if store.AssistantRunIsImage(run) {
+		mode = "image"
+	}
+	if mode == "image" && assistantPromptContinuesConversation(run.Prompt) {
+		history, historyErr := store.ListAssistantMessages(ctx, w.St.Pool, run.ConversationID, assistantMessageLimitForContext)
+		if historyErr == nil {
+			run.Prompt = assistantImagePromptWithConversation(assistantMessagesAfterContextBoundary(history), run)
+		}
+	}
 	if mode == "image" {
 		if err := w.setAssistantImageStage(ctx, run, "preparing-image", nil); err != nil {
 			return err
@@ -481,10 +511,8 @@ func (w *Worker) executeAssistantRun(ctx context.Context, run *store.AssistantRu
 	if err != nil {
 		return err
 	}
-	if mode != "image" && !isCanvasWorkspaceRun(run) {
-		if kind := assistanttools.DedicatedEditableFileKindRequested(run.Prompt, len(assistantRunFileIDs(run)) > 0); kind != "" {
-			return w.executeAssistantEditableFile(ctx, run, references, kind)
-		}
+	if kind := assistantEditableKind(run); kind != "" {
+		return w.executeAssistantEditableFile(ctx, run, references, kind)
 	}
 	var client *sub2api.Client
 	if mode == "agent" {
@@ -495,7 +523,7 @@ func (w *Worker) executeAssistantRun(ctx context.Context, run *store.AssistantRu
 		if configured {
 			client, err = w.configuredAssistantChatClient(selection)
 		} else {
-			client, err = w.assistantClient(ctx)
+			client, err = w.assistantClientForRun(ctx, run)
 			if err == nil {
 				if requestedModel := assistantParamString(run.Params, "model", ""); requestedModel != "" && requestedModel != client.ImageModel() {
 					client = client.WithChatModel(requestedModel)
@@ -563,17 +591,17 @@ func (w *Worker) executeAssistantRun(ctx context.Context, run *store.AssistantRu
 			}
 			return w.executeConfiguredAssistantImage(ctx, run, references, selection)
 		}
-		provider, providerErr := settings.ImageServiceProvider(ctx, w.St.Pool, serviceKey)
+		imageConfig, providerErr := w.legacyAssistantImageConfig(ctx, run)
 		if providerErr != nil {
 			return providerErr
 		}
-		if provider == "c2a" {
+		if imageConfig.Provider == "c2a" {
 			return w.executeAssistantImageC2A(ctx, run, references, serviceKey)
 		}
-		if provider == "crun" {
+		if imageConfig.Provider == "crun" {
 			return w.executeAssistantImageCRUN(ctx, run)
 		}
-		client, err = w.assistantClient(ctx)
+		client, err = legacySub2Client(imageConfig)
 		if err != nil {
 			return err
 		}
@@ -587,7 +615,7 @@ func (w *Worker) executeAssistantRun(ctx context.Context, run *store.AssistantRu
 		if configured {
 			client, err = w.configuredAssistantChatClient(selection)
 		} else {
-			client, err = w.assistantClient(ctx)
+			client, err = w.assistantClientForRun(ctx, run)
 			if err == nil {
 				if requestedModel := assistantParamString(run.Params, "model", ""); requestedModel != "" && requestedModel != client.ImageModel() {
 					client = client.WithChatModel(requestedModel)
@@ -669,19 +697,29 @@ func (w *Worker) configuredAssistantModelSelection(ctx context.Context, run *sto
 	}
 	providerID := assistantParamString(run.Params, prefix+"ProviderConfigId", "")
 	modelID := assistantParamString(run.Params, prefix+"ModelConfigId", "")
+	routeID := assistantParamString(run.Params, prefix+"ProviderRouteId", "")
 	if kind == modelconfig.ModelKindImage && (providerID == "" || modelID == "") {
 		providerID = assistantParamString(run.Params, "_providerConfigId", "")
 		modelID = assistantParamString(run.Params, "_modelConfigId", "")
+		routeID = assistantParamString(run.Params, "_providerRouteId", "")
 	}
 	if providerID == "" || modelID == "" {
 		return nil, false, nil
 	}
-	cfg, err := modelconfig.Runtime(ctx, w.St.Pool, w.Cfg.AppSecret)
+	snapshot, err := w.assistantExecutionSnapshot(ctx, run)
 	if err != nil {
 		return nil, false, err
 	}
-	routeID := assistantParamString(run.Params, prefix+"ProviderRouteId", "")
-	selection, found := modelconfig.FindExecutionRoute(cfg, providerID, modelID, routeID)
+	var selection *modelconfig.Selection
+	var found bool
+	if kind == modelconfig.ModelKindImage && store.AssistantRunHasKnownImageJobs(run) {
+		selection, found, err = snapshot.BoundSelection(kind, providerID, modelID, routeID, w.Cfg.AppSecret)
+	} else {
+		selection, found, err = snapshot.Selection(ctx, w.St.Pool, kind, providerID, modelID, routeID, w.Cfg.AppSecret)
+	}
+	if err != nil {
+		return nil, false, err
+	}
 	if !found {
 		return nil, false, errors.New("助手任务绑定的模型或服务商配置已失效")
 	}
@@ -736,7 +774,7 @@ func (w *Worker) configuredAssistantWebSearchClient(ctx context.Context, run *st
 	if configured {
 		return w.configuredAssistantChatClient(selection)
 	}
-	client, err := w.assistantClient(ctx)
+	client, err := w.assistantClientForRun(ctx, run)
 	if err != nil {
 		return nil, err
 	}
@@ -747,6 +785,12 @@ func (w *Worker) configuredAssistantWebSearchClient(ctx context.Context, run *st
 }
 
 func (w *Worker) executeConfiguredAssistantImage(ctx context.Context, run *store.AssistantRun, references []string, selection *modelconfig.Selection) error {
+	if err := modelconfig.ValidateExactImageSelection(selection, run.Params); err != nil {
+		return err
+	}
+	if err := modelconfig.NormalizeExactImageParams(selection.Model, selection.Provider.Adapter, run.Params); err != nil {
+		return err
+	}
 	provider := selection.Provider
 	model := selection.Model.UpstreamModel
 	if strings.TrimSpace(provider.APIKey) == "" {
@@ -754,14 +798,14 @@ func (w *Worker) executeConfiguredAssistantImage(ctx context.Context, run *store
 	}
 	switch provider.Adapter {
 	case modelconfig.AdapterOpenAI:
-		client := c2a.NewWithPolicy(provider.BaseURL, provider.APIKey, provider.TimeoutSecs, w.Cfg.C2APrivateNetworkAllowed()).WithOpenAIImageEdits()
+		client := c2a.NewWithPolicy(provider.BaseURL, provider.APIKey, provider.TimeoutSecs, w.Cfg.C2APrivateNetworkAllowed()).WithAsyncImageEdits()
 		return w.executeAssistantImageC2AClient(ctx, run, references, client, model)
 	case modelconfig.AdapterCRUN:
 		client, err := crun.New(provider.BaseURL, provider.APIKey, model, provider.TimeoutSecs)
 		if err != nil {
 			return err
 		}
-		return w.executeAssistantImageCRUNClient(ctx, run, client, selection.Model.UpstreamInputFields)
+		return w.executeAssistantImageCRUNClient(ctx, run, client, selection.Model.UpstreamInputFields, selection.Model)
 	default:
 		return errors.New("不支持的模型服务商类型")
 	}
@@ -896,9 +940,8 @@ func assistantPromptRequestsTaskStatus(prompt string) bool {
 }
 
 func assistantExecutionMode(mode, prompt string) string {
-	if mode == "image" && assistantSmallTalk(prompt) {
-		mode = "chat"
-	}
+	// Resource class and model pricing are decided before admission. Never
+	// demote an explicit image run to chat after claiming its image slots.
 	// Explicit search requests always need the tool-capable agent path, even
 	// when the user selected the lightweight Q&A mode.
 	if mode == "chat" && (assistantPromptRequestsWebSearch(prompt) || assistantPromptRequestsTaskStatus(prompt)) {
@@ -1061,6 +1104,12 @@ type assistantImagePlanItem struct {
 	Prompt             string           `json:"prompt"`
 	ReferenceImages    []map[string]any `json:"referenceImages,omitempty"`
 	ReferencedImageIDs []string         `json:"referencedImageIds"`
+	Ratio              string           `json:"ratio,omitempty"`
+	Resolution         string           `json:"resolution,omitempty"`
+	Quality            string           `json:"quality,omitempty"`
+	RequestSize        string           `json:"requestSize,omitempty"`
+	Width              int              `json:"width,omitempty"`
+	Height             int              `json:"height,omitempty"`
 }
 
 type assistantGoalDeliverable struct {
@@ -1277,6 +1326,9 @@ func assistantProposalFunctionTool(models []map[string]any) sub2api.FunctionTool
 					"title":              map[string]any{"type": "string", "description": "简短用途，例如主图、场景图、细节图"},
 					"prompt":             map[string]any{"type": "string", "description": "这一张图片独立执行的提示词"},
 					"referencedImageIds": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"ratio":              map[string]any{"type": "string", "description": "这一张独立使用的比例；未指定时沿用整组比例"},
+					"resolution":         map[string]any{"type": "string", "description": "这一张独立使用的分辨率；未指定时沿用整组分辨率"},
+					"quality":            map[string]any{"type": "string", "description": "这一张独立使用的质量；未指定时沿用整组质量"},
 				},
 				"required":             []string{"title", "prompt", "referencedImageIds"},
 				"additionalProperties": false,
@@ -1524,6 +1576,7 @@ func (w *Worker) executeAssistantAgent(
 		return store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, fullText, "agent", "running", metadata)
 	}
 	successfulToolObservations := make(map[string]string)
+	toolExecutionStarted := false
 	loopExhausted := true
 	for iteration := 0; iteration < assistantAgentMaxIterations; iteration++ {
 		toolChoice := ""
@@ -1548,7 +1601,7 @@ func (w *Worker) executeAssistantAgent(
 		}
 		result = next
 		if callErr != nil {
-			return &assistantProviderError{err: callErr, outputStarted: result.Text != "" || result.Reasoning != "" || result.ToolCall != nil}
+			return &assistantProviderError{err: callErr, outputStarted: toolExecutionStarted || result.Text != "" || result.Reasoning != "" || result.ToolCall != nil}
 		}
 		if next.ToolCall == nil {
 			if reminder := assistantAgentFileRequirementReminder(fileIDs, wantsArtifact, successfulFileTools, artifacts); reminder != "" {
@@ -1593,6 +1646,9 @@ func (w *Worker) executeAssistantAgent(
 			observation = assistantAgentRepeatedToolObservation(observation)
 		} else {
 			var toolErr error
+			// A later model failure cannot safely replay a tool that may already
+			// have produced an external result, even when its response was lost.
+			toolExecutionStarted = true
 			switch next.ToolCall.Name {
 			case webSearchTool().Name:
 				if len(searches) >= 3 {
@@ -1669,14 +1725,14 @@ func (w *Worker) executeAssistantAgent(
 		if finalErr != nil {
 			return &assistantProviderError{
 				err: finalErr,
-				outputStarted: strings.TrimSpace(final.Text) != "" || strings.TrimSpace(final.Reasoning) != "" ||
+				outputStarted: toolExecutionStarted || strings.TrimSpace(final.Text) != "" || strings.TrimSpace(final.Reasoning) != "" ||
 					result.Text != "" || result.Reasoning != "" || result.ToolCall != nil || len(successfulToolObservations) > 0,
 			}
 		}
 		if strings.TrimSpace(final.Text) == "" {
 			return &assistantProviderError{
 				err: errAssistantAgentEmptyResponse,
-				outputStarted: strings.TrimSpace(final.Reasoning) != "" || result.Text != "" || result.Reasoning != "" ||
+				outputStarted: toolExecutionStarted || strings.TrimSpace(final.Reasoning) != "" || result.Text != "" || result.Reasoning != "" ||
 					result.ToolCall != nil || len(successfulToolObservations) > 0,
 			}
 		}
@@ -2609,6 +2665,30 @@ func assistantParamStrings(params map[string]any, key string) []string {
 	return out
 }
 
+func assistantParamStringMap(params map[string]any, key string) map[string]string {
+	out := map[string]string{}
+	if params == nil {
+		return out
+	}
+	switch values := params[key].(type) {
+	case map[string]string:
+		for itemKey, value := range values {
+			if value = strings.TrimSpace(value); value != "" {
+				out[itemKey] = value
+			}
+		}
+	case map[string]any:
+		for itemKey, raw := range values {
+			if value, ok := raw.(string); ok {
+				if value = strings.TrimSpace(value); value != "" {
+					out[itemKey] = value
+				}
+			}
+		}
+	}
+	return out
+}
+
 func assistantAllowedValue(values []string, value string) (string, bool) {
 	for _, candidate := range values {
 		if strings.EqualFold(strings.TrimSpace(candidate), strings.TrimSpace(value)) {
@@ -2865,7 +2945,8 @@ func (w *Worker) storeAssistantImageBytes(ctx context.Context, run *store.Assist
 	if contentType == "" || ext == "" {
 		return nil, errors.New("上游返回了不支持的图片格式")
 	}
-	if _, _, err := media.Dimensions(data); err != nil {
+	width, height, err := media.Dimensions(data)
+	if err != nil {
 		return nil, fmt.Errorf("上游返回的图片无法读取: %w", err)
 	}
 	key := fmt.Sprintf("tasks/%s/assistant/%s/%d.%s", run.UserID, run.ID, index+1, ext)
@@ -2874,7 +2955,7 @@ func (w *Worker) storeAssistantImageBytes(ctx context.Context, run *store.Assist
 	}
 	stored := map[string]any{
 		"id": uuid.NewString(), "index": index, "dataUrl": "/api/v1/files/" + key, "fileKey": key,
-		"revisedPrompt": revisedPrompt,
+		"revisedPrompt": revisedPrompt, "width": width, "height": height,
 	}
 	// 小图/展示图变体：尽力而为，失败只影响加载速度（前端回退原图）。
 	thumbURL, displayURL := "", ""
@@ -2908,6 +2989,7 @@ func (w *Worker) storeAssistantImageBytes(ctx context.Context, run *store.Assist
 		Image: &assistantstream.ImageEvent{
 			ID: stored["id"].(string), Index: index, DataURL: stored["dataUrl"].(string),
 			FileKey: key, ThumbURL: thumbURL, DisplayURL: displayURL, RevisedPrompt: revisedPrompt,
+			Width: width, Height: height,
 		},
 	})
 	return stored, nil
@@ -2986,16 +3068,113 @@ func (w *Worker) completeAssistantImageRun(ctx context.Context, run *store.Assis
 }
 
 func (w *Worker) executeAssistantImageC2A(ctx context.Context, run *store.AssistantRun, references []string, serviceKey string) error {
-	taskType := "t2i"
-	if serviceKey == "ui_design_asset" {
-		taskType = "ui_design"
-	}
-	model, err := settings.TaskModel(ctx, w.St.Pool, taskType)
+	frozen, err := w.legacyAssistantImageConfig(ctx, run)
 	if err != nil {
 		return err
 	}
-	client := w.upstreamClient(ctx)
-	return w.executeAssistantImageC2AClient(ctx, run, references, client, model)
+	return w.executeAssistantImageC2AClient(ctx, run, references, w.frozenC2AClient(frozen), frozen.Model)
+}
+
+type assistantC2ASubmitFunc func(context.Context) ([]string, bool, string, error)
+
+type assistantC2ATerminalError struct{ err error }
+
+func (e *assistantC2ATerminalError) Error() string { return e.err.Error() }
+func (e *assistantC2ATerminalError) Unwrap() error { return e.err }
+
+func waitAssistantC2ATask(
+	ctx context.Context,
+	client *c2a.Client,
+	taskID string,
+	expected int,
+	best []string,
+	submitErr error,
+) ([]string, error) {
+	timeout := client.Timeout
+	if timeout < assistantC2AMinTaskTimeout {
+		timeout = assistantC2AMinTaskTimeout
+	}
+	taskCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ticker := time.NewTicker(assistantC2APollInterval)
+	defer ticker.Stop()
+	lastErr := submitErr
+	for {
+		result := client.PollImageTasks(taskCtx, []string{taskID}, map[string]int{taskID: expected})[taskID]
+		if len(result.Images) > len(best) {
+			best = result.Images
+		}
+		if result.Err == nil && !result.Pending {
+			return best, nil
+		}
+		if err := result.Err; err != nil {
+			if result.ExplicitFailure {
+				return best, &assistantC2ATerminalError{err: err}
+			}
+			lastErr = err
+			if !c2a.IsRetryableError(err) {
+				if submitErr != nil {
+					return best, submitErr
+				}
+				return best, err
+			}
+		}
+		select {
+		case <-taskCtx.Done():
+			message := "上游图片任务等待超时"
+			if lastErr != nil {
+				message += "；最后一次查询失败：" + sanitizeUpstreamMessage(lastErr.Error())
+			}
+			return best, &c2a.NetworkError{Message: message, Err: taskCtx.Err()}
+		case <-ticker.C:
+		}
+	}
+}
+
+func submitAndWaitAssistantC2ATask(
+	ctx context.Context,
+	client *c2a.Client,
+	clientTaskID string,
+	existingTaskID string,
+	expected int,
+	submit assistantC2ASubmitFunc,
+	persist func(string) error,
+) ([]string, error) {
+	taskID := strings.TrimSpace(existingTaskID)
+	var best []string
+	var submitErr error
+	if taskID == "" {
+		images, pending, upstreamTaskID, err := submit(ctx)
+		best = images
+		if err == nil && !pending {
+			return images, nil
+		}
+		if err != nil && !c2a.IsRetryableError(err) {
+			return images, err
+		}
+		submitErr = err
+		taskID = strings.TrimSpace(upstreamTaskID)
+		if taskID == "" {
+			// Submission timeouts are ambiguous: chatgpt2api may have accepted
+			// the deterministic client ID even though its proxy lost the reply.
+			taskID = clientTaskID
+		}
+		if persist != nil {
+			if err := persist(taskID); err != nil {
+				return best, err
+			}
+		}
+	}
+	images, err := waitAssistantC2ATask(ctx, client, taskID, expected, best, submitErr)
+	var terminalErr *assistantC2ATerminalError
+	if errors.As(err, &terminalErr) && persist != nil {
+		// An explicit terminal failure is safe to retry with a new client ID.
+		// Ambiguous transport failures keep the original ID for recovery.
+		if persistErr := persist(""); persistErr != nil {
+			return images, persistErr
+		}
+	}
+	return images, err
 }
 
 func generateAssistantC2AItems(
@@ -3123,7 +3302,13 @@ func assistantImageExecutionPlan(params map[string]any) ([]assistantImageExecuti
 		if promptText == "" {
 			return nil, fmt.Errorf("第 %d 张图片缺少独立提示词", index+1)
 		}
-		execution := assistantImageExecutionItem{Title: assistantMapString(item, "title"), Prompt: promptText}
+		execution := assistantImageExecutionItem{
+			Title: assistantMapString(item, "title"), Prompt: promptText,
+			Ratio: assistantMapString(item, "ratio"), Resolution: assistantMapString(item, "resolution"),
+			Quality: assistantMapString(item, "quality"), RequestSize: assistantMapString(item, "requestSize"),
+			SizeMode: assistantMapString(item, "sizeMode"), ExactWidth: assistantMapInt(item, "exactWidth"), ExactHeight: assistantMapInt(item, "exactHeight"),
+			Width: assistantMapInt(item, "width"), Height: assistantMapInt(item, "height"),
+		}
 		seen := map[int]bool{}
 		for _, id := range assistantMapStrings(item, "referenceImageIds") {
 			referenceIndex, ok := referenceIndexes[id]
@@ -3138,6 +3323,33 @@ func assistantImageExecutionPlan(params map[string]any) ([]assistantImageExecuti
 		out = append(out, execution)
 	}
 	return out, nil
+}
+
+func assistantImagePlanParams(base map[string]any, item assistantImageExecutionItem) map[string]any {
+	params := make(map[string]any, len(base)+6)
+	for key, value := range base {
+		params[key] = value
+	}
+	if item.SizeMode != "" {
+		params["sizeMode"] = item.SizeMode
+		params["exactWidth"], params["exactHeight"] = item.ExactWidth, item.ExactHeight
+	}
+	for key, value := range map[string]string{
+		"ratio": item.Ratio, "aspectRatio": item.Ratio, "requestedAspectRatio": item.Ratio,
+		"resolution": item.Resolution, "requestSize": item.RequestSize, "quality": item.Quality,
+	} {
+		if strings.TrimSpace(value) != "" {
+			params[key] = value
+		}
+	}
+	return params
+}
+
+func assistantPlanString(value, fallback string) string {
+	if strings.TrimSpace(value) != "" {
+		return strings.TrimSpace(value)
+	}
+	return fallback
 }
 
 func assistantExecutionReferences[T any](values []T, indexes []int) ([]T, error) {
@@ -3172,8 +3384,10 @@ func generateAssistantSub2PlanItems(
 				return
 			}
 			var generated sub2api.Image
+			itemParams := assistantImagePlanParams(params, plan[index])
 			images, err := client.GenerateImageProgressive(batchCtx,
-				prompt.ConstrainAutoAspectRatio(plan[index].Prompt, params), size, quality, 1, itemReferences,
+				prompt.ConstrainAutoAspectRatio(plan[index].Prompt, itemParams),
+				assistantPlanString(plan[index].RequestSize, size), assistantPlanString(plan[index].Quality, quality), 1, itemReferences,
 				func(_ int, image sub2api.Image) error {
 					generated = image
 					return nil
@@ -3213,13 +3427,23 @@ func generateAssistantSub2PlanItems(
 }
 
 func (w *Worker) executeAssistantImageC2AClient(ctx context.Context, run *store.AssistantRun, references []string, client *c2a.Client, model string) error {
+	count, reservationErr := w.assistantReservedImageCount(ctx, run)
+	if reservationErr != nil {
+		return reservationErr
+	}
+	ctx, reservationErr = w.assistantImageSubmissionContext(ctx, run)
+	if reservationErr != nil {
+		return reservationErr
+	}
+	if run.Params == nil {
+		run.Params = map[string]any{}
+	}
 	finalPrompt := prompt.ConstrainAutoAspectRatio(run.Prompt, run.Params)
 	size := assistantParamString(run.Params, "requestSize", "")
 	if size == "auto" {
 		size = ""
 	}
 	quality := assistantParamString(run.Params, "quality", "high")
-	count := assistantParamInt(run.Params, "count", 2)
 	inputs := make([]string, 0, len(references))
 	for _, reference := range references {
 		data, _, _, loadErr := downloadAssistantImage(ctx, reference)
@@ -3229,9 +3453,6 @@ func (w *Worker) executeAssistantImageC2AClient(ctx context.Context, run *store.
 		inputs = append(inputs, base64.StdEncoding.EncodeToString(data))
 	}
 	storedByIndex := make([]map[string]any, count)
-	if err := w.setAssistantImageStage(ctx, run, "generating-image", nil); err != nil {
-		return err
-	}
 	var fetchingStarted atomic.Bool
 	var savingStarted atomic.Bool
 	onImage := func(index int, encoded string) error {
@@ -3273,21 +3494,57 @@ func (w *Worker) executeAssistantImageC2AClient(ctx context.Context, run *store.
 	if planErr != nil {
 		return planErr
 	}
+	trackedTaskIDs := assistantParamStringMap(run.Params, "_c2aTaskIdsBySlot")
+	var trackedTaskIDsMu sync.Mutex
+	existingTaskID := func(slot string) string {
+		trackedTaskIDsMu.Lock()
+		defer trackedTaskIDsMu.Unlock()
+		return trackedTaskIDs[slot]
+	}
+	persistTaskID := func(slot, taskID string) error {
+		trackedTaskIDsMu.Lock()
+		defer trackedTaskIDsMu.Unlock()
+		if taskID == "" {
+			delete(trackedTaskIDs, slot)
+		} else {
+			trackedTaskIDs[slot] = taskID
+		}
+		snapshot := make(map[string]string, len(trackedTaskIDs))
+		for key, value := range trackedTaskIDs {
+			snapshot[key] = value
+		}
+		changed, err := store.SetAssistantRunC2ATaskIDs(ctx, w.St.Pool, run.ID, run.Attempt, snapshot)
+		if err != nil {
+			return err
+		}
+		if !changed {
+			return context.Canceled
+		}
+		return nil
+	}
 	if len(plan) > 0 {
 		if len(plan) != count {
 			return fmt.Errorf("独立多图方案数量不一致：方案 %d 张，输出 %d 张", len(plan), count)
 		}
 		actual, err = generateAssistantC2AIndividualItems(ctx, run.ID.String(), count,
 			func(itemCtx context.Context, taskID string, index int) ([]string, error) {
+				slot := fmt.Sprintf("item:%d", index)
 				itemInputs, mapErr := assistantExecutionReferences(inputs, plan[index].ReferenceIndexes)
 				if mapErr != nil {
 					return nil, mapErr
 				}
-				itemPrompt := prompt.ConstrainAutoAspectRatio(plan[index].Prompt, run.Params)
-				if len(itemInputs) > 0 {
-					return client.EditImagesWithID(itemCtx, taskID, itemPrompt, model, 1, itemInputs, size, quality)
-				}
-				return client.GenerateImagesWithID(itemCtx, taskID, itemPrompt, model, 1, size, quality)
+				itemParams := assistantImagePlanParams(run.Params, plan[index])
+				itemPrompt := prompt.ConstrainAutoAspectRatio(plan[index].Prompt, itemParams)
+				itemSize := assistantPlanString(plan[index].RequestSize, size)
+				itemQuality := assistantPlanString(plan[index].Quality, quality)
+				return submitAndWaitAssistantC2ATask(itemCtx, client, taskID, existingTaskID(slot), 1,
+					func(submitCtx context.Context) ([]string, bool, string, error) {
+						options := c2a.ImageOptions{Quality: itemQuality}
+						if len(itemInputs) > 0 {
+							return client.SubmitEditImagesTracked(submitCtx, taskID, itemPrompt, model, 1, itemInputs, itemSize, options)
+						}
+						return client.SubmitGenerateImagesTracked(submitCtx, taskID, itemPrompt, model, 1, itemSize, options)
+					}, func(upstreamTaskID string) error { return persistTaskID(slot, upstreamTaskID) })
 			}, onImage)
 	} else if assistantParamString(run.Params, "referenceMode", assistantReferenceModeShared) == assistantReferenceModeIndividual {
 		if len(inputs) != count {
@@ -3295,16 +3552,29 @@ func (w *Worker) executeAssistantImageC2AClient(ctx context.Context, run *store.
 		}
 		actual, err = generateAssistantC2AIndividualItems(ctx, run.ID.String(), count,
 			func(itemCtx context.Context, taskID string, index int) ([]string, error) {
-				return client.EditImagesWithID(itemCtx, taskID, finalPrompt, model, 1, []string{inputs[index]}, size, quality)
+				slot := fmt.Sprintf("item:%d", index)
+				return submitAndWaitAssistantC2ATask(itemCtx, client, taskID, existingTaskID(slot), 1,
+					func(submitCtx context.Context) ([]string, bool, string, error) {
+						return client.SubmitEditImagesTracked(submitCtx, taskID, finalPrompt, model, 1,
+							[]string{inputs[index]}, size, c2a.ImageOptions{Quality: quality})
+					}, func(upstreamTaskID string) error { return persistTaskID(slot, upstreamTaskID) })
 			}, onImage)
 	} else {
 		actual, err = generateAssistantC2AItems(ctx, run.ID.String(), count, func(itemCtx context.Context, taskID string) ([]string, error) {
-			if len(inputs) > 0 {
-				return client.EditImagesWithID(itemCtx, taskID, finalPrompt, model, count, inputs, size, quality)
-			}
-			return client.GenerateImagesWithID(itemCtx, taskID, finalPrompt, model, count, size, quality)
+			const slot = "batch"
+			return submitAndWaitAssistantC2ATask(itemCtx, client, taskID, existingTaskID(slot), count,
+				func(submitCtx context.Context) ([]string, bool, string, error) {
+					options := c2a.ImageOptions{Quality: quality}
+					if len(inputs) > 0 {
+						return client.SubmitEditImagesTracked(submitCtx, taskID, finalPrompt, model, count, inputs, size, options)
+					}
+					return client.SubmitGenerateImagesTracked(submitCtx, taskID, finalPrompt, model, count, size, options)
+				}, func(upstreamTaskID string) error { return persistTaskID(slot, upstreamTaskID) })
 		}, onImage)
 	}
+	// The generation helpers join every image goroutine before returning.
+	// Keep Params read-only until then; metadata and per-image plans read it.
+	run.Params["_c2aTaskIdsBySlot"] = trackedTaskIDs
 	if err != nil {
 		return err
 	}
@@ -3354,7 +3624,11 @@ func (w *Worker) crunAssistantReferenceURLs(ctx context.Context, run *store.Assi
 }
 
 func (w *Worker) executeAssistantImageCRUN(ctx context.Context, run *store.AssistantRun) error {
-	client, err := w.crunClient(ctx)
+	frozen, err := w.legacyAssistantImageConfig(ctx, run)
+	if err != nil {
+		return err
+	}
+	client, err := legacyCRUNClient(frozen)
 	if err != nil {
 		return err
 	}
@@ -3420,8 +3694,16 @@ func createAssistantCRUNPlanTasks(
 		}
 		request := base
 		request.N = 1
-		request.Prompt = crunPrompt(prompt.ConstrainAutoAspectRatio(plan[index].Prompt, params))
+		itemParams := assistantImagePlanParams(params, plan[index])
+		request.Prompt = crunPrompt(prompt.ConstrainAutoAspectRatio(plan[index].Prompt, itemParams))
 		request.ImageURLs = itemReferences
+		request.Size = assistantPlanString(plan[index].RequestSize, request.Size)
+		request.Quality = assistantPlanString(plan[index].Quality, request.Quality)
+		request.AspectRatio = normalizeCRUNAspectRatio(itemParams, request.Size)
+		request.Resolution = normalizeCRUNResolutionForAspect(normalizeCRUNResolution(itemParams), request.AspectRatio)
+		if err := applyCRUNExactSize(&request, itemParams, base.ExactSizeFields); err != nil {
+			return nil, err
+		}
 		taskID, err := client.CreateTaskWithRequest(ctx, request)
 		if err != nil {
 			return nil, err
@@ -3441,7 +3723,20 @@ func (w *Worker) executeAssistantImageCRUNClient(
 	run *store.AssistantRun,
 	client *crun.Client,
 	allowedInputFields []string,
+	models ...modelconfig.Model,
 ) error {
+	exactFields, exactErr := crunExactSizeFields(run.Params, models)
+	if exactErr != nil {
+		return exactErr
+	}
+	count, reservationErr := w.assistantReservedImageCount(ctx, run)
+	if reservationErr != nil {
+		return reservationErr
+	}
+	ctx, reservationErr = w.assistantImageSubmissionContext(ctx, run)
+	if reservationErr != nil {
+		return reservationErr
+	}
 	finalPrompt := prompt.ConstrainAutoAspectRatio(run.Prompt, run.Params)
 	references, temporaryKeys, err := w.crunAssistantReferenceURLs(ctx, run)
 	if len(temporaryKeys) > 0 {
@@ -3450,7 +3745,6 @@ func (w *Worker) executeAssistantImageCRUNClient(
 	if err != nil {
 		return err
 	}
-	count := assistantParamInt(run.Params, "count", 2)
 	aspectRatio := normalizeCRUNAspectRatio(run.Params, assistantParamString(run.Params, "requestSize", ""))
 	resolution := normalizeCRUNResolutionForAspect(normalizeCRUNResolution(run.Params), aspectRatio)
 	request := crun.OpenAIImageRequest{
@@ -3460,9 +3754,11 @@ func (w *Worker) executeAssistantImageCRUNClient(
 		AspectRatio: aspectRatio, Resolution: resolution,
 		AllowedInputFields: allowedInputFields,
 	}
-	if err := w.setAssistantImageStage(ctx, run, "generating-image", nil); err != nil {
+	if err := applyCRUNExactSize(&request, run.Params, exactFields); err != nil {
 		return err
 	}
+	// Individual plans may use exact dimensions even when the shared mode does not.
+	request.ExactSizeFields = append([]string(nil), exactFields...)
 	plan, planErr := assistantImageExecutionPlan(run.Params)
 	if planErr != nil {
 		return planErr
@@ -3532,14 +3828,18 @@ func (w *Worker) executeAssistantImageCRUNClient(
 }
 
 func (w *Worker) executeAssistantImage(ctx context.Context, client *sub2api.Client, run *store.AssistantRun, references []string) error {
+	count, reservationErr := w.assistantReservedImageCount(ctx, run)
+	if reservationErr != nil {
+		return reservationErr
+	}
+	ctx, reservationErr = w.assistantImageSubmissionContext(ctx, run)
+	if reservationErr != nil {
+		return reservationErr
+	}
 	finalPrompt := prompt.ConstrainAutoAspectRatio(run.Prompt, run.Params)
 	size := assistantParamString(run.Params, "requestSize", "auto")
 	quality := assistantParamString(run.Params, "quality", "high")
-	count := assistantParamInt(run.Params, "count", 2)
 	storedByIndex := make([]map[string]any, count)
-	if err := w.setAssistantImageStage(ctx, run, "generating-image", nil); err != nil {
-		return err
-	}
 	requestCtx, cancelRequest := context.WithTimeout(ctx, assistantSynchronousImageLimit)
 	defer cancelRequest()
 	var fetchingStarted atomic.Bool

@@ -261,7 +261,8 @@ html:not(.color-scheme-dark) .main-content.main--pricing-console {
 }
 
 /* 个人中心：底色交给页面科幻氛围层，壳层保持透明 */
-.main-content.main--wallet-console {
+.main-content.main--wallet-console,
+.main-content.main--subscriptions-console {
   padding-top: 0;
   padding-bottom: 0;
   height: 100svh;
@@ -271,14 +272,24 @@ html:not(.color-scheme-dark) .main-content.main--pricing-console {
   flex-direction: column;
   background: #ffffff;
 }
-html.color-scheme-dark .main-content.main--wallet-console {
+html.color-scheme-dark .main-content.main--wallet-console,
+html.color-scheme-dark .main-content.main--subscriptions-console {
   background: #0d0e14;
 }
-.main-content.main--wallet-console > * {
+.main-content.main--wallet-console > *,
+.main-content.main--subscriptions-console > * {
   flex: 1;
   min-width: 0;
   min-height: 0;
   padding-top: calc(var(--app-header-offset, 82px) + 12px);
+}
+@media (max-width: 640px) {
+  .main-content.main--subscriptions-console {
+    display: block;
+    height: auto;
+    max-height: none;
+    overflow: visible;
+  }
 }
 
 .main-content.main--orders-console {

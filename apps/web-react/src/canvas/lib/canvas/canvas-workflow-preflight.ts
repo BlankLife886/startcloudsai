@@ -3,12 +3,13 @@ import type { CanvasNodeGenerationMode } from "@/components/canvas/canvas-node-p
 import { isCanvasGenerationModeEnabled } from "@/constant/canvas";
 import { buildGenerationConfig, getGenerationCount, getInputSummary } from "@/lib/canvas/canvas-generation-helpers";
 import { estimateCanvasGenerationCost, type CanvasCostEstimate } from "@/lib/canvas/canvas-generation-cost";
+import { canvasImageSizeParams } from "@/lib/canvas/canvas-image-model";
 import { isCanvasLocalImageOperation } from "@/lib/canvas/canvas-local-image-operation";
 import { validateCanvasWorkflowNodeReadiness, type CanvasWorkflowNodeReadinessIssue, type CanvasWorkflowPlan } from "@/lib/canvas/canvas-workflow";
-import type { AiConfig } from "@/stores/use-config-store";
+import { modelOptionMeta, type AiConfig } from "@/stores/use-config-store";
 import type { CanvasConnection, CanvasNodeData } from "@/types/canvas";
 
-type WorkflowPreflightFailureReason = "node_missing" | "unsupported_media" | "empty_input" | "readiness" | "model_unavailable" | "pricing_unavailable";
+type WorkflowPreflightFailureReason = "node_missing" | "unsupported_media" | "empty_input" | "readiness" | "model_unavailable" | "pricing_unavailable" | "invalid_image_size";
 
 export type CanvasWorkflowPreflightFailure = {
     ok: false;
@@ -17,6 +18,7 @@ export type CanvasWorkflowPreflightFailure = {
     nodeTitle?: string;
     mode?: string;
     readinessIssue?: CanvasWorkflowNodeReadinessIssue;
+    errorMessage?: string;
 };
 
 export type CanvasWorkflowPreflightItem = {
@@ -82,6 +84,13 @@ export function preflightCanvasWorkflow(options: {
         if (localOperation) {
             items.push({ nodeId, title: node.title, mode, model: config.model, count, localOperation, inputSummary });
             continue;
+        }
+        if (mode === "image" && config.sizeMode === "exact") {
+            try {
+                canvasImageSizeParams(modelOptionMeta(config, config.model), config);
+            } catch (error) {
+                return { ok: false, reason: "invalid_image_size", nodeId, nodeTitle: node.title, mode, errorMessage: error instanceof Error ? error.message : "精确尺寸配置无效" };
+            }
         }
         if (!options.isConfigReady(config, config.model)) return { ok: false, reason: "model_unavailable", nodeId, nodeTitle: node.title, mode };
         const estimate = estimateCanvasGenerationCost({ config, kind: mode === "text" ? "text" : "image", count });

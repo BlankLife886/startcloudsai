@@ -44,18 +44,18 @@ test("history only opens records that have preview media", () => {
   assert.equal(historyTaskCanOpen({ status: "failed" }, true), true);
 });
 
-test("history duration uses real generation timestamps instead of queue time", () => {
+test("history total duration includes queue time and all retries", () => {
   const task = {
     status: "failed",
     createdAt: "2026-08-29T10:00:00.000Z",
     startedAt: "2026-08-29T10:00:05.000Z",
     finishedAt: "2026-08-29T10:01:12.000Z",
   };
-  assert.equal(historyTaskDurationMs(task), 67_000);
-  assert.equal(historyTaskDurationLabel(task), "1分7秒");
+  assert.equal(historyTaskDurationMs(task), 72_000);
+  assert.equal(historyTaskDurationLabel(task), "1分12秒");
   assert.equal(
     historyTaskDurationLabel({ status: "canceled", createdAt: task.createdAt, finishedAt: task.finishedAt }),
-    "未开始生成",
+    "1分12秒",
   );
   assert.equal(historyTaskDurationLabel({ status: "queued" }), "等待开始");
 });

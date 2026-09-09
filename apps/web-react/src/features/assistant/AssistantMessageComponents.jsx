@@ -9,19 +9,20 @@ import {
 import { createPortal } from "react-dom";
 import { uploadFile } from "@react/legacy-modules/services/tasksApi.js";
 import notificationService from "@react/legacy-modules/services/notification.js";
-import { formatMessageDate, messageStatus, uid } from "./domain/assistantMessages.js";
+import { formatMessageDate, generatedImageRatioLabel, messageStatus, uid } from "./domain/assistantMessages.js";
 import { promptNeedsRecentVisual } from "./domain/visualContext.js";
+import { assistantImageBatchLimit } from "./domain/assistantImageLimits.js";
 import {
   clampImageCount,
   getModelAspectRatiosForResolution,
   imageCountOptions,
-  imageModelMaxCount,
   normalizeImageModelCapabilities,
 } from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
 import { useIsDark } from "../../hooks/useIsDark.js";
 import { DownloadIcon } from "../../components/common/DownloadIcon.jsx";
 import { RegenerateIcon } from "../../components/common/RegenerateIcon.jsx";
 import { SoftMark } from "../../components/common/SoftMark.jsx";
+import { ModelCatalogIcon, ModelMaintenanceBadge, isCatalogModelMaintenance } from "../../components/common/ModelCatalogIcon.jsx";
 import { isAssistantImageFile, isPSDFile } from "./domain/assistantAttachments.js";
 import {
   IMAGE_QUALITY_OPTIONS,
@@ -66,6 +67,7 @@ import { AssistantPreviewImage, ModelMenuPrice } from "./AssistantWorkspaceUi.js
 
 function GeneratedImageGrid({ message, imageModels, loadedImages, failedImages, imageRetryVersions, onOpenImage, onImageLoad, onImageError, onImageRetry, onUseReference }) {
   const meta = { ...imageGenerationMeta(message, imageModels), messageId: message.id, runId: message.runId || "", model: message.model || "", requestRatio: message.requestRatio || message.ratio || "", requestSize: message.requestSize || "", width: message.width, height: message.height, quality: message.quality || "", pending: Boolean(message.pending) };
+  const imagePlanItems = Array.isArray(message.imagePlanItems) ? message.imagePlanItems : [];
   return (
     <div className={`generated-images${message.images.length === 1 ? " is-single" : ""}${message.images.length > 2 ? " is-many" : ""}`} style={{ "--generated-ratio": imageRatioValue(message), "--image-slot-count": message.images.length }}>
       {message.images.map((image, index) => {
@@ -73,6 +75,7 @@ function GeneratedImageGrid({ message, imageModels, loadedImages, failedImages, 
         const loaded = loadedImages.has(key);
         const failed = failedImages.has(key);
         const deleted = Boolean(image?.deleted || image?.deletedByHistory);
+        const ratioLabel = generatedImageRatioLabel(image, { ...message, ...(imagePlanItems[index] || {}) });
         return (
           <figure key={key} data-image-key={key} className={deleted ? "is-deleted" : failed ? "is-failed" : loaded ? "" : "is-loading"}>
             {deleted ? (
@@ -92,6 +95,7 @@ function GeneratedImageGrid({ message, imageModels, loadedImages, failedImages, 
                 <i className="tile-sheen" aria-hidden="true" />
               </button>
             )}
+            {loaded && !failed && !deleted && ratioLabel ? <span className="generated-image-ratio">{ratioLabel}</span> : null}
             {loaded && !failed && !deleted && (
               <div className="generated-image-actions">
                 <button type="button" title="复制图片" aria-label="复制图片" onClick={() => void copyAssistantImage(image).then(() => notificationService.success("图片已复制")).catch(() => notificationService.error("复制图片失败"))}><i className="bi bi-copy" /></button>
@@ -325,6 +329,7 @@ function AssistantToolActions({ actions, busyId, onExecute }) {
 function ProposalSelect({ id, label, ariaLabel, valueLabel, options, disabled, open, onToggle, onPick }) {
   const wrapRef = useRef(null);
   const [menuStyle, setMenuStyle] = useState(null);
+  const selectedOption = options.find((option) => option.selected) || options[0];
 
   useLayoutEffect(() => {
     if (!open) {
@@ -363,13 +368,17 @@ function ProposalSelect({ id, label, ariaLabel, valueLabel, options, disabled, o
           role="option"
           aria-selected={option.selected}
           className={option.selected ? "active" : ""}
+          disabled={option.disabled}
+          title={option.disabled ? "模型维护中，暂不可选择" : undefined}
           onClick={(event) => { event.stopPropagation(); onPick(option.id); }}
         >
+          {option.model ? <ModelCatalogIcon model={option.model} size="xs" /> : null}
           {option.mark ? <i className={`ratio-shape is-${option.mark}`} style={option.markStyle} /> : null}
           <span className="agent-proposal-menu-copy">
             <strong>{option.label}</strong>
             {option.detail}
           </span>
+          {option.model ? <ModelMaintenanceBadge model={option.model} /> : null}
           {option.selected ? <i className="bi bi-check-lg" aria-hidden="true" /> : null}
         </button>
       ))}
@@ -389,7 +398,7 @@ function ProposalSelect({ id, label, ariaLabel, valueLabel, options, disabled, o
           aria-haspopup="listbox"
           onClick={(event) => { event.stopPropagation(); onToggle(); }}
         >
-          {id === "model" ? <SoftMark name="cpu" size="xs" /> : null}
+          {id === "model" ? <ModelCatalogIcon model={selectedOption?.model} size="xs" /> : null}
           <span>{valueLabel}</span>
           <i className={`bi bi-chevron-down${open ? " is-open" : ""}`} aria-hidden="true" />
         </button>
@@ -500,8 +509,11 @@ function AgentProposal({ message, imageModels, generating, executed, attachedRef
     };
     window.addEventListener("pointerdown", onPointerDown);
     window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("scroll", onScroll, true);
+    const scrollTimer = window.setTimeout(() => {
+      window.addEventListener("scroll", onScroll, true);
+    }, 160);
     return () => {
+      window.clearTimeout(scrollTimer);
       window.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("scroll", onScroll, true);
@@ -510,23 +522,30 @@ function AgentProposal({ message, imageModels, generating, executed, attachedRef
   const proposal = message.proposal;
   if (!proposal) return null;
   const sourceReferences = attachedReferences?.length ? attachedReferences : promptNeedsRecentVisual(message.prompt) ? proposal.referenceImages : [];
-  const planItems = proposalImagePlanItems(proposal);
-  const independentPlan = planItems.length >= 2;
   const referenceImages = proposalReferenceImages(proposal, sourceReferences);
-  const selectedModel = imageModels.find((item) => item.model === proposal.model) || imageModels[0] || null;
+  const recordedModel = imageModels.find((item) => item.model === proposal.model) || imageModels[0] || null;
+  const frozenProposal = Boolean(executed || generating || proposal.submitting);
+  const selectedModel = recordedModel && !frozenProposal
+    ? { ...recordedModel, maxImages: assistantImageBatchLimit(recordedModel) }
+    : recordedModel;
+  const planItems = proposalImagePlanItems(proposal).map((item) => ({
+    ...item,
+    ...(frozenProposal ? {} : assistantImageSettings(selectedModel, { ...proposal, ...item })),
+  }));
+  const independentPlan = planItems.length >= 2;
   const modelCapabilities = normalizeImageModelCapabilities(selectedModel || {});
   const resolutions = RESOLUTIONS.filter((item) => modelCapabilities.resolutions.includes(item.id));
   const qualities = IMAGE_QUALITY_OPTIONS.filter((item) => modelCapabilities.qualities.includes(item.id));
   const ratios = getModelAspectRatiosForResolution(selectedModel, proposal.resolution).map(ratioOption);
-  const counts = imageCountOptions(selectedModel);
+  const counts = selectedModel && assistantImageBatchLimit(selectedModel) > 0 ? imageCountOptions(selectedModel) : [];
   const referenceMode = proposalReferenceMode(proposal, referenceImages);
   const individualReferences = !independentPlan && referenceMode === "individual" && referenceImages.length > 0;
-  const proposalCount = independentPlan ? planItems.length : individualReferences ? referenceImages.length : clampImageCount(proposal.count || 1, selectedModel, 1);
+  const proposalCount = independentPlan ? planItems.length : individualReferences ? referenceImages.length : frozenProposal ? Math.max(1, Number(proposal.count) || 1) : clampImageCount(proposal.count || 1, selectedModel, 1);
   const busy = Boolean(proposal.submitting);
   const toggleMenu = (id) => setOpenMenu((current) => current === id ? "" : id);
   const promptMode = proposal.promptMode === "faithful" ? "faithful" : "enhanced";
   const referenceLabels = new Map(referenceImages.map((image, index) => [referenceImageIdentity(image), `图${index + 1}`]));
-  const validPlan = !independentPlan || planItems.every((item) => String(item.prompt || "").trim());
+  const validPlan = Boolean(selectedModel && assistantImageBatchLimit(selectedModel) > 0) && (!independentPlan || planItems.every((item) => String(item.prompt || "").trim()));
   const applyReferenceImages = (nextImages) => {
     const nextReferences = uniqueReferenceImages(nextImages).slice(0, modelCapabilities.maxReferenceImages);
     const nextIDs = nextReferences.map(referenceImageIdentity).filter(Boolean);
@@ -610,6 +629,38 @@ function AgentProposal({ message, imageModels, generating, executed, attachedRef
     }
     setPromptEditor(null);
   };
+  const changePlanItemSetting = (itemId, patch) => {
+    const nextItems = planItems.map((item) => {
+      if (item.id !== itemId) return item;
+      const settings = assistantImageSettings(selectedModel, { ...proposal, ...item, ...patch });
+      if (patch.resolution && settings.ratio && settings.ratio !== item.ratio) {
+        notificationService.info(`${patch.resolution} 不支持 ${item.ratio}，该张比例已调整为 ${settings.ratio}`);
+      }
+      return { ...item, ...settings };
+    });
+    onChange({ items: nextItems, count: nextItems.length });
+  };
+  const changeProposalModel = (nextModel) => {
+    const model = imageModels.find((item) => item.model === nextModel) || selectedModel;
+    if (!model || isCatalogModelMaintenance(model)) return;
+    const batchLimit = assistantImageBatchLimit(model);
+    if (batchLimit <= 0) return;
+    const fixedCount = independentPlan ? planItems.length : individualReferences ? referenceImages.length : 0;
+    if (fixedCount && batchLimit < fixedCount) {
+      notificationService.warning(`当前额度下该模型一次最多生成 ${batchLimit} 张，方案需要 ${fixedCount} 张`);
+      return;
+    }
+    const settings = assistantImageSettings(model, proposal);
+    if (settings.ratio && settings.ratio !== proposal.ratio) {
+      notificationService.info(`新模型不支持 ${proposal.ratio}，比例已调整为 ${settings.ratio}`);
+    }
+    onChange({
+      model: nextModel,
+      ...settings,
+      ...(planItems.length ? { items: planItems.map((item) => ({ ...item, ...assistantImageSettings(model, item) })) } : {}),
+      count: fixedCount || clampImageCount(proposal.count, model, 1),
+    });
+  };
   useEffect(() => {
     if (!proposal.dismissed) return;
     setOpenMenu("");
@@ -627,6 +678,7 @@ function AgentProposal({ message, imageModels, generating, executed, attachedRef
       <div className="agent-proposal-body" hidden={proposal.dismissed}>
       <header className="agent-proposal-head">
         <strong>{proposal.action === "edit" ? "图片编辑方案" : "图片生成方案"}</strong>
+        {independentPlan ? <em className="agent-proposal-count">{planItems.length} 张独立图</em> : null}
         {executed ? <span className="agent-proposal-state">已执行</span> : null}
         {!independentPlan ? (
           <div className="agent-proposal-prompt-mode" role="group" aria-label="提示词执行方式">
@@ -675,19 +727,61 @@ function AgentProposal({ message, imageModels, generating, executed, attachedRef
         <div className="agent-proposal-plan" aria-label={`${planItems.length} 张独立图片方案`}>
           {planItems.map((item, index) => {
             const labels = item.referencedImageIds.map((id) => referenceLabels.get(id)).filter(Boolean);
+            const itemRatios = getModelAspectRatiosForResolution(selectedModel, item.resolution).map(ratioOption);
             return (
-              <button
-                key={item.id}
-                type="button"
-                disabled={busy}
-                aria-label={`编辑${item.title}提示词`}
-                onClick={() => { setOpenMenu(""); setPromptEditor({ itemId: item.id, title: item.title, value: item.prompt }); }}
-              >
-                <b>{index + 1}</b>
-                <span><strong>{item.title}</strong><small>{item.prompt}</small></span>
-                {labels.length ? <em>{labels.join(" · ")}</em> : null}
-                <i className="bi bi-pencil" aria-hidden="true" />
-              </button>
+              <div className="agent-proposal-plan-item" key={item.id}>
+                <div className="agent-proposal-plan-item-head">
+                  <b>{index + 1}</b>
+                  <strong>{item.title}</strong>
+                  <div className="agent-proposal-plan-settings agent-proposal-params">
+                  <ProposalSelect
+                    id="ratio"
+                    label="比例"
+                    ariaLabel={`${item.title}比例`}
+                    valueLabel={itemRatios.find((option) => option.id === item.ratio)?.label || item.ratio || itemRatios[0]?.label}
+                    disabled={busy}
+                    open={openMenu === `plan-ratio:${item.id}`}
+                    onToggle={() => toggleMenu(`plan-ratio:${item.id}`)}
+                    onPick={(ratio) => { setOpenMenu(""); changePlanItemSetting(item.id, { ratio }); }}
+                    options={itemRatios.map((option) => ({
+                      id: option.id,
+                      label: option.label,
+                      selected: item.ratio === option.id,
+                      mark: option.shape,
+                      markStyle: ratioPreviewStyle(option.id),
+                    }))}
+                  />
+                  {resolutions.length ? (
+                    <ProposalSelect
+                      id="resolution"
+                      label="分辨率"
+                      ariaLabel={`${item.title}分辨率`}
+                      valueLabel={resolutions.find((option) => option.id === item.resolution)?.label || item.resolution || resolutions[0]?.label}
+                      disabled={busy}
+                      open={openMenu === `plan-resolution:${item.id}`}
+                      onToggle={() => toggleMenu(`plan-resolution:${item.id}`)}
+                      onPick={(resolution) => { setOpenMenu(""); changePlanItemSetting(item.id, { resolution }); }}
+                      options={resolutions.map((option) => ({
+                        id: option.id,
+                        label: option.label,
+                        selected: item.resolution === option.id,
+                      }))}
+                    />
+                  ) : null}
+                  </div>
+                </div>
+                <button
+                  className="agent-proposal-plan-prompt"
+                  type="button"
+                  disabled={busy}
+                  aria-label={`编辑${item.title}提示词`}
+                  onClick={() => { setOpenMenu(""); setPromptEditor({ itemId: item.id, title: item.title, value: item.prompt }); }}
+                >
+                  <span>{item.prompt}</span>
+                  {labels.length ? <em>{labels.join(" · ")}</em> : null}
+                  <i className="bi bi-pencil" aria-hidden="true" />
+                </button>
+              </div>
             );
           })}
         </div>
@@ -732,20 +826,12 @@ function AgentProposal({ message, imageModels, generating, executed, attachedRef
             disabled={busy}
             open={openMenu === "model"}
             onToggle={() => toggleMenu("model")}
-            onPick={(nextModel) => {
-              setOpenMenu("");
-              const model = imageModels.find((item) => item.model === nextModel) || selectedModel;
-              const fixedCount = independentPlan ? planItems.length : individualReferences ? referenceImages.length : 0;
-              if (fixedCount && imageModelMaxCount(model) < fixedCount) {
-                notificationService.warning(`该模型最多生成 ${imageModelMaxCount(model)} 张，当前方案需要 ${fixedCount} 张`);
-                return;
-              }
-              const settings = assistantImageSettings(model, proposal);
-              onChange({ model: nextModel, ...settings, count: fixedCount || clampImageCount(proposal.count, model, 1) });
-            }}
+            onPick={(nextModel) => { setOpenMenu(""); changeProposalModel(nextModel); }}
             options={imageModels.map((model) => ({
               id: model.model,
               label: model.label,
+              model,
+              disabled: isCatalogModelMaintenance(model),
               selected: (proposal.model || selectedModel?.model) === model.model,
               detail: <ModelMenuPrice model={model} perImage />,
             }))}
@@ -756,7 +842,7 @@ function AgentProposal({ message, imageModels, generating, executed, attachedRef
             <div className="agent-proposal-readonly">{proposal.modelName || proposal.model || "模型不可用"}</div>
           </div>
         )}
-        {ratios.length ? <ProposalSelect
+        {!independentPlan && ratios.length ? <ProposalSelect
           id="ratio"
           label="比例"
           ariaLabel="画面比例"
@@ -773,7 +859,7 @@ function AgentProposal({ message, imageModels, generating, executed, attachedRef
             markStyle: ratioPreviewStyle(ratio.id),
           }))}
         /> : null}
-        {resolutions.length ? <ProposalSelect
+        {!independentPlan && resolutions.length ? <ProposalSelect
           id="resolution"
           label="清晰度"
           ariaLabel="清晰度"
@@ -781,7 +867,14 @@ function AgentProposal({ message, imageModels, generating, executed, attachedRef
           disabled={busy}
           open={openMenu === "resolution"}
           onToggle={() => toggleMenu("resolution")}
-          onPick={(resolution) => { setOpenMenu(""); onChange({ resolution }); }}
+          onPick={(resolution) => {
+            setOpenMenu("");
+            const settings = assistantImageSettings(selectedModel, { ...proposal, resolution });
+            if (settings.ratio && settings.ratio !== proposal.ratio) {
+              notificationService.info(`${resolution} 不支持 ${proposal.ratio}，比例已调整为 ${settings.ratio}`);
+            }
+            onChange({ resolution, ...settings });
+          }}
           options={resolutions.map((option) => ({
             id: option.id,
             label: option.label,
@@ -796,7 +889,13 @@ function AgentProposal({ message, imageModels, generating, executed, attachedRef
           disabled={busy}
           open={openMenu === "quality"}
           onToggle={() => toggleMenu("quality")}
-          onPick={(quality) => { setOpenMenu(""); onChange({ quality }); }}
+          onPick={(quality) => {
+            setOpenMenu("");
+            onChange({
+              quality,
+              ...(planItems.length ? { items: planItems.map((item) => ({ ...item, quality })) } : {}),
+            });
+          }}
           options={qualities.map((option) => ({
             id: option.id,
             label: option.label,

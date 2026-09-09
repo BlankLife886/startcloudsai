@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 )
@@ -30,7 +31,8 @@ var walletIncomeCatalog = []walletIncomeSpec{
 	{"task_failure_bonus", "失败补偿", "生成失败后的补偿积分"},
 	{"redeem_code", "兑换码入账", "使用兑换码充入的积分"},
 	{"order", "套餐入账", "购买套餐到账"},
-	{"subscription_daily", "订阅每日发放", "会员订阅按日发放"},
+	{"subscription_daily", "历史订阅发放", "旧版订阅的自然日发放"},
+	{"subscription_cycle", "订阅额度发放", "历史周期发放合计，含已到期或置换额度"},
 	{"signup_bonus", "注册赠送", "新账号注册奖励"},
 	{"admin", "人工调整", "客服或管理员入账"},
 	{"other", "其他入账", "未归入以上渠道的入账"},
@@ -52,6 +54,15 @@ func walletIncomeID(sourceType string) string {
 }
 
 func walletIncomeLabel(sourceType string) string {
+	if sourceType == "subscription_cycle_expiry" {
+		return "订阅周期到期"
+	}
+	if sourceType == "subscription_upgrade_exchange" {
+		return "订阅升级置换"
+	}
+	if sourceType == "subscription_refund_hold" {
+		return "订阅退订"
+	}
 	return walletIncomeByID[walletIncomeID(sourceType)].Label
 }
 
@@ -77,6 +88,8 @@ func walletKindLabel(kind string, delta int64) string {
 
 func walletCreditBucketLabel(bucket string) string {
 	switch bucket {
+	case "subscription":
+		return "订阅积分"
 	case "trial":
 		return "体验积分"
 	case "mixed":
@@ -86,9 +99,42 @@ func walletCreditBucketLabel(bucket string) string {
 	}
 }
 
+func walletEntryKindLabel(entry *store.LedgerEntry) string {
+	if entry.SourceType == "subscription_cycle_expiry" {
+		return "周期到期"
+	}
+	if entry.SourceType == "subscription_upgrade_exchange" {
+		switch entry.Kind {
+		case "freeze":
+			return "升级锁定"
+		case "release":
+			return "升级解锁"
+		case "spend":
+			return "升级置换回收"
+		}
+	}
+	if entry.SourceType == "subscription_refund_hold" {
+		switch entry.Kind {
+		case "freeze":
+			return "退订冻结"
+		case "release":
+			return "退订解冻"
+		case "spend":
+			return "退订回收"
+		}
+	}
+	return walletKindLabel(entry.Kind, entry.DeltaCents)
+}
+
 func ledgerConsumedCents(entry *store.LedgerEntry, task *store.Task, run *store.AssistantRun) int64 {
 	if entry == nil {
 		return 0
+	}
+	if entry.SourceType == "subscription_cycle_expiry" {
+		return 0
+	}
+	if entry.Kind == "spend" && entry.SettledPoints != nil {
+		return *entry.SettledPoints
 	}
 	if entry.Kind == "admin_adjust" && entry.DeltaCents < 0 {
 		return -entry.DeltaCents
@@ -139,9 +185,6 @@ func walletSummaryDict(stats *store.WalletLedgerStats) gin.H {
 	}
 	items := make([]gin.H, 0, len(walletIncomeCatalog))
 	for _, spec := range walletIncomeCatalog {
-		if spec.ID == "trial_access" {
-			continue
-		}
 		item := byID[spec.ID]
 		items = append(items, gin.H{
 			"id":    spec.ID,
@@ -152,14 +195,18 @@ func walletSummaryDict(stats *store.WalletLedgerStats) gin.H {
 		})
 	}
 	return gin.H{
-		"consumedCents": stats.ConsumedCents,
-		"consumedCount": stats.ConsumedCount,
-		"refundCents":   stats.RefundCents,
-		"refundCount":   stats.RefundCount,
-		"incomeCents":   stats.IncomeCents,
-		"incomeCount":   stats.IncomeCount,
-		"entryCount":    stats.EntryCount,
-		"items":         items,
+		"unresolvedConsumedCount": stats.UnresolvedConsumedCount,
+		"expiredPoints":           stats.ExpiredPoints,
+		"upgradeReclaimedPoints":  stats.UpgradeReclaimedPoints,
+		"refundReclaimedPoints":   stats.RefundReclaimedPoints,
+		"consumedCents":           stats.ConsumedCents,
+		"consumedCount":           stats.ConsumedCount,
+		"refundCents":             stats.RefundCents,
+		"refundCount":             stats.RefundCount,
+		"incomeCents":             stats.IncomeCents,
+		"incomeCount":             stats.IncomeCount,
+		"entryCount":              stats.EntryCount,
+		"items":                   items,
 	}
 }
 
@@ -169,7 +216,19 @@ func (s *Server) myWalletSummary(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	stats, err := store.UserWalletLedgerStats(c.Request.Context(), s.St.Pool, user.ID)
+	ctx := c.Request.Context()
+	var stats *store.WalletLedgerStats
+	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT user_id FROM wallets WHERE user_id=$1 FOR UPDATE`, user.ID); err != nil {
+			return err
+		}
+		if err := store.ExpireSubscriptionCredits(ctx, tx, user.ID, store.BillingTime(ctx)); err != nil {
+			return err
+		}
+		var err error
+		stats, err = store.UserWalletLedgerStats(ctx, tx, user.ID)
+		return err
+	})
 	if err != nil {
 		fail(c, err)
 		return
@@ -215,16 +274,19 @@ func (s *Server) myWalletExport(c *gin.Context) {
 	_ = writer.Write([]string{"星空云绘积分账单"})
 	_ = writer.Write([]string{"导出时间", stamp})
 	_ = writer.Write(safeCSVRow("账号", user.Email))
-	_ = writer.Write([]string{"可用余额", strconv.FormatInt(wallet.BalanceCents+wallet.TrialBalanceCents, 10)})
-	_ = writer.Write([]string{"冻结中", strconv.FormatInt(wallet.FrozenCents+wallet.TrialFrozenCents, 10)})
+	_ = writer.Write([]string{"可用余额", strconv.FormatInt(wallet.BalanceCents+wallet.TrialBalanceCents+wallet.SubscriptionBalanceCents, 10)})
+	_ = writer.Write([]string{"冻结中", strconv.FormatInt(wallet.FrozenCents+wallet.TrialFrozenCents+wallet.SubscriptionHeldCents+wallet.SubscriptionUpgradeHeldCents, 10)})
 	_ = writer.Write([]string{"普通积分", strconv.FormatInt(wallet.BalanceCents, 10)})
 	_ = writer.Write([]string{"体验积分余额", strconv.FormatInt(wallet.TrialBalanceCents, 10)})
 	_ = writer.Write([]string{})
 	_ = writer.Write([]string{"汇总项目", "积分", "笔数", "说明"})
 	summary := walletSummaryDict(stats)
-	_ = writer.Write([]string{"合计消耗", fmt.Sprint(summary["consumedCents"]), fmt.Sprint(summary["consumedCount"]), "已结算的创作消耗，不含仍在冻结中的预扣"})
-	_ = writer.Write([]string{"失败退回", fmt.Sprint(summary["refundCents"]), fmt.Sprint(summary["refundCount"]), "任务失败或取消后解冻退回可用余额"})
+	_ = writer.Write([]string{"合计消耗", fmt.Sprint(summary["consumedCents"]), fmt.Sprint(summary["consumedCount"]), "任务结算与人工扣减，不含冻结和权益回收"})
+	_ = writer.Write([]string{"任务释放", fmt.Sprint(summary["refundCents"]), fmt.Sprint(summary["refundCount"]), "任务失败、取消或未用预留额度的释放，不属于新增入账"})
 	_ = writer.Write([]string{"合计入账", fmt.Sprint(summary["incomeCents"]), fmt.Sprint(summary["incomeCount"]), "所有渠道累计到账"})
+	_ = writer.Write([]string{"周期到期", fmt.Sprint(stats.ExpiredPoints), "", "不计为创作消耗"})
+	_ = writer.Write([]string{"升级置换回收", fmt.Sprint(stats.UpgradeReclaimedPoints), "", "旧权益抵扣回收"})
+	_ = writer.Write([]string{"退订回收", fmt.Sprint(stats.RefundReclaimedPoints), "", "退款后回收的订阅积分"})
 	if rawItems, ok := summary["items"].([]gin.H); ok {
 		for _, item := range rawItems {
 			_ = writer.Write(safeCSVRow(
@@ -256,13 +318,23 @@ func (s *Server) myWalletExport(c *gin.Context) {
 			elapsed = formatExportDuration(stringValue(task["startedAt"]), stringValue(task["finishedAt"]))
 		}
 		delta := ledgerExportDelta(entry, tasksByID, runsByID)
+		if entry.SourceType == "subscription_refund_hold" {
+			switch entry.Kind {
+			case "freeze":
+				note = "退订审核通过，订阅积分暂时冻结，通用积分不受影响。"
+			case "release":
+				note = "退订申请未通过，订阅积分解除冻结。"
+			case "spend":
+				note = "退订完成，回收此前冻结的订阅积分，不重复扣减可用余额。"
+			}
+		}
 		_ = writer.Write(safeCSVRow(
 			entry.CreatedAt.In(promptDayLocation).Format("2006-01-02 15:04:05"),
 			elapsed,
 			title,
 			note,
 			model,
-			walletKindLabel(entry.Kind, entry.DeltaCents),
+			walletEntryKindLabel(entry),
 			formatExportDelta(delta),
 			strconv.FormatInt(entry.BalanceAfterCents, 10),
 			walletIncomeLabel(entry.SourceType),
@@ -281,6 +353,15 @@ func (s *Server) myWalletExport(c *gin.Context) {
 }
 
 func walletExportTitle(entry *store.LedgerEntry, task gin.H) string {
+	if entry.SourceType == "subscription_cycle_expiry" {
+		return "订阅周期到期"
+	}
+	if entry.SourceType == "subscription_upgrade_exchange" {
+		return "订阅升级置换"
+	}
+	if entry.SourceType == "subscription_refund_hold" {
+		return "订阅退订"
+	}
 	if task != nil {
 		if name := strings.TrimSpace(fmt.Sprint(task["displayName"])); name != "" && name != "<nil>" {
 			return name

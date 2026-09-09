@@ -42,6 +42,18 @@ func TestNormalizeAssistantConfiguredImageParametersClearsUnsupportedFields(t *t
 	}
 }
 
+func TestNormalizeAssistantConfiguredImageParametersUsesPromptRatio(t *testing.T) {
+	body := assistantRunIn{Mode: "image", Prompt: "生成一张 1200x800 的横版海报", Ratio: "auto", Resolution: "2K", Quality: "high"}
+	model := modelconfig.Model{
+		AspectRatios: []string{"auto", "1:1", "3:2", "16:9"},
+		Resolutions:  []string{"2K"}, Qualities: []string{"high"},
+	}
+	auto, err := normalizeAssistantConfiguredImageParameters(&body, model)
+	if err != nil || auto || body.Ratio != "3:2" {
+		t.Fatalf("prompt ratio was not applied: body=%#v auto=%v err=%v", body, auto, err)
+	}
+}
+
 func TestNormalizeAssistantReferenceMode(t *testing.T) {
 	for input, expected := range map[string]string{
 		"": "", " shared ": "shared", "INDIVIDUAL": "individual",
@@ -76,7 +88,7 @@ func TestSanitizeAssistantImagePlanItems(t *testing.T) {
 	items, err := sanitizeAssistantImagePlanItems([]assistantRunImagePlanItem{
 		{Title: "主图", Prompt: "主图提示词", ReferenceImageIDs: []string{"ref-1"}},
 		{Title: "细节图", Prompt: "细节图提示词", ReferenceImageIDs: []string{"ref-2"}},
-	}, references, 2)
+	}, references, 2, nil, "")
 	if err != nil {
 		t.Fatalf("sanitize image plan: %v", err)
 	}
@@ -86,20 +98,30 @@ func TestSanitizeAssistantImagePlanItems(t *testing.T) {
 	if ids, ok := items[0]["referenceImageIds"].([]string); !ok || len(ids) != 1 || ids[0] != "ref-1" {
 		t.Fatalf("sanitized reference ids = %#v", items[0]["referenceImageIds"])
 	}
+	model := modelconfig.Model{
+		Resolutions: []string{"1K", "2K"}, AspectRatios: []string{"auto", "1:1", "16:9"}, Qualities: []string{"high"},
+	}
+	items, err = sanitizeAssistantImagePlanItems([]assistantRunImagePlanItem{
+		{Prompt: "横图", Ratio: "16:9", Resolution: "2K", Quality: "high"},
+		{Prompt: "方图", Ratio: "1:1", Resolution: "1K", Quality: "high"},
+	}, references, 2, &model, "1K")
+	if err != nil || assistantMapText(items[0], "requestSize") != "2048x1152" || assistantMapText(items[1], "requestSize") != "1024x1024" {
+		t.Fatalf("per-item image settings = %#v, err=%v", items, err)
+	}
 
 	if _, err := sanitizeAssistantImagePlanItems([]assistantRunImagePlanItem{
 		{Prompt: "一", ReferenceImageIDs: []string{"missing"}}, {Prompt: "二"},
-	}, references, 2); err == nil {
+	}, references, 2, nil, ""); err == nil {
 		t.Fatal("unknown reference id must fail validation")
 	}
 	if _, err := sanitizeAssistantImagePlanItems([]assistantRunImagePlanItem{
 		{Prompt: strings.Repeat("字", maxAssistantMessageRunes+1)}, {Prompt: "二"},
-	}, references, 2); err == nil {
+	}, references, 2, nil, ""); err == nil {
 		t.Fatal("oversized item prompt must fail validation")
 	}
 	if _, err := sanitizeAssistantImagePlanItems([]assistantRunImagePlanItem{
 		{Prompt: "一"}, {Prompt: "二"},
-	}, references, 3); err == nil {
+	}, references, 3, nil, ""); err == nil {
 		t.Fatal("plan count mismatch must fail validation")
 	}
 }
@@ -181,7 +203,8 @@ func TestAssistantConfigIncludesStandardAndDiscountPointPrices(t *testing.T) {
 		},
 		{
 			ID: "image-model", Name: "Image Model", ProviderID: "provider", UpstreamModel: "image-2",
-			Kind: modelconfig.ModelKindImage, PriceCents: 20, DiscountPriceCents: &discount,
+			IconURL: "/api/v1/files/model-icons/image-model.webp",
+			Kind:    modelconfig.ModelKindImage, PriceCents: 20, DiscountPriceCents: &discount,
 			UpstreamInputFields:         []string{"prompt", "aspect_ratio", "img_urls", "output_format"},
 			UpstreamRequiredInputFields: []string{"prompt"},
 			UpstreamInputSchema: map[string]any{"type": "object", "properties": map[string]any{
@@ -190,9 +213,14 @@ func TestAssistantConfigIncludesStandardAndDiscountPointPrices(t *testing.T) {
 			AspectRatios: []string{"auto", "16:9"}, Resolutions: []string{}, Qualities: []string{},
 			Public: true, Enabled: true,
 		},
+		{
+			ID: "maintenance-image", Name: "Maintenance Image", ProviderID: "provider", UpstreamModel: "image-maintenance",
+			IconURL: "/api/v1/files/model-icons/maintenance-image.webp", Status: modelconfig.ModelStatusMaintenance,
+			Kind: modelconfig.ModelKindImage, PriceCents: 30, Public: true, Enabled: true,
+		},
 	}
 	cfg.Workspaces = map[string]modelconfig.WorkspaceBinding{
-		modelconfig.WorkspaceAssistant: {ModelIDs: []string{"chat-model", "image-model"}},
+		modelconfig.WorkspaceAssistant: {ModelIDs: []string{"chat-model", "image-model", "maintenance-image"}},
 	}
 	if err := modelconfig.Save(context.Background(), env.st.Pool, cfg); err != nil {
 		t.Fatal(err)
@@ -210,10 +238,16 @@ func TestAssistantConfigIncludesStandardAndDiscountPointPrices(t *testing.T) {
 		`"assistantDiscountPricePoints":8`, `"canvasAgentStandardPricePoints":41`, `"canvasAgentPricePoints":29`,
 		`"canvasAgentDiscountPricePoints":29`, `"reasoningEfforts":`,
 		`"resolutions":[]`, `"qualities":[]`, `"inputFields":["aspect_ratio","img_urls","output_format","prompt"]`,
+		`"iconUrl":"/api/v1/files/model-icons/image-model.webp"`,
+		`"model":"maintenance-image"`, `"iconUrl":"/api/v1/files/model-icons/maintenance-image.webp"`,
+		`"status":"maintenance"`, `"maintenance":true`,
 	} {
 		if !strings.Contains(body, field) {
 			t.Fatalf("assistant model price missing %s: %s", field, body)
 		}
+	}
+	if response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("assistant config cache control = %q", response.Header().Get("Cache-Control"))
 	}
 }
 
@@ -1218,6 +1252,62 @@ func TestDeleteAssistantConversationQueuesGeneratedImages(t *testing.T) {
 	}
 }
 
+func TestAssistantConversationMessagePagination(t *testing.T) {
+	env := newCommunityEnv(t)
+	user, token := env.newUserSession(t, "user")
+	ctx := context.Background()
+	now := time.Now().UTC()
+	conversation, err := store.InsertAssistantConversation(ctx, env.st.Pool, uuid.New(), user.ID, "分页测试", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	messageIDs := make([]string, 0, 7)
+	for index := 0; index < 7; index++ {
+		message, insertErr := store.InsertAssistantMessage(ctx, env.st.Pool, store.AssistantMessage{
+			ID: uuid.New(), ConversationID: conversation.ID, Role: "user",
+			Content: fmt.Sprintf("消息 %d", index+1), Kind: "chat", Status: "complete",
+			CreatedAt: now.Add(time.Duration(index) * time.Millisecond),
+		})
+		if insertErr != nil {
+			t.Fatal(insertErr)
+		}
+		messageIDs = append(messageIDs, message.ID.String())
+	}
+
+	loadPage := func(path string) ([]any, bool) {
+		t.Helper()
+		response := env.do(t, http.MethodGet, path, nil, token)
+		if response.Code != http.StatusOK {
+			t.Fatalf("load assistant page: status %d body %s", response.Code, response.Body.String())
+		}
+		data, _ := decode(t, response)
+		messages, _ := data["messages"].([]any)
+		hasMore, _ := data["hasMoreMessages"].(bool)
+		return messages, hasMore
+	}
+	messageID := func(messages []any, index int) string {
+		t.Helper()
+		message, _ := messages[index].(map[string]any)
+		id, _ := message["id"].(string)
+		return id
+	}
+
+	basePath := "/api/v1/assistant/conversations/" + conversation.ID.String() + "?messageLimit=3"
+	latest, hasMore := loadPage(basePath)
+	if len(latest) != 3 || !hasMore || messageID(latest, 0) != messageIDs[4] || messageID(latest, 2) != messageIDs[6] {
+		t.Fatalf("latest page = %#v, hasMore=%v", latest, hasMore)
+	}
+	middle, hasMore := loadPage(basePath + "&beforeMessageId=" + messageID(latest, 0))
+	if len(middle) != 3 || !hasMore || messageID(middle, 0) != messageIDs[1] || messageID(middle, 2) != messageIDs[3] {
+		t.Fatalf("middle page = %#v, hasMore=%v", middle, hasMore)
+	}
+	oldest, hasMore := loadPage(basePath + "&beforeMessageId=" + messageID(middle, 0))
+	if len(oldest) != 1 || hasMore || messageID(oldest, 0) != messageIDs[0] {
+		t.Fatalf("oldest page = %#v, hasMore=%v", oldest, hasMore)
+	}
+}
+
 func TestDeleteAssistantMessageQueuesLaterGeneratedImages(t *testing.T) {
 	env := newCommunityEnv(t)
 	user, token := env.newUserSession(t, "user")
@@ -1357,6 +1447,17 @@ func TestValidateAssistantRunCapacity(t *testing.T) {
 
 	if err := validateAssistantRunCapacity(active[:assistantActiveRunLimit-1], conversationID, false); err != nil {
 		t.Fatalf("three other conversations should be allowed: %v", err)
+	}
+	if err := validateAssistantRunCapacity(active, conversationID, false, 8, 6); err != nil {
+		t.Fatalf("subscription with six of eight slots used should accept: %v", err)
+	}
+	err = validateAssistantRunCapacity(nil, conversationID, false, 6, 6)
+	appErr, ok = apperr.As(err)
+	if !ok || appErr.Code != "assistant_run_limit" {
+		t.Fatalf("slots occupied by other task types must count: %#v", err)
+	}
+	if err := validateAssistantRunCapacity(nil, conversationID, true, 6, 6); err != nil {
+		t.Fatalf("full account can still queue: %v", err)
 	}
 
 	queued := make([]*store.AssistantRun, 0, assistantUserQueueLimit)

@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Link, useSearchParams } from "react-router";
+import { useSearchParams } from "react-router";
+import { PageEntryLink as Link } from "../page-control/PageEntryLink.jsx";
 import { gsap } from "gsap";
 import { useGSAP } from "@gsap/react";
 import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";
+import { availableCatalogModels, isCatalogModelMaintenance } from "../components/common/ModelCatalogIcon.jsx";
+import { resolveModelPointPricing } from "@react/legacy-modules/features/ai-shared/modelPointPricing.js";
 import { useLocale } from "../i18n/index.js";
 import {
   buildEcommerceGenerationPlan,
@@ -403,11 +406,18 @@ function coerceRatioValue(value, options, fallback = "") {
 function commerceModelOptions(list, fallbackPrice) {
   const fallback = Number(fallbackPrice);
   return (list || []).map((item) => {
-    const cost = Number(item?.creditCost ?? item?.pricePoints ?? fallback);
+    const priced = resolveModelPointPricing(item);
+    const model = priced.configured || !Number.isFinite(fallback)
+      ? item
+      : { ...item, pricePoints: fallback };
+    const price = resolveModelPointPricing(model);
     return {
       value: item.id || item.publicModelKey,
       label: item.label || item.name || item.id,
-      hint: Number.isFinite(cost) ? `${cost} 积分/张` : "",
+      hint: "",
+      model,
+      disabled: isCatalogModelMaintenance(item),
+      hasPrice: price.configured,
     };
   });
 }
@@ -1357,11 +1367,12 @@ export function EcommerceBusinessSession({
           runtime.value.aiModelCatalog?.featurePublicModels ||
           [];
         setModels(list);
+        const available = availableCatalogModels(list);
         setModelId(
           String(
-            list.find((item) => item.default)?.id ||
-              list[0]?.id ||
-              list[0]?.publicModelKey ||
+            available.find((item) => item.default)?.id ||
+              available[0]?.id ||
+              available[0]?.publicModelKey ||
               "",
           ),
         );
@@ -1380,8 +1391,8 @@ export function EcommerceBusinessSession({
         .map(String)
         .includes(String(modelId)),
     );
-    const price = Number(selected?.creditCost ?? selected?.pricePoints);
-    if (Number.isFinite(price)) setUnitPrice(Math.max(0, price));
+    const price = resolveModelPointPricing(selected);
+    if (price.configured) setUnitPrice(Math.max(0, price.effective));
   }, [modelId, models]);
 
   useEffect(() => {
@@ -4942,7 +4953,7 @@ export function EcommerceBusinessSession({
                 onChange={setModelId}
                 placeholder="请选择模型"
                 ariaLabel="选择生成模型"
-                menuMinWidth={240}
+                menuMinWidth={360}
                 disabled={jobs.running}
               />
             </label>
@@ -5002,7 +5013,7 @@ export function EcommerceBusinessSession({
                 onChange={setModelId}
                 placeholder="请选择模型"
                 ariaLabel="选择生成模型"
-                menuMinWidth={240}
+                menuMinWidth={360}
                 disabled={handheldCurrentRunning}
               />
             </label>
@@ -5620,7 +5631,7 @@ export function EcommerceBusinessSession({
                       onChange={setModelId}
                       placeholder="请选择模型"
                       ariaLabel="选择生成模型"
-                      menuMinWidth={240}
+                      menuMinWidth={360}
                     />
                   </label>
                 </div>
@@ -6342,7 +6353,7 @@ export function EcommerceBusinessSession({
                   : tryonFailMessage
               }
               elapsedSeconds={ecommerceElapsedSeconds(tryonTimingTask)}
-              runStartedAt={tryonTimingTask?.startedAt || ""}
+              runStartedAt={tryonTimingTask?.createdAt || ""}
               generationStageLabel={jobs.generationStageLabel || "正在生成"}
               cancelling={jobs.cancelling}
               generateDisabled={auth.isAuthenticated && !canGenerate}
@@ -6509,9 +6520,7 @@ export function EcommerceBusinessSession({
                   failed: slotFailed,
                   error: task?.error || "",
                   startedAt:
-                    task?.startedAt ||
                     task?.createdAt ||
-                    row?.task?.startedAt ||
                     row?.task?.createdAt ||
                     "",
                   elapsedSeconds: ecommerceElapsedSeconds(task || row?.task),

@@ -42,6 +42,9 @@ export type CompactCanvasSnapshot = {
         model?: string;
         mode?: string;
         size?: string;
+        sizeMode?: "ratio" | "exact";
+        exactWidth?: string | number;
+        exactHeight?: string | number;
         resolution?: string;
         quality?: string;
         count?: number;
@@ -103,6 +106,7 @@ export function compactCanvasSnapshot(snapshot: CanvasAgentSnapshot | null | und
                 ...(node.metadata?.model ? { model: node.metadata.model } : {}),
                 ...(node.metadata?.generationMode ? { mode: node.metadata.generationMode } : {}),
                 ...(node.metadata?.size ? { size: node.metadata.size } : {}),
+                ...(node.metadata?.sizeMode ? { sizeMode: node.metadata.sizeMode, exactWidth: node.metadata.exactWidth, exactHeight: node.metadata.exactHeight } : {}),
                 ...(node.metadata?.resolution ? { resolution: node.metadata.resolution } : {}),
                 ...(node.metadata?.quality ? { quality: node.metadata.quality } : {}),
                 ...(typeof node.metadata?.count === "number" ? { count: node.metadata.count } : {}),
@@ -281,7 +285,7 @@ export type CanvasAgentToolCanvas = {
     canRedo?: boolean;
     /** Re-reads the live canvas; generation polling needs state newer than the turn snapshot. */
     readSnapshot?: () => CanvasAgentSnapshot;
-    startGeneration?: (input: { nodeIds: string[]; mode?: "text" | "image" | "video" | "audio"; prompt?: string }) => { requestId: string; nodeIds: string[] };
+    startGeneration?: (input: { requestId?: string; nodeIds: string[]; mode?: "text" | "image" | "video" | "audio"; prompt?: string }) => { requestId: string; nodeIds: string[] };
     getGenerationStatus?: (requestId: string) => { requestId: string; tasks: Array<{ nodeId: string; status: CanvasGenerationStatus; error?: string }> } | null;
     regenerateSelection?: (input: { requestId: string; instruction: string }) => Promise<{
         status: "started" | "canceled";
@@ -445,7 +449,7 @@ export async function runCanvasAgentTool(request: CanvasAgentToolRequest, canvas
         });
     }
     if (request.name === "canvas_run_generation") {
-        return runGeneration(request.arguments, canvas);
+        return runGeneration(request.arguments, canvas, request.requestId);
     }
     if (request.name === "canvas_generation_status") {
         return readGenerationStatus(request.arguments, canvas);
@@ -1103,6 +1107,9 @@ function inspectableNodeMetadata(metadata: CanvasAgentSnapshot["nodes"][number][
         model: metadata.model,
         generationMode: metadata.generationMode,
         size: metadata.size,
+        sizeMode: metadata.sizeMode,
+        exactWidth: metadata.exactWidth,
+        exactHeight: metadata.exactHeight,
         resolution: metadata.resolution,
         quality: metadata.quality,
         count: metadata.count,
@@ -1139,6 +1146,9 @@ type GenerationSettingsInput = {
     workflowId?: string;
     nodeIds?: string[];
     size?: string;
+    sizeMode?: "ratio" | "exact";
+    exactWidth?: string;
+    exactHeight?: string;
     resolution?: string;
     quality?: string;
     model?: string;
@@ -1154,10 +1164,13 @@ function updateGenerationSettings(rawArguments: string, canvas: CanvasAgentToolC
         workflowId: String(raw.workflowId || "").trim() || undefined,
         nodeIds: Array.isArray(raw.nodeIds) ? raw.nodeIds.map((id) => String(id || "").trim()).filter(Boolean) : undefined,
         ...generationSettingStrings(raw),
+        ...(raw.sizeMode === "exact" || raw.sizeMode === "ratio" ? { sizeMode: raw.sizeMode } : {}),
+        ...(raw.exactWidth !== undefined ? { exactWidth: String(raw.exactWidth).trim() } : {}),
+        ...(raw.exactHeight !== undefined ? { exactHeight: String(raw.exactHeight).trim() } : {}),
         ...(typeof raw.count === "number" && Number.isInteger(raw.count) && raw.count > 0 ? { count: raw.count } : {}),
     };
     const settings = generationSettingsPatch(input);
-    if (!Object.keys(settings).length) throw new Error("至少需要提供一个生成参数：size、quality、resolution、model、count 或 background");
+    if (!Object.keys(settings).length) throw new Error("至少需要提供一个生成参数：size、sizeMode、exactWidth、exactHeight、quality、resolution、model、count 或 background");
 
     const before = liveSnapshot(canvas);
     const targets = resolveGenerationSettingTargets(before, input);
@@ -1195,8 +1208,14 @@ function generationSettingStrings(raw: Record<string, unknown>) {
 }
 
 function generationSettingsPatch(input: GenerationSettingsInput) {
+    const sizeMode = input.sizeMode || (input.size || input.resolution ? "ratio" : undefined);
     return {
         ...(input.size ? { size: input.size } : {}),
+        ...(sizeMode ? { sizeMode } : {}),
+        ...(sizeMode === "ratio" ? { exactWidth: "", exactHeight: "" } : {
+            ...(input.exactWidth !== undefined ? { exactWidth: input.exactWidth } : {}),
+            ...(input.exactHeight !== undefined ? { exactHeight: input.exactHeight } : {}),
+        }),
         ...(input.resolution ? { resolution: input.resolution } : {}),
         ...(input.quality ? { quality: input.quality } : {}),
         ...(input.model ? { model: input.model } : {}),
@@ -1289,7 +1308,7 @@ function canvasMutationStats(before: CanvasAgentSnapshot, after: CanvasAgentSnap
     };
 }
 
-function runGeneration(rawArguments: string, canvas: CanvasAgentToolCanvas) {
+function runGeneration(rawArguments: string, canvas: CanvasAgentToolCanvas, requestId?: string) {
     const input = asRecord(safeParse(rawArguments)) || {};
     const snapshot = liveSnapshot(canvas);
     const known = new Set(snapshot.nodes.map((node) => node.id));
@@ -1299,7 +1318,7 @@ function runGeneration(rawArguments: string, canvas: CanvasAgentToolCanvas) {
     if (!nodeIds.length) throw new Error(missing.length ? `节点不存在：${missing.join("、")}` : "nodeIds 为空");
     const mode = input.mode === "text" || input.mode === "image" || input.mode === "video" || input.mode === "audio" ? input.mode : undefined;
     const prompt = String(input.prompt || "").trim();
-    if (canvas.startGeneration) return canvas.startGeneration({ nodeIds, ...(mode ? { mode } : {}), ...(prompt ? { prompt } : {}) });
+    if (canvas.startGeneration) return canvas.startGeneration({ nodeIds, ...(requestId ? { requestId } : {}), ...(mode ? { mode } : {}), ...(prompt ? { prompt } : {}) });
     canvas.applyOps(nodeIds.map((nodeId) => ({ type: "run_generation", nodeId, ...(mode ? { mode } : {}), ...(prompt ? { prompt } : {}) })));
     return { triggered: nodeIds, ...(missing.length ? { missing } : {}) };
 }

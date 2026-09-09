@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { fileURLToPath, URL } from "node:url";
 import react from "@vitejs/plugin-react";
@@ -76,6 +77,29 @@ export default defineConfig({
   server: {
     port: 3105,
     proxy: {
+      "^/v1(?:/|$)": {
+        target: process.env.VITE_API_PROXY_TARGET || "http://localhost:8000",
+        changeOrigin: true,
+        // Synchronous image generation may wait for the existing task worker.
+        timeout: 300_000,
+        proxyTimeout: 300_000,
+        configure(proxy) {
+          proxy.on("error", (_error, _request, response) => {
+            if (typeof response.writeHead !== "function" || response.headersSent || response.writableEnded) return;
+            response.writeHead(502, {
+              "Content-Type": "application/json",
+              "X-Request-ID": randomUUID(),
+              "X-Should-Retry": "false",
+            });
+            response.end(JSON.stringify({ error: {
+              message: "图片服务暂时不可用；如需重试，请使用同一 Idempotency-Key",
+              type: "server_error",
+              param: null,
+              code: "bad_gateway",
+            } }));
+          });
+        },
+      },
       "/api": {
         target: process.env.VITE_API_PROXY_TARGET || "http://localhost:8000",
         changeOrigin: true,

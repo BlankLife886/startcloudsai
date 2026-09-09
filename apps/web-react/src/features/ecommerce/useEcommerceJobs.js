@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   cancelTask,
+  cancelTaskGroup,
   createTask,
   deleteTask,
   listTasks,
@@ -10,6 +11,8 @@ import {
   waitForTask,
 } from "@react/legacy-modules/services/tasksApi.js";
 import { fetchAuthenticatedMediaBlob } from "@react/legacy-modules/services/authenticatedMedia.js";
+import { getAuthSession } from "@react/legacy-modules/services/auth.js";
+import { prepareHandheldSubmission } from "./handheld/handheldSubmission.js";
 import {
   cancelHandheldJob,
   createHandheldJob,
@@ -252,7 +255,10 @@ export function useEcommerceJobs({ taskKind = "", models = [] } = {}) {
 	const [cancelConfirmOpen, setCancelConfirmOpen] = useState(false);
   const [lastError, setLastError] = useState("");
   const controllersRef = useRef(new Map());
+  const approvedCancellationsRef = useRef(new WeakSet());
   const preparationDoneRef = useRef(new Map());
+  const handheldSubmissionRef = useRef(null);
+  const handheldSubmittingRef = useRef(false);
   const mountedRef = useRef(true);
 
   const upsert = useCallback((task) => {
@@ -274,15 +280,12 @@ export function useEcommerceJobs({ taskKind = "", models = [] } = {}) {
         signal: controller.signal,
         onUpdate: upsert,
         intervalMs: 500,
+        maxWaitMs: null,
       })
         .then(upsert)
         .catch((error) => {
           if (error?.name !== "AbortError") {
-            upsert({
-              ...task,
-              status: "failed",
-              error: error?.message || "任务执行失败",
-            });
+            console.warn("Task monitoring interrupted", id, error);
           }
         })
         .finally(() => {
@@ -473,10 +476,11 @@ export function useEcommerceJobs({ taskKind = "", models = [] } = {}) {
             });
             if (controller.signal.aborted) {
               try {
-                const canceled = await cancelTask(task.id, { acknowledgeUpstream: true });
+                const canceled = await cancelTask(task.id, { acknowledgeUpstream: approvedCancellationsRef.current.has(controller) });
                 upsert(canceled);
               } catch {
                 upsert(task);
+                if (mountedRef.current) watchTask(normalizeTask(task));
               }
               throw new DOMException("已停止本次生成", "AbortError");
             }
@@ -579,26 +583,36 @@ export function useEcommerceJobs({ taskKind = "", models = [] } = {}) {
       ) {
         throw new Error("手持商品任务缺少商品图或生成项");
       }
+      if (handheldSubmittingRef.current) throw new Error("手持商品任务正在提交，请稍候");
+      const draft = prepareHandheldSubmission(handheldSubmissionRef.current, {
+        scope: getAuthSession()?.user?.id || "guest", roleFiles, projectId, productId, modelId, spec, parentBatchId,
+      });
+      handheldSubmittingRef.current = true;
+      handheldSubmissionRef.current = draft;
       const controller = new AbortController();
       const prepareKey = `handheld-${Date.now()}`;
       controllersRef.current.set(prepareKey, controller);
       setLastError("");
       setSubmitting(true);
       try {
-        const inputs = await Promise.all(
-          roleFiles.map(async ({ role, file }) => ({
-            role,
-            key: await resolveEcommerceUploadKey(file, controller.signal),
-          })),
-        );
-        const batch = await createHandheldJob(
-          {
+        if (!draft.payload) {
+          const inputs = await Promise.all(
+            roleFiles.map(async ({ role, file }) => ({
+              role,
+              key: await resolveEcommerceUploadKey(file, controller.signal),
+            })),
+          );
+          draft.payload = {
+            idempotencyKey: draft.idempotencyKey,
             ...(projectId ? { projectId } : {}),
             ...(productId ? { productId } : {}),
             ...(parentBatchId ? { parentBatchId } : {}),
             modelId,
             spec: { ...spec, inputs },
-          },
+          };
+        }
+        const batch = await createHandheldJob(
+          draft.payload,
           { signal: controller.signal },
         );
         const incoming = (Array.isArray(batch?.items) ? batch.items : [])
@@ -609,12 +623,14 @@ export function useEcommerceJobs({ taskKind = "", models = [] } = {}) {
           upsert(task);
           if (ACTIVE_STATUSES.has(task.status)) watchTask(task);
         });
+        handheldSubmissionRef.current = null;
         return { batchId: String(batch?.id || ""), tasks: incoming, batch };
       } catch (error) {
         if (mountedRef.current)
           setLastError(error?.message || "手持商品生成失败");
         throw error;
       } finally {
+        handheldSubmittingRef.current = false;
         controllersRef.current.delete(prepareKey);
         if (mountedRef.current) setSubmitting(false);
       }
@@ -701,10 +717,18 @@ export function useEcommerceJobs({ taskKind = "", models = [] } = {}) {
     if (!active.length && !pendingControllers.length) return;
     setCancelling(true);
     try {
-      pendingControllers.forEach(([, controller]) => controller.abort());
-      const settled = await Promise.allSettled(
-        active.map((task) => cancelTask(task.id, { acknowledgeUpstream: true })),
-      );
+      pendingControllers.forEach(([, controller]) => { approvedCancellationsRef.current.add(controller); controller.abort(); });
+      let settled = [];
+      try {
+        const ids = active.map(task => task.id);
+        const canceled = ids.length ? await cancelTaskGroup(ids, { acknowledgedTaskIds: ids }) : [];
+        const byId = new Map(canceled.map(task => [task.id, task]));
+        settled = active.map(task => byId.has(task.id)
+          ? { status: "fulfilled", value: byId.get(task.id) }
+          : { status: "rejected", reason: new Error("任务取消结果缺失，仍将继续跟踪") });
+      } catch (error) {
+        settled = active.map(() => ({ status: "rejected", reason: error }));
+      }
       await Promise.allSettled(preparationDone);
       const canceledIds = [];
 		const failures = [];

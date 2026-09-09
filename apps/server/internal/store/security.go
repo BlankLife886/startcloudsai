@@ -261,8 +261,9 @@ func InsertPaymentReconciliation(ctx context.Context, q Q, item PaymentReconcili
 
 func ListPaymentReconciliations(ctx context.Context, q Q, issuesOnly bool, limit int) ([]*PaymentReconciliation, error) {
 	rows, err := q.Query(ctx, `SELECT id,order_id,provider,local_status,provider_state,expected_amount_cents,
-		provider_amount_cents,provider_paid_amount_cents,outcome,detail,checked_at FROM payment_reconciliations
-		WHERE ($1=false OR outcome<>'matched') ORDER BY id DESC LIMIT $2`, issuesOnly, min(max(limit, 1), 200))
+		provider_amount_cents,provider_paid_amount_cents,outcome,detail,checked_at FROM
+		(SELECT DISTINCT ON (order_id) * FROM payment_reconciliations ORDER BY order_id,id DESC) latest
+		WHERE ($1=false OR outcome NOT IN ('matched','repaired','manual_not_created')) ORDER BY id DESC LIMIT $2`, issuesOnly, min(max(limit, 1), 200))
 	if err != nil {
 		return nil, err
 	}

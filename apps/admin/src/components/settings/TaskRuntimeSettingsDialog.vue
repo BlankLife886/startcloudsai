@@ -15,8 +15,10 @@ const effectiveGlobalConcurrency = ref(1)
 const form = reactive({
   userMaxRunningTasks: 100,
   userMaxRunningImages: 400,
-  userMaxConcurrentTasks: 20,
+  userMaxConcurrentTasks: 4,
+  userMaxConcurrentChats: 4,
   globalMaxConcurrentTasks: 2000,
+  globalMaxConcurrentChats: 32,
   globalMaxActiveTasks: 12000,
   globalMaxActiveImages: 12000,
   taskFailureRetryCount: 2,
@@ -34,8 +36,11 @@ const form = reactive({
 function hydrate(settings: AdminSettings) {
   form.userMaxRunningTasks = settings.userMaxRunningTasks ?? 100
   form.userMaxRunningImages = settings.userMaxRunningImages ?? 400
-  form.userMaxConcurrentTasks = settings.userMaxConcurrentTasks ?? 20
-  form.globalMaxConcurrentTasks = settings.globalMaxConcurrentTasks ?? 2000
+  form.userMaxConcurrentTasks = settings.userMaxConcurrentTasks ?? 4
+  form.userMaxConcurrentChats = settings.userMaxConcurrentChats ?? 4
+  form.globalMaxConcurrentTasks = settings.globalMaxConcurrentTasks != null && settings.globalMaxConcurrentTasks > 0
+    ? settings.globalMaxConcurrentTasks : settings.effectiveGlobalConcurrency ?? 2000
+  form.globalMaxConcurrentChats = settings.globalMaxConcurrentChats ?? 32
   form.globalMaxActiveTasks = settings.globalMaxActiveTasks ?? 12000
   form.globalMaxActiveImages = settings.globalMaxActiveImages ?? 12000
   form.taskFailureRetryCount = settings.taskFailureRetryCount ?? 2
@@ -76,7 +81,9 @@ async function save() {
           userMaxRunningTasks: form.userMaxRunningTasks,
           userMaxRunningImages: form.userMaxRunningImages,
           userMaxConcurrentTasks: form.userMaxConcurrentTasks,
+          userMaxConcurrentChats: form.userMaxConcurrentChats,
           globalMaxConcurrentTasks: form.globalMaxConcurrentTasks,
+          globalMaxConcurrentChats: form.globalMaxConcurrentChats,
           globalMaxActiveTasks: form.globalMaxActiveTasks,
           globalMaxActiveImages: form.globalMaxActiveImages,
           taskFailureRetryCount: form.taskFailureRetryCount,
@@ -118,8 +125,8 @@ async function save() {
   >
     <div v-loading="loading" class="module-settings-form">
       <div class="module-settings-metrics">
-        <div class="module-settings-metric"><span>在线 Worker 并发能力</span><strong>{{ workerConcurrencyCeiling.toLocaleString('zh-CN') }}</strong></div>
-        <div class="module-settings-metric"><span>当前全局并发配置</span><strong>{{ effectiveGlobalConcurrency.toLocaleString('zh-CN') }}</strong></div>
+        <div class="module-settings-metric"><span>在线处理线程</span><strong>{{ workerConcurrencyCeiling.toLocaleString('zh-CN') }}</strong></div>
+        <div class="module-settings-metric"><span>全局图片并发上限</span><strong>{{ effectiveGlobalConcurrency.toLocaleString('zh-CN') }} 张</strong></div>
       </div>
 
       <section class="module-settings-section">
@@ -127,14 +134,16 @@ async function save() {
         <div class="module-settings-grid">
           <div class="module-settings-field"><div class="module-settings-field__copy"><strong>运行中任务上限</strong><small>包含排队中和生成中的任务</small></div><div class="module-settings-control"><el-input-number v-model="form.userMaxRunningTasks" :min="1" :max="10000" :precision="0" /><span>个</span></div></div>
           <div class="module-settings-field"><div class="module-settings-field__copy"><strong>运行中图片上限</strong><small>按任务内图片数量累计</small></div><div class="module-settings-control"><el-input-number v-model="form.userMaxRunningImages" :min="1" :max="100000" :precision="0" /><span>张</span></div></div>
-          <div class="module-settings-field module-settings-field--wide"><div class="module-settings-field__copy"><strong>单用户并发任务</strong><small>同一时间允许进入上游执行的任务数量</small></div><div class="module-settings-control"><el-input-number v-model="form.userMaxConcurrentTasks" :min="1" :max="10000" :precision="0" /><span>个</span></div></div>
+          <div class="module-settings-field"><div class="module-settings-field__copy"><strong>个人基础图片并发</strong><small>图片按张占用；订阅加成增加图片额度，各生图场景共用</small></div><div class="module-settings-control"><el-input-number v-model="form.userMaxConcurrentTasks" :min="1" :max="10000" :precision="0" /><span>张</span></div></div>
+          <div class="module-settings-field"><div class="module-settings-field__copy"><strong>个人对话并发</strong><small>对话按次占用，独立于图片额度</small></div><div class="module-settings-control"><el-input-number v-model="form.userMaxConcurrentChats" :min="1" :max="10000" :precision="0" /><span>次</span></div></div>
         </div>
       </section>
 
       <section class="module-settings-section">
         <header class="module-settings-section__head"><div><strong>全局容量</strong><small>限制平台整体积压和上游执行规模</small></div></header>
         <div class="module-settings-grid">
-          <div class="module-settings-field"><div class="module-settings-field__copy"><strong>全局并发任务</strong><small>允许同时进入执行阶段的任务</small></div><div class="module-settings-control"><el-input-number v-model="form.globalMaxConcurrentTasks" :min="1" :max="10000000" :precision="0" /><span>个</span></div></div>
+          <div class="module-settings-field"><div class="module-settings-field__copy"><strong>全局图片并发</strong><small>所有生图场景同时执行的图片总量</small></div><div class="module-settings-control"><el-input-number v-model="form.globalMaxConcurrentTasks" :min="1" :max="10000000" :precision="0" /><span>张</span></div></div>
+          <div class="module-settings-field"><div class="module-settings-field__copy"><strong>全局对话并发</strong><small>所有对话任务同时执行的次数</small></div><div class="module-settings-control"><el-input-number v-model="form.globalMaxConcurrentChats" :min="1" :max="10000000" :precision="0" /><span>次</span></div></div>
           <div class="module-settings-field"><div class="module-settings-field__copy"><strong>活跃任务容量</strong><small>排队中与生成中的总任务上限</small></div><div class="module-settings-control"><el-input-number v-model="form.globalMaxActiveTasks" :min="10" :max="10000000" :precision="0" /><span>个</span></div></div>
           <div class="module-settings-field module-settings-field--wide"><div class="module-settings-field__copy"><strong>活跃图片容量</strong><small>所有活跃任务的图片数量总上限</small></div><div class="module-settings-control"><el-input-number v-model="form.globalMaxActiveImages" :min="10" :max="10000000" :precision="0" /><span>张</span></div></div>
         </div>

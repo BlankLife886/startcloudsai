@@ -7,30 +7,39 @@ function containsAny(value, terms) {
   return terms.some((term) => text.includes(term))
 }
 
-const GUIDANCE = {
-  web: [
-    { id: "verify-sources", icon: "bi-shield-check", label: "核对来源", prompt: "完成后继续核对关键结论，并补充对应的可靠来源链接。" },
-    { id: "summarize-table", icon: "bi-table", label: "整理成表格", prompt: "完成后把结果整理成简洁的对比表格，保留日期和来源。" },
-    { id: "deeper-search", icon: "bi-search", label: "继续深挖", prompt: "完成后继续搜索这个主题，补充容易遗漏的重要信息。" },
-  ],
-  image: [
-    { id: "image-variant", icon: "bi-images", label: "再做一版", prompt: "完成后基于上一张再做一版，保留核心要求但换一种构图。" },
-    { id: "image-refine", icon: "bi-sliders", label: "优化细节", prompt: "完成后检查上一张的主体、背景和细节，给出可以继续优化的具体方案。" },
-    { id: "image-prompt", icon: "bi-card-text", label: "整理提示词", prompt: "完成后把这次需求整理成一份可复用的完整生图提示词。" },
-  ],
-  file: [
-    { id: "file-summary", icon: "bi-list-check", label: "提炼要点", prompt: "完成后提炼最重要的结论和待办事项。" },
-    { id: "file-table", icon: "bi-table", label: "整理表格", prompt: "完成后把关键信息整理成结构清晰的表格。" },
-    { id: "file-export", icon: "bi-file-earmark-arrow-down", label: "导出文件", prompt: "完成后把最终内容整理成可下载的 Markdown 文件。" },
-  ],
-  chat: [
-    { id: "chat-detail", icon: "bi-zoom-in", label: "深入说明", prompt: "完成后继续深入说明关键部分，避免重复已经回答的内容。" },
-    { id: "chat-example", icon: "bi-lightbulb", label: "给出例子", prompt: "完成后补充几个具体例子，帮助我直接理解和使用。" },
-    { id: "chat-actions", icon: "bi-list-check", label: "行动清单", prompt: "完成后把结论整理成一份简短、可执行的行动清单。" },
-  ],
+function taskFocus(prompt) {
+  const compact = String(prompt || "").replace(/\s+/g, " ").trim()
+  return compact.length > 32 ? `${compact.slice(0, 32)}…` : compact || "当前任务"
 }
 
-export function assistantRunGuidance(run = {}) {
+function dynamicGuidance(kind, run, messages) {
+  const focus = taskFocus(run.prompt)
+  const hasReference = Number(run.referenceCount || 0) > 0 || messages.some((message) => message.referenceImages?.length)
+  const asksComparison = /对比|比较|区别|差异|优缺点|versus|\bvs\b/i.test(run.prompt || "")
+  const asksSteps = /如何|怎么|步骤|流程|方案|实现|how|steps/i.test(run.prompt || "")
+  if (kind === "web") return [
+    { id: "verify-sources", icon: "bi-shield-check", label: "核对关键来源", prompt: `完成后逐项核对“${focus}”中的关键结论、发布日期和原始来源。` },
+    { id: "summarize-evidence", icon: "bi-table", label: asksComparison ? "整理对比证据" : "整理证据表", prompt: `完成后把“${focus}”的结论、证据、日期和来源整理成表格。` },
+    { id: "find-gaps", icon: "bi-search", label: "查找遗漏信息", prompt: `完成后继续检查“${focus}”还有哪些重要信息没有覆盖。` },
+  ]
+  if (kind === "image") return [
+    { id: "image-variant", icon: "bi-images", label: hasReference ? "基于参考图再做" : "换构图再做一版", prompt: `完成后围绕“${focus}”再生成一版，保留已确认要求并明确说明构图变化。` },
+    { id: "image-refine", icon: "bi-sliders", label: hasReference ? "精修当前图片" : "检查画面细节", prompt: `完成后检查“${focus}”的主体、比例、背景和细节，整理下一版修改方案。` },
+    { id: "image-prompt", icon: "bi-card-text", label: "保存本次提示词", prompt: `完成后把“${focus}”整理成包含比例和关键视觉约束的可复用提示词。` },
+  ]
+  if (kind === "file") return [
+    { id: "file-summary", icon: "bi-list-check", label: "提炼文件结论", prompt: `完成后从“${focus}”中提炼结论、依据和待办事项。` },
+    { id: "file-table", icon: "bi-table", label: asksComparison ? "生成对比表" : "整理结构化表格", prompt: `完成后把“${focus}”的关键信息整理成结构清晰的表格。` },
+    { id: "file-export", icon: "bi-file-earmark-arrow-down", label: "导出整理结果", prompt: `完成后把“${focus}”的最终内容生成可下载文件。` },
+  ]
+  return [
+    { id: "chat-detail", icon: "bi-zoom-in", label: asksSteps ? "细化执行步骤" : "深入关键结论", prompt: `完成后继续展开“${focus}”中最关键但尚未说明清楚的部分。` },
+    { id: "chat-example", icon: "bi-lightbulb", label: asksComparison ? "补充对比例子" : "给出具体例子", prompt: `完成后针对“${focus}”补充可以直接验证或使用的具体例子。` },
+    { id: "chat-actions", icon: "bi-list-check", label: asksSteps ? "整理落地清单" : "生成行动清单", prompt: `完成后把“${focus}”整理成简短、可执行且可检查的行动清单。` },
+  ]
+}
+
+export function assistantRunGuidance(run = {}, messages = []) {
   const prompt = String(run.prompt || "")
   const stage = String(run.stage || "").toLowerCase()
   const mode = String(run.resolvedMode || run.mode || "").toLowerCase()
@@ -38,5 +47,5 @@ export function assistantRunGuidance(run = {}) {
   if (stage === "web_search" || containsAny(prompt, WEB_TERMS)) kind = "web"
   else if (mode === "image" || stage.includes("image") || containsAny(prompt, IMAGE_TERMS)) kind = "image"
   else if (stage.includes("ppt") || stage.includes("psd") || containsAny(prompt, FILE_TERMS)) kind = "file"
-  return GUIDANCE[kind].map((item) => ({ ...item }))
+  return dynamicGuidance(kind, run, Array.isArray(messages) ? messages : [])
 }

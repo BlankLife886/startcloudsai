@@ -1,6 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
-import { ArrowRight, Image as ImageIcon } from "lucide-react";
+import {
+  ArrowUp, ArrowUpRight, AudioLines, Box, Clock3, Coins, FileArchive,
+  Gamepad2, Image as ImageIcon, Layers, LayoutGrid, Maximize2, MessageSquareText,
+  Paintbrush, PanelsTopLeft, Puzzle, Scissors, Shirt, ShoppingBag,
+  Sparkles, Video, WandSparkles, Workflow, Wrench,
+} from "lucide-react";
 import { fetchRuntimeConfig } from "@react/legacy-modules/services/runtimeConfig.js";
 import { COMMERCE_ENTRY_GROUPS, STUDIO_TOOLS } from "@react/legacy-modules/features/creator-hub/studioTools.js";
 import { resolveModelPointPricing } from "@react/legacy-modules/features/ai-shared/modelPointPricing.js";
@@ -9,11 +14,39 @@ import { PAGE_STATUS, pageKeyForHref } from "../config/pageControls.js";
 import { useIsDark } from "../hooks/useIsDark.js";
 import { usePageControls } from "../page-control/PageControlContext.jsx";
 import "./commercial-home-react.css";
+import "./home/HomeCatalogSections.css";
+import { HomeHero } from "./home/HomeHero.jsx";
+import { HomeCoverImage } from "./home/HomeCoverImage.jsx";
+import { useHomeMotion } from "./home/useHomeMotion.js";
+import { HomeModelMarquee } from "./home/HomeModelMarquee.jsx";
+import { collectHomeModels } from "./home/homeModels.js";
 
 const STATUS_META = {
   [PAGE_STATUS.NORMAL]: { label: "可使用", className: "is-normal" },
   [PAGE_STATUS.MAINTENANCE]: { label: "维护中", className: "is-maintenance" },
   [PAGE_STATUS.DEVELOPING]: { label: "开发中", className: "is-developing" },
+};
+
+const CARD_ICONS = {
+  canvas: Workflow,
+  assistant: MessageSquareText,
+  t2i: ImageIcon,
+  coloring: Paintbrush,
+  ui: PanelsTopLeft,
+  model: Box,
+  game: Gamepad2,
+  "commerce-model": Shirt,
+  "commerce-create": ShoppingBag,
+  "commerce-image": WandSparkles,
+  skills: Sparkles,
+  "psd-decompose": Layers,
+  "all-ai-tools": LayoutGrid,
+  "background-remove": Scissors,
+  "image-compress": FileArchive,
+  puzzle: Puzzle,
+  "bi-camera-video": Video,
+  "bi-soundwave": AudioLines,
+  "bi-badge-hd": Maximize2,
 };
 
 const UPCOMING_ITEMS = [
@@ -30,22 +63,10 @@ const UPCOMING_ITEMS = [
     icon: "bi-android2",
   },
   {
-    id: "payment-subscription",
-    label: "支付订阅",
-    tagline: "在线购买套餐并自动续费",
-    icon: "bi-credit-card-2-front-fill",
-  },
-  {
     id: "canvas-scheduled-task",
     label: "无限画布定时任务",
     tagline: "按计划自动跑画布工作流",
     icon: "bi-clock",
-  },
-  {
-    id: "skill",
-    label: "Skill",
-    tagline: "可复用的创作技能包",
-    icon: "bi-lightning-charge-fill",
   },
   {
     id: "mcp",
@@ -65,7 +86,14 @@ const CREATION_ITEMS = [
     feature: "ai.infiniteCanvas",
     taskType: "infinite_canvas",
   },
-  ...STUDIO_TOOLS.filter((item) => item.id !== "ecommerce"),
+  ...STUDIO_TOOLS.filter((item) => item.id !== "ecommerce")
+    .map(item => item.id === "assistant" ? { ...item, feature: "ai.assistant" } : item),
+];
+
+const FOOTER_GROUPS = [
+  { title: "开始创作", links: [["创作台", "/studio"], ["AI 助手", "/assistant"], ["无限画布", "/canvas"]] },
+  { title: "发现更多", links: [["Skill 中心", "/skills"], ["提示词", "/prompts"], ["创作价格", "/pricing"]] },
+  { title: "我的空间", links: [["创作历史", "/history"], ["我的订单", "/orders"], ["账户设置", "/account"]] },
 ];
 
 const COMMERCE_ITEMS = COMMERCE_ENTRY_GROUPS.map((group) => ({
@@ -79,6 +107,8 @@ const COMMERCE_ITEMS = COMMERCE_ENTRY_GROUPS.map((group) => ({
 }));
 
 const LOCAL_TOOL_ITEMS = [
+  { id: "skills", to: "/skills", label: "Skill 中心", tagline: "官方创作模板与参数化提示词", icon: "bi-lightning-charge", minPoints: 0 },
+  { id: "psd-decompose", to: "/psd-decompose", label: "PSD 分解", tagline: "图片转分层 PSD 与素材包", icon: "bi-layers", },
   {
     id: "all-ai-tools",
     to: "/ai-tools",
@@ -176,103 +206,102 @@ function priceLabel(points) {
   return `最低 ${points.toLocaleString("zh-CN")} 积分`;
 }
 
-function CoverCard({ item, badge = "" }) {
+function CoverCard({ item, badge = "", featured = false }) {
+  const Icon = CARD_ICONS[item.id] || CARD_ICONS[item.icon] || ImageIcon;
   const status = STATUS_META[item.status] || STATUS_META[PAGE_STATUS.NORMAL];
+  const StatusIcon = item.status === PAGE_STATUS.MAINTENANCE ? Wrench : Clock3;
   const blocked = !badge && (item.status === PAGE_STATUS.DEVELOPING || item.status === PAGE_STATUS.MAINTENANCE);
   const shownBadge = badge || (blocked ? status.label : "");
   const badgeClass = badge ? "is-developing" : status.className;
   const price = priceLabel(item.minPoints);
   const className = [
     "home-card",
+    featured ? "is-featured" : "",
     blocked ? status.className : "",
     item.cover ? "" : "is-icon",
     item.to ? "" : "is-static",
   ]
     .filter(Boolean)
     .join(" ");
-  const label = [item.label, shownBadge, price].filter(Boolean).join("，");
+  const label = [item.label, shownBadge, blocked ? "" : price].filter(Boolean).join("，");
   const body = (
     <>
       <span className="home-card__media">
         {item.cover ? (
-          <img src={item.cover} alt="" loading="lazy" decoding="async" />
-        ) : item.icon ? (
-          <i className={`bi ${item.icon}`} aria-hidden="true" />
+          <HomeCoverImage src={item.cover} />
         ) : (
-          <ImageIcon aria-hidden="true" />
+          <Icon size={32} strokeWidth={1.75} aria-hidden="true" />
         )}
       </span>
-      {blocked ? (
-        <span className={`home-card__mask ${badgeClass}`} aria-hidden="true">
-          <strong>{shownBadge}</strong>
-        </span>
-      ) : shownBadge ? (
-        <em className={`home-card__status ${badgeClass}`}>{shownBadge}</em>
+      {shownBadge ? (
+        <em className={`home-card__status ${badgeClass}`}><StatusIcon size={12} strokeWidth={1.75} aria-hidden="true" /><span>{shownBadge}</span></em>
       ) : null}
-      {price ? <b className="home-card__price">{price}</b> : null}
+      {!blocked && price ? <b className="home-card__price" title={price}><Coins size={12} strokeWidth={1.75} aria-hidden="true" /><span>{price}</span></b> : null}
       <span className="home-card__body">
-        <strong>{item.label}</strong>
-        {blocked && item.reason ? <small>{item.reason}</small> : null}
-        {item.to && !blocked ? (
-          <i>
-            进入
-            <ArrowRight aria-hidden="true" />
-          </i>
-        ) : null}
+        <span className="home-card__heading">
+          <strong title={item.label}>{item.label}</strong>
+          {item.to && !blocked ? <span className="home-card__arrow" aria-hidden="true"><ArrowUpRight size={17} strokeWidth={1.75} /></span> : null}
+        </span>
+        {blocked && item.reason ? <small className="home-card__description" title={item.reason}>{item.reason}</small> : <span className="home-card__description" title={item.tagline}>{item.tagline}</span>}
       </span>
     </>
   );
   if (item.to) {
     return (
-      <Link className={className} to={item.to} aria-label={label}>
+      <Link className={className} to={item.to} aria-label={label} data-home-item>
         {body}
       </Link>
     );
   }
   return (
-    <div className={className} role="group" aria-label={label}>
+    <div className={className} role="group" aria-label={label} data-home-item>
       {body}
     </div>
   );
 }
 
 function CompactCard({ item }) {
+  const Icon = CARD_ICONS[item.id] || CARD_ICONS[item.icon] || ImageIcon;
+  const StatusIcon = item.status === PAGE_STATUS.MAINTENANCE ? Wrench : Clock3;
   const status = STATUS_META[item.status] || STATUS_META[PAGE_STATUS.NORMAL];
   const blocked = item.status === PAGE_STATUS.DEVELOPING || item.status === PAGE_STATUS.MAINTENANCE;
   const price = priceLabel(item.minPoints);
+  const description = blocked ? item.reason || item.tagline : item.tagline;
   return (
     <Link
       className={`home-compact ${blocked ? status.className : ""}`}
+      data-tool={item.id}
       to={item.to}
-      aria-label={[item.label, blocked ? status.label : "", price].filter(Boolean).join("，")}
+      aria-label={[item.label, blocked ? status.label : price].filter(Boolean).join("，")}
+      data-home-item
     >
-      <span className="home-compact__icon" aria-hidden="true">
-        <i className={`bi ${item.icon || "bi-tools"}`} />
-      </span>
       <span className="home-compact__copy">
-        <strong>{item.label}</strong>
-        {item.tagline ? <span>{item.tagline}</span> : null}
-      </span>
-      {blocked ? (
-        <span className={`home-compact__mask ${status.className}`} aria-hidden="true">
-          <strong>{status.label}</strong>
+        <span className="home-compact__heading">
+          <span className="home-compact__icon" aria-hidden="true">
+            <Icon size={20} strokeWidth={1.6} />
+          </span>
+          <strong title={item.label}>{item.label}</strong>
+          {blocked ? (
+            <em className={`home-card__status ${status.className}`}><StatusIcon size={12} strokeWidth={1.75} aria-hidden="true" /><span>{status.label}</span></em>
+          ) : price ? (
+            <b className="home-card__price" title={price}><Coins size={12} strokeWidth={1.75} aria-hidden="true" /><span>{price}</span></b>
+          ) : null}
         </span>
-      ) : price ? (
-        <b className="home-card__price">{price}</b>
-      ) : null}
+        {description ? <span className="home-compact__description" title={description}>{description}</span> : null}
+      </span>
+      <ArrowUpRight className="home-compact__arrow" strokeWidth={1.75} aria-hidden="true" />
     </Link>
   );
 }
 
-function HomeSection({ id, title, description, kind, children }) {
+function HomeSection({ id, title, description, children }) {
   return (
-    <section className="home-section" aria-labelledby={`home-${id}-title`}>
+    <section id={`home-${id}`} className={`home-section home-section--${id}`} aria-labelledby={`home-${id}-title`}>
       <header className="home-section__head">
         <div className="home-section__lead">
           <h2 id={`home-${id}-title`}>{title}</h2>
-          <p>{description}</p>
+          {description ? <p>{description}</p> : null}
         </div>
-        {kind ? <span className="home-section__kind">{kind}</span> : null}
       </header>
       {children}
     </section>
@@ -281,7 +310,8 @@ function HomeSection({ id, title, description, kind, children }) {
 
 export function CommercialHomeView() {
   const isDark = useIsDark();
-  const { controls, controlForKey } = usePageControls();
+  const { controls, controlForKey, isEntryVisible } = usePageControls();
+  const rootRef = useRef(null);
   const [runtimeConfig, setRuntimeConfig] = useState(null);
   const [pricing, setPricing] = useState(null);
 
@@ -324,8 +354,7 @@ export function CommercialHomeView() {
         to: `/tools/${encodeURIComponent(tool.id)}`,
         label: String(tool.name || tool.label || "媒体工具"),
         icon: mediaToolIcon(tool),
-        status: PAGE_STATUS.NORMAL,
-        reason: "",
+        feature: "ai.mediaTools",
         minPoints:
           takePoints(tool.imageUpscalePricing?.lowPricePoints) ?? takePoints(tool.pricePoints),
       }),
@@ -333,9 +362,12 @@ export function CommercialHomeView() {
     return {
       creation,
       commerce: COMMERCE_ITEMS.map(enrich).filter(keep),
-      tools: [...mediaItems, ...LOCAL_TOOL_ITEMS.map(enrich)].filter(keep),
+      tools: [...mediaItems, ...LOCAL_TOOL_ITEMS].map(enrich).filter(keep),
     };
   }, [controlForKey, controls, pricing, runtimeConfig]);
+
+  const models = useMemo(() => collectHomeModels(runtimeConfig), [runtimeConfig]);
+  const motionOff = useHomeMotion(rootRef);
 
   useEffect(() => {
     const previousTitle = document.title;
@@ -346,38 +378,25 @@ export function CommercialHomeView() {
   }, []);
 
   return (
-    <div className={`commercial-home home-catalog${isDark ? " is-dark" : ""}`}>
-      <div className="home-catalog__atmosphere" aria-hidden="true">
-        <div className="home-catalog__aurora" />
-        <span className="home-catalog__orb is-a" />
-        <span className="home-catalog__orb is-b" />
-      </div>
+    <div id="home-top" ref={rootRef} className={`commercial-home home-catalog${isDark ? " is-dark" : ""}`} data-motion={motionOff ? "off" : "on"}>
+      <HomeHero studioVisible={isEntryVisible("/studio")} />
+      <HomeModelMarquee models={models} motionOff={motionOff} />
 
-      <main className="home-catalog__content">
-        <HomeSection
-          id="upcoming"
-          title="即将上线"
-          description="客户端、支付、画布与开放能力"
-          kind="预告"
-        >
-          <div className="home-card-grid is-upcoming">
-            {UPCOMING_ITEMS.map((item) => (
-              <CoverCard key={item.id} item={item} badge="即将上线" />
-            ))}
-          </div>
-        </HomeSection>
-
+      <div id="home-directory" className="home-shell home-catalog__content home-directory">
         {catalog.creation.length ? (
           <HomeSection
             id="creation"
             title="AI 创作"
-            description="画布、对话、生图和设计"
-            kind="创作类"
           >
-            <div className="home-card-grid is-dense">
-              {catalog.creation.map((item) => (
-                <CoverCard key={item.id} item={item} />
-              ))}
+            <div className="home-creation-layout" data-count={catalog.creation.length}>
+              <CoverCard item={catalog.creation[0]} featured />
+              {catalog.creation.length > 1 ? (
+                <div className="home-creation-support" data-count={catalog.creation.length - 1}>
+                  {catalog.creation.slice(1).map((item) => (
+                    <CoverCard key={item.id} item={item} />
+                  ))}
+                </div>
+              ) : null}
             </div>
           </HomeSection>
         ) : null}
@@ -386,10 +405,8 @@ export function CommercialHomeView() {
           <HomeSection
             id="commerce"
             title="AI 电商"
-            description="从真人展示到主图和详情页"
-            kind="电商类"
           >
-            <div className="home-card-grid is-three">
+            <div className="home-card-grid is-three" data-count={catalog.commerce.length}>
               {catalog.commerce.map((item) => (
                 <CoverCard key={item.id} item={item} />
               ))}
@@ -401,17 +418,34 @@ export function CommercialHomeView() {
           <HomeSection
             id="tools"
             title="实用工具"
-            description="抠图、压缩、拼图和媒体处理"
-            kind="工具类"
           >
-            <div className="home-compact-grid">
+            <div className="home-compact-grid" data-count={catalog.tools.length}>
               {catalog.tools.map((item) => (
                 <CompactCard key={item.id} item={item} />
               ))}
             </div>
           </HomeSection>
         ) : null}
-      </main>
+      </div>
+
+      <div className="home-shell home-news">
+        <section className="home-upcoming" aria-labelledby="home-upcoming-title">
+          <header><h2 id="home-upcoming-title">即将上线</h2></header>
+          <div className="home-upcoming__items">{UPCOMING_ITEMS.map(item => <div key={item.id} data-home-item>
+            <i className={`bi ${item.icon}`} aria-hidden="true" /><span>{item.label}</span><small>敬请期待</small>
+          </div>)}</div>
+        </section>
+      </div>
+
+      <footer className="home-footer">
+        <div className="home-shell home-footer__main">
+          <div className="home-footer__brand"><img src="/brand/starcloud-logo.svg" alt="" width="32" height="32" /><strong>星空云绘</strong></div>
+          {FOOTER_GROUPS.map(group => <nav key={group.title} aria-label={group.title}><h2>{group.title}</h2>
+            {group.links.filter(([, to]) => isEntryVisible(to)).map(([label, to]) => <Link key={to} to={to}>{label}<ArrowUpRight size={13} aria-hidden="true" /></Link>)}
+          </nav>)}
+        </div>
+        <div className="home-shell home-footer__bottom"><span>创作，不止于想象。</span><a href="#home-top">回到顶部<ArrowUp size={13} aria-hidden="true" /></a></div>
+      </footer>
     </div>
   );
 }

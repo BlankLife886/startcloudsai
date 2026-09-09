@@ -4,7 +4,8 @@ import { useTranslation } from "react-i18next";
 
 import { requestEdit, requestGeneration, requestImageQuestion, type AiTextMessage } from "@/services/api/image";
 import { requestVideoGeneration, storeGeneratedVideo } from "@/services/api/video";
-import { decodeChannelModel, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
+import { decodeChannelModel, modelOptionMeta, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
+import { applyCanvasImageModelSettings, canvasImageSizeParams } from "@/lib/canvas/canvas-image-model";
 import { buildGenerationConfig } from "@/lib/canvas/canvas-generation-helpers";
 import { buildNodeContext } from "@/lib/canvas/plugin-node-context";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
@@ -50,7 +51,16 @@ export function usePluginHost(params: PluginHostParams) {
         };
         return {
             generateImage: async (prompt, options) => {
-                const config = { ...buildGenerationConfig(effectiveConfig, undefined, "image"), count: String(options?.count || 1), ...(options?.model ? { model: options.model } : {}), ...(options?.size ? { size: options.size } : {}) };
+                const base = { ...buildGenerationConfig(effectiveConfig, undefined, "image"), ...(options?.model ? { model: options.model } : {}) };
+                const config: AiConfig = {
+                    ...applyCanvasImageModelSettings(base, modelOptionMeta(base, base.model)),
+                    count: String(options?.count || 1),
+                    ...(options?.size ? { size: options.size, sizeMode: "ratio" } : {}),
+                    ...(options?.sizeMode ? { sizeMode: options.sizeMode } : {}),
+                    ...(options?.exactWidth !== undefined ? { exactWidth: String(options.exactWidth) } : {}),
+                    ...(options?.exactHeight !== undefined ? { exactHeight: String(options.exactHeight) } : {}),
+                };
+                canvasImageSizeParams(modelOptionMeta(config, config.model), config);
                 ensureReady(config);
                 const references = toReferences(options?.references);
                 const items = references.length ? await requestEdit(config, prompt, references, undefined, { signal: options?.signal }) : await requestGeneration(config, prompt, { signal: options?.signal });

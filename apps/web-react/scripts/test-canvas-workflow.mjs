@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { defaultConfig, migrateConfigStore } from "../src/canvas/stores/use-config-store.ts";
+import { catalogModelsByCapability, defaultConfig, migrateConfigStore, resolveModelForCapability, selectableModelsByCapability } from "../src/canvas/stores/use-config-store.ts";
 import { normalizeConnection } from "../src/canvas/lib/canvas/canvas-connection.ts";
 import { copyCanvasNodeMetadata, resolveCopiedCanvasNodeReferences } from "../src/canvas/lib/canvas/canvas-node-copy.ts";
 import {
     advanceCanvasWorkflowCheckpoint,
     beginCanvasWorkflowRetry,
     canvasWorkflowCheckpointForStart,
+    canvasWorkflowNodeOutputFingerprint,
     compileCanvasWorkflow,
+    completeCanvasWorkflowNode,
     createCanvasWorkflowCheckpoint,
     failCanvasWorkflowCheckpoint,
     findCanvasWorkflowCancellationClosure,
@@ -23,6 +25,7 @@ import {
     settleCanvasWorkflowTerminal,
     validateCanvasWorkflowNodeOutputs,
     validateCanvasWorkflowNodeReadiness,
+    validateCanvasWorkflowCompletedOutputs,
     waitForCanvasWorkflowStop,
     workflowPlanMatchesCheckpoint,
 } from "../src/canvas/lib/canvas/canvas-workflow.ts";
@@ -31,6 +34,7 @@ import { canvasProjectNeedsCloudRetry, markCanvasProjectMediaDeleted, mergeCanva
 import { buildCanvasSidePanelWorkflowGroups } from "../src/canvas/lib/canvas/canvas-workflow-groups.ts";
 import { shouldPromoteGeneratedImage } from "../src/canvas/lib/canvas/canvas-image-primary.ts";
 import { shouldBlockCanvasNavigation } from "../src/canvas/lib/canvas/canvas-leave-guard.ts";
+import { applyCanvasAgentNodeUpdate } from "../src/canvas/lib/canvas/canvas-agent-node-metadata.ts";
 import { canvasLocalImageOperationOutputCount, isCanvasLocalImageOperation, normalizeCanvasLocalImageOperationParams } from "../src/canvas/lib/canvas/canvas-local-image-operation.ts";
 
 const node = (id, type, metadata = {}) => ({ id, type, title: id, position: { x: 0, y: 0 }, width: 100, height: 100, metadata });
@@ -61,6 +65,25 @@ test("defaults new and legacy canvas image generation to one image", () => {
     assert.equal(defaultConfig.canvasImageCount, "1");
     assert.equal(migrateConfigStore({ config: { canvasImageCount: "3" } }, 1).config.canvasImageCount, "1");
     assert.equal(migrateConfigStore({ config: { canvasImageCount: "4" } }, 2).config.canvasImageCount, "4");
+});
+
+test("keeps maintenance models visible but excludes them from new canvas tasks", () => {
+    const config = {
+        ...defaultConfig,
+        imageModel: "starclouds::maintenance-image",
+        channels: [{
+            id: "starclouds",
+            name: "本站模型",
+            models: [
+                { name: "maintenance-image", label: "维护模型", capability: "image", iconUrl: "/api/v1/files/model-icons/maintenance.webp", status: "maintenance", maintenance: true },
+                { name: "available-image", label: "正常模型", capability: "image", iconUrl: "/api/v1/files/model-icons/available.webp", status: "available", maintenance: false },
+            ],
+        }],
+        models: ["starclouds::maintenance-image", "starclouds::available-image"],
+    };
+    assert.deepEqual(catalogModelsByCapability(config, "image"), ["starclouds::maintenance-image", "starclouds::available-image"]);
+    assert.deepEqual(selectableModelsByCapability(config, "image"), ["starclouds::available-image"]);
+    assert.equal(resolveModelForCapability(config, "starclouds::maintenance-image", "image"), "starclouds::available-image");
 });
 
 test("promotes the first completed image when the previous batch primary is stale", () => {
@@ -272,14 +295,47 @@ test("does not mark empty text output or a changed plan as complete", () => {
         ok: false,
         issue: { reason: "output_incomplete", nodeId: "config", expected: 1, actual: 0 },
     });
-    const checkpoint = createCanvasWorkflowCheckpoint(["a", "b"]);
-    assert.equal(workflowPlanMatchesCheckpoint({ nodeIds: ["a", "b"], layers: [["a"], ["b"]], dependencies: new Map() }, checkpoint), true);
-    assert.equal(workflowPlanMatchesCheckpoint({ nodeIds: ["b", "a"], layers: [["b"], ["a"]], dependencies: new Map() }, checkpoint), false);
+    const plan = compileCanvasWorkflow([node("a", "config"), node("b", "config")], []).plan;
+    const checkpoint = createCanvasWorkflowCheckpoint(plan);
+    assert.equal(workflowPlanMatchesCheckpoint(plan, checkpoint), true);
+    assert.equal(workflowPlanMatchesCheckpoint({ ...plan, nodeIds: ["b", "a"] }, checkpoint), false);
+});
+
+test("workflow recovery validates prompts, models, input pixels, wiring and legacy checkpoints", () => {
+    const nodes = [node("source", "image", { storageKey: "uploads/input.png" }), node("a", "config", { composerContent: "original", model: "model-a" }), node("out", "image"), node("b", "config")];
+    const edges = [edge("source", "a"), edge("a", "out"), edge("out", "b")];
+    const plan = compileCanvasWorkflow(nodes, edges).plan;
+    const checkpoint = createCanvasWorkflowCheckpoint(plan);
+    assert.equal(workflowPlanMatchesCheckpoint(plan, normalizeCanvasWorkflowCheckpoint(JSON.parse(JSON.stringify(checkpoint)))), true);
+    for (const patch of [{ composerContent: "changed" }, { model: "model-b" }, { count: 4 }, { localImageOperationParams: { scale: 2 } }]) {
+        const edited = nodes.map((item) => item.id === "a" ? { ...item, metadata: { ...item.metadata, ...patch } } : item);
+        assert.equal(workflowPlanMatchesCheckpoint(compileCanvasWorkflow(edited, edges).plan, checkpoint), false);
+    }
+    const editedInput = nodes.map((item) => item.id === "source" ? { ...item, metadata: { storageKey: "uploads/changed.png" } } : item);
+    assert.equal(workflowPlanMatchesCheckpoint(compileCanvasWorkflow(editedInput, edges).plan, checkpoint), false);
+    assert.equal(workflowPlanMatchesCheckpoint(compileCanvasWorkflow(nodes, edges.filter((item) => item.fromNodeId !== "a")).plan, checkpoint), false);
+    assert.equal(workflowPlanMatchesCheckpoint(plan, createCanvasWorkflowCheckpoint(plan.nodeIds)), false, "legacy node IDs alone cannot prove input compatibility");
+    const defaultsA = compileCanvasWorkflow(nodes, edges, { resolveSettings: () => ({ model: "default-a" }) }).plan;
+    const defaultsB = compileCanvasWorkflow(nodes, edges, { resolveSettings: () => ({ model: "default-b" }) }).plan;
+    assert.equal(workflowPlanMatchesCheckpoint(defaultsB, createCanvasWorkflowCheckpoint(defaultsA)), false);
+    const mentioned = [node("a", "config", { composerContent: "use @[node:reference]" }), node("reference", "text", { content: "original facts" })];
+    const mentionedCheckpoint = createCanvasWorkflowCheckpoint(compileCanvasWorkflow(mentioned, []).plan);
+    mentioned[1].metadata.content = "changed facts";
+    assert.equal(workflowPlanMatchesCheckpoint(compileCanvasWorkflow(mentioned, []).plan, mentionedCheckpoint), false, "unconnected explicit mentions are inputs too");
+});
+
+test("output creation and execution metadata do not change a workflow input version", () => {
+    const nodes = [node("source", "image", { storageKey: "uploads/input.png" }), node("a", "config", { composerContent: "original" }), node("out", "image"), node("b", "config")];
+    const edges = [edge("source", "a"), edge("a", "out"), edge("out", "b")];
+    const checkpoint = createCanvasWorkflowCheckpoint(compileCanvasWorkflow(nodes, edges).plan);
+    const completed = nodes.map((item) => item.id === "out" ? { ...item, metadata: { content: "data:image/png;base64,generated", storageKey: "tasks/output.png", status: "success", workflowProducerNodeId: "a" } } : item.id === "a" ? { ...item, metadata: { ...item.metadata, status: "success", generationStartedAt: "now", generationDurationMs: 400, workflowOutputNodeIds: ["out"] } } : item);
+    completed.push(node("extra", "image", { content: "generated", workflowProducerNodeId: "a" }));
+    assert.equal(workflowPlanMatchesCheckpoint(compileCanvasWorkflow(completed, [...edges, edge("a", "extra")]).plan, checkpoint), true);
 });
 
 test("adopts a valid output from a falsely failed node without regenerating it", () => {
-    const failed = failCanvasWorkflowCheckpoint(createCanvasWorkflowCheckpoint(["config"]), "config", "stale state");
     const nodes = [node("config", "config", { generationMode: "text", count: 1, workflowOutputNodeIds: ["result"] }), node("result", "text", { status: "success", content: "complete answer" })];
+    const failed = failCanvasWorkflowCheckpoint(completeCanvasWorkflowNode(createCanvasWorkflowCheckpoint(["config"]), "config", nodes, []), "config", "stale state");
     const recovered = reconcileCanvasWorkflowFailureOutput(failed, nodes, []);
     assert.equal(recovered.status, "running");
     assert.deepEqual(recovered.completedNodeIds, ["config"]);
@@ -295,7 +351,8 @@ test("adopts all completed concurrent outputs after refresh", () => {
         node("b-out", "image", { status: "success", content: "b.png" }),
         node("c", "config"),
     ];
-    assert.deepEqual(reconcileCanvasWorkflowOutputs(checkpoint, nodes, [], { recoverPersistedOutputs: true }).completedNodeIds, ["a", "b"]);
+    const certified = completeCanvasWorkflowNode(completeCanvasWorkflowNode(checkpoint, "a", nodes, []), "b", nodes, []);
+    assert.deepEqual(reconcileCanvasWorkflowOutputs({ ...certified, completedNodeIds: [] }, nodes, [], { recoverPersistedOutputs: true }).completedNodeIds, ["a", "b"]);
 });
 
 test("does not adopt outputs from a previous run when explicitly rerunning", () => {
@@ -483,10 +540,11 @@ test("keeps a failed workflow checkpoint retryable", () => {
 });
 
 test("reconciles a refreshed current node without replaying completed work", () => {
-    const checkpoint = { ...createCanvasWorkflowCheckpoint(["a", "b"]), currentNodeId: "a" };
+    const nodes = [node("a", "config", { status: "success", generationMode: "image", count: 1, workflowOutputNodeIds: ["a-out"] }), node("a-out", "image", { status: "success", content: "done.png" }), node("b", "config")];
+    const checkpoint = { ...completeCanvasWorkflowNode(createCanvasWorkflowCheckpoint(["a", "b"]), "a", nodes, []), completedNodeIds: [], currentNodeId: "a" };
     const completed = reconcileCanvasWorkflowCheckpoint(
         checkpoint,
-        [node("a", "config", { status: "success", generationMode: "image", count: 1, workflowOutputNodeIds: ["a-out"] }), node("a-out", "image", { status: "success", content: "done.png" }), node("b", "config")],
+        nodes,
         "interrupted",
     );
     assert.equal(completed.ok, true);
@@ -503,6 +561,67 @@ test("reconciles a refreshed current node without replaying completed work", () 
     assert.equal(canceled.ok, true);
     const retryingFailure = reconcileCanvasWorkflowCheckpoint({ ...failCanvasWorkflowCheckpoint(checkpoint, "a", "provider failed"), currentNodeId: undefined, errorNodeId: undefined, errorMessage: undefined, status: "running" }, [node("a", "config", { status: "error", errorDetails: "provider failed" })], "interrupted");
     assert.equal(retryingFailure.ok, true);
+});
+
+test("rejects recovery after a completed intermediate output is manually replaced", () => {
+    const nodes = [node("a", "config", { status: "success" }), node("a-out", "image", { status: "success", storageKey: "tasks/user/task/original/a.png" }), node("b", "config")];
+    const edges = [edge("a", "a-out"), edge("a-out", "b")];
+    const plan = compileCanvasWorkflow(nodes, edges).plan;
+    const saved = JSON.parse(JSON.stringify(completeCanvasWorkflowNode(createCanvasWorkflowCheckpoint(plan), "a", nodes, edges)));
+    const restored = normalizeCanvasWorkflowCheckpoint(saved);
+    assert.equal(validateCanvasWorkflowCompletedOutputs(restored, nodes, edges).ok, true);
+    const edited = nodes.map((item) => item.id === "a-out" ? { ...item, metadata: { ...item.metadata, storageKey: "uploads/manual-replacement.png", content: "new pixels" } } : item);
+    assert.equal(workflowPlanMatchesCheckpoint(compileCanvasWorkflow(edited, edges).plan, restored), true, "runtime output contents stay outside the input signature");
+    assert.deepEqual(validateCanvasWorkflowCompletedOutputs(restored, edited, edges), { ok: false, nodeId: "a", reason: "changed" });
+    const agentEdit = nodes.map((item) => item.id === "a-out" ? applyCanvasAgentNodeUpdate(item, { patch: { content: "data:image/png;base64,edited-pixels" } }) : item);
+    assert.equal(agentEdit[1].metadata.storageKey, undefined, "an Agent content replacement must discard the old resource identity");
+    assert.equal(validateCanvasWorkflowCompletedOutputs(restored, agentEdit, edges).ok, false);
+    const sameResource = nodes.map((item) => item.id === "a-out" ? applyCanvasAgentNodeUpdate(item, { patch: { content: "/api/v1/files/tasks/user/task/original/a.png" } }) : item);
+    assert.equal(validateCanvasWorkflowCompletedOutputs(restored, sameResource, edges).ok, true);
+    assert.throws(() => completeCanvasWorkflowNode(createCanvasWorkflowCheckpoint(plan), "a", edited, edges, new Date().toISOString(), canvasWorkflowNodeOutputFingerprint("a", nodes, edges)), /完成后已被修改/, "a sibling's long execution cannot cause a later manual edit to be certified as this node's output");
+    const textNodes = [node("a", "config", { generationMode: "text" }), node("text", "text", { status: "success", content: "original answer" })];
+    const textEdges = [edge("a", "text")];
+    const textCheckpoint = completeCanvasWorkflowNode(createCanvasWorkflowCheckpoint(["a"]), "a", textNodes, textEdges);
+    textNodes[1].metadata.content = "manually rewritten answer";
+    assert.equal(validateCanvasWorkflowCompletedOutputs(textCheckpoint, textNodes, textEdges).ok, false);
+});
+
+test("normal output hydration and cloud progress preserve resumable output fingerprints", () => {
+    const key = "tasks/user/task/original/a.png";
+    const nodes = [node("a", "config"), node("out", "image", { status: "success", storageKey: key, content: "data:image/png;base64,original" }), node("b", "config")];
+    const edges = [edge("a", "out"), edge("out", "b")];
+    const initial = createCanvasWorkflowCheckpoint(compileCanvasWorkflow(nodes, edges).plan);
+    const completed = completeCanvasWorkflowNode(initial, "a", nodes, edges);
+    const hydrated = nodes.map((item) => item.id === "out" ? { ...item, position: { x: 300, y: 400 }, metadata: { ...item.metadata, content: `/api/v1/files/${key}`, thumbnailUrl: "new-thumbnail", generationDurationMs: 99 } } : item);
+    const local = normalizeCanvasWorkflowCheckpoint(JSON.parse(JSON.stringify(completed)));
+    assert.equal(validateCanvasWorkflowCompletedOutputs(local, hydrated, edges).ok, true);
+    const recovered = mergeCanvasWorkflowRunProgress(initial, { id: "run-1", nodeIds: ["a", "b"], completedNodeIds: ["a"], nodeMetrics: [{ nodeId: "a", outputFingerprint: completed.outputFingerprints.a }] });
+    assert.equal(validateCanvasWorkflowCompletedOutputs(recovered, hydrated, edges).ok, true);
+    const gallery = nodes.map((item) => item.id === "out" ? { ...item, metadata: { status: "success", images: [{ id: "image-1", status: "success", storageKey: key, content: "data:image/png;base64,original" }] } } : item);
+    const galleryCheckpoint = completeCanvasWorkflowNode(initial, "a", gallery, edges);
+    const galleryHydrated = gallery.map((item) => item.id === "out" ? { ...item, metadata: { ...item.metadata, storageKey: key, content: `/api/v1/files/${key}`, primaryImageId: "image-1" } } : item);
+    assert.equal(validateCanvasWorkflowCompletedOutputs(galleryCheckpoint, galleryHydrated, edges).ok, true);
+    const unsaved = nodes.map((item) => item.id === "out" ? { ...item, metadata: { status: "success", content: "data:image/png;base64,pending-upload" } } : item);
+    assert.throws(() => completeCanvasWorkflowNode(initial, "a", unsaved, edges), /尚未完整保存/);
+});
+
+test("legacy completed outputs without fingerprints are never silently trusted", () => {
+    const nodes = [node("a", "config", { status: "success" }), node("out", "image", { status: "success", storageKey: "tasks/result.png" })];
+    const edges = [edge("a", "out")];
+    const initial = createCanvasWorkflowCheckpoint(compileCanvasWorkflow(nodes, edges).plan);
+    const legacy = advanceCanvasWorkflowCheckpoint(initial, "a");
+    assert.deepEqual(validateCanvasWorkflowCompletedOutputs(legacy, nodes, edges), { ok: false, nodeId: "a", reason: "unverified" });
+    assert.deepEqual(reconcileCanvasWorkflowOutputs(initial, nodes, edges, { recoverPersistedOutputs: true }).completedNodeIds, []);
+    const current = reconcileCanvasWorkflowCheckpoint({ ...initial, currentNodeId: "a" }, nodes, "interrupted", edges);
+    assert.deepEqual(current.checkpoint.completedNodeIds, []);
+});
+
+test("local operation output count does not pollute the input signature", () => {
+    const operation = node("split", "builtin:split", { localImageOperation: "split", localImageOperationParams: { rows: 2, columns: 2 } });
+    const options = { resolveSettings: (item) => ({ model: "local", count: item.metadata.count || 1 }) };
+    const plan = compileCanvasWorkflow([operation], [], options).plan;
+    const updated = { ...operation, metadata: { ...operation.metadata, count: 4, localImageOperationCompletedCount: 4, workflowOutputNodeIds: ["out"] } };
+    assert.equal(workflowPlanMatchesCheckpoint(compileCanvasWorkflow([updated], [], options).plan, createCanvasWorkflowCheckpoint(plan)), true);
 });
 
 test("treats an error current node as a failure retry even if the checkpoint still says running", () => {

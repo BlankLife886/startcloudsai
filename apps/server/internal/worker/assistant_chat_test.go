@@ -103,6 +103,29 @@ func TestAssistantConversationPayloadExcludesFutureQueuedMessages(t *testing.T) 
 	}
 }
 
+func TestAssistantImagePromptCarriesReferencedConversationText(t *testing.T) {
+	run := &store.AssistantRun{
+		UserMessageID: uuid.New(), AssistantMessageID: uuid.New(), Prompt: "按刚才讨论的方案生成图片",
+	}
+	history := []*store.AssistantMessage{
+		{ID: uuid.New(), Role: "user", Content: "做一张品牌海报，主色必须是红色", Status: "complete"},
+		{ID: uuid.New(), Role: "assistant", Content: "建议使用留白构图和无衬线标题", Status: "complete"},
+		{ID: run.UserMessageID, Role: "user", Content: run.Prompt, Status: "complete"},
+		{ID: run.AssistantMessageID, Role: "assistant", Status: "running"},
+	}
+	got := assistantImagePromptWithConversation(history, run)
+	for _, want := range []string{"主色必须是红色", "留白构图", "本轮图片要求：" + run.Prompt} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("prompt missing %q: %s", want, got)
+		}
+	}
+
+	fresh := &store.AssistantRun{Prompt: "生成一张全新的蓝色海报"}
+	if got := assistantImagePromptWithConversation(history, fresh); got != fresh.Prompt {
+		t.Fatalf("fresh request unexpectedly inherited history: %s", got)
+	}
+}
+
 func TestAssistantRunFileIDsAreValidatedAndDeduplicated(t *testing.T) {
 	first := uuid.New()
 	run := &store.AssistantRun{Params: map[string]any{

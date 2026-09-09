@@ -54,7 +54,9 @@ export interface AdminSettings {
   userMaxRunningTasks?: number
   userMaxRunningImages?: number
   userMaxConcurrentTasks?: number
+  userMaxConcurrentChats?: number
   globalMaxConcurrentTasks?: number
+  globalMaxConcurrentChats?: number
   globalMaxActiveTasks?: number
   globalMaxActiveImages?: number
   taskFailureRetryCount?: number

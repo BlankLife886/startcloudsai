@@ -112,7 +112,7 @@ func platformRequestScope(route string) string {
 	switch {
 	case strings.HasPrefix(route, "/api/v1/admin/"):
 		return "admin"
-	case strings.HasPrefix(route, "/api/open/"):
+	case strings.HasPrefix(route, "/api/open/"), isOpenAICompatPath(route):
 		return "open-api"
 	case strings.HasPrefix(route, "/internal/"):
 		return "internal"

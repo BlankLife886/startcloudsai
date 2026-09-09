@@ -1,10 +1,12 @@
 import { lazy, Suspense } from "react";
-import { createBrowserRouter, Navigate } from "react-router";
+import { createBrowserRouter, Navigate, redirect } from "react-router";
 import { MigrationPreview } from "./views/MigrationPreview.jsx";
 import { AppShell } from "./layout/AppShell.jsx";
 import { AuthAccountView } from "./views/auth/AuthAccountView.jsx";
 import { ProtectedCanvasRoute } from "./auth/ProtectedCanvasRoute.jsx";
 import { importWithRecovery } from "./utils/dynamicImportRecovery.js";
+import { PageAccessBoundary } from "./page-control/PageAccessBoundary.jsx";
+import { REFERRALS_ENABLED } from "./config/referrals.js";
 
 const CanvasNativeLayout = lazy(() =>
   importWithRecovery(() => import("@canvas/native-layout.tsx")).then((module) => ({
@@ -47,6 +49,14 @@ function RouteHydrationFallback() {
 // maintained in apps/web-react/tests.
 export const router = createBrowserRouter([
   {
+    element: <PageAccessBoundary />,
+    HydrateFallback: RouteHydrationFallback,
+    children: [{
+      path: "/holo-card/sample",
+      lazy: lazyView(() => import("./views/HoloCardSampleView.jsx"), "HoloCardSampleView"),
+    }],
+  },
+  {
     path: "/auth",
     element: <AuthAccountView />,
   },
@@ -78,6 +88,17 @@ export const router = createBrowserRouter([
     element: <AppShell />,
     HydrateFallback: RouteHydrationFallback,
     children: [
+      { path: "/holo-card", lazy: lazyView(() => import("./views/HoloCardView.jsx"), "HoloCardView") },
+      {
+        path: "/invite",
+        ...(REFERRALS_ENABLED
+          ? { lazy: lazyView(() => import("./views/InvitationView.jsx"), "InvitationView") }
+          : { loader: () => redirect("/") }),
+      },
+      { path: "/psd-decompose", lazy: lazyView(() => import("./views/PSDDecomposeView.jsx"), "PSDDecomposeView") },
+      { path: "/skills", lazy: lazyView(() => import("./views/SkillsView.jsx"), "SkillsView") },
+      { path: "/developer-api/docs", lazy: lazyView(() => import("./views/OpenAPIDocsView.jsx"), "OpenAPIDocsView") },
+      { path: "/developer-api/demo", lazy: lazyView(() => import("./views/DeveloperAPIView.jsx"), "DeveloperAPIDemoView") },
       {
         path: "/",
         lazy: lazyView(
@@ -272,6 +293,10 @@ export const router = createBrowserRouter([
               () => import("./views/SubmissionsView.jsx"),
               "SubmissionsView",
             ),
+          },
+          {
+            path: "/subscriptions",
+            lazy: lazyView(() => import("./views/SubscriptionsView.jsx"), "SubscriptionsView"),
           },
           {
             path: "/wallet",

@@ -9,9 +9,11 @@
 import { invalidateStudioCreditSnapshot } from '@/features/ai-shared/studioUsage'
 import {
   cancelTask,
+  cancelTaskGroup,
   createTask,
   deleteTask,
   getTask,
+  getTaskByIdempotencyKey,
   listTasks,
   quoteTaskPrice,
   uploadFile,
@@ -214,24 +216,34 @@ function createInputImageLostError() {
  * URL → R2 key。解析失败（blob: 刷新后失效、过期 URL 等）时抛出
  * code='input_image_lost' 的错误并阻断提交，避免参考图静默丢失。
  */
-async function resolveInputKeyForUrl(url) {
+async function resolveInputKeyForUrl(url, { signal, isCurrentSession } = {}) {
+  const assertCurrent = () => {
+    if (signal?.aborted || (typeof isCurrentSession === 'function' && !isCurrentSession())) {
+      throw new DOMException('账号已切换或参考图处理已中止', 'AbortError')
+    }
+  }
+  assertCurrent()
   const known = lookupKeyForUrl(url)
   if (known) return known
   const value = String(url || '').trim()
   if (!value) return ''
   // 未知来源（data: / blob: / 过期 URL）：拉取后重新上传拿 key
   try {
-    const response = await fetch(value)
+    const response = await fetch(value, { signal })
     if (!response.ok) throw new Error(`参考图读取失败（${response.status}）`)
     const blob = await response.blob()
+    assertCurrent()
     const file = new File([blob], `reference-${Date.now()}.png`, {
       type: blob.type || 'image/png',
     })
-    const uploaded = await uploadFile(file)
+    const uploaded = await uploadFile(file, { signal })
+    assertCurrent()
     registerUrlKey(uploaded.url, uploaded.key)
     registerUrlKey(value, uploaded.key)
     return uploaded.key
-  } catch {
+  } catch (error) {
+    assertCurrent()
+    if (error?.name === 'AbortError') throw error
     throw createInputImageLostError()
   }
 }
@@ -308,12 +320,14 @@ export function taskToLegacyJob(task = {}) {
   return {
     id: task.id,
     taskId: task.id,
+    clientRequestId: task.clientRequestId || '',
     kind: String(params._kind || DEFAULT_KIND_BY_TYPE[task.type] || task.type || ''),
     type: task.type,
     model: String(task.model || params.modelHint || '').trim(),
     gatewayModelId: String(params.publicModelKey || '').trim(),
 		status: STATUS_TO_LEGACY[String(task.status || '').toLowerCase()] || task.status || 'queued',
 		generationStage: String(task.generationStage || ''),
+    queueReason: String(task.queueReason || ''),
 		cancelPolicy:
 			task.cancelPolicy && typeof task.cancelPolicy === 'object'
 				? { ...task.cancelPolicy }
@@ -372,7 +386,11 @@ export async function uploadAiInputFile(file, options = {}) {
 /** 创建任务：旧 job payload → 新 createTask 契约。 */
 export async function createServerAiJob(payload = {}) {
   const signal = payload.signal
+  const isCurrentSession = payload.isCurrentSession
   const throwIfAborted = () => {
+    if (typeof isCurrentSession === 'function' && !isCurrentSession()) {
+      throw new DOMException('账号已切换或页面已关闭', 'AbortError')
+    }
     if (!signal?.aborted) return
     throw signal.reason instanceof Error
       ? signal.reason
@@ -414,7 +432,7 @@ export async function createServerAiJob(payload = {}) {
         .filter(Boolean),
     ),
   )
-  const resolvedSourceKeys = await Promise.all(sourceUrls.map((url) => resolveInputKeyForUrl(url)))
+  const resolvedSourceKeys = await Promise.all(sourceUrls.map((url) => resolveInputKeyForUrl(url, { signal, isCurrentSession })))
   throwIfAborted()
   for (const key of resolvedSourceKeys) {
     if (key && !inputKeys.includes(key)) inputKeys.push(key)
@@ -422,8 +440,8 @@ export async function createServerAiJob(payload = {}) {
   // 蒙版与合成底图只进 params 供 Worker 贴回原图使用，
   // 不进 inputKeys——上游把它们当输入图会污染生成结果。
   const [maskKey, maskBaseKey] = await Promise.all([
-    maskUrl ? resolveInputKeyForUrl(maskUrl) : '',
-    maskBaseUrl ? resolveInputKeyForUrl(maskBaseUrl) : '',
+    maskUrl ? resolveInputKeyForUrl(maskUrl, { signal, isCurrentSession }) : '',
+    maskBaseUrl ? resolveInputKeyForUrl(maskBaseUrl, { signal, isCurrentSession }) : '',
   ])
   throwIfAborted()
 
@@ -445,16 +463,25 @@ export async function createServerAiJob(payload = {}) {
     count,
     idempotencyKey: String(payload.clientRequestId || '').trim() || undefined,
     expectedUnitPriceCents: payload.expectedUnitPriceCents,
+    isCurrentSession,
   })
+  throwIfSessionChanged()
   if (signal?.aborted) {
     // The server may have accepted an idempotent POST while the user was leaving or
-    // stopping the batch. We now have the task id, so cancel it instead of orphaning it.
-    await cancelTask(task.id, { acknowledgeUpstream: true }).catch(() => undefined)
+    // stopping the batch. Cancel only while refundable; a submitted job must remain
+    // available in history until the user explicitly accepts forfeiting its fee.
+    await cancelTask(task.id, { acknowledgeUpstream: false }).catch(() => undefined)
     throwIfAborted()
   }
   // 冻结额度已变化，让下一次余额预检重新读取。
   invalidateStudioCreditSnapshot()
   return { job: taskToLegacyJob(task) }
+
+  function throwIfSessionChanged() {
+    if (typeof isCurrentSession === 'function' && !isCurrentSession()) {
+      throw new DOMException('账号已切换或页面已关闭', 'AbortError')
+    }
+  }
 }
 
 export async function quoteServerAiJob(payload = {}) {
@@ -515,6 +542,43 @@ export async function getServerAiJob(jobId, options = {}) {
   return { job: taskToLegacyJob(task) }
 }
 
+/** Recent completed results may be capped, but accepted queued/running work
+ * must remain visible after refresh even when the user's queue exceeds a page. */
+export async function listActiveServerAiJobs(options = {}) {
+  const groups = await Promise.all(['queued', 'running'].map(async status => {
+    const jobs = []
+    const seen = new Set()
+    let cursor = ''
+    do {
+      if (seen.has(cursor)) throw new Error('活动任务分页异常，请刷新后重试')
+      seen.add(cursor)
+      const page = await listServerAiJobs(100, { ...options, status, cursor })
+      jobs.push(...page.jobs)
+      cursor = page.pagination.nextCursor
+    } while (cursor)
+    return jobs
+  }))
+  return [...new Map(groups.flat().map(job => [job.id, job])).values()]
+}
+
+export async function findServerAiJob(clientRequestId, options = {}) {
+  const task = await getTaskByIdempotencyKey(clientRequestId, options)
+  return { job: task ? taskToLegacyJob(task) : null }
+}
+
+export async function prepareAiInputReference(item, { signal, isCurrentSession } = {}) {
+  const assertCurrent = () => {
+    if (signal?.aborted || (isCurrentSession && !isCurrentSession())) throw new DOMException('参考图处理已中止', 'AbortError')
+  }
+  assertCurrent()
+  let key = item.key || ''
+  if (!key && item.url) key = await resolveInputKeyForUrl(item.url, { signal, isCurrentSession })
+  if (!key && item.file) key = (await uploadFile(item.file, { signal })).key
+  assertCurrent()
+  if (!key) throw createInputImageLostError()
+  return { key, url: `/api/v1/files/${key.split('/').map(encodeURIComponent).join('/')}` }
+}
+
 export async function getServerAiJobResult(jobId, options = {}) {
   const task = await getTask(jobId, { signal: options.signal })
   return { job: taskToLegacyJob(task), result: legacyResultFromTask(task) }
@@ -533,8 +597,15 @@ export async function runServerAiJob(jobId) {
 
 export async function cancelServerAiJob(jobId, options = {}) {
 	const task = await cancelTask(jobId, options)
+  invalidateStudioCreditSnapshot()
   const job = taskToLegacyJob(task)
   return { cancelled: job.status === 'cancelled', job }
+}
+
+export async function cancelServerAiJobs(jobIds, options = {}) {
+  const tasks = await cancelTaskGroup(jobIds, options)
+  invalidateStudioCreditSnapshot()
+  return { jobs: tasks.map(taskToLegacyJob) }
 }
 
 /**
@@ -543,7 +614,7 @@ export async function cancelServerAiJob(jobId, options = {}) {
  */
 export async function waitForServerAiJob(
   jobId,
-  { onStatus = null, onUpdate = null, onImage = null, maxPolls = 450, signal = undefined } = {},
+  { onStatus = null, onUpdate = null, onImage = null, maxPolls = 450, maxWaitMs = undefined, terminalAsResult = false, signal = undefined } = {},
 ) {
   if (!jobId) throw new Error('AI 任务 ID 无效')
   // 轮询统一 2s 间隔（无视旧调用方各自的 intervalMs 配置）
@@ -551,7 +622,7 @@ export async function waitForServerAiJob(
   const task = await waitForTask(jobId, {
     signal,
     intervalMs: interval,
-    maxWaitMs: interval * Math.max(1, Number(maxPolls) || 450),
+    maxWaitMs: maxWaitMs === null ? null : maxWaitMs ?? interval * Math.max(1, Number(maxPolls) || 450),
     onUpdate: (current) => {
       const currentJob = taskToLegacyJob(current)
       const currentResult = legacyResultFromTask(current)
@@ -565,13 +636,13 @@ export async function waitForServerAiJob(
     },
   })
   const job = taskToLegacyJob(task)
-  if (task.status === 'succeeded') {
+  if (terminalAsResult || task.status === 'succeeded') {
     return { job, result: legacyResultFromTask(task) }
   }
   if (task.status === 'canceled') {
-    throw new Error(task.errorMessage || 'AI 任务已取消')
+    throw Object.assign(new Error(task.errorMessage || 'AI 任务已取消'), { code: 'task_canceled', task })
   }
-  throw new Error(task.errorMessage || 'AI 任务执行失败')
+  throw Object.assign(new Error(task.errorMessage || 'AI 任务执行失败'), { code: task.errorCode || 'task_failed', task })
 }
 
 /**

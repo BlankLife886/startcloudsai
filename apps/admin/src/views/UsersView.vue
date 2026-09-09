@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { CircleClose, Search, Unlock, Wallet } from '@element-plus/icons-vue'
 import AdminDialog from '@/components/AdminDialog.vue'
 import RegistrationSettingsDialog from '@/components/settings/RegistrationSettingsDialog.vue'
 import UserProfilePanel from '@/components/UserProfilePanel.vue'
+import UserBillingPanel from '@/components/UserBillingPanel.vue'
 import UserProfileRulesDialog from '@/components/UserProfileRulesDialog.vue'
 import UserAnalyticsDrawer from '@/components/UserAnalyticsDrawer.vue'
 import { normalizeList, request, type Page } from '@/request'
@@ -42,6 +43,11 @@ interface UserUsage {
 }
 
 interface UserWallet {
+  subscriptionBalanceCents?: number
+  refundHeldCents?: number
+  upgradeHeldCents?: number
+  eligibleTopupPoints?: number
+  ordinaryTopupPoints?: number
   balanceCents: number
   frozenCents: number
   normalBalanceCents?: number
@@ -53,6 +59,10 @@ interface UserWallet {
 }
 
 interface UserSubscription {
+  status?: string
+  nextGrantAt?: string | null
+  availablePoints?: number
+  contract?: { id: string; priceBookId: string; concurrencyBonus: number; lockModelPrices: boolean; allowTopupPriceLock: boolean; planRevision: number } | null
   active: boolean
   planId?: string
   planName?: string
@@ -206,7 +216,8 @@ function websiteHref(value: string | null | undefined) {
   return /^https?:\/\//i.test(url) ? url : ''
 }
 
-const filters = reactive({ search: '', status: '', lifecycle: '', risk: '', profileTag: '' })
+const route = useRoute()
+const filters = reactive({ search: String(route.query.search || ''), status: '', lifecycle: '', risk: '', profileTag: '' })
 
 const lifecycleOptions = Object.entries(lifecycleLabels).map(([value, label]) => ({ value, label }))
 const profileTagOptions = Object.entries(profileTagLabels).map(([value, label]) => ({ value, label }))
@@ -334,6 +345,7 @@ async function submitAdjust() {
 
 // ---------- 用户详情抽屉 ----------
 interface UserDetail {
+  concurrency?: {base: number; bonus: number; limit: number; running: number; imageRunning?: number; imageLimit?: number; chatRunning?: number; chatLimit?: number}
   user: AdminUser
   wallet: UserWallet
   subscription?: UserSubscription | null
@@ -362,6 +374,8 @@ interface UserDetail {
 }
 
 interface LedgerEntry {
+  creditBucket?: string
+  settledPoints?: number | null
   id: string
   kind: string
   deltaCents: number
@@ -420,13 +434,17 @@ const taskList = usePagedList<UserTask>(
   () => `${drawerUser.value?.id ?? ''}:${taskPageSize.value}`,
 )
 
+let overviewGeneration = 0
 async function loadOverview() {
   if (!drawerUser.value) return
+  const id = drawerUser.value.id
+  const own = ++overviewGeneration
   overviewLoading.value = true
   try {
-    overview.value = await request<UserDetail>(`/api/v1/admin/users/${drawerUser.value.id}`)
+    const data = await request<UserDetail>(`/api/v1/admin/users/${id}`)
+    if (own === overviewGeneration && drawerUser.value?.id === id) overview.value = data
   } finally {
-    overviewLoading.value = false
+    if (own === overviewGeneration) overviewLoading.value = false
   }
 }
 
@@ -454,6 +472,15 @@ function openDrawer(user: AdminUser) {
   drawerVisible.value = true
   loadOverview()
 }
+
+watch(() => route.query.userId, async value => {
+  if (typeof value !== 'string' || !value) return
+  try {
+    const data = await request<UserDetail>(`/api/v1/admin/users/${encodeURIComponent(value)}`)
+    if (route.query.userId === value) openDrawer(data.user)
+  } catch { /* The request layer reports invalid user links. */ }
+}, { immediate: true })
+watch(() => route.query.search, value => { filters.search = String(value || ''); currentPage.value = 1; reset() })
 
 watch(activeTab, (tab) => {
   if (!drawerVisible.value || tab === 'overview' || loadedTabs.has(tab)) return
@@ -885,6 +912,7 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
                 <section class="detail-section">
                   <header class="detail-section__title">资金概览</header>
                   <div class="wallet-overview">
+                    <div><small>订阅本期可用</small><strong class="tnum">{{ formatPoints(drawerWallet.subscriptionBalanceCents ?? 0) }}</strong><span>积分</span></div>
                     <div>
                       <small>普通可用</small>
                       <strong class="tnum">{{ formatPoints(drawerWallet.normalBalanceCents ?? 0) }}</strong>
@@ -900,12 +928,8 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
                       <strong class="tnum is-frozen">{{ formatPoints(drawerWallet.frozenCents) }}</strong>
                       <span>积分</span>
                     </div>
-                    <div>
-                      <small>资金合计</small>
-                      <strong class="tnum">{{ formatPoints(drawerWallet.balanceCents + drawerWallet.frozenCents) }}</strong>
-                      <span>积分</span>
-                    </div>
                   </div>
+                  <p class="wallet-note">资金合计 {{ formatPoints(drawerWallet.balanceCents + drawerWallet.frozenCents) }}；普通余额内：合格额度包 {{ formatPoints(drawerWallet.eligibleTopupPoints ?? 0) }} · 普通额度包 {{ formatPoints(drawerWallet.ordinaryTopupPoints ?? 0) }}；退订冻结 {{ formatPoints(drawerWallet.refundHeldCents ?? 0) }} · 升级锁定 {{ formatPoints(drawerWallet.upgradeHeldCents ?? 0) }}</p>
                   <p v-if="drawerWallet.trialFeatureLabel || drawerWallet.trialFeatureKey" class="wallet-note">
                     体验功能：{{ drawerWallet.trialFeatureLabel || drawerWallet.trialFeatureKey }}
                   </p>
@@ -916,14 +940,14 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
                   <dl class="detail-fields">
                     <div>
                       <dt>当前套餐</dt>
-                      <dd>{{ overview.subscription?.active ? overview.subscription.planName || overview.subscription.planCode : '无订阅' }}</dd>
+                      <dd>{{ overview.subscription?.planName || '无订阅' }}{{ overview.subscription?.status === 'refunding' ? '（退订审核中）' : overview.subscription?.planName && !overview.subscription.active ? '（历史订阅）' : '' }}</dd>
                     </div>
                     <div>
                       <dt>到期时间</dt>
                       <dd>{{ overview.subscription?.active ? formatTime(overview.subscription.endsAt) : '-' }}</dd>
                     </div>
                     <div>
-                      <dt>每日发放</dt>
+                      <dt>每24小时额度</dt>
                       <dd>
                         {{
                           overview.subscription?.active
@@ -933,17 +957,14 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
                       </dd>
                     </div>
                     <div>
-                      <dt>今日发放</dt>
-                      <dd>
-                        {{
-                          overview.subscription?.active
-                            ? overview.subscription.grantedToday
-                              ? '已发放'
-                              : '未发放'
-                            : '-'
-                        }}
-                      </dd>
+                      <dt>下次重置</dt>
+                      <dd>{{ formatTime(overview.subscription?.nextGrantAt) }}</dd>
                     </div>
+                    <div><dt>权益编号</dt><dd style="overflow-wrap:anywhere">{{ overview.subscription?.contract?.id || '历史未绑定价格版本' }}</dd></div>
+                    <div v-if="overview.subscription?.contract"><dt>锁价范围</dt><dd>{{ overview.subscription.contract.lockModelPrices ? overview.subscription.contract.allowTopupPriceLock ? '订阅及合格额度包' : '仅订阅积分' : '实时价格' }}</dd></div>
+                    <div v-if="overview.concurrency"><dt>图片并发</dt><dd>基础 {{ overview.concurrency.base }} + 订阅 {{ overview.concurrency.bonus }} = {{ overview.concurrency.imageLimit ?? overview.concurrency.limit }} 张；当前占用 {{ overview.concurrency.imageRunning ?? overview.concurrency.running }} 张</dd></div>
+                    <div v-if="overview.concurrency?.chatLimit != null"><dt>对话并发</dt><dd>当前 {{ overview.concurrency.chatRunning ?? 0 }} / {{ overview.concurrency.chatLimit }} 次，与图片额度独立</dd></div>
+                    <div v-if="overview.subscription?.contract"><dt>价格版本</dt><dd style="overflow-wrap:anywhere">{{ overview.subscription.contract.priceBookId }}</dd></div>
                     <div>
                       <dt>体验申请</dt>
                       <dd>
@@ -1085,6 +1106,9 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
             </div>
           </el-tab-pane>
 
+          <el-tab-pane label="权益与批次" name="billing" class="overview-tab">
+            <UserBillingPanel v-if="activeTab === 'billing' && drawerUserInfo" :key="drawerUserInfo.id" :user-id="drawerUserInfo.id" />
+          </el-tab-pane>
           <el-tab-pane label="用户画像" name="profile" class="overview-tab">
             <div v-loading="overviewLoading" class="overview-panel">
               <UserProfilePanel
@@ -1147,6 +1171,8 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
                       </span>
                     </template>
                   </el-table-column>
+                  <el-table-column label="资金来源" width="95"><template #default="{ row }">{{ ({subscription:'订阅',trial:'体验',normal:'通用',mixed:'混合'} as Record<string,string>)[row.creditBucket] || '未分类' }}</template></el-table-column>
+                  <el-table-column label="实际消费" width="90"><template #default="{ row }">{{ row.settledPoints == null ? '-' : formatPoints(row.settledPoints) }}</template></el-table-column>
                   <el-table-column label="积分余额" width="96" align="left" header-align="left">
                     <template #default="{ row }">
                       <span class="cell-num tnum">{{ formatPoints(row.balanceAfterCents) }}</span>
@@ -2182,13 +2208,13 @@ button.count-card.is-emphasis:hover {
   min-height: 0;
 }
 
-:deep(.user-detail-tabs .el-tabs__header) {
+:deep(.user-detail-tabs > .el-tabs__header) {
   margin-bottom: 14px;
   flex-shrink: 0;
 }
 
-:deep(.user-detail-tabs .el-tabs__content),
-:deep(.user-detail-tabs .el-tab-pane) {
+:deep(.user-detail-tabs > .el-tabs__content),
+:deep(.user-detail-tabs > .el-tabs__content > .el-tab-pane) {
   flex: 1;
   min-height: 0;
 }
@@ -2287,19 +2313,19 @@ button.count-card.is-emphasis:hover {
   overflow: hidden;
 }
 
-.user-detail-drawer .user-detail-tabs .el-tab-pane {
+.user-detail-drawer .user-detail-tabs > .el-tabs__content > .el-tab-pane {
   position: absolute;
   inset: 0;
   min-width: 0;
   overflow: hidden;
 }
 
-.user-detail-drawer .user-detail-tabs .el-tab-pane.overview-tab {
+.user-detail-drawer .user-detail-tabs > .el-tabs__content > .el-tab-pane.overview-tab {
   overflow: auto;
   padding: 14px 20px 24px;
 }
 
-.user-detail-drawer .user-detail-tabs .el-tab-pane.drawer-list-tab {
+.user-detail-drawer .user-detail-tabs > .el-tabs__content > .el-tab-pane.drawer-list-tab {
   display: flex;
   flex-direction: column;
   padding: 0;

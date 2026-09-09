@@ -6,8 +6,9 @@ import { useTranslation } from "react-i18next";
 
 import { isCanvasGenerationModeEnabled } from "@/constant/canvas";
 import { reasoningEffortLabel } from "@/components/text-settings-panel";
-import { applyCanvasImageModelSettings, canvasImageSettingsFromModel } from "@/lib/canvas/canvas-image-model";
-import { defaultConfig, formatModelPriceParts, modelOptionLabel, modelOptionMeta, modelOptionName, resolveModelForCapability, selectableModelsByCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
+import { applyCanvasImageModelSettings, canvasExactSizeSettingsForNode, canvasImageSettingsFromModel, resolveCanvasImageModel } from "@/lib/canvas/canvas-image-model";
+import { catalogModelsByCapability, defaultConfig, formatModelPriceParts, modelMaintenance, modelOptionLabel, modelOptionMeta, resolveModelForCapability, selectableModelsByCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
+import { ModelCatalogIcon, ModelMaintenanceBadge } from "@react/components/common/ModelCatalogIcon.jsx";
 import { formatGenerationDuration, useGenerationElapsed } from "@/lib/canvas/canvas-generation-elapsed";
 import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
 import { CanvasIconWellStyle, nodeTypeColor } from "@/lib/canvas-ui";
@@ -284,10 +285,11 @@ function PromptDockModel({
     onChange: (model: string) => void;
     onMissingConfig: () => void;
 }) {
-    const options = selectableModelsByCapability(config, mode);
+    const options = catalogModelsByCapability(config, mode);
+    const availableOptions = selectableModelsByCapability(config, mode);
     const current = config.model || "";
 
-    if (!options.length) {
+    if (!availableOptions.length) {
         return (
             <button type="button" className="flex h-8 min-w-0 max-w-[148px] items-center gap-1.5 rounded-full px-2.5 text-left" style={{ background: surface, color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()} onClick={onMissingConfig}>
                 <SoftMark name="cpu" size="xs" />
@@ -302,16 +304,19 @@ function PromptDockModel({
                 compact
                 value={current}
                 options={options.map((model) => {
-                    const parts = formatModelPriceParts(modelOptionMeta(config, model), config.reasoningEffort);
+                    const meta = modelOptionMeta(config, model);
+                    const parts = formatModelPriceParts(meta, config.reasoningEffort);
                     return {
                         value: model,
                         label: (
                             <span className="flex min-w-0 flex-1 items-center gap-2">
-                                <PromptModelMark model={model} />
+                                <PromptModelMark config={config} model={model} />
                                 <span className="min-w-0 flex-1 truncate">{modelOptionLabel(config, model)}</span>
-                                <CanvasPriceMark price={parts.price} comparePrice={parts.comparePrice} />
+                                <ModelMaintenanceBadge model={meta} />
+                                {!modelMaintenance(meta) ? <CanvasPriceMark price={parts.price} comparePrice={parts.comparePrice} /> : null}
                             </span>
                         ),
+                        disabled: modelMaintenance(meta),
                     };
                 })}
                 theme={theme}
@@ -323,7 +328,7 @@ function PromptDockModel({
             >
                 {(open) => (
                     <span className="flex w-full min-w-0 items-center gap-1.5">
-                        <PromptModelMark model={current} />
+                        <PromptModelMark config={config} model={current} />
                         <span className="min-w-0 flex-1 truncate text-[12px] font-medium">{current ? modelOptionLabel(config, current) : placeholder}</span>
                         <ChevronDown className="size-3 shrink-0 opacity-35 transition-transform duration-200" style={{ transform: open ? "rotate(180deg)" : "none" }} />
                     </span>
@@ -333,22 +338,8 @@ function PromptDockModel({
     );
 }
 
-function PromptModelMark({ model }: { model: string }) {
-    const name = modelOptionName(model).toLowerCase();
-    const icon = name.includes("claude") || name.includes("anthropic")
-        ? "/icons/claude.svg"
-        : name.includes("gemini") || name.includes("google")
-          ? "/icons/gemini.svg"
-          : name.includes("gpt") || name.includes("openai")
-            ? "/icons/openai.svg"
-            : name.includes("grok")
-              ? "/icons/grok.svg"
-              : name.includes("deepseek")
-                ? "/icons/deepseek.svg"
-                : name.includes("glm")
-                  ? "/icons/glm.svg"
-                  : "";
-    return icon ? <img src={icon} alt="" className="size-3.5 shrink-0 dark:invert" /> : <SoftMark name="cpu" size="xs" />;
+function PromptModelMark({ config, model }: { config: AiConfig; model: string }) {
+    return <ModelCatalogIcon model={modelOptionMeta(config, model)} size="xs" />;
 }
 
 function DockSettingsLabel({ theme, children }: { theme: CanvasTheme; children?: ReactNode }) {
@@ -365,12 +356,14 @@ function defaultMode(type: CanvasNodeData["type"]): CanvasNodeGenerationMode {
 }
 
 function buildNodeConfig(globalConfig: AiConfig, node: CanvasNodeData, mode: CanvasNodeGenerationMode): AiConfig {
+    const sizeSettings = canvasExactSizeSettingsForNode(globalConfig, node.metadata);
     const next = {
         ...globalConfig,
-        model: resolveModelForCapability(globalConfig, node.metadata?.model, mode),
+        model: mode === "image" ? resolveCanvasImageModel(globalConfig, node.metadata?.model, sizeSettings.sizeMode) : resolveModelForCapability(globalConfig, node.metadata?.model, mode),
         reasoningEffort: node.metadata?.reasoningEffort || globalConfig.reasoningEffort || defaultConfig.reasoningEffort,
         quality: node.metadata?.quality || globalConfig.quality || defaultConfig.quality,
         size: node.metadata?.size || globalConfig.size || defaultConfig.size,
+        ...sizeSettings,
         resolution: node.metadata?.resolution || globalConfig.resolution || defaultConfig.resolution,
         background: node.metadata?.background ?? "",
         videoSeconds: node.metadata?.seconds || globalConfig.videoSeconds || defaultConfig.videoSeconds,

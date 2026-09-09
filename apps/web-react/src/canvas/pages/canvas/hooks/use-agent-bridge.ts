@@ -7,6 +7,8 @@ import { applyCanvasAgentOps, type CanvasAgentOp, type CanvasAgentSnapshot } fro
 import { MAX_CANVAS_AGENT_REGENERATION_SOURCES, planCanvasAgentRegeneration, resolveCanvasAgentRegenerationSourceIds } from "@/lib/canvas/canvas-agent-regenerate";
 import { buildCanvasSidePanelWorkflowGroups } from "@/lib/canvas/canvas-workflow-groups";
 import { isCanvasExecutableNode } from "@/lib/canvas/canvas-operation-node";
+import { canvasAgentWorkflowStatus, type AgentWorkflowExecution } from "@/lib/canvas/canvas-agent-workflow-status";
+import { canvasAgentTaskSalt } from "@/lib/canvas/canvas-agent-task-identity";
 import { getNodeSpec } from "@/lib/canvas/node-registry";
 import { CanvasNodeType } from "@/types/canvas";
 import type { CanvasNodeGenerationMode } from "@/components/canvas/canvas-node-prompt-panel";
@@ -15,12 +17,12 @@ import type { AgentTaskStatus } from "@/stores/use-agent-store";
 
 type GenerateNodeOptions = { skipCostConfirm?: boolean; workflowRunId?: string; taskKeySalt?: string };
 type GenerateNodeRef = MutableRefObject<((nodeId: string, mode: CanvasNodeGenerationMode, prompt: string, options?: GenerateNodeOptions) => Promise<boolean>) | null>;
-type WorkflowRunState = { status: string; completed: number; total: number; currentNodeId?: string; errorMessage?: string; startedAt?: string };
+type WorkflowRunState = { status: string; completed: number; total: number; currentNodeId?: string; errorMessage?: string; startedAt?: string; attemptId?: number };
 type RunWorkflowRef = MutableRefObject<((request?: { workflowId?: string; nodeIds?: string[] }) => Promise<void>) | null>;
 type StopWorkflowRef = MutableRefObject<(() => { stopped: boolean; status: string; nodeIds: string[] }) | null>;
 type PlanWorkflowRef = MutableRefObject<((request?: { workflowId?: string; nodeIds?: string[] }) => AgentWorkflowPreflightResult) | null>;
 type AgentGenerationRunRecord = { nodeIds: string[]; statuses: Map<string, { status: AgentTaskStatus; error?: string }> };
-type AgentWorkflowRunRecord = { workflowId?: string; configNodeIds: string[]; baselineStartedAt?: string; settled: boolean; error?: string };
+type AgentWorkflowRunRecord = AgentWorkflowExecution & { workflowId?: string; configNodeIds: string[] };
 
 type AgentBridgeParams = {
     projectId: string;
@@ -138,17 +140,18 @@ export function useAgentBridge(params: AgentBridgeParams) {
         return applyAgentSnapshot(transaction.after);
     }, [applyAgentSnapshot, connectionsRef, nodesRef, projectTitle, projectId, selectedNodeIdsRef, viewportRef]);
 
-    const startGeneration = useCallback((input: { nodeIds: string[]; mode?: "text" | "image" | "video" | "audio"; prompt?: string }) => {
+    const startGeneration = useCallback((input: { requestId?: string; nodeIds: string[]; mode?: "text" | "image" | "video" | "audio"; prompt?: string }) => {
         const nodeIds = [...new Set(input.nodeIds)].filter((id) => nodesRef.current.some((node) => node.id === id && isCanvasExecutableNode(node)));
         if (!nodeIds.length || !generateNodeRef.current) throw new Error("没有可执行的配置节点");
-        const requestId = `generation-${nanoid(10)}`;
+        const requestId = input.requestId ? `generation-${input.requestId}` : `generation-${nanoid(10)}`;
+        if (generationRuns.has(requestId)) return { requestId, nodeIds: generationRuns.get(requestId)!.nodeIds };
         const record: AgentGenerationRunRecord = { nodeIds, statuses: new Map(nodeIds.map((nodeId) => [nodeId, { status: "queued" as AgentTaskStatus }])) };
         generationRuns.set(requestId, record);
         nodeIds.forEach((nodeId) => {
             const target = nodesRef.current.find((node) => node.id === nodeId)!;
             const prompt = input.prompt?.trim() ? input.prompt : (target.metadata?.composerContent ?? target.metadata?.prompt ?? "");
             record.statuses.set(nodeId, { status: "running" });
-            void generateNodeRef.current!(nodeId, input.mode || target.metadata?.generationMode || "image", prompt).then(
+            void generateNodeRef.current!(nodeId, input.mode || target.metadata?.generationMode || "image", prompt, { taskKeySalt: canvasAgentTaskSalt(requestId) }).then(
                 (ok) => record.statuses.set(nodeId, ok ? { status: "succeeded" } : { status: "failed", error: nodesRef.current.find((node) => node.id === nodeId)?.metadata?.errorDetails || "生成未完成" }),
                 (error) => record.statuses.set(nodeId, { status: "failed", error: error instanceof Error ? error.message : "生成失败" }),
             );
@@ -269,11 +272,11 @@ export function useAgentBridge(params: AgentBridgeParams) {
         if (requestedIds && configNodeIds.length !== requestedIds.size) throw new Error("定向运行包含不属于目标工作流的节点");
         if (!configNodeIds.length) throw new Error("工作流中没有可执行的配置节点");
         const requestId = `workflow-${nanoid(10)}`;
-        const record: AgentWorkflowRunRecord = { workflowId: input.workflowId, configNodeIds, baselineStartedAt: workflowRunStateRef.current.startedAt, settled: false };
+        const record: AgentWorkflowRunRecord = { workflowId: input.workflowId, configNodeIds, baselineAttemptId: workflowRunStateRef.current.attemptId || 0, settled: false };
         workflowRuns.set(requestId, record);
         void runWorkflowRef.current(input).then(
-            () => { record.settled = true; },
-            (error) => { record.settled = true; record.error = error instanceof Error ? error.message : "工作流运行失败"; },
+            () => { record.settled = true; record.finalState = { ...workflowRunStateRef.current }; },
+            (error) => { record.settled = true; record.finalState = { ...workflowRunStateRef.current }; record.error = error instanceof Error ? error.message : "工作流运行失败"; },
         );
         trimRunRegistry(workflowRuns);
         return { requestId, ...(input.workflowId ? { workflowId: input.workflowId } : {}), configNodeIds };
@@ -282,13 +285,7 @@ export function useAgentBridge(params: AgentBridgeParams) {
     const getWorkflowStatus = useCallback((requestId: string) => {
         const record = workflowRuns.get(requestId);
         if (!record) return null;
-        const state = workflowRunStateRef.current;
-        const started = Boolean(state.startedAt && state.startedAt !== record.baselineStartedAt);
-        const status: AgentTaskStatus = record.error
-            ? "failed"
-            : !record.settled
-              ? started && (state.status === "running" || state.status === "locked") ? "running" : "queued"
-              : !started ? "canceled" : state.status === "success" ? "succeeded" : state.status === "error" ? "failed" : state.status === "canceled" ? "canceled" : "running";
+        const { state, started, status } = canvasAgentWorkflowStatus(record, workflowRunStateRef.current);
         return {
             requestId,
             ...(record.workflowId ? { workflowId: record.workflowId } : {}),

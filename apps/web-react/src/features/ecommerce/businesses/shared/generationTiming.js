@@ -1,10 +1,7 @@
+import { taskTotalElapsedMs } from "../../../../legacy-modules/features/ai-wallpaper/domain/taskGenerationTiming.js";
+
 export function ecommerceElapsedSeconds(task) {
-  if (!task) return 0;
-  const started = Date.parse(task.startedAt || "");
-  if (!Number.isFinite(started)) return 0;
-  const finished = Date.parse(task.finishedAt || "");
-  const end = Number.isFinite(finished) ? finished : Date.now();
-  return Math.max(0, Math.floor((end - started) / 1000));
+  return Math.floor(taskTotalElapsedMs(task) / 1000);
 }
 
 export function firstReturnedOutputUrl(rows = []) {

@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { Link } from "react-router";
+import { usePageControls } from "../page-control/PageControlContext.jsx";
 import "./legal-pages.css";
 
 const privacySections = [
@@ -79,7 +80,7 @@ export function SupportPage() {
         <section><h2>账号与登录</h2><p>App 支持 Gmail、Googlemail 和 QQ 邮箱验证码登录。登录异常时请确认邮箱地址可正常收信，并检查垃圾邮件目录。</p></section>
         <section><h2>创作与作品</h2><p>任务状态、失败原因和生成结果可在作品页查看。网络中断后，App 会在恢复连接时继续同步任务状态。</p></section>
         <section><h2>隐私与账号安全</h2><p>你可以在 App 的账号与安全页管理登录设备、导出数据或永久注销账号。</p></section>
-        <section><h2>提交问题</h2><p>登录 App 后进入“我的 → 问题反馈”，选择问题类型并附上复现说明。处理进度和回复会保存在反馈记录中。</p><Link className="legal-page__action" to="/feedback">打开问题反馈</Link></section>
+        <section><h2>提交问题</h2><p>登录 App 后进入“我的 → 问题反馈”，选择问题类型并附上复现说明。处理进度和回复会保存在反馈记录中。</p><SupportFeedbackLink /></section>
       </div>
       <footer className="legal-page__footer">
         <Link to="/privacy">隐私政策</Link>
@@ -87,4 +88,10 @@ export function SupportPage() {
       </footer>
     </main>
   );
+}
+
+function SupportFeedbackLink() {
+  const { isEntryVisible, loading } = usePageControls();
+  if (loading || !isEntryVisible("/feedback")) return null;
+  return <Link className="legal-page__action" to="/feedback">打开问题反馈</Link>;
 }

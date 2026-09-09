@@ -31,7 +31,7 @@ export function CanvasImageSettingsPopover({ config, onConfigChange, onOpenChang
     const activeSize = config.size || "";
     const summary = [
         quality ? imageQualityLabel(quality) : "",
-        activeSize || config.resolution ? imageSizeLabel(activeSize, config.resolution) : "",
+        config.sizeMode === "exact" ? `${config.exactWidth || "—"} × ${config.exactHeight || "—"} px` : activeSize || config.resolution ? imageSizeLabel(activeSize, config.resolution) : "",
         t("canvas.controls.images", { count }),
     ].filter(Boolean).join(" · ");
 

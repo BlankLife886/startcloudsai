@@ -154,6 +154,57 @@ export function imageCountFromPrompt(prompt, maxCount = IMAGE_COUNTS[IMAGE_COUNT
   return 0
 }
 
+function greatestCommonDivisor(left, right) {
+  let a = Math.abs(Math.round(Number(left) || 0))
+  let b = Math.abs(Math.round(Number(right) || 0))
+  while (b) [a, b] = [b, a % b]
+  return a || 1
+}
+
+export function generatedImageRatioLabel(image = {}, settings = {}) {
+  const width = Number(image.width || settings.width)
+  const height = Number(image.height || settings.height)
+  if (width > 0 && height > 0) {
+    const divisor = greatestCommonDivisor(width, height)
+    return `${Math.round(width) / divisor}:${Math.round(height) / divisor}`
+  }
+  const ratio = String(image.ratio || settings.ratio || settings.requestRatio || '').trim()
+  return ratio.toLowerCase() === 'auto' ? 'Auto' : ratio
+}
+
+/** Parse an explicit ratio or pixel size and map it to the nearest supported ratio. */
+export function imageRatioFromPrompt(prompt, supportedRatios = []) {
+  const text = String(prompt || '')
+  const ratioMatch = text.match(/(?:^|[^\d])(\d{1,3})\s*[:：/]\s*(\d{1,3})(?:[^\d]|$)/)
+  const sizeMatch = ratioMatch ? null : text.match(/(?:^|[^\d])(\d{3,5})\s*[x×*]\s*(\d{3,5})(?:[^\d]|$)/i)
+  const matched = ratioMatch || sizeMatch
+  if (!matched) return null
+  const width = Number(matched[1])
+  const height = Number(matched[2])
+  if (!width || !height) return null
+  const divisor = greatestCommonDivisor(width, height)
+  const requestedRatio = `${width / divisor}:${height / divisor}`
+  const allowed = supportedRatios
+    .map((value) => String(value || '').trim().toLowerCase())
+    .filter((value) => value && value !== 'auto' && /^\d+:\d+$/.test(value))
+  let ratio = requestedRatio
+  if (allowed.length && !allowed.includes(requestedRatio)) {
+    const target = Math.log(width / height)
+    ratio = allowed.reduce((best, candidate) => {
+      const [candidateWidth, candidateHeight] = candidate.split(':').map(Number)
+      const distance = Math.abs(Math.log(candidateWidth / candidateHeight) - target)
+      return !best || distance < best.distance ? { value: candidate, distance } : best
+    }, null)?.value || allowed[0]
+  }
+  return {
+    ratio,
+    requestedRatio,
+    width: sizeMatch ? width : 0,
+    height: sizeMatch ? height : 0,
+    source: sizeMatch ? 'size' : 'ratio',
+  }
+}
+
 /**
  * 组装 assistant 占位消息。sendMessage 与编辑重发共用同一工厂，
  * `previous` 传上一条回复时优先继承其生成参数。
@@ -167,6 +218,8 @@ export function createAssistantPlaceholder({
   queued = false,
 }) {
   const waiting = Boolean(queued)
+  const exact = responseMode === 'image' &&
+    (defaults.sizeMode === 'exact' ? defaults : defaults.sizeMode !== 'ratio' && previous?.sizeMode === 'exact' ? previous : null)
   return {
     id: uid(),
     role: 'assistant',
@@ -189,6 +242,7 @@ export function createAssistantPlaceholder({
     width: previous?.width || defaults.width,
     height: previous?.height || defaults.height,
     quality: previous?.quality || defaults.quality,
+    ...(exact ? { sizeMode: 'exact', exactWidth: exact.exactWidth, exactHeight: exact.exactHeight } : {}),
     progress: 0,
     routing: responseMode === 'agent' && !waiting,
     ...(waiting ? { status: 'queued' } : {}),
@@ -366,6 +420,12 @@ const MESSAGE_STATUS = {
     tone: 'muted',
     progress: 0,
   },
+  'connection-paused': {
+    label: '已停止本机等待',
+    detail: '任务可能仍在后台运行；恢复网络后会同步状态或补交停止请求。',
+    tone: 'muted',
+    progress: 0,
+  },
 }
 
 export function messageIsQueued(message) {
@@ -399,7 +459,7 @@ export function messageStatus(message) {
             ? 'answering'
             : 'thinking'
     }
-  } else if (!['failed', 'stopped'].includes(stage)) {
+  } else if (!['failed', 'stopped', 'connection-paused'].includes(stage)) {
     stage = 'complete'
   }
   const base = MESSAGE_STATUS[stage]

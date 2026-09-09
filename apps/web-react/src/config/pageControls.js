@@ -28,6 +28,29 @@ const PAGE_KEYS = [
   "ui_design",
   "game_art",
   "pricing",
+  "holo_card",
+  "psd_decompose",
+  "skills",
+  "invitation",
+  "developer_api_docs",
+  "ai_tools",
+  "prompts",
+  "share",
+  "app_space",
+  "updates",
+  "feedback",
+  "background_remove",
+  "image_compress",
+  "puzzle",
+  "media_tools",
+  "history",
+  "assets",
+  "submissions",
+  "wallet",
+  "orders",
+  "subscriptions",
+  "notifications",
+  "profile",
   "activity.checkin",
   "activity.trial",
   "activity.usage",
@@ -59,6 +82,29 @@ const PAGE_LABELS = Object.freeze({
   ui_design: "UI 设计稿",
   game_art: "游戏设计",
   pricing: "创作价格",
+  holo_card: "闪光卡",
+  psd_decompose: "PSD 分解",
+  skills: "Skill 中心",
+  invitation: "邀请好友",
+  developer_api_docs: "API 文档",
+  ai_tools: "全部工具",
+  prompts: "提示词",
+  share: "作品社区",
+  app_space: "关于我们",
+  updates: "更新说明",
+  feedback: "问题反馈",
+  background_remove: "背景移除",
+  image_compress: "图片压缩",
+  puzzle: "拼图",
+  media_tools: "媒体工具",
+  history: "历史记录",
+  assets: "我的资产",
+  submissions: "我的投稿",
+  wallet: "我的钱包",
+  orders: "我的订单",
+  subscriptions: "我的订阅",
+  notifications: "通知中心",
+  profile: "个人中心",
   "activity.checkin": "签到活动",
   "activity.trial": "申请体验",
   "activity.usage": "用量激励",
@@ -132,17 +178,51 @@ function ecommercePageKey(search = "") {
   return PAGE_KEYS.includes(key) ? key : null;
 }
 
+function normalizePagePath(pathname) {
+  let path = String(pathname || "/");
+  try {
+    path = path.split("/").map((segment) => decodeURIComponent(segment).replace(/\//g, "%2F")).join("/");
+  } catch {
+    // Keep malformed paths available to the router's normal error handling.
+  }
+  return path.replace(/\/+$/, "").toLowerCase() || "/";
+}
+
 export function pageKeyForLocation(pathname, search = "") {
+  pathname = normalizePagePath(pathname);
   if (pathname === "/studio") return "studio";
   if (pathname === "/canvas" || pathname.startsWith("/canvas/")) return "canvas";
   if (pathname === "/assistant") return "assistant";
   if (pathname === "/developer-api") return "developer_api";
-  if (pathname === "/text-to-image") return "text_to_image";
+  if (pathname === "/developer-api/docs") return "developer_api_docs";
+  if (pathname === "/text-to-image" || pathname === "/ai-wallpaper") return "text_to_image";
   if (pathname === "/model-sheet") return "model_sheet";
   if (pathname === "/ai-illustration-coloring") return "illustration_coloring";
   if (pathname === "/design-workshop") return "ui_design";
   if (pathname === "/game-art") return "game_art";
   if (pathname === "/pricing") return "pricing";
+  if (pathname === "/holo-card" || pathname === "/holo-card/sample") return "holo_card";
+  if (pathname === "/psd-decompose") return "psd_decompose";
+  if (pathname === "/skills") return "skills";
+  if (pathname === "/invite") return "invitation";
+  if (pathname === "/ai-tools") return "ai_tools";
+  if (pathname === "/prompts") return "prompts";
+  if (pathname === "/share") return "share";
+  if (pathname === "/app-space") return "app_space";
+  if (pathname === "/updates") return "updates";
+  if (pathname === "/feedback") return "feedback";
+  if (pathname === "/tools/background-remove") return "background_remove";
+  if (pathname === "/tools/image-compress") return "image_compress";
+  if (pathname === "/tools/puzzle" || pathname === "/ai-puzzle") return "puzzle";
+  if (/^\/tools\/[^/]+$/.test(pathname)) return "media_tools";
+  if (pathname === "/history") return "history";
+  if (pathname === "/assets" || pathname === "/materials") return "assets";
+  if (pathname === "/submissions") return "submissions";
+  if (pathname === "/wallet") return "wallet";
+  if (pathname === "/orders") return "orders";
+  if (pathname === "/subscriptions" || pathname === "/incentive-plans/membership") return "subscriptions";
+  if (pathname === "/notifications") return "notifications";
+  if (pathname === "/profile") return "profile";
   if (pathname === "/check-in") return "activity.checkin";
   if (pathname === "/incentive-plans/usage" || pathname === "/incentive-plans/milestone")
     return "activity.usage";
@@ -153,11 +233,12 @@ export function pageKeyForLocation(pathname, search = "") {
 }
 
 export function pageKeyForHref(href = "") {
-  const [pathname, query = ""] = String(href).split("?");
+  const [rawPathname, query = ""] = String(href).split("#")[0].split("?");
+  const pathname = normalizePagePath(rawPathname);
   if (pathname === "/ecommerce-design") {
     return ecommercePageKey(query ? `?${query}` : "");
   }
-  return pageKeyForLocation(pathname, query ? `?${query}` : "");
+  return pageKeyForLocation(rawPathname, query ? `?${query}` : "");
 }
 
 export function pageControlForKey(controls, key) {
@@ -169,7 +250,7 @@ export function pageControlForKey(controls, key) {
 }
 
 export function pageControlForLocation(controls, pathname, search = "") {
-  if (pathname === "/incentive-plans") {
+  if (normalizePagePath(pathname) === "/incentive-plans") {
     const removed = INCENTIVE_PAGE_KEYS.every(
       (key) => pageControlForKey(controls, key).status === PAGE_STATUS.REMOVED,
     );
@@ -182,7 +263,7 @@ export function pageControlForLocation(controls, pathname, search = "") {
 }
 
 export function isPageEntryVisible(controls, keyOrHref) {
-  if (keyOrHref === "/incentive-plans") {
+  if (normalizePagePath(String(keyOrHref || "").split(/[?#]/)[0]) === "/incentive-plans") {
     return INCENTIVE_PAGE_KEYS.some(
       (key) => pageControlForKey(controls, key).status !== PAGE_STATUS.REMOVED,
     );

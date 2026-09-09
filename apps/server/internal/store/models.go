@@ -19,7 +19,7 @@ var (
 	AdminTaskTypes     = append(append([]string{}, TaskTypes...), "assistant")
 	AdminTaskFilters   = append(append([]string{}, AdminTaskTypes...), PromptTaskTypeCanvas)
 	TaskStatuses       = []string{"queued", "running", "succeeded", "failed", "canceled"}
-	OrderStatuses      = []string{"pending", "paid", "completed", "failed", "expired"}
+	OrderStatuses      = []string{"pending", "uncertain", "paid", "completed", "failed", "expired", "cancelled"}
 	SubmissionStatuses = []string{"pending", "approved", "rejected", "removed"}
 	LedgerKinds        = []string{"grant", "spend", "freeze", "release", "refund", "admin_adjust"}
 )
@@ -260,16 +260,23 @@ type AdminSession struct {
 }
 
 type Wallet struct {
-	UserID            uuid.UUID
-	BalanceCents      int64
-	FrozenCents       int64
-	TrialBalanceCents int64
-	TrialFrozenCents  int64
-	TrialFeatureKey   *string
-	UpdatedAt         *time.Time
+	EligibleTopupPoints          int64
+	OrdinaryTopupPoints          int64
+	SubscriptionBalanceCents     int64
+	SubscriptionHeldCents        int64
+	SubscriptionUpgradeHeldCents int64
+	SubscriptionFrozenCents      int64
+	UserID                       uuid.UUID
+	BalanceCents                 int64
+	FrozenCents                  int64
+	TrialBalanceCents            int64
+	TrialFrozenCents             int64
+	TrialFeatureKey              *string
+	UpdatedAt                    *time.Time
 }
 
 type LedgerEntry struct {
+	SettledPoints     *int64
 	ID                uuid.UUID
 	UserID            uuid.UUID
 	Kind              string
@@ -307,23 +314,27 @@ type CreditReservation struct {
 }
 
 type Plan struct {
-	ID              uuid.UUID
-	Code            string
-	Name            string
-	Description     string
-	Badge           string
-	Kind            string // topup 充值包 / subscription 订阅
-	PriceCents      int64
-	GrantCents      int64
-	BonusCents      int64
-	DurationDays    int   // subscription：订阅时长（天）
-	DailyGrantCents int64 // subscription：每日发放额度
-	Features        []string
-	Active          bool
-	Recommended     bool
-	Sort            int
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	RechargePolicy     *RechargePolicy
+	PriceLockEligible  bool
+	Revision           int
+	SubscriptionPolicy SubscriptionPolicy
+	ID                 uuid.UUID
+	Code               string
+	Name               string
+	Description        string
+	Badge              string
+	Kind               string // topup 充值包 / subscription 订阅
+	PriceCents         int64
+	GrantCents         int64
+	BonusCents         int64
+	DurationDays       int   // subscription：订阅时长（天）
+	DailyGrantCents    int64 // subscription：每日发放额度
+	Features           []string
+	Active             bool
+	Recommended        bool
+	Sort               int
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 type PlanUsage struct {
@@ -333,6 +344,13 @@ type PlanUsage struct {
 
 // Subscription 订阅期（续购同套餐 = ends_at 顺延）。
 type Subscription struct {
+	Contract        *BillingContract
+	BillingVersion  int
+	Policy          SubscriptionPolicy
+	PlanName        string
+	PriceCents      int64
+	DurationDays    int
+	Revision        int
 	ID              uuid.UUID
 	UserID          uuid.UUID
 	PlanID          uuid.UUID
@@ -407,6 +425,11 @@ type TrialAccessApplication struct {
 }
 
 type Order struct {
+	RechargePolicy         *RechargePolicy
+	PriceLockEligible      bool
+	PlanRevision           int
+	SubscriptionPolicy     SubscriptionPolicy
+	SubscriptionChangeID   *uuid.UUID
 	ID                     uuid.UUID
 	UserID                 uuid.UUID
 	PlanID                 uuid.UUID
@@ -424,9 +447,19 @@ type Order struct {
 	PaidAt                 *time.Time
 	CompletedAt            *time.Time
 	CreatedAt              time.Time
+	PlanName               *string
+	PlanKind               *string
+	PlanDurationDays       int
+	PlanDailyGrantCents    int64
+	SubscriptionEndsAt     *time.Time
+	SubscriptionStartsAt   *time.Time
+	ReconcileAttempts      int
+	ReconcileLeaseID       *uuid.UUID
 }
 
 type Task struct {
+	// Derived from task_upstream_attempts by store reads, never from request params.
+	HasPendingUpstream bool
 	ID                 uuid.UUID
 	UserID             uuid.UUID
 	Type               string
@@ -580,6 +613,7 @@ type GalleryAuthor struct {
 }
 
 type Notification struct {
+	TargetPath *string
 	ID         uuid.UUID
 	UserID     *uuid.UUID
 	Kind       string
@@ -677,6 +711,8 @@ type Announcement struct {
 	EndsAt    *time.Time
 	Config    json.RawMessage
 	CreatedAt time.Time
+	PushID    *uuid.UUID
+	PushedAt  *time.Time
 }
 
 type ChangelogEntry struct {

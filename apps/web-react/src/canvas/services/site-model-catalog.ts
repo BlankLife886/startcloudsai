@@ -1,4 +1,5 @@
 import { starcloudsRequest } from "@/services/starclouds-api";
+import { normalizeExactSizeCapabilities } from "@react/config/exactImageSize.js";
 import { MODEL_REASONING_EFFORTS, defaultCanvasAgentPricing, type CanvasAgentPricing, type ChannelModel, type ModelChannel, type ModelReasoningEffort, type ModelReasoningPrice } from "@/stores/use-config-store";
 
 type SiteModel = {
@@ -8,12 +9,17 @@ type SiteModel = {
     kind?: unknown;
     tool?: unknown;
     default?: unknown;
+    iconUrl?: unknown;
+    status?: unknown;
+    maintenance?: unknown;
     pricePoints?: unknown;
     standardPricePoints?: unknown;
     discountPricePoints?: unknown;
     resolutions?: unknown;
     aspectRatios?: unknown;
     aspectRatiosByResolution?: unknown;
+    supportsExactSize?: unknown;
+    exactSizeLimits?: unknown;
     qualities?: unknown;
     transparentBackground?: unknown;
     maxReferenceImages?: unknown;
@@ -95,7 +101,7 @@ export async function fetchSiteModelCatalog(): Promise<SiteModelCatalog> {
         if (model.default === true) defaults.text = String(model.id || model.name || "").trim();
     }
     for (const model of models) {
-        if (!defaults[model.capability]) defaults[model.capability] = model.name;
+        if (!defaults[model.capability] && !model.maintenance) defaults[model.capability] = model.name;
     }
     return {
         channel: {
@@ -139,6 +145,9 @@ function mapSiteModel(raw: SiteModel, capability: "image" | "text"): ChannelMode
     return {
         name,
         label: String(raw.label || raw.name || name).trim(),
+        iconUrl: String(raw.iconUrl || "").trim(),
+        status: raw.status === "maintenance" || raw.maintenance === true ? "maintenance" : "available",
+        maintenance: raw.status === "maintenance" || raw.maintenance === true,
         capability,
         pricePoints: finiteNumber(raw.pricing?.points ?? raw.pricePoints),
         standardPricePoints: finiteNumber(raw.pricing?.standardPoints ?? raw.standardPricePoints),
@@ -146,6 +155,7 @@ function mapSiteModel(raw: SiteModel, capability: "image" | "text"): ChannelMode
         resolutions: stringList(raw.resolutions),
         aspectRatios: stringList(raw.aspectRatios),
         aspectRatiosByResolution: stringListMap(raw.aspectRatiosByResolution),
+        ...normalizeExactSizeCapabilities(raw),
         qualities: stringList(raw.qualities),
         transparentBackground: raw.transparentBackground !== false,
         maxReferenceImages: finiteNumber(raw.maxReferenceImages),

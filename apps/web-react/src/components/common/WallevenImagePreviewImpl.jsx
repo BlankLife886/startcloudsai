@@ -102,6 +102,7 @@ export function WallevenImagePreviewImpl({
   onDownload,
   filename = "image.png",
   metadata = {},
+  model = null,
   enabledActions = {},
   actionBusy = "",
   regionEditBusy = false,
@@ -1778,6 +1779,7 @@ export function WallevenImagePreviewImpl({
             sourceUrl={sourceUrl}
             title={title}
             modelLabel={String(metadata.model || metadata.modelName || "图片模型")}
+            model={model}
             busy={regionEditBusy}
             onClose={() => !regionEditBusy && setRegionEditorOpen(false)}
             onSubmit={async (payload) => {

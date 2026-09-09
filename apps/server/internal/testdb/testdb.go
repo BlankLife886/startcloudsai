@@ -54,21 +54,19 @@ func Setup(t *testing.T) *store.Store {
 		t.Fatalf("create temp database: %v", err)
 	}
 	_ = admin.Close(ctx)
+	// Register cleanup before migration: an invalid migration can panic before
+	// the Store exists, and must not leave a temporary database behind.
+	t.Cleanup(func() { dropDatabase(t, dbName) })
 
 	dbURL := withDatabase(adminURL(), dbName)
 	if err := store.Migrate(dbURL); err != nil {
-		dropDatabase(t, dbName)
 		t.Fatalf("migrate temp database: %v", err)
 	}
 	st, err := store.New(ctx, dbURL)
 	if err != nil {
-		dropDatabase(t, dbName)
 		t.Fatalf("connect temp database: %v", err)
 	}
-	t.Cleanup(func() {
-		st.Close()
-		dropDatabase(t, dbName)
-	})
+	t.Cleanup(st.Close)
 	return st
 }
 

@@ -139,6 +139,7 @@ export function useGameArtJobs({ model, isAuthenticated }) {
     try {
       const completed = await waitForServerAiJob(job.id, {
         maxPolls: 260,
+        maxWaitMs: null,
         signal,
         onImage: (_values, partialJob, partialResult) => ingest(partialJob, partialResult, { activate: !activeOutput }),
       });
@@ -207,6 +208,7 @@ export function useGameArtJobs({ model, isAuthenticated }) {
     try {
       const completed = await waitForServerAiJob(jobId, {
         maxPolls: 260,
+        maxWaitMs: null,
         signal: context.controller.signal,
         onStatus: (message) => patchTask(runId, { status: String(message || "") }),
         onImage: (_values, partialJob, partialResult) => {
@@ -260,7 +262,7 @@ export function useGameArtJobs({ model, isAuthenticated }) {
           patchTask(runId, { progress: [...progress], completedCount: progress.filter((entry) => entry.status === "done").length });
           return result;
         } catch (caught) {
-          progress[index] = { ...progress[index], status: caught?.name === "AbortError" ? "cancelled" : "failed", message: caught?.message || "生成失败" };
+          progress[index] = { ...progress[index], status: caught?.name === "AbortError" || caught?.code === "task_canceled" ? "cancelled" : "failed", message: caught?.message || "生成失败" };
           patchTask(runId, { progress: [...progress] });
           return { error: caught, urls: [] };
         }

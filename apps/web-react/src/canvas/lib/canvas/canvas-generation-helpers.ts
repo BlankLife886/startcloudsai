@@ -1,4 +1,4 @@
-import { applyCanvasImageModelSettings, CANVAS_IMAGE_HARD_MAX_COUNT } from "@/lib/canvas/canvas-image-model";
+import { applyCanvasImageModelSettings, canvasExactSizeSettingsForNode, resolveCanvasImageModel, CANVAS_IMAGE_HARD_MAX_COUNT } from "@/lib/canvas/canvas-image-model";
 import { shouldPromoteGeneratedImage } from "@/lib/canvas/canvas-image-primary";
 import { defaultConfig, modelOptionMeta, resolveModelForCapability, type AiConfig } from "@/stores/use-config-store";
 import i18n from "@/i18n";
@@ -135,12 +135,14 @@ export function getInputSummary(inputs: NodeGenerationInput[]) {
 }
 
 export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | undefined, mode: CanvasNodeGenerationMode): AiConfig {
+    const sizeSettings = canvasExactSizeSettingsForNode(config, node?.metadata);
     const next = {
         ...config,
-        model: resolveModelForCapability(config, node?.metadata?.model, mode),
+        model: mode === "image" ? resolveCanvasImageModel(config, node?.metadata?.model, sizeSettings.sizeMode) : resolveModelForCapability(config, node?.metadata?.model, mode),
         reasoningEffort: node?.metadata?.reasoningEffort || config.reasoningEffort || defaultConfig.reasoningEffort,
         quality: node?.metadata?.quality || config.quality || defaultConfig.quality,
         size: node?.metadata?.size || config.size || defaultConfig.size,
+        ...sizeSettings,
         resolution: node?.metadata?.resolution || config.resolution || defaultConfig.resolution,
         background: node?.metadata?.background ?? "",
         videoSeconds: node?.metadata?.seconds || config.videoSeconds || defaultConfig.videoSeconds,

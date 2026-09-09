@@ -5,6 +5,7 @@ import { useIsDark } from "../hooks/useIsDark.js";
 import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
 import { canOpenWallevenImagePreview, WallevenImagePreview } from "../components/common/WallevenImagePreview.jsx";
+import { ModelCatalogIcon, ModelMaintenanceBadge, availableCatalogModels, isCatalogModelMaintenance } from "../components/common/ModelCatalogIcon.jsx";
 import {
   PAGE_TYPES,
   VISUAL_STYLES,
@@ -477,17 +478,22 @@ function WorkshopSelect({
               className={`ratio-select__option has-icon${item.value === value ? " is-selected" : ""}`}
               role="option"
               aria-selected={item.value === value}
+              disabled={item.disabled}
+              title={item.disabled ? "模型维护中，暂不可选择" : undefined}
               onClick={() => {
                 onChange(item.value);
                 setOpen(false);
               }}
             >
-              {(item.icon || icon) === "bi-cpu" ? (
+              {item.model ? (
+                <ModelCatalogIcon model={item.model} size="sm" />
+              ) : (item.icon || icon) === "bi-cpu" ? (
                 <SoftMark name="cpu" size="sm" />
               ) : (
                 <i className={`bi ${item.icon || icon}`} />
               )}
               <span>{item.label}</span>
+              {item.model ? <ModelMaintenanceBadge model={item.model} /> : null}
               {item.value === value && <i className="bi bi-check2" />}
             </button>
           ))}
@@ -1103,8 +1109,9 @@ export function DesignWorkshopView() {
   );
   const isIteration = Boolean(iterationSource);
   const hasReference = isIteration || references.length > 0;
+  const availableModels = useMemo(() => availableCatalogModels(models), [models]);
   const activeModel =
-    models.find((item) => item.id === modelId) || models[0] || null;
+    availableModels.find((item) => item.id === modelId) || availableModels[0] || null;
   const referenceLimit = activeModel
     ? Math.min(
         MAX_REFERENCES,
@@ -1578,10 +1585,11 @@ export function DesignWorkshopView() {
       .then(([config]) => {
         if (!mountedRef.current) return;
         const nextModels = featureModels(config);
+        const nextAvailableModels = availableCatalogModels(nextModels);
         setModels(nextModels);
         setModelId(
-          nextModels.find((item) => item.default)?.id ||
-            nextModels[0]?.id ||
+          nextAvailableModels.find((item) => item.default)?.id ||
+            nextAvailableModels[0]?.id ||
             "",
         );
         const analysis =
@@ -3476,7 +3484,7 @@ export function DesignWorkshopView() {
           <div className="dws-panel-scroll">
             <section className="dws-engine">
               <span className="dws-engine-icon">
-                <SoftMark name="cpu" size="md" />
+                <ModelCatalogIcon model={activeModel} size="md" />
               </span>
               <div className="dws-engine-control">
                 <WorkshopSelect
@@ -3484,7 +3492,8 @@ export function DesignWorkshopView() {
                   options={models.map((item) => ({
                     value: item.id,
                     label: item.label,
-                    icon: "bi-cpu",
+                    model: item,
+                    disabled: isCatalogModelMaintenance(item),
                   }))}
                   onChange={setModelId}
                   label="生成模型"

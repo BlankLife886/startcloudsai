@@ -341,6 +341,45 @@ func TestAdminPutSettingsRejectsRetiredTrialCampaignFields(t *testing.T) {
 	}
 }
 
+func TestAdminGetSettingsResolvesPageControls(t *testing.T) {
+	st := testdb.Setup(t)
+	const storedControls = `{"studio":{"status":"maintenance","reason":"  系统升级中  "},"unknown":{"status":"normal","reason":""}}`
+	if err := settings.Set(context.Background(), st.Pool, "page_controls", json.RawMessage(storedControls)); err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{Cfg: &config.Config{}, St: st}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/admin/settings", nil)
+	srv.adminGetSettings(c, nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("get settings status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Data struct {
+			PageControls map[string]settings.PageControl `json:"pageControls"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	controls := response.Data.PageControls
+	if len(controls) != len(settings.PageControlKeys) {
+		t.Fatalf("page controls count = %d, want %d", len(controls), len(settings.PageControlKeys))
+	}
+	if got := controls["studio"]; got.Status != settings.PageStatusMaintenance || got.Reason != "系统升级中" {
+		t.Fatalf("stored studio control = %#v", got)
+	}
+	for _, key := range []string{"canvas", "holo_card", "psd_decompose", "wallet", "developer_api_docs", "illustration_coloring", "activity.checkin", "developer_api"} {
+		if got, want := controls[key], settings.PageControlDefaults()[key]; got != want {
+			t.Fatalf("default %s control = %#v, want %#v", key, got, want)
+		}
+	}
+	if _, exists := controls["unknown"]; exists {
+		t.Fatal("unknown page control exposed in admin settings")
+	}
+}
+
 func TestAdminPutSettingsValidatesPageControls(t *testing.T) {
 	st := testdb.Setup(t)
 	srv := &Server{Cfg: &config.Config{}, St: st}
@@ -368,6 +407,17 @@ func TestAdminPutSettingsValidatesPageControls(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("valid page controls status = %d body=%s", recorder.Code, recorder.Body.String())
 	}
+	var response struct {
+		Data struct {
+			PageControls map[string]settings.PageControl `json:"pageControls"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if got := response.Data.PageControls["activity.checkin"]; got.Status != settings.PageStatusRemoved {
+		t.Fatalf("save response default check-in control = %#v", got)
+	}
 
 	controls, err := settings.ResolvePageControls(context.Background(), st.Pool)
 	if err != nil {
@@ -381,6 +431,43 @@ func TestAdminPutSettingsValidatesPageControls(t *testing.T) {
 	}
 	if got := controls["developer_api"]; got.Status != settings.PageStatusRemoved || got.Reason != "内部测试" {
 		t.Fatalf("developer API control = %#v", got)
+	}
+}
+
+func TestAdminPutSettingsAcceptsAdditionalPageControls(t *testing.T) {
+	st := testdb.Setup(t)
+	srv := &Server{Cfg: &config.Config{}, St: st}
+	keys := []string{
+		"holo_card", "psd_decompose", "skills", "invitation", "developer_api_docs",
+		"ai_tools", "prompts", "share", "app_space", "updates", "feedback",
+		"background_remove", "image_compress", "puzzle", "media_tools", "history",
+		"assets", "submissions", "wallet", "orders", "subscriptions", "notifications", "profile",
+	}
+	statuses := []string{settings.PageStatusNormal, settings.PageStatusMaintenance, settings.PageStatusDeveloping, settings.PageStatusRemoved}
+	controls := make(map[string]settings.PageControl, len(keys))
+	for i, key := range keys {
+		controls[key] = settings.PageControl{Status: statuses[i%len(statuses)], Reason: "  页面状态说明  "}
+	}
+	body, err := json.Marshal(map[string]any{"pageControls": controls})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPut, "/api/v1/admin/settings", strings.NewReader(string(body)))
+	c.Request.Header.Set("Content-Type", "application/json")
+	srv.adminPutSettings(c, nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("save additional page controls status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	resolved, err := settings.ResolvePageControls(context.Background(), st.Pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range keys {
+		if got := resolved[key]; got.Status != controls[key].Status || got.Reason != "页面状态说明" {
+			t.Fatalf("saved %s control = %#v", key, got)
+		}
 	}
 }
 

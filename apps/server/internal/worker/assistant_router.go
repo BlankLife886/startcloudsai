@@ -15,7 +15,6 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
 	"github.com/BlankLife886/startcloudsai/server/internal/crun"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
-	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/sub2api"
 )
@@ -31,42 +30,55 @@ func (e *assistantProviderError) Error() string { return e.err.Error() }
 func (e *assistantProviderError) Unwrap() error { return e.err }
 
 func (w *Worker) assistantExecutionCandidates(ctx context.Context, run *store.AssistantRun) ([]modelconfig.Selection, error) {
+	return w.assistantExecutionCandidatesQ(ctx, w.St.Pool, run)
+}
+
+func (w *Worker) assistantExecutionCandidatesQ(ctx context.Context, q store.Q, run *store.AssistantRun) ([]modelconfig.Selection, error) {
+	if assistantEditableKind(run) != "" {
+		snapshot, err := w.assistantExecutionSnapshotQ(ctx, q, run)
+		if err != nil {
+			return nil, err
+		}
+		provider, configured, err := snapshot.EditableProvider(ctx, q, w.Cfg.AppSecret)
+		if err != nil {
+			return nil, err
+		}
+		if !configured {
+			return nil, errAssistantRoutesExhausted
+		}
+		return []modelconfig.Selection{{Provider: provider}}, nil
+	}
 	prefix := "_chat"
-	if run.Mode == "image" {
+	slot := "chat"
+	if store.AssistantRunIsImage(run) {
 		prefix = "_image"
+		slot = "image"
 	}
 	providerID := assistantParamString(run.Params, prefix+"ProviderConfigId", "")
 	modelID := assistantParamString(run.Params, prefix+"ModelConfigId", "")
+	routeID := assistantParamString(run.Params, prefix+"ProviderRouteId", "")
+	if slot == "image" && (providerID == "" || modelID == "") {
+		providerID, modelID = assistantParamString(run.Params, "_providerConfigId", ""), assistantParamString(run.Params, "_modelConfigId", "")
+		routeID = assistantParamString(run.Params, "_providerRouteId", "")
+	}
 	if providerID == "" || modelID == "" {
 		return nil, nil
 	}
-	cfg, err := w.runtimeModelConfig(ctx)
+	snapshot, err := w.assistantExecutionSnapshotQ(ctx, q, run)
 	if err != nil {
 		return nil, err
 	}
-	routeID := assistantParamString(run.Params, prefix+"ProviderRouteId", "")
-	balanceAcrossProviders, err := settings.GetBool(ctx, w.St.Pool, "cross_provider_same_model_balancing_enabled")
-	if err != nil {
-		return nil, err
+	if slot == "image" && store.AssistantRunHasKnownImageJobs(run) {
+		selection, found, err := snapshot.BoundSelection(slot, providerID, modelID, routeID, w.Cfg.AppSecret)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, errAssistantRoutesExhausted
+		}
+		return []modelconfig.Selection{*selection}, nil
 	}
-	if balanceAcrossProviders {
-		unitPrice := assistantParamInt(run.Params, prefix+"ModelEffectivePriceCents", -1)
-		if run.Mode == "image" {
-			unitPrice = assistantParamInt(run.Params, "_modelEffectivePriceCents",
-				assistantParamInt(run.Params, "_billingUnitPriceCents", unitPrice))
-		}
-		if run.Mode != "image" {
-			unitPrice = assistantParamInt(run.Params, "_chatModelEffectivePriceCents",
-				assistantParamInt(run.Params, "_agentChatUnitPriceCents",
-					assistantParamInt(run.Params, "_chatCostCents", -1)))
-		}
-		if unitPrice >= 0 {
-			return modelconfig.ExecutionCandidatesRouteAcrossProviders(
-				cfg, providerID, modelID, routeID, int64(unitPrice),
-			), nil
-		}
-	}
-	return modelconfig.ExecutionCandidatesRoute(cfg, providerID, modelID, routeID), nil
+	return snapshot.RuntimeCandidates(ctx, q, slot, w.Cfg.AppSecret)
 }
 
 func (w *Worker) claimAssistantRun(
@@ -78,20 +90,9 @@ func (w *Worker) claimAssistantRun(
 	if err != nil || queued == nil || queued.Status != "queued" {
 		return nil, err
 	}
-	candidates, err := w.assistantExecutionCandidates(ctx, queued)
+	globals, err := store.GetGlobalExecutionLimits(ctx, w.St.Pool)
 	if err != nil {
 		return nil, err
-	}
-	if len(candidates) == 0 {
-		prefix := "_chat"
-		if queued.Mode == "image" {
-			prefix = "_image"
-		}
-		if assistantParamString(queued.Params, prefix+"ProviderConfigId", "") != "" &&
-			assistantParamString(queued.Params, prefix+"ModelConfigId", "") != "" {
-			return nil, errAssistantRoutesExhausted
-		}
-		return store.ClaimAssistantRunWithLease(ctx, w.St.Pool, runID, leaseOwner, time.Now().UTC(), taskLease, 4)
 	}
 
 	var claimed *store.AssistantRun
@@ -99,32 +100,99 @@ func (w *Worker) claimAssistantRun(
 		if err := store.LockGlobalTaskExecution(ctx, tx); err != nil {
 			return err
 		}
-		routeKeys := make([]string, 0, len(candidates))
-		for _, candidate := range candidates {
-			routeKeys = append(routeKeys, modelconfig.ExecutionRouteKey(candidate.Provider))
+		if err := store.LockUserTaskExecution(ctx, tx, queued.UserID); err != nil {
+			return err
 		}
-		running, err := store.RunningTasksByProvider(ctx, tx, routeKeys)
+		locked, getErr := store.GetAssistantRunForUpdate(ctx, tx, runID)
+		if getErr != nil || locked == nil || locked.Status != "queued" {
+			return getErr
+		}
+		queued = locked
+		image := store.AssistantRunIsImage(queued)
+		resumeKnown := store.AssistantRunHasKnownImageJobs(queued)
+		units := store.AssistantRunWorkUnits(queued)
+		dedicatedEditable := assistantEditableKind(queued) != ""
+		candidates, candidateErr := w.assistantExecutionCandidatesQ(ctx, tx, queued)
+		if candidateErr != nil {
+			return candidateErr
+		}
+		if len(candidates) == 0 {
+			prefix := "_chat"
+			if image {
+				prefix = "_image"
+			}
+			if assistantParamString(queued.Params, prefix+"ProviderConfigId", "") != "" && assistantParamString(queued.Params, prefix+"ModelConfigId", "") != "" {
+				return errAssistantRoutesExhausted
+			}
+		}
+		account, err := store.GetUserConcurrency(ctx, tx, queued.UserID)
 		if err != nil {
 			return err
 		}
-		assistantRunning, err := store.RunningAssistantRunsByProvider(ctx, tx, routeKeys)
+		usage, err := store.GetGlobalExecutionUsage(ctx, tx)
 		if err != nil {
 			return err
 		}
-		for key, count := range assistantRunning {
-			running[key] += count
+		userLimit, userRunning, globalLimit, globalRunning := int64(account.ChatLimit), account.ChatRunning, globals.ChatLimit, usage.ChatRunning
+		if image {
+			userLimit, userRunning, globalLimit, globalRunning = int64(account.ImageLimit), account.ImageRunning, globals.ImageLimit, usage.ImageRunning
 		}
-		prefix := "_chat"
-		failedRouteParam := "_failedChatProviderRouteKeys"
-		if queued.Mode == "image" {
-			prefix = "_image"
-			failedRouteParam = "_failedImageProviderRouteKeys"
+		if resumeKnown {
+			userRunning = max(userRunning-units, 0)
+			globalRunning = max(globalRunning-units, 0)
+		}
+		if err := store.CheckExecutionBatchLimits(image, units, userLimit, globalLimit, executionCandidateMaxCapacity(candidates)); err != nil && !resumeKnown {
+			return err
+		}
+		prefix, failedRouteParam := "_chat", "_failedChatProviderRouteKeys"
+		if image {
+			prefix, failedRouteParam = "_image", "_failedImageProviderRouteKeys"
 		}
 		excluded := make(map[string]bool)
 		for _, key := range assistantParamStrings(queued.Params, failedRouteParam) {
 			excluded[key] = true
 		}
-		selected, ok := selectExecutionCandidateExcluding(candidates, running, excluded)
+		if len(candidates) > 0 && !resumeKnown {
+			remainingMax, remaining := executionRemainingCapacity(candidates, excluded)
+			if remaining == 0 {
+				return errAssistantRoutesExhausted
+			}
+			if units > remainingMax {
+				pool := "对话"
+				if image {
+					pool = "生图"
+				}
+				return &store.ExecutionBatchCapacityError{Pool: pool, Scope: "剩余单条模型线路", Requested: units, Limit: remainingMax}
+			}
+		}
+		if !resumeKnown && (userRunning+units > userLimit || globalRunning+units > globalLimit) {
+			if err := store.InsertAssistantRunOutbox(ctx, tx, runID); err != nil {
+				return err
+			}
+			return store.RecordAssistantRunOutboxFailure(ctx, tx, runID, "waiting for execution pool capacity", time.Now().UTC().Add(3*time.Second))
+		}
+		if len(candidates) == 0 {
+			claimLimit := userLimit
+			if resumeKnown {
+				claimLimit = max(claimLimit, userRunning+units)
+			}
+			claimed, err = store.ClaimAssistantRunWithLease(ctx, tx, runID, leaseOwner, time.Now().UTC(), taskLease, int(claimLimit))
+			return err
+		}
+		routeKeys := make([]string, 0, len(candidates))
+		for _, candidate := range candidates {
+			routeKeys = append(routeKeys, modelconfig.ExecutionRouteKey(candidate.Provider))
+		}
+		running, err := store.RunningExecutionUnitsByProvider(ctx, tx, routeKeys)
+		if err != nil {
+			return err
+		}
+		selected, ok := selectExecutionCandidateExcluding(candidates, running, excluded, units)
+		if resumeKnown {
+			selected, ok = &candidates[0], true
+			key := modelconfig.ExecutionRouteKey(selected.Provider)
+			running[key] = max(running[key]-units, 0)
+		}
 		if !ok {
 			hasUntried := false
 			for _, candidate := range candidates {
@@ -148,23 +216,41 @@ func (w *Worker) claimAssistantRun(
 			prefix + "ProviderRouteKey":    modelconfig.ExecutionRouteKey(selected.Provider),
 			prefix + "ProviderDisplayName": selected.Provider.Name,
 			prefix + "ProviderEndpoint":    assistantProviderEndpoint(selected.Provider.BaseURL),
-			prefix + "ModelConfigId":       selected.Model.ID,
-			prefix + "Model":               selected.Model.UpstreamModel,
-			prefix + "ModelDisplayName":    selected.Model.Name,
-			"_modelDisplayName":            selected.Model.Name,
+		}
+		if !dedicatedEditable {
+			route[prefix+"ModelConfigId"] = selected.Model.ID
+			route[prefix+"Model"] = selected.Model.UpstreamModel
+			route[prefix+"ModelDisplayName"] = selected.Model.Name
+			route["_modelDisplayName"] = selected.Model.Name
 		}
 		updated, err := store.SetQueuedAssistantRunExecutionRoute(ctx, tx, runID, route)
 		if err != nil || !updated {
 			return err
 		}
-		claimed, err = store.ClaimAssistantRunWithLease(ctx, tx, runID, leaseOwner, time.Now().UTC(), taskLease, 4)
+		claimLimit := userLimit
+		if resumeKnown {
+			claimLimit = max(claimLimit, userRunning+units)
+		}
+		claimed, err = store.ClaimAssistantRunWithLease(ctx, tx, runID, leaseOwner, time.Now().UTC(), taskLease, int(claimLimit))
 		return err
 	})
 	return claimed, err
 }
 
-func (w *Worker) failQueuedAssistantRun(ctx context.Context, runID uuid.UUID, message string) error {
-	failed, err := assistantbilling.Fail(ctx, w.St, runID, "assistant_routes_exhausted", message)
+func (w *Worker) failQueuedAssistantRun(ctx context.Context, runID uuid.UUID, message string, codes ...string) error {
+	code := "assistant_routes_exhausted"
+	if len(codes) > 0 {
+		code = codes[0]
+	}
+	failed := false
+	err := w.St.Tx(ctx, func(tx pgx.Tx) error {
+		run, err := store.GetAssistantRunForUpdate(ctx, tx, runID)
+		if err != nil || run == nil || run.Status != "queued" {
+			return err
+		}
+		failed, err = assistantbilling.FailTx(ctx, tx, runID, code, message)
+		return err
+	})
 	if err != nil || !failed {
 		return err
 	}
@@ -186,6 +272,19 @@ func (w *Worker) retryAssistantProviderRoute(
 	executionErr error,
 ) (bool, error) {
 	if run == nil || isCanvasWorkspaceRun(run) {
+		return false, nil
+	}
+	if store.AssistantRunHasKnownImageJobs(run) {
+		// A timeout while polling is not evidence that the provider stopped.
+		// Preserve known job IDs instead of clearing them and launching another
+		// generation on an alternate route. Explicit failed-run retry is separate.
+		return false, nil
+	}
+	// These requests may already have generated work without a recoverable ID.
+	// Check the outer marker before unwrapping timeout/HTTP errors for failover.
+	var uncertainCRUN *crun.SubmissionUncertainError
+	var synchronousC2A *c2a.SynchronousImageError
+	if errors.As(executionErr, &uncertainCRUN) || errors.As(executionErr, &synchronousC2A) {
 		return false, nil
 	}
 	retryable := sub2api.RetryableOnAlternateRoute(ctx, executionErr)

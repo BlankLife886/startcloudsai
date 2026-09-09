@@ -3,8 +3,11 @@ import gsap from "gsap";
 import { useGSAP } from "@gsap/react";
 import { Link, useLocation, useNavigate } from "react-router";
 import "@react/legacy-static/views/auth/auth-page.css";
+import "./referral-attribution.css";
 import { useAuth } from "../../auth/AuthContext.jsx";
 import { useIsDark } from "../../hooks/useIsDark.js";
+import { REFERRALS_ENABLED } from "../../config/referrals.js";
+import notificationService from "@react/legacy-modules/services/notification.js";
 
 gsap.registerPlugin(useGSAP);
 
@@ -36,6 +39,8 @@ function safeRedirect(value) {
   return path.startsWith("/") && !path.startsWith("//") ? path : "/";
 }
 
+const REFERRAL_CHECK_TIMEOUT_MS = 5000;
+
 export function AuthAccountView() {
   const pageRef = useRef(null);
   const isDark = useIsDark();
@@ -46,6 +51,8 @@ export function AuthAccountView() {
     () => new URLSearchParams(location.search),
     [location.search],
   );
+  const incomingReferralCode = REFERRALS_ENABLED ? query.get("ref") || "" : "";
+  const incomingSkipReferral = !REFERRALS_ENABLED || query.get("skipReferral") === "1";
   const [providers, setProviders] = useState({
     email: true,
     verificationCode: true,
@@ -58,6 +65,107 @@ export function AuthAccountView() {
   const [resendSeconds, setResendSeconds] = useState(0);
   const [error, setError] = useState(query.get("error") || "");
   const [info, setInfo] = useState("");
+  const [referralCode, setReferralCode] = useState(incomingSkipReferral ? "" : incomingReferralCode);
+  const [referralInfo, setReferralInfo] = useState(null);
+  const [referralBusy, setReferralBusy] = useState(false);
+  const [skipReferral, setSkipReferral] = useState(incomingSkipReferral);
+  const referralRequest = useRef(null);
+  const referralLocation = useRef(location);
+  const localReferralSelection = useRef(null);
+  referralLocation.current = location;
+
+  function cancelReferralRequest() {
+    referralRequest.current?.abort();
+    referralRequest.current = null;
+    setReferralBusy(false);
+  }
+
+  function consumeReferralLink(skip = false) {
+    const current = referralLocation.current;
+    const params = new URLSearchParams(current.search);
+    params.delete("ref");
+    if (skip) params.set("skipReferral", "1");
+    else params.delete("skipReferral");
+    const search = params.size ? `?${params.toString()}` : "";
+    if (search === current.search) return;
+    // This navigation records the current choice; it must not trigger a fresh
+    // Cookie restore that could overwrite an edit or an explicit opt-out.
+    localReferralSelection.current = JSON.stringify(["", skip]);
+    navigate({ pathname: current.pathname, search, hash: current.hash }, { replace: true });
+  }
+
+  async function updateReferral(method, value = "") {
+    if (!REFERRALS_ENABLED) return;
+    referralRequest.current?.abort();
+    const controller = new AbortController();
+    referralRequest.current = controller;
+    let timedOut = false;
+    const timeout = window.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, REFERRAL_CHECK_TIMEOUT_MS);
+    setReferralBusy(true);
+    try {
+      const result = await apiRequest("/referral-attribution", {
+        method, signal: controller.signal,
+        ...(method === "POST" ? {body: JSON.stringify({code: value})} : {}),
+      });
+      if (controller.signal.aborted || referralRequest.current !== controller) return;
+      if (method === "DELETE") {
+        setReferralInfo({ status: "none", message: "已选择不使用邀请，本次注册不会绑定邀请人" });
+      } else {
+        setReferralInfo(result);
+        if (result.code) setReferralCode(result.code);
+        if (method === "POST" && result.status === "valid") consumeReferralLink();
+      }
+    } catch (err) {
+      if (referralRequest.current !== controller || (controller.signal.aborted && !timedOut)) return;
+      setReferralInfo({
+        status: "error",
+        message: method === "DELETE"
+          ? "本次注册已跳过邀请；设备记录暂未清除，可重试清除"
+          : timedOut
+            ? "邀请资格校验超时，可直接验证邮箱，是否绑定以注册结果为准"
+            : "邀请资格暂时无法校验，可直接验证邮箱，是否绑定以注册结果为准",
+      });
+    } finally {
+      window.clearTimeout(timeout);
+      if (referralRequest.current === controller) {
+        referralRequest.current = null;
+        setReferralBusy(false);
+      }
+    }
+  }
+
+  function skipInvitation() {
+    cancelReferralRequest();
+    setReferralCode("");
+    setSkipReferral(true);
+    setReferralInfo({ status: "none", message: "已选择不使用邀请，本次注册不会绑定邀请人" });
+    consumeReferralLink(true);
+    void updateReferral("DELETE");
+  }
+
+  useEffect(() => {
+    if (!REFERRALS_ENABLED) return;
+    const selection = JSON.stringify([incomingReferralCode, incomingSkipReferral]);
+    const isLocalSelection = localReferralSelection.current === selection;
+    localReferralSelection.current = null;
+    if (isLocalSelection) return;
+    setReferralCode(incomingSkipReferral ? "" : incomingReferralCode);
+    setSkipReferral(incomingSkipReferral);
+    if (incomingSkipReferral) {
+      setReferralInfo({ status: "none", message: "已选择不使用邀请，本次注册不会绑定邀请人" });
+      void updateReferral("DELETE");
+    } else {
+      void updateReferral(incomingReferralCode ? "POST" : "GET", incomingReferralCode);
+    }
+  }, [incomingReferralCode, incomingSkipReferral]);
+
+  useEffect(() => () => {
+    referralRequest.current?.abort();
+    referralRequest.current = null;
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -115,18 +223,31 @@ export function AuthAccountView() {
 
   async function submit(event) {
     event.preventDefault();
+    if (submitting) return;
     setError("");
     setInfo("");
     if (!/^\d{6}$/.test(code)) {
       setError("请输入六位邮箱验证码");
       return;
     }
+    // Invitation preview is optional. The registration endpoint resolves the
+    // explicit choice or its signed Cookie and returns the final binding result.
+    cancelReferralRequest();
     setSubmitting(true);
     try {
       const result = await apiRequest("/auth/session", {
         method: "POST",
-        body: JSON.stringify({ email: email.trim(), code: code.trim() }),
+        body: JSON.stringify({
+          email: email.trim(),
+          code: code.trim(),
+          referralCode: REFERRALS_ENABLED ? referralCode : "",
+          skipReferral: !REFERRALS_ENABLED || skipReferral,
+        }),
       });
+      if (REFERRALS_ENABLED && result?.referral?.message) {
+        if (result.referral.status === "bound") notificationService.success(result.referral.message);
+        else notificationService.info(result.referral.message);
+      }
       auth.setUser(result?.user || null);
       navigate(safeRedirect(query.get("redirect")), { replace: true });
     } catch (caught) {
@@ -289,6 +410,30 @@ export function AuthAccountView() {
 
               <div className="auth-panel-body">
                 <form className="auth-form" onSubmit={submit}>
+                  {REFERRALS_ENABLED && <details className="auth-referral" open={Boolean(referralCode) || skipReferral || referralInfo?.status === "valid"}>
+                    <summary>邀请码（可选）</summary>
+                    <label className="auth-field">
+                      <span>邀请代码</span>
+                      <div className="input-wrap">
+                        <input aria-label="邀请代码" value={referralCode} maxLength={16} autoComplete="off" disabled={submitting}
+                          onChange={event => {
+                            cancelReferralRequest();
+                            const value = event.target.value.toUpperCase();
+                            const skip = !value.trim();
+                            setReferralCode(value);
+                            setSkipReferral(skip);
+                            setReferralInfo(null);
+                            consumeReferralLink(skip);
+                          }}/>
+                      </div>
+                    </label>
+                    <div className="auth-referral-actions">
+                      <button type="button" disabled={referralBusy || submitting || !referralCode.trim()} onClick={() => {setSkipReferral(false);void updateReferral("POST",referralCode);}}>校验邀请码</button>
+                      <button type="button" disabled={submitting} onClick={skipInvitation}>不使用邀请</button>
+                    </div>
+                    <p className="auth-notice is-info" role="status">{referralBusy && !skipReferral ? "正在校验邀请资格…" : referralInfo?.message || "仅首次注册可绑定，已有账号登录不受影响"}</p>
+                    {referralInfo?.status === "valid" && <p className="auth-notice is-info">邀请人：{referralInfo.inviterName} · 本设备保留至 {new Date(referralInfo.expiresAt).toLocaleDateString()}</p>}
+                  </details>}
                   <label className="auth-field auth-field-email">
                     <span>Gmail / QQ 邮箱</span>
                     <div className="input-wrap">

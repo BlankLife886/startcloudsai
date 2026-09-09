@@ -3,7 +3,8 @@ import { createPortal } from "react-dom";
 import { useGSAP } from "@gsap/react";
 import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
-import { Link, useNavigate } from "react-router";
+import { useNavigate } from "react-router";
+import { PageEntryLink as Link } from "../page-control/PageEntryLink.jsx";
 import { fetchAssistantConfig } from "../features/assistant/services/assistantApi.js";
 import { getWallet } from "@react/legacy-modules/services/meApi.js";
 import {
@@ -15,7 +16,6 @@ import { getFeatureUnitPriceCents } from "@react/legacy-modules/services/pricing
 import {
   fetchRuntimeConfig,
   getDefaultRuntimeConfig,
-  normalizeRuntimeConfig,
 } from "@react/legacy-modules/services/runtimeConfig.js";
 import { listTasks, uploadFile } from "@react/legacy-modules/services/tasksApi.js";
 import {
@@ -40,6 +40,7 @@ import {
   normalizeImageModelCapabilities,
 } from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
 import { resolveModelPointPricing } from "@react/legacy-modules/features/ai-shared/modelPointPricing.js";
+import { SHOW_GENERATION_SKILL_CONTROLS } from "@react/legacy-modules/features/ai-wallpaper/composables/wallpaperStudioConstants.js";
 import {
   taskDisplayUrl,
   taskOriginalUrl,
@@ -56,6 +57,7 @@ import { ProductGuideTour, useProductGuide } from "./shared/ProductGuideTour.jsx
 import { PRODUCT_GUIDE_KEYS, STUDIO_GUIDE_STEPS } from "./shared/productGuides.js";
 import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
 import { SoftMark } from "../components/common/SoftMark.jsx";
+import { ModelCatalogIcon, ModelMaintenanceBadge, availableCatalogModels, isCatalogModelMaintenance } from "../components/common/ModelCatalogIcon.jsx";
 import { useLocale } from "../i18n/index.js";
 import {
   ECOMMERCE_PAGE_KEYS,
@@ -90,17 +92,6 @@ const ECOMMERCE_MODE_IDS = [
   "handheld",
   "background",
 ];
-
-function storedRuntimeConfig() {
-  try {
-    const value = JSON.parse(
-      sessionStorage.getItem("walleven.runtime-config.v2") || "null",
-    );
-    return normalizeRuntimeConfig(value?.config || getDefaultRuntimeConfig());
-  } catch {
-    return getDefaultRuntimeConfig();
-  }
-}
 
 function routeVisible(config, path) {
   const routes = config?.routes || {};
@@ -210,6 +201,7 @@ function modelWithReasoningPrice(model, effortId) {
 }
 
 function compactModelPriceLabel(model, { perImage = true } = {}) {
+  if (isCatalogModelMaintenance(model)) return "";
   const price = resolveModelPointPricing(model);
   if (!price.configured) return "";
   const suffix = perImage ? "/张" : "";
@@ -219,6 +211,7 @@ function compactModelPriceLabel(model, { perImage = true } = {}) {
 }
 
 function StudioModelPrice({ model, perImage }) {
+  if (isCatalogModelMaintenance(model)) return null;
   const price = resolveModelPointPricing(model);
   if (!price.configured) return null;
   const suffix = perImage ? "/张" : "";
@@ -610,7 +603,7 @@ export function StudioHubView() {
   const recentControllerRef = useRef(null);
   const uploadControllerRef = useRef(null);
   const recognitionRef = useRef(null);
-  const [runtimeConfig, setRuntimeConfig] = useState(storedRuntimeConfig);
+  const [runtimeConfig, setRuntimeConfig] = useState(getDefaultRuntimeConfig);
   const [draftPrompt, setDraftPrompt] = useState(() =>
     String(readComposerDraft().prompt || "").slice(0, 2000),
   );
@@ -705,10 +698,11 @@ export function StudioHubView() {
       .map(normalizeModel)
       .filter(Boolean);
   }, [assistantModels, runtimeConfig, selectedConfig.skill, selectedTool]);
+  const availableModelOptions = useMemo(() => availableCatalogModels(modelOptions), [modelOptions]);
   const selectedModel =
-    modelOptions.find((model) => model.id === selectedConfig.model) ||
-    modelOptions.find((model) => model.default) ||
-    modelOptions[0] ||
+    availableModelOptions.find((model) => model.id === selectedConfig.model) ||
+    availableModelOptions.find((model) => model.default) ||
+    availableModelOptions[0] ||
     null;
   const maxReferences =
     selectedTool?.id === "assistant"
@@ -735,6 +729,7 @@ export function StudioHubView() {
       ? []
       : listReasoningEfforts(selectedModel);
     return launchFields.flatMap((field) => {
+      if (!SHOW_GENERATION_SKILL_CONTROLS && field.configKey === "skills") return [];
       if (field.key === "reasoning") {
         if (!reasoningOptions.length) return [];
         return [{
@@ -767,6 +762,8 @@ export function StudioHubView() {
               return {
                 value: model.id,
                 label: model.label,
+                model,
+                disabled: isCatalogModelMaintenance(model),
                 priceModel: pricedModel,
                 perImage: usesModelImageParams,
                 description:
@@ -912,7 +909,7 @@ export function StudioHubView() {
     selectedTool?.id === "t2i" ||
     (selectedTool?.id === "assistant" && selectedConfig.skill === "image");
   const explicitModel =
-    modelOptions.find((model) => model.id === selectedConfig.model) || null;
+    availableModelOptions.find((model) => model.id === selectedConfig.model) || null;
   const fieldCaption = (field) => {
     if (field.key === "model") {
       const priced = usesImagePrice
@@ -959,7 +956,9 @@ export function StudioHubView() {
               aria-hidden="true"
             />
           ) : null}
-          {field.key !== "ratio" && !CAPTIONED_FIELDS.has(field.key) ? (
+          {field.key === "model" ? (
+            <ModelCatalogIcon model={selectedModel} size="sm" />
+          ) : field.key !== "ratio" && !CAPTIONED_FIELDS.has(field.key) ? (
             <i className={`bi ${field.icon}`} />
           ) : null}
           <em>{fieldValueText(field)}</em>
@@ -978,9 +977,10 @@ export function StudioHubView() {
               key={String(option.value)}
               type="button"
               role="option"
-              title={option.label}
               aria-selected={optionSelected(field, option.value)}
               className={optionSelected(field, option.value) ? "is-selected" : ""}
+              disabled={option.disabled}
+              title={option.disabled ? "模型维护中，暂不可选择" : option.label}
               onClick={() => selectOption(field, option.value)}
             >
               {field.key === "ratio" ? (
@@ -995,7 +995,7 @@ export function StudioHubView() {
               ) : (
                 <>
                   {field.key === "model" ? (
-                    <SoftMark name="cpu" size="sm" />
+                    <ModelCatalogIcon model={option.model} size="sm" />
                   ) : field.key === "skill" && CREATION_TYPE_MARK[option.value] ? (
                     <SoftMark name={CREATION_TYPE_MARK[option.value]} size="sm" />
                   ) : field.key !== "skill" && option.icon ? (
@@ -1007,6 +1007,7 @@ export function StudioHubView() {
                       <small>{option.description}</small>
                     )}
                   </span>
+                  {field.key === "model" ? <ModelMaintenanceBadge model={option.model} /> : null}
                   {option.priceModel ? (
                     <StudioModelPrice
                       model={option.priceModel}
@@ -1042,7 +1043,7 @@ export function StudioHubView() {
       const patch = { [key]: value };
       if (selectedTool?.id === "assistant" && key === "skill") {
         const nextModels =
-          value === "image" ? assistantModels.image : assistantModels.conversation;
+          availableCatalogModels(value === "image" ? assistantModels.image : assistantModels.conversation);
         patch.mode = value;
         patch.model = nextModels[0]?.id || "";
         patch.reasoningEffort =
@@ -1192,16 +1193,16 @@ export function StudioHubView() {
   ]);
 
   useEffect(() => {
-    if (!modelOptions.length) return;
+    if (!availableModelOptions.length) return;
     const toolId = selectedTool?.id || "t2i";
-    const firstModelId = modelOptions[0]?.id;
+    const firstModelId = availableModelOptions.find((model) => model.default)?.id || availableModelOptions[0]?.id;
     if (!firstModelId) return;
     setLaunchConfigs((current) => {
       const prev = current[toolId] || {};
-      if (modelOptions.some((model) => model.id === prev.model)) return current;
+      if (availableModelOptions.some((model) => model.id === prev.model)) return current;
       return { ...current, [toolId]: { ...prev, model: firstModelId } };
     });
-  }, [modelOptions, selectedTool?.id]);
+  }, [availableModelOptions, selectedTool?.id]);
 
   useEffect(() => {
     if (selectedTool?.id !== "assistant" || selectedConfig.skill === "image") return;
@@ -1552,12 +1553,8 @@ export function StudioHubView() {
           ? 1
           : Math.max(1, Math.min(4, Number(config.count) || 1));
       const assistantImageMode = selectedConfig.skill === "image";
-      const assistantModel = (
-        assistantImageMode ? assistantModels.image : assistantModels.conversation
-      ).find((item) => item.id === config.model) ||
-        (assistantImageMode
-          ? assistantModels.image[0]
-          : assistantModels.conversation[0]);
+      const assistantCatalog = availableCatalogModels(assistantImageMode ? assistantModels.image : assistantModels.conversation);
+      const assistantModel = assistantCatalog.find((item) => item.id === config.model) || assistantCatalog[0];
       const pricedAssistantModel = assistantImageMode
         ? assistantModel
         : modelWithReasoningPrice(assistantModel, config.reasoningEffort);
@@ -1985,7 +1982,7 @@ export function StudioHubView() {
               </div>
             </section>
           )}
-          <section
+          {isPageEntryVisible(runtimeConfig.pageControls, "/history") && <section
             className="studio-section studio-section--recent"
             aria-label="最近创作"
             data-studio-reveal
@@ -2062,7 +2059,7 @@ export function StudioHubView() {
                 ))}
               </div>
             )}
-          </section>
+          </section>}
         </div>
       </main>
       {promptDialog.mounted &&

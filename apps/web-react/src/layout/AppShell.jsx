@@ -6,7 +6,6 @@ import { AuthPromptProvider } from "../auth/AuthPromptContext.jsx";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { useRouteMotion } from "../components/motion/RouteMotionController.jsx";
 import { PageAccessBoundary } from "../page-control/PageAccessBoundary.jsx";
-import { PageControlProvider } from "../page-control/PageControlContext.jsx";
 import { prefetchRoute } from "../routePrefetch.js";
 import {
   behaviorFeatureFromPath,
@@ -28,6 +27,7 @@ const documentScrollRoutes = new Set([
   "/submissions",
   "/orders",
   "/share",
+  "/invite",
 ]);
 
 const incentiveCanvasRoutes = new Set([
@@ -49,6 +49,7 @@ export function AppShell() {
   const documentScroll = documentScrollRoutes.has(location.pathname);
   const canvasHome = location.pathname === "/canvas";
   const canvasEditor = location.pathname.startsWith("/canvas/");
+  const immersiveHolo = location.pathname === "/holo-card";
 
   useRouteMotion({
     pathname: location.pathname,
@@ -112,6 +113,7 @@ export function AppShell() {
   }, []);
 
   const mainClasses = ["main-content"];
+  if (immersiveHolo) mainClasses.push("main--holo-card", "main--no-header");
   if (documentScroll) mainClasses.push("main--document-scroll");
   if (location.pathname === "/pricing")
     mainClasses.push("main--pricing-console");
@@ -119,11 +121,13 @@ export function AppShell() {
     mainClasses.push("main--profile-console");
   if (location.pathname === "/wallet")
     mainClasses.push("main--wallet-console");
+  if (location.pathname === "/subscriptions")
+    mainClasses.push("main--subscriptions-console");
   if (location.pathname === "/orders")
     mainClasses.push("main--orders-console");
   if (location.pathname === "/account")
     mainClasses.push("main--settings-console");
-  if (location.pathname === "/developer-api")
+  if (location.pathname === "/developer-api" || location.pathname === "/developer-api/demo")
     mainClasses.push("main--developer-console");
   if (location.pathname === "/updates")
     mainClasses.push("main--updates-gallery");
@@ -164,7 +168,7 @@ export function AppShell() {
   }
 
   return (
-    <PageControlProvider>
+    <>
       <AuthPromptProvider>
         <div className={`app-container${documentScroll ? " app--document-scroll" : ""}`}>
           {navigating && (
@@ -176,7 +180,7 @@ export function AppShell() {
               <span />
             </div>
           )}
-          <NavBar />
+          {!immersiveHolo && <NavBar />}
           <ClientAnnouncementHost />
           <main
             ref={mainRef}
@@ -187,6 +191,6 @@ export function AppShell() {
           </main>
         </div>
       </AuthPromptProvider>
-    </PageControlProvider>
+    </>
   );
 }

@@ -141,6 +141,63 @@ export const TASK_STATUS_LABELS: Record<string, string> = {
   canceled: "已取消",
 };
 
+export function taskStatusLabel(task: {
+  status: string;
+  attempt?: number;
+  errorCode?: string | null;
+  startedAt?: string | null;
+  params?: Record<string, unknown> | null;
+  cancelPolicy?: { upstreamSubmitted?: boolean; refunded?: boolean; canceledFrom?: string };
+}): string {
+  if (task.status === "canceled") {
+    const submitted = task.cancelPolicy?.upstreamSubmitted ?? task.params?._cancelUpstreamSubmitted;
+    if (submitted === false) return (task.cancelPolicy?.canceledFrom || task.params?._cancelFromStatus) === "queued" || !task.startedAt ? "排队已取消" : "生成前已取消";
+    if (submitted === true) return "已停止接收";
+    return task.errorCode === "user_canceled" ? "用户已取消" : "已取消";
+  }
+  if (task.status === "queued" && task.cancelPolicy?.upstreamSubmitted === true) return "等待上游结果";
+  if (task.status === "queued" && Number(task.attempt) > 0) {
+    return "等待重试";
+  }
+  return TASK_STATUS_LABELS[task.status] ?? task.status;
+}
+
+export function taskTotalDuration(task: {
+  status: string;
+  createdAt: string;
+  finishedAt?: string | null;
+}, now = Date.now()): string {
+  const start = Date.parse(task.createdAt);
+  const terminal = ["succeeded", "failed", "canceled"].includes(task.status);
+  const end = task.finishedAt ? Date.parse(task.finishedAt) : terminal ? Number.NaN : now;
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return "-";
+  const seconds = Math.max(0, Math.floor((end - start) / 1000));
+  if (seconds < 60) return `${seconds} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} 分 ${seconds % 60} 秒`;
+  return `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分`;
+}
+
+export function normalizeTaskTimelineEvent<T extends {
+  stage: string;
+  durationMs: number | null;
+  message: string;
+  meta?: Record<string, unknown>;
+}>(event: T): T {
+  const attempt = Number(event.meta?.attempt);
+  // Older workers recorded the task's entire age as each retry's queue wait.
+  if (event.stage !== "queued" || !Number.isFinite(attempt) || attempt <= 1) return event;
+  return { ...event, stage: "retry_started", durationMs: null, message: `开始第 ${attempt} 次生成尝试` };
+}
+
+export function taskErrorMessage(message: string | null | undefined): string {
+  const raw = String(message || "");
+  if (!/<(?:!doctype\s+html|html|head|body)\b/i.test(raw)) return raw;
+  if (/504|gateway\s+time[ -]?out/i.test(raw)) return "上游网关超时（HTTP 504）";
+  if (/502|bad\s+gateway/i.test(raw)) return "上游网关异常（HTTP 502）";
+  return "上游服务返回异常网页";
+}
+
 export const TASK_STATUS_TAG: Record<
   string,
   "info" | "primary" | "success" | "danger" | "warning"

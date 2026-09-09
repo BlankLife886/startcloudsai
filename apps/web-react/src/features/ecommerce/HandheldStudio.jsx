@@ -739,7 +739,6 @@ function guidePath(points) {
 
 function handheldEarliestStartedAt(shots = []) {
   const timestamps = shots
-    .filter((shot) => shot?.running)
     .map((shot) => Date.parse(shot?.startedAt || ""))
     .filter(Number.isFinite);
   return timestamps.length ? Math.min(...timestamps) : 0;
@@ -1567,9 +1566,7 @@ export function HandheldStudio({
       return undefined;
     }
     if (taskStartedAt) {
-      if (!runOriginRef.current || taskStartedAt < runOriginRef.current) {
-        runOriginRef.current = taskStartedAt;
-      }
+      runOriginRef.current = taskStartedAt;
     } else if (!runOriginRef.current) {
       runOriginRef.current = Date.now();
     }

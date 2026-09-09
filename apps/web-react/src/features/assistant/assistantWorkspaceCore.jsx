@@ -7,6 +7,7 @@ import { assistantCodeLanguageLabel, highlightAssistantCode } from "./domain/ass
 import { markAssistantMessageLocal } from "./domain/assistantRetryPolicy.js";
 import { resolveVisualContext } from "./domain/visualContext.js";
 import { getModelAspectRatiosForResolution, normalizeImageModelCapabilities } from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
+import { validateExactImageSize } from "../../config/exactImageSize.js";
 
 const CREATION_TYPES = [
   { id: "chat", label: "问答模式", icon: "bi-chat-left-dots", mark: "chat" },
@@ -192,6 +193,12 @@ function proposalImagePlanItems(proposal = {}) {
       id: String(item?.id || `item-${index + 1}`).trim(),
       title: String(item?.title || `图片 ${index + 1}`).trim(),
       prompt: String(item?.prompt || "").trim(),
+      ratio: String(item?.ratio || proposal.ratio || "auto").trim().toLowerCase(),
+      resolution: String(item?.resolution || proposal.resolution || "").trim().toUpperCase(),
+      quality: String(item?.quality || proposal.quality || "").trim().toLowerCase(),
+      requestSize: String(item?.requestSize || "").trim(),
+      width: Math.max(0, Number(item?.width) || 0),
+      height: Math.max(0, Number(item?.height) || 0),
       referencedImageIds: [...new Set((Array.isArray(item?.referencedImageIds)
         ? item.referencedImageIds
         : Array.isArray(item?.referenceImageIds) ? item.referenceImageIds : [])
@@ -735,6 +742,16 @@ function assistantImageSettings(model, settings = {}) {
   const quality = capabilities.qualities.includes(requestedQuality)
     ? requestedQuality
     : capabilities.qualities[0] || "";
+  if (settings.sizeMode === "exact") {
+    const exact = validateExactImageSize(model, settings.exactWidth, settings.exactHeight);
+    return {
+      ratio: "", resolution: "", quality,
+      width: exact.width, height: exact.height, requestSize: exact.size,
+      sizeMode: "exact", exactWidth: settings.exactWidth, exactHeight: settings.exactHeight,
+      ...exact.params,
+      sizeError: exact.error,
+    };
+  }
   const ratios = getModelAspectRatiosForResolution(model || {}, resolution);
   const requestedRatio = String(settings.ratio || "auto").toLowerCase();
   const ratio = ratios.includes(requestedRatio) ? requestedRatio : ratios[0] || "";
@@ -954,6 +971,8 @@ function normalizeConfig(config = {}) {
   return {
     conversationModels,
     imageModels,
+    imageBatchLimit: config.imageBatchLimit,
+    concurrency: config.concurrency,
     editableFilesEnabled: config.editableFilesEnabled === true,
   };
 }

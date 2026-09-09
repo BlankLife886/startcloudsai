@@ -68,6 +68,7 @@ func TestWalletSummaryGroupsIncomeAndConsumedPoints(t *testing.T) {
 		got[id] = [2]float64{item["cents"].(float64), item["count"].(float64)}
 	}
 	want := map[string][2]float64{
+		"trial_access":       {200, 1},
 		"daily_checkin":      {25, 2},
 		"usage_milestone":    {50, 1},
 		"growth_group":       {30, 1},
@@ -80,8 +81,12 @@ func TestWalletSummaryGroupsIncomeAndConsumedPoints(t *testing.T) {
 			t.Fatalf("%s = %#v, want %#v (all=%#v)", id, got[id], pair, got)
 		}
 	}
-	if _, ok := got["trial_access"]; ok {
-		t.Fatalf("trial_access should be omitted from summary items: %#v", got)
+	var sourceTotal float64
+	for _, pair := range got {
+		sourceTotal += pair[0]
+	}
+	if sourceTotal != data["incomeCents"].(float64) {
+		t.Fatalf("income sources do not match total: %v", got)
 	}
 }
 

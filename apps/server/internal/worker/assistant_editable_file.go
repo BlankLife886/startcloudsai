@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"github.com/jackc/pgx/v5"
 	"path/filepath"
 	"strings"
 	"time"
@@ -15,7 +16,6 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantstream"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistanttools"
 	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
-	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/google/uuid"
 )
@@ -27,14 +27,28 @@ const (
 	assistantEditableArchiveMax   = 256 << 20
 )
 
+func assistantEditableKind(run *store.AssistantRun) string {
+	if run == nil || store.AssistantRunIsImage(run) || isCanvasWorkspaceRun(run) {
+		return ""
+	}
+	return assistanttools.DedicatedEditableFileKindRequested(run.Prompt, len(assistantRunFileIDs(run)) > 0)
+}
+
 func (w *Worker) setAssistantEditableStage(ctx context.Context, run *store.AssistantRun, stage string) error {
-	if err := w.setAssistantRunStage(ctx, run, "chat", stage); err != nil {
+	if err := w.St.Tx(ctx, func(tx pgx.Tx) error {
+		changed, err := store.SetAssistantRunStageAttempt(ctx, tx, run.ID, run.Attempt, "chat", stage)
+		if err != nil {
+			return err
+		}
+		if !changed {
+			return context.Canceled
+		}
+		return store.UpdateAssistantMessage(ctx, tx, run.AssistantMessageID, "", "chat", "running", assistantMessageMetadata(run, nil, stage, ""))
+	}); err != nil {
 		return err
 	}
-	if err := store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, "", "chat", "running",
-		assistantMessageMetadata(run, nil, stage, "")); err != nil {
-		return err
-	}
+	run.ResolvedMode = "chat"
+	run.Stage = stage
 	assistantstream.Publish(ctx, w.Stream, run.ID.String(), assistantstream.Event{Kind: "chat", Stage: stage})
 	return nil
 }
@@ -181,14 +195,14 @@ func assistantEditableReferences(ctx context.Context, references []string) ([]st
 }
 
 func (w *Worker) assistantEditableClient(ctx context.Context, run *store.AssistantRun) (*c2a.Client, error) {
-	cfg, err := modelconfig.Runtime(ctx, w.St.Pool, w.Cfg.AppSecret)
+	snapshot, err := w.assistantExecutionSnapshot(ctx, run)
 	if err != nil {
 		return nil, err
 	}
-	if !cfg.EditableFiles.Enabled {
-		return nil, errors.New("PPT/PSD 可编辑文件功能尚未开启")
+	provider, configured, err := snapshot.EditableProvider(ctx, w.St.Pool, w.Cfg.AppSecret)
+	if err != nil {
+		return nil, err
 	}
-	provider, configured := modelconfig.EditableFileProvider(cfg)
 	if !configured {
 		return nil, errors.New("PPT/PSD 服务商或线路配置已失效")
 	}
@@ -216,9 +230,11 @@ func (w *Worker) executeAssistantEditableFile(
 		return errors.New("制作分层 PSD 前，请先上传一张 JPG、PNG 或 WebP 参考图")
 	}
 	run.ResolvedMode = "chat"
-	if err := w.setAssistantEditableStage(ctx, run, "submitting-file"); err != nil {
-		return err
+	guarded, guardErr := w.assistantSubmissionContext(ctx, run, "chat", "preparing-file", "submitting-file")
+	if guardErr != nil {
+		return guardErr
 	}
+	ctx = guarded
 	client, err := w.assistantEditableClient(ctx, run)
 	if err != nil {
 		return err

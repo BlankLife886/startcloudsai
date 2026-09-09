@@ -642,7 +642,7 @@ export async function generateAiDesignDocument({
       await cancelAssistantRun(runId).catch(() => null)
     }
     if (!preserveSession && !shouldKeepActiveRun && conversation?.id) {
-      await deleteAssistantConversation(conversation.id, { cancelActive: true }).catch(() => null)
+      await deleteAssistantConversation(conversation.id, { cancelActive: false }).catch(() => null)
     }
   }
 }
@@ -712,7 +712,7 @@ export async function generateDesignRegionCode({
   } finally {
     if (signal?.aborted && runId) await cancelAssistantRun(runId).catch(() => null)
     if (conversation?.id) {
-      await deleteAssistantConversation(conversation.id, { cancelActive: true }).catch(() => null)
+      await deleteAssistantConversation(conversation.id, { cancelActive: false }).catch(() => null)
     }
   }
 }
@@ -976,7 +976,7 @@ export async function analyzeDesignCropElements({
   } finally {
     if (signal?.aborted && runId) await cancelAssistantRun(runId).catch(() => null)
     if (conversation?.id) {
-      await deleteAssistantConversation(conversation.id, { cancelActive: true }).catch(() => null)
+      await deleteAssistantConversation(conversation.id, { cancelActive: false }).catch(() => null)
     }
   }
 }
@@ -1321,7 +1321,7 @@ export async function generateDesignRegionImage({
       await cancelAssistantRun(runId).catch(() => null)
     }
     if (conversation?.id && !retainConversation) {
-      await deleteAssistantConversation(conversation.id, { cancelActive: true }).catch(() => null)
+      await deleteAssistantConversation(conversation.id, { cancelActive: false }).catch(() => null)
     }
   }
 }
@@ -1374,7 +1374,7 @@ export async function generateDesignAssetDescription({
   } finally {
     if (signal?.aborted && runId) await cancelAssistantRun(runId).catch(() => null)
     if (conversation?.id) {
-      await deleteAssistantConversation(conversation.id, { cancelActive: true }).catch(() => null)
+      await deleteAssistantConversation(conversation.id, { cancelActive: false }).catch(() => null)
     }
   }
 }
@@ -1471,7 +1471,7 @@ export async function generateDesignWebsite({
   } finally {
     if (signal?.aborted && runId) await cancelAssistantRun(runId).catch(() => null)
     if (conversation?.id) {
-      await deleteAssistantConversation(conversation.id, { cancelActive: true }).catch(() => null)
+      await deleteAssistantConversation(conversation.id, { cancelActive: false }).catch(() => null)
     }
   }
 }

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/BlankLife886/startcloudsai/server/internal/upstreamguard"
 	"io"
 	"net/http"
 	"net/url"
@@ -1747,6 +1748,11 @@ func (c *Client) generateSingleImage(ctx context.Context, prompt, size, quality 
 	req, err := c.newJSONRequest(ctx, path, payload)
 	if err != nil {
 		return nil, err
+	}
+	if path == "/v1/images/generations" || path == "/v1/images/edits" {
+		if err := upstreamguard.Check(ctx); err != nil {
+			return nil, err
+		}
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

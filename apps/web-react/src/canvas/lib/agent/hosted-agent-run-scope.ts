@@ -7,7 +7,7 @@ export type HostedAgentRunScope = {
 const retiredHostedAgentRunIds = new Set<string>();
 const RETIRED_RUN_LIMIT = 64;
 const RUNNING_MESSAGE_STATUSES = new Set(["inProgress", "in_progress", "running", "started", "pending"]);
-type HostedAgentRunStopper = (projectId: string, options?: { keepalive?: boolean }) => Promise<void>;
+type HostedAgentRunStopper = (projectId: string, options?: { keepalive?: boolean; acknowledgeUpstream?: boolean }) => Promise<void>;
 let hostedAgentRunStopper: HostedAgentRunStopper | null = null;
 
 export function createHostedAgentRunScope(projectId: string, controller = new AbortController()): HostedAgentRunScope {
@@ -55,7 +55,7 @@ export function registerHostedAgentRunStopper(stopper: HostedAgentRunStopper) {
     };
 }
 
-export function stopHostedAgentRunForCanvas(projectId: string, options?: { keepalive?: boolean }) {
+export function stopHostedAgentRunForCanvas(projectId: string, options?: { keepalive?: boolean; acknowledgeUpstream?: boolean }) {
     return hostedAgentRunStopper?.(projectId, options) || Promise.resolve();
 }
 

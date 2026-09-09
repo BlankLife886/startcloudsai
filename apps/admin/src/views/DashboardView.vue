@@ -229,6 +229,13 @@ interface SystemMetrics {
 			queues: Record<string, number>
 		}>
 	}
+	executionPools?: {
+		imageRunning: number
+		imageLimit: number
+		chatRunning: number
+		chatLimit: number
+		error?: string
+	}
 	taskPressure: {
 		queued: number
 		running: number
@@ -372,7 +379,7 @@ const systemGaugeOption = computed((): EChartOption => {
 			center: ['17%', '52%'],
 		},
 		{
-			name: '任务容量',
+			name: '普通任务容量',
 			value: Number(metrics.taskPressure.utilizationPercent.toFixed(1)),
 			center: ['50%', '52%'],
 		},
@@ -426,6 +433,7 @@ const systemChips = computed(() => {
 	if (!metrics) return []
 	const queue = metrics.queue
 	const pressure = metrics.taskPressure
+	const pools = metrics.executionPools
 	return [
 		{ label: '吞吐', value: `${metrics.http.requestsPerSecond.toFixed(2)}/s` },
 		{ label: 'API P95', value: formatDuration(metrics.http.p95LatencyMs) },
@@ -437,7 +445,9 @@ const systemChips = computed(() => {
 			value: `${metrics.database.acquiredConnections}/${metrics.database.maxConnections}`,
 		},
 		{ label: '队列', value: queue.available ? String(queue.pending) : '-' },
-		{ label: '容量', value: `${pressure.active}/${pressure.globalLimit}` },
+		{ label: '普通任务积压', value: pressure.error ? '-' : `${pressure.active}/${pressure.globalLimit} 个` },
+		{ label: '图片执行', value: pools && !pools.error ? `${pools.imageRunning}/${pools.imageLimit} 张` : '-' },
+		{ label: '对话执行', value: pools && !pools.error ? `${pools.chatRunning}/${pools.chatLimit} 次` : '-' },
 		{
 			label: '拉图槽',
 			value: metrics.imageFetch.available
@@ -1125,22 +1135,22 @@ onBeforeUnmount(() => {
               <dd>连接池已占用 / 最大连接。偏高时检查慢查询或连接泄漏。</dd>
             </div>
             <div>
-              <dt>任务容量</dt>
-              <dd>当前活跃任务相对全站并发上限的利用率。</dd>
+              <dt>普通任务容量</dt>
+              <dd>普通任务的排队与运行数量相对积压容量的利用率；图片与对话执行额度分别在底部状态条显示。</dd>
             </div>
             <div>
               <dt>队列压力</dt>
               <dd>pending ÷ Worker 总并发槽。持续偏高说明消化不过来，可加 Worker 或查上游。</dd>
             </div>
           </dl>
-          <p>底部芯片是摘要：吞吐、API P95、当前 CPU/内存绝对值、Goroutine、Worker、GC 等。</p>
+          <p>底部显示图片执行占用（张）、对话执行占用（次）及各自上限，覆盖普通任务和助手；同时保留吞吐、API P95、CPU/内存、Worker等摘要。指标读取失败时显示「-」。</p>
         </section>
 
         <section class="help-section">
           <h3>Worker 实例</h3>
           <p>
-            每一行是一个正在向 Redis 汇报心跳的 Worker
-            <strong>进程</strong>，不是任务数。本地默认通常只有 1 个；生产可用
+            每一行是一个正在向 Redis 汇报心跳的
+            <strong>执行服务实例</strong>。同一 Worker 进程可以分别运行图片和对话队列；生产可用
             <code>docker compose up -d --scale worker=N</code> 多开。
           </p>
           <dl>
@@ -1149,8 +1159,8 @@ onBeforeUnmount(() => {
               <dd>进程所在机器与进程号，方便对照日志。</dd>
             </div>
             <div>
-              <dt>活跃 / 并发</dt>
-              <dd>当前占用的短操作槽 / 该进程配置的槽位上限（如 WORKER_CONCURRENCY=32）。</dd>
+              <dt>活跃 / 槽位</dt>
+              <dd>当前占用的操作槽 / 该执行服务的线程上限，与按图片张数或对话次数计算的执行额度分开显示。</dd>
             </div>
             <div>
               <dt>状态</dt>
@@ -1165,11 +1175,11 @@ onBeforeUnmount(() => {
 
         <section class="help-section">
           <h3>服务商容量</h3>
-          <p>各上游线路此刻的在途任务与配置容量。</p>
+          <p>各上游线路此刻的执行用量与配置容量，包含普通任务和助手。</p>
           <dl>
             <div>
               <dt>在途 / 容量</dt>
-              <dd>正在占用该线路的任务数 / 该线路允许的最大并发。</dd>
+              <dd>正在占用该线路的执行用量 / 线路额度；图片按张累计，对话按次累计。</dd>
             </div>
             <div>
               <dt>利用率</dt>
@@ -1294,7 +1304,7 @@ onBeforeUnmount(() => {
           title="系统健康"
           :subtitle="
             systemMetrics
-              ? `Heap ${formatBytes(systemMetrics.process.memory.heapInUseBytes)} · 上限 ${systemMetrics.taskPressure.effectiveGlobalConcurrency}`
+              ? `Heap ${formatBytes(systemMetrics.process.memory.heapInUseBytes)} · 图片 ${systemMetrics.executionPools?.imageLimit ?? '-'} 张 · 对话 ${systemMetrics.executionPools?.chatLimit ?? '-'} 次`
               : '等待系统指标'
           "
         >
@@ -1325,7 +1335,7 @@ onBeforeUnmount(() => {
               <el-table-column prop="host" label="主机" min-width="90" show-overflow-tooltip />
               <el-table-column prop="pid" label="PID" width="56" align="right" />
               <el-table-column prop="active" label="活跃" width="48" align="right" />
-              <el-table-column prop="concurrency" label="并发" width="48" align="right" />
+              <el-table-column prop="concurrency" label="槽位" width="48" align="right" />
               <el-table-column label="状态" width="68" align="right">
                 <template #default="{ row }">
                   <el-tag type="success" effect="plain" size="small">{{ row.status }}</el-tag>

@@ -13,6 +13,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantbilling"
 	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
 	"github.com/BlankLife886/startcloudsai/server/internal/config"
+	"github.com/BlankLife886/startcloudsai/server/internal/crun"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
@@ -20,6 +21,67 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/testdb"
 	"github.com/BlankLife886/startcloudsai/server/internal/wallet"
 )
+
+func TestAssistantImageFailoverRespectsSubmissionSafetyMarkers(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		err       error
+		wantRetry bool
+	}{
+		{name: "crun_unknown_timeout", err: &crun.SubmissionUncertainError{Err: context.DeadlineExceeded}},
+		{name: "crun_unknown_502", err: &crun.SubmissionUncertainError{Err: &crun.UpstreamError{Status: http.StatusBadGateway, Message: "lost acknowledgement"}}},
+		{name: "c2a_synchronous_timeout", err: &c2a.SynchronousImageError{Err: &c2a.NetworkError{Message: "request timed out", Err: context.DeadlineExceeded}}},
+		{name: "c2a_synchronous_504", err: &c2a.SynchronousImageError{Err: &c2a.UpstreamError{StatusCode: http.StatusGatewayTimeout, Message: "lost response"}}},
+		{name: "crun_preflight_503", err: &crun.PreflightError{Err: &crun.UpstreamError{Status: http.StatusServiceUnavailable, Message: "estimate unavailable"}}, wantRetry: true},
+		{name: "crun_preflight_timeout", err: &crun.PreflightError{Err: context.DeadlineExceeded}, wantRetry: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			st := testdb.Setup(t)
+			ctx := context.Background()
+			w := assistantRoutingTestWorker(t, st, 4, 4)
+			user := assistantRoutingTestUser(t, st, 100)
+			queued := insertAssistantRoutingTestRun(t, st, user.ID, "image", modelconfig.WorkspaceAssistant, 10)
+			first, err := w.claimAssistantRun(ctx, queued.ID, "marker-route-a")
+			if err != nil || first == nil || assistantParamString(first.Params, "_imageProviderRouteKey", "") != "chat-provider/route-a" {
+				t.Fatalf("first claim=%#v err=%v", first, err)
+			}
+			// A provider wrapper must not hide the submission's safety boundary.
+			executionErr := fmt.Errorf("image execution: %w", &assistantProviderError{err: test.err})
+			requeued, err := w.retryAssistantProviderRoute(ctx, first, executionErr)
+			if err != nil || requeued != test.wantRetry {
+				t.Fatalf("requeued=%t want=%t err=%v", requeued, test.wantRetry, err)
+			}
+			second, err := w.claimAssistantRun(ctx, first.ID, "marker-route-b")
+			if err != nil {
+				t.Fatal(err)
+			}
+			stored, err := store.GetAssistantRun(ctx, st.Pool, first.ID)
+			if err != nil || stored == nil {
+				t.Fatalf("stored run=%#v err=%v", stored, err)
+			}
+			if test.wantRetry {
+				if second == nil || second.Attempt != first.Attempt+1 || assistantParamString(second.Params, "_imageProviderRouteKey", "") != "chat-provider/route-b" {
+					t.Fatalf("safe preflight did not move to the alternate route: %#v", second)
+				}
+			} else {
+				if second != nil || stored.Status != "running" || stored.Attempt != first.Attempt || assistantParamString(stored.Params, "_imageProviderRouteKey", "") != "chat-provider/route-a" {
+					t.Fatalf("uncertain submission was restarted: second=%#v stored=%#v", second, stored)
+				}
+				if len(assistantParamStrings(stored.Params, "_failedImageProviderRouteKeys")) != 0 {
+					t.Fatalf("uncertain submission excluded its original route: %#v", stored.Params)
+				}
+				var outboxCount int
+				if err := st.Pool.QueryRow(ctx, `SELECT count(*) FROM assistant_run_outbox WHERE run_id=$1`, first.ID).Scan(&outboxCount); err != nil || outboxCount != 0 {
+					t.Fatalf("uncertain submission dispatched again: outbox=%d err=%v", outboxCount, err)
+				}
+			}
+			funds, err := store.GetWallet(ctx, st.Pool, user.ID)
+			if err != nil || funds == nil || funds.BalanceCents != 90 || funds.FrozenCents != 10 {
+				t.Fatalf("route decision changed billing: funds=%#v err=%v", funds, err)
+			}
+		})
+	}
+}
 
 func TestAssistantProviderEndpointRemovesCredentialsAndQuery(t *testing.T) {
 	got := assistantProviderEndpoint("https://user:secret@enabled.example.com/v1/?token=secret#fragment")

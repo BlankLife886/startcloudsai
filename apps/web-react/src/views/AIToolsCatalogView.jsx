@@ -4,10 +4,12 @@ import { ArrowLeft, ArrowRight, Search, ShieldCheck, Wrench } from "lucide-react
 import { fetchRuntimeConfig } from "@react/legacy-modules/services/runtimeConfig.js";
 import { TOOL_GROUPS, TOOL_STATUS, runtimeMediaTools } from "../features/tool-catalog/toolCatalog.js";
 import { useIsDark } from "../hooks/useIsDark.js";
+import { usePageControls } from "../page-control/PageControlContext.jsx";
 import "./ai-tools-catalog.css";
 
 export function AIToolsCatalogView() {
   const isDark = useIsDark();
+  const { isEntryVisible } = usePageControls();
   const [query, setQuery] = useState("");
   const [activeGroup, setActiveGroup] = useState("all");
   const [runtimeConfig, setRuntimeConfig] = useState(null);
@@ -20,7 +22,10 @@ export function AIToolsCatalogView() {
 
   const groups = useMemo(() => TOOL_GROUPS.map((group) => group.id === "utility"
     ? { ...group, tools: [...group.tools, ...runtimeMediaTools(runtimeConfig)] }
-    : group), [runtimeConfig]);
+    : group).map((group) => ({
+      ...group,
+      tools: group.tools.filter((item) => isEntryVisible(item.to)),
+    })).filter((group) => group.tools.length), [isEntryVisible, runtimeConfig]);
   const total = groups.reduce((sum, group) => sum + group.tools.length, 0);
   const visibleGroups = useMemo(() => {
     const keyword = query.trim().toLowerCase();

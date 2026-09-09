@@ -190,6 +190,11 @@ func ClaimPendingUpstreamTasksByRoute(ctx context.Context, q Q, routeKey, owner 
 		WHERE attempt.route_key = $1
 		  AND attempt.status IN ('submitting','pending')
 		  AND (attempt.status = 'pending' OR (
+			-- A synchronous fallback may still be using this submitting attempt.
+			-- Only recover the current submission after its worker has lost its lease.
+			(task.status = 'queued' OR task.lease_until IS NULL OR task.lease_until <= $3
+			 OR COALESCE(task.params->>'_providerRouteKey','') <> attempt.route_key)
+			AND
 			-- OpenAI-compatible image submission can spend up to 2m handing off
 			-- reference images. CRUN keeps the shorter crash-recovery window.
 			((attempt.adapter = 'openai'
@@ -377,6 +382,18 @@ func CountPendingTaskUpstreamAttempts(ctx context.Context, q Q, taskID uuid.UUID
 	return count, err
 }
 
+// A queued recovery of the current attempt must resume polling that attempt,
+// even when another route has spare capacity. Older attempts are kept distinct
+// so an explicit transition to a newer attempt is not mistaken for recovery.
+func HasCurrentPendingTaskUpstreamAttempt(ctx context.Context, q Q, taskID uuid.UUID, attempt int) (bool, error) {
+	var pending bool
+	err := q.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM task_upstream_attempts
+		WHERE task_id=$1 AND task_attempt=$2 AND status IN ('submitting','pending')
+	)`, taskID, attempt).Scan(&pending)
+	return pending, err
+}
+
 func PendingTaskUpstreamAttemptRouteKeys(ctx context.Context, q Q, taskID uuid.UUID) ([]string, error) {
 	rows, err := q.Query(ctx, `SELECT DISTINCT route_key FROM task_upstream_attempts
 		WHERE task_id = $1 AND status IN ('submitting','pending') ORDER BY route_key`, taskID)
@@ -397,11 +414,11 @@ func PendingTaskUpstreamAttemptRouteKeys(ctx context.Context, q Q, taskID uuid.U
 
 func GetPendingUpstreamAttemptRoute(ctx context.Context, q Q, routeKey string) (*UpstreamAttemptRoute, error) {
 	var route UpstreamAttemptRoute
-	err := q.QueryRow(ctx, `SELECT provider_id, route_id, route_key, adapter, base_url,
-		api_key_encrypted, timeout_secs, max_concurrency
-		FROM task_upstream_attempts
-		WHERE route_key = $1 AND status IN ('submitting','pending')
-		ORDER BY submitted_at DESC LIMIT 1`, routeKey).Scan(&route.ProviderID, &route.RouteID,
+	err := q.QueryRow(ctx, `SELECT attempt.provider_id, attempt.route_id, attempt.route_key, attempt.adapter, attempt.base_url,
+		attempt.api_key_encrypted, attempt.timeout_secs, attempt.max_concurrency
+		FROM task_upstream_attempts attempt JOIN tasks task ON task.id=attempt.task_id
+		WHERE attempt.route_key = $1 AND attempt.status IN ('submitting','pending') AND task.status IN ('queued','running')
+		ORDER BY attempt.submitted_at DESC LIMIT 1`, routeKey).Scan(&route.ProviderID, &route.RouteID,
 		&route.RouteKey, &route.Adapter, &route.BaseURL, &route.APIKeyEncrypted,
 		&route.TimeoutSecs, &route.MaxConcurrency)
 	if errors.Is(err, pgx.ErrNoRows) {

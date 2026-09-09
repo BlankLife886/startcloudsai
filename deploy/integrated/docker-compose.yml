@@ -115,6 +115,7 @@ services:
     logging: *default-logging
 
   server:
+    image: startcloudsai-integrated-server:${STARCLOUD_RELEASE_TAG:-latest}
     build: ../../apps/server
     restart: unless-stopped
     env_file: ${INTEGRATED_APP_ENV_FILE:-.env.integrated}
@@ -153,6 +154,7 @@ services:
       start_period: 20s
 
   worker:
+    image: startcloudsai-integrated-worker:${STARCLOUD_RELEASE_TAG:-latest}
     build: ../../apps/server
     restart: unless-stopped
     stop_grace_period: 15m
@@ -164,6 +166,7 @@ services:
       C2A_API_KEY: ${CHATGPT2API_AUTH_KEY:?CHATGPT2API_AUTH_KEY must be set}
       C2A_ALLOW_PRIVATE: "true"
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-32}
+      WORKER_CHAT_CONCURRENCY: ${WORKER_CHAT_CONCURRENCY:-8}
       WORKER_POLL_CONCURRENCY: ${WORKER_POLL_CONCURRENCY:-8}
       WORKER_IMAGE_MEMORY_MIB: ${WORKER_IMAGE_MEMORY_MIB:-1280}
       ASSISTANT_OCR_ENABLED: ${ASSISTANT_OCR_ENABLED:-true}
@@ -193,6 +196,7 @@ services:
     logging: *default-logging
 
   web:
+    image: startcloudsai-integrated-web:${STARCLOUD_RELEASE_TAG:-latest}
     build:
       context: ../..
       dockerfile: apps/web-react/Dockerfile
@@ -205,6 +209,7 @@ services:
     logging: *default-logging
 
   admin:
+    image: startcloudsai-integrated-admin:${STARCLOUD_RELEASE_TAG:-latest}
     build: ../../apps/admin
     restart: unless-stopped
     networks: [frontend]

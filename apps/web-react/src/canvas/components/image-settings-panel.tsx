@@ -1,9 +1,10 @@
-import { type CSSProperties, type PointerEvent, type ReactNode, useEffect, useRef } from "react";
+import { type CSSProperties, type PointerEvent, type ReactNode, useEffect, useId, useRef } from "react";
 import { ConfigProvider, Switch } from "antd";
 import { Minus, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import i18n from "@/i18n";
+import { initialExactImageSize, validateExactImageSize } from "@react/config/exactImageSize.js";
 import { type CanvasTheme } from "@/lib/canvas-theme";
 import {
     CANVAS_IMAGE_HARD_MAX_COUNT,
@@ -24,7 +25,7 @@ const bare: CSSProperties = {
     boxShadow: "none",
 };
 
-type ImageSettingKey = "quality" | "size" | "resolution" | "count" | "background";
+type ImageSettingKey = "quality" | "size" | "sizeMode" | "exactWidth" | "exactHeight" | "resolution" | "count" | "background";
 
 type ImageSettingsPanelProps = {
     config: AiConfig;
@@ -42,6 +43,9 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
     const model = modelOptionMeta(config, config.model);
     const capabilities = canvasImageModelCapabilities(model);
     const settings = coerceCanvasImageSettings(model, config);
+    const exactMode = settings.sizeMode === "exact";
+    const exact = validateExactImageSize(model, settings.exactWidth, settings.exactHeight);
+    const exactHintId = useId();
     const quality = settings.quality;
     const selectedRatio = settings.size;
     const selectedResolution = settings.resolution;
@@ -66,6 +70,14 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
 
     const controlH = embedded ? "h-9" : "h-10";
     const triggerClass = embedded ? "!h-9 !rounded-[10px] canvas-config-field" : undefined;
+    const switchSizeMode = (mode: "ratio" | "exact") => {
+        if (mode === "exact" && !exact.valid) {
+            const initial = dimensions && validateExactImageSize(model, dimensions.width, dimensions.height).valid ? dimensions : initialExactImageSize(model);
+            onConfigChange("exactWidth", String(initial.width));
+            onConfigChange("exactHeight", String(initial.height));
+        }
+        onConfigChange("sizeMode", mode);
+    };
 
     return (
         <ImageSettingsTheme theme={theme}>
@@ -79,18 +91,22 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
             >
                 {showTitle ? <div className="text-[13px] font-semibold leading-none">{t("settingsPanels.image.title")}</div> : null}
 
-                <div className="grid gap-1.5" style={{ gridTemplateColumns: `repeat(${Math.max(1, Number(ratioOptions.length > 0) + Number(qualityOptions.length > 0) + Number(resolutionOptions.length > 0))}, minmax(0, 1fr))` }}>
+                {capabilities.supportsExactSize ? <div className="grid grid-cols-2 gap-1 rounded-[10px] p-1" style={{ background: controlBg }} role="group" aria-label={t("settingsPanels.image.sizeMode", { defaultValue: "尺寸模式" })}>
+                    {([ ["ratio", t("settingsPanels.image.ratioMode", { defaultValue: "比例与档位" })], ["exact", t("settingsPanels.image.exactMode", { defaultValue: "精确宽高" })] ] as const).map(([mode, label]) => <button key={mode} type="button" aria-pressed={settings.sizeMode === mode} onClick={() => switchSizeMode(mode)} className="h-8 rounded-lg text-[12px] font-medium" style={{ background: settings.sizeMode === mode ? theme.toolbar.panel : "transparent", color: settings.sizeMode === mode ? theme.node.text : theme.node.muted }}>{label}</button>)}
+                </div> : null}
+
+                <div className="grid gap-1.5" style={{ gridTemplateColumns: `repeat(${Math.max(1, Number(!exactMode && ratioOptions.length > 0) + Number(qualityOptions.length > 0) + Number(!exactMode && resolutionOptions.length > 0))}, minmax(0, 1fr))` }}>
                     {qualityOptions.length ? <FieldBlock label={t("settingsPanels.image.quality")} style={labelStyle}>
                         <CanvasFieldMenu compact value={quality} options={qualityOptions} theme={theme} surface={controlBg} triggerClassName={triggerClass} onChange={(value) => onConfigChange("quality", value)}>
                             {(open) => <FieldMenuValue open={open}>{imageQualityLabel(quality)}</FieldMenuValue>}
                         </CanvasFieldMenu>
                     </FieldBlock> : null}
-                    {ratioOptions.length ? <FieldBlock label={t("settingsPanels.image.aspectRatio")} style={labelStyle}>
+                    {!exactMode && ratioOptions.length ? <FieldBlock label={t("settingsPanels.image.aspectRatio")} style={labelStyle}>
                         <CanvasFieldMenu compact value={selectedRatio} options={ratioOptions} theme={theme} surface={controlBg} triggerClassName={triggerClass} onChange={(ratio) => onConfigChange("size", ratio)}>
                             {(open) => <FieldMenuValue open={open}>{selectedRatio === "auto" ? t("settingsPanels.common.auto") : selectedRatio}</FieldMenuValue>}
                         </CanvasFieldMenu>
                     </FieldBlock> : null}
-                    {resolutionOptions.length ? <FieldBlock label={t("settingsPanels.image.resolution")} style={labelStyle}>
+                    {!exactMode && resolutionOptions.length ? <FieldBlock label={t("settingsPanels.image.resolution")} style={labelStyle}>
                             <CanvasFieldMenu compact value={selectedResolution} options={resolutionOptions} theme={theme} surface={controlBg} triggerClassName={triggerClass} onChange={(resolution) => {
                                 const next = coerceCanvasImageSettings(model, { ...settings, resolution });
                                 onConfigChange("resolution", next.resolution);
@@ -100,6 +116,17 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                             </CanvasFieldMenu>
                     </FieldBlock> : null}
                 </div>
+
+                {exactMode ? <div className="flex flex-col gap-1.5">
+                    <div className="grid grid-cols-2 gap-1.5">
+                        {([ ["exactWidth", "W", t("settingsPanels.image.exactWidth", { defaultValue: "宽度（px）" }), capabilities.exactSizeLimits.minWidth, capabilities.exactSizeLimits.maxWidth], ["exactHeight", "H", t("settingsPanels.image.exactHeight", { defaultValue: "高度（px）" }), capabilities.exactSizeLimits.minHeight, capabilities.exactSizeLimits.maxHeight] ] as const).map(([key, prefix, label, min, max]) => <label key={key} className={`canvas-config-field flex ${controlH} min-w-0 items-center gap-2 rounded-[10px] px-2.5`} style={{ background: controlBg }}>
+                            <span className="text-[11px]" style={labelStyle}>{prefix}</span>
+                            <input type="number" inputMode="numeric" aria-label={label} aria-describedby={exactHintId} aria-invalid={!exact.valid} min={Math.ceil(min / capabilities.exactSizeLimits.step) * capabilities.exactSizeLimits.step} max={Math.floor(max / capabilities.exactSizeLimits.step) * capabilities.exactSizeLimits.step} step={capabilities.exactSizeLimits.step} value={settings[key]} onChange={(event) => onConfigChange(key, event.currentTarget.value)} className="min-w-0 w-full bg-transparent text-[13px] tabular-nums" style={{ ...bare, color: theme.node.text }} />
+                            <span className="text-[11px]" style={labelStyle}>px</span>
+                        </label>)}
+                    </div>
+                    <p id={exactHintId} role={exact.valid ? undefined : "alert"} className="m-0 text-[11px] leading-4" style={{ color: exact.valid ? theme.node.muted : "#dc655b" }}>{exact.valid ? `W ${capabilities.exactSizeLimits.minWidth}–${capabilities.exactSizeLimits.maxWidth} · H ${capabilities.exactSizeLimits.minHeight}–${capabilities.exactSizeLimits.maxHeight} px${capabilities.exactSizeLimits.step > 1 ? ` · ${t("settingsPanels.image.exactStep", { step: capabilities.exactSizeLimits.step })}` : ""}` : exact.error}</p>
+                </div> : null}
 
                 <div className={`grid gap-1.5 ${capabilities.transparentBackground ? "grid-cols-2" : "grid-cols-1"}`}>
                     {capabilities.transparentBackground ? <div className={`canvas-config-field flex ${controlH} min-w-0 items-center justify-between rounded-[10px] px-2.5`} style={{ background: controlBg }} title={t("settingsPanels.image.transparentHint")}>
@@ -124,7 +151,7 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                     </div>
                 </div>
 
-                {showDimensions && resolutionOptions.length > 0 && dimensions ? (
+                {!exactMode && showDimensions && resolutionOptions.length > 0 && dimensions ? (
                     <FieldBlock label={t("settingsPanels.image.size")} style={labelStyle}>
                         <div className="grid grid-cols-2 gap-1.5">
                             <DimensionPreview prefix="W" value={dimensions?.width} theme={theme} surface={controlBg} compact={embedded} />

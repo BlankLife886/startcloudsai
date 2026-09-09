@@ -63,6 +63,11 @@ jobs:
         run: npm --prefix apps/web-react run test:domain
       - name: Typecheck integrated canvas module
         run: npm --prefix apps/web-react run typecheck:canvas
+      - name: Canvas recovery and agent delivery regression
+        run: |
+          npm --prefix apps/web-react run test:canvas-workflow
+          npm --prefix apps/web-react run test:canvas-agent-graph
+          node --test apps/web-react/scripts/test-handheld-submission.mjs
       - name: Build React main site
         run: npm --prefix apps/web-react run build
       - name: Dependency audit
@@ -83,6 +88,9 @@ jobs:
       - name: Build (含 vue-tsc strict)
         working-directory: apps/admin
         run: npm run build
+      - name: Task timing and retry presentation
+        working-directory: apps/admin
+        run: npm run test:task-presentation
       - name: Dependency audit
         working-directory: apps/admin
         run: npm audit --audit-level=high

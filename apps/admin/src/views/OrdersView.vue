@@ -1,7 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from "vue";
-import { ElMessage } from "element-plus";
-import { CopyDocument, Refresh, Search, View, Wallet } from "@element-plus/icons-vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
+import { useRoute, useRouter } from 'vue-router';
+import { ElMessage, ElMessageBox } from "element-plus";
+import { Delete, Download, Refresh, Search, View, Wallet } from "@element-plus/icons-vue";
+import OrderAccountingDetail from '@/components/OrderAccountingDetail.vue';
+import { billingMoney, deliveryLabels, orderKindLabels, type BillingOrder, type AccountingSummary } from '@/billingTypes';
+import { downloadAdminCsv } from '@/downloadCsv';
 import AdminDialog from "@/components/AdminDialog.vue";
 import AdminListShell from "@/components/AdminListShell.vue";
 import ListError from "@/components/ListError.vue";
@@ -10,50 +14,54 @@ import { request, type Page } from "@/request";
 import { usePagedList } from "@/usePagedList";
 import { formatPoints, formatTime } from "@/utils";
 
-type OrderStatus = "pending" | "paid" | "completed" | "failed" | "expired";
-
-interface AdminOrder {
-  id: string;
-  userId: string;
-  userEmail: string | null;
-	planId: string;
-	planName: string | null;
-	planKind: "topup" | "subscription" | null;
-	durationDays: number | null;
-	dailyGrantCents: number | null;
-  status: OrderStatus;
-  amountCents: number;
-  providerPayAmountCents: number | null;
-  payAmountCents: number | null;
-  grantCents: number;
-  bonusCents: number;
-  provider: string;
-  providerOrderId: string | null;
-  paymentMethod: string | null;
-  paidAt: string | null;
-  completedAt: string | null;
-  createdAt: string;
-}
-
-const filters = reactive({ status: "", search: "" });
+type AdminOrder = BillingOrder;
+const route = useRoute();
+const router = useRouter();
+const defaults = () => ({ planId:String(route.query.planId || ''),planRevision:String(route.query.planRevision || ''),status:'',search:String(route.query.search || ''),userId:String(route.query.userId || ''),kind:'',paymentMethod:'',refundState:'',delivery:'',createdFrom:'',createdTo:'',minAmount:'',maxAmount:'' });
+const filters = reactive(defaults());
+const summary = ref<AccountingSummary | null>(null);
+const appliedFilters = ref<Record<string,string> | null>(null);
+const unappliedFilters = computed(() => JSON.stringify(appliedFilters.value) !== JSON.stringify({ ...filters, search:filters.search.trim() }));
+const exporting = ref(false);
+let listGeneration = 0;
 const detail = ref<AdminOrder | null>(null);
 const detailVisible = ref(false);
 const reconciling = ref(false);
+const deletingOrder=ref('');
+async function deleteExpiredOrder(order:AdminOrder) {
+  if(deletingOrder.value || order.status!=='expired')return;
+  deletingOrder.value=order.id;
+  try {
+    await ElMessageBox.confirm(`删除已过期订单 ${order.id}？订单将从列表移除，原始记录与审计保留；后续确认收款时会重新显示。`,'删除失效订单',{type:'warning',confirmButtonText:'删除',cancelButtonText:'取消',closeOnClickModal:false});
+    await request(`/api/v1/admin/orders/${encodeURIComponent(order.id)}`,{method:'DELETE',silent:true});
+    if(detail.value?.id===order.id){detailVisible.value=false;detail.value=null;}
+    ElMessage.success('已过期订单已从列表移除');
+    await refresh();
+    if(!items.value.length && page.value>1)await goToPage(page.value-1);
+  } catch(e) {
+    if(e!=='cancel' && e!=='close')ElMessage.error(e instanceof Error?e.message:'删除失败，请重试');
+    if(e instanceof Error && 'code' in e && e.code==='order_not_deletable')await refresh();
+  } finally {deletingOrder.value='';}
+}
 
 const statusOptions = [
   { value: "", label: "全部" },
   { value: "pending", label: "待支付" },
-  { value: "paid", label: "确认中" },
+  { value: "uncertain", label: "待核实" },
+  { value: "paid", label: "待到账" },
   { value: "completed", label: "已完成" },
-  { value: "expired", label: "已失效" },
+  { value: "cancelled", label: "已取消" },
+  { value: "expired", label: "已过期" },
   { value: "failed", label: "失败" },
 ];
 
 const statusMeta: Record<string, { label: string; type: "success" | "warning" | "danger" | "info" | "primary" }> = {
   pending: { label: "待支付", type: "warning" },
-  paid: { label: "确认中", type: "primary" },
+  uncertain: { label: "待核实", type: "warning" },
+  paid: { label: "待到账", type: "primary" },
   completed: { label: "已完成", type: "success" },
-  expired: { label: "已失效", type: "info" },
+  cancelled: { label: "已取消", type: "info" },
+  expired: { label: "已过期", type: "info" },
   failed: { label: "失败", type: "danger" },
 };
 
@@ -72,40 +80,31 @@ const {
   refresh,
   retry,
 } = usePagedList<AdminOrder>(
-  (cursor) =>
-    request<Page<AdminOrder>>("/api/v1/admin/orders", {
+  async (cursor) => {
+    const own = ++listGeneration;
+    const selected = { ...filters, search:filters.search.trim() };
+    summary.value = null;
+    const result = await request<Page<AdminOrder> & { summary: AccountingSummary }>("/api/v1/admin/orders", {
       query: {
-        status: filters.status,
-        search: filters.search.trim(),
+        ...selected,
         cursor,
         limit: pageSize.value,
       },
-    }),
+    });
+    if (own === listGeneration) { summary.value = result.summary; appliedFilters.value = selected; }
+    return result;
+  },
   () => ({ ...filters, limit: pageSize.value }),
 );
 
 const matchedTotal = computed(() => total.value ?? items.value.length);
 
 const pagePaidCents = computed(() =>
-  items.value.reduce((sum, order) => sum + Number(paidAmount(order)), 0),
+  summary.value?.receivedCents ?? 0,
 );
-
-const pageCompleted = computed(() => items.value.filter((order) => order.status === "completed").length);
 
 const pagePending = computed(() =>
-  items.value.filter((order) => order.status === "pending" || order.status === "paid").length,
-);
-
-const adjustedCount = computed(() =>
-  items.value.filter(
-    (order) =>
-      order.providerPayAmountCents !== null &&
-      Number(order.providerPayAmountCents) !== Number(order.amountCents),
-  ).length,
-);
-
-const statusLabel = computed(
-  () => statusOptions.find((option) => option.value === filters.status)?.label || "全部",
+  summary.value?.pendingOrders ?? 0,
 );
 
 function formatMoney(cents: number | null | undefined) {
@@ -116,7 +115,7 @@ function formatMoney(cents: number | null | undefined) {
 }
 
 function paidAmount(order: AdminOrder) {
-	return order.providerPayAmountCents ?? order.payAmountCents ?? order.amountCents;
+	return order.finance?.receivedCents ?? 0;
 }
 
 function orderBenefit(order: AdminOrder) {
@@ -124,7 +123,7 @@ function orderBenefit(order: AdminOrder) {
 		const dailyGrant = Number(order.dailyGrantCents || 0);
 		const durationDays = Number(order.durationDays || 0);
 		if (dailyGrant > 0 && durationDays > 0) {
-			return `每日 ${formatPoints(dailyGrant)} 积分 · ${durationDays} 天`;
+			return `每24小时 ${formatPoints(dailyGrant)} 积分 · ${durationDays} 天`;
 		}
 		return "订阅权益";
 	}
@@ -141,25 +140,29 @@ function orderStatus(status: string) {
   return statusMeta[status] || { label: status || "未知", type: "info" as const };
 }
 
-function shortId(id: string) {
-  return id ? `${id.slice(0, 8)}…${id.slice(-4)}` : "—";
-}
-
-async function copy(value: string) {
-  await navigator.clipboard.writeText(value);
-  ElMessage.success("已复制");
-}
-
 function openDetail(order: AdminOrder) {
   detail.value = order;
   detailVisible.value = true;
 }
 
 function clearFilters() {
-  filters.status = "";
-  filters.search = "";
+  Object.assign(filters, defaults(), { search:'',userId:'',planId:'',planRevision:'' });
   void reset();
 }
+
+async function exportOrders() {
+  if (loading.value || !summary.value || unappliedFilters.value || !appliedFilters.value) return;
+  exporting.value = true;
+  try { await downloadAdminCsv('/api/v1/admin/orders/export', { ...appliedFilters.value }, '订单明细.csv'); }
+  catch (e) { ElMessage.error(e instanceof Error ? e.message : '导出失败'); }
+  finally { exporting.value = false; }
+}
+watch(() => route.query.orderId, async id => {
+  if (typeof id !== 'string' || !id) return;
+  try { const order = await request<AdminOrder>(`/api/v1/admin/orders/${encodeURIComponent(id)}`); if (route.query.orderId === id) openDetail(order); }
+  catch { /* The request layer reports invalid or missing order IDs. */ }
+}, { immediate:true });
+watch(() => [route.query.search, route.query.userId, route.query.planId, route.query.planRevision], () => { Object.assign(filters,defaults()); reset(); });
 
 async function runReconciliation() {
   if (reconciling.value) return;
@@ -183,50 +186,34 @@ onMounted(reset);
 <template>
   <div class="page orders-page">
     <PageCard>
-      <template #actions>
-        <el-button :icon="Refresh" :loading="loading" @click="refresh">刷新</el-button>
-        <el-button type="primary" :icon="Search" :loading="reconciling" @click="runReconciliation">
-          主动对账
-        </el-button>
-      </template>
-
       <section class="orders-kpis" aria-label="订单摘要">
-        <article>
-          <small>匹配订单</small>
-          <strong class="tnum">{{ matchedTotal }}</strong>
-        </article>
-        <article>
-          <small>本页实付</small>
-          <strong class="tnum">{{ formatMoney(pagePaidCents) }}</strong>
-        </article>
-        <article>
-          <small>本页已完成</small>
-          <strong class="tnum">{{ pageCompleted }}</strong>
-        </article>
-        <article>
-          <small>本页待处理</small>
-          <strong class="tnum">{{ pagePending }}</strong>
-        </article>
-        <article :class="{ 'is-warn': adjustedCount > 0 }">
-          <small>金额差异</small>
-          <strong class="tnum">{{ adjustedCount }}</strong>
-        </article>
+        <div class="orders-kpis__metrics">
+          <span>
+            <em>筛选实收</em>
+            <strong class="tnum">{{ formatMoney(pagePaidCents) }}</strong>
+          </span>
+          <span>
+            <em>确认退款</em>
+            <strong class="tnum">{{ formatMoney(summary?.refundedCents) }}</strong>
+          </span>
+          <span><em>净收款</em><strong class="tnum">{{ summary ? billingMoney(summary.netCents) : '-' }}</strong></span>
+          <span>
+            <em>待处理</em>
+            <strong class="tnum">{{ pagePending }}</strong>
+          </span>
+        </div>
+        <div class="orders-kpis__actions">
+          <el-button :icon="Refresh" :loading="loading" @click="refresh">刷新</el-button>
+          <el-button :icon="Download" :loading="exporting" :disabled="loading || !summary || unappliedFilters" :title="unappliedFilters ? '请先查询以应用筛选条件' : '导出当前筛选的全部页面，最多5000笔'" @click="exportOrders">导出筛选结果</el-button>
+          <el-button type="primary" :icon="Search" :loading="reconciling" @click="runReconciliation">
+            主动对账
+          </el-button>
+        </div>
       </section>
-
-      <p class="orders-legend">
-        当前筛选
-        <em>{{ statusLabel }}</em>
-        共
-        <em class="tnum">{{ matchedTotal }}</em>
-        笔。本页
-        <em class="tnum">{{ items.length }}</em>
-        笔实付
-        <em class="tnum">{{ formatMoney(pagePaidCents) }}</em>
-        。
-        <span v-if="adjustedCount" class="is-warn">{{ adjustedCount }} 笔实际收款与套餐标价不同。</span>
-      </p>
+      <el-alert v-if="summary?.unallocatedRefundCents" type="warning" :closable="false" :title="`关联订阅中有 ${formatMoney(summary.unallocatedRefundCents)} 退款尚未记录逐单归属。${summary.partialRefundCents ? '当前筛选未覆盖全部关联付款，净收款暂不计算。' : '汇总已去重，单笔退款与净额显示待核对。'}`" />
 
       <div class="orders-toolbar">
+        <el-tag v-if="filters.planId" closable @close="filters.planId=''; filters.planRevision=''; reset()">{{ route.query.planName || '指定套餐' }} · {{ filters.planRevision ? `第 ${filters.planRevision} 版` : '全部版本' }}</el-tag>
         <div class="orders-tabs" role="tablist" aria-label="订单状态">
           <button
             v-for="option in statusOptions"
@@ -247,13 +234,24 @@ onMounted(reset);
             v-model="filters.search"
             :prefix-icon="Search"
             clearable
-            placeholder="搜索用户邮箱或昵称"
+            placeholder="订单号、渠道单号、用户或套餐"
             @keyup.enter="reset"
             @clear="reset"
           />
           <el-button @click="reset">查询</el-button>
           <el-button text @click="clearFilters">重置</el-button>
         </div>
+      </div>
+
+      <div class="orders-filters">
+        <el-select v-model="filters.kind" clearable placeholder="订单类型" aria-label="订单类型" @change="reset"><el-option v-for="(label,value) in orderKindLabels" :key="value" :label="label" :value="value" /></el-select>
+        <el-select v-model="filters.paymentMethod" clearable placeholder="支付方式" aria-label="支付方式" @change="reset"><el-option label="支付宝" value="alipay" /><el-option label="微信支付" value="wechat" /></el-select>
+        <el-select v-model="filters.refundState" clearable placeholder="退款状态" aria-label="退款状态" @change="reset"><el-option label="无退款" value="none" /><el-option label="审核/处理中" value="pending" /><el-option label="已确认退款" value="completed" /><el-option label="逐单归属待核对" value="unallocated" /></el-select>
+        <el-select v-model="filters.delivery" clearable placeholder="到账状态" aria-label="到账状态" @change="reset"><el-option v-for="(label,value) in deliveryLabels" :key="value" :label="label" :value="value" /></el-select>
+        <el-date-picker v-model="filters.createdFrom" type="date" value-format="YYYY-MM-DD" placeholder="创建起始日期" aria-label="创建起始日期" @change="reset" />
+        <el-date-picker v-model="filters.createdTo" type="date" value-format="YYYY-MM-DD" placeholder="创建截止日期" aria-label="创建截止日期" @change="reset" />
+        <el-input v-model="filters.minAmount" placeholder="最低订单金额(元)" aria-label="最低订单金额" @keyup.enter="reset" />
+        <el-input v-model="filters.maxAmount" placeholder="最高订单金额(元)" aria-label="最高订单金额" @keyup.enter="reset" />
       </div>
 
       <ListError :error="error" :loading="loading" @retry="retry" />
@@ -275,49 +273,46 @@ onMounted(reset);
           <template #empty>
             <el-empty description="暂无订单" :image-size="64" />
           </template>
-          <el-table-column label="订单 / 套餐" min-width="220">
+          <el-table-column label="套餐" min-width="180">
             <template #default="{ row }">
               <div class="order-main">
                 <strong>{{ row.planName || "历史套餐" }}</strong>
-                <button type="button" title="复制订单号" @click="copy(row.id)">
-                  <span class="mono">{{ shortId(row.id) }}</span>
-                  <el-icon><CopyDocument /></el-icon>
-                </button>
+                <small>{{ orderKindLabels[row.finance?.kind] || '历史记录' }}</small>
               </div>
             </template>
           </el-table-column>
           <el-table-column label="用户" min-width="210">
             <template #default="{ row }">
               <div class="order-user">
-                <strong :title="row.userEmail || row.userId">{{ row.userEmail || "未知用户" }}</strong>
-                <small class="mono">{{ shortId(row.userId) }}</small>
+                <el-button link type="primary" :title="row.userEmail || undefined" @click="router.push({path:'/users',query:{userId:row.userId,search:row.userEmail || row.userId}})">{{ row.userEmail || "未知用户" }}</el-button>
               </div>
             </template>
           </el-table-column>
-          <el-table-column label="标价 / 实付" width="150">
+          <el-table-column label="确认实收 / 订单金额" width="160">
             <template #default="{ row }">
               <div class="order-money">
                 <strong>{{ formatMoney(paidAmount(row as AdminOrder)) }}</strong>
                 <small v-if="Number(paidAmount(row as AdminOrder)) !== Number(row.amountCents)">
-                  标价 {{ formatMoney(row.amountCents) }}
+                  订单金额 {{ formatMoney(row.amountCents) }}
                 </small>
               </div>
             </template>
           </el-table-column>
+          <el-table-column label="净收款 / 已退" width="150"><template #default="{ row }"><div class="order-money"><strong>{{ billingMoney(row.finance?.netCents) }}</strong><small>已退 {{ billingMoney(row.finance?.refundedCents) }}</small></div></template></el-table-column>
+          <el-table-column label="到账" width="130"><template #default="{ row }"><span>{{ deliveryLabels[row.finance?.delivery] || '-' }}</span></template></el-table-column>
           <el-table-column label="发放权益" width="180">
             <template #default="{ row }">
               <span class="tnum">{{ orderBenefit(row as AdminOrder) }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="支付渠道" width="130">
+          <el-table-column label="支付渠道" width="110" align="center">
             <template #default="{ row }">
               <div class="order-channel">
                 <strong>{{ paymentMethodLabel(row.paymentMethod) }}</strong>
-                <small>{{ row.provider }}</small>
               </div>
             </template>
           </el-table-column>
-          <el-table-column label="状态" width="100">
+          <el-table-column label="状态" width="100" align="center">
             <template #default="{ row }">
               <el-tag :type="orderStatus(row.status).type" effect="light" size="small">
                 {{ orderStatus(row.status).label }}
@@ -329,9 +324,20 @@ onMounted(reset);
               <span class="tnum order-time">{{ formatTime(row.createdAt) }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="80" fixed="right">
+          <el-table-column label="支付时间" width="160">
+            <template #default="{ row }">
+              <span class="tnum order-time">{{ formatTime(row.paidAt) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="完成时间" width="160">
+            <template #default="{ row }">
+              <span class="tnum order-time">{{ formatTime(row.completedAt) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="150" fixed="right">
             <template #default="{ row }">
               <el-button text size="small" :icon="View" title="查看订单" @click="openDetail(row as AdminOrder)">详情</el-button>
+              <el-button v-if="row.status==='expired' && !row.paidAt && !row.completedAt" text type="danger" size="small" :icon="Delete" :loading="deletingOrder===row.id" :disabled="!!deletingOrder && deletingOrder!==row.id" @click="deleteExpiredOrder(row as AdminOrder)">删除</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -343,46 +349,25 @@ onMounted(reset);
       title="订单详情"
       subtitle="支付快照与到账结果"
       :icon="Wallet"
-      width="620px"
+      width="880px"
       :show-cancel="false"
       confirm-text="关闭"
       @confirm="detailVisible = false"
     >
-      <div v-if="detail" class="order-detail">
-        <div class="order-detail__kpis">
-          <div>
-            <small>订单状态</small>
-            <el-tag :type="orderStatus(detail.status).type" effect="light">
-              {{ orderStatus(detail.status).label }}
-            </el-tag>
-          </div>
-          <div>
-            <small>实际收款</small>
-            <strong class="tnum">{{ formatMoney(paidAmount(detail)) }}</strong>
-          </div>
-          <div>
-            <small>套餐权益</small>
-            <strong>{{ orderBenefit(detail) }}</strong>
-          </div>
-        </div>
-        <dl>
-          <div><dt>订单号</dt><dd class="mono">{{ detail.id }}</dd></div>
-          <div><dt>上游订单号</dt><dd class="mono">{{ detail.providerOrderId || "—" }}</dd></div>
-          <div><dt>用户</dt><dd>{{ detail.userEmail || detail.userId }}</dd></div>
-          <div><dt>套餐</dt><dd>{{ detail.planName || detail.planId }}</dd></div>
-          <div><dt>套餐标价</dt><dd>{{ formatMoney(detail.amountCents) }}</dd></div>
-          <div><dt>实际应付</dt><dd>{{ formatMoney(paidAmount(detail)) }}</dd></div>
-          <div><dt>支付渠道</dt><dd>{{ paymentMethodLabel(detail.paymentMethod) }} · {{ detail.provider || "—" }}</dd></div>
-          <div><dt>创建时间</dt><dd>{{ formatTime(detail.createdAt) }}</dd></div>
-          <div><dt>支付时间</dt><dd>{{ detail.paidAt ? formatTime(detail.paidAt) : "—" }}</dd></div>
-          <div><dt>完成时间</dt><dd>{{ detail.completedAt ? formatTime(detail.completedAt) : "—" }}</dd></div>
-        </dl>
-      </div>
+      <template v-if="detail" #meta>
+        <el-tag :type="orderStatus(detail.status).type" effect="light" size="small">
+          {{ orderStatus(detail.status).label }}
+        </el-tag>
+      </template>
+      <OrderAccountingDetail v-if="detail" :key="detail.id" :order-id="detail.id" @loaded="detail = $event" />
     </AdminDialog>
   </div>
 </template>
 
 <style scoped>
+.orders-filters { display:flex;flex-wrap:wrap;gap:8px; }
+.orders-filters :deep(.el-select), .orders-filters :deep(.el-input), .orders-filters :deep(.el-date-editor) { width:150px; }
+.order-main small { color:var(--ink-3);font-size:11px; }
 .orders-page {
   display: flex;
   flex-direction: column;
@@ -398,14 +383,6 @@ onMounted(reset);
   min-height: 0;
   overflow: hidden;
 }
-.orders-page :deep(.page-card__header) {
-  flex-wrap: wrap;
-  align-items: flex-start;
-}
-.orders-page :deep(.page-card__actions) {
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
 .orders-page :deep(.page-card__body) {
   display: flex;
   flex: 1;
@@ -415,53 +392,66 @@ onMounted(reset);
   overflow: hidden;
 }
 .orders-kpis {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  overflow: hidden;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 6px 8px 6px 4px;
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
   background: var(--surface-2);
 }
-.orders-kpis article {
-  display: grid;
-  gap: 6px;
+.orders-kpis__metrics {
+  display: flex;
   min-width: 0;
-  padding: 14px 16px;
-  border-right: 1px solid var(--border);
+  flex: 1 1 auto;
+  align-items: center;
+  overflow-x: auto;
+  scrollbar-width: none;
 }
-.orders-kpis article:last-child {
+.orders-kpis__metrics::-webkit-scrollbar {
+  display: none;
+}
+.orders-kpis__metrics > span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 0 12px;
+  border-right: 1px solid var(--border);
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+.orders-kpis__metrics > span:last-child {
   border-right: 0;
 }
-.orders-kpis small {
+.orders-kpis em {
   color: var(--ink-3);
   font-size: 12px;
+  font-style: normal;
   font-weight: 650;
 }
 .orders-kpis strong {
-  overflow: hidden;
   color: var(--ink);
-  font-size: 22px;
+  font-size: 13px;
   font-weight: 750;
-  letter-spacing: -0.03em;
-  line-height: 1.1;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
-.orders-kpis article.is-warn strong,
-.orders-legend .is-warn {
+.orders-kpis__metrics > span.is-warn strong {
   color: var(--warning);
 }
-.orders-legend {
-  margin: 0;
-  color: var(--ink-2);
-  font-size: 13px;
-  line-height: 1.5;
+.orders-kpis__actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
 }
-.orders-legend em {
-  margin: 0 2px;
-  color: var(--ink);
-  font-style: normal;
-  font-weight: 750;
+.orders-kpis__actions :deep(.el-button) {
+  min-width: 88px;
+  height: 36px;
+  padding: 0 16px;
 }
 .orders-toolbar {
   display: flex;
@@ -560,21 +550,6 @@ onMounted(reset);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.order-main button {
-  display: inline-flex;
-  width: fit-content;
-  max-width: 100%;
-  align-items: center;
-  gap: 5px;
-  padding: 0;
-  overflow: hidden;
-  border: 0;
-  color: var(--ink-3);
-  background: transparent;
-  font: inherit;
-  font-size: 11px;
-  cursor: pointer;
-}
 .order-user small,
 .order-money small,
 .order-channel small {
@@ -593,85 +568,101 @@ onMounted(reset);
   color: var(--ink-2);
   font-size: 12px;
 }
-.order-detail__kpis {
+.order-detail {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-  margin-bottom: 16px;
+  gap: 10px;
 }
-.order-detail__kpis > div {
+.order-detail__hero,
+.order-detail__facts,
+.order-detail__times {
   display: grid;
-  gap: 6px;
-  min-width: 0;
-  min-height: 72px;
-  align-content: center;
-  padding: 12px 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: var(--radius-control);
+  border-radius: 14px;
+  background: var(--border);
+}
+.order-detail__times {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.order-detail__hero > div,
+.order-detail__facts > div,
+.order-detail__times > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 14px 16px;
   background: var(--surface-2);
 }
-.order-detail__kpis small {
+.order-detail em {
   color: var(--ink-3);
-  font-size: 12px;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 650;
 }
-.order-detail__kpis strong {
+.order-detail strong {
   overflow: hidden;
   color: var(--ink);
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 750;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.order-detail__kpis > div:nth-child(2) strong {
+.order-detail__hero > div:first-child strong {
   color: var(--success);
+  font-size: 22px;
+  letter-spacing: -0.03em;
 }
-.order-detail dl {
-  display: grid;
-  margin: 0;
-}
-.order-detail dl > div {
-  display: grid;
-  grid-template-columns: 110px minmax(0, 1fr);
-  gap: 14px;
-  padding: 10px 2px;
-  border-bottom: 1px solid var(--border);
-}
-.order-detail dt {
+.order-detail small {
   color: var(--ink-3);
   font-size: 12px;
 }
-.order-detail dd {
-  margin: 0;
-  overflow-wrap: anywhere;
-  color: var(--ink);
-  font-size: 13px;
-  text-align: right;
+.order-detail__hero > div:first-child small {
+  color: var(--warning);
 }
-@media (max-width: 1080px) {
-  .orders-kpis {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-  .orders-kpis article:nth-child(3) {
-    border-right: 0;
-  }
-  .orders-kpis article:nth-child(4),
-  .orders-kpis article:nth-child(5) {
-    border-top: 1px solid var(--border);
-  }
+.order-detail__times strong {
+  font-size: 12px;
+  font-weight: 650;
+}
+.order-detail__ids {
+  display: grid;
+  gap: 6px;
+}
+.order-detail__ids button {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) 16px;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--ink-2);
+  background: var(--surface);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.order-detail__ids em {
+  color: var(--ink-3);
+}
+.order-detail__ids code {
+  overflow: hidden;
+  color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.order-detail__ids .el-icon {
+  color: var(--ink-3);
 }
 @media (max-width: 860px) {
-  .orders-kpis {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .orders-kpis article:nth-child(odd) {
-    border-right: 1px solid var(--border);
-  }
-  .orders-kpis article:nth-child(even) {
-    border-right: 0;
-  }
-  .orders-kpis article:nth-child(3) {
-    border-top: 1px solid var(--border);
-  }
+  .orders-kpis { flex-direction:column;align-items:stretch; }
+  .orders-kpis__actions { flex-wrap:wrap; }
+  .orders-kpis__actions :deep(.el-button) { flex:1;min-width:0;padding-inline:10px; }
   .orders-toolbar {
     align-items: stretch;
     flex-direction: column;
@@ -679,7 +670,9 @@ onMounted(reset);
   .orders-toolbar__search :deep(.el-input) {
     width: min(100%, 280px);
   }
-  .order-detail__kpis {
+  .order-detail__hero,
+  .order-detail__facts,
+  .order-detail__times {
     grid-template-columns: 1fr;
   }
 }

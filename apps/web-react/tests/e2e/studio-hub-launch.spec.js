@@ -80,8 +80,8 @@ test('composer only offers assistant and text-to-image while the tool wall stays
 
   const composerTools = page.locator('.studio-composer__tool-menu > button')
   await expect(composerTools).toHaveCount(2)
-  await expect(composerTools.locator('.bi-chat-square-text-fill')).toHaveCount(1)
-  await expect(composerTools.locator('.bi-stars')).toHaveCount(1)
+  await expect(page.getByRole('menuitem', { name: /^AI 助手/ })).toHaveCount(1)
+  await expect(page.getByRole('menuitem', { name: /^文生图/ })).toHaveCount(1)
   await expect(page.locator('.studio-bento__item')).toHaveCount(6)
   await expect(page.locator('.studio-bento__item.is-model')).toHaveAttribute('href', '/model-sheet')
   await expect(page.locator('.studio-bento__item.is-coloring')).toHaveAttribute('href', '/ai-illustration-coloring')
@@ -89,15 +89,8 @@ test('composer only offers assistant and text-to-image while the tool wall stays
   await expect(page.locator('.studio-bento__item.is-game')).toHaveAttribute('href', '/game-art')
   await expect(page.getByText('开发中', { exact: true })).toHaveCount(0)
 
-  await composerTools.locator('.bi-stars').locator('..').click()
-  await page.locator('.studio-composer__control.is-field.is-skill').click()
-  const skillOptions = page.locator('.studio-composer__field-menu > button')
-  await skillOptions.nth(2).click()
-  await skillOptions.nth(4).click()
-
-  await expect(page.locator('.studio-composer__field-menu')).toBeVisible()
-  await expect(page.locator('.studio-composer__field-menu > button.is-selected')).toHaveCount(3)
-  await expect(page.locator('.studio-composer__control.is-field.is-skill')).toContainText('3')
+  await page.getByRole('menuitem', { name: /^文生图/ }).click()
+  await expect(page.locator('.studio-composer__control.is-field.is-skill')).toHaveCount(0)
 })
 
 test('composer uploads a reference image and calculates points before launch', async ({ page }) => {
@@ -138,7 +131,7 @@ test('composer uploads a reference image and calculates points before launch', a
   await expect(page.locator('.studio-composer__reference')).toHaveCount(1)
 
   await page.locator('.studio-composer__control.is-workflow').click()
-  await page.locator('.studio-composer__tool-menu .bi-stars').locator('..').click()
+  await page.getByRole('menuitem', { name: /^文生图/ }).click()
   await page.locator('.studio-composer__input').fill('一张带有冷色灯光的产品主图')
   await page.locator('.studio-composer__submit').click()
 
@@ -158,7 +151,7 @@ test('composer uploads a reference image and calculates points before launch', a
 test('text-to-image models show points without auto matching', async ({ page }) => {
   await page.goto('/studio')
   await page.locator('.studio-composer__control.is-workflow').click()
-  await page.locator('.studio-composer__tool-menu .bi-stars').locator('..').click()
+  await page.getByRole('menuitem', { name: /^文生图/ }).click()
   await expect(page.locator('.studio-composer__control.is-field.is-model')).toContainText('gpt-image-2')
   await expect(page.locator('.studio-composer__control.is-field.is-model')).toContainText('折扣 3积分')
   await page.locator('.studio-composer__control.is-field.is-model').click()

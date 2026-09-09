@@ -146,3 +146,40 @@ func TestAdminPlanCRUDAndPublicCatalog(t *testing.T) {
 		t.Fatalf("public archived plans = %#v", publicData["items"])
 	}
 }
+
+func TestAdminContractPlanControlsAndVersionHistory(t *testing.T) {
+	env := newCommunityEnv(t)
+	_, token := env.newUserSession(t, "admin")
+	r := env.do(t, http.MethodPost, "/api/v1/admin/plans", gin.H{"code": "eligible-pack", "name": "合格额度包", "kind": "topup", "priceCents": 3000, "grantCents": 100, "priceLockEligible": true}, token)
+	d, _ := decode(t, r)
+	if r.Code != 200 || d["priceLockEligible"] != true || d["revision"] != float64(1) {
+		t.Fatalf("create=%d %s", r.Code, r.Body.String())
+	}
+	id := d["id"].(string)
+	r = env.do(t, http.MethodPatch, "/api/v1/admin/plans/"+id, gin.H{"priceLockEligible": false}, token)
+	d, _ = decode(t, r)
+	if r.Code != 200 || d["priceLockEligible"] != false || d["revision"] != float64(2) {
+		t.Fatalf("patch=%d %s", r.Code, r.Body.String())
+	}
+	r = env.do(t, http.MethodGet, "/api/v1/admin/plans/"+id+"/versions", nil, token)
+	d, _ = decode(t, r)
+	if r.Code != 200 || len(d["items"].([]any)) != 2 {
+		t.Fatalf("versions=%d %s", r.Code, r.Body.String())
+	}
+	if r = env.do(t, http.MethodDelete, "/api/v1/admin/plans/"+id, nil, token); r.Code != http.StatusNoContent {
+		t.Fatalf("unused versioned plan delete=%d %s", r.Code, r.Body.String())
+	}
+	policy := store.DefaultSubscriptionPolicy()
+	policy.AllowTopupPriceLock = true
+	bonus := 9
+	policy.ConcurrencyBonus = &bonus
+	r = env.do(t, http.MethodPost, "/api/v1/admin/plans", gin.H{"code": "contract-sub", "name": "合同订阅", "kind": "subscription", "priceCents": 3900, "grantCents": 0, "durationDays": 30, "dailyGrantCents": 100, "subscriptionPolicy": policy}, token)
+	d, _ = decode(t, r)
+	if r.Code != 200 {
+		t.Fatalf("subscription=%d %s", r.Code, r.Body.String())
+	}
+	saved := d["subscriptionPolicy"].(map[string]any)
+	if saved["concurrencyBonus"] != float64(9) || saved["allowTopupPriceLock"] != true {
+		t.Fatalf("policy=%+v", saved)
+	}
+}

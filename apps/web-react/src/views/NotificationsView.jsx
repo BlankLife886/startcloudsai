@@ -5,7 +5,7 @@ import {
   listNotifications,
   markNotificationsRead,
 } from "@react/legacy-modules/services/meApi.js";
-import { getActiveAnnouncements } from "@react/legacy-modules/services/metaApi.js";
+import { useLiveAnnouncements } from "../features/announcements/useLiveAnnouncements.js";
 import { TASK_UPDATE_EVENT } from "@react/legacy-modules/services/tasksApi.js";
 import notificationService from "@react/legacy-modules/services/notification.js";
 import { translateClientText } from "@react/legacy-modules/i18n/clientTranslations.js";
@@ -64,6 +64,7 @@ function formatClock(value) {
 }
 
 function kindMeta(item) {
+  if (String(item?.sourceType || '').startsWith('subscription_')) return { icon: 'bi-credit-card', label: '订阅', tone: 'wallet' };
   const kind = String(item?.kind || "").toLowerCase();
   const title = String(item?.title || "");
   if (kind === "trial_access")
@@ -89,15 +90,18 @@ function kindMeta(item) {
 }
 
 function itemHref(item) {
+  if (String(item?.targetPath || '').startsWith('/subscriptions?')) return item.targetPath;
   const kind = String(item?.kind || "").toLowerCase();
   if (kind === "trial_access") return null;
   if (kind.includes("task")) return "/history";
   if (kind.includes("wallet") || kind.includes("redeem")) return "/wallet";
   if (kind.includes("gallery")) return "/submissions";
+  if (kind === "order") return "/orders";
   return null;
 }
 
 function itemScope(item) {
+  if (String(item?.sourceType || '').startsWith('subscription_')) return 'wallet';
   const kind = String(item?.kind || "").toLowerCase();
   if (kind === "trial_access") return "trial";
   if (kind.includes("task")) return "task";
@@ -268,11 +272,15 @@ export function NotificationsView() {
   const [clearing, setClearing] = useState(false);
   const [unread, setUnread] = useState(0);
   const [scope, setScope] = useState("all");
-  const [announcements, setAnnouncements] = useState([]);
-  const [announcementsLoading, setAnnouncementsLoading] = useState(false);
-  const [announcementsLoaded, setAnnouncementsLoaded] = useState(false);
-  const [announcementsError, setAnnouncementsError] = useState("");
+  const { items: announcements, loading: announcementsLoading, error: announcementsError, refresh: loadAnnouncements } = useLiveAnnouncements();
+  const announcementsLoaded = !announcementsLoading;
   const [expandedAnnouncementId, setExpandedAnnouncementId] = useState(null);
+
+  useEffect(() => {
+    if (expandedAnnouncementId && !announcements.some((item) => item.id === expandedAnnouncementId)) {
+      setExpandedAnnouncementId(null);
+    }
+  }, [announcements, expandedAnnouncementId]);
 
   const pageTab =
     new URLSearchParams(location.search).get("tab") === "announce"
@@ -362,29 +370,10 @@ export function NotificationsView() {
     }
   }, []);
 
-  const loadAnnouncements = useCallback(async () => {
-    setAnnouncementsLoading(true);
-    setAnnouncementsError("");
-    try {
-      const rows = await getActiveAnnouncements();
-      if (!mountedRef.current) return;
-      setAnnouncements(Array.isArray(rows) ? rows : []);
-      setAnnouncementsLoaded(true);
-    } catch (loadError) {
-      if (mountedRef.current) {
-        setAnnouncementsError(loadError?.message || "公告读取失败");
-        setAnnouncementsLoaded(true);
-      }
-    } finally {
-      if (mountedRef.current) setAnnouncementsLoading(false);
-    }
-  }, []);
-
   useEffect(() => {
     mountedRef.current = true;
     loadingRef.current = false;
     loadList();
-    loadAnnouncements();
     const onUpdated = (event) => {
       if (event?.detail?.source === "mark-all") {
         const readAt = new Date().toISOString();
@@ -419,7 +408,6 @@ export function NotificationsView() {
     const refresh = () => {
       if (document.visibilityState !== "visible") return;
       if (!loadingMoreRef.current && itemsRef.current.length <= 20) loadList();
-      loadAnnouncements();
     };
     const onTaskUpdate = (event) => {
       if (
@@ -446,7 +434,7 @@ export function NotificationsView() {
       if (realtimeTimerRef.current)
         window.clearTimeout(realtimeTimerRef.current);
     };
-  }, [loadList, loadAnnouncements]);
+  }, [loadList]);
 
   useEffect(() => {
     if (!sentinelRef.current || !cursor) return undefined;

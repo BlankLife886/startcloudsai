@@ -213,6 +213,11 @@ func normalizeModelReasoningPricing(model *Model) {
 	pricing := model.ReasoningPricing
 	if pricing == nil {
 		pricing = &ReasoningPricing{}
+	} else {
+		// Models are also passed by value in pricing and validation helpers.
+		// Keep normalization from modifying their shared pricing pointer.
+		owned := *pricing
+		pricing = &owned
 	}
 	if pricing.Efforts == nil {
 		pricing.Efforts = map[string]ReasoningEffortPricing{}

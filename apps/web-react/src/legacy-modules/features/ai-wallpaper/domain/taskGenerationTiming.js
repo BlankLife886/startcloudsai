@@ -32,3 +32,22 @@ export function taskGenerationElapsedMs(task, now = Date.now()) {
   }
   return Math.max(0, Number(now || 0) - startedAt)
 }
+
+export function taskTotalElapsedMs(task, now = Date.now()) {
+  if (!task) return 0
+  const start = taskTimestamp(task.createdAt || task.created_at || task.startedAt || task.started_at)
+  if (!start) return 0
+  const end = taskTimestamp(task.finishedAt || task.finished_at)
+  if (end) return Math.max(0, end - start)
+  const status = String(task.status || '').toLowerCase()
+  if (status && !['queued', 'running', 'waiting_provider'].includes(status)) return 0
+  return Math.max(0, Number(now || 0) - start)
+}
+
+export function taskGroupTotalElapsedMs(tasks, now = Date.now()) {
+  const spans = (tasks || []).map((task) => {
+    const start = taskTimestamp(task?.createdAt || task?.startedAt)
+    return start ? { start, end: start + taskTotalElapsedMs(task, now) } : null
+  }).filter(Boolean)
+  return spans.length ? Math.max(0, Math.max(...spans.map((item) => item.end)) - Math.min(...spans.map((item) => item.start))) : 0
+}

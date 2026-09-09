@@ -8,11 +8,11 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const notificationCols = `id, user_id, kind, title, body, read_at, created_at, source_type, source_id`
+const notificationCols = `id, user_id, kind, title, body, read_at, created_at, source_type, source_id, target_path`
 
 func scanNotification(row pgx.Row) (*Notification, error) {
 	var n Notification
-	err := row.Scan(&n.ID, &n.UserID, &n.Kind, &n.Title, &n.Body, &n.ReadAt, &n.CreatedAt, &n.SourceType, &n.SourceID)
+	err := row.Scan(&n.ID, &n.UserID, &n.Kind, &n.Title, &n.Body, &n.ReadAt, &n.CreatedAt, &n.SourceType, &n.SourceID, &n.TargetPath)
 	if err != nil {
 		return nil, err
 	}

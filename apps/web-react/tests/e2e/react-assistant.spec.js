@@ -326,10 +326,11 @@ test.describe('React assistant workspace contract', () => {
     await page.locator('.image-model-menu').getByRole('button', { name: /Schema Only/ }).click()
     await page.locator('.image-settings-button').click()
 
-    await expect(page.getByText('选择比例', { exact: true })).toBeVisible()
-    await expect(page.getByText('选择分辨率', { exact: true })).toHaveCount(0)
-    await expect(page.getByText('选择质量', { exact: true })).toHaveCount(0)
-    await expect(page.getByText('尺寸', { exact: true })).toHaveCount(0)
+    const preferences = page.locator('.image-mode-preferences')
+    await expect(preferences.getByText('比例', { exact: true })).toBeVisible()
+    await expect(preferences.getByText('分辨率', { exact: true })).toHaveCount(0)
+    await expect(preferences.getByText('质量', { exact: true })).toHaveCount(0)
+    await expect(preferences.getByRole('button', { name: '精确尺寸', exact: true })).toHaveCount(0)
 
     await page.getByLabel('消息输入').fill('生成一个品牌图标')
     await page.getByRole('button', { name: '发送' }).click()
@@ -922,6 +923,7 @@ test.describe('React assistant workspace contract', () => {
         message('preview-user', 'user', '生成两张预览图'),
         message('preview-assistant', 'assistant', '', {
           kind: 'image',
+          ratio: '16:9',
           images: [
             { id: 'preview-one', dataUrl: '/sucai/home-intro-02.png', revisedPrompt: '预览图一' },
             { id: 'preview-two', dataUrl: '/sucai/home-intro-03.png', revisedPrompt: '预览图二' },
@@ -932,6 +934,10 @@ test.describe('React assistant workspace contract', () => {
     await mockAssistant(page, { conversations })
     await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
 
+    const firstImage = page.locator('.generated-images figure').first()
+    await firstImage.hover()
+    await expect(firstImage.locator('.generated-image-ratio')).toHaveText('16:9')
+    await expect(firstImage.locator('.generated-image-ratio')).toBeVisible()
     await page.locator('.generated-image-preview').first().click()
     const viewer = page.locator('.wallpaper-fullscreen-preview')
     await expect(viewer).toBeVisible()
@@ -1539,6 +1545,79 @@ test.describe('React assistant workspace contract', () => {
         { fileKey: 'uploads/proposal/edit-1.png' },
         { fileKey: 'uploads/proposal/edit-3.png' },
       ],
+    })
+  })
+
+  test('edits each image ratio and resolution directly in an independent proposal', async ({ page }) => {
+    let runBody = null
+    const proposal = {
+      action: 'generate',
+      prompt: '生成一组品牌视觉',
+      model: 'image-pro',
+      ratio: '16:9',
+      resolution: '2K',
+      count: 2,
+      quality: 'medium',
+      items: [
+        { id: 'hero', title: '主图', prompt: '横版品牌主图', ratio: '16:9', resolution: '2K', quality: 'medium', referencedImageIds: [] },
+        { id: 'detail', title: '细节图', prompt: '方形品牌细节', ratio: '1:1', resolution: '1K', quality: 'medium', referencedImageIds: [] },
+      ],
+    }
+    await mockAssistant(page, {
+      conversations: [{
+        id: 'independent-proposal-conversation',
+        title: '独立方案测试',
+        messages: [
+          message('independent-user', 'user', '生成两张不同尺寸的品牌图片'),
+          message('independent-proposal', 'assistant', '已整理方案', { kind: 'proposal', proposal }),
+        ],
+      }],
+    })
+    await page.route('**/api/v1/assistant/runs', async (route) => {
+      if (route.request().method() !== 'POST') {
+        await fulfillJson(route, { runs: [] })
+        return
+      }
+      runBody = route.request().postDataJSON()
+      await fulfillJson(route, succeededRun(runBody), 201)
+    })
+    await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
+
+    await expect(page.locator('.agent-proposal-plan-settings')).toHaveCount(2)
+    await expect(page.locator('.agent-proposal-plan-settings .agent-proposal-trigger')).toHaveCount(4)
+    await expect(page.getByLabel('生成模型')).toHaveCount(1)
+    await expect(page.getByLabel('图片质量')).toHaveCount(1)
+    await expect(page.getByLabel('生成数量')).toHaveCount(1)
+    await expect(page.getByLabel('画面比例')).toHaveCount(0)
+    await expect(page.getByLabel('清晰度', { exact: true })).toHaveCount(0)
+    const firstTitleBox = await page.locator('.agent-proposal-plan-item-head strong').first().boundingBox()
+    const firstPromptBox = await page.locator('.agent-proposal-plan-prompt').first().boundingBox()
+    const firstSettingsBox = await page.locator('.agent-proposal-plan-settings').first().boundingBox()
+    expect(firstSettingsBox.x).toBeGreaterThan(firstTitleBox.x + firstTitleBox.width - 4)
+    expect(firstSettingsBox.y).toBeLessThan(firstPromptBox.y)
+    const heroRatio = page.getByRole('button', { name: '主图比例' })
+    await heroRatio.scrollIntoViewIfNeeded()
+    await page.waitForTimeout(200)
+    await heroRatio.click()
+    await expect(heroRatio).toHaveAttribute('aria-expanded', 'true')
+    await page.locator('.agent-proposal-menu').getByRole('option', { name: '9:16' }).click()
+    await page.getByRole('button', { name: '主图分辨率' }).click()
+    await page.locator('.agent-proposal-menu').getByRole('option', { name: '4K' }).click()
+    await expect(page.getByRole('button', { name: '主图比例' })).toContainText('9:16')
+    await expect(page.getByRole('button', { name: '主图分辨率' })).toContainText('4K')
+
+    await page.getByRole('button', { name: '编辑主图提示词' }).click()
+    const promptDialog = page.locator('.agent-proposal-prompt-dialog')
+    await expect(promptDialog.locator('select')).toHaveCount(0)
+    await promptDialog.getByLabel('编辑生成提示词').fill('竖版品牌主图')
+    await promptDialog.getByRole('button', { name: '完成' }).click()
+    await page.getByRole('button', { name: '开始生成' }).click()
+
+    expect(runBody.imagePlanItems[0]).toMatchObject({
+      id: 'hero', prompt: '竖版品牌主图', ratio: '9:16', resolution: '4K', requestSize: '2304x4096',
+    })
+    expect(runBody.imagePlanItems[1]).toMatchObject({
+      id: 'detail', ratio: '1:1', resolution: '1K', requestSize: '1024x1024',
     })
   })
 

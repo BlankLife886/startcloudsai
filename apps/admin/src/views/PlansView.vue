@@ -11,12 +11,17 @@ import {
 } from "@element-plus/icons-vue";
 import draggable from "vuedraggable";
 import AdminDialog from "@/components/AdminDialog.vue";
+import PlanVersionHistory from "@/components/PlanVersionHistory.vue";
 import { normalizeList, request } from "@/request";
 import { formatPoints, formatTime, normalizePoints } from "@/utils";
 
 type PlanKind = "topup" | "subscription";
 
 interface Plan {
+  rechargePolicy?: { pointsPerYuan: number; priceLockMinYuan: number } | null;
+  subscriptionPolicy?: { version: number; series: string; tier: number; channels: string[]; featureKeys: string[]; modelIds: string[]; refundWindowHours?: number; lockModelPrices?: boolean; allowTopupPriceLock?: boolean; concurrencyBonus?: number };
+  revision: number;
+  priceLockEligible: boolean;
   id: string;
   code: string;
   name: string;
@@ -40,6 +45,19 @@ interface Plan {
 }
 
 interface PlanForm {
+  customAmount: boolean;
+  pointsPerYuan: number;
+  priceLockMinYuan: number;
+  lockModelPrices: boolean;
+  allowTopupPriceLock: boolean;
+  priceLockEligible: boolean;
+  concurrencyBonus: number;
+  series: string;
+  tier: number;
+  channels: string[];
+  featureKeys: string[];
+  modelIdsText: string;
+  refundWindowHours: number;
   code: string;
   name: string;
   description: string;
@@ -57,6 +75,7 @@ interface PlanForm {
 }
 
 const plans = ref<Plan[]>([]);
+const baseConcurrency = ref(4);
 const loading = ref(false);
 const loadError = ref("");
 const saving = ref(false);
@@ -67,6 +86,9 @@ const statusFilter = ref<"" | "active" | "inactive">("");
 
 function defaultForm(): PlanForm {
   return {
+    customAmount: true, pointsPerYuan: 100, priceLockMinYuan: 30,
+    lockModelPrices: true, allowTopupPriceLock: false, priceLockEligible: false, concurrencyBonus: 0,
+    series: "general", tier: 1, channels: ["web", "api"], featureKeys: [], modelIdsText: "", refundWindowHours: 3,
     code: "",
     name: "",
     description: "",
@@ -145,11 +167,12 @@ async function loadPlans() {
   loading.value = true;
   loadError.value = "";
   try {
-    const data = await request<Plan[] | { items: Plan[] }>(
+    const data = await request<Plan[] | { items: Plan[]; baseConcurrency?: number }>(
       "/api/v1/admin/plans",
       { silent: true },
     );
     plans.value = normalizeList(data).items;
+    if (!Array.isArray(data)) baseConcurrency.value = data.baseConcurrency ?? 4;
   } catch (error) {
     plans.value = [];
     loadError.value = error instanceof Error ? error.message : "套餐读取失败";
@@ -174,6 +197,13 @@ function openEdit(row: unknown) {
   editingId.value = plan.id;
   Object.assign(form, {
     ...defaultForm(),
+    customAmount: Boolean(plan.rechargePolicy),
+    pointsPerYuan: plan.rechargePolicy?.pointsPerYuan ?? 100,
+    priceLockMinYuan: plan.rechargePolicy?.priceLockMinYuan ?? 30,
+    priceLockEligible: plan.priceLockEligible ?? false,
+    lockModelPrices: plan.subscriptionPolicy?.lockModelPrices ?? true,
+    allowTopupPriceLock: plan.subscriptionPolicy?.allowTopupPriceLock ?? false,
+    concurrencyBonus: plan.subscriptionPolicy?.concurrencyBonus ?? 0,
     code: plan.code,
     name: plan.name,
     description: plan.description || "",
@@ -185,6 +215,12 @@ function openEdit(row: unknown) {
     durationDays: Number(plan.durationDays || 0),
     dailyGrantPoints: Number(plan.dailyGrantCents || 0),
     featuresText: (plan.features || []).join("\n"),
+    series: plan.subscriptionPolicy?.series || "general",
+    tier: plan.subscriptionPolicy?.tier || 1,
+    channels: plan.subscriptionPolicy?.channels || ["web", "api"],
+    featureKeys: plan.subscriptionPolicy?.featureKeys || [],
+    modelIdsText: (plan.subscriptionPolicy?.modelIds || []).join("\n"),
+    refundWindowHours: plan.subscriptionPolicy?.refundWindowHours ?? 24,
     active: plan.active,
     recommended: plan.recommended,
     sort: Number(plan.sort || 0),
@@ -204,6 +240,9 @@ function parseFeatures() {
 }
 
 function validateForm() {
+  if (form.kind === 'topup' && form.customAmount && (!Number.isInteger(form.pointsPerYuan) || form.pointsPerYuan < 1 || form.pointsPerYuan > 1000000 || !Number.isInteger(form.priceLockMinYuan) || form.priceLockMinYuan < 1 || form.priceLockMinYuan > Math.min(1000, Math.floor(1000000000 / form.pointsPerYuan)))) {
+    ElMessage.warning('请检查每元积分和锁价门槛，均须为范围内的正整数'); return false;
+  }
   form.code = form.code.trim().toLowerCase();
   form.name = form.name.trim();
   form.description = form.description.trim();
@@ -224,7 +263,7 @@ function validateForm() {
     ElMessage.warning("销售价格不能为负数");
     return false;
   }
-  if (form.kind === "topup" && form.grantPoints + form.bonusPoints <= 0) {
+  if (form.kind === "topup" && !form.customAmount && form.grantPoints + form.bonusPoints <= 0) {
     ElMessage.warning("积分包的发放积分必须大于 0");
     return false;
   }
@@ -245,19 +284,22 @@ function validateForm() {
 
 function buildPayload() {
   return {
+    rechargePolicy: form.kind === 'topup' && form.customAmount ? { pointsPerYuan: form.pointsPerYuan, priceLockMinYuan: form.priceLockMinYuan } : null,
+    priceLockEligible: form.kind === 'topup' && form.priceLockEligible,
     code: form.code,
     name: form.name,
     description: form.description,
     badge: form.badge,
     kind: form.kind,
-    priceCents: Math.round(Number(form.priceYuan || 0) * 100),
-    grantCents: form.kind === "topup" ? normalizePoints(form.grantPoints) : 0,
-    bonusCents: form.kind === "topup" ? normalizePoints(form.bonusPoints) : 0,
+    priceCents: form.kind === 'topup' && form.customAmount ? 100 : Math.round(Number(form.priceYuan || 0) * 100),
+    grantCents: form.kind === "topup" ? form.customAmount ? form.pointsPerYuan : normalizePoints(form.grantPoints) : 0,
+    bonusCents: form.kind === "topup" && !form.customAmount ? normalizePoints(form.bonusPoints) : 0,
     durationDays:
       form.kind === "subscription" ? Math.round(form.durationDays) : 0,
     dailyGrantCents:
       form.kind === "subscription" ? normalizePoints(form.dailyGrantPoints) : 0,
     features: parseFeatures(),
+    subscriptionPolicy: { version: 2, series: form.series.trim(), tier: form.tier, channels: form.channels, featureKeys: form.featureKeys, modelIds: form.modelIdsText.split("\n").map(v => v.trim()).filter(Boolean), refundWindowHours: form.refundWindowHours, lockModelPrices: form.lockModelPrices, allowTopupPriceLock: form.lockModelPrices && form.allowTopupPriceLock, concurrencyBonus: form.concurrencyBonus },
     active: form.active,
     recommended: form.recommended,
     sort: Math.max(0, Math.round(Number(form.sort || 0))),
@@ -281,6 +323,13 @@ async function savePlan() {
   } finally {
     saving.value = false;
   }
+}
+
+const versionsOpen = ref(false);
+const versionsPlan = ref<Plan | null>(null);
+function showVersions(plan: Plan) {
+  versionsPlan.value = plan;
+  versionsOpen.value = true;
 }
 
 async function toggleActive(row: unknown, active: boolean) {
@@ -382,8 +431,9 @@ function formatMoney(cents: number) {
 
 function valueSummary(row: unknown) {
   const plan = row as Plan;
+  if (plan.rechargePolicy) return `每1元 ${formatPoints(plan.rechargePolicy.pointsPerYuan)} 积分 · 整数金额充值`;
   if (plan.kind === "subscription") {
-    return `${plan.durationDays} 天 · 每日 ${formatPoints(plan.dailyGrantCents)} 积分`;
+    return `${plan.durationDays} 天 · 每24小时 ${formatPoints(plan.dailyGrantCents)} 积分`;
   }
   const total = Number(plan.grantCents || 0) + Number(plan.bonusCents || 0);
   return `${formatPoints(total)} 积分${plan.bonusCents > 0 ? `（赠 ${formatPoints(plan.bonusCents)}）` : ""}`;
@@ -487,7 +537,7 @@ onMounted(loadPlans);
           </header>
 
           <div class="plan-card__price">
-            <b>{{ formatMoney(row.priceCents) }}</b>
+            <b>{{ row.rechargePolicy ? '¥1 起充' : formatMoney(row.priceCents) }}</b>
             <span>{{ valueSummary(row) }}</span>
           </div>
 
@@ -500,6 +550,10 @@ onMounted(loadPlans);
           </ul>
 
           <dl class="plan-card__meta">
+            <div v-if="row.kind === 'subscription'"><dt>图片并发</dt><dd>{{ baseConcurrency }} + {{ row.subscriptionPolicy?.concurrencyBonus ?? 0 }} = {{ baseConcurrency + (row.subscriptionPolicy?.concurrencyBonus ?? 0) }} 张</dd></div>
+            <div v-if="row.rechargePolicy && row.priceLockEligible"><dt>锁价门槛</dt><dd>单笔满 {{ row.rechargePolicy.priceLockMinYuan }} 元</dd></div>
+            <div><dt>权益版本</dt><dd><el-button link type="primary" @click="showVersions(row)">第 {{ row.revision || 1 }} 版 · 变更记录</el-button></dd></div>
+            <div><dt>锁价</dt><dd>{{ row.kind === 'topup' ? (row.priceLockEligible ? '接受符合资格的订阅锁价' : '按实时价格消费') : (row.subscriptionPolicy?.lockModelPrices === false ? '不锁定模型价格' : row.subscriptionPolicy?.allowTopupPriceLock ? '订阅及合格额度包' : '仅订阅积分') }}</dd></div>
             <div>
               <dt>使用</dt>
               <dd>订单 {{ row.orderCount || 0 }} · 订阅 {{ row.subscriptionCount || 0 }}</dd>
@@ -547,7 +601,7 @@ onMounted(loadPlans);
     <AdminDialog
       v-model="dialogOpen"
       :title="dialogTitle"
-      subtitle="保存后会实时同步到用户端价格页面"
+      subtitle="新配置影响后续购买与升级，已购订阅权益和额度包资格保持不变"
       :icon="Collection"
       width="780px"
       panel-class="plan-editor-dialog"
@@ -582,7 +636,7 @@ onMounted(loadPlans);
               ]"
             />
           </el-form-item>
-          <el-form-item label="销售价格（元）" required>
+          <el-form-item v-if="form.kind !== 'topup' || !form.customAmount" label="销售价格（元）" required>
             <el-input-number
               v-model="form.priceYuan"
               :min="0"
@@ -592,6 +646,8 @@ onMounted(loadPlans);
             />
           </el-form-item>
         </div>
+
+        <el-form-item v-if="form.kind === 'topup'" label="充值方式"><el-switch v-model="form.customAmount" active-text="自定义整数金额，最低1元" inactive-text="固定额度包" /></el-form-item>
 
         <el-form-item label="套餐说明">
           <el-input
@@ -605,7 +661,11 @@ onMounted(loadPlans);
         </el-form-item>
 
         <div class="plan-form__grid">
-          <template v-if="form.kind === 'topup'">
+          <template v-if="form.kind === 'topup' && form.customAmount">
+            <el-form-item label="每1元兑换积分" required><el-input-number v-model="form.pointsPerYuan" :min="1" :max="1000000" :precision="0" /></el-form-item>
+            <el-form-item label="接受订阅锁价的最低单笔金额（元）" required><el-input-number v-model="form.priceLockMinYuan" :min="1" :max="Math.min(1000, Math.floor(1000000000 / Math.max(form.pointsPerYuan, 1)))" :precision="0" /></el-form-item>
+          </template>
+          <template v-else-if="form.kind === 'topup'">
             <el-form-item label="基础积分" required>
               <el-input-number
                 v-model="form.grantPoints"
@@ -632,7 +692,7 @@ onMounted(loadPlans);
                 :precision="0"
               />
             </el-form-item>
-            <el-form-item label="每日发放积分" required>
+            <el-form-item label="每24小时发放积分" required>
               <el-input-number
                 v-model="form.dailyGrantPoints"
                 :min="1"
@@ -658,6 +718,25 @@ onMounted(loadPlans);
             placeholder="每行一条，最多 12 条"
           />
         </el-form-item>
+        <template v-if="form.kind === 'subscription'">
+          <div class="plan-form__switches">
+            <label><span><strong>订阅模型价格保护</strong><small>有效期内使用订阅锁定价</small></span><el-switch v-model="form.lockModelPrices" /></label>
+            <label><span><strong>延伸至合格额度包</strong><small>同时要求额度包接受锁价；退款审核期间停用</small></span><el-switch v-model="form.allowTopupPriceLock" :disabled="!form.lockModelPrices" /></label>
+          </div>
+          <div class="plan-form__grid">
+            <el-form-item label="订阅额外图片并发"><el-input-number v-model="form.concurrencyBonus" :min="0" :max="1000" :precision="0" /></el-form-item>
+            <el-form-item label="生效后图片并发"><span>基础 {{ baseConcurrency }} + 订阅 {{ form.concurrencyBonus }} = {{ baseConcurrency + form.concurrencyBonus }} 张；对话额度单独配置</span></el-form-item>
+          </div>
+          <div class="plan-form__grid">
+            <el-form-item label="订阅系列"><el-input v-model="form.series" maxlength="64" /></el-form-item>
+            <el-form-item label="升级级别"><el-input-number v-model="form.tier" :min="1" :max="100" :precision="0" /></el-form-item>
+            <el-form-item label="未使用全退窗口（小时）"><el-input-number v-model="form.refundWindowHours" :min="0" :max="720" :precision="0" /></el-form-item>
+          </div>
+          <el-form-item label="使用渠道"><el-checkbox-group v-model="form.channels"><el-checkbox value="web">网站</el-checkbox><el-checkbox value="api">API</el-checkbox></el-checkbox-group></el-form-item>
+          <el-form-item label="适用场景"><el-select v-model="form.featureKeys" multiple clearable placeholder="全部场景" style="width:100%"><el-option v-for="option in [{value:'text_to_image',label:'文生图'},{value:'ai_assistant',label:'AI助手'},{value:'ui_design',label:'UI设计'},{value:'ecommerce_design',label:'电商创作'},{value:'illustration_coloring',label:'插画上色'},{value:'model_sheet',label:'角色设定'},{value:'game_art',label:'游戏美术'},{value:'background_remove',label:'背景移除'},{value:'infinite_canvas',label:'无限画布'}]" :key="option.value" :value="option.value" :label="option.label" /></el-select></el-form-item>
+          <el-form-item label="模型ID范围"><el-input v-model="form.modelIdsText" type="textarea" :rows="3" placeholder="留空允许全部模型，每行一个模型配置ID" /></el-form-item>
+        </template>
+        <el-form-item v-else label="允许此额度包接受订阅锁价"><el-switch v-model="form.priceLockEligible" /></el-form-item>
 
         <div class="plan-form__switches">
           <label>
@@ -677,6 +756,7 @@ onMounted(loadPlans);
         </div>
       </el-form>
     </AdminDialog>
+    <PlanVersionHistory v-model="versionsOpen" :plan="versionsPlan" />
   </div>
 </template>
 

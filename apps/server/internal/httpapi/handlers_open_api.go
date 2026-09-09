@@ -19,6 +19,7 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/netguard"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
+	"github.com/BlankLife886/startcloudsai/server/internal/wallet"
 )
 
 const (
@@ -71,6 +72,7 @@ func openAPIModelItems(cfg modelconfig.Config, allowedModelIDs []string) []gin.H
 			"priceCents": modelconfig.EffectivePrice(model), "maxImages": model.GenerationMaxImages(),
 			"maxReferenceImages": model.MaxReferenceImages, "resolutions": model.Resolutions,
 			"aspectRatios": model.AspectRatios, "qualities": model.Qualities,
+			"supportsExactSize": model.SupportsExactSize, "exactSizeLimits": model.ExactSizeRules(),
 		})
 	}
 	return items
@@ -167,6 +169,7 @@ func (s *Server) openAPIOnly(scope string, handler gin.HandlerFunc) gin.HandlerF
 		c.Set(ctxOpenAPIKey, key)
 		c.Set(ctxOpenAPIUser, user)
 		c.Set(ctxOpenAPI, true)
+		c.Request = c.Request.WithContext(wallet.WithSubscriptionScope(c.Request.Context(), "api", ""))
 		handler(c)
 		statusCode := c.Writer.Status()
 		responseBytes := int64(max(c.Writer.Size(), 0))
@@ -468,6 +471,13 @@ func (s *Server) rotateMyAPIKey(c *gin.Context) {
 	}
 	var replacement *store.UserAPIKey
 	err = s.St.Tx(c.Request.Context(), func(tx pgx.Tx) error {
+		var currentStatus string
+		if err := tx.QueryRow(c.Request.Context(), `SELECT status FROM user_api_keys WHERE id=$1 AND user_id=$2 FOR UPDATE`, id, user.ID).Scan(&currentStatus); err != nil {
+			return err
+		}
+		if currentStatus != "active" {
+			return apperr.E("api_key_not_active", "仅可轮换有效 Key，已冻结的 Key 请联系管理员", 403)
+		}
 		var insertErr error
 		replacement, insertErr = store.InsertUserAPIKey(c.Request.Context(), tx, &store.UserAPIKey{
 			UserID: existing.UserID, KeyPrefix: secret[:min(18, len(secret))], KeyHash: hashAPISecret(secret),
@@ -500,6 +510,25 @@ func (s *Server) openAPIModels(c *gin.Context) {
 		return
 	}
 	ok(c, gin.H{"items": openAPIModelItems(cfg, key.AllowedModelIDs)})
+}
+
+func (s *Server) openAPIUsage(c *gin.Context) {
+	key := openAPIKeyFromContext(c)
+	if key == nil {
+		fail(c, apperr.E("api_key_required", "需要 API Key", 401))
+		return
+	}
+	now := time.Now().UTC()
+	usage, err := store.GetAPIKeyUsageSummary(c.Request.Context(), s.St.Pool, key.ID, now)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	c.Header("Cache-Control", "no-store")
+	ok(c, gin.H{"keyId": key.ID, "usage": usage, "timezone": "UTC", "spendBasis": "submitted_reserved_credits",
+		"dailyResetAt": day.AddDate(0, 0, 1), "monthlyResetAt": time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, time.UTC),
+		"limits": gin.H{"dailyTasks": key.DailyTaskLimit, "monthlyTasks": key.MonthlyTaskLimit, "dailyPoints": key.DailySpendLimitCents, "monthlyPoints": key.MonthlySpendLimitCents, "dailyBytes": key.DailyByteLimit, "requestsPerMinute": key.RateLimitPerMinute}})
 }
 
 func (s *Server) myOpenAPIModels(c *gin.Context) {

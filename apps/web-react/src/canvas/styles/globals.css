@@ -2403,18 +2403,28 @@ html.settings-no-animations .canvas-nav-map {
     flex: 1;
 }
 
+.canvas-home-library.is-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
 .canvas-home-start {
     display: grid;
-    width: min(420px, 100%);
-    margin-top: 12px;
-    padding: 28px 24px 26px;
-    place-items: center;
-    gap: 10px;
+    width: min(320px, 70vw, 62vh);
+    aspect-ratio: 1;
+    align-content: center;
+    justify-items: center;
+    gap: 14px;
+    padding: 28px 24px;
     border: 1px dashed rgba(109, 92, 255, 0.28);
-    border-radius: 20px;
+    border-radius: 22px;
     background:
-        radial-gradient(circle at 50% 28%, rgba(124, 58, 237, 0.1), transparent 42%),
-        rgba(255, 255, 255, 0.72);
+        radial-gradient(circle at 50% 28%, rgba(124, 58, 237, 0.14), transparent 48%),
+        rgba(255, 255, 255, 0.78);
+    box-shadow:
+        0 1px 0 rgba(255, 255, 255, 0.85) inset,
+        0 20px 48px rgba(91, 77, 255, 0.1);
     color: inherit;
     text-align: center;
     cursor: pointer;
@@ -2424,26 +2434,36 @@ html.settings-no-animations .canvas-nav-map {
 .canvas-home-start:focus-visible {
     border-color: rgba(109, 92, 255, 0.5);
     background:
-        radial-gradient(circle at 50% 28%, rgba(124, 58, 237, 0.14), transparent 46%),
+        radial-gradient(circle at 50% 28%, rgba(124, 58, 237, 0.18), transparent 50%),
         #fff;
+    box-shadow:
+        0 1px 0 rgba(255, 255, 255, 0.95) inset,
+        0 24px 56px rgba(91, 77, 255, 0.14);
+}
+
+.canvas-home-start .canvas-project-tile__plus {
+    width: 56px;
+    height: 56px;
 }
 
 .canvas-home-start strong {
-    font-size: 16px;
-    font-weight: 700;
+    font-size: 18px;
+    font-weight: 720;
     letter-spacing: -0.02em;
 }
 
 .canvas-home-start > span:last-child {
     color: #7a738f;
     font-size: 13px;
+    line-height: 1.45;
 }
 
 .dark .canvas-home-start {
     border-color: rgba(167, 139, 250, 0.24);
     background:
-        radial-gradient(circle at 50% 28%, rgba(124, 58, 237, 0.16), transparent 42%),
+        radial-gradient(circle at 50% 28%, rgba(124, 58, 237, 0.2), transparent 48%),
         rgba(255, 255, 255, 0.04);
+    box-shadow: 0 20px 48px rgba(0, 0, 0, 0.28);
 }
 
 .dark .canvas-home-start > span:last-child {

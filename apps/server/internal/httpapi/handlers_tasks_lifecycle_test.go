@@ -109,6 +109,96 @@ func TestDeleteTaskOutputRemovesOneImageFromABatch(t *testing.T) {
 	}
 }
 
+func TestDeleteOnlyEmptyHistoryProtectsOutputsAndActiveWork(t *testing.T) {
+	env := newCommunityEnv(t)
+	user, token := env.newUserSession(t, "user")
+	ctx := context.Background()
+	for _, entry := range []struct {
+		name, status, source, outputs, thumbnails string
+		wantStatus                                int
+	}{
+		{"failed", "failed", "", `[]`, `[]`, http.StatusOK},
+		{"stopped", "canceled", "", `[]`, `[]`, http.StatusOK},
+		{"empty-completed", "succeeded", "", `[]`, `[]`, http.StatusOK},
+		{"empty-canvas", "canceled", "react_canvas", `[]`, `[]`, http.StatusOK},
+		{"failed-with-image", "failed", "", `["tasks/test/saved.png"]`, `[]`, http.StatusConflict},
+		{"stopped-with-thumbnail", "canceled", "", `[]`, `["tasks/test/thumb.png"]`, http.StatusConflict},
+		{"canvas-with-image", "succeeded", "react_canvas", `["tasks/test/saved.png"]`, `[]`, http.StatusConflict},
+		{"running", "running", "", `[]`, `[]`, http.StatusBadRequest},
+		{"queued", "queued", "", `[]`, `[]`, http.StatusBadRequest},
+	} {
+		t.Run(entry.name, func(t *testing.T) {
+			var id uuid.UUID
+			if err := env.st.Pool.QueryRow(ctx, `INSERT INTO tasks(user_id,type,prompt,status,params,input_keys,output_keys,thumbnail_keys,cost_cents)
+				VALUES($1,'t2i','cleanup',$2,jsonb_build_object('_source',$3::text),'[]',$4::jsonb,$5::jsonb,0) RETURNING id`,
+				user.ID, entry.status, entry.source, entry.outputs, entry.thumbnails).Scan(&id); err != nil {
+				t.Fatal(err)
+			}
+			// Force/cascade options must not override the empty-only condition.
+			w := env.do(t, http.MethodDelete, "/api/v1/tasks/"+id.String()+"?history=true&onlyEmpty=true&forceMedia=true&cascade=true", nil, token)
+			_, code := decode(t, w)
+			if w.Code != entry.wantStatus || (w.Code == http.StatusConflict && code != "task_has_outputs") {
+				t.Fatalf("status=%d code=%s body=%s", w.Code, code, w.Body.String())
+			}
+			var removed bool
+			if err := env.st.Pool.QueryRow(ctx, `SELECT deleted_at IS NOT NULL FROM tasks WHERE id=$1`, id).Scan(&removed); err != nil || removed != (entry.wantStatus == http.StatusOK) {
+				t.Fatalf("removed=%v err=%v", removed, err)
+			}
+		})
+	}
+	var cleanupJobs int
+	if err := env.st.Pool.QueryRow(ctx, `SELECT count(*) FROM object_cleanup_jobs`).Scan(&cleanupJobs); err != nil || cleanupJobs != 0 {
+		t.Fatalf("existing image objects queued for deletion: %d %v", cleanupJobs, err)
+	}
+}
+
+func TestDeleteOnlyEmptyAssistantHistoryPreservesMessagesAndImages(t *testing.T) {
+	env := newCommunityEnv(t)
+	user, token := env.newUserSession(t, "user")
+	ctx := context.Background()
+	for _, withImage := range []bool{false, true} {
+		now := time.Now().UTC()
+		conversation, err := store.InsertAssistantConversationWithWorkspace(ctx, env.st.Pool, uuid.New(), user.ID, "empty history", "assistant", now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		input, err := store.InsertAssistantMessage(ctx, env.st.Pool, store.AssistantMessage{ID: uuid.New(), ConversationID: conversation.ID, Role: "user", Content: "image", Kind: "text", Status: "complete", CreatedAt: now})
+		if err != nil {
+			t.Fatal(err)
+		}
+		metadata := map[string]any{}
+		if withImage {
+			metadata["images"] = []map[string]any{{"fileKey": "tasks/" + user.ID.String() + "/saved.png"}}
+		}
+		output, err := store.InsertAssistantMessage(ctx, env.st.Pool, store.AssistantMessage{ID: uuid.New(), ConversationID: conversation.ID, Role: "assistant", Content: "stopped", Kind: "image", Status: "failed", Metadata: metadata, CreatedAt: now})
+		if err != nil {
+			t.Fatal(err)
+		}
+		run, err := store.InsertAssistantRun(ctx, env.st.Pool, store.AssistantRun{ID: uuid.New(), UserID: user.ID, ConversationID: conversation.ID, UserMessageID: input.ID, AssistantMessageID: output.ID, Mode: "image", Prompt: "image", Params: map[string]any{}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.st.Pool.Exec(ctx, `UPDATE assistant_runs SET status='canceled',finished_at=$2 WHERE id=$1`, run.ID, now); err != nil {
+			t.Fatal(err)
+		}
+		w := env.do(t, http.MethodDelete, "/api/v1/tasks/"+run.ID.String()+"?history=true&onlyEmpty=true", nil, token)
+		_, code := decode(t, w)
+		if (withImage && (w.Code != http.StatusConflict || code != "task_has_outputs")) || (!withImage && w.Code != http.StatusOK) {
+			t.Fatalf("withImage=%v status=%d code=%s body=%s", withImage, w.Code, code, w.Body.String())
+		}
+		message, err := store.GetAssistantMessage(ctx, env.st.Pool, output.ID)
+		if err != nil || message == nil || message.Content != "stopped" {
+			t.Fatalf("assistant message changed: %+v %v", message, err)
+		}
+		if withImage {
+			keys, err := store.ListUserAssistantMessageOutputKeys(ctx, env.st.Pool, user.ID, output.ID)
+			if err != nil || len(keys) == 0 {
+				t.Fatalf("assistant image removed: %v %v", keys, err)
+			}
+		}
+	}
+}
+
 func TestDeleteTaskProtectsReferencedOutputs(t *testing.T) {
 	env := newCommunityEnv(t)
 	user, token := env.newUserSession(t, "user")

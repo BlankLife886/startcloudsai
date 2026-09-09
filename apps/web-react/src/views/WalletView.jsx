@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router";
+import { PageEntryLink as Link } from "../page-control/PageEntryLink.jsx";
 import { downloadWalletBill, getWallet, getWalletSummary, listWalletLedger } from "@react/legacy-modules/services/meApi.js";
 import {
   claimTrialAccessReward,
@@ -24,15 +24,20 @@ const SUMMARY_LINKS = {
   growth_group: "/incentive-plans/group",
   feedback_adoption: "/incentive-plans/suggestion",
   task_failure_bonus: "/incentive-plans/failure",
-  order: "/incentive-plans/membership",
-  subscription_daily: "/incentive-plans/membership",
+  order: "/orders",
+  subscription_daily: "/subscriptions",
+  subscription_cycle: "/subscriptions",
+  subscription_refund_hold: "/subscriptions",
+  subscription_upgrade_exchange: "/subscriptions?view=changes",
+  subscription_cycle_expiry: "/subscriptions",
 };
 const FILTERS = [
   ["all", "全部"],
   ["income", "入账"],
   ["spend", "消费"],
   ["pending", "冻结"],
-  ["refund", "退款"],
+  ["refund", "退回"],
+  ["adjustment", "权益回收"],
 ];
 const TASK_TYPES = {
   t2i: "文生图",
@@ -165,13 +170,47 @@ function presentationFor(entry) {
   const label = taskLabel(entry);
   const status = String(entry?.task?.status || "").toLowerCase();
   const statusLabel = TASK_STATUSES[status] || "";
-  const cost = Math.max(0, Number(entry?.task?.costPoints || Math.abs(delta)));
+  const cost = Math.max(0, Number(entry?.settledPoints ?? entry?.task?.costPoints ?? Math.abs(delta)));
   const meta = taskMeta(entry);
   const model = taskModel(entry);
   const remaining = remainingCents(entry);
   const remainingText = remaining == null ? "—" : formatPoints(remaining, { withUnit: false });
   const reason = String(entry?.reason || "").trim();
   const userStopped = reason.includes("用户主动停止");
+
+  if (entry?.sourceType === "subscription_cycle_expiry") return {
+    icon: "bi-clock-history", tone: "adjustment", kindLabel: "周期到期", title: "订阅额度到期", badge: "已失效",
+    amount: delta ? amount.text : "旧周期额度已失效", amountTone: "neutral",
+    description: reason || "上一周期未用额度已失效，不结转到新一期；这不是创作消费。", meta: "", model: "—", remainingText,
+  };
+
+  if (entry?.sourceType === "subscription_refund_hold") {
+    const freezing = kind === "freeze", restoring = kind === "release";
+    return {
+      icon: freezing ? "bi-lock" : restoring ? "bi-unlock" : "bi-receipt",
+      tone: freezing ? "pending" : restoring ? "refund" : "adjustment",
+      kindLabel: freezing ? "退订冻结" : restoring ? "退订解冻" : "退订回收",
+      title: "订阅退订", badge: freezing ? "等待退款处理" : restoring ? "已恢复" : "已结束",
+      amount: freezing || restoring ? amount.text : "已回收冻结额度",
+      amountTone: freezing ? "spend" : restoring ? "income" : "neutral",
+      description: freezing ? "退订申请已受理，暂时冻结订阅积分。不是AI任务扣费，通用积分不受影响。" : restoring ? "退订申请未通过，订阅积分已解除冻结，按原有效期继续使用。" : "退订已完成，原冻结的订阅积分已回收，可用余额不再重复扣减。",
+      meta: "", model: "—", remainingText,
+    };
+  }
+
+  if (entry?.sourceType === "subscription_upgrade_exchange") {
+    const freezing = kind === "freeze", restoring = kind === "release";
+    return {
+      icon: freezing ? "bi-lock" : restoring ? "bi-unlock" : "bi-receipt",
+      tone: freezing ? "pending" : restoring ? "refund" : "adjustment",
+      kindLabel: freezing ? "升级锁定" : restoring ? "升级解锁" : "升级置换回收",
+      title: "订阅升级置换", badge: freezing ? "等待升级支付" : restoring ? "已恢复" : "已置换",
+      amount: freezing || restoring ? amount.text : "旧积分已置换",
+      amountTone: freezing ? "spend" : restoring ? "income" : "neutral",
+      description: freezing ? "旧订阅积分已参与报价抵扣，待支付期间锁定，通用积分不受影响。" : restoring ? "升级订单已关闭，旧订阅积分已恢复。" : "旧未用积分已回收抵扣新套餐，不是AI任务消费；新周期积分另行发放。",
+      meta: "", model: "—", remainingText,
+    };
+  }
 
   if (kind === "freeze" || kind === "task_freeze")
     return {
@@ -208,7 +247,7 @@ function presentationFor(entry) {
       kindLabel: "退款",
       title: label,
       badge: userStopped ? "用户停止" : status === "canceled" ? "已取消" : statusLabel || "已退回",
-      amount: amount.tone === "income" ? amount.text : `+${formatPoints(Math.abs(delta) || cost)}`,
+      amount: reason.includes("旧周期订阅积分已过期") ? `+${formatPoints(Math.max(delta,0))}` : amount.tone === "income" ? amount.text : `+${formatPoints(Math.abs(delta) || cost)}`,
       amountTone: "income",
       description: reason || (status === "canceled" || status === "failed"
         ? `任务未完成，${formatPoints(Math.abs(delta) || cost)} 已退回可用余额。`
@@ -222,6 +261,8 @@ function presentationFor(entry) {
     redeem_code: "兑换码入账",
     daily_checkin: "签到奖励",
     subscription_daily: "订阅积分发放",
+    subscription_cycle: "订阅周期发放",
+    subscription_refund_hold: "订阅退订处理",
     signup_bonus: "注册赠送",
     admin: "人工调整",
     trial_access: "体验积分",
@@ -250,6 +291,7 @@ function presentationFor(entry) {
 }
 
 function categoryFor(entry, presentation) {
+  if (presentation.tone === "adjustment") return "adjustment";
   if (["income", "refund", "pending"].includes(presentation.tone))
     return presentation.tone;
   if (["spend", "settled"].includes(presentation.tone)) return "spend";
@@ -287,6 +329,7 @@ export function WalletView() {
   const [walletError, setWalletError] = useState("");
   const [summary, setSummary] = useState(null);
   const [summaryError, setSummaryError] = useState("");
+  const [summaryLoading, setSummaryLoading] = useState(true);
   const [ledger, setLedger] = useState([]);
   const [ledgerLoading, setLedgerLoading] = useState(true);
   const [ledgerError, setLedgerError] = useState("");
@@ -373,9 +416,10 @@ export function WalletView() {
     const controller = new AbortController();
     summaryControllerRef.current = controller;
     setSummaryError("");
+    setSummaryLoading(true);
     try {
       const result = await getWalletSummary({ signal: controller.signal });
-      if (mountedRef.current) setSummary(result);
+      if (mountedRef.current && !controller.signal.aborted) setSummary(result);
     } catch (error) {
       if (error?.name !== "AbortError" && mountedRef.current) {
         const message = String(error?.message || "");
@@ -385,7 +429,7 @@ export function WalletView() {
             : message || "账单汇总读取失败",
         );
       }
-    }
+    } finally { if (mountedRef.current && !controller.signal.aborted) setSummaryLoading(false); }
   }, []);
 
   const refreshAll = useCallback(
@@ -445,7 +489,7 @@ export function WalletView() {
           all: counts.all + 1,
           [row.category]: counts[row.category] + 1,
         }),
-        { all: 0, income: 0, spend: 0, pending: 0, refund: 0 },
+        { all: 0, income: 0, spend: 0, pending: 0, refund: 0, adjustment: 0 },
       ),
     [ledgerRows],
   );
@@ -482,11 +526,27 @@ export function WalletView() {
   const trialBalance = Number(wallet?.trialBalanceCents || 0);
   const normalFrozen = Number(wallet?.normalFrozenCents ?? frozen);
   const trialFrozen = Number(wallet?.trialFrozenCents || 0);
+  const subscriptionBalance = Number(wallet?.subscriptionBalanceCents || 0);
+  const refundHeld = Number(wallet?.refundHeldCents || 0);
+  const upgradeHeld = Number(wallet?.upgradeHeldCents || 0);
+  const taskFrozen = Number(wallet?.taskFrozenCents ?? Math.max(0, frozen - refundHeld - upgradeHeld));
   const trialLabel = trial?.feature?.label || "体验";
   const showTrial = trial?.status === "approved" && trial?.rewardCents;
-  const summaryItems = (Array.isArray(summary?.items) ? summary.items : []).filter(
-    (item) => item.id !== "trial_access",
-  );
+  const allSummaryItems = Array.isArray(summary?.items) ? summary.items : [];
+  const sourcePriority = ["order", "subscription_cycle", "daily_checkin", "redeem_code"];
+  const rankedSources = allSummaryItems.map(item => {
+    const target = SUMMARY_LINKS[item.id];
+    return { ...item, href: target && isEntryVisible(target) ? target : "" };
+  }).sort((a,b) => Number(Boolean(b.href))-Number(Boolean(a.href))
+    || Number(Boolean(Number(b.cents)||Number(b.count)))-Number(Boolean(Number(a.cents)||Number(a.count)))
+    || (sourcePriority.includes(a.id) ? sourcePriority.indexOf(a.id) : 99)-(sourcePriority.includes(b.id) ? sourcePriority.indexOf(b.id) : 99)
+    || Number(b.count)-Number(a.count) || Number(b.cents)-Number(a.cents));
+  const summaryItems = rankedSources;
+  const hasSourceRecords = item => Number(item.cents || 0) !== 0 || Number(item.count || 0) > 0;
+  const sourceGroups = [
+    { id: 'recorded', items: summaryItems.filter(hasSourceRecords) },
+    { id: 'empty', items: summaryItems.filter(item => !hasSourceRecords(item)) },
+  ].filter(group => group.items.length);
   const pageCount =
     ledgerTotal == null ? null : Math.max(1, Math.ceil(Math.max(0, ledgerTotal) / pageSize));
   const canPrev = ledgerPage > 1;
@@ -606,7 +666,9 @@ export function WalletView() {
                 </p>
                 {frozen > 0 ? (
                   <p className="wallet-aside__hint">
-                    另有 {formatPoints(frozen)} 冻结中，完成后结算或退回。
+                    {taskFrozen > 0 ? <>任务冻结 {formatPoints(taskFrozen)}，完成后结算或退回。</> : null}
+                    {refundHeld > 0 ? <>退订冻结 {formatPoints(refundHeld)}，<Link to="/subscriptions?view=changes">查看退款进度</Link>。</> : null}
+                    {upgradeHeld > 0 ? <>升级锁定 {formatPoints(upgradeHeld)}，<Link to="/orders">处理升级订单</Link>。</> : null}
                   </p>
                 ) : null}
               </div>
@@ -622,30 +684,40 @@ export function WalletView() {
                 <img src="/failure-compensation/step-fail.webp" alt="" width="48" height="48" decoding="async" />
                 <span>冻结中</span>
                 <strong>{formatPoints(frozen, { withUnit: false })}</strong>
-                <small>{frozen > 0 ? "任务处理中预扣" : "当前无预扣"}</small>
+                <small>{taskFrozen > 0 ? `任务 ${formatPoints(taskFrozen)}` : "无任务冻结"}</small>
+                {refundHeld > 0 && <small>退订 {formatPoints(refundHeld)}</small>}
+                {upgradeHeld > 0 && <small>升级 {formatPoints(upgradeHeld)}</small>}
               </article>
               <article>
                 <img src="/签到页面素材/ai-wallpaper-1786340924518-2-1.webp" alt="" width="48" height="48" decoding="async" />
                 <span>普通积分</span>
                 <strong>{formatPoints(normal, { withUnit: false })}</strong>
                 {normalFrozen > 0 ? (
-                  <small>含冻结 {formatPoints(normalFrozen, { withUnit: false })}</small>
+                  <small>另冻结 {formatPoints(normalFrozen, { withUnit: false })}</small>
                 ) : (
                   <small>通用额度</small>
                 )}
+                {Number(wallet?.eligibleTopupPoints) > 0 && <small>其中可接受订阅锁价 {formatPoints(wallet.eligibleTopupPoints, { withUnit: false })}</small>}
               </article>
               <article className="is-trial">
                 <img src="/failure-compensation/step-bonus.webp" alt="" width="48" height="48" decoding="async" />
                 <span>体验积分</span>
                 <strong>{formatPoints(trialBalance, { withUnit: false })}</strong>
                 {trialFrozen > 0 ? (
-                  <small>含冻结 {formatPoints(trialFrozen, { withUnit: false })}</small>
+                  <small>另冻结 {formatPoints(trialFrozen, { withUnit: false })}</small>
                 ) : trialBalance > 0 ? (
                   <small>仅限对应功能</small>
                 ) : (
                   <small>暂无体验额度</small>
                 )}
               </article>
+              {subscriptionBalance > 0 || Number(wallet?.subscriptionFrozenCents || 0) > 0 ? <article>
+                <img src="/usage-plan/reward-coin.webp" alt="" width="48" height="48" decoding="async" />
+                <span>订阅可用积分</span><strong>{formatPoints(subscriptionBalance, { withUnit: false })}</strong>
+                {refundHeld > 0 && <small>另有退订冻结 {formatPoints(refundHeld)}</small>}
+                {upgradeHeld > 0 && <small>另有升级锁定 {formatPoints(upgradeHeld)}</small>}
+                <small><Link to="/subscriptions">查看发放与适用范围</Link></small>
+              </article> : null}
             </div>
             {showTrial ? (
               <aside
@@ -685,7 +757,7 @@ export function WalletView() {
                 <img src="/failure-compensation/step-ledger.webp" alt="" width="56" height="56" decoding="async" />
                 <div>
                   <strong>账单汇总</strong>
-                  <p>合计消耗不含冻结中预扣，入账按渠道分开统计</p>
+                  <p>历史积分统计，不等于当前余额{summaryLoading && summary ? " · 更新中" : ""}</p>
                 </div>
               </header>
               {summaryError ? (
@@ -695,53 +767,60 @@ export function WalletView() {
                     重新加载
                   </button>
                 </div>
-              ) : (
+              ) : !summary ? <p className="wallet-summary__note" role="status">正在读取账单汇总…</p> : (
                 <>
                   <div className="wallet-summary__totals">
-                    <article className="is-spend">
-                      <span>合计消耗</span>
-                      <strong>{formatPoints(summary?.consumedCents || 0, { withUnit: false })}</strong>
-                      <small>{summary?.consumedCount || 0} 笔已结算</small>
-                    </article>
                     <article className="is-income">
-                      <span>合计入账</span>
+                      <span>历史入账</span>
                       <strong>{formatPoints(summary?.incomeCents || 0, { withUnit: false })}</strong>
-                      <small>{summary?.incomeCount || 0} 笔到账</small>
+                      <small>{summary?.incomeCount || 0} 笔 · 含已到期额度</small>
                     </article>
-                    <article className="is-refund">
-                      <span>失败退回</span>
-                      <strong>{formatPoints(summary?.refundCents || 0, { withUnit: false })}</strong>
-                      <small>{summary?.refundCount || 0} 笔解冻</small>
+                    <article className="is-spend">
+                      <span>已结算扣减</span>
+                      <strong>{formatPoints(summary?.consumedCents || 0, { withUnit: false })}</strong>
+                      <small>{summary?.consumedCount || 0} 笔 · 结算及人工扣减</small>
                     </article>
                   </div>
-                  <ul>
-                    {summaryItems.map((item) => {
-                      const target = SUMMARY_LINKS[item.id];
-                      const href = target && isEntryVisible(target) ? target : "";
+                  {summary.unresolvedConsumedCount > 0 && <p className="wallet-summary__note is-warning" role="status">另有 {summary.unresolvedConsumedCount} 笔历史结算缺少金额依据，未计入扣减合计。</p>}
+                  <h3 className="wallet-summary__sources-title">入账来源<small>积分 / 笔数</small></h3>
+                  <div id="wallet-income-sources">
+                  {sourceGroups.map(group => <div key={group.id} className={`wallet-summary__source-group is-${group.id}`}>
+                    {group.id === 'empty' && <h4>暂无入账<small>{group.items.length} 项来源</small></h4>}
+                  <ul className={`wallet-summary__sources is-${group.id}`}>
+                    {group.items.map((item) => {
+                      const href = item.href;
                       const body = (
                         <>
                           <div>
                             <span>{item.label}</span>
-                            <small>{item.hint}</small>
                           </div>
-                          <b>{formatPoints(item.cents || 0, { withUnit: false })}</b>
-                          <em>{item.count || 0} 笔</em>
-                          {href ? <i className="bi bi-chevron-right" aria-hidden="true" /> : <i />}
+                          <div className="wallet-summary__source-value"><b>{formatPoints(item.cents || 0, { withUnit: false })}</b><em>{(item.count || 0).toLocaleString('zh-CN')} 笔</em></div>
+                          {href ? <i className="bi bi-chevron-right" aria-hidden="true" /> : <i aria-hidden="true" />}
                         </>
                       );
                       return (
                         <li key={item.id}>
                           {href ? (
-                            <Link to={href} className="wallet-summary__row">
+                            <Link to={href} className="wallet-summary__row" title={item.hint}>
                               {body}
                             </Link>
                           ) : (
-                            <div className="wallet-summary__row">{body}</div>
+                            <div className="wallet-summary__row" title={item.hint}>{body}</div>
                           )}
                         </li>
                       );
                     })}
                   </ul>
+                  </div>)}
+                  </div>
+                  {!summaryItems.length && <p className="wallet-summary__note">暂无入账记录</p>}
+                  {(summary.expiredPoints > 0 || summary.upgradeReclaimedPoints > 0 || summary.refundReclaimedPoints > 0 || summary.refundCents > 0 || summary.refundCount > 0) && <dl className="wallet-summary__adjustments">
+                    {summary.expiredPoints > 0 && <div><dt>周期到期</dt><dd>{formatPoints(summary.expiredPoints)}</dd></div>}
+                    {summary.upgradeReclaimedPoints > 0 && <div><dt>升级置换回收</dt><dd>{formatPoints(summary.upgradeReclaimedPoints)}</dd></div>}
+                    {summary.refundReclaimedPoints > 0 && <div><dt>退订回收</dt><dd>{formatPoints(summary.refundReclaimedPoints)}</dd></div>}
+                    {(summary.refundCents > 0 || summary.refundCount > 0) && <div><dt>任务释放</dt><dd>{formatPoints(summary.refundCents || 0)}<small>{summary.refundCount || 0} 笔</small></dd></div>}
+                  </dl>}
+                  <p className="wallet-summary__note">到期与权益回收不计为消费，任务释放不计为新增入账。</p>
                 </>
               )}
             </section>

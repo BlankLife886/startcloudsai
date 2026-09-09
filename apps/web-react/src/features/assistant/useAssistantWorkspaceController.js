@@ -20,6 +20,7 @@ import {
   fetchAssistantConfig,
   editQueuedAssistantRun,
   getAssistantFile,
+  getAssistantConversation,
   getAssistantRun,
   importAssistantConversations,
   listActiveAssistantRuns,
@@ -47,14 +48,16 @@ import {
   assistantSendMode,
   assistantMessageMatchesRun,
   imageCountFromPrompt,
+  imageRatioFromPrompt,
   messageIsQueued,
   messagePreview,
   uid,
 } from "./domain/assistantMessages.js";
 import { assistantStreamEventIsTerminal, mergeAssistantMessageSnapshot, mergeAssistantStreamText } from "./domain/assistantStreamMerge.js";
 import { mergePersistedAssistantMessage, resolveAssistantRetryIdentity } from "./domain/assistantRetryPolicy.js";
-import { resolveVisualContext } from "./domain/visualContext.js";
+import { promptNeedsRecentVisual, resolveVisualContext } from "./domain/visualContext.js";
 import { assistantRunGuidance } from "./domain/assistantGuidance.js";
+import { assistantImageBatchLimit, constrainAssistantImageModels } from "./domain/assistantImageLimits.js";
 import {
   clearAssistantHistory,
   loadAssistantHistory,
@@ -72,6 +75,8 @@ import {
 import { useAuth } from "../../auth/AuthContext.jsx";
 import { useAuthPrompt } from "../../auth/AuthPromptContext.jsx";
 import { useIsDark } from "../../hooks/useIsDark.js";
+import { exactImageSizeParams, validateExactImageSize } from "../../config/exactImageSize.js";
+import { availableCatalogModels } from "../../components/common/ModelCatalogIcon.jsx";
 import { assistantClipboardFiles, isAssistantImageFile, isPSDFile } from "./domain/assistantAttachments.js";
 import { isProductGuidesEnabled, subscribeProductGuideReplay } from "../../views/shared/productGuides.js";
 import {
@@ -125,8 +130,61 @@ import {
 } from "./assistantWorkspaceCore.jsx";
 import { closestNavigatorTurn } from "./AssistantMessageComponents.jsx";
 
+const PENDING_ASSISTANT_CANCELS_KEY = "starclouds:assistant-pending-cancels";
+
+function readPendingAssistantCancels() {
+  try {
+    const items = JSON.parse(localStorage.getItem(PENDING_ASSISTANT_CANCELS_KEY) || "[]");
+    return Array.isArray(items) ? items.filter((item) => item?.id) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writePendingAssistantCancels(items) {
+  try {
+    const next = Array.from(new Map(items.filter((item) => item?.id).map((item) => [item.id, item])).values());
+    if (next.length) localStorage.setItem(PENDING_ASSISTANT_CANCELS_KEY, JSON.stringify(next));
+    else localStorage.removeItem(PENDING_ASSISTANT_CANCELS_KEY);
+  } catch {
+    // Cancellation is still reflected locally when storage is unavailable.
+  }
+}
+
+function queuePendingAssistantCancel(run, acknowledgeUpstream, userId) {
+  writePendingAssistantCancels([
+    ...readPendingAssistantCancels(),
+    { id: run.id, userId, acknowledgeUpstream: acknowledgeUpstream === true },
+  ]);
+}
+
+function assistantRequestIsTransient(error) {
+  const status = Number(error?.status || 0);
+  return error?.name === "AbortError" || status === 0 || status >= 500;
+}
+
+async function flushPendingAssistantCancels(userId, isCurrent = () => true) {
+  const pending = readPendingAssistantCancels();
+  if (!pending.length) return false;
+  const remaining = [];
+  for (const item of pending) {
+    if (!isCurrent()) return false;
+    if (!userId || item.userId !== userId) { remaining.push(item); continue; }
+    try {
+      await cancelAssistantRun(item.id, { acknowledgeUpstream: item.acknowledgeUpstream === true });
+    } catch (error) {
+      if (assistantRequestIsTransient(error) || error?.code === "assistant_cancel_confirmation_required") remaining.push(item);
+    }
+  }
+  if (!isCurrent()) return false;
+  writePendingAssistantCancels(remaining);
+  return remaining.length !== pending.length;
+}
+
 export function useAssistantWorkspaceController() {
   const auth = useAuth();
+  const cancelUserRef = useRef(auth.user?.id);
+  cancelUserRef.current = auth.user?.id;
   const { requestAuth } = useAuthPrompt();
   const isDark = useIsDark();
   const navigate = useNavigate();
@@ -148,6 +206,8 @@ export function useAssistantWorkspaceController() {
   const atBottomRef = useRef(true);
   const returningRef = useRef(false);
   const loadingEarlierRef = useRef(false);
+  const loadEarlierMessagesRef = useRef(null);
+  const earlierMessagesControllerRef = useRef(null);
   const loadEarlierAtRef = useRef(0);
   const messageScrollFrameRef = useRef(0);
   const navigatorMeasureFrameRef = useRef(0);
@@ -214,12 +274,14 @@ export function useAssistantWorkspaceController() {
   const libraryLoadingMoreRef = useRef(false);
   const [conversationModels, setConversationModels] = useState([]);
   const [imageModels, setImageModels] = useState([]);
+  const [imageLimits, setImageLimits] = useState({});
   const [editableFilesEnabled, setEditableFilesEnabled] = useState(false);
   const [conversationModel, setConversationModel] = useState("");
   const [reasoningEffort, setReasoningEffort] = useState("");
   const [imageModel, setImageModel] = useState("");
   const [generationRatio, setGenerationRatio] = useState("auto");
   const [generationResolution, setGenerationResolution] = useState("");
+  const [generationSize, setGenerationSize] = useState({ sizeMode: "ratio", exactWidth: "", exactHeight: "" });
   const [generationQuality, setGenerationQuality] = useState("");
   const [generationCount, setGenerationCount] = useState(2);
   const [references, setReferences] = useState([]);
@@ -370,8 +432,8 @@ export function useAssistantWorkspaceController() {
     return ids;
   }, [activeRun, followUpRuns, messages]);
   const runningGuidance = useMemo(() => activeRun && !draft.trim() && !queueEditingId && followUpRuns.length === 0
-    ? assistantRunGuidance(activeRun)
-    : [], [activeRun, draft, followUpRuns.length, queueEditingId]);
+    ? assistantRunGuidance(activeRun, messages)
+    : [], [activeRun, draft, followUpRuns.length, messages, queueEditingId]);
   const activeCancelPolicy = activeRun?.cancelPolicy || null;
   const composerScrolledAway = messages.length > 0
     && !isAtBottom
@@ -389,15 +451,25 @@ export function useAssistantWorkspaceController() {
   const currentThreadHitId = threadHitIndex >= 0 ? threadSearchHits[threadHitIndex]?.id || "" : "";
   const mode = creationType === "image" ? "image" : "chat";
   const selectedCreation = CREATION_TYPES.find((item) => item.id === creationType) || CREATION_TYPES[0];
+  const availableConversationModels = useMemo(() => availableCatalogModels(conversationModels), [conversationModels]);
+  const availableImageModels = useMemo(() => constrainAssistantImageModels(availableCatalogModels(imageModels), imageLimits), [imageModels, imageLimits]);
   const generationModels = mode === "image" ? imageModels : conversationModels;
+  const availableGenerationModels = mode === "image" ? availableImageModels : availableConversationModels;
   const generationModel = mode === "image" ? imageModel : conversationModel;
   const resolveAssistantSend = (prompt, documentCount = documents.length) => {
-    const responseMode = assistantSendMode(creationType, documentCount, prompt);
+    const selectedMode = assistantSendMode(creationType, documentCount, prompt);
+    const hasConversationImage = messages.some((message) => (message.images || []).some((image) => imageUrl(image)));
+    const responseMode = selectedMode === "chat"
+      && creationType === "chat"
+      && hasConversationImage
+      && promptNeedsRecentVisual(prompt)
+      ? "agent"
+      : selectedMode;
     return {
       responseMode,
       sendModel: responseMode === "image"
-        ? (imageModel || imageModels[0]?.model || "")
-        : (conversationModel || conversationModels[0]?.model || ""),
+        ? (generationSize.sizeMode === "exact" ? imageModel : availableImageModels.find((item) => item.model === imageModel)?.model || availableImageModels[0]?.model || "")
+        : (availableConversationModels.find((item) => item.model === conversationModel)?.model || availableConversationModels[0]?.model || ""),
       requestedCount: responseMode === "image"
         ? clampImageCount(imageCountFromPrompt(prompt, maxImages) || generationCount, selectedImageModel)
         : responseMode === "agent"
@@ -405,9 +477,9 @@ export function useAssistantWorkspaceController() {
           : 1,
     };
   };
-  const selectedModel = generationModels.find((item) => item.model === generationModel) || generationModels[0] || null;
-  const generationModelLabel = selectedModel?.label || (loading ? "加载模型…" : "暂无可用模型");
-  const selectedConversationModel = conversationModels.find((item) => item.model === conversationModel) || conversationModels[0] || null;
+  const selectedModel = availableGenerationModels.find((item) => item.model === generationModel) || (mode === "image" && generationSize.sizeMode === "exact" ? null : availableGenerationModels[0] || null);
+  const generationModelLabel = selectedModel?.label || (loading ? "加载模型…" : mode === "image" && generationSize.sizeMode === "exact" ? "请重新选择模型" : "暂无可用模型");
+  const selectedConversationModel = availableConversationModels.find((item) => item.model === conversationModel) || availableConversationModels[0] || null;
   const reasoningEffortOptions = selectedConversationModel?.reasoningEfforts || [];
   const reasoningEfforts = reasoningEffortOptions.map((item) => item.id);
   const activeReasoningEffort = reasoningEfforts.includes(reasoningEffort) ? reasoningEffort : defaultReasoningEffort(selectedConversationModel);
@@ -428,9 +500,9 @@ export function useAssistantWorkspaceController() {
     const query = modelSearch.trim().toLowerCase();
     return query ? generationModels.filter((item) => `${item.label} ${item.model} ${item.description || ""}`.toLowerCase().includes(query)) : generationModels;
   }, [generationModels, modelSearch]);
-  const selectedImageModel = imageModels.find((item) => item.model === imageModel) || imageModels[0] || null;
-  const availableCounts = useMemo(() => imageCountOptions(selectedImageModel), [selectedImageModel]);
-  const maxImages = imageModelMaxCount(selectedImageModel);
+  const selectedImageModel = availableImageModels.find((item) => item.model === imageModel) || (generationSize.sizeMode === "exact" ? null : availableImageModels[0] || null);
+  const availableCounts = useMemo(() => selectedImageModel ? imageCountOptions(selectedImageModel) : [], [selectedImageModel]);
+  const maxImages = selectedImageModel ? imageModelMaxCount(selectedImageModel) : 0;
   const maxReferences = normalizeImageModelCapabilities(selectedImageModel || {}).maxReferenceImages;
   const atReferenceLimit = references.length >= maxReferences;
   const referenceLimitMessage = maxReferences <= 0
@@ -456,6 +528,35 @@ export function useAssistantWorkspaceController() {
     );
     return IMAGE_QUALITY_OPTIONS.filter((item) => supported.has(item.id));
   }, [selectedImageModel]);
+  const selectImageModel = useCallback((nextModelId) => {
+    const nextModel = availableImageModels.find((item) => item.model === nextModelId) || availableImageModels[0] || null;
+    if (!nextModel) return;
+    if (generationSize.sizeMode === "exact" && nextModel.supportsExactSize !== true) {
+      setGenerationSize({ sizeMode: "ratio", exactWidth: "", exactHeight: "" });
+      notificationService.info("新模型不支持精确尺寸，已切换为比例尺寸。");
+    }
+    const settings = assistantImageSettings(nextModel, {
+      ratio: generationRatio,
+      resolution: generationResolution,
+      quality: generationQuality,
+    });
+    if (settings.ratio && settings.ratio !== generationRatio) {
+      notificationService.info(`新模型不支持 ${generationRatio}，比例已调整为 ${settings.ratio}`);
+    }
+    setImageModel(nextModel.model);
+    setGenerationResolution(settings.resolution);
+    setGenerationQuality(settings.quality);
+    setGenerationRatio(settings.ratio);
+  }, [availableImageModels, generationQuality, generationRatio, generationResolution, generationSize.sizeMode]);
+  const selectGenerationResolution = useCallback((nextResolution) => {
+    const ratios = getModelAspectRatiosForResolution(selectedImageModel || {}, nextResolution);
+    const nextRatio = ratios.includes(generationRatio) ? generationRatio : ratios[0] || "";
+    if (nextRatio && nextRatio !== generationRatio) {
+      notificationService.info(`${nextResolution} 不支持 ${generationRatio}，比例已调整为 ${nextRatio}`);
+    }
+    setGenerationResolution(nextResolution);
+    if (nextRatio) setGenerationRatio(nextRatio);
+  }, [generationRatio, selectedImageModel]);
   const listableConversations = useMemo(
     () => conversations.filter((item) => (item?.messages || []).length > 0),
     [conversations],
@@ -539,6 +640,45 @@ export function useAssistantWorkspaceController() {
   const patchConversation = useCallback((id, patcher) => {
     setConversations((current) => current.map((item) => item.id === id ? patcher(item) : item));
   }, []);
+
+  const loadEarlierMessages = useCallback(async () => {
+    const conversation = conversationsRef.current.find((item) => item.id === activeIdRef.current);
+    const beforeMessageId = conversation?.messages?.[0]?.id || "";
+    if (!conversation?.hasMoreMessages || !beforeMessageId || loadingEarlierRef.current) return;
+    const scroller = messageScrollerRef.current;
+    loadingEarlierRef.current = true;
+    loadEarlierAtRef.current = performance.now();
+    pendingEarlierScrollHeightRef.current = scroller?.scrollHeight || 0;
+    const controller = new AbortController();
+    earlierMessagesControllerRef.current?.abort();
+    earlierMessagesControllerRef.current = controller;
+    try {
+      const page = await getAssistantConversation(conversation.id, {
+        beforeMessageId,
+        messageLimit: 80,
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted || !mountedRef.current) return;
+      const incoming = Array.isArray(page?.messages) ? page.messages : [];
+      patchConversation(conversation.id, (current) => {
+        const existing = new Set(current.messages.map((message) => message.id));
+        const older = incoming.filter((message) => !existing.has(message.id));
+        return { ...current, hasMoreMessages: Boolean(page?.hasMoreMessages), messages: [...older, ...current.messages] };
+      });
+      setVisibleMessageLimit((current) => current + incoming.length);
+      if (!incoming.length) {
+        pendingEarlierScrollHeightRef.current = 0;
+        loadingEarlierRef.current = false;
+      }
+    } catch (error) {
+      pendingEarlierScrollHeightRef.current = 0;
+      loadingEarlierRef.current = false;
+      if (error?.name !== "AbortError") notificationService.error(error?.message || "更早对话加载失败");
+    } finally {
+      if (earlierMessagesControllerRef.current === controller) earlierMessagesControllerRef.current = null;
+    }
+  }, [patchConversation]);
+  loadEarlierMessagesRef.current = loadEarlierMessages;
 
   const submitMessageFeedback = useCallback(async (message, rating) => {
     const conversationId = activeConversation?.id;
@@ -810,19 +950,23 @@ export function useAssistantWorkspaceController() {
     const now = performance.now();
     if (
       scrollTop <= 36
-      && hiddenMessageCount > 0
+      && (hiddenMessageCount > 0 || activeConversation?.hasMoreMessages)
       && !loadingEarlierRef.current
       && now - loadEarlierAtRef.current >= LOAD_EARLIER_COOLDOWN_MS
     ) {
-      loadingEarlierRef.current = true;
-      loadEarlierAtRef.current = now;
-      pendingEarlierScrollHeightRef.current = scrollHeight;
-      setVisibleMessageLimit((current) => Math.min(messages.length, current + MESSAGE_BATCH_SIZE));
+      if (hiddenMessageCount > 0) {
+        loadingEarlierRef.current = true;
+        loadEarlierAtRef.current = now;
+        pendingEarlierScrollHeightRef.current = scrollHeight;
+        setVisibleMessageLimit((current) => Math.min(messages.length, current + MESSAGE_BATCH_SIZE));
+      } else {
+        void loadEarlierMessagesRef.current?.();
+      }
     }
     const target = scrollTop + clientHeight * 0.28;
     const activeTurn = closestNavigatorTurn(navigatorMessageOffsetsRef.current, target, navigatorItems[0]?.id || "");
     navigatorActiveSetterRef.current(activeTurn);
-  }, [hiddenMessageCount, messages.length, navigatorItems, setScrollState]);
+  }, [activeConversation?.hasMoreMessages, hiddenMessageCount, messages.length, navigatorItems, setScrollState]);
 
   const handleMessageScroll = useCallback(() => {
     if (messageScrollFrameRef.current) return;
@@ -1102,11 +1246,14 @@ export function useAssistantWorkspaceController() {
       if (controller.signal.aborted || !mountedRef.current) return;
       if (configResult.status !== "fulfilled") throw configResult.reason;
       const config = normalizeConfig(configResult.value);
+      const availableConversation = availableCatalogModels(config.conversationModels);
+      const availableImages = constrainAssistantImageModels(availableCatalogModels(config.imageModels), config);
       setConversationModels(config.conversationModels);
-      setImageModels(config.imageModels);
+      setImageModels(config.imageModels.map((model) => ({ ...model, imageBatchLimit: assistantImageBatchLimit(model, config) })));
+      setImageLimits({ imageBatchLimit: config.imageBatchLimit, concurrency: config.concurrency });
       setEditableFilesEnabled(config.editableFilesEnabled);
-      setConversationModel(config.conversationModels[0]?.model || "");
-      setImageModel(config.imageModels[0]?.model || "");
+      setConversationModel(availableConversation[0]?.model || "");
+      setImageModel(availableImages[0]?.model || "");
       const workspaceState = loadAssistantWorkspaceState(workspaceScope);
       let rows = conversationResult.status === "fulfilled"
         ? conversationResult.value.map(normalizeConversation)
@@ -1142,13 +1289,16 @@ export function useAssistantWorkspaceController() {
         setDraft("");
       }
       if (CREATION_TYPES.some((item) => item.id === workspaceState.creationType)) setCreationType(workspaceState.creationType);
+      setGenerationSize(workspaceState.creationType === "image" && workspaceState.generationSize?.sizeMode === "exact"
+        ? { sizeMode: "exact", exactWidth: String(workspaceState.generationSize.exactWidth || ""), exactHeight: String(workspaceState.generationSize.exactHeight || "") }
+        : { sizeMode: "ratio", exactWidth: "", exactHeight: "" });
       if (IMAGE_ASPECT_RATIOS.includes(workspaceState.generationRatio)) setGenerationRatio(workspaceState.generationRatio);
       if (RESOLUTIONS.some((item) => item.id === String(workspaceState.generationResolution || "").toUpperCase())) setGenerationResolution(String(workspaceState.generationResolution).toUpperCase());
       if (IMAGE_QUALITY_OPTIONS.some((item) => item.id === String(workspaceState.generationQuality || "").toLowerCase())) setGenerationQuality(String(workspaceState.generationQuality).toLowerCase());
-      if (Number.isFinite(Number(workspaceState.generationCount))) setGenerationCount(clampImageCount(workspaceState.generationCount, config.imageModels.find((item) => item.model === (workspaceState.creationType === "image" ? workspaceState.generationModel : "")) || config.imageModels[0]));
+      if (Number.isFinite(Number(workspaceState.generationCount))) setGenerationCount(clampImageCount(workspaceState.generationCount, availableImages.find((item) => item.model === (workspaceState.creationType === "image" ? workspaceState.generationModel : "")) || availableImages[0]));
       const savedModel = String(workspaceState.generationModel || "").trim();
-      if (workspaceState.creationType === "image" && config.imageModels.some((item) => item.model === savedModel)) setImageModel(savedModel);
-      if (workspaceState.creationType !== "image" && config.conversationModels.some((item) => item.model === savedModel)) setConversationModel(savedModel);
+      if (workspaceState.creationType === "image" && (workspaceState.generationSize?.sizeMode === "exact" || availableImages.some((item) => item.model === savedModel))) setImageModel(savedModel);
+      if (workspaceState.creationType !== "image" && availableConversation.some((item) => item.model === savedModel)) setConversationModel(savedModel);
       setReasoningEffort(String(workspaceState.reasoningEffort || "").trim().toLowerCase());
       const pending = takePendingPrompt("assistant");
       if (pending) {
@@ -1160,6 +1310,9 @@ export function useAssistantWorkspaceController() {
           ? pendingSkill
           : "agent";
         setCreationType(pendingMode);
+        setGenerationSize(pendingMode === "image" && pending.config?.sizeMode === "exact"
+          ? { sizeMode: "exact", exactWidth: String(pending.config.exactWidth || ""), exactHeight: String(pending.config.exactHeight || "") }
+          : { sizeMode: "ratio", exactWidth: "", exactHeight: "" });
         if (pending.config?.reasoningEffort) {
           setReasoningEffort(String(pending.config.reasoningEffort).trim().toLowerCase());
         }
@@ -1168,12 +1321,12 @@ export function useAssistantWorkspaceController() {
           setGenerationResolution(String(pending.config.resolution).toUpperCase());
         }
         if (Number.isFinite(Number(pending.config?.count))) {
-          setGenerationCount(clampImageCount(pending.config.count, config.imageModels.find((item) => item.model === pending.config?.model) || config.imageModels[0]));
+          setGenerationCount(clampImageCount(pending.config.count, availableImages.find((item) => item.model === pending.config?.model) || availableImages[0]));
         }
         if (Array.isArray(pending.config?.referenceImages)) setReferences(pending.config.referenceImages.slice(0, MAX_MODEL_REFERENCE_IMAGES));
         if (pending.config?.model) {
-          if (pendingMode === "image") setImageModel(pending.config.model);
-          else setConversationModel(pending.config.model);
+          if (pendingMode === "image" && (pending.config?.sizeMode === "exact" || availableImages.some((item) => item.model === pending.config.model))) setImageModel(pending.config.model);
+          else if (pendingMode !== "image" && availableConversation.some((item) => item.model === pending.config.model)) setConversationModel(pending.config.model);
         }
       }
       if (runResult.status === "fulfilled" && runResult.value.length) {
@@ -1192,6 +1345,20 @@ export function useAssistantWorkspaceController() {
   }, [auth.isAuthenticated, workspaceScope]);
 
   useEffect(() => {
+    if (!auth.isAuthenticated) return undefined;
+    const synchronizeAfterReconnect = async () => {
+      const userId = auth.user?.id;
+      await flushPendingAssistantCancels(userId, () => mountedRef.current && cancelUserRef.current === userId);
+      if (mountedRef.current) await loadWorkspace();
+    };
+    window.addEventListener("online", synchronizeAfterReconnect);
+    if (navigator.onLine !== false && readPendingAssistantCancels().length) {
+      void synchronizeAfterReconnect();
+    }
+    return () => window.removeEventListener("online", synchronizeAfterReconnect);
+  }, [auth.isAuthenticated, loadWorkspace]);
+
+  useEffect(() => {
     mountedRef.current = true;
     void import("../../views/StudioHubView.jsx");
     try {
@@ -1204,6 +1371,7 @@ export function useAssistantWorkspaceController() {
       mountedRef.current = false;
       workspaceControllerRef.current?.abort();
       draftRequestControllerRef.current?.abort();
+      earlierMessagesControllerRef.current?.abort();
       for (const controller of runControllersRef.current.values()) controller.abort();
       runControllersRef.current.clear();
       uploadControllerRef.current?.abort();
@@ -1288,6 +1456,13 @@ export function useAssistantWorkspaceController() {
   }, [selectedImageModel]);
 
   useEffect(() => {
+    if (loading || mode === "image") return;
+    setGenerationSize((current) => current.sizeMode === "exact" || current.exactWidth || current.exactHeight
+      ? { sizeMode: "ratio", exactWidth: "", exactHeight: "" }
+      : current);
+  }, [loading, mode]);
+
+  useEffect(() => {
     if (!workspaceHydratedRef.current || loading) return;
     saveAssistantWorkspaceState(workspaceScope, {
       activeId,
@@ -1298,12 +1473,13 @@ export function useAssistantWorkspaceController() {
       generationModel,
       reasoningEffort: activeReasoningEffort,
       generationResolution,
+      generationSize,
       generationQuality,
       generationCount,
       pinnedIds,
     });
     syncConversationUrl(activeId);
-  }, [activeId, activeReasoningEffort, creationType, draft, generationCount, generationModel, generationQuality, generationRatio, generationResolution, loading, mode, pinnedIds, workspaceScope]);
+  }, [activeId, activeReasoningEffort, creationType, draft, generationCount, generationModel, generationQuality, generationRatio, generationResolution, generationSize, loading, mode, pinnedIds, workspaceScope]);
 
   useEffect(() => {
     const handleKeydown = (event) => {
@@ -1796,8 +1972,8 @@ export function useAssistantWorkspaceController() {
   };
 
   const confirmAssistantCost = async (responseMode, requestedCount = 1, requestedModel = "", requestedReasoningEffort = activeReasoningEffort, { skip = false } = {}) => {
-    const chatModel = conversationModels.find((item) => item.model === requestedModel) || conversationModels.find((item) => item.model === conversationModel) || conversationModels[0];
-    const imagePriceModel = imageModels.find((item) => item.model === requestedModel) || selectedImageModel;
+    const chatModel = availableConversationModels.find((item) => item.model === requestedModel) || selectedConversationModel;
+    const imagePriceModel = availableImageModels.find((item) => item.model === requestedModel) || selectedImageModel;
     const imageCount = clampImageCount(requestedCount, imagePriceModel, 1);
     const chatUnit = assistantReasoningPrice(chatModel, requestedReasoningEffort).effective;
     const imageUnit = Math.max(0, Number(imagePriceModel?.pricePoints || 0));
@@ -1967,7 +2143,14 @@ export function useAssistantWorkspaceController() {
     const controller = new AbortController();
     runControllersRef.current.set(run.id, controller);
     void monitorRun(conversation.id, assistantMessage.id, run, controller).catch((error) => {
-      if (error?.name !== "AbortError" && mountedRef.current) {
+      if (error?.code === "assistant_run_timeout" && mountedRef.current) {
+        patchConversation(conversation.id, (item) => ({
+          ...item,
+          messages: item.messages.map((message) => message.id === assistantMessage.id
+            ? { ...message, pending: false, statusStage: "connection-paused", content: message.content || error.message }
+            : message),
+        }));
+      } else if (error?.name !== "AbortError" && mountedRef.current) {
         patchConversation(conversation.id, (item) => ({
           ...item,
           messages: item.messages.map((message) => message.id === assistantMessage.id
@@ -1986,13 +2169,16 @@ export function useAssistantWorkspaceController() {
     let launchedRun = {};
     try {
       const requestImageModel = responseMode === "image"
-        ? imageModels.find((item) => item.model === assistantMessage.model) || selectedImageModel
+        ? availableImageModels.find((item) => item.model === assistantMessage.model) || (assistantMessage.sizeMode === "exact" ? null : selectedImageModel)
         : selectedImageModel;
       const imageSettings = assistantImageSettings(requestImageModel, {
+        ...assistantMessage,
+        sizeMode: responseMode === "image" ? assistantMessage.sizeMode : "ratio",
         ratio: assistantMessage.requestRatio || assistantMessage.ratio || generationRatio,
         resolution: assistantMessage.resolution || generationResolution,
         quality: assistantMessage.quality || generationQuality,
       });
+      if (imageSettings.sizeError) throw new Error(imageSettings.sizeError);
       const includeImageParameters = responseMode === "image" || responseMode === "agent";
       const created = await createAssistantRun({
         conversationId,
@@ -2010,6 +2196,13 @@ export function useAssistantWorkspaceController() {
           title: item.title || `图片 ${index + 1}`,
           prompt: item.prompt || "",
           referenceImageIds: Array.isArray(item.referenceImageIds) ? item.referenceImageIds : item.referencedImageIds || [],
+          ratio: item.ratio || "",
+          resolution: item.resolution || "",
+          quality: item.quality || "",
+          requestSize: item.requestSize || "",
+          width: Number(item.width) || 0,
+          height: Number(item.height) || 0,
+          ...(responseMode === "image" && item.sizeMode === "exact" ? exactImageSizeParams(requestImageModel, item.exactWidth, item.exactHeight) : {}),
         })),
         referenceMode: responseMode === "image" ? imageRunReferenceMode(userMessage, assistantMessage) : "",
         attachments: (userMessage.attachments || []).filter((item) => item.status === "ready").map((item) => ({ id: item.id })),
@@ -2017,6 +2210,7 @@ export function useAssistantWorkspaceController() {
         skill: userMessage.skill || "",
         model: assistantMessage.model || (responseMode === "image" ? imageModel : conversationModel),
         count: responseMode === "image" || responseMode === "agent" ? assistantMessage.count || generationCount : 1,
+        ...(responseMode === "image" && imageSettings.sizeMode === "exact" ? exactImageSizeParams(requestImageModel, imageSettings.exactWidth, imageSettings.exactHeight) : {}),
         ...(includeImageParameters && imageSettings.ratio ? { ratio: imageSettings.ratio } : {}),
         ...(includeImageParameters && imageSettings.resolution ? { resolution: imageSettings.resolution } : {}),
         ...(includeImageParameters && imageSettings.requestSize ? { requestSize: imageSettings.requestSize } : {}),
@@ -2040,6 +2234,15 @@ export function useAssistantWorkspaceController() {
         await monitorRun(conversationId, assistantMessage.id, created.run, controller);
       }
     } catch (error) {
+      if (error?.code === "assistant_run_timeout") {
+        patchConversation(conversationId, (conversation) => ({
+          ...conversation,
+          messages: conversation.messages.map((message) => assistantMessageMatchesRun(message, assistantMessage.id, launchedRun)
+            ? { ...message, pending: false, statusStage: "connection-paused", content: message.content || error.message }
+            : message),
+        }));
+        return;
+      }
       if (error?.name !== "AbortError") {
         patchConversation(conversationId, (conversation) => ({ ...conversation, messages: conversation.messages.map((message) => assistantMessageMatchesRun(message, assistantMessage.id, launchedRun) ? { ...message, pending: false, routing: false, statusStage: "failed", error: error?.message || "生成失败，请稍后重试", content: message.content || error?.message || "生成失败，请稍后重试" } : message) }));
       }
@@ -2048,12 +2251,12 @@ export function useAssistantWorkspaceController() {
     } finally {
       if (launchedRun.id && runControllersRef.current.get(launchedRun.id) === controller) runControllersRef.current.delete(launchedRun.id);
     }
-  }, [activeReasoningEffort, applyRunResult, clearConversationRun, conversationModel, generationCount, generationQuality, generationRatio, generationResolution, imageModel, imageModels, monitorRun, patchConversation, removeQueuedRun, selectedImageModel]);
+  }, [activeReasoningEffort, applyRunResult, availableImageModels, clearConversationRun, conversationModel, generationCount, generationQuality, generationRatio, generationResolution, imageModel, monitorRun, patchConversation, removeQueuedRun, selectedImageModel]);
 
   const submitRegionEdit = useCallback(async (payload, item, meta = {}) => {
     if (!item || !payload?.prompt || !activeConversation || conversationHasWork || imageActionBusy) return false;
-    const preferredModel = String(meta.model || imageModel || imageModels[0]?.model || "");
-    const selected = imageModels.find((item) => item.model === preferredModel) || selectedImageModel;
+    const preferredModel = String(meta.model || imageModel || availableImageModels[0]?.model || "");
+    const selected = availableImageModels.find((item) => item.model === preferredModel) || selectedImageModel;
     setImageActionBusy("region-edit");
     try {
       if (!(await confirmAssistantCost("image", 1, preferredModel, ""))) return false;
@@ -2136,7 +2339,7 @@ export function useAssistantWorkspaceController() {
     } finally {
       setImageActionBusy("");
     }
-  }, [activeConversation, confirmAssistantCost, conversationHasWork, generationQuality, generationRatio, generationResolution, imageActionBusy, imageModel, imageModels, launchRun, patchConversation, scrollToBottom, selectedImageModel]);
+  }, [activeConversation, availableImageModels, confirmAssistantCost, conversationHasWork, generationQuality, generationRatio, generationResolution, imageActionBusy, imageModel, launchRun, patchConversation, scrollToBottom, selectedImageModel]);
 
   const executeSend = useCallback(async (prompt) => {
     const controller = new AbortController();
@@ -2157,11 +2360,18 @@ export function useAssistantWorkspaceController() {
     draftRequestControllerRef.current = null;
     const userMessageId = uid();
     const { responseMode, sendModel, requestedCount } = resolveAssistantSend(prompt);
+    const promptRatio = responseMode === "image" || responseMode === "agent"
+      ? imageRatioFromPrompt(prompt, availableRatios.map((item) => item.id))
+      : null;
     const imageSettings = assistantImageSettings(selectedImageModel, {
-      ratio: generationRatio,
+      ...(responseMode === "image" && creationType === "image" ? generationSize : {}),
+      ratio: promptRatio?.ratio || generationRatio,
       resolution: generationResolution,
       quality: generationQuality,
     });
+    if (promptRatio && promptRatio.ratio !== promptRatio.requestedRatio) {
+      notificationService.info(`当前模型不支持 ${promptRatio.requestedRatio}，已采用最接近的 ${promptRatio.ratio}`);
+    }
     const liveConversation = conversationsRef.current.find((item) => item.id === conversation.id) || conversation;
     const shouldQueue = Boolean(
       conversationHasWork ||
@@ -2176,6 +2386,9 @@ export function useAssistantWorkspaceController() {
       queued: shouldQueue,
       defaults: {
         model: sendModel,
+        sizeMode: imageSettings.sizeMode || "ratio",
+        exactWidth: imageSettings.exactWidth,
+        exactHeight: imageSettings.exactHeight,
         reasoningEffort: activeReasoningEffort,
         ratio: imageSettings.ratio,
         resolution: imageSettings.resolution,
@@ -2199,7 +2412,7 @@ export function useAssistantWorkspaceController() {
     scrollToBottom();
     controller.abort();
     await launchRun({ conversationId: conversation.id, prompt, userMessage, assistantMessage, responseMode });
-  }, [activeConversation, activeReasoningEffort, activeRuns, conversationHasWork, conversationModel, conversationModels, creationType, documents, generationCount, generationQuality, generationRatio, generationResolution, imageModel, imageModels, launchRun, maxImages, maxReferences, patchConversation, quotedMessage, references, scrollToBottom, selectedImageModel]);
+  }, [activeConversation, activeReasoningEffort, activeRuns, availableRatios, conversationHasWork, conversationModel, conversationModels, creationType, documents, generationCount, generationQuality, generationRatio, generationResolution, generationSize, imageModel, imageModels, launchRun, maxImages, maxReferences, patchConversation, quotedMessage, references, scrollToBottom, selectedImageModel]);
 
   useEffect(() => {
     if (!resumeCandidates.length) return;
@@ -2256,7 +2469,10 @@ export function useAssistantWorkspaceController() {
     if (requestAuth({ featureLabel: "AI 助手" })) return;
     const prompt = draft.trim();
     if (!canSend) {
-      if (assistantCharacterCount(prompt) > MAX_ASSISTANT_MESSAGE_CHARACTERS) {
+      if (generationSizeError) {
+        notificationService.warning(generationSizeError);
+        setPreferencesOpen(true);
+      } else if (assistantCharacterCount(prompt) > MAX_ASSISTANT_MESSAGE_CHARACTERS) {
         notificationService.warning("消息不能超过 12,000 个字符");
       } else if (documents.some((item) => item.status === "queued" || item.status === "processing")) {
         notificationService.warning("文档仍在解析，请等待完成后发送");
@@ -2419,7 +2635,7 @@ export function useAssistantWorkspaceController() {
   };
 
   const modelForMode = (responseMode, preferred = "") => {
-    const models = responseMode === "image" ? imageModels : conversationModels;
+    const models = responseMode === "image" ? availableImageModels : availableConversationModels;
     if (models.some((item) => item.model === preferred)) return preferred;
     return responseMode === "image" ? imageModel || models[0]?.model || "" : conversationModel || models[0]?.model || "";
   };
@@ -2485,8 +2701,12 @@ export function useAssistantWorkspaceController() {
     const model = replayLocalAttempt && target.model
       ? target.model
       : modelForMode(responseMode, responseMode === requestedMode ? target.model : "");
+    if (responseMode === "image" && target.sizeMode === "exact" && !availableImageModels.some((item) => item.model === target.model && item.supportsExactSize === true)) {
+      notificationService.warning("原精确尺寸模型暂不可用，请重新选择支持精确尺寸的可用模型后发送。原任务尺寸已保留。");
+      return;
+    }
     const retryEffort = target.reasoningEffort || activeReasoningEffort;
-    const retryModel = imageModels.find((item) => item.model === model) || selectedImageModel;
+    const retryModel = availableImageModels.find((item) => item.model === model) || selectedImageModel;
     const retryCapabilities = normalizeImageModelCapabilities(retryModel || {});
     const retryPlanItems = responseMode === "image"
       ? proposalImagePlanItems({ items: target.imagePlanItems?.length ? target.imagePlanItems : retrySourceProposal?.proposal?.items })
@@ -2525,6 +2745,7 @@ export function useAssistantWorkspaceController() {
         ? retryPlanItems.length || clampImageCount(target.count || generationCount, retryModel)
         : 1;
     const retrySettings = replayLocalAttempt ? {
+      ...(responseMode === "image" && target.sizeMode === "exact" ? { sizeMode: "exact", exactWidth: target.exactWidth, exactHeight: target.exactHeight } : {}),
       ratio: target.requestRatio || target.ratio || "",
       resolution: target.resolution || "",
       quality: target.quality || "",
@@ -2532,10 +2753,15 @@ export function useAssistantWorkspaceController() {
       width: Number(target.width) || 0,
       height: Number(target.height) || 0,
     } : assistantImageSettings(retryModel, {
+      ...(responseMode === "image" && target.sizeMode === "exact" ? { sizeMode: "exact", exactWidth: target.exactWidth, exactHeight: target.exactHeight } : {}),
       ratio: target.requestRatio || target.ratio || generationRatio,
       resolution: target.resolution || generationResolution,
       quality: target.quality || generationQuality,
     });
+    if (retrySettings.sizeError) {
+      notificationService.warning(retrySettings.sizeError);
+      return;
+    }
     if (!(await confirmAssistantCost(responseMode, retryCount, model, retryEffort))) return;
     const retryIdentity = resolveAssistantRetryIdentity(userMessage, target);
     const assistantMessage = createLocalAssistantPlaceholder({
@@ -2546,6 +2772,9 @@ export function useAssistantWorkspaceController() {
       defaults: {
         model,
         reasoningEffort: retryEffort,
+        sizeMode: retrySettings.sizeMode || "ratio",
+        exactWidth: retrySettings.exactWidth,
+        exactHeight: retrySettings.exactHeight,
         ratio: retrySettings.ratio,
         requestRatio: retrySettings.ratio,
         resolution: retrySettings.resolution,
@@ -2578,15 +2807,24 @@ export function useAssistantWorkspaceController() {
     const requestedMode = previousReply ? messageResponseMode(previousReply) : "chat";
     const responseMode = assistantSendMode(requestedMode, 0, prompt);
     const model = modelForMode(responseMode, responseMode === requestedMode ? previousReply?.model : "");
+    if (responseMode === "image" && previousReply?.sizeMode === "exact" && !availableImageModels.some((item) => item.model === previousReply.model && item.supportsExactSize === true)) {
+      notificationService.warning("原精确尺寸模型暂不可用，请重新选择支持精确尺寸的可用模型后发送。原任务尺寸已保留。");
+      return;
+    }
     const count = responseMode === "image"
-      ? clampImageCount(previousReply?.count || generationCount, imageModels.find((item) => item.model === model) || selectedImageModel)
+      ? clampImageCount(previousReply?.count || generationCount, availableImageModels.find((item) => item.model === model) || selectedImageModel)
       : 1;
-    const editModel = imageModels.find((item) => item.model === model) || selectedImageModel;
+    const editModel = availableImageModels.find((item) => item.model === model) || selectedImageModel;
     const editSettings = assistantImageSettings(editModel, {
+      ...(responseMode === "image" && previousReply?.sizeMode === "exact" ? { sizeMode: "exact", exactWidth: previousReply.exactWidth, exactHeight: previousReply.exactHeight } : {}),
       ratio: previousReply?.requestRatio || previousReply?.ratio || generationRatio,
       resolution: previousReply?.resolution || generationResolution,
       quality: previousReply?.quality || generationQuality,
     });
+    if (editSettings.sizeError) {
+      notificationService.warning(editSettings.sizeError);
+      return;
+    }
     const editEffort = previousReply?.reasoningEffort || activeReasoningEffort;
     if (!(await confirmAssistantCost(responseMode, count, model, editEffort))) return;
     const editIdentity = resolveAssistantRetryIdentity(message, previousReply);
@@ -2598,6 +2836,9 @@ export function useAssistantWorkspaceController() {
       defaults: {
         model,
         reasoningEffort: editEffort,
+        sizeMode: editSettings.sizeMode || "ratio",
+        exactWidth: editSettings.exactWidth,
+        exactHeight: editSettings.exactHeight,
         ratio: editSettings.ratio,
         requestRatio: editSettings.ratio,
         resolution: editSettings.resolution,
@@ -2619,10 +2860,12 @@ export function useAssistantWorkspaceController() {
     patchConversation(activeId, (conversation) => ({ ...conversation, messages: conversation.messages.map((message) => {
       if (message.id !== messageId || !message.proposal) return message;
       const next = { ...message.proposal, ...patch };
-      const selected = imageModels.find((item) => item.model === next.model) || imageModels[0];
-      Object.assign(next, assistantImageSettings(selected, next));
-      const planItems = proposalImagePlanItems(next);
-      next.count = planItems.length || clampImageCount(next.count, selected, 1);
+      if (["model", "count", "ratio", "resolution", "quality", "items"].some((key) => Object.hasOwn(patch, key))) {
+        const selected = availableImageModels.find((item) => item.model === next.model) || availableImageModels[0];
+        Object.assign(next, assistantImageSettings(selected, next));
+        const planItems = proposalImagePlanItems(next);
+        next.count = planItems.length || clampImageCount(next.count, selected, 1);
+      }
       return { ...message, proposal: next };
     }) }));
   };
@@ -2635,7 +2878,7 @@ export function useAssistantWorkspaceController() {
     const imagePlanItems = proposalImagePlanItems(proposal);
     if (!liveConversation || conversationHasWork || proposal?.submitting || (!prompt && !imagePlanItems.length)) return;
     const model = modelForMode("image", proposal.model);
-    const selected = imageModels.find((item) => item.model === model) || selectedImageModel;
+    const selected = availableImageModels.find((item) => item.model === model) || selectedImageModel;
     const request = imageRequestFromProposal(proposal, selected);
     const modelCapabilities = normalizeImageModelCapabilities(selected || {});
     const { references: referenceImages } = resolveProposalReferences(liveConversation, proposalMessage, modelCapabilities.maxReferenceImages || MAX_MODEL_REFERENCE_IMAGES);
@@ -2691,10 +2934,23 @@ export function useAssistantWorkspaceController() {
   const stopRun = async () => {
     if (!activeRun?.id || stopBusy) return;
     const stoppingRun = activeRun;
+    const stoppingUserId = auth.user?.id;
+    const acknowledgedUpstream = stoppingRun.cancelPolicy?.upstreamSubmitted === true;
     setStopBusy(true);
     try {
-      const acknowledgedUpstream = stoppingRun.cancelPolicy?.upstreamSubmitted === true;
-      const result = await cancelAssistantRun(stoppingRun.id, { acknowledgeUpstream: acknowledgedUpstream });
+      if (navigator.onLine === false) throw new TypeError("offline");
+      const requestController = new AbortController();
+      const requestTimer = window.setTimeout(() => requestController.abort(), 8000);
+      let result;
+      try {
+        result = await cancelAssistantRun(stoppingRun.id, {
+          acknowledgeUpstream: acknowledgedUpstream,
+          signal: requestController.signal,
+        });
+      } finally {
+        window.clearTimeout(requestTimer);
+      }
+      if (cancelUserRef.current !== stoppingUserId) return;
       if (!result?.canceled) {
         setStopConfirmOpen(false);
         notificationService.info("任务已经结束，无需停止");
@@ -2713,13 +2969,32 @@ export function useAssistantWorkspaceController() {
       clearConversationRun(stoppingRun.conversationId || activeId, stoppingRun.id);
       setStopConfirmOpen(false);
       scheduleWalletRefresh();
-      notificationService.warning(
-        stoppingRun.cancelPolicy?.refunded
-          ? "任务已停止，冻结积分已退回"
-          : "任务已停止；已提交上游的部分不再接收结果，本轮积分不退还",
-      );
+      notificationService.warning(result.run?.cancelPolicy?.message || "任务已停止，请在钱包明细中查看实际积分处理结果");
     } catch (error) {
+      if (assistantRequestIsTransient(error)) {
+        queuePendingAssistantCancel(stoppingRun, acknowledgedUpstream, stoppingUserId);
+        if (cancelUserRef.current !== stoppingUserId) return;
+        runControllersRef.current.get(stoppingRun.id)?.abort();
+        runControllersRef.current.delete(stoppingRun.id);
+        patchConversation(stoppingRun.conversationId || activeId, (conversation) => ({
+          ...conversation,
+          messages: conversation.messages.map((message) => message.id === stoppingRun.assistantMessageId
+            ? {
+                ...message,
+                pending: false,
+                routing: false,
+                statusStage: "connection-paused",
+                content: message.content || "已停止本机等待；恢复网络后会自动提交停止请求。",
+              }
+            : message),
+        }));
+        clearConversationRun(stoppingRun.conversationId || activeId, stoppingRun.id);
+        setStopConfirmOpen(false);
+        notificationService.warning("网络不可用，已停止本机等待；恢复网络后会自动提交停止请求");
+        return;
+      }
       if (error?.code === "assistant_cancel_confirmation_required") {
+        if (cancelUserRef.current !== stoppingUserId) return;
         const latest = await getAssistantRun(stoppingRun.id).catch(() => null);
         if (latest?.run) setConversationRun(stoppingRun.conversationId || activeId, latest.run);
         notificationService.info("任务状态刚刚发生变化，请确认新的停止后果");
@@ -2782,7 +3057,7 @@ export function useAssistantWorkspaceController() {
     if (!run?.id || queueBusyId) return;
     setQueueBusyId(run.id);
     try {
-      const result = await cancelAssistantRun(run.id);
+      const result = await cancelAssistantRun(run.id, { acknowledgeUpstream: false });
       if (!result?.canceled) {
         notificationService.info("任务已经开始或结束，队列状态将自动更新");
         return;
@@ -2794,8 +3069,14 @@ export function useAssistantWorkspaceController() {
         messages: conversation.messages.filter((message) => message.id !== run.userMessageId && message.id !== run.assistantMessageId),
       }));
       scheduleWalletRefresh();
-      notificationService.success("已从队列移除，冻结积分已退回");
+      notificationService.success(result.run?.cancelPolicy?.refunded ? "已从队列移除，冻结积分已退回" : result.run?.cancelPolicy?.message || "任务已取消，请查看积分明细");
     } catch (error) {
+      if (error?.code === "assistant_cancel_confirmation_required") {
+        const latest = await getAssistantRun(run.id).catch(() => null);
+        if (latest?.run) { setConversationRun(run.conversationId || activeId, latest.run); setStopConfirmOpen(true); }
+        notificationService.info("任务已开始执行，请确认新的停止后果");
+        return;
+      }
       notificationService.error(error?.message || "移除排队任务失败");
     } finally {
       if (mountedRef.current) setQueueBusyId("");
@@ -2835,7 +3116,10 @@ export function useAssistantWorkspaceController() {
   });
 
   const draftCharacterCount = assistantCharacterCount(draft.trim());
-  const canSend = draftCharacterCount > 0 && draftCharacterCount <= MAX_ASSISTANT_MESSAGE_CHARACTERS && !documents.some((item) => item.status !== "ready") && !costPayload && !loading && !serviceError && !uploading;
+  const generationSizeError = mode === "image" && generationSize.sizeMode === "exact"
+    ? validateExactImageSize(selectedImageModel, generationSize.exactWidth, generationSize.exactHeight).error
+    : "";
+  const canSend = draftCharacterCount > 0 && draftCharacterCount <= MAX_ASSISTANT_MESSAGE_CHARACTERS && !documents.some((item) => item.status !== "ready") && !costPayload && !loading && !serviceError && !uploading && !generationSizeError;
   const voiceBusy = Boolean(serviceError);
   const deleteTargetHasWork = Boolean(deleteTarget && (
     activeRuns[deleteTarget.id] || queuedRuns.some((run) => run.conversationId === deleteTarget.id)
@@ -2947,11 +3231,14 @@ export function useAssistantWorkspaceController() {
     editableFilesEnabled,
     setConversationModel,
     setReasoningEffort,
-    setImageModel,
+    setImageModel: selectImageModel,
     generationRatio,
     setGenerationRatio,
     generationResolution,
-    setGenerationResolution,
+    setGenerationResolution: selectGenerationResolution,
+    generationSize,
+    setGenerationSize,
+    generationSizeError,
     generationQuality,
     setGenerationQuality,
     generationCount,
@@ -3019,6 +3306,7 @@ export function useAssistantWorkspaceController() {
     firstRenderedMessageIndex,
     renderedMessages,
     hiddenMessageCount,
+    loadEarlierMessages,
     threadSearchHits,
     threadSearchHitIds,
     currentThreadHitId,
@@ -3027,6 +3315,7 @@ export function useAssistantWorkspaceController() {
     generationModels,
     generationModel,
     generationModelLabel,
+    selectedModel,
     reasoningEffortOptions,
     reasoningEfforts,
     activeReasoningEffort,

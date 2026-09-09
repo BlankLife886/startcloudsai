@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import {
   Bell,
   Delete,
@@ -28,6 +28,9 @@ const annStatusFilter = ref<AnnStatusFilter>("all");
 const logTagFilter = ref<LogTagFilter>("all");
 const switchingAnnId = ref("");
 const switchingLogId = ref("");
+const pushingAnnId = ref("");
+const announcementNow = ref(Date.now());
+let announcementClock: ReturnType<typeof setInterval> | undefined;
 
 // ---------- 公告 ----------
 interface Announcement {
@@ -52,6 +55,8 @@ interface Announcement {
   carouselEnabled?: boolean;
   carouselIntervalMs?: number;
   createdAt?: string;
+  pushId?: string | null;
+  pushedAt?: string | null;
 }
 
 interface AnnouncementAsset {
@@ -326,14 +331,14 @@ function announcementConfigOf(item: Announcement): AnnouncementConfig {
 }
 
 function announcementState(item: Announcement) {
-  const now = Date.now();
+  const now = announcementNow.value;
   if (item.active === false) {
     return { key: "disabled" as const, label: "已停用", tone: "info" as const };
   }
   if (item.startsAt && new Date(item.startsAt).getTime() > now) {
     return { key: "pending" as const, label: "待生效", tone: "warning" as const };
   }
-  if (item.endsAt && new Date(item.endsAt).getTime() < now) {
+  if (item.endsAt && new Date(item.endsAt).getTime() <= now) {
     return { key: "ended" as const, label: "已结束", tone: "info" as const };
   }
   return { key: "live" as const, label: "展示中", tone: "success" as const };
@@ -451,6 +456,34 @@ async function removeAnn(item: Announcement) {
   await request(`/api/v1/admin/announcements/${item.id}`, { method: "DELETE" });
   ElMessage.success("已删除");
   await loadAnnouncements();
+}
+
+async function pushAnn(item: Announcement) {
+  if (pushingAnnId.value || switchingAnnId.value) return;
+  announcementNow.value = Date.now();
+  if (announcementState(item).key !== "live") {
+    ElMessage.warning("只有展示中的公告可以立即推送，请先启用公告并确认展示时间");
+    return;
+  }
+  pushingAnnId.value = item.id;
+  try {
+    try {
+      await ElMessageBox.confirm(
+        `将「${item.title}」推送给当前在线用户。已关闭该公告的用户也会再次看到一次。`,
+        "立即推送公告",
+        { type: "warning", confirmButtonText: "立即推送", cancelButtonText: "取消" },
+      );
+    } catch {
+      return;
+    }
+    const updated = await request<Announcement>(`/api/v1/admin/announcements/${item.id}/push`, { method: "POST" });
+    announcements.value = announcements.value.map(row => row.id === item.id ? { ...row, ...updated } : row);
+    ElMessage.success("已发起推送，在线页面将自动更新");
+  } catch {
+    // request presents the API error; allow retry without losing the current list.
+  } finally {
+    pushingAnnId.value = "";
+  }
 }
 
 // ---------- 更新说明 changelog ----------
@@ -845,7 +878,9 @@ watch([query, annStatusFilter, logTagFilter, activeTab], () => {
 onMounted(() => {
   void loadAnnouncements();
   void loadChangelog();
+  announcementClock = setInterval(() => { announcementNow.value = Date.now(); }, 1000);
 });
+onBeforeUnmount(() => clearInterval(announcementClock));
 </script>
 
 <template>
@@ -940,7 +975,7 @@ onMounted(() => {
 
       <p class="content-legend">
         <template v-if="activeTab === 'announcements'">
-          公告出现在用户通知中心，不会混进通知列表。当前展示中
+          公告发布与修改会自动同步到在线页面；“立即推送”可让已关闭的公告再次展示。当前展示中
           <em class="tnum">{{ liveAnnCount }}</em>
           / {{ announcements.length }} 条。
         </template>
@@ -986,6 +1021,7 @@ onMounted(() => {
               <span>{{ LAYOUT_LABELS[announcementConfigOf(item).layout] }}</span>
               <span>{{ scheduleLabel(item) }}</span>
               <span class="tnum">{{ formatShortTime(item.createdAt) }}</span>
+              <span v-if="item.pushedAt" class="ann-push-time">最近推送 {{ formatShortTime(item.pushedAt) }}</span>
             </div>
             <footer class="ann-card__foot">
               <label class="content-switch">
@@ -993,16 +1029,28 @@ onMounted(() => {
                 <el-switch
                   :model-value="item.active !== false"
                   :loading="switchingAnnId === item.id"
+                  :disabled="!!pushingAnnId"
                   @change="toggleAnnActive(item, Boolean($event))"
                 />
               </label>
               <div class="content-actions">
-                <el-button :icon="EditPen" @click="openAnnEdit(item)">编辑</el-button>
+                <span :title="announcementState(item).key === 'live' ? '让在线用户立即看到这条公告' : '仅展示中的公告可推送，请先启用并确认展示时间'">
+                  <el-button
+                    type="primary"
+                    plain
+                    :icon="Bell"
+                    :loading="pushingAnnId === item.id"
+                    :disabled="announcementState(item).key !== 'live' || !!switchingAnnId || (!!pushingAnnId && pushingAnnId !== item.id)"
+                    @click="pushAnn(item)"
+                  >立即推送</el-button>
+                </span>
+                <el-button :icon="EditPen" :disabled="!!pushingAnnId" @click="openAnnEdit(item)">编辑</el-button>
                 <el-button
                   type="danger"
                   plain
                   :icon="Delete"
                   aria-label="删除公告"
+                  :disabled="!!pushingAnnId"
                   @click="removeAnn(item)"
                 />
               </div>
@@ -1087,7 +1135,7 @@ onMounted(() => {
               hasFilters
                 ? "调整筛选条件后再试"
                 : activeTab === "announcements"
-                  ? "发布后会出现在用户通知中心的公告页签"
+                  ? "发布后自动同步到在线页面，也可在用户通知中心查看"
                   : "发布版本后，打开中的用户端会收到刷新提示"
             }}
           </span>

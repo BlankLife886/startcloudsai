@@ -726,6 +726,8 @@ Object.assign(EN, {
 
   选择适合你的: 'Choose your ideal',
   创作方案: 'creative plan',
+  '按需选择额度包或订阅方案，让创作预算更清晰。':
+    'Choose credits or a subscription to keep your creation budget clear.',
   '从按量创作到未来的订阅计划，费用结构保持清晰。支付功能已预留，但在正式接入前不会创建订单或扣款。':
     'Clear pricing, from pay-as-you-go to future plans. No orders or charges until payments launch.',
   套餐方案: 'Plans',
@@ -1280,7 +1282,7 @@ Object.assign(EN, {
   持续创作: 'Keep creating',
   高频制作: 'High volume',
   订阅方案: 'Subscription',
-  额度包: 'Credit pack',
+  额度包: 'Credits',
   '订阅期内按计划发放创作额度。支付接入前仅展示方案信息。':
     'Credits granted on schedule during the term; display-only until payments launch.',
   '一次性额度包，支付接入前仅展示方案信息。':
@@ -1343,7 +1345,7 @@ Object.assign(EN, {
   订阅: 'Subscription',
   未订阅: 'Not subscribed',
   暂无订阅方案: 'No subscription plans',
-  暂无额度包: 'No credit packs',
+  暂无额度包: 'No credits',
   '可先用兑换码或体验资格获取积分。': 'Get credits with a redeem code or trial access first.',
   '套餐暂时不可用，已显示预览方案。': 'Plans are unavailable, so preview options are shown.',
   '提交冻结 · 完成结算': 'Hold on submit · settle when done',
@@ -3143,6 +3145,8 @@ const TW_PHRASES = {
   高频制作: '高頻製作',
   专业制作: '專業製作',
   套餐信息已配置: '套餐資訊已配置',
+  '按需选择额度包或订阅方案，让创作预算更清晰。':
+    '按需選擇額度包或訂閱方案，讓創作預算更清晰。',
   '订阅期内按计划发放创作额度。支付接入前仅展示方案信息。':
     '訂閱期內按計畫發放創作額度。付款接入前僅展示方案資訊。',
   '一次性额度包，支付接入前仅展示方案信息。': '一次性額度包，付款接入前僅展示方案資訊。',

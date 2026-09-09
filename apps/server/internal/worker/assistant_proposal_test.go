@@ -134,7 +134,7 @@ func TestAssistantExecutionModeRoutesExplicitSearchThroughAgent(t *testing.T) {
 		{mode: "chat", prompt: "请联网搜索今天的官方消息", want: "agent"},
 		{mode: "chat", prompt: "我的生图任务为什么还在运行中", want: "agent"},
 		{mode: "chat", prompt: "解释一下什么是对象存储", want: "chat"},
-		{mode: "image", prompt: "你好", want: "chat"},
+		{mode: "image", prompt: "你好", want: "image"},
 		{mode: "image", prompt: "生成一张海报", want: "image"},
 	}
 	for _, test := range tests {

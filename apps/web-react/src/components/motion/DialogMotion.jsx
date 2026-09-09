@@ -9,6 +9,7 @@ gsap.registerPlugin(useGSAP);
 const variants = {
   dialog: { enterY: 18, enterScale: 0.975, enterDuration: 0.36, exitY: 12, exitScale: 0.985, exitDuration: 0.2 },
   detail: { enterY: 12, enterScale: 0.985, enterDuration: 0.4, exitY: 8, exitScale: 0.99, exitDuration: 0.22 },
+  checkout: { enterY: 56, enterScale: 0.97, enterDuration: 0.56, exitY: 24, exitScale: 0.985, exitDuration: 0.2, enterEase: "expo.out" },
 };
 
 function assignRef(ref, value) {
@@ -131,27 +132,48 @@ export function DialogMotion({
         defaults: { ease: "power3.out" },
         onComplete: finishEnter,
       });
-      timeline
-        .fromTo(layer, { autoAlpha: 0 }, { autoAlpha: 1, duration: 0.22 }, 0)
-        .fromTo(panel, {
-          autoAlpha: 0,
-          y: settings.enterY,
-          scale: settings.enterScale,
-        }, {
-          autoAlpha: 1,
-          y: 0,
-          scale: 1,
-          duration: settings.enterDuration,
-          clearProps: "transform",
-        }, 0.025);
+      if (variant === "checkout") {
+        timeline
+          .fromTo(layer, { autoAlpha: 0 }, { autoAlpha: 1, duration: 0.36, ease: "power2.out" }, 0)
+          .fromTo(panel, {
+            autoAlpha: 0,
+            y: settings.enterY,
+            scale: settings.enterScale,
+            filter: "blur(12px)",
+          }, {
+            autoAlpha: 1,
+            y: 0,
+            scale: 1,
+            filter: "blur(0px)",
+            duration: settings.enterDuration,
+            ease: settings.enterEase,
+            clearProps: "transform,filter",
+          }, 0.04);
+      } else {
+        timeline
+          .fromTo(layer, { autoAlpha: 0 }, { autoAlpha: 1, duration: 0.22 }, 0)
+          .fromTo(panel, {
+            autoAlpha: 0,
+            y: settings.enterY,
+            scale: settings.enterScale,
+          }, {
+            autoAlpha: 1,
+            y: 0,
+            scale: 1,
+            duration: settings.enterDuration,
+            ease: settings.enterEase || "power3.out",
+            clearProps: "transform",
+          }, 0.025);
+      }
       if (items.length) {
-        timeline.fromTo(items, { autoAlpha: 0, y: 9 }, {
+        timeline.fromTo(items, { autoAlpha: 0, y: variant === "checkout" ? 16 : 9 }, {
           autoAlpha: 1,
           y: 0,
-          duration: 0.28,
-          stagger: 0.025,
+          duration: variant === "checkout" ? 0.4 : 0.28,
+          stagger: variant === "checkout" ? 0.05 : 0.025,
+          ease: variant === "checkout" ? "expo.out" : "power3.out",
           clearProps: "transform",
-        }, 0.12);
+        }, variant === "checkout" ? 0.16 : 0.12);
       }
       return () => window.clearTimeout(settleTimerRef.current);
     },

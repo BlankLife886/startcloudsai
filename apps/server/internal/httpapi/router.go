@@ -13,6 +13,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"github.com/BlankLife886/startcloudsai/server/internal/announcementstream"
+	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/auth"
 	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
 	"github.com/BlankLife886/startcloudsai/server/internal/config"
@@ -29,6 +31,10 @@ var writeMethods = map[string]bool{"POST": true, "PATCH": true, "DELETE": true, 
 func requestBodyLimit(path string, uploadMaxBytes int64) int64 {
 	limit := int64(1 << 20)
 	switch {
+	case path == "/v1/images/edits":
+		// Up to 32 MiB of image files plus multipart metadata. Each file is
+		// additionally checked against UploadMaxBytes by the image handler.
+		return 33 << 20
 	case path == "/api/v1/uploads" || path == "/api/open/v1/uploads":
 		return uploadMaxBytes + (1 << 20)
 	case strings.HasPrefix(path, "/api/v1/assistant/"):
@@ -52,6 +58,10 @@ func requestBodyLimit(path string, uploadMaxBytes int64) int64 {
 		return tryonCatalogMaxBytes + (1 << 20)
 	case path == "/api/v1/admin/announcements/images":
 		return promptCoverMaxBytes + (1 << 20)
+	case path == "/api/v1/admin/home-banners/images":
+		return 0 // Admin banner originals stream to storage without a body-size cap.
+	case path == "/api/v1/admin/model-config/icons":
+		return modelIconMaxBytes + (1 << 20)
 	case path == "/api/v1/admin/prompt-import-batches/upload":
 		return promptTransferMaxBytes + (1 << 20)
 	default:
@@ -60,6 +70,7 @@ func requestBodyLimit(path string, uploadMaxBytes int64) int64 {
 }
 
 type Server struct {
+	SubscriptionClock  func() time.Time
 	Cfg                *config.Config
 	St                 *store.Store
 	Storage            *storage.Storage
@@ -74,6 +85,7 @@ type Server struct {
 	Metrics            *systemMetrics
 	LanjingPay         *lanjingpay.Client
 	Logs               *platformlog.Recorder
+	AnnouncementStream *announcementstream.Source
 	limiterClosers     []func() error
 	c2aCallbackRoutes  func(context.Context, uuid.UUID) ([]store.AsyncPendingRoute, error)
 	enqueueImagePoll   func(context.Context, string, string, string, int, time.Duration) error
@@ -142,11 +154,26 @@ func New(cfg *config.Config, st *store.Store, stg *storage.Storage, c2aClient *c
 		s.ConcurrencyLimiter = concurrency
 		s.limiterClosers = []func() error{login.Close, admin.Close, redeem.Close, usage.Close, concurrency.Close}
 	}
+	if st != nil {
+		var bus announcementstream.Bus
+		if cfg.RedisURL != "" {
+			redisBus, err := announcementstream.NewRedisBus(cfg.RedisURL, cfg.DatabaseURL)
+			if err != nil {
+				s.Close()
+				return nil, err
+			}
+			bus = redisBus
+		}
+		s.AnnouncementStream = announcementstream.New(s.announcementSnapshot, bus, announcementstream.Options{})
+	}
 	s.startBackgroundSecurityJobs()
 	return s, nil
 }
 
 func (s *Server) Close() {
+	if s.AnnouncementStream != nil {
+		_ = s.AnnouncementStream.Close()
+	}
 	if s.backgroundCancel != nil {
 		s.backgroundCancel()
 		s.backgroundWG.Wait()
@@ -171,23 +198,46 @@ func (s *Server) Router() *gin.Engine {
 	}
 	r.HandleMethodNotAllowed = true
 	r.Use(s.platformLoggingMiddleware)
+	r.Use(openAICompatRequestMiddleware)
 	r.Use(s.requestMetricsMiddleware)
-	r.Use(gin.CustomRecovery(func(c *gin.Context, err any) {
+	legacyRecovery := gin.CustomRecovery(func(c *gin.Context, err any) {
 		log.Printf("panic on %s %s: %v", c.Request.Method, c.Request.URL.Path, err)
-		c.AbortWithStatusJSON(500, gin.H{"success": false, "code": "internal_error", "error": "服务器内部错误"})
-	}))
+		fail(c, apperr.E("internal_error", "服务器内部错误", http.StatusInternalServerError))
+	})
+	compatRecovery := gin.CustomRecoveryWithWriter(nil, func(c *gin.Context, _ any) {
+		// Gin's default recovery dumps panic values and request headers before
+		// calling its handler. Compatibility requests log only safe error metadata.
+		failOpenAI(c, apperr.E("internal_error", "服务器内部错误", http.StatusInternalServerError), "")
+	})
+	r.Use(func(c *gin.Context) {
+		if isOpenAICompatPath(c.Request.URL.Path) {
+			compatRecovery(c)
+			return
+		}
+		legacyRecovery(c)
+	})
 	r.Use(func(c *gin.Context) {
 		limit := requestBodyLimit(c.Request.URL.Path, s.Cfg.UploadMaxBytes)
-		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limit)
+		if limit > 0 {
+			if isOpenAICompatPath(c.Request.URL.Path) && c.Request.ContentLength > limit {
+				failOpenAI(c, &http.MaxBytesError{Limit: limit}, "")
+				return
+			}
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limit)
+		}
 		c.Next()
 	})
 	r.Use(s.originGuard)
+	r.Use(func(c *gin.Context) {
+		c.Request = c.Request.WithContext(store.WithBillingClock(c.Request.Context(), s.subscriptionNow))
+		c.Next()
+	})
 
 	r.NoRoute(func(c *gin.Context) {
-		c.JSON(404, gin.H{"success": false, "code": "not_found", "error": "Not Found"})
+		fail(c, apperr.E("not_found", "Not Found", http.StatusNotFound))
 	})
 	r.NoMethod(func(c *gin.Context) {
-		c.JSON(405, gin.H{"success": false, "code": "bad_request", "error": "Method Not Allowed"})
+		fail(c, apperr.E("bad_request", "Method Not Allowed", http.StatusMethodNotAllowed))
 	})
 	r.POST("/internal/c2a/image-task-events", s.c2aImageTaskEvent)
 
@@ -195,6 +245,9 @@ func (s *Server) Router() *gin.Engine {
 
 	// auth
 	api.GET("/auth/providers", s.authProviders)
+	api.GET("/referral-attribution", s.referralAttribution)
+	api.POST("/referral-attribution", s.referralAttribution)
+	api.DELETE("/referral-attribution", s.referralAttribution)
 	api.POST("/auth/email-verification-codes", s.requestEmailLoginCode)
 	api.POST("/auth/session", s.verifyEmailCode)
 	api.GET("/auth/session", s.authMe)
@@ -238,9 +291,16 @@ func (s *Server) Router() *gin.Engine {
 	api.PATCH("/me/profile", s.patchProfile)
 	api.GET("/me/overview", s.overview)
 	api.GET("/me/wallet", s.myWallet)
+	api.GET("/me/referrals", s.myReferrals)
 	api.GET("/me/wallet/summary", s.myWalletSummary)
 	api.GET("/me/wallet/export", s.myWalletExport)
 	api.GET("/me/subscription", s.mySubscription)
+	api.GET("/me/subscriptions", s.mySubscriptions)
+	api.GET("/me/subscriptions/:id/grants", s.mySubscriptionGrants)
+	api.POST("/me/subscriptions/:id/upgrade-quote", s.mySubscriptionUpgradeQuote)
+	api.POST("/me/subscriptions/:id/refund", s.mySubscriptionRefund)
+	api.GET("/me/subscriptions/:id/refund-preview", s.mySubscriptionRefundPreview)
+	api.GET("/me/subscription-changes/:id", s.mySubscriptionChange)
 	api.GET("/me/wallet/entries", s.myLedger)
 	api.POST("/me/wallet/redemptions", s.redeemCode)
 	api.GET("/me/trial-access-application", s.myTrialAccessApplication)
@@ -288,6 +348,8 @@ func (s *Server) Router() *gin.Engine {
 	// tasks
 	api.POST("/tasks", s.createTask)
 	api.POST("/tasks/quote", s.quoteTask)
+	api.POST("/tasks/cancel-group", s.cancelTaskGroup)
+	api.GET("/tasks/by-idempotency", s.getTaskByIdempotency)
 	api.GET("/tasks", s.listTasks)
 	api.GET("/tasks/:id", s.getTask)
 	api.GET("/tasks/:id/events", s.taskStream)
@@ -365,14 +427,24 @@ func (s *Server) Router() *gin.Engine {
 	api.GET("/changelog/latest", s.metaChangelogLatest)
 	api.GET("/changelog", s.metaChangelog)
 	api.GET("/announcements", s.metaAnnouncements)
+	api.GET("/announcements/events", s.announcementEvents)
+	api.GET("/home-banners", s.homeBanners)
 	api.GET("/health", s.health)
 
 	open := r.Group("/api/open/v1")
 	open.GET("/models", s.openAPIOnly("models:read", s.openAPIModels))
+	open.GET("/usage", s.openAPIOnly("tasks:read", s.openAPIUsage))
+	open.POST("/tasks/quote", s.openAPIOnly("tasks:write", s.quoteTask))
 	open.POST("/uploads", s.openAPIOnly("files:write", s.upload))
 	open.GET("/files/*key", s.openAPIOnly("tasks:read", s.getFile))
 	open.POST("/tasks", s.openAPIOnly("tasks:write", s.createTask))
 	open.GET("/tasks/:id", s.openAPIOnly("tasks:read", s.getTask))
+
+	compat := r.Group("/v1")
+	compat.GET("/models", s.openAPIOnly("models:read", s.openAIModels))
+	compat.GET("/models/:model", s.openAPIOnly("models:read", s.openAIModel))
+	compat.POST("/images/generations", s.openAPIOnly("tasks:write", s.openAIGenerateImage))
+	compat.POST("/images/edits", s.openAPIOnly("tasks:write", s.openAIEditImage))
 
 	// admin auth（独立账号、会话与 Cookie）
 	api.POST("/admin/auth/session", s.adminLogin)
@@ -411,13 +483,26 @@ func (s *Server) Router() *gin.Engine {
 	admin.GET("/users", s.adminOnly(s.adminListUsers))
 	admin.GET("/user-analytics", s.adminOnly(s.adminUserAnalytics))
 	admin.GET("/users/:id", s.adminOnly(s.adminGetUser))
+	admin.GET("/users/:id/billing", s.adminOnly(s.adminUserBilling))
+	admin.GET("/users/:id/credit-lots", s.adminOnly(s.adminUserCreditLots))
+	admin.GET("/users/:id/credit-lots/export", s.adminOnly(s.adminExportUserCreditLots))
 	admin.PATCH("/users/:id", s.adminOnly(s.adminPatchUser))
 	admin.POST("/users/:id/profile/refresh", s.adminOnly(s.adminRefreshUserProfile))
 	admin.GET("/users/:id/wallet/entries", s.adminOnly(s.adminUserLedger))
 	admin.POST("/users/:id/wallet/entries", s.adminOnly(s.adminWalletAdjust))
 	admin.GET("/wallet/entries", s.adminOnly(s.adminSiteLedger))
-	admin.GET("/orders", s.adminOnly(s.adminListOrders))
+	admin.GET("/orders", s.adminOnly(s.adminAccountingOrders))
+	admin.GET("/orders/export", s.adminOnly(s.adminExportOrderAccounting))
+	admin.GET("/orders/:id", s.adminOnly(s.adminOrderAccountingDetail))
+	admin.DELETE("/orders/:id", s.adminOnly(s.adminDeleteExpiredOrder))
+	admin.GET("/subscription-changes", s.adminOnly(s.adminSubscriptionChanges))
+	admin.GET("/subscription-changes/:id", s.adminOnly(s.adminSubscriptionChangeDetail))
+	admin.POST("/subscription-changes/:id/review", s.adminOnly(s.adminReviewSubscriptionRefund))
+	admin.GET("/orders/:id/subscription-refund", s.adminOnly(s.adminManualRefundPreview))
+	admin.GET("/orders/:id/subscription-audit", s.adminOnly(s.adminSubscriptionAudit))
+	admin.POST("/orders/:id/subscription-refund", s.adminOnly(s.adminRequestManualRefund))
 	admin.GET("/plans", s.adminOnly(s.adminListPlans))
+	admin.GET("/plans/:id/versions", s.adminOnly(s.adminPlanVersions))
 	admin.POST("/plans", s.adminOnly(s.adminCreatePlan))
 	admin.PATCH("/plan-order", s.adminOnly(s.adminReorderPlans))
 	admin.PATCH("/plans/order", s.adminOnly(s.adminReorderPlans))
@@ -495,9 +580,21 @@ func (s *Server) Router() *gin.Engine {
 	admin.POST("/prompt-import-batches/:id/analyze", s.adminOnly(s.adminAnalyzePromptImportBatch))
 	admin.POST("/prompt-import-batches/:id/bulk-review", s.adminOnly(s.adminBulkReviewPromptImportBatch))
 	admin.POST("/prompt-import-batches/:id/publish", s.adminOnly(s.adminPublishPromptImportBatch))
+	admin.GET("/home-banners", s.adminOnly(s.adminHomeBanners))
+	admin.GET("/referral-config", s.adminOnly(s.adminReferralConfig))
+	admin.PUT("/referral-config", s.adminOnly(s.adminSaveReferralConfig))
+	admin.GET("/referral-relations", s.adminOnly(s.adminReferralRelations))
+	admin.GET("/referral-rewards", s.adminOnly(s.adminReferralRewards))
+	admin.GET("/referral-rewards/:id/actions", s.adminOnly(s.adminReferralRewardActions))
+	admin.POST("/referral-rewards/:id/reversal", s.adminOnly(s.adminReverseReferralReward))
+	admin.POST("/home-banners", s.adminOnly(s.adminSaveHomeBanner))
+	admin.POST("/home-banners/images", s.adminOnly(s.adminUploadHomeBannerImage))
+	admin.PUT("/home-banners/:id", s.adminOnly(s.adminSaveHomeBanner))
+	admin.DELETE("/home-banners/:id", s.adminOnly(s.adminDeleteHomeBanner))
 	admin.GET("/announcements", s.adminOnly(s.adminAnnouncements))
 	admin.POST("/announcements", s.adminOnly(s.adminCreateAnnouncement))
 	admin.POST("/announcements/images", s.adminOnly(s.adminUploadAnnouncementImage))
+	admin.POST("/announcements/:id/push", s.adminOnly(s.adminPushAnnouncement))
 	admin.PATCH("/announcements/:id", s.adminOnly(s.adminPatchAnnouncement))
 	admin.DELETE("/announcements/:id", s.adminOnly(s.adminDeleteAnnouncement))
 	admin.GET("/changelog/export", s.adminOnly(s.adminExportChangelog))
@@ -515,6 +612,7 @@ func (s *Server) Router() *gin.Engine {
 	admin.POST("/providers/lanjing-pay/tests", s.adminOnly(s.adminTestLanjingPay))
 	admin.GET("/model-config", s.adminOnly(s.adminGetModelConfig))
 	admin.PUT("/model-config", s.adminOnly(s.adminPutModelConfig))
+	admin.POST("/model-config/icons", s.adminOnly(s.adminUploadModelIcon))
 	admin.POST("/model-config/discoveries", s.adminOnly(s.adminDiscoverProviderModels))
 	admin.GET("/ecommerce/catalog", s.adminOnly(s.adminListTryonCatalog))
 	admin.POST("/ecommerce/catalog", s.adminOnly(s.adminCreateTryonCatalog))
@@ -547,7 +645,7 @@ func (s *Server) originGuard(c *gin.Context) {
 				}
 			}
 			if !allowed {
-				c.AbortWithStatusJSON(403, gin.H{"success": false, "code": "origin_not_allowed", "error": "当前访问地址不在服务端允许列表"})
+				fail(c, apperr.E("origin_not_allowed", "当前访问地址不在服务端允许列表", http.StatusForbidden))
 				return
 			}
 		}

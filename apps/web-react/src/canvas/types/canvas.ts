@@ -61,6 +61,9 @@ export type CanvasNodeMetadata = {
     model?: string;
     reasoningEffort?: "auto" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
     size?: string;
+    sizeMode?: "ratio" | "exact";
+    exactWidth?: string | number;
+    exactHeight?: string | number;
     resolution?: string;
     quality?: string;
     background?: string;

@@ -8,7 +8,7 @@ import { SharePublishDialog } from "../components/SharePublishDialog.jsx";
 import { EcommerceMaskEditor } from "../features/ecommerce/EcommerceMaskEditor.jsx";
 import { canOpenWallevenImagePreview, WallevenImagePreview } from "../components/common/WallevenImagePreview.jsx";
 import { DownloadIcon } from "../components/common/DownloadIcon.jsx";
-import { SoftMark } from "../components/common/SoftMark.jsx";
+import { ModelCatalogIcon, ModelMaintenanceBadge, availableCatalogModels, isCatalogModelMaintenance } from "../components/common/ModelCatalogIcon.jsx";
 import { RegenerateIcon } from "../components/common/RegenerateIcon.jsx";
 import { ConfirmDialog } from "../components/ConfirmDialog.jsx";
 import { PackageCheck } from "lucide-react";
@@ -198,14 +198,15 @@ function SelectPopover({ value, options, label, onChange, model = false, light =
   }, [open, positionMenu]);
   return <div className={`ratio-select ms3-select-pop${open ? " is-open" : ""}${light ? " is-light" : ""}`}>
     <button ref={triggerRef} type="button" className="ratio-select__trigger" aria-label={label} aria-haspopup="listbox" aria-expanded={open} onClick={() => { if (!open) positionMenu(); setOpen((current) => !current); }}>
-      <span className="ratio-select__value-wrap"><span className="ratio-select__value">{selected?.label || selected?.value || "请选择"}</span></span>
+      <span className="ratio-select__value-wrap">{model ? <ModelCatalogIcon model={selected?.model} size="sm" /> : null}<span className="ratio-select__value">{selected?.label || selected?.value || "请选择"}</span></span>
       <i className="ratio-select__chevron bi bi-chevron-down" />
     </button>
     {open && createPortal(<div className={`ratio-select__menu${model ? " is-plain has-priced-options" : ""}${light ? " is-light" : ""}`} role="listbox" aria-label={label} style={menuStyle} onPointerDown={(event) => event.stopPropagation()}>
-      {options.map((option) => <button key={option.value} type="button" role="option" aria-selected={option.value === value} className={`ratio-select__option${option.value === value ? " is-selected" : ""}${model ? " has-icon has-price" : ""}`} onClick={() => { onChange(option.value); setOpen(false); }}>
-        {model ? <SoftMark name="cpu" size="sm" /> : null}
+      {options.map((option) => <button key={option.value} type="button" role="option" aria-selected={option.value === value} className={`ratio-select__option${option.value === value ? " is-selected" : ""}${model ? " has-icon has-price" : ""}`} disabled={option.disabled} title={option.disabled ? "模型维护中，暂不可选择" : undefined} onClick={() => { onChange(option.value); setOpen(false); }}>
+        {model ? <ModelCatalogIcon model={option.model} size="sm" /> : null}
         <span className="ratio-select__option-content"><span className="ratio-select__option-label">{option.label || option.value}</span></span>
-        {model && option.creditCost != null && <span className={`model-point-price is-compact is-prominent${light ? " is-light" : ""}`}><strong><b>{option.creditCost}</b><span>积分/张</span></strong></span>}
+        {model ? <ModelMaintenanceBadge model={option.model} /> : null}
+        {model && !isCatalogModelMaintenance(option.model) && option.creditCost != null && <span className={`model-point-price is-compact is-prominent${light ? " is-light" : ""}`}><strong><b>{option.creditCost}</b><span>积分/张</span></strong></span>}
       </button>)}
     </div>, document.body)}
   </div>;
@@ -237,7 +238,8 @@ export function ModelSheetStudioView() {
   const [storageScope, setStorageScope] = useState("");
   const [models, setModels] = useState([]);
   const [modelId, setModelId] = useState("");
-  const activeModel = models.find((item) => item.id === modelId) || models[0] || null;
+  const availableModels = useMemo(() => availableCatalogModels(models), [models]);
+  const activeModel = availableModels.find((item) => item.id === modelId) || availableModels[0] || null;
   const jobs = useModelSheetJobs({ model: activeModel, isAuthenticated: auth.isAuthenticated });
   const [referenceItems, setReferenceItems] = useState([]);
   const [subjects, setSubjects] = useState([]);
@@ -407,8 +409,9 @@ export function ModelSheetStudioView() {
     mountedRef.current = true;
     fetchRuntimeConfig().then((config) => {
       if (!mountedRef.current) return;
-      const available = featureModels(config);
-      setModels(available);
+      const catalog = featureModels(config);
+      const available = availableCatalogModels(catalog);
+      setModels(catalog);
       setModelId((current) => available.some((item) => item.id === current) ? current : available.find((item) => item.default)?.id || available[0]?.id || "");
       const pending = takePendingPrompt("model_sheet");
       if (pending) {
@@ -757,7 +760,7 @@ export function ModelSheetStudioView() {
           <div className="ms3-row"><span>背景</span><div className="ms3-seg is-mini">{backgroundOptions.map((item) => <button key={item.id} type="button" className={background === item.id ? "is-on" : ""} onClick={() => setBackground(item.id)}>{item.label}</button>)}</div></div>
           <div className="ms3-row"><span>还原策略</span><div className="ms3-seg is-mini"><button type="button" className={fidelity === "strict" ? "is-on" : ""} onClick={() => setFidelity("strict")}>严格</button><button type="button" className={fidelity === "enhance" ? "is-on" : ""} onClick={() => setFidelity("enhance")}>优化</button></div></div>
           {modelCapabilities.qualities.length > 0 && <div className="ms3-row is-slider"><span>细节强度</span><em>{detail} · {qualityLabel}档</em><input value={detail} type="range" min="40" max="100" aria-label="细节强度" disabled={detailLocked} onChange={(event) => setDetail(supportedDetail(Number(event.target.value), modelCapabilities.qualities))} /></div>}
-          <div className="ms3-row"><span>生成模型</span><SelectPopover value={modelId} options={models.map((item) => ({ value: item.id, label: item.label, creditCost: item.creditCost }))} label="生成模型" onChange={setModelId} model light={!isDark} /></div>
+          <div className="ms3-row"><span>生成模型</span><SelectPopover value={modelId} options={models.map((item) => ({ value: item.id, label: item.label, creditCost: item.creditCost, model: item, disabled: isCatalogModelMaintenance(item) }))} label="生成模型" onChange={setModelId} model light={!isDark} /></div>
         </details>
         <details className="ms3-more">
           <summary>主体档案与提示词</summary>

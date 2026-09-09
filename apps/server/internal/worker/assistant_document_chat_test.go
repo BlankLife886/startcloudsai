@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +16,52 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/sub2api"
 	"github.com/BlankLife886/startcloudsai/server/internal/testdb"
 )
+
+func TestAssistantDocumentChatRejectsFailedReadAsEvidence(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	requests := 0
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		tools, _ := body["tools"].([]any)
+		for _, rawTool := range tools {
+			tool, _ := rawTool.(map[string]any)
+			function, _ := tool["function"].(map[string]any)
+			if function["name"] == "files_create" {
+				t.Error("file creation was enabled before successfully reading evidence")
+			}
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		if requests == 1 {
+			fmt.Fprint(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"invalid-read","function":{"name":"files_read","arguments":"{\"file_id\":\"missing-file\"}"}}]}}]}`+"\n\n")
+		} else {
+			fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"An answer with no file evidence."}}]}`+"\n\n")
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer provider.Close()
+	client, err := sub2api.New(provider.URL, "test-key", "gpt-test", "image-test", 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := &store.AssistantRun{
+		ID: uuid.New(), UserID: uuid.New(), AssistantMessageID: uuid.New(), Prompt: "Summarize the attachment and export a txt file",
+		Params: map[string]any{"_assistantFileIds": []string{uuid.NewString()}, "skill": "document_analysis"},
+	}
+	w := &Worker{St: st}
+	streamed := ""
+	text, used, artifacts, _, err := w.requestAssistantDocumentText(ctx, client, run,
+		[]sub2api.Message{{Role: "user", Content: run.Prompt}}, func(value, _ string) error { streamed = value; return nil })
+	if err == nil || !strings.Contains(err.Error(), "without reading file evidence") || text != "" || streamed != "" || len(used) != 0 || len(artifacts) != 0 {
+		t.Fatalf("requests=%d text=%q streamed=%q used=%#v artifacts=%#v err=%v", requests, text, streamed, used, artifacts, err)
+	}
+}
 
 func TestAssistantDocumentChatExecutesAttachedFileSearchBeforeAnswering(t *testing.T) {
 	ctx := context.Background()

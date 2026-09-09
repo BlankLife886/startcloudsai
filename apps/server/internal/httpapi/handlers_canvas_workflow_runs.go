@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
+	"regexp"
 	"strings"
 	"time"
 
@@ -15,8 +17,9 @@ import (
 const canvasWorkflowLease = 30 * time.Second
 
 type canvasWorkflowAcquireIn struct {
-	OwnerID string   `json:"ownerId"`
-	NodeIDs []string `json:"nodeIds"`
+	InputSignature string   `json:"inputSignature"`
+	OwnerID        string   `json:"ownerId"`
+	NodeIDs        []string `json:"nodeIds"`
 }
 
 type canvasWorkflowPatchIn struct {
@@ -32,14 +35,15 @@ type canvasWorkflowPatchIn struct {
 }
 
 type canvasWorkflowNodeMetric struct {
-	NodeID       string  `json:"nodeId"`
-	Title        string  `json:"title"`
-	Status       string  `json:"status"`
-	StartedAt    *string `json:"startedAt,omitempty"`
-	FinishedAt   *string `json:"finishedAt,omitempty"`
-	DurationMs   int64   `json:"durationMs"`
-	CostCents    int64   `json:"costCents"`
-	ErrorMessage string  `json:"errorMessage,omitempty"`
+	OutputFingerprint string  `json:"outputFingerprint,omitempty"`
+	NodeID            string  `json:"nodeId"`
+	Title             string  `json:"title"`
+	Status            string  `json:"status"`
+	StartedAt         *string `json:"startedAt,omitempty"`
+	FinishedAt        *string `json:"finishedAt,omitempty"`
+	DurationMs        int64   `json:"durationMs"`
+	CostCents         int64   `json:"costCents"`
+	ErrorMessage      string  `json:"errorMessage,omitempty"`
 }
 
 func validCanvasWorkflowNodeIDs(values []string, required bool) ([]string, error) {
@@ -70,7 +74,8 @@ func canvasWorkflowRunJSON(item *store.CanvasWorkflowRun) gin.H {
 		return nil
 	}
 	return gin.H{
-		"id": item.ID.String(), "projectId": item.ProjectID.String(), "ownerId": item.OwnerID.String(), "status": item.Status,
+		"inputSignature": item.InputSignature,
+		"id":             item.ID.String(), "projectId": item.ProjectID.String(), "ownerId": item.OwnerID.String(), "status": item.Status,
 		"nodeIds": item.NodeIDs, "completedNodeIds": item.CompletedNodeIDs, "canceledNodeIds": item.CanceledNodeIDs, "currentNodeId": item.CurrentNodeID,
 		"errorMessage": item.ErrorMessage, "errorNodeId": item.ErrorNodeID,
 		"nodeMetrics": item.NodeMetrics, "totalCostCents": item.TotalCostCents,
@@ -108,6 +113,9 @@ func validateCanvasWorkflowNodeMetrics(raw json.RawMessage) (json.RawMessage, er
 		}
 		if len(metric.Title) > 240 || len(metric.ErrorMessage) > 2000 || metric.DurationMs < 0 || metric.CostCents < 0 {
 			return nil, apperr.E("validation_error", "nodeMetrics: 节点诊断数据无效", 422)
+		}
+		if metric.OutputFingerprint != "" && !canvasWorkflowInputSignatureRE.MatchString(metric.OutputFingerprint) {
+			return nil, apperr.E("validation_error", "nodeMetrics: 产物版本无效", 422)
 		}
 		for _, value := range []*string{metric.StartedAt, metric.FinishedAt} {
 			if value == nil || *value == "" {
@@ -183,13 +191,24 @@ func (s *Server) acquireCanvasWorkflowRun(c *gin.Context) {
 		return
 	}
 	nodeJSON, _ := json.Marshal(nodeIDs)
-	item, acquired, err := store.AcquireCanvasWorkflowRun(c.Request.Context(), s.St.Pool, user.ID, projectID, ownerID, nodeJSON, time.Now(), canvasWorkflowLease)
+	signature := strings.TrimSpace(in.InputSignature)
+	if signature != "" && !canvasWorkflowInputSignatureRE.MatchString(signature) {
+		fail(c, apperr.E("validation_error", "inputSignature: 工作流输入版本无效", 422))
+		return
+	}
+	item, acquired, err := store.AcquireCanvasWorkflowRun(c.Request.Context(), s.St.Pool, user.ID, projectID, ownerID, nodeJSON, time.Now(), canvasWorkflowLease, signature)
+	if errors.Is(err, store.ErrCanvasWorkflowInputsChanged) {
+		fail(c, apperr.E("workflow_run_inputs_changed", "工作流输入已变化或旧运行缺少输入版本，请先停止旧运行，再开始新的工作流", 409))
+		return
+	}
 	if err != nil {
 		fail(c, err)
 		return
 	}
 	ok(c, gin.H{"run": canvasWorkflowRunJSON(item), "acquired": acquired})
 }
+
+var canvasWorkflowInputSignatureRE = regexp.MustCompile(`^v[1-9][0-9]{0,2}:[a-f0-9]{16,64}$`)
 
 func (s *Server) patchCanvasWorkflowRun(c *gin.Context) {
 	user, err := s.requireUser(c)

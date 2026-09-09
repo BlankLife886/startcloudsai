@@ -1,5 +1,6 @@
 import { normalizeGptImageOutputSize } from "@react/legacy-modules/services/aiImageOutputSize.js";
-import { modelOptionMeta, type AiConfig, type ChannelModel } from "@/stores/use-config-store";
+import { normalizeExactSizeCapabilities, validateExactImageSize } from "@react/config/exactImageSize.js";
+import { modelMaintenance, modelOptionMeta, resolveModelForCapability, type AiConfig, type ChannelModel } from "@/stores/use-config-store";
 
 export const CANVAS_IMAGE_MAX_COUNT = 4;
 export const CANVAS_IMAGE_HARD_MAX_COUNT = 16;
@@ -14,11 +15,16 @@ export type CanvasImageModelCapabilities = {
     qualities: string[];
     transparentBackground: boolean;
     maxImages: number;
+    supportsExactSize: boolean;
+    exactSizeLimits: NonNullable<ChannelModel["exactSizeLimits"]>;
 };
 
 export type CanvasImageSettings = {
     quality: string;
     size: string;
+    sizeMode: "ratio" | "exact";
+    exactWidth: string;
+    exactHeight: string;
     resolution: string;
     background: string;
     count: string;
@@ -76,6 +82,7 @@ export function canvasImageModelCapabilities(model?: ChannelModel | null): Canva
         qualities: normalizeList(safe.qualities, CANVAS_IMAGE_QUALITIES, CANVAS_IMAGE_QUALITIES),
         transparentBackground: safe.transparentBackground !== false,
         maxImages: canvasImageMaxCount(model),
+        ...normalizeExactSizeCapabilities(safe),
     };
 }
 
@@ -134,6 +141,9 @@ export function coerceCanvasImageSettings(model: ChannelModel | null | undefined
     return {
         quality,
         size,
+        sizeMode: capabilities.supportsExactSize && settings.sizeMode === "exact" ? "exact" : "ratio",
+        exactWidth: capabilities.supportsExactSize ? String(settings.exactWidth ?? "") : "",
+        exactHeight: capabilities.supportsExactSize ? String(settings.exactHeight ?? "") : "",
         resolution,
         background: capabilities.transparentBackground && settings.background === "transparent" ? "transparent" : "",
         count: String(Math.max(1, Math.min(capabilities.maxImages, Math.floor(Math.abs(Number(settings.count)) || 1)))),
@@ -141,18 +151,63 @@ export function coerceCanvasImageSettings(model: ChannelModel | null | undefined
 }
 
 export function applyCanvasImageModelSettings(config: AiConfig, model?: ChannelModel | null) {
-    return { ...config, ...coerceCanvasImageSettings(model ?? null, config) };
+    return { ...config, ...coerceCanvasImageSettings(model ?? null, config), ...(config.sizeMode === "exact" ? canvasExactSizeSettings(config) : {}) };
 }
 
 export function canvasImageSettingsFromModel(config: AiConfig, model: string) {
-    const next = applyCanvasImageModelSettings({ ...config, model }, modelOptionMeta({ ...config, model }, model));
+    const selected = modelOptionMeta(config, model);
+    const next = applyCanvasImageModelSettings({ ...config, model, ...(selected?.supportsExactSize === true ? {} : { sizeMode: "ratio" as const, exactWidth: "", exactHeight: "" }) }, selected);
     return {
         model,
         quality: next.quality,
         size: next.size,
+        ...canvasExactSizeSettings(next),
         resolution: next.resolution,
         background: next.background,
         count: Number(next.count) || 1,
+    };
+}
+
+type CanvasExactSizeInput = { size?: string; sizeMode?: "ratio" | "exact"; exactWidth?: string | number; exactHeight?: string | number };
+
+export function canvasExactSizeSettings(settings: CanvasExactSizeInput) {
+    return {
+        sizeMode: settings.sizeMode === "exact" ? "exact" as const : "ratio" as const,
+        exactWidth: String(settings.exactWidth ?? ""),
+        exactHeight: String(settings.exactHeight ?? ""),
+    };
+}
+
+/** Legacy nodes with their own size remain in ratio mode when global settings change. */
+export function canvasExactSizeSettingsForNode(config: AiConfig, metadata?: CanvasExactSizeInput) {
+    const sizeMode = metadata?.sizeMode ?? (metadata?.size ? "ratio" : config.sizeMode);
+    return canvasExactSizeSettings({
+        sizeMode,
+        exactWidth: metadata?.exactWidth ?? (metadata?.sizeMode === "exact" ? "" : config.exactWidth),
+        exactHeight: metadata?.exactHeight ?? (metadata?.sizeMode === "exact" ? "" : config.exactHeight),
+    });
+}
+
+export function resolveCanvasImageModel(config: AiConfig, model: string | undefined, sizeMode: "ratio" | "exact") {
+    if (sizeMode === "exact") return model || config.imageModel || config.model;
+    return resolveModelForCapability(config, model, "image");
+}
+
+export function canvasImageSizeParams(model: ChannelModel | null | undefined, config: Partial<CanvasImageSettings>) {
+    if (config.sizeMode === "exact") {
+        if (!model || modelMaintenance(model)) throw new Error("所选精确尺寸模型暂不可用，请重新选择模型");
+        const exact = validateExactImageSize(model ?? {}, config.exactWidth, config.exactHeight);
+        if (!exact.valid) throw new Error(exact.error);
+        return { ...exact.params, size: exact.size, outputSize: exact.size };
+    }
+    const settings = coerceCanvasImageSettings(model, config);
+    const aspectRatio = settings.size;
+    const resolutionScale = settings.resolution;
+    const outputSize = resolutionScale ? canvasImageRequestSize(aspectRatio, resolutionScale) : "";
+    return {
+        ...(aspectRatio ? { aspectRatio, requestedAspectRatio: aspectRatio } : {}),
+        ...(resolutionScale ? { resolutionScale } : {}),
+        ...(outputSize ? { size: outputSize, outputSize } : {}),
     };
 }
 

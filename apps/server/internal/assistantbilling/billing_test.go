@@ -261,6 +261,30 @@ func TestImageCancelPolicyTracksUpstreamBoundary(t *testing.T) {
 	}
 }
 
+func TestEditableCancelPolicyTracksPreparationAndKnownQueuedJobs(t *testing.T) {
+	run := &store.AssistantRun{Mode: "chat", Status: "running", Stage: "preparing-file", BillingGeneration: 1, Params: map[string]any{}}
+	if policy := assistantbilling.CancelPolicyForRun(run); !policy.Refunded || policy.UpstreamSubmitted {
+		t.Fatalf("preparing=%+v", policy)
+	}
+	run.Status = "queued"
+	run.Params = map[string]any{"_editableTaskId": "file-job", "_editableTaskGeneration": int64(1)}
+	if policy := assistantbilling.CancelPolicyForRun(run); policy.Refunded || !policy.UpstreamSubmitted {
+		t.Fatalf("submitted queue=%+v", policy)
+	}
+	run.BillingGeneration = 2
+	if policy := assistantbilling.CancelPolicyForRun(run); !policy.Refunded || policy.UpstreamSubmitted {
+		t.Fatalf("old attempt=%+v", policy)
+	}
+}
+
+func TestCanceledAssistantPolicyUsesRecordedSettlement(t *testing.T) {
+	run := &store.AssistantRun{Status: "canceled", Params: map[string]any{"_cancelUpstreamSubmitted": true, "_cancelChargedPoints": int64(0), "_cancelRefundedPoints": int64(20), "_cancelFromStatus": "running"}}
+	policy := assistantbilling.CancelPolicyForRun(run)
+	if !policy.Refunded || policy.ChargedPoints != 0 || policy.RefundedPoints != 20 || !policy.UpstreamSubmitted {
+		t.Fatalf("policy=%+v", policy)
+	}
+}
+
 func TestImageCancelRequiresConfirmationAfterSubmission(t *testing.T) {
 	st := testdb.Setup(t)
 	user := billingUser(t, st, 100)

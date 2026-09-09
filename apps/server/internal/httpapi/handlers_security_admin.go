@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
@@ -145,22 +144,48 @@ func (s *Server) adminRemoveUploadHashBlock(c *gin.Context, _ *store.User) {
 
 func pointer[T any](value T) *T { return &value }
 
-func (s *Server) reconcilePaymentOrder(ctx context.Context, order *store.Order) (*store.PaymentReconciliation, error) {
-	result := &store.PaymentReconciliation{OrderID: order.ID, Provider: order.Provider, LocalStatus: order.Status,
+func (s *Server) reconcilePaymentOrder(ctx context.Context, order *store.Order) (result *store.PaymentReconciliation, resultErr error) {
+	result = &store.PaymentReconciliation{OrderID: order.ID, Provider: order.Provider, LocalStatus: order.Status,
 		ExpectedAmountCents: expectedProviderPayAmount(order), Outcome: "provider_error"}
+	defer func() {
+		if order.ReconcileLeaseID != nil {
+			fresh, err := store.GetOrder(ctx, s.St.Pool, order.ID)
+			if err != nil {
+				resultErr = err
+				return
+			}
+			if fresh == nil || fresh.ReconcileLeaseID == nil || *fresh.ReconcileLeaseID != *order.ReconcileLeaseID {
+				return
+			}
+			result.LocalStatus = fresh.Status
+		}
+		if result.Outcome == "matched" || result.Outcome == "repaired" {
+			_ = store.ResolveOrderReconciliationRisks(ctx, s.St.Pool, order.ID)
+		} else if result.Detail != nil && (order.ReconcileAttempts == 0 || (order.ReconcileAttempts+1)%3 == 0) {
+			s.recordRisk(ctx, store.NewSecurityRiskEvent{UserID: &order.UserID, Category: "payment_reconciliation",
+				Severity: "high", Score: 60, Action: "observed", Reason: *result.Detail,
+				Metadata: map[string]any{"orderId": order.ID.String(), "outcome": result.Outcome, "attempt": order.ReconcileAttempts + 1}})
+		}
+		if err := store.InsertPaymentReconciliation(ctx, s.St.Pool, *result); resultErr == nil && err != nil {
+			resultErr = err
+		}
+	}()
+	if order.ProviderOrderID == nil {
+		result.Outcome = "provider_id_missing"
+		result.Detail = pointer("缺少渠道单号：等待验签回调，或补录渠道单号后核对；不要重复下单")
+		return result, nil
+	}
 	client, _, err := s.resolveLanjingPay(ctx)
 	if err != nil || client == nil {
 		if err == nil {
 			err = fmt.Errorf("支付渠道未配置")
 		}
 		result.Detail = pointer(err.Error())
-		_ = store.InsertPaymentReconciliation(ctx, s.St.Pool, *result)
 		return result, err
 	}
 	remote, err := client.GetOrder(ctx, *order.ProviderOrderID)
 	if err != nil {
 		result.Detail = pointer(err.Error())
-		_ = store.InsertPaymentReconciliation(ctx, s.St.Pool, *result)
 		return result, nil
 	}
 	result.ProviderState = pointer(remote.State)
@@ -198,8 +223,8 @@ func (s *Server) reconcilePaymentOrder(ctx context.Context, order *store.Order) 
 				result.Detail = pointer("上游实付金额与本站支付快照不一致")
 			} else if order.Status == "completed" {
 				result.Outcome = "matched"
-			} else if order.Status == "pending" || order.Status == "paid" || order.Status == "expired" {
-				if _, err := s.completeOrder(ctx, order); err != nil {
+			} else if order.Status == "pending" || order.Status == "uncertain" || order.Status == "paid" || order.Status == "expired" || order.Status == "failed" || order.Status == "cancelled" {
+				if _, err := s.completeVerifiedOrder(ctx, order); err != nil {
 					result.Outcome = "repair_failed"
 					result.Detail = pointer(err.Error())
 				} else {
@@ -215,32 +240,19 @@ func (s *Server) reconcilePaymentOrder(ctx context.Context, order *store.Order) 
 			result.Detail = pointer("本站已完成，但上游尚未确认支付")
 		} else if result.Detail == nil {
 			result.Outcome = "matched"
+			if remote.State == -1 && (order.Status == "pending" || order.Status == "uncertain") {
+				if _, err := store.TransitionPendingOrderStatus(ctx, s.St.Pool, order.ID, "expired"); err != nil {
+					result.Outcome = "repair_failed"
+					result.Detail = pointer(err.Error())
+				}
+			}
 		}
 	}
-	if result.Outcome != "matched" && result.Outcome != "repaired" {
-		s.recordRisk(ctx, store.NewSecurityRiskEvent{UserID: &order.UserID, Category: "payment_reconciliation",
-			Severity: "critical", Score: 100, Action: "observed", Reason: *result.Detail,
-			Metadata: map[string]any{"orderId": order.ID.String(), "outcome": result.Outcome}})
-	}
-	return result, store.InsertPaymentReconciliation(ctx, s.St.Pool, *result)
+	return result, nil
 }
 
 func (s *Server) adminRunPaymentReconciliation(c *gin.Context, _ *store.User) {
-	orders, err := store.ListOrdersForReconciliation(c.Request.Context(), s.St.Pool, time.Now().UTC().Add(-30*24*time.Hour), 500)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	counts := map[string]int{}
-	for _, order := range orders {
-		result, err := s.reconcilePaymentOrder(c.Request.Context(), order)
-		if err != nil {
-			counts["provider_error"]++
-			continue
-		}
-		counts[result.Outcome]++
-	}
-	ok(c, gin.H{"checked": len(orders), "outcomes": counts})
+	s.adminReconcileOrRecover(c)
 }
 
 func (s *Server) adminPaymentReconciliations(c *gin.Context, _ *store.User) {
@@ -249,5 +261,5 @@ func (s *Server) adminPaymentReconciliations(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	ok(c, gin.H{"items": items})
+	ok(c, gin.H{"items": items, "recoverySupported": true})
 }

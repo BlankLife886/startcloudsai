@@ -1,6 +1,7 @@
 import { starcloudsJson, starcloudsRequest } from "@/services/starclouds-api";
 
 export type CanvasWorkflowRunRecord = {
+    inputSignature?: string;
     id: string;
     projectId: string;
     ownerId: string;
@@ -20,6 +21,7 @@ export type CanvasWorkflowRunRecord = {
 };
 
 export type CanvasWorkflowNodeMetric = {
+	outputFingerprint?: string;
 	nodeId: string;
 	title: string;
 	status: "queued" | "running" | "succeeded" | "failed" | "canceled";
@@ -38,10 +40,12 @@ export function acquireCanvasWorkflowRun(
 	projectId: string,
 	ownerId: string,
 	nodeIds: string[],
+	inputSignature: string,
 ) {
 	return starcloudsJson<{ run: CanvasWorkflowRunRecord; acquired: boolean }>(`/canvas-projects/${encodeURIComponent(projectId)}/workflow-runs`, "POST", {
 		ownerId,
 		nodeIds,
+		inputSignature,
 	});
 }
 

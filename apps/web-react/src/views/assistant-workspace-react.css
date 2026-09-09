@@ -2697,6 +2697,14 @@
   overflow: hidden;
 }
 
+.assistant-workspace .image-model-menu .model-menu-aside {
+  display: inline-flex;
+  min-width: 94px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .assistant-workspace .image-model-menu .model-copy strong {
   display: block;
   min-width: 0;
@@ -2707,9 +2715,47 @@
   white-space: nowrap;
 }
 
+.assistant-workspace .image-model-menu .model-menu-options > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
+.assistant-workspace .image-model-menu .model-menu-options > button:disabled:hover {
+  background: transparent;
+}
+
+.assistant-workspace .sc-model-maintenance-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 16px;
+  padding: 0 6px 0 5px;
+  border: 0;
+  border-radius: 999px;
+  color: #8a6a2f;
+  background: color-mix(in srgb, #c4a15a 16%, var(--assistant-card));
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  line-height: 1;
+}
+
+.assistant-workspace .sc-model-maintenance-badge::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #c4882a;
+}
+
+.assistant-workspace.is-dark .sc-model-maintenance-badge {
+  color: #e6c27a;
+  background: rgb(196 136 42 / 16%);
+}
+
 .assistant-workspace .image-model-menu .model-menu-price {
   display: grid;
-  min-width: 94px;
+  min-width: 0;
   justify-items: end;
   gap: 1px;
   line-height: 1.2;
@@ -3807,8 +3853,17 @@ html.settings-no-animations .assistant-workspace .image-mode-preferences .pref-t
 
 .assistant-workspace .agent-proposal:not(.is-dismissed) {
   display: grid;
+  gap: 10px;
+  padding: 14px 16px 14px;
+}
+
+.assistant-workspace .agent-proposal:has(.agent-proposal-plan) {
+  width: min(560px, 100%);
+}
+
+.assistant-workspace .agent-proposal:has(.agent-proposal-plan):not(.is-dismissed) {
   gap: 8px;
-  padding: 12px 14px 12px;
+  padding: 10px 12px;
 }
 
 .assistant-workspace .agent-proposal-head {
@@ -3822,19 +3877,26 @@ html.settings-no-animations .assistant-workspace .image-mode-preferences .pref-t
   min-width: 0;
   overflow: hidden;
   color: var(--assistant-text);
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: -0.02em;
+  font-size: 14px;
+  font-weight: 720;
+  letter-spacing: -0.03em;
   line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.assistant-workspace .agent-proposal-count {
+  color: var(--assistant-muted);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 650;
+}
+
 .assistant-workspace .agent-proposal-state {
-  padding: 2px 7px;
+  padding: 3px 8px;
   border-radius: 999px;
   color: var(--assistant-accent-ink);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 650;
   background: color-mix(in srgb, var(--assistant-accent) 18%, var(--assistant-card));
 }
@@ -3975,80 +4037,135 @@ html.settings-no-animations .assistant-workspace .image-mode-preferences .pref-t
 
 .assistant-workspace .agent-proposal-plan {
   display: grid;
-  border-top: 1px solid color-mix(in srgb, var(--assistant-border) 78%, transparent);
-  border-bottom: 1px solid color-mix(in srgb, var(--assistant-border) 78%, transparent);
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--assistant-border) 70%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--assistant-panel) 38%, transparent);
 }
 
-.assistant-workspace .agent-proposal-plan > button {
+.assistant-workspace .agent-proposal-plan-item {
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) auto 14px;
   min-width: 0;
-  min-height: 46px;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 2px;
+  align-items: stretch;
+  gap: 3px;
+  padding: 8px 10px;
   border: 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--assistant-border) 60%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--assistant-border) 62%, transparent);
+  border-radius: 0;
   color: var(--assistant-text);
   background: transparent;
-  text-align: left;
 }
 
-.assistant-workspace .agent-proposal-plan > button:last-child {
+.assistant-workspace .agent-proposal-plan-item:last-child {
   border-bottom: 0;
 }
 
-.assistant-workspace .agent-proposal-plan > button:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--assistant-panel) 55%, transparent);
+.assistant-workspace .agent-proposal-plan-item:hover {
+  background: color-mix(in srgb, var(--assistant-accent) 7%, transparent);
 }
 
-.assistant-workspace .agent-proposal-plan > button > b {
+.assistant-workspace.is-dark .agent-proposal-plan-item {
+  background: transparent;
+}
+
+.assistant-workspace.is-dark .agent-proposal-plan-item:hover {
+  background: color-mix(in srgb, var(--assistant-accent) 14%, transparent);
+}
+
+.assistant-workspace .agent-proposal-plan-item-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.assistant-workspace .agent-proposal-plan-item-head > b {
   display: grid;
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
   place-items: center;
   border-radius: 6px;
   color: var(--assistant-accent-ink);
   background: var(--assistant-accent-soft);
   font-size: 10px;
+  font-weight: 720;
 }
 
-.assistant-workspace .agent-proposal-plan > button > span {
-  display: grid;
+.assistant-workspace .agent-proposal-plan-item-head > strong {
+  flex: 1 1 auto;
   min-width: 0;
-  gap: 2px;
-}
-
-.assistant-workspace .agent-proposal-plan strong,
-.assistant-workspace .agent-proposal-plan small {
   overflow: hidden;
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.assistant-workspace .agent-proposal-plan strong {
+.assistant-workspace .agent-proposal-plan-prompt {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 14px;
+  min-width: 0;
+  align-items: start;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  color: var(--assistant-text-soft);
+  background: transparent;
+  font: inherit;
   font-size: 12px;
-  font-weight: 650;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
 }
 
-.assistant-workspace .agent-proposal-plan small {
-  color: var(--assistant-text-soft);
-  font-size: 11px;
+.assistant-workspace .agent-proposal-plan-prompt > span {
+  display: -webkit-box;
+  min-width: 0;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  word-break: break-word;
 }
 
 .assistant-workspace .agent-proposal-plan em {
   max-width: 92px;
   overflow: hidden;
   color: var(--assistant-muted);
-  font-size: 10px;
+  font-size: 11px;
   font-style: normal;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.assistant-workspace .agent-proposal-plan > button > i {
+.assistant-workspace .agent-proposal-plan-prompt > i {
   color: var(--assistant-muted);
-  font-size: 11px;
+  font-size: 12px;
+}
+
+.assistant-workspace .agent-proposal-plan-prompt:hover:not(:disabled),
+.assistant-workspace .agent-proposal-plan-prompt:focus-visible {
+  color: var(--assistant-text);
+}
+
+.assistant-workspace .agent-proposal-plan-prompt:hover:not(:disabled) > i,
+.assistant-workspace .agent-proposal-plan-prompt:focus-visible > i {
+  color: var(--assistant-accent-ink);
+}
+
+.assistant-workspace .agent-proposal-plan-item .agent-proposal-plan-settings.agent-proposal-params {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  margin-left: auto;
+  gap: 2px;
+  width: auto;
+  min-width: 0;
 }
 
 .assistant-workspace .agent-proposal-prompt {
@@ -4314,8 +4431,13 @@ html.settings-no-animations .assistant-workspace .image-mode-preferences .pref-t
 
 .assistant-workspace .agent-proposal-toolbar {
   display: grid;
-  gap: 8px;
+  gap: 6px;
   padding-top: 2px;
+}
+
+.assistant-workspace .agent-proposal:has(.agent-proposal-plan) .agent-proposal-toolbar {
+  padding-top: 6px;
+  border-top: 1px solid color-mix(in srgb, var(--assistant-border) 62%, transparent);
 }
 
 .assistant-workspace .agent-proposal-params {
@@ -4509,7 +4631,11 @@ html.settings-no-animations .assistant-workspace .image-mode-preferences .pref-t
   flex: 1;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
+}
+
+.assistant-workspace .agent-proposal-menu .sc-model-maintenance-badge {
+  margin-left: auto;
 }
 
 .assistant-workspace .agent-proposal-menu-copy strong {
@@ -6258,6 +6384,34 @@ html.settings-no-animations .assistant-workspace .image-mode-preferences .pref-t
   pointer-events: none;
 }
 
+.assistant-workspace .generated-image-ratio {
+  position: absolute;
+  z-index: 2;
+  top: 6px;
+  left: 6px;
+  min-width: 34px;
+  padding: 4px 7px;
+  border-radius: 6px;
+  color: #fff;
+  background: rgb(20 18 28 / 68%);
+  box-shadow: 0 3px 10px rgb(0 0 0 / 14%);
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 1;
+  text-align: center;
+  opacity: 0;
+  transform: translateY(3px);
+  transition: opacity 140ms ease, transform 160ms ease;
+  pointer-events: none;
+  backdrop-filter: blur(8px);
+}
+
+.assistant-workspace .generated-images figure:hover .generated-image-ratio,
+.assistant-workspace .generated-images figure:focus-within .generated-image-ratio {
+  opacity: 1;
+  transform: none;
+}
+
 .assistant-workspace .generated-images figure:hover .generated-image-actions,
 .assistant-workspace .generated-images figure:focus-within .generated-image-actions {
   opacity: 1;
@@ -6307,7 +6461,8 @@ html.settings-no-animations .assistant-workspace .image-mode-preferences .pref-t
   }
 
   .assistant-workspace .generated-image-preview img,
-  .assistant-workspace .generated-image-actions {
+  .assistant-workspace .generated-image-actions,
+  .assistant-workspace .generated-image-ratio {
     transition: none;
   }
 

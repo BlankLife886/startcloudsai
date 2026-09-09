@@ -1,4 +1,5 @@
 import type { CanvasNodeData, CanvasNodeMetadata, CanvasNodeTypeId } from "../../types/canvas.ts";
+import { storageKeyFromUrl } from "./canvas-preview-url.ts";
 
 export type CanvasAgentNodePatch = Partial<CanvasNodeData> & {
     content?: string;
@@ -29,6 +30,22 @@ export function applyCanvasAgentNodeUpdate(
           ? update.patch.title
           : node.title;
     const metadata = mergeCanvasAgentNodeMetadata(node.metadata, update.patch, update.metadata);
+    if (node.type === "image" && metadata.content !== node.metadata?.content) {
+        const previousKey = node.metadata?.storageKey || storageKeyFromUrl(node.metadata?.content || "");
+        const sameFile = previousKey && storageKeyFromUrl(metadata.content || "") === previousKey;
+        if (!sameFile) {
+            // Replacing pixels must not keep a different image's identity.
+            // Hydration bypasses this user/Agent edit path; same-file URL
+            // changes above remain harmless display updates.
+            if (metadata.storageKey === node.metadata?.storageKey) delete metadata.storageKey;
+            if (metadata.images === node.metadata?.images) {
+                delete metadata.images;
+                delete metadata.primaryImageId;
+            }
+            if (metadata.thumbnailUrl === node.metadata?.thumbnailUrl) delete metadata.thumbnailUrl;
+            if (metadata.thumbnailKey === node.metadata?.thumbnailKey) delete metadata.thumbnailKey;
+        }
+    }
     if (title === node.title && recordsEqual(metadata, node.metadata || {})) return node;
     return { ...node, title, metadata };
 }

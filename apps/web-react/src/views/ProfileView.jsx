@@ -3,7 +3,9 @@ import { createPortal } from "react-dom";
 import { useGSAP } from "@gsap/react";
 import { gsap } from "gsap";
 import { ArrowUpRight } from "lucide-react";
-import { Link, useLocation, useNavigate } from "react-router";
+import { useLocation, useNavigate } from "react-router";
+import { PageEntryLink as Link } from "../page-control/PageEntryLink.jsx";
+import { usePageControls } from "../page-control/PageControlContext.jsx";
 import { getOverview, getWallet, listUserAssets, updateProfile } from "@react/legacy-modules/services/meApi.js";
 import { logoutAccount } from "@react/legacy-modules/services/auth.js";
 import { formatPoints } from "@react/legacy-modules/services/billingApi.js";
@@ -1013,6 +1015,7 @@ function MiniStack({ items }) {
 
 export function ProfileView() {
   const auth = useAuth();
+  const { isEntryVisible } = usePageControls();
   const isDark = useIsDark();
   const location = useLocation();
   const navigate = useNavigate();
@@ -2031,9 +2034,9 @@ export function ProfileView() {
             <aside className="pp-soft-performance">
               <header>
                 <strong>Performance</strong>
-                <button type="button" onClick={() => navigate("/submissions")}>
+                {isEntryVisible("/submissions") && <button type="button" onClick={() => navigate("/submissions")}>
                   查看投稿
-                </button>
+                </button>}
               </header>
               <div className="pp-soft-progress">
                 <div className="pp-soft-progress__meta">
@@ -2075,7 +2078,7 @@ export function ProfileView() {
                   <strong>{submissionStats.pending}</strong>
                 </li>
               </ul>
-              {recentLoop.length ? (
+              {recentLoop.length && isEntryVisible("/history") ? (
                 <div
                   className="pp-soft-recent"
                   style={{ "--pp-recent-n": recentLoop.length }}

@@ -103,10 +103,10 @@ func (w *Worker) createCRUNMediaToolTask(ctx context.Context, task *store.Task, 
 	}
 	estimate, err := client.EstimateMediaTask(ctx, crun.MediaTaskRequest{Model: model.UpstreamModel, Input: input})
 	if err != nil {
-		return "", fmt.Errorf("CRUN task estimate failed: %w", err)
+		return "", &crun.PreflightError{Err: fmt.Errorf("CRUN task estimate failed: %w", err)}
 	}
 	if !estimate.Affordable {
-		return "", errors.New("CRUN account balance is insufficient for this task")
+		return "", &crun.PreflightError{Err: errors.New("CRUN account balance is insufficient for this task")}
 	}
 	created, err := client.CreateMediaTask(ctx, crun.MediaTaskRequest{Model: model.UpstreamModel, Input: input})
 	if err != nil {

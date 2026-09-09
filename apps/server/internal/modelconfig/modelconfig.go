@@ -15,7 +15,7 @@ import (
 
 const (
 	SettingKey = "model_dispatch_config"
-	Version    = 7
+	Version    = 8
 
 	AdapterOpenAI = "openai"
 	AdapterCRUN   = "crun"
@@ -23,6 +23,9 @@ const (
 	ModelKindImage     = "image"
 	ModelKindChat      = "chat"
 	ModelKindImageTool = "image_tool"
+
+	ModelStatusAvailable   = "available"
+	ModelStatusMaintenance = "maintenance"
 
 	ImageToolBackgroundRemove = "background_remove"
 	ImageToolUpscale          = "image_upscale"
@@ -141,6 +144,8 @@ func (p *Provider) UnmarshalJSON(data []byte) error {
 type Model struct {
 	ID                           string               `json:"id"`
 	Name                         string               `json:"name"`
+	IconURL                      string               `json:"iconUrl,omitempty"`
+	Status                       string               `json:"status,omitempty"`
 	ProviderID                   string               `json:"providerId"`
 	UpstreamModel                string               `json:"upstreamModel"`
 	UpstreamInputFields          []string             `json:"upstreamInputFields,omitempty"`
@@ -163,6 +168,8 @@ type Model struct {
 	Resolutions                  []string             `json:"resolutions"`
 	AspectRatios                 []string             `json:"aspectRatios"`
 	AspectRatiosByResolution     map[string][]string  `json:"aspectRatiosByResolution"`
+	SupportsExactSize            bool                 `json:"supportsExactSize"`
+	ExactSizeLimits              *ExactSizeLimits     `json:"exactSizeLimits,omitempty"`
 	Qualities                    []string             `json:"qualities"`
 	TransparentBackground        bool                 `json:"transparentBackground"`
 	OutputFormats                []string             `json:"outputFormats"`
@@ -280,6 +287,10 @@ func (m Model) GenerationMaxImages() int {
 	return m.MaxImages
 }
 
+func (m Model) Available() bool {
+	return m.Status != ModelStatusMaintenance
+}
+
 type Config struct {
 	Version       int                         `json:"version"`
 	Providers     []Provider                  `json:"providers"`
@@ -355,6 +366,11 @@ func Save(ctx context.Context, q store.Q, cfg Config) error {
 }
 
 func normalize(cfg *Config) {
+	// Lookup helpers accept Config by value, but its slices still alias the
+	// caller's cached configuration. Own the writable containers before
+	// normalizing so concurrent readers/snapshot captures remain read-only.
+	cfg.Providers = append([]Provider(nil), cfg.Providers...)
+	cfg.Models = append([]Model(nil), cfg.Models...)
 	cfg.Version = Version
 	cfg.EditableFiles.ProviderID = strings.TrimSpace(cfg.EditableFiles.ProviderID)
 	cfg.EditableFiles.RouteID = strings.TrimSpace(cfg.EditableFiles.RouteID)
@@ -369,6 +385,7 @@ func normalize(cfg *Config) {
 	}
 	for index := range cfg.Providers {
 		provider := &cfg.Providers[index]
+		provider.Routes = append([]ProviderRoute(nil), provider.Routes...)
 		provider.ID = strings.TrimSpace(provider.ID)
 		provider.Name = strings.TrimSpace(provider.Name)
 		provider.Adapter = strings.TrimSpace(provider.Adapter)
@@ -409,6 +426,11 @@ func normalize(cfg *Config) {
 		model := &cfg.Models[index]
 		model.ID = strings.TrimSpace(model.ID)
 		model.Name = strings.TrimSpace(model.Name)
+		model.IconURL = strings.TrimSpace(model.IconURL)
+		model.Status = strings.ToLower(strings.TrimSpace(model.Status))
+		if model.Status == "" {
+			model.Status = ModelStatusAvailable
+		}
 		model.ProviderID = strings.TrimSpace(model.ProviderID)
 		model.UpstreamModel = strings.TrimSpace(model.UpstreamModel)
 		model.UpstreamInputFields = cleanStrings(model.UpstreamInputFields)
@@ -437,6 +459,13 @@ func normalize(cfg *Config) {
 			model.MaxOutputTokens = 0
 		}
 		model.Resolutions = cleanStrings(model.Resolutions)
+		if model.ExactSizeLimits != nil {
+			limits := *model.ExactSizeLimits
+			model.ExactSizeLimits = &limits
+		} else if model.Kind == ModelKindImage {
+			limits := DefaultExactSizeLimits()
+			model.ExactSizeLimits = &limits
+		}
 		if model.Kind == ModelKindImage {
 			if !model.transparentBackgroundSet {
 				model.TransparentBackground = true
@@ -470,7 +499,7 @@ func normalize(cfg *Config) {
 		}
 		if model.Default {
 			switch {
-			case !model.Enabled || !model.Public:
+			case !model.Enabled || !model.Public || !model.Available():
 				model.Default = false
 			case defaultKinds[model.Kind]:
 				model.Default = false
@@ -485,7 +514,7 @@ func normalize(cfg *Config) {
 		}
 		for index := range cfg.Models {
 			model := &cfg.Models[index]
-			if model.Kind == kind && model.Enabled && model.Public {
+			if model.Kind == kind && model.Enabled && model.Public && model.Available() {
 				model.Default = true
 				defaultKinds[kind] = true
 				break
@@ -746,6 +775,15 @@ func Validate(cfg Config) error {
 		if _, exists := providers[model.ProviderID]; !exists {
 			return fmt.Errorf("模型 %s 没有关联有效服务商", model.Name)
 		}
+		if model.Status != ModelStatusAvailable && model.Status != ModelStatusMaintenance {
+			return fmt.Errorf("模型 %s 的状态无效", model.Name)
+		}
+		if model.IconURL != "" && !strings.HasPrefix(model.IconURL, "/api/v1/files/model-icons/") {
+			return fmt.Errorf("模型 %s 的图标地址无效，请通过模型目录上传", model.Name)
+		}
+		if err := validateExactSizeConfig(model, providers[model.ProviderID]); err != nil {
+			return err
+		}
 		if model.Kind == ModelKindImageTool {
 			if !ValidImageTool(model.Tool) {
 				return fmt.Errorf("图片工具 %s 的工具能力无效", model.Name)
@@ -820,7 +858,7 @@ func Validate(cfg Config) error {
 			}
 		}
 		if model.Default {
-			if !model.Enabled || !model.Public {
+			if !model.Enabled || !model.Public || !model.Available() {
 				return fmt.Errorf("默认模型 %s 必须启用并对用户开放", model.Name)
 			}
 			if defaults[model.Kind] {
@@ -900,7 +938,7 @@ func Validate(cfg Config) error {
 				return fmt.Errorf("页面 %s 的默认模型类型无效：%s", workspace, kind)
 			}
 			model, exists := models[modelID]
-			if !exists || !assigned[modelID] || model.Kind != kind {
+			if !exists || !assigned[modelID] || model.Kind != kind || !model.Available() {
 				return fmt.Errorf("页面 %s 的默认模型必须包含在该页面的可选模型中", workspace)
 			}
 		}
@@ -1177,7 +1215,7 @@ func SelectPublic(cfg Config, kind, requestedModelID string) (*Selection, bool) 
 	var fallback *Selection
 	for _, model := range cfg.Models {
 		provider, providerOK := providers[model.ProviderID]
-		if !providerOK || !model.Enabled || !model.Public || model.Kind != kind {
+		if !providerOK || !model.Enabled || !model.Public || !model.Available() || model.Kind != kind {
 			continue
 		}
 		selection := &Selection{Provider: provider, Model: model}
@@ -1202,7 +1240,7 @@ func PublicImageTools(cfg Config, tool string) []Selection {
 	models := PublicModels(cfg, ModelKindImageTool)
 	out := make([]Selection, 0, len(models))
 	for _, selection := range models {
-		if selection.Model.Tool == tool {
+		if selection.Model.Tool == tool && selection.Model.Available() {
 			out = append(out, selection)
 		}
 	}
@@ -1276,7 +1314,7 @@ func SelectPublicForWorkspace(cfg Config, workspace, kind, requestedModelID stri
 	models := PublicModelsForWorkspace(cfg, workspace, kind)
 	if requestedModelID != "" {
 		for index := range models {
-			if models[index].Model.ID == requestedModelID {
+			if models[index].Model.ID == requestedModelID && models[index].Model.Available() {
 				return &models[index], true
 			}
 		}
@@ -1285,16 +1323,18 @@ func SelectPublicForWorkspace(cfg Config, workspace, kind, requestedModelID stri
 	if binding, configured := cfg.Workspaces[workspace]; configured {
 		if defaultID := strings.TrimSpace(binding.DefaultModelIDs[kind]); defaultID != "" {
 			for index := range models {
-				if models[index].Model.ID == defaultID {
+				if models[index].Model.ID == defaultID && models[index].Model.Available() {
 					return &models[index], true
 				}
 			}
 		}
 	}
-	if len(models) == 0 {
-		return nil, false
+	for index := range models {
+		if models[index].Model.Available() {
+			return &models[index], true
+		}
 	}
-	return &models[0], true
+	return nil, false
 }
 
 func HasWorkspaceBinding(cfg Config, workspace string) bool {
@@ -1399,7 +1439,7 @@ func executionCandidatesRoute(cfg Config, providerID, modelID, routeID string, a
 	seenProviders := map[string]bool{selected.ProviderID: true}
 	if acrossProviders && EffectivePrice(selected) == expectedPrice {
 		for _, model := range cfg.Models {
-			if seenProviders[model.ProviderID] || !model.Enabled || !model.Public || model.Kind != selected.Kind || model.Tool != selected.Tool ||
+			if seenProviders[model.ProviderID] || !model.Enabled || !model.Public || !model.Available() || model.Kind != selected.Kind || model.Tool != selected.Tool ||
 				!strings.EqualFold(strings.TrimSpace(model.Name), strings.TrimSpace(selected.Name)) ||
 				EffectivePrice(model) != expectedPrice {
 				continue
@@ -1456,6 +1496,7 @@ func OverlayTaskPrices(cfg Config, legacy map[string]int64) (map[string]int64, m
 	for _, taskType := range ImageTaskTypes {
 		workspace, _ := WorkspaceForTaskType(taskType)
 		models := PublicModelsForWorkspace(cfg, workspace, ModelKindImage)
+		models = availableSelections(models)
 		if len(models) == 0 {
 			continue
 		}
@@ -1474,4 +1515,14 @@ func OverlayTaskPrices(cfg Config, legacy map[string]int64) (map[string]int64, m
 		ranges[taskType] = rangeValue
 	}
 	return prices, ranges
+}
+
+func availableSelections(values []Selection) []Selection {
+	out := make([]Selection, 0, len(values))
+	for _, selection := range values {
+		if selection.Model.Available() {
+			out = append(out, selection)
+		}
+	}
+	return out
 }

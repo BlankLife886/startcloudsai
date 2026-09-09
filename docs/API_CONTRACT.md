@@ -229,7 +229,11 @@ task 主要字段：
 
 ## 支付
 
-`GET /api/v1/plans` 返回 `{items,paymentEnabled,paymentMethods}`。蓝鲸支付配置完整时，登录用户可通过 `POST /api/v1/orders` 创建支付宝或微信二维码订单；响应包含平台订单号、二维码内容、实际应付金额、是否需要手动输入金额以及失效时间。同一用户对同一套餐只能保留一笔待支付订单，重复创建会同步并复用原订单，不会再次向支付渠道下单。
+新版订阅以生效时间为锚点，每24小时发放一次。已有有效订阅时再次普通购买订阅返回
+`subscription_exists`，购买额度包不受此限制。升级订单需附带服务端报价的 `upgradeQuoteId`。
+统一订阅中心、场景/API范围及退订审核接口详见 [SUBSCRIPTIONS.md](SUBSCRIPTIONS.md)。
+
+`GET /api/v1/plans` 返回 `{items,paymentEnabled,paymentMethods}`。蓝鲸支付配置完整时，登录用户可通过 `POST /api/v1/orders` 创建支付宝或微信二维码订单；响应包含平台订单号、二维码内容、实际应付金额、是否需要手动输入金额以及失效时间。同一用户在所有套餐间只能保留一笔待处理订单（`pending`、`uncertain`、`paid`）；同套餐重复创建会同步并复用原订单，不会再次向支付渠道下单。存在其他套餐的待处理订单时返回 HTTP 409、`code=user_unsettled_order`，客户端提示先进入「我的订单」完成支付、取消或等待核实到账。并发建单按用户串行校验，不会因不同套餐绕过限制。
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
@@ -239,7 +243,11 @@ task 主要字段：
 | `POST` | `/api/v1/orders/{id}/close` | 关闭仍在等待支付的订单 |
 | `GET` | `/api/v1/payments/lanjing/notify` | 蓝鲸支付异步通知；验签并完成幂等入账，成功返回纯文本 `success` |
 
-用户订单列表支持 `status`、`limit`、`cursor`，每项包含套餐名称、套餐类型、标价、实际应付金额、支付渠道与到账时间。管理后台通过 `GET /api/v1/admin/orders` 按状态和用户关键词检索全站订单。
+用户订单列表支持 `status`、`limit`、`cursor`、`q`，返回独立于当前筛选的账户级 `summary`。状态包含 `uncertain`（待核实）、`cancelled`（已取消）、`expired`（已过期）；`summary.cancelled` 单独统计取消数。取消成功返回 `cancelled`，渠道已过期则保留 `expired`，已到账则返回 `completed`；重复取消不改变终态。每项包含套餐快照、金额、支付渠道与权益生效区间。管理后台通过 `GET /api/v1/admin/orders` 按状态和用户关键词检索全站订单。
+
+支付创建超时或结果不明时返回 HTTP 202 和已保存的订单，`status=uncertain`、`recoveryRequired=true`。客户端应继续查单，不展示支付二维码、不允许取消或重复创建；不能将其当作支付失败或已付款。
+
+后台 `GET /api/v1/admin/payment-reconciliations` 返回每笔订单的最新核查结果及 `recoverySupported=true` 能力标记。旧后端未提供标记时，前端禁用新恢复入口。`POST /api/v1/admin/payment-reconciliations/run` 无正文时处理最多 100 笔到期对账任务；`{orderId,providerOrderId}` 关联经验证的渠道记录并核对；`{orderId,resolution:"not_created",note}` 用于管理员确认未建单，须填写核查依据且仅限无渠道单号的待核实订单。两种人工操作沿用管理员权限及审计，不创建渠道订单。
 
 回调签名使用平台原始十进制金额文本校验，并要求商户订单号、自定义参数、本地订单 UUID 和套餐原价一致。新订单的 `reallyPrice` 必须与套餐标价完全一致；支付渠道调整金额时立即关闭上游订单并拒绝向用户展示二维码。订单会保存实付金额、支付方式、二维码、手动输入标记和失效时间快照，后续查单的稀疏响应不得清空这些字段。关闭订单在渠道已关闭、已过期或刚好支付完成时保持幂等；可信回调或主动对账可将取消竞态中的已支付订单恢复为已完成。完成订单复用钱包账本唯一幂等键，同一通知重复投递不会重复发放积分或重复延长订阅。
 
@@ -269,6 +277,7 @@ task 主要字段：
 | GET  | `/api/v1/changelog`     | 公开更新说明                                            |
 | GET  | `/api/v1/changelog/latest` | 最近一次后台发版；用户端用来提示刷新                 |
 | GET  | `/api/v1/announcements` | 当前生效公告                                            |
+| GET  | `/api/v1/announcements/events` | 公告实时快照（SSE，事件名 `announcements`，数据 `{items}`） |
 | GET  | `/api/v1/health`             | API、PostgreSQL 与 Redis 健康状态；成功 `{status:"ok"}` |
 
 ## 管理端：用户、账本和任务
@@ -424,6 +433,7 @@ JSON 导出格式为 `{schemaVersion,exportedAt,items}`；CSV 使用 UTF-8 BOM�
 | ------------ | ------------------------------- | -------------------------------------------------- |
 | GET/POST     | `/api/v1/admin/announcements`      | 列表/新建公告                                      |
 | PATCH/DELETE | `/api/v1/admin/announcements/{id}` | 修改/删除公告                                      |
+| POST         | `/api/v1/admin/announcements/{id}/push` | 立即推送当前生效公告，返回带 `pushId`、`pushedAt` 的公告 |
 | GET/POST     | `/api/v1/admin/changelog`          | 列表/新建更新说明                                  |
 | PATCH/DELETE | `/api/v1/admin/changelog/{id}`     | 修改/删除更新说明                                  |
 | GET          | `/api/v1/admin/settings`           | 获取运营配置                                       |

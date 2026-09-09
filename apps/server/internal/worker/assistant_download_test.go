@@ -91,6 +91,13 @@ func TestSanitizeUpstreamMessageHidesInvalidatedToken(t *testing.T) {
 	}
 }
 
+func TestSanitizeUpstreamMessageHidesGatewayHTML(t *testing.T) {
+	got := sanitizeUpstreamMessage("<html><head><title>504 Gateway Time-out</title></head><body>nginx</body></html>")
+	if strings.Contains(strings.ToLower(got), "html") || !strings.Contains(got, "响应超时") {
+		t.Fatalf("gateway HTML was not normalized: %q", got)
+	}
+}
+
 func TestPendingImagePollFailureUsesSanitizedUpstreamReason(t *testing.T) {
 	code, message := pendingImagePollFailure("text_review", "内容审核拒绝：参考图不符合服务政策 https://internal.example/review/123")
 	if code != "upstream_error" {

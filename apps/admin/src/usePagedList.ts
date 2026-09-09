@@ -31,13 +31,16 @@ export function usePagedList<T>(
   let lastParamsKey = paramsKey()
   /** 最近一次尝试加载的 cursor（失败后供 retry 重放） */
   let attemptedCursor: string | null = null
+  let generation = 0
 
   async function load(cursor: string | null) {
+    const ownGeneration = ++generation
     attemptedCursor = cursor
     loading.value = true
     error.value = null
     try {
       const page = await fetcher(cursor)
+      if (ownGeneration !== generation) return
       items.value = page.items ?? []
       nextCursor.value = page.nextCursor ?? null
       const reported = page.total ?? page.scopeTotal
@@ -50,10 +53,11 @@ export function usePagedList<T>(
       }
       currentCursor.value = cursor
     } catch (e) {
+      if (ownGeneration !== generation) return
       // request.ts 已弹过 toast，这里落地为可见的错误条状态
       error.value = e instanceof Error && e.message ? e.message : '加载失败，请重试'
     } finally {
-      loading.value = false
+      if (ownGeneration === generation) loading.value = false
     }
   }
 

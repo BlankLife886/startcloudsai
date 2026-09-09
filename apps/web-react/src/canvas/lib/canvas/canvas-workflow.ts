@@ -1,16 +1,21 @@
 import type { CanvasConnection, CanvasNodeData } from "@/types/canvas";
 import { resolveCopiedCanvasNodeReferences } from "./canvas-node-copy.ts";
 import { isCanvasExecutableNode } from "./canvas-operation-node.ts";
+import { canvasWorkflowInputSignature, canvasWorkflowValueFingerprint } from "./canvas-workflow-signature.ts";
+import { storageKeyFromUrl } from "./canvas-preview-url.ts";
 
 export type CanvasWorkflowCompileError = "empty" | "cycle" | "invalid_connection";
 
 export type CanvasWorkflowPlan = {
+    inputSignature: string;
     nodeIds: string[];
     layers: string[][];
     dependencies: Map<string, Set<string>>;
 };
 
 export type CanvasWorkflowCheckpoint = {
+    inputSignature?: string;
+    outputFingerprints?: Record<string, string>;
     status: "running" | "failed";
     runId?: string;
     nodeIds: string[];
@@ -67,8 +72,9 @@ export type CanvasWorkflowNodeOutputIssue = {
     errorDetails?: string;
 };
 
-export function createCanvasWorkflowCheckpoint(nodeIds: string[], now = new Date().toISOString()): CanvasWorkflowCheckpoint {
-    return { status: "running", nodeIds: [...nodeIds], completedNodeIds: [], startedAt: now, updatedAt: now };
+export function createCanvasWorkflowCheckpoint(plan: CanvasWorkflowPlan | string[], now = new Date().toISOString()): CanvasWorkflowCheckpoint {
+    const nodeIds = Array.isArray(plan) ? plan : plan.nodeIds;
+    return { status: "running", nodeIds: [...nodeIds], ...(!Array.isArray(plan) ? { inputSignature: plan.inputSignature } : {}), completedNodeIds: [], startedAt: now, updatedAt: now };
 }
 
 export function normalizeCanvasWorkflowCheckpoint(value: unknown): CanvasWorkflowCheckpoint | null {
@@ -87,6 +93,10 @@ export function normalizeCanvasWorkflowCheckpoint(value: unknown): CanvasWorkflo
     const now = new Date().toISOString();
     return {
         status: record.status,
+        ...(typeof record.inputSignature === "string" ? { inputSignature: record.inputSignature } : {}),
+        ...(record.outputFingerprints && typeof record.outputFingerprints === "object" && !Array.isArray(record.outputFingerprints)
+            ? { outputFingerprints: Object.fromEntries(Object.entries(record.outputFingerprints).filter(([id, value]) => validIds.has(id) && typeof value === "string" && /^v1:[a-f0-9]{16}$/.test(value))) as Record<string, string> }
+            : {}),
         ...(typeof record.runId === "string" && record.runId ? { runId: record.runId } : {}),
         nodeIds,
         completedNodeIds: [...new Set(completedNodeIds)],
@@ -111,6 +121,8 @@ export function failCanvasWorkflowCheckpoint(checkpoint: CanvasWorkflowCheckpoin
 }
 
 export type CanvasWorkflowRunProgress = {
+    inputSignature?: string;
+    nodeMetrics?: Array<{ nodeId: string; outputFingerprint?: string }>;
     id: string;
     nodeIds: string[];
     completedNodeIds: string[];
@@ -150,6 +162,11 @@ export function mergeCanvasWorkflowRunProgress(checkpoint: CanvasWorkflowCheckpo
         ...checkpoint,
         status: "running",
         runId: run.id,
+        inputSignature: run.inputSignature || checkpoint.inputSignature,
+        outputFingerprints: {
+            ...checkpoint.outputFingerprints,
+            ...Object.fromEntries((run.nodeMetrics || []).filter((metric) => validIds.has(metric.nodeId) && metric.outputFingerprint).map((metric) => [metric.nodeId, metric.outputFingerprint!])),
+        },
         nodeIds,
         completedNodeIds,
         ...(canceledNodeIds.length ? { canceledNodeIds } : { canceledNodeIds: undefined }),
@@ -171,6 +188,49 @@ export function advanceCanvasWorkflowCheckpoint(checkpoint: CanvasWorkflowCheckp
     };
 }
 
+/** Media must have a durable identity before a completed output is certified. */
+export function canvasWorkflowNodeOutputFingerprint(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
+    const producer = nodes.find((node) => node.id === nodeId);
+    if (!producer) return null;
+    const mode = producer.metadata?.generationMode || "image";
+    const validation = validateCanvasWorkflowNodeOutputs({ nodeId, mode, expectedCount: Number(producer.metadata?.count) || 1, nodes, connections });
+    if (!validation.ok) return null;
+    const outputs = findWorkflowOutputNodes(nodeId, mode, nodes, connections);
+    const source = (content = "", key = "") => key || storageKeyFromUrl(content) || (/^(?:data:|blob:)/.test(content) ? "" : content);
+    const records = outputs.map((node) => {
+        const metadata = node.metadata || {};
+        if (mode === "text") return { id: node.id, type: node.type, text: metadata.content || "" };
+        const images = (metadata.images || []).map((image) => ({ id: image.id, source: source(image.content, image.storageKey) }));
+        const primary = images.find((image) => image.id === metadata.primaryImageId) || images[0];
+        const direct = source(metadata.content, metadata.storageKey) || primary?.source || "";
+        if (images.some((image) => !image.source) || (!images.length && !direct)) return null;
+        return { id: node.id, type: node.type, source: direct, primaryImageId: primary?.id, images };
+    });
+    if (records.some((record) => !record)) return null;
+    records.sort((left, right) => left!.id < right!.id ? -1 : left!.id > right!.id ? 1 : 0);
+    return canvasWorkflowValueFingerprint(records);
+}
+
+export function completeCanvasWorkflowNode(checkpoint: CanvasWorkflowCheckpoint, nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[], now = new Date().toISOString(), expectedFingerprint?: string) {
+    const fingerprint = canvasWorkflowNodeOutputFingerprint(nodeId, nodes, connections);
+    if (!fingerprint) throw new Error("节点产物尚未完整保存，不能记录为已完成");
+    if (expectedFingerprint && fingerprint !== expectedFingerprint) throw new Error("节点产物在完成后已被修改，请重新运行工作流。");
+    return { ...advanceCanvasWorkflowCheckpoint(checkpoint, nodeId, now), outputFingerprints: { ...checkpoint.outputFingerprints, [nodeId]: fingerprint } };
+}
+
+export function validateCanvasWorkflowCompletedOutputs(checkpoint: CanvasWorkflowCheckpoint, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
+    for (const nodeId of checkpoint.completedNodeIds) {
+        const expected = checkpoint.outputFingerprints?.[nodeId];
+        if (!expected) return { ok: false as const, nodeId, reason: "unverified" as const };
+        if (canvasWorkflowNodeOutputFingerprint(nodeId, nodes, connections) !== expected) return { ok: false as const, nodeId, reason: "changed" as const };
+    }
+    return { ok: true as const };
+}
+
+function verifiedWorkflowOutput(checkpoint: CanvasWorkflowCheckpoint, nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
+    return Boolean(checkpoint.outputFingerprints?.[nodeId] && canvasWorkflowNodeOutputFingerprint(nodeId, nodes, connections) === checkpoint.outputFingerprints[nodeId]);
+}
+
 export function reconcileCanvasWorkflowCheckpoint(checkpoint: CanvasWorkflowCheckpoint, nodes: CanvasNodeData[], interruptedError: string, connections: CanvasConnection[] = [], retryableErrors: string[] = []) {
     const currentNodeId = checkpoint.currentNodeId;
     if (!currentNodeId || checkpoint.completedNodeIds.includes(currentNodeId)) return { ok: true as const, checkpoint };
@@ -185,7 +245,7 @@ export function reconcileCanvasWorkflowCheckpoint(checkpoint: CanvasWorkflowChec
             connections,
         });
         if (!outputValidation.ok) return { ok: false as const, reason: "failed" as const, nodeId: currentNodeId, checkpoint };
-        return { ok: true as const, checkpoint: advanceCanvasWorkflowCheckpoint(checkpoint, currentNodeId) };
+        return { ok: true as const, checkpoint: verifiedWorkflowOutput(checkpoint, currentNodeId, nodes, connections) ? advanceCanvasWorkflowCheckpoint(checkpoint, currentNodeId) : checkpoint };
     }
     const errorDetails = current.metadata?.errorDetails;
     const retryable = errorDetails === interruptedError || retryableErrors.includes(errorDetails || "");
@@ -196,7 +256,7 @@ export function reconcileCanvasWorkflowCheckpoint(checkpoint: CanvasWorkflowChec
 }
 
 export function workflowPlanMatchesCheckpoint(plan: CanvasWorkflowPlan, checkpoint: CanvasWorkflowCheckpoint) {
-    return plan.nodeIds.length === checkpoint.nodeIds.length && plan.nodeIds.every((nodeId, index) => checkpoint.nodeIds[index] === nodeId);
+    return Boolean(checkpoint.inputSignature && checkpoint.inputSignature === plan.inputSignature) && plan.nodeIds.length === checkpoint.nodeIds.length && plan.nodeIds.every((nodeId, index) => checkpoint.nodeIds[index] === nodeId);
 }
 
 export function reconcileCanvasWorkflowFailureOutput(checkpoint: CanvasWorkflowCheckpoint, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
@@ -211,7 +271,7 @@ export function reconcileCanvasWorkflowFailureOutput(checkpoint: CanvasWorkflowC
         nodes,
         connections,
     });
-    if (!validation.ok) return checkpoint;
+    if (!validation.ok || !verifiedWorkflowOutput(checkpoint, failedNodeId, nodes, connections)) return checkpoint;
     return {
         ...advanceCanvasWorkflowCheckpoint(checkpoint, failedNodeId),
         status: "running" as const,
@@ -241,7 +301,7 @@ export function reconcileCanvasWorkflowOutputs(
             nodes,
             connections,
         });
-        if (validation.ok) next = advanceCanvasWorkflowCheckpoint(next, nodeId);
+        if (validation.ok && verifiedWorkflowOutput(checkpoint, nodeId, nodes, connections)) next = advanceCanvasWorkflowCheckpoint(next, nodeId);
     }
     return next;
 }
@@ -342,7 +402,7 @@ function workflowOutputSuccessCount(node: CanvasNodeData) {
 }
 
 /** Compile generation-config nodes into a stable, dependency-ordered execution plan. */
-export function compileCanvasWorkflow(nodes: CanvasNodeData[], connections: CanvasConnection[], options: { configNodeIds?: Iterable<string> } = {}): CanvasWorkflowCompileResult {
+export function compileCanvasWorkflow(nodes: CanvasNodeData[], connections: CanvasConnection[], options: { configNodeIds?: Iterable<string>; resolveSettings?: (node: CanvasNodeData) => unknown } = {}): CanvasWorkflowCompileResult {
     const scopedConfigIds = options.configNodeIds ? new Set(options.configNodeIds) : null;
     const executableNodes = nodes.filter((node) => isCanvasExecutableNode(node) && (!scopedConfigIds || scopedConfigIds.has(node.id)));
     if (!executableNodes.length) return { ok: false, reason: "empty", nodeIds: [] };
@@ -379,7 +439,8 @@ export function compileCanvasWorkflow(nodes: CanvasNodeData[], connections: Canv
         remaining.forEach((deps) => ready.forEach((nodeId) => deps.delete(nodeId)));
     }
 
-    return { ok: true, plan: { nodeIds: layers.flat(), layers, dependencies } };
+    const nodeIds = layers.flat();
+    return { ok: true, plan: { nodeIds, layers, dependencies, inputSignature: canvasWorkflowInputSignature(nodes, connections, nodeIds, options.resolveSettings) } };
 }
 
 export function findWorkflowOutputNodes(producerNodeId: string, outputType: string, nodes: CanvasNodeData[], connections: CanvasConnection[] = []) {

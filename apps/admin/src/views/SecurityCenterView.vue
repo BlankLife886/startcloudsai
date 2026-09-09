@@ -44,11 +44,15 @@ const hashes = ref<HashRule[]>([]);
 const reconciliations = ref<Reconciliation[]>([]);
 const hashDialog = ref(false);
 const hashDraft = ref({ sha256: "", reason: "" });
+const recoveryDialog = ref(false);
+const recovering = ref(false);
+const recoverySupported = ref(false);
+const recoveryDraft = ref({ orderId: "", providerOrderId: "", resolution: "link", note: "" });
 
 const unresolvedCount = computed(() => risks.value.length);
 const activeHashCount = computed(() => hashes.value.filter((item) => item.active).length);
 const paymentIssueCount = computed(
-  () => reconciliations.value.filter((item) => !["matched", "repaired"].includes(item.outcome)).length,
+  () => reconciliations.value.filter((item) => !["matched", "repaired", "manual_not_created"].includes(item.outcome)).length,
 );
 
 const tabs = computed(() => [
@@ -58,7 +62,8 @@ const tabs = computed(() => [
 ]);
 
 function points(value?: number) {
-  return `${Math.max(0, Number(value) || 0).toLocaleString("zh-CN")} 分`;
+  if (value == null || !Number.isFinite(Number(value))) return "—";
+  return `¥${(Number(value) / 100).toFixed(2)}`;
 }
 
 function severityType(value: string) {
@@ -70,7 +75,7 @@ function severityLabel(value: string) {
 }
 
 function outcomeType(value: string) {
-  return value === "matched" ? "success" : value === "repaired" ? "warning" : "danger";
+  return ["matched", "manual_not_created"].includes(value) ? "success" : value === "repaired" ? "warning" : "danger";
 }
 
 function outcomeLabel(value: string) {
@@ -79,6 +84,8 @@ function outcomeLabel(value: string) {
       matched: "一致",
       repaired: "已自动补单",
       provider_error: "上游查询失败",
+      provider_id_missing: "待补充渠道单号",
+      manual_not_created: "人工确认未建单",
       identity_or_amount_mismatch: "订单信息不一致",
       paid_amount_mismatch: "实付金额不一致",
       repair_failed: "补单失败",
@@ -103,12 +110,13 @@ async function load() {
     const [riskData, hashData, paymentData] = await Promise.all([
       request<{ items: Risk[]; activeBlocks: Block[] }>("/api/v1/admin/security/risks", { query: { unresolved: true, limit: 200 }, silent: true }),
       request<{ items: HashRule[] }>("/api/v1/admin/security/upload-hashes", { query: { limit: 200 }, silent: true }),
-      request<{ items: Reconciliation[] }>("/api/v1/admin/payment-reconciliations", { query: { issues: false, limit: 200 }, silent: true }),
+      request<{ items: Reconciliation[]; recoverySupported?: boolean }>("/api/v1/admin/payment-reconciliations", { query: { issues: false, limit: 200 }, silent: true }),
     ]);
     risks.value = riskData.items || [];
     blocks.value = riskData.activeBlocks || [];
     hashes.value = hashData.items || [];
     reconciliations.value = paymentData.items || [];
+    recoverySupported.value = paymentData.recoverySupported === true;
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "安全数据读取失败");
   } finally {
@@ -164,6 +172,33 @@ async function runReconciliation() {
   }
 }
 
+function openRecovery(orderId = "") {
+  if (recovering.value || !recoverySupported.value) return;
+  recoveryDraft.value = { orderId, providerOrderId: "", resolution: "link", note: "" };
+  recoveryDialog.value = true;
+}
+
+async function recoverPayment() {
+  if (recovering.value || !recoverySupported.value) return;
+  recovering.value = true;
+  try {
+    const notCreated = recoveryDraft.value.resolution === "not_created";
+    if (notCreated) await ElMessageBox.confirm("仅在渠道后台已确认未建单、未收款时继续，查询超时不能作为未建单依据。操作将保留审计记录。", "确认核查结果", { type: "warning" });
+    const result = await request<{ outcomes: Record<string, number> }>("/api/v1/admin/payment-reconciliations/run", {
+      method: "POST", silent: true, body: { orderId: recoveryDraft.value.orderId.trim(), providerOrderId: notCreated ? "" : recoveryDraft.value.providerOrderId.trim(), resolution: notCreated ? "not_created" : "", note: recoveryDraft.value.note.trim() },
+    });
+    const outcome = Object.keys(result.outcomes)[0];
+    if (["matched", "repaired", "manual_not_created"].includes(outcome || "")) {
+      ElMessage.success(outcomeLabel(outcome));
+      recoveryDialog.value = false;
+    } else ElMessage.warning(outcomeLabel(outcome || "provider_error"));
+    await load();
+  } catch (error) {
+    if (error === "cancel" || error === "close") return;
+    ElMessage.error(error instanceof Error ? error.message : "订单核查失败");
+  } finally { recovering.value = false; }
+}
+
 onMounted(() => void load());
 </script>
 
@@ -174,6 +209,7 @@ onMounted(() => void load());
         <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
         <el-button v-if="tab === 'uploads'" type="primary" :icon="Plus" @click="hashDialog = true">添加规则</el-button>
         <el-button v-if="tab === 'payments'" type="primary" :icon="Search" :loading="running" @click="runReconciliation">立即核对</el-button>
+        <el-button v-if="tab === 'payments' && recoverySupported" :icon="Plus" @click="openRecovery()">关联渠道单号</el-button>
       </template>
 
       <section class="security-kpis" aria-label="安全摘要">
@@ -202,7 +238,7 @@ onMounted(() => void load());
         <em class="tnum">{{ blocks.length }}</em>
         条，文件拦截
         <em class="tnum">{{ activeHashCount }}</em>
-        条。对账仅自动修复金额完全一致的待支付订单，其余留人工核查。
+        条。自动修复必须通过渠道订单身份、金额和支付方式校验，其余留人工核查。
         <span v-if="paymentIssueCount" class="is-bad">{{ paymentIssueCount }} 笔需要对账。</span>
       </p>
 
@@ -320,7 +356,7 @@ onMounted(() => void load());
         <section v-else class="security-board">
           <header>
             <strong>支付订单主动对账</strong>
-            <small>仅自动修复金额完全一致的待支付订单</small>
+            <small>优先核对未结订单，缺少渠道单号的记录需人工核查</small>
           </header>
           <el-table :data="reconciliations" height="100%" empty-text="尚未执行对账">
             <el-table-column label="订单" min-width="220">
@@ -346,10 +382,26 @@ onMounted(() => void load());
             <el-table-column label="核对时间" width="170">
               <template #default="{ row }"><span class="tnum">{{ formatTime(row.checkedAt) }}</span></template>
             </el-table-column>
+            <el-table-column label="处理" width="130" fixed="right">
+              <template #default="{ row }"><el-button v-if="recoverySupported && row.outcome === 'provider_id_missing'" text @click="openRecovery(row.orderId)">关联渠道单号</el-button></template>
+            </el-table-column>
           </el-table>
         </section>
       </div>
     </PageCard>
+
+    <AdminDialog
+      v-model="recoveryDialog" title="核查并恢复订单" :icon="Search" width="520px" confirm-text="核查订单"
+      :confirm-loading="recovering" :show-close="!recovering" :show-cancel="!recovering" :close-on-click-modal="!recovering" :close-on-press-escape="!recovering"
+      :confirm-disabled="recovering || !recoveryDraft.orderId.trim() || (recoveryDraft.resolution === 'link' ? !recoveryDraft.providerOrderId.trim() : recoveryDraft.note.trim().length < 6)" @confirm="recoverPayment"
+    >
+      <el-form label-position="top">
+        <el-form-item label="平台订单号"><el-input v-model="recoveryDraft.orderId" :disabled="recovering" maxlength="36" /></el-form-item>
+        <el-form-item label="核查方式"><el-radio-group v-model="recoveryDraft.resolution" :disabled="recovering"><el-radio-button value="link">关联渠道单号</el-radio-button><el-radio-button value="not_created">确认未建单</el-radio-button></el-radio-group></el-form-item>
+        <el-form-item v-if="recoveryDraft.resolution === 'link'" label="渠道单号"><el-input v-model="recoveryDraft.providerOrderId" :disabled="recovering" maxlength="128" /></el-form-item>
+        <el-form-item v-else label="渠道核查依据"><el-input v-model="recoveryDraft.note" type="textarea" :disabled="recovering" maxlength="300" show-word-limit /></el-form-item>
+      </el-form>
+    </AdminDialog>
 
     <AdminDialog
       v-model="hashDialog"

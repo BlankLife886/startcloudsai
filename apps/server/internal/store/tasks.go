@@ -16,12 +16,21 @@ const taskCols = `id, user_id, type, model, status, prompt, params, count, input
 	work_units, idempotency_key, error_code, error_message, attempt, started_at, lease_owner, heartbeat_at, lease_until, finished_at, created_at,
 	deleted_at, deletion_actor, deleted_output_count`
 
-func scanTask(row pgx.Row) (*Task, error) {
+func taskReadCols(table string) string {
+	return taskCols + `, EXISTS (SELECT 1 FROM task_upstream_attempts pending
+		WHERE pending.task_id = ` + table + `.id AND pending.status IN ('submitting','pending'))`
+}
+
+func scanTask(row pgx.Row, withPending ...bool) (*Task, error) {
 	var t Task
-	err := row.Scan(&t.ID, &t.UserID, &t.Type, &t.Model, &t.Status, &t.Prompt, &t.Params, &t.Count, &t.InputKeys, &t.OutputKeys, &t.ThumbnailKeys,
+	fields := []any{&t.ID, &t.UserID, &t.Type, &t.Model, &t.Status, &t.Prompt, &t.Params, &t.Count, &t.InputKeys, &t.OutputKeys, &t.ThumbnailKeys,
 		&t.CostCents, &t.WorkUnits, &t.IdempotencyKey, &t.ErrorCode, &t.ErrorMessage, &t.Attempt, &t.StartedAt,
 		&t.LeaseOwner, &t.HeartbeatAt, &t.LeaseUntil, &t.FinishedAt, &t.CreatedAt,
-		&t.DeletedAt, &t.DeletionActor, &t.DeletedOutputCount)
+		&t.DeletedAt, &t.DeletionActor, &t.DeletedOutputCount}
+	if len(withPending) > 0 && withPending[0] {
+		fields = append(fields, &t.HasPendingUpstream)
+	}
+	err := row.Scan(fields...)
 	if err != nil {
 		return nil, err
 	}
@@ -63,7 +72,7 @@ func UIDesignAssetHistoryIdempotencyKey(runID uuid.UUID) string {
 	return UIDesignAssetHistoryIdemPrefix + runID.String()
 }
 
-const uiDesignAssetHistoryNotSQL = `COALESCE(params->>'_kind','') <> '` + UIDesignRegionEditKind + `'`
+const uiDesignAssetHistoryNotSQL = `COALESCE(lease_owner,'') <> '` + UIDesignAssetHistoryLeaseOwner + `'`
 
 func assistantReferenceFileKeys(params map[string]any) []string {
 	if params == nil {
@@ -329,7 +338,7 @@ func upsertUIDesignAssetHistoryTask(ctx context.Context, q Q, run *AssistantRun,
 				status = $2, model = $3, prompt = $4, params = $5, count = $6, work_units = $6,
 				input_keys = $7, output_keys = $8, thumbnail_keys = $8, cost_cents = $9,
 				error_code = $10, error_message = $11, started_at = $12, finished_at = $13,
-				lease_owner = CASE WHEN $2 IN ('queued','running') THEN $14::text ELSE NULL END,
+				lease_owner = $14::text,
 				heartbeat_at = CASE WHEN $2 IN ('queued','running') THEN $12::timestamptz ELSE NULL END,
 				lease_until = CASE WHEN $2 IN ('queued','running') THEN $15::timestamptz ELSE NULL END
 			 WHERE id = $1 AND deleted_at IS NULL
@@ -343,7 +352,7 @@ func upsertUIDesignAssetHistoryTask(ctx context.Context, q Q, run *AssistantRun,
 		return task, false, nil
 	}
 	leaseUntil := now.Add(30 * 24 * time.Hour)
-	leaseOwner := any(nil)
+	leaseOwner := any(UIDesignAssetHistoryLeaseOwner)
 	var leaseUntilArg any
 	if status == "running" {
 		leaseOwner = UIDesignAssetHistoryLeaseOwner
@@ -373,7 +382,7 @@ func upsertUIDesignAssetHistoryTask(ctx context.Context, q Q, run *AssistantRun,
 }
 
 func GetTask(ctx context.Context, q Q, id uuid.UUID) (*Task, error) {
-	t, err := scanTask(q.QueryRow(ctx, `SELECT `+taskCols+` FROM tasks WHERE id = $1`, id))
+	t, err := scanTask(q.QueryRow(ctx, `SELECT `+taskReadCols("tasks")+` FROM tasks WHERE id = $1`, id), true)
 	return nilOnNoRows(t, err)
 }
 
@@ -381,7 +390,7 @@ func GetTask(ctx context.Context, q Q, id uuid.UUID) (*Task, error) {
 // Workers that are already uploading may finish the storage operation, but
 // their conditional reference update will be fenced after this lock commits.
 func GetTaskForUpdate(ctx context.Context, q Q, id uuid.UUID) (*Task, error) {
-	t, err := scanTask(q.QueryRow(ctx, `SELECT `+taskCols+` FROM tasks WHERE id = $1 FOR UPDATE`, id))
+	t, err := scanTask(q.QueryRow(ctx, `SELECT `+taskReadCols("tasks")+` FROM tasks WHERE id = $1 FOR UPDATE`, id), true)
 	return nilOnNoRows(t, err)
 }
 
@@ -390,13 +399,13 @@ func GetTasksByIDs(ctx context.Context, q Q, ids []uuid.UUID) (map[uuid.UUID]*Ta
 	if len(ids) == 0 {
 		return out, nil
 	}
-	rows, err := q.Query(ctx, `SELECT `+taskCols+` FROM tasks WHERE id = ANY($1)`, ids)
+	rows, err := q.Query(ctx, `SELECT `+taskReadCols("tasks")+` FROM tasks WHERE id = ANY($1)`, ids)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		task, err := scanTask(rows)
+		task, err := scanTask(rows, true)
 		if err != nil {
 			return nil, err
 		}
@@ -411,7 +420,7 @@ func ListUserTasksFinishedBetween(ctx context.Context, q Q, userID uuid.UUID, fr
 		from, to = to, from
 	}
 	rows, err := q.Query(ctx,
-		`SELECT `+taskCols+` FROM tasks
+		`SELECT `+taskReadCols("tasks")+` FROM tasks
 		 WHERE user_id = $1 AND deleted_at IS NULL AND finished_at IS NOT NULL
 		   AND finished_at >= $2 AND finished_at <= $3
 		 ORDER BY finished_at ASC`,
@@ -422,7 +431,7 @@ func ListUserTasksFinishedBetween(ctx context.Context, q Q, userID uuid.UUID, fr
 	defer rows.Close()
 	var out []*Task
 	for rows.Next() {
-		task, err := scanTask(rows)
+		task, err := scanTask(rows, true)
 		if err != nil {
 			return nil, err
 		}
@@ -432,7 +441,7 @@ func ListUserTasksFinishedBetween(ctx context.Context, q Q, userID uuid.UUID, fr
 }
 
 func GetUserTask(ctx context.Context, q Q, userID, id uuid.UUID) (*Task, error) {
-	t, err := scanTask(q.QueryRow(ctx, `SELECT `+taskCols+` FROM tasks WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`, id, userID))
+	t, err := scanTask(q.QueryRow(ctx, `SELECT `+taskReadCols("tasks")+` FROM tasks WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`, id, userID), true)
 	if item, err := nilOnNoRows(t, err); item != nil || err != nil {
 		return item, err
 	}
@@ -441,7 +450,7 @@ func GetUserTask(ctx context.Context, q Q, userID, id uuid.UUID) (*Task, error) 
 
 // GetUserTaskForUpdate serializes terminal-task deletion with new references.
 func GetUserTaskForUpdate(ctx context.Context, q Q, userID, id uuid.UUID) (*Task, error) {
-	t, err := scanTask(q.QueryRow(ctx, `SELECT `+taskCols+` FROM tasks WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL FOR UPDATE`, id, userID))
+	t, err := scanTask(q.QueryRow(ctx, `SELECT `+taskReadCols("tasks")+` FROM tasks WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL FOR UPDATE`, id, userID), true)
 	return nilOnNoRows(t, err)
 }
 
@@ -606,7 +615,7 @@ func ListUserTasksReferencingInputKeysForUpdate(ctx context.Context, q Q, userID
 	if len(keys) == 0 {
 		return nil, nil
 	}
-	rows, err := q.Query(ctx, `SELECT `+taskCols+`
+	rows, err := q.Query(ctx, `SELECT `+taskReadCols("task")+`
 		FROM tasks task
 		WHERE task.user_id = $1
 		  AND task.deleted_at IS NULL
@@ -631,7 +640,7 @@ func ListUserTasksReferencingInputKeysForUpdate(ctx context.Context, q Q, userID
 	defer rows.Close()
 	var tasks []*Task
 	for rows.Next() {
-		task, err := scanTask(rows)
+		task, err := scanTask(rows, true)
 		if err != nil {
 			return nil, err
 		}
@@ -642,7 +651,7 @@ func ListUserTasksReferencingInputKeysForUpdate(ctx context.Context, q Q, userID
 
 func GetTaskByIdemKey(ctx context.Context, q Q, userID uuid.UUID, key string) (*Task, error) {
 	t, err := scanTask(q.QueryRow(ctx,
-		`SELECT `+taskCols+` FROM tasks WHERE user_id = $1 AND idempotency_key = $2 AND deleted_at IS NULL`, userID, key))
+		`SELECT `+taskReadCols("tasks")+` FROM tasks WHERE user_id = $1 AND idempotency_key = $2 AND deleted_at IS NULL`, userID, key), true)
 	return nilOnNoRows(t, err)
 }
 
@@ -724,21 +733,25 @@ func GetTaskExecutionPressure(ctx context.Context, q Q, userID uuid.UUID, window
 	var out TaskExecutionPressure
 	err := q.QueryRow(ctx, `
 		WITH active AS (
-			SELECT user_id, status, GREATEST(work_units, 1) AS units, started_at,
+			SELECT user_id, CASE WHEN `+taskRetainedExecutionSQL("task")+` THEN 'running' ELSE status END AS status, GREATEST(work_units, count, 1)::bigint AS units, started_at,
 				CASE
 					WHEN COALESCE(params->>'_predictedCompleteAtMs', '') ~ '^[0-9]{10,16}$'
 						THEN to_timestamp((params->>'_predictedCompleteAtMs')::double precision / 1000.0)
 					WHEN started_at IS NOT NULL THEN started_at + interval '60 seconds'
 					ELSE NULL
 				END AS predicted_complete_at
-			FROM tasks
-			WHERE status IN ('queued', 'running') AND `+uiDesignAssetHistoryNotSQL+`
+			FROM tasks task
+			WHERE status IN ('queued', 'running') AND `+sharedExecutionTaskSQL+`
+			UNION ALL
+			SELECT user_id, CASE WHEN `+assistantExecutionActiveSQL("run")+` THEN 'running' ELSE status END AS status, `+assistantImageUnitsSQL("run")+` AS units, started_at,
+				started_at + interval '60 seconds' AS predicted_complete_at
+			FROM assistant_runs run WHERE status IN ('queued','running') AND `+assistantImageSQL("run")+`
 		)
 		SELECT
 			count(DISTINCT user_id),
 			count(DISTINCT user_id) FILTER (WHERE status = 'queued' AND user_id <> $1),
-			count(*) FILTER (WHERE status = 'running'),
-			count(*) FILTER (WHERE status = 'running' AND user_id = $1),
+			COALESCE(sum(units) FILTER (WHERE status = 'running'),0),
+			COALESCE(sum(units) FILTER (WHERE status = 'running' AND user_id = $1),0),
 			COALESCE(sum(units) FILTER (WHERE status = 'running'), 0),
 			COALESCE(sum(units) FILTER (
 				WHERE status = 'running' AND predicted_complete_at > $2 AND predicted_complete_at <= $3
@@ -782,11 +795,16 @@ func RunningTasksByProvider(ctx context.Context, q Q, providerIDs []string) (map
 	if len(providerIDs) == 0 {
 		return out, nil
 	}
-	rows, err := q.Query(ctx, `
-		SELECT COALESCE(params ->> '_providerRouteKey', params ->> '_providerConfigId'), count(*)
-		FROM tasks
-		WHERE status = 'running' AND COALESCE(params ->> '_providerRouteKey', params ->> '_providerConfigId') = ANY($1)
-		GROUP BY 1`, providerIDs)
+	rows, err := q.Query(ctx, `WITH usage AS (
+		SELECT task.id, COALESCE(params->>'_providerRouteKey',params->>'_providerConfigId') AS route_key,
+			GREATEST(work_units,count,1)::bigint AS units FROM tasks task
+		WHERE (task.status='running' OR (task.status='queued' AND `+knownCRUNJobsSQL("task")+`)) AND `+sharedExecutionTaskSQL+`
+		UNION
+		SELECT task.id, held.route_key, GREATEST(task.work_units,task.count,1)::bigint
+		FROM tasks task JOIN task_upstream_attempts held ON held.task_id=task.id
+		WHERE task.status IN ('queued','running') AND held.status IN ('submitting','pending')
+	)
+	SELECT route_key, COALESCE(sum(units),0) FROM usage WHERE route_key=ANY($1) GROUP BY route_key`, providerIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -1027,18 +1045,20 @@ const userHistoryTaskSourceSQL = `
 
 func getUserUIDesignAssetRunAsTask(ctx context.Context, q Q, userID, id uuid.UUID) (*Task, error) {
 	t, err := scanTask(q.QueryRow(ctx,
-		`SELECT `+taskCols+` FROM (`+userHistoryTaskSourceSQL+`) user_history_tasks
-		 WHERE id = $1 AND user_id = $2 AND type = 'ui_design' AND deleted_at IS NULL`, id, userID))
+		`SELECT `+taskReadCols("user_history_tasks")+` FROM (`+userHistoryTaskSourceSQL+`) user_history_tasks
+		 WHERE id = $1 AND user_id = $2 AND type = 'ui_design' AND deleted_at IS NULL`, id, userID), true)
 	return nilOnNoRows(t, err)
 }
 
 // ListTasks 任务分页（limit+1 行）。userID 为 nil 时查全站（后台）。
 func ListTasks(ctx context.Context, q Q, userID *uuid.UUID, taskType, status string, userIDs []uuid.UUID, limit int, cursor *Cursor, excludeSource, source string) ([]*Task, error) {
 	from := "tasks"
+	table := "tasks"
 	if userID != nil {
 		from = "(" + userHistoryTaskSourceSQL + ") user_history_tasks"
+		table = "user_history_tasks"
 	}
-	sql := `SELECT ` + taskCols + ` FROM ` + from + ` WHERE true`
+	sql := `SELECT ` + taskReadCols(table) + ` FROM ` + from + ` WHERE true`
 	args := []any{}
 	if userID != nil {
 		args = append(args, *userID)
@@ -1066,7 +1086,7 @@ func ListTasks(ctx context.Context, q Q, userID *uuid.UUID, taskType, status str
 	defer rows.Close()
 	var out []*Task
 	for rows.Next() {
-		t, err := scanTask(rows)
+		t, err := scanTask(rows, true)
 		if err != nil {
 			return nil, err
 		}
@@ -1200,7 +1220,7 @@ func ListAdminTasks(ctx context.Context, q Q, taskType, status, errorCode string
 	if taskType == PromptTaskTypeAssistant && source == "" {
 		source = PromptTaskTypeAssistant
 	}
-	sql := `SELECT ` + taskCols + ` FROM (` + adminTaskSourceSQL + `) admin_tasks WHERE true`
+	sql := `SELECT ` + taskReadCols("admin_tasks") + ` FROM (` + adminTaskSourceSQL + `) admin_tasks WHERE true`
 	args := []any{}
 	if taskType != "" {
 		args = append(args, taskType)
@@ -1227,7 +1247,7 @@ func ListAdminTasks(ctx context.Context, q Q, taskType, status, errorCode string
 	defer rows.Close()
 	var out []*Task
 	for rows.Next() {
-		task, err := scanTask(rows)
+		task, err := scanTask(rows, true)
 		if err != nil {
 			return nil, err
 		}
@@ -1418,14 +1438,14 @@ func enqueueObjectCleanupInChunks(ctx context.Context, q Q, keys []string) error
 // ListRecentTasks 用户最近 n 条任务。
 func ListRecentTasks(ctx context.Context, q Q, userID uuid.UUID, n int) ([]*Task, error) {
 	rows, err := q.Query(ctx,
-		`SELECT `+taskCols+` FROM tasks WHERE user_id = $1 AND deleted_at IS NULL ORDER BY created_at DESC, id DESC LIMIT $2`, userID, n)
+		`SELECT `+taskReadCols("tasks")+` FROM tasks WHERE user_id = $1 AND deleted_at IS NULL ORDER BY created_at DESC, id DESC LIMIT $2`, userID, n)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []*Task
 	for rows.Next() {
-		t, err := scanTask(rows)
+		t, err := scanTask(rows, true)
 		if err != nil {
 			return nil, err
 		}
@@ -1606,13 +1626,17 @@ func TaskTypeCountsSince(ctx context.Context, q Q, since time.Time) (map[string]
 
 // --- 状态机条件更新（返回是否抢到迁移） ---
 
+// Legacy client-supplied timestamps must not poison SQL casts or retain claims forever.
+const completionClaimTimestampSQL = `CASE WHEN COALESCE(params->>'_completionClaimedAtMs','') ~ '^[0-9]{1,16}$' THEN (params->>'_completionClaimedAtMs')::bigint ELSE 0 END`
+
 func ClaimTask(ctx context.Context, q Q, id uuid.UUID, startedAt time.Time, owner string, lease time.Duration) (bool, error) {
 	tag, err := q.Exec(ctx,
-		`UPDATE tasks SET status = 'running', started_at = $2, lease_owner = $3, heartbeat_at = $2, lease_until = $4
+		`UPDATE tasks SET status = 'running', started_at = $2, lease_owner = $3, heartbeat_at = $2, lease_until = $4, params=(COALESCE(params,'{}'::jsonb)-'_queueWaitReason')||'{"_generationStage":"preparing"}'::jsonb
 		 WHERE id = $1 AND status = 'queued'
+		   AND `+uiDesignAssetHistoryNotSQL+`
 		   AND (COALESCE(params->>'_completionClaimId', '') = ''
-			OR COALESCE((params->>'_completionClaimedAtMs')::bigint, 0) < $5)`,
-		id, startedAt, owner, startedAt.Add(lease), startedAt.Add(-5*time.Minute).UnixMilli())
+			OR `+completionClaimTimestampSQL+` < $5 OR `+completionClaimTimestampSQL+` > $6)`,
+		id, startedAt, owner, startedAt.Add(lease), startedAt.Add(-5*time.Minute).UnixMilli(), startedAt.Add(5*time.Minute).UnixMilli())
 	if err != nil {
 		return false, err
 	}
@@ -1733,7 +1757,7 @@ func ClearTaskOutputsAndEnqueueCleanup(ctx context.Context, q Q, id uuid.UUID, o
 		return err
 	}
 	_, err := q.Exec(ctx,
-		`UPDATE tasks SET output_keys = '[]'::jsonb, thumbnail_keys = '[]'::jsonb WHERE id = $1`, id)
+		`UPDATE tasks SET output_keys = '[]'::jsonb, thumbnail_keys = '[]'::jsonb, params=COALESCE(params,'{}'::jsonb)-'_outputSlots' WHERE id = $1`, id)
 	return err
 }
 
@@ -1775,12 +1799,14 @@ func setTaskPartialOutputsIfWritable(ctx context.Context, q Q, id uuid.UUID, out
 	if thumbnailKeys == nil {
 		thumbnailKeys = []string{}
 	}
+	slots := TaskOutputSlots{Version: 1, Originals: outputKeys, Thumbnails: thumbnailKeys}
 	tag, err := q.Exec(ctx,
-		`UPDATE tasks SET output_keys = $2, thumbnail_keys = $3
+		`UPDATE tasks SET output_keys = $2, thumbnail_keys = $3,
+			params=jsonb_set(COALESCE(params,'{}'::jsonb),'{_outputSlots}',$6::jsonb,true)
 		 WHERE id = $1 AND (($4 <> '' AND status IN ('queued','running')) OR ($4 = '' AND status = 'running'))
 			   AND ($4 = '' OR params->>'_completionClaimId' = $4)
 		   AND ($5 = '' OR lease_owner = $5)`,
-		id, outputKeys, thumbnailKeys, claimID, owner)
+		id, compactOutputKeys(outputKeys), compactOutputKeys(thumbnailKeys), claimID, owner, slots)
 	if err != nil {
 		return false, err
 	}
@@ -1816,8 +1842,8 @@ func tryClaimTaskCompletion(ctx context.Context, q Q, id uuid.UUID, claimID stri
 			'{_completionClaimedAtMs}', to_jsonb($3::bigint), true)
 		WHERE id = $1 AND `+statusFence+`
 		  AND (COALESCE(params->>'_completionClaimId', '') = ''
-			OR COALESCE((params->>'_completionClaimedAtMs')::bigint, 0) < $4)`,
-		id, claimID, claimedAtMs, cutoffMs, owner)
+			OR `+completionClaimTimestampSQL+` < $4 OR `+completionClaimTimestampSQL+` > $6)`,
+		id, claimID, claimedAtMs, cutoffMs, owner, claimedAt.Add(5*time.Minute).UnixMilli())
 	if err != nil {
 		return false, err
 	}
@@ -1961,8 +1987,8 @@ func RequeueTask(ctx context.Context, q Q, id uuid.UUID) (bool, error) {
 			lease_owner = NULL, heartbeat_at = NULL, lease_until = NULL, finished_at = NULL,
 			output_keys = '[]'::jsonb, thumbnail_keys = '[]'::jsonb,
 			params = COALESCE(params, '{}'::jsonb)
-				- '_crunTaskIds' - '_upstreamStage' - '_generationStage' - '_failedProviderConfigIds'
-				- '_completionClaimId' - '_completionClaimedAtMs'
+				- '_crunTaskIds' - '_crunSubmissionUncertain' - '_upstreamStage' - '_generationStage' - '_failedProviderConfigIds'
+				- '_completionClaimId' - '_completionClaimedAtMs' - '_outputSlots'
 		 WHERE id = $1 AND status = 'failed' AND deleted_at IS NULL`, id)
 	if err != nil {
 		return false, err
@@ -1976,6 +2002,23 @@ func SetTaskCRUNTaskIDs(ctx context.Context, q Q, id uuid.UUID, taskIDs []string
 
 func SetTaskCRUNTaskIDsOwned(ctx context.Context, q Q, id uuid.UUID, taskIDs []string, owner string) error {
 	return setTaskCRUNTaskIDs(ctx, q, id, taskIDs, owner)
+}
+
+func RecordTaskCRUNUncertainSubmissionOwned(ctx context.Context, q Q, id uuid.UUID, taskIDs []string, owner string) error {
+	if taskIDs == nil {
+		taskIDs = []string{}
+	}
+	raw, err := json.Marshal(taskIDs)
+	if err != nil {
+		return err
+	}
+	tag, err := q.Exec(ctx, `UPDATE tasks SET params=COALESCE(params,'{}'::jsonb) ||
+		jsonb_build_object('_crunTaskIds',$3::jsonb,'_crunSubmissionUncertain',true)
+		WHERE id=$1 AND status='running' AND lease_owner=$2`, id, owner, string(raw))
+	if err == nil && tag.RowsAffected() == 0 {
+		return errors.New("task lease lost while recording uncertain CRUN submission")
+	}
+	return err
 }
 
 func setTaskCRUNTaskIDs(ctx context.Context, q Q, id uuid.UUID, taskIDs []string, owner string) error {
@@ -2079,7 +2122,7 @@ func BumpTaskAttempt(ctx context.Context, q Q, id uuid.UUID) error {
 // RetryRunningTaskOwned atomically records provider failover history, bumps the
 // attempt, and returns a lease-owned running task to queued. A stale worker can
 // never split these state changes or retry work after losing its lease.
-func RetryRunningTaskOwned(ctx context.Context, q Q, id uuid.UUID, owner string, expectedAttempt int, failedProviderIDs []string) (int, bool, error) {
+func RetryRunningTaskOwned(ctx context.Context, q Q, id uuid.UUID, owner string, expectedAttempt int, failedProviderIDs []string, preserveCRUNTaskIDs ...bool) (int, bool, error) {
 	if strings.TrimSpace(owner) == "" {
 		return expectedAttempt, false, errors.New("task lease owner is required")
 	}
@@ -2088,16 +2131,18 @@ func RetryRunningTaskOwned(ctx context.Context, q Q, id uuid.UUID, owner string,
 		return expectedAttempt, false, err
 	}
 	var attempt int
+	preserveIDs := len(preserveCRUNTaskIDs) > 0 && preserveCRUNTaskIDs[0]
 	err = q.QueryRow(ctx, `UPDATE tasks SET
 		status = 'queued', attempt = attempt + 1, started_at = NULL, finished_at = NULL,
 		lease_owner = NULL, heartbeat_at = NULL, lease_until = NULL,
 		error_code = NULL, error_message = NULL,
 		params = jsonb_set(
-			COALESCE(params, '{}'::jsonb) - '_upstreamStage' - '_generationStage' - '_crunTaskIds',
+			CASE WHEN $5 THEN COALESCE(params, '{}'::jsonb) - '_upstreamStage' - '_generationStage'
+			ELSE COALESCE(params, '{}'::jsonb) - '_upstreamStage' - '_generationStage' - '_crunTaskIds' END,
 			'{_failedProviderConfigIds}', $4::jsonb, true)
 		WHERE id = $1 AND status = 'running' AND lease_owner = $2 AND attempt = $3
 		  AND COALESCE(params->>'_completionClaimId', '') = ''
-		RETURNING attempt`, id, owner, expectedAttempt, string(payload)).Scan(&attempt)
+		RETURNING attempt`, id, owner, expectedAttempt, string(payload), preserveIDs).Scan(&attempt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return expectedAttempt, false, nil
 	}

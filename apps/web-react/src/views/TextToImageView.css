@@ -71,6 +71,101 @@
   display: none;
 }
 
+.t2i-page .t2i-pending-elapsed {
+  color: var(--t2i-muted);
+}
+
+.t2i-page .t2i-history-cleanup {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 32px;
+  padding: 7px 11px;
+  border: 1px solid var(--t2i-line);
+  border-radius: 9px;
+  background: var(--t2i-panel-2);
+  color: var(--t2i-muted);
+  font: inherit;
+  font-weight: 500;
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
+}
+
+.t2i-page .t2i-history-cleanup svg,
+.t2i-page .t2i-history-cleanup i {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.t2i-page .t2i-history-cleanup:hover:not(:disabled) {
+  border-color: var(--t2i-faint);
+  background: var(--t2i-field);
+  color: var(--t2i-ink);
+}
+
+.t2i-page .t2i-history-cleanup:focus-visible {
+  outline: 2px solid var(--t2i-accent);
+  outline-offset: 3px;
+}
+
+.t2i-page .t2i-history-cleanup:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.t2i-page .t2i-history-cleanup[aria-busy="true"] {
+  cursor: wait;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t2i-page .t2i-history-cleanup {
+    transition: none;
+  }
+}
+
+.t2i-page .t2i-stage-copy {
+  flex: 0 1 50%;
+  max-width: 50%;
+}
+
+.t2i-page .t2i-stage-copy strong,
+.t2i-page .t2i-stage-copy small {
+  min-width: 0;
+}
+
+.t2i-page .t2i-stage-status,
+.t2i-page .t2i-stage-cell-status {
+  align-content: safe center;
+  overflow-y: auto;
+}
+
+.t2i-page .t2i-status-prompt {
+  -webkit-line-clamp: 1;
+}
+
+.t2i-page .t2i-status-actions {
+  justify-content: center;
+  max-width: 100%;
+  margin-top: 6px;
+}
+
+.t2i-page .t2i-stage-cell-status .t2i-status-actions {
+  gap: 6px;
+}
+
+.t2i-page .t2i-stage-cell-status .t2i-status-actions button {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 0.72rem;
+}
+
 .t2i-page .t2i-stage-frame,
 .t2i-page .t2i-stage-media,
 .t2i-page .t2i-stage-grid {
@@ -123,6 +218,26 @@
   transition:
     opacity 150ms ease,
     transform 150ms ease;
+}
+
+.t2i-batch-recovery {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid currentColor;
+  border-radius: 12px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.t2i-batch-recovery button {
+  justify-self: start;
+  padding: 0;
+  color: inherit;
+  background: none;
+  border: 0;
+  text-decoration: underline;
+  cursor: pointer;
 }
 
 .t2i-skill-popover-enter-from,

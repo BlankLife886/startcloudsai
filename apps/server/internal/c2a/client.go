@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/netguard"
+	"github.com/BlankLife886/startcloudsai/server/internal/upstreamguard"
 	"github.com/google/uuid"
 	"golang.org/x/sync/semaphore"
 )
@@ -58,6 +59,26 @@ type UpstreamError struct {
 
 func (e *UpstreamError) Error() string { return e.Message }
 
+// SynchronousImageError identifies a request without a recoverable upstream
+// task ID. A timeout may still have created work, so it must not be resubmitted.
+type SynchronousImageError struct {
+	Err error
+}
+
+func (e *SynchronousImageError) Error() string { return e.Err.Error() }
+func (e *SynchronousImageError) Unwrap() error { return e.Err }
+
+func synchronousImageResult(body []byte, err error) ([]string, error) {
+	var images []string
+	if err == nil {
+		images, err = extractB64List(body)
+	}
+	if err != nil {
+		return images, &SynchronousImageError{Err: err}
+	}
+	return images, nil
+}
+
 // NetworkError 连接/超时类错误（可重试一次）。
 type NetworkError struct {
 	Message string
@@ -83,6 +104,21 @@ type imageNotReadyError struct {
 func (e *imageNotReadyError) Error() string { return e.err.Error() }
 func (e *imageNotReadyError) Unwrap() error { return e.err }
 
+type asyncSubmitUnsupportedError struct {
+	err error
+}
+
+func (e *asyncSubmitUnsupportedError) Error() string { return e.err.Error() }
+func (e *asyncSubmitUnsupportedError) Unwrap() error { return e.err }
+
+func classifyAsyncSubmitError(err error) error {
+	var upstream *UpstreamError
+	if errors.As(err, &upstream) && (upstream.StatusCode == http.StatusNotFound || upstream.StatusCode == http.StatusMethodNotAllowed) {
+		return &asyncSubmitUnsupportedError{err: err}
+	}
+	return err
+}
+
 type Client struct {
 	BaseURL          string
 	APIKey           string
@@ -90,6 +126,7 @@ type Client struct {
 	HTTPClient       *http.Client
 	AllowPrivate     bool
 	openAIImageEdits bool
+	asyncImageEdits  bool
 }
 
 // WithOpenAIImageEdits uses the standard multipart /v1/images/edits contract.
@@ -100,6 +137,18 @@ func (c *Client) WithOpenAIImageEdits() *Client {
 	}
 	clone := *c
 	clone.openAIImageEdits = true
+	return &clone
+}
+
+// WithAsyncImageEdits prefers chatgpt2api's recoverable task protocol, while
+// retaining the standard OpenAI multipart endpoint as a compatibility fallback.
+func (c *Client) WithAsyncImageEdits() *Client {
+	if c == nil {
+		return c
+	}
+	clone := *c
+	clone.openAIImageEdits = false
+	clone.asyncImageEdits = true
 	return &clone
 }
 
@@ -211,6 +260,11 @@ func (c *Client) doRequest(ctx context.Context, method, path string, payload any
 	}
 	req.Header.Set("Authorization", "Bearer "+c.APIKey)
 
+	if method == http.MethodPost && (path == "/api/image-tasks/generations" || path == "/api/image-tasks/edits" || path == "/v1/images/generations" || path == "/v1/images/edits" || path == "/v1/editable-file-tasks") {
+		if err := upstreamguard.Check(reqCtx); err != nil {
+			return nil, err
+		}
+	}
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
 		return nil, &NetworkError{Message: fmt.Sprintf("上游连接失败：%v", err), Err: err}
@@ -856,7 +910,7 @@ func (c *Client) submitAndPollImageTask(ctx context.Context, endpoint, taskID st
 
 	body, err := c.doRequest(taskCtx, http.MethodPost, endpoint, payload, asyncSubmitTimeout)
 	if err != nil && !isRetryablePollError(err) {
-		return nil, err
+		return nil, classifyAsyncSubmitError(err)
 	}
 	var task imageTask
 	if err == nil {
@@ -937,7 +991,7 @@ func (c *Client) submitImageTaskTracked(ctx context.Context, endpoint, taskID st
 	payload["client_task_id"] = taskID
 	body, err := c.doRequest(ctx, http.MethodPost, endpoint, payload, asyncSubmitTimeout)
 	if err != nil {
-		return nil, false, "", err
+		return nil, false, "", classifyAsyncSubmitError(err)
 	}
 	task, err := parseImageTask(body)
 	if err != nil {
@@ -1334,7 +1388,12 @@ func (c *Client) editImagesMultipart(
 	inputImagesB64 []string,
 	size string,
 	options ImageOptions,
-) ([]string, error) {
+) (images []string, err error) {
+	defer func() {
+		if err != nil {
+			err = &SynchronousImageError{Err: err}
+		}
+	}()
 	if len(inputImagesB64) == 0 {
 		return nil, &UpstreamError{Message: "图像编辑至少需要一张参考图"}
 	}
@@ -1386,6 +1445,9 @@ func (c *Client) editImagesMultipart(
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	if err := upstreamguard.Check(requestCtx); err != nil {
+		return nil, err
+	}
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
 		return nil, &NetworkError{Message: fmt.Sprintf("上游连接失败：%v", err), Err: err}
@@ -1405,6 +1467,10 @@ func (c *Client) editImagesMultipart(
 }
 
 func isRetryablePollError(err error) bool {
+	var synchronous *SynchronousImageError
+	if errors.As(err, &synchronous) {
+		return false
+	}
 	var imageNotReady *imageNotReadyError
 	if errors.As(err, &imageNotReady) {
 		return true
@@ -1434,8 +1500,10 @@ func isRetryablePollError(err error) bool {
 func IsRetryableError(err error) bool { return isRetryablePollError(err) }
 
 func shouldFallbackToSync(err error) bool {
-	var upstream *UpstreamError
-	return errors.As(err, &upstream) && (upstream.StatusCode == http.StatusNotFound || upstream.StatusCode == http.StatusMethodNotAllowed)
+	// Only a rejected submission proves that the async endpoint is unsupported.
+	// A later poll returning 404/405 must not start a second generation.
+	var unsupported *asyncSubmitUnsupportedError
+	return errors.As(err, &unsupported)
 }
 
 // GenerateImages 文生图 /v1/images/generations → base64 列表。
@@ -1484,10 +1552,7 @@ func (c *Client) GenerateImagesWithOptions(ctx context.Context, taskID, prompt, 
 		return images, err
 	}
 	body, err := c.doRequest(ctx, http.MethodPost, "/v1/images/generations", payload, c.Timeout)
-	if err != nil {
-		return nil, err
-	}
-	return extractB64List(body)
+	return synchronousImageResult(body, err)
 }
 
 func (c *Client) SubmitGenerateImages(ctx context.Context, taskID, prompt, model string, n int, size string, options ImageOptions) ([]string, bool, error) {
@@ -1504,10 +1569,7 @@ func (c *Client) SubmitGenerateImagesTracked(ctx context.Context, taskID, prompt
 		return images, pending, upstreamTaskID, err
 	}
 	body, err := c.doRequest(ctx, http.MethodPost, "/v1/images/generations", payload, c.Timeout)
-	if err != nil {
-		return nil, false, "", err
-	}
-	images, err = extractB64List(body)
+	images, err = synchronousImageResult(body, err)
 	return images, false, "", err
 }
 
@@ -1543,6 +1605,9 @@ func (c *Client) EditImagesWithOptions(ctx context.Context, taskID, prompt, mode
 	if err == nil || !shouldFallbackToSync(err) {
 		return result, err
 	}
+	if c.asyncImageEdits {
+		return c.editImagesMultipart(ctx, prompt, model, n, inputImagesB64, size, options)
+	}
 	body, err := c.doRequest(ctx, http.MethodPost, "/v1/images/edits", payload, c.Timeout)
 	if !usingImageURL && imageURLRequiredError(err) {
 		payload, err = imageEditURLPayload(prompt, model, n, inputImagesB64, size, options)
@@ -1552,10 +1617,7 @@ func (c *Client) EditImagesWithOptions(ctx context.Context, taskID, prompt, mode
 		payload["client_task_id"] = taskID
 		body, err = c.doRequest(ctx, http.MethodPost, "/v1/images/edits", payload, c.Timeout)
 	}
-	if err != nil {
-		return nil, err
-	}
-	return extractB64List(body)
+	return synchronousImageResult(body, err)
 }
 
 func (c *Client) SubmitEditImages(ctx context.Context, taskID, prompt, model string, n int, inputImagesB64 []string, size string, options ImageOptions) ([]string, bool, error) {
@@ -1584,6 +1646,10 @@ func (c *Client) SubmitEditImagesTracked(ctx context.Context, taskID, prompt, mo
 	if err == nil || !shouldFallbackToSync(err) {
 		return images, pending, upstreamTaskID, err
 	}
+	if c.asyncImageEdits {
+		images, err = c.editImagesMultipart(ctx, prompt, model, n, inputImagesB64, size, options)
+		return images, false, "", err
+	}
 	body, err := c.doRequest(ctx, http.MethodPost, "/v1/images/edits", payload, c.Timeout)
 	if !usingImageURL && imageURLRequiredError(err) {
 		payload, err = imageEditURLPayload(prompt, model, n, inputImagesB64, size, options)
@@ -1593,10 +1659,7 @@ func (c *Client) SubmitEditImagesTracked(ctx context.Context, taskID, prompt, mo
 		payload["client_task_id"] = taskID
 		body, err = c.doRequest(ctx, http.MethodPost, "/v1/images/edits", payload, c.Timeout)
 	}
-	if err != nil {
-		return nil, false, "", err
-	}
-	images, err = extractB64List(body)
+	images, err = synchronousImageResult(body, err)
 	return images, false, "", err
 }
 

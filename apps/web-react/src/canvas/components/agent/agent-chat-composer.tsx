@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Button, Dropdown, Popover, Tooltip } from "antd";
 import { ArrowUp, Check, ChevronDown, ChevronUp, FileText, Gauge, Group, Hand, Image as ImageIcon, ImagePlus, Layers3, LoaderCircle, Music2, PenLine, RefreshCw, Settings2, Shield, ShieldAlert, ShieldCheck, ShieldOff, SlidersHorizontal, Square, Video, X } from "lucide-react";
 import { SoftMark } from "@react/components/common/SoftMark.jsx";
+import { ModelCatalogIcon, ModelMaintenanceBadge, isCatalogModelMaintenance } from "@react/components/common/ModelCatalogIcon.jsx";
 import { AnimatePresence, motion } from "motion/react";
 import { useTranslation } from "react-i18next";
 
@@ -19,7 +20,7 @@ import { AgentChatPromptInput } from "./agent-chat-prompt-input";
 
 const MENU_EASE = [0.22, 1, 0.36, 1] as const;
 
-type ComposerPricedOption = { value: string; label: string; price?: string; comparePrice?: string };
+type ComposerPricedOption = { value: string; label: string; price?: string; comparePrice?: string; model?: unknown; disabled?: boolean };
 type ComposerMenuId = "tools" | "permission" | "localModel" | "chatModel" | "reasoning";
 
 function ComposerPriceMark({ price, comparePrice }: { price?: string; comparePrice?: string }) {
@@ -744,8 +745,9 @@ function ComposerModelSelect({
                     setOpen(true);
                 }}
             >
+                {current.model ? <ModelCatalogIcon model={current.model} size="sm" /> : null}
                 <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{current.label}</span>
-                {current.price ? (
+                {current.price && !isCatalogModelMaintenance(current.model) ? (
                     <span
                         className="shrink-0 rounded-full px-1.5 py-0.5"
                         style={{ background: theme.sidebar.surface, color: theme.node.muted }}
@@ -808,8 +810,9 @@ function ComposerModelSelect({
                                     aria-selected={selected}
                                     className={cn(
                                         "flex min-h-10 w-full items-center gap-3 rounded-[12px] px-3 py-2 text-left",
-                                        !selected && "hover:bg-black/[.04] dark:hover:bg-white/[.08]",
+                                        item.disabled ? "cursor-not-allowed opacity-55" : !selected && "hover:bg-black/[.04] dark:hover:bg-white/[.08]",
                                     )}
+                                    disabled={item.disabled}
                                     style={{
                                         color: selected ? theme.toolbar.activeText : theme.node.text,
                                         background: selected ? theme.toolbar.activeBg : undefined,
@@ -820,8 +823,10 @@ function ComposerModelSelect({
                                         setOpen(false);
                                     }}
                                 >
+                                    {item.model ? <ModelCatalogIcon model={item.model} size="sm" /> : null}
                                     <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{item.label}</span>
-                                    <ComposerPriceMark price={item.price} comparePrice={item.comparePrice} />
+                                    {item.model ? <ModelMaintenanceBadge model={item.model} /> : null}
+                                    {!isCatalogModelMaintenance(item.model) ? <ComposerPriceMark price={item.price} comparePrice={item.comparePrice} /> : null}
                                     {selected ? <Check className="size-3.5 shrink-0" /> : <span className="size-3.5 shrink-0" />}
                                 </button>
                             );
@@ -887,6 +892,7 @@ function AgentChatModelControl({ models, value, onChange, open, onOpenChange }: 
                 title={current.label}
                 onClick={() => onOpenChange(!open)}
             >
+                {current.model ? <ModelCatalogIcon model={current.model} size="sm" /> : null}
                 <span className="min-w-0 truncate">{current.label}</span>
                 <ChevronUp className={cn("size-3 shrink-0 opacity-50 transition-transform duration-200", open && "rotate-180")} />
             </button>
@@ -927,6 +933,7 @@ function AgentChatModelControl({ models, value, onChange, open, onOpenChange }: 
                                             type="button"
                                             role="option"
                                             aria-selected={active}
+                                            disabled={item.disabled}
                                             className="relative flex min-h-10 w-full items-center gap-3 rounded-[12px] px-3 py-2 text-left text-[13px] font-medium"
                                             initial={{ opacity: 0, y: 6 }}
                                             animate={{ opacity: 1, y: 0 }}
@@ -944,8 +951,10 @@ function AgentChatModelControl({ models, value, onChange, open, onOpenChange }: 
                                             ) : hovered === item.value ? (
                                                 <motion.span layoutId="agentChatModelHover" className="absolute inset-0 rounded-xl" style={{ background: theme.toolbar.itemHover }} transition={{ type: "spring", stiffness: 520, damping: 36 }} />
                                             ) : null}
+                                            {item.model ? <span className="relative z-10"><ModelCatalogIcon model={item.model} size="sm" /></span> : null}
                                             <span className="relative z-10 min-w-0 flex-1 truncate">{item.label}</span>
-                                            <span className="relative z-10"><ComposerPriceMark price={item.price} comparePrice={item.comparePrice} /></span>
+                                            {item.model ? <span className="relative z-10"><ModelMaintenanceBadge model={item.model} /></span> : null}
+                                            {!isCatalogModelMaintenance(item.model) ? <span className="relative z-10"><ComposerPriceMark price={item.price} comparePrice={item.comparePrice} /></span> : null}
                                             {active ? <Check className="relative z-10 size-3.5 shrink-0" /> : <span className="relative z-10 size-3.5 shrink-0" />}
                                         </motion.button>
                                     );

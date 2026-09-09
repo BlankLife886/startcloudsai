@@ -17,6 +17,7 @@ import (
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/lanjingpay"
+	"github.com/BlankLife886/startcloudsai/server/internal/referral"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/subscription"
@@ -26,6 +27,11 @@ import (
 var errProviderAdjustedAmount = errors.New("provider adjusted payment amount")
 
 func (s *Server) listPlans(c *gin.Context) {
+	baseConcurrency, err := store.BaseUserConcurrency(c.Request.Context(), s.St.Pool)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	plans, err := store.ListPlans(c.Request.Context(), s.St.Pool, true)
 	if err != nil {
 		fail(c, err)
@@ -47,15 +53,19 @@ func (s *Server) listPlans(c *gin.Context) {
 		methods = append(methods, "wechat")
 	}
 	ok(c, gin.H{
-		"items":          items,
-		"paymentEnabled": client != nil && configErr == nil && len(methods) > 0,
-		"paymentMethods": methods,
+		"items":           items,
+		"baseConcurrency": baseConcurrency,
+		"paymentEnabled":  client != nil && configErr == nil && len(methods) > 0,
+		"paymentMethods":  methods,
 	})
 }
 
 type orderCreateIn struct {
-	PlanID        string `json:"planId"`
-	PaymentMethod string `json:"paymentMethod"`
+	AmountYuan           *int64 `json:"amountYuan"`
+	ExpectedPlanRevision *int   `json:"expectedPlanRevision"`
+	UpgradeQuoteID       string `json:"upgradeQuoteId"`
+	PlanID               string `json:"planId"`
+	PaymentMethod        string `json:"paymentMethod"`
 }
 
 func (s *Server) createOrder(c *gin.Context) {
@@ -104,14 +114,128 @@ func (s *Server) createOrder(c *gin.Context) {
 		fail(c, apperr.E("plan_not_found", "套餐不存在或已下架", 404))
 		return
 	}
-	existingOrders, err := store.ListPendingOrdersForPlan(ctx, s.St.Pool, user.ID, plan.ID)
+	if plan.RechargePolicy != nil {
+		if body.AmountYuan == nil || body.ExpectedPlanRevision == nil || body.UpgradeQuoteID != "" {
+			fail(c, apperr.E("validation_error", "自定义充值须提供整数元金额及当前配置版本，不能用于订阅升级", 422))
+			return
+		}
+		if *body.ExpectedPlanRevision != plan.Revision {
+			fail(c, apperr.E("plan_changed", "充值规则已更新，请刷新后确认到账积分", 409))
+			return
+		}
+		plan, err = store.QuoteRecharge(plan, *body.AmountYuan)
+		if err != nil {
+			fail(c, apperr.E("validation_error", err.Error(), 422))
+			return
+		}
+	} else if body.AmountYuan != nil || (body.ExpectedPlanRevision != nil && (plan.Kind != "subscription" || body.UpgradeQuoteID != "")) {
+		fail(c, apperr.E("validation_error", "该套餐不支持自定义充值金额", 422))
+		return
+	}
+	if plan.Kind == "subscription" && body.ExpectedPlanRevision != nil {
+		if *body.ExpectedPlanRevision < 1 {
+			fail(c, apperr.E("validation_error", "无效的订阅方案版本", 422))
+			return
+		}
+		if *body.ExpectedPlanRevision != plan.Revision {
+			fail(c, apperr.E("plan_changed", "订阅方案已更新，请重新确认权益", 409))
+			return
+		}
+	}
+	var upgradeID *uuid.UUID
+	if body.UpgradeQuoteID != "" {
+		id, parseErr := uuid.Parse(body.UpgradeQuoteID)
+		if parseErr != nil {
+			fail(c, apperr.E("validation_error", "无效的升级报价", 422))
+			return
+		}
+		change, err := store.GetSubscriptionChange(ctx, s.St.Pool, id, false)
+		if err != nil {
+			fail(c, err)
+			return
+		}
+		if change == nil || change.UserID != user.ID || change.Kind != "upgrade" || change.TargetPlanID == nil || *change.TargetPlanID != plan.ID {
+			fail(c, apperr.E("upgrade_quote_invalid", "升级报价不可用，请重新获取", 409))
+			return
+		}
+		upgradeID = &id
+		plan.PriceCents = change.AmountCents
+		plan.Name = change.Snapshot.PlanName
+		plan.DailyGrantCents = change.Snapshot.DailyPoints
+		plan.DurationDays = change.Snapshot.DurationDays
+		plan.SubscriptionPolicy = change.Snapshot.Policy
+		plan.GrantCents = 0
+		plan.BonusCents = 0
+	} else if plan.Kind == "subscription" {
+		exists, err := store.HasBlockingSubscription(ctx, s.St.Pool, user.ID, s.subscriptionNow())
+		if err != nil {
+			fail(c, err)
+			return
+		}
+		if exists {
+			fail(c, apperr.E("subscription_exists", "你已有有效订阅，可购买额度包；升级或退订请前往我的订阅", 409))
+			return
+		}
+	}
+	createPending := func() (*store.Order, bool, error) {
+		if body.AmountYuan != nil {
+			return store.GetOrInsertRechargeOrder(ctx, s.St, user.ID, plan.ID, *body.AmountYuan, *body.ExpectedPlanRevision, "lanjing")
+		}
+		if upgradeID != nil {
+			return store.GetOrInsertUpgradeOrder(ctx, s.St, user.ID, *upgradeID, s.subscriptionNow())
+		}
+		if body.ExpectedPlanRevision != nil {
+			return store.GetOrInsertPendingOrderAtRevision(ctx, s.St, user.ID, plan.ID, plan.PriceCents, plan.GrantCents, plan.BonusCents, "lanjing", *body.ExpectedPlanRevision, s.subscriptionNow())
+		}
+		return store.GetOrInsertPendingOrder(ctx, s.St, user.ID, plan.ID, plan.PriceCents, plan.GrantCents, plan.BonusCents, "lanjing", s.subscriptionNow())
+	}
+	existingOrders, err := store.ListPendingOrdersForUser(ctx, s.St.Pool, user.ID)
 	if err != nil {
 		fail(c, err)
 		return
 	}
+	for _, existing := range existingOrders {
+		if existing.RechargePolicy != nil && body.AmountYuan == nil {
+			fail(c, userUnsettledOrderError())
+			return
+		}
+		if body.AmountYuan != nil && (existing.RechargePolicy == nil || existing.AmountCents != plan.PriceCents) {
+			fail(c, userUnsettledOrderError())
+			return
+		}
+		if (upgradeID == nil) != (existing.SubscriptionChangeID == nil) || (upgradeID != nil && *upgradeID != *existing.SubscriptionChangeID) {
+			fail(c, userUnsettledOrderError())
+			return
+		}
+		if existing.PlanID != plan.ID {
+			fail(c, userUnsettledOrderError())
+			return
+		}
+	}
 	var reusable *store.Order
 	for _, existing := range existingOrders {
-		if reusable == nil && orderMatchesCheckout(existing, plan, paymentType) {
+		if existing.Provider != "lanjing" {
+			fail(c, apperr.E("payment_order_conflict", "该套餐存在其他渠道的待处理订单", 409))
+			return
+		}
+		if existing.Status == "uncertain" || existing.Status == "paid" || existing.ProviderOrderID == nil {
+			if existing.Status == "pending" {
+				if err := store.MarkOrderUncertain(ctx, s.St.Pool, existing.ID); err != nil {
+					fail(c, err)
+					return
+				}
+				existing, err = store.GetOrder(ctx, s.St.Pool, existing.ID)
+				if err != nil {
+					fail(c, err)
+					return
+				}
+			}
+			out := orderDict(existing, nil)
+			out["reused"] = true
+			c.JSON(http.StatusAccepted, gin.H{"success": true, "data": out})
+			return
+		}
+		if reusable == nil && (body.AmountYuan != nil || orderMatchesCheckout(existing, plan, paymentType)) {
 			reusable = existing
 		}
 	}
@@ -139,19 +263,43 @@ func (s *Server) createOrder(c *gin.Context) {
 			return
 		}
 	}
-	order, created, err := store.GetOrInsertPendingOrder(ctx, s.St, user.ID, plan.ID, plan.PriceCents,
-		plan.GrantCents, plan.BonusCents, "lanjing")
+	order, created, err := createPending()
 	if err != nil {
+		if errors.Is(err, store.ErrAlreadySubscribed) {
+			err = apperr.E("subscription_exists", "已有有效订阅，请前往我的订阅管理", 409)
+		}
+		if errors.Is(err, store.ErrSubscriptionChangeInvalid) {
+			err = apperr.E("upgrade_quote_invalid", "升级报价已失效，请重新获取", 409)
+		}
+		if errors.Is(err, store.ErrUserUnsettledOrder) {
+			err = userUnsettledOrderError()
+		}
+		if errors.Is(err, store.ErrOrderPlanChanged) {
+			err = apperr.E("plan_changed", "套餐已更新，请重新选择方案", 409)
+		}
 		fail(c, err)
 		return
 	}
 	if !created {
+		if upgradeID != nil && store.Contains([]string{"completed", "cancelled", "expired", "failed"}, order.Status) {
+			ok(c, orderDict(order, nil))
+			return
+		}
 		if order.Provider != "lanjing" {
 			fail(c, apperr.E("payment_order_conflict", "该套餐已有待支付订单，请先处理现有订单", 409))
 			return
 		}
 		if order.ProviderOrderID == nil {
-			fail(c, apperr.E("payment_order_creating", "该套餐订单正在创建，请稍后重试", 409))
+			if err := store.MarkOrderUncertain(ctx, s.St.Pool, order.ID); err != nil {
+				fail(c, err)
+				return
+			}
+			fresh, err := store.GetOrder(ctx, s.St.Pool, order.ID)
+			if err != nil {
+				fail(c, err)
+				return
+			}
+			c.JSON(http.StatusAccepted, gin.H{"success": true, "data": orderDict(fresh, nil)})
 			return
 		}
 		fresh, remote, syncErr := s.syncLanjingOrder(ctx, order)
@@ -177,9 +325,20 @@ func (s *Server) createOrder(c *gin.Context) {
 			ok(c, out)
 			return
 		}
-		order, created, err = store.GetOrInsertPendingOrder(ctx, s.St, user.ID, plan.ID, plan.PriceCents,
-			plan.GrantCents, plan.BonusCents, "lanjing")
+		order, created, err = createPending()
 		if err != nil {
+			if errors.Is(err, store.ErrAlreadySubscribed) {
+				err = apperr.E("subscription_exists", "已有有效订阅，请前往我的订阅管理", 409)
+			}
+			if errors.Is(err, store.ErrSubscriptionChangeInvalid) {
+				err = apperr.E("upgrade_quote_invalid", "升级报价已失效，请重新获取", 409)
+			}
+			if errors.Is(err, store.ErrUserUnsettledOrder) {
+				err = userUnsettledOrderError()
+			}
+			if errors.Is(err, store.ErrOrderPlanChanged) {
+				err = apperr.E("plan_changed", "套餐已更新，请重新选择方案", 409)
+			}
 			fail(c, err)
 			return
 		}
@@ -188,6 +347,11 @@ func (s *Server) createOrder(c *gin.Context) {
 			return
 		}
 	}
+	order, err = store.PrepareOrderPayment(ctx, s.St.Pool, order.ID, lanjingPaymentMethod(paymentType))
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	remote, err := client.CreateOrder(ctx, lanjingpay.CreateOrderInput{
 		MerchantOrderID: order.ID.String(),
 		Param:           order.ID.String(),
@@ -195,9 +359,8 @@ func (s *Server) createOrder(c *gin.Context) {
 		AmountCents:     order.AmountCents,
 	})
 	if err != nil {
-		_, _ = store.TransitionPendingOrderStatus(ctx, s.St.Pool, order.ID, "failed")
 		log.Printf("create lanjing payment for order %s: %v", order.ID, err)
-		fail(c, apperr.E("payment_provider_error", "支付渠道暂时不可用，请稍后重试", 502))
+		c.JSON(http.StatusAccepted, gin.H{"success": true, "data": orderDict(order, nil)})
 		return
 	}
 	if err := validateRemoteOrder(order, remote, true, true); err != nil {
@@ -223,20 +386,29 @@ func (s *Server) createOrder(c *gin.Context) {
 	if value := remote.ExpiresAt(); !value.IsZero() {
 		expiresAt = &value
 	}
-	order, err = store.SetOrderProviderDetails(ctx, s.St.Pool, order.ID, remote.ProviderOrderID,
+	persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer persistCancel()
+	updated, err := store.SetOrderProviderDetails(persistCtx, s.St.Pool, order.ID, remote.ProviderOrderID,
 		payAmountCents, lanjingPaymentMethod(remote.Type), remote.PayURL, remote.IsAuto == 1, expiresAt)
 	if err != nil {
-		_ = client.CloseOrder(ctx, remote.ProviderOrderID)
-		fail(c, err)
+		log.Printf("persist lanjing payment for order %s: %v", order.ID, err)
+		c.JSON(http.StatusAccepted, gin.H{"success": true, "data": orderDict(order, nil)})
 		return
 	}
-	respondCreated(c, lanjingOrderDict(order, remote))
+	respondCreated(c, lanjingOrderDict(updated, remote))
+}
+
+func userUnsettledOrderError() error {
+	return apperr.E("user_unsettled_order", "你已有一笔待处理订单，请先在「我的订单」中完成支付或取消；待核实或到账确认中的订单需等待处理完成", http.StatusConflict)
 }
 
 func orderMatchesCheckout(order *store.Order, plan *store.Plan, paymentType lanjingpay.PaymentType) bool {
 	if order == nil || plan == nil || order.Provider != "lanjing" || order.ProviderOrderID == nil ||
 		order.AmountCents != plan.PriceCents || order.GrantCents != plan.GrantCents || order.BonusCents != plan.BonusCents ||
 		expectedProviderPayAmount(order) != plan.PriceCents || order.PaymentMethod == nil {
+		return false
+	}
+	if order.PlanKind != nil && (*order.PlanKind != plan.Kind || order.PlanDurationDays != plan.DurationDays || order.PlanDailyGrantCents != plan.DailyGrantCents) {
 		return false
 	}
 	return *order.PaymentMethod == lanjingPaymentMethod(paymentType)
@@ -288,13 +460,18 @@ func (s *Server) listOrders(c *gin.Context) {
 		fail(c, apperr.E("validation_error", "无效的订单状态", 422))
 		return
 	}
+	query := strings.TrimSpace(c.Query("q"))
+	if len([]rune(query)) > 100 {
+		fail(c, apperr.E("validation_error", "搜索内容不能超过 100 个字符", 422))
+		return
+	}
 	limit, cursor, err := pageParams(c)
 	if err != nil {
 		fail(c, err)
 		return
 	}
 	ctx := c.Request.Context()
-	rows, err := store.ListOrders(ctx, s.St.Pool, &user.ID, status, nil, limit, cursor)
+	rows, err := store.SearchUserOrders(ctx, s.St.Pool, user.ID, status, query, limit, cursor)
 	if err != nil {
 		fail(c, err)
 		return
@@ -302,7 +479,7 @@ func (s *Server) listOrders(c *gin.Context) {
 	planIDs := make([]uuid.UUID, 0, len(rows))
 	seenPlans := make(map[uuid.UUID]bool, len(rows))
 	for _, order := range rows {
-		if !seenPlans[order.PlanID] {
+		if order.PlanKind == nil && !seenPlans[order.PlanID] {
 			seenPlans[order.PlanID] = true
 			planIDs = append(planIDs, order.PlanID)
 		}
@@ -312,16 +489,23 @@ func (s *Server) listOrders(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	ok(c, buildPage(rows, limit, func(o *store.Order) gin.H {
+	summary, err := store.GetUserOrderSummary(ctx, s.St.Pool, user.ID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	page := buildPage(rows, limit, func(o *store.Order) gin.H {
 		out := orderDict(o, nil)
-		if plan := plans[o.PlanID]; plan != nil {
+		if plan := plans[o.PlanID]; o.PlanKind == nil && plan != nil {
 			out["planName"] = plan.Name
 			out["planKind"] = plan.Kind
 			out["durationDays"] = plan.DurationDays
 			out["dailyGrantCents"] = plan.DailyGrantCents
 		}
 		return out
-	}))
+	})
+	page["summary"] = summary
+	ok(c, page)
 }
 
 func (s *Server) getOrder(c *gin.Context) {
@@ -344,15 +528,24 @@ func (s *Server) getOrder(c *gin.Context) {
 		fail(c, apperr.E("order_not_found", "订单不存在", 404))
 		return
 	}
-	order, remote, err := s.syncLanjingOrder(c.Request.Context(), order)
+	fresh, remote, err := s.syncLanjingOrder(c.Request.Context(), order)
+	if fresh != nil {
+		order = fresh
+	}
+	out := orderDict(order, nil)
 	if err != nil {
 		log.Printf("sync lanjing order %s: %v", order.ID, err)
+		out["syncError"] = "支付渠道暂时无法确认状态，请稍后刷新"
+	} else if remote != nil {
+		out = lanjingOrderDict(order, remote)
 	}
-	if remote != nil {
-		ok(c, lanjingOrderDict(order, remote))
-		return
+	if order.PlanKind == nil {
+		if plan, planErr := store.GetPlan(c.Request.Context(), s.St.Pool, order.PlanID); planErr == nil && plan != nil {
+			out["planName"], out["planKind"] = plan.Name, plan.Kind
+			out["durationDays"], out["dailyGrantCents"] = plan.DurationDays, plan.DailyGrantCents
+		}
 	}
-	ok(c, orderDict(order, nil))
+	ok(c, out)
 }
 
 func parseLanjingPaymentType(method string) (lanjingpay.PaymentType, error) {
@@ -470,11 +663,14 @@ func lanjingOrderDict(order *store.Order, remote *lanjingpay.Order) gin.H {
 }
 
 func (s *Server) syncLanjingOrder(ctx context.Context, order *store.Order) (*store.Order, *lanjingpay.Order, error) {
-	if order.Provider != "lanjing" || order.ProviderOrderID == nil || order.Status != "pending" {
+	if order.Provider != "lanjing" || order.ProviderOrderID == nil || (order.Status != "pending" && order.Status != "paid" && order.Status != "uncertain") {
 		return order, nil, nil
 	}
 	client, _, err := s.resolveLanjingPay(ctx)
 	if err != nil || client == nil {
+		if err == nil {
+			err = fmt.Errorf("payment provider unavailable")
+		}
 		return order, nil, err
 	}
 	remote, err := client.GetOrder(ctx, *order.ProviderOrderID)
@@ -488,16 +684,17 @@ func (s *Server) syncLanjingOrder(ctx context.Context, order *store.Order) (*sto
 	if value := remote.ExpiresAt(); !value.IsZero() {
 		expiresAt = &value
 	}
-	order, err = store.UpdateOrderPaymentDisplay(ctx, s.St.Pool, order.ID, remote.PayURL, remote.IsAuto == 1, expiresAt)
+	updated, err := store.UpdateOrderPaymentDisplay(ctx, s.St.Pool, order.ID, remote.PayURL, remote.IsAuto == 1, expiresAt)
 	if err != nil {
 		return order, remote, err
 	}
+	order = updated
 	confirmation, checkErr := client.CheckOrder(ctx, *order.ProviderOrderID)
 	if checkErr == nil {
 		if err := validatePaymentConfirmation(order, confirmation); err != nil {
 			return order, remote, fmt.Errorf("invalid lanjing payment confirmation: %w", err)
 		}
-		completed, err := s.completeOrder(ctx, order)
+		completed, err := s.completeVerifiedOrder(ctx, order)
 		return completed, remote, err
 	}
 	if !isLanjingUnpaid(checkErr) {
@@ -505,7 +702,7 @@ func (s *Server) syncLanjingOrder(ctx context.Context, order *store.Order) (*sto
 	}
 	switch remote.State {
 	case 1, 2:
-		completed, err := s.completeOrder(ctx, order)
+		completed, err := s.completeVerifiedOrder(ctx, order)
 		return completed, remote, err
 	case -1:
 		if _, err := store.TransitionPendingOrderStatus(ctx, s.St.Pool, order.ID, "expired"); err != nil {
@@ -539,6 +736,10 @@ func (s *Server) closeOrder(c *gin.Context) {
 		fail(c, apperr.E("order_not_found", "订单不存在", 404))
 		return
 	}
+	if order.Status == "uncertain" {
+		fail(c, apperr.E("payment_verification_pending", "支付结果正在核实，暂不能取消或重复下单", 409))
+		return
+	}
 	if order.Status != "pending" {
 		ok(c, orderDict(order, nil))
 		return
@@ -557,7 +758,7 @@ func (s *Server) cancelPendingLanjingOrder(ctx context.Context, order *store.Ord
 		return order, nil
 	}
 	if order.Provider == "lanjing" && order.ProviderOrderID == nil {
-		if _, err := store.TransitionPendingOrderStatus(ctx, s.St.Pool, order.ID, "expired"); err != nil {
+		if _, err := store.TransitionPendingOrderStatus(ctx, s.St.Pool, order.ID, "cancelled"); err != nil {
 			return order, err
 		}
 		return store.GetOrder(ctx, s.St.Pool, order.ID)
@@ -572,7 +773,7 @@ func (s *Server) cancelPendingLanjingOrder(ctx context.Context, order *store.Ord
 			if err := validatePaymentConfirmation(order, confirmation); err != nil {
 				return order, fmt.Errorf("invalid lanjing payment confirmation: %w", err)
 			}
-			return s.completeOrder(ctx, order)
+			return s.completeVerifiedOrder(ctx, order)
 		}
 		fresh, _, syncErr := s.syncLanjingOrder(ctx, order)
 		if syncErr == nil && fresh != nil && (fresh.Status == "completed" || fresh.Status == "expired") {
@@ -587,7 +788,7 @@ func (s *Server) cancelPendingLanjingOrder(ctx context.Context, order *store.Ord
 		}
 		return order, closeErr
 	}
-	if _, err := store.TransitionPendingOrderStatus(ctx, s.St.Pool, order.ID, "expired"); err != nil {
+	if _, err := store.TransitionPendingOrderStatus(ctx, s.St.Pool, order.ID, "cancelled"); err != nil {
 		return order, err
 	}
 	return store.GetOrder(ctx, s.St.Pool, order.ID)
@@ -619,7 +820,9 @@ func (s *Server) lanjingPaymentNotify(c *gin.Context) {
 	var amountCents, paidAmountCents *int64
 	signatureValid := false
 	defer func() {
-		_, _ = store.InsertPaymentCallbackEvent(context.Background(), s.St.Pool, fingerprint, orderID, providerOrderID,
+		auditCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = store.InsertPaymentCallbackEvent(auditCtx, s.St.Pool, fingerprint, orderID, providerOrderID,
 			amountCents, paidAmountCents, c.ClientIP(), signatureValid, outcome, detail)
 	}()
 	client, _, err := s.resolveLanjingPay(c.Request.Context())
@@ -699,7 +902,9 @@ func (s *Server) lanjingPaymentNotify(c *gin.Context) {
 		c.String(http.StatusBadRequest, "invalid_really_price")
 		return
 	}
-	if _, err := s.completeOrder(ctx, order); err != nil {
+	settleCtx, settleCancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer settleCancel()
+	if _, err := s.completeVerifiedOrder(settleCtx, order); err != nil {
 		outcome, detail = "completion_failed", err.Error()
 		log.Printf("complete callback order %s: %v", payID, err)
 		c.String(http.StatusInternalServerError, "error")
@@ -715,8 +920,16 @@ func (s *Server) lanjingPaymentNotify(c *gin.Context) {
 // 已 completed 的订单视为幂等重放，直接返回成功，不重复入账
 // （ledger 幂等键 ('grant','order',order_id) 双保险）。
 // 通知在事务提交后尽力而为（M4 解耦）。
-// 当前没有 HTTP 路由暴露支付或补单；此函数只用于历史数据兼容和迁移测试。
+// All completion paths share this transaction, including callbacks and reconciliation.
 func (s *Server) completeOrder(ctx context.Context, order *store.Order) (*store.Order, error) {
+	return s.completeOrderWithProof(ctx, order, false)
+}
+
+func (s *Server) completeVerifiedOrder(ctx context.Context, order *store.Order) (*store.Order, error) {
+	return s.completeOrderWithProof(ctx, order, true)
+}
+
+func (s *Server) completeOrderWithProof(ctx context.Context, order *store.Order, verified bool) (*store.Order, error) {
 	if order.Status == "completed" {
 		return order, nil
 	}
@@ -727,6 +940,14 @@ func (s *Server) completeOrder(ctx context.Context, order *store.Order) (*store.
 	if plan == nil {
 		return nil, apperr.E("plan_not_found", "套餐不存在", 404)
 	}
+	if order.PlanKind != nil {
+		plan.Kind = *order.PlanKind
+		plan.DurationDays = order.PlanDurationDays
+		plan.DailyGrantCents = order.PlanDailyGrantCents
+		if order.PlanName != nil {
+			plan.Name = *order.PlanName
+		}
+	}
 	var result *store.Order
 	var sub *store.Subscription
 	completedNow := false
@@ -734,6 +955,11 @@ func (s *Server) completeOrder(ctx context.Context, order *store.Order) (*store.
 		completedNow = false
 		sub = nil
 		return s.St.Tx(ctx, func(tx pgx.Tx) error {
+			if verified {
+				if err := store.MarkOrderPaymentVerified(ctx, tx, order.ID); err != nil {
+					return err
+				}
+			}
 			won, err := store.CompleteOrderUpdate(ctx, tx, order.ID, time.Now().UTC())
 			if err != nil {
 				return err
@@ -750,15 +976,39 @@ func (s *Server) completeOrder(ctx context.Context, order *store.Order) (*store.
 				return apperr.E("order_not_payable", "订单当前状态不可完成", 400)
 			}
 			if plan.Kind == "subscription" {
-				sub, err = subscription.ApplyOrder(ctx, tx, order, plan, time.Now().UTC())
+				if order.SubscriptionChangeID != nil {
+					sub, err = subscription.ApplyUpgrade(ctx, tx, order, s.subscriptionNow())
+				} else {
+					sub, err = subscription.ApplyOrder(ctx, tx, order, plan, s.subscriptionNow())
+				}
 				if err != nil {
 					return err
 				}
+				if order.SubscriptionChangeID == nil {
+					period, err := store.GetSubscriptionPeriodForOrder(ctx, tx, order.ID)
+					if err != nil {
+						return err
+					}
+					if period == nil {
+						return fmt.Errorf("subscription period was not recorded")
+					}
+					if err := store.SetOrderSubscriptionPeriod(ctx, tx, order.ID, period.StartsAt, period.EndsAt); err != nil {
+						return err
+					}
+				}
 			} else {
 				total := order.GrantCents + order.BonusCents
-				reason := fmt.Sprintf("订单入账（含赠送 %d 分）", order.BonusCents)
+				reason := fmt.Sprintf("订单入账（含赠送 %d 积分）", order.BonusCents)
 				if _, err := wallet.Grant(ctx, tx, order.UserID, total, "grant", "order", order.ID.String(), &reason); err != nil {
 					return err
+				}
+				if err := store.RecordTopupCreditLot(ctx, tx, order); err != nil {
+					return err
+				}
+				if verified && order.Provider == "lanjing" {
+					if err := referral.Accrue(ctx, tx, order); err != nil {
+						return err
+					}
 				}
 			}
 			fresh, err := store.GetOrder(ctx, tx, order.ID)
@@ -775,12 +1025,12 @@ func (s *Server) completeOrder(ctx context.Context, order *store.Order) (*store.
 		// 并发补单竞态：账本唯一键冲突 → 幂等重放（重试命中前置检查）
 		err = run()
 	}
-	if err == nil && completedNow {
-		title, body := "充值到账", fmt.Sprintf("订单已完成，%d 分已入账到你的钱包。", order.GrantCents+order.BonusCents)
+	if err == nil && completedNow && !(plan.Kind == "subscription" && order.SubscriptionPolicy.Version == 2) {
+		title, body := "充值到账", fmt.Sprintf("订单已完成，%d 积分已入账到你的钱包。", order.GrantCents+order.BonusCents)
 		if plan.Kind == "subscription" && sub != nil {
-			title = "订阅开通成功"
-			body = fmt.Sprintf("「%s」订阅已生效，每日发放 %d 分，有效期至 %s。",
-				plan.Name, sub.DailyGrantCents, subscription.BeijingDate(sub.EndsAt))
+			title = "订阅订单已确认"
+			body = fmt.Sprintf("「%s」本次订阅每日 %d 分，按购买批次生效，有效期至 %s。",
+				plan.Name, plan.DailyGrantCents, subscription.BeijingDate(sub.EndsAt))
 		}
 		if nerr := store.InsertNotificationWithSource(ctx, s.St.Pool, &order.UserID, "order", title, &body, "order", order.ID); nerr != nil {
 			log.Printf("notify order %s completed: %v", order.ID, nerr)
@@ -797,14 +1047,24 @@ func (s *Server) mySubscription(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
-	now := time.Now().UTC()
+	now := s.subscriptionNow()
+	concurrency, err := store.GetUserConcurrency(store.WithBillingTime(ctx, now), s.St.Pool, user.ID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	sub, err := store.GetCurrentSubscription(ctx, s.St.Pool, user.ID, now)
 	if err != nil {
 		fail(c, err)
 		return
 	}
 	if sub == nil {
-		ok(c, gin.H{"active": false, "planName": nil, "endsAt": nil, "dailyGrantCents": 0, "grantedToday": false})
+		blocking, err := store.HasBlockingSubscription(ctx, s.St.Pool, user.ID, now)
+		if err != nil {
+			fail(c, err)
+			return
+		}
+		ok(c, gin.H{"concurrency": concurrency, "active": false, "blockingPurchase": blocking, "planName": nil, "endsAt": nil, "dailyGrantCents": 0, "grantedToday": false})
 		return
 	}
 	plan, err := store.GetPlan(ctx, s.St.Pool, sub.PlanID)
@@ -816,7 +1076,20 @@ func (s *Server) mySubscription(c *gin.Context) {
 	if plan != nil {
 		planName = plan.Name
 	}
+	if sub.PlanName != "" {
+		planName = sub.PlanName
+	}
+	var next *time.Time
+	if sub.BillingVersion == 2 {
+		if err := s.St.Pool.QueryRow(ctx, `SELECT min(next_grant_at) FROM subscription_periods WHERE subscription_id=$1 AND closed_at IS NULL AND granted_count<total_grants AND NOT EXISTS(SELECT 1 FROM subscription_changes WHERE subscription_id=$1 AND kind='upgrade' AND status='pending' AND snapshot->>'upgradeMode'='restart')`, sub.ID).Scan(&next); err != nil {
+			fail(c, err)
+			return
+		}
+	}
 	ok(c, gin.H{
+		"id": sub.ID, "planId": sub.PlanID, "startsAt": sub.StartsAt, "billingVersion": sub.BillingVersion, "nextGrantAt": next, "policy": sub.Policy, "blockingPurchase": true,
+		"concurrency":     concurrency,
+		"contract":        sub.Contract,
 		"active":          true,
 		"planName":        planName,
 		"endsAt":          isoValue(sub.EndsAt),

@@ -170,6 +170,7 @@ func ClaimAPIWebhookDeliveries(ctx context.Context, q Q, owner string, now time.
 	rows, err := q.Query(ctx, `WITH candidates AS (
 		SELECT delivery.id FROM api_webhook_deliveries delivery
 		WHERE delivery.status='pending' AND delivery.next_attempt_at <= $2
+		  AND EXISTS (SELECT 1 FROM api_webhook_endpoints endpoint WHERE endpoint.id=delivery.endpoint_id AND endpoint.enabled=true)
 		  AND (delivery.locked_until IS NULL OR delivery.locked_until < $2)
 		ORDER BY delivery.next_attempt_at,delivery.created_at FOR UPDATE SKIP LOCKED LIMIT $4
 	), claimed AS (

@@ -202,6 +202,21 @@ test('notification hover shows recent messages and remains interactive', async (
   await expect(page).toHaveURL(/\/notifications$/)
 })
 
+for (const [name, subscription, label] of [
+  ['active plan', { active: true, planName: '分批续订场景' }, '已订阅'],
+  ['active without plan name', { active: true, planName: '' }, '已订阅'],
+  ['inactive plan', { active: false, planName: '已到期套餐' }, '未订阅'],
+]) {
+  test(`navbar subscription status: ${name}`, async ({ page }) => {
+    await page.route('**/api/v1/me/subscription', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true, data: subscription }) }))
+    await page.goto('/pricing')
+    const status = page.locator('.account-cluster__plan')
+    await expect(status).toHaveText(label)
+    if (subscription.active) await expect(status).toHaveClass(/is-active/)
+    else await expect(status).not.toHaveClass(/is-active/)
+  })
+}
+
 test('account cluster hover shows the profile menu and click still works', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.goto('/')
@@ -288,7 +303,7 @@ test('anonymous navigation enters an ecommerce module without opening a prompt',
 
   const ecommerceDropdown = page.locator('.nav-dropdown').filter({ hasText: 'AI 电商' }).first()
   await ecommerceDropdown.locator('.nav-dropdown-label').click()
-  await ecommerceDropdown.getByRole('menuitem', { name: 'AI 虚拟试衣' }).click()
+  await ecommerceDropdown.getByRole('menuitem', { name: '虚拟试衣', exact: true }).click()
 
   await expect(page).toHaveURL(/\/ecommerce-design\?tool=tryon$/)
   await expect(page.locator('.commerce-studio')).toBeVisible()

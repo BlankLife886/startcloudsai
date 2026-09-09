@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { useVirtualMasonryFeed } from "../features/prompts/useVirtualMasonryFeed.js";
 import { taskFailureMessage } from "../features/history/taskFailureMessage.js";
+import { isEmptyHistoryTask, removeEmptyHistory } from "../features/history/historyCleanup.js";
+import { useAuth } from "../auth/AuthContext.jsx";
 import {
   historyTaskCanOpen,
   historyTaskDurationLabel,
@@ -214,12 +216,15 @@ function historyMediaMaxDimension(task, src, requestedDimension) {
 
 export function HistoryView() {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const isDark = useIsDark();
   const { open: guideOpen, setOpen: setGuideOpen } = useProductGuide({
     storageKey: PRODUCT_GUIDE_KEYS.history,
   });
   const stored = useMemo(readStoredLayout, []);
   const mountedRef = useRef(true);
+  const cleanupRef = useRef(false);
+  const cleanupContextRef = useRef(null);
   const listControllerRef = useRef(null);
   const subscriptionsRef = useRef(new Map());
   const sentinelRef = useRef(null);
@@ -246,12 +251,14 @@ export function HistoryView() {
   const loadedImageIdsRef = useRef(new Set());
   const [actionBusyIds, setActionBusyIds] = useState(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [emptyCleanupBusy, setEmptyCleanupBusy] = useState(false);
   const [batchBusy, setBatchBusy] = useState(false);
   const [batchProgress, setBatchProgress] = useState(null);
   const [confirm, setConfirm] = useState(null);
   const [publishTarget, setPublishTarget] = useState(null);
   const [publishBusy, setPublishBusy] = useState(false);
   const [durationNow, setDurationNow] = useState(() => Date.now());
+  cleanupContextRef.current = { userId: String(user?.id || ""), typeFilter };
 
   const visibleTasks = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -259,7 +266,7 @@ export function HistoryView() {
       .filter((task) => task && typeof task === "object")
       .filter(
         (task) =>
-          (!statusFilter || task.status === statusFilter) &&
+          (!statusFilter || historyTaskStatus(task) === statusFilter) &&
           (!query ||
             `${taskPrompt(task)} ${taskTypeLabel(task)}`
               .toLowerCase()
@@ -659,6 +666,7 @@ export function HistoryView() {
   const removeTask = (task) => {
     if (!isHistoryTaskDeletable(task))
       return notificationService.info("进行中的任务结束后才能删除");
+    if (isEmptyHistoryTask(task)) return clearEmptyHistory([task]);
     const forceMedia = historyTaskRequiresForceMediaRemoval(task);
     openConfirm(
       {
@@ -678,14 +686,15 @@ export function HistoryView() {
       },
     );
   };
-  const deleteHistoryTask = async (task) => {
+  const deleteHistoryTask = async (task, { onlyEmpty = false } = {}) => {
     const target = historyTaskDeleteTarget(task);
     if (!target) throw new Error("当前记录暂时无法删除");
-    const forceMedia = historyTaskRequiresForceMediaRemoval(task);
+    const forceMedia = !onlyEmpty && historyTaskRequiresForceMediaRemoval(task);
     await deleteTask(target.id, {
       history: true,
       cascade: forceMedia,
       forceMedia,
+      onlyEmpty,
     });
   };
   const deleteTasks = async (items) => {
@@ -731,6 +740,7 @@ export function HistoryView() {
   };
   const batchDelete = (ids) => {
     const items = visibleTasks.filter((task) => ids.includes(String(task.id)));
+    if (items.length && items.every(isEmptyHistoryTask)) return clearEmptyHistory(items);
     const forceMedia = items.some(historyTaskRequiresForceMediaRemoval);
     return openConfirm(
       {
@@ -756,7 +766,50 @@ export function HistoryView() {
       },
     );
   };
-  const clearByStatus = (all) => {
+  const clearEmptyHistory = async (items = null) => {
+    if (bulkBusy || cleanupRef.current) return;
+    const { userId, typeFilter: scopeType } = cleanupContextRef.current;
+    const assertCurrent = () => {
+      if (!mountedRef.current || !userId || cleanupContextRef.current.userId !== userId) {
+        throw new DOMException("账号已切换或页面已关闭", "AbortError");
+      }
+    };
+    cleanupRef.current = true;
+    setBulkBusy(true);
+    setEmptyCleanupBusy(true);
+    try {
+      const result = await removeEmptyHistory({
+        assertCurrent,
+        listPage: async (pageCursor) => {
+          if (items) return { tasks: items.filter(isHistoryTaskDeletable) };
+          const page = await listTasks({ ...historyTaskQueryScope(scopeType), limit: 50, cursor: pageCursor });
+          return { tasks: (page.items || []).filter(isHistoryTaskDeletable), nextCursor: page.nextCursor };
+        },
+        removeTask: async (task, options) => {
+          assertCurrent();
+          await deleteHistoryTask(task, options);
+          assertCurrent();
+          setTasks((current) => current.filter((row) => row.id !== task.id));
+        },
+      });
+      assertCurrent();
+      setSelectedIds(new Set());
+      if (cleanupContextRef.current.typeFilter === scopeType) await loadTasks();
+      assertCurrent();
+      if (result.failed) notificationService.warning(`已清除 ${result.removed} 条无图片数据，${result.failed} 条未清除，请刷新后查看`);
+      else if (result.removed) notificationService.success(`已清除 ${result.removed} 条无图片数据`);
+      else notificationService.info("当前分类没有可清除的无图片数据");
+    } catch (error) {
+      if (mountedRef.current && error?.name !== "AbortError") notificationService.error(error?.message || "清除无图片数据失败");
+    } finally {
+      cleanupRef.current = false;
+      if (mountedRef.current) {
+        setBulkBusy(false);
+        setEmptyCleanupBusy(false);
+      }
+    }
+  };
+  const clearAllHistory = () => {
     const scopeType = typeFilter;
     const scopeLabel = TYPE_FILTERS.find(([id]) => id === scopeType)?.[1] || "";
     const scoped = Boolean(scopeType && scopeLabel);
@@ -764,33 +817,24 @@ export function HistoryView() {
     return openConfirm(
       {
         heading: forceMedia
-          ? all
-            ? scoped
-              ? `强制清空「${scopeLabel}」历史记录？`
-              : "强制清空全部历史记录？"
-            : scoped
-              ? `强制清除「${scopeLabel}」失败记录？`
-              : "强制清除全部失败记录？"
-          : all
-            ? `清空「${scopeLabel}」历史记录？`
-            : `清除「${scopeLabel}」失败记录？`,
+          ? scoped
+            ? `强制清空「${scopeLabel}」历史记录？`
+            : "强制清空全部历史记录？"
+          : `清空「${scopeLabel}」历史记录？`,
         description: forceMedia
           ? `范围内如有 AI 助手或无限画布图片，原图将被永久移除；对话和画布结构会保留，原位置显示“该图片已被删除”。之后无法预览、下载或继续引用这些图片，直接使用它们生成的后续任务记录也会一并清理。进行中的任务会保留。`
-          : all
-            ? `仅删除「${scopeLabel}」中已结束的记录，进行中的任务会保留。产物也会一并删除，且不可撤销。`
-            : `将删除账号下「${scopeLabel}」中的失败任务及其产物，此操作不可撤销。`,
-        confirmLabel: forceMedia ? "确认强制移除" : all ? "清空全部" : "全部清除",
+          : `仅删除「${scopeLabel}」中已结束的记录，进行中的任务会保留。产物也会一并删除，且不可撤销。`,
+        confirmLabel: forceMedia ? "确认强制移除" : "清空全部",
         busyLabel: "清除中…",
       },
       async () => {
         const rows = await fetchAll({
-          status: all ? "" : "failed",
           scopeType,
         });
         const targets = rows.filter(isHistoryTaskDeletable);
         if (!targets.length)
           return notificationService.info(
-            all ? "没有可删除的已结束任务" : "没有失败记录",
+            "没有可删除的已结束任务",
           );
         const result = await deleteTasks(targets);
         await loadTasks();
@@ -983,15 +1027,17 @@ export function HistoryView() {
                 type="button"
                 className="ch-chip"
                 disabled={bulkBusy}
-                onClick={() => clearByStatus(false)}
+                aria-busy={emptyCleanupBusy}
+                title="清除当前分类中已结束且没有产物的记录"
+                onClick={() => void clearEmptyHistory()}
               >
-                清除失败
+                {emptyCleanupBusy ? "清除中…" : "清除无图片数据"}
               </button>
               <button
                 type="button"
                 className="ch-chip is-danger"
                 disabled={bulkBusy}
-                onClick={() => clearByStatus(true)}
+                onClick={clearAllHistory}
               >
                 清空全部
               </button>

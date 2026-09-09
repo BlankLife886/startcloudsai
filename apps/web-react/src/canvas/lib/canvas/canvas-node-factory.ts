@@ -1,5 +1,6 @@
 import { getNodeSpec, NODE_DEFAULT_SIZE } from "@/constant/canvas";
 import { nodeSizeFromRatio } from "@/lib/canvas/canvas-node-size";
+import { canvasExactSizeSettings } from "@/lib/canvas/canvas-image-model";
 import type { AiConfig } from "@/stores/use-config-store";
 import type { UploadedImage } from "@/services/image-storage";
 import type { UploadedFile } from "@/services/file-storage";
@@ -45,6 +46,7 @@ export function buildImageGenerationMetadata(type: CanvasImageGenerationType, co
         generationType: type,
         model: config.model,
         size: config.size,
+        ...canvasExactSizeSettings(config),
         resolution: config.resolution,
         quality: config.quality,
         ...(config.background ? { background: config.background } : {}),

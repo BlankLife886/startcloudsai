@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/BlankLife886/startcloudsai/server/internal/upstreamguard"
 	"io"
 	"net/http"
 	"net/url"
@@ -23,6 +24,22 @@ type UpstreamError struct {
 	Code    int
 	Message string
 }
+
+// SubmissionUncertainError means CreateTask may have accepted work without a
+// usable acknowledgement. CRUN has no client idempotency key, so never replay it.
+type SubmissionUncertainError struct{ Err error }
+
+func (e *SubmissionUncertainError) Error() string {
+	return "CRUN submission outcome unknown: " + e.Err.Error()
+}
+func (e *SubmissionUncertainError) Unwrap() error { return e.Err }
+
+// PreflightError occurs before CreateTask was sent and can safely be retried
+// when its underlying estimate/connection error is transient.
+type PreflightError struct{ Err error }
+
+func (e *PreflightError) Error() string { return e.Err.Error() }
+func (e *PreflightError) Unwrap() error { return e.Err }
 
 func (e *UpstreamError) Error() string {
 	if e == nil {
@@ -46,6 +63,10 @@ type OpenAIImageRequest struct {
 	Prompt                string
 	N                     int
 	Size                  string
+	ExactSize             bool
+	ExactWidth            int
+	ExactHeight           int
+	ExactSizeFields       []string
 	Quality               string
 	ImageURLs             []string
 	AspectRatio           string
@@ -136,6 +157,11 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body any, out 
 	}
 	req.Header.Set("x-api-key", c.apiKey)
 	req.Header.Set("Content-Type", "application/json")
+	if method == http.MethodPost && path == "/api/v1/client/job/CreateTask" {
+		if err := upstreamguard.Check(ctx); err != nil {
+			return err
+		}
+	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return err
@@ -223,14 +249,17 @@ func (c *Client) EstimateMediaTask(ctx context.Context, request MediaTaskRequest
 func (c *Client) CreateMediaTask(ctx context.Context, request MediaTaskRequest) (*MediaTaskCreated, error) {
 	request.Model = strings.TrimSpace(request.Model)
 	if request.Model == "" || request.Input == nil {
-		return nil, errors.New("CRUN media task model and input are required")
+		return nil, &PreflightError{Err: errors.New("CRUN media task model and input are required")}
 	}
 	var data MediaTaskCreated
 	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/client/job/CreateTask", request, &data); err != nil {
-		return nil, err
+		if upstreamguard.WasNotSent(err) {
+			return nil, err
+		}
+		return nil, &SubmissionUncertainError{Err: err}
 	}
 	if strings.TrimSpace(data.TaskID) == "" {
-		return nil, errors.New("CRUN returned an empty task id")
+		return nil, &SubmissionUncertainError{Err: errors.New("CRUN returned an empty task id")}
 	}
 	return &data, nil
 }
@@ -273,6 +302,21 @@ func (c *Client) CreateTask(ctx context.Context, prompt, aspectRatio, resolution
 }
 
 func (c *Client) CreateTaskWithRequest(ctx context.Context, request OpenAIImageRequest) (string, error) {
+	if request.ExactSize {
+		if request.ExactWidth < 1 || request.ExactHeight < 1 || request.Size != fmt.Sprintf("%dx%d", request.ExactWidth, request.ExactHeight) {
+			return "", &PreflightError{Err: errors.New("CRUN exact image dimensions are invalid")}
+		}
+		fields := request.ExactSizeFields
+		validFields := len(fields) == 1 && fields[0] == "size" || len(fields) == 2 && fields[0] == "width" && fields[1] == "height"
+		if !validFields || len(request.AllowedInputFields) == 0 {
+			return "", &PreflightError{Err: errors.New("CRUN model has no declared exact-size input")}
+		}
+		for _, field := range fields {
+			if !inputFieldAllowed(request.AllowedInputFields, field) {
+				return "", &PreflightError{Err: errors.New("CRUN model does not accept the exact-size input")}
+			}
+		}
+	}
 	input := buildImageInput(request)
 	if err := c.ensureAffordable(ctx, input); err != nil {
 		return "", err
@@ -282,14 +326,26 @@ func (c *Client) CreateTaskWithRequest(ctx context.Context, request OpenAIImageR
 
 func buildImageInput(request OpenAIImageRequest) map[string]any {
 	input := map[string]any{"prompt": request.Prompt}
-	if inputFieldAllowed(request.AllowedInputFields, "aspect_ratio") && strings.TrimSpace(request.AspectRatio) != "" {
+	if !request.ExactSize && inputFieldAllowed(request.AllowedInputFields, "aspect_ratio") && strings.TrimSpace(request.AspectRatio) != "" {
 		input["aspect_ratio"] = request.AspectRatio
 	}
 	if inputFieldAllowed(request.AllowedInputFields, "img_urls") && len(request.ImageURLs) > 0 {
 		input["img_urls"] = request.ImageURLs
 	}
-	if inputFieldAllowed(request.AllowedInputFields, "resolution") && strings.TrimSpace(request.Resolution) != "" {
+	if !request.ExactSize && inputFieldAllowed(request.AllowedInputFields, "resolution") && strings.TrimSpace(request.Resolution) != "" {
 		input["resolution"] = request.Resolution
+	}
+	if request.ExactSize {
+		for _, field := range request.ExactSizeFields {
+			switch field {
+			case "size":
+				input["size"] = request.Size
+			case "width":
+				input["width"] = request.ExactWidth
+			case "height":
+				input["height"] = request.ExactHeight
+			}
+		}
 	}
 	if quality := strings.ToLower(strings.TrimSpace(request.Quality)); inputFieldAllowed(request.AllowedInputFields, "quality") && quality != "" {
 		input["quality"] = quality
@@ -321,10 +377,10 @@ func inputFieldAllowed(allowed []string, field string) bool {
 func (c *Client) ensureAffordable(ctx context.Context, input map[string]any) error {
 	estimate, err := c.EstimateMediaTask(ctx, MediaTaskRequest{Model: c.model, Input: input})
 	if err != nil {
-		return fmt.Errorf("CRUN task estimate failed: %w", err)
+		return &PreflightError{Err: fmt.Errorf("CRUN task estimate failed: %w", err)}
 	}
 	if !estimate.Affordable {
-		return errors.New("CRUN account balance is insufficient for this task")
+		return &PreflightError{Err: errors.New("CRUN account balance is insufficient for this task")}
 	}
 	return nil
 }
@@ -338,10 +394,13 @@ func (c *Client) createTaskWithInput(ctx context.Context, input map[string]any) 
 		"input": input,
 	}, &data)
 	if err != nil {
-		return "", err
+		if upstreamguard.WasNotSent(err) {
+			return "", err
+		}
+		return "", &SubmissionUncertainError{Err: err}
 	}
 	if strings.TrimSpace(data.TaskID) == "" {
-		return "", errors.New("CRUN returned an empty task id")
+		return "", &SubmissionUncertainError{Err: errors.New("CRUN returned an empty task id")}
 	}
 	return data.TaskID, nil
 }
@@ -349,7 +408,7 @@ func (c *Client) createTaskWithInput(ctx context.Context, input map[string]any) 
 func (c *Client) CreateBackgroundRemovalTask(ctx context.Context, imageURL string) (string, error) {
 	imageURL = strings.TrimSpace(imageURL)
 	if imageURL == "" {
-		return "", errors.New("CRUN background removal image URL is empty")
+		return "", &PreflightError{Err: errors.New("CRUN background removal image URL is empty")}
 	}
 	input := map[string]any{"img_urls": []string{imageURL}}
 	if err := c.ensureAffordable(ctx, input); err != nil {
@@ -363,10 +422,13 @@ func (c *Client) CreateBackgroundRemovalTask(ctx context.Context, imageURL strin
 		"input": input,
 	}, &data)
 	if err != nil {
-		return "", err
+		if upstreamguard.WasNotSent(err) {
+			return "", err
+		}
+		return "", &SubmissionUncertainError{Err: err}
 	}
 	if strings.TrimSpace(data.TaskID) == "" {
-		return "", errors.New("CRUN returned an empty background removal task id")
+		return "", &SubmissionUncertainError{Err: errors.New("CRUN returned an empty background removal task id")}
 	}
 	return data.TaskID, nil
 }
@@ -391,12 +453,12 @@ func (c *Client) CreateImageTasks(
 	for len(taskIDs) < count {
 		taskID, err := c.CreateTaskWithRequest(ctx, request)
 		if err != nil {
-			return nil, err
+			return taskIDs, err
 		}
 		taskIDs = append(taskIDs, taskID)
 		if onCreated != nil {
 			if err := onCreated(append([]string(nil), taskIDs...)); err != nil {
-				return nil, err
+				return taskIDs, &SubmissionUncertainError{Err: fmt.Errorf("persist accepted CRUN jobs: %w", err)}
 			}
 		}
 	}
@@ -511,6 +573,10 @@ func (c *Client) WaitMediaTask(ctx context.Context, taskID string) ([]string, er
 }
 
 func IsRetryableError(err error) bool {
+	var uncertain *SubmissionUncertainError
+	if errors.As(err, &uncertain) {
+		return false
+	}
 	var upstream *UpstreamError
 	return errors.As(err, &upstream) && (upstream.Status == 429 || upstream.Status >= 500 || upstream.Code == 455)
 }

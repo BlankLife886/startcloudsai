@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"mime"
 	"net/http"
@@ -318,7 +317,7 @@ func (s *Server) readOwnedTaskImageBytes(ctx context.Context, key string, maxByt
 	if lastErr == nil {
 		lastErr = fmt.Errorf("object read failed")
 	}
-	return nil, fmt.Errorf("%w: %v", errTaskImageMissing, lastErr)
+	return nil, fmt.Errorf("%w: %w", errTaskImageMissing, lastErr)
 }
 
 func inspectUserUploadImageData(data []byte) (int64, string, error) {
@@ -374,187 +373,12 @@ func (s *Server) upload(c *gin.Context) {
 		fail(c, apperr.E("validation_error", "file: 缺少上传文件", 422))
 		return
 	}
-	if !s.enforceUsageLimit(c, "upload-count-minute", user.ID.String(), uploadRequestsPerMinute, 1, time.Minute) {
-		return
-	}
-	if !s.enforceUsageLimit(c, "upload-bytes-day", user.ID.String(), uploadBytesPerDay, max(fileHeader.Size, 1), 24*time.Hour) {
-		return
-	}
-	storedBytes, err := store.UserUploadStorageBytes(c.Request.Context(), s.St.Pool, user.ID)
+	item, err := s.storeUserUpload(c, user, fileHeader, false)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	if fileHeader.Size > uploadStorageMaxBytes || storedBytes > uploadStorageMaxBytes-fileHeader.Size {
-		fail(c, apperr.E("upload_storage_limit", "个人素材存储空间已满，请先删除不再使用的素材", 413))
-		return
-	}
-	if fileHeader.Size > s.Cfg.UploadMaxBytes {
-		fail(c, apperr.E("upload_too_large", "文件不能超过 15MB", 413))
-		return
-	}
-	f, err := fileHeader.Open()
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	defer f.Close()
-	data := make([]byte, 0, fileHeader.Size)
-	buf := make([]byte, 64*1024)
-	for {
-		n, rerr := f.Read(buf)
-		data = append(data, buf[:n]...)
-		if int64(len(data)) > s.Cfg.UploadMaxBytes {
-			fail(c, apperr.E("upload_too_large", "文件不能超过 15MB", 413))
-			return
-		}
-		if errors.Is(rerr, io.EOF) {
-			break
-		}
-		if rerr != nil {
-			fail(c, rerr)
-			return
-		}
-	}
-	if len(data) == 0 {
-		fail(c, apperr.E("unsupported_file", "文件为空", 400))
-		return
-	}
-	contentHash := fmt.Sprintf("%x", sha256.Sum256(data))
-	blocked, blockReason, err := store.IsUploadHashBlocked(c.Request.Context(), s.St.Pool, contentHash)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	if blocked {
-		s.recordRisk(c.Request.Context(), store.NewSecurityRiskEvent{UserID: &user.ID, ClientIP: c.ClientIP(),
-			Category: "blocked_upload", Severity: "high", Score: 80, Action: "blocked",
-			Reason: "上传内容命中安全黑名单", Metadata: map[string]any{"sha256": contentHash, "rule": blockReason}})
-		fail(c, apperr.E("upload_blocked", "该文件未通过安全检查", 422))
-		return
-	}
-	ext, contentType, isImage := sniffUploadMedia(data)
-	if ext == "" {
-		fail(c, apperr.E("unsupported_file", "仅支持 png / jpg / webp 图片、mp4 / webm 视频或 mp3 / wav / m4a / ogg 音频", 400))
-		return
-	}
-	if address := strings.TrimSpace(s.Cfg.UploadClamAVAddr); address != "" {
-		if err := scanWithClamAV(c.Request.Context(), address, data, s.Cfg.UploadScanTimeout); err != nil {
-			if strings.Contains(err.Error(), "malware detected") {
-				s.recordRisk(c.Request.Context(), store.NewSecurityRiskEvent{UserID: &user.ID, ClientIP: c.ClientIP(),
-					Category: "malware_upload", Severity: "critical", Score: 100, Action: "blocked",
-					Reason: "上传文件检出恶意内容", Metadata: map[string]any{"sha256": contentHash}})
-				fail(c, apperr.E("upload_malware_detected", "该文件未通过安全检查", 422))
-				return
-			}
-			fail(c, apperr.E("upload_scanner_unavailable", "文件安全检查服务暂时不可用，请稍后重试", 503))
-			return
-		}
-	}
-	if endpoint := strings.TrimSpace(s.Cfg.UploadReviewURL); endpoint != "" {
-		err := reviewUploadContent(c.Request.Context(), endpoint, s.Cfg.UploadReviewKey, contentType,
-			contentHash, data, s.Cfg.UploadScanTimeout, s.Cfg.AppEnv != "production")
-		if err != nil {
-			if strings.Contains(err.Error(), "content rejected") {
-				s.recordRisk(c.Request.Context(), store.NewSecurityRiskEvent{UserID: &user.ID, ClientIP: c.ClientIP(),
-					Category: "unsafe_upload", Severity: "high", Score: 90, Action: "blocked",
-					Reason: "上传内容未通过独立内容审核", Metadata: map[string]any{"sha256": contentHash, "contentType": contentType}})
-				fail(c, apperr.E("upload_content_rejected", "该文件未通过内容安全审核", 422))
-				return
-			}
-			fail(c, apperr.E("upload_review_unavailable", "内容安全审核服务暂时不可用，请稍后重试", 503))
-			return
-		}
-	}
-	fileID := uuid.NewString()
-	key := fmt.Sprintf("uploads/%s/original/%s.%s", user.ID, fileID, ext)
-	if !isImage {
-		if err := s.Storage.UploadBytes(c.Request.Context(), key, data, contentType); err != nil {
-			fail(c, err)
-			return
-		}
-		if err := s.registerUploadWithinQuota(c.Request.Context(), user.ID, []store.UserUploadObjectSize{{Key: key, SizeBytes: int64(len(data))}}); err != nil {
-			s.cleanupUploadedObjectKeys([]string{key})
-			fail(c, err)
-			return
-		}
-		respondCreated(c, gin.H{
-			"key": key, "url": storedFilePrefix(c) + key,
-			"contentType": contentType, "sizeBytes": len(data),
-		})
-		return
-	}
-	variantCfg, err := settings.ResolveImageVariants(c.Request.Context(), s.St.Pool)
-	if err != nil {
-		variantCfg = settings.ImageVariantConfig{Format: "webp", Quality: 85, DisplayMaxEdge: 2048, ThumbMaxEdge: 512}
-	}
-	thumbnail, err := media.EncodeVariant(data, media.VariantOptions{
-		Format: variantCfg.Format, Quality: 75, MaxEdge: variantCfg.ThumbMaxEdge,
-	})
-	if err != nil {
-		fail(c, apperr.E("unsupported_file", "图片尺寸过大或内容无法读取", 400))
-		return
-	}
-	// 小图 key 不带扩展名：格式可在后台切换，内容类型由对象元数据提供。
-	thumbnailKey := fmt.Sprintf("uploads/%s/thumb/%s", user.ID, fileID)
-	displayKey := store.DisplayKeyForOriginal(key)
-	type uploadResult struct {
-		key       string
-		sizeBytes int64
-		err       error
-		optional  bool
-	}
-	results := make(chan uploadResult, 3)
-	go func() {
-		results <- uploadResult{key: key, sizeBytes: int64(len(data)), err: s.Storage.UploadBytes(c.Request.Context(), key, data, contentType)}
-	}()
-	go func() {
-		results <- uploadResult{key: thumbnailKey, sizeBytes: int64(len(thumbnail.Data)), err: s.Storage.UploadBytes(c.Request.Context(), thumbnailKey, thumbnail.Data, thumbnail.ContentType)}
-	}()
-	go func() {
-		// 展示图失败不阻断上传，前端会回退加载原图。
-		display, displayErr := media.EncodeVariant(data, media.VariantOptions{
-			Format: variantCfg.Format, Lossless: variantCfg.Lossless,
-			Quality: variantCfg.Quality, MaxEdge: variantCfg.DisplayMaxEdge,
-		})
-		if displayErr != nil {
-			results <- uploadResult{key: displayKey, err: displayErr, optional: true}
-			return
-		}
-		results <- uploadResult{key: displayKey, sizeBytes: int64(len(display.Data)), err: s.Storage.UploadBytes(c.Request.Context(), displayKey, display.Data, display.ContentType), optional: true}
-	}()
-	uploaded := make([]string, 0, 3)
-	uploadedObjects := make([]store.UserUploadObjectSize, 0, 3)
-	var uploadErr error
-	for range 3 {
-		result := <-results
-		if result.err != nil {
-			if result.optional {
-				log.Printf("upload display variant skipped key=%s: %v", result.key, result.err)
-				continue
-			}
-			uploadErr = result.err
-			continue
-		}
-		uploaded = append(uploaded, result.key)
-		uploadedObjects = append(uploadedObjects, store.UserUploadObjectSize{Key: result.key, SizeBytes: result.sizeBytes})
-	}
-	if uploadErr != nil {
-		s.cleanupUploadedObjectKeys(uploaded)
-		fail(c, uploadErr)
-		return
-	}
-	if err := s.registerUploadWithinQuota(c.Request.Context(), user.ID, uploadedObjects); err != nil {
-		s.cleanupUploadedObjectKeys(uploaded)
-		fail(c, err)
-		return
-	}
-	respondCreated(c, gin.H{
-		"key": key, "url": storedFilePrefix(c) + key,
-		"thumbnailKey": thumbnailKey, "thumbnailUrl": storedFilePrefix(c) + thumbnailKey,
-		"displayKey": displayKey, "displayUrl": storedFilePrefix(c) + displayKey,
-		"contentType": contentType, "sizeBytes": len(data),
-	})
+	respondCreated(c, item.response(storedFilePrefix(c)))
 }
 
 func (s *Server) getFile(c *gin.Context) {
@@ -585,6 +409,8 @@ func (s *Server) getFile(c *gin.Context) {
 		allowed = true // 已发布画布模板的内嵌资源公开可读
 	case strings.HasPrefix(key, "announcement-images/"):
 		allowed = true // 公告图片对用户端公开可读
+	case strings.HasPrefix(key, "model-icons/"):
+		allowed = true // 后台模型目录图标对用户端公开可读
 	case strings.HasPrefix(key, "ecommerce-catalog/"),
 		strings.HasPrefix(key, "ecommerce-tryon/"),
 		strings.HasPrefix(key, "ecommerce-handheld/"):
@@ -676,7 +502,8 @@ func (s *Server) compressCoverImage(ctx context.Context, data []byte, ext, conte
 // key 本身即内容指纹。后台可覆盖上传的素材（prompt-covers、ecommerce-* 等）不算。
 func isImmutableObjectKey(key string) bool {
 	if strings.HasPrefix(key, "tasks/") || strings.HasPrefix(key, "uploads/") ||
-		strings.HasPrefix(key, "announcement-images/") || strings.HasPrefix(key, "canvas-template-assets/") {
+		strings.HasPrefix(key, "announcement-images/") || strings.HasPrefix(key, "model-icons/") ||
+		strings.HasPrefix(key, "canvas-template-assets/") {
 		return true
 	}
 	for _, prefix := range []string{"prompt-covers/", "canvas-template-covers/", "ecommerce-catalog/"} {
@@ -752,7 +579,11 @@ func (s *Server) serveStoredObject(c *gin.Context, key string, user *store.User,
 	}
 	rangeSpec := strings.TrimSpace(c.GetHeader("Range"))
 	openStartedAt := time.Now()
-	stream, err := s.Storage.OpenObjectRange(c.Request.Context(), key, rangeSpec, 32<<20)
+	objectLimit := int64(32 << 20)
+	if strings.HasPrefix(key, homeBannerOriginalPrefix) {
+		objectLimit = 0
+	}
+	stream, err := s.Storage.OpenObjectRange(c.Request.Context(), key, rangeSpec, objectLimit)
 	openMs := time.Since(openStartedAt).Milliseconds()
 	if err != nil {
 		if storagepkg.IsNotFound(err) {

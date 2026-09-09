@@ -8,12 +8,12 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const planCols = `id, code, name, description, badge, kind, price_cents, grant_cents, bonus_cents, duration_days, daily_grant_cents, features, active, recommended, sort, created_at, updated_at`
+const planCols = `id, code, name, description, badge, kind, price_cents, grant_cents, bonus_cents, duration_days, daily_grant_cents, features, active, recommended, sort, created_at, updated_at, subscription_policy,price_lock_eligible,revision,recharge_policy`
 
 func scanPlan(row pgx.Row) (*Plan, error) {
 	var p Plan
 	err := row.Scan(&p.ID, &p.Code, &p.Name, &p.Description, &p.Badge, &p.Kind, &p.PriceCents, &p.GrantCents, &p.BonusCents,
-		&p.DurationDays, &p.DailyGrantCents, &p.Features, &p.Active, &p.Recommended, &p.Sort, &p.CreatedAt, &p.UpdatedAt)
+		&p.DurationDays, &p.DailyGrantCents, &p.Features, &p.Active, &p.Recommended, &p.Sort, &p.CreatedAt, &p.UpdatedAt, &p.SubscriptionPolicy, &p.PriceLockEligible, &p.Revision, &p.RechargePolicy)
 	if err != nil {
 		return nil, err
 	}
@@ -36,6 +36,11 @@ func GetPlanByCode(ctx context.Context, q Q, code string) (*Plan, error) {
 }
 
 func InsertPlan(ctx context.Context, q Q, p *Plan) (*Plan, error) {
+	if p.SubscriptionPolicy.Version == 0 {
+		if err := p.SubscriptionPolicy.Normalize(); err != nil {
+			return nil, err
+		}
+	}
 	if p.Features == nil {
 		p.Features = []string{}
 	}
@@ -43,20 +48,20 @@ func InsertPlan(ctx context.Context, q Q, p *Plan) (*Plan, error) {
 		p.Kind = "topup"
 	}
 	return scanPlan(q.QueryRow(ctx,
-		`INSERT INTO plans (code, name, description, badge, kind, price_cents, grant_cents, bonus_cents, duration_days, daily_grant_cents, features, active, recommended, sort)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING `+planCols,
+		`INSERT INTO plans (code, name, description, badge, kind, price_cents, grant_cents, bonus_cents, duration_days, daily_grant_cents, features, active, recommended, sort,subscription_policy,price_lock_eligible,recharge_policy)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,$15,$16,$17) RETURNING `+planCols,
 		p.Code, p.Name, p.Description, p.Badge, p.Kind, p.PriceCents, p.GrantCents, p.BonusCents,
-		p.DurationDays, p.DailyGrantCents, p.Features, p.Active, p.Recommended, p.Sort))
+		p.DurationDays, p.DailyGrantCents, p.Features, p.Active, p.Recommended, p.Sort, p.SubscriptionPolicy, p.PriceLockEligible, p.RechargePolicy))
 }
 
 // UpdatePlan 全量回写（调用方先取出并修改字段）。
 func UpdatePlan(ctx context.Context, q Q, p *Plan) error {
-	_, err := q.Exec(ctx,
+	err := q.QueryRow(ctx,
 		`UPDATE plans SET code = $2, name = $3, description = $4, badge = $5, kind = $6, price_cents = $7,
 		 grant_cents = $8, bonus_cents = $9, duration_days = $10, daily_grant_cents = $11, features = $12,
-		 active = $13, recommended = $14, sort = $15, updated_at = now() WHERE id = $1`,
+		 active = $13, recommended = $14, sort = $15, subscription_policy=$16,price_lock_eligible=$17,recharge_policy=$18, updated_at = now() WHERE id = $1 RETURNING revision,updated_at`,
 		p.ID, p.Code, p.Name, p.Description, p.Badge, p.Kind, p.PriceCents, p.GrantCents, p.BonusCents,
-		p.DurationDays, p.DailyGrantCents, p.Features, p.Active, p.Recommended, p.Sort)
+		p.DurationDays, p.DailyGrantCents, p.Features, p.Active, p.Recommended, p.Sort, p.SubscriptionPolicy, p.PriceLockEligible, p.RechargePolicy).Scan(&p.Revision, &p.UpdatedAt)
 	return err
 }
 

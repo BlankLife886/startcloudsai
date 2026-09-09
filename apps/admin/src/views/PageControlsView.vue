@@ -69,9 +69,23 @@ const STATUS_OPTIONS: Array<{
 const PAGE_GROUPS: PageGroup[] = [
   {
     title: "开放能力",
-    description: "仍在测试的能力可先下架，避免用户提前使用。",
+    description: "控制台与接入文档可分别管理。",
     pages: [
       { key: "developer_api", label: "开发者 API", path: "/developer-api" },
+      { key: "developer_api_docs", label: "API 文档", path: "/developer-api/docs" },
+    ],
+  },
+  {
+    title: "发现与内容",
+    description: "内容浏览、社区与产品资讯入口。",
+    pages: [
+      { key: "ai_tools", label: "全部工具", path: "/ai-tools" },
+      { key: "prompts", label: "提示词库", path: "/prompts" },
+      { key: "share", label: "作品社区", path: "/share" },
+      { key: "app_space", label: "关于我们", path: "/app-space" },
+      { key: "skills", label: "技能库", path: "/skills" },
+      { key: "updates", label: "更新日志", path: "/updates" },
+      { key: "feedback", label: "问题反馈", path: "/feedback" },
     ],
   },
   {
@@ -90,7 +104,18 @@ const PAGE_GROUPS: PageGroup[] = [
       },
       { key: "ui_design", label: "UI 设计稿", path: "/design-workshop" },
       { key: "game_art", label: "游戏设计", path: "/game-art" },
-      { key: "pricing", label: "创作价格", path: "/pricing" },
+      { key: "psd_decompose", label: "PSD 拆解", path: "/psd-decompose" },
+      { key: "holo_card", label: "全息卡片", path: "/holo-card（含样卡）" },
+    ],
+  },
+  {
+    title: "图像工具",
+    description: "独立工具与模型工具页；不影响其他创作页中的工具能力。",
+    pages: [
+      { key: "background_remove", label: "智能抠图", path: "/tools/background-remove" },
+      { key: "image_compress", label: "图片压缩", path: "/tools/image-compress" },
+      { key: "puzzle", label: "AI 拼图", path: "/tools/puzzle" },
+      { key: "media_tools", label: "模型工具", path: "/tools/:modelId" },
     ],
   },
   {
@@ -112,9 +137,31 @@ const PAGE_GROUPS: PageGroup[] = [
     ],
   },
   {
+    title: "个人工作区",
+    description: "个人内容与消息入口；账户设置仍可正常访问。",
+    pages: [
+      { key: "profile", label: "个人中心", path: "/profile" },
+      { key: "history", label: "我的作品", path: "/history" },
+      { key: "assets", label: "素材库", path: "/assets" },
+      { key: "submissions", label: "我的投稿", path: "/submissions" },
+      { key: "notifications", label: "消息通知", path: "/notifications" },
+    ],
+  },
+  {
+    title: "价格与账单",
+    description: "管理展示入口与页面访问，已有订单和订阅继续按原规则处理。",
+    pages: [
+      { key: "pricing", label: "创作价格", path: "/pricing" },
+      { key: "wallet", label: "我的钱包", path: "/wallet" },
+      { key: "orders", label: "我的订单", path: "/orders" },
+      { key: "subscriptions", label: "我的订阅", path: "/subscriptions" },
+    ],
+  },
+  {
     title: "活动入口",
     description: "下架后用户端不再展示入口。",
     pages: [
+      { key: "invitation", label: "邀请返利", path: "/invite" },
       { key: "activity.checkin", label: "签到活动", path: "/check-in" },
       { key: "activity.trial", label: "申请体验", path: "申请弹窗" },
       { key: "activity.usage", label: "用量激励", path: "/incentive-plans/usage" },
@@ -148,6 +195,12 @@ function emptyControls(): Record<string, PageControl> {
 }
 
 function defaultControl(key: string): PageControl {
+  if (key === "illustration_coloring" || key === "game_art") {
+    return { status: "developing", reason: "功能正在开发中，敬请期待。" };
+  }
+  if (key.startsWith("activity.")) {
+    return { status: "removed", reason: "活动已下架。" };
+  }
   if (key === "developer_api") {
     return { status: "removed", reason: "开放 API 正在内部测试。" };
   }
@@ -158,6 +211,7 @@ const loading = ref(false);
 const saving = ref(false);
 const loadError = ref("");
 const query = ref("");
+const groupFilter = ref("");
 const statusFilter = ref<StatusFilter>("all");
 const controls = ref<Record<string, PageControl>>(emptyControls());
 const savedControls = ref<Record<string, PageControl>>(emptyControls());
@@ -235,7 +289,7 @@ const matchesFilter = (page: PageDefinition) => {
 };
 
 const visibleGroups = computed(() =>
-  PAGE_GROUPS.map((group) => ({
+  PAGE_GROUPS.filter((group) => !groupFilter.value || group.title === groupFilter.value).map((group) => ({
     ...group,
     pages: group.pages.filter(
       (page) => matchesQuery(page) && matchesFilter(page),
@@ -314,7 +368,7 @@ async function load() {
 }
 
 async function save() {
-  if (loading.value || saving.value || !isDirty.value) return;
+  if (loading.value || saving.value || loadError.value || !isDirty.value) return;
 
   for (const page of ALL_PAGES) {
     const control = controls.value[page.key];
@@ -367,14 +421,33 @@ onMounted(load);
           {{
             isDirty
               ? `有 ${dirtyCount} 处未保存变更`
-              : "配置已同步"
+              : loadError
+                ? "配置读取失败"
+                : loading
+                  ? "正在读取配置"
+                  : "配置已同步"
           }}
         </div>
+        <el-select
+          v-model="groupFilter"
+          class="controls-group-filter"
+          aria-label="按页面分组筛选"
+          placeholder="全部分组"
+          clearable
+        >
+          <el-option
+            v-for="group in PAGE_GROUPS"
+            :key="group.title"
+            :label="group.title"
+            :value="group.title"
+          />
+        </el-select>
         <el-input
           v-model="query"
           class="controls-search"
           clearable
           :prefix-icon="Search"
+          aria-label="搜索页面或路径"
           placeholder="搜索页面或路径"
         />
         <div class="controls-toolbar__actions">
@@ -385,7 +458,7 @@ onMounted(load);
             type="primary"
             :icon="Check"
             :loading="saving"
-            :disabled="!isDirty"
+            :disabled="!isDirty || !!loadError"
             @click="save"
           >
             保存并生效
@@ -483,7 +556,7 @@ onMounted(load);
             >
               <div class="page-name">
                 <strong>{{ page.label }}</strong>
-                <small class="mono">{{ page.path }}</small>
+                <small class="mono" :title="page.path">{{ page.path }}</small>
               </div>
               <div
                 class="status-switch"
@@ -510,6 +583,7 @@ onMounted(load);
               <el-input
                 v-model="controls[page.key].reason"
                 class="reason-input"
+                :aria-label="`${page.label} 状态说明`"
                 :disabled="controls[page.key].status === 'normal'"
                 :placeholder="reasonPlaceholder(controls[page.key].status)"
                 maxlength="200"
@@ -589,9 +663,13 @@ onMounted(load);
   box-shadow: 0 0 0 3px var(--warning-soft);
 }
 
-.controls-search {
-  width: 240px;
+.controls-group-filter {
+  width: 148px;
   margin-left: auto;
+}
+
+.controls-search {
+  width: 220px;
 }
 
 .controls-toolbar__actions {

@@ -39,6 +39,7 @@ func (s *Server) pricing(c *gin.Context) {
 }
 
 func (s *Server) runtimeConfig(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	if !s.enforceUsageLimit(c, "public-runtime-minute", c.ClientIP(), publicMetadataPerMinute, 1, time.Minute) {
 		return
 	}
@@ -63,6 +64,7 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 		price := modelconfig.ResolveWorkspacePrice(cfg, workspace, model)
 		return gin.H{
 			"id": model.ID, "publicModelKey": model.ID, "label": model.Name, "name": model.Name,
+			"iconUrl": model.IconURL, "status": model.Status, "maintenance": !model.Available(),
 			"kind":         model.Kind,
 			"description":  model.Description,
 			"capabilities": []string{"textToImage", "imageToImage", "image.generate", "image.edit"},
@@ -72,6 +74,7 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 			"workspacePriceOverridden": price.Overridden,
 			"default":                  isDefault, "fastMode": model.FastMode, "resolutions": model.Resolutions,
 			"aspectRatios": model.AspectRatios, "aspectRatiosByResolution": model.AspectRatiosByResolution, "qualities": model.Qualities,
+			"supportsExactSize": model.SupportsExactSize, "exactSizeLimits": model.ExactSizeRules(),
 			"transparentBackground": model.TransparentBackground, "outputFormats": model.OutputFormats,
 			"moderationLevels": model.ModerationLevels, "maxReferenceImages": model.MaxReferenceImages,
 			"maxImages": model.GenerationMaxImages(),
@@ -83,6 +86,7 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 		reasoningEfforts, defaultReasoningEffort, reasoningPrices, reasoningEffortItems := reasoningModelPayload(model, &cfg)
 		return gin.H{
 			"id": model.ID, "model": model.ID, "label": model.Name, "name": model.Name,
+			"iconUrl": model.IconURL, "status": model.Status, "maintenance": !model.Available(),
 			"kind":        model.Kind,
 			"description": model.Description,
 			"pricePoints": price.EffectiveCents, "standardPricePoints": price.PriceCents,
@@ -97,6 +101,7 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 		price := modelconfig.EffectivePrice(model)
 		item := gin.H{
 			"id": model.ID, "publicModelKey": model.ID, "label": model.Name, "name": model.Name,
+			"iconUrl": model.IconURL, "status": model.Status, "maintenance": !model.Available(),
 			"description": model.Description, "tool": model.Tool,
 			"pricePoints": price, "standardPricePoints": model.PriceCents,
 			"discountPricePoints": model.DiscountPriceCents, "default": model.Default,
@@ -139,10 +144,12 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 		price := modelconfig.EffectivePrice(model)
 		item := gin.H{
 			"id": model.ID, "label": model.Name, "name": model.Name,
+			"iconUrl": model.IconURL, "status": model.Status, "maintenance": !model.Available(),
 			"kind": model.Kind, "tool": model.Tool, "description": model.Description, "capabilities": capabilities,
 			"adapterReady": true, "default": model.Default, "fastMode": model.FastMode,
 			"resolutions": model.Resolutions, "aspectRatios": model.AspectRatios,
 			"aspectRatiosByResolution": model.AspectRatiosByResolution, "qualities": model.Qualities,
+			"supportsExactSize": model.SupportsExactSize, "exactSizeLimits": model.ExactSizeRules(),
 			"transparentBackground": model.TransparentBackground, "outputFormats": model.OutputFormats,
 			"moderationLevels": model.ModerationLevels, "maxReferenceImages": model.MaxReferenceImages,
 			"maxImages": model.GenerationMaxImages(),
@@ -160,8 +167,11 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 	workspaceImageModels := func(workspace string) []gin.H {
 		selections := modelconfig.PublicModelsForWorkspace(cfg, workspace, modelconfig.ModelKindImage)
 		items := make([]gin.H, 0, len(selections))
-		for index, selection := range selections {
-			items = append(items, imageItem(selection, index == 0, workspace))
+		defaultAssigned := false
+		for _, selection := range selections {
+			isDefault := !defaultAssigned && selection.Model.Available()
+			items = append(items, imageItem(selection, isDefault, workspace))
+			defaultAssigned = defaultAssigned || isDefault
 		}
 		return items
 	}
@@ -171,8 +181,11 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 			selections = modelconfig.PublicModelsForWorkspace(cfg, modelconfig.WorkspaceAssistant, modelconfig.ModelKindChat)
 		}
 		items := make([]gin.H, 0, len(selections))
-		for index, selection := range selections {
-			items = append(items, chatItem(selection, index == 0, workspace))
+		defaultAssigned := false
+		for _, selection := range selections {
+			isDefault := !defaultAssigned && selection.Model.Available()
+			items = append(items, chatItem(selection, isDefault, workspace))
+			defaultAssigned = defaultAssigned || isDefault
 		}
 		return items
 	}

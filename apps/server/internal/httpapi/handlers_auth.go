@@ -12,6 +12,7 @@ import (
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/auth"
+	"github.com/BlankLife886/startcloudsai/server/internal/referral"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/BlankLife886/startcloudsai/server/internal/wallet"
@@ -67,8 +68,10 @@ func (s *Server) createSession(c *gin.Context, q store.Q, userID uuid.UUID) (str
 }
 
 type verifyEmailIn struct {
-	Email string `json:"email"`
-	Code  string `json:"code"`
+	Email        string `json:"email"`
+	Code         string `json:"code"`
+	ReferralCode string `json:"referralCode"`
+	SkipReferral bool   `json:"skipReferral"`
 }
 
 func (s *Server) verifyEmailCode(c *gin.Context) {
@@ -96,6 +99,8 @@ func (s *Server) verifyEmailCode(c *gin.Context) {
 	var user *store.User
 	var token string
 	created := false
+	referralCode := s.referralCodeForRegistration(c, body)
+	referralStatus := "none"
 	codeState := emailCodeValid
 	err := s.St.Tx(ctx, func(tx pgx.Tx) error {
 		var txErr error
@@ -140,6 +145,9 @@ func (s *Server) verifyEmailCode(c *gin.Context) {
 					return txErr
 				}
 			}
+			if referralStatus, txErr = referral.BindNewAccountResult(ctx, tx, user.ID, referralCode); txErr != nil {
+				return txErr
+			}
 			created = true
 		} else if user.Role != "user" || user.Status != "active" {
 			return apperr.E("invalid_credentials", "账号已被禁用", 403)
@@ -175,7 +183,11 @@ func (s *Server) verifyEmailCode(c *gin.Context) {
 	}
 	c.Set(ctxPlatformUserKey, user)
 	s.setSessionCookie(c, token)
-	respondCreated(c, gin.H{"user": userDict(user), "isNewUser": created})
+	if !created && referralCode != "" {
+		referralStatus = "existing_account"
+	}
+	s.clearReferralCookie(c)
+	respondCreated(c, gin.H{"user": userDict(user), "isNewUser": created, "referral": gin.H{"status": referralStatus, "message": referralBindingMessage(referralStatus)}})
 }
 
 func (s *Server) logout(c *gin.Context) {

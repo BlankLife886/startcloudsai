@@ -95,6 +95,9 @@ export function resolveT2iOutputSize(aspectRatio = '16:9', resolutionScale = '2K
   return `${normalized.width}x${normalized.height}`
 }
 
+// Skill 功能规划期间，暂时隐藏文生图与创作台的生成 Skill 控件。
+export const SHOW_GENERATION_SKILL_CONTROLS = false
+
 export const WALLPAPER_SKILL_OPTIONS = BUILTIN_WALLPAPER_SKILLS
 
 export const WALLPAPER_DEFAULT_MCP_OPTIONS = [

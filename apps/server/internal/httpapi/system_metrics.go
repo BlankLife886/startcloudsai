@@ -224,6 +224,15 @@ func (s *Server) adminSystemMetrics(c *gin.Context, _ *store.User) {
 		c.Request.Context(), s.St.Pool, uuid.Nil, now.UTC(), now.UTC().Add(10*time.Second),
 	)
 	imageFetchForecast := imageFetchForecastSnapshot(imageFetch, executionPressure, executionPressureErr)
+	executionUsage, executionUsageErr := store.GetGlobalExecutionUsage(c.Request.Context(), s.St.Pool)
+	executionLimits, executionLimitsErr := store.GetGlobalExecutionLimits(c.Request.Context(), s.St.Pool)
+	executionPools := gin.H{
+		"imageRunning": executionUsage.ImageRunning, "imageLimit": executionLimits.ImageLimit,
+		"chatRunning": executionUsage.ChatRunning, "chatLimit": executionLimits.ChatLimit,
+	}
+	if executionUsageErr != nil || executionLimitsErr != nil {
+		executionPools["error"] = "execution_pool_metrics_unavailable"
+	}
 
 	ok(c, gin.H{
 		"sampledAt": now.UTC().Format(time.RFC3339Nano),
@@ -249,11 +258,12 @@ func (s *Server) adminSystemMetrics(c *gin.Context, _ *store.User) {
 			"canceledAcquireCount":    pool.CanceledAcquireCount(),
 			"acquireDurationMs":       roundMetric(float64(pool.AcquireDuration())/float64(time.Millisecond), 2),
 		},
-		"queue":        queue,
-		"taskPressure": taskPressureSnapshot(now, pressure, pressureErr, globalLimit, globalLimitErr, globalImageLimit, globalImageLimitErr, globalConcurrency, globalConcurrencyErr, userConcurrency, userConcurrencyErr, workerCeiling),
-		"providers":    providerCapacity,
-		"imageFetch":   imageFetchForecast,
-		"profiling":    gin.H{"enabled": profilingEnabled},
+		"queue":          queue,
+		"executionPools": executionPools,
+		"taskPressure":   taskPressureSnapshot(now, pressure, pressureErr, globalLimit, globalLimitErr, globalImageLimit, globalImageLimitErr, globalConcurrency, globalConcurrencyErr, userConcurrency, userConcurrencyErr, workerCeiling),
+		"providers":      providerCapacity,
+		"imageFetch":     imageFetchForecast,
+		"profiling":      gin.H{"enabled": profilingEnabled},
 	})
 }
 
@@ -289,7 +299,7 @@ func (s *Server) providerCapacityMetrics(ctx context.Context) []gin.H {
 			providerIDs = append(providerIDs, modelconfig.ExecutionRouteKey(route))
 		}
 	}
-	running, err := store.RunningTasksByProvider(ctx, s.St.Pool, providerIDs)
+	running, err := store.RunningExecutionUnitsByProvider(ctx, s.St.Pool, providerIDs)
 	if err != nil {
 		return []gin.H{}
 	}

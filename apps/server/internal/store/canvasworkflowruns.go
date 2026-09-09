@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -10,6 +12,7 @@ import (
 )
 
 type CanvasWorkflowRun struct {
+	InputSignature   string          `json:"inputSignature"`
 	ID               uuid.UUID       `json:"id"`
 	ProjectID        uuid.UUID       `json:"projectId"`
 	UserID           uuid.UUID       `json:"userId"`
@@ -30,14 +33,14 @@ type CanvasWorkflowRun struct {
 }
 
 const canvasWorkflowRunCols = `id, project_id, user_id, owner_id, status, node_ids, completed_node_ids, canceled_node_ids,
-	current_node_id, error_message, node_metrics, total_cost_cents, error_node_id, lease_expires_at, started_at, updated_at, finished_at`
+	current_node_id, error_message, node_metrics, total_cost_cents, error_node_id, lease_expires_at, started_at, updated_at, finished_at, input_signature`
 
 func scanCanvasWorkflowRun(row pgx.Row) (*CanvasWorkflowRun, error) {
 	var item CanvasWorkflowRun
 	if err := row.Scan(
 		&item.ID, &item.ProjectID, &item.UserID, &item.OwnerID, &item.Status, &item.NodeIDs, &item.CompletedNodeIDs, &item.CanceledNodeIDs,
 		&item.CurrentNodeID, &item.ErrorMessage, &item.NodeMetrics, &item.TotalCostCents, &item.ErrorNodeID, &item.LeaseExpiresAt,
-		&item.StartedAt, &item.UpdatedAt, &item.FinishedAt,
+		&item.StartedAt, &item.UpdatedAt, &item.FinishedAt, &item.InputSignature,
 	); err != nil {
 		return nil, err
 	}
@@ -66,25 +69,45 @@ func GetActiveCanvasWorkflowRun(ctx context.Context, q Q, userID, projectID uuid
 
 // AcquireCanvasWorkflowRun creates the active run or takes over an expired lease.
 // The same owner may reacquire immediately after a page refresh.
-func AcquireCanvasWorkflowRun(ctx context.Context, q Q, userID, projectID, ownerID uuid.UUID, nodeIDs json.RawMessage, now time.Time, lease time.Duration) (*CanvasWorkflowRun, bool, error) {
+var ErrCanvasWorkflowInputsChanged = errors.New("canvas workflow inputs changed")
+
+func AcquireCanvasWorkflowRun(ctx context.Context, q Q, userID, projectID, ownerID uuid.UUID, nodeIDs json.RawMessage, now time.Time, lease time.Duration, signatures ...string) (*CanvasWorkflowRun, bool, error) {
+	signature := ""
+	if len(signatures) > 0 {
+		signature = signatures[0]
+	}
 	item, err := scanOptionalCanvasWorkflowRun(q.QueryRow(ctx, `UPDATE canvas_workflow_runs
 		SET owner_id = $3, lease_expires_at = $5, updated_at = $4
 		WHERE user_id = $1 AND project_id = $2 AND status = 'running'
 		  AND (owner_id = $3 OR lease_expires_at IS NULL OR lease_expires_at <= $4)
-		RETURNING `+canvasWorkflowRunCols, userID, projectID, ownerID, now, now.Add(lease)))
+		  AND node_ids = $6::jsonb AND input_signature = $7
+		  AND ($7 <> '' OR (completed_node_ids = '[]'::jsonb AND canceled_node_ids = '[]'::jsonb AND current_node_id IS NULL AND node_metrics = '[]'::jsonb))
+		RETURNING `+canvasWorkflowRunCols, userID, projectID, ownerID, now, now.Add(lease), nodeIDs, signature))
 	if err != nil || item != nil {
 		return item, item != nil, err
 	}
 
 	item, err = scanOptionalCanvasWorkflowRun(q.QueryRow(ctx, `INSERT INTO canvas_workflow_runs
-		(project_id, user_id, owner_id, status, node_ids, completed_node_ids, lease_expires_at, started_at, updated_at)
-		VALUES ($1, $2, $3, 'running', $4, '[]'::jsonb, $6, $5, $5)
+		(project_id, user_id, owner_id, status, node_ids, completed_node_ids, lease_expires_at, started_at, updated_at, input_signature)
+		VALUES ($1, $2, $3, 'running', $4, '[]'::jsonb, $6, $5, $5, $7)
 		ON CONFLICT (project_id) WHERE status = 'running' DO NOTHING
-		RETURNING `+canvasWorkflowRunCols, projectID, userID, ownerID, nodeIDs, now, now.Add(lease)))
+		RETURNING `+canvasWorkflowRunCols, projectID, userID, ownerID, nodeIDs, now, now.Add(lease), signature))
 	if err != nil || item != nil {
 		return item, item != nil, err
 	}
 	item, err = GetActiveCanvasWorkflowRun(ctx, q, userID, projectID)
+	if err == nil && item != nil {
+		var stored, requested, completed, canceled []string
+		var metrics []json.RawMessage
+		_ = json.Unmarshal(item.NodeIDs, &stored)
+		_ = json.Unmarshal(nodeIDs, &requested)
+		_ = json.Unmarshal(item.CompletedNodeIDs, &completed)
+		_ = json.Unmarshal(item.CanceledNodeIDs, &canceled)
+		_ = json.Unmarshal(item.NodeMetrics, &metrics)
+		if signature != item.InputSignature || !slices.Equal(stored, requested) || (signature == "" && (len(completed)+len(canceled)+len(metrics) > 0 || item.CurrentNodeID != nil)) {
+			return nil, false, ErrCanvasWorkflowInputsChanged
+		}
+	}
 	return item, false, err
 }
 

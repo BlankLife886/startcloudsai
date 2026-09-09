@@ -39,6 +39,7 @@ const usersView = memoizeRouteLoader(() => import("@/views/UsersView.vue"));
 const codesView = memoizeRouteLoader(() => import("@/views/CodesView.vue"));
 const plansView = memoizeRouteLoader(() => import("@/views/PlansView.vue"));
 const ordersView = memoizeRouteLoader(() => import("@/views/OrdersView.vue"));
+const subscriptionChangesView = memoizeRouteLoader(() => import("@/views/SubscriptionChangesView.vue"));
 const trialApplicationsView = memoizeRouteLoader(
   () => import("@/views/TrialApplicationsView.vue"),
 );
@@ -97,6 +98,7 @@ const routeLoaders = new Map<string, RouteLoader>([
   ["/codes", codesView],
   ["/plans", plansView],
   ["/orders", ordersView],
+  ["/subscription-changes", subscriptionChangesView],
   ["/trial-applications", trialApplicationsView],
   ["/checkin-activity", checkinSettingsView],
   ["/growth-groups", growthGroupsView],
@@ -111,6 +113,7 @@ const routeLoaders = new Map<string, RouteLoader>([
   ["/community", communityView],
   ["/gallery", galleryView],
   ["/content", contentView],
+  ["/home-banners", () => import("@/views/HomeBannersView.vue")],
   ["/page-controls", pageControlsView],
   ["/audit", auditView],
   ["/platform-logs", platformLogsView],
@@ -147,6 +150,8 @@ const router = createRouter({
       path: "/",
       component: adminLayout,
       children: [
+        { path: "referrals", component: () => import("@/views/ReferralSettingsView.vue"), meta: { title: "邀请返利" } },
+        { path: "home-banners", component: () => import("@/views/HomeBannersView.vue"), meta: { title: "首页轮播" } },
         {
           path: "",
           component: dashboardView,
@@ -172,6 +177,7 @@ const router = createRouter({
           component: ordersView,
           meta: { title: "订单管理" },
         },
+        { path: "subscription-changes", component: subscriptionChangesView, meta: { title: "订阅变更" } },
         {
           path: "trial-applications",
           component: trialApplicationsView,

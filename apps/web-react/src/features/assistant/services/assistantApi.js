@@ -15,6 +15,7 @@ export async function fetchAssistantConfig(signal) {
   const response = await fetch(buildApiPath('/assistant/config'), {
     credentials: 'include',
     signal,
+    cache: 'no-store',
   })
   const payload = await response.json().catch(() => null)
   if (!response.ok || payload?.success !== true) {
@@ -28,10 +29,22 @@ export async function fetchAssistantConfig(signal) {
 
 export async function listAssistantConversations({ signal } = {}) {
   const data = await apiGet('/assistant/conversations', {
+    query: { messageLimit: 24 },
     signal,
     fallbackMessage: '对话记录加载失败',
   })
   return Array.isArray(data?.conversations) ? data.conversations : []
+}
+
+export async function getAssistantConversation(id, { beforeMessageId = '', messageLimit = 80, signal } = {}) {
+  return apiGet(`/assistant/conversations/${encodeURIComponent(id)}`, {
+    query: {
+      messageLimit,
+      ...(beforeMessageId ? { beforeMessageId } : {}),
+    },
+    signal,
+    fallbackMessage: '更早对话加载失败',
+  })
 }
 
 export async function createAssistantConversation(
@@ -207,11 +220,11 @@ export async function listActiveAssistantRuns({ workspace = '', signal } = {}) {
   return Array.isArray(data?.runs) ? data.runs : []
 }
 
-export async function cancelAssistantRun(id, { acknowledgeUpstream = true } = {}) {
+export async function cancelAssistantRun(id, { acknowledgeUpstream = false, signal } = {}) {
   return apiPatch(
     `/assistant/runs/${encodeURIComponent(id)}`,
     { status: 'canceled', acknowledgeUpstream },
-    { fallbackMessage: '停止任务失败' },
+    { signal, fallbackMessage: '停止任务失败' },
   )
 }
 
@@ -244,12 +257,17 @@ function abortError() {
 
 export async function waitForAssistantRun(
   id,
-  { signal, onUpdate, intervalMs = 700, maxWaitMs = 0 } = {},
+  { signal, onUpdate, intervalMs = 700, maxWaitMs = 15 * 60 * 1000 } = {},
 ) {
   const startedAt = Date.now()
   let transientFailures = 0
   for (;;) {
     if (signal?.aborted) throw abortError()
+    if (maxWaitMs > 0 && Date.now() - startedAt > maxWaitMs) {
+      throw new ApiError('任务仍在后台运行，可停止任务或稍后回到该对话查看', {
+        code: 'assistant_run_timeout',
+      })
+    }
     let data
     try {
       data = await getAssistantRun(id, { signal })
@@ -267,11 +285,6 @@ export async function waitForAssistantRun(
     }
     onUpdate?.(data)
     if (['succeeded', 'failed', 'canceled'].includes(data?.run?.status)) return data
-    if (maxWaitMs > 0 && Date.now() - startedAt > maxWaitMs) {
-      throw new ApiError('任务仍在后台运行，可稍后回到该对话查看', {
-        code: 'assistant_run_timeout',
-      })
-    }
     await waitForAssistantDelay(intervalMs, signal)
   }
 }

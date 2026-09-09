@@ -12,9 +12,10 @@ import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";
 import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
 import { DownloadIcon } from "../components/common/DownloadIcon.jsx";
-import { SoftMark } from "../components/common/SoftMark.jsx";
+import { ModelCatalogIcon, ModelMaintenanceBadge, availableCatalogModels, isCatalogModelMaintenance } from "../components/common/ModelCatalogIcon.jsx";
 import { RegenerateIcon } from "../components/common/RegenerateIcon.jsx";
 import { SharePublishDialog } from "../components/SharePublishDialog.jsx";
+import { ConfirmDialog } from "../components/ConfirmDialog.jsx";
 import { useIllustrationColoringJobs } from "../features/illustration-coloring/useIllustrationColoringJobs.js";
 import {
   COLORING_BATCH_COUNT_OPTIONS,
@@ -177,10 +178,11 @@ function ColoringSelect({ value, options, onChange, label, disabled, className =
       <i className="ratio-select__chevron bi bi-chevron-down" />
     </button>
     {open && rect && createPortal(<div className="ratio-select__menu is-plain is-compact-text is-compact-menu is-glass-accent opens-down" role="listbox" aria-label={label} style={{ top: rect.bottom + 6, left: rect.left, width: rect.width, maxHeight: Math.min(320, innerHeight - rect.bottom - 18) }} onPointerDown={(event) => event.stopPropagation()}>
-      {options.map((option) => <button key={option.value} type="button" role="option" aria-selected={option.value === value} className={`ratio-select__option${option.value === value ? " is-selected" : ""}${icon ? " has-icon" : ""}`} onClick={() => { onChange(option.value); setOpen(false); }}>
-        {icon && <SoftMark name="cpu" size="sm" />}
+      {options.map((option) => <button key={option.value} type="button" role="option" aria-selected={option.value === value} className={`ratio-select__option${option.value === value ? " is-selected" : ""}${icon ? " has-icon" : ""}`} disabled={option.disabled} title={option.disabled ? "模型维护中，暂不可选择" : undefined} onClick={() => { onChange(option.value); setOpen(false); }}>
+        {icon && <ModelCatalogIcon model={option.model} size="sm" />}
         <span className="ratio-select__option-content"><span className="ratio-select__option-label">{option.label}</span></span>
-        {option.creditCost != null && <small className="coloring-react-model-price">{option.creditCost} 积分/张</small>}
+        {icon && <ModelMaintenanceBadge model={option.model} />}
+        {!isCatalogModelMaintenance(option.model) && option.creditCost != null && <small className="coloring-react-model-price">{option.creditCost} 积分/张</small>}
       </button>)}
     </div>, document.body)}
   </div>;
@@ -277,6 +279,8 @@ export function AiIllustrationColoringView() {
   const [cost, setCost] = useState(null);
   const [pendingSubmit, setPendingSubmit] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
+  const [cancelTarget, setCancelTarget] = useState(null);
+  const [cancelBusy, setCancelBusy] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -285,19 +289,33 @@ export function AiIllustrationColoringView() {
   const [uploadDragOver, setUploadDragOver] = useState(false);
   const jobs = useIllustrationColoringJobs({ authenticated: auth.isAuthenticated });
 
+  const cancelColoring = async (acknowledgeUpstream, item) => {
+    if (!item || cancelBusy) return;
+    setCancelBusy(true);
+    try {
+      const result = await jobs.cancel(item, { acknowledgeUpstream });
+      setCancelTarget(null);
+      notificationService.success(result?.cancelPolicy?.message || "任务已取消，请查看积分明细");
+    } catch (error) {
+      if (error?.code === "task_cancel_confirmation_required") setCancelTarget(item);
+      else notificationService.error(error?.message || "取消失败，任务仍在跟踪中");
+    } finally { setCancelBusy(false); }
+  };
+
   useEffect(() => {
     let disposed = false;
     fetchRuntimeConfig().then((config) => {
       if (disposed) return;
       const feature = featureConfig(config);
       const nextModels = modelOptions(config);
+      const nextAvailableModels = availableCatalogModels(nextModels);
       setModels(nextModels);
       setDisabledMessage(feature.enabled === false ? feature.message || "插画染色功能暂未开放" : "");
       setSettings((current) => {
-        if (!nextModels[0]) return current;
-        const selected = nextModels.find((item) => item.id === current.publicModelKey)
-          || nextModels.find((item) => item.default === true || item.isDefault === true || item.metadata?.isDefault === true)
-          || nextModels[0];
+        if (!nextAvailableModels[0]) return { ...current, publicModelKey: "" };
+        const selected = nextAvailableModels.find((item) => item.id === current.publicModelKey)
+          || nextAvailableModels.find((item) => item.default === true || item.isDefault === true || item.metadata?.isDefault === true)
+          || nextAvailableModels[0];
         const supportedResolutions = selected.resolutions || [];
         const resolution = resolutionSetting(current.outputSize);
         const nextResolution = supportedResolutions.includes(resolution)
@@ -350,7 +368,8 @@ export function AiIllustrationColoringView() {
   const sourceUrl = source?.preview || active?.sourcePreview || active?.sourceRemoteUrl || "";
   const effectiveMeta = source?.meta || (active ? { width: active.sourceWidth, height: active.sourceHeight, bytes: active.sourceBytes, type: active.inputType } : sourceMeta);
   const outputPreview = resolveOutputPixelSize(effectiveMeta.width, effectiveMeta.height, settings.outputSize, settings.outputOrientation);
-  const selectedModel = models.find((item) => item.id === settings.publicModelKey) || models[0] || null;
+  const availableModels = useMemo(() => availableCatalogModels(models), [models]);
+  const selectedModel = availableModels.find((item) => item.id === settings.publicModelKey) || availableModels[0] || null;
   const resolutionOptions = useMemo(() => {
     if (!selectedModel) return [];
     const supported = Array.isArray(selectedModel?.resolutions)
@@ -626,7 +645,7 @@ export function AiIllustrationColoringView() {
   return <main className={`coloring-studio-page${isDark ? "" : " is-light"}`}>
     <div className="coloring-studio"><div className="coloring-workspace">
       <aside className="coloring-sidebar"><div className="coloring-side-scroll">
-        <section className="coloring-model-engine" aria-label="生成模型"><span className="coloring-model-engine-icon"><SoftMark name="cpu" size="md" /></span><ColoringSelect className="coloring-model-select" value={selectedModel?.id || ""} options={models.map((item) => ({ value: item.id, label: item.label, creditCost: item.creditCost }))} onChange={(value) => updateSettings({ publicModelKey: value })} label="生成模型" disabled={controlsLocked || !models.length} icon /></section>
+        <section className="coloring-model-engine" aria-label="生成模型"><span className="coloring-model-engine-icon"><ModelCatalogIcon model={selectedModel} size="md" /></span><ColoringSelect className="coloring-model-select" value={selectedModel?.id || ""} options={models.map((item) => ({ value: item.id, label: item.label, creditCost: item.creditCost, model: item, disabled: isCatalogModelMaintenance(item) }))} onChange={(value) => updateSettings({ publicModelKey: value })} label="生成模型" disabled={controlsLocked || !availableModels.length} icon /></section>
         {disabledMessage && <div className="coloring-disabled-banner">{disabledMessage}</div>}
         <section className="coloring-block coloring-block--title"><input className="coloring-input" value={title} maxLength={80} disabled={controlsLocked} aria-label="作品名称" placeholder="作品名称，例如：赛博机甲头像" onChange={(event) => setTitle(event.target.value)} /></section>
         <section className="coloring-block coloring-block--source"><div className={`coloring-source-card${sourceUrl ? "" : " is-empty"}${uploadDragOver ? " is-dragover" : ""}`} onDragOver={(event) => { event.preventDefault(); setUploadDragOver(true); }} onDragLeave={() => setUploadDragOver(false)} onDrop={(event) => { event.preventDefault(); setUploadDragOver(false); void chooseSource(event.dataTransfer.files[0]); }}>
@@ -635,7 +654,7 @@ export function AiIllustrationColoringView() {
         </div><input ref={fileInput} type="file" accept="image/*" hidden onChange={(event) => { void chooseSource(event.target.files?.[0]); event.target.value = ""; }} /></section>
         <section className="coloring-block"><header className="coloring-block-head"><span>配色描述</span><small>{prompt.length} 字</small></header><textarea className="coloring-textarea" value={prompt} disabled={controlsLocked} placeholder="描述主色、阴影倾向、材质或氛围，例如：薄荷绿与珊瑚粉，暖色阴影，线稿保持清晰…" onChange={(event) => setPrompt(event.target.value)} /></section>
         <section className="coloring-block coloring-parameter-block"><header className="coloring-block-head"><span>输出设置</span><small>{resolutionOptions.length || orientationOptions.length ? outputPreview.label : "模型默认"}</small></header><div className="coloring-parameter-selectors">{orientationOptions.length > 0 && <div className="coloring-selector-field is-wide"><span>输出比例</span><ColoringSelect value={settings.outputOrientation} options={orientationOptions} onChange={(value) => updateSettings({ outputOrientation: value })} label="输出比例" disabled={controlsLocked} /></div>}{resolutionOptions.length > 0 && <div className="coloring-selector-field"><span>分辨率</span><ColoringSelect value={settings.outputSize} options={resolutionOptions} onChange={(value) => updateSettings({ outputSize: value })} label="分辨率" disabled={controlsLocked} /></div>}<div className="coloring-selector-field"><span>生成张数</span><ColoringSelect value={settings.generationCount} options={COLORING_BATCH_COUNT_OPTIONS.map((value) => ({ value, label: `${value} 张` }))} onChange={(value) => updateSettings({ generationCount: Number(value) })} label="生成张数" disabled={controlsLocked} /></div>{qualityOptions.length > 0 && <div className="coloring-selector-field"><span>质量</span><ColoringSelect value={quality} options={qualityOptions} onChange={setQuality} label="质量" disabled={controlsLocked} /></div>}{outputFormatOptions.length > 0 && <div className="coloring-selector-field"><span>格式</span><ColoringSelect value={outputFormat} options={outputFormatOptions} onChange={setOutputFormat} label="格式" disabled={controlsLocked} /></div>}{moderationOptions.length > 0 && <div className="coloring-selector-field is-wide"><span>内容审核</span><ColoringSelect value={moderation} options={moderationOptions} onChange={setModeration} label="内容审核" disabled={controlsLocked} /></div>}</div></section>
-      </div><div className="coloring-side-footer">{unitCost > 0 && <div className="coloring-footer-meta"><span>本次约消耗</span><strong>{totalCost} 积分</strong></div>}{jobs.history.some((item) => ACTIVE.has(item.status)) && active && <button type="button" className="coloring-secondary-btn coloring-new-task-btn" disabled={jobs.submitting} onClick={beginNewTask}><i className="bi bi-plus-circle" />新建染色任务</button>}<button type="button" className="coloring-primary-btn" disabled={auth.isAuthenticated && !canSubmit} onClick={startColoring}><i className={`bi ${jobs.submitting ? "bi-arrow-repeat spin" : "bi-palette-fill"}`} />{jobs.submitting ? "正在提交…" : settings.generationCount > 1 ? `开始 AI 染色 · ${settings.generationCount} 张` : "开始 AI 染色"}</button>{active && ["failed", "cancelled", "canceled"].includes(active.status) && <button type="button" className="coloring-retry-btn" disabled={jobs.submitting} onClick={startColoring}><RegenerateIcon />重试失败任务</button>}{active && isActiveColoringJobStatus(active.status) && <button type="button" className="coloring-secondary-btn" disabled={jobs.submitting} onClick={() => jobs.cancel(active)}><i className="bi bi-x-circle" />取消任务</button>}</div></aside>
+      </div><div className="coloring-side-footer">{unitCost > 0 && <div className="coloring-footer-meta"><span>本次约消耗</span><strong>{totalCost} 积分</strong></div>}{jobs.history.some((item) => ACTIVE.has(item.status)) && active && <button type="button" className="coloring-secondary-btn coloring-new-task-btn" disabled={jobs.submitting} onClick={beginNewTask}><i className="bi bi-plus-circle" />新建染色任务</button>}<button type="button" className="coloring-primary-btn" disabled={auth.isAuthenticated && !canSubmit} onClick={startColoring}><i className={`bi ${jobs.submitting ? "bi-arrow-repeat spin" : "bi-palette-fill"}`} />{jobs.submitting ? "正在提交…" : settings.generationCount > 1 ? `开始 AI 染色 · ${settings.generationCount} 张` : "开始 AI 染色"}</button>{active && ["failed", "cancelled", "canceled"].includes(active.status) && <button type="button" className="coloring-retry-btn" disabled={jobs.submitting} onClick={startColoring}><RegenerateIcon />重试失败任务</button>}{active && isActiveColoringJobStatus(active.status) && <button type="button" className="coloring-secondary-btn" disabled={jobs.submitting} onClick={() => void cancelColoring(false, active)}><i className="bi bi-x-circle" />取消任务</button>}</div></aside>
 
       <section className="coloring-stage"><div ref={stageRef} className={`coloring-stage-shell${isFullscreen ? " is-fullscreen" : ""}`}>
         <div className="coloring-stage-toolbar"><div className="coloring-stage-toolbar-main"><div className="coloring-view-toggle" aria-label="视图模式"><button type="button" className={compareMode === "result" ? "active" : ""} aria-pressed={compareMode === "result"} onClick={() => setCompareMode("result")}><i className="bi bi-image" /><span>{resultUrl ? "结果" : "预览"}</span></button><button type="button" className={`coloring-compare-toggle${compareMode === "split" ? " active" : ""}${sourceUrl && resultUrl ? " ready" : ""}`} disabled={!sourceUrl || !resultUrl} onClick={() => setCompareMode("split")}><i className="bi bi-layout-split" /><span>对比</span></button></div><div className="coloring-fit-toggle" aria-label="画面适配"><button type="button" className={settings.fitMode === "contain" ? "active" : ""} onClick={() => { updateSettings({ fitMode: "contain" }); setZoom(1); setPan({ x: 0, y: 0 }); }}><i className="bi bi-aspect-ratio" /><span>适配</span></button><button type="button" className={settings.fitMode === "cover" ? "active" : ""} onClick={() => { updateSettings({ fitMode: "cover" }); setZoom(1); setPan({ x: 0, y: 0 }); }}><i className="bi bi-arrows-fullscreen" /><span>铺满</span></button></div></div>
@@ -656,6 +675,7 @@ export function AiIllustrationColoringView() {
     <LibraryDrawer open={libraryOpen} tab={libraryTab} setTab={setLibraryTab} history={jobs.history} activeId={jobs.activeId} light={!isDark} onClose={() => setLibraryOpen(false)} onSelect={selectHistory} onPrompt={(item) => { setPrompt(item.prompt); setLibraryOpen(false); }} />
     <SettingsDialog open={settingsOpen} settings={settings} light={!isDark} onClose={() => setSettingsOpen(false)} onSave={(next) => { setSettings(writeColoringSettings(next)); setSettingsOpen(false); }} />
     <CostConfirmDialog cost={cost} light={!isDark} onCancel={() => { setCost(null); setPendingSubmit(null); }} onConfirm={() => pendingSubmit && executeSubmit(pendingSubmit)} />
+    <ConfirmDialog open={Boolean(cancelTarget)} busy={cancelBusy} heading="停止接收这张染色结果？" description="任务已经提交上游。停止后不再接收结果，本次预留积分不退回，上游可能仍继续生成。" confirmLabel="确认停止" busyLabel="正在停止…" light={!isDark} onClose={() => !cancelBusy && setCancelTarget(null)} onConfirm={() => void cancelColoring(true, cancelTarget)} />
     {deleteTarget && createPortal(<div className="coloring-confirm-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setDeleteTarget(null)}><section className="coloring-confirm-dialog" role="dialog" aria-modal="true" aria-label="删除历史"><header><span className="coloring-confirm-mark"><i className="bi bi-trash3" /></span><div><strong>删除这条历史？</strong><p>会同时从本地历史存储移除缩略图、原图地址和结果记录。</p></div></header><div className="coloring-confirm-target"><span>{deleteTarget.title || "插画染色"}</span><small>{statusLabel(deleteTarget)}</small></div><footer><button type="button" className="coloring-confirm-secondary" onClick={() => setDeleteTarget(null)}>取消</button><button type="button" className="coloring-confirm-danger" onClick={() => { void jobs.remove(deleteTarget.items.map((item) => item.id)); setDeleteTarget(null); }}>删除</button></footer></section></div>, document.body)}
     <SharePublishDialog open={shareOpen} title={active?.title || title || "插画染色"} submitting={sharing} light={!isDark} onClose={() => setShareOpen(false)} onSubmit={async (options) => { if (!active?.serverJobId) return; setSharing(true); try { await submitShareItem({ jobId: active.serverJobId, ...options }); notificationService.success("已提交共享审核"); setShareOpen(false); } catch (error) { notificationService.error(error?.message || "提交失败"); } finally { setSharing(false); } }} />
   </main>;

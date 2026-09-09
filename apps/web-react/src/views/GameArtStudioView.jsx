@@ -9,7 +9,7 @@ import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
 import { SharePublishDialog } from "../components/SharePublishDialog.jsx";
 import { canOpenWallevenImagePreview, WallevenImagePreview } from "../components/common/WallevenImagePreview.jsx";
 import { DownloadIcon } from "../components/common/DownloadIcon.jsx";
-import { SoftMark } from "../components/common/SoftMark.jsx";
+import { ModelCatalogIcon, ModelMaintenanceBadge, availableCatalogModels, isCatalogModelMaintenance } from "../components/common/ModelCatalogIcon.jsx";
 import { WireframeTerrainBackground } from "../features/game-art/WireframeTerrainBackground.jsx";
 import { useGameArtJobs } from "../features/game-art/useGameArtJobs.js";
 import {
@@ -95,7 +95,7 @@ function constraintParts(value) {
 }
 
 function ModelPrice({ model, light }) {
-  if (model?.creditCost == null) return null;
+  if (isCatalogModelMaintenance(model) || model?.creditCost == null) return null;
   return <span className={`model-point-price is-compact${light ? " is-light" : ""}`}><strong>{model.creditCost === 0 ? "免费" : `${model.creditCost} 积分/张`}</strong></span>;
 }
 
@@ -126,7 +126,8 @@ export function GameArtStudioView() {
   const settings = useMemo(readSettings, []);
   const [models, setModels] = useState([]);
   const [modelId, setModelId] = useState(String(settings.modelId || ""));
-  const currentModel = models.find((item) => item.id === modelId) || models[0] || null;
+  const availableModels = useMemo(() => availableCatalogModels(models), [models]);
+  const currentModel = availableModels.find((item) => item.id === modelId) || availableModels[0] || null;
   const modelCapabilities = useMemo(
     () => normalizeImageModelCapabilities(currentModel || {}),
     [currentModel],
@@ -265,7 +266,8 @@ export function GameArtStudioView() {
       if (disposed) return;
       const available = modelsFromConfig(config);
       setModels(available);
-      setModelId((current) => available.some((item) => item.id === current) ? current : available.find((item) => item.default)?.id || available[0]?.id || "");
+      const selectable = availableCatalogModels(available);
+      setModelId((current) => selectable.some((item) => item.id === current) ? current : selectable.find((item) => item.default)?.id || selectable[0]?.id || "");
       const pending = takePendingPrompt("game_art");
       if (pending) {
         const configValue = pending.config || {};
@@ -274,7 +276,7 @@ export function GameArtStudioView() {
         const text = composePendingLaunchPrompt(pending, 1200);
         if (text) setTypeState((current) => ({ ...current, [nextType]: { ...current[nextType], prompt: text, aspect: ASSET_TYPES.find((type) => type.id === nextType)?.aspects.includes(configValue.ratio) ? configValue.ratio : current[nextType].aspect } }));
         if ([1,2,3,4].includes(Number(configValue.count))) setImageCount(Number(configValue.count));
-        if (configValue.model && available.some((item) => item.id === configValue.model)) setModelId(configValue.model);
+        if (configValue.model && selectable.some((item) => item.id === configValue.model)) setModelId(configValue.model);
       }
     }).catch(() => undefined);
     return () => { disposed = true; if (previewRef.current) URL.revokeObjectURL(previewRef.current); };
@@ -388,7 +390,7 @@ export function GameArtStudioView() {
       <div className="ga-canvas-head"><div className="ga-canvas-title"><strong>{currentTypeHeading}</strong>{!jobs.generationTasks.length && <span className={`ga-canvas-status${jobs.busy ? " working" : ""}`}><i />{jobs.busy ? "RENDERING" : `READY / ${currentState.aspect}`}{!jobs.busy && typeEntries.length ? ` / ${typeEntries.length} 张` : ""}</span>}</div>
         {jobs.generationTasks.length > 0 && <div className="ga-render-stack" aria-label="正在运行的生成任务">{jobs.generationTasks.map((task) => <div key={task.id} className="ga-render"><div className="ga-render-copy"><strong>{task.status}</strong><small>{task.completedCount}/{task.totalCount}</small></div>{task.progress.length > 1 && <ul className="ga-progress">{task.progress.map((entry, index) => <li key={index} className={`is-${entry.status}`} title={entry.label}><i className={`bi ${entry.status === "done" ? "bi-check-circle-fill" : entry.status === "failed" ? "bi-x-circle" : entry.status === "running" ? "bi-arrow-repeat spin" : "bi-circle"}`} /></li>)}</ul>}</div>)}</div>}
         <div className="ga-canvas-tools"><div className={`ga-background-pick${backgroundMenuOpen ? " open" : ""}`}><button className="ga-background-trigger" type="button" aria-label="选择工作区背景" aria-expanded={backgroundMenuOpen} onClick={() => { setBackgroundMenuOpen((value) => !value); setModelMenuOpen(false); }}><i className="bi bi-images" /><span>背景</span><i className="bi bi-chevron-down" /></button>{backgroundMenuOpen && <div className="ga-background-menu" role="dialog" aria-label="选择工作区背景"><div className="ga-background-menu-head"><strong>选择背景</strong><span>{currentBackground.label}</span></div><div className="ga-background-grid">{STUDIO_BACKGROUND_OPTIONS.map((item) => <button key={item.id} type="button" className={item.id === studioBackgroundId ? "active" : ""} onClick={() => { setStudioBackgroundId(item.id); setBackgroundMenuOpen(false); }}>{item.procedural ? <div className="ga-background-procedural-thumb" /> : <img src={item.src} alt={item.label} />}<span>{item.label}</span><i className="bi bi-check2" /></button>)}</div></div>}</div>
-          <div className={`ga-model-pick${modelMenuOpen ? " open" : ""}`}><SoftMark name="cpu" size="sm" /><button className="ga-model-trigger" type="button" aria-label="切换生成模型" aria-expanded={modelMenuOpen} onClick={() => { setModelMenuOpen((value) => !value); setBackgroundMenuOpen(false); }}><span>{currentModel?.label || "选择模型"}</span><i className="bi bi-chevron-down" /></button>{modelMenuOpen && <div className="ga-model-menu" role="listbox" aria-label="生成模型">{models.map((model) => <button key={model.id} type="button" role="option" aria-selected={model.id === modelId} className={model.id === modelId ? "active" : ""} onClick={() => { setModelId(model.id); setModelMenuOpen(false); }}><i className="bi bi-check2" /><SoftMark name="cpu" size="sm" /><span>{model.label}</span><ModelPrice model={model} light={!isDark} /></button>)}</div>}</div></div>
+          <div className={`ga-model-pick${modelMenuOpen ? " open" : ""}`}><ModelCatalogIcon model={currentModel} size="sm" /><button className="ga-model-trigger" type="button" aria-label="切换生成模型" aria-expanded={modelMenuOpen} onClick={() => { setModelMenuOpen((value) => !value); setBackgroundMenuOpen(false); }}><span>{currentModel?.label || "选择模型"}</span><i className="bi bi-chevron-down" /></button>{modelMenuOpen && <div className="ga-model-menu" role="listbox" aria-label="生成模型">{models.map((model) => <button key={model.id} type="button" role="option" aria-selected={model.id === modelId} className={model.id === modelId ? "active" : ""} disabled={isCatalogModelMaintenance(model)} title={isCatalogModelMaintenance(model) ? "模型维护中，暂不可选择" : undefined} onClick={() => { setModelId(model.id); setModelMenuOpen(false); }}><i className="bi bi-check2" /><ModelCatalogIcon model={model} size="sm" /><span>{model.label}</span><ModelMaintenanceBadge model={model} /><ModelPrice model={model} light={!isDark} /></button>)}</div>}</div></div>
       </div>
       <div className={`ga-output${selectedGroup?.entries.length ? " has-results" : ""}`}>
         {selectedGroup?.entries.length ? <div className="ga-viewer-layout"><div className={`ga-results${selectedGroup.entries.length > 1 ? " is-group" : ""}${selectedGroup.entries.length === 4 ? " is-grid-2x2" : ""}`}><div className="ga-result-grid" style={{ "--group-count": selectedGroup.entries.length, "--group-aspect": Number(String(selectedGroup.entries[0]?.aspectRatio || "1:1").split(":")[0]) / Number(String(selectedGroup.entries[0]?.aspectRatio || "1:1").split(":")[1]) }}>{selectedGroup.entries.map((entry) => <div key={entry.url} className={`ga-card-slot${entry.url === jobs.activeOutput ? " is-active" : ""}`}><article className="ga-card" style={{ "--car": Number(entry.aspectRatio.split(":")[0]) / Number(entry.aspectRatio.split(":")[1]) }}><button type="button" className="ga-card-view" aria-label="查看大图" onClick={() => { jobs.setActiveOutput(entry.url); if (canOpenWallevenImagePreview()) setFullscreenOpen(true); }}><AuthenticatedImage src={entry.displayUrl || entry.url} fallbackSrc={entry.url} alt="游戏美术资产" loading="eager" maxDimension={1200} retryCount={2} /></button><div className="ga-card-actions"><button type="button" title="以它为参考继续生成" onClick={() => { setReferenceUrl(entry.url); setInputFile(null); setSourcePreview(""); }}><i className="bi bi-pin-angle" /></button><button type="button" title="发布到广场" onClick={() => { setPublishTargetUrl(entry.url); setPublishOpen(true); }}><i className="bi bi-broadcast" /></button><button type="button" title="下载" onClick={() => downloadAuthenticatedMedia(entry.url, `game-${assetType}-${Date.now()}.png`)}><DownloadIcon /></button><button type="button" title="删除" onClick={() => setPendingDeleteUrl(entry.url)}><i className="bi bi-trash3" /></button></div></article></div>)}</div></div><Filmstrip groups={groups} selectedId={selectedGroupId} onSelect={(id) => { setSelectedGroups((current) => ({ ...current, [assetType]: id })); const group = groups.find((item) => item.id === id); if (group?.cover) jobs.setActiveOutput(group.cover); }} /></div> : <div className="ga-empty"><div className="ga-crosshair"><i className={`bi ${currentType.icon}`} /></div><strong>{currentTypeHeading}工作台</strong><em>{currentType.line}</em><div className="ga-inspo" role="group" aria-label="点一个灵感直接开始">{currentType.examples.map((example) => <button key={example.label} type="button" onClick={() => patchState({ prompt: example.text })}><strong>{example.label}</strong><span>{example.text}</span></button>)}</div><span>点一个灵感填入描述，或直接在下方输入框写下你的想法</span></div>}

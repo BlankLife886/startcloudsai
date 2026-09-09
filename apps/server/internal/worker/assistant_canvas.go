@@ -412,15 +412,18 @@ func canvasUpdateGenerationSettingsTool() sub2api.FunctionTool {
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"scope":      map[string]any{"type": "string", "enum": []string{"auto", "selection", "workflow", "all"}, "description": "默认 auto：优先实时选区；无有效选区且只有一个生图工作流时更新该工作流。all 必须是用户明确要求全部时才用"},
-				"workflowId": map[string]any{"type": "string", "description": "目标工作流的精确 id，仅在用户明确指定工作流时传入"},
-				"nodeIds":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "明确指定的配置节点或输出图片 id；通常留空，让浏览器读取实时选区"},
-				"size":       map[string]any{"type": "string", "description": "图片比例或尺寸，例如 9:16、1024x1792"},
-				"resolution": map[string]any{"type": "string", "description": "分辨率档位"},
-				"quality":    map[string]any{"type": "string", "description": "质量档位，例如 high"},
-				"model":      map[string]any{"type": "string", "description": "生成模型标识"},
-				"count":      map[string]any{"type": "integer", "minimum": 1, "description": "每个节点的生成张数"},
-				"background": map[string]any{"type": "string", "description": "背景选项"},
+				"scope":       map[string]any{"type": "string", "enum": []string{"auto", "selection", "workflow", "all"}, "description": "默认 auto：优先实时选区；无有效选区且只有一个生图工作流时更新该工作流。all 必须是用户明确要求全部时才用"},
+				"workflowId":  map[string]any{"type": "string", "description": "目标工作流的精确 id，仅在用户明确指定工作流时传入"},
+				"nodeIds":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "明确指定的配置节点或输出图片 id；通常留空，让浏览器读取实时选区"},
+				"size":        map[string]any{"type": "string", "description": "图片比例或尺寸，例如 9:16、1024x1792"},
+				"sizeMode":    map[string]any{"type": "string", "enum": []string{"ratio", "exact"}, "description": "ratio 使用比例与分辨率；用户指定精确像素时必须选 exact 并同时提供 exactWidth、exactHeight。模型必须支持精确尺寸"},
+				"exactWidth":  map[string]any{"type": "integer", "minimum": 1, "maximum": modelconfig.MaxExactImageDimension, "description": "精确输出宽度（像素），须符合所选模型限制"},
+				"exactHeight": map[string]any{"type": "integer", "minimum": 1, "maximum": modelconfig.MaxExactImageDimension, "description": "精确输出高度（像素），须符合所选模型限制"},
+				"resolution":  map[string]any{"type": "string", "description": "分辨率档位"},
+				"quality":     map[string]any{"type": "string", "description": "质量档位，例如 high"},
+				"model":       map[string]any{"type": "string", "description": "生成模型标识"},
+				"count":       map[string]any{"type": "integer", "minimum": 1, "description": "每个节点的生成张数"},
+				"background":  map[string]any{"type": "string", "description": "背景选项"},
 			},
 			"additionalProperties": false,
 		},
@@ -1704,7 +1707,7 @@ func canvasAgentInstructions(run *store.AssistantRun) string {
 - canvas_duplicate_selection：复制指定节点或实时选区，浏览器负责 ID、组关系、节点引用、任务归属和内部连线重映射。
 - canvas_replace_workflow_input：保留目标输入节点 ID 和连线，用现有资源或文字替换内容，并使所有受影响旧输出失效；runDownstream=true 时只重跑真实下游。canvas_run_downstream 可从任意选中起点定向重跑。运行中的工作流必须先停止。
 - canvas_create_image_operation：为每张来源图片创建独立的内置操作节点和准确连线。只搭工作流时 execute=false；用户明确要求立即处理时 execute=true。裁剪、切图、本地放大不应改造成付费生图 config，多角度和反推提示词仍走现有生成费用确认。
-- canvas_update_generation_settings：只更新已有生图配置。它会读取实时选区并把选中的输出图片映射回其生产配置；没有有效选区且只有一个生图工作流时更新该工作流。参数修改请求禁止改用 create_graph、add_node、connect_nodes、生成工具，也禁止自动启动生成。用户明确说“全部/所有”时才传 scope=all。
+- canvas_update_generation_settings：只更新已有生图配置。它会读取实时选区并把选中的输出图片映射回其生产配置；没有有效选区且只有一个生图工作流时更新该工作流。用户指定精确像素时必须传 sizeMode=exact 和 exactWidth/exactHeight，先通过模型目录确认支持与限制；不支持时说明原因，禁止自动换成比例、改尺寸或声称成功。参数修改请求禁止改用 create_graph、add_node、connect_nodes、生成工具，也禁止自动启动生成。用户明确说“全部/所有”时才传 scope=all。
 - canvas_undo_last_action / canvas_redo_last_action：按浏览器保存的完整 Agent 事务撤销或重做。工具拒绝时说明没有可用历史或后续编辑导致历史失效，不要自行删除、重建节点来模拟回退。
 - canvas_list_agent_history / canvas_create_checkpoint / canvas_restore_checkpoint / canvas_restore_agent_transaction：管理当前浏览器会话内最多 30 步 Agent 事务和 10 个命名检查点。恢复时必须使用列表返回的精确 id。
 - canvas_list_workflow_templates / canvas_inspect_workflow_template：搜索并检查系统工作流模板，只返回受限结构摘要。canvas_create_from_workflow_template 必须使用列表返回的精确 templateId 创建新画布，不会启动生成；返回 path 后，用户要求打开时再调用 site_navigate。

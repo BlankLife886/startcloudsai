@@ -60,6 +60,10 @@ export async function getWalletSummary({ signal } = {}) {
   const data = await apiGet('/me/wallet/summary', { signal, fallbackMessage: '账单汇总读取失败' })
   return {
     consumedCents: Number(data?.consumedCents || 0),
+    unresolvedConsumedCount: Number(data?.unresolvedConsumedCount || 0),
+    expiredPoints: data?.expiredPoints == null ? null : Number(data.expiredPoints),
+    upgradeReclaimedPoints: data?.upgradeReclaimedPoints == null ? null : Number(data.upgradeReclaimedPoints),
+    refundReclaimedPoints: data?.refundReclaimedPoints == null ? null : Number(data.refundReclaimedPoints),
     consumedCount: Number(data?.consumedCount || 0),
     refundCents: Number(data?.refundCents || 0),
     refundCount: Number(data?.refundCount || 0),

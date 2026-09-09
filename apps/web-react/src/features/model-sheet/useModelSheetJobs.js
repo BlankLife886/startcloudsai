@@ -64,8 +64,8 @@ export function useModelSheetJobs({ model, isAuthenticated }) {
 
   const markExecutionStarted = useCallback((job = {}) => {
     const currentStatus = String(job.status || "").toLowerCase();
-    if (currentStatus !== "running") return;
-    const startedAt = Date.parse(job.startedAt || "") || Date.now();
+    if (!ACTIVE_STATUSES.has(currentStatus)) return;
+    const startedAt = Date.parse(job.createdAt || job.startedAt || "") || Date.now();
     setExecutionStartedAt((current) => current ? Math.min(current, startedAt) : startedAt);
   }, []);
 
@@ -122,6 +122,7 @@ export function useModelSheetJobs({ model, isAuthenticated }) {
       const completed = await waitForServerAiJob(jobId, {
         intervalMs: 2500,
         maxPolls: 260,
+        maxWaitMs: null,
         signal,
         onUpdate: (currentJob) => {
           markExecutionStarted(currentJob);
@@ -157,7 +158,7 @@ export function useModelSheetJobs({ model, isAuthenticated }) {
         setError(caught?.message || "运行中的任务恢复失败");
         setBatchProgress((current) => current.map((item) =>
           item.jobId === jobId
-            ? { ...item, status: "failed", message: caught?.message || "恢复失败" }
+            ? { ...item, status: caught?.code === "task_canceled" ? "cancelled" : "failed", message: caught?.message || "恢复失败" }
             : item,
         ));
       }
@@ -302,6 +303,7 @@ export function useModelSheetJobs({ model, isAuthenticated }) {
       const completed = await waitForServerAiJob(jobId, {
         intervalMs: 2500,
         maxPolls: 260,
+        maxWaitMs: null,
         signal,
         onUpdate: markExecutionStarted,
         onStatus: (message) => mountedRef.current && setStatus(String(message || "")),
@@ -400,7 +402,7 @@ export function useModelSheetJobs({ model, isAuthenticated }) {
               effectiveSources = [result.urls[0]];
             }
           } catch (caught) {
-            if (caught?.name === "AbortError") {
+            if (caught?.name === "AbortError" || caught?.code === "task_canceled") {
               updateProgress(index, { status: "cancelled" });
               break;
             }
@@ -494,6 +496,11 @@ export function useModelSheetJobs({ model, isAuthenticated }) {
         setCancelling(false);
         setStatus("任务已提交上游，请确认是否停止接收结果");
       }
+      return;
+    }
+    const failure = settled.find(item => item.status === "rejected");
+    if (failure) {
+      if (mountedRef.current) { setCancelling(false); setStatus(failure.reason?.message || "部分任务停止失败，仍在跟踪服务器状态"); }
       return;
     }
     generationControllerRef.current?.abort();

@@ -103,6 +103,38 @@ func TestRuntimeConfigExposesOnlyPublicModelMapping(t *testing.T) {
 	}
 }
 
+func TestRuntimeConfigExposesModelIconAndMaintenanceStatus(t *testing.T) {
+	st := testdb.Setup(t)
+	cfg := modelconfig.Empty()
+	cfg.Providers = []modelconfig.Provider{{
+		ID: "provider", Name: "Provider", Adapter: modelconfig.AdapterOpenAI,
+		BaseURL: "https://api.example.com", APIKey: "secret", Enabled: true,
+	}}
+	cfg.Models = []modelconfig.Model{
+		{ID: "ready", Name: "可用模型", ProviderID: "provider", UpstreamModel: "ready", Kind: modelconfig.ModelKindImage, PriceCents: 3, Public: true, Enabled: true},
+		{ID: "maintenance", Name: "维护模型", IconURL: "/api/v1/files/model-icons/maintenance.webp", Status: modelconfig.ModelStatusMaintenance, ProviderID: "provider", UpstreamModel: "maintenance", Kind: modelconfig.ModelKindImage, PriceCents: 4, Public: true, Enabled: true},
+	}
+	if err := modelconfig.Save(context.Background(), st.Pool, cfg); err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/runtime-config", nil)
+	(&Server{St: st}).runtimeConfig(c)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if recorder.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("runtime config cache control = %q", recorder.Header().Get("Cache-Control"))
+	}
+	body := recorder.Body.String()
+	for _, expected := range []string{`"id":"maintenance"`, `"iconUrl":"/api/v1/files/model-icons/maintenance.webp"`, `"status":"maintenance"`, `"maintenance":true`} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("runtime config missing %s: %s", expected, body)
+		}
+	}
+}
+
 func TestRuntimeConfigExposesImageUpscalePlatformPriceTiers(t *testing.T) {
 	st := testdb.Setup(t)
 	highDiscount := int64(4)
@@ -226,7 +258,7 @@ func TestRuntimeConfigAndPricingExposeWorkspaceModelPrice(t *testing.T) {
 
 func TestRuntimeConfigExposesResolvedPageControls(t *testing.T) {
 	st := testdb.Setup(t)
-	raw := json.RawMessage(`{"studio":{"status":"maintenance","reason":"系统升级"}}`)
+	raw := json.RawMessage(`{"studio":{"status":"maintenance","reason":"系统升级"},"psd_decompose":{"status":"removed","reason":"工具升级"}}`)
 	if err := settings.Set(context.Background(), st.Pool, "page_controls", raw); err != nil {
 		t.Fatal(err)
 	}
@@ -253,6 +285,14 @@ func TestRuntimeConfigExposesResolvedPageControls(t *testing.T) {
 	}
 	if got := response.Data.PageControls["developer_api"]; got.Status != settings.PageStatusRemoved {
 		t.Fatalf("default developer API control = %#v", got)
+	}
+	if got := response.Data.PageControls["psd_decompose"]; got.Status != settings.PageStatusRemoved || got.Reason != "工具升级" {
+		t.Fatalf("stored PSD control = %#v", got)
+	}
+	for _, key := range []string{"holo_card", "skills", "wallet", "profile", "developer_api_docs"} {
+		if got := response.Data.PageControls[key]; got.Status != settings.PageStatusNormal {
+			t.Fatalf("default %s control = %#v", key, got)
+		}
 	}
 }
 

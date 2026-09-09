@@ -14,12 +14,20 @@ func InsertWallet(ctx context.Context, q Q, userID uuid.UUID) error {
 	return err
 }
 
+const walletSubscriptionCols = `,COALESCE((SELECT sum(available_points) FROM subscription_credit_lots l WHERE l.user_id=wallets.user_id AND NOT refund_hold AND NOT upgrade_hold AND (expires_at IS NULL OR expires_at>$2)),0),COALESCE((SELECT sum(frozen_points) FROM subscription_credit_lots l WHERE l.user_id=wallets.user_id),0),COALESCE((SELECT sum(available_points) FROM subscription_credit_lots l WHERE l.user_id=wallets.user_id AND refund_hold),0),COALESCE((SELECT sum(available_points) FROM subscription_credit_lots l WHERE l.user_id=wallets.user_id AND upgrade_hold),0)`
+
+const walletTopupCols = `,COALESCE((SELECT sum(available_points) FROM topup_credit_lots l WHERE l.user_id=wallets.user_id AND price_lock_eligible),0),COALESCE((SELECT sum(available_points) FROM topup_credit_lots l WHERE l.user_id=wallets.user_id AND NOT price_lock_eligible),0)`
+
 func GetWallet(ctx context.Context, q Q, userID uuid.UUID) (*Wallet, error) {
+	at := BillingTime(ctx)
+	if err := ExpireSubscriptionCredits(ctx, q, userID, at); err != nil {
+		return nil, err
+	}
 	var w Wallet
 	err := q.QueryRow(ctx,
-		`SELECT user_id, balance_cents, frozen_cents, trial_balance_cents, trial_frozen_cents, trial_feature_key, updated_at
-		 FROM wallets WHERE user_id = $1`, userID).
-		Scan(&w.UserID, &w.BalanceCents, &w.FrozenCents, &w.TrialBalanceCents, &w.TrialFrozenCents, &w.TrialFeatureKey, &w.UpdatedAt)
+		`SELECT user_id, balance_cents, frozen_cents, trial_balance_cents, trial_frozen_cents, trial_feature_key, updated_at`+walletSubscriptionCols+walletTopupCols+`
+		 FROM wallets WHERE user_id = $1`, userID, at).
+		Scan(&w.UserID, &w.BalanceCents, &w.FrozenCents, &w.TrialBalanceCents, &w.TrialFrozenCents, &w.TrialFeatureKey, &w.UpdatedAt, &w.SubscriptionBalanceCents, &w.SubscriptionFrozenCents, &w.SubscriptionHeldCents, &w.SubscriptionUpgradeHeldCents, &w.EligibleTopupPoints, &w.OrdinaryTopupPoints)
 	return nilOnNoRows(&w, err)
 }
 
@@ -29,15 +37,15 @@ func GetWalletsByUserIDs(ctx context.Context, q Q, ids []uuid.UUID) (map[uuid.UU
 		return out, nil
 	}
 	rows, err := q.Query(ctx,
-		`SELECT user_id, balance_cents, frozen_cents, trial_balance_cents, trial_frozen_cents, trial_feature_key, updated_at
-			 FROM wallets WHERE user_id = ANY($1)`, ids)
+		`SELECT user_id, balance_cents, frozen_cents, trial_balance_cents, trial_frozen_cents, trial_feature_key, updated_at`+walletSubscriptionCols+walletTopupCols+`
+			 FROM wallets WHERE user_id = ANY($1)`, ids, BillingTime(ctx))
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var w Wallet
-		if err := rows.Scan(&w.UserID, &w.BalanceCents, &w.FrozenCents, &w.TrialBalanceCents, &w.TrialFrozenCents, &w.TrialFeatureKey, &w.UpdatedAt); err != nil {
+		if err := rows.Scan(&w.UserID, &w.BalanceCents, &w.FrozenCents, &w.TrialBalanceCents, &w.TrialFrozenCents, &w.TrialFeatureKey, &w.UpdatedAt, &w.SubscriptionBalanceCents, &w.SubscriptionFrozenCents, &w.SubscriptionHeldCents, &w.SubscriptionUpgradeHeldCents, &w.EligibleTopupPoints, &w.OrdinaryTopupPoints); err != nil {
 			return nil, err
 		}
 		out[w.UserID] = &w
@@ -52,17 +60,17 @@ func SumWalletBalance(ctx context.Context, q Q) (int64, error) {
 
 func SumWalletBalances(ctx context.Context, q Q) (remaining, frozen int64, err error) {
 	err = q.QueryRow(ctx, `
-		SELECT COALESCE(SUM(balance_cents + trial_balance_cents), 0),
-		       COALESCE(SUM(frozen_cents + trial_frozen_cents), 0)
-		FROM wallets`).Scan(&remaining, &frozen)
+		SELECT COALESCE(SUM(balance_cents + trial_balance_cents), 0)+(SELECT COALESCE(sum(available_points),0) FROM subscription_credit_lots WHERE NOT refund_hold AND NOT upgrade_hold AND (expires_at IS NULL OR expires_at>$1)),
+		       COALESCE(SUM(frozen_cents + trial_frozen_cents), 0)+(SELECT COALESCE(sum(available_points),0) FROM subscription_credit_lots WHERE refund_hold OR upgrade_hold)
+		FROM wallets`, BillingTime(ctx)).Scan(&remaining, &frozen)
 	return remaining, frozen, err
 }
 
-const ledgerCols = `id, user_id, kind, delta_cents, balance_after_cents, source_type, source_id, reason, credit_bucket, created_at`
+const ledgerCols = `id, user_id, kind, delta_cents, balance_after_cents, source_type, source_id, reason, credit_bucket, created_at, settled_points`
 
 func scanLedger(row pgx.Row) (*LedgerEntry, error) {
 	var e LedgerEntry
-	err := row.Scan(&e.ID, &e.UserID, &e.Kind, &e.DeltaCents, &e.BalanceAfterCents, &e.SourceType, &e.SourceID, &e.Reason, &e.CreditBucket, &e.CreatedAt)
+	err := row.Scan(&e.ID, &e.UserID, &e.Kind, &e.DeltaCents, &e.BalanceAfterCents, &e.SourceType, &e.SourceID, &e.Reason, &e.CreditBucket, &e.CreatedAt, &e.SettledPoints)
 	if err != nil {
 		return nil, err
 	}
@@ -76,11 +84,25 @@ func GetLedgerEntry(ctx context.Context, q Q, kind, sourceType, sourceID string)
 	return nilOnNoRows(e, err)
 }
 
-func InsertLedgerEntry(ctx context.Context, q Q, userID uuid.UUID, kind string, deltaCents, balanceAfterCents int64, sourceType string, sourceID, reason *string, creditBucket string) (*LedgerEntry, error) {
-	return scanLedger(q.QueryRow(ctx,
-		`INSERT INTO wallet_ledger (user_id, kind, delta_cents, balance_after_cents, source_type, source_id, reason, credit_bucket)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING `+ledgerCols,
-		userID, kind, deltaCents, balanceAfterCents, sourceType, sourceID, reason, creditBucket))
+func InsertLedgerEntry(ctx context.Context, q Q, userID uuid.UUID, kind string, deltaCents, balanceAfterCents int64, sourceType string, sourceID, reason *string, creditBucket string, settled ...int64) (*LedgerEntry, error) {
+	var points *int64
+	if len(settled) > 0 {
+		points = &settled[0]
+	}
+	entry, err := scanLedger(q.QueryRow(ctx,
+		`INSERT INTO wallet_ledger (user_id, kind, delta_cents, balance_after_cents, source_type, source_id, reason, credit_bucket,settled_points)
+		 VALUES ($1, $2, $3, $4+COALESCE((SELECT sum(available_points) FROM subscription_credit_lots WHERE user_id=$1 AND NOT refund_hold AND NOT upgrade_hold),0), $5, $6, $7, $8,$9) RETURNING `+ledgerCols,
+		userID, kind, deltaCents, balanceAfterCents, sourceType, sourceID, reason, creditBucket, points))
+	if err == nil && kind == "admin_adjust" && deltaCents < 0 {
+		source := entry.ID.String()
+		if _, err := ReserveTopupCredits(ctx, q, userID, -deltaCents, "admin_adjust", source, false); err != nil {
+			return nil, err
+		}
+		if _, err := FinishTopupCredits(ctx, q, userID, -deltaCents, "admin_adjust", source, "spend"); err != nil {
+			return nil, err
+		}
+	}
+	return entry, err
 }
 
 // #nosec G101 -- this constant contains SQL column names, not credentials.
@@ -320,14 +342,18 @@ type WalletSourceTotal struct {
 }
 
 type WalletLedgerStats struct {
-	ConsumedCents int64
-	ConsumedCount int64
-	RefundCents   int64
-	RefundCount   int64
-	IncomeCents   int64
-	IncomeCount   int64
-	EntryCount    int64
-	Income        []WalletSourceTotal
+	UnresolvedConsumedCount int64
+	ExpiredPoints           int64
+	UpgradeReclaimedPoints  int64
+	RefundReclaimedPoints   int64
+	ConsumedCents           int64
+	ConsumedCount           int64
+	RefundCents             int64
+	RefundCount             int64
+	IncomeCents             int64
+	IncomeCount             int64
+	EntryCount              int64
+	Income                  []WalletSourceTotal
 }
 
 type PlatformCreditTotals struct {
@@ -369,10 +395,12 @@ func queryWalletLedgerStats(ctx context.Context, q Q, userID *uuid.UUID) (*Walle
 		`SELECT
 			COUNT(*),
 			COUNT(*) FILTER (
-				WHERE kind = 'spend' OR (kind = 'admin_adjust' AND delta_cents < 0)
+				WHERE (kind = 'spend' AND source_type NOT IN ('subscription_refund_hold','subscription_upgrade_exchange','subscription_cycle_expiry')) OR (kind = 'admin_adjust' AND delta_cents < 0)
 			),
 			COALESCE(SUM(
 				CASE
+					WHEN source_type IN ('subscription_refund_hold','subscription_upgrade_exchange','subscription_cycle_expiry') THEN 0
+					WHEN kind='spend' AND settled_points IS NOT NULL THEN settled_points
 					WHEN kind = 'spend' AND ABS(delta_cents) > 0 THEN ABS(delta_cents)
 					WHEN kind = 'spend' THEN COALESCE(
 						NULLIF((regexp_match(COALESCE(reason, ''), '消耗冻结 ([0-9]+)'))[1], '')::bigint,
@@ -382,8 +410,8 @@ func queryWalletLedgerStats(ctx context.Context, q Q, userID *uuid.UUID) (*Walle
 					ELSE 0
 				END
 			), 0),
-			COUNT(*) FILTER (WHERE kind = 'release'),
-			COALESCE(SUM(delta_cents) FILTER (WHERE kind = 'release'), 0),
+			COUNT(*) FILTER (WHERE kind = 'release' AND source_type NOT IN ('subscription_refund_hold','subscription_upgrade_exchange')),
+			COALESCE(SUM(delta_cents) FILTER (WHERE kind = 'release' AND source_type NOT IN ('subscription_refund_hold','subscription_upgrade_exchange')), 0),
 			COUNT(*) FILTER (
 				WHERE kind = 'grant' OR kind = 'refund' OR (kind = 'admin_adjust' AND delta_cents > 0)
 			),
@@ -430,18 +458,22 @@ func queryWalletLedgerStats(ctx context.Context, q Q, userID *uuid.UUID) (*Walle
 	spendWhere, spendArgs := ledgerUserFilter("l", userID)
 	var joinedSpend int64
 	err = q.QueryRow(ctx,
-		`SELECT COALESCE(SUM(GREATEST(COALESCE(t.cost_cents, 0), COALESCE(a.cost_cents, 0))), 0)
+		`SELECT COALESCE(SUM(GREATEST(COALESCE(t.cost_cents, 0), COALESCE(a.cost_cents, 0))), 0),COUNT(*) FILTER(WHERE COALESCE(t.cost_cents,0)=0 AND COALESCE(a.cost_cents,0)=0)
 		 FROM wallet_ledger l
 		 LEFT JOIN tasks t ON l.source_type = 'task' AND t.id::text = l.source_id
 		 LEFT JOIN assistant_runs a ON l.source_type = 'assistant_run'
 		      AND a.id::text = split_part(COALESCE(l.source_id, ''), '/', 1)
-		 WHERE `+spendWhere+` AND l.kind = 'spend' AND l.delta_cents = 0
+		 WHERE `+spendWhere+` AND l.kind = 'spend' AND l.delta_cents = 0 AND l.settled_points IS NULL
+		   AND l.source_type NOT IN ('subscription_refund_hold','subscription_upgrade_exchange','subscription_cycle_expiry')
 		   AND COALESCE((regexp_match(COALESCE(l.reason, ''), '消耗冻结 ([0-9]+)'))[1], '') = ''`,
-		spendArgs...).Scan(&joinedSpend)
+		spendArgs...).Scan(&joinedSpend, &stats.UnresolvedConsumedCount)
 	if err != nil {
 		return nil, err
 	}
 	stats.ConsumedCents += joinedSpend
+	if err := q.QueryRow(ctx, `SELECT COALESCE(sum(expired_points),0),COALESCE(sum(upgrade_revoked_points),0),COALESCE(sum(revoked_points-upgrade_revoked_points-expired_points),0) FROM subscription_credit_lots WHERE `+where, args...).Scan(&stats.ExpiredPoints, &stats.UpgradeReclaimedPoints, &stats.RefundReclaimedPoints); err != nil {
+		return nil, err
+	}
 	return stats, nil
 }
 

@@ -5,8 +5,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"math"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,11 +22,15 @@ import (
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantbilling"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantstream"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistanttools"
+	"github.com/BlankLife886/startcloudsai/server/internal/contractpricing"
+	"github.com/BlankLife886/startcloudsai/server/internal/executionconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/media"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
+	"github.com/BlankLife886/startcloudsai/server/internal/taskflow"
 	"github.com/BlankLife886/startcloudsai/server/internal/taskstream"
+	"github.com/BlankLife886/startcloudsai/server/internal/trialfeature"
 )
 
 const (
@@ -75,6 +83,9 @@ type assistantRunIn struct {
 	Resolution               string                      `json:"resolution"`
 	Count                    int                         `json:"count"`
 	RequestSize              string                      `json:"requestSize"`
+	SizeMode                 string                      `json:"sizeMode"`
+	ExactWidth               int                         `json:"exactWidth"`
+	ExactHeight              int                         `json:"exactHeight"`
 	Width                    int                         `json:"width"`
 	Height                   int                         `json:"height"`
 	Quality                  string                      `json:"quality"`
@@ -96,6 +107,15 @@ type assistantRunImagePlanItem struct {
 	Title             string   `json:"title"`
 	Prompt            string   `json:"prompt"`
 	ReferenceImageIDs []string `json:"referenceImageIds"`
+	Ratio             string   `json:"ratio"`
+	Resolution        string   `json:"resolution"`
+	Quality           string   `json:"quality"`
+	RequestSize       string   `json:"requestSize"`
+	SizeMode          string   `json:"sizeMode"`
+	ExactWidth        int      `json:"exactWidth"`
+	ExactHeight       int      `json:"exactHeight"`
+	Width             int      `json:"width"`
+	Height            int      `json:"height"`
 }
 
 func applyAssistantReasoningPriceSnapshot(
@@ -144,13 +164,23 @@ func (s *Server) assistantConversations(c *gin.Context) {
 		return
 	}
 	out := make([]gin.H, 0, len(items))
+	messageLimit := assistantMessageLimit
+	if requested, parseErr := strconv.Atoi(c.Query("messageLimit")); parseErr == nil && requested > 0 {
+		messageLimit = min(assistantMessageLimit, requested)
+	}
 	for _, item := range items {
-		messages, err := store.ListAssistantMessages(c.Request.Context(), s.St.Pool, item.ID, assistantMessageLimit)
+		messages, err := store.ListAssistantMessages(c.Request.Context(), s.St.Pool, item.ID, messageLimit+1)
 		if err != nil {
 			fail(c, err)
 			return
 		}
-		out = append(out, assistantConversationDict(item, messages))
+		hasMore := len(messages) > messageLimit
+		if hasMore {
+			messages = messages[len(messages)-messageLimit:]
+		}
+		serialized := assistantConversationDict(item, messages)
+		serialized["hasMoreMessages"] = hasMore
+		out = append(out, serialized)
 	}
 	ok(c, gin.H{"conversations": out})
 }
@@ -175,7 +205,22 @@ func (s *Server) assistantConversation(c *gin.Context) {
 		fail(c, apperr.E("not_found", "对话不存在", 404))
 		return
 	}
-	messages, err := store.ListAssistantMessages(c.Request.Context(), s.St.Pool, item.ID, assistantMessageLimit)
+	messageLimit := assistantMessageLimit
+	if requested, parseErr := strconv.Atoi(c.Query("messageLimit")); parseErr == nil && requested > 0 {
+		messageLimit = min(assistantMessageLimit, requested)
+	}
+	var messages []*store.AssistantMessage
+	beforeText := strings.TrimSpace(c.Query("beforeMessageId"))
+	if beforeText != "" {
+		beforeID, parseErr := uuid.Parse(beforeText)
+		if parseErr != nil {
+			fail(c, apperr.E("validation_error", "beforeMessageId 无效", 422))
+			return
+		}
+		messages, err = store.ListAssistantMessagesBefore(c.Request.Context(), s.St.Pool, item.ID, beforeID, messageLimit+1)
+	} else {
+		messages, err = store.ListAssistantMessages(c.Request.Context(), s.St.Pool, item.ID, messageLimit+1)
+	}
 	if err != nil {
 		fail(c, err)
 		return
@@ -189,7 +234,13 @@ func (s *Server) assistantConversation(c *gin.Context) {
 			return
 		}
 	}
-	ok(c, assistantConversationDict(item, messages))
+	hasMore := len(messages) > messageLimit
+	if hasMore {
+		messages = messages[len(messages)-messageLimit:]
+	}
+	payload := assistantConversationDict(item, messages)
+	payload["hasMoreMessages"] = hasMore
+	ok(c, payload)
 }
 
 func (s *Server) createAssistantConversation(c *gin.Context) {
@@ -257,7 +308,7 @@ func (s *Server) deleteAssistantConversation(c *gin.Context) {
 			if !cancelActive {
 				return apperr.E("assistant_conversation_busy", "该对话仍有任务正在运行，请先停止任务", 409)
 			}
-			_, canceled, err := assistantbilling.CancelUserTx(c.Request.Context(), tx, user.ID, run.ID)
+			_, canceled, err := assistantbilling.CancelUserTxConfirmed(c.Request.Context(), tx, user.ID, run.ID, false)
 			if err != nil {
 				return err
 			}
@@ -863,6 +914,14 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 	}
 	allowModelFallback := body.Mode == "agent" || strings.TrimSpace(body.SourceUserMessageID) != "" ||
 		strings.TrimSpace(body.ProposalSourceMessageID) != ""
+	if strings.EqualFold(strings.TrimSpace(body.SizeMode), "exact") {
+		allowModelFallback = false
+	}
+	for _, item := range body.ImagePlanItems {
+		if strings.EqualFold(strings.TrimSpace(item.SizeMode), "exact") {
+			allowModelFallback = false
+		}
+	}
 	selectedModel, modelConfigured := selectAssistantServiceModel(
 		modelCfg, workspace, requestedKind, body.Model, allowModelFallback,
 	)
@@ -955,12 +1014,28 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		}
 	}
 	if imageSelection != nil {
+		if strings.EqualFold(strings.TrimSpace(body.SizeMode), "exact") {
+			if body.Mode != "image" {
+				fail(c, apperr.E("validation_error", "精确尺寸仅支持直接生图模式", 422))
+				return
+			}
+			if err := modelconfig.ValidateExactImageParams(imageSelection.Model, imageSelection.Provider.Adapter, map[string]any{
+				"sizeMode": body.SizeMode, "exactWidth": body.ExactWidth, "exactHeight": body.ExactHeight,
+			}); err != nil {
+				fail(c, apperr.E("validation_error", err.Error(), 422))
+				return
+			}
+		}
 		requestedAutoRatio, err = normalizeAssistantConfiguredImageParameters(&body, imageSelection.Model)
 		if err != nil {
 			fail(c, err)
 			return
 		}
 	} else {
+		if strings.EqualFold(strings.TrimSpace(body.SizeMode), "exact") {
+			fail(c, apperr.E("validation_error", "精确尺寸需要选择支持该能力的生图模型", 422))
+			return
+		}
 		if body.RequestSize == "" {
 			body.RequestSize = "auto"
 		}
@@ -1003,9 +1078,23 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	imagePlanItems, err := sanitizeAssistantImagePlanItems(body.ImagePlanItems, references, body.Count)
+	var imagePlanModel *modelconfig.Model
+	if imageSelection != nil {
+		imagePlanModel = &imageSelection.Model
+	}
+	for index := range body.ImagePlanItems {
+		item := &body.ImagePlanItems[index]
+		if item.SizeMode == "" && body.SizeMode == "exact" {
+			item.SizeMode, item.ExactWidth, item.ExactHeight = body.SizeMode, body.ExactWidth, body.ExactHeight
+		}
+	}
+	imagePlanItems, err := sanitizeAssistantImagePlanItems(body.ImagePlanItems, references, body.Count, imagePlanModel, body.Resolution)
 	if err != nil {
 		fail(c, err)
+		return
+	}
+	if err := modelconfig.ValidateExactImageSelection(imageSelection, map[string]any{"imagePlanItems": imagePlanItems}); err != nil {
+		fail(c, apperr.E("validation_error", err.Error(), 422))
 		return
 	}
 	if body.Mode == "image" {
@@ -1074,6 +1163,9 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 	}
 	if body.RequestSize != "" {
 		params["requestSize"] = body.RequestSize
+	}
+	if body.SizeMode == "exact" {
+		params["sizeMode"], params["exactWidth"], params["exactHeight"] = body.SizeMode, body.ExactWidth, body.ExactHeight
 	}
 	if body.Width > 0 {
 		params["width"] = body.Width
@@ -1268,6 +1360,40 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 				return nil
 			}
 		}
+		pricingModel := chatSelection
+		pricingUnit := chatCostCents
+		pricingCount := int64(1)
+		pricingScope := modelconfig.ReasoningPriceScopeAssistant
+		if canvasAgent {
+			pricingScope = modelconfig.ReasoningPriceScopeCanvasAgent
+		}
+		if body.Mode == "image" {
+			pricingModel = imageSelection
+			pricingCount = int64(max(body.Count, 1))
+			pricingUnit = imageCostCents / pricingCount
+			pricingScope = ""
+		}
+		var billingDecision *store.BillingDecision
+		if pricingModel != nil {
+			feature, _ := trialfeature.ForAssistantParams(params)
+			billingDecision, err = contractpricing.Resolve(c.Request.Context(), tx, contractpricing.Request{UserID: user.ID, Feature: feature.Key, Workspace: workspace, ModelID: pricingModel.Model.ID, Channel: "web", PublicUnitPoints: pricingUnit, Count: pricingCount, ReasoningScope: pricingScope, ReasoningEffort: body.ReasoningEffort})
+			if err != nil {
+				return err
+			}
+			params["_billing"] = billingDecision
+			params["_modelConfigId"] = pricingModel.Model.ID
+			if body.Mode == "image" {
+				imageCostCents = billingDecision.UnitPoints * pricingCount
+				params["_billingUnitPriceCents"] = billingDecision.UnitPoints
+				params["_unitPriceCents"] = billingDecision.UnitPoints
+			} else {
+				chatCostCents = billingDecision.UnitPoints
+			}
+			reservedCents = assistantRunReservedCost(body.Mode, chatCostCents, imageCostCents)
+			params["_chatCostCents"] = chatCostCents
+			params["_imageCostCents"] = imageCostCents
+			params["_reservedCostCents"] = reservedCents
+		}
 		objectReferenceKeys := append(append([]string(nil), taskOutputReferenceKeys...), assistantOutputKeys...)
 		if len(objectReferenceKeys) > 0 {
 			if err := store.LockObjectReferenceKeys(c.Request.Context(), tx, objectReferenceKeys); err != nil {
@@ -1300,7 +1426,15 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		if err != nil {
 			return err
 		}
-		if err := validateAssistantRunCapacity(active, conversationID, body.Queue); err != nil {
+		accountConcurrency, err := store.GetUserConcurrency(c.Request.Context(), tx, user.ID)
+		if err != nil {
+			return err
+		}
+		poolLimit, poolRunning := accountConcurrency.ChatLimit, accountConcurrency.ChatRunning
+		if body.Mode == "image" {
+			poolLimit, poolRunning = accountConcurrency.ImageLimit, accountConcurrency.ImageRunning
+		}
+		if err := validateAssistantRunCapacity(active, conversationID, body.Queue, poolLimit, int(poolRunning)); err != nil {
 			return err
 		}
 		globalActive, err := store.CountActiveAssistantRunsGlobal(c.Request.Context(), tx)
@@ -1311,6 +1445,13 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 			return apperr.E("assistant_system_capacity", "当前助手任务较多，请稍后再试；你的输入不会丢失", 429)
 		}
 		if body.SourceUserMessageID != "" {
+			// Editing history deletes later messages and their runs. Queueing must
+			// not bypass the settlement required before those runs can be removed.
+			for _, activeRun := range active {
+				if activeRun.ConversationID == conversationID {
+					return apperr.E("assistant_conversation_busy", "该对话还有未结束的任务，请先等待完成或确认停止后再编辑", 409)
+				}
+			}
 			sourceID, parseErr := uuid.Parse(body.SourceUserMessageID)
 			if parseErr != nil {
 				return apperr.E("validation_error", "sourceUserMessageId 无效", 422)
@@ -1385,6 +1526,25 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		if insertErr != nil {
 			return insertErr
 		}
+		executionSnapshot, snapshotErr := executionconfig.CaptureAssistant(c.Request.Context(), tx, run, modelCfg, func(slot string, candidate modelconfig.Selection) bool {
+			return slot != "image" || (modelconfig.ValidateExactImageSelection(&candidate, params) == nil && taskflow.ValidateModelImageCapabilities(candidate.Model, params, len(references)) == nil)
+		})
+		if snapshotErr != nil {
+			return snapshotErr
+		}
+		executionSlot := "chat"
+		if store.AssistantRunIsImage(run) {
+			executionSlot = "image"
+		}
+		if modelConfigured && len(executionSnapshot.CandidatesFor(executionSlot)) == 0 {
+			return apperr.E("model_unavailable", "所选模型没有可用的执行线路，请刷新后重试", 503)
+		}
+		if err := store.ValidateExecutionBatchCapacity(c.Request.Context(), tx, user.ID, store.AssistantRunIsImage(run), store.AssistantRunWorkUnits(run), executionSnapshot.MaxRouteUnits(executionSlot)); err != nil {
+			if errors.Is(err, store.ErrExecutionBatchTooLarge) {
+				return apperr.E("execution_batch_too_large", err.Error(), 422)
+			}
+			return err
+		}
 		if assistantAgentTrace {
 			var projectID *uuid.UUID
 			var snapshotJSON json.RawMessage
@@ -1428,8 +1588,13 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 			store.UploadReferenceAssistantRun, run.ID, assistantUploadKeys); err != nil {
 			return err
 		}
-		if err := assistantbilling.Reserve(c.Request.Context(), tx, run); err != nil {
+		if err := assistantbilling.Reserve(store.WithBillingDecision(c.Request.Context(), billingDecision), tx, run); err != nil {
 			return err
+		}
+		if billingDecision != nil {
+			if _, err := tx.Exec(c.Request.Context(), `UPDATE assistant_runs SET params=$2 WHERE id=$1`, run.ID, params); err != nil {
+				return err
+			}
 		}
 		var title *string
 		if conversation.Title == "新对话" {
@@ -1485,7 +1650,7 @@ func (s *Server) enqueueAssistantRunFromOutbox(ctx context.Context, run *store.A
 	if err != nil || !ready {
 		return false
 	}
-	if err := s.Queue.EnqueueAssistantRun(ctx, run.ID.String()); err != nil {
+	if err := s.Queue.EnqueueAssistantRun(ctx, run.ID.String(), run.Mode); err != nil {
 		log.Printf("assistant run %s enqueue deferred to outbox: %v", run.ID, err)
 		if recordErr := store.RecordAssistantRunOutboxFailure(ctx, s.St.Pool, run.ID,
 			err.Error(), time.Now().UTC().Add(5*time.Second)); recordErr != nil {
@@ -1514,7 +1679,7 @@ func (s *Server) dispatchReadyAssistantRuns(ctx context.Context) {
 	}
 }
 
-func validateAssistantRunCapacity(active []*store.AssistantRun, conversationID uuid.UUID, allowQueue bool) error {
+func validateAssistantRunCapacity(active []*store.AssistantRun, conversationID uuid.UUID, allowQueue bool, capacity ...int) error {
 	running := 0
 	queued := 0
 	conversationActive := 0
@@ -1528,11 +1693,18 @@ func validateAssistantRunCapacity(active []*store.AssistantRun, conversationID u
 			conversationActive++
 		}
 	}
+	limit := assistantActiveRunLimit
+	if len(capacity) > 0 {
+		limit = max(capacity[0], 1)
+	}
+	if len(capacity) > 1 {
+		running = max(capacity[1], 0)
+	}
 	if !allowQueue && conversationActive > 0 {
 		return apperr.E("assistant_conversation_busy", "该对话已有任务正在运行", 409)
 	}
-	if !allowQueue && running >= assistantActiveRunLimit {
-		return apperr.E("assistant_run_limit", "最多可同时运行 4 个对话任务", 409)
+	if !allowQueue && running >= limit {
+		return apperr.E("assistant_run_limit", fmt.Sprintf("当前账号最多同时运行 %d 个任务，请排队或稍后重试", limit), 409)
 	}
 	if allowQueue && conversationActive >= assistantConversationQueueLimit {
 		return apperr.E("assistant_conversation_queue_full", "当前对话最多排队 10 个任务", 409)
@@ -2032,7 +2204,16 @@ func normalizeAssistantReferenceMode(value string) (string, error) {
 }
 
 func normalizeAssistantConfiguredImageParameters(body *assistantRunIn, model modelconfig.Model) (bool, error) {
-	if len(model.Resolutions) == 0 {
+	exact := strings.EqualFold(strings.TrimSpace(body.SizeMode), "exact")
+	if exact {
+		if err := modelconfig.ValidateExactImageSize(model, body.ExactWidth, body.ExactHeight); err != nil {
+			return false, apperr.E("validation_error", err.Error(), 422)
+		}
+		body.SizeMode = "exact"
+		body.RequestSize = fmt.Sprintf("%dx%d", body.ExactWidth, body.ExactHeight)
+		body.Width, body.Height = body.ExactWidth, body.ExactHeight
+		body.Resolution, body.Ratio = "", ""
+	} else if len(model.Resolutions) == 0 {
 		body.Resolution = ""
 		body.RequestSize = ""
 		body.Width = 0
@@ -2063,12 +2244,20 @@ func normalizeAssistantConfiguredImageParameters(body *assistantRunIn, model mod
 	} else {
 		return false, apperr.E("validation_error", "所选模型不支持该图片质量", 422)
 	}
+	if exact {
+		return false, nil
+	}
 
 	ratio := strings.ToLower(strings.TrimSpace(body.Ratio))
 	if ratio == "" || ratio == "自动" {
 		ratio = "auto"
 	}
 	allowedRatios := modelconfig.AspectRatiosForResolution(model, body.Resolution)
+	if ratio == "auto" {
+		if inferred := assistantPromptImageRatio(body.Prompt, allowedRatios); inferred != "" {
+			ratio = inferred
+		}
+	}
 	if len(allowedRatios) == 0 {
 		ratio = ""
 	} else if !containsString(allowedRatios, ratio) {
@@ -2080,6 +2269,42 @@ func normalizeAssistantConfiguredImageParameters(body *assistantRunIn, model mod
 	}
 	body.Ratio = ratio
 	return ratio == "auto", nil
+}
+
+var assistantPromptRatioPattern = regexp.MustCompile(`(?i)(?:(\d{1,3})\s*[:：/]\s*(\d{1,3})|(\d{3,5})\s*[x×*]\s*(\d{3,5}))`)
+
+func assistantPromptImageRatio(prompt string, allowed []string) string {
+	match := assistantPromptRatioPattern.FindStringSubmatch(prompt)
+	if len(match) != 5 {
+		return ""
+	}
+	widthText, heightText := match[1], match[2]
+	if widthText == "" {
+		widthText, heightText = match[3], match[4]
+	}
+	width, widthErr := strconv.Atoi(widthText)
+	height, heightErr := strconv.Atoi(heightText)
+	if widthErr != nil || heightErr != nil || width < 1 || height < 1 {
+		return ""
+	}
+	target := math.Log(float64(width) / float64(height))
+	best, bestDistance := "", math.MaxFloat64
+	for _, candidate := range allowed {
+		parts := strings.Split(candidate, ":")
+		if len(parts) != 2 {
+			continue
+		}
+		candidateWidth, firstErr := strconv.Atoi(parts[0])
+		candidateHeight, secondErr := strconv.Atoi(parts[1])
+		if firstErr != nil || secondErr != nil || candidateWidth < 1 || candidateHeight < 1 {
+			continue
+		}
+		distance := math.Abs(math.Log(float64(candidateWidth)/float64(candidateHeight)) - target)
+		if distance < bestDistance {
+			best, bestDistance = candidate, distance
+		}
+	}
+	return best
 }
 
 func assistantRunRequestFingerprint(body assistantRunIn) (string, error) {
@@ -2307,7 +2532,37 @@ func sanitizeAssistantReferences(items []map[string]any, userID uuid.UUID) ([]ma
 	return out, nil
 }
 
-func sanitizeAssistantImagePlanItems(items []assistantRunImagePlanItem, references []map[string]any, expected int) ([]map[string]any, error) {
+func assistantPlanItemRequestSize(ratio, resolution, explicit string) string {
+	if explicit = strings.ToLower(strings.TrimSpace(explicit)); explicit != "" {
+		return explicit
+	}
+	if strings.TrimSpace(ratio) == "" && strings.TrimSpace(resolution) == "" {
+		return ""
+	}
+	if ratio == "" || ratio == "auto" {
+		return "auto"
+	}
+	longEdges := map[string]int{"1K": 1024, "2K": 2048, "4K": 4096}
+	longEdge := longEdges[strings.ToUpper(strings.TrimSpace(resolution))]
+	parts := strings.Split(ratio, ":")
+	if longEdge == 0 || len(parts) != 2 {
+		return "auto"
+	}
+	ratioWidth, widthErr := strconv.Atoi(parts[0])
+	ratioHeight, heightErr := strconv.Atoi(parts[1])
+	if widthErr != nil || heightErr != nil || ratioWidth < 1 || ratioHeight < 1 {
+		return "auto"
+	}
+	width, height := longEdge, longEdge
+	if ratioWidth >= ratioHeight {
+		height = max(256, int(math.Round(float64(longEdge*ratioHeight)/float64(ratioWidth))))
+	} else {
+		width = max(256, int(math.Round(float64(longEdge*ratioWidth)/float64(ratioHeight))))
+	}
+	return fmt.Sprintf("%dx%d", width, height)
+}
+
+func sanitizeAssistantImagePlanItems(items []assistantRunImagePlanItem, references []map[string]any, expected int, model *modelconfig.Model, defaultResolution string) ([]map[string]any, error) {
 	if len(items) == 0 {
 		return nil, nil
 	}
@@ -2355,8 +2610,49 @@ func sanitizeAssistantImagePlanItems(items []assistantRunImagePlanItem, referenc
 		if id == "" {
 			id = fmt.Sprintf("item-%d", index+1)
 		}
+		exact := strings.EqualFold(strings.TrimSpace(item.SizeMode), "exact")
+		if exact {
+			if model == nil {
+				return nil, apperr.E("validation_error", "精确尺寸方案需要选择支持该能力的生图模型", 422)
+			}
+			if err := modelconfig.ValidateExactImageSize(*model, item.ExactWidth, item.ExactHeight); err != nil {
+				return nil, apperr.E("validation_error", fmt.Sprintf("第 %d 张图片：%s", index+1, err.Error()), 422)
+			}
+			item.SizeMode = "exact"
+			item.Resolution, item.Ratio = "", ""
+			item.RequestSize = fmt.Sprintf("%dx%d", item.ExactWidth, item.ExactHeight)
+			item.Width, item.Height = item.ExactWidth, item.ExactHeight
+		}
+		resolution := strings.ToUpper(strings.TrimSpace(item.Resolution))
+		if model != nil && resolution != "" && !containsString(model.Resolutions, resolution) {
+			return nil, apperr.E("validation_error", fmt.Sprintf("第 %d 张图片不支持 %s 清晰度", index+1, resolution), 422)
+		}
+		ratio := strings.ToLower(strings.TrimSpace(item.Ratio))
+		if ratio == "自动" {
+			ratio = "auto"
+		}
+		if model != nil && ratio != "" {
+			allowedRatios := modelconfig.AspectRatiosForResolution(*model, firstNonEmpty(resolution, defaultResolution))
+			if !containsString(allowedRatios, ratio) {
+				return nil, apperr.E("validation_error", fmt.Sprintf("第 %d 张图片不支持 %s 比例", index+1, ratio), 422)
+			}
+		}
+		quality := strings.ToLower(strings.TrimSpace(item.Quality))
+		if model != nil && quality != "" && !containsString(model.Qualities, quality) {
+			return nil, apperr.E("validation_error", fmt.Sprintf("第 %d 张图片不支持 %s 质量", index+1, quality), 422)
+		}
+		requestSize := item.RequestSize
+		if !exact {
+			requestSize = assistantPlanItemRequestSize(ratio, firstNonEmpty(resolution, defaultResolution), item.RequestSize)
+			if err := validateAssistantImageSize(requestSize); err != nil {
+				return nil, apperr.E("validation_error", fmt.Sprintf("第 %d 张图片尺寸无效", index+1), 422)
+			}
+		}
 		out = append(out, map[string]any{
 			"id": id, "title": title, "prompt": promptText, "referenceImageIds": referenceIDs,
+			"ratio": ratio, "resolution": resolution, "quality": quality, "requestSize": requestSize,
+			"width": item.Width, "height": item.Height,
+			"sizeMode": item.SizeMode, "exactWidth": item.ExactWidth, "exactHeight": item.ExactHeight,
 		})
 	}
 	return out, nil

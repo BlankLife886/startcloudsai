@@ -11,7 +11,7 @@ import { useTranslation } from "react-i18next";
 import { requestEdit, requestGeneration, requestImageQuestion } from "@/services/api/image";
 import { requestAudioGeneration, storeGeneratedAudio } from "@/services/api/audio";
 import { requestVideoGeneration, storeGeneratedVideo } from "@/services/api/video";
-import { applyCanvasImageModelSettings, canvasImageModelCapabilities } from "@/lib/canvas/canvas-image-model";
+import { applyCanvasImageModelSettings, canvasExactSizeSettings, canvasExactSizeSettingsForNode, canvasImageModelCapabilities, canvasImageSizeParams } from "@/lib/canvas/canvas-image-model";
 import { defaultConfig, modelOptionMeta, resolveModelForCapability, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { adoptGeneratedImage, uploadImage } from "@/services/image-storage";
 import { uploadMediaFile } from "@/services/file-storage";
@@ -108,7 +108,9 @@ import {
     advanceCanvasWorkflowCheckpoint,
     beginCanvasWorkflowRetry,
     canvasWorkflowCheckpointForStart,
+    canvasWorkflowNodeOutputFingerprint,
     compileCanvasWorkflow,
+    completeCanvasWorkflowNode,
     createCanvasWorkflowCheckpoint,
     failCanvasWorkflowCheckpoint,
     findCanvasWorkflowCancellationClosure,
@@ -123,6 +125,7 @@ import {
     settleCanvasWorkflowTerminal,
     validateCanvasWorkflowNodeOutputs,
     validateCanvasWorkflowNodeReadiness,
+    validateCanvasWorkflowCompletedOutputs,
     waitForCanvasWorkflowStop,
     workflowPlanMatchesCheckpoint,
     type CanvasWorkflowCheckpoint,
@@ -194,8 +197,11 @@ type CanvasGenerationRequest = {
     controller: AbortController;
 };
 
-function cancelPersistedCanvasTask(taskId: string, kind: "image" | "assistant", options?: { keepalive?: boolean; acknowledgeUpstream?: boolean }) {
-    return kind === "assistant" ? cancelCanvasAssistantRun(taskId, options) : cancelCanvasTask(taskId, options);
+async function cancelPersistedCanvasTask(taskId: string, kind: "image" | "assistant", options?: { keepalive?: boolean; acknowledgeUpstream?: boolean }) {
+    if (kind !== "assistant") return cancelCanvasTask(taskId, options);
+    const result = await cancelCanvasAssistantRun(taskId, options);
+    if (!result.canceled && result.run?.status !== "canceled") throw Object.assign(new Error("任务已结束，请等待结果同步"), { code: "task_already_finished" });
+    return result;
 }
 
 type CanvasWorkflowRunState = {
@@ -209,6 +215,7 @@ type CanvasWorkflowRunState = {
     running?: number;
     queued?: number;
     canceling?: boolean;
+    attemptId?: number;
 };
 
 type CanvasWorkflowRunRequest = {
@@ -469,7 +476,15 @@ function InfiniteCanvasPage() {
     const [isNodeResizing, setIsNodeResizing] = useState(false);
     const [dropTargetGroupId, setDropTargetGroupId] = useState<string | null>(null);
     const [costConfirm, setCostConfirm] = useState<CanvasCostPayload | null>(null);
-    const [workflowRun, setWorkflowRun] = useState<CanvasWorkflowRunState>({ status: "idle", completed: 0, total: 0 });
+    const [workflowRun, setWorkflowRunState] = useState<CanvasWorkflowRunState>({ status: "idle", completed: 0, total: 0 });
+    const workflowAttemptRef = useRef(0);
+    const workflowRunStateRef = useRef(workflowRun);
+    const setWorkflowRun = useCallback((update: CanvasWorkflowRunState | ((current: CanvasWorkflowRunState) => CanvasWorkflowRunState)) => {
+        const next = typeof update === "function" ? update(workflowRunStateRef.current) : update;
+        const state = { ...next, attemptId: workflowAttemptRef.current };
+        workflowRunStateRef.current = state;
+        setWorkflowRunState(state);
+    }, []);
     const costResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
     const auth = useAuth() as { user: { requireCostConfirm?: boolean } | null; setUser: (user: unknown) => void };
 
@@ -488,8 +503,18 @@ function InfiniteCanvasPage() {
     );
 
     const requestCostConfirm = useCallback(
-        (input: Parameters<typeof estimateCanvasGenerationCost>[0]) => requestCostEstimateConfirm(estimateCanvasGenerationCost(input)),
-        [requestCostEstimateConfirm],
+        (input: Parameters<typeof estimateCanvasGenerationCost>[0]) => {
+            if (input.kind === "image" && input.config.sizeMode === "exact") {
+                try {
+                    canvasImageSizeParams(modelOptionMeta(input.config, input.config.model), input.config);
+                } catch (error) {
+                    message.warning(error instanceof Error ? error.message : "精确尺寸配置无效");
+                    return Promise.resolve(false);
+                }
+            }
+            return requestCostEstimateConfirm(estimateCanvasGenerationCost(input));
+        },
+        [message, requestCostEstimateConfirm],
     );
 
     const finishCostConfirm = useCallback((confirmed: boolean) => {
@@ -533,8 +558,6 @@ function InfiniteCanvasPage() {
     const pendingConnectionCreateRef = useRef(pendingConnectionCreate);
     const generationRequestsRef = useRef(new Map<string, CanvasGenerationRequest>());
     const workflowRunRef = useRef<{ cancelQueued: boolean; lockLost?: boolean; executing?: boolean; stopped?: boolean; currentNodeId?: string; canceledNodeIds: Set<string> }>({ cancelQueued: false, canceledNodeIds: new Set() });
-    const workflowRunStateRef = useRef(workflowRun);
-    workflowRunStateRef.current = workflowRun;
     const workflowExecutionTokenRef = useRef(0);
     // Task ids submitted on behalf of the active workflow run; used by "stop"
     // to cancel still-queued server-side tasks so they do not keep billing.
@@ -672,11 +695,11 @@ function InfiniteCanvasPage() {
             });
             if (shouldCancelSubmittedTask) {
                 try {
-                    await cancelPersistedCanvasTask(taskId, taskKind, { acknowledgeUpstream: true });
+                    await cancelPersistedCanvasTask(taskId, taskKind, { acknowledgeUpstream: false });
+                    return;
                 } catch (error) {
                     message.error(error instanceof Error ? error.message : t("canvas.projectPage.stopFailed"));
                 }
-                return;
             }
             if (workflowControlled) {
                 workflowSubmittedNodeIdsRef.current.add(nodeId);
@@ -1215,7 +1238,7 @@ function InfiniteCanvasPage() {
                 message.warning(t("canvas.projectPage.mediaUnavailable"));
                 return;
             }
-            const metadata = type === CanvasNodeType.Config ? { model: effectiveConfig.imageModel || effectiveConfig.model, size: effectiveConfig.size, resolution: effectiveConfig.resolution, count: getGenerationCount(effectiveConfig.canvasImageCount || effectiveConfig.count) } : undefined;
+            const metadata = type === CanvasNodeType.Config ? { model: effectiveConfig.imageModel || effectiveConfig.model, size: effectiveConfig.size, ...canvasExactSizeSettings(effectiveConfig), resolution: effectiveConfig.resolution, count: getGenerationCount(effectiveConfig.canvasImageCount || effectiveConfig.count) } : undefined;
             const newNode = createCanvasNode(type, pending.position, metadata);
             const connection = normalizeConnection(pending.connection.nodeId, newNode.id, [...nodesRef.current, newNode], pending.connection.handleType);
             if (!connection) {
@@ -1451,6 +1474,7 @@ function InfiniteCanvasPage() {
                     ? {
                           model: effectiveConfig.imageModel || effectiveConfig.model,
                           size: effectiveConfig.size,
+                          ...canvasExactSizeSettings(effectiveConfig),
                           resolution: effectiveConfig.resolution,
                           count: getGenerationCount(effectiveConfig.canvasImageCount || effectiveConfig.count),
                       }
@@ -2497,6 +2521,8 @@ function InfiniteCanvasPage() {
                 generationType: node.metadata?.generationType,
                 model: node.metadata?.model,
                 size: node.metadata?.size,
+                ...canvasExactSizeSettings(node.metadata || {}),
+                resolution: node.metadata?.resolution,
                 quality: node.metadata?.quality,
                 background: node.metadata?.background,
                 references: node.metadata?.references,
@@ -2834,6 +2860,7 @@ function InfiniteCanvasPage() {
                         imageAngleParams: { ...params },
                         model: generationConfig.model,
                         size: generationConfig.size,
+                        ...canvasExactSizeSettings(generationConfig),
                         resolution: generationConfig.resolution,
                         quality: generationConfig.quality,
                         background: generationConfig.background,
@@ -3715,7 +3742,7 @@ function InfiniteCanvasPage() {
                 const textTargetIds = childIds.length ? childIds : [nodeId];
                 textTargetIds.forEach((targetNodeId) => startGenerationRequest(targetNodeId, nodeId, nodeId, controller));
                 const answers = await Promise.all(
-                    textTargetIds.map((targetNodeId) => {
+                    textTargetIds.map((targetNodeId, textIndex) => {
                         let localStreamed = "";
                         return requestImageQuestion(
                             generationConfig,
@@ -3725,7 +3752,7 @@ function InfiniteCanvasPage() {
                                 if (isConfigNode) return;
                                 setNodes((prev) => prev.map((node) => (node.id === targetNodeId ? { ...node, type: CanvasNodeType.Text, metadata: { ...node.metadata, content: text, status: NODE_STATUS_LOADING } } : node)));
                             },
-                            { signal: controller.signal, onCreated: (taskId) => persistCanvasTaskId(targetNodeId, taskId, undefined, "assistant", { workflowRunId }) },
+                            { signal: controller.signal, idempotencyKey: taskIdempotencyKey(textIndex), onBeforeCreate: guardWorkflowSubmit, onCreated: (taskId) => persistCanvasTaskId(targetNodeId, taskId, undefined, "assistant", { workflowRunId }) },
                         )
                             .then((answer) => ({ nodeId: targetNodeId, content: answer || localStreamed }))
                             .finally(() => finishGenerationRequest(targetNodeId, controller));
@@ -3819,7 +3846,7 @@ function InfiniteCanvasPage() {
 	const workflowDiagnosticsPayload = useCallback((checkpoint: CanvasWorkflowCheckpoint) => {
 		const metrics = checkpoint.nodeIds.map((nodeId) => {
 			const existing = workflowNodeMetricsRef.current.get(nodeId);
-			if (existing) return existing;
+			if (existing) return { ...existing, outputFingerprint: checkpoint.outputFingerprints?.[nodeId] };
 			return {
 				nodeId,
 				title: nodesRef.current.find((node) => node.id === nodeId)?.title || nodeId,
@@ -4013,7 +4040,8 @@ function InfiniteCanvasPage() {
             let lastError: unknown;
             for (let attempt = 0; attempt < 3; attempt += 1) {
                 try {
-					response = await acquireCanvasWorkflowRun(projectId, workflowOwnerId, source.nodeIds);
+					if (!source.inputSignature) throw new Error(t("canvas.workflow.graphChanged"));
+					response = await acquireCanvasWorkflowRun(projectId, workflowOwnerId, source.nodeIds, source.inputSignature);
                     break;
                 } catch (error) {
                     lastError = error;
@@ -4024,7 +4052,19 @@ function InfiniteCanvasPage() {
             }
             if (!response) {
                 releaseWorkflowBrowserLock();
+                if (lastError instanceof StarcloudsApiError && lastError.code === "workflow_run_inputs_changed") {
+                    const active = await getActiveCanvasWorkflowRun(projectId);
+                    if (active.run) {
+                        showLockedWorkflow({ ...source, inputSignature: active.run.inputSignature }, active.run);
+                        message.warning(lastError.message);
+                        return null;
+                    }
+                }
                 throw lastError;
+            }
+            if (!source.inputSignature || source.inputSignature !== response.run.inputSignature) {
+                releaseWorkflowBrowserLock();
+                throw new Error(t("canvas.workflow.graphChanged"));
             }
             const checkpoint = mergeWorkflowRunCheckpoint(source, response.run, { resetCurrentNode: options?.resetCurrentNode });
 			workflowNodeMetricsRef.current = new Map((response.run.nodeMetrics || []).map((metric) => [metric.nodeId, metric]));
@@ -4053,6 +4093,7 @@ function InfiniteCanvasPage() {
     const executeWorkflow = useCallback(
         async (sourceCheckpoint: CanvasWorkflowCheckpoint, resumed = false) => {
             if (workflowRunRef.current.executing) return;
+            workflowAttemptRef.current += 1;
             const runToken = ++workflowExecutionTokenRef.current;
             workflowRunRef.current.executing = true;
             workflowRunRef.current.stopped = false;
@@ -4066,10 +4107,12 @@ function InfiniteCanvasPage() {
             const retryingFailure = isCanvasWorkflowFailureRetry(checkpoint, nodesRef.current);
             const supersededRunId = retryingFailure ? checkpoint.runId : undefined;
             checkpoint = retryingFailure ? beginCanvasWorkflowRetry(checkpoint) : { ...checkpoint, status: "running", errorNodeId: undefined, errorMessage: undefined };
-            const compiled = compileCanvasWorkflow(nodesRef.current, connectionsRef.current, { configNodeIds: checkpoint.nodeIds });
+            const compiled = compileCanvasWorkflow(nodesRef.current, connectionsRef.current, { configNodeIds: checkpoint.nodeIds, resolveSettings: (node) => buildGenerationConfig(effectiveConfig, node, node.metadata?.generationMode || "image") });
             if (!compiled.ok || !workflowPlanMatchesCheckpoint(compiled.plan, checkpoint)) {
                 const errorMessage = t("canvas.workflow.graphChanged");
-                setWorkflowRun({ status: "error", completed: checkpoint.completedNodeIds.length, total: checkpoint.nodeIds.length, errorMessage, startedAt: checkpoint.startedAt });
+                const active = await getActiveCanvasWorkflowRun(projectId).catch(() => ({ run: null }));
+                if (active.run) showLockedWorkflow({ ...checkpoint, inputSignature: active.run.inputSignature }, active.run);
+                else setWorkflowRun({ status: "error", completed: checkpoint.completedNodeIds.length, total: checkpoint.nodeIds.length, errorMessage, startedAt: checkpoint.startedAt });
                 message.error(errorMessage);
                 return;
             }
@@ -4095,6 +4138,14 @@ function InfiniteCanvasPage() {
                 const errorMessage = error instanceof Error ? error.message : t("canvas.workflow.syncFailed");
                 setWorkflowRun({ status: "error", completed: checkpoint.completedNodeIds.length, total: checkpoint.nodeIds.length, errorMessage, startedAt: checkpoint.startedAt });
                 message.error(errorMessage);
+                return;
+            }
+
+            const completedOutputs = validateCanvasWorkflowCompletedOutputs(checkpoint, nodesRef.current, connectionsRef.current);
+            if (!completedOutputs.ok) {
+                releaseWorkflowBrowserLock();
+                showLockedWorkflow(checkpoint);
+                message.warning("已完成节点的产物已被修改或缺少产物版本，请停止旧运行后重新运行工作流。");
                 return;
             }
 
@@ -4234,6 +4285,9 @@ function InfiniteCanvasPage() {
                 }
                 const node = nodesRef.current.find((item) => item.id === nodeId);
 				if (!node) return { nodeId, ok: false as const, errorMessage: t("canvas.workflow.nodeMissing"), costCents: 0 };
+                const currentPlan = compileCanvasWorkflow(nodesRef.current, connectionsRef.current, { configNodeIds: checkpoint!.nodeIds, resolveSettings: (item) => buildGenerationConfig(effectiveConfig, item, item.metadata?.generationMode || "image") });
+                if (!currentPlan.ok || !workflowPlanMatchesCheckpoint(currentPlan.plan, checkpoint!)) return { nodeId, ok: false as const, errorMessage: t("canvas.workflow.graphChanged"), costCents: 0 };
+                if (!validateCanvasWorkflowCompletedOutputs(checkpoint!, nodesRef.current, connectionsRef.current).ok) return { nodeId, ok: false as const, errorMessage: "已完成节点的产物已变化，请重新运行工作流。", costCents: 0 };
                 const readiness = validateCanvasWorkflowNodeReadiness({ nodeId, nodes: nodesRef.current, connections: connectionsRef.current, dependencies: executionPlan.dependencies.get(nodeId) || new Set(), completedNodeIds: completedIds });
 				if (!readiness.ok) return { nodeId, ok: false as const, errorMessage: workflowReadinessErrorMessage(readiness.issue), costCents: 0 };
                 const mode = node.metadata?.generationMode || "image";
@@ -4253,7 +4307,10 @@ function InfiniteCanvasPage() {
 					if (!runActive()) return { nodeId, ok: false as const, errorMessage: t("canvas.generation.canceled"), costCents };
                     validation = validateCanvasWorkflowNodeOutputs({ nodeId, mode, expectedCount, nodes: nodesRef.current, connections: connectionsRef.current });
                 }
-				return validation.ok ? { nodeId, ok: true as const, costCents } : { nodeId, ok: false as const, errorMessage: workflowOutputErrorMessage(validation.issue), costCents };
+                if (!validation.ok) return { nodeId, ok: false as const, errorMessage: workflowOutputErrorMessage(validation.issue), costCents };
+                const outputFingerprint = canvasWorkflowNodeOutputFingerprint(nodeId, nodesRef.current, connectionsRef.current);
+                if (!outputFingerprint) return { nodeId, ok: false as const, errorMessage: "节点产物尚未完整保存，不能记录为已完成", costCents };
+                return { nodeId, ok: true as const, costCents, outputFingerprint };
             };
 
             // While the run executes, node-level progress goes to the run lease
@@ -4346,8 +4403,8 @@ function InfiniteCanvasPage() {
 							...(result.ok ? {} : { errorMessage: result.errorMessage }),
 						});
                         if (result.ok) {
+                            checkpoint = completeCanvasWorkflowNode(checkpoint, result.nodeId, nodesRef.current, connectionsRef.current, finishedAt, result.outputFingerprint);
                             completedIds.add(result.nodeId);
-                            checkpoint = advanceCanvasWorkflowCheckpoint(checkpoint, result.nodeId);
                         } else if (workflowRunRef.current.cancelQueued || workflowRunRef.current.stopped || workflowRunRef.current.canceledNodeIds.has(result.nodeId)) {
                             workflowRunRef.current.canceledNodeIds.add(result.nodeId);
                         } else {
@@ -4512,13 +4569,16 @@ function InfiniteCanvasPage() {
         const group = candidates[0];
         const executableNodeIds = group.nodes.filter((node) => isCanvasExecutableNode(node) && (!requestedNodeIds || requestedNodeIds.has(node.id))).map((node) => node.id);
         if (requestedNodeIds && executableNodeIds.length !== requestedNodeIds.size) throw new Error("预检节点包含不属于目标工作流的节点");
-        const compiled = compileCanvasWorkflow(nodesRef.current, connectionsRef.current, { configNodeIds: executableNodeIds });
+        const compiled = compileCanvasWorkflow(nodesRef.current, connectionsRef.current, { configNodeIds: executableNodeIds, resolveSettings: (node) => buildGenerationConfig(effectiveConfig, node, node.metadata?.generationMode || "image") });
         if (!compiled.ok) {
             throw new Error(compiled.reason === "cycle" ? "工作流存在循环依赖" : compiled.reason === "invalid_connection" ? "工作流包含无效的配置节点直连" : "工作流没有可执行节点");
         }
         const savedCheckpoint = canvasWorkflowCheckpointForStart(state.status, workflowCheckpointRef.current);
         const canResumeSaved = Boolean(savedCheckpoint?.nodeIds.length && workflowPlanMatchesCheckpoint(compiled.plan, savedCheckpoint));
         const recoveredCheckpoint = canResumeSaved && savedCheckpoint ? reconcileCanvasWorkflowFailureOutput(savedCheckpoint, nodesRef.current, connectionsRef.current) : null;
+        if (recoveredCheckpoint && !validateCanvasWorkflowCompletedOutputs(recoveredCheckpoint, nodesRef.current, connectionsRef.current).ok) {
+            throw new Error("已完成节点的产物已被修改或缺少产物版本，请停止旧运行后重新运行工作流。");
+        }
         const completedNodeIds = recoveredCheckpoint?.completedNodeIds || [];
         const preflight = preflightCanvasWorkflow({
             plan: compiled.plan,
@@ -4534,6 +4594,7 @@ function InfiniteCanvasPage() {
             if (preflight.reason === "unsupported_media") throw new Error(t("canvas.workflow.unsupportedMedia", { name: preflight.nodeTitle || preflight.nodeId }));
             if (preflight.reason === "empty_input") throw new Error(t("canvas.workflow.notReady", { name: preflight.nodeTitle || preflight.nodeId }));
             if (preflight.reason === "model_unavailable") throw new Error(t("canvas.workflow.modelUnavailable", { name: preflight.nodeTitle || preflight.nodeId }));
+            if (preflight.reason === "invalid_image_size") throw new Error(`${preflight.nodeTitle || preflight.nodeId}：${preflight.errorMessage}`);
             throw new Error(t("canvas.workflow.pricingUnavailable", { name: preflight.nodeTitle || preflight.nodeId }));
         }
         return {
@@ -4597,6 +4658,7 @@ function InfiniteCanvasPage() {
         }
         const compiled = compileCanvasWorkflow(nodesRef.current, connectionsRef.current, {
             configNodeIds: requestedGroup || requestedNodeIds ? scopedExecutableNodeIds : undefined,
+            resolveSettings: (node) => buildGenerationConfig(effectiveConfig, node, node.metadata?.generationMode || "image"),
         });
         if (!compiled.ok) {
             message.warning(t(compiled.reason === "cycle" ? "canvas.workflow.cycle" : compiled.reason === "invalid_connection" ? "canvas.workflow.invalidConnection" : "canvas.workflow.empty"));
@@ -4620,7 +4682,7 @@ function InfiniteCanvasPage() {
             ? retryingFailure
                 ? { ...recoveredCheckpoint, status: "failed" as const, updatedAt: new Date().toISOString() }
                 : { ...recoveredCheckpoint, status: "running" as const, errorNodeId: undefined, errorMessage: undefined, updatedAt: new Date().toISOString() }
-            : createCanvasWorkflowCheckpoint(compiled.plan.nodeIds);
+            : createCanvasWorkflowCheckpoint(compiled.plan);
         const remainingNodeIds = checkpoint.nodeIds.filter((nodeId) => !checkpoint.completedNodeIds.includes(nodeId));
         if (!remainingNodeIds.length) {
             await executeWorkflow(checkpoint, true);
@@ -4644,6 +4706,7 @@ function InfiniteCanvasPage() {
             else if (preflight.reason === "unsupported_media") message.warning(t("canvas.workflow.unsupportedMedia", { name: preflight.nodeTitle || t("canvas.node.untitled") }));
             else if (preflight.reason === "empty_input") message.warning(t("canvas.workflow.notReady", { name: preflight.nodeTitle || t("canvas.node.untitled") }));
             else if (preflight.reason === "readiness" && preflight.readinessIssue) message.warning(workflowReadinessErrorMessage(preflight.readinessIssue));
+            else if (preflight.reason === "invalid_image_size") message.warning(`${preflight.nodeTitle || preflight.nodeId}：${preflight.errorMessage}`);
             else if (preflight.reason === "model_unavailable") {
                 openConfigDialog(true);
                 message.warning(t("canvas.workflow.modelUnavailable", { name: preflight.nodeTitle || t("canvas.node.untitled") }));
@@ -4726,6 +4789,7 @@ function InfiniteCanvasPage() {
                 }
             }
             const tasks = [...new Map(pendingCanvasTasks(nodesRef.current).filter((task) => stoppedNodeIds.has(task.nodeId)).map((task) => [`${task.kind}:${task.taskId}`, task])).values()];
+            let allStopped = true;
             if (tasks.length) {
                 const results = await Promise.allSettled(tasks.map((task) => cancelPersistedCanvasTask(task.taskId, task.kind, { acknowledgeUpstream: true })));
                 const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
@@ -4733,7 +4797,23 @@ function InfiniteCanvasPage() {
                     throw failures[0]?.reason || new Error(t("canvas.projectPage.stopFailed"));
                 }
                 if (failures.length) {
+                    allStopped = false;
                     message.error(failures[0].reason instanceof Error ? failures[0].reason.message : t("canvas.projectPage.stopFailed"));
+                    const failedTaskKeys = new Set(tasks.filter((_, index) => results[index].status === "rejected").map(task => `${task.kind}:${task.taskId}`));
+                    const retained = new Set(pendingCanvasTasks(nodesRef.current).filter(task => failedTaskKeys.has(`${task.kind}:${task.taskId}`)).map(task => task.nodeId));
+                    let expand = true;
+                    while (expand) {
+                        expand = false;
+                        for (const node of nodesRef.current) {
+                            if (!retained.has(node.id) && !retained.has(node.metadata?.workflowProducerNodeId || "") && !node.metadata?.workflowOutputNodeIds?.some(id => retained.has(id))) continue;
+                            const size = retained.size;
+                            retained.add(node.id);
+                            if (node.metadata?.workflowProducerNodeId) retained.add(node.metadata.workflowProducerNodeId);
+                            node.metadata?.workflowOutputNodeIds?.forEach(id => retained.add(id));
+                            if (retained.size !== size) expand = true;
+                        }
+                    }
+                    retained.forEach(id => stoppedNodeIds.delete(id));
                 }
             }
             if (tasks.length) {
@@ -4745,14 +4825,13 @@ function InfiniteCanvasPage() {
                     if (submitted) request.controller.abort();
                 });
             }
-            finalizeCanceledGenerationNodes(stoppedNodeIds);
+            if (stoppedNodeIds.size) finalizeCanceledGenerationNodes(stoppedNodeIds);
             setRunningNodeIds((current) => {
                 const next = new Set(current);
                 stoppedNodeIds.forEach((id) => next.delete(id));
                 return next;
             });
-            setStopConfirm(null);
-            message.info(t("canvas.generation.canceled"));
+            if (allStopped) { setStopConfirm(null); message.info(t("canvas.generation.canceled")); }
         } catch (error) {
             message.error(error instanceof Error ? error.message : t("canvas.projectPage.stopFailed"));
         } finally {
@@ -4760,8 +4839,7 @@ function InfiniteCanvasPage() {
         }
     }, [finalizeCanceledGenerationNodes, message, stopConfirm?.nodeId, stopSubmitting, t]);
 
-    const stopWorkflow = useCallback(() => {
-        workflowExecutionTokenRef.current += 1;
+    const stopWorkflow = useCallback(async ({ acknowledgeUpstream = false } = {}) => {
         const checkpoint = workflowCheckpointRef.current;
         const runningOrQueued = nodesRef.current.filter((node) => node.metadata?.executionStatus === "queued" || node.metadata?.executionStatus === "running").map((node) => node.id);
         const activeWorkflowNodeIds = new Set([...(checkpoint?.nodeIds || []), ...runningOrQueued]);
@@ -4775,14 +4853,22 @@ function InfiniteCanvasPage() {
                 nodesRef.current.some((item) => activeWorkflowNodeIds.has(item.id) && item.metadata?.workflowOutputNodeIds?.includes(task.nodeId));
             if (belongsToWorkflow) submittedTasks.set(`${task.kind}:${task.taskId}`, task);
         });
+        workflowRunRef.current = { ...workflowRunRef.current, cancelQueued: true };
+        const cancellations = [...submittedTasks.values()].map((task) => cancelPersistedCanvasTask(task.taskId, task.kind, { acknowledgeUpstream }));
+        const results = await Promise.allSettled(cancellations);
+        const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+        if (failure) {
+            const code = (failure.reason as { code?: string })?.code;
+            if (code === "task_cancel_confirmation_required" || code === "assistant_cancel_confirmation_required") setStopConfirm({ kind: "workflow", queuedCount: runningOrQueued.length });
+            message.error(failure.reason instanceof Error ? failure.reason.message : t("canvas.projectPage.stopFailed"));
+            return;
+        }
+        workflowExecutionTokenRef.current += 1;
         workflowRunRef.current = {
-            cancelQueued: true,
-            stopped: true,
-            executing: false,
+            cancelQueued: true, stopped: true, executing: false,
             lockLost: workflowRunRef.current.lockLost,
             canceledNodeIds: new Set([...workflowRunRef.current.canceledNodeIds, ...runningOrQueued]),
         };
-        const cancellations = [...submittedTasks.values()].map((task) => cancelPersistedCanvasTask(task.taskId, task.kind, { acknowledgeUpstream: true }));
         generationRequestsRef.current.forEach((request) => {
             const submitted = [request.targetNodeId, request.originNodeId, request.runningNodeId]
                 .map((id) => nodesRef.current.find((node) => node.id === id))
@@ -4791,12 +4877,6 @@ function InfiniteCanvasPage() {
         });
         workflowRunTaskIdsRef.current.clear();
         workflowSubmittedNodeIdsRef.current.clear();
-        if (cancellations.length) {
-            void Promise.allSettled(cancellations).then((results) => {
-                const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
-                if (failure) message.error(failure.reason instanceof Error ? failure.reason.message : t("canvas.projectPage.stopFailed"));
-            });
-        }
         finalizeCanceledGenerationNodes();
         setRunningNodeIds(new Set());
         workflowPlanRef.current = null;
@@ -4826,7 +4906,7 @@ function InfiniteCanvasPage() {
         const nodeIds = [...new Set([...(checkpoint?.nodeIds || []), ...activeNodeIds])];
         const active = Boolean(checkpoint || nodeIds.length || state.status === "running" || state.status === "locked");
         if (!active) return { stopped: false, status: state.status || "idle", nodeIds: [] };
-        stopWorkflow();
+        void stopWorkflow();
         return { stopped: true, status: "canceling", nodeIds };
     };
 
@@ -4842,31 +4922,30 @@ function InfiniteCanvasPage() {
             setStopConfirm({ kind: "workflow", queuedCount });
             return;
         }
-        stopWorkflow();
+        void stopWorkflow();
     }, [collectUnsubmittedWorkflowNodeIds, message, stopUnsubmittedWorkflowWork, stopWorkflow, t]);
 
-    const stopAllCanvasTasks = useCallback(async (options?: { keepalive?: boolean }) => {
+    const stopAllCanvasTasks = useCallback(async (options?: { keepalive?: boolean; acknowledgeUpstream?: boolean }) => {
         const checkpoint = workflowCheckpointRef.current;
         const lockedRun = workflowRunStateRef.current.status === "locked" ? lockedWorkflowRunRef.current : null;
         const submittedTasks = new Map<string, PendingCanvasTask>();
         workflowRunTaskIdsRef.current.forEach((taskId) => submittedTasks.set(`image:${taskId}`, { nodeId: "", taskId, kind: "image" }));
         pendingCanvasTasks(nodesRef.current).forEach((task) => submittedTasks.set(`${task.kind}:${task.taskId}`, task));
 
-        workflowExecutionTokenRef.current += 1;
-        workflowRunRef.current = {
-            cancelQueued: true,
-            stopped: true,
-            executing: false,
-            lockLost: workflowRunRef.current.lockLost,
-            canceledNodeIds: new Set(nodesRef.current.filter((node) => node.metadata?.executionStatus === "queued" || node.metadata?.executionStatus === "running").map((node) => node.id)),
-        };
-        generationRequestsRef.current.forEach((request) => request.controller.abort());
+        workflowRunRef.current = { ...workflowRunRef.current, cancelQueued: true };
         const cancellations: Promise<unknown>[] = [
             stopHostedAgentRunForCanvas(projectId, options),
-            ...[...submittedTasks.values()].map((task) => cancelPersistedCanvasTask(task.taskId, task.kind, { ...options, acknowledgeUpstream: true })),
+            ...[...submittedTasks.values()].map((task) => cancelPersistedCanvasTask(task.taskId, task.kind, { ...options, acknowledgeUpstream: options?.acknowledgeUpstream === true })),
         ];
 
         const finalizeLocalStop = () => {
+            workflowExecutionTokenRef.current += 1;
+            workflowRunRef.current = {
+                cancelQueued: true, stopped: true, executing: false,
+                lockLost: workflowRunRef.current.lockLost,
+                canceledNodeIds: new Set(nodesRef.current.filter(node => node.metadata?.executionStatus === "queued" || node.metadata?.executionStatus === "running").map(node => node.id)),
+            };
+            generationRequestsRef.current.forEach((request) => request.controller.abort());
             generationRequestsRef.current.clear();
             workflowRunTaskIdsRef.current.clear();
             workflowSubmittedNodeIdsRef.current.clear();
@@ -4875,30 +4954,6 @@ function InfiniteCanvasPage() {
             finalizeCanceledGenerationNodes();
             setRunningNodeIds(new Set());
         };
-
-        if (options?.keepalive) {
-            finalizeLocalStop();
-            if (checkpoint) {
-                setWorkflowRun({ status: "canceled", completed: checkpoint.completedNodeIds.length, total: checkpoint.nodeIds.length, running: 0, queued: 0, startedAt: checkpoint.startedAt });
-                workflowCheckpointRef.current = null;
-                updateProject(projectId, { workflowRun: null });
-                releaseWorkflowBrowserLock();
-                if (checkpoint.runId) {
-                    cancellations.push(updateCanvasWorkflowRun(projectId, checkpoint.runId, {
-                        ownerId: lockedRun?.ownerId || workflowOwnerId,
-                        status: "canceled",
-                        completedNodeIds: checkpoint.completedNodeIds,
-                        canceledNodeIds: checkpoint.canceledNodeIds,
-                        currentNodeId: checkpoint.currentNodeId,
-                    }, options));
-                }
-            } else {
-                releaseWorkflowBrowserLock();
-                setWorkflowRun({ status: "canceled", completed: 0, total: 0, running: 0, queued: 0 });
-            }
-            await Promise.allSettled(cancellations);
-            return;
-        }
 
         const results = await Promise.allSettled(cancellations);
         const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
@@ -4943,7 +4998,7 @@ function InfiniteCanvasPage() {
         };
         const stopAfterConfirmedUnload = () => {
             leavingCanvasPageRef.current = true;
-            void stopAllCanvasTasks({ keepalive: true }).catch(() => undefined);
+            releaseWorkflowBrowserLock();
         };
         window.addEventListener("beforeunload", warnBeforeUnload);
         window.addEventListener("pagehide", stopAfterConfirmedUnload);
@@ -4951,7 +5006,7 @@ function InfiniteCanvasPage() {
             window.removeEventListener("beforeunload", warnBeforeUnload);
             window.removeEventListener("pagehide", stopAfterConfirmedUnload);
         };
-    }, [agentRunning, stopAllCanvasTasks]);
+    }, [agentRunning, releaseWorkflowBrowserLock]);
 
     useEffect(() => {
         generateNodeRef.current = handleGenerateNode;
@@ -4985,6 +5040,7 @@ function InfiniteCanvasPage() {
                               model: savedImageMetadata.model || effectiveConfig.imageModel || effectiveConfig.model,
                               quality: savedImageMetadata.quality || effectiveConfig.quality,
                               size: savedImageMetadata.size || effectiveConfig.size,
+                              ...canvasExactSizeSettingsForNode(effectiveConfig, savedImageMetadata),
                               resolution: savedImageMetadata.resolution || effectiveConfig.resolution,
                               background: savedImageMetadata.background ?? effectiveConfig.background,
                               count: "1",
@@ -5095,6 +5151,7 @@ function InfiniteCanvasPage() {
                           generationType: savedImageMetadata.generationType,
                           model: generationConfig.model,
                           size: generationConfig.size,
+                          ...canvasExactSizeSettings(generationConfig),
                           resolution: generationConfig.resolution,
                           quality: generationConfig.quality,
                           ...(generationConfig.background ? { background: generationConfig.background } : {}),
@@ -5200,6 +5257,7 @@ function InfiniteCanvasPage() {
                     prompt: "",
                     model: effectiveConfig.imageModel || effectiveConfig.model,
                     size: effectiveConfig.size,
+                    ...canvasExactSizeSettings(effectiveConfig),
                     resolution: effectiveConfig.resolution,
                     count: getGenerationCount(effectiveConfig.canvasImageCount || effectiveConfig.count),
                 },
@@ -5783,7 +5841,7 @@ function InfiniteCanvasPage() {
                                 onClick={() => {
                                     if (navigationBlocker.state !== "blocked" || leaveSubmitting) return;
                                     setLeaveSubmitting(true);
-                                    void stopAllCanvasTasks()
+                                    void stopAllCanvasTasks({ acknowledgeUpstream: true })
                                         .then(() => {
                                             leavingCanvasPageRef.current = true;
                                             navigationBlocker.proceed();
@@ -5820,7 +5878,7 @@ function InfiniteCanvasPage() {
                                     disabled={stopSubmitting}
                                     onClick={() => {
                                         setStopConfirm(null);
-                                        stopWorkflow();
+                                        void stopWorkflow({ acknowledgeUpstream: true });
                                     }}
                                 >
                                     {t("canvas.projectPage.stop")}

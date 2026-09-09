@@ -46,6 +46,8 @@ func main() {
 		err = runServe(cfg)
 	case "worker":
 		err = runWorker(cfg)
+	case "check-worker":
+		err = checkWorker(cfg)
 	case "create-admin":
 		err = runCreateAdmin(cfg, os.Args[2:])
 	case "seed":

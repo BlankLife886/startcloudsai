@@ -29,6 +29,7 @@ const props = withDefaults(
     showCancel?: boolean
     confirmLoading?: boolean
     confirmDisabled?: boolean
+    cancelDisabled?: boolean
     confirmType?: 'primary' | 'success' | 'warning' | 'danger' | 'info'
     /**
      * 大表单 / Tabs：body 不滚动，由内部区域自行滚动。
@@ -51,6 +52,7 @@ const props = withDefaults(
     showCancel: true,
     confirmLoading: false,
     confirmDisabled: false,
+    cancelDisabled: false,
     confirmType: 'primary',
     nestedScroll: false,
   },
@@ -149,6 +151,7 @@ function onConfirm() {
             <el-button
               v-if="showCancel"
               class="admin-dialog__btn"
+              :disabled="cancelDisabled"
               @click="onCancel"
             >
               {{ cancelText }}

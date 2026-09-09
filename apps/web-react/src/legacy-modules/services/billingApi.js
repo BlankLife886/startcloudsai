@@ -11,15 +11,16 @@ export async function listPlans({ signal } = {}) {
   }
 }
 
-export async function listOrders({ status = '', cursor = '', limit = 12, signal } = {}) {
+export async function listOrders({ status = '', query = '', cursor = '', limit = 12, signal } = {}) {
   const data = await apiGet('/orders', {
-    query: { status, cursor, limit },
+    query: { status, q: query, cursor, limit },
     signal,
     fallbackMessage: '订单读取失败',
   })
   return {
     items: Array.isArray(data?.items) ? data.items : [],
     nextCursor: data?.nextCursor || null,
+    summary: data?.summary || null,
   }
 }
 

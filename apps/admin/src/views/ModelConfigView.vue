@@ -9,15 +9,17 @@ import {
   watch,
 } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { Coin, Connection, Cpu, Delete, Plus, Refresh, Search } from "@element-plus/icons-vue";
+import { Coin, Connection, Cpu, Delete, Plus, Refresh, Search, Upload } from "@element-plus/icons-vue";
 import AdminDialog from "@/components/AdminDialog.vue";
 import PageCard from "@/components/PageCard.vue";
 import { request } from "@/request";
 import { useClientPagination } from "@/useClientPagination";
 import { formatPoints, IMAGE_SERVICE_ROUTES, normalizePoints } from "@/utils";
+import { exactSizeLimits, schemaSupportsExactSize, validateExactSizeLimits, type ExactSizeLimits } from "@/exactImageSize";
 
 type ProviderAdapter = "openai" | "crun";
 type ModelKind = "image" | "chat" | "image_tool";
+type ModelStatus = "available" | "maintenance";
 type ImageTool = string;
 type ReasoningPriceScope = "assistant" | "canvas_agent";
 type WorkspaceKey =
@@ -76,6 +78,8 @@ interface ImageUpscalePricing {
 interface ModelItem {
   id: string;
   name: string;
+  iconUrl: string;
+  status: ModelStatus;
   providerId: string;
   upstreamModel: string;
   upstreamInputFields: string[];
@@ -96,6 +100,8 @@ interface ModelItem {
   minSeconds: number;
   maxSeconds: number;
   resolutions: string[];
+  supportsExactSize: boolean;
+  exactSizeLimits: ExactSizeLimits;
   aspectRatios: string[];
   aspectRatiosByResolution: Record<string, string[]>;
   autoAspectRatios?: Record<string, string[]>;
@@ -224,6 +230,23 @@ const IMAGE_QUALITIES = [
 ];
 const IMAGE_OUTPUT_FORMATS = ["png", "jpeg", "webp"];
 const IMAGE_MODERATION_LEVELS = ["auto", "low"];
+const EXACT_SIZE_FIELDS: Array<{
+  key: keyof ExactSizeLimits;
+  label: string;
+  hint: string;
+  min: number;
+  max: number;
+  precision: number;
+}> = [
+  { key: "minWidth", label: "最小宽度", hint: "单位：像素", min: 1, max: 16384, precision: 0 },
+  { key: "maxWidth", label: "最大宽度", hint: "单位：像素", min: 1, max: 16384, precision: 0 },
+  { key: "minHeight", label: "最小高度", hint: "单位：像素", min: 1, max: 16384, precision: 0 },
+  { key: "maxHeight", label: "最大高度", hint: "单位：像素", min: 1, max: 16384, precision: 0 },
+  { key: "step", label: "像素步长", hint: "宽、高都必须是此数的整数倍", min: 1, max: 16384, precision: 0 },
+  { key: "maxAspectRatio", label: "最大长短边比", hint: "长边 ÷ 短边；0 表示不额外限制", min: 0, max: 16384, precision: 2 },
+  { key: "minPixels", label: "最少总像素", hint: "宽 × 高；0 表示不额外限制", min: 0, max: 268435456, precision: 0 },
+  { key: "maxPixels", label: "最多总像素", hint: "宽 × 高；0 表示不额外限制", min: 0, max: 268435456, precision: 0 },
+];
 const REASONING_EFFORT_LABELS: Record<string, string> = {
   none: "关闭",
   minimal: "极低",
@@ -486,7 +509,7 @@ const autoSaveReady = ref(false);
 let autoSaveTimer: ReturnType<typeof setTimeout> | null = null;
 let saveQueued = false;
 const config = reactive<ModelConfig>({
-	version: 7,
+	version: 8,
   providers: [],
   models: [],
   workspaces: {} as Record<WorkspaceKey, WorkspaceBinding>,
@@ -541,7 +564,7 @@ const viewTabs = computed(() => [
 watch([kindFilter, modelSearch], modelPagination.reset);
 
 function hydrate(value: ModelConfig) {
-	config.version = value.version || 7;
+	config.version = value.version || 8;
   config.providers = (value.providers || []).map((provider) => ({
     ...provider,
     adapter: provider.adapter || "openai",
@@ -564,6 +587,8 @@ function hydrate(value: ModelConfig) {
   };
   config.models = (value.models || []).map((model) => ({
     ...model,
+    iconUrl: String(model.iconUrl || "").trim(),
+    status: model.status === "maintenance" ? "maintenance" : "available",
     upstreamInputFields: model.upstreamInputFields || [],
     upstreamRequiredInputFields: model.upstreamRequiredInputFields || [],
     upstreamInputSchema: model.upstreamInputSchema || {},
@@ -573,6 +598,8 @@ function hydrate(value: ModelConfig) {
     kind: model.kind || "image",
     tool: model.kind === "image_tool" ? model.tool || "background_remove" : "",
     description: model.description || "",
+    supportsExactSize: model.kind === "image" && model.supportsExactSize === true,
+    exactSizeLimits: exactSizeLimits(model.exactSizeLimits),
     resolutions: (model.resolutions || []).filter(
       (resolution) => String(resolution).toUpperCase() !== "AUTO",
     ),
@@ -1003,7 +1030,7 @@ function setWorkspaceDefaultModel(
   model: ModelItem,
 ) {
   const binding = config.workspaces[workspace.key];
-  if (!binding || !binding.modelIds.includes(model.id)) return;
+  if (!binding || !binding.modelIds.includes(model.id) || model.status === "maintenance") return;
   binding.defaultModelIds[model.kind] = model.id;
 }
 
@@ -1053,7 +1080,10 @@ function workspaceDefaultOptions(
   const binding = config.workspaces[workspace.key];
   if (!binding) return [];
   return workspaceAvailableModels(workspace).filter(
-    (model) => model.kind === kind && binding.modelIds.includes(model.id),
+    (model) =>
+      model.kind === kind &&
+      model.status !== "maintenance" &&
+      binding.modelIds.includes(model.id),
   );
 }
 
@@ -1423,6 +1453,11 @@ function modelCardSections(model: ModelItem) {
           wide: true,
           parts: aspectParts.length ? aspectParts : undefined,
         },
+        ...(model.supportsExactSize ? [{
+          label: "精确尺寸",
+          value: `宽 ${model.exactSizeLimits.minWidth}–${model.exactSizeLimits.maxWidth} · 高 ${model.exactSizeLimits.minHeight}–${model.exactSizeLimits.maxHeight} px`,
+          wide: true,
+        }] : []),
       ],
     });
   }
@@ -1525,7 +1560,7 @@ async function importDiscoveredMediaTools() {
       }
       const operation = String(entry.operations?.[0] || "").replaceAll("-", "_");
       config.models.push({
-        id: createId("media-tool"), name: importedToolName(entry), providerId: provider.id,
+        id: createId("media-tool"), name: importedToolName(entry), iconUrl: "", status: "available", providerId: provider.id,
         upstreamModel: entry.id, upstreamInputFields: [...(entry.inputFields || [])],
         upstreamRequiredInputFields: [...(entry.requiredInputFields || [])],
         upstreamInputSchema: cloneJSON(entry.inputSchema || {}), modality: entry.modality || "",
@@ -1533,6 +1568,7 @@ async function importDiscoveredMediaTools() {
         description: "", priceCents: 0, discountPriceCents: null, upstreamCostCents: 0,
         allowZeroPrice: false, allowLossLeader: false, imageUpscalePricing: null, fastMode: false,
         minSeconds: 30, maxSeconds: 600, resolutions: [], aspectRatios: [],
+        supportsExactSize: false, exactSizeLimits: exactSizeLimits(),
         aspectRatiosByResolution: {}, qualities: [], transparentBackground: false,
         outputFormats: [], moderationLevels: [], maxReferenceImages: 0, maxImages: 0,
         contextWindowTokens: 0, maxOutputTokens: 0, supportedReasoningEfforts: [],
@@ -1767,9 +1803,13 @@ async function removeProvider(index: number) {
 const modelDialogVisible = ref(false);
 const modelEditIndex = ref(-1);
 const discoveringModelOptions = ref(false);
+const modelIconInputRef = ref<HTMLInputElement | null>(null);
+const modelIconUploading = ref(false);
 const modelDraft = reactive<ModelDraft>({
   id: "",
   name: "",
+  iconUrl: "",
+  status: "available",
   providerId: "",
   upstreamModel: "",
   upstreamInputFields: [],
@@ -1794,6 +1834,8 @@ const modelDraft = reactive<ModelDraft>({
   minSeconds: 30,
   maxSeconds: 90,
   resolutions: ["1K"],
+  supportsExactSize: false,
+  exactSizeLimits: exactSizeLimits(),
   aspectRatios: [...IMAGE_ASPECT_RATIOS],
   aspectRatiosByResolution: { "1K": [...IMAGE_ASPECT_RATIOS] },
   qualities: IMAGE_QUALITIES.map((item) => item.value),
@@ -1823,6 +1865,8 @@ function openModel(index = -1) {
       ? {
           id: source.id,
           name: source.name,
+          iconUrl: source.iconUrl || "",
+          status: source.status === "maintenance" ? "maintenance" : "available",
           providerId: source.providerId,
           upstreamModel: source.upstreamModel,
           upstreamInputFields: [...(source.upstreamInputFields || [])],
@@ -1837,6 +1881,8 @@ function openModel(index = -1) {
           minSeconds: source.minSeconds,
           maxSeconds: source.maxSeconds,
           resolutions: [...(source.resolutions || [])],
+          supportsExactSize: source.supportsExactSize === true,
+          exactSizeLimits: exactSizeLimits(source.exactSizeLimits),
           aspectRatios: [...(source.aspectRatios || IMAGE_ASPECT_RATIOS)],
           aspectRatiosByResolution: normalizeAspectRatiosByResolution(
             source.resolutions || [],
@@ -1894,6 +1940,8 @@ function openModel(index = -1) {
       : {
           id: createId("model"),
           name: "",
+          iconUrl: "",
+          status: "available",
           providerId: defaultProvider,
           upstreamModel: "",
           upstreamInputFields: [],
@@ -1923,6 +1971,8 @@ function openModel(index = -1) {
           minSeconds: 30,
           maxSeconds: 90,
           resolutions: ["1K"],
+          supportsExactSize: false,
+          exactSizeLimits: exactSizeLimits(),
           aspectRatios: [...IMAGE_ASPECT_RATIOS],
           aspectRatiosByResolution: { "1K": [...IMAGE_ASPECT_RATIOS] },
           qualities: IMAGE_QUALITIES.map((item) => item.value),
@@ -1950,6 +2000,50 @@ function openModel(index = -1) {
     config.providers.find((provider) => provider.id === source.providerId)?.adapter === "crun"
   ) {
     void loadCRUNModelSchema(source.upstreamModel);
+  }
+}
+
+function pickModelIcon() {
+  if (!modelIconUploading.value) modelIconInputRef.value?.click();
+}
+
+async function onModelIconPick(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file) return;
+  const supported =
+    ["image/png", "image/jpeg", "image/webp"].includes(file.type) ||
+    /\.(png|jpe?g|webp)$/i.test(file.name);
+  if (!supported) {
+    ElMessage.warning("模型图标仅支持 PNG、JPG 或 WebP");
+    return;
+  }
+  if (file.size > 2 * 1024 * 1024) {
+    ElMessage.warning("模型图标不能超过 2MB");
+    return;
+  }
+  modelIconUploading.value = true;
+  try {
+    const body = new FormData();
+    body.append("file", file);
+    const response = await fetch("/api/v1/admin/model-config/icons", {
+      method: "POST",
+      credentials: "include",
+      body,
+    });
+    const payload = (await response.json().catch(() => null)) as
+      | { success?: boolean; data?: { url?: string }; error?: string }
+      | null;
+    if (!response.ok || !payload?.success || !payload.data?.url) {
+      throw new Error(payload?.error || `图标上传失败（HTTP ${response.status}）`);
+    }
+    modelDraft.iconUrl = payload.data.url;
+    ElMessage.success("模型图标已上传");
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "模型图标上传失败");
+  } finally {
+    modelIconUploading.value = false;
   }
 }
 
@@ -2049,6 +2143,10 @@ const isSchemaDrivenCRUNImage = computed(
   () =>
     selectedModelProvider.value?.adapter === "crun" &&
     modelDraft.kind === "image",
+);
+
+const canConfigureExactSize = computed(() =>
+  !isSchemaDrivenCRUNImage.value || schemaSupportsExactSize(modelDraft.upstreamInputSchema, modelDraft.upstreamInputFields),
 );
 
 const availableResolutionOptions = computed(() =>
@@ -2178,6 +2276,7 @@ function onModelKindChange(value: unknown) {
 	modelDraft.contextWindowTokens = kind === "chat" ? Math.max(4096, modelDraft.contextWindowTokens || 128000) : 0;
 	modelDraft.maxOutputTokens = kind === "chat" ? Math.max(256, modelDraft.maxOutputTokens || 8192) : 0;
 	if (kind !== "image") {
+    modelDraft.supportsExactSize = false;
     modelDraft.resolutions = [];
     modelDraft.fastMode = false;
     modelDraft.aspectRatios = [];
@@ -2353,6 +2452,16 @@ async function saveModelDraft() {
     ElMessage.warning("请填写模型名称、上游模型 ID 和服务商");
     return;
   }
+  if (modelDraft.kind === "image") {
+    const error = modelDraft.supportsExactSize && !canConfigureExactSize.value
+      ? "此模型未声明支持精确尺寸，请先读取模型能力或关闭精确尺寸"
+      : validateExactSizeLimits(modelDraft.exactSizeLimits);
+    if (error) {
+      ElMessage.warning(error);
+      focusModelCapabilities();
+      return;
+    }
+  }
   if (
     modelDraft.kind === "image" &&
     modelDraft.resolutions.length > 0 &&
@@ -2423,6 +2532,10 @@ async function saveModelDraft() {
     ElMessage.warning("默认模型必须启用并对用户开放");
     return;
   }
+  if (modelDraft.default && modelDraft.status === "maintenance") {
+    ElMessage.warning("维护中的模型不能设为默认模型");
+    return;
+  }
   if (modelDraft.kind === "chat" && modelDraft.reasoningPricing) {
     for (const effort of modelDraft.supportedReasoningEfforts) {
       const price = modelDraft.reasoningPricing.efforts[effort];
@@ -2469,6 +2582,8 @@ async function saveModelDraft() {
   const value: ModelItem = {
     id: modelDraft.id,
     name: modelDraft.name.trim(),
+    iconUrl: modelDraft.iconUrl.trim(),
+    status: modelDraft.status,
     providerId: modelDraft.providerId,
     upstreamModel: modelDraft.upstreamModel.trim(),
     upstreamInputFields: [...modelDraft.upstreamInputFields],
@@ -2500,6 +2615,8 @@ async function saveModelDraft() {
     fastMode: modelDraft.kind === "image" && modelDraft.fastMode,
     minSeconds: modelDraft.minSeconds,
     maxSeconds: modelDraft.maxSeconds,
+    supportsExactSize: modelDraft.kind === "image" && modelDraft.supportsExactSize,
+    exactSizeLimits: { ...modelDraft.exactSizeLimits },
     resolutions:
       modelDraft.kind === "image"
         ? modelDraft.resolutions.filter(
@@ -2582,10 +2699,10 @@ async function saveModelDraft() {
   if (
     !config.models.some(
       (item) =>
-        item.kind === value.kind && item.default && item.public && item.enabled,
+        item.kind === value.kind && item.default && item.public && item.enabled && item.status !== "maintenance",
     )
   ) {
-    value.default = value.public && value.enabled;
+    value.default = value.public && value.enabled && value.status !== "maintenance";
   }
   sanitizeWorkspaceBindings();
   modelDialogVisible.value = false;
@@ -2606,7 +2723,7 @@ async function removeModel(index: number) {
   pruneWorkspaceModel(model.id);
   if (model.default) {
     const next = config.models.find(
-      (item) => item.kind === model.kind && item.public && item.enabled,
+      (item) => item.kind === model.kind && item.public && item.enabled && item.status !== "maintenance",
     );
     if (next) next.default = true;
   }
@@ -2619,6 +2736,7 @@ function modelOriginalIndex(value: unknown) {
 
 function onCatalogModelStateChange(value: unknown) {
   const model = value as ModelItem;
+  if (model.status === "maintenance") model.default = false;
   if (!model.public || !model.enabled) {
     model.default = false;
     pruneWorkspaceModel(model.id);
@@ -2767,19 +2885,26 @@ onBeforeUnmount(() => {
             >
               <header class="model-card__head">
                 <div class="model-card__identity">
-                  <div
-                    class="model-card__line"
-                    :title="`${kindName(row.kind)} · ${row.name} · ${providerName(row.providerId)} · ${row.upstreamModel} · ${providerAdapterLabel(row.providerId)}`"
-                  >
-                    <span class="kind-badge" :class="`is-${row.kind}`">{{
-                      kindName(row.kind)
-                    }}</span>
-                    <span v-if="row.default" class="default-badge">默认</span>
-                    <span v-if="row.fastMode" class="meta-badge">快速</span>
-                    <strong>{{ row.name }}</strong>
-                    <span>{{ providerName(row.providerId) }}</span>
-                    <span class="mono">{{ row.upstreamModel || "—" }}</span>
-                    <span>{{ providerAdapterLabel(row.providerId) }}</span>
+                  <span class="model-card__icon" aria-hidden="true">
+                    <img v-if="row.iconUrl" :src="row.iconUrl" alt="" />
+                    <Cpu v-else />
+                  </span>
+                  <div class="model-card__identity-copy">
+                    <div
+                      class="model-card__line"
+                      :title="`${kindName(row.kind)} · ${row.name} · ${providerName(row.providerId)} · ${row.upstreamModel} · ${providerAdapterLabel(row.providerId)}`"
+                    >
+                      <span class="kind-badge" :class="`is-${row.kind}`">{{
+                        kindName(row.kind)
+                      }}</span>
+                      <span v-if="row.default" class="default-badge">默认</span>
+                      <span v-if="row.status === 'maintenance'" class="maintenance-badge">维护中</span>
+                      <span v-if="row.fastMode" class="meta-badge">快速</span>
+                      <strong>{{ row.name }}</strong>
+                      <span>{{ providerName(row.providerId) }}</span>
+                      <span class="mono">{{ row.upstreamModel || "—" }}</span>
+                      <span>{{ providerAdapterLabel(row.providerId) }}</span>
+                    </div>
                   </div>
                 </div>
                 <el-popover
@@ -3179,7 +3304,10 @@ onBeforeUnmount(() => {
                     }"
                   >
                     <div class="assignment-card__body">
-                      <strong :title="model.name">{{ model.name }}</strong>
+                      <strong :title="model.name">
+                        {{ model.name }}
+                        <small v-if="model.status === 'maintenance'" class="assignment-maintenance">维护中</small>
+                      </strong>
                       <small
                         >{{ kindName(model.kind) }} ·
                         {{ providerName(model.providerId) }}</small
@@ -3203,6 +3331,8 @@ onBeforeUnmount(() => {
                         v-else
                         type="button"
                         class="assignment-default-btn"
+                        :disabled="model.status === 'maintenance'"
+                        :title="model.status === 'maintenance' ? '维护中的模型不能设为默认' : undefined"
                         @click="
                           setWorkspaceDefaultModel(activeWorkspace, model)
                         "
@@ -3968,6 +4098,38 @@ onBeforeUnmount(() => {
                 placeholder="用户端显示的模型名称"
               />
             </el-form-item>
+            <el-form-item label="用户端状态">
+              <el-select v-model="modelDraft.status" style="width: 100%">
+                <el-option label="正常" value="available" />
+                <el-option label="维护中" value="maintenance" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="模型图标" class="is-wide">
+              <div class="model-icon-editor">
+                <span class="model-icon-editor__preview" aria-hidden="true">
+                  <img v-if="modelDraft.iconUrl" :src="modelDraft.iconUrl" alt="" />
+                  <Cpu v-else />
+                </span>
+                <div class="model-icon-editor__actions">
+                  <div>
+                    <el-button :icon="Upload" :loading="modelIconUploading" @click="pickModelIcon">
+                      {{ modelDraft.iconUrl ? "替换图标" : "上传图标" }}
+                    </el-button>
+                    <el-button v-if="modelDraft.iconUrl" link type="danger" @click="modelDraft.iconUrl = ''">
+                      移除
+                    </el-button>
+                  </div>
+                  <small>建议上传正方形 PNG、JPG 或 WebP，最大 2MB</small>
+                </div>
+                <input
+                  ref="modelIconInputRef"
+                  class="model-icon-editor__input"
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  @change="onModelIconPick"
+                />
+              </div>
+            </el-form-item>
             <el-form-item label="服务商">
               <el-select
                 v-model="modelDraft.providerId"
@@ -4322,6 +4484,40 @@ onBeforeUnmount(() => {
                   :value="ratio"
                 />
               </el-select>
+            </div>
+
+            <div class="model-capability-row">
+              <div class="model-capability-copy">
+                <strong>支持精确尺寸</strong>
+                <span>允许用户按像素输入宽度和高度</span>
+              </div>
+              <el-switch
+                v-model="modelDraft.supportsExactSize"
+                aria-label="支持精确尺寸"
+                :disabled="!canConfigureExactSize && !modelDraft.supportsExactSize"
+              />
+            </div>
+            <p v-if="!canConfigureExactSize" class="exact-size-hint">
+              此模型尚未声明支持精确宽高，请读取最新模型能力后确认。
+            </p>
+            <div v-if="modelDraft.supportsExactSize" class="exact-size-settings">
+              <p class="exact-size-hint">按模型实际支持的范围填写；精确模式将使用用户输入的尺寸，超出限制时提示修改。</p>
+              <div class="model-capability-tiles">
+                <div v-for="field in EXACT_SIZE_FIELDS" :key="field.key" class="model-capability-tile">
+                  <div class="model-capability-copy">
+                    <strong>{{ field.label }}</strong>
+                    <span>{{ field.hint }}</span>
+                  </div>
+                  <el-input-number
+                    v-model="modelDraft.exactSizeLimits[field.key]"
+                    :aria-label="`精确尺寸${field.label}`"
+                    :min="field.min"
+                    :max="field.max"
+                    :precision="field.precision"
+                    controls-position="right"
+                  />
+                </div>
+              </div>
             </div>
 
             <div class="model-capability-tiles">
@@ -4741,6 +4937,57 @@ onBeforeUnmount(() => {
   margin-bottom: 0;
 }
 
+.model-icon-editor {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+}
+
+.model-icon-editor__preview,
+.model-card__icon {
+  display: grid;
+  flex: 0 0 auto;
+  overflow: hidden;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--accent-ink);
+  background: var(--surface-2);
+}
+
+.model-icon-editor__preview {
+  width: 54px;
+  height: 54px;
+}
+
+.model-icon-editor__preview img,
+.model-card__icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.model-icon-editor__preview svg {
+  width: 24px;
+  height: 24px;
+}
+
+.model-icon-editor__actions {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.model-icon-editor__actions small {
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.model-icon-editor__input {
+  display: none;
+}
+
 .model-status-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -4798,6 +5045,23 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+}
+
+.exact-size-settings {
+  display: grid;
+  gap: 10px;
+}
+
+.exact-size-hint {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.exact-size-settings .model-capability-tile {
+  min-width: 0;
+  flex-wrap: wrap;
 }
 
 .model-capability-tile.is-wide {
@@ -5138,10 +5402,27 @@ html.dark .status-tab.is-active {
 }
 
 .model-card__identity {
-  display: grid;
+  display: flex;
   min-width: 0;
   flex: 1 1 auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.model-card__identity-copy {
+  display: grid;
+  min-width: 0;
   gap: 6px;
+}
+
+.model-card__icon {
+  width: 34px;
+  height: 34px;
+}
+
+.model-card__icon svg {
+  width: 17px;
+  height: 17px;
 }
 
 .model-card__line {
@@ -5175,31 +5456,37 @@ html.dark .status-tab.is-active {
 
 .model-card__line > .kind-badge,
 .model-card__line > .default-badge,
+.model-card__line > .maintenance-badge,
 .model-card__line > .meta-badge {
   flex: 0 0 auto;
   align-self: center;
 }
 
 .model-card__line > .kind-badge + .default-badge,
+.model-card__line > .kind-badge + .maintenance-badge,
 .model-card__line > .kind-badge + .meta-badge,
-.model-card__line > .default-badge + .meta-badge {
+.model-card__line > .default-badge + .maintenance-badge,
+.model-card__line > .default-badge + .meta-badge,
+.model-card__line > .maintenance-badge + .meta-badge {
   margin-left: 4px;
 }
 
 .model-card__line > .kind-badge + strong,
 .model-card__line > .default-badge + strong,
+.model-card__line > .maintenance-badge + strong,
 .model-card__line > .meta-badge + strong {
   margin-left: 8px;
 }
 
 .model-card__line > .kind-badge + *::before,
 .model-card__line > .default-badge + *::before,
+.model-card__line > .maintenance-badge + *::before,
 .model-card__line > .meta-badge + *::before {
   content: none;
 }
 
-.model-card__line > :not(.kind-badge):not(.default-badge):not(.meta-badge)
-  + :not(.kind-badge):not(.default-badge):not(.meta-badge)::before {
+.model-card__line > :not(.kind-badge):not(.default-badge):not(.maintenance-badge):not(.meta-badge)
+  + :not(.kind-badge):not(.default-badge):not(.maintenance-badge):not(.meta-badge)::before {
   content: "·";
   margin: 0 8px;
   color: var(--ink-3);
@@ -5213,6 +5500,23 @@ html.dark .status-tab.is-active {
   background: var(--violet-soft);
   font-size: 10px;
   font-weight: 650;
+}
+
+.maintenance-badge,
+.assignment-maintenance {
+  display: inline-flex;
+  padding: 3px 6px;
+  border-radius: 5px;
+  color: #9a3412;
+  background: #ffedd5;
+  font-size: 10px;
+  font-weight: 650;
+}
+
+html.dark .maintenance-badge,
+html.dark .assignment-maintenance {
+  color: #fed7aa;
+  background: rgb(154 52 18 / 32%);
 }
 
 .model-card__price {

@@ -277,12 +277,13 @@ export function useIllustrationColoringJobs({ authenticated }) {
   );
 
   const cancel = useCallback(
-    async (item) => {
+    async (item, { acknowledgeUpstream = false } = {}) => {
       if (!item?.serverJobId) return;
-      const { job } = await cancelServerAiJob(item.serverJobId);
+      const { job } = await cancelServerAiJob(item.serverJobId, { acknowledgeUpstream });
       const mapped = mapColoringJobToHistory(job, { existingItem: item });
       commitHistory((current) => updateItem(current, mapped));
       stopPolling(item.serverJobId);
+      return job;
     },
     [commitHistory, stopPolling],
   );

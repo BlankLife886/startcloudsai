@@ -208,7 +208,7 @@ export default function CanvasPage() {
                     </div>
                 </header>
 
-                <section data-canvas-entry-item className="canvas-home-library">
+                <section data-canvas-entry-item className={`canvas-home-library${hydrated && !visibleProjects.length && !projectQuery.trim() ? " is-empty" : ""}`}>
                     {hydrated && !visibleProjects.length && !projectQuery.trim() ? null : <div className="canvas-recent-bar">
                         <div className="flex shrink-0 items-baseline gap-3">
                             <h2 className="text-[15px] font-semibold tracking-tight">{t("canvas.recent")}</h2>
@@ -274,7 +274,7 @@ export default function CanvasPage() {
                     ) : !filteredProjects.length ? (
                         <button type="button" className="canvas-home-start" onClick={createAndEnter}>
                             <span className="canvas-project-tile__plus">
-                                <Plus className="size-5" />
+                                <Plus className="size-7" />
                             </span>
                             <strong>{t("canvas.create")}</strong>
                             <span>{t("canvas.createDescription")}</span>

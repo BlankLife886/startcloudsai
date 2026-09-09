@@ -1,7 +1,7 @@
 /**
  * 公开配置与内容 API（/api/v1/*）。
  */
-import { apiGet } from './apiClient'
+import { apiGet, buildApiPath } from './apiClient'
 
 /** 任务单价：{ taskPointPrices: { t2i: points, ... } } */
 export async function getTaskPricing({ signal } = {}) {
@@ -24,7 +24,32 @@ export async function getLatestChangelog({ signal } = {}) {
 
 /** 生效中公告。 */
 export async function getActiveAnnouncements({ signal } = {}) {
-  const data = await apiGet('/announcements', { signal, fallbackMessage: '公告读取失败' })
+  const data = await apiGet('/announcements', { signal, cache: 'no-store', fallbackMessage: '公告读取失败' })
   if (Array.isArray(data)) return data
-  return Array.isArray(data?.items) ? data.items : []
+  if (Array.isArray(data?.items)) return data.items
+  throw new Error('公告响应格式不正确')
+}
+
+/** Public announcement snapshots; EventSource reconnects transport failures. */
+export function openAnnouncementEvents({ onSnapshot, onOpen, onError } = {}) {
+  if (typeof EventSource === 'undefined') return null
+  let source
+  try {
+    source = new EventSource(buildApiPath('/announcements/events'), { withCredentials: true })
+  } catch (error) {
+    onError?.(error)
+    return null
+  }
+  source.addEventListener('announcements', (event) => {
+    try {
+      const payload = JSON.parse(event.data)
+      if (!Array.isArray(payload?.items)) throw new Error('公告推送格式不正确')
+      onSnapshot?.(payload.items)
+    } catch (error) {
+      onError?.(error)
+    }
+  })
+  source.onopen = () => onOpen?.()
+  source.onerror = (error) => onError?.(error)
+  return source
 }

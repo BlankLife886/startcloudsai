@@ -21,6 +21,7 @@ type taskOutputCollector struct {
 	outputSlots       []string
 	thumbnailSlots    []string
 	newKeys           []string
+	obsoleteKeys      []string
 	newIndexes        map[int]struct{}
 	completionClaimID string
 	leaseOwner        string
@@ -61,8 +62,7 @@ func newTaskOutputCollector(w *Worker, ctx context.Context, task *store.Task) *t
 		outputSlots: make([]string, size), thumbnailSlots: make([]string, size),
 		newIndexes: make(map[int]struct{}), leaseOwner: leaseOwner,
 	}
-	copy(collector.outputSlots, task.OutputKeys)
-	copy(collector.thumbnailSlots, task.ThumbnailKeys)
+	collector.obsoleteKeys = restoreTaskOutputSlots(task, collector.outputSlots, collector.thumbnailSlots)
 	return collector
 }
 
@@ -155,13 +155,12 @@ func (c *taskOutputCollector) persist(index int, encoded string) error {
 	if incomingBytes <= 0 || incomingBytes > 20<<20 {
 		return fmt.Errorf("output image exceeds 20 MiB limit")
 	}
-	// Acquire the memory budget BEFORE the mask-composite / source-canvas
-	// restore steps, which each decode and re-encode the image. Previously the
-	// semaphore was taken only right before the final decode, leaving those
-	// transform buffers (plus the incoming base64 string) unbounded across all
-	// worker slots. A conservative multiple of the payload size covers the
-	// decode, the RGBA destination, and the transient transform copies.
-	memoryWeight := min(max(int64(incomingBytes)*6, 1<<20), c.w.imageMemoryBytes)
+	// Compressed bytes do not bound decoded RGBA images or the parallel variant
+	// encoders. Read dimensions without decoding pixels before taking the slot.
+	memoryWeight, budgetErr := taskOutputMemoryWeight(c.task, encoded, incomingBytes, c.w.imageMemoryBytes)
+	if budgetErr != nil {
+		return budgetErr
+	}
 	if err := c.w.imageMemory.Acquire(c.ctx, memoryWeight); err != nil {
 		return err
 	}
@@ -198,6 +197,9 @@ func (c *taskOutputCollector) persist(index int, encoded string) error {
 	if ext == "" {
 		return fmt.Errorf("upstream returned unsupported image data")
 	}
+	if err := validateStrictAlphaTaskOutput(c.task, data); err != nil {
+		return err
+	}
 
 	objectIndex := fmt.Sprintf("%d", index)
 	if c.completionClaimID != "" {
@@ -233,16 +235,15 @@ func (c *taskOutputCollector) persist(index int, encoded string) error {
 	c.outputSlots[index] = key
 	c.thumbnailSlots[index] = thumbKey
 	outputKeys := compactTaskKeys(c.outputSlots)
-	thumbnailKeys := compactTaskKeys(c.thumbnailSlots)
 	var persistErr error
 	if c.completionClaimID == "" {
 		if c.leaseOwner == "" {
-			persistErr = store.SetTaskPartialOutputs(c.ctx, c.w.St.Pool, c.task.ID, outputKeys, thumbnailKeys)
+			persistErr = store.SetTaskPartialOutputs(c.ctx, c.w.St.Pool, c.task.ID, c.outputSlots, c.thumbnailSlots)
 		} else {
-			persistErr = store.SetTaskPartialOutputsOwned(c.ctx, c.w.St.Pool, c.task.ID, outputKeys, thumbnailKeys, c.leaseOwner)
+			persistErr = store.SetTaskPartialOutputsOwned(c.ctx, c.w.St.Pool, c.task.ID, c.outputSlots, c.thumbnailSlots, c.leaseOwner)
 		}
 	} else {
-		persistErr = store.SetTaskPartialOutputsClaimed(c.ctx, c.w.St.Pool, c.task.ID, outputKeys, thumbnailKeys, c.completionClaimID)
+		persistErr = store.SetTaskPartialOutputsClaimed(c.ctx, c.w.St.Pool, c.task.ID, c.outputSlots, c.thumbnailSlots, c.completionClaimID)
 	}
 	if persistErr != nil {
 		c.outputSlots[index] = ""
@@ -253,8 +254,11 @@ func (c *taskOutputCollector) persist(index int, encoded string) error {
 	}
 	c.newKeys = append(c.newKeys, uploaded...)
 	c.newIndexes[index] = struct{}{}
+	obsolete := c.obsoleteKeys
+	c.obsoleteKeys = nil
 	count := len(outputKeys)
 	c.mu.Unlock()
+	c.enqueueCleanup(obsolete)
 
 	c.w.publishTaskEvent(c.ctx, c.task, taskstream.Event{
 		Stage: "image-ready", Status: "running", ImageIndex: index, ImageCount: count,
@@ -284,8 +288,8 @@ func (c *taskOutputCollector) cleanup() {
 		c.outputSlots[index] = ""
 		c.thumbnailSlots[index] = ""
 	}
-	outputKeys := compactTaskKeys(c.outputSlots)
-	thumbnailKeys := compactTaskKeys(c.thumbnailSlots)
+	outputKeys := append([]string(nil), c.outputSlots...)
+	thumbnailKeys := append([]string(nil), c.thumbnailSlots...)
 	c.mu.Unlock()
 	if c.w == nil || c.w.St == nil {
 		return

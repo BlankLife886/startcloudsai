@@ -89,11 +89,22 @@
 
 ### `orders`
 
-订单保存用户、套餐和下单时的 `amount_cents`、`grant_cents`、`bonus_cents` 快照。`provider_pay_amount_cents` 保存蓝鲸创建订单时返回的实际应付金额，`payment_method` 保存 `alipay|wechat` 渠道；回调、主动查单和对账均以这两个不可变快照校验，迁移前历史订单为空时回退套餐标价。状态为 `pending|paid|completed|failed|expired`；`(provider, provider_order_id)` 对非空 provider order 唯一。订单完成条件更新与入账/开通订阅位于同一事务，收入统计优先使用实际支付金额。
+订单保存用户、套餐和下单时的金额、积分与套餐权益快照。请求渠道前保存 `provider_pay_amount_cents` 和 `payment_method`，返回后校验并补齐渠道单号；回调、查单与对账都按不可变快照校验。状态为 `pending|uncertain|paid|completed|failed|expired|cancelled`，其中 `uncertain` 表示渠道结果待核实，不能据此重复下单或宣称支付失败。迁移 `00127` 新增 `cancelled` 区分取消与过期，不猜测历史 `expired` 记录的关闭原因。验签回调与已校验的渠道记录可恢复待核实、历史失败及取消竞态订单；普通补单不能直接完成这些订单。`(provider, provider_order_id)` 对非空渠道单号唯一。到账和订阅发放仍在同一事务中幂等完成。
+
+`reconcile_after`、`reconcile_attempts`、`reconcile_lease_id`、`reconcile_lease_until` 和 `last_reconciled_at` 保存对账进度与短租约。新订单另保存 `subscription_starts_at`、`subscription_ends_at`，表示该次购买实际交付的权益区间。
 
 ### `subscriptions`
 
+新版结构及迁移 `00128`-`00130` 见 [SUBSCRIPTIONS.md](SUBSCRIPTIONS.md)。
+`subscription_credit_lots` 保存独立发放批次和范围快照，`subscription_credit_allocations`
+保存预留来源，`subscription_changes` 保存升级报价和退款审核。历史自然日订阅不重算；
+新版按24小时周期持久化下一次发放时间和已发期数。
+
 订阅期关联用户、套餐和订单，保存 `starts_at`、`ends_at`、每日发放快照、`last_granted_date` 与 `active|expired` 状态。索引覆盖 `(status, ends_at)` 和用户最近订阅。每日入账幂等来源为 `subscriptionId/YYYY-MM-DD`，日期按北京时间计算。
+
+### `subscription_periods`
+
+每次购买保存独立生效区间和日额度；续订接在旧周期之后，不修改旧批次额度。`order_id` 唯一，历史批次为空。`grant_starts_on` 与排他的 `grant_ends_on` 限定发放日期，`next_grant_on` 为持久化补发游标。补发涵盖已到期批次，复用原有账本键防止重复入账；新批次发放次数等于购买天数，不额外发放到期日额度。
 
 ### `redemption_codes`
 

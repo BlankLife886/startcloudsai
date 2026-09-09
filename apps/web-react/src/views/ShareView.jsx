@@ -828,10 +828,6 @@ export function ShareView() {
               </div>
             </header>
             <div className="community-submit">
-              <p>
-                在任意工坊完成创作后，到「个人中心 ·
-                我的作品」一键投稿，通过审核即挂上展墙。
-              </p>
               <div className="community-submit__actions">
                 <button
                   type="button"

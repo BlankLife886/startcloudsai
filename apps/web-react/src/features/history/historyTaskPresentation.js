@@ -1,6 +1,9 @@
+import { taskTotalElapsedMs } from "../../legacy-modules/features/ai-wallpaper/domain/taskGenerationTiming.js";
+
 export function historyTaskStatus(task) {
   const status = String(task?.status || "").trim().toLowerCase();
-  return status === "cancelled" ? "canceled" : status;
+  if (status === "queued" && task?.cancelPolicy?.upstreamSubmitted === true) return "running";
+  return status === "cancelled" ? "canceled" : ["completed", "done"].includes(status) ? "succeeded" : status;
 }
 
 function timestamp(value) {
@@ -9,13 +12,13 @@ function timestamp(value) {
 }
 
 export function historyTaskDurationMs(task, now = Date.now()) {
-  const startedAt = timestamp(task?.startedAt);
+  const startedAt = timestamp(task?.createdAt || task?.startedAt);
   if (startedAt == null) return null;
   const terminal = ["succeeded", "failed", "canceled"].includes(historyTaskStatus(task));
   const finishedAt = timestamp(task?.finishedAt);
   const end = finishedAt ?? (terminal ? null : Number(now));
   if (end == null || !Number.isFinite(end)) return null;
-  return Math.max(0, end - startedAt);
+  return taskTotalElapsedMs({ ...task, status: historyTaskStatus(task) }, now);
 }
 
 export function formatHistoryDuration(durationMs) {

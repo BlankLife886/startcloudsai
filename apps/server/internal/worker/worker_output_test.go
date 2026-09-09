@@ -32,23 +32,41 @@ func TestEnsureUpstreamOutputErrorRetriesEmptyCompletion(t *testing.T) {
 
 func TestShouldRecoverEmptyOpenAISubmit(t *testing.T) {
 	attemptID := uuid.New()
-	if !shouldRecoverEmptyOpenAISubmit(attemptID, modelconfig.AdapterOpenAI, false, nil, nil) {
+	if !shouldRecoverEmptyOpenAISubmit(attemptID, modelconfig.AdapterOpenAI, nil, nil) {
 		t.Fatal("configured OpenAI empty submit must enter asynchronous recovery")
 	}
-	if shouldRecoverEmptyOpenAISubmit(uuid.Nil, modelconfig.AdapterOpenAI, false, nil, nil) {
+	if shouldRecoverEmptyOpenAISubmit(uuid.Nil, modelconfig.AdapterOpenAI, nil, nil) {
 		t.Fatal("legacy request without a durable attempt cannot enter recovery")
 	}
-	if shouldRecoverEmptyOpenAISubmit(attemptID, modelconfig.AdapterCRUN, false, nil, nil) {
+	if shouldRecoverEmptyOpenAISubmit(attemptID, modelconfig.AdapterCRUN, nil, nil) {
 		t.Fatal("CRUN empty submit must keep its adapter-specific handling")
 	}
-	if shouldRecoverEmptyOpenAISubmit(attemptID, modelconfig.AdapterOpenAI, false, []string{"image"}, nil) {
+	if shouldRecoverEmptyOpenAISubmit(attemptID, modelconfig.AdapterOpenAI, []string{"image"}, nil) {
 		t.Fatal("completed OpenAI image must not enter recovery")
 	}
-	if shouldRecoverEmptyOpenAISubmit(attemptID, modelconfig.AdapterOpenAI, false, nil, errors.New("explicit failure")) {
+	if shouldRecoverEmptyOpenAISubmit(attemptID, modelconfig.AdapterOpenAI, nil, errors.New("explicit failure")) {
 		t.Fatal("explicit OpenAI failure must be preserved")
 	}
-	if shouldRecoverEmptyOpenAISubmit(attemptID, modelconfig.AdapterOpenAI, true, nil, nil) {
-		t.Fatal("synchronous OpenAI edit must not enter asynchronous recovery")
+	if !shouldRecoverEmptyOpenAISubmit(attemptID, modelconfig.AdapterOpenAI, nil, nil) {
+		t.Fatal("asynchronous OpenAI edit must enter recovery")
+	}
+}
+
+func TestSynchronousImageErrorsNeverEnterRetryOrAsyncRecovery(t *testing.T) {
+	for _, err := range []error{
+		&c2a.UpstreamError{Message: "504 Gateway Time-out", StatusCode: http.StatusGatewayTimeout},
+		&c2a.NetworkError{Message: "timeout", Err: context.DeadlineExceeded},
+	} {
+		if !isRetryableTaskError(err) {
+			t.Fatalf("async error must remain recoverable: %v", err)
+		}
+		synchronous := &c2a.SynchronousImageError{Err: err}
+		if isRetryableTaskError(synchronous) {
+			t.Fatalf("sync error must not poll a nonexistent task or resubmit: %v", synchronous)
+		}
+		if shouldRecoverEmptyOpenAISubmit(uuid.New(), modelconfig.AdapterOpenAI, nil, synchronous) {
+			t.Fatalf("sync error must not be treated as an empty async acknowledgement: %v", synchronous)
+		}
 	}
 }
 

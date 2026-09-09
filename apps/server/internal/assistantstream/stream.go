@@ -54,6 +54,8 @@ type ImageEvent struct {
 	ThumbURL      string `json:"thumbUrl,omitempty"`
 	DisplayURL    string `json:"displayUrl,omitempty"`
 	RevisedPrompt string `json:"revisedPrompt,omitempty"`
+	Width         int    `json:"width,omitempty"`
+	Height        int    `json:"height,omitempty"`
 }
 
 func Channel(runID string) string {

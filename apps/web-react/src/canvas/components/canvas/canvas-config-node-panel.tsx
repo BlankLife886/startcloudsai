@@ -10,13 +10,14 @@ import { isCanvasGenerationModeEnabled } from "@/constant/canvas";
 import { estimateCanvasGenerationCost } from "@/lib/canvas/canvas-generation-cost";
 import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
 import { canvasRaisedStyle, colorWash, nodeTypeColor } from "@/lib/canvas-ui";
-import { applyCanvasImageModelSettings, canvasImageSettingsFromModel } from "@/lib/canvas/canvas-image-model";
+import { applyCanvasImageModelSettings, canvasExactSizeSettingsForNode, canvasImageSettingsFromModel, resolveCanvasImageModel } from "@/lib/canvas/canvas-image-model";
 import { formatGenerationDuration, useGenerationElapsed } from "@/lib/canvas/canvas-generation-elapsed";
 import { canvasGenerationStageLabel } from "@/lib/canvas/canvas-generation-stage";
 import { buildAngleLabel, isUnsubmittedCanvasGeneration } from "@/lib/canvas/canvas-generation-helpers";
 import { canvasLocalImageOperationOutputCount, isCanvasLocalImageOperation, normalizeCanvasLocalImageOperationParams } from "@/lib/canvas/canvas-local-image-operation";
 import { CanvasOperationNodeType } from "@/lib/canvas/canvas-operation-node";
-import { defaultConfig, formatModelPriceParts, modelOptionLabel, modelOptionMeta, modelOptionName, resolveModelForCapability, selectableModelsByCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
+import { catalogModelsByCapability, defaultConfig, formatModelPriceParts, modelMaintenance, modelOptionLabel, modelOptionMeta, resolveModelForCapability, selectableModelsByCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
+import { ModelCatalogIcon, ModelMaintenanceBadge } from "@react/components/common/ModelCatalogIcon.jsx";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { CanvasGenerationMode, CanvasNodeData, CanvasNodeMetadata } from "@/types/canvas";
 import { CanvasPreviewImage } from "./canvas-preview-image";
@@ -482,12 +483,13 @@ function ConfigModelField({
     onChange: (model: string) => void;
     onMissingConfig: () => void;
 }) {
-    const options = selectableModelsByCapability(config, mode);
+    const options = catalogModelsByCapability(config, mode);
+    const availableOptions = selectableModelsByCapability(config, mode);
     const current = config.model || "";
     const meta = current ? modelOptionMeta(config, current) : undefined;
     const priceParts = formatModelPriceParts(meta, config.reasoningEffort);
 
-    if (!options.length) {
+    if (!availableOptions.length) {
         return (
             <button type="button" className="canvas-config-field flex h-9 w-full min-w-0 items-center gap-2.5 rounded-[10px] px-3 text-left" style={{ background: surface, color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()} onClick={onMissingConfig}>
                 <SoftMark name="cpu" size="sm" />
@@ -501,17 +503,20 @@ function ConfigModelField({
         <CanvasFieldMenu
             value={current}
             options={options.map((model) => {
-                const parts = formatModelPriceParts(modelOptionMeta(config, model), config.reasoningEffort);
+                const meta = modelOptionMeta(config, model);
+                const parts = formatModelPriceParts(meta, config.reasoningEffort);
                 return {
                     value: model,
                     label: (
                         <span className="flex min-w-0 flex-1 items-center gap-2">
-                            <ModelMark model={model} />
+                            <ModelMark config={config} model={model} />
                             <span className="min-w-0 flex-1 truncate">{modelOptionLabel(config, model)}</span>
-                            <CanvasPriceMark price={parts.price} comparePrice={parts.comparePrice} />
+                            <ModelMaintenanceBadge model={meta} />
+                            {!modelMaintenance(meta) ? <CanvasPriceMark price={parts.price} comparePrice={parts.comparePrice} /> : null}
                         </span>
                     ),
-                };
+                        disabled: modelMaintenance(meta),
+                    };
             })}
             theme={theme}
             surface={surface}
@@ -521,7 +526,7 @@ function ConfigModelField({
         >
             {(open) => (
                 <span className="flex w-full min-w-0 items-center gap-2.5">
-                    <ModelMark model={current} />
+                    <ModelMark config={config} model={current} />
                     <span className="min-w-0 flex-1 truncate text-[13px] font-semibold">{current ? modelOptionLabel(config, current) : placeholder}</span>
                     {priceParts.price ? (
                         <span className="shrink-0">
@@ -535,20 +540,8 @@ function ConfigModelField({
     );
 }
 
-function ModelMark({ model }: { model: string }) {
-    const icon = modelIcon(modelOptionName(model));
-    return icon ? <img src={icon} alt="" className="size-4 shrink-0 dark:invert" /> : <SoftMark name="cpu" size="sm" />;
-}
-
-function modelIcon(model: string) {
-    const name = model.toLowerCase();
-    if (name.includes("claude") || name.includes("anthropic")) return "/icons/claude.svg";
-    if (name.includes("gemini") || name.includes("google")) return "/icons/gemini.svg";
-    if (name.includes("gpt") || name.includes("openai")) return "/icons/openai.svg";
-    if (name.includes("grok")) return "/icons/grok.svg";
-    if (name.includes("deepseek")) return "/icons/deepseek.svg";
-    if (name.includes("glm")) return "/icons/glm.svg";
-    return "";
+function ModelMark({ config, model }: { config: AiConfig; model: string }) {
+    return <ModelCatalogIcon model={modelOptionMeta(config, model)} size="sm" />;
 }
 
 function SettingsField({
@@ -617,12 +610,14 @@ function settingsSummary(mode: CanvasGenerationMode, config: AiConfig) {
 }
 
 function buildNodeConfig(globalConfig: AiConfig, node: CanvasNodeData, mode: CanvasGenerationMode): AiConfig {
+    const sizeSettings = canvasExactSizeSettingsForNode(globalConfig, node.metadata);
     const next = {
         ...globalConfig,
-        model: resolveModelForCapability(globalConfig, node.metadata?.model, mode),
+        model: mode === "image" ? resolveCanvasImageModel(globalConfig, node.metadata?.model, sizeSettings.sizeMode) : resolveModelForCapability(globalConfig, node.metadata?.model, mode),
         reasoningEffort: node.metadata?.reasoningEffort || globalConfig.reasoningEffort || defaultConfig.reasoningEffort,
         quality: node.metadata?.quality || globalConfig.quality || defaultConfig.quality,
         size: node.metadata?.size || globalConfig.size || defaultConfig.size,
+        ...sizeSettings,
         resolution: node.metadata?.resolution || globalConfig.resolution || defaultConfig.resolution,
         background: node.metadata?.background ?? "",
         videoSeconds: node.metadata?.seconds || globalConfig.videoSeconds || defaultConfig.videoSeconds,

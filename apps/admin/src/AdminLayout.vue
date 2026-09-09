@@ -46,6 +46,7 @@ import { preloadAdminRoute } from "@/router";
 import { loadAdminBadgeCounts } from "@/services/adminBadgeCounts";
 import { isDark, toggleTheme } from "@/theme";
 import { useAdminShellMotion } from "@/composables/useAdminShellMotion";
+import { REFERRALS_ENABLED } from "@/referrals";
 
 const route = useRoute();
 const router = useRouter();
@@ -99,6 +100,8 @@ const NAV_GROUPS = [
     items: [
       { path: "/page-controls", label: "页面控制", icon: Operation },
       { path: "/content", label: "内容管理", icon: Document },
+      { path: "/home-banners", label: "首页轮播", icon: Picture },
+      ...(REFERRALS_ENABLED ? [{ path: "/referrals", label: "邀请返利", icon: User }] : []),
       { path: "/prompt-library", label: "提示词库", icon: CollectionTag },
       { path: "/ecommerce", label: "电商素材", icon: ShoppingBag },
       { path: "/community", label: "社区管理", icon: ChatDotRound },
@@ -119,6 +122,7 @@ const NAV_GROUPS = [
     items: [
       { path: "/profitability", label: "成本利润", icon: TrendCharts },
       { path: "/orders", label: "订单管理", icon: Wallet },
+      { path: "/subscription-changes", label: "订阅变更", icon: Wallet },
       { path: "/plans", label: "套餐管理", icon: Box },
       { path: "/codes", label: "兑换码", icon: Ticket },
       { path: "/audit", label: "审计日志", icon: List },
@@ -536,11 +540,13 @@ async function submitPassword() {
             '/profitability',
             '/agent-quality',
             '/orders',
+            '/home-banners',
             '/users',
             '/platform-logs',
             '/security-center',
             '/plans',
             '/growth-groups',
+            '/referrals',
             '/checkin-activity',
             '/settings',
             '/model-config',

@@ -13,7 +13,47 @@ globalThis.document = { hidden: false }
 globalThis.CustomEvent = TestCustomEvent
 globalThis.EventSource = undefined
 
-const { createTask, waitForTask } = await import('../src/legacy-modules/services/tasksApi.js')
+const { createTask, waitForTask, subscribeTask, subscribeUserTasks } = await import('../src/legacy-modules/services/tasksApi.js')
+
+test('account events and many task subscriptions share one connection and release it only after the last consumer', async () => {
+  const sources = []
+  globalThis.EventSource = class {
+    constructor(url) { this.url = url; this.closed = false; sources.push(this) }
+    addEventListener() {}
+    close() { this.closed = true }
+  }
+  const updates = []
+  const stopAccount = subscribeUserTasks()
+  const stops = Array.from({ length: 100 }, (_, i) => subscribeTask(`shared-${i}`, { onUpdate: task => updates.push(task.id) }))
+  assert.equal(sources.length, 1)
+  assert.equal(sources[0].url, '/api/v1/me/tasks/events')
+  sources[0].onmessage({ data: JSON.stringify({ task: { id: 'shared-9', status: 'running' } }) })
+  assert.deepEqual(updates, ['shared-9'])
+  stopAccount()
+  assert.equal(sources[0].closed, false)
+  stops.forEach(stop => stop())
+  assert.equal(sources[0].closed, true)
+  globalThis.EventSource = undefined
+})
+
+test('continued task observation survives a transport failure and preserves server cancellation', async () => {
+  let reads = 0
+  const id = '30000000-0000-4000-8000-000000000001'
+  globalThis.fetch = async () => {
+    reads += 1
+    if (reads === 1) throw new TypeError('offline')
+    return new Response(JSON.stringify({ success: true, data: { items: [{ id, status: 'canceled', errorCode: 'user_canceled' }] } }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 5000)
+  try {
+    const result = await waitForTask(id, { intervalMs: 500, maxWaitMs: null, signal: controller.signal })
+    assert.equal(reads, 2)
+    assert.equal(result.status, 'canceled')
+  } finally {
+    clearTimeout(timeout)
+  }
+})
 
 test('100 task waiters use one batch snapshot request', async () => {
   let batchCalls = 0

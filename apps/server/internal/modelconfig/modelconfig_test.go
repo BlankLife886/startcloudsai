@@ -41,6 +41,47 @@ func TestSelectPublicUsesRequestedOrDefaultModel(t *testing.T) {
 	}
 }
 
+func TestMaintenanceModelRemainsPublicButCannotReceiveNewTasks(t *testing.T) {
+	cfg := testConfig()
+	cfg.Models[0].Status = ModelStatusMaintenance
+	public := PublicModels(cfg, ModelKindImage)
+	if len(public) != 2 {
+		t.Fatalf("public catalog = %#v", public)
+	}
+	publicByID := map[string]Model{}
+	for _, selection := range public {
+		publicByID[selection.Model.ID] = selection.Model
+	}
+	if publicByID["image-quality"].Status != ModelStatusMaintenance || !publicByID["image-fast"].Available() {
+		t.Fatalf("public catalog statuses = %#v", publicByID)
+	}
+	if _, ok := SelectPublic(cfg, ModelKindImage, "image-quality"); ok {
+		t.Fatal("maintenance model must not be selectable")
+	}
+	selected, ok := SelectPublic(cfg, ModelKindImage, "")
+	if !ok || selected.Model.ID != "image-fast" {
+		t.Fatalf("available fallback = %#v", selected)
+	}
+}
+
+func TestValidateModelIconAndStatus(t *testing.T) {
+	cfg := testConfig()
+	cfg.Models[0].IconURL = "/api/v1/files/model-icons/image.webp"
+	cfg.Models[0].Status = ModelStatusAvailable
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("valid model presentation fields: %v", err)
+	}
+	cfg.Models[0].IconURL = "https://tracking.example/icon.png"
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "图标地址") {
+		t.Fatalf("expected invalid icon URL, got %v", err)
+	}
+	cfg = testConfig()
+	cfg.Models[0].Status = "retired"
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "状态无效") {
+		t.Fatalf("expected invalid status, got %v", err)
+	}
+}
+
 func TestEditableFileProviderRequiresExplicitEnabledRoute(t *testing.T) {
 	cfg := testConfig()
 	cfg.EditableFiles = EditableFileConfig{

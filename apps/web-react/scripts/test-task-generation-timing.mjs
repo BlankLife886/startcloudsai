@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import {
   serverTaskStartedAt,
   taskGenerationElapsedMs,
+  taskTotalElapsedMs,
+  taskGroupTotalElapsedMs,
 } from '../src/legacy-modules/features/ai-wallpaper/domain/taskGenerationTiming.js'
 import {
   ecommerceElapsedSeconds,
@@ -46,4 +48,17 @@ assert.equal(
   '完成任务应只计算 finishedAt - startedAt',
 )
 
-console.log('task generation timing checks passed')
+const retryCreated = '2026-09-07T00:00:00Z'
+const retryStarted = '2026-09-07T00:01:10Z'
+const retryFinished = '2026-09-07T00:01:40Z'
+assert.equal(taskTotalElapsedMs({ status: 'running', createdAt: retryCreated, startedAt: retryStarted }, Date.parse(retryFinished)), 100_000)
+assert.equal(taskTotalElapsedMs({ status: 'queued', createdAt: retryCreated, startedAt: null }, Date.parse(retryFinished)), 100_000)
+assert.equal(taskTotalElapsedMs({ status: 'succeeded', createdAt: retryCreated, startedAt: retryStarted, finishedAt: retryFinished }), 100_000)
+assert.equal(ecommerceElapsedSeconds({ status: 'succeeded', createdAt: retryCreated, startedAt: retryStarted, finishedAt: retryFinished }), 100)
+assert.equal(taskTotalElapsedMs({ status: 'canceled', createdAt: retryCreated, finishedAt: retryFinished }), 100_000)
+assert.equal(taskTotalElapsedMs({ status: 'failed', createdAt: retryCreated }), 0, 'a terminal row without a finish time must not keep ticking')
+assert.equal(taskGroupTotalElapsedMs([
+  { status: 'succeeded', createdAt: retryCreated, finishedAt: retryFinished },
+  { status: 'succeeded', createdAt: retryStarted, finishedAt: retryFinished },
+]), 100_000, 'parallel tasks share elapsed wall time instead of adding overlapping durations')
+console.log('task generation and total duration checks passed')

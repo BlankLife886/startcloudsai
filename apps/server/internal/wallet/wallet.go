@@ -137,8 +137,18 @@ func taskSourceID(taskID uuid.UUID, generation int) string {
 	return fmt.Sprintf("%s/%d", taskID, generation)
 }
 
-// FreezeForTask 冻结任务费用：只对匹配的真实功能使用体验积分，其余费用使用普通积分。
-func FreezeForTask(ctx context.Context, q store.Q, userID, taskID uuid.UUID, amountCents int64, featureKey string, reason *string) (*store.LedgerEntry, error) {
+func trialBudget(ctx context.Context, amount int64) int64 {
+	if d := store.BillingDecisionFrom(ctx); d != nil {
+		if d.Source == "subscription_contract" {
+			return 0
+		}
+		return max(amount-d.SubscriptionPoints, 0)
+	}
+	return amount
+}
+
+// FreezeForTask reserves matching subscription credits first, then eligible trial/general funds.
+func freezeForTaskBase(ctx context.Context, q store.Q, userID, taskID uuid.UUID, amountCents int64, featureKey string, reason *string) (*store.LedgerEntry, error) {
 	// Allocation must read the balance after acquiring the wallet row lock. If
 	// concurrent statements calculate from the same pre-lock snapshot, both can
 	// reserve the same trial credits before their UPDATE statements serialize.
@@ -170,7 +180,7 @@ func FreezeForTask(ctx context.Context, q store.Q, userID, taskID uuid.UUID, amo
 			                 AND campaign.status = 'active'
 			                 AND campaign.expires_at > now()
 			           ) THEN trial_balance_cents ELSE 0 END,
-			           $2::bigint
+			           $5::bigint
 			       ) AS trial_cents,
 			       $2::bigint - LEAST(
 			           CASE WHEN EXISTS (
@@ -183,7 +193,7 @@ func FreezeForTask(ctx context.Context, q store.Q, userID, taskID uuid.UUID, amo
 			                 AND campaign.status = 'active'
 			                 AND campaign.expires_at > now()
 			           ) THEN trial_balance_cents ELSE 0 END,
-			           $2::bigint
+			           $5::bigint
 			       ) AS normal_cents
 			FROM wallets
 			WHERE user_id = $1
@@ -210,7 +220,7 @@ func FreezeForTask(ctx context.Context, q store.Q, userID, taskID uuid.UUID, amo
 			          a.normal_cents, a.trial_cents
 		)
 		SELECT balance_after, normal_cents, trial_cents FROM updated`,
-		userID, amountCents, now(), featureKey).Scan(&balanceAfter, &normalCents, &trialCents)
+		userID, amountCents, now(), featureKey, trialBudget(ctx, amountCents)).Scan(&balanceAfter, &normalCents, &trialCents)
 	if err != nil {
 		if isNoRows(err) {
 			current, walletErr := store.GetWallet(ctx, q, userID)
@@ -235,7 +245,7 @@ func FreezeForTask(ctx context.Context, q store.Q, userID, taskID uuid.UUID, amo
 }
 
 // ReleaseForTask 解冻（失败/取消）：幂等——本代已 release 则重放返回。
-func ReleaseForTask(ctx context.Context, q store.Q, userID, taskID uuid.UUID, amountCents int64, reason *string) (*store.LedgerEntry, error) {
+func releaseForTaskBase(ctx context.Context, q store.Q, userID, taskID uuid.UUID, amountCents int64, reason *string) (*store.LedgerEntry, error) {
 	// freeze 代数走 reservation 主键；release 代数仍读账本（已由
 	// ix_wallet_ledger_task_source 索引化，不再全扫）。
 	freezeGen, err := store.CountTaskCreditReservations(ctx, q, taskID)
@@ -304,7 +314,7 @@ func ReleaseForTask(ctx context.Context, q store.Q, userID, taskID uuid.UUID, am
 
 // SettleForTask 结算（成功）：消耗冻结额，幂等键 ('spend','task',task_id)。
 // delta_cents = 0：结算只消耗冻结额，可用余额不变（冻结时已记 -amount）。
-func SettleForTask(ctx context.Context, q store.Q, userID, taskID uuid.UUID, amountCents int64, reason *string) (*store.LedgerEntry, error) {
+func settleForTaskBase(ctx context.Context, q store.Q, userID, taskID uuid.UUID, amountCents int64, reason *string) (*store.LedgerEntry, error) {
 	existing, err := store.GetLedgerEntry(ctx, q, "spend", "task", taskID.String())
 	if err != nil {
 		return nil, err
@@ -319,7 +329,7 @@ func SettleForTask(ctx context.Context, q store.Q, userID, taskID uuid.UUID, amo
 	if reservation == nil || reservation.NormalRemainingCents+reservation.TrialRemainingCents < amountCents {
 		return nil, apperr.E("internal_error", "任务冻结来源异常，无法结算", 500)
 	}
-	trialCents := min(reservation.TrialRemainingCents, amountCents)
+	trialCents := min(reservation.TrialRemainingCents, trialBudget(ctx, amountCents))
 	normalCents := amountCents - trialCents
 	if normalCents > reservation.NormalRemainingCents {
 		return nil, apperr.E("internal_error", "任务冻结来源不足，无法结算", 500)
@@ -354,13 +364,13 @@ func SettleForTask(ctx context.Context, q store.Q, userID, taskID uuid.UUID, amo
 	if reason == nil {
 		reason = strPtr(fmt.Sprintf("任务结算：消耗冻结 %d 分", amountCents))
 	}
-	return store.InsertLedgerEntry(ctx, q, userID, "spend", 0, balanceAfter, "task", strPtr(taskID.String()), reason, creditBucket(normalCents, trialCents))
+	return store.InsertLedgerEntry(ctx, q, userID, "spend", 0, balanceAfter, "task", strPtr(taskID.String()), reason, creditBucket(normalCents, trialCents), amountCents)
 }
 
 // FreezeFeatureCredits reserves a generic billable operation from the trial
 // bucket when the user has an active entitlement for featureKey, then uses
 // normal credits for any remainder.
-func FreezeFeatureCredits(ctx context.Context, q store.Q, userID uuid.UUID, amountCents int64, featureKey, sourceType, sourceID string, reason *string) (*store.LedgerEntry, error) {
+func freezeFeatureCreditsBase(ctx context.Context, q store.Q, userID uuid.UUID, amountCents int64, featureKey, sourceType, sourceID string, reason *string) (*store.LedgerEntry, error) {
 	if amountCents <= 0 {
 		return nil, nil
 	}
@@ -390,7 +400,7 @@ func FreezeFeatureCredits(ctx context.Context, q store.Q, userID uuid.UUID, amou
 			                 AND campaign.status = 'active'
 			                 AND campaign.expires_at > now()
 			           ) THEN trial_balance_cents ELSE 0 END,
-			           $2::bigint
+			           $5::bigint
 			       ) AS trial_cents,
 			       $2::bigint - LEAST(
 			           CASE WHEN EXISTS (
@@ -403,7 +413,7 @@ func FreezeFeatureCredits(ctx context.Context, q store.Q, userID uuid.UUID, amou
 			                 AND campaign.status = 'active'
 			                 AND campaign.expires_at > now()
 			           ) THEN trial_balance_cents ELSE 0 END,
-			           $2::bigint
+			           $5::bigint
 			       ) AS normal_cents
 			FROM wallets
 			WHERE user_id = $1
@@ -430,7 +440,7 @@ func FreezeFeatureCredits(ctx context.Context, q store.Q, userID uuid.UUID, amou
 			          a.normal_cents, a.trial_cents
 		)
 		SELECT balance_after, normal_cents, trial_cents FROM updated`,
-		userID, amountCents, now(), featureKey).Scan(&balanceAfter, &normalCents, &trialCents)
+		userID, amountCents, now(), featureKey, trialBudget(ctx, amountCents)).Scan(&balanceAfter, &normalCents, &trialCents)
 	if err != nil {
 		if isNoRows(err) {
 			current, walletErr := store.GetWallet(ctx, q, userID)
@@ -456,7 +466,7 @@ func FreezeFeatureCredits(ctx context.Context, q store.Q, userID uuid.UUID, amou
 
 // ReleaseFeatureCredits returns the requested remainder to the same credit
 // buckets used by the original generic reservation.
-func ReleaseFeatureCredits(ctx context.Context, q store.Q, userID uuid.UUID, amountCents int64, sourceType, sourceID string, reason *string) (*store.LedgerEntry, error) {
+func releaseFeatureCreditsBase(ctx context.Context, q store.Q, userID uuid.UUID, amountCents int64, sourceType, sourceID string, reason *string) (*store.LedgerEntry, error) {
 	if amountCents <= 0 {
 		return nil, nil
 	}
@@ -510,7 +520,7 @@ func ReleaseFeatureCredits(ctx context.Context, q store.Q, userID uuid.UUID, amo
 
 // SettleFeatureCredits consumes the requested amount from a generic mixed
 // reservation. Any remaining amount can be released in the same transaction.
-func SettleFeatureCredits(ctx context.Context, q store.Q, userID uuid.UUID, amountCents int64, sourceType, sourceID string, reason *string) (*store.LedgerEntry, error) {
+func settleFeatureCreditsBase(ctx context.Context, q store.Q, userID uuid.UUID, amountCents int64, sourceType, sourceID string, reason *string) (*store.LedgerEntry, error) {
 	if amountCents <= 0 {
 		return nil, nil
 	}
@@ -532,7 +542,7 @@ func SettleFeatureCredits(ctx context.Context, q store.Q, userID uuid.UUID, amou
 	if reservation == nil || reservation.NormalRemainingCents+reservation.TrialRemainingCents < amountCents {
 		return nil, apperr.E("internal_error", "冻结来源异常，无法结算", 500)
 	}
-	trialCents := min(reservation.TrialRemainingCents, amountCents)
+	trialCents := min(reservation.TrialRemainingCents, trialBudget(ctx, amountCents))
 	normalCents := amountCents - trialCents
 	if normalCents > reservation.NormalRemainingCents {
 		return nil, apperr.E("internal_error", "冻结来源不足，无法结算", 500)
@@ -564,7 +574,7 @@ func SettleFeatureCredits(ctx context.Context, q store.Q, userID uuid.UUID, amou
 	if reason == nil {
 		reason = strPtr(fmt.Sprintf("任务结算：消耗冻结 %d 分", amountCents))
 	}
-	return store.InsertLedgerEntry(ctx, q, userID, "spend", 0, balanceAfter, sourceType, strPtr(sourceID), reason, creditBucket(normalCents, trialCents))
+	return store.InsertLedgerEntry(ctx, q, userID, "spend", 0, balanceAfter, sourceType, strPtr(sourceID), reason, creditBucket(normalCents, trialCents), amountCents)
 }
 
 // FreezeNormalCredits reserves only normal credits for operations that are not
@@ -670,7 +680,7 @@ func SettleNormalCredits(ctx context.Context, q store.Q, userID uuid.UUID, amoun
 	if reason == nil {
 		reason = strPtr(fmt.Sprintf("任务结算：消耗冻结 %d 分", amountCents))
 	}
-	return store.InsertLedgerEntry(ctx, q, userID, "spend", 0, balanceAfter, sourceType, strPtr(sourceID), reason, "normal")
+	return store.InsertLedgerEntry(ctx, q, userID, "spend", 0, balanceAfter, sourceType, strPtr(sourceID), reason, "normal", amountCents)
 }
 
 func isNoRows(err error) bool {

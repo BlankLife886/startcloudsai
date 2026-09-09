@@ -30,6 +30,10 @@ func respondNoContent(c *gin.Context) {
 
 // fail 输出统一错误格式；非 apperr 记录日志并回 500 internal_error。
 func fail(c *gin.Context, err error) {
+	if c.Request != nil && isOpenAICompatPath(c.Request.URL.Path) {
+		failOpenAI(c, err, "")
+		return
+	}
 	if errors.Is(err, context.Canceled) ||
 		(c.Request != nil && errors.Is(c.Request.Context().Err(), context.Canceled)) {
 		c.Abort()

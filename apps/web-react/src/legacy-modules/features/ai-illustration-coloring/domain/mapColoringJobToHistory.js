@@ -3,6 +3,7 @@ import { extractServerJobOutputs } from '@/features/ai-wallpaper/domain/mapServe
 import { COMPLETED_WITHOUT_OUTPUT_ERROR } from '@/features/ai-illustration-coloring/domain/coloringStability'
 import { normalizeColoringHistoryItem } from '@/services/aiIllustrationColoringState'
 import { buildApiUrl } from '@/services/apiBase'
+import { taskTotalElapsedMs } from '../../ai-wallpaper/domain/taskGenerationTiming.js'
 
 const TERMINAL_JOB_STATUSES = new Set([
   'completed',
@@ -341,7 +342,7 @@ export function mapColoringJobToHistory(job, { existingItem = null } = {}) {
     createdAt: job?.createdAt || existingItem?.createdAt || new Date().toISOString(),
     startedAt,
     finishedAt,
-    durationMs: Number(job?.durationMs || existingItem?.durationMs || 0),
+    durationMs: taskTotalElapsedMs({ ...job, status, createdAt: job?.createdAt || existingItem?.createdAt, startedAt, finishedAt }),
     updatedAt:
       (keptExistingStatus ? existingItem?.updatedAt : job?.updatedAt) ||
       existingItem?.updatedAt ||

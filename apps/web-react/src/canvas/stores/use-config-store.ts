@@ -22,6 +22,9 @@ export type ModelReasoningPrice = {
 export type ChannelModel = {
     name: string;
     label?: string;
+    iconUrl?: string;
+    status?: "available" | "maintenance";
+    maintenance?: boolean;
     pricePoints?: number;
     standardPricePoints?: number;
     discountPricePoints?: number;
@@ -29,6 +32,17 @@ export type ChannelModel = {
     resolutions?: string[];
     aspectRatios?: string[];
     aspectRatiosByResolution?: Record<string, string[]>;
+    supportsExactSize?: boolean;
+    exactSizeLimits?: {
+        minWidth: number;
+        maxWidth: number;
+        minHeight: number;
+        maxHeight: number;
+        step: number;
+        minPixels: number;
+        maxPixels: number;
+        maxAspectRatio: number;
+    };
     qualities?: string[];
     transparentBackground?: boolean;
     maxReferenceImages?: number;
@@ -75,6 +89,9 @@ export type AiConfig = {
     models: string[];
     quality: string;
     size: string;
+    sizeMode: "ratio" | "exact";
+    exactWidth: string;
+    exactHeight: string;
     resolution: string;
     background: string;
     count: string;
@@ -105,6 +122,9 @@ export const defaultConfig: AiConfig = {
     models: [],
     quality: "medium",
     size: "1:1",
+    sizeMode: "ratio",
+    exactWidth: "",
+    exactHeight: "",
     resolution: "1K",
     background: "",
     count: "1",
@@ -195,7 +215,12 @@ export function formatModelDiscount(model: ChannelModel | undefined) {
 }
 
 function modelMatchesCapability(config: AiConfig, value: string, capability: ModelCapability) {
-    return findChannelModel(config, value)?.capability === capability;
+    const model = findChannelModel(config, value);
+    return model?.capability === capability && !modelMaintenance(model);
+}
+
+export function modelMaintenance(model: ChannelModel | undefined) {
+    return model?.maintenance === true || model?.status === "maintenance";
 }
 
 export function resolveModelForCapability(config: AiConfig, currentModel: string | undefined, capability: ModelCapability) {
@@ -206,6 +231,10 @@ export function resolveModelForCapability(config: AiConfig, currentModel: string
 }
 
 export function selectableModelsByCapability(config: AiConfig, capability?: ModelCapability) {
+    return catalogModelsByCapability(config, capability).filter((value) => !modelMaintenance(findChannelModel(config, value)));
+}
+
+export function catalogModelsByCapability(config: AiConfig, capability?: ModelCapability) {
     if (!capability) return config.models;
     return config.channels.flatMap((channel) => channel.models.filter((model) => model.capability === capability).map((model) => encodeChannelModel(channel.id, model.name)));
 }
@@ -223,6 +252,7 @@ export const useConfigStore = create<ConfigStore>()(
                     const value = (capability: ModelCapability) => (defaults[capability] ? encodeChannelModel(channel.id, defaults[capability]!) : "");
                     const imageModel = value("image");
                     const textModel = value("text");
+                    const exactModel = state.config.sizeMode === "exact" ? state.config.imageModel || state.config.model : "";
                     return {
                         agentPricing: {
                             standardMultiplier: agentPricing?.standardMultiplier || defaultCanvasAgentPricing.standardMultiplier,
@@ -233,16 +263,24 @@ export const useConfigStore = create<ConfigStore>()(
                             channelMode: "remote",
                             channels,
                             models: modelOptionsFromChannels(channels),
-                            imageModel,
+                            imageModel: exactModel || imageModel,
                             textModel,
                             videoModel: value("video"),
                             audioModel: value("audio"),
-                            model: imageModel || textModel,
+                            model: exactModel || imageModel || textModel,
                         },
                     };
                 }),
-            updateConfig: (key, value) => set((state) => ({ config: { ...state.config, [key]: value } })),
-            isAiConfigReady: (config, model) => Boolean(model.trim() && findChannelModel(config, model)),
+            updateConfig: (key, value) => set((state) => {
+                const config = { ...state.config, [key]: value };
+                if ((key === "model" || key === "imageModel") && findChannelModel(config, String(value))?.supportsExactSize !== true) {
+                    config.sizeMode = "ratio";
+                    config.exactWidth = "";
+                    config.exactHeight = "";
+                }
+                return { config };
+            }),
+            isAiConfigReady: (config, model) => Boolean(model.trim() && findChannelModel(config, model) && !modelMaintenance(findChannelModel(config, model))),
             openConfigDialog: (shouldPromptContinue = false) => set({ isConfigOpen: true, shouldPromptContinue }),
             setConfigDialogOpen: (isConfigOpen) => set({ isConfigOpen }),
             clearPromptContinue: () => set({ shouldPromptContinue: false }),
@@ -251,7 +289,7 @@ export const useConfigStore = create<ConfigStore>()(
             name: CONFIG_STORE_KEY,
             version: 2,
             partialize: (state): Pick<ConfigStore, "config"> => ({
-                config: { ...state.config, channels: [], models: [], model: "", imageModel: "", videoModel: "", textModel: "", audioModel: "" },
+                config: { ...state.config, channels: [], models: [], model: state.config.sizeMode === "exact" ? state.config.model : "", imageModel: state.config.sizeMode === "exact" ? state.config.imageModel || state.config.model : "", videoModel: "", textModel: "", audioModel: "" },
             }),
             migrate: migrateConfigStore,
             merge: (persisted, current) => {
@@ -264,8 +302,8 @@ export const useConfigStore = create<ConfigStore>()(
                         channelMode: "remote",
                         channels: [],
                         models: [],
-                        model: "",
-                        imageModel: "",
+                        model: saved.config?.sizeMode === "exact" ? saved.config.model || "" : "",
+                        imageModel: saved.config?.sizeMode === "exact" ? saved.config.imageModel || saved.config.model || "" : "",
                         videoModel: "",
                         textModel: "",
                         audioModel: "",
@@ -279,7 +317,7 @@ export const useConfigStore = create<ConfigStore>()(
 export function useEffectiveConfig() {
     const config = useConfigStore((state) => state.config);
     return useMemo(() => {
-        const imageModel = resolveModelForCapability(config, config.imageModel, "image");
+        const imageModel = config.sizeMode === "exact" ? config.imageModel || config.model : resolveModelForCapability(config, config.imageModel, "image");
         const videoModel = resolveModelForCapability(config, config.videoModel, "video");
         const textModel = resolveModelForCapability(config, config.textModel, "text");
         const audioModel = resolveModelForCapability(config, config.audioModel, "audio");

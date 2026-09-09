@@ -237,6 +237,51 @@ func assistantPromptContinuesDocument(prompt string) bool {
 	return continuation || (documentSubject && evidenceAction)
 }
 
+func assistantPromptContinuesConversation(prompt string) bool {
+	text := strings.ToLower(strings.TrimSpace(prompt))
+	if text == "" {
+		return false
+	}
+	return containsAssistantTerm(text, []string{
+		"刚才", "上面", "上述", "以上", "前面", "之前讨论", "根据前文", "按照前文", "按前面的", "按上面的",
+		"按这个方案", "按照这个方案", "照这个方案", "照你说的", "继续生成", "接着生成", "基于刚才", "沿用刚才",
+		"previous", "above", "earlier discussion", "as discussed", "continue with", "use that plan",
+	})
+}
+
+func assistantImagePromptWithConversation(history []*store.AssistantMessage, run *store.AssistantRun) string {
+	if run == nil {
+		return ""
+	}
+	if !assistantPromptContinuesConversation(run.Prompt) {
+		return run.Prompt
+	}
+	lines := make([]string, 0, 8)
+	for index := len(history) - 1; index >= 0 && len(lines) < 8; index-- {
+		message := history[index]
+		if message == nil || message.ID == run.UserMessageID || message.ID == run.AssistantMessageID ||
+			message.Status != "complete" || strings.TrimSpace(message.Content) == "" {
+			continue
+		}
+		role := "助手"
+		if message.Role == "user" {
+			role = "用户"
+		} else if message.Role != "assistant" {
+			continue
+		}
+		content := assistantContextualizedContent(message, message.Content)
+		lines = append([]string{fmt.Sprintf("- %s：%s", role, truncateAssistantRunes(strings.Join(strings.Fields(content), " "), 480))}, lines...)
+	}
+	if len(lines) == 0 {
+		return run.Prompt
+	}
+	return strings.Join([]string{
+		"以下是本次图片请求明确引用的近期对话，只用于补全当前创作要求；如有冲突，以最后的本轮要求为准：",
+		strings.Join(lines, "\n"),
+		"本轮图片要求：" + strings.TrimSpace(run.Prompt),
+	}, "\n")
+}
+
 func assistantRecentDocumentFileIDs(history []*store.AssistantMessage, maximum int) []string {
 	if maximum <= 0 {
 		maximum = 8

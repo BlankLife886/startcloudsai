@@ -5,8 +5,8 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
-  echo "Working tree has uncommitted changes; commit them before packaging." >&2
+if [[ -n "$(git status --porcelain --untracked-files=normal -- . ':(exclude)apps/mobile')" ]]; then
+  echo "Website release has uncommitted changes; commit them before packaging." >&2
   exit 1
 fi
 
@@ -16,7 +16,12 @@ archive_name="startcloudsai-$commit.tar.gz"
 archive="$output_dir/$archive_name"
 
 mkdir -p "$output_dir"
-git archive --format=tar --prefix=startcloudsai/ HEAD | gzip -9 > "$archive"
+# Website release only. Flutter is released separately; uncommitted mobile work
+# must never be swept into a website deployment. No working-tree data is copied.
+full_commit="$(git rev-parse HEAD)"
+git archive --format=tar --prefix=startcloudsai/ \
+  --add-virtual-file="startcloudsai/RELEASE_COMMIT:$full_commit" \
+  HEAD -- . ':(exclude)apps/mobile' | gzip -n -9 > "$archive"
 
 if command -v shasum >/dev/null 2>&1; then
   (cd "$output_dir" && shasum -a 256 "$archive_name" > "$archive_name.sha256")

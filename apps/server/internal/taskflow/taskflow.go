@@ -15,6 +15,8 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
+	"github.com/BlankLife886/startcloudsai/server/internal/contractpricing"
+	"github.com/BlankLife886/startcloudsai/server/internal/executionconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/growth"
 	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
@@ -99,13 +101,17 @@ func supports(values []string, requested string) bool {
 }
 
 func validateModelImageCapabilities(model modelconfig.Model, params map[string]any, referenceCount int) error {
+	if err := modelconfig.ValidateExactImageParams(model, "", params); err != nil {
+		return apperr.E("validation_error", err.Error(), 422)
+	}
+	_, _, exact, _ := modelconfig.ExactImageDimensions(params)
 	requestedResolution := stringParam(params, "resolutionScale", "resolution")
-	if requestedResolution != "" && !supports(model.Resolutions, requestedResolution) {
+	if !exact && requestedResolution != "" && !supports(model.Resolutions, requestedResolution) {
 		return apperr.E("validation_error", "所选模型不支持该分辨率，请重新选择", 422)
 	}
 	allowedRatios := modelconfig.AspectRatiosForResolution(model, requestedResolution)
 	aspectRatio := stringParam(params, "aspectRatio", "ratio")
-	if aspectRatio != "" && !supports(allowedRatios, aspectRatio) {
+	if !exact && aspectRatio != "" && !supports(allowedRatios, aspectRatio) {
 		return apperr.E("validation_error", "所选模型不支持该宽高比，请重新选择", 422)
 	}
 	quality := stringParam(params, "quality")
@@ -159,9 +165,11 @@ func ValidateModelImageCapabilities(model modelconfig.Model, params map[string]a
 }
 
 type CreateInput struct {
-	Type                   string
-	Prompt                 string
-	Params                 map[string]any
+	Type   string
+	Prompt string
+	Params map[string]any
+	// TrustedParams is set only by internal callers after validation, never JSON input.
+	TrustedParams          map[string]any `json:"-"`
 	InputKeys              []string
 	Count                  int
 	IdempotencyKey         *string
@@ -169,6 +177,7 @@ type CreateInput struct {
 }
 
 type PriceQuote struct {
+	Billing                *store.BillingDecision
 	Workspace              string
 	ModelID                string
 	StandardUnitPriceCents int64
@@ -228,7 +237,8 @@ func resolveSelectionPrice(cfg modelconfig.Config, workspace string, model model
 	return modelconfig.ResolveWorkspacePrice(cfg, workspace, model)
 }
 
-func QuoteTaskPrice(ctx context.Context, q store.Q, in CreateInput) (*PriceQuote, error) {
+func QuoteTaskPrice(ctx context.Context, q store.Q, in CreateInput, users ...uuid.UUID) (*PriceQuote, error) {
+	in.Params = incomingTaskParams(in.Params, in.TrustedParams)
 	if !store.Contains(store.TaskTypes, in.Type) || in.Type == "puzzle" {
 		return nil, apperr.E("validation_error", "不支持的任务类型", 422)
 	}
@@ -272,6 +282,12 @@ func QuoteTaskPrice(ctx context.Context, q store.Q, in CreateInput) (*PriceQuote
 			selection, configured = modelconfig.SelectPublic(cfg, modelconfig.ModelKindImage, modelID)
 		}
 	}
+	if err := ValidateStrictAlphaImageRequest(selection, in.Params); err != nil {
+		return nil, err
+	}
+	if err := modelconfig.ValidateExactImageSelection(selection, in.Params); err != nil {
+		return nil, apperr.E("validation_error", err.Error(), 422)
+	}
 	if configured {
 		if selection.Model.Kind == modelconfig.ModelKindImage {
 			if err := validateModelImageCapabilities(selection.Model, in.Params, len(in.InputKeys)); err != nil {
@@ -288,6 +304,17 @@ func QuoteTaskPrice(ctx context.Context, q store.Q, in CreateInput) (*PriceQuote
 		quote.UnitPriceCents = resolved.EffectiveCents
 		quote.TotalPriceCents = resolved.EffectiveCents * int64(in.Count)
 		quote.Overridden = resolved.Overridden
+		if len(users) > 0 {
+			feature, _ := trialfeature.ForTask(in.Type, in.Params)
+			toolInput, _ := in.Params["toolInput"].(map[string]any)
+			decision, err := contractpricing.Resolve(ctx, q, contractpricing.Request{UserID: users[0], Feature: feature.Key, Workspace: workspace, ModelID: selection.Model.ID, Channel: store.BillingChannel(ctx), PublicUnitPoints: quote.UnitPriceCents, Count: int64(in.Count), InputLongEdge: int(numericParam(in.Params, "_inputImageLongEdge")), ScaleFactor: numericParam(toolInput, "scale_factor")})
+			if err != nil {
+				return nil, err
+			}
+			quote.Billing = decision
+			quote.UnitPriceCents = decision.UnitPoints
+			quote.TotalPriceCents = decision.UnitPoints * int64(in.Count)
+		}
 		return quote, nil
 	}
 	if in.Type == "media_tool" || in.Type == "background_remove" ||
@@ -400,6 +427,28 @@ func CreateTaskWithCommitHook(ctx context.Context, st *store.Store, userID uuid.
 }
 
 func createTask(ctx context.Context, st *store.Store, userID uuid.UUID, in CreateInput, hook CreateTaskCommitHook) (*store.Task, bool, error) {
+	task, created, err := createTaskWithTransaction(ctx, userID, in, hook, func(fn func(pgx.Tx) error) error {
+		return st.Tx(ctx, fn)
+	})
+	if err != nil && store.IsUniqueViolation(err, "uq_tasks_user_idem") && in.IdempotencyKey != nil {
+		existing, readErr := store.GetTaskByIdemKey(ctx, st.Pool, userID, *in.IdempotencyKey)
+		if readErr == nil && existing != nil {
+			return existing, false, nil
+		}
+	}
+	return task, created, err
+}
+
+// CreateTaskInTx shares the normal validation and billing contract with an
+// enclosing domain transaction. The caller must roll back if any item fails.
+func CreateTaskInTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID, in CreateInput, hook CreateTaskCommitHook) (*store.Task, bool, error) {
+	return createTaskWithTransaction(ctx, userID, in, hook, func(fn func(pgx.Tx) error) error {
+		return fn(tx)
+	})
+}
+
+func createTaskWithTransaction(ctx context.Context, userID uuid.UUID, in CreateInput, hook CreateTaskCommitHook, runTx func(func(pgx.Tx) error) error) (*store.Task, bool, error) {
+	in.Params = incomingTaskParams(in.Params, in.TrustedParams)
 	if !store.Contains(store.TaskTypes, in.Type) {
 		return nil, false, apperr.E("validation_error", "不支持的任务类型", 422)
 	}
@@ -421,7 +470,7 @@ func createTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 
 	var task *store.Task
 	created := false
-	err := st.Tx(ctx, func(tx pgx.Tx) error {
+	err := runTx(func(tx pgx.Tx) error {
 		if err := store.LockUserTaskCreation(ctx, tx, userID); err != nil {
 			return err
 		}
@@ -461,7 +510,7 @@ func createTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 			return err
 		}
 		if activeCount >= maxRunning {
-			return apperr.E("user_task_limit", fmt.Sprintf("同时进行中的任务不能超过 %d 个", maxRunning), 429)
+			return apperr.E("user_task_limit", fmt.Sprintf("你的任务队列已满（生成中与排队合计上限 %d 个），请等已有任务结束后重试", maxRunning), 429)
 		}
 		maxImages, err := settings.GetInt(ctx, tx, "user_max_running_images")
 		if err != nil {
@@ -475,7 +524,7 @@ func createTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 			return err
 		}
 		if activeImages+int64(in.Count) > int64(maxImages) {
-			return apperr.E("user_image_capacity", fmt.Sprintf("同时处理的图片不能超过 %d 张", maxImages), 429)
+			return apperr.E("user_image_capacity", fmt.Sprintf("你的图片队列容量不足（生成中与排队合计上限 %d 张），请等已有任务结束后重试", maxImages), 429)
 		}
 		taskID := uuid.New()
 		unitPrice, err := settings.TaskPriceCents(ctx, tx, in.Type)
@@ -538,7 +587,16 @@ func createTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 		} else {
 			selection, configured = modelconfig.SelectPublic(modelCfg, modelconfig.ModelKindImage, requestedModelID)
 		}
+		if err := ValidateStrictAlphaImageRequest(selection, params); err != nil {
+			return err
+		}
+		if err := modelconfig.ValidateExactImageSelection(selection, params); err != nil {
+			return apperr.E("validation_error", err.Error(), 422)
+		}
 		if configured {
+			if err := modelconfig.NormalizeExactImageParams(selection.Model, selection.Provider.Adapter, params); err != nil {
+				return apperr.E("validation_error", err.Error(), 422)
+			}
 			if isMediaTool {
 				toolInput, inputErr := mediaToolInput(params)
 				if inputErr != nil {
@@ -576,7 +634,7 @@ func createTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 				}
 				requestedResolution := ""
 				for _, key := range []string{"resolutionScale", "resolution"} {
-					if value, ok := in.Params[key].(string); ok && strings.TrimSpace(value) != "" {
+					if value, ok := params[key].(string); ok && strings.TrimSpace(value) != "" {
 						requestedResolution = strings.ToUpper(strings.TrimSpace(value))
 						break
 					}
@@ -593,7 +651,7 @@ func createTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 						return apperr.E("validation_error", "所选模型不支持该分辨率，请重新选择", 422)
 					}
 				}
-				requestedAspectRatio := stringParam(in.Params, "aspectRatio")
+				requestedAspectRatio := stringParam(params, "aspectRatio")
 				if requestedAspectRatio == "auto" {
 					params["requestedAspectRatio"] = "auto"
 					params["aspectRatio"] = "auto"
@@ -649,8 +707,17 @@ func createTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 			modelconfig.HasPublicKind(modelCfg, modelconfig.ModelKindImage) || requestedModelID != "" {
 			return apperr.E("validation_error", "所选图片模型未分配给当前页面，请刷新模型列表后重试", 422)
 		}
+		toolInput, _ := params["toolInput"].(map[string]any)
+		decision, err := contractpricing.Resolve(ctx, tx, contractpricing.Request{UserID: userID, Feature: taskFeature.Key, Workspace: workspace, ModelID: stringParam(params, "_modelConfigId"), Channel: store.BillingChannel(ctx), PublicUnitPoints: unitPrice, Count: int64(in.Count), InputLongEdge: int(numericParam(params, "_inputImageLongEdge")), ScaleFactor: numericParam(toolInput, "scale_factor")})
+		if err != nil {
+			return err
+		}
+		unitPrice = decision.UnitPoints
+		params["_billing"] = decision
+		params["_billingUnitPriceCents"] = unitPrice
+		params["_unitPriceCents"] = unitPrice
 		costCents := unitPrice * int64(in.Count)
-		if in.ExpectedUnitPriceCents != nil && *in.ExpectedUnitPriceCents != unitPrice {
+		if in.ExpectedUnitPriceCents != nil && *in.ExpectedUnitPriceCents != unitPrice && !(decision.Source == "subscription_contract" && unitPrice < *in.ExpectedUnitPriceCents) {
 			return apperr.E("price_changed", "任务价格已更新，请确认最新费用后重试", 409)
 		}
 
@@ -707,6 +774,33 @@ func createTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 		if err != nil {
 			return err
 		}
+		executionSnapshot, err := executionconfig.CaptureTask(ctx, tx, task, modelCfg, func(_ string, candidate modelconfig.Selection) bool {
+			if modelconfig.ValidateExactImageSelection(&candidate, params) != nil {
+				return false
+			}
+			if ValidateStrictAlphaImageRequest(&candidate, params) != nil {
+				return false
+			}
+			if candidate.Provider.ID == stringParam(params, "_providerConfigId") && candidate.Model.ID == stringParam(params, "_modelConfigId") {
+				return true
+			}
+			if candidate.Model.Kind == modelconfig.ModelKindImageTool {
+				return candidate.Model.Tool == stringParam(params, "_modelTool")
+			}
+			return ValidateModelImageCapabilities(candidate.Model, params, len(in.InputKeys)) == nil
+		})
+		if err != nil {
+			return err
+		}
+		if configured && len(executionSnapshot.CandidatesFor("task")) == 0 {
+			return apperr.E("model_unavailable", "所选模型没有可用的执行线路，请刷新后重试", 503)
+		}
+		if err := store.ValidateExecutionBatchCapacity(ctx, tx, userID, true, int64(in.Count), executionSnapshot.MaxRouteUnits("task")); err != nil {
+			if errors.Is(err, store.ErrExecutionBatchTooLarge) {
+				return apperr.E("execution_batch_too_large", err.Error(), 422)
+			}
+			return err
+		}
 		if rawAPIKeyID, ok := params["_apiKeyId"].(string); ok && strings.TrimSpace(rawAPIKeyID) != "" {
 			apiKeyID, parseErr := uuid.Parse(strings.TrimSpace(rawAPIKeyID))
 			if parseErr != nil {
@@ -746,8 +840,12 @@ func createTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 					reason = fmt.Sprintf("无限画布冻结（%d 张）", in.Count)
 				}
 			}
-			_, err = wallet.FreezeForTask(ctx, tx, userID, taskID, costCents, taskFeature.Key, strPtr(reason))
+			billingCtx := store.WithBillingDecision(wallet.WithSubscriptionScope(ctx, "", stringParam(params, "_modelConfigId")), decision)
+			_, err = wallet.FreezeForTask(billingCtx, tx, userID, taskID, costCents, taskFeature.Key, strPtr(reason))
 			if err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `UPDATE tasks SET params=$2 WHERE id=$1`, task.ID, params); err != nil {
 				return err
 			}
 		}
@@ -758,13 +856,6 @@ func createTask(ctx context.Context, st *store.Store, userID uuid.UUID, in Creat
 		return nil
 	})
 	if err != nil {
-		// 幂等键并发竞态：唯一约束冲突时重放读取已有任务
-		if store.IsUniqueViolation(err, "uq_tasks_user_idem") && in.IdempotencyKey != nil {
-			existing, gerr := store.GetTaskByIdemKey(ctx, st.Pool, userID, *in.IdempotencyKey)
-			if gerr == nil && existing != nil {
-				return existing, false, nil
-			}
-		}
 		return nil, false, err
 	}
 	return task, created, nil
@@ -812,6 +903,16 @@ func imageTaskRequiresCancelConfirmation(taskType string) bool {
 func cancelTask(ctx context.Context, st *store.Store, owner *uuid.UUID, taskID uuid.UUID, actor cancelActor, acknowledgeUpstream bool) (*store.Task, error) {
 	var task *store.Task
 	err := st.Tx(ctx, func(tx pgx.Tx) error {
+		var err error
+		task, err = cancelTaskInTx(ctx, tx, owner, taskID, actor, acknowledgeUpstream)
+		return err
+	})
+	return task, err
+}
+
+func cancelTaskInTx(ctx context.Context, tx pgx.Tx, owner *uuid.UUID, taskID uuid.UUID, actor cancelActor, acknowledgeUpstream bool) (*store.Task, error) {
+	var task *store.Task
+	err := func() error {
 		var t *store.Task
 		var err error
 		if owner != nil {
@@ -836,8 +937,15 @@ func cancelTask(ctx context.Context, st *store.Store, owner *uuid.UUID, taskID u
 			}
 			return apperr.E("task_not_cancelable", "仅排队中或运行中的任务可以停止", 400)
 		}
-		generationStage := stringParam(t.Params, "_generationStage")
-		upstreamSubmitted := fromStatus == "running" && generationStage != "preparing"
+		pendingAttempts, err := store.CountPendingTaskUpstreamAttempts(ctx, tx, taskID)
+		if err != nil {
+			return err
+		}
+		t.HasPendingUpstream = pendingAttempts > 0
+		upstreamSubmitted := store.TaskUpstreamSubmitted(t)
+		if actor != cancelActorUser && upstreamSubmitted {
+			return apperr.E("task_not_cancelable", "任务已提交上游，不能作为未提交任务取消", 400)
+		}
 		if actor == cancelActorUser && imageTaskRequiresCancelConfirmation(t.Type) && upstreamSubmitted && !acknowledgeUpstream {
 			return apperr.E("task_cancel_confirmation_required", "生成请求已经提交给上游，取消只会停止等待和接收结果，上游可能仍会继续生成，本次积分不会退回。请确认后再停止", 409)
 		}
@@ -856,6 +964,10 @@ func cancelTask(ctx context.Context, st *store.Store, owner *uuid.UUID, taskID u
 		}
 		if !ok {
 			return apperr.E("task_not_cancelable", "任务状态已变化，无法停止", 409)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE tasks SET params = COALESCE(params, '{}'::jsonb) || jsonb_build_object(
+			'_cancelUpstreamSubmitted',$2::boolean,'_cancelFromStatus',$3::text) WHERE id=$1`, taskID, upstreamSubmitted, fromStatus); err != nil {
+			return err
 		}
 		if err := store.ClearTaskOutputsAndEnqueueCleanup(ctx, tx, taskID, t.OutputKeys, t.ThumbnailKeys); err != nil {
 			return err
@@ -902,7 +1014,7 @@ func cancelTask(ctx context.Context, st *store.Store, owner *uuid.UUID, taskID u
 		}
 		task, err = store.GetTask(ctx, tx, taskID)
 		return err
-	})
+	}()
 	return task, err
 }
 
@@ -1157,7 +1269,8 @@ func ApplyTaskNotificationDisplay(n *store.Notification, task *store.Task) {
 	case (task.ErrorCode != nil && *task.ErrorCode == "user_canceled") || strings.Contains(title, "主动停止") || strings.Contains(body, "主动停止"):
 		n.Title = name + "已主动停止"
 		text := "你已主动停止" + name + "任务。任务尚未提交，冻结积分已退回。"
-		if task.StartedAt != nil {
+		submitted, recorded := task.Params["_cancelUpstreamSubmitted"].(bool)
+		if submitted || (!recorded && task.StartedAt != nil) {
 			text = "你已主动停止" + name + "任务。任务已提交，按本次预留积分结算，不按失败退款，也不会发放失败补偿。"
 		}
 		n.Body = &text
@@ -1220,6 +1333,33 @@ func RequeueTask(ctx context.Context, st *store.Store, taskID uuid.UUID) (*store
 		if t == nil {
 			return apperr.E("task_not_found", "任务不存在", 404)
 		}
+		channel := "web"
+		if stringParam(t.Params, "_apiKeyId") != "" {
+			channel = "api"
+		}
+		billingCtx := wallet.WithSubscriptionScope(ctx, channel, stringParam(t.Params, "_modelConfigId"))
+		quoteParams := make(map[string]any, len(t.Params)+1)
+		for key, value := range t.Params {
+			quoteParams[key] = value
+		}
+		if model := stringParam(t.Params, "_modelConfigId"); model != "" {
+			quoteParams["publicModelKey"] = model
+		}
+		quote := &PriceQuote{TotalPriceCents: t.CostCents, UnitPriceCents: t.CostCents / int64(max(t.Count, 1))}
+		if t.Type != "puzzle" {
+			quote, err = QuoteTaskPrice(billingCtx, tx, CreateInput{Type: t.Type, Params: quoteParams, InputKeys: t.InputKeys, Count: t.Count}, t.UserID)
+			if err != nil {
+				return err
+			}
+		}
+		if quote.TotalPriceCents > t.CostCents {
+			return apperr.E("price_changed", "当前价格或订阅权益已变化，请重新创建任务并确认费用", 409)
+		}
+		t.CostCents = quote.TotalPriceCents
+		t.Params["_billing"] = quote.Billing
+		t.Params["_unitPriceCents"] = quote.UnitPriceCents
+		t.Params["_billingUnitPriceCents"] = quote.UnitPriceCents
+		billingCtx = store.WithBillingDecision(billingCtx, quote.Billing)
 		cleanupKeys := append([]string(nil), t.OutputKeys...)
 		cleanupKeys = append(cleanupKeys, t.ThumbnailKeys...)
 		cleanupKeys = store.WithDisplayKeys(cleanupKeys)
@@ -1235,9 +1375,12 @@ func RequeueTask(ctx context.Context, st *store.Store, taskID uuid.UUID) (*store
 		}
 		if t.CostCents > 0 {
 			feature, _ := trialfeature.ForTask(t.Type, t.Params)
-			if _, err := wallet.FreezeForTask(ctx, tx, t.UserID, taskID, t.CostCents, feature.Key, strPtr("任务重跑冻结")); err != nil {
+			if _, err := wallet.FreezeForTask(billingCtx, tx, t.UserID, taskID, t.CostCents, feature.Key, strPtr("任务重跑冻结")); err != nil {
 				return err
 			}
+		}
+		if _, err := tx.Exec(ctx, `UPDATE tasks SET cost_cents=$2,params=$3 WHERE id=$1`, t.ID, t.CostCents, t.Params); err != nil {
+			return err
 		}
 		task, err = store.GetTask(ctx, tx, taskID)
 		return err

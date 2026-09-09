@@ -1,4 +1,5 @@
 const routePreloaders = new Map([
+  ["/holo-card", () => import("./views/HoloCardView.jsx")],
   ["/", () => import("./views/CommercialHomeView.jsx")],
   ["/studio", () => import("./views/StudioHubView.jsx")],
   ["/prompts", () => import("./views/PromptLibraryView.jsx")],

@@ -32,7 +32,7 @@ import {
     type CanvasAgentToolCall,
 } from "@/services/canvas-task-api";
 import { useAgentStore, type AgentAttachment, type AgentCanvasContext, type AgentChatItem, type AgentPendingToolCall, type AgentReasoningEffort } from "@/stores/use-agent-store";
-import { MODEL_REASONING_EFFORTS, modelOptionLabel, modelOptionMeta, resolveModelForCapability, selectableModelsByCapability, useConfigStore, type ChannelModel, type ModelReasoningEffort } from "@/stores/use-config-store";
+import { MODEL_REASONING_EFFORTS, catalogModelsByCapability, modelMaintenance, modelOptionLabel, modelOptionMeta, resolveModelForCapability, selectableModelsByCapability, useConfigStore, type ChannelModel, type ModelReasoningEffort } from "@/stores/use-config-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { attachmentPayloadBytes, isCanvasWriteTool, promptWithAttachments, promptWithCanvasReferences, toolCallDetail } from "./agent-event-formatters";
 import { CanvasHomeDialog } from "@/components/canvas/canvas-home-dialog";
@@ -76,10 +76,12 @@ function isHighRiskCanvasTool(call: CanvasAgentToolCall) {
 	return ops.some((op) => op.type === "delete_node");
 }
 
-function cancelHostedAgentRun(runId: string, options?: { keepalive?: boolean }) {
+function cancelHostedAgentRun(runId: string, options?: { keepalive?: boolean; acknowledgeUpstream?: boolean }) {
     if (!runId) return Promise.resolve();
-    retireHostedAgentRunId(runId);
-    return cancelCanvasAssistantRun(runId, options);
+    return cancelCanvasAssistantRun(runId, options).then((result) => {
+        if (!result.canceled && result.run?.status !== "canceled") throw Object.assign(new Error("任务已经结束，正在同步结果"), { code: "task_already_finished" });
+        retireHostedAgentRunId(runId);
+    });
 }
 
 function initialHostedConfirmTools() {
@@ -350,16 +352,19 @@ export function HostedAgentPanel() {
     const [currentConversationId, setCurrentConversationId] = useState("");
     const [pendingDeleteIds, setPendingDeleteIds] = useState<string[] | null>(null);
     const [deletingHistory, setDeletingHistory] = useState(false);
-    const textModelValues = useMemo(() => selectableModelsByCapability(canvasConfig, "text"), [canvasConfig]);
+    const [stopRunId, setStopRunId] = useState("");
+    const [stopBusy, setStopBusy] = useState(false);
+    const textModelValues = useMemo(() => catalogModelsByCapability(canvasConfig, "text"), [canvasConfig]);
+    const selectableTextModelValues = useMemo(() => selectableModelsByCapability(canvasConfig, "text"), [canvasConfig]);
     useEffect(() => {
-        if (!textModelValues.length) return;
+        if (!selectableTextModelValues.length) return;
         setHostedModel((current) => {
-            if (current && textModelValues.includes(current)) return current;
+            if (current && selectableTextModelValues.includes(current)) return current;
             const saved = typeof window === "undefined" ? "" : localStorage.getItem(HOSTED_MODEL_KEY) || "";
-            if (saved && textModelValues.includes(saved)) return saved;
+            if (saved && selectableTextModelValues.includes(saved)) return saved;
             return resolveModelForCapability(canvasConfig, canvasConfig.textModel, "text");
         });
-    }, [canvasConfig, textModelValues]);
+    }, [canvasConfig, selectableTextModelValues]);
     const hostedTextModel = modelOptionMeta(canvasConfig, hostedModel || resolveModelForCapability(canvasConfig, canvasConfig.textModel, "text"));
     const hostedReasoningEfforts = useMemo(() => supportedHostedReasoningEfforts(hostedTextModel), [hostedTextModel]);
     const activeReasoningEffort = useMemo(() => resolveHostedReasoningEffort(hostedTextModel, reasoningEffort), [hostedTextModel, reasoningEffort]);
@@ -378,6 +383,8 @@ export function HostedAgentPanel() {
             return {
                 value,
                 label: modelOptionLabel(canvasConfig, value),
+                model,
+                disabled: modelMaintenance(model),
                 price: formatted.price,
                 comparePrice: formatted.comparePrice,
             };
@@ -448,19 +455,15 @@ export function HostedAgentPanel() {
         });
     }, [rejectHostedPendingTool, setAgentState, t]);
 
-    const cancelHostedRun = useCallback((markStopped = false, options?: { keepalive?: boolean }) => {
+    const cancelHostedRun = useCallback(async (markStopped = false, options?: { keepalive?: boolean; acknowledgeUpstream?: boolean }) => {
         const scope = activeRunRef.current;
-        let cancellation = Promise.resolve();
-        if (scope) {
-            activeRunRef.current = null;
-            scope.controller.abort();
-            cancellation = scope.runId
-                ? cancelHostedAgentRun(scope.runId, options)
-                : scope.waitForRunId.then((runId) => cancelHostedAgentRun(runId, options));
-            void cancellation.catch(() => undefined);
-        }
+        if (!scope) return;
+        if (markStopped && !scope.runId) throw new Error("任务提交结果尚未确认，请稍后再停止");
+        if (markStopped) await cancelHostedAgentRun(scope.runId, options);
+        scope.controller.abort();
+        if (activeRunRef.current !== scope) return;
+        activeRunRef.current = null;
         rejectHostedPendingTool(new Error(t("agent.runtime.canvasToolCanceled")));
-        if (!scope) return cancellation;
         const current = useAgentStore.getState();
         setAgentState({
             sending: false,
@@ -470,14 +473,13 @@ export function HostedAgentPanel() {
                 messages: settleHostedAgentMessagesOnStop(current.messages, t("agent.message.stopped")),
             } : {}),
         });
-        return cancellation;
     }, [rejectHostedPendingTool, setAgentState, t]);
     const cancelHostedRunRef = useRef(cancelHostedRun);
     cancelHostedRunRef.current = cancelHostedRun;
 
     useEffect(() => {
         return () => {
-            void cancelHostedRunRef.current(true);
+            void cancelHostedRunRef.current(false);
         };
     }, []);
 
@@ -495,7 +497,7 @@ export function HostedAgentPanel() {
         const stateMatchesProject = isHostedAgentStateForProject(current.hostedProjectId, projectId);
         const projectStateChanged = switched || !stateMatchesProject;
         if (projectStateChanged) {
-            cancelHostedRun(true);
+            void cancelHostedRun(false);
             setHostedTab("chat");
             setConversations([]);
             setCurrentConversationId("");
@@ -842,9 +844,22 @@ export function HostedAgentPanel() {
         rejectHostedPendingTool(new Error(t("agent.runtime.canvasToolCanceled")));
     }, [rejectHostedPendingTool, t]);
 
-    const stopTurn = useCallback(() => {
-        cancelHostedRun(true);
-    }, [cancelHostedRun]);
+    const requestHostedStop = useCallback(async (acknowledgeUpstream = false) => {
+        if (stopBusy) return;
+        const scope = activeRunRef.current;
+        if (!scope || (acknowledgeUpstream && stopRunId && scope.runId !== stopRunId)) { setStopRunId(""); return; }
+        setStopBusy(true);
+        try {
+            await cancelHostedRun(true, { acknowledgeUpstream });
+            setStopRunId("");
+        } catch (error) {
+            const code = (error as { code?: string })?.code;
+            if (code === "assistant_cancel_confirmation_required") setStopRunId(scope.runId || "");
+            else if (code === "task_already_finished") { setStopRunId(""); message.info("任务已经结束，正在同步结果"); }
+            else message.error(error instanceof Error ? error.message : "停止失败，任务仍在跟踪中");
+        } finally { setStopBusy(false); }
+    }, [cancelHostedRun, message, stopBusy, stopRunId]);
+    const stopTurn = useCallback(() => { void requestHostedStop(false); }, [requestHostedStop]);
 
     const followHostedRun = useCallback(async (runId: string, originProjectId: string) => {
         if (!runId || !originProjectId || isHostedAgentRunIdRetired(runId)) return;
@@ -1200,6 +1215,12 @@ export function HostedAgentPanel() {
                 onStop={stopTurn}
             />
             ) : null}
+            <CanvasHomeDialog
+                open={Boolean(stopRunId)} tone="danger" eyebrow="停止确认" title="停止接收本次结果？"
+                description="任务已经开始执行。停止后按已完成的画布操作结算，未使用的费用退回；已提交上游的生成可能仍会继续。"
+                closeLabel={t("common.cancel")} onClose={() => !stopBusy && setStopRunId("")}
+                footer={<><button className="sc-cd-btn" disabled={stopBusy} onClick={() => setStopRunId("")}>继续等待</button><button className="sc-cd-btn is-danger" disabled={stopBusy} onClick={() => void requestHostedStop(true)}>{stopBusy ? "正在停止…" : "确认停止"}</button></>}
+            />
             <CanvasHomeDialog
                 open={Boolean(pendingDeleteIds?.length)}
                 tone="danger"

@@ -51,13 +51,18 @@ func webhookRetryDelay(attempt int) time.Duration {
 }
 
 func (w *Worker) handleDispatchAPIWebhooks(ctx context.Context, _ *asynq.Task) error {
-	now := time.Now().UTC()
-	deliveries, err := store.ClaimAPIWebhookDeliveries(ctx, w.St.Pool, w.workerID, now, 45*time.Second, 20)
-	if err != nil {
-		return err
-	}
 	client := netguard.NewHTTPClient(15*time.Second, false, true)
-	for _, delivery := range deliveries {
+	// Claim immediately before sending so queued items cannot outlive their lease.
+	for batch := 0; batch < 20; batch++ {
+		now := time.Now().UTC()
+		deliveries, err := store.ClaimAPIWebhookDeliveries(ctx, w.St.Pool, w.workerID, now, 45*time.Second, 1)
+		if err != nil {
+			return err
+		}
+		if len(deliveries) == 0 {
+			break
+		}
+		delivery := deliveries[0]
 		if err := netguard.ValidateURL(delivery.URL, false, true); err != nil {
 			_ = store.FailAPIWebhookDelivery(ctx, w.St.Pool, delivery.ID, w.workerID,
 				"webhook URL is no longer allowed", 0, now, now, 1)

@@ -373,6 +373,29 @@ func ListAssistantMessages(ctx context.Context, q Q, conversationID uuid.UUID, l
 	return items, rows.Err()
 }
 
+func ListAssistantMessagesBefore(ctx context.Context, q Q, conversationID, beforeID uuid.UUID, limit int) ([]*AssistantMessage, error) {
+	rows, err := q.Query(ctx, `SELECT `+assistantMessageCols+` FROM (
+		SELECT `+assistantMessageCols+` FROM assistant_messages
+		WHERE conversation_id = $1 AND (created_at, id) < (
+			SELECT created_at, id FROM assistant_messages WHERE conversation_id = $1 AND id = $2
+		)
+		ORDER BY created_at DESC, id DESC LIMIT $3
+	) recent ORDER BY created_at ASC, id ASC`, conversationID, beforeID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]*AssistantMessage, 0, limit)
+	for rows.Next() {
+		item, scanErr := scanAssistantMessage(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 func GetAssistantMessage(ctx context.Context, q Q, id uuid.UUID) (*AssistantMessage, error) {
 	item, err := scanAssistantMessage(q.QueryRow(ctx, `SELECT `+assistantMessageCols+` FROM assistant_messages WHERE id = $1`, id))
 	return nilOnNoRows(item, err)
@@ -759,16 +782,16 @@ func RunningAssistantRunsByProvider(ctx context.Context, q Q, providerKeys []str
 	if len(providerKeys) == 0 {
 		return out, nil
 	}
-	rows, err := q.Query(ctx, `SELECT CASE WHEN mode = 'image'
+	rows, err := q.Query(ctx, `SELECT CASE WHEN `+assistantImageSQL("run")+`
 			THEN COALESCE(params ->> '_imageProviderRouteKey', params ->> '_imageProviderConfigId')
 			ELSE COALESCE(params ->> '_chatProviderRouteKey', params ->> '_chatProviderConfigId')
 		END AS provider_key,
-		SUM(CASE WHEN mode = 'image'
-			THEN LEAST(16, GREATEST(1, COALESCE(NULLIF(params ->> 'count', '')::bigint, 1)))
+		SUM(CASE WHEN `+assistantImageSQL("run")+`
+			THEN `+assistantImageUnitsSQL("run")+`
 			ELSE 1 END)::bigint
-		FROM assistant_runs
-		WHERE status = 'running'
-		AND (CASE WHEN mode = 'image'
+		FROM assistant_runs run
+		WHERE `+assistantExecutionActiveSQL("run")+`
+		AND (CASE WHEN `+assistantImageSQL("run")+`
 			THEN COALESCE(params ->> '_imageProviderRouteKey', params ->> '_imageProviderConfigId')
 			ELSE COALESCE(params ->> '_chatProviderRouteKey', params ->> '_chatProviderConfigId')
 		END) = ANY($1)
@@ -833,14 +856,20 @@ func ClaimAssistantRunWithLease(ctx context.Context, q Q, id uuid.UUID, owner st
 				SELECT 1 FROM assistant_runs current
 				WHERE current.conversation_id = target.conversation_id AND current.status = 'running'
 			)
-			AND NOT EXISTS (
+			AND (`+assistantKnownImageJobsSQL("target")+` OR NOT EXISTS (
 				SELECT 1 FROM assistant_runs earlier
 				WHERE earlier.conversation_id = target.conversation_id AND earlier.status = 'queued'
 					AND (earlier.queue_position, earlier.created_at, earlier.id)
 						< (target.queue_position, target.created_at, target.id)
-			)
-			AND (SELECT count(*) FROM assistant_runs active
-				WHERE active.user_id = target.user_id AND active.status = 'running') < $5
+			))
+			AND CASE WHEN `+assistantImageSQL("target")+` THEN
+				(SELECT COALESCE(sum(`+assistantImageUnitsSQL("active")+`),0) FROM assistant_runs active
+				 WHERE active.user_id=target.user_id AND active.id<>target.id AND `+assistantExecutionActiveSQL("active")+` AND `+assistantImageSQL("active")+`)
+				+(SELECT COALESCE(sum(GREATEST(work_units,count,1)),0) FROM tasks task
+				 WHERE user_id=target.user_id AND `+taskExecutionActiveSQL("task")+`)
+				+(`+assistantImageUnitsSQL("target")+`)
+			ELSE (SELECT count(*) FROM assistant_runs active
+				WHERE active.user_id=target.user_id AND active.status='running' AND NOT `+assistantImageSQL("active")+`)+1 END <= $5
 		RETURNING target.*
 	), activated_message AS (
 		UPDATE assistant_messages message SET status = 'complete', updated_at = $3
@@ -1033,7 +1062,9 @@ func RequeueAssistantRun(ctx context.Context, q Q, id uuid.UUID) (bool, error) {
 		cost_cents = 0, billing_generation = billing_generation + 1,
 		error_code = NULL, error_message = NULL, started_at = NULL, finished_at = NULL,
 		lease_owner = NULL, lease_until = NULL, heartbeat_at = NULL,
-		params = COALESCE(params, '{}'::jsonb) - '_crunTaskIds'
+		params = COALESCE(params, '{}'::jsonb) - '_crunTaskIds' - '_c2aTaskIdsBySlot'
+			- '_editableTaskId' - '_editableTaskGeneration'
+			- '_failedChatProviderRouteKeys' - '_failedImageProviderRouteKeys'
 		WHERE id = $1 AND status = 'failed'`, id)
 	return tag.RowsAffected() > 0, err
 }
@@ -1065,9 +1096,13 @@ func RequeueRunningAssistantRunForRouteFailoverWithKey(
 	if err != nil {
 		return false, err
 	}
+	paramsExpr := "jsonb_set(COALESCE(params, '{}'::jsonb), ARRAY[$3]::text[], $4::jsonb, true)"
+	if failedRouteParam == "_failedImageProviderRouteKeys" {
+		paramsExpr = "(" + paramsExpr + ") - '_crunTaskIds' - '_c2aTaskIdsBySlot'"
+	}
 	tag, err := q.Exec(ctx, `UPDATE assistant_runs SET status = 'queued', stage = 'queued', resolved_mode = '',
 		started_at = NULL, lease_owner = NULL, lease_until = NULL, heartbeat_at = NULL,
-		params = jsonb_set(COALESCE(params, '{}'::jsonb), ARRAY[$3]::text[], $4::jsonb, true)
+		params = `+paramsExpr+`
 		WHERE id = $1 AND status = 'running' AND attempt = $2 AND lease_until > now()`, id, attempt, failedRouteParam, raw)
 	return tag.RowsAffected() > 0, err
 }
@@ -1080,6 +1115,16 @@ func SetAssistantRunCRUNTaskIDs(ctx context.Context, q Q, id uuid.UUID, taskIDs 
 	_, err = q.Exec(ctx, `UPDATE assistant_runs SET params = jsonb_set(COALESCE(params, '{}'::jsonb), '{_crunTaskIds}', $2::jsonb, true)
 		WHERE id = $1`, id, string(payload))
 	return err
+}
+
+func SetAssistantRunC2ATaskIDs(ctx context.Context, q Q, id uuid.UUID, attempt int, taskIDs map[string]string) (bool, error) {
+	payload, err := json.Marshal(taskIDs)
+	if err != nil {
+		return false, err
+	}
+	tag, err := q.Exec(ctx, `UPDATE assistant_runs SET params = jsonb_set(COALESCE(params, '{}'::jsonb), '{_c2aTaskIdsBySlot}', $3::jsonb, true)
+		WHERE id = $1 AND status = 'running' AND attempt = $2 AND lease_until > now()`, id, attempt, string(payload))
+	return tag.RowsAffected() > 0, err
 }
 
 func AdminCancelAssistantRun(ctx context.Context, q Q, id uuid.UUID) (bool, error) {
@@ -1148,14 +1193,12 @@ func ListReadyAssistantRunOutboxIDs(ctx context.Context, q Q, now time.Time, lim
 				SELECT 1 FROM assistant_runs current
 				WHERE current.conversation_id = run.conversation_id AND current.status = 'running'
 			)
-			AND NOT EXISTS (
+			AND (`+assistantKnownImageJobsSQL("run")+` OR NOT EXISTS (
 				SELECT 1 FROM assistant_runs earlier
 				WHERE earlier.conversation_id = run.conversation_id AND earlier.status = 'queued'
 					AND (earlier.queue_position, earlier.created_at, earlier.id)
 						< (run.queue_position, run.created_at, run.id)
-			)
-			AND (SELECT count(*) FROM assistant_runs active
-				WHERE active.user_id = run.user_id AND active.status = 'running') < 4
+			))
 		ORDER BY outbox.created_at ASC, outbox.run_id ASC LIMIT $2`, now, limit)
 	if err != nil {
 		return nil, err
@@ -1186,14 +1229,12 @@ func ListQueuedAssistantRunIDs(ctx context.Context, q Q, limit int) ([]uuid.UUID
 				SELECT 1 FROM assistant_runs current
 				WHERE current.conversation_id = run.conversation_id AND current.status = 'running'
 			)
-			AND NOT EXISTS (
+			AND (`+assistantKnownImageJobsSQL("run")+` OR NOT EXISTS (
 				SELECT 1 FROM assistant_runs earlier
 				WHERE earlier.conversation_id = run.conversation_id AND earlier.status = 'queued'
 					AND (earlier.queue_position, earlier.created_at, earlier.id)
 						< (run.queue_position, run.created_at, run.id)
-			)
-			AND (SELECT count(*) FROM assistant_runs active
-				WHERE active.user_id = run.user_id AND active.status = 'running') < 4
+			))
 		ORDER BY run.created_at ASC, run.id ASC LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
@@ -1210,10 +1251,12 @@ func ListQueuedAssistantRunIDs(ctx context.Context, q Q, limit int) ([]uuid.UUID
 	return ids, rows.Err()
 }
 
-func AssistantRunDispatchable(ctx context.Context, q Q, id uuid.UUID, maxUserRunning int) (bool, error) {
-	if maxUserRunning < 1 {
-		maxUserRunning = 1
-	}
+// Dispatch preserves conversation order, while already submitted image jobs
+// resume ahead of unstarted queued work to release their held resources.
+// Resource admission is checked only
+// when claiming under execution locks, using the run's image or chat pool.
+// Keep the last argument for compatibility with older dispatch callers.
+func AssistantRunDispatchable(ctx context.Context, q Q, id uuid.UUID, _ int) (bool, error) {
 	var ready bool
 	err := q.QueryRow(ctx, `SELECT EXISTS (
 		SELECT 1 FROM assistant_runs run
@@ -1222,15 +1265,13 @@ func AssistantRunDispatchable(ctx context.Context, q Q, id uuid.UUID, maxUserRun
 				SELECT 1 FROM assistant_runs current
 				WHERE current.conversation_id = run.conversation_id AND current.status = 'running'
 			)
-			AND NOT EXISTS (
+			AND (`+assistantKnownImageJobsSQL("run")+` OR NOT EXISTS (
 				SELECT 1 FROM assistant_runs earlier
 				WHERE earlier.conversation_id = run.conversation_id AND earlier.status = 'queued'
 					AND (earlier.queue_position, earlier.created_at, earlier.id)
 						< (run.queue_position, run.created_at, run.id)
-			)
-			AND (SELECT count(*) FROM assistant_runs active
-				WHERE active.user_id = run.user_id AND active.status = 'running') < $2
-	)`, id, maxUserRunning).Scan(&ready)
+			))
+	)`, id).Scan(&ready)
 	return ready, err
 }
 

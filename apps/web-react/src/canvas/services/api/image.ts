@@ -28,5 +28,5 @@ export function requestEdit(config: AiConfig, prompt: string, references: Refere
 export function requestImageQuestion(config: AiConfig, messages: AiTextMessage[], onDelta: (text: string) => void, options?: RequestOptions) {
     const model = config.model || config.textModel;
     const effort = resolveCanvasReasoningEffort(modelOptionMeta(config, model), config.reasoningEffort);
-    return requestCanvasAssistant(messages, onDelta, { signal: options?.signal, onCreated: options?.onCreated }, model, effort);
+    return requestCanvasAssistant(messages, onDelta, options, model, effort);
 }

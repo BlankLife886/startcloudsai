@@ -6,7 +6,7 @@ import { assistantRunGuidance } from "../src/features/assistant/domain/assistant
 test("offers source-oriented follow-ups for live web work", () => {
   assert.deepEqual(
     assistantRunGuidance({ mode: "agent", stage: "web_search", prompt: "查今天新闻" }).map((item) => item.id),
-    ["verify-sources", "summarize-table", "deeper-search"],
+    ["verify-sources", "summarize-evidence", "find-gaps"],
   )
 })
 
@@ -24,10 +24,11 @@ test("recognizes file creation from the prompt", () => {
   )
 })
 
-test("keeps ordinary chat suggestions concise and immutable", () => {
+test("keeps ordinary chat suggestions concise and task-aware", () => {
   const first = assistantRunGuidance({ mode: "chat", prompt: "解释这个概念" })
   first[0].label = "changed"
   const second = assistantRunGuidance({ mode: "chat", prompt: "解释这个概念" })
   assert.equal(second.length, 3)
-  assert.equal(second[0].label, "深入说明")
+  assert.equal(second[0].label, "深入关键结论")
+  assert.match(second[0].prompt, /解释这个概念/)
 })

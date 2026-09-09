@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { getLatestChangelog } from "@react/legacy-modules/services/metaApi.js";
 import { useLocale } from "../i18n/index.js";
+import { usePageControls } from "../page-control/PageControlContext.jsx";
 import "./ClientReleaseBanner.css";
 
 const POLL_MS = 30 * 60 * 1000;
@@ -26,6 +27,7 @@ function publishedAtMs(latest) {
 
 export function ClientReleaseBanner() {
   const { t } = useLocale();
+  const { isEntryVisible } = usePageControls();
   const [release, setRelease] = useState(null);
 
   useEffect(() => {
@@ -81,9 +83,9 @@ export function ClientReleaseBanner() {
         <span>{release.title || t("刷新页面即可使用最新功能。")}</span>
       </div>
       <div className="client-release-banner__actions">
-        <a className="client-release-banner__notes" href="/updates">
+        {isEntryVisible("/updates") && <a className="client-release-banner__notes" href="/updates">
           {t("查看说明")}
-        </a>
+        </a>}
         <button
           type="button"
           className="client-release-banner__refresh"

@@ -65,7 +65,7 @@ export type AgentCanvasContext = {
     redoOps: () => CanvasAgentSnapshot | null;
     canUndo: boolean;
     canRedo: boolean;
-    startGeneration: (input: { nodeIds: string[]; mode?: "text" | "image" | "video" | "audio"; prompt?: string }) => { requestId: string; nodeIds: string[] };
+    startGeneration: (input: { requestId?: string; nodeIds: string[]; mode?: "text" | "image" | "video" | "audio"; prompt?: string }) => { requestId: string; nodeIds: string[] };
     getGenerationStatus: (requestId: string) => { requestId: string; tasks: Array<{ nodeId: string; status: AgentTaskStatus; error?: string }> } | null;
     regenerateSelection: (input: AgentRegenerateSelectionInput) => Promise<AgentRegenerateSelectionResult>;
     startWorkflow: (input: { workflowId?: string; nodeIds?: string[] }) => { requestId: string; workflowId?: string; configNodeIds: string[] };

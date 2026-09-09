@@ -18,15 +18,20 @@ import {
   formatPoints,
   formatShortTime,
   formatTime,
-  TASK_STATUS_LABELS,
+  normalizeTaskTimelineEvent,
   TASK_TYPE_LABELS,
+  taskErrorMessage,
+  taskStatusLabel,
+  taskTotalDuration,
   taskTypeLabel,
 } from '@/utils'
 
 interface AdminTask {
+  billing?: BillingAudit[]
   id: string
   type: string
   status: string
+  attempt?: number
   prompt: string
   params: Record<string, unknown> | null
   count: number
@@ -37,6 +42,7 @@ interface AdminTask {
   displayUrls?: string[]
   originalUrls?: string[]
   costCents: number
+  cancelPolicy?: { upstreamSubmitted?: boolean; refunded?: boolean; canceledFrom?: string; chargedPoints?: number; refundedPoints?: number; message?: string }
   errorCode: string | null
   errorMessage: string | null
   userId?: string
@@ -64,6 +70,20 @@ interface TaskSummary {
 
 interface TaskPage extends Page<AdminTask> {
   summary?: TaskSummary
+  billing?: Record<string, BillingAudit[]>
+}
+
+interface BillingAudit {
+  sourceId: string
+  settledPoints: number
+  decision: { source: string; count: number; unitPoints: number; publicUnitPoints: number; contractId?: string; priceBookId?: string; subscriptionPoints: number; topupPoints: number; trialPoints: number; otherPoints: number }
+  allocations: { bucket: string; origin: string; lot_id: string; allocated_points: number; remaining_points: number; settled_points: number | null; released_points: number | null; expired_points: number | null; price_lock_eligible: boolean }[]
+}
+
+function fundingLabel(task: AdminTask) {
+  const d = task.billing?.[0]?.decision
+  if (!d) return '历史未分账'
+  return [[d.subscriptionPoints, '订阅'], [d.topupPoints, '额度包'], [d.trialPoints, '体验'], [d.otherPoints, '其他通用']].filter(([n]) => Number(n) > 0).map(([,label]) => label).join(' + ') || '免费'
 }
 
 const filters = reactive({ type: '', status: '', user: '', errorCode: '' })
@@ -105,6 +125,7 @@ const {
       },
     })
     if (page.summary) summary.value = page.summary
+    page.items = page.items.map(item => ({ ...item, billing: page.billing?.[item.id] ?? [] }))
     lastUpdatedAt.value = new Date()
     return page
   },
@@ -169,6 +190,8 @@ const lastUpdatedLabel = computed(() =>
 )
 
 let refreshTimer: number | null = null
+let elapsedTimer: number | null = null
+const elapsedNow = ref(Date.now())
 
 function stopAutoRefresh() {
   if (refreshTimer !== null) window.clearInterval(refreshTimer)
@@ -188,9 +211,19 @@ watch(autoRefresh, startAutoRefresh)
 onMounted(() => {
   void reset()
   startAutoRefresh()
+  elapsedTimer = window.setInterval(() => {
+    const active = (task: AdminTask) => task.status === 'queued' || task.status === 'running'
+    if (document.visibilityState === 'visible' &&
+      (items.value.some(active) || (detailVisible.value && detail.value && active(detail.value)))) {
+      elapsedNow.value = Date.now()
+    }
+  }, 1000)
 })
 
-onBeforeUnmount(stopAutoRefresh)
+onBeforeUnmount(() => {
+  stopAutoRefresh()
+  if (elapsedTimer !== null) window.clearInterval(elapsedTimer)
+})
 
 function setStatusTab(status: string) {
   if (filters.status === status) return
@@ -259,22 +292,7 @@ function taskPreviewUrls(task: AdminTask) {
 }
 
 function taskDuration(task: AdminTask) {
-  const started = task.startedAt ? new Date(task.startedAt).getTime() : Number.NaN
-  const created = new Date(task.createdAt).getTime()
-  const start = Number.isFinite(started) ? started : created
-  const end = task.finishedAt ? new Date(task.finishedAt).getTime() : Date.now()
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return '-'
-  const seconds = Math.max(0, Math.round((end - start) / 1000))
-  let value = ''
-  if (seconds < 60) value = `${seconds} 秒`
-  const minutes = Math.floor(seconds / 60)
-  const rest = seconds % 60
-  if (!value && minutes < 60) value = `${minutes} 分 ${rest} 秒`
-  if (!value) value = `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分`
-  if (Number.isFinite(started)) return value
-  if (task.status === 'queued') return `排队中 · ${value}`
-  if (task.status === 'running') return `等待执行 · ${value}`
-  return `总历时 ${value}`
+  return taskTotalDuration(task, elapsedNow.value)
 }
 
 function taskRowClass({ row }: { row: AdminTask }) {
@@ -451,12 +469,22 @@ function isUserDeletedTask(task: AdminTask) {
 }
 
 function isUserCanceledTask(task: AdminTask) {
-  return task.status === 'canceled' && task.errorCode === 'user_canceled'
+  return task.status === 'canceled'
 }
 
-function taskStatusLabel(task: AdminTask) {
-  if (isUserCanceledTask(task)) return '用户主动停止'
-  return TASK_STATUS_LABELS[task.status] ?? task.status
+function taskChargedPoints(task: AdminTask) {
+  if (task.status === 'canceled') {
+    if (task.cancelPolicy?.refunded === true || task.params?._cancelUpstreamSubmitted === false) return 0
+    if (Number.isFinite(task.cancelPolicy?.chargedPoints)) return Number(task.cancelPolicy?.chargedPoints)
+  }
+  return task.costCents
+}
+
+function taskCancellationDescription(task: AdminTask) {
+  if (task.cancelPolicy?.message) return task.cancelPolicy.message
+  if (task.cancelPolicy?.refunded === true || task.params?._cancelUpstreamSubmitted === false) return `任务在提交上游前取消，实际扣款为0，冻结积分已退回。`
+  if (task.cancelPolicy?.upstreamSubmitted === true || task.params?._cancelUpstreamSubmitted === true) return task.cancelPolicy?.message || '任务已提交上游，用户确认后停止接收结果，本次费用按确认结果结算。'
+  return '任务已由用户取消，请结合钱包明细确认积分处理结果。'
 }
 
 function taskInputCount(task: AdminTask) {
@@ -472,6 +500,7 @@ function taskCount(task: AdminTask): number | string {
 /** 未交付张数：请求 − 产出；排队/运行中尚未定论 */
 function taskFailedCount(task: AdminTask): number | string {
   if (task.status === 'queued' || task.status === 'running') return '—'
+  if (task.status === 'canceled') return '—'
   const requested = taskCount(task)
   if (typeof requested !== 'number') {
     return task.status === 'failed' ? 1 : 0
@@ -644,6 +673,15 @@ function openDetail(task: AdminTask) {
   void loadTimeline(task.id)
 }
 
+watch(items, (nextItems) => {
+  if (!detailVisible.value || !detail.value) return
+  const next = nextItems.find((task) => task.id === detail.value?.id)
+  if (!next) return
+  const changed = next.status !== detail.value.status || next.attempt !== detail.value.attempt
+  detail.value = next
+  if (changed) void loadTimeline(next.id)
+})
+
 // ---------- 执行耗时时间线 ----------
 
 interface TimelineEvent {
@@ -659,10 +697,12 @@ interface TimelineEvent {
 const timelineLoading = ref(false)
 const timelineError = ref('')
 const timelineEvents = ref<TimelineEvent[]>([])
+let timelineRequest = 0
 
 /** 阶段 → 白话名称与解释（给非技术同学看的） */
 const TIMELINE_STAGE_META: Record<string, { label: string; hint: string }> = {
-  queued: { label: '排队等待', hint: '任务创建后在队列里等待空闲处理线程接单，排队久说明当时任务多或并发额度满了' },
+  queued: { label: '首次排队', hint: '' },
+  retry_started: { label: '重试开始', hint: '' },
   input_prepare: { label: '准备参考图', hint: '把参考图从云存储取出并编码，准备发给 AI 服务' },
   submitted: { label: '提交生成请求', hint: '把生成请求发送给上游 AI 服务商，之后进入等待生成阶段' },
   upstream_generate: { label: 'AI 生成', hint: '上游 AI 服务实际画图的时间，快慢取决于上游服务的负载，平台无法加速' },
@@ -712,6 +752,7 @@ function timelineBarWidth(event: TimelineEvent): string {
 }
 
 async function loadTimeline(taskId: string) {
+  const version = ++timelineRequest
   timelineLoading.value = true
   timelineError.value = ''
   timelineEvents.value = []
@@ -719,11 +760,15 @@ async function loadTimeline(taskId: string) {
     const data = await request<{ items: TimelineEvent[] }>(
       `/api/v1/admin/tasks/${taskId}/timeline`,
     )
-    timelineEvents.value = data.items ?? []
+    if (version === timelineRequest) {
+      timelineEvents.value = (data.items ?? []).map(normalizeTaskTimelineEvent)
+    }
   } catch (error) {
-    timelineError.value = error instanceof Error ? error.message : '耗时记录加载失败'
+    if (version === timelineRequest) {
+      timelineError.value = error instanceof Error ? error.message : '耗时记录加载失败'
+    }
   } finally {
-    timelineLoading.value = false
+    if (version === timelineRequest) timelineLoading.value = false
   }
 }
 
@@ -1044,7 +1089,7 @@ async function forceFail(task: AdminTask) {
               </template>
             </el-table-column>
 
-            <el-table-column label="耗时" width="110" align="left" header-align="left">
+            <el-table-column label="总耗时" width="110" align="left" header-align="left">
               <template #default="{ row }">
                 <span class="cell-text tnum">{{ taskDuration(row as AdminTask) }}</span>
               </template>
@@ -1052,9 +1097,11 @@ async function forceFail(task: AdminTask) {
 
             <el-table-column label="积分" width="72" align="left" header-align="left" class-name="col-num">
               <template #default="{ row }">
-                <span class="cell-num tnum">{{ formatPoints(row.costCents) }}</span>
+                <span class="cell-num tnum">{{ formatPoints(taskChargedPoints(row as AdminTask)) }}</span>
+                <small v-if="row.status === 'canceled' && (row.cancelPolicy?.refunded || row.params?._cancelUpstreamSubmitted === false)" style="display:block;color:var(--el-color-success)">已退回</small>
               </template>
             </el-table-column>
+            <el-table-column label="积分来源" min-width="140"><template #default="{ row }"><span>{{ fundingLabel(row as AdminTask) }}</span><small v-if="row.billing?.[0]?.decision.source === 'subscription_contract'" style="display:block;color:var(--el-color-success)">订阅锁价</small></template></el-table-column>
 
             <el-table-column label="数量" min-width="250" align="left" header-align="left">
               <template #default="{ row }">
@@ -1160,7 +1207,7 @@ async function forceFail(task: AdminTask) {
               show-overflow-tooltip
             >
               <template #default="{ row }">
-                <span v-if="row.errorMessage" class="cell-muted">{{ row.errorMessage }}</span>
+                <span v-if="row.errorMessage" class="cell-muted">{{ taskErrorMessage(row.errorMessage) }}</span>
                 <span v-else class="cell-muted">—</span>
               </template>
             </el-table-column>
@@ -1242,8 +1289,8 @@ async function forceFail(task: AdminTask) {
           :type="isUserCanceledTask(detail) ? 'warning' : 'error'"
           :closable="false"
           show-icon
-          :title="isUserCanceledTask(detail) ? '用户主动停止' : detail.errorCode || '任务异常'"
-          :description="isUserCanceledTask(detail) ? '该任务由用户主动停止，不属于模型或系统执行失败。' : detail.errorMessage || ''"
+          :title="isUserCanceledTask(detail) ? taskStatusLabel(detail) : detail.errorCode || '任务异常'"
+          :description="isUserCanceledTask(detail) ? taskCancellationDescription(detail) : taskErrorMessage(detail.errorMessage)"
         />
 
         <section class="drawer-hero">
@@ -1363,12 +1410,12 @@ async function forceFail(task: AdminTask) {
                 <em class="tnum">{{ taskInputCount(detail) }}</em>
               </span>
               <span class="stat-item">
-                <small>耗时</small>
+                <small>总耗时</small>
                 <em class="tnum">{{ taskDuration(detail) }}</em>
               </span>
               <span class="stat-item">
                 <small>积分</small>
-                <em class="tnum">{{ formatPoints(detail.costCents) }}</em>
+                <em class="tnum">{{ formatPoints(taskChargedPoints(detail)) }}</em>
               </span>
             </div>
           </div>
@@ -1400,6 +1447,27 @@ async function forceFail(task: AdminTask) {
         </section>
 
         <section class="detail-section">
+          <header class="detail-section__title">定价与资金来源</header>
+          <p v-if="!detail.billing?.length">历史任务未记录订阅权益及积分批次明细，请结合钱包流水核查。</p>
+          <div v-for="audit in detail.billing" :key="audit.sourceId" style="margin-bottom:16px">
+            <dl class="info-rows info-rows--facts">
+              <div class="info-row"><dt>预留编号</dt><dd style="overflow-wrap:anywhere">{{ audit.sourceId }}</dd></div>
+              <div class="info-row"><dt>计费单价</dt><dd v-if="audit.decision.count > 0">{{ audit.decision.source === 'subscription_contract' ? '订阅锁定价' : '实时价' }} {{ formatPoints(audit.decision.unitPoints) }} · 当时公开价 {{ formatPoints(audit.decision.publicUnitPoints) }}</dd><dd v-else>未记录模型单价</dd></div>
+              <div class="info-row"><dt>预留构成</dt><dd>订阅 {{ audit.decision.subscriptionPoints }} · 额度包 {{ audit.decision.topupPoints }} · 体验 {{ audit.decision.trialPoints }} · 其他 {{ audit.decision.otherPoints }}</dd></div>
+              <div class="info-row"><dt>实际消费</dt><dd>{{ formatPoints(audit.settledPoints) }} 积分</dd></div>
+              <div v-if="audit.decision.contractId" class="info-row"><dt>权益编号</dt><dd style="overflow-wrap:anywhere">{{ audit.decision.contractId }}</dd></div>
+              <div v-if="audit.decision.priceBookId" class="info-row"><dt>价格版本</dt><dd style="overflow-wrap:anywhere">{{ audit.decision.priceBookId }}</dd></div>
+            </dl>
+            <el-table v-if="audit.allocations.length" :data="audit.allocations" size="small">
+              <el-table-column label="资金批次" min-width="170"><template #default="{ row }">{{ row.bucket === 'subscription' ? '订阅积分' : row.origin }}<small style="display:block;overflow-wrap:anywhere">{{ row.lot_id }}</small></template></el-table-column>
+              <el-table-column prop="remaining_points" label="冻结" width="70" />
+              <el-table-column label="消费" width="70"><template #default="{ row }">{{ row.settled_points ?? '未分账' }}</template></el-table-column>
+              <el-table-column label="退回" width="70"><template #default="{ row }">{{ row.released_points ?? '未分账' }}</template></el-table-column>
+              <el-table-column label="过期" width="70"><template #default="{ row }">{{ row.expired_points ?? '未分账' }}</template></el-table-column>
+            </el-table>
+          </div>
+        </section>
+        <section class="detail-section">
           <header class="detail-section__title">
             执行耗时
             <small class="detail-section__hint">任务每一步花了多久（灰色小字是白话解释）</small>
@@ -1427,7 +1495,7 @@ async function forceFail(task: AdminTask) {
               <div v-if="timelineBarWidth(event)" class="timeline-bar">
                 <i :style="{ width: timelineBarWidth(event) }" />
               </div>
-              <p class="timeline-message">{{ event.message }}</p>
+              <p class="timeline-message">{{ taskErrorMessage(event.message) }}</p>
               <p v-if="timelineStageHint(event.stage)" class="timeline-hint">
                 {{ timelineStageHint(event.stage) }}
               </p>

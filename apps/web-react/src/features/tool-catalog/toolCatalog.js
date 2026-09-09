@@ -111,6 +111,7 @@ const BUSINESS_TOOLS = [
 ];
 
 const UTILITY_TOOLS = [
+  tool("holo-card", "闪光卡", "原图镭射预览与 image2 透明主体分层。", { to: "/holo-card", surface: "实用工具", status: "confirm", isNew: true }),
   tool("background-remove", "背景移除", "智能抠图并导出透明背景。", { to: "/tools/background-remove", surface: "实用工具", status: "confirm" }),
   tool("image-compress", "图片压缩", "在浏览器本地减小图片体积并保留清晰度。", { to: "/tools/image-compress", surface: "实用工具", status: "local" }),
   tool("puzzle", "拼图", "在浏览器本地拼贴多张图片并导出。", { to: "/tools/puzzle", surface: "实用工具", status: "local" }),

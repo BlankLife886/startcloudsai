@@ -12,6 +12,7 @@ import { DialogMotion } from "../../components/motion/DialogMotion.jsx";
 import { AuthenticatedImage } from "../../components/AuthenticatedImage.jsx";
 import { DownloadIcon } from "../../components/common/DownloadIcon.jsx";
 import { WallevenImagePreview } from "../../components/common/WallevenImagePreview.jsx";
+import { isCatalogModelMaintenance } from "../../components/common/ModelCatalogIcon.jsx";
 import {
   documentIcon,
   downloadAssistantImage,
@@ -113,6 +114,7 @@ function AssistantPreviewImage({ image, src = "", fallbackSrc = "", ...props }) 
 
 function AssistantFullscreenPreview({
   value,
+  models = [],
   actionBusy = "",
   onClose,
   onStep,
@@ -129,6 +131,11 @@ function AssistantFullscreenPreview({
   if (!sourceUrl) return null;
   const index = Math.max(0, galleryItems.findIndex((entry) => entry === item || sameAssetReference(entry, imageAssetFromItem(item))));
   const meta = value.meta && typeof value.meta === "object" ? value.meta : {};
+  const modelIdentity = String(meta.model || meta.modelLabel || "").trim();
+  const catalogModel = models.find((model) =>
+    [model?.id, model?.model, model?.name, model?.label]
+      .some((value) => String(value || "").trim() === modelIdentity),
+  ) || { label: modelIdentity };
   const prompt = String(meta.prompt || item.revisedPrompt || item.name || "").trim();
   const title = prompt || "AI 助手图片";
   const gallery = galleryItems.map(imageUrl).filter(Boolean);
@@ -142,6 +149,7 @@ function AssistantFullscreenPreview({
       filename={`assistant-image-${index + 1}.png`}
       gallery={gallery}
       displaySources={displaySources}
+      model={catalogModel}
       metadata={{
         id: item.id || "",
         model: meta.modelLabel || meta.model || "",
@@ -283,6 +291,7 @@ function PreferenceSegment({ className = "", columns, value, items, onChange, la
 }
 
 function ModelMenuPrice({ model, perImage, unitSuffix }) {
+  if (isCatalogModelMaintenance(model)) return null;
   const price = resolveModelPointPricing(model);
   if (!price.configured) return <span className="model-menu-price is-empty">未定价</span>;
   const suffix = unitSuffix ?? (perImage ? "/张" : "");

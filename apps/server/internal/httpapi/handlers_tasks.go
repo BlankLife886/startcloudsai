@@ -302,8 +302,13 @@ func (s *Server) createTask(c *gin.Context) {
 	if body.Params == nil {
 		body.Params = map[string]any{}
 	}
+	delete(body.Params, "_apiKeyId")
+	trustedParams := map[string]any{}
+	if body.Params["_source"] == "open_api" {
+		delete(body.Params, "_source")
+	}
 	if key := openAPIKeyFromContext(c); key != nil {
-		body.Params["_apiKeyId"] = key.ID.String()
+		trustedParams["_apiKeyId"] = key.ID.String()
 		body.Params["_source"] = "open_api"
 		if body.IdempotencyKey == nil {
 			if value := strings.TrimSpace(c.GetHeader("Idempotency-Key")); value != "" {
@@ -348,6 +353,9 @@ func (s *Server) createTask(c *gin.Context) {
 	}
 	if body.Type == "media_tool" {
 		s.attachTrustedInputImageDimensions(c.Request.Context(), body.Params, body.InputKeys)
+		if value, ok := body.Params["_inputImageLongEdge"]; ok {
+			trustedParams["_inputImageLongEdge"] = value
+		}
 	}
 	maskKeys, err := taskMaskImageKeys(body.Params)
 	if err != nil {
@@ -371,6 +379,7 @@ func (s *Server) createTask(c *gin.Context) {
 		Type:                   body.Type,
 		Prompt:                 body.Prompt,
 		Params:                 body.Params,
+		TrustedParams:          trustedParams,
 		InputKeys:              body.InputKeys,
 		Count:                  count,
 		IdempotencyKey:         body.IdempotencyKey,
@@ -418,6 +427,7 @@ func (s *Server) quoteTask(c *gin.Context) {
 	if body.Params == nil {
 		body.Params = map[string]any{}
 	}
+	trustedParams := map[string]any{}
 	if body.Type == "media_tool" {
 		inspect := func(ctx context.Context, key string, maxBytes int64) (int64, error) {
 			return s.inspectOwnedTaskMedia(ctx, user.ID, key, maxBytes)
@@ -427,26 +437,60 @@ func (s *Server) quoteTask(c *gin.Context) {
 			return
 		}
 		s.attachTrustedInputImageDimensions(c.Request.Context(), body.Params, body.InputKeys)
+		if value, ok := body.Params["_inputImageLongEdge"]; ok {
+			trustedParams["_inputImageLongEdge"] = value
+		}
 	}
 	count := 1
 	if body.Count != nil {
 		count = *body.Count
 	}
-	quote, err := taskflow.QuoteTaskPrice(c.Request.Context(), s.St.Pool, taskflow.CreateInput{
-		Type: body.Type, Params: body.Params, InputKeys: body.InputKeys, Count: count,
+	var quote *taskflow.PriceQuote
+	err = s.St.Tx(c.Request.Context(), func(tx pgx.Tx) error {
+		var err error
+		quote, err = taskflow.QuoteTaskPrice(c.Request.Context(), tx, taskflow.CreateInput{Type: body.Type, Params: body.Params, TrustedParams: trustedParams, InputKeys: body.InputKeys, Count: count}, user.ID)
+		return err
 	})
 	if err != nil {
 		fail(c, err)
 		return
 	}
+	if key := openAPIKeyFromContext(c); key != nil && len(key.AllowedModelIDs) > 0 && !store.Contains(key.AllowedModelIDs, quote.ModelID) {
+		fail(c, apperr.E("api_key_model_denied", "模型不在 API Key 白名单中", 403))
+		return
+	}
 	ok(c, gin.H{
 		"currency": "credits", "workspace": quote.Workspace, "modelId": quote.ModelID,
+		"billing":                quote.Billing,
 		"standardUnitPriceCents": quote.StandardUnitPriceCents,
 		"discountUnitPriceCents": quote.DiscountUnitPriceCents,
 		"unitPriceCents":         quote.UnitPriceCents, "count": quote.Count,
 		"totalPriceCents": quote.TotalPriceCents, "configVersion": quote.ConfigVersion,
 		"workspacePriceOverridden": quote.Overridden, "authoritative": true,
 	})
+}
+
+func (s *Server) getTaskByIdempotency(c *gin.Context) {
+	user, err := s.requireUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	key := strings.TrimSpace(c.Query("key"))
+	if key == "" || len([]rune(key)) > 128 {
+		fail(c, apperr.E("validation_error", "无效的提交标识", 422))
+		return
+	}
+	task, err := store.GetTaskByIdemKey(c.Request.Context(), s.St.Pool, user.ID, key)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if task == nil {
+		ok(c, gin.H{"task": nil})
+		return
+	}
+	ok(c, gin.H{"task": taskDict(task, s.outputURLsFor(c, task), s.originalURLsFor(c, task))})
 }
 
 func (s *Server) listTasks(c *gin.Context) {
@@ -614,12 +658,54 @@ func (s *Server) cancelTask(c *gin.Context, acknowledgeUpstream bool) {
 	streamClient := s.assistantStreamRedis()
 	taskstream.Publish(c.Request.Context(), streamClient, taskID.String(), event)
 	taskstream.PublishUser(c.Request.Context(), streamClient, user.ID.String(), event)
+	if s.Queue != nil {
+		if err := s.Queue.WakeUserTaskQueue(c.Request.Context(), s.St.Pool, user.ID); err != nil {
+			log.Printf("wake canceled task queue: %v", err)
+		}
+	}
 	ok(c, taskDict(task, nil, nil))
 }
 
 type taskPatchIn struct {
 	Status              string `json:"status"`
 	AcknowledgeUpstream bool   `json:"acknowledgeUpstream"`
+}
+
+func (s *Server) cancelTaskGroup(c *gin.Context) {
+	user, err := s.requireUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	var body struct {
+		IDs                 []uuid.UUID `json:"ids"`
+		AcknowledgedTaskIDs []uuid.UUID `json:"acknowledgedTaskIds"`
+	}
+	if err := bindJSON(c, &body); err != nil {
+		fail(c, err)
+		return
+	}
+	tasks, err := taskflow.CancelTaskGroupConfirmed(c.Request.Context(), s.St, user.ID, body.IDs, body.AcknowledgedTaskIDs)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	items := make([]gin.H, 0, len(tasks))
+	stream := s.assistantStreamRedis()
+	for _, task := range tasks {
+		items = append(items, taskDict(task, s.outputURLsFor(c, task), s.originalURLsFor(c, task)))
+		if task.Status == "canceled" {
+			event := taskstream.Event{TaskID: task.ID.String(), Stage: "canceled", Status: "canceled", Done: true}
+			taskstream.Publish(c.Request.Context(), stream, task.ID.String(), event)
+			taskstream.PublishUser(c.Request.Context(), stream, user.ID.String(), event)
+		}
+	}
+	if s.Queue != nil {
+		if err := s.Queue.WakeUserTaskQueue(c.Request.Context(), s.St.Pool, user.ID); err != nil {
+			log.Printf("wake canceled group: %v", err)
+		}
+	}
+	ok(c, gin.H{"items": items})
 }
 
 func (s *Server) patchTask(c *gin.Context) {
@@ -666,6 +752,10 @@ func (s *Server) deleteTask(c *gin.Context) {
 	cascade := c.Query("cascade") == "true"
 	historyDelete := c.Query("history") == "true"
 	forceMedia := c.Query("forceMedia") == "true"
+	onlyEmpty := c.Query("onlyEmpty") == "true"
+	if onlyEmpty {
+		cascade = false
+	}
 	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
 		root, err := store.GetUserTaskForUpdate(ctx, tx, user.ID, taskID)
 		if err != nil {
@@ -682,12 +772,15 @@ func (s *Server) deleteTask(c *gin.Context) {
 			if run.Status != "succeeded" && run.Status != "failed" && run.Status != "canceled" {
 				return apperr.E("task_not_cancelable", "仅已结束的任务可以删除", 400)
 			}
-			if !historyDelete || !forceMedia {
-				return apperr.E("force_media_required", "AI 助手图片仍属于对话内容，请确认强制移除图片", 409)
-			}
 			keys, err := store.ListUserAssistantMessageOutputKeys(ctx, tx, user.ID, run.AssistantMessageID)
 			if err != nil {
 				return err
+			}
+			if onlyEmpty && len(keys) > 0 {
+				return apperr.E("task_has_outputs", "该记录已有产物，已保留", 409)
+			}
+			if !historyDelete || (!forceMedia && !onlyEmpty) {
+				return apperr.E("force_media_required", "AI 助手图片仍属于对话内容，请确认强制移除图片", 409)
 			}
 			if err := store.LockObjectReferenceKeys(ctx, tx, keys); err != nil {
 				return err
@@ -713,8 +806,11 @@ func (s *Server) deleteTask(c *gin.Context) {
 			deletedTaskIDs = append(deletedTaskIDs, taskID)
 			return nil
 		}
+		if onlyEmpty && (len(root.OutputKeys) > 0 || len(root.ThumbnailKeys) > 0) {
+			return apperr.E("task_has_outputs", "该记录已有产物，已保留", 409)
+		}
 		protectedHistoryMedia := historyDelete && (store.IsCanvasOrigin(root.Params) || store.IsAssistantOrigin(root.Params))
-		if protectedHistoryMedia && !forceMedia {
+		if protectedHistoryMedia && !forceMedia && !onlyEmpty {
 			return apperr.E("force_media_required", "图片仍被 AI 助手或无限画布使用，请确认强制移除图片", 409)
 		}
 

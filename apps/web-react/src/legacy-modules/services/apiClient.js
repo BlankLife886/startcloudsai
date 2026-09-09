@@ -68,6 +68,7 @@ async function parsePayload(response) {
  * @param {object|FormData|null} [options.body] - 普通对象自动 JSON 序列化
  * @param {object} [options.query] - query 参数对象
  * @param {AbortSignal} [options.signal]
+ * @param {RequestCache} [options.cache]
  * @param {string} [options.fallbackMessage]
  * @returns {Promise<any>} 响应中的 data 字段
  */
@@ -77,6 +78,7 @@ export async function apiRequest(path, options = {}) {
     body = null,
     query = null,
     signal = undefined,
+    cache = undefined,
     fallbackMessage = '请求失败',
   } = options
 
@@ -97,6 +99,7 @@ export async function apiRequest(path, options = {}) {
       headers,
       body: requestBody,
       signal,
+      cache,
     })
   } catch (caught) {
     if (caught?.name === 'AbortError') throw caught

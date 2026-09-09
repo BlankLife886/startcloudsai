@@ -464,13 +464,13 @@ func TestImageUpscaleQuoteAndCreateUseTargetResolutionTier(t *testing.T) {
 		}
 	}
 	low, err := taskflow.QuoteTaskPrice(context.Background(), st.Pool, taskflow.CreateInput{
-		Type: "media_tool", Count: 1, InputKeys: []string{key}, Params: params(512, 4),
+		Type: "media_tool", Count: 1, InputKeys: []string{key}, Params: params(512, 4), TrustedParams: map[string]any{"_inputImageLongEdge": 512},
 	})
 	if err != nil || low.UnitPriceCents != 3 {
 		t.Fatalf("low quote = %#v err=%v", low, err)
 	}
 	high, err := taskflow.QuoteTaskPrice(context.Background(), st.Pool, taskflow.CreateInput{
-		Type: "media_tool", Count: 1, InputKeys: []string{key}, Params: params(1024, 4),
+		Type: "media_tool", Count: 1, InputKeys: []string{key}, Params: params(1024, 4), TrustedParams: map[string]any{"_inputImageLongEdge": 1024},
 	})
 	if err != nil || high.UnitPriceCents != 5 {
 		t.Fatalf("high quote = %#v err=%v", high, err)
@@ -478,7 +478,7 @@ func TestImageUpscaleQuoteAndCreateUseTargetResolutionTier(t *testing.T) {
 	stale := int64(3)
 	_, _, err = taskflow.CreateTask(context.Background(), st, user.ID, taskflow.CreateInput{
 		Type: "media_tool", Prompt: "高清放大", Count: 1, InputKeys: []string{key},
-		Params: params(1024, 4), ExpectedUnitPriceCents: &stale,
+		Params: params(1024, 4), TrustedParams: map[string]any{"_inputImageLongEdge": 1024}, ExpectedUnitPriceCents: &stale,
 	})
 	mustAppErr(t, err, "price_changed")
 }

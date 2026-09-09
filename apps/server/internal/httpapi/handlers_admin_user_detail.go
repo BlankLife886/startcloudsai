@@ -67,7 +67,12 @@ func (s *Server) adminGetUser(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	subOut, err := adminUserSubscriptionDict(ctx, s.St.Pool, userID, now)
+	subOut, err := adminUserSubscriptionDict(ctx, s.St.Pool, userID, s.subscriptionNow())
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	concurrency, err := store.GetUserConcurrency(store.WithBillingTime(ctx, s.subscriptionNow()), s.St.Pool, userID)
 	if err != nil {
 		fail(c, err)
 		return
@@ -107,6 +112,7 @@ func (s *Server) adminGetUser(c *gin.Context, _ *store.User) {
 		"user":         adminUserDict(user, nil),
 		"wallet":       walletOut,
 		"subscription": subOut,
+		"concurrency":  concurrency,
 		"trialAccess":  trialAccessApplicationDict(trialApp, false),
 		"checkin":      checkinOut,
 		"growthGroup":  growthOut,
@@ -270,27 +276,44 @@ func adminUserSubscriptionDict(ctx context.Context, q store.Q, userID uuid.UUID,
 		return nil, err
 	}
 	if sub == nil {
-		return gin.H{"active": false}, nil
+		history, err := store.ListUserSubscriptions(ctx, q, userID)
+		if err != nil {
+			return nil, err
+		}
+		if len(history) == 0 {
+			return gin.H{"active": false}, nil
+		}
+		sub = history[0]
 	}
-	plan, err := store.GetPlan(ctx, q, sub.PlanID)
-	if err != nil {
+	out := subscriptionDict(sub, now)
+	if sub.BillingVersion == 1 {
+		out["grantedToday"] = subscription.GrantedOn(sub, subscription.BeijingDate(now))
+		if sub.PlanName == "" {
+			plan, err := store.GetPlan(ctx, q, sub.PlanID)
+			if err != nil {
+				return nil, err
+			}
+			if plan != nil {
+				out["planName"], out["planCode"] = plan.Name, plan.Code
+				out["legacyPlanFallback"] = true
+			}
+		}
+	}
+	out["active"] = sub.Status == "active" && sub.EndsAt.After(now)
+	out["dailyGrantCents"] = sub.DailyGrantCents
+	var next *time.Time
+	var available, frozen int64
+	if err := q.QueryRow(ctx, `SELECT min(next_grant_at) FILTER(WHERE granted_count<total_grants) FROM subscription_periods WHERE subscription_id=$1 AND closed_at IS NULL`, sub.ID).Scan(&next); err != nil {
 		return nil, err
 	}
-	planName, planCode := "", ""
-	if plan != nil {
-		planName = plan.Name
-		planCode = plan.Code
+	if err := q.QueryRow(ctx, `SELECT COALESCE(sum(available_points) FILTER(WHERE NOT refund_hold AND NOT upgrade_hold AND expires_at>$2),0),COALESCE(sum(frozen_points),0) FROM subscription_credit_lots WHERE subscription_id=$1`, sub.ID, now).Scan(&available, &frozen); err != nil {
+		return nil, err
 	}
-	return gin.H{
-		"active":          true,
-		"planId":          sub.PlanID.String(),
-		"planName":        planName,
-		"planCode":        planCode,
-		"startsAt":        isoValue(sub.StartsAt),
-		"endsAt":          isoValue(sub.EndsAt),
-		"dailyGrantCents": sub.DailyGrantCents,
-		"grantedToday":    subscription.GrantedOn(sub, subscription.BeijingDate(now)),
-	}, nil
+	if sub.Status != "active" || !sub.EndsAt.After(now) {
+		next = nil
+	}
+	out["nextGrantAt"], out["availablePoints"], out["taskFrozenPoints"] = next, available, frozen
+	return out, nil
 }
 
 func adminUserCheckinDict(ctx context.Context, q store.Q, userID uuid.UUID) (gin.H, error) {

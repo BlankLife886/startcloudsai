@@ -60,14 +60,14 @@ test.describe('React migration navigation contract', () => {
     await expect(page.locator('.ch-page--prompts')).toBeVisible()
   })
 
-  test('pricing section state resets after returning to the top', async ({ page }) => {
-    await page.setViewportSize({ width: 390, height: 844 })
+  test('pricing uses a simple model section without a sticky section navigation', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 720 })
     await page.goto('/pricing', { waitUntil: 'domcontentloaded' })
 
-    await page.locator('#pricing-faq').scrollIntoViewIfNeeded()
-    await expect(page.locator('.pp-nav button', { hasText: '常见问题' })).toHaveClass(/is-active/)
-    await page.evaluate(() => window.scrollTo(0, 0))
-    await expect(page.locator('.pp-nav button', { hasText: '套餐方案' })).toHaveClass(/is-active/)
+    await expect(page.locator('.pp-nav')).toHaveCount(0)
+    await expect(page.getByRole('link', { name: '查看模型价格', exact: true })).toHaveCount(0)
+    await page.locator('#pricing-models').scrollIntoViewIfNeeded()
+    await expect(page.getByRole('heading', { name: '模型价格', exact: true })).toBeVisible()
   })
 
   test('pricing layout stays isolated after a cold visit', async ({ page }) => {

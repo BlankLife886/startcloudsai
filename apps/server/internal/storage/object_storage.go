@@ -31,6 +31,10 @@ const (
 	objectDeleteErrorDetailLimit   = 8
 )
 
+// ErrObjectTooLarge identifies a bounded read that cannot return the complete
+// object. Callers can offer a different delivery method without parsing text.
+var ErrObjectTooLarge = errors.New("object exceeds byte limit")
+
 func IsNotFound(err error) bool {
 	var statusErr interface{ HTTPStatusCode() int }
 	if errors.As(err, &statusErr) && statusErr.HTTPStatusCode() == 404 {
@@ -177,6 +181,20 @@ func (s *Storage) UploadBytes(ctx context.Context, key string, data []byte, cont
 	return err
 }
 
+// UploadReader preserves the source stream without buffering it in memory.
+// A seekable source allows signing and retries while keeping multipart uploads on disk.
+func (s *Storage) UploadReader(ctx context.Context, key string, source io.ReadSeeker, size int64, contentType string) error {
+	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:        aws.String(s.bucket),
+		Key:           aws.String(key),
+		Body:          source,
+		ContentLength: aws.Int64(size),
+		ContentType:   aws.String(contentType),
+		CacheControl:  aws.String(objectUploadCacheControl(key)),
+	})
+	return err
+}
+
 func (s *Storage) GetBytes(ctx context.Context, key string) ([]byte, error) {
 	return s.GetBytesLimit(ctx, key, 32<<20)
 }
@@ -203,7 +221,11 @@ type ObjectStream struct {
 
 // OpenObjectRange 与 OpenObject 相同，但把客户端的 Range 头（如 bytes=0-1023）
 // 透传给对象存储，用于视频/大文件的分段拉取。rangeSpec 为空时等价于整对象读取。
+// maxBytes 为 0 时不设置大小上限，正文仍直接使用对象存储流。
 func (s *Storage) OpenObjectRange(ctx context.Context, key, rangeSpec string, maxBytes int64) (*ObjectStream, error) {
+	if maxBytes < 0 {
+		return nil, errors.New("object byte limit must not be negative")
+	}
 	input := &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
@@ -215,15 +237,19 @@ func (s *Storage) OpenObjectRange(ctx context.Context, key, rangeSpec string, ma
 	if err != nil {
 		return nil, err
 	}
-	if out.ContentLength != nil && *out.ContentLength > maxBytes {
+	if maxBytes > 0 && out.ContentLength != nil && *out.ContentLength > maxBytes {
 		_ = out.Body.Close()
-		return nil, fmt.Errorf("object exceeds %d byte limit", maxBytes)
+		return nil, fmt.Errorf("%w (%d bytes)", ErrObjectTooLarge, maxBytes)
 	}
-	stream := &ObjectStream{
-		Body: &limitedReadCloser{
+	body := out.Body
+	if maxBytes > 0 {
+		body = &limitedReadCloser{
 			reader: io.LimitReader(out.Body, maxBytes+1),
 			close:  out.Body.Close,
-		},
+		}
+	}
+	stream := &ObjectStream{
+		Body:          body,
 		ContentLength: -1,
 		ContentType:   aws.ToString(out.ContentType),
 		ContentRange:  aws.ToString(out.ContentRange),
@@ -269,7 +295,7 @@ func (s *Storage) getBytesLimitOnce(ctx context.Context, key string, maxBytes in
 	defer out.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(out.Body, maxBytes+1))
 	if err == nil && int64(len(data)) > maxBytes {
-		return nil, fmt.Errorf("object exceeds %d byte limit", maxBytes)
+		return nil, fmt.Errorf("%w (%d bytes)", ErrObjectTooLarge, maxBytes)
 	}
 	return data, err
 }

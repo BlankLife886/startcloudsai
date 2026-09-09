@@ -1,7 +1,32 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import "@react/legacy-styles/generated/features/ecommerce/CommerceSelect.css";
+import "./CommerceSelect.override.css";
 import { useLocale } from "../../i18n/index.js";
+import { ModelCatalogIcon, ModelMaintenanceBadge, isCatalogModelMaintenance } from "../../components/common/ModelCatalogIcon.jsx";
+import { resolveModelPointPricing } from "@react/legacy-modules/features/ai-shared/modelPointPricing.js";
+
+function CommerceSelectPrice({ model, hint }) {
+  if (model && !isCatalogModelMaintenance(model)) {
+    const price = resolveModelPointPricing(model);
+    if (price.hasDiscount) {
+      return (
+        <span className="commerce-select-price has-discount">
+          <strong>折扣 {price.discount} 积分/张</strong>
+          <del>{price.standard} 积分/张</del>
+        </span>
+      );
+    }
+    if (price.configured) {
+      return (
+        <small className="commerce-select-hint">
+          {price.effective === 0 ? "免费" : `${price.effective} 积分/张`}
+        </small>
+      );
+    }
+  }
+  return hint ? <small className="commerce-select-hint">{hint}</small> : null;
+}
 
 export function CommerceSelect({
   value,
@@ -26,7 +51,10 @@ export function CommerceSelect({
           ? {
               value: item.value,
               label: t(String(item.label ?? item.value ?? "")),
-              hint: String(item.hint || "").trim(),
+              hint: isCatalogModelMaintenance(item.model) ? "" : String(item.hint || "").trim(),
+              model: item.model,
+              hasPrice: Boolean(item.model && !isCatalogModelMaintenance(item.model) && resolveModelPointPricing(item.model).configured),
+              disabled: item.disabled === true,
             }
           : { value: item, label: t(String(item ?? "")), hint: "" },
       ),
@@ -51,9 +79,10 @@ export function CommerceSelect({
       Math.min(264, (placeAbove ? above : below) - gap),
     );
     const availableWidth = Math.max(160, window.innerWidth - padding * 2);
-    const hasHint = normalized.some((item) => item.hint);
-    const floor =
-      Number(menuMinWidth) > 0 ? Number(menuMinWidth) : hasHint ? 220 : 160;
+    const hasModels = normalized.some((item) => item.model);
+    const hasHint = normalized.some((item) => item.hint || item.hasPrice);
+    const requested = Number(menuMinWidth) || 0;
+    const floor = hasModels ? Math.max(requested, 360) : requested > 0 ? requested : hasHint ? 220 : 160;
     const menuWidth = Math.min(availableWidth, Math.max(rect.width, floor));
     setStyle({
       left: Math.min(
@@ -95,20 +124,26 @@ export function CommerceSelect({
 
   function openMenu() {
     if (disabled || !normalized.length) return;
-    setActiveIndex(selectedIndex >= 0 ? selectedIndex : 0);
+    const firstEnabled = normalized.findIndex((item) => !item.disabled);
+    setActiveIndex(selectedIndex >= 0 && !normalized[selectedIndex]?.disabled ? selectedIndex : firstEnabled);
     setOpen(true);
   }
 
   function choose(option) {
+    if (option.disabled) return;
     onChange?.(option.value);
     setOpen(false);
     requestAnimationFrame(() => triggerRef.current?.focus());
   }
 
   function move(delta) {
-    setActiveIndex(
-      (current) => (current + delta + normalized.length) % normalized.length,
-    );
+    setActiveIndex((current) => {
+      if (!normalized.some((item) => !item.disabled)) return -1;
+      let next = current;
+      do next = (next + delta + normalized.length) % normalized.length;
+      while (normalized[next]?.disabled);
+      return next;
+    });
   }
 
   function onKeyDown(event) {
@@ -139,6 +174,7 @@ export function CommerceSelect({
         onClick={() => (open ? setOpen(false) : openMenu())}
         onKeyDown={onKeyDown}
       >
+        {selected?.model ? <ModelCatalogIcon model={selected.model} size="sm" /> : null}
         <span>{selected?.label || t(placeholder)}</span>
         <i className="bi bi-chevron-down" aria-hidden="true" />
       </button>
@@ -159,14 +195,20 @@ export function CommerceSelect({
                 type="button"
                 role="option"
                 aria-selected={option.value === value}
-                className={`${option.value === value ? "selected " : ""}${index === activeIndex ? "active" : ""}${option.hint ? " has-hint" : ""}`}
+                disabled={option.disabled}
+                title={option.disabled ? t("模型维护中，暂不可选择") : undefined}
+                className={`${option.value === value ? "selected " : ""}${index === activeIndex ? "active" : ""}${option.hint || option.hasPrice ? " has-hint" : ""}`}
                 data-active={index === activeIndex}
                 onMouseEnter={() => setActiveIndex(index)}
                 onClick={() => choose(option)}
               >
+                {option.model ? <ModelCatalogIcon model={option.model} size="sm" /> : null}
                 <span>{option.label}</span>
-                {option.hint ? (
-                  <small className="commerce-select-hint">{option.hint}</small>
+                {option.hint || option.model ? (
+                  <span className="commerce-select-aside">
+                    {option.model ? <ModelMaintenanceBadge model={option.model} /> : null}
+                    <CommerceSelectPrice model={option.model} hint={option.hint} />
+                  </span>
                 ) : null}
                 {option.value === value && (
                   <i className="bi bi-check2" aria-hidden="true" />
