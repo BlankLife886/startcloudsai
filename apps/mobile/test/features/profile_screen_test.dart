@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:go_router/go_router.dart';
+import 'package:starcloudsai_mobile/app/starclouds_theme.dart';
+import 'package:starcloudsai_mobile/features/auth/authenticated_route.dart';
 import 'package:starcloudsai_mobile/app/appearance.dart';
 import 'package:starcloudsai_mobile/features/auth/auth.dart';
 import 'package:starcloudsai_mobile/features/checkin/checkin.dart';
@@ -55,12 +58,17 @@ class _ProfileSessionController extends SessionController {
 }
 
 class _ProfileCheckinController extends CheckinController {
+  _ProfileCheckinController([this.onRead]);
+  final VoidCallback? onRead;
   @override
-  Future<CheckinState> build() async => CheckinState.fromJson({
-    'enabled': true,
-    'todayChecked': false,
-    'claimRewardCents': 20,
-  });
+  Future<CheckinState> build() async {
+    onRead?.call();
+    return CheckinState.fromJson({
+      'enabled': true,
+      'todayChecked': false,
+      'claimRewardCents': 20,
+    });
+  }
 }
 
 class _ProfileAppearanceController extends AppearanceController {
@@ -72,18 +80,28 @@ Widget _screen({
   required AppUser? user,
   bool overviewFails = false,
   double textScale = 1,
+  Brightness brightness = Brightness.light,
+  EdgeInsets padding = EdgeInsets.zero,
+  VoidCallback? onPrivateRead,
+  Widget? app,
   Future<bool> Function(Uri uri)? openExternal,
 }) => ProviderScope(
   overrides: [
     sessionControllerProvider.overrideWith(
       () => _ProfileSessionController(user),
     ),
-    walletProvider.overrideWith((ref) async => _wallet),
+    walletProvider.overrideWith((ref) async {
+      onPrivateRead?.call();
+      return _wallet;
+    }),
     profileOverviewProvider.overrideWith((ref) async {
+      onPrivateRead?.call();
       if (overviewFails) throw StateError('overview unavailable');
       return _overview;
     }),
-    checkinControllerProvider.overrideWith(_ProfileCheckinController.new),
+    checkinControllerProvider.overrideWith(
+      () => _ProfileCheckinController(onPrivateRead),
+    ),
     appearanceControllerProvider.overrideWith(_ProfileAppearanceController.new),
     latestChangelogProvider.overrideWith((ref) async => null),
     appPackageInfoProvider.overrideWith(
@@ -95,18 +113,173 @@ Widget _screen({
       ),
     ),
   ],
-  child: MaterialApp(
-    builder: (context, child) => MediaQuery(
-      data: MediaQuery.of(
-        context,
-      ).copyWith(textScaler: TextScaler.linear(textScale)),
-      child: child!,
-    ),
-    home: ProfileScreen(openExternal: openExternal),
-  ),
+  child:
+      app ??
+      MaterialApp(
+        theme: StarCloudsTheme.light(),
+        darkTheme: StarCloudsTheme.dark(),
+        themeMode: brightness == Brightness.dark
+            ? ThemeMode.dark
+            : ThemeMode.light,
+        builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(context).copyWith(
+            textScaler: TextScaler.linear(textScale),
+            padding: padding,
+          ),
+          child: child!,
+        ),
+        home: ProfileScreen(openExternal: openExternal),
+      ),
 );
 
 void main() {
+  testWidgets(
+    'guest account layout fits large text and does not load private data',
+    (tester) async {
+      var privateReads = 0;
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      for (final brightness in Brightness.values) {
+        for (final width in [320.0, 840.0]) {
+          await tester.binding.setSurfaceSize(Size(width, 720));
+          await tester.pumpWidget(
+            _screen(
+              user: null,
+              brightness: brightness,
+              textScale: 1.6,
+              padding: const EdgeInsets.only(top: 59),
+              onPrivateRead: () => privateReads++,
+            ),
+          );
+          await tester.pumpAndSettle();
+          final panel = find.byKey(const Key('profile-account-panel'));
+          expect(tester.getTopLeft(panel).dy, closeTo(123, 1));
+          expect(tester.getSize(panel).width, lessThanOrEqualTo(640));
+          expect(find.text('星空账号'), findsOneWidget);
+          expect(find.text('未登录'), findsOneWidget);
+          expect(find.byKey(const Key('profile-quick-works')), findsOneWidget);
+          expect(find.byKey(const Key('profile-quick-assets')), findsOneWidget);
+          expect(privateReads, 0);
+          expect(tester.takeException(), isNull);
+          await tester.pumpWidget(const SizedBox());
+        }
+      }
+    },
+  );
+
+  for (final destination in ['/works', '/profile/assets']) {
+    testWidgets(
+      'guest shortcut $destination stays protected and resumes after login',
+      (tester) async {
+        var privateBuilds = 0;
+        final router = GoRouter(
+          initialLocation: '/profile',
+          routes: [
+            GoRoute(
+              path: '/profile',
+              builder: (context, state) => const ProfileScreen(),
+            ),
+            GoRoute(
+              path: destination,
+              builder: (context, state) => AuthenticatedRoute(
+                title: '私有内容',
+                icon: Icons.lock_outline,
+                child: Builder(
+                  builder: (context) {
+                    privateBuilds++;
+                    return const Scaffold(body: Text('私有内容已打开'));
+                  },
+                ),
+              ),
+            ),
+            GoRoute(
+              path: '/login',
+              builder: (context, state) => Consumer(
+                builder: (context, ref, child) => Scaffold(
+                  body: FilledButton(
+                    onPressed: () {
+                      ref
+                          .read(sessionControllerProvider.notifier)
+                          .replaceUser(_user);
+                      context.pop(true);
+                    },
+                    child: const Text('测试登录'),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+        addTearDown(router.dispose);
+        await tester.pumpWidget(
+          _screen(user: null, app: MaterialApp.router(routerConfig: router)),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.byKey(
+            Key(
+              destination == '/works'
+                  ? 'profile-quick-works'
+                  : 'profile-quick-assets',
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(router.state.uri.path, destination);
+        expect(privateBuilds, 0);
+        await tester.tap(find.byKey(const Key('authenticated-route-login')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('测试登录'));
+        await tester.pumpAndSettle();
+        expect(router.state.uri.path, destination);
+        expect(find.text('私有内容已打开'), findsOneWidget);
+        expect(privateBuilds, greaterThan(0));
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  testWidgets('guest support and legal links open their existing routes', (
+    tester,
+  ) async {
+    const destinations = {
+      'profile-login': '/login',
+      'profile-help': '/help',
+      'profile-terms': '/legal/terms',
+      'profile-privacy': '/legal/privacy',
+    };
+    final router = GoRouter(
+      initialLocation: '/profile',
+      routes: [
+        GoRoute(
+          path: '/profile',
+          builder: (context, state) => const ProfileScreen(),
+        ),
+        for (final path in destinations.values)
+          GoRoute(
+            path: path,
+            builder: (context, state) => Scaffold(body: Text('opened:$path')),
+          ),
+      ],
+    );
+    addTearDown(router.dispose);
+    await tester.pumpWidget(
+      _screen(user: null, app: MaterialApp.router(routerConfig: router)),
+    );
+    await tester.pumpAndSettle();
+    for (final entry in destinations.entries) {
+      final control = find.byKey(Key(entry.key));
+      await tester.ensureVisible(control);
+      await tester.pumpAndSettle();
+      await tester.tap(control);
+      await tester.pumpAndSettle();
+      expect(router.state.uri.path, entry.value);
+      expect(find.text('opened:${entry.value}'), findsOneWidget);
+      router.pop();
+      await tester.pumpAndSettle();
+    }
+    expect(tester.takeException(), isNull);
+  });
+
   test('normalizes legacy profile websites and rejects unsafe schemes', () {
     expect(
       profileWebsiteUri(' star.example.com/portfolio '),

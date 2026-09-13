@@ -92,17 +92,13 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen>
     return HomeDiscoverTab.values[_tabs.index];
   }
 
-  PromptQuery _homePromptQuery() => const PromptQuery(sort: 'latest', limit: 8);
+  PromptQuery _homePromptQuery() => const PromptQuery(sort: 'latest', limit: 6);
 
   PromptQuery _libraryPromptQuery(bool authenticated) => PromptQuery(
     search: _search,
     category: _promptCategory,
     favoritesOnly: authenticated && _favoritesOnly,
   );
-
-  PromptQuery _promptQueryFor(bool authenticated) => widget.promptLibraryOnly
-      ? _libraryPromptQuery(authenticated)
-      : _homePromptQuery();
 
   GalleryQuery get _galleryQuery => GalleryQuery(category: _galleryCategory);
 
@@ -318,32 +314,13 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen>
       ]);
       return;
     }
-    final authenticated =
-        ref.read(sessionControllerProvider).valueOrNull?.isAuthenticated ==
-        true;
-    final promptQuery = _promptQueryFor(authenticated);
-    final galleryQuery = _galleryQuery;
-    setState(() {
-      _resetPromptPaginationState();
-      _resetGalleryPaginationState();
-    });
-    ref.invalidate(galleryCategoriesProvider);
+    final query = _homePromptQuery();
+    setState(_resetPromptPaginationState);
     ref.invalidate(
-      discoverPromptPageRequestProvider(PromptPageRequest(query: promptQuery)),
+      discoverPromptPageRequestProvider(PromptPageRequest(query: query)),
     );
-    ref.invalidate(
-      discoverGalleryPageRequestProvider(
-        GalleryPageRequest(query: galleryQuery),
-      ),
-    );
-    ref.invalidate(discoverPromptPageProvider(promptQuery));
-    ref.invalidate(discoverGalleryPageProvider(galleryQuery));
-    ref.invalidate(discoverFeedProvider);
-    await Future.wait([
-      ref.read(galleryCategoriesProvider.future),
-      ref.read(discoverPromptPageProvider(promptQuery).future),
-      ref.read(discoverGalleryPageProvider(galleryQuery).future),
-    ]);
+    ref.invalidate(discoverPromptPageProvider(query));
+    await ref.read(discoverPromptPageProvider(query).future);
   }
 
   List<PromptItem> _promptItemsFor(PromptPage firstPage, PromptQuery query) {
@@ -679,7 +656,7 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen>
     required bool authenticated,
   }) {
     final dark = Theme.of(context).brightness == Brightness.dark;
-    final items = _promptItemsFor(page, query).take(8).toList();
+    final items = _promptItemsFor(page, query).take(query.limit).toList();
     if (items.isEmpty) {
       return [
         SliverToBoxAdapter(
@@ -692,15 +669,21 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen>
       ];
     }
     return [
-      SliverToBoxAdapter(
-        child: _PromptStrip(
-          items: items,
-          hasMore: false,
-          loadingMore: false,
-          loadMoreFailed: false,
-          onLoadMore: () {},
-          onOpen: (item) =>
-              _openPrompt(item, authenticated: authenticated, query: query),
+      SliverPadding(
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        sliver: SliverList.builder(
+          itemCount: items.length,
+          itemBuilder: (context, index) => RepaintBoundary(
+            child: _HomePromptRow(
+              key: Key('home-prompt-${items[index].id}'),
+              item: items[index],
+              onOpen: () => _openPrompt(
+                items[index],
+                authenticated: authenticated,
+                query: query,
+              ),
+            ),
+          ),
         ),
       ),
     ];
@@ -765,12 +748,7 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen>
     ];
   }
 
-  List<Widget> _buildGalleryPage(
-    GalleryPage page,
-    GalleryQuery query, {
-    bool homeLayout = false,
-  }) {
-    final dark = Theme.of(context).brightness == Brightness.dark;
+  List<Widget> _buildGalleryPage(GalleryPage page, GalleryQuery query) {
     final items = _galleryItemsFor(page, query);
     if (items.isEmpty) {
       return const [
@@ -778,29 +756,7 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen>
       ];
     }
     final hasMore = _nextGalleryCursor(page, query) != null;
-    if (homeLayout) {
-      return [
-        SliverToBoxAdapter(
-          child: _HomeGalleryStrip(
-            items: items,
-            inverted: dark,
-            onOpen: _openGallery,
-          ),
-        ),
-        if (hasMore || _loadingMoreGallery || _galleryLoadMoreFailed)
-          SliverToBoxAdapter(
-            child: _LoadMoreBand(
-              key: const Key('load-more-gallery'),
-              loading: _loadingMoreGallery,
-              failed: _galleryLoadMoreFailed,
-              inverted: dark,
-              onPressed: () => _loadMoreGallery(page, query),
-            ),
-          )
-        else
-          const SliverToBoxAdapter(child: SizedBox(height: 24)),
-      ];
-    }
+
     if (hasMore && !_loadingMoreGallery && !_galleryLoadMoreFailed) {
       _scheduleFillGallery(page, query);
     }
@@ -848,7 +804,30 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen>
             color: colors.surface,
             child: SafeArea(
               bottom: false,
-              child: _HomeTabBar(controller: _tabs, onSelected: _selectHomeTab),
+              child: Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
+                    child: Row(
+                      children: [
+                        Image.asset(
+                          'assets/brand/brand_mark.png',
+                          width: 28,
+                          cacheWidth: 84,
+                          height: 28,
+                          excludeFromSemantics: true,
+                        ),
+                        const SizedBox(width: 10),
+                        Text(
+                          '星空云绘',
+                          style: Theme.of(context).textTheme.titleLarge,
+                        ),
+                      ],
+                    ),
+                  ),
+                  _HomeTabBar(controller: _tabs, onSelected: _selectHomeTab),
+                ],
+              ),
             ),
           ),
           Expanded(
@@ -873,123 +852,73 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen>
   }
 
   Widget _buildHomeBody() {
-    final session = ref.watch(sessionControllerProvider);
-    final authenticated = session.valueOrNull?.isAuthenticated == true;
-    final promptQuery = _homePromptQuery();
-    final galleryQuery = _galleryQuery;
-    final prompts = ref.watch(discoverPromptPageProvider(promptQuery));
-    final gallery = ref.watch(discoverGalleryPageProvider(galleryQuery));
-    final galleryCategories = ref.watch(galleryCategoriesProvider);
-    final galleryIsKnownEmpty =
-        gallery.asData?.value.items.isEmpty == true && _moreGallery.isEmpty;
-    final dark = Theme.of(context).brightness == Brightness.dark;
-
+    final authenticated =
+        ref.watch(sessionControllerProvider).valueOrNull?.isAuthenticated ==
+        true;
+    final query = _homePromptQuery();
+    final prompts = ref.watch(discoverPromptPageProvider(query));
     return CustomScrollView(
+      key: const PageStorageKey('home-scroll'),
       physics: appRefreshScrollPhysics,
+      cacheExtent: 160,
       slivers: [
         AppSliverRefresh(onRefresh: _refresh),
         SliverPadding(
-          padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
           sliver: SliverToBoxAdapter(
-            child: _HomeReveal(
-              child: HomePrimaryActions(
-                onCreate: () => context.push('/create'),
-                onAssistant: () => context.go('/ai'),
+            child: HomePrimaryActions(
+              onCreate: () => context.push('/create'),
+              onCreateWithPrompt: (prompt) => context.push(
+                Uri(
+                  path: '/create',
+                  queryParameters: {'prompt': prompt},
+                ).toString(),
               ),
+              onAssistant: () => context.go('/ai'),
             ),
           ),
         ),
         _SectionHeader(
-          title: '提示词',
+          title: '灵感精选',
           action: '全部',
-          inverted: dark,
           onAction: () => _selectHomeTab(HomeDiscoverTab.prompts),
         ),
         ...prompts.when(
-          loading: () => [
-            SliverToBoxAdapter(
-              child: _SectionLoading(
-                height: _PromptStrip.height,
-                inverted: dark,
-                featuredWidth: _PromptStrip.cardWidth,
-                itemWidth: _PromptStrip.cardWidth,
-              ),
-            ),
+          loading: () => const [
+            SliverToBoxAdapter(child: _HomePromptSkeleton()),
           ],
           error: (error, stackTrace) => [
             SliverToBoxAdapter(
               child: _InlineError(
                 message: '创作灵感加载失败',
-                inverted: dark,
                 onRetry: () {
                   ref.invalidate(
                     discoverPromptPageRequestProvider(
-                      PromptPageRequest(query: promptQuery),
+                      PromptPageRequest(query: query),
                     ),
                   );
-                  ref.invalidate(discoverPromptPageProvider(promptQuery));
+                  ref.invalidate(discoverPromptPageProvider(query));
                 },
               ),
             ),
           ],
-          data: (page) => _buildHomePromptPage(
-            page,
-            promptQuery,
-            authenticated: authenticated,
-          ),
+          data: (page) =>
+              _buildHomePromptPage(page, query, authenticated: authenticated),
         ),
-        if (!galleryIsKnownEmpty) ...[
-          _SectionHeader(
-            title: '社区作品',
-            action: '去社区',
-            inverted: dark,
-            actionKey: const Key('home-community-action'),
-            onAction: () => _selectHomeTab(HomeDiscoverTab.community),
-          ),
-          SliverToBoxAdapter(
-            child: _HomeCategoryStrip(
-              categories: galleryCategories,
-              selected: _galleryCategory,
-              inverted: dark,
-              onSelected: (value) => setState(() {
-                _galleryCategory = value;
-                _resetGalleryPaginationState();
-              }),
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                key: const Key('home-community-action'),
+                onPressed: () => _selectHomeTab(HomeDiscoverTab.community),
+                icon: const Icon(Icons.public_outlined, size: 18),
+                label: const Text('浏览社区作品'),
+              ),
             ),
           ),
-          ...gallery.when(
-            loading: () => [
-              SliverToBoxAdapter(
-                child: _SectionLoading(
-                  height: 280,
-                  inverted: dark,
-                  featuredWidth: 226,
-                  itemWidth: 158,
-                  overlay: true,
-                ),
-              ),
-            ],
-            error: (error, stackTrace) => [
-              SliverToBoxAdapter(
-                child: _InlineError(
-                  message: '社区作品加载失败',
-                  inverted: dark,
-                  onRetry: () {
-                    ref.invalidate(
-                      discoverGalleryPageRequestProvider(
-                        GalleryPageRequest(query: galleryQuery),
-                      ),
-                    );
-                    ref.invalidate(discoverGalleryPageProvider(galleryQuery));
-                  },
-                ),
-              ),
-            ],
-            data: (page) =>
-                _buildGalleryPage(page, galleryQuery, homeLayout: true),
-          ),
-        ] else
-          const SliverToBoxAdapter(child: SizedBox(height: 24)),
+        ),
       ],
     );
   }
@@ -1033,7 +962,7 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen>
               ),
               side: const WidgetStatePropertyAll(BorderSide.none),
               shape: WidgetStatePropertyAll(
-                RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
               ),
               constraints: const BoxConstraints(minHeight: 48, maxHeight: 48),
               trailing: [
@@ -1300,10 +1229,10 @@ class _HomeTabButton extends StatelessWidget {
           overflow: TextOverflow.ellipsis,
           style: TextStyle(
             color: Color.lerp(muted, color, emphasis),
-            fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
+            fontWeight: selected ? FontWeight.w600 : FontWeight.w600,
             fontSize: 16,
             height: 1,
-            letterSpacing: -0.3,
+            letterSpacing: 0,
           ),
         ),
       ),
@@ -1375,32 +1304,6 @@ class _HomePressableState extends State<_HomePressable> {
   }
 }
 
-class _HomeReveal extends StatelessWidget {
-  const _HomeReveal({required this.child});
-
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    if (MediaQuery.disableAnimationsOf(context)) return child;
-    return TweenAnimationBuilder<double>(
-      tween: Tween(begin: 0, end: 1),
-      duration: const Duration(milliseconds: 340),
-      curve: Curves.easeOutCubic,
-      builder: (context, value, child) {
-        return Opacity(
-          opacity: value,
-          child: Transform.translate(
-            offset: Offset(0, 18 * (1 - value)),
-            child: child,
-          ),
-        );
-      },
-      child: child,
-    );
-  }
-}
-
 class _HomeZoom extends StatelessWidget {
   const _HomeZoom({required this.child});
 
@@ -1419,186 +1322,95 @@ class _HomeZoom extends StatelessWidget {
   }
 }
 
-class HomePrimaryActions extends StatelessWidget {
+class HomePrimaryActions extends StatefulWidget {
   const HomePrimaryActions({
     required this.onCreate,
     required this.onAssistant,
+    this.onCreateWithPrompt,
     super.key,
   });
 
   final VoidCallback onCreate;
   final VoidCallback onAssistant;
+  final ValueChanged<String>? onCreateWithPrompt;
 
   @override
-  Widget build(BuildContext context) {
-    final textScale = MediaQuery.textScalerOf(context).scale(1);
-    final heroHeight = 148 + ((textScale - 1).clamp(0.0, 0.6) * 36);
-    final railHeight = 64 + ((textScale - 1).clamp(0.0, 0.6) * 22);
-    return Column(
-      children: [
-        SizedBox(
-          height: heroHeight,
-          width: double.infinity,
-          child: _PrimaryCreationCard(
-            key: const Key('home-create-action'),
-            onTap: onCreate,
-          ),
-        ),
-        const SizedBox(height: 8),
-        SizedBox(
-          height: railHeight,
-          width: double.infinity,
-          child: _AssistantActionCard(
-            key: const Key('home-assistant-action'),
-            onTap: onAssistant,
-          ),
-        ),
-      ],
-    );
-  }
+  State<HomePrimaryActions> createState() => _HomePrimaryActionsState();
 }
 
-class _PrimaryCreationCard extends StatelessWidget {
-  const _PrimaryCreationCard({required this.onTap, super.key});
-
-  final VoidCallback onTap;
+class _HomePrimaryActionsState extends State<HomePrimaryActions> {
+  final _controller = TextEditingController();
 
   @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    const ink = Color(0xFF2548A7);
-    return Semantics(
-      button: true,
-      label: '进入文生图',
-      child: _HomePressable(
-        onTap: onTap,
-        child: Material(
-          color: const Color(0xFFDCE3FF),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-          clipBehavior: Clip.antiAlias,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              Positioned(
-                right: 8,
-                top: 10,
-                bottom: 10,
-                width: 140,
-                child: IgnorePointer(
-                  child: _HomeZoom(
-                    child: Image.asset(
-                      'assets/images/home_text_to_image_v2.png',
-                      key: const Key('home-creation-visual'),
-                      width: 140,
-                      height: 128,
-                      fit: BoxFit.contain,
-                      alignment: Alignment.center,
-                      filterQuality: FilterQuality.medium,
-                      excludeFromSemantics: true,
-                    ),
-                  ),
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 16, 148, 16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Spacer(),
-                    Text(
-                      '文生图',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.headlineSmall?.copyWith(
-                        color: ink,
-                        fontWeight: FontWeight.w900,
-                        letterSpacing: -0.8,
-                        height: 1,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      '从一句描述开始',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: ink.withValues(alpha: 0.68),
-                        height: 1.2,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
   }
-}
 
-class _AssistantActionCard extends StatelessWidget {
-  const _AssistantActionCard({required this.onTap, super.key});
-
-  final VoidCallback onTap;
+  void _create() {
+    final prompt = _controller.text.trim();
+    if (prompt.isEmpty || widget.onCreateWithPrompt == null) {
+      widget.onCreate();
+    } else {
+      widget.onCreateWithPrompt!(prompt);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colors = theme.colorScheme;
-    return Semantics(
-      button: true,
-      label: '进入AI 助手',
-      child: _HomePressable(
-        onTap: onTap,
-        child: Material(
-          color: colors.surfaceContainerLow,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-          clipBehavior: Clip.antiAlias,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 10, 8),
-            child: Row(
+    final colors = Theme.of(context).colorScheme;
+    return AppGlassSurface(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              key: const Key('home-prompt-input'),
+              controller: _controller,
+              minLines: 2,
+              maxLines: 3,
+              maxLength: 20000,
+              textInputAction: TextInputAction.newline,
+              style: Theme.of(
+                context,
+              ).textTheme.bodyLarge?.copyWith(height: 1.5),
+              decoration: const InputDecoration(
+                hintText: '描述你想创作的画面',
+                counterText: '',
+                filled: false,
+                contentPadding: EdgeInsets.zero,
+                border: InputBorder.none,
+                enabledBorder: InputBorder.none,
+                focusedBorder: InputBorder.none,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Wrap(
+              alignment: WrapAlignment.spaceBetween,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: 8,
+              runSpacing: 8,
               children: [
-                Expanded(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'AI 助手',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.titleMedium?.copyWith(
-                          color: colors.onSurface,
-                          fontWeight: FontWeight.w800,
-                          height: 1.05,
-                        ),
-                      ),
-                      Text(
-                        '梳理灵感与提示词',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: colors.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
+                TextButton.icon(
+                  key: const Key('home-assistant-action'),
+                  onPressed: widget.onAssistant,
+                  icon: const Icon(Icons.auto_awesome_outlined, size: 18),
+                  label: const Text('AI 助手'),
+                  style: TextButton.styleFrom(
+                    foregroundColor: colors.onSurfaceVariant,
                   ),
                 ),
-                _HomeZoom(
-                  child: Image.asset(
-                    'assets/images/home_ai_assistant_v2.png',
-                    key: const Key('home-assistant-visual'),
-                    width: 48,
-                    fit: BoxFit.contain,
-                    alignment: Alignment.centerRight,
-                    filterQuality: FilterQuality.medium,
-                    excludeFromSemantics: true,
-                  ),
+                FilledButton.icon(
+                  key: const Key('home-create-action'),
+                  onPressed: _create,
+                  icon: const Icon(Icons.arrow_forward_rounded, size: 18),
+                  label: const Text('文生图'),
                 ),
               ],
             ),
-          ),
+          ],
         ),
       ),
     );
@@ -1609,22 +1421,18 @@ class _SectionHeader extends StatelessWidget {
   const _SectionHeader({
     required this.title,
     required this.action,
-    this.inverted = false,
     this.onAction,
-    this.actionKey,
   });
 
   final String title;
   final String action;
-  final bool inverted;
   final VoidCallback? onAction;
-  final Key? actionKey;
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final muted = inverted ? Colors.white54 : colors.onSurfaceVariant;
-    final ink = inverted ? Colors.white : colors.onSurface;
+    final muted = colors.onSurfaceVariant;
+    final ink = colors.onSurface;
     return SliverPadding(
       padding: const EdgeInsets.fromLTRB(20, 22, 20, 12),
       sliver: SliverToBoxAdapter(
@@ -1635,8 +1443,8 @@ class _SectionHeader extends StatelessWidget {
                 title,
                 style: Theme.of(context).textTheme.titleMedium?.copyWith(
                   color: ink,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: -0.3,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0,
                 ),
               ),
             ),
@@ -1656,14 +1464,12 @@ class _SectionHeader extends StatelessWidget {
               )
             else
               _HomePressable(
-                key: actionKey ?? const Key('all-prompts-action'),
+                key: const Key('all-prompts-action'),
                 onTap: onAction,
                 child: Text(
                   action,
                   style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                    color: inverted
-                        ? const Color(0xFFB8C3FF)
-                        : colors.onSurfaceVariant,
+                    color: colors.onSurfaceVariant,
                     fontWeight: FontWeight.w700,
                   ),
                 ),
@@ -1736,78 +1542,8 @@ class _PromptCategoryStrip extends StatelessWidget {
   }
 }
 
-class _HomeCategoryStrip extends StatelessWidget {
-  const _HomeCategoryStrip({
-    required this.categories,
-    required this.selected,
-    required this.onSelected,
-    this.inverted = false,
-  });
-
-  final AsyncValue<List<GalleryCategory>> categories;
-  final String? selected;
-  final ValueChanged<String?> onSelected;
-  final bool inverted;
-
-  @override
-  Widget build(BuildContext context) {
-    final items = [
-      (id: null, label: '全部'),
-      ...?categories.valueOrNull?.map(
-        (category) => (id: category.id, label: category.name),
-      ),
-    ];
-    if (categories.isLoading && categories.valueOrNull == null) {
-      return const _HomeCategorySkeleton();
-    }
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      physics: const BouncingScrollPhysics(),
-      padding: const EdgeInsets.fromLTRB(20, 2, 20, 10),
-      child: Row(
-        children: [
-          for (final item in items) ...[
-            _HomeTextTab(
-              key: item.id == null ? null : Key('gallery-category-${item.id}'),
-              label: item.label,
-              selected: selected == item.id,
-              inverted: inverted,
-              onTap: () => onSelected(item.id),
-            ),
-            const SizedBox(width: 18),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-class _HomeCategorySkeleton extends StatelessWidget {
-  const _HomeCategorySkeleton();
-
-  @override
-  Widget build(BuildContext context) {
-    return const Padding(
-      padding: EdgeInsets.fromLTRB(20, 8, 20, 14),
-      child: Row(
-        children: [
-          _HomeTabBone(width: 36),
-          SizedBox(width: 18),
-          _HomeTabBone(width: 44),
-          SizedBox(width: 18),
-          _HomeTabBone(width: 32),
-          SizedBox(width: 18),
-          _HomeTabBone(width: 40),
-        ],
-      ),
-    );
-  }
-}
-
 class _HomeTabBone extends StatelessWidget {
-  const _HomeTabBone({this.width = 36});
-
-  final double width;
+  const _HomeTabBone();
 
   @override
   Widget build(BuildContext context) {
@@ -1816,59 +1552,7 @@ class _HomeTabBone extends StatelessWidget {
         color: Theme.of(context).colorScheme.surfaceContainer,
         borderRadius: BorderRadius.circular(6),
       ),
-      child: SizedBox(width: width, height: 12),
-    );
-  }
-}
-
-class _HomeTextTab extends StatelessWidget {
-  const _HomeTextTab({
-    required this.label,
-    required this.selected,
-    required this.onTap,
-    this.inverted = false,
-    super.key,
-  });
-
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-  final bool inverted;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    final color = inverted
-        ? (selected ? Colors.white : Colors.white54)
-        : (selected ? colors.onSurface : colors.onSurfaceVariant);
-    return AppPressable(
-      onTap: onTap,
-      semanticLabel: label,
-      selected: selected,
-      excludeChildSemantics: true,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            label,
-            style: Theme.of(context).textTheme.labelLarge?.copyWith(
-              color: color,
-              fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
-            ),
-          ),
-          const SizedBox(height: 6),
-          AnimatedContainer(
-            duration: const Duration(milliseconds: 220),
-            curve: Curves.easeOutCubic,
-            height: 2,
-            width: selected ? 16 : 0,
-            decoration: BoxDecoration(
-              color: color,
-              borderRadius: BorderRadius.circular(99),
-            ),
-          ),
-        ],
-      ),
+      child: SizedBox(width: 36, height: 12),
     );
   }
 }
@@ -1950,78 +1634,198 @@ class _FlatFilterChip extends StatelessWidget {
       selected: selected,
       showCheckmark: false,
       onSelected: onSelected,
-      backgroundColor: inverted
-          ? const Color(0xFF1A1C20)
-          : colors.surfaceContainerLow,
-      selectedColor: inverted ? const Color(0xFFB8C3FF) : colors.onSurface,
+      backgroundColor: colors.surfaceContainerLowest,
+      selectedColor: colors.primary,
       side: BorderSide.none,
       shape: const StadiumBorder(),
       labelStyle: TextStyle(
-        color: inverted
-            ? (selected ? const Color(0xFF17204B) : Colors.white70)
-            : (selected ? colors.surface : colors.onSurfaceVariant),
-        fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
+        color: selected ? colors.onPrimary : colors.onSurfaceVariant,
+        fontWeight: selected ? FontWeight.w600 : FontWeight.w600,
       ),
       visualDensity: VisualDensity.compact,
     );
   }
 }
 
-class _PromptStrip extends ConsumerWidget {
-  const _PromptStrip({
-    required this.items,
-    required this.hasMore,
-    required this.loadingMore,
-    required this.loadMoreFailed,
-    required this.onLoadMore,
-    required this.onOpen,
-  });
+double _homePromptRowHeight(BuildContext context) =>
+    144 +
+    ((MediaQuery.textScalerOf(context).scale(1) - 1).clamp(0.0, 1.5) * 96);
 
-  final List<PromptItem> items;
-  final bool hasMore;
-  final bool loadingMore;
-  final bool loadMoreFailed;
-  final VoidCallback onLoadMore;
-  final ValueChanged<PromptItem> onOpen;
-
-  static const height = 258.0;
-  static const cardWidth = 160.0;
+class _HomePromptRow extends ConsumerWidget {
+  const _HomePromptRow({required this.item, required this.onOpen, super.key});
+  final PromptItem item;
+  final VoidCallback onOpen;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final apiClient = ref.watch(apiClientProvider);
-    return SizedBox(
-      height: height,
-      child: ListView.separated(
-        padding: const EdgeInsets.fromLTRB(20, 0, 28, 0),
-        scrollDirection: Axis.horizontal,
-        physics: const BouncingScrollPhysics(),
-        itemCount:
-            items.length + (hasMore || loadingMore || loadMoreFailed ? 1 : 0),
-        separatorBuilder: (_, _) => const SizedBox(width: 16),
-        itemBuilder: (context, index) {
-          if (index == items.length) {
-            return SizedBox(
-              width: cardWidth,
-              child: _PromptLoadMoreCard(
-                loading: loadingMore,
-                failed: loadMoreFailed,
-                onPressed: onLoadMore,
+    final colors = Theme.of(context).colorScheme;
+    final imageUrl = ref
+        .watch(apiClientProvider)
+        .resolveUrl(promptListCoverUrl(item.coverUrl));
+    return Semantics(
+      button: true,
+      label: item.title,
+      child: AppPressable(
+        onTap: onOpen,
+        borderRadius: StarCloudsRadii.card,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: AppGlassSurface(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: SizedBox(
+                height: _homePromptRowHeight(context),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    SizedBox(
+                      width: 112,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(16),
+                        child: ColoredBox(
+                          color: colors.surfaceContainerLow,
+                          child: _PublicImage(
+                            url: imageUrl,
+                            fit: BoxFit.contain,
+                            maxDecodePx: 384,
+                            fadeIn: false,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            item.title,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(
+                              context,
+                            ).textTheme.titleSmall?.copyWith(height: 1.35),
+                          ),
+                          const SizedBox(height: 8),
+                          Expanded(
+                            child: Text(
+                              item.prompt,
+                              maxLines:
+                                  MediaQuery.textScalerOf(context).scale(1) >
+                                      1.3
+                                  ? 2
+                                  : 3,
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(
+                                context,
+                              ).textTheme.bodySmall?.copyWith(height: 1.45),
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Wrap(
+                            spacing: 12,
+                            runSpacing: 4,
+                            children: [
+                              _HomePromptStat(
+                                icon: Icons.favorite_border_rounded,
+                                count: item.likeCount,
+                              ),
+                              _HomePromptStat(
+                                icon: Icons.bookmark_border_rounded,
+                                count: item.favoriteCount,
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            );
-          }
-          final item = items[index];
-          return SizedBox(
-            width: cardWidth,
-            child: _PromptImageCard(
-              key: Key('home-prompt-${item.id}'),
-              item: item,
-              imageUrl: apiClient.resolveUrl(item.coverUrl ?? ''),
-              onTap: () => onOpen(item),
-              zoomCover: true,
             ),
-          );
-        },
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _HomePromptStat extends StatelessWidget {
+  const _HomePromptStat({required this.icon, required this.count});
+  final IconData icon;
+  final int count;
+
+  @override
+  Widget build(BuildContext context) => Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Icon(
+        icon,
+        size: 14,
+        color: Theme.of(context).colorScheme.onSurfaceVariant,
+      ),
+      const SizedBox(width: 4),
+      Text('$count', style: Theme.of(context).textTheme.labelSmall),
+    ],
+  );
+}
+
+class _HomePromptSkeleton extends StatelessWidget {
+  const _HomePromptSkeleton();
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Padding(
+      key: const Key('home-prompt-skeleton'),
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: Column(
+        children: [
+          for (var index = 0; index < 2; index++)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              child: AppGlassSurface(
+                shadow: false,
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: SizedBox(
+                    height: _homePromptRowHeight(context),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Container(
+                          width: 112,
+                          decoration: BoxDecoration(
+                            color: colors.surfaceContainerLow,
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Container(
+                                height: 16,
+                                color: colors.surfaceContainerLow,
+                              ),
+                              const SizedBox(height: 12),
+                              FractionallySizedBox(
+                                widthFactor: .75,
+                                child: Container(
+                                  height: 12,
+                                  color: colors.surfaceContainerLow,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -2037,7 +1841,7 @@ class _PromptMasonryCard extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final imageUrl = ref
         .watch(apiClientProvider)
-        .resolveUrl(item.coverUrl ?? '');
+        .resolveUrl(promptListCoverUrl(item.coverUrl));
     final colors = Theme.of(context).colorScheme;
     final hasCover = imageUrl.isNotEmpty;
     return AppPressable(
@@ -2064,9 +1868,9 @@ class _PromptMasonryCard extends ConsumerWidget {
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-              fontWeight: FontWeight.w800,
+              fontWeight: FontWeight.w600,
               height: 1.25,
-              letterSpacing: -0.15,
+              letterSpacing: 0,
             ),
           ),
           if (hasCover && item.prompt.isNotEmpty) ...[
@@ -2100,8 +1904,8 @@ class _PromptTextCover extends StatelessWidget {
     final dark = Theme.of(context).brightness == Brightness.dark;
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: dark ? colors.surfaceContainerHigh : const Color(0xFFF2F2F7),
-        borderRadius: BorderRadius.circular(8),
+        color: colors.surfaceContainerLowest,
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(
           color: dark ? Colors.white10 : const Color(0x14000000),
         ),
@@ -2200,47 +2004,6 @@ class _PromptCardMeta extends StatelessWidget {
   }
 }
 
-class _PromptImageCard extends StatelessWidget {
-  const _PromptImageCard({
-    required this.item,
-    required this.imageUrl,
-    required this.onTap,
-    this.zoomCover = false,
-    super.key,
-  });
-
-  final PromptItem item;
-  final String imageUrl;
-  final VoidCallback onTap;
-  final bool zoomCover;
-
-  @override
-  Widget build(BuildContext context) {
-    final cover = _PromptCover(
-      url: imageUrl,
-      zoom: zoomCover,
-      liked: item.liked,
-      likeCount: item.likeCount,
-      favorited: item.favorited,
-      favoriteCount: item.favoriteCount,
-    );
-    final body = Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Expanded(child: cover),
-        _PromptCardCaption(title: item.title),
-      ],
-    );
-    return Semantics(
-      button: true,
-      label: item.title,
-      child: zoomCover
-          ? _HomePressable(onTap: onTap, child: body)
-          : AppPressable(onTap: onTap, child: body),
-    );
-  }
-}
-
 class _PromptCover extends StatelessWidget {
   const _PromptCover({
     required this.url,
@@ -2261,13 +2024,11 @@ class _PromptCover extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final dark = Theme.of(context).brightness == Brightness.dark;
-    final fill = dark
-        ? Theme.of(context).colorScheme.surfaceContainerHigh
-        : const Color(0xFFF2F2F7);
+    final fill = Theme.of(context).colorScheme.surfaceContainerLowest;
     return DecoratedBox(
       decoration: BoxDecoration(
         color: fill,
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(
           color: dark ? Colors.white10 : const Color(0x14000000),
         ),
@@ -2391,98 +2152,11 @@ class _PromptCoverStat extends StatelessWidget {
   }
 }
 
-class _PromptCardCaption extends StatelessWidget {
-  const _PromptCardCaption({required this.title, this.titleColor});
-
-  final String title;
-  final Color? titleColor;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(2, 10, 2, 0),
-      child: Text(
-        title,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-          color: titleColor,
-          fontWeight: FontWeight.w700,
-          height: 1.25,
-          letterSpacing: -0.15,
-        ),
-      ),
-    );
-  }
-}
-
-class _PromptLoadMoreCard extends StatelessWidget {
-  const _PromptLoadMoreCard({
-    required this.loading,
-    required this.failed,
-    required this.onPressed,
-  });
-
-  final bool loading;
-  final bool failed;
-  final VoidCallback onPressed;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return GestureDetector(
-      key: const Key('load-more-prompts'),
-      behavior: HitTestBehavior.opaque,
-      onTap: loading ? null : onPressed,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Expanded(
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                color: Theme.of(context).brightness == Brightness.dark
-                    ? colors.surfaceContainerHigh
-                    : const Color(0xFFF2F2F7),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(
-                  color: Theme.of(context).brightness == Brightness.dark
-                      ? Colors.white10
-                      : const Color(0x14000000),
-                ),
-              ),
-              child: Center(
-                child: loading
-                    ? const SizedBox.shrink()
-                    : Icon(
-                        failed
-                            ? Icons.refresh_rounded
-                            : Icons.arrow_forward_rounded,
-                        size: 22,
-                        color: colors.primary,
-                      ),
-              ),
-            ),
-          ),
-          _PromptCardCaption(
-            title: loading
-                ? '正在加载'
-                : failed
-                ? '重试'
-                : '继续浏览',
-            titleColor: colors.primary,
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 class _LoadMoreBand extends StatelessWidget {
   const _LoadMoreBand({
     required this.loading,
     required this.failed,
     required this.onPressed,
-    this.inverted = false,
     this.noun = '作品',
     super.key,
   });
@@ -2490,7 +2164,6 @@ class _LoadMoreBand extends StatelessWidget {
   final bool loading;
   final bool failed;
   final VoidCallback onPressed;
-  final bool inverted;
   final String noun;
 
   @override
@@ -2506,11 +2179,7 @@ class _LoadMoreBand extends StatelessWidget {
       child: Center(
         child: TextButton(
           onPressed: loading ? null : onPressed,
-          style: TextButton.styleFrom(
-            foregroundColor: inverted
-                ? Colors.white70
-                : colors.onSurfaceVariant,
-          ),
+          style: TextButton.styleFrom(foregroundColor: colors.onSurfaceVariant),
           child: Text(label),
         ),
       ),
@@ -2593,7 +2262,6 @@ class _PromptDetailSheetState extends State<PromptDetailSheet> {
   Widget build(BuildContext context) {
     final media = MediaQuery.of(context);
     final colors = Theme.of(context).colorScheme;
-    final dark = Theme.of(context).brightness == Brightness.dark;
     final maxHeight = media.size.height * 0.72;
     final tags = _item.tags
         .where((tag) {
@@ -2639,9 +2307,9 @@ class _PromptDetailSheetState extends State<PromptDetailSheet> {
                           overflow: TextOverflow.ellipsis,
                           style: Theme.of(context).textTheme.titleMedium
                               ?.copyWith(
-                                fontWeight: FontWeight.w800,
+                                fontWeight: FontWeight.w600,
                                 fontSize: 20,
-                                letterSpacing: -0.4,
+                                letterSpacing: 0,
                                 height: 1.2,
                               ),
                         ),
@@ -2671,16 +2339,14 @@ class _PromptDetailSheetState extends State<PromptDetailSheet> {
                     style: Theme.of(context).textTheme.labelLarge?.copyWith(
                       color: colors.onSurfaceVariant,
                       fontWeight: FontWeight.w700,
-                      letterSpacing: 0.2,
+                      letterSpacing: 0,
                     ),
                   ),
                   const SizedBox(height: 8),
                   DecoratedBox(
                     decoration: BoxDecoration(
-                      color: dark
-                          ? const Color(0xFF1C1E26)
-                          : const Color(0xFFF2F2F7),
-                      borderRadius: BorderRadius.circular(8),
+                      color: colors.surfaceContainerLow,
+                      borderRadius: BorderRadius.circular(16),
                     ),
                     child: Padding(
                       padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
@@ -2688,7 +2354,7 @@ class _PromptDetailSheetState extends State<PromptDetailSheet> {
                         _item.prompt,
                         style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                           height: 1.55,
-                          letterSpacing: -0.1,
+                          letterSpacing: 0,
                         ),
                       ),
                     ),
@@ -2755,7 +2421,7 @@ class _PromptDetailSheetState extends State<PromptDetailSheet> {
                 minimumSize: const Size(0, 48),
                 padding: const EdgeInsets.symmetric(horizontal: 18),
                 shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
+                  borderRadius: BorderRadius.circular(16),
                 ),
               ),
               icon: const Icon(Icons.auto_awesome_rounded, size: 18),
@@ -2930,10 +2596,9 @@ class _QuietPill extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final dark = Theme.of(context).brightness == Brightness.dark;
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: dark ? const Color(0xFF22242C) : const Color(0xFFF2F2F7),
+        color: colors.surfaceContainerLow,
         borderRadius: StarCloudsRadii.pillAll,
       ),
       child: Padding(
@@ -2973,19 +2638,16 @@ class _PromptIconAction extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final dark = Theme.of(context).brightness == Brightness.dark;
     final accent = activeColor ?? colors.primary;
     return IconButton(
       tooltip: tooltip,
       onPressed: busy ? null : onPressed,
       style: IconButton.styleFrom(
         foregroundColor: active ? accent : colors.onSurface,
-        backgroundColor: dark
-            ? const Color(0xFF1C1E26)
-            : const Color(0xFFF2F2F7),
+        backgroundColor: colors.surfaceContainerLow,
         minimumSize: const Size.square(44),
         maximumSize: const Size.square(48),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       ),
       icon: busy
           ? SizedBox.square(
@@ -3000,62 +2662,16 @@ class _PromptIconAction extends StatelessWidget {
   }
 }
 
-class _HomeGalleryStrip extends StatelessWidget {
-  const _HomeGalleryStrip({
-    required this.items,
-    required this.inverted,
-    required this.onOpen,
-  });
-
-  final List<GalleryItem> items;
-  final bool inverted;
-  final ValueChanged<GalleryItem> onOpen;
-
-  @override
-  Widget build(BuildContext context) => SizedBox(
-    key: const Key('home-community-gallery'),
-    height: 280,
-    child: ListView.separated(
-      padding: const EdgeInsets.fromLTRB(20, 0, 40, 0),
-      scrollDirection: Axis.horizontal,
-      physics: const BouncingScrollPhysics(),
-      itemCount: items.length,
-      separatorBuilder: (_, _) => const SizedBox(width: 14),
-      itemBuilder: (context, index) {
-        final item = items[index];
-        return SizedBox(
-          width: index == 0 ? 226 : 158,
-          height: 280,
-          child: _GalleryCard(
-            item: item,
-            inverted: inverted,
-            overlay: true,
-            zoomCover: true,
-            fill: true,
-            onOpen: () => onOpen(item),
-          ),
-        );
-      },
-    ),
-  );
-}
-
 class _GalleryCard extends ConsumerWidget {
   const _GalleryCard({
     required this.item,
     required this.onOpen,
-    this.inverted = false,
     this.overlay = false,
-    this.zoomCover = false,
-    this.fill = false,
   });
 
   final GalleryItem item;
   final VoidCallback onOpen;
-  final bool inverted;
   final bool overlay;
-  final bool zoomCover;
-  final bool fill;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -3065,9 +2681,7 @@ class _GalleryCard extends ConsumerWidget {
     final cover = Stack(
       fit: StackFit.expand,
       children: [
-        zoomCover
-            ? _HomeZoom(child: _PublicImage(url: imageUrl))
-            : _PublicImage(url: imageUrl),
+        _PublicImage(url: imageUrl),
         if (overlay)
           const DecoratedBox(
             decoration: BoxDecoration(
@@ -3110,7 +2724,7 @@ class _GalleryCard extends ConsumerWidget {
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                     color: Colors.white,
-                    fontWeight: FontWeight.w800,
+                    fontWeight: FontWeight.w600,
                     height: 1.15,
                   ),
                 ),
@@ -3126,16 +2740,8 @@ class _GalleryCard extends ConsumerWidget {
           ),
       ],
     );
-    if (fill) {
-      return _HomePressable(
-        onTap: onOpen,
-        child: ClipRRect(borderRadius: BorderRadius.circular(8), child: cover),
-      );
-    }
     final card = AppSoftCard(
-      color: inverted
-          ? const Color(0xFF181A1D)
-          : Theme.of(context).colorScheme.surface,
+      color: Theme.of(context).colorScheme.surface,
       child: overlay
           ? AspectRatio(
               aspectRatio: 0.72 + (item.id.hashCode.abs() % 16) / 100,
@@ -3151,18 +2757,13 @@ class _GalleryCard extends ConsumerWidget {
                     item.title,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: inverted ? Colors.white : null,
-                      fontWeight: FontWeight.w800,
-                    ),
+                    style: TextStyle(fontWeight: FontWeight.w600),
                   ),
                 ),
               ],
             ),
     );
-    return zoomCover
-        ? _HomePressable(onTap: onOpen, child: card)
-        : AppPressable(onTap: onOpen, child: card);
+    return AppPressable(onTap: onOpen, child: card);
   }
 }
 
@@ -3338,7 +2939,7 @@ class _GalleryDetailSheetState extends State<GalleryDetailSheet> {
             AspectRatio(
               aspectRatio: 1,
               child: ClipRRect(
-                borderRadius: BorderRadius.circular(8),
+                borderRadius: BorderRadius.circular(16),
                 child: Stack(
                   children: [
                     Positioned.fill(
@@ -3391,7 +2992,7 @@ class _GalleryDetailSheetState extends State<GalleryDetailSheet> {
                   child: Text(
                     item.title,
                     style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.w900,
+                      fontWeight: FontWeight.w700,
                     ),
                   ),
                 ),
@@ -3419,7 +3020,7 @@ class _GalleryDetailSheetState extends State<GalleryDetailSheet> {
                     children: [
                       Text(
                         item.authorName,
-                        style: const TextStyle(fontWeight: FontWeight.w800),
+                        style: const TextStyle(fontWeight: FontWeight.w600),
                       ),
                       if (item.createdAt != null)
                         Text(
@@ -3694,11 +3295,13 @@ class _PublicImage extends StatelessWidget {
     required this.url,
     this.fit = BoxFit.cover,
     this.maxDecodePx = 720,
+    this.fadeIn = true,
   });
 
   final String url;
   final BoxFit fit;
   final int maxDecodePx;
+  final bool fadeIn;
 
   @override
   Widget build(BuildContext context) {
@@ -3729,7 +3332,7 @@ class _PublicImage extends StatelessWidget {
           cacheWidth: cacheWidth,
           errorBuilder: (_, _, _) => const _ImageFallback(),
           frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
-            if (wasSynchronouslyLoaded || reduce) return child;
+            if (wasSynchronouslyLoaded || reduce || !fadeIn) return child;
             return AnimatedOpacity(
               opacity: frame == null ? 0 : 1,
               duration: const Duration(milliseconds: 160),
@@ -3761,24 +3364,12 @@ class _ImageFallback extends StatelessWidget {
 }
 
 class _SectionLoading extends StatelessWidget {
-  const _SectionLoading({
-    required this.height,
-    this.inverted = false,
-    this.featuredWidth,
-    this.itemWidth,
-    this.overlay = false,
-  });
-
+  const _SectionLoading({required this.height});
   final double height;
-  final bool inverted;
-  final double? featuredWidth;
-  final double? itemWidth;
-  final bool overlay;
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final fallback = inverted ? 260.0 : 168.0;
     return SizedBox(
       height: height,
       child: ListView.separated(
@@ -3787,52 +3378,37 @@ class _SectionLoading extends StatelessWidget {
         physics: const NeverScrollableScrollPhysics(),
         itemCount: 3,
         separatorBuilder: (_, _) => const SizedBox(width: 14),
-        itemBuilder: (context, index) {
-          final width = index == 0
-              ? (featuredWidth ?? fallback)
-              : (itemWidth ?? fallback);
-          final block = ColoredBox(
-            color: inverted
-                ? const Color(0xFF25282D)
-                : colors.surfaceContainerLow,
-          );
-          return ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: SizedBox(
-              width: width,
-              child: overlay
-                  ? block
-                  : Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Expanded(child: block),
-                        const SizedBox(height: 10),
-                        ColoredBox(
-                          color: inverted
-                              ? const Color(0xFF34373C)
-                              : colors.surfaceContainer,
-                          child: const SizedBox(width: 88, height: 10),
-                        ),
-                      ],
-                    ),
-            ),
-          );
-        },
+        itemBuilder: (context, index) => SizedBox(
+          width: 168,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: colors.surfaceContainerLow,
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              ColoredBox(
+                color: colors.surfaceContainer,
+                child: const SizedBox(width: 88, height: 10),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
 }
 
 class _InlineError extends StatelessWidget {
-  const _InlineError({
-    required this.message,
-    required this.onRetry,
-    this.inverted = false,
-  });
+  const _InlineError({required this.message, required this.onRetry});
 
   final String message;
   final VoidCallback onRetry;
-  final bool inverted;
 
   @override
   Widget build(BuildContext context) {
@@ -3844,15 +3420,12 @@ class _InlineError extends StatelessWidget {
           Icon(Icons.cloud_off_outlined, color: colors.error),
           const SizedBox(width: 10),
           Expanded(
-            child: Text(
-              message,
-              style: TextStyle(color: inverted ? Colors.white : null),
-            ),
+            child: Text(message, style: Theme.of(context).textTheme.bodySmall),
           ),
           IconButton(
             tooltip: '重试',
             onPressed: onRetry,
-            icon: Icon(Icons.refresh, color: inverted ? Colors.white : null),
+            icon: const Icon(Icons.refresh),
           ),
         ],
       ),

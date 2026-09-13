@@ -39,6 +39,7 @@ const usersView = memoizeRouteLoader(() => import("@/views/UsersView.vue"));
 const codesView = memoizeRouteLoader(() => import("@/views/CodesView.vue"));
 const plansView = memoizeRouteLoader(() => import("@/views/PlansView.vue"));
 const ordersView = memoizeRouteLoader(() => import("@/views/OrdersView.vue"));
+const financeCenterView = memoizeRouteLoader(() => import("@/views/FinanceCenterView.vue"));
 const subscriptionChangesView = memoizeRouteLoader(() => import("@/views/SubscriptionChangesView.vue"));
 const trialApplicationsView = memoizeRouteLoader(
   () => import("@/views/TrialApplicationsView.vue"),
@@ -147,6 +148,11 @@ const router = createRouter({
       meta: { public: true, title: "无权限" },
     },
     {
+      path: "/finance-preview",
+      component: financeCenterView,
+      meta: { public: true, title: "财务中心模拟" },
+    },
+    {
       path: "/",
       component: adminLayout,
       children: [
@@ -177,6 +183,7 @@ const router = createRouter({
           component: ordersView,
           meta: { title: "订单管理" },
         },
+        { path: "finance-center", component: financeCenterView, meta: { title: "财务中心" } },
         { path: "subscription-changes", component: subscriptionChangesView, meta: { title: "订阅变更" } },
         {
           path: "trial-applications",

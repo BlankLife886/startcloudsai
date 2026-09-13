@@ -160,7 +160,7 @@ class _UpdatesOverview extends StatelessWidget {
       key: const Key('updates-overview-surface'),
       decoration: BoxDecoration(
         color: colors.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(24),
       ),
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -185,7 +185,7 @@ class _UpdatesOverview extends StatelessWidget {
                         ? (feed.changelogUnavailable ? '版本记录暂时不可用' : '暂无版本记录')
                         : '服务版本 v${latest.version}',
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w800,
+                      fontWeight: FontWeight.w600,
                     ),
                   ),
                   const SizedBox(height: 4),
@@ -259,7 +259,7 @@ class _SectionTitle extends StatelessWidget {
             title,
             style: Theme.of(
               context,
-            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
           ),
         ],
       ),
@@ -281,13 +281,13 @@ class _AnnouncementCard extends ConsumerWidget {
     final colors = Theme.of(context).colorScheme;
     final hasAction = item.ctaUrl?.trim().isNotEmpty == true;
     return ClipRRect(
-      borderRadius: BorderRadius.circular(8),
+      borderRadius: BorderRadius.circular(16),
       child: DecoratedBox(
         key: Key('announcement-surface-${item.id}'),
         decoration: BoxDecoration(
           color: colors.surfaceContainerLow,
           border: Border.all(color: colors.outlineVariant),
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(16),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -314,7 +314,7 @@ class _AnnouncementCard extends ConsumerWidget {
                       Expanded(
                         child: Text(
                           item.title,
-                          style: const TextStyle(fontWeight: FontWeight.w800),
+                          style: const TextStyle(fontWeight: FontWeight.w600),
                         ),
                       ),
                     ],
@@ -434,7 +434,7 @@ class _ChangelogCard extends StatelessWidget {
       key: Key('changelog-${entry.id}'),
       color: colors.surface,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(16),
         side: BorderSide(
           color: entry.highlight ? colors.primary : colors.outlineVariant,
         ),
@@ -457,7 +457,7 @@ class _ChangelogCard extends StatelessWidget {
           'v${entry.version} · ${entry.title}',
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontWeight: FontWeight.w800),
+          style: const TextStyle(fontWeight: FontWeight.w600),
         ),
         subtitle: Text(
           '${_tagLabel(entry.tag)} · ${_date(entry.date)}',

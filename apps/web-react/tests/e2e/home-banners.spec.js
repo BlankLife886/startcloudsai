@@ -13,18 +13,14 @@ test.beforeEach(async ({ page }) => {
   await page.route('**/api/v1/home-banners', route => fulfillJson(route, { items: slides }))
 })
 
-async function expectDefaultHero(page) {
+async function expectSkeletonHero(page) {
   const hero = page.locator('.home-hero')
   await expect(hero).toBeVisible()
-  await expect(hero).toHaveAttribute('data-banners-source', 'default')
+  await expect(hero).toHaveAttribute('data-banners-source', 'empty')
   await expect(page.locator('.home-banner')).toHaveCount(0)
-  await expect(hero.locator('h1')).toHaveText('星空云绘')
-  await expect(hero.locator('.home-hero__tagline')).toHaveText('让想象，成为作品。')
-  await expect(hero.getByRole('link', { name: '进入创作台', exact: true })).toHaveAttribute('href', '/studio')
-  await expect(hero.getByRole('link', { name: '探索全部工具', exact: true })).toHaveAttribute('href', '#home-directory')
-  const image = hero.locator('img[src="/sucai/home-intro-03.png"]')
-  await expect(image).toBeVisible()
-  await expect.poll(() => image.evaluate(img => img.complete && img.naturalWidth > 0)).toBe(true)
+  await expect(hero.locator('img, h1, a, button')).toHaveCount(0)
+  await expect(hero.locator('.home-hero__skeleton')).toBeVisible()
+  await expect(hero).toHaveAttribute('aria-busy', 'false')
   await expect(hero.locator('.home-launch')).toHaveCount(0)
 }
 
@@ -276,6 +272,131 @@ async function expectCornerLayout(banner, viewportWidth) {
   }
 }
 
+test('startup requests banners and the first image before React loads', async ({ page }) => {
+  let releaseApp
+  const appGate = new Promise(resolve => { releaseApp = resolve })
+  let bannerRequests = 0
+  let firstImageRequests = 0
+  page.on('request', request => {
+    if (request.url().endsWith('/api/v1/home-banners')) bannerRequests += 1
+    if (request.url().endsWith('/sucai/studio-cover-t2i.webp')) firstImageRequests += 1
+  })
+  await page.route('**/src/main.jsx', async route => {
+    await appGate
+    await route.continue()
+  })
+  const bannerRequest = page.waitForRequest('**/api/v1/home-banners')
+  const firstImageRequest = page.waitForRequest('**/sucai/studio-cover-t2i.webp')
+  await page.goto('/', { waitUntil: 'commit' })
+  await bannerRequest
+  await firstImageRequest
+  await expect(page.locator('.home-hero')).toHaveCount(0)
+  releaseApp()
+  await expect(page.locator('.home-hero')).toHaveAttribute('data-banners-source', 'configured')
+  await expect(page.locator('.home-hero')).toHaveAttribute('aria-busy', 'false')
+  expect(bannerRequests).toBe(1)
+  expect(firstImageRequests).toBe(1)
+})
+
+test('secondary banners wait for the first image and use lower priority', async ({ page }) => {
+  const firstURL = '/sucai/performance-first-banner.svg'
+  const nextURL = '/sucai/performance-next-banner.svg'
+  const image = '<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="600"><path fill="#292438" d="M0 0h1920v600H0z"/></svg>'
+  let releaseFirst
+  const imageGate = new Promise(resolve => { releaseFirst = resolve })
+  let secondaryRequests = 0
+  page.on('request', request => {
+    if (request.url().endsWith(nextURL)) secondaryRequests += 1
+  })
+  await page.route('**/api/v1/home-banners', route => fulfillJson(route, { items: [
+    { ...slides[0], imageUrl: firstURL }, { ...slides[1], imageUrl: nextURL },
+  ] }))
+  await page.route(`**${firstURL}`, async route => {
+    await imageGate
+    await route.fulfill({ contentType: 'image/svg+xml', body: image })
+  })
+  await page.route(`**${nextURL}`, route => route.fulfill({ contentType: 'image/svg+xml', body: image }))
+  await page.goto('/')
+  const hero = page.locator('.home-hero')
+  await expect(hero).toHaveAttribute('data-banners-source', 'configured')
+  await expect(hero).toHaveAttribute('aria-busy', 'true')
+  await expect(hero.locator('[data-banner-slide="one"] img')).toHaveAttribute('fetchpriority', 'high')
+  await expect(hero.locator('[data-banner-slide="two"] img')).not.toHaveAttribute('src')
+  expect(secondaryRequests).toBe(0)
+  releaseFirst()
+  await expect(hero).toHaveAttribute('aria-busy', 'false')
+  await expect(hero.locator('[data-banner-slide="two"] img')).toHaveAttribute('src', nextURL)
+  await expect(hero.locator('[data-banner-slide="two"] img')).toHaveAttribute('fetchpriority', 'low')
+  await expect(page.locator('.home-card__media img').first()).toHaveAttribute('fetchpriority', 'low')
+})
+
+test('pending banners never flash the default image and returning home reuses recent banners', async ({ page }) => {
+  let release
+  let gate = new Promise(resolve => { release = resolve })
+  let responseItems = slides
+  let defaultImageRequests = 0
+  page.on('request', request => {
+    if (request.url().includes('/sucai/home-intro-03.png')) defaultImageRequests += 1
+  })
+  await page.route('**/api/v1/home-banners', async route => {
+    await gate
+    await fulfillJson(route, { items: responseItems })
+  })
+  await page.goto('/')
+  const hero = page.locator('.home-hero')
+  await expect(hero).toHaveAttribute('data-banners-source', 'loading')
+  await expect(hero).toHaveAttribute('aria-busy', 'true')
+  await expect(hero.locator('.home-hero__skeleton')).toBeVisible()
+  await expect(hero.locator('img, h1')).toHaveCount(0)
+  const initialHeight = (await hero.boundingBox()).height
+  expect(defaultImageRequests).toBe(0)
+  release()
+  await expect(hero).toHaveAttribute('data-banners-source', 'configured')
+  await expect(hero.locator('.home-banner__slide.is-active img')).toHaveAttribute('src', slides[0].imageUrl)
+  expect((await hero.boundingBox()).height).toBe(initialHeight)
+
+  gate = new Promise(resolve => { release = resolve })
+  await page.locator('.home-compact[href="/tools/image-compress"]').click()
+  await expect(page).toHaveURL(/\/tools\/image-compress$/)
+  await expect(hero).toHaveCount(0)
+  const refreshRequest = page.waitForRequest('**/api/v1/home-banners')
+  await page.goBack()
+  await refreshRequest
+  await expect(hero).toHaveAttribute('data-banners-source', 'configured')
+  await expect(hero.locator('.home-banner__slide.is-active img')).toHaveAttribute('src', slides[0].imageUrl)
+  expect(defaultImageRequests).toBe(0)
+
+  responseItems = []
+  release()
+  await expectSkeletonHero(page)
+})
+
+test('skeleton animates until the first image loads and respects reduced motion', async ({ page }) => {
+  let release
+  const gate = new Promise(resolve => { release = resolve })
+  await page.route('**/sucai/studio-cover-t2i.webp', async route => {
+    await gate
+    await route.continue()
+  })
+  await page.emulateMedia({ reducedMotion: 'no-preference' })
+  await page.goto('/')
+  const hero = page.locator('.home-hero')
+  const skeleton = hero.locator('.home-hero__skeleton')
+  await expect(hero).toHaveAttribute('data-banners-source', 'configured')
+  await expect(hero).toHaveAttribute('aria-busy', 'true')
+  await expect(skeleton).toBeVisible()
+  await expect(hero.locator('.home-banner__controls, .home-hero__inner')).toHaveCount(0)
+  expect(await skeleton.evaluate(el => getComputedStyle(el, '::after').animationName)).toBe('home-skeleton-sweep')
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  expect(await skeleton.evaluate(el => getComputedStyle(el, '::after').animationName)).toBe('none')
+  const height = (await hero.boundingBox()).height
+  release()
+  await expect(skeleton).toHaveCount(0)
+  await expect(hero).toHaveAttribute('aria-busy', 'false')
+  await expect(hero.locator('.home-banner__controls')).toBeVisible()
+  expect((await hero.boundingBox()).height).toBe(height)
+})
+
 test('configured banners share the top hero and retain their destination link', async ({ page }) => {
   await page.goto('/')
   const banner = page.getByRole('region', { name: '首页精选' })
@@ -439,20 +560,20 @@ test('long banner copy fits a short mobile viewport without covering controls', 
   await page.screenshot({ path: testInfo.outputPath('home-banner-long-copy-320.png') })
 })
 
-test('empty banners retain the default hero image', async ({ page }) => {
+test('empty banners retain the skeleton without a default image', async ({ page }) => {
   await page.route('**/api/v1/home-banners', route => fulfillJson(route, { items: [] }))
   const response = page.waitForResponse('**/api/v1/home-banners')
   await page.goto('/')
   expect((await response).status()).toBe(200)
-  await expectDefaultHero(page)
+  await expectSkeletonHero(page)
 })
 
-test('a failed banner request retains the default hero image', async ({ page }) => {
+test('a failed banner request retains the skeleton without a default image', async ({ page }) => {
   await page.route('**/api/v1/home-banners', route => fulfillJson(route, {}, 500))
   const response = page.waitForResponse('**/api/v1/home-banners')
   await page.goto('/')
   expect((await response).status()).toBe(500)
-  await expectDefaultHero(page)
+  await expectSkeletonHero(page)
 })
 
 test('a single configured banner has no unnecessary carousel controls', async ({ page }) => {
@@ -464,13 +585,13 @@ test('a single configured banner has no unnecessary carousel controls', async ({
   await expect(page.locator('.home-banner__cta')).toHaveAttribute('href', '/text-to-image')
 })
 
-test('a broken banner image falls back to the default hero', async ({ page }) => {
+test('a broken banner image returns to the skeleton', async ({ page }) => {
   await page.route('**/api/v1/home-banners', route => fulfillJson(route, { items: [{ ...slides[0], imageUrl: '/missing-banner.webp' }] }))
   await page.route('**/missing-banner.webp', route => route.fulfill({ status: 404, body: '' }))
   const imageResponse = page.waitForResponse('**/missing-banner.webp')
   await page.goto('/')
   expect((await imageResponse).status()).toBe(404)
-  await expectDefaultHero(page)
+  await expectSkeletonHero(page)
 })
 
 test('hidden, future, expired and unsafe-image banners are not displayed', async ({ page }) => {

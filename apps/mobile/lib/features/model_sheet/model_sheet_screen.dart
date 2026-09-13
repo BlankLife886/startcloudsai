@@ -354,7 +354,7 @@ class _ModelSheetScreenState extends ConsumerState<ModelSheetScreen>
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
             color: Theme.of(context).colorScheme.surfaceContainerLow,
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(16),
             border: Border.all(
               color: Theme.of(context).colorScheme.outlineVariant,
             ),
@@ -496,7 +496,7 @@ class _ModelSheetScreenState extends ConsumerState<ModelSheetScreen>
                   padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
                     color: colors.secondaryContainer.withValues(alpha: 0.52),
-                    borderRadius: BorderRadius.circular(8),
+                    borderRadius: BorderRadius.circular(16),
                     border: Border.all(color: colors.outlineVariant),
                   ),
                   child: Row(
@@ -511,7 +511,7 @@ class _ModelSheetScreenState extends ConsumerState<ModelSheetScreen>
                             Text(
                               '同一主体，多视角生产级参考',
                               style: Theme.of(context).textTheme.titleMedium
-                                  ?.copyWith(fontWeight: FontWeight.w900),
+                                  ?.copyWith(fontWeight: FontWeight.w700),
                             ),
                             const SizedBox(height: 4),
                             Text(
@@ -594,7 +594,7 @@ class _ModelSheetScreenState extends ConsumerState<ModelSheetScreen>
                         child: Text(
                           '参考主体 ${_references.length}/${model.maxReferenceImages}',
                           style: Theme.of(context).textTheme.titleSmall
-                              ?.copyWith(fontWeight: FontWeight.w800),
+                              ?.copyWith(fontWeight: FontWeight.w600),
                         ),
                       ),
                       Text(
@@ -628,7 +628,7 @@ class _ModelSheetScreenState extends ConsumerState<ModelSheetScreen>
                               style: OutlinedButton.styleFrom(
                                 padding: EdgeInsets.zero,
                                 shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(8),
+                                  borderRadius: BorderRadius.circular(16),
                                 ),
                               ),
                               child: _selecting
@@ -668,7 +668,7 @@ class _ModelSheetScreenState extends ConsumerState<ModelSheetScreen>
                               child: Text(
                                 '模型设定',
                                 style: Theme.of(context).textTheme.titleMedium
-                                    ?.copyWith(fontWeight: FontWeight.w900),
+                                    ?.copyWith(fontWeight: FontWeight.w700),
                               ),
                             ),
                             Container(
@@ -679,13 +679,13 @@ class _ModelSheetScreenState extends ConsumerState<ModelSheetScreen>
                               ),
                               decoration: BoxDecoration(
                                 color: colors.secondaryContainer,
-                                borderRadius: BorderRadius.circular(8),
+                                borderRadius: BorderRadius.circular(16),
                               ),
                               child: Text(
                                 '${model.pricePoints * units} 积分',
                                 style: TextStyle(
                                   color: colors.onSecondaryContainer,
-                                  fontWeight: FontWeight.w900,
+                                  fontWeight: FontWeight.w700,
                                 ),
                               ),
                             ),
@@ -726,7 +726,7 @@ class _ModelSheetScreenState extends ConsumerState<ModelSheetScreen>
                         Text(
                           '主体类型',
                           style: Theme.of(context).textTheme.titleSmall
-                              ?.copyWith(fontWeight: FontWeight.w800),
+                              ?.copyWith(fontWeight: FontWeight.w600),
                         ),
                         const SizedBox(height: 8),
                         SegmentedButton<String>(
@@ -753,7 +753,7 @@ class _ModelSheetScreenState extends ConsumerState<ModelSheetScreen>
                         Text(
                           '输出方式',
                           style: Theme.of(context).textTheme.titleSmall
-                              ?.copyWith(fontWeight: FontWeight.w800),
+                              ?.copyWith(fontWeight: FontWeight.w600),
                         ),
                         const SizedBox(height: 8),
                         SegmentedButton<String>(
@@ -784,7 +784,7 @@ class _ModelSheetScreenState extends ConsumerState<ModelSheetScreen>
                               child: Text(
                                 '输出视角',
                                 style: Theme.of(context).textTheme.titleSmall
-                                    ?.copyWith(fontWeight: FontWeight.w800),
+                                    ?.copyWith(fontWeight: FontWeight.w600),
                               ),
                             ),
                             Text('${_views.length}/6'),
@@ -823,7 +823,7 @@ class _ModelSheetScreenState extends ConsumerState<ModelSheetScreen>
                         Text(
                           '还原策略',
                           style: Theme.of(context).textTheme.titleSmall
-                              ?.copyWith(fontWeight: FontWeight.w800),
+                              ?.copyWith(fontWeight: FontWeight.w600),
                         ),
                         const SizedBox(height: 8),
                         SegmentedButton<String>(
@@ -845,7 +845,7 @@ class _ModelSheetScreenState extends ConsumerState<ModelSheetScreen>
                         Text(
                           '画面比例',
                           style: Theme.of(context).textTheme.titleSmall
-                              ?.copyWith(fontWeight: FontWeight.w800),
+                              ?.copyWith(fontWeight: FontWeight.w600),
                         ),
                         const SizedBox(height: 8),
                         Wrap(
@@ -881,7 +881,7 @@ class _ModelSheetScreenState extends ConsumerState<ModelSheetScreen>
                         Text(
                           '背景',
                           style: Theme.of(context).textTheme.titleSmall
-                              ?.copyWith(fontWeight: FontWeight.w800),
+                              ?.copyWith(fontWeight: FontWeight.w600),
                         ),
                         const SizedBox(height: 8),
                         Wrap(
@@ -921,7 +921,7 @@ class _ModelSheetScreenState extends ConsumerState<ModelSheetScreen>
                               child: Text(
                                 '细节强度',
                                 style: Theme.of(context).textTheme.titleSmall
-                                    ?.copyWith(fontWeight: FontWeight.w800),
+                                    ?.copyWith(fontWeight: FontWeight.w600),
                               ),
                             ),
                             Text(
@@ -949,7 +949,7 @@ class _ModelSheetScreenState extends ConsumerState<ModelSheetScreen>
                                 child: Text(
                                   '方案数量',
                                   style: Theme.of(context).textTheme.titleSmall
-                                      ?.copyWith(fontWeight: FontWeight.w800),
+                                      ?.copyWith(fontWeight: FontWeight.w600),
                                 ),
                               ),
                               IconButton.filledTonal(
@@ -1077,7 +1077,7 @@ class _ModelSheetStage extends StatelessWidget {
                 const Expanded(
                   child: Text(
                     '模型蓝图预览',
-                    style: TextStyle(fontWeight: FontWeight.w900),
+                    style: TextStyle(fontWeight: FontWeight.w700),
                   ),
                 ),
                 Container(
@@ -1139,7 +1139,7 @@ class _ModelSheetStage extends StatelessWidget {
                         : failed
                         ? '部分视图生成失败，可进入作品查看'
                         : '${views.length} 个视角 · ${_backgroundLabel(background)}',
-                    style: const TextStyle(fontWeight: FontWeight.w800),
+                    style: const TextStyle(fontWeight: FontWeight.w600),
                   ),
                 ),
                 if (active)
@@ -1165,7 +1165,7 @@ class _ModelSheetStage extends StatelessWidget {
                     color: selected
                         ? colors.secondaryContainer
                         : colors.surfaceContainerLow,
-                    borderRadius: BorderRadius.circular(8),
+                    borderRadius: BorderRadius.circular(16),
                     clipBehavior: Clip.antiAlias,
                     child: InkWell(
                       key: Key('model-sheet-output-$index'),
@@ -1186,7 +1186,7 @@ class _ModelSheetStage extends StatelessWidget {
                                 overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(
                                   fontSize: 12,
-                                  fontWeight: FontWeight.w800,
+                                  fontWeight: FontWeight.w600,
                                 ),
                               ),
                             ),
@@ -1279,7 +1279,7 @@ class _BlueprintSilhouettes extends StatelessWidget {
                       modelSheetViewLabels[view] ?? view,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontWeight: FontWeight.w900),
+                      style: const TextStyle(fontWeight: FontWeight.w700),
                     ),
                   ],
                 ),
@@ -1309,7 +1309,7 @@ class _ReferenceThumbnail extends StatelessWidget {
       fit: StackFit.expand,
       children: [
         ClipRRect(
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(16),
           child: image.localPath.isNotEmpty
               ? Image.file(File(image.localPath), fit: BoxFit.cover)
               : AuthenticatedImage(url: image.remoteUrl ?? ''),
@@ -1351,7 +1351,7 @@ class _PrimaryReferenceBadge extends StatelessWidget {
       style: TextStyle(
         color: Colors.white,
         fontSize: 10,
-        fontWeight: FontWeight.w800,
+        fontWeight: FontWeight.w600,
       ),
     ),
   );
@@ -1412,7 +1412,7 @@ class _ConfirmRow extends StatelessWidget {
           value,
           textAlign: TextAlign.end,
           style: TextStyle(
-            fontWeight: FontWeight.w900,
+            fontWeight: FontWeight.w700,
             color: danger ? Theme.of(context).colorScheme.error : null,
           ),
         ),
@@ -1463,7 +1463,7 @@ class _InlineError extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Material(
     color: Theme.of(context).colorScheme.errorContainer,
-    borderRadius: BorderRadius.circular(8),
+    borderRadius: BorderRadius.circular(16),
     child: ListTile(
       leading: const Icon(Icons.cloud_off_outlined),
       title: const Text('模型设计状态读取失败'),

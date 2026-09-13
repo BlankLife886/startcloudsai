@@ -48,6 +48,7 @@ import {
 import notificationService from "@react/legacy-modules/services/notification.js";
 import { AI_WALLPAPER_STUDIO_DRAFT_KEY } from "@react/legacy-modules/services/aiWallpaperState.js";
 import { resolveModelPointPricing } from "@react/legacy-modules/features/ai-shared/modelPointPricing.js";
+import { normalizeModelLabel, resolveModelDisplayName } from "@react/legacy-modules/features/ai-shared/modelDisplay.js";
 import {
   getScopedLocalItem,
   getScopedLocalStorageKey,
@@ -65,6 +66,7 @@ import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
 import { ProgressiveAuthenticatedImage } from "../components/ProgressiveAuthenticatedImage.jsx";
 import { DialogMotion } from "../components/motion/DialogMotion.jsx";
 import { useTextToImageJobs } from "../features/text-to-image/useTextToImageJobs.js";
+import { showBatchRecovery, useSubmissionStage } from "../features/text-to-image/useSubmissionStage.js";
 import { batchQuotePayload, historyTaskReferences, pendingBatchEntries } from "../features/text-to-image/submissionBatch.js";
 import { isEmptyHistoryTask } from "../features/history/historyCleanup.js";
 import { LOCAL_SUBMISSION_STATUSES, QUEUE_CAPACITY_CODES, serverTaskCounts, taskStatePresentation } from "../features/text-to-image/submissionState.js";
@@ -74,6 +76,8 @@ import { GenerationAtmosphere } from "../features/text-to-image/GenerationAtmosp
 import { GenerationStateVisual } from "../features/text-to-image/GenerationStateVisual.jsx";
 import { GenerationParticleField } from "../features/text-to-image/GenerationParticleField.jsx";
 import { GenerationReveal } from "../features/text-to-image/GenerationReveal.jsx";
+import { StageTransition, stageMediaKey } from "../features/text-to-image/StageTransition.jsx";
+import { resolveStageGroupAspect } from "../features/text-to-image/stageGroupGeometry.js";
 import { useReferenceDraft } from "../features/text-to-image/useReferenceDraft.js";
 import { taskTimestamp, taskGenerationElapsedMs } from "../legacy-modules/features/ai-wallpaper/domain/taskGenerationTiming.js";
 import { T2iHistoryFeed } from "../features/text-to-image/T2iHistoryFeed.jsx";
@@ -252,7 +256,7 @@ function normalizePublicModel(item = {}) {
     ...item,
     ...normalizeImageModelCapabilities(item),
     id,
-    label: String(item.label || item.name || id),
+    label: normalizeModelLabel(item),
     pointPricing,
     creditCost: Math.max(0, Number(pointPricing.effective ?? 0)),
   };
@@ -284,7 +288,7 @@ function compactRatioClass(value) {
   return width > height ? "is-landscape" : "is-portrait";
 }
 
-function stageAspectValue(task, measuredAspect = "") {
+export function stageAspectValue(task, measuredAspect = "") {
   const measured = String(measuredAspect || "").trim();
   if (measured) return measured;
   const sizeMatch = String(task?.actualOutputSize || "").match(/(\d+)\s*[x×]\s*(\d+)/i);
@@ -297,7 +301,7 @@ function stageAspectValue(task, measuredAspect = "") {
     : "16 / 9";
 }
 
-function stageFrameStyle(task, measuredAspect = "") {
+export function stageFrameStyle(task, measuredAspect = "") {
   const aspect = stageAspectValue(task, measuredAspect);
   const [width, height] = aspect.split("/").map(Number);
   const ratio = Number.isFinite(width) && Number.isFinite(height) && height > 0
@@ -310,7 +314,7 @@ function stageFrameStyle(task, measuredAspect = "") {
   };
 }
 
-function stageGridLayout(count, imageAspect, canvasAspect) {
+export function stageGridLayout(count, imageAspect, canvasAspect) {
   if (count < 2) return null;
   const [width, height] = String(imageAspect || "1 / 1").split("/").map(Number);
   const imageRatio = Number.isFinite(width) && Number.isFinite(height) && height > 0
@@ -370,19 +374,8 @@ function taskGroupKey(task) {
   return task?.batchId ? `batch:${task.batchId}` : `task:${task?.id || "unknown"}`;
 }
 
-function looksLikeInternalModelId(value) {
-  const text = String(value || "").trim();
-  if (!text) return true;
-  return /^model--/i.test(text) || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(text);
-}
-
 function taskModelLabel(task, models = []) {
-  const keys = [task?.publicModelKey, task?.model]
-    .map((value) => String(value || "").trim())
-    .filter(Boolean);
-  const match = models.find((item) => keys.includes(item.id) || keys.includes(item.publicModelKey));
-  if (match?.label) return match.label;
-  return keys.find((key) => !looksLikeInternalModelId(key)) || "文生图模型";
+  return resolveModelDisplayName(task, models, "文生图模型");
 }
 
 function taskMeta(task, models = []) {
@@ -755,6 +748,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   const modelMenuRef = useRef(null);
   const skillTriggerRef = useRef(null);
   const skillPanelRef = useRef(null);
+  const controlLayersRef = useRef(null);
   const promptInputRef = useRef(null);
   const promptViewportRef = useRef(null);
   const promptColumnAssignmentRef = useRef({ columnCount: 0, columns: new Map() });
@@ -763,6 +757,8 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   const historyViewportRef = useRef(null);
   const historyActionRef = useRef({});
   const stageCanvasRef = useRef(null);
+  const stageCanvasObserverRef = useRef(null);
+  const stageGroupGeometryRef = useRef(null);
   const filmstripRef = useRef(null);
   const isDark = useIsDark();
   const { open: guideOpen, setOpen: setGuideOpen } = useProductGuide({
@@ -875,17 +871,18 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   );
   const maxReferences = Math.max(0, Number(currentModel?.maxReferenceImages ?? 4));
   const jobs = useTextToImageJobs({ authenticated, userId: user?.id, historyActive: mainTab === "history" });
+  const stageSubmission = useSubmissionStage(jobs.tasks, jobs.latestBatchId);
   const remainingBatchCount = pendingBatchEntries(jobs.pendingBatch).length;
-  const taskCounts = serverTaskCounts(jobs.tasks);
+  const taskCounts = serverTaskCounts(stageSubmission.tasks);
   const queueFull = pendingBatchEntries(jobs.pendingBatch).some(entry => QUEUE_CAPACITY_CODES.has(entry.error?.code));
   const submissionBusy = jobs.submitting || jobs.submissionPhase === "recovering";
   useLayoutEffect(() => {
-    if (!jobs.latestBatchId) return;
-    setActiveGroupKey(`batch:${jobs.latestBatchId}`);
+    if (!stageSubmission.focusBatchId) return;
+    setActiveGroupKey(`batch:${stageSubmission.focusBatchId}`);
     setActiveGalleryKey("");
     setActiveTaskId("");
     setMainTab("images");
-  }, [jobs.latestBatchId]);
+  }, [stageSubmission.focusBatchId]);
   const isRunning =
     jobs.tasks.some((task) => ACTIVE_STATUSES.has(task.status)) ||
     (mainTab === "history" && jobs.historyTasks.some((task) => ACTIVE_STATUSES.has(task.status)));
@@ -1011,6 +1008,24 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
       window.removeEventListener("scroll", updateSkillPanelPosition, true);
     };
   }, [skillOpen, updateSkillPanelPosition]);
+
+  useEffect(() => {
+    if (!openLayer) return undefined;
+    const onPointerDown = (event) => {
+      if (controlLayersRef.current?.contains(event.target)) return;
+      setOpenLayer("");
+    };
+    const onKeyDown = (event) => {
+      if (event.key !== "Escape") return;
+      setOpenLayer("");
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown, true);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [openLayer]);
 
   useGSAP(
     () => {
@@ -1296,17 +1311,24 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     if (!activeTaskId && jobs.tasks[0]) setActiveTaskId(jobs.tasks[0].id);
   }, [activeTaskId, jobs.tasks]);
 
-  useEffect(() => {
-    const canvas = stageCanvasRef.current;
-    if (!canvas || typeof ResizeObserver === "undefined") return undefined;
+  const observeStageCanvas = useCallback(canvas => {
+    stageCanvasObserverRef.current?.disconnect();
+    stageCanvasRef.current = canvas;
+    if (!canvas || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(([entry]) => {
       const width = Number(entry?.contentRect?.width || 0);
       const height = Number(entry?.contentRect?.height || 0);
-      if (width > 0 && height > 0) setStageCanvasAspect(width / height);
+      if (width > 0 && height > 0) setStageCanvasAspect(current => Math.abs(current - width / height) < 0.002 ? current : width / height);
     });
+    stageCanvasObserverRef.current = observer;
     observer.observe(canvas);
-    return () => observer.disconnect();
-  }, [mainTab]);
+  }, []);
+  useEffect(() => () => stageCanvasObserverRef.current?.disconnect(), []);
+  const rememberStageImageSize = useCallback((key, width, height) => {
+    if (!key || width <= 0 || height <= 0) return;
+    const aspect = `${width} / ${height}`;
+    setFeaturedImageAspects(current => current[key] === aspect ? current : { ...current, [key]: aspect });
+  }, []);
 
   const addReferenceFiles = useCallback((fileList) => {
     const files = Array.from(fileList || []).filter((file) => file.type.startsWith("image/"));
@@ -1550,8 +1572,8 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   }, [currentModel, loading, prompt, requestGeneration]);
 
   const galleryItems = useMemo(
-    () => buildGalleryItems(jobs.tasks, unavailableImageKeys),
-    [jobs.tasks, unavailableImageKeys],
+    () => buildGalleryItems(stageSubmission.tasks, unavailableImageKeys),
+    [stageSubmission.tasks, unavailableImageKeys],
   );
   const filmstripGroups = useMemo(() => groupGalleryItems(galleryItems), [galleryItems]);
   const featuredGroup =
@@ -1568,10 +1590,18 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   const groupSubmissionUnconfirmed = (featuredGroup?.items || []).some(item => ["submitting", "submission_unknown"].includes(item.task.status));
   const activeOutput = featuredItem?.url || "";
   const stageGridItems = featuredGroup?.items.length > 1 ? featuredGroup.items : [];
-  const featuredAspect = stageAspectValue(
+  const measuredStageAspect = stageAspectValue(
     activeTask,
     featuredItem?.key ? featuredImageAspects[featuredItem.key] : "",
   );
+  const stageGroupGeometry = resolveStageGroupAspect({
+    key: featuredGroup?.key || "", count: stageGridItems.length,
+    active: stageGridItems.some(item => ACTIVE_STATUSES.has(item.task.status) || item.task.status === "submitting"),
+    requested: stageAspectValue({ ...activeTask, actualOutputSize: activeTask?.sizeMode === "exact" ? `${activeTask.exactWidth}x${activeTask.exactHeight}` : "" }),
+    measured: measuredStageAspect,
+  }, stageGroupGeometryRef.current);
+  const featuredAspect = stageGroupGeometry.aspect;
+  useLayoutEffect(() => { stageGroupGeometryRef.current = stageGroupGeometry; }, [stageGroupGeometry.key, stageGroupGeometry.aspect, stageGroupGeometry.locked]);
   const gridLayout = stageGridLayout(stageGridItems.length, featuredAspect, stageCanvasAspect);
   const activeStageStyle = (() => {
     const style = stageFrameStyle(activeTask, featuredItem?.key ? featuredImageAspects[featuredItem.key] : "");
@@ -2122,7 +2152,10 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                   aria-expanded={modelOpen}
                   onClick={() => {
                     const next = !modelOpen;
-                    if (next) updateModelMenuPosition();
+                    if (next) {
+                      updateModelMenuPosition();
+                      setOpenLayer("");
+                    }
                     setModelOpen(next);
                   }}
                 >
@@ -2177,6 +2210,8 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
               value={prompt}
               maxLength={8000}
               placeholder="描述主体、场景、光线与风格…"
+              onFocus={() => setOpenLayer("")}
+              onPointerDown={() => setOpenLayer("")}
               onChange={(event) => setPrompt(event.target.value)}
               onPaste={(event) => {
                 const files = Array.from(event.clipboardData?.files || []);
@@ -2197,9 +2232,9 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                     <button type="button" title="移除参考图" aria-label="移除参考图" onClick={() => removeReference(item.id)}><i className="bi bi-x-lg" /></button>
                   </figure>
                 ))}
-                {references.length < maxReferences && (
+                {references.length < maxReferences ? (
                   <button type="button" className="t2i-prompt-ref-add" aria-label="添加参考图" onClick={() => fileInputRef.current?.click()}><i className="bi bi-plus-lg" /></button>
-                )}
+                ) : null}
                 <input ref={fileInputRef} hidden type="file" accept="image/*" multiple onChange={(event) => { addReferenceFiles(event.target.files); event.target.value = ""; }} />
               </div>
               <div className="t2i-prompt-foot-actions">
@@ -2214,7 +2249,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
               </div>
             </div>
           </div>
-          <div className="t2i-control-layers" data-guide="t2i-params" data-motion>
+          <div ref={controlLayersRef} className="t2i-control-layers" data-guide="t2i-params" data-motion>
             <div className="t2i-control-layer-bar" aria-label="生成参数分类">
               {[
                 ["frame", "bi-aspect-ratio", "画面", frameSummary],
@@ -2231,7 +2266,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                 <CompactSegments label="质量" value={quality} options={qualityOptions} onChange={setQuality} />
                 <ExactImageSizeControl model={currentModel} mode={imageSize.sizeMode} width={imageSize.exactWidth} height={imageSize.exactHeight} onChange={(patch) => setImageSize((current) => ({ ...current, ...patch }))} />
                 {imageSize.sizeMode !== "exact" && <div className="t2i-compact-field is-ratio-field"><span>比例</span><div className="t2i-compact-ratio-grid">
-                  {ratioOptions.map((option) => <button key={option.value} type="button" className={ratio === option.value ? "is-selected" : ""} aria-pressed={ratio === option.value} title={option.label} onClick={() => setRatio(option.value)}><i className={compactRatioClass(option.value)} style={ratioStyle(option.value)} /><small>{option.value === "auto" ? "自动" : option.value}</small></button>)}
+                  {ratioOptions.map((option) => <button key={option.value} type="button" className={ratio === option.value ? "is-selected" : ""} aria-pressed={ratio === option.value} title={option.label} onClick={(event) => { setRatio(option.value); if (event.detail > 0) event.currentTarget.blur(); }}><i className={compactRatioClass(option.value)} style={ratioStyle(option.value)} /><small>{option.value === "auto" ? "自动" : option.value}</small></button>)}
                 </div></div>}
                 <div className="t2i-compact-field-row">
                   {imageSize.sizeMode !== "exact" && <CompactSegments label="分辨率" value={resolution} options={resolutionOptions} onChange={setResolution} />}
@@ -2257,13 +2292,13 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
             )}
           </div>
         </div>
-        {remainingBatchCount > 0 && <div className="t2i-batch-recovery" role="status">
+        {showBatchRecovery(jobs.pendingBatch, submissionBusy) && <div className="t2i-batch-recovery" role="status">
           <small>{queueFull ? "排队容量已满。" : ""}已接受 {jobs.pendingBatch.entries.filter(entry => entry.task).length} 张，还有 {remainingBatchCount} 张待提交。原模型、参数和参考图已保留，刷新后可继续。</small>
           <button type="button" disabled={submissionBusy || quotingCost} onClick={() => { quoteRequestRef.current += 1; setCost(null); jobs.discardPendingBatch(); }}>不再补交，开始新一批</button>
         </div>}
         {referenceStorageError && <p className="t2i-reference-warning" role="alert">{referenceStorageError}</p>}
         {!loading && imageSize.sizeMode === "exact" && currentModel?.supportsExactSize !== true && openLayer !== "frame" && <p className="exact-size-control__error" role="alert">原精确尺寸模型暂不可用，请重新选择支持精确尺寸的可用模型。已保留当前宽高。</p>}
-        <button type="button" className="t2i-generate" data-motion data-state={generationButton.state} aria-busy={generationButton.busy} disabled={generationButton.disabled} title={generationButton.title} onClick={() => void requestGeneration()}>
+        <button type="button" className="t2i-generate" data-motion data-state={generationButton.state} aria-busy={generationButton.busy} disabled={generationButton.disabled} aria-label={generationButton.title} onClick={() => void requestGeneration()}>
           <GenerationButtonContent
             state={generationButton.state}
             label={generationButton.label}
@@ -2341,7 +2376,8 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                 </div>
               ) : (
                 <div className="t2i-stage">
-                  <div ref={stageCanvasRef} className="t2i-stage-canvas">
+                  <div ref={observeStageCanvas} className="t2i-stage-canvas">
+                    <StageTransition sceneKey={featuredGroup.key} mediaKeys={featuredGroup.items.filter(item => item.kind === "image").map(item => stageMediaKey(item.key, item.url || ""))} onImageSize={rememberStageImageSize}>
                     <div className="t2i-stage-frame" style={activeStageStyle}>
                       {stageGridItems.length > 0 ? (
                         <div
@@ -2360,7 +2396,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                                   onDelete={() => requestDelete([item.task], "这条任务")}
                                 />
                               ) : (
-                                <GenerationReveal complete={item.kind === "image"} sourceKey={item.url || ""} pending={<PendingStage task={item.kind === "image" ? { ...item.task, status: "running", generationStage: "fetching_result" } : item.task} now={now} batchIndex={item.batchIndex ?? item.task.batchIndex} />}>
+                                <GenerationReveal complete={item.kind === "image"} sourceKey={item.url || ""} mediaKey={item.key} pending={<PendingStage task={item.kind === "image" ? { ...item.task, status: "running", generationStage: "fetching_result" } : item.task} now={now} batchIndex={item.batchIndex ?? item.task.batchIndex} onCancel={item.kind === "pending" ? () => requestCancel(item.task) : undefined} cancelDisabled={Boolean(actionBusyId)} cancelBusy={actionBusyId === item.task.id} />}>
                                   {({ onReady, onPreviewReady, onFailure }) => <>
                                   <button type="button" className="t2i-stage-cell-media" onClick={() => openPreview(item)}>
                                     <ProgressiveAuthenticatedImage
@@ -2404,7 +2440,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                           ))}
                         </div>
                       ) : featuredItem.kind !== "status" ? (
-                        <GenerationReveal key={featuredItem.key} complete={featuredItem.kind === "image"} sourceKey={activeOutput} pending={<PendingStage task={featuredItem.kind === "image" ? { ...activeTask, status: "running", generationStage: "fetching_result" } : activeTask} now={now} />}>
+                        <GenerationReveal key={featuredItem.key} complete={featuredItem.kind === "image"} sourceKey={activeOutput} mediaKey={featuredItem.key} pending={<PendingStage task={featuredItem.kind === "image" ? { ...activeTask, status: "running", generationStage: "fetching_result" } : activeTask} now={now} onCancel={featuredItem.kind === "pending" ? () => requestCancel(activeTask) : undefined} cancelDisabled={Boolean(actionBusyId)} cancelBusy={actionBusyId === activeTask.id} />}>
                           {({ onReady, onPreviewReady, onFailure }) => <>
                           <button type="button" className={`t2i-stage-media${showsTransparentCanvas(activeTask) ? " is-transparent-output" : ""}`} onClick={() => openPreview(featuredItem)}>
                             <ProgressiveAuthenticatedImage
@@ -2415,18 +2451,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                               loading="eager"
                               loadOriginal
                               hideStatus
-                              onLoad={(event) => {
-                                void onReady(event);
-                                const width = Number(event.currentTarget?.naturalWidth || 0);
-                                const height = Number(event.currentTarget?.naturalHeight || 0);
-                                if (!featuredItem?.key || width <= 0 || height <= 0) return;
-                                const nextAspect = `${width} / ${height}`;
-                                setFeaturedImageAspects((current) =>
-                                  current[featuredItem.key] === nextAspect
-                                    ? current
-                                    : { ...current, [featuredItem.key]: nextAspect },
-                                );
-                              }}
+                              onLoad={onReady}
                               onPreviewLoad={onPreviewReady}
                               onOriginalError={onFailure}
                               onError={() => { onFailure(); markImageUnavailable(featuredItem); }}
@@ -2455,6 +2480,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                         </div>
                       )}
                     </div>
+                    </StageTransition>
                   </div>
                   <div className="t2i-stage-bar">
                     <div className="t2i-stage-copy">
@@ -2609,7 +2635,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
           metadata={{
             id: previewItem.task.id,
             prompt: previewItem.task.prompt,
-            model: previewItem.task.publicModelKey || previewItem.task.model,
+            model: previewItem.task.modelName || taskModelLabel(previewItem.task, models),
             ratio: previewItem.task.aspectRatio,
             resolution: previewItem.task.actualOutputSize || previewItem.task.outputSize,
             quality: previewItem.task.imageQuality,
@@ -2638,9 +2664,76 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   );
 }
 
+function segmentMotionDisabled() {
+  return (
+    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ||
+    document.documentElement.classList.contains("settings-no-animations")
+  );
+}
+
 function CompactSegments({ label, value, options, onChange }) {
+  const rootRef = useRef(null);
+  const thumbRef = useRef(null);
+  const readyRef = useRef(false);
+  const optionKey = options.map((option) => String(option.value)).join("|");
+
+  const syncThumb = useCallback((animate) => {
+    const root = rootRef.current;
+    const thumb = thumbRef.current;
+    const active = root?.querySelector("button.is-selected");
+    if (!root || !thumb || !active) return;
+    const rootBox = root.getBoundingClientRect();
+    const box = active.getBoundingClientRect();
+    const shouldAnimate = animate && readyRef.current && !segmentMotionDisabled();
+    thumb.style.transition = shouldAnimate ? "" : "none";
+    thumb.style.width = `${Math.round(box.width)}px`;
+    thumb.style.height = `${Math.round(box.height)}px`;
+    thumb.style.transform = `translate3d(${Math.round(box.left - rootBox.left)}px, ${Math.round(box.top - rootBox.top)}px, 0)`;
+    thumb.style.opacity = "1";
+    root.classList.add("is-ready");
+    readyRef.current = true;
+  }, []);
+
+  useLayoutEffect(() => {
+    readyRef.current = false;
+    syncThumb(false);
+  }, [optionKey, syncThumb]);
+
+  useLayoutEffect(() => {
+    syncThumb(true);
+  }, [syncThumb, value]);
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root || typeof ResizeObserver === "undefined") return undefined;
+    const observer = new ResizeObserver(() => syncThumb(false));
+    observer.observe(root);
+    return () => observer.disconnect();
+  }, [syncThumb]);
+
   if (!options.length) return null;
-  return <div className="t2i-compact-field"><span>{label}</span><div className="t2i-compact-segments">{options.map((option) => <button key={option.value} type="button" className={String(value) === String(option.value) ? "is-selected" : ""} aria-pressed={String(value) === String(option.value)} onClick={() => onChange(option.value)}>{option.label}</button>)}</div></div>;
+  return (
+    <div className="t2i-compact-field">
+      <span>{label}</span>
+      <div ref={rootRef} className="t2i-compact-segments">
+        <span className="t2i-seg-thumb" ref={thumbRef} aria-hidden="true" />
+        {options.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            className={String(value) === String(option.value) ? "is-selected" : ""}
+            aria-pressed={String(value) === String(option.value)}
+            onClick={(event) => {
+              onChange(option.value);
+              if (event.detail > 0) event.currentTarget.blur();
+            }}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function ModelPointPrice({ model, compact = false, prominent = false, light = false }) {
@@ -2675,10 +2768,13 @@ function Toggle({ label, icon, value, disabled = false, onChange }) {
   return <button type="button" className={`t2i-prompt-toggle${value ? " is-on" : ""}`} role="switch" aria-checked={value} disabled={disabled} onClick={() => onChange(!value)}><span className="t2i-prompt-toggle-copy"><i className={`bi ${icon}`} />{label}</span><span className="t2i-mini-switch"><span /></span></button>;
 }
 
-export function PendingStage({ task, now, batchIndex, motionStyle = "particle-logo" }) {
+export function PendingStage({ task, now, batchIndex, motionStyle = "particle-logo", onCancel, cancelDisabled = false, cancelBusy = false }) {
   const isCell = Number.isFinite(Number(batchIndex));
   const presentation = taskStatePresentation(task);
   const generationElapsed = generationElapsedLabel(task, now);
+  const cancelAllowed = Boolean(onCancel && task?.serverJobId && ACTIVE_STATUSES.has(task.status) && task.cancelPolicy?.allowed !== false);
+  const submitted = cancelDialogContent(task).acknowledgeUpstream;
+  const cancelLabel = submitted ? "停止接收" : task.status === "queued" ? "取消排队" : "取消生成";
   return (
     <div className={`${isCell ? "t2i-stage-cell-pending" : "t2i-stage-pending"} t2i-generation-stage`} data-motion-style={motionStyle} role="group" aria-label={isCell ? `第 ${Number(batchIndex) + 1} 张` : "图片生成"}>
       {motionStyle.startsWith("particle-")
@@ -2687,6 +2783,7 @@ export function PendingStage({ task, now, batchIndex, motionStyle = "particle-lo
         ? <GenerationAtmosphere state={presentation.motion} variant={isCell ? Number(batchIndex) : 0} />
         : <GenerationStateVisual state={presentation.motion} variant={isCell ? Number(batchIndex) : 0} style={motionStyle} />}
       {isCell && <span className="t2i-generation-index" aria-hidden="true">{String(Number(batchIndex) + 1).padStart(2, "0")}</span>}
+      {cancelAllowed && <button type="button" className="t2i-pending-cancel" disabled={cancelDisabled || cancelBusy} aria-busy={cancelBusy} aria-label={`${cancelLabel}${isCell ? `第 ${Number(batchIndex) + 1} 张` : "这张图片"}`} title={submitted ? "停止接收这张图片的结果，需确认积分处理" : "取消这张图片，冻结积分会退回"} onClick={event => { event.stopPropagation(); onCancel(); }}>{cancelBusy ? "正在取消" : cancelLabel}</button>}
       <div className="t2i-generation-caption">
         <span className="t2i-generation-label" role="status">{presentation.label}</span>
         {generationElapsed && <span className="t2i-generation-time" role="timer" aria-live="off" aria-label={`生成用时 ${generationElapsed}`} title="生成用时">{generationElapsed}</span>}

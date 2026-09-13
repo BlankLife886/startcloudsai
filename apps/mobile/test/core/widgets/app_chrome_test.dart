@@ -205,12 +205,12 @@ void main() {
     final close = tester.getRect(find.byKey(const Key('app-sheet-close')));
     final sheet = tester.getRect(find.byType(AppSheetScaffold));
     expect(handle.center.dx, closeTo(195, 12));
-    expect(handle.width, 64);
-    expect(handle.height, 5);
+    expect(handle.width, 36);
+    expect(handle.height, 4);
     expect(handle.top - sheet.top, lessThan(12));
     expect(close.right, greaterThan(handle.right));
-    expect(close.width, 28);
-    expect(close.height, 28);
+    expect(close.width, 44);
+    expect(close.height, 44);
 
     await tester.tap(find.byKey(const Key('app-sheet-close')));
     await tester.pumpAndSettle();

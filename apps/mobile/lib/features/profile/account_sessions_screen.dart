@@ -174,7 +174,7 @@ class _SessionList extends StatelessWidget {
               DecoratedBox(
                 decoration: BoxDecoration(
                   color: colors.primaryContainer,
-                  borderRadius: BorderRadius.circular(8),
+                  borderRadius: BorderRadius.circular(16),
                 ),
                 child: SizedBox.square(
                   dimension: 48,
@@ -192,7 +192,7 @@ class _SessionList extends StatelessWidget {
                     Text(
                       '${items.length} 台设备保持登录',
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w800,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
                     const SizedBox(height: 3),
@@ -247,7 +247,7 @@ class _SessionList extends StatelessWidget {
             '有效会话',
             style: Theme.of(
               context,
-            ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+            ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 8),
           if (items.isEmpty)
@@ -258,7 +258,7 @@ class _SessionList extends StatelessWidget {
           else
             Material(
               color: colors.surfaceContainerLow,
-              borderRadius: BorderRadius.circular(8),
+              borderRadius: BorderRadius.circular(16),
               clipBehavior: Clip.antiAlias,
               child: Column(
                 children: [
@@ -328,7 +328,7 @@ class _SessionTile extends StatelessWidget {
               '本机',
               style: Theme.of(context).textTheme.labelSmall?.copyWith(
                 color: Theme.of(context).colorScheme.primary,
-                fontWeight: FontWeight.w800,
+                fontWeight: FontWeight.w600,
               ),
             ),
           ],

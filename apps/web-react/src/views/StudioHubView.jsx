@@ -5,6 +5,7 @@ import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 import { useNavigate } from "react-router";
 import { PageEntryLink as Link } from "../page-control/PageEntryLink.jsx";
+import { useDeferredPanel } from "../hooks/useDeferredPanel.js";
 import { fetchAssistantConfig } from "../features/assistant/services/assistantApi.js";
 import { getWallet } from "@react/legacy-modules/services/meApi.js";
 import {
@@ -54,6 +55,7 @@ import { useAuth } from "../auth/AuthContext.jsx";
 import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";
 import { ProductGuideTour, useProductGuide } from "./shared/ProductGuideTour.jsx";
+import { StudioReasoningSlider } from "./shared/StudioReasoningSlider.jsx";
 import { PRODUCT_GUIDE_KEYS, STUDIO_GUIDE_STEPS } from "./shared/productGuides.js";
 import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
 import { SoftMark } from "../components/common/SoftMark.jsx";
@@ -611,6 +613,11 @@ export function StudioHubView() {
     () => readComposerDraft().toolId || "assistant",
   );
   const [activePanel, setActivePanel] = useState("");
+  const composerPanelId =
+    activePanel === "tools" || String(activePanel).startsWith("field:")
+      ? activePanel
+      : "";
+  const composerPanel = useDeferredPanel(composerPanelId, 150);
   const [launchConfigs, setLaunchConfigs] = useState(() =>
     mergeLaunchConfigs(readComposerDraft().configs),
   );
@@ -965,9 +972,19 @@ export function StudioHubView() {
           <i className="bi bi-chevron-down" />
         </span>
       </button>
-      {activePanel === `field:${field.key}` && (
+      {composerPanel.id === `field:${field.key}` && (field.key === "reasoning" ? (
+        <StudioReasoningSlider
+          options={field.options}
+          value={selectedConfig[field.configKey || field.key]}
+          onChange={value => updateSelectedConfig({ [field.configKey || field.key]: value })}
+          onClose={() => setActivePanel("")}
+          modelLabel={selectedModel?.label}
+          className={composerPanel.className}
+          renderPrice={option => option.priceModel ? <StudioModelPrice model={option.priceModel} perImage={false} /> : null}
+        />
+      ) : (
         <div
-          className={`studio-composer__field-menu is-${field.key}`}
+          className={`studio-composer__field-menu is-${field.key}${composerPanel.className ? ` ${composerPanel.className}` : ""}`}
           role="listbox"
           aria-label={field.label}
           aria-multiselectable={field.multiple || undefined}
@@ -1022,7 +1039,7 @@ export function StudioHubView() {
             </button>
           ))}
         </div>
-      )}
+      ))}
     </div>
   );
   const selectOption = (field, value) => {
@@ -1758,9 +1775,9 @@ export function StudioHubView() {
                         <span>{selectedTool?.label}</span>
                         <i className="bi bi-chevron-down" />
                       </button>
-                      {activePanel === "tools" && (
+                      {composerPanel.id === "tools" && (
                         <div
-                          className="studio-composer__popover studio-composer__popover--tools"
+                          className={`studio-composer__popover studio-composer__popover--tools${composerPanel.className ? ` ${composerPanel.className}` : ""}`}
                           role="menu"
                           aria-label="选择创作工具"
                           onPointerDown={(event) => event.stopPropagation()}

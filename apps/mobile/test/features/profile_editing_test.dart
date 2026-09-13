@@ -186,7 +186,7 @@ void main() {
     );
     expect(
       (accountSurface.decoration as BoxDecoration).borderRadius,
-      BorderRadius.circular(8),
+      BorderRadius.circular(16),
     );
     await tester.scrollUntilVisible(
       find.text('创作费用确认'),

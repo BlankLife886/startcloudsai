@@ -257,6 +257,61 @@ html.dark .canvas-config-generate .canvas-config-price,
   color: inherit;
 }
 
+.canvas-config-refined .canvas-config-field {
+  box-shadow: none !important;
+  border: 0;
+}
+
+.canvas-config-refined .canvas-config-tabs {
+  border-bottom: 1px solid rgba(120, 112, 148, .14);
+}
+
+.canvas-config-refined .canvas-config-model-row .canvas-config-field {
+  background: transparent !important;
+  padding-inline: 2px !important;
+  border-radius: 0 !important;
+}
+
+.canvas-config-refined .canvas-config-parameters {
+  padding: 10px;
+  border-radius: 12px;
+  background: #f0f2f8;
+}
+
+.canvas-config-refined .canvas-config-parameters .canvas-config-field {
+  background: #fafbff !important;
+  border-radius: 7px !important;
+}
+
+.canvas-config-refined[data-color-scheme="dark"] .canvas-config-parameters {
+  background: #242a35;
+}
+
+.canvas-config-refined[data-color-scheme="dark"] .canvas-config-parameters .canvas-config-field {
+  background: #303846 !important;
+}
+
+.canvas-config-refined .canvas-config-input-row {
+  padding-top: 10px !important;
+}
+
+.canvas-config-refined .canvas-config-price {
+  color: inherit;
+  font-weight: 400;
+}
+
+.canvas-config-refined .canvas-config-generate {
+  border-radius: 10px !important;
+  min-height: 36px;
+  box-shadow: none !important;
+  filter: none !important;
+}
+
+.canvas-config-refined button:focus-visible {
+  outline: 2px solid #8b7cff;
+  outline-offset: 2px;
+}
+
 html.color-scheme-dark .canvas-node-overlay-btn,
 html.dark .canvas-node-overlay-btn,
 .dark .canvas-node-overlay-btn {

@@ -3,18 +3,63 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:starcloudsai_mobile/app/starclouds_theme.dart';
 
 void main() {
+  test(
+    'reading and action colors retain accessible contrast in both themes',
+    () {
+      double contrast(Color foreground, Color background) {
+        final a = foreground.computeLuminance();
+        final b = background.computeLuminance();
+        return a > b ? (a + .05) / (b + .05) : (b + .05) / (a + .05);
+      }
+
+      for (final theme in [StarCloudsTheme.light(), StarCloudsTheme.dark()]) {
+        final colors = theme.colorScheme;
+        for (final pair in [
+          (colors.onSurface, colors.surface),
+          (colors.onSurfaceVariant, colors.surfaceContainerLow),
+          (colors.onPrimary, colors.primary),
+          (colors.onPrimaryContainer, colors.primaryContainer),
+          (colors.onSecondary, colors.secondary),
+        ]) {
+          expect(contrast(pair.$1, pair.$2), greaterThanOrEqualTo(4.5));
+        }
+        expect(theme.textTheme.bodyMedium?.fontSize, 15);
+        expect(theme.textTheme.bodyMedium?.fontWeight, FontWeight.w400);
+        expect(theme.textTheme.titleMedium?.fontWeight, FontWeight.w600);
+        final visual = theme.extension<StarCloudsVisualStyle>()!;
+        for (final tint in [visual.panelStrong, visual.panel]) {
+          for (final backdrop in [colors.surface, Colors.black, Colors.white]) {
+            final rendered = Color.alphaBlend(tint, backdrop);
+            expect(
+              contrast(colors.onSurface, rendered),
+              greaterThanOrEqualTo(4.5),
+            );
+            expect(
+              contrast(colors.onSurfaceVariant, rendered),
+              greaterThanOrEqualTo(4.5),
+            );
+          }
+        }
+      }
+    },
+  );
+
   test('global component surfaces provide distinct light and dark themes', () {
     final light = StarCloudsTheme.light();
     final dark = StarCloudsTheme.dark();
 
     expect(light.brightness, Brightness.light);
     expect(dark.brightness, Brightness.dark);
-    expect(light.colorScheme.surface, Colors.white);
-    expect(light.colorScheme.surfaceContainerLow, const Color(0xFFF2F2F7));
-    expect(light.colorScheme.surfaceContainerLowest, const Color(0xFFF7F7FA));
-    expect(light.scaffoldBackgroundColor, Colors.white);
-    expect(light.appBarTheme.backgroundColor, Colors.white);
-    expect(light.canvasColor, Colors.white);
+    expect(light.colorScheme.surface, const Color(0xFFF2F4F8));
+    expect(light.colorScheme.primary, const Color(0xFF20242B));
+    expect(light.colorScheme.secondaryContainer, const Color(0xFFE1F0E9));
+    expect(light.colorScheme.tertiaryContainer, const Color(0xFFF5E7EC));
+    expect(light.colorScheme.surfaceContainerLow, const Color(0xFFF5F6F8));
+    expect(light.colorScheme.surfaceContainerLowest, Colors.white);
+    expect(dark.colorScheme.surfaceContainerLowest, const Color(0xFF1B2028));
+    expect(light.scaffoldBackgroundColor, const Color(0xFFF2F4F8));
+    expect(light.appBarTheme.backgroundColor, const Color(0xFFF2F4F8));
+    expect(light.canvasColor, const Color(0xFFF2F4F8));
     expect(dark.scaffoldBackgroundColor, dark.colorScheme.surface);
     expect(light.scaffoldBackgroundColor, isNot(dark.scaffoldBackgroundColor));
 
@@ -22,6 +67,18 @@ void main() {
       final colors = theme.colorScheme;
       final visual = theme.extension<StarCloudsVisualStyle>()!;
       expect(visual.brandStart, isNot(visual.brandEnd));
+      expect(visual.panel, colors.surfaceContainerLowest);
+      expect(visual.panelStrong, visual.panel);
+      expect(visual.hairline.r, 1);
+      expect(visual.hairline.g, 1);
+      expect(visual.hairline.b, 1);
+      expect(visual.shadow.r, 0);
+      expect(visual.shadow.g, 0);
+      expect(visual.shadow.b, 0);
+      expect(theme.filledButtonTheme.style?.backgroundBuilder, isNull);
+      expect(theme.outlinedButtonTheme.style?.backgroundBuilder, isNull);
+      expect(theme.iconButtonTheme.style?.backgroundBuilder, isNull);
+      expect(theme.cardTheme.color, colors.surfaceContainerLowest);
       expect(theme.appBarTheme.backgroundColor, colors.surface);
       expect(theme.navigationBarTheme.backgroundColor, colors.surface);
       expect(
@@ -38,24 +95,27 @@ void main() {
         theme.searchBarTheme.backgroundColor?.resolve({}),
         colors.surfaceContainerLow,
       );
-      expect(theme.cardTheme.elevation, 1);
+      expect(theme.cardTheme.elevation, 0);
       expect(
         theme.filledButtonTheme.style?.minimumSize?.resolve({}),
-        const Size(48, 48),
+        const Size(48, 52),
       );
       expect(
         theme.menuTheme.style?.backgroundColor?.resolve({}),
         colors.surfaceContainerLowest,
       );
-      expect(theme.inputDecorationTheme.fillColor, colors.surfaceContainerLow);
+      expect(
+        theme.inputDecorationTheme.fillColor,
+        colors.surfaceContainerLowest,
+      );
       expect(theme.textTheme.headlineLarge?.letterSpacing, 0);
       expect(theme.textTheme.titleMedium?.letterSpacing, 0);
       expect(theme.appBarTheme.titleTextStyle?.letterSpacing, 0);
       final cardShape = theme.cardTheme.shape! as RoundedRectangleBorder;
-      expect(cardShape.borderRadius, BorderRadius.circular(8));
+      expect(cardShape.borderRadius, BorderRadius.circular(24));
       final inputBorder =
           theme.inputDecorationTheme.enabledBorder! as OutlineInputBorder;
-      expect(inputBorder.borderRadius, BorderRadius.circular(8));
+      expect(inputBorder.borderRadius, BorderRadius.circular(16));
       expect(
         theme.pageTransitionsTheme.builders[TargetPlatform.iOS],
         isA<StarCloudsPageTransitionsBuilder>(),
@@ -65,8 +125,17 @@ void main() {
         isA<StarCloudsPageTransitionsBuilder>(),
       );
     }
-    expect(StarCloudsRadii.control, BorderRadius.circular(8));
-    expect(StarCloudsRadii.card, BorderRadius.circular(8));
+    expect(StarCloudsRadii.control, BorderRadius.circular(16));
+    expect(StarCloudsRadii.card, BorderRadius.circular(24));
+    expect(StarCloudsRadii.dialog, BorderRadius.circular(28));
+    expect(
+      light.filledButtonTheme.style?.shape?.resolve({}),
+      isA<StadiumBorder>(),
+    );
+    expect(
+      light.outlinedButtonTheme.style?.shape?.resolve({}),
+      isA<StadiumBorder>(),
+    );
   });
 
   test('system chrome stays legible in both modes', () {

@@ -4,22 +4,28 @@ import { ArrowLeft, ArrowRight, ChevronLeft, ChevronRight, Pause, Play } from "l
 import gsap from "gsap";
 import { useGSAP } from "@gsap/react";
 import { apiRequest } from "../legacy-modules/services/apiClient.js";
+import { consumeInitialHomeBanners, safeBannerURL as safeURL } from "../homeBannerBootstrap.js";
 import { usePageControls } from "../page-control/PageControlContext.jsx";
 import { createBannerParticles } from "../views/home/createBannerParticles.js";
 import "./HomeBannerCarousel.css";
 
 gsap.registerPlugin(useGSAP);
 
-function safeURL(value) {
-  if (typeof value !== "string" || /[\\\u0000-\u0020]/.test(value)) return "";
-  if (value.startsWith("/") && !value.startsWith("//")) return value;
-  try { const u = new URL(value); return ["https:", "http:"].includes(u.protocol) && !u.username && !u.password ? value : ""; }
-  catch { return ""; }
+let bannerSnapshot = null;
+const BANNER_CACHE_MS = 60000;
+
+function BannerSkeleton() {
+  return <div className="home-hero__skeleton" aria-hidden="true">
+    <div className="home-hero__skeleton-copy"><span /><span /></div>
+    <div className="home-hero__skeleton-dots"><span /><span /><span /></div>
+  </div>;
 }
 
 export function HomeBannerCarousel({ hero = false, fallbackSlide = null, previewItems = null, renderContent }) {
   const { isEntryVisible } = usePageControls();
-  const [items, setItems] = useState([]);
+  const [items, setItems] = useState(() =>
+    bannerSnapshot && Date.now() - bannerSnapshot.savedAt < BANNER_CACHE_MS
+      ? bannerSnapshot.items : null);
   const [selected, setSelected] = useState(0);
   const [paused, setPaused] = useState(false);
   const [hovered, setHovered] = useState(false);
@@ -28,6 +34,7 @@ export function HomeBannerCarousel({ hero = false, fallbackSlide = null, preview
   const [reduced, setReduced] = useState(() => window.matchMedia("(prefers-reduced-motion: reduce)").matches);
   const [motionDisabled, setMotionDisabled] = useState(() => document.documentElement.classList.contains("settings-no-animations"));
   const [failed, setFailed] = useState({});
+  const [hasLoadedHero, setHasLoadedHero] = useState(false);
   const [transitioning, setTransitioning] = useState(false);
   const rootRef = useRef(null);
   const touchStart = useRef(null);
@@ -44,9 +51,16 @@ export function HomeBannerCarousel({ hero = false, fallbackSlide = null, preview
     let timer;
     async function load() {
       try {
-        const data = await apiRequest("/home-banners", { signal: controller.signal, cache: "no-store" });
-        if (!controller.signal.aborted) setItems(Array.isArray(data?.items) ? data.items : []);
-      } catch { /* Optional promotional content must not block the home page. */ }
+        const data = await (consumeInitialHomeBanners()
+          || apiRequest("/home-banners", { signal: controller.signal, cache: "no-store" }));
+        if (!controller.signal.aborted) {
+          const nextItems = Array.isArray(data?.items) ? data.items : [];
+          bannerSnapshot = { items: nextItems, savedAt: Date.now() };
+          setItems(nextItems);
+        }
+      } catch {
+        if (!controller.signal.aborted) setItems(previous => previous ?? []);
+      }
       finally { if (!controller.signal.aborted) timer = window.setTimeout(load, 60000); }
     }
     load();
@@ -77,16 +91,18 @@ export function HomeBannerCarousel({ hero = false, fallbackSlide = null, preview
       isLinkVisible,
     };
   };
-  const configured = (previewItems || items).filter(item => item && safeURL(item.imageUrl) && !failed[item.imageUrl] && item.active !== false && (!item.startsAt || Date.parse(item.startsAt) <= Date.now()) && (!item.endsAt || Date.parse(item.endsAt) > Date.now()))
+  const loading = !previewItems && items === null;
+  const configured = (previewItems || items || []).filter(item => item && safeURL(item.imageUrl) && !failed[item.imageUrl] && item.active !== false && (!item.startsAt || Date.parse(item.startsAt) <= Date.now()) && (!item.endsAt || Date.parse(item.endsAt) > Date.now()))
     .map(configureLink);
   const isFallback = !configured.length;
   const fallbackImage = failed[fallbackSlide?.imageUrl] ? fallbackSlide?.fallbackImageUrl : fallbackSlide?.imageUrl;
-  const slides = configured.length ? configured : fallbackSlide ? [configureLink({ ...fallbackSlide, imageUrl: failed[fallbackImage] ? "" : fallbackImage })] : [];
+  const slides = configured.length ? configured : !loading && fallbackSlide ? [configureLink({ ...fallbackSlide, imageUrl: failed[fallbackImage] ? "" : fallbackImage })] : [];
   const index = selected % Math.max(1, slides.length);
   const current = slides[index];
+  const imagePending = hero && Boolean(current?.imageUrl) && !hasLoadedHero;
   const motionEnabled = hero && !reduced && !motionDisabled;
   const slideSignature = JSON.stringify(slides.map(slide => [slide.id, slide.imageUrl]));
-  const playing = slides.length > 1 && !transitioning && (hero || !paused) && !hovered && !focused && !hidden && !reduced && !motionDisabled;
+  const playing = slides.length > 1 && !imagePending && !transitioning && (hero || !paused) && !hovered && !focused && !hidden && !reduced && !motionDisabled;
   const duration = Math.max(3000, Math.min(20000, Number(current?.durationMs) || 5000));
 
   function selectSlide(nextIndex, direction = nextIndex >= requestedIndexRef.current ? 1 : -1) {
@@ -206,7 +222,11 @@ export function HomeBannerCarousel({ hero = false, fallbackSlide = null, preview
     });
   }, { scope: rootRef, dependencies: [playing, index, duration, current?.id, slides.length], revertOnUpdate: true });
 
-  if (!current) return null;
+  if (!current) return hero ? (
+    <section ref={rootRef} className="home-hero" aria-label="首页精选" aria-busy={loading} data-banners-source={loading ? "loading" : "empty"}>
+      <BannerSkeleton />
+    </section>
+  ) : null;
   const hasControls = slides.length > 1;
   const indicators = <div className="home-banner__dots" aria-label="选择轮播图">{slides.map((slide, i) => <button key={slide.id} type="button" aria-label={slide.title ? `第 ${i + 1} 张：${slide.title}` : `第 ${i + 1} 张轮播图`} aria-current={i === index ? "true" : undefined} title={slide.title || undefined} onClick={() => selectSlide(i)}><span className="home-banner__dot" aria-hidden="true"><span className="home-banner__progress" /></span></button>)}</div>;
   const playControl = <button className="home-banner__play" type="button" disabled={motionDisabled} onClick={() => { if (reduced) setReduced(false); setPaused(reduced ? false : !paused); }} aria-label={paused || reduced || motionDisabled ? "播放轮播" : "暂停轮播"} title={motionDisabled ? "动态效果已关闭" : paused || reduced ? "播放轮播" : "暂停轮播"}>{paused || reduced || motionDisabled ? <Play size={16}/> : <Pause size={16}/>}</button>;
@@ -215,7 +235,7 @@ export function HomeBannerCarousel({ hero = false, fallbackSlide = null, preview
     const href = slide.isLinkVisible ? slide.linkUrl : "";
     const linkBody = <>{slide.buttonText || "查看详情"}<ArrowRight size={17} aria-hidden="true" /></>;
     return <article key={slide.id} data-banner-slide={slide.id} className={`home-banner__slide${active ? " is-active" : ""}`} aria-hidden={hero || !active} inert={hero || !active} role="group" aria-roledescription="幻灯片" aria-label={slide.title ? `${slideIndex + 1} / ${slides.length}：${slide.title}` : `第 ${slideIndex + 1} 张轮播图`}>
-      {slide.imageUrl && <img className={`home-banner__image${hero ? " home-hero__image" : ""}`} src={slide.imageUrl} alt="" loading={active ? "eager" : "lazy"} fetchPriority={active ? "high" : "auto"} decoding="async" onError={() => setFailed(previous => ({...previous, [slide.imageUrl]: true}))} />}
+      {slide.imageUrl && <img className={`home-banner__image${hero ? " home-hero__image" : ""}`} src={active || hasLoadedHero || !hero ? slide.imageUrl : undefined} alt="" loading={active ? "eager" : "lazy"} fetchPriority={active ? "high" : "low"} decoding="async" onLoad={() => { if (active) setHasLoadedHero(true); }} onError={() => setFailed(previous => ({...previous, [slide.imageUrl]: true}))} />}
       {!hero && <><div className="home-banner__shade" />
         <div className="home-banner__copy">{slide.title && <h2 style={slide.title.length > 30 ? {fontSize:24} : undefined}>{slide.title}</h2>}{slide.subtitle && <p>{slide.subtitle}</p>}
           {href && (href.startsWith("/") && !slide.newTab ? <Link className="home-banner__cta" to={href}>{linkBody}</Link> : <a className="home-banner__cta" href={href} target={slide.newTab ? "_blank" : undefined} rel="noopener noreferrer">{linkBody}</a>)}
@@ -226,6 +246,7 @@ export function HomeBannerCarousel({ hero = false, fallbackSlide = null, preview
     <section ref={rootRef} className={`${hero ? "home-hero" : ""}${!isFallback || !hero ? " home-banner" : ""}`} role="region" aria-roledescription={hasControls ? "轮播图" : undefined}
       aria-label={isFallback && hero ? undefined : "首页精选"} aria-labelledby={isFallback && hero ? "home-title" : undefined}
       data-banners-source={isFallback ? "default" : previewItems ? "preview" : "configured"}
+      aria-busy={imagePending}
       data-banner-motion={motionEnabled ? "on" : "off"}
       data-banner-transition={transitioning ? "running" : "idle"}
       data-banner-direction={directionRef.current > 0 ? "next" : "previous"}
@@ -248,8 +269,9 @@ export function HomeBannerCarousel({ hero = false, fallbackSlide = null, preview
       }}
       onTouchCancel={() => { touchStart.current = null; }}>
       {hero ? <div className="home-hero__visual" aria-hidden="true">{images}</div> : images}
-      {renderContent?.(current, { hasControls, isFallback })}
-      {hasControls && <div className={`home-banner__controls${hero ? " home-shell" : ""}`} data-click-guard="repeat">
+      {imagePending && <BannerSkeleton />}
+      {!imagePending && renderContent?.(current, { hasControls, isFallback })}
+      {hasControls && !imagePending && <div className={`home-banner__controls${hero ? " home-shell" : ""}`} data-click-guard="repeat">
         {hero ? <div className="home-banner__pagination" role="group" aria-label="轮播进度">{indicators}</div> : indicators}
         <div className="home-banner__navigation"><span className="home-banner__counter">{String(index + 1).padStart(2,"0")} / {String(slides.length).padStart(2,"0")}</span>
           {!hero && playControl}

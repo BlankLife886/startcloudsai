@@ -67,6 +67,11 @@ func GetActiveCanvasWorkflowRun(ctx context.Context, q Q, userID, projectID uuid
 		FROM canvas_workflow_runs WHERE user_id = $1 AND project_id = $2 AND status = 'running'`, userID, projectID))
 }
 
+func GetUserCanvasWorkflowRun(ctx context.Context, q Q, userID, projectID, runID uuid.UUID) (*CanvasWorkflowRun, error) {
+	return scanOptionalCanvasWorkflowRun(q.QueryRow(ctx, `SELECT `+canvasWorkflowRunCols+`
+		FROM canvas_workflow_runs WHERE user_id = $1 AND project_id = $2 AND id = $3`, userID, projectID, runID))
+}
+
 // AcquireCanvasWorkflowRun creates the active run or takes over an expired lease.
 // The same owner may reacquire immediately after a page refresh.
 var ErrCanvasWorkflowInputsChanged = errors.New("canvas workflow inputs changed")

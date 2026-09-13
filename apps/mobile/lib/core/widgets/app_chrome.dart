@@ -76,7 +76,7 @@ class AppDialog extends StatelessWidget {
             constraints: const BoxConstraints(maxWidth: 400),
             child: DecoratedBox(
               decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(8),
+                borderRadius: StarCloudsRadii.dialog,
                 boxShadow: [
                   BoxShadow(
                     color: visual.shadow.withValues(
@@ -91,57 +91,61 @@ class AppDialog extends StatelessWidget {
               ),
               child: Material(
                 key: const Key('app-dialog-card'),
-                color: colors.surface,
+                color: Colors.transparent,
                 elevation: 0,
                 shadowColor: Colors.transparent,
                 surfaceTintColor: Colors.transparent,
                 shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
+                  borderRadius: StarCloudsRadii.dialog,
                 ),
                 clipBehavior: Clip.antiAlias,
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(22, 22, 22, 16),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      if (icon != null) ...[
-                        Align(
-                          alignment: Alignment.centerLeft,
-                          child: AppIconWell(child: icon!),
-                        ),
-                        const SizedBox(height: 16),
+                child: AppGlassSurface(
+                  shadow: false,
+                  borderRadius: StarCloudsRadii.dialog,
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 24, 24, 20),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        if (icon != null) ...[
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child: AppIconWell(child: icon!),
+                          ),
+                          const SizedBox(height: 16),
+                        ],
+                        if (title != null)
+                          DefaultTextStyle(
+                            style: Theme.of(context).textTheme.titleLarge!
+                                .copyWith(
+                                  fontWeight: FontWeight.w600,
+                                  letterSpacing: 0,
+                                ),
+                            child: title!,
+                          ),
+                        if (content != null) ...[
+                          if (title != null) const SizedBox(height: 10),
+                          DefaultTextStyle(
+                            style: Theme.of(context).textTheme.bodyMedium!
+                                .copyWith(
+                                  color: colors.onSurfaceVariant,
+                                  height: 1.45,
+                                ),
+                            child: content!,
+                          ),
+                        ],
+                        if (actions.isNotEmpty) ...[
+                          const SizedBox(height: 22),
+                          Wrap(
+                            alignment: WrapAlignment.end,
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: actions,
+                          ),
+                        ],
                       ],
-                      if (title != null)
-                        DefaultTextStyle(
-                          style: Theme.of(context).textTheme.titleLarge!
-                              .copyWith(
-                                fontWeight: FontWeight.w800,
-                                letterSpacing: -0.2,
-                              ),
-                          child: title!,
-                        ),
-                      if (content != null) ...[
-                        if (title != null) const SizedBox(height: 10),
-                        DefaultTextStyle(
-                          style: Theme.of(context).textTheme.bodyMedium!
-                              .copyWith(
-                                color: colors.onSurfaceVariant,
-                                height: 1.45,
-                              ),
-                          child: content!,
-                        ),
-                      ],
-                      if (actions.isNotEmpty) ...[
-                        const SizedBox(height: 22),
-                        Wrap(
-                          alignment: WrapAlignment.end,
-                          spacing: 8,
-                          runSpacing: 8,
-                          children: actions,
-                        ),
-                      ],
-                    ],
+                    ),
                   ),
                 ),
               ),
@@ -181,7 +185,7 @@ Future<T?> showAppPicker<T>({
                 title,
                 style: Theme.of(
                   context,
-                ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
+                ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w600),
               ),
             ),
             for (final item in options)
@@ -223,9 +227,7 @@ class AppPickerTile extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       child: Material(
-        color: selected
-            ? accent.withValues(alpha: .10)
-            : colors.surfaceContainerLow,
+        color: selected ? accent.withValues(alpha: .10) : colors.surface,
         borderRadius: StarCloudsRadii.control,
         clipBehavior: Clip.antiAlias,
         child: AppPressable(
@@ -343,7 +345,7 @@ class AppSelectField<T> extends StatelessWidget {
                   label,
                   style: Theme.of(
                     context,
-                  ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
+                  ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w600),
                 ),
               ),
               for (final option in options)
@@ -367,10 +369,10 @@ class AppSelectField<T> extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     final selected = _selected;
-    return Material(
-      color: enabled ? colors.surfaceContainerLow : colors.surfaceContainer,
+    return AppGlassSurface(
+      color: enabled ? null : colors.surfaceContainer,
       borderRadius: StarCloudsRadii.control,
-      clipBehavior: Clip.antiAlias,
+      shadow: false,
       child: AppPressable(
         onTap: enabled ? () => _open(context) : null,
         semanticLabel: '$label，${selected?.label ?? '请选择'}',
@@ -438,8 +440,8 @@ class AppChoicePill extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     return Material(
-      color: selected ? colors.primary : colors.surfaceContainerLow,
-      shape: const StadiumBorder(),
+      color: selected ? colors.primaryContainer : colors.surfaceContainerLow,
+      shape: RoundedRectangleBorder(borderRadius: StarCloudsRadii.control),
       clipBehavior: Clip.antiAlias,
       child: AppPressable(
         onTap: onSelected == null ? null : () => onSelected!(!selected),
@@ -450,13 +452,15 @@ class AppChoicePill extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
           child: DefaultTextStyle(
             style: Theme.of(context).textTheme.labelLarge!.copyWith(
-              color: selected ? colors.onPrimary : colors.onSurface,
-              fontWeight: FontWeight.w700,
+              color: selected ? colors.onPrimaryContainer : colors.onSurface,
+              fontWeight: FontWeight.w600,
             ),
             child: IconTheme(
               data: IconThemeData(
                 size: 16,
-                color: selected ? colors.onPrimary : colors.onSurfaceVariant,
+                color: selected
+                    ? colors.onPrimaryContainer
+                    : colors.onSurfaceVariant,
               ),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
@@ -510,7 +514,7 @@ class AppFilterChip extends StatelessWidget {
         alignment: Alignment.center,
         decoration: BoxDecoration(
           color: selected ? colors.onSurface : colors.surfaceContainerLow,
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: StarCloudsRadii.control,
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -590,14 +594,13 @@ class AppIconWell extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final visual = StarCloudsVisualStyle.of(context);
     final colors = Theme.of(context).colorScheme;
     return SizedBox.square(
       dimension: size,
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: color ?? visual.brandSoft,
-          borderRadius: BorderRadius.circular(8),
+          color: color ?? colors.surfaceContainerLow,
+          borderRadius: StarCloudsRadii.control,
         ),
         child: IconTheme(
           data: IconThemeData(color: colors.primary, size: size * 0.48),
@@ -649,7 +652,7 @@ class AppStatusView extends StatelessWidget {
             textAlign: TextAlign.center,
             style: Theme.of(
               context,
-            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 6),
           Text(
@@ -729,41 +732,19 @@ class AppGradientButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final visual = StarCloudsVisualStyle.of(context);
-    final enabled = onPressed != null;
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        gradient: enabled ? visual.brandGradient : null,
-        color: enabled
-            ? null
-            : Theme.of(context).disabledColor.withValues(alpha: .18),
-        borderRadius: StarCloudsRadii.control,
-        boxShadow: enabled
-            ? [
-                BoxShadow(
-                  color: visual.brandStart.withValues(alpha: .28),
-                  blurRadius: 16,
-                  offset: const Offset(0, 8),
-                ),
-              ]
-            : null,
-      ),
-      child: FilledButton(
-        onPressed: onPressed,
-        style: FilledButton.styleFrom(
-          backgroundColor: Colors.transparent,
-          disabledBackgroundColor: Colors.transparent,
-          shadowColor: Colors.transparent,
-          foregroundColor: Colors.white,
-          minimumSize: const Size.fromHeight(52),
-        ),
-        child: icon == null
-            ? child
-            : Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [icon!, const SizedBox(width: 8), child],
-              ),
-      ),
+    return FilledButton(
+      onPressed: onPressed,
+      style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(48)),
+      child: icon == null
+          ? child
+          : Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                icon!,
+                const SizedBox(width: 8),
+                Flexible(child: child),
+              ],
+            ),
     );
   }
 }

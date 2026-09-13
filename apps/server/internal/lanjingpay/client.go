@@ -105,6 +105,25 @@ func IsTerminalOrderError(err error) bool {
 	return false
 }
 
+func IsDefinitiveCreateRejection(err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Code != -1 {
+		return false
+	}
+	message := strings.ToLower(strings.TrimSpace(apiErr.Message))
+	for _, ambiguous := range []string{"重复", "已存在", "超时", "duplicate", "exists", "timeout"} {
+		if strings.Contains(message, ambiguous) {
+			return false
+		}
+	}
+	for _, reason := range []string{"签名错误", "签名验证失败", "金额格式错误", "金额必须大于", "参数缺失", "余额不足", "无可用收款码", "未配置收款码", "invalid signature", "invalid amount", "missing parameter"} {
+		if strings.Contains(message, reason) {
+			return true
+		}
+	}
+	return false
+}
+
 func New(baseURL, secret, notifyURL string, timeout time.Duration, allowPrivate bool) (*Client, error) {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	secret = strings.TrimSpace(secret)

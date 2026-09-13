@@ -1,15 +1,14 @@
 import { isCloudThumbnailUrl, isLocalImageKey, isRemoteOriginalSource, softMissingFileUrl } from "@/lib/canvas/canvas-preview-url";
 import { dataUrlToBlob } from "@/lib/data-url";
 import { getImageBlob } from "@/services/image-storage";
+import { createCanvasMediaQueue } from "./canvas-media-queue";
 
 export const CANVAS_PREVIEW_MIN_EDGE = 160;
-export const CANVAS_PREVIEW_MAX_EDGE = 384;
-export const CANVAS_PREVIEW_QUALITY = 0.5;
+export const CANVAS_PREVIEW_MAX_EDGE = 2048;
+export const CANVAS_PREVIEW_QUALITY = 0.85;
 export const CANVAS_PREVIEW_TYPE = "image/webp";
 export const CANVAS_PREVIEW_CACHE_LIMIT = 48;
-export const CANVAS_PREVIEW_CACHE_PIXEL_BUDGET = CANVAS_PREVIEW_CACHE_LIMIT * CANVAS_PREVIEW_MAX_EDGE * CANVAS_PREVIEW_MAX_EDGE;
-const PREVIEW_CACHE_HARD_LIMIT = CANVAS_PREVIEW_CACHE_LIMIT * 4;
-const PREVIEW_CACHE_HARD_PIXEL_BUDGET = CANVAS_PREVIEW_CACHE_PIXEL_BUDGET * 4;
+export const CANVAS_PREVIEW_CACHE_PIXEL_BUDGET = CANVAS_PREVIEW_CACHE_LIMIT * 512 * 512;
 const FAILED_SOURCE_TTL_MS = 60_000;
 
 let liveScale = 1;
@@ -30,7 +29,9 @@ export function subscribeCanvasPreviewScale(listener: () => void) {
 }
 
 export function previewEdgeForScale(scale: number, maxEdge = CANVAS_PREVIEW_MAX_EDGE) {
-    const edge = scale < 0.18 ? 160 : scale < 0.4 ? 256 : CANVAS_PREVIEW_MAX_EDGE;
+    const density = typeof window === "undefined" ? 1 : Math.min(window.devicePixelRatio || 1, 2);
+    const pixels = scale * density;
+    const edge = pixels < 0.18 ? 160 : pixels < 0.4 ? 256 : pixels <= 1 ? 512 : pixels <= 2 ? 1024 : CANVAS_PREVIEW_MAX_EDGE;
     return clampPreviewEdge(Math.min(maxEdge, edge));
 }
 
@@ -38,33 +39,14 @@ export function getCanvasPreviewEdge(maxEdge = CANVAS_PREVIEW_MAX_EDGE) {
     return previewEdgeForScale(liveScale, maxEdge);
 }
 
-const inflight = new Map<string, Promise<string | undefined>>();
+const previewQueue = createCanvasMediaQueue<string | undefined>(2);
 const blobUrls = new Map<string, string>();
 const blobRefs = new Map<string, number>();
 const previewPixels = new Map<string, number>();
 const recent = new Set<string>();
 const failedSources = new Map<string, number>();
-const MAX_DOWNSCALE_JOBS = 2;
-let activeJobs = 0;
 let cachedPreviewPixels = 0;
 let previewCacheGeneration = 0;
-const downscaleQueue: Array<() => void> = [];
-
-function runDownscaleJob<T>(work: () => Promise<T>) {
-    return new Promise<T>((resolve, reject) => {
-        const start = () => {
-            activeJobs += 1;
-            work()
-                .then(resolve, reject)
-                .finally(() => {
-                    activeJobs -= 1;
-                    downscaleQueue.shift()?.();
-                });
-        };
-        if (activeJobs < MAX_DOWNSCALE_JOBS) start();
-        else downscaleQueue.push(start);
-    });
-}
 
 function cacheKey(src: string, maxEdge: number) {
     return `${src}#webp=${maxEdge}@${CANVAS_PREVIEW_QUALITY}`;
@@ -75,17 +57,17 @@ function isTransientPreviewError(error: unknown) {
     return /failed to fetch|network|Preview image fetch failed: (5\d\d|408|429)/i.test(message);
 }
 
-async function loadPreviewBlob(src: string) {
-    if (isRemoteOriginalSource(src)) return;
+async function loadPreviewBlob(src: string, signal: AbortSignal, allowDetail = false) {
+    if (isRemoteOriginalSource(src) && !allowDetail) return;
     if (isLocalImageKey(src)) return (await getImageBlob(src)) || undefined;
     if (src.startsWith("data:")) return dataUrlToBlob(src);
     const credentials = src.startsWith("blob:") ? ("omit" as const) : ("include" as const);
-    const response = await fetch(softMissingFileUrl(src), { cache: "force-cache", credentials });
+    const response = await fetch(softMissingFileUrl(src), { cache: "force-cache", credentials, signal });
     const missing = response.status === 204 || response.headers.get("X-StarCloud-Media-Missing") === "1";
     if (!response.ok) {
         if (response.status === 404 && isCloudThumbnailUrl(src)) {
             if (/\/thumb\/[^/.?#]+$/.test(src)) {
-                const legacy = await fetch(softMissingFileUrl(`${src}.jpg`), { cache: "force-cache", credentials });
+                const legacy = await fetch(softMissingFileUrl(`${src}.jpg`), { cache: "force-cache", credentials, signal });
                 const legacyMissing = legacy.status === 204 || legacy.headers.get("X-StarCloud-Media-Missing") === "1";
                 if (legacy.ok && !legacyMissing) return legacy.blob();
             }
@@ -95,7 +77,7 @@ async function loadPreviewBlob(src: string) {
     }
     if (missing) {
         if (/\/thumb\/[^/.?#]+$/.test(src)) {
-            const legacy = await fetch(softMissingFileUrl(`${src}.jpg`), { cache: "force-cache", credentials });
+            const legacy = await fetch(softMissingFileUrl(`${src}.jpg`), { cache: "force-cache", credentials, signal });
             const legacyMissing = legacy.status === 204 || legacy.headers.get("X-StarCloud-Media-Missing") === "1";
             if (legacy.ok && !legacyMissing) return legacy.blob();
         }
@@ -153,21 +135,19 @@ function revokePreview(key: string) {
     blobRefs.delete(key);
     previewPixels.delete(key);
     recent.delete(key);
-    inflight.delete(key);
 }
 
-function evict() {
+function evict(protectedKey = "") {
     while (recent.size > CANVAS_PREVIEW_CACHE_LIMIT || cachedPreviewPixels > CANVAS_PREVIEW_CACHE_PIXEL_BUDGET) {
         let oldest: string | undefined;
         for (const key of recent) {
-            if (!blobRefs.get(key)) {
+            if (key !== protectedKey && !blobRefs.get(key)) {
                 oldest = key;
                 break;
             }
         }
         if (!oldest) {
-            if (recent.size <= PREVIEW_CACHE_HARD_LIMIT && cachedPreviewPixels <= PREVIEW_CACHE_HARD_PIXEL_BUDGET) return;
-            oldest = recent.keys().next().value;
+            return; // Never revoke an image still used by a visible card.
         }
         if (!oldest) return;
         revokePreview(oldest);
@@ -195,8 +175,8 @@ export function retainPreviewUrl(url: string) {
     };
 }
 
-export async function buildLightweightPreview(src: string, maxEdge = CANVAS_PREVIEW_MAX_EDGE) {
-    if (!src || src.startsWith("data:image/svg") || isRemoteOriginalSource(src)) return;
+export async function buildLightweightPreview(src: string, maxEdge = CANVAS_PREVIEW_MAX_EDGE, options: { signal?: AbortSignal; priority?: number } = {}) {
+    if (!src || src.startsWith("data:image/svg") || (isRemoteOriginalSource(src) && maxEdge <= 512)) return;
     const failedAt = failedSources.get(src);
     if (failedAt && Date.now() - failedAt < FAILED_SOURCE_TTL_MS) return;
     if (failedAt) failedSources.delete(src);
@@ -207,20 +187,18 @@ export async function buildLightweightPreview(src: string, maxEdge = CANVAS_PREV
         touch(key);
         return cached;
     }
-    const pending = inflight.get(key);
-    if (pending) return pending;
     const generation = previewCacheGeneration;
 
-    const task = runDownscaleJob(async () => {
-        if (generation !== previewCacheGeneration) return;
-        const blob = await loadPreviewBlob(src);
-        if (generation !== previewCacheGeneration) return;
+    const task = previewQueue.request(key, async (signal) => {
+        if (generation !== previewCacheGeneration || signal.aborted) return;
+        const blob = await loadPreviewBlob(src, signal, edge > 512);
+        if (generation !== previewCacheGeneration || signal.aborted) return;
         if (!blob) {
             failedSources.set(src, Date.now());
             return;
         }
         const bitmap = await decodePreviewBitmap(blob, edge);
-        if (generation !== previewCacheGeneration) {
+        if (generation !== previewCacheGeneration || signal.aborted) {
             bitmap.close();
             return;
         }
@@ -241,7 +219,7 @@ export async function buildLightweightPreview(src: string, maxEdge = CANVAS_PREV
         const pixelCount = canvas.width * canvas.height;
         canvas.width = 0;
         canvas.height = 0;
-        if (!preview || generation !== previewCacheGeneration) return;
+        if (!preview || generation !== previewCacheGeneration || signal.aborted) return;
         const previous = blobUrls.get(key);
         if (previous) {
             URL.revokeObjectURL(previous);
@@ -252,21 +230,17 @@ export async function buildLightweightPreview(src: string, maxEdge = CANVAS_PREV
         previewPixels.set(key, pixelCount);
         cachedPreviewPixels += pixelCount;
         touch(key);
-        evict();
+        evict(key);
         return url;
-    })
+    }, options)
         .catch((error) => {
+            if (options.signal?.aborted || (error instanceof DOMException && error.name === "AbortError")) return undefined;
             if (generation === previewCacheGeneration) {
                 if (!isTransientPreviewError(error)) failedSources.set(src, Date.now());
                 console.warn("[CanvasPreviewImage] failed to build lightweight preview", error);
             }
             return undefined;
-        })
-        .finally(() => {
-            if (inflight.get(key) === task) inflight.delete(key);
         });
-
-    inflight.set(key, task);
     evict();
     return task;
 }
@@ -282,7 +256,7 @@ export function clearPreviewCache() {
     blobRefs.clear();
     previewPixels.clear();
     recent.clear();
-    inflight.clear();
+    previewQueue.clear();
     failedSources.clear();
     cachedPreviewPixels = 0;
 }

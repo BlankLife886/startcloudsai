@@ -49,7 +49,11 @@ class AssistantModelOption {
     this.maxImages = 1,
   });
 
-  factory AssistantModelOption.fromJson(Map<String, dynamic> json) {
+  factory AssistantModelOption.fromJson(
+    Map<String, dynamic> json, {
+    int? imageLimit,
+    int? imageBatchLimit,
+  }) {
     final id = json['model']?.toString().trim() ?? '';
     final efforts =
         (json['supportedReasoningEfforts'] as List?)
@@ -71,6 +75,14 @@ class AssistantModelOption {
     final maxReferences = rawMaxReferences is num
         ? rawMaxReferences.toInt()
         : 0;
+    var maxImages = ((json['maxImages'] as num?)?.toInt() ?? 1).clamp(1, 16);
+    for (final limit in [
+      (json['imageBatchLimit'] as num?)?.toInt(),
+      imageBatchLimit,
+      imageLimit,
+    ]) {
+      if (limit != null) maxImages = maxImages.clamp(0, limit.clamp(0, 16));
+    }
     for (final item in reasoningItems) {
       final effort = item['id']?.toString().trim() ?? '';
       if (effort.isEmpty) continue;
@@ -106,7 +118,7 @@ class AssistantModelOption {
         json['aspectRatiosByResolution'],
       ),
       qualities: _stringList(json['qualities']),
-      maxImages: ((json['maxImages'] as num?)?.toInt() ?? 1).clamp(1, 4),
+      maxImages: maxImages,
     );
   }
 
@@ -189,9 +201,16 @@ class AssistantConfig {
             .map(
               (item) => AssistantModelOption.fromJson(
                 Map<String, dynamic>.from(item),
+                imageBatchLimit: (map['imageBatchLimit'] as num?)?.toInt(),
+                imageLimit: map['concurrency'] is Map
+                    ? (((map['concurrency'] as Map)['imageLimit'] ??
+                                  (map['concurrency'] as Map)['limit'])
+                              as num?)
+                          ?.toInt()
+                    : null,
               ),
             )
-            .where((item) => item.id.isNotEmpty)
+            .where((item) => item.id.isNotEmpty && item.maxImages > 0)
             .toList() ??
         const <AssistantModelOption>[];
     final requestedImageModel = map['imageModel']?.toString().trim() ?? '';
@@ -248,7 +267,7 @@ class AssistantProposal {
       summary: summary?.isNotEmpty == true ? summary! : reason ?? '',
       ratio: map['ratio']?.toString().trim() ?? '',
       resolution: map['resolution']?.toString().trim() ?? '',
-      count: ((map['count'] as num?)?.toInt() ?? 1).clamp(1, 4),
+      count: ((map['count'] as num?)?.toInt() ?? 1).clamp(1, 16),
       modelId: map['model']?.toString().trim() ?? '',
       modelName: map['modelName']?.toString().trim().isNotEmpty == true
           ? map['modelName'].toString().trim()
@@ -1158,7 +1177,7 @@ abstract interface class AssistantRepository {
   );
   Future<AssistantRunSnapshot> createRun(CreateAssistantRunInput input);
   Future<AssistantRunSnapshot> getRun(String id);
-  Future<AssistantRun> cancelRun(String id);
+  Future<AssistantRun> cancelRun(String id, {bool acknowledgeUpstream = false});
   Stream<AssistantStreamEvent> streamRun(String id);
 }
 
@@ -1273,10 +1292,13 @@ class ApiAssistantRepository implements AssistantRepository {
       );
 
   @override
-  Future<AssistantRun> cancelRun(String id) async {
+  Future<AssistantRun> cancelRun(
+    String id, {
+    bool acknowledgeUpstream = false,
+  }) async {
     final data = await _apiClient.patch(
       '/assistant/runs/${Uri.encodeComponent(id)}',
-      data: const {'status': 'canceled'},
+      data: {'status': 'canceled', 'acknowledgeUpstream': acknowledgeUpstream},
     );
     final map = data is Map
         ? Map<String, dynamic>.from(data)
@@ -2028,11 +2050,23 @@ class AssistantWorkspaceController
     }
   }
 
-  Future<void> cancelSelectedRun() async {
+  Future<void> cancelSelectedRun({
+    bool acknowledgeUpstream = false,
+    String? expectedRunId,
+  }) async {
     final current = state.asData?.value;
     final run = current?.selectedRun;
     if (current == null || run == null) return;
-    await _repository.cancelRun(run.id);
+    if (expectedRunId != null && run.id != expectedRunId) {
+      throw const ApiException(
+        code: 'task_changed',
+        message: '任务已变化，请重新确认要停止的任务',
+      );
+    }
+    await _repository.cancelRun(
+      run.id,
+      acknowledgeUpstream: acknowledgeUpstream,
+    );
     _pollGenerations[run.id] = (_pollGenerations[run.id] ?? 0) + 1;
     _stopStream(run.id);
     try {

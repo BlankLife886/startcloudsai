@@ -3,6 +3,9 @@ import i18n from "@/i18n";
 
 import type { CanvasAgentOp, CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
+import type { AgentWorkflowStartResult } from "@/lib/canvas/canvas-agent-workflow-start";
+
+export type { AgentWorkflowStartDecision, AgentWorkflowStartResult } from "@/lib/canvas/canvas-agent-workflow-start";
 
 export type AgentChatRole = "user" | "assistant" | "system" | "tool" | "error";
 export type AgentAttachment = { id: string; name: string; type: string; size: number; width: number; height: number; url: string; dataUrl: string };
@@ -24,7 +27,7 @@ export type AgentModel = {
 };
 export type AgentApprovalDecision = "accept" | "acceptForSession" | "decline";
 export type AgentPendingApproval = { requestId: string; method: string; threadId?: string; turnId?: string; itemId?: string; reason?: string; command?: unknown; cwd?: string; grantRoot?: string; networkApprovalContext?: unknown; permissions?: unknown; deciding?: AgentApprovalDecision };
-export type AgentTaskStatus = "queued" | "running" | "succeeded" | "failed" | "canceled";
+export type AgentTaskStatus = "queued" | "running" | "succeeded" | "failed" | "canceled" | "unknown";
 export type AgentWorkflowPreflightResult = {
     workflowId: string;
     resumeFromCheckpoint: boolean;
@@ -66,10 +69,10 @@ export type AgentCanvasContext = {
     canUndo: boolean;
     canRedo: boolean;
     startGeneration: (input: { requestId?: string; nodeIds: string[]; mode?: "text" | "image" | "video" | "audio"; prompt?: string }) => { requestId: string; nodeIds: string[] };
-    getGenerationStatus: (requestId: string) => { requestId: string; tasks: Array<{ nodeId: string; status: AgentTaskStatus; error?: string }> } | null;
+    getGenerationStatus: (requestId: string) => Promise<{ requestId: string; tasks: Array<{ nodeId: string; status: AgentTaskStatus; error?: string }> } | null>;
     regenerateSelection: (input: AgentRegenerateSelectionInput) => Promise<AgentRegenerateSelectionResult>;
-    startWorkflow: (input: { workflowId?: string; nodeIds?: string[] }) => { requestId: string; workflowId?: string; configNodeIds: string[] };
-    getWorkflowStatus: (requestId: string) => { requestId: string; workflowId?: string; status: AgentTaskStatus; completed: number; total: number; currentNodeId?: string; error?: string } | null;
+    startWorkflow: (input: { workflowId?: string; nodeIds?: string[] }) => Promise<AgentWorkflowStartResult>;
+    getWorkflowStatus: (requestId: string) => Promise<{ requestId: string; workflowId?: string; status: AgentTaskStatus; completed: number; total: number; currentNodeId?: string; error?: string } | null>;
     focusNodes: (nodeIds: string[]) => CanvasAgentSnapshot;
     stopWorkflow: () => { stopped: boolean; status: string; nodeIds: string[] };
     getWorkflowState: () => { status: string; completed: number; total: number; currentNodeId?: string; errorMessage?: string; startedAt?: string };
@@ -114,6 +117,7 @@ type AgentStore = {
     waiting: boolean;
     messages: AgentChatItem[];
     hostedProjectId: string;
+    hostedOwnerUserId: string;
     tokenUsage: AgentTokenUsage | null;
     eventLogs: AgentEventLog[];
     threads: AgentThreadSummary[];
@@ -175,6 +179,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     waiting: false,
     messages: [],
     hostedProjectId: "",
+    hostedOwnerUserId: "",
     tokenUsage: null,
     eventLogs: [],
     threads: [],

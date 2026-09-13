@@ -8,6 +8,7 @@ import { SharePublishDialog } from "../../components/SharePublishDialog.jsx";
 import { AssistantEmptyState } from "./components/AssistantEmptyState.jsx";
 import { AssistantOnboardingTour } from "./components/AssistantOnboardingTour.jsx";
 import { ExactImageSizeControl } from "../../components/ExactImageSizeControl.jsx";
+import { StudioReasoningSlider } from "../../views/shared/StudioReasoningSlider.jsx";
 import {
   CREATION_TYPES,
   MAX_ASSISTANT_MESSAGE_CHARACTERS,
@@ -49,6 +50,9 @@ export function AssistantWorkspaceLayout({ workspace }) {
     composerRef,
     composerZoneRef,
     imageSettingsButtonRef,
+    creationButtonRef,
+    modelButtonRef,
+    reasoningButtonRef,
     composerInputHeightRef,
     messageScrollerRef,
     loadingEarlierRef,
@@ -90,7 +94,8 @@ export function AssistantWorkspaceLayout({ workspace }) {
     setReasoningMenuOpen,
     preferencesOpen,
     setPreferencesOpen,
-    preferencesPosition,
+    composerMenuPosition,
+    composerMenuPresence,
     tourOpen,
     setTourOpen,
     assetLibraryOpen,
@@ -426,7 +431,7 @@ export function AssistantWorkspaceLayout({ workspace }) {
           event.stopPropagation();
           const target = event.target;
           if (!(target instanceof Element)) return;
-          if (target.closest(".composer-popover, .agent-mode-button, .image-model-button, .reasoning-effort-button, .image-settings-button")) return;
+          if (target.closest(".composer-popover, .studio-reasoning, .agent-mode-button, .image-model-button, .reasoning-effort-button, .image-settings-button")) return;
           setCreationMenuOpen(false);
           setModelMenuOpen(false);
           setReasoningMenuOpen(false);
@@ -477,24 +482,88 @@ export function AssistantWorkspaceLayout({ workspace }) {
                 </div>
               </nav>
             )}
-            {creationMenuOpen && <section className="composer-popover creation-type-menu"><p className="popover-eyebrow">创作类型</p>{CREATION_TYPES.map((type) => <button key={type.id} type="button" className={creationType === type.id ? "active" : ""} disabled={type.id === "image" && documents.length > 0} title={type.id === "image" && documents.length > 0 ? "先移除文档附件" : undefined} onClick={() => { setCreationType(type.id); setCreationMenuOpen(false); }}><SoftMark name={type.mark} size="sm" /><span>{type.label}</span>{creationType === type.id && <i className="bi bi-check-lg menu-check" />}</button>)}</section>}
-            {modelMenuOpen && <section className="composer-popover image-model-menu" style={{ "--model-menu-left": "168px" }}><header className="model-menu-head"><p className="popover-eyebrow">{mode === "image" ? "选择图片模型" : "选择对话模型"}</p><span>{generationModels.length} 个模型</span></header>{generationModels.length > 6 && <div className="model-menu-search"><i className="bi bi-search" /><input name="assistant-model-search" value={modelSearch} type="text" placeholder="搜索模型名称" autoComplete="off" onChange={(event) => setModelSearch(event.target.value)} />{modelSearch && <button type="button" aria-label="清空模型搜索" title="清空" onClick={() => setModelSearch("")}><i className="bi bi-x-lg" /></button>}</div>}<div className="model-menu-options">{filteredGenerationModels.map((model) => <button key={model.model} type="button" className={generationModel === model.model ? "active" : ""} disabled={isCatalogModelMaintenance(model)} title={isCatalogModelMaintenance(model) ? "模型维护中，暂不可选择" : undefined} onClick={() => { mode === "image" ? setImageModel(model.model) : setConversationModel(model.model); setModelMenuOpen(false); setModelSearch(""); }}><ModelCatalogIcon model={model} size="sm" /><span className="model-copy"><strong>{model.label}</strong></span><span className="model-menu-aside"><ModelMaintenanceBadge model={model} /><ModelMenuPrice model={mode === "image" ? model : modelWithReasoningPrice(model)} perImage={mode === "image"} /></span><span className="model-menu-check-slot">{generationModel === model.model && <i className="bi bi-check-lg menu-check" />}</span></button>)}{!filteredGenerationModels.length && <p className="skill-empty">{modelSearch ? "没有匹配的模型" : "后台暂未提供可用模型"}</p>}</div></section>}
-            {reasoningMenuOpen && mode !== "image" && reasoningEffortOptions.length > 0 && (
-              <section className="composer-popover reasoning-effort-menu" aria-label="推理强度">
-                <header><p className="popover-eyebrow">推理强度</p><span>当前模型支持 {reasoningEffortOptions.length} 档</span></header>
-                <div className="reasoning-effort-options">
-                  {reasoningEffortOptions.map((option) => (
-                    <button key={option.id} type="button" className={activeReasoningEffort === option.id ? "active" : ""} aria-pressed={activeReasoningEffort === option.id} onClick={() => { setReasoningEffort(option.id); setReasoningMenuOpen(false); }}>
-                      <span className="reasoning-effort-copy"><strong>{option.label}</strong><small>{option.id}</small></span>
-                      <ModelMenuPrice model={reasoningEffortOptionPriceModel(option)} unitSuffix="/轮" />
-                      {activeReasoningEffort === option.id && <i className="bi bi-check-lg menu-check" />}
+            {composerMenuPresence.id === "creation" && (
+              <section className={`composer-popover creation-type-menu${composerMenuPresence.className ? ` ${composerMenuPresence.className}` : ""}`} style={composerMenuPosition || undefined}>
+                <p className="popover-eyebrow">创作类型</p>
+                {CREATION_TYPES.map((type) => (
+                  <button
+                    key={type.id}
+                    type="button"
+                    className={creationType === type.id ? "active" : ""}
+                    disabled={type.id === "image" && documents.length > 0}
+                    title={type.id === "image" && documents.length > 0 ? "先移除文档附件" : undefined}
+                    onClick={() => { setCreationType(type.id); setCreationMenuOpen(false); }}
+                  >
+                    <SoftMark name={type.mark} size="sm" />
+                    <span>{type.label}</span>
+                    {creationType === type.id && <i className="bi bi-check-lg menu-check" />}
+                  </button>
+                ))}
+              </section>
+            )}
+            {composerMenuPresence.id === "model" && (
+              <section className={`composer-popover image-model-menu${composerMenuPresence.className ? ` ${composerMenuPresence.className}` : ""}`} style={composerMenuPosition || undefined}>
+                <header className="model-menu-head">
+                  <p className="popover-eyebrow">{mode === "image" ? "选择图片模型" : "选择对话模型"}</p>
+                </header>
+                {generationModels.length > 6 && (
+                  <div className="model-menu-search">
+                    <i className="bi bi-search" />
+                    <input name="assistant-model-search" value={modelSearch} type="text" placeholder="搜索模型名称" autoComplete="off" onChange={(event) => setModelSearch(event.target.value)} />
+                    {modelSearch && <button type="button" aria-label="清空模型搜索" title="清空" onClick={() => setModelSearch("")}><i className="bi bi-x-lg" /></button>}
+                  </div>
+                )}
+                <div className="model-menu-options">
+                  {filteredGenerationModels.map((model) => (
+                    <button
+                      key={model.model}
+                      type="button"
+                      className={generationModel === model.model ? "active" : ""}
+                      disabled={isCatalogModelMaintenance(model)}
+                      title={isCatalogModelMaintenance(model) ? "模型维护中，暂不可选择" : undefined}
+                      onClick={() => {
+                        mode === "image" ? setImageModel(model.model) : setConversationModel(model.model);
+                        setModelMenuOpen(false);
+                        setModelSearch("");
+                      }}
+                    >
+                      <ModelCatalogIcon model={model} size="sm" />
+                      <span className="model-copy"><strong>{model.label}</strong></span>
+                      <ModelMaintenanceBadge model={model} />
+                      {!isCatalogModelMaintenance(model) && (
+                        <ModelMenuPrice model={mode === "image" ? model : modelWithReasoningPrice(model)} perImage={mode === "image"} />
+                      )}
+                      {generationModel === model.model && <i className="bi bi-check2 menu-check" />}
                     </button>
                   ))}
+                  {!filteredGenerationModels.length && (
+                    <p className="skill-empty">{modelSearch ? "没有匹配的模型" : "后台暂未提供可用模型"}</p>
+                  )}
                 </div>
               </section>
             )}
-            {preferencesOpen && mode === "image" && (
-              <section className="composer-popover image-mode-preferences" aria-label="图片生成参数" style={preferencesPosition || undefined}>
+            {composerMenuPresence.id === "reasoning" && mode !== "image" && reasoningEffortOptions.length > 0 && (
+              <StudioReasoningSlider
+                options={reasoningEffortOptions.map((option) => ({
+                  value: option.id,
+                  label: option.label,
+                  priceModel: reasoningEffortOptionPriceModel(option),
+                }))}
+                value={activeReasoningEffort}
+                onChange={setReasoningEffort}
+                onClose={() => setReasoningMenuOpen(false)}
+                modelLabel={generationModelLabel}
+                style={composerMenuPosition || undefined}
+                className={composerMenuPresence.className}
+                renderPrice={(option) => (
+                  option?.priceModel
+                    ? <ModelMenuPrice model={option.priceModel} unitSuffix="/轮" />
+                    : null
+                )}
+              />
+            )}
+            {composerMenuPresence.id === "preferences" && mode === "image" && (
+              <section className={`composer-popover image-mode-preferences${composerMenuPresence.className ? ` ${composerMenuPresence.className}` : ""}`} aria-label="图片生成参数" style={composerMenuPosition || undefined}>
                 <ExactImageSizeControl model={selectedModel} mode={generationSize.sizeMode} width={generationSize.exactWidth} height={generationSize.exactHeight} onChange={(patch) => setGenerationSize((current) => ({ ...current, ...patch }))} />
                 {generationSize.sizeMode !== "exact" && availableRatios.length ? <div className="preferences-block">
                   <p className="preferences-label">比例</p>
@@ -542,13 +611,13 @@ export function AssistantWorkspaceLayout({ workspace }) {
             <div className="composer-toolbar">
               <div className="composer-left">
                 <button className="composer-attachment-inline" type="button" data-assistant-tour="attach" title={mode === "image" ? "添加参考图" : "添加附件"} aria-label={mode === "image" ? "添加参考图" : "添加附件"} onClick={() => fileInputRef.current?.click()}><i className="bi bi-paperclip" /></button>
-                <button className={`agent-mode-button${creationMenuOpen ? " active" : ""}`} type="button" data-assistant-tour="mode" aria-expanded={creationMenuOpen} onPointerDown={(event) => toggleComposerMenu(event, "creation")} onClick={swallowComposerMenuClick}><SoftMark name={selectedCreation.mark} size="sm" /><span>{selectedCreation.label}</span><i className={`bi bi-chevron-down menu-chevron${creationMenuOpen ? " is-open" : ""}`} /></button>
-                <button className={`composer-tool-button image-model-button${modelMenuOpen ? " active" : ""}`} type="button" data-assistant-tour="model" title={`模型：${generationModelLabel}`} aria-label={`选择模型，当前为${generationModelLabel}`} aria-expanded={modelMenuOpen} onPointerDown={(event) => toggleComposerMenu(event, "model")} onClick={swallowComposerMenuClick}><ModelCatalogIcon model={selectedModel} size="sm" /><span>{generationModelLabel}</span><i className={`bi bi-chevron-down menu-chevron${modelMenuOpen ? " is-open" : ""}`} /></button>
+                <button ref={creationButtonRef} className={`agent-mode-button${creationMenuOpen ? " active" : ""}`} type="button" data-assistant-tour="mode" aria-expanded={creationMenuOpen} onPointerDown={(event) => toggleComposerMenu(event, "creation")} onClick={swallowComposerMenuClick}><SoftMark name={selectedCreation.mark} size="sm" /><span>{selectedCreation.label}</span><i className={`bi bi-chevron-down menu-chevron${creationMenuOpen ? " is-open" : ""}`} /></button>
+                <button ref={modelButtonRef} className={`composer-tool-button image-model-button${modelMenuOpen ? " active" : ""}`} type="button" data-assistant-tour="model" title={`模型：${generationModelLabel}`} aria-label={`选择模型，当前为${generationModelLabel}`} aria-expanded={modelMenuOpen} onPointerDown={(event) => toggleComposerMenu(event, "model")} onClick={swallowComposerMenuClick}><ModelCatalogIcon model={selectedModel} size="sm" /><span>{generationModelLabel}</span><i className={`bi bi-chevron-down menu-chevron${modelMenuOpen ? " is-open" : ""}`} /></button>
                 {mode === "image" ? (
                   <button ref={imageSettingsButtonRef} className={`composer-tool-button image-settings-button${preferencesOpen ? " active" : ""}`} type="button" aria-expanded={preferencesOpen} onPointerDown={(event) => toggleComposerMenu(event, "preferences")} onClick={swallowComposerMenuClick}><span>{[...(generationSize.sizeMode === "exact" ? [`${generationSize.exactWidth || "—"}×${generationSize.exactHeight || "—"} px`] : [generationRatio === "auto" ? "Auto" : generationRatio, generationResolution]), generationQuality, `${generationCount}张`].filter(Boolean).join(" | ")}</span><i className={`bi bi-chevron-down menu-chevron${preferencesOpen ? " is-open" : ""}`} /></button>
                 ) : (
                   <>
-                    {reasoningEfforts.length > 0 && activeReasoningEffort ? <button className={`composer-tool-button reasoning-effort-button${reasoningMenuOpen ? " active" : ""}`} type="button" title={`推理强度：${reasoningEffortLabel}`} aria-label={`选择推理强度，当前为${reasoningEffortLabel}`} aria-expanded={reasoningMenuOpen} onPointerDown={(event) => toggleComposerMenu(event, "reasoning")} onClick={swallowComposerMenuClick}><i className="bi bi-speedometer2" /><span>推理 {reasoningEffortLabel}</span><i className={`bi bi-chevron-down menu-chevron${reasoningMenuOpen ? " is-open" : ""}`} /></button> : null}
+                    {reasoningEfforts.length > 0 && activeReasoningEffort ? <button ref={reasoningButtonRef} className={`composer-tool-button reasoning-effort-button${reasoningMenuOpen ? " active" : ""}`} type="button" title={`推理强度：${reasoningEffortLabel}`} aria-label={`选择推理强度，当前为${reasoningEffortLabel}`} aria-expanded={reasoningMenuOpen} onPointerDown={(event) => toggleComposerMenu(event, "reasoning")} onClick={swallowComposerMenuClick}><i className="bi bi-speedometer2" /><span>推理 {reasoningEffortLabel}</span><i className={`bi bi-chevron-down menu-chevron${reasoningMenuOpen ? " is-open" : ""}`} /></button> : null}
                   </>
                 )}
               </div>

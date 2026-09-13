@@ -80,6 +80,7 @@ export type CanvasNodeMetadata = {
     naturalWidth?: number;
     naturalHeight?: number;
     freeResize?: boolean;
+    loadedImageAspect?: { source: string; ratio: number };
     images?: CanvasNodeImage[];
     primaryImageId?: string;
     storageKey?: string;
@@ -113,12 +114,45 @@ export type CanvasNodeMetadata = {
     hidden?: boolean;
     inlineOutputNodeId?: string;
     agentRequestId?: string;
+    agentGenerationRequestId?: string;
     agentBatchId?: string;
     agentSourceNodeId?: string;
     localImageOperation?: CanvasLocalImageOperation;
     localImageOperationParams?: Record<string, unknown>;
     localImageOperationCompletedCount?: number;
     imageAngleParams?: Record<string, unknown>;
+    /** Storyboard provenance kept on each generated shot for editing, retries, and cloud merges. */
+    storyboardId?: string;
+    storyboardSceneId?: string;
+    storyboardIndex?: number;
+    storyboardTitle?: string;
+    /** Human-edited shot beat persisted alongside the generated image. */
+    storyboardSummary?: string;
+    storyboardShotType?: string;
+    storyboardStatus?: "queued" | "running" | "succeeded" | "failed" | "canceled";
+    /** The shot copy changed after its last image generation. */
+    storyboardNeedsRegeneration?: boolean;
+    /** Durable source/session fields kept on storyboard groups for reopen/recovery. */
+    storyboardScript?: string;
+    storyboardPlanJson?: string;
+    storyboardSceneCount?: number;
+    storyboardAspectRatio?: string;
+    storyboardSourceNodeId?: string;
+    storyboardSourceNodeIds?: string[];
+    storyboardContinuity?: string;
+    storyboardPrompt?: string;
+    /** Adjacent shot ids provide an explicit, refresh-safe sequence on the canvas. */
+    storyboardPreviousSceneId?: string;
+    storyboardNextSceneId?: string;
+    /** Planner-level provenance mirrored on storyboard members for recovery/merge. */
+    storyboardGlobalStyle?: string;
+    storyboardPlanSource?: "rules" | "ai";
+    /** Original storyboard controls are persisted so a later node-level retry is faithful. */
+    storyboardStyle?: string;
+    storyboardConsistency?: boolean;
+    /** Durable first-frame reference used to keep later shots visually consistent after refresh. */
+    storyboardAnchorReference?: string;
+    storyboardAnchorSceneId?: string;
 };
 
 export type CanvasNodeData = {

@@ -3,7 +3,9 @@ import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { canvasThemes, type CanvasBackgroundMode } from "@/lib/canvas-theme";
 import { emitCanvasEvent } from "@/lib/canvas/canvas-event-bus";
 import { useThemeStore } from "@/stores/use-theme-store";
+import { canvasWheelIntent } from "@/lib/canvas/canvas-navigation";
 import type { ViewportTransform } from "@/types/canvas";
+import { shouldIgnoreCanvasShortcut } from "@/lib/keyboard-event";
 
 export const CANVAS_VIEWPORT_LIVE_EVENT = "viewport:live";
 export const MIN_CANVAS_SCALE = 0.05;
@@ -116,6 +118,7 @@ export function InfiniteCanvas({
     });
     const suppressContextMenu = useRef(false);
     const [isSpacePressed, setIsSpacePressed] = useState(false);
+    const spacePressedRef = useRef(false);
     const [isControlPressed, setIsControlPressed] = useState(false);
     const callbacksRef = useRef({ onViewportChange, onLiveViewport, onViewportInteractionChange, onCanvasDeselect });
     callbacksRef.current = { onViewportChange, onLiveViewport, onViewportInteractionChange, onCanvasDeselect };
@@ -192,19 +195,20 @@ export function InfiniteCanvas({
 
     useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
+            if (shouldIgnoreCanvasShortcut(event, { ignoreControls: true, scope: containerRef.current })) return;
             if (event.key === "Control") setIsControlPressed(true);
             if (event.code !== "Space") return;
-            const target = event.target instanceof Element ? event.target : null;
-            if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement || target?.closest("[contenteditable='true']")) return;
+            if (event.metaKey || event.altKey) return;
             event.preventDefault();
+            spacePressedRef.current = true;
             setIsSpacePressed(true);
             containerRef.current?.classList.add("canvas-stage--space-panning");
         };
 
         const handleKeyUp = (event: KeyboardEvent) => {
             if (event.code === "Space") {
-                const target = event.target instanceof Element ? event.target : null;
-                if (!(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement || target?.closest("[contenteditable='true']"))) event.preventDefault();
+                if (spacePressedRef.current && !shouldIgnoreCanvasShortcut(event, { ignoreControls: true, scope: containerRef.current })) event.preventDefault();
+                spacePressedRef.current = false;
                 setIsSpacePressed(false);
                 containerRef.current?.classList.remove("canvas-stage--space-panning");
             }
@@ -212,6 +216,7 @@ export function InfiniteCanvas({
         };
 
         const handleBlur = () => {
+            spacePressedRef.current = false;
             setIsSpacePressed(false);
             setIsControlPressed(false);
             if (panState.current.isPanning) {
@@ -239,6 +244,11 @@ export function InfiniteCanvas({
         if (target?.closest("[data-canvas-no-zoom]")) return;
         if (target?.closest("[data-connection-create-menu]")) return;
         const isBackgroundClick = !target?.closest("[data-node-id],[data-connection-id]");
+        if (isBackgroundClick && event.button === 0) {
+            const active = document.activeElement;
+            if (active instanceof HTMLElement && active !== event.currentTarget) active.blur();
+            event.currentTarget.focus({ preventScroll: true });
+        }
         const temporaryTool = event.ctrlKey || isSpacePressed;
         const activeTool = temporaryTool ? (tool === "select" ? "pan" : "select") : tool;
         const shouldPan = event.button === 1 || event.button === 2 || (event.button === 0 && activeTool === "pan");
@@ -353,6 +363,15 @@ export function InfiniteCanvas({
             event.preventDefault();
 
             const current = liveRef.current;
+            const intent = canvasWheelIntent(event);
+            if (intent.kind === "pan") {
+                setInteracting(true);
+                container.classList.add("canvas-stage--panning");
+                liveRef.current = { ...current, x: current.x - intent.dx, y: current.y - intent.dy };
+                if (!frameRef.current) frameRef.current = requestAnimationFrame(() => { frameRef.current = null; publish(liveRef.current); });
+                scheduleCommit();
+                return;
+            }
             const factor = wheelZoomFactor(event.deltaY, event.deltaMode);
             const nextScale = clampScale(current.k * factor);
             const rect = container.getBoundingClientRect();
@@ -384,6 +403,7 @@ export function InfiniteCanvas({
     return (
         <div
             ref={containerRef}
+            tabIndex={-1}
             className="canvas-stage relative h-full w-full select-none overflow-hidden"
             data-guide="canvas-board"
             style={{ background: theme.canvas.background, cursor: activeTool === "pan" ? "grab" : undefined }}

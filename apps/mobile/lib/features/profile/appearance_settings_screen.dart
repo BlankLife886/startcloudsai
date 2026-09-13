@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/appearance.dart';
+import '../../app/starclouds_theme.dart';
 import '../../core/widgets/app_notice.dart';
 import '../../core/widgets/app_top_bar.dart';
 import '../../core/widgets/app_visual.dart';
@@ -83,7 +84,7 @@ class AppearanceSelectionPanel extends StatelessWidget {
           '选择界面外观',
           style: Theme.of(
             context,
-          ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
+          ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
         ),
         const SizedBox(height: 6),
         Row(
@@ -149,6 +150,7 @@ class _AppearanceTile extends StatelessWidget {
       label: '${appearance.label}，$detail',
       child: AppPressable(
         onTap: onTap,
+        borderRadius: StarCloudsRadii.card,
         child: AnimatedContainer(
           key: Key('appearance-option-${appearance.name}'),
           duration: reduceMotion ? Duration.zero : AppMotion.appear,
@@ -157,10 +159,12 @@ class _AppearanceTile extends StatelessWidget {
           decoration: BoxDecoration(
             color: selected
                 ? scheme.primaryContainer.withValues(alpha: .55)
-                : scheme.surfaceContainerLow,
-            borderRadius: BorderRadius.circular(8),
+                : scheme.surfaceContainerLowest,
+            borderRadius: StarCloudsRadii.card,
             border: Border.all(
-              color: selected ? scheme.primary : scheme.outlineVariant,
+              color: selected
+                  ? scheme.primary
+                  : StarCloudsVisualStyle.of(context).hairline,
             ),
           ),
           child: Row(
@@ -179,7 +183,7 @@ class _AppearanceTile extends StatelessWidget {
                       appearance.label,
                       style: TextStyle(
                         color: scheme.onSurface,
-                        fontWeight: FontWeight.w800,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
                     Text(
@@ -227,96 +231,89 @@ class _AppearancePreview extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
     final brightness = effectiveAppearanceBrightness(
       appearance,
       platformBrightness,
     );
-    final preview = ColorScheme.fromSeed(
-      seedColor: colors.primary,
-      brightness: brightness,
-    );
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: colors.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: colors.outlineVariant),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              '界面预览 · ${effectiveAppearanceLabel(appearance, platformBrightness)}',
-              style: const TextStyle(fontWeight: FontWeight.w900),
+    final preview =
+        (brightness == Brightness.dark
+                ? StarCloudsTheme.dark()
+                : StarCloudsTheme.light())
+            .colorScheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '界面预览 · ${effectiveAppearanceLabel(appearance, platformBrightness)}',
+            style: const TextStyle(fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 14),
+          AnimatedContainer(
+            key: Key('appearance-preview-${brightness.name}'),
+            duration: MediaQuery.disableAnimationsOf(context)
+                ? Duration.zero
+                : AppMotion.appear,
+            curve: AppMotion.ease,
+            height: 112,
+            decoration: BoxDecoration(
+              color: preview.surface,
+              borderRadius: StarCloudsRadii.card,
+              border: Border.all(color: preview.outlineVariant),
             ),
-            const SizedBox(height: 14),
-            AnimatedContainer(
-              key: Key('appearance-preview-${brightness.name}'),
-              duration: MediaQuery.disableAnimationsOf(context)
-                  ? Duration.zero
-                  : AppMotion.appear,
-              curve: AppMotion.ease,
-              height: 112,
-              decoration: BoxDecoration(
-                color: preview.surface,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: preview.outlineVariant),
-              ),
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Row(
-                    children: [
-                      Icon(
-                        _appearanceIcon(appearance),
-                        size: 18,
-                        color: preview.onSurface,
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Container(
-                          height: 8,
-                          decoration: BoxDecoration(
-                            color: preview.onSurfaceVariant.withValues(
-                              alpha: 0.24,
-                            ),
-                            borderRadius: BorderRadius.circular(4),
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      _appearanceIcon(appearance),
+                      size: 18,
+                      color: preview.onSurface,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Container(
+                        height: 8,
+                        decoration: BoxDecoration(
+                          color: preview.onSurfaceVariant.withValues(
+                            alpha: 0.24,
                           ),
+                          borderRadius: BorderRadius.circular(4),
                         ),
                       ),
-                    ],
-                  ),
-                  const Spacer(),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Container(
-                          height: 34,
-                          decoration: BoxDecoration(
-                            color: preview.surfaceContainerHighest,
-                            borderRadius: BorderRadius.circular(7),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      Container(
-                        width: 72,
+                    ),
+                  ],
+                ),
+                const Spacer(),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Container(
                         height: 34,
                         decoration: BoxDecoration(
-                          color: preview.primary,
-                          borderRadius: BorderRadius.circular(7),
+                          color: preview.surfaceContainerHighest,
+                          borderRadius: StarCloudsRadii.control,
                         ),
                       ),
-                    ],
-                  ),
-                ],
-              ),
+                    ),
+                    const SizedBox(width: 10),
+                    Container(
+                      width: 72,
+                      height: 34,
+                      decoration: BoxDecoration(
+                        color: preview.primary,
+                        borderRadius: StarCloudsRadii.pillAll,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }

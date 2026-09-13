@@ -164,7 +164,7 @@ class LegalDocumentScreen extends StatelessWidget {
                     Text(
                       document.summary,
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w800,
+                        fontWeight: FontWeight.w600,
                         height: 1.4,
                       ),
                     ),
@@ -187,7 +187,7 @@ class LegalDocumentScreen extends StatelessWidget {
                     Text(
                       section.title,
                       style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.w800,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
                     const SizedBox(height: 8),

@@ -97,7 +97,10 @@ async function visibleHeroControls(hero) {
 test.beforeEach(async ({ page }) => {
   await installVisualBaseline(page)
   await mockRuntime(page)
-  await page.route('**/api/v1/home-banners', (route) => fulfillJson(route, { items: [] }))
+  await page.route('**/api/v1/home-banners', (route) => fulfillJson(route, { items: [{
+    id: 'configured-home', title: '星空云绘', subtitle: '让想象，成为作品。',
+    imageUrl: '/sucai/studio-cover-t2i.webp', linkUrl: '/studio', buttonText: '进入创作台',
+  }] }))
   await page.route('**/api/v1/pricing**', (route) =>
     fulfillJson(route, {
       taskPointPrices: { t2i: 8, infinite_canvas: 12, ecommerce_design: 10 },
@@ -120,16 +123,14 @@ test('homepage omits decorative English labels and section numbering', async ({ 
   await expect(page.getByRole('button', { name: '下一张', exact: true })).toBeVisible()
 })
 
-test('homepage retains a usable branded hero without promotional banners', async ({ page }) => {
+test('homepage keeps tool access while empty banners show a skeleton', async ({ page }) => {
+  await page.route('**/api/v1/home-banners', route => fulfillJson(route, { items: [] }))
   await page.goto('/')
   const hero = page.locator('.home-hero')
-  await expect(hero.getByRole('heading', { level: 1 })).toHaveText('星空云绘')
-  await expect(hero.locator('.home-hero__image')).toHaveAttribute('src', '/sucai/home-intro-03.png')
-  await expect.poll(() => hero.locator('.home-hero__image').evaluate((image) =>
-    image.complete && image.naturalWidth > 0,
-  )).toBe(true)
+  await expect(hero.locator('.home-hero__skeleton')).toBeVisible()
+  await expect(hero.locator('img, h1')).toHaveCount(0)
   await expect(page.locator('.home-banner')).toHaveCount(0)
-  await expect(hero.locator('.home-hero__links')).toBeVisible()
+  await expect(hero.locator('.home-hero__links')).toHaveCount(0)
   await expect(page.locator('.home-card[href="/canvas"]')).toBeVisible()
   await expect(page.locator('.home-compact[href="/skills"]')).toBeVisible()
   await expect(page.locator('.home-compact[href="/psd-decompose"]')).toBeVisible()

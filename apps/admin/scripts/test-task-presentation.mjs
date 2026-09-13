@@ -1,9 +1,30 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { normalizeTaskTimelineEvent, taskErrorMessage, taskStatusLabel, taskTotalDuration } from '../src/utils.ts'
+import { normalizeTaskTimelineEvent, taskErrorMessage, taskStatusLabel, taskTotalDuration, taskExecutionDuration } from '../src/utils.ts'
 
 const createdAt = '2026-09-06T13:15:14Z'
 const task = { status: 'running', createdAt, startedAt: '2026-09-06T13:17:33Z' }
+
+test('queued and retry-waiting tasks never display a ticking duration', () => {
+  for (const attempt of [0, 2]) for (const startedAt of [null, createdAt, task.startedAt]) {
+    const queued = { ...task, status: 'queued', attempt, startedAt }
+    assert.equal(taskExecutionDuration(queued, Date.parse('2026-09-06T13:17:35Z')), '-')
+    assert.equal(taskExecutionDuration(queued, Date.parse('2026-09-06T13:18:35Z')), '-')
+  }
+})
+
+test('execution duration starts from the actual start and freezes at the finish', () => {
+  assert.equal(taskExecutionDuration(task, Date.parse('2026-09-06T13:17:35Z')), '2 秒')
+  for (const status of ['succeeded', 'failed', 'canceled']) {
+    assert.equal(taskExecutionDuration({ ...task, status, finishedAt: '2026-09-06T13:18:33Z' }, Date.parse('2026-09-07T00:00:00Z')), '1 分 0 秒')
+  }
+})
+
+test('missing timestamps never fabricate elapsed time or keep terminal tasks ticking', () => {
+  assert.equal(taskExecutionDuration({ ...task, startedAt: null }), '-')
+  assert.equal(taskExecutionDuration({ ...task, startedAt: 'invalid' }), '-')
+  assert.equal(taskExecutionDuration({ ...task, status: 'canceled', finishedAt: null }), '-')
+})
 
 test('total duration keeps the original start across running, retry waiting and resumed execution', () => {
   const now = Date.parse('2026-09-06T13:17:35Z')

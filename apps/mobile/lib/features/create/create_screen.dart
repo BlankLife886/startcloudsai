@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:math' as math;
 import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
@@ -68,6 +67,8 @@ class _CreateScreenState extends ConsumerState<CreateScreen>
   Timer? _pollTimer;
   var _pollInFlight = false;
   String _submissionLabel = '';
+  TextToImageBatch? _interruptedBatch;
+  String? _submissionUserId;
   final List<ReferenceImageDraft> _references = [];
 
   String? get _incomingPrompt =>
@@ -596,6 +597,11 @@ class _CreateScreenState extends ConsumerState<CreateScreen>
   }
 
   Future<void> _submit(ImageModelOption model) async {
+    if (_submitting) return;
+    if (_interruptedBatch != null) {
+      await _resumeSubmission();
+      return;
+    }
     if (_promptController.text.trim().isEmpty) {
       AppNotice.warning(context, '请先输入画面描述');
       return;
@@ -641,6 +647,7 @@ class _CreateScreenState extends ConsumerState<CreateScreen>
     }
     setState(() {
       _submitting = true;
+      _submissionUserId = user?.id;
       _submittedAt = DateTime.now();
       _submissionLabel = _references.isEmpty ? '正在提交任务' : '正在上传参考图';
     });
@@ -658,57 +665,8 @@ class _CreateScreenState extends ConsumerState<CreateScreen>
             count: count,
             inputKeys: inputKeys,
           );
-      final createdAt = (_submittedAt ?? DateTime.now()).toUtc();
-      final center = ref.read(taskCenterControllerProvider.notifier);
-      for (var index = 0; index < batch.taskIds.length; index++) {
-        center.upsert(
-          TaskItem.fromJson({
-            'id': batch.taskIds[index],
-            'type': 't2i',
-            'status': 'queued',
-            'model': model.id,
-            'count': 1,
-            'createdAt': createdAt.toIso8601String(),
-            'params': {
-              'userPrompt': _promptController.text.trim(),
-              'publicModelKey': model.id,
-              'modelHint': model.id,
-              'aspectRatio': _selected(_aspectRatio, model.aspectRatios),
-              'requestedAspectRatio': _selected(
-                _aspectRatio,
-                model.aspectRatios,
-              ),
-              'resolutionScale': _selected(_resolution, model.resolutions),
-              'quality': _selected(_quality, model.qualities),
-              if (batch.batchId.isNotEmpty) ...{
-                'batchId': batch.batchId,
-                'batchIndex': index,
-                'batchSize': batch.taskIds.length,
-              },
-            },
-          }),
-        );
-      }
-      ref.invalidate(taskListProvider);
-      ref.invalidate(profileOverviewProvider);
-      ref.invalidate(walletProvider);
-      for (final taskId in batch.taskIds) {
-        ref.invalidate(taskDetailProvider(taskId));
-      }
-      _draftTimer?.cancel();
-      try {
-        await ref.read(creationDraftStoreProvider).clear();
-      } catch (_) {
-        // The task is already committed; draft cleanup is best effort.
-      }
       if (!mounted) return;
-      setState(() {
-        _pendingTaskIds
-          ..clear()
-          ..addAll(batch.taskIds);
-      });
-      unawaited(_pollPending());
-      AppNotice.success(context, '任务已提交，生成结果会出现在对话里');
+      await _acceptBatch(batch, model);
     } catch (error) {
       if (mounted) _showError(error);
     } finally {
@@ -719,6 +677,139 @@ class _CreateScreenState extends ConsumerState<CreateScreen>
         });
       }
     }
+  }
+
+  Future<void> _acceptBatch(
+    TextToImageBatch batch,
+    ImageModelOption model,
+  ) async {
+    if (ref.read(sessionControllerProvider).asData?.value.user?.id !=
+        _submissionUserId) {
+      return;
+    }
+    final request = batch.request;
+    final center = ref.read(taskCenterControllerProvider.notifier);
+    final knownIds =
+        ref
+            .read(taskCenterControllerProvider)
+            .asData
+            ?.value
+            .items
+            .map((task) => task.id)
+            .toSet() ??
+        <String>{};
+    for (var index = 0; index < batch.taskIds.length; index++) {
+      final id = batch.taskIds[index];
+      if (knownIds.contains(id)) continue;
+      center.upsert(
+        TaskItem.fromJson({
+          'id': id,
+          'type': 't2i',
+          'status': 'queued',
+          'model': request?.model.id ?? model.id,
+          'count': 1,
+          'inputKeys': request?.inputKeys ?? const <String>[],
+          'createdAt': (request?.createdAt ?? _submittedAt ?? DateTime.now())
+              .toUtc()
+              .toIso8601String(),
+          'params': {
+            'userPrompt': request?.prompt ?? _promptController.text.trim(),
+            'publicModelKey': request?.model.id ?? model.id,
+            'modelHint': request?.model.id ?? model.id,
+            'aspectRatio':
+                request?.aspectRatio ??
+                _selected(_aspectRatio, model.aspectRatios),
+            'resolutionScale':
+                request?.resolution ??
+                _selected(_resolution, model.resolutions),
+            'quality': request?.quality ?? _selected(_quality, model.qualities),
+            if (batch.batchId.isNotEmpty) ...{
+              'batchId': batch.batchId,
+              'batchIndex': index,
+              'batchSize': batch.requestedCount,
+            },
+          },
+        }),
+      );
+    }
+    ref.invalidate(taskListProvider);
+    ref.invalidate(profileOverviewProvider);
+    ref.invalidate(walletProvider);
+    for (final id in batch.taskIds) {
+      ref.invalidate(taskDetailProvider(id));
+    }
+    setState(() {
+      _interruptedBatch = batch.isComplete ? null : batch;
+      for (final id in batch.taskIds) {
+        if (!_pendingTaskIds.contains(id)) _pendingTaskIds.add(id);
+      }
+    });
+    unawaited(_pollPending());
+    if (!batch.isComplete) {
+      AppNotice.warning(
+        context,
+        '提交中断，已确认 ${batch.taskIds.length}/${batch.requestedCount} 张',
+      );
+      return;
+    }
+    _draftTimer?.cancel();
+    try {
+      await ref.read(creationDraftStoreProvider).clear();
+    } catch (_) {
+      // Submission has already succeeded; draft cleanup is best effort.
+    }
+    if (mounted) AppNotice.success(context, '任务已提交，生成结果会出现在对话里');
+  }
+
+  Future<void> _resumeSubmission() async {
+    final batch = _interruptedBatch;
+    final request = batch?.request;
+    if (_submitting || batch == null || request == null) return;
+    final userId = ref.read(sessionControllerProvider).asData?.value.user?.id;
+    if (userId == null || userId != _submissionUserId) {
+      AppNotice.warning(context, '请使用原账号登录后继续提交');
+      return;
+    }
+    setState(() {
+      _submitting = true;
+      _submissionLabel = '正在恢复提交';
+    });
+    try {
+      final result = await ref
+          .read(creationRepositoryProvider)
+          .submitTextToImageBatch(request, completedTaskIds: batch.taskIds);
+      if (mounted) await _acceptBatch(result, request.model);
+    } catch (error) {
+      if (mounted) _showError(error);
+    } finally {
+      if (mounted) {
+        setState(() {
+          _submitting = false;
+          _submissionLabel = '';
+        });
+      }
+    }
+  }
+
+  Future<void> _endSubmission() async {
+    final confirmed = await showAppDialog<bool>(
+      context: context,
+      builder: (context) => AppDialog(
+        title: const Text('结束本次提交？'),
+        content: const Text('已创建的任务会继续生成。尚未确认的请求可能已被服务器接收，请先在作品中核对结果，避免重复生成。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('返回'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('结束提交'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true && mounted) setState(() => _interruptedBatch = null);
   }
 
   Future<bool?> _confirmCost({
@@ -769,7 +860,7 @@ class _CreateScreenState extends ConsumerState<CreateScreen>
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
             color: Theme.of(context).colorScheme.errorContainer,
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(16),
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -991,7 +1082,7 @@ class _CreateScreenState extends ConsumerState<CreateScreen>
                 resolution: _selected(_resolution, current.resolutions),
                 quality: _selected(_quality, current.qualities),
                 count: _count.clamp(1, current.maxImages),
-                enabled: !_submitting,
+                enabled: !_submitting && _interruptedBatch == null,
                 onSelectModel: (next) {
                   if (next.id == current.id) return;
                   _applyModel(next);
@@ -1075,9 +1166,7 @@ class _CreateScreenState extends ConsumerState<CreateScreen>
           final count = _count.clamp(1, model.maxImages);
           final estimatedCost = estimatedCreationCost(model, count);
           final refLimit = creationReferenceLimit(model);
-          final cardFill = Theme.of(context).brightness == Brightness.dark
-              ? const Color(0xFF16181F)
-              : const Color(0xFFF5F5F7);
+          final cardFill = Theme.of(context).colorScheme.surfaceContainerLow;
           final authenticated =
               ref
                   .watch(sessionControllerProvider)
@@ -1122,13 +1211,22 @@ class _CreateScreenState extends ConsumerState<CreateScreen>
                   ),
                 ),
               ),
+              if (_interruptedBatch case final batch?)
+                CreationSubmissionNotice(
+                  confirmedCount: batch.taskIds.length,
+                  requestedCount: batch.requestedCount,
+                  error: batch.error,
+                  busy: _submitting,
+                  onResume: _resumeSubmission,
+                  onEnd: _endSubmission,
+                ),
               _CreationSettingsDock(
                 modelName: model.name,
                 aspectRatio: ratio,
                 resolution: resolution,
                 quality: _qualityLabel(quality),
                 count: count,
-                enabled: !_submitting,
+                enabled: !_submitting && _interruptedBatch == null,
                 onOpen: () => _openSettings(data.models),
               ),
               SafeArea(
@@ -1136,9 +1234,13 @@ class _CreateScreenState extends ConsumerState<CreateScreen>
                 child: _PromptComposer(
                   controller: _promptController,
                   submitting: _submitting,
-                  submissionLabel: _submissionLabel,
+                  submissionLabel: _interruptedBatch != null && !_submitting
+                      ? '待恢复提交'
+                      : _submissionLabel,
                   estimatedCost: estimatedCost,
-                  onSubmit: () => _submit(model),
+                  onSubmit: _interruptedBatch == null
+                      ? () => _submit(model)
+                      : null,
                   fill: cardFill,
                   refLimit: refLimit,
                   references: _references,
@@ -1157,6 +1259,68 @@ class _CreateScreenState extends ConsumerState<CreateScreen>
 }
 
 enum _TurnImageAction { regenerate, reference, download, delete }
+
+class CreationSubmissionNotice extends StatelessWidget {
+  const CreationSubmissionNotice({
+    required this.confirmedCount,
+    required this.requestedCount,
+    required this.onResume,
+    required this.onEnd,
+    this.error,
+    this.busy = false,
+    super.key,
+  });
+
+  final int confirmedCount;
+  final int requestedCount;
+  final Object? error;
+  final bool busy;
+  final VoidCallback onResume;
+  final VoidCallback onEnd;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Padding(
+      key: const Key('creation-submission-notice'),
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '提交中断 · 已确认 $confirmedCount/$requestedCount 张',
+            style: Theme.of(context).textTheme.labelLarge,
+          ),
+          const SizedBox(height: 4),
+          Text(
+            error is ApiException
+                ? (error as ApiException).message
+                : '部分请求尚未确认，已创建的任务会继续生成。',
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: colors.onSurfaceVariant),
+          ),
+          Wrap(
+            spacing: 8,
+            children: [
+              TextButton.icon(
+                onPressed: busy ? null : onResume,
+                icon: const Icon(Icons.refresh, size: 18),
+                label: const Text('恢复提交'),
+              ),
+              TextButton(
+                onPressed: busy ? null : onEnd,
+                child: const Text('结束本次提交'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
 
 class _CreationImageActionTarget {
   const _CreationImageActionTarget({
@@ -2052,13 +2216,13 @@ class _CreationVariantStrip extends StatelessWidget {
   Widget build(BuildContext context) {
     return Center(
       child: ClipRRect(
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(16),
         child: BackdropFilter(
           filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
           child: DecoratedBox(
             decoration: BoxDecoration(
               color: Colors.black.withValues(alpha: .38),
-              borderRadius: BorderRadius.circular(8),
+              borderRadius: BorderRadius.circular(16),
               border: Border.all(color: Colors.white.withValues(alpha: .16)),
             ),
             child: Padding(
@@ -2196,7 +2360,7 @@ class _CreationResultTile extends StatelessWidget {
   }
 }
 
-class _CreationGeneratingOverlay extends StatefulWidget {
+class _CreationGeneratingOverlay extends StatelessWidget {
   const _CreationGeneratingOverlay({
     required this.compact,
     this.elapsed,
@@ -2208,242 +2372,40 @@ class _CreationGeneratingOverlay extends StatefulWidget {
   final bool marked;
 
   @override
-  State<_CreationGeneratingOverlay> createState() =>
-      _CreationGeneratingOverlayState();
-}
-
-class _CreationGeneratingOverlayState extends State<_CreationGeneratingOverlay>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _motion;
-
-  @override
-  void initState() {
-    super.initState();
-    _motion = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 10000),
-    )..repeat();
-  }
-
-  @override
-  void dispose() {
-    _motion.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final visual = StarCloudsVisualStyle.of(context);
-    final seconds = widget.elapsed == null
+    final colors = Theme.of(context).colorScheme;
+    final seconds = elapsed == null || elapsed!.isNegative
         ? 0
-        : (widget.elapsed!.isNegative ? 0 : widget.elapsed!.inSeconds);
-    return AnimatedBuilder(
-      animation: _motion,
-      builder: (context, child) {
-        return Stack(
-          fit: StackFit.expand,
-          children: [
-            Positioned.fill(
-              child: CustomPaint(
-                painter: _CinemaParticleGradientPainter(
-                  progress: _motion.value,
-                  brandStart: visual.brandStart,
-                  brandEnd: visual.brandEnd,
-                  compact: widget.compact,
+        : elapsed!.inSeconds;
+    return ColoredBox(
+      color: colors.surfaceContainerLow,
+      child: LayoutBuilder(
+        builder: (context, constraints) => Center(
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (constraints.maxHeight >= 64) ...[
+                  AppActivityIndicator(size: compact ? 18 : 24),
+                  SizedBox(height: compact ? 8 : 12),
+                ],
+                Text(
+                  key: marked ? const Key('creation-slot-elapsed') : null,
+                  '${seconds}s',
+                  style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                    color: colors.onSurfaceVariant,
+                    fontWeight: FontWeight.w500,
+                    letterSpacing: 0,
+                  ),
                 ),
-              ),
+              ],
             ),
-            Center(
-              child: Text(
-                key: widget.marked ? const Key('creation-slot-elapsed') : null,
-                '${seconds}s',
-                style:
-                    (widget.compact
-                            ? Theme.of(context).textTheme.labelLarge
-                            : Theme.of(context).textTheme.headlineMedium)
-                        ?.copyWith(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w700,
-                          letterSpacing: widget.compact ? 0 : 0.6,
-                          shadows: const [
-                            Shadow(color: Color(0x66000000), blurRadius: 12),
-                          ],
-                        ),
-              ),
-            ),
-          ],
-        );
-      },
+          ),
+        ),
+      ),
     );
   }
-}
-
-class _CinemaParticleGradientPainter extends CustomPainter {
-  const _CinemaParticleGradientPainter({
-    required this.progress,
-    required this.brandStart,
-    required this.brandEnd,
-    required this.compact,
-  });
-
-  final double progress;
-  final Color brandStart;
-  final Color brandEnd;
-  final bool compact;
-
-  static double _fract(double value) => value - value.floorToDouble();
-
-  static double _hash(double seed) => _fract(math.sin(seed) * 43758.5453123);
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    if (size.isEmpty) return;
-    final rect = Offset.zero & size;
-    final t = progress * math.pi * 2;
-
-    canvas.drawRect(rect, Paint()..color = const Color(0xFF070510));
-
-    final wash = Offset(
-      size.width * (0.38 + 0.28 * math.sin(t * 0.55)),
-      size.height * (0.36 + 0.22 * math.cos(t * 0.42)),
-    );
-    canvas.drawRect(
-      rect,
-      Paint()
-        ..shader =
-            RadialGradient(
-              colors: [
-                Color.lerp(
-                  brandStart,
-                  Colors.white,
-                  0.2,
-                )!.withValues(alpha: 0.9),
-                brandStart.withValues(alpha: 0.52),
-                brandEnd.withValues(alpha: 0.3),
-                const Color(0xFF070510).withValues(alpha: 0),
-              ],
-              stops: const [0, 0.22, 0.56, 1],
-            ).createShader(
-              Rect.fromCircle(center: wash, radius: size.longestSide * 0.95),
-            ),
-    );
-
-    final bloom = Offset(
-      size.width * (0.74 + 0.14 * math.cos(t * 0.48)),
-      size.height * (0.7 + 0.12 * math.sin(t * 0.63)),
-    );
-    canvas.drawRect(
-      rect,
-      Paint()
-        ..shader =
-            RadialGradient(
-              colors: [
-                brandEnd.withValues(alpha: compact ? 0.28 : 0.4),
-                const Color(0x00000000),
-              ],
-            ).createShader(
-              Rect.fromCircle(center: bloom, radius: size.shortestSide * 0.72),
-            ),
-    );
-
-    canvas.drawRect(
-      rect,
-      Paint()
-        ..shader = LinearGradient(
-          begin: Alignment(-0.85 + 0.35 * math.sin(t * 0.5), -1),
-          end: Alignment(0.85 + 0.2 * math.cos(t * 0.4), 1),
-          colors: [
-            const Color(0x00000000),
-            Colors.white.withValues(alpha: 0.08),
-            brandStart.withValues(alpha: 0.2),
-            Colors.white.withValues(alpha: 0.06),
-            const Color(0x00000000),
-          ],
-          stops: const [0, 0.38, 0.5, 0.64, 1],
-        ).createShader(rect),
-    );
-
-    final bokehCount = compact ? 2 : 4;
-    for (var index = 0; index < bokehCount; index++) {
-      final seed = 11.0 + index * 17.3;
-      final origin = Offset(
-        _hash(seed) * size.width,
-        _hash(seed + 2.1) * size.height,
-      );
-      final center = Offset(
-        origin.dx +
-            math.sin(t * (0.38 + index * 0.12) + index) * size.width * 0.08,
-        origin.dy +
-            math.cos(t * (0.3 + index * 0.1) + index * 1.6) *
-                size.height *
-                0.07,
-      );
-      final radius =
-          size.shortestSide *
-          (compact ? 0.2 : 0.24) *
-          (0.55 + 0.45 * _hash(seed + 4.4));
-      canvas.drawCircle(
-        center,
-        radius,
-        Paint()
-          ..shader = RadialGradient(
-            colors: [
-              Color.lerp(
-                brandEnd,
-                Colors.white,
-                0.32,
-              )!.withValues(alpha: compact ? 0.16 : 0.24),
-              const Color(0x00000000),
-            ],
-          ).createShader(Rect.fromCircle(center: center, radius: radius)),
-      );
-    }
-
-    final count = compact ? 8 : 28;
-    for (var index = 0; index < count; index++) {
-      final seed = 100.0 + index * 9.13;
-      final x = _fract(_hash(seed) + 0.045 * math.sin(t + index * 0.71));
-      final y = _fract(
-        _hash(seed + 1.9) - progress * (0.12 + 0.36 * _hash(seed + 3.1)),
-      );
-      final radius = (compact ? 0.7 : 1.2) * (0.55 + 1.7 * _hash(seed + 5.2));
-      final twinkle =
-          0.22 + 0.78 * (0.5 + 0.5 * math.sin(t * 2.4 + index * 1.35));
-      final color = Color.lerp(
-        Colors.white,
-        brandStart,
-        _hash(seed + 8.4),
-      )!.withValues(alpha: twinkle * (compact ? 0.5 : 0.88));
-      final point = Offset(x * size.width, y * size.height);
-      if (!compact && index % 4 == 0) {
-        canvas.drawCircle(
-          point,
-          radius * 3.1,
-          Paint()..color = color.withValues(alpha: color.a * 0.2),
-        );
-      }
-      canvas.drawCircle(point, radius, Paint()..color = color);
-    }
-
-    canvas.drawRect(
-      rect,
-      Paint()
-        ..shader = RadialGradient(
-          colors: [
-            const Color(0x00000000),
-            Colors.black.withValues(alpha: compact ? 0.26 : 0.4),
-          ],
-          stops: const [0.55, 1],
-        ).createShader(rect),
-    );
-  }
-
-  @override
-  bool shouldRepaint(covariant _CinemaParticleGradientPainter oldDelegate) =>
-      oldDelegate.progress != progress ||
-      oldDelegate.brandStart != brandStart ||
-      oldDelegate.brandEnd != brandEnd ||
-      oldDelegate.compact != compact;
 }
 
 class _CreationOutcomeOverlay extends StatelessWidget {
@@ -2487,7 +2449,7 @@ class _CreationOutcomeOverlay extends StatelessWidget {
               title,
               style: Theme.of(
                 context,
-              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
             ),
             const SizedBox(height: 6),
             Text(
@@ -2528,7 +2490,7 @@ class _PromptComposer extends StatelessWidget {
   final bool submitting;
   final String submissionLabel;
   final int estimatedCost;
-  final VoidCallback onSubmit;
+  final VoidCallback? onSubmit;
   final Color fill;
   final int refLimit;
   final List<ReferenceImageDraft> references;
@@ -2574,11 +2536,10 @@ class _PromptComposer extends StatelessWidget {
         MediaQuery.textScalerOf(context).scale(1) > 1.3;
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: fill,
-          borderRadius: StarCloudsRadii.card,
-        ),
+      child: AppGlassSurface(
+        color: fill == Theme.of(context).colorScheme.surfaceContainerLow
+            ? null
+            : fill,
         child: Padding(
           padding: const EdgeInsets.fromLTRB(4, 8, 8, 8),
           child: Column(
@@ -2588,6 +2549,7 @@ class _PromptComposer extends StatelessWidget {
               TextField(
                 key: const Key('creation-prompt'),
                 controller: controller,
+                readOnly: submitting || onSubmit == null,
                 minLines: 3,
                 maxLines: 5,
                 maxLength: 20000,
@@ -2598,10 +2560,9 @@ class _PromptComposer extends StatelessWidget {
                       required isFocused,
                       maxLength,
                     }) => null,
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  height: 1.5,
-                  letterSpacing: -0.15,
-                ),
+                style: Theme.of(
+                  context,
+                ).textTheme.bodyLarge?.copyWith(height: 1.5, letterSpacing: 0),
                 textAlignVertical: TextAlignVertical.top,
                 textInputAction: TextInputAction.newline,
                 decoration: const InputDecoration(
@@ -2723,60 +2684,39 @@ class _CreateSubmitButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final visual = StarCloudsVisualStyle.of(context);
     final label = submissionLabel.isNotEmpty
         ? submissionLabel
         : estimatedCost > 0
         ? '消耗 $estimatedCost 积分'
         : '生成';
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        gradient: onPressed == null ? null : visual.brandGradient,
-        color: onPressed == null
-            ? Theme.of(context).disabledColor.withValues(alpha: .18)
-            : null,
-        borderRadius: StarCloudsRadii.pillAll,
+    return FilledButton(
+      key: const Key('creation-submit'),
+      onPressed: onPressed,
+      style: FilledButton.styleFrom(
+        minimumSize: const Size(48, _composerActionSize),
+        maximumSize: const Size(double.infinity, _composerActionSize),
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        padding: const EdgeInsets.fromLTRB(14, 0, 16, 0),
+        visualDensity: VisualDensity.standard,
       ),
-      child: Material(
-        type: MaterialType.transparency,
-        child: InkWell(
-          key: const Key('creation-submit'),
-          onTap: onPressed,
-          borderRadius: StarCloudsRadii.pillAll,
-          child: SizedBox(
-            height: _composerActionSize,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(14, 0, 16, 0),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (submitting) ...[
-                    const SizedBox.square(
-                      dimension: 16,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.white,
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                  ],
-                  ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 168),
-                    child: Text(
-                      label,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                  ),
-                ],
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (submitting) ...[
+            const SizedBox.square(
+              dimension: 16,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: Colors.white,
               ),
             ),
+            const SizedBox(width: 6),
+          ],
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 168),
+            child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
           ),
-        ),
+        ],
       ),
     );
   }
@@ -2804,7 +2744,6 @@ class _CreationSettingsDock extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final dark = Theme.of(context).brightness == Brightness.dark;
     final items = [
       modelName,
       _ratioLabel(aspectRatio),
@@ -2822,8 +2761,8 @@ class _CreationSettingsDock extends StatelessWidget {
           onTap: enabled ? onOpen : null,
           child: DecoratedBox(
             decoration: BoxDecoration(
-              color: dark ? const Color(0xFF16181F) : const Color(0xFFF5F5F7),
-              borderRadius: BorderRadius.circular(8),
+              color: colors.surface,
+              borderRadius: BorderRadius.circular(16),
             ),
             child: Padding(
               padding: const EdgeInsets.fromLTRB(12, 10, 10, 10),
@@ -2853,7 +2792,7 @@ class _CreationSettingsDock extends StatelessWidget {
                             Text(
                               items[i],
                               style: Theme.of(context).textTheme.labelLarge
-                                  ?.copyWith(fontWeight: FontWeight.w700),
+                                  ?.copyWith(fontWeight: FontWeight.w500),
                             ),
                           ],
                         ],
@@ -2914,7 +2853,7 @@ class _CreationSettingsPanel extends StatelessWidget {
           '生成设置',
           style: Theme.of(
             context,
-          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
         ),
         const SizedBox(height: 12),
         _SettingsRow(
@@ -3016,7 +2955,7 @@ class _SettingsRow extends StatelessWidget {
                 title,
                 style: Theme.of(
                   context,
-                ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w800),
+                ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w600),
               ),
             ),
           ),
@@ -3059,16 +2998,11 @@ class _OptionChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final dark = Theme.of(context).brightness == Brightness.dark;
     return AppPressable(
       onTap: selected ? null : onTap,
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: selected
-              ? colors.onSurface
-              : dark
-              ? const Color(0xFF22242C)
-              : const Color(0xFFF2F2F7),
+          color: selected ? colors.onSurface : colors.surfaceContainerLow,
           borderRadius: StarCloudsRadii.pillAll,
         ),
         child: Padding(
@@ -3101,12 +3035,11 @@ class _CountDock extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final dark = Theme.of(context).brightness == Brightness.dark;
     return Align(
       alignment: Alignment.centerLeft,
       child: Material(
-        color: dark ? const Color(0xFF22242C) : const Color(0xFFF2F2F7),
-        borderRadius: BorderRadius.circular(8),
+        color: Theme.of(context).colorScheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(16),
         child: SizedBox(
           height: 36,
           child: Row(
@@ -3132,7 +3065,7 @@ class _CountDock extends StatelessWidget {
                   textAlign: TextAlign.center,
                   style: Theme.of(
                     context,
-                  ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w800),
+                  ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w600),
                 ),
               ),
               IconButton(
@@ -3318,7 +3251,7 @@ class CreationReferenceStrip extends StatelessWidget {
                             style: const TextStyle(
                               color: Colors.white,
                               fontSize: 10,
-                              fontWeight: FontWeight.w800,
+                              fontWeight: FontWeight.w600,
                             ),
                           ),
                         ],
@@ -3427,7 +3360,7 @@ class CreationReferencesSheet extends StatelessWidget {
             '全部参考图',
             style: Theme.of(
               context,
-            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 16),
           GridView.builder(
@@ -3601,7 +3534,7 @@ class CreationPresetBanner extends StatelessWidget {
                   '沿用历史作品参数',
                   style: TextStyle(
                     color: colors.onSecondaryContainer,
-                    fontWeight: FontWeight.w800,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
                 const SizedBox(height: 5),
@@ -3711,7 +3644,7 @@ class _ConfirmationRow extends StatelessWidget {
                   ? Theme.of(context).colorScheme.primary
                   : null,
               fontWeight: emphasized || danger
-                  ? FontWeight.w800
+                  ? FontWeight.w600
                   : FontWeight.w600,
             ),
           ),

@@ -346,7 +346,7 @@ class WalletLedgerCard extends StatelessWidget {
                     entry.title,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontWeight: FontWeight.w800),
+                    style: const TextStyle(fontWeight: FontWeight.w600),
                   ),
                   if (entry.reason.isNotEmpty) ...[
                     const SizedBox(height: 3),
@@ -397,8 +397,8 @@ class WalletLedgerCard extends StatelessWidget {
                   '${positive ? '+' : '-'}$amount',
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
                     color: tone,
-                    fontWeight: FontWeight.w900,
-                    letterSpacing: -0.4,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0,
                   ),
                 ),
               ),

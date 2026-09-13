@@ -351,7 +351,7 @@ class _AppNoticeCard extends StatelessWidget {
           elevation: 4,
           shadowColor: visual.shadow,
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(20),
             side: BorderSide(
               color: dark
                   ? colors.outlineVariant.withValues(alpha: .55)
@@ -387,7 +387,7 @@ class _AppNoticeCard extends StatelessWidget {
                         Text(
                           title,
                           style: Theme.of(context).textTheme.labelLarge
-                              ?.copyWith(fontWeight: FontWeight.w800),
+                              ?.copyWith(fontWeight: FontWeight.w600),
                         ),
                         if (data.message.isNotEmpty) const SizedBox(height: 2),
                       ],

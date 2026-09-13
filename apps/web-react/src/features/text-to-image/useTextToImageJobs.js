@@ -66,6 +66,7 @@ function taskFromJob(job = {}, patch = {}) {
 				: null,
     prompt: String(input.userPrompt || params.userPrompt || job.prompt || ""),
     model: String(job.gatewayModelId || job.model || ""),
+    modelName: String(job.modelName || params._modelDisplayName || input._modelDisplayName || ""),
     publicModelKey: String(params.publicModelKey || input.publicModelKey || ""),
     sizeMode: String(input.sizeMode || params.sizeMode || ""),
     exactWidth: input.exactWidth ?? params.exactWidth,
@@ -441,11 +442,12 @@ export function useTextToImageJobs({ authenticated, userId = "", historyActive =
           persistBatch(batch);
           setLatestBatchId(batch.batchId || batch.entries[0]?.payload.clientRequestId || "");
           setSubmissionPhase("submitting");
+          const submittingTasks = pendingBatchEntries(batch).map(entry => submissionTask(entry, batch, "submitting"));
+          setTasks(current => submittingTasks.reduce((rows, task) => upsertInto(rows, task), current));
           const result = await submitPendingBatch(batch, async (payload) => {
             assertCurrent();
             const optimisticId = payload.clientRequestId;
             const { batchId, batchIndex, batchSize } = payload.input;
-            upsertTask(submissionTask({ payload }, batch, "submitting"));
             try {
               const response = await createServerAiJob({ ...payload, isCurrentSession });
               assertCurrent();

@@ -6,6 +6,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../core/providers.dart';
 import '../../core/widgets/app_notice.dart';
 import '../../core/widgets/app_visual.dart';
+import '../../core/widgets/app_top_bar.dart';
 import '../../core/widgets/authenticated_image.dart';
 import '../../app/appearance.dart';
 import '../assets/assets.dart';
@@ -52,17 +53,9 @@ abstract final class _ProfileLayout {
   static const inset = 20.0;
   static const block = 10.0;
   static const section = 20.0;
-  static const radius = 8.0;
+  static const radius = 24.0;
   static const avatar = 36.0;
   static const action = 36.0;
-  static const iconWell = 44.0;
-
-  static int gridColumns(BuildContext context, double maxWidth) {
-    final scale = MediaQuery.textScalerOf(context).scale(14) / 14;
-    if (maxWidth < 360 || scale > 1.35) return 2;
-    return 4;
-  }
-
   static bool stackedPair(BuildContext context) {
     final scale = MediaQuery.textScalerOf(context).scale(14) / 14;
     return MediaQuery.sizeOf(context).width < 360 || scale > 1.35;
@@ -99,28 +92,40 @@ class ProfileScreen extends ConsumerWidget {
     final environment = ref.watch(appEnvironmentProvider);
     return Scaffold(
       backgroundColor: Theme.of(context).colorScheme.surface,
-      body: session.when(
-        skipLoadingOnReload: true,
-        skipLoadingOnRefresh: true,
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (error, stackTrace) => Center(
-          child: OutlinedButton.icon(
-            onPressed: () =>
-                ref.read(sessionControllerProvider.notifier).refresh(),
-            icon: const Icon(Icons.refresh),
-            label: const Text('重新检查账号'),
+      appBar: AppTopBar(
+        title: const Text('我的'),
+        showBackButton: false,
+        backgroundColor: Theme.of(context).colorScheme.surface,
+      ),
+      body: Align(
+        alignment: Alignment.topCenter,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 680),
+          child: session.when(
+            skipLoadingOnReload: true,
+            skipLoadingOnRefresh: true,
+            loading: () => const Center(child: CircularProgressIndicator()),
+            error: (error, stackTrace) => Center(
+              child: OutlinedButton.icon(
+                onPressed: () =>
+                    ref.read(sessionControllerProvider.notifier).refresh(),
+                icon: const Icon(Icons.refresh),
+                label: const Text('重新检查账号'),
+              ),
+            ),
+            data: (state) {
+              if (!state.isAuthenticated) {
+                return _AnonymousProfile(environmentLabel: environment.label);
+              }
+              return _SignedInProfile(
+                user: state.user!,
+                environmentLabel: environment.label,
+                onOpenWebsite: () =>
+                    _openWebsite(context, state.user!.websiteUrl),
+              );
+            },
           ),
         ),
-        data: (state) {
-          if (!state.isAuthenticated) {
-            return _AnonymousProfile(environmentLabel: environment.label);
-          }
-          return _SignedInProfile(
-            user: state.user!,
-            environmentLabel: environment.label,
-            onOpenWebsite: () => _openWebsite(context, state.user!.websiteUrl),
-          );
-        },
       ),
     );
   }
@@ -134,18 +139,61 @@ class _AnonymousProfile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ListView(
-      padding: const EdgeInsets.only(bottom: 32),
+      padding: const EdgeInsets.only(bottom: 24),
       children: [
-        const _ProfileHeroShell(child: _AnonymousIdentity()),
+        const _ProfileHeroShell(
+          child: AppGlassSurface(
+            key: Key('profile-account-panel'),
+            child: Padding(
+              padding: EdgeInsets.all(20),
+              child: _AnonymousIdentity(),
+            ),
+          ),
+        ),
+        _ProfileSection(
+          title: '我的创作',
+          child: IntrinsicHeight(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Expanded(
+                  child: _ProfileQuickAction(
+                    key: const Key('profile-quick-works'),
+                    title: '我的作品',
+                    icon: Icons.photo_library_outlined,
+                    onTap: () => context.push('/works'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _ProfileQuickAction(
+                    key: const Key('profile-quick-assets'),
+                    title: '我的素材',
+                    icon: Icons.collections_outlined,
+                    onTap: () => context.push('/profile/assets'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
         _ProfileSection(
           title: '设置与支持',
           child: _ProfileActionGrid(
             children: [
               const _AppearanceTile(),
+              _ProfileActionCell(
+                key: const Key('profile-help'),
+                icon: Icons.help_outline_rounded,
+                title: '帮助中心',
+                accent: Theme.of(context).colorScheme.onSurfaceVariant,
+                onTap: () => context.push('/help'),
+              ),
               _AboutTile(environmentLabel: environmentLabel),
             ],
           ),
         ),
+        const _ProfileLegalLinks(),
       ],
     );
   }
@@ -157,50 +205,172 @@ class _AnonymousIdentity extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
+    final dark = colors.brightness == Brightness.dark;
+    final identity = Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
       children: [
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.center,
-          children: [
-            CircleAvatar(
-              radius: _ProfileLayout.avatar,
-              backgroundColor: colors.primaryContainer,
-              child: const Icon(Icons.person_outline, size: 32),
+        Container(
+          width: 56,
+          height: 56,
+          padding: const EdgeInsets.all(9),
+          decoration: BoxDecoration(
+            color: dark
+                ? Colors.white.withValues(alpha: .06)
+                : const Color(0xFFF5F6F8),
+            shape: BoxShape.circle,
+            border: Border.all(
+              color: Colors.white.withValues(alpha: dark ? .16 : 1),
             ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    '未登录',
-                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.w900,
-                      letterSpacing: -0.4,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    '登录后同步作品、积分和福利',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: colors.onSurfaceVariant,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
+          ),
+          child: Image.asset(
+            'assets/brand/brand_mark.png',
+            cacheWidth: 168,
+            excludeFromSemantics: true,
+          ),
         ),
-        const SizedBox(height: 18),
-        FilledButton(
-          key: const Key('profile-login'),
-          onPressed: () => context.push('/login'),
-          child: const Text('登录'),
+        const SizedBox(width: 14),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '星空账号',
+                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '未登录',
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: colors.onSurfaceVariant),
+              ),
+            ],
+          ),
         ),
       ],
     );
+    final signIn = FilledButton.icon(
+      key: const Key('profile-login'),
+      onPressed: () => context.push('/login'),
+      icon: const Icon(Icons.login_rounded, size: 18),
+      label: const Text('登录'),
+      style:
+          FilledButton.styleFrom(
+            backgroundColor: dark ? Colors.white : const Color(0xFF20242B),
+            foregroundColor: dark ? const Color(0xFF20242B) : Colors.white,
+            minimumSize: const Size(100, 44),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            side: BorderSide(color: Colors.white.withValues(alpha: .5)),
+            elevation: 0,
+          ).copyWith(
+            backgroundBuilder: (context, states, child) =>
+                child ?? const SizedBox.shrink(),
+          ),
+    );
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final stacked =
+            constraints.maxWidth < 300 ||
+            MediaQuery.textScalerOf(context).scale(1) > 1.3;
+        if (stacked) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [identity, const SizedBox(height: 16), signIn],
+          );
+        }
+        return Row(
+          children: [
+            Expanded(child: identity),
+            const SizedBox(width: 16),
+            signIn,
+          ],
+        );
+      },
+    );
   }
+}
+
+class _ProfileQuickAction extends StatelessWidget {
+  const _ProfileQuickAction({
+    required this.title,
+    required this.icon,
+    required this.onTap,
+    super.key,
+  });
+  final String title;
+  final IconData icon;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => AppPressable(
+    onTap: onTap,
+    semanticLabel: title,
+    excludeChildSemantics: true,
+    borderRadius: BorderRadius.circular(24),
+    child: AppGlassSurface(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 96),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                icon,
+                size: 22,
+                color: Theme.of(context).colorScheme.onSurface,
+              ),
+              const SizedBox(height: 12),
+              Text(
+                title,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(
+                  context,
+                ).textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w600),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+class _ProfileLegalLinks extends StatelessWidget {
+  const _ProfileLegalLinks();
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+    child: Wrap(
+      alignment: WrapAlignment.center,
+      spacing: 4,
+      children: [
+        TextButton(
+          key: const Key('profile-terms'),
+          onPressed: () => context.push('/legal/terms'),
+          style: TextButton.styleFrom(
+            foregroundColor: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+          child: const Text('用户协议'),
+        ),
+        TextButton(
+          key: const Key('profile-privacy'),
+          onPressed: () => context.push('/legal/privacy'),
+          style: TextButton.styleFrom(
+            foregroundColor: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+          child: const Text('隐私政策'),
+        ),
+      ],
+    ),
+  );
 }
 
 class _SignedInProfile extends ConsumerWidget {
@@ -253,6 +423,15 @@ class _SignedInProfile extends ConsumerWidget {
             ),
           ),
           _ProfileSection(
+            title: '内容管理',
+            child: _ProfileActionGrid(
+              children: [
+                _SubmissionTile(overview: overview),
+                const _FavoritePromptsTile(),
+              ],
+            ),
+          ),
+          _ProfileSection(
             title: '权益与服务',
             child: Column(
               children: [
@@ -268,19 +447,17 @@ class _SignedInProfile extends ConsumerWidget {
             ),
           ),
           _ProfileSection(
-            title: '内容管理',
-            child: _ProfileActionGrid(
-              children: [
-                _SubmissionTile(overview: overview),
-                const _FavoritePromptsTile(),
-              ],
-            ),
-          ),
-          _ProfileSection(
             title: '设置与支持',
             child: _ProfileActionGrid(
               children: [
                 const _AppearanceTile(),
+                _ProfileActionCell(
+                  key: const Key('profile-help'),
+                  icon: Icons.help_outline_rounded,
+                  title: '帮助中心',
+                  accent: Theme.of(context).colorScheme.onSurfaceVariant,
+                  onTap: () => context.push('/help'),
+                ),
                 _ProfileActionCell(
                   icon: Icons.security_outlined,
                   title: '账号与安全',
@@ -311,14 +488,13 @@ class _ProfileHeroShell extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final topInset = MediaQuery.paddingOf(context).top;
     return ColoredBox(
       key: const Key('profile-hero-surface'),
       color: colors.surface,
       child: Padding(
         padding: EdgeInsets.fromLTRB(
           _ProfileLayout.inset,
-          topInset + 8,
+          8,
           _ProfileLayout.inset,
           8,
         ),
@@ -457,8 +633,8 @@ class _ProfileIdentityHeader extends StatelessWidget {
                                 overflow: TextOverflow.ellipsis,
                                 style: Theme.of(context).textTheme.titleLarge
                                     ?.copyWith(
-                                      fontWeight: FontWeight.w900,
-                                      letterSpacing: -0.4,
+                                      fontWeight: FontWeight.w700,
+                                      letterSpacing: 0,
                                       height: 1.15,
                                     ),
                               ),
@@ -642,8 +818,8 @@ class _ProfileMetricButton extends StatelessWidget {
                 overflow: TextOverflow.ellipsis,
                 textAlign: TextAlign.center,
                 style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                  fontWeight: FontWeight.w900,
-                  letterSpacing: -0.5,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0,
                   height: 1.1,
                 ),
               ),
@@ -736,86 +912,22 @@ class _ProfileSectionTitle extends StatelessWidget {
     title,
     style: Theme.of(
       context,
-    ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+    ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
   );
 }
 
 class _PurchaseBanner extends StatelessWidget {
   const _PurchaseBanner({required this.onTap});
-
   final VoidCallback onTap;
 
   @override
-  Widget build(BuildContext context) {
-    final dark = Theme.of(context).brightness == Brightness.dark;
-    return AppPressable(
-      onTap: onTap,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: dark ? const Color(0xFF2A2438) : const Color(0xFF2B2A32),
-          borderRadius: BorderRadius.circular(_ProfileLayout.radius),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
-          child: Row(
-            children: [
-              const Icon(
-                Icons.workspace_premium_rounded,
-                color: Color(0xFFE8C07A),
-              ),
-              const SizedBox(width: 12),
-              const Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '会员与订单',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w800,
-                        fontSize: 15,
-                        height: 1.2,
-                      ),
-                    ),
-                    SizedBox(height: 2),
-                    Text(
-                      '查看当前权益与历史订单',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: Color(0xCCFFFFFF),
-                        fontSize: 12,
-                        height: 1.2,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 10),
-              DecoratedBox(
-                decoration: BoxDecoration(
-                  color: const Color(0xFFE8C07A),
-                  borderRadius: BorderRadius.circular(999),
-                ),
-                child: const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-                  child: Text(
-                    '去查看',
-                    style: TextStyle(
-                      color: Color(0xFF2B2A32),
-                      fontWeight: FontWeight.w800,
-                      fontSize: 12,
-                      height: 1.1,
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => _ProfileActionCell(
+    icon: Icons.workspace_premium_outlined,
+    title: '会员与订单',
+    detail: '查看当前权益与历史订单',
+    accent: Theme.of(context).colorScheme.secondary,
+    onTap: onTap,
+  );
 }
 
 class _ProfileFeaturePair extends StatelessWidget {
@@ -923,24 +1035,21 @@ class _ProfileColorCard extends StatelessWidget {
         constraints: const BoxConstraints(minHeight: 112),
         child: SizedBox(
           width: double.infinity,
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              color: background,
-              borderRadius: BorderRadius.circular(_ProfileLayout.radius),
-            ),
+          child: AppGlassSurface(
+            borderRadius: BorderRadius.circular(_ProfileLayout.radius),
             child: Padding(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 14),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Icon(icon, color: accent, size: 28),
-                  const SizedBox(height: 14),
+                  Icon(icon, color: accent, size: 22),
+                  const SizedBox(height: 12),
                   Text(
                     title,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.w800,
+                      fontWeight: FontWeight.w600,
                     ),
                   ),
                   const SizedBox(height: 4),
@@ -965,29 +1074,26 @@ class _ProfileColorCard extends StatelessWidget {
 
 class _ProfileActionGrid extends StatelessWidget {
   const _ProfileActionGrid({required this.children});
-
   final List<Widget> children;
 
   @override
-  Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final columns = _ProfileLayout.gridColumns(
-          context,
-          constraints.maxWidth,
-        );
-        const gap = 0.0;
-        final width = (constraints.maxWidth - gap * (columns - 1)) / columns;
-        return Wrap(
-          spacing: gap,
-          runSpacing: 2,
-          children: [
-            for (final child in children) SizedBox(width: width, child: child),
-          ],
-        );
-      },
-    );
-  }
+  Widget build(BuildContext context) => Column(
+    children: [
+      for (var index = 0; index < children.length; index++) ...[
+        if (index > 0)
+          Padding(
+            padding: const EdgeInsets.only(left: 52),
+            child: Divider(
+              height: 1,
+              color: Theme.of(context).brightness == Brightness.dark
+                  ? Colors.white.withValues(alpha: .08)
+                  : Colors.black.withValues(alpha: .045),
+            ),
+          ),
+        children[index],
+      ],
+    ],
+  );
 }
 
 class _ProfileActionCell extends StatelessWidget {
@@ -1013,49 +1119,61 @@ class _ProfileActionCell extends StatelessWidget {
     final colors = Theme.of(context).colorScheme;
     return AppPressable(
       onTap: onTap,
-      child: SizedBox(
-        width: double.infinity,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 64),
         child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 8),
-          child: Column(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          child: Row(
             children: [
               Badge(
                 isLabelVisible: badgeCount > 0,
                 label: Text('${badgeCount > 99 ? 99 : badgeCount}'),
-                child: DecoratedBox(
+                child: Container(
+                  width: 36,
+                  height: 36,
                   decoration: BoxDecoration(
-                    color: accent.withValues(alpha: .12),
-                    borderRadius: BorderRadius.circular(8),
+                    color: colors.brightness == Brightness.dark
+                        ? Colors.white.withValues(alpha: .06)
+                        : Colors.white.withValues(alpha: .86),
+                    border: Border.all(
+                      color: Colors.white.withValues(
+                        alpha: colors.brightness == Brightness.dark ? .12 : .95,
+                      ),
+                    ),
+                    borderRadius: BorderRadius.circular(16),
                   ),
-                  child: SizedBox.square(
-                    dimension: _ProfileLayout.iconWell,
-                    child: Icon(icon, color: accent, size: 22),
-                  ),
+                  child: Icon(icon, color: colors.onSurfaceVariant, size: 20),
                 ),
               ),
-              const SizedBox(height: 8),
-              Text(
-                title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                textAlign: TextAlign.center,
-                style: Theme.of(
-                  context,
-                ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w800),
-              ),
-              if (detail?.isNotEmpty == true) ...[
-                const SizedBox(height: 2),
-                Text(
-                  detail!,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  textAlign: TextAlign.center,
-                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: colors.onSurfaceVariant,
-                    height: 1.2,
-                  ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    if (detail?.isNotEmpty == true) ...[
+                      const SizedBox(height: 3),
+                      Text(
+                        detail!,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ],
                 ),
-              ],
+              ),
+              const SizedBox(width: 12),
+              Icon(
+                Icons.chevron_right_rounded,
+                size: 18,
+                color: colors.outline,
+              ),
             ],
           ),
         ),
@@ -1077,7 +1195,7 @@ class _AppearanceTile extends ConsumerWidget {
         _ => Icons.brightness_auto_outlined,
       },
       title: '外观设置',
-      accent: const Color(0xFF4F67D6),
+      accent: const Color(0xFF005FEA),
       detail: appearance.when(
         loading: () => '同步中',
         error: (error, stackTrace) => '跟随系统',
@@ -1145,7 +1263,7 @@ class _FavoritePromptsTile extends StatelessWidget {
     key: const Key('profile-favorite-prompts'),
     icon: Icons.bookmark_outline_rounded,
     title: '我的收藏',
-    accent: const Color(0xFF4F67D6),
+    accent: const Color(0xFF005FEA),
     detail: '提示词收藏',
     onTap: () => context.go('/discover?tab=prompts&favorites=1'),
   );
@@ -1213,7 +1331,7 @@ class ProfileCreationOverviewCard extends StatelessWidget {
                     height: 40,
                     decoration: BoxDecoration(
                       color: Theme.of(context).colorScheme.secondaryContainer,
-                      borderRadius: BorderRadius.circular(8),
+                      borderRadius: BorderRadius.circular(16),
                     ),
                     child: const Icon(Icons.insights_outlined),
                   ),
@@ -1224,7 +1342,7 @@ class ProfileCreationOverviewCard extends StatelessWidget {
                       children: [
                         const Text(
                           '创作概览',
-                          style: TextStyle(fontWeight: FontWeight.w900),
+                          style: TextStyle(fontWeight: FontWeight.w700),
                         ),
                         Text(
                           overview.taskStats.running > 0
@@ -1324,7 +1442,7 @@ class _CreationMetric extends StatelessWidget {
         '$value',
         style: Theme.of(
           context,
-        ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
+        ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
       ),
       Text(label, style: Theme.of(context).textTheme.bodySmall),
     ],
@@ -1372,7 +1490,7 @@ class _RecentTaskTile extends StatelessWidget {
                     title,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontWeight: FontWeight.w800),
+                    style: const TextStyle(fontWeight: FontWeight.w600),
                   ),
                   const SizedBox(height: 4),
                   Text(
@@ -1396,7 +1514,7 @@ class _RecentTaskTile extends StatelessWidget {
 ({String label, Color color}) _profileTaskStatus(String value) =>
     switch (value) {
       'queued' => (label: '排队中', color: const Color(0xFFD97706)),
-      'running' => (label: '生成中', color: const Color(0xFF4F67D6)),
+      'running' => (label: '生成中', color: const Color(0xFF005FEA)),
       'succeeded' => (label: '已完成', color: const Color(0xFF0F766E)),
       'failed' => (label: '生成失败', color: const Color(0xFFDC2626)),
       'canceled' => (label: '已取消', color: const Color(0xFF64748B)),

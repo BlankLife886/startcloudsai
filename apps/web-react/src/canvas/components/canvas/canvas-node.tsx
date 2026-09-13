@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { ChevronRight, Copy, Group, Image as ImageIcon, MessageSquare, Minus, Music2, Plus, Puzzle, RefreshCw, Star, Trash2, Video } from "lucide-react";
+import { ChevronRight, Clapperboard, Copy, Group, Image as ImageIcon, MessageSquare, Minus, Music2, Plus, Puzzle, RefreshCw, Star, Trash2, Video } from "lucide-react";
 import { DownloadIcon } from "@react/components/common/DownloadIcon.jsx";
 import { RegenerateIcon } from "@react/components/common/RegenerateIcon.jsx";
 
@@ -15,11 +15,13 @@ import { buildNodeContext } from "@/lib/canvas/plugin-node-context";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasPreviewImage, CanvasPreviewVideo } from "./canvas-preview-image";
 import { CanvasResourceMentionTextarea } from "./canvas-resource-mention-textarea";
-import { CanvasNodeType, type CanvasNodeData, type CanvasNodeImage, type Position } from "@/types/canvas";
+import { CanvasNodeType, type CanvasNodeData, type CanvasNodeImage, type CanvasNodeMetadata, type Position } from "@/types/canvas";
 import type { CanvasNodeContext, CanvasPluginHost } from "@/types/canvas-plugin";
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { useTranslation } from "react-i18next";
 import { getCanvasLiveScale } from "./infinite-canvas";
+import { CanvasFloatingLayer } from "./canvas-floating-layer";
+import { imageFrameRatio, imageFrameSource } from "@/lib/canvas/canvas-node-size";
 
 type ResizeCorner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
 
@@ -42,6 +44,7 @@ type CanvasNodeProps = {
     renderPanel?: (node: CanvasNodeData) => ReactNode;
     renderNodeContent?: (node: CanvasNodeData) => ReactNode;
     groupChildCount?: number;
+    storyboardGroupStats?: StoryboardGroupStats;
     isGroupDropTarget?: boolean;
     batchExpanded?: boolean;
     onMouseDown: (event: React.MouseEvent, nodeId: string) => void;
@@ -52,6 +55,7 @@ type CanvasNodeProps = {
     onResizeStart: (nodeId: string) => void;
     onResize: (nodeId: string, width: number, height: number, position?: Position) => void;
     onResizeEnd: (nodeId: string) => void;
+    onImageAspect?: (nodeId: string, source: string, ratio: number) => void;
     onContentChange: (nodeId: string, content: string) => void;
     onRenameRequest: (node: CanvasNodeData) => void;
     onToggleBatch?: (nodeId: string) => void;
@@ -65,11 +69,13 @@ type CanvasNodeProps = {
     onDecreaseFont?: (node: CanvasNodeData) => void;
     onIncreaseFont?: (node: CanvasNodeData) => void;
     onGenerateImage?: (node: CanvasNodeData) => void;
+    onOpenStoryboard?: (node: CanvasNodeData) => void;
     onViewImage?: (node: CanvasNodeData, image?: CanvasNodeImage) => void;
     onContextMenu: (event: React.MouseEvent, nodeId: string) => void;
 };
 
 type NodeContentRendererProps = {
+    onImageAspect?: CanvasNodeProps["onImageAspect"];
     node: CanvasNodeData;
     theme: (typeof canvasThemes)[keyof typeof canvasThemes];
     isEditingContent: boolean;
@@ -87,6 +93,7 @@ type NodeContentRendererProps = {
     onDecreaseFont?: (node: CanvasNodeData) => void;
     onIncreaseFont?: (node: CanvasNodeData) => void;
     onGenerateImage?: (node: CanvasNodeData) => void;
+    onOpenStoryboard?: (node: CanvasNodeData) => void;
     onToggleBatch?: () => void;
     onSetBatchPrimary?: (imageId: string) => void;
     onDuplicateBatchImage?: (imageId: string) => void;
@@ -95,6 +102,22 @@ type NodeContentRendererProps = {
     onDeleteBatchImage?: (imageId: string) => void;
     onViewBatchImage?: (image: CanvasNodeImage) => void;
     groupChildCount: number;
+    storyboardGroupStats?: StoryboardGroupStats;
+};
+
+type StoryboardGroupShot = {
+    index: number;
+    title: string;
+    status: NonNullable<CanvasNodeMetadata["storyboardStatus"]>;
+};
+
+type StoryboardGroupStats = {
+    total: number;
+    completed: number;
+    failed: number;
+    canceled: number;
+    active: number;
+    shots: StoryboardGroupShot[];
 };
 
 export const CanvasNode = React.memo(function CanvasNode({
@@ -115,6 +138,7 @@ export const CanvasNode = React.memo(function CanvasNode({
     renderPanel,
     renderNodeContent,
     groupChildCount = 0,
+    storyboardGroupStats,
     isGroupDropTarget = false,
     batchExpanded = false,
     onMouseDown,
@@ -125,6 +149,7 @@ export const CanvasNode = React.memo(function CanvasNode({
     onResizeStart,
     onResize,
     onResizeEnd,
+    onImageAspect,
     onContentChange,
     onRenameRequest,
     onToggleBatch,
@@ -138,12 +163,14 @@ export const CanvasNode = React.memo(function CanvasNode({
     onDecreaseFont,
     onIncreaseFont,
     onGenerateImage,
+    onOpenStoryboard,
     onViewImage,
     onContextMenu,
 }: CanvasNodeProps) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const { t } = useTranslation();
     const [hovered, setHovered] = useState(false);
+    const nodeElementRef = useRef<HTMLDivElement>(null);
     const definition = getNodeDefinition(data.type);
     const pluginContext = useMemo<CanvasNodeContext | null>(() => (pluginHost ? buildNodeContext(pluginHost, data, theme, scale, isSelected) : null), [pluginHost, data, theme, scale, isSelected]);
     const [isEditingContent, setIsEditingContent] = useState(false);
@@ -163,6 +190,8 @@ export const CanvasNode = React.memo(function CanvasNode({
     // Transparent nodes such as SVGs blend into the canvas while retaining outlines for selected or related states.
     const transparentBg = Boolean(definition?.transparentBackground);
     const isActive = isConnectionTarget || isSelected || isFocusRelated;
+    // Config cards keep a stable frame while graph hover/focus highlights change.
+    const isConfigCard = data.type === CanvasNodeType.Config;
     const posX = transientPosition?.x ?? data.position.x;
     const posY = transientPosition?.y ?? data.position.y;
     const isTransient = Boolean(transientPosition);
@@ -181,7 +210,7 @@ export const CanvasNode = React.memo(function CanvasNode({
         pointerId: -1,
     });
     const resizeMoveRef = useRef<(event: PointerEvent) => void>(() => undefined);
-    const resizeUpRef = useRef<(event: PointerEvent) => void>(() => undefined);
+    const resizeUpRef = useRef<(event?: PointerEvent) => void>(() => undefined);
     const resizeListenerCleanupRef = useRef<(() => void) | null>(null);
     const detachResizeListeners = useCallback(() => {
         resizeListenerCleanupRef.current?.();
@@ -290,13 +319,16 @@ export const CanvasNode = React.memo(function CanvasNode({
         detachResizeListeners();
         const move = (event: PointerEvent) => resizeMoveRef.current(event);
         const up = (event: PointerEvent) => resizeUpRef.current(event);
+        const blur = () => resizeUpRef.current();
         window.addEventListener("pointermove", move);
         window.addEventListener("pointerup", up);
         window.addEventListener("pointercancel", up);
+        window.addEventListener("blur", blur);
         resizeListenerCleanupRef.current = () => {
             window.removeEventListener("pointermove", move);
             window.removeEventListener("pointerup", up);
             window.removeEventListener("pointercancel", up);
+            window.removeEventListener("blur", blur);
         };
     };
 
@@ -314,17 +346,21 @@ export const CanvasNode = React.memo(function CanvasNode({
             startWidth: data.width,
             startHeight: data.height,
             keepRatio: (data.type === CanvasNodeType.Image && !data.metadata?.freeResize) || data.type === CanvasNodeType.Video || Boolean(definition?.keepAspectRatio?.(data)),
-            ratio: (data.metadata?.naturalWidth || data.width) / (data.metadata?.naturalHeight || data.height || 1),
+            ratio: imageFrameRatio(data) || data.width / (data.height || 1),
             pointerId: event.pointerId,
         };
         event.currentTarget.setPointerCapture(event.pointerId);
         attachResizeListeners();
     };
 
-    useEffect(() => detachResizeListeners, [detachResizeListeners]);
+    useEffect(() => () => {
+        resizeUpRef.current();
+        detachResizeListeners();
+    }, [detachResizeListeners]);
 
     return (
         <div
+            ref={nodeElementRef}
             data-node-id={data.id}
             className={`node-element absolute flex select-none flex-col ${isDragging ? "" : "transition-shadow duration-200"} ${isGroup ? "z-[5]" : isSelected ? "z-50" : "z-10"}`}
             style={{
@@ -365,10 +401,16 @@ export const CanvasNode = React.memo(function CanvasNode({
 
             <div
                 data-canvas-node-shell={data.type}
-                className={isGroup ? "relative h-full w-full overflow-visible rounded-[12px] border border-dashed" : "relative h-full w-full overflow-visible rounded-[12px] border"}
+                className={isGroup ? "relative h-full w-full overflow-visible rounded-[12px] border border-dashed" : data.type === CanvasNodeType.Image ? "relative h-full w-full overflow-visible rounded-[12px]" : "relative h-full w-full overflow-visible rounded-[12px] border"}
                 style={{
-                    background: isGroup ? `${theme.toolbar.panel}66` : transparentBg ? "transparent" : theme.node.fill,
-                    borderColor: isGroup
+                    // Selection decoration must not shrink the image's aspect-correct content box.
+                    borderWidth: data.type === CanvasNodeType.Image ? 0 : undefined,
+                    outline: data.type === CanvasNodeType.Image ? `1px solid ${isActive ? theme.node.activeStroke : isRelated ? theme.node.muted : theme.node.stroke}` : undefined,
+                    outlineOffset: data.type === CanvasNodeType.Image ? -1 : undefined,
+                    background: isGroup ? theme.toolbar.panel : transparentBg ? "transparent" : theme.node.fill,
+                    borderColor: isConfigCard
+                        ? isSelected || isConnectionTarget ? theme.node.activeStroke : theme.scheme === "dark" ? "#454059" : "#ded7ed"
+                        : isGroup
                         ? isGroupDropTarget || isActive
                             ? theme.node.activeStroke
                             : theme.node.stroke
@@ -380,7 +422,8 @@ export const CanvasNode = React.memo(function CanvasNode({
                               ? "transparent"
                               : theme.node.stroke,
                     borderStyle: isGroup ? "dashed" : "solid",
-                    boxShadow: isDragging ? "none" : canvasNodeShadow(theme, isGroupDropTarget ? "drop" : isActive ? "active" : isRelated ? "related" : "idle"),
+                    boxShadow: isConfigCard ? (theme.scheme === "dark" ? "none" : "0 3px 12px rgba(49,32,107,.06)") : isDragging ? "none" : canvasNodeShadow(theme, isGroupDropTarget ? "drop" : isActive ? "active" : isRelated ? "related" : "idle"),
+                    transition: isConfigCard ? "none" : undefined,
                 }}
                 onMouseDown={(event) => onMouseDown(event, data.id)}
                 onDoubleClick={(event) => {
@@ -413,6 +456,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                     }
                 >
                     <NodeContent
+                        onImageAspect={onImageAspect}
                         node={data}
                         theme={theme}
                         isEditingContent={isEditingContent}
@@ -430,6 +474,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                         onDecreaseFont={onDecreaseFont}
                         onIncreaseFont={onIncreaseFont}
                         onGenerateImage={onGenerateImage}
+                        onOpenStoryboard={onOpenStoryboard}
                         onToggleBatch={() => onToggleBatch?.(data.id)}
                         onSetBatchPrimary={(imageId) => onSetBatchPrimary?.(data.id, imageId)}
                         onDuplicateBatchImage={(imageId) => onDuplicateBatchImage?.(data, imageId)}
@@ -438,6 +483,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                         onDeleteBatchImage={(imageId) => onDeleteBatchImage?.(data.id, imageId)}
                         onViewBatchImage={(image) => onViewImage?.(data, image)}
                         groupChildCount={groupChildCount}
+                        storyboardGroupStats={storyboardGroupStats}
                     />
                 </div>
 
@@ -476,7 +522,11 @@ export const CanvasNode = React.memo(function CanvasNode({
                 <ConnectionHandleDot side="right" visible={(definition?.hasSourceHandle ?? true) && (hovered || isSelected || isConnecting)} onMouseDown={(event) => onConnectStart(event, data.id, "source")} />
             ) : null}
 
-            {showPanel && !isGroup && renderPanel ? <div className="absolute left-1/2 top-full z-[70] w-[600px] -translate-x-1/2 pt-4">{renderPanel(data)}</div> : null}
+            {showPanel && !isGroup && renderPanel ? (
+                <CanvasFloatingLayer anchorRef={nodeElementRef} width={600} gap={16} data-canvas-node-editor={data.id} style={{ borderRadius: 22, boxShadow: theme.toolbar.shadow }}>
+                    {renderPanel(data)}
+                </CanvasFloatingLayer>
+            ) : null}
         </div>
     );
 });
@@ -512,8 +562,92 @@ const nodeContentRenderers = {
     [CanvasNodeType.Group]: GroupNodeContent,
 } satisfies Record<CanvasNodeType, (props: NodeContentRendererProps) => ReactNode>;
 
-function GroupNodeContent({ node, theme, groupChildCount }: NodeContentRendererProps) {
+function GroupNodeContent({ node, theme, groupChildCount, storyboardGroupStats }: NodeContentRendererProps) {
     const { t } = useTranslation();
+    const storyboard = node.metadata?.storyboardId ? node.metadata : null;
+    if (storyboard) {
+        const sceneCount = Math.max(1, Number(storyboard.storyboardSceneCount) || Math.floor(groupChildCount / 2) || 1);
+        const stats = storyboardGroupStats;
+        const total = Math.max(sceneCount, Number(stats?.total) || 0);
+        const status = storyboard.storyboardStatus || "queued";
+        const statusLabel = status === "succeeded"
+            ? t("canvas.storyboard.statusSucceeded")
+            : status === "failed"
+              ? t("canvas.storyboard.statusFailed")
+              : status === "canceled"
+                ? t("canvas.storyboard.statusCanceled")
+                : status === "running"
+                  ? t("canvas.storyboard.statusRunning")
+                  : t("canvas.storyboard.statusQueued");
+        const statusColor = status === "succeeded"
+            ? "#36b37e"
+            : status === "failed"
+              ? "#e05a5a"
+              : status === "canceled"
+                ? theme.node.muted
+                : theme.node.activeStroke;
+        const title = storyboard.storyboardTitle || node.title || t("canvas.storyboard.title");
+        const knownShots = new Map((stats?.shots || []).map((shot) => [shot.index, shot]));
+        const fallbackStatus = status === "succeeded" ? "succeeded" as const : status === "failed" ? "failed" as const : status === "canceled" ? "canceled" as const : "queued" as const;
+        const shots = Array.from({ length: total }, (_, index) => knownShots.get(index + 1) || { index: index + 1, title: "", status: fallbackStatus });
+        const completed = stats?.completed ?? (status === "succeeded" ? total : 0);
+        const failed = stats?.failed ?? (status === "failed" ? 1 : 0);
+        const active = stats?.active ?? (status === "running" ? Math.max(1, total - completed - failed) : 0);
+        const footerLabel = failed
+            ? `${failed} · ${t("canvas.storyboard.statusFailed")}`
+            : active
+              ? `${active} · ${t("canvas.storyboard.statusRunning")}`
+              : statusLabel;
+        const statusTone = (shotStatus: StoryboardGroupShot["status"]) => shotStatus === "succeeded" ? "#36b37e" : shotStatus === "failed" ? "#e05a5a" : shotStatus === "canceled" ? theme.node.muted : theme.node.activeStroke;
+        return (
+            <div className="pointer-events-none flex h-full w-full flex-col p-4">
+                <div className="flex min-w-0 items-center gap-2">
+                    <span className="grid size-9 shrink-0 place-items-center rounded-xl" style={{ background: theme.toolbar.activeBg, color: theme.node.activeStroke }}>
+                        <Clapperboard className="size-4" />
+                    </span>
+                    <div className="min-w-0">
+                        <div className="truncate text-sm font-semibold" style={{ color: theme.node.text }}>{title}</div>
+                        <div className="mt-0.5 text-[11px]" style={{ color: theme.node.muted }}>
+                            {t("canvas.storyboard.canvasGroupMeta", { count: total })}
+                        </div>
+                    </div>
+                    <div className="ml-auto flex shrink-0 items-center gap-2">
+                        <span className="rounded-full px-2 py-1 text-[10px] font-semibold tabular-nums" style={{ background: theme.node.fill, color: theme.node.muted }}>
+                            {completed}/{total}
+                        </span>
+                        <span className="inline-flex items-center gap-1 rounded-full px-2 py-1 text-[10px] font-semibold" style={{ background: `${statusColor}18`, color: statusColor }}>
+                            <span className={status === "running" ? "animate-pulse" : ""}>●</span>
+                            {statusLabel}
+                        </span>
+                    </div>
+                </div>
+                <div className="mt-3 flex items-center gap-1.5 overflow-hidden" aria-hidden>
+                    {shots.slice(0, 10).map((shot) => {
+                        const tone = statusTone(shot.status);
+                        return <span key={`${shot.index}-${shot.title}`} className="grid size-6 shrink-0 place-items-center rounded-md border text-[10px] font-semibold tabular-nums" style={{ borderColor: `${tone}66`, background: `${tone}18`, color: tone }}>{String(shot.index).padStart(2, "0")}</span>;
+                    })}
+                    {shots.length > 10 ? <span className="px-1 text-[10px] font-medium" style={{ color: theme.node.muted }}>+{shots.length - 10}</span> : null}
+                </div>
+                <div className="relative mt-3 min-h-0 flex-1 overflow-hidden rounded-2xl border" style={{ borderColor: theme.node.stroke, background: theme.node.fill }}>
+                    <div className="absolute inset-x-4 top-3 flex items-center justify-between gap-3 text-[10px] font-medium" style={{ color: theme.node.muted }}>
+                        <span className="truncate">{storyboard.storyboardGlobalStyle || t("canvas.storyboard.title")}</span>
+                        <span className="shrink-0 rounded-md border px-1.5 py-0.5 tabular-nums" style={{ borderColor: theme.node.stroke }}>{storyboard.storyboardAspectRatio || "16:9"}</span>
+                    </div>
+                    <div className="absolute inset-3 top-10 rounded-xl border border-dashed" style={{ borderColor: theme.node.stroke }} aria-hidden />
+                    <div className="absolute inset-x-4 bottom-3 flex items-center gap-1.5" aria-hidden>
+                        {shots.slice(0, 12).map((shot) => {
+                            const tone = statusTone(shot.status);
+                            return <span key={`bar-${shot.index}-${shot.title}`} className="h-1.5 min-w-0 flex-1 rounded-full" style={{ background: tone }} />;
+                        })}
+                        {shots.length > 12 ? <span className="h-1.5 w-5 shrink-0 rounded-full" style={{ background: theme.node.stroke }} /> : null}
+                    </div>
+                    <div className="absolute bottom-6 right-4 text-[10px] tabular-nums" style={{ color: theme.node.muted }}>
+                        {footerLabel}
+                    </div>
+                </div>
+            </div>
+        );
+    }
     return (
         <div className="pointer-events-none flex h-full w-full flex-col p-4">
             <div className="flex items-center gap-2 text-sm font-semibold" style={{ color: theme.node.text }}>
@@ -525,7 +659,7 @@ function GroupNodeContent({ node, theme, groupChildCount }: NodeContentRendererP
                     {t("canvas.node.nodeCount", { count: groupChildCount })}
                 </span>
             </div>
-            <div className="mt-3 flex-1 rounded-2xl border border-dashed" style={{ borderColor: theme.node.stroke, background: `${theme.node.fill}55` }} />
+            <div className="mt-3 flex-1 rounded-2xl border border-dashed" style={{ borderColor: theme.node.stroke, background: theme.node.fill }} />
         </div>
     );
 }
@@ -578,13 +712,15 @@ function MissingPluginContent({ theme, type }: Pick<NodeContentRendererProps, "t
     );
 }
 
-function TextContent({ node, theme, isEditingContent, textareaRef, mentionReferences, onContentChange, onStopEditing, onTogglePanel, onDecreaseFont, onIncreaseFont, onGenerateImage }: NodeContentRendererProps) {
+function TextContent({ node, theme, isEditingContent, textareaRef, mentionReferences, onContentChange, onStopEditing, onTogglePanel, onDecreaseFont, onIncreaseFont, onGenerateImage, onOpenStoryboard }: NodeContentRendererProps) {
     const { t } = useTranslation();
     const fontSize = node.metadata?.fontSize || 14;
     const textStyle = { fontSize: `${fontSize}px`, lineHeight: `${Math.round(fontSize * 1.65)}px`, color: theme.node.text, boxSizing: "border-box" } as React.CSSProperties;
+    const isStoryboardCaption = Boolean(node.metadata?.storyboardSceneId);
 
     return (
-        <div className="flex h-full w-full flex-col overflow-hidden">
+        <div className={`relative flex h-full w-full flex-col overflow-hidden ${isStoryboardCaption ? "canvas-storyboard-caption" : ""}`}>
+            {isStoryboardCaption ? <span className="pointer-events-none absolute inset-y-0 left-0 w-1" style={{ background: theme.node.activeStroke, opacity: 0.72 }} aria-hidden /> : null}
             {isEditingContent ? (
                 <CanvasResourceMentionTextarea
                     ref={textareaRef}
@@ -646,6 +782,24 @@ function TextContent({ node, theme, isEditingContent, textareaRef, mentionRefere
                     <ImageIcon className="size-3.5" />
                     {t("canvas.node.generate")}
                 </button>
+                {node.metadata?.content?.trim() && !node.metadata?.storyboardSceneId ? (
+                    <button
+                        type="button"
+                        className="canvas-node-overlay-btn inline-flex h-8 items-center gap-1 rounded-full px-2.5 text-xs font-medium opacity-85 shadow-sm transition hover:opacity-100"
+                        style={{ background: theme.toolbar.activeBg, color: theme.node.text, boxShadow: `inset 0 0 0 1px ${theme.node.activeStroke}` }}
+                        title={t("canvas.toolbar.storyboard")}
+                        aria-label={t("canvas.toolbar.storyboard")}
+                        onMouseDown={(event) => event.stopPropagation()}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onClick={(event) => {
+                            event.stopPropagation();
+                            onOpenStoryboard?.(node);
+                        }}
+                    >
+                        <Clapperboard className="size-3.5" />
+                        {t("canvas.toolbar.storyboard")}
+                    </button>
+                ) : null}
             </div>
         </div>
     );
@@ -673,10 +827,11 @@ function TextNodeActionButton({ label, title = label, icon, theme, onClick }: { 
 }
 
 function ImageNodeContent(props: NodeContentRendererProps) {
-    if (!props.node.metadata?.content && !props.isBatchRoot) return <EmptyImageContent {...props} />;
+    if (!props.node.metadata?.content && !props.node.metadata?.storageKey && !props.node.metadata?.thumbnailUrl && !props.isBatchRoot) return <EmptyImageContent {...props} />;
 
     return (
         <ImageContent
+            onImageAspect={props.onImageAspect}
             node={props.node}
             batchExpanded={props.batchExpanded}
             onToggleBatch={props.onToggleBatch}
@@ -734,6 +889,7 @@ function AudioNodeContent({ node, theme }: NodeContentRendererProps) {
 }
 
 function ImageContent({
+    onImageAspect,
     node,
     batchExpanded,
     onToggleBatch,
@@ -744,6 +900,7 @@ function ImageContent({
     onDeleteBatchImage,
     onViewBatchImage,
 }: {
+    onImageAspect?: CanvasNodeProps["onImageAspect"];
     node: CanvasNodeData;
     batchExpanded: boolean;
     onToggleBatch?: () => void;
@@ -762,6 +919,20 @@ function ImageContent({
     const primaryImageId = node.metadata?.primaryImageId || images[0]?.id;
     const primaryImage = images.find((image) => image.id === primaryImageId);
     const primaryContent = primaryImage?.content || node.metadata?.content;
+    const storyboard = node.metadata?.storyboardSceneId ? node.metadata : null;
+    const shotTypeLabel = storyboard?.storyboardShotType === "wide"
+        ? t("canvas.storyboard.shotWide")
+        : storyboard?.storyboardShotType === "full"
+          ? t("canvas.storyboard.shotFull")
+          : storyboard?.storyboardShotType === "close"
+            ? t("canvas.storyboard.shotClose")
+            : storyboard?.storyboardShotType === "detail"
+              ? t("canvas.storyboard.shotDetail")
+              : storyboard?.storyboardShotType === "over"
+                ? t("canvas.storyboard.shotOver")
+                : storyboard?.storyboardShotType === "medium"
+                  ? t("canvas.storyboard.shotMedium")
+                  : "";
 
     return (
         <BatchFrame
@@ -776,9 +947,13 @@ function ImageContent({
                       .map((image, index) => <ExpandedImageCard key={image.id} node={node} image={image} index={index} onView={() => onViewBatchImage?.(image)} onSetPrimary={() => onSetBatchPrimary?.(image.id)} onDuplicate={() => onDuplicateBatchImage?.(image.id)} onDownload={() => onDownloadBatchImage?.(image.id)} onRetry={() => onRetryBatchImage?.(image.id)} onDelete={() => onDeleteBatchImage?.(image.id)} />)
                 : null}
             <div className="h-full w-full overflow-hidden rounded-[inherit]">
-                {primaryContent ? (
+                {primaryContent || primaryImage?.storageKey || node.metadata?.storageKey || primaryImage?.thumbnailUrl || node.metadata?.thumbnailUrl ? (
                     <CanvasPreviewImage
                         src={primaryContent}
+                        onLoad={(event) => {
+                            const image = event.currentTarget;
+                            if (image.naturalWidth > 0 && image.naturalHeight > 0) onImageAspect?.(node.id, imageFrameSource(node), image.naturalWidth / image.naturalHeight);
+                        }}
                         storageKey={primaryImage?.storageKey || node.metadata?.storageKey}
                         thumbnailUrl={primaryImage?.thumbnailUrl || node.metadata?.thumbnailUrl}
                         alt={node.title}
@@ -790,6 +965,18 @@ function ImageContent({
                     <ImageSlotStatus image={primaryImage} startedAt={node.metadata?.generationStartedAt} generationStage={node.metadata?.generationStage} />
                 )}
             </div>
+            {storyboard ? (
+                <div className="pointer-events-none absolute right-2.5 top-2.5 z-30 flex items-center gap-1.5 rounded-full border px-1.5 py-1 text-[10px] font-semibold tabular-nums shadow-sm" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.activeText }} aria-hidden>
+                    <span className="grid size-5 place-items-center rounded-full" style={{ background: theme.toolbar.activeBg, color: theme.node.activeStroke }}>{String(storyboard.storyboardIndex || 1).padStart(2, "0")}</span>
+                    {shotTypeLabel ? <span className="max-w-[9em] truncate font-medium" style={{ color: theme.node.muted }}>{shotTypeLabel}</span> : null}
+                </div>
+            ) : null}
+            {storyboard?.storyboardNeedsRegeneration ? (
+                <span className="pointer-events-none absolute bottom-2.5 right-2.5 z-30 inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[10px] font-medium shadow-sm" style={{ background: theme.toolbar.panel, borderColor: `${theme.node.activeStroke}66`, color: theme.node.activeStroke }}>
+                    <RefreshCw className="size-3" />
+                    {t("canvas.storyboard.retryScene")}
+                </span>
+            ) : null}
             {primaryImage?.status === "error" ? <BatchImageFailureActions placement="left" onRetry={() => onRetryBatchImage?.(primaryImage.id)} onDelete={() => onDeleteBatchImage?.(primaryImage.id)} /> : null}
             {primaryImage?.content ? (
                 <button type="button" className="canvas-node-overlay-btn absolute left-2.5 top-2.5 z-30 flex h-7 items-center gap-1 rounded-full border px-2 text-[10px] font-medium transition hover:opacity-90" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.activeText }} title={t("common.download")} onClick={(event) => (event.stopPropagation(), onDownloadBatchImage?.(primaryImage.id))}>
@@ -855,7 +1042,7 @@ function ExpandedImageCard({ node, image, index, onView, onSetPrimary, onDuplica
                 if (image.content) onView();
             }}
         >
-            {image.content ? <CanvasPreviewImage src={image.content} storageKey={image.storageKey} thumbnailUrl={image.thumbnailUrl} alt={node.title} draggable={false} className="pointer-events-none h-full w-full select-none object-contain" /> : <ImageSlotStatus image={image} startedAt={node.metadata?.generationStartedAt} generationStage={node.metadata?.generationStage} />}
+            {image.content || image.storageKey || image.thumbnailUrl ? <CanvasPreviewImage src={image.content} storageKey={image.storageKey} thumbnailUrl={image.thumbnailUrl} alt={node.title} draggable={false} className="pointer-events-none h-full w-full select-none object-contain" /> : <ImageSlotStatus image={image} startedAt={node.metadata?.generationStartedAt} generationStage={node.metadata?.generationStage} />}
             {image.content ? (
                 <div className="absolute inset-x-2 top-2 flex items-center gap-1">
                     <button type="button" className="canvas-node-overlay-btn flex h-7 min-w-0 flex-1 items-center justify-center gap-1 rounded-full border px-1.5 text-[10px] font-medium transition hover:opacity-90" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.activeText }} title={t("common.download")} onClick={(event) => (event.stopPropagation(), onDownload())}>

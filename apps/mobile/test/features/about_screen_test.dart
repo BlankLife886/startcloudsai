@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:starcloudsai_mobile/app/app_router.dart';
 import 'package:starcloudsai_mobile/app/starclouds_theme.dart';
 import 'package:starcloudsai_mobile/core/config/app_environment.dart';
 import 'package:starcloudsai_mobile/core/providers.dart';
@@ -129,10 +130,8 @@ void main() {
       expect(find.textContaining('不用于跨应用跟踪'), findsOneWidget);
       expect(find.byKey(const Key('about-privacy-policy')), findsOneWidget);
       expect(find.byKey(const Key('about-terms')), findsOneWidget);
-      expect(
-        find.byKey(const Key('about-open-source-licenses')),
-        findsOneWidget,
-      );
+      expect(find.byKey(const Key('about-open-source-licenses')), findsNothing);
+      expect(find.text('开源许可'), findsNothing);
       expect(tester.takeException(), isNull);
     }
   });
@@ -402,42 +401,34 @@ void main() {
     expect(find.text('用户协议'), findsOneWidget);
   });
 
-  testWidgets('about page opens third-party licenses', (tester) async {
-    final router = GoRouter(
-      initialLocation: '/about',
-      routes: [
-        GoRoute(
-          path: '/about',
-          builder: (context, state) => const AboutScreen(),
+  testWidgets(
+    'retired licenses link returns to about without a license entry',
+    (tester) async {
+      final container = ProviderContainer(overrides: _overrides());
+      addTearDown(container.dispose);
+      final router = container.read(appRouterProvider);
+      addTearDown(router.dispose);
+      router.go('/licenses');
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: MaterialApp.router(routerConfig: router),
         ),
-        GoRoute(
-          path: '/licenses',
-          builder: (context, state) => const Scaffold(body: Text('开源许可目标页')),
-        ),
-      ],
-    );
-    addTearDown(router.dispose);
-    await tester.pumpWidget(
-      ProviderScope(
-        overrides: _overrides(),
-        child: MaterialApp.router(routerConfig: router),
-      ),
-    );
-    await tester.pumpAndSettle();
+      );
+      await tester.pumpAndSettle();
 
-    await tester.scrollUntilVisible(
-      find.byKey(const Key('about-open-source-licenses')),
-      320,
-      scrollable: find.byType(Scrollable).first,
-    );
-    await tester.ensureVisible(
-      find.byKey(const Key('about-open-source-licenses')),
-    );
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('about-open-source-licenses')));
-    await tester.pumpAndSettle();
-
-    expect(router.state.uri.path, '/licenses');
-    expect(find.text('开源许可目标页'), findsOneWidget);
-  });
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('about-data-use')),
+        320,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(router.state.uri.path, '/about');
+      expect(find.byType(AboutScreen), findsOneWidget);
+      expect(find.byKey(const Key('about-open-source-licenses')), findsNothing);
+      expect(find.text('开源许可'), findsNothing);
+      expect(find.byKey(const Key('about-terms')), findsOneWidget);
+      expect(find.byKey(const Key('about-privacy-policy')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
 }

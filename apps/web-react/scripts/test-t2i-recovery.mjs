@@ -542,6 +542,24 @@ test('one failed POST cannot unlock submission until all sibling POSTs have sett
   assert.equal(pendingBatchEntries(render().pendingBatch).length, 1);
 });
 
+test('all four optimistic cards exist before the first server submission starts', async () => {
+  const gate = deferred();
+  const snapshots = [];
+  let requests = 0;
+  const render = hookHarness({ createServerAiJob: async () => {
+    const id = `accepted-${requests++}`;
+    snapshots.push(render().tasks.filter(task => task.status === 'submitting').length);
+    await gate.promise;
+    return { job: { id, status:'queued' } };
+  } });
+  const operation = render().createBatch({ count:4, buildPayload });
+  await settle();
+  assert.deepEqual(snapshots,[4,4,4,4]);
+  gate.resolve();
+  await operation;
+  assert.equal(render().tasks.filter(task=>task.serverJobId).length,4);
+});
+
 test('history references prefer durable keys, preserve order, and reject missing edit inputs', () => {
   const refs = historyTaskReferences({ kind: 'wallpaper-image-edit', inputKeys: ['original/A.png', 'original/B.png'], input: { sourceUrls: ['https://expired/A'] } }, (key) => `/api/v1/files/${key}`);
   assert.deepEqual(refs.map((ref) => ref.url), ['/api/v1/files/original/A.png', '/api/v1/files/original/B.png']);

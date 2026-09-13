@@ -73,7 +73,7 @@ export function Minimap({
 
     const visibleNodes = useMemo(() => pickNodes(nodes), [nodes]);
     const nodeMap = useMemo(() => new Map(visibleNodes.map((node) => [node.id, node])), [visibleNodes]);
-    const bounds = useMemo(() => nodeBounds(visibleNodes), [visibleNodes]);
+    const bounds = useMemo(() => nodeBounds(nodes), [nodes]);
 
     const layoutRef = useRef({ minX: 0, minY: 0, scale: 1, ox: 0, oy: 0, width: 256 });
 

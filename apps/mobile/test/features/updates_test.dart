@@ -198,7 +198,7 @@ void main() {
     );
     expect(
       (overview.decoration as BoxDecoration).borderRadius,
-      BorderRadius.circular(8),
+      BorderRadius.circular(24),
     );
 
     await tester.scrollUntilVisible(

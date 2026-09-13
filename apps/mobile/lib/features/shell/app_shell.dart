@@ -8,6 +8,8 @@ import 'package:go_router/go_router.dart';
 import '../auth/auth.dart';
 import '../notifications/notifications.dart';
 import '../tasks/task_sync.dart';
+import '../../core/widgets/app_visual.dart';
+import '../../app/starclouds_theme.dart';
 
 final navigationNotificationCountProvider = FutureProvider<int>((ref) async {
   final session = await ref.watch(sessionControllerProvider.future);
@@ -181,7 +183,7 @@ class _EmptyAppSidebar extends StatelessWidget {
   }
 }
 
-class AppBottomNavigationBar extends StatelessWidget {
+class AppBottomNavigationBar extends StatefulWidget {
   const AppBottomNavigationBar({
     required this.selectedIndex,
     required this.onDestinationSelected,
@@ -195,108 +197,436 @@ class AppBottomNavigationBar extends StatelessWidget {
   final int activeCount;
   final int unreadNotifications;
 
+  static const destinationCount = 5;
+
+  @override
+  State<AppBottomNavigationBar> createState() => _AppBottomNavigationBarState();
+}
+
+enum _NavigationGesture { none, drag, hold }
+
+class _AppBottomNavigationBarState extends State<AppBottomNavigationBar>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _position;
+  _NavigationGesture _gesture = _NavigationGesture.none;
+  int _previewIndex = 0;
+  int _selectionEpoch = 0;
+
+  static const _lastIndex = AppBottomNavigationBar.destinationCount - 1;
+
+  int get _selected => widget.selectedIndex.clamp(0, _lastIndex);
+  bool get _scrubbing => _gesture != _NavigationGesture.none;
+
+  @override
+  void initState() {
+    super.initState();
+    _previewIndex = _selected;
+    _position = AnimationController(
+      vsync: this,
+      lowerBound: 0,
+      upperBound: _lastIndex.toDouble(),
+      value: _selected.toDouble(),
+      duration: const Duration(milliseconds: 260),
+    );
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (MediaQuery.disableAnimationsOf(context) && !_scrubbing) {
+      _position.stop();
+      _position.value = _selected.toDouble();
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant AppBottomNavigationBar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.selectedIndex != widget.selectedIndex) {
+      _selectionEpoch++;
+      _gesture = _NavigationGesture.none;
+      _previewIndex = _selected;
+      _settle(_selected);
+    }
+  }
+
+  @override
+  void dispose() {
+    _gesture = _NavigationGesture.none;
+    _selectionEpoch++;
+    _position.dispose();
+    super.dispose();
+  }
+
+  void _settle(int index) {
+    final target = index.clamp(0, _lastIndex).toDouble();
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _position.stop();
+      _position.value = target;
+    } else {
+      _position.animateTo(target, curve: Curves.easeOutCubic);
+    }
+  }
+
+  double _positionAt(double x, double width, TextDirection direction) {
+    if (width <= 0 || !width.isFinite) return _selected.toDouble();
+    final logicalX = direction == TextDirection.rtl ? width - x : x;
+    return (logicalX / (width / AppBottomNavigationBar.destinationCount) - .5)
+        .clamp(0.0, _lastIndex.toDouble());
+  }
+
+  void _begin(
+    _NavigationGesture gesture,
+    double x,
+    double width,
+    TextDirection direction,
+  ) {
+    _selectionEpoch++;
+    _position.stop();
+    setState(() {
+      _gesture = gesture;
+      _previewIndex = _selected;
+    });
+    _move(gesture, x, width, direction);
+  }
+
+  void _move(
+    _NavigationGesture gesture,
+    double x,
+    double width,
+    TextDirection direction,
+  ) {
+    if (_gesture != gesture) return;
+    final position = _positionAt(x, width, direction);
+    _position.value = position;
+    final preview = position.round();
+    if (_previewIndex != preview) {
+      setState(() => _previewIndex = preview);
+      unawaited(HapticFeedback.selectionClick());
+    }
+  }
+
+  void _finish(_NavigationGesture gesture) {
+    if (_gesture != gesture) return;
+    final target = _previewIndex;
+    setState(() => _gesture = _NavigationGesture.none);
+    if (target == _selected) {
+      _settle(_selected);
+    } else {
+      _requestSelection(target);
+    }
+  }
+
+  void _cancel(_NavigationGesture gesture) {
+    if (!mounted || !_scrubbing || _gesture != gesture) return;
+    _selectionEpoch++;
+    setState(() {
+      _gesture = _NavigationGesture.none;
+      _previewIndex = _selected;
+    });
+    _settle(_selected);
+  }
+
+  void _requestSelection(int index) {
+    final epoch = ++_selectionEpoch;
+    _settle(index);
+    widget.onDestinationSelected(index);
+    // The parent remains authoritative if navigation is rejected or redirected.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || epoch != _selectionEpoch || _scrubbing) return;
+      if (_selected != index) _settle(_selected);
+    });
+  }
+
+  void _tap(int index) {
+    setState(() => _gesture = _NavigationGesture.none);
+    unawaited(HapticFeedback.selectionClick());
+    _requestSelection(index);
+  }
+
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
     final textScale = MediaQuery.textScalerOf(context).scale(1);
-    final height = 64 + ((textScale - 1).clamp(0.0, 0.6) * 20);
-    final currentIndex = selectedIndex.clamp(0, 3);
+    final height = 76 + ((textScale - 1).clamp(0.0, 1.0) * 16);
+    final reduceMotion = MediaQuery.disableAnimationsOf(context);
+    final highContrast = MediaQuery.highContrastOf(context);
+    final direction = Directionality.of(context);
+    final currentIndex = _scrubbing ? _previewIndex : _selected;
     final destinations = [
       (
         label: '首页',
         semantics: '首页',
         icon: Icons.home_outlined,
         selectedIcon: Icons.home_rounded,
-        showLabel: true,
-      ),
-      (
-        label: 'AI',
-        semantics: 'AI',
-        icon: Icons.auto_awesome_outlined,
-        selectedIcon: Icons.auto_awesome_rounded,
-        showLabel: false,
       ),
       (
         label: '设计',
-        semantics: activeCount > 0 ? '设计，$activeCount 个正在生成' : '设计',
+        semantics: widget.activeCount > 0
+            ? '设计，${widget.activeCount} 个正在生成'
+            : '设计',
         icon: Icons.palette_outlined,
         selectedIcon: Icons.palette_rounded,
-        showLabel: true,
+      ),
+      (
+        label: '助手',
+        semantics: '助手',
+        icon: Icons.auto_awesome_outlined,
+        selectedIcon: Icons.auto_awesome_rounded,
+      ),
+      (
+        label: '订单',
+        semantics: '订单',
+        icon: Icons.receipt_long_outlined,
+        selectedIcon: Icons.receipt_long_rounded,
       ),
       (
         label: '我的',
-        semantics: unreadNotifications > 0
-            ? '我的，$unreadNotifications 条未读通知'
+        semantics: widget.unreadNotifications > 0
+            ? '我的，${widget.unreadNotifications} 条未读通知'
             : '我的',
         icon: Icons.person_outline_rounded,
         selectedIcon: Icons.person_rounded,
-        showLabel: true,
       ),
     ];
+    assert(destinations.length == AppBottomNavigationBar.destinationCount);
     return Material(
       key: const Key('app-bottom-navigation'),
-      color: colors.surface,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          border: Border(
-            top: BorderSide(
-              color: colors.outlineVariant.withValues(alpha: .45),
-            ),
-          ),
-        ),
-        child: SafeArea(
-          top: false,
-          child: SizedBox(
-            height: height,
-            child: Row(
-              children: List.generate(destinations.length, (index) {
-                final destination = destinations[index];
-                final selected = currentIndex == index;
-                Widget icon;
-                if (index == 1) {
-                  icon = _AiNavigationIcon(selected: selected);
-                } else if (index == 2) {
-                  icon = NavigationStatusIcon(
-                    icon: selected
-                        ? destination.selectedIcon
-                        : destination.icon,
-                    count: activeCount,
-                    semanticsLabel: destination.label,
-                    countDescription: '个正在生成',
-                  );
-                } else if (index == 3) {
-                  icon = NavigationStatusIcon(
-                    icon: selected
-                        ? destination.selectedIcon
-                        : destination.icon,
-                    count: unreadNotifications,
-                    semanticsLabel: destination.label,
-                    countDescription: '条未读通知',
-                  );
-                } else {
-                  icon = Icon(
-                    selected ? destination.selectedIcon : destination.icon,
-                  );
-                }
-                return Expanded(
-                  child: _BottomNavigationItem(
-                    key: Key('bottom-nav-item-$index'),
-                    label: destination.label,
-                    semanticsLabel: destination.semantics,
-                    selected: selected,
-                    showLabel: destination.showLabel,
-                    icon: icon,
-                    onTap: () {
-                      unawaited(HapticFeedback.selectionClick());
-                      onDestinationSelected(index);
+      color: Colors.transparent,
+      child: SafeArea(
+        top: false,
+        child: Align(
+          heightFactor: 1,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 560),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+              child: _NavigationFrame(
+                key: const Key('bottom-nav-frame'),
+                borderRadius: StarCloudsRadii.dialog,
+                child: SizedBox(
+                  height: height,
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      final width = constraints.maxWidth;
+                      final slot = width / destinations.length;
+                      // Flutter can report an accepted drag's cancellation as an end.
+                      return Listener(
+                        onPointerCancel: (_) => _cancel(_gesture),
+                        child: GestureDetector(
+                          key: const Key('bottom-nav-track'),
+                          behavior: HitTestBehavior.opaque,
+                          excludeFromSemantics: true,
+                          onHorizontalDragStart: (details) => _begin(
+                            _NavigationGesture.drag,
+                            details.localPosition.dx,
+                            width,
+                            direction,
+                          ),
+                          onHorizontalDragUpdate: (details) => _move(
+                            _NavigationGesture.drag,
+                            details.localPosition.dx,
+                            width,
+                            direction,
+                          ),
+                          onHorizontalDragEnd: (_) =>
+                              _finish(_NavigationGesture.drag),
+                          onHorizontalDragCancel: () =>
+                              _cancel(_NavigationGesture.drag),
+                          onLongPressStart: (details) => _begin(
+                            _NavigationGesture.hold,
+                            details.localPosition.dx,
+                            width,
+                            direction,
+                          ),
+                          onLongPressMoveUpdate: (details) => _move(
+                            _NavigationGesture.hold,
+                            details.localPosition.dx,
+                            width,
+                            direction,
+                          ),
+                          onLongPressEnd: (_) =>
+                              _finish(_NavigationGesture.hold),
+                          onLongPressCancel: () =>
+                              _cancel(_NavigationGesture.hold),
+                          child: AnimatedBuilder(
+                            animation: _position,
+                            builder: (context, child) {
+                              final value = _position.value.clamp(
+                                0.0,
+                                _lastIndex.toDouble(),
+                              );
+                              final physicalIndex =
+                                  direction == TextDirection.rtl
+                                  ? _lastIndex - value
+                                  : value;
+                              return Stack(
+                                children: [
+                                  Positioned(
+                                    left: physicalIndex * slot + 4,
+                                    top: 4,
+                                    bottom: 4,
+                                    width: (slot - 8).clamp(0.0, width),
+                                    child: IgnorePointer(
+                                      child: SizedBox(
+                                        key: const Key('bottom-nav-selection'),
+                                        child: AnimatedScale(
+                                          scale: _scrubbing && !reduceMotion
+                                              ? 1.025
+                                              : 1,
+                                          duration: reduceMotion
+                                              ? Duration.zero
+                                              : AppMotion.press,
+                                          curve: AppMotion.ease,
+                                          child: highContrast
+                                              ? DecoratedBox(
+                                                  decoration: BoxDecoration(
+                                                    color: Colors.white,
+                                                    borderRadius:
+                                                        StarCloudsRadii.pillAll,
+                                                  ),
+                                                )
+                                              : _NavigationFrame(
+                                                  selection: true,
+                                                  borderRadius:
+                                                      StarCloudsRadii.pillAll,
+                                                  child:
+                                                      const SizedBox.expand(),
+                                                ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  Row(
+                                    children: List.generate(
+                                      destinations.length,
+                                      (index) {
+                                        final destination = destinations[index];
+                                        final selected = currentIndex == index;
+                                        final coverage =
+                                            (1 - (value - index).abs() * 2)
+                                                .clamp(0.0, 1.0);
+                                        final foreground = Color.lerp(
+                                          _NavigationPalette.muted,
+                                          highContrast
+                                              ? _NavigationPalette.ink
+                                              : Colors.white,
+                                          coverage,
+                                        )!;
+                                        final iconData = selected
+                                            ? destination.selectedIcon
+                                            : destination.icon;
+                                        final Widget icon = switch (index) {
+                                          1 => NavigationStatusIcon(
+                                            icon: iconData,
+                                            count: widget.activeCount,
+                                            semanticsLabel: destination.label,
+                                            countDescription: '个正在生成',
+                                          ),
+                                          2 => _AiNavigationIcon(
+                                            selected: selected,
+                                          ),
+                                          4 => NavigationStatusIcon(
+                                            icon: iconData,
+                                            count: widget.unreadNotifications,
+                                            semanticsLabel: destination.label,
+                                            countDescription: '条未读通知',
+                                          ),
+                                          _ => Icon(iconData),
+                                        };
+                                        return Expanded(
+                                          child: _BottomNavigationItem(
+                                            key: Key('bottom-nav-item-$index'),
+                                            label: destination.label,
+                                            semanticsLabel:
+                                                destination.semantics,
+                                            selected: selected,
+                                            foreground: foreground,
+                                            icon: icon,
+                                            onTap: () => _tap(index),
+                                          ),
+                                        );
+                                      },
+                                    ),
+                                  ),
+                                ],
+                              );
+                            },
+                          ),
+                        ),
+                      );
                     },
                   ),
-                );
-              }),
+                ),
+              ),
             ),
           ),
         ),
       ),
+    );
+  }
+}
+
+abstract final class _NavigationPalette {
+  static const ink = Color(0xFF20242B);
+  static const muted = Color(0xFFBBC1CB);
+  static const selected = Color(0xFF484E58);
+}
+
+class _NavigationFrame extends StatelessWidget {
+  const _NavigationFrame({
+    required this.child,
+    required this.borderRadius,
+    this.selection = false,
+    super.key,
+  });
+
+  final Widget child;
+  final BorderRadius borderRadius;
+  final bool selection;
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final highContrast = MediaQuery.highContrastOf(context);
+    final borderColor = highContrast
+        ? Colors.white
+        : Colors.white.withValues(
+            alpha: selection
+                ? .5
+                : dark
+                ? .26
+                : .18,
+          );
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: selection
+            ? _NavigationPalette.selected
+            : highContrast
+            ? Colors.black
+            : null,
+        gradient: selection || highContrast
+            ? null
+            : LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: dark
+                    ? const [Color(0xFF262A32), Color(0xFF191C23)]
+                    : const [Color(0xFF30343C), Color(0xFF20242B)],
+              ),
+        borderRadius: borderRadius,
+        border: Border.all(color: borderColor, width: highContrast ? 1.5 : 1),
+        boxShadow: selection || highContrast
+            ? null
+            : [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: dark ? .3 : .18),
+                  blurRadius: 20,
+                  spreadRadius: -2,
+                  offset: const Offset(0, 7),
+                ),
+              ],
+      ),
+      child: ClipRRect(borderRadius: borderRadius, child: child),
     );
   }
 }
@@ -306,7 +636,7 @@ class _BottomNavigationItem extends StatelessWidget {
     required this.label,
     required this.semanticsLabel,
     required this.selected,
-    required this.showLabel,
+    required this.foreground,
     required this.icon,
     required this.onTap,
     super.key,
@@ -315,59 +645,67 @@ class _BottomNavigationItem extends StatelessWidget {
   final String label;
   final String semanticsLabel;
   final bool selected;
-  final bool showLabel;
+  final Color foreground;
   final Widget icon;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    final foreground = selected ? colors.primary : colors.onSurfaceVariant;
     final motionDuration = MediaQuery.disableAnimationsOf(context)
         ? Duration.zero
-        : const Duration(milliseconds: 160);
+        : AppMotion.selection;
     return Semantics(
       label: semanticsLabel,
       button: true,
       selected: selected,
+      onTap: onTap,
       child: ExcludeSemantics(
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(4, 6, 4, 4),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                SizedBox(
-                  height: showLabel ? 38 : 44,
-                  child: Center(
-                    child: IconTheme(
-                      data: IconThemeData(
-                        color: foreground,
-                        size: showLabel ? 24 : 28,
-                      ),
-                      child: AnimatedScale(
-                        key: const Key('bottom-nav-icon-motion'),
-                        scale: selected ? 1.08 : 1,
-                        duration: motionDuration,
-                        curve: Curves.easeOutCubic,
-                        child: icon,
+        child: Material(
+          type: MaterialType.transparency,
+          child: InkResponse(
+            onTap: onTap,
+            containedInkWell: true,
+            customBorder: const StadiumBorder(),
+            splashFactory: NoSplash.splashFactory,
+            highlightColor: Colors.transparent,
+            focusColor: Colors.white.withValues(alpha: .16),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(4, 6, 4, 4),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  SizedBox(
+                    height: 40,
+                    child: Center(
+                      child: IconTheme(
+                        data: IconThemeData(color: foreground, size: 24),
+                        child: AnimatedScale(
+                          key: const Key('bottom-nav-icon-motion'),
+                          scale: selected ? 1.04 : 1,
+                          duration: motionDuration,
+                          curve: Curves.easeOutCubic,
+                          child: icon,
+                        ),
                       ),
                     ),
                   ),
-                ),
-                if (showLabel)
+                  const SizedBox(height: 3),
                   Text(
                     label,
+                    textScaler: MediaQuery.textScalerOf(
+                      context,
+                    ).clamp(maxScaleFactor: 2),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: Theme.of(context).textTheme.labelSmall?.copyWith(
                       color: foreground,
-                      fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                      fontSize: 11,
+                      height: 1.2,
+                      fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
                     ),
                   ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
@@ -383,15 +721,23 @@ class _AiNavigationIcon extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final iconTheme = IconTheme.of(context);
-    final size = iconTheme.size ?? 28;
-    return SizedBox.square(
+    return AnimatedContainer(
       key: const Key('bottom-nav-ai-button'),
-      dimension: size,
+      width: 38,
+      height: 38,
+      duration: MediaQuery.disableAnimationsOf(context)
+          ? Duration.zero
+          : AppMotion.selection,
+      curve: AppMotion.ease,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        shape: BoxShape.circle,
+        border: Border.all(color: Colors.white, width: selected ? 2 : 1),
+      ),
       child: Icon(
         selected ? Icons.auto_awesome_rounded : Icons.auto_awesome_outlined,
-        color: iconTheme.color,
-        size: size,
+        color: _NavigationPalette.ink,
+        size: 23,
       ),
     );
   }
@@ -423,7 +769,18 @@ class NavigationStatusIcon extends StatelessWidget {
           dimension: 24,
           child: Badge(
             isLabelVisible: safeCount > 0,
-            label: Text(navigationBadgeLabel(safeCount)),
+            offset: const Offset(0, -4),
+            textStyle: const TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0,
+            ),
+            label: Text(
+              navigationBadgeLabel(safeCount),
+              textScaler: MediaQuery.textScalerOf(
+                context,
+              ).clamp(maxScaleFactor: 1.2),
+            ),
             child: Icon(icon),
           ),
         ),

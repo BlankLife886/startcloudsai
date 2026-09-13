@@ -379,7 +379,7 @@ export function CommercialHomeView() {
 
   return (
     <div id="home-top" ref={rootRef} className={`commercial-home home-catalog${isDark ? " is-dark" : ""}`} data-motion={motionOff ? "off" : "on"}>
-      <HomeHero studioVisible={isEntryVisible("/studio")} />
+      <HomeHero />
       <HomeModelMarquee models={models} motionOff={motionOff} />
 
       <div id="home-directory" className="home-shell home-catalog__content home-directory">

@@ -4,9 +4,59 @@ import 'package:flutter/services.dart';
 import '../../app/starclouds_theme.dart';
 
 abstract final class AppMotion {
-  static const Duration press = Duration(milliseconds: 140);
+  static const Duration press = Duration(milliseconds: 120);
+  static const Duration selection = Duration(milliseconds: 160);
   static const Duration appear = Duration(milliseconds: 220);
+  static const Duration content = Duration(milliseconds: 200);
   static const Curve ease = Curves.easeOutCubic;
+}
+
+class AppActivityIndicator extends StatefulWidget {
+  const AppActivityIndicator({this.size = 22, super.key});
+
+  final double size;
+
+  @override
+  State<AppActivityIndicator> createState() => _AppActivityIndicatorState();
+}
+
+class _AppActivityIndicatorState extends State<AppActivityIndicator>
+    with WidgetsBindingObserver {
+  bool _foreground = true;
+
+  @override
+  void initState() {
+    super.initState();
+    final state = WidgetsBinding.instance.lifecycleState;
+    _foreground = state == null || state == AppLifecycleState.resumed;
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    setState(() => _foreground = state == AppLifecycleState.resumed);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final animate =
+        _foreground &&
+        TickerMode.valuesOf(context).enabled &&
+        !MediaQuery.disableAnimationsOf(context);
+    final indicator = CircularProgressIndicator(
+      value: animate ? null : .7,
+      strokeWidth: 2,
+      color: Theme.of(context).colorScheme.primary,
+      backgroundColor: Colors.transparent,
+    );
+    return SizedBox.square(dimension: widget.size, child: indicator);
+  }
 }
 
 class AppPressable extends StatefulWidget {
@@ -17,6 +67,7 @@ class AppPressable extends StatefulWidget {
     this.semanticLabel,
     this.selected,
     this.excludeChildSemantics = false,
+    this.borderRadius,
     super.key,
   });
 
@@ -26,6 +77,7 @@ class AppPressable extends StatefulWidget {
   final String? semanticLabel;
   final bool? selected;
   final bool excludeChildSemantics;
+  final BorderRadius? borderRadius;
 
   @override
   State<AppPressable> createState() => _AppPressableState();
@@ -100,7 +152,7 @@ class _AppPressableState extends State<AppPressable> {
                         : Colors.transparent,
                     width: 2,
                   ),
-                  borderRadius: BorderRadius.circular(8),
+                  borderRadius: widget.borderRadius ?? StarCloudsRadii.control,
                 ),
                 child: widget.child,
               ),
@@ -108,6 +160,48 @@ class _AppPressableState extends State<AppPressable> {
           ),
         ),
       ),
+    );
+  }
+}
+
+class AppGlassSurface extends StatelessWidget {
+  const AppGlassSurface({
+    required this.child,
+    this.color,
+    this.borderRadius,
+    this.shadow = true,
+    super.key,
+  });
+
+  final Widget child;
+  final Color? color;
+  final BorderRadius? borderRadius;
+  final bool shadow;
+
+  @override
+  Widget build(BuildContext context) {
+    final visual = StarCloudsVisualStyle.of(context);
+    final highContrast = MediaQuery.highContrastOf(context);
+    final radius = borderRadius ?? StarCloudsRadii.card;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: highContrast
+            ? Theme.of(context).colorScheme.surfaceContainerLowest
+            : color ?? visual.panel,
+        borderRadius: radius,
+        border: visual.glassBorder(highContrast: highContrast),
+        boxShadow: shadow && !highContrast
+            ? [
+                BoxShadow(
+                  color: visual.shadow,
+                  blurRadius: 16,
+                  spreadRadius: -3,
+                  offset: const Offset(0, 5),
+                ),
+              ]
+            : null,
+      ),
+      child: ClipRRect(borderRadius: radius, child: child),
     );
   }
 }
@@ -131,33 +225,20 @@ class AppSoftCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final visual = StarCloudsVisualStyle.of(context);
     final borderRadius = radius ?? StarCloudsRadii.card;
-    final content = DecoratedBox(
-      decoration: BoxDecoration(
-        color: color ?? colors.surface,
-        borderRadius: borderRadius,
-        boxShadow: [
-          BoxShadow(
-            color: visual.shadow.withValues(
-              alpha: Theme.of(context).brightness == Brightness.dark
-                  ? .22
-                  : .06,
-            ),
-            blurRadius: 18,
-            offset: const Offset(0, 6),
-          ),
-        ],
-      ),
-      child: ClipRRect(
-        borderRadius: borderRadius,
-        child: padding == null
-            ? child
-            : Padding(padding: padding!, child: child),
-      ),
+    final content = AppGlassSurface(
+      color: color == colors.surface || color == colors.surfaceContainerLow
+          ? null
+          : color,
+      borderRadius: borderRadius,
+      child: padding == null ? child : Padding(padding: padding!, child: child),
     );
     if (onTap == null) return content;
-    return AppPressable(onTap: onTap, child: content);
+    return AppPressable(
+      onTap: onTap,
+      borderRadius: borderRadius,
+      child: content,
+    );
   }
 }
 
@@ -199,8 +280,8 @@ class AppSectionLabel extends StatelessWidget {
           child: Text(
             title,
             style: Theme.of(context).textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.w800,
-              letterSpacing: -0.2,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0,
             ),
           ),
         ),

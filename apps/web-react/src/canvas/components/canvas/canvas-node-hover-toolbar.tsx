@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { App, Tooltip } from "antd";
-import { Ellipsis, FolderPlus, Image as ImageIcon, MessageSquare, Music2, Pencil, Settings2, Trash2, Upload, Video } from "lucide-react";
+import { Clapperboard, Ellipsis, FolderPlus, Image as ImageIcon, MessageSquare, Music2, Pencil, Settings2, Trash2, Upload, Video } from "lucide-react";
 import { DownloadIcon } from "@react/components/common/DownloadIcon.jsx";
 import { RegenerateIcon } from "@react/components/common/RegenerateIcon.jsx";
 import { useTranslation } from "react-i18next";
@@ -15,6 +15,7 @@ import { CanvasNodeType, type CanvasNodeData, type ViewportTransform } from "@/t
 import type { CanvasNodeToolbarItem } from "@/types/canvas-plugin";
 import { ImageToolSettingsModal, type ImageToolbarSettingsTool } from "./canvas-image-toolbar-settings-modal";
 import { IMAGE_QUICK_TOOLS_STORAGE_KEY, buildImageToolbarTools, defaultImageQuickToolIds, readImageQuickToolsConfig, type ImageQuickToolId } from "./canvas-image-toolbar-tools";
+import { CanvasFloatingLayer } from "./canvas-floating-layer";
 
 type CanvasNodeHoverToolbarProps = {
     node: CanvasNodeData | null;
@@ -25,6 +26,7 @@ type CanvasNodeHoverToolbarProps = {
     onEditText: (node: CanvasNodeData) => void;
     onToggleDialog: (node: CanvasNodeData) => void;
     onGenerateImage: (node: CanvasNodeData) => void;
+    onOpenStoryboard: (node: CanvasNodeData) => void;
     onUpload: (node: CanvasNodeData) => void;
     onDownload: (node: CanvasNodeData) => void;
     onSaveAsset: (node: CanvasNodeData) => void;
@@ -62,6 +64,7 @@ export function CanvasNodeHoverToolbar({
     onEditText,
     onToggleDialog,
     onGenerateImage,
+    onOpenStoryboard,
     onUpload,
     onDownload,
     onSaveAsset,
@@ -110,8 +113,6 @@ export function CanvasNodeHoverToolbar({
 
     const activeNode = node;
     const isText = node.type === CanvasNodeType.Text;
-    const left = viewport.x + (node.position.x + node.width / 2) * viewport.k;
-    const top = viewport.y + node.position.y * viewport.k - 14;
     const isImage = node.type === CanvasNodeType.Image;
     const isVideo = node.type === CanvasNodeType.Video;
     const isAudio = node.type === CanvasNodeType.Audio;
@@ -151,6 +152,7 @@ export function CanvasNodeHoverToolbar({
         ...(hasImage || hasVideo || hasAudio ? [{ id: "download", title: t(hasAudio ? "canvas.nodeToolbar.downloadAudio" : hasVideo ? "canvas.nodeToolbar.downloadVideo" : "canvas.nodeToolbar.downloadImage"), label: t("common.download"), icon: <DownloadIcon className="size-4" />, onClick: () => onDownload(node) }] : []),
         ...(canOpenDialog && !isText ? [{ id: "edit", title: t("common.edit"), label: t("common.edit"), icon: <MessageSquare className="size-4" />, onClick: () => onToggleDialog(node) }] : []),
         ...(isText ? [{ id: "editText", title: t("canvas.nodeToolbar.editTextTitle"), label: t("canvas.nodeToolbar.editText"), icon: <Pencil className="size-4" />, onClick: () => onEditText(node) }] : []),
+        ...((Boolean(node.metadata?.storyboardId) || (isText && Boolean((node.metadata?.content || node.metadata?.prompt || "").trim()))) ? [{ id: "storyboard", title: t("canvas.nodeToolbar.storyboardTitle"), label: t("canvas.toolbar.storyboard"), icon: <Clapperboard className="size-4" />, onClick: () => onOpenStoryboard(node) }] : []),
         ...(isText ? [{ id: "generateImage", title: t("canvas.node.generateImage"), label: t("canvas.node.generate"), icon: <ImageIcon className="size-4" />, onClick: () => onGenerateImage(node) }] : []),
         ...(isConfig ? [{ id: "config", title: t("canvas.configNode.title"), label: t("canvas.configNode.title"), icon: <Settings2 className="size-4" />, onClick: () => onToggleDialog(node) }] : []),
         ...(isImage && !hasImage ? [{ id: "uploadImage", title: t("canvas.nodeToolbar.uploadImage"), label: t("canvas.nodeToolbar.uploadImage"), icon: <Upload className="size-4" />, onClick: () => onUpload(node) }] : []),
@@ -192,10 +194,15 @@ export function CanvasNodeHoverToolbar({
 
     return (
         <>
-            <div
+            <CanvasFloatingLayer
+                key={node.id}
+                getAnchorElement={() => document.querySelector<HTMLElement>(`.canvas-stage [data-node-id="${CSS.escape(node.id)}"]`)}
+                avoidSelector={`[data-canvas-node-editor="${CSS.escape(node.id)}"]`}
+                placement="top"
+                gap={14}
                 data-canvas-node-toolbar
-                className="canvas-float-menu absolute z-[70] flex -translate-x-1/2 -translate-y-full flex-col overflow-hidden rounded-[20px] px-1.5 py-1.5 backdrop-blur-xl"
-                style={{ left, top, background: theme.toolbar.panel, color: theme.toolbar.item, boxShadow: theme.toolbar.shadow }}
+                className="canvas-float-menu flex flex-col rounded-[20px] px-1.5 py-1.5 backdrop-blur-xl"
+                style={{ background: theme.toolbar.panel, color: theme.toolbar.item, boxShadow: theme.toolbar.shadow, zIndex: 110 }}
                 onMouseEnter={() => onKeep(node.id)}
                 onMouseLeave={() => {
                     if (!imageToolSettingsOpen) onLeave();
@@ -214,7 +221,7 @@ export function CanvasNodeHoverToolbar({
                         ))}
                     </div>
                 ))}
-            </div>
+            </CanvasFloatingLayer>
             {hasImage ? (
                 <ImageToolSettingsModal
                     open={imageToolSettingsOpen}

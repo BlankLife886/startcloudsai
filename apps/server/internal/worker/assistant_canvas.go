@@ -236,11 +236,15 @@ func canvasFindNodesTool() sub2api.FunctionTool {
 func canvasInspectNodesTool() sub2api.FunctionTool {
 	return sub2api.FunctionTool{
 		Name:        "canvas_inspect_nodes",
-		Description: "读取指定节点或实时选区的完整可用配置、状态以及上下游节点，不返回图片二进制内容。",
+		Description: "读取指定节点或实时选区的配置、状态、上下游与原始文本，不返回图片二进制。节点通过 nextOffset 分页；每个文本字段的 textPages 含 total、truncated、nextOffset，截断时对该节点继续传 textOffset，直至读完后再修改或总结。",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"nodeIds": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "精确节点 id；留空读取实时选区"},
+				"nodeIds":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "精确节点 id；留空读取实时选区"},
+				"offset":     map[string]any{"type": "integer", "minimum": 0, "description": "节点分页起点；后续使用顶层 nextOffset"},
+				"limit":      map[string]any{"type": "integer", "minimum": 1, "maximum": 20, "description": "单页节点数，默认 4；大文本会自动减少单页节点数"},
+				"textOffset": map[string]any{"type": "integer", "minimum": 0, "description": "各文本字段的 Unicode 字符起点，默认 0；单独指定节点并使用 metadata.textPages 中相应字段的 nextOffset 继续阅读"},
+				"textLimit":  map[string]any{"type": "integer", "minimum": 1, "maximum": 4000, "description": "每个文本字段单页字符数，默认 2000；原样保留换行与空格"},
 			},
 			"additionalProperties": false,
 		},
@@ -257,7 +261,7 @@ func canvasInspectVisualsTool() sub2api.FunctionTool {
 				"scope":      map[string]any{"type": "string", "enum": []string{"auto", "selection", "workflow", "recent"}, "description": "默认 auto；selection 只看选中图片，workflow 检查指定工作流，recent 检查最近输出"},
 				"workflowId": map[string]any{"type": "string", "description": "scope=workflow 时使用快照 workflows 中的精确 id"},
 				"nodeIds":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "可选精确起点；留空使用实时选区，模型不确定时不要猜"},
-				"maxImages":  map[string]any{"type": "integer", "minimum": 1, "maximum": 12, "description": "单页本地比较上限，默认 12；每页最多 4 张真实图片会送回视觉模型"},
+				"maxImages":  map[string]any{"type": "integer", "minimum": 1, "maximum": 4, "description": "单页图片上限，默认 4；当前页的每张图片都会送回模型，compared 仅表示指纹比较数量，modelImageCount 表示本页提供的真实图片数量"},
 				"offset":     map[string]any{"type": "integer", "minimum": 0, "description": "分页起点，首次为 0；truncated=true 时必须使用返回的 nextOffset 继续检查"},
 			},
 			"additionalProperties": false,
@@ -809,6 +813,8 @@ func canvasRunGenerationFallbackOps(arguments string) []map[string]any {
 // canvasAgentLoopState accumulates what the tool loop actually did, so the
 // closing message can describe real changes instead of intentions.
 type canvasAgentLoopState struct {
+	reviewTargets            []canvasReviewTarget
+	reviewReport             map[string]any
 	summary                  string
 	appliedOps               int
 	pendingOps               []map[string]any
@@ -823,10 +829,14 @@ type canvasAgentLoopState struct {
 	webSearchClient          *sub2api.Client
 	webSearchFailed          bool
 	webSearchError           string
+	unconfirmedActionError   string
 	visualReferences         []canvasAgentVisualReference
 	attachmentNodeIDs        []string
 	requiresVisualInspection bool
 	visualInspected          bool
+	visualNextOffset         int
+	visualPageOffset         int
+	visualInspectionTotal    int
 }
 
 type canvasAgentVisualReference struct {
@@ -888,11 +898,46 @@ func canvasAgentToolResultFailed(raw string) bool {
 	return strings.HasPrefix(strings.TrimSpace(raw), "执行失败：")
 }
 
+type canvasAgentWorkflowStartResult struct {
+	RunID         string   `json:"runId"`
+	Status        string   `json:"status"`
+	RequestID     string   `json:"requestId"`
+	ConfigNodeIDs []string `json:"configNodeIds"`
+	Error         string   `json:"error"`
+}
+
+func canvasAgentWorkflowStartFeedback(loop *canvasAgentLoopState, raw, startedSummary string) bool {
+	var response canvasAgentWorkflowStartResult
+	if json.Unmarshal([]byte(raw), &response) != nil {
+		return false
+	}
+	if response.Status == "canceled" {
+		loop.userCanceled = true
+		loop.lastToolSucceeded = true
+		loop.summary = "已取消本次工作流运行。"
+		loop.finishAfterTool = true
+		return false
+	}
+	if response.Status != "started" || strings.TrimSpace(response.RequestID) == "" || len(response.ConfigNodeIDs) == 0 {
+		return false
+	}
+	loop.touched = true
+	loop.billableAction = true
+	loop.lastToolSucceeded = true
+	loop.summary = startedSummary
+	loop.reviewTargets = append(loop.reviewTargets, canvasReviewTarget{Kind: "workflow", RequestID: response.RequestID, RunID: response.RunID, NodeIDs: response.ConfigNodeIDs})
+	loop.finishAfterTool = true
+	return true
+}
+
 func (w *Worker) checkpointCanvasAgentAction(ctx context.Context, run *store.AssistantRun, loop *canvasAgentLoopState) {
 	if run == nil || loop == nil || !loop.billableAction {
 		return
 	}
 	fields := map[string]any{"agentBillableAction": true}
+	if len(loop.reviewTargets) > 0 {
+		fields["canvasReviewTargets"] = loop.reviewTargets
+	}
 	if loop.appliedOps > 0 {
 		fields["canvasOpsApplied"] = loop.appliedOps
 	}
@@ -1002,12 +1047,16 @@ func (w *Worker) runCanvasAgentTool(ctx context.Context, run *store.AssistantRun
 	case webSearchTool().Name:
 		return w.runCanvasAgentWebSearch(ctx, run, loop, call)
 	case canvasInspectVisualsTool().Name:
+		loop.visualInspected = false
+		loop.visualReferences = nil
 		raw, ok := w.dispatchCanvasTool(ctx, run, call.Name, call.Arguments, canvasAgentReadTimeout)
 		if !ok {
 			return "画布没有及时响应，无法读取真实图片。禁止根据节点标题或提示词猜测图片内容，也不要直接重新生成。"
 		}
 		var response struct {
 			Inspected        int                          `json:"inspected"`
+			Offset           int                          `json:"offset"`
+			Total            int                          `json:"total"`
 			Truncated        bool                         `json:"truncated"`
 			NextOffset       int                          `json:"nextOffset"`
 			VisionReferences []canvasAgentVisualReference `json:"visionReferences"`
@@ -1017,8 +1066,19 @@ func (w *Worker) runCanvasAgentTool(ctx context.Context, run *store.AssistantRun
 			return "工具 canvas_inspect_visuals 的返回：\n" + raw + "\n没有读取到可检查的图片，禁止声称已经看过图片或直接重新生成。"
 		}
 		loop.verifiedRead = true
+		if response.Offset == 0 {
+			loop.visualNextOffset = 0
+			loop.visualInspectionTotal = response.Total
+			loop.visualInspected = false
+		}
+		if response.Offset != loop.visualNextOffset || response.Total != loop.visualInspectionTotal || len(response.VisionReferences) != response.Inspected {
+			loop.visualInspected = false
+			return "工具 canvas_inspect_visuals 的返回：\n" + raw + "\n真实图片分页未完整覆盖当前范围，可能存在缺页或未同步图片。禁止声称已检查全部图片或继续修改；请从 offset=0 连续检查，并先解决无法读取的图片。"
+		}
 		loop.lastToolSucceeded = true
-		loop.visualInspected = !response.Truncated
+		loop.visualPageOffset = response.Offset
+		loop.visualNextOffset = response.Offset + response.Inspected
+		loop.visualInspected = !response.Truncated && loop.visualNextOffset == response.Total
 		loop.visualReferences = response.VisionReferences
 		if response.Truncated {
 			return fmt.Sprintf("工具 canvas_inspect_visuals 的返回：\n%s\n当前只完成一页检查，必须继续调用 canvas_inspect_visuals，并传入 offset=%d；检查完全部图片前禁止修改或生成。", raw, response.NextOffset)
@@ -1111,9 +1171,10 @@ func (w *Worker) runCanvasAgentTool(ctx context.Context, run *store.AssistantRun
 		w.checkpointCanvasAgentAction(ctx, run, loop)
 		return "工具 canvas_duplicate_selection 的返回：\n" + raw + "\n复制结果已由浏览器验证，可以结束本轮。"
 	case canvasReplaceWorkflowInputTool().Name, canvasRunDownstreamTool().Name:
-		raw, ok := w.dispatchCanvasTool(ctx, run, call.Name, call.Arguments, canvasAgentApplyTimeout)
+		raw, ok := w.dispatchCanvasTool(ctx, run, call.Name, call.Arguments, canvasAgentStatusTimeout)
 		if !ok {
-			return "画布没有及时响应，工作流复用操作没有执行。请告诉用户刷新页面后重试。"
+			loop.unconfirmedActionError = "尚未收到画布的工作流操作确认，输入修改或运行结果暂时无法确定。请查看画布中的费用确认和运行状态，不要重复提交。"
+			return loop.unconfirmedActionError
 		}
 		if canvasAgentToolResultFailed(raw) {
 			return "工具 " + call.Name + " 的返回：\n" + raw + "\n输入或下游状态没有按要求改变，禁止声称完成。"
@@ -1126,7 +1187,26 @@ func (w *Worker) runCanvasAgentTool(ctx context.Context, run *store.AssistantRun
 		if call.Name == canvasReplaceWorkflowInputTool().Name {
 			loop.summary = "已替换工作流输入并使受影响的旧下游输出失效。"
 		} else {
-			loop.summary = "已仅重置并启动受影响的下游工作流节点。"
+			loop.summary = "已准备受影响的下游工作流节点。"
+		}
+		var response struct {
+			Workflow *canvasAgentWorkflowStartResult `json:"workflow"`
+		}
+		_ = json.Unmarshal([]byte(raw), &response)
+		if response.Workflow != nil {
+			switch response.Workflow.Status {
+			case "started":
+				if response.Workflow.RequestID != "" && len(response.Workflow.ConfigNodeIDs) > 0 {
+					loop.summary += "下游工作流已启动，进度会在画布中更新。"
+				} else {
+					loop.summary += "下游工作流尚未确认启动。"
+				}
+			case "canceled":
+				loop.userCanceled = true
+				loop.summary += "本次下游工作流运行已取消。"
+			default:
+				loop.summary += "下游工作流未启动。" + response.Workflow.Error
+			}
 		}
 		w.checkpointCanvasAgentAction(ctx, run, loop)
 		return "工具 " + call.Name + " 的返回：\n" + raw + "\n操作已由实时依赖图验证，可以结束本轮。"
@@ -1233,15 +1313,30 @@ func (w *Worker) runCanvasAgentTool(ctx context.Context, run *store.AssistantRun
 		raw, ok := w.dispatchCanvasTool(ctx, run, call.Name, call.Arguments, canvasAgentApplyTimeout)
 		loop.touched = true
 		if !ok {
-			loop.pendingOps = append(loop.pendingOps, fallback...)
-			return "画布暂时没有响应，生成会在本轮结束后触发。不要重复调用，请直接用中文回复用户。"
+			loop.unconfirmedActionError = "没有收到生成启动确认。任务可能已经提交，请查看原节点的任务状态；不会补发生成或自动重复扣费。"
+			return loop.unconfirmedActionError
 		}
-		if !canvasAgentToolResultFailed(raw) {
+		var response struct {
+			NodeIDs   []string `json:"nodeIds"`
+			Triggered []string `json:"triggered"`
+			RequestID string   `json:"requestId"`
+		}
+		_ = json.Unmarshal([]byte(raw), &response)
+		triggered := response.NodeIDs
+		if triggered == nil {
+			triggered = response.Triggered
+		}
+		if !canvasAgentToolResultFailed(raw) && len(triggered) > 0 {
+			if response.RequestID != "" {
+				loop.reviewTargets = append(loop.reviewTargets, canvasReviewTarget{Kind: "generation", RequestID: response.RequestID, NodeIDs: triggered})
+			}
 			loop.billableAction = true
 			loop.lastToolSucceeded = true
-			loop.summary = fmt.Sprintf("已启动 %d 个生成任务，结果会在画布节点中更新。", len(fallback))
+			loop.summary = fmt.Sprintf("已提交 %d 个生成请求，结果会在画布节点中更新。", len(triggered))
 			loop.finishAfterTool = true
 			w.checkpointCanvasAgentAction(ctx, run, loop)
+		} else {
+			return "工具 canvas_run_generation 的返回：\n" + raw + "\n没有确认提交任何生成请求，禁止声称任务已经启动。"
 		}
 		return "工具 canvas_run_generation 的返回：\n" + raw +
 			"\n生成是异步的，任务已经提交即可结束本轮；不要把任务已启动表述为图片已生成成功。"
@@ -1253,7 +1348,9 @@ func (w *Worker) runCanvasAgentTool(ctx context.Context, run *store.AssistantRun
 		var response struct {
 			Status              string `json:"status"`
 			GenerationRequestID string `json:"generationRequestId"`
-			Items               []any  `json:"items"`
+			Items               []struct {
+				ConfigNodeID string `json:"configNodeId"`
+			} `json:"items"`
 		}
 		_ = json.Unmarshal([]byte(raw), &response)
 		if response.Status == "canceled" {
@@ -1268,6 +1365,13 @@ func (w *Worker) runCanvasAgentTool(ctx context.Context, run *store.AssistantRun
 		}
 		loop.touched = true
 		loop.appliedOps += len(response.Items)
+		ids := make([]string, 0, len(response.Items))
+		for _, item := range response.Items {
+			ids = append(ids, item.ConfigNodeID)
+		}
+		if response.GenerationRequestID != "" {
+			loop.reviewTargets = append(loop.reviewTargets, canvasReviewTarget{Kind: "generation", RequestID: response.GenerationRequestID, NodeIDs: ids})
+		}
 		loop.billableAction = true
 		loop.lastToolSucceeded = true
 		loop.summary = fmt.Sprintf("已为 %d 张参考图分别创建一对一生成分支并启动任务，结果会在画布节点中更新。", len(response.Items))
@@ -1276,39 +1380,46 @@ func (w *Worker) runCanvasAgentTool(ctx context.Context, run *store.AssistantRun
 		return "工具 canvas_regenerate_selection 的返回：\n" + raw +
 			"\n批量生成已提交，可以结束本轮；不要继续轮询，也不要把任务已启动表述为图片已全部生成成功。"
 	case canvasRunWorkflowTool().Name:
-		raw, ok := w.dispatchCanvasTool(ctx, run, call.Name, call.Arguments, canvasAgentApplyTimeout)
-		loop.touched = true
+		raw, ok := w.dispatchCanvasTool(ctx, run, call.Name, call.Arguments, canvasAgentStatusTimeout)
 		if !ok {
-			return "画布没有及时响应，工作流没有启动。请告诉用户刷新页面后重试，禁止声称已经执行。"
+			loop.unconfirmedActionError = "尚未收到工作流启动确认，画布可能仍在等待费用确认或同步。请查看画布中的费用确认和运行状态，不要重复提交。"
+			return loop.unconfirmedActionError
 		}
-		if !canvasAgentToolResultFailed(raw) {
-			loop.billableAction = true
-			loop.lastToolSucceeded = true
-			loop.summary = "工作流已启动，进度会在画布中更新。"
-			loop.finishAfterTool = true
+		if canvasAgentWorkflowStartFeedback(loop, raw, "工作流已启动，进度会在画布中更新。") {
 			w.checkpointCanvasAgentAction(ctx, run, loop)
+		} else if loop.userCanceled {
+			return "用户在画布费用确认中取消了本次工作流。请简短说明已取消，不要再次询问或提交。"
+		} else {
+			return "工具 canvas_run_workflow 的返回：\n" + raw + "\n没有收到有效的 started 确认，禁止声称工作流已经启动；请依据返回原因处理。"
 		}
 		return "工具 canvas_run_workflow 的返回：\n" + raw +
 			"\n工作流是异步的，任务已经提交即可结束本轮；不要把工作流已启动表述为已经执行完成。"
 	case canvasStopWorkflowTool().Name, canvasResumeWorkflowTool().Name, canvasRetryFailedNodesTool().Name:
-		raw, ok := w.dispatchCanvasTool(ctx, run, call.Name, call.Arguments, canvasAgentApplyTimeout)
+		raw, ok := w.dispatchCanvasTool(ctx, run, call.Name, call.Arguments, canvasAgentStatusTimeout)
 		if !ok {
-			return "画布没有及时响应，工作流控制没有执行。请告诉用户刷新页面后重试，禁止声称已经完成。"
+			loop.unconfirmedActionError = "尚未收到工作流控制确认，结果暂时无法确定。请查看画布中的费用确认和运行状态，不要重复提交。"
+			return loop.unconfirmedActionError
 		}
 		if canvasAgentToolResultFailed(raw) {
 			return "工具 " + call.Name + " 的返回：\n" + raw + "\n工作流状态没有改变，禁止声称已经完成。"
 		}
-		loop.touched = true
-		loop.billableAction = true
-		loop.lastToolSucceeded = true
-		loop.finishAfterTool = true
-		switch call.Name {
-		case canvasStopWorkflowTool().Name:
+		if call.Name == canvasStopWorkflowTool().Name {
+			loop.touched = true
+			loop.billableAction = true
+			loop.lastToolSucceeded = true
+			loop.finishAfterTool = true
 			loop.summary = "已请求停止当前工作流，正在取消已提交任务。"
-		case canvasResumeWorkflowTool().Name:
-			loop.summary = "已从检查点恢复工作流，进度会在画布中更新。"
-		default:
-			loop.summary = "已通过工作流调度器重试失败节点。"
+		} else {
+			summary := "已通过工作流调度器重试失败节点。"
+			if call.Name == canvasResumeWorkflowTool().Name {
+				summary = "已从检查点恢复工作流，进度会在画布中更新。"
+			}
+			if !canvasAgentWorkflowStartFeedback(loop, raw, summary) {
+				if loop.userCanceled {
+					return "用户在画布费用确认中取消了本次工作流。请简短说明已取消，不要再次询问或提交。"
+				}
+				return "工具 " + call.Name + " 的返回：\n" + raw + "\n没有收到有效的 started 确认，禁止声称工作流已经恢复或重试。"
+			}
 		}
 		w.checkpointCanvasAgentAction(ctx, run, loop)
 		return "工具 " + call.Name + " 的返回：\n" + raw + "\n工作流控制请求已经提交，可以结束本轮。"
@@ -1574,8 +1685,15 @@ func (w *Worker) consumeCanvasAgentVisualContext(ctx context.Context, run *store
 	}
 	references := loop.visualReferences
 	loop.visualReferences = nil
+	visualReadFailed := func() {
+		loop.visualInspected = false
+		loop.lastToolSucceeded = false
+		loop.visualNextOffset = loop.visualPageOffset
+	}
 	if len(references) == 0 {
-		if !loop.visualInspected {
+		wasInspected := loop.visualInspected
+		visualReadFailed()
+		if !wasInspected {
 			return &sub2api.Message{Role: "user", Content: "真实图片检查没有成功，禁止声称已经比较或看过图片，也不能据此修改或重新生成。"}
 		}
 		return &sub2api.Message{Role: "user", Content: "视觉检查完成了浏览器端重复检测，但这些图片没有可供模型读取的云端文件。只能依据工具返回的确定性重复结果继续，禁止声称已经看过图片像素；涉及主体、颜色或构图判断时应明确告诉用户图片尚未同步。"}
@@ -1600,14 +1718,16 @@ func (w *Worker) consumeCanvasAgentVisualContext(ctx context.Context, run *store
 			break
 		}
 	}
-	if len(allowed) == 0 {
-		return &sub2api.Message{Role: "user", Content: "视觉检查完成了本地重复检测，但没有取得可供模型查看的云端图片。只能依据工具返回的确定性重复结果继续，禁止声称已经看过图片像素。"}
+	if len(allowed) != len(references) {
+		visualReadFailed()
+		return &sub2api.Message{Role: "user", Content: "视觉检查完成了本地重复检测，但没有取得本页全部可供模型查看的云端图片。请先解决图片同步后重试当前页，禁止声称已经看过全部图片像素或继续修改。"}
 	}
 	images, err := w.loadAssistantReferences(ctx, map[string]any{"referenceImages": raw})
 	if len(temporaryKeys) > 0 && w.Storage != nil {
 		_ = w.Storage.DeleteKeys(ctx, uniqueCanvasAgentStrings(temporaryKeys))
 	}
 	if err != nil || len(images) != len(allowed) {
+		visualReadFailed()
 		return &sub2api.Message{Role: "user", Content: "视觉检查已定位图片节点，但真实图片读取失败。禁止根据标题、提示词或旧输出猜测画面，也不要未经检查直接重新生成。"}
 	}
 	lines := make([]string, 0, len(allowed)+1)
@@ -1702,8 +1822,8 @@ func canvasAgentInstructions(run *store.AssistantRun) string {
 你可以在一轮里多次调用工具，每次调用后都会看到真实结果：
 - canvas_get_state / canvas_export_snapshot：读画布最新结构。下面的快照是本轮开始时的，改过之后想确认就再读一次。
 - canvas_get_selection：读用户当前选中的节点。用户说「这个/这些/选中的」时先读它。
-- canvas_find_nodes / canvas_inspect_nodes：在大画布中按语义查找节点，并读取准确配置和上下游依赖。找到后需要定位时调用 canvas_focus_nodes。
-- canvas_inspect_visuals：读取真实图片像素并做确定性重复检测。scope=auto 会从实时选区追踪下游输出；选中文字或配置节点时也能找到其生成图片。用户反馈图片重复、相似、效果不对、主体变化、颜色或构图问题时必须先调用；工具返回后会附上最多 4 张真实图片及 nodeId/imageId 映射。truncated=true 时必须用 nextOffset 继续分页，全部检查完成前禁止修改或生成。禁止只凭 hasContent、标题或提示词声称看过图片，也禁止未检查就直接重新生成。
+- canvas_find_nodes / canvas_inspect_nodes：在大画布中按语义查找节点，并读取准确配置和上下游依赖。快照文字仅为摘要；详细读取的 metadata.textPages 给出每个字段的 total、truncated、nextOffset，长文本必须对该节点继续传 textOffset 直至读完，禁止遗漏尾部要求。顶层 truncated 表示还有节点未读取，用顶层 nextOffset 继续节点分页。找到后需要定位时调用 canvas_focus_nodes。
+- canvas_inspect_visuals：读取真实图片像素并做确定性重复检测。scope=auto 会从实时选区追踪下游输出；选中文字或配置节点时也能找到其生成图片。用户反馈图片重复、相似、效果不对、主体变化、颜色或构图问题时必须先调用；每页最多 4 张且附上当前页所有真实图片与 nodeId/imageId 映射。compared 是指纹比较数量，modelImageCount 是本页实际提供给模型的图片数。truncated=true 时必须用 nextOffset 连续分页，全部检查完成前禁止修改或生成。禁止只凭 hasContent、标题或提示词声称看过图片，也禁止未检查就直接重新生成。
 - canvas_duplicate_selection：复制指定节点或实时选区，浏览器负责 ID、组关系、节点引用、任务归属和内部连线重映射。
 - canvas_replace_workflow_input：保留目标输入节点 ID 和连线，用现有资源或文字替换内容，并使所有受影响旧输出失效；runDownstream=true 时只重跑真实下游。canvas_run_downstream 可从任意选中起点定向重跑。运行中的工作流必须先停止。
 - canvas_create_image_operation：为每张来源图片创建独立的内置操作节点和准确连线。只搭工作流时 execute=false；用户明确要求立即处理时 execute=true。裁剪、切图、本地放大不应改造成付费生图 config，多角度和反推提示词仍走现有生成费用确认。
@@ -2654,6 +2774,16 @@ func (w *Worker) executeCanvasAgent(
 	reasoningClient := client.WithReasoningEffort(reasoningEffort)
 	webSearchClient, webSearchErr := w.configuredAssistantWebSearchClient(ctx, run)
 	loop := canvasAgentLoopState{summary: "", pendingOps: nil, webSearchClient: webSearchClient}
+	resumingReview := false
+	if previous, e := store.GetAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID); e == nil && previous != nil && previous.Metadata["canvasReviewStarted"] == true && previous.Metadata["canvasReviewCompleted"] != true {
+		encoded, _ := json.Marshal(previous.Metadata["canvasReviewTargets"])
+		if json.Unmarshal(encoded, &loop.reviewTargets) == nil && len(loop.reviewTargets) > 0 {
+			resumingReview = true
+			loop.touched = true
+			loop.billableAction = true
+			loop.summary = "正在继续验收原任务结果，没有重新生成。"
+		}
+	}
 	if webSearchErr != nil {
 		loop.webSearchError = webSearchErr.Error()
 	}
@@ -2667,6 +2797,9 @@ func (w *Worker) executeCanvasAgent(
 	capabilities := intent.Capabilities
 	loop.requiresVisualInspection = capabilities[canvasCapabilityVisualInspection]
 	loop.plannedActions = append([]canvasAgentPlannedAction(nil), intent.Actions...)
+	if resumingReview {
+		loop.plannedActions = nil
+	}
 	if planInstructions := canvasAgentPlanInstructions(loop.plannedActions); planInstructions != "" {
 		payload = append(payload, sub2api.Message{Role: "system", Content: planInstructions})
 	}
@@ -2734,7 +2867,7 @@ func (w *Worker) executeCanvasAgent(
 	// Waiting on generations can burn minutes, so the loop is bounded by wall
 	// clock as well as by iteration count.
 	loopDeadline := time.Now().Add(canvasAgentMaxDuration)
-	for iteration := 0; iteration < canvasAgentMaxIterations; iteration++ {
+	for iteration := 0; iteration < canvasAgentMaxIterations && !resumingReview; iteration++ {
 		if iteration > 0 && time.Now().After(loopDeadline) {
 			break
 		}
@@ -2906,6 +3039,9 @@ func (w *Worker) executeCanvasAgent(
 		if loop.webSearchFailed {
 			return fmt.Errorf("%s", loop.webSearchError)
 		}
+		if loop.unconfirmedActionError != "" {
+			return fmt.Errorf("%s", loop.unconfirmedActionError)
+		}
 		loop.completeNextPlannedAction(next.ToolCall.Name)
 		if loop.finishAfterTool && len(loop.pendingPlannedActions()) > 0 {
 			loop.finishAfterTool = false
@@ -2940,6 +3076,18 @@ func (w *Worker) executeCanvasAgent(
 	if content == "" {
 		content = "没有收到模型回复，请重试。"
 	}
+	if len(loop.reviewTargets) > 0 && !loop.userCanceled {
+		content += w.reviewCanvasAgentOutputs(ctx, reasoningClient, run, &loop)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if terminated, err := w.assistantRunTerminated(ctx, run.ID); err != nil || terminated {
+			if err != nil {
+				return err
+			}
+			return context.Canceled
+		}
+	}
 	if len(reasoningParts) > 0 {
 		result.Reasoning = strings.Join(reasoningParts, "\n\n")
 	} else if strings.TrimSpace(result.Reasoning) == "" {
@@ -2947,6 +3095,11 @@ func (w *Worker) executeCanvasAgent(
 	}
 	result.ReasoningTokens = reasoningTokens
 	metadata := assistantMessageMetadata(run, nil, "complete", "")
+	if loop.reviewReport != nil {
+		metadata["canvasReview"] = loop.reviewReport
+		metadata["canvasReviewCompleted"] = true
+		metadata["canvasReviewTargets"] = loop.reviewTargets
+	}
 	if strings.TrimSpace(result.Reasoning) != "" {
 		metadata["reasoning"] = result.Reasoning
 	}

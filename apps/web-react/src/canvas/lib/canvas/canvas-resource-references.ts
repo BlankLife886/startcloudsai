@@ -6,6 +6,7 @@ import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { getDataUrlByteSize, readImageMeta } from "@/lib/image-utils";
 import { imageToDataUrl } from "@/services/image-storage";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@/types/canvas";
+import { createCanvasResourceIndex, type CanvasResourceIndex } from "./canvas-resource-index";
 
 export type CanvasResourceKind = "image" | "video" | "audio" | "text";
 
@@ -20,8 +21,25 @@ export type CanvasResourceReference = {
     active: boolean;
 };
 
-export function buildNodeMentionReferences(node: CanvasNodeData, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
-    return labelResourceNodes(getMentionResourceNodes(node.id, nodes, connections), true);
+export function buildNodeMentionReferences(node: CanvasNodeData, nodes: CanvasNodeData[], connections: CanvasConnection[], index = createCanvasResourceIndex(nodes, connections)) {
+    return labelResourceNodes(getMentionResourceNodes(node.id, nodes, connections, index), true);
+}
+
+/** Reuse unchanged references so editing one resource does not invalidate every node. */
+export function buildCanvasNodeMentionReferences(nodes: CanvasNodeData[], connections: CanvasConnection[], index: CanvasResourceIndex, previous = new Map<string, CanvasResourceReference[]>()) {
+    let changed = previous.size !== nodes.length;
+    const next = new Map<string, CanvasResourceReference[]>();
+    for (const node of nodes) {
+        const references = buildNodeMentionReferences(node, nodes, connections, index);
+        const existing = previous.get(node.id);
+        const equal = existing && existing.length === references.length && references.every((reference, i) => {
+            const old = existing[i];
+            return reference.id === old.id && reference.kind === old.kind && reference.label === old.label && reference.title === old.title && reference.previewUrl === old.previewUrl && reference.text === old.text && reference.active === old.active;
+        });
+        next.set(node.id, equal ? existing : references);
+        if (!equal) changed = true;
+    }
+    return changed ? next : previous;
 }
 
 export function buildCanvasResourceReferences(nodes: CanvasNodeData[]) {
@@ -52,22 +70,22 @@ export async function resolveCanvasReferenceImages(references: CanvasResourceRef
     }));
 }
 
-export function getMentionResourceNodes(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
-    const configInputs = getConnectedConfigResourceNodes(nodeId, nodes, connections);
+export function getMentionResourceNodes(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[], index = createCanvasResourceIndex(nodes, connections)) {
+    const configInputs = getConnectedConfigResourceNodes(nodeId, index);
     if (configInputs.length) return configInputs;
-    const ownInputs = getContextResourceNodes(nodeId, nodes, connections);
+    const ownInputs = getContextResourceNodes(nodeId, index);
     if (ownInputs.length) return ownInputs;
-    const node = nodes.find((item) => item.id === nodeId);
+    const node = index.nodesById.get(nodeId);
     return node && isResourceNode(node) ? [node] : [];
 }
 
-export function getGenerationResourceNodes(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
-    const configInputs = getConnectedConfigResourceNodes(nodeId, nodes, connections);
-    const roots = configInputs.length ? configInputs : getContextResourceNodes(nodeId, nodes, connections);
-    return expandUpstreamResourceNodes(roots, nodes, connections);
+export function getGenerationResourceNodes(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[], index = createCanvasResourceIndex(nodes, connections)) {
+    const configInputs = getConnectedConfigResourceNodes(nodeId, index);
+    const roots = configInputs.length ? configInputs : getContextResourceNodes(nodeId, index);
+    return expandUpstreamResourceNodes(roots, index);
 }
 
-function expandUpstreamResourceNodes(roots: CanvasNodeData[], nodes: CanvasNodeData[], connections: CanvasConnection[]) {
+function expandUpstreamResourceNodes(roots: CanvasNodeData[], index: CanvasResourceIndex) {
     const seen = new Set<string>();
     const out: CanvasNodeData[] = [];
     const visit = (node: CanvasNodeData) => {
@@ -75,23 +93,20 @@ function expandUpstreamResourceNodes(roots: CanvasNodeData[], nodes: CanvasNodeD
         seen.add(node.id);
         if (isResourceNode(node)) out.push(node);
         if (node.type !== CanvasNodeType.Text && node.type !== CanvasNodeType.Config) return;
-        getContextResourceNodes(node.id, nodes, connections).forEach(visit);
+        getContextResourceNodes(node.id, index).forEach(visit);
     };
     roots.forEach(visit);
     return out;
 }
 
-function getContextResourceNodes(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
-    return connections
-        .filter((connection) => connection.toNodeId === nodeId)
-        .map((connection) => nodes.find((node) => node.id === connection.fromNodeId))
-        .filter((node): node is CanvasNodeData => Boolean(node && isResourceNode(node)));
+function getContextResourceNodes(nodeId: string, index: CanvasResourceIndex) {
+    return (index.incoming.get(nodeId) || []).filter(isResourceNode);
 }
 
-function getConnectedConfigResourceNodes(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
-    const configConnection = connections.find((connection) => connection.fromNodeId === nodeId && nodes.find((node) => node.id === connection.toNodeId)?.type === CanvasNodeType.Config);
-    if (!configConnection) return [];
-    return getContextResourceNodes(configConnection.toNodeId, nodes, connections).filter((node) => node.id !== nodeId);
+function getConnectedConfigResourceNodes(nodeId: string, index: CanvasResourceIndex) {
+    const config = index.outgoing.get(nodeId)?.find((node) => node.type === CanvasNodeType.Config);
+    if (!config) return [];
+    return getContextResourceNodes(config.id, index).filter((node) => node.id !== nodeId);
 }
 
 function labelResourceNodes(nodes: CanvasNodeData[], active: boolean) {

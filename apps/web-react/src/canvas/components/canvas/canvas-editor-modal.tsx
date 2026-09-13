@@ -16,6 +16,8 @@ export function CanvasEditorModal({
     icon,
     children,
     className,
+    closable = true,
+    ariaTitle,
 }: {
     open: boolean;
     onClose: () => void;
@@ -26,6 +28,9 @@ export function CanvasEditorModal({
     icon?: ReactNode;
     children: ReactNode;
     className?: string;
+    closable?: boolean;
+    /** Accessible name for dialogs that render their own visual heading. */
+    ariaTitle?: string;
 }) {
     const hostDark = useIsDark();
     const colorTheme = useThemeStore((state) => state.theme);
@@ -37,11 +42,12 @@ export function CanvasEditorModal({
             className={`canvas-editor-modal${dark ? " is-dark" : ""}${className ? ` ${className}` : ""}`}
             rootClassName={dark ? "is-dark" : undefined}
             classNames={{ container: dark ? "is-dark" : undefined }}
-            title={null}
+            title={ariaTitle ? <span className="canvas-editor-modal-a11y-title">{ariaTitle}</span> : null}
             open={open}
             centered
             width={width}
             footer={null}
+            closable={closable}
             destroyOnHidden
             onCancel={onClose}
         >

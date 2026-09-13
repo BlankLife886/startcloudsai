@@ -172,204 +172,377 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
     final emailProviders = providers.asData?.value;
     final canUseEmailCode = emailProviders?.canUseEmailCode == true;
     final isDevelopment = environment.name == AppEnvironmentName.development;
+    final colors = Theme.of(context).colorScheme;
+    final dark = colors.brightness == Brightness.dark;
+    final background = dark ? colors.surface : const Color(0xFFF7F8FA);
+    final primary = dark ? Colors.white : const Color(0xFF24262B);
+    final onPrimary = dark ? const Color(0xFF24262B) : Colors.white;
     return Scaffold(
-      appBar: const AppTopBar(
-        title: SizedBox.shrink(),
+      key: const Key('login-screen'),
+      backgroundColor: background,
+      appBar: AppTopBar(
+        title: const SizedBox.shrink(),
         fallbackLocation: '/discover',
+        backgroundColor: background,
       ),
       body: SafeArea(
-        child: Center(
+        top: false,
+        child: Align(
+          alignment: Alignment.topCenter,
           child: SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+            padding: const EdgeInsets.fromLTRB(24, 16, 24, 28),
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 440),
-              child: AutofillGroup(
-                child: Form(
-                  key: _formKey,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      const AppAppear(
-                        child: Align(
-                          alignment: Alignment.centerLeft,
-                          child: _BrandMark(),
-                        ),
-                      ),
-                      const SizedBox(height: 20),
-                      if (isDevelopment) ...[
-                        _DevelopmentEnvironmentNotice(environment: environment),
-                        const SizedBox(height: 18),
-                      ],
-                      Text(
-                        isDevelopment ? '本地账号登录' : '登录星空云绘',
-                        style: Theme.of(context).textTheme.headlineSmall
-                            ?.copyWith(fontWeight: FontWeight.w900),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        '验证码将在 3 分钟内有效',
-                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      _AuthProviderStatus(
-                        providers: providers,
-                        onRetry: () => ref.invalidate(authProvidersProvider),
-                      ),
-                      const SizedBox(height: 20),
-                      TextFormField(
-                        key: const Key('login-email-field'),
-                        controller: _emailController,
-                        focusNode: _emailFocusNode,
-                        keyboardType: TextInputType.emailAddress,
-                        autofillHints: const [AutofillHints.email],
-                        autocorrect: false,
-                        enableSuggestions: false,
-                        textInputAction: TextInputAction.next,
-                        onFieldSubmitted: (_) => _codeFocusNode.requestFocus(),
-                        validator: (value) => emailProviders == null
-                            ? null
-                            : validateLoginEmail(value, emailProviders),
-                        decoration: const InputDecoration(
-                          labelText: '邮箱',
-                          prefixIcon: Icon(Icons.alternate_email),
-                        ),
-                      ),
-                      const SizedBox(height: 14),
-                      LayoutBuilder(
-                        builder: (context, constraints) {
-                          final textScale = MediaQuery.textScalerOf(
-                            context,
-                          ).scale(1);
-                          final compact =
-                              constraints.maxWidth < 360 || textScale > 1.3;
-                          final codeField = TextFormField(
-                            key: const Key('login-code-field'),
-                            controller: _codeController,
-                            focusNode: _codeFocusNode,
-                            keyboardType: TextInputType.number,
-                            autofillHints: const [AutofillHints.oneTimeCode],
-                            inputFormatters: [
-                              FilteringTextInputFormatter.digitsOnly,
-                              LengthLimitingTextInputFormatter(6),
-                            ],
-                            maxLength: 6,
-                            textInputAction: TextInputAction.done,
-                            onChanged: (_) => setState(() {}),
-                            onFieldSubmitted: (_) => _submit(),
-                            validator: (value) =>
-                                RegExp(r'^\d{6}$').hasMatch(value?.trim() ?? '')
-                                ? null
-                                : '请输入六位验证码',
-                            decoration: InputDecoration(
-                              labelText: '验证码',
-                              counterText: '',
-                              prefixIcon: const Icon(Icons.password),
-                              suffixIcon: AnimatedSwitcher(
-                                duration: const Duration(milliseconds: 160),
-                                child: _codeController.text.length == 6
-                                    ? Icon(
-                                        Icons.check_circle,
-                                        key: const Key('login-code-complete'),
-                                        color: Theme.of(
-                                          context,
-                                        ).colorScheme.primary,
-                                      )
-                                    : const SizedBox.shrink(),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  AppAppear(child: _LoginHeader(isDevelopment: isDevelopment)),
+                  const SizedBox(height: 28),
+                  if (isDevelopment) ...[
+                    _DevelopmentEnvironmentNotice(environment: environment),
+                    const SizedBox(height: 16),
+                  ],
+                  _LoginFormSurface(
+                    child: AutofillGroup(
+                      child: Form(
+                        key: _formKey,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            _AuthProviderStatus(
+                              providers: providers,
+                              onRetry: () =>
+                                  ref.invalidate(authProvidersProvider),
+                            ),
+                            const SizedBox(height: 18),
+                            TextFormField(
+                              key: const Key('login-email-field'),
+                              controller: _emailController,
+                              focusNode: _emailFocusNode,
+                              keyboardType: TextInputType.emailAddress,
+                              autofillHints: const [AutofillHints.email],
+                              autocorrect: false,
+                              enableSuggestions: false,
+                              textInputAction: TextInputAction.next,
+                              onFieldSubmitted: (_) =>
+                                  _codeFocusNode.requestFocus(),
+                              validator: (value) => emailProviders == null
+                                  ? null
+                                  : validateLoginEmail(value, emailProviders),
+                              decoration: _loginInputDecoration(
+                                context,
+                                hint: '邮箱',
+                                icon: Icons.mail_outline_rounded,
                               ),
                             ),
-                          );
-                          final sendButton = OutlinedButton.icon(
-                            key: const Key('send-login-code'),
-                            onPressed:
-                                _sendingCode ||
-                                    _signingIn ||
-                                    _resendSeconds > 0 ||
-                                    !canUseEmailCode
-                                ? null
-                                : _requestCode,
-                            icon: _sendingCode
-                                ? const SizedBox.square(
-                                    dimension: 16,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                    ),
-                                  )
-                                : const Icon(Icons.send_outlined, size: 18),
-                            label: Text(
-                              _sendingCode
-                                  ? '发送中'
-                                  : _resendSeconds > 0
-                                  ? '${_resendSeconds}s 后重试'
-                                  : '获取验证码',
+                            const SizedBox(height: 14),
+                            LayoutBuilder(
+                              builder: (context, constraints) {
+                                final compact =
+                                    constraints.maxWidth < 280 ||
+                                    MediaQuery.textScalerOf(context).scale(1) >
+                                        1.3;
+                                final sendLabel = _sendingCode
+                                    ? '发送中'
+                                    : _resendSeconds > 0
+                                    ? '${_resendSeconds}s 后重试'
+                                    : '获取验证码';
+                                return TextFormField(
+                                  key: const Key('login-code-field'),
+                                  controller: _codeController,
+                                  focusNode: _codeFocusNode,
+                                  keyboardType: TextInputType.number,
+                                  autofillHints: const [
+                                    AutofillHints.oneTimeCode,
+                                  ],
+                                  inputFormatters: [
+                                    FilteringTextInputFormatter.digitsOnly,
+                                    LengthLimitingTextInputFormatter(6),
+                                  ],
+                                  maxLength: 6,
+                                  textInputAction: TextInputAction.done,
+                                  onChanged: (_) => setState(() {}),
+                                  onFieldSubmitted: (_) => _submit(),
+                                  validator: (value) =>
+                                      RegExp(
+                                        r'^\d{6}$',
+                                      ).hasMatch(value?.trim() ?? '')
+                                      ? null
+                                      : '请输入六位验证码',
+                                  decoration:
+                                      _loginInputDecoration(
+                                        context,
+                                        hint: '验证码',
+                                        icon: compact
+                                            ? null
+                                            : Icons.password_rounded,
+                                      ).copyWith(
+                                        counterText: '',
+                                        contentPadding:
+                                            const EdgeInsets.symmetric(
+                                              horizontal: 12,
+                                              vertical: 19,
+                                            ),
+                                        suffixIconConstraints: BoxConstraints(
+                                          minWidth: compact ? 121 : 157,
+                                          maxWidth: compact ? 121 : 157,
+                                          minHeight: 56,
+                                        ),
+                                        suffixIcon: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            SizedBox(
+                                              width: 24,
+                                              child: Center(
+                                                child: AnimatedSwitcher(
+                                                  duration:
+                                                      MediaQuery.disableAnimationsOf(
+                                                        context,
+                                                      )
+                                                      ? Duration.zero
+                                                      : AppMotion.selection,
+                                                  child:
+                                                      _codeController
+                                                              .text
+                                                              .length ==
+                                                          6
+                                                      ? Icon(
+                                                          Icons.check_circle,
+                                                          key: const Key(
+                                                            'login-code-complete',
+                                                          ),
+                                                          size: 18,
+                                                          color: Theme.of(
+                                                            context,
+                                                          ).colorScheme.primary,
+                                                        )
+                                                      : const SizedBox(
+                                                          width: 24,
+                                                        ),
+                                                ),
+                                              ),
+                                            ),
+                                            SizedBox(
+                                              key: const Key(
+                                                'login-code-divider',
+                                              ),
+                                              width: 1,
+                                              height: 24,
+                                              child: ColoredBox(
+                                                color: colors.onSurface
+                                                    .withValues(alpha: .14),
+                                              ),
+                                            ),
+                                            SizedBox(
+                                              width: compact ? 92 : 128,
+                                              child: Tooltip(
+                                                message: sendLabel,
+                                                child: TextButton.icon(
+                                                  key: const Key(
+                                                    'send-login-code',
+                                                  ),
+                                                  style: TextButton.styleFrom(
+                                                    minimumSize: const Size(
+                                                      0,
+                                                      56,
+                                                    ),
+                                                    padding:
+                                                        const EdgeInsets.symmetric(
+                                                          horizontal: 10,
+                                                          vertical: 16,
+                                                        ),
+                                                    backgroundColor:
+                                                        Colors.transparent,
+                                                    foregroundColor:
+                                                        colors.onSurface,
+                                                    side: BorderSide.none,
+                                                    shape: const RoundedRectangleBorder(
+                                                      borderRadius:
+                                                          BorderRadius.horizontal(
+                                                            right:
+                                                                Radius.circular(
+                                                                  28,
+                                                                ),
+                                                          ),
+                                                    ),
+                                                  ),
+                                                  onPressed:
+                                                      _sendingCode ||
+                                                          _signingIn ||
+                                                          _resendSeconds > 0 ||
+                                                          !canUseEmailCode
+                                                      ? null
+                                                      : _requestCode,
+                                                  icon:
+                                                      compact ||
+                                                          _resendSeconds > 0
+                                                      ? null
+                                                      : _sendingCode
+                                                      ? const SizedBox.square(
+                                                          dimension: 16,
+                                                          child:
+                                                              CircularProgressIndicator(
+                                                                strokeWidth: 2,
+                                                              ),
+                                                        )
+                                                      : const Icon(
+                                                          Icons.send_outlined,
+                                                          size: 18,
+                                                        ),
+                                                  label: Text(
+                                                    compact && !_sendingCode
+                                                        ? (_resendSeconds > 0
+                                                              ? '${_resendSeconds}s'
+                                                              : '获取')
+                                                        : sendLabel,
+                                                  ),
+                                                ),
+                                              ),
+                                            ),
+                                            const SizedBox(width: 4),
+                                          ],
+                                        ),
+                                      ),
+                                );
+                              },
                             ),
-                          );
-                          if (compact) {
-                            return Column(
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                codeField,
-                                const SizedBox(height: 10),
-                                sendButton,
-                              ],
-                            );
-                          }
-                          return Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Expanded(child: codeField),
-                              const SizedBox(width: 10),
-                              SizedBox(width: 126, child: sendButton),
-                            ],
-                          );
-                        },
-                      ),
-                      if (_developmentCode != null) ...[
-                        const SizedBox(height: 10),
-                        Text(
-                          '开发环境验证码已自动填入',
-                          style: TextStyle(
-                            color: Theme.of(context).colorScheme.tertiary,
-                          ),
-                        ),
-                      ],
-                      const SizedBox(height: 22),
-                      FilledButton(
-                        onPressed:
-                            _signingIn ||
-                                _sendingCode ||
-                                !canUseEmailCode ||
-                                !_acceptedLegal
-                            ? null
-                            : _submit,
-                        style: FilledButton.styleFrom(
-                          minimumSize: const Size.fromHeight(52),
-                        ),
-                        child: _signingIn
-                            ? const SizedBox.square(
-                                dimension: 20,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
+                            if (_developmentCode != null) ...[
+                              const SizedBox(height: 10),
+                              Text(
+                                '开发环境验证码已自动填入',
+                                style: TextStyle(
+                                  color: Theme.of(context).colorScheme.tertiary,
                                 ),
-                              )
-                            : const Text('登录'),
+                              ),
+                            ],
+                            const SizedBox(height: 24),
+                            FilledButton(
+                              key: const Key('login-submit'),
+                              onPressed:
+                                  _signingIn ||
+                                      _sendingCode ||
+                                      !canUseEmailCode ||
+                                      !_acceptedLegal
+                                  ? null
+                                  : _submit,
+                              style: FilledButton.styleFrom(
+                                minimumSize: const Size.fromHeight(56),
+                                backgroundColor: primary,
+                                foregroundColor: onPrimary,
+                                disabledBackgroundColor: dark
+                                    ? const Color(0xFF343A43)
+                                    : const Color(0xFF484C53),
+                                disabledForegroundColor: dark
+                                    ? const Color(0xFFBFC5CF)
+                                    : const Color(0xFFD9DDE3),
+                                side: BorderSide(
+                                  color: Colors.white.withValues(alpha: .4),
+                                ),
+                                shape: const StadiumBorder(),
+                              ),
+                              child: _signingIn
+                                  ? const SizedBox.square(
+                                      dimension: 20,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: Colors.white,
+                                      ),
+                                    )
+                                  : const Text('登录'),
+                            ),
+                            const SizedBox(height: 14),
+                            _LegalConsent(
+                              accepted: _acceptedLegal,
+                              onChanged: (value) {
+                                setState(() => _acceptedLegal = value);
+                              },
+                            ),
+                          ],
+                        ),
                       ),
-                      const SizedBox(height: 12),
-                      _LegalConsent(
-                        accepted: _acceptedLegal,
-                        onChanged: (value) {
-                          setState(() => _acceptedLegal = value);
-                        },
-                      ),
-                    ],
+                    ),
                   ),
-                ),
+                ],
               ),
             ),
           ),
         ),
       ),
+    );
+  }
+}
+
+InputDecoration _loginInputDecoration(
+  BuildContext context, {
+  required String hint,
+  required IconData? icon,
+}) {
+  final colors = Theme.of(context).colorScheme;
+  final highContrast = MediaQuery.highContrastOf(context);
+  final edge = Colors.white.withValues(
+    alpha: colors.brightness == Brightness.dark ? .14 : .95,
+  );
+  const radius = BorderRadius.all(Radius.circular(28));
+  return InputDecoration(
+    hintText: hint,
+    prefixIcon: icon == null ? null : Icon(icon, size: 21),
+    prefixIconConstraints: const BoxConstraints(minWidth: 54, minHeight: 56),
+    filled: true,
+    fillColor: colors.surfaceContainerLow,
+    contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 19),
+    border: const OutlineInputBorder(borderRadius: radius),
+    enabledBorder: OutlineInputBorder(
+      borderRadius: radius,
+      borderSide: BorderSide(color: highContrast ? colors.outline : edge),
+    ),
+    focusedBorder: OutlineInputBorder(
+      borderRadius: radius,
+      borderSide: BorderSide(color: colors.primary, width: 1.5),
+    ),
+    errorBorder: OutlineInputBorder(
+      borderRadius: radius,
+      borderSide: BorderSide(color: colors.error),
+    ),
+    focusedErrorBorder: OutlineInputBorder(
+      borderRadius: radius,
+      borderSide: BorderSide(color: colors.error, width: 1.5),
+    ),
+    errorMaxLines: 3,
+  );
+}
+
+class _LoginFormSurface extends StatelessWidget {
+  const _LoginFormSurface({required this.child});
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final dark = colors.brightness == Brightness.dark;
+    final highContrast = MediaQuery.highContrastOf(context);
+    return DecoratedBox(
+      key: const Key('login-form-panel'),
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerLowest,
+        borderRadius: BorderRadius.circular(28),
+        border: Border.all(
+          color: highContrast
+              ? colors.outline
+              : Colors.white.withValues(alpha: dark ? .16 : 1),
+        ),
+        boxShadow: highContrast
+            ? null
+            : [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: dark ? .18 : .055),
+                  blurRadius: 22,
+                  offset: const Offset(0, 8),
+                  spreadRadius: -4,
+                ),
+              ],
+      ),
+      child: Padding(padding: const EdgeInsets.all(20), child: child),
     );
   }
 }
@@ -387,6 +560,8 @@ class _LegalConsent extends StatelessWidget {
       minimumSize: const Size(44, 36),
       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
       visualDensity: VisualDensity.compact,
+      foregroundColor: Theme.of(context).colorScheme.onSurface,
+      textStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
     );
     final muted = Theme.of(context).colorScheme.onSurfaceVariant;
     return Row(
@@ -411,19 +586,13 @@ class _LegalConsent extends StatelessWidget {
                 '我已阅读并同意',
                 style: Theme.of(
                   context,
-                ).textTheme.bodySmall?.copyWith(color: muted),
+                ).textTheme.bodySmall?.copyWith(color: muted, fontSize: 12),
               ),
               TextButton(
                 key: const Key('login-terms'),
                 style: style,
                 onPressed: () => context.push('/legal/terms'),
                 child: const Text('用户协议'),
-              ),
-              Text(
-                '和',
-                style: Theme.of(
-                  context,
-                ).textTheme.bodySmall?.copyWith(color: muted),
               ),
               TextButton(
                 key: const Key('login-privacy-policy'),
@@ -464,7 +633,7 @@ class _AuthProviderStatus extends StatelessWidget {
       data: (value) => value.canUseEmailCode
           ? _AuthStatusPanel(
               icon: Icons.verified_user_outlined,
-              title: '邮箱验证码登录',
+              title: '验证码登录',
               detail: '支持 ${formatLoginEmailDomains(value.emailDomains)}',
             )
           : _AuthStatusPanel(
@@ -498,58 +667,53 @@ class _AuthStatusPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final foreground = error ? colors.onErrorContainer : colors.onSurface;
-    return DecoratedBox(
+    final foreground = error ? colors.error : colors.onSurface;
+    return ConstrainedBox(
       key: const Key('auth-service-status'),
-      decoration: BoxDecoration(
-        color: error ? colors.errorContainer : colors.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(
-          color: error
-              ? colors.error.withValues(alpha: .28)
-              : colors.outlineVariant,
-        ),
-      ),
-      child: Column(
+      constraints: const BoxConstraints(minHeight: 64),
+      child: Row(
         children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
-            child: Row(
+          SizedBox.square(
+            dimension: 40,
+            child: Center(
+              child: loading
+                  ? const SizedBox.square(
+                      dimension: 22,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : Icon(icon, size: 28, color: foreground),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(icon, size: 21, color: foreground),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        title,
-                        style: TextStyle(
-                          color: foreground,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        detail,
-                        style: Theme.of(
-                          context,
-                        ).textTheme.bodySmall?.copyWith(color: foreground),
-                      ),
-                    ],
+                Text(
+                  title,
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                    color: foreground,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
-                if (onRetry != null)
-                  IconButton(
-                    tooltip: '重新检查',
-                    onPressed: onRetry,
-                    color: foreground,
-                    icon: const Icon(Icons.refresh),
+                const SizedBox(height: 5),
+                Text(
+                  detail,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: colors.onSurfaceVariant,
+                    height: 1.4,
                   ),
+                ),
               ],
             ),
           ),
-          if (loading) const LinearProgressIndicator(minHeight: 2),
+          if (onRetry != null)
+            IconButton(
+              tooltip: '重新检查',
+              onPressed: onRetry,
+              color: foreground,
+              icon: const Icon(Icons.refresh),
+            ),
         ],
       ),
     );
@@ -567,7 +731,7 @@ class _DevelopmentEnvironmentNotice extends StatelessWidget {
     return DecoratedBox(
       decoration: BoxDecoration(
         color: colors.tertiaryContainer,
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(color: colors.tertiary.withValues(alpha: .25)),
       ),
       child: Padding(
@@ -604,22 +768,57 @@ class _DevelopmentEnvironmentNotice extends StatelessWidget {
   }
 }
 
-class _BrandMark extends StatelessWidget {
-  const _BrandMark();
+class _LoginHeader extends StatelessWidget {
+  const _LoginHeader({required this.isDevelopment});
+
+  final bool isDevelopment;
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     return Row(
-      mainAxisSize: MainAxisSize.min,
+      key: const Key('login-header'),
       children: [
-        Icon(Icons.auto_awesome_rounded, color: colors.primary, size: 24),
-        const SizedBox(width: 9),
-        Text(
-          '星空云绘',
-          style: Theme.of(
-            context,
-          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(14),
+          child: Image.asset(
+            'assets/brand/brand_mark.png',
+            key: const Key('login-brand-mark'),
+            width: 52,
+            height: 52,
+            cacheWidth: 156,
+            semanticLabel: '星空云绘标识',
+          ),
+        ),
+        const SizedBox(width: 16),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Semantics(
+                header: true,
+                child: Text(
+                  '星空云绘',
+                  key: const Key('login-title'),
+                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                    fontSize: 28,
+                    height: 1.25,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 0,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                isDevelopment ? '本地账号登录' : '账号登录',
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: colors.onSurfaceVariant,
+                  fontSize: 14,
+                  height: 1.3,
+                ),
+              ),
+            ],
+          ),
         ),
       ],
     );

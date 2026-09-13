@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { gsap } from "gsap";
 import { useGSAP } from "@gsap/react";
+import { useStageMediaReady } from "./StageTransition.jsx";
 import "./GenerationReveal.css";
 
 gsap.registerPlugin(useGSAP);
 
 // Keep the same particle surface alive while the result image loads underneath it.
-export function GenerationReveal({ complete, sourceKey = "", pending, children }) {
+export function GenerationReveal({ complete, sourceKey = "", mediaKey = sourceKey, pending, children }) {
+  const stageMediaReady = useStageMediaReady();
   const root = useRef(null);
   const media = useRef(null);
   const cover = useRef(null);
@@ -37,16 +39,19 @@ export function GenerationReveal({ complete, sourceKey = "", pending, children }
       || (image.currentSrc || image.src) !== src || !image.complete || !image.naturalWidth) return;
     setFailed(false);
     setReady(true);
-  }, []);
+    stageMediaReady?.({ id: mediaKey, source: sourceKey, width: image.naturalWidth, height: image.naturalHeight });
+  }, [mediaKey, sourceKey, stageMediaReady]);
   const onPreviewReady = useCallback(event => { preview.current = event.currentTarget; }, []);
   const onFailure = useCallback(() => {
+    if (!mounted.current) return;
     if (preview.current?.naturalWidth && preview.current.complete) {
       void onReady({ currentTarget: preview.current });
       return;
     }
     setFailed(true);
     setOverlay(false);
-  }, [onReady]);
+    stageMediaReady?.({ id: mediaKey, source: sourceKey, width: 0, height: 0 });
+  }, [onReady, mediaKey, sourceKey, stageMediaReady]);
 
   useGSAP(() => {
     if (!complete || !ready || !overlay) return;

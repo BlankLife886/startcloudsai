@@ -9,6 +9,7 @@ import { useThemeStore } from "@/stores/use-theme-store";
 import { getNodePluginId, listNodeDefinitions, useNodeRegistryVersion } from "@/lib/canvas/node-registry";
 import { CanvasNodeType, type ConnectionHandle, type Position } from "@/types/canvas";
 import type { CanvasNodeDefinition } from "@/types/canvas-plugin";
+import { CanvasFloatingLayer } from "./canvas-floating-layer";
 
 export type PendingConnectionCreate = {
     connection: ConnectionHandle;
@@ -32,26 +33,35 @@ function MenuShell({
     style,
     menuRef,
     connection,
+    position,
+    width,
 }: {
     children: React.ReactNode;
     className?: string;
     style?: React.CSSProperties;
-    menuRef?: React.Ref<HTMLDivElement>;
+    menuRef?: React.RefObject<HTMLDivElement | null>;
     connection?: boolean;
+    position: Position;
+    width: number;
 }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const anchorRef = useRef<HTMLSpanElement>(null);
     return (
-        <div
-            ref={menuRef}
-            className={`canvas-float-menu absolute z-[120] overflow-hidden rounded-[22px] border shadow-2xl backdrop-blur-xl ${className || ""}`}
-            data-canvas-no-zoom
-            data-connection-create-menu={connection ? "" : undefined}
-            style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, boxShadow: theme.toolbar.shadow, color: theme.node.text, ...style }}
-            onMouseDown={(event) => event.stopPropagation()}
-            onPointerDown={(event) => event.stopPropagation()}
-        >
-            {children}
-        </div>
+        <>
+            <span ref={anchorRef} aria-hidden className="pointer-events-none absolute" style={{ left: position.x, top: position.y, width: 0, height: 0 }} />
+            <CanvasFloatingLayer
+                anchorRef={anchorRef}
+                panelRef={menuRef}
+                placement="bottom-start"
+                gap={0}
+                width={width}
+                className={`canvas-float-menu rounded-[22px] border shadow-2xl backdrop-blur-xl ${className || ""}`}
+                data-connection-create-menu={connection ? "" : undefined}
+                style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, boxShadow: theme.toolbar.shadow, color: theme.node.text, ...style }}
+            >
+                {children}
+            </CanvasFloatingLayer>
+        </>
     );
 }
 
@@ -120,7 +130,7 @@ export function ConnectionCreateMenu({
     const basic = definitions.filter((def) => getNodePluginId(def.type) === "builtin");
     const extensions = definitions.filter((def) => getNodePluginId(def.type) !== "builtin");
     return (
-        <MenuShell connection className="w-[300px] p-2.5" style={{ left: pending.position.x, top: pending.position.y }}>
+        <MenuShell connection className="p-2.5" position={pending.position} width={300}>
             <MenuHeader title={t("canvas.createMenu.fromNode")} onClose={onClose} />
             <div className="thin-scrollbar max-h-[min(62vh,520px)] overflow-y-auto pr-0.5">
                 {basic.length ? <SectionLabel>{t("canvas.createMenu.basic")}</SectionLabel> : null}
@@ -257,7 +267,7 @@ export function NodeCreateMenu({ position, onCreate, onClose }: { position: Posi
     }, [onClose]);
 
     return (
-        <MenuShell menuRef={menuRef} className="w-[308px] p-2.5" style={{ left: position.x, top: position.y }}>
+        <MenuShell menuRef={menuRef} className="p-2.5" position={position} width={308}>
             <MenuHeader title={t("canvas.createMenu.select")} onClose={onClose} />
             <label
                 className="mb-1 flex h-9 items-center gap-2 rounded-[12px] px-2.5"

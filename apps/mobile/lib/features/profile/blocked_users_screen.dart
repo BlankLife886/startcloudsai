@@ -134,7 +134,7 @@ class _BlockedUsersList extends StatelessWidget {
                     Text(
                       items.isEmpty ? '没有已屏蔽用户' : '已屏蔽 ${items.length} 位用户',
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w800,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
                     const SizedBox(height: 3),
@@ -171,7 +171,7 @@ class _BlockedUsersList extends StatelessWidget {
           else
             Material(
               color: colors.surfaceContainerLow,
-              borderRadius: BorderRadius.circular(8),
+              borderRadius: BorderRadius.circular(16),
               clipBehavior: Clip.antiAlias,
               child: Column(
                 children: [

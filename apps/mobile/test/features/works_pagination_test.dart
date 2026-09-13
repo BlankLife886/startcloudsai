@@ -550,7 +550,7 @@ void main() {
       find.byKey(const Key('works-search')),
     );
     final border = search.decoration!.border! as OutlineInputBorder;
-    expect(border.borderRadius, BorderRadius.circular(8));
+    expect(border.borderRadius, BorderRadius.circular(16));
     expect(tester.takeException(), isNull);
   });
 

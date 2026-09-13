@@ -1393,11 +1393,27 @@ func assistantProposalCatalogMaxImages(models []map[string]any) int {
 		maximum = 1
 	}
 	for _, model := range models {
-		if value := assistantMapInt(model, "maxImages"); value > maximum {
+		if value := assistantProposalModelMaxImages(model); value > maximum {
 			maximum = value
 		}
 	}
 	return maximum
+}
+
+// assistantProposalModelMaxImages is the effective per-request limit. The
+// model catalog exposes both the provider capability (maxImages) and the
+// account/global execution limit (imageBatchLimit). Agent proposals must use
+// the lower value so the confirmation card cannot promise a batch the run
+// endpoint will reject or the account cannot execute.
+func assistantProposalModelMaxImages(model map[string]any) int {
+	limit := assistantMapInt(model, "maxImages")
+	if limit <= 0 {
+		limit = 4
+	}
+	if batchLimit := assistantMapInt(model, "imageBatchLimit"); batchLimit > 0 && batchLimit < limit {
+		limit = batchLimit
+	}
+	return limit
 }
 
 func assistantAgentInstructions(run *store.AssistantRun, catalog []assistantCatalogImage, models []map[string]any) string {
@@ -1429,7 +1445,7 @@ func assistantAgentInstructions(run *store.AssistantRun, catalog []assistantCata
 	- 编辑图片时必须判断参考图映射：用户要求分别、逐张、各自或一一对应处理时 referenceMode=individual，且 count 等于参考图数量；多张参考图需要共同融合、共同指导每张输出时 referenceMode=shared。
 	- 生成全新图片或没有参考图时 referenceMode=shared。
 	- 生成全新图片时 referencedImageIds 默认必须为空；只有用户明确提到上一张、图1/图2、之前图片的主体/风格，或明确要求修改历史图片时才可引用图片目录。
-- 用户明确要求几张图时必须原样写入 count；未指定时使用当前默认数量。
+	- 用户明确要求几张图时，在当前图片模型目录提供的有效单次上限内填写 count；如果需求数量超过上限，必须在 reason 和 planningSummary 中明确说明单次上限，不能提交会被系统拒绝的超限方案。未指定时使用当前默认数量。
 - 参数只从工具允许值和模型目录选择，系统还会按模型能力做最终校验。`
 	defaults := []string{fmt.Sprintf("数量=%d", assistantParamInt(run.Params, "count", 1))}
 	for _, item := range []struct{ label, key string }{{"比例", "ratio"}, {"分辨率", "resolution"}, {"质量", "quality"}, {"图片模型", "_imageModelConfigId"}} {
@@ -2336,9 +2352,7 @@ func assistantProposalMaxReferences(modelID string, models []map[string]any) int
 func assistantProposalMaxImages(modelID string, models []map[string]any) int {
 	limit := 4
 	if model := assistantProposalModel(modelID, models); model != nil {
-		if value := assistantMapInt(model, "maxImages"); value > 0 {
-			limit = value
-		}
+		limit = assistantProposalModelMaxImages(model)
 	}
 	return limit
 }

@@ -33,7 +33,6 @@ import '../features/profile/blocked_users_screen.dart';
 import '../features/profile/delete_account_screen.dart';
 import '../features/profile/legal_document_screen.dart';
 import '../features/profile/local_storage_screen.dart';
-import '../features/profile/open_source_licenses_screen.dart';
 import '../features/profile/profile_screen.dart';
 import '../features/shell/app_shell.dart';
 import '../features/tasks/works_screen.dart';
@@ -75,6 +74,14 @@ final appRouterProvider = Provider<GoRouter>(
           StatefulShellBranch(
             routes: [
               GoRoute(
+                path: '/design',
+                builder: (context, state) => const DesignScreen(),
+              ),
+            ],
+          ),
+          StatefulShellBranch(
+            routes: [
+              GoRoute(
                 path: '/ai',
                 builder: (context, state) => const AuthenticatedRoute(
                   title: 'AI 助手',
@@ -89,8 +96,16 @@ final appRouterProvider = Provider<GoRouter>(
           StatefulShellBranch(
             routes: [
               GoRoute(
-                path: '/design',
-                builder: (context, state) => const DesignScreen(),
+                path: '/orders',
+                builder: (context, state) => AuthenticatedRoute(
+                  title: '订单',
+                  icon: Icons.receipt_long_outlined,
+                  showBackButton: false,
+                  child: PurchaseOrdersScreen(
+                    showBackButton: false,
+                    initialOrderId: state.uri.queryParameters['order'],
+                  ),
+                ),
               ),
             ],
           ),
@@ -441,11 +456,7 @@ final appRouterProvider = Provider<GoRouter>(
         builder: (context, state) =>
             const LegalDocumentScreen(kind: LegalDocumentKind.terms),
       ),
-      GoRoute(
-        parentNavigatorKey: _rootNavigatorKey,
-        path: '/licenses',
-        builder: (context, state) => const OpenSourceLicensesScreen(),
-      ),
+      GoRoute(path: '/licenses', redirect: (context, state) => '/about'),
       GoRoute(
         parentNavigatorKey: _rootNavigatorKey,
         path: '/updates',

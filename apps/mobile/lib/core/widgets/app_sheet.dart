@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 
 import '../../app/starclouds_theme.dart';
+import 'app_visual.dart';
 
-const _headerHeight = 40.0;
+const _headerHeight = 48.0;
 
 Future<T?> showAppDrawer<T>({
   required BuildContext context,
@@ -75,10 +76,11 @@ class AppSheetScaffold extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
     final reduceMotion = MediaQuery.disableAnimationsOf(context);
     final routeAnimation = ModalRoute.of(context)?.animation;
-    const radius = BorderRadius.vertical(top: Radius.circular(26));
+    const radius = BorderRadius.vertical(
+      top: Radius.circular(StarCloudsRadii.xl),
+    );
     final sheet = DecoratedBox(
       decoration: BoxDecoration(
         borderRadius: radius,
@@ -91,35 +93,39 @@ class AppSheetScaffold extends StatelessWidget {
         ],
       ),
       child: Material(
-        color: colors.surface,
+        color: Colors.transparent,
         elevation: 0,
         shadowColor: Colors.transparent,
         shape: const RoundedRectangleBorder(borderRadius: radius),
         clipBehavior: Clip.antiAlias,
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final maxHeight = constraints.maxHeight.isFinite
-                ? constraints.maxHeight
-                : MediaQuery.sizeOf(context).height * 0.92;
-            return ConstrainedBox(
-              constraints: BoxConstraints(maxHeight: maxHeight),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  _AppSheetHeader(showCloseButton: showCloseButton),
-                  ConstrainedBox(
-                    constraints: BoxConstraints(
-                      maxHeight: (maxHeight - _headerHeight).clamp(
-                        0,
-                        maxHeight,
+        child: AppGlassSurface(
+          borderRadius: radius,
+          shadow: false,
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final maxHeight = constraints.maxHeight.isFinite
+                  ? constraints.maxHeight
+                  : MediaQuery.sizeOf(context).height * 0.92;
+              return ConstrainedBox(
+                constraints: BoxConstraints(maxHeight: maxHeight),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _AppSheetHeader(showCloseButton: showCloseButton),
+                    ConstrainedBox(
+                      constraints: BoxConstraints(
+                        maxHeight: (maxHeight - _headerHeight).clamp(
+                          0,
+                          maxHeight,
+                        ),
                       ),
+                      child: child,
                     ),
-                    child: child,
-                  ),
-                ],
-              ),
-            );
-          },
+                  ],
+                ),
+              );
+            },
+          ),
         ),
       ),
     );
@@ -151,7 +157,7 @@ class _AppSheetHeader extends StatelessWidget {
         children: [
           const Positioned(top: 8, left: 0, right: 0, child: _AppSheetHandle()),
           if (showCloseButton)
-            const Positioned(top: 6, right: 10, child: _AppSheetCloseButton()),
+            const Positioned(top: 2, right: 8, child: _AppSheetCloseButton()),
         ],
       ),
     );
@@ -178,10 +184,10 @@ class _AppSheetHandle extends StatelessWidget {
         child: DecoratedBox(
           key: const Key('app-sheet-handle'),
           decoration: BoxDecoration(
-            color: Colors.black,
+            color: Theme.of(context).colorScheme.outlineVariant,
             borderRadius: BorderRadius.circular(99),
           ),
-          child: const SizedBox(width: 64, height: 5),
+          child: const SizedBox(width: 36, height: 4),
         ),
       ),
     );
@@ -244,7 +250,7 @@ class _AppSheetCloseButtonState extends State<_AppSheetCloseButton>
               shape: BoxShape.circle,
             ),
             child: SizedBox.square(
-              dimension: 28,
+              dimension: 44,
               child: Center(
                 child: Icon(
                   Icons.close_rounded,

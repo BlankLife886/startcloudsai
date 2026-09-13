@@ -2,7 +2,6 @@ import { lazy, Suspense } from "react";
 import { createBrowserRouter, Navigate, redirect } from "react-router";
 import { MigrationPreview } from "./views/MigrationPreview.jsx";
 import { AppShell } from "./layout/AppShell.jsx";
-import { AuthAccountView } from "./views/auth/AuthAccountView.jsx";
 import { ProtectedCanvasRoute } from "./auth/ProtectedCanvasRoute.jsx";
 import { importWithRecovery } from "./utils/dynamicImportRecovery.js";
 import { PageAccessBoundary } from "./page-control/PageAccessBoundary.jsx";
@@ -58,7 +57,8 @@ export const router = createBrowserRouter([
   },
   {
     path: "/auth",
-    element: <AuthAccountView />,
+    HydrateFallback: RouteHydrationFallback,
+    lazy: lazyView(() => import("./views/auth/AuthAccountView.jsx"), "AuthAccountView"),
   },
   {
     path: "/auth/login",

@@ -23,11 +23,12 @@ test("bundled plugins are registered under their original storage namespaces", a
     assert.match(builtinNodes, /BUNDLED_CANVAS_PLUGINS\.forEach\(\(plugin\) => registerNodeDefinitions\(plugin\.nodes, plugin\.id\)\)/);
 });
 
-test("top toolbar exposes operation nodes directly and keeps plugin nodes grouped", async () => {
+test("top toolbar labels common tools and groups advanced operations without dropping them", async () => {
     const toolbar = await readCanvasSource("components/canvas/canvas-toolbar.tsx");
     assert.match(toolbar, /creatableDefinitions\.filter\(\(def\) => isCanvasOperationNodeType\(def\.type\)\)/);
-    assert.match(toolbar, /operationDefs\.map\(\(definition\) =>/);
-    assert.match(toolbar, /\[&>svg\]:size-3\.5/);
+    assert.match(toolbar, /\[\.\.\.operationDefs, \.\.\.extensionDefs\]\.map/);
+    assert.match(toolbar, /data-canvas-more-tools/);
+    assert.match(toolbar, /id="tool-text" showLabel/);
     assert.match(toolbar, /getNodePluginId\(def\.type\) !== "builtin"/);
     assert.match(toolbar, /id="tool-extensions"/);
 });

@@ -24,6 +24,7 @@ export type CanvasWorkflowCheckpoint = {
     currentNodeId?: string;
     errorNodeId?: string;
     errorMessage?: string;
+    recoveryBlocked?: boolean;
     startedAt: string;
     updatedAt: string;
 };
@@ -104,6 +105,7 @@ export function normalizeCanvasWorkflowCheckpoint(value: unknown): CanvasWorkflo
         ...(currentNodeId ? { currentNodeId } : {}),
         ...(errorNodeId ? { errorNodeId } : {}),
         ...(typeof record.errorMessage === "string" && record.errorMessage ? { errorMessage: record.errorMessage } : {}),
+        ...(record.recoveryBlocked === true ? { recoveryBlocked: true } : {}),
         startedAt: typeof record.startedAt === "string" ? record.startedAt : now,
         updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : now,
     };

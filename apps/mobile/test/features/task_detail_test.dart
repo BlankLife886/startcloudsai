@@ -335,7 +335,7 @@ void main() {
       find.byKey(const Key('task-prompt-panel')),
     );
     final shape = panel.shape! as RoundedRectangleBorder;
-    expect(shape.borderRadius, BorderRadius.circular(8));
+    expect(shape.borderRadius, BorderRadius.circular(24));
     expect(
       Theme.of(tester.element(find.text(task.displayPrompt))).brightness,
       Brightness.dark,
@@ -408,7 +408,7 @@ void main() {
     expect(find.text('4 张'), findsOneWidget);
     final material = tester.widget<Material>(panel);
     final shape = material.shape! as RoundedRectangleBorder;
-    expect(shape.borderRadius, BorderRadius.circular(8));
+    expect(shape.borderRadius, BorderRadius.circular(24));
     expect(Theme.of(tester.element(panel)).brightness, Brightness.dark);
     expect(tester.takeException(), isNull);
   });

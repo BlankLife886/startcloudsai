@@ -362,7 +362,7 @@ function buildNodeConfig(globalConfig: AiConfig, node: CanvasNodeData, mode: Can
         model: mode === "image" ? resolveCanvasImageModel(globalConfig, node.metadata?.model, sizeSettings.sizeMode) : resolveModelForCapability(globalConfig, node.metadata?.model, mode),
         reasoningEffort: node.metadata?.reasoningEffort || globalConfig.reasoningEffort || defaultConfig.reasoningEffort,
         quality: node.metadata?.quality || globalConfig.quality || defaultConfig.quality,
-        size: node.metadata?.size || globalConfig.size || defaultConfig.size,
+        size: node.metadata?.size || (mode === "image" ? "" : globalConfig.size || defaultConfig.size),
         ...sizeSettings,
         resolution: node.metadata?.resolution || globalConfig.resolution || defaultConfig.resolution,
         background: node.metadata?.background ?? "",

@@ -155,6 +155,34 @@ func (s *Server) activeCanvasWorkflowRun(c *gin.Context) {
 	ok(c, gin.H{"run": canvasWorkflowRunJSON(item)})
 }
 
+func (s *Server) canvasWorkflowRun(c *gin.Context) {
+	user, err := s.requireUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	projectID, err := parseUUIDParam(c, "id")
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	runID, err := parseUUIDParam(c, "runId")
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	item, err := store.GetUserCanvasWorkflowRun(c.Request.Context(), s.St.Pool, user.ID, projectID, runID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if item == nil {
+		fail(c, apperr.E("not_found", "工作流运行记录不存在", 404))
+		return
+	}
+	ok(c, gin.H{"run": canvasWorkflowRunJSON(item)})
+}
+
 func (s *Server) acquireCanvasWorkflowRun(c *gin.Context) {
 	user, err := s.requireUser(c)
 	if err != nil {

@@ -489,8 +489,8 @@ void main() {
     final card = tester.widget<Material>(
       find.byKey(const Key('asset-card-asset-2')),
     );
-    final shape = card.shape! as RoundedRectangleBorder;
-    expect(shape.borderRadius, BorderRadius.circular(8));
+    expect(card.borderRadius, BorderRadius.circular(24));
+    expect(card.color, Colors.transparent);
     expect(
       Theme.of(tester.element(find.text('风景参考'))).brightness,
       Brightness.dark,

@@ -231,13 +231,6 @@ class AboutScreen extends ConsumerWidget {
                 detail: '查看服务规则与用户责任',
                 onTap: () => context.push('/legal/terms'),
               ),
-              _AboutRow(
-                key: const Key('about-open-source-licenses'),
-                icon: Icons.code_rounded,
-                title: '开源许可',
-                detail: '查看第三方组件及其许可文本',
-                onTap: () => context.push('/licenses'),
-              ),
               const _AboutRow(
                 key: Key('about-data-use'),
                 icon: Icons.shield_outlined,
@@ -287,7 +280,7 @@ class _AboutIdentity extends StatelessWidget {
         DecoratedBox(
           decoration: BoxDecoration(
             color: const Color(0xFFF7F8FA),
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(16),
           ),
           child: SizedBox.square(
             dimension: 64,
@@ -306,7 +299,7 @@ class _AboutIdentity extends StatelessWidget {
           '星空云绘',
           style: Theme.of(
             context,
-          ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
+          ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
         ),
         const SizedBox(height: 4),
         Text(
@@ -331,7 +324,7 @@ class _AboutSectionTitle extends StatelessWidget {
     title,
     style: Theme.of(
       context,
-    ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+    ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
   );
 }
 
@@ -345,7 +338,7 @@ class _AboutGroup extends StatelessWidget {
     final colors = Theme.of(context).colorScheme;
     return Material(
       color: colors.surfaceContainerLow,
-      borderRadius: BorderRadius.circular(8),
+      borderRadius: BorderRadius.circular(16),
       clipBehavior: Clip.antiAlias,
       child: Column(
         children: [

@@ -401,7 +401,7 @@ class _FeedbackMetric extends StatelessWidget {
                 '$value',
                 maxLines: 1,
                 style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                  fontWeight: FontWeight.w900,
+                  fontWeight: FontWeight.w700,
                   height: 1.1,
                 ),
               ),
@@ -466,7 +466,7 @@ class FeedbackCard extends StatelessWidget {
             item.title,
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontWeight: FontWeight.w800),
+            style: const TextStyle(fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 5),
           Text(
@@ -501,7 +501,7 @@ class FeedbackCard extends StatelessWidget {
               '建议已采纳 · +${item.rewardPoints} 积分',
               style: TextStyle(
                 color: Theme.of(context).colorScheme.secondary,
-                fontWeight: FontWeight.w800,
+                fontWeight: FontWeight.w600,
               ),
             ),
           ],
@@ -539,7 +539,7 @@ class FeedbackDetailSheet extends StatelessWidget {
                   child: Text(
                     item.title,
                     style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.w900,
+                      fontWeight: FontWeight.w700,
                     ),
                   ),
                 ),
@@ -549,7 +549,7 @@ class FeedbackDetailSheet extends StatelessWidget {
                   status.label,
                   style: TextStyle(
                     color: status.color,
-                    fontWeight: FontWeight.w800,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
               ],
@@ -574,13 +574,13 @@ class FeedbackDetailSheet extends StatelessWidget {
                 '处理回复',
                 style: Theme.of(
                   context,
-                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
               ),
               const SizedBox(height: 8),
               DecoratedBox(
                 decoration: BoxDecoration(
                   color: Theme.of(context).colorScheme.surfaceContainerLow,
-                  borderRadius: BorderRadius.circular(8),
+                  borderRadius: BorderRadius.circular(16),
                   border: Border.all(
                     color: Theme.of(context).colorScheme.outlineVariant,
                   ),
@@ -599,7 +599,7 @@ class FeedbackDetailSheet extends StatelessWidget {
               DecoratedBox(
                 decoration: BoxDecoration(
                   color: Theme.of(context).colorScheme.secondaryContainer,
-                  borderRadius: BorderRadius.circular(8),
+                  borderRadius: BorderRadius.circular(16),
                 ),
                 child: Padding(
                   padding: const EdgeInsets.all(14),
@@ -610,7 +610,7 @@ class FeedbackDetailSheet extends StatelessWidget {
                       Expanded(
                         child: Text(
                           '产品建议已采纳，${item.rewardPoints} 积分奖励已到账。',
-                          style: const TextStyle(fontWeight: FontWeight.w800),
+                          style: const TextStyle(fontWeight: FontWeight.w600),
                         ),
                       ),
                     ],
@@ -870,7 +870,7 @@ class _FeedbackComposerSheetState extends State<FeedbackComposerSheet> {
                 '提交反馈',
                 style: Theme.of(
                   context,
-                ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
+                ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
               ),
               const SizedBox(height: 5),
               Text(

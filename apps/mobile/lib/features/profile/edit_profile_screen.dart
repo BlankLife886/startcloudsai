@@ -126,7 +126,7 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
                 '更换头像',
                 style: Theme.of(
                   context,
-                ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+                ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
               ),
               const SizedBox(height: 12),
               _AvatarSheetAction(
@@ -422,8 +422,8 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: -0.3,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 0,
                   ),
                 ),
                 const SizedBox(height: 4),
@@ -450,7 +450,7 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
                   children: [
                     _EditFieldRow(
                       icon: Icons.person_outline,
-                      accent: const Color(0xFF4F67D6),
+                      accent: const Color(0xFF005FEA),
                       label: '用户名',
                       child: TextFormField(
                         controller: _usernameController,
@@ -673,7 +673,7 @@ class _EditCard extends StatelessWidget {
     return DecoratedBox(
       decoration: BoxDecoration(
         color: colors.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(color: colors.outlineVariant),
       ),
       child: Padding(
@@ -725,7 +725,7 @@ class _EditFieldRow extends StatelessWidget {
           DecoratedBox(
             decoration: BoxDecoration(
               color: accent.withValues(alpha: .12),
-              borderRadius: BorderRadius.circular(8),
+              borderRadius: BorderRadius.circular(16),
             ),
             child: SizedBox.square(
               dimension: 40,
@@ -801,7 +801,7 @@ class _EditPreferenceCard extends StatelessWidget {
       key: const Key('edit-preference-surface'),
       decoration: BoxDecoration(
         color: colors.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(color: colors.outlineVariant),
       ),
       child: Padding(
@@ -829,7 +829,7 @@ class _EditPreferenceCard extends StatelessWidget {
                   Text(
                     '创作费用确认',
                     style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.w800,
+                      fontWeight: FontWeight.w600,
                     ),
                   ),
                   const SizedBox(height: 4),
@@ -923,7 +923,7 @@ class _EditSaveBar extends StatelessWidget {
                   style: FilledButton.styleFrom(
                     minimumSize: const Size.fromHeight(48),
                     shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8),
+                      borderRadius: BorderRadius.circular(16),
                     ),
                   ),
                   icon: saving
@@ -963,7 +963,7 @@ class _EditSectionTitle extends StatelessWidget {
     title,
     style: Theme.of(
       context,
-    ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+    ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
   );
 }
 
@@ -991,7 +991,7 @@ class _AvatarSheetAction extends StatelessWidget {
         child: DecoratedBox(
           decoration: BoxDecoration(
             color: colors.surfaceContainerLow,
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(16),
             border: Border.all(color: colors.outlineVariant),
           ),
           child: Padding(

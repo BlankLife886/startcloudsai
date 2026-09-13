@@ -85,6 +85,25 @@ class PromptItem {
   );
 }
 
+String promptListCoverUrl(String? value) {
+  final url = value?.trim() ?? '';
+  final uri = Uri.tryParse(url);
+  // Only resize this public CDN's size parameter; signed and
+  // application file URLs must remain byte-for-byte unchanged.
+  if (uri == null ||
+      uri.scheme != 'https' ||
+      uri.host != 'pbs.twimg.com' ||
+      uri.userInfo.isNotEmpty ||
+      !uri.path.startsWith('/media/') ||
+      !uri.queryParameters.keys.every(const {'format', 'name'}.contains) ||
+      !const {'large', 'orig'}.contains(uri.queryParameters['name'])) {
+    return url;
+  }
+  return uri
+      .replace(queryParameters: {...uri.queryParameters, 'name': 'small'})
+      .toString();
+}
+
 class PromptEngagement {
   const PromptEngagement({
     required this.action,

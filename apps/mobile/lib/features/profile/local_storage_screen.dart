@@ -247,7 +247,7 @@ class _StorageContent extends StatelessWidget {
           const SizedBox(height: 8),
           Material(
             color: Theme.of(context).colorScheme.surfaceContainerLow,
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(16),
             clipBehavior: Clip.antiAlias,
             child: Column(
               children: [
@@ -324,7 +324,7 @@ class _StorageSummary extends StatelessWidget {
         DecoratedBox(
           decoration: BoxDecoration(
             color: colors.primaryContainer,
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(16),
           ),
           child: SizedBox.square(
             dimension: 48,
@@ -343,7 +343,7 @@ class _StorageSummary extends StatelessWidget {
                 '本机内容',
                 style: Theme.of(
                   context,
-                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
               ),
               const SizedBox(height: 3),
               Text(
@@ -407,7 +407,7 @@ class _SectionTitle extends StatelessWidget {
     title,
     style: Theme.of(
       context,
-    ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+    ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
   );
 }
 
@@ -426,7 +426,7 @@ class _StorageError extends StatelessWidget {
         children: [
           const Icon(Icons.sync_problem_outlined, size: 38),
           const SizedBox(height: 12),
-          const Text('本地存储读取失败', style: TextStyle(fontWeight: FontWeight.w800)),
+          const Text('本地存储读取失败', style: TextStyle(fontWeight: FontWeight.w600)),
           const SizedBox(height: 12),
           OutlinedButton.icon(
             onPressed: onRetry,

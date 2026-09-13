@@ -9,9 +9,14 @@ import 'billing.dart';
 import 'purchase_center_screen.dart';
 
 class PurchaseOrdersScreen extends ConsumerStatefulWidget {
-  const PurchaseOrdersScreen({this.initialOrderId, super.key});
+  const PurchaseOrdersScreen({
+    this.initialOrderId,
+    this.showBackButton = true,
+    super.key,
+  });
 
   final String? initialOrderId;
+  final bool showBackButton;
 
   @override
   ConsumerState<PurchaseOrdersScreen> createState() =>
@@ -84,7 +89,8 @@ class _PurchaseOrdersScreenState extends ConsumerState<PurchaseOrdersScreen> {
     final center = ref.watch(purchaseCenterControllerProvider);
     return Scaffold(
       appBar: AppTopBar(
-        title: const Text('我的订单'),
+        title: Text(widget.showBackButton ? '我的订单' : '订单'),
+        showBackButton: widget.showBackButton,
         fallbackLocation: '/profile/purchases',
         actions: [
           IconButton(

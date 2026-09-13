@@ -737,13 +737,26 @@ html.color-scheme-dark .studio-composer__add-ref {
 .studio-composer__rail {
   display: flex;
   min-width: 0;
-  height: 48px;
+  height: 50px;
   align-items: center;
-  gap: 6px;
-  padding: 4px;
+  gap: 4px;
+  padding: 5px;
   overflow: visible;
-  border-radius: 18px;
-  background: color-mix(in srgb, var(--sc-surface) 64%, transparent);
+  border: 1px solid transparent;
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--sc-surface) 70%, #fff);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 72%),
+    0 1px 2px rgb(48 38 96 / 3%);
+}
+
+html.color-scheme-dark .studio-composer__rail,
+html.dark .studio-composer__rail {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--sc-surface) 82%, transparent);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 4%),
+    0 1px 2px rgb(0 0 0 / 14%);
 }
 
 .studio-composer__rail-group {
@@ -751,7 +764,7 @@ html.color-scheme-dark .studio-composer__add-ref {
   min-width: 0;
   height: 100%;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   padding: 0;
   background: transparent;
 }
@@ -760,7 +773,7 @@ html.color-scheme-dark .studio-composer__add-ref {
   flex: 0 0 auto;
   align-self: center;
   gap: 10px;
-  height: 48px;
+  height: 50px;
 }
 
 .studio-composer__actions {
@@ -797,33 +810,39 @@ html.color-scheme-dark .studio-composer__add-ref {
 }
 
 .studio-composer__rail .studio-composer__control {
-  height: 38px;
-  min-height: 38px;
+  height: 40px;
+  min-height: 40px;
   gap: 6px;
   padding: 0 12px;
   border-color: transparent;
-  border-radius: 13px;
+  border-radius: 14px;
   background: transparent;
   box-shadow: none;
+  outline: none;
   transition:
-    background 220ms ease,
-    color 220ms ease,
-    box-shadow 220ms ease;
+    background 200ms ease,
+    color 200ms ease,
+    box-shadow 200ms ease;
+}
+
+.studio-composer__rail .studio-composer__control:focus,
+.studio-composer__rail .studio-composer__control:focus-visible {
+  outline: none;
 }
 
 .studio-composer__rail .studio-composer__control.is-captioned {
   display: grid;
   align-content: center;
   justify-items: start;
-  gap: 3px;
-  padding: 5px 14px 6px;
+  gap: 4px;
+  padding: 6px 14px 7px;
 }
 
 .studio-composer__rail .studio-composer__control.is-captioned > small {
-  color: color-mix(in srgb, var(--sc-muted) 88%, var(--sc-text));
-  font-size: 0.56rem;
-  font-weight: 620;
-  letter-spacing: 0.03em;
+  color: color-mix(in srgb, var(--sc-muted) 90%, transparent);
+  font-size: 0.55rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
   line-height: 1;
 }
 
@@ -854,34 +873,36 @@ html.color-scheme-dark .studio-composer__add-ref {
 .studio-composer__control-value > i:last-child {
   color: var(--sc-muted);
   font-size: 0.56rem;
-  opacity: 0.45;
+  opacity: 0.4;
   transition:
-    transform 220ms ease,
-    opacity 220ms ease;
+    transform 200ms ease,
+    opacity 200ms ease;
 }
 
 .studio-composer__rail .studio-composer__control:hover .studio-composer__control-value > i:last-child,
 .studio-composer__rail .studio-composer__control.is-open .studio-composer__control-value > i:last-child {
-  opacity: 0.75;
+  opacity: 0.72;
 }
 
 .studio-composer__rail .studio-composer__control.is-workflow {
   height: 40px;
   min-height: 40px;
-  padding: 0 16px 0 14px;
+  padding: 0 15px 0 13px;
   border-color: transparent;
   border-radius: 14px;
-  background: var(--sc-accent-soft);
+  background: color-mix(in srgb, var(--sc-accent-soft) 78%, #fff);
   color: var(--sc-ink);
   font-weight: 700;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 55%);
 }
 
 .studio-composer__rail .studio-composer__control.is-icon {
-  width: 38px;
-  min-width: 38px;
-  height: 38px;
-  flex-basis: 38px;
+  width: 40px;
+  min-width: 40px;
+  height: 40px;
+  flex-basis: 40px;
   padding: 0;
+  border-radius: 14px;
 }
 
 .studio-composer__control > i:first-child {
@@ -903,8 +924,9 @@ html.color-scheme-dark .studio-composer__add-ref {
 
 .studio-composer__rail .studio-composer__control:hover:not(:disabled) {
   border-color: transparent;
-  background: rgba(255, 255, 255, 0.88);
+  background: rgb(255 255 255 / 92%);
   color: var(--sc-ink);
+  box-shadow: 0 1px 3px rgb(48 38 96 / 6%);
 }
 
 .studio-composer__rail .studio-composer__control.is-open,
@@ -912,24 +934,34 @@ html.color-scheme-dark .studio-composer__add-ref {
   border-color: transparent;
   background: #fff;
   color: var(--sc-accent);
-  box-shadow: 0 6px 16px rgba(88, 60, 140, 0.08);
+  box-shadow: 0 4px 14px rgb(88 60 140 / 10%);
 }
 
 .studio-composer__rail .studio-composer__control.is-workflow:hover:not(:disabled),
 .studio-composer__rail .studio-composer__control.is-workflow.is-open,
 .studio-composer__rail .studio-composer__control.is-workflow[aria-expanded='true'] {
-  background: color-mix(in srgb, var(--sc-accent-soft) 80%, #fff);
+  background: color-mix(in srgb, var(--sc-accent-soft) 68%, #fff);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 65%);
+}
+
+html.color-scheme-dark .studio-composer__rail .studio-composer__control:hover:not(:disabled),
+html.dark .studio-composer__rail .studio-composer__control:hover:not(:disabled) {
+  background: rgb(255 255 255 / 8%);
   box-shadow: none;
 }
 
-html.color-scheme-dark .studio-composer__rail .studio-composer__control:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.08);
+html.color-scheme-dark .studio-composer__rail .studio-composer__control.is-open,
+html.color-scheme-dark .studio-composer__rail .studio-composer__control[aria-expanded='true'],
+html.dark .studio-composer__rail .studio-composer__control.is-open,
+html.dark .studio-composer__rail .studio-composer__control[aria-expanded='true'] {
+  background: rgb(255 255 255 / 10%);
+  box-shadow: 0 6px 16px rgb(0 0 0 / 22%);
 }
 
-html.color-scheme-dark .studio-composer__rail .studio-composer__control.is-open,
-html.color-scheme-dark .studio-composer__rail .studio-composer__control[aria-expanded='true'] {
-  background: rgba(255, 255, 255, 0.1);
-  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.24);
+html.color-scheme-dark .studio-composer__rail .studio-composer__control.is-workflow,
+html.dark .studio-composer__rail .studio-composer__control.is-workflow {
+  background: color-mix(in srgb, var(--sc-accent-soft) 88%, transparent);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 6%);
 }
 
 .studio-composer__control.is-open > i:first-child,
@@ -1132,12 +1164,46 @@ html.color-scheme-dark .studio-composer__rail .studio-composer__control[aria-exp
 @keyframes studio-menu-in {
   from {
     opacity: 0;
-    transform: translateY(6px);
+    transform: translateY(6px) scale(0.98);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: translateY(0) scale(1);
   }
+}
+
+@keyframes studio-menu-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(4px) scale(0.985);
+  }
+}
+
+.studio-composer__field-menu,
+.studio-composer__popover.studio-composer__popover--tools {
+  animation: studio-menu-in 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.studio-composer__field-menu.is-entering,
+.studio-composer__popover.studio-composer__popover--tools.is-entering {
+  opacity: 0;
+  transform: translateY(6px) scale(0.98);
+  animation: none;
+}
+
+.studio-composer__field-menu.is-open,
+.studio-composer__popover.studio-composer__popover--tools.is-open {
+  animation: studio-menu-in 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.studio-composer__field-menu.is-closing,
+.studio-composer__popover.studio-composer__popover--tools.is-closing {
+  animation: studio-menu-out 140ms ease forwards;
+  pointer-events: none;
 }
 
 .studio-composer__field-menu {
@@ -1146,7 +1212,6 @@ html.color-scheme-dark .studio-composer__rail .studio-composer__control[aria-exp
   left: 0;
   z-index: 34;
   display: grid;
-  animation: studio-menu-in 200ms ease;
   width: max-content;
   min-width: max(100%, 168px);
   max-width: min(280px, calc(100vw - 32px));
@@ -1162,6 +1227,162 @@ html.color-scheme-dark .studio-composer__rail .studio-composer__control[aria-exp
     0 0 0 1px rgba(124, 92, 255, 0.04);
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--sc-muted) 54%, transparent) transparent;
+}
+
+/* Shared sheet card — light/dark follow assistant model-menu palette. */
+.studio-composer__popover.studio-composer__popover--tools,
+.studio-composer__field-menu.is-skill,
+.studio-composer__field-menu.is-model,
+.studio-composer__field-menu.is-ratio,
+.studio-composer__field-menu.is-resolution,
+.studio-composer__field-menu.is-quality,
+.studio-composer__field-menu.is-count {
+  --sheet-surface: #ffffff;
+  --sheet-hover: #f4f0fa;
+  --sheet-active: #ece6f8;
+  --sheet-text: #302b43;
+  --sheet-muted: rgb(56 49 76 / 55%);
+  --sheet-accent: #7c5cff;
+  --sheet-price: #a96000;
+  --sheet-price-muted: rgb(56 49 76 / 42%);
+  padding: 12px;
+  overflow: auto;
+  border: 0;
+  border-radius: 18px;
+  background: var(--sheet-surface);
+  color: var(--sheet-text);
+  box-shadow:
+    0 2px 6px rgb(49 32 107 / 6%),
+    0 18px 40px rgb(49 32 107 / 12%);
+  color-scheme: light;
+}
+
+html.color-scheme-dark .studio-composer__popover.studio-composer__popover--tools,
+html.color-scheme-dark .studio-composer__field-menu.is-skill,
+html.color-scheme-dark .studio-composer__field-menu.is-model,
+html.color-scheme-dark .studio-composer__field-menu.is-ratio,
+html.color-scheme-dark .studio-composer__field-menu.is-resolution,
+html.color-scheme-dark .studio-composer__field-menu.is-quality,
+html.color-scheme-dark .studio-composer__field-menu.is-count,
+html.dark .studio-composer__popover.studio-composer__popover--tools,
+html.dark .studio-composer__field-menu.is-skill,
+html.dark .studio-composer__field-menu.is-model,
+html.dark .studio-composer__field-menu.is-ratio,
+html.dark .studio-composer__field-menu.is-resolution,
+html.dark .studio-composer__field-menu.is-quality,
+html.dark .studio-composer__field-menu.is-count {
+  --sheet-surface: #2a233c;
+  --sheet-hover: rgb(255 255 255 / 8%);
+  --sheet-active: rgb(143 116 255 / 22%);
+  --sheet-text: rgb(255 255 255 / 92%);
+  --sheet-muted: rgb(255 255 255 / 48%);
+  --sheet-accent: #b49cff;
+  --sheet-price: #f0b24e;
+  --sheet-price-muted: rgb(255 255 255 / 38%);
+  box-shadow:
+    0 2px 8px rgb(0 0 0 / 28%),
+    0 22px 48px rgb(0 0 0 / 42%);
+  color-scheme: dark;
+}
+
+.studio-composer__popover--tools .studio-composer__tool-menu > button,
+.studio-composer__field-menu.is-skill > button,
+.studio-composer__field-menu.is-model > button,
+.studio-composer__field-menu.is-ratio > button,
+.studio-composer__field-menu.is-resolution > button,
+.studio-composer__field-menu.is-quality > button,
+.studio-composer__field-menu.is-count > button {
+  border-radius: 12px;
+  color: var(--sheet-text);
+  transition:
+    background 160ms ease,
+    color 160ms ease,
+    transform 160ms ease;
+}
+
+.studio-composer__popover--tools .studio-composer__tool-menu > button:hover,
+.studio-composer__field-menu.is-skill > button:hover,
+.studio-composer__field-menu.is-model > button:hover,
+.studio-composer__field-menu.is-resolution > button:hover,
+.studio-composer__field-menu.is-quality > button:hover,
+.studio-composer__field-menu.is-count > button:hover {
+  background: var(--sheet-hover);
+  color: var(--sheet-text);
+  transform: translateX(2px);
+}
+
+.studio-composer__field-menu.is-ratio > button:hover {
+  background: var(--sheet-hover);
+  color: var(--sheet-text);
+  transform: translateY(-1px);
+}
+
+.studio-composer__popover--tools .studio-composer__tool-menu > button:active,
+.studio-composer__field-menu.is-skill > button:active,
+.studio-composer__field-menu.is-model > button:active,
+.studio-composer__field-menu.is-resolution > button:active,
+.studio-composer__field-menu.is-quality > button:active,
+.studio-composer__field-menu.is-count > button:active {
+  transform: translateX(1px) scale(0.99);
+  transition-duration: 80ms;
+}
+
+.studio-composer__field-menu.is-ratio > button:active {
+  transform: translateY(0) scale(0.99);
+  transition-duration: 80ms;
+}
+
+.studio-composer__popover--tools .studio-composer__tool-menu > button.is-active,
+.studio-composer__field-menu.is-skill > button.is-selected,
+.studio-composer__field-menu.is-model > button.is-selected,
+.studio-composer__field-menu.is-ratio > button.is-selected,
+.studio-composer__field-menu.is-resolution > button.is-selected,
+.studio-composer__field-menu.is-quality > button.is-selected,
+.studio-composer__field-menu.is-count > button.is-selected {
+  background: var(--sheet-active);
+  color: var(--sheet-text);
+}
+
+.studio-composer__popover--tools .studio-composer__tool-menu > button.is-active:hover,
+.studio-composer__field-menu.is-skill > button.is-selected:hover,
+.studio-composer__field-menu.is-model > button.is-selected:hover,
+.studio-composer__field-menu.is-resolution > button.is-selected:hover,
+.studio-composer__field-menu.is-quality > button.is-selected:hover,
+.studio-composer__field-menu.is-count > button.is-selected:hover {
+  background: var(--sheet-active);
+  transform: translateX(2px);
+}
+
+.studio-composer__field-menu.is-ratio > button.is-selected:hover {
+  background: var(--sheet-active);
+  transform: translateY(-1px);
+}
+
+.studio-composer__popover--tools .studio-composer__popover-label,
+.studio-composer__popover--tools .studio-composer__tool-menu small,
+.studio-composer__field-menu.is-skill .studio-composer__field-option-copy small,
+.studio-composer__field-menu.is-model .studio-composer__field-option-copy small {
+  color: var(--sheet-muted);
+}
+
+.studio-composer__popover--tools .studio-composer__tool-menu strong,
+.studio-composer__popover--tools .studio-composer__tool-menu > button.is-active strong,
+.studio-composer__field-menu.is-skill .studio-composer__field-option-copy strong,
+.studio-composer__field-menu.is-model .studio-composer__field-option-copy strong,
+.studio-composer__field-menu.is-resolution .studio-composer__field-option-copy strong,
+.studio-composer__field-menu.is-quality .studio-composer__field-option-copy strong,
+.studio-composer__field-menu.is-count .studio-composer__field-option-copy strong {
+  color: var(--sheet-text);
+}
+
+.studio-composer__field-menu.is-model .studio-composer__model-price strong,
+.studio-composer__field-menu.is-skill .studio-composer__model-price strong {
+  color: var(--sheet-price);
+}
+
+.studio-composer__field-menu.is-model .studio-composer__model-price del,
+.studio-composer__field-menu.is-skill .studio-composer__model-price del {
+  color: var(--sheet-price-muted);
 }
 
 .studio-composer__field-menu > button {
@@ -1197,6 +1418,42 @@ html.color-scheme-dark .studio-composer__rail .studio-composer__control[aria-exp
   color: var(--sc-accent);
 }
 
+/* Model picker: give the dense catalog enough room for name, status and price. */
+.studio-composer__field-menu.is-model {
+  min-width: 360px;
+  max-width: min(420px, calc(100vw - 32px));
+  gap: 4px;
+}
+
+.studio-composer__field-menu.is-model > button {
+  min-height: 52px;
+  gap: 10px;
+  padding: 0 12px;
+}
+
+.studio-composer__field-menu.is-model .studio-composer__field-option-copy {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 3px;
+}
+
+.studio-composer__field-menu.is-model .studio-composer__field-option-copy small {
+  color: var(--sheet-muted);
+  font-size: .64rem;
+  font-weight: 500;
+}
+
+.studio-composer__field-menu.is-model > button.is-selected > i:last-child {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--sheet-accent);
+  color: #fff;
+}
+
 .studio-composer__field-menu > button span {
   min-width: 0;
   overflow: hidden;
@@ -1211,8 +1468,7 @@ html.color-scheme-dark .studio-composer__rail .studio-composer__control[aria-exp
   min-width: 0;
   max-width: min(280px, calc(100vw - 32px));
   max-height: none;
-  gap: 4px;
-  padding: 8px;
+  gap: 6px;
 }
 
 .studio-composer__field-menu.is-ratio > button {
@@ -1227,13 +1483,42 @@ html.color-scheme-dark .studio-composer__rail .studio-composer__control[aria-exp
   padding: 6px 4px;
 }
 
+.studio-composer__field-menu.is-resolution,
+.studio-composer__field-menu.is-quality,
+.studio-composer__field-menu.is-count {
+  width: 168px;
+  min-width: 168px;
+  max-width: min(168px, calc(100vw - 32px));
+  max-height: none;
+  gap: 2px;
+  padding: 8px;
+  border-radius: 16px;
+}
+
+.studio-composer__field-menu.is-resolution > button,
+.studio-composer__field-menu.is-quality > button,
+.studio-composer__field-menu.is-count > button {
+  min-height: 36px;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 12px;
+  font-weight: 650;
+}
+
+.studio-composer__field-menu.is-resolution > button .studio-composer__field-option-copy,
+.studio-composer__field-menu.is-quality > button .studio-composer__field-option-copy,
+.studio-composer__field-menu.is-count > button .studio-composer__field-option-copy {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .studio-composer__field-menu.is-ratio > button > i.studio-composer__ratio-preview {
-  color: var(--sc-muted);
+  color: var(--sheet-muted);
 }
 
 .studio-composer__field-menu.is-ratio > button.is-selected > i.studio-composer__ratio-preview,
 .studio-composer__field-menu.is-ratio > button:hover > i.studio-composer__ratio-preview {
-  color: var(--sc-accent);
+  color: var(--sheet-accent);
 }
 
 .studio-composer__field-menu.is-ratio > button small {
@@ -1250,14 +1535,14 @@ html.color-scheme-dark .studio-composer__rail .studio-composer__control[aria-exp
 .studio-composer__field-menu.is-skill {
   width: min(340px, calc(100vw - 32px));
   max-width: min(340px, calc(100vw - 32px));
-  padding: 8px;
+  gap: 4px;
 }
 
 .studio-composer__field-menu.is-skill > button {
   min-height: 52px;
   justify-content: flex-start;
   gap: 10px;
-  padding: 7px 10px;
+  padding: 8px 12px;
 }
 
 .studio-composer__field-menu.is-skill .studio-composer__field-option-copy {
@@ -1289,10 +1574,16 @@ html.color-scheme-dark .studio-composer__rail .studio-composer__control[aria-exp
 
 .studio-composer__field-menu.is-skill > button > i:last-child {
   margin-left: auto;
-  color: var(--sc-accent);
+  color: var(--sheet-accent);
 }
 
-.studio-composer__field-menu.is-model,
+.studio-composer__field-menu.is-resolution > button.is-selected > i:last-child,
+.studio-composer__field-menu.is-quality > button.is-selected > i:last-child,
+.studio-composer__field-menu.is-count > button.is-selected > i:last-child {
+  color: var(--sheet-accent);
+  font-size: 0.82rem;
+}
+
 .studio-composer__field-menu.is-reasoning {
   min-width: 280px;
   max-width: min(360px, calc(100vw - 32px));
@@ -1483,17 +1774,15 @@ html.color-scheme-dark .studio-composer__model-price del {
 .studio-composer__popover--tools {
   top: calc(100% + 6px);
   left: 0;
-  width: min(268px, calc(100vw - 32px));
-  padding: 8px;
-  animation: studio-menu-in 200ms ease;
+  width: min(280px, calc(100vw - 32px));
 }
 
 .studio-composer__workflow-wrap .studio-composer__popover--tools {
-  width: min(268px, calc(100vw - 32px));
+  width: min(280px, calc(100vw - 32px));
 }
 
 .studio-composer__popover-label {
-  margin: 2px 8px 6px;
+  margin: 4px 10px 8px;
   color: var(--sc-muted);
   font-size: 0.68rem;
   font-weight: 650;
@@ -1793,7 +2082,7 @@ html.color-scheme-dark .studio-prompt-layer {
 
 .studio-composer__tool-menu {
   display: grid;
-  gap: 2px;
+  gap: 4px;
 }
 
 .studio-composer__tool-menu > button {
@@ -1803,22 +2092,12 @@ html.color-scheme-dark .studio-prompt-layer {
   grid-template-columns: 22px minmax(0, 1fr) 16px;
   align-items: center;
   gap: 10px;
-  padding: 8px 10px;
+  padding: 8px 12px;
   border: 0;
-  border-radius: 10px;
   background: transparent;
   color: var(--sc-text);
   text-align: left;
   cursor: pointer;
-}
-
-.studio-composer__tool-menu > button:hover {
-  background: var(--sc-surface-hover);
-}
-
-.studio-composer__tool-menu > button.is-active {
-  background: var(--sc-accent-soft);
-  color: var(--sc-accent);
 }
 
 .studio-composer__tool-menu > button > i {
@@ -2698,8 +2977,41 @@ html.color-scheme-dark .studio-commerce-module {
 
   .studio-composer__voice.is-listening,
   .studio-composer__field-menu,
-  .studio-composer__popover--tools {
+  .studio-composer__popover--tools,
+  .studio-composer__field-menu.is-entering,
+  .studio-composer__field-menu.is-open,
+  .studio-composer__field-menu.is-closing,
+  .studio-composer__popover--tools.is-entering,
+  .studio-composer__popover--tools.is-open,
+  .studio-composer__popover--tools.is-closing {
     animation: none;
+    opacity: 1;
+    transform: none;
+  }
+
+  .studio-composer__popover--tools .studio-composer__tool-menu > button,
+  .studio-composer__field-menu.is-skill > button,
+  .studio-composer__field-menu.is-model > button,
+  .studio-composer__field-menu.is-ratio > button,
+  .studio-composer__field-menu.is-resolution > button,
+  .studio-composer__field-menu.is-quality > button,
+  .studio-composer__field-menu.is-count > button,
+  .studio-composer__popover--tools .studio-composer__tool-menu > button:hover,
+  .studio-composer__field-menu.is-skill > button:hover,
+  .studio-composer__field-menu.is-model > button:hover,
+  .studio-composer__field-menu.is-ratio > button:hover,
+  .studio-composer__field-menu.is-resolution > button:hover,
+  .studio-composer__field-menu.is-quality > button:hover,
+  .studio-composer__field-menu.is-count > button:hover,
+  .studio-composer__popover--tools .studio-composer__tool-menu > button:active,
+  .studio-composer__field-menu.is-skill > button:active,
+  .studio-composer__field-menu.is-model > button:active,
+  .studio-composer__field-menu.is-ratio > button:active,
+  .studio-composer__field-menu.is-resolution > button:active,
+  .studio-composer__field-menu.is-quality > button:active,
+  .studio-composer__field-menu.is-count > button:active {
+    transition: background 120ms ease, color 120ms ease !important;
+    transform: none !important;
   }
 
   .studio-bento__item:hover img,

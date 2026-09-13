@@ -8,6 +8,7 @@ import {
   ref,
   watch,
 } from "vue";
+import { onBeforeRouteLeave } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { Coin, Connection, Cpu, Delete, Plus, Refresh, Search, Upload } from "@element-plus/icons-vue";
 import AdminDialog from "@/components/AdminDialog.vue";
@@ -505,9 +506,8 @@ const kindFilter = ref<"all" | ModelKind>("all");
 const modelSearch = ref("");
 const reasoningPriceScope = ref<ReasoningPriceScope>("assistant");
 const savedSignature = ref("");
-const autoSaveReady = ref(false);
-let autoSaveTimer: ReturnType<typeof setTimeout> | null = null;
-let saveQueued = false;
+const configLoaded = ref(false);
+const loadFailed = ref(false);
 const config = reactive<ModelConfig>({
 	version: 8,
   providers: [],
@@ -538,13 +538,14 @@ const modelPagination = useClientPagination(() => filteredModels.value, 12);
 const providerPagination = useClientPagination(() => config.providers, 10);
 
 const isDirty = computed(
-  () => autoSaveReady.value && signature() !== savedSignature.value,
+  () => configLoaded.value && signature() !== savedSignature.value,
 );
 const saveStatusLabel = computed(() => {
   if (saving.value) return "保存中…";
   if (isDirty.value) return "有未保存更改";
-  if (!autoSaveReady.value) return "加载中…";
-  return "已自动保存";
+  if (loadFailed.value) return "加载失败，禁止保存";
+  if (!configLoaded.value) return "加载中…";
+  return "已保存";
 });
 
 const viewTabs = computed(() => [
@@ -703,59 +704,54 @@ function hydrate(value: ModelConfig) {
 }
 
 async function load() {
-  autoSaveReady.value = false;
+  if (loading.value || saving.value) return;
+  if (isDirty.value) {
+    try { await ElMessageBox.confirm("重新加载会放弃未保存的修改，是否继续？", "未保存的修改", { confirmButtonText: "放弃并重新加载", cancelButtonText: "继续编辑", type: "warning" }); }
+    catch { return; }
+  }
+  configLoaded.value = false;
+  loadFailed.value = false;
   loading.value = true;
   try {
-    hydrate(await request<ModelConfig>("/api/v1/admin/model-config"));
+    const loaded = await request<ModelConfig>("/api/v1/admin/model-config");
+    if (!loaded || !Array.isArray(loaded.models) || !Array.isArray(loaded.providers)) {
+      ElMessage.error("配置返回格式异常，已禁止保存");
+      throw new Error("Invalid model config response");
+    }
+    hydrate(loaded);
+    configLoaded.value = true;
+  } catch {
+    loadFailed.value = true;
   } finally {
     loading.value = false;
-    autoSaveReady.value = true;
   }
 }
 
 async function save() {
-  if (autoSaveTimer) {
-    clearTimeout(autoSaveTimer);
-    autoSaveTimer = null;
-  }
-  if (saving.value) {
-    saveQueued = true;
-    return;
-  }
+  if (!configLoaded.value || loading.value || saving.value) return;
   sanitizeWorkspaceBindings();
   sanitizeEditableFileConfig();
   if (signature() === savedSignature.value) return;
   const payload = JSON.parse(JSON.stringify(config)) as ModelConfig;
   const submittedSignature = JSON.stringify(payload);
-  saveQueued = false;
-  let succeeded = false;
   saving.value = true;
   try {
     const saved = await request<ModelConfig>("/api/v1/admin/model-config", {
       method: "PUT",
       body: payload,
+      scope: "persistent",
     });
     if (signature() === submittedSignature) {
       hydrate(retainSubmittedReasoning(saved, payload));
     } else {
       savedSignature.value = submittedSignature;
-      saveQueued = true;
     }
-    succeeded = true;
+    ElMessage.success(signature() === savedSignature.value ? "模型配置已保存" : "已保存提交的配置，后续修改请再次点击保存");
+  } catch {
+    // Keep the draft dirty after failure. Retry only on an explicit Save click.
   } finally {
     saving.value = false;
-    if (succeeded && (saveQueued || signature() !== savedSignature.value))
-      scheduleSave();
   }
-}
-
-function scheduleSave() {
-  if (!autoSaveReady.value || loading.value) return;
-  if (autoSaveTimer) clearTimeout(autoSaveTimer);
-  autoSaveTimer = setTimeout(() => {
-    autoSaveTimer = null;
-    void save().catch(() => undefined);
-  }, 500);
 }
 
 function retainSubmittedReasoning(saved: ModelConfig, submitted: ModelConfig) {
@@ -776,15 +772,6 @@ function retainSubmittedReasoning(saved: ModelConfig, submitted: ModelConfig) {
   };
 }
 
-watch(
-  () => signature(),
-  (value) => {
-    if (!autoSaveReady.value || loading.value || value === savedSignature.value)
-      return;
-    scheduleSave();
-  },
-  { flush: "post" },
-);
 
 function createId(prefix: string) {
   return `${prefix}-${crypto.randomUUID()}`;
@@ -966,7 +953,7 @@ async function saveWorkspacePricingDraft() {
         }),
     );
   }
-  await save();
+  ElMessage.success("价格修改已暂存，请点击顶部“保存配置”生效");
   workspacePricingDialogVisible.value = false;
 }
 
@@ -1577,8 +1564,7 @@ async function importDiscoveredMediaTools() {
       created += 1;
     }
     discoveredModelsViewer.configured = providerModels(provider.id).map((model) => model.upstreamModel);
-    await save();
-    ElMessage.success(`已同步 ${schemas.length} 个媒体工具，新增 ${created} 个；请设置平台积分后再启用`);
+    ElMessage.success(`已暂存 ${schemas.length} 个媒体工具，新增 ${created} 个；请设置平台积分并点击顶部“保存配置”`);
   } finally {
     importingDiscoveredTools.value = false;
   }
@@ -2706,12 +2692,7 @@ async function saveModelDraft() {
   }
   sanitizeWorkspaceBindings();
   modelDialogVisible.value = false;
-  try {
-    await save();
-    ElMessage.success("模型已保存");
-  } catch {
-    // request() already presents the server validation message.
-  }
+  ElMessage.success("模型修改已暂存，请点击顶部“保存配置”生效");
 }
 
 async function removeModel(index: number) {
@@ -2758,18 +2739,27 @@ function openFrontendTool(value: unknown) {
   window.open(url.toString(), "_blank", "noopener,noreferrer");
 }
 
-onMounted(load);
-onBeforeUnmount(() => {
-  if (autoSaveTimer) clearTimeout(autoSaveTimer);
-  const shouldFlush =
-    autoSaveReady.value && signature() !== savedSignature.value;
-  autoSaveReady.value = false;
-  if (shouldFlush) void save().catch(() => undefined);
+function warnBeforeUnload(event: BeforeUnloadEvent) {
+  if (!isDirty.value && !saving.value) return;
+  event.preventDefault();
+  event.returnValue = "";
+}
+
+onBeforeRouteLeave(async () => {
+  if (saving.value) { ElMessage.warning("正在保存，请稍候再离开"); return false; }
+  if (!isDirty.value) return true;
+  try {
+    await ElMessageBox.confirm("修改尚未保存。离开会放弃这些修改，不会提交到服务器。", "未保存的修改", { confirmButtonText: "放弃并离开", cancelButtonText: "继续编辑", type: "warning" });
+    return true;
+  } catch { return false; }
 });
+onMounted(() => { window.addEventListener("beforeunload", warnBeforeUnload); void load(); });
+onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnload); });
 </script>
 
 <template>
   <div v-loading="loading" class="model-config-page">
+    <el-alert v-if="loadFailed" type="error" title="配置加载失败，保存已禁用。请重新加载，不要重新创建现有配置。" :closable="false" show-icon />
     <PageCard>
       <div class="config-toolbar">
         <div class="config-toolbar__heading">
@@ -2790,6 +2780,8 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="config-toolbar__heading-actions">
+            <el-button type="primary" :loading="saving" :disabled="!configLoaded || loading || !isDirty" @click="save">保存配置</el-button>
+            <el-button v-if="loadFailed" :disabled="loading" @click="load">重新加载</el-button>
             <div
               class="save-status"
               :class="{ 'is-dirty': isDirty, 'is-saving': saving }"
@@ -3576,7 +3568,7 @@ onBeforeUnmount(() => {
       :icon="Coin"
       width="min(1040px, calc(100% - 24px))"
       panel-class="workspace-pricing-dialog-panel"
-      confirm-text="保存价格"
+      confirm-text="应用到草稿"
       :confirm-loading="saving"
       :close-on-click-modal="false"
       @confirm="saveWorkspacePricingDraft"

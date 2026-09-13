@@ -322,6 +322,13 @@ func taskCancelPolicy(t *store.Task) gin.H {
 
 func taskDict(t *store.Task, outputURLs, originalURLs []string) gin.H {
 	params := publicTaskParams(t.Params)
+	displayModel := ""
+	for _, key := range []string{"_modelDisplayName", "_imageModelDisplayName", "_chatModelDisplayName"} {
+		if value, ok := t.Params[key].(string); ok && strings.TrimSpace(value) != "" {
+			displayModel = strings.TrimSpace(value)
+			break
+		}
+	}
 	var deletionActor any
 	if t.DeletionActor != nil {
 		deletionActor = *t.DeletionActor
@@ -331,6 +338,7 @@ func taskDict(t *store.Task, outputURLs, originalURLs []string) gin.H {
 		"clientRequestId":    t.IdempotencyKey,
 		"type":               t.Type,
 		"model":              t.Model,
+		"modelName":          displayModel,
 		"status":             t.Status,
 		"generationStage":    taskGenerationStage(t),
 		"queueReason":        t.Params["_queueWaitReason"],

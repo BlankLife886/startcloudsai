@@ -104,3 +104,73 @@ html.color-scheme-dark .commerce-select-menu .sc-model-maintenance-badge,
   color: #e6c27a;
   background: rgb(196 136 42 / 16%);
 }
+.commerce-select-trigger {
+  min-height: 42px;
+  padding: 0 13px;
+  gap: 10px;
+  border: 1px solid color-mix(in srgb, var(--commerce-ink) 10%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--commerce-settings-control, #f5f3fc) 88%, #fff);
+  box-shadow: 0 3px 10px rgb(58 51 112 / 5%);
+  transition: border-color 180ms ease, background 180ms ease, box-shadow 180ms ease, transform 140ms ease;
+}
+
+.commerce-select-trigger:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--commerce-accent) 28%, var(--commerce-settings-line));
+  background: var(--commerce-settings-surface, #fff);
+  box-shadow: 0 6px 18px rgb(58 51 112 / 9%);
+}
+
+.commerce-select-trigger:active:not(:disabled) { transform: scale(.985); }
+
+.commerce-select-menu {
+  padding: 8px;
+  border-radius: 16px;
+  border-color: color-mix(in srgb, var(--commerce-accent) 16%, var(--commerce-line, #e4e3ec));
+  box-shadow: 0 20px 54px rgb(43 32 92 / 18%), 0 2px 8px rgb(43 32 92 / 7%);
+  animation: commerce-select-pop .18s cubic-bezier(.22, 1, .36, 1);
+}
+
+.commerce-select-menu button {
+  min-height: 44px;
+  gap: 10px;
+  padding: 0 11px;
+  border-radius: 10px;
+  transition: background 140ms ease, transform 140ms ease;
+}
+
+.commerce-select-menu button:hover:not(:disabled),
+.commerce-select-menu button.active {
+  background: color-mix(in srgb, var(--commerce-accent) 8%, transparent);
+}
+
+.commerce-select-menu button:active:not(:disabled) { transform: scale(.985); }
+
+.commerce-select-menu button.selected {
+  background: color-mix(in srgb, var(--commerce-accent) 11%, transparent);
+}
+
+.commerce-select-menu button.selected > i {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: #fff;
+  background: var(--commerce-accent);
+  font-size: 13px;
+}
+
+@keyframes commerce-select-pop {
+  from { opacity: 0; transform: translateY(-5px) scale(.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+html.color-scheme-dark .commerce-select-trigger {
+  border-color: rgb(255 255 255 / 10%);
+  box-shadow: 0 3px 14px rgb(0 0 0 / 18%);
+}
+
+html.color-scheme-dark .commerce-select-menu button.selected {
+  background: rgb(139 123 255 / 16%);
+}

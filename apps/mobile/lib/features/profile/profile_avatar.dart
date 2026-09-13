@@ -75,7 +75,7 @@ class ProfileAvatar extends StatelessWidget {
           style: TextStyle(
             color: Theme.of(context).colorScheme.onPrimaryContainer,
             fontSize: radius * 0.72,
-            fontWeight: FontWeight.w800,
+            fontWeight: FontWeight.w600,
           ),
         ),
       ),

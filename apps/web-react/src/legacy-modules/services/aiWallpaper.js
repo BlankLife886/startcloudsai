@@ -324,6 +324,7 @@ export function taskToLegacyJob(task = {}) {
     kind: String(params._kind || DEFAULT_KIND_BY_TYPE[task.type] || task.type || ''),
     type: task.type,
     model: String(task.model || params.modelHint || '').trim(),
+    modelName: String(task.modelName || params._modelDisplayName || '').trim(),
     gatewayModelId: String(params.publicModelKey || '').trim(),
 		status: STATUS_TO_LEGACY[String(task.status || '').toLowerCase()] || task.status || 'queued',
 		generationStage: String(task.generationStage || ''),

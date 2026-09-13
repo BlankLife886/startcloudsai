@@ -8,24 +8,29 @@ import { MAX_CANVAS_AGENT_REGENERATION_SOURCES, planCanvasAgentRegeneration, res
 import { buildCanvasSidePanelWorkflowGroups } from "@/lib/canvas/canvas-workflow-groups";
 import { isCanvasExecutableNode } from "@/lib/canvas/canvas-operation-node";
 import { canvasAgentWorkflowStatus, type AgentWorkflowExecution } from "@/lib/canvas/canvas-agent-workflow-status";
+import { observeCanvasWorkflowStart, type AgentWorkflowStartDecision } from "@/lib/canvas/canvas-agent-workflow-start";
 import { canvasAgentTaskSalt } from "@/lib/canvas/canvas-agent-task-identity";
 import { getNodeSpec } from "@/lib/canvas/node-registry";
 import { CanvasNodeType } from "@/types/canvas";
 import type { CanvasNodeGenerationMode } from "@/components/canvas/canvas-node-prompt-panel";
 import type { CanvasConnection, CanvasNodeData, ContextMenuState, ViewportTransform } from "@/types/canvas";
 import type { AgentTaskStatus } from "@/stores/use-agent-store";
+import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
+import { getCanvasTaskRecord, getCanvasAssistantRunRecord } from "@/services/canvas-task-api";
+import { getCanvasWorkflowRun } from "@/services/canvas-workflow-run-api";
+import { canvasAgentHistoryMatches, canvasAgentStatusIsTerminal, createAgentGenerationRecord, normalizeCanvasAgentContinuation, packCanvasAgentContinuation, reconcileAgentGenerationRecord, unpackCanvasAgentHistory, type AgentGenerationRecord, type AgentWorkflowRecord } from "@/lib/canvas/canvas-agent-continuation";
 
-type GenerateNodeOptions = { skipCostConfirm?: boolean; workflowRunId?: string; taskKeySalt?: string };
+type GenerateNodeOptions = { skipCostConfirm?: boolean; workflowRunId?: string; taskKeySalt?: string; agentGenerationRequestId?: string };
 type GenerateNodeRef = MutableRefObject<((nodeId: string, mode: CanvasNodeGenerationMode, prompt: string, options?: GenerateNodeOptions) => Promise<boolean>) | null>;
 type WorkflowRunState = { status: string; completed: number; total: number; currentNodeId?: string; errorMessage?: string; startedAt?: string; attemptId?: number };
-type RunWorkflowRef = MutableRefObject<((request?: { workflowId?: string; nodeIds?: string[] }) => Promise<void>) | null>;
+type RunWorkflowRef = MutableRefObject<((request?: { workflowId?: string; nodeIds?: string[]; onStartDecision?: (decision: AgentWorkflowStartDecision) => void }) => Promise<void>) | null>;
 type StopWorkflowRef = MutableRefObject<(() => { stopped: boolean; status: string; nodeIds: string[] }) | null>;
 type PlanWorkflowRef = MutableRefObject<((request?: { workflowId?: string; nodeIds?: string[] }) => AgentWorkflowPreflightResult) | null>;
-type AgentGenerationRunRecord = { nodeIds: string[]; statuses: Map<string, { status: AgentTaskStatus; error?: string }> };
-type AgentWorkflowRunRecord = AgentWorkflowExecution & { workflowId?: string; configNodeIds: string[] };
+type AgentWorkflowRunRecord = AgentWorkflowExecution & { workflowId?: string; configNodeIds: string[]; saved: AgentWorkflowRecord; recovered?: boolean };
 
 type AgentBridgeParams = {
     projectId: string;
+    projectReady: boolean;
     title: string | undefined;
     nodes: CanvasNodeData[];
     connections: CanvasConnection[];
@@ -58,11 +63,57 @@ export function useAgentBridge(params: AgentBridgeParams) {
     const { projectId, title, nodes, connections, selectedNodeIds, viewport, canvasSize, nodesRef, connectionsRef, selectedNodeIdsRef, viewportRef, generateNodeRef, runWorkflowRef, stopWorkflowRef, planWorkflowRef, workflowRunStateRef, confirmImageGenerationBatch, setNodes, setConnections, setSelectedNodeIds, setSelectedConnectionId, setViewport, setContextMenu } =
         params;
     const setAgentCanvasContext = useAgentStore((state) => state.setCanvasContext);
+    const ownerUserId = useCanvasStore((state) => state.ownerUserId);
+    const continuationScope = useRef("");
     const agentHistoryRef = useRef<AgentCanvasHistoryState>({ past: [], future: [], checkpoints: [] });
     const [agentHistoryVersion, setAgentHistoryVersion] = useState(0);
-    const generationRuns = useMemo(() => new Map<string, AgentGenerationRunRecord>(), []);
-    const regenerationSources = useMemo(() => new Map<string, string[]>(), []);
-    const workflowRuns = useMemo(() => new Map<string, AgentWorkflowRunRecord>(), []);
+    const generationRuns = useMemo(() => new Map<string, AgentGenerationRecord>(), [projectId, ownerUserId]);
+    const regenerationSources = useMemo(() => new Map<string, string[]>(), [projectId, ownerUserId]);
+    const workflowRuns = useMemo(() => new Map<string, AgentWorkflowRunRecord>(), [projectId, ownerUserId]);
+    const scopeKey = `${ownerUserId || ""}:${projectId}`;
+    const historyUpdatedAtRef = useRef("");
+    const assertReady = useCallback(() => {
+        if (!params.projectReady || !ownerUserId || continuationScope.current !== scopeKey || useCanvasStore.getState().ownerUserId !== ownerUserId) throw new Error("画布恢复尚未完成，请稍后重试");
+    }, [params.projectReady, ownerUserId, scopeKey]);
+    const persistContinuation = useCallback(() => {
+        assertReady();
+        const state = useCanvasStore.getState();
+        if (!state.projects.some((project) => project.id === projectId)) return;
+        const packed = packCanvasAgentContinuation({ ownerUserId, projectId, history: agentHistoryRef.current, historyUpdatedAt: historyUpdatedAtRef.current, generations: generationRuns.values(), workflows: [...workflowRuns.values()].map((record) => record.saved), regenerations: [...regenerationSources].map(([batchId, sourceNodeIds]) => ({ batchId, sourceNodeIds, updatedAt: new Date().toISOString() })) });
+        agentHistoryRef.current = unpackCanvasAgentHistory(packed);
+        state.updateProject(projectId, { agentContinuation: packed });
+        return packed;
+    }, [assertReady, ownerUserId, projectId, generationRuns, workflowRuns, regenerationSources]);
+    const setGenerationStatus = useCallback((record: AgentGenerationRecord, nodeId: string, status: AgentTaskStatus, error?: string) => {
+        if (continuationScope.current !== scopeKey || useCanvasStore.getState().ownerUserId !== ownerUserId) return;
+        record.tasks[nodeId] = { ...record.tasks[nodeId], status, error };
+        record.updatedAt = new Date().toISOString();
+        persistContinuation();
+    }, [persistContinuation, scopeKey, ownerUserId]);
+    useEffect(() => {
+        if (!params.projectReady || !ownerUserId) return;
+        const project = useCanvasStore.getState().projects.find((item) => item.id === projectId);
+        if (!project || project.documentPending) return;
+        const saved = normalizeCanvasAgentContinuation(project.agentContinuation, { ownerUserId, projectId });
+        agentHistoryRef.current = unpackCanvasAgentHistory(saved);
+        historyUpdatedAtRef.current = saved?.historyUpdatedAt || "";
+        generationRuns.clear(); workflowRuns.clear(); regenerationSources.clear();
+        saved?.generations.forEach((record) => generationRuns.set(record.requestId, reconcileAgentGenerationRecord(record, nodesRef.current, true)));
+        saved?.workflows.forEach((saved) => workflowRuns.set(saved.requestId, { baselineAttemptId: -1, configNodeIds: saved.configNodeIds, workflowId: saved.workflowId, settled: canvasAgentStatusIsTerminal(saved.status), saved, recovered: true }));
+        saved?.regenerations.forEach((record) => regenerationSources.set(record.batchId, record.sourceNodeIds));
+        continuationScope.current = scopeKey;
+        setAgentHistoryVersion((version) => version + 1);
+        return () => { if (continuationScope.current === scopeKey) continuationScope.current = ""; };
+    }, [params.projectReady, ownerUserId, projectId, scopeKey, generationRuns, workflowRuns, regenerationSources]);
+    useEffect(() => {
+        if (continuationScope.current !== scopeKey || !params.projectReady) return;
+        let changed = false;
+        generationRuns.forEach((record, id) => {
+            const next = reconcileAgentGenerationRecord(record, nodes);
+            if (next !== record) { generationRuns.set(id, next); changed = true; }
+        });
+        if (changed) persistContinuation();
+    }, [nodes, params.projectReady, generationRuns, persistContinuation, scopeKey]);
     const projectTitle = title || i18n.t("canvas.project.untitled");
 
     const agentSelectedNodeIds = useMemo(() => Array.from(selectedNodeIds), [selectedNodeIds]);
@@ -82,6 +133,7 @@ export function useAgentBridge(params: AgentBridgeParams) {
     }, [connectionsRef, nodesRef, projectId, projectTitle, selectedNodeIdsRef, viewportRef]);
     const applyAgentOps = useCallback(
         (ops?: CanvasAgentOp[]) => {
+            assertReady();
             const safeOps = Array.isArray(ops) ? ops.filter((op) => op?.type) : [];
             const before = { projectId, title: projectTitle, nodes: nodesRef.current, connections: connectionsRef.current, selectedNodeIds: Array.from(selectedNodeIdsRef.current), viewport: viewportRef.current };
             const generationOps = safeOps.filter((op): op is Extract<CanvasAgentOp, { type: "run_generation" }> => op.type === "run_generation" && Boolean(op.nodeId));
@@ -99,6 +151,8 @@ export function useAgentBridge(params: AgentBridgeParams) {
                 agentHistoryRef.current.past = [...agentHistoryRef.current.past.slice(-29), transaction];
                 agentHistoryRef.current.future = [];
                 setAgentHistoryVersion((version) => version + 1);
+                historyUpdatedAtRef.current = transaction.createdAt;
+                persistContinuation();
             }
             setNodes(next.nodes);
             setConnections(next.connections);
@@ -117,9 +171,10 @@ export function useAgentBridge(params: AgentBridgeParams) {
             }
             return after;
         },
-        [projectTitle, projectId],
+        [projectTitle, projectId, assertReady, persistContinuation],
     );
     const undoAgentOps = useCallback(() => {
+        assertReady();
         const transaction = agentHistoryRef.current.past.at(-1);
         if (!transaction) return null;
         const current = currentAgentSnapshot(projectId, projectTitle, nodesRef, connectionsRef, selectedNodeIdsRef, viewportRef);
@@ -127,9 +182,12 @@ export function useAgentBridge(params: AgentBridgeParams) {
         agentHistoryRef.current.past.pop();
         agentHistoryRef.current.future.push(transaction);
         setAgentHistoryVersion((version) => version + 1);
+        historyUpdatedAtRef.current = new Date().toISOString();
+        persistContinuation();
         return applyAgentSnapshot(transaction.before);
-    }, [applyAgentSnapshot, connectionsRef, nodesRef, projectTitle, projectId, selectedNodeIdsRef, viewportRef]);
+    }, [applyAgentSnapshot, connectionsRef, nodesRef, projectTitle, projectId, selectedNodeIdsRef, viewportRef, assertReady, persistContinuation]);
     const redoAgentOps = useCallback(() => {
+        assertReady();
         const transaction = agentHistoryRef.current.future.at(-1);
         if (!transaction) return null;
         const current = currentAgentSnapshot(projectId, projectTitle, nodesRef, connectionsRef, selectedNodeIdsRef, viewportRef);
@@ -137,34 +195,51 @@ export function useAgentBridge(params: AgentBridgeParams) {
         agentHistoryRef.current.future.pop();
         agentHistoryRef.current.past.push(transaction);
         setAgentHistoryVersion((version) => version + 1);
+        historyUpdatedAtRef.current = new Date().toISOString();
+        persistContinuation();
         return applyAgentSnapshot(transaction.after);
-    }, [applyAgentSnapshot, connectionsRef, nodesRef, projectTitle, projectId, selectedNodeIdsRef, viewportRef]);
+    }, [applyAgentSnapshot, connectionsRef, nodesRef, projectTitle, projectId, selectedNodeIdsRef, viewportRef, assertReady, persistContinuation]);
 
     const startGeneration = useCallback((input: { requestId?: string; nodeIds: string[]; mode?: "text" | "image" | "video" | "audio"; prompt?: string }) => {
+        assertReady();
         const nodeIds = [...new Set(input.nodeIds)].filter((id) => nodesRef.current.some((node) => node.id === id && isCanvasExecutableNode(node)));
         if (!nodeIds.length || !generateNodeRef.current) throw new Error("没有可执行的配置节点");
         const requestId = input.requestId ? `generation-${input.requestId}` : `generation-${nanoid(10)}`;
         if (generationRuns.has(requestId)) return { requestId, nodeIds: generationRuns.get(requestId)!.nodeIds };
-        const record: AgentGenerationRunRecord = { nodeIds, statuses: new Map(nodeIds.map((nodeId) => [nodeId, { status: "queued" as AgentTaskStatus }])) };
+        const record = createAgentGenerationRecord(requestId, nodeIds, nodesRef.current);
         generationRuns.set(requestId, record);
+        persistContinuation();
         nodeIds.forEach((nodeId) => {
             const target = nodesRef.current.find((node) => node.id === nodeId)!;
             const prompt = input.prompt?.trim() ? input.prompt : (target.metadata?.composerContent ?? target.metadata?.prompt ?? "");
-            record.statuses.set(nodeId, { status: "running" });
-            void generateNodeRef.current!(nodeId, input.mode || target.metadata?.generationMode || "image", prompt, { taskKeySalt: canvasAgentTaskSalt(requestId) }).then(
-                (ok) => record.statuses.set(nodeId, ok ? { status: "succeeded" } : { status: "failed", error: nodesRef.current.find((node) => node.id === nodeId)?.metadata?.errorDetails || "生成未完成" }),
-                (error) => record.statuses.set(nodeId, { status: "failed", error: error instanceof Error ? error.message : "生成失败" }),
+            setGenerationStatus(record, nodeId, "running");
+            void generateNodeRef.current!(nodeId, input.mode || target.metadata?.generationMode || "image", prompt, { taskKeySalt: canvasAgentTaskSalt(requestId), agentGenerationRequestId: requestId }).then(
+                (ok) => setGenerationStatus(generationRuns.get(requestId) || record, nodeId, ok ? "succeeded" : "failed", ok ? undefined : "生成未完成"),
+                (error) => setGenerationStatus(generationRuns.get(requestId) || record, nodeId, "failed", error instanceof Error ? error.message : "生成失败"),
             );
         });
         trimRunRegistry(generationRuns);
         return { requestId, nodeIds };
-    }, [generationRuns, generateNodeRef, nodesRef]);
+    }, [generationRuns, generateNodeRef, nodesRef, assertReady, persistContinuation, setGenerationStatus]);
 
-    const getGenerationStatus = useCallback((requestId: string) => {
+    const getGenerationStatus = useCallback(async (requestId: string) => {
+        assertReady();
         const record = generationRuns.get(requestId);
         if (!record) return null;
-        return { requestId, tasks: record.nodeIds.map((nodeId) => ({ nodeId, ...(record.statuses.get(nodeId) || { status: "queued" as const }) })) };
-    }, [generationRuns]);
+        for (const nodeId of record.nodeIds) {
+            const task = record.tasks[nodeId];
+            if (canvasAgentStatusIsTerminal(task.status) || !task.taskIds.length) continue;
+            const states = await Promise.allSettled(task.taskIds.map(async (identity) => {
+                const result = identity.kind === "assistant" ? (await getCanvasAssistantRunRecord(identity.id)).run : await getCanvasTaskRecord(identity.id);
+                if (result.id !== identity.id) throw new Error("原任务记录不匹配");
+                return result;
+            }));
+            assertReady();
+            const status = states.some((state) => state.status === "rejected") ? "unknown" : states.some((state) => state.status === "fulfilled" && state.value.status === "failed") ? "failed" : states.some((state) => state.status === "fulfilled" && (state.value.status === "queued" || state.value.status === "running")) ? "running" : states.some((state) => state.status === "fulfilled" && state.value.status === "canceled") ? "canceled" : states.every((state) => state.status === "fulfilled" && state.value.status === "succeeded") ? "succeeded" : "unknown";
+            setGenerationStatus(record, nodeId, status, status === "unknown" ? "暂时无法读取原任务状态，没有自动重新生成" : undefined);
+        }
+        return { requestId, tasks: record.nodeIds.map((nodeId) => ({ nodeId, status: record.tasks[nodeId].status, error: record.tasks[nodeId].error })) };
+    }, [generationRuns, assertReady, setGenerationStatus]);
 
     const focusNodes = useCallback((nodeIds: string[]) => {
         const targets = nodesRef.current.filter((node) => nodeIds.includes(node.id));
@@ -190,9 +265,12 @@ export function useAgentBridge(params: AgentBridgeParams) {
     }, [applyAgentOps, canvasSize.height, canvasSize.width, nodesRef]);
 
     const regenerateSelection = useCallback(async (input: AgentRegenerateSelectionInput): Promise<AgentRegenerateSelectionResult> => {
+        assertReady();
         const instruction = String(input.instruction || "").trim();
         if (!instruction) throw new Error("重生成指令不能为空");
         const batchId = String(input.requestId || "").trim() || `regenerate-${nanoid(10)}`;
+        const replay = generationRuns.get(`generation-${batchId}`);
+        if (replay) throw new Error("这次重生成已经提交或恢复，请查询原任务状态，不要重复提交");
         const validSourceNode = (id: string) => {
             const node = nodesRef.current.find((item) => item.id === id);
             return Boolean(node?.type === CanvasNodeType.Image && (node.metadata?.content || node.metadata?.storageKey || node.metadata?.images?.some((image) => image.content || image.storageKey)));
@@ -228,24 +306,25 @@ export function useAgentBridge(params: AgentBridgeParams) {
             regenerationSources.delete(batchId);
             return { status: "canceled", batchId, createdBranches: 0, selectedNodeCount: liveSelectedIds.length, sourceImageCount: sourceNodes.length, skippedNodeIds, items: [] };
         }
+        assertReady();
         if (ops.length > 1) applyAgentOps(ops);
 
         if (!generateNodeRef.current) throw new Error("画布生成器尚未就绪");
-        const generationRequestId = `generation-${nanoid(10)}`;
-        const record: AgentGenerationRunRecord = {
-            nodeIds: items.map((item) => item.configNodeId),
-            statuses: new Map(items.map((item) => [item.configNodeId, { status: "queued" as AgentTaskStatus }])),
-        };
+        const generationRequestId = `generation-${batchId}`;
+        const record = createAgentGenerationRecord(generationRequestId, items.map((item) => item.configNodeId), nodesRef.current);
         generationRuns.set(generationRequestId, record);
+        persistContinuation();
         queueMicrotask(() => {
+            if (continuationScope.current !== scopeKey) return;
             items.forEach((item) => {
-                record.statuses.set(item.configNodeId, { status: "running" });
+                setGenerationStatus(record, item.configNodeId, "running");
                 void generateNodeRef.current!(item.configNodeId, "image", instruction, {
                     skipCostConfirm: true,
                     taskKeySalt: `${batchId}:${item.sourceNodeId}`,
+                    agentGenerationRequestId: generationRequestId,
                 }).then(
-                    (ok) => record.statuses.set(item.configNodeId, ok ? { status: "succeeded" } : { status: "failed", error: nodesRef.current.find((node) => node.id === item.configNodeId)?.metadata?.errorDetails || "生成未完成" }),
-                    (error) => record.statuses.set(item.configNodeId, { status: "failed", error: error instanceof Error ? error.message : "生成失败" }),
+                    (ok) => setGenerationStatus(generationRuns.get(generationRequestId) || record, item.configNodeId, ok ? "succeeded" : "failed", ok ? undefined : "生成未完成"),
+                    (error) => setGenerationStatus(generationRuns.get(generationRequestId) || record, item.configNodeId, "failed", error instanceof Error ? error.message : "生成失败"),
                 );
             });
         });
@@ -260,9 +339,10 @@ export function useAgentBridge(params: AgentBridgeParams) {
             skippedNodeIds,
             items: items.map(({ sourceNodeId, configNodeId, outputNodeId }) => ({ sourceNodeId, configNodeId, outputNodeId })),
         };
-    }, [applyAgentOps, confirmImageGenerationBatch, generateNodeRef, generationRuns, nodesRef, regenerationSources, selectedNodeIdsRef]);
+    }, [applyAgentOps, confirmImageGenerationBatch, generateNodeRef, generationRuns, nodesRef, regenerationSources, selectedNodeIdsRef, assertReady, persistContinuation, setGenerationStatus, scopeKey]);
 
-    const startWorkflow = useCallback((input: { workflowId?: string; nodeIds?: string[] }) => {
+    const startWorkflow = useCallback(async (input: { workflowId?: string; nodeIds?: string[] }) => {
+        assertReady();
         if (!runWorkflowRef.current) throw new Error("工作流调度器尚未就绪");
         const groups = buildCanvasSidePanelWorkflowGroups(nodesRef.current, connectionsRef.current).filter((group) => group.firstConfig);
         const group = input.workflowId ? groups.find((item) => item.id === input.workflowId) : null;
@@ -272,19 +352,52 @@ export function useAgentBridge(params: AgentBridgeParams) {
         if (requestedIds && configNodeIds.length !== requestedIds.size) throw new Error("定向运行包含不属于目标工作流的节点");
         if (!configNodeIds.length) throw new Error("工作流中没有可执行的配置节点");
         const requestId = `workflow-${nanoid(10)}`;
-        const record: AgentWorkflowRunRecord = { workflowId: input.workflowId, configNodeIds, baselineAttemptId: workflowRunStateRef.current.attemptId || 0, settled: false };
+        const now = new Date().toISOString();
+        const record: AgentWorkflowRunRecord = { workflowId: input.workflowId, configNodeIds, baselineAttemptId: workflowRunStateRef.current.attemptId || 0, settled: false, saved: { requestId, workflowId: input.workflowId, configNodeIds, createdAt: now, updatedAt: now, status: "queued", completed: 0, total: configNodeIds.length } };
         workflowRuns.set(requestId, record);
-        void runWorkflowRef.current(input).then(
-            () => { record.settled = true; record.finalState = { ...workflowRunStateRef.current }; },
+        persistContinuation();
+        const run = runWorkflowRef.current;
+        const execution = observeCanvasWorkflowStart(
+            (onStartDecision) => run({ ...input, onStartDecision }),
+            () => ({ status: "rejected", error: workflowRunStateRef.current.attemptId !== record.baselineAttemptId
+                ? workflowRunStateRef.current.errorMessage || "工作流未通过启动检查，请查看画布状态"
+                : "工作流未启动，请检查预检结果或当前运行状态" }),
+        );
+        void execution.completion.then(
+            () => { record.settled = true; record.finalState ||= { ...workflowRunStateRef.current }; },
             (error) => { record.settled = true; record.finalState = { ...workflowRunStateRef.current }; record.error = error instanceof Error ? error.message : "工作流运行失败"; },
         );
         trimRunRegistry(workflowRuns);
-        return { requestId, ...(input.workflowId ? { workflowId: input.workflowId } : {}), configNodeIds };
-    }, [connectionsRef, nodesRef, runWorkflowRef, workflowRunStateRef, workflowRuns]);
+        const decision = await execution.decision;
+        assertReady();
+        record.saved = { ...record.saved, runId: decision.runId, status: decision.status === "started" ? "running" : decision.status === "canceled" ? "canceled" : "failed", error: decision.error, updatedAt: new Date().toISOString() };
+        if (decision.status !== "started") {
+            record.settled = true;
+            if (decision.status === "rejected") record.error = decision.error || "工作流没有启动";
+            record.finalState = { status: decision.status === "canceled" ? "canceled" : "error", attemptId: record.baselineAttemptId, completed: 0, total: configNodeIds.length };
+        }
+        persistContinuation();
+        return { requestId, ...(input.workflowId ? { workflowId: input.workflowId } : {}), configNodeIds, ...decision };
+    }, [connectionsRef, nodesRef, runWorkflowRef, workflowRunStateRef, workflowRuns, assertReady, persistContinuation]);
 
-    const getWorkflowStatus = useCallback((requestId: string) => {
+    const getWorkflowStatus = useCallback(async (requestId: string) => {
+        assertReady();
         const record = workflowRuns.get(requestId);
         if (!record) return null;
+        if (record.saved.runId) {
+            try {
+                const { run } = await getCanvasWorkflowRun(projectId, record.saved.runId);
+                assertReady();
+                if (run.id !== record.saved.runId || run.projectId !== projectId) throw new Error("工作流记录不匹配");
+                record.saved = { ...record.saved, status: run.status, completed: run.completedNodeIds.length, currentNodeId: run.currentNodeId || undefined, error: run.errorMessage, updatedAt: new Date().toISOString() };
+            } catch (error) {
+                assertReady();
+                record.saved = { ...record.saved, status: "unknown", error: "暂时无法读取原工作流，没有自动重新运行" };
+            }
+            persistContinuation();
+            return record.saved;
+        }
+        if (record.recovered) return { ...record.saved, status: canvasAgentStatusIsTerminal(record.saved.status) ? record.saved.status : "unknown" as const, error: record.saved.error || "刷新前未记录到工作流启动确认，没有自动重跑" };
         const { state, started, status } = canvasAgentWorkflowStatus(record, workflowRunStateRef.current);
         return {
             requestId,
@@ -295,7 +408,7 @@ export function useAgentBridge(params: AgentBridgeParams) {
             ...(started && state.currentNodeId ? { currentNodeId: state.currentNodeId } : {}),
             ...((record.error || state.errorMessage) && status === "failed" ? { error: record.error || state.errorMessage } : {}),
         };
-    }, [workflowRunStateRef, workflowRuns]);
+    }, [workflowRunStateRef, workflowRuns, assertReady, persistContinuation, projectId]);
 
     const listAgentHistory = useCallback(() => ({
         past: agentHistoryRef.current.past.map(historySummary),
@@ -304,18 +417,23 @@ export function useAgentBridge(params: AgentBridgeParams) {
     }), [agentHistoryVersion]);
 
     const createAgentCheckpoint = useCallback((name: string) => {
+        assertReady();
         const checkpoint: AgentCanvasCheckpoint = {
             id: `checkpoint-${nanoid(10)}`,
             name: name.slice(0, 80),
             createdAt: new Date().toISOString(),
             snapshot: currentAgentSnapshot(projectId, projectTitle, nodesRef, connectionsRef, selectedNodeIdsRef, viewportRef),
         };
-        agentHistoryRef.current.checkpoints = [...agentHistoryRef.current.checkpoints.slice(-9), checkpoint];
+        const previous = agentHistoryRef.current.checkpoints;
+        agentHistoryRef.current.checkpoints = [...previous.slice(-9), checkpoint];
+        historyUpdatedAtRef.current = checkpoint.createdAt;
+        try { persistContinuation(); } catch (error) { agentHistoryRef.current.checkpoints = previous; throw error; }
         setAgentHistoryVersion((version) => version + 1);
         return { id: checkpoint.id, name: checkpoint.name, createdAt: checkpoint.createdAt };
-    }, [connectionsRef, nodesRef, projectId, projectTitle, selectedNodeIdsRef, viewportRef]);
+    }, [connectionsRef, nodesRef, projectId, projectTitle, selectedNodeIdsRef, viewportRef, assertReady, persistContinuation]);
 
     const restoreAgentHistory = useCallback((input: { checkpointId?: string; transactionId?: string }) => {
+        assertReady();
         const current = currentAgentSnapshot(projectId, projectTitle, nodesRef, connectionsRef, selectedNodeIdsRef, viewportRef);
         const checkpoint = input.checkpointId ? agentHistoryRef.current.checkpoints.find((item) => item.id === input.checkpointId) : null;
         const transaction = input.transactionId
@@ -327,10 +445,13 @@ export function useAgentBridge(params: AgentBridgeParams) {
         agentHistoryRef.current.past = [...agentHistoryRef.current.past.slice(-29), restoreTransaction];
         agentHistoryRef.current.future = [];
         setAgentHistoryVersion((version) => version + 1);
+        historyUpdatedAtRef.current = restoreTransaction.createdAt;
+        persistContinuation();
         return applyAgentSnapshot(target);
-    }, [applyAgentSnapshot, connectionsRef, nodesRef, projectId, projectTitle, selectedNodeIdsRef, viewportRef]);
+    }, [applyAgentSnapshot, connectionsRef, nodesRef, projectId, projectTitle, selectedNodeIdsRef, viewportRef, assertReady, persistContinuation]);
 
     useEffect(() => {
+        if (!params.projectReady || continuationScope.current !== scopeKey) { setAgentCanvasContext(null); return; }
         setAgentCanvasContext({
             snapshot: agentSnapshot,
             applyOps: applyAgentOps,
@@ -357,7 +478,7 @@ export function useAgentBridge(params: AgentBridgeParams) {
             createCheckpoint: createAgentCheckpoint,
             restoreHistory: restoreAgentHistory,
         });
-    }, [agentHistoryVersion, agentSnapshot, applyAgentOps, createAgentCheckpoint, focusNodes, getGenerationStatus, getWorkflowStatus, listAgentHistory, planWorkflowRef, redoAgentOps, regenerateSelection, restoreAgentHistory, setAgentCanvasContext, startGeneration, startWorkflow, stopWorkflowRef, undoAgentOps, workflowRunStateRef]);
+    }, [params.projectReady, scopeKey, agentHistoryVersion, agentSnapshot, applyAgentOps, createAgentCheckpoint, focusNodes, getGenerationStatus, getWorkflowStatus, listAgentHistory, planWorkflowRef, redoAgentOps, regenerateSelection, restoreAgentHistory, setAgentCanvasContext, startGeneration, startWorkflow, stopWorkflowRef, undoAgentOps, workflowRunStateRef]);
 
     useEffect(() => {
         return () => setAgentCanvasContext(null);
@@ -391,10 +512,6 @@ function canvasAgentHistoryChanged(before: CanvasAgentSnapshot, after: CanvasAge
         || before.viewport.k !== after.viewport.k
         || before.selectedNodeIds.length !== after.selectedNodeIds.length
         || before.selectedNodeIds.some((id, index) => id !== after.selectedNodeIds[index]);
-}
-
-function canvasAgentHistoryMatches(current: CanvasAgentSnapshot, expected: CanvasAgentSnapshot) {
-    return current.nodes === expected.nodes && current.connections === expected.connections;
 }
 
 function canvasAgentSnapshotsEqual(current: CanvasAgentSnapshot, expected: CanvasAgentSnapshot) {

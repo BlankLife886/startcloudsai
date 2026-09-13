@@ -57,7 +57,7 @@ class GallerySubmissionStatusPanel extends StatelessWidget {
       padding: const EdgeInsets.all(13),
       decoration: BoxDecoration(
         color: style.color.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(color: style.color.withValues(alpha: 0.25)),
       ),
       child: Row(
@@ -73,7 +73,7 @@ class GallerySubmissionStatusPanel extends StatelessWidget {
                   style.panelLabel,
                   style: TextStyle(
                     color: style.color,
-                    fontWeight: FontWeight.w800,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
                 const SizedBox(height: 3),
@@ -188,7 +188,7 @@ class _GallerySubmissionSheetState extends State<_GallerySubmissionSheet> {
                   '投稿到社区',
                   style: Theme.of(
                     context,
-                  ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
+                  ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w600),
                 ),
                 const SizedBox(height: 6),
                 Text(
@@ -246,7 +246,7 @@ class _GallerySubmissionSheetState extends State<_GallerySubmissionSheet> {
                     ),
                     decoration: BoxDecoration(
                       color: Theme.of(context).colorScheme.surfaceContainerLow,
-                      borderRadius: BorderRadius.circular(8),
+                      borderRadius: BorderRadius.circular(16),
                     ),
                     child: const Row(
                       children: [

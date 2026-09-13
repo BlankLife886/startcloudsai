@@ -429,7 +429,7 @@ void main() {
       ),
     );
     final shape = material.shape! as RoundedRectangleBorder;
-    expect(shape.borderRadius, BorderRadius.circular(8));
+    expect(shape.borderRadius, BorderRadius.circular(24));
     expect(tester.takeException(), isNull);
   });
 

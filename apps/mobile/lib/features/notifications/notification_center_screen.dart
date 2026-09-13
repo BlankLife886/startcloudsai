@@ -387,7 +387,7 @@ class _NotificationDeleteBackground extends StatelessWidget {
       child: DecoratedBox(
         decoration: BoxDecoration(
           color: colors.errorContainer,
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(16),
         ),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 18),
@@ -400,7 +400,7 @@ class _NotificationDeleteBackground extends StatelessWidget {
                 '删除',
                 style: TextStyle(
                   color: colors.onErrorContainer,
-                  fontWeight: FontWeight.w800,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
             ],
@@ -560,7 +560,7 @@ class NotificationTimelineTile extends StatelessWidget {
             ? colors.surface
             : style.color.withValues(alpha: 0.04),
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(16),
           side: BorderSide(
             color: notification.isRead
                 ? colors.outlineVariant
@@ -593,7 +593,7 @@ class NotificationTimelineTile extends StatelessWidget {
                               style: TextStyle(
                                 fontWeight: notification.isRead
                                     ? FontWeight.w600
-                                    : FontWeight.w800,
+                                    : FontWeight.w600,
                               ),
                             ),
                           ),
@@ -652,7 +652,7 @@ class NotificationTimelineTile extends StatelessWidget {
                             style: Theme.of(context).textTheme.labelSmall
                                 ?.copyWith(
                                   color: style.color,
-                                  fontWeight: FontWeight.w800,
+                                  fontWeight: FontWeight.w600,
                                 ),
                           ),
                           if (destination != null)
@@ -685,7 +685,7 @@ class NotificationTimelineTile extends StatelessWidget {
 ({IconData icon, Color color}) notificationKindStyle(
   String kind,
 ) => switch (kind) {
-  'task' => (icon: Icons.auto_awesome_outlined, color: const Color(0xFF4F67D6)),
+  'task' => (icon: Icons.auto_awesome_outlined, color: const Color(0xFF005FEA)),
   'reward' => (
     icon: Icons.card_giftcard_outlined,
     color: const Color(0xFF0F766E),
@@ -739,7 +739,7 @@ class NotificationDetailSheet extends StatelessWidget {
                   height: 44,
                   decoration: BoxDecoration(
                     color: style.color.withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(8),
+                    borderRadius: BorderRadius.circular(16),
                   ),
                   child: Icon(style.icon, color: style.color),
                 ),
@@ -751,7 +751,7 @@ class NotificationDetailSheet extends StatelessWidget {
                       Text(
                         notification.title,
                         style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                          fontWeight: FontWeight.w900,
+                          fontWeight: FontWeight.w700,
                         ),
                       ),
                       const SizedBox(height: 5),
@@ -763,7 +763,7 @@ class NotificationDetailSheet extends StatelessWidget {
                             notificationKindLabel(notification.kind),
                             style: TextStyle(
                               color: style.color,
-                              fontWeight: FontWeight.w800,
+                              fontWeight: FontWeight.w600,
                             ),
                           ),
                           Text(
@@ -796,7 +796,7 @@ class NotificationDetailSheet extends StatelessWidget {
                                         .labelSmall
                                         ?.copyWith(
                                           color: style.color,
-                                          fontWeight: FontWeight.w800,
+                                          fontWeight: FontWeight.w600,
                                         ),
                                   ),
                                 ],

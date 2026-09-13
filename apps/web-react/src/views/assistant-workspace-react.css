@@ -2343,104 +2343,15 @@
   font-size: 10px;
 }
 
-.assistant-workspace .reasoning-effort-menu {
-  left: min(318px, calc(100% - 256px));
-  display: grid;
-  width: min(292px, calc(100% - 24px));
-  gap: 7px;
-  padding: 10px;
-  transform-origin: 32px 100%;
-}
-
-.assistant-workspace .reasoning-effort-menu > header {
-  display: flex;
-  min-height: 28px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 0 7px;
-}
-
-.assistant-workspace .reasoning-effort-menu > header .popover-eyebrow {
-  color: var(--assistant-text-soft);
-  font-weight: 650;
-}
-
-.assistant-workspace .reasoning-effort-menu > header > span {
-  color: var(--assistant-muted);
-  font-size: 10px;
-  white-space: nowrap;
-}
-
-.assistant-workspace .reasoning-effort-options {
-  display: grid;
-  gap: 2px;
-}
-
-.assistant-workspace .reasoning-effort-options > button {
-  display: grid;
-  width: 100%;
-  min-height: 42px;
-  grid-template-columns: minmax(0, 1fr) auto 18px;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 9px;
-  border: 0;
-  border-radius: 8px;
-  color: var(--assistant-text);
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
-}
-
-.assistant-workspace .reasoning-effort-options > button:hover,
-.assistant-workspace .reasoning-effort-options > button.active {
-  background: var(--assistant-panel-active);
-}
-
-.assistant-workspace .reasoning-effort-copy {
-  display: grid;
-  min-width: 0;
-  gap: 1px;
-}
-
-.assistant-workspace .reasoning-effort-options strong {
-  font-size: 12px;
-  font-weight: 650;
-}
-
-.assistant-workspace .reasoning-effort-options small {
-  color: var(--assistant-muted);
-  font-size: 10px;
-}
-
-.assistant-workspace .reasoning-effort-options .model-menu-price {
-  display: grid;
-  justify-items: end;
-  gap: 1px;
-  line-height: 1.2;
-  white-space: nowrap;
-}
-
-.assistant-workspace .reasoning-effort-options .model-menu-price strong {
-  color: var(--assistant-text-soft);
-  font-size: 11px;
-  font-weight: 650;
-}
-
-.assistant-workspace .reasoning-effort-options .model-menu-price.has-discount strong {
-  color: #f3ad32;
-}
-
-.assistant-workspace .reasoning-effort-options .model-menu-price del {
-  color: var(--assistant-muted);
-  font-size: 10px;
-  text-decoration-thickness: 1px;
-}
-
-.assistant-workspace .reasoning-effort-options .menu-check {
-  color: var(--assistant-accent-ink);
-  font-size: 12px;
+/* Studio Hub reasoning card — left/bottom set by composerMenuPosition. */
+.assistant-workspace .studio-composer__field-menu.is-reasoning.studio-reasoning {
+  top: auto;
+  left: 8px;
+  bottom: 50px;
+  z-index: 20;
+  max-width: min(320px, calc(100% - 16px));
+  animation: assistant-popover-in 160ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  transform-origin: 24px 100%;
 }
 
 .assistant-workspace .menu-chevron {
@@ -2455,11 +2366,22 @@
 @keyframes assistant-popover-in {
   from {
     opacity: 0;
-    transform: translate3d(0, 4px, 0);
+    transform: translate3d(0, 4px, 0) scale(0.985);
   }
   to {
     opacity: 1;
-    transform: translate3d(0, 0, 0);
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes assistant-popover-out {
+  from {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate3d(0, 4px, 0) scale(0.985);
   }
 }
 
@@ -2474,7 +2396,25 @@
   background: var(--assistant-card);
   box-shadow: 0 20px 56px rgb(0 0 0 / 20%);
   transform-origin: 28px 100%;
-  animation: assistant-popover-in 110ms ease-out both;
+  animation: assistant-popover-in 160ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.assistant-workspace .composer-popover.is-entering,
+.assistant-workspace .studio-composer__field-menu.is-reasoning.studio-reasoning.is-entering {
+  opacity: 0;
+  transform: translate3d(0, 4px, 0) scale(0.985);
+  animation: none;
+}
+
+.assistant-workspace .composer-popover.is-open,
+.assistant-workspace .studio-composer__field-menu.is-reasoning.studio-reasoning.is-open {
+  animation: assistant-popover-in 160ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.assistant-workspace .composer-popover.is-closing,
+.assistant-workspace .studio-composer__field-menu.is-reasoning.studio-reasoning.is-closing {
+  animation: assistant-popover-out 130ms ease forwards;
+  pointer-events: none;
 }
 
 .assistant-workspace .composer-popover .popover-eyebrow {
@@ -2487,10 +2427,16 @@
 .assistant-workspace .image-model-menu {
   --menu-surface: #ffffff;
   --menu-hover: #f4f0fa;
-  --menu-active: #ece6f8;
+  --menu-active: rgb(143 116 255 / 22%);
   --menu-well: #f3eef9;
+  --menu-text: #302b43;
+  --menu-muted: rgb(56 49 76 / 55%);
+  --menu-accent: #7c5cff;
+  --menu-price: #a96000;
+  --menu-price-muted: rgb(56 49 76 / 42%);
   border: 0;
   border-radius: 18px;
+  color: var(--menu-text);
   background: var(--menu-surface);
   box-shadow:
     0 2px 6px rgb(49 32 107 / 6%),
@@ -2503,6 +2449,11 @@
   --menu-hover: rgb(255 255 255 / 8%);
   --menu-active: rgb(143 116 255 / 22%);
   --menu-well: rgb(0 0 0 / 28%);
+  --menu-text: rgb(255 255 255 / 92%);
+  --menu-muted: rgb(255 255 255 / 48%);
+  --menu-accent: #b49cff;
+  --menu-price: #f0b24e;
+  --menu-price-muted: rgb(255 255 255 / 38%);
   background: var(--menu-surface);
   box-shadow:
     0 2px 8px rgb(0 0 0 / 28%),
@@ -2512,15 +2463,17 @@
 .assistant-workspace .creation-type-menu {
   display: grid;
   width: 260px;
+  max-width: min(260px, calc(100% - 16px));
   gap: 4px;
   padding: 12px;
-  left: 48px;
+  left: 8px;
   bottom: 50px;
-  transform-origin: 36px 100%;
+  transform-origin: 24px 100%;
 }
 
 .assistant-workspace .creation-type-menu .popover-eyebrow {
   padding: 2px 10px 7px;
+  color: var(--menu-muted);
 }
 
 .assistant-workspace .creation-type-menu > button {
@@ -2531,76 +2484,97 @@
   gap: 7px;
   padding: 0 10px;
   border: 0;
-  border-radius: 9px;
-  color: var(--assistant-text);
+  border-radius: 12px;
+  color: var(--menu-text);
   background: transparent;
   text-align: left;
   cursor: pointer;
+  transition:
+    background 160ms ease,
+    color 160ms ease,
+    transform 160ms ease;
 }
 
 .assistant-workspace .creation-type-menu .sc-soft-mark,
 .assistant-workspace .image-model-menu .model-menu-options .sc-soft-mark {
-  color: var(--assistant-accent-ink);
+  color: var(--menu-accent);
 }
 
 .assistant-workspace .creation-type-menu > button:hover {
   background: var(--menu-hover);
+  transform: translateX(2px);
+}
+
+.assistant-workspace .creation-type-menu > button:active {
+  transform: translateX(1px) scale(0.99);
+  transition-duration: 80ms;
 }
 
 .assistant-workspace .creation-type-menu > button.active {
-  color: var(--assistant-text);
+  color: var(--menu-text);
   background: var(--menu-active);
 }
 
+.assistant-workspace .creation-type-menu > button.active:hover {
+  background: var(--menu-active);
+  transform: translateX(2px);
+}
+
 .assistant-workspace .creation-type-menu .menu-check {
-  color: var(--assistant-accent-ink);
+  color: var(--menu-accent);
 }
 
 .assistant-workspace .image-model-menu {
   display: grid;
-  width: min(410px, calc(100% - 122px));
+  width: 320px;
+  max-width: min(320px, calc(100% - 16px));
   max-height: min(430px, calc(100vh - 150px));
-  grid-template-rows: auto auto minmax(0, 1fr);
-  gap: 8px;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px;
   overflow: hidden;
-  padding: 10px;
-  left: var(--model-menu-left, 168px);
+  padding: 12px;
+  left: 8px;
   bottom: 50px;
-  transform-origin: 40px 100%;
+  transform-origin: 24px 100%;
+}
+
+.assistant-workspace .image-model-menu:has(.model-menu-search) {
+  grid-template-rows: auto auto minmax(0, 1fr);
 }
 
 .assistant-workspace .image-model-menu .model-menu-head {
   display: flex;
-  min-height: 28px;
+  min-height: 34px;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 0 7px;
+  padding: 0 8px;
 }
 
 .assistant-workspace .image-model-menu .popover-eyebrow {
   padding: 0;
-  color: var(--assistant-text-soft);
+  color: var(--menu-muted);
   font-size: 12px;
   font-weight: 600;
 }
 
 .assistant-workspace .image-model-menu .model-menu-head > span {
   flex: 0 0 auto;
-  color: var(--assistant-muted);
+  color: var(--menu-muted);
   font-size: 10px;
 }
 
 .assistant-workspace .image-model-menu .model-menu-search {
   display: grid;
-  height: 34px;
+  height: 40px;
   grid-template-columns: 18px minmax(0, 1fr) 26px;
   align-items: center;
   gap: 5px;
   padding: 0 4px 0 10px;
   border: 0;
-  border-radius: 9px;
-  color: var(--assistant-muted);
+  border: 1px solid var(--assistant-border);
+  border-radius: 12px;
+  color: var(--menu-muted);
   background: var(--menu-well);
   transition:
     border-color 160ms ease,
@@ -2610,7 +2584,7 @@
 .assistant-workspace .image-model-menu .model-menu-search:focus-within {
   border: 0;
   background: var(--menu-hover);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--assistant-accent) 10%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--menu-accent) 10%, transparent);
 }
 
 .assistant-workspace .image-model-menu .model-menu-search > i {
@@ -2621,7 +2595,7 @@
   min-width: 0;
   border: 0;
   outline: 0;
-  color: var(--assistant-text);
+  color: var(--menu-text);
   background: transparent;
   font-size: 12px;
 }
@@ -2631,7 +2605,7 @@
 }
 
 .assistant-workspace .image-model-menu .model-menu-search input::placeholder {
-  color: var(--assistant-muted);
+  color: var(--menu-muted);
 }
 
 .assistant-workspace .image-model-menu .model-menu-search button {
@@ -2641,14 +2615,14 @@
   place-items: center;
   border: 0;
   border-radius: 7px;
-  color: var(--assistant-muted);
+  color: var(--menu-muted);
   background: transparent;
   cursor: pointer;
 }
 
 .assistant-workspace .image-model-menu .model-menu-search button:hover {
-  color: var(--assistant-text);
-  background: var(--assistant-panel-active);
+  color: var(--menu-text);
+  background: var(--menu-hover);
 }
 
 .assistant-workspace .image-model-menu .model-menu-options {
@@ -2664,53 +2638,58 @@
 }
 
 .assistant-workspace .image-model-menu .model-menu-options > button {
-  display: grid;
+  display: flex;
   width: 100%;
-  min-height: 44px;
-  grid-template-columns: 22px minmax(0, 1fr) minmax(94px, auto) 18px;
+  min-height: 52px;
   align-items: center;
-  gap: 9px;
-  padding: 6px 8px;
+  gap: 10px;
+  padding: 0 12px;
   border: 0;
-  border-radius: 8px;
-  color: var(--assistant-text);
+  border-radius: 12px;
+  color: var(--menu-text);
   background: transparent;
   text-align: left;
   cursor: pointer;
   transition:
-    background 140ms ease,
-    color 140ms ease;
+    background 160ms ease,
+    color 160ms ease,
+    transform 160ms ease;
 }
 
 .assistant-workspace .image-model-menu .model-menu-options > button:hover {
   background: var(--menu-hover);
+  transform: translateX(2px);
+}
+
+.assistant-workspace .image-model-menu .model-menu-options > button:active {
+  transform: translateX(1px) scale(0.99);
+  transition-duration: 80ms;
 }
 
 .assistant-workspace .image-model-menu .model-menu-options > button.active {
   background: var(--menu-active);
 }
 
-.assistant-workspace .image-model-menu .model-copy {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  overflow: hidden;
+.assistant-workspace .image-model-menu .model-menu-options > button.active:hover {
+  background: var(--menu-active);
+  transform: translateX(2px);
 }
 
-.assistant-workspace .image-model-menu .model-menu-aside {
-  display: inline-flex;
-  min-width: 94px;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
+.assistant-workspace .image-model-menu .model-copy {
+  display: grid;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 3px;
+  overflow: hidden;
 }
 
 .assistant-workspace .image-model-menu .model-copy strong {
   display: block;
   min-width: 0;
   overflow: hidden;
-  font-size: 12px;
-  font-weight: 600;
+  color: var(--menu-text);
+  font-size: 13px;
+  font-weight: 720;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2755,57 +2734,55 @@
 
 .assistant-workspace .image-model-menu .model-menu-price {
   display: grid;
-  min-width: 0;
+  flex: 0 0 auto;
   justify-items: end;
   gap: 1px;
-  line-height: 1.2;
+  line-height: 1.25;
   white-space: nowrap;
 }
 
 .assistant-workspace .image-model-menu .model-menu-price strong {
-  color: var(--assistant-text-soft);
-  font-size: 12px;
-  font-weight: 650;
+  color: var(--menu-price);
+  font-size: 11px;
+  font-weight: 720;
 }
 
 .assistant-workspace .image-model-menu .model-menu-price.has-discount strong {
-  color: #f3ad32;
+  color: var(--menu-price);
 }
 
 .assistant-workspace .image-model-menu .model-menu-price del {
-  color: var(--assistant-muted);
+  color: var(--menu-price-muted);
   font-size: 10px;
   text-decoration-thickness: 1px;
 }
 
 .assistant-workspace .image-model-menu .model-menu-price.is-empty {
-  color: var(--assistant-muted);
+  color: var(--menu-muted);
   font-size: 10px;
 }
 
-.assistant-workspace .image-model-menu .model-menu-check-slot {
-  display: grid;
-  width: 18px;
-  height: 18px;
-  place-items: center;
+.assistant-workspace .image-model-menu .model-menu-options > button > .sc-model-catalog-icon {
+  flex: 0 0 auto;
 }
 
 .assistant-workspace .image-model-menu .menu-check {
-  color: var(--assistant-accent-ink);
+  display: grid;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  place-items: center;
+  border-radius: 50%;
+  color: #fff;
+  background: var(--menu-accent);
   font-size: 12px;
 }
 
 .assistant-workspace .image-model-menu .skill-empty {
   margin: 4px 0;
   padding: 24px 12px;
-  color: var(--assistant-muted);
+  color: var(--menu-muted);
   text-align: center;
-}
-
-.assistant-workspace .reasoning-effort-menu {
-  left: min(292px, calc(100% - 292px));
-  bottom: 50px;
-  transform-origin: 32px 100%;
 }
 
 .assistant-workspace .image-mode-preferences {
@@ -2819,6 +2796,7 @@
   bottom: 48px;
   display: grid;
   width: min(428px, calc(100% - 16px));
+  max-width: min(428px, calc(100% - 16px));
   max-height: min(620px, calc(100dvh - 128px));
   gap: 14px;
   overflow-x: hidden;
@@ -2832,7 +2810,7 @@
   box-shadow:
     0 2px 6px rgb(49 32 107 / 6%),
     0 18px 40px rgb(49 32 107 / 12%);
-  transform-origin: 32px 100%;
+  transform-origin: 24px 100%;
 }
 
 .assistant-workspace.is-dark .image-mode-preferences {
@@ -2950,9 +2928,10 @@
   cursor: pointer;
   box-shadow: none;
   transition:
-    background-color 180ms ease,
-    box-shadow 180ms ease,
-    color 180ms ease;
+    background-color 160ms ease,
+    box-shadow 160ms ease,
+    color 160ms ease,
+    transform 160ms ease;
 }
 
 .assistant-workspace .image-mode-preferences .preferences-seg.is-wrap button,
@@ -2971,6 +2950,11 @@
 .assistant-workspace .image-mode-preferences .image-quality-options button:hover:not(.active) {
   color: var(--assistant-text);
   background: var(--pref-chip-hover);
+  transform: translateY(-1px);
+}
+
+.assistant-workspace .image-mode-preferences .preferences-seg.is-track button:hover:not(.active) {
+  transform: translateY(-1px);
 }
 
 .assistant-workspace .image-mode-preferences .preferences-seg button.active,
@@ -2994,6 +2978,13 @@
 
 @media (prefers-reduced-motion: reduce) {
   .assistant-workspace .composer-popover,
+  .assistant-workspace .studio-reasoning,
+  .assistant-workspace .composer-popover.is-entering,
+  .assistant-workspace .composer-popover.is-open,
+  .assistant-workspace .composer-popover.is-closing,
+  .assistant-workspace .studio-reasoning.is-entering,
+  .assistant-workspace .studio-reasoning.is-open,
+  .assistant-workspace .studio-reasoning.is-closing,
   .assistant-workspace .agent-proposal-menu,
   .assistant-workspace .menu-chevron,
   .agent-proposal-prompt-dialog,
@@ -3001,6 +2992,20 @@
   .assistant-workspace .image-mode-preferences .pref-thumb {
     animation: none;
     transition: none;
+    opacity: 1;
+    transform: none;
+  }
+
+  .assistant-workspace .creation-type-menu > button,
+  .assistant-workspace .creation-type-menu > button:hover,
+  .assistant-workspace .creation-type-menu > button:active,
+  .assistant-workspace .image-model-menu .model-menu-options > button,
+  .assistant-workspace .image-model-menu .model-menu-options > button:hover,
+  .assistant-workspace .image-model-menu .model-menu-options > button:active,
+  .assistant-workspace .image-mode-preferences .preferences-seg button:hover:not(.active),
+  .assistant-workspace .image-mode-preferences .ratio-options button:hover:not(.active) {
+    transition: background 120ms ease, color 120ms ease !important;
+    transform: none !important;
   }
 }
 
@@ -3542,16 +3547,10 @@ html.settings-no-animations .assistant-workspace .image-mode-preferences .pref-t
     display: none;
   }
 
-  .assistant-workspace .reasoning-effort-menu {
-    right: 12px;
-    left: 12px;
-    width: auto;
-  }
-
-  .assistant-workspace .image-model-menu {
-    right: 12px;
-    left: 12px;
-    width: auto;
+  .assistant-workspace .studio-composer__field-menu.is-reasoning.studio-reasoning,
+  .assistant-workspace .image-model-menu,
+  .assistant-workspace .creation-type-menu {
+    max-width: calc(100% - 16px);
   }
 }
 
@@ -5063,7 +5062,9 @@ html.settings-no-animations .assistant-workspace .image-mode-preferences .pref-t
   background: var(--assistant-panel);
   box-shadow: none;
   contain: none;
-  transition: width var(--assistant-sidebar-motion);
+  transition:
+    width var(--assistant-sidebar-motion),
+    padding var(--assistant-sidebar-motion);
 }
 
 .assistant-workspace > .assistant-sidebar,
@@ -5085,15 +5086,21 @@ html.settings-no-animations .assistant-workspace .image-mode-preferences .pref-t
   position: absolute;
   top: 8px;
   right: 6px;
+  left: auto;
   z-index: 4;
   width: 36px;
   height: 36px;
   flex-basis: 36px;
+  margin-inline: 0;
   border: 0;
   border-radius: 8px;
   color: var(--assistant-muted);
   background: transparent;
   font-size: 22px;
+  transition:
+    right var(--assistant-sidebar-motion),
+    left var(--assistant-sidebar-motion),
+    margin-inline var(--assistant-sidebar-motion);
 }
 
 .assistant-workspace > .assistant-sidebar > .sidebar-close i {
@@ -5147,16 +5154,23 @@ html.settings-no-animations .assistant-workspace .image-mode-preferences .pref-t
 
 .assistant-workspace .assistant-sidebar-body {
   display: flex;
+  position: absolute;
+  top: 14px;
+  right: auto;
+  bottom: 12px;
+  left: 16px;
+  z-index: 0;
   box-sizing: border-box;
-  width: 100%;
+  width: calc(var(--assistant-sidebar-expanded) - 34px);
   min-width: 0;
-  max-width: 100%;
-  height: 100%;
+  max-width: none;
+  height: auto;
   min-height: 0;
-  flex: 1;
+  flex: none;
   flex-direction: column;
   opacity: 1;
-  transition: opacity 200ms ease;
+  /* Fade labels out before the width clip finishes so text never looks squeezed. */
+  transition: opacity 120ms ease;
 }
 
 .assistant-workspace .assistant-sidebar-body .conversation-section,
@@ -5667,27 +5681,32 @@ html.settings-no-animations .assistant-workspace .image-mode-preferences .pref-t
   padding: 52px 0 8px;
   opacity: 0;
   pointer-events: none;
-  transition: opacity 200ms ease;
+  transition: opacity 160ms ease 40ms;
 }
 
-.assistant-workspace.is-sidebar-narrow .assistant-sidebar-body,
-.assistant-workspace.is-sidebar-animating .assistant-sidebar-body {
-  width: calc(var(--assistant-sidebar-expanded) - 34px);
-  min-width: 0;
-  max-width: none;
-}
-
+/*
+ * Keep the expanded body pinned to the padded content origin for the whole
+ * collapse/expand. Width animation only clips; opacity crossfades with the rail.
+ */
 .assistant-workspace.is-sidebar-narrow .assistant-sidebar-body {
-  position: absolute;
-  inset: 0;
   opacity: 0;
   pointer-events: none;
+  transition: opacity 110ms ease;
+}
+
+.assistant-workspace.is-sidebar-animating:not(.is-sidebar-narrow) .assistant-sidebar-body {
+  opacity: 1;
+  transition: opacity 160ms ease 60ms;
 }
 
 .assistant-workspace.is-sidebar-narrow .assistant-sidebar-rail,
 .assistant-workspace.is-sidebar-animating.is-sidebar-narrow .assistant-sidebar-rail {
   opacity: 1;
   pointer-events: auto;
+}
+
+.assistant-workspace:not(.is-sidebar-narrow) .assistant-sidebar-rail {
+  transition: opacity 110ms ease;
 }
 
 .assistant-workspace:not(.is-sidebar-animating).is-sidebar-narrow .assistant-sidebar-body,

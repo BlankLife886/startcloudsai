@@ -123,7 +123,7 @@ void main() {
     );
     expect(
       (darkOption.decoration as BoxDecoration).borderRadius,
-      BorderRadius.circular(8),
+      BorderRadius.circular(24),
     );
     expect(store.writes, ['dark']);
     expect(tester.takeException(), isNull);
@@ -153,6 +153,13 @@ void main() {
     expect(find.text('设备当前为深色外观'), findsOneWidget);
     expect(find.text('界面预览 · 深色外观'), findsOneWidget);
     expect(find.byKey(const Key('appearance-preview-dark')), findsOneWidget);
+    final preview = tester.widget<AnimatedContainer>(
+      find.byKey(const Key('appearance-preview-dark')),
+    );
+    expect(
+      (preview.decoration as BoxDecoration).color,
+      const Color(0xFF12151B),
+    );
     expect(tester.takeException(), isNull);
   });
 

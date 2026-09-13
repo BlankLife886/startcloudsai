@@ -64,6 +64,24 @@ func TestAssistantProposalFunctionToolOmitsUnsupportedModelParameters(t *testing
 	}
 }
 
+func TestAssistantProposalUsesEffectiveImageBatchLimit(t *testing.T) {
+	models := []map[string]any{{
+		"id": "image-model", "maxImages": float64(16), "imageBatchLimit": float64(7),
+	}}
+	tool := assistantProposalFunctionTool(models)
+	properties := tool.Parameters["properties"].(map[string]any)
+	count := properties["count"].(map[string]any)
+	if count["maximum"] != 7 {
+		t.Fatalf("count maximum = %#v, want 7", count["maximum"])
+	}
+	proposal := normalizeAssistantProposalWithModels(assistantImageProposal{
+		Action: "generate", Prompt: "生成一组产品图", Model: "image-model", Count: 16,
+	}, &store.AssistantRun{}, models)
+	if proposal.Count != 1 {
+		t.Fatalf("normalized count = %d, want safe fallback within effective limit", proposal.Count)
+	}
+}
+
 func TestAssistantAgentInstructionsPreserveRequestedCount(t *testing.T) {
 	run := &store.AssistantRun{Params: map[string]any{
 		"ratio": "16:9", "resolution": "2K", "count": float64(3), "quality": "high",
@@ -89,6 +107,9 @@ func TestAssistantAgentInstructionsPreserveRequestedCount(t *testing.T) {
 		if !strings.Contains(instructions, requirement) {
 			t.Fatalf("instructions lack orchestration requirement %q: %q", requirement, instructions)
 		}
+	}
+	if !strings.Contains(instructions, "有效单次上限") || !strings.Contains(instructions, "不能提交会被系统拒绝的超限方案") {
+		t.Fatalf("instructions lack effective batch limit rule = %q", instructions)
 	}
 }
 

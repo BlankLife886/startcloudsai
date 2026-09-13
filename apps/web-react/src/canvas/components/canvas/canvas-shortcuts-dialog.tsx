@@ -30,8 +30,9 @@ export function CanvasShortcutsDialog({ open, onClose }: { open: boolean; onClos
         {
             title: t("canvas.shortcut.groupView"),
             items: [
-                { keys: [mod, "Space", t("canvas.shortcut.drag")], action: t("canvas.shortcut.toggleTool") },
-                { keys: [t("canvas.shortcut.wheel")], action: t("canvas.shortcut.zoom") },
+                { keys: ["Space", t("canvas.shortcut.drag")], action: t("canvas.shortcut.toggleTool") },
+                { keys: [t("canvas.shortcut.wheel")], action: t("canvas.toolbar.pan") },
+                { keys: [mod, t("canvas.shortcut.wheel")], action: t("canvas.shortcut.zoom") },
                 { keys: [t("canvas.shortcut.zoomSlider")], action: t("canvas.shortcut.preciseZoom") },
             ],
         },

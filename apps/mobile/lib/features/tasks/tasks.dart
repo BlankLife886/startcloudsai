@@ -5,12 +5,38 @@ import 'package:path_provider/path_provider.dart';
 
 import '../../core/network/api_client.dart';
 import '../../core/providers.dart';
+import '../auth/auth.dart';
+
+class TaskCancelPolicy {
+  const TaskCancelPolicy({
+    required this.allowed,
+    required this.mode,
+    required this.upstreamSubmitted,
+    required this.refunded,
+    required this.message,
+  });
+
+  factory TaskCancelPolicy.fromJson(Map json) => TaskCancelPolicy(
+    allowed: json['allowed'] == true,
+    mode: json['mode']?.toString() ?? 'unavailable',
+    upstreamSubmitted: json['upstreamSubmitted'] == true,
+    refunded: json['refunded'] == true,
+    message: json['message']?.toString() ?? '',
+  );
+
+  final bool allowed;
+  final String mode;
+  final bool upstreamSubmitted;
+  final bool refunded;
+  final String message;
+}
 
 class TaskItem {
   const TaskItem({
     required this.id,
     required this.type,
     required this.model,
+    this.modelName = '',
     required this.status,
     required this.prompt,
     required this.params,
@@ -29,6 +55,7 @@ class TaskItem {
     this.deletionActor,
     this.deletedOutputCount = 0,
     this.count = 1,
+    this.cancelPolicy,
   });
 
   factory TaskItem.fromJson(Map<String, dynamic> json) {
@@ -41,6 +68,14 @@ class TaskItem {
       id: json['id']?.toString() ?? '',
       type: json['type']?.toString() ?? '',
       model: json['model']?.toString() ?? '',
+      modelName: json['modelName']?.toString().trim().isNotEmpty == true
+          ? json['modelName'].toString().trim()
+          : (json['params'] is Map
+                ? (json['params'] as Map)['_modelDisplayName']
+                          ?.toString()
+                          .trim() ??
+                      ''
+                : ''),
       status: json['status']?.toString() ?? 'queued',
       prompt:
           (json['params'] is Map ? (json['params'] as Map)['userPrompt'] : null)
@@ -67,12 +102,16 @@ class TaskItem {
       deletedOutputCount:
           (json['deletedOutputCount'] as num?)?.toInt().clamp(0, 1000000) ?? 0,
       count: ((json['count'] as num?)?.toInt() ?? 1).clamp(1, 4),
+      cancelPolicy: json['cancelPolicy'] is Map
+          ? TaskCancelPolicy.fromJson(json['cancelPolicy'] as Map)
+          : null,
     );
   }
 
   final String id;
   final String type;
   final String model;
+  final String modelName;
   final String status;
   final String prompt;
 
@@ -101,6 +140,7 @@ class TaskItem {
   final String? deletionActor;
   final int deletedOutputCount;
   final int count;
+  final TaskCancelPolicy? cancelPolicy;
 
   String? get thumbnailUrl => thumbnailUrls.firstOrNull;
   String? get originalUrl => originalUrls.firstOrNull;
@@ -115,7 +155,17 @@ class TaskItem {
       deletedAt != null ||
       deletedOutputCount > 0 ||
       deletionActor?.isNotEmpty == true;
-  bool get canCancel => isActive;
+  bool get canCancel => isActive && (cancelPolicy?.allowed ?? true);
+  String get cancelConfirmationMessage {
+    final message = cancelPolicy?.message.trim() ?? '';
+    if (cancelPolicy?.upstreamSubmitted == true && message.isNotEmpty) {
+      return message;
+    }
+    // Submission can race with the dialog, so consent covers both stages.
+    return '${message.isEmpty ? '尚未提交上游的任务会停止并退回冻结积分。' : message}\n\n'
+        '若确认时已提交上游，只会停止等待和接收结果，上游可能继续生成，本次预留积分不会退回。';
+  }
+
   bool get canDelete =>
       status == 'succeeded' || status == 'failed' || status == 'canceled';
   bool get isTextToImage {
@@ -159,10 +209,11 @@ class TaskItem {
   }
 
   Duration? get duration {
-    final start = startedAt ?? createdAt;
+    final start = createdAt ?? startedAt;
     final end = finishedAt;
     if (start == null || end == null) return null;
-    return end.difference(start);
+    final elapsed = end.difference(start);
+    return elapsed.isNegative ? Duration.zero : elapsed;
   }
 }
 
@@ -254,10 +305,10 @@ class TaskRepository {
         .toList();
   }
 
-  Future<TaskItem> cancel(String id) async {
+  Future<TaskItem> cancel(String id, {bool acknowledgeUpstream = false}) async {
     final data = await _apiClient.patch(
       '/tasks/$id',
-      data: const {'status': 'canceled'},
+      data: {'status': 'canceled', 'acknowledgeUpstream': acknowledgeUpstream},
     );
     if (data is! Map) throw const FormatException('任务取消响应无效');
     return TaskItem.fromJson(Map<String, dynamic>.from(data));
@@ -513,9 +564,11 @@ final taskRepositoryProvider = Provider<TaskRepository>(
   (ref) => TaskRepository(ref.watch(apiClientProvider)),
 );
 
-final taskListProvider = FutureProvider<List<TaskItem>>(
-  (ref) => ref.watch(taskRepositoryProvider).list(),
-);
+final taskListProvider = FutureProvider<List<TaskItem>>((ref) async {
+  final session = await ref.watch(sessionControllerProvider.future);
+  if (!session.isAuthenticated) return const [];
+  return ref.watch(taskRepositoryProvider).list();
+});
 
 final taskCenterControllerProvider =
     AutoDisposeAsyncNotifierProvider<TaskCenterController, TaskCenterState>(

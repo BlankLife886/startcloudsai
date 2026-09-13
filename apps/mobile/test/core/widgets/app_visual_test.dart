@@ -4,8 +4,68 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:starcloudsai_mobile/core/widgets/app_visual.dart';
+import 'package:starcloudsai_mobile/app/starclouds_theme.dart';
 
 void main() {
+  testWidgets(
+    'neutral surfaces retain white edges and support opaque high contrast',
+    (tester) async {
+      for (final highContrast in [false, true]) {
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: StarCloudsTheme.light(),
+            builder: (context, child) => MediaQuery(
+              data: MediaQuery.of(context).copyWith(highContrast: highContrast),
+              child: child!,
+            ),
+            home: const Scaffold(
+              body: AppGlassSurface(
+                child: Padding(
+                  padding: EdgeInsets.all(20),
+                  child: Text('玻璃表面'),
+                ),
+              ),
+            ),
+          ),
+        );
+        final decorated =
+            tester
+                    .widget<DecoratedBox>(
+                      find
+                          .descendant(
+                            of: find.byType(AppGlassSurface),
+                            matching: find.byType(DecoratedBox),
+                          )
+                          .first,
+                    )
+                    .decoration
+                as BoxDecoration;
+        expect(find.byType(BackdropFilter), findsNothing);
+        if (highContrast) {
+          expect(decorated.gradient, isNull);
+          expect(decorated.color?.a, 1);
+          expect(decorated.boxShadow, isNull);
+          expect(decorated.border?.top.width, 1.5);
+        } else {
+          expect(decorated.gradient, isNull);
+          expect(decorated.color, Colors.white);
+          final edge = decorated.border!.top.color;
+          expect(edge.r, 1);
+          expect(edge.g, 1);
+          expect(edge.b, 1);
+          expect(decorated.boxShadow, hasLength(1));
+          final shadow = decorated.boxShadow!.single;
+          expect(shadow.color.r, 0);
+          expect(shadow.color.g, 0);
+          expect(shadow.color.b, 0);
+          expect(shadow.blurRadius, 16);
+          expect(decorated.borderRadius, BorderRadius.circular(24));
+        }
+        expect(tester.takeException(), isNull);
+      }
+    },
+  );
+
   testWidgets(
     'pressable exposes a button role and supports keyboard activation',
     (tester) async {

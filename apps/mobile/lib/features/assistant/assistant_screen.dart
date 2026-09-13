@@ -18,6 +18,7 @@ import '../../app/starclouds_theme.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/providers.dart';
 import '../../core/widgets/app_notice.dart';
+import '../../core/widgets/app_visual.dart';
 import '../../core/widgets/app_top_bar.dart';
 import '../../core/widgets/authenticated_image.dart';
 import '../assets/assets.dart';
@@ -1394,6 +1395,52 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     }
   }
 
+  bool _stoppingRun = false;
+  Future<void> _stopSelectedRun() async {
+    if (_stoppingRun) return;
+    final runId = ref
+        .read(assistantWorkspaceProvider)
+        .asData
+        ?.value
+        .selectedRun
+        ?.id;
+    if (runId == null) return;
+    _stoppingRun = true;
+    try {
+      await ref
+          .read(assistantWorkspaceProvider.notifier)
+          .cancelSelectedRun(expectedRunId: runId);
+    } on ApiException catch (error) {
+      if (error.code != 'assistant_cancel_confirmation_required') rethrow;
+      if (!mounted) return;
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          scrollable: true,
+          title: const Text('停止接收本次结果？'),
+          content: Text(error.message),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('继续等待'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('确认停止'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed == true && mounted) {
+        await ref
+            .read(assistantWorkspaceProvider.notifier)
+            .cancelSelectedRun(acknowledgeUpstream: true, expectedRunId: runId);
+      }
+    } finally {
+      _stoppingRun = false;
+    }
+  }
+
   Future<void> _send() async {
     final value = _composer.text.trim();
     if (value.isEmpty || _checkingBalance || _uploadingReferences) return;
@@ -1494,7 +1541,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
             color: Theme.of(context).colorScheme.errorContainer,
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(16),
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -1731,7 +1778,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
                           AssistantMode.chat => '快捷指令',
                         },
                         style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                          fontWeight: FontWeight.w800,
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
                       const SizedBox(height: 4),
@@ -1755,7 +1802,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
                         child: Material(
                           color: colors.surfaceContainerLow,
                           shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(8),
+                            borderRadius: BorderRadius.circular(16),
                             side: BorderSide(
                               color: colors.outlineVariant.withValues(
                                 alpha: .55,
@@ -2156,11 +2203,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
           onToggleSpeech: _toggleSpeechInput,
           onStop: state.selectedRun == null
               ? null
-              : () => _run(
-                  () => ref
-                      .read(assistantWorkspaceProvider.notifier)
-                      .cancelSelectedRun(),
-                ),
+              : () => _run(_stopSelectedRun),
           onSend: _send,
         ),
       ],
@@ -2385,7 +2428,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
                   Text(
                     '图片参数',
                     style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.w900,
+                      fontWeight: FontWeight.w700,
                     ),
                   ),
                   const SizedBox(height: 6),
@@ -2494,7 +2537,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
                           '$count 张',
                           textAlign: TextAlign.center,
                           style: Theme.of(context).textTheme.titleMedium
-                              ?.copyWith(fontWeight: FontWeight.w900),
+                              ?.copyWith(fontWeight: FontWeight.w700),
                         ),
                       ),
                       IconButton.outlined(
@@ -2571,7 +2614,7 @@ class _AssistantToolIcon extends StatelessWidget {
           color: color.withValues(
             alpha: colors.brightness == Brightness.dark ? .22 : .12,
           ),
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(16),
         ),
         child: Icon(icon, size: 22, color: color),
       ),
@@ -2620,7 +2663,7 @@ class _AssistantToolRow extends StatelessWidget {
                       title,
                       style: Theme.of(context).textTheme.titleSmall?.copyWith(
                         fontWeight: FontWeight.w700,
-                        letterSpacing: -0.2,
+                        letterSpacing: 0,
                         height: 1.2,
                       ),
                     ),
@@ -2659,7 +2702,7 @@ class _ImageSettingLabel extends StatelessWidget {
     label,
     style: Theme.of(
       context,
-    ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w800),
+    ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w600),
   );
 }
 
@@ -2875,7 +2918,7 @@ class _AssistantHeaderMenuState extends State<_AssistantHeaderMenu>
                         '${_assistantModeLabel(mode)} · ${model?.label ?? 'AI 助手'}',
                     textAlign: TextAlign.center,
                     style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                      fontWeight: FontWeight.w800,
+                      fontWeight: FontWeight.w600,
                     ),
                   ),
                 ),
@@ -3659,7 +3702,7 @@ class _AssistantWelcome extends StatelessWidget {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  const _AssistantOrb(size: 118),
+                  const _AssistantBrandMark(size: 118),
                   const SizedBox(height: 18),
                   _WelcomeHeadline(title: title),
                   const SizedBox(height: 10),
@@ -3683,100 +3726,32 @@ class _AssistantWelcome extends StatelessWidget {
 
 class _WelcomeHeadline extends StatelessWidget {
   const _WelcomeHeadline({required this.title});
-
   final String title;
 
   @override
-  Widget build(BuildContext context) {
-    final visual = StarCloudsVisualStyle.of(context);
-    final accentLength = switch (title) {
-      '有什么可以帮你？' => 3,
-      '交给 Agent 来完成' => 2,
-      '想生成什么图片？' => 3,
-      _ => 0,
-    };
-    final style = Theme.of(context).textTheme.headlineSmall?.copyWith(
-      fontWeight: FontWeight.w800,
-      letterSpacing: -0.5,
-      height: 1.15,
-    );
-    if (accentLength == 0 || accentLength >= title.length) {
-      return Text(title, textAlign: TextAlign.center, style: style);
-    }
-    return Text.rich(
-      TextSpan(
-        children: [
-          TextSpan(
-            text: title.substring(0, title.length - accentLength),
-            style: style,
-          ),
-          TextSpan(
-            text: title.substring(title.length - accentLength),
-            style: style?.copyWith(color: visual.brandEnd),
-          ),
-        ],
-      ),
-      textAlign: TextAlign.center,
-    );
-  }
+  Widget build(BuildContext context) => Text(
+    title,
+    textAlign: TextAlign.center,
+    style: Theme.of(context).textTheme.titleLarge?.copyWith(height: 1.4),
+  );
 }
 
-class _AssistantOrb extends StatelessWidget {
-  const _AssistantOrb({this.size = 72});
-
+class _AssistantBrandMark extends StatelessWidget {
+  const _AssistantBrandMark({this.size = 72});
   final double size;
 
   @override
-  Widget build(BuildContext context) {
-    final visual = StarCloudsVisualStyle.of(context);
-    final core = size > 28 ? size * 0.62 : size;
-    return SizedBox.square(
-      dimension: size,
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          if (size > 28)
-            Container(
-              width: size,
-              height: size,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: RadialGradient(
-                  colors: [
-                    visual.brandStart.withValues(alpha: .28),
-                    visual.brandEnd.withValues(alpha: .08),
-                    visual.brandEnd.withValues(alpha: 0),
-                  ],
-                  stops: const [0.35, 0.68, 1],
-                ),
-              ),
-            ),
-          Container(
-            width: core,
-            height: core,
-            decoration: BoxDecoration(
-              gradient: visual.brandGradient,
-              shape: BoxShape.circle,
-              boxShadow: [
-                BoxShadow(
-                  color: visual.brandStart.withValues(
-                    alpha: size > 28 ? .38 : .2,
-                  ),
-                  blurRadius: size > 28 ? 22 : 6,
-                  offset: Offset(0, size > 28 ? 10 : 2),
-                ),
-              ],
-            ),
-            child: Icon(
-              Icons.auto_awesome_rounded,
-              color: Colors.white,
-              size: core * 0.42,
-            ),
-          ),
-        ],
+  Widget build(BuildContext context) => SizedBox.square(
+    dimension: size,
+    child: Center(
+      child: Image.asset(
+        'assets/brand/brand_mark.png',
+        width: size > 28 ? size * .72 : size,
+        height: size > 28 ? size * .72 : size,
+        excludeFromSemantics: true,
       ),
-    );
-  }
+    ),
+  );
 }
 
 class _MessageBubble extends StatelessWidget {
@@ -3853,13 +3828,12 @@ class _MessageBubble extends StatelessWidget {
         ? null
         : DateFormat('HH:mm').format(message.createdAt!);
     final bubbleText = Theme.of(context).textTheme.bodyMedium?.copyWith(
-      height: 1.28,
-      letterSpacing: -0.15,
+      height: 1.5,
+      letterSpacing: 0,
       leadingDistribution: TextLeadingDistribution.even,
-      color: user ? colors.onPrimaryContainer : colors.onSurface,
+      color: colors.onSurface,
     );
     if (user) {
-      final visual = StarCloudsVisualStyle.of(context);
       return Padding(
         padding: const EdgeInsets.only(bottom: 10),
         child: Align(
@@ -3881,13 +3855,11 @@ class _MessageBubble extends StatelessWidget {
                 ],
                 DecoratedBox(
                   decoration: BoxDecoration(
-                    color: visual.brandSoft,
-                    borderRadius: const BorderRadius.only(
-                      topLeft: Radius.circular(18),
-                      topRight: Radius.circular(18),
-                      bottomLeft: Radius.circular(18),
-                      bottomRight: Radius.circular(6),
+                    color: colors.surfaceContainerLowest,
+                    border: StarCloudsVisualStyle.of(context).glassBorder(
+                      highContrast: MediaQuery.highContrastOf(context),
                     ),
+                    borderRadius: BorderRadius.circular(16),
                   ),
                   child: Padding(
                     padding: const EdgeInsets.symmetric(
@@ -4214,7 +4186,7 @@ class _GeneratedImageTile extends StatelessWidget {
       child: Material(
         key: ValueKey('assistant-generated-image-${image.id}'),
         color: colors.surfaceContainerHigh,
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(16),
         clipBehavior: Clip.antiAlias,
         child: InkWell(
           onTap: () => _showGeneratedImage(
@@ -4255,7 +4227,7 @@ class _GeneratedImageTile extends StatelessWidget {
                         '${index + 1}',
                         style: Theme.of(context).textTheme.labelSmall?.copyWith(
                           color: Colors.white,
-                          fontWeight: FontWeight.w800,
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
                     ),
@@ -4515,7 +4487,7 @@ class _GeneratedImagePreviewState extends State<_GeneratedImagePreview> {
                 ],
                 Material(
                   color: Colors.black.withValues(alpha: .66),
-                  borderRadius: BorderRadius.circular(8),
+                  borderRadius: BorderRadius.circular(16),
                   child: Padding(
                     padding: const EdgeInsets.all(4),
                     child: Row(
@@ -4619,7 +4591,7 @@ class _GeneratedImagePromptPanel extends StatelessWidget {
       constraints: const BoxConstraints(maxHeight: 160),
       child: Material(
         color: Colors.black.withValues(alpha: .76),
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(16),
         clipBehavior: Clip.antiAlias,
         child: Padding(
           padding: const EdgeInsets.fromLTRB(12, 8, 6, 10),
@@ -4756,7 +4728,7 @@ class _GeneratedImageThumbnailRail extends StatelessWidget {
                 duration: _motionDuration(context, 180),
                 width: 52,
                 decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(8),
+                  borderRadius: BorderRadius.circular(16),
                   border: Border.all(
                     color: selected ? Colors.white : Colors.white38,
                     width: selected ? 2 : 1,
@@ -4849,6 +4821,7 @@ class _AgentProposalPanelState extends State<_AgentProposalPanel> {
       widget.imageModels.firstOrNull;
 
   AssistantProposal _normalized(AssistantProposal value) {
+    if (widget.generating || widget.executed) return value;
     final model =
         widget.imageModels
             .where((item) => item.id == value.modelId)
@@ -4901,7 +4874,7 @@ class _AgentProposalPanelState extends State<_AgentProposalPanel> {
               title,
               style: Theme.of(
                 context,
-              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
             ),
           ),
           ListView.builder(
@@ -4914,7 +4887,7 @@ class _AgentProposalPanelState extends State<_AgentProposalPanel> {
               return ListTile(
                 minTileHeight: 52,
                 shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
+                  borderRadius: BorderRadius.circular(16),
                 ),
                 selected: selected,
                 title: Text(option.label),
@@ -5040,11 +5013,11 @@ class _AgentProposalPanelState extends State<_AgentProposalPanel> {
         key: const Key('assistant-agent-proposal'),
         color: colors.surfaceContainerLow,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(16),
           side: BorderSide(color: colors.outlineVariant),
         ),
         child: InkWell(
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(16),
           onTap: () => setState(() => _dismissed = false),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
@@ -5071,7 +5044,7 @@ class _AgentProposalPanelState extends State<_AgentProposalPanel> {
       key: const Key('assistant-agent-proposal'),
       color: colors.surface,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(16),
         side: BorderSide(color: colors.outlineVariant),
       ),
       clipBehavior: Clip.antiAlias,
@@ -5104,7 +5077,7 @@ class _AgentProposalPanelState extends State<_AgentProposalPanel> {
                       Text(
                         _draft.action == 'edit' ? '图片编辑方案' : '图片生成方案',
                         style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                          fontWeight: FontWeight.w800,
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
                       if (_draft.summary.isNotEmpty) ...[
@@ -5149,10 +5122,10 @@ class _AgentProposalPanelState extends State<_AgentProposalPanel> {
             const SizedBox(height: 14),
             Material(
               color: colors.surfaceContainerLow,
-              borderRadius: BorderRadius.circular(8),
+              borderRadius: BorderRadius.circular(16),
               child: InkWell(
                 key: const Key('assistant-edit-agent-prompt'),
-                borderRadius: BorderRadius.circular(8),
+                borderRadius: BorderRadius.circular(16),
                 onTap: busy ? null : _editPrompt,
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(12, 10, 10, 12),
@@ -5364,7 +5337,7 @@ class _ProposalPromptEditorSheetState
           '编辑生成提示词',
           style: Theme.of(
             context,
-          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
         ),
         const SizedBox(height: 12),
         TextField(
@@ -5428,9 +5401,9 @@ class _ProposalControl extends StatelessWidget {
     final colors = Theme.of(context).colorScheme;
     return Material(
       color: colors.surfaceContainerLow,
-      borderRadius: BorderRadius.circular(8),
+      borderRadius: BorderRadius.circular(16),
       child: InkWell(
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(16),
         onTap: onTap,
         child: ConstrainedBox(
           constraints: const BoxConstraints(minHeight: 62),
@@ -5492,29 +5465,29 @@ class AssistantMarkdownContent extends StatelessWidget {
     final theme = Theme.of(context);
     final colors = theme.colorScheme;
     final body = theme.textTheme.bodyMedium?.copyWith(
-      height: 1.28,
-      letterSpacing: -0.15,
+      height: 1.55,
+      letterSpacing: 0,
       leadingDistribution: TextLeadingDistribution.even,
     );
     final styleSheet = MarkdownStyleSheet.fromTheme(theme).copyWith(
       p: body,
       pPadding: EdgeInsets.zero,
       h1: theme.textTheme.titleMedium?.copyWith(
-        fontWeight: FontWeight.w800,
-        height: 1.2,
-        letterSpacing: -0.2,
-      ),
-      h1Padding: const EdgeInsets.only(bottom: 2),
-      h2: theme.textTheme.titleSmall?.copyWith(
-        fontWeight: FontWeight.w800,
-        height: 1.22,
-        letterSpacing: -0.15,
-      ),
-      h2Padding: const EdgeInsets.only(bottom: 2),
-      h3: theme.textTheme.titleSmall?.copyWith(
         fontWeight: FontWeight.w700,
-        height: 1.22,
-        letterSpacing: -0.1,
+        height: 1.4,
+        letterSpacing: 0,
+      ),
+      h1Padding: const EdgeInsets.only(top: 8, bottom: 4),
+      h2: theme.textTheme.titleSmall?.copyWith(
+        fontWeight: FontWeight.w600,
+        height: 1.4,
+        letterSpacing: 0,
+      ),
+      h2Padding: const EdgeInsets.only(top: 6, bottom: 4),
+      h3: theme.textTheme.titleSmall?.copyWith(
+        fontWeight: FontWeight.w600,
+        height: 1.4,
+        letterSpacing: 0,
       ),
       h3Padding: const EdgeInsets.only(bottom: 2),
       strong: const TextStyle(fontWeight: FontWeight.w700),
@@ -5526,9 +5499,9 @@ class AssistantMarkdownContent extends StatelessWidget {
         color: colors.onSurface,
         backgroundColor: colors.surfaceContainerHighest,
       ),
-      blockSpacing: 6,
+      blockSpacing: 10,
       listIndent: 16,
-      listBullet: body?.copyWith(height: 1.28),
+      listBullet: body,
       listBulletPadding: const EdgeInsets.only(right: 6),
       blockquote: body?.copyWith(color: colors.onSurfaceVariant),
       blockquotePadding: const EdgeInsets.fromLTRB(12, 8, 10, 8),
@@ -5846,7 +5819,7 @@ class _MessageReferenceStrip extends StatelessWidget {
         label: items[index].name,
         image: true,
         child: ClipRRect(
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(16),
           child: SizedBox(
             width: 92,
             child: AuthenticatedImage(url: items[index].url),
@@ -5909,10 +5882,9 @@ class _MessageReasoning extends StatelessWidget {
               alignment: Alignment.centerLeft,
               child: SelectableText(
                 message.reasoning.trim(),
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  height: 1.32,
-                  letterSpacing: -0.1,
-                ),
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(height: 1.32, letterSpacing: 0),
               ),
             ),
           ],
@@ -6021,7 +5993,7 @@ class _ComposerQuote extends StatelessWidget {
       key: const Key('assistant-composer-quote'),
       decoration: BoxDecoration(
         color: colors.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(16),
       ),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(10, 8, 4, 8),
@@ -6142,7 +6114,6 @@ class _AssistantComposerState extends State<_AssistantComposer> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final visual = StarCloudsVisualStyle.of(context);
     final expanded = widget.focusNode.hasFocus;
     final canSubmit =
         widget.enabled &&
@@ -6304,68 +6275,63 @@ class _AssistantComposerState extends State<_AssistantComposer> {
                 onTap: () {
                   if (widget.enabled) widget.focusNode.requestFocus();
                 },
-                child: AnimatedContainer(
-                  duration: _motionDuration(context, 280),
-                  curve: Curves.easeOutCubic,
-                  padding: const EdgeInsets.fromLTRB(4, 4, 4, 4),
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).brightness == Brightness.dark
-                        ? colors.surfaceContainerHigh
-                        : const Color(0xFFF3F4F6),
-                    borderRadius: BorderRadius.circular(expanded ? 22 : 999),
-                    boxShadow: [
-                      BoxShadow(
-                        color: widget.speechListening
-                            ? colors.error.withValues(alpha: .16)
-                            : visual.shadow.withValues(alpha: .06),
-                        blurRadius: expanded ? 16 : 10,
-                        offset: const Offset(0, 2),
-                      ),
-                    ],
-                  ),
-                  child: AnimatedSize(
-                    duration: _motionDuration(context, 280),
+                child: AppGlassSurface(
+                  child: AnimatedContainer(
+                    duration: _motionDuration(context, 200),
                     curve: Curves.easeOutCubic,
-                    alignment: Alignment.bottomCenter,
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        if (expanded)
-                          Padding(
-                            padding: const EdgeInsets.fromLTRB(2, 2, 2, 8),
-                            child: ConstrainedBox(
-                              constraints: const BoxConstraints(
-                                minHeight: 72,
-                                maxHeight: 112,
-                              ),
-                              child: KeyedSubtree(
-                                key: _fieldHostKey,
-                                child: field,
+                    padding: const EdgeInsets.fromLTRB(4, 4, 4, 4),
+                    decoration: BoxDecoration(
+                      borderRadius: StarCloudsRadii.card,
+                      border: Border.all(
+                        color: widget.speechListening
+                            ? colors.error
+                            : Colors.transparent,
+                      ),
+                    ),
+                    child: AnimatedSize(
+                      duration: _motionDuration(context, 200),
+                      curve: Curves.easeOutCubic,
+                      alignment: Alignment.bottomCenter,
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          if (expanded)
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(2, 2, 2, 8),
+                              child: ConstrainedBox(
+                                constraints: const BoxConstraints(
+                                  minHeight: 72,
+                                  maxHeight: 112,
+                                ),
+                                child: KeyedSubtree(
+                                  key: _fieldHostKey,
+                                  child: field,
+                                ),
                               ),
                             ),
-                          ),
-                        SizedBox(
-                          height: 36,
-                          child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.center,
-                            children: [
-                              tools,
-                              if (expanded)
-                                const Spacer()
-                              else
-                                Expanded(
-                                  child: KeyedSubtree(
-                                    key: _fieldHostKey,
-                                    child: field,
+                          SizedBox(
+                            height: 36,
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.center,
+                              children: [
+                                tools,
+                                if (expanded)
+                                  const Spacer()
+                                else
+                                  Expanded(
+                                    child: KeyedSubtree(
+                                      key: _fieldHostKey,
+                                      child: field,
+                                    ),
                                   ),
-                                ),
-                              ?voice,
-                              send,
-                            ],
+                                ?voice,
+                                send,
+                              ],
+                            ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                   ),
                 ),
@@ -6554,7 +6520,7 @@ class _JumpToLatestButton extends StatelessWidget {
                   Text(
                     '最新',
                     style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                      fontWeight: FontWeight.w800,
+                      fontWeight: FontWeight.w600,
                     ),
                   ),
                 ],
@@ -6595,7 +6561,7 @@ class _AssistantCostRow extends StatelessWidget {
             color: danger
                 ? Theme.of(context).colorScheme.error
                 : Theme.of(context).colorScheme.onErrorContainer,
-            fontWeight: FontWeight.w800,
+            fontWeight: FontWeight.w600,
           ),
         ),
       ),
@@ -6631,7 +6597,7 @@ class AssistantReferenceStrip extends StatelessWidget {
             fit: StackFit.expand,
             children: [
               ClipRRect(
-                borderRadius: BorderRadius.circular(8),
+                borderRadius: BorderRadius.circular(16),
                 child: image.localPath.isNotEmpty
                     ? Image.file(File(image.localPath), fit: BoxFit.cover)
                     : AuthenticatedImage(url: image.remoteUrl ?? ''),
@@ -6855,7 +6821,7 @@ class _AssistantHistoryDrawerState
                               child: Text(
                                 _selecting ? '已选 $selectedCount 项' : '历史',
                                 style: Theme.of(context).textTheme.titleLarge
-                                    ?.copyWith(fontWeight: FontWeight.w800),
+                                    ?.copyWith(fontWeight: FontWeight.w600),
                               ),
                             ),
                             if (_selecting)
@@ -6954,15 +6920,15 @@ class _AssistantHistoryDrawerState
                               vertical: 10,
                             ),
                             border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(8),
+                              borderRadius: BorderRadius.circular(16),
                               borderSide: BorderSide.none,
                             ),
                             enabledBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(8),
+                              borderRadius: BorderRadius.circular(16),
                               borderSide: BorderSide.none,
                             ),
                             focusedBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(8),
+                              borderRadius: BorderRadius.circular(16),
                               borderSide: BorderSide.none,
                             ),
                           ),
@@ -7241,7 +7207,7 @@ class _HistoryDrawerFooter extends StatelessWidget {
                         selectedCount <= 1 ? '删除' : '删除 $selectedCount 段',
                         style: Theme.of(context).textTheme.titleSmall?.copyWith(
                           color: colors.error,
-                          fontWeight: FontWeight.w800,
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
                     ],
@@ -7271,7 +7237,7 @@ class _HistoryGroupHeader extends StatelessWidget {
         style: Theme.of(context).textTheme.labelMedium?.copyWith(
           color: Theme.of(context).colorScheme.onSurfaceVariant,
           fontWeight: FontWeight.w700,
-          letterSpacing: 0.2,
+          letterSpacing: 0,
         ),
       ),
     );
@@ -7430,7 +7396,7 @@ class _HistoryConversationTileState extends State<_HistoryConversationTile> {
           color: widget.menuOpen || (widget.selected && !widget.selecting)
               ? _historyQuietFill(context)
               : Colors.transparent,
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(16),
           clipBehavior: Clip.antiAlias,
           child: InkWell(
             onTap: widget.selecting
@@ -7662,7 +7628,7 @@ class _ConversationSearchEmpty extends StatelessWidget {
             query.isEmpty ? '暂无记录' : '没有匹配的对话',
             style: Theme.of(
               context,
-            ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+            ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
           ),
           if (query.isNotEmpty) ...[
             const SizedBox(height: 5),

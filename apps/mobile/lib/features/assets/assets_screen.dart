@@ -14,6 +14,7 @@ import '../../core/network/api_exception.dart';
 import '../../core/providers.dart';
 import '../../core/widgets/app_notice.dart';
 import '../../core/widgets/app_top_bar.dart';
+import '../../core/widgets/app_visual.dart';
 import '../../core/widgets/authenticated_image.dart';
 import '../create/reference_image_service.dart';
 import 'assets.dart';
@@ -703,12 +704,7 @@ class AssetCapacityPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: colors.surface,
-        border: Border.all(color: colors.outlineVariant),
-        borderRadius: BorderRadius.circular(8),
-      ),
+    return AppGlassSurface(
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -724,7 +720,7 @@ class AssetCapacityPanel extends StatelessWidget {
                     children: [
                       const Text(
                         '个人素材库',
-                        style: TextStyle(fontWeight: FontWeight.w900),
+                        style: TextStyle(fontWeight: FontWeight.w700),
                       ),
                       Text(
                         '${state.totalAssetCount} 项素材 · ${state.groups.length} 个分组',
@@ -734,7 +730,7 @@ class AssetCapacityPanel extends StatelessWidget {
                 ),
                 Text(
                   '${state.totalAssetCount}/200',
-                  style: const TextStyle(fontWeight: FontWeight.w900),
+                  style: const TextStyle(fontWeight: FontWeight.w700),
                 ),
               ],
             ),
@@ -772,8 +768,6 @@ class AssetGroupFilterStrip extends StatelessWidget {
           key: const Key('asset-group-all'),
           label: Text('全部 ${state.totalAssetCount}'),
           selected: state.selectedGroup == assetGroupAll,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-          side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
           showCheckmark: false,
           onSelected: (_) => onSelected(assetGroupAll),
         ),
@@ -781,8 +775,6 @@ class AssetGroupFilterStrip extends StatelessWidget {
           key: const Key('asset-group-ungrouped'),
           label: Text('未分组 ${state.ungroupedCount}'),
           selected: state.selectedGroup == assetGroupUngrouped,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-          side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
           showCheckmark: false,
           onSelected: (_) => onSelected(assetGroupUngrouped),
         ),
@@ -791,12 +783,6 @@ class AssetGroupFilterStrip extends StatelessWidget {
             key: Key('asset-group-${group.id}'),
             label: Text('${group.name} ${group.assetCount}'),
             selected: state.selectedGroup == group.id,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(6),
-            ),
-            side: BorderSide(
-              color: Theme.of(context).colorScheme.outlineVariant,
-            ),
             showCheckmark: false,
             onSelected: (_) => onSelected(group.id),
           ),
@@ -818,54 +804,53 @@ class AssetCard extends StatelessWidget {
   final VoidCallback onTap;
 
   @override
-  Widget build(BuildContext context) => Material(
-    key: Key('asset-card-${asset.id}'),
-    color: Theme.of(context).colorScheme.surface,
-    shape: RoundedRectangleBorder(
-      borderRadius: BorderRadius.circular(8),
-      side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
-    ),
-    clipBehavior: Clip.antiAlias,
-    child: InkWell(
-      onTap: busy ? null : onTap,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Expanded(
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                AuthenticatedImage(url: asset.thumbnailUrl),
-                if (busy)
-                  const ColoredBox(
-                    color: Colors.black38,
-                    child: Center(
-                      child: CircularProgressIndicator(color: Colors.white),
+  Widget build(BuildContext context) => AppGlassSurface(
+    child: Material(
+      key: Key('asset-card-${asset.id}'),
+      color: Colors.transparent,
+      borderRadius: BorderRadius.circular(24),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: busy ? null : onTap,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  AuthenticatedImage(url: asset.thumbnailUrl),
+                  if (busy)
+                    const ColoredBox(
+                      color: Colors.black38,
+                      child: Center(
+                        child: CircularProgressIndicator(color: Colors.white),
+                      ),
                     ),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(10, 9, 10, 10),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    asset.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontWeight: FontWeight.w600),
                   ),
-              ],
+                  const SizedBox(height: 4),
+                  Text(
+                    formatAssetSize(asset.sizeBytes),
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+              ),
             ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(10, 9, 10, 10),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  asset.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontWeight: FontWeight.w800),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  formatAssetSize(asset.sizeBytes),
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              ],
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
     ),
   );
@@ -929,7 +914,7 @@ class _AssetPickerSheetState extends ConsumerState<AssetPickerSheet> {
                     Text(
                       '从素材库选择',
                       style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.w900,
+                        fontWeight: FontWeight.w700,
                       ),
                     ),
                     Text('已选 ${_selected.length}/${widget.maxSelection}'),
@@ -1017,7 +1002,7 @@ class _AssetPickerSheetState extends ConsumerState<AssetPickerSheet> {
                                       : Theme.of(
                                           context,
                                         ).colorScheme.surfaceContainerLow,
-                                  borderRadius: BorderRadius.circular(8),
+                                  borderRadius: BorderRadius.circular(16),
                                   clipBehavior: Clip.antiAlias,
                                   child: InkWell(
                                     key: Key('asset-picker-${asset.id}'),
@@ -1067,7 +1052,7 @@ class _AssetPickerSheetState extends ConsumerState<AssetPickerSheet> {
                                                       style: const TextStyle(
                                                         color: Colors.white,
                                                         fontWeight:
-                                                            FontWeight.w800,
+                                                            FontWeight.w600,
                                                       ),
                                                     ),
                                                   ),
@@ -1082,7 +1067,7 @@ class _AssetPickerSheetState extends ConsumerState<AssetPickerSheet> {
                                             maxLines: 1,
                                             overflow: TextOverflow.ellipsis,
                                             style: const TextStyle(
-                                              fontWeight: FontWeight.w800,
+                                              fontWeight: FontWeight.w600,
                                             ),
                                           ),
                                         ),
@@ -1147,7 +1132,7 @@ class _AssetPickerEmpty extends StatelessWidget {
             filtered ? '这个分组还没有素材' : '素材库还是空的',
             style: Theme.of(
               context,
-            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 5),
           Text(
@@ -1264,7 +1249,7 @@ class _AssetDetailSheetState extends State<AssetDetailSheet> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           ClipRRect(
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(16),
             child: AspectRatio(
               aspectRatio: 1,
               child: Stack(
@@ -1300,7 +1285,7 @@ class _AssetDetailSheetState extends State<AssetDetailSheet> {
             widget.asset.title,
             style: Theme.of(
               context,
-            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
+            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
           ),
           const SizedBox(height: 8),
           Wrap(
@@ -1500,7 +1485,7 @@ class _AssetFullscreenPreviewState extends State<_AssetFullscreenPreview> {
             child: Material(
               key: const Key('asset-fullscreen-actions'),
               color: Colors.black.withValues(alpha: .68),
-              borderRadius: BorderRadius.circular(8),
+              borderRadius: BorderRadius.circular(16),
               child: Padding(
                 padding: const EdgeInsets.all(4),
                 child: Wrap(
@@ -1676,11 +1661,11 @@ class _AssetUploadSheetState extends State<AssetUploadSheet> {
               '保存到素材库',
               style: Theme.of(
                 context,
-              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
+              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 14),
             ClipRRect(
-              borderRadius: BorderRadius.circular(8),
+              borderRadius: BorderRadius.circular(16),
               child: AspectRatio(
                 aspectRatio: 16 / 9,
                 child:

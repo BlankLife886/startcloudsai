@@ -175,17 +175,22 @@ test("visual inspection paginates a large selection without dropping images", as
     }));
     const canvas = stubCanvas(images, [], images.map((item) => item.id));
     const first = await runCanvasAgentTool({ name: "canvas_inspect_visuals", arguments: "{}" }, canvas);
-    assert.equal(first.inspected, 12);
+    assert.equal(first.inspected, 4);
     assert.equal(first.truncated, true);
-    assert.equal(first.nextOffset, 12);
-    const second = await runCanvasAgentTool({ name: "canvas_inspect_visuals", arguments: JSON.stringify({ offset: first.nextOffset }) }, canvas);
-    assert.equal(second.inspected, 3);
-    assert.equal(second.offset, 12);
-    assert.equal(second.truncated, false);
-    assert.equal(second.nextOffset, undefined);
-    assert.equal(new Set([...first.items, ...second.items].map((item) => item.nodeId)).size, 15);
-    assert.equal(second.compared, 15);
-    assert.equal(second.exactDuplicateGroups.some((group) => new Set(group.nodeIds).has("image-01") && new Set(group.nodeIds).has("image-15")), true, "duplicates across pages must be detected");
+    assert.equal(first.nextOffset, 4);
+    const pages = [first];
+    while (pages.at(-1).truncated) {
+        pages.push(await runCanvasAgentTool({ name: "canvas_inspect_visuals", arguments: JSON.stringify({ offset: pages.at(-1).nextOffset }) }, canvas));
+    }
+    const last = pages.at(-1);
+    assert.equal(last.inspected, 3);
+    assert.equal(last.offset, 12);
+    assert.equal(last.nextOffset, undefined);
+    assert.equal(new Set(pages.flatMap((page) => page.items.map((item) => item.nodeId))).size, 15);
+    assert.equal(new Set(pages.flatMap((page) => page.visionReferences.map((item) => item.nodeId))).size, 15, "every page must supply its own images to the model");
+    for (const page of pages) assert.deepEqual(page.visionReferences.map((item) => item.resourceId), page.items.map((item) => item.resourceId));
+    assert.equal(last.compared, 15);
+    assert.equal(last.exactDuplicateGroups.some((group) => new Set(group.nodeIds).has("image-01") && new Set(group.nodeIds).has("image-15")), true, "duplicates across pages must be detected");
 });
 
 function semanticCanvas(nodes = [], connections = [], selectedNodeIds = []) {

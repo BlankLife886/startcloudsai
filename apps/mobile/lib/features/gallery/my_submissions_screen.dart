@@ -319,7 +319,7 @@ class _SubmissionOverview extends StatelessWidget {
       decoration: BoxDecoration(
         color: colors.surface,
         border: Border.all(color: colors.outlineVariant),
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(16),
       ),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
@@ -410,7 +410,7 @@ class _SummaryMetric extends StatelessWidget {
             '$value',
             style: Theme.of(context).textTheme.titleMedium?.copyWith(
               color: color,
-              fontWeight: FontWeight.w900,
+              fontWeight: FontWeight.w700,
             ),
           ),
           const SizedBox(height: 2),
@@ -445,7 +445,7 @@ class GallerySubmissionCard extends StatelessWidget {
     return Material(
       color: colors.surface,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(24),
         side: BorderSide(color: colors.outlineVariant),
       ),
       clipBehavior: Clip.antiAlias,
@@ -483,7 +483,7 @@ class GallerySubmissionCard extends StatelessWidget {
                             style: TextStyle(
                               color: style.color,
                               fontSize: 12,
-                              fontWeight: FontWeight.w800,
+                              fontWeight: FontWeight.w600,
                             ),
                           ),
                           const Spacer(),

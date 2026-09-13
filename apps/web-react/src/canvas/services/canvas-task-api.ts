@@ -12,6 +12,7 @@ import type { AgentChatItem, AgentMessageAttachment, AgentReasoningEffort } from
 import { modelOptionMeta, modelOptionName, type AiConfig } from "@/stores/use-config-store";
 import { scheduleWalletRefresh } from "@react/legacy-modules/services/walletSync.js";
 import type { ReferenceImage } from "@/types/image";
+import { assertHostedAgentRecoveryScope, type HostedAgentReference } from "@/lib/agent/hosted-agent-recovery";
 
 export type CanvasTask = {
     id: string;
@@ -33,7 +34,8 @@ export type CanvasTask = {
 };
 
 export type CanvasAssistantResponse = {
-	run: { id: string; status: CanvasTask["status"]; stage?: string; errorMessage?: string; costCents?: number; reservedCents?: number; cancelPolicy?: CanvasTask["cancelPolicy"] };
+	run: { id: string; status: CanvasTask["status"]; conversationId?: string; workspace?: string; userMessageId?: string; assistantMessageId?: string; stage?: string; errorMessage?: string; costCents?: number; reservedCents?: number; cancelPolicy?: CanvasTask["cancelPolicy"] };
+    userMessage?: CanvasAgentConversationMessage;
     assistantMessage?: {
         content?: string;
         canvasOps?: unknown;
@@ -682,7 +684,7 @@ export type CanvasAgentConversationMessage = {
     status?: string;
     pending?: boolean;
     error?: string;
-    referenceImages?: Array<{ id?: string; name?: string; fileKey?: string; url?: string; thumbnailKey?: string; thumbnailUrl?: string }>;
+    referenceImages?: HostedAgentReference[];
     canvasOpsSummary?: string;
     reasoning?: string;
     reasoningTokens?: number;
@@ -714,7 +716,7 @@ function displayHostedUserPrompt(content: string) {
 }
 
 function hostedAgentAttachment(image: NonNullable<CanvasAgentConversationMessage["referenceImages"]>[number], index: number): AgentMessageAttachment | null {
-    const url = image.url || (image.fileKey ? starcloudsFileUrl(image.fileKey) : "") || image.thumbnailUrl || (image.thumbnailKey ? starcloudsFileUrl(image.thumbnailKey) : "");
+    const url = image.dataUrl || image.url || (image.fileKey ? starcloudsFileUrl(image.fileKey) : "") || image.thumbnailUrl || (image.thumbnailKey ? starcloudsFileUrl(image.thumbnailKey) : "");
     if (!url) return null;
     return { id: image.id || image.fileKey || `ref-${index}`, name: image.name || "image", url };
 }
@@ -789,6 +791,15 @@ export function hostedAgentMessagesFromConversation(
 export function fetchCanvasAgentConversation(conversationId: string, signal?: AbortSignal, projectId = "") {
     const query = projectId ? `?projectId=${encodeURIComponent(projectId)}` : "";
     return starcloudsRequest<CanvasAgentConversation>(`/assistant/conversations/${encodeURIComponent(conversationId)}${query}`, { signal });
+}
+
+export async function fetchCanvasAgentRunRecovery(runId: string, projectId: string, conversationId: string, signal?: AbortSignal) {
+    const response = await starcloudsRequest<CanvasAssistantResponse>(`/assistant/runs/${encodeURIComponent(runId)}?includeInput=1`, { signal });
+    if (!response.run.conversationId) throw new Error("任务缺少对话信息，无法恢复");
+    // A recovery read must not bind an unrelated legacy conversation to this project.
+    const conversation = await fetchCanvasAgentConversation(response.run.conversationId, signal);
+    assertHostedAgentRecoveryScope({ runId, projectId, conversationId, run: response.run, conversation, userMessage: response.userMessage });
+    return response;
 }
 
 export function listActiveCanvasAgentRuns(signal?: AbortSignal) {
@@ -977,7 +988,6 @@ export async function waitForCanvasAgentRun(
     onReasoning?: (reasoning: string) => void,
     onStage?: (stage: string) => void,
 ): Promise<CanvasAgentTurnResult> {
-    const deadline = Date.now() + 20 * 60 * 1000;
     let pollDelay = 700;
     const countedToolCalls = new Set<string>();
     let executedTools = 0;
@@ -1094,7 +1104,6 @@ export async function waitForCanvasAgentRun(
                 if (!(error instanceof StarcloudsApiError) && !(error instanceof TypeError)) throw error;
             }
         }
-        if (Date.now() >= deadline) throw new Error("画布 Agent 仍在后台处理，请稍后重试");
         await wait(pollDelay, signal);
         pollDelay = Math.min(Math.round(pollDelay * 1.5), TASK_POLL_MAX_MS);
     }

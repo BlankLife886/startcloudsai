@@ -3,10 +3,12 @@ import { persist, type PersistStorage, type StorageValue } from "zustand/middlew
 import i18n from "@/i18n";
 
 import { localForageStorage } from "@/lib/localforage-storage";
+import { createCanvasProjectStorage } from "@/lib/canvas/canvas-project-storage";
 import type { CanvasBackgroundMode } from "@/lib/canvas-theme";
 import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, ViewportTransform } from "@/types/canvas";
 import type { CanvasWorkflowCheckpoint } from "@/lib/canvas/canvas-workflow";
-import { canvasProjectNeedsCloudRetry, markCanvasProjectMediaDeleted, mergeCanvasProjectDocuments, mergeCanvasProjectSnapshots, type CanvasCloudProjectSummary } from "@/lib/canvas/canvas-project-sync";
+import type { CanvasAgentContinuation } from "@/lib/canvas/canvas-agent-continuation";
+import { canvasProjectNeedsCloudRetry, markCanvasProjectMediaDeleted, mergeCanvasProjectDocuments, mergeCanvasProjectSnapshots, trackCanvasProjectGraphChanges, type CanvasCloudProjectSummary, type CanvasGraphSyncState } from "@/lib/canvas/canvas-project-sync";
 import { createCloudCanvasProject, deleteCloudCanvasProject, getCloudCanvasProject, listCloudCanvasProjectSummaries, updateCloudCanvasProject } from "@/services/canvas-cloud-repository";
 import { StarcloudsApiError } from "@/services/starclouds-api";
 import { HISTORY_MEDIA_REMOVED_EVENT } from "@react/legacy-modules/services/tasksApi.js";
@@ -31,6 +33,8 @@ export type CanvasProject = {
     showImageInfo: boolean;
     viewport: ViewportTransform;
     workflowRun?: CanvasWorkflowCheckpoint | null;
+    graphSync?: CanvasGraphSyncState;
+    agentContinuation?: CanvasAgentContinuation;
 };
 
 type CanvasStore = {
@@ -43,12 +47,13 @@ type CanvasStore = {
     renameProject: (id: string, title: string) => void;
     deleteProjects: (ids: string[]) => void;
     replaceProjects: (projects: CanvasProject[]) => void;
-    updateProject: (id: string, patch: Partial<Pick<CanvasProject, "nodes" | "connections" | "chatSessions" | "activeChatId" | "backgroundMode" | "showImageInfo" | "viewport" | "workflowRun">>) => void;
+    updateProject: (id: string, patch: Partial<Pick<CanvasProject, "nodes" | "connections" | "chatSessions" | "activeChatId" | "backgroundMode" | "showImageInfo" | "viewport" | "workflowRun" | "agentContinuation">>) => void;
 };
 
 const initialViewport: ViewportTransform = { x: 0, y: 0, k: 1 };
 const CANVAS_STORE_KEY = "infinite-canvas:canvas_store";
 type PersistedCanvasState = Pick<CanvasStore, "ownerUserId" | "projects">;
+const projectStorage = createCanvasProjectStorage<CanvasProject>(localForageStorage);
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let queuedPersistState: PersistedCanvasState | null = null;
 let queuedPersistValue: StorageValue<CanvasStore> | null = null;
@@ -79,9 +84,27 @@ export type CanvasSyncNotification = {
 
 let canvasSyncNotifier: ((notification: CanvasSyncNotification) => void) | null = null;
 const failedSaveProjectIds = new Set<string>();
+let localPersistenceFailure: CanvasSyncNotification | null = null;
+let localHydrationError: unknown;
+
+export type CanvasProjectMerge = { before: CanvasProject; after: CanvasProject };
+const canvasProjectMergeListeners = new Set<(merge: CanvasProjectMerge) => void>();
+
+/** Cloud merge notifications are synchronous so an open page can retire its stale graph before its next save. */
+export function subscribeCanvasProjectMerge(listener: (merge: CanvasProjectMerge) => void) {
+    canvasProjectMergeListeners.add(listener);
+    return () => { canvasProjectMergeListeners.delete(listener); };
+}
+
+function notifyCanvasProjectMerge(merge: CanvasProjectMerge) {
+    canvasProjectMergeListeners.forEach((listener) => {
+        try { listener(merge); } catch (error) { console.error("Canvas merge listener failed", error); }
+    });
+}
 
 export function setCanvasSyncNotifier(notifier: (notification: CanvasSyncNotification) => void) {
     canvasSyncNotifier = notifier;
+    if (localPersistenceFailure) notifier(localPersistenceFailure);
     return () => {
         if (canvasSyncNotifier === notifier) canvasSyncNotifier = null;
     };
@@ -102,22 +125,55 @@ function notifyCloudSaveFailed(id: string, error: unknown) {
 
 function notifyCloudSaveRecovered(id: string) {
     if (!failedSaveProjectIds.delete(id)) return;
+    if (localPersistenceFailure) return;
     const project = useCanvasStore.getState().projects.find((item) => item.id === id);
     canvasSyncNotifier?.({ kind: "save_recovered", projectId: id, projectTitle: project?.title || "", errorMessage: "" });
 }
 
-function replaceCloudProject(saved: CanvasProject, expectedUpdatedAt?: string, mergeIntoLocal = false) {
+async function persistCanvasValue(name: string, value: StorageValue<CanvasStore>) {
+    try {
+        // Never overwrite an unreadable cache with an empty hydration result.
+        if (localHydrationError) throw localHydrationError;
+        await projectStorage.setItem(name, value);
+        if (localPersistenceFailure) {
+            const previous = localPersistenceFailure;
+            localPersistenceFailure = null;
+            if (!failedSaveProjectIds.size) canvasSyncNotifier?.({ ...previous, kind: "save_recovered", errorMessage: "" });
+        }
+    } catch (error) {
+        if (!localPersistenceFailure) {
+            const project = value.state.projects.find((item) => item.pendingSync) || value.state.projects[0];
+            localPersistenceFailure = {
+                kind: "save_failed",
+                projectId: project?.id || "",
+                projectTitle: project?.title || "",
+                errorMessage: error instanceof Error ? error.message : "本地保存失败，请勿关闭页面",
+            };
+            canvasSyncNotifier?.(localPersistenceFailure);
+        }
+        throw error;
+    }
+}
+
+function replaceCloudProject(saved: CanvasProject, expectedProject?: CanvasProject, mergeIntoLocal = false) {
+    let merged: CanvasProjectMerge | undefined;
     useCanvasStore.setState((state) => ({
         projects: state.projects.map((project) => {
             if (project.id !== saved.id) return project;
-            if (!expectedUpdatedAt || project.updatedAt === expectedUpdatedAt) return saved;
+            if (!expectedProject || project === expectedProject) {
+                if (mergeIntoLocal) merged = { before: project, after: saved };
+                return saved;
+            }
             // Local edits landed while the save was in flight: keep them
             // (still pendingSync), adopt the saved revision, and — after a
             // conflict merge — the remotely merged nodes as well.
             const base = mergeIntoLocal ? mergeCanvasProjectDocuments(project, saved) : project;
-            return { ...base, revision: saved.revision, pendingSync: true };
+            const after = { ...base, revision: saved.revision, pendingSync: true };
+            if (mergeIntoLocal) merged = { before: project, after };
+            return after;
         }),
     }));
+    if (merged) notifyCanvasProjectMerge(merged);
 }
 
 async function persistProjectToCloud(id: string, userId: string) {
@@ -125,7 +181,6 @@ async function persistProjectToCloud(id: string, userId: string) {
     if (cloudSyncUserId !== userId || state.ownerUserId !== userId) return;
     const project = state.projects.find((item) => item.id === id);
     if (!project || project.documentPending) return;
-    const expectedUpdatedAt = project.updatedAt;
     let saved: CanvasProject | null;
     let mergedRemote = false;
     try {
@@ -142,7 +197,7 @@ async function persistProjectToCloud(id: string, userId: string) {
     }
     if (cloudSyncUserId !== userId || useCanvasStore.getState().ownerUserId !== userId) return;
     if (saved) {
-        replaceCloudProject(saved, expectedUpdatedAt, mergedRemote);
+        replaceCloudProject(saved, project, mergedRemote);
         notifyCloudSaveRecovered(id);
     }
     const latest = useCanvasStore.getState().projects.find((item) => item.id === id);
@@ -268,6 +323,7 @@ export function ensureCanvasProjectDocument(id: string): Promise<CanvasProject |
             ? { ...mergeCanvasProjectDocuments(current, remote), documentPending: false, documentStale: false, pendingSync: true }
             : remote;
         useCanvasStore.setState((state) => ({ projects: state.projects.map((item) => (item.id === id ? next : item)) }));
+        if (!current.documentPending && (current.documentStale || current.pendingSync)) notifyCanvasProjectMerge({ before: current, after: next });
         if (current.pendingSync) scheduleCloudSave(id);
         return next;
     })().finally(() => documentLoads.delete(id));
@@ -308,31 +364,33 @@ export function prefetchCanvasProjectDocument(id: string) {
 
 const canvasStorage: PersistStorage<CanvasStore> = {
     getItem: async (name) => {
-        const value = await localForageStorage.getItem(name);
-        if (!value) return null;
         try {
-            const parsed = JSON.parse(value) as StorageValue<CanvasStore>;
+            const value = await projectStorage.getItem(name);
+            localHydrationError = undefined;
+            if (!value) return null;
+            const parsed = value as StorageValue<CanvasStore>;
             queuedPersistState = parsed.state as PersistedCanvasState;
             queuedPersistValue = parsed;
             return parsed;
         } catch (error) {
+            localHydrationError = error;
             console.error("Canvas store failed to parse persisted state", error);
             throw error;
         }
     },
     setItem: (name, value) => {
         const nextState = value.state as PersistedCanvasState;
-        if (queuedPersistState && queuedPersistState.ownerUserId === nextState.ownerUserId && queuedPersistState.projects === nextState.projects) return;
+        if (!localPersistenceFailure && queuedPersistState && queuedPersistState.ownerUserId === nextState.ownerUserId && queuedPersistState.projects === nextState.projects) return;
         queuedPersistState = nextState;
         queuedPersistValue = value;
         if (saveTimer) clearTimeout(saveTimer);
         saveTimer = setTimeout(() => {
             saveTimer = null;
             if (!queuedPersistValue) return;
-            void localForageStorage.setItem(name, JSON.stringify(queuedPersistValue));
+            void persistCanvasValue(name, queuedPersistValue).catch((error) => console.error("Canvas local save failed", error));
         }, 400);
     },
-    removeItem: (name) => localForageStorage.removeItem(name),
+    removeItem: (name) => projectStorage.removeItem(name),
 };
 
 export async function flushCanvasPersistence() {
@@ -341,7 +399,7 @@ export async function flushCanvasPersistence() {
         saveTimer = null;
     }
     if (!queuedPersistValue) return;
-    await localForageStorage.setItem(CANVAS_STORE_KEY, JSON.stringify(queuedPersistValue));
+    await persistCanvasValue(CANVAS_STORE_KEY, queuedPersistValue);
 }
 
 export const useCanvasStore = create<CanvasStore>()(
@@ -425,7 +483,7 @@ export const useCanvasStore = create<CanvasStore>()(
             updateProject: (id, patch) => {
                 const project = get().projects.find((item) => item.id === id);
                 if (!project) return;
-                const next = { ...project, ...patch };
+                const next = trackCanvasProjectGraphChanges(project, { ...project, ...patch });
                 const unchanged =
                     next.nodes === project.nodes &&
                     next.connections === project.connections &&
@@ -434,6 +492,7 @@ export const useCanvasStore = create<CanvasStore>()(
                     next.backgroundMode === project.backgroundMode &&
                     next.showImageInfo === project.showImageInfo &&
                     next.workflowRun === project.workflowRun &&
+                    next.agentContinuation === project.agentContinuation &&
                     next.viewport.x === project.viewport.x &&
                     next.viewport.y === project.viewport.y &&
                     next.viewport.k === project.viewport.k;

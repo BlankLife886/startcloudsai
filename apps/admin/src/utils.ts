@@ -178,6 +178,21 @@ export function taskTotalDuration(task: {
   return `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分`;
 }
 
+export function taskExecutionDuration(task: {
+  status: string;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+}, now = Date.now()): string {
+  // Queue snapshots can retain a previous attempt's start time. They must not tick.
+  if (task.status === "queued" || !task.startedAt) return "-";
+  if (task.status !== "running" && !task.finishedAt) return "-";
+  return taskTotalDuration({
+    status: task.status,
+    createdAt: task.startedAt,
+    finishedAt: task.finishedAt,
+  }, now);
+}
+
 export function normalizeTaskTimelineEvent<T extends {
   stage: string;
   durationMs: number | null;

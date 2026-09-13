@@ -256,7 +256,7 @@ void main() {
     );
     expect(
       (card.shape as RoundedRectangleBorder).borderRadius,
-      BorderRadius.circular(8),
+      BorderRadius.circular(28),
     );
     await tester.tap(find.byKey(const Key('startup-announcement-close')));
     await tester.pumpAndSettle();

@@ -143,10 +143,10 @@ class WalletBalancePanel extends StatelessWidget {
         decoration: BoxDecoration(
           color: colors.surface,
           border: Border.all(color: colors.outlineVariant),
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(16),
         ),
         child: ClipRRect(
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(16),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -183,7 +183,7 @@ class WalletBalancePanel extends StatelessWidget {
                               style: Theme.of(context).textTheme.headlineLarge
                                   ?.copyWith(
                                     color: colors.onSurface,
-                                    fontWeight: FontWeight.w900,
+                                    fontWeight: FontWeight.w700,
                                     height: 1,
                                   ),
                             ),
@@ -351,7 +351,7 @@ class WalletCompositionGrid extends StatelessWidget {
       decoration: BoxDecoration(
         color: colors.surface,
         border: Border.all(color: colors.outlineVariant),
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(16),
       ),
       child: Column(
         children: [
@@ -429,8 +429,8 @@ class _CompositionRow extends StatelessWidget {
                     walletPoints(value),
                     maxLines: 1,
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: -0.3,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 0,
                       color: valueColor,
                     ),
                   ),
@@ -493,7 +493,7 @@ class _WalletTrialBanner extends StatelessWidget {
               '$trialLabel体验礼包',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontWeight: FontWeight.w800),
+              style: const TextStyle(fontWeight: FontWeight.w600),
             ),
           ),
           if (redeemed)
@@ -503,7 +503,7 @@ class _WalletTrialBanner extends StatelessWidget {
                 '已领取',
                 style: Theme.of(
                   context,
-                ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w800),
+                ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w600),
               ),
             )
           else
@@ -525,7 +525,7 @@ class _WalletTrialBanner extends StatelessWidget {
                     claiming ? '领取中…' : '领取',
                     style: TextStyle(
                       color: colors.onPrimary,
-                      fontWeight: FontWeight.w800,
+                      fontWeight: FontWeight.w600,
                       fontSize: 12,
                     ),
                   ),
@@ -591,9 +591,9 @@ class WalletBillSummary extends StatelessWidget {
                             maxLines: 1,
                             style: Theme.of(context).textTheme.titleMedium
                                 ?.copyWith(
-                                  fontWeight: FontWeight.w900,
+                                  fontWeight: FontWeight.w700,
                                   color: totals[i].$3,
-                                  letterSpacing: -0.4,
+                                  letterSpacing: 0,
                                   height: 1.1,
                                 ),
                           ),
@@ -690,8 +690,8 @@ class _WalletSummaryRow extends StatelessWidget {
               Text(
                 walletPoints(item.points),
                 style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: -0.2,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0,
                 ),
               ),
               if (route != null) ...[
@@ -765,7 +765,7 @@ class _RedeemCodeSheetState extends State<RedeemCodeSheet> {
                 '兑换积分',
                 style: Theme.of(
                   context,
-                ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
+                ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w600),
               ),
               const SizedBox(height: 5),
               Text(

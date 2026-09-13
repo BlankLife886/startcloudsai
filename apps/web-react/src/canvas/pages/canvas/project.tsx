@@ -11,7 +11,7 @@ import { useTranslation } from "react-i18next";
 import { requestEdit, requestGeneration, requestImageQuestion } from "@/services/api/image";
 import { requestAudioGeneration, storeGeneratedAudio } from "@/services/api/audio";
 import { requestVideoGeneration, storeGeneratedVideo } from "@/services/api/video";
-import { applyCanvasImageModelSettings, canvasExactSizeSettings, canvasExactSizeSettingsForNode, canvasImageModelCapabilities, canvasImageSizeParams } from "@/lib/canvas/canvas-image-model";
+import { defaultCanvasImageRatio, applyCanvasImageModelSettings, canvasExactSizeSettings, canvasExactSizeSettingsForNode, canvasImageModelCapabilities, canvasImageSizeParams } from "@/lib/canvas/canvas-image-model";
 import { defaultConfig, modelOptionMeta, resolveModelForCapability, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { adoptGeneratedImage, uploadImage } from "@/services/image-storage";
 import { uploadMediaFile } from "@/services/file-storage";
@@ -23,7 +23,7 @@ import { useThemeStore } from "@/stores/use-theme-store";
 import { cropDataUrl, splitDataUrl, upscaleDataUrl } from "@/lib/canvas/canvas-image-data";
 import { canvasLocalImageOperationOutputCount, isCanvasLocalImageOperation, normalizeCanvasLocalImageOperationParams } from "@/lib/canvas/canvas-local-image-operation";
 import { CanvasOperationNodeType, canvasNodeTypeForLocalImageOperation, isCanvasExecutableNode, isCanvasOperationNodeType } from "@/lib/canvas/canvas-operation-node";
-import { cardSizeForMedia, fitNodeSize, nodeSizeFromRatio, resultNodeSize } from "@/lib/canvas/canvas-node-size";
+import { cardSizeForMedia, fitLockedImageNode, fitNodeSize, imageFrameSource, nodeSizeFromRatio, resultNodeSize } from "@/lib/canvas/canvas-node-size";
 import { App } from "antd";
 import { CANVAS_AUDIO_ENABLED, CANVAS_VIDEO_ENABLED, NODE_DEFAULT_SIZE, getNodeSpec, isCanvasGenerationModeEnabled, isCanvasNodeTypeEnabled } from "@/constant/canvas";
 import { ActiveConnectionPath, ConnectionPath, canvasConnectionPathD } from "@/components/canvas/canvas-connections";
@@ -42,6 +42,7 @@ import { Minimap } from "@/components/canvas/canvas-mini-map";
 import { CanvasNode } from "@/components/canvas/canvas-node";
 import { CanvasNodePromptPanel, type CanvasNodeGenerationMode } from "@/components/canvas/canvas-node-prompt-panel";
 import { CanvasToolbar } from "@/components/canvas/canvas-toolbar";
+import { CanvasStoryboardDialog, type StoryboardGenerationOptions, type StoryboardProgressEvent, type StoryboardSourceOption } from "@/components/canvas/canvas-storyboard-dialog";
 import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
 import { CanvasImageLightbox } from "@/components/canvas/canvas-image-lightbox";
 import { clearPreviewCache, setCanvasPreviewScale } from "@/lib/canvas/canvas-preview-image";
@@ -51,13 +52,23 @@ import { CanvasZoomControls } from "@/components/canvas/canvas-zoom-controls";
 import { ProductGuideTour, useProductGuide } from "@react/views/shared/ProductGuideTour.jsx";
 import { CANVAS_GUIDE_PENDING_KEY, CANVAS_WORKSPACE_GUIDE_STEPS, PRODUCT_GUIDE_KEYS } from "@react/views/shared/productGuides.js";
 import { useCanvasSidePanelStore } from "@/stores/use-canvas-side-panel-store";
-import { useAgentStore, type AgentWorkflowPreflightResult } from "@/stores/use-agent-store";
-import { ensureCanvasProjectDocument, flushCanvasPersistence, setCanvasCloudSaveBaseDelay, setCanvasSyncNotifier, useCanvasStore, type CanvasSyncNotification } from "@/stores/canvas/use-canvas-store";
+import { useAgentStore, type AgentWorkflowPreflightResult, type AgentWorkflowStartDecision } from "@/stores/use-agent-store";
+import { ensureCanvasProjectDocument, flushCanvasPersistence, setCanvasCloudSaveBaseDelay, setCanvasSyncNotifier, subscribeCanvasProjectMerge, useCanvasStore, type CanvasSyncNotification } from "@/stores/canvas/use-canvas-store";
+import { rebaseCanvasProjectGraph } from "@/lib/canvas/canvas-project-sync";
+import { canvasAgentContinuationNodes } from "@/lib/canvas/canvas-agent-continuation";
+import { fitCanvasContent } from "@/lib/canvas/canvas-navigation";
+import { applyCanvasHistoryDelta, hasCanvasUserEdit } from "@/lib/canvas/canvas-edit-history";
+import { commitCanvasArray } from "@/lib/canvas/canvas-live-state";
+import { canvasCheckpointFromRun, canvasRecoveryAttemptKey, isFinishedCanvasTaskError } from "@/lib/canvas/canvas-workflow-observation";
 import { useCanvasUiStore } from "@/stores/canvas/use-canvas-ui-store";
 import { useAgentBridge } from "@/pages/canvas/hooks/use-agent-bridge";
 import { stopHostedAgentRunForCanvas } from "@/lib/agent/hosted-agent-run-scope";
 import { usePluginHost } from "@/pages/canvas/hooks/use-plugin-host";
-import { buildNodeMentionReferences, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
+import { buildCanvasNodeMentionReferences, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
+import { collectCanvasDragNodeIds, collectCanvasOwnedOutputIds, createCanvasResourceIndex } from "@/lib/canvas/canvas-resource-index";
+import { storyboardLayoutMetrics, storyboardScenePosition, storyboardSequenceLinks } from "@/lib/canvas/canvas-storyboard-layout";
+import { createCanvasNodeClipboard, parseCanvasNodeClipboard, serializeCanvasNodeClipboard, type CanvasNodeClipboard } from "@/lib/canvas/canvas-node-clipboard";
+import { canvasConnectionIntersectsRect, canvasWorkspaceRect, constrainCanvasPanelWidths, findCanvasInsertionCenter } from "@/lib/canvas/canvas-workspace-geometry";
 import { buildCanvasSidePanelWorkflowGroups } from "@/lib/canvas/canvas-workflow-groups";
 import { shouldBlockCanvasNavigation } from "@/lib/canvas/canvas-leave-guard";
 import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
@@ -66,7 +77,9 @@ import { copyCanvasNodeMetadata } from "@/lib/canvas/canvas-node-copy";
 import { connectionLayerBox, getConnectionTargetAnchor, normalizeConnection, normalizeConnectionBetween, snapNodesIntoGroup } from "@/lib/canvas/canvas-node-geometry";
 import { buildCanvasSpatialIndex, canvasViewportQueryRect, shouldRefreshCanvasRenderViewport, type CanvasSpatialIndex } from "@/lib/canvas/canvas-spatial-index";
 import { canvasClipboardImages } from "@/lib/canvas/canvas-clipboard";
+import { shouldIgnoreCanvasShortcut } from "@/lib/keyboard-event";
 import {
+    applyCanceledGenerationToNode,
     applyCanceledGenerationToNodes,
     applyFailedCanvasTaskToNode,
     applyUploadedImageToNode,
@@ -142,6 +155,7 @@ import {
     type CanvasConnection,
     type CanvasLocalImageOperation,
     type CanvasNodeData,
+    type CanvasNodeExecutionStatus,
     type CanvasNodeImage,
     type CanvasNodeMetadata,
     type CanvasNodeTypeId,
@@ -166,17 +180,13 @@ import {
     waitForCanvasAssistantRun,
     waitForCanvasTask,
 } from "@/services/canvas-task-api";
-import { acquireCanvasWorkflowRun, getActiveCanvasWorkflowRun, updateCanvasWorkflowRun, type CanvasWorkflowNodeMetric, type CanvasWorkflowRunRecord } from "@/services/canvas-workflow-run-api";
+import { acquireCanvasWorkflowRun, getActiveCanvasWorkflowRun, getCanvasWorkflowRun, updateCanvasWorkflowRun, type CanvasWorkflowNodeMetric, type CanvasWorkflowRunRecord } from "@/services/canvas-workflow-run-api";
 import { StarcloudsApiError } from "@/services/starclouds-api";
+import { normalizeStoryboardPlan, parseStoryboardScript, storyboardStyleLabel, type StoryboardPlan, type StoryboardScene, type StoryboardShotType } from "@/lib/canvas/storyboard-parser";
+import { recoverStoryboardFromNodes, storyboardAggregateStatus, storyboardSessionJson, type StoryboardResume } from "@/lib/canvas/canvas-storyboard-recovery";
 
 // Register built-in nodes in the shared registry once when the module loads.
 registerBuiltinNodes();
-
-type CanvasClipboard = {
-    marker: string;
-    nodes: CanvasNodeData[];
-    connections: CanvasConnection[];
-};
 
 type ConnectionDropTarget = {
     nodeId: string | null;
@@ -188,7 +198,7 @@ type DragConnectionDom = {
     paths: SVGPathElement[];
 };
 
-type CanvasHistoryEntry = Pick<CanvasClipboard, "nodes" | "connections">;
+type CanvasHistoryEntry = Pick<CanvasNodeClipboard, "nodes" | "connections">;
 
 type CanvasGenerationRequest = {
     targetNodeId: string;
@@ -205,7 +215,7 @@ async function cancelPersistedCanvasTask(taskId: string, kind: "image" | "assist
 }
 
 type CanvasWorkflowRunState = {
-    status: "idle" | "running" | "locked" | "refresh" | "success" | "error" | "canceled";
+    status: "idle" | "running" | "locked" | "paused" | "refresh" | "success" | "error" | "canceled";
     completed: number;
     total: number;
     currentNodeId?: string;
@@ -223,6 +233,7 @@ type CanvasWorkflowRunRequest = {
     nodeIds?: string[];
     checkpoint?: CanvasWorkflowCheckpoint;
     fresh?: boolean;
+    onStartDecision?: (decision: AgentWorkflowStartDecision) => void;
 };
 
 const VIDEO_NODE_MAX_WIDTH = 360;
@@ -278,6 +289,142 @@ const NODE_STATUS_IDLE = "idle" as const;
 const NODE_STATUS_LOADING = "loading" as const;
 const NODE_STATUS_SUCCESS = "success" as const;
 const NODE_STATUS_ERROR = "error" as const;
+const STORYBOARD_ANALYSIS_NODE_ID = "__storyboard-analysis__";
+
+function storyboardSceneFromNode(node: CanvasNodeData): StoryboardScene | null {
+    const metadata = node.metadata;
+    const sceneId = metadata?.storyboardSceneId;
+    if (!sceneId) return null;
+    const shotTypes: StoryboardShotType[] = ["wide", "full", "medium", "close", "detail", "over"];
+    const shotType = shotTypes.includes(metadata.storyboardShotType as StoryboardShotType) ? (metadata.storyboardShotType as StoryboardShotType) : "medium";
+    const prompt = (metadata.storyboardPrompt || metadata.prompt || "").trim();
+    return {
+        id: sceneId,
+        index: Math.max(1, Number(metadata.storyboardIndex) || 1),
+        title: typeof metadata.storyboardTitle === "string" ? metadata.storyboardTitle : node.title || `镜头 ${metadata.storyboardIndex || 1}`,
+        sourceText: prompt,
+        summary: prompt || node.title || "",
+        shotType,
+        cameraAngle: "平视",
+        lens: "50mm 标准镜头",
+        movement: "稳定镜头，叙事性停留",
+        location: "未说明场景",
+        time: "未说明时间",
+        characters: [],
+        dialogue: "",
+        continuity: metadata.storyboardContinuity || "",
+        durationSec: 4,
+        prompt,
+        confidence: "high",
+    };
+}
+
+function storyboardPromptForConsistency(prompt: string, consistency: boolean) {
+    if (consistency) return prompt;
+    // Rule and AI planners may include an explicit continuity sentence. When
+    // the user turns continuity off, remove only that structured constraint
+    // and preserve provider-specific cinematography and action language.
+    return String(prompt || "")
+        .replace(/(?:连续性锁定|continuity\s+lock)\s*[:：][^。！？!?\n]*(?:[。！？!?]|$)/gi, "")
+        .replace(/角色保持前后镜头一致[。！？!?]?/g, "")
+        .replace(/\s{2,}/g, " ")
+        .trim();
+}
+
+function updateStoryboardTaskStatus(nodes: CanvasNodeData[], targetNodeId: string, status: "succeeded" | "failed" | "canceled", errorDetails?: string) {
+    const target = nodes.find((node) => node.id === targetNodeId);
+    const storyboardId = target?.metadata?.storyboardId;
+    const sceneId = target?.metadata?.storyboardSceneId;
+    if (!storyboardId || !sceneId) return nodes;
+    const executionStatus: CanvasNodeExecutionStatus = status;
+    const generationStage = status === "succeeded" ? "completed" : status;
+    const updated = nodes.map((node) => {
+        const isImage = node.id === targetNodeId;
+        const isCaption = node.type === CanvasNodeType.Text && node.metadata?.storyboardId === storyboardId && node.metadata?.storyboardSceneId === sceneId;
+        if (!isImage && !isCaption) return node;
+        return {
+            ...node,
+            metadata: {
+                ...node.metadata,
+                storyboardStatus: status,
+                executionStatus,
+                generationStage,
+                errorDetails: status === "succeeded" ? undefined : errorDetails,
+            },
+        };
+    });
+    const aggregate = storyboardAggregateStatus(updated, storyboardId);
+    if (!aggregate) return updated;
+    const groupExecutionStatus: CanvasNodeExecutionStatus = aggregate === "succeeded" ? "succeeded" : aggregate === "failed" ? "failed" : aggregate === "canceled" ? "canceled" : "running";
+    return updated.map((node) => node.type === CanvasNodeType.Group && node.metadata?.storyboardId === storyboardId
+        ? { ...node, metadata: { ...node.metadata, storyboardStatus: aggregate, executionStatus: groupExecutionStatus } }
+        : node);
+}
+
+function isActiveStoryboardNode(node: CanvasNodeData) {
+    const storyboardStatus = node.metadata?.storyboardStatus;
+    const executionStatus = node.metadata?.executionStatus;
+    return storyboardStatus === "queued" || storyboardStatus === "running" || executionStatus === "queued" || executionStatus === "running";
+}
+
+/**
+ * Settle a recovered storyboard after its server tasks were canceled while
+ * this page had no in-memory controller. Existing image content is retained so
+ * a partially completed batch remains useful and can be retried scene-by-scene.
+ */
+function settleStoryboardCancellation(nodes: CanvasNodeData[], nodeIds: Set<string>, errorDetails: string) {
+    if (!nodeIds.size) return nodes;
+    const targetNodes = nodes.filter((node) => nodeIds.has(node.id));
+    const storyboardIds = new Set(targetNodes.map((node) => node.metadata?.storyboardId).filter((id): id is string => Boolean(id)));
+    if (!storyboardIds.size) return nodes;
+    const targetSceneKeys = new Set(
+        targetNodes
+            .filter((node) => Boolean(node.metadata?.storyboardSceneId))
+            .map((node) => `${node.metadata?.storyboardId}\u0000${node.metadata?.storyboardSceneId}`),
+    );
+    const targetGroupIds = new Set(targetNodes.filter((node) => node.type === CanvasNodeType.Group).map((node) => node.id));
+    // A group-level cancellation owns every active scene in that group, even
+    // when the persisted node list only retained the group id.
+    nodes.forEach((node) => {
+        if (node.type !== CanvasNodeType.Image || !isActiveStoryboardNode(node) || !node.metadata?.storyboardId || !storyboardIds.has(node.metadata.storyboardId)) return;
+        if (targetGroupIds.size) targetSceneKeys.add(`${node.metadata.storyboardId}\u0000${node.metadata.storyboardSceneId || ""}`);
+    });
+    const completedAt = new Date().toISOString();
+    const updated = nodes.map((node) => {
+        const storyboardId = node.metadata?.storyboardId;
+        if (!storyboardId || !storyboardIds.has(storyboardId)) return node;
+        const sceneKey = node.metadata?.storyboardSceneId ? `${storyboardId}\u0000${node.metadata.storyboardSceneId}` : "";
+        const isGroup = node.type === CanvasNodeType.Group && (nodeIds.has(node.id) || targetGroupIds.has(node.id));
+        const isTargetScene = Boolean(sceneKey && targetSceneKeys.has(sceneKey));
+        if (!isGroup && !(isTargetScene && isActiveStoryboardNode(node))) return node;
+        const metadata = {
+            ...node.metadata,
+            storyboardStatus: "canceled" as const,
+            executionStatus: "canceled" as const,
+            generationStage: "canceled",
+            errorDetails,
+            generationCompletedAt: completedAt,
+            ...(node.type === CanvasNodeType.Image
+                ? { status: NODE_STATUS_IDLE, taskId: undefined, taskKind: undefined }
+                : node.type === CanvasNodeType.Text
+                  ? { status: NODE_STATUS_SUCCESS }
+                  : {}),
+        };
+        return { ...node, metadata };
+    });
+    // Recompute each targeted group's aggregate from the settled child nodes.
+    // This keeps mixed/partial batches consistent with normal storyboard
+    // completion semantics while allowing an all-canceled batch to show the
+    // explicit canceled state.
+    return updated.map((node) => {
+        const storyboardId = node.metadata?.storyboardId;
+        if (node.type !== CanvasNodeType.Group || !storyboardId || !storyboardIds.has(storyboardId)) return node;
+        const aggregate = storyboardAggregateStatus(updated, storyboardId);
+        if (!aggregate) return node;
+        const executionStatus: CanvasNodeExecutionStatus = aggregate === "succeeded" ? "succeeded" : aggregate === "failed" ? "failed" : aggregate === "canceled" ? "canceled" : "running";
+        return { ...node, metadata: { ...node.metadata, storyboardStatus: aggregate, executionStatus } };
+    });
+}
 
 function normalizeCanvasImageAngleParams(value: unknown): CanvasImageAngleParams {
     const params = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
@@ -342,6 +489,9 @@ function InfiniteCanvasPage() {
     const localAgentEnabled = useAgentStore((state) => state.enabled);
     const agentPanelOpen = useAgentStore((state) => state.panelOpen);
     const agentPanelClosing = useAgentStore((state) => state.panelClosing);
+    const agentPanelWidth = useAgentStore((state) => state.width);
+    const sidePanelOpen = useCanvasSidePanelStore((state) => state.panelOpen);
+    const sidePanelWidth = useCanvasSidePanelStore((state) => state.width);
     const agentRunning = useAgentStore((state) => state.sending || state.waiting);
     const toggleAgentPanel = useAgentStore((state) => state.togglePanel);
     const openAgentPanel = useAgentStore((state) => state.openPanel);
@@ -349,7 +499,6 @@ function InfiniteCanvasPage() {
     const containerRectRef = useRef({ left: 0, top: 0, width: 1200, height: 720 });
     const imageInputRef = useRef<HTMLInputElement>(null);
     const uploadTargetRef = useRef<{ nodeId?: string; position?: Position } | null>(null);
-    const clipboardRef = useRef<CanvasClipboard | null>(null);
     const historyRef = useRef<{ past: CanvasHistoryEntry[]; future: CanvasHistoryEntry[] }>({ past: [], future: [] });
     const lastHistoryRef = useRef<CanvasHistoryEntry | null>(null);
     const historyCommitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -367,6 +516,11 @@ function InfiniteCanvasPage() {
     const nodeDraggingRef = useRef(false);
     const dragNodeElementsRef = useRef(new Map<string, HTMLElement>());
     const dragConnectionDomRef = useRef<DragConnectionDom[]>([]);
+    const displayConnectionsRef = useRef<CanvasConnection[]>([]);
+    const pendingResizeRef = useRef<{ nodeId: string; width: number; height: number; position?: Position } | null>(null);
+    const resizingNodeIdRef = useRef<string | null>(null);
+    const resizeFrameRef = useRef<number | null>(null);
+    const resizeElementRef = useRef<HTMLElement | null>(null);
     const dragRef = useRef<{
         isDraggingNode: boolean;
         hasMoved: boolean;
@@ -408,8 +562,12 @@ function InfiniteCanvasPage() {
     const startEditingProject = useCanvasUiStore((state) => state.startEditingProject);
     const canvasThemeName = useThemeStore((state) => state.theme);
     const theme = canvasThemes[canvasThemeName];
-    const [nodes, setNodes] = useState<CanvasNodeData[]>([]);
-    const [connections, setConnections] = useState<CanvasConnection[]>([]);
+    const [nodes, publishNodes] = useState<CanvasNodeData[]>([]);
+    const [connections, publishConnections] = useState<CanvasConnection[]>([]);
+    const nodesRef = useRef(nodes);
+    const connectionsRef = useRef(connections);
+    const setNodes = useCallback((update: CanvasNodeData[] | ((current: CanvasNodeData[]) => CanvasNodeData[])) => { commitCanvasArray(nodesRef, update, publishNodes); }, []);
+    const setConnections = useCallback((update: CanvasConnection[] | ((current: CanvasConnection[]) => CanvasConnection[])) => { commitCanvasArray(connectionsRef, update, publishConnections); }, []);
     const [chatSessions, setChatSessions] = useState<CanvasAssistantSession[]>([]);
     const [activeChatId, setActiveChatId] = useState<string | null>(null);
     const [viewport, setViewport] = useState<ViewportTransform>({ x: 0, y: 0, k: 1 });
@@ -418,6 +576,11 @@ function InfiniteCanvasPage() {
     const [size, setSize] = useState(() =>
         typeof window === "undefined" ? { width: 1200, height: 720 } : { width: window.innerWidth, height: window.innerHeight },
     );
+    useLayoutEffect(() => {
+        const widths = constrainCanvasPanelWidths(size.width, sidePanelOpen ? sidePanelWidth : 0, agentPanelOpen ? agentPanelWidth : 0);
+        if (sidePanelOpen && widths.left !== sidePanelWidth) useCanvasSidePanelStore.getState().setWidth(widths.left);
+        if (agentPanelOpen && widths.right !== agentPanelWidth) useAgentStore.getState().setAgentState({ width: widths.right });
+    }, [size.width, sidePanelOpen, sidePanelWidth, agentPanelOpen, agentPanelWidth]);
     const [selectedNodeIds, setSelectedNodeIdsState] = useState<Set<string>>(new Set());
     const selectedNodeIdsRef = useRef(selectedNodeIds);
     const setSelectedNodeIds = useCallback((value: Set<string> | ((current: Set<string>) => Set<string>)) => {
@@ -448,6 +611,8 @@ function InfiniteCanvasPage() {
     const [showImageInfo, setShowImageInfo] = useState(false);
     const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
     const [stopConfirm, setStopConfirm] = useState<{ kind: "running" | "workflow"; queuedCount: number; nodeId?: string } | null>(null);
+    const [storyboardCancelConfirm, setStoryboardCancelConfirm] = useState(false);
+    const [storyboardCancelSubmitting, setStoryboardCancelSubmitting] = useState(false);
     const [stopSubmitting, setStopSubmitting] = useState(false);
     const [leaveSubmitting, setLeaveSubmitting] = useState(false);
     const [assetPickerOpen, setAssetPickerOpen] = useState(false);
@@ -467,6 +632,13 @@ function InfiniteCanvasPage() {
     const [splitNodeId, setSplitNodeId] = useState<string | null>(null);
     const [upscaleNodeId, setUpscaleNodeId] = useState<string | null>(null);
     const [angleNodeId, setAngleNodeId] = useState<string | null>(null);
+    const [storyboardOpen, setStoryboardOpen] = useState(false);
+    const [storyboardSourceNodeId, setStoryboardSourceNodeId] = useState<string | null>(null);
+    const [storyboardScriptOverride, setStoryboardScriptOverride] = useState<string | null>(null);
+    // Keep the selected storyboard group as the durable resume anchor. The
+    // recovery object is derived from the current canvas nodes so progress
+    // written by generation callbacks is reflected after a reopen/refresh.
+    const [storyboardRecoveryTargetId, setStoryboardRecoveryTargetId] = useState<string | null>(null);
     const [previewNodeId, setPreviewNodeId] = useState<string | null>(null);
     const [previewImageId, setPreviewImageId] = useState<string | null>(null);
     const [historyState, setHistoryState] = useState({ canUndo: false, canRedo: false });
@@ -486,24 +658,43 @@ function InfiniteCanvasPage() {
         setWorkflowRunState(state);
     }, []);
     const costResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
+    const costAbortCleanupRef = useRef<(() => void) | null>(null);
     const auth = useAuth() as { user: { requireCostConfirm?: boolean } | null; setUser: (user: unknown) => void };
 
     const requestCostEstimateConfirm = useCallback(
-        async (estimate: CanvasCostEstimate) => {
+        async (estimate: CanvasCostEstimate, signal?: AbortSignal) => {
             if (auth.user?.requireCostConfirm === false) return true;
+            if (signal?.aborted) return false;
             const wallet = await getWallet().catch(() => null);
+            if (signal?.aborted) return false;
             const available = wallet ? Math.max(0, Number(wallet.availableCents ?? wallet.balanceCents ?? 0)) : null;
             return new Promise<boolean>((resolve) => {
-                costResolverRef.current?.(false);
+                costAbortCleanupRef.current?.();
+                costAbortCleanupRef.current = null;
+                const previous = costResolverRef.current;
+                costResolverRef.current = null;
+                previous?.(false);
+                const abort = () => {
+                    if (costResolverRef.current !== resolve) return;
+                    costResolverRef.current = null;
+                    costAbortCleanupRef.current = null;
+                    setCostConfirm(null);
+                    resolve(false);
+                };
                 costResolverRef.current = resolve;
+                if (signal) {
+                    signal.addEventListener("abort", abort, { once: true });
+                    costAbortCleanupRef.current = () => signal.removeEventListener("abort", abort);
+                }
                 setCostConfirm({ ...estimate, available });
+                if (signal?.aborted) abort();
             });
         },
         [auth.user?.requireCostConfirm],
     );
 
     const requestCostConfirm = useCallback(
-        (input: Parameters<typeof estimateCanvasGenerationCost>[0]) => {
+        (input: Parameters<typeof estimateCanvasGenerationCost>[0], signal?: AbortSignal) => {
             if (input.kind === "image" && input.config.sizeMode === "exact") {
                 try {
                     canvasImageSizeParams(modelOptionMeta(input.config, input.config.model), input.config);
@@ -512,13 +703,15 @@ function InfiniteCanvasPage() {
                     return Promise.resolve(false);
                 }
             }
-            return requestCostEstimateConfirm(estimateCanvasGenerationCost(input));
+            return requestCostEstimateConfirm(estimateCanvasGenerationCost(input), signal);
         },
         [message, requestCostEstimateConfirm],
     );
 
     const finishCostConfirm = useCallback((confirmed: boolean) => {
         const resolve = costResolverRef.current;
+        costAbortCleanupRef.current?.();
+        costAbortCleanupRef.current = null;
         costResolverRef.current = null;
         setCostConfirm(null);
         resolve?.(confirmed);
@@ -539,17 +732,18 @@ function InfiniteCanvasPage() {
         [auth, finishCostConfirm],
     );
 
-    const nodesRef = useRef(nodes);
     const nodesByIdRef = useRef(new Map(nodes.map((node) => [node.id, node])));
-    const connectionsRef = useRef(connections);
     const viewportRef = useRef(viewport);
     const renderViewportRef = useRef(renderViewport);
     const renderViewportRafRef = useRef<number | null>(null);
     const viewportApiRef = useRef<CanvasViewportApi | null>(null);
     const viewportInteractingRef = useRef(false);
     const focusAnimRef = useRef<number | null>(null);
-    const generateNodeRef = useRef<((nodeId: string, mode: CanvasNodeGenerationMode, prompt: string, options?: { skipCostConfirm?: boolean; workflowRunId?: string; taskKeySalt?: string }) => Promise<boolean>) | null>(null);
+    const generateNodeRef = useRef<((nodeId: string, mode: CanvasNodeGenerationMode, prompt: string, options?: { skipCostConfirm?: boolean; workflowRunId?: string; taskKeySalt?: string; agentGenerationRequestId?: string }) => Promise<boolean>) | null>(null);
     const runWorkflowRef = useRef<((request?: CanvasWorkflowRunRequest) => Promise<void>) | null>(null);
+    const workflowStartPendingRef = useRef(false);
+    const attemptedWorkflowRecoveries = useRef(new Set<string>());
+    const retiredWorkflowRuns = useRef(new Set<string>());
     const planWorkflowAgentRef = useRef<((request?: CanvasWorkflowRunRequest) => AgentWorkflowPreflightResult) | null>(null);
     const stopWorkflowAgentRef = useRef<(() => { stopped: boolean; status: string; nodeIds: string[] }) | null>(null);
     const connectingParamsRef = useRef(connectingParams);
@@ -577,10 +771,22 @@ function InfiniteCanvasPage() {
     const workflowStopRetryRef = useRef<CanvasWorkflowCheckpoint | null>(null);
     const workflowTerminalPromiseRef = useRef<Promise<void> | null>(null);
     const workflowBrowserLockReleaseRef = useRef<(() => void) | null>(null);
+    const storyboardAbortRef = useRef<AbortController | null>(null);
+    const storyboardLatestIdRef = useRef<string | null>(null);
+    const storyboardCancelRequestedRef = useRef(false);
+    const storyboardCancelAcknowledgedRef = useRef(false);
+    const storyboardCancelSubmittingRef = useRef(false);
+    const storyboardCancelTasksRef = useRef<PendingCanvasTask[]>([]);
+    const storyboardCancelNodeIdsRef = useRef<Set<string>>(new Set());
+    const storyboardAnalysisTaskRef = useRef<PendingCanvasTask | null>(null);
     const pageActiveRef = useRef(true);
     const leavingCanvasPageRef = useRef(false);
     const projectLoadedRef = useRef(false);
     projectLoadedRef.current = projectLoaded;
+
+    useEffect(() => () => {
+        storyboardAbortRef.current?.abort();
+    }, []);
 
     const releaseWorkflowBrowserLock = useCallback(() => {
         workflowBrowserLockReleaseRef.current?.();
@@ -615,9 +821,23 @@ function InfiniteCanvasPage() {
         [],
     );
 
+    useEffect(() => subscribeCanvasProjectMerge(({ before, after }) => {
+        if (after.id !== projectId || !projectLoadedRef.current) return;
+        const merged = rebaseCanvasProjectGraph(before, { nodes: nodesRef.current, connections: connectionsRef.current }, after);
+        nodesRef.current = merged.nodes;
+        nodesByIdRef.current = new Map(merged.nodes.map((node) => [node.id, node]));
+        connectionsRef.current = merged.connections;
+        setNodes(merged.nodes);
+        setConnections(merged.connections);
+        const ids = new Set(merged.nodes.map((node) => node.id));
+        setSelectedNodeIds((current) => new Set([...current].filter((id) => ids.has(id))));
+        setContextMenu(null);
+    }), [projectId, setSelectedNodeIds]);
+
     const cleanupCanvasFiles = useCallback(
         (extra?: unknown) => {
-            cleanupAssetImages({ extra, history: historyRef.current, lastHistory: lastHistoryRef.current });
+            const agentHistoryNodes = useCanvasStore.getState().projects.flatMap((project) => canvasAgentContinuationNodes(project.agentContinuation));
+            cleanupAssetImages({ extra, history: historyRef.current, lastHistory: lastHistoryRef.current, agentHistoryNodes });
         },
         [cleanupAssetImages],
     );
@@ -636,12 +856,7 @@ function InfiniteCanvasPage() {
 
     const commitNodes = useCallback(
         (updater: (current: CanvasNodeData[]) => CanvasNodeData[]) => {
-            let next: CanvasNodeData[] = nodesRef.current;
-            setNodes((current) => {
-                next = updater(current);
-                nodesRef.current = next;
-                return next;
-            });
+            const next = commitCanvasArray(nodesRef, updater, publishNodes);
             updateProject(projectId, { nodes: next, connections: connectionsRef.current });
             return next;
         },
@@ -731,6 +946,123 @@ function InfiniteCanvasPage() {
             await flushCanvasPersistence();
         },
         [commitNodes, message, t],
+    );
+
+    const persistStoryboardTaskId = useCallback(
+        async (nodeId: string, taskId: string, controller: AbortController) => {
+            // A retry can replace the request for the same canvas node before
+            // the previous POST resolves. Never attach that stale server task
+            // to the new attempt's node metadata.
+            const isCurrentRequest = () => generationRequestsRef.current.get(nodeId)?.controller === controller;
+            if (!isCurrentRequest()) return;
+            // Always retain the server task id before attempting cancellation.
+            // If the cancel request fails, recovery still has an exact task to
+            // poll or cancel again instead of treating the task as finished.
+            await persistCanvasTaskId(nodeId, taskId, undefined, "image");
+            if (!isCurrentRequest()) {
+                // `persistCanvasTaskId` commits synchronously, but its cloud
+                // flush is awaited. If a newer attempt replaced this request
+                // during that flush, remove only the stale id; never clear a
+                // newer task id written by the retry.
+                commitNodes((current) =>
+                    current.map((node) =>
+                        node.id === nodeId && node.metadata?.taskId === taskId
+                            ? { ...node, metadata: { ...node.metadata, taskId: undefined, taskKind: undefined } }
+                            : node,
+                    ),
+                );
+                return;
+            }
+            // A task can be created after the cancellation snapshot but before
+            // the controller is aborted. Once the user has acknowledged the
+            // upstream cancellation, cancel this late task immediately so it
+            // cannot escape the server-side cancellation batch.
+            if (!storyboardCancelRequestedRef.current || (!controller.signal.aborted && !storyboardCancelAcknowledgedRef.current) || leavingCanvasPageRef.current) return;
+            try {
+                await cancelPersistedCanvasTask(taskId, "image", { acknowledgeUpstream: storyboardCancelAcknowledgedRef.current });
+            } catch (error) {
+                if (isFinishedCanvasTaskError(error)) return;
+                const code = (error as { code?: string })?.code;
+                if (code === "task_cancel_confirmation_required") {
+                    const existing = storyboardCancelTasksRef.current.some((task) => task.kind === "image" && task.taskId === taskId);
+                    if (!existing) storyboardCancelTasksRef.current = [...storyboardCancelTasksRef.current, { nodeId, taskId, kind: "image" }];
+                    storyboardCancelNodeIdsRef.current.add(nodeId);
+                    if (!leavingCanvasPageRef.current) setStoryboardCancelConfirm(true);
+                    return;
+                }
+                message.error(error instanceof Error ? error.message : t("canvas.projectPage.stopFailed"));
+                throw error;
+            }
+        },
+        [commitNodes, generationRequestsRef, message, persistCanvasTaskId, t],
+    );
+
+    const persistStoryboardAnalysisTaskId = useCallback(
+        async (taskId: string, controller: AbortController) => {
+            const task: PendingCanvasTask = { nodeId: STORYBOARD_ANALYSIS_NODE_ID, taskId, kind: "assistant" };
+            // An analysis request can finish creating its server run after a
+            // newer analysis/generation controller has become current. Never
+            // let that stale callback replace the task that the cancel dialog
+            // is meant to acknowledge.
+            if (storyboardAbortRef.current !== controller) {
+                // The old controller is aborted when a newer storyboard
+                // operation takes over. The assistant POST can still resolve
+                // after that handoff, so cancel the newly-created upstream run
+                // immediately instead of dropping its only durable identity.
+                // This path has no current storyboard node to own the task;
+                // keep a failed cancellation in the shared confirmation queue
+                // so the user can retry it with the same run id.
+                // A newer analysis/generation can abort the local controller
+                // without the user asking to stop an already-submitted run.
+                // Do not turn that handoff into an upstream, billable cancel;
+                // only the explicit storyboard cancel flow may do so.
+                if (!controller.signal.aborted || !storyboardCancelRequestedRef.current) return;
+                try {
+                    await cancelPersistedCanvasTask(taskId, "assistant", { acknowledgeUpstream: storyboardCancelAcknowledgedRef.current });
+                } catch (error) {
+                    if (isFinishedCanvasTaskError(error)) return;
+                    const code = (error as { code?: string })?.code;
+                    if (code === "task_cancel_confirmation_required" || code === "assistant_cancel_confirmation_required") {
+                        if (!storyboardCancelTasksRef.current.some((item) => item.kind === "assistant" && item.taskId === taskId)) {
+                            storyboardCancelTasksRef.current = [...storyboardCancelTasksRef.current, task];
+                        }
+                        storyboardCancelNodeIdsRef.current.add(STORYBOARD_ANALYSIS_NODE_ID);
+                        if (!leavingCanvasPageRef.current) setStoryboardCancelConfirm(true);
+                        return;
+                    }
+                    if (!storyboardCancelTasksRef.current.some((item) => item.kind === "assistant" && item.taskId === taskId)) {
+                        storyboardCancelTasksRef.current = [...storyboardCancelTasksRef.current, task];
+                    }
+                    storyboardCancelNodeIdsRef.current.add(STORYBOARD_ANALYSIS_NODE_ID);
+                    if (!leavingCanvasPageRef.current) setStoryboardCancelConfirm(true);
+                    message.error(error instanceof Error ? error.message : t("canvas.projectPage.stopFailed"));
+                    return;
+                }
+                return;
+            }
+            storyboardAnalysisTaskRef.current = task;
+            if (!storyboardCancelRequestedRef.current || (!storyboardAbortRef.current?.signal.aborted && !storyboardCancelAcknowledgedRef.current) || leavingCanvasPageRef.current) return;
+            try {
+                await cancelPersistedCanvasTask(taskId, "assistant", { acknowledgeUpstream: storyboardCancelAcknowledgedRef.current });
+                if (storyboardAbortRef.current === controller && storyboardAnalysisTaskRef.current?.taskId === taskId) storyboardAnalysisTaskRef.current = null;
+            } catch (error) {
+                if (isFinishedCanvasTaskError(error)) {
+                    if (storyboardAbortRef.current === controller && storyboardAnalysisTaskRef.current?.taskId === taskId) storyboardAnalysisTaskRef.current = null;
+                    return;
+                }
+                const code = (error as { code?: string })?.code;
+                if (code === "task_cancel_confirmation_required" || code === "assistant_cancel_confirmation_required") {
+                    if (storyboardAbortRef.current !== controller) return;
+                    if (!storyboardCancelTasksRef.current.some((item) => item.kind === "assistant" && item.taskId === taskId)) storyboardCancelTasksRef.current = [...storyboardCancelTasksRef.current, task];
+                    storyboardCancelNodeIdsRef.current.add(STORYBOARD_ANALYSIS_NODE_ID);
+                    if (!leavingCanvasPageRef.current) setStoryboardCancelConfirm(true);
+                    return;
+                }
+                message.error(error instanceof Error ? error.message : t("canvas.projectPage.stopFailed"));
+                throw error;
+            }
+        },
+        [message, t],
     );
 
     const finalizeCanceledGenerationNodes = useCallback(
@@ -854,12 +1186,18 @@ function InfiniteCanvasPage() {
                                         const task = await waitForCanvasTask(target.taskId, controller.signal);
                                         const [image] = imagesFromCanvasTask(task);
                                         const uploaded = await adoptGeneratedImage(image);
-                                        commitNodes((current) => current.map((item) => (item.id === target.nodeId ? applyUploadedImageToNode(item, uploaded, target.imageId) : item)));
+                                        commitNodes((current) => {
+                                            const uploadedNodes = current.map((item) => (item.id === target.nodeId ? applyUploadedImageToNode(item, uploaded, target.imageId) : item));
+                                            return updateStoryboardTaskStatus(uploadedNodes, target.nodeId, "succeeded");
+                                        });
                                     }
                                 } catch (error) {
-                                    if (isGenerationCanceled(error)) return;
+                                    if (isGenerationCanceled(error)) {
+                                        commitNodes((current) => updateStoryboardTaskStatus(current.map((node) => (node.id === target.nodeId ? applyCanceledGenerationToNode(node, t("canvas.generation.canceled")) : node)), target.nodeId, "canceled", t("canvas.generation.canceled")));
+                                        return;
+                                    }
                                     const errorDetails = error instanceof Error ? error.message : t("canvas.projectPage.generationFailed");
-                                    commitNodes((current) => current.map((node) => (node.id === target.nodeId ? applyFailedCanvasTaskToNode(node, errorDetails, target.imageId) : node)));
+                                    commitNodes((current) => updateStoryboardTaskStatus(current.map((node) => (node.id === target.nodeId ? applyFailedCanvasTaskToNode(node, errorDetails, target.imageId) : node)), target.nodeId, "failed", errorDetails));
                                 }
                             }),
                         );
@@ -995,7 +1333,7 @@ function InfiniteCanvasPage() {
                 checkpoint?.status === "running"
                     ? { status: "running", completed: checkpoint.completedNodeIds.length, total: checkpoint.nodeIds.length, currentNodeId: checkpoint.currentNodeId, currentNodeTitle: restoredNodes.find((node) => node.id === checkpoint.currentNodeId)?.title, startedAt: checkpoint.startedAt }
                     : checkpoint?.status === "failed"
-                      ? { status: "error", completed: checkpoint.completedNodeIds.length, total: checkpoint.nodeIds.length, currentNodeId: checkpoint.errorNodeId || checkpoint.currentNodeId, currentNodeTitle: restoredNodes.find((node) => node.id === (checkpoint.errorNodeId || checkpoint.currentNodeId))?.title, errorMessage: checkpoint.errorMessage, startedAt: checkpoint.startedAt }
+                      ? { status: checkpoint.recoveryBlocked ? "paused" : "error", completed: checkpoint.completedNodeIds.length, total: checkpoint.nodeIds.length, currentNodeId: checkpoint.errorNodeId || checkpoint.currentNodeId, currentNodeTitle: restoredNodes.find((node) => node.id === (checkpoint.errorNodeId || checkpoint.currentNodeId))?.title, errorMessage: checkpoint.errorMessage, startedAt: checkpoint.startedAt }
                       : { status: "idle", completed: 0, total: 0 },
             );
             historyRef.current = { past: [], future: [] };
@@ -1041,12 +1379,26 @@ function InfiniteCanvasPage() {
         leavingCanvasPageRef.current = false;
         return () => {
             leavingCanvasPageRef.current = true;
+            storyboardAbortRef.current?.abort();
+            storyboardAbortRef.current = null;
+            storyboardAnalysisTaskRef.current = null;
+            storyboardLatestIdRef.current = null;
+            storyboardCancelRequestedRef.current = false;
+            storyboardCancelAcknowledgedRef.current = false;
+            storyboardCancelSubmittingRef.current = false;
+            storyboardCancelTasksRef.current = [];
+            storyboardCancelNodeIdsRef.current = new Set();
+            setStoryboardOpen(false);
+            setStoryboardSourceNodeId(null);
+            setStoryboardScriptOverride(null);
+            setStoryboardRecoveryTargetId(null);
+            finishCostConfirm(false);
             releaseWorkflowBrowserLock();
             generationRequestsRef.current.forEach((request) => request.controller.abort());
             generationRequestsRef.current.clear();
             if (projectLoadedRef.current) updateProject(projectId, { nodes: nodesRef.current, connections: connectionsRef.current });
         };
-    }, [projectId, releaseWorkflowBrowserLock, updateProject]);
+    }, [finishCostConfirm, projectId, releaseWorkflowBrowserLock, updateProject]);
 
     useEffect(() => {
         if (!projectLoaded || !["new", "recent", "choose"].includes(searchParams.get("mode") || "")) return;
@@ -1062,7 +1414,7 @@ function InfiniteCanvasPage() {
         if (!projectLoaded || applyingHistoryRef.current || historyPausedRef.current) return;
         const next = createHistoryEntry();
         const previous = lastHistoryRef.current;
-        if (previous?.nodes === next.nodes && previous.connections === next.connections) return;
+        if (previous && !hasCanvasUserEdit(previous, next)) { lastHistoryRef.current = next; return; }
 
         if (historyCommitTimerRef.current) clearTimeout(historyCommitTimerRef.current);
         historyCommitTimerRef.current = setTimeout(() => {
@@ -1118,9 +1470,7 @@ function InfiniteCanvasPage() {
     }, [projectId, projectLoaded, updateProject, viewport]);
 
     useLayoutEffect(() => {
-        nodesRef.current = nodes;
         nodesByIdRef.current = new Map(nodes.map((node) => [node.id, node]));
-        connectionsRef.current = connections;
         selectedNodeIdsRef.current = selectedNodeIds;
         if (!viewportInteractingRef.current) viewportRef.current = viewport;
         connectingParamsRef.current = connectingParams;
@@ -1191,8 +1541,21 @@ function InfiniteCanvasPage() {
 
     const getCanvasCenter = useCallback(() => {
         const rect = containerRectRef.current;
-        return screenToCanvas(rect.left + rect.width / 2, rect.top + rect.height / 2);
+        const left = useCanvasSidePanelStore.getState();
+        const right = useAgentStore.getState();
+        const workspace = canvasWorkspaceRect(rect, left.panelOpen ? left.width : 0, right.panelOpen ? right.width : 0);
+        return screenToCanvas(rect.left + workspace.center.x, rect.top + workspace.center.y);
     }, [screenToCanvas]);
+
+    const getInsertionCenter = useCallback((nodeSize: { width: number; height: number }) => {
+        const rect = containerRectRef.current;
+        const left = useCanvasSidePanelStore.getState();
+        const right = useAgentStore.getState();
+        const workspace = canvasWorkspaceRect(rect, left.panelOpen ? left.width : 0, right.panelOpen ? right.width : 0);
+        const topLeft = screenToCanvas(rect.left + workspace.left, rect.top + workspace.top);
+        const bottomRight = screenToCanvas(rect.left + workspace.right, rect.top + workspace.bottom);
+        return findCanvasInsertionCenter(getCanvasCenter(), nodeSize, nodesRef.current, { left: topLeft.x, top: topLeft.y, right: bottomRight.x, bottom: bottomRight.y });
+    }, [getCanvasCenter, screenToCanvas]);
 
     const setConnecting = useCallback((next: ConnectionHandle | null) => {
         connectingParamsRef.current = next;
@@ -1238,7 +1601,7 @@ function InfiniteCanvasPage() {
                 message.warning(t("canvas.projectPage.mediaUnavailable"));
                 return;
             }
-            const metadata = type === CanvasNodeType.Config ? { model: effectiveConfig.imageModel || effectiveConfig.model, size: effectiveConfig.size, ...canvasExactSizeSettings(effectiveConfig), resolution: effectiveConfig.resolution, count: getGenerationCount(effectiveConfig.canvasImageCount || effectiveConfig.count) } : undefined;
+            const metadata = type === CanvasNodeType.Config || type === CanvasNodeType.Image ? { model: effectiveConfig.imageModel || effectiveConfig.model, size: defaultCanvasImageRatio(modelOptionMeta(effectiveConfig, effectiveConfig.imageModel || effectiveConfig.model), effectiveConfig.resolution), ...canvasExactSizeSettings(effectiveConfig), resolution: effectiveConfig.resolution, count: getGenerationCount(effectiveConfig.canvasImageCount || effectiveConfig.count) } : undefined;
             const newNode = createCanvasNode(type, pending.position, metadata);
             const connection = normalizeConnection(pending.connection.nodeId, newNode.id, [...nodesRef.current, newNode], pending.connection.handleType);
             if (!connection) {
@@ -1262,7 +1625,8 @@ function InfiniteCanvasPage() {
         setConnecting(null);
     }, [setConnecting]);
 
-    const nodeSpatialIndex = useMemo(() => buildCanvasSpatialIndex(nodes), [nodes]);
+    const visibleNodes = useMemo(() => nodes.filter((node) => !node.metadata?.hidden), [nodes]);
+    const nodeSpatialIndex = useMemo(() => buildCanvasSpatialIndex(visibleNodes), [visibleNodes]);
 
     const getConnectionDropTarget = useCallback(
         (clientX: number, clientY: number, current: ConnectionHandle): ConnectionDropTarget => {
@@ -1302,8 +1666,32 @@ function InfiniteCanvasPage() {
         [nodeSpatialIndex, screenToCanvas],
     );
 
-    const nodeById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
-    const visibleNodes = useMemo(() => nodes.filter((node) => !node.metadata?.hidden), [nodes]);
+    const resourceIndex = useMemo(() => createCanvasResourceIndex(nodes, connections), [nodes, connections]);
+    const nodeById = resourceIndex.nodesById;
+    const storyboardRecovery = useMemo<StoryboardResume | null>(() => {
+        if (!storyboardRecoveryTargetId) return null;
+        const target = nodeById.get(storyboardRecoveryTargetId)
+            || nodes.find((node) => node.metadata?.storyboardId === storyboardRecoveryTargetId);
+        return recoverStoryboardFromNodes(target, nodes);
+    }, [nodeById, nodes, storyboardRecoveryTargetId]);
+    const storyboardSourceNode = storyboardSourceNodeId ? nodeById.get(storyboardSourceNodeId) || null : null;
+    const storyboardInitialScript = storyboardScriptOverride ?? (storyboardSourceNode?.type === CanvasNodeType.Text ? (storyboardSourceNode.metadata?.content || "").trim() || (storyboardSourceNode.metadata?.prompt || "").trim() : "");
+    const storyboardSourceOptions = useMemo<StoryboardSourceOption[]>(() => {
+        const relatedIds = storyboardSourceNode && Array.isArray(storyboardSourceNode.metadata?.storyboardSourceNodeIds)
+            ? storyboardSourceNode.metadata.storyboardSourceNodeIds
+            : [];
+        const ids = [storyboardSourceNode?.id, ...relatedIds, ...(storyboardRecovery?.sourceNodeIds || [])].filter((id): id is string => Boolean(id));
+        if (!ids.length) return [];
+        const seen = new Set<string>();
+        return ids.flatMap((id) => {
+            if (seen.has(id)) return [];
+            seen.add(id);
+            const node = nodeById.get(id);
+            if (!node || node.type !== CanvasNodeType.Text) return [];
+            const script = (node.metadata?.content || node.metadata?.prompt || "").trim();
+            return script ? [{ id: node.id, title: node.title || t("canvas.node.untitled"), script }] : [];
+        });
+    }, [nodeById, storyboardRecovery?.sourceNodeIds, storyboardSourceNode, t]);
     const deferredSidePanelNodes = useDeferredValue(visibleNodes);
     const viewportNodeIds = useMemo(
         () => new Set(nodeSpatialIndex.queryRect(canvasViewportQueryRect(renderViewport, size, VIEWPORT_NODE_OVERSCAN_PX)).map((node) => node.id)),
@@ -1323,11 +1711,20 @@ function InfiniteCanvasPage() {
             const endpoints = `${fromNodeId}->${toNodeId}`;
             if (seen.has(endpoints)) return [];
             seen.add(endpoints);
-            return [{ ...connection, fromNodeId, toNodeId }];
+            return [fromNodeId === connection.fromNodeId && toNodeId === connection.toNodeId ? connection : { ...connection, fromNodeId, toNodeId }];
         });
     }, [connections, nodes]);
+    displayConnectionsRef.current = displayConnections;
     const displayNodeById = useMemo(() => new Map(visibleNodes.map((node) => [node.id, node])), [visibleNodes]);
-    const connectionLayer = useMemo(() => connectionLayerBox(displayConnections, displayNodeById, connectingParams ? [mouseWorld] : []), [connectingParams, displayConnections, displayNodeById, mouseWorld]);
+    const renderedConnections = useMemo(() => {
+        const rect = canvasViewportQueryRect(renderViewport, size, VIEWPORT_NODE_OVERSCAN_PX);
+        return displayConnections.filter((connection) => {
+            const from = displayNodeById.get(connection.fromNodeId);
+            const to = displayNodeById.get(connection.toNodeId);
+            return from && to && canvasConnectionIntersectsRect(from, to, rect);
+        });
+    }, [displayConnections, displayNodeById, renderViewport, size]);
+    const connectionLayer = useMemo(() => connectionLayerBox(renderedConnections, displayNodeById, connectingParams ? [mouseWorld] : []), [connectingParams, renderedConnections, displayNodeById, mouseWorld]);
     // The toolbar follows a single selected node selected by click, creation, marquee, or keyboard.
     // It stays hidden for multi-selection and while isNodeDragging is true.
     const singleSelectedNodeId = selectedNodeIds.size === 1 ? Array.from(selectedNodeIds)[0] : null;
@@ -1378,6 +1775,42 @@ function InfiniteCanvasPage() {
         });
         return map;
     }, [nodes]);
+    const storyboardGroupStatsById = useMemo(() => {
+        const groups = new Map<string, {
+            total: number;
+            completed: number;
+            failed: number;
+            canceled: number;
+            active: number;
+            shots: Array<{ index: number; title: string; status: "queued" | "running" | "succeeded" | "failed" | "canceled" }>;
+        }>();
+        const sceneNodes = nodes.filter((node) => node.type === CanvasNodeType.Image && node.metadata?.storyboardId && node.metadata?.storyboardSceneId);
+        const declaredTotals = new Map<string, number>();
+        nodes.forEach((node) => {
+            const storyboardId = node.type === CanvasNodeType.Group ? node.metadata?.storyboardId : undefined;
+            if (!storyboardId) return;
+            const count = Number(node.metadata?.storyboardSceneCount);
+            if (Number.isFinite(count) && count > 0) declaredTotals.set(storyboardId, Math.min(16, Math.floor(count)));
+        });
+        sceneNodes.forEach((node) => {
+            const storyboardId = node.metadata!.storyboardId!;
+            const current = groups.get(storyboardId) || { total: 0, completed: 0, failed: 0, canceled: 0, active: 0, shots: [] };
+            const rawStatus = node.metadata?.storyboardStatus;
+            const status = rawStatus === "succeeded" || rawStatus === "failed" || rawStatus === "canceled" || rawStatus === "running" || rawStatus === "queued" ? rawStatus : node.metadata?.status === "success" ? "succeeded" : node.metadata?.status === "error" ? "failed" : node.metadata?.status === "loading" ? "running" : "queued";
+            current.total += 1;
+            if (status === "succeeded") current.completed += 1;
+            else if (status === "failed") current.failed += 1;
+            else if (status === "canceled") current.canceled += 1;
+            else current.active += 1;
+            current.shots.push({ index: Math.max(1, Number(node.metadata?.storyboardIndex) || current.total), title: node.metadata?.storyboardTitle || node.title || "", status });
+            groups.set(storyboardId, current);
+        });
+        groups.forEach((stats, storyboardId) => {
+            stats.total = Math.max(stats.total, declaredTotals.get(storyboardId) || 0);
+            stats.shots.sort((left, right) => left.index - right.index);
+        });
+        return groups;
+    }, [nodes]);
     const relatedHighlight = useMemo(() => {
         const nodeIds = new Set<string>();
         const connectionIds = new Set<string>();
@@ -1397,10 +1830,9 @@ function InfiniteCanvasPage() {
     const renderedNodes = useMemo(() => {
         const retainedNodeIds = new Set<string>([
             ...viewportNodeIds,
-            ...selectedNodeIds,
-            ...runningNodeIds,
-            ...relatedHighlight.nodeIds,
         ]);
+        // Keep an active editor mounted, but bulk selection is a model operation.
+        // Offscreen selected/running nodes do not need DOM representations.
         [hoveredNodeId, toolbarNodeId, dialogNodeId, editingNodeId, expandedImageNodeId, dropTargetGroupId, connectingParams?.nodeId, connectionTargetNodeId, contextMenu?.type === "node" ? contextMenu.nodeId : null]
             .filter((nodeId): nodeId is string => Boolean(nodeId))
             .forEach((nodeId) => retainedNodeIds.add(nodeId));
@@ -1411,21 +1843,23 @@ function InfiniteCanvasPage() {
         const map = new Map<string, NodeGenerationInput[]>();
         nodes.forEach((node) => {
             if (!isCanvasExecutableNode(node)) return;
-            map.set(node.id, buildNodeGenerationInputs(node.id, nodes, connections));
+            map.set(node.id, buildNodeGenerationInputs(node.id, nodes, connections, resourceIndex));
         });
         return map;
-    }, [connections, nodes]);
+    }, [connections, nodes, resourceIndex]);
+    const mentionReferencesCacheRef = useRef(new Map<string, CanvasResourceReference[]>());
     const mentionReferencesByNodeId = useMemo(() => {
-        const map = new Map<string, ReturnType<typeof buildNodeMentionReferences>>();
-        nodes.forEach((node) => map.set(node.id, buildNodeMentionReferences(node, nodes, connections)));
-        return map;
-    }, [connections, nodes]);
+        const next = buildCanvasNodeMentionReferences(nodes, connections, resourceIndex, mentionReferencesCacheRef.current);
+        mentionReferencesCacheRef.current = next;
+        return next;
+    }, [connections, nodes, resourceIndex, nodeRegistryVersion, t]);
     const confirmAgentImageGenerationBatch = useCallback(
         (count: number) => requestCostConfirm({ config: buildGenerationConfig(effectiveConfig, undefined, "image"), kind: "image", count }),
         [effectiveConfig, requestCostConfirm],
     );
     const { applyAgentOps } = useAgentBridge({
         projectId,
+        projectReady: projectLoaded,
         title: currentProjectTitle,
         nodes,
         connections,
@@ -1468,12 +1902,12 @@ function InfiniteCanvasPage() {
                 message.warning(t("canvas.projectPage.mediaUnavailable"));
                 return;
             }
-            const targetPosition = position || getCanvasCenter();
+            const targetPosition = position || getInsertionCenter(getNodeSpec(type));
             const configMetadata =
-                type === CanvasNodeType.Config
+                type === CanvasNodeType.Config || type === CanvasNodeType.Image
                     ? {
                           model: effectiveConfig.imageModel || effectiveConfig.model,
-                          size: effectiveConfig.size,
+                          size: defaultCanvasImageRatio(modelOptionMeta(effectiveConfig, effectiveConfig.imageModel || effectiveConfig.model), effectiveConfig.resolution),
                           ...canvasExactSizeSettings(effectiveConfig),
                           resolution: effectiveConfig.resolution,
                           count: getGenerationCount(effectiveConfig.canvasImageCount || effectiveConfig.count),
@@ -1497,7 +1931,192 @@ function InfiniteCanvasPage() {
                     : isBuiltinType(type) && type !== CanvasNodeType.Text && type !== CanvasNodeType.Audio && type !== CanvasNodeType.Group;
             if (wantsPanel) setDialogNodeId(newNode.id);
         },
-        [effectiveConfig.canvasImageCount, effectiveConfig.count, effectiveConfig.imageModel, effectiveConfig.model, effectiveConfig.resolution, effectiveConfig.size, getCanvasCenter, message, t],
+        [effectiveConfig.canvasImageCount, effectiveConfig.count, effectiveConfig.imageModel, effectiveConfig.model, effectiveConfig.resolution, effectiveConfig.size, getInsertionCenter, message, t],
+    );
+
+    const openStoryboard = useCallback((preferredNode?: CanvasNodeData) => {
+        const selectedNodes = preferredNode
+            ? [preferredNode]
+            : [...selectedNodeIdsRef.current]
+                  .map((id) => nodesRef.current.find((node) => node.id === id))
+                  .filter((node): node is CanvasNodeData => Boolean(node));
+        // Reopening from a generated shot or its group must restore the
+        // persisted plan/options/progress instead of starting a blank review.
+        const storyboardTarget = selectedNodes.find((node) => Boolean(node.metadata?.storyboardId));
+        if (storyboardTarget) {
+            const resume = recoverStoryboardFromNodes(storyboardTarget, nodesRef.current);
+            if (resume) {
+                storyboardLatestIdRef.current = resume.storyboardId;
+                setStoryboardRecoveryTargetId(resume.groupNodeId);
+                setStoryboardSourceNodeId(resume.sourceNodeId || null);
+                setStoryboardScriptOverride(resume.script);
+                setSelectedNodeIds(new Set([resume.groupNodeId]));
+                setStoryboardOpen(true);
+                return;
+            }
+        }
+
+        storyboardLatestIdRef.current = null;
+        setStoryboardRecoveryTargetId(null);
+        const preferredSource = preferredNode?.metadata?.storyboardSourceNodeId
+            ? nodesRef.current.find((node) => node.id === preferredNode.metadata?.storyboardSourceNodeId) || preferredNode
+            : preferredNode;
+        const selected = preferredSource
+            ? [preferredSource]
+            : [...selectedNodeIdsRef.current]
+            .map((id) => nodesRef.current.find((node) => node.id === id))
+            .filter((node): node is CanvasNodeData => Boolean(node));
+        const sources = selected
+            .filter(
+                (node) =>
+                node.type === CanvasNodeType.Text &&
+                    !node.metadata?.storyboardSceneId &&
+                    Boolean((node.metadata?.content || "").trim() || (node.metadata?.prompt || "").trim()),
+            )
+            .sort((left, right) => left.position.y - right.position.y || left.position.x - right.position.x);
+        const source = sources[0];
+        if (sources.length > 1) {
+            const mergedScript = sources
+                .map((node) => (node.metadata?.content || node.metadata?.prompt || "").trim())
+                .filter(Boolean)
+                .join("\n\n");
+            const mergedNode = createCanvasNode(CanvasNodeType.Text, getCanvasCenter(), {
+                content: mergedScript,
+                status: NODE_STATUS_SUCCESS,
+                fontSize: 14,
+                storyboardSourceNodeIds: sources.map((node) => node.id),
+            });
+            mergedNode.title = `合并剧本（${sources.length}段）`;
+            const nextNodes = [...nodesRef.current, mergedNode];
+            nodesRef.current = nextNodes;
+            setNodes(nextNodes);
+            updateProject(projectId, { nodes: nextNodes, connections: connectionsRef.current });
+            setStoryboardSourceNodeId(mergedNode.id);
+            setStoryboardScriptOverride(mergedScript);
+            setSelectedNodeIds(new Set([mergedNode.id]));
+        } else {
+            setStoryboardSourceNodeId(source?.id || null);
+            setStoryboardScriptOverride(null);
+        }
+        setStoryboardOpen(true);
+    }, [getCanvasCenter, projectId, setSelectedNodeIds, updateProject]);
+
+    const handleStoryboardSourceChange = useCallback((sourceId: string) => {
+        const source = nodesRef.current.find((node) => node.id === sourceId && node.type === CanvasNodeType.Text);
+        if (!source) return;
+        storyboardLatestIdRef.current = null;
+        setStoryboardRecoveryTargetId(null);
+        setStoryboardSourceNodeId(source.id);
+        setStoryboardScriptOverride(null);
+        setSelectedNodeIds(new Set([source.id]));
+    }, [setSelectedNodeIds]);
+
+    const handleStoryboardScriptChange = useCallback(
+        (script: string) => {
+            storyboardLatestIdRef.current = null;
+            setStoryboardRecoveryTargetId(null);
+            setStoryboardScriptOverride(script);
+            if (storyboardSourceNodeId) {
+                commitNodes((current) => current.map((node) => (node.id === storyboardSourceNodeId ? { ...node, metadata: { ...node.metadata, content: script, status: NODE_STATUS_SUCCESS } } : node)));
+                return;
+            }
+            if (!script.trim()) return;
+            const sourceNode = createCanvasNode(CanvasNodeType.Text, getCanvasCenter(), {
+                content: script,
+                status: NODE_STATUS_SUCCESS,
+                fontSize: 14,
+                storyboardSourceNodeIds: [],
+            });
+            sourceNode.title = "分镜脚本";
+            commitNodes((current) => [...current, sourceNode]);
+            setStoryboardSourceNodeId(sourceNode.id);
+            setSelectedNodeIds(new Set([sourceNode.id]));
+        },
+        [commitNodes, getCanvasCenter, setSelectedNodeIds, storyboardSourceNodeId],
+    );
+
+    /**
+     * Keep a reopened storyboard review authoritative over its canvas output.
+     * Scene title/summary edits are intentionally persisted immediately so a
+     * close/refresh cannot resurrect stale captions or prompts.
+     */
+    const persistStoryboardPlanChange = useCallback(
+        (nextPlan: StoryboardPlan, options: StoryboardGenerationOptions) => {
+            const target = storyboardRecoveryTargetId ? nodesRef.current.find((node) => node.id === storyboardRecoveryTargetId) : undefined;
+            const storyboardId = target?.metadata?.storyboardId || storyboardLatestIdRef.current;
+            if (!storyboardId) return;
+            const group = nodesRef.current.find((node) => node.type === CanvasNodeType.Group && node.metadata?.storyboardId === storyboardId);
+            if (!group) return;
+            const sourceNode = storyboardSourceNodeId ? nodesRef.current.find((node) => node.id === storyboardSourceNodeId) : undefined;
+            const script = String(group.metadata?.storyboardScript || storyboardScriptOverride || sourceNode?.metadata?.content || sourceNode?.metadata?.prompt || "").trim().slice(0, 9000);
+            const sceneById = new Map(nextPlan.scenes.map((scene) => [scene.id, scene]));
+            const scenePositionById = new Map(nextPlan.scenes.map((scene, index) => [scene.id, index]));
+            const session = storyboardSessionJson({ storyboardId, script, plan: nextPlan, options: { ...options, sceneCount: nextPlan.scenes.length } });
+            commitNodes((current) =>
+                current.map((node) => {
+                    if (node.id === group.id) {
+                        const displayTitle = nextPlan.title || node.title || "智能分镜";
+                        return {
+                            ...node,
+                            title: displayTitle.startsWith("分镜") ? displayTitle : `分镜 · ${displayTitle}`,
+                            metadata: {
+                                ...node.metadata,
+                                storyboardTitle: nextPlan.title || node.metadata?.storyboardTitle,
+                                storyboardGlobalStyle: nextPlan.globalStyle,
+                                storyboardPlanSource: nextPlan.source,
+                                storyboardPlanJson: session,
+                                storyboardSceneCount: nextPlan.scenes.length,
+                                storyboardStyle: options.style,
+                                storyboardAspectRatio: options.aspectRatio,
+                                storyboardConsistency: options.consistency,
+                            },
+                        };
+                    }
+                    if (node.metadata?.storyboardId !== storyboardId || !node.metadata?.storyboardSceneId) return node;
+                    const scene = sceneById.get(node.metadata.storyboardSceneId);
+                    if (!scene) return node;
+                    const scenePosition = scenePositionById.get(scene.id) ?? 0;
+                    const title = `${String(scene.index).padStart(2, "0")} · ${scene.title}`;
+                    const common = {
+                        storyboardIndex: scene.index,
+                        storyboardTitle: scene.title,
+                        storyboardSummary: scene.summary,
+                        storyboardPrompt: scene.prompt,
+                        storyboardGlobalStyle: nextPlan.globalStyle,
+                        storyboardPlanSource: nextPlan.source,
+                        storyboardPreviousSceneId: nextPlan.scenes[scenePosition - 1]?.id,
+                        storyboardNextSceneId: nextPlan.scenes[scenePosition + 1]?.id,
+                    } satisfies Partial<CanvasNodeMetadata>;
+                    if (node.type === CanvasNodeType.Image) {
+                        const wasGenerated = node.metadata?.storyboardStatus === "succeeded";
+                        return {
+                            ...node,
+                            title,
+                            metadata: {
+                                ...node.metadata,
+                                ...common,
+                                prompt: scene.prompt,
+                                ...(wasGenerated ? { storyboardNeedsRegeneration: true } : {}),
+                            },
+                        };
+                    }
+                    if (node.type === CanvasNodeType.Text) {
+                        return {
+                            ...node,
+                            title,
+                            metadata: {
+                                ...node.metadata,
+                                ...common,
+                                ...(node.metadata?.storyboardStatus === "succeeded" ? { storyboardNeedsRegeneration: true } : {}),
+                                content: `${String(scene.index).padStart(2, "0")}  ${scene.title}\n${scene.summary}`,
+                            },
+                        };
+                    }
+                    return node;
+                }),
+            );
+        },
+        [commitNodes, storyboardRecoveryTargetId, storyboardScriptOverride, storyboardSourceNodeId],
     );
 
     const abortGenerationForNodes = useCallback((ids?: Set<string>) => {
@@ -1511,7 +2130,7 @@ function InfiniteCanvasPage() {
     const deleteNodes = useCallback(
         (ids: Set<string>) => {
             if (!ids.size) return;
-            const allIds = new Set(ids);
+            const allIds = collectCanvasOwnedOutputIds(nodesRef.current, ids);
             abortGenerationForNodes(allIds);
             setNodes((prev) => {
                 const next = prev.filter((node) => !allIds.has(node.id));
@@ -1586,34 +2205,21 @@ function InfiniteCanvasPage() {
         cleanupCanvasFiles({ projectId, nodes: [], chatSessions: [] });
     }, [abortGenerationForNodes, cleanupCanvasFiles, deselectCanvas, projectId]);
 
-    const copySelectedNodes = useCallback(() => {
-        const selectedIds = selectedNodeIdsRef.current;
-        if (!selectedIds.size) return;
+    const copySelectedNodes = useCallback((clipboardData: DataTransfer | null) => {
+        try {
+            const clipboard = createCanvasNodeClipboard(nodesRef.current, connectionsRef.current, selectedNodeIdsRef.current);
+            if (!clipboard) return;
+            const text = serializeCanvasNodeClipboard(clipboard);
+            if (!clipboardData) throw new Error("无法写入剪贴板，请允许剪贴板访问后重试");
+            clipboardData.setData("text/plain", text);
+        } catch (error) {
+            message.warning(error instanceof Error ? error.message : "复制失败，请重试");
+        }
+    }, [message]);
 
-        const copiedNodes = nodesRef.current
-            .filter((node) => selectedIds.has(node.id))
-            .map((node) => ({
-                ...node,
-                position: { ...node.position },
-                metadata: node.metadata ? { ...node.metadata } : undefined,
-            }));
+    const pasteCopiedNodes = useCallback((clipboard: CanvasNodeClipboard) => {
+        if (!clipboard.nodes.length) return false;
 
-        if (!copiedNodes.length) return;
-
-        const marker = `startclouds-canvas:${crypto.randomUUID()}`;
-        clipboardRef.current = {
-            marker,
-            nodes: copiedNodes,
-            connections: connectionsRef.current.filter((connection) => selectedIds.has(connection.fromNodeId) && selectedIds.has(connection.toNodeId)).map((connection) => ({ ...connection })),
-        };
-        void navigator.clipboard?.writeText(marker).catch(() => undefined);
-    }, []);
-
-    const pasteCopiedNodes = useCallback(() => {
-        const clipboard = clipboardRef.current;
-        if (!clipboard?.nodes.length) return false;
-
-        const center = getCanvasCenter();
         const bounds = clipboard.nodes.reduce(
             (acc, node) => ({
                 left: Math.min(acc.left, node.position.x),
@@ -1623,6 +2229,7 @@ function InfiniteCanvasPage() {
             }),
             { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity },
         );
+        const center = getInsertionCenter({ width: bounds.right - bounds.left, height: bounds.bottom - bounds.top });
         const dx = center.x - (bounds.left + bounds.right) / 2;
         const dy = center.y - (bounds.top + bounds.bottom) / 2;
         const idMap = new Map<string, string>();
@@ -1666,12 +2273,16 @@ function InfiniteCanvasPage() {
         setSelectedNodeIds(new Set(pastedNodes.map((node) => node.id)));
         setSelectedConnectionId(null);
         setContextMenu(null);
-        setDialogNodeId(pastedNodes[0]?.type === CanvasNodeType.Group ? null : pastedNodes[0]?.id || null);
+        setDialogNodeId(null);
         return true;
-    }, [getCanvasCenter]);
+    }, [getInsertionCenter]);
 
     const resetViewport = useCallback(() => {
-        setViewport({ x: size.width / 2, y: size.height / 2, k: 1 });
+        const left = useCanvasSidePanelStore.getState();
+        const right = useAgentStore.getState();
+        const next = fitCanvasContent(nodesRef.current, size, left.panelOpen ? left.width : 0, right.panelOpen ? right.width : 0);
+        viewportApiRef.current?.apply(next, { commit: true });
+        setViewport(next);
         setContextMenu(null);
     }, [size.height, size.width]);
 
@@ -1681,8 +2292,11 @@ function InfiniteCanvasPage() {
             if (!node) return;
             const worldX = node.position.x + node.width / 2;
             const worldY = node.position.y + node.height / 2;
-            const k = Math.min(Math.max(Math.min((size.width * 0.6) / node.width, (size.height * 0.6) / node.height), 0.05), 1);
-            const target = { x: size.width / 2 - worldX * k, y: size.height / 2 - worldY * k, k };
+            const left = useCanvasSidePanelStore.getState();
+            const right = useAgentStore.getState();
+            const workspace = canvasWorkspaceRect(size, left.panelOpen ? left.width : 0, right.panelOpen ? right.width : 0);
+            const k = Math.min(Math.max(Math.min((workspace.width * 0.8) / node.width, (workspace.height * 0.8) / node.height), 0.05), 1);
+            const target = { x: workspace.center.x - worldX * k, y: workspace.center.y - worldY * k, k };
             setSelectedNodeIds(new Set([nodeId]));
             setSelectedConnectionId(null);
             setContextMenu(null);
@@ -1707,6 +2321,19 @@ function InfiniteCanvasPage() {
         },
         [size.height, size.width],
     );
+
+    const focusStoryboardScene = useCallback((sceneId: string) => {
+        const latestStoryboardId = storyboardLatestIdRef.current;
+        if (!latestStoryboardId) return;
+        const matches = nodesRef.current.filter((node) => {
+            if (node.metadata?.storyboardSceneId !== sceneId) return false;
+            return node.metadata?.storyboardId === latestStoryboardId;
+        });
+        if (!matches.length) return;
+        const primary = matches.find((node) => node.type === CanvasNodeType.Image) || matches[0];
+        focusNode(primary.id);
+        setSelectedNodeIds(new Set(matches.map((node) => node.id)));
+    }, [focusNode, setSelectedNodeIds]);
 
     useEffect(() => () => void (focusAnimRef.current && cancelAnimationFrame(focusAnimRef.current)), []);
 
@@ -1736,7 +2363,7 @@ function InfiniteCanvasPage() {
             lastHistoryRef.current = current;
             return;
         }
-        if (last.nodes === current.nodes && last.connections === current.connections) return;
+        if (!hasCanvasUserEdit(last, current)) { lastHistoryRef.current = current; return; }
         historyRef.current.past = [...historyRef.current.past.slice(-49), last];
         historyRef.current.future = [];
         lastHistoryRef.current = current;
@@ -1749,17 +2376,20 @@ function InfiniteCanvasPage() {
             historyCommitTimerRef.current = null;
         }
         applyingHistoryRef.current = true;
-        setNodes(entry.nodes);
-        setConnections(entry.connections);
+        const restored = applyCanvasHistoryDelta(entry, lastHistoryRef.current || createHistoryEntry(), createHistoryEntry());
+        nodesRef.current = restored.nodes;
+        connectionsRef.current = restored.connections;
+        setNodes(restored.nodes);
+        setConnections(restored.connections);
         setSelectedNodeIds(new Set());
         setSelectedConnectionId(null);
         setContextMenu(null);
         setTimeout(() => {
-            lastHistoryRef.current = entry;
+            lastHistoryRef.current = restored;
             applyingHistoryRef.current = false;
             setHistoryState({ canUndo: historyRef.current.past.length > 0, canRedo: historyRef.current.future.length > 0 });
         });
-    }, []);
+    }, [createHistoryEntry]);
 
     const undoCanvas = useCallback(() => {
         flushPendingHistoryCommit();
@@ -1875,15 +2505,7 @@ function InfiniteCanvasPage() {
         const currentNodes = nodesRef.current;
         const nextSelected = selectedIds ?? pendingSelectionRef.current ?? selectNodeByEvent({ shiftKey: false } as ReactMouseEvent, nodeId).nextSelected;
         pendingSelectionRef.current = null;
-        const dragIds = new Set(nextSelected);
-        currentNodes.forEach((node) => {
-            if (!nextSelected.has(node.id)) return;
-            if (node.type === CanvasNodeType.Group) {
-                currentNodes.forEach((child) => {
-                    if (child.metadata?.groupId === node.id) dragIds.add(child.id);
-                });
-            }
-        });
+        const dragIds = collectCanvasDragNodeIds(currentNodes, nextSelected);
         dragRef.current = {
             isDraggingNode: true,
             hasMoved: false,
@@ -1901,7 +2523,7 @@ function InfiniteCanvasPage() {
             dragNodeElementsRef.current.set(elementNodeId, element);
         });
 
-        const affectedConnectionIds = new Set(connectionsRef.current.filter((connection) => dragIds.has(connection.fromNodeId) || dragIds.has(connection.toNodeId)).map((connection) => connection.id));
+        const affectedConnectionIds = new Set(displayConnectionsRef.current.filter((connection) => dragIds.has(connection.fromNodeId) || dragIds.has(connection.toNodeId)).map((connection) => connection.id));
         const pathsByConnectionId = new Map<string, SVGPathElement[]>();
         canvasElement?.querySelectorAll<SVGPathElement>("[data-connection-path]").forEach((path) => {
             const connectionId = path.dataset.connectionPath;
@@ -1910,7 +2532,7 @@ function InfiniteCanvasPage() {
             if (paths) paths.push(path);
             else pathsByConnectionId.set(connectionId, [path]);
         });
-        dragConnectionDomRef.current = connectionsRef.current
+        dragConnectionDomRef.current = displayConnectionsRef.current
             .filter((connection) => affectedConnectionIds.has(connection.id))
             .map((connection) => ({ connection, paths: pathsByConnectionId.get(connection.id) || [] }));
         historyPausedRef.current = true;
@@ -1921,6 +2543,7 @@ function InfiniteCanvasPage() {
     const handleNodeMouseDown = useCallback((event: ReactMouseEvent, nodeId: string) => {
         event.stopPropagation();
         if (event.button !== 0) return;
+        if (resizingNodeIdRef.current) return;
         if (isCanvasTextEditTarget(event.target) || isCanvasControlTarget(event.target)) return;
         beginNodeDrag(event, nodeId);
     }, [beginNodeDrag]);
@@ -2322,9 +2945,13 @@ function InfiniteCanvasPage() {
     }, [createImageFileNode, createTextNodeFromClipboard, getCanvasCenter, message, projectLoaded, t]);
 
     useEffect(() => {
+        const handleCopy = (event: ClipboardEvent) => {
+            if (shouldIgnoreCanvasShortcut(event) || window.getSelection()?.toString() || !selectedNodeIdsRef.current.size) return;
+            event.preventDefault();
+            copySelectedNodes(event.clipboardData);
+        };
         const handlePaste = (event: ClipboardEvent) => {
-            const target = event.target instanceof Element ? event.target : null;
-            if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement || target?.closest("[contenteditable='true'],[data-canvas-shortcuts-ignore]")) return;
+            if (shouldIgnoreCanvasShortcut(event)) return;
             const clipboard = event.clipboardData;
             if (!clipboard) return;
             const imageFiles = canvasClipboardImages(clipboard);
@@ -2339,24 +2966,33 @@ function InfiniteCanvasPage() {
                 return;
             }
             const text = clipboard.getData("text/plain");
-            if (text && text === clipboardRef.current?.marker) {
+            try {
+                const canvasClipboard = parseCanvasNodeClipboard(text);
+                if (canvasClipboard) {
+                    event.preventDefault();
+                    pasteCopiedNodes(canvasClipboard);
+                    return;
+                }
+            } catch (error) {
                 event.preventDefault();
-                pasteCopiedNodes();
+                message.warning(error instanceof Error ? error.message : "无法读取剪贴板内容");
                 return;
             }
             if (!text.trim()) return;
             event.preventDefault();
             if (createTextNodeFromClipboard(text)) message.success(t("canvas.projectPage.clipboardTextAdded"));
         };
+        window.addEventListener("copy", handleCopy);
         window.addEventListener("paste", handlePaste);
-        return () => window.removeEventListener("paste", handlePaste);
-    }, [createImageFileNode, createTextNodeFromClipboard, getCanvasCenter, message, pasteCopiedNodes, t]);
+        return () => {
+            window.removeEventListener("copy", handleCopy);
+            window.removeEventListener("paste", handlePaste);
+        };
+    }, [copySelectedNodes, createImageFileNode, createTextNodeFromClipboard, getCanvasCenter, message, pasteCopiedNodes, t]);
 
     useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
-            const target = event.target instanceof Element ? event.target : null;
-            if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement || target?.closest("[contenteditable='true'],[data-canvas-no-zoom],[data-canvas-shortcuts-ignore]"))
-                return;
+            if (shouldIgnoreCanvasShortcut(event)) return;
 
             const key = event.key.toLowerCase();
             const isModifierShortcut = event.metaKey || event.ctrlKey;
@@ -2378,7 +3014,7 @@ function InfiniteCanvasPage() {
 
             if (isModifierShortcut && !event.altKey && key === "a") {
                 event.preventDefault();
-                setSelectedNodeIds(new Set(nodesRef.current.map((node) => node.id)));
+                setSelectedNodeIds(new Set(nodesRef.current.filter((node) => !node.metadata?.hidden).map((node) => node.id)));
                 setSelectedConnectionId(null);
                 setContextMenu(null);
                 setSelectionBox(null);
@@ -2386,8 +3022,7 @@ function InfiniteCanvasPage() {
             }
 
             if (isModifierShortcut && !event.altKey && key === "c") {
-                event.preventDefault();
-                copySelectedNodes();
+                // Let the browser dispatch a copy event with a writable clipboard.
                 return;
             }
 
@@ -2424,7 +3059,7 @@ function InfiniteCanvasPage() {
 
         window.addEventListener("keydown", handleKeyDown);
         return () => window.removeEventListener("keydown", handleKeyDown);
-    }, [copySelectedNodes, deleteConnections, deleteNodes, redoCanvas, selectedConnectionIds, setConnecting, undoCanvas]);
+    }, [deleteConnections, deleteNodes, redoCanvas, selectedConnectionIds, setConnecting, undoCanvas]);
 
     const handleConnectStart = useCallback(
         (event: ReactMouseEvent, nodeId: string, handleType: "source" | "target") => {
@@ -2439,14 +3074,94 @@ function InfiniteCanvasPage() {
     );
 
     const handleNodeResize = useCallback((nodeId: string, width: number, height: number, position?: Position) => {
-        setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, width, height, position: position || node.position } : node)));
+        pendingResizeRef.current = { nodeId, width, height, position };
+        if (resizeFrameRef.current != null) return;
+        resizeFrameRef.current = requestAnimationFrame(() => {
+            resizeFrameRef.current = null;
+            const pending = pendingResizeRef.current;
+            if (!pending) return;
+            const node = nodesByIdRef.current.get(pending.nodeId);
+            if (!node) return;
+            const resized = { ...node, width: pending.width, height: pending.height, position: pending.position || node.position };
+            const element = resizeElementRef.current || containerRef.current?.querySelector<HTMLElement>(`[data-node-id="${CSS.escape(pending.nodeId)}"]`);
+            if (element) {
+                resizeElementRef.current = element;
+                element.style.width = `${resized.width}px`;
+                element.style.height = `${resized.height}px`;
+                element.style.transform = `translate3d(${resized.position.x}px, ${resized.position.y}px, 0)`;
+            }
+            const paths = new Map<string, string>();
+            for (const connection of displayConnectionsRef.current) {
+                if (connection.fromNodeId !== node.id && connection.toNodeId !== node.id) continue;
+                const from = connection.fromNodeId === node.id ? resized : nodesByIdRef.current.get(connection.fromNodeId);
+                const to = connection.toNodeId === node.id ? resized : nodesByIdRef.current.get(connection.toNodeId);
+                if (from && to) paths.set(connection.id, canvasConnectionPathD(from, to));
+            }
+            containerRef.current?.querySelectorAll<SVGPathElement>("[data-connection-path]").forEach((path) => {
+                const d = paths.get(path.dataset.connectionPath || "");
+                if (d) path.setAttribute("d", d);
+            });
+        });
     }, []);
 
-    const handleNodeResizeStart = useCallback(() => {
+    const handleNodeResizeStart = useCallback((nodeId: string) => {
+        resizingNodeIdRef.current = nodeId;
+        pendingResizeRef.current = null;
+        resizeElementRef.current = null;
+        historyPausedRef.current = true;
         setIsNodeResizing(true);
         setExpandedImageNodeId(null);
     }, []);
-    const handleNodeResizeEnd = useCallback(() => setIsNodeResizing(false), []);
+    const handleNodeResizeEnd = useCallback(() => {
+        if (resizeFrameRef.current != null) cancelAnimationFrame(resizeFrameRef.current);
+        resizeFrameRef.current = null;
+        const pending = pendingResizeRef.current;
+        pendingResizeRef.current = null;
+        resizingNodeIdRef.current = null;
+        resizeElementRef.current = null;
+        historyPausedRef.current = false;
+        if (pending) setNodes((prev) => prev.map((node) => node.id === pending.nodeId ? { ...node, width: pending.width, height: pending.height, position: pending.position || node.position } : node));
+        setIsNodeResizing(false);
+    }, []);
+    useEffect(() => () => {
+        if (resizeFrameRef.current != null) cancelAnimationFrame(resizeFrameRef.current);
+    }, []);
+    useEffect(() => {
+        if (!isNodeResizing) return;
+        // A resize target can disappear through Delete or a cloud merge before pointerup.
+        const finish = () => handleNodeResizeEnd();
+        window.addEventListener("pointerup", finish);
+        window.addEventListener("pointercancel", finish);
+        window.addEventListener("blur", finish);
+        return () => {
+            window.removeEventListener("pointerup", finish);
+            window.removeEventListener("pointercancel", finish);
+            window.removeEventListener("blur", finish);
+        };
+    }, [handleNodeResizeEnd, isNodeResizing]);
+    useEffect(() => {
+        const id = resizingNodeIdRef.current;
+        if (id && !nodes.some((node) => node.id === id)) handleNodeResizeEnd();
+    }, [handleNodeResizeEnd, nodes]);
+
+    useEffect(() => {
+        if (!nodes.some((node) => fitLockedImageNode(node) !== node)) return;
+        setNodes((current) => current.map(fitLockedImageNode));
+    }, [nodes]);
+
+    const handleImageAspect = useCallback((nodeId: string, source: string, ratio: number) => {
+        if (!source || !Number.isFinite(ratio) || ratio <= 0) return;
+        setNodes((current) => current.map((node) => {
+            // Storyboard shots are fixed-format cells. A provider may return
+            // pixels with a slightly different ratio than requested, but
+            // adapting the canvas node to those pixels would desynchronise the
+            // image and caption lanes inside the storyboard group.
+            if (node.id !== nodeId || node.metadata?.storyboardSceneId || imageFrameSource(node) !== source) return node;
+            const previous = node.metadata?.loadedImageAspect;
+            if (previous?.source === source && Math.abs(previous.ratio - ratio) < 0.001) return node;
+            return fitLockedImageNode({ ...node, metadata: { ...node.metadata, loadedImageAspect: { source, ratio } } });
+        }));
+    }, []);
 
     const toggleNodeFreeResize = useCallback((nodeId: string) => {
         setNodes((prev) =>
@@ -2454,9 +3169,7 @@ function InfiniteCanvasPage() {
                 if (node.id !== nodeId) return node;
                 const freeResize = !node.metadata?.freeResize;
                 if (freeResize || node.type !== CanvasNodeType.Image) return { ...node, metadata: { ...node.metadata, freeResize } };
-                const ratio = (node.metadata?.naturalWidth || node.width) / (node.metadata?.naturalHeight || node.height || 1);
-                const height = node.width / ratio;
-                return { ...node, height, position: { x: node.position.x, y: node.position.y + node.height / 2 - height / 2 }, metadata: { ...node.metadata, freeResize } };
+                return fitLockedImageNode({ ...node, metadata: { ...node.metadata, freeResize } });
             }),
         );
     }, []);
@@ -3319,9 +4032,10 @@ function InfiniteCanvasPage() {
     );
 
     const handleGenerateNode = useCallback(
-        async (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string, options: { skipCostConfirm?: boolean; workflowRunId?: string; taskKeySalt?: string } = {}) => {
+        async (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string, options: { skipCostConfirm?: boolean; workflowRunId?: string; taskKeySalt?: string; agentGenerationRequestId?: string } = {}) => {
             const sourceNode = nodesRef.current.find((node) => node.id === nodeId);
             if (options.workflowRunId && (workflowRunRef.current.cancelQueued || workflowRunRef.current.canceledNodeIds.has(nodeId))) return false;
+            commitNodes((current) => current.map((node) => node.id === nodeId ? { ...node, metadata: { ...node.metadata, agentGenerationRequestId: options.agentGenerationRequestId } } : node));
             if (sourceNode && isCanvasLocalImageOperation(sourceNode.metadata?.localImageOperation)) return runLocalImageOperation(sourceNode, options);
             if (sourceNode && (sourceNode.type === CanvasOperationNodeType.Angle || sourceNode.type === CanvasOperationNodeType.ReversePrompt)) {
                 const imageCount = getInputSummary(buildNodeGenerationInputs(nodeId, nodesRef.current, connectionsRef.current)).imageCount;
@@ -3803,6 +4517,535 @@ function InfiniteCanvasPage() {
         [effectiveConfig, finalizeCanceledGenerationNodes, finishGenerationRequest, isAiConfigReady, markGenerationFinished, markGenerationStarted, message, openConfigDialog, persistCanvasTaskId, projectId, requestCostConfirm, runLocalImageOperation, startGenerationRequest, t],
     );
 
+    const analyzeStoryboard = useCallback(
+        async (script: string, options: StoryboardGenerationOptions): Promise<StoryboardPlan | null> => {
+            const sceneCount = Math.min(16, Math.max(1, Math.floor(Number(options.sceneCount) || 6)));
+            const fallback = parseStoryboardScript(script, { count: sceneCount, style: options.style });
+            const requestedModel = effectiveConfig.textModel || effectiveConfig.model || defaultConfig.textModel;
+            const textModel = resolveModelForCapability(effectiveConfig, requestedModel, "text");
+            const textConfig = { ...buildGenerationConfig(effectiveConfig, undefined, "text"), model: textModel, textModel, count: "1" };
+            if (!isAiConfigReady(textConfig, textModel)) return null;
+            storyboardAbortRef.current?.abort();
+            storyboardAnalysisTaskRef.current = null;
+            const controller = new AbortController();
+            storyboardAbortRef.current = controller;
+            let analysisTaskId = "";
+            try {
+                if (!(await requestCostConfirm({ config: textConfig, kind: "text", count: 1 }, controller.signal)) || controller.signal.aborted) return null;
+                const systemPrompt = [
+                    `你是影视分镜导演。把用户提供的故事拆成 ${sceneCount} 个左右、最多 16 个可生成的镜头；如果原文信息不足，宁可合并重复动作，也不要凭空添加剧情。`,
+                    `目标镜头数：${sceneCount}。视觉风格：${options.style}。画幅：${options.aspectRatio}。角色连续性：${options.consistency ? "严格保持" : "尽量保持"}。`,
+                    "只输出 JSON，不要 Markdown，不要解释。格式：{title,globalStyle,scenes:[{title,summary,shotType,cameraAngle,lens,movement,location,time,characters,dialogue,durationSec,prompt,continuity}]}。",
+                    options.consistency
+                        ? "每个 prompt 必须是可直接用于文生图的完整画面描述；所有镜头保持角色、服装、道具、色彩和空间方向连续。"
+                        : "每个 prompt 必须是可直接用于文生图的完整画面描述；镜头之间不强制角色、服装、道具、色彩或空间方向连续，按本镜头文本独立构图。",
+                ].join("\n");
+                const response = await requestImageQuestion(
+                    textConfig,
+                    [
+                        { role: "system", content: systemPrompt },
+                        { role: "user", content: script.slice(0, 9000) },
+                    ],
+                    () => undefined,
+                    {
+                        signal: controller.signal,
+                        onCreated: (taskId: string) => {
+                            analysisTaskId = taskId;
+                            return persistStoryboardAnalysisTaskId(taskId, controller);
+                        },
+                        idempotencyKey: `canvas:${projectId}:storyboard-plan:${nanoid(10)}`,
+                    },
+                );
+                if (controller.signal.aborted) return null;
+                return normalizeStoryboardPlan(response, fallback, { count: sceneCount, style: options.style });
+            } catch {
+                return null;
+            } finally {
+                // An analysis cancellation has no image task to finish the
+                // cleanup. Only clear the cancellation refs while this
+                // controller is still current; a newer generation must keep
+                // its own cancellation state intact.
+                // React's ref control-flow analysis sees the synchronous reset
+                // at the start of this callback and narrows `.current` to
+                // `null`; read through the task type to preserve the runtime
+                // generation guard across the awaited request.
+                const currentAnalysisTask = storyboardAnalysisTaskRef.current as PendingCanvasTask | null;
+                if (currentAnalysisTask && currentAnalysisTask.taskId === analysisTaskId) storyboardAnalysisTaskRef.current = null;
+                if (storyboardAbortRef.current === controller) {
+                    storyboardAbortRef.current = null;
+                    if (!storyboardCancelTasksRef.current.length && !storyboardCancelSubmittingRef.current) {
+                        storyboardCancelRequestedRef.current = false;
+                        storyboardCancelAcknowledgedRef.current = false;
+                        storyboardCancelNodeIdsRef.current = new Set();
+                    }
+                }
+            }
+        },
+        [effectiveConfig, isAiConfigReady, persistStoryboardAnalysisTaskId, projectId, requestCostConfirm],
+    );
+
+    const generateStoryboard = useCallback(
+        async (
+            reviewedPlan: StoryboardPlan,
+            reviewedScript: string,
+            options: StoryboardGenerationOptions,
+            report: (event: StoryboardProgressEvent) => void,
+        ) => {
+            const scenes = reviewedPlan.scenes;
+            if (!scenes.length) return;
+            const sourceNode = storyboardSourceNodeId ? nodesRef.current.find((node) => node.id === storyboardSourceNodeId) || null : null;
+            const generationConfig = {
+                ...buildGenerationConfig(effectiveConfig, sourceNode || undefined, "image"),
+                count: "1",
+                size: options.aspectRatio,
+                sizeMode: "ratio" as const,
+                exactWidth: "",
+                exactHeight: "",
+            };
+            if (!isAiConfigReady(generationConfig, generationConfig.model)) {
+                openConfigDialog(true);
+                throw new Error(t("canvas.workflow.modelUnavailable", { name: t("canvas.storyboard.title") }));
+            }
+            storyboardAbortRef.current?.abort();
+            storyboardCancelRequestedRef.current = false;
+            storyboardCancelAcknowledgedRef.current = false;
+            storyboardCancelTasksRef.current = [];
+            storyboardCancelNodeIdsRef.current = new Set();
+            storyboardAnalysisTaskRef.current = null;
+            const controller = new AbortController();
+            storyboardAbortRef.current = controller;
+            let confirmed = false;
+            try {
+                confirmed = await requestCostConfirm({ config: generationConfig, kind: "image", count: scenes.length }, controller.signal);
+            } catch (reason) {
+                if (storyboardAbortRef.current === controller) storyboardAbortRef.current = null;
+                throw reason;
+            }
+            if (!confirmed || controller.signal.aborted) {
+                const canceledMessage = t("canvas.storyboard.statusCanceled");
+                scenes.forEach((scene) => report({ sceneId: scene.id, status: "canceled", error: canceledMessage }));
+                if (storyboardAbortRef.current === controller) storyboardAbortRef.current = null;
+                return;
+            }
+
+            const storyboardId = `storyboard-${nanoid(10)}`;
+            storyboardLatestIdRef.current = storyboardId;
+            const storyboardScript = (reviewedScript || sourceNode?.metadata?.content || sourceNode?.metadata?.prompt || "").trim().slice(0, 9000);
+            // Preserve the reviewed planner payload as the durable source of
+            // truth. Earlier code rebuilt this object from generation options,
+            // which silently discarded an AI plan's title, globalStyle, and
+            // source provenance as soon as images were submitted.
+            const storyboardPlan: StoryboardPlan = reviewedPlan.scenes.length
+                ? { ...reviewedPlan, scenes }
+                : {
+                      title: "智能分镜",
+                      globalStyle: storyboardStyleLabel(options.style),
+                      scenes,
+                      source: "rules",
+                  };
+            const storyboardSession = storyboardSessionJson({
+                storyboardId,
+                script: storyboardScript,
+                plan: storyboardPlan,
+                options: { ...options, sceneCount: scenes.length },
+            });
+            const card = nodeSizeFromRatio(options.aspectRatio, 300, 220) || { width: 300, height: 220 };
+            const layout = storyboardLayoutMetrics(scenes.length, card, { captionHeight: 82, gapX: 88, gapY: 52, groupPaddingX: 40, groupHeaderHeight: 104, groupFooterHeight: 44 });
+            const center = findCanvasInsertionCenter(getCanvasCenter(), { width: layout.groupWidth, height: layout.groupHeight }, nodesRef.current);
+            const groupOrigin = { x: center.x - layout.groupWidth / 2, y: center.y - layout.groupHeight / 2 };
+            const origin = { x: groupOrigin.x + layout.groupPaddingX, y: groupOrigin.y + layout.groupHeaderHeight };
+            const sequenceLinks = new Map(storyboardSequenceLinks(scenes.map((scene) => scene.id)).map((link) => [link.sceneId, link]));
+            const storyboardGroupId = `storyboard-group-${nanoid(10)}`;
+            const sourceContext = sourceNode ? buildNodeGenerationContext(sourceNode.id, nodesRef.current, connectionsRef.current, "") : null;
+            const sourceReferences = options.consistency ? sourceContext?.referenceImages?.slice(0, 4) || [] : [];
+            // Keep only durable storage URLs in node metadata. The request can
+            // still use data URLs in-memory, but persistence must not bloat the
+            // canvas document or retain transient browser blobs.
+            const storyboardReferenceUrls = generationReferenceUrls({ referenceImages: sourceReferences, referenceVideos: [], referenceAudios: [] }).slice(0, 4);
+            const imageNodes: CanvasNodeData[] = [];
+            const captionNodes: CanvasNodeData[] = [];
+            const sceneNodeIds = new Map<string, string>();
+            const sceneCaptionIds = new Map<string, string>();
+            const scenePrompts = new Map(scenes.map((scene) => [scene.id, storyboardPromptForConsistency(scene.prompt, options.consistency)]));
+            scenes.forEach((scene, index) => {
+                const { x, y } = storyboardScenePosition(index, origin, card, layout);
+                const sequence = sequenceLinks.get(scene.id);
+                const image = {
+                    ...createCanvasNode(CanvasNodeType.Image, { x: x + card.width / 2, y: y + card.height / 2 }, {
+                        prompt: scenePrompts.get(scene.id) || scene.prompt,
+                        storyboardPrompt: scenePrompts.get(scene.id) || scene.prompt,
+                        generationType: sourceReferences.length ? "edit" : "generation",
+                        generationMode: "image",
+                        model: generationConfig.model,
+                        size: options.aspectRatio,
+                        sizeMode: "ratio",
+                        exactWidth: "",
+                        exactHeight: "",
+                        count: 1,
+                        status: NODE_STATUS_LOADING,
+                        executionStatus: "running",
+                        generationStartedAt: new Date().toISOString(),
+                        storyboardId,
+                        storyboardSceneId: scene.id,
+                        storyboardIndex: scene.index,
+                        storyboardTitle: scene.title,
+                        storyboardSummary: scene.summary,
+                        storyboardShotType: scene.shotType,
+                        storyboardStatus: "queued",
+                        storyboardSourceNodeId: sourceNode?.id,
+                        storyboardPreviousSceneId: sequence?.previousSceneId,
+                        storyboardNextSceneId: sequence?.nextSceneId,
+                        storyboardContinuity: options.consistency ? scene.continuity : undefined,
+                        references: storyboardReferenceUrls,
+                        storyboardStyle: options.style,
+                        storyboardConsistency: options.consistency,
+                        storyboardGlobalStyle: storyboardPlan.globalStyle,
+                        storyboardPlanSource: storyboardPlan.source,
+                        groupId: storyboardGroupId,
+                    }),
+                    title: `${String(scene.index).padStart(2, "0")} · ${scene.title}`,
+                    position: { x, y },
+                    width: card.width,
+                    height: card.height,
+                } satisfies CanvasNodeData;
+                const caption = {
+                    ...createCanvasNode(CanvasNodeType.Text, { x: x + card.width / 2, y: y + card.height + layout.captionHeight / 2 }, {
+                        content: `${String(scene.index).padStart(2, "0")}  ${scene.title}\n${scene.summary}`,
+                        status: NODE_STATUS_SUCCESS,
+                        executionStatus: "queued",
+                        fontSize: 12,
+                        storyboardId,
+                        storyboardSceneId: scene.id,
+                        storyboardIndex: scene.index,
+                        storyboardTitle: scene.title,
+                        storyboardSummary: scene.summary,
+                        storyboardStatus: "queued",
+                        storyboardSourceNodeId: sourceNode?.id,
+                        storyboardPreviousSceneId: sequence?.previousSceneId,
+                        storyboardNextSceneId: sequence?.nextSceneId,
+                        storyboardStyle: options.style,
+                        storyboardConsistency: options.consistency,
+                        storyboardGlobalStyle: storyboardPlan.globalStyle,
+                        storyboardPlanSource: storyboardPlan.source,
+                        groupId: storyboardGroupId,
+                    }),
+                    title: `${String(scene.index).padStart(2, "0")} · ${scene.title}`,
+                    position: { x, y: y + card.height + 8 },
+                    width: card.width,
+                    height: layout.captionHeight - 8,
+                } satisfies CanvasNodeData;
+                imageNodes.push(image);
+                captionNodes.push(caption);
+                sceneNodeIds.set(scene.id, image.id);
+                sceneCaptionIds.set(scene.id, caption.id);
+            });
+            const storyboardGroup = {
+                ...createCanvasNode(CanvasNodeType.Group, center, {
+                    storyboardId,
+                    storyboardTitle: storyboardPlan.title || `分镜 · ${scenes[0]?.title || "镜头序列"}`,
+                    storyboardStatus: "running",
+                    executionStatus: "running",
+                    storyboardScript,
+                    storyboardPlanJson: storyboardSession,
+                    storyboardSceneCount: scenes.length,
+                    storyboardAspectRatio: options.aspectRatio,
+                    storyboardSourceNodeId: sourceNode?.id,
+                    storyboardSourceNodeIds: sourceNode?.metadata?.storyboardSourceNodeIds,
+                    storyboardStyle: options.style,
+                    storyboardConsistency: options.consistency,
+                    storyboardGlobalStyle: storyboardPlan.globalStyle,
+                    storyboardPlanSource: storyboardPlan.source,
+                }),
+                id: storyboardGroupId,
+                title: `分镜 · ${storyboardPlan.title || scenes[0]?.title || "镜头序列"}`,
+                position: groupOrigin,
+                width: layout.groupWidth,
+                height: layout.groupHeight,
+            } satisfies CanvasNodeData;
+            const storyboardNodes = [storyboardGroup, ...imageNodes, ...captionNodes];
+            const storyboardConnections = sourceNode
+                ? imageNodes
+                      .map((node) => normalizeConnection(sourceNode.id, node.id, [...nodesRef.current, ...storyboardNodes], "source"))
+                      .filter((connection): connection is { fromNodeId: string; toNodeId: string } => Boolean(connection))
+                      .map((connection) => ({ id: nanoid(), ...connection }))
+                : [];
+            const nextNodes = [...nodesRef.current, ...storyboardNodes];
+            const nextConnections = [...connectionsRef.current, ...storyboardConnections];
+            nodesRef.current = nextNodes;
+            connectionsRef.current = nextConnections;
+            setNodes(nextNodes);
+            setConnections(nextConnections);
+            updateProject(projectId, { nodes: nextNodes, connections: nextConnections });
+            setSelectedNodeIds(new Set([storyboardGroup.id]));
+            setSelectedConnectionId(null);
+
+            const commitStoryboardScene = (
+                sceneId: string,
+                imagePatch: Partial<CanvasNodeMetadata>,
+                captionPatch: Partial<CanvasNodeMetadata> = {},
+                groupPatch: Partial<CanvasNodeMetadata> = {},
+            ) => {
+                const imageNodeId = sceneNodeIds.get(sceneId);
+                const captionNodeId = sceneCaptionIds.get(sceneId);
+                if (!imageNodeId && !captionNodeId) return;
+                commitNodes((current) => {
+                    const updated = current.map((node) => {
+                        if (node.id === imageNodeId) return { ...node, metadata: { ...node.metadata, ...imagePatch } };
+                        if (node.id === captionNodeId) return { ...node, metadata: { ...node.metadata, ...captionPatch } };
+                        return node;
+                    });
+                    const aggregate = storyboardAggregateStatus(updated, storyboardId);
+                    if (!aggregate) return updated;
+                    const executionStatus = aggregate === "succeeded" ? "succeeded" : aggregate === "failed" ? "failed" : aggregate === "canceled" ? "canceled" : "running";
+                    return updated.map((node) => node.id === storyboardGroupId ? { ...node, metadata: { ...node.metadata, ...groupPatch, storyboardStatus: aggregate, executionStatus } } : node);
+                });
+            };
+
+            let cursor = 0;
+            const claimedSceneIds = new Set<string>();
+            let continuityAnchor: ReferenceImage | null = null;
+            const worker = async () => {
+                while (!controller.signal.aborted) {
+                    const index = cursor;
+                    cursor += 1;
+                    if (index >= scenes.length) return;
+                    const scene = scenes[index];
+                    const nodeId = sceneNodeIds.get(scene.id);
+                    if (!nodeId) continue;
+                    const generationPrompt = scenePrompts.get(scene.id) || scene.prompt;
+                    claimedSceneIds.add(scene.id);
+                    report({ sceneId: scene.id, status: "running" });
+                    const generationStartedAt = new Date().toISOString();
+                    commitStoryboardScene(
+                        scene.id,
+                        { storyboardStatus: "running", executionStatus: "running", generationStartedAt },
+                        { storyboardStatus: "running", executionStatus: "running", status: NODE_STATUS_SUCCESS, errorDetails: undefined },
+                    );
+                    const requestController = startGenerationRequest(nodeId, sourceNode?.id || nodeId, nodeId, controller);
+                    try {
+                        const references = options.consistency
+                            ? [
+                                  ...(continuityAnchor ? [continuityAnchor] : []),
+                                  ...sourceReferences,
+                              ].slice(0, 4)
+                            : sourceReferences;
+                        const requestOptions = {
+                            signal: requestController.signal,
+                            onCreated: (taskId: string) => persistStoryboardTaskId(nodeId, taskId, requestController),
+                            idempotencyKey: canvasManualTaskKey(projectId, nodeId, storyboardId, scene.id),
+                        };
+                        const image = references.length
+                            ? await requestEdit(generationConfig, generationPrompt, references, undefined, requestOptions).then((items) => items[0])
+                            : await requestGeneration(generationConfig, generationPrompt, requestOptions).then((items) => items[0]);
+                        const uploaded = await adoptGeneratedImage(image);
+                        if (requestController.signal.aborted) throw new DOMException("Aborted", "AbortError");
+                        const anchorReference = options.consistency ? uploaded.storageKey || uploaded.url || uploaded.thumbnailUrl || "" : "";
+                        const anchorSceneId = options.consistency && !continuityAnchor && anchorReference ? scene.id : undefined;
+                        if (anchorSceneId && anchorReference) {
+                            continuityAnchor = {
+                                id: `storyboard-anchor-${storyboardId}`,
+                                name: "storyboard-anchor.png",
+                                type: "image/png",
+                                dataUrl: uploaded.url || uploaded.thumbnailUrl || anchorReference,
+                                storageKey: uploaded.storageKey,
+                            };
+                        }
+                        commitStoryboardScene(
+                            scene.id,
+                            { ...imageMetadata(uploaded), prompt: generationPrompt, storyboardPrompt: generationPrompt, storyboardStatus: "succeeded", storyboardNeedsRegeneration: false, executionStatus: "succeeded", generationCompletedAt: new Date().toISOString(), generationStage: "completed", errorDetails: undefined, taskId: undefined, taskKind: undefined, ...(anchorSceneId && anchorReference ? { storyboardAnchorReference: anchorReference, storyboardAnchorSceneId: anchorSceneId } : {}) },
+                            { storyboardStatus: "succeeded", storyboardNeedsRegeneration: false, executionStatus: "succeeded", status: NODE_STATUS_SUCCESS, errorDetails: undefined },
+                            anchorSceneId && anchorReference ? { storyboardAnchorReference: anchorReference, storyboardAnchorSceneId: anchorSceneId } : {},
+                        );
+                        report({ sceneId: scene.id, status: "succeeded", imageUrl: uploaded.thumbnailUrl || uploaded.url });
+                    } catch (reason) {
+                        const canceled = isGenerationCanceled(reason) || requestController.signal.aborted;
+                        const status = canceled ? "canceled" : "failed";
+                        const errorDetails = canceled ? t("canvas.storyboard.statusCanceled") : reason instanceof Error ? reason.message : t("canvas.storyboard.generationFailed");
+                        const cancellationPending = storyboardCancelTasksRef.current.some((task) => task.nodeId === nodeId);
+                        commitStoryboardScene(
+                            scene.id,
+                            { storyboardStatus: status, executionStatus: canceled ? "canceled" : "failed", status: canceled ? NODE_STATUS_IDLE : NODE_STATUS_ERROR, errorDetails, generationCompletedAt: new Date().toISOString(), ...(cancellationPending ? {} : { taskId: undefined, taskKind: undefined }) },
+                            { storyboardStatus: status, executionStatus: canceled ? "canceled" : "failed", status: NODE_STATUS_SUCCESS, errorDetails },
+                        );
+                        report({ sceneId: scene.id, status, error: errorDetails });
+                    } finally {
+                        finishGenerationRequest(nodeId, requestController);
+                        setRunningNodeIds((current) => {
+                            const next = new Set(current);
+                            next.delete(nodeId);
+                            return next;
+                        });
+                    }
+                }
+            };
+            setRunningNodeIds((current) => new Set([...current, ...imageNodes.map((node) => node.id)]));
+            // A continuity batch is intentionally serialized so the first
+            // successful keyframe can become an actual identity reference for
+            // later shots. Independent batches still use four workers.
+            await Promise.all(Array.from({ length: options.consistency ? 1 : Math.min(4, scenes.length) }, () => worker()));
+            if (controller.signal.aborted) {
+                const canceledMessage = t("canvas.storyboard.statusCanceled");
+                scenes.forEach((scene) => {
+                    if (claimedSceneIds.has(scene.id)) return;
+                    commitStoryboardScene(
+                        scene.id,
+                        { storyboardStatus: "canceled", executionStatus: "canceled", status: NODE_STATUS_IDLE, errorDetails: canceledMessage, generationCompletedAt: new Date().toISOString() },
+                        { storyboardStatus: "canceled", executionStatus: "canceled", status: NODE_STATUS_SUCCESS, errorDetails: canceledMessage },
+                    );
+                    report({ sceneId: scene.id, status: "canceled", error: canceledMessage });
+                });
+            }
+            setRunningNodeIds((current) => {
+                const next = new Set(current);
+                imageNodes.forEach((node) => next.delete(node.id));
+                return next;
+            });
+            const isCurrentStoryboardController = storyboardAbortRef.current === controller;
+            if (isCurrentStoryboardController) storyboardAbortRef.current = null;
+            if (isCurrentStoryboardController && storyboardCancelRequestedRef.current && !storyboardCancelSubmittingRef.current && !storyboardCancelTasksRef.current.length) {
+                storyboardCancelRequestedRef.current = false;
+                storyboardCancelAcknowledgedRef.current = false;
+                storyboardCancelTasksRef.current = [];
+                storyboardCancelNodeIdsRef.current = new Set();
+            }
+        },
+        [adoptGeneratedImage, commitNodes, effectiveConfig, finishGenerationRequest, getCanvasCenter, isAiConfigReady, nodeSizeFromRatio, openConfigDialog, persistStoryboardTaskId, projectId, requestCostConfirm, startGenerationRequest, storyboardSourceNodeId, t, updateProject],
+    );
+
+    const hasLocalStoryboardExecution = useCallback((nodeIds: Set<string>) => {
+        if (!nodeIds.size) return Boolean(storyboardAbortRef.current || generationRequestsRef.current.size);
+        const requestOwnsTarget = [...generationRequestsRef.current.values()].some((request) => {
+            const requestNodeIds = [request.targetNodeId, request.originNodeId, request.runningNodeId];
+            return requestNodeIds.some((nodeId) => nodeIds.has(nodeId));
+        });
+        if (requestOwnsTarget) return true;
+        const currentStoryboardId = storyboardLatestIdRef.current;
+        if (!currentStoryboardId || storyboardAnalysisTaskRef.current) return false;
+        return [...nodeIds].some((nodeId) => nodesRef.current.find((node) => node.id === nodeId)?.metadata?.storyboardId === currentStoryboardId);
+    }, []);
+
+    const abortStoryboardControllers = useCallback((nodeIds?: Set<string>) => {
+        const shouldAbortCurrentController = !nodeIds?.size || [...nodeIds].some((nodeId) => {
+            const node = nodesRef.current.find((item) => item.id === nodeId);
+            const status = node?.metadata?.storyboardStatus;
+            return Boolean(node?.metadata?.storyboardId && (status === "queued" || status === "running"));
+        });
+        if (shouldAbortCurrentController) storyboardAbortRef.current?.abort();
+        generationRequestsRef.current.forEach((request) => {
+            const requestNodeIds = [request.targetNodeId, request.originNodeId, request.runningNodeId];
+            const isStoryboardRequest = requestNodeIds.some((id) => nodesRef.current.find((node) => node.id === id)?.metadata?.storyboardId);
+            if (!isStoryboardRequest) return;
+            if (!nodeIds || requestNodeIds.some((id) => nodeIds.has(id))) request.controller.abort();
+        });
+    }, []);
+
+    const cancelStoryboardGeneration = useCallback(() => {
+        const latestStoryboardId = storyboardLatestIdRef.current;
+        const activeNodeIds = new Set<string>();
+        generationRequestsRef.current.forEach((request) => {
+            const node = nodesRef.current.find((item) => item.id === request.targetNodeId);
+            if (node?.metadata?.storyboardId) activeNodeIds.add(request.targetNodeId);
+        });
+        nodesRef.current.forEach((node) => {
+            const status = node.metadata?.storyboardStatus;
+            if (!node.metadata?.storyboardId || (status !== "queued" && status !== "running")) return;
+            if (!latestStoryboardId || node.metadata.storyboardId === latestStoryboardId || activeNodeIds.has(node.id)) activeNodeIds.add(node.id);
+        });
+
+        const tasks = [
+            ...pendingCanvasTasks(nodesRef.current).filter((task) => activeNodeIds.has(task.nodeId)),
+            ...(storyboardAnalysisTaskRef.current ? [storyboardAnalysisTaskRef.current] : []),
+        ];
+        storyboardCancelRequestedRef.current = true;
+        storyboardCancelAcknowledgedRef.current = false;
+        storyboardCancelTasksRef.current = tasks;
+        storyboardCancelNodeIdsRef.current = activeNodeIds;
+        if (tasks.length) {
+            setStoryboardCancelConfirm(true);
+            return;
+        }
+        abortStoryboardControllers(activeNodeIds);
+        if (!hasLocalStoryboardExecution(activeNodeIds)) {
+            const canceledMessage = t("canvas.storyboard.statusCanceled");
+            commitNodes((current) => settleStoryboardCancellation(current, activeNodeIds, canceledMessage));
+            void flushCanvasPersistence().catch(() => undefined);
+            storyboardCancelRequestedRef.current = false;
+            storyboardCancelAcknowledgedRef.current = false;
+            storyboardCancelTasksRef.current = [];
+            storyboardCancelNodeIdsRef.current = new Set();
+        }
+    }, [abortStoryboardControllers, commitNodes, flushCanvasPersistence, hasLocalStoryboardExecution, t]);
+
+    const confirmStoryboardCancellation = useCallback(async () => {
+        if (storyboardCancelSubmitting || storyboardCancelSubmittingRef.current) return;
+        storyboardCancelSubmittingRef.current = true;
+        setStoryboardCancelSubmitting(true);
+        const nodeIds = new Set(storyboardCancelNodeIdsRef.current);
+        storyboardCancelAcknowledgedRef.current = true;
+        const taskMap = new Map<string, PendingCanvasTask>();
+        [
+            ...storyboardCancelTasksRef.current,
+            ...pendingCanvasTasks(nodesRef.current).filter((task) => nodeIds.has(task.nodeId)),
+            ...(storyboardAnalysisTaskRef.current ? [storyboardAnalysisTaskRef.current] : []),
+        ].forEach((task) => taskMap.set(`${task.kind}:${task.taskId}`, task));
+        const cancellationTargets = [...taskMap.values()];
+        const cancellations = cancellationTargets.map((task) =>
+            cancelPersistedCanvasTask(task.taskId, task.kind, { acknowledgeUpstream: true }).catch((error) => {
+                if (!isFinishedCanvasTaskError(error)) throw error;
+            }),
+        );
+        const results = await Promise.allSettled(cancellations);
+        const settledKeys = new Set<string>();
+        results.forEach((result, index) => {
+            if (result.status === "fulfilled") {
+                const task = cancellationTargets[index];
+                settledKeys.add(`${task.kind}:${task.taskId}`);
+            }
+        });
+        if (settledKeys.size) {
+            storyboardCancelTasksRef.current = storyboardCancelTasksRef.current.filter((task) => !settledKeys.has(`${task.kind}:${task.taskId}`));
+            const analysisTask = storyboardAnalysisTaskRef.current;
+            if (analysisTask && settledKeys.has(`${analysisTask.kind}:${analysisTask.taskId}`)) storyboardAnalysisTaskRef.current = null;
+        }
+        const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+        if (failure) {
+            storyboardCancelAcknowledgedRef.current = false;
+            storyboardCancelSubmittingRef.current = false;
+            message.error(failure.reason instanceof Error ? failure.reason.message : t("canvas.projectPage.stopFailed"));
+            setStoryboardCancelSubmitting(false);
+            return;
+        }
+        // Do not abort local polling until every known server task accepted the
+        // acknowledged cancellation. If a PATCH fails, the live generation and
+        // its durable task id remain available for another confirmation attempt.
+        const hadLocalStoryboardExecution = hasLocalStoryboardExecution(nodeIds);
+        abortStoryboardControllers(nodeIds);
+        // The request's finally block owns cleanup while its controller is
+        // still current. If it already finished, close the cancellation state
+        // here; otherwise retain the acknowledged state for a late onCreated
+        // callback from this same aborted controller.
+        if (storyboardCancelTasksRef.current.length) {
+            storyboardCancelAcknowledgedRef.current = false;
+            storyboardCancelSubmittingRef.current = false;
+            setStoryboardCancelConfirm(true);
+            setStoryboardCancelSubmitting(false);
+            return;
+        }
+        if (!hadLocalStoryboardExecution) {
+            const canceledMessage = t("canvas.storyboard.statusCanceled");
+            commitNodes((current) => settleStoryboardCancellation(current, nodeIds, canceledMessage));
+            void flushCanvasPersistence().catch(() => undefined);
+        }
+        if (!storyboardAbortRef.current && !storyboardCancelTasksRef.current.length) {
+            storyboardCancelRequestedRef.current = false;
+            storyboardCancelAcknowledgedRef.current = false;
+            storyboardCancelNodeIdsRef.current = new Set();
+        }
+        storyboardCancelSubmittingRef.current = false;
+        setStoryboardCancelConfirm(false);
+        setStoryboardCancelSubmitting(false);
+    }, [abortStoryboardControllers, commitNodes, flushCanvasPersistence, hasLocalStoryboardExecution, message, storyboardCancelSubmitting, t]);
+
     const persistWorkflowCheckpoint = useCallback(
         async (checkpoint: CanvasWorkflowCheckpoint | null) => {
             workflowCheckpointRef.current = checkpoint;
@@ -3818,6 +5061,12 @@ function InfiniteCanvasPage() {
 
     const presentWorkflowTerminal = useCallback(
         async (state: CanvasWorkflowRunState, checkpoint: CanvasWorkflowCheckpoint | null = null) => {
+            const finishedRunId = checkpoint?.runId || workflowCheckpointRef.current?.runId;
+            if (finishedRunId) {
+                retiredWorkflowRuns.current.add(finishedRunId);
+                if (retiredWorkflowRuns.current.size > 64) retiredWorkflowRuns.current.delete(retiredWorkflowRuns.current.values().next().value!);
+            }
+            lockedWorkflowRunRef.current = null;
             const task = (async () => {
                 const { persistenceError } = await settleCanvasWorkflowTerminal({
                     persist: () => persistWorkflowCheckpoint(checkpoint),
@@ -3998,6 +5247,7 @@ function InfiniteCanvasPage() {
 
     const showLockedWorkflow = useCallback(
         (checkpoint: CanvasWorkflowCheckpoint, run?: CanvasWorkflowRunRecord | null) => {
+            if (workflowRunRef.current.stopped || checkpoint.recoveryBlocked || retiredWorkflowRuns.current.has(run?.id || checkpoint.runId || "")) return;
             const lockedCheckpoint = run ? mergeWorkflowRunCheckpoint(checkpoint, run) : checkpoint;
             lockedWorkflowRunRef.current = run || null;
             workflowCheckpointRef.current = lockedCheckpoint;
@@ -4014,6 +5264,16 @@ function InfiniteCanvasPage() {
         },
         [],
     );
+
+    const pauseWorkflowRecovery = useCallback((checkpoint: CanvasWorkflowCheckpoint, errorMessage: string, run?: CanvasWorkflowRunRecord | null) => {
+        const blocked = { ...(run ? mergeWorkflowRunCheckpoint(checkpoint, run) : checkpoint), status: "failed" as const, recoveryBlocked: true, errorMessage, updatedAt: new Date().toISOString() };
+        workflowCheckpointRef.current = blocked;
+        lockedWorkflowRunRef.current = run || lockedWorkflowRunRef.current;
+        workflowRunRef.current = { ...workflowRunRef.current, executing: false, stopped: true };
+        releaseWorkflowBrowserLock();
+        updateProject(projectId, { workflowRun: blocked });
+        setWorkflowRun({ status: "paused", completed: blocked.completedNodeIds.length, total: blocked.nodeIds.length, currentNodeId: blocked.currentNodeId, errorMessage, startedAt: blocked.startedAt, running: 0, queued: 0 });
+    }, [projectId, releaseWorkflowBrowserLock, updateProject]);
 
     const acquireDurableWorkflowCheckpoint = useCallback(
         async (source: CanvasWorkflowCheckpoint, options?: { resetCurrentNode?: boolean; supersedeRunId?: string }) => {
@@ -4055,7 +5315,7 @@ function InfiniteCanvasPage() {
                 if (lastError instanceof StarcloudsApiError && lastError.code === "workflow_run_inputs_changed") {
                     const active = await getActiveCanvasWorkflowRun(projectId);
                     if (active.run) {
-                        showLockedWorkflow({ ...source, inputSignature: active.run.inputSignature }, active.run);
+                        pauseWorkflowRecovery(source, lastError.message, active.run);
                         message.warning(lastError.message);
                         return null;
                     }
@@ -4087,11 +5347,12 @@ function InfiniteCanvasPage() {
             lockedWorkflowRunRef.current = null;
             return checkpoint;
         },
-        [acquireWorkflowBrowserLock, message, projectId, releaseWorkflowBrowserLock, showLockedWorkflow, t, workflowOwnerId],
+        [acquireWorkflowBrowserLock, message, pauseWorkflowRecovery, projectId, releaseWorkflowBrowserLock, showLockedWorkflow, t, workflowOwnerId],
     );
 
     const executeWorkflow = useCallback(
-        async (sourceCheckpoint: CanvasWorkflowCheckpoint, resumed = false) => {
+        async (sourceCheckpoint: CanvasWorkflowCheckpoint, resumed = false, onStartDecision?: (decision: AgentWorkflowStartDecision) => void) => {
+            if (sourceCheckpoint.recoveryBlocked) return;
             if (workflowRunRef.current.executing) return;
             workflowAttemptRef.current += 1;
             const runToken = ++workflowExecutionTokenRef.current;
@@ -4111,8 +5372,7 @@ function InfiniteCanvasPage() {
             if (!compiled.ok || !workflowPlanMatchesCheckpoint(compiled.plan, checkpoint)) {
                 const errorMessage = t("canvas.workflow.graphChanged");
                 const active = await getActiveCanvasWorkflowRun(projectId).catch(() => ({ run: null }));
-                if (active.run) showLockedWorkflow({ ...checkpoint, inputSignature: active.run.inputSignature }, active.run);
-                else setWorkflowRun({ status: "error", completed: checkpoint.completedNodeIds.length, total: checkpoint.nodeIds.length, errorMessage, startedAt: checkpoint.startedAt });
+                pauseWorkflowRecovery(checkpoint, errorMessage, active.run);
                 message.error(errorMessage);
                 return;
             }
@@ -4144,8 +5404,9 @@ function InfiniteCanvasPage() {
             const completedOutputs = validateCanvasWorkflowCompletedOutputs(checkpoint, nodesRef.current, connectionsRef.current);
             if (!completedOutputs.ok) {
                 releaseWorkflowBrowserLock();
-                showLockedWorkflow(checkpoint);
-                message.warning("已完成节点的产物已被修改或缺少产物版本，请停止旧运行后重新运行工作流。");
+                const errorMessage = "已完成节点的产物已被修改或缺少产物版本，请停止旧运行后重新运行工作流。";
+                pauseWorkflowRecovery(checkpoint, errorMessage);
+                message.warning(errorMessage);
                 return;
             }
 
@@ -4257,6 +5518,15 @@ function InfiniteCanvasPage() {
                 });
             };
             updateProgress();
+            if (!runActive()) {
+                onStartDecision?.({ status: "canceled" });
+                return;
+            }
+            if (workflowRunRef.current.lockLost || !pageActiveRef.current) {
+                onStartDecision?.({ status: "rejected", error: "工作流启动状态已变化，请检查当前画布" });
+                return;
+            }
+            onStartDecision?.({ status: workflowRunRef.current.cancelQueued ? "canceled" : "started", runId: checkpoint.runId });
 
             const heartbeat = window.setInterval(() => {
                 if (workflowRunRef.current.lockLost || workflowRunRef.current.stopped || runToken !== workflowExecutionTokenRef.current) return;
@@ -4491,7 +5761,7 @@ function InfiniteCanvasPage() {
                 workflowPendingIdsRef.current = new Set();
             }
         },
-		[acquireDurableWorkflowCheckpoint, commitNodes, effectiveConfig, finalizeCanceledGenerationNodes, handleGenerateNode, message, persistWorkflowCheckpoint, presentWorkflowTerminal, projectId, readWorkflowNodeCost, releaseWorkflowBrowserLock, showLockedWorkflow, syncServerWorkflowCheckpoint, t, workflowOutputErrorMessage, workflowOwnerId, workflowReadinessErrorMessage],
+		[acquireDurableWorkflowCheckpoint, commitNodes, effectiveConfig, finalizeCanceledGenerationNodes, handleGenerateNode, message, pauseWorkflowRecovery, persistWorkflowCheckpoint, presentWorkflowTerminal, projectId, readWorkflowNodeCost, releaseWorkflowBrowserLock, showLockedWorkflow, syncServerWorkflowCheckpoint, t, workflowOutputErrorMessage, workflowOwnerId, workflowReadinessErrorMessage],
     );
     resumeWorkflowRef.current = (checkpoint) => executeWorkflow(checkpoint, true);
 
@@ -4500,49 +5770,51 @@ function InfiniteCanvasPage() {
         let disposed = false;
         void getActiveCanvasWorkflowRun(projectId)
             .then(({ run }) => {
-                if (disposed || !run?.nodeIds.length) return;
-                const checkpoint = normalizeCanvasWorkflowCheckpoint({
-                    status: "running",
-                    runId: run.id,
-                    nodeIds: run.nodeIds,
-                    completedNodeIds: run.completedNodeIds,
-                    canceledNodeIds: run.canceledNodeIds,
-                    currentNodeId: run.currentNodeId || undefined,
-                    startedAt: run.startedAt,
-                    updatedAt: run.updatedAt,
-                });
-                if (checkpoint) void resumeWorkflowRef.current(checkpoint);
+                if (disposed || !run?.nodeIds.length || retiredWorkflowRuns.current.has(run.id) || workflowRunRef.current.stopped) return;
+                const checkpoint = canvasCheckpointFromRun(run);
+                if (!checkpoint) return;
+                if (run.ownerId !== workflowOwnerId && run.leaseExpiresAt && Date.parse(run.leaseExpiresAt) > Date.now()) {
+                    showLockedWorkflow(checkpoint, run);
+                    return;
+                }
+                attemptedWorkflowRecoveries.current.add(canvasRecoveryAttemptKey(run));
+                void resumeWorkflowRef.current(checkpoint);
             })
             .catch(() => undefined);
         return () => {
             disposed = true;
         };
-    }, [projectId, projectLoaded]);
+    }, [projectId, projectLoaded, showLockedWorkflow, workflowOwnerId]);
 
     useEffect(() => {
         if (workflowRun.status !== "locked") return;
         let disposed = false;
         let inflight = false;
         const poll = async () => {
-            if (inflight) return;
+            if (inflight || workflowRunRef.current.stopped || workflowRunRef.current.cancelQueued) return;
             inflight = true;
             try {
             const { run } = await getActiveCanvasWorkflowRun(projectId);
-            if (disposed) return;
+            if (disposed || workflowRunRef.current.stopped || workflowRunRef.current.cancelQueued) return;
             const current = workflowCheckpointRef.current;
             if (run && current) {
                 if (!run.leaseExpiresAt || new Date(run.leaseExpiresAt).getTime() <= Date.now()) {
-                    void resumeWorkflowRef.current(mergeWorkflowRunCheckpoint(current, run));
+                    const key = canvasRecoveryAttemptKey(run);
+                    if (attemptedWorkflowRecoveries.current.has(key)) return;
+                    attemptedWorkflowRecoveries.current.add(key);
+                    await resumeWorkflowRef.current(mergeWorkflowRunCheckpoint(current, run));
                     return;
                 }
                 showLockedWorkflow(current, run);
                 return;
             }
             if (!run) {
-                workflowCheckpointRef.current = null;
-                lockedWorkflowRunRef.current = null;
-                setWorkflowRun((state) => ({ ...state, status: "refresh", currentNodeId: undefined, currentNodeTitle: undefined }));
-                message.success(t("canvas.workflow.completedElsewhere"));
+                const id = current?.runId;
+                const detail = id ? await getCanvasWorkflowRun(projectId, id).catch(() => null) : null;
+                if (disposed || workflowRunRef.current.stopped || workflowRunRef.current.cancelQueued) return;
+                const status = detail?.run.status;
+                await presentWorkflowTerminal({ status: status === "succeeded" ? "success" : status === "canceled" ? "canceled" : status === "failed" ? "error" : "refresh", completed: detail?.run.completedNodeIds.length ?? current?.completedNodeIds.length ?? 0, total: detail?.run.nodeIds.length ?? current?.nodeIds.length ?? 0, errorMessage: detail?.run.errorMessage, running: 0, queued: 0 });
+                if (status === "succeeded") message.success(t("canvas.workflow.completedElsewhere"));
             }
             } finally {
                 inflight = false;
@@ -4553,11 +5825,11 @@ function InfiniteCanvasPage() {
             disposed = true;
             window.clearInterval(timer);
         };
-    }, [message, projectId, showLockedWorkflow, t, workflowRun.status]);
+    }, [message, presentWorkflowTerminal, projectId, showLockedWorkflow, t, workflowRun.status]);
 
     const planWorkflowForAgent = useCallback((request: CanvasWorkflowRunRequest = {}): AgentWorkflowPreflightResult => {
         const state = workflowRunStateRef.current;
-        if (state.status === "running" || state.status === "locked") throw new Error("工作流仍在执行，请先停止后再进行运行预检");
+        if (state.status === "running" || state.status === "locked" || state.status === "paused") throw new Error("工作流尚未结束，请先停止旧运行后再进行运行预检");
         const groups = buildCanvasSidePanelWorkflowGroups(nodesRef.current, connectionsRef.current).filter((group) => group.firstConfig);
         const requestedNodeIds = request.nodeIds?.length ? new Set(request.nodeIds) : null;
         const candidates = request.workflowId
@@ -4620,7 +5892,24 @@ function InfiniteCanvasPage() {
     planWorkflowAgentRef.current = planWorkflowForAgent;
 
     const runWorkflow = useCallback(async (request: CanvasWorkflowRunRequest = {}) => {
-        if (workflowRunRef.current.executing && !workflowRunRef.current.stopped) return;
+        if (workflowCheckpointRef.current?.recoveryBlocked) {
+            const error = "旧工作流已暂停，请先停止旧运行，再启动新工作流";
+            request.onStartDecision?.({ status: "rejected", error });
+            message.warning(error);
+            return;
+        }
+        if (workflowStartPendingRef.current || (workflowRunRef.current.executing && !workflowRunRef.current.stopped)) {
+            request.onStartDecision?.({ status: "rejected", error: "已有工作流正在启动或运行，请等待当前操作结束" });
+            return;
+        }
+        workflowStartPendingRef.current = true;
+        let startDecided = false;
+        const onStartDecision = (decision: AgentWorkflowStartDecision) => {
+            if (startDecided) return;
+            startDecided = true;
+            request.onStartDecision?.(decision);
+        };
+        try {
         const pendingTerminal = workflowTerminalPromiseRef.current;
         if (pendingTerminal) await waitForCanvasWorkflowStop(pendingTerminal);
         let stoppedRunSettled = false;
@@ -4647,6 +5936,7 @@ function InfiniteCanvasPage() {
             : undefined;
         if (request.workflowId && !requestedGroup) {
             message.warning(t("canvas.workflow.notFound"));
+            onStartDecision({ status: "rejected", error: t("canvas.workflow.notFound") });
             return;
         }
         const requestedNodeIds = request.nodeIds?.length ? new Set(request.nodeIds) : null;
@@ -4654,6 +5944,7 @@ function InfiniteCanvasPage() {
         const scopedExecutableNodeIds = availableExecutableNodes.filter((node) => !requestedNodeIds || requestedNodeIds.has(node.id)).map((node) => node.id);
         if (requestedNodeIds && scopedExecutableNodeIds.length !== requestedNodeIds.size) {
             message.warning(t("canvas.workflow.notFound"));
+            onStartDecision({ status: "rejected", error: t("canvas.workflow.notFound") });
             return;
         }
         const compiled = compileCanvasWorkflow(nodesRef.current, connectionsRef.current, {
@@ -4661,7 +5952,9 @@ function InfiniteCanvasPage() {
             resolveSettings: (node) => buildGenerationConfig(effectiveConfig, node, node.metadata?.generationMode || "image"),
         });
         if (!compiled.ok) {
-            message.warning(t(compiled.reason === "cycle" ? "canvas.workflow.cycle" : compiled.reason === "invalid_connection" ? "canvas.workflow.invalidConnection" : "canvas.workflow.empty"));
+            const error = t(compiled.reason === "cycle" ? "canvas.workflow.cycle" : compiled.reason === "invalid_connection" ? "canvas.workflow.invalidConnection" : "canvas.workflow.empty");
+            message.warning(error);
+            onStartDecision({ status: "rejected", error });
             return;
         }
         const savedCheckpoint = request.fresh || stoppedRunSettled
@@ -4685,7 +5978,7 @@ function InfiniteCanvasPage() {
             : createCanvasWorkflowCheckpoint(compiled.plan);
         const remainingNodeIds = checkpoint.nodeIds.filter((nodeId) => !checkpoint.completedNodeIds.includes(nodeId));
         if (!remainingNodeIds.length) {
-            await executeWorkflow(checkpoint, true);
+            await executeWorkflow(checkpoint, true, onStartDecision);
             return;
         }
 
@@ -4711,10 +6004,11 @@ function InfiniteCanvasPage() {
                 openConfigDialog(true);
                 message.warning(t("canvas.workflow.modelUnavailable", { name: preflight.nodeTitle || t("canvas.node.untitled") }));
             } else message.warning(t("canvas.workflow.pricingUnavailable", { name: preflight.nodeTitle || t("canvas.node.untitled") }));
+            onStartDecision({ status: "rejected", error: `工作流检查未通过：${preflight.nodeTitle || preflight.nodeId || ""}（${preflight.reason}）` });
             return;
         }
         if (!preflight.totals.paidNodeCount) {
-            await executeWorkflow(checkpoint, canResumeSaved && !retryingFailure);
+            await executeWorkflow(checkpoint, canResumeSaved && !retryingFailure, onStartDecision);
             return;
         }
         const { generation: generationUnit, removal: removalUnit, total, compareTotal } = preflight.totals;
@@ -4731,8 +6025,18 @@ function InfiniteCanvasPage() {
             unitLabel: "run",
             pricingUnavailable: false,
         });
-        if (!costConfirmed) return;
-        await executeWorkflow(checkpoint, canResumeSaved && !retryingFailure);
+        if (!costConfirmed) {
+            onStartDecision({ status: "canceled" });
+            return;
+        }
+        await executeWorkflow(checkpoint, canResumeSaved && !retryingFailure, onStartDecision);
+        } catch (error) {
+            onStartDecision({ status: "rejected", error: error instanceof Error ? error.message : "工作流启动失败" });
+            throw error;
+        } finally {
+            workflowStartPendingRef.current = false;
+            if (!startDecided) onStartDecision({ status: "rejected", error: workflowRunStateRef.current.errorMessage || "工作流未能启动，请检查画布状态后重试" });
+        }
     }, [beginWorkflowStop, effectiveConfig, executeWorkflow, isAiConfigReady, message, openConfigDialog, requestCostEstimateConfirm, t, workflowReadinessErrorMessage, workflowRun.status]);
     runWorkflowRef.current = runWorkflow;
 
@@ -4854,10 +6158,11 @@ function InfiniteCanvasPage() {
             if (belongsToWorkflow) submittedTasks.set(`${task.kind}:${task.taskId}`, task);
         });
         workflowRunRef.current = { ...workflowRunRef.current, cancelQueued: true };
-        const cancellations = [...submittedTasks.values()].map((task) => cancelPersistedCanvasTask(task.taskId, task.kind, { acknowledgeUpstream }));
+        const cancellations = [...submittedTasks.values()].map((task) => cancelPersistedCanvasTask(task.taskId, task.kind, { acknowledgeUpstream }).catch((error) => { if (!isFinishedCanvasTaskError(error)) throw error; }));
         const results = await Promise.allSettled(cancellations);
         const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
         if (failure) {
+            workflowRunRef.current.cancelQueued = false;
             const code = (failure.reason as { code?: string })?.code;
             if (code === "task_cancel_confirmation_required" || code === "assistant_cancel_confirmation_required") setStopConfirm({ kind: "workflow", queuedCount: runningOrQueued.length });
             message.error(failure.reason instanceof Error ? failure.reason.message : t("canvas.projectPage.stopFailed"));
@@ -4911,6 +6216,10 @@ function InfiniteCanvasPage() {
     };
 
     const requestStopWorkflow = useCallback(() => {
+        if (workflowRunStateRef.current.status === "locked" || workflowRunStateRef.current.status === "paused") {
+            void stopWorkflow();
+            return;
+        }
         const queuedCount = collectUnsubmittedWorkflowNodeIds().size;
         const submittedRunning = nodesRef.current.some((node) => hasSubmittedCanvasTask(node, nodesRef.current) && isInFlightCanvasGeneration(node) && node.metadata?.executionStatus !== "queued");
         if (queuedCount > 0 && !submittedRunning) {
@@ -5199,6 +6508,253 @@ function InfiniteCanvasPage() {
         [effectiveConfig, finalizeCanceledGenerationNodes, finishGenerationRequest, isAiConfigReady, markGenerationFinished, markGenerationStarted, message, openConfigDialog, persistCanvasTaskId, projectId, requestCostConfirm, startGenerationRequest, t],
     );
 
+    /**
+     * Re-run one failed or edited storyboard image in place. The image and caption nodes
+     * already carry the storyboard provenance, so a retry must never append a
+     * second card or submit the successful shots again.
+     */
+    const retryStoryboardScene = useCallback(
+        async (scene: StoryboardScene, options: StoryboardGenerationOptions, report: (event: StoryboardProgressEvent) => void): Promise<boolean> => {
+            const latestStoryboardId = storyboardLatestIdRef.current;
+            const storyboardCandidates = [...nodesRef.current]
+                .reverse()
+                .filter((node) => node.type === CanvasNodeType.Image && node.metadata?.storyboardSceneId === scene.id && (node.metadata?.storyboardStatus === "failed" || node.metadata?.storyboardStatus === "canceled" || (node.metadata?.storyboardStatus === "succeeded" && node.metadata?.storyboardNeedsRegeneration === true)));
+            const imageNode = storyboardCandidates.find((node) => !latestStoryboardId || node.metadata?.storyboardId === latestStoryboardId) || storyboardCandidates[0];
+            if (!imageNode) {
+                message.warning(t("canvas.storyboard.generationFailed"));
+                return false;
+            }
+            if (generationRequestsRef.current.has(imageNode.id)) return false;
+
+            const metadata = imageNode.metadata || {};
+            const sourceId = metadata.storyboardSourceNodeId || storyboardSourceNodeId;
+            const sourceNode = sourceId ? nodesRef.current.find((node) => node.id === sourceId) || null : null;
+            const captionNode = [...nodesRef.current]
+                .reverse()
+                .find(
+                    (node) =>
+                        node.type === CanvasNodeType.Text &&
+                        node.metadata?.storyboardSceneId === scene.id &&
+                        node.metadata?.storyboardId === metadata.storyboardId,
+                );
+            const generationConfig = {
+                ...buildGenerationConfig(effectiveConfig, imageNode, "image"),
+                count: "1",
+                size: metadata.size || options.aspectRatio,
+                sizeMode: "ratio" as const,
+                exactWidth: "",
+                exactHeight: "",
+            };
+            if (!isAiConfigReady(generationConfig, generationConfig.model)) {
+                openConfigDialog(true);
+                throw new Error(t("canvas.workflow.modelUnavailable", { name: t("canvas.storyboard.title") }));
+            }
+            const activeStoryboardId = storyboardLatestIdRef.current;
+            if (storyboardAbortRef.current && activeStoryboardId !== metadata.storyboardId) {
+                message.warning(t("canvas.storyboard.busy"));
+                return false;
+            }
+            storyboardAbortRef.current?.abort();
+            storyboardCancelRequestedRef.current = false;
+            storyboardCancelAcknowledgedRef.current = false;
+            storyboardCancelTasksRef.current = [];
+            storyboardCancelNodeIdsRef.current = new Set();
+            storyboardAnalysisTaskRef.current = null;
+            const controller = new AbortController();
+            storyboardAbortRef.current = controller;
+            const clearController = () => {
+                if (storyboardAbortRef.current === controller) storyboardAbortRef.current = null;
+            };
+            let confirmed = false;
+            try {
+                confirmed = await requestCostConfirm({ config: generationConfig, kind: "image", count: 1 }, controller.signal);
+            } catch (reason) {
+                clearController();
+                throw reason;
+            }
+            if (!confirmed || controller.signal.aborted) {
+                clearController();
+                return false;
+            }
+
+            const prompt = storyboardPromptForConsistency((scene.prompt || metadata.storyboardPrompt || metadata.prompt || "").trim(), options.consistency);
+            if (!prompt) {
+                clearController();
+                throw new Error(t("canvas.projectPage.retryPromptMissing"));
+            }
+
+            const sourceContext = sourceNode ? buildNodeGenerationContext(sourceNode.id, nodesRef.current, connectionsRef.current, "") : null;
+            const storyboardGroup = metadata.storyboardId
+                ? nodesRef.current.find((node) => node.type === CanvasNodeType.Group && node.metadata?.storyboardId === metadata.storyboardId)
+                : null;
+            // The first successful frame is persisted on the storyboard group
+            // (and mirrored on the shot when available). Put it first so a
+            // retry after refresh preserves the established visual identity.
+            const anchorReference = storyboardGroup?.metadata?.storyboardAnchorReference
+                || metadata.storyboardAnchorReference
+                || nodesRef.current.find((node) => node.metadata?.storyboardId === metadata.storyboardId && node.metadata?.storyboardAnchorReference)?.metadata?.storyboardAnchorReference;
+            let persistedReferences: Awaited<ReturnType<typeof resolveMetadataReferences>> = null;
+            try {
+                const referenceUrls = options.consistency
+                    ? [...(anchorReference ? [anchorReference] : []), ...(metadata.references || [])].filter((reference, index, all) => all.indexOf(reference) === index).slice(0, 4)
+                    : [];
+                persistedReferences = referenceUrls.length
+                    ? await resolveMetadataReferences({ ...metadata, generationType: "edit", references: referenceUrls })
+                    : null;
+            } catch (reason) {
+                clearController();
+                throw reason;
+            }
+            const references = options.consistency
+                ? [...(persistedReferences || []), ...(sourceContext?.referenceImages || [])]
+                      .filter((reference, index, all) => {
+                          const key = reference.storageKey || reference.url || reference.dataUrl;
+                          return all.findIndex((candidate) => (candidate.storageKey || candidate.url || candidate.dataUrl) === key) === index;
+                      })
+                      .slice(0, 4)
+                : [];
+            if (options.consistency && (metadata.generationType === "edit" || Boolean(anchorReference)) && !references.length) {
+                clearController();
+                throw new Error(t("canvas.projectPage.referenceMissing"));
+            }
+            if (controller.signal.aborted) {
+                clearController();
+                return false;
+            }
+            const startedAt = new Date().toISOString();
+            startGenerationRequest(imageNode.id, sourceNode?.id || imageNode.id, imageNode.id, controller);
+            setRunningNodeIds((current) => new Set(current).add(imageNode.id));
+            commitNodes((current) =>
+                current.map((node) => {
+                    if (node.id === imageNode.id) {
+                        return {
+                            ...node,
+                            metadata: {
+                                ...node.metadata,
+                                prompt,
+                                storyboardPrompt: prompt,
+                                storyboardStatus: "running",
+                                storyboardNeedsRegeneration: false,
+                                status: NODE_STATUS_LOADING,
+                                executionStatus: "running",
+                                generationStage: "preparing",
+                                generationStartedAt: startedAt,
+                                generationCompletedAt: undefined,
+                                generationDurationMs: undefined,
+                                errorDetails: undefined,
+                                taskId: undefined,
+                                taskKind: undefined,
+                            },
+                        };
+                    }
+                    if (captionNode && node.id === captionNode.id) {
+                        return { ...node, metadata: { ...node.metadata, storyboardStatus: "running", executionStatus: "running", errorDetails: undefined } };
+                    }
+                    return node;
+                }),
+            );
+            report({ sceneId: scene.id, status: "running" });
+
+            try {
+                const requestOptions = {
+                    signal: controller.signal,
+                    onCreated: (taskId: string) => persistStoryboardTaskId(imageNode.id, taskId, controller),
+                    // Explicit retries intentionally mint a new nonce. Reusing
+                    // the original storyboard key would return the failed task.
+                    idempotencyKey: canvasManualTaskKey(projectId, imageNode.id, createCanvasTaskNonce(), scene.id),
+                };
+                const image = references.length
+                    ? await requestEdit(generationConfig, prompt, references, undefined, requestOptions).then((items) => items[0])
+                    : await requestGeneration(generationConfig, prompt, requestOptions).then((items) => items[0]);
+                const uploaded = await adoptGeneratedImage(image);
+                if (controller.signal.aborted) throw new DOMException("Aborted", "AbortError");
+                const completedAt = new Date().toISOString();
+                commitNodes((current) =>
+                    current.map((node) => {
+                        if (node.id === imageNode.id) {
+                            return {
+                                ...node,
+                                metadata: {
+                                    ...node.metadata,
+                                    ...imageMetadata(uploaded),
+                                    prompt,
+                                    storyboardPrompt: prompt,
+                                    storyboardStatus: "succeeded",
+                                    storyboardNeedsRegeneration: false,
+                                    status: NODE_STATUS_SUCCESS,
+                                    executionStatus: "succeeded",
+                                    generationStage: "completed",
+                                    generationCompletedAt: completedAt,
+                                    generationDurationMs: Math.max(0, new Date(completedAt).getTime() - new Date(startedAt).getTime()),
+                                    errorDetails: undefined,
+                                    taskId: undefined,
+                                    taskKind: undefined,
+                                },
+                            };
+                        }
+                        if (captionNode && node.id === captionNode.id) {
+                            return { ...node, metadata: { ...node.metadata, storyboardStatus: "succeeded", storyboardNeedsRegeneration: false, executionStatus: "succeeded", errorDetails: undefined } };
+                        }
+                        return node;
+                    }),
+                );
+                report({ sceneId: scene.id, status: "succeeded", imageUrl: uploaded.thumbnailUrl || uploaded.url });
+                return true;
+            } catch (reason) {
+                const canceled = isGenerationCanceled(reason) || controller.signal.aborted;
+                // A canceled in-place retry remains retryable. The batch
+                // generator uses `canceled`, but a retry must return the
+                // existing failed shot to its actionable state.
+                const status = "failed" as const;
+                const errorDetails = canceled ? imageNode.metadata?.errorDetails || t("canvas.storyboard.statusCanceled") : reason instanceof Error ? reason.message : t("canvas.storyboard.generationFailed");
+                const completedAt = new Date().toISOString();
+                const cancellationPending = storyboardCancelTasksRef.current.some((task) => task.nodeId === imageNode.id);
+                commitNodes((current) =>
+                    current.map((node) => {
+                        if (node.id === imageNode.id) {
+                            return {
+                                ...node,
+                                metadata: {
+                                    ...node.metadata,
+                                    storyboardStatus: status,
+                                    executionStatus: "failed",
+                                    status: node.metadata?.content ? NODE_STATUS_SUCCESS : NODE_STATUS_ERROR,
+                                    generationCompletedAt: completedAt,
+                                    generationStage: "failed",
+                                    errorDetails,
+                                    ...(cancellationPending ? {} : { taskId: undefined, taskKind: undefined }),
+                                },
+                            };
+                        }
+                        if (captionNode && node.id === captionNode.id) {
+                            return { ...node, metadata: { ...node.metadata, storyboardStatus: status, storyboardNeedsRegeneration: false, executionStatus: "failed", errorDetails } };
+                        }
+                        return node;
+                    }),
+                );
+                report({ sceneId: scene.id, status: canceled ? "canceled" : status, error: errorDetails });
+                if (!canceled) throw reason;
+                return false;
+            } finally {
+                finishGenerationRequest(imageNode.id, controller);
+                const isCurrentStoryboardController = storyboardAbortRef.current === controller;
+                if (isCurrentStoryboardController) storyboardAbortRef.current = null;
+                if (isCurrentStoryboardController && storyboardCancelRequestedRef.current && !storyboardCancelSubmittingRef.current && !storyboardCancelTasksRef.current.length) {
+                    storyboardCancelRequestedRef.current = false;
+                    storyboardCancelAcknowledgedRef.current = false;
+                    storyboardCancelTasksRef.current = [];
+                    storyboardCancelNodeIdsRef.current = new Set();
+                }
+                setRunningNodeIds((current) => {
+                    const next = new Set(current);
+                    next.delete(imageNode.id);
+                    return next;
+                });
+            }
+        },
+        [adoptGeneratedImage, commitNodes, effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, persistStoryboardTaskId, projectId, requestCostConfirm, startGenerationRequest, storyboardSourceNodeId, t],
+    );
+
     const deleteBatchImage = useCallback((nodeId: string, imageId: string) => {
         const node = nodesRef.current.find((item) => item.id === nodeId);
         if ((node?.metadata?.images?.length || 0) <= 2) setExpandedImageNodeId(null);
@@ -5256,7 +6812,7 @@ function InfiniteCanvasPage() {
                 {
                     prompt: "",
                     model: effectiveConfig.imageModel || effectiveConfig.model,
-                    size: effectiveConfig.size,
+                    size: defaultCanvasImageRatio(modelOptionMeta(effectiveConfig, effectiveConfig.imageModel || effectiveConfig.model), effectiveConfig.resolution),
                     ...canvasExactSizeSettings(effectiveConfig),
                     resolution: effectiveConfig.resolution,
                     count: getGenerationCount(effectiveConfig.canvasImageCount || effectiveConfig.count),
@@ -5365,7 +6921,33 @@ function InfiniteCanvasPage() {
         setPreviewNodeId(node.id);
         setPreviewImageId(image?.id || null);
     }, []);
-    const handleNodeRetry = useCallback((node: CanvasNodeData) => void handleRetryNode(node), [handleRetryNode]);
+    const handleNodeRetry = useCallback(
+            (node: CanvasNodeData) => {
+            if (node.metadata?.storyboardSceneId && (node.metadata.storyboardStatus === "failed" || node.metadata.storyboardStatus === "canceled" || (node.metadata.storyboardStatus === "succeeded" && node.metadata.storyboardNeedsRegeneration === true))) {
+                const scene = storyboardSceneFromNode(node);
+                if (scene) {
+                    const storyboardStyles = ["cinematic", "anime", "documentary", "commercial"] as const;
+                    const savedStyle = storyboardStyles.includes(node.metadata.storyboardStyle as (typeof storyboardStyles)[number]) ? (node.metadata.storyboardStyle as (typeof storyboardStyles)[number]) : "cinematic";
+                    const ratio = ["16:9", "9:16", "1:1"].includes(node.metadata?.size || "") ? (node.metadata?.size as string) : "16:9";
+                    void retryStoryboardScene(
+                        scene,
+                        {
+                            style: savedStyle,
+                            sceneCount: 1,
+                            aspectRatio: ratio,
+                            consistency: typeof node.metadata.storyboardConsistency === "boolean" ? node.metadata.storyboardConsistency : node.metadata?.generationType === "edit" || Boolean(node.metadata?.references?.length),
+                        },
+                        () => undefined,
+                    ).catch((reason) => {
+                        message.error(reason instanceof Error ? reason.message : t("canvas.storyboard.generationFailed"));
+                    });
+                    return;
+                }
+            }
+            void handleRetryNode(node);
+        },
+        [handleRetryNode, message, retryStoryboardScene, t],
+    );
     const handleNodeTogglePanel = useCallback((node: CanvasNodeData) => {
         setDialogNodeId((current) => (current === node.id ? null : node.id));
     }, []);
@@ -5412,7 +6994,7 @@ function InfiniteCanvasPage() {
     }, []);
     const connectionPathElements = useMemo(
         () =>
-            displayConnections.map((connection) => {
+            renderedConnections.map((connection) => {
                 const from = displayNodeById.get(connection.fromNodeId);
                 const to = displayNodeById.get(connection.toNodeId);
                 if (!from || !to) return null;
@@ -5428,7 +7010,7 @@ function InfiniteCanvasPage() {
                     />
                 );
             }),
-        [displayConnections, displayNodeById, handleConnectionContextMenu, handleConnectionSelect, relatedHighlight.connectionIds, selectedConnectionIds],
+        [renderedConnections, displayNodeById, handleConnectionContextMenu, handleConnectionSelect, relatedHighlight.connectionIds, selectedConnectionIds],
     );
 
     const renderNodePanel = useCallback(
@@ -5533,6 +7115,7 @@ function InfiniteCanvasPage() {
                         onProjects={() => navigate("/canvas")}
                         onCreateProject={createAndOpenProject}
                         onAddImage={() => createNode(CanvasNodeType.Image)}
+                        onOpenStoryboard={openStoryboard}
                         onAddText={() => createNode(CanvasNodeType.Text)}
                         onAddConfig={() => createNode(CanvasNodeType.Config)}
                         onAddGroup={() => createNode(CanvasNodeType.Group)}
@@ -5598,14 +7181,15 @@ function InfiniteCanvasPage() {
                             editRequestNonce={editingNodeId === node.id ? editRequestNonce : 0}
                             showPanel={dialogNodeId === node.id && !selectionBox && !getNodeDefinition(node.type)?.hidePanel}
                             groupChildCount={groupChildCountById.get(node.id) || 0}
+                            storyboardGroupStats={node.metadata?.storyboardId ? storyboardGroupStatsById.get(node.metadata.storyboardId) : undefined}
                             isGroupDropTarget={dropTargetGroupId === node.id}
                             batchExpanded={expandedImageNodeId === node.id}
                             showImageInfo={showImageInfo}
                             mentionReferences={mentionReferencesByNodeId.get(node.id) || EMPTY_REFERENCES}
                             pluginHost={pluginHost}
                             registryVersion={nodeRegistryVersion}
-                            renderPanel={renderNodePanel}
-                            renderNodeContent={renderNodeContentPanel}
+                            renderPanel={dialogNodeId === node.id ? renderNodePanel : undefined}
+                            renderNodeContent={isCanvasExecutableNode(node) ? renderNodeContentPanel : undefined}
                             onMouseDown={handleNodeMouseDown}
                             onSelectCapture={handleNodeSelectCapture}
                             onHoverStart={handleNodeHoverStart}
@@ -5614,7 +7198,9 @@ function InfiniteCanvasPage() {
                             onResizeStart={handleNodeResizeStart}
                             onResize={handleNodeResize}
                             onResizeEnd={handleNodeResizeEnd}
+                            onImageAspect={handleImageAspect}
                             onContentChange={handleNodeContentChange}
+                            onOpenStoryboard={openStoryboard}
                             onRenameRequest={openNodeRename}
                             onToggleBatch={toggleBatchExpanded}
                             onSetBatchPrimary={setBatchPrimary}
@@ -5663,6 +7249,7 @@ function InfiniteCanvasPage() {
                     onEditText={openTextEditor}
                     onToggleDialog={(node) => setDialogNodeId((current) => (current === node.id ? null : node.id))}
                     onGenerateImage={generateImageFromTextNode}
+                    onOpenStoryboard={openStoryboard}
                     onUpload={(node) => handleUploadRequest(node.id)}
                     onDownload={downloadNodeImage}
                     onSaveAsset={(node) => void saveNodeAsset(node)}
@@ -5675,7 +7262,7 @@ function InfiniteCanvasPage() {
                     onAngle={(node) => setAngleNodeId(node.id)}
                     onViewImage={(node) => handleNodeViewImage(node)}
                     onReversePrompt={createImageReversePromptNodes}
-                    onRetry={(node) => void handleRetryNode(node)}
+                    onRetry={(node) => void handleNodeRetry(node)}
                     onToggleFreeResize={(node) => toggleNodeFreeResize(node.id)}
                     onDelete={(node) => deleteNodes(new Set([node.id]))}
                 />
@@ -5695,6 +7282,10 @@ function InfiniteCanvasPage() {
                             else setDialogNodeId(contextNode.id);
                             setContextMenu(null);
                         } : undefined}
+                        onStoryboard={contextNode && (Boolean(contextNode.metadata?.storyboardId) || (contextNode.type === CanvasNodeType.Text && Boolean((contextNode.metadata?.content || contextNode.metadata?.prompt || "").trim()))) ? () => {
+                            openStoryboard(contextNode);
+                            setContextMenu(null);
+                        } : undefined}
                         onPreview={contextNode?.type === CanvasNodeType.Image && contextNode.metadata?.content ? () => (handleNodeViewImage(contextNode), setContextMenu(null)) : undefined}
                         onDownload={contextNode?.metadata?.content && [CanvasNodeType.Image, CanvasNodeType.Video, CanvasNodeType.Audio].includes(contextNode.type as CanvasNodeType) ? () => (downloadNodeImage(contextNode), setContextMenu(null)) : undefined}
                         onDelete={() => {
@@ -5711,6 +7302,73 @@ function InfiniteCanvasPage() {
                 <input ref={imageInputRef} type="file" multiple accept={[CANVAS_VIDEO_ENABLED ? "video/*" : "", CANVAS_AUDIO_ENABLED ? "audio/*" : "", "image/*"].filter(Boolean).join(",")} className="hidden" onChange={handleImageInputChange} />
 
                 <CanvasCostConfirmDialog cost={costConfirm} onCancel={() => finishCostConfirm(false)} onConfirm={(options) => void handleCostConfirm(options)} />
+
+                <CanvasStoryboardDialog
+                    open={storyboardOpen}
+                    initialScript={storyboardInitialScript}
+                    initialPlan={storyboardRecovery?.plan}
+                    initialProgress={storyboardRecovery ? Object.fromEntries(Object.entries(storyboardRecovery.progress).map(([sceneId, item]) => [sceneId, { sceneId: item.sceneId, status: item.status, imageUrl: item.imageUrl, error: item.error, needsRegeneration: item.needsRegeneration }])) : undefined}
+                    initialOptions={storyboardRecovery?.options}
+                    sourceTitle={storyboardSourceNode?.title}
+                    sourceId={storyboardSourceNodeId}
+                    sourceOptions={storyboardSourceOptions}
+                    onSourceChange={handleStoryboardSourceChange}
+                    onScriptChange={handleStoryboardScriptChange}
+                    onPlanChange={persistStoryboardPlanChange}
+                    onFocusScene={focusStoryboardScene}
+                    onClose={() => {
+                        setStoryboardOpen(false);
+                        setStoryboardSourceNodeId(null);
+                        setStoryboardScriptOverride(null);
+                        setStoryboardRecoveryTargetId(null);
+                        storyboardLatestIdRef.current = null;
+                    }}
+                    onAnalyze={analyzeStoryboard}
+                    onGenerate={generateStoryboard}
+                    onRetryScene={retryStoryboardScene}
+                    onCancelGeneration={cancelStoryboardGeneration}
+                />
+
+                <CanvasHomeDialog
+                    open={storyboardCancelConfirm}
+                    onClose={() => {
+                        if (storyboardCancelSubmitting) return;
+                        setStoryboardCancelConfirm(false);
+                        storyboardCancelSubmittingRef.current = false;
+                        storyboardCancelRequestedRef.current = false;
+                        storyboardCancelAcknowledgedRef.current = false;
+                        storyboardCancelTasksRef.current = [];
+                        storyboardCancelNodeIdsRef.current = new Set();
+                    }}
+                    tone="danger"
+                    eyebrow={t("canvas.projectPage.stopEyebrow")}
+                    title={t("canvas.projectPage.stopTitle")}
+                    description={t("canvas.projectPage.stopDescription")}
+                    closeLabel={t("canvas.projectPage.continue")}
+                    footer={
+                        <>
+                            <button
+                                type="button"
+                                className="sc-cd-btn"
+                                disabled={storyboardCancelSubmitting}
+                                onClick={() => {
+                                    if (storyboardCancelSubmitting) return;
+                                    setStoryboardCancelConfirm(false);
+                                    storyboardCancelSubmittingRef.current = false;
+                                    storyboardCancelRequestedRef.current = false;
+                                    storyboardCancelAcknowledgedRef.current = false;
+                                    storyboardCancelTasksRef.current = [];
+                                    storyboardCancelNodeIdsRef.current = new Set();
+                                }}
+                            >
+                                {t("canvas.projectPage.continue")}
+                            </button>
+                            <button type="button" className="sc-cd-btn is-danger" disabled={storyboardCancelSubmitting} onClick={() => void confirmStoryboardCancellation()}>
+                                {t("canvas.projectPage.stop")}
+                            </button>
+                        </>
+                    }
+                />
 
                 <CanvasHomeDialog
                     open={Boolean(renameDialog)}

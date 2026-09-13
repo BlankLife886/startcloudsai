@@ -29,7 +29,7 @@ class _DesignScreenState extends ConsumerState<DesignScreen> {
       subtitle: '文字创作',
       location: '/create',
       icon: Icons.auto_awesome_outlined,
-      accent: Color(0xFF4F67D6),
+      accent: Color(0xFF326C62),
     ),
   ];
 
@@ -108,7 +108,7 @@ class _DesignScreenState extends ConsumerState<DesignScreen> {
             ),
             child: Center(
               child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 720),
+                constraints: const BoxConstraints(maxWidth: 640),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -118,7 +118,7 @@ class _DesignScreenState extends ConsumerState<DesignScreen> {
                           child: Text(
                             '创作工具',
                             style: Theme.of(context).textTheme.titleMedium
-                                ?.copyWith(fontWeight: FontWeight.w800),
+                                ?.copyWith(fontWeight: FontWeight.w600),
                           ),
                         ),
                         if (_draft != null && !_draft!.isEmpty)
@@ -132,7 +132,7 @@ class _DesignScreenState extends ConsumerState<DesignScreen> {
                     ),
                     const SizedBox(height: 6),
                     SizedBox(
-                      height: 112 + ((textScale - 1).clamp(0.0, .6) * 56),
+                      height: 176 + ((textScale - 1).clamp(0.0, 1.0) * 72),
                       width: double.infinity,
                       child: _DesignFeaturedCard(
                         tool: featured,
@@ -145,7 +145,7 @@ class _DesignScreenState extends ConsumerState<DesignScreen> {
                       Text(
                         '其他工具',
                         style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                          fontWeight: FontWeight.w800,
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
                       const SizedBox(height: 10),
@@ -157,27 +157,37 @@ class _DesignScreenState extends ConsumerState<DesignScreen> {
                         const SizedBox(height: 8),
                       ],
                     ],
-                    const SizedBox(height: 18),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: _DesignUtilityAction(
-                            key: const Key('design-open-works'),
-                            icon: Icons.history,
-                            label: '历史记录',
-                            onTap: () => context.push('/works'),
+                    const SizedBox(height: 24),
+                    Text(
+                      '我的创作',
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    IntrinsicHeight(
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Expanded(
+                            child: _DesignUtilityAction(
+                              key: const Key('design-open-works'),
+                              icon: Icons.history,
+                              label: '历史记录',
+                              onTap: () => context.push('/works'),
+                            ),
                           ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: _DesignUtilityAction(
-                            key: const Key('design-open-assets'),
-                            icon: Icons.collections_outlined,
-                            label: '我的素材',
-                            onTap: () => context.push('/profile/assets'),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: _DesignUtilityAction(
+                              key: const Key('design-open-assets'),
+                              icon: Icons.collections_outlined,
+                              label: '我的素材',
+                              onTap: () => context.push('/profile/assets'),
+                            ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                   ],
                 ),
@@ -212,20 +222,17 @@ class _DesignFeaturedCard extends StatelessWidget {
         child: AppPressable(
           key: Key('design-tool-${tool.keyName}'),
           onTap: onTap,
-          child: DecoratedBox(
+          child: AppGlassSurface(
             key: const Key('design-featured-surface'),
-            decoration: BoxDecoration(
-              color: colors.surfaceContainerLow,
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: colors.outlineVariant),
-            ),
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 14, 14, 14),
+              padding: const EdgeInsets.all(20),
               child: Row(
                 children: [
                   Expanded(
                     child: AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 220),
+                      duration: MediaQuery.disableAnimationsOf(context)
+                          ? Duration.zero
+                          : AppMotion.appear,
                       switchInCurve: Curves.easeOutCubic,
                       switchOutCurve: Curves.easeInCubic,
                       child: Column(
@@ -242,7 +249,7 @@ class _DesignFeaturedCard extends StatelessWidget {
                                 style: Theme.of(context).textTheme.labelLarge
                                     ?.copyWith(
                                       color: tool.accent,
-                                      fontWeight: FontWeight.w800,
+                                      fontWeight: FontWeight.w600,
                                     ),
                               ),
                             ],
@@ -250,10 +257,10 @@ class _DesignFeaturedCard extends StatelessWidget {
                           const SizedBox(height: 10),
                           Text(
                             hasDraft ? '继续上次创作' : '从一句描述开始',
-                            maxLines: 1,
+                            maxLines: 2,
                             overflow: TextOverflow.ellipsis,
                             style: Theme.of(context).textTheme.titleLarge
-                                ?.copyWith(fontWeight: FontWeight.w900),
+                                ?.copyWith(fontWeight: FontWeight.w700),
                           ),
                           const SizedBox(height: 3),
                           Text(
@@ -270,12 +277,16 @@ class _DesignFeaturedCard extends StatelessWidget {
                       ),
                     ),
                   ),
-                  const SizedBox(width: 12),
-                  Icon(
-                    Icons.arrow_forward_rounded,
-                    color: colors.onSurfaceVariant,
-                    size: 20,
-                  ),
+                  if (MediaQuery.textScalerOf(context).scale(1) <= 1.3) ...[
+                    const SizedBox(width: 16),
+                    Image.asset(
+                      'assets/images/home_text_to_image_v2.png',
+                      width: 72,
+                      height: 88,
+                      fit: BoxFit.contain,
+                      excludeFromSemantics: true,
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -303,7 +314,7 @@ class _DesignToolRow extends StatelessWidget {
           key: Key('design-tool-${tool.keyName}'),
           onTap: onTap,
           child: AppSoftCard(
-            radius: BorderRadius.circular(8),
+            radius: BorderRadius.circular(16),
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
             child: Row(
               children: [
@@ -312,7 +323,7 @@ class _DesignToolRow extends StatelessWidget {
                   height: 42,
                   decoration: BoxDecoration(
                     color: tool.accent.withValues(alpha: .12),
-                    borderRadius: BorderRadius.circular(8),
+                    borderRadius: BorderRadius.circular(16),
                   ),
                   child: Icon(tool.icon, size: 22, color: tool.accent),
                 ),
@@ -326,7 +337,7 @@ class _DesignToolRow extends StatelessWidget {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: Theme.of(context).textTheme.titleMedium
-                            ?.copyWith(fontWeight: FontWeight.w800),
+                            ?.copyWith(fontWeight: FontWeight.w600),
                       ),
                       Text(
                         tool.subtitle,
@@ -374,25 +385,22 @@ class _DesignUtilityAction extends StatelessWidget {
       child: ExcludeSemantics(
         child: AppPressable(
           onTap: onTap,
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              color: colors.surfaceContainerLow,
-              borderRadius: BorderRadius.circular(8),
-            ),
+          borderRadius: BorderRadius.circular(24),
+          child: AppGlassSurface(
             child: ConstrainedBox(
-              constraints: const BoxConstraints(minHeight: 52),
+              constraints: const BoxConstraints(minHeight: 96),
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 14),
-                child: Row(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Icon(icon, size: 20, color: colors.primary),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        label,
-                        style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                          fontWeight: FontWeight.w800,
-                        ),
+                    Icon(icon, size: 22, color: colors.onSurface),
+                    const SizedBox(height: 12),
+                    Text(
+                      label,
+                      style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
                   ],

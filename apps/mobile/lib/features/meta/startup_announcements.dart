@@ -273,7 +273,7 @@ class _AnnouncementContent extends ConsumerWidget {
             ],
             if (imageUrl.isNotEmpty) ...[
               ClipRRect(
-                borderRadius: BorderRadius.circular(8),
+                borderRadius: BorderRadius.circular(16),
                 child: AspectRatio(
                   aspectRatio: 16 / 7,
                   child: Image.network(

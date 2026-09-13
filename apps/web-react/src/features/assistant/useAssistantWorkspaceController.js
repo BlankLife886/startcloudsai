@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import { useNavigate, useSearchParams } from "react-router";
+import { useDeferredPanel } from "../../hooks/useDeferredPanel.js";
 import {
   cancelAssistantRun,
   createAssistantContextBoundary,
@@ -196,6 +197,9 @@ export function useAssistantWorkspaceController() {
   const composerRef = useRef(null);
   const composerZoneRef = useRef(null);
   const imageSettingsButtonRef = useRef(null);
+  const creationButtonRef = useRef(null);
+  const modelButtonRef = useRef(null);
+  const reasoningButtonRef = useRef(null);
   const composerInputHeightRef = useRef(0);
   const composerResizeStateRef = useRef(null);
   const recognitionRef = useRef(null);
@@ -257,7 +261,7 @@ export function useAssistantWorkspaceController() {
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [reasoningMenuOpen, setReasoningMenuOpen] = useState(false);
   const [preferencesOpen, setPreferencesOpen] = useState(false);
-  const [preferencesPosition, setPreferencesPosition] = useState(null);
+  const [composerMenuPosition, setComposerMenuPosition] = useState(null);
   const [tourOpen, setTourOpen] = useState(false);
   const tourStartedRef = useRef(false);
   const [assetLibraryOpen, setAssetLibraryOpen] = useState(false);
@@ -1214,6 +1218,28 @@ export function useAssistantWorkspaceController() {
     return () => window.removeEventListener("resize", clampHeight);
   }, [applyComposerInputHeight, composerManuallyResized, documents.length, references.length, uploading]);
 
+  const applyAssistantConfig = useCallback((rawConfig) => {
+    const config = normalizeConfig(rawConfig);
+    const availableConversation = availableCatalogModels(config.conversationModels);
+    const availableImages = constrainAssistantImageModels(availableCatalogModels(config.imageModels), config);
+    setConversationModels(config.conversationModels);
+    setImageModels(config.imageModels.map((model) => ({
+      ...model,
+      imageBatchLimit: assistantImageBatchLimit(model, config),
+    })));
+    setImageLimits({ imageBatchLimit: config.imageBatchLimit, concurrency: config.concurrency });
+    setEditableFilesEnabled(config.editableFilesEnabled);
+    // Keep the user's selected model when it is still available. A config
+    // refresh should update limits without unexpectedly switching models.
+    setConversationModel((current) => availableConversation.some((item) => item.model === current)
+      ? current
+      : availableConversation[0]?.model || "");
+    setImageModel((current) => availableImages.some((item) => item.model === current)
+      ? current
+      : availableImages[0]?.model || "");
+    return { config, availableConversation, availableImages };
+  }, []);
+
   const loadWorkspace = useCallback(async () => {
     const controller = new AbortController();
     workspaceControllerRef.current?.abort();
@@ -1245,15 +1271,7 @@ export function useAssistantWorkspaceController() {
       ]);
       if (controller.signal.aborted || !mountedRef.current) return;
       if (configResult.status !== "fulfilled") throw configResult.reason;
-      const config = normalizeConfig(configResult.value);
-      const availableConversation = availableCatalogModels(config.conversationModels);
-      const availableImages = constrainAssistantImageModels(availableCatalogModels(config.imageModels), config);
-      setConversationModels(config.conversationModels);
-      setImageModels(config.imageModels.map((model) => ({ ...model, imageBatchLimit: assistantImageBatchLimit(model, config) })));
-      setImageLimits({ imageBatchLimit: config.imageBatchLimit, concurrency: config.concurrency });
-      setEditableFilesEnabled(config.editableFilesEnabled);
-      setConversationModel(availableConversation[0]?.model || "");
-      setImageModel(availableImages[0]?.model || "");
+      const { availableConversation, availableImages } = applyAssistantConfig(configResult.value);
       const workspaceState = loadAssistantWorkspaceState(workspaceScope);
       let rows = conversationResult.status === "fulfilled"
         ? conversationResult.value.map(normalizeConversation)
@@ -1342,7 +1360,31 @@ export function useAssistantWorkspaceController() {
     } finally {
       if (!controller.signal.aborted && mountedRef.current) setLoading(false);
     }
-  }, [auth.isAuthenticated, workspaceScope]);
+  }, [applyAssistantConfig, auth.isAuthenticated, workspaceScope]);
+
+  // Admin settings are edited in a separate app/tab. Revalidate when the
+  // assistant regains focus so a changed concurrency limit is reflected in
+  // proposal cards without requiring a full page reload.
+  useEffect(() => {
+    let lastRefreshAt = 0;
+    const refreshConfig = () => {
+      if (document.visibilityState === "hidden") return;
+      const now = Date.now();
+      if (now - lastRefreshAt < 1000) return;
+      lastRefreshAt = now;
+      void fetchAssistantConfig().then((rawConfig) => {
+        if (mountedRef.current) applyAssistantConfig(rawConfig);
+      }).catch(() => {
+        // The existing workspace remains usable when a background refresh is unavailable.
+      });
+    };
+    window.addEventListener("focus", refreshConfig);
+    document.addEventListener("visibilitychange", refreshConfig);
+    return () => {
+      window.removeEventListener("focus", refreshConfig);
+      document.removeEventListener("visibilitychange", refreshConfig);
+    };
+  }, [applyAssistantConfig]);
 
   useEffect(() => {
     if (!auth.isAuthenticated) return undefined;
@@ -1819,6 +1861,16 @@ export function useAssistantWorkspaceController() {
     event.preventDefault();
     event.stopPropagation();
   };
+  const activeComposerMenu = creationMenuOpen
+    ? "creation"
+    : modelMenuOpen
+      ? "model"
+      : reasoningMenuOpen
+        ? "reasoning"
+        : preferencesOpen
+          ? "preferences"
+          : "";
+  const composerMenuPresence = useDeferredPanel(activeComposerMenu, 150);
   const toggleComposerMenu = (event, menu) => {
     event.preventDefault();
     event.stopPropagation();
@@ -1828,37 +1880,52 @@ export function useAssistantWorkspaceController() {
     setPreferencesOpen(menu === "preferences" ? !preferencesOpen : false);
   };
 
-  const updatePreferencesPosition = useCallback(() => {
-    const trigger = imageSettingsButtonRef.current;
+  const updateComposerMenuPosition = useCallback((menu) => {
+    const triggerMap = {
+      creation: creationButtonRef.current,
+      model: modelButtonRef.current,
+      reasoning: reasoningButtonRef.current,
+      preferences: imageSettingsButtonRef.current,
+    };
+    const preferredWidth = {
+      creation: 260,
+      model: 320,
+      reasoning: 312,
+      preferences: 428,
+    };
+    const trigger = triggerMap[menu];
     const composer = composerRef.current;
     if (!trigger || !composer) return;
     const triggerRect = trigger.getBoundingClientRect();
     const composerRect = composer.getBoundingClientRect();
     const gap = 8;
     const margin = 8;
-    const width = Math.min(428, Math.max(240, composerRect.width - margin * 2));
+    const width = Math.min(preferredWidth[menu] || 280, Math.max(200, composerRect.width - margin * 2));
     let left = triggerRect.left - composerRect.left;
     if (left + width > composerRect.width - margin) {
       left = composerRect.width - width - margin;
     }
     left = Math.max(margin, left);
     const bottom = Math.max(gap, composerRect.bottom - triggerRect.top + gap);
-    const maxHeight = Math.max(200, Math.min(620, triggerRect.top - gap - margin));
-    setPreferencesPosition({
+    const next = {
       left: `${Math.round(left)}px`,
       bottom: `${Math.round(bottom)}px`,
       width: `${Math.round(width)}px`,
-      maxHeight: `${Math.round(maxHeight)}px`,
-    });
+    };
+    if (menu === "preferences") {
+      next.maxHeight = `${Math.round(Math.max(200, Math.min(620, triggerRect.top - gap - margin)))}px`;
+    }
+    setComposerMenuPosition(next);
   }, []);
 
   useLayoutEffect(() => {
-    if (!preferencesOpen || mode !== "image") {
-      setPreferencesPosition(null);
+    const menu = composerMenuPresence.id;
+    if (!menu || (menu === "preferences" && mode !== "image") || (menu === "reasoning" && mode === "image")) {
+      setComposerMenuPosition(null);
       return undefined;
     }
-    updatePreferencesPosition();
-    const onReposition = () => updatePreferencesPosition();
+    updateComposerMenuPosition(menu);
+    const onReposition = () => updateComposerMenuPosition(menu);
     window.addEventListener("resize", onReposition);
     window.addEventListener("scroll", onReposition, true);
     const scroller = messageScrollerRef.current;
@@ -1868,7 +1935,7 @@ export function useAssistantWorkspaceController() {
       window.removeEventListener("scroll", onReposition, true);
       scroller?.removeEventListener("scroll", onReposition);
     };
-  }, [mode, preferencesOpen, updatePreferencesPosition]);
+  }, [composerMenuPresence.id, mode, updateComposerMenuPosition]);
 
   useEffect(() => {
     if (!searchOpen) return undefined;
@@ -3172,6 +3239,9 @@ export function useAssistantWorkspaceController() {
     composerRef,
     composerZoneRef,
     imageSettingsButtonRef,
+    creationButtonRef,
+    modelButtonRef,
+    reasoningButtonRef,
     composerInputHeightRef,
     messageScrollerRef,
     loadingEarlierRef,
@@ -3213,7 +3283,8 @@ export function useAssistantWorkspaceController() {
     setReasoningMenuOpen,
     preferencesOpen,
     setPreferencesOpen,
-    preferencesPosition,
+    composerMenuPosition,
+    composerMenuPresence,
     tourOpen,
     setTourOpen,
     assetLibraryOpen,

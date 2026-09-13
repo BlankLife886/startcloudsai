@@ -367,7 +367,7 @@ class _ColoringScreenState extends ConsumerState<ColoringScreen>
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
             color: Theme.of(context).colorScheme.surfaceContainerLow,
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(16),
             border: Border.all(
               color: Theme.of(context).colorScheme.outlineVariant,
             ),
@@ -482,7 +482,7 @@ class _ColoringScreenState extends ConsumerState<ColoringScreen>
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
               color: colors.tertiaryContainer.withValues(alpha: 0.5),
-              borderRadius: BorderRadius.circular(8),
+              borderRadius: BorderRadius.circular(16),
               border: Border.all(color: colors.outlineVariant),
             ),
             child: Row(
@@ -497,7 +497,7 @@ class _ColoringScreenState extends ConsumerState<ColoringScreen>
                       Text(
                         '让线稿保留笔触，获得完整色彩',
                         style: Theme.of(context).textTheme.titleMedium
-                            ?.copyWith(fontWeight: FontWeight.w900),
+                            ?.copyWith(fontWeight: FontWeight.w700),
                       ),
                       const SizedBox(height: 4),
                       Text(
@@ -579,7 +579,7 @@ class _ColoringScreenState extends ConsumerState<ColoringScreen>
                   child: Text(
                     '配色参考 ${_references.length}/$maxPaletteReferences',
                     style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.w800,
+                      fontWeight: FontWeight.w600,
                     ),
                   ),
                 ),
@@ -612,7 +612,7 @@ class _ColoringScreenState extends ConsumerState<ColoringScreen>
                         style: OutlinedButton.styleFrom(
                           padding: EdgeInsets.zero,
                           shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(8),
+                            borderRadius: BorderRadius.circular(16),
                           ),
                         ),
                         child: _selecting
@@ -650,7 +650,7 @@ class _ColoringScreenState extends ConsumerState<ColoringScreen>
                         child: Text(
                           '输出设置',
                           style: Theme.of(context).textTheme.titleMedium
-                              ?.copyWith(fontWeight: FontWeight.w900),
+                              ?.copyWith(fontWeight: FontWeight.w700),
                         ),
                       ),
                       Container(
@@ -661,13 +661,13 @@ class _ColoringScreenState extends ConsumerState<ColoringScreen>
                         ),
                         decoration: BoxDecoration(
                           color: colors.secondaryContainer,
-                          borderRadius: BorderRadius.circular(8),
+                          borderRadius: BorderRadius.circular(16),
                         ),
                         child: Text(
                           '${model.pricePoints * count} 积分',
                           style: TextStyle(
                             color: colors.onSecondaryContainer,
-                            fontWeight: FontWeight.w900,
+                            fontWeight: FontWeight.w700,
                           ),
                         ),
                       ),
@@ -708,7 +708,7 @@ class _ColoringScreenState extends ConsumerState<ColoringScreen>
                   Text(
                     '画面比例',
                     style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.w800,
+                      fontWeight: FontWeight.w600,
                     ),
                   ),
                   const SizedBox(height: 8),
@@ -784,7 +784,7 @@ class _ColoringScreenState extends ConsumerState<ColoringScreen>
                         child: Text(
                           '生成张数',
                           style: Theme.of(context).textTheme.titleSmall
-                              ?.copyWith(fontWeight: FontWeight.w800),
+                              ?.copyWith(fontWeight: FontWeight.w600),
                         ),
                       ),
                       IconButton.filledTonal(
@@ -938,7 +938,7 @@ class _ColoringStage extends StatelessWidget {
                 return SizedBox(
                   height: constraints.maxWidth * 0.75 + extraHeight,
                   child: ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
+                    borderRadius: BorderRadius.circular(16),
                     child: DecoratedBox(
                       decoration: BoxDecoration(
                         color: Theme.of(
@@ -1021,7 +1021,7 @@ class _StageStatus extends StatelessWidget {
         Expanded(
           child: Text(
             label,
-            style: const TextStyle(fontWeight: FontWeight.w800),
+            style: const TextStyle(fontWeight: FontWeight.w600),
           ),
         ),
         if (task?.isActive == true)
@@ -1056,7 +1056,7 @@ class _EmptySource extends StatelessWidget {
               textAlign: TextAlign.center,
               style: Theme.of(
                 context,
-              ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w900),
+              ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 4),
             Text(
@@ -1143,7 +1143,7 @@ class _ReferenceThumbnail extends StatelessWidget {
       fit: StackFit.expand,
       children: [
         ClipRRect(
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(16),
           child: image.localPath.isNotEmpty
               ? Image.file(File(image.localPath), fit: BoxFit.cover)
               : AuthenticatedImage(url: image.remoteUrl ?? ''),
@@ -1190,7 +1190,7 @@ class _ConfirmRow extends StatelessWidget {
           value,
           textAlign: TextAlign.end,
           style: TextStyle(
-            fontWeight: FontWeight.w900,
+            fontWeight: FontWeight.w700,
             color: danger ? Theme.of(context).colorScheme.error : null,
           ),
         ),
@@ -1241,7 +1241,7 @@ class _InlineError extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Material(
     color: Theme.of(context).colorScheme.errorContainer,
-    borderRadius: BorderRadius.circular(8),
+    borderRadius: BorderRadius.circular(16),
     child: ListTile(
       leading: const Icon(Icons.cloud_off_outlined),
       title: const Text('染色状态读取失败'),

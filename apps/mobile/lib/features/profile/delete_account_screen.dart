@@ -190,7 +190,7 @@ class _DeleteAccountScreenState extends ConsumerState<DeleteAccountScreen>
             '验证账号身份',
             style: Theme.of(
               context,
-            ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+            ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 8),
           Text(
@@ -216,7 +216,7 @@ class _DeleteAccountScreenState extends ConsumerState<DeleteAccountScreen>
               labelText: '6 位验证码',
               hintText: '请输入邮箱验证码',
               border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(8),
+                borderRadius: BorderRadius.circular(16),
               ),
             ),
           ),
@@ -301,7 +301,7 @@ class _DeleteHeader extends StatelessWidget {
         DecoratedBox(
           decoration: BoxDecoration(
             color: colors.errorContainer,
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(16),
           ),
           child: SizedBox.square(
             dimension: 48,
@@ -320,7 +320,7 @@ class _DeleteHeader extends StatelessWidget {
                 '永久关闭当前账号',
                 style: Theme.of(
                   context,
-                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
               ),
               const SizedBox(height: 4),
               Text(
@@ -352,7 +352,7 @@ class _ImpactList extends StatelessWidget {
     ];
     return Material(
       color: colors.surfaceContainerLow,
-      borderRadius: BorderRadius.circular(8),
+      borderRadius: BorderRadius.circular(16),
       clipBehavior: Clip.antiAlias,
       child: Column(
         children: [

@@ -38,7 +38,7 @@ export function CanvasTopBar({
     onExportProject: () => void;
     onClear: () => void;
     workflowRun: {
-        status: "idle" | "running" | "locked" | "refresh" | "success" | "error" | "canceled";
+        status: "idle" | "running" | "locked" | "paused" | "refresh" | "success" | "error" | "canceled";
         completed: number;
         total: number;
         currentNodeTitle?: string;
@@ -80,7 +80,7 @@ export function CanvasTopBar({
                 className="pointer-events-none absolute left-0 right-0 top-3 z-50 flex h-11 items-center justify-between pr-4"
                 style={{ paddingLeft: sidePanelOpen ? sidePanelWidth + 20 : 268, transition: "padding-left 380ms cubic-bezier(0.22, 1, 0.36, 1)" }}
             >
-                {children ? <div className="pointer-events-none absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2" style={{ width: "clamp(260px, calc(100% - 822px), 720px)" }}><div className="pointer-events-auto">{children}</div></div> : null}
+                {children ? <div className="pointer-events-none absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2" style={{ width: "clamp(260px, calc(100% - 822px), 720px)" }}><div className="pointer-events-auto flex justify-center">{children}</div></div> : null}
 
                 <div className="pointer-events-auto ml-auto flex items-center gap-2" data-canvas-topbar-actions data-guide="canvas-actions">
                     <div className="canvas-workflow-control-slot relative z-20 shrink-0">
@@ -143,7 +143,7 @@ function WorkflowControl({
 }: {
     theme: CanvasTheme;
     workflowRun: {
-        status: "idle" | "running" | "locked" | "refresh" | "success" | "error" | "canceled";
+        status: "idle" | "running" | "locked" | "paused" | "refresh" | "success" | "error" | "canceled";
         completed: number;
         total: number;
         currentNodeTitle?: string;
@@ -199,7 +199,7 @@ function WorkflowControl({
                     </span>
                 ) : null}
                 <span className="canvas-workflow-pill__meta tabular-nums">{elapsedLabel}</span>
-                {locked ? null : (
+                {(
                     <button
                         type="button"
                         className="canvas-workflow-pill__stop"
@@ -217,6 +217,15 @@ function WorkflowControl({
                 )}
             </div>
         );
+    }
+
+    if (workflowRun.status === "paused") {
+        return <div className="canvas-workflow-pill is-error" title={workflowRun.errorMessage}>
+            <CircleAlert className="size-3.5 shrink-0" />
+            <span className="canvas-workflow-pill__label">已暂停</span>
+            <span className="canvas-workflow-pill__meta">{workflowRun.completed}/{workflowRun.total}</span>
+            <button type="button" className="canvas-workflow-pill__stop" onClick={onStop} aria-label="停止旧工作流" title="停止旧工作流"><Square className="size-2.5 fill-current" /></button>
+        </div>;
     }
 
     if (workflowRun.status === "error") {

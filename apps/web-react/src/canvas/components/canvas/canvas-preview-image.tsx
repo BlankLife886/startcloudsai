@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type DragEventHandler, type Ref } from "react";
 
 import { buildLightweightPreview, getCanvasPreviewEdge, retainPreviewUrl, shouldDownscalePreview, subscribeCanvasPreviewScale } from "@/lib/canvas/canvas-preview-image";
-import { canvasCompressSource, cloudFileUrl, softMissingFileUrl } from "@/lib/canvas/canvas-preview-url";
+import { canvasCompressSource, cloudDisplayUrl, cloudFileUrl, softMissingFileUrl } from "@/lib/canvas/canvas-preview-url";
 import { resolveMediaUrl } from "@/services/file-storage";
 
 const VIEWPORT_MARGIN = 160;
@@ -15,25 +15,19 @@ export function useViewportMedia(enabled: boolean) {
             setShouldLoad(false);
             return;
         }
-        if (shouldLoad) return;
         const element = elementRef.current;
         if (!element || typeof IntersectionObserver === "undefined") {
             setShouldLoad(true);
             return;
         }
         const inView = (rect: DOMRect) => rect.bottom >= -VIEWPORT_MARGIN && rect.top <= window.innerHeight + VIEWPORT_MARGIN && rect.right >= -VIEWPORT_MARGIN && rect.left <= window.innerWidth + VIEWPORT_MARGIN;
-        if (inView(element.getBoundingClientRect())) {
-            setShouldLoad(true);
-            return;
-        }
+        setShouldLoad(inView(element.getBoundingClientRect()));
         const observer = new IntersectionObserver((entries) => {
-            if (!entries.some((entry) => entry.isIntersecting)) return;
-            setShouldLoad(true);
-            observer.disconnect();
+            setShouldLoad(entries.some((entry) => entry.isIntersecting));
         }, { rootMargin: `${VIEWPORT_MARGIN}px`, threshold: 0 });
         observer.observe(element);
         return () => observer.disconnect();
-    }, [enabled, shouldLoad]);
+    }, [enabled]);
 
     return { elementRef, shouldLoad };
 }
@@ -46,15 +40,16 @@ export function useCanvasPreviewSrc(src?: string, options?: { storageKey?: strin
     const enabled = options?.enabled !== false;
     const allowOriginalFallback = options?.allowOriginalFallback !== false;
     const [maxEdge, setMaxEdge] = useState(() => getCanvasPreviewEdge(options?.maxEdge));
-    const compressSrc = canvasCompressSource({ src, storageKey: options?.storageKey, thumbnailUrl: options?.thumbnailUrl });
+    const lightweightSource = canvasCompressSource({ src, storageKey: options?.storageKey, thumbnailUrl: options?.thumbnailUrl });
+    const compressSrc = maxEdge > 512 && allowOriginalFallback ? cloudDisplayUrl(options?.storageKey || src) || cloudFileUrl(options?.storageKey || src) || lightweightSource : lightweightSource;
     const source = src || "";
     const rawOriginalSrc = source && !source.startsWith("data:") && isUsableImageSrc(source)
         ? source
         : cloudFileUrl(options?.storageKey || source) || source;
     const originalSrc = softMissingFileUrl(rawOriginalSrc);
-    const placeholderSrc = isUsableImageSrc(compressSrc) ? softMissingFileUrl(compressSrc) : "";
-    const [previewSrc, setPreviewSrc] = useState<string>();
-    const [useOriginal, setUseOriginal] = useState(false);
+    const identity = options?.storageKey || source || options?.thumbnailUrl || "";
+    const [display, setDisplay] = useState<{ identity: string; url: string; kind: string; release: () => void }>();
+    const [failedIdentity, setFailedIdentity] = useState("");
 
     useEffect(() => {
         const stop = subscribeCanvasPreviewScale(() => setMaxEdge(getCanvasPreviewEdge(options?.maxEdge)));
@@ -64,49 +59,66 @@ export function useCanvasPreviewSrc(src?: string, options?: { storageKey?: strin
     }, [options?.maxEdge]);
 
     useEffect(() => {
-        if (!enabled) {
-            setPreviewSrc(undefined);
-            setUseOriginal(false);
-            return;
-        }
-        if (!compressSrc) {
-            setPreviewSrc(undefined);
-            setUseOriginal(allowOriginalFallback);
-            return;
-        }
+        // Visibility controls new work, not the lifetime of an already displayed image.
+        if (!enabled || !identity) return;
         let cancelled = false;
-        setPreviewSrc(undefined);
-        setUseOriginal(false);
-        void buildLightweightPreview(compressSrc, maxEdge).then((url) => {
+        const controller = new AbortController();
+        setFailedIdentity("");
+        void (async () => {
+            const previewUrl = compressSrc ? await buildLightweightPreview(compressSrc, maxEdge, { signal: controller.signal, priority: allowOriginalFallback ? 10 : 0 }) : undefined;
             if (cancelled) return;
-            if (url) setPreviewSrc(url);
-            else if (allowOriginalFallback) setUseOriginal(true);
-        });
+            const directPreview = !shouldDownscalePreview(compressSrc) && isUsableImageSrc(compressSrc) ? softMissingFileUrl(compressSrc) : undefined;
+            const candidates = [...new Set([previewUrl, directPreview, allowOriginalFallback && isUsableImageSrc(originalSrc) ? originalSrc : undefined].filter((url): url is string => Boolean(url)))];
+            for (const url of candidates) {
+                // Pin blobs while decoding; release the previous display only after React commits its replacement.
+                const release = retainPreviewUrl(url);
+                const ready = await loadCanvasImage(url, controller.signal);
+                if (cancelled) { release(); return; }
+                if (ready) {
+                    setDisplay({ identity, url, kind: url === previewUrl ? "canvas" : "", release });
+                    return;
+                }
+                release();
+            }
+            setFailedIdentity(identity);
+        })();
         return () => {
             cancelled = true;
+            controller.abort();
         };
-    }, [allowOriginalFallback, compressSrc, enabled, maxEdge]);
+    }, [allowOriginalFallback, compressSrc, enabled, maxEdge, identity, originalSrc]);
 
-    useEffect(() => {
-        if (!previewSrc) return;
-        const release = retainPreviewUrl(previewSrc);
-        return () => {
-            release();
-        };
-    }, [previewSrc]);
-
-    const directPreviewSrc = shouldDownscalePreview(compressSrc) ? "" : placeholderSrc;
-    const displaySrc = useOriginal && allowOriginalFallback && isUsableImageSrc(originalSrc) ? originalSrc : previewSrc || directPreviewSrc;
+    useEffect(() => () => display?.release(), [display]);
+    const current = display?.identity === identity ? display : undefined;
 
     return {
         remote: allowOriginalFallback ? originalSrc : "",
-        src: enabled ? displaySrc || "" : "",
-        previewKind: previewSrc && !useOriginal ? "canvas" : "",
-        onError: () => {
-            if (allowOriginalFallback && originalSrc && originalSrc !== displaySrc) setUseOriginal(true);
-        },
-        fallbackSrc: useOriginal && isUsableImageSrc(originalSrc) ? originalSrc : undefined,
+        src: current?.url || "",
+        previewKind: current?.kind || "",
+        failed: !current && failedIdentity === identity,
     };
+}
+
+/** Never expose an undecoded or failed candidate to the visible image element. */
+export function loadCanvasImage(url: string, signal: AbortSignal): Promise<boolean> {
+    return new Promise((resolve) => {
+        if (signal.aborted) { resolve(false); return; }
+        const image = new Image();
+        const finish = (ready: boolean) => {
+            image.onload = null;
+            image.onerror = null;
+            signal.removeEventListener("abort", abort);
+            resolve(ready);
+        };
+        const abort = () => { finish(false); image.src = ""; };
+        signal.addEventListener("abort", abort, { once: true });
+        image.onerror = () => finish(false);
+        image.onload = () => {
+            if (typeof image.decode === "function") void image.decode().then(() => finish(true), () => finish(false));
+            else finish(image.naturalWidth > 0);
+        };
+        image.src = url;
+    });
 }
 
 type CanvasPreviewImageProps = {
@@ -119,6 +131,7 @@ type CanvasPreviewImageProps = {
     allowOriginalFallback?: boolean;
     draggable?: boolean;
     onDragStart?: DragEventHandler<HTMLImageElement>;
+    onLoad?: React.ReactEventHandler<HTMLImageElement>;
 };
 
 function bindViewportRef<T extends Element>(ref: { current: Element | null }): Ref<T> {
@@ -127,15 +140,15 @@ function bindViewportRef<T extends Element>(ref: { current: Element | null }): R
     };
 }
 
-export function CanvasPreviewImage({ src, storageKey, thumbnailUrl, alt = "", className, maxEdge, allowOriginalFallback = true, draggable = false, onDragStart }: CanvasPreviewImageProps) {
+export function CanvasPreviewImage({ src, storageKey, thumbnailUrl, alt = "", className, maxEdge, allowOriginalFallback = true, draggable = false, onDragStart, onLoad }: CanvasPreviewImageProps) {
     const hasSource = Boolean(src || thumbnailUrl || storageKey);
     const { elementRef, shouldLoad } = useViewportMedia(hasSource);
     const preview = useCanvasPreviewSrc(src, { storageKey, thumbnailUrl, maxEdge, enabled: shouldLoad, allowOriginalFallback });
 
     return (
         <span ref={bindViewportRef<HTMLSpanElement>(elementRef)} className="block h-full w-full">
-            <img
-                src={preview.fallbackSrc || preview.src || undefined}
+            {preview.src ? <img
+                src={preview.src}
                 data-preview-src={preview.previewKind || undefined}
                 alt={alt}
                 className={className}
@@ -143,8 +156,8 @@ export function CanvasPreviewImage({ src, storageKey, thumbnailUrl, alt = "", cl
                 loading="eager"
                 decoding="async"
                 onDragStart={onDragStart}
-                onError={preview.onError}
-            />
+                onLoad={onLoad}
+            /> : <span role="status" aria-label={preview.failed ? "图片暂时无法加载" : "图片加载中"} className="block h-full w-full bg-black/5" />}
         </span>
     );
 }

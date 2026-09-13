@@ -889,6 +889,11 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		fail(c, err)
 		return
 	}
+	acrossProviders, err := settings.GetBool(c.Request.Context(), s.St.Pool, "cross_provider_same_model_balancing_enabled")
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	editableKind := ""
 	if workspace == modelconfig.WorkspaceAssistant && body.Mode != "image" {
 		editableKind = assistanttools.DedicatedEditableFileKindRequested(body.Prompt, len(body.Attachments) > 0)
@@ -1124,6 +1129,37 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 			return
 		}
 	}
+	// The model capability is only one part of the effective batch limit. A
+	// direct client can bypass the assistant config card, so enforce the same
+	// account/global/route limit at the run boundary as well.
+	if body.Mode == "image" && imageSelection != nil {
+		globalLimits, limitsErr := store.GetGlobalExecutionLimits(c.Request.Context(), s.St.Pool)
+		if limitsErr != nil {
+			fail(c, limitsErr)
+			return
+		}
+		accountConcurrency, concurrencyErr := store.GetUserConcurrency(c.Request.Context(), s.St.Pool, user.ID)
+		if concurrencyErr != nil {
+			fail(c, concurrencyErr)
+			return
+		}
+		effectiveLimit := min(int64(imageSelection.Model.GenerationMaxImages()), int64(accountConcurrency.ImageLimit), globalLimits.ImageLimit)
+		var routeLimit int64
+		for _, candidate := range executionconfig.AuthorizedCandidates(modelCfg, modelconfig.WorkspaceAssistant,
+			imageSelection.Provider.ID, imageSelection.Model.ID, imageSelection.Provider.RouteID, acrossProviders,
+			modelconfig.EffectivePrice(imageSelection.Model)) {
+			if candidate.Provider.MaxConcurrency > 0 {
+				routeLimit = max(routeLimit, int64(candidate.Provider.MaxConcurrency))
+			}
+		}
+		if routeLimit > 0 {
+			effectiveLimit = min(effectiveLimit, routeLimit)
+		}
+		if effectiveLimit > 0 && int64(body.Count) > effectiveLimit {
+			fail(c, apperr.E("validation_error", fmt.Sprintf("当前额度下所选模型单次最多生成 %d 张", effectiveLimit), 422))
+			return
+		}
+	}
 	assistantUploadKeys := assistantUploadReferenceKeys(references, user.ID)
 	taskOutputReferenceKeys := assistantTaskOutputReferenceKeys(references, user.ID)
 	assistantOutputKeys := assistantOutputReferenceKeys(references, user.ID)
@@ -1223,8 +1259,31 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 	}
 	if body.Mode == "agent" && !canvasAgent {
 		selections := modelconfig.PublicModelsForWorkspace(modelCfg, modelconfig.WorkspaceAssistant, modelconfig.ModelKindImage)
+		globalLimits, limitsErr := store.GetGlobalExecutionLimits(c.Request.Context(), s.St.Pool)
+		if limitsErr != nil {
+			fail(c, limitsErr)
+			return
+		}
+		accountConcurrency, concurrencyErr := store.GetUserConcurrency(c.Request.Context(), s.St.Pool, user.ID)
+		if concurrencyErr != nil {
+			fail(c, concurrencyErr)
+			return
+		}
+		imageBatchLimit := min(int64(accountConcurrency.ImageLimit), globalLimits.ImageLimit)
 		catalog := make([]map[string]any, 0, len(selections))
 		for _, selection := range selections {
+			modelBatchLimit := min(imageBatchLimit, int64(selection.Model.GenerationMaxImages()))
+			var routeLimit int64
+			for _, candidate := range executionconfig.AuthorizedCandidates(modelCfg, modelconfig.WorkspaceAssistant,
+				selection.Provider.ID, selection.Model.ID, selection.Provider.RouteID, acrossProviders,
+				modelconfig.EffectivePrice(selection.Model)) {
+				if candidate.Provider.MaxConcurrency > 0 {
+					routeLimit = max(routeLimit, int64(candidate.Provider.MaxConcurrency))
+				}
+			}
+			if routeLimit > 0 {
+				modelBatchLimit = min(modelBatchLimit, routeLimit)
+			}
 			catalog = append(catalog, map[string]any{
 				"id": selection.Model.ID, "name": selection.Model.Name,
 				"description":        selection.Model.Description,
@@ -1233,6 +1292,7 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 				"qualities":          selection.Model.Qualities,
 				"maxReferenceImages": selection.Model.MaxReferenceImages,
 				"maxImages":          selection.Model.GenerationMaxImages(),
+				"imageBatchLimit":    modelBatchLimit,
 				"fastMode":           selection.Model.FastMode,
 			})
 		}
@@ -1789,7 +1849,36 @@ func (s *Server) assistantRun(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	ok(c, gin.H{"run": assistantRunDict(run), "assistantMessage": assistantMessageDict(message)})
+	if c.Query("includeInput") != "1" {
+		ok(c, gin.H{"run": assistantRunDict(run), "assistantMessage": assistantMessageDict(message)})
+		return
+	}
+	userMessage, err := store.GetAssistantMessage(c.Request.Context(), s.St.Pool, run.UserMessageID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	payload, err := assistantRunSnapshot(user.ID, run, userMessage, message)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ok(c, payload)
+}
+
+// Keep the original input tied to the exact run. Picking the most recent user
+// message in a conversation would attach the wrong images after a refresh.
+func assistantRunSnapshot(userID uuid.UUID, run *store.AssistantRun, userMessage, assistantMessage *store.AssistantMessage) (gin.H, error) {
+	if run == nil || run.UserID != userID {
+		return nil, apperr.E("not_found", "任务不存在", 404)
+	}
+	if userMessage == nil || userMessage.ID != run.UserMessageID || userMessage.ConversationID != run.ConversationID || userMessage.Role != "user" {
+		return nil, apperr.E("not_found", "任务输入消息不存在", 404)
+	}
+	return gin.H{
+		"run": assistantRunDict(run), "userMessage": assistantMessageDict(userMessage),
+		"assistantMessage": assistantMessageDict(assistantMessage),
+	}, nil
 }
 
 func (s *Server) cancelAssistantRun(c *gin.Context, user *store.User, id uuid.UUID, body assistantRunPatchIn) {

@@ -80,7 +80,7 @@ class _BenefitsScreenState extends ConsumerState<BenefitsScreen> {
             '资格与奖励',
             style: Theme.of(
               context,
-            ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w800),
+            ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 8),
           DecoratedBox(
@@ -88,7 +88,7 @@ class _BenefitsScreenState extends ConsumerState<BenefitsScreen> {
               border: Border.all(
                 color: Theme.of(context).colorScheme.outlineVariant,
               ),
-              borderRadius: BorderRadius.circular(8),
+              borderRadius: BorderRadius.circular(16),
             ),
             child: Column(
               children: [
@@ -388,7 +388,7 @@ class _BenefitHubEntry extends StatelessWidget {
       color: Colors.transparent,
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(16),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
           child: Row(
@@ -405,7 +405,7 @@ class _BenefitHubEntry extends StatelessWidget {
                     Text(
                       title,
                       style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.w800,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
                     const SizedBox(height: 3),
@@ -448,7 +448,7 @@ class TrialCampaignPanel extends StatelessWidget {
             campaign.title,
             style: Theme.of(
               context,
-            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
+            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
           ),
           const SizedBox(height: 6),
           Text(
@@ -541,7 +541,7 @@ class TrialApplicationPanel extends StatelessWidget {
           children: [
             const Text(
               '申请限量体验资格',
-              style: TextStyle(fontWeight: FontWeight.w900),
+              style: TextStyle(fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 6),
             const Text('审核通过后可领取专属体验积分，用于本期开放功能。'),
@@ -576,7 +576,7 @@ class TrialApplicationPanel extends StatelessWidget {
               Expanded(
                 child: Text(
                   _applicationTitle(item.status),
-                  style: const TextStyle(fontWeight: FontWeight.w900),
+                  style: const TextStyle(fontWeight: FontWeight.w700),
                 ),
               ),
               _StatusLabel(
@@ -740,7 +740,7 @@ class _UsageMilestones extends StatelessWidget {
               const Expanded(
                 child: Text(
                   '本月创作里程碑',
-                  style: TextStyle(fontWeight: FontWeight.w900),
+                  style: TextStyle(fontWeight: FontWeight.w700),
                 ),
               ),
               Text('${rules.monthDeliveredUnits} 个作品'),
@@ -838,7 +838,7 @@ class GrowthGroupPanel extends StatelessWidget {
               rules.groupEnabled
                   ? '${rules.groupTargetMembers} 人成团，每人得 ${rules.groupRewardPoints} 积分'
                   : '拼团活动暂未开放',
-              style: const TextStyle(fontWeight: FontWeight.w900),
+              style: const TextStyle(fontWeight: FontWeight.w700),
             ),
             if (rules.groupEnabled) ...[
               const SizedBox(height: 5),
@@ -890,7 +890,7 @@ class GrowthGroupPanel extends StatelessWidget {
               Expanded(
                 child: Text(
                   item.status == 'completed' ? '拼团已完成' : '拼团进行中',
-                  style: const TextStyle(fontWeight: FontWeight.w900),
+                  style: const TextStyle(fontWeight: FontWeight.w700),
                 ),
               ),
               _StatusLabel(
@@ -911,7 +911,7 @@ class GrowthGroupPanel extends StatelessWidget {
               border: Border.all(
                 color: Theme.of(context).colorScheme.outlineVariant,
               ),
-              borderRadius: BorderRadius.circular(8),
+              borderRadius: BorderRadius.circular(16),
             ),
             child: Padding(
               padding: const EdgeInsets.fromLTRB(12, 2, 2, 2),
@@ -921,7 +921,7 @@ class GrowthGroupPanel extends StatelessWidget {
                     child: Text(
                       '拼团码 ${item.code}',
                       style: const TextStyle(
-                        fontWeight: FontWeight.w800,
+                        fontWeight: FontWeight.w600,
                         letterSpacing: 0,
                       ),
                     ),
@@ -1090,7 +1090,7 @@ class _TrialApplicationSheetState extends State<TrialApplicationSheet> {
               widget.initialOccupation.isEmpty ? '申请体验资格' : '重新申请体验资格',
               style: Theme.of(
                 context,
-              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
+              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 14),
             TextFormField(
@@ -1200,7 +1200,7 @@ class _JoinGrowthGroupSheetState extends State<JoinGrowthGroupSheet> {
               '加入好友拼团',
               style: Theme.of(
                 context,
-              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
+              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 14),
             TextFormField(
@@ -1254,7 +1254,7 @@ class _StatusLabel extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
       child: Text(
         label,
-        style: TextStyle(color: color, fontWeight: FontWeight.w800),
+        style: TextStyle(color: color, fontWeight: FontWeight.w600),
       ),
     ),
   );

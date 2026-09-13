@@ -1,4 +1,14 @@
 .home-banner { position:relative; width:100%; overflow:hidden; background:#202624; color:#fff; isolation:isolate; letter-spacing:0; touch-action:pan-y; }
+.home-hero__skeleton { position:absolute; z-index:3; inset:0; overflow:hidden; pointer-events:none; background:linear-gradient(120deg,#191725,#242131 55%,#191725); }
+.home-hero__skeleton::after { content:""; position:absolute; inset:0; background:linear-gradient(105deg,transparent 30%,rgb(255 255 255 / 5%) 50%,transparent 70%); transform:translateX(-100%); animation:home-skeleton-sweep 2.4s ease-in-out infinite; }
+.home-hero__skeleton-copy { position:absolute; left:var(--home-edge,48px); bottom:var(--home-bottom,32px); display:grid; gap:12px; width:min(36%,320px); }
+.home-hero__skeleton-copy span { display:block; height:28px; border-radius:6px; background:rgb(255 255 255 / 7%); }
+.home-hero__skeleton-copy span + span { width:68%; height:12px; background:rgb(255 255 255 / 4%); }
+.home-hero__skeleton-dots { position:absolute; bottom:20px; left:50%; display:flex; gap:12px; transform:translateX(-50%); }
+.home-hero__skeleton-dots span { width:18px; height:2px; border-radius:2px; background:rgb(255 255 255 / 10%); }
+@keyframes home-skeleton-sweep { to { transform:translateX(100%); } }
+.settings-no-animations .home-hero__skeleton::after { animation:none; }
+@media (prefers-reduced-motion:reduce) { .home-hero__skeleton::after { animation:none; } }
 .home-banner:not(.home-hero) { height:340px; }
 .home-banner__slide { position:absolute; inset:0; opacity:0; visibility:hidden; transition:opacity .5s ease,visibility .5s; }
 .home-banner__slide.is-active { opacity:1; visibility:visible; z-index:1; }

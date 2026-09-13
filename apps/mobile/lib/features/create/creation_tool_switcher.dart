@@ -17,7 +17,7 @@ class CreationToolSwitcher extends StatelessWidget {
         padding: const EdgeInsets.all(4),
         decoration: BoxDecoration(
           color: colors.surfaceContainerLow,
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(16),
           border: Border.all(
             color: colors.outlineVariant.withValues(alpha: .55),
           ),
@@ -64,9 +64,9 @@ class _ToolButton extends StatelessWidget {
       padding: const EdgeInsets.only(right: 4),
       child: Material(
         color: selected ? colors.primary : Colors.transparent,
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(16),
         child: InkWell(
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(16),
           onTap: selected ? null : onTap,
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
@@ -85,7 +85,7 @@ class _ToolButton extends StatelessWidget {
                     color: selected
                         ? colors.onPrimary
                         : colors.onSurfaceVariant,
-                    fontWeight: selected ? FontWeight.w900 : FontWeight.w700,
+                    fontWeight: selected ? FontWeight.w700 : FontWeight.w700,
                   ),
                 ),
               ],

@@ -174,7 +174,7 @@ class _SecurityStatus extends StatelessWidget {
         DecoratedBox(
           decoration: BoxDecoration(
             color: colors.primaryContainer,
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(16),
           ),
           child: SizedBox.square(
             dimension: 48,
@@ -193,7 +193,7 @@ class _SecurityStatus extends StatelessWidget {
                 '账号已安全登录',
                 style: Theme.of(
                   context,
-                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
               ),
               const SizedBox(height: 3),
               Text(
@@ -222,7 +222,7 @@ class _SectionTitle extends StatelessWidget {
     title,
     style: Theme.of(
       context,
-    ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+    ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
   );
 }
 
@@ -236,7 +236,7 @@ class _SettingsGroup extends StatelessWidget {
     final colors = Theme.of(context).colorScheme;
     return Material(
       color: colors.surfaceContainerLow,
-      borderRadius: BorderRadius.circular(8),
+      borderRadius: BorderRadius.circular(16),
       clipBehavior: Clip.antiAlias,
       child: Column(
         children: [
@@ -314,7 +314,7 @@ class _SignedOutState extends StatelessWidget {
           const SizedBox(height: 14),
           const Text(
             '登录状态已失效',
-            style: TextStyle(fontWeight: FontWeight.w800, fontSize: 18),
+            style: TextStyle(fontWeight: FontWeight.w600, fontSize: 18),
           ),
           const SizedBox(height: 14),
           FilledButton(onPressed: onLogin, child: const Text('重新登录')),

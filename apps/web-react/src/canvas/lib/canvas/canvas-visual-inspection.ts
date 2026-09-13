@@ -3,7 +3,6 @@ import { cloudDisplayKey, cloudFileUrl, cloudThumbnailKey, cloudThumbnailUrl, is
 import type { CanvasAgentSnapshot } from "./canvas-agent-ops.ts";
 import type { CanvasNodeData } from "../../types/canvas.ts";
 
-const MAX_VISUAL_ITEMS = 12;
 const MAX_MODEL_IMAGES = 4;
 const FINGERPRINT_CONCURRENCY = 2;
 const PERCEPTUAL_DUPLICATE_DISTANCE = 6;
@@ -17,6 +16,7 @@ export type CanvasVisualInspectionInput = {
     scope?: "auto" | "selection" | "workflow" | "recent";
     workflowId?: string;
     nodeIds?: string[];
+    resourceIds?: string[];
     maxImages?: number;
     offset?: number;
 };
@@ -98,12 +98,14 @@ export function analyzeCanvasVisualFingerprints(items: Array<Pick<FingerprintedV
 }
 
 export async function inspectCanvasVisuals(snapshot: CanvasAgentSnapshot, input: CanvasVisualInspectionInput = {}) {
-    const limit = Math.max(1, Math.min(MAX_VISUAL_ITEMS, Math.floor(Number(input.maxImages)) || MAX_VISUAL_ITEMS));
+    // Every resource on a page must fit in the model's actual image budget.
+    const limit = Math.max(1, Math.min(MAX_MODEL_IMAGES, Math.floor(Number(input.maxImages)) || MAX_MODEL_IMAGES));
     const offset = Math.max(0, Math.floor(Number(input.offset)) || 0);
     const selectedNodeIds = uniqueStrings(input.nodeIds?.length ? input.nodeIds : snapshot.selectedNodeIds);
     const { nodeIds, resolvedFrom } = resolveVisualNodeScope(snapshot, { ...input, nodeIds: selectedNodeIds });
     const candidates = nodeIds
         .flatMap((nodeId) => visualResourcesForNode(snapshot.nodes.find((node) => node.id === nodeId)))
+        .filter(resource => !input.resourceIds?.length || input.resourceIds.includes(resource.resourceId))
         .sort(compareVisualResources);
     if (!candidates.length) throw new Error("没有找到可检查的图片；请选中图片、图片上游节点或指定工作流");
     if (offset >= candidates.length) throw new Error(`图片检查起点 ${offset} 超出范围，当前只有 ${candidates.length} 张图片`);
@@ -118,7 +120,7 @@ export async function inspectCanvasVisuals(snapshot: CanvasAgentSnapshot, input:
     }))).filter((item): item is FingerprintedVisualResource => Boolean(item));
     const comparison = analyzeCanvasVisualFingerprints(comparedItems);
     const visionReferences = (await mapLimit(
-        prioritizeModelVisuals(comparedItems, comparison).slice(0, MAX_MODEL_IMAGES),
+        fingerprinted,
         FINGERPRINT_CONCURRENCY,
         modelVisualReference,
     )).filter((item): item is NonNullable<typeof item> => Boolean(item));
@@ -131,6 +133,8 @@ export async function inspectCanvasVisuals(snapshot: CanvasAgentSnapshot, input:
         total: candidates.length,
         inspected: fingerprinted.length,
         compared: comparedItems.length,
+        modelImageCount: visionReferences.length,
+        unavailableVisualResourceIds: fingerprinted.filter((item) => !visionReferences.some((reference) => reference.resourceId === item.resourceId)).map((item) => item.resourceId),
         truncated: nextOffset !== undefined,
         ...(nextOffset !== undefined ? { nextOffset } : {}),
         items: fingerprinted.map((item) => ({
@@ -207,30 +211,6 @@ function pruneVisualFingerprintCache() {
         if (!oldest) break;
         visualFingerprintCache.delete(oldest);
     }
-}
-
-function prioritizeModelVisuals(
-    items: FingerprintedVisualResource[],
-    comparison: ReturnType<typeof analyzeCanvasVisualFingerprints>,
-) {
-    const byResourceId = new Map(items.map((item) => [item.resourceId, item]));
-    const orderedIds = [
-        ...comparison.similarPairs.flatMap((pair) => [pair.leftResourceId, pair.rightResourceId]),
-        ...comparison.exactDuplicateGroups.map((group) => group.resourceIds[0]),
-        ...items.map((item) => item.resourceId),
-    ];
-    const seenResources = new Set<string>();
-    const seenExact = new Set<string>();
-    const selected: FingerprintedVisualResource[] = [];
-    orderedIds.forEach((resourceId) => {
-        const item = byResourceId.get(resourceId);
-        if (!item || seenResources.has(resourceId)) return;
-        seenResources.add(resourceId);
-        if (item.exact && seenExact.has(item.exact)) return;
-        if (item.exact) seenExact.add(item.exact);
-        selected.push(item);
-    });
-    return selected;
 }
 
 function resolveVisualNodeScope(snapshot: CanvasAgentSnapshot, input: CanvasVisualInspectionInput & { nodeIds: string[] }) {

@@ -14,7 +14,7 @@ export function TaskStateIndicator({ state = "waiting", compact = false }) {
       const icon = root.current.querySelector("svg");
       gsap.fromTo(icon, { scale: 0.96 }, { scale: 1, duration: 0.24, ease: "power2.out" });
       if (["submitting", "recovering", "uploading", "generating", "saving", "quoting", "loading"].includes(state)) {
-        gsap.to(root.current.querySelector(".t2i-state-orbit"), { rotation: 360, transformOrigin: "50% 50%", duration: state === "generating" ? 3 : 1.5, repeat: -1, ease: "none" });
+        gsap.to(root.current.querySelector(".t2i-state-orbit"), { rotation: 360, transformOrigin: "50% 50%", duration: state === "generating" || state === "saving" ? 2.6 : 1.5, repeat: -1, ease: "none" });
       } else if (state === "waiting") {
         gsap.to(root.current.querySelector(".t2i-state-core"), { opacity: 0.5, duration: 1.4, repeat: -1, yoyo: true, ease: "sine.inOut" });
       }
@@ -26,7 +26,7 @@ export function TaskStateIndicator({ state = "waiting", compact = false }) {
     <span ref={root} className={`t2i-state-indicator is-${state}${compact ? " is-compact" : ""}`} aria-hidden="true">
       <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
         <circle className="t2i-state-track" cx="24" cy="24" r="20" />
-        <circle className="t2i-state-orbit" cx="24" cy="24" r="20" strokeDasharray="28 98" />
+        <circle className="t2i-state-orbit" cx="24" cy="24" r="20" strokeDasharray={state === "generating" || state === "saving" ? "22 104" : "28 98"} />
         <g className="t2i-state-core">
           {warning ? <path d="M24 15v12m0 6h.01" />
             : state === "waiting" ? <><circle cx="24" cy="24" r="9" /><path d="M24 18v6l4 3" /></>
@@ -55,10 +55,13 @@ export function GenerationButtonContent({ state, label, detail, points }) {
   const visible = busy && !showBusy ? idle.current : { state, label, detail, points: busy ? idle.current.points : points };
   useGSAP(() => {
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches || document.documentElement.classList.contains("settings-no-animations")) return;
-    gsap.fromTo(root.current.querySelector(".t2i-submit-copy"), { y: 1.5 }, { y: 0, duration: 0.18, ease: "power2.out" });
-    if (["submitting", "recovering", "uploading", "quoting"].includes(visible.state)) {
-      gsap.fromTo(root.current.querySelector(".t2i-submit-sweep"), { xPercent: -120 }, { xPercent: 340, duration: 1.8, repeat: -1, ease: "sine.inOut" });
-    }
+    const targets = root.current?.querySelectorAll(".t2i-submit-copy, .t2i-submit-summary");
+    if (!targets?.length) return;
+    gsap.fromTo(
+      targets,
+      { opacity: 0.45, scale: 0.97 },
+      { opacity: 1, scale: 1, duration: 0.34, ease: "power2.out", stagger: 0.03 },
+    );
   }, { scope: root, dependencies: [visible.state, visible.label], revertOnUpdate: true });
   const knownPoints = visible.points !== null && visible.points !== undefined && Number.isFinite(Number(visible.points));
   return <span ref={root} className="t2i-submit-content" data-visible-state={visible.state}>
@@ -68,6 +71,5 @@ export function GenerationButtonContent({ state, label, detail, points }) {
         {knownPoints ? Number(visible.points) === 0 ? <b>免费</b> : <><b>{Number(visible.points).toLocaleString("zh-CN")}</b><span>积分</span></> : <span>待核价</span>}
       </span> : visible.detail ? <span className="t2i-submit-note">{visible.detail}</span> : null}
     </span>
-    <span className="t2i-submit-track" aria-hidden="true"><span className="t2i-submit-sweep" /></span>
   </span>;
 }

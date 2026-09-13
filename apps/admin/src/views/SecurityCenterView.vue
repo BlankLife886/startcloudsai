@@ -178,6 +178,27 @@ function openRecovery(orderId = "") {
   recoveryDialog.value = true;
 }
 
+async function confirmNotCreated(orderId: string) {
+  if (recovering.value || !recoverySupported.value) return;
+  const { value: note } = await ElMessageBox.prompt(
+    "请确认已在支付渠道后台核对：没有建立渠道订单，也没有收到款项。",
+    "确认未建单",
+    { inputPlaceholder: "例如：蓝鲸订单列表未找到，支付宝无收款记录", inputValidator: (value) => value.trim().length >= 6 ? true : "请填写至少 6 个字的核查说明", confirmButtonText: "确认并解除待核实", type: "warning" },
+  );
+  recovering.value = true;
+  try {
+    const result = await request<{ outcomes: Record<string, number> }>("/api/v1/admin/payment-reconciliations/run", {
+      method: "POST", silent: true, body: { orderId, providerOrderId: "", resolution: "not_created", note: note.trim() },
+    });
+    const outcome = Object.keys(result.outcomes)[0];
+    if (outcome === "manual_not_created") ElMessage.success("已解除待核实，用户可以重新支付");
+    else ElMessage.warning(outcomeLabel(outcome || "provider_error"));
+    await load();
+  } catch (error) {
+    if (error !== "cancel" && error !== "close") ElMessage.error(error instanceof Error ? error.message : "订单处理失败");
+  } finally { recovering.value = false; }
+}
+
 async function recoverPayment() {
   if (recovering.value || !recoverySupported.value) return;
   recovering.value = true;
@@ -383,7 +404,11 @@ onMounted(() => void load());
               <template #default="{ row }"><span class="tnum">{{ formatTime(row.checkedAt) }}</span></template>
             </el-table-column>
             <el-table-column label="处理" width="130" fixed="right">
-              <template #default="{ row }"><el-button v-if="recoverySupported && row.outcome === 'provider_id_missing'" text @click="openRecovery(row.orderId)">关联渠道单号</el-button></template>
+              <template #default="{ row }">
+                <el-button v-if="recoverySupported && row.outcome === 'provider_id_missing'" text type="success" @click="confirmNotCreated(row.orderId)">确认未建单</el-button>
+                <el-button v-if="recoverySupported && row.outcome === 'provider_id_missing'" text @click="openRecovery(row.orderId)">补录渠道单号</el-button>
+                <el-button v-if="recoverySupported && ['close_result_unknown','provider_binding_failed','create_result_unknown'].includes(row.outcome)" text @click="openRecovery(row.orderId)">继续核查</el-button>
+              </template>
             </el-table-column>
           </el-table>
         </section>

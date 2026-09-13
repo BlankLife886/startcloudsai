@@ -21,7 +21,7 @@ export function canvasAgentWorkflowStatus(record: AgentWorkflowExecution, liveSt
     const status = record.error ? "failed"
         : !started ? record.settled ? "canceled" : "queued"
         : state.status === "success" ? "succeeded"
-        : state.status === "error" ? "failed"
+        : state.status === "error" || state.status === "paused" ? "failed"
         : state.status === "canceled" ? "canceled" : "running";
     return { status, started, state } as const;
 }

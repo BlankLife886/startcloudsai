@@ -10,6 +10,7 @@ import '../../core/network/api_exception.dart';
 import '../../core/widgets/app_chrome.dart';
 import '../../core/widgets/app_notice.dart';
 import '../../core/widgets/app_top_bar.dart';
+import '../../core/widgets/app_visual.dart';
 import '../../core/widgets/authenticated_image.dart';
 import '../auth/auth.dart';
 import '../discover/discover.dart';
@@ -280,15 +281,15 @@ class _WorksScreenState extends ConsumerState<WorksScreen> {
                               vertical: 10,
                             ),
                             border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(8),
+                              borderRadius: BorderRadius.circular(16),
                               borderSide: BorderSide.none,
                             ),
                             enabledBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(8),
+                              borderRadius: BorderRadius.circular(16),
                               borderSide: BorderSide.none,
                             ),
                             focusedBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(8),
+                              borderRadius: BorderRadius.circular(16),
                               borderSide: BorderSide.none,
                             ),
                           ),
@@ -525,7 +526,7 @@ List<TaskItem> filterTasksForWorks(
     if (terms.isEmpty) return true;
     final searchable = [
       task.displayPrompt,
-      task.model,
+      task.modelName,
       task.type,
       worksTaskTypeLabel(task),
     ].join(' ').toLowerCase();
@@ -691,70 +692,72 @@ class TaskCard extends StatelessWidget {
     final time = item.createdAt == null
         ? ''
         : DateFormat('HH:mm').format(item.createdAt!);
-    return Material(
-      color: colors.surfaceContainerLow,
-      borderRadius: BorderRadius.circular(8),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: onTap,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _WorksCover(
-              item: item,
-              imageUrl: imageUrl,
-              statusLabel: status.label,
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(10, 8, 4, 8),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    prompt.isEmpty ? '未填写提示词' : prompt,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          time,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context).textTheme.labelSmall
-                              ?.copyWith(color: colors.onSurfaceVariant),
-                        ),
+    return AppGlassSurface(
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(24),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _WorksCover(
+                item: item,
+                imageUrl: imageUrl,
+                statusLabel: status.label,
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(10, 8, 4, 8),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      prompt.isEmpty ? '未填写提示词' : prompt,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        fontWeight: FontWeight.w700,
                       ),
-                      if (onDelete != null)
-                        SizedBox.square(
-                          dimension: 28,
-                          child: IconButton(
-                            tooltip: '删除作品',
-                            padding: EdgeInsets.zero,
-                            visualDensity: VisualDensity.compact,
-                            onPressed: deleting ? null : onDelete,
-                            color: colors.error,
-                            icon: deleting
-                                ? const SizedBox.square(
-                                    dimension: 14,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                    ),
-                                  )
-                                : const Icon(Icons.delete_outline, size: 16),
+                    ),
+                    const SizedBox(height: 2),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            time,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.labelSmall
+                                ?.copyWith(color: colors.onSurfaceVariant),
                           ),
                         ),
-                    ],
-                  ),
-                ],
+                        if (onDelete != null)
+                          SizedBox.square(
+                            dimension: 28,
+                            child: IconButton(
+                              tooltip: '删除作品',
+                              padding: EdgeInsets.zero,
+                              visualDensity: VisualDensity.compact,
+                              onPressed: deleting ? null : onDelete,
+                              color: colors.error,
+                              icon: deleting
+                                  ? const SizedBox.square(
+                                      dimension: 14,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : const Icon(Icons.delete_outline, size: 16),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -877,7 +880,7 @@ class _WorksCoverChip extends StatelessWidget {
     return DecoratedBox(
       decoration: BoxDecoration(
         color: Colors.black.withValues(alpha: .55),
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(16),
       ),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
@@ -957,7 +960,7 @@ class _FilteredEmpty extends StatelessWidget {
 
 ({String label, Color color}) _status(String value) => switch (value) {
   'queued' => (label: '排队中', color: const Color(0xFFD97706)),
-  'running' => (label: '生成中', color: const Color(0xFF4F67D6)),
+  'running' => (label: '生成中', color: const Color(0xFF005FEA)),
   'succeeded' => (label: '已完成', color: const Color(0xFF0F766E)),
   'failed' => (label: '失败', color: const Color(0xFFDC2626)),
   'canceled' => (label: '已取消', color: const Color(0xFF64748B)),

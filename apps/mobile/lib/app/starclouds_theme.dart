@@ -1,6 +1,30 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+abstract final class StarCloudsPalette {
+  static const ice = Color(0xFFE5EFFC);
+  static const mist = Color(0xFFADCCEF);
+  static const peach = Color(0xFFFDF0EC);
+  static const sky = Color(0xFFAEE1F9);
+  static const frost = Color(0xFFBDE3FB);
+  static const cornflower = Color(0xFF92BCFA);
+  static const lavender = Color(0xFFD3C3FC);
+  static const lightBlue = Color(0xFF9AC5FC);
+  static const silver = Color(0xFFD4E1E4);
+  static const cyan = Color(0xFF02EFFE);
+  static const azure = Color(0xFF4CAEFE);
+  static const aqua = Color(0xFF00C2FA);
+  static const blue = Color(0xFF005FEA);
+  static const turquoise = Color(0xFF49C5EF);
+  static const iris = Color(0xFF5B6FD4);
+  static const periwinkle = Color(0xFFC2D1EC);
+  static const steel = Color(0xFF6A92C8);
+  static const blueGray = Color(0xFF9DB2DC);
+  static const rose = Color(0xFFED82D5);
+  static const mint = Color(0xFF6BE6CF);
+  static const gold = Color(0xFFFFC87A);
+}
+
 @immutable
 class StarCloudsVisualStyle extends ThemeExtension<StarCloudsVisualStyle> {
   const StarCloudsVisualStyle({
@@ -27,6 +51,27 @@ class StarCloudsVisualStyle extends ThemeExtension<StarCloudsVisualStyle> {
     begin: Alignment.topLeft,
     end: Alignment.bottomRight,
     colors: [brandStart, brandEnd],
+  );
+
+  LinearGradient glassGradient({bool highContrast = false}) => LinearGradient(
+    begin: Alignment.topLeft,
+    end: Alignment.bottomRight,
+    colors: highContrast
+        ? [panelStrong.withValues(alpha: 1), panelStrong.withValues(alpha: 1)]
+        : [
+            panelStrong,
+            Color.lerp(panelStrong, panel, .7)!,
+            panel,
+            Color.lerp(panel, panelStrong, .2)!,
+          ],
+    stops: highContrast ? null : const [0, .32, .70, 1],
+  );
+
+  Border glassBorder({bool highContrast = false}) => Border.all(
+    color: highContrast
+        ? (panel.computeLuminance() < .5 ? Colors.white : Colors.black)
+        : hairline,
+    width: highContrast ? 1.5 : 1,
   );
 
   static StarCloudsVisualStyle of(BuildContext context) {
@@ -84,14 +129,16 @@ class StarCloudsVisualStyle extends ThemeExtension<StarCloudsVisualStyle> {
 }
 
 abstract final class StarCloudsRadii {
-  static const double sm = 6;
-  static const double md = 8;
-  static const double lg = 8;
-  static const double xl = 12;
+  static const double sm = 12;
+  static const double md = 16;
+  static const double lg = 24;
+  static const double xl = 28;
   static const double pill = 999;
 
   static BorderRadius get control => BorderRadius.circular(md);
   static BorderRadius get card => BorderRadius.circular(lg);
+  static BorderRadius get dialog => BorderRadius.circular(xl);
+  static BorderRadius get media => BorderRadius.circular(md);
   static BorderRadius get sheet =>
       const BorderRadius.vertical(top: Radius.circular(xl));
   static BorderRadius get pillAll => BorderRadius.circular(pill);
@@ -142,10 +189,10 @@ class StarCloudsPageTransitionsBuilder extends PageTransitionsBuilder {
 }
 
 abstract final class StarCloudsTheme {
-  static const primary = Color(0xFF4B5FE3);
-  static const secondary = Color(0xFF7A5CDB);
-  static const tertiary = Color(0xFFB14A9A);
-  static const ink = Color(0xFF16171C);
+  static const primary = Color(0xFF20242B);
+  static const secondary = Color(0xFF326C62);
+  static const tertiary = Color(0xFF875663);
+  static const ink = Color(0xFF20242B);
 
   static ThemeData light() => _theme(Brightness.light);
   static ThemeData dark() => _theme(Brightness.dark);
@@ -154,65 +201,59 @@ abstract final class StarCloudsTheme {
     final dark = brightness == Brightness.dark;
     return ColorScheme(
       brightness: brightness,
-      primary: dark ? const Color(0xFFB4C0FF) : primary,
-      onPrimary: dark ? const Color(0xFF152056) : Colors.white,
+      primary: dark ? const Color(0xFFF5F6F8) : primary,
+      onPrimary: dark ? primary : Colors.white,
       primaryContainer: dark
-          ? const Color(0xFF2A3368)
-          : const Color(0xFFE4E8FF),
-      onPrimaryContainer: dark
-          ? const Color(0xFFE7EBFF)
-          : const Color(0xFF1E2A6B),
-      secondary: dark ? const Color(0xFFCDB8FF) : secondary,
-      onSecondary: dark ? const Color(0xFF2C2158) : Colors.white,
+          ? const Color(0xFF32373F)
+          : const Color(0xFFE8EBEF),
+      onPrimaryContainer: dark ? const Color(0xFFF3F4F6) : primary,
+      secondary: dark ? const Color(0xFFA4D5C5) : secondary,
+      onSecondary: dark ? const Color(0xFF173B32) : Colors.white,
       secondaryContainer: dark
-          ? const Color(0xFF3D335F)
-          : const Color(0xFFEDE7FF),
+          ? const Color(0xFF24463D)
+          : const Color(0xFFE1F0E9),
       onSecondaryContainer: dark
-          ? const Color(0xFFEDE6FF)
-          : const Color(0xFF2D2158),
-      tertiary: dark ? const Color(0xFFF0B4E2) : tertiary,
-      onTertiary: dark ? const Color(0xFF4A1A40) : Colors.white,
+          ? const Color(0xFFD1EEE2)
+          : const Color(0xFF254D43),
+      tertiary: dark ? const Color(0xFFE5B8C5) : tertiary,
+      onTertiary: dark ? const Color(0xFF4A2935) : Colors.white,
       tertiaryContainer: dark
-          ? const Color(0xFF5A314F)
-          : const Color(0xFFF8D7F0),
+          ? const Color(0xFF49323C)
+          : const Color(0xFFF5E7EC),
       onTertiaryContainer: dark
-          ? const Color(0xFFFBE6F5)
-          : const Color(0xFF4A1A40),
+          ? const Color(0xFFF5D9E3)
+          : const Color(0xFF603B49),
       error: dark ? const Color(0xFFFFB3B0) : const Color(0xFFCF3B4A),
       onError: dark ? const Color(0xFF680014) : Colors.white,
       errorContainer: dark ? const Color(0xFF93001A) : const Color(0xFFFFDAD8),
       onErrorContainer: dark
           ? const Color(0xFFFFDAD8)
           : const Color(0xFF5C1218),
-      surface: dark ? const Color(0xFF0B0C10) : Colors.white,
-      onSurface: dark ? const Color(0xFFF4F5F8) : ink,
-      surfaceContainerLowest: dark
-          ? const Color(0xFF13141A)
-          : const Color(0xFFF7F7FA),
+      surface: dark ? const Color(0xFF12151B) : const Color(0xFFF2F4F8),
+      onSurface: dark ? const Color(0xFFF3F4F6) : ink,
+      surfaceContainerLowest: dark ? const Color(0xFF1B2028) : Colors.white,
       surfaceContainerLow: dark
-          ? const Color(0xFF181A22)
-          : const Color(0xFFF2F2F7),
+          ? const Color(0xFF252A32)
+          : const Color(0xFFF5F6F8),
       surfaceContainer: dark
-          ? const Color(0xFF1E2029)
-          : const Color(0xFFEBEBF0),
+          ? const Color(0xFF292E36)
+          : const Color(0xFFEEF0F3),
       surfaceContainerHigh: dark
-          ? const Color(0xFF252833)
-          : const Color(0xFFE5E5EA),
+          ? const Color(0xFF32373F)
+          : const Color(0xFFE8EBEF),
       surfaceContainerHighest: dark
-          ? const Color(0xFF2E3140)
-          : const Color(0xFFDCDCE3),
+          ? const Color(0xFF3B414A)
+          : const Color(0xFFDFE3E8),
       onSurfaceVariant: dark
-          ? const Color(0xFFB8BCC8)
-          : const Color(0xFF5C5F6A),
-      outline: dark ? const Color(0xFF8B90A0) : const Color(0xFF8B8E98),
-      outlineVariant: dark ? const Color(0xFF323644) : const Color(0xFFE4E4EA),
+          ? const Color(0xFFBFC5CF)
+          : const Color(0xFF626974),
+      outline: dark ? const Color(0xFF858D98) : const Color(0xFF777F8A),
+      outlineVariant: dark ? const Color(0xFF41464F) : const Color(0xFFDEE2E7),
       shadow: Colors.black,
       scrim: Colors.black,
-      inverseSurface: dark ? const Color(0xFFF4F5F8) : const Color(0xFF23242B),
-      onInverseSurface: dark
-          ? const Color(0xFF23242B)
-          : const Color(0xFFF4F5F8),
-      inversePrimary: dark ? primary : const Color(0xFFB4C0FF),
+      inverseSurface: dark ? StarCloudsPalette.ice : const Color(0xFF23242B),
+      onInverseSurface: dark ? const Color(0xFF23242B) : StarCloudsPalette.ice,
+      inversePrimary: dark ? primary : Colors.white,
       surfaceTint: Colors.transparent,
     );
   }
@@ -241,15 +282,13 @@ abstract final class StarCloudsTheme {
                   : Brightness.dark,
             );
     final visualStyle = StarCloudsVisualStyle(
-      brandStart: dark ? const Color(0xFF8EA0FF) : const Color(0xFF4B5FE3),
-      brandEnd: dark ? const Color(0xFFE0A8F0) : const Color(0xFF8B5CF6),
-      brandSoft: dark ? const Color(0xFF2A3368) : const Color(0xFFDDE3FA),
-      panel: scheme.surfaceContainerLow,
+      brandStart: scheme.primary,
+      brandEnd: dark ? const Color(0xFFDFE3E8) : const Color(0xFF41464F),
+      brandSoft: scheme.primaryContainer,
+      panel: scheme.surfaceContainerLowest,
       panelStrong: scheme.surfaceContainerLowest,
-      shadow: dark
-          ? Colors.black.withValues(alpha: .42)
-          : const Color(0xFF3B3A4A).withValues(alpha: .10),
-      hairline: scheme.outlineVariant.withValues(alpha: dark ? .9 : .85),
+      shadow: Colors.black.withValues(alpha: dark ? .18 : .045),
+      hairline: Colors.white.withValues(alpha: dark ? .16 : .95),
       overlay: Colors.black.withValues(alpha: dark ? .62 : .44),
     );
     final controlShape = RoundedRectangleBorder(
@@ -266,7 +305,7 @@ abstract final class StarCloudsTheme {
       highlightColor: Colors.transparent,
       splashColor: Colors.transparent,
       hoverColor: scheme.primary.withValues(alpha: .04),
-      dividerColor: visualStyle.hairline,
+      dividerColor: scheme.onSurface.withValues(alpha: .08),
       pageTransitionsTheme: PageTransitionsTheme(
         builders: {
           TargetPlatform.android: const StarCloudsPageTransitionsBuilder(),
@@ -292,7 +331,7 @@ abstract final class StarCloudsTheme {
         titleSpacing: 0,
         toolbarHeight: 56,
         titleTextStyle: textTheme.titleMedium?.copyWith(
-          fontWeight: FontWeight.w800,
+          fontWeight: FontWeight.w700,
           fontSize: 17,
           letterSpacing: 0,
           color: scheme.onSurface,
@@ -302,8 +341,8 @@ abstract final class StarCloudsTheme {
       ),
       cardTheme: CardThemeData(
         margin: EdgeInsets.zero,
-        elevation: 1,
-        color: scheme.surface,
+        elevation: 0,
+        color: scheme.surfaceContainerLowest,
         surfaceTintColor: Colors.transparent,
         shadowColor: visualStyle.shadow,
         shape: cardShape,
@@ -325,13 +364,13 @@ abstract final class StarCloudsTheme {
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
-        fillColor: scheme.surfaceContainerLow,
+        fillColor: scheme.surfaceContainerLowest,
         contentPadding: const EdgeInsets.symmetric(
           horizontal: 16,
           vertical: 16,
         ),
         hintStyle: textTheme.bodyMedium?.copyWith(
-          color: scheme.onSurfaceVariant.withValues(alpha: .72),
+          color: scheme.onSurfaceVariant,
         ),
         labelStyle: textTheme.bodyMedium?.copyWith(
           color: scheme.onSurfaceVariant,
@@ -348,7 +387,7 @@ abstract final class StarCloudsTheme {
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: StarCloudsRadii.control,
-          borderSide: BorderSide.none,
+          borderSide: BorderSide(color: visualStyle.hairline),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: StarCloudsRadii.control,
@@ -365,27 +404,31 @@ abstract final class StarCloudsTheme {
       ),
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(
-          minimumSize: const Size(48, 48),
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-          shape: controlShape,
+          backgroundColor: scheme.primary,
+          foregroundColor: scheme.onPrimary,
+          minimumSize: const Size(48, 52),
+          padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 14),
+          shape: const StadiumBorder(),
           textStyle: textTheme.labelLarge?.copyWith(
-            fontWeight: FontWeight.w800,
-            letterSpacing: 0,
+            fontWeight: FontWeight.w600,
           ),
           elevation: 0,
           shadowColor: Colors.transparent,
-        ),
+          side: BorderSide(color: Colors.white.withValues(alpha: .5)),
+        ).copyWith(animationDuration: const Duration(milliseconds: 120)),
       ),
       outlinedButtonTheme: OutlinedButtonThemeData(
         style: OutlinedButton.styleFrom(
-          minimumSize: const Size(48, 48),
-          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-          shape: controlShape,
+          backgroundColor: scheme.surfaceContainerLowest,
+          foregroundColor: scheme.onSurface,
+          minimumSize: const Size(48, 52),
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+          shape: const StadiumBorder(),
           side: BorderSide(color: visualStyle.hairline),
           textStyle: textTheme.labelLarge?.copyWith(
-            fontWeight: FontWeight.w700,
+            fontWeight: FontWeight.w600,
           ),
-        ),
+        ).copyWith(animationDuration: const Duration(milliseconds: 120)),
       ),
       textButtonTheme: TextButtonThemeData(
         style: TextButton.styleFrom(
@@ -399,10 +442,11 @@ abstract final class StarCloudsTheme {
       ),
       iconButtonTheme: IconButtonThemeData(
         style: IconButton.styleFrom(
+          backgroundColor: scheme.surfaceContainerLowest,
           minimumSize: const Size.square(44),
           highlightColor: scheme.primary.withValues(alpha: .08),
           shape: const CircleBorder(),
-        ),
+        ).copyWith(animationDuration: const Duration(milliseconds: 120)),
       ),
       floatingActionButtonTheme: FloatingActionButtonThemeData(
         elevation: 0,
@@ -459,7 +503,7 @@ abstract final class StarCloudsTheme {
                 ? scheme.primary
                 : scheme.onSurfaceVariant,
             fontWeight: states.contains(WidgetState.selected)
-                ? FontWeight.w800
+                ? FontWeight.w700
                 : FontWeight.w500,
           ),
         ),
@@ -490,12 +534,12 @@ abstract final class StarCloudsTheme {
         shadowColor: visualStyle.shadow,
         barrierColor: visualStyle.overlay,
         shape: RoundedRectangleBorder(
-          borderRadius: StarCloudsRadii.card,
+          borderRadius: StarCloudsRadii.dialog,
           side: BorderSide(color: visualStyle.hairline),
         ),
         titleTextStyle: textTheme.titleLarge?.copyWith(
           color: scheme.onSurface,
-          fontWeight: FontWeight.w800,
+          fontWeight: FontWeight.w700,
           letterSpacing: 0,
         ),
         contentTextStyle: textTheme.bodyMedium?.copyWith(
@@ -512,7 +556,7 @@ abstract final class StarCloudsTheme {
         shape: const RoundedRectangleBorder(),
       ),
       dividerTheme: DividerThemeData(
-        color: visualStyle.hairline,
+        color: scheme.onSurface.withValues(alpha: .08),
         thickness: 1,
         space: 1,
       ),
@@ -573,7 +617,7 @@ abstract final class StarCloudsTheme {
       badgeTheme: BadgeThemeData(
         backgroundColor: scheme.tertiary,
         textColor: dark ? const Color(0xFF31102F) : Colors.white,
-        textStyle: textTheme.labelSmall?.copyWith(fontWeight: FontWeight.w800),
+        textStyle: textTheme.labelSmall?.copyWith(fontWeight: FontWeight.w700),
       ),
       progressIndicatorTheme: ProgressIndicatorThemeData(
         color: scheme.primary,
@@ -581,17 +625,20 @@ abstract final class StarCloudsTheme {
         circularTrackColor: scheme.primaryContainer,
       ),
       switchTheme: SwitchThemeData(
-        thumbColor: WidgetStateProperty.resolveWith(
-          (states) => states.contains(WidgetState.selected)
-              ? scheme.onPrimary
-              : scheme.outline,
-        ),
+        thumbColor: const WidgetStatePropertyAll(Colors.white),
         trackColor: WidgetStateProperty.resolveWith(
           (states) => states.contains(WidgetState.selected)
-              ? scheme.primary
+              ? StarCloudsPalette.blue
               : scheme.surfaceContainerHighest,
         ),
-        trackOutlineColor: const WidgetStatePropertyAll(Colors.transparent),
+        trackOutlineColor: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.selected)
+              ? StarCloudsPalette.cyan.withValues(alpha: .7)
+              : scheme.outline.withValues(alpha: .55),
+        ),
+        overlayColor: WidgetStatePropertyAll(
+          StarCloudsPalette.cyan.withValues(alpha: .12),
+        ),
       ),
       checkboxTheme: CheckboxThemeData(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
@@ -655,7 +702,7 @@ abstract final class StarCloudsTheme {
         dividerColor: Colors.transparent,
         labelColor: scheme.onSurface,
         unselectedLabelColor: scheme.onSurfaceVariant,
-        labelStyle: textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+        labelStyle: textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
         unselectedLabelStyle: textTheme.titleSmall?.copyWith(
           fontWeight: FontWeight.w600,
         ),
@@ -671,60 +718,69 @@ abstract final class StarCloudsTheme {
       source.copyWith(
         displayLarge: source.displayLarge?.copyWith(
           color: colors.onSurface,
-          fontWeight: FontWeight.w800,
+          fontWeight: FontWeight.w700,
           letterSpacing: 0,
         ),
         displayMedium: source.displayMedium?.copyWith(
           color: colors.onSurface,
-          fontWeight: FontWeight.w800,
+          fontWeight: FontWeight.w700,
           letterSpacing: 0,
         ),
         displaySmall: source.displaySmall?.copyWith(
           color: colors.onSurface,
-          fontWeight: FontWeight.w800,
+          fontWeight: FontWeight.w700,
           letterSpacing: 0,
         ),
         headlineLarge: source.headlineLarge?.copyWith(
           color: colors.onSurface,
-          fontWeight: FontWeight.w800,
+          fontWeight: FontWeight.w700,
           letterSpacing: 0,
         ),
         headlineMedium: source.headlineMedium?.copyWith(
           color: colors.onSurface,
-          fontWeight: FontWeight.w800,
+          fontWeight: FontWeight.w700,
           letterSpacing: 0,
         ),
         headlineSmall: source.headlineSmall?.copyWith(
           color: colors.onSurface,
-          fontWeight: FontWeight.w800,
+          fontWeight: FontWeight.w700,
           letterSpacing: 0,
         ),
         titleLarge: source.titleLarge?.copyWith(
+          fontSize: 22,
           color: colors.onSurface,
-          fontWeight: FontWeight.w800,
+          fontWeight: FontWeight.w700,
           letterSpacing: 0,
         ),
         titleMedium: source.titleMedium?.copyWith(
+          fontSize: 17,
           color: colors.onSurface,
-          fontWeight: FontWeight.w700,
+          fontWeight: FontWeight.w600,
           letterSpacing: 0,
         ),
         titleSmall: source.titleSmall?.copyWith(
+          fontSize: 15,
           color: colors.onSurface,
-          fontWeight: FontWeight.w700,
+          fontWeight: FontWeight.w600,
           letterSpacing: 0,
         ),
         bodyLarge: source.bodyLarge?.copyWith(
+          fontSize: 16,
+          fontWeight: FontWeight.w400,
           color: colors.onSurface,
           letterSpacing: 0,
           height: 1.45,
         ),
         bodyMedium: source.bodyMedium?.copyWith(
+          fontSize: 15,
+          fontWeight: FontWeight.w400,
           color: colors.onSurface,
           letterSpacing: 0,
           height: 1.45,
         ),
         bodySmall: source.bodySmall?.copyWith(
+          fontSize: 13,
+          fontWeight: FontWeight.w400,
           color: colors.onSurfaceVariant,
           letterSpacing: 0,
           height: 1.4,

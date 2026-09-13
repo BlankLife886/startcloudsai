@@ -36,6 +36,10 @@ export function getActiveCanvasWorkflowRun(projectId: string) {
     return starcloudsRequest<{ run: CanvasWorkflowRunRecord | null }>(`/canvas-projects/${encodeURIComponent(projectId)}/workflow-run`);
 }
 
+export function getCanvasWorkflowRun(projectId: string, runId: string) {
+    return starcloudsRequest<{ run: CanvasWorkflowRunRecord }>(`/canvas-projects/${encodeURIComponent(projectId)}/workflow-runs/${encodeURIComponent(runId)}`);
+}
+
 export function acquireCanvasWorkflowRun(
 	projectId: string,
 	ownerId: string,

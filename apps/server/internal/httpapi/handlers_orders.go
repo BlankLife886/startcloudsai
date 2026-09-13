@@ -359,24 +359,30 @@ func (s *Server) createOrder(c *gin.Context) {
 		AmountCents:     order.AmountCents,
 	})
 	if err != nil {
+		if lanjingpay.IsDefinitiveCreateRejection(err) {
+			if _, updateErr := store.TransitionPendingOrderStatus(context.WithoutCancel(ctx), s.St.Pool, order.ID, "failed"); updateErr != nil {
+				fail(c, updateErr)
+				return
+			}
+			fail(c, apperr.E("payment_create_rejected", "支付渠道暂时无法创建订单，本单已结束，请稍后重试", 502))
+			return
+		}
 		log.Printf("create lanjing payment for order %s: %v", order.ID, err)
 		c.JSON(http.StatusAccepted, gin.H{"success": true, "data": orderDict(order, nil)})
 		return
 	}
 	if err := validateRemoteOrder(order, remote, true, true); err != nil {
-		_ = client.CloseOrder(ctx, remote.ProviderOrderID)
-		_, _ = store.TransitionPendingOrderStatus(ctx, s.St.Pool, order.ID, "failed")
+		s.closeRejectedPayment(ctx, client, order, remote, err)
 		log.Printf("invalid lanjing payment response for order %s: %v", order.ID, err)
 		if errors.Is(err, errProviderAdjustedAmount) {
-			fail(c, apperr.E("payment_amount_conflict", "当前金额已有待支付订单，支付渠道无法保持套餐标价，请稍后重试", 409))
+			fail(c, apperr.E("payment_amount_conflict", "支付渠道实际金额与订单金额不一致，请稍后重试", 409))
 			return
 		}
 		fail(c, apperr.E("payment_provider_error", "支付渠道返回异常，请稍后重试", 502))
 		return
 	}
 	if remote.Type != paymentType {
-		_ = client.CloseOrder(ctx, remote.ProviderOrderID)
-		_, _ = store.TransitionPendingOrderStatus(ctx, s.St.Pool, order.ID, "failed")
+		s.closeRejectedPayment(ctx, client, order, remote, fmt.Errorf("payment type mismatch"))
 		log.Printf("invalid lanjing payment type for order %s: requested=%d returned=%d", order.ID, paymentType, remote.Type)
 		fail(c, apperr.E("payment_provider_error", "支付渠道返回异常，请稍后重试", 502))
 		return
@@ -392,6 +398,7 @@ func (s *Server) createOrder(c *gin.Context) {
 		payAmountCents, lanjingPaymentMethod(remote.Type), remote.PayURL, remote.IsAuto == 1, expiresAt)
 	if err != nil {
 		log.Printf("persist lanjing payment for order %s: %v", order.ID, err)
+		s.recordPaymentCreationIssue(persistCtx, order, "provider_binding_failed", "渠道已建单但本站未能绑定渠道单号，需人工关联后核查", remote.ProviderOrderID)
 		c.JSON(http.StatusAccepted, gin.H{"success": true, "data": orderDict(order, nil)})
 		return
 	}
@@ -405,7 +412,7 @@ func userUnsettledOrderError() error {
 func orderMatchesCheckout(order *store.Order, plan *store.Plan, paymentType lanjingpay.PaymentType) bool {
 	if order == nil || plan == nil || order.Provider != "lanjing" || order.ProviderOrderID == nil ||
 		order.AmountCents != plan.PriceCents || order.GrantCents != plan.GrantCents || order.BonusCents != plan.BonusCents ||
-		expectedProviderPayAmount(order) != plan.PriceCents || order.PaymentMethod == nil {
+		order.PaymentMethod == nil {
 		return false
 	}
 	if order.PlanKind != nil && (*order.PlanKind != plan.Kind || order.PlanDurationDays != plan.DurationDays || order.PlanDailyGrantCents != plan.DailyGrantCents) {
@@ -577,7 +584,7 @@ func expectedProviderPayAmount(order *store.Order) int64 {
 	return order.AmountCents
 }
 
-func validateRemoteOrder(order *store.Order, remote *lanjingpay.Order, requirePayURL, requireExactAmount bool) error {
+func validateRemoteOrder(order *store.Order, remote *lanjingpay.Order, requirePayURL, acceptNewPayAmount bool) error {
 	if remote == nil || remote.ProviderOrderID == "" || (requirePayURL && remote.PayURL == "") {
 		return fmt.Errorf("missing provider order data")
 	}
@@ -595,15 +602,12 @@ func validateRemoteOrder(order *store.Order, remote *lanjingpay.Order, requirePa
 	if err != nil || payAmountCents <= 0 {
 		return fmt.Errorf("invalid paid amount")
 	}
-	if requireExactAmount && payAmountCents != order.AmountCents {
-		return fmt.Errorf("%w: expected %d, got %d", errProviderAdjustedAmount, order.AmountCents, payAmountCents)
-	}
 	paymentMethod := lanjingPaymentMethod(remote.Type)
 	if paymentMethod == "" {
 		return fmt.Errorf("invalid payment type")
 	}
-	if order.ProviderPayAmountCents != nil && payAmountCents != *order.ProviderPayAmountCents {
-		return fmt.Errorf("paid amount mismatch")
+	if payAmountCents != order.AmountCents {
+		return fmt.Errorf("%w: expected %d, got %d", errProviderAdjustedAmount, order.AmountCents, payAmountCents)
 	}
 	if order.PaymentMethod != nil && paymentMethod != *order.PaymentMethod {
 		return fmt.Errorf("payment type mismatch")

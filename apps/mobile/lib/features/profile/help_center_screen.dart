@@ -153,7 +153,7 @@ class _HelpCenterScreenState extends ConsumerState<HelpCenterScreen> {
             '有什么可以帮你？',
             style: Theme.of(
               context,
-            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
+            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
           ),
           const SizedBox(height: 6),
           Text(
@@ -187,11 +187,11 @@ class _HelpCenterScreenState extends ConsumerState<HelpCenterScreen> {
               filled: true,
               fillColor: colors.surfaceContainerLow,
               border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(8),
+                borderRadius: BorderRadius.circular(16),
                 borderSide: BorderSide(color: colors.outlineVariant),
               ),
               enabledBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(8),
+                borderRadius: BorderRadius.circular(16),
                 borderSide: BorderSide(color: colors.outlineVariant),
               ),
             ),
@@ -204,7 +204,7 @@ class _HelpCenterScreenState extends ConsumerState<HelpCenterScreen> {
                   _query.trim().isEmpty ? '常见问题' : '搜索结果',
                   style: Theme.of(
                     context,
-                  ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+                  ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
                 ),
               ),
               Text(
@@ -225,7 +225,7 @@ class _HelpCenterScreenState extends ConsumerState<HelpCenterScreen> {
                 : Material(
                     key: const Key('help-topic-group'),
                     color: colors.surfaceContainerLow,
-                    borderRadius: BorderRadius.circular(8),
+                    borderRadius: BorderRadius.circular(16),
                     clipBehavior: Clip.antiAlias,
                     child: Column(
                       children: [
@@ -253,12 +253,12 @@ class _HelpCenterScreenState extends ConsumerState<HelpCenterScreen> {
             '仍需帮助',
             style: Theme.of(
               context,
-            ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+            ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 10),
           Material(
             color: colors.surfaceContainerLow,
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(16),
             clipBehavior: Clip.antiAlias,
             child: ListTile(
               key: const Key('help-feedback'),
@@ -325,7 +325,7 @@ class _ServiceStatusBar extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(14, 12, 6, 12),
       decoration: BoxDecoration(
         color: presentation.color.withValues(alpha: .09),
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(16),
       ),
       child: Row(
         children: [
@@ -347,7 +347,7 @@ class _ServiceStatusBar extends StatelessWidget {
                   presentation.label,
                   style: Theme.of(context).textTheme.labelLarge?.copyWith(
                     color: colors.onSurface,
-                    fontWeight: FontWeight.w800,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
                 const SizedBox(height: 2),

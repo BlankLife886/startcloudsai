@@ -8,8 +8,8 @@ import "./GenerationParticleField.css";
 gsap.registerPlugin(useGSAP);
 
 const PROFILES = {
-  waiting: { speed: 0, strength: 0.3, breath: 0 },
-  generating: { speed: 0.85, strength: 1, breath: 1 },
+  waiting: { speed: 0, strength: 0.28, breath: 0 },
+  generating: { speed: 0.62, strength: 1, breath: 1 },
 };
 const ALPHA_STEPS = 24;
 const renderPool = createParticleRenderScheduler(gsap.ticker);
@@ -17,25 +17,33 @@ const glowCache = new Map();
 export const particleRenderStats = () => ({ ...renderPool.snapshot(), logoShapeBytes: generationLogoShapeStats().bytes, logoShapePoints: generationLogoShapeStats().points });
 const smooth = value => { const x = Math.min(1, Math.max(0, value)); return x * x * (3 - 2 * x); };
 
+// Living breath: soft inhale, quiet crest, longer exhale + faint shimmer.
 function breathAt(time) {
-  const cycle = (time % 6.6) / 6.6;
-  return cycle < 0.36 ? smooth(cycle / 0.36) : 1 - smooth((cycle - 0.36) / 0.64);
+  const cycle = (time % 6.2) / 6.2;
+  let primary;
+  if (cycle < 0.36) primary = smooth(cycle / 0.36);
+  else if (cycle < 0.46) primary = 1;
+  else primary = 1 - smooth((cycle - 0.46) / 0.54);
+  const shimmer = 0.5 + 0.5 * Math.sin(time * 0.92 + 0.4);
+  return primary * 0.9 + shimmer * 0.1;
 }
 
 function glowSprite(color) {
   if (glowCache.has(color)) return glowCache.get(color);
   const sprite = document.createElement("canvas");
-  sprite.width = sprite.height = 32;
+  sprite.width = sprite.height = 56;
   const context = sprite.getContext("2d");
   if (!context) return null;
-  const glow = context.createRadialGradient(16, 16, 0, 16, 16, 16);
-  glow.addColorStop(0, `${color}80`);
-  glow.addColorStop(0.22, `${color}28`);
+  const glow = context.createRadialGradient(28, 28, 0, 28, 28, 28);
+  glow.addColorStop(0, "#ffffffd0");
+  glow.addColorStop(0.1, `${color}b0`);
+  glow.addColorStop(0.28, `${color}48`);
+  glow.addColorStop(0.58, `${color}14`);
   glow.addColorStop(1, `${color}00`);
   context.fillStyle = glow;
-  context.fillRect(0, 0, 32, 32);
+  context.fillRect(0, 0, 56, 56);
   glowCache.set(color, sprite);
-  if (glowCache.size > 16) glowCache.delete(glowCache.keys().next().value);
+  if (glowCache.size > 28) glowCache.delete(glowCache.keys().next().value);
   return sprite;
 }
 
@@ -47,7 +55,7 @@ function particleSeeds(count, variant) {
   };
   return Array.from({ length: count }, (_, index) => {
     const depth = random();
-    return { u: random(), v: random(), depth, phase: random() * Math.PI * 2, color: Math.floor(random() * 4), strand: index % 4, spread: random() + random() + random() - 1.5, radius: 0.5 + Math.pow(depth, 1.6) * 1.1 };
+    return { u: random(), v: random(), depth, phase: random() * Math.PI * 2, color: Math.floor(random() * 10), strand: index % 4, spread: random() + random() + random() - 1.5, radius: 0.5 + Math.pow(depth, 1.6) * 1.1 };
   });
 }
 
@@ -70,21 +78,25 @@ export const GenerationParticleField = memo(function GenerationParticleField({ s
     canvas.width = canvas.height = 1;
     let palette = [], glows = [];
     const profile = { ...PROFILES[phaseRef.current] };
-    const buckets = Array.from({ length: 4 * ALPHA_STEPS }, () => []);
+    let buckets = Array.from({ length: 10 * ALPHA_STEPS }, () => []);
     const highlights = [];
 
     function readPalette() {
       light = page?.classList.contains("is-light") === true;
+      // Pearl prism: neighboring stops stay close so bands melt instead of striping.
+      const prismLight = ["#d889a3", "#d99880", "#c9ad72", "#8fb08c", "#6eabb4", "#6e99c6", "#7f8ecc", "#9686c6", "#b484b6", "#c888aa"];
+      const prismDark = ["#ff9db8", "#ffb498", "#ffe4a8", "#9ae8c4", "#8ad8ea", "#8ec8ff", "#a8b6ff", "#c2b2ff", "#e0acf0", "#f0aad0"];
       const next = phaseRef.current === "waiting"
-        ? light ? ["#828b9a", "#8c94a5", "#939dad", "#9ca4b3"] : ["#8c98af", "#94a0b9", "#8794ac", "#9ca8bf"]
-        : mode === "particle-logo" ? light
-          ? ["#397dc7", "#8559c8", "#1b8f9a", "#c15b93"]
-          : ["#d4b6ff", "#bac9ff", "#b28aed", "#f0dfff"]
-          : light ? ["#6954b3", "#4e75ad", "#3b899a", "#9868a8"] : ["#c9baff", "#b5deff", "#9ce2e4", "#f0dcff"];
+        ? light
+          ? ["#8b93a3", "#939bab", "#9aa3b2", "#a3abb8"]
+          : ["#8a94a8", "#939db2", "#8490a5", "#9aa5b8"]
+        : light ? prismLight : prismDark;
       const changed = next.join() !== palette.join();
       if (changed) {
         palette = next;
         glows = palette.map(glowSprite);
+        const size = Math.max(1, palette.length) * ALPHA_STEPS;
+        if (buckets.length !== size) buckets = Array.from({ length: size }, () => []);
       }
       return changed;
     }
@@ -92,83 +104,99 @@ export const GenerationParticleField = memo(function GenerationParticleField({ s
     function draw(delta = 0, settle = false) {
       if (!allocated || !width || !height) return;
       const target = PROFILES[phaseRef.current];
-      const blend = settle ? 1 : delta ? 1 - Math.exp(-delta * 2.4) : 0;
+      const blend = settle ? 1 : delta ? 1 - Math.exp(-delta * 2.1) : 0;
       for (const key of ["speed", "strength", "breath"]) profile[key] += (target[key] - profile[key]) * blend;
       clock += delta * profile.speed;
       breathClock += delta;
       const breath = breathAt(breathClock);
+      const breathLift = (breath - 0.5) * profile.breath;
       const logoBox = logo ? logoPlacement(width, height, logo) : null;
-      const luminance = 1 + (breath - 0.5) * 0.95 * profile.breath;
-      const lightCos = Math.cos(clock * 0.4), lightSin = Math.sin(clock * 0.4);
-      const logoTilt = Math.sin(clock * 0.18) * 0.008;
+      const luminance = 1 + breathLift * 0.26;
+      const lightCos = Math.cos(clock * 0.34), lightSin = Math.sin(clock * 0.34);
+      const logoTilt = Math.sin(clock * 0.15) * 0.006;
       const logoRadiusScale = logoBox ? Math.max(0.7, Math.min(1.35, logoBox.width / 280)) : 1;
+      const hueDrift = clock * 0.012 + breath * 0.028;
       context.clearRect(0, 0, width, height);
       for (const bucket of buckets) bucket.length = 0;
       highlights.length = 0;
       const cols = Math.max(8, Math.round(width / 8));
-      const rows = Math.ceil(pixels.length / cols);
       const seed = variant * 1.13;
+      const glowBudget = Math.max(quality.glows * 5, mode === "particle-logo" ? 36 : 0);
       for (let index = 0; index < pixels.length; index++) {
         const p = pixels[index];
+        // Stagger breath per particle so the silhouette ripples instead of scaling as a plate.
+        const local = breathAt(breathClock + p.phase * 0.55);
+        const localLift = (local - 0.5) * profile.breath;
         let u = ((p.u + clock * 0.008 * (0.3 + p.depth * 0.7)) % 1) * 1.16 - 0.08;
         let v = ((p.v + clock * 0.004 * (0.3 + p.depth * 0.7)) % 1) * 1.16 - 0.08;
         let brightness, radius = p.radius;
         let color = p.color;
         if (mode === "particle-logo" && logoBox && logo.count) {
-          if (index % 10 !== 0) {
+          if (index % 12 !== 0) {
             const point = Math.floor((index * 0.61803398875 % 1) * logo.count) * 6;
             const x = logo.points[point], y = logo.points[point + 1], depth = logo.points[point + 2];
             const shine = Math.max(0, logo.points[point + 3] * lightCos + logo.points[point + 4] * lightSin);
-            const spread = (1 - breath) * (0.004 + p.depth * 0.012);
-            u = (logoBox.x + x * logoBox.width) / width + Math.cos(p.phase + clock * 0.16) * spread;
-            v = (logoBox.y + y * logoBox.height) / height + Math.sin(p.phase + clock * 0.14) * spread * width / height;
+            const spread = (1 - local) * (0.005 + p.depth * 0.014);
+            u = (logoBox.x + x * logoBox.width) / width + Math.cos(p.phase + clock * 0.14) * spread;
+            v = (logoBox.y + y * logoBox.height) / height + Math.sin(p.phase + clock * 0.12) * spread * width / height;
             u += logoTilt * (depth - 0.5);
-            brightness = 0.48 + depth * 0.38 + shine * 0.18;
-            radius = (0.42 + depth * 0.46 + p.depth * 0.22) * logoRadiusScale;
-            color = light
-              ? Math.min(3, Math.floor((x * 0.62 + y * 0.38) * 4))
-              : depth > 0.72 || shine > 0.55 ? 3 : depth > 0.4 ? 0 : 2;
+            brightness = 0.44 + depth * 0.34 + shine * 0.22 + localLift * 0.06;
+            radius = (0.38 + depth * 0.5 + p.depth * 0.22) * logoRadiusScale * (1 + localLift * 0.1);
+            const hues = Math.max(1, palette.length);
+            const angle = (Math.atan2(y - 0.5, x - 0.5) / (Math.PI * 2) + 1 + hueDrift) % 1;
+            const radial = Math.min(1, Math.hypot(x - 0.5, y - 0.5) * 1.4);
+            // Slight phase dither softens hard color seams.
+            const spectrum = (angle * 0.74 + radial * 0.2 + depth * 0.06 + p.phase * 0.015) % 1;
+            color = Math.min(hues - 1, Math.floor(spectrum * hues));
           } else {
-            brightness = 0.09 + p.depth * 0.15;
-            radius *= 0.7;
+            brightness = 0.05 + p.depth * 0.1;
+            radius *= 0.55;
+            color = Math.min(Math.max(0, palette.length - 1), p.color % Math.max(1, palette.length));
           }
         } else if (mode === "particle-stars") {
           u += Math.sin(clock * 0.13 + p.phase) * 0.025;
           v += Math.cos(clock * 0.09 + p.phase) * 0.015;
           brightness = 0.2 + Math.pow(0.5 + Math.sin(clock * 0.38 + p.phase) * 0.5, 2) * 0.58;
           radius *= 0.75 + p.depth * 0.5;
+          color = Math.min(Math.max(0, palette.length - 1), Math.floor(((p.u + hueDrift * 0.35 + p.phase * 0.05) % 1) * palette.length));
         } else if (mode === "particle-matrix") {
           u = (index % cols + 0.5) / cols;
           v = (Math.floor(index / cols) + 0.5) / Math.ceil(pixels.length / cols);
           brightness = 0.16 + Math.pow(0.5 + Math.sin(u * 7 + v * 4 - clock * 0.48) * 0.5, 3) * 0.62;
           radius = 0.55 + brightness * 0.65;
+          color = Math.min(Math.max(0, palette.length - 1), Math.floor(((u + v * 0.35 + hueDrift * 0.2) % 1) * palette.length));
         } else {
           u += Math.sin(v * 10 + clock * 0.25 + seed) * 0.052 + Math.sin(v * 23 - clock * 0.17) * 0.018;
           const ridge = 0.32 + Math.sin(u * 5.3 + clock * 0.22 + seed) * 0.17;
           const second = 0.72 + Math.sin(u * 4.8 - clock * 0.18 + seed) * 0.16;
-          const ribbonWidth = 0.055 + (1 - breath) * 0.045;
+          const ribbonWidth = 0.055 + (1 - local) * 0.04;
           if (p.strand) v = (p.strand === 3 ? second : ridge) + p.spread * ribbonWidth * 1.8;
           else v += Math.sin(u * 8 - clock * 0.21 + seed) * 0.04;
           const glow = Math.exp(-Math.pow((v - ridge) / ribbonWidth, 2)) + Math.exp(-Math.pow((v - second) / (ribbonWidth * 1.2), 2)) * 0.7;
           brightness = 0.16 + glow * 0.76 + Math.sin(clock * 0.35 + p.phase) * 0.025;
           radius += glow * 0.38;
+          color = Math.min(Math.max(0, palette.length - 1), Math.floor(((u + hueDrift * 0.25) % 1) * palette.length));
         }
-        const expansion = 1 - (breath - 0.5) * (0.065 + p.depth * 0.08) * profile.breath;
+        const expansion = 1 - localLift * (0.08 + p.depth * 0.1);
         u = 0.5 + (u - 0.5) * expansion;
         v = 0.46 + (v - 0.46) * expansion;
-        radius *= 1 + (breath - 0.5) * 0.3 * profile.breath;
-        const edge = smooth(Math.min(u, 1 - u, v, 1 - v) / 0.065);
-        brightness *= profile.strength * edge * (0.78 + p.depth * 0.22);
-        if (brightness < 0.012) continue;
+        radius *= 1 + localLift * 0.36;
+        const edge = smooth(Math.min(u, 1 - u, v, 1 - v) / 0.07);
+        brightness *= profile.strength * edge * (0.8 + p.depth * 0.2);
+        if (brightness < 0.014 || !palette.length) continue;
+        color = ((color % palette.length) + palette.length) % palette.length;
         const alphaBin = Math.min(ALPHA_STEPS - 1, Math.floor(brightness * ALPHA_STEPS));
         buckets[color * ALPHA_STEPS + alphaBin].push(u * width, v * height, radius);
-        if (highlights.length < quality.glows * 5 && p.depth > 0.9 && brightness > 0.4 && mode !== "particle-matrix") highlights.push(u * width, v * height, radius, color, brightness);
+        if (highlights.length < glowBudget && p.depth > 0.78 && brightness > 0.4 && mode !== "particle-matrix") {
+          highlights.push(u * width, v * height, radius, color, brightness);
+        }
       }
       for (let bucketIndex = 0; bucketIndex < buckets.length; bucketIndex++) {
         const bucket = buckets[bucketIndex];
         if (!bucket.length) continue;
         context.fillStyle = palette[Math.floor(bucketIndex / ALPHA_STEPS)];
-        context.globalAlpha = Math.min(1, (0.055 + bucketIndex % ALPHA_STEPS / (ALPHA_STEPS - 1) * (light ? 0.88 : 0.94)) * luminance);
+        const tone = bucketIndex % ALPHA_STEPS / (ALPHA_STEPS - 1);
+        context.globalAlpha = Math.min(1, (0.04 + tone * (light ? 0.78 : 0.88)) * luminance);
         context.beginPath();
         for (let index = 0; index < bucket.length; index += 3) {
           const x = bucket[index], y = bucket[index + 1], radius = bucket[index + 2];
@@ -180,8 +208,8 @@ export const GenerationParticleField = memo(function GenerationParticleField({ s
       for (let index = 0; index < highlights.length; index += 5) {
         const sprite = glows[highlights[index + 3]];
         if (!sprite) continue;
-        const size = highlights[index + 2] * 10;
-        context.globalAlpha = Math.min(1, highlights[index + 4] * 0.48 * luminance);
+        const size = highlights[index + 2] * (12.5 + breathLift * 2.8);
+        context.globalAlpha = Math.min(1, highlights[index + 4] * (0.34 + breath * 0.1) * luminance);
         context.drawImage(sprite, highlights[index] - size / 2, highlights[index + 1] - size / 2, size, size);
       }
       context.globalAlpha = 1;

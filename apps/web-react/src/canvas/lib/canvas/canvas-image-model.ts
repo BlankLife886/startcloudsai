@@ -93,6 +93,10 @@ export function aspectRatiosForResolution(model: ChannelModel | null | undefined
     return configured?.length ? configured : capabilities.aspectRatios;
 }
 
+export function defaultCanvasImageRatio(model: ChannelModel | null | undefined, resolution: string) {
+    return aspectRatiosForResolution(model, resolution)[0] || "auto";
+}
+
 export function parseCanvasImageSize(size: string) {
     const value = String(size || "").trim();
     if (!value || value === "auto") return { ratio: "auto" };
@@ -134,7 +138,7 @@ export function coerceCanvasImageSettings(model: ChannelModel | null | undefined
     const requestedResolution = String(settings.resolution || parsed.resolution || "").trim().toUpperCase();
     const resolution = capabilities.resolutions.includes(requestedResolution) ? requestedResolution : capabilities.resolutions[0] || "";
     const ratios = aspectRatiosForResolution(model, resolution);
-    const requestedRatio = parsed.ratio || "auto";
+    const requestedRatio = settings.size ? parsed.ratio : ratios[0] || "auto";
     const size = ratios.includes(requestedRatio) ? requestedRatio : ratios[0] || "";
     const requestedQuality = normalizeQuality(String(settings.quality || ""));
     const quality = capabilities.qualities.includes(requestedQuality) ? requestedQuality : capabilities.qualities[0] || "";
@@ -156,7 +160,7 @@ export function applyCanvasImageModelSettings(config: AiConfig, model?: ChannelM
 
 export function canvasImageSettingsFromModel(config: AiConfig, model: string) {
     const selected = modelOptionMeta(config, model);
-    const next = applyCanvasImageModelSettings({ ...config, model, ...(selected?.supportsExactSize === true ? {} : { sizeMode: "ratio" as const, exactWidth: "", exactHeight: "" }) }, selected);
+    const next = applyCanvasImageModelSettings({ ...config, model, size: defaultCanvasImageRatio(selected, config.resolution), ...(selected?.supportsExactSize === true ? {} : { sizeMode: "ratio" as const, exactWidth: "", exactHeight: "" }) }, selected);
     return {
         model,
         quality: next.quality,

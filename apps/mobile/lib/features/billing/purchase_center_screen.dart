@@ -183,7 +183,7 @@ class _MobileStoreNotice extends StatelessWidget {
       decoration: BoxDecoration(
         color: colors.surface,
         border: Border.all(color: colors.outlineVariant),
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(16),
       ),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
@@ -201,7 +201,7 @@ class _MobileStoreNotice extends StatelessWidget {
                 children: [
                   Text(
                     '我的会员权益',
-                    style: const TextStyle(fontWeight: FontWeight.w800),
+                    style: const TextStyle(fontWeight: FontWeight.w600),
                   ),
                   const SizedBox(height: 2),
                   Text(
@@ -227,34 +227,40 @@ class _SubscriptionPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => AppSoftCard(
-    color: Theme.of(context).colorScheme.tertiaryContainer,
-    padding: const EdgeInsets.all(14),
-    child: Row(
+    padding: const EdgeInsets.all(20),
+    child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Icon(Icons.workspace_premium),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
+        Row(
+          children: [
+            Icon(
+              Icons.workspace_premium_outlined,
+              color: Theme.of(context).colorScheme.secondary,
+              size: 28,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
                 subscription.planName.isEmpty ? '当前订阅' : subscription.planName,
-                style: const TextStyle(fontWeight: FontWeight.w800),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.titleLarge,
               ),
-              const SizedBox(height: 4),
-              Text(
-                '每日 ${subscription.dailyGrantPoints} 积分 · '
-                '${subscription.grantedToday ? '今日已发放' : '今日待发放'}',
-              ),
-              if (subscription.endsAt != null)
-                Text(
-                  '有效期至 ${_dateTime(subscription.endsAt!, dateOnly: true)}',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-            ],
-          ),
+            ),
+          ],
         ),
+        const SizedBox(height: 20),
+        Text(
+          '每日 ${subscription.dailyGrantPoints} 积分 · '
+          '${subscription.grantedToday ? '今日已发放' : '今日待发放'}',
+        ),
+        if (subscription.endsAt != null) ...[
+          const SizedBox(height: 8),
+          Text(
+            '有效期至 ${_dateTime(subscription.endsAt!, dateOnly: true)}',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ],
       ],
     ),
   );
@@ -272,7 +278,7 @@ class _OrdersEntry extends StatelessWidget {
     return Material(
       color: colors.surface,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(16),
         side: BorderSide(color: colors.outlineVariant),
       ),
       clipBehavior: Clip.antiAlias,
@@ -330,7 +336,7 @@ class OrderCard extends StatelessWidget {
             ? colors.primaryContainer.withValues(alpha: 0.28)
             : colors.surface,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(16),
           side: BorderSide(
             color: highlighted ? colors.primary : colors.outlineVariant,
           ),
@@ -371,7 +377,7 @@ class OrderCard extends StatelessWidget {
                       '通知关联',
                       style: Theme.of(context).textTheme.labelSmall?.copyWith(
                         color: colors.primary,
-                        fontWeight: FontWeight.w800,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
                   ],
@@ -391,7 +397,7 @@ class OrderCard extends StatelessWidget {
                     Text(
                       _orderStatus(order.status),
                       style: TextStyle(
-                        fontWeight: FontWeight.w800,
+                        fontWeight: FontWeight.w600,
                         color: _orderColor(context, order.status),
                       ),
                     ),
@@ -492,7 +498,7 @@ class _PaymentOrderSheetState extends State<PaymentOrderSheet> {
                   child: Text(
                     widget.plan?.name ?? '套餐订单',
                     style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.w900,
+                      fontWeight: FontWeight.w700,
                     ),
                   ),
                 ),
@@ -510,7 +516,7 @@ class _PaymentOrderSheetState extends State<PaymentOrderSheet> {
                 border: Border.all(
                   color: Theme.of(context).colorScheme.outlineVariant,
                 ),
-                borderRadius: BorderRadius.circular(8),
+                borderRadius: BorderRadius.circular(16),
               ),
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(10, 2, 2, 2),
@@ -601,7 +607,7 @@ class _OrderStatusLabel extends StatelessWidget {
         _orderStatus(status),
         style: TextStyle(
           color: _orderColor(context, status),
-          fontWeight: FontWeight.w800,
+          fontWeight: FontWeight.w600,
         ),
       ),
     ),

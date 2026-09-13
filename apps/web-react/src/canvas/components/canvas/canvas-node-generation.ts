@@ -6,6 +6,7 @@ import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@/types/canvas";
 import { getGenerationResourceNodes } from "@/lib/canvas/canvas-resource-references";
+import type { CanvasResourceIndex } from "@/lib/canvas/canvas-resource-index";
 import { isCanvasExecutableNode } from "@/lib/canvas/canvas-operation-node";
 import { resolveCopiedCanvasNodeReferences } from "@/lib/canvas/canvas-node-copy";
 import { appendConnectedTextToPrompt } from "@/lib/canvas/canvas-prompt-context";
@@ -124,8 +125,8 @@ function buildComposerGenerationContext(inputs: NodeGenerationInput[], prompt: s
     };
 }
 
-export function buildNodeGenerationInputs(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]): NodeGenerationInput[] {
-    return getGenerationResourceNodes(nodeId, nodes, connections).flatMap((node): NodeGenerationInput[] => {
+export function buildNodeGenerationInputs(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[], index?: CanvasResourceIndex): NodeGenerationInput[] {
+    return getGenerationResourceNodes(nodeId, nodes, connections, index).flatMap((node): NodeGenerationInput[] => {
         const images = readReferenceImages(node);
         if (images.length) return images.map((image) => ({ nodeId: node.id, type: "image" as const, title: node.title, image }));
         const video = readReferenceVideo(node);

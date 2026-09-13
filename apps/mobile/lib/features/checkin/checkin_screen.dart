@@ -168,7 +168,7 @@ class _CheckinHeader extends StatelessWidget {
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                         style: Theme.of(context).textTheme.titleMedium
-                            ?.copyWith(fontWeight: FontWeight.w900),
+                            ?.copyWith(fontWeight: FontWeight.w700),
                       ),
                       const SizedBox(height: 2),
                       Text(
@@ -223,7 +223,7 @@ class _CheckinHeader extends StatelessWidget {
                           style: Theme.of(context).textTheme.headlineMedium
                               ?.copyWith(
                                 color: _CheckinTone.accent,
-                                fontWeight: FontWeight.w900,
+                                fontWeight: FontWeight.w700,
                                 height: 1,
                               ),
                         ),
@@ -342,7 +342,7 @@ class _CheckinMetric extends StatelessWidget {
               value,
               maxLines: 1,
               style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                fontWeight: FontWeight.w800,
+                fontWeight: FontWeight.w600,
                 height: 1.1,
               ),
             ),
@@ -478,7 +478,7 @@ class _RewardDay extends StatelessWidget {
                   '+${reward.rewardPoints}',
                   maxLines: 1,
                   style: TextStyle(
-                    fontWeight: FontWeight.w900,
+                    fontWeight: FontWeight.w700,
                     color: done || active
                         ? _CheckinTone.accent
                         : colors.onSurface,
@@ -527,7 +527,7 @@ class CheckinMonthCalendar extends StatelessWidget {
             '$year 年 $month 月',
             style: Theme.of(
               context,
-            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 4),
           Text(

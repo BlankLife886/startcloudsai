@@ -22,7 +22,7 @@ import {
   TASK_TYPE_LABELS,
   taskErrorMessage,
   taskStatusLabel,
-  taskTotalDuration,
+  taskExecutionDuration,
   taskTypeLabel,
 } from '@/utils'
 
@@ -212,7 +212,7 @@ onMounted(() => {
   void reset()
   startAutoRefresh()
   elapsedTimer = window.setInterval(() => {
-    const active = (task: AdminTask) => task.status === 'queued' || task.status === 'running'
+    const active = (task: AdminTask) => task.status === 'running'
     if (document.visibilityState === 'visible' &&
       (items.value.some(active) || (detailVisible.value && detail.value && active(detail.value)))) {
       elapsedNow.value = Date.now()
@@ -292,7 +292,7 @@ function taskPreviewUrls(task: AdminTask) {
 }
 
 function taskDuration(task: AdminTask) {
-  return taskTotalDuration(task, elapsedNow.value)
+  return taskExecutionDuration(task, elapsedNow.value)
 }
 
 function taskRowClass({ row }: { row: AdminTask }) {
@@ -1089,7 +1089,7 @@ async function forceFail(task: AdminTask) {
               </template>
             </el-table-column>
 
-            <el-table-column label="总耗时" width="110" align="left" header-align="left">
+            <el-table-column label="执行耗时" width="110" align="left" header-align="left">
               <template #default="{ row }">
                 <span class="cell-text tnum">{{ taskDuration(row as AdminTask) }}</span>
               </template>
@@ -1410,7 +1410,7 @@ async function forceFail(task: AdminTask) {
                 <em class="tnum">{{ taskInputCount(detail) }}</em>
               </span>
               <span class="stat-item">
-                <small>总耗时</small>
+                <small>执行耗时</small>
                 <em class="tnum">{{ taskDuration(detail) }}</em>
               </span>
               <span class="stat-item">

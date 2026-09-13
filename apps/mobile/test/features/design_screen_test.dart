@@ -61,10 +61,15 @@ void main() {
     expect(find.byKey(const Key('design-open-works')), findsOneWidget);
     expect(find.byKey(const Key('design-open-assets')), findsOneWidget);
     final surface = tester.widget<DecoratedBox>(
-      find.byKey(const Key('design-featured-surface')),
+      find
+          .descendant(
+            of: find.byKey(const Key('design-featured-surface')),
+            matching: find.byType(DecoratedBox),
+          )
+          .first,
     );
     final decoration = surface.decoration as BoxDecoration;
-    expect(decoration.borderRadius, BorderRadius.circular(8));
+    expect(decoration.borderRadius, BorderRadius.circular(24));
     expect(find.byKey(const Key('app-top-bar-back')), findsNothing);
     expect(tester.takeException(), isNull);
   });
@@ -91,11 +96,17 @@ void main() {
       await tester.pumpAndSettle();
 
       final surface = tester.widget<DecoratedBox>(
-        find.byKey(const Key('design-featured-surface')),
+        find
+            .descendant(
+              of: find.byKey(const Key('design-featured-surface')),
+              matching: find.byType(DecoratedBox),
+            )
+            .first,
       );
       final decoration = surface.decoration as BoxDecoration;
-      expect(decoration.color, theme.colorScheme.surfaceContainerLow);
-      expect(decoration.borderRadius, BorderRadius.circular(8));
+      expect(decoration.color, theme.extension<StarCloudsVisualStyle>()!.panel);
+      expect(decoration.gradient, isNull);
+      expect(decoration.borderRadius, BorderRadius.circular(24));
       expect(find.text('从一句描述开始'), findsOneWidget);
       expect(tester.takeException(), isNull);
     }

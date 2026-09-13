@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "test:model-config-save": "node --test scripts/test-model-config-save.mjs",
     "dev": "vite --host 127.0.0.1 --port 3200 --strictPort",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",

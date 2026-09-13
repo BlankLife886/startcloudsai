@@ -91,7 +91,7 @@ class _TaskDetailScreenState extends ConsumerState<TaskDetailScreen>
       context: context,
       builder: (context) => AppDialog(
         title: const Text('停止生成？'),
-        content: const Text('已提交给模型的任务可能仍会按实际用量结算。'),
+        content: Text(task.cancelConfirmationMessage),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -107,7 +107,9 @@ class _TaskDetailScreenState extends ConsumerState<TaskDetailScreen>
     if (confirmed != true || !mounted) return;
     setState(() => _busyAction = _TaskAction.cancel);
     try {
-      await ref.read(taskRepositoryProvider).cancel(task.id);
+      await ref
+          .read(taskRepositoryProvider)
+          .cancel(task.id, acknowledgeUpstream: true);
       ref.invalidate(taskDetailProvider(task.id));
       ref.invalidate(taskListProvider);
       ref.invalidate(taskCenterControllerProvider);
@@ -550,7 +552,11 @@ class _TaskDetailScreenState extends ConsumerState<TaskDetailScreen>
                     ),
                   ),
                   const Spacer(),
-                  if (task.costPoints > 0) Text('${task.costPoints} 积分'),
+                  if (task.status == 'canceled' &&
+                      task.cancelPolicy?.refunded == true)
+                    const Text('冻结积分已退回')
+                  else if (task.costPoints > 0)
+                    Text('${task.costPoints} 积分'),
                 ],
               ),
               const SizedBox(height: 18),
@@ -972,7 +978,7 @@ class _TaskOutputPlaceholder extends StatelessWidget {
             textAlign: TextAlign.center,
             style: Theme.of(
               context,
-            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 7),
           Text(
@@ -1180,7 +1186,7 @@ class _TaskFullscreenPreviewState extends State<_TaskFullscreenPreview> {
                                   : const Duration(milliseconds: 180),
                               width: 54,
                               decoration: BoxDecoration(
-                                borderRadius: BorderRadius.circular(8),
+                                borderRadius: BorderRadius.circular(16),
                                 border: Border.all(
                                   color: selected
                                       ? Colors.white
@@ -1215,7 +1221,7 @@ class _TaskFullscreenPreviewState extends State<_TaskFullscreenPreview> {
                 Material(
                   key: const Key('task-fullscreen-actions'),
                   color: Colors.black.withValues(alpha: .68),
-                  borderRadius: BorderRadius.circular(8),
+                  borderRadius: BorderRadius.circular(16),
                   child: Padding(
                     padding: const EdgeInsets.all(4),
                     child: Wrap(
@@ -1431,7 +1437,7 @@ class _TaskImageGallery extends StatelessWidget {
                             curve: Curves.easeOutCubic,
                             width: 62,
                             decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(8),
+                              borderRadius: BorderRadius.circular(16),
                               border: Border.all(
                                 color: selected
                                     ? colors.primary
@@ -1552,7 +1558,7 @@ class _TaskParametersPanel extends StatelessWidget {
       key: const Key('task-parameters-panel'),
       color: colors.surface,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(24),
         side: BorderSide(color: colors.outlineVariant),
       ),
       child: Padding(
@@ -1593,7 +1599,7 @@ class _TaskPromptPanel extends StatelessWidget {
       key: const Key('task-prompt-panel'),
       color: colors.surface,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(24),
         side: BorderSide(color: colors.outlineVariant),
       ),
       child: Padding(
@@ -1642,7 +1648,7 @@ class _TaskPromptPanel extends StatelessWidget {
 
 ({String label, Color color}) _taskStatus(String value) => switch (value) {
   'queued' => (label: '排队中', color: const Color(0xFFD97706)),
-  'running' => (label: '生成中', color: const Color(0xFF4F67D6)),
+  'running' => (label: '生成中', color: const Color(0xFF005FEA)),
   'succeeded' => (label: '已完成', color: const Color(0xFF0F766E)),
   'failed' => (label: '失败', color: const Color(0xFFDC2626)),
   'canceled' => (label: '已取消', color: const Color(0xFF64748B)),
@@ -1650,12 +1656,9 @@ class _TaskPromptPanel extends StatelessWidget {
 };
 
 String _modelLabel(TaskItem task) {
-  final hint = task.params['modelHint']?.toString() ?? '';
-  return task.model.isNotEmpty
-      ? task.model
-      : hint.isNotEmpty
-      ? hint
-      : '-';
+  return task.modelName.isNotEmpty
+      ? task.modelName
+      : '图片模型';
 }
 
 String _durationLabel(Duration duration) {

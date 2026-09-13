@@ -9,12 +9,18 @@ import { inspectCanvasVisuals } from "./canvas-visual-inspection.ts";
 import type { CanvasNodeMetadata } from "../../types/canvas.ts";
 import type { SiteToolName } from "../agent/agent-site-tools.ts";
 import type { AgentWorkflowPreflightResult } from "../../stores/use-agent-store.ts";
+import type { AgentWorkflowStartResult } from "./canvas-agent-workflow-start.ts";
 import { nanoid } from "nanoid";
+import { insertCanvasAgentAttachments } from "./canvas-agent-attachment-nodes.ts";
+import { reviewCanvasOutputs } from "./canvas-output-review.ts";
 
 const MAX_NODES = 80;
 const MAX_CONNECTIONS = 160;
 const MAX_TEXT_CHARS = 320;
 const MAX_TEXT_BYTES = 640;
+const DEFAULT_INSPECTION_TEXT_CHARS = 2000;
+const MAX_INSPECTION_TEXT_CHARS = 4000;
+const MAX_INSPECTION_BYTES = 60_000;
 const MAX_IMAGE_OPERATION_SOURCES = 80;
 
 export type CompactCanvasSnapshot = {
@@ -286,7 +292,7 @@ export type CanvasAgentToolCanvas = {
     /** Re-reads the live canvas; generation polling needs state newer than the turn snapshot. */
     readSnapshot?: () => CanvasAgentSnapshot;
     startGeneration?: (input: { requestId?: string; nodeIds: string[]; mode?: "text" | "image" | "video" | "audio"; prompt?: string }) => { requestId: string; nodeIds: string[] };
-    getGenerationStatus?: (requestId: string) => { requestId: string; tasks: Array<{ nodeId: string; status: CanvasGenerationStatus; error?: string }> } | null;
+    getGenerationStatus?: (requestId: string) => MaybePromise<{ requestId: string; tasks: Array<{ nodeId: string; status: CanvasGenerationStatus; error?: string }> } | null>;
     regenerateSelection?: (input: { requestId: string; instruction: string }) => Promise<{
         status: "started" | "canceled";
         batchId: string;
@@ -297,8 +303,8 @@ export type CanvasAgentToolCanvas = {
         skippedNodeIds: string[];
         items: Array<{ sourceNodeId: string; configNodeId: string; outputNodeId: string }>;
     }>;
-    startWorkflow?: (input: { workflowId?: string; nodeIds?: string[] }) => { requestId: string; workflowId?: string; configNodeIds: string[] };
-    getWorkflowStatus?: (requestId: string) => { requestId: string; workflowId?: string; status: CanvasGenerationStatus; completed: number; total: number; currentNodeId?: string; error?: string } | null;
+    startWorkflow?: (input: { workflowId?: string; nodeIds?: string[] }) => Promise<AgentWorkflowStartResult>;
+    getWorkflowStatus?: (requestId: string) => MaybePromise<{ requestId: string; workflowId?: string; status: CanvasGenerationStatus; completed: number; total: number; currentNodeId?: string; error?: string } | null>;
     focusNodes?: (nodeIds: string[]) => CanvasAgentSnapshot;
     stopWorkflow?: () => { stopped: boolean; status: string; nodeIds: string[] };
     getWorkflowState?: () => { status: string; completed: number; total: number; currentNodeId?: string; errorMessage?: string; startedAt?: string };
@@ -307,10 +313,12 @@ export type CanvasAgentToolCanvas = {
     createCheckpoint?: (name: string) => { id: string; name: string; createdAt: string };
     restoreHistory?: (input: { checkpointId?: string; transactionId?: string }) => CanvasAgentSnapshot | null;
     attachments?: Array<{ id: string; name?: string; dataUrl: string }>;
+    runId?: string;
     navigate?: (path: string) => void;
 };
 
-export type CanvasGenerationStatus = "idle" | "queued" | "running" | "succeeded" | "failed" | "canceled";
+type MaybePromise<T> = T | Promise<T>;
+export type CanvasGenerationStatus = "idle" | "queued" | "running" | "succeeded" | "failed" | "canceled" | "unknown";
 
 const GENERATION_POLL_MS = 700;
 const GENERATION_DEFAULT_WAIT_SECONDS = 20;
@@ -347,6 +355,15 @@ export function isAllowedSiteNavigatePath(path: string) {
  * its own work instead of guessing.
  */
 export async function runCanvasAgentTool(request: CanvasAgentToolRequest, canvas: CanvasAgentToolCanvas): Promise<unknown> {
+    if (request.name === "canvas_review_outputs") {
+        const input = asRecord(safeParse(request.arguments)) || {};
+        const snapshot = liveSnapshot(canvas);
+        const report = reviewCanvasOutputs(snapshot, { nodeIds: Array.isArray(input.nodeIds) ? input.nodeIds.map(String) : [], offset: Number(input.offset) || 0, requestId: typeof input.requestId === "string" ? input.requestId : undefined, fingerprints: asRecord(input.fingerprints) as Record<string, string> | undefined });
+        let visuals;
+        if (report.imageNodeIds.length) visuals = await inspectCanvasVisuals(snapshot, { scope: "selection", nodeIds: report.imageNodeIds, resourceIds: report.imageResourceIds, maxImages: 4 });
+        liveSnapshot(canvas); // Revalidate the active project after image I/O.
+        return { ...report, visionReferences: visuals?.visionReferences || [], duplicateGroups: visuals?.exactDuplicateGroups || [] };
+    }
     if (request.name === "canvas_get_state" || request.name === "canvas_export_snapshot") {
         return { snapshot: compactCanvasSnapshot(liveSnapshot(canvas)) };
     }
@@ -461,7 +478,7 @@ export async function runCanvasAgentTool(request: CanvasAgentToolRequest, canvas
         return readWorkflowStatus(request.arguments, canvas);
     }
     if (request.name === "canvas_create_attachment_nodes") {
-        return createAttachmentNodes(request.arguments, canvas);
+        return createAttachmentNodes(request.arguments, canvas, request.requestId || "");
     }
     if (request.name === "site_navigate") {
         return navigateSite(request.arguments, canvas);
@@ -627,7 +644,7 @@ function duplicateCanvasSelection(rawArguments: string, canvas: CanvasAgentToolC
     };
 }
 
-function replaceCanvasWorkflowInput(rawArguments: string, canvas: CanvasAgentToolCanvas) {
+async function replaceCanvasWorkflowInput(rawArguments: string, canvas: CanvasAgentToolCanvas) {
     const input = asRecord(safeParse(rawArguments)) || {};
     const before = liveSnapshot(canvas);
     assertWorkflowIdle(canvas);
@@ -654,10 +671,10 @@ function replaceCanvasWorkflowInput(rawArguments: string, canvas: CanvasAgentToo
     if (!downstream.executableNodeIds.length) throw new Error("目标输入没有连接到可执行的下游节点");
     const resetOps = resetDownstreamOps(before, downstream.nodeIds, new Set([target.id]));
     const after = canvas.applyOps([{ type: "update_node", id: target.id, metadata: replacement }, ...resetOps]) as CanvasAgentApplyResult;
-    let workflow: ReturnType<NonNullable<CanvasAgentToolCanvas["startWorkflow"]>> | undefined;
+    let workflow: AgentWorkflowStartResult | undefined;
     if (input.runDownstream === true) {
         if (!canvas.startWorkflow) throw new Error("输入已替换，但当前画布无法启动工作流");
-        workflow = canvas.startWorkflow({ workflowId: downstream.workflowId, nodeIds: downstream.executableNodeIds });
+        workflow = await canvas.startWorkflow({ workflowId: downstream.workflowId, nodeIds: downstream.executableNodeIds });
     }
     return {
         targetNodeId: target.id,
@@ -670,7 +687,7 @@ function replaceCanvasWorkflowInput(rawArguments: string, canvas: CanvasAgentToo
     };
 }
 
-function runCanvasDownstream(rawArguments: string, canvas: CanvasAgentToolCanvas) {
+async function runCanvasDownstream(rawArguments: string, canvas: CanvasAgentToolCanvas) {
     const input = asRecord(safeParse(rawArguments)) || {};
     const before = liveSnapshot(canvas);
     assertWorkflowIdle(canvas);
@@ -686,7 +703,7 @@ function runCanvasDownstream(rawArguments: string, canvas: CanvasAgentToolCanvas
         after = canvas.applyOps(resetDownstreamOps(before, downstream.nodeIds, new Set(sourceNodeIds))) as CanvasAgentApplyResult;
     }
     if (!canvas.startWorkflow) throw new Error("当前画布无法启动工作流");
-    const workflow = canvas.startWorkflow({ workflowId: downstream.workflowId, nodeIds: downstream.executableNodeIds });
+    const workflow = await canvas.startWorkflow({ workflowId: downstream.workflowId, nodeIds: downstream.executableNodeIds });
     return {
         sourceNodeIds,
         executableNodeIds: downstream.executableNodeIds,
@@ -970,14 +987,38 @@ function inspectCanvasNodes(rawArguments: string, canvas: CanvasAgentToolCanvas)
     const idSet = new Set(ids);
     const nodes = snapshot.nodes.filter((node) => idSet.has(node.id));
     if (!nodes.length) throw new Error("没有找到要检查的节点");
-    return {
-        total: nodes.length,
-        nodes: nodes.map((node) => ({
+    const offset = Math.max(0, Math.floor(Number(input.offset)) || 0);
+    const limit = Math.max(1, Math.min(20, Math.floor(Number(input.limit)) || 4));
+    const textOffset = Math.max(0, Math.floor(Number(input.textOffset)) || 0);
+    const textLimit = Math.max(1, Math.min(MAX_INSPECTION_TEXT_CHARS, Math.floor(Number(input.textLimit)) || DEFAULT_INSPECTION_TEXT_CHARS));
+    if (offset >= nodes.length) throw new Error(`节点检查起点 ${offset} 超出范围，当前只有 ${nodes.length} 个节点`);
+    const page = [];
+    let pageBytes = 0;
+    for (const node of nodes.slice(offset, offset + limit)) {
+        const detail = {
             ...compactNodeFallback(node),
             upstreamNodeIds: snapshot.connections.filter((connection) => connection.toNodeId === node.id).map((connection) => connection.fromNodeId),
             downstreamNodeIds: snapshot.connections.filter((connection) => connection.fromNodeId === node.id).map((connection) => connection.toNodeId),
-            metadata: inspectableNodeMetadata(node.metadata),
-        })),
+            metadata: inspectableNodeMetadata(node, textOffset, textLimit),
+        };
+        // Go's tool-result envelope escapes HTML characters before applying its
+        // byte limit, so budget the representation the server actually sends.
+        const serverJSON = JSON.stringify(detail).replace(/[<>&\u2028\u2029]/g, (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`);
+        const size = new TextEncoder().encode(serverJSON).byteLength;
+        if (pageBytes + size > MAX_INSPECTION_BYTES) {
+            if (!page.length) throw new Error("单个节点的检查内容过大，请减小 textLimit 后重试");
+            break;
+        }
+        page.push(detail);
+        pageBytes += size;
+    }
+    const nextOffset = offset + page.length;
+    return {
+        total: nodes.length,
+        offset,
+        nodes: page,
+        truncated: nextOffset < nodes.length,
+        ...(nextOffset < nodes.length ? { nextOffset } : {}),
     };
 }
 
@@ -1053,7 +1094,7 @@ function validateCanvasWorkflows(rawArguments: string, canvas: CanvasAgentToolCa
     };
 }
 
-function resumeCanvasWorkflow(rawArguments: string, canvas: CanvasAgentToolCanvas, retryFailed: boolean) {
+async function resumeCanvasWorkflow(rawArguments: string, canvas: CanvasAgentToolCanvas, retryFailed: boolean) {
     if (!canvas.startWorkflow) throw new Error("当前画布不支持运行工作流");
     const input = asRecord(safeParse(rawArguments)) || {};
     const workflowId = String(input.workflowId || "").trim() || undefined;
@@ -1066,7 +1107,7 @@ function resumeCanvasWorkflow(rawArguments: string, canvas: CanvasAgentToolCanva
         const failed = snapshot.nodes.filter((node) => isCanvasExecutableNode(node) && node.metadata?.status === "error" && (!scopedIds || scopedIds.has(node.id)));
         if (!failed.length) throw new Error("目标工作流中没有失败节点可重试");
     }
-    const request = canvas.startWorkflow({ ...(workflowId ? { workflowId } : {}) });
+    const request = await canvas.startWorkflow({ ...(workflowId ? { workflowId } : {}) });
     return { mode: retryFailed ? "retry_failed" : "resume", ...request, workflowState: canvas.getWorkflowState?.() };
 }
 
@@ -1092,15 +1133,31 @@ function compactNodeFallback(node: CanvasAgentSnapshot["nodes"][number]) {
     };
 }
 
-function inspectableNodeMetadata(metadata: CanvasAgentSnapshot["nodes"][number]["metadata"]) {
+function inspectableTextPage(value: unknown, offset: number, limit: number) {
+    const chars = Array.from(typeof value === "string" ? value : "");
+    const start = Math.min(offset, chars.length);
+    const text = chars.slice(start, start + limit).join("");
+    const nextOffset = Math.min(start + limit, chars.length);
+    return { text, offset: start, total: chars.length, truncated: nextOffset < chars.length, ...(nextOffset < chars.length ? { nextOffset } : {}) };
+}
+
+function inspectableNodeMetadata(node: CanvasAgentSnapshot["nodes"][number], offset: number, limit: number) {
+    const metadata = node.metadata;
     if (!metadata) return {};
+    const textContent = node.type === "text" || (metadata.content && !String(metadata.content).startsWith("data:") && !String(metadata.content).startsWith("http")) ? metadata.content : "";
+    const fields = {
+        prompt: inspectableTextPage(metadata.prompt, offset, limit),
+        composerContent: inspectableTextPage(metadata.composerContent, offset, limit),
+        textContent: inspectableTextPage(textContent, offset, limit),
+    };
     return {
         status: metadata.status,
         executionStatus: metadata.executionStatus,
         errorDetails: metadata.errorDetails,
-        prompt: compactText(metadata.prompt),
-        composerContent: compactText(metadata.composerContent),
-        textContent: compactText(metadata.content && !String(metadata.content).startsWith("data:") && !String(metadata.content).startsWith("http") ? metadata.content : ""),
+        prompt: fields.prompt.text,
+        composerContent: fields.composerContent.text,
+        textContent: fields.textContent.text,
+        textPages: Object.fromEntries(Object.entries(fields).map(([key, { text: _text, ...page }]) => [key, page])),
         hasContent: Boolean(metadata.content || metadata.storageKey || metadata.images?.length),
         naturalWidth: metadata.naturalWidth,
         naturalHeight: metadata.naturalHeight,
@@ -1318,7 +1375,10 @@ function runGeneration(rawArguments: string, canvas: CanvasAgentToolCanvas, requ
     if (!nodeIds.length) throw new Error(missing.length ? `节点不存在：${missing.join("、")}` : "nodeIds 为空");
     const mode = input.mode === "text" || input.mode === "image" || input.mode === "video" || input.mode === "audio" ? input.mode : undefined;
     const prompt = String(input.prompt || "").trim();
-    if (canvas.startGeneration) return canvas.startGeneration({ nodeIds, ...(requestId ? { requestId } : {}), ...(mode ? { mode } : {}), ...(prompt ? { prompt } : {}) });
+    if (canvas.startGeneration) {
+        const result = canvas.startGeneration({ nodeIds, ...(requestId ? { requestId } : {}), ...(mode ? { mode } : {}), ...(prompt ? { prompt } : {}) });
+        return { ...result, triggered: result.nodeIds, ...(missing.length ? { missing } : {}) };
+    }
     canvas.applyOps(nodeIds.map((nodeId) => ({ type: "run_generation", nodeId, ...(mode ? { mode } : {}), ...(prompt ? { prompt } : {}) })));
     return { triggered: nodeIds, ...(missing.length ? { missing } : {}) };
 }
@@ -1338,51 +1398,15 @@ function navigateSite(rawArguments: string, canvas: CanvasAgentToolCanvas) {
     return { ok: true, path };
 }
 
-async function createAttachmentNodes(rawArguments: string, canvas: CanvasAgentToolCanvas) {
+async function createAttachmentNodes(rawArguments: string, canvas: CanvasAgentToolCanvas, requestId: string) {
     const input = asRecord(safeParse(rawArguments)) || {};
-    const requested = Array.isArray(input.attachmentIds) ? input.attachmentIds.map((id) => String(id || "").trim()).filter(Boolean) : [];
-    const attachments = canvas.attachments || [];
-    const known = new Map(attachments.map((item) => [item.id, item]));
-    const missing = requested.filter((id) => !known.has(id));
-    const chosen = requested.map((id) => known.get(id)).filter((item): item is { id: string; name?: string; dataUrl: string } => Boolean(item));
-    if (!chosen.length) throw new Error(missing.length ? `附件不存在：${missing.join("、")}` : "attachmentIds 为空");
-    const { uploadImage } = await import("@/services/image-storage");
-    const originX = Number(input.x);
-    const originY = Number(input.y);
-    const snapshot = liveSnapshot(canvas);
-    const startX = Number.isFinite(originX) ? originX : flowOriginX(snapshot);
-    const startY = Number.isFinite(originY) ? originY : flowOriginY(snapshot);
-    const gap = Number(input.gap) > 0 ? Number(input.gap) : 40;
-    const column = input.direction === "column";
-    const ops: CanvasAgentOp[] = [];
-    for (let index = 0; index < chosen.length; index += 1) {
-        const attachment = chosen[index];
-        const stored = await uploadImage(attachment.dataUrl);
-        const size = attachmentCardSize(stored.width, stored.height);
-        ops.push({
-            type: "add_node",
-            id: `image-${nanoid(6)}`,
-            nodeType: "image",
-            title: attachment.name || "参考图",
-            x: column ? startX : startX + index * (size.width + gap),
-            y: column ? startY + index * (size.height + gap) : startY,
-            width: size.width,
-            height: size.height,
-            metadata: {
-                content: stored.url,
-                storageKey: stored.storageKey,
-                thumbnailUrl: stored.thumbnailUrl,
-                thumbnailKey: stored.thumbnailKey,
-                status: "success",
-                naturalWidth: stored.width,
-                naturalHeight: stored.height,
-                bytes: stored.bytes,
-                mimeType: stored.mimeType,
-            },
-        });
-    }
-    const after = canvas.applyOps(ops);
-    return { added: ops.map((op) => ("id" in op ? op.id : "")).filter(Boolean), ...(missing.length ? { missing } : {}), snapshot: compactCanvasSnapshot(after) };
+    const result = await insertCanvasAgentAttachments({
+        ids: Array.isArray(input.attachmentIds) ? input.attachmentIds.map((id) => String(id || "").trim()) : [],
+        runKey: canvas.runId || requestId,
+        attachments: canvas.attachments || [],
+        x: Number(input.x), y: Number(input.y), gap: Number(input.gap) > 0 ? Number(input.gap) : 40, column: input.direction === "column",
+    }, { read: () => liveSnapshot(canvas), apply: canvas.applyOps, upload: async (source) => (await import("@/services/image-storage")).uploadImage(source) });
+    return { added: result.added, reused: result.reused, created: result.created, ...(result.missing.length ? { missing: result.missing } : {}), snapshot: compactCanvasSnapshot(result.after) };
 }
 
 function flowOriginX(snapshot: CanvasAgentSnapshot) {
@@ -1408,7 +1432,7 @@ async function readGenerationStatus(rawArguments: string, canvas: CanvasAgentToo
     const waitSeconds = Math.max(0, Math.min(GENERATION_MAX_WAIT_SECONDS, Number(input.waitSeconds ?? GENERATION_DEFAULT_WAIT_SECONDS) || 0));
     const deadline = Date.now() + waitSeconds * 1000;
     for (;;) {
-        const tracked = requestId && canvas.getGenerationStatus ? canvas.getGenerationStatus(requestId) : null;
+        const tracked = requestId && canvas.getGenerationStatus ? await canvas.getGenerationStatus(requestId) : null;
         if (requestId && canvas.getGenerationStatus && !tracked) throw new Error(`生成请求不存在：${requestId}`);
         const tasks = tracked?.tasks || collectGenerationTasks(liveSnapshot(canvas), nodeIds);
         const settled = !tasks.some((task) => task.status === "running" || task.status === "queued");
@@ -1427,7 +1451,7 @@ async function readWorkflowStatus(rawArguments: string, canvas: CanvasAgentToolC
     const waitSeconds = Math.max(0, Math.min(GENERATION_MAX_WAIT_SECONDS, Number(input.waitSeconds ?? GENERATION_DEFAULT_WAIT_SECONDS) || 0));
     const deadline = Date.now() + waitSeconds * 1000;
     for (;;) {
-        const status = canvas.getWorkflowStatus(requestId);
+        const status = await canvas.getWorkflowStatus(requestId);
         if (!status) throw new Error(`工作流请求不存在：${requestId}`);
         const settled = status.status !== "running" && status.status !== "queued";
         if (settled || Date.now() >= deadline) return { ...status, settled };

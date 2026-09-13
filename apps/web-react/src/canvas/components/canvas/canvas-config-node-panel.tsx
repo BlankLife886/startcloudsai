@@ -9,7 +9,7 @@ import { audioFormatLabel, audioSpeedLabel, audioVoiceLabel } from "@/lib/audio-
 import { isCanvasGenerationModeEnabled } from "@/constant/canvas";
 import { estimateCanvasGenerationCost } from "@/lib/canvas/canvas-generation-cost";
 import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
-import { canvasRaisedStyle, colorWash, nodeTypeColor } from "@/lib/canvas-ui";
+import { colorWash, nodeTypeColor } from "@/lib/canvas-ui";
 import { applyCanvasImageModelSettings, canvasExactSizeSettingsForNode, canvasImageSettingsFromModel, resolveCanvasImageModel } from "@/lib/canvas/canvas-image-model";
 import { formatGenerationDuration, useGenerationElapsed } from "@/lib/canvas/canvas-generation-elapsed";
 import { canvasGenerationStageLabel } from "@/lib/canvas/canvas-generation-stage";
@@ -97,9 +97,9 @@ function CanvasGenerationConfigNodePanel({ node, isRunning, inputSummary, inputs
     const globalConfig = useEffectiveConfig();
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const dark = theme.scheme === "dark";
     const requestedMode = node.metadata?.generationMode || "image";
     const mode = isCanvasGenerationModeEnabled(requestedMode) ? requestedMode : "image";
-    const modeIndex = Math.max(0, MODES.findIndex((item) => item.value === mode));
     const color = nodeTypeColor(mode, undefined, theme.scheme);
     const config = buildNodeConfig(globalConfig, node, mode);
     const hasAnyInput = Boolean(inputSummary.textCount || inputSummary.imageCount || inputSummary.videoCount || inputSummary.audioCount);
@@ -120,29 +120,21 @@ function CanvasGenerationConfigNodePanel({ node, isRunning, inputSummary, inputs
     const referenceImages = inputs.filter((input) => Boolean(input.image));
 
     return (
-        <div className="canvas-config-node flex h-full w-full cursor-move flex-col px-3 py-2.5" style={{ color: theme.node.text }} onWheel={(event) => event.stopPropagation()}>
-            <div className="canvas-config-modes relative grid h-9 shrink-0 grid-cols-4 rounded-xl p-[3px]" style={{ background: theme.toolbar.itemHover }}>
-                <div
-                    className="canvas-config-mode-thumb pointer-events-none absolute inset-y-[3px] rounded-[9px] transition-[left] duration-200 ease-out"
-                    style={{
-                        left: `calc(3px + ${modeIndex} * (100% - 6px) / 4)`,
-                        width: "calc((100% - 6px) / 4)",
-                        ...canvasRaisedStyle(theme),
-                    }}
-                />
+        <div data-color-scheme={theme.scheme} className="canvas-config-node canvas-config-refined flex h-full w-full cursor-move flex-col rounded-[inherit] px-3 py-2.5" style={{ color: theme.node.text, background: dark ? "#1c2029" : "#fdfdff" }} onWheel={(event) => event.stopPropagation()}>
+            <div className="canvas-config-tabs grid h-9 shrink-0 grid-cols-4 gap-1">
                 {MODES.map((item) => {
                     const active = mode === item.value;
                     const enabled = isCanvasGenerationModeEnabled(item.value);
                     const Icon = item.icon;
-                    const itemColor = nodeTypeColor(item.colorKey, undefined, theme.scheme);
                     return (
                         <button
                             key={item.value}
                             type="button"
                             disabled={!enabled}
                             title={enabled ? undefined : t("canvas.unavailable")}
-                            className="relative z-[1] flex items-center justify-center gap-1 rounded-[9px] text-[12px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-35"
-                            style={{ color: active ? itemColor : theme.node.muted }}
+                            aria-pressed={active}
+                            className="relative flex items-center justify-center gap-1 text-[12px] font-medium disabled:cursor-not-allowed disabled:opacity-35"
+                            style={{ color: active ? color : theme.node.muted, borderBottom: `2px solid ${active ? color : "transparent"}` }}
                             onClick={() => enabled && onConfigChange(node.id, { generationMode: item.value })}
                         >
                             <Icon className="size-3.5 shrink-0" />
@@ -152,16 +144,19 @@ function CanvasGenerationConfigNodePanel({ node, isRunning, inputSummary, inputs
                 })}
             </div>
 
-            <div className="mt-2 flex min-w-0 shrink-0 flex-col gap-2">
+            <div className="canvas-config-body mt-2 flex min-w-0 shrink-0 flex-col gap-2">
+                <div className="canvas-config-model-row">
                 <ConfigModelField
                     config={config}
                     mode={mode}
                     theme={theme}
-                    surface={fieldStyle.background}
+                    surface="transparent"
                     placeholder={t("canvas.configNode.model")}
                     onChange={(model) => onConfigChange(node.id, canvasImageSettingsFromModel(config, model))}
                     onMissingConfig={() => openConfigDialog(true)}
                 />
+                </div>
+                <div className="canvas-config-parameters">
                 {mode === "image" ? (
                     <ImageSettingsPanel
                         config={config}
@@ -181,9 +176,10 @@ function CanvasGenerationConfigNodePanel({ node, isRunning, inputSummary, inputs
                 ) : (
                     <SettingsField mode={mode} config={config} nodeId={node.id} fieldStyle={fieldStyle} onConfigChange={onConfigChange} />
                 )}
+                </div>
             </div>
 
-            <div className="mt-auto flex min-w-0 shrink-0 items-center gap-2 pt-2">
+            <div className="canvas-config-input-row mt-auto flex min-w-0 shrink-0 items-center gap-2 pt-2">
                 <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
                     {referenceImages.length ? (
                         <div className="mr-0.5 flex items-center -space-x-1" title={t("canvas.configNode.references")}>
@@ -203,9 +199,9 @@ function CanvasGenerationConfigNodePanel({ node, isRunning, inputSummary, inputs
                         stats.map((item) => (
                             <span
                                 key={item.label}
-                                className="inline-flex h-6 max-w-full items-center gap-1 rounded-full px-2 text-[11px]"
+                                className="inline-flex h-6 max-w-full items-center gap-1 px-1 text-[11px]"
                                 style={{
-                                    background: item.value > 0 ? colorWash(item.color, theme.scheme === "dark" ? 0.1 : 0.12) : "transparent",
+                                    background: "transparent",
                                     color: item.value > 0 ? item.color : theme.node.muted,
                                 }}
                             >
@@ -244,7 +240,7 @@ function CanvasGenerationConfigNodePanel({ node, isRunning, inputSummary, inputs
                 </div>
             ) : executionStatus === "succeeded" && completedAt ? (
                 <div className="mt-2.5 flex h-7 shrink-0 items-center gap-1.5 px-1 text-[11px]" style={{ color: theme.node.muted }}>
-                    <CheckCircle2 className="size-3.5" style={{ color: theme.scheme === "dark" ? "#4ade80" : undefined }} />
+                    <CheckCircle2 className="size-3.5" style={{ color: dark ? "#4ade80" : "#16845b" }} />
                     <span>{t("canvas.configNode.generatedAt", { time: formatGenerationTime(completedAt) })}</span>
                     <span className="opacity-45">·</span>
                     <span className="tabular-nums">{t("canvas.configNode.duration", { duration: formatGenerationDuration(elapsedMs) })}</span>
@@ -269,9 +265,9 @@ function CanvasGenerationConfigNodePanel({ node, isRunning, inputSummary, inputs
                 type="button"
                 className="canvas-config-generate mt-2 inline-flex h-9 w-full shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-xl text-[13px] font-medium disabled:cursor-not-allowed disabled:opacity-70"
                 style={{
-                    background: queued ? "#d97706" : theme.scheme === "dark" ? colorWash(color, 0.16) : color,
-                    color: queued ? "#fff" : theme.scheme === "dark" ? color : "#fff",
-                    boxShadow: theme.scheme === "dark" && !queued ? `inset 0 0 0 1px ${colorWash(color, 0.38)}` : undefined,
+                    background: queued ? "#b97716" : mode === "image" ? "#07845f" : mode === "text" ? "#6950d9" : color,
+                    color: "#fff",
+                    boxShadow: "none",
                 }}
                 disabled={!queued && !generating && !canGenerate}
                 onMouseDown={(event) => event.stopPropagation()}
@@ -616,7 +612,7 @@ function buildNodeConfig(globalConfig: AiConfig, node: CanvasNodeData, mode: Can
         model: mode === "image" ? resolveCanvasImageModel(globalConfig, node.metadata?.model, sizeSettings.sizeMode) : resolveModelForCapability(globalConfig, node.metadata?.model, mode),
         reasoningEffort: node.metadata?.reasoningEffort || globalConfig.reasoningEffort || defaultConfig.reasoningEffort,
         quality: node.metadata?.quality || globalConfig.quality || defaultConfig.quality,
-        size: node.metadata?.size || globalConfig.size || defaultConfig.size,
+        size: node.metadata?.size || (mode === "image" ? "" : globalConfig.size || defaultConfig.size),
         ...sizeSettings,
         resolution: node.metadata?.resolution || globalConfig.resolution || defaultConfig.resolution,
         background: node.metadata?.background ?? "",

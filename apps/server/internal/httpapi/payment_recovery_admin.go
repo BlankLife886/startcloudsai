@@ -104,7 +104,7 @@ func (s *Server) adminReconcileOrRecover(c *gin.Context) {
 		return
 	}
 	amount, amountErr := remote.ReallyPriceCents()
-	if validateRemoteOrder(order, remote, false, false) != nil || remote.ProviderOrderID != providerID || amountErr != nil || amount != expectedProviderPayAmount(order) {
+	if validateRemoteOrder(order, remote, false, false) != nil || remote.ProviderOrderID != providerID || amountErr != nil {
 		fail(c, apperr.E("order_provider_mismatch", "渠道订单的身份、金额或支付方式不匹配", 409))
 		return
 	}

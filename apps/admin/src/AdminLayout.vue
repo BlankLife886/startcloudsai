@@ -33,7 +33,6 @@ import {
   Sunny,
   SwitchButton,
   Ticket,
-  TrendCharts,
   Star,
   User,
   UserFilled,
@@ -120,9 +119,7 @@ const NAV_GROUPS = [
   {
     title: "交易与审计",
     items: [
-      { path: "/profitability", label: "成本利润", icon: TrendCharts },
-      { path: "/orders", label: "订单管理", icon: Wallet },
-      { path: "/subscription-changes", label: "订阅变更", icon: Wallet },
+      { path: "/finance-center", label: "财务中心", icon: Wallet },
       { path: "/plans", label: "套餐管理", icon: Box },
       { path: "/codes", label: "兑换码", icon: Ticket },
       { path: "/audit", label: "审计日志", icon: List },
@@ -538,6 +535,7 @@ async function submitPassword() {
             '/gallery',
             '/tasks',
             '/profitability',
+            '/finance-center',
             '/agent-quality',
             '/orders',
             '/home-banners',

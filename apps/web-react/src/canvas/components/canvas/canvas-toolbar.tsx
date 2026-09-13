@@ -1,7 +1,7 @@
 import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import { Button, Tooltip } from "antd";
-import { Group, Hand, Home, Image as ImageIcon, MousePointer2, Music2, Plus, Puzzle, Redo2, Settings2, Trash2, Type, Undo2, Video } from "lucide-react";
+import { Clapperboard, Group, Hand, Home, Image as ImageIcon, MousePointer2, Music2, Plus, Puzzle, Redo2, Settings2, Trash2, Type, Undo2, Video } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { isCanvasNodeTypeEnabled } from "@/constant/canvas";
@@ -10,6 +10,7 @@ import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
 import { CanvasNodeType } from "@/types/canvas";
 import { getNodePluginId, listNodeDefinitions, useNodeRegistryVersion } from "@/lib/canvas/node-registry";
 import { useThemeStore } from "@/stores/use-theme-store";
+import { CanvasFloatingLayer } from "./canvas-floating-layer";
 
 export function CanvasToolbar({
     selectedCount,
@@ -19,6 +20,7 @@ export function CanvasToolbar({
     onProjects,
     onCreateProject,
     onAddImage,
+    onOpenStoryboard,
     onAddText,
     onAddConfig,
     onAddGroup,
@@ -35,6 +37,7 @@ export function CanvasToolbar({
     onProjects: () => void;
     onCreateProject: () => void;
     onAddImage: () => void;
+    onOpenStoryboard: () => void;
     onAddText: () => void;
     onAddConfig: () => void;
     onAddGroup: () => void;
@@ -51,7 +54,6 @@ export function CanvasToolbar({
     const theme = canvasThemes[colorTheme];
     const [hovered, setHovered] = useState<string | null>(null);
     const [extensionsOpen, setExtensionsOpen] = useState(false);
-    const [extPanelX, setExtPanelX] = useState(0);
     useNodeRegistryVersion();
     const creatableDefinitions = listNodeDefinitions().filter((def) => def.showInCreateMenu !== false);
     const operationDefs = creatableDefinitions.filter((def) => isCanvasOperationNodeType(def.type));
@@ -63,6 +65,7 @@ export function CanvasToolbar({
     useEffect(() => {
         if (!extensionsOpen) return;
         const handlePointerDown = (event: PointerEvent) => {
+            if (event.target instanceof Element && event.target.closest("[data-canvas-more-tools]")) return;
             if (rootRef.current && !rootRef.current.contains(event.target as Node)) setExtensionsOpen(false);
         };
         document.addEventListener("pointerdown", handlePointerDown, true);
@@ -85,63 +88,43 @@ export function CanvasToolbar({
                 <ToolbarButton id="tool-home" label={t("canvas.projects")} hovered={hovered} hoverStyle={hoverStyle} onHover={setHovered} onClick={onProjects}>
                     <Home className="size-3.5" />
                 </ToolbarButton>
-                <ToolbarButton id="tool-new-project" label={t("canvas.create")} hovered={hovered} hoverStyle={hoverStyle} onHover={setHovered} onClick={onCreateProject}>
-                    <Plus className="size-3.5" />
-                </ToolbarButton>
                 <Divider theme={theme} />
                 <ToolbarButton id={`tool-${canvasTool}`} label={t(`canvas.toolbar.${canvasTool}`)} active hovered={hovered} activeStyle={activeStyle} hoverStyle={hoverStyle} onHover={setHovered} onClick={() => onCanvasToolChange(canvasTool === "select" ? "pan" : "select")}>
                     {canvasTool === "select" ? <MousePointer2 className="size-3.5" /> : <Hand className="size-3.5" />}
                 </ToolbarButton>
                 <Divider theme={theme} />
-                <ToolbarButton id="tool-text" label={t("canvas.toolbar.text")} hovered={hovered} hoverStyle={hoverStyle} onHover={setHovered} onClick={onAddText}>
+                <ToolbarButton id="tool-text" showLabel label={t("canvas.toolbar.text")} hovered={hovered} hoverStyle={hoverStyle} onHover={setHovered} onClick={onAddText}>
                     <Type className="size-3.5" />
                 </ToolbarButton>
-                <ToolbarButton id="tool-image" label={t("canvas.toolbar.image")} hovered={hovered} hoverStyle={hoverStyle} onHover={setHovered} onClick={onAddImage}>
+                <ToolbarButton id="tool-image" showLabel label={t("canvas.toolbar.image")} hovered={hovered} hoverStyle={hoverStyle} onHover={setHovered} onClick={onAddImage}>
                     <ImageIcon className="size-3.5" />
                 </ToolbarButton>
-                <ToolbarButton id="tool-video" label={isCanvasNodeTypeEnabled(CanvasNodeType.Video) ? t("canvas.toolbar.video") : `${t("canvas.toolbar.video")} · ${t("canvas.unavailable")}`} disabled={!isCanvasNodeTypeEnabled(CanvasNodeType.Video)} hovered={hovered} hoverStyle={hoverStyle} onHover={setHovered}>
+                <ToolbarButton id="tool-storyboard" showLabel label={t("canvas.toolbar.storyboard")} hovered={hovered} hoverStyle={hoverStyle} onHover={setHovered} onClick={onOpenStoryboard}>
+                    <Clapperboard className="size-3.5" />
+                </ToolbarButton>
+                {isCanvasNodeTypeEnabled(CanvasNodeType.Video) ? <ToolbarButton id="tool-video" label={t("canvas.toolbar.video")} hovered={hovered} hoverStyle={hoverStyle} onHover={setHovered}>
                     <Video className="size-3.5" />
-                </ToolbarButton>
-                <ToolbarButton id="tool-audio" label={isCanvasNodeTypeEnabled(CanvasNodeType.Audio) ? t("canvas.toolbar.audio") : `${t("canvas.toolbar.audio")} · ${t("canvas.unavailable")}`} disabled={!isCanvasNodeTypeEnabled(CanvasNodeType.Audio)} hovered={hovered} hoverStyle={hoverStyle} onHover={setHovered}>
+                </ToolbarButton> : null}
+                {isCanvasNodeTypeEnabled(CanvasNodeType.Audio) ? <ToolbarButton id="tool-audio" label={t("canvas.toolbar.audio")} hovered={hovered} hoverStyle={hoverStyle} onHover={setHovered}>
                     <Music2 className="size-3.5" />
-                </ToolbarButton>
-                <ToolbarButton id="tool-config" label={t("canvas.toolbar.config")} hovered={hovered} hoverStyle={hoverStyle} onHover={setHovered} onClick={onAddConfig}>
+                </ToolbarButton> : null}
+                <ToolbarButton id="tool-config" showLabel label={t("canvas.toolbar.config")} hovered={hovered} hoverStyle={hoverStyle} onHover={setHovered} onClick={onAddConfig}>
                     <Settings2 className="size-3.5" />
                 </ToolbarButton>
                 <ToolbarButton id="tool-group" label={t("canvas.toolbar.group")} hovered={hovered} hoverStyle={hoverStyle} onHover={setHovered} onClick={onAddGroup}>
                     <Group className="size-3.5" />
                 </ToolbarButton>
-                {operationDefs.map((definition) => {
-                    const enabled = isCanvasNodeTypeEnabled(definition.type);
-                    const label = enabled ? definition.title : `${definition.title} · ${t("canvas.unavailable")}`;
-                    return (
-                        <ToolbarButton
-                            key={definition.type}
-                            id={`tool-node-${definition.type}`}
-                            label={label}
-                            disabled={!enabled}
-                            hovered={hovered}
-                            hoverStyle={hoverStyle}
-                            onHover={setHovered}
-                            onClick={() => onAddExtensionNode(definition.type)}
-                        >
-                            <span className="inline-flex size-3.5 items-center justify-center [&>svg]:size-3.5">
-                                {definition.icon}
-                            </span>
-                        </ToolbarButton>
-                    );
-                })}
-                {extensionDefs.length ? (
+                {operationDefs.length || extensionDefs.length ? (
                     <ToolbarButton
                         id="tool-extensions"
-                        label={t("canvas.toolbar.extensions")}
+                        showLabel
+                        label={t("canvas.toolbar.moreTools", { defaultValue: "更多工具" })}
                         active={extensionsOpen}
                         hovered={hovered}
                         activeStyle={activeStyle}
                         hoverStyle={hoverStyle}
                         onHover={setHovered}
                         onClick={(event) => {
-                            setExtPanelX(getTipX(wrapRef.current, event.currentTarget));
                             setExtensionsOpen((value) => !value);
                         }}
                     >
@@ -165,14 +148,16 @@ export function CanvasToolbar({
                 ) : null}
             </div>
 
-            {extensionsOpen && extensionDefs.length ? (
-                <div
-                    className="thin-scrollbar pointer-events-auto absolute top-[calc(100%+8px)] z-30 max-h-[50vh] w-[240px] -translate-x-1/2 overflow-y-auto rounded-2xl p-2 shadow-xl backdrop-blur-xl"
-                    style={{ left: extPanelX || "50%", background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.item }}
+            {extensionsOpen ? (
+                <CanvasFloatingLayer anchorRef={rootRef} width={280}
+                    data-canvas-more-tools
+                    className="thin-scrollbar rounded-2xl border p-3 shadow-xl"
+                    style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.item }}
                 >
-                    <div className="px-1.5 pb-1.5 text-[11px] font-medium opacity-50">{t("canvas.toolbar.extensions")}</div>
+                    <div className="px-1.5 pb-2 text-xs font-medium">{t("canvas.toolbar.moreTools", { defaultValue: "更多工具" })}</div>
                     <div className="grid gap-0.5">
-                        {extensionDefs.map((def) => (
+                        <button type="button" className="mb-1 flex items-center gap-2 rounded-lg px-2 py-2 text-left text-sm" onClick={() => { setExtensionsOpen(false); onCreateProject(); }}><Plus className="size-4" />{t("canvas.create")}</button>
+                        {[...operationDefs, ...extensionDefs].map((def) => (
                             <button
                                 key={def.type}
                                 type="button"
@@ -192,7 +177,7 @@ export function CanvasToolbar({
                             </button>
                         ))}
                     </div>
-                </div>
+                </CanvasFloatingLayer>
             ) : null}
         </div>
     );
@@ -209,6 +194,7 @@ function ToolbarButton({
     onClick,
     disabled = false,
     danger = false,
+    showLabel = false,
     children,
 }: {
     id: string;
@@ -221,6 +207,7 @@ function ToolbarButton({
     onClick?: (event: ReactMouseEvent<HTMLElement>) => void;
     disabled?: boolean;
     danger?: boolean;
+    showLabel?: boolean;
     children: ReactNode;
 }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
@@ -231,14 +218,14 @@ function ToolbarButton({
                 <Button
                     type="text"
                     aria-label={label}
-                    className="!h-7 !w-7 !min-w-7 !p-0"
+                    className={showLabel ? "!h-8 !px-2 !text-[13px]" : "!h-8 !w-8 !min-w-8 !p-0"}
                     disabled={disabled}
                     style={active ? activeStyle : hovered === id && !disabled ? hoverStyle : { color: danger ? "#ef4444" : theme.toolbar.item, opacity: disabled ? 0.35 : 1 }}
                     icon={children}
                     onMouseEnter={() => onHover(id)}
                     onMouseLeave={() => onHover(null)}
                     onClick={onClick}
-                />
+                >{showLabel ? label : null}</Button>
             </span>
         </Tooltip>
     );

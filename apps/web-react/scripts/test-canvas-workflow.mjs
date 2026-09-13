@@ -181,6 +181,28 @@ test("a copied config forgets its old output and adopts the newly connected text
     assert.deepEqual(findWorkflowOutputNodes("config-copy", "text", nodes, [edge("config-copy", "new-result")]).map((item) => item.id), ["new-result"]);
 });
 
+test("copying a storyboard shot creates an independent retry identity", () => {
+    const metadata = copyCanvasNodeMetadata({
+        prompt: "电影级分镜画面，雨后车站",
+        storyboardId: "storyboard-1",
+        storyboardSceneId: "shot-2",
+        storyboardIndex: 2,
+        storyboardStatus: "failed",
+        storyboardSourceNodeId: "script",
+        storyboardPreviousSceneId: "shot-1",
+        storyboardNextSceneId: "shot-3",
+        storyboardStyle: "cinematic",
+        storyboardConsistency: true,
+    }, new Map());
+    assert.equal(metadata.prompt, "电影级分镜画面，雨后车站");
+    assert.equal(metadata.storyboardId, undefined);
+    assert.equal(metadata.storyboardSceneId, undefined);
+    assert.equal(metadata.storyboardStatus, undefined);
+    assert.equal(metadata.storyboardSourceNodeId, undefined);
+    assert.equal(metadata.storyboardPreviousSceneId, undefined);
+    assert.equal(metadata.storyboardNextSceneId, undefined);
+});
+
 test("an existing copied config prefers its current connection over a stale persisted output id", () => {
     const nodes = [
         node("config-copy", "config", { workflowOutputNodeIds: ["old-result"] }),

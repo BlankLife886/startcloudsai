@@ -159,7 +159,7 @@ class _AppPermissionsScreenState extends ConsumerState<AppPermissionsScreen>
             '设备权限',
             style: Theme.of(
               context,
-            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 4),
           Text(
@@ -171,7 +171,7 @@ class _AppPermissionsScreenState extends ConsumerState<AppPermissionsScreen>
           const SizedBox(height: 14),
           Material(
             color: colors.surfaceContainerLow,
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(16),
             clipBehavior: Clip.antiAlias,
             child: Column(
               children: [

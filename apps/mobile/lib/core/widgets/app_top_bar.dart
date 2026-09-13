@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../app/starclouds_theme.dart';
 import 'app_chrome.dart';
 
 class AppTopBar extends StatelessWidget implements PreferredSizeWidget {
@@ -48,7 +47,6 @@ class AppTopBar extends StatelessWidget implements PreferredSizeWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colors = theme.colorScheme;
-    final visual = StarCloudsVisualStyle.of(context);
     final showLeading = leading != null || showBackButton;
     final effectiveLeading =
         leading ??
@@ -57,8 +55,8 @@ class AppTopBar extends StatelessWidget implements PreferredSizeWidget {
             : null);
     final titleStyle = (theme.textTheme.titleMedium ?? const TextStyle())
         .copyWith(
-          fontWeight: FontWeight.w800,
-          fontSize: 17,
+          fontWeight: FontWeight.w600,
+          fontSize: showLeading ? 17 : 22,
           height: 1.15,
           letterSpacing: 0,
           color: foregroundColor ?? colors.onSurface,
@@ -78,7 +76,7 @@ class AppTopBar extends StatelessWidget implements PreferredSizeWidget {
       elevation: 0,
       scrolledUnderElevation: 0,
       toolbarHeight: toolbarHeight,
-      centerTitle: centerTitle,
+      centerTitle: showLeading && centerTitle,
       leadingWidth:
           leadingWidth ??
           (leading != null
@@ -88,13 +86,6 @@ class AppTopBar extends StatelessWidget implements PreferredSizeWidget {
               : 12),
       titleSpacing: showLeading ? 0 : 20,
       actionsPadding: const EdgeInsets.only(right: 6),
-      flexibleSpace: Align(
-        alignment: Alignment.bottomCenter,
-        child: ColoredBox(
-          color: visual.hairline.withValues(alpha: .45),
-          child: const SizedBox(width: double.infinity, height: 0.5),
-        ),
-      ),
     );
   }
 }

@@ -1,10 +1,11 @@
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { StarcloudsApiError, starcloudsJson, starcloudsRequest } from "@/services/starclouds-api";
 import type { CanvasConnection, CanvasNodeData, ViewportTransform } from "@/types/canvas";
-import type { CanvasCloudProjectSummary } from "@/lib/canvas/canvas-project-sync";
+import { normalizeCanvasGraphSyncState, type CanvasCloudProjectSummary } from "@/lib/canvas/canvas-project-sync";
 import { normalizeCanvasWorkflowCheckpoint } from "@/lib/canvas/canvas-workflow";
+import { normalizeCanvasAgentContinuation } from "@/lib/canvas/canvas-agent-continuation";
 
-type CanvasDocumentV3 = Pick<CanvasProject, "nodes" | "connections" | "chatSessions" | "activeChatId" | "backgroundMode" | "showImageInfo" | "viewport" | "workflowRun"> & {
+type CanvasDocumentV3 = Pick<CanvasProject, "nodes" | "connections" | "chatSessions" | "activeChatId" | "backgroundMode" | "showImageInfo" | "viewport" | "workflowRun" | "graphSync" | "agentContinuation"> & {
     version: 3;
 };
 
@@ -63,7 +64,7 @@ function normalizeViewport(value: unknown): ViewportTransform {
     };
 }
 
-function projectDocument(project: CanvasProject): CanvasDocumentV3 {
+export function canvasProjectDocument(project: CanvasProject): CanvasDocumentV3 {
     return {
         version: 3,
         nodes: project.nodes,
@@ -74,10 +75,12 @@ function projectDocument(project: CanvasProject): CanvasDocumentV3 {
         showImageInfo: project.showImageInfo,
         viewport: project.viewport,
         workflowRun: project.workflowRun || null,
+        ...(project.graphSync ? { graphSync: project.graphSync } : {}),
+        ...(project.agentContinuation ? { agentContinuation: project.agentContinuation } : {}),
     };
 }
 
-function fromResponse(item: CanvasProjectResponse): CanvasProject {
+export function canvasProjectFromResponse(item: CanvasProjectResponse): CanvasProject {
     const document = item.document as Partial<CanvasDocumentV3> & LegacyCanvasDocument;
     if (![1, 2, 3].includes(document.version || 0) || !Array.isArray(document.nodes)) {
         throw new StarcloudsApiError("invalid_document", "画布文档格式不受支持", 422);
@@ -98,6 +101,8 @@ function fromResponse(item: CanvasProjectResponse): CanvasProject {
         showImageInfo: Boolean(document.showImageInfo),
         viewport: normalizeViewport(document.viewport),
         workflowRun: normalizeCanvasWorkflowCheckpoint(document.workflowRun),
+        graphSync: normalizeCanvasGraphSyncState(document.graphSync),
+        agentContinuation: normalizeCanvasAgentContinuation(document.agentContinuation),
     };
 }
 
@@ -115,7 +120,7 @@ export async function listCloudCanvasProjectSummaries(): Promise<CanvasCloudProj
 
 export async function getCloudCanvasProject(id: string) {
     try {
-        return fromResponse(await starcloudsRequest<CanvasProjectResponse>(`/canvas-projects/${encodeURIComponent(id)}`));
+        return canvasProjectFromResponse(await starcloudsRequest<CanvasProjectResponse>(`/canvas-projects/${encodeURIComponent(id)}`));
     } catch (error) {
         if (error instanceof StarcloudsApiError && error.status === 404) return null;
         throw error;
@@ -126,19 +131,19 @@ export async function createCloudCanvasProject(project: CanvasProject) {
     const response = await starcloudsJson<CanvasProjectResponse>("/canvas-projects", "POST", {
         id: project.id,
         title: project.title,
-        document: projectDocument(project),
+        document: canvasProjectDocument(project),
     });
-    return fromResponse(response);
+    return canvasProjectFromResponse(response);
 }
 
 export async function updateCloudCanvasProject(project: CanvasProject) {
     if (!project.revision) return createCloudCanvasProject(project);
     const response = await starcloudsJson<CanvasProjectResponse>(`/canvas-projects/${encodeURIComponent(project.id)}`, "PATCH", {
         title: project.title,
-        document: projectDocument(project),
+        document: canvasProjectDocument(project),
         revision: project.revision,
     });
-    return fromResponse(response);
+    return canvasProjectFromResponse(response);
 }
 
 export function deleteCloudCanvasProject(id: string) {

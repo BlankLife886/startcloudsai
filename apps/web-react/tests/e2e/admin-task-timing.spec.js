@@ -44,29 +44,30 @@ async function setup(page) {
   return { rows, writes }
 }
 
-test('admin task lifetime includes every attempt and ticks while waiting to retry', async ({ page }) => {
+test('admin queued tasks hide time and completed tasks show execution duration', async ({ page }) => {
   const { writes } = await setup(page)
-  await expect(page.getByRole('columnheader', { name: '总耗时', exact: true })).toBeVisible()
+  await expect(page.getByRole('columnheader', { name: '执行耗时', exact: true })).toBeVisible()
   const first = page.getByRole('row').filter({ hasText: '首轮任务' })
   const retry = page.getByRole('row').filter({ hasText: '重试任务' })
   const completed = page.getByRole('row').filter({ hasText: '完成任务' })
   await expect(first).toContainText('排队中')
   await expect(retry).toContainText('等待重试')
-  await expect(retry).toContainText('2 分 21 秒')
-  await expect(completed).toContainText('3 分 19 秒')
+  await expect(first.getByRole('cell').nth(2)).toHaveText('-')
+  await expect(retry.getByRole('cell').nth(2)).toHaveText('-')
+  await expect(completed).toContainText('1 分 0 秒')
   await page.clock.setFixedTime(new Date(now.valueOf() + 2000))
   await page.clock.fastForward(2000)
-  await expect(retry).toContainText('2 分 23 秒')
-  await expect(completed).toContainText('3 分 19 秒')
+  await expect(retry.getByRole('cell').nth(2)).toHaveText('-')
+  await expect(completed).toContainText('1 分 0 秒')
   expect(writes).toEqual([])
 })
 
-test('open task details retain total time and update to the final snapshot', async ({ page }) => {
+test('task details hide queue time and freeze execution time at completion', async ({ page }) => {
   const { rows, writes } = await setup(page)
   await page.getByRole('row').filter({ hasText: '重试任务' }).getByText('等待重试', { exact: true }).click()
   const detail = page.getByRole('dialog')
-  await expect(detail).toContainText('总耗时')
-  await expect(detail).toContainText('2 分 21 秒')
+  await expect(detail).toContainText('执行耗时')
+  await expect(detail.locator('.stat-item').filter({ hasText: '执行耗时' })).toContainText('-')
   await expect(detail).toContainText('重试开始')
   await expect(detail).not.toContainText('2 分 19 秒')
   rows[1].status = 'succeeded'
@@ -75,8 +76,8 @@ test('open task details retain total time and update to the final snapshot', asy
   await page.clock.setFixedTime(new Date(now.valueOf() + 60000))
   await page.clock.fastForward(60000)
   await expect(detail).toContainText('已成功')
-  await expect(detail).toContainText('3 分 19 秒')
+  await expect(detail.locator('.stat-item').filter({ hasText: '执行耗时' })).toContainText('1 分 0 秒')
   await page.clock.fastForward(30000)
-  await expect(detail).toContainText('3 分 19 秒')
+  await expect(detail.locator('.stat-item').filter({ hasText: '执行耗时' })).toContainText('1 分 0 秒')
   expect(writes).toEqual([])
 })

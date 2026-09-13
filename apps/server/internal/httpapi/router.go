@@ -393,6 +393,7 @@ func (s *Server) Router() *gin.Engine {
 	api.GET("/canvas-projects/:id/workflow-run", s.activeCanvasWorkflowRun)
 	api.POST("/canvas-projects/:id/workflow-runs", s.acquireCanvasWorkflowRun)
 	api.PATCH("/canvas-projects/:id/workflow-runs/:runId", s.patchCanvasWorkflowRun)
+	api.GET("/canvas-projects/:id/workflow-runs/:runId", s.canvasWorkflowRun)
 	api.GET("/canvas-workflow-templates", s.publicCanvasWorkflowTemplates)
 	api.GET("/canvas-workflow-templates/:id", s.publicCanvasWorkflowTemplate)
 

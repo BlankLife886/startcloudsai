@@ -98,7 +98,7 @@ class _AccountDataExportScreenState
                       Text(
                         '获取你的数据副本',
                         style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                          fontWeight: FontWeight.w800,
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
                       const SizedBox(height: 6),

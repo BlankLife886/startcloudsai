@@ -243,7 +243,7 @@ class _BackgroundRemoveScreenState extends ConsumerState<BackgroundRemoveScreen>
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
             color: Theme.of(context).colorScheme.surfaceContainerLow,
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(16),
             border: Border.all(
               color: Theme.of(context).colorScheme.outlineVariant,
             ),
@@ -349,7 +349,7 @@ class _BackgroundRemoveScreenState extends ConsumerState<BackgroundRemoveScreen>
                     padding: const EdgeInsets.all(16),
                     decoration: BoxDecoration(
                       color: colors.primaryContainer.withValues(alpha: 0.45),
-                      borderRadius: BorderRadius.circular(8),
+                      borderRadius: BorderRadius.circular(16),
                       border: Border.all(color: colors.outlineVariant),
                     ),
                     child: Row(
@@ -367,7 +367,7 @@ class _BackgroundRemoveScreenState extends ConsumerState<BackgroundRemoveScreen>
                               Text(
                                 '主体保留，背景透明',
                                 style: Theme.of(context).textTheme.titleMedium
-                                    ?.copyWith(fontWeight: FontWeight.w900),
+                                    ?.copyWith(fontWeight: FontWeight.w700),
                               ),
                               const SizedBox(height: 4),
                               Text(
@@ -415,7 +415,7 @@ class _BackgroundRemoveScreenState extends ConsumerState<BackgroundRemoveScreen>
                                           .textTheme
                                           .titleMedium
                                           ?.copyWith(
-                                            fontWeight: FontWeight.w900,
+                                            fontWeight: FontWeight.w700,
                                           ),
                                     ),
                                     const SizedBox(height: 3),
@@ -439,13 +439,13 @@ class _BackgroundRemoveScreenState extends ConsumerState<BackgroundRemoveScreen>
                                 ),
                                 decoration: BoxDecoration(
                                   color: colors.secondaryContainer,
-                                  borderRadius: BorderRadius.circular(8),
+                                  borderRadius: BorderRadius.circular(16),
                                 ),
                                 child: Text(
                                   '${model.pricePoints} 积分',
                                   style: TextStyle(
                                     color: colors.onSecondaryContainer,
-                                    fontWeight: FontWeight.w900,
+                                    fontWeight: FontWeight.w700,
                                   ),
                                 ),
                               ),
@@ -612,13 +612,13 @@ class _ComparisonPanel extends StatelessWidget {
             label,
             style: Theme.of(
               context,
-            ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w800),
+            ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w600),
           ),
         ),
         AspectRatio(
           aspectRatio: 4 / 3,
           child: ClipRRect(
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(16),
             child: DecoratedBox(
               decoration: BoxDecoration(
                 color: colors.surfaceContainerLow,
@@ -702,7 +702,7 @@ class _EmptySource extends StatelessWidget {
               '选择一张图片',
               style: Theme.of(
                 context,
-              ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+              ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
             ),
           ],
         ),
@@ -773,7 +773,7 @@ class _CostRow extends StatelessWidget {
       Text(
         value,
         style: TextStyle(
-          fontWeight: FontWeight.w900,
+          fontWeight: FontWeight.w700,
           color: danger ? Theme.of(context).colorScheme.error : null,
         ),
       ),
@@ -823,7 +823,7 @@ class _InlineError extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Material(
     color: Theme.of(context).colorScheme.errorContainer,
-    borderRadius: BorderRadius.circular(8),
+    borderRadius: BorderRadius.circular(16),
     child: ListTile(
       leading: const Icon(Icons.cloud_off_outlined),
       title: const Text('任务状态读取失败'),

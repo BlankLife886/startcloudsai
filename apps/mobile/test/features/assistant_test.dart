@@ -10,6 +10,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:speech_to_text/speech_recognition_result.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 import 'package:starcloudsai_mobile/app/starclouds_theme.dart';
+import 'package:starcloudsai_mobile/core/network/api_exception.dart';
 import 'package:starcloudsai_mobile/features/assistant/assistant.dart';
 import 'package:starcloudsai_mobile/features/assistant/assistant_draft.dart';
 import 'package:starcloudsai_mobile/features/assistant/assistant_screen.dart';
@@ -224,7 +225,10 @@ class _FakeAssistantRepository implements AssistantRepository {
   }
 
   @override
-  Future<AssistantRun> cancelRun(String id) async => const AssistantRun(
+  Future<AssistantRun> cancelRun(
+    String id, {
+    bool acknowledgeUpstream = false,
+  }) async => const AssistantRun(
     id: 'run-1',
     conversationId: 'conversation-1',
     status: 'canceled',
@@ -252,6 +256,8 @@ class _ScreenAssistantController extends AssistantWorkspaceController {
   final AssistantWorkspaceState initial;
   int sendCount = 0;
   int stopCount = 0;
+  bool requireStopConfirmation = false;
+  final stopAcknowledgements = <bool>[];
   int newConversationCount = 0;
   String? sentValue;
   List<AssistantReferenceImage> sentReferences = const [];
@@ -294,8 +300,18 @@ class _ScreenAssistantController extends AssistantWorkspaceController {
   }
 
   @override
-  Future<void> cancelSelectedRun() async {
+  Future<void> cancelSelectedRun({
+    bool acknowledgeUpstream = false,
+    String? expectedRunId,
+  }) async {
     stopCount += 1;
+    stopAcknowledgements.add(acknowledgeUpstream);
+    if (requireStopConfirmation && !acknowledgeUpstream) {
+      throw const ApiException(
+        code: 'assistant_cancel_confirmation_required',
+        message: '任务已提交上游，本次积分不会退回。',
+      );
+    }
   }
 
   @override
@@ -2981,6 +2997,53 @@ void main() {
     expect(controller.stopCount, 1);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'stopping an assistant asks for fee consent after a queued-to-running change',
+    (tester) async {
+      late _ScreenAssistantController controller;
+      final conversation = AssistantConversation(
+        id: 'conversation-1',
+        title: '取消确认',
+        messages: [_message('assistant-1', 'assistant', '', status: 'running')],
+        updatedAt: DateTime(2026, 9, 9),
+      );
+      const run = AssistantRun(
+        id: 'run-1',
+        conversationId: 'conversation-1',
+        status: 'running',
+        stage: 'thinking',
+        errorMessage: '',
+        costPoints: 0,
+      );
+      await tester.pumpWidget(
+        _screen(() {
+          controller = _ScreenAssistantController(
+            AssistantWorkspaceState(
+              config: _config,
+              conversations: [conversation],
+              selectedConversationId: 'conversation-1',
+              selectedModelId: 'chat-pro',
+              reasoningEffort: 'medium',
+              activeRuns: const {'conversation-1': run},
+              liveRunIds: const {'run-1'},
+            ),
+          );
+          controller.requireStopConfirmation = true;
+          return controller;
+        }),
+      );
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('assistant-stop')));
+      await tester.pumpAndSettle();
+      expect(controller.stopAcknowledgements, [false]);
+      expect(find.text('任务已提交上游，本次积分不会退回。'), findsOneWidget);
+      await tester.tap(find.text('确认停止'));
+      await tester.pumpAndSettle();
+      expect(controller.stopAcknowledgements, [false, true]);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('reference strip fits narrow large text and removes one image', (
     tester,

@@ -1227,7 +1227,7 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
                     <template #default="{ row }">
                       <div class="task-kind">
                         <strong>{{ taskTypeLabel(row.type, row.params, row.source) }}</strong>
-                        <small :title="row.model || ''">{{ row.model || '未记录模型' }}</small>
+                        <small :title="row.modelName || row.model || ''">{{ row.modelName || row.params?._modelDisplayName || row.model || '未记录模型' }}</small>
                       </div>
                     </template>
                   </el-table-column>

@@ -189,7 +189,44 @@ test('assistant creation types include Q&A and show model points plus reasoning'
   await expect(reasoningMenu).toContainText('低')
   await expect(reasoningMenu).toContainText('中')
   await expect(reasoningMenu).toContainText('高')
+  await expect(reasoningMenu).toContainText('Chat Pro')
   await expect(reasoningMenu).toContainText('折扣 4 积分')
+})
+
+test('reasoning effort uses a draggable slider with an elevated high-effort state', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' })
+  await page.goto('/studio')
+  await page.locator('.studio-composer__control.is-field.is-skill').click()
+  await page.locator('.studio-composer__field-menu.is-skill').getByRole('option', { name: /^问答模式/ }).click()
+  await page.locator('.studio-composer__control.is-field.is-reasoning').click()
+
+  const panel = page.locator('.studio-reasoning')
+  const slider = panel.getByRole('slider', { name: '推理强度' })
+  await expect(slider).toHaveValue('0')
+  await expect(panel).toHaveAttribute('data-effort', 'low')
+  await expect(panel.getByRole('button', { name: '选择高推理' })).toBeVisible()
+
+  await panel.getByRole('button', { name: '选择高推理' }).click()
+  await expect(slider).toHaveValue('2')
+  await expect(panel).toHaveAttribute('data-effort', 'high')
+  await expect(panel).toHaveAttribute('data-extreme', 'true')
+  await expect(panel.locator('.studio-reasoning__level-badge')).toHaveText('Ultra ›')
+  await expect(panel).toContainText('Chat Pro')
+  await expect(panel).toContainText('积分')
+  await expect(panel.getByRole('button', { name: '恢复默认推理强度' })).toBeEnabled()
+
+  await slider.press('Home')
+  await expect(panel).toHaveAttribute('data-effort', 'low')
+  await slider.press('End')
+  await expect(panel).toHaveAttribute('data-effort', 'high')
+  await slider.press('Home')
+  const box = await panel.locator('.studio-reasoning__slider').boundingBox()
+  await page.mouse.move(box.x + 10, box.y + box.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(box.x + box.width - 10, box.y + box.height / 2, { steps: 10 })
+  await page.mouse.up()
+  await expect(panel).toHaveAttribute('data-effort', 'high')
+  await expect(panel).toHaveAttribute('data-extreme', 'true')
 })
 
 test('assistant Q&A launch keeps chat mode and reasoning effort', async ({ page }) => {
@@ -272,7 +309,7 @@ test('assistant image mode exposes model-driven generation params and launches w
     ratio: '16:9',
     resolution: '2K',
     count: 3,
-    quality: 'medium',
+    quality: 'low',
     autoStart: true,
     costConfirmed: true,
   })

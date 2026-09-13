@@ -19,87 +19,139 @@ class _SessionController extends SessionController {
 }
 
 void main() {
-  testWidgets('bottom navigation exposes four stable destinations', (
+  testWidgets('five-entry dock fits large text above the device safe area', (
     tester,
   ) async {
-    var selected = -1;
-    final haptics = <Object?>[];
-    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
-      SystemChannels.platform,
-      (call) async {
-        if (call.method == 'HapticFeedback.vibrate') {
-          haptics.add(call.arguments);
-        }
-        return null;
-      },
-    );
-    addTearDown(
-      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
-        SystemChannels.platform,
-        null,
-      ),
-    );
-    await tester.binding.setSurfaceSize(const Size(320, 120));
+    await tester.binding.setSurfaceSize(const Size(320, 240));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.pumpWidget(
       MaterialApp(
         builder: (context, child) => MediaQuery(
-          data: MediaQuery.of(
-            context,
-          ).copyWith(textScaler: const TextScaler.linear(1.4)),
+          data: MediaQuery.of(context).copyWith(
+            textScaler: const TextScaler.linear(2.5),
+            padding: const EdgeInsets.only(bottom: 34),
+          ),
           child: child!,
         ),
         home: Scaffold(
           bottomNavigationBar: AppBottomNavigationBar(
-            selectedIndex: 0,
-            onDestinationSelected: (value) => selected = value,
-            activeCount: 2,
-            unreadNotifications: 12,
+            selectedIndex: 2,
+            onDestinationSelected: (_) {},
+            activeCount: 128,
+            unreadNotifications: 999,
           ),
         ),
       ),
     );
-
-    for (final label in ['首页', '设计', '我的']) {
+    await tester.pumpAndSettle();
+    final frame = tester.getRect(find.byKey(const Key('bottom-nav-frame')));
+    expect(frame.bottom, lessThanOrEqualTo(240 - 34));
+    for (var index = 0; index < 5; index++) {
+      final item = find.byKey(Key('bottom-nav-item-$index'));
+      expect(tester.getSize(item).width, greaterThanOrEqualTo(48));
+      expect(tester.getSize(item).height, greaterThanOrEqualTo(48));
+    }
+    for (final label in ['首页', '设计', '助手', '订单', '我的']) {
       expect(find.text(label), findsOneWidget);
     }
-    expect(find.text('社区'), findsNothing);
-    expect(find.text('AI'), findsNothing);
-    expect(find.bySemanticsLabel('AI'), findsOneWidget);
-    expect(find.byType(InkWell), findsNothing);
-    expect(find.byType(NavigationBar), findsNothing);
-    expect(
-      tester.getSize(find.byKey(const Key('bottom-nav-ai-button'))),
-      const Size(28, 28),
+    final assistant = tester.getRect(
+      find.byKey(const Key('bottom-nav-ai-button')),
     );
-    for (var index = 0; index < 4; index += 1) {
+    for (final badge in find.text('99+').evaluate()) {
       expect(
-        tester.getSize(find.byKey(Key('bottom-nav-item-$index'))).height,
-        greaterThanOrEqualTo(56),
+        tester.getRect(find.byWidget(badge.widget)).overlaps(assistant),
+        isFalse,
       );
     }
-    expect(find.byKey(const Key('bottom-nav-item-4')), findsNothing);
-    final selectedMotion = tester.widget<AnimatedScale>(
-      find.descendant(
-        of: find.byKey(const Key('bottom-nav-item-0')),
-        matching: find.byKey(const Key('bottom-nav-icon-motion')),
-      ),
-    );
-    expect(selectedMotion.scale, 1.08);
-    expect(selectedMotion.duration, const Duration(milliseconds: 160));
-    final navigation = tester.getRect(
-      find.byKey(const Key('app-bottom-navigation')),
-    );
-    expect(navigation.left, 0);
-    expect(navigation.right, 320);
-    expect(navigation.bottom, 120);
-    await tester.tap(find.byKey(const Key('bottom-nav-item-2')));
-    expect(selected, 2);
-    expect(haptics, ['HapticFeedbackType.selectionClick']);
-    expect(find.text('2'), findsOneWidget);
-    expect(find.bySemanticsLabel('设计，2 个正在生成'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'bottom navigation exposes five destinations with a central assistant',
+    (tester) async {
+      var selected = -1;
+      final haptics = <Object?>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (call) async {
+          if (call.method == 'HapticFeedback.vibrate') {
+            haptics.add(call.arguments);
+          }
+          return null;
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          null,
+        ),
+      );
+      await tester.binding.setSurfaceSize(const Size(320, 120));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(
+        MaterialApp(
+          builder: (context, child) => MediaQuery(
+            data: MediaQuery.of(
+              context,
+            ).copyWith(textScaler: const TextScaler.linear(1.4)),
+            child: child!,
+          ),
+          home: Scaffold(
+            bottomNavigationBar: AppBottomNavigationBar(
+              selectedIndex: 0,
+              onDestinationSelected: (value) => selected = value,
+              activeCount: 2,
+              unreadNotifications: 12,
+            ),
+          ),
+        ),
+      );
+
+      for (final label in ['首页', '设计', '助手', '订单', '我的']) {
+        expect(find.text(label), findsOneWidget);
+      }
+      expect(find.text('社区'), findsNothing);
+      expect(find.text('AI'), findsNothing);
+      expect(find.bySemanticsLabel('助手'), findsOneWidget);
+      expect(find.byType(InkWell), findsNothing);
+      expect(find.byType(NavigationBar), findsNothing);
+      expect(
+        tester.getSize(find.byKey(const Key('bottom-nav-ai-button'))),
+        const Size(38, 38),
+      );
+      expect(
+        tester.getCenter(find.byKey(const Key('bottom-nav-ai-button'))).dx,
+        closeTo(160, .1),
+      );
+      for (var index = 0; index < 5; index += 1) {
+        expect(
+          tester.getSize(find.byKey(Key('bottom-nav-item-$index'))).height,
+          greaterThanOrEqualTo(56),
+        );
+      }
+      expect(find.byKey(const Key('bottom-nav-item-5')), findsNothing);
+      final selectedMotion = tester.widget<AnimatedScale>(
+        find.descendant(
+          of: find.byKey(const Key('bottom-nav-item-0')),
+          matching: find.byKey(const Key('bottom-nav-icon-motion')),
+        ),
+      );
+      expect(selectedMotion.scale, 1.04);
+      expect(selectedMotion.duration, const Duration(milliseconds: 160));
+      final navigation = tester.getRect(
+        find.byKey(const Key('app-bottom-navigation')),
+      );
+      expect(navigation.left, 0);
+      expect(navigation.right, 320);
+      expect(navigation.bottom, 120);
+      await tester.tap(find.byKey(const Key('bottom-nav-item-2')));
+      expect(selected, 2);
+      expect(haptics, ['HapticFeedbackType.selectionClick']);
+      expect(find.text('2'), findsOneWidget);
+      expect(find.bySemanticsLabel('设计，2 个正在生成'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('bottom navigation removes motion when the system requests it', (
     tester,
@@ -127,7 +179,7 @@ void main() {
         matching: find.byKey(const Key('bottom-nav-icon-motion')),
       ),
     );
-    expect(motion.scale, 1.08);
+    expect(motion.scale, 1.04);
     expect(motion.duration, Duration.zero);
     expect(tester.takeException(), isNull);
   });

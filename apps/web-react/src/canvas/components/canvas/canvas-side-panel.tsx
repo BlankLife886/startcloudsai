@@ -153,8 +153,8 @@ export const CanvasSidePanel = memo(function CanvasSidePanel({ projectId, nodes,
                             <button
                                 key={item.id}
                                 type="button"
-                                className="relative h-8 min-w-0 flex-1 rounded-full px-1 text-[11px] font-semibold transition-colors duration-200 hover:opacity-100"
-                                style={{ color: active ? theme.toolbar.activeText : theme.toolbar.item, opacity: active ? 1 : 0.62 }}
+                                className="relative h-8 min-w-0 flex-1 rounded-full px-1 text-xs font-semibold transition-colors duration-200"
+                                style={{ color: active ? theme.toolbar.activeText : theme.toolbar.item }}
                                 onClick={() => openTab(item.id)}
                             >
                                 {active ? (

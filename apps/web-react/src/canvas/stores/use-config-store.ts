@@ -121,7 +121,7 @@ export const defaultConfig: AiConfig = {
     reasoningEffort: "auto",
     models: [],
     quality: "medium",
-    size: "1:1",
+    size: "auto",
     sizeMode: "ratio",
     exactWidth: "",
     exactHeight: "",

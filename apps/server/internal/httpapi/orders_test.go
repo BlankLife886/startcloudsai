@@ -252,7 +252,7 @@ func TestCreateOrderClosesDuplicateAndMismatchedPendingOrders(t *testing.T) {
 	user, reusable := makeOrder(t, st)
 	reusable = prepareLanjingOrder(t, st, reusable, "provider-reusable", reusable.AmountCents, "alipay")
 	adjusted, err := store.InsertOrder(ctx, st.Pool, user.ID, reusable.PlanID, reusable.AmountCents,
-		reusable.GrantCents, reusable.BonusCents, "lanjing")
+		reusable.GrantCents+1, reusable.BonusCents, "lanjing")
 	if err != nil {
 		t.Fatal(err)
 	}

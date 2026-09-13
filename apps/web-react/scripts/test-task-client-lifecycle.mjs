@@ -4,6 +4,7 @@ import vm from 'node:vm';
 import test from 'node:test';
 import ts from 'typescript';
 import { canvasAgentTaskSalt } from '../src/canvas/lib/canvas/canvas-agent-task-identity.ts';
+import { createAgentGenerationRecord } from '../src/canvas/lib/canvas/canvas-agent-continuation.ts';
 
 const read = (path) => ts.createSourceFile(path, fs.readFileSync(new URL(path, import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const hook = read('../src/features/text-to-image/useTextToImageJobs.js');
@@ -61,11 +62,18 @@ test('monitor errors never manufacture failed task snapshots', async () => {
 
 test('ordinary Agent generation reuses the tool identity across replay and hook reconstruction', async () => {
   const submitted = [];
-  const build = () => ({ useCallback: (fn) => fn, canvasAgentTaskSalt, nanoid: () => 'new-random', nodesRef: { current: [{ id: 'config', type: 'config', metadata: {} }] }, isCanvasExecutableNode: (node) => node.type === 'config', generateNodeRef: { current: async (...args) => { submitted.push(args); return true; } }, generationRuns: new Map(), trimRunRegistry() {} });
+  let saved = [];
+  const build = (restore = true) => {
+    const generationRuns = new Map((restore ? JSON.parse(JSON.stringify(saved)) : []).map(record => [record.requestId, record]));
+    const persistContinuation = () => { saved = [...generationRuns.values()]; };
+    return { useCallback: (fn) => fn, assertReady() {}, persistContinuation, createAgentGenerationRecord, setGenerationStatus(record, id, status, error) { record.tasks[id] = { ...record.tasks[id], status, error }; persistContinuation(); }, canvasAgentTaskSalt, nanoid: () => 'new-random', nodesRef: { current: [{ id: 'config', type: 'config', metadata: {} }] }, isCanvasExecutableNode: (node) => node.type === 'config', generateNodeRef: { current: async (...args) => { submitted.push(args); return true; } }, generationRuns, trimRunRegistry() {} };
+  };
   const source = declaration(bridge, 'startGeneration') + '\nstartGeneration({requestId:"server-tool-1",nodeIds:["config"]});startGeneration({requestId:"server-tool-1",nodeIds:["config"]});';
   execute(source, build());
   execute(source, build());
-  assert.equal(submitted.length, 2, 'same hook replays must not submit twice');
+  assert.equal(submitted.length, 1, 'persisted requests must not submit again after hook reconstruction');
+  execute(source, build(false));
+  assert.equal(submitted.length, 2, 'a lost local registry still uses backend idempotency');
   assert.equal(submitted[0][3].taskKeySalt, submitted[1][3].taskKeySalt, 'fresh hooks must derive the same server idempotency salt');
   assert.equal(submitted[0][3].taskKeySalt, canvasAgentTaskSalt('generation-server-tool-1'));
 });

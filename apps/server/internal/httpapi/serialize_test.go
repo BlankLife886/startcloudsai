@@ -11,10 +11,13 @@ import (
 )
 
 func TestTaskDictIncludesRecordedModel(t *testing.T) {
-	task := &store.Task{ID: uuid.New(), Type: "t2i", Model: "gpt-image-2"}
+	task := &store.Task{ID: uuid.New(), Type: "t2i", Model: "gpt-image-2", Params: map[string]any{"_modelDisplayName": "我的图片模型"}}
 	dict := taskDict(task, nil, nil)
 	if got := dict["model"]; got != "gpt-image-2" {
 		t.Fatalf("model = %v, want gpt-image-2", got)
+	}
+	if got := dict["modelName"]; got != "我的图片模型" {
+		t.Fatalf("modelName = %v, want 我的图片模型", got)
 	}
 }
 

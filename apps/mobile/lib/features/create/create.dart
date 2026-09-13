@@ -128,11 +128,12 @@ Duration? creationElapsedDuration({
 }) {
   final clock = now ?? DateTime.now();
   if (!active) {
-    final start = startedAt ?? createdAt;
+    final start = createdAt ?? submittedAt ?? startedAt;
     if (start == null || finishedAt == null) return null;
-    return finishedAt.difference(start);
+    final elapsed = finishedAt.difference(start);
+    return elapsed.isNegative ? Duration.zero : elapsed;
   }
-  final start = startedAt ?? createdAt ?? submittedAt;
+  final start = createdAt ?? submittedAt ?? startedAt;
   if (start == null) return null;
   final elapsed = clock.difference(start);
   return elapsed.isNegative ? Duration.zero : elapsed;
@@ -148,7 +149,7 @@ Duration? creationGroupElapsedDuration({
   if (items.isEmpty) return null;
   DateTime? start;
   for (final task in items) {
-    final candidate = task.startedAt ?? task.createdAt ?? submittedAt;
+    final candidate = task.createdAt ?? submittedAt ?? task.startedAt;
     if (candidate == null) continue;
     if (start == null || candidate.isBefore(start)) start = candidate;
   }
@@ -168,10 +169,52 @@ Duration? creationGroupElapsedDuration({
 }
 
 class TextToImageBatch {
-  const TextToImageBatch({required this.taskIds, this.batchId = ''});
+  const TextToImageBatch({
+    required this.taskIds,
+    this.batchId = '',
+    this.request,
+    this.error,
+  });
 
   final List<String> taskIds;
   final String batchId;
+  final TextToImageRequest? request;
+  final Object? error;
+
+  bool get isComplete => error == null;
+  int get requestedCount => request?.count ?? taskIds.length;
+}
+
+class TextToImageRequest {
+  TextToImageRequest({
+    required this.prompt,
+    required this.model,
+    required this.aspectRatio,
+    required this.resolution,
+    required this.quality,
+    required int count,
+    required List<String> inputKeys,
+  }) : count = count.clamp(1, model.maxImages.clamp(1, 4)),
+       inputKeys = List.unmodifiable(inputKeys),
+       batchId = 'batch-${const Uuid().v4()}',
+       createdAt = DateTime.now().toUtc(),
+       idempotencyKeys = List.unmodifiable(
+         List.generate(
+           count.clamp(1, model.maxImages.clamp(1, 4)),
+           (_) => const Uuid().v4(),
+         ),
+       );
+
+  final String prompt;
+  final ImageModelOption model;
+  final String aspectRatio;
+  final String resolution;
+  final String quality;
+  final int count;
+  final List<String> inputKeys;
+  final String batchId;
+  final DateTime createdAt;
+  final List<String> idempotencyKeys;
 }
 
 class RuntimeCreationConfig {
@@ -257,7 +300,6 @@ class CreationRepository {
   const CreationRepository(this._apiClient);
 
   final ApiClient _apiClient;
-  static const _uuid = Uuid();
 
   Future<RuntimeCreationConfig> loadConfig() async {
     final data = await _apiClient.get('/runtime-config');
@@ -303,29 +345,60 @@ class CreationRepository {
     if (inputKeys.length > maxTaskReferenceImages) {
       throw const FormatException('文生图任务最多支持 6 张参考图');
     }
-    final batchSize = count.clamp(1, 4);
-    final batchId = batchSize > 1
-        ? 'batch-${DateTime.now().millisecondsSinceEpoch}'
-        : '';
-    final batchCreatedAt = DateTime.now().toUtc().toIso8601String();
-    final ids = <String>[];
-    for (var index = 0; index < batchSize; index++) {
-      ids.add(
-        await _createTextToImageTask(
-          prompt: prompt,
-          model: model,
-          aspectRatio: aspectRatio,
-          resolution: resolution,
-          quality: quality,
-          inputKeys: inputKeys,
-          batchId: batchId,
-          batchIndex: index,
-          batchSize: batchSize,
-          batchCreatedAt: batchCreatedAt,
-        ),
-      );
+    return submitTextToImageBatch(
+      TextToImageRequest(
+        prompt: prompt.trim(),
+        model: model,
+        aspectRatio: aspectRatio,
+        resolution: resolution,
+        quality: quality,
+        count: count,
+        inputKeys: inputKeys,
+      ),
+    );
+  }
+
+  Future<TextToImageBatch> submitTextToImageBatch(
+    TextToImageRequest request, {
+    List<String> completedTaskIds = const [],
+  }) async {
+    if (request.inputKeys.length > maxTaskReferenceImages) {
+      throw const FormatException('文生图任务最多支持 6 张参考图');
     }
-    return TextToImageBatch(taskIds: ids, batchId: batchId);
+    final ids = List<String>.of(completedTaskIds);
+    final batchId = request.count > 1 ? request.batchId : '';
+    for (var index = ids.length; index < request.count; index++) {
+      try {
+        ids.add(
+          await _createTextToImageTask(
+            prompt: request.prompt,
+            model: request.model,
+            aspectRatio: request.aspectRatio,
+            resolution: request.resolution,
+            quality: request.quality,
+            inputKeys: request.inputKeys,
+            batchId: batchId,
+            batchIndex: index,
+            batchSize: request.count,
+            batchCreatedAt: request.createdAt.toIso8601String(),
+            idempotencyKey: request.idempotencyKeys[index],
+          ),
+        );
+      } catch (error) {
+        // Keep the unknown request's key: the server may already have committed it.
+        return TextToImageBatch(
+          taskIds: List.unmodifiable(ids),
+          batchId: batchId,
+          request: request,
+          error: error,
+        );
+      }
+    }
+    return TextToImageBatch(
+      taskIds: List.unmodifiable(ids),
+      batchId: batchId,
+      request: request,
+    );
   }
 
   Future<String> _createTextToImageTask({
@@ -339,6 +412,7 @@ class CreationRepository {
     required int batchIndex,
     required int batchSize,
     required String batchCreatedAt,
+    required String idempotencyKey,
   }) async {
     final data = await _apiClient.post(
       '/tasks',
@@ -367,7 +441,7 @@ class CreationRepository {
         },
         'inputKeys': inputKeys,
         'count': 1,
-        'idempotencyKey': _uuid.v4(),
+        'idempotencyKey': idempotencyKey,
       },
     );
     final map = data is Map

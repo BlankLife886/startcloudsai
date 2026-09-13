@@ -32,13 +32,41 @@ export function copyCanvasNodeMetadata(metadata: CanvasNodeMetadata | undefined,
     const {
         taskId: _taskId,
         taskKind: _taskKind,
+        agentGenerationRequestId: _agentGenerationRequestId,
         executionStatus: _executionStatus,
         generationQueuedAt: _generationQueuedAt,
         generationStartedAt: _generationStartedAt,
         generationCompletedAt: _generationCompletedAt,
         generationDurationMs: _generationDurationMs,
+        // A copied shot is a new canvas artifact. Keeping the source batch
+        // identity would make retries or status updates target both copies.
+        storyboardId: _storyboardId,
+        storyboardSceneId: _storyboardSceneId,
+        storyboardIndex: _storyboardIndex,
+        storyboardTitle: _storyboardTitle,
+        storyboardSummary: _storyboardSummary,
+        storyboardShotType: _storyboardShotType,
+        storyboardStatus: _storyboardStatus,
+        storyboardNeedsRegeneration: _storyboardNeedsRegeneration,
+        storyboardScript: _storyboardScript,
+        storyboardPlanJson: _storyboardPlanJson,
+        storyboardSceneCount: _storyboardSceneCount,
+        storyboardAspectRatio: _storyboardAspectRatio,
+        storyboardSourceNodeId: _storyboardSourceNodeId,
+        storyboardSourceNodeIds: _storyboardSourceNodeIds,
+        storyboardContinuity: _storyboardContinuity,
+        storyboardPrompt: _storyboardPrompt,
+        storyboardPreviousSceneId: _storyboardPreviousSceneId,
+        storyboardNextSceneId: _storyboardNextSceneId,
+        storyboardGlobalStyle: _storyboardGlobalStyle,
+        storyboardPlanSource: _storyboardPlanSource,
+        storyboardStyle: _storyboardStyle,
+        storyboardConsistency: _storyboardConsistency,
+        storyboardAnchorReference: _storyboardAnchorReference,
+        storyboardAnchorSceneId: _storyboardAnchorSceneId,
         workflowOutputNodeIds,
         workflowProducerNodeId,
+        inlineOutputNodeId,
         ...copy
     } = metadata;
     const remappedOutputIds = workflowOutputNodeIds?.flatMap((nodeId) => {
@@ -46,6 +74,7 @@ export function copyCanvasNodeMetadata(metadata: CanvasNodeMetadata | undefined,
         return mappedId ? [mappedId] : [];
     });
     const remappedProducerId = workflowProducerNodeId ? idMap.get(workflowProducerNodeId) : undefined;
+    const remappedInlineOutputId = inlineOutputNodeId ? idMap.get(inlineOutputNodeId) : undefined;
     const next: CanvasNodeMetadata = {
         ...copy,
         composerContent: remapNodeReferences(copy.composerContent, idMap),
@@ -53,6 +82,7 @@ export function copyCanvasNodeMetadata(metadata: CanvasNodeMetadata | undefined,
         images: copy.images?.map(({ taskId: _imageTaskId, ...image }) => ({ ...image })),
         ...(remappedOutputIds?.length ? { workflowOutputNodeIds: remappedOutputIds } : {}),
         ...(remappedProducerId ? { workflowProducerNodeId: remappedProducerId } : {}),
+        ...(remappedInlineOutputId ? { inlineOutputNodeId: remappedInlineOutputId } : {}),
     };
     if (next.status === "loading") {
         next.status = next.content || next.storageKey || next.images?.some((image) => image.content || image.storageKey) ? "success" : "idle";

@@ -3,6 +3,10 @@ import { App, Button, Tooltip } from "antd";
 import { History, MessageSquare, PanelRightClose, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router";
+import { useAuth } from "@react/auth/AuthContext.jsx";
+import { recoverHostedAgentAttachments } from "@/lib/agent/hosted-agent-recovery";
+import { shouldConfirmHostedCanvasTool } from "@/lib/agent/hosted-agent-permissions";
+import { flushCanvasPersistence, useCanvasStore } from "@/stores/canvas/use-canvas-store";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { bindHostedAgentRunId, createHostedAgentRunScope, isHostedAgentRunIdRetired, isHostedAgentRunScopeActive, isHostedAgentStateForProject, registerHostedAgentRunStopper, retireHostedAgentRunId, settleHostedAgentMessagesOnStop, type HostedAgentRunScope } from "@/lib/agent/hosted-agent-run-scope";
@@ -12,13 +16,14 @@ import { buildCanvasResourceReferences, resolveCanvasReferenceImages } from "@/l
 import { runCanvasAgentTool } from "@/lib/canvas/canvas-hosted-agent";
 import { readImageMeta } from "@/lib/image-utils";
 import { randomId } from "@/lib/utils";
-import { StarcloudsApiError } from "@/services/starclouds-api";
+import { StarcloudsApiError, starcloudsApiUrl } from "@/services/starclouds-api";
 import {
     cancelCanvasAssistantRun,
     beginHostedAgentConversation,
     clearHostedAgentConversationId,
     deleteCanvasAgentConversation,
     fetchCanvasAgentConversation,
+    fetchCanvasAgentRunRecovery,
     hostedAgentConversationThread,
     hostedAgentMessagesFromConversation,
     claimCanvasAgentTool,
@@ -55,25 +60,19 @@ type HostedToolWaiter = {
 };
 const VALID_HOSTED_REASONING_EFFORTS = new Set<ModelReasoningEffort>(MODEL_REASONING_EFFORTS);
 type HostedAgentRunBinding = HostedAgentRunScope & {
+    ownerUserId: string;
     attachments: AgentAttachment[];
     waitForRunId: Promise<string>;
     resolveRunId: (runId: string) => void;
 	checkpointId?: string;
 };
 
-function createHostedAgentRunBinding(projectId: string, attachments: AgentAttachment[], controller = new AbortController()): HostedAgentRunBinding {
+function createHostedAgentRunBinding(projectId: string, attachments: AgentAttachment[], controller = new AbortController(), ownerUserId = ""): HostedAgentRunBinding {
     let resolveRunId: (runId: string) => void = () => undefined;
     const waitForRunId = new Promise<string>((resolve) => {
         resolveRunId = resolve;
     });
-    return { ...createHostedAgentRunScope(projectId, controller), attachments, waitForRunId, resolveRunId };
-}
-
-function isHighRiskCanvasTool(call: CanvasAgentToolCall) {
-	if (call.name === "canvas_delete_nodes" || call.name === "canvas_clear" || call.name === "canvas_restore_checkpoint" || call.name === "canvas_restore_agent_transaction") return true;
-	if (call.name !== "canvas_apply_ops") return false;
-	const ops = hostedToolInput(call)?.ops || [];
-	return ops.some((op) => op.type === "delete_node");
+    return { ...createHostedAgentRunScope(projectId, controller), ownerUserId, attachments, waitForRunId, resolveRunId };
 }
 
 function cancelHostedAgentRun(runId: string, options?: { keepalive?: boolean; acknowledgeUpstream?: boolean }) {
@@ -143,6 +142,7 @@ function formatCanvasAgentTurnPrice(t: Translate, cost: { effective?: number; st
 }
 
 function toolTitle(name: string, t: Translate) {
+    if (name === "canvas_review_outputs") return t("agent.hosted.reviewOutputs", { defaultValue: "验收生成结果" });
     if (name === "web_search") return t("agent.siteTools.webSearch");
     if (name === "canvas_get_state") return t("agent.eventExtra.tools.readCanvas");
     if (name === "canvas_get_selection") return t("agent.eventExtra.tools.readSelection");
@@ -186,7 +186,7 @@ function hostedToolRunningText(name: string, title: string, t: Translate) {
     if (name === "web_search") return t("agent.hosted.webSearching");
     if (["canvas_get_state", "canvas_get_selection", "canvas_find_nodes", "canvas_inspect_nodes", "canvas_inspect_visuals", "canvas_validate_workflow", "canvas_plan_workflow_run", "canvas_list_agent_history", "canvas_export_snapshot", "canvas_list_projects", "canvas_list_workflow_templates", "canvas_inspect_workflow_template", "prompts_search", "assets_list"].includes(name)) return t("agent.hosted.toolReading");
     if (["canvas_apply_ops", "canvas_focus_nodes", "canvas_duplicate_selection", "canvas_create_image_operation", "canvas_replace_workflow_input", "canvas_update_generation_settings", "canvas_undo_last_action", "canvas_redo_last_action", "canvas_create_checkpoint", "canvas_restore_checkpoint", "canvas_restore_agent_transaction", "canvas_create_attachment_nodes", "canvas_create_from_workflow_template", "assets_add"].includes(name)) return t("agent.hosted.toolModifying");
-    if (["canvas_regenerate_selection", "canvas_run_generation", "canvas_generation_status", "canvas_run_downstream", "canvas_stop_workflow", "canvas_resume_workflow", "canvas_retry_failed_nodes"].includes(name)) return t("agent.hosted.toolGenerating");
+    if (["canvas_regenerate_selection", "canvas_run_generation", "canvas_generation_status", "canvas_run_workflow", "canvas_run_downstream", "canvas_stop_workflow", "canvas_resume_workflow", "canvas_retry_failed_nodes"].includes(name)) return t("agent.hosted.toolGenerating");
     return t("agent.hosted.toolWorking", { tool: title });
 }
 
@@ -242,8 +242,15 @@ function describeToolObservation(name: string, observation: unknown, t: Translat
         return t(name === "canvas_undo_last_action" ? "agent.canvasHistoryTool.undone" : "agent.canvasHistoryTool.redone");
     }
     if (name === "canvas_run_generation") {
-        const triggered = (observation as { triggered?: string[] })?.triggered?.length || 0;
+        const result = observation as { nodeIds?: string[]; triggered?: string[] };
+        const triggered = result.nodeIds?.length ?? result.triggered?.length ?? 0;
         return t("agent.hosted.generationTriggered", { count: triggered });
+    }
+    if (["canvas_run_workflow", "canvas_resume_workflow", "canvas_retry_failed_nodes", "canvas_run_downstream", "canvas_replace_workflow_input"].includes(name)) {
+        const result = observation as { status?: string; error?: string; workflow?: { status?: string; error?: string } };
+        const start = result.workflow || result;
+        if (start.status === "canceled") return t("agent.runtime.canvasToolCanceled");
+        if (start.status === "rejected") return start.error || t("canvas.workflow.notReady");
     }
     if (name === "canvas_generation_status") {
         const summary = (observation as { summary?: Record<string, number> })?.summary || {};
@@ -251,6 +258,7 @@ function describeToolObservation(name: string, observation: unknown, t: Translat
             summary.succeeded ? t("agent.hosted.generationSucceeded", { count: summary.succeeded }) : "",
             summary.running || summary.queued ? t("agent.hosted.generationRunning", { count: (summary.running || 0) + (summary.queued || 0) }) : "",
             summary.failed ? t("agent.hosted.generationFailed", { count: summary.failed }) : "",
+            summary.unknown ? t("agent.hosted.generationUnknown", { count: summary.unknown }) : "",
         ]
             .filter(Boolean)
             .join(" · ") || t("agent.hosted.generationIdle");
@@ -258,6 +266,9 @@ function describeToolObservation(name: string, observation: unknown, t: Translat
     if (name === "canvas_plan_workflow_run") {
         const result = observation as { nodeIds?: unknown[]; totals?: { total?: number; paidNodeCount?: number; freeNodeCount?: number } };
         return t("agent.hosted.workflowPreflight", { nodes: result.nodeIds?.length || 0, price: result.totals?.total || 0, paid: result.totals?.paidNodeCount || 0, free: result.totals?.freeNodeCount || 0 });
+    }
+    if (name === "canvas_workflow_status" && (observation as { status?: string }).status === "unknown") {
+        return (observation as { error?: string }).error || t("agent.hosted.generationUnknown", { count: 1 });
     }
     if (name === "site_navigate") {
         return t("agent.hosted.openedPage", { path: String((observation as { path?: string })?.path || "/") });
@@ -322,6 +333,11 @@ function hostedAgentErrorText(error: unknown, fallback: string, authFailed: stri
 }
 
 export function HostedAgentPanel() {
+    const auth = useAuth() as { isAuthenticated: boolean; user?: { id?: string | number } | null };
+    const ownerUserId = auth.isAuthenticated && auth.user?.id ? String(auth.user.id) : "";
+    const ownerRef = useRef(ownerUserId);
+    ownerRef.current = ownerUserId;
+    const isActiveScope = useCallback((scope: HostedAgentRunBinding, active: HostedAgentRunBinding | null, currentProjectId: string) => Boolean(scope.ownerUserId && scope.ownerUserId === ownerRef.current && isHostedAgentRunScopeActive(scope, active, currentProjectId)), []);
     const { t } = useTranslation();
     const { message } = App.useApp();
     const navigate = useNavigate();
@@ -411,7 +427,7 @@ export function HostedAgentPanel() {
 
     const lastProjectIdRef = useRef(projectId);
     const restoreSeqRef = useRef(0);
-    const followHostedRunRef = useRef<(runId: string, originProjectId: string) => Promise<void>>(async () => undefined);
+    const followHostedRunRef = useRef<(runId: string, originProjectId: string, conversationId: string) => Promise<void>>(async () => undefined);
 
     useEffect(() => {
         return useAgentStore.subscribe((state) => {
@@ -494,30 +510,21 @@ export function HostedAgentPanel() {
         const switched = Boolean(previousProjectId && previousProjectId !== projectId);
         lastProjectIdRef.current = projectId;
         const current = useAgentStore.getState();
-        const stateMatchesProject = isHostedAgentStateForProject(current.hostedProjectId, projectId);
+        const stateMatchesProject = current.hostedOwnerUserId === ownerUserId && isHostedAgentStateForProject(current.hostedProjectId, projectId);
         const projectStateChanged = switched || !stateMatchesProject;
         if (projectStateChanged) {
             void cancelHostedRun(false);
             setHostedTab("chat");
             setConversations([]);
             setCurrentConversationId("");
-            setAgentState({ hostedProjectId: projectId, messages: [], prompt: "", attachments: [], canvasReferences: [], sending: false, waiting: false, activeTab: "chat" });
+            setAgentState({ hostedOwnerUserId: ownerUserId, hostedProjectId: projectId, messages: [], prompt: "", attachments: [], canvasReferences: [], sending: false, waiting: false, activeTab: "chat" });
         }
-        if (!projectId) return;
-        if (!projectStateChanged && (current.messages.length > 0 || current.sending || current.waiting)) {
-            setHydrating(false);
-            void listCanvasAgentConversations(projectId).then((items) => {
-                if (useAgentStore.getState().canvasContext?.snapshot.projectId !== projectId) return;
-                setConversations(items);
-                setCurrentConversationId(readHostedAgentConversationId(projectId) || items[0]?.id || "");
-            }).catch(() => undefined);
-            return;
-        }
+        if (!projectId || !ownerUserId) return;
         const seq = ++restoreSeqRef.current;
         const controller = new AbortController();
         const titles = hostedMessageTitles(t);
         const applyConversation = (conversation: CanvasAgentConversation | null) => {
-            if (seq !== restoreSeqRef.current || !conversation?.id) return false;
+            if (seq !== restoreSeqRef.current || ownerRef.current !== ownerUserId || !conversation?.id) return false;
             writeHostedAgentConversationId(projectId, conversation.id);
             setCurrentConversationId(conversation.id);
             setAgentState({ hostedProjectId: projectId, messages: hostedAgentMessagesFromConversation(conversation.messages, titles) });
@@ -526,15 +533,15 @@ export function HostedAgentPanel() {
         setHydrating(true);
         void listCanvasAgentConversations(projectId, controller.signal)
             .then(async (items) => {
-                if (seq !== restoreSeqRef.current) return;
+                if (seq !== restoreSeqRef.current || ownerRef.current !== ownerUserId) return;
                 setConversations(items);
                 const cachedId = readHostedAgentConversationId(projectId);
                 const selected = (cachedId && items.find((item) => item.id === cachedId)) || items[0] || null;
                 if (!applyConversation(selected)) return;
                 const runs = await listActiveCanvasAgentRuns(controller.signal);
-                if (seq !== restoreSeqRef.current) return;
+                if (seq !== restoreSeqRef.current || ownerRef.current !== ownerUserId) return;
                 const active = runs.find((run) => run.conversationId === selected?.id && !isHostedAgentRunIdRetired(run.id) && (run.status === "queued" || run.status === "running"));
-                if (active?.id) void followHostedRunRef.current(active.id, projectId);
+                if (active?.id) void followHostedRunRef.current(active.id, projectId, selected!.id);
             })
             .catch((error) => {
                 if (seq !== restoreSeqRef.current || controller.signal.aborted) return;
@@ -547,7 +554,7 @@ export function HostedAgentPanel() {
             restoreSeqRef.current += 1;
             controller.abort();
         };
-    }, [cancelHostedRun, projectId, setAgentState, t]);
+    }, [cancelHostedRun, ownerUserId, projectId, setAgentState, t]);
 
     useEffect(() => {
         const current = useAgentStore.getState();
@@ -566,6 +573,7 @@ export function HostedAgentPanel() {
     }, [setAgentState]);
 
     const refreshConversations = useCallback(async (signal?: AbortSignal) => {
+        const originOwner = ownerRef.current;
         if (!projectId) {
             setConversations([]);
             return [];
@@ -573,7 +581,7 @@ export function HostedAgentPanel() {
         setLoadingHistory(true);
         try {
             const items = await listCanvasAgentConversations(projectId, signal);
-            if (useAgentStore.getState().canvasContext?.snapshot.projectId !== projectId) return [];
+            if (ownerRef.current !== originOwner || useAgentStore.getState().canvasContext?.snapshot.projectId !== projectId) return [];
             setConversations(items);
             return items;
         } catch (error) {
@@ -587,6 +595,8 @@ export function HostedAgentPanel() {
     const startNewChat = useCallback(() => {
         cancelHostedRun();
         restoreSeqRef.current += 1;
+        const seq = restoreSeqRef.current;
+        const originOwner = ownerRef.current;
         setHydrating(false);
         setHostedTab("chat");
         setAgentState({ hostedProjectId: projectId, messages: [], prompt: "", attachments: [], canvasReferences: [], sending: false, waiting: false });
@@ -596,7 +606,7 @@ export function HostedAgentPanel() {
         }
         void beginHostedAgentConversation(projectId)
             .then((conversation) => {
-                if (useAgentStore.getState().canvasContext?.snapshot.projectId !== projectId) return;
+                if (seq !== restoreSeqRef.current || ownerRef.current !== originOwner || useAgentStore.getState().canvasContext?.snapshot.projectId !== projectId) return;
                 setCurrentConversationId(conversation.id);
                 setConversations((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
             })
@@ -604,6 +614,7 @@ export function HostedAgentPanel() {
     }, [cancelHostedRun, message, projectId, setAgentState, t]);
 
     const resumeConversation = useCallback(async (conversationId: string) => {
+        const originOwner = ownerRef.current;
         if (!projectId || !conversationId) return;
         if (conversationId === currentConversationId) {
             setHostedTab("chat");
@@ -615,7 +626,7 @@ export function HostedAgentPanel() {
         setHydrating(true);
         try {
             const conversation = await fetchCanvasAgentConversation(conversationId, undefined, projectId);
-            if (seq !== restoreSeqRef.current) return;
+            if (seq !== restoreSeqRef.current || ownerRef.current !== originOwner) return;
             writeHostedAgentConversationId(projectId, conversation.id);
             setCurrentConversationId(conversation.id);
             setConversations((current) => {
@@ -630,9 +641,9 @@ export function HostedAgentPanel() {
             });
             setHostedTab("chat");
             const runs = await listActiveCanvasAgentRuns();
-            if (seq !== restoreSeqRef.current) return;
+            if (seq !== restoreSeqRef.current || ownerRef.current !== originOwner) return;
             const active = runs.find((run) => run.conversationId === conversation.id && !isHostedAgentRunIdRetired(run.id) && (run.status === "queued" || run.status === "running"));
-            if (active?.id) void followHostedRunRef.current(active.id, projectId);
+            if (active?.id) void followHostedRunRef.current(active.id, projectId, conversation.id);
         } catch (error) {
             if (seq !== restoreSeqRef.current) return;
             message.error(error instanceof Error ? error.message : t("agent.runtime.resumeConversationFailed"));
@@ -684,7 +695,7 @@ export function HostedAgentPanel() {
         const input = hostedToolInput(call);
         const requireOriginCanvas = () => {
             const canvas = canvasContextRef.current;
-            if (!canvas || !isHostedAgentRunScopeActive(scope, activeRunRef.current, canvas.snapshot.projectId)) {
+            if (!canvas || !isActiveScope(scope, activeRunRef.current, canvas.snapshot.projectId)) {
                 throw new Error(t("agent.runtime.canvasToolCanceled"));
             }
             return canvas;
@@ -707,22 +718,30 @@ export function HostedAgentPanel() {
             if (verifyBeforeExecution && !(await verifyBeforeExecution())) throw new Error(t("agent.runtime.canvasToolExpired"));
             const canvas = requireOriginCanvas();
 			if ((isCanvasWriteTool(call.name) || call.name === "canvas_run_generation") && !scope.checkpointId && call.name !== "canvas_create_checkpoint") {
-				scope.checkpointId = canvas.createCheckpoint(`Agent 自动恢复点 ${new Date().toLocaleTimeString()}`).id;
+				scope.checkpointId = canvas.createCheckpoint(`Agent 自动恢复点 ${scope.runId}`).id;
+				await flushCanvasPersistence();
+				requireOriginCanvas();
 			}
             const observation = await runCanvasAgentTool(call, {
                 ...canvas,
                 readSnapshot: () => requireOriginCanvas().snapshot,
                 attachments: scope.attachments,
+                runId: scope.runId,
                 navigate,
             });
-            requireOriginCanvas();
+            const applied = requireOriginCanvas();
+            if (isCanvasWriteTool(call.name) || call.name === "canvas_run_generation" || call.name === "canvas_create_checkpoint") {
+                useCanvasStore.getState().updateProject(scope.projectId, { nodes: applied.snapshot.nodes, connections: applied.snapshot.connections });
+                await flushCanvasPersistence();
+                requireOriginCanvas();
+            }
             upsertToolMessage({ text: describeToolObservation(call.name, observation, t), detail: toolCallDetail(call.name, input, "completed") });
 			return scope.checkpointId && observation && typeof observation === "object"
 				? { ...(observation as Record<string, unknown>), agentCheckpointId: scope.checkpointId }
 				: observation;
         } catch (error) {
             const detail = error instanceof Error ? error.message : t("agent.runtime.toolExecutionFailed");
-            if (isHostedAgentRunScopeActive(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "")) {
+            if (isActiveScope(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "")) {
                 upsertToolMessage({ text: detail, detail: toolCallDetail(call.name, input, "failed", detail) });
             }
             throw error;
@@ -730,7 +749,7 @@ export function HostedAgentPanel() {
     }, [navigate, setAgentState, t]);
 
     const handleServerHostedToolEvent = useCallback(async (call: CanvasAgentToolCall, scope: HostedAgentRunBinding) => {
-        if (!isHostedAgentRunScopeActive(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "")) return;
+        if (!isActiveScope(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "")) return;
         const messageId = `hosted-tool:${call.requestId}`;
         const title = call.title || toolTitle(call.name, t);
         const input = hostedToolInput(call);
@@ -760,11 +779,14 @@ export function HostedAgentPanel() {
         return call.result;
     }, [setAgentState, t]);
 
-    const handleHostedStage = useCallback((stage: string, scope: HostedAgentRunScope) => {
-        if (stage === "tool" && isHostedAgentRunScopeActive(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "")) {
+    const handleHostedStage = useCallback((stage: string, scope: HostedAgentRunBinding) => {
+        if (stage === "reviewing" && isActiveScope(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "")) {
+            setAgentState({ activity: t("agent.hosted.reviewing", { defaultValue: "正在等待任务完成并验收结果…" }) });
+        }
+        if (stage === "tool" && isActiveScope(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "")) {
             setAgentState({ activity: t("agent.hosted.applying") });
         }
-        if (stage === "web_search" && isHostedAgentRunScopeActive(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "")) {
+        if (stage === "web_search" && isActiveScope(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "")) {
             setAgentState({ activity: t("agent.hosted.webSearching") });
         }
     }, [setAgentState, t]);
@@ -772,20 +794,20 @@ export function HostedAgentPanel() {
     const handleHostedToolCall = useCallback((call: CanvasAgentToolCall, scope: HostedAgentRunBinding) => {
         if (call.execution === "server") return handleServerHostedToolEvent(call, scope);
         const verifyBeforeExecution = async () => {
-            if (!isHostedAgentRunScopeActive(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "")) return false;
+            if (!isActiveScope(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "")) return false;
             const allowed = await canExecuteApprovedCanvasAgentTool(call, scope.runId, claimCanvasAgentTool);
-            return allowed && isHostedAgentRunScopeActive(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "");
+            return allowed && isActiveScope(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "");
         };
-		if ((confirmToolsRef.current && isCanvasWriteTool(call.name)) || isHighRiskCanvasTool(call)) {
+		if (shouldConfirmHostedCanvasTool(call.name, confirmToolsRef.current, isCanvasWriteTool(call.name))) {
             return waitForHostedToolApproval(call)
                 .then(() => {
-                    if (isHostedAgentRunScopeActive(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "")) {
+                    if (isActiveScope(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "")) {
                         setAgentState({ sending: true, waiting: true, activity: hostedToolRunningText(call.name, call.title || toolTitle(call.name, t), t) });
                     }
                     return runHostedTool(call, scope, verifyBeforeExecution);
                 })
                 .catch((error) => {
-                    if (isHostedAgentRunScopeActive(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "")) {
+                    if (isActiveScope(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "")) {
                         setAgentState({ sending: true, waiting: true, activity: "" });
                     }
                     throw error;
@@ -797,8 +819,8 @@ export function HostedAgentPanel() {
     const applyCompletionOps = useCallback(async (ops: CanvasAgentOp[], scope: HostedAgentRunBinding, summary?: string) => {
         if (!ops.length) return;
         const currentProjectId = canvasContextRef.current?.snapshot.projectId || "";
-        if (!isHostedAgentRunScopeActive(scope, activeRunRef.current, currentProjectId)) return;
-        if (confirmToolsRef.current || ops.some((op) => op.type === "delete_node")) {
+        if (!isActiveScope(scope, activeRunRef.current, currentProjectId)) return;
+        if (confirmToolsRef.current) {
             const call: CanvasAgentToolCall = {
                 requestId: `completion:${randomId()}`,
                 name: "canvas_apply_ops",
@@ -806,7 +828,7 @@ export function HostedAgentPanel() {
             };
             try {
                 await waitForHostedToolApproval(call);
-                if (!isHostedAgentRunScopeActive(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "")) return;
+                if (!isActiveScope(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "")) return;
                 setAgentState({ sending: true, waiting: true, activity: hostedToolRunningText(call.name, toolTitle(call.name, t), t) });
                 // Completion ops are a local fallback emitted after the server
                 // run is terminal, so there is no server-side request to claim.
@@ -818,8 +840,8 @@ export function HostedAgentPanel() {
             return;
         }
         const liveContext = canvasContextRef.current;
-        if (!liveContext || !isHostedAgentRunScopeActive(scope, activeRunRef.current, liveContext.snapshot.projectId)) return;
-		if (!scope.checkpointId) scope.checkpointId = liveContext.createCheckpoint(`Agent 自动恢复点 ${new Date().toLocaleTimeString()}`).id;
+        if (!liveContext || !isActiveScope(scope, activeRunRef.current, liveContext.snapshot.projectId)) return;
+		if (!scope.checkpointId) scope.checkpointId = liveContext.createCheckpoint(`Agent 自动恢复点 ${scope.runId}`).id;
 		const before = liveContext.snapshot.connections.length;
         const next = liveContext.applyOps(ops);
         const linked = Math.max(0, next.connections.length - before);
@@ -861,21 +883,37 @@ export function HostedAgentPanel() {
     }, [cancelHostedRun, message, stopBusy, stopRunId]);
     const stopTurn = useCallback(() => { void requestHostedStop(false); }, [requestHostedStop]);
 
-    const followHostedRun = useCallback(async (runId: string, originProjectId: string) => {
+    const followHostedRun = useCallback(async (runId: string, originProjectId: string, conversationId: string) => {
         if (!runId || !originProjectId || isHostedAgentRunIdRetired(runId)) return;
         const currentContext = canvasContextRef.current;
         if (!currentContext || currentContext.snapshot.projectId !== originProjectId) return;
         if (activeRunRef.current?.runId === runId && activeRunRef.current.projectId === originProjectId) return;
         cancelHostedRun();
         const controller = new AbortController();
-        const scope = createHostedAgentRunBinding(originProjectId, [], controller);
+        const scope = createHostedAgentRunBinding(originProjectId, [], controller, ownerRef.current);
         scope.runId = runId;
         scope.resolveRunId(runId);
         activeRunRef.current = scope;
-        const scopeIsActive = () => isHostedAgentRunScopeActive(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "");
+        const scopeIsActive = () => isActiveScope(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "");
         setAgentState({ sending: true, waiting: true });
+        let recovery: Awaited<ReturnType<typeof fetchCanvasAgentRunRecovery>>;
+        try {
+            recovery = await fetchCanvasAgentRunRecovery(runId, originProjectId, conversationId, controller.signal);
+            if (!scopeIsActive()) return;
+            scope.attachments = await recoverHostedAgentAttachments(recovery.userMessage?.referenceImages, { apiFilesUrl: starcloudsApiUrl("/files/"), pageUrl: window.location.href, signal: controller.signal, readImageMeta });
+            if (!scopeIsActive()) return;
+            scope.checkpointId = currentContext.listHistory().checkpoints.find((item) => item.name === `Agent 自动恢复点 ${runId}`)?.id;
+        } catch (error) {
+            if (scopeIsActive()) {
+                message.error(error instanceof Error ? error.message : "助手恢复失败，请重新打开对话");
+                activeRunRef.current = null;
+                setAgentState({ sending: false, waiting: false, activity: "" });
+            }
+            return;
+        }
         const currentMessages = useAgentStore.getState().messages;
-        let assistantId = [...currentMessages].reverse().find((item) => item.role === "assistant")?.id;
+        let assistantId = recovery.run.assistantMessageId;
+        if (assistantId && !currentMessages.some((item) => item.id === assistantId)) addMessage({ id: assistantId, role: "assistant", title: t("agent.hosted.subtitle"), text: "", streamId: assistantId });
         if (!assistantId) {
             assistantId = randomId();
             addMessage({ id: assistantId, role: "assistant", title: t("agent.hosted.subtitle"), text: "", streamId: assistantId });
@@ -953,6 +991,8 @@ export function HostedAgentPanel() {
 
     const addAttachments = useCallback(async (files: FileList | File[] | null) => {
         if (!files) return;
+        const originOwner = ownerRef.current;
+        const originProject = canvasContextRef.current?.snapshot.projectId;
         const images = Array.from(files).filter((file) => file.type.startsWith("image/"));
         const prev = useAgentStore.getState().attachments;
         try {
@@ -964,6 +1004,7 @@ export function HostedAgentPanel() {
                 }),
             );
             const merged = [...prev, ...next];
+            if (ownerRef.current !== originOwner || canvasContextRef.current?.snapshot.projectId !== originProject) return;
             if (attachmentPayloadBytes(merged) > MAX_ATTACHMENT_PAYLOAD_BYTES) {
                 message.warning(t("agent.runtime.imageLimit"));
                 return;
@@ -982,14 +1023,15 @@ export function HostedAgentPanel() {
         const canvasReferences = state.canvasReferences;
         if ((!text && !files.length && !canvasReferences.length) || !context || state.sending || state.waiting || state.pendingTool) return;
         const controller = new AbortController();
-        const scope = createHostedAgentRunBinding(context.snapshot.projectId, [...files], controller);
+        if (!ownerRef.current) return;
+        const scope = createHostedAgentRunBinding(context.snapshot.projectId, [...files], controller, ownerRef.current);
         activeRunRef.current = scope;
-        const scopeIsActive = () => isHostedAgentRunScopeActive(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "");
+        const scopeIsActive = () => isActiveScope(scope, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "");
         const userId = randomId();
         const assistantId = randomId();
         const reasoningId = randomId();
         const userText = text || t(files.length ? "agent.runtime.imagesSent" : "agent.runtime.canvasReferencesSent", { count: files.length || canvasReferences.length });
-        setAgentState({ hostedProjectId: context.snapshot.projectId });
+        setAgentState({ hostedOwnerUserId: ownerRef.current, hostedProjectId: context.snapshot.projectId });
         addMessage({ id: userId, role: "user", text: userText, attachments: files });
         addMessage({ id: assistantId, role: "assistant", title: t("agent.hosted.subtitle"), text: "", streamId: assistantId });
         setAgentState({ prompt: "", attachments: [], canvasReferences: [], sending: true, waiting: true });
@@ -1047,7 +1089,7 @@ export function HostedAgentPanel() {
                 referenceImages,
                 onCreated: (runId) => {
                     scope.resolveRunId(runId);
-                    const stillActive = bindHostedAgentRunId(scope, runId, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "");
+                    const stillActive = bindHostedAgentRunId(scope, runId, activeRunRef.current, canvasContextRef.current?.snapshot.projectId || "") && scopeIsActive();
                     if (!stillActive) void cancelHostedAgentRun(runId).catch(() => undefined);
                 },
                 onDelta: (next) => patchAssistant({ text: next }),

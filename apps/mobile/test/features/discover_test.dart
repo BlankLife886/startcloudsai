@@ -9,6 +9,7 @@ import 'package:starcloudsai_mobile/app/starclouds_theme.dart';
 import 'package:starcloudsai_mobile/features/auth/auth.dart';
 import 'package:starcloudsai_mobile/core/network/api_exception.dart';
 import 'package:starcloudsai_mobile/core/widgets/app_notice.dart';
+import 'package:starcloudsai_mobile/core/widgets/app_refresh.dart';
 import 'package:starcloudsai_mobile/features/discover/discover.dart';
 import 'package:starcloudsai_mobile/features/discover/discover_screen.dart';
 import 'package:starcloudsai_mobile/features/gallery/gallery.dart';
@@ -29,6 +30,13 @@ class _FakeSessionController extends SessionController {
           )
         : null,
   );
+}
+
+class _PendingSession extends SessionController {
+  _PendingSession(this.result);
+  final Completer<SessionState> result;
+  @override
+  Future<SessionState> build() => result.future;
 }
 
 const _promptCategories = [
@@ -199,6 +207,104 @@ Widget _app({
 }
 
 void main() {
+  test('thumbnail requests resize only supported public CDN URLs', () {
+    const original =
+        'https://pbs.twimg.com/media/example?format=jpg&name=large';
+    final thumb = Uri.parse(promptListCoverUrl(original));
+    expect(thumb.queryParameters, {'format': 'jpg', 'name': 'small'});
+    for (final url in [
+      '/api/v1/files/private.jpg?name=large',
+      'https://example.com/image.jpg?name=large',
+      'https://pbs.twimg.com/media/example?name=small',
+      'https://pbs.twimg.com/media/example?name=large&signature=signed',
+      'https://user@pbs.twimg.com/media/example?name=large',
+    ]) {
+      expect(promptListCoverUrl(url), url);
+    }
+    expect(promptListCoverUrl(null), '');
+    final item = PromptItem.fromJson({
+      'id': 'sample',
+      'title': 'Sample',
+      'prompt': 'Sample prompt',
+      'coverUrl': original,
+    });
+    expect(item.coverUrl, original);
+  });
+
+  testWidgets(
+    'home composer paints while session and prompt requests are pending',
+    (tester) async {
+      final session = Completer<SessionState>();
+      final prompts = Completer<PromptPage>();
+      var galleryLoads = 0;
+      var categoryLoads = 0;
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            sessionControllerProvider.overrideWith(
+              () => _PendingSession(session),
+            ),
+            discoverPromptPageProvider.overrideWith(
+              (ref, query) => prompts.future,
+            ),
+            discoverGalleryPageProvider.overrideWith((ref, query) async {
+              galleryLoads++;
+              return const GalleryPage(items: []);
+            }),
+            galleryCategoriesProvider.overrideWith((ref) async {
+              categoryLoads++;
+              return [];
+            }),
+          ],
+          child: MaterialApp(
+            theme: StarCloudsTheme.light(),
+            home: const DiscoverScreen(),
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(find.byKey(const Key('home-prompt-input')), findsOneWidget);
+      expect(find.byKey(const Key('home-prompt-skeleton')), findsOneWidget);
+      await tester.enterText(
+        find.byKey(const Key('home-prompt-input')),
+        '即时创作',
+      );
+      expect(galleryLoads, 0);
+      expect(categoryLoads, 0);
+      expect(tester.takeException(), isNull);
+      session.complete(const SessionState());
+      prompts.complete(
+        _promptPage(const PromptQuery(sort: 'latest', limit: 6)),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('默认灵感'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'home refresh leaves community data deferred until its tab opens',
+    (tester) async {
+      final prompts = <PromptQuery>[];
+      final gallery = <GalleryQuery>[];
+      await tester.pumpWidget(
+        _app(promptRequests: prompts, galleryRequests: gallery),
+      );
+      await tester.pumpAndSettle();
+      expect(gallery, isEmpty);
+      await tester
+          .widget<AppSliverRefresh>(
+            find.byType(AppSliverRefresh, skipOffstage: false).first,
+          )
+          .onRefresh();
+      await tester.pumpAndSettle();
+      expect(prompts.length, 2);
+      expect(gallery, isEmpty);
+      await tester.tap(find.byKey(const Key('home-tab-community')));
+      await tester.pumpAndSettle();
+      expect(gallery, [const GalleryQuery()]);
+    },
+  );
+
   testWidgets('home follows light and dark page surfaces', (tester) async {
     for (final brightness in Brightness.values) {
       final expectedTheme = brightness == Brightness.dark
@@ -211,6 +317,14 @@ void main() {
 
       final scaffold = tester.widget<Scaffold>(find.byType(Scaffold));
       expect(scaffold.backgroundColor, expectedTheme.colorScheme.surface);
+      final composerContext = tester.element(
+        find.byKey(const Key('home-prompt-input')),
+      );
+      expect(Theme.of(composerContext).brightness, brightness);
+      expect(
+        Theme.of(composerContext).colorScheme.surfaceContainerLowest,
+        expectedTheme.colorScheme.surfaceContainerLowest,
+      );
       expect(find.byKey(const Key('home-tabs')), findsOneWidget);
       expect(find.byKey(const Key('home-tab-home')), findsOneWidget);
       expect(find.byKey(const Key('home-tab-prompts')), findsOneWidget);
@@ -285,59 +399,38 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('home primary actions expose creation and assistant workflows', (
-    tester,
-  ) async {
-    var createTaps = 0;
-    var assistantTaps = 0;
-    await tester.pumpWidget(
-      MaterialApp(
-        builder: (context, child) => AppNoticeHost(child: child!),
-        home: Scaffold(
-          body: HomePrimaryActions(
-            onCreate: () => createTaps += 1,
-            onAssistant: () => assistantTaps += 1,
+  testWidgets(
+    'home composer opens creation with the entered prompt and keeps assistant reachable',
+    (tester) async {
+      var createTaps = 0;
+      var assistantTaps = 0;
+      String? submitted;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: HomePrimaryActions(
+              onCreate: () => createTaps++,
+              onCreateWithPrompt: (value) => submitted = value,
+              onAssistant: () => assistantTaps++,
+            ),
           ),
         ),
-      ),
-    );
-
-    expect(find.text('文生图'), findsOneWidget);
-    expect(find.text('AI 助手'), findsOneWidget);
-    expect(find.byKey(const Key('home-creation-visual')), findsOneWidget);
-    expect(find.byKey(const Key('home-assistant-visual')), findsOneWidget);
-    final createBounds = tester.getRect(
-      find.byKey(const Key('home-create-action')),
-    );
-    final assistantBounds = tester.getRect(
-      find.byKey(const Key('home-assistant-action')),
-    );
-    expect(createBounds.bottom, lessThan(assistantBounds.top));
-    expect(createBounds.left, assistantBounds.left);
-    expect(createBounds.width, assistantBounds.width);
-    expect(createBounds.height, greaterThan(assistantBounds.height));
-    expect(createBounds.height, lessThan(190));
-    final createMaterial = tester.widget<Material>(
-      find
-          .descendant(
-            of: find.byKey(const Key('home-create-action')),
-            matching: find.byType(Material),
-          )
-          .first,
-    );
-    final createShape = createMaterial.shape! as RoundedRectangleBorder;
-    expect(createShape.borderRadius, BorderRadius.circular(8));
-    expect(createMaterial.color, const Color(0xFFDCE3FF));
-    final visualBounds = tester.getRect(
-      find.byKey(const Key('home-creation-visual')),
-    );
-    expect(createBounds.contains(visualBounds.topLeft), isTrue);
-    expect(createBounds.contains(visualBounds.bottomRight), isTrue);
-    await tester.tap(find.byKey(const Key('home-create-action')));
-    await tester.tap(find.byKey(const Key('home-assistant-action')));
-    expect(createTaps, 1);
-    expect(assistantTaps, 1);
-  });
+      );
+      expect(find.byType(Image), findsNothing);
+      expect(find.byKey(const Key('home-prompt-input')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('home-create-action')));
+      expect(createTaps, 1);
+      await tester.enterText(
+        find.byKey(const Key('home-prompt-input')),
+        '  夏日海报  ',
+      );
+      await tester.tap(find.byKey(const Key('home-create-action')));
+      expect(submitted, '夏日海报');
+      await tester.tap(find.byKey(const Key('home-assistant-action')));
+      expect(assistantTaps, 1);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('home primary actions fit narrow screens with large text', (
     tester,
@@ -363,8 +456,14 @@ void main() {
 
     expect(find.text('文生图'), findsOneWidget);
     expect(find.text('AI 助手'), findsOneWidget);
-    expect(find.text('从一句描述开始'), findsOneWidget);
-    expect(find.text('梳理灵感与提示词'), findsOneWidget);
+    final create = tester.getRect(find.byKey(const Key('home-create-action')));
+    final assistant = tester.getRect(
+      find.byKey(const Key('home-assistant-action')),
+    );
+    expect(create.overlaps(assistant), isFalse);
+    expect(create.right, lessThanOrEqualTo(304));
+    expect(assistant.left, greaterThanOrEqualTo(16));
+    expect(assistant.bottom, lessThanOrEqualTo(400));
     expect(tester.takeException(), isNull);
   });
 
@@ -372,12 +471,14 @@ void main() {
     'home requests only latest prompts and keeps discovery controls out',
     (tester) async {
       final promptRequests = <PromptQuery>[];
+      final galleryRequests = <GalleryQuery>[];
       await tester.pumpWidget(
-        _app(promptRequests: promptRequests, galleryRequests: []),
+        _app(promptRequests: promptRequests, galleryRequests: galleryRequests),
       );
       await tester.pumpAndSettle();
 
-      expect(promptRequests, [const PromptQuery(sort: 'latest', limit: 8)]);
+      expect(promptRequests, [const PromptQuery(sort: 'latest', limit: 6)]);
+      expect(galleryRequests, isEmpty);
       expect(find.byKey(const Key('home-tabs')), findsOneWidget);
       expect(find.byKey(const Key('home-tab-home')), findsOneWidget);
       expect(find.byKey(const Key('home-tab-prompts')), findsOneWidget);
@@ -402,13 +503,10 @@ void main() {
         tester
             .getCenter(find.descendant(of: card, matching: find.text('2')))
             .dy,
-        lessThan(tester.getCenter(title).dy),
+        greaterThan(tester.getCenter(title).dy),
       );
-      expect(tester.getRect(card).height, 258);
-      expect(
-        tester.getCenter(title).dy,
-        greaterThan(tester.getCenter(card).dy),
-      );
+      expect(tester.getRect(card).height, 188);
+      expect(tester.getCenter(title).dy, lessThan(tester.getCenter(card).dy));
       expect(tester.takeException(), isNull);
     },
   );
@@ -912,6 +1010,8 @@ void main() {
       _app(promptRequests: [], galleryRequests: [], authenticated: true),
     );
     await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('home-tab-community')));
+    await tester.pumpAndSettle();
     await tester.scrollUntilVisible(
       find.text('默认作品'),
       280,
@@ -919,7 +1019,7 @@ void main() {
     );
     await tester.ensureVisible(find.text('默认作品'));
     await tester.pumpAndSettle();
-    expect(find.byKey(const Key('home-community-gallery')), findsOneWidget);
+    expect(find.byKey(const Key('home-community-gallery')), findsNothing);
     await tester.tap(find.text('默认作品'));
     await tester.pumpAndSettle();
 
@@ -1290,21 +1390,11 @@ void main() {
     expect(find.byKey(const Key('load-more-prompts')), findsNothing);
     expect(tester.takeException(), isNull);
 
-    await tester.scrollUntilVisible(
-      find.text('社区作品'),
-      280,
-      scrollable: find.byType(Scrollable).first,
-    );
+    await tester.tap(find.byKey(const Key('home-tab-community')));
     await tester.pumpAndSettle();
     expect(find.text('默认作品'), findsOneWidget);
     expect(tester.takeException(), isNull);
-    await tester.scrollUntilVisible(
-      find.byKey(const Key('load-more-gallery')),
-      280,
-      scrollable: find.byType(Scrollable).first,
-    );
-    await tester.pumpAndSettle();
-    expect(find.text('加载更多作品'), findsOneWidget);
+    expect(find.byKey(const Key('home-tab-community')), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 

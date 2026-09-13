@@ -7,6 +7,8 @@ import { imageMetadata, referenceUrl } from "@/lib/canvas/canvas-node-factory";
 import { resultNodeSize } from "@/lib/canvas/canvas-node-size";
 import { canonicalImageSrc, cloudFileUrl, cloudThumbnailUrl } from "@/lib/canvas/canvas-preview-url";
 import { isUsableCanvasImageSource, isUsableCanvasImageStorageKey, normalizeHydratedCanvasImageMetadata } from "@/lib/canvas/canvas-image-hydration";
+import { reconcileStoryboardGroupStatuses } from "./canvas-storyboard-recovery.ts";
+import { describeStoryboardReference } from "./canvas-storyboard-references.ts";
 export { pendingCanvasTasks, type PendingCanvasTask } from "./canvas-pending-tasks.ts";
 export { repairMisappliedCanvasWorkflowOutputs } from "@/lib/canvas/canvas-image-hydration";
 import type { NodeGenerationInput } from "@/components/canvas/canvas-node-generation";
@@ -41,9 +43,19 @@ export async function resolveMetadataReferences(metadata: CanvasNodeMetadata) {
     if (metadata.generationType !== "edit") return [];
     if (!metadata.references?.length) return null;
     const references = await Promise.all(
-        metadata.references.map(async (url, index) => {
-            const dataUrl = url.startsWith("image:") ? await resolveImageUrl(url, "") : url;
-            return dataUrl ? { id: `${index}`, name: `reference-${index}.png`, type: "image/png", dataUrl, storageKey: url.startsWith("image:") ? url : undefined } : null;
+        metadata.references.map(async (value, index) => {
+            const descriptor = describeStoryboardReference(value);
+            if (!descriptor) return null;
+            const dataUrl = descriptor.storageKey ? await resolveImageUrl(descriptor.storageKey, descriptor.fallback) : descriptor.fallback;
+            return dataUrl
+                ? {
+                      id: `${index}`,
+                      name: `reference-${index}.png`,
+                      type: "image/png",
+                      dataUrl,
+                      ...(descriptor.storageKey ? { storageKey: descriptor.storageKey } : {}),
+                  }
+                : null;
         }),
     );
     return references.every(Boolean) ? (references as ReferenceImage[]) : null;
@@ -141,7 +153,7 @@ export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | u
         model: mode === "image" ? resolveCanvasImageModel(config, node?.metadata?.model, sizeSettings.sizeMode) : resolveModelForCapability(config, node?.metadata?.model, mode),
         reasoningEffort: node?.metadata?.reasoningEffort || config.reasoningEffort || defaultConfig.reasoningEffort,
         quality: node?.metadata?.quality || config.quality || defaultConfig.quality,
-        size: node?.metadata?.size || config.size || defaultConfig.size,
+        size: node?.metadata?.size || (mode === "image" ? "" : config.size || defaultConfig.size),
         ...sizeSettings,
         resolution: node?.metadata?.resolution || config.resolution || defaultConfig.resolution,
         background: node?.metadata?.background ?? "",
@@ -195,6 +207,7 @@ export function restartCanvasNodeGeneration(node: CanvasNodeData, startedAt = ne
             generationStartedAt: startedAt,
             generationCompletedAt: undefined,
             generationDurationMs: undefined,
+            ...(node.metadata?.storyboardSceneId ? { storyboardStatus: "running" as const } : {}),
             images: node.metadata?.images?.map((image) =>
                 imageId && image.id !== imageId
                     ? image
@@ -231,6 +244,7 @@ export function applyUploadedImageToNode(node: CanvasNodeData, uploaded: Uploade
                     errorDetails: stillLoading || hasSuccess ? undefined : node.metadata.errorDetails,
                     taskId: stillLoading ? node.metadata.taskId : undefined,
                     taskKind: stillLoading ? node.metadata.taskKind : undefined,
+                    ...(node.metadata.storyboardSceneId && !stillLoading ? { storyboardStatus: "succeeded" as const, executionStatus: "succeeded" as const, generationStage: "completed" } : {}),
                 },
             };
         }
@@ -249,6 +263,7 @@ export function applyUploadedImageToNode(node: CanvasNodeData, uploaded: Uploade
                 errorDetails: stillLoading || hasSuccess ? undefined : node.metadata.errorDetails,
                 taskId: stillLoading ? node.metadata.taskId : undefined,
                 taskKind: stillLoading ? node.metadata.taskKind : undefined,
+                ...(node.metadata.storyboardSceneId && !stillLoading ? { storyboardStatus: "succeeded" as const, executionStatus: "succeeded" as const, generationStage: "completed" } : {}),
             },
         };
     }
@@ -260,6 +275,7 @@ export function applyUploadedImageToNode(node: CanvasNodeData, uploaded: Uploade
             taskId: undefined,
             taskKind: undefined,
             errorDetails: undefined,
+            ...(node.metadata?.storyboardSceneId ? { storyboardStatus: "succeeded" as const, executionStatus: "succeeded" as const, generationStage: "completed" } : {}),
         },
     };
 }
@@ -278,6 +294,7 @@ export function applyFailedCanvasTaskToNode(node: CanvasNodeData, errorDetails: 
                 errorDetails: stillLoading || hasSuccess ? undefined : errorDetails,
                 taskId: stillLoading ? node.metadata.taskId : undefined,
                 taskKind: stillLoading ? node.metadata.taskKind : undefined,
+                ...(node.metadata.storyboardSceneId && !stillLoading ? { storyboardStatus: "failed" as const, executionStatus: "failed" as const, generationStage: "failed" } : {}),
             },
         };
     }
@@ -289,6 +306,7 @@ export function applyFailedCanvasTaskToNode(node: CanvasNodeData, errorDetails: 
             errorDetails,
             taskId: undefined,
             taskKind: undefined,
+            ...(node.metadata?.storyboardSceneId ? { storyboardStatus: "failed" as const, executionStatus: "failed" as const, generationStage: "failed" } : {}),
         },
     };
 }
@@ -347,6 +365,7 @@ export function applyCanceledGenerationToNode(node: CanvasNodeData, errorDetails
                       executionStatus: "canceled" as const,
                       generationCompletedAt: completedAt,
                       generationDurationMs: Math.max(0, new Date(completedAt).getTime() - startedAt.getTime()),
+                      ...(node.metadata?.storyboardSceneId ? { storyboardStatus: "canceled" as const, generationStage: "canceled" } : {}),
                   }
                 : {}),
         },
@@ -360,7 +379,7 @@ export function applyCanceledGenerationToNodes(nodes: CanvasNodeData[], errorDet
 
 export function resetInterruptedGeneration(nodes: CanvasNodeData[]) {
     const interrupted = i18n.t("canvas.generation.interrupted");
-    return nodes.map((node) => {
+    const repaired = nodes.map((node) => {
         const images = node.metadata?.images?.map((image) => (image.status === "loading" && !image.taskId ? { ...image, status: "error" as const, errorDetails: interrupted } : image));
         if (hasResumableTask(node)) {
             return images ? { ...node, metadata: { ...node.metadata, images } } : node;
@@ -390,11 +409,18 @@ export function resetInterruptedGeneration(nodes: CanvasNodeData[]) {
                           generationDurationMs: node.metadata?.generationDurationMs ?? 0,
                       }
                     : {}),
+                ...(node.metadata?.storyboardSceneId
+                    ? {
+                          storyboardStatus: wasRunning ? ("canceled" as const) : ("failed" as const),
+                          generationStage: wasRunning ? "canceled" : "failed",
+                      }
+                    : {}),
                 taskId: undefined,
                 taskKind: undefined,
             },
         };
     });
+    return reconcileStoryboardGroupStatuses(repaired);
 }
 
 export function isGenerationCanceled(error: unknown) {
