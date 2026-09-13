@@ -978,7 +978,7 @@ async function submitPassword() {
   width: 32%;
   height: 100%;
   border-radius: var(--radius-pill);
-  background: var(--accent);
+  background: var(--el-color-primary);
   animation: route-progress-move 0.85s ease-in-out infinite;
 }
 
