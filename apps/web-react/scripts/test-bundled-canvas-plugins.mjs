@@ -40,15 +40,18 @@ test("workflow controls live with the right-side canvas actions", async () => {
     assert.match(topBar, /data-canvas-topbar-actions[^>]*>[\s\S]*canvas-workflow-control-slot[\s\S]*canvas-chrome-cluster/);
 });
 
-test("text node keeps edit and font controls in its dedicated bottom action row", async () => {
+test("text node keeps font controls in its dedicated bottom action row", async () => {
     const [canvasNode, hoverToolbar] = await Promise.all([
         readCanvasSource("components/canvas/canvas-node.tsx"),
         readCanvasSource("components/canvas/canvas-node-hover-toolbar.tsx"),
     ]);
     assert.match(canvasNode, /flex h-12 shrink-0 items-center justify-end gap-1 px-4/);
-    assert.match(canvasNode, /onTogglePanel\?\.\(node\)/);
     assert.match(canvasNode, /onDecreaseFont\?\.\(node\)/);
     assert.match(canvasNode, /onIncreaseFont\?\.\(node\)/);
+    // Editing and generation moved to the hover toolbar, so the row stays font-only.
+    assert.doesNotMatch(canvasNode, /onTogglePanel/);
+    assert.match(hoverToolbar, /isText \? \[\{ id: "editText"/);
+    assert.match(hoverToolbar, /isText \? \[\{ id: "generateImage"/);
     assert.match(canvasNode, /containerClassName="min-h-0 flex-1"/);
     assert.match(canvasNode, /className="thin-scrollbar m-0 block h-full w-full resize-none/);
     assert.doesNotMatch(hoverToolbar, /id: "decreaseFont"|id: "increaseFont"/);
@@ -117,5 +120,5 @@ test("image uploads render a pending node before waiting for cloud storage", asy
     assert.ok(waitForUpload > createUploadStart, "pending node must render before the cloud upload resolves");
     assert.match(project, /metadata: \{ status: NODE_STATUS_LOADING, uploading: true \}/);
     assert.match(canvasNode, /data\.metadata\?\.uploading\s*\? t\("canvas\.node\.uploading"\)/);
-    assert.match(canvasNode, /node\.metadata\?\.uploading \? t\("canvas\.node\.uploading"\) : canvasGenerationStageLabel/);
+    assert.match(canvasNode, /node\.metadata\?\.uploading\s*\? t\("canvas\.node\.uploading"\)\s*: canvasGenerationStageLabel/);
 });
