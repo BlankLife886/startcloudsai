@@ -150,13 +150,13 @@ class AuthRepository {
           ? Map<String, dynamic>.from(data)
           : const <String, dynamic>{};
       return CodeDelivery(
-        expiresIn: (map['expiresIn'] as num?)?.toInt() ?? 180,
+        expiresIn: (map['expiresIn'] as num?)?.toInt() ?? 600,
         resendAfter: (map['resendAfter'] as num?)?.toInt() ?? 60,
         developmentCode: map['developmentCode']?.toString(),
       );
     } on ApiException catch (error) {
       if (!_isMalformedSuccess(error)) rethrow;
-      return const CodeDelivery(expiresIn: 180, resendAfter: 60);
+      return const CodeDelivery(expiresIn: 600, resendAfter: 60);
     }
   }
 

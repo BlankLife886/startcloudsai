@@ -13,7 +13,7 @@ const vite = await createServer({
 })
 
 try {
-  const [{ taskToLegacyJob }, { taskSnapshotSignature }, { assistantMessageMatchesRun, messageStatus }, { ecommerceGenerationStage, ecommerceGenerationStageLabel }, { canvasNodeHasTaskId, restartCanvasNodeGeneration, shouldCancelCreatedCanvasTask }, { canvasGenerationStageLabel }] = await Promise.all([
+  const [{ taskToLegacyJob }, { taskSnapshotSignature }, { assistantMessageMatchesRun, messageStatus }, { ecommerceGenerationStage, ecommerceGenerationStageLabel }, { applyCancelingGenerationToNodes, canvasNodeHasTaskId, liveCanvasGenerationNodeIds, restartCanvasNodeGeneration, shouldCancelCreatedCanvasTask }, { canvasGenerationStageLabel }] = await Promise.all([
     vite.ssrLoadModule('/src/legacy-modules/services/aiWallpaper.js'),
     vite.ssrLoadModule('/src/legacy-modules/services/tasksApi.js'),
 	vite.ssrLoadModule('/src/features/assistant/domain/assistantMessages.js'),
@@ -112,6 +112,33 @@ try {
   assert.ok(assistantWorkspaceSource.includes('{ id: image.id, name: image.name'), 'AI 助手必须保留参考图 ID 以支持逐图映射')
   assert.ok(assistantWorkspaceSource.includes('const retryPlanItems = responseMode === "image"'), 'AI 助手重新生成时必须保留独立多图方案')
   assert.equal(canvasGenerationStageLabel('saving_result'), '正在保存图片')
+  assert.equal(canvasGenerationStageLabel('canceling'), '正在停止')
+
+  const stopping = applyCancelingGenerationToNodes([
+    { id: 'running', metadata: { executionStatus: 'running', taskId: 'live-task', taskKind: 'image', generationStage: 'generating' } },
+    { id: 'queued', metadata: { executionStatus: 'queued' } },
+    { id: 'done', metadata: { executionStatus: 'succeeded', generationStage: 'completed' } },
+    { id: 'other', metadata: { executionStatus: 'running', generationStage: 'generating' } },
+  ], new Set(['running', 'queued', 'done']))
+  assert.equal(stopping[0].metadata.generationStage, 'canceling', '停止中的节点必须显示状态而不是继续显示生成中')
+  // The server task outlives the abort, so the id it is cancelled by and the
+  // status that keeps it in flight both have to survive this.
+  assert.equal(stopping[0].metadata.taskId, 'live-task')
+  assert.equal(stopping[0].metadata.executionStatus, 'running')
+  assert.equal(stopping[1].metadata.generationStage, 'canceling', '排队中的节点也要显示正在停止')
+  assert.equal(stopping[2].metadata.generationStage, 'completed', '已完成的节点不受停止影响')
+  assert.equal(stopping[3].metadata.generationStage, 'generating', '未被停止的节点必须继续生成')
+
+  const aborted = new AbortController()
+  aborted.abort()
+  const live = liveCanvasGenerationNodeIds([
+    { runningNodeId: 'hand-generated', controller: new AbortController() },
+    // Already stopped and only waiting on its own cleanup, so it must not block
+    // the next run the user starts.
+    { runningNodeId: 'stopped', controller: aborted },
+  ])
+  assert.deepEqual([...live], ['hand-generated'], '只有仍在生成的节点才能阻止工作流启动')
+  assert.equal(liveCanvasGenerationNodeIds([]).size, 0, '没有手动生成时工作流必须能直接启动')
   assert.equal(canvasNodeHasTaskId({ metadata: { images: [{ id: 'slot', taskId: 'image-task' }] } }, 'image-task'), true)
   const retried = restartCanvasNodeGeneration({
     id: 'result', type: 'image', title: 'result', position: { x: 0, y: 0 }, width: 100, height: 100,

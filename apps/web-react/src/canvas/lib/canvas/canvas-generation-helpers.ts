@@ -342,6 +342,39 @@ export function shouldCancelCreatedCanvasTask(input: {
     return Boolean(input.workflowCancelQueued || input.workflowStopped || input.workflowNodeCanceled);
 }
 
+/**
+ * A workflow must not start while something is already generating in this tab.
+ * The two paths mint different idempotency keys, so a node they share is billed
+ * as two separate tasks; and preempting a request never cancels the task it
+ * already created, so the abandoned one keeps generating upstream and charging
+ * for a result that is then thrown away.
+ */
+export function liveCanvasGenerationNodeIds(requests: Iterable<{ runningNodeId: string; controller: { signal: { aborted: boolean } } }>) {
+    const ids = new Set<string>();
+    for (const request of requests) {
+        // Aborted requests stay in the map until their own cleanup runs, and they
+        // will not submit anything, so they must not block the next run.
+        if (request.controller.signal.aborted) continue;
+        ids.add(request.runningNodeId);
+    }
+    return ids;
+}
+
+/**
+ * A stop aborts local work at once but the server cancel still needs a round
+ * trip, so the node reports that it is stopping for as long as that takes. It
+ * deliberately keeps executionStatus and the durable task id: the task is still
+ * alive until the server says otherwise, and a rejected cancel needs its id to
+ * try again.
+ */
+export function applyCancelingGenerationToNodes(nodes: CanvasNodeData[], nodeIds?: Set<string>) {
+    return nodes.map((node) =>
+        (!nodeIds || nodeIds.has(node.id)) && isInFlightCanvasGeneration(node)
+            ? { ...node, metadata: { ...node.metadata, generationStage: "canceling" } }
+            : node,
+    );
+}
+
 export function applyCanceledGenerationToNode(node: CanvasNodeData, errorDetails: string, completedAt = new Date().toISOString()): CanvasNodeData {
     if (!isInFlightCanvasGeneration(node)) return node;
     const images = node.metadata?.images?.map((image) => (image.status === "loading" ? { ...image, status: "error" as const, errorDetails, taskId: undefined } : image));

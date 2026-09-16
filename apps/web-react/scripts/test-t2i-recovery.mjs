@@ -171,22 +171,40 @@ test('assistant deferred cancellation keeps the original fee consent and account
   assert.equal(pending[0].acknowledgeUpstream,false);
 });
 
-test('canvas partial cancellation never finalizes a node whose server cancellation failed', async () => {
-  const finalized = [], aborted = [];
+test('canvas stop halts generation at once and keeps a rejected cancel retryable', async () => {
+  const finalized = [], stopped = [], frozen = [];
+  let thawed = false;
+  const pendingStopTasksRef = { current: [] };
   const context = {
+    pendingStopTasksRef,
+    freezeNodeSubmissions: ids => { frozen.push([...ids].sort()); return () => { thawed = true; }; },
+    beginGenerationStop: ids => stopped.push([...ids].sort()),
     useCallback: fn => fn, stopConfirm: { nodeId:'parent' },stopSubmitting:false,setStopSubmitting() {},
     nodesRef:{current:[{id:'parent',metadata:{workflowOutputNodeIds:['ok','bad']}},{id:'ok',metadata:{workflowProducerNodeId:'parent'}},{id:'bad',metadata:{workflowProducerNodeId:'parent'}}]},
-    generationRequestsRef:{current:new Map([['group',{targetNodeId:'parent',originNodeId:'parent',runningNodeId:'parent',controller:{abort:()=>aborted.push('group')}}]])},
+    generationRequestsRef:{current:new Map([['group',{targetNodeId:'parent',originNodeId:'parent',runningNodeId:'parent',controller:{abort() {}}}]])},
     pendingCanvasTasks:()=>[{nodeId:'ok',kind:'image',taskId:'ok-task'},{nodeId:'bad',kind:'image',taskId:'bad-task'}],
-    cancelPersistedCanvasTask:async id=>{if(id==='bad-task')throw new Error('network failure');return {status:'canceled'};},
+    cancelPersistedCanvasTask:async id=>{
+      // Queued images must already be frozen: the slot a cancel frees is what
+      // would otherwise let them create a task nothing is left to cancel.
+      assert.deepEqual(frozen,[['bad','ok','parent']]);
+      // And nothing may still be generating once the user has asked it to stop,
+      // rather than running on for the length of this round trip.
+      assert.deepEqual(stopped,[['bad','ok','parent']]);
+      if(id==='bad-task')throw new Error('network failure');
+      return {status:'canceled'};
+    },
     hasSubmittedCanvasTask:()=>true,
     finalizeCanceledGenerationNodes: ids=>finalized.push(...ids),setRunningNodeIds() {},setStopConfirm() {},
     message:{error() {},info() {}},t:key=>key,
   };
   execute(declaration(canvasProject,'stopRunningGeneration')+'\nglobalThis.stop=stopRunningGeneration;',context);
   await context.stop();
-  assert.equal(finalized.includes('bad'),false);
-  assert.deepEqual(aborted,[]);
+  assert.equal(finalized.includes('bad'),false,'a node whose cancel was rejected is still stopping, not stopped');
+  // Aborting first clears the task id from node metadata, so this is the only
+  // remaining way for a second attempt to reach the task that is still billing.
+  assert.deepEqual([...pendingStopTasksRef.current].map(task=>`${task.kind}:${task.taskId}:${task.nodeId}`),['image:bad-task:bad']);
+  // Thawing keeps the node restartable rather than stranded between the two.
+  assert.equal(thawed,true);
 });
 
 test('pending cards keep their identity when the server accepts them', () => {
@@ -630,6 +648,7 @@ test('submission queue validates account scope immediately before sending the PO
     exports: {}, AbortController, DOMException, setTimeout, clearTimeout, scheduleWalletRefresh() {},
     apiPost: async () => { posts++; return { task: { id: 'should-not-exist' } }; },
     withSubmissionSlot: async (operation) => { await queued.promise; return operation(); },
+    resolveSkillsForTaskType: async () => [], composeSkillPrompt: (prompt) => String(prompt || ''),
   };
   execute([declaration(api, 'postTaskWithRecovery'), declaration(api, 'createTask')].join('\n'), context);
   const result = context.exports.createTask({ type: 't2i', idempotencyKey: 'stable', isCurrentSession: () => current });
@@ -637,6 +656,37 @@ test('submission queue validates account scope immediately before sending the PO
   queued.resolve();
   await assert.rejects(result, (error) => error.name === 'AbortError');
   assert.equal(posts, 0);
+});
+
+// Skill 是增强项：装载信息读不到时必须照常提交，否则一次接口抖动就挡住所有生成。
+test('a failing skill lookup still submits the generation with the original prompt', async () => {
+  let sent = null;
+  const context = {
+    exports: {}, AbortController, DOMException, setTimeout, clearTimeout, scheduleWalletRefresh() {},
+    apiPost: async (_path, body) => { sent = body; return { task: { id: 'submitted' } }; },
+    withSubmissionSlot: (operation) => operation(),
+    resolveSkillsForTaskType: async () => { throw new Error('skill lookup down'); },
+    composeSkillPrompt: (prompt, skills) => [...skills.map((s) => s.instruction), String(prompt || '')].join('\n\n'),
+  };
+  execute([declaration(api, 'postTaskWithRecovery'), declaration(api, 'createTask')].join('\n'), context);
+  const task = await context.exports.createTask({ type: 't2i', prompt: '一只猫' });
+  assert.equal(task.id, 'submitted', '读不到 Skill 时生成必须照常提交');
+  assert.equal(sent.prompt, '一只猫', '失败时按没有装载处理，提示词保持原样');
+});
+
+// 装载成功时指令要真的拼进提交体，而不是只在本地算一遍。
+test('loaded skills reach the submitted prompt', async () => {
+  let sent = null;
+  const context = {
+    exports: {}, AbortController, DOMException, setTimeout, clearTimeout, scheduleWalletRefresh() {},
+    apiPost: async (_path, body) => { sent = body; return { task: { id: 'submitted' } }; },
+    withSubmissionSlot: (operation) => operation(),
+    resolveSkillsForTaskType: async () => [{ instruction: '柔和顶光' }],
+    composeSkillPrompt: (prompt, skills) => [...skills.map((s) => s.instruction), String(prompt || '')].join('\n\n'),
+  };
+  execute([declaration(api, 'postTaskWithRecovery'), declaration(api, 'createTask')].join('\n'), context);
+  await context.exports.createTask({ type: 't2i', prompt: '一只猫' });
+  assert.equal(sent.prompt, '柔和顶光\n\n一只猫');
 });
 
 test('accepted response from an old account never triggers cancellation under the new account', async () => {

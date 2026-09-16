@@ -70,6 +70,8 @@ import { useCanvasStoryboardConfigRunner } from "@/pages/canvas/hooks/use-canvas
 import { isAcceptedCanvasFile, isCanvasGenerationBusy, VIDEO_NODE_MAX_HEIGHT, VIDEO_NODE_MAX_WIDTH } from "@/pages/canvas/hooks/use-canvas-generation";
 import { canvasWorkflowOwnerId, isCanvasWorkflowBusy, mergeWorkflowRunCheckpoint } from "@/pages/canvas/hooks/use-canvas-workflow-runner";
 import { NODE_STATUS_ERROR, NODE_STATUS_IDLE, NODE_STATUS_LOADING, NODE_STATUS_SUCCESS, normalizeCanvasImageAngleParams, settleStoryboardCancellation, STORYBOARD_ANALYSIS_NODE_ID, storyboardPromptForConsistency, storyboardSceneFromNode, updateStoryboardTaskStatus, type StoryboardGenerationOptions, type StoryboardProgressEvent } from "@/lib/canvas/canvas-storyboard-page";
+import { canvasShotInputSignature, canvasShotIsReusable } from "@/lib/canvas/canvas-storyboard-shot-signature";
+import { createCanvasSubmissionFreeze } from "@/lib/canvas/canvas-submission-freeze";
 import { buildCanvasNodeMentionReferences, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { collectCanvasDragNodeIds, collectCanvasOwnedOutputIds, createCanvasResourceIndex } from "@/lib/canvas/canvas-resource-index";
 import { storyboardPackedLayout, storyboardSequenceLinks } from "@/lib/canvas/canvas-storyboard-layout";
@@ -81,13 +83,15 @@ import { shouldBlockCanvasNavigation } from "@/lib/canvas/canvas-leave-guard";
 import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
 import { applyNodeConfigPatch, audioMetadata, buildAudioGenerationMetadata, buildImageGenerationMetadata, createCanvasNode, imageMetadata, videoMetadata } from "@/lib/canvas/canvas-node-factory";
 import { copyCanvasNodeMetadata } from "@/lib/canvas/canvas-node-copy";
-import { connectionLayerBox, connectionSourceNodeIds, getConnectionTargetAnchor, normalizeConnection, normalizeConnectionBetween, snapNodesIntoGroup } from "@/lib/canvas/canvas-node-geometry";
+import { canvasConnectionIdsTouchingNodes, connectionLayerBox, connectionSourceNodeIds, getConnectionTargetAnchor, normalizeConnection, normalizeConnectionBetween, snapNodesIntoGroup } from "@/lib/canvas/canvas-node-geometry";
 import { buildCanvasSpatialIndex, canvasViewportQueryRect, shouldRefreshCanvasRenderViewport, type CanvasSpatialIndex } from "@/lib/canvas/canvas-spatial-index";
 import { canvasClipboardImages } from "@/lib/canvas/canvas-clipboard";
 import { shouldIgnoreCanvasShortcut } from "@/lib/keyboard-event";
 import {
     applyCanceledGenerationToNode,
     applyCanceledGenerationToNodes,
+    applyCancelingGenerationToNodes,
+    liveCanvasGenerationNodeIds,
     applyFailedCanvasTaskToNode,
     applyUploadedImageToNode,
     attachCanvasTaskId,
@@ -124,11 +128,13 @@ import { CanvasCostConfirmDialog, type CanvasCostPayload } from "@/components/ca
 import { CanvasHomeDialog } from "@/components/canvas/canvas-home-dialog";
 import { estimateCanvasGenerationCost, type CanvasCostEstimate } from "@/lib/canvas/canvas-generation-cost";
 import { preflightCanvasWorkflow } from "@/lib/canvas/canvas-workflow-preflight";
+import { canvasWorkflowNodeInputFingerprint } from "@/lib/canvas/canvas-workflow-signature";
 import {
     advanceCanvasWorkflowCheckpoint,
     beginCanvasWorkflowRetry,
     canvasWorkflowCheckpointForStart,
     canvasWorkflowNodeOutputFingerprint,
+    carryOverCanvasWorkflowCompletions,
     compileCanvasWorkflow,
     completeCanvasWorkflowNode,
     createCanvasWorkflowCheckpoint,
@@ -177,6 +183,7 @@ import {
     cancelCanvasAssistantRun,
     cancelCanvasTask,
 	CANVAS_TASK_PROGRESS_EVENT,
+    canvasImageTaskParams,
     canvasManualTaskKey,
     canvasWorkflowTaskKey,
     createCanvasTaskNonce,
@@ -701,6 +708,12 @@ function InfiniteCanvasPage() {
         if (request?.controller === controller) generationRequestsRef.current.delete(targetNodeId);
     }, []);
 
+    const submissionFreezeRef = useRef(createCanvasSubmissionFreeze());
+    // Thawing once the stop settles keeps a node whose cancel was rejected
+    // restartable, rather than stranded between running and stopped.
+    const freezeNodeSubmissions = useCallback((nodeIds: Iterable<string>) => submissionFreezeRef.current.freeze(nodeIds), []);
+    const guardNodeSubmission = useCallback((...nodeIds: string[]) => submissionFreezeRef.current.guard(...nodeIds), []);
+
     const commitNodes = useCallback(
         (updater: (current: CanvasNodeData[]) => CanvasNodeData[]) => {
             const next = commitCanvasArray(nodesRef, updater, publishNodes);
@@ -921,6 +934,24 @@ function InfiniteCanvasPage() {
             commitNodes((current) => applyCanceledGenerationToNodes(current, t("canvas.generation.canceled"), nodeIds));
         },
         [commitNodes, t],
+    );
+
+    /**
+     * A stop aborts the local requests before the server has confirmed anything,
+     * and their cleanup drops the task ids from node metadata. Tasks whose cancel
+     * was rejected are held here so stopping again can still reach them.
+     */
+    const pendingStopTasksRef = useRef<PendingCanvasTask[]>([]);
+
+    const beginGenerationStop = useCallback(
+        (nodeIds: Set<string>) => {
+            commitNodes((current) => applyCancelingGenerationToNodes(current, nodeIds));
+            generationRequestsRef.current.forEach((request) => {
+                if (!nodeIds.has(request.targetNodeId) && !nodeIds.has(request.originNodeId) && !nodeIds.has(request.runningNodeId)) return;
+                request.controller.abort();
+            });
+        },
+        [commitNodes],
     );
 
     const collectUnsubmittedWorkflowNodeIds = useCallback(() => {
@@ -1568,6 +1599,10 @@ function InfiniteCanvasPage() {
     // The toolbar follows a single selected node selected by click, creation, marquee, or keyboard.
     // It stays hidden for multi-selection and while isNodeDragging is true.
     const singleSelectedNodeId = selectedNodeIds.size === 1 ? Array.from(selectedNodeIds)[0] : null;
+    const selectedNodeConnectionCount = useMemo(
+        () => canvasConnectionIdsTouchingNodes(connections, collectCanvasOwnedOutputIds(nodes, selectedNodeIds)).size,
+        [connections, nodes, selectedNodeIds],
+    );
     const toolbarNode = (toolbarNodeId ? nodeById.get(toolbarNodeId) || null : null) || (singleSelectedNodeId ? nodeById.get(singleSelectedNodeId) || null : null);
     const cropNode = cropNodeId ? nodeById.get(cropNodeId) || null : null;
     const maskEditNode = maskEditNodeId ? nodeById.get(maskEditNodeId) || null : null;
@@ -1965,6 +2000,17 @@ function InfiniteCanvasPage() {
     }, []);
 
     const deleteConnection = useCallback((connectionId: string) => deleteConnections(new Set([connectionId])), [deleteConnections]);
+
+    // Cut every wire on the selection but keep the nodes, so a mis-wired graph can be
+    // rebuilt without deleting and re-creating the nodes themselves.
+    const disconnectNodes = useCallback(
+        (ids: Set<string>) => {
+            if (!ids.size) return;
+            const scoped = collectCanvasOwnedOutputIds(nodesRef.current, ids);
+            deleteConnections(canvasConnectionIdsTouchingNodes(connectionsRef.current, scoped));
+        },
+        [deleteConnections],
+    );
 
     const deselectCanvas = useCallback(() => {
         cancelPendingConnectionCreate();
@@ -3231,7 +3277,7 @@ function InfiniteCanvasPage() {
             setDialogNodeId(childId);
             const controller = startGenerationRequest(childId, node.id, childId);
             try {
-                const image = await requestEdit(generationConfig, prompt, [source], { id: `${node.id}-mask`, name: "mask.png", type: "image/png", dataUrl: payload.maskDataUrl }, { signal: controller.signal, onCreated: (taskId) => persistCanvasTaskId(childId, taskId), idempotencyKey: canvasManualTaskKey(projectId, childId, createCanvasTaskNonce()) }).then((items) => items[0]);
+                const image = await requestEdit(generationConfig, prompt, [source], { id: `${node.id}-mask`, name: "mask.png", type: "image/png", dataUrl: payload.maskDataUrl }, { signal: controller.signal, onBeforeCreate: guardNodeSubmission(childId, node.id), onCreated: (taskId) => persistCanvasTaskId(childId, taskId), idempotencyKey: canvasManualTaskKey(projectId, childId, createCanvasTaskNonce()) }).then((items) => items[0]);
                 const uploaded = await adoptGeneratedImage(image);
                 if (controller.signal.aborted) throw new DOMException("Aborted", "AbortError");
                 const completedAt = new Date().toISOString();
@@ -3350,6 +3396,7 @@ function InfiniteCanvasPage() {
             try {
                 const image = await requestEdit(generationConfig, prompt, [source], undefined, {
                     signal: controller.signal,
+                    onBeforeCreate: guardNodeSubmission(childId, node.id),
                     onCreated: (taskId) => persistCanvasTaskId(childId, taskId),
                     idempotencyKey: canvasManualTaskKey(projectId, childId, createCanvasTaskNonce()),
                 }).then((items) => items[0]);
@@ -3922,13 +3969,14 @@ function InfiniteCanvasPage() {
                 const slot = options.taskKeySalt ? `${options.taskKeySalt}:${imageIndexOrId}` : imageIndexOrId;
                 return canvasWorkflowTaskKey(workflowRunId, nodeId, slot);
             };
-            const guardWorkflowSubmit = workflowRunId
-                ? () => {
-                      // The run was stopped or its lease was lost while this task
-                      // waited for a concurrency slot: skip the submission.
-                      if (workflowRunRef.current.cancelQueued || workflowRunRef.current.lockLost || workflowRunRef.current.canceledNodeIds.has(nodeId)) throw new DOMException("Aborted", "AbortError");
-                  }
-                : undefined;
+            const guardSubmit =
+                (...extraNodeIds: string[]) =>
+                () => {
+                    guardNodeSubmission(nodeId, ...extraNodeIds)();
+                    // The run was stopped or its lease was lost while this task
+                    // waited for a concurrency slot: skip the submission.
+                    if (workflowRunId && (workflowRunRef.current.cancelQueued || workflowRunRef.current.lockLost || workflowRunRef.current.canceledNodeIds.has(nodeId))) throw new DOMException("Aborted", "AbortError");
+                };
             const generationConfig = buildGenerationConfig(effectiveConfig, sourceNode, mode);
             const builtinPanel = sourceNode ? getNodeDefinition(sourceNode.type)?.useBuiltinPanel : undefined;
             const billedCount = builtinPanel?.writeBackToSelf ? 1 : mode === "image" || (mode === "text" && isCanvasExecutableNode(sourceNode)) ? getGenerationCount(generationConfig.count) : 1;
@@ -3963,7 +4011,7 @@ function InfiniteCanvasPage() {
                         signal: controller.signal,
                         onCreated: (taskId: string) => persistCanvasTaskId(nodeId, taskId, undefined, "image", { workflowRunId }),
                         idempotencyKey: taskIdempotencyKey(0),
-                        onBeforeCreate: guardWorkflowSubmit,
+                        onBeforeCreate: guardSubmit(),
                     };
                     const image = refs.length
                         ? await requestEdit({ ...generationConfig, count: "1" }, fullPrompt, refs, undefined, builtinRequestOptions).then((items) => items[0])
@@ -4117,7 +4165,7 @@ function InfiniteCanvasPage() {
                                         if (items[0]?.dataUrl || items[0]?.storageKey) await applyPreview(imageId, items[0]);
                                     },
                                     idempotencyKey: taskIdempotencyKey(imageIndex),
-                                    onBeforeCreate: guardWorkflowSubmit,
+                                    onBeforeCreate: guardSubmit(rootId),
                                 };
                                 const image = referenceImages.length
                                     ? await requestEdit({ ...generationConfig, count: "1" }, effectivePrompt, referenceImages, undefined, requestOptions).then((items) => items[0])
@@ -4326,7 +4374,7 @@ function InfiniteCanvasPage() {
                                 if (isConfigNode) return;
                                 setNodes((prev) => prev.map((node) => (node.id === targetNodeId ? { ...node, type: CanvasNodeType.Text, metadata: { ...node.metadata, content: text, status: NODE_STATUS_LOADING } } : node)));
                             },
-                            { signal: controller.signal, idempotencyKey: taskIdempotencyKey(textIndex), onBeforeCreate: guardWorkflowSubmit, onCreated: (taskId) => persistCanvasTaskId(targetNodeId, taskId, undefined, "assistant", { workflowRunId }) },
+                            { signal: controller.signal, idempotencyKey: taskIdempotencyKey(textIndex), onBeforeCreate: guardSubmit(targetNodeId), onCreated: (taskId) => persistCanvasTaskId(targetNodeId, taskId, undefined, "assistant", { workflowRunId }) },
                         )
                             .then((answer) => ({ nodeId: targetNodeId, content: answer || localStreamed }))
                             .finally(() => finishGenerationRequest(targetNodeId, controller));
@@ -4722,12 +4770,26 @@ function InfiniteCanvasPage() {
                     ].filter(Boolean).join("\n"),
                 ]),
             );
+            // Continuity anchors each image to the previous render, so a reused
+            // image would break the chain for everything after it.
+            const reuseUnchangedShots = reuseExistingOutputs && !options.consistency;
+            const sceneSignatures = new Map<string, string | null>();
+            const reusedSceneIds = new Set<string>();
             scenes.forEach((scene, index) => {
                 const slot = packed.positions[index] || { x: 0, y: 0, width: 300, height: 220 };
                 const sequence = sequenceLinks.get(scene.id);
                 const sceneSize = sceneAspectRatios.get(scene.id) || options.aspectRatio || "auto";
                 const sceneCard = sceneCards[index] || { width: slot.width, height: slot.height };
                 const sceneReferences = referenceImagesForScene(scene);
+                // Sign the same values the request will carry, resolved exactly
+                // as the worker resolves them below.
+                const sceneSignature = canvasShotInputSignature({
+                    prompt: scenePrompts.get(scene.id) || scene.prompt,
+                    params: canvasImageTaskParams({ ...generationConfig, size: sceneAspectRatios.get(scene.id) || generationConfig.size }),
+                    count: 1,
+                    references: sceneReferences,
+                });
+                sceneSignatures.set(scene.id, sceneSignature);
                 const shotMetadata = {
                     prompt: scenePrompts.get(scene.id) || scene.prompt,
                     storyboardPrompt: scenePrompts.get(scene.id) || scene.prompt,
@@ -4769,6 +4831,8 @@ function InfiniteCanvasPage() {
                     generationDurationMs: undefined,
                 } as const;
                 const reusable = reusableByScene.get(scene.id);
+                const reusing = reuseUnchangedShots && canvasShotIsReusable(reusable, sceneSignature);
+                if (reusing) reusedSceneIds.add(scene.id);
                 if (reusable) {
                     const reused = {
                         ...reusable,
@@ -4781,6 +4845,16 @@ function InfiniteCanvasPage() {
                             storageKey: reusable.metadata?.storageKey,
                             images: reusable.metadata?.images,
                             primaryImageId: reusable.metadata?.primaryImageId,
+                            ...(reusing
+                                ? {
+                                      status: NODE_STATUS_SUCCESS,
+                                      executionStatus: "succeeded" as const,
+                                      storyboardStatus: "succeeded" as const,
+                                      generationStage: "completed",
+                                      generationCompletedAt: reusable.metadata?.generationCompletedAt,
+                                      generationDurationMs: reusable.metadata?.generationDurationMs,
+                                  }
+                                : {}),
                         },
                     } satisfies CanvasNodeData;
                     imageNodes.push(reused);
@@ -4811,7 +4885,7 @@ function InfiniteCanvasPage() {
             const hostPatch = storyboardHostId
                 ? {
                       storyboardId,
-                      storyboardTitle: storyboardPlan.title || `分镜 · ${scenes[0]?.title || "镜头序列"}`,
+                      storyboardTitle: storyboardPlan.title || `批量 · ${scenes[0]?.title || "图片序列"}`,
                       storyboardStatus: "running" as const,
                       storyboardPlanJson: storyboardSession,
                       storyboardSceneCount: scenes.length,
@@ -4868,6 +4942,14 @@ function InfiniteCanvasPage() {
                 });
             };
 
+            // An image whose inputs are unchanged since it last succeeded is
+            // already its own answer: report it done and never submit a task,
+            // so a rerun after a partial failure only pays for what changed.
+            for (const scene of scenes) {
+                if (!reusedSceneIds.has(scene.id)) continue;
+                report({ sceneId: scene.id, status: "succeeded" });
+            }
+            const scenesToRun = scenes.filter((scene) => !reusedSceneIds.has(scene.id));
             let cursor = 0;
             const claimedSceneIds = new Set<string>();
             let continuityAnchor: ReferenceImage | null = null;
@@ -4911,8 +4993,8 @@ function InfiniteCanvasPage() {
                 while (!controller.signal.aborted) {
                     const index = cursor;
                     cursor += 1;
-                    if (index >= scenes.length) return;
-                    const scene = scenes[index];
+                    if (index >= scenesToRun.length) return;
+                    const scene = scenesToRun[index];
                     const nodeId = sceneNodeIds.get(scene.id);
                     if (!nodeId) continue;
                     if (!tryClaimStoryboardScene(scene.id)) {
@@ -4934,6 +5016,15 @@ function InfiniteCanvasPage() {
                             : shotReferences;
                         const requestOptions = {
                             signal: requestController.signal,
+                            // Shots queue behind a concurrency limit, so most of a
+                            // batch is still waiting here when the user confirms a
+                            // stop. Without this guard each one goes on to create a
+                            // billable task that the cancellation then has to chase,
+                            // which is why stopping a batch took so long to settle.
+                            onBeforeCreate: () => {
+                                if (storyboardCancelAcknowledgedRef.current || controller.signal.aborted) throw new DOMException("Aborted", "AbortError");
+                                guardNodeSubmission(nodeId, storyboardHostId || "")();
+                            },
                             onCreated: (taskId: string) => persistStoryboardTaskId(nodeId, taskId, requestController),
                             // A workflow run must use the workflow key format: folding the
                             // 36-character runId into a manual key pushes the whole key past
@@ -4962,7 +5053,7 @@ function InfiniteCanvasPage() {
                         }
                         commitStoryboardScene(
                             scene.id,
-                            { ...imageMetadata(uploaded), prompt: generationPrompt, storyboardPrompt: generationPrompt, storyboardStatus: "succeeded", storyboardNeedsRegeneration: false, executionStatus: "succeeded", generationCompletedAt: new Date().toISOString(), generationStage: "completed", errorDetails: undefined, taskId: undefined, taskKind: undefined, ...(anchorSceneId && anchorReference ? { storyboardAnchorReference: anchorReference, storyboardAnchorSceneId: anchorSceneId } : {}) },
+                            { ...imageMetadata(uploaded), prompt: generationPrompt, storyboardPrompt: generationPrompt, storyboardStatus: "succeeded", storyboardNeedsRegeneration: false, executionStatus: "succeeded", generationCompletedAt: new Date().toISOString(), generationStage: "completed", errorDetails: undefined, taskId: undefined, taskKind: undefined, storyboardShotSignature: sceneSignatures.get(scene.id) || undefined, storyboardShotOutput: uploaded.storageKey || uploaded.url || undefined, ...(anchorSceneId && anchorReference ? { storyboardAnchorReference: anchorReference, storyboardAnchorSceneId: anchorSceneId } : {}) },
                             anchorSceneId && anchorReference ? { storyboardAnchorReference: anchorReference, storyboardAnchorSceneId: anchorSceneId } : {},
                         );
                         report({ sceneId: scene.id, status: "succeeded", imageUrl: uploaded.thumbnailUrl || uploaded.url });
@@ -4990,16 +5081,33 @@ function InfiniteCanvasPage() {
             // executionStatus/storyboardStatus "queued" until a slot starts.
             // Continuity batches stay serial so the first keyframe can anchor
             // later shots; independent batches use up to four workers.
-            await Promise.all(Array.from({ length: options.consistency ? 1 : Math.min(4, scenes.length) }, () => worker()));
+            await Promise.all(Array.from({ length: options.consistency ? 1 : Math.min(4, scenesToRun.length) }, () => worker()));
             if (controller.signal.aborted) {
                 const canceledMessage = t("canvas.storyboard.statusCanceled");
                 scenes.forEach((scene) => {
-                    if (claimedSceneIds.has(scene.id)) return;
+                    // A reused image never entered the run, so cancelling has
+                    // nothing to take back from it. Marking it canceled would
+                    // also cost the user money: it would no longer qualify for
+                    // reuse and the next run would pay to regenerate it.
+                    if (claimedSceneIds.has(scene.id) || reusedSceneIds.has(scene.id)) return;
                     commitStoryboardScene(
                         scene.id,
                         { storyboardStatus: "canceled", executionStatus: "canceled", status: NODE_STATUS_IDLE, errorDetails: canceledMessage, generationCompletedAt: new Date().toISOString() },
                     );
                     report({ sceneId: scene.id, status: "canceled", error: canceledMessage });
+                });
+            }
+            // The host status is otherwise only recomputed by a scene commit,
+            // and a run whose every shot was reused never commits one. A
+            // cancelled run is settled by the cancellation path instead, and
+            // recomputing here would report shots still winding down as
+            // "running" and put the host back into a state it just left.
+            if (storyboardHostId && !controller.signal.aborted && !storyboardCancelRequestedRef.current) {
+                commitNodes((current) => {
+                    const aggregate = storyboardAggregateStatus(current, storyboardId);
+                    if (!aggregate) return current;
+                    const executionStatus = aggregate === "succeeded" ? "succeeded" : aggregate === "failed" ? "failed" : aggregate === "canceled" ? "canceled" : "running";
+                    return current.map((node) => (node.id === storyboardHostId ? { ...node, metadata: { ...node.metadata, storyboardStatus: aggregate, executionStatus } } : node));
                 });
             }
             setRunningNodeIds((current) => {
@@ -5208,6 +5316,13 @@ function InfiniteCanvasPage() {
             ...(storyboardAnalysisTaskRef.current ? [storyboardAnalysisTaskRef.current] : []),
         ].forEach((task) => taskMap.set(`${task.kind}:${task.taskId}`, task));
         const cancellationTargets = [...taskMap.values()];
+        // Stop everything the user can see before the cancels go out, so a batch
+        // does not keep producing images for the length of a server round trip.
+        // Queued shots share the run's controller and die with it, and
+        // storyboardCancelTasksRef keeps the ids a rejected cancel needs to retry.
+        const hadLocalStoryboardExecution = hasLocalStoryboardExecution(nodeIds);
+        commitNodes((current) => applyCancelingGenerationToNodes(current, nodeIds));
+        abortStoryboardControllers(nodeIds);
         const cancellations = cancellationTargets.map((task) =>
             cancelPersistedCanvasTask(task.taskId, task.kind, { acknowledgeUpstream: true }).catch((error) => {
                 if (!isFinishedCanvasTaskError(error)) throw error;
@@ -5234,11 +5349,6 @@ function InfiniteCanvasPage() {
             setStoryboardCancelSubmitting(false);
             return;
         }
-        // Do not abort local polling until every known server task accepted the
-        // acknowledged cancellation. If a PATCH fails, the live generation and
-        // its durable task id remain available for another confirmation attempt.
-        const hadLocalStoryboardExecution = hasLocalStoryboardExecution(nodeIds);
-        abortStoryboardControllers(nodeIds);
         // The request's finally block owns cleanup while its controller is
         // still current. If it already finished, close the cancellation state
         // here; otherwise retain the acknowledged state for a late onCreated
@@ -5847,6 +5957,23 @@ function InfiniteCanvasPage() {
                     ? null
                     : "已完成节点的产物已变化，请重新运行工作流。";
             };
+            // Stamp what the node ran on and what it produced, so a later run
+            // can prove this result is still the answer instead of paying to
+            // find out. The stamp lives on the node because the run record is
+            // re-serialized server-side from a fixed shape.
+            const recordWorkflowNodeSignatures = (nodeId: string, inputFingerprint: string | null, outputFingerprint: string) => {
+                if (!inputFingerprint) return;
+                commitNodes((current) => current.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, workflowInputSignature: inputFingerprint, workflowOutputSignature: outputFingerprint } } : node)));
+            };
+            const workflowNodeInputFingerprint = (nodeId: string) =>
+                canvasWorkflowNodeInputFingerprint({
+                    nodeId,
+                    nodes: nodesRef.current,
+                    connections: connectionsRef.current,
+                    executableNodeIds: checkpoint!.nodeIds,
+                    resolveSettings: (item) => buildGenerationConfig(effectiveConfig, item, item.metadata?.generationMode || "image"),
+                    resolveProducerOutput: (id) => canvasWorkflowNodeOutputFingerprint(id, nodesRef.current, connectionsRef.current),
+                });
             const executeNode = async (nodeId: string) => {
                 if (!runActive() || workflowRunRef.current.cancelQueued || workflowRunRef.current.canceledNodeIds.has(nodeId) || workflowRunRef.current.lockLost) {
 					return { nodeId, ok: false as const, errorMessage: t("canvas.generation.canceled"), costCents: 0 };
@@ -5857,6 +5984,7 @@ function InfiniteCanvasPage() {
                 const readiness = validateCanvasWorkflowNodeReadiness({ nodeId, nodes: nodesRef.current, connections: connectionsRef.current, dependencies: executionPlan.dependencies.get(nodeId) || new Set(), completedNodeIds: completedIds });
 				if (!readiness.ok) return { nodeId, ok: false as const, errorMessage: workflowReadinessErrorMessage(readiness.issue), costCents: 0 };
                 if (node.metadata?.storyboardConfig) {
+                    const inputFingerprint = workflowNodeInputFingerprint(nodeId);
                     const storyboardResult = await runStoryboardFromConfigNode(nodeId, {
                         skipCostConfirm: true,
                         waitForSlot: true,
@@ -5881,11 +6009,13 @@ function InfiniteCanvasPage() {
                     if (!validation.ok) return { nodeId, ok: false as const, errorMessage: workflowOutputErrorMessage(validation.issue), costCents };
                     const outputFingerprint = canvasWorkflowNodeOutputFingerprint(nodeId, nodesRef.current, connectionsRef.current);
                     if (!outputFingerprint) return { nodeId, ok: false as const, errorMessage: "节点产物尚未完整保存，不能记录为已完成", costCents };
+                    recordWorkflowNodeSignatures(nodeId, inputFingerprint, outputFingerprint);
                     return { nodeId, ok: true as const, costCents, outputFingerprint };
                 }
                 const mode = node.metadata?.generationMode || "image";
                 const prompt = node.metadata?.composerContent ?? node.metadata?.prompt ?? "";
                 const generationConfig = buildGenerationConfig(effectiveConfig, node, mode);
+                const inputFingerprint = workflowNodeInputFingerprint(nodeId);
                 await handleGenerateNode(nodeId, mode, prompt, { skipCostConfirm: true, workflowRunId: checkpoint?.runId, taskKeySalt: retryTaskKeySalt });
 				const costCents = await readWorkflowNodeCost(nodeId);
                 if (!runActive() || workflowRunRef.current.canceledNodeIds.has(nodeId) || !pageActiveRef.current || workflowRunRef.current.lockLost) {
@@ -5903,6 +6033,7 @@ function InfiniteCanvasPage() {
                 if (!validation.ok) return { nodeId, ok: false as const, errorMessage: workflowOutputErrorMessage(validation.issue), costCents };
                 const outputFingerprint = canvasWorkflowNodeOutputFingerprint(nodeId, nodesRef.current, connectionsRef.current);
                 if (!outputFingerprint) return { nodeId, ok: false as const, errorMessage: "节点产物尚未完整保存，不能记录为已完成", costCents };
+                recordWorkflowNodeSignatures(nodeId, inputFingerprint, outputFingerprint);
                 return { nodeId, ok: true as const, costCents, outputFingerprint };
             };
 
@@ -6226,6 +6357,20 @@ function InfiniteCanvasPage() {
             request.onStartDecision?.({ status: "rejected", error: "已有工作流正在启动或运行，请等待当前操作结束" });
             return;
         }
+        // A running workflow was already rejected above, so anything still
+        // generating here was started by hand. Letting the run proceed would bill
+        // any node they share twice, and the request the run preempts would keep
+        // generating upstream because aborting it never cancels its task.
+        // A just-stopped batch keeps its controller until the runner unwinds, so
+        // test the signal rather than the ref or a re-run right after a stop is
+        // rejected for work that is already over.
+        const batchRunning = Boolean(storyboardAbortRef.current && !storyboardAbortRef.current.signal.aborted);
+        if (liveCanvasGenerationNodeIds(generationRequestsRef.current.values()).size || batchRunning) {
+            const error = t("canvas.workflow.manualGenerationBusy");
+            request.onStartDecision?.({ status: "rejected", error });
+            message.warning(error);
+            return;
+        }
         workflowStartPendingRef.current = true;
         let startDecided = false;
         const onStartDecision = (decision: AgentWorkflowStartDecision) => {
@@ -6292,14 +6437,30 @@ function InfiniteCanvasPage() {
             workflowPlanRef.current = null;
             workflowPendingIdsRef.current = new Set();
         }
+        // A changed input discards the saved checkpoint wholesale, but in a large
+        // graph most nodes are untouched by that change. Keep the ones that can
+        // prove their result still matches their inputs, so editing one prompt
+        // does not re-bill the whole canvas. When nothing changed at all, every
+        // node is kept, nothing is left to do, and the rerun below takes over.
+        const freshCheckpoint = () => {
+            const carried = carryOverCanvasWorkflowCompletions({
+                layers: compiled.plan.layers,
+                nodeIds: compiled.plan.nodeIds,
+                nodes: nodesRef.current,
+                connections: connectionsRef.current,
+                dependencies: compiled.plan.dependencies,
+                resolveSettings: (item) => buildGenerationConfig(effectiveConfig, item, item.metadata?.generationMode || "image"),
+            });
+            return { ...createCanvasWorkflowCheckpoint(compiled.plan), completedNodeIds: carried.completedNodeIds, outputFingerprints: carried.outputFingerprints };
+        };
         const canResumeSaved = Boolean(savedCheckpoint?.nodeIds.length && workflowPlanMatchesCheckpoint(compiled.plan, savedCheckpoint));
         const recoveredCheckpoint = canResumeSaved && savedCheckpoint ? reconcileCanvasWorkflowFailureOutput(savedCheckpoint, nodesRef.current, connectionsRef.current) : savedCheckpoint;
         const retryingFailure = Boolean(recoveredCheckpoint && isCanvasWorkflowFailureRetry(recoveredCheckpoint, nodesRef.current));
-        let checkpoint = canResumeSaved && recoveredCheckpoint
+        let checkpoint: CanvasWorkflowCheckpoint = canResumeSaved && recoveredCheckpoint
             ? retryingFailure
                 ? { ...recoveredCheckpoint, status: "failed" as const, updatedAt: new Date().toISOString() }
                 : { ...recoveredCheckpoint, status: "running" as const, errorNodeId: undefined, errorMessage: undefined, updatedAt: new Date().toISOString() }
-            : createCanvasWorkflowCheckpoint(compiled.plan);
+            : freshCheckpoint();
         const canceledSet = new Set(checkpoint.canceledNodeIds || []);
         const actionableRemaining = checkpoint.nodeIds.filter((nodeId) => !checkpoint.completedNodeIds.includes(nodeId) && !canceledSet.has(nodeId));
         // Prior run already finished (all completed or canceled): a new click is a full rerun.
@@ -6407,8 +6568,11 @@ function InfiniteCanvasPage() {
         const requestedNodeId = stopConfirm?.nodeId;
         if (!requestedNodeId || stopSubmitting) return;
         setStopSubmitting(true);
+        let thawSubmissions: (() => void) | undefined;
         try {
-            const stoppedNodeIds = new Set([requestedNodeId]);
+            // A previous attempt may have aborted the requests already, which drops
+            // the task ids from metadata, so these nodes are only reachable here.
+            const stoppedNodeIds = new Set([requestedNodeId, ...pendingStopTasksRef.current.map((task) => task.nodeId)]);
             generationRequestsRef.current.forEach((request) => {
                 if (request.targetNodeId !== requestedNodeId && request.originNodeId !== requestedNodeId && request.runningNodeId !== requestedNodeId) return;
                 stoppedNodeIds.add(request.targetNodeId);
@@ -6431,7 +6595,21 @@ function InfiniteCanvasPage() {
                     if (stoppedNodeIds.size !== before) expanded = true;
                 }
             }
-            const tasks = [...new Map(pendingCanvasTasks(nodesRef.current).filter((task) => stoppedNodeIds.has(task.nodeId)).map((task) => [`${task.kind}:${task.taskId}`, task])).values()];
+            // A node generating several images fires one request per image and most
+            // of them are still queued on a concurrency slot here. Freeze them
+            // before the cancels go out, or the slots these cancels free up let the
+            // queued ones create tasks that are not on the list about to be sent.
+            thawSubmissions = freezeNodeSubmissions(stoppedNodeIds);
+            const tasks = [
+                ...new Map(
+                    [...pendingStopTasksRef.current, ...pendingCanvasTasks(nodesRef.current).filter((task) => stoppedNodeIds.has(task.nodeId))].map((task) => [`${task.kind}:${task.taskId}`, task]),
+                ).values(),
+            ];
+            // Stop the local work now rather than after the cancels: the user asked
+            // for it to stop, and they should not be left watching it run for a
+            // server round trip. The snapshot above already holds every task id the
+            // cancels need, so nothing is stranded by the requests cleaning up.
+            beginGenerationStop(stoppedNodeIds);
             let allStopped = true;
             if (tasks.length) {
                 const results = await Promise.allSettled(tasks.map((task) => cancelPersistedCanvasTask(task.taskId, task.kind, { acknowledgeUpstream: true })));
@@ -6442,8 +6620,13 @@ function InfiniteCanvasPage() {
                 if (failures.length) {
                     allStopped = false;
                     message.error(failures[0].reason instanceof Error ? failures[0].reason.message : t("canvas.projectPage.stopFailed"));
-                    const failedTaskKeys = new Set(tasks.filter((_, index) => results[index].status === "rejected").map(task => `${task.kind}:${task.taskId}`));
-                    const retained = new Set(pendingCanvasTasks(nodesRef.current).filter(task => failedTaskKeys.has(`${task.kind}:${task.taskId}`)).map(task => task.nodeId));
+                    // The abort settled these nodes locally but their server task is
+                    // still running and billing, and its id is gone from metadata.
+                    // Holding it here is what lets the dialog, which stays open on
+                    // this path, reach the task when the user stops again.
+                    const failedTasks = tasks.filter((_, index) => results[index].status === "rejected");
+                    pendingStopTasksRef.current = failedTasks;
+                    const retained = new Set(failedTasks.map((task) => task.nodeId));
                     let expand = true;
                     while (expand) {
                         expand = false;
@@ -6459,28 +6642,24 @@ function InfiniteCanvasPage() {
                     retained.forEach(id => stoppedNodeIds.delete(id));
                 }
             }
-            if (tasks.length) {
-                generationRequestsRef.current.forEach((request) => {
-                    if (!stoppedNodeIds.has(request.targetNodeId) && !stoppedNodeIds.has(request.originNodeId) && !stoppedNodeIds.has(request.runningNodeId)) return;
-                    const submitted = [request.targetNodeId, request.originNodeId, request.runningNodeId]
-                        .map((id) => nodesRef.current.find((node) => node.id === id))
-                        .some((node) => node && hasSubmittedCanvasTask(node, nodesRef.current));
-                    if (submitted) request.controller.abort();
-                });
-            }
             if (stoppedNodeIds.size) finalizeCanceledGenerationNodes(stoppedNodeIds);
             setRunningNodeIds((current) => {
                 const next = new Set(current);
                 stoppedNodeIds.forEach((id) => next.delete(id));
                 return next;
             });
-            if (allStopped) { setStopConfirm(null); message.info(t("canvas.generation.canceled")); }
+            if (allStopped) {
+                pendingStopTasksRef.current = [];
+                setStopConfirm(null);
+                message.info(t("canvas.generation.canceled"));
+            }
         } catch (error) {
             message.error(error instanceof Error ? error.message : t("canvas.projectPage.stopFailed"));
         } finally {
+            thawSubmissions?.();
             setStopSubmitting(false);
         }
-    }, [finalizeCanceledGenerationNodes, message, stopConfirm?.nodeId, stopSubmitting, t]);
+    }, [beginGenerationStop, finalizeCanceledGenerationNodes, freezeNodeSubmissions, message, stopConfirm?.nodeId, stopSubmitting, t]);
 
     const stopWorkflow = useCallback(async ({ acknowledgeUpstream = false } = {}) => {
         const checkpoint = workflowCheckpointRef.current;
@@ -6497,6 +6676,12 @@ function InfiniteCanvasPage() {
             if (belongsToWorkflow) submittedTasks.set(`${task.kind}:${task.taskId}`, task);
         });
         workflowRunRef.current = { ...workflowRunRef.current, cancelQueued: true };
+        // Queued nodes die on cancelQueued, and the running ones stop here rather
+        // than after the cancels: nothing the user can see should still be
+        // generating once they have asked the run to stop. workflowRunTaskIdsRef
+        // keeps the ids a rejected cancel needs, so it survives the abort.
+        setWorkflowRun((current) => ({ ...current, canceling: true }));
+        beginGenerationStop(activeWorkflowNodeIds);
         const cancellations = [...submittedTasks.values()].map((task) => cancelPersistedCanvasTask(task.taskId, task.kind, { acknowledgeUpstream }).catch((error) => { if (!isFinishedCanvasTaskError(error)) throw error; }));
         const results = await Promise.allSettled(cancellations);
         const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
@@ -6513,12 +6698,6 @@ function InfiniteCanvasPage() {
             lockLost: workflowRunRef.current.lockLost,
             canceledNodeIds: new Set([...workflowRunRef.current.canceledNodeIds, ...runningOrQueued]),
         };
-        generationRequestsRef.current.forEach((request) => {
-            const submitted = [request.targetNodeId, request.originNodeId, request.runningNodeId]
-                .map((id) => nodesRef.current.find((node) => node.id === id))
-                .some((node) => node && hasSubmittedCanvasTask(node, nodesRef.current));
-            if (submitted) request.controller.abort();
-        });
         workflowRunTaskIdsRef.current.clear();
         workflowSubmittedNodeIdsRef.current.clear();
         finalizeCanceledGenerationNodes();
@@ -6540,7 +6719,7 @@ function InfiniteCanvasPage() {
         releaseWorkflowBrowserLock();
         setWorkflowRun({ status: "canceled", completed: 0, total: 0, running: 0, queued: 0 });
         message.info(t("canvas.workflow.canceled"));
-    }, [beginWorkflowStop, finalizeCanceledGenerationNodes, message, releaseWorkflowBrowserLock, t]);
+    }, [beginGenerationStop, beginWorkflowStop, finalizeCanceledGenerationNodes, message, releaseWorkflowBrowserLock, t]);
     stopWorkflowAgentRef.current = () => {
         const checkpoint = workflowCheckpointRef.current;
         const state = workflowRunStateRef.current;
@@ -6581,6 +6760,13 @@ function InfiniteCanvasPage() {
         pendingCanvasTasks(nodesRef.current).forEach((task) => submittedTasks.set(`${task.kind}:${task.taskId}`, task));
 
         workflowRunRef.current = { ...workflowRunRef.current, cancelQueued: true };
+        // cancelQueued only covers workflow submissions, and this path cancels
+        // manual generations too, whose queued requests would otherwise submit
+        // while the cancels below are in flight.
+        const thawSubmissions = freezeNodeSubmissions(nodesRef.current.map((node) => node.id));
+        // finalizeLocalStop below also aborts, but only once the cancels return.
+        // Stopping every live request up front is what makes the stop immediate.
+        beginGenerationStop(new Set(nodesRef.current.map((node) => node.id)));
         const cancellations: Promise<unknown>[] = [
             stopHostedAgentRunForCanvas(projectId, options),
             ...[...submittedTasks.values()].map((task) => cancelPersistedCanvasTask(task.taskId, task.kind, { ...options, acknowledgeUpstream: options?.acknowledgeUpstream === true })),
@@ -6605,8 +6791,13 @@ function InfiniteCanvasPage() {
 
         const results = await Promise.allSettled(cancellations);
         const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
-        if (failure) throw failure.reason;
+        if (failure) {
+            thawSubmissions();
+            throw failure.reason;
+        }
         finalizeLocalStop();
+        // Safe now that finalizeLocalStop has aborted every live request.
+        thawSubmissions();
         if (checkpoint) {
             setWorkflowRun({ status: "running", completed: checkpoint.completedNodeIds.length, total: checkpoint.nodeIds.length, running: 0, queued: 0, canceling: true, startedAt: checkpoint.startedAt });
             if (lockedRun && lockedRun.id === checkpoint.runId) {
@@ -6630,7 +6821,7 @@ function InfiniteCanvasPage() {
             setWorkflowRun({ status: "canceled", completed: 0, total: 0, running: 0, queued: 0 });
         }
         await flushCanvasPersistence();
-    }, [beginWorkflowStop, finalizeCanceledGenerationNodes, projectId, releaseWorkflowBrowserLock, updateProject, workflowOwnerId]);
+    }, [beginGenerationStop, beginWorkflowStop, finalizeCanceledGenerationNodes, freezeNodeSubmissions, projectId, releaseWorkflowBrowserLock, updateProject, workflowOwnerId]);
 
     const canvasBusy =
         agentRunning ||
@@ -6792,6 +6983,7 @@ function InfiniteCanvasPage() {
 
                 const retryRequestOptions = {
                     signal: controller.signal,
+                    onBeforeCreate: guardNodeSubmission(node.id),
                     onCreated: (taskId: string) => persistCanvasTaskId(node.id, taskId, imageId),
                     // Explicit retry click: a fresh nonce intentionally creates a new task.
                     idempotencyKey: canvasManualTaskKey(projectId, node.id, createCanvasTaskNonce(), imageId ?? 0),
@@ -7018,6 +7210,7 @@ function InfiniteCanvasPage() {
             try {
                 const requestOptions = {
                     signal: controller.signal,
+                    onBeforeCreate: guardNodeSubmission(imageNode.id),
                     onCreated: (taskId: string) => persistStoryboardTaskId(imageNode.id, taskId, controller),
                     // Explicit retries intentionally mint a new nonce. Reusing
                     // the original storyboard key would return the failed task.
@@ -7484,6 +7677,7 @@ function InfiniteCanvasPage() {
                 >
                     <CanvasToolbar
                         selectedCount={selectedNodeIds.size}
+                        selectedConnectionCount={selectedNodeConnectionCount}
                         canvasTool={canvasTool}
                         canUndo={historyState.canUndo}
                         canRedo={historyState.canRedo}
@@ -7495,6 +7689,7 @@ function InfiniteCanvasPage() {
                         onAddConfig={() => createNode(CanvasNodeType.Config)}
                         onAddGroup={() => createNode(CanvasNodeType.Group)}
                         onAddExtensionNode={(type) => createNode(type)}
+                        onDisconnect={() => disconnectNodes(new Set(selectedNodeIds))}
                         onDelete={() => deleteNodes(new Set(selectedNodeIds))}
                         onUndo={undoCanvas}
                         onRedo={redoCanvas}
@@ -7727,7 +7922,7 @@ function InfiniteCanvasPage() {
                                 {t("canvas.projectPage.continue")}
                             </button>
                             <button type="button" className="sc-cd-btn is-danger" disabled={storyboardCancelSubmitting} onClick={() => void confirmStoryboardCancellation()}>
-                                {t("canvas.projectPage.stop")}
+                                {storyboardCancelSubmitting ? t("canvas.projectPage.stopping") : t("canvas.projectPage.stop")}
                             </button>
                         </>
                     }
@@ -7938,7 +8133,7 @@ function InfiniteCanvasPage() {
                             </>
                         ) : (
                             <button type="button" className="sc-cd-btn is-solid" disabled={stopSubmitting} onClick={() => void stopRunningGeneration()}>
-                                {t("canvas.projectPage.stop")}
+                                {stopSubmitting ? t("canvas.projectPage.stopping") : t("canvas.projectPage.stop")}
                             </button>
                         )
                     }

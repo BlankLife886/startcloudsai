@@ -9,6 +9,8 @@ import { apiDelete, apiGet, apiPatch, apiPost, apiRequest, apiUploadRequest, bui
 import { listNotifications } from './meApi.js'
 import { scheduleWalletRefresh } from './walletSync.js'
 import { trackReferenceUpload } from './behaviorTracker.js'
+import { composeSkillPrompt } from '../../features/skills/skillComposition.js'
+import { resolveSkillsForTaskType } from '../../features/skills/skillRuntime.js'
 
 export const TASK_TYPES = [
   't2i',
@@ -160,9 +162,18 @@ export async function createTask({
   expectedUnitPriceCents = null,
   isCurrentSession = null,
 } = {}) {
+  // 装载的 Skill 在这里统一生效：全部 9 个生图页面都经过本函数提交，
+  // 所以拼接只需要这一个接入点。Skill 是增强项，读取失败一律按"没有装载"处理，
+  // 绝不能让它挡住生成。
+  let skills = []
+  try {
+    skills = await resolveSkillsForTaskType(type)
+  } catch {
+    skills = []
+  }
   const body = {
     type,
-    prompt: String(prompt || ''),
+    prompt: composeSkillPrompt(prompt, skills),
     params: params && typeof params === 'object' ? params : {},
     inputKeys: (Array.isArray(inputKeys) ? inputKeys : []).filter(Boolean),
     count: Math.max(1, Math.min(Number(count) || 1, 4)),

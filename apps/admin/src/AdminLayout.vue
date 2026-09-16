@@ -12,6 +12,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import {
   Bell,
   Box,
+  Brush,
   Calendar,
   ChatDotRound,
   CollectionTag,
@@ -102,6 +103,7 @@ const NAV_GROUPS = [
       { path: "/home-banners", label: "首页轮播", icon: Picture },
       ...(REFERRALS_ENABLED ? [{ path: "/referrals", label: "邀请返利", icon: User }] : []),
       { path: "/prompt-library", label: "提示词库", icon: CollectionTag },
+      { path: "/image-skills", label: "Skill 词库", icon: Brush },
       { path: "/ecommerce", label: "电商素材", icon: ShoppingBag },
       { path: "/community", label: "社区管理", icon: ChatDotRound },
       { path: "/gallery", label: "投稿审核", icon: Picture },
@@ -530,6 +532,7 @@ async function submitPassword() {
           'content--workspace': [
             '/',
             '/prompt-library',
+            '/image-skills',
             '/ecommerce',
             '/community',
             '/gallery',

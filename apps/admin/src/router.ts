@@ -69,6 +69,9 @@ const canvasTemplatesView = memoizeRouteLoader(
 const promptLibraryView = memoizeRouteLoader(
   () => import("@/views/PromptLibraryView.vue"),
 );
+const imageSkillsView = memoizeRouteLoader(
+  () => import("@/views/ImageSkillsView.vue"),
+);
 const ecommerceView = memoizeRouteLoader(
   () => import("@/views/EcommerceCatalogView.vue"),
 );
@@ -110,6 +113,7 @@ const routeLoaders = new Map<string, RouteLoader>([
   ["/model-config", modelConfigView],
   ["/canvas-templates", canvasTemplatesView],
   ["/prompt-library", promptLibraryView],
+  ["/image-skills", imageSkillsView],
   ["/ecommerce", ecommerceView],
   ["/community", communityView],
   ["/gallery", galleryView],
@@ -234,6 +238,11 @@ const router = createRouter({
           path: "prompt-library",
           component: promptLibraryView,
           meta: { title: "提示词库" },
+        },
+        {
+          path: "image-skills",
+          component: imageSkillsView,
+          meta: { title: "Skill 词库" },
         },
         {
           path: "ecommerce",

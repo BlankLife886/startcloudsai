@@ -30,6 +30,17 @@ func UpsertEmailLoginCodeIfStale(ctx context.Context, q Q, email, purpose, codeH
 	return tag.RowsAffected() > 0, nil
 }
 
+// RecentEmailLoginCodeExists 只读判断该邮箱是否已有仍处于重发间隔内的验证码。
+// 它让重复点击在扣减发码额度、覆盖已发验证码之前就被拦下；写入时的权威判断
+// 仍由 UpsertEmailLoginCodeIfStale 在同一条语句里原子完成。
+func RecentEmailLoginCodeExists(ctx context.Context, q Q, email string, minInterval time.Duration) (bool, error) {
+	var exists bool
+	err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM email_login_codes
+		WHERE email=$1 AND created_at >= now() - ($2 * interval '1 second'))`,
+		email, int64(minInterval.Seconds())).Scan(&exists)
+	return exists, err
+}
+
 func GetEmailLoginCodeForUpdate(ctx context.Context, q Q, email string) (string, string, time.Time, int, time.Time, error) {
 	var purpose, hash string
 	var expires, created time.Time

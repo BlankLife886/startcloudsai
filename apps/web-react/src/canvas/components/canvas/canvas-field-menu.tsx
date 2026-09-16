@@ -22,10 +22,12 @@ type CanvasFieldMenuProps<T extends string> = {
     compact?: boolean;
     triggerClassName?: string;
     menuMinWidth?: number;
+    /** Accessible name for triggers that show only the current value, with no visible label. */
+    title?: string;
     children: (open: boolean) => ReactNode;
 };
 
-export function CanvasFieldMenu<T extends string>({ value, options, onChange, theme, surface, placement = "bottomLeft", emptyLabel, compact = false, triggerClassName, menuMinWidth, children }: CanvasFieldMenuProps<T>) {
+export function CanvasFieldMenu<T extends string>({ value, options, onChange, theme, surface, placement = "bottomLeft", emptyLabel, compact = false, triggerClassName, menuMinWidth, title, children }: CanvasFieldMenuProps<T>) {
     const { buttonRef, panelRef, open, buttonRect, updateOpen } = useAnchorPopover();
     const width = Math.max(menuMinWidth ?? (compact ? 120 : 168), Math.round(buttonRect?.width || 200));
 
@@ -38,6 +40,7 @@ export function CanvasFieldMenu<T extends string>({ value, options, onChange, th
                 fullWidth
                 className={`flex w-full min-w-0 items-center text-left ${compact ? "h-7 rounded-lg px-2 text-[11px]" : "h-10 rounded-xl px-3 text-[13px]"} ${triggerClassName || ""}`.trim()}
                 style={{ background: surface, color: theme.node.text }}
+                title={title}
             >
                 {children(open)}
             </AnchorPopoverTrigger>

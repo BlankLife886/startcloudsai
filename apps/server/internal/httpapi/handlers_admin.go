@@ -298,6 +298,8 @@ func (s *Server) adminListUsers(c *gin.Context, _ *store.User) {
 
 type adminUserPatchIn struct {
 	Status Opt[string] `json:"status"`
+	// Manual concurrency added on top of the base setting and the plan bonus.
+	ConcurrencyBonus Opt[int] `json:"concurrencyBonus"`
 }
 
 func (s *Server) adminPatchUser(c *gin.Context, _ *store.User) {
@@ -313,6 +315,14 @@ func (s *Server) adminPatchUser(c *gin.Context, _ *store.User) {
 	}
 	if body.Status.Valid && body.Status.Value != "active" && body.Status.Value != "banned" {
 		fail(c, apperr.E("validation_error", "status: 无效的用户状态", 422))
+		return
+	}
+	if body.ConcurrencyBonus.Set && !body.ConcurrencyBonus.Valid {
+		fail(c, apperr.E("validation_error", "concurrencyBonus: 不能为空", 422))
+		return
+	}
+	if body.ConcurrencyBonus.Valid && (body.ConcurrencyBonus.Value < 0 || body.ConcurrencyBonus.Value > store.MaxUserConcurrencyBonus) {
+		fail(c, apperr.E("validation_error", fmt.Sprintf("concurrencyBonus: 需在 0 ~ %d 之间", store.MaxUserConcurrencyBonus), 422))
 		return
 	}
 	ctx := c.Request.Context()
@@ -332,6 +342,12 @@ func (s *Server) adminPatchUser(c *gin.Context, _ *store.User) {
 	if err := store.UpdateUserStatus(ctx, s.St.Pool, userID, body.Status.Ptr()); err != nil {
 		fail(c, err)
 		return
+	}
+	if body.ConcurrencyBonus.Valid {
+		if err := store.SetUserConcurrencyBonus(ctx, s.St.Pool, userID, body.ConcurrencyBonus.Value); err != nil {
+			fail(c, err)
+			return
+		}
 	}
 	if body.Status.Valid {
 		user.Status = body.Status.Value

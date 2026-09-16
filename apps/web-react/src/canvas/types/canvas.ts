@@ -181,14 +181,16 @@ export type CanvasNodeMetadata = {
     storyboardInputShotIds?: Record<string, string[]>;
     /** Explicit user-selected shot scale by stable shot id. */
     storyboardShotTypeOverrides?: Record<string, string>;
-    /** Multi-node storyboard workflow step (detect → analyze → generate). */
-    storyboardPipelineStep?: "detect" | "analyze" | "generate";
-    /** Shared id linking all nodes in one storyboard pipeline. */
-    storyboardPipelineId?: string;
     storyboardShotCount?: number;
     /** Live generate progress mirrored onto the config host for the inline panel. */
     storyboardProgressDone?: number;
     storyboardProgressTotal?: number;
+    /** Signature of the inputs that produced this image, and the image they produced, so a later run can skip regenerating it. */
+    storyboardShotSignature?: string;
+    storyboardShotOutput?: string;
+    /** Inputs this node last executed with, and the result it produced, so a later run can tell whether it still has to run. */
+    workflowInputSignature?: string;
+    workflowOutputSignature?: string;
     /** Durable first-frame reference used to keep later shots visually consistent after refresh. */
     storyboardAnchorReference?: string;
     storyboardAnchorSceneId?: string;

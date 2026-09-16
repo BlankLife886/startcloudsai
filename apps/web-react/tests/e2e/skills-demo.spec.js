@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { fulfillJson } from "./helpers/authMocks.js";
 import { installVisualBaseline } from "./helpers/visualBaseline.js";
 
 const otherPageState = {
@@ -12,15 +13,36 @@ const otherPageState = {
   walleven_ai_wallpaper_studio_draft_v1: JSON.stringify({
     prompt: "保留原有文生图草稿",
   }),
-  walleven_guest_local_walleven_ai_wallpaper_studio_draft_v1: JSON.stringify({
-    prompt: "保留当前访客的文生图草稿",
-  }),
-  "starclouds:skill-favorites:guest": JSON.stringify([
-    "existing-official-skill",
-  ]),
 };
 
-async function openIsolatedDemo(page) {
+const library = {
+  items: [
+    {
+      id: "official-soft-light",
+      name: "柔光人像",
+      description: "柔和顶光，背景干净",
+      instruction: "使用柔和顶光，背景纯净，主体居中。",
+      taskTypes: [],
+      tags: ["人像"],
+      official: true,
+      active: true,
+    },
+    {
+      id: "mine-product",
+      name: "商品主图",
+      description: "突出材质与分区",
+      instruction: "突出材质纹理，主体居中，留出标题区。",
+      taskTypes: ["t2i", "ecommerce_design"],
+      tags: [],
+      official: false,
+      active: true,
+    },
+  ],
+  bindings: { global: ["official-soft-light"] },
+  maxPerScope: 5,
+};
+
+async function openSkillsPage(page, { user = null, skills = library } = {}) {
   const businessWrites = [];
   await installVisualBaseline(page);
   await page.addInitScript((state) => {
@@ -31,8 +53,12 @@ async function openIsolatedDemo(page) {
       state["starclouds:pending-prompt"],
     );
   }, otherPageState);
-  // The shared baseline mocks every /api/** request. Observe writes separately
-  // so an accidental task, checkout, or assistant handoff cannot pass silently.
+  await page.route("**/api/v1/auth/session", (route) =>
+    fulfillJson(route, { user }),
+  );
+  await page.route("**/api/v1/me/image-skills**", (route) =>
+    fulfillJson(route, skills),
+  );
   page.on("request", (request) => {
     const path = new URL(request.url()).pathname;
     if (
@@ -45,7 +71,6 @@ async function openIsolatedDemo(page) {
     businessWrites.push(`${request.method()} ${path}`);
   });
   await page.goto("/skills", { waitUntil: "domcontentloaded" });
-  await expect(page.getByTestId("skills-demo")).toBeVisible();
   return businessWrites;
 }
 
@@ -67,129 +92,53 @@ async function expectOtherPagesUntouched(page, businessWrites) {
   expect(businessWrites).toEqual([]);
 }
 
-test("Skill demo keeps a reusable method while changing examples and trying a new request", async ({
+test("guests can open Skill 中心 without touching other drafts", async ({
   page,
 }) => {
-  const businessWrites = await openIsolatedDemo(page);
-  await expect(page.locator(".skills-demo__card")).toHaveCount(6);
-  const method = page.getByRole("region", { name: "使用方法", exact: true });
-  await expect(method).toBeVisible();
-  await expect(method.getByRole("listitem")).toHaveCount(3);
-  const originalMethod = await method.innerText();
-  const examples = page.getByRole("button", { name: /^示例：/ });
-  await expect(examples).toHaveCount(2);
-  const exampleResult = page.getByRole("region", {
-    name: "示例结果",
-    exact: true,
-  });
-  await examples.first().click();
-  await expect(exampleResult).toBeVisible();
-  const firstExample = await exampleResult.innerText();
-  expect(firstExample.length).toBeGreaterThan(0);
-  await examples.nth(1).click();
-  await expect(exampleResult).not.toHaveText(firstExample, { useInnerText: true });
-  await expect(method).toHaveText(originalMethod, { useInnerText: true });
-
-  await page
-    .getByRole("button", { name: "试用商品主图策划", exact: true })
-    .click();
-  const request = page.getByRole("textbox", {
-    name: "这次想完成什么",
-    exact: true,
-  });
-  await page.getByRole("button", { name: "使用示例", exact: true }).click();
-  expect((await request.inputValue()).length).toBeGreaterThan(0);
-  const customRequest =
-    "为一款燕麦色旅行收纳包策划主图，突出分区收纳和轻便。演示隔离验证。";
-  await request.fill(customRequest);
-  await page.getByRole("button", { name: "生成演示结果", exact: true }).click();
-  const result = page.getByRole("region", { name: "演示结果", exact: true });
-  await expect(result).toBeVisible();
-  await expect(result).toContainText("燕麦色旅行收纳包");
-  await expect(request).toBeVisible();
-  await expect(request).toHaveValue(customRequest);
-  await page.getByRole("button", { name: "方法与示例", exact: true }).click();
-  await expect(method).toHaveText(originalMethod, { useInnerText: true });
+  const businessWrites = await openSkillsPage(page);
+  await expect(page.getByTestId("skills-page")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Skill 中心" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "登录后使用" })).toBeVisible();
   await expectOtherPagesUntouched(page, businessWrites);
 });
 
-test("Skill demo search and added skills stay within the current demo session", async ({
+test("signed-in users browse the library and the binding board", async ({
   page,
 }) => {
-  const businessWrites = await openIsolatedDemo(page);
-  const search = page.getByRole("textbox", { name: "搜索 Skill" });
-  await search.fill("商品主图策划");
-  await expect(page.locator(".skills-demo__card")).toHaveCount(1);
-  await page
-    .getByRole("button", { name: "添加商品主图策划", exact: true })
-    .click();
-  await search.clear();
-  const added = page.getByRole("button", { name: "已添加", exact: true });
-  await added.click();
-  await expect(added).toHaveAttribute("aria-pressed", "true");
-  await expect(page.locator(".skills-demo__card")).toHaveCount(1);
-  await expect(
-    page.getByRole("button", { name: "移除商品主图策划", exact: true }),
-  ).toBeVisible();
-  await expectOtherPagesUntouched(page, businessWrites);
+  const businessWrites = await openSkillsPage(page, {
+    user: { id: "skill-user", username: "创作者", email: "skill@example.com" },
+  });
+  await expect(page.getByTestId("skills-page")).toBeVisible();
+  await expect(page.getByRole("button", { name: "查看 柔光人像" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "柔光人像" })).toBeVisible();
+  await expect(page.getByText("已对所有页面生效", { exact: false })).toBeVisible();
 
-  await page.reload({ waitUntil: "domcontentloaded" });
-  await expect(page.getByTestId("skills-demo")).toBeVisible();
-  await page.getByRole("button", { name: "已添加", exact: true }).click();
-  await expect(page.locator(".skills-demo__card")).toHaveCount(0);
+  await page.getByRole("tab", { name: /装载配置/ }).click();
+  await expect(page.getByRole("heading", { name: "全局装载" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "文生图" })).toBeVisible();
+  await expect(page.getByText("跟随全局").first()).toBeVisible();
   await expectOtherPagesUntouched(page, businessWrites);
 });
 
-test("Skill demo fits a narrow screen and keeps results separate when switching skills", async ({
+test("Skill 中心 fits a narrow screen and keeps the list and detail stacked", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  const businessWrites = await openIsolatedDemo(page);
+  const businessWrites = await openSkillsPage(page, {
+    user: { id: "skill-user", username: "创作者" },
+  });
   await expect
     .poll(() =>
       page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
     )
     .toBe(true);
-  await expect(
-    page.getByRole("region", { name: "使用方法", exact: true }),
-  ).not.toBeVisible();
-  await page
-    .getByRole("button", { name: "查看商品主图策划", exact: true })
-    .click();
-  await expect(
-    page.getByRole("region", { name: "使用方法", exact: true }),
-  ).toBeVisible();
-  await page
-    .getByRole("button", { name: "试用商品主图策划", exact: true })
-    .click();
-  await page
-    .getByRole("textbox", { name: "这次想完成什么", exact: true })
-    .fill("为薄荷绿随行杯设计主图，仅用于手机隔离演示。");
-  await page.getByRole("button", { name: "生成演示结果", exact: true }).click();
-  await expect(
-    page.getByRole("region", { name: "演示结果", exact: true }),
-  ).toContainText("薄荷绿随行杯");
-  await page.getByRole("button", { name: "返回技能库", exact: true }).click();
-  await page
-    .getByRole("button", { name: "查看生图提示词优化", exact: true })
-    .click();
-  await expect(
-    page.getByRole("region", { name: "演示结果", exact: true }),
-  ).toHaveCount(0);
-  await page
-    .getByRole("button", { name: "试用生图提示词优化", exact: true })
-    .click();
-  await expect(
-    page.getByRole("textbox", { name: "这次想完成什么", exact: true }),
-  ).toHaveValue("");
+  await page.getByRole("button", { name: "查看 商品主图" }).click();
+  await expect(page.getByRole("heading", { name: "商品主图" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "编辑" })).toBeVisible();
   await expect
     .poll(() =>
       page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
     )
     .toBe(true);
-  await page.getByRole("button", { name: "返回技能库", exact: true }).click();
-  await expect(
-    page.getByRole("button", { name: "查看商品主图策划", exact: true }),
-  ).toBeVisible();
   await expectOtherPagesUntouched(page, businessWrites);
 });

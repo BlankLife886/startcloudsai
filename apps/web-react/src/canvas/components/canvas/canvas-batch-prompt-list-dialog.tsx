@@ -305,7 +305,7 @@ export function CanvasBatchPromptListDialog({
               ref={singleRef}
               className="canvas-storyboard-prompt-single-input thin-scrollbar"
               value={singleScript}
-              placeholder={t("canvas.storyboard.configPromptPlaceholder")}
+              placeholder={t(batchMode === "refs" ? "canvas.storyboard.configRefsPlaceholder" : "canvas.storyboard.configVariantsPlaceholder")}
               aria-label={t("canvas.storyboard.configPromptAria")}
               onChange={(event) => setSingleScript(event.target.value)}
             />

@@ -127,6 +127,8 @@ export function AppShell() {
     mainClasses.push("main--orders-console");
   if (location.pathname === "/account")
     mainClasses.push("main--settings-console");
+  if (location.pathname === "/skills")
+    mainClasses.push("main--skills");
   if (location.pathname === "/developer-api" || location.pathname === "/developer-api/demo")
     mainClasses.push("main--developer-console");
   if (location.pathname === "/updates")

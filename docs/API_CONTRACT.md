@@ -61,7 +61,7 @@
 | DELETE | `/api/v1/auth/session`       | 可匿名 | 删除当前 session 并清 Cookie                                                                       |
 | GET  | `/api/v1/auth/session`           | 可匿名 | 返回 `{user}`；未登录时 `user:null`                                                                |
 
-用户状态为 banned 或 deleted 时不能登录或调用受保护能力。邮箱验证码只保存规范化 email 与 code 的 HMAC，不保存明文。首次自动建号受 `registrationEnabled` 控制，已有用户登录不受该开关影响。验证码 3 分钟有效、最多错误 5 次且成功后一次性消费。开发环境未配置 SMTP 时 `/auth/email-verification-codes` 会额外返回 `developmentCode`，生产环境不会返回。
+用户状态为 banned 或 deleted 时不能登录或调用受保护能力。邮箱验证码只保存规范化 email 与 code 的 HMAC，不保存明文。首次自动建号受 `registrationEnabled` 控制，已有用户登录不受该开关影响。验证码 10 分钟有效、最多错误 5 次且成功后一次性消费。验证码超时返回 `code_expired`，不计入防爆破失败次数；防爆破按邮箱维度计数，不按 IP，避免同一出口 IP 的用户互相牵连。开发环境未配置 SMTP 时 `/auth/email-verification-codes` 会额外返回 `developmentCode`，生产环境不会返回。
 
 ## 管理员认证
 
@@ -99,6 +99,14 @@
 | GET    | `/api/v1/me/growth`                         | 好友拼团、会员、失败补偿、用量里程碑和建议采纳；同时返回当前拼团及奖励进度                                                                                                                                          |
 | POST   | `/api/v1/me/growth/groups`                  | 创建当期好友拼团；同一用户同一活动批次只能参加一个有效拼团                                                                                                                                                        |
 | POST   | `/api/v1/me/growth/groups/join`             | `{code}` 加入拼团；满员后同一事务向全部成员各发放一次积分                                                                                                                                                         |
+| GET    | `/api/v1/me/image-skills`                   | 生图 Skill 候选（官方词库 + 自建，官方在前）及当前装载状态；支持 `taskType`、`search` 筛选，附 `taskTypes`、`maxPerScope` |
+| POST   | `/api/v1/me/image-skills`                   | 自建 Skill：`{name,instruction,description?,taskTypes?,tags?,active?}`；`taskTypes` 为空表示全部生图页面可用，每人最多 100 个 |
+| PATCH  | `/api/v1/me/image-skills/{id}`              | 修改自建 Skill；官方词条对用户只读，命中官方或他人词条返回 404                                                                                                                                                    |
+| DELETE | `/api/v1/me/image-skills/{id}`              | 删除自建 Skill；装载记录随之清理                                                                                                                                                                                  |
+| GET    | `/api/v1/me/image-skills/resolved`          | 给定 `taskType` 时该页面实际生效的 Skill（含 `instruction`），前端据此拼提示词；页面绑定优先于全局 |
+| PUT    | `/api/v1/me/skill-bindings/{scope}`         | 整体替换一个装载位，`{skillIds:[]}`；`scope` 为 `global` 或某个生图页面，传空表示清空，单位最多 5 个                                                                                                              |
+
+生图 Skill 的装载位 `scope` 取 `global` 或 `t2i|coloring|ui_design|ecommerce_design|model_sheet|game_art`，即用户自己填写提示词的页面。`puzzle`（本地工具，不接受云端任务）、`background_remove` 与 `media_tool`（提示词由系统生成的固定文案）不支持装载 Skill。Skill 仅拼接 `instruction` 文本，不预设生图参数。
 | GET    | `/api/v1/me/notifications`            | 个人通知与全站通知合并后的 cursor 分页；任务与订单通知可包含 `sourceType`、`sourceId`，用于用户端精确深链                                                                                                         |
 | PATCH  | `/api/v1/me/notifications`       | `{ids?:[]}`；省略 ids 表示全部已读；成功返回 204                                                                                                                                                                 |
 | GET    | `/api/v1/me/gallery/submissions`      | 我的投稿 cursor 分页                                                                                                                                                                                             |
@@ -290,7 +298,11 @@ task 主要字段：
 | GET   | `/api/v1/admin/system/metrics`                | API、Go Runtime、数据库池、Asynq 队列和 Worker 实时快照   |
 | GET   | `/api/v1/admin/users`                    | `search`、`status` 筛选的 cursor 列表；每项附带 `usage` 使用摘要 |
 | GET   | `/api/v1/admin/users/{id}`               | 用户完整资料、钱包拆分、当前套餐、体验申请、签到/拼团、任务/投稿/素材/订单/反馈计数及最近会话摘要 |
-| PATCH | `/api/v1/admin/users/{id}`               | 更新 `{status?,role?}`                                    |
+| PATCH | `/api/v1/admin/users/{id}`               | 更新 `{status?,role?,concurrencyBonus?}`；`concurrencyBonus` 为 0~1000 的手动并发追加，叠加在基础并发与订阅加成之上 |
+| GET    | `/api/v1/admin/image-skills`             | 官方 Skill 词库列表；支持 `taskType`、`category`、`search`、`status=enabled` 筛选 |
+| POST   | `/api/v1/admin/image-skills`             | 录入官方 Skill：`{name,instruction,description?,taskTypes?,category?,tags?,coverKey?,sort?,active?}` |
+| PATCH  | `/api/v1/admin/image-skills/{id}`        | 修改官方 Skill；只作用于官方词条，命中用户自建词条返回 404 |
+| DELETE | `/api/v1/admin/image-skills/{id}`        | 删除官方 Skill；用户的装载记录随外键级联清理 |
 | GET   | `/api/v1/admin/users/{id}/wallet/entries` | 指定用户账本                                              |
 | POST  | `/api/v1/admin/users/{id}/wallet/entries` | `{deltaCents,reason}`，创建 admin_adjust 账本条目         |
 | GET   | `/api/v1/admin/wallet/entries`                   | 全站账本；筛选 `kind`、`sourceType`、`user`               |

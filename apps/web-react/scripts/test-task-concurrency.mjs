@@ -184,7 +184,14 @@ test('successful snapshot waits for output fields to become visible', async () =
 
 test('lost create response retries with the same idempotency key', async () => {
   const bodies = []
-  globalThis.fetch = async (_url, options = {}) => {
+  globalThis.fetch = async (url, options = {}) => {
+    // 提交前会先读一次装载的 Skill；那条流量与本用例无关，不计入重试计数。
+    if (String(url).includes('/image-skills/')) {
+      return new Response(JSON.stringify({ success: true, data: { items: [] } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
     bodies.push(JSON.parse(String(options.body || '{}')))
     if (bodies.length === 1) throw new TypeError('connection reset after server commit')
     return new Response(

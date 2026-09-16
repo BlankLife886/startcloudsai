@@ -110,8 +110,12 @@ func (l *RedisLimiter) Check(email, ip string) (time.Duration, bool) {
 		cmds = append(cmds, pipe.PTTL(ctx, key))
 	}
 	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
-		log.Printf("redis limiter check failed: %v", err)
-		return time.Minute, false
+		// Redis 不可用时放行而不是锁门。Check 只用来读取"是否已被锁定"，一旦
+		// fail-closed，一次几秒的 Redis 抖动就会让全站所有人登录都收到 429。
+		// 猜测验证码的硬约束另有来源：每封验证码在 Postgres 事务里最多允许 5 次
+		// 尝试，即便这层完全失效也无法被爆破。
+		log.Printf("redis limiter check failed, allowing attempt: %v", err)
+		return 0, true
 	}
 	var longest time.Duration
 	for _, cmd := range cmds {

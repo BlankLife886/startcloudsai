@@ -19,8 +19,11 @@ const DefaultGlobalChatConcurrency = 32
 const sharedExecutionTaskSQL = `COALESCE(lease_owner,'') <> '` + UIDesignAssetHistoryLeaseOwner + `'`
 
 type UserConcurrency struct {
-	Base         int   `json:"base"`
+	Base int `json:"base"`
+	// Bonus is the total added to Base: PlanBonus + ManualBonus.
 	Bonus        int   `json:"bonus"`
+	PlanBonus    int   `json:"planBonus"`
+	ManualBonus  int   `json:"manualBonus"`
 	Limit        int   `json:"limit"`
 	Running      int64 `json:"running"`
 	ImageRunning int64 `json:"imageRunning"`
@@ -28,6 +31,10 @@ type UserConcurrency struct {
 	ChatRunning  int64 `json:"chatRunning"`
 	ChatLimit    int   `json:"chatLimit"`
 }
+
+// MaxUserConcurrencyBonus caps the manual grant, matching the subscription
+// contract bonus ceiling and the users.concurrency_bonus CHECK constraint.
+const MaxUserConcurrencyBonus = 1000
 
 type ExecutionUsage struct {
 	ImageRunning int64
@@ -223,14 +230,40 @@ func GetUserConcurrency(ctx context.Context, q Q, userID uuid.UUID) (UserConcurr
 		return result, err
 	}
 	if sub != nil && sub.Contract != nil {
-		result.Bonus = sub.Contract.ExtraConcurrency()
-		result.Limit += result.Bonus
+		result.PlanBonus = sub.Contract.ExtraConcurrency()
+		result.Bonus = result.PlanBonus
+		result.Limit += result.PlanBonus
 	}
 	result.ImageLimit = result.Limit
+	var manualBonus int
 	err = q.QueryRow(ctx, `SELECT
  (SELECT COALESCE(sum(GREATEST(work_units,count,1)),0) FROM tasks task WHERE user_id=$1 AND `+taskExecutionActiveSQL("task")+`)
  +(SELECT COALESCE(sum(`+assistantImageUnitsSQL("run")+`),0) FROM assistant_runs run WHERE user_id=$1 AND `+assistantExecutionActiveSQL("run")+` AND `+assistantImageSQL("run")+`),
- (SELECT count(*) FROM assistant_runs run WHERE user_id=$1 AND status='running' AND NOT `+assistantImageSQL("run")+`)`, userID).Scan(&result.ImageRunning, &result.ChatRunning)
+ (SELECT count(*) FROM assistant_runs run WHERE user_id=$1 AND status='running' AND NOT `+assistantImageSQL("run")+`),
+ COALESCE((SELECT concurrency_bonus FROM users WHERE id=$1),0)`, userID).Scan(&result.ImageRunning, &result.ChatRunning, &manualBonus)
+	if err != nil {
+		// Leave the limit at base+plan rather than widening it from a partial scan;
+		// a zero limit would read as "unlimited" in checkExecutionBatchLimits.
+		return result, err
+	}
+	result.ManualBonus = manualBonus
+	result.Bonus += manualBonus
+	result.Limit += manualBonus
+	result.ImageLimit = result.Limit
 	result.Running = result.ImageRunning
-	return result, err
+	return result, nil
+}
+
+func GetUserConcurrencyBonus(ctx context.Context, q Q, userID uuid.UUID) (int, error) {
+	var bonus int
+	err := q.QueryRow(ctx, `SELECT COALESCE((SELECT concurrency_bonus FROM users WHERE id=$1),0)`, userID).Scan(&bonus)
+	return bonus, err
+}
+
+func SetUserConcurrencyBonus(ctx context.Context, q Q, userID uuid.UUID, bonus int) error {
+	if bonus < 0 || bonus > MaxUserConcurrencyBonus {
+		return fmt.Errorf("concurrency bonus out of range")
+	}
+	_, err := q.Exec(ctx, `UPDATE users SET concurrency_bonus=$2 WHERE id=$1`, userID, bonus)
+	return err
 }

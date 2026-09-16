@@ -382,6 +382,36 @@ html.color-scheme-dark .main-content.main--settings-console {
   min-width: 0;
   min-height: 0;
 }
+.main-content.main--skills {
+  padding-top: 0;
+  padding-bottom: 0;
+  overflow: hidden;
+  height: 100svh;
+  max-height: 100svh;
+  display: flex;
+  flex-direction: column;
+  background: #f6f5f9;
+}
+html.color-scheme-dark .main-content.main--skills {
+  background: #110e18;
+}
+.main-content.main--skills > * {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+@media (max-width: 960px) {
+  .main-content.main--skills {
+    display: block;
+    height: auto;
+    max-height: none;
+    overflow: visible;
+  }
+  .main-content.main--skills > .skills-page {
+    height: auto;
+    min-height: calc(100svh - var(--app-header-offset, 82px));
+  }
+}
 .main-content.main--studio-console {
   padding-top: 0;
   padding-bottom: 0;

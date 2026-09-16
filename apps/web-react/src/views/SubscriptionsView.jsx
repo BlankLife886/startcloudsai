@@ -440,7 +440,7 @@ export function SubscriptionsView() {
                 <dl>
                   <div><dt>价格保护</dt><dd>{current.contract ? current.contract.lockModelPrices ? current.contract.allowTopupPriceLock ? '订阅及合格额度包' : '仅订阅积分' : '按实时价格计费' : '历史订阅按实时价格计费'}</dd></div>
                   {current.contract && <div><dt>额外并发</dt><dd>+{current.contract.concurrencyBonus ?? 0} 张</dd></div>}
-                  {!stopped && data.concurrency && <div><dt>并发上限</dt><dd>{data.concurrency.imageLimit ?? data.concurrency.limit} 张<small>基础 {data.concurrency.base} + 订阅 {data.concurrency.bonus}，所有生图场景共用</small></dd></div>}
+                  {!stopped && data.concurrency && <div><dt>并发上限</dt><dd>{data.concurrency.imageLimit ?? data.concurrency.limit} 张<small>基础 {data.concurrency.base} + 订阅 {data.concurrency.planBonus ?? data.concurrency.bonus}{data.concurrency.manualBonus > 0 ? ` + 专属追加 ${data.concurrency.manualBonus}` : ''}，所有生图场景共用</small></dd></div>}
                   {!stopped && data.concurrency?.chatLimit != null && <div><dt>对话并发上限</dt><dd>{data.concurrency.chatLimit} 次<small>与图片额度独立</small></dd></div>}
                   <div><dt>使用渠道</dt><dd>{current.policy?.channels?.map(value => value === 'api' ? 'API' : value === 'web' ? '网站' : value).join('、') || '按原套餐权益'}</dd></div>
                   <div><dt>适用场景</dt><dd>{current.policy?.featureKeys?.length ? current.policy.featureKeys.map(key => scenes[key] || key).join('、') : '全部场景'}</dd></div>

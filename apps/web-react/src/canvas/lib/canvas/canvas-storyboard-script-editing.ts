@@ -179,7 +179,7 @@ export function clearDisconnectedStoryboardInputs(
 ) {
     const nodesById = new Map(nodes.map((node) => [node.id, node]));
     return nodes.map((node) => {
-        if (!node.metadata?.storyboardConfig && node.metadata?.storyboardPipelineStep !== "detect") return node;
+        if (!node.metadata?.storyboardConfig) return node;
         const before = directTextInputIds(node.id, nodesById, previousConnections);
         if (!before.size) return node;
         const after = directTextInputIds(node.id, nodesById, nextConnections);

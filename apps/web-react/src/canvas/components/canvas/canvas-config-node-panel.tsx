@@ -18,7 +18,7 @@ import {
   X,
 } from "lucide-react";
 import { SoftMark } from "@react/components/common/SoftMark.jsx";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import { ImageSettingsPanel, imageQualityLabel, imageSizeLabel } from "@/components/image-settings-panel";
@@ -185,16 +185,6 @@ export function CanvasConfigNodePanel({
       onGenerate={onGenerate}
       onStopGeneration={onStopGeneration}
     />
-  ) : node.metadata?.storyboardPipelineStep ? (
-    <CanvasStoryboardPipelineStepPanel
-      node={node}
-      isRunning={isRunning}
-      inputSummary={inputSummary}
-      inputs={inputs}
-      onConfigChange={onConfigChange}
-      onGenerate={onGenerate}
-      onStopGeneration={onStopGeneration}
-    />
   ) : isCanvasLocalImageOperation(node.metadata?.localImageOperation) ? (
     <CanvasLocalImageOperationPanel
       node={node}
@@ -240,258 +230,6 @@ export function CanvasConfigNodePanel({
         outputNode={outputNode}
         mode={node.metadata.generationMode || "image"}
       />
-    </div>
-  );
-}
-
-/** Inline storyboard controls. Kept deliberately self-contained so regular generation nodes retain their compact panel. */
-function CanvasStoryboardPipelineStepPanel({
-  node,
-  isRunning,
-  inputSummary,
-  inputs,
-  onConfigChange,
-  onGenerate,
-  onStopGeneration,
-}: Pick<
-  CanvasConfigNodePanelProps,
-  | "node"
-  | "isRunning"
-  | "inputSummary"
-  | "inputs"
-  | "onConfigChange"
-  | "onGenerate"
-  | "onStopGeneration"
->) {
-  const { t } = useTranslation();
-  const theme = canvasThemes[useThemeStore((state) => state.theme)];
-  const step = node.metadata?.storyboardPipelineStep || "detect";
-  const inputSelection = useMemo(
-    () => resolveStoryboardInputSelection(inputs, node.metadata),
-    [inputs, node.metadata?.batchMode, node.metadata?.storyboardInputNodeIds, node.metadata?.storyboardInputRoles, node.metadata?.storyboardPrimaryTextNodeId, node.metadata?.storyboardInputShotIds],
-  );
-  const connectedScript = combineStoryboardTextInputs(
-    inputs.filter((input) => input.type === "text" && inputSelection.selectedNodeIds.has(input.nodeId)),
-    inputSelection.roles,
-  );
-  const script = String(
-    connectedScript ||
-      node.metadata?.storyboardScript ||
-      node.metadata?.composerContent ||
-      node.metadata?.prompt ||
-      "",
-  ).trim();
-  const style = (node.metadata?.storyboardStyle || "cinematic") as StoryboardStyle;
-  const count = Math.max(
-    1,
-    Math.min(100, Number(node.metadata?.storyboardShotCount || node.metadata?.storyboardSceneCount) || 6),
-  );
-  const [countDraft, setCountDraft] = useState(String(count));
-  useEffect(() => {
-    setCountDraft(String(count));
-  }, [count]);
-  const set = (patch: Partial<CanvasNodeMetadata>) => onConfigChange(node.id, patch);
-  const detectedShotCount = useMemo(() => detectStoryboardShotCount(script, style), [script, style]);
-  const planScenes = useMemo(() => {
-    try {
-      const raw = node.metadata?.storyboardPlanJson;
-      if (!raw) return [] as Array<{ title?: string; summary?: string }>;
-      const parsed = JSON.parse(raw) as { plan?: { scenes?: Array<{ title?: string; summary?: string }> }; scenes?: Array<{ title?: string; summary?: string }> };
-      return parsed.plan?.scenes || parsed.scenes || [];
-    } catch {
-      return [];
-    }
-  }, [node.metadata?.storyboardPlanJson]);
-  const generationStage = node.metadata?.generationStage;
-  const running =
-    isRunning ||
-    node.metadata?.executionStatus === "running" ||
-    generationStage === "detecting" ||
-    generationStage === "analyzing" ||
-    generationStage === "generating";
-  const succeeded = node.metadata?.executionStatus === "succeeded";
-  const accent = nodeTypeColor("image", undefined, theme.scheme);
-  const consistency = node.metadata?.storyboardConsistency === true;
-  const ratio = node.metadata?.storyboardAspectRatio || "16:9";
-  const stepMeta =
-    step === "detect"
-      ? {
-          title: t("canvas.storyboard.pipelineDetectTitle"),
-          subtitle: t("canvas.storyboard.pipelineDetectSubtitle"),
-          action: t("canvas.storyboard.pipelineDetectAction"),
-          stop: t("canvas.storyboard.pipelineDetectStop"),
-        }
-      : step === "analyze"
-        ? {
-            title: t("canvas.storyboard.pipelineAnalyzeTitle"),
-            subtitle: t("canvas.storyboard.pipelineAnalyzeSubtitle"),
-            action: t("canvas.storyboard.pipelineAnalyzeAction"),
-            stop: t("canvas.storyboard.configStop"),
-          }
-        : {
-            title: t("canvas.storyboard.pipelineGenerateTitle"),
-            subtitle: t("canvas.storyboard.pipelineGenerateSubtitle"),
-            action: t("canvas.storyboard.pipelineGenerateAction"),
-            stop: t("canvas.storyboard.configStopGenerate"),
-          };
-
-  return (
-    <div
-      data-canvas-no-zoom
-      data-canvas-shortcuts-ignore
-      className="canvas-config-node canvas-storyboard-config-node flex h-full w-full cursor-move flex-col gap-2.5 px-3 py-2.5"
-      style={{ color: theme.node.text }}
-      onWheel={(event) => event.stopPropagation()}
-    >
-      <div
-        className="canvas-storyboard-config-header flex items-center gap-2 rounded-xl px-3 py-2.5"
-        style={{ background: colorWash(accent, theme.scheme === "dark" ? 0.16 : 0.08) }}
-      >
-        <span
-          className="canvas-storyboard-config-icon grid size-8 shrink-0 place-items-center rounded-lg text-[11px] font-bold"
-          style={{ background: colorWash(accent, 0.18), color: accent }}
-          aria-hidden="true"
-        >
-          {step === "detect" ? "1" : step === "analyze" ? "2" : "3"}
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-[13px] font-semibold">{stepMeta.title}</div>
-          <div className="truncate text-[10px]" style={{ color: theme.node.muted }}>
-            {stepMeta.subtitle}
-          </div>
-        </div>
-        {succeeded ? (
-          <CheckCircle2 className="size-4 shrink-0" style={{ color: "#36b37e" }} />
-        ) : running ? (
-          <Clock3 className="size-4 shrink-0 animate-pulse" style={{ color: accent }} />
-        ) : null}
-      </div>
-
-      <div className="rounded-xl px-3 py-2 text-[11px] leading-4" style={{ background: theme.toolbar.itemHover, color: theme.node.muted }}>
-        {script
-          ? t("canvas.storyboard.pipelineScriptReady", { count: script.length })
-          : t("canvas.storyboard.pipelineScriptMissing")}
-        {inputSummary && (inputSummary.textCount || inputSummary.imageCount)
-          ? ` · ${t("canvas.storyboard.configConnectedInputs", { count: inputSummary.textCount || inputSummary.imageCount })}`
-          : ""}
-      </div>
-
-      {step === "detect" ? (
-        <div className="grid grid-cols-2 gap-1.5" onMouseDown={(event) => event.stopPropagation()}>
-          <label>
-            <span>{t("canvas.storyboard.style")}</span>
-            <select
-              value={style}
-              onChange={(event) => set({ storyboardStyle: event.target.value })}
-              className="h-8 min-w-0 w-full rounded-lg border-0 px-2 text-[11px] outline-none"
-              style={{ background: theme.toolbar.itemHover, color: theme.node.text }}
-            >
-              <option value="cinematic">{t("canvas.storyboard.styleCinematic")}</option>
-              <option value="anime">{t("canvas.storyboard.styleAnime")}</option>
-              <option value="documentary">{t("canvas.storyboard.styleDocumentary")}</option>
-              <option value="commercial">{t("canvas.storyboard.styleCommercial")}</option>
-            </select>
-          </label>
-          <label>
-            <span>{t("canvas.storyboard.sceneCount")}</span>
-            <div className="flex gap-1">
-              <input
-                value={countDraft}
-                onChange={(event) => setCountDraft(event.target.value.replace(/[^\d]/g, "").slice(0, 2))}
-                onBlur={() => {
-                  const next = Math.max(1, Math.min(100, Number(countDraft) || count));
-                  setCountDraft(String(next));
-                  set({ storyboardShotCount: next, storyboardSceneCount: next });
-                }}
-                className="h-8 min-w-0 flex-1 rounded-lg border-0 px-2 text-[11px] outline-none"
-                style={{ background: theme.toolbar.itemHover, color: theme.node.text }}
-              />
-              <button
-                type="button"
-                className="h-8 shrink-0 rounded-lg px-2 text-[10px] font-medium disabled:opacity-40"
-                style={{ background: colorWash(accent, 0.12), color: accent }}
-                disabled={!detectedShotCount || running}
-                onClick={() => {
-                  if (!detectedShotCount) return;
-                  setCountDraft(String(detectedShotCount));
-                  set({ storyboardShotCount: detectedShotCount, storyboardSceneCount: detectedShotCount });
-                }}
-              >
-                {t("canvas.storyboard.configAutoDetectShort")}
-              </button>
-            </div>
-          </label>
-        </div>
-      ) : null}
-
-      {step === "generate" ? (
-        <div className="grid grid-cols-2 gap-1.5" onMouseDown={(event) => event.stopPropagation()}>
-          <label>
-            <span>{t("canvas.storyboard.configRatio")}</span>
-            <select
-              value={ratio}
-              onChange={(event) => set({ storyboardAspectRatio: event.target.value })}
-              className="h-8 min-w-0 w-full rounded-lg border-0 px-2 text-[11px] outline-none"
-              style={{ background: theme.toolbar.itemHover, color: theme.node.text }}
-            >
-              <option value="16:9">16:9</option>
-              <option value="9:16">9:16</option>
-              <option value="1:1">1:1</option>
-            </select>
-          </label>
-          <button
-            type="button"
-            className="mt-[18px] inline-flex h-8 items-center justify-center gap-1.5 rounded-lg text-[11px] font-medium"
-            style={{ background: theme.toolbar.itemHover, color: theme.node.text }}
-            onClick={() => set({ storyboardConsistency: !consistency })}
-            aria-pressed={consistency}
-          >
-            {consistency ? t("canvas.storyboard.configConsistencyOn") : t("canvas.storyboard.configConsistencyOff")}
-          </button>
-        </div>
-      ) : null}
-
-      {planScenes.length ? (
-        <div className="min-h-0 flex-1 overflow-hidden rounded-xl px-3 py-2" style={{ background: theme.toolbar.itemHover }}>
-          <div className="mb-1 text-[10px]" style={{ color: theme.node.muted }}>
-            {t("canvas.storyboard.configShots", { count: planScenes.length })}
-          </div>
-          <div className="thin-scrollbar max-h-[120px] space-y-1 overflow-y-auto text-[11px] leading-4">
-            {planScenes.slice(0, 8).map((scene, index) => (
-              <div key={`${scene.title || "shot"}-${index}`} className="truncate">
-                <span style={{ color: accent }}>{String(index + 1).padStart(2, "0")}</span>
-                {" · "}
-                {scene.title || scene.summary || t("canvas.storyboard.shots")}
-              </div>
-            ))}
-            {planScenes.length > 8 ? (
-              <div style={{ color: theme.node.muted }}>+{planScenes.length - 8}</div>
-            ) : null}
-          </div>
-        </div>
-      ) : (
-        <div className="flex min-h-0 flex-1 items-center justify-center rounded-xl px-3 text-center text-[11px]" style={{ background: theme.toolbar.itemHover, color: theme.node.muted }}>
-          {step === "detect"
-            ? t("canvas.storyboard.pipelineDetectHint")
-            : step === "analyze"
-              ? t("canvas.storyboard.pipelineAnalyzeHint")
-              : t("canvas.storyboard.pipelineGenerateHint")}
-        </div>
-      )}
-
-      <button
-        type="button"
-        className="canvas-config-generate inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-xl text-[12px] font-medium disabled:opacity-60"
-        style={{
-          background: theme.scheme === "dark" ? colorWash(accent, 0.18) : accent,
-          color: theme.scheme !== "dark" ? "#fff" : accent,
-        }}
-        disabled={!running && !script}
-        onMouseDown={(event) => event.stopPropagation()}
-        onClick={() => (running ? onStopGeneration(node.id) : onGenerate(node.id))}
-      >
-        {running ? stepMeta.stop : stepMeta.action}
-      </button>
     </div>
   );
 }
@@ -678,7 +416,6 @@ function CanvasStoryboardConfigNodePanel({
       <div
         className={`canvas-batch-mode-switch grid grid-cols-3 gap-1 rounded-xl p-1 ${running ? "pointer-events-none opacity-55" : ""}`}
         style={{ background: theme.toolbar.itemHover }}
-        onMouseDown={(event) => event.stopPropagation()}
       >
         {([
           { id: "split" as const, label: t("canvas.storyboard.batchModeSplit") },
@@ -690,7 +427,7 @@ function CanvasStoryboardConfigNodePanel({
             <button
               key={mode.id}
               type="button"
-              className="rounded-[10px] px-1.5 py-1.5 text-[10px] font-medium leading-tight"
+              className="canvas-batch-mode-switch-btn"
               style={{
                 background: active ? colorWash(accent, theme.scheme === "dark" ? 0.2 : 0.14) : "transparent",
                 color: active ? accent : theme.node.muted,
@@ -705,6 +442,35 @@ function CanvasStoryboardConfigNodePanel({
         })}
       </div>
 
+      <div className={running ? "pointer-events-none opacity-55" : ""}>
+        <StoryboardModelParamsRow
+          theme={theme}
+          config={imageConfig}
+          mode="image"
+          modelPlaceholder={t("canvas.configNode.model")}
+          paramsSummary={imageParamsSummary}
+          onModelChange={(model) => set(canvasImageSettingsFromModel(imageConfig, model))}
+          onMissingConfig={() => openConfigDialog(true)}
+        >
+          <ImageSettingsPanel
+            config={imageConfig}
+            theme={theme}
+            showTitle={false}
+            embedded
+            showDimensions={false}
+            showAspectRatio
+            showCount={false}
+            onConfigChange={(key, value) =>
+              set(
+                key === "size"
+                  ? { size: value, storyboardAspectRatio: value }
+                  : { [key]: value },
+              )
+            }
+          />
+        </StoryboardModelParamsRow>
+      </div>
+
       <div
         className={`canvas-storyboard-script-field min-h-0 flex-1 rounded-[14px] px-2.5 pt-2 pb-2 ${running ? "is-locked" : ""}`}
         style={{ background: theme.toolbar.itemHover, opacity: running ? 0.72 : 1 }}
@@ -713,7 +479,7 @@ function CanvasStoryboardConfigNodePanel({
           <span className="canvas-storyboard-script-field-label" style={{ color: theme.node.muted }}>
             {t("canvas.storyboard.configPromptAria")}
           </span>
-          <div className="canvas-storyboard-script-field-meta" onMouseDown={(event) => event.stopPropagation()}>
+          <div className="canvas-storyboard-script-field-meta">
             {autoShotCount ? (
               <span className="canvas-storyboard-shot-count" style={{ color: accent }}>
                 {t("canvas.storyboard.configShots", { count: autoShotCount })}
@@ -762,26 +528,25 @@ function CanvasStoryboardConfigNodePanel({
                 {t(
                   batchMode === "split"
                     ? "canvas.storyboard.configPlaceholder"
-                    : "canvas.storyboard.configPromptPlaceholder",
+                    : batchMode === "refs"
+                      ? "canvas.storyboard.configRefsPlaceholder"
+                      : "canvas.storyboard.configVariantsPlaceholder",
                 )}
               </span>
               <span className="canvas-storyboard-empty-shot-hint">
                 {t(
                   batchMode === "split"
-                    ? "canvas.storyboard.promptListOpenTitle"
+                    ? "canvas.storyboard.configSplitHint"
                     : batchMode === "refs"
-                      ? "canvas.storyboard.promptListOpenTitleRefs"
-                      : "canvas.storyboard.promptListOpenTitleVariants",
+                      ? "canvas.storyboard.configRefsPromptHint"
+                      : "canvas.storyboard.configVariantsHint",
                 )}
               </span>
             </div>
           )}
         </div>
         {batchMode === "split" ? (
-          <div className="canvas-storyboard-script-field-foot" onMouseDown={(event) => event.stopPropagation()}>
-            <span className="text-[11px] font-medium" style={{ color: theme.node.muted }}>
-              {t("canvas.storyboard.parseMode")}
-            </span>
+          <div className="canvas-storyboard-script-field-foot">
             <CanvasFieldMenu
               value={parseMode}
               options={parseOptions}
@@ -790,6 +555,7 @@ function CanvasStoryboardConfigNodePanel({
               surface={surface}
               compact
               menuMinWidth={148}
+              title={t("canvas.storyboard.parseMode")}
               triggerClassName="canvas-storyboard-script-toolbar-chip"
             >
               {(menuOpen) => (
@@ -801,60 +567,31 @@ function CanvasStoryboardConfigNodePanel({
             </CanvasFieldMenu>
           </div>
         ) : batchMode === "variants" ? (
-          <div className="canvas-storyboard-script-field-foot" onMouseDown={(event) => event.stopPropagation()}>
-            <span className="text-[11px] font-medium" style={{ color: theme.node.muted }}>
+          <div className="canvas-storyboard-script-field-foot">
+            <span className="canvas-storyboard-script-field-foot-label" style={{ color: theme.node.muted }}>
               {t("canvas.storyboard.configVariantCount")}
             </span>
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                className="rounded-md px-2 py-1 text-[12px]"
-                style={{ background: colorWash(theme.node.text, 0.06) }}
-                disabled={running || variantCount <= 1}
-                aria-label={`${t("canvas.storyboard.configVariantCountAria")} -`}
-                onClick={() => set({ batchVariantCount: Math.max(1, variantCount - 1) })}
-              >
-                −
-              </button>
-              <input
-                type="number"
-                min={1}
-                max={100}
-                className="w-12 rounded-md bg-transparent px-1 py-1 text-center text-[12px] tabular-nums outline-none"
-                style={{ color: theme.node.text, background: colorWash(theme.node.text, 0.04) }}
-                value={variantCount}
-                disabled={running}
-                aria-label={t("canvas.storyboard.configVariantCountAria")}
-                onChange={(event) => set({ batchVariantCount: Math.min(100, Math.max(1, Math.floor(Number(event.target.value) || 1))) })}
-              />
-              <button
-                type="button"
-                className="rounded-md px-2 py-1 text-[12px]"
-                style={{ background: colorWash(theme.node.text, 0.06) }}
-                disabled={running || variantCount >= 100}
-                aria-label={`${t("canvas.storyboard.configVariantCountAria")} +`}
-                onClick={() => set({ batchVariantCount: Math.min(100, variantCount + 1) })}
-              >
-                +
-              </button>
-            </div>
+            <StoryboardCountStepper
+              value={variantCount}
+              disabled={running}
+              label={t("canvas.storyboard.configVariantCountAria")}
+              theme={theme}
+              onChange={(next) => set({ batchVariantCount: next })}
+            />
           </div>
         ) : (
-          <div className="canvas-storyboard-script-field-foot" onMouseDown={(event) => event.stopPropagation()}>
-            <span className="text-[11px] font-medium" style={{ color: theme.node.muted }}>
+          <div className="canvas-storyboard-script-field-foot">
+            <span className="canvas-storyboard-script-field-foot-label" style={{ color: theme.node.muted }}>
               {t("canvas.storyboard.configRefsHint")}
             </span>
-            <span className="text-[11px] font-semibold tabular-nums" style={{ color: driverImages.length ? accent : theme.node.muted }}>
+            <span className="canvas-storyboard-script-field-foot-value" style={{ color: driverImages.length ? accent : theme.node.muted }}>
               {t("canvas.configNode.images", { count: driverImages.length })}
             </span>
           </div>
         )}
       </div>
 
-      <div
-        className={`flex flex-col gap-2 ${running ? "pointer-events-none opacity-55" : ""}`}
-        onMouseDown={(event) => event.stopPropagation()}
-      >
+      <div className={`flex flex-col gap-2 ${running ? "pointer-events-none opacity-55" : ""}`}>
         {batchMode === "refs" ? (
           <>
             <StoryboardBatchImageRow
@@ -923,32 +660,6 @@ function CanvasStoryboardConfigNodePanel({
             </span>
           </div>
         ) : null}
-        <StoryboardModelParamsRow
-          theme={theme}
-          config={imageConfig}
-          mode="image"
-          modelPlaceholder={t("canvas.configNode.model")}
-          paramsSummary={imageParamsSummary}
-          onModelChange={(model) => set(canvasImageSettingsFromModel(imageConfig, model))}
-          onMissingConfig={() => openConfigDialog(true)}
-        >
-          <ImageSettingsPanel
-            config={imageConfig}
-            theme={theme}
-            showTitle={false}
-            embedded
-            showDimensions={false}
-            showAspectRatio
-            showCount={false}
-            onConfigChange={(key, value) =>
-              set(
-                key === "size"
-                  ? { size: value, storyboardAspectRatio: value }
-                  : { [key]: value },
-              )
-            }
-          />
-        </StoryboardModelParamsRow>
       </div>
 
       <button
@@ -972,6 +683,105 @@ function CanvasStoryboardConfigNodePanel({
   );
 }
 
+
+const COUNT_STEPPER_MIN = 1;
+const COUNT_STEPPER_MAX = 100;
+const COUNT_STEPPER_HOLD_DELAY_MS = 380;
+const COUNT_STEPPER_HOLD_INTERVAL_MS = 80;
+
+function StoryboardCountStepper({
+  value,
+  disabled,
+  label,
+  theme,
+  onChange,
+}: {
+  value: number;
+  disabled: boolean;
+  label: string;
+  theme: (typeof canvasThemes)[keyof typeof canvasThemes];
+  onChange: (next: number) => void;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const valueRef = useRef(value);
+  valueRef.current = value;
+  const holdRef = useRef<{ delay?: number; repeat?: number }>({});
+
+  const endHold = useRef(() => {
+    window.clearTimeout(holdRef.current.delay);
+    window.clearInterval(holdRef.current.repeat);
+    holdRef.current = {};
+  }).current;
+
+  useEffect(() => endHold, [endHold]);
+
+  const nudge = (delta: number) => {
+    const next = Math.min(COUNT_STEPPER_MAX, Math.max(COUNT_STEPPER_MIN, valueRef.current + delta));
+    if (next !== valueRef.current) onChange(next);
+  };
+
+  // Hold either arrow to keep stepping, so large counts don't need dozens of clicks.
+  const beginHold = (event: ReactPointerEvent, delta: number) => {
+    if (event.button !== 0) return;
+    endHold();
+    nudge(delta);
+    holdRef.current.delay = window.setTimeout(() => {
+      holdRef.current.repeat = window.setInterval(() => nudge(delta), COUNT_STEPPER_HOLD_INTERVAL_MS);
+    }, COUNT_STEPPER_HOLD_DELAY_MS);
+    window.addEventListener("pointerup", endHold, { once: true });
+    window.addEventListener("pointercancel", endHold, { once: true });
+  };
+
+  const commitDraft = () => {
+    if (draft === null) return;
+    const parsed = Math.floor(Number(draft));
+    setDraft(null);
+    if (!Number.isFinite(parsed)) return;
+    const next = Math.min(COUNT_STEPPER_MAX, Math.max(COUNT_STEPPER_MIN, parsed));
+    if (next !== value) onChange(next);
+  };
+
+  return (
+    <div className="canvas-storyboard-count-stepper" style={{ background: colorWash(theme.node.text, 0.06) }}>
+      <button
+        type="button"
+        disabled={disabled || value <= COUNT_STEPPER_MIN}
+        aria-label={`${label} -`}
+        onPointerDown={(event) => beginHold(event, -1)}
+        onPointerLeave={endHold}
+      >
+        −
+      </button>
+      <input
+        type="text"
+        inputMode="numeric"
+        style={{ color: theme.node.text }}
+        value={draft ?? String(value)}
+        disabled={disabled}
+        aria-label={label}
+        onFocus={(event) => event.currentTarget.select()}
+        onChange={(event) => setDraft(event.target.value.replace(/\D/g, "").slice(0, 3))}
+        onBlur={commitDraft}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") event.currentTarget.blur();
+          else if (event.key === "ArrowUp") nudge(1);
+          else if (event.key === "ArrowDown") nudge(-1);
+          else return;
+          event.preventDefault();
+        }}
+      />
+      <button
+        type="button"
+        disabled={disabled || value >= COUNT_STEPPER_MAX}
+        aria-label={`${label} +`}
+        onPointerDown={(event) => beginHold(event, 1)}
+        onPointerLeave={endHold}
+      >
+        +
+      </button>
+    </div>
+  );
+}
 
 function StoryboardBatchImageRow({
   label,
@@ -1081,8 +891,8 @@ function StoryboardModelParamsRow({
   const { t } = useTranslation();
   const { buttonRef, panelRef, open, buttonRect, updateOpen } = useAnchorPopover();
   const surface = theme.toolbar.itemHover;
-  const paramsButtonClass =
-    "flex h-9 w-full min-w-0 items-center gap-1.5 rounded-[10px] px-2.5 text-left";
+  // Matches ConfigModelField's trigger so the stacked model and params rows line up.
+  const paramsButtonClass = "flex h-9 w-full min-w-0 items-center gap-2.5 rounded-[10px] px-3 text-left";
   const modelMeta = modelOptionMeta(config, config.model);
   const reasoningOptions = useMemo(() => {
     if (mode !== "text") return [];
@@ -1095,8 +905,8 @@ function StoryboardModelParamsRow({
     resolveCanvasReasoningEffort(modelMeta, config.reasoningEffort) || config.reasoningEffort || "";
 
   return (
-    <div className="canvas-storyboard-model-params-row flex min-w-0 items-center gap-1.5">
-      <div className="min-w-0 flex-[1.35]">
+    <div className="canvas-storyboard-model-params-row flex min-w-0 flex-col gap-1.5">
+      <div className="min-w-0">
         <ConfigModelField
           config={config}
           mode={mode}
@@ -1108,7 +918,7 @@ function StoryboardModelParamsRow({
           onMissingConfig={onMissingConfig}
         />
       </div>
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0">
         {mode === "text" && onTextParamsChange ? (
           reasoningOptions.length ? (
             <>
@@ -1120,8 +930,8 @@ function StoryboardModelParamsRow({
                 className={paramsButtonClass}
                 style={{ background: surface, color: theme.node.text }}
               >
-                <span className="shrink-0 text-[12px] font-medium">{t("canvas.configNode.params")}</span>
-                <span className="min-w-0 flex-1 truncate text-[11px]" style={{ color: theme.node.muted }}>
+                <span className="shrink-0 text-[13px] font-semibold">{t("canvas.configNode.params")}</span>
+                <span className="min-w-0 flex-1 truncate text-right text-[11px]" style={{ color: theme.node.muted }}>
                   {paramsSummary}
                 </span>
                 <ChevronDown
@@ -1168,8 +978,8 @@ function StoryboardModelParamsRow({
               className={paramsButtonClass}
               style={{ background: surface, color: theme.node.text }}
             >
-              <span className="shrink-0 text-[12px] font-medium">{t("canvas.configNode.params")}</span>
-              <span className="min-w-0 flex-1 truncate text-[11px]" style={{ color: theme.node.muted }}>
+              <span className="shrink-0 text-[13px] font-semibold">{t("canvas.configNode.params")}</span>
+              <span className="min-w-0 flex-1 truncate text-right text-[11px]" style={{ color: theme.node.muted }}>
                 {paramsSummary}
               </span>
               <ChevronDown
@@ -1194,7 +1004,7 @@ function StoryboardModelParamsRow({
           </>
         )}
       </div>
-      {trailing ? <div className="shrink-0">{trailing}</div> : null}
+      {trailing ? <div className="min-w-0">{trailing}</div> : null}
     </div>
   );
 }

@@ -8,11 +8,94 @@
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, currentColor 22%, transparent) transparent;
 }
-.canvas-batch-mode-switch button {
+/* The node-wide guard above also kills caret dragging inside real fields. */
+.canvas-storyboard-config-node input,
+.canvas-storyboard-config-node textarea {
+  cursor: text;
+  user-select: text;
+}
+/* The node body advertises `move`; only leave it showing where a press really
+   does drag the node, otherwise the cursor promises something controls refuse. */
+.canvas-storyboard-config-node button:not(:disabled),
+.canvas-storyboard-config-node [role="button"]:not([aria-disabled="true"]) {
+  cursor: pointer;
+}
+/* Mode labels differ in length, so pin the box and clip instead of letting the
+   longest one wrap and leave the three tabs at uneven heights. */
+.canvas-batch-mode-switch-btn {
+  display: flex;
+  height: 26px;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  padding-inline: 4px;
+  border: 0;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
   transition: background .15s ease, color .15s ease, box-shadow .15s ease;
 }
-.canvas-batch-mode-switch button[aria-pressed="true"] {
+.canvas-batch-mode-switch-btn[aria-pressed="true"] {
+  font-weight: 650;
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--storyboard-accent) 18%, transparent);
+}
+.canvas-storyboard-count-stepper {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  height: 28px;
+  overflow: hidden;
+  border-radius: 8px;
+}
+.canvas-storyboard-count-stepper button {
+  display: flex;
+  width: 30px;
+  height: 100%;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  /* Press-and-hold repeats the step, so suppress the browser's own
+     text-selection and scroll gestures while the button stays down. */
+  user-select: none;
+  touch-action: none;
+  transition: background .15s ease, color .15s ease;
+}
+.canvas-storyboard-count-stepper button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--storyboard-accent) 14%, transparent);
+  color: var(--storyboard-accent);
+}
+/* Must follow :hover — equal specificity, and the pointer is always hovering
+   the button it is holding down. */
+.canvas-storyboard-count-stepper button:active:not(:disabled) {
+  background: color-mix(in srgb, var(--storyboard-accent) 26%, transparent);
+  color: var(--storyboard-accent);
+}
+.canvas-storyboard-count-stepper button:disabled {
+  cursor: not-allowed;
+  opacity: .35;
+}
+.canvas-storyboard-count-stepper input {
+  width: 38px;
+  height: 100%;
+  border: 0;
+  outline: none;
+  background: transparent;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  cursor: text;
 }
 .canvas-storyboard-config-node > * { min-width: 0; }
 .canvas-storyboard-input-manager {
@@ -207,15 +290,36 @@
   display: flex;
   flex: 0 0 auto;
   align-items: center;
+  justify-content: space-between;
   gap: 6px;
+  /* Each mode puts a different control here, so hold one height and the panel
+     stops shifting as the user tries the three modes. */
+  min-height: 42px;
   margin-top: 8px;
   padding-top: 8px;
   border-top: 1px solid color-mix(in srgb, var(--storyboard-accent) 10%, transparent);
 }
-.canvas-storyboard-script-field-foot .canvas-storyboard-script-toolbar-chip {
+/* Labels here are short; wrapping one onto two lines is never the right answer. */
+.canvas-storyboard-script-field-foot-label {
+  min-width: 0;
   flex: 0 1 auto;
-  min-width: 4.5rem;
-  max-width: 7.5rem;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.canvas-storyboard-script-field-foot-value {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* The split-rule menu is the only thing in its row, so let it span the width
+   instead of leaving a lone narrow control adrift. */
+.canvas-storyboard-script-field-foot .canvas-storyboard-script-toolbar-chip {
+  max-width: none;
 }
 .canvas-storyboard-prompt-list-btn,
 .canvas-storyboard-prompt-list-toolbar-btn {
@@ -492,11 +596,6 @@
 .canvas-storyboard-config-controls label { display: flex; min-width: 0; flex-direction: column; gap: 4px; color: var(--storyboard-muted, #8c8b9d); font-size: 10px; }
 .canvas-storyboard-config-controls select, .canvas-storyboard-config-controls input { width: 100%; cursor: pointer; border: 1px solid color-mix(in srgb, var(--storyboard-accent) 9%, transparent); }
 .canvas-storyboard-config-controls select:focus, .canvas-storyboard-config-controls input:focus { outline: none; border-color: color-mix(in srgb, var(--storyboard-accent) 55%, transparent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--storyboard-accent) 10%, transparent); }
-.canvas-storyboard-consistency { display: inline-flex; align-items: center; gap: 5px; border: 0; background: transparent; color: inherit; cursor: pointer; font-size: 11px; white-space: nowrap; }
-.canvas-storyboard-consistency-row { white-space: normal; }
-.canvas-storyboard-consistency:hover { color: var(--storyboard-accent); }
-.canvas-storyboard-consistency-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; opacity: .45; }
-.canvas-storyboard-consistency.is-on .canvas-storyboard-consistency-dot { background: var(--storyboard-accent); opacity: 1; box-shadow: 0 0 0 3px color-mix(in srgb, var(--storyboard-accent) 14%, transparent); }
 .canvas-storyboard-script-field.is-locked { border-style: dashed; }
 .canvas-storyboard-status-card { border: 1px solid color-mix(in srgb, currentColor 16%, transparent); }
 .canvas-storyboard-stage-rail { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
@@ -518,6 +617,14 @@
   flex: 0 0 auto;
   font-size: 11px;
   font-weight: 600;
+}
+/* Without this the thumbs are block-level and stack into a tall column instead
+   of the overlapping strip the negative margins below assume. */
+.canvas-storyboard-reference-thumbs {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
 }
 .canvas-storyboard-reference-thumbs.is-editable {
   flex-wrap: wrap;

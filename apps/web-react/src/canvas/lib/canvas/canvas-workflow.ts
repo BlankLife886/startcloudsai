@@ -1,8 +1,7 @@
 import type { CanvasConnection, CanvasNodeData } from "@/types/canvas";
 import { resolveCopiedCanvasNodeReferences } from "./canvas-node-copy.ts";
 import { isCanvasExecutableNode } from "./canvas-operation-node.ts";
-import { canConnectStoryboardPipelineNodes } from "./canvas-storyboard-pipeline-guards.ts";
-import { canvasWorkflowInputSignature, canvasWorkflowValueFingerprint } from "./canvas-workflow-signature.ts";
+import { canvasWorkflowInputSignature, canvasWorkflowNodeInputFingerprint, canvasWorkflowValueFingerprint } from "./canvas-workflow-signature.ts";
 import { storageKeyFromUrl } from "./canvas-preview-url.ts";
 
 export type CanvasWorkflowCompileError = "empty" | "cycle" | "invalid_connection";
@@ -299,6 +298,53 @@ export function reconcileCanvasWorkflowFailureOutput(checkpoint: CanvasWorkflowC
     };
 }
 
+/**
+ * Nodes a fresh run may keep instead of re-executing: the node's own inputs are
+ * unchanged since it produced its result, that result is still intact in the
+ * document, and every upstream it depends on is itself being kept.
+ *
+ * The upstream condition is what makes this safe. Skipping has to propagate
+ * downstream, because a node that re-runs produces different pixels, and
+ * anything reading them must run again even though its own settings are
+ * untouched. Layers arrive topologically ordered, so one pass suffices.
+ */
+export function carryOverCanvasWorkflowCompletions(options: {
+    layers: string[][];
+    nodeIds: string[];
+    nodes: CanvasNodeData[];
+    connections: CanvasConnection[];
+    dependencies: Map<string, Set<string>>;
+    resolveSettings?: (node: CanvasNodeData) => unknown;
+}) {
+    const keep = new Set<string>();
+    const outputFingerprints: Record<string, string> = {};
+    const executable = new Set(options.nodeIds);
+    for (const layer of options.layers) {
+        for (const nodeId of layer) {
+            const node = options.nodes.find((item) => item.id === nodeId);
+            const recordedInput = node?.metadata?.workflowInputSignature;
+            const recordedOutput = node?.metadata?.workflowOutputSignature;
+            if (!node || !recordedInput || !recordedOutput) continue;
+            const upstream = [...(options.dependencies.get(nodeId) || [])].filter((id) => executable.has(id));
+            if (upstream.some((id) => !keep.has(id))) continue;
+            const output = canvasWorkflowNodeOutputFingerprint(nodeId, options.nodes, options.connections);
+            if (!output || output !== recordedOutput) continue;
+            const input = canvasWorkflowNodeInputFingerprint({
+                nodeId,
+                nodes: options.nodes,
+                connections: options.connections,
+                executableNodeIds: options.nodeIds,
+                resolveSettings: options.resolveSettings,
+                resolveProducerOutput: (id) => canvasWorkflowNodeOutputFingerprint(id, options.nodes, options.connections),
+            });
+            if (!input || input !== recordedInput) continue;
+            keep.add(nodeId);
+            outputFingerprints[nodeId] = output;
+        }
+    }
+    return { completedNodeIds: [...keep], outputFingerprints };
+}
+
 /** Adopt valid persisted outputs only while recovering an interrupted run. A fresh run must regenerate them. */
 export function reconcileCanvasWorkflowOutputs(
     checkpoint: CanvasWorkflowCheckpoint,
@@ -437,9 +483,6 @@ export function compileCanvasWorkflow(nodes: CanvasNodeData[], connections: Canv
     const executableIds = new Set(executableNodes.map((node) => node.id));
     const invalidConfigIds = connections.flatMap((connection) => {
         if (!executableIds.has(connection.fromNodeId) || !executableIds.has(connection.toNodeId)) return [];
-        const from = nodeById.get(connection.fromNodeId);
-        const to = nodeById.get(connection.toNodeId);
-        if (canConnectStoryboardPipelineNodes(from, to)) return [];
         return [connection.fromNodeId, connection.toNodeId];
     });
     if (invalidConfigIds.length) return { ok: false, reason: "invalid_connection", nodeIds: [...new Set(invalidConfigIds)] };

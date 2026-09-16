@@ -371,7 +371,7 @@ export function AuthAccountView() {
               </div>
 
               <div className="auth-panel-meta" aria-label="验证说明">
-                <span><i className="bi bi-clock" aria-hidden="true" />3 分钟有效</span>
+                <span><i className="bi bi-clock" aria-hidden="true" />10 分钟有效</span>
                 <span><i className="bi bi-person-plus" aria-hidden="true" />首次验证自动建号</span>
               </div>
 

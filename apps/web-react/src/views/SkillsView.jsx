@@ -1,645 +1,628 @@
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  ArrowLeft,
-  ArrowRight,
-  ArrowUpRight,
-  Check,
-  ChevronDown,
+  AlertCircle,
+  BadgeCheck,
   Copy,
-  Download,
-  FileText,
-  Image as ImageIcon,
+  Globe2,
   Layers3,
-  Palette,
+  Loader2,
+  Pencil,
   Plus,
+  RefreshCw,
   Search,
-  ShoppingBag,
   Sparkles,
-  Type,
+  Trash2,
   UserRound,
   X,
 } from "lucide-react";
-import { DEMO_SKILLS } from "../features/skills/demoCatalog.js";
-import SkillEmblem from "../features/skills/SkillEmblem.jsx";
+
+import { useAuth } from "../auth/AuthContext.jsx";
+import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
+import SkillBindingBoard from "../features/skills/SkillBindingBoard.jsx";
+import SkillEditorDialog from "../features/skills/SkillEditorDialog.jsx";
+import SkillPickerDialog from "../features/skills/SkillPickerDialog.jsx";
 import {
-  DEMO_SKILL_GUIDES,
-  createDemoSkillRun,
-} from "../features/skills/demoGuides.js";
+  SKILL_GLOBAL_SCOPE,
+  SKILL_TASK_TYPES,
+  skillAppliesTo,
+  skillTaskTypeLabel,
+} from "../features/skills/skillComposition.js";
+import {
+  createMySkill,
+  deleteMySkill,
+  listMySkills,
+  setSkillBinding,
+  updateMySkill,
+} from "../features/skills/skillRuntime.js";
 import "./skills.css";
 
-const ICONS = {
-  shopping: ShoppingBag,
-  image: ImageIcon,
-  character: UserRound,
-  palette: Palette,
-  copy: Type,
-  document: FileText,
-};
-const CATEGORIES = ["全部方向", "图像创作", "设计策划", "日常效率"];
+const ORIGIN_TABS = [
+  { value: "all", label: "全部" },
+  { value: "official", label: "官方" },
+  { value: "mine", label: "我的" },
+];
 
-function SkillGlyph({ skill, size = 22 }) {
-  const Icon = ICONS[skill.icon] || Sparkles;
-  return <Icon size={size} strokeWidth={1.65} aria-hidden="true" />;
+function errorMessage(error, fallback) {
+  const message = error instanceof Error ? error.message : "";
+  return message || fallback;
 }
 
-function sectionTitle(value) {
-  return value.replace(/^\d+\s*\/\s*/, "");
-}
+/** 装载位列表：全局在前，其后是六个生图页面。 */
+const ALL_SCOPES = [SKILL_GLOBAL_SCOPE, ...SKILL_TASK_TYPES];
 
-function sectionExcerpt(section) {
-  const text = section.body || section.bullets?.[0] || "";
-  return text.length > 78 ? text.slice(0, 78) + "…" : text;
-}
-
-function PalettePreview({ palette }) {
-  return (
-    <div className="skills-demo__colors" aria-label="示例配色">
-      {palette.map((color) => (
-        <div key={color.hex}>
-          <span style={{ backgroundColor: color.hex }} />
-          <strong>{color.name}</strong>
-          <small>{color.hex}</small>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function SamplePreview({ result }) {
-  return (
-    <section className="skills-demo__sample-result" aria-label="示例结果">
-      <div className="skills-demo__sample-result-label">
-        <Sparkles size={14} aria-hidden="true" />
-        <span>使用 Skill 后 · 示例节选</span>
-      </div>
-      {result.palette ? (
-        <PalettePreview palette={result.palette} />
-      ) : (
-        <div className="skills-demo__sample-columns">
-          {result.sections.slice(0, 2).map((section) => (
-            <div key={section.title}>
-              <h4>{sectionTitle(section.title)}</h4>
-              <p>{sectionExcerpt(section)}</p>
-            </div>
-          ))}
-        </div>
-      )}
-    </section>
-  );
-}
-
-function SkillDetail({ skill, added, onToggleAdded, onBack }) {
-  const guide = DEMO_SKILL_GUIDES[skill.id];
-  const [mode, setMode] = useState("overview");
-  const [exampleIndex, setExampleIndex] = useState(0);
-  const [request, setRequest] = useState("");
-  const [result, setResult] = useState(null);
-  const [error, setError] = useState("");
-  const [copyState, setCopyState] = useState("");
-  const requestRef = useRef(null);
-  const example = guide.examples[exampleIndex];
-  const preview = useMemo(
-    () => createDemoSkillRun(skill, example.request),
-    [skill, example.request],
-  );
-
-  function tryExample() {
-    setRequest(example.request);
-    setResult(null);
-    setError("");
-    setMode("try");
-  }
-
-  function useExample() {
-    setRequest(example.request);
-    setResult(null);
-    setError("");
-  }
-
-  function generate(event) {
-    event.preventDefault();
-    const value = request.trim();
-    if (!value || value.length > 1200) {
-      setError(
-        !value
-          ? "先写下这次想完成的事，或者使用一个示例。"
-          : "请将需求控制在 1200 字以内。",
-      );
-      requestRef.current?.focus();
-      return;
-    }
-    // The demo applies local sample data only. It never creates a real task.
-    setResult(createDemoSkillRun(skill, value));
-    setCopyState("");
-    setError("");
-  }
-
-  async function copyResult() {
-    try {
-      await navigator.clipboard.writeText(result.text);
-      setCopyState("copied");
-    } catch {
-      setCopyState("error");
-    }
-  }
-
-  function downloadResult() {
-    const link = document.createElement("a");
-    link.href =
-      "data:text/plain;charset=utf-8," + encodeURIComponent(result.text);
-    link.download = skill.name + "-演示结果.txt";
-    link.click();
-  }
+function SkillDetail({
+  skill,
+  bindings,
+  busyScope,
+  maxPerScope,
+  onToggleScope,
+  onEdit,
+  onDelete,
+  onDuplicate,
+}) {
+  const globalIds = bindings[SKILL_GLOBAL_SCOPE] || [];
+  const scopeState = ALL_SCOPES.map((scope) => {
+    const ids = bindings[scope] || [];
+    return {
+      scope,
+      loaded: ids.includes(skill.id),
+      eligible: skillAppliesTo(skill, scope),
+      full: ids.length >= maxPerScope && !ids.includes(skill.id),
+    };
+  });
+  const loadedScopes = scopeState.filter((item) => item.loaded);
 
   return (
-    <section className="skills-demo__detail" aria-label={skill.name + "详情"}>
-      <button className="skills-demo__back" type="button" onClick={onBack}>
-        <ArrowLeft size={17} />
-        返回技能库
-      </button>
-      <header className="skills-demo__detail-head">
-        <div className="skills-demo__detail-identity">
-          <SkillEmblem tone={skill.icon}>
-            <SkillGlyph skill={skill} size={32} />
-          </SkillEmblem>
-          <div className="skills-demo__title-copy">
-            <div className="skills-demo__detail-meta">
-              <span>{skill.category}</span>
-              <i />
-              <span>官方示例</span>
+    <section className="skills-detail" aria-label={`${skill.name} 详情`}>
+      <header className="skills-detail__head">
+        <div className="skills-detail__identity">
+          <span className={"skills-detail__emblem" + (skill.official ? " is-official" : "")}>
+            {skill.official ? <BadgeCheck size={22} /> : <UserRound size={22} />}
+          </span>
+          <div>
+            <div className="skills-detail__meta">
+              <span>{skill.official ? "官方 Skill" : "我的 Skill"}</span>
+              {skill.category && (
+                <>
+                  <i />
+                  <span>{skill.category}</span>
+                </>
+              )}
             </div>
             <h2>{skill.name}</h2>
-            <p className="skills-demo__detail-summary">{guide.summary}</p>
+            <p>{skill.description || "没有填写简介"}</p>
           </div>
         </div>
-        <div className="skills-demo__detail-actions">
-          <button
-            className={"skills-demo__add" + (added ? " is-added" : "")}
-            type="button"
-            aria-label={(added ? "移除" : "添加") + skill.name}
-            aria-pressed={added}
-            onClick={onToggleAdded}
-          >
-            {added ? <Check size={16} /> : <Plus size={16} />}
-            {added ? "已添加" : "添加 Skill"}
-          </button>
-          <button
-            className="skills-demo__primary"
-            type="button"
-            aria-label={"试用" + skill.name}
-            onClick={() => setMode("try")}
-          >
-            试用 Skill
-            <ArrowUpRight size={16} />
-          </button>
+        <div className="skills-detail__actions">
+          {skill.official ? (
+            <button type="button" className="skills-button" onClick={() => onDuplicate(skill)}>
+              <Copy size={15} />
+              复制为我的
+            </button>
+          ) : (
+            <>
+              <button type="button" className="skills-button" onClick={() => onEdit(skill)}>
+                <Pencil size={15} />
+                编辑
+              </button>
+              <button type="button" className="skills-button is-danger" onClick={() => onDelete(skill)}>
+                <Trash2 size={15} />
+                删除
+              </button>
+            </>
+          )}
         </div>
       </header>
-      <div className="skills-demo__detail-tabs" aria-label="技能内容">
-        <button
-          type="button"
-          aria-pressed={mode === "overview"}
-          onClick={() => setMode("overview")}
-        >
-          方法与示例
-        </button>
-        <button
-          type="button"
-          aria-pressed={mode === "try"}
-          onClick={() => setMode("try")}
-        >
-          试用
-        </button>
-        <span>
-          {skill.outputLabel}
-          <FileText size={13} aria-hidden="true" />
-        </span>
-      </div>
 
-      {mode === "overview" ? (
-        <div className="skills-demo__overview">
-          <section className="skills-demo__method" aria-label="使用方法">
-            <header>
-              <h3>工作方式</h3>
-              <p>{guide.whenToUse}</p>
-            </header>
-            <ol>
-              {guide.rules.map((rule, index) => (
-                <li key={rule.title}>
-                  <span className="skills-demo__rule-number">
-                    {"0" + (index + 1)}
-                  </span>
-                  <h4>{rule.title}</h4>
-                  <p>{rule.description}</p>
-                </li>
-              ))}
-            </ol>
-          </section>
-          <section className="skills-demo__examples" aria-label="使用示例">
-            <header>
-              <div>
-                <h3>使用示例</h3>
-              </div>
-              <div className="skills-demo__example-switch">
-                {guide.examples.map((item, index) => (
-                  <button
-                    key={item.label}
-                    type="button"
-                    aria-label={"示例：" + item.label}
-                    aria-pressed={exampleIndex === index}
-                    onClick={() => setExampleIndex(index)}
-                  >
-                    {item.label}
-                  </button>
-                ))}
-              </div>
-            </header>
-            <div className="skills-demo__sample">
-              <div className="skills-demo__sample-request">
-                <span>需求</span>
-                <p>{example.request}</p>
-              </div>
-              <SamplePreview result={preview} />
-              <footer>
-                <button
-                  className="skills-demo__text-button"
-                  type="button"
-                  onClick={tryExample}
-                >
-                  用这个示例试用
-                  <ArrowRight size={15} />
-                </button>
-              </footer>
-            </div>
-          </section>
-        </div>
-      ) : (
-        <div className="skills-demo__trial">
-          <div className="skills-demo__trial-top">
-            <span>
-              <span className="skills-demo__status-dot" />
-              正在试用 · {skill.name}
-            </span>
-            <small>预设演示，不调用 AI</small>
-          </div>
-          <div className="skills-demo__trial-grid">
-            <form
-              className="skills-demo__request-form"
-              onSubmit={generate}
-              noValidate
-            >
-              <div className="skills-demo__request-heading">
-                <label htmlFor="skill-demo-request">这次想完成什么</label>
-                <button
-                  className="skills-demo__text-button"
-                  type="button"
-                  onClick={useExample}
-                >
-                  使用示例
-                  <ArrowUpRight size={13} />
-                </button>
-              </div>
-              <textarea
-                ref={requestRef}
-                id="skill-demo-request"
-                aria-label="这次想完成什么"
-                value={request}
-                maxLength={1200}
-                placeholder={
-                  "写下你的具体需求，或先试试「" + example.label + "」…"
-                }
-                onChange={(event) => {
-                  setRequest(event.target.value);
-                  setError("");
-                }}
-                aria-invalid={Boolean(error)}
-                aria-describedby={error ? "skill-demo-error" : undefined}
-              />
-              {error && (
-                <p
-                  id="skill-demo-error"
-                  className="skills-demo__error"
-                  role="alert"
-                >
-                  {error}
-                </p>
-              )}
-              <div className="skills-demo__request-foot">
-                <span>
-                  {request.length}
-                  <i>/ 1200</i>
-                </span>
-                <button className="skills-demo__primary" type="submit">
-                  生成演示结果
-                  <ArrowRight size={15} />
-                </button>
-              </div>
-              <div className="skills-demo__applied">
-                <h4>这套方法继续生效</h4>
-                <ul>
-                  {guide.rules.map((rule) => (
-                    <li key={rule.title}>
-                      <Check size={13} aria-hidden="true" />
-                      {rule.title}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </form>
-            {result ? (
-              <section
-                className="skills-demo__run-result"
-                aria-label="演示结果"
-                aria-live="polite"
-              >
-                <header>
-                  <span>
-                    <FileText size={15} aria-hidden="true" />
-                    演示结果
-                  </span>
-                  <div>
-                    <button
-                      type="button"
-                      aria-label="下载演示结果"
-                      title="下载文本"
-                      onClick={downloadResult}
-                    >
-                      <Download size={16} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="复制演示结果"
-                      title={copyState === "copied" ? "已复制" : "复制内容"}
-                      onClick={copyResult}
-                    >
-                      {copyState === "copied" ? (
-                        <Check size={16} />
-                      ) : (
-                        <Copy size={16} />
-                      )}
-                    </button>
-                  </div>
-                </header>
-                <div className="skills-demo__result-content">
-                  <h3>{result.title}</h3>
-                  <p className="skills-demo__result-lead">{result.summary}</p>
-                  {result.palette && (
-                    <PalettePreview palette={result.palette} />
-                  )}
-                  {result.sections.map((section) => (
-                    <article key={section.title}>
-                      <h4>{sectionTitle(section.title)}</h4>
-                      {section.body && <p>{section.body}</p>}
-                      {section.bullets && (
-                        <ul>
-                          {section.bullets.map((item, index) => (
-                            <li key={index}>{item}</li>
-                          ))}
-                        </ul>
-                      )}
-                    </article>
-                  ))}
-                  <p className="skills-demo__result-note">
-                    这是用于体验 Skill 使用方式的示例内容。
-                  </p>
-                </div>
-                <span className="skills-demo__sr-only" role="status">
-                  {copyState === "copied" ? "演示结果已复制" : ""}
-                </span>
-                {copyState === "error" && (
-                  <p className="skills-demo__error" role="alert">
-                    复制未成功，可以下载文本。
-                  </p>
-                )}
-              </section>
-            ) : (
-              <div className="skills-demo__result-placeholder">
-                <div className="skills-demo__paper" aria-hidden="true">
-                  <span>
-                    <Layers3 size={20} />
-                  </span>
-                  <i />
-                  <i />
-                  <i />
-                  <b />
-                  <i />
-                  <i />
-                </div>
-                <h3>你的需求，它的方法</h3>
-                <p>
-                  写下一句话，看看这个 Skill
-                  <br />
-                  如何组织一份清楚的结果。
-                </p>
-                <span>演示结果会出现在这里</span>
-              </div>
-            )}
-          </div>
-        </div>
+      {skill.tags?.length > 0 && (
+        <ul className="skills-detail__tags">
+          {skill.tags.map((tag) => (
+            <li key={tag}>{tag}</li>
+          ))}
+        </ul>
       )}
+
+      <section className="skills-detail__block">
+        <h3>
+          <Sparkles size={15} aria-hidden="true" />
+          指令内容
+        </h3>
+        <pre className="skills-detail__instruction">{skill.instruction}</pre>
+        <p className="skills-detail__note">生图提交时会自动拼在你的提示词前面，你无需手动复制。</p>
+      </section>
+
+      <section className="skills-detail__block">
+        <h3>
+          <Layers3 size={15} aria-hidden="true" />
+          适用页面
+        </h3>
+        {skill.taskTypes?.length ? (
+          <ul className="skills-detail__tags is-plain">
+            {skill.taskTypes.map((taskType) => (
+              <li key={taskType}>{skillTaskTypeLabel(taskType)}</li>
+            ))}
+          </ul>
+        ) : (
+          <p className="skills-detail__note">全部生图页面均可装载。</p>
+        )}
+      </section>
+
+      <section className="skills-detail__block">
+        <h3>
+          <Globe2 size={15} aria-hidden="true" />
+          装载位置
+        </h3>
+        <div className="skills-chipset">
+          {scopeState.map(({ scope, loaded, eligible, full }) => {
+            const isGlobal = scope === SKILL_GLOBAL_SCOPE;
+            const label = isGlobal ? "全局" : skillTaskTypeLabel(scope);
+            const disabled = !eligible || full || busyScope === scope;
+            return (
+              <button
+                key={scope}
+                type="button"
+                className={"skills-chip" + (isGlobal ? " is-global" : "")}
+                aria-pressed={loaded}
+                disabled={disabled}
+                title={
+                  !eligible
+                    ? "该 Skill 不适用于这个页面"
+                    : full
+                      ? `这个装载位已满（最多 ${maxPerScope} 个）`
+                      : undefined
+                }
+                onClick={() => onToggleScope(scope, skill, loaded)}
+              >
+                {busyScope === scope ? <Loader2 className="skills-spin" size={13} /> : null}
+                {label}
+              </button>
+            );
+          })}
+        </div>
+        <p className="skills-detail__note">
+          {loadedScopes.length === 0
+            ? "尚未装载，生图时不会使用这个 Skill。"
+            : loadedScopes.some((item) => item.scope === SKILL_GLOBAL_SCOPE) &&
+                loadedScopes.length === 1
+              ? globalIds.length > 1
+                ? "已全局生效，但单独配置过的页面会改用该页面自己的 Skill。"
+                : "已对所有页面生效（单独配置过的页面除外）。"
+              : "已在选中的页面生效。"}
+        </p>
+      </section>
     </section>
   );
 }
 
 export function SkillsView() {
+  const { user, loading: authLoading } = useAuth();
+  const { requestAuth } = useAuthPrompt();
+  const [tab, setTab] = useState("library");
+  const [origin, setOrigin] = useState("all");
   const [query, setQuery] = useState("");
-  const [category, setCategory] = useState("全部方向");
-  const [addedOnly, setAddedOnly] = useState(false);
-  const [added, setAdded] = useState([]);
-  const [selectedId, setSelectedId] = useState(DEMO_SKILLS[0].id);
-  const [detailOpen, setDetailOpen] = useState(false);
-  const items = useMemo(() => {
-    const value = query.trim().toLocaleLowerCase();
-    return DEMO_SKILLS.filter(
-      (skill) =>
-        (!addedOnly || added.includes(skill.id)) &&
-        (category === "全部方向" || skill.category === category) &&
-        (skill.name + " " + skill.description + " " + skill.outputLabel)
-          .toLocaleLowerCase()
-          .includes(value),
+  const [items, setItems] = useState([]);
+  const [bindings, setBindings] = useState({});
+  const [maxPerScope, setMaxPerScope] = useState(5);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [selectedId, setSelectedId] = useState("");
+  const [busyScope, setBusyScope] = useState("");
+  const [editor, setEditor] = useState({ open: false, skill: null, saving: false, error: "" });
+  const [picker, setPicker] = useState({ open: false, scope: "", saving: false, error: "" });
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setLoadError("");
+    try {
+      const data = await listMySkills();
+      setItems(data.items);
+      setBindings(data.bindings);
+      if (data.maxPerScope) setMaxPerScope(data.maxPerScope);
+    } catch (error) {
+      setLoadError(errorMessage(error, "加载 Skill 失败，请稍后重试"));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (authLoading) return;
+    if (!user) {
+      setLoading(false);
+      return;
+    }
+    load();
+  }, [authLoading, user, load]);
+
+  const skillsById = useMemo(() => new Map(items.map((skill) => [skill.id, skill])), [items]);
+
+  const loadedIds = useMemo(() => {
+    const ids = new Set();
+    for (const scope of ALL_SCOPES) for (const id of bindings[scope] || []) ids.add(id);
+    return ids;
+  }, [bindings]);
+
+  const visible = useMemo(() => {
+    const keyword = query.trim().toLocaleLowerCase();
+    return items.filter((skill) => {
+      if (origin === "official" && !skill.official) return false;
+      if (origin === "mine" && skill.official) return false;
+      if (!keyword) return true;
+      return `${skill.name} ${skill.description} ${(skill.tags || []).join(" ")}`
+        .toLocaleLowerCase()
+        .includes(keyword);
+    });
+  }, [items, origin, query]);
+
+  const selected = useMemo(
+    () => visible.find((skill) => skill.id === selectedId) || visible[0] || null,
+    [visible, selectedId],
+  );
+
+  const counts = useMemo(
+    () => ({
+      all: items.length,
+      official: items.filter((skill) => skill.official).length,
+      mine: items.filter((skill) => !skill.official).length,
+    }),
+    [items],
+  );
+
+  /** 写入一个装载位，失败时回滚到服务端的当前状态。 */
+  const commitBinding = useCallback(
+    async (scope, skillIds) => {
+      setBusyScope(scope);
+      try {
+        const next = await setSkillBinding(scope, skillIds);
+        setBindings(next);
+        return true;
+      } catch (error) {
+        setLoadError(errorMessage(error, "装载失败，请稍后重试"));
+        await load();
+        return false;
+      } finally {
+        setBusyScope("");
+      }
+    },
+    [load],
+  );
+
+  const toggleScope = useCallback(
+    (scope, skill, loaded) => {
+      const current = bindings[scope] || [];
+      commitBinding(
+        scope,
+        loaded ? current.filter((id) => id !== skill.id) : [...current, skill.id],
+      );
+    },
+    [bindings, commitBinding],
+  );
+
+  const removeBinding = useCallback(
+    (scope, skill) => {
+      commitBinding(scope, (bindings[scope] || []).filter((id) => id !== skill.id));
+    },
+    [bindings, commitBinding],
+  );
+
+  const clearBinding = useCallback(
+    (scope) => commitBinding(scope, []),
+    [commitBinding],
+  );
+
+  async function submitEditor(input) {
+    setEditor((current) => ({ ...current, saving: true, error: "" }));
+    try {
+      const saved = editor.skill?.id
+        ? await updateMySkill(editor.skill.id, input)
+        : await createMySkill(input);
+      setEditor({ open: false, skill: null, saving: false, error: "" });
+      await load();
+      if (saved?.id) {
+        setSelectedId(saved.id);
+        setOrigin("mine");
+      }
+    } catch (error) {
+      setEditor((current) => ({
+        ...current,
+        saving: false,
+        error: errorMessage(error, "保存失败，请稍后重试"),
+      }));
+    }
+  }
+
+  async function removeSkill(skill) {
+    // 装载记录随外键级联清理，这里只要确认一次。
+    if (!window.confirm(`删除「${skill.name}」？它会从所有装载位移除。`)) return;
+    try {
+      await deleteMySkill(skill.id);
+      if (selectedId === skill.id) setSelectedId("");
+      await load();
+    } catch (error) {
+      setLoadError(errorMessage(error, "删除失败，请稍后重试"));
+    }
+  }
+
+  function duplicateSkill(skill) {
+    setEditor({
+      open: true,
+      // 不带 id 即新建：官方 Skill 只读，复制一份再改。
+      skill: {
+        name: `${skill.name}（副本）`,
+        description: skill.description,
+        instruction: skill.instruction,
+        taskTypes: skill.taskTypes,
+      },
+      saving: false,
+      error: "",
+    });
+  }
+
+  async function confirmPicker(skillIds) {
+    const scope = picker.scope;
+    setPicker((current) => ({ ...current, saving: true, error: "" }));
+    const ok = await commitBinding(scope, [...(bindings[scope] || []), ...skillIds]);
+    setPicker(ok ? { open: false, scope: "", saving: false, error: "" } : (current) => ({
+      ...current,
+      saving: false,
+      error: "装载失败，请稍后重试",
+    }));
+  }
+
+  if (authLoading) {
+    return (
+      <div className="skills-page">
+        <div className="skills-page__inner skills-page__state">
+          <Loader2 className="skills-spin" size={22} />
+          <p>正在加载…</p>
+        </div>
+      </div>
     );
-  }, [query, category, addedOnly, added]);
-  const selected = items.find((skill) => skill.id === selectedId) || items[0];
+  }
 
-  function toggleAdded(id) {
-    setAdded((current) =>
-      current.includes(id)
-        ? current.filter((item) => item !== id)
-        : [...current, id],
+  if (!user) {
+    return (
+      <div className="skills-page">
+        <div className="skills-page__inner skills-page__state">
+          <span className="skills-page__state-icon">
+            <Layers3 size={26} />
+          </span>
+          <h1>Skill 中心</h1>
+          <p>
+            登录后即可装载 Skill：装载之后，每次生图都会自动带上它的要求，不用每次重复输入。
+          </p>
+          <button
+            type="button"
+            className="skills-button is-primary"
+            onClick={() =>
+              requestAuth({
+                featureLabel: "Skill 中心",
+                detail: "登录后即可装载官方或自建 Skill，之后每次生图都会自动带上它的画面要求。",
+                returnTo: "/skills",
+              })
+            }
+          >
+            登录后使用
+          </button>
+        </div>
+      </div>
     );
   }
 
-  function resetFilters() {
-    setQuery("");
-    setCategory("全部方向");
-    setAddedOnly(false);
-    setDetailOpen(false);
-  }
-
-  function selectSkill(id) {
-    setSelectedId(id);
-    setDetailOpen(true);
-  }
+  const pickerScope = picker.scope;
+  const pickerBound = pickerScope ? bindings[pickerScope] || [] : [];
 
   return (
-    <div
-      className="skills-demo"
-      data-testid="skills-demo"
-      data-detail-open={detailOpen}
-    >
-      <div className="skills-demo__inner">
-        <header className="skills-demo__page-head">
+    <div className="skills-page" data-testid="skills-page">
+      <div className="skills-page__inner">
+        <header className="skills-page__head">
           <div>
-            <div className="skills-demo__page-title">
+            <div className="skills-page__title">
               <span>
                 <Layers3 size={23} strokeWidth={1.6} aria-hidden="true" />
               </span>
               <h1>Skill 中心</h1>
             </div>
-            <p>为 AI 准备好的专业方法，按需选用，反复复用。</p>
+            <p>装载一次，之后每次生图都自动带上它的画面要求。</p>
           </div>
-          <span className="skills-demo__demo-badge">
-            <i />
-            独立 Demo<span>仅在本页体验</span>
-          </span>
+          <div className="skills-page__head-actions">
+            <button
+              type="button"
+              className="skills-button"
+              disabled={loading}
+              aria-label="刷新"
+              onClick={load}
+            >
+              <RefreshCw className={loading ? "skills-spin" : ""} size={15} />
+              刷新
+            </button>
+            <button
+              type="button"
+              className="skills-button is-primary"
+              onClick={() => setEditor({ open: true, skill: null, saving: false, error: "" })}
+            >
+              <Plus size={15} />
+              新建 Skill
+            </button>
+          </div>
         </header>
-        <div className="skills-demo__toolbar">
-          <div className="skills-demo__collection-tabs" aria-label="技能集合">
-            <button
-              type="button"
-              aria-pressed={!addedOnly}
-              onClick={() => {
-                setAddedOnly(false);
-                setDetailOpen(false);
-              }}
-            >
-              全部技能
-            </button>
-            <button
-              type="button"
-              aria-label="已添加"
-              aria-pressed={addedOnly}
-              onClick={() => {
-                setAddedOnly(true);
-                setDetailOpen(false);
-              }}
-            >
-              已添加{added.length > 0 && <span>{added.length}</span>}
-            </button>
-          </div>
-          <label className="skills-demo__search">
-            <Search size={17} aria-hidden="true" />
-            <input
-              aria-label="搜索 Skill"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="搜索技能或用途"
-            />
-            {query && (
-              <button
-                type="button"
-                aria-label="清空搜索"
-                onClick={() => setQuery("")}
-              >
-                <X size={15} />
-              </button>
-            )}
-          </label>
+
+        <div className="skills-page__tabs" role="tablist" aria-label="Skill 视图">
+          <button type="button" role="tab" aria-selected={tab === "library"} onClick={() => setTab("library")}>
+            技能库
+            <em className="tnum">{counts.all}</em>
+          </button>
+          <button type="button" role="tab" aria-selected={tab === "board"} onClick={() => setTab("board")}>
+            装载配置
+            <em className="tnum">{loadedIds.size}</em>
+          </button>
         </div>
-        <div className="skills-demo__layout">
-          <aside className="skills-demo__library" aria-label="技能列表">
-            <div className="skills-demo__library-head">
-              <span>{addedOnly ? "我的技能" : "选择一个技能"}</span>
-              <label>
-                <select
-                  value={category}
-                  aria-label="技能分类"
-                  onChange={(event) => setCategory(event.target.value)}
-                >
-                  {CATEGORIES.map((value) => (
-                    <option key={value}>{value}</option>
-                  ))}
-                </select>
-                <ChevronDown size={12} aria-hidden="true" />
+
+        {loadError && (
+          <p className="skills-page__error" role="alert">
+            <AlertCircle size={15} aria-hidden="true" />
+            {loadError}
+            <button type="button" aria-label="关闭提示" onClick={() => setLoadError("")}>
+              <X size={13} />
+            </button>
+          </p>
+        )}
+
+        {loading ? (
+          <div className="skills-page__state is-inline">
+            <Loader2 className="skills-spin" size={20} />
+            <p>正在加载 Skill…</p>
+          </div>
+        ) : tab === "board" ? (
+          <SkillBindingBoard
+            bindings={bindings}
+            skillsById={skillsById}
+            maxPerScope={maxPerScope}
+            busyScope={busyScope}
+            onRemove={removeBinding}
+            onClear={clearBinding}
+            onAdd={(scope) => setPicker({ open: true, scope, saving: false, error: "" })}
+          />
+        ) : (
+          <>
+            <div className="skills-page__toolbar">
+              <div className="skills-page__segmented" role="tablist" aria-label="Skill 来源">
+                {ORIGIN_TABS.map((item) => (
+                  <button
+                    key={item.value}
+                    type="button"
+                    role="tab"
+                    aria-selected={origin === item.value}
+                    onClick={() => setOrigin(item.value)}
+                  >
+                    {item.label}
+                    <em className="tnum">{counts[item.value]}</em>
+                  </button>
+                ))}
+              </div>
+              <label className="skills-search">
+                <Search size={16} aria-hidden="true" />
+                <input
+                  value={query}
+                  aria-label="搜索 Skill"
+                  placeholder="搜索名称、简介或标签"
+                  onChange={(event) => setQuery(event.target.value)}
+                />
+                {query && (
+                  <button type="button" aria-label="清空搜索" onClick={() => setQuery("")}>
+                    <X size={14} />
+                  </button>
+                )}
               </label>
             </div>
-            <div className="skills-demo__list">
-              {items.map((skill) => (
-                <article
-                  className={
-                    "skills-demo__card" +
-                    (selected?.id === skill.id ? " is-selected" : "")
-                  }
-                  key={skill.id}
-                >
+
+            {visible.length === 0 ? (
+              <div className="skills-page__state is-inline">
+                <span className="skills-page__state-icon">
+                  {origin === "mine" ? <Plus size={24} /> : <Search size={24} />}
+                </span>
+                <h2>
+                  {origin === "mine" && !counts.mine
+                    ? "把自己的画面要求存成 Skill"
+                    : "没有找到符合条件的 Skill"}
+                </h2>
+                <p>
+                  {origin === "mine" && !counts.mine
+                    ? "写一段固定的画面要求，装载之后每次生图都会自动带上。"
+                    : "换一个关键词，或看看其他来源。"}
+                </p>
+                {origin === "mine" && !counts.mine ? (
                   <button
                     type="button"
-                    aria-label={"查看" + skill.name}
-                    aria-pressed={selected?.id === skill.id}
-                    onClick={() => selectSkill(skill.id)}
+                    className="skills-button is-primary"
+                    onClick={() => setEditor({ open: true, skill: null, saving: false, error: "" })}
                   >
-                    <span className={"skills-demo__glyph is-" + skill.icon}>
-                      <SkillGlyph skill={skill} size={19} />
-                    </span>
-                    <span className="skills-demo__card-copy">
-                      <strong>{skill.name}</strong>
-                      <small>{skill.description}</small>
-                    </span>
-                    {added.includes(skill.id) && (
-                      <Check
-                        className="skills-demo__saved-mark"
-                        size={14}
-                        aria-label="已添加"
-                      />
-                    )}
+                    <Plus size={15} />
+                    新建 Skill
                   </button>
-                </article>
-              ))}
-            </div>
-            <div className="skills-demo__library-note">
-              <span>一个 Skill，一套好方法。</span>
-              <p>先看看它如何处理不同的需求，再决定是否添加。</p>
-            </div>
-          </aside>
-          {selected ? (
-            <SkillDetail
-              key={selected.id}
-              skill={selected}
-              added={added.includes(selected.id)}
-              onToggleAdded={() => toggleAdded(selected.id)}
-              onBack={() => setDetailOpen(false)}
-            />
-          ) : (
-            <div className="skills-demo__empty">
-              <span>
-                {addedOnly ? <Plus size={27} /> : <Search size={27} />}
-              </span>
-              <h2>
-                {addedOnly && !added.length
-                  ? "把常用的方法，留在手边"
-                  : "暂时没有找到合适的 Skill"}
-              </h2>
-              <p>
-                {addedOnly && !added.length
-                  ? "从全部技能中选一个，了解它的方法后点击添加。"
-                  : "换一个关键词，或看看其他方向。"}
-                <br />
-                添加与试用都只在当前 Demo 中生效。
-              </p>
-              <button
-                className="skills-demo__primary"
-                type="button"
-                onClick={resetFilters}
-              >
-                浏览全部技能
-                <ArrowRight size={15} />
-              </button>
-            </div>
-          )}
-        </div>
-        <p className="skills-demo__page-note">
-          演示数据 · 不调用 AI、不消耗积分 · 刷新后清空本页添加记录
-        </p>
+                ) : (
+                  <button
+                    type="button"
+                    className="skills-button"
+                    onClick={() => {
+                      setQuery("");
+                      setOrigin("all");
+                    }}
+                  >
+                    查看全部
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="skills-page__layout">
+                <aside className="skills-list" aria-label="Skill 列表">
+                  <div className="skills-list__scroll">
+                    {visible.map((skill) => (
+                      <article
+                        key={skill.id}
+                        className={"skills-card" + (selected?.id === skill.id ? " is-selected" : "")}
+                      >
+                        <button
+                          type="button"
+                          aria-label={`查看 ${skill.name}`}
+                          aria-pressed={selected?.id === skill.id}
+                          onClick={() => setSelectedId(skill.id)}
+                        >
+                          <span className={"skills-card__glyph" + (skill.official ? " is-official" : "")}>
+                            {skill.official ? <BadgeCheck size={17} /> : <UserRound size={17} />}
+                          </span>
+                          <span className="skills-card__copy">
+                            <strong>{skill.name}</strong>
+                            <small>{skill.description || "没有填写简介"}</small>
+                          </span>
+                          {loadedIds.has(skill.id) && (
+                            <span className="skills-card__mark" title="已装载">
+                              已装载
+                            </span>
+                          )}
+                        </button>
+                      </article>
+                    ))}
+                  </div>
+                </aside>
+                {selected && (
+                  <SkillDetail
+                    key={selected.id}
+                    skill={selected}
+                    bindings={bindings}
+                    busyScope={busyScope}
+                    maxPerScope={maxPerScope}
+                    onToggleScope={toggleScope}
+                    onEdit={(skill) => setEditor({ open: true, skill, saving: false, error: "" })}
+                    onDelete={removeSkill}
+                    onDuplicate={duplicateSkill}
+                  />
+                )}
+              </div>
+            )}
+          </>
+        )}
       </div>
+
+      <SkillEditorDialog
+        open={editor.open}
+        skill={editor.skill}
+        saving={editor.saving}
+        error={editor.error}
+        onClose={() => setEditor({ open: false, skill: null, saving: false, error: "" })}
+        onSubmit={submitEditor}
+      />
+      <SkillPickerDialog
+        open={picker.open}
+        scope={pickerScope}
+        skills={items}
+        boundIds={pickerBound}
+        remaining={Math.max(0, maxPerScope - pickerBound.length)}
+        saving={picker.saving}
+        error={picker.error}
+        onClose={() => setPicker({ open: false, scope: "", saving: false, error: "" })}
+        onConfirm={confirmPicker}
+      />
     </div>
   );
 }

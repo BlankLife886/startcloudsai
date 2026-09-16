@@ -234,6 +234,28 @@ function useDismissibleMenu(onClose: () => void, menuRef: React.RefObject<HTMLDi
     }, [menuRef, onClose, searchRef]);
 }
 
+/** Grouped node list shared by the create menus and the toolbar's more-tools panel. */
+export function CanvasNodeDefinitionSections({
+    sections,
+    onCreate,
+}: {
+    sections: Array<{ id: string; label: string; definitions: CanvasNodeDefinition[] }>;
+    onCreate: (type: string) => void;
+}) {
+    const { t } = useTranslation();
+    const unavailable = t("canvas.unavailable");
+    return (
+        <CreateMenuSections
+            sections={sections.map((section) => ({
+                id: section.id,
+                label: section.label,
+                items: section.definitions.map((def) => definitionToItem(def, onCreate, unavailable)),
+            }))}
+            emptyLabel={t("canvas.createMenu.empty")}
+        />
+    );
+}
+
 function definitionToItem(def: CanvasNodeDefinition, onCreate: (type: string) => void, unavailableLabel: string): CreateMenuItem {
     return {
         key: def.type,

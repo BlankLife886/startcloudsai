@@ -1,6 +1,11 @@
 import type { CanvasConnection, CanvasNodeData } from "../../types/canvas.ts";
 
-const SETTING_KEYS = ["composerContent", "prompt", "generationMode", "generationType", "model", "reasoningEffort", "size", "sizeMode", "exactWidth", "exactHeight", "resolution", "quality", "background", "count", "seconds", "videoSeconds", "vquality", "generateAudio", "videoGenerateAudio", "watermark", "videoWatermark", "audioVoice", "audioFormat", "audioSpeed", "audioInstructions", "references", "localImageOperation", "localImageOperationParams", "imageAngleParams"];
+// Batch settings belong here for the same reason a prompt does: they decide
+// what gets submitted. Only the fields the user sets are listed. The resolved
+// script, shot count and input roles are written back during a run, so signing
+// them would compare a run against its own output instead of against its
+// inputs — the source text itself is already covered by the upstream walk.
+const SETTING_KEYS = ["composerContent", "prompt", "generationMode", "generationType", "model", "reasoningEffort", "size", "sizeMode", "exactWidth", "exactHeight", "resolution", "quality", "background", "count", "seconds", "videoSeconds", "vquality", "generateAudio", "videoGenerateAudio", "watermark", "videoWatermark", "audioVoice", "audioFormat", "audioSpeed", "audioInstructions", "references", "localImageOperation", "localImageOperationParams", "imageAngleParams", "batchMode", "batchVariantCount", "storyboardParseMode", "storyboardStyle", "storyboardAspectRatio", "storyboardInputMode", "storyboardTextModel", "storyboardConsistency"];
 
 function settings(value: unknown) {
     const record = (value || {}) as Record<string, unknown>;
@@ -27,8 +32,13 @@ export function canvasWorkflowValueFingerprint(value: unknown) {
     return digest(canonical(value));
 }
 
-/** Sign submitted inputs, not output pixels or execution/UI metadata. */
-export function canvasWorkflowInputSignature(nodes: CanvasNodeData[], connections: CanvasConnection[], nodeIds: string[], resolveSettings?: (node: CanvasNodeData) => unknown) {
+/**
+ * Walks the graph the way execution reads it, describing each node by the
+ * inputs it submits. `describeProducer` decides how an upstream executable node
+ * is represented: the whole-graph signature only needs its identity, while a
+ * per-node fingerprint needs the actual output it will feed downstream.
+ */
+function workflowGraphReader(nodes: CanvasNodeData[], connections: CanvasConnection[], nodeIds: string[], describeProducer: (id: string) => unknown) {
     const nodeById = new Map(nodes.map((node) => [node.id, node]));
     const executable = new Set(nodeIds);
     const incoming = new Map<string, string[]>();
@@ -45,7 +55,7 @@ export function canvasWorkflowInputSignature(nodes: CanvasNodeData[], connection
     const resource = (id: string, visited: Set<string>): unknown => {
         const node = nodeById.get(id);
         if (!node || visited.has(id)) return { id, missing: !node };
-        if (executable.has(id)) return { producer: id };
+        if (executable.has(id)) return describeProducer(id);
         const metadata = node.metadata || {};
         const producers = (incoming.get(id) || []).filter((source) => executable.has(source));
         if (producers.length) return { id, type: node.type, producers };
@@ -59,7 +69,7 @@ export function canvasWorkflowInputSignature(nodes: CanvasNodeData[], connection
             inputs: inputIds(node).map((source) => resource(source, seen)),
         };
     };
-    return digest(canonical(nodeIds.map((id) => {
+    const describe = (id: string, resolveSettings?: (node: CanvasNodeData) => unknown) => {
         const node = nodeById.get(id)!;
         const configured = settings(node.metadata);
         const resolved = resolveSettings ? settings(resolveSettings(node)) : undefined;
@@ -70,5 +80,40 @@ export function canvasWorkflowInputSignature(nodes: CanvasNodeData[], connection
             if (resolved) delete resolved.count;
         }
         return { id, type: node.type, settings: configured, resolved, inputs: inputIds(node).map((source) => resource(source, new Set([id]))) };
-    })));
+    };
+    return { has: (id: string) => nodeById.has(id), describe };
+}
+
+/** Sign submitted inputs, not output pixels or execution/UI metadata. */
+export function canvasWorkflowInputSignature(nodes: CanvasNodeData[], connections: CanvasConnection[], nodeIds: string[], resolveSettings?: (node: CanvasNodeData) => unknown) {
+    const reader = workflowGraphReader(nodes, connections, nodeIds, (id) => ({ producer: id }));
+    return digest(canonical(nodeIds.map((id) => reader.describe(id, resolveSettings))));
+}
+
+/**
+ * Signs one node's inputs so a later run can tell whether that node still has
+ * to execute. An upstream executable node contributes the output it actually
+ * produced, not just its id: a regenerated upstream feeds different pixels
+ * downstream even when the downstream node's own settings never changed.
+ *
+ * Returns null when an upstream has no resolvable output, since a node whose
+ * input cannot be named cannot be proven unchanged.
+ */
+export function canvasWorkflowNodeInputFingerprint(options: {
+    nodeId: string;
+    nodes: CanvasNodeData[];
+    connections: CanvasConnection[];
+    executableNodeIds: string[];
+    resolveSettings?: (node: CanvasNodeData) => unknown;
+    resolveProducerOutput: (id: string) => string | null;
+}) {
+    let unresolvedUpstream = false;
+    const reader = workflowGraphReader(options.nodes, options.connections, options.executableNodeIds, (id) => {
+        const output = options.resolveProducerOutput(id);
+        if (!output) unresolvedUpstream = true;
+        return { producer: id, output };
+    });
+    if (!reader.has(options.nodeId)) return null;
+    const described = canonical(reader.describe(options.nodeId, options.resolveSettings));
+    return unresolvedUpstream ? null : digest(described);
 }

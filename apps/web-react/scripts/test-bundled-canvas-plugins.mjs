@@ -26,7 +26,9 @@ test("bundled plugins are registered under their original storage namespaces", a
 test("top toolbar labels common tools and groups advanced operations without dropping them", async () => {
     const toolbar = await readCanvasSource("components/canvas/canvas-toolbar.tsx");
     assert.match(toolbar, /creatableDefinitions\.filter\(\(def\) => isCanvasOperationNodeType\(def\.type\)\)/);
-    assert.match(toolbar, /\[\.\.\.operationDefs, \.\.\.extensionDefs\]\.map/);
+    // Both groups must still reach the more-tools panel, now each under its own section header.
+    assert.match(toolbar, /definitions: operationDefs/);
+    assert.match(toolbar, /definitions: extensionDefs/);
     assert.match(toolbar, /data-canvas-more-tools/);
     assert.match(toolbar, /id="tool-text" showLabel/);
     assert.match(toolbar, /getNodePluginId\(def\.type\) !== "builtin"/);

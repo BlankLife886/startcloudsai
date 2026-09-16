@@ -2,6 +2,7 @@ import type { CanvasNodeData, CanvasNodeExecutionStatus } from "../../types/canv
 import {
     normalizeStoryboardPlan,
     parseStoryboardScript,
+    resolveStoryboardConsistency,
     resolveStoryboardParseMode,
     type StoryboardParseMode,
     type StoryboardPlan,
@@ -88,7 +89,10 @@ function optionsFrom(group: CanvasNodeData, stored: ReturnType<typeof readStored
         style,
         sceneCount,
         aspectRatio,
-        consistency: typeof storedOptions.consistency === "boolean" ? storedOptions.consistency : group.metadata?.storyboardConsistency === true,
+        consistency: resolveStoryboardConsistency(
+            group.metadata?.batchMode,
+            typeof storedOptions.consistency === "boolean" ? storedOptions.consistency : group.metadata?.storyboardConsistency === true,
+        ),
         parseMode,
         aiPolish,
     };

@@ -147,6 +147,12 @@ const navItems = [
     label: "提示词",
     icon: "bi-journal-richtext",
   },
+  {
+    type: "link",
+    to: "/skills",
+    label: "Skill 中心",
+    icon: "bi-lightning-charge-fill",
+  },
   { type: "link", to: "/share", label: "社区", icon: "bi-images" },
   {
     type: "link",
@@ -171,7 +177,7 @@ const navItems = [
   },
 ];
 
-const accountMenuNavHrefs = new Set(["/pricing", "/incentive-plans"]);
+const accountMenuNavHrefs = new Set(["/incentive-plans"]);
 
 function routePath(to) {
   return String(to || "").split("?")[0];
@@ -1246,27 +1252,17 @@ export function NavBar() {
                                 </Link>
                               ))}
                           </div>
-                          {["/pricing", "/incentive-plans"].some((to) =>
-                            isEntryVisible(to),
-                          ) ? (
+                          {isEntryVisible("/incentive-plans") ? (
                             <div className="account-menu__list is-secondary">
-                              {[
-                                ["/pricing", "bi-credit-card-2-front", "创作价格"],
-                                ["/incentive-plans", "bi-gift", "创作激励"],
-                              ]
-                                .filter(([to]) => isEntryVisible(to))
-                                .map(([to, icon, label]) => (
-                                  <Link
-                                    key={to}
-                                    className="account-menu__item"
-                                    role="menuitem"
-                                    to={to}
-                                    onClick={closeMenu}
-                                  >
-                                    <i className={`bi ${icon}`} aria-hidden="true" />
-                                    <span>{label}</span>
-                                  </Link>
-                                ))}
+                              <Link
+                                className="account-menu__item"
+                                role="menuitem"
+                                to="/incentive-plans"
+                                onClick={closeMenu}
+                              >
+                                <i className="bi bi-gift" aria-hidden="true" />
+                                <span>创作激励</span>
+                              </Link>
                             </div>
                           ) : null}
                           {checkinVisible || (trialVisible && trialCampaign) ? (

@@ -107,7 +107,7 @@ const COMMERCE_ITEMS = COMMERCE_ENTRY_GROUPS.map((group) => ({
 }));
 
 const LOCAL_TOOL_ITEMS = [
-  { id: "skills", to: "/skills", label: "Skill 中心", tagline: "官方创作模板与参数化提示词", icon: "bi-lightning-charge", minPoints: 0 },
+  { id: "skills", to: "/skills", label: "Skill 中心", tagline: "装载一次，之后每次生图都自动带上画面要求", icon: "bi-lightning-charge", minPoints: 0 },
   { id: "psd-decompose", to: "/psd-decompose", label: "PSD 分解", tagline: "图片转分层 PSD 与素材包", icon: "bi-layers", },
   {
     id: "all-ai-tools",

@@ -1,7 +1,7 @@
 import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import { Button, Tooltip } from "antd";
-import { Clapperboard, Group, Hand, Home, Image as ImageIcon, MousePointer2, Music2, Plus, Puzzle, Redo2, Settings2, Trash2, Type, Undo2, Video } from "lucide-react";
+import { Clapperboard, FilePlus2, Group, Hand, Home, Image as ImageIcon, MousePointer2, Music2, Puzzle, Redo2, Settings2, Trash2, Type, Undo2, Unlink, Video } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { isCanvasNodeTypeEnabled } from "@/constant/canvas";
@@ -11,9 +11,11 @@ import { CanvasNodeType } from "@/types/canvas";
 import { getNodePluginId, listNodeDefinitions, useNodeRegistryVersion } from "@/lib/canvas/node-registry";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasFloatingLayer } from "./canvas-floating-layer";
+import { CanvasNodeDefinitionSections } from "./canvas-create-menus";
 
 export function CanvasToolbar({
     selectedCount,
+    selectedConnectionCount,
     canvasTool,
     canUndo,
     canRedo,
@@ -25,12 +27,15 @@ export function CanvasToolbar({
     onAddConfig,
     onAddGroup,
     onAddExtensionNode,
+    onDisconnect,
     onDelete,
     onUndo,
     onRedo,
     onCanvasToolChange,
 }: {
     selectedCount: number;
+    /** Wires attached to the selection — drives the disconnect button's enabled state. */
+    selectedConnectionCount: number;
     canvasTool: "select" | "pan";
     canUndo: boolean;
     canRedo: boolean;
@@ -42,6 +47,7 @@ export function CanvasToolbar({
     onAddConfig: () => void;
     onAddGroup: () => void;
     onAddExtensionNode: (type: string) => void;
+    onDisconnect: () => void;
     onDelete: () => void;
     onUndo: () => void;
     onRedo: () => void;
@@ -87,6 +93,9 @@ export function CanvasToolbar({
             >
                 <ToolbarButton id="tool-home" label={t("canvas.projects")} hovered={hovered} hoverStyle={hoverStyle} onHover={setHovered} onClick={onProjects}>
                     <Home className="size-3.5" />
+                </ToolbarButton>
+                <ToolbarButton id="tool-create" label={t("canvas.create")} hovered={hovered} hoverStyle={hoverStyle} onHover={setHovered} onClick={onCreateProject}>
+                    <FilePlus2 className="size-3.5" />
                 </ToolbarButton>
                 <Divider theme={theme} />
                 <ToolbarButton id={`tool-${canvasTool}`} label={t(`canvas.toolbar.${canvasTool}`)} active hovered={hovered} activeStyle={activeStyle} hoverStyle={hoverStyle} onHover={setHovered} onClick={() => onCanvasToolChange(canvasTool === "select" ? "pan" : "select")}>
@@ -141,6 +150,17 @@ export function CanvasToolbar({
                 {selectedCount ? (
                     <>
                         <Divider theme={theme} />
+                        <ToolbarButton
+                            id="tool-disconnect"
+                            label={t("canvas.disconnectSelected")}
+                            disabled={!selectedConnectionCount}
+                            hovered={hovered}
+                            hoverStyle={hoverStyle}
+                            onHover={setHovered}
+                            onClick={onDisconnect}
+                        >
+                            <Unlink className="size-3.5" />
+                        </ToolbarButton>
                         <ToolbarButton id="tool-delete" label={t("canvas.deleteSelected")} hovered={hovered} hoverStyle={hoverStyle} onHover={setHovered} onClick={onDelete} danger>
                             <Trash2 className="size-3.5" />
                         </ToolbarButton>
@@ -149,34 +169,24 @@ export function CanvasToolbar({
             </div>
 
             {extensionsOpen ? (
-                <CanvasFloatingLayer anchorRef={rootRef} width={280}
+                <CanvasFloatingLayer
+                    getAnchorElement={() => rootRef.current?.querySelector<HTMLElement>('[data-toolbar-id="tool-extensions"]') ?? null}
+                    width={264}
                     data-canvas-more-tools
-                    className="thin-scrollbar rounded-2xl border p-3 shadow-xl"
+                    className="rounded-2xl border p-2 shadow-xl"
                     style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.item }}
                 >
-                    <div className="px-1.5 pb-2 text-xs font-medium">{t("canvas.toolbar.moreTools", { defaultValue: "更多工具" })}</div>
-                    <div className="grid gap-0.5">
-                        <button type="button" className="mb-1 flex items-center gap-2 rounded-lg px-2 py-2 text-left text-sm" onClick={() => { setExtensionsOpen(false); onCreateProject(); }}><Plus className="size-4" />{t("canvas.create")}</button>
-                        {[...operationDefs, ...extensionDefs].map((def) => (
-                            <button
-                                key={def.type}
-                                type="button"
-                                className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-sm transition"
-                                style={{ color: theme.toolbar.item }}
-                                onMouseEnter={(event) => (event.currentTarget.style.background = theme.toolbar.itemHover)}
-                                onMouseLeave={(event) => (event.currentTarget.style.background = "transparent")}
-                                onClick={() => {
-                                    onAddExtensionNode(def.type);
-                                    setExtensionsOpen(false);
-                                }}
-                            >
-                                <span className="grid size-7 shrink-0 place-items-center rounded-md text-base" style={{ background: theme.toolbar.itemHover }}>
-                                    {def.icon}
-                                </span>
-                                <span className="min-w-0 flex-1 truncate">{def.title}</span>
-                            </button>
-                        ))}
-                    </div>
+                    <div className="px-1.5 pb-1.5 text-xs font-medium">{t("canvas.toolbar.moreTools", { defaultValue: "更多工具" })}</div>
+                    <CanvasNodeDefinitionSections
+                        sections={[
+                            { id: "process", label: t("canvas.createMenu.sectionProcess"), definitions: operationDefs },
+                            { id: "extensions", label: t("canvas.createMenu.extensions"), definitions: extensionDefs },
+                        ]}
+                        onCreate={(type) => {
+                            onAddExtensionNode(type);
+                            setExtensionsOpen(false);
+                        }}
+                    />
                 </CanvasFloatingLayer>
             ) : null}
         </div>
@@ -214,7 +224,7 @@ function ToolbarButton({
 
     return (
         <Tooltip title={label} placement="bottom">
-            <span className="inline-flex">
+            <span className="inline-flex" data-toolbar-id={id}>
                 <Button
                     type="text"
                     aria-label={label}

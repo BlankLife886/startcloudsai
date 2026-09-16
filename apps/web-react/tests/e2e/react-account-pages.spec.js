@@ -1409,8 +1409,7 @@ test.describe('React authenticated account pages', () => {
     await page.goto('/profile', { waitUntil: 'domcontentloaded' })
     await expect(page.locator('.pp-page')).toBeVisible()
 
-    await page.getByTitle('个人中心').click()
-    await page.getByRole('menuitem', { name: '创作价格' }).click()
+    await page.getByRole('navigation', { name: '主导航' }).getByRole('link', { name: '创作价格' }).click()
     await expect(page).toHaveURL(/\/pricing$/)
     await expectPricingPageIsolated(page)
     await expect(page.locator('.pp-page')).toHaveCount(0)

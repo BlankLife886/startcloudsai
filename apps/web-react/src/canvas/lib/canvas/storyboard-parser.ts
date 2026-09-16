@@ -397,6 +397,11 @@ export function resolveBatchMode(value?: string): "split" | "variants" | "refs" 
     return "split";
 }
 
+/** Cast continuity anchors each shot to the previous render, so it must run serially. Only split is a continuous narrative: refs shots already carry their own reference, and anchoring variants would erase the variety they exist for. */
+export function resolveStoryboardConsistency(batchMode: string | undefined, enabled: boolean | undefined) {
+    return resolveBatchMode(batchMode) === "split" && enabled === true;
+}
+
 /** Map each connected reference onto exactly one scene for batch refs mode. */
 export function buildStoryboardRefShotIds(
     scenes: Array<{ id: string }>,

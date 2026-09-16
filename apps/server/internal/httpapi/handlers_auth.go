@@ -91,7 +91,12 @@ func (s *Server) verifyEmailCode(c *gin.Context) {
 		return
 	}
 	clientIP := c.ClientIP()
-	if remain, allowed := s.LoginLimiter.Check(email, clientIP); !allowed {
+	// 防爆破只按邮箱维度计数，不带 IP：校园、公司和运营商 NAT 会让成百上千的正常
+	// 用户共用一个出口 IP，一旦按 IP 锁定，少数人输错验证码就会让同网络的所有人
+	// 都登不进去。针对 IP 的滥用防护改由发码额度承担（见 takeLoginCodeQuota）：
+	// 猜测验证码必须先有一封已发出的验证码，限制发码量即可限制总猜测量，而且不会
+	// 妨碍任何人使用手里已经收到的验证码。
+	if remain, allowed := s.LoginLimiter.Check(email, ""); !allowed {
 		fail(c, apperr.E("rate_limited", auth.LockMessage(remain), 429))
 		return
 	}
@@ -114,15 +119,20 @@ func (s *Server) verifyEmailCode(c *gin.Context) {
 		}
 		now := time.Now().UTC()
 		if user == nil {
-			if limitErr := s.takeUsageLimit(c, "registration-ip-day", clientIP, registrationsPerIPDay, 1, 24*time.Hour); limitErr != nil {
-				return limitErr
-			}
 			enabled, settingErr := settings.GetBool(ctx, tx, "registration_enabled")
 			if settingErr != nil {
 				return settingErr
 			}
 			if !enabled {
 				return apperr.E("registration_closed", "当前未开放新用户注册", 403)
+			}
+			// 名额在所有前置校验都通过之后才扣：额度记在 Redis 里，不随事务回滚，
+			// 提前扣会让"注册未开放"或一次偶发数据库错误白白吃掉用户当天的名额。
+			// clientIP 为空时跳过，避免把空 subject 传给限流器换来一个 503。
+			if clientIP != "" {
+				if limitErr := s.takeUsageLimit(c, "registration-ip-day", clientIP, registrationsPerIPDay, 1, 24*time.Hour); limitErr != nil {
+					return limitErr
+				}
 			}
 			passwordHash, hashErr := auth.HashPassword(auth.NewSessionToken())
 			if hashErr != nil {
@@ -162,25 +172,24 @@ func (s *Server) verifyEmailCode(c *gin.Context) {
 		fail(c, err)
 		return
 	}
+	if codeState == emailCodeExpired {
+		// 超时不计失败次数：用户该做的只是重新获取一封验证码。
+		fail(c, apperr.E("code_expired", "验证码已过期，请重新获取", 401))
+		return
+	}
 	if codeState == emailCodeLocked {
-		s.LoginLimiter.Fail(email, clientIP)
+		s.LoginLimiter.Fail(email, "")
 		fail(c, apperr.E("rate_limited", "验证码错误次数过多，请重新获取", 429))
 		return
 	}
 	if codeState != emailCodeValid {
-		// 失败才计数：错误验证码计入邮箱/IP 失败窗口，配合下方成功时的
-		// SuccessAttempt 重置，形成 fail-to-count + success-to-reset。
-		s.LoginLimiter.Fail(email, clientIP)
+		// 失败才计数：只有真正猜错的验证码计入邮箱失败窗口，配合下方成功时的
+		// Success 重置，形成 fail-to-count + success-to-reset。
+		s.LoginLimiter.Fail(email, "")
 		fail(c, apperr.E("invalid_code", "验证码错误或已过期", 401))
 		return
 	}
-	if created {
-		// Keep the IP-side login-code counter after registration. Clearing it here
-		// allowed sequential valid mailboxes to bypass the IP anti-farming window.
-		s.LoginLimiter.Success(email)
-	} else {
-		s.LoginLimiter.SuccessAttempt(email, clientIP)
-	}
+	s.LoginLimiter.Success(email)
 	c.Set(ctxPlatformUserKey, user)
 	s.setSessionCookie(c, token)
 	if !created && referralCode != "" {

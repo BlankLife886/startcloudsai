@@ -186,11 +186,15 @@ function outputMetadata(metadata: CanvasNodeMetadata = {}): Partial<CanvasNodeMe
         generationStartedAt: metadata.generationStartedAt,
         generationCompletedAt: metadata.generationCompletedAt,
         generationDurationMs: metadata.generationDurationMs,
+        workflowInputSignature: metadata.workflowInputSignature,
+        workflowOutputSignature: metadata.workflowOutputSignature,
         // Storyboard output identity is part of the durable result, not merely
         // local editor state. Preserve it when a newer cloud output wins a
         // multi-tab merge so retries and shot-level provenance remain intact.
         storyboardId: metadata.storyboardId,
         storyboardSceneId: metadata.storyboardSceneId,
+        storyboardShotSignature: metadata.storyboardShotSignature,
+        storyboardShotOutput: metadata.storyboardShotOutput,
         storyboardIndex: metadata.storyboardIndex,
         storyboardTitle: metadata.storyboardTitle,
         storyboardSummary: metadata.storyboardSummary,

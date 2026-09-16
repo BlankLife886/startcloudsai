@@ -261,7 +261,8 @@ export async function requestCanvasBackgroundRemoval(reference: ReferenceImage, 
     };
 }
 
-function imageTaskParams(config: AiConfig) {
+/** The only path config settings take to the server, so callers that need to compare two submissions must sign this, not a hand-picked field list. */
+export function canvasImageTaskParams(config: AiConfig) {
     const settings = coerceCanvasImageSettings(modelOptionMeta(config, config.model), config);
     const quality = settings.quality === "standard" ? "medium" : settings.quality === "hd" ? "high" : settings.quality;
     return {
@@ -431,7 +432,7 @@ export function imagesFromCanvasTask(task: CanvasTask) {
 
 export async function requestCanvasImages(config: AiConfig, prompt: string, references: ReferenceImage[] = [], mask?: ReferenceImage, options?: AbortSignal | CanvasTaskOptions) {
     const { signal, onCreated, idempotencyKey, onBeforeCreate } = normalizeTaskOptions(options);
-    const params = imageTaskParams(config);
+    const params = canvasImageTaskParams(config);
     const inputKeys = await Promise.all(references.slice(0, 4).map(ensureReferenceKey));
     const maskKey = mask ? await ensureReferenceKey(mask) : "";
     if (signal?.aborted) throw abortError();

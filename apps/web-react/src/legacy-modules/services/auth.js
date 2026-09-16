@@ -55,7 +55,7 @@ export async function requestEmailAuthCode(email) {
   } catch (error) {
     // 发码成功但 body 偶发丢失时，服务端通常已写入验证码；按已发送处理，避免误导重试撞限流。
     if (isMalformedSuccessResponse(error)) {
-      return { expiresIn: 180, resendAfter: 60 }
+      return { expiresIn: 600, resendAfter: 60 }
     }
     throw error
   }

@@ -10,6 +10,8 @@ export function canvasGenerationStageLabel(stage?: string, fallback = "正在生
             return "正在获取生成结果";
         case "saving_result":
             return "正在保存图片";
+        case "canceling":
+            return "正在停止";
         default:
             return fallback;
     }

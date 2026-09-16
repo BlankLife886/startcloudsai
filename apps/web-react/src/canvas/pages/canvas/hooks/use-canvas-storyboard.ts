@@ -7,7 +7,7 @@ import { classifyStoryboardBatchImages, combineStoryboardTextInputs, resolveStor
 import type { StoryboardGenerationOptions, StoryboardProgressEvent } from "@/lib/canvas/canvas-storyboard-page";
 import { asStoryboardStyle, NODE_STATUS_ERROR, NODE_STATUS_IDLE, NODE_STATUS_LOADING, NODE_STATUS_SUCCESS } from "@/lib/canvas/canvas-storyboard-page";
 import { isGenerationCanceled } from "@/lib/canvas/canvas-generation-helpers";
-import { detectStoryboardShotCount, buildStoryboardVariantPlan, buildStoryboardRefPlan, buildStoryboardRefShotIds, resolveBatchMode, resolveStoryboardParseMode, STORYBOARD_INPUT_LIMIT, STORYBOARD_MAX_SCENES } from "@/lib/canvas/storyboard-parser";
+import { detectStoryboardShotCount, buildStoryboardVariantPlan, buildStoryboardRefPlan, buildStoryboardRefShotIds, resolveBatchMode, resolveStoryboardConsistency, resolveStoryboardParseMode, STORYBOARD_INPUT_LIMIT, STORYBOARD_MAX_SCENES } from "@/lib/canvas/storyboard-parser";
 import type { StoryboardPlan } from "@/lib/canvas/storyboard-parser";
 import type { CanvasConnection, CanvasNodeData } from "@/types/canvas";
 import type { ReasoningEffort } from "@/stores/use-config-store";
@@ -235,7 +235,7 @@ export function useCanvasStoryboardConfigRunner(params: UseCanvasStoryboardConfi
                 style,
                 sceneCount: detectedCount,
                 aspectRatio: String(node.metadata.size || node.metadata.storyboardAspectRatio || "auto"),
-                consistency: batchMode === "refs" ? false : node.metadata.storyboardConsistency === true,
+                consistency: resolveStoryboardConsistency(batchMode, node.metadata.storyboardConsistency),
                 parseMode,
                 aiPolish,
                 shotTypeOverrides: node.metadata.storyboardShotTypeOverrides,

@@ -2,13 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { catalogModelsByCapability, defaultConfig, migrateConfigStore, resolveModelForCapability, selectableModelsByCapability } from "../src/canvas/stores/use-config-store.ts";
-import { connectionSourceNodeIds, normalizeConnection } from "../src/canvas/lib/canvas/canvas-connection.ts";
+import { canvasConnectionIdsTouchingNodes, connectionSourceNodeIds, normalizeConnection } from "../src/canvas/lib/canvas/canvas-connection.ts";
 import { copyCanvasNodeMetadata, resolveCopiedCanvasNodeReferences } from "../src/canvas/lib/canvas/canvas-node-copy.ts";
+import { canvasShotInputSignature, canvasShotIsReusable } from "../src/canvas/lib/canvas/canvas-storyboard-shot-signature.ts";
+import { createCanvasSubmissionFreeze } from "../src/canvas/lib/canvas/canvas-submission-freeze.ts";
 import {
     advanceCanvasWorkflowCheckpoint,
     beginCanvasWorkflowRetry,
     canvasWorkflowCheckpointForStart,
     canvasWorkflowNodeOutputFingerprint,
+    carryOverCanvasWorkflowCompletions,
     compileCanvasWorkflow,
     completeCanvasWorkflowNode,
     createCanvasWorkflowCheckpoint,
@@ -38,6 +41,8 @@ import { shouldBlockCanvasNavigation } from "../src/canvas/lib/canvas/canvas-lea
 import { applyCanvasAgentNodeUpdate, clampCanvasAgentImageCounts } from "../src/canvas/lib/canvas/canvas-agent-node-metadata.ts";
 import { boundedCanvasTaskKey, canvasManualTaskKey, canvasWorkflowTaskKey, MAX_CANVAS_TASK_KEY_LENGTH } from "../src/canvas/lib/canvas/canvas-task-key.ts";
 import { canvasLocalImageOperationOutputCount, isCanvasLocalImageOperation, normalizeCanvasLocalImageOperationParams } from "../src/canvas/lib/canvas/canvas-local-image-operation.ts";
+import { resolveStoryboardConsistency } from "../src/canvas/lib/canvas/storyboard-parser.ts";
+import { canvasWorkflowNodeInputFingerprint } from "../src/canvas/lib/canvas/canvas-workflow-signature.ts";
 
 const node = (id, type, metadata = {}) => ({ id, type, title: id, position: { x: 0, y: 0 }, width: 100, height: 100, metadata });
 const edge = (fromNodeId, toNodeId) => ({ id: `${fromNodeId}-${toNodeId}`, fromNodeId, toNodeId });
@@ -286,6 +291,21 @@ test("connectionSourceNodeIds expands multi-select sources", () => {
     assert.deepEqual(connectionSourceNodeIds({ nodeId: "a", sourceNodeIds: [] }), ["a"]);
     assert.deepEqual(connectionSourceNodeIds({ nodeId: "a", sourceNodeIds: ["a", "b", "a", "c"] }), ["a", "b", "c"]);
     assert.deepEqual(connectionSourceNodeIds(null), []);
+});
+
+test("disconnecting a selection cuts wires on both sides and leaves the rest alone", () => {
+    const connections = [
+        { id: "c1", fromNodeId: "text", toNodeId: "config" },
+        { id: "c2", fromNodeId: "config", toNodeId: "out" },
+        { id: "c3", fromNodeId: "out", toNodeId: "upscale" },
+        { id: "c4", fromNodeId: "other-a", toNodeId: "other-b" },
+    ];
+    // Incoming c1 and outgoing c2 both go, because either endpoint counts.
+    assert.deepEqual([...canvasConnectionIdsTouchingNodes(connections, new Set(["config"]))], ["c1", "c2"]);
+    assert.deepEqual([...canvasConnectionIdsTouchingNodes(connections, new Set(["config", "upscale"]))], ["c1", "c2", "c3"]);
+    // An empty or unrelated selection must never touch a wire.
+    assert.equal(canvasConnectionIdsTouchingNodes(connections, new Set()).size, 0);
+    assert.equal(canvasConnectionIdsTouchingNodes(connections, new Set(["ghost"])).size, 0);
 });
 
 test("multi-selected images can each normalize onto one config target", () => {
@@ -833,4 +853,221 @@ test("folds an over-long task key into a stable bounded digest", () => {
     assert.equal(bounded, boundedCanvasTaskKey(long), "the same input must survive a crash-resume with the same key");
     assert.notEqual(bounded, boundedCanvasTaskKey(`${long}y`), "different inputs must not collapse onto one key");
     assert.equal(boundedCanvasTaskKey("canvas:short"), "canvas:short", "a short key is returned untouched");
+});
+
+test("restricts cast continuity to split mode so batch runs stay parallel", () => {
+    // Continuity generates serially (each shot anchors on the previous render),
+    // so a stale flag on a 100-image batch would silently cost ~4x wall clock.
+    assert.equal(resolveStoryboardConsistency("split", true), true);
+    assert.equal(resolveStoryboardConsistency("variants", true), false, "variants are independent takes on one prompt");
+    assert.equal(resolveStoryboardConsistency("refs", true), false, "refs shots already carry their own reference");
+
+    // Legacy documents saved the flag before the toggle was retired from the UI.
+    assert.equal(resolveStoryboardConsistency(undefined, true), true, "an absent mode is split");
+    assert.equal(resolveStoryboardConsistency("variants", undefined), false);
+    assert.equal(resolveStoryboardConsistency("split", false), false);
+});
+
+const shotInput = (overrides = {}) => ({
+    prompt: "a red bicycle",
+    params: { quality: "high", size: "1024x1024", publicModelKey: "gpt-image-1" },
+    count: 1,
+    references: [{ storageKey: "uploads/a.png" }],
+    ...overrides,
+});
+
+test("signs every value a shot submits so a rerun can tell changed images from unchanged ones", () => {
+    const baseline = canvasShotInputSignature(shotInput());
+    assert.equal(baseline, canvasShotInputSignature(shotInput()), "identical inputs must reuse, not re-bill");
+    assert.notEqual(baseline, canvasShotInputSignature(shotInput({ prompt: "a blue bicycle" })), "prompt");
+    assert.notEqual(baseline, canvasShotInputSignature(shotInput({ params: { quality: "low", size: "1024x1024", publicModelKey: "gpt-image-1" } })), "params");
+    assert.notEqual(baseline, canvasShotInputSignature(shotInput({ count: 2 })), "count");
+    assert.notEqual(baseline, canvasShotInputSignature(shotInput({ references: [{ storageKey: "uploads/b.png" }] })), "reference");
+    assert.notEqual(baseline, canvasShotInputSignature(shotInput({ references: [] })), "dropping a reference");
+
+    // Edit models read references positionally, so the same set in a new order
+    // is a different request.
+    const ordered = canvasShotInputSignature(shotInput({ references: [{ storageKey: "uploads/a.png" }, { storageKey: "uploads/b.png" }] }));
+    const swapped = canvasShotInputSignature(shotInput({ references: [{ storageKey: "uploads/b.png" }, { storageKey: "uploads/a.png" }] }));
+    assert.notEqual(ordered, swapped, "reference order is part of the request");
+
+    assert.equal(baseline, canvasShotInputSignature(shotInput({ prompt: "  a red bicycle  " })), "the request trims the prompt, so the signature must too");
+});
+
+test("refuses to sign a shot whose reference has no identity beyond this session", () => {
+    // A blob/data reference cannot be compared across runs; signing it by value
+    // would let a rerun serve pixels from a since-replaced upload.
+    assert.equal(canvasShotInputSignature(shotInput({ references: [{ dataUrl: "data:image/png;base64,AAA" }] })), null);
+    assert.equal(canvasShotInputSignature(shotInput({ references: [{ url: "blob:http://localhost/abc" }] })), null);
+    assert.equal(canvasShotInputSignature(shotInput({ references: [{ storageKey: "uploads/a.png" }, { url: "blob:http://localhost/abc" }] })), null, "one transient reference taints the whole shot");
+});
+
+test("reuses an image only when it is the proven output of exactly these inputs", () => {
+    const signature = canvasShotInputSignature(shotInput());
+    const succeeded = { id: "n1", metadata: { storyboardShotSignature: signature, storyboardShotOutput: "tasks/out.png", storyboardStatus: "succeeded", storageKey: "tasks/out.png" } };
+    assert.equal(canvasShotIsReusable(succeeded, signature), true);
+
+    assert.equal(canvasShotIsReusable(succeeded, canvasShotInputSignature(shotInput({ prompt: "changed" }))), false, "changed inputs must regenerate");
+    assert.equal(canvasShotIsReusable(succeeded, null), false, "an unsignable shot must regenerate");
+    assert.equal(canvasShotIsReusable(null, signature), false);
+    assert.equal(canvasShotIsReusable({ id: "n2", metadata: { storyboardStatus: "succeeded", storageKey: "tasks/out.png" } }, signature), false, "an image from before signing must regenerate");
+
+    // A failed shot keeps the pixels and signature of its last success, so the
+    // inputs it failed on can never match it.
+    assert.equal(canvasShotIsReusable({ ...succeeded, metadata: { ...succeeded.metadata, storyboardStatus: "failed" } }, signature), false);
+    assert.equal(canvasShotIsReusable({ id: "n3", metadata: { storyboardShotSignature: signature, storyboardShotOutput: "tasks/out.png", storyboardStatus: "succeeded" } }, signature), false, "a signature without pixels is not an output");
+});
+
+test("refuses to reuse a shot whose pixels were replaced after it was signed", () => {
+    // Task recovery, Agent edits and manual uploads all write images without
+    // knowing which inputs produced them. Checking the recorded output against
+    // the node's current image catches every such path at once.
+    const signature = canvasShotInputSignature(shotInput());
+    const signed = { storyboardShotSignature: signature, storyboardShotOutput: "tasks/out.png", storyboardStatus: "succeeded" };
+    assert.equal(canvasShotIsReusable({ id: "n1", metadata: { ...signed, storageKey: "tasks/out.png" } }, signature), true);
+    assert.equal(canvasShotIsReusable({ id: "n2", metadata: { ...signed, storageKey: "uploads/replaced.png" } }, signature), false, "a replaced upload is not the signed output");
+    assert.equal(canvasShotIsReusable({ id: "n3", metadata: { ...signed, storageKey: "", content: "data:image/png;base64,edited" } }, signature), false, "an edit that drops the durable key is not the signed output");
+    assert.equal(canvasShotIsReusable({ id: "n4", metadata: { ...signed, storageKey: undefined, content: undefined } }, signature), false, "a shot with no pixels left has nothing to reuse");
+
+    // Older documents were signed before the output was recorded.
+    assert.equal(canvasShotIsReusable({ id: "n5", metadata: { storyboardShotSignature: signature, storyboardStatus: "succeeded", storageKey: "tasks/out.png" } }, signature), false);
+});
+
+// Chain: a -> a-out -> b -> b-out, so b reads the image a produces.
+const signedChain = () => {
+    const nodes = [
+        node("a", "config", { status: "success", prompt: "draw a cat" }),
+        node("a-out", "image", { status: "success", storageKey: "tasks/user/task/original/a.png" }),
+        node("b", "config", { status: "success", prompt: "upscale it" }),
+        node("b-out", "image", { status: "success", storageKey: "tasks/user/task/original/b.png" }),
+    ];
+    const edges = [edge("a", "a-out"), edge("a-out", "b"), edge("b", "b-out")];
+    const plan = compileCanvasWorkflow(nodes, edges).plan;
+    const stamped = nodes.map((item) => {
+        if (!plan.nodeIds.includes(item.id)) return item;
+        return {
+            ...item,
+            metadata: {
+                ...item.metadata,
+                workflowInputSignature: canvasWorkflowNodeInputFingerprint({
+                    nodeId: item.id,
+                    nodes,
+                    connections: edges,
+                    executableNodeIds: plan.nodeIds,
+                    resolveProducerOutput: (id) => canvasWorkflowNodeOutputFingerprint(id, nodes, edges),
+                }),
+                workflowOutputSignature: canvasWorkflowNodeOutputFingerprint(item.id, nodes, edges),
+            },
+        };
+    });
+    const carry = (current) => carryOverCanvasWorkflowCompletions({ layers: plan.layers, nodeIds: plan.nodeIds, nodes: current, connections: edges, dependencies: plan.dependencies }).completedNodeIds;
+    const edit = (id, patch) => stamped.map((item) => (item.id === id ? { ...item, metadata: { ...item.metadata, ...patch } } : item));
+    return { plan, edges, stamped, carry, edit };
+};
+
+test("carries over only the nodes a change cannot have touched", () => {
+    const chain = signedChain();
+    assert.deepEqual(chain.plan.nodeIds, ["a", "b"], "only config nodes execute");
+    assert.deepEqual(chain.carry(chain.stamped).sort(), ["a", "b"], "an untouched graph owes no work");
+
+    // The rule that makes this safe: b reads a's pixels, so a rerunning forces
+    // b to rerun even though b's own prompt never changed.
+    assert.deepEqual(chain.carry(chain.edit("a", { prompt: "draw a dog" })), [], "a changed upstream invalidates everything below it");
+    assert.deepEqual(chain.carry(chain.edit("b", { prompt: "upscale it twice" })), ["a"], "a change invalidates only itself and its downstream");
+
+    // A result that no longer exists, or was replaced by hand, is not a result.
+    assert.deepEqual(chain.carry(chain.edit("a-out", { storageKey: "uploads/manual-replacement.png", content: "" })), [], "a manually replaced output must be regenerated");
+    assert.deepEqual(chain.carry(chain.edit("b-out", { storageKey: "", content: "" })), ["a"], "a missing output must be regenerated");
+});
+
+test("never carries over a node that has not proven what it ran on", () => {
+    const chain = signedChain();
+    assert.deepEqual(chain.carry(chain.edit("a", { workflowInputSignature: undefined })), [], "a node from before signing must run, and so must its downstream");
+    assert.deepEqual(chain.carry(chain.edit("b", { workflowOutputSignature: undefined })), ["a"]);
+
+    // Stamping writes to node metadata, so it must not feed back into either
+    // fingerprint or a second run could never match the first.
+    const restamped = signedChain();
+    assert.equal(restamped.stamped[0].metadata.workflowInputSignature, chain.stamped[0].metadata.workflowInputSignature);
+    assert.deepEqual(
+        carryOverCanvasWorkflowCompletions({ layers: chain.plan.layers, nodeIds: chain.plan.nodeIds, nodes: restamped.stamped, connections: chain.edges, dependencies: chain.plan.dependencies }).completedNodeIds.sort(),
+        ["a", "b"],
+    );
+});
+
+test("treats batch settings as inputs so changing the image count is never skipped", () => {
+    const batch = (metadata) => {
+        const nodes = [
+            node("text", "text", { content: "one\ntwo\nthree" }),
+            node("cfg", "config", { storyboardConfig: true, batchMode: "variants", batchVariantCount: 100, storyboardParseMode: "lines", storyboardStyle: "ink", storyboardAspectRatio: "1:1", ...metadata }),
+            node("out", "image", { status: "success", storageKey: "tasks/user/task/original/out.png" }),
+        ];
+        const edges = [edge("text", "cfg"), edge("cfg", "out")];
+        return canvasWorkflowNodeInputFingerprint({ nodeId: "cfg", nodes, connections: edges, executableNodeIds: ["cfg"], resolveProducerOutput: () => "v1:0" });
+    };
+    const baseline = batch({});
+    assert.equal(baseline, batch({}));
+    assert.notEqual(baseline, batch({ batchVariantCount: 80 }), "image count");
+    assert.notEqual(baseline, batch({ batchMode: "split" }), "batch mode");
+    assert.notEqual(baseline, batch({ storyboardParseMode: "blank-line" }), "split method");
+    assert.notEqual(baseline, batch({ storyboardStyle: "watercolor" }), "style");
+    assert.notEqual(baseline, batch({ storyboardAspectRatio: "16:9" }), "aspect ratio");
+
+    // Written back at run start from the resolved inputs. Signing them would
+    // compare a run against its own output, and the text they came from is
+    // already covered by the upstream node.
+    assert.equal(baseline, batch({ storyboardScript: "one\ntwo\nthree", storyboardShotCount: 3, storyboardInputRoles: { text: "primary" }, storyboardTitle: "batch" }), "run-written fields stay out of the input fingerprint");
+});
+
+test("reads the source text through the upstream node rather than the cached script", () => {
+    const build = (content) => {
+        const nodes = [node("text", "text", { content }), node("cfg", "config", { storyboardConfig: true, storyboardScript: "stale cached copy" })];
+        const edges = [edge("text", "cfg")];
+        return canvasWorkflowNodeInputFingerprint({ nodeId: "cfg", nodes, connections: edges, executableNodeIds: ["cfg"], resolveProducerOutput: () => "v1:0" });
+    };
+    assert.notEqual(build("one\ntwo"), build("one\ntwo\nthree"), "editing the connected text must invalidate the batch");
+});
+
+test("images still queued when a stop lands create no task", async () => {
+    const freeze = createCanvasSubmissionFreeze();
+    const createdTasks = [];
+    const slotWaiters = [];
+    // A multi-image node fires one request per image, but only a handful hold a
+    // concurrency slot at a time, so most are still queued when a stop lands.
+    const submitImage = async (nodeId) => {
+        await new Promise((resolve) => slotWaiters.push(resolve));
+        freeze.guard(nodeId)();
+        createdTasks.push(nodeId);
+    };
+    const inFlight = Array.from({ length: 10 }, () => submitImage("node-a").then(() => "created", (error) => error.name));
+    assert.equal(slotWaiters.length, 10, "every image is waiting on a slot");
+
+    // Cancelling the tasks already created is what frees the slots these are
+    // waiting for, so the freeze has to be in place before the cancels go out.
+    const thaw = freeze.freeze(["node-a"]);
+    slotWaiters.forEach((release) => release());
+    assert.deepEqual(await Promise.all(inFlight), Array(10).fill("AbortError"));
+    assert.deepEqual(createdTasks, [], "a stopped node must not bill for work it never ran");
+
+    thaw();
+    assert.doesNotThrow(freeze.guard("node-a"), "a settled stop must leave the node restartable");
+});
+
+test("overlapping stops do not thaw each other's nodes", () => {
+    const freeze = createCanvasSubmissionFreeze();
+    const thawWorkflow = freeze.freeze(["a", "b"]);
+    const thawNode = freeze.freeze(["b", "c"]);
+    thawNode();
+    assert.equal(freeze.isFrozen("b"), true, "the workflow stop still owns b");
+    assert.equal(freeze.isFrozen("c"), false);
+    thawWorkflow();
+    assert.equal(freeze.isFrozen("a"), false);
+    assert.equal(freeze.isFrozen("b"), false);
+});
+
+test("a guard covers every node the request writes to", () => {
+    const freeze = createCanvasSubmissionFreeze();
+    freeze.freeze(["host"]);
+    assert.throws(freeze.guard("shot", "host"), { name: "AbortError" }, "freezing a batch host must stop its shots");
+    assert.doesNotThrow(freeze.guard("shot", ""), "an absent companion id must not freeze anything");
 });

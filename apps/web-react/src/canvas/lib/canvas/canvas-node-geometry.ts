@@ -1,6 +1,6 @@
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type ConnectionHandle, type Position } from "@/types/canvas";
 
-export { connectionSourceNodeIds, normalizeConnection, normalizeConnectionBetween } from "./canvas-connection";
+export { canvasConnectionIdsTouchingNodes, connectionSourceNodeIds, normalizeConnection, normalizeConnectionBetween } from "./canvas-connection";
 
 export function nodeBounds(nodes: CanvasNodeData[]) {
     return nodes.reduce(

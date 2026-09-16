@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { CircleClose, Search, Unlock, Wallet } from '@element-plus/icons-vue'
+import { CircleClose, Odometer, Search, Unlock, Wallet } from '@element-plus/icons-vue'
 import AdminDialog from '@/components/AdminDialog.vue'
 import RegistrationSettingsDialog from '@/components/settings/RegistrationSettingsDialog.vue'
 import UserProfilePanel from '@/components/UserProfilePanel.vue'
@@ -343,9 +343,36 @@ async function submitAdjust() {
   }
 }
 
+// ---------- 追加并发对话框 ----------
+const concurrencyVisible = ref(false)
+const concurrencyForm = reactive({ bonus: 0 })
+const concurrencySubmitting = ref(false)
+
+function openConcurrency() {
+  concurrencyForm.bonus = overview.value?.concurrency?.manualBonus ?? 0
+  concurrencyVisible.value = true
+}
+
+async function submitConcurrency() {
+  const userID = drawerUser.value?.id
+  if (!userID) return
+  concurrencySubmitting.value = true
+  try {
+    await request(`/api/v1/admin/users/${userID}`, {
+      method: 'PATCH',
+      body: { concurrencyBonus: Math.round(Number(concurrencyForm.bonus || 0)) },
+    })
+    ElMessage.success('并发已更新')
+    concurrencyVisible.value = false
+    loadOverview()
+  } finally {
+    concurrencySubmitting.value = false
+  }
+}
+
 // ---------- 用户详情抽屉 ----------
 interface UserDetail {
-  concurrency?: {base: number; bonus: number; limit: number; running: number; imageRunning?: number; imageLimit?: number; chatRunning?: number; chatLimit?: number}
+  concurrency?: {base: number; bonus: number; planBonus?: number; manualBonus?: number; limit: number; running: number; imageRunning?: number; imageLimit?: number; chatRunning?: number; chatLimit?: number}
   user: AdminUser
   wallet: UserWallet
   subscription?: UserSubscription | null
@@ -825,6 +852,30 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
       </el-form>
     </AdminDialog>
 
+    <!-- 手动追加并发 -->
+    <AdminDialog
+      v-model="concurrencyVisible"
+      title="手动追加并发"
+      subtitle="在基础并发与订阅加成之上额外追加，立即生效"
+      :icon="Odometer"
+      width="420px"
+      footer-hint="范围 0 ~ 1000 张，填 0 表示取消追加"
+      confirm-text="保存"
+      :confirm-loading="concurrencySubmitting"
+      @confirm="submitConcurrency"
+    >
+      <template v-if="overview?.concurrency" #meta>
+        <span class="admin-dialog__chip tnum">
+          追加前 基础 {{ overview.concurrency.base }} + 订阅 {{ overview.concurrency.planBonus ?? overview.concurrency.bonus }} = {{ overview.concurrency.base + (overview.concurrency.planBonus ?? overview.concurrency.bonus) }} 张
+        </span>
+      </template>
+      <el-form label-position="top" class="adjust-form">
+        <el-form-item label="追加张数" required>
+          <el-input-number v-model="concurrencyForm.bonus" :min="0" :max="1000" :precision="0" :step="1" />
+        </el-form-item>
+      </el-form>
+    </AdminDialog>
+
     <!-- 用户详情抽屉 -->
     <el-drawer
       v-model="drawerVisible"
@@ -962,7 +1013,14 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
                     </div>
                     <div><dt>权益编号</dt><dd style="overflow-wrap:anywhere">{{ overview.subscription?.contract?.id || '历史未绑定价格版本' }}</dd></div>
                     <div v-if="overview.subscription?.contract"><dt>锁价范围</dt><dd>{{ overview.subscription.contract.lockModelPrices ? overview.subscription.contract.allowTopupPriceLock ? '订阅及合格额度包' : '仅订阅积分' : '实时价格' }}</dd></div>
-                    <div v-if="overview.concurrency"><dt>图片并发</dt><dd>基础 {{ overview.concurrency.base }} + 订阅 {{ overview.concurrency.bonus }} = {{ overview.concurrency.imageLimit ?? overview.concurrency.limit }} 张；当前占用 {{ overview.concurrency.imageRunning ?? overview.concurrency.running }} 张</dd></div>
+                    <div v-if="overview.concurrency">
+                      <dt>图片并发</dt>
+                      <dd>
+                        基础 {{ overview.concurrency.base }} + 订阅 {{ overview.concurrency.planBonus ?? overview.concurrency.bonus }} + 手动 {{ overview.concurrency.manualBonus ?? 0 }}
+                        = {{ overview.concurrency.imageLimit ?? overview.concurrency.limit }} 张；当前占用 {{ overview.concurrency.imageRunning ?? overview.concurrency.running }} 张
+                        <button type="button" class="detail-link" @click="openConcurrency">调整手动追加</button>
+                      </dd>
+                    </div>
                     <div v-if="overview.concurrency?.chatLimit != null"><dt>对话并发</dt><dd>当前 {{ overview.concurrency.chatRunning ?? 0 }} / {{ overview.concurrency.chatLimit }} 次，与图片额度独立</dd></div>
                     <div v-if="overview.subscription?.contract"><dt>价格版本</dt><dd style="overflow-wrap:anywhere">{{ overview.subscription.contract.priceBookId }}</dd></div>
                     <div>
