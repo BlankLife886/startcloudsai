@@ -377,8 +377,8 @@ func jsonValuePresent(value any) bool {
 func dangerousSteps(steps []*store.AgentToolStep) []*store.AgentToolStep {
 	items := make([]*store.AgentToolStep, 0)
 	for _, step := range steps {
-		if step.ToolName == "canvas_delete_nodes" || step.ToolName == "canvas_clear" || step.ToolName == "canvas_restore_checkpoint" || step.ToolName == "canvas_restore_agent_transaction" ||
-			(step.ToolName == "canvas_apply_ops" && (strings.Contains(string(step.Arguments), `"delete_node"`) || strings.Contains(string(step.Arguments), `"clear_canvas"`))) {
+		if step.ToolName == "canvas_restore_checkpoint" || step.ToolName == "canvas_restore_agent_transaction" ||
+			(step.ToolName == "canvas_apply_ops" && strings.Contains(string(step.Arguments), `"delete_node"`)) {
 			items = append(items, step)
 		}
 	}

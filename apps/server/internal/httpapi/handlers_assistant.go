@@ -26,12 +26,12 @@ import (
 )
 
 const (
-	maxAssistantMessages     = 60
-	maxAssistantMessageRunes = 12000
-	maxAssistantTotalRunes   = 80000
-	maxAssistantReferences   = 4
-	maxAssistantImageBytes   = 8 << 20
-	maxAssistantImagesBytes  = 12 << 20
+	maxAssistantMessages    = 60
+	maxAssistantMessageRunes = settings.DefaultAssistantMessageMaxChars
+	maxAssistantTotalRunes  = 80000
+	maxAssistantReferences  = 4
+	maxAssistantImageBytes  = 8 << 20
+	maxAssistantImagesBytes = 12 << 20
 )
 
 type assistantChatIn struct {
@@ -416,7 +416,7 @@ func (s *Server) assistantChat(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	if err := validateAssistantMessages(body.Messages); err != nil {
+	if err := validateAssistantMessages(body.Messages, s.assistantMessageMaxRunes(c.Request.Context())); err != nil {
 		fail(c, err)
 		return
 	}
@@ -590,7 +590,18 @@ func validateAssistantImageSize(size string) error {
 	return nil
 }
 
-func validateAssistantMessages(messages []sub2api.Message) error {
+func (s *Server) assistantMessageMaxRunes(ctx context.Context) int {
+	return settings.GetPromptMaxChars(ctx, s.St.Pool, "assistant_message_max_chars", settings.DefaultAssistantMessageMaxChars)
+}
+
+func (s *Server) t2iPromptMaxRunes(ctx context.Context) int {
+	return settings.GetPromptMaxChars(ctx, s.St.Pool, "t2i_prompt_max_chars", settings.DefaultT2IPromptMaxChars)
+}
+
+func validateAssistantMessages(messages []sub2api.Message, maxRunes int) error {
+	if maxRunes < settings.PromptMaxCharsMin {
+		maxRunes = settings.DefaultAssistantMessageMaxChars
+	}
 	if len(messages) == 0 || len(messages) > maxAssistantMessages {
 		return apperr.E("validation_error", fmt.Sprintf("messages: 须包含 1-%d 条消息", maxAssistantMessages), 422)
 	}
@@ -600,8 +611,8 @@ func validateAssistantMessages(messages []sub2api.Message) error {
 			return apperr.E("validation_error", fmt.Sprintf("messages[%d].role: 无效角色", i), 422)
 		}
 		length := len([]rune(strings.TrimSpace(message.Content)))
-		if length == 0 || length > maxAssistantMessageRunes {
-			return apperr.E("validation_error", fmt.Sprintf("messages[%d].content: 长度须在 1-%d 之间", i, maxAssistantMessageRunes), 422)
+		if length == 0 || length > maxRunes {
+			return apperr.E("validation_error", fmt.Sprintf("messages[%d].content: 长度须在 1-%d 之间", i, maxRunes), 422)
 		}
 		total += length
 	}

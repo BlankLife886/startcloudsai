@@ -689,7 +689,7 @@ func (s *Server) importAssistantConversations(c *gin.Context) {
 				if role != "user" && role != "assistant" {
 					continue
 				}
-				content := truncateAssistantText(assistantMapText(raw, "content"), maxAssistantMessageRunes)
+				content := truncateAssistantText(assistantMapText(raw, "content"), s.assistantMessageMaxRunes(c.Request.Context()))
 				metadata := assistantImportMetadata(raw)
 				status := "complete"
 				if pending, _ := raw["pending"].(bool); pending {
@@ -744,16 +744,17 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		return
 	}
 	body.Prompt = strings.TrimSpace(body.Prompt)
-	if body.Prompt == "" || len([]rune(body.Prompt)) > maxAssistantMessageRunes {
-		fail(c, apperr.E("validation_error", "消息长度须在 1-12000 之间", 422))
+	maxRunes := s.assistantMessageMaxRunes(c.Request.Context())
+	if body.Prompt == "" || len([]rune(body.Prompt)) > maxRunes {
+		fail(c, apperr.E("validation_error", fmt.Sprintf("消息长度须在 1-%d 之间", maxRunes), 422))
 		return
 	}
 	body.UserMessageContent = strings.TrimSpace(body.UserMessageContent)
 	if body.UserMessageContent == "" {
 		body.UserMessageContent = body.Prompt
 	}
-	if len([]rune(body.UserMessageContent)) > maxAssistantMessageRunes {
-		fail(c, apperr.E("validation_error", "展示消息不能超过 12000 个字符", 422))
+	if len([]rune(body.UserMessageContent)) > maxRunes {
+		fail(c, apperr.E("validation_error", fmt.Sprintf("展示消息不能超过 %d 个字符", maxRunes), 422))
 		return
 	}
 	if body.Mode != "agent" && body.Mode != "chat" && body.Mode != "image" {
@@ -1093,7 +1094,7 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 			item.SizeMode, item.ExactWidth, item.ExactHeight = body.SizeMode, body.ExactWidth, body.ExactHeight
 		}
 	}
-	imagePlanItems, err := sanitizeAssistantImagePlanItems(body.ImagePlanItems, references, body.Count, imagePlanModel, body.Resolution)
+	imagePlanItems, err := sanitizeAssistantImagePlanItems(body.ImagePlanItems, references, body.Count, imagePlanModel, body.Resolution, s.assistantMessageMaxRunes(c.Request.Context()))
 	if err != nil {
 		fail(c, err)
 		return
@@ -1975,8 +1976,9 @@ func (s *Server) patchAssistantRun(c *gin.Context) {
 		if content == "" {
 			content = prompt
 		}
-		if prompt == "" || len([]rune(prompt)) > maxAssistantMessageRunes || len([]rune(content)) > maxAssistantMessageRunes {
-			fail(c, apperr.E("validation_error", "排队消息长度须在 1-12000 之间", 422))
+		maxRunes := s.assistantMessageMaxRunes(c.Request.Context())
+		if prompt == "" || len([]rune(prompt)) > maxRunes || len([]rune(content)) > maxRunes {
+			fail(c, apperr.E("validation_error", fmt.Sprintf("排队消息长度须在 1-%d 之间", maxRunes), 422))
 			return
 		}
 		updated, updateErr := store.UpdateQueuedAssistantRunPrompt(c.Request.Context(), s.St.Pool, user.ID, id, prompt, content)
@@ -2651,12 +2653,15 @@ func assistantPlanItemRequestSize(ratio, resolution, explicit string) string {
 	return fmt.Sprintf("%dx%d", width, height)
 }
 
-func sanitizeAssistantImagePlanItems(items []assistantRunImagePlanItem, references []map[string]any, expected int, model *modelconfig.Model, defaultResolution string) ([]map[string]any, error) {
+func sanitizeAssistantImagePlanItems(items []assistantRunImagePlanItem, references []map[string]any, expected int, model *modelconfig.Model, defaultResolution string, maxPromptRunes int) ([]map[string]any, error) {
 	if len(items) == 0 {
 		return nil, nil
 	}
 	if len(items) != expected {
 		return nil, apperr.E("validation_error", fmt.Sprintf("独立多图方案数量不一致：方案 %d 张，输出 %d 张", len(items), expected), 422)
+	}
+	if maxPromptRunes < settings.PromptMaxCharsMin {
+		maxPromptRunes = settings.DefaultAssistantMessageMaxChars
 	}
 	allowed := map[string]bool{}
 	for _, reference := range references {
@@ -2669,8 +2674,8 @@ func sanitizeAssistantImagePlanItems(items []assistantRunImagePlanItem, referenc
 	out := make([]map[string]any, 0, len(items))
 	for index, item := range items {
 		promptText := strings.TrimSpace(item.Prompt)
-		if promptText == "" || len([]rune(promptText)) > maxAssistantMessageRunes {
-			return nil, apperr.E("validation_error", fmt.Sprintf("第 %d 张图片的提示词长度须在 1-12000 之间", index+1), 422)
+		if promptText == "" || len([]rune(promptText)) > maxPromptRunes {
+			return nil, apperr.E("validation_error", fmt.Sprintf("第 %d 张图片的提示词长度须在 1-%d 之间", index+1, maxPromptRunes), 422)
 		}
 		title := strings.TrimSpace(item.Title)
 		if title == "" {

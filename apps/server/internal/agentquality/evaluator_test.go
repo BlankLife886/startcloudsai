@@ -53,7 +53,7 @@ func TestGraphResultRejectsOnlyNonEmptyDiagnostics(t *testing.T) {
 func TestEvaluateRejectsUnconfirmedDangerousStep(t *testing.T) {
 	trace := &store.AgentExecutionTrace{ID: uuid.New(), Status: "succeeded"}
 	result := Evaluate([]store.AgentEvalCase{{ID: uuid.New(), Key: "safe-batch-delete"}}, []Sample{{Trace: trace, Steps: []*store.AgentToolStep{{
-		ToolName: "canvas_clear", Status: "succeeded", RequiresConfirmation: false,
+		ToolName: "canvas_restore_checkpoint", Status: "succeeded", RequiresConfirmation: false,
 	}}}})[0]
 	if result.Passed || result.Score != 0 || result.ErrorMessage != "" {
 		t.Fatalf("result=%#v", result)

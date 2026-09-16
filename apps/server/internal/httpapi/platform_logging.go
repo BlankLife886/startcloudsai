@@ -169,16 +169,23 @@ func (s *Server) platformLoggingMiddleware(c *gin.Context) {
 		adminID = &id
 	}
 	message := fmt.Sprintf("%s %s -> %d", c.Request.Method, route, statusCode)
+	responseBytes := c.Writer.Size()
 	metadata := map[string]any{
 		"method":        c.Request.Method,
 		"route":         route,
 		"scope":         platformRequestScope(route),
 		"client":        platformClientKind(c.Request.UserAgent()),
 		"outcome":       platformRequestOutcome(statusCode),
-		"responseBytes": c.Writer.Size(),
+		"responseBytes": responseBytes,
 		"contentLength": max(c.Request.ContentLength, 0),
 		"aborted":       c.IsAborted(),
 		"slow":          duration >= 2*time.Second,
+	}
+	// Auth writes that report success with an empty body match the intermittent
+	// client symptom "请求失败（201）" when the JSON envelope never arrives.
+	if eventName == "security.authentication_succeeded" && responseBytes <= 0 {
+		metadata["emptyBody"] = true
+		level = "warning"
 	}
 	if value, exists := c.Get(ctxPlatformErrorKey); exists {
 		if code, ok := value.(string); ok && strings.TrimSpace(code) != "" {

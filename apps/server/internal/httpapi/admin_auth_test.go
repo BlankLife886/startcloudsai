@@ -78,7 +78,7 @@ func TestUserAndAdminAuthenticationAreIsolated(t *testing.T) {
 	adminLogin := authRequest(t, engine, "POST", "/api/v1/admin/auth/session", gin.H{
 		"email": "same@gmail.com", "password": "admin-password",
 	})
-	if adminLogin.Code != http.StatusCreated {
+	if adminLogin.Code != http.StatusOK {
 		t.Fatalf("admin login failed: %d %s", adminLogin.Code, adminLogin.Body.String())
 	}
 
@@ -123,7 +123,7 @@ func TestUserAndAdminAuthenticationAreIsolated(t *testing.T) {
 	}
 	if w := authRequest(t, engine, "POST", "/api/v1/admin/auth/session", gin.H{
 		"email": "same@gmail.com", "password": "changed-admin-password",
-	}); w.Code != http.StatusCreated {
+	}); w.Code != http.StatusOK {
 		t.Fatalf("new admin password rejected: %d %s", w.Code, w.Body.String())
 	}
 	if w := authRequest(t, engine, "GET", "/api/v1/auth/session", nil, userCookie); w.Code != 200 || !bytes.Contains(w.Body.Bytes(), []byte(`"email":"same@gmail.com"`)) {

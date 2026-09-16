@@ -38,7 +38,7 @@ func openAICompatRequestMiddleware(c *gin.Context) {
 		// Request IDs are part of the public API even when platform logging is off.
 		ensureOpenAIRequestID(c)
 		if c.Request.Method == http.MethodPost &&
-			(c.Request.URL.Path == "/v1/images/generations" || c.Request.URL.Path == "/v1/images/edits") &&
+			(c.Request.URL.Path == "/v1/images/generations" || c.Request.URL.Path == "/v1/images/edits" || c.Request.URL.Path == "/v1/responses") &&
 			strings.TrimSpace(c.GetHeader("Idempotency-Key")) == "" {
 			// A client cannot safely replay a paid POST using an ID generated
 			// only in the previous response. OpenAI SDKs honor this retry hint.

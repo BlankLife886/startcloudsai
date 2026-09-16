@@ -116,19 +116,19 @@ func newOpenAIImagesIntegrationEnv(t *testing.T) *openAIImagesIntegrationEnv {
 	}
 	provider := modelconfig.Provider{ID: "compat-provider", Name: "Local test provider", Adapter: modelconfig.AdapterOpenAI,
 		BaseURL: "https://never-called.invalid", APIKey: "never-called-test-key", Enabled: true, TimeoutSecs: 10}
-	imageModel := modelconfig.Model{ID: openAIIntegrationModel, Name: "Test image", ProviderID: provider.ID,
+	imageModel := modelconfig.Model{ID: openAIIntegrationModel, Name: openAIIntegrationModel, ProviderID: provider.ID,
 		UpstreamModel: "test-upstream-image", Kind: modelconfig.ModelKindImage, PriceCents: 20,
 		Enabled: true, Public: true, Default: true, MaxImages: 4, MaxReferenceImages: 6,
 		Resolutions: []string{"1K"}, AspectRatios: []string{"1:1"}, Qualities: []string{"low", "medium", "high"},
 		OutputFormats: []string{"png", "jpeg", "webp"}, ModerationLevels: []string{"auto", "low"}}
 	other := imageModel
-	other.ID, other.Default = "compat-other", false
+	other.ID, other.Name, other.Default = "compat-other", "compat-other", false
 	private := other
-	private.ID, private.Public = "compat-private", false
+	private.ID, private.Name, private.Public = "compat-private", "compat-private", false
 	maintenance := other
-	maintenance.ID, maintenance.Status = "compat-maintenance", modelconfig.ModelStatusMaintenance
+	maintenance.ID, maintenance.Name, maintenance.Status = "compat-maintenance", "compat-maintenance", modelconfig.ModelStatusMaintenance
 	unbound := other
-	unbound.ID = "compat-unbound"
+	unbound.ID, unbound.Name = "compat-unbound", "compat-unbound"
 	if err := modelconfig.Save(ctx, st.Pool, modelconfig.Config{Version: modelconfig.Version,
 		Providers: []modelconfig.Provider{provider}, Models: []modelconfig.Model{imageModel, other, private, maintenance, unbound},
 		Workspaces: map[string]modelconfig.WorkspaceBinding{modelconfig.WorkspaceT2I: {
@@ -282,6 +282,83 @@ func (env *openAIImagesIntegrationEnv) assertBilling(t *testing.T, taskCount int
 	usage, err := store.GetAPIKeyUsageSummary(ctx, env.st.Pool, env.key.ID, time.Now().UTC())
 	if err != nil || usage.TodayTasks != taskCount || usage.TodaySpendCents != points {
 		t.Fatalf("API usage = %#v error=%v; want tasks=%d points=%d", usage, err, taskCount, points)
+	}
+}
+
+func TestOpenAIResponsesImageGeneration(t *testing.T) {
+	env := newOpenAIImagesIntegrationEnv(t)
+	body := `{"model":"compat-image","input":"a blue sky","tools":[{"type":"image_generation"}]}`
+	done := env.start(t, env.request(http.MethodPost, "/v1/responses", "application/json", "responses-test-1", strings.NewReader(body)))
+	task := env.waitTask(t, "a blue sky", done)
+	env.completeTask(t, task, uploadTestPNG(t))
+	response := awaitOpenAIIntegrationResponse(t, done)
+	if response.Code != http.StatusOK {
+		t.Fatalf("responses status=%d body=%s", response.Code, response.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["object"] != "response" || payload["status"] != "completed" {
+		t.Fatalf("responses payload=%#v", payload)
+	}
+	output, _ := payload["output"].([]any)
+	if len(output) != 1 || output[0].(map[string]any)["type"] != "image_generation_call" || output[0].(map[string]any)["result"] == "" {
+		t.Fatalf("responses output=%#v", output)
+	}
+}
+
+func TestOpenAIResponsesImageModelWithoutTool(t *testing.T) {
+	env := newOpenAIImagesIntegrationEnv(t)
+	body := `{"model":"compat-image","input":"a blue kitten"}`
+	done := env.start(t, env.request(http.MethodPost, "/v1/responses", "application/json", "responses-image-model-1", strings.NewReader(body)))
+	task := env.waitTask(t, "a blue kitten", done)
+	env.completeTask(t, task, uploadTestPNG(t))
+	response := awaitOpenAIIntegrationResponse(t, done)
+	if response.Code != http.StatusOK {
+		t.Fatalf("responses status=%d body=%s", response.Code, response.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	output, _ := payload["output"].([]any)
+	if len(output) != 1 || output[0].(map[string]any)["type"] != "image_generation_call" {
+		t.Fatalf("responses output=%#v", output)
+	}
+}
+
+func TestOpenAIResponsesImageGenerationStream(t *testing.T) {
+	env := newOpenAIImagesIntegrationEnv(t)
+	body := `{"model":"compat-image","input":[{"role":"user","content":[{"type":"input_text","text":"stream a blue sky"}]}],"tools":[{"type":"image_generation","partial_images":1}],"stream":true}`
+	done := env.start(t, env.request(http.MethodPost, "/v1/responses", "application/json", "responses-stream-1", strings.NewReader(body)))
+	task := env.waitTask(t, "stream a blue sky", done)
+	env.completeTask(t, task, uploadTestPNG(t))
+	response := awaitOpenAIIntegrationResponse(t, done)
+	if response.Code != http.StatusOK || !strings.HasPrefix(response.Header().Get("Content-Type"), "text/event-stream") {
+		t.Fatalf("stream status=%d content-type=%s body=%s", response.Code, response.Header().Get("Content-Type"), response.Body.String())
+	}
+	for _, event := range []string{
+		`"type":"response.created"`,
+		`"type":"response.image_generation_call.in_progress"`,
+		`"type":"response.image_generation_call.generating"`,
+		`"type":"response.image_generation_call.partial_image"`,
+		`"type":"response.image_generation_call.completed"`,
+		`"type":"response.completed"`,
+		"data: [DONE]",
+	} {
+		if !strings.Contains(response.Body.String(), event) {
+			t.Fatalf("stream omitted %s: %s", event, response.Body.String())
+		}
+	}
+}
+
+func TestParseOpenAIResponsesInputImage(t *testing.T) {
+	encoded := base64.StdEncoding.EncodeToString(uploadTestPNG(t))
+	raw := json.RawMessage(`[{"role":"user","content":[{"type":"input_text","text":"edit this"},{"type":"input_image","image_url":"data:image/png;base64,` + encoded + `"}]}]`)
+	prompt, images, err := parseOpenAIResponsesInput(raw)
+	if err != nil || prompt != "edit this" || len(images) != 1 || images[0].ContentType != "image/png" {
+		t.Fatalf("prompt=%q images=%#v error=%v", prompt, images, err)
 	}
 }
 

@@ -99,7 +99,7 @@ func TestExactSizeAssistantPlanPreservesPixelsBeyondLegacyRange(t *testing.T) {
 	items, err := sanitizeAssistantImagePlanItems([]assistantRunImagePlanItem{
 		{Prompt: "wide banner", SizeMode: "exact", ExactWidth: 6001, ExactHeight: 999, Resolution: "4K", Ratio: "1:1", RequestSize: "1024x1024"},
 		{Prompt: "poster", SizeMode: "exact", ExactWidth: 777, ExactHeight: 1001},
-	}, nil, 2, &model, "1K")
+	}, nil, 2, &model, "1K", maxAssistantMessageRunes)
 	if err != nil {
 		t.Fatal(err)
 	}

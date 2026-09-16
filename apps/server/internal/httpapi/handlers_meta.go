@@ -222,6 +222,7 @@ func (s *Server) runtimeConfig(c *gin.Context) {
 	}
 	ok(c, gin.H{
 		"routes": gin.H{}, "features": features, "pageLayout": gin.H{}, "pageControls": pageControls,
+		"promptInputLimits": settings.ResolvePromptInputLimits(ctx, s.St.Pool),
 		"aiModelCatalog": gin.H{
 			"providers": []any{}, "models": catalogModels, "publicModels": allImageModels,
 			"featurePublicModels": []any{}, "updatedAt": time.Now().UTC().Format(time.RFC3339),

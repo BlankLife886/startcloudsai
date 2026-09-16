@@ -137,7 +137,9 @@ func (s *Server) requestEmailLoginCode(c *gin.Context) {
 	if developmentCodeEcho {
 		result["developmentCode"] = code
 	}
-	respondCreated(c, result)
+	// Verification codes are ephemeral; 200 avoids 201-without-Location quirks
+	// in some reverse proxies that can strip or alter the JSON body.
+	ok(c, result)
 }
 
 type emailCodeState uint8

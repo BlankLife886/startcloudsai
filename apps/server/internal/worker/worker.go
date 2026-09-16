@@ -457,7 +457,11 @@ func (w *Worker) claimTask(ctx context.Context, taskID uuid.UUID) (*store.Task, 
 		pressure.RunningUnits = max(pressure.RunningUnits-reservedUnits, 0)
 		pressure.RunningTasks = max(pressure.RunningTasks-reservedUnits, 0)
 		userLimit := int64(account.ImageLimit)
+		developerAPI := taskParamString(queued.Params, "_apiKeyId") != ""
 		if err := store.CheckExecutionBatchLimits(true, requestedUnits, userLimit, globalLimit, executionCandidateMaxCapacity(candidates)); err != nil && !resumeKnown {
+			if developerAPI {
+				err = store.CheckExecutionBatchLimits(true, requestedUnits, 0, globalLimit, executionCandidateMaxCapacity(candidates))
+			}
 			return err
 		}
 		excluded := make(map[string]bool)
@@ -486,9 +490,16 @@ func (w *Worker) claimTask(ctx context.Context, taskID uuid.UUID) (*store.Task, 
 			return nil
 		}
 		pressure.UserRunningTasks = max(account.ImageRunning-reservedUnits, 0)
+		hardUserLimit := userLimit
+		if developerAPI {
+			// API keys are governed by their own RPM/spend quotas. Use global
+			// capacity as the scheduling ceiling instead of the interactive
+			// subscription concurrency allowance.
+			hardUserLimit = globalLimit
+		}
 		decision := adaptiveDispatchLimits(
 			pressure,
-			userLimit,
+			hardUserLimit,
 			globalLimit,
 			executionCandidateCapacity(candidates),
 			forecastFetchSlots,
@@ -498,7 +509,7 @@ func (w *Worker) claimTask(ctx context.Context, taskID uuid.UUID) (*store.Task, 
 			deferReason = "forecast_completion_pressure"
 			return nil
 		}
-		if !resumeKnown && pressure.UserRunningTasks+requestedUnits > max(decision.EffectiveUserLimit, requestedUnits) {
+		if !resumeKnown && !developerAPI && pressure.UserRunningTasks+requestedUnits > max(decision.EffectiveUserLimit, requestedUnits) {
 			deferReason = "user_execution_limit"
 			return nil
 		}

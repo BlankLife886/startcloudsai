@@ -25,6 +25,10 @@ var Defaults = map[string]json.RawMessage{
 	"task_failure_retry_count":    json.RawMessage(`2`),
 	"task_retry_first_delay_secs": json.RawMessage(`3`),
 	"task_retry_backoff_secs":     json.RawMessage(`15`),
+	// 前端输入框字数上限（文生图 / AI 助手 / 创作台）
+	"t2i_prompt_max_chars":          json.RawMessage(`8000`),
+	"assistant_message_max_chars":   json.RawMessage(`12000`),
+	"studio_hub_prompt_max_chars":   json.RawMessage(`2000`),
 	// 图片三级图（小图/展示图/原图）中变体的编码配置
 	"image_variant_format":                        json.RawMessage(`"webp"`),
 	"image_display_lossless":                      json.RawMessage(`false`),
@@ -189,6 +193,44 @@ func GetInt(ctx context.Context, q store.Q, key string) (int64, error) {
 		return 0, nil
 	}
 	return v, nil
+}
+
+const (
+	DefaultT2IPromptMaxChars        = 8000
+	DefaultAssistantMessageMaxChars = 12000
+	DefaultStudioHubPromptMaxChars  = 2000
+	PromptMaxCharsMin               = 100
+	PromptMaxCharsMax               = 100000
+)
+
+// PromptInputLimits 前端输入字数上限（runtime-config / 服务端校验共用）。
+type PromptInputLimits struct {
+	T2IPromptMaxChars        int `json:"t2iPromptMaxChars"`
+	AssistantMessageMaxChars int `json:"assistantMessageMaxChars"`
+	StudioHubPromptMaxChars  int `json:"studioHubPromptMaxChars"`
+}
+
+func ClampPromptMaxChars(value, fallback int64) int {
+	if value < PromptMaxCharsMin || value > PromptMaxCharsMax {
+		return int(fallback)
+	}
+	return int(value)
+}
+
+func GetPromptMaxChars(ctx context.Context, q store.Q, key string, fallback int64) int {
+	value, err := GetInt(ctx, q, key)
+	if err != nil || value == 0 {
+		return int(fallback)
+	}
+	return ClampPromptMaxChars(value, fallback)
+}
+
+func ResolvePromptInputLimits(ctx context.Context, q store.Q) PromptInputLimits {
+	return PromptInputLimits{
+		T2IPromptMaxChars:        GetPromptMaxChars(ctx, q, "t2i_prompt_max_chars", DefaultT2IPromptMaxChars),
+		AssistantMessageMaxChars: GetPromptMaxChars(ctx, q, "assistant_message_max_chars", DefaultAssistantMessageMaxChars),
+		StudioHubPromptMaxChars:  GetPromptMaxChars(ctx, q, "studio_hub_prompt_max_chars", DefaultStudioHubPromptMaxChars),
+	}
 }
 
 func GetString(ctx context.Context, q store.Q, key string) (string, error) {

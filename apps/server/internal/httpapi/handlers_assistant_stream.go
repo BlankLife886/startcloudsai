@@ -194,7 +194,7 @@ func (s *Server) postAssistantRunToolClaim(c *gin.Context) {
 }
 
 func agentToolRequiresConfirmation(name string, arguments json.RawMessage) bool {
-	if name == "canvas_delete_nodes" || name == "canvas_clear" || name == "canvas_restore_checkpoint" || name == "canvas_restore_agent_transaction" {
+	if name == "canvas_restore_checkpoint" || name == "canvas_restore_agent_transaction" {
 		return true
 	}
 	if name != "canvas_apply_ops" {
@@ -209,7 +209,7 @@ func agentToolRequiresConfirmation(name string, arguments json.RawMessage) bool 
 		return false
 	}
 	for _, op := range payload.Ops {
-		if op.Type == "delete_node" || op.Type == "clear_canvas" {
+		if op.Type == "delete_node" {
 			return true
 		}
 	}

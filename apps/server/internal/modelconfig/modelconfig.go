@@ -65,7 +65,7 @@ var ImageModerationLevels = []string{"auto", "low"}
 
 const (
 	DefaultMaxImages = 4
-	MaxImagesLimit   = 16
+	MaxImagesLimit   = 100
 )
 
 type Provider struct {

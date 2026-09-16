@@ -46,3 +46,15 @@ func TestSubscriptionConcurrencyBonusValidation(t *testing.T) {
 		t.Fatalf("legacy policy=%+v", policy)
 	}
 }
+
+func TestCheckExecutionBatchLimitsAllowsDeveloperAPIWithoutAccountLimit(t *testing.T) {
+	if err := CheckExecutionBatchLimits(true, 10, 0, 20, 20); err != nil {
+		t.Fatalf("developer API batch should ignore account concurrency: %v", err)
+	}
+	if err := CheckExecutionBatchLimits(true, 21, 0, 20, 20); err == nil {
+		t.Fatal("developer API batch must still respect global capacity")
+	}
+	if err := CheckExecutionBatchLimits(true, 10, 0, 20, 8); err == nil {
+		t.Fatal("developer API batch must still respect route capacity")
+	}
+}

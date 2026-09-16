@@ -22,7 +22,7 @@ func createEmailAccount(t *testing.T, email string) (*Server, *store.Store, *sto
 		"email": email,
 		"code":  code,
 	})
-	if response.Code != http.StatusCreated {
+	if response.Code != http.StatusOK {
 		t.Fatalf("create account: status %d body %s", response.Code, response.Body.String())
 	}
 	user, err := store.GetUserByEmail(context.Background(), st.Pool, email)
@@ -116,7 +116,7 @@ func TestDeleteAccountRequiresReauthenticationAndAnonymizesIdentity(t *testing.T
 		"email": email,
 		"code":  newCode,
 	})
-	if recreated.Code != http.StatusCreated {
+	if recreated.Code != http.StatusOK {
 		t.Fatalf("recreate with released email = %d %s", recreated.Code, recreated.Body.String())
 	}
 	recreatedBody := decodeVerifyEmailResponse(t, recreated.Body.Bytes())

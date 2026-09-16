@@ -449,6 +449,7 @@ func CreateTaskInTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID, in CreateI
 
 func createTaskWithTransaction(ctx context.Context, userID uuid.UUID, in CreateInput, hook CreateTaskCommitHook, runTx func(func(pgx.Tx) error) error) (*store.Task, bool, error) {
 	in.Params = incomingTaskParams(in.Params, in.TrustedParams)
+	developerAPI := stringParam(in.Params, "_apiKeyId") != ""
 	if !store.Contains(store.TaskTypes, in.Type) {
 		return nil, false, apperr.E("validation_error", "不支持的任务类型", 422)
 	}
@@ -509,7 +510,7 @@ func createTaskWithTransaction(ctx context.Context, userID uuid.UUID, in CreateI
 		if err != nil {
 			return err
 		}
-		if activeCount >= maxRunning {
+		if !developerAPI && activeCount >= maxRunning {
 			return apperr.E("user_task_limit", fmt.Sprintf("你的任务队列已满（生成中与排队合计上限 %d 个），请等已有任务结束后重试", maxRunning), 429)
 		}
 		maxImages, err := settings.GetInt(ctx, tx, "user_max_running_images")
@@ -523,7 +524,7 @@ func createTaskWithTransaction(ctx context.Context, userID uuid.UUID, in CreateI
 		if err != nil {
 			return err
 		}
-		if activeImages+int64(in.Count) > int64(maxImages) {
+		if !developerAPI && activeImages+int64(in.Count) > int64(maxImages) {
 			return apperr.E("user_image_capacity", fmt.Sprintf("你的图片队列容量不足（生成中与排队合计上限 %d 张），请等已有任务结束后重试", maxImages), 429)
 		}
 		taskID := uuid.New()
@@ -795,7 +796,13 @@ func createTaskWithTransaction(ctx context.Context, userID uuid.UUID, in CreateI
 		if configured && len(executionSnapshot.CandidatesFor("task")) == 0 {
 			return apperr.E("model_unavailable", "所选模型没有可用的执行线路，请刷新后重试", 503)
 		}
-		if err := store.ValidateExecutionBatchCapacity(ctx, tx, userID, true, int64(in.Count), executionSnapshot.MaxRouteUnits("task")); err != nil {
+		var capacityErr error
+		if stringParam(params, "_apiKeyId") != "" {
+			capacityErr = store.ValidateDeveloperExecutionBatchCapacity(ctx, tx, true, int64(in.Count), executionSnapshot.MaxRouteUnits("task"))
+		} else {
+			capacityErr = store.ValidateExecutionBatchCapacity(ctx, tx, userID, true, int64(in.Count), executionSnapshot.MaxRouteUnits("task"))
+		}
+		if err := capacityErr; err != nil {
 			if errors.Is(err, store.ErrExecutionBatchTooLarge) {
 				return apperr.E("execution_batch_too_large", err.Error(), 422)
 			}

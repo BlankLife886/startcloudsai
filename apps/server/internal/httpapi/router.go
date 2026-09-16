@@ -317,6 +317,7 @@ func (s *Server) Router() *gin.Engine {
 	api.GET("/me/assets", s.myAssets)
 	api.GET("/me/api-keys", s.developerAPIOnly(s.myAPIKeys))
 	api.POST("/me/api-keys", s.developerAPIOnly(s.createMyAPIKey))
+	api.PATCH("/me/api-keys/:id", s.developerAPIOnly(s.patchMyAPIKey))
 	api.POST("/me/api-keys/:id/rotate", s.developerAPIOnly(s.rotateMyAPIKey))
 	api.DELETE("/me/api-keys/:id", s.developerAPIOnly(s.revokeMyAPIKey))
 	api.GET("/me/api-models", s.developerAPIOnly(s.myOpenAPIModels))
@@ -444,8 +445,17 @@ func (s *Server) Router() *gin.Engine {
 	compat := r.Group("/v1")
 	compat.GET("/models", s.openAPIOnly("models:read", s.openAIModels))
 	compat.GET("/models/:model", s.openAPIOnly("models:read", s.openAIModel))
+	compat.POST("/responses", s.openAPIOnly("tasks:write", s.openAIResponses))
+	compat.GET("/responses", s.openAIResponsesWebSocket)
 	compat.POST("/images/generations", s.openAPIOnly("tasks:write", s.openAIGenerateImage))
 	compat.POST("/images/edits", s.openAPIOnly("tasks:write", s.openAIEditImage))
+
+	// OAuth 2.0 + PKCE for local image skills that call the Images API.
+	r.GET("/.well-known/oauth-authorization-server", s.imageSkillOAuthAuthorizationServer)
+	r.POST("/oauth/register", s.registerImageSkillOAuthClient)
+	r.GET("/oauth/authorize", s.authorizeImageSkillOAuth)
+	r.POST("/oauth/authorize", s.approveImageSkillOAuth)
+	r.POST("/oauth/token", s.exchangeImageSkillOAuthToken)
 
 	// admin auth（独立账号、会话与 Cookie）
 	api.POST("/admin/auth/session", s.adminLogin)
@@ -638,7 +648,12 @@ func (s *Server) originGuard(c *gin.Context) {
 		origin := c.GetHeader("Origin")
 		if origin != "" {
 			trimmed := strings.TrimRight(origin, "/")
-			allowed := false
+			// Browsers may open OAuth endpoints directly on the API origin (for
+			// example http://127.0.0.1:8000/oauth/authorize). That is a same-origin
+			// write and must remain valid even though AllowedOrigins primarily lists
+			// the separate frontend origins. The browser-supplied Origin must still
+			// exactly match the public scheme and request Host.
+			allowed := trimmed == strings.TrimRight(requestPublicOrigin(c), "/")
 			for _, o := range s.Cfg.AllowedOriginsList() {
 				if o == trimmed {
 					allowed = true

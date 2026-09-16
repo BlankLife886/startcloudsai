@@ -41,9 +41,23 @@ type openAIModelObject struct {
 	OwnedBy string `json:"owned_by"`
 }
 
-func openAIImageModels(cfg modelconfig.Config, key *store.UserAPIKey) []modelconfig.Model {
+func openAIPublicModelID(model modelconfig.Model) string {
+	// Wire id is the admin-configured display name so OpenAI clients can pass
+	// model="gpt-image-2" instead of an internal UUID. Names are expected to be
+	// unique among developer-API image models.
+	return strings.TrimSpace(model.Name)
+}
+
+func openAIFilterPublicModels(cfg modelconfig.Config, key *store.UserAPIKey, workspace, kind string) []modelconfig.Model {
 	models := make([]modelconfig.Model, 0)
-	for _, selected := range modelconfig.PublicModelsForWorkspace(cfg, modelconfig.WorkspaceT2I, modelconfig.ModelKindImage) {
+	seenNames := make(map[string]struct{})
+	for _, selected := range modelconfig.PublicModelsForWorkspace(cfg, workspace, kind) {
+		// The developer OpenAI-wire API only exposes AdapterOpenAI routes.
+		// CRUN is an internal asynchronous task protocol and cannot satisfy the
+		// synchronous /v1 contract.
+		if selected.Provider.Adapter != modelconfig.AdapterOpenAI {
+			continue
+		}
 		model := selected.Model
 		if !model.Available() {
 			continue
@@ -51,14 +65,149 @@ func openAIImageModels(cfg modelconfig.Config, key *store.UserAPIKey) []modelcon
 		if key != nil && len(key.AllowedModelIDs) > 0 && !store.Contains(key.AllowedModelIDs, model.ID) {
 			continue
 		}
+		publicID := openAIPublicModelID(model)
+		if publicID == "" {
+			continue
+		}
+		if _, exists := seenNames[publicID]; exists {
+			continue
+		}
+		seenNames[publicID] = struct{}{}
 		models = append(models, model)
 	}
 	return models
 }
 
+func openAIImageModels(cfg modelconfig.Config, key *store.UserAPIKey) []modelconfig.Model {
+	return openAIFilterPublicModels(cfg, key, modelconfig.WorkspaceT2I, modelconfig.ModelKindImage)
+}
+
+func openAIChatModels(cfg modelconfig.Config, key *store.UserAPIKey) []modelconfig.Model {
+	return openAIFilterPublicModels(cfg, key, modelconfig.WorkspaceAssistant, modelconfig.ModelKindChat)
+}
+
+// openAIDeveloperModels returns the combined /v1/models catalog (image + chat),
+// deduped by public display name.
+func openAIDeveloperModels(cfg modelconfig.Config, key *store.UserAPIKey) []modelconfig.Model {
+	models := openAIImageModels(cfg, key)
+	seenNames := make(map[string]struct{}, len(models))
+	for _, model := range models {
+		seenNames[openAIPublicModelID(model)] = struct{}{}
+	}
+	for _, model := range openAIChatModels(cfg, key) {
+		publicID := openAIPublicModelID(model)
+		if _, exists := seenNames[publicID]; exists {
+			continue
+		}
+		seenNames[publicID] = struct{}{}
+		models = append(models, model)
+	}
+	return models
+}
+
+func openAIChatSelections(cfg modelconfig.Config, key *store.UserAPIKey) []modelconfig.Selection {
+	selections := make([]modelconfig.Selection, 0)
+	seenNames := make(map[string]struct{})
+	for _, selected := range modelconfig.PublicModelsForWorkspace(cfg, modelconfig.WorkspaceAssistant, modelconfig.ModelKindChat) {
+		if selected.Provider.Adapter != modelconfig.AdapterOpenAI {
+			continue
+		}
+		if !selected.Model.Available() {
+			continue
+		}
+		if key != nil && len(key.AllowedModelIDs) > 0 && !store.Contains(key.AllowedModelIDs, selected.Model.ID) {
+			continue
+		}
+		publicID := openAIPublicModelID(selected.Model)
+		if publicID == "" {
+			continue
+		}
+		if _, exists := seenNames[publicID]; exists {
+			continue
+		}
+		seenNames[publicID] = struct{}{}
+		selections = append(selections, selected)
+	}
+	return selections
+}
+
+func matchOpenAIImageModel(models []modelconfig.Model, requested string) *modelconfig.Model {
+	requested = strings.TrimSpace(requested)
+	if requested == "" {
+		return nil
+	}
+	for index := range models {
+		if openAIWireModelEqual(openAIPublicModelID(models[index]), requested) {
+			return &models[index]
+		}
+	}
+	// Accept the internal catalog id as a compatibility fallback.
+	for index := range models {
+		if models[index].ID == requested {
+			return &models[index]
+		}
+	}
+	// Codex/Cockpit may request gpt-image-2.5 while the catalog exposes gpt-image-2.
+	if openAIWireImageModelFamily(requested) {
+		for index := range models {
+			if openAIWireImageModelFamily(openAIPublicModelID(models[index])) {
+				return &models[index]
+			}
+		}
+	}
+	return nil
+}
+
+func openAIWireImageModelFamily(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	return strings.HasPrefix(name, "gpt-image")
+}
+
+func matchOpenAIChatSelection(selections []modelconfig.Selection, requested string, imageModels ...[]modelconfig.Model) *modelconfig.Selection {
+	requested = strings.TrimSpace(requested)
+	if len(selections) == 0 {
+		return nil
+	}
+	if requested == "" {
+		return &selections[0]
+	}
+	for index := range selections {
+		if openAIWireModelEqual(openAIPublicModelID(selections[index].Model), requested) {
+			return &selections[index]
+		}
+	}
+	for index := range selections {
+		if selections[index].Model.ID == requested {
+			return &selections[index]
+		}
+	}
+	var images []modelconfig.Model
+	if len(imageModels) > 0 {
+		images = imageModels[0]
+	}
+	// Dedicated image-model requests must not fall through to chat.
+	if matchOpenAIImageModel(images, requested) != nil {
+		return nil
+	}
+	// Codex / Cockpit often send a local display model id that is not in this
+	// catalog. When the Key already has chat models, fall back to the default
+	// so plain Responses chat still works.
+	return &selections[0]
+}
+
+// openAIWireModelEqual treats '.' and '-' as interchangeable so clients can
+// request gpt-5.5 while the catalog name is gpt-5-5.
+func openAIWireModelEqual(left, right string) bool {
+	normalize := func(value string) string {
+		value = strings.ToLower(strings.TrimSpace(value))
+		return strings.ReplaceAll(value, ".", "-")
+	}
+	return normalize(left) == normalize(right)
+}
+
 func asOpenAIModel(model modelconfig.Model) openAIModelObject {
 	// This catalog has no model-created timestamp; zero explicitly denotes unknown.
-	return openAIModelObject{ID: model.ID, Object: "model", Created: 0, OwnedBy: "starcloudsai"}
+	return openAIModelObject{ID: openAIPublicModelID(model), Object: "model", Created: 0, OwnedBy: "starcloudsai"}
 }
 
 func (s *Server) openAIModels(c *gin.Context) {
@@ -69,7 +218,7 @@ func (s *Server) openAIModels(c *gin.Context) {
 		return
 	}
 	items := make([]openAIModelObject, 0)
-	for _, model := range openAIImageModels(cfg, openAPIKeyFromContext(c)) {
+	for _, model := range openAIDeveloperModels(cfg, openAPIKeyFromContext(c)) {
 		items = append(items, asOpenAIModel(model))
 	}
 	c.JSON(http.StatusOK, gin.H{"object": "list", "data": items})
@@ -82,13 +231,11 @@ func (s *Server) openAIModel(c *gin.Context) {
 		failOpenAI(c, err, "")
 		return
 	}
-	for _, model := range openAIImageModels(cfg, openAPIKeyFromContext(c)) {
-		if model.ID == c.Param("model") {
-			c.JSON(http.StatusOK, asOpenAIModel(model))
-			return
-		}
+	if model := matchOpenAIImageModel(openAIDeveloperModels(cfg, openAPIKeyFromContext(c)), c.Param("model")); model != nil {
+		c.JSON(http.StatusOK, asOpenAIModel(*model))
+		return
 	}
-	failOpenAI(c, apperr.E("model_not_found", "The requested image model does not exist or is not available to this API Key.", http.StatusNotFound), "model")
+	failOpenAI(c, apperr.E("model_not_found", "The requested model does not exist or is not available to this API Key.", http.StatusNotFound), "model")
 }
 
 func failOpenAIImage(c *gin.Context, err error) {
@@ -157,13 +304,7 @@ func (s *Server) openAIImage(c *gin.Context, editing bool) {
 		failOpenAI(c, err, "")
 		return
 	}
-	var selected *modelconfig.Model
-	for _, model := range openAIImageModels(cfg, key) {
-		if model.ID == request.Model {
-			selected = &model
-			break
-		}
-	}
+	selected := matchOpenAIImageModel(openAIImageModels(cfg, key), request.Model)
 	if selected == nil {
 		failOpenAI(c, apperr.E("model_not_found", "The requested image model does not exist or is not available to this API Key.", 404), "model")
 		return

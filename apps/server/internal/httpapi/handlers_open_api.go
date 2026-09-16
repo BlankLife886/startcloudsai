@@ -61,7 +61,7 @@ func openAPIModelItems(cfg modelconfig.Config, allowedModelIDs []string) []gin.H
 	}
 	items := make([]gin.H, 0)
 	for _, model := range cfg.Models {
-		if !model.Enabled || !model.Public || model.Kind == modelconfig.ModelKindChat {
+		if !model.Enabled || !model.Public {
 			continue
 		}
 		if len(allowed) > 0 && !allowed[model.ID] {
@@ -81,7 +81,7 @@ func openAPIModelItems(cfg modelconfig.Config, allowedModelIDs []string) []gin.H
 func normalizeOpenAPIModelIDs(cfg modelconfig.Config, values []string) ([]string, error) {
 	available := map[string]bool{}
 	for _, model := range cfg.Models {
-		if model.Enabled && model.Public && model.Kind != modelconfig.ModelKindChat {
+		if model.Enabled && model.Public {
 			available[model.ID] = true
 		}
 	}
@@ -306,10 +306,94 @@ func (s *Server) createMyAPIKey(c *gin.Context) {
 		fail(c, apperr.E("api_key_limit", "每个账号最多保留 10 个有效 API Key", 422))
 		return
 	}
+	settings, err := s.parseAPIKeySettings(c, &body)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	secret, err := newAPISecret()
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	key, err := store.InsertUserAPIKey(c.Request.Context(), s.St.Pool, &store.UserAPIKey{
+		UserID: user.ID, KeyPrefix: secret[:min(18, len(secret))], KeyHash: hashAPISecret(secret), Label: settings.Label,
+		Scopes: settings.Scopes, AllowedModelIDs: settings.AllowedModelIDs, DailyTaskLimit: settings.DailyTaskLimit,
+		MonthlyTaskLimit: settings.MonthlyTaskLimit, DailySpendLimitCents: settings.DailySpendLimitCents,
+		MonthlySpendLimitCents: settings.MonthlySpendLimitCents, IPAllowlist: settings.IPAllowlist,
+		RateLimitPerMinute: settings.RateLimitPerMinute, DailyByteLimit: settings.DailyByteLimit, ExpiresAt: settings.ExpiresAt,
+	})
+	if err != nil {
+		fail(c, apperr.E("validation_error", err.Error(), 422))
+		return
+	}
+	data := userAPIKeyDict(key, store.APIKeyUsageSummary{})
+	data["secret"] = secret
+	respondCreated(c, data)
+}
+
+func (s *Server) patchMyAPIKey(c *gin.Context) {
+	user, err := s.requireUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		fail(c, apperr.E("validation_error", "id: 无效", 422))
+		return
+	}
+	var body createAPIKeyInput
+	if err := bindJSON(c, &body); err != nil {
+		fail(c, err)
+		return
+	}
+	settings, err := s.parseAPIKeySettings(c, &body)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	key, err := store.UpdateUserAPIKey(c.Request.Context(), s.St.Pool, user.ID, id, &store.UserAPIKey{
+		Label: settings.Label, Scopes: settings.Scopes, AllowedModelIDs: settings.AllowedModelIDs,
+		DailyTaskLimit: settings.DailyTaskLimit, MonthlyTaskLimit: settings.MonthlyTaskLimit,
+		DailySpendLimitCents: settings.DailySpendLimitCents, MonthlySpendLimitCents: settings.MonthlySpendLimitCents,
+		IPAllowlist: settings.IPAllowlist, RateLimitPerMinute: settings.RateLimitPerMinute,
+		DailyByteLimit: settings.DailyByteLimit, ExpiresAt: settings.ExpiresAt,
+	})
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if key == nil {
+		fail(c, apperr.E("api_key_not_found", "API Key 不存在或已撤销", 404))
+		return
+	}
+	usage, err := store.GetAPIKeyUsageSummary(c.Request.Context(), s.St.Pool, key.ID, time.Now().UTC())
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ok(c, userAPIKeyDict(key, usage))
+}
+
+type apiKeySettings struct {
+	Label                  string
+	Scopes                 []string
+	AllowedModelIDs        []string
+	DailyTaskLimit         int
+	MonthlyTaskLimit       int
+	DailySpendLimitCents   int64
+	MonthlySpendLimitCents int64
+	IPAllowlist            []string
+	RateLimitPerMinute     int
+	DailyByteLimit         int64
+	ExpiresAt              *time.Time
+}
+
+func (s *Server) parseAPIKeySettings(c *gin.Context, body *createAPIKeyInput) (*apiKeySettings, error) {
 	body.Label = strings.TrimSpace(body.Label)
 	if body.Label == "" || len([]rune(body.Label)) > 80 {
-		fail(c, apperr.E("validation_error", "label: 须为 1-80 个字符", 422))
-		return
+		return nil, apperr.E("validation_error", "label: 须为 1-80 个字符", 422)
 	}
 	if len(body.Scopes) == 0 {
 		body.Scopes = []string{"models:read", "files:write", "tasks:write", "tasks:read"}
@@ -319,8 +403,7 @@ func (s *Server) createMyAPIKey(c *gin.Context) {
 	for _, raw := range body.Scopes {
 		scope := strings.TrimSpace(raw)
 		if !allowedOpenAPIScopes[scope] {
-			fail(c, apperr.E("validation_error", "scopes: 包含不支持的权限", 422))
-			return
+			return nil, apperr.E("validation_error", "scopes: 包含不支持的权限", 422)
 		}
 		if !seenScopes[scope] {
 			seenScopes[scope] = true
@@ -331,8 +414,7 @@ func (s *Server) createMyAPIKey(c *gin.Context) {
 	if body.ExpiresAt != nil && strings.TrimSpace(*body.ExpiresAt) != "" {
 		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(*body.ExpiresAt))
 		if err != nil || !parsed.After(time.Now().UTC()) {
-			fail(c, apperr.E("validation_error", "expiresAt: 必须是未来的 RFC3339 时间", 422))
-			return
+			return nil, apperr.E("validation_error", "expiresAt: 必须是未来的 RFC3339 时间", 422)
 		}
 		parsed = parsed.UTC()
 		expiresAt = &parsed
@@ -356,8 +438,7 @@ func (s *Server) createMyAPIKey(c *gin.Context) {
 		body.DailyByteLimit = 2 << 30
 	}
 	if len(body.IPAllowlist) > 20 {
-		fail(c, apperr.E("validation_error", "ipAllowlist: 最多 20 项", 422))
-		return
+		return nil, apperr.E("validation_error", "ipAllowlist: 最多 20 项", 422)
 	}
 	allowlist := make([]string, 0, len(body.IPAllowlist))
 	seenIPs := map[string]bool{}
@@ -368,8 +449,7 @@ func (s *Server) createMyAPIKey(c *gin.Context) {
 		}
 		if !validIPAddress(value) {
 			if _, _, err := net.ParseCIDR(value); err != nil {
-				fail(c, apperr.E("validation_error", "ipAllowlist: 仅支持 IP 或 CIDR", 422))
-				return
+				return nil, apperr.E("validation_error", "ipAllowlist: 仅支持 IP 或 CIDR", 422)
 			}
 		}
 		if !seenIPs[value] {
@@ -377,48 +457,31 @@ func (s *Server) createMyAPIKey(c *gin.Context) {
 			allowlist = append(allowlist, value)
 		}
 	}
-	body.IPAllowlist = allowlist
 	if body.DailyTaskLimit < 1 || body.DailyTaskLimit > 100000 ||
 		body.MonthlyTaskLimit < body.DailyTaskLimit || body.MonthlyTaskLimit > 1000000 ||
 		body.DailySpendLimitCents < 1 || body.DailySpendLimitCents > 1000000000 ||
 		body.MonthlySpendLimitCents < body.DailySpendLimitCents || body.MonthlySpendLimitCents > 10000000000 {
-		fail(c, apperr.E("validation_error", "API Key 的日/月任务或积分额度无效", 422))
-		return
+		return nil, apperr.E("validation_error", "API Key 的日/月任务或积分额度无效", 422)
 	}
 	if body.RateLimitPerMinute < 1 || body.RateLimitPerMinute > 10000 ||
 		body.DailyByteLimit < 1<<20 || body.DailyByteLimit > 1<<40 {
-		fail(c, apperr.E("validation_error", "API Key 的每分钟请求或每日流量额度无效", 422))
-		return
+		return nil, apperr.E("validation_error", "API Key 的每分钟请求或每日流量额度无效", 422)
 	}
 	cfg, err := modelconfig.Load(c.Request.Context(), s.St.Pool)
 	if err != nil {
-		fail(c, err)
-		return
+		return nil, err
 	}
 	allowedModelIDs, err := normalizeOpenAPIModelIDs(cfg, body.AllowedModelIDs)
 	if err != nil {
-		fail(c, err)
-		return
+		return nil, err
 	}
-	secret, err := newAPISecret()
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	key, err := store.InsertUserAPIKey(c.Request.Context(), s.St.Pool, &store.UserAPIKey{
-		UserID: user.ID, KeyPrefix: secret[:min(18, len(secret))], KeyHash: hashAPISecret(secret), Label: body.Label,
-		Scopes: scopes, AllowedModelIDs: allowedModelIDs, DailyTaskLimit: body.DailyTaskLimit,
-		MonthlyTaskLimit: body.MonthlyTaskLimit, DailySpendLimitCents: body.DailySpendLimitCents,
-		MonthlySpendLimitCents: body.MonthlySpendLimitCents, IPAllowlist: body.IPAllowlist,
-		RateLimitPerMinute: body.RateLimitPerMinute, DailyByteLimit: body.DailyByteLimit, ExpiresAt: expiresAt,
-	})
-	if err != nil {
-		fail(c, apperr.E("validation_error", err.Error(), 422))
-		return
-	}
-	data := userAPIKeyDict(key, store.APIKeyUsageSummary{})
-	data["secret"] = secret
-	respondCreated(c, data)
+	return &apiKeySettings{
+		Label: body.Label, Scopes: scopes, AllowedModelIDs: allowedModelIDs,
+		DailyTaskLimit: body.DailyTaskLimit, MonthlyTaskLimit: body.MonthlyTaskLimit,
+		DailySpendLimitCents: body.DailySpendLimitCents, MonthlySpendLimitCents: body.MonthlySpendLimitCents,
+		IPAllowlist: allowlist, RateLimitPerMinute: body.RateLimitPerMinute,
+		DailyByteLimit: body.DailyByteLimit, ExpiresAt: expiresAt,
+	}, nil
 }
 
 func (s *Server) revokeMyAPIKey(c *gin.Context) {

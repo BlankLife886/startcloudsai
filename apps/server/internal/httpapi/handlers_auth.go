@@ -187,7 +187,9 @@ func (s *Server) verifyEmailCode(c *gin.Context) {
 		referralStatus = "existing_account"
 	}
 	s.clearReferralCookie(c)
-	respondCreated(c, gin.H{"user": userDict(user), "isNewUser": created, "referral": gin.H{"status": referralStatus, "message": referralBindingMessage(referralStatus)}})
+	// Login/register establishes a session cookie; 200 matches common auth
+	// clients and avoids intermediaries that mishandle 201 bodies without Location.
+	ok(c, gin.H{"user": userDict(user), "isNewUser": created, "referral": gin.H{"status": referralStatus, "message": referralBindingMessage(referralStatus)}})
 }
 
 func (s *Server) logout(c *gin.Context) {

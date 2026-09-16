@@ -2,13 +2,13 @@
 
 通过同一组 API Key 和统一图片接口，将不同模型接入自己的应用。新应用可使用 OpenAI SDK 的 Images 方法；已有应用可继续使用下方的任务 API。模型权限、积分账户、额度和任务队列共用。
 
-这是 **OpenAI Images 兼容子集**，不代表完整 OpenAI 协议。支持模型目录、生成图片和编辑图片，不提供 Chat Completions、Responses、视频或 OpenAI 自有模型。第三方工具须允许自定义 Base URL、模型 ID，并支持本文列出的 Images 参数。
+这是 **OpenAI Images / Responses 兼容子集**，不代表完整 OpenAI 协议。支持模型目录、生成/编辑图片，以及 Responses 下的图片工具与对话（流式）子集；不提供独立的 Chat Completions 入口、视频或 OpenAI 自有模型。第三方工具须允许自定义 Base URL、模型名称（`model`），并支持本文列出的参数。
 
 ## 先完成一次测试
 
 1. 在真实“开发者 API”控制台创建测试 Key，设置较小的任务和积分额度。勾选 `models:read`、`tasks:write`、`tasks:read`；编辑图片还需 `files:write`。保存一次性显示的密钥。
 2. Base URL 填 `https://<你的域名>/v1`。本地可填后端可访问的地址，如 `http://127.0.0.1:<后端端口>/v1`；前端地址仅在已代理 `/v1` 时可用。
-3. 先调用 `GET /v1/models`，从返回的 `data[].id` 选择真实模型 ID。不要直接填写 OpenAI 模型名，也不要使用演示页的 `demo-` 模型或 `demo_` Key。
+3. 先调用 `GET /v1/models`，从返回的 `data[].id` 选择模型。`id` 就是你在后台配置的**自定义模型名称**（不是内部 UUID）。不要使用演示页的 `demo-` 模型或 `demo_` Key。
 4. 需要确认价格时，使用下方旧版 `POST /api/open/v1/tasks/quote` 报价。查询模型和报价不创建图片任务。
 5. 用下方 SDK 或 cURL 示例生成一张图片。**实际执行生图或编辑请求会按站内价格消耗积分**；控制台的复制和模拟按钮不会发送付费请求。
 
@@ -25,11 +25,11 @@ export STAR_CLOUD_API_KEY='替换为真实测试Key'
 python examples/open-api/openai_images.py models
 ```
 
-最后一条命令只列出模型。选择一个真实 ID 后，再明确执行生图：
+最后一条命令只列出模型。选择一个真实模型名称（`data[].id`）后，再明确执行生图：
 
 ```bash
 python examples/open-api/openai_images.py generate \
-  --model '替换为上一步的模型ID' \
+  --model '替换为上一步的模型名称' \
   --prompt '一只在窗边晒太阳的橘猫，柔和自然光，摄影风格' \
   --idempotency-key '你保存的本次请求唯一编号' \
   --output './cat.png'
@@ -102,14 +102,14 @@ curl -sS "$STAR_CLOUD_BASE_URL/models" \
   -H "Authorization: Bearer $STAR_CLOUD_API_KEY"
 ```
 
-返回 `{"object":"list","data":[...模型对象...]}`；每个模型包含 `id`、`object: "model"`、`created: 0` 和 `owned_by: "starcloudsai"`。`created: 0` 表示当前未提供模型创建时间；`id` 是后续请求的 `model`。列表受到模型开放状态和 Key 白名单限制，并不保证每个模型都支持相同的尺寸、质量或参考图数量。具体能力、参考图限制和业务价格通过旧版 `GET /api/open/v1/models` 读取。
+返回 `{"object":"list","data":[...模型对象...]}`；每个模型包含 `id`、`object: "model"`、`created: 0` 和 `owned_by: "starcloudsai"`。`created: 0` 表示当前未提供模型创建时间；`id` 等于后台配置的自定义模型名称，后续请求的 `model` 填它即可。列表受到模型开放状态和 Key 白名单限制，并不保证每个模型都支持相同的尺寸、质量或参考图数量。具体能力、参考图限制和业务价格通过旧版 `GET /api/open/v1/models` 读取。
 
 ### 生成图片
 
 ```bash
 # 此 ID 应保存到自己的业务记录；重试同一请求时复用。
 export STAR_CLOUD_REQUEST_ID='替换为本次请求唯一编号'
-export STAR_CLOUD_MODEL='替换为真实模型ID'
+export STAR_CLOUD_MODEL='替换为真实模型名称'
 
 curl -sS --max-time 270 -D './generation-headers.txt' \
   "$STAR_CLOUD_BASE_URL/images/generations" \
@@ -131,7 +131,7 @@ curl -sS --max-time 270 -D './generation-headers.txt' \
 
 | 字段 | 说明 |
 | --- | --- |
-| `model` | 必填，使用当前 Key 可调用的真实公开模型 ID |
+| `model` | 必填，使用当前 Key 可调用的自定义模型名称（与 `GET /v1/models` 的 `data[].id` 相同） |
 | `prompt` | 必填，非空提示词 |
 | `n` | 默认 1，必须为 1–10 的整数，且不能超过模型的单次张数上限 |
 | `size` | 默认 `auto`。指定 `宽x高` 像素要求模型 `supportsExactSize: true`，同时满足该模型的精确尺寸限制；不支持的尺寸返回错误，不会通过事后缩放伪装成该尺寸 |
@@ -142,6 +142,98 @@ curl -sS --max-time 270 -D './generation-headers.txt' \
 | `moderation` | 可选 `auto` 或 `low`，须受目标模型支持 |
 | `user` | 可选客户端用户标识，最多256字符，不参与账号认证或权限判定 |
 | `stream` | 只接受省略或 `false`；本版返回完整结果 |
+
+`n` 表示一次请求需要的图片数量，多个请求也可以并行提交；服务端不会把开发者 API 强制串行化。每张图片按一个执行单位计入全局容量和上游线路容量，超过可用容量的请求会排队或返回容量错误。API Key 的每分钟请求数、日/月任务数和日/月积分额度仍然有效。
+
+### Responses API（图片或对话）
+
+`POST /v1/responses` 提供 OpenAI Responses API 的兼容子集，按是否包含 `image_generation` 工具分流：
+
+- **对话**：请求未包含 `image_generation` 时，走公开助手聊天模型（`GET /v1/models` 中的 chat 名称）。支持 `stream: true` 的 SSE（`response.created`、`response.output_text.delta`、`response.completed`）。按助手工作区单价冻结并结算积分。
+- **图片**：请求包含一个 `image_generation` 工具时，行为与原先一致；`model` 可以是当前 Key 可用的自定义图片模型名称，也可以省略并由服务端选择默认图片模型。
+
+仍不是完整 Codex / 多工具 Agent：不支持 `previous_response_id` 多轮状态、shell 等任意函数执行。非图片工具（例如 Codex 附带的 catalog）会被忽略。
+
+当请求使用**聊天模型**（或 Codex 传入未识别的模型名并回落到默认聊天模型）时：服务端按对话处理，并向模型暴露 `image_generation` 工具；模型一旦调用该工具，服务端用现有 Images 任务链路出图并在 Responses `output` 中返回 `image_generation_call`（与 NewAPI/Sub2API 类似的「能聊也能生图」）。当请求明确使用**图片模型名**且带 `image_generation` 时，仍走专用图片路径（不经聊天模型）。
+
+对话示例：
+
+```bash
+curl -sS "$STAR_CLOUD_BASE_URL/responses" \
+  -H "Authorization: Bearer $STAR_CLOUD_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "替换为 /v1/models 返回的聊天模型名称",
+    "input": "nihao"
+  }'
+```
+
+流式对话在同一路径加上 `"stream": true`，响应为 `text/event-stream`。
+
+图片工具示例：
+
+```bash
+curl -sS --max-time 270 "$STAR_CLOUD_BASE_URL/responses" \
+  -H "Authorization: Bearer $STAR_CLOUD_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: responses-image-001' \
+  -d '{
+    "model": "替换为 /v1/models 返回的图片模型名称",
+    "input": "一只在窗边晒太阳的橘猫",
+    "tools": [{"type": "image_generation", "size": "auto", "quality": "auto"}]
+  }'
+```
+
+成功图片响应是标准 Response 对象，其中 `output` 的每个图片项形如：
+
+```json
+{
+  "type": "image_generation_call",
+  "status": "completed",
+  "result": "图片 Base64"
+}
+```
+
+对话成功时 `output` 含 `type: "message"` 项，并填充 `output_text`。
+
+Responses API 调用示例（OpenAI Python SDK）：
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    api_key="sk-sc-替换为 StarClouds API Key",
+    base_url="https://<你的域名>/v1",
+)
+# 对话
+chat = client.responses.create(
+    model="替换为 /v1/models 返回的聊天模型名称",
+    input="nihao",
+)
+print(chat.output_text)
+
+# 图片
+response = client.responses.create(
+    model="替换为 /v1/models 返回的图片模型名称",
+    input="生成一张蓝天白云图",
+    tools=[{"type": "image_generation"}],
+)
+image_b64 = next(item.result for item in response.output if item.type == "image_generation_call")
+```
+
+#### Responses WebSocket（Cockpit）
+
+Cockpit 选择“允许 Codex 使用 Responses WebSocket”时，会连接：
+
+```text
+ws://<你的域名>/v1/responses
+```
+
+本项目同时支持这个 WebSocket 入口。客户端通过 `Authorization: Bearer <API_KEY>` 完成认证，然后发送与 `POST /v1/responses` 相同的 JSON 请求；服务端返回同样的 Response 对象，`stream: true` 时把 SSE 事件逐条转成 WebSocket JSON 消息。HTTP 与 WebSocket 共用同一套 Responses 实现（图片任务链路或对话计费/上游调用）。
+
+图片路径复用现有 Images API 的账号鉴权、模型开放状态、API Key 额度、钱包计费、全局/线路并发、任务队列和幂等键。对话路径使用助手模型目录与积分冻结/结算。该端点不会把结果注册成 ChatGPT 私有的 Images 对象，也不会替换 ChatGPT 左侧“图像”工作区。
+
+图片 `stream: true` 发送 `response.image_generation_call.*` 与最终 `response.completed`；对话流式发送 `response.output_text.delta` 与 `response.completed`。当前子集支持文本生图、Base64 `input_image` 编辑，以及纯文本（可选 `input_image`）对话；暂不支持 `previous_response_id`、远程图片 URL、file_id、完整函数调用或多工具编排。
 
 首次接入建议只传 `model`、`prompt`、`n: 1`，或使用示例中的 `auto` 参数。模型切换时重新核对能力；本接口不承诺所有上游都支持 OpenAI 图片模型的全部选项。
 
@@ -201,9 +293,54 @@ curl -sS --max-time 270 -D './edit-headers.txt' \
 
 ### 兼容边界与错误
 
-首版不支持 `mask`、`stream: true`、`partial_images`、`style`、`input_fidelity`、`output_compression`；传入不支持的参数会明确返回 400，不会静默忽略。只使用 Chat Completions/Responses 的聊天客户端无法调用本图片接口。
+首版不支持 `mask`、`stream: true`（Images 路径）、`partial_images`、`style`、`input_fidelity`、`output_compression`；传入不支持的参数会明确返回 400，不会静默忽略。对话请使用 `POST /v1/responses`（无需 `image_generation` 工具）。
 
 常见状态：`400` 参数/能力不支持，`401` 密钥无效，`403` 缺少权限或模型未授权，`409` 幂等内容冲突或余额不足，`429` 限流/额度已用满，`5xx` 服务或上游失败，`504` 等待超时。不要在日志中记录完整 Authorization Header 或图片 Base64。
+
+### Codex 兼容性
+
+当前网关是 **OpenAI Images / Responses 兼容子集**。对 Codex：用聊天模型作为主模型时，`/v1/responses` 可对话，并在模型调用 `image_generation` 时本地出图（Key 需同时有聊天与图片模型权限）。它仍不是完整 Agent（无 shell 等工具环）。也可继续用 StarClouds Image Skill 旁路生图。
+
+开发者 Images API 只选择 OpenAI wire-compatible 的上游线路；OpenAI 官方接口、Sub2API、NewAPI 等只要提供兼容的 `/v1/models`、`/v1/images/generations` 和 `/v1/images/edits`，统一按 OpenAI 兼容适配器配置。CRUN 等内部异步任务协议不会出现在开发者 API 模型目录中。
+
+#### StarClouds Image Skill 登录
+
+普通用户安装 StarClouds Image 插件后直接描述生图或编辑需求。首次调用时，本地脚本启动 loopback 回调、动态注册 OAuth 客户端并打开星空云绘登录页；用户确认后，脚本使用 Authorization Code + PKCE 换取专用 API Key 并保存在当前操作系统用户的配置目录。后续调用不需要复制密钥或重复登录。
+
+OAuth scope 为 `images`，签发的 Key 只包含 `models:read`、`files:write`、`tasks:write` 和 `tasks:read`，授权码单次使用，Key 默认 180 天后过期。服务端不会拿到 Codex 的主模型登录凭据。
+
+OAuth 端点：
+
+| 端点 | 用途 |
+| --- | --- |
+| `GET /.well-known/oauth-authorization-server` | OAuth 元数据 |
+| `POST /oauth/register` | 动态注册本地公共客户端 |
+| `GET /oauth/authorize` | 登录与授权确认 |
+| `POST /oauth/authorize` | 提交授权决定 |
+| `POST /oauth/token` | 使用 PKCE 授权码换取 Images API Key |
+
+本地开发时先把 Skill 指向开发服务器：
+
+```bash
+python3 scripts/starclouds_image.py config \
+  --base-url http://127.0.0.1:8000/v1
+```
+
+然后可以直接登录和调用：
+
+```bash
+python3 scripts/starclouds_image.py login
+python3 scripts/starclouds_image.py generate --prompt '蓝天白云'
+python3 scripts/starclouds_image.py edit --image /absolute/reference.png --prompt '改成雨夜'
+```
+
+脚本默认请求 `response_format=url` 并立即把签名结果下载到 `~/.codex/generated_images/starclouds/`。Skill 必须在最终回复中使用绝对本地路径展示图片，不能把短期签名 URL 当成最终交付物。
+
+### 手动 Bearer Key（开发者备用）
+
+自动化环境仍可以创建包含 `models:read`、`files:write`、`tasks:write`、`tasks:read` 权限的 API Key，并使用标准 `Authorization: Bearer <API_KEY>` 调用本节接口。不要把密钥写进 Skill、仓库或命令行参数。
+
+Skill 客户端不使用 MCP，也不需要修改 `~/.codex/config.toml` 的 `mcp_servers`。
 
 ## 旧版任务 API
 
@@ -231,14 +368,14 @@ API Key 可分别授权以下 scope：
 
 ### 读取模型
 
-旧版任务 API 公开端点共7个：`GET /models`、`GET /usage`、`POST /uploads`、`GET /files/*key`、`POST /tasks/quote`、`POST /tasks`、`GET /tasks/:id`。未提供开放的任务列表、取消、对话、PSD或MCP端点；这些旧版端点使用 StarClouds 任务协议；OpenAI Images 兼容接口见上文。
+旧版任务 API 公开端点共7个：`GET /models`、`GET /usage`、`POST /uploads`、`GET /files/*key`、`POST /tasks/quote`、`POST /tasks`、`GET /tasks/:id`。未提供开放的任务列表、取消、对话或 PSD 端点；这些旧版端点使用 StarClouds 任务协议；OpenAI Images 兼容接口见上文。
 
 ```bash
 curl -sS 'https://example.com/api/open/v1/models' \
   -H 'Authorization: Bearer sk-sc-REPLACE_ME'
 ```
 
-响应中的 `id` 是创建任务时使用的公开模型 ID。若 Key 配置了模型白名单，只返回白名单内仍处于开放状态的模型。
+响应中的 `id` 是创建任务时使用的公开模型标识（兼容接口里等于自定义模型名称）。若 Key 配置了模型白名单，只返回白名单内仍处于开放状态的模型。
 
 生图模型还会返回 `supportsExactSize` 与 `exactSizeLimits`。支持精确尺寸时，可在 `/tasks/quote` 和 `/tasks` 的 `params` 中传 `sizeMode: "exact"`、`exactWidth`、`exactHeight`。例如 `1200` × `800` 会按原始像素提交；服务端会校验该模型的宽高、步长、总像素和长短边比限制。字段说明见 [精确图片尺寸](EXACT_IMAGE_SIZE.md)。
 
@@ -309,7 +446,7 @@ curl -sS -X POST 'https://example.com/api/open/v1/tasks' \
   }'
 ```
 
-任务创建仍经过站内同一套模型开放状态、参考图权限、用户并发、全局容量、API Key 日/月任务额度、API Key 日/月积分额度、钱包冻结与任务队列校验。Open API 不会绕过业务限制。
+任务创建仍经过站内同一套模型开放状态、参考图权限、全局容量、单条模型线路容量、API Key 日/月任务额度、API Key 日/月积分额度、钱包冻结与任务队列校验。开发者 API 不受账号用于网页交互的个人并发名额限制，但不会绕过全局容量、上游线路并发或 API Key 自身限流。
 
 常见错误：
 

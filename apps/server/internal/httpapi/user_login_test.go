@@ -47,7 +47,7 @@ func developmentCode(t *testing.T, responseBody []byte) string {
 func requestDevelopmentCode(t *testing.T, engine http.Handler, email string) string {
 	t.Helper()
 	w := authRequest(t, engine, http.MethodPost, "/api/v1/auth/email-verification-codes", gin.H{"email": email})
-	if w.Code != http.StatusCreated {
+	if w.Code != http.StatusOK {
 		t.Fatalf("send code for %q = %d %s", email, w.Code, w.Body.String())
 	}
 	return developmentCode(t, w.Body.Bytes())
@@ -85,7 +85,7 @@ func TestUnifiedEmailAuthenticationCreatesThenLogsIn(t *testing.T) {
 		t.Fatalf("wrong code = %d %s", wrong.Code, wrong.Body.String())
 	}
 	created := authRequest(t, engine, http.MethodPost, "/api/v1/auth/session", gin.H{"email": firstAlias, "code": code})
-	if created.Code != http.StatusCreated || len(created.Result().Cookies()) == 0 {
+	if created.Code != http.StatusOK || len(created.Result().Cookies()) == 0 {
 		t.Fatalf("first verify = %d %s", created.Code, created.Body.String())
 	}
 	createdBody := decodeVerifyEmailResponse(t, created.Body.Bytes())
@@ -105,7 +105,7 @@ func TestUnifiedEmailAuthenticationCreatesThenLogsIn(t *testing.T) {
 	returningAlias := "f.i.r.s.t.u.s.e.r+return@gmail.com"
 	returningCode := requestDevelopmentCode(t, engine, returningAlias)
 	returning := authRequest(t, engine, http.MethodPost, "/api/v1/auth/session", gin.H{"email": returningAlias, "code": returningCode})
-	if returning.Code != http.StatusCreated {
+	if returning.Code != http.StatusOK {
 		t.Fatalf("returning verify = %d %s", returning.Code, returning.Body.String())
 	}
 	returningBody := decodeVerifyEmailResponse(t, returning.Body.Bytes())
@@ -137,7 +137,7 @@ func TestUnifiedEmailAuthenticationPreservesCodeWhenRegistrationClosed(t *testin
 		t.Fatal(err)
 	}
 	retry := authRequest(t, engine, http.MethodPost, "/api/v1/auth/session", gin.H{"email": email, "code": code})
-	if retry.Code != http.StatusCreated {
+	if retry.Code != http.StatusOK {
 		t.Fatalf("code was consumed by rolled back registration = %d %s", retry.Code, retry.Body.String())
 	}
 }
@@ -150,7 +150,7 @@ func TestUnifiedEmailAuthenticationLimitsNewAccountsPerIP(t *testing.T) {
 		email := fmt.Sprintf("security-registration-%d@qq.com", index)
 		code := requestDevelopmentCode(t, engine, email)
 		response := authRequest(t, engine, http.MethodPost, "/api/v1/auth/session", gin.H{"email": email, "code": code})
-		if response.Code != http.StatusCreated {
+		if response.Code != http.StatusOK {
 			t.Fatalf("registration %d = %d %s", index, response.Code, response.Body.String())
 		}
 	}

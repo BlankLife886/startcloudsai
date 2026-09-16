@@ -116,6 +116,25 @@ func RevokeUserAPIKey(ctx context.Context, q Q, userID, id uuid.UUID) (bool, err
 	return tag.RowsAffected() > 0, err
 }
 
+func UpdateUserAPIKey(ctx context.Context, q Q, userID, id uuid.UUID, key *UserAPIKey) (*UserAPIKey, error) {
+	if key.IPAllowlist == nil {
+		key.IPAllowlist = []string{}
+	}
+	if key.AllowedModelIDs == nil {
+		key.AllowedModelIDs = []string{}
+	}
+	item, err := scanUserAPIKey(q.QueryRow(ctx, `UPDATE user_api_keys SET
+		label=$3,scopes=$4,allowed_model_ids=$5,daily_task_limit=$6,monthly_task_limit=$7,
+		daily_spend_limit_cents=$8,monthly_spend_limit_cents=$9,ip_allowlist=$10,
+		rate_limit_per_minute=$11,daily_byte_limit=$12,expires_at=$13,updated_at=now()
+		WHERE id=$1 AND user_id=$2 AND status IN ('active','frozen')
+		RETURNING `+userAPIKeyCols,
+		id, userID, key.Label, key.Scopes, key.AllowedModelIDs, key.DailyTaskLimit, key.MonthlyTaskLimit,
+		key.DailySpendLimitCents, key.MonthlySpendLimitCents, key.IPAllowlist,
+		key.RateLimitPerMinute, key.DailyByteLimit, key.ExpiresAt))
+	return nilOnNoRows(item, err)
+}
+
 func TouchUserAPIKey(ctx context.Context, q Q, id uuid.UUID, ip string, lastError *string) error {
 	_, err := q.Exec(ctx, `UPDATE user_api_keys SET last_used_at=now(),last_used_ip=NULLIF($2,''),last_error=$3,updated_at=now()
 		WHERE id=$1`, id, ip, lastError)

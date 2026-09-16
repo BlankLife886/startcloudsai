@@ -88,11 +88,11 @@ func TestNormalizeOpenAPIModelIDs(t *testing.T) {
 		{ID: "chat", Kind: modelconfig.ModelKindChat, Public: true, Enabled: true},
 		{ID: "private", Kind: modelconfig.ModelKindImage, Public: false, Enabled: true},
 	}}
-	ids, err := normalizeOpenAPIModelIDs(cfg, []string{" image ", "image", ""})
-	if err != nil || len(ids) != 1 || ids[0] != "image" {
+	ids, err := normalizeOpenAPIModelIDs(cfg, []string{" image ", "image", "chat", ""})
+	if err != nil || len(ids) != 2 || ids[0] != "image" || ids[1] != "chat" {
 		t.Fatalf("normalized ids = %#v err=%v", ids, err)
 	}
-	for _, denied := range []string{"chat", "private", "missing"} {
+	for _, denied := range []string{"private", "missing"} {
 		if _, err := normalizeOpenAPIModelIDs(cfg, []string{denied}); err == nil {
 			t.Fatalf("model %q should be denied", denied)
 		}

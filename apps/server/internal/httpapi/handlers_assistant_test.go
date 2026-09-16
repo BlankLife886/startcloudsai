@@ -88,7 +88,7 @@ func TestSanitizeAssistantImagePlanItems(t *testing.T) {
 	items, err := sanitizeAssistantImagePlanItems([]assistantRunImagePlanItem{
 		{Title: "主图", Prompt: "主图提示词", ReferenceImageIDs: []string{"ref-1"}},
 		{Title: "细节图", Prompt: "细节图提示词", ReferenceImageIDs: []string{"ref-2"}},
-	}, references, 2, nil, "")
+	}, references, 2, nil, "", maxAssistantMessageRunes)
 	if err != nil {
 		t.Fatalf("sanitize image plan: %v", err)
 	}
@@ -104,24 +104,24 @@ func TestSanitizeAssistantImagePlanItems(t *testing.T) {
 	items, err = sanitizeAssistantImagePlanItems([]assistantRunImagePlanItem{
 		{Prompt: "横图", Ratio: "16:9", Resolution: "2K", Quality: "high"},
 		{Prompt: "方图", Ratio: "1:1", Resolution: "1K", Quality: "high"},
-	}, references, 2, &model, "1K")
+	}, references, 2, &model, "1K", maxAssistantMessageRunes)
 	if err != nil || assistantMapText(items[0], "requestSize") != "2048x1152" || assistantMapText(items[1], "requestSize") != "1024x1024" {
 		t.Fatalf("per-item image settings = %#v, err=%v", items, err)
 	}
 
 	if _, err := sanitizeAssistantImagePlanItems([]assistantRunImagePlanItem{
 		{Prompt: "一", ReferenceImageIDs: []string{"missing"}}, {Prompt: "二"},
-	}, references, 2, nil, ""); err == nil {
+	}, references, 2, nil, "", maxAssistantMessageRunes); err == nil {
 		t.Fatal("unknown reference id must fail validation")
 	}
 	if _, err := sanitizeAssistantImagePlanItems([]assistantRunImagePlanItem{
 		{Prompt: strings.Repeat("字", maxAssistantMessageRunes+1)}, {Prompt: "二"},
-	}, references, 2, nil, ""); err == nil {
+	}, references, 2, nil, "", maxAssistantMessageRunes); err == nil {
 		t.Fatal("oversized item prompt must fail validation")
 	}
 	if _, err := sanitizeAssistantImagePlanItems([]assistantRunImagePlanItem{
 		{Prompt: "一"}, {Prompt: "二"},
-	}, references, 3, nil, ""); err == nil {
+	}, references, 3, nil, "", maxAssistantMessageRunes); err == nil {
 		t.Fatal("plan count mismatch must fail validation")
 	}
 }
@@ -301,7 +301,7 @@ func TestValidateAssistantMessages(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if err := validateAssistantMessages(tt.messages); (err != nil) != tt.wantErr {
+			if err := validateAssistantMessages(tt.messages, maxAssistantMessageRunes); (err != nil) != tt.wantErr {
 				t.Fatalf("error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})

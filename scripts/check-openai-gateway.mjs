@@ -36,9 +36,12 @@ const upstream = createServer((request, response) => {
     return
   }
   response.writeHead(200, { 'content-type': 'application/json', 'x-request-id': 'fixture-request' })
-  response.end(JSON.stringify(request.url.startsWith('/v1/')
-    ? { object: 'list', data: [{ id: 'fixture-image', object: 'model', owned_by: 'fixture', created: 0 }] }
-    : { success: true, data: { fixture: true } }))
+  const payload = request.url === '/v1/responses'
+    ? { object: 'response', status: 'completed', output: [] }
+    : request.url.startsWith('/v1/')
+      ? { object: 'list', data: [{ id: 'fixture-image', object: 'model', owned_by: 'fixture', created: 0 }] }
+      : { success: true, data: { fixture: true } }
+  response.end(JSON.stringify(payload))
 })
 
 async function check(title, action) {
@@ -100,6 +103,16 @@ try {
     assert.equal(response.status, 200)
     assert.equal(response.headers.get('x-request-id'), 'fixture-request')
     assert.equal((await response.json()).object, 'list')
+  })
+  await check('Responses requests reach the API', async () => {
+    const response = await fetchLocal('/v1/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'fixture-responses' },
+      body: JSON.stringify({ input: 'test', tools: [{ type: 'image_generation' }] }),
+    })
+    assert.equal(response.status, 200)
+    assert.equal(response.headers.get('x-request-id'), 'fixture-request')
+    assert.equal((await response.json()).object, 'response')
   })
   await check('gateway timeout uses the compatibility error object', async () => {
     const body = await compatError(await fetchLocal('/v1/delayed'), 504, 'gateway_timeout')

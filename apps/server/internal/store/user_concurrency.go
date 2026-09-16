@@ -138,6 +138,24 @@ func ValidateExecutionBatchCapacity(ctx context.Context, q Q, userID uuid.UUID, 
 	return checkExecutionBatchLimits(pool, units, userLimit, globalLimit, maxRouteUnits)
 }
 
+// ValidateDeveloperExecutionBatchCapacity applies platform and provider-route
+// capacity checks without applying the interactive account concurrency quota.
+// Developer API keys have their own request, spend, and daily byte limits;
+// their work must still respect global and per-route execution capacity.
+func ValidateDeveloperExecutionBatchCapacity(ctx context.Context, q Q, image bool, units, maxRouteUnits int64) error {
+	global, err := GetGlobalExecutionLimits(ctx, q)
+	if err != nil {
+		return err
+	}
+	globalLimit := global.ChatLimit
+	pool := "对话"
+	if image {
+		globalLimit = global.ImageLimit
+		pool = "生图"
+	}
+	return checkExecutionBatchLimits(pool, units, 0, globalLimit, maxRouteUnits)
+}
+
 func CheckExecutionBatchLimits(image bool, units, userLimit, globalLimit, maxRouteUnits int64) error {
 	pool := "生图"
 	if !image {

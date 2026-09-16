@@ -2162,6 +2162,9 @@ var settingsCamel = map[string]string{
 	"task_failure_retry_count":                    "taskFailureRetryCount",
 	"task_retry_first_delay_secs":                 "taskRetryFirstDelaySecs",
 	"task_retry_backoff_secs":                     "taskRetryBackoffSecs",
+	"t2i_prompt_max_chars":                        "t2iPromptMaxChars",
+	"assistant_message_max_chars":                 "assistantMessageMaxChars",
+	"studio_hub_prompt_max_chars":                 "studioHubPromptMaxChars",
 	"image_variant_format":                        "imageVariantFormat",
 	"image_display_lossless":                      "imageDisplayLossless",
 	"image_display_quality":                       "imageDisplayQuality",
@@ -2436,6 +2439,13 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 			var v int64
 			if err := json.Unmarshal(raw, &v); err != nil || v < 1 || v > 600 {
 				fail(c, apperr.E("validation_error", "taskRetryBackoffSecs: 须在 1-600 之间", 422))
+				return
+			}
+		case "t2i_prompt_max_chars", "assistant_message_max_chars", "studio_hub_prompt_max_chars":
+			var v int64
+			label := settingsCamel[snake]
+			if err := json.Unmarshal(raw, &v); err != nil || v < settings.PromptMaxCharsMin || v > settings.PromptMaxCharsMax {
+				fail(c, apperr.E("validation_error", fmt.Sprintf("%s: 须在 %d-%d 之间", label, settings.PromptMaxCharsMin, settings.PromptMaxCharsMax), 422))
 				return
 			}
 		case "admin_image_analysis_provider_id", "admin_image_analysis_model_id", "admin_image_analysis_reasoning_effort":

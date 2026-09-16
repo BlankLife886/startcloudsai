@@ -324,6 +324,13 @@ func (s *Server) createTask(c *gin.Context) {
 		fail(c, apperr.E("validation_error", "prompt: 完整任务内容过长", 422))
 		return
 	}
+	if body.Type == "t2i" {
+		maxT2I := s.t2iPromptMaxRunes(c.Request.Context())
+		if len([]rune(body.Prompt)) > maxT2I {
+			fail(c, apperr.E("validation_error", fmt.Sprintf("prompt: 长度不能超过 %d 个字符", maxT2I), 422))
+			return
+		}
+	}
 	count := 1
 	if body.Count != nil {
 		count = *body.Count
