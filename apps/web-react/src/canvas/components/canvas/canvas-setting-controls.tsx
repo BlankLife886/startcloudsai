@@ -67,7 +67,7 @@ export function SoftField({ theme, disabled, style, children }: { theme: CanvasT
 export function floatingPanelStyle(theme: CanvasTheme, extra?: CSSProperties): CSSProperties {
     return {
         background: theme.toolbar.panel,
-        border: `1px solid ${theme.toolbar.border}`,
+        border: "0",
         borderRadius: 18,
         boxShadow: theme.toolbar.shadow,
         backdropFilter: "blur(22px)",

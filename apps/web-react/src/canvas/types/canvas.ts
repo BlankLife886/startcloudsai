@@ -9,14 +9,20 @@ export type ViewportTransform = {
     k: number;
 };
 
-export enum CanvasNodeType {
-    Image = "image",
-    Text = "text",
-    Config = "config",
-    Video = "video",
-    Audio = "audio",
-    Group = "group",
-}
+// Keep the built-in type table as a const object instead of a TypeScript enum.
+// The browser build treats both forms identically, while Node's
+// `--experimental-strip-types` test runner can execute this module without a
+// transpilation step.
+export const CanvasNodeType = {
+    Image: "image",
+    Text: "text",
+    Config: "config",
+    Video: "video",
+    Audio: "audio",
+    Group: "group",
+} as const;
+
+export type CanvasNodeType = (typeof CanvasNodeType)[keyof typeof CanvasNodeType];
 
 // Node types are open strings: built-ins use CanvasNodeType and plugins use "<pluginId>:<name>".
 export type CanvasNodeTypeId = CanvasNodeType | (string & {});
@@ -26,6 +32,7 @@ export type CanvasNodeExecutionStatus = "queued" | "running" | "succeeded" | "fa
 export type CanvasGenerationMode = "text" | "image" | "video" | "audio";
 export type CanvasImageGenerationType = "generation" | "edit";
 export type CanvasLocalImageOperation = "crop" | "split" | "upscale";
+export type StoryboardInputRole = "script" | "context" | "input" | "character" | "style" | "scene" | "object" | "reference";
 
 export type CanvasNodeImage = {
     id: string;
@@ -59,6 +66,12 @@ export type CanvasNodeMetadata = {
     generationMode?: CanvasGenerationMode;
     generationType?: CanvasImageGenerationType;
     model?: string;
+    /** Text model used by the storyboard auto-analyze step. */
+    storyboardTextModel?: string;
+    /** Rule-based script splitting mode for storyboard config. */
+    storyboardParseMode?: "lines" | "paragraphs" | "markers" | "prose";
+    /** When false, rules split shots and AI polish is skipped. */
+    storyboardAiPolish?: boolean;
     reasoningEffort?: "auto" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
     size?: string;
     sizeMode?: "ratio" | "exact";
@@ -150,6 +163,32 @@ export type CanvasNodeMetadata = {
     /** Original storyboard controls are persisted so a later node-level retry is faithful. */
     storyboardStyle?: string;
     storyboardConsistency?: boolean;
+    /** Marks a config node as the inline batch / storyboard workbench. */
+    storyboardConfig?: boolean;
+    /** Batch config mode: split text, one prompt → N variants, or one prompt × each reference. */
+    batchMode?: "split" | "variants" | "refs";
+    /** Variant count for batchMode=variants (clamped 1–100). */
+    batchVariantCount?: number;
+    /** Whether the storyboard script follows its connected text source or is a local override. */
+    storyboardInputMode?: "linked" | "detached";
+    /** Explicit user-controlled storyboard inputs. Missing means legacy/default selection. */
+    storyboardInputNodeIds?: string[];
+    /** Exactly one selected text input can be the primary script. */
+    storyboardPrimaryTextNodeId?: string;
+    /** User-assigned semantic role for connected storyboard inputs. */
+    storyboardInputRoles?: Record<string, StoryboardInputRole>;
+    /** Selected shot ids for image inputs; omitted means all generated shots. */
+    storyboardInputShotIds?: Record<string, string[]>;
+    /** Explicit user-selected shot scale by stable shot id. */
+    storyboardShotTypeOverrides?: Record<string, string>;
+    /** Multi-node storyboard workflow step (detect → analyze → generate). */
+    storyboardPipelineStep?: "detect" | "analyze" | "generate";
+    /** Shared id linking all nodes in one storyboard pipeline. */
+    storyboardPipelineId?: string;
+    storyboardShotCount?: number;
+    /** Live generate progress mirrored onto the config host for the inline panel. */
+    storyboardProgressDone?: number;
+    storyboardProgressTotal?: number;
     /** Durable first-frame reference used to keep later shots visually consistent after refresh. */
     storyboardAnchorReference?: string;
     storyboardAnchorSceneId?: string;
@@ -208,6 +247,8 @@ export type CanvasAssistantSession = {
 export type ConnectionHandle = {
     nodeId: string;
     handleType: "source" | "target";
+    /** When multi-selecting, all selected sources to wire on drop (includes nodeId). */
+    sourceNodeIds?: string[];
 };
 
 export type SelectionBox = {

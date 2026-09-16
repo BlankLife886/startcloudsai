@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ImageIcon, List, Music2, Search, Settings2, Video, X } from "lucide-react";
+import { Clapperboard, Search, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { isCanvasNodeTypeEnabled } from "@/constant/canvas";
@@ -7,6 +7,7 @@ import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
 import { CANVAS_ACCENT, colorWash, nodeTypeColor } from "@/lib/canvas-ui";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { getNodePluginId, listNodeDefinitions, useNodeRegistryVersion } from "@/lib/canvas/node-registry";
+import { CanvasOperationNodeType, isCanvasOperationNodeType } from "@/lib/canvas/canvas-operation-node";
 import { CanvasNodeType, type ConnectionHandle, type Position } from "@/types/canvas";
 import type { CanvasNodeDefinition } from "@/types/canvas-plugin";
 import { CanvasFloatingLayer } from "./canvas-floating-layer";
@@ -16,15 +17,35 @@ export type PendingConnectionCreate = {
     position: Position;
 };
 
+type CreateMenuItem = {
+    key: string;
+    title: string;
+    description?: string;
+    icon: React.ReactNode;
+    accent: string;
+    disabled?: boolean;
+    hint?: string;
+    onClick?: () => void;
+};
+
+type CreateMenuSection = {
+    id: string;
+    label: string;
+    items: CreateMenuItem[];
+};
+
 function nodeAccent(def?: Pick<CanvasNodeDefinition, "type" | "minimapColor"> | null) {
     if (!def) return CANVAS_ACCENT;
     return def.minimapColor || nodeTypeColor(def.type);
 }
 
-function matchesQuery(def: CanvasNodeDefinition, query: string) {
+function matchesQuery(haystack: string, query: string) {
     if (!query) return true;
-    const haystack = `${def.title} ${def.description || ""} ${def.type}`.toLowerCase();
-    return haystack.includes(query);
+    return haystack.toLowerCase().includes(query);
+}
+
+function matchesDefinition(def: CanvasNodeDefinition, query: string) {
+    return matchesQuery(`${def.title} ${def.description || ""} ${def.type}`, query);
 }
 
 function MenuShell({
@@ -55,7 +76,7 @@ function MenuShell({
                 placement="bottom-start"
                 gap={0}
                 width={width}
-                className={`canvas-float-menu rounded-[22px] border shadow-2xl backdrop-blur-xl ${className || ""}`}
+                className={`canvas-float-menu rounded-[20px] border shadow-2xl backdrop-blur-xl ${className || ""}`}
                 data-connection-create-menu={connection ? "" : undefined}
                 style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, boxShadow: theme.toolbar.shadow, color: theme.node.text, ...style }}
             >
@@ -69,13 +90,13 @@ function MenuHeader({ title, onClose }: { title: string; onClose: () => void }) 
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const { t } = useTranslation();
     return (
-        <div className="flex items-center justify-between px-1 pb-2">
-            <span className="text-[13px] font-semibold tracking-wide" style={{ color: theme.node.text }}>
+        <div className="flex items-center justify-between gap-1 px-0.5 pb-1">
+            <span className="text-[11px] font-semibold tracking-wide" style={{ color: theme.node.text }}>
                 {title}
             </span>
             <button
                 type="button"
-                className="grid size-7 place-items-center rounded-full transition"
+                className="grid size-5 place-items-center rounded-full transition"
                 style={{ color: theme.node.muted }}
                 onMouseEnter={(event) => {
                     event.currentTarget.style.background = theme.toolbar.itemHover;
@@ -88,7 +109,7 @@ function MenuHeader({ title, onClose }: { title: string; onClose: () => void }) 
                 onClick={onClose}
                 aria-label={t("canvas.createMenu.close")}
             >
-                <X className="size-3.5" />
+                <X className="size-3" />
             </button>
         </div>
     );
@@ -97,8 +118,8 @@ function MenuHeader({ title, onClose }: { title: string; onClose: () => void }) 
 function NodeIcon({ icon, color }: { icon: React.ReactNode; color: string }) {
     return (
         <span
-            className="grid size-8 shrink-0 place-items-center rounded-[10px] text-[15px] leading-none [&>img]:size-4 [&>img]:object-contain [&>svg]:size-4"
-            style={{ background: colorWash(color), color }}
+            className="grid shrink-0 place-items-center rounded-[6px] text-[11px] leading-none [&>img]:size-3 [&>img]:object-contain [&>svg]:size-3"
+            style={{ background: colorWash(color, 0.12), color, width: 22, height: 22 }}
         >
             {icon}
         </span>
@@ -108,50 +129,10 @@ function NodeIcon({ icon, color }: { icon: React.ReactNode; color: string }) {
 function SectionLabel({ children }: { children: React.ReactNode }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     return (
-        <div className="px-1 pb-1.5 pt-2 text-[11px] font-medium tracking-wide" style={{ color: theme.node.faint }}>
+        <div className="px-0.5 pb-px pt-1 text-[9px] font-medium tracking-[0.04em]" style={{ color: theme.node.faint }}>
             {children}
         </div>
     );
-}
-
-export function ConnectionCreateMenu({
-    pending,
-    onCreate,
-    onClose,
-}: {
-    pending: PendingConnectionCreate;
-    onCreate: (type: string) => void;
-    onClose: () => void;
-}) {
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
-    const { t } = useTranslation();
-    useNodeRegistryVersion();
-    const definitions = listNodeDefinitions().filter((def) => def.showInCreateMenu !== false);
-    const basic = definitions.filter((def) => getNodePluginId(def.type) === "builtin");
-    const extensions = definitions.filter((def) => getNodePluginId(def.type) !== "builtin");
-    return (
-        <MenuShell connection className="p-2.5" position={pending.position} width={300}>
-            <MenuHeader title={t("canvas.createMenu.fromNode")} onClose={onClose} />
-            <div className="thin-scrollbar max-h-[min(62vh,520px)] overflow-y-auto pr-0.5">
-                {basic.length ? <SectionLabel>{t("canvas.createMenu.basic")}</SectionLabel> : null}
-                <div className="grid gap-0.5">
-                    {basic.map((def) => (
-                        <CreateListOption key={def.type} theme={theme} accent={nodeAccent(def)} icon={def.icon} title={def.title} description={def.description} disabled={!isCanvasNodeTypeEnabled(def.type)} onClick={() => onCreate(def.type)} />
-                    ))}
-                </div>
-                {extensions.length ? <SectionLabel>{t("canvas.createMenu.extensions")}</SectionLabel> : null}
-                <div className="grid gap-0.5">
-                    {extensions.map((def) => (
-                        <CreateListOption key={def.type} theme={theme} accent={nodeAccent(def)} icon={def.icon} title={def.title} description={def.description} disabled={!isCanvasNodeTypeEnabled(def.type)} onClick={() => onCreate(def.type)} />
-                    ))}
-                </div>
-            </div>
-        </MenuShell>
-    );
-}
-
-export function ConnectionCreateOption({ theme, icon, title, description, onClick }: { theme: CanvasTheme; icon: React.ReactNode; title: string; description?: string; onClick?: () => void }) {
-    return <CreateListOption theme={theme} icon={icon} title={title} description={description} onClick={onClick} />;
 }
 
 function CreateListOption({
@@ -161,6 +142,7 @@ function CreateListOption({
     description,
     accent = CANVAS_ACCENT,
     disabled = false,
+    hint,
     onClick,
 }: {
     theme: CanvasTheme;
@@ -169,14 +151,15 @@ function CreateListOption({
     description?: string;
     accent?: string;
     disabled?: boolean;
+    hint?: string;
     onClick?: () => void;
 }) {
     return (
         <button
             type="button"
             disabled={disabled}
-            title={disabled ? description : undefined}
-            className="flex w-full items-center gap-2.5 rounded-[14px] px-2 py-1.5 text-left transition disabled:cursor-not-allowed disabled:opacity-40"
+            title={disabled ? hint || description : description ? `${title} · ${description}` : title}
+            className="flex w-full items-center gap-1.5 rounded-[8px] px-1 py-0.5 text-left transition disabled:cursor-not-allowed disabled:opacity-40"
             style={{ color: theme.node.text }}
             onClick={disabled ? undefined : onClick}
             onMouseEnter={(event) => {
@@ -187,68 +170,52 @@ function CreateListOption({
             }}
         >
             <NodeIcon icon={icon} color={accent} />
-            <span className="min-w-0 flex-1">
-                <span className="block truncate text-[13px] font-medium leading-5">{title}</span>
-                {description ? (
-                    <span className="mt-0.5 block truncate text-[11px] leading-4" style={{ color: theme.node.muted }}>
-                        {description}
-                    </span>
-                ) : null}
-            </span>
+            <span className="min-w-0 flex-1 truncate text-[11px] font-medium leading-4">{title}</span>
         </button>
     );
 }
 
-function CreateTileOption({
-    theme,
-    icon,
-    title,
-    accent,
-    disabled = false,
-    hint,
-    onClick,
-}: {
-    theme: CanvasTheme;
-    icon: React.ReactNode;
-    title: string;
-    accent: string;
-    disabled?: boolean;
-    hint?: string;
-    onClick?: () => void;
-}) {
-    return (
-        <button
-            type="button"
-            disabled={disabled}
-            title={disabled ? hint : undefined}
-            className="flex h-11 w-full items-center gap-2 rounded-[14px] px-2 text-left transition disabled:cursor-not-allowed disabled:opacity-40"
-            style={{ color: theme.node.text, background: colorWash(accent, disabled ? 0.04 : 0.05) }}
-            onClick={disabled ? undefined : onClick}
-            onMouseEnter={(event) => {
-                if (!disabled) event.currentTarget.style.background = colorWash(accent, 0.12);
-            }}
-            onMouseLeave={(event) => {
-                event.currentTarget.style.background = colorWash(accent, disabled ? 0.04 : 0.05);
-            }}
-        >
-            <NodeIcon icon={icon} color={accent} />
-            <span className="min-w-0 truncate text-[13px] font-medium">{title}</span>
-        </button>
-    );
+export function ConnectionCreateOption({ theme, icon, title, description, onClick }: { theme: CanvasTheme; icon: React.ReactNode; title: string; description?: string; onClick?: () => void }) {
+    return <CreateListOption theme={theme} icon={icon} title={title} description={description} onClick={onClick} />;
 }
 
-export function NodeCreateMenu({ position, onCreate, onClose }: { position: Position; onCreate: (type: string) => void; onClose: () => void }) {
+function CreateMenuSections({ sections, emptyLabel }: { sections: CreateMenuSection[]; emptyLabel: string }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
-    const { t } = useTranslation();
-    useNodeRegistryVersion();
-    const menuRef = useRef<HTMLDivElement>(null);
-    const searchRef = useRef<HTMLInputElement>(null);
-    const [query, setQuery] = useState("");
-    const normalized = query.trim().toLowerCase();
-    const definitions = listNodeDefinitions().filter((def) => def.showInCreateMenu !== false);
-    const basic = useMemo(() => definitions.filter((def) => getNodePluginId(def.type) === "builtin" && matchesQuery(def, normalized)), [definitions, normalized]);
-    const extensions = useMemo(() => definitions.filter((def) => getNodePluginId(def.type) !== "builtin" && matchesQuery(def, normalized)), [definitions, normalized]);
+    const visible = sections.filter((section) => section.items.length);
+    if (!visible.length) {
+        return (
+            <div className="px-2 py-6 text-center text-[11px]" style={{ color: theme.node.faint }}>
+                {emptyLabel}
+            </div>
+        );
+    }
+    return (
+        <div className="thin-scrollbar max-h-[min(52vh,360px)] overflow-y-auto">
+            {visible.map((section, index) => (
+                <div key={section.id} className={index === 0 ? "" : "border-t"} style={{ borderColor: theme.toolbar.border }}>
+                    <SectionLabel>{section.label}</SectionLabel>
+                    <div className="grid grid-cols-2 gap-x-0.5 gap-y-0">
+                        {section.items.map((item) => (
+                            <CreateListOption
+                                key={item.key}
+                                theme={theme}
+                                icon={item.icon}
+                                title={item.title}
+                                description={item.description}
+                                accent={item.accent}
+                                disabled={item.disabled}
+                                hint={item.hint}
+                                onClick={item.onClick}
+                            />
+                        ))}
+                    </div>
+                </div>
+            ))}
+        </div>
+    );
+}
 
+function useDismissibleMenu(onClose: () => void, menuRef: React.RefObject<HTMLDivElement | null>, searchRef?: React.RefObject<HTMLInputElement | null>) {
     useEffect(() => {
         const handlePointerDown = (event: PointerEvent) => {
             if (menuRef.current && !menuRef.current.contains(event.target as Node)) onClose();
@@ -258,70 +225,208 @@ export function NodeCreateMenu({ position, onCreate, onClose }: { position: Posi
         };
         document.addEventListener("pointerdown", handlePointerDown, true);
         document.addEventListener("keydown", handleKeyDown);
-        const timer = window.setTimeout(() => searchRef.current?.focus(), 30);
+        const timer = window.setTimeout(() => searchRef?.current?.focus(), 30);
         return () => {
             document.removeEventListener("pointerdown", handlePointerDown, true);
             document.removeEventListener("keydown", handleKeyDown);
             window.clearTimeout(timer);
         };
-    }, [onClose]);
+    }, [menuRef, onClose, searchRef]);
+}
+
+function definitionToItem(def: CanvasNodeDefinition, onCreate: (type: string) => void, unavailableLabel: string): CreateMenuItem {
+    return {
+        key: def.type,
+        title: def.title,
+        description: def.description,
+        icon: def.icon,
+        accent: nodeAccent(def),
+        disabled: !isCanvasNodeTypeEnabled(def.type),
+        hint: unavailableLabel,
+        onClick: () => onCreate(def.type),
+    };
+}
+
+function partitionBuiltinDefinitions(definitions: CanvasNodeDefinition[]) {
+    const media: CanvasNodeDefinition[] = [];
+    const generate: CanvasNodeDefinition[] = [];
+    const process: CanvasNodeDefinition[] = [];
+    const organize: CanvasNodeDefinition[] = [];
+    const other: CanvasNodeDefinition[] = [];
+    const mediaTypes = new Set<string>([CanvasNodeType.Text, CanvasNodeType.Image, CanvasNodeType.Video, CanvasNodeType.Audio]);
+    const processTypes = new Set<string>([
+        CanvasOperationNodeType.Crop,
+        CanvasOperationNodeType.Split,
+        CanvasOperationNodeType.Upscale,
+        CanvasOperationNodeType.Angle,
+        CanvasOperationNodeType.ReversePrompt,
+    ]);
+
+    for (const def of definitions) {
+        if (mediaTypes.has(def.type)) media.push(def);
+        else if (def.type === CanvasNodeType.Config) generate.push(def);
+        else if (processTypes.has(def.type) || isCanvasOperationNodeType(def.type)) process.push(def);
+        else if (def.type === CanvasNodeType.Group) organize.push(def);
+        else other.push(def);
+    }
+    return { media, generate, process, organize, other };
+}
+
+export function ConnectionCreateMenu({
+    pending,
+    onCreate,
+    onCreateStoryboard,
+    onClose,
+}: {
+    pending: PendingConnectionCreate;
+    onCreate: (type: string) => void;
+    onCreateStoryboard?: () => void;
+    onClose: () => void;
+}) {
+    const { t } = useTranslation();
+    useNodeRegistryVersion();
+    const menuRef = useRef<HTMLDivElement>(null);
+    useDismissibleMenu(onClose, menuRef);
+    const definitions = listNodeDefinitions().filter((def) => def.showInCreateMenu !== false);
+    const builtin = definitions.filter((def) => getNodePluginId(def.type) === "builtin");
+    const extensions = definitions.filter((def) => getNodePluginId(def.type) !== "builtin");
+    const partitioned = partitionBuiltinDefinitions(builtin);
+    const unavailable = t("canvas.unavailable");
+    const storyboardTitle = t("canvas.toolbar.storyboard");
+    const storyboardDescription = t("canvas.storyboard.configSubtitle");
+    const sections: CreateMenuSection[] = [
+        { id: "media", label: t("canvas.createMenu.sectionMedia"), items: partitioned.media.map((def) => definitionToItem(def, onCreate, unavailable)) },
+        {
+            id: "generate",
+            label: t("canvas.createMenu.sectionGenerate"),
+            items: [
+                ...partitioned.generate.map((def) => definitionToItem(def, onCreate, unavailable)),
+                ...(onCreateStoryboard
+                    ? [
+                          {
+                              key: "storyboard-batch",
+                              title: storyboardTitle,
+                              description: storyboardDescription,
+                              icon: <Clapperboard className="size-3" />,
+                              accent: CANVAS_ACCENT,
+                              onClick: onCreateStoryboard,
+                          } satisfies CreateMenuItem,
+                      ]
+                    : []),
+                ...partitioned.other.map((def) => definitionToItem(def, onCreate, unavailable)),
+            ],
+        },
+        { id: "process", label: t("canvas.createMenu.sectionProcess"), items: partitioned.process.map((def) => definitionToItem(def, onCreate, unavailable)) },
+        { id: "organize", label: t("canvas.createMenu.sectionOrganize"), items: partitioned.organize.map((def) => definitionToItem(def, onCreate, unavailable)) },
+        { id: "extensions", label: t("canvas.createMenu.extensions"), items: extensions.map((def) => definitionToItem(def, onCreate, unavailable)) },
+    ];
 
     return (
-        <MenuShell menuRef={menuRef} className="p-2.5" position={position} width={308}>
+        <MenuShell menuRef={menuRef} connection className="p-1.5" position={pending.position} width={260} style={{ borderRadius: 14 }}>
+            <MenuHeader title={t("canvas.createMenu.fromNode")} onClose={onClose} />
+            <CreateMenuSections sections={sections} emptyLabel={t("canvas.createMenu.empty")} />
+        </MenuShell>
+    );
+}
+
+export function NodeCreateMenu({
+    position,
+    onCreate,
+    onCreateStoryboard,
+    onClose,
+}: {
+    position: Position;
+    onCreate: (type: string) => void;
+    onCreateStoryboard?: () => void;
+    onClose: () => void;
+}) {
+    const { t } = useTranslation();
+    useNodeRegistryVersion();
+    const menuRef = useRef<HTMLDivElement>(null);
+    const searchRef = useRef<HTMLInputElement>(null);
+    const [query, setQuery] = useState("");
+    const normalized = query.trim().toLowerCase();
+    useDismissibleMenu(onClose, menuRef, searchRef);
+
+    const definitions = listNodeDefinitions().filter((def) => def.showInCreateMenu !== false);
+    const builtin = useMemo(
+        () => definitions.filter((def) => getNodePluginId(def.type) === "builtin" && matchesDefinition(def, normalized)),
+        [definitions, normalized],
+    );
+    const extensions = useMemo(
+        () => definitions.filter((def) => getNodePluginId(def.type) !== "builtin" && matchesDefinition(def, normalized)),
+        [definitions, normalized],
+    );
+    const partitioned = useMemo(() => partitionBuiltinDefinitions(builtin), [builtin]);
+    const storyboardTitle = t("canvas.toolbar.storyboard");
+    const storyboardDescription = t("canvas.storyboard.configSubtitle");
+    const storyboardMatches =
+        Boolean(onCreateStoryboard) &&
+        matchesQuery(`${storyboardTitle} ${storyboardDescription} storyboard batch 批量配置`, normalized);
+    const unavailable = t("canvas.unavailable");
+    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+
+    const sections: CreateMenuSection[] = [
+        {
+            id: "media",
+            label: t("canvas.createMenu.sectionMedia"),
+            items: partitioned.media.map((def) => definitionToItem(def, onCreate, unavailable)),
+        },
+        {
+            id: "generate",
+            label: t("canvas.createMenu.sectionGenerate"),
+            items: [
+                ...partitioned.generate.map((def) => definitionToItem(def, onCreate, unavailable)),
+                ...(storyboardMatches
+                    ? [
+                          {
+                              key: "storyboard-batch",
+                              title: storyboardTitle,
+                              description: storyboardDescription,
+                              icon: <Clapperboard className="size-3" />,
+                              accent: CANVAS_ACCENT,
+                              onClick: onCreateStoryboard,
+                          } satisfies CreateMenuItem,
+                      ]
+                    : []),
+                ...partitioned.other.map((def) => definitionToItem(def, onCreate, unavailable)),
+            ],
+        },
+        {
+            id: "process",
+            label: t("canvas.createMenu.sectionProcess"),
+            items: partitioned.process.map((def) => definitionToItem(def, onCreate, unavailable)),
+        },
+        {
+            id: "organize",
+            label: t("canvas.createMenu.sectionOrganize"),
+            items: partitioned.organize.map((def) => definitionToItem(def, onCreate, unavailable)),
+        },
+        {
+            id: "extensions",
+            label: t("canvas.createMenu.extensions"),
+            items: extensions.map((def) => definitionToItem(def, onCreate, unavailable)),
+        },
+    ];
+
+    return (
+        <MenuShell menuRef={menuRef} className="p-1.5" position={position} width={260} style={{ borderRadius: 14 }}>
             <MenuHeader title={t("canvas.createMenu.select")} onClose={onClose} />
             <label
-                className="mb-1 flex h-9 items-center gap-2 rounded-[12px] px-2.5"
+                className="mb-0.5 flex h-7 items-center gap-1 rounded-[8px] px-1.5"
                 style={{ background: theme.toolbar.itemHover, color: theme.node.muted }}
             >
-                <Search className="size-3.5 shrink-0 opacity-70" />
+                <Search className="size-3 shrink-0 opacity-70" />
                 <input
                     ref={searchRef}
                     value={query}
                     onChange={(event) => setQuery(event.target.value)}
                     placeholder={t("canvas.createMenu.search")}
-                    className="h-full w-full bg-transparent text-[13px] outline-none"
+                    className="h-full w-full bg-transparent text-[11px] outline-none"
                     style={{ color: theme.node.text }}
                 />
             </label>
-            <div className="thin-scrollbar max-h-[min(62vh,520px)] overflow-y-auto pr-0.5">
-                {basic.length ? (
-                    <>
-                        <SectionLabel>{t("canvas.createMenu.basic")}</SectionLabel>
-                        <div className="grid grid-cols-2 gap-1.5">
-                            {basic.map((def) => {
-                                const disabled = !isCanvasNodeTypeEnabled(def.type);
-                                return (
-                                    <CreateTileOption
-                                        key={def.type}
-                                        theme={theme}
-                                        icon={def.icon}
-                                        title={def.title}
-                                        accent={nodeAccent(def)}
-                                        disabled={disabled}
-                                        hint={t("canvas.unavailable")}
-                                        onClick={() => onCreate(def.type)}
-                                    />
-                                );
-                            })}
-                        </div>
-                    </>
-                ) : null}
-                {extensions.length ? (
-                    <>
-                        <SectionLabel>{t("canvas.createMenu.extensions")}</SectionLabel>
-                        <div className="grid gap-0.5">
-                            {extensions.map((def) => (
-                                <CreateListOption key={def.type} theme={theme} icon={def.icon} title={def.title} description={def.description} accent={nodeAccent(def)} onClick={() => onCreate(def.type)} />
-                            ))}
-                        </div>
-                    </>
-                ) : null}
-                {!basic.length && !extensions.length ? (
-                    <div className="px-2 py-8 text-center text-[12px]" style={{ color: theme.node.faint }}>
-                        {t("canvas.createMenu.empty")}
-                    </div>
-                ) : null}
-            </div>
+            <CreateMenuSections sections={sections} emptyLabel={t("canvas.createMenu.empty")} />
         </MenuShell>
     );
 }

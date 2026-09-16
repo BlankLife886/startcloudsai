@@ -1,3 +1,5 @@
+import { isCanvasGenerationModeEnabled } from "@/constant/canvas";
+
 export type CanvasAgentGraphContractNode = {
     key: string;
     type: string;
@@ -7,6 +9,11 @@ export type CanvasAgentGraphContractNode = {
 export type CanvasAgentGraphContractEdge = { from: string; to: string };
 
 const GENERATION_MODES = new Set(["text", "image", "video", "audio"]);
+
+function sanitizeCanvasAgentGenerationMode(mode: string | undefined, fallback: "text" | "image" | "video" | "audio" = "image") {
+    const requested = GENERATION_MODES.has(mode || "") ? (mode as "text" | "image" | "video" | "audio") : fallback;
+    return isCanvasGenerationModeEnabled(requested) ? requested : "image";
+}
 
 export function resolveCanvasAgentGraphModes(nodes: CanvasAgentGraphContractNode[], edges: CanvasAgentGraphContractEdge[]) {
     const nodeByKey = new Map(nodes.map((node) => [node.key, node]));
@@ -25,9 +32,9 @@ export function resolveCanvasAgentGraphModes(nodes: CanvasAgentGraphContractNode
         const outputs = edges
             .filter((edge) => edge.from === node.key)
             .map((edge) => nodeByKey.get(edge.to))
-            .filter((output): output is CanvasAgentGraphContractNode => Boolean(output && GENERATION_MODES.has(output.type)));
+            .filter((output): output is CanvasAgentGraphContractNode => Boolean(output && GENERATION_MODES.has(output.type) && isCanvasGenerationModeEnabled(output.type)));
         const requestedMode = GENERATION_MODES.has(node.generationMode || "") ? node.generationMode : undefined;
-        const mode = (requestedMode || outputs[0]?.type || "image") as "text" | "image" | "video" | "audio";
+        const mode = sanitizeCanvasAgentGenerationMode(requestedMode || outputs[0]?.type || "image");
         if (!outputs.some((output) => output.type === mode)) {
             throw new Error(`配置节点“${node.key}”缺少与 ${mode} 模式匹配的 ${mode} 输出节点`);
         }

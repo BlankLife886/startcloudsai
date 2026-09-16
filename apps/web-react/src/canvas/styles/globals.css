@@ -460,8 +460,11 @@
     }
 
     .canvas-image-settings-popover,
-    .canvas-float-menu {
-        animation: canvas-settings-in 180ms ease-out;
+    .canvas-float-menu,
+    .ant-select-dropdown,
+    .ant-dropdown .ant-dropdown-menu,
+    .ant-dropdown-menu-submenu-popup .ant-dropdown-menu {
+        animation: studio-menu-in 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
         scrollbar-width: thin;
     }
 
@@ -469,7 +472,7 @@
     .ant-select-dropdown,
     .ant-dropdown .ant-dropdown-menu,
     .ant-dropdown-menu-submenu-popup .ant-dropdown-menu {
-        border: 1px solid rgba(109, 92, 255, 0.1) !important;
+        border: 0 !important;
         border-radius: 16px !important;
         background: rgba(255, 255, 255, 0.86) !important;
         box-shadow: 0 14px 36px rgba(49, 32, 107, 0.1) !important;
@@ -485,9 +488,22 @@
     html.dark .ant-dropdown .ant-dropdown-menu,
     .dark .ant-dropdown-menu-submenu-popup .ant-dropdown-menu,
     html.dark .ant-dropdown-menu-submenu-popup .ant-dropdown-menu {
-        border-color: rgba(255, 255, 255, 0.1) !important;
+        border: 0 !important;
         background: rgba(16, 18, 26, 0.86) !important;
         box-shadow: 0 16px 40px rgba(0, 0, 0, 0.36) !important;
+    }
+
+    .canvas-float-menu.canvas-anchor-popover:has(.canvas-storyboard-reasoning-host),
+    .dark .canvas-float-menu.canvas-anchor-popover:has(.canvas-storyboard-reasoning-host),
+    html.dark .canvas-float-menu.canvas-anchor-popover:has(.canvas-storyboard-reasoning-host) {
+        background: transparent !important;
+        border: 0 !important;
+        box-shadow: none !important;
+        backdrop-filter: none !important;
+        -webkit-backdrop-filter: none !important;
+        overflow: visible !important;
+        padding: 0 !important;
+        animation: none !important;
     }
 
     .ant-select-dropdown .ant-select-item,
@@ -942,6 +958,28 @@
         }
     }
 
+    /* Same open motion as StudioReasoningSlider / 创作台推理下拉 */
+    @keyframes studio-menu-in {
+        from {
+            opacity: 0;
+            transform: translateY(6px) scale(0.98);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+        }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        .canvas-image-settings-popover,
+        .canvas-float-menu,
+        .ant-select-dropdown,
+        .ant-dropdown .ant-dropdown-menu,
+        .ant-dropdown-menu-submenu-popup .ant-dropdown-menu {
+            animation: none;
+        }
+    }
+
     .canvas-prompt-editor-modal .ant-modal-content {
         padding: 20px 20px 16px !important;
         border-radius: 24px !important;
@@ -1109,19 +1147,25 @@
     }
 
     .canvas-editor-btn {
+        -webkit-appearance: none !important;
+        appearance: none !important;
         display: inline-flex;
         align-items: center;
         justify-content: center;
         gap: 6px;
         min-height: 36px;
         padding: 0 14px;
+        border: 0 !important;
+        outline: none !important;
         border-radius: 12px;
         background: rgba(109, 92, 255, 0.08);
         color: #4c1d95;
         font-size: 13px;
         font-weight: 600;
         line-height: 1;
+        cursor: pointer;
         transition: background 0.15s ease, color 0.15s ease;
+        box-shadow: none;
     }
 
     .canvas-editor-btn:hover:not(:disabled) {
@@ -1158,13 +1202,20 @@
     }
 
     .canvas-editor-icon-btn {
+        -webkit-appearance: none !important;
+        appearance: none !important;
         display: grid;
         place-items: center;
         width: 32px;
         height: 32px;
+        border: 0 !important;
+        outline: none !important;
         border-radius: 10px;
+        background: transparent;
         color: #8b83a3;
+        cursor: pointer;
         transition: background 0.15s ease, color 0.15s ease;
+        box-shadow: none;
     }
 
     .canvas-editor-icon-btn:hover:not(:disabled) {
@@ -1978,6 +2029,15 @@ html.settings-no-animations .canvas-editor-chrome {
 
 .canvas-side-panel-filter-dropdown {
     z-index: 12000 !important;
+}
+
+.canvas-editor-modal-root {
+    z-index: 12000 !important;
+}
+
+.canvas-editor-modal-root .ant-modal-mask,
+.canvas-editor-modal-root .ant-modal-wrap {
+    z-index: 12000;
 }
 
 .canvas-side-panel-filter-dropdown .ant-dropdown-menu {

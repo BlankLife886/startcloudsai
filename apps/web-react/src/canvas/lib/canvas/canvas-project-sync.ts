@@ -209,6 +209,12 @@ function outputMetadata(metadata: CanvasNodeMetadata = {}): Partial<CanvasNodeMe
         storyboardPlanSource: metadata.storyboardPlanSource,
         storyboardStyle: metadata.storyboardStyle,
         storyboardConsistency: metadata.storyboardConsistency,
+        storyboardInputMode: metadata.storyboardInputMode,
+        storyboardInputNodeIds: metadata.storyboardInputNodeIds,
+        storyboardPrimaryTextNodeId: metadata.storyboardPrimaryTextNodeId,
+        storyboardInputRoles: metadata.storyboardInputRoles,
+        storyboardInputShotIds: metadata.storyboardInputShotIds,
+        storyboardShotTypeOverrides: metadata.storyboardShotTypeOverrides,
         storyboardAnchorReference: metadata.storyboardAnchorReference,
         storyboardAnchorSceneId: metadata.storyboardAnchorSceneId,
     };

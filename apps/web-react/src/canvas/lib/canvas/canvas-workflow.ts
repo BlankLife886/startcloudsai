@@ -1,6 +1,7 @@
 import type { CanvasConnection, CanvasNodeData } from "@/types/canvas";
 import { resolveCopiedCanvasNodeReferences } from "./canvas-node-copy.ts";
 import { isCanvasExecutableNode } from "./canvas-operation-node.ts";
+import { canConnectStoryboardPipelineNodes } from "./canvas-storyboard-pipeline-guards.ts";
 import { canvasWorkflowInputSignature, canvasWorkflowValueFingerprint } from "./canvas-workflow-signature.ts";
 import { storageKeyFromUrl } from "./canvas-preview-url.ts";
 
@@ -190,12 +191,27 @@ export function advanceCanvasWorkflowCheckpoint(checkpoint: CanvasWorkflowCheckp
     };
 }
 
+/** Expected successful outputs for a producer — storyboard uses shot count, not metadata.count. */
+export function workflowExpectedOutputCount(producer: CanvasNodeData): number {
+    if (producer.metadata?.storyboardConfig) {
+        const candidates = [
+            Number(producer.metadata.storyboardProgressTotal),
+            Number(producer.metadata.storyboardSceneCount),
+            Number(producer.metadata.storyboardShotCount),
+            producer.metadata.workflowOutputNodeIds?.length || 0,
+        ];
+        const matched = candidates.find((value) => Number.isFinite(value) && value > 0);
+        return Math.max(1, Math.floor(matched || 1));
+    }
+    return Math.max(1, Math.floor(Number(producer.metadata?.count) || 1));
+}
+
 /** Media must have a durable identity before a completed output is certified. */
 export function canvasWorkflowNodeOutputFingerprint(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
     const producer = nodes.find((node) => node.id === nodeId);
     if (!producer) return null;
     const mode = producer.metadata?.generationMode || "image";
-    const validation = validateCanvasWorkflowNodeOutputs({ nodeId, mode, expectedCount: Number(producer.metadata?.count) || 1, nodes, connections });
+    const validation = validateCanvasWorkflowNodeOutputs({ nodeId, mode, expectedCount: workflowExpectedOutputCount(producer), nodes, connections });
     if (!validation.ok) return null;
     const outputs = findWorkflowOutputNodes(nodeId, mode, nodes, connections);
     const source = (content = "", key = "") => key || storageKeyFromUrl(content) || (/^(?:data:|blob:)/.test(content) ? "" : content);
@@ -242,7 +258,7 @@ export function reconcileCanvasWorkflowCheckpoint(checkpoint: CanvasWorkflowChec
         const outputValidation = validateCanvasWorkflowNodeOutputs({
             nodeId: currentNodeId,
             mode: current.metadata?.generationMode || "image",
-            expectedCount: Number(current.metadata?.count) || 1,
+            expectedCount: workflowExpectedOutputCount(current),
             nodes,
             connections,
         });
@@ -269,7 +285,7 @@ export function reconcileCanvasWorkflowFailureOutput(checkpoint: CanvasWorkflowC
     const validation = validateCanvasWorkflowNodeOutputs({
         nodeId: failedNodeId,
         mode: node.metadata?.generationMode || "image",
-        expectedCount: Number(node.metadata?.count) || 1,
+        expectedCount: workflowExpectedOutputCount(node),
         nodes,
         connections,
     });
@@ -299,7 +315,7 @@ export function reconcileCanvasWorkflowOutputs(
         const validation = validateCanvasWorkflowNodeOutputs({
             nodeId,
             mode: node.metadata?.generationMode || "image",
-            expectedCount: Number(node.metadata?.count) || 1,
+            expectedCount: workflowExpectedOutputCount(node),
             nodes,
             connections,
         });
@@ -419,7 +435,13 @@ export function compileCanvasWorkflow(nodes: CanvasNodeData[], connections: Canv
     }
 
     const executableIds = new Set(executableNodes.map((node) => node.id));
-    const invalidConfigIds = connections.flatMap((connection) => executableIds.has(connection.fromNodeId) && executableIds.has(connection.toNodeId) ? [connection.fromNodeId, connection.toNodeId] : []);
+    const invalidConfigIds = connections.flatMap((connection) => {
+        if (!executableIds.has(connection.fromNodeId) || !executableIds.has(connection.toNodeId)) return [];
+        const from = nodeById.get(connection.fromNodeId);
+        const to = nodeById.get(connection.toNodeId);
+        if (canConnectStoryboardPipelineNodes(from, to)) return [];
+        return [connection.fromNodeId, connection.toNodeId];
+    });
     if (invalidConfigIds.length) return { ok: false, reason: "invalid_connection", nodeIds: [...new Set(invalidConfigIds)] };
     const dependencies = new Map<string, Set<string>>();
     for (const node of executableNodes) {
@@ -449,15 +471,30 @@ export function findWorkflowOutputNodes(producerNodeId: string, outputType: stri
     const producer = nodes.find((node) => node.id === producerNodeId);
     const connectedOutputIds = new Set(connections.filter((connection) => connection.fromNodeId === producerNodeId).map((connection) => connection.toNodeId));
     const connected = nodes.filter((node) => node.type === outputType && connectedOutputIds.has(node.id));
-    // A copied config can still carry its source node's persisted output IDs. A
-    // connection the user created on the copy is the current source of truth.
-    if (connected.length) return connected;
     const explicitIds = producer?.metadata?.workflowOutputNodeIds || [];
     const explicit = explicitIds
         .map((id) => nodes.find((node) => node.id === id))
         .filter((node): node is CanvasNodeData => Boolean(node && node.type === outputType));
-    if (explicit.length) return explicit;
     const attributed = nodes.filter((node) => node.type === outputType && node.metadata?.workflowProducerNodeId === producerNodeId);
+    // Storyboard re-runs append new shot nodes while old edges remain. Scope to
+    // the current storyboardId / workflowOutputNodeIds so mixed leftover states
+    // cannot certify a partial batch as complete.
+    const storyboardId = producer?.metadata?.storyboardConfig ? producer.metadata.storyboardId : undefined;
+    if (storyboardId) {
+        const matchesStoryboard = (node: CanvasNodeData) => node.metadata?.storyboardId === storyboardId;
+        if (explicit.length) {
+            const scopedExplicit = explicit.filter(matchesStoryboard);
+            if (scopedExplicit.length) return scopedExplicit;
+        }
+        const scopedConnected = connected.filter(matchesStoryboard);
+        if (scopedConnected.length) return scopedConnected;
+        const scopedAttributed = attributed.filter(matchesStoryboard);
+        if (scopedAttributed.length) return scopedAttributed;
+    }
+    // A copied config can still carry its source node's persisted output IDs. A
+    // connection the user created on the copy is the current source of truth.
+    if (connected.length) return connected;
+    if (explicit.length) return explicit;
     if (attributed.length) return attributed;
     return [];
 }

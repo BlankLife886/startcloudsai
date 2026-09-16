@@ -36,7 +36,7 @@ export function CanvasFieldMenu<T extends string>({ value, options, onChange, th
                 open={open}
                 onToggle={() => updateOpen(!open)}
                 fullWidth
-                className={`flex h-10 w-full min-w-0 items-center rounded-xl text-left ${compact ? "px-2" : "px-3"} ${triggerClassName || ""}`.trim()}
+                className={`flex w-full min-w-0 items-center text-left ${compact ? "h-7 rounded-lg px-2 text-[11px]" : "h-10 rounded-xl px-3 text-[13px]"} ${triggerClassName || ""}`.trim()}
                 style={{ background: surface, color: theme.node.text }}
             >
                 {children(open)}

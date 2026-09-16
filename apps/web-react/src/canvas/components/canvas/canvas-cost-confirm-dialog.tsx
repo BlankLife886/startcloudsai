@@ -72,7 +72,7 @@ export function CanvasCostConfirmDialog({ cost, onCancel, onConfirm }: CanvasCos
                         {t("canvas.costConfirm.cancel")}
                     </button>
                     {insufficient ? (
-                        <a className="sc-cd-btn is-solid" href="/wallet">
+                        <a className="sc-cd-btn is-solid" href="/pricing?plan=topup">
                             {t("canvas.costConfirm.recharge")}
                         </a>
                     ) : (

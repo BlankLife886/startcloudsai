@@ -29,13 +29,33 @@ export type StoryboardPlan = {
     source: "rules" | "ai";
 };
 
+export type StoryboardParseMode = "lines" | "paragraphs" | "markers" | "prose";
+
+export const STORYBOARD_PARSE_MODES: readonly StoryboardParseMode[] = ["lines", "paragraphs", "markers", "prose"];
+export const STORYBOARD_SHOT_TYPES: readonly StoryboardShotType[] = ["wide", "full", "medium", "close", "detail", "over"];
+
+const DEFAULT_STORYBOARD_PARSE_MODE: StoryboardParseMode = "lines";
+
+export function resolveStoryboardParseMode(value: unknown): StoryboardParseMode {
+    const mode = String(value || "").trim().toLowerCase();
+    // Legacy "auto" is retired — map it to the explicit default.
+    if (mode === "auto" || !mode) return DEFAULT_STORYBOARD_PARSE_MODE;
+    return STORYBOARD_PARSE_MODES.includes(mode as StoryboardParseMode) ? (mode as StoryboardParseMode) : DEFAULT_STORYBOARD_PARSE_MODE;
+}
+
 export type StoryboardParseOptions = {
     count?: number;
     style?: StoryboardStyle;
+    mode?: StoryboardParseMode;
 };
 
-const MAX_SCENES = 16;
-const MAX_TEXT_LENGTH = 9000;
+const MAX_SCENES = 100;
+/** Platform safety cap for batch/split shot count (aligned with canvas image hard max). */
+export const STORYBOARD_MAX_SCENES = MAX_SCENES;
+/** Maximum script size accepted by the current single-run storyboard executor. */
+export const STORYBOARD_INPUT_LIMIT = 9000;
+
+const DEFAULT_BATCH_TITLE = "批量配置";
 
 const STYLE_LABELS: Record<StoryboardStyle, string> = {
     cinematic: "电影感写实，细腻光影，真实材质，专业摄影",
@@ -62,7 +82,7 @@ const SCREENPLAY_TIME_WORDS: Array<{ pattern: RegExp; label: string }> = [
     { pattern: /\bDAY\b/i, label: "白天" },
 ];
 const LOCATION_WORDS = ["街道", "车站", "地铁", "咖啡馆", "办公室", "教室", "医院", "家中", "客厅", "厨房", "天台", "森林", "海边", "广场", "仓库", "剧院"];
-const SCENE_MARKER_RE = /^(?:第\s*[0-9零〇一二三四五六七八九十百两]+\s*(?:场景|幕|场|镜头|镜)|(?:场景|镜头)\s*[0-9零〇一二三四五六七八九十百两]+|(?:SCENE|SHOT|SEQ)\s*[#-]?\s*\d+|【[^】]{1,24}】|(?:INT|EXT)\.?\s+|\d+[.)、]\s*)/i;
+const SCENE_MARKER_RE = /^(?:[-*•·▪‣]\s+|第\s*[0-9零〇一二三四五六七八九十百两]+\s*(?:场景|幕|场|镜头|镜)|(?:场景|镜头)\s*[0-9零〇一二三四五六七八九十百两]+|(?:SCENE|SHOT|SEQ)\s*[#:-]?\s*\d+|【[^】]{1,24}】|(?:INT|EXT)\.?\s+|\d+[.)、]\s*)/i;
 
 function clampText(value: unknown, max = 280) {
     return String(value ?? "").replace(/\s+/g, " ").trim().slice(0, max);
@@ -72,8 +92,7 @@ function normalizeScript(script: string) {
     return String(script || "")
         .replace(/\r\n?/g, "\n")
         .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "")
-        .trim()
-        .slice(0, MAX_TEXT_LENGTH);
+        .trim();
 }
 
 function stripSceneMarker(value: string) {
@@ -95,8 +114,32 @@ function stripSceneMarker(value: string) {
         return remainder;
     }
     return value
-        .replace(/^\s*(?:(?:第\s*[0-9零〇一二三四五六七八九十百两]+\s*(?:场景|幕|场|镜头|镜)|(?:场景|镜头)\s*[0-9零〇一二三四五六七八九十百两]+|(?:SCENE|SHOT|SEQ)\s*[#-]?\s*\d+|【[^】]{1,24}】)(?:\s*[：:—-]\s*)?|\d+[.)、])\s*/i, "")
+        .replace(/^\s*[-*•·▪‣]\s+/, "")
+        .replace(/^\s*(?:(?:第\s*[0-9零〇一二三四五六七八九十百两]+\s*(?:场景|幕|场|镜头|镜)|(?:场景|镜头)\s*[0-9零〇一二三四五六七八九十百两]+|(?:SCENE|SHOT|SEQ)\s*[#:-]?\s*\d+|【[^】]{1,24}】)(?:\s*[：:—-]\s*)?|\d+[.)、])\s*/i, "")
         .trim();
+}
+
+/** Normalize list bullets while retaining explicit numbered/scene markers. */
+function normalizeLine(value: string) {
+    return value.replace(/^\s*[-*•·▪‣]\s+/, "").trim();
+}
+
+/** Split very long prose beats at clause punctuation, keeping short clauses together. */
+function splitLongBeat(value: string, maxLength = 260) {
+    if (value.length <= maxLength) return [value.trim()].filter(Boolean);
+    const clauses = value.split(/(?<=[，,、；;：:])\s*/).map((part) => part.trim()).filter(Boolean);
+    if (clauses.length < 2) return splitSentenceBeats(value);
+    const result: string[] = [];
+    let current = "";
+    for (const clause of clauses) {
+        const candidate = current ? `${current}${clause}` : clause;
+        if (current && candidate.length > maxLength * 0.72) {
+            result.push(current);
+            current = clause;
+        } else current = candidate;
+    }
+    if (current) result.push(current);
+    return result.length > 1 ? result : [value.trim()];
 }
 
 /** Split a single prose block into scene beats without breaking screenplay headings. */
@@ -128,37 +171,39 @@ function splitSentenceBeats(value: string) {
     return chunks;
 }
 
-function splitSource(script: string, count: number) {
+function groupMarkedLines(lines: string[]) {
+    const grouped: string[] = [];
+    for (const line of lines) {
+        if (SCENE_MARKER_RE.test(line) || !grouped.length) grouped.push(line);
+        else grouped[grouped.length - 1] = `${grouped[grouped.length - 1]} ${line}`;
+    }
+    return grouped;
+}
+
+function splitSource(script: string, count: number, mode: StoryboardParseMode = DEFAULT_STORYBOARD_PARSE_MODE) {
     const paragraphs = script
         .split(/\n\s*\n+/)
         .map((line) => line.trim())
-        .filter(Boolean);
+        .filter((line) => Boolean(stripSceneMarker(line)));
     const lines = script
         .split("\n")
-        .map((line) => line.trim())
-        .filter(Boolean);
+        .map(normalizeLine)
+        .filter((line) => Boolean(stripSceneMarker(line)));
     const explicitCount = lines.filter((line) => SCENE_MARKER_RE.test(line)).length;
     let chunks: string[];
-    if (explicitCount >= 2 || (explicitCount === 1 && paragraphs.length === 1)) {
-        // Keep dialogue/action lines attached to the preceding marked scene.
-        // This also handles a single screenplay heading followed by several
-        // action lines; splitting those lines into unrelated shots loses the
-        // writer's intended scene boundary.
-        const grouped: string[] = [];
-        for (const line of lines) {
-            if (SCENE_MARKER_RE.test(line) || !grouped.length) grouped.push(line);
-            else grouped[grouped.length - 1] = `${grouped[grouped.length - 1]} ${line}`;
-        }
-        chunks = grouped;
+    if (mode === "paragraphs") {
+        chunks = paragraphs.length > 1 ? paragraphs : lines.length > 1 ? lines : paragraphs.length ? paragraphs : script.trim() ? [script.trim()] : [];
+    } else if (mode === "markers") {
+        chunks = explicitCount >= 1 ? groupMarkedLines(lines) : lines.length > 1 ? lines : script.trim() ? [script.trim()] : [];
+    } else if (mode === "prose") {
+        chunks = splitSentenceBeats(script);
+        if (!chunks.length && script.trim()) chunks = [script.trim()];
+        chunks = chunks.flatMap((chunk) => splitLongBeat(chunk));
     } else {
-        // Blank-line paragraphs are usually intentional scene beats. Preserve
-        // them before falling back to individual screenplay lines.
-        chunks = paragraphs.length > 1 ? paragraphs : lines.length > 1 ? lines : paragraphs;
+        // lines (default)
+        chunks = lines.length ? lines : script.trim() ? [script.trim()] : [];
     }
-    // An explicit screenplay marker defines the scene boundary; keep its
-    // continuation/action lines together even when they contain periods.
-    if (chunks.length <= 1 && explicitCount === 0) chunks = splitSentenceBeats(script);
-    if (!chunks.length && script.trim()) chunks = [script.trim()];
+    if (mode !== "prose" && !chunks.length && script.trim()) chunks = [script.trim()];
     if (chunks.length <= count) return chunks.slice(0, MAX_SCENES);
 
     const merged: string[] = [];
@@ -174,10 +219,23 @@ function splitSource(script: string, count: number) {
 }
 
 function inferShotType(text: string, index: number): StoryboardShotType {
-    const normalized = text.toLowerCase();
-    const hit = SHOT_RULES.find((rule) => rule.words.some((word) => normalized.includes(word.toLowerCase())));
-    if (hit) return hit.type;
-    return ["wide", "medium", "close", "full"][index % 4] as StoryboardShotType;
+    // Never invent a different framing merely because this is shot N. If the
+    // script contains a framing word, still keep the default neutral: shot
+    // scale is an explicit user choice, not an accidental property of prose.
+    return "medium";
+}
+
+export function applyStoryboardShotTypeOverrides(plan: StoryboardPlan, overrides?: Record<string, unknown>): StoryboardPlan {
+    if (!overrides) return plan;
+    return {
+        ...plan,
+        scenes: plan.scenes.map((scene) => {
+            const selected = overrides[scene.id];
+            return STORYBOARD_SHOT_TYPES.includes(selected as StoryboardShotType)
+                ? { ...scene, shotType: selected as StoryboardShotType }
+                : scene;
+        }),
+    };
 }
 
 function inferLocation(text: string) {
@@ -215,10 +273,12 @@ function inferMovement(text: string, shotType: StoryboardShotType) {
 
 function buildPrompt(scene: Omit<StoryboardScene, "prompt">, style: StoryboardStyle, continuity: string) {
     const characters = scene.characters.length ? `角色：${scene.characters.join("、")}。` : "角色保持前后镜头一致。";
+    // Default medium is silent — only mention framing when the scene carries an explicit scale.
+    const framing = scene.shotType && scene.shotType !== "medium" ? `${scene.shotType}，` : "";
     return [
         "电影级分镜画面，单帧，不要拼贴，不要文字和水印。",
         STYLE_LABELS[style],
-        `第${scene.index}镜，${scene.shotType}，${scene.cameraAngle}，${scene.lens}，${scene.movement}。`,
+        `第${scene.index}镜，${framing}${scene.cameraAngle}，${scene.lens}，${scene.movement}。`,
         `地点：${scene.location}；时间：${scene.time}。`,
         characters,
         `画面动作：${scene.summary}`,
@@ -234,15 +294,138 @@ export function storyboardScenePrompt(scene: Omit<StoryboardScene, "prompt">, st
     return globalStyle && globalStyle !== defaultStyle ? prompt.replace(defaultStyle, () => clampText(globalStyle, 240)) : prompt;
 }
 
+export function buildStoryboardPlanFromRules(script: string, options: StoryboardParseOptions = {}): StoryboardPlan {
+    const style = options.style || "cinematic";
+    const scenes = parseStoryboardScript(script, { ...options, count: MAX_SCENES });
+    return {
+        title: DEFAULT_BATCH_TITLE,
+        globalStyle: STYLE_LABELS[style],
+        scenes,
+        source: "rules",
+    };
+}
+
+/** One prompt repeated N times as independent image shots (batch variants mode). */
+export function buildStoryboardVariantPlan(
+    script: string,
+    count: number,
+    options: StoryboardParseOptions = {},
+): StoryboardPlan {
+    const style = options.style || "cinematic";
+    const prompt = String(script || "").trim();
+    const total = Math.min(MAX_SCENES, Math.max(1, Math.floor(Number(count) || 1)));
+    if (!prompt) {
+        return { title: DEFAULT_BATCH_TITLE, globalStyle: STYLE_LABELS[style], scenes: [], source: "rules" };
+    }
+    const titleHint = clampText(prompt.split(/[，。；：:\n]/)[0] || DEFAULT_BATCH_TITLE, 32);
+    const continuity = "同一提示词的多张变体；主体、风格与构图语言保持一致";
+    const scenes = Array.from({ length: total }, (_, index) => {
+        const scene = {
+            id: `shot-${index + 1}`,
+            index: index + 1,
+            title: total > 1 ? `${titleHint} · ${index + 1}` : titleHint,
+            sourceText: prompt,
+            summary: clampText(prompt, 240),
+            shotType: "medium" as StoryboardShotType,
+            cameraAngle: "eye-level",
+            lens: "50mm",
+            movement: "static",
+            location: "",
+            time: "",
+            characters: [] as string[],
+            dialogue: "",
+            continuity,
+            durationSec: 4,
+            confidence: "high" as const,
+        } satisfies Omit<StoryboardScene, "prompt">;
+        return { ...scene, prompt };
+    });
+    return {
+        title: DEFAULT_BATCH_TITLE,
+        globalStyle: STYLE_LABELS[style],
+        scenes,
+        source: "rules",
+    };
+}
+
+/** One shared prompt applied once per reference image (batch refs mode). */
+export function buildStoryboardRefPlan(
+    script: string,
+    references: Array<{ id?: string; title?: string }>,
+    options: StoryboardParseOptions = {},
+): StoryboardPlan {
+    const style = options.style || "cinematic";
+    const prompt = String(script || "").trim();
+    const items = references.slice(0, MAX_SCENES);
+    if (!prompt || !items.length) {
+        return { title: DEFAULT_BATCH_TITLE, globalStyle: STYLE_LABELS[style], scenes: [], source: "rules" };
+    }
+    const titleHint = clampText(prompt.split(/[，。；：:\n]/)[0] || DEFAULT_BATCH_TITLE, 32);
+    const continuity = "同一提示词分别作用于每张输入图；输出彼此独立";
+    const scenes = items.map((reference, index) => {
+        const refTitle = clampText(String(reference.title || "").trim() || `输入 ${index + 1}`, 24);
+        const scene = {
+            id: `shot-${index + 1}`,
+            index: index + 1,
+            title: `${titleHint} · ${refTitle}`,
+            sourceText: prompt,
+            summary: clampText(prompt, 240),
+            shotType: "medium" as StoryboardShotType,
+            cameraAngle: "eye-level",
+            lens: "50mm",
+            movement: "static",
+            location: "",
+            time: "",
+            characters: [] as string[],
+            dialogue: "",
+            continuity,
+            durationSec: 4,
+            confidence: "high" as const,
+        } satisfies Omit<StoryboardScene, "prompt">;
+        return { ...scene, prompt };
+    });
+    return {
+        title: DEFAULT_BATCH_TITLE,
+        globalStyle: STYLE_LABELS[style],
+        scenes,
+        source: "rules",
+    };
+}
+
+export function resolveBatchMode(value?: string): "split" | "variants" | "refs" {
+    if (value === "variants" || value === "refs") return value;
+    return "split";
+}
+
+/** Map each connected reference onto exactly one scene for batch refs mode. */
+export function buildStoryboardRefShotIds(
+    scenes: Array<{ id: string }>,
+    references: Array<{ id?: string; nodeId?: string }>,
+): Record<string, string[]> {
+    const shotIds: Record<string, string[]> = {};
+    scenes.forEach((scene, index) => {
+        const reference = references[index];
+        if (!reference) return;
+        const key = String(reference.id || reference.nodeId || "").trim();
+        if (!key) return;
+        shotIds[key] = [scene.id];
+    });
+    return shotIds;
+}
+
 export function parseStoryboardScript(script: string, options: StoryboardParseOptions = {}): StoryboardScene[] {
     const normalized = normalizeScript(script);
     if (!normalized) return [];
     const count = Math.min(MAX_SCENES, Math.max(1, Math.floor(Number(options.count) || 6)));
     const style = options.style || "cinematic";
-    const chunks = splitSource(normalized, count);
+    const mode = resolveStoryboardParseMode(options.mode);
+    const chunks = splitSource(normalized, count, mode);
     const continuity = "同一组角色、服装、道具与主色调；镜头之间保持空间方向和时间线连贯";
     return chunks.map((raw, index) => {
-        const sourceText = clampText(raw, 520);
+        // Keep the complete beat as the durable source and generation input.
+        // The summary is intentionally shorter for compact cards; it must not
+        // become the authoritative prompt and silently remove late actions.
+        const sourceText = String(raw || "").trim();
         const summary = clampText(stripSceneMarker(sourceText), 240);
         const shotType = inferShotType(summary, index);
         const { cameraAngle, lens } = inferCamera(shotType, index);
@@ -264,8 +447,16 @@ export function parseStoryboardScript(script: string, options: StoryboardParseOp
             durationSec: 4,
             confidence: chunks.length > 1 ? "high" : "medium",
         } satisfies Omit<StoryboardScene, "prompt">;
-        return { ...scene, prompt: storyboardScenePrompt(scene, style) };
+        // Rules only split shots. Keep the generation prompt as the beat text —
+        // cinematic expansion is reserved for optional AI polish.
+        const generationText = stripSceneMarker(sourceText).trim() || sourceText;
+        return { ...scene, prompt: generationText || `镜头 ${index + 1}` };
     });
+}
+
+/** Natural shot count from script markers/paragraphs (does not force-merge to a target). */
+export function detectStoryboardShotCount(script: string, style: StoryboardStyle = "cinematic", mode?: StoryboardParseMode) {
+    return parseStoryboardScript(script, { count: MAX_SCENES, style, mode: resolveStoryboardParseMode(mode) }).length;
 }
 
 function balancedJsonCandidates(value: string) {
@@ -356,16 +547,25 @@ export function normalizeStoryboardPlan(response: string, fallback: StoryboardSc
     // retain the old fallback behavior for malformed/incomplete responses.
     const parsed = parsedCandidates.find((value) => sceneArrayFromPayload(value)) || parsedCandidates[0] || null;
     const rawScenes = sceneArrayFromPayload(parsed);
-    if (!Array.isArray(rawScenes) || !rawScenes.length) return { title: "智能分镜", globalStyle: STYLE_LABELS[options.style || "cinematic"], scenes: fallback, source: "rules" };
     const style = options.style || "cinematic";
+    const targetCount = fallback.length;
+    if (!targetCount) {
+        return { title: DEFAULT_BATCH_TITLE, globalStyle: STYLE_LABELS[style], scenes: [], source: "rules" };
+    }
+    if (!Array.isArray(rawScenes) || !rawScenes.length) {
+        return { title: DEFAULT_BATCH_TITLE, globalStyle: STYLE_LABELS[style], scenes: fallback, source: "rules" };
+    }
     const continuity = "同一组角色、服装、道具与主色调；镜头之间保持空间方向和时间线连贯";
     const globalStyle = clampText(parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>).globalStyle : STYLE_LABELS[style], 240) || STYLE_LABELS[style];
-    const targetCount = Math.min(MAX_SCENES, Math.max(1, Math.floor(Number(options.count) || MAX_SCENES)));
-    const scenes = rawScenes.slice(0, targetCount).map((raw, index) => {
+    const scenes = Array.from({ length: targetCount }, (_, index) => {
+        const raw = rawScenes[index];
         const item = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+        const modelProvided = Boolean(raw && typeof raw === "object" && Object.keys(item).length);
         const fallbackScene = fallback[index] || fallback[fallback.length - 1] || parseStoryboardScript(`镜头 ${index + 1}`, { count: 1, style })[0];
         const summary = clampText(item.summary || item.beat || item.action || item.description || fallbackScene.summary, 240);
-        const shotType = shotTypeFromValue(item.shotType || item.shot || item.type, fallbackScene.shotType);
+        // AI may describe a framing, but it cannot silently choose one for the
+        // user. Explicit overrides are applied separately after normalization.
+        const shotType = fallbackScene.shotType;
         const cameraAngle = clampText(item.cameraAngle || item.camera || fallbackScene.cameraAngle, 60);
         const lens = clampText(item.lens || fallbackScene.lens, 60);
         const scene = {
@@ -373,7 +573,7 @@ export function normalizeStoryboardPlan(response: string, fallback: StoryboardSc
             id: `shot-${index + 1}`,
             index: index + 1,
             title: clampText(item.title || fallbackScene.title || `镜头 ${index + 1}`, 32),
-            sourceText: clampText(item.sourceText || fallbackScene.sourceText, 520),
+            sourceText: typeof item.sourceText === "string" ? item.sourceText.trim() : fallbackScene.sourceText,
             summary,
             shotType,
             cameraAngle,
@@ -385,12 +585,13 @@ export function normalizeStoryboardPlan(response: string, fallback: StoryboardSc
             dialogue: clampText(item.dialogue || fallbackScene.dialogue, 100),
             continuity: clampText(item.continuity || continuity, 180),
             durationSec: Math.max(1, Math.min(30, Number(item.durationSec || item.duration || fallbackScene.durationSec) || 4)),
-            confidence: "high" as const,
+            confidence: modelProvided ? ("high" as const) : ("low" as const),
         };
-        return { ...scene, prompt: clampText(item.visualPrompt || item.prompt || storyboardScenePrompt(scene, style, globalStyle), 1800) };
+        const promptValue = item.visualPrompt || item.prompt;
+        return { ...scene, prompt: typeof promptValue === "string" ? promptValue.trim() : storyboardScenePrompt(scene, style, globalStyle) };
     });
     return {
-        title: clampText(parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>).title : "智能分镜", 80) || "智能分镜",
+        title: clampText(parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>).title : DEFAULT_BATCH_TITLE, 80) || DEFAULT_BATCH_TITLE,
         globalStyle,
         scenes,
         source: "ai",

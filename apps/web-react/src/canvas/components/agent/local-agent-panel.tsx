@@ -1,3 +1,7 @@
+/**
+ * Orphaned local Codex agent UI (SSE + skills). Not mounted by AgentPanel —
+ * HostedAgentPanel is the shipping surface. Keep for possible remount.
+ */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { App, Button, Tooltip } from "antd";

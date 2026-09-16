@@ -121,5 +121,5 @@ export function AppConfigModal() {
 }
 
 function normalizeImageCount(value: string) {
-    return String(Math.max(1, Math.min(16, Math.floor(Math.abs(Number(value)) || 1))));
+    return String(Math.max(1, Math.min(100, Math.floor(Math.abs(Number(value)) || 1))));
 }

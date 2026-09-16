@@ -224,7 +224,8 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
         }
         localStorage.setItem("canvas-agent-url", endpoint);
         sessionStorage.setItem("canvas-agent-token", token);
-        // Only set enabled here; LocalAgentPanel's effect owns SSE initialization.
+        // Hosted Agent is the only panel currently mounted. Local Codex SSE
+        // still lives behind LocalAgentPanel (orphaned / not imported).
         set({ url: endpoint, token, enabled: true, silentConnect: silent, activity: i18n.t("agent.status.connecting"), connectError: "" });
     },
     disconnectAgent: (patch = {}) => {

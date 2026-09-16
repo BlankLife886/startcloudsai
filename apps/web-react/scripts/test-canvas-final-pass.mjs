@@ -31,10 +31,13 @@ test('legacy cache migrates only after all project writes succeed',async()=>{
  fail=false;await adapter.setItem('cache',legacy);assert.equal(JSON.parse(values.get('cache')).canvasProjectIndex,1);
  await adapter.setItem('cache',{state:{ownerUserId:'u',projects:[legacy.state.projects[0]]}});assert.equal(values.has('cache:project:u:b'),false);
 });
-test('wheel pans on both axes while Ctrl/Meta and trackpad pinch zoom',()=>{
+test('wheel zooms by default; Shift+wheel pans; Ctrl/Meta and trackpad pinch still zoom',()=>{
  const base={deltaX:30,deltaY:50,deltaMode:0,ctrlKey:false,metaKey:false,shiftKey:false};
- assert.deepEqual(navigation.canvasWheelIntent(base),{kind:'pan',dx:30,dy:50});assert.equal(navigation.canvasWheelIntent({...base,ctrlKey:true}).kind,'zoom');
+ assert.equal(navigation.canvasWheelIntent(base).kind,'zoom');
+ assert.equal(navigation.canvasWheelIntent({...base,ctrlKey:true}).kind,'zoom');
+ assert.equal(navigation.canvasWheelIntent({...base,metaKey:true}).kind,'zoom');
  assert.deepEqual(navigation.canvasWheelIntent({...base,deltaX:0,shiftKey:true}),{kind:'pan',dx:50,dy:0});
+ assert.deepEqual(navigation.canvasWheelIntent({...base,shiftKey:true}),{kind:'pan',dx:30,dy:50});
 });
 test('fit content includes far branches and excludes hidden implementation nodes',()=>{
  const nodes=[n('a',{}, {position:{x:1000,y:2000}}),n('b',{}, {position:{x:3000,y:2500}}),n('hidden',{hidden:true},{position:{x:1e9,y:1e9}})];

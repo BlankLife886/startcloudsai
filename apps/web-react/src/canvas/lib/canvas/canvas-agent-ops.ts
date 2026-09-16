@@ -1,7 +1,7 @@
 import { nanoid } from "nanoid";
 
 import i18n from "@/i18n";
-import { isCanvasNodeTypeEnabled } from "@/constant/canvas";
+import { isCanvasGenerationModeEnabled, isCanvasNodeTypeEnabled } from "@/constant/canvas";
 import { validCanvasAgentOps } from "./canvas-agent-op-validation.js";
 import { arrangeCanvasNodes, layoutCanvasGraph } from "@/lib/canvas/canvas-graph-layout";
 import { applyCanvasAgentNodeUpdate, canvasAgentGraphTextMetadata, type CanvasAgentNodePatch } from "@/lib/canvas/canvas-agent-node-metadata";
@@ -9,6 +9,7 @@ import { resolveCanvasAgentGraphModes } from "@/lib/canvas/canvas-agent-graph-co
 import { canvasWorkflowNodeIds } from "@/lib/canvas/canvas-workflow-groups";
 import { getNodeSpec, isRegisteredNodeType } from "@/lib/canvas/node-registry";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type CanvasNodeMetadata, type CanvasNodeTypeId, type ViewportTransform } from "@/types/canvas";
+import { clearDisconnectedStoryboardInputs } from "./canvas-storyboard-script-editing.ts";
 
 export type CanvasAgentOp =
     | { type: "add_node"; id?: string; nodeType?: CanvasNodeTypeId; title?: string; position?: { x: number; y: number }; x?: number; y?: number; width?: number; height?: number; metadata?: CanvasNodeMetadata }
@@ -94,6 +95,9 @@ export function applyCanvasAgentOps(snapshot: CanvasAgentSnapshot, ops?: CanvasA
                 height: boundedNodeSize(op.height, spec.height),
                 metadata: { ...spec.metadata, ...op.metadata },
             };
+            if (node.metadata?.generationMode && !isCanvasGenerationModeEnabled(node.metadata.generationMode)) {
+                node.metadata = { ...node.metadata, generationMode: "image" };
+            }
             nodes = [...nodes, node];
             selectedNodeIds = [node.id];
             changed = true;
@@ -110,18 +114,21 @@ export function applyCanvasAgentOps(snapshot: CanvasAgentSnapshot, ops?: CanvasA
         }
         if (op.type === "delete_node") {
             const ids = new Set(op.ids || (op.id ? [op.id] : []));
+            const previousConnections = connections;
             const nextNodes = nodes.filter((node) => !ids.has(node.id));
             const nextConnections = connections.filter((conn) => !ids.has(conn.fromNodeId) && !ids.has(conn.toNodeId));
             const nextSelectedNodeIds = selectedNodeIds.filter((id) => !ids.has(id));
             changed = nextNodes.length !== nodes.length || nextConnections.length !== connections.length || nextSelectedNodeIds.length !== selectedNodeIds.length;
-            nodes = nextNodes;
+            nodes = clearDisconnectedStoryboardInputs(nodes, previousConnections, nextConnections).filter((node) => !ids.has(node.id));
             connections = nextConnections;
             selectedNodeIds = nextSelectedNodeIds;
         }
         if (op.type === "delete_connections") {
             const ids = new Set(op.ids || (op.id ? [op.id] : []));
+            const previousConnections = connections;
             const nextConnections = connections.filter((conn) => !ids.has(conn.id));
             changed = nextConnections.length !== connections.length;
+            nodes = clearDisconnectedStoryboardInputs(nodes, previousConnections, nextConnections);
             connections = nextConnections;
         }
         if (op.type === "connect_nodes") {

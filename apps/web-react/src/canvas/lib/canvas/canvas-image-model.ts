@@ -3,7 +3,7 @@ import { normalizeExactSizeCapabilities, validateExactImageSize } from "@react/c
 import { modelMaintenance, modelOptionMeta, resolveModelForCapability, type AiConfig, type ChannelModel } from "@/stores/use-config-store";
 
 export const CANVAS_IMAGE_MAX_COUNT = 4;
-export const CANVAS_IMAGE_HARD_MAX_COUNT = 16;
+export const CANVAS_IMAGE_HARD_MAX_COUNT = 100;
 export const CANVAS_IMAGE_ASPECT_RATIOS = ["auto", "16:9", "9:16", "1:1", "3:2", "2:3", "5:4", "4:5", "4:3", "3:4", "21:9", "9:21"] as const;
 export const CANVAS_IMAGE_RESOLUTIONS = ["1K", "2K", "4K"] as const;
 export const CANVAS_IMAGE_QUALITIES = ["low", "medium", "high"] as const;

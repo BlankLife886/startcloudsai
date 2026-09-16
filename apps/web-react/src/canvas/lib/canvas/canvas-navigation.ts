@@ -1,11 +1,21 @@
 import type { CanvasNodeData, ViewportTransform } from "../../types/canvas";
 import { canvasWorkspaceRect } from "./canvas-workspace-geometry";
 
-/** Standard wheel/trackpad scrolling pans; Ctrl/Meta+wheel and native pinch zoom. */
+/**
+ * Wheel zooms the canvas. Shift+wheel pans (including converting vertical
+ * scroll into horizontal pan when there is no deltaX). Ctrl/Meta+wheel and
+ * trackpad pinch also zoom.
+ */
 export function canvasWheelIntent(event: { deltaX: number; deltaY: number; deltaMode: number; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) {
-    if (event.ctrlKey || event.metaKey) return { kind: "zoom" as const, dx: 0, dy: event.deltaY };
+    if (event.ctrlKey || event.metaKey || !event.shiftKey) {
+        return { kind: "zoom" as const, dx: 0, dy: event.deltaY };
+    }
     const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 640 : 1;
-    return { kind: "pan" as const, dx: (event.shiftKey && !event.deltaX ? event.deltaY : event.deltaX) * unit, dy: (event.shiftKey && !event.deltaX ? 0 : event.deltaY) * unit };
+    return {
+        kind: "pan" as const,
+        dx: (event.shiftKey && !event.deltaX ? event.deltaY : event.deltaX) * unit,
+        dy: (event.shiftKey && !event.deltaX ? 0 : event.deltaY) * unit,
+    };
 }
 
 export function fitCanvasContent(nodes: CanvasNodeData[], size: { width: number; height: number }, leftWidth = 0, rightWidth = 0): ViewportTransform {

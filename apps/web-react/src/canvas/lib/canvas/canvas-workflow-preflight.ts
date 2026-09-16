@@ -5,6 +5,7 @@ import { buildGenerationConfig, getGenerationCount, getInputSummary } from "@/li
 import { estimateCanvasGenerationCost, type CanvasCostEstimate } from "@/lib/canvas/canvas-generation-cost";
 import { canvasImageSizeParams } from "@/lib/canvas/canvas-image-model";
 import { isCanvasLocalImageOperation } from "@/lib/canvas/canvas-local-image-operation";
+import { estimateStoryboardWorkflowShotCount } from "@/lib/canvas/canvas-storyboard-script-editing";
 import { validateCanvasWorkflowNodeReadiness, type CanvasWorkflowNodeReadinessIssue, type CanvasWorkflowPlan } from "@/lib/canvas/canvas-workflow";
 import { modelOptionMeta, type AiConfig } from "@/stores/use-config-store";
 import type { CanvasConnection, CanvasNodeData } from "@/types/canvas";
@@ -64,9 +65,12 @@ export function preflightCanvasWorkflow(options: {
         if (!node) return { ok: false, reason: "node_missing", nodeId };
         const mode = (node.metadata?.generationMode || "image") as CanvasNodeGenerationMode;
         if (!isCanvasGenerationModeEnabled(mode)) return { ok: false, reason: "unsupported_media", nodeId, nodeTitle: node.title, mode };
-        const inputSummary = getInputSummary(buildNodeGenerationInputs(nodeId, options.nodes, options.connections));
+        const generationInputs = buildNodeGenerationInputs(nodeId, options.nodes, options.connections);
+        const inputSummary = getInputSummary(generationInputs);
         const hasCurrentInput = Boolean(inputSummary.textCount || inputSummary.imageCount || inputSummary.videoCount || inputSummary.audioCount);
-        const hasComposerContent = Boolean((node.metadata?.composerContent ?? node.metadata?.prompt ?? "").trim());
+        const hasComposerContent = Boolean(
+            (node.metadata?.composerContent ?? node.metadata?.prompt ?? node.metadata?.storyboardScript ?? "").trim(),
+        );
         const hasPlannedInput = Boolean(options.plan.dependencies.get(nodeId)?.size);
         if (!hasComposerContent && !hasCurrentInput && !hasPlannedInput) return { ok: false, reason: "empty_input", nodeId, nodeTitle: node.title, mode };
         const readiness = validateCanvasWorkflowNodeReadiness({
@@ -79,7 +83,14 @@ export function preflightCanvasWorkflow(options: {
         });
         if (!readiness.ok) return { ok: false, reason: "readiness", nodeId, nodeTitle: node.title, mode, readinessIssue: readiness.issue };
         const config = buildGenerationConfig(options.effectiveConfig, node, mode);
-        const count = getGenerationCount(config.count);
+        const count = node.metadata?.storyboardConfig
+            ? estimateStoryboardWorkflowShotCount(
+                node.metadata,
+                generationInputs
+                    .filter((input) => input.type === "image" && input.image)
+                    .map((input) => ({ nodeId: input.nodeId, type: input.type, title: input.title, image: input.image })),
+            )
+            : getGenerationCount(config.count);
         const localOperation = isCanvasLocalImageOperation(node.metadata?.localImageOperation);
         if (localOperation) {
             items.push({ nodeId, title: node.title, mode, model: config.model, count, localOperation, inputSummary });

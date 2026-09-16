@@ -1,4 +1,5 @@
 import type { CanvasNodeData } from "@/types/canvas";
+import { canConnectStoryboardPipelineNodes } from "./canvas-storyboard-pipeline-guards.ts";
 import { isCanvasExecutableNode } from "./canvas-operation-node.ts";
 
 export function normalizeConnection(firstNodeId: string, secondNodeId: string, nodes: CanvasNodeData[], firstHandleType: "source" | "target") {
@@ -10,6 +11,13 @@ export function normalizeConnection(firstNodeId: string, secondNodeId: string, n
 export function normalizeConnectionBetween(first: CanvasNodeData | undefined, second: CanvasNodeData | undefined, firstHandleType: "source" | "target") {
     if (!first || !second || first.id === second.id) return null;
     if (first.type === "group" || second.type === "group") return null;
-    if (isCanvasExecutableNode(first) && isCanvasExecutableNode(second)) return null;
+    if (isCanvasExecutableNode(first) && isCanvasExecutableNode(second) && !canConnectStoryboardPipelineNodes(first, second)) return null;
     return firstHandleType === "source" ? { fromNodeId: first.id, toNodeId: second.id } : { fromNodeId: second.id, toNodeId: first.id };
+}
+
+/** Source node ids for a connection drag — multi-select expands beyond the handle node. */
+export function connectionSourceNodeIds(handle: { nodeId: string; sourceNodeIds?: string[] } | null | undefined): string[] {
+    if (!handle?.nodeId) return [];
+    const ids = handle.sourceNodeIds?.length ? handle.sourceNodeIds : [handle.nodeId];
+    return [...new Set(ids.map((id) => String(id || "").trim()).filter(Boolean))];
 }

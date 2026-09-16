@@ -386,7 +386,8 @@ export function resetInterruptedGeneration(nodes: CanvasNodeData[]) {
         }
         const wasLoading = node.metadata?.status === "loading";
         const wasRunning = node.metadata?.executionStatus === "running" || node.metadata?.executionStatus === "queued";
-        if (!wasLoading && !wasRunning) {
+        const hasActiveStage = ["preparing", "formatting", "analyzing", "generating", "fetching", "saving"].includes(String(node.metadata?.generationStage || ""));
+        if (!wasLoading && !wasRunning && !hasActiveStage) {
             return images ? { ...node, metadata: { ...node.metadata, images } } : node;
         }
         const hasSuccess = Boolean(node.metadata?.content) || Boolean(images?.some((image) => image.status === "success"));
@@ -402,17 +403,17 @@ export function resetInterruptedGeneration(nodes: CanvasNodeData[]) {
                           errorDetails: hasSuccess || isConfig ? undefined : interrupted,
                       }
                     : {}),
-                ...(wasRunning
+                ...(wasRunning || hasActiveStage
                     ? {
                           executionStatus: "canceled" as const,
+                          generationStage: "canceled",
                           generationCompletedAt: node.metadata?.generationCompletedAt || new Date().toISOString(),
                           generationDurationMs: node.metadata?.generationDurationMs ?? 0,
                       }
                     : {}),
-                ...(node.metadata?.storyboardSceneId
+                ...(node.metadata?.storyboardSceneId && (wasRunning || hasActiveStage)
                     ? {
-                          storyboardStatus: wasRunning ? ("canceled" as const) : ("failed" as const),
-                          generationStage: wasRunning ? "canceled" : "failed",
+                          storyboardStatus: "canceled" as const,
                       }
                     : {}),
                 taskId: undefined,

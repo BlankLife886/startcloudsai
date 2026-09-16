@@ -13,6 +13,7 @@ const [clipboard, receivingPage, workspace, resources, references] = await Promi
     server.ssrLoadModule("/src/canvas/lib/canvas/canvas-resource-index.ts"),
     server.ssrLoadModule("/src/canvas/lib/canvas/canvas-resource-references.ts"),
 ]);
+const { clearDisconnectedStoryboardInputs, combineStoryboardTextInputs, resolveStoryboardInputSelection, resolveStoryboardScriptInput } = await server.ssrLoadModule("/src/canvas/lib/canvas/canvas-storyboard-script-editing.ts");
 const { copyCanvasNodeMetadata } = await server.ssrLoadModule("/src/canvas/lib/canvas/canvas-node-copy.ts");
 
 test("a copied config displays its own copied output rather than the original", () => {
@@ -222,6 +223,63 @@ test("generation references include recursive text ancestors once in input order
     const index = resources.createCanvasResourceIndex(nodes, connections);
     assert.deepEqual(references.getMentionResourceNodes("run", nodes, connections, index).map((item) => item.id), ["final", "sibling"]);
     assert.deepEqual(references.getGenerationResourceNodes("run", nodes, connections, index).map((item) => item.id), ["final", "base", "image", "sibling"]);
+});
+
+test("text inputs stored in composerContent remain eligible storyboard resources", () => {
+    const nodes = [
+        node("script", { type: "text", metadata: { content: "", composerContent: "分镜脚本：女孩走进车站。" } }),
+        node("storyboard", { type: "config", metadata: {} }),
+    ];
+    const connections = [edge("script-storyboard", "script", "storyboard")];
+    const index = resources.createCanvasResourceIndex(nodes, connections);
+    assert.deepEqual(references.getGenerationResourceNodes("storyboard", nodes, connections, index).map((item) => item.id), ["script"]);
+    assert.equal(references.buildNodeMentionReferences(nodes[1], nodes, connections, index)[0].text, "分镜脚本：女孩走进车站。");
+});
+
+test("multiple storyboard text inputs are combined in connection order", () => {
+    assert.equal(combineStoryboardTextInputs([{ text: "主剧本" }, { text: "角色设定" }, { text: "" }, { text: "风格约束" }]), "主剧本\n\n角色设定\n\n风格约束");
+    assert.equal(combineStoryboardTextInputs([{ nodeId: "script", text: "主剧本" }, { nodeId: "style", text: "冷色调" }], { script: "script", style: "style" }), "主剧本\n\n【风格约束】\n冷色调");
+});
+
+test("connected storyboard inputs are selected by default", () => {
+    const inputs = [
+        { nodeId: "script-a", type: "text", title: "剧本 A", text: "A" },
+        { nodeId: "script-b", type: "text", title: "剧本 B", text: "B" },
+        { nodeId: "character", type: "image", title: "人物", image: {} },
+    ];
+    const initial = resolveStoryboardInputSelection(inputs, {});
+    assert.deepEqual([...initial.selectedNodeIds], ["script-a", "script-b", "character"]);
+    assert.equal(initial.primaryTextNodeId, "script-a");
+    const chosen = resolveStoryboardInputSelection(inputs, {
+        storyboardInputNodeIds: ["script-a"],
+        storyboardPrimaryTextNodeId: "script-a",
+        storyboardInputRoles: { character: "character" },
+    });
+    // Explicit text selection is sticky, but newly/still-connected images stay accepted.
+    assert.deepEqual([...chosen.selectedNodeIds].sort(), ["character", "script-a"]);
+    assert.equal(chosen.roles.character, "character");
+});
+
+test("an empty detached storyboard adopts a newly connected text source", () => {
+    assert.deepEqual(resolveStoryboardScriptInput({ connectedScript: "女孩走进车站。", localScript: "", inputMode: "detached" }), {
+        script: "女孩走进车站。",
+        followsConnectedScript: true,
+    });
+    assert.deepEqual(resolveStoryboardScriptInput({ connectedScript: "上游脚本", localScript: "本地覆盖", inputMode: "detached" }), {
+        script: "本地覆盖",
+        followsConnectedScript: false,
+    });
+});
+
+test("removing the last linked text connection clears the storyboard cache", () => {
+    const nodes = [
+        node("script", { type: "text", metadata: { content: "剧本内容" } }),
+        node("storyboard", { type: "config", metadata: { storyboardConfig: true, storyboardScript: "剧本内容", composerContent: "剧本内容", prompt: "剧本内容", storyboardInputMode: "linked", storyboardSourceNodeId: "script" } }),
+    ];
+    const previous = [edge("script-storyboard", "script", "storyboard")];
+    const repaired = clearDisconnectedStoryboardInputs(nodes, previous, []);
+    assert.equal(repaired[1].metadata.storyboardScript, undefined);
+    assert.equal(repaired[1].metadata.storyboardSourceNodeId, undefined);
 });
 
 test("unchanged mention arrays and entire unchanged maps retain identity", () => {

@@ -519,7 +519,7 @@ function CanvasSidePanelNodeInfoDialog({ node, open, onClose, theme }: { node: C
             ? t("canvas.node.group")
             : node.type === CanvasNodeType.Config
               ? t("canvas.configNode.title")
-              : [CanvasNodeType.Image, CanvasNodeType.Video, CanvasNodeType.Audio, CanvasNodeType.Text].includes(node.type as CanvasNodeType)
+              : ([CanvasNodeType.Image, CanvasNodeType.Video, CanvasNodeType.Audio, CanvasNodeType.Text] as readonly string[]).includes(node.type)
                 ? t(`assets.kinds.${node.type}`)
                 : getNodeDefinition(node.type)?.title || node.type
         : "";

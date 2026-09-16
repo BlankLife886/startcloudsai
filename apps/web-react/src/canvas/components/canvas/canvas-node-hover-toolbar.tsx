@@ -1,14 +1,13 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { App, Tooltip } from "antd";
-import { Clapperboard, Ellipsis, FolderPlus, Image as ImageIcon, MessageSquare, Music2, Pencil, Settings2, Trash2, Upload, Video } from "lucide-react";
+import { Ellipsis, FolderPlus, Image as ImageIcon, ListOrdered, MessageSquare, Music2, Pencil, Trash2, Upload, Video } from "lucide-react";
 import { DownloadIcon } from "@react/components/common/DownloadIcon.jsx";
 import { RegenerateIcon } from "@react/components/common/RegenerateIcon.jsx";
 import { useTranslation } from "react-i18next";
 
 import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
-import { isCanvasExecutableNode, isCanvasOperationNodeType } from "@/lib/canvas/canvas-operation-node";
-import { isCanvasLocalImageOperation } from "@/lib/canvas/canvas-local-image-operation";
+import { isCanvasExecutableNode } from "@/lib/canvas/canvas-operation-node";
 import { useCopyText } from "@/hooks/use-copy-text";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasNodeType, type CanvasNodeData, type ViewportTransform } from "@/types/canvas";
@@ -26,7 +25,6 @@ type CanvasNodeHoverToolbarProps = {
     onEditText: (node: CanvasNodeData) => void;
     onToggleDialog: (node: CanvasNodeData) => void;
     onGenerateImage: (node: CanvasNodeData) => void;
-    onOpenStoryboard: (node: CanvasNodeData) => void;
     onUpload: (node: CanvasNodeData) => void;
     onDownload: (node: CanvasNodeData) => void;
     onSaveAsset: (node: CanvasNodeData) => void;
@@ -39,6 +37,7 @@ type CanvasNodeHoverToolbarProps = {
     onViewImage: (node: CanvasNodeData) => void;
     onReversePrompt: (node: CanvasNodeData) => void;
     onRetry: (node: CanvasNodeData) => void;
+    onOpenPromptList?: (node: CanvasNodeData) => void;
     onToggleFreeResize: (node: CanvasNodeData) => void;
     onDelete: (node: CanvasNodeData) => void;
     extraTools?: CanvasNodeToolbarItem[];
@@ -64,7 +63,6 @@ export function CanvasNodeHoverToolbar({
     onEditText,
     onToggleDialog,
     onGenerateImage,
-    onOpenStoryboard,
     onUpload,
     onDownload,
     onSaveAsset,
@@ -77,6 +75,7 @@ export function CanvasNodeHoverToolbar({
     onViewImage,
     onReversePrompt,
     onRetry,
+    onOpenPromptList,
     onToggleFreeResize,
     onDelete,
     extraTools = [],
@@ -119,10 +118,10 @@ export function CanvasNodeHoverToolbar({
     const hasImage = isImage && Boolean(node.metadata?.content);
     const hasVideo = isVideo && Boolean(node.metadata?.content);
     const hasAudio = isAudio && Boolean(node.metadata?.content);
-    const isConfig = isCanvasExecutableNode(node) && !isCanvasOperationNodeType(node.type) && !isCanvasLocalImageOperation(node.metadata?.localImageOperation);
     const definition = getNodeDefinition(node.type);
     const canOpenDialog = isText || hasImage || isVideo || isCanvasExecutableNode(node) || Boolean(definition?.Panel || definition?.useBuiltinPanel);
     const canRetry = node.metadata?.status === "error";
+    const isBatchConfig = Boolean(node.metadata?.storyboardConfig);
     const copyImagePrompt = (target: CanvasNodeData) => {
         const prompt = target.metadata?.prompt?.trim();
         if (!prompt) {
@@ -148,19 +147,32 @@ export function CanvasNodeHoverToolbar({
     ];
     const nodeToolbarTools: ToolbarTool[] = [
         ...(canRetry ? [{ id: "retry", title: t("canvas.nodeToolbar.retryTitle"), label: t("canvas.node.retry"), icon: <RegenerateIcon className="size-4" />, onClick: () => onRetry(node) }] : []),
+        ...(isBatchConfig && onOpenPromptList
+            ? [{
+                id: "managePrompts",
+                title: t(
+                    node.metadata?.batchMode === "refs"
+                        ? "canvas.storyboard.promptListOpenTitleRefs"
+                        : node.metadata?.batchMode === "variants"
+                          ? "canvas.storyboard.promptListOpenTitleVariants"
+                          : "canvas.storyboard.promptListOpenTitle",
+                ),
+                label: t("canvas.storyboard.promptListOpen"),
+                icon: <ListOrdered className="size-4" />,
+                onClick: () => onOpenPromptList(node),
+            }]
+            : []),
         ...(hasImage || hasVideo || isText ? [{ id: "saveAsset", title: t("common.addToAssets"), label: t("canvas.nodeToolbar.saveAsset"), icon: <FolderPlus className="size-4" />, onClick: () => onSaveAsset(node) }] : []),
         ...(hasImage || hasVideo || hasAudio ? [{ id: "download", title: t(hasAudio ? "canvas.nodeToolbar.downloadAudio" : hasVideo ? "canvas.nodeToolbar.downloadVideo" : "canvas.nodeToolbar.downloadImage"), label: t("common.download"), icon: <DownloadIcon className="size-4" />, onClick: () => onDownload(node) }] : []),
         ...(canOpenDialog && !isText ? [{ id: "edit", title: t("common.edit"), label: t("common.edit"), icon: <MessageSquare className="size-4" />, onClick: () => onToggleDialog(node) }] : []),
         ...(isText ? [{ id: "editText", title: t("canvas.nodeToolbar.editTextTitle"), label: t("canvas.nodeToolbar.editText"), icon: <Pencil className="size-4" />, onClick: () => onEditText(node) }] : []),
-        ...((Boolean(node.metadata?.storyboardId) || (isText && Boolean((node.metadata?.content || node.metadata?.prompt || "").trim()))) ? [{ id: "storyboard", title: t("canvas.nodeToolbar.storyboardTitle"), label: t("canvas.toolbar.storyboard"), icon: <Clapperboard className="size-4" />, onClick: () => onOpenStoryboard(node) }] : []),
         ...(isText ? [{ id: "generateImage", title: t("canvas.node.generateImage"), label: t("canvas.node.generate"), icon: <ImageIcon className="size-4" />, onClick: () => onGenerateImage(node) }] : []),
-        ...(isConfig ? [{ id: "config", title: t("canvas.configNode.title"), label: t("canvas.configNode.title"), icon: <Settings2 className="size-4" />, onClick: () => onToggleDialog(node) }] : []),
         ...(isImage && !hasImage ? [{ id: "uploadImage", title: t("canvas.nodeToolbar.uploadImage"), label: t("canvas.nodeToolbar.uploadImage"), icon: <Upload className="size-4" />, onClick: () => onUpload(node) }] : []),
         ...(isVideo ? [{ id: "uploadVideo", title: t(hasVideo ? "canvas.nodeToolbar.replaceVideo" : "canvas.nodeToolbar.uploadVideo"), label: t(hasVideo ? "canvas.nodeToolbar.replaceVideo" : "canvas.nodeToolbar.uploadVideo"), icon: <Video className="size-4" />, onClick: () => onUpload(node) }] : []),
         ...(isAudio ? [{ id: "uploadAudio", title: t(hasAudio ? "canvas.nodeToolbar.replaceAudio" : "canvas.nodeToolbar.uploadAudio"), label: t(hasAudio ? "canvas.nodeToolbar.replaceAudio" : "canvas.nodeToolbar.uploadAudio"), icon: <Music2 className="size-4" />, onClick: () => onUpload(node) }] : []),
         ...(hasImage ? imageTools.map((tool) => ({ id: tool.id, title: tool.title, label: tool.label, icon: tool.icon, active: tool.active, onClick: tool.onClick })) : []),
     ];
-    const availableImageTools = nodeToolbarTools.filter((tool) => tool.id !== "retry");
+    const availableImageTools = nodeToolbarTools.filter((tool) => tool.id !== "retry" && tool.id !== "storyboard");
     const imageToolById = new Map(availableImageTools.map((tool) => [tool.id, tool]));
     const toolbarTools = dedupeToolbarTools(
         hasImage
