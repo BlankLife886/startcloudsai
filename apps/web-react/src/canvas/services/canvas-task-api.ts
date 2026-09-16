@@ -90,21 +90,10 @@ function wait(delay: number, signal?: AbortSignal) {
 //
 // Canvas task submissions must be deterministic so that automatic retries and
 // reconnect replays of the same logical generation never create (and bill) a
-// second task. The backend deduplicates on (userId, idempotencyKey).
-//
-// - Workflow node execution:  canvas:${runId}:${nodeId}:${imageIndex}
-// - Manual node generation:   canvas:${projectId}:${nodeId}:${nonce}:${imageIndex}
-//   The nonce is created once per explicit user click and reused for the
-//   whole generation; a new explicit click creates a new nonce.
+// second task. The backend deduplicates on (userId, idempotencyKey). The key
+// formats and their length bound live in canvas-task-key.
 
-export function canvasWorkflowTaskKey(runId: string, nodeId: string, imageIndexOrId: number | string) {
-    return `canvas:${runId}:${nodeId}:${imageIndexOrId}`;
-}
-
-export function canvasManualTaskKey(projectId: string, nodeId: string, nonce: string, imageIndexOrId?: number | string) {
-    const base = `canvas:${projectId}:${nodeId}:${nonce}`;
-    return imageIndexOrId === undefined ? base : `${base}:${imageIndexOrId}`;
-}
+export { boundedCanvasTaskKey, canvasManualTaskKey, canvasWorkflowTaskKey, MAX_CANVAS_TASK_KEY_LENGTH } from "@/lib/canvas/canvas-task-key";
 
 export function createCanvasTaskNonce() {
     return nanoid(10);

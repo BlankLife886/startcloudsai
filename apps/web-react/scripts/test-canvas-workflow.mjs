@@ -36,6 +36,7 @@ import { buildCanvasSidePanelWorkflowGroups } from "../src/canvas/lib/canvas/can
 import { shouldPromoteGeneratedImage } from "../src/canvas/lib/canvas/canvas-image-primary.ts";
 import { shouldBlockCanvasNavigation } from "../src/canvas/lib/canvas/canvas-leave-guard.ts";
 import { applyCanvasAgentNodeUpdate, clampCanvasAgentImageCounts } from "../src/canvas/lib/canvas/canvas-agent-node-metadata.ts";
+import { boundedCanvasTaskKey, canvasManualTaskKey, canvasWorkflowTaskKey, MAX_CANVAS_TASK_KEY_LENGTH } from "../src/canvas/lib/canvas/canvas-task-key.ts";
 import { canvasLocalImageOperationOutputCount, isCanvasLocalImageOperation, normalizeCanvasLocalImageOperationParams } from "../src/canvas/lib/canvas/canvas-local-image-operation.ts";
 
 const node = (id, type, metadata = {}) => ({ id, type, title: id, position: { x: 0, y: 0 }, width: 100, height: 100, metadata });
@@ -797,4 +798,39 @@ test("clamps agent-written image counts to the model cap so a finished node can 
     // expected output count aligned with what generation will actually request.
     assert.equal(workflowExpectedOutputCount(clamped[0]), 4);
     assert.equal(workflowExpectedOutputCount(requested[0]), 8);
+});
+
+test("keeps storyboard shot idempotency keys inside the server's 128-character limit", () => {
+    const projectId = "123e4567-e89b-12d3-a456-426614174000";
+    const runId = "7f1c9a02-5b3d-4e88-9a21-0c6f5d8e4b17";
+    const nodeId = "config-1758043200000-a1b2c";
+    const storyboardId = "storyboard-Ab3dEf9xYz";
+
+    // The regression: a workflow run folded its 36-character runId into the
+    // manual key format, which overflowed and failed every shot with a 422.
+    const overflowed = `canvas:${projectId}:${nodeId}:${storyboardId}:${runId}:shot-1`;
+    assert.equal(overflowed.length, 136, "the original composition really did exceed the limit");
+
+    const workflowKey = canvasWorkflowTaskKey(runId, nodeId, `${storyboardId}:shot-1`);
+    assert.ok(workflowKey.length <= MAX_CANVAS_TASK_KEY_LENGTH, `workflow shot key must fit, got ${workflowKey.length}`);
+    assert.equal(workflowKey, `canvas:${runId}:${nodeId}:${storyboardId}:shot-1`, "a key within the limit stays readable and unhashed");
+
+    // Distinct shots and distinct runs must stay distinct.
+    assert.notEqual(workflowKey, canvasWorkflowTaskKey(runId, nodeId, `${storyboardId}:shot-2`));
+    assert.notEqual(workflowKey, canvasWorkflowTaskKey(projectId, nodeId, `${storyboardId}:shot-1`));
+
+    // Manual generation was already inside the limit and must not change shape,
+    // or in-flight tasks would lose their dedup identity across a deploy.
+    const manualKey = canvasManualTaskKey(projectId, nodeId, `${storyboardId}:nonce12345`, "shot-1");
+    assert.equal(manualKey, `canvas:${projectId}:${nodeId}:${storyboardId}:nonce12345:shot-1`);
+    assert.ok(manualKey.length <= MAX_CANVAS_TASK_KEY_LENGTH);
+});
+
+test("folds an over-long task key into a stable bounded digest", () => {
+    const long = `canvas:${"x".repeat(200)}`;
+    const bounded = boundedCanvasTaskKey(long);
+    assert.equal(bounded.length, MAX_CANVAS_TASK_KEY_LENGTH, "a clamped key uses the full allowance");
+    assert.equal(bounded, boundedCanvasTaskKey(long), "the same input must survive a crash-resume with the same key");
+    assert.notEqual(bounded, boundedCanvasTaskKey(`${long}y`), "different inputs must not collapse onto one key");
+    assert.equal(boundedCanvasTaskKey("canvas:short"), "canvas:short", "a short key is returned untouched");
 });

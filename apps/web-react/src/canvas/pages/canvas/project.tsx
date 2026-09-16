@@ -4503,12 +4503,13 @@ function InfiniteCanvasPage() {
             options: StoryboardGenerationOptions,
             report: (event: StoryboardProgressEvent) => void,
             producerNodeId?: string | null,
-            runOptions?: { skipCostConfirm?: boolean; reuseExistingOutputs?: boolean; taskKeySalt?: string },
+            runOptions?: { skipCostConfirm?: boolean; reuseExistingOutputs?: boolean; taskKeySalt?: string; workflowRunId?: string },
         ) => {
             const scenes = reviewedPlan.scenes;
             if (!scenes.length) return;
             const reuseExistingOutputs = Boolean(runOptions?.reuseExistingOutputs);
             const taskKeySalt = runOptions?.taskKeySalt || createCanvasTaskNonce();
+            const workflowRunId = runOptions?.workflowRunId;
             // Config stop during/after analyze sets this flag. Refuse to start
             // image generation instead of clearing the stop and continuing.
             if (storyboardCancelRequestedRef.current && storyboardConfigDriverRef.current) {
@@ -4934,7 +4935,12 @@ function InfiniteCanvasPage() {
                         const requestOptions = {
                             signal: requestController.signal,
                             onCreated: (taskId: string) => persistStoryboardTaskId(nodeId, taskId, requestController),
-                            idempotencyKey: canvasManualTaskKey(projectId, nodeId, `${storyboardId}:${taskKeySalt}`, scene.id),
+                            // A workflow run must use the workflow key format: folding the
+                            // 36-character runId into a manual key pushes the whole key past
+                            // the server's 128-character limit, failing every shot.
+                            idempotencyKey: workflowRunId
+                                ? canvasWorkflowTaskKey(workflowRunId, nodeId, `${storyboardId}:${scene.id}`)
+                                : canvasManualTaskKey(projectId, nodeId, `${storyboardId}:${taskKeySalt}`, scene.id),
                         };
                         const sceneSize = sceneAspectRatios.get(scene.id) || generationConfig.size;
                         const sceneGenerationConfig = { ...generationConfig, size: sceneSize };
@@ -5856,6 +5862,7 @@ function InfiniteCanvasPage() {
                         waitForSlot: true,
                         reuseExistingOutputs: true,
                         taskKeySalt: checkpoint?.runId || createCanvasTaskNonce(),
+                        workflowRunId: checkpoint?.runId,
                     });
                     const costCents = await readWorkflowNodeCost(nodeId);
                     if (!runActive() || workflowRunRef.current.canceledNodeIds.has(nodeId) || !pageActiveRef.current || workflowRunRef.current.lockLost) {
@@ -6663,6 +6670,7 @@ function InfiniteCanvasPage() {
                     waitForSlot: Boolean(options?.workflowRunId),
                     reuseExistingOutputs: Boolean(options?.workflowRunId),
                     taskKeySalt: options?.workflowRunId || options?.taskKeySalt,
+                    workflowRunId: options?.workflowRunId,
                 });
                 return result.ok;
             }

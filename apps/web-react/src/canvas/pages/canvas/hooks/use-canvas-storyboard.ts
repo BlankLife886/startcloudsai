@@ -25,6 +25,12 @@ export type StoryboardConfigRunOptions = {
      * inputs are not served from the previous idempotent result.
      */
     taskKeySalt?: string;
+    /**
+     * Set while running inside a workflow, so shot tasks use the workflow key
+     * format. Folding the runId into a manual key instead overflows the
+     * server's 128-character idempotency key limit.
+     */
+    workflowRunId?: string;
 };
 
 export type StoryboardConfigRunResult = {
@@ -62,7 +68,7 @@ type UseCanvasStoryboardConfigParams = {
         options: StoryboardGenerationOptions,
         report: (event: StoryboardProgressEvent) => void,
         producerNodeId?: string | null,
-        runOptions?: { skipCostConfirm?: boolean; reuseExistingOutputs?: boolean; taskKeySalt?: string },
+        runOptions?: { skipCostConfirm?: boolean; reuseExistingOutputs?: boolean; taskKeySalt?: string; workflowRunId?: string },
     ) => Promise<void>;
 };
 
@@ -361,7 +367,7 @@ export function useCanvasStoryboardConfigRunner(params: UseCanvasStoryboardConfi
                         }
                     },
                     nodeId,
-                    { skipCostConfirm: runOptions.skipCostConfirm, reuseExistingOutputs: runOptions.reuseExistingOutputs, taskKeySalt: runOptions.taskKeySalt },
+                    { skipCostConfirm: runOptions.skipCostConfirm, reuseExistingOutputs: runOptions.reuseExistingOutputs, taskKeySalt: runOptions.taskKeySalt, workflowRunId: runOptions.workflowRunId },
                 );
                 const statuses = [...sceneStatuses.values()];
                 const failed = statuses.filter((status) => status === "failed").length;
