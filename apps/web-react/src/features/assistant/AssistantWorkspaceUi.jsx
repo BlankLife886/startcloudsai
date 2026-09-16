@@ -331,9 +331,17 @@ function AssistantCostDialog({ payload, light, onCancel, onConfirm }) {
           <div className="ai-cost-confirm-total"><div className="ai-cost-confirm-total__copy"><span>本次预计</span><small>{payload.unit} 积分 / {payload.unitLabel} × {payload.count} {payload.unitLabel}</small></div><strong>{total.toLocaleString("zh-CN")} 积分</strong></div>
           <div className="ai-cost-confirm-balance"><div><span>当前可用</span><strong>{available == null ? "读取中" : `${available.toLocaleString("zh-CN")} 积分`}</strong></div><i className="bi bi-arrow-right" /><div className={insufficient ? "danger" : ""}><span>预留后余额</span><strong>{available == null ? "待计算" : insufficient ? "余额不足" : `${Math.max(0, available - total).toLocaleString("zh-CN")} 积分`}</strong></div></div>
         </div>
+        {insufficient ? <p className="ai-cost-confirm-warn is-danger"><i className="bi bi-exclamation-circle" />钱包余额不足，请充值后再提交任务。</p> : null}
         <footer className="ai-cost-confirm-footer">
           <label className="ai-cost-confirm-preference"><input type="checkbox" checked={skip} onChange={(event) => setSkip(event.target.checked)} /><span>不再每次确认</span></label>
-          <div className="ai-cost-confirm-actions"><button type="button" className="ai-cost-confirm-btn ghost" onClick={onCancel}>取消</button><button type="button" className="ai-cost-confirm-btn primary" disabled={insufficient} onClick={() => onConfirm(skip)}>确认</button></div>
+          <div className="ai-cost-confirm-actions">
+            <button type="button" className="ai-cost-confirm-btn ghost" onClick={onCancel}>取消</button>
+            {insufficient ? (
+              <a className="ai-cost-confirm-btn primary" href="/pricing?plan=topup">去充值</a>
+            ) : (
+              <button type="button" className="ai-cost-confirm-btn primary" onClick={() => onConfirm(skip)}>确认</button>
+            )}
+          </div>
         </footer>
       </section>
     </div>,

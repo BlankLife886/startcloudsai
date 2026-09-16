@@ -1,6 +1,6 @@
 import {useEffect,useRef,useState} from 'react';
 import {Check,Copy,KeyRound,ShieldCheck,X} from 'lucide-react';
-import {SCOPES,EVENTS,copyText,emptyKey,keyPayload,number} from './presentation.js';
+import {SCOPES,EVENTS,copyText,emptyKey,draftFromKey,keyPayload,number} from './presentation.js';
 import {Checkbox,DateField,NumberField} from './Controls.jsx';
 import {useDialogMotion} from './motion.js';
 
@@ -13,16 +13,21 @@ export function Modal({title,children,onClose,busy=false,footer,wide=false,locke
  </dialog>;
 }
 
-export function KeyForm({client,models,demo,onClose,onSaved}){
- const [draft,setDraft]=useState(emptyKey),[busy,setBusy]=useState(false),[error,setError]=useState('');
+export function KeyForm({client,models,demo,initial,onClose,onSaved}){
+ const editing=Boolean(initial?.id);
+ const [draft,setDraft]=useState(()=>editing?draftFromKey(initial):emptyKey()),[busy,setBusy]=useState(false),[error,setError]=useState('');
  const alive=useRef(true);useEffect(()=>{alive.current=true;return()=>{alive.current=false}},[]);
  const change=(key,value)=>setDraft(current=>({...current,[key]:value}));
  const toggle=(key,value)=>setDraft(current=>({...current,[key]:current[key].includes(value)?current[key].filter(item=>item!==value):[...current[key],value]}));
- async function submit(event){event.preventDefault();if(busy)return;setError('');setBusy(true);try{const result=await client.createAPIKey(keyPayload(draft));if(alive.current)onSaved(result)}catch(error){if(alive.current)setError(error.message)}finally{if(alive.current)setBusy(false)}}
- return <Modal title={demo?'创建演示 Key':'创建 API Key'} busy={busy} onClose={onClose} wide footer={<><button className="dap-button" disabled={busy} onClick={onClose}>取消</button><button className="dap-button primary" form="dap-key-form" type="submit" disabled={busy}>{busy?'创建中…':'创建 Key'}</button></>}>
+ async function submit(event){event.preventDefault();if(busy)return;setError('');setBusy(true);try{
+  const payload=keyPayload(draft);
+  const result=editing?await client.updateAPIKey(initial.id,payload):await client.createAPIKey(payload);
+  if(alive.current)onSaved(result,editing?'updated':'created');
+ }catch(error){if(alive.current)setError(error.message)}finally{if(alive.current)setBusy(false)}}
+ return <Modal title={editing?(demo?'编辑演示 Key':'编辑 API Key'):(demo?'创建演示 Key':'创建 API Key')} busy={busy} onClose={onClose} wide footer={<><button className="dap-button" disabled={busy} onClick={onClose}>取消</button><button className="dap-button primary" form="dap-key-form" type="submit" disabled={busy}>{busy?(editing?'保存中…':'创建中…'):(editing?'保存修改':'创建 Key')}</button></>}>
   <form id="dap-key-form" onSubmit={submit} className="dap-form"><fieldset disabled={busy}><label>名称<input data-autofocus required maxLength={80} placeholder="例如：生产环境图像服务" value={draft.label} onChange={e=>change('label',e.target.value)}/></label>
    <section className="dap-form-section"><h3><ShieldCheck size={16}/>访问权限</h3><div className="dap-options">{SCOPES.map(([id,label])=><label key={id}><Checkbox checked={draft.scopes.includes(id)} onChange={()=>toggle('scopes',id)}/><span>{label}<small>{id}</small></span></label>)}</div></section>
-   <section className="dap-form-section"><h3>模型范围 <small>未选模型时允许全部开放模型</small></h3>{models.length?<div className="dap-options">{models.map(model=><label key={model.id}><Checkbox checked={draft.allowedModelIds.includes(model.id)} onChange={()=>toggle('allowedModelIds',model.id)}/><span>{model.name}<small>{number(model.priceCents)} 积分起</small></span></label>)}</div>:<p className="dap-muted">暂无可用模型，请确认模型列表已加载。</p>}</section>
+   <section className="dap-form-section"><h3>模型范围 <small>未选模型时允许全部开放模型（含对话与图片）</small></h3>{models.length?<div className="dap-options">{models.map(model=><label key={model.id}><Checkbox checked={draft.allowedModelIds.includes(model.id)} onChange={()=>toggle('allowedModelIds',model.id)}/><span>{model.name}<small>{model.kind==='chat'?'对话 · ':''}{number(model.priceCents)} 积分起</small></span></label>)}</div>:<p className="dap-muted">暂无可用模型，请确认模型列表已加载。</p>}</section>
    <section className="dap-form-section"><h3>额度与有效期</h3><div className="dap-form-grid">{[['dailyTaskLimit','每日任务数',100000],['monthlyTaskLimit','每月任务数',1000000],['dailySpendLimitCents','每日提交预算（积分）',1000000000],['monthlySpendLimitCents','每月提交预算（积分）',10000000000],['rateLimitPerMinute','每分钟请求数',10000]].map(([id,label,max])=><div className="dap-form-field" key={id}><label htmlFor={`dap-${id}`}>{label}</label><NumberField id={`dap-${id}`} label={label} required min={1} max={max} step={1} value={draft[id]} onChange={value=>change(id,value)}/></div>)}
    <div className="dap-form-field"><label htmlFor="dap-dailyByteLimitGiB">每日流量（GiB）</label><NumberField id="dap-dailyByteLimitGiB" label="每日流量（GiB）" required min={0.001} max={1024} step="any" value={draft.dailyByteLimitGiB} onChange={value=>change('dailyByteLimitGiB',value)}/></div>
    <label className="wide">IP 白名单<input placeholder="203.0.113.10, 10.0.0.0/24" value={draft.ipAllowlistText} onChange={e=>change('ipAllowlistText',e.target.value)}/><small>可选，支持IP与CIDR，最多20项。</small></label><div className="dap-form-field wide"><span className="dap-form-label">到期日期</span><DateField value={draft.expiresAt} disabled={busy} onChange={value=>change('expiresAt',value)}/></div></div></section>

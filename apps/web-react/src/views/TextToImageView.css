@@ -246,6 +246,13 @@
   line-height: 1.5;
 }
 
+.t2i-batch-recovery-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: center;
+}
+
 .t2i-batch-recovery button {
   justify-self: start;
   padding: 0;
@@ -254,6 +261,11 @@
   border: 0;
   text-decoration: underline;
   cursor: pointer;
+}
+
+.t2i-batch-recovery button.is-primary {
+  text-decoration: none;
+  font-weight: 600;
 }
 
 .t2i-skill-popover-enter-from,

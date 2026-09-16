@@ -254,12 +254,24 @@ class ApiClient {
     final success =
         statusCode >= 200 && statusCode < 300 && map?['success'] == true;
     if (!success) {
+      final malformedSuccess =
+          statusCode >= 200 && statusCode < 300 && map?['success'] != true;
+      if (malformedSuccess && setCookies.isNotEmpty) {
+        // Body 可能被截断，但 Set-Cookie 往往仍在；先落盘再让上层回查会话。
+        await _sessionStore.captureSetCookies(setCookies);
+      }
       final exception = ApiException(
         statusCode: statusCode,
         code:
             map?['code']?.toString() ??
-            (statusCode >= 500 ? 'internal_error' : 'request_failed'),
-        message: map?['error']?.toString() ?? '请求失败（$statusCode）',
+            (malformedSuccess
+                ? 'response_malformed'
+                : (statusCode >= 500 ? 'internal_error' : 'request_failed')),
+        message:
+            map?['error']?.toString() ??
+            (malformedSuccess
+                ? '响应异常，请重试（HTTP $statusCode）'
+                : '请求失败（$statusCode）'),
       );
       if (exception.isUnauthorized) await _expireSession();
       throw exception;

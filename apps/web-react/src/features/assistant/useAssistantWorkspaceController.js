@@ -46,6 +46,7 @@ import notificationService from "@react/legacy-modules/services/notification.js"
 import {
   conversationTitle,
   formatTime,
+  assistantPromptRequestsAgent,
   assistantSendMode,
   assistantMessageMatchesRun,
   imageCountFromPrompt,
@@ -79,6 +80,7 @@ import { useIsDark } from "../../hooks/useIsDark.js";
 import { exactImageSizeParams, validateExactImageSize } from "../../config/exactImageSize.js";
 import { availableCatalogModels } from "../../components/common/ModelCatalogIcon.jsx";
 import { assistantClipboardFiles, isAssistantImageFile, isPSDFile } from "./domain/assistantAttachments.js";
+import { compressAssistantReferenceUploadFile, needsAssistantReferenceCompression } from "./services/assistantReferenceUpload.js";
 import { isProductGuidesEnabled, subscribeProductGuideReplay } from "../../views/shared/productGuides.js";
 import {
   ASSET_GRID_RENDER_SIZE,
@@ -130,6 +132,7 @@ import {
   usageStartedAtMs,
 } from "./assistantWorkspaceCore.jsx";
 import { closestNavigatorTurn } from "./AssistantMessageComponents.jsx";
+import { fetchRuntimeConfig } from "@react/legacy-modules/services/runtimeConfig.js";
 
 const PENDING_ASSISTANT_CANCELS_KEY = "starclouds:assistant-pending-cancels";
 
@@ -237,6 +240,7 @@ export function useAssistantWorkspaceController() {
   const composerWorkspaceScopeRef = useRef(workspaceScope);
   const [loading, setLoading] = useState(true);
   const [serviceError, setServiceError] = useState("");
+  const [maxMessageCharacters, setMaxMessageCharacters] = useState(MAX_ASSISTANT_MESSAGE_CHARACTERS);
   const [conversations, setConversations] = useState([]);
   const [activeId, setActiveId] = useState("");
   const [draft, setDraft] = useState("");
@@ -289,6 +293,7 @@ export function useAssistantWorkspaceController() {
   const [generationQuality, setGenerationQuality] = useState("");
   const [generationCount, setGenerationCount] = useState(2);
   const [references, setReferences] = useState([]);
+  const referencePreviewUrlsRef = useRef(new Set());
   const [documents, setDocuments] = useState([]);
   const [uploading, setUploading] = useState(false);
   const [voiceSupported, setVoiceSupported] = useState(false);
@@ -461,14 +466,7 @@ export function useAssistantWorkspaceController() {
   const availableGenerationModels = mode === "image" ? availableImageModels : availableConversationModels;
   const generationModel = mode === "image" ? imageModel : conversationModel;
   const resolveAssistantSend = (prompt, documentCount = documents.length) => {
-    const selectedMode = assistantSendMode(creationType, documentCount, prompt);
-    const hasConversationImage = messages.some((message) => (message.images || []).some((image) => imageUrl(image)));
-    const responseMode = selectedMode === "chat"
-      && creationType === "chat"
-      && hasConversationImage
-      && promptNeedsRecentVisual(prompt)
-      ? "agent"
-      : selectedMode;
+    const responseMode = assistantSendMode(creationType, documentCount, prompt);
     return {
       responseMode,
       sendModel: responseMode === "image"
@@ -1251,6 +1249,8 @@ export function useAssistantWorkspaceController() {
       conversationDraftsRef.current.clear();
       uploadControllerRef.current?.abort();
       uploadControllerRef.current = null;
+      referencePreviewUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+      referencePreviewUrlsRef.current.clear();
       setUploading(false);
       setReferences([]);
       setDocuments([]);
@@ -1260,7 +1260,7 @@ export function useAssistantWorkspaceController() {
     setServiceError("");
     try {
       const signedIn = auth.isAuthenticated;
-      const [configResult, conversationResult, runResult] = await Promise.allSettled([
+      const [configResult, conversationResult, runResult, runtimeResult] = await Promise.allSettled([
         fetchAssistantConfig(controller.signal),
         signedIn
           ? listAssistantConversations({ signal: controller.signal })
@@ -1268,7 +1268,16 @@ export function useAssistantWorkspaceController() {
         signedIn
           ? listActiveAssistantRuns({ signal: controller.signal })
           : Promise.resolve([]),
+        fetchRuntimeConfig(),
       ]);
+      let messageLimit = MAX_ASSISTANT_MESSAGE_CHARACTERS;
+      if (runtimeResult.status === "fulfilled") {
+        const limit = Number(runtimeResult.value?.promptInputLimits?.assistantMessageMaxChars);
+        if (Number.isFinite(limit) && limit >= 100 && limit <= 100000) {
+          messageLimit = Math.floor(limit);
+          setMaxMessageCharacters(messageLimit);
+        }
+      }
       if (controller.signal.aborted || !mountedRef.current) return;
       if (configResult.status !== "fulfilled") throw configResult.reason;
       const { availableConversation, availableImages } = applyAssistantConfig(configResult.value);
@@ -1297,7 +1306,7 @@ export function useAssistantWorkspaceController() {
       setActiveId(nextActiveId);
       setPinnedIds(Array.isArray(workspaceState.pinnedIds) ? workspaceState.pinnedIds.filter((id) => rows.some((item) => item.id === id)) : []);
       if (typeof workspaceState.draft === "string") {
-        const restoredDraft = workspaceState.draft.slice(0, 12000);
+        const restoredDraft = workspaceState.draft.slice(0, messageLimit);
         const savedDraftConversationId = rows.some((item) => item.id === workspaceState.activeId)
           ? workspaceState.activeId
           : nextActiveId;
@@ -1322,7 +1331,7 @@ export function useAssistantWorkspaceController() {
       if (pending) {
         pendingLaunchRef.current = pending;
         setActiveId("");
-        setDraft(composePendingLaunchPrompt(pending, 12000));
+        setDraft(composePendingLaunchPrompt(pending, messageLimit));
         const pendingSkill = String(pending.config?.mode || pending.config?.skill || "").trim();
         const pendingMode = pendingSkill === "image" || pendingSkill === "chat" || pendingSkill === "agent"
           ? pendingSkill
@@ -1417,6 +1426,8 @@ export function useAssistantWorkspaceController() {
       for (const controller of runControllersRef.current.values()) controller.abort();
       runControllersRef.current.clear();
       uploadControllerRef.current?.abort();
+      referencePreviewUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+      referencePreviewUrlsRef.current.clear();
       costControllerRef.current?.abort();
       costResolverRef.current?.(false);
       costResolverRef.current = null;
@@ -1769,6 +1780,8 @@ export function useAssistantWorkspaceController() {
     draftRequestControllerRef.current = null;
     uploadControllerRef.current?.abort();
     uploadControllerRef.current = null;
+    referencePreviewUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+    referencePreviewUrlsRef.current.clear();
     costControllerRef.current?.abort();
     costControllerRef.current = null;
     const resolvePendingCost = costResolverRef.current;
@@ -1984,20 +1997,66 @@ export function useAssistantWorkspaceController() {
     const controller = new AbortController();
     uploadControllerRef.current?.abort();
     uploadControllerRef.current = controller;
+    const pendingImages = imageFiles.map((file) => {
+      const previewUrl = URL.createObjectURL(file);
+      referencePreviewUrlsRef.current.add(previewUrl);
+      return {
+        file,
+        reference: {
+          id: uid(),
+          name: file.name,
+          dataUrl: previewUrl,
+          thumbnailUrl: previewUrl,
+          fileKey: "",
+          uploadStatus: needsAssistantReferenceCompression(file) ? "compressing" : "uploading",
+          uploadProgress: 0,
+        },
+      };
+    });
+    if (pendingImages.length) {
+      setReferences((current) => [...current, ...pendingImages.map((item) => item.reference)].slice(0, maxReferences));
+    }
     setUploading(true);
     try {
-      const imageTask = imageFiles.length ? Promise.all(imageFiles.map(async (file) => {
-        const result = await uploadFile(file, {
-          signal: controller.signal,
-          referenceUpload: true,
-          behaviorFeature: "assistant",
-        });
-        return { id: uid(), name: file.name, dataUrl: result.url, thumbnailUrl: result.thumbnailUrl, fileKey: result.key };
-      })).then((uploaded) => {
-        if (mountedRef.current && !controller.signal.aborted) setReferences((current) => [...current, ...uploaded].slice(0, maxReferences));
-      }).catch((error) => {
-        if (error?.name !== "AbortError") notificationService.error(error?.message || "图片上传失败");
-      }) : Promise.resolve();
+      const imageTasks = pendingImages.map(async ({ file, reference }) => {
+        // Keep images up to 1 MB untouched; encode larger references once at
+        // 80% WebP quality before uploading.
+        try {
+          const uploadFileValue = await compressAssistantReferenceUploadFile(file, { signal: controller.signal });
+          if (mountedRef.current && !controller.signal.aborted) {
+            setReferences((current) => current.map((item) => item.id === reference.id
+              ? { ...item, uploadStatus: "uploading", uploadProgress: 0 }
+              : item));
+          }
+          const result = await uploadFile(uploadFileValue, {
+            signal: controller.signal,
+            referenceUpload: true,
+            behaviorFeature: "assistant",
+            onProgress: ({ percent, done }) => {
+              if (!mountedRef.current || controller.signal.aborted) return;
+              setReferences((current) => current.map((item) => {
+                if (item.id !== reference.id) return item;
+                const uploadProgress = Math.max(item.uploadProgress || 0, percent || 0);
+                const uploadStatus = done ? "processing" : "uploading";
+                return item.uploadProgress === uploadProgress && item.uploadStatus === uploadStatus
+                  ? item
+                  : { ...item, uploadProgress, uploadStatus };
+              }));
+            },
+          });
+          if (mountedRef.current && !controller.signal.aborted) {
+            setReferences((current) => current.map((item) => item.id === reference.id
+              ? { id: reference.id, name: file.name, dataUrl: result.url, thumbnailUrl: result.thumbnailUrl, fileKey: result.key, uploadStatus: "ready" }
+              : item));
+          }
+        } catch (error) {
+          if (mountedRef.current) setReferences((current) => current.filter((item) => item.id !== reference.id));
+          if (error?.name !== "AbortError") notificationService.error(error?.message || "图片上传失败");
+        } finally {
+          URL.revokeObjectURL(reference.dataUrl);
+          referencePreviewUrlsRef.current.delete(reference.dataUrl);
+        }
+      });
       const documentTasks = documentFiles.map(async (file) => {
         try {
           const created = await uploadAssistantFile(file, { signal: controller.signal });
@@ -2009,7 +2068,7 @@ export function useAssistantWorkspaceController() {
           notificationService.error(error?.message || "文档上传失败");
         }
       });
-      await Promise.all([imageTask, ...documentTasks]);
+      await Promise.all([...imageTasks, ...documentTasks]);
     } finally {
       if (uploadControllerRef.current === controller) {
         uploadControllerRef.current = null;
@@ -2539,13 +2598,17 @@ export function useAssistantWorkspaceController() {
       if (generationSizeError) {
         notificationService.warning(generationSizeError);
         setPreferencesOpen(true);
-      } else if (assistantCharacterCount(prompt) > MAX_ASSISTANT_MESSAGE_CHARACTERS) {
-        notificationService.warning("消息不能超过 12,000 个字符");
+      } else if (assistantCharacterCount(prompt) > maxMessageCharacters) {
+        notificationService.warning(`消息不能超过 ${maxMessageCharacters.toLocaleString("zh-CN")} 个字符`);
       } else if (documents.some((item) => item.status === "queued" || item.status === "processing")) {
         notificationService.warning("文档仍在解析，请等待完成后发送");
       } else if (documents.some((item) => item.status !== "ready")) {
         notificationService.warning("请移除解析失败的文档后再发送");
       }
+      return;
+    }
+    if (creationType === "chat" && assistantPromptRequestsAgent(prompt)) {
+      notificationService.info("问答模式仅提供回答，请切换到 Agent 或图片模式执行此操作");
       return;
     }
     const { responseMode, sendModel, requestedCount } = resolveAssistantSend(prompt);
@@ -2627,6 +2690,17 @@ export function useAssistantWorkspaceController() {
     setReferences((current) => {
       if (current.length >= maxReferences || current.some((item) => sameAssetReference(item, asset))) return current;
       return [...current, { id: uid(), name: asset.label, dataUrl: asset.dataUrl, thumbnailUrl: asset.thumbUrl || asset.dataUrl, fileKey: asset.fileKey || "" }];
+    });
+  };
+
+  const removeReference = (id) => {
+    setReferences((current) => {
+      const removed = current.find((item) => item.id === id);
+      if (removed?.dataUrl?.startsWith("blob:")) {
+        URL.revokeObjectURL(removed.dataUrl);
+        referencePreviewUrlsRef.current.delete(removed.dataUrl);
+      }
+      return current.filter((item) => item.id !== id);
     });
   };
 
@@ -2867,7 +2941,7 @@ export function useAssistantWorkspaceController() {
 
   const submitUserMessageEdit = async (message) => {
     const prompt = editingMessageDraft.trim();
-    if (!activeConversation || conversationHasWork || !prompt || assistantCharacterCount(prompt) > MAX_ASSISTANT_MESSAGE_CHARACTERS || message.id !== lastUserMessageId) return;
+    if (!activeConversation || conversationHasWork || !prompt || assistantCharacterCount(prompt) > maxMessageCharacters || message.id !== lastUserMessageId) return;
     const messageIndex = messages.findIndex((item) => item.id === message.id);
     if (messageIndex < 0) return;
     const previousReply = messages[messageIndex + 1];
@@ -3094,8 +3168,8 @@ export function useAssistantWorkspaceController() {
   const saveQueueEdit = async (run, promptText = draft) => {
     const prompt = String(promptText || "").trim();
     if (!run?.id || run.pending || queueBusyId || !prompt) return;
-    if (assistantCharacterCount(prompt) > MAX_ASSISTANT_MESSAGE_CHARACTERS) {
-      notificationService.warning("消息不能超过 12,000 个字符");
+    if (assistantCharacterCount(prompt) > maxMessageCharacters) {
+      notificationService.warning(`消息不能超过 ${maxMessageCharacters.toLocaleString("zh-CN")} 个字符`);
       return;
     }
     setQueueBusyId(run.id);
@@ -3186,7 +3260,7 @@ export function useAssistantWorkspaceController() {
   const generationSizeError = mode === "image" && generationSize.sizeMode === "exact"
     ? validateExactImageSize(selectedImageModel, generationSize.exactWidth, generationSize.exactHeight).error
     : "";
-  const canSend = draftCharacterCount > 0 && draftCharacterCount <= MAX_ASSISTANT_MESSAGE_CHARACTERS && !documents.some((item) => item.status !== "ready") && !costPayload && !loading && !serviceError && !uploading && !generationSizeError;
+  const canSend = draftCharacterCount > 0 && draftCharacterCount <= maxMessageCharacters && !documents.some((item) => item.status !== "ready") && !costPayload && !loading && !serviceError && !uploading && !generationSizeError;
   const voiceBusy = Boolean(serviceError);
   const deleteTargetHasWork = Boolean(deleteTarget && (
     activeRuns[deleteTarget.id] || queuedRuns.some((run) => run.conversationId === deleteTarget.id)
@@ -3316,6 +3390,7 @@ export function useAssistantWorkspaceController() {
     setGenerationCount,
     references,
     setReferences,
+    removeReference,
     documents,
     uploading,
     voiceSupported,
@@ -3478,6 +3553,7 @@ export function useAssistantWorkspaceController() {
     cancelQueueItem,
     deleteConversationRow,
     draftCharacterCount,
+    maxMessageCharacters,
     canSend,
     voiceBusy,
     deleteTargetHasWork,

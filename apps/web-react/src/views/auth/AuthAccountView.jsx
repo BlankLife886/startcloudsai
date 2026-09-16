@@ -7,6 +7,11 @@ import "./referral-attribution.css";
 import { useAuth } from "../../auth/AuthContext.jsx";
 import { useIsDark } from "../../hooks/useIsDark.js";
 import { REFERRALS_ENABLED } from "../../config/referrals.js";
+import { apiRequest } from "@react/legacy-modules/services/apiClient.js";
+import {
+  requestEmailAuthCode,
+  verifyEmailAccount,
+} from "@react/legacy-modules/services/auth.js";
 import notificationService from "@react/legacy-modules/services/notification.js";
 
 gsap.registerPlugin(useGSAP);
@@ -18,21 +23,6 @@ const mangaPanels = [
   "polygon(0 65.5%, 0 100%, 42% 100%, 54% 55%, 0 65.5%)",
   "polygon(56% 55%, 68% 55%, 100% 37%, 100% 100%, 44% 100%)",
 ];
-
-async function apiRequest(path, options = {}) {
-  const response = await fetch(`/api/v1${path}`, {
-    credentials: "include",
-    ...options,
-    headers: options.body
-      ? { "Content-Type": "application/json", ...options.headers }
-      : options.headers,
-  });
-  const payload = await response.json().catch(() => null);
-  if (!response.ok || payload?.success !== true) {
-    throw new Error(payload?.error || `请求失败（${response.status}）`);
-  }
-  return payload.data;
-}
 
 function safeRedirect(value) {
   const path = String(value || "").trim();
@@ -108,7 +98,7 @@ export function AuthAccountView() {
     try {
       const result = await apiRequest("/referral-attribution", {
         method, signal: controller.signal,
-        ...(method === "POST" ? {body: JSON.stringify({code: value})} : {}),
+        ...(method === "POST" ? { body: { code: value } } : {}),
       });
       if (controller.signal.aborted || referralRequest.current !== controller) return;
       if (method === "DELETE") {
@@ -203,10 +193,7 @@ export function AuthAccountView() {
     setInfo("");
     setSending(true);
     try {
-      const result = await apiRequest("/auth/email-verification-codes", {
-        method: "POST",
-        body: JSON.stringify({ email: email.trim() }),
-      });
+      const result = await requestEmailAuthCode(email.trim());
       setCodeSent(true);
       setResendSeconds(Number(result?.resendAfter) || 60);
       setInfo(
@@ -235,14 +222,11 @@ export function AuthAccountView() {
     cancelReferralRequest();
     setSubmitting(true);
     try {
-      const result = await apiRequest("/auth/session", {
-        method: "POST",
-        body: JSON.stringify({
-          email: email.trim(),
-          code: code.trim(),
-          referralCode: REFERRALS_ENABLED ? referralCode : "",
-          skipReferral: !REFERRALS_ENABLED || skipReferral,
-        }),
+      const result = await verifyEmailAccount({
+        email: email.trim(),
+        code: code.trim(),
+        referralCode: REFERRALS_ENABLED ? referralCode : "",
+        skipReferral: !REFERRALS_ENABLED || skipReferral,
       });
       if (REFERRALS_ENABLED && result?.referral?.message) {
         if (result.referral.status === "bound") notificationService.success(result.referral.message);

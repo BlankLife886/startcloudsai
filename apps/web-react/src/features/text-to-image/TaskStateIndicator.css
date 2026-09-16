@@ -126,9 +126,11 @@
       var(--t2i-rb-1) 310deg,
       transparent 336deg,
       transparent 360deg
-    ) border-box;
+    ) border-box,
+    /* Fill the 2px stream channel so light-mode page bg never shows as a white rim */
+    linear-gradient(108deg, #4f3dff 0%, #6d5cff 48%, #8b5cf6 100%) border-box;
   background-origin: border-box;
-  background-clip: padding-box, padding-box, border-box;
+  background-clip: padding-box, padding-box, border-box, border-box;
   box-shadow: var(--t2i-stream-shadow);
   animation: none;
   transition:
@@ -170,6 +172,7 @@
 /* Idle / actionable: no rim, no stream — clean pill only */
 .t2i-page .t2i-generate[data-state="ready"],
 .t2i-page .t2i-generate[data-state="retry"],
+.t2i-page .t2i-generate[data-state="recharge"],
 .t2i-page .t2i-generate[data-state="full"],
 .t2i-page .t2i-generate:is(
   [data-state="empty"],
@@ -278,6 +281,16 @@
   filter: saturate(0.78) brightness(0.96);
 }
 
+.t2i-page.is-light .t2i-generate {
+  --t2i-stream-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 -2px 6px rgba(30, 16, 110, 0.22),
+    inset 0 0 16px color-mix(in srgb, var(--t2i-rb-3) var(--t2i-stream-glow), transparent),
+    inset 0 0 34px color-mix(in srgb, var(--t2i-rb-2) var(--t2i-stream-glow), transparent),
+    inset 0 0 50px color-mix(in srgb, var(--t2i-rb-4) var(--t2i-stream-glow), transparent),
+    0 14px 32px rgba(79, 61, 255, 0.34);
+}
+
 .t2i-page.is-light .t2i-generate:is(
   [data-state="empty"],
   [data-state="invalid"],
@@ -355,6 +368,27 @@
     color 280ms ease;
 }
 
+.t2i-page.is-light .t2i-generate:not(:disabled):not([aria-busy="true"]):not(
+  :is(
+    [data-state="uploading"],
+    [data-state="submitting"],
+    [data-state="recovering"],
+    [data-state="quoting"],
+    [data-state="confirming"],
+    [data-state="loading"],
+    [data-state="generating"],
+    [data-state="waiting"]
+  )
+):hover {
+  --t2i-stream-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    inset 0 -2px 6px rgba(30, 16, 110, 0.2),
+    inset 0 0 18px color-mix(in srgb, var(--t2i-rb-3) var(--t2i-stream-glow), transparent),
+    inset 0 0 36px color-mix(in srgb, var(--t2i-rb-4) var(--t2i-stream-glow), transparent),
+    inset 0 0 52px color-mix(in srgb, var(--t2i-rb-2) var(--t2i-stream-glow), transparent),
+    0 18px 40px rgba(79, 61, 255, 0.4);
+}
+
 /* In-flight hover: keep continuous stream, do not restart a one-lap spin */
 .t2i-page .t2i-generate:is(
   [aria-busy="true"],
@@ -380,6 +414,26 @@
     t2i-generate-stream-breathe 2.2s ease-in-out infinite;
 }
 
+.t2i-page.is-light .t2i-generate:is(
+  [aria-busy="true"],
+  [data-state="uploading"],
+  [data-state="submitting"],
+  [data-state="recovering"],
+  [data-state="quoting"],
+  [data-state="confirming"],
+  [data-state="loading"],
+  [data-state="generating"],
+  [data-state="waiting"]
+):not(:disabled):hover {
+  --t2i-stream-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    inset 0 -2px 6px rgba(30, 16, 110, 0.2),
+    inset 0 0 18px color-mix(in srgb, var(--t2i-rb-3) var(--t2i-stream-glow), transparent),
+    inset 0 0 36px color-mix(in srgb, var(--t2i-rb-4) var(--t2i-stream-glow), transparent),
+    inset 0 0 52px color-mix(in srgb, var(--t2i-rb-2) var(--t2i-stream-glow), transparent),
+    0 18px 40px rgba(79, 61, 255, 0.4);
+}
+
 .t2i-page .t2i-generate:not(:disabled):active {
   --t2i-stream-shadow:
     inset 0 2px 6px rgba(45, 27, 151, 0.28),
@@ -387,6 +441,14 @@
     inset 0 0 16px color-mix(in srgb, var(--t2i-rb-3) var(--t2i-stream-glow), transparent),
     0 8px 20px rgba(91, 77, 255, 0.3);
   box-shadow: var(--t2i-stream-shadow);
+}
+
+.t2i-page.is-light .t2i-generate:not(:disabled):active {
+  --t2i-stream-shadow:
+    inset 0 2px 6px rgba(45, 27, 151, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 0 16px color-mix(in srgb, var(--t2i-rb-3) var(--t2i-stream-glow), transparent),
+    0 8px 20px rgba(91, 77, 255, 0.26);
 }
 
 @media (prefers-reduced-motion: reduce) {

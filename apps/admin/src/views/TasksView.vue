@@ -512,6 +512,7 @@ function taskFailedCount(task: AdminTask): number | string {
 // 详情抽屉
 const detailVisible = ref(false)
 const detail = ref<AdminTask | null>(null)
+const detailActiveTab = ref<'overview' | 'billing' | 'timeline' | 'content'>('overview')
 const paramsDialogVisible = ref(false)
 
 /** 常见请求参数 → 中文标签 */
@@ -667,6 +668,7 @@ function setDetailMediaMode(mode: 'output' | 'input') {
 
 function openDetail(task: AdminTask) {
   detail.value = task
+  detailActiveTab.value = 'overview'
   detailMediaMode.value = task.outputUrls?.length ? 'output' : 'input'
   paramsDialogVisible.value = false
   detailVisible.value = true
@@ -1218,7 +1220,7 @@ async function forceFail(task: AdminTask) {
 
     <el-drawer
       v-model="detailVisible"
-      size="min(640px, 96vw)"
+      size="50vw"
       append-to-body
       destroy-on-close
       class="task-detail-drawer"
@@ -1273,255 +1275,318 @@ async function forceFail(task: AdminTask) {
       </template>
 
       <div v-if="detail" class="drawer-body">
-        <el-alert
-          v-if="isUserDeletedTask(detail)"
-          class="drawer-alert"
-          type="warning"
-          :closable="false"
-          show-icon
-          title="产物已被用户删除"
-          :description="`用户于 ${formatTime(detail.deletedAt)} 删除了此任务及其 ${taskDeletedOutputCount(detail)} 个产物。任务成功状态和计费记录保留用于审计。`"
-        />
+        <el-tabs v-model="detailActiveTab" class="task-detail-tabs">
+          <el-tab-pane label="概览" name="overview" class="task-detail-tab-pane">
+            <div class="task-detail-tab-scroll">
+              <div v-if="isUserDeletedTask(detail) || detail.errorCode || detail.errorMessage" class="drawer-alerts">
+                <el-alert
+                  v-if="isUserDeletedTask(detail)"
+                  class="drawer-alert"
+                  type="warning"
+                  :closable="false"
+                  show-icon
+                  title="产物已被用户删除"
+                  :description="`用户于 ${formatTime(detail.deletedAt)} 删除了此任务及其 ${taskDeletedOutputCount(detail)} 个产物。任务成功状态和计费记录保留用于审计。`"
+                />
+                <el-alert
+                  v-if="detail.errorCode || detail.errorMessage"
+                  class="drawer-alert"
+                  :type="isUserCanceledTask(detail) ? 'warning' : 'error'"
+                  :closable="false"
+                  show-icon
+                  :title="isUserCanceledTask(detail) ? taskStatusLabel(detail) : detail.errorCode || '任务异常'"
+                  :description="isUserCanceledTask(detail) ? taskCancellationDescription(detail) : taskErrorMessage(detail.errorMessage)"
+                />
+              </div>
 
-        <el-alert
-          v-if="detail.errorCode || detail.errorMessage"
-          class="drawer-alert"
-          :type="isUserCanceledTask(detail) ? 'warning' : 'error'"
-          :closable="false"
-          show-icon
-          :title="isUserCanceledTask(detail) ? taskStatusLabel(detail) : detail.errorCode || '任务异常'"
-          :description="isUserCanceledTask(detail) ? taskCancellationDescription(detail) : taskErrorMessage(detail.errorMessage)"
-        />
-
-        <section class="drawer-hero">
-          <div
-            v-if="detailOutputUrls.length || detailInputUrls.length"
-            class="detail-media-tabs"
-          >
-            <button
-              v-if="detailOutputUrls.length"
-              type="button"
-              :class="{ 'is-active': detailMediaMode === 'output' }"
-              @click="setDetailMediaMode('output')"
-            >
-              产出 <em>{{ detailOutputUrls.length }}</em>
-            </button>
-            <button
-              v-if="detailInputUrls.length"
-              type="button"
-              :class="{ 'is-active': detailMediaMode === 'input' }"
-              @click="setDetailMediaMode('input')"
-            >
-              参考 <em>{{ detailInputUrls.length }}</em>
-            </button>
-          </div>
-          <div class="drawer-hero__visual">
-            <el-image
-              v-if="detailMediaUrls.length"
-              :src="detailMediaMode === 'output' ? taskThumbSrc(detail, 0) : detailMediaUrls[0]"
-              :preview-src-list="detailPreviewUrls"
-              fit="cover"
-              class="drawer-hero__shot"
-              preview-teleported
-              hide-on-click-modal
-              @error="detailMediaMode === 'output' ? onTaskThumbError(detail, 0) : undefined"
-            >
-              <template #error>
-                <div class="media-ph">
-                  <el-icon><Picture /></el-icon>
-                </div>
-              </template>
-            </el-image>
-            <div
-              v-else
-              class="drawer-hero__shot is-empty"
-              :class="{ 'is-user-deleted': isUserDeletedTask(detail) }"
-            >
-              <el-icon>
-                <Delete v-if="isUserDeletedTask(detail)" />
-                <Picture v-else />
-              </el-icon>
-              <span>{{
-                isUserDeletedTask(detail)
-                  ? '产物已删除'
-                  : detail.status === 'failed'
-                    ? '无产出图'
-                    : '暂无预览'
-              }}</span>
-            </div>
-            <div v-if="detailMediaUrls.length > 1" class="drawer-hero__thumbs">
-              <el-image
-                v-for="(url, index) in detailMediaUrls.slice(1)"
-                :key="`${detailMediaMode}-${url}-${index + 1}`"
-                :src="detailMediaMode === 'output' ? taskThumbSrc(detail, index + 1) : url"
-                :preview-src-list="detailPreviewUrls"
-                :initial-index="index + 1"
-                fit="cover"
-                class="drawer-hero__thumb"
-                preview-teleported
-                hide-on-click-modal
-                @error="detailMediaMode === 'output' ? onTaskThumbError(detail, index + 1) : undefined"
-              >
-                <template #error>
-                  <div class="media-ph media-ph--sm">
-                    <el-icon><Picture /></el-icon>
+              <section class="drawer-hero drawer-hero--wide">
+                <div class="drawer-hero__media">
+                  <div
+                    v-if="detailOutputUrls.length || detailInputUrls.length"
+                    class="detail-media-tabs"
+                  >
+                    <button
+                      v-if="detailOutputUrls.length"
+                      type="button"
+                      :class="{ 'is-active': detailMediaMode === 'output' }"
+                      @click="setDetailMediaMode('output')"
+                    >
+                      产出 <em>{{ detailOutputUrls.length }}</em>
+                    </button>
+                    <button
+                      v-if="detailInputUrls.length"
+                      type="button"
+                      :class="{ 'is-active': detailMediaMode === 'input' }"
+                      @click="setDetailMediaMode('input')"
+                    >
+                      参考 <em>{{ detailInputUrls.length }}</em>
+                    </button>
                   </div>
-                </template>
-              </el-image>
-            </div>
-          </div>
+                  <div class="drawer-hero__visual">
+                    <el-image
+                      v-if="detailMediaUrls.length"
+                      :src="detailMediaMode === 'output' ? taskThumbSrc(detail, 0) : detailMediaUrls[0]"
+                      :preview-src-list="detailPreviewUrls"
+                      fit="cover"
+                      class="drawer-hero__shot"
+                      preview-teleported
+                      hide-on-click-modal
+                      @error="detailMediaMode === 'output' ? onTaskThumbError(detail, 0) : undefined"
+                    >
+                      <template #error>
+                        <div class="media-ph">
+                          <el-icon><Picture /></el-icon>
+                        </div>
+                      </template>
+                    </el-image>
+                    <div
+                      v-else
+                      class="drawer-hero__shot is-empty"
+                      :class="{ 'is-user-deleted': isUserDeletedTask(detail) }"
+                    >
+                      <el-icon>
+                        <Delete v-if="isUserDeletedTask(detail)" />
+                        <Picture v-else />
+                      </el-icon>
+                      <span>{{
+                        isUserDeletedTask(detail)
+                          ? '产物已删除'
+                          : detail.status === 'failed'
+                            ? '无产出图'
+                            : '暂无预览'
+                      }}</span>
+                    </div>
+                    <div v-if="detailMediaUrls.length > 1" class="drawer-hero__thumbs">
+                      <el-image
+                        v-for="(url, index) in detailMediaUrls.slice(1)"
+                        :key="`${detailMediaMode}-${url}-${index + 1}`"
+                        :src="detailMediaMode === 'output' ? taskThumbSrc(detail, index + 1) : url"
+                        :preview-src-list="detailPreviewUrls"
+                        :initial-index="index + 1"
+                        fit="cover"
+                        class="drawer-hero__thumb"
+                        preview-teleported
+                        hide-on-click-modal
+                        @error="detailMediaMode === 'output' ? onTaskThumbError(detail, index + 1) : undefined"
+                      >
+                        <template #error>
+                          <div class="media-ph media-ph--sm">
+                            <el-icon><Picture /></el-icon>
+                          </div>
+                        </template>
+                      </el-image>
+                    </div>
+                  </div>
+                </div>
 
-          <div class="drawer-hero__copy">
-            <div
-              v-for="models in [taskPreviewModels(detail)]"
-              :key="`${detail.id}-hero-models`"
-              class="drawer-hero__models"
-            >
-              <span v-if="models.image">{{ models.image }}</span>
-              <span v-if="models.text">
-                {{ models.text }}<i v-if="models.reasoning"> · {{ models.reasoning }}</i>
-              </span>
-              <span v-if="!models.image && !models.text">未记录模型</span>
-            </div>
-            <p class="drawer-hero__route">
-              {{ taskServiceProviderMeta(detail).name }}
-              <em v-if="taskServiceProviderMeta(detail).endpoint">
-                {{ taskServiceProviderMeta(detail).endpoint }}
-              </em>
-            </p>
-            <div class="drawer-stats">
-              <span class="stat-item">
-                <small>产出/请求</small>
-                <em class="tnum">
-                  <b class="metric-result">{{ taskOutputCount(detail) }}</b>
-                  <i>/</i>
-                  <b class="metric-request">{{ taskCount(detail) }}</b>
-                </em>
-              </span>
-              <span class="stat-item">
-                <small>失败</small>
-                <em
-                  class="metric-fail tnum"
-                  :class="{ 'is-zero': taskFailedCount(detail) === 0 }"
-                >{{ taskFailedCount(detail) }}</em>
-              </span>
-              <span class="stat-item">
-                <small>参考</small>
-                <em class="tnum">{{ taskInputCount(detail) }}</em>
-              </span>
-              <span class="stat-item">
-                <small>执行耗时</small>
-                <em class="tnum">{{ taskDuration(detail) }}</em>
-              </span>
-              <span class="stat-item">
-                <small>积分</small>
-                <em class="tnum">{{ formatPoints(taskChargedPoints(detail)) }}</em>
-              </span>
-            </div>
-          </div>
-        </section>
+                <div class="drawer-hero__copy">
+                  <div
+                    v-for="models in [taskPreviewModels(detail)]"
+                    :key="`${detail.id}-hero-models`"
+                    class="drawer-hero__models"
+                  >
+                    <span v-if="models.image">{{ models.image }}</span>
+                    <span v-if="models.text">
+                      {{ models.text }}<i v-if="models.reasoning"> · {{ models.reasoning }}</i>
+                    </span>
+                    <span v-if="!models.image && !models.text">未记录模型</span>
+                  </div>
+                  <p class="drawer-hero__route">
+                    {{ taskServiceProviderMeta(detail).name }}
+                    <em v-if="taskServiceProviderMeta(detail).endpoint">
+                      {{ taskServiceProviderMeta(detail).endpoint }}
+                    </em>
+                  </p>
+                  <div class="drawer-metric-grid">
+                    <div class="drawer-metric-card">
+                      <small>产出 / 请求</small>
+                      <strong class="tnum">
+                        <b class="metric-result">{{ taskOutputCount(detail) }}</b>
+                        <i>/</i>
+                        <b class="metric-request">{{ taskCount(detail) }}</b>
+                      </strong>
+                    </div>
+                    <div class="drawer-metric-card">
+                      <small>失败</small>
+                      <strong
+                        class="metric-fail tnum"
+                        :class="{ 'is-zero': taskFailedCount(detail) === 0 }"
+                      >{{ taskFailedCount(detail) }}</strong>
+                    </div>
+                    <div class="drawer-metric-card">
+                      <small>参考图</small>
+                      <strong class="tnum">{{ taskInputCount(detail) }}</strong>
+                    </div>
+                    <div class="drawer-metric-card">
+                      <small>执行耗时</small>
+                      <strong class="tnum">{{ taskDuration(detail) }}</strong>
+                    </div>
+                    <div class="drawer-metric-card">
+                      <small>积分</small>
+                      <strong class="tnum">{{ formatPoints(taskChargedPoints(detail)) }}</strong>
+                    </div>
+                    <div class="drawer-metric-card">
+                      <small>来源</small>
+                      <strong>{{ taskSourceLabel(detail) }}</strong>
+                    </div>
+                  </div>
+                </div>
+              </section>
 
-        <section class="detail-section">
-          <dl class="info-rows info-rows--facts">
-            <div class="info-row">
-              <dt>来源</dt>
-              <dd>{{ taskSourceLabel(detail) }}</dd>
+              <section class="detail-section">
+                <header class="detail-section__title">时间线</header>
+                <dl class="info-rows info-rows--facts info-rows--timeline">
+                  <div class="info-row">
+                    <dt>创建</dt>
+                    <dd>{{ formatTime(detail.createdAt) }}</dd>
+                  </div>
+                  <div class="info-row">
+                    <dt>开始</dt>
+                    <dd>{{ formatTime(detail.startedAt) }}</dd>
+                  </div>
+                  <div class="info-row">
+                    <dt>结束</dt>
+                    <dd>{{ formatTime(detail.finishedAt) }}</dd>
+                  </div>
+                  <div v-if="detail.deletedAt" class="info-row">
+                    <dt>删除</dt>
+                    <dd>用户删除 · {{ formatTime(detail.deletedAt) }}</dd>
+                  </div>
+                </dl>
+              </section>
             </div>
-            <div class="info-row">
-              <dt>创建</dt>
-              <dd>{{ formatTime(detail.createdAt) }}</dd>
-            </div>
-            <div class="info-row">
-              <dt>开始</dt>
-              <dd>{{ formatTime(detail.startedAt) }}</dd>
-            </div>
-            <div class="info-row">
-              <dt>结束</dt>
-              <dd>{{ formatTime(detail.finishedAt) }}</dd>
-            </div>
-            <div v-if="detail.deletedAt" class="info-row">
-              <dt>删除</dt>
-              <dd>用户删除 · {{ formatTime(detail.deletedAt) }}</dd>
-            </div>
-          </dl>
-        </section>
+          </el-tab-pane>
 
-        <section class="detail-section">
-          <header class="detail-section__title">定价与资金来源</header>
-          <p v-if="!detail.billing?.length">历史任务未记录订阅权益及积分批次明细，请结合钱包流水核查。</p>
-          <div v-for="audit in detail.billing" :key="audit.sourceId" style="margin-bottom:16px">
-            <dl class="info-rows info-rows--facts">
-              <div class="info-row"><dt>预留编号</dt><dd style="overflow-wrap:anywhere">{{ audit.sourceId }}</dd></div>
-              <div class="info-row"><dt>计费单价</dt><dd v-if="audit.decision.count > 0">{{ audit.decision.source === 'subscription_contract' ? '订阅锁定价' : '实时价' }} {{ formatPoints(audit.decision.unitPoints) }} · 当时公开价 {{ formatPoints(audit.decision.publicUnitPoints) }}</dd><dd v-else>未记录模型单价</dd></div>
-              <div class="info-row"><dt>预留构成</dt><dd>订阅 {{ audit.decision.subscriptionPoints }} · 额度包 {{ audit.decision.topupPoints }} · 体验 {{ audit.decision.trialPoints }} · 其他 {{ audit.decision.otherPoints }}</dd></div>
-              <div class="info-row"><dt>实际消费</dt><dd>{{ formatPoints(audit.settledPoints) }} 积分</dd></div>
-              <div v-if="audit.decision.contractId" class="info-row"><dt>权益编号</dt><dd style="overflow-wrap:anywhere">{{ audit.decision.contractId }}</dd></div>
-              <div v-if="audit.decision.priceBookId" class="info-row"><dt>价格版本</dt><dd style="overflow-wrap:anywhere">{{ audit.decision.priceBookId }}</dd></div>
-            </dl>
-            <el-table v-if="audit.allocations.length" :data="audit.allocations" size="small">
-              <el-table-column label="资金批次" min-width="170"><template #default="{ row }">{{ row.bucket === 'subscription' ? '订阅积分' : row.origin }}<small style="display:block;overflow-wrap:anywhere">{{ row.lot_id }}</small></template></el-table-column>
-              <el-table-column prop="remaining_points" label="冻结" width="70" />
-              <el-table-column label="消费" width="70"><template #default="{ row }">{{ row.settled_points ?? '未分账' }}</template></el-table-column>
-              <el-table-column label="退回" width="70"><template #default="{ row }">{{ row.released_points ?? '未分账' }}</template></el-table-column>
-              <el-table-column label="过期" width="70"><template #default="{ row }">{{ row.expired_points ?? '未分账' }}</template></el-table-column>
-            </el-table>
-          </div>
-        </section>
-        <section class="detail-section">
-          <header class="detail-section__title">
-            执行耗时
-            <small class="detail-section__hint">任务每一步花了多久（灰色小字是白话解释）</small>
-          </header>
-          <div v-if="timelineLoading" class="timeline-empty">加载中…</div>
-          <div v-else-if="timelineError" class="timeline-empty">{{ timelineError }}</div>
-          <div v-else-if="!timelineEvents.length" class="timeline-empty">
-            暂无耗时记录
-          </div>
-          <ol v-else class="timeline">
-            <li
-              v-for="event in timelineEvents"
-              :key="event.id"
-              class="timeline-item"
-              :class="`is-${event.status}`"
-            >
-              <div class="timeline-item__head">
-                <span class="timeline-dot" />
-                <strong>{{ timelineStageLabel(event.stage) }}</strong>
-                <span v-if="event.durationMs != null" class="timeline-duration tnum">
-                  {{ formatDurationMs(event.durationMs) }}
-                </span>
-                <time class="timeline-time">{{ formatShortTime(event.createdAt) }}</time>
-              </div>
-              <div v-if="timelineBarWidth(event)" class="timeline-bar">
-                <i :style="{ width: timelineBarWidth(event) }" />
-              </div>
-              <p class="timeline-message">{{ taskErrorMessage(event.message) }}</p>
-              <p v-if="timelineStageHint(event.stage)" class="timeline-hint">
-                {{ timelineStageHint(event.stage) }}
-              </p>
-            </li>
-          </ol>
-        </section>
+          <el-tab-pane label="计费" name="billing" class="task-detail-tab-pane">
+            <div class="task-detail-tab-scroll">
+              <section class="detail-section">
+                <header class="detail-section__title">定价与资金来源</header>
+                <el-empty
+                  v-if="!detail.billing?.length"
+                  description="历史任务未记录订阅权益及积分批次明细，请结合钱包流水核查。"
+                  :image-size="48"
+                />
+                <div v-for="audit in detail.billing" :key="audit.sourceId" class="billing-card">
+                  <header class="billing-card__head">
+                    <span>预留编号</span>
+                    <code class="mono">{{ audit.sourceId }}</code>
+                  </header>
+                  <dl class="info-rows info-rows--facts">
+                    <div class="info-row">
+                      <dt>计费单价</dt>
+                      <dd v-if="audit.decision.count > 0">
+                        {{ audit.decision.source === 'subscription_contract' ? '订阅锁定价' : '实时价' }}
+                        {{ formatPoints(audit.decision.unitPoints) }} · 当时公开价
+                        {{ formatPoints(audit.decision.publicUnitPoints) }}
+                      </dd>
+                      <dd v-else>未记录模型单价</dd>
+                    </div>
+                    <div class="info-row">
+                      <dt>预留构成</dt>
+                      <dd>
+                        订阅 {{ audit.decision.subscriptionPoints }} · 额度包
+                        {{ audit.decision.topupPoints }} · 体验 {{ audit.decision.trialPoints }} · 其他
+                        {{ audit.decision.otherPoints }}
+                      </dd>
+                    </div>
+                    <div class="info-row">
+                      <dt>实际消费</dt>
+                      <dd>{{ formatPoints(audit.settledPoints) }} 积分</dd>
+                    </div>
+                    <div v-if="audit.decision.contractId" class="info-row">
+                      <dt>权益编号</dt>
+                      <dd style="overflow-wrap: anywhere">{{ audit.decision.contractId }}</dd>
+                    </div>
+                    <div v-if="audit.decision.priceBookId" class="info-row">
+                      <dt>价格版本</dt>
+                      <dd style="overflow-wrap: anywhere">{{ audit.decision.priceBookId }}</dd>
+                    </div>
+                  </dl>
+                  <el-table v-if="audit.allocations.length" :data="audit.allocations" size="small" class="billing-card__table">
+                    <el-table-column label="资金批次" min-width="170">
+                      <template #default="{ row }">
+                        {{ row.bucket === 'subscription' ? '订阅积分' : row.origin }}
+                        <small style="display: block; overflow-wrap: anywhere">{{ row.lot_id }}</small>
+                      </template>
+                    </el-table-column>
+                    <el-table-column prop="remaining_points" label="冻结" width="70" />
+                    <el-table-column label="消费" width="70">
+                      <template #default="{ row }">{{ row.settled_points ?? '未分账' }}</template>
+                    </el-table-column>
+                    <el-table-column label="退回" width="70">
+                      <template #default="{ row }">{{ row.released_points ?? '未分账' }}</template>
+                    </el-table-column>
+                    <el-table-column label="过期" width="70">
+                      <template #default="{ row }">{{ row.expired_points ?? '未分账' }}</template>
+                    </el-table-column>
+                  </el-table>
+                </div>
+              </section>
+            </div>
+          </el-tab-pane>
 
-        <section class="detail-section">
-          <header class="detail-section__title">
-            任务内容
-            <button type="button" class="icon-btn" title="复制" @click="copyTaskPrompt(detail)">
-              <el-icon><CopyDocument /></el-icon>
-            </button>
-          </header>
-          <pre class="detail-pre">{{ detail.prompt || '—' }}</pre>
-        </section>
+          <el-tab-pane label="耗时" name="timeline" class="task-detail-tab-pane">
+            <div class="task-detail-tab-scroll">
+              <section class="detail-section">
+                <header class="detail-section__title">
+                  执行耗时
+                  <small class="detail-section__hint">任务每一步花了多久（灰色小字是白话解释）</small>
+                </header>
+                <div v-if="timelineLoading" class="timeline-empty">加载中…</div>
+                <div v-else-if="timelineError" class="timeline-empty">{{ timelineError }}</div>
+                <div v-else-if="!timelineEvents.length" class="timeline-empty">暂无耗时记录</div>
+                <ol v-else class="timeline">
+                  <li
+                    v-for="event in timelineEvents"
+                    :key="event.id"
+                    class="timeline-item"
+                    :class="`is-${event.status}`"
+                  >
+                    <div class="timeline-item__head">
+                      <span class="timeline-dot" />
+                      <strong>{{ timelineStageLabel(event.stage) }}</strong>
+                      <span v-if="event.durationMs != null" class="timeline-duration tnum">
+                        {{ formatDurationMs(event.durationMs) }}
+                      </span>
+                      <time class="timeline-time">{{ formatShortTime(event.createdAt) }}</time>
+                    </div>
+                    <div v-if="timelineBarWidth(event)" class="timeline-bar">
+                      <i :style="{ width: timelineBarWidth(event) }" />
+                    </div>
+                    <p class="timeline-message">{{ taskErrorMessage(event.message) }}</p>
+                    <p v-if="timelineStageHint(event.stage)" class="timeline-hint">
+                      {{ timelineStageHint(event.stage) }}
+                    </p>
+                  </li>
+                </ol>
+              </section>
+            </div>
+          </el-tab-pane>
 
-        <section v-if="hasDetailParams" class="detail-section">
-          <header class="detail-section__title">
-            请求参数
-            <button type="button" class="params-open-link" @click="openParamsDialog">
-              结构化查看
-            </button>
-          </header>
-          <pre class="detail-pre mono detail-pre--compact">{{ detailParamsJson }}</pre>
-        </section>
+          <el-tab-pane label="内容" name="content" class="task-detail-tab-pane">
+            <div class="task-detail-tab-scroll">
+              <section class="detail-section">
+                <header class="detail-section__title">
+                  任务内容
+                  <button type="button" class="icon-btn" title="复制" @click="copyTaskPrompt(detail)">
+                    <el-icon><CopyDocument /></el-icon>
+                  </button>
+                </header>
+                <pre class="detail-pre detail-pre--content">{{ detail.prompt || '—' }}</pre>
+              </section>
+
+              <section v-if="hasDetailParams" class="detail-section">
+                <header class="detail-section__title">
+                  请求参数
+                  <button type="button" class="params-open-link" @click="openParamsDialog">
+                    结构化查看
+                  </button>
+                </header>
+                <pre class="detail-pre mono detail-pre--compact">{{ detailParamsJson }}</pre>
+              </section>
+            </div>
+          </el-tab-pane>
+        </el-tabs>
       </div>
     </el-drawer>
 
@@ -2232,9 +2297,22 @@ html.dark .status-tab.is-active em {
 
 .drawer-body {
   display: flex;
+  flex: 1;
   flex-direction: column;
-  gap: 18px;
-  padding-bottom: 28px;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.drawer-alerts {
+  display: grid;
+  gap: 12px;
+}
+
+.task-detail-tab-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 
 .drawer-id-chip {
@@ -2274,13 +2352,35 @@ html.dark .status-tab.is-active em {
   align-items: start;
 }
 
-.drawer-hero .detail-media-tabs {
-  grid-column: 1 / -1;
+.drawer-hero--wide {
+  grid-template-columns: minmax(180px, 240px) minmax(0, 1fr);
+  gap: 20px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-2);
+}
+
+.drawer-hero__media {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.drawer-hero .detail-media-tabs,
+.drawer-hero__media .detail-media-tabs {
+  grid-column: auto;
 }
 
 .drawer-hero__visual {
   display: grid;
   gap: 8px;
+}
+
+.drawer-hero--wide .drawer-hero__shot {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1;
 }
 
 .drawer-hero__shot {
@@ -2385,40 +2485,85 @@ html.dark .status-tab.is-active em {
   white-space: nowrap;
 }
 
-.drawer-stats {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px 16px;
-}
-
-.stat-item {
+.drawer-metric-grid {
   display: grid;
-  gap: 2px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
 }
 
-.stat-item small {
+.drawer-metric-card {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.drawer-metric-card small {
   color: var(--ink-3);
   font-size: 11px;
 }
 
-.stat-item em {
+.drawer-metric-card strong {
+  overflow: hidden;
   color: var(--ink-2);
-  font-size: 13px;
-  font-style: normal;
-  font-weight: 600;
+  font-size: 14px;
+  font-weight: 650;
   letter-spacing: -0.02em;
-  line-height: 1.2;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.stat-item em i {
-  margin: 0 1px;
+.drawer-metric-card strong i {
+  margin: 0 2px;
   color: var(--ink-3);
   font-style: normal;
   font-weight: 500;
 }
 
-.stat-item em b {
+.drawer-metric-card strong b {
   font-weight: inherit;
+}
+
+.billing-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.billing-card + .billing-card {
+  margin-top: 12px;
+}
+
+.billing-card__head {
+  display: grid;
+  gap: 4px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.billing-card__head span {
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.billing-card__head code {
+  overflow-wrap: anywhere;
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.45;
+  word-break: break-all;
+}
+
+.billing-card__table {
+  margin-top: 4px;
 }
 
 .drawer-alert {
@@ -2434,6 +2579,10 @@ html.dark .status-tab.is-active em {
 .info-rows--facts {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px 20px;
+}
+
+.info-rows--timeline {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .params-open-link {
@@ -2516,6 +2665,10 @@ html.dark .status-tab.is-active em {
 .detail-pre--compact {
   max-height: 120px;
   font-size: 11px;
+}
+
+.detail-pre--content {
+  max-height: min(360px, 40vh);
 }
 
 .detail-media-tabs {
@@ -2609,6 +2762,18 @@ html.dark .status-tab.is-active em {
     width: auto;
     min-width: 120px;
   }
+
+  .drawer-hero--wide {
+    grid-template-columns: 1fr;
+  }
+
+  .drawer-metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .info-rows--timeline {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 </style>
 
@@ -2632,11 +2797,63 @@ html.dark .status-tab.is-active em {
 }
 
 .task-detail-drawer .el-drawer__body {
+  display: flex;
   flex: 1;
+  flex-direction: column;
   min-height: 0;
-  padding: 18px 20px 0;
+  padding: 12px 0 0;
+  overflow: hidden;
+}
+
+.task-detail-drawer .drawer-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.task-detail-drawer .task-detail-tabs {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.task-detail-drawer .task-detail-tabs > .el-tabs__header {
+  flex-shrink: 0;
+  margin: 0 20px;
+}
+
+.task-detail-drawer .task-detail-tabs > .el-tabs__content {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.task-detail-drawer .task-detail-tabs > .el-tabs__content > .el-tab-pane {
+  position: absolute;
+  inset: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.task-detail-drawer .task-detail-tab-scroll {
+  height: 100%;
   overflow: auto;
   overscroll-behavior: contain;
+  padding: 14px 20px 24px;
+}
+
+@media (max-width: 768px) {
+  .task-detail-drawer.el-drawer {
+    width: 96vw !important;
+  }
 }
 
 /* 参数弹窗内容（外壳见 AdminDialog；teleport 后需非 scoped） */
@@ -2878,9 +3095,9 @@ html.dark .status-tab.is-active em {
 
 .timeline-item {
   position: relative;
-  padding: 10px 12px 12px 26px;
+  padding: 12px 14px 14px 28px;
   border-left: 2px solid var(--border);
-  margin-left: 7px;
+  margin-left: 8px;
 }
 
 .timeline-item:last-child {

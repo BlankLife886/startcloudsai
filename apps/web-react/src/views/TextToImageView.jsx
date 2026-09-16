@@ -69,7 +69,7 @@ import { useTextToImageJobs } from "../features/text-to-image/useTextToImageJobs
 import { showBatchRecovery, useSubmissionStage } from "../features/text-to-image/useSubmissionStage.js";
 import { batchQuotePayload, historyTaskReferences, pendingBatchEntries } from "../features/text-to-image/submissionBatch.js";
 import { isEmptyHistoryTask } from "../features/history/historyCleanup.js";
-import { LOCAL_SUBMISSION_STATUSES, QUEUE_CAPACITY_CODES, serverTaskCounts, taskStatePresentation } from "../features/text-to-image/submissionState.js";
+import { LOCAL_SUBMISSION_STATUSES, QUEUE_CAPACITY_CODES, isInsufficientBalanceFailure, serverTaskCounts, taskStatePresentation } from "../features/text-to-image/submissionState.js";
 import { TaskStateIndicator, GenerationButtonContent } from "../features/text-to-image/TaskStateIndicator.jsx";
 import { generationButtonState } from "../features/text-to-image/generationButtonState.js";
 import { GenerationAtmosphere } from "../features/text-to-image/GenerationAtmosphere.jsx";
@@ -664,7 +664,7 @@ function usePopoverPresence(open, duration, key = "popover") {
   return { mounted, phase, key: renderKey };
 }
 
-function CostConfirmDialog({ cost, light = false, onCancel, onConfirm }) {
+function CostConfirmDialog({ cost, light = false, onCancel, onConfirm, onRecharge }) {
   const [skipEveryTime, setSkipEveryTime] = useState(false);
   const costRef = useRef(cost);
   if (cost) costRef.current = cost;
@@ -721,7 +721,11 @@ function CostConfirmDialog({ cost, light = false, onCancel, onConfirm }) {
           <label className="ai-cost-confirm-preference"><input type="checkbox" checked={skipEveryTime} onChange={(event) => setSkipEveryTime(event.target.checked)} /><span>不再每次确认</span></label>
           <div className="ai-cost-confirm-actions">
             <button type="button" className="ai-cost-confirm-btn ghost" onClick={onCancel}>取消</button>
-            <button type="button" className="ai-cost-confirm-btn primary" disabled={insufficient} onClick={() => onConfirm({ skipEveryTime })}>确认</button>
+            {insufficient ? (
+              <button type="button" className="ai-cost-confirm-btn primary" onClick={() => onRecharge?.()}>去充值</button>
+            ) : (
+              <button type="button" className="ai-cost-confirm-btn primary" onClick={() => onConfirm({ skipEveryTime })}>确认</button>
+            )}
           </div>
         </footer>
     </DialogMotion>
@@ -743,6 +747,10 @@ export function TextToImageView() {
 }
 
 function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch }) {
+  const navigate = useNavigate();
+  const goRecharge = useCallback(() => {
+    navigate("/pricing?plan=topup");
+  }, [navigate]);
   const rootRef = useRef(null);
   const modelTriggerRef = useRef(null);
   const modelMenuRef = useRef(null);
@@ -850,6 +858,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   const models = useMemo(() => featureModels(runtime), [runtime]);
   const availableModels = useMemo(() => availableCatalogModels(models), [models]);
   const feature = useMemo(() => wallpaperFeature(runtime), [runtime]);
+  const promptMaxChars = runtime?.promptInputLimits?.t2iPromptMaxChars ?? 8000;
   const backgroundRemovalModels = useMemo(() => {
     const raw = runtime.features?.["ai.imageTools"] || {};
     const config = raw.config && typeof raw.config === "object" ? raw.config : raw;
@@ -1540,6 +1549,11 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     }
     if (quoteBusyRef.current || jobs.submitting || jobs.submissionPhase === "recovering" || !referencesReady) return;
     if (jobs.pendingBatch) {
+      const remaining = pendingBatchEntries(jobs.pendingBatch);
+      if (remaining.length && remaining.every((entry) => isInsufficientBalanceFailure(entry.error))) {
+        goRecharge();
+        return;
+      }
       try {
         await refreshGenerationCost({ authoritativeOnly: true, batch: jobs.pendingBatch });
       } catch (error) {
@@ -1561,7 +1575,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
       return;
     }
     await refreshGenerationCost();
-  }, [authenticated, currentModel, exactSize, jobs.pendingBatch, jobs.submitting, jobs.submissionPhase, referencesReady, onRequireAuth, prompt, refreshGenerationCost, submitGeneration, user?.requireCostConfirm]);
+  }, [authenticated, currentModel, exactSize, goRecharge, jobs.pendingBatch, jobs.submitting, jobs.submissionPhase, referencesReady, onRequireAuth, prompt, refreshGenerationCost, submitGeneration, user?.requireCostConfirm]);
 
   useEffect(() => {
     const pending = pendingRef.current?.value;
@@ -2208,7 +2222,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
               ref={promptInputRef}
               aria-label="创作描述"
               value={prompt}
-              maxLength={8000}
+              maxLength={promptMaxChars}
               placeholder="描述主体、场景、光线与风格…"
               onFocus={() => setOpenLayer("")}
               onPointerDown={() => setOpenLayer("")}
@@ -2294,11 +2308,23 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
         </div>
         {showBatchRecovery(jobs.pendingBatch, submissionBusy) && <div className="t2i-batch-recovery" role="status">
           <small>{queueFull ? "排队容量已满。" : ""}已接受 {jobs.pendingBatch.entries.filter(entry => entry.task).length} 张，还有 {remainingBatchCount} 张待提交。原模型、参数和参考图已保留，刷新后可继续。</small>
-          <button type="button" disabled={submissionBusy || quotingCost} onClick={() => { quoteRequestRef.current += 1; setCost(null); jobs.discardPendingBatch(); }}>不再补交，开始新一批</button>
+          <div className="t2i-batch-recovery-actions">
+            {pendingBatchEntries(jobs.pendingBatch).every((entry) => isInsufficientBalanceFailure(entry.error)) ? (
+              <button type="button" className="is-primary" disabled={submissionBusy || quotingCost} onClick={goRecharge}>去充值</button>
+            ) : null}
+            <button type="button" disabled={submissionBusy || quotingCost} onClick={() => { quoteRequestRef.current += 1; setCost(null); jobs.discardPendingBatch(); }}>不再补交，开始新一批</button>
+          </div>
         </div>}
         {referenceStorageError && <p className="t2i-reference-warning" role="alert">{referenceStorageError}</p>}
         {!loading && imageSize.sizeMode === "exact" && currentModel?.supportsExactSize !== true && openLayer !== "frame" && <p className="exact-size-control__error" role="alert">原精确尺寸模型暂不可用，请重新选择支持精确尺寸的可用模型。已保留当前宽高。</p>}
-        <button type="button" className="t2i-generate" data-motion data-state={generationButton.state} aria-busy={generationButton.busy} disabled={generationButton.disabled} aria-label={generationButton.title} onClick={() => void requestGeneration()}>
+        <button type="button" className="t2i-generate" data-motion data-state={generationButton.state} aria-busy={generationButton.busy} disabled={generationButton.disabled} aria-label={generationButton.title} onClick={() => {
+          if (generationButton.action === "recharge") {
+            setCost(null);
+            goRecharge();
+            return;
+          }
+          void requestGeneration();
+        }}>
           <GenerationButtonContent
             state={generationButton.state}
             label={generationButton.label}
@@ -2394,6 +2420,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                                   busy={Boolean(actionBusyId) || jobs.submitting}
                                   onEdit={() => editTask(item.task)}
                                   onDelete={() => requestDelete([item.task], "这条任务")}
+                                  onRecharge={goRecharge}
                                 />
                               ) : (
                                 <GenerationReveal complete={item.kind === "image"} sourceKey={item.url || ""} mediaKey={item.key} pending={<PendingStage task={item.kind === "image" ? { ...item.task, status: "running", generationStage: "fetching_result" } : item.task} now={now} batchIndex={item.batchIndex ?? item.task.batchIndex} onCancel={item.kind === "pending" ? () => requestCancel(item.task) : undefined} cancelDisabled={Boolean(actionBusyId)} cancelBusy={actionBusyId === item.task.id} />}>
@@ -2476,6 +2503,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                             busy={Boolean(actionBusyId) || jobs.submitting}
                             onEdit={() => editTask(activeTask)}
                             onDelete={() => requestDelete([activeTask], "这条任务")}
+                            onRecharge={goRecharge}
                           />
                         </div>
                       )}
@@ -2595,6 +2623,10 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
         light={!isDark}
         onCancel={() => setCost(null)}
         onConfirm={(options) => void confirmGenerationCost(options)}
+        onRecharge={() => {
+          setCost(null);
+          goRecharge();
+        }}
       />
       <ActionConfirmDialog
         open={Boolean(deleteTarget)}
@@ -2792,11 +2824,12 @@ export function PendingStage({ task, now, batchIndex, motionStyle = "particle-lo
   );
 }
 
-export function TaskStatusStage({ task, batchIndex, busy = false, onEdit, onDelete }) {
+export function TaskStatusStage({ task, batchIndex, busy = false, onEdit, onDelete, onRecharge }) {
   const isCell = Number.isFinite(Number(batchIndex));
   const failed = task?.status === "failed";
   const canceled = ["cancelled", "canceled"].includes(task?.status);
   const localSubmission = LOCAL_SUBMISSION_STATUSES.has(task?.status);
+  const needsRecharge = isInsufficientBalanceFailure(task);
   const message = localSubmission ? taskStatePresentation(task).detail : failed
     ? taskFailureMessage(task)
     : canceled
@@ -2818,6 +2851,7 @@ export function TaskStatusStage({ task, batchIndex, busy = false, onEdit, onDele
       <em className="t2i-terminal-message" title={message}>{message}</em>
       {!isCell && task?.prompt ? <span className="t2i-status-prompt" title={task.prompt}>{task.prompt}</span> : null}
       <div className="t2i-status-actions t2i-image-actions" aria-label="任务操作">
+        {needsRecharge && onRecharge ? <button type="button" className="is-primary" disabled={busy} onClick={onRecharge}>去充值</button> : null}
         <button type="button" disabled={busy} onClick={onEdit}>编辑提示词</button>
         <button type="button" className="is-danger" disabled={busy} onClick={onDelete}>删除</button>
       </div>

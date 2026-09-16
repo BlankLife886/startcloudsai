@@ -238,6 +238,8 @@
   font-size: 0.78rem;
   font-weight: 680;
   white-space: nowrap;
+  text-decoration: none;
+  box-sizing: border-box;
   cursor: pointer;
   transition:
     transform 0.16s ease,

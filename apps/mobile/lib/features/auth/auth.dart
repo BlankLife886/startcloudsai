@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/network/api_client.dart';
+import '../../core/network/api_exception.dart';
 import '../../core/providers.dart';
 import '../../core/storage/session_store.dart';
 
@@ -140,32 +141,49 @@ class AuthRepository {
   }
 
   Future<CodeDelivery> requestCode(String email) async {
-    final data = await _apiClient.post(
-      '/auth/email-verification-codes',
-      data: {'email': email.trim()},
-    );
-    final map = data is Map
-        ? Map<String, dynamic>.from(data)
-        : const <String, dynamic>{};
-    return CodeDelivery(
-      expiresIn: (map['expiresIn'] as num?)?.toInt() ?? 180,
-      resendAfter: (map['resendAfter'] as num?)?.toInt() ?? 60,
-      developmentCode: map['developmentCode']?.toString(),
-    );
+    try {
+      final data = await _apiClient.post(
+        '/auth/email-verification-codes',
+        data: {'email': email.trim()},
+      );
+      final map = data is Map
+          ? Map<String, dynamic>.from(data)
+          : const <String, dynamic>{};
+      return CodeDelivery(
+        expiresIn: (map['expiresIn'] as num?)?.toInt() ?? 180,
+        resendAfter: (map['resendAfter'] as num?)?.toInt() ?? 60,
+        developmentCode: map['developmentCode']?.toString(),
+      );
+    } on ApiException catch (error) {
+      if (!_isMalformedSuccess(error)) rethrow;
+      return const CodeDelivery(expiresIn: 180, resendAfter: 60);
+    }
   }
 
   Future<AppUser> verifyCode(String email, String code) async {
-    final response = await _apiClient.request(
-      '/auth/session',
-      method: 'POST',
-      data: {'email': email.trim(), 'code': code.trim()},
-    );
-    await _sessionStore.captureSetCookies(response.setCookies);
-    final data = response.data;
-    if (data is! Map || data['user'] is! Map) {
-      throw const FormatException('登录响应缺少用户信息');
+    try {
+      final response = await _apiClient.request(
+        '/auth/session',
+        method: 'POST',
+        data: {'email': email.trim(), 'code': code.trim()},
+      );
+      await _sessionStore.captureSetCookies(response.setCookies);
+      final data = response.data;
+      if (data is! Map || data['user'] is! Map) {
+        throw const FormatException('登录响应缺少用户信息');
+      }
+      return AppUser.fromJson(Map<String, dynamic>.from(data['user'] as Map));
+    } on ApiException catch (error) {
+      if (!_isMalformedSuccess(error)) rethrow;
+      final user = await currentUser();
+      if (user == null) rethrow;
+      return user;
     }
-    return AppUser.fromJson(Map<String, dynamic>.from(data['user'] as Map));
+  }
+
+  bool _isMalformedSuccess(ApiException error) {
+    return error.code == 'response_malformed' ||
+        (error.statusCode >= 200 && error.statusCode < 300);
   }
 
   Future<void> logout() async {

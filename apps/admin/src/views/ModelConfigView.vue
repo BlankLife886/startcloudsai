@@ -2639,7 +2639,7 @@ async function saveModelDraft() {
         : 0,
     maxImages:
       modelDraft.kind === "image"
-        ? Math.min(16, Math.max(1, Math.round(modelDraft.maxImages)))
+        ? Math.min(100, Math.max(1, Math.round(modelDraft.maxImages)))
         : 0,
     contextWindowTokens:
       modelDraft.kind === "chat"
@@ -4623,7 +4623,7 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
                   <el-input-number
                     v-model="modelDraft.maxImages"
                     :min="1"
-                    :max="16"
+                    :max="100"
                     :step="1"
                     :precision="0"
                   />

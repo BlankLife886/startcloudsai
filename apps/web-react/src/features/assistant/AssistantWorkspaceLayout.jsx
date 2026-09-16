@@ -11,7 +11,6 @@ import { ExactImageSizeControl } from "../../components/ExactImageSizeControl.js
 import { StudioReasoningSlider } from "../../views/shared/StudioReasoningSlider.jsx";
 import {
   CREATION_TYPES,
-  MAX_ASSISTANT_MESSAGE_CHARACTERS,
   conversationMark,
   conversationThumbnail,
   documentIcon,
@@ -40,6 +39,17 @@ import {
   AssistantMessageRow,
   ConversationMinimap,
 } from "./AssistantMessageComponents.jsx";
+
+const REFERENCE_PROGRESS_RADIUS = 17;
+const REFERENCE_PROGRESS_CIRCUMFERENCE = 2 * Math.PI * REFERENCE_PROGRESS_RADIUS;
+
+function referenceUploadProgress(image) {
+  if (["compressing", "uploading", "processing"].includes(image.uploadStatus)) {
+    const progress = image.uploadStatus === "processing" ? 100 : Number(image.uploadProgress) || 0;
+    return Math.max(0, Math.min(100, progress));
+  }
+  return null;
+}
 
 export function AssistantWorkspaceLayout({ workspace }) {
   const {
@@ -126,7 +136,7 @@ export function AssistantWorkspaceLayout({ workspace }) {
     generationCount,
     setGenerationCount,
     references,
-    setReferences,
+    removeReference,
     documents,
     uploading,
     voiceSupported,
@@ -289,6 +299,7 @@ export function AssistantWorkspaceLayout({ workspace }) {
     cancelQueueItem,
     deleteConversationRow,
     draftCharacterCount,
+    maxMessageCharacters,
     canSend,
     voiceBusy,
     deleteTargetHasWork,
@@ -421,7 +432,7 @@ export function AssistantWorkspaceLayout({ workspace }) {
               ? resolveProposalReferences(activeConversation, message).references
               : previousUser?.referenceImages;
             if (hiddenQueuedMessageIds.has(message.id)) return null;
-            return <AssistantMessageRow key={message.id} message={message} turnId={previousUser?.id} showDate={showDate} expanded={expandedStatusId === message.id} copied={copiedMessageId === message.id} generating={conversationHasWork} feedbackBusy={feedbackBusyIds.has(message.id)} isLastAssistant={message.id === lastAssistantId} isLastUser={message.id === lastUserMessageId} editing={editingMessageId === message.id} editingDraft={editingMessageDraft} moreOpen={activeMessageMenuId === message.id} loadedImages={loadedImages} failedImages={failedImages} imageRetryVersions={imageRetryVersions} imageModels={imageModels} sourceProposal={sourceProposal} proposalExecuted={messages.some((item) => item.role === "user" && item.proposalSourceMessageId === message.id)} attachedReferences={attachedReferences} searchHit={threadSearchHitIds.has(message.id)} searchCurrent={message.id === currentThreadHitId} searchQuery={threadSearch} toolActionBusyId={toolActionBusyId} onToolAction={executeAssistantToolAction} onToggleStatus={toggleStatus} onCopy={copyMessage} onFeedback={submitMessageFeedback} onQuote={quoteMessage} onOpenImage={openImage} onImageLoad={markImageLoaded} onImageError={markImageFailed} onImageRetry={retryImage} onUseReference={useGeneratedImageAsReference} onStartEdit={startEditingUserMessage} onEditDraft={setEditingMessageDraft} onCancelEdit={cancelUserMessageEdit} onSubmitEdit={(item) => void submitUserMessageEdit(item)} onRetry={(item) => void retryAssistant(item)} onToggleMore={(id) => setActiveMessageMenuId((current) => current === id ? "" : id)} onDownloadMarkdown={downloadMarkdown} onDelete={(id) => void removeMessage(id)} onProposalChange={(patch) => updateProposal(message.id, patch)} onProposalDismiss={() => updateProposal(message.id, { dismissed: true })} onProposalRestore={() => updateProposal(message.id, { dismissed: false })} onProposalApprove={() => void approveAgentProposal(message)} onReopenProposal={() => reopenSourceProposal(sourceProposal)} />;
+            return <AssistantMessageRow key={message.id} message={message} turnId={previousUser?.id} showDate={showDate} expanded={expandedStatusId === message.id} copied={copiedMessageId === message.id} generating={conversationHasWork} feedbackBusy={feedbackBusyIds.has(message.id)} isLastAssistant={message.id === lastAssistantId} isLastUser={message.id === lastUserMessageId} editing={editingMessageId === message.id} editingDraft={editingMessageDraft} moreOpen={activeMessageMenuId === message.id} loadedImages={loadedImages} failedImages={failedImages} imageRetryVersions={imageRetryVersions} imageModels={imageModels} sourceProposal={sourceProposal} proposalExecuted={messages.some((item) => item.role === "user" && item.proposalSourceMessageId === message.id)} attachedReferences={attachedReferences} searchHit={threadSearchHitIds.has(message.id)} searchCurrent={message.id === currentThreadHitId} searchQuery={threadSearch} toolActionBusyId={toolActionBusyId} maxMessageCharacters={maxMessageCharacters} onToolAction={executeAssistantToolAction} onToggleStatus={toggleStatus} onCopy={copyMessage} onFeedback={submitMessageFeedback} onQuote={quoteMessage} onOpenImage={openImage} onImageLoad={markImageLoaded} onImageError={markImageFailed} onImageRetry={retryImage} onUseReference={useGeneratedImageAsReference} onStartEdit={startEditingUserMessage} onEditDraft={setEditingMessageDraft} onCancelEdit={cancelUserMessageEdit} onSubmitEdit={(item) => void submitUserMessageEdit(item)} onRetry={(item) => void retryAssistant(item)} onToggleMore={(id) => setActiveMessageMenuId((current) => current === id ? "" : id)} onDownloadMarkdown={downloadMarkdown} onDelete={(id) => void removeMessage(id)} onProposalChange={(patch) => updateProposal(message.id, patch)} onProposalDismiss={() => updateProposal(message.id, { dismissed: true })} onProposalRestore={() => updateProposal(message.id, { dismissed: false })} onProposalApprove={() => void approveAgentProposal(message)} onReopenProposal={() => reopenSourceProposal(sourceProposal)} />;
           })}</div></section>}
         </div>
 
@@ -603,11 +614,43 @@ export function AssistantWorkspaceLayout({ workspace }) {
               </section>
             )}
             <input ref={fileInputRef} className="reference-file-input" name="assistant-attachments" type="file" accept={mode === "image" ? "image/*" : "image/*,.txt,.md,.markdown,.csv,.json,.pdf,.docx,.xlsx,.pptx"} multiple aria-label={mode === "image" ? "添加参考图" : "添加图片或文档"} onChange={(event) => { void uploadReferences(event.target.files); event.target.value = ""; }} />
-            {(references.length > 0 || documents.length > 0 || uploading) && <div className={`reference-dock has-images${uploading ? " is-uploading" : ""}`} aria-label="已添加的附件">{references.map((image, index) => <figure key={image.id} className="reference-card"><button type="button" className="reference-card-preview" title={image.name ? `查看 ${image.name}` : "查看参考图"} onClick={() => openImage(image, index, references)}><AssistantPreviewImage image={image} src={image.thumbnailUrl || image.dataUrl} fallbackSrc={image.dataUrl} alt={image.name || "参考图"} /></button><button type="button" className="reference-card-remove" title="移除参考图" aria-label={image.name ? `移除参考图 ${image.name}` : "移除参考图"} onClick={(event) => { event.stopPropagation(); setReferences((current) => current.filter((item) => item.id !== image.id)); }}><i className="bi bi-x" /></button></figure>)}{documents.map((item) => <div key={item.id} className={`reference-document-card is-${item.status || "queued"}`} title={item.errorMessage || item.name}><i className={`bi ${documentIcon(item)}`} /><span><strong>{item.name}</strong><small>{documentStatusLabel(item)} · {formatDocumentSize(item.sizeBytes)}</small></span><button type="button" title="移除文档" aria-label={`移除文档 ${item.name}`} onClick={() => removeComposerDocument(item)}><i className="bi bi-x" /></button></div>)}{uploading && <span className="reference-card reference-skeleton" aria-label="附件上传或解析中" />}</div>}
+            {(references.length > 0 || documents.length > 0 || uploading) && (
+              <div className={`reference-dock has-images${uploading ? " is-uploading" : ""}`} aria-label="已添加的附件">
+                {references.map((image, index) => {
+                  const uploadProgress = referenceUploadProgress(image);
+                  const uploadingReference = uploadProgress !== null;
+                  return (
+                    <figure key={image.id} className={`reference-card${uploadingReference ? " is-uploading" : ""}`}>
+                      <button type="button" className="reference-card-preview" title={image.name ? `查看 ${image.name}` : "查看参考图"} onClick={() => openImage(image, index, references)}>
+                        <AssistantPreviewImage image={image} src={image.thumbnailUrl || image.dataUrl} fallbackSrc={image.dataUrl} alt={image.name || "参考图"} />
+                      </button>
+                      {uploadingReference && (
+                        <span className="reference-card-upload-status" role="progressbar" aria-label="参考图上传进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={uploadProgress}>
+                          <svg viewBox="0 0 40 40" aria-hidden="true">
+                            <circle className="is-track" cx="20" cy="20" r={REFERENCE_PROGRESS_RADIUS} />
+                            <circle
+                              className="is-progress"
+                              cx="20"
+                              cy="20"
+                              r={REFERENCE_PROGRESS_RADIUS}
+                              strokeDasharray={REFERENCE_PROGRESS_CIRCUMFERENCE}
+                              strokeDashoffset={REFERENCE_PROGRESS_CIRCUMFERENCE * (1 - uploadProgress / 100)}
+                            />
+                          </svg>
+                        </span>
+                      )}
+                      <button type="button" className="reference-card-remove" title="移除参考图" aria-label={image.name ? `移除参考图 ${image.name}` : "移除参考图"} onClick={(event) => { event.stopPropagation(); removeReference(image.id); }}><i className="bi bi-x" /></button>
+                    </figure>
+                  );
+                })}
+                {documents.map((item) => <div key={item.id} className={`reference-document-card is-${item.status || "queued"}`} title={item.errorMessage || item.name}><i className={`bi ${documentIcon(item)}`} /><span><strong>{item.name}</strong><small>{documentStatusLabel(item)} · {formatDocumentSize(item.sizeBytes)}</small></span><button type="button" title="移除文档" aria-label={`移除文档 ${item.name}`} onClick={() => removeComposerDocument(item)}><i className="bi bi-x" /></button></div>)}
+                {uploading && !references.some((item) => referenceUploadProgress(item) !== null) && <span className="reference-card reference-skeleton" aria-label="附件上传或解析中" />}
+              </div>
+            )}
             {quotedMessage && <div className="composer-quote"><i className="bi bi-quote" /><span>[{quotedMessage.kind}] {quotedMessage.content}</span><button type="button" title="移除引用" aria-label="移除引用" onClick={() => setQuotedMessage(null)}><i className="bi bi-x-lg" /></button></div>}
-            <textarea ref={textareaRef} name="assistant-message" value={draft} rows={1} aria-label="消息输入" data-assistant-tour="input" placeholder={queueEditingId ? "修改这条排队消息，发送后更新" : activeRun ? "继续输入，发送后会自动排队" : mode === "image" ? "描述你想生成的画面，也可以上传参考图" : "输入问题，或粘贴、拖入图片和文档"} disabled={Boolean(serviceError)} onChange={(event) => { setDraft(event.target.value); if (queueEditingId && !event.target.value) cancelQueueEdit(); }} onKeyDown={(event) => { if (event.key === "Escape" && queueEditingId) { event.preventDefault(); setDraft(""); cancelQueueEdit(); return; } if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void requestSend(); } }} />
+            <textarea ref={textareaRef} name="assistant-message" value={draft} rows={1} aria-label="消息输入" data-assistant-tour="input" placeholder={queueEditingId ? "修改这条排队消息，发送后更新" : activeRun ? "继续输入，发送后会自动排队" : mode === "image" ? "描述你想生成的画面，也可以上传参考图" : "输入问题，或粘贴、拖入图片和文档"} disabled={Boolean(serviceError)} maxLength={maxMessageCharacters} onChange={(event) => { setDraft(event.target.value); if (queueEditingId && !event.target.value) cancelQueueEdit(); }} onKeyDown={(event) => { if (event.key === "Escape" && queueEditingId) { event.preventDefault(); setDraft(""); cancelQueueEdit(); return; } if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void requestSend(); } }} />
             {mode === "image" && generationSizeError && !preferencesOpen && <p className="exact-size-control__error" role="alert">{selectedModel?.supportsExactSize === true ? generationSizeError : "原精确尺寸模型暂不可用，请重新选择支持精确尺寸的可用模型。已保留当前宽高。"}</p>}
-            {draftCharacterCount > 10000 && <div className={`draft-counter${draftCharacterCount > MAX_ASSISTANT_MESSAGE_CHARACTERS ? " is-over" : ""}`}>{draftCharacterCount.toLocaleString("zh-CN")} / 12,000</div>}
+            {draftCharacterCount > Math.min(10000, Math.floor(maxMessageCharacters * 0.8)) && <div className={`draft-counter${draftCharacterCount > maxMessageCharacters ? " is-over" : ""}`}>{draftCharacterCount.toLocaleString("zh-CN")} / {maxMessageCharacters.toLocaleString("zh-CN")}</div>}
             <div className="composer-toolbar">
               <div className="composer-left">
                 <button className="composer-attachment-inline" type="button" data-assistant-tour="attach" title={mode === "image" ? "添加参考图" : "添加附件"} aria-label={mode === "image" ? "添加参考图" : "添加附件"} onClick={() => fileInputRef.current?.click()}><i className="bi bi-paperclip" /></button>

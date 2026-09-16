@@ -2,8 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { assistantClipboardFiles, isImageToPSDRequest, isPSDFile } from "../src/features/assistant/domain/assistantAttachments.js";
-import { assistantSendMode, generatedImageRatioLabel, imageRatioFromPrompt } from "../src/features/assistant/domain/assistantMessages.js";
+import { assistantPromptRequestsAgent, assistantSendMode, generatedImageRatioLabel, imageRatioFromPrompt } from "../src/features/assistant/domain/assistantMessages.js";
 import { promptNeedsRecentVisual, resolveVisualContext } from "../src/features/assistant/domain/visualContext.js";
+import { ASSISTANT_REFERENCE_COMPRESSION_THRESHOLD_BYTES, ASSISTANT_REFERENCE_WEBP_QUALITY, needsAssistantReferenceCompression } from "../src/features/assistant/services/assistantReferenceUpload.js";
+
+test("compresses assistant reference images over 1 MB at 80% quality", () => {
+  assert.equal(ASSISTANT_REFERENCE_COMPRESSION_THRESHOLD_BYTES, 1024 * 1024);
+  assert.equal(ASSISTANT_REFERENCE_WEBP_QUALITY, 80);
+  assert.equal(needsAssistantReferenceCompression({ size: 1024 * 1024 }), false);
+  assert.equal(needsAssistantReferenceCompression({ size: 1024 * 1024 + 1 }), true);
+});
 
 test("collects pasted documents and images without duplicate clipboard entries", () => {
   const document = { name: "brief.pdf", type: "application/pdf", size: 100, lastModified: 1 };
@@ -83,7 +91,7 @@ test("visual iteration inherits the latest generated image instead of an older u
   assert.deepEqual(resolveVisualContext(conversation, "创建一张蓝天白云图", 4), []);
 });
 
-test("routes explicit image and workspace actions from Q&A mode through the agent", () => {
+test("keeps explicit image and workspace actions in Q&A mode until the user switches", () => {
   for (const prompt of [
     "画一张星空下的雪山桌面壁纸",
     "请帮我设计一个简洁的品牌图标",
@@ -105,7 +113,8 @@ test("routes explicit image and workspace actions from Q&A mode through the agen
     "复刻这张参考图为可编辑工作流",
     "把本次图片打包为 ZIP 交付包",
   ]) {
-    assert.equal(assistantSendMode("chat", 0, prompt), "agent", prompt);
+    assert.equal(assistantPromptRequestsAgent(prompt), true, prompt);
+    assert.equal(assistantSendMode("chat", 0, prompt), "chat", prompt);
   }
 });
 
@@ -129,12 +138,12 @@ test("keeps documents, small talk, negated image work, and image-domain question
   ]) {
     assert.equal(assistantSendMode("chat", 0, prompt), "chat", prompt);
   }
-  assert.equal(assistantSendMode("chat", 0, "不要生成旧方案，生成一张新的海报"), "agent");
+  assert.equal(assistantSendMode("chat", 0, "不要生成旧方案，生成一张新的海报"), "chat");
 });
 
 test("routes document-backed compound work through the agent", () => {
-  assert.equal(assistantSendMode("chat", 1, "读取附件，联网核对最新资料并导出 CSV"), "agent");
-  assert.equal(assistantSendMode("chat", 1, "根据附件生成一张产品海报"), "agent");
+  assert.equal(assistantSendMode("chat", 1, "读取附件，联网核对最新资料并导出 CSV"), "chat");
+  assert.equal(assistantSendMode("chat", 1, "根据附件生成一张产品海报"), "chat");
   assert.equal(assistantSendMode("agent", 1, "分析附件并给出执行建议"), "agent");
   assert.equal(assistantSendMode("image", 1, "根据这份品牌规范制作视觉稿"), "agent");
 });

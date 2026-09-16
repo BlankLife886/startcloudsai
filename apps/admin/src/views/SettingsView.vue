@@ -77,6 +77,9 @@ const form = reactive({
   taskFailureRetryCount: 2,
   taskRetryFirstDelaySecs: 3,
   taskRetryBackoffSecs: 15,
+  t2iPromptMaxChars: 8000,
+  assistantMessageMaxChars: 12000,
+  studioHubPromptMaxChars: 2000,
   crossProviderSameModelBalancingEnabled: false,
   platformLoggingEnabled: false,
   platformLogSecurityEnabled: true,
@@ -430,6 +433,9 @@ function hydrate(settings: AdminSettings & PaymentSettings) {
   form.taskFailureRetryCount = settings.taskFailureRetryCount ?? 2;
   form.taskRetryFirstDelaySecs = settings.taskRetryFirstDelaySecs ?? 3;
   form.taskRetryBackoffSecs = settings.taskRetryBackoffSecs ?? 15;
+  form.t2iPromptMaxChars = settings.t2iPromptMaxChars ?? 8000;
+  form.assistantMessageMaxChars = settings.assistantMessageMaxChars ?? 12000;
+  form.studioHubPromptMaxChars = settings.studioHubPromptMaxChars ?? 2000;
   form.crossProviderSameModelBalancingEnabled =
     settings.crossProviderSameModelBalancingEnabled ?? false;
   form.platformLoggingEnabled = settings.platformLoggingEnabled ?? false;
@@ -545,6 +551,9 @@ async function save() {
           taskFailureRetryCount: form.taskFailureRetryCount,
           taskRetryFirstDelaySecs: form.taskRetryFirstDelaySecs,
           taskRetryBackoffSecs: form.taskRetryBackoffSecs,
+          t2iPromptMaxChars: form.t2iPromptMaxChars,
+          assistantMessageMaxChars: form.assistantMessageMaxChars,
+          studioHubPromptMaxChars: form.studioHubPromptMaxChars,
           crossProviderSameModelBalancingEnabled:
             form.crossProviderSameModelBalancingEnabled,
           platformLoggingEnabled: form.platformLoggingEnabled,
@@ -1242,6 +1251,27 @@ onMounted(() => {
               :max="100000"
               :step="10"
             />
+          </label>
+          <label class="field-row">
+            <span>
+              <strong>文生图提示词字数</strong>
+              <small>文生图输入框上限</small>
+            </span>
+            <el-input-number v-model="form.t2iPromptMaxChars" :min="100" :max="100000" :step="100" />
+          </label>
+          <label class="field-row">
+            <span>
+              <strong>AI 助手消息字数</strong>
+              <small>助手单条用户消息上限</small>
+            </span>
+            <el-input-number v-model="form.assistantMessageMaxChars" :min="100" :max="100000" :step="100" />
+          </label>
+          <label class="field-row">
+            <span>
+              <strong>创作台描述字数</strong>
+              <small>创作台首页输入框上限</small>
+            </span>
+            <el-input-number v-model="form.studioHubPromptMaxChars" :min="100" :max="100000" :step="100" />
           </label>
         </div>
       </div>

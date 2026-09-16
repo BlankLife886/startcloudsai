@@ -11,6 +11,17 @@ export function ratio(used,limit){return limit>0?Math.max(0,Math.min(100,Number(
 export async function copyText(value){if(!navigator.clipboard?.writeText)throw new Error('浏览器不允许自动复制，请手动选择内容复制');await navigator.clipboard.writeText(String(value));}
 export function localDate(){const date=new Date();date.setMinutes(date.getMinutes()-date.getTimezoneOffset());return date.toISOString().slice(0,10);}
 export function emptyKey(){return {label:'',scopes:SCOPES.map(([id])=>id),allowedModelIds:[],dailyTaskLimit:100,monthlyTaskLimit:2000,dailySpendLimitCents:10000,monthlySpendLimitCents:200000,rateLimitPerMinute:120,dailyByteLimitGiB:2,ipAllowlistText:'',expiresAt:''};}
+export function draftFromKey(key){
+ return {
+  label:key?.label||'',scopes:[...(key?.scopes||[])],allowedModelIds:[...(key?.allowedModelIds||[])],
+  dailyTaskLimit:key?.dailyTaskLimit||100,monthlyTaskLimit:key?.monthlyTaskLimit||2000,
+  dailySpendLimitCents:key?.dailySpendLimitCents||10000,monthlySpendLimitCents:key?.monthlySpendLimitCents||200000,
+  rateLimitPerMinute:key?.rateLimitPerMinute||120,
+  dailyByteLimitGiB:Number(((Number(key?.dailyByteLimit)||2*1024**3)/1024**3).toFixed(3)),
+  ipAllowlistText:(key?.ipAllowlist||[]).join(', '),
+  expiresAt:key?.expiresAt?String(key.expiresAt).slice(0,10):'',
+ };
+}
 export function keyPayload(draft){
  const payload={label:draft.label.trim(),scopes:draft.scopes,allowedModelIds:draft.allowedModelIds,expiresAt:draft.expiresAt?new Date(`${draft.expiresAt}T23:59:59`).toISOString():null,
  ipAllowlist:[...new Set(draft.ipAllowlistText.split(/[\s,]+/).filter(Boolean))],dailyByteLimit:Math.round(Number(draft.dailyByteLimitGiB)*1024**3)};

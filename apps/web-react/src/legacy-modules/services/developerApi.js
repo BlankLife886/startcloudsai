@@ -20,6 +20,12 @@ export function createAPIKey(payload) {
   return apiPost("/me/api-keys", payload, { fallbackMessage: "API Key 创建失败" });
 }
 
+export function updateAPIKey(id, payload) {
+  return apiPatch(`/me/api-keys/${encodeURIComponent(id)}`, payload, {
+    fallbackMessage: "API Key 更新失败",
+  });
+}
+
 export function revokeAPIKey(id) {
   return apiDelete(`/me/api-keys/${encodeURIComponent(id)}`, {
     fallbackMessage: "API Key 撤销失败",

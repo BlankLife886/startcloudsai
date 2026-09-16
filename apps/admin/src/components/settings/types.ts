@@ -62,6 +62,9 @@ export interface AdminSettings {
   taskFailureRetryCount?: number
   taskRetryFirstDelaySecs?: number
   taskRetryBackoffSecs?: number
+  t2iPromptMaxChars?: number
+  assistantMessageMaxChars?: number
+  studioHubPromptMaxChars?: number
   crossProviderSameModelBalancingEnabled?: boolean
   adminImageAnalysisProviderId?: string
   adminImageAnalysisModelId?: string

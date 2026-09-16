@@ -115,20 +115,19 @@ function assistantPromptRequestsWorkspaceTool(prompt) {
   return deliveryExport.test(text)
 }
 
-function assistantPromptRequestsAgent(prompt) {
+export function assistantPromptRequestsAgent(prompt) {
   return assistantPromptClauses(prompt).some(assistantClauseRequestsImageAction) ||
     assistantPromptRequestsWorkspaceTool(prompt)
 }
 
 /** 实际发给服务端的模式：文档可参与 Agent 复合任务，但不能直接进入图片生成。 */
 export function assistantSendMode(creationType, documentCount = 0, prompt = '') {
+  if (creationType === 'chat') return 'chat'
   if (Number(documentCount) > 0) {
     if (isAssistantSmallTalk(prompt)) return 'chat'
-    if (creationType === 'agent' || creationType === 'image' || assistantPromptRequestsAgent(prompt)) return 'agent'
-    return 'chat'
+    if (creationType === 'agent' || creationType === 'image') return 'agent'
   }
   if (isAssistantSmallTalk(prompt)) return creationType === 'agent' ? 'agent' : 'chat'
-  if (creationType === 'chat' && assistantPromptRequestsAgent(prompt)) return 'agent'
   if (creationType === 'image' || creationType === 'agent') return creationType
   return 'chat'
 }

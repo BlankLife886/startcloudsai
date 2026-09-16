@@ -24,6 +24,9 @@ const form = reactive({
   taskFailureRetryCount: 2,
   taskRetryFirstDelaySecs: 3,
   taskRetryBackoffSecs: 15,
+  t2iPromptMaxChars: 8000,
+  assistantMessageMaxChars: 12000,
+  studioHubPromptMaxChars: 2000,
   crossProviderSameModelBalancingEnabled: false,
   imageVariantFormat: 'webp',
   imageDisplayLossless: false,
@@ -46,6 +49,9 @@ function hydrate(settings: AdminSettings) {
   form.taskFailureRetryCount = settings.taskFailureRetryCount ?? 2
   form.taskRetryFirstDelaySecs = settings.taskRetryFirstDelaySecs ?? 3
   form.taskRetryBackoffSecs = settings.taskRetryBackoffSecs ?? 15
+  form.t2iPromptMaxChars = settings.t2iPromptMaxChars ?? 8000
+  form.assistantMessageMaxChars = settings.assistantMessageMaxChars ?? 12000
+  form.studioHubPromptMaxChars = settings.studioHubPromptMaxChars ?? 2000
   form.crossProviderSameModelBalancingEnabled =
     settings.crossProviderSameModelBalancingEnabled ?? false
   form.imageVariantFormat = settings.imageVariantFormat === 'png' ? 'png' : 'webp'
@@ -89,6 +95,9 @@ async function save() {
           taskFailureRetryCount: form.taskFailureRetryCount,
           taskRetryFirstDelaySecs: form.taskRetryFirstDelaySecs,
           taskRetryBackoffSecs: form.taskRetryBackoffSecs,
+          t2iPromptMaxChars: form.t2iPromptMaxChars,
+          assistantMessageMaxChars: form.assistantMessageMaxChars,
+          studioHubPromptMaxChars: form.studioHubPromptMaxChars,
           crossProviderSameModelBalancingEnabled:
             form.crossProviderSameModelBalancingEnabled,
           imageVariantFormat: form.imageVariantFormat,
@@ -146,6 +155,15 @@ async function save() {
           <div class="module-settings-field"><div class="module-settings-field__copy"><strong>全局对话并发</strong><small>所有对话任务同时执行的次数</small></div><div class="module-settings-control"><el-input-number v-model="form.globalMaxConcurrentChats" :min="1" :max="10000000" :precision="0" /><span>次</span></div></div>
           <div class="module-settings-field"><div class="module-settings-field__copy"><strong>活跃任务容量</strong><small>排队中与生成中的总任务上限</small></div><div class="module-settings-control"><el-input-number v-model="form.globalMaxActiveTasks" :min="10" :max="10000000" :precision="0" /><span>个</span></div></div>
           <div class="module-settings-field module-settings-field--wide"><div class="module-settings-field__copy"><strong>活跃图片容量</strong><small>所有活跃任务的图片数量总上限</small></div><div class="module-settings-control"><el-input-number v-model="form.globalMaxActiveImages" :min="10" :max="10000000" :precision="0" /><span>张</span></div></div>
+        </div>
+      </section>
+
+      <section class="module-settings-section">
+        <header class="module-settings-section__head"><div><strong>输入字数限制</strong><small>控制文生图、AI 助手与创作台输入框可输入的最大字符数</small></div></header>
+        <div class="module-settings-grid">
+          <div class="module-settings-field"><div class="module-settings-field__copy"><strong>文生图提示词</strong><small>文生图页面输入框上限</small></div><div class="module-settings-control"><el-input-number v-model="form.t2iPromptMaxChars" :min="100" :max="100000" :step="100" :precision="0" /><span>字</span></div></div>
+          <div class="module-settings-field"><div class="module-settings-field__copy"><strong>AI 助手消息</strong><small>助手单条用户消息上限</small></div><div class="module-settings-control"><el-input-number v-model="form.assistantMessageMaxChars" :min="100" :max="100000" :step="100" :precision="0" /><span>字</span></div></div>
+          <div class="module-settings-field module-settings-field--wide"><div class="module-settings-field__copy"><strong>创作台描述</strong><small>创作台首页输入框上限</small></div><div class="module-settings-control"><el-input-number v-model="form.studioHubPromptMaxChars" :min="100" :max="100000" :step="100" :precision="0" /><span>字</span></div></div>
         </div>
       </section>
 

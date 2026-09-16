@@ -1,6 +1,13 @@
 export const QUEUE_CAPACITY_CODES = new Set(["user_task_limit", "user_image_capacity", "system_task_capacity", "system_image_capacity"]);
 export const LOCAL_SUBMISSION_STATUSES = new Set(["submitting", "submission_pending", "submission_unknown", "submission_failed", "queue_full"]);
 
+export function isInsufficientBalanceFailure(errorOrTask) {
+  const code = String(errorOrTask?.code || errorOrTask?.errorCode || "");
+  const message = String(errorOrTask?.message || errorOrTask?.error || "");
+  return code === "insufficient_balance"
+    || /余额不足|积分不足|普通积分不足以|insufficient[_\s-]?balance/i.test(message);
+}
+
 export function submissionFailure(error) {
   const code = String(error?.code || "");
   if (QUEUE_CAPACITY_CODES.has(code)) return { status: "queue_full", code, message: error.message || "排队容量已满，请稍后重试" };
@@ -8,6 +15,9 @@ export function submissionFailure(error) {
     return { status: "submission_unknown", code: "task_submission_uncertain", message: "提交结果暂未确认，已保留本次参数，可核对后继续提交" };
   }
   if (code === "price_changed") return { status: "submission_pending", code, message: "价格已更新，请确认费用后继续提交" };
+  if (isInsufficientBalanceFailure(error)) {
+    return { status: "submission_failed", code: code || "insufficient_balance", message: error?.message || "余额不足" };
+  }
   return { status: "submission_failed", code, message: error?.message || "任务未能提交，请检查参数后重试" };
 }
 

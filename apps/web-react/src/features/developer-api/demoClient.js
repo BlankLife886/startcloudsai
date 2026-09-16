@@ -210,6 +210,13 @@ export function createDeveloperDemoClient({ now = Date.now } = {}) {
       keys.unshift(key);
       return clone({ ...key, secret: secretFor(id) });
     },
+    async updateAPIKey(id, payload) {
+      const current = requireKey(id);
+      if (current.status === "revoked") fail("API Key 不存在或已撤销", "api_key_not_found", 404);
+      const values = keyValues(payload);
+      Object.assign(current, values, { updatedAt: iso() });
+      return clone(current);
+    },
     async rotateAPIKey(id) {
       const current = requireKey(id);
       if (current.status !== "active") fail("仅可轮换有效 Key，已冻结的 Key 请联系管理员", "api_key_not_active", 403);

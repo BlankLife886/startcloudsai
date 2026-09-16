@@ -5,7 +5,7 @@
  * 无限画布不是独立 type，而是 t2i / background_remove + params._source=react_canvas
  * 状态机：queued → running → succeeded | failed | canceled
  */
-import { apiDelete, apiGet, apiPatch, apiPost, apiRequest, buildApiPath } from './apiClient.js'
+import { apiDelete, apiGet, apiPatch, apiPost, apiRequest, apiUploadRequest, buildApiPath } from './apiClient.js'
 import { listNotifications } from './meApi.js'
 import { scheduleWalletRefresh } from './walletSync.js'
 import { trackReferenceUpload } from './behaviorTracker.js'
@@ -535,17 +535,20 @@ export async function deleteTask(id, { cascade = false, history = false, forceMe
 
 /**
  * 上传输入图片（≤15MB，png/jpg/webp）。
+ * @param {(progress: {loaded: number, total: number, percent: number, done: boolean}) => void} [options.onProgress]
  * @returns {Promise<{key: string, url: string}>}
  */
-export async function uploadFile(file, { signal, referenceUpload = false, behaviorFeature } = {}) {
+export async function uploadFile(file, { signal, referenceUpload = false, behaviorFeature, onProgress } = {}) {
   if (!file) throw new Error('请先选择文件')
   const operation = () => {
     const formData = new FormData()
     formData.append('file', file, file.name || `upload-${Date.now()}.png`)
-    return apiRequest('/uploads', {
+    const request = typeof onProgress === 'function' ? apiUploadRequest : apiRequest
+    return request('/uploads', {
       method: 'POST',
       body: formData,
       signal,
+      onProgress,
       fallbackMessage: '文件上传失败',
     })
   }

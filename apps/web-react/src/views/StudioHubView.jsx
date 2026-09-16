@@ -606,6 +606,7 @@ export function StudioHubView() {
   const uploadControllerRef = useRef(null);
   const recognitionRef = useRef(null);
   const [runtimeConfig, setRuntimeConfig] = useState(getDefaultRuntimeConfig);
+  const studioPromptMaxChars = runtimeConfig?.promptInputLimits?.studioHubPromptMaxChars ?? 2000;
   const [draftPrompt, setDraftPrompt] = useState(() =>
     String(readComposerDraft().prompt || "").slice(0, 2000),
   );
@@ -1106,7 +1107,12 @@ export function StudioHubView() {
     const controller = new AbortController();
     Promise.allSettled([
       fetchRuntimeConfig().then((config) => {
-        if (mountedRef.current) setRuntimeConfig(config);
+        if (!mountedRef.current) return;
+        setRuntimeConfig(config);
+        const limit = Number(config?.promptInputLimits?.studioHubPromptMaxChars);
+        if (Number.isFinite(limit) && limit >= 100) {
+          setDraftPrompt((current) => String(current || "").slice(0, Math.floor(limit)));
+        }
       }),
       fetchAssistantConfig(controller.signal).then((config) => {
         if (!mountedRef.current) return;
@@ -1667,7 +1673,7 @@ export function StudioHubView() {
           event.preventDefault();
           const text = String(event.clipboardData?.getData("text/plain") || "");
           if (text && event.target.closest(".studio-composer__input"))
-            setDraftPrompt((current) => `${current}${text}`.slice(0, 2000));
+            setDraftPrompt((current) => `${current}${text}`.slice(0, studioPromptMaxChars));
           void addReferences(files);
         }}
       >
@@ -1750,7 +1756,7 @@ export function StudioHubView() {
                   value={draftPrompt}
                   className="studio-composer__input"
                   rows="4"
-                  maxLength="2000"
+                  maxLength={studioPromptMaxChars}
                   placeholder="描述你想做的画面、角色、风格或界面…"
                   aria-label="创作描述"
                   onChange={(event) => setDraftPrompt(event.target.value)}
@@ -1846,7 +1852,7 @@ export function StudioHubView() {
                       className={`studio-composer__count${draftPrompt.length ? " is-visible" : ""}`}
                     >
                       {draftPrompt.length}
-                      <small>/2000</small>
+                      <small>/{studioPromptMaxChars}</small>
                     </span>
                     <div className="studio-composer__actions">
                       <button

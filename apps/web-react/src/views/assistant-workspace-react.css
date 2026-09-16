@@ -1608,6 +1608,45 @@
   border-color: color-mix(in srgb, var(--assistant-accent) 38%, var(--assistant-border));
 }
 
+.assistant-workspace .composer-zone .reference-card.is-uploading img {
+  opacity: 0.72;
+}
+
+.assistant-workspace .composer-zone .reference-card-upload-status {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  background: rgb(10 12 16 / 28%);
+  pointer-events: none;
+}
+
+.assistant-workspace .composer-zone .reference-card-upload-status svg {
+  width: 38px;
+  height: 38px;
+  overflow: visible;
+  filter: drop-shadow(0 2px 6px rgb(0 0 0 / 42%));
+  transform: rotate(-90deg);
+}
+
+.assistant-workspace .composer-zone .reference-card-upload-status circle {
+  fill: none;
+  stroke-width: 3;
+}
+
+.assistant-workspace .composer-zone .reference-card-upload-status .is-track {
+  stroke: rgb(255 255 255 / 32%);
+}
+
+.assistant-workspace .composer-zone .reference-card-upload-status .is-progress {
+  stroke: #fff;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 160ms linear;
+}
+
 .assistant-workspace .composer-zone .reference-card-preview,
 .assistant-workspace .composer-zone .reference-card > button.reference-card-preview {
   position: static;
@@ -4850,6 +4889,7 @@ html.settings-no-animations .assistant-workspace .image-mode-preferences .pref-t
   .assistant-workspace .composer-toolbar,
   .assistant-workspace .composer-zone .reference-dock,
   .assistant-workspace .composer-zone .reference-skeleton::before,
+  .assistant-workspace .composer-zone .reference-card-upload-status .is-progress,
   .assistant-workspace .composer-quote,
   .assistant-workspace .assistant-composer textarea::placeholder,
   .assistant-workspace .return-to-bottom,

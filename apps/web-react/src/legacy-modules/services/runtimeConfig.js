@@ -30,6 +30,11 @@ export function getDefaultRuntimeConfig() {
     features: buildDefaultFeatures(),
     pageLayout: {},
     pageControls: getDefaultPageControls(),
+    promptInputLimits: {
+      t2iPromptMaxChars: 8000,
+      assistantMessageMaxChars: 12000,
+      studioHubPromptMaxChars: 2000,
+    },
     aiModelCatalog: {
       providers: [],
       models: [],
@@ -42,6 +47,22 @@ export function getDefaultRuntimeConfig() {
   }
 }
 
+function clampPromptMaxChars(value, fallback) {
+  const next = Number(value)
+  if (!Number.isFinite(next) || next < 100 || next > 100000) return fallback
+  return Math.floor(next)
+}
+
+export function normalizePromptInputLimits(limits = {}) {
+  const defaults = getDefaultRuntimeConfig().promptInputLimits
+  const value = limits && typeof limits === 'object' ? limits : {}
+  return {
+    t2iPromptMaxChars: clampPromptMaxChars(value.t2iPromptMaxChars, defaults.t2iPromptMaxChars),
+    assistantMessageMaxChars: clampPromptMaxChars(value.assistantMessageMaxChars, defaults.assistantMessageMaxChars),
+    studioHubPromptMaxChars: clampPromptMaxChars(value.studioHubPromptMaxChars, defaults.studioHubPromptMaxChars),
+  }
+}
+
 export function normalizeRuntimeConfig(config = {}) {
   const defaults = getDefaultRuntimeConfig()
   const value = config && typeof config === 'object' ? config : {}
@@ -50,6 +71,7 @@ export function normalizeRuntimeConfig(config = {}) {
     ...value,
     features: { ...defaults.features, ...(value.features || {}) },
     pageControls: normalizePageControls(value.pageControls),
+    promptInputLimits: normalizePromptInputLimits(value.promptInputLimits),
     aiModelCatalog: { ...defaults.aiModelCatalog, ...(value.aiModelCatalog || {}) },
   }
 }

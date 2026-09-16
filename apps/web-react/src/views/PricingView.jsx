@@ -707,7 +707,7 @@ export function PricingView() {
   const pageRef = useRef(null);
   const checkoutPanelRef = useRef(null);
   const planKind =
-    searchParams.get("plan") === "topup" ? "topup" : "subscription";
+    searchParams.get("plan") === "subscription" ? "subscription" : "topup";
   const planSwitchRef = useRef(null);
   const planThumbRef = useRef(null);
   const previousPlanKind = useRef(null);

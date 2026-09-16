@@ -160,19 +160,25 @@ export async function request<T>(
       | { success: false; code?: string; error?: string }
       | null;
 
-    if (envelope && envelope.success === true) {
+    if (res.ok && envelope && envelope.success === true) {
       return envelope.data;
     }
 
     const code =
       (envelope && envelope.success === false && envelope.code) ||
-      `http_${res.status}`;
+      (res.ok ? "response_malformed" : `http_${res.status}`);
     const serverMessage =
-      (envelope && envelope.success === false && envelope.error) || "";
+      envelope && envelope.success === false && envelope.error
+        ? envelope.error
+        : "";
     const message =
       code === "validation_error" && serverMessage
         ? serverMessage
-        : (CODE_MESSAGES[code] ?? serverMessage ?? `请求失败（${res.status}）`);
+        : CODE_MESSAGES[code] ||
+          serverMessage ||
+          (res.ok
+            ? `响应异常，请重试（HTTP ${res.status}）`
+            : `请求失败（${res.status}）`);
 
     if (res.status === 401) {
       // 会话失效：回登录页（避免在登录页上循环跳转）

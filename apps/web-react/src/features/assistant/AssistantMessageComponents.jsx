@@ -408,7 +408,7 @@ function ProposalSelect({ id, label, ariaLabel, valueLabel, options, disabled, o
   );
 }
 
-function ProposalPromptDialog({ value, title = "编辑生成提示词", onCancel, onSave }) {
+function ProposalPromptDialog({ value, title = "编辑生成提示词", maxMessageCharacters = MAX_ASSISTANT_MESSAGE_CHARACTERS, onCancel, onSave }) {
   const isDark = useIsDark();
   const [draft, setDraft] = useState(value || "");
   const textareaRef = useRef(null);
@@ -419,7 +419,7 @@ function ProposalPromptDialog({ value, title = "编辑生成提示词", onCancel
   onCancelRef.current = onCancel;
   onSaveRef.current = onSave;
   const count = assistantCharacterCount(draft);
-  const overLimit = count > MAX_ASSISTANT_MESSAGE_CHARACTERS;
+  const overLimit = count > maxMessageCharacters;
 
   useEffect(() => {
     const node = textareaRef.current;
@@ -435,14 +435,14 @@ function ProposalPromptDialog({ value, title = "编辑生成提示词", onCancel
       }
       if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
-        if (assistantCharacterCount(draftRef.current) <= MAX_ASSISTANT_MESSAGE_CHARACTERS) {
+        if (assistantCharacterCount(draftRef.current) <= maxMessageCharacters) {
           onSaveRef.current(draftRef.current);
         }
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [maxMessageCharacters]);
 
   return createPortal(
     <div
@@ -467,13 +467,13 @@ function ProposalPromptDialog({ value, title = "编辑生成提示词", onCancel
         <textarea
           ref={textareaRef}
           rows={8}
-          maxLength={12000}
+          maxLength={maxMessageCharacters}
           aria-label="编辑生成提示词"
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
         />
         <footer>
-          <span className={overLimit ? "is-over" : ""}>{count.toLocaleString("zh-CN")} / 12,000</span>
+          <span className={overLimit ? "is-over" : ""}>{count.toLocaleString("zh-CN")} / {maxMessageCharacters.toLocaleString("zh-CN")}</span>
           <div>
             <button type="button" onClick={onCancel}>取消</button>
             <button type="button" className="is-primary" disabled={overLimit} onClick={() => onSave(draft)}>完成</button>
@@ -485,7 +485,7 @@ function ProposalPromptDialog({ value, title = "编辑生成提示词", onCancel
   );
 }
 
-function AgentProposal({ message, imageModels, generating, executed, attachedReferences, onChange, onDismiss, onRestore, onApprove, onOpenImage }) {
+function AgentProposal({ message, imageModels, generating, executed, attachedReferences, maxMessageCharacters = MAX_ASSISTANT_MESSAGE_CHARACTERS, onChange, onDismiss, onRestore, onApprove, onOpenImage }) {
   const [openMenu, setOpenMenu] = useState("");
   const [promptEditor, setPromptEditor] = useState(null);
   const [promptExpanded, setPromptExpanded] = useState(false);
@@ -811,6 +811,7 @@ function AgentProposal({ message, imageModels, generating, executed, attachedRef
         <ProposalPromptDialog
           value={promptEditor.value || ""}
           title={promptEditor.title ? `编辑${promptEditor.title}提示词` : "编辑生成提示词"}
+          maxMessageCharacters={maxMessageCharacters}
           onCancel={() => setPromptEditor(null)}
           onSave={savePrompt}
         />
@@ -1195,7 +1196,7 @@ function ConversationMinimap({ items, activeSetterRef, onScrollToMessage }) {
   );
 }
 
-function AssistantMessageRow({ message, turnId, showDate, expanded, copied, generating, feedbackBusy, isLastAssistant, isLastUser, editing, editingDraft, moreOpen, loadedImages, failedImages, imageRetryVersions, imageModels, sourceProposal, proposalExecuted, attachedReferences, searchHit = false, searchCurrent = false, searchQuery = "", toolActionBusyId = "", onToolAction, onToggleStatus, onCopy, onFeedback, onQuote, onOpenImage, onImageLoad, onImageError, onImageRetry, onUseReference, onStartEdit, onEditDraft, onCancelEdit, onSubmitEdit, onRetry, onToggleMore, onDownloadMarkdown, onDelete, onProposalChange, onProposalDismiss, onProposalRestore, onProposalApprove, onReopenProposal }) {
+function AssistantMessageRow({ message, turnId, showDate, expanded, copied, generating, feedbackBusy, isLastAssistant, isLastUser, editing, editingDraft, moreOpen, loadedImages, failedImages, imageRetryVersions, imageModels, sourceProposal, proposalExecuted, attachedReferences, searchHit = false, searchCurrent = false, searchQuery = "", toolActionBusyId = "", maxMessageCharacters = MAX_ASSISTANT_MESSAGE_CHARACTERS, onToolAction, onToggleStatus, onCopy, onFeedback, onQuote, onOpenImage, onImageLoad, onImageError, onImageRetry, onUseReference, onStartEdit, onEditDraft, onCancelEdit, onSubmitEdit, onRetry, onToggleMore, onDownloadMarkdown, onDelete, onProposalChange, onProposalDismiss, onProposalRestore, onProposalApprove, onReopenProposal }) {
   const status = message.role === "assistant" ? messageStatus(message) : null;
   const contextUsage = normalizeAssistantContext(message.context);
   const usage = normalizeAssistantUsage(message);
@@ -1207,13 +1208,13 @@ function AssistantMessageRow({ message, turnId, showDate, expanded, copied, gene
       {message.kind === "context-divider" ? <div className="assistant-context-divider"><span /><p><i className="bi bi-eraser" aria-hidden="true" /> 已从这里开始新的上下文</p><span /></div> : <article className={`message message--${message.role}${searchHit ? " is-search-hit" : ""}${searchCurrent ? " is-search-current" : ""}`} data-message-id={message.id} data-turn-id={turnId || undefined}>
         {status && !showImageStage ? <AssistantMessageStatus message={message} status={status} contextUsage={contextUsage} expanded={expanded} onToggle={onToggleStatus} /> : null}
         {message.role === "user" && !editing && <div className="user-message-actions" aria-label="用户消息操作"><button type="button" title={copied ? "已复制" : "复制问题"} aria-label={copied ? "已复制" : "复制问题"} className={copied ? "is-copied" : ""} onClick={() => onCopy(message)}><i className={`bi ${copied ? "bi-check2" : "bi-copy"}`} /></button>{isLastUser && <button type="button" title="编辑问题" aria-label="编辑问题" disabled={generating} onClick={() => onStartEdit(message)}><i className="bi bi-pencil" /></button>}{isLastUser && <button type="button" title="重试" aria-label="重试" disabled={generating} onClick={() => onRetry(message)}><RegenerateIcon /></button>}</div>}
-        {message.role === "user" && editing ? <div className="user-message-editor"><textarea autoFocus rows={3} aria-label="编辑问题" value={editingDraft} onChange={(event) => onEditDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); onSubmitEdit(message); } }} /><footer><span>{assistantCharacterCount(editingDraft.trim()).toLocaleString("zh-CN")} / 12,000</span><button type="button" onClick={onCancelEdit}>取消</button><button className="is-primary" type="button" disabled={!editingDraft.trim() || assistantCharacterCount(editingDraft.trim()) > MAX_ASSISTANT_MESSAGE_CHARACTERS || generating} onClick={() => onSubmitEdit(message)}><i className="bi bi-arrow-up" /><span>发送</span></button></footer></div> : <div className={`message-content${message.error ? " has-error" : ""}`}>
+        {message.role === "user" && editing ? <div className="user-message-editor"><textarea autoFocus rows={3} aria-label="编辑问题" value={editingDraft} onChange={(event) => onEditDraft(event.target.value)} maxLength={maxMessageCharacters} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); onSubmitEdit(message); } }} /><footer><span>{assistantCharacterCount(editingDraft.trim()).toLocaleString("zh-CN")} / {maxMessageCharacters.toLocaleString("zh-CN")}</span><button type="button" onClick={onCancelEdit}>取消</button><button className="is-primary" type="button" disabled={!editingDraft.trim() || assistantCharacterCount(editingDraft.trim()) > maxMessageCharacters || generating} onClick={() => onSubmitEdit(message)}><i className="bi bi-arrow-up" /><span>发送</span></button></footer></div> : <div className={`message-content${message.error ? " has-error" : ""}`}>
           {showImageStage ? <ImageGenerationStage message={message} imageModelLabel={imageModelLabel} imageModels={imageModels} loadedImages={loadedImages} onOpenImage={onOpenImage} onImageLoad={onImageLoad} /> : <>
             {message.role === "user" && message.quoted && <div className="sent-quote"><i className="bi bi-quote" /><span>[{message.quoted.kind}] {message.quoted.content}</span></div>}
             {message.role === "user" && uniqueReferenceImages(message.referenceImages).length > 0 && <div className="sent-reference-images">{uniqueReferenceImages(message.referenceImages).map((image, index, images) => <button key={image.id || image.fileKey || index} type="button" title="查看参考图" onClick={() => onOpenImage(image, index, images)}><AssistantPreviewImage image={image} alt={image.name || "参考图"} /></button>)}</div>}
             {message.role === "user" && message.attachments?.length > 0 && <div className="assistant-document-chips">{message.attachments.map((item) => <span key={item.id} className="assistant-document-chip"><i className={`bi ${documentIcon(item)}`} /><span><strong>{item.name}</strong><small>{formatDocumentSize(item.sizeBytes)} · {item.pageCount ? `${item.pageCount} 页` : "文档"}</small></span></span>)}</div>}
             {message.role === "assistant" && <AssistantReasoning text={message.reasoning} pending={message.pending} />}
-            {message.role === "assistant" && message.kind === "proposal" && message.proposal && <AgentProposal message={message} imageModels={imageModels} generating={generating} executed={proposalExecuted} attachedReferences={attachedReferences} onChange={onProposalChange} onDismiss={onProposalDismiss} onRestore={onProposalRestore} onApprove={onProposalApprove} onOpenImage={onOpenImage} />}
+            {message.role === "assistant" && message.kind === "proposal" && message.proposal && <AgentProposal message={message} imageModels={imageModels} generating={generating} executed={proposalExecuted} attachedReferences={attachedReferences} maxMessageCharacters={maxMessageCharacters} onChange={onProposalChange} onDismiss={onProposalDismiss} onRestore={onProposalRestore} onApprove={onProposalApprove} onOpenImage={onOpenImage} />}
             {message.role === "assistant" && message.kind !== "proposal" && message.content && message.content !== message.error ? <AssistantMarkdown content={message.content} streaming={message.pending} highlightQuery={searchHit ? searchQuery : ""} /> : message.role !== "assistant" && message.content && message.content !== message.error ? <p>{searchHit ? highlightSearchNodes(message.content, searchQuery) : message.content}</p> : null}
             {message.role === "assistant" && <AssistantWebSources searches={message.webSearches} />}
             {message.role === "assistant" && <AssistantArtifacts items={message.artifacts} />}
