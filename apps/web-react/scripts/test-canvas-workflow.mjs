@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { catalogModelsByCapability, defaultConfig, migrateConfigStore, resolveModelForCapability, selectableModelsByCapability } from "../src/canvas/stores/use-config-store.ts";
-import { normalizeConnection } from "../src/canvas/lib/canvas/canvas-connection.ts";
+import { connectionSourceNodeIds, normalizeConnection } from "../src/canvas/lib/canvas/canvas-connection.ts";
 import { copyCanvasNodeMetadata, resolveCopiedCanvasNodeReferences } from "../src/canvas/lib/canvas/canvas-node-copy.ts";
 import {
     advanceCanvasWorkflowCheckpoint,
@@ -27,6 +27,7 @@ import {
     validateCanvasWorkflowNodeReadiness,
     validateCanvasWorkflowCompletedOutputs,
     waitForCanvasWorkflowStop,
+    workflowExpectedOutputCount,
     workflowPlanMatchesCheckpoint,
 } from "../src/canvas/lib/canvas/canvas-workflow.ts";
 import { pendingCanvasTasks } from "../src/canvas/lib/canvas/canvas-pending-tasks.ts";
@@ -34,7 +35,7 @@ import { canvasProjectNeedsCloudRetry, markCanvasProjectMediaDeleted, mergeCanva
 import { buildCanvasSidePanelWorkflowGroups } from "../src/canvas/lib/canvas/canvas-workflow-groups.ts";
 import { shouldPromoteGeneratedImage } from "../src/canvas/lib/canvas/canvas-image-primary.ts";
 import { shouldBlockCanvasNavigation } from "../src/canvas/lib/canvas/canvas-leave-guard.ts";
-import { applyCanvasAgentNodeUpdate } from "../src/canvas/lib/canvas/canvas-agent-node-metadata.ts";
+import { applyCanvasAgentNodeUpdate, clampCanvasAgentImageCounts } from "../src/canvas/lib/canvas/canvas-agent-node-metadata.ts";
 import { canvasLocalImageOperationOutputCount, isCanvasLocalImageOperation, normalizeCanvasLocalImageOperationParams } from "../src/canvas/lib/canvas/canvas-local-image-operation.ts";
 
 const node = (id, type, metadata = {}) => ({ id, type, title: id, position: { x: 0, y: 0 }, width: 100, height: 100, metadata });
@@ -277,6 +278,23 @@ test("keeps config input direction from either drag direction", () => {
 test("rejects config-to-config connections", () => {
     const nodes = [node("a", "config"), node("b", "config")];
     assert.equal(normalizeConnection("a", "b", nodes, "source"), null);
+});
+
+test("connectionSourceNodeIds expands multi-select sources", () => {
+    assert.deepEqual(connectionSourceNodeIds({ nodeId: "a" }), ["a"]);
+    assert.deepEqual(connectionSourceNodeIds({ nodeId: "a", sourceNodeIds: [] }), ["a"]);
+    assert.deepEqual(connectionSourceNodeIds({ nodeId: "a", sourceNodeIds: ["a", "b", "a", "c"] }), ["a", "b", "c"]);
+    assert.deepEqual(connectionSourceNodeIds(null), []);
+});
+
+test("multi-selected images can each normalize onto one config target", () => {
+    const nodes = [node("img-1", "image"), node("img-2", "image"), node("img-3", "image"), node("config", "config")];
+    const links = ["img-1", "img-2", "img-3"]
+        .map((id) => normalizeConnection(id, "config", nodes, "source"))
+        .filter(Boolean);
+    assert.equal(links.length, 3);
+    assert.deepEqual(links.map((link) => link.fromNodeId), ["img-1", "img-2", "img-3"]);
+    assert.ok(links.every((link) => link.toNodeId === "config"));
 });
 
 test("blocks unresolved workflow references until their producer has completed", () => {
@@ -757,4 +775,26 @@ test("history media deletion survives stale canvas caches as a placeholder", () 
     const merged = mergeCanvasProjectDocuments(document, { ...marked, revision: 2 });
     assert.equal(merged.nodes[0].metadata.deletedByHistory, true);
     assert.equal(merged.nodes[0].metadata.content, undefined);
+});
+
+test("clamps agent-written image counts to the model cap so a finished node can certify its outputs", () => {
+    const cap = (value) => () => value;
+    const requested = [
+        node("over", "config", { generationMode: "image", count: 8 }),
+        node("within", "config", { generationMode: "image", count: 2 }),
+        node("text", "text", { content: "hi" }),
+    ];
+
+    const clamped = clampCanvasAgentImageCounts(requested, cap(4));
+    assert.equal(clamped[0].metadata.count, 4, "a count above the model cap must be lowered to the cap");
+    assert.equal(clamped[1], requested[1], "a count within the cap keeps its node identity");
+    assert.equal(clamped[2], requested[2], "nodes without a count are untouched");
+
+    assert.equal(clampCanvasAgentImageCounts(requested, cap(8)), requested, "nothing changes when every count fits");
+    assert.equal(clampCanvasAgentImageCounts(requested, () => null), requested, "an unknown model cap must not clamp");
+
+    // The certification path reads the stored count, so clamping keeps the
+    // expected output count aligned with what generation will actually request.
+    assert.equal(workflowExpectedOutputCount(clamped[0]), 4);
+    assert.equal(workflowExpectedOutputCount(requested[0]), 8);
 });

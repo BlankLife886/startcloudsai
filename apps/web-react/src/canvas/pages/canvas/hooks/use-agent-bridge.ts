@@ -4,6 +4,9 @@ import { nanoid } from "nanoid";
 import i18n from "@/i18n";
 import { useAgentStore, type AgentRegenerateSelectionInput, type AgentRegenerateSelectionResult, type AgentWorkflowPreflightResult } from "@/stores/use-agent-store";
 import { applyCanvasAgentOps, type CanvasAgentOp, type CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
+import { clampCanvasAgentImageCounts } from "@/lib/canvas/canvas-agent-node-metadata";
+import { canvasImageMaxCount } from "@/lib/canvas/canvas-image-model";
+import { modelOptionMeta, useEffectiveConfig } from "@/stores/use-config-store";
 import { MAX_CANVAS_AGENT_REGENERATION_SOURCES, planCanvasAgentRegeneration, resolveCanvasAgentRegenerationSourceIds } from "@/lib/canvas/canvas-agent-regenerate";
 import { buildCanvasSidePanelWorkflowGroups } from "@/lib/canvas/canvas-workflow-groups";
 import { isCanvasExecutableNode } from "@/lib/canvas/canvas-operation-node";
@@ -64,6 +67,7 @@ export function useAgentBridge(params: AgentBridgeParams) {
         params;
     const setAgentCanvasContext = useAgentStore((state) => state.setCanvasContext);
     const ownerUserId = useCanvasStore((state) => state.ownerUserId);
+    const effectiveConfig = useEffectiveConfig();
     const continuationScope = useRef("");
     const agentHistoryRef = useRef<AgentCanvasHistoryState>({ past: [], future: [], checkpoints: [] });
     const [agentHistoryVersion, setAgentHistoryVersion] = useState(0);
@@ -137,10 +141,17 @@ export function useAgentBridge(params: AgentBridgeParams) {
             const safeOps = Array.isArray(ops) ? ops.filter((op) => op?.type) : [];
             const before = { projectId, title: projectTitle, nodes: nodesRef.current, connections: connectionsRef.current, selectedNodeIds: Array.from(selectedNodeIdsRef.current), viewport: viewportRef.current };
             const generationOps = safeOps.filter((op): op is Extract<CanvasAgentOp, { type: "run_generation" }> => op.type === "run_generation" && Boolean(op.nodeId));
-            const next = applyCanvasAgentOps(
+            const applied = applyCanvasAgentOps(
                 before,
                 safeOps,
             );
+            const next = {
+                ...applied,
+                nodes: clampCanvasAgentImageCounts(applied.nodes, (node) => {
+                    const model = modelOptionMeta(effectiveConfig, node.metadata?.model || effectiveConfig.imageModel || effectiveConfig.model);
+                    return model ? canvasImageMaxCount(model) : null;
+                }),
+            };
             const after = { ...next, projectId, title: projectTitle };
             nodesRef.current = next.nodes;
             connectionsRef.current = next.connections;
@@ -171,7 +182,7 @@ export function useAgentBridge(params: AgentBridgeParams) {
             }
             return after;
         },
-        [projectTitle, projectId, assertReady, persistContinuation],
+        [projectTitle, projectId, assertReady, persistContinuation, effectiveConfig],
     );
     const undoAgentOps = useCallback(() => {
         assertReady();

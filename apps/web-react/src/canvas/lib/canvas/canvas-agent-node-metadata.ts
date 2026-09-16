@@ -1,4 +1,5 @@
 import type { CanvasNodeData, CanvasNodeMetadata, CanvasNodeTypeId } from "../../types/canvas.ts";
+import { isCanvasGenerationModeEnabled } from "@/constant/canvas";
 import { storageKeyFromUrl } from "./canvas-preview-url.ts";
 
 export type CanvasAgentNodePatch = Partial<CanvasNodeData> & {
@@ -30,6 +31,9 @@ export function applyCanvasAgentNodeUpdate(
           ? update.patch.title
           : node.title;
     const metadata = mergeCanvasAgentNodeMetadata(node.metadata, update.patch, update.metadata);
+    if (metadata.generationMode && !isCanvasGenerationModeEnabled(metadata.generationMode)) {
+        metadata.generationMode = "image";
+    }
     if (node.type === "image" && metadata.content !== node.metadata?.content) {
         const previousKey = node.metadata?.storageKey || storageKeyFromUrl(node.metadata?.content || "");
         const sameFile = previousKey && storageKeyFromUrl(metadata.content || "") === previousKey;
@@ -52,6 +56,28 @@ export function applyCanvasAgentNodeUpdate(
 
 export function canvasAgentGraphTextMetadata(type: CanvasNodeTypeId, text: string): CanvasNodeMetadata | undefined {
     return type === "text" && text ? { content: text, status: "success" } : undefined;
+}
+
+/**
+ * Generation clamps `count` to the model capability, while workflow certification
+ * reads the stored `count`. An Agent-written count above the cap therefore makes a
+ * fully successful node fail as "outputs incomplete", so clamp it on the way in.
+ * `maxCountForNode` returns null when the model catalog cannot answer yet.
+ */
+export function clampCanvasAgentImageCounts(
+    nodes: CanvasNodeData[],
+    maxCountForNode: (node: CanvasNodeData) => number | null,
+): CanvasNodeData[] {
+    let changed = false;
+    const next = nodes.map((node) => {
+        const requested = Math.floor(Number(node.metadata?.count));
+        if (!Number.isFinite(requested) || requested < 1) return node;
+        const max = maxCountForNode(node);
+        if (!max || !Number.isFinite(max) || requested <= max) return node;
+        changed = true;
+        return { ...node, metadata: { ...node.metadata, count: max } };
+    });
+    return changed ? next : nodes;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
