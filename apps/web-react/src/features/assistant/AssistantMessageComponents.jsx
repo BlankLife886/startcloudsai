@@ -10,6 +10,7 @@ import { createPortal } from "react-dom";
 import { uploadFile } from "@react/legacy-modules/services/tasksApi.js";
 import notificationService from "@react/legacy-modules/services/notification.js";
 import { formatMessageDate, generatedImageRatioLabel, messageStatus, uid } from "./domain/assistantMessages.js";
+import { assistantToolStepsSummary, normalizeAssistantToolSteps } from "./domain/assistantToolSteps.js";
 import { promptNeedsRecentVisual } from "./domain/visualContext.js";
 import { assistantImageBatchLimit } from "./domain/assistantImageLimits.js";
 import {
@@ -273,6 +274,90 @@ function AssistantMarkdown({ content, streaming, highlightQuery = "" }) {
   };
 
   return <div ref={rootRef} className={`assistant-markdown${streaming ? " is-streaming" : ""}`} onClick={(event) => void handleClick(event)} />;
+}
+
+const TOOL_STEP_STATE_LABELS = {
+  running: "进行中",
+  completed: "已完成",
+  failed: "失败",
+  interrupted: "已中断",
+};
+
+function toolStepDetailText(value) {
+  if (value === null || value === undefined || value === "") return "";
+  if (typeof value === "string") {
+    try {
+      return JSON.stringify(JSON.parse(value), null, 2);
+    } catch {
+      return value;
+    }
+  }
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function AssistantToolTimeline({ steps, pending }) {
+  const items = useMemo(() => normalizeAssistantToolSteps(steps), [steps]);
+  // null 表示跟随运行状态：执行中自动展开，结束后自动收起，用户点过之后以用户为准。
+  const [manualExpanded, setManualExpanded] = useState(null);
+  const [openKey, setOpenKey] = useState("");
+  if (!items.length) return null;
+  const expanded = manualExpanded === null ? Boolean(pending) : manualExpanded;
+  return (
+    <section className={`assistant-tool-timeline${pending ? " is-live" : ""}`} aria-label="Agent 执行过程">
+      <button
+        type="button"
+        className="assistant-tool-timeline-toggle"
+        aria-expanded={expanded}
+        onClick={() => setManualExpanded(!expanded)}
+      >
+        <i className="bi bi-list-nested" aria-hidden="true" />
+        <strong>执行过程</strong>
+        <small>{assistantToolStepsSummary(items)}</small>
+        <i className={`bi bi-chevron-down assistant-tool-timeline-chevron${expanded ? " is-expanded" : ""}`} aria-hidden="true" />
+      </button>
+      {expanded ? (
+        <ol className="assistant-tool-timeline-list">
+          {items.map((step) => {
+            // 运行已结束却仍停在 running 的步骤，说明结果事件丢了，不要一直转圈。
+            const status = step.status === "running" && !pending ? "interrupted" : step.status;
+            const detail = toolStepDetailText(step.error || step.result || step.arguments);
+            const open = openKey === step.key;
+            return (
+              <li key={step.key} className={`assistant-tool-step is-${status}`}>
+                <button
+                  type="button"
+                  className="assistant-tool-step-head"
+                  aria-expanded={open}
+                  disabled={!detail}
+                  onClick={() => setOpenKey(open ? "" : step.key)}
+                >
+                  <span className="assistant-tool-step-icon" aria-hidden="true">
+                    <i className={`bi ${step.icon}`} />
+                  </span>
+                  <span className="assistant-tool-step-copy">
+                    <strong>{step.label}</strong>
+                    {step.summary ? <small title={step.summary}>{step.summary}</small> : null}
+                  </span>
+                  {step.durationMs > 0 ? <b className="assistant-tool-step-duration">{formatDurationMs(step.durationMs)}</b> : null}
+                  <span className="assistant-tool-step-state" aria-label={TOOL_STEP_STATE_LABELS[status]}>
+                    {status === "running" ? <i className="bi bi-arrow-repeat assistant-tool-spin" /> : null}
+                    {status === "completed" ? <i className="bi bi-check2" /> : null}
+                    {status === "failed" ? <i className="bi bi-exclamation-triangle" /> : null}
+                    {status === "interrupted" ? <i className="bi bi-dash-lg" /> : null}
+                  </span>
+                </button>
+                {open && detail ? <pre className="assistant-tool-step-detail">{detail}</pre> : null}
+              </li>
+            );
+          })}
+        </ol>
+      ) : null}
+    </section>
+  );
 }
 
 function artifactLayerLabel(item = {}) {
@@ -1214,6 +1299,7 @@ function AssistantMessageRow({ message, turnId, showDate, expanded, copied, gene
             {message.role === "user" && uniqueReferenceImages(message.referenceImages).length > 0 && <div className="sent-reference-images">{uniqueReferenceImages(message.referenceImages).map((image, index, images) => <button key={image.id || image.fileKey || index} type="button" title="查看参考图" onClick={() => onOpenImage(image, index, images)}><AssistantPreviewImage image={image} alt={image.name || "参考图"} /></button>)}</div>}
             {message.role === "user" && message.attachments?.length > 0 && <div className="assistant-document-chips">{message.attachments.map((item) => <span key={item.id} className="assistant-document-chip"><i className={`bi ${documentIcon(item)}`} /><span><strong>{item.name}</strong><small>{formatDocumentSize(item.sizeBytes)} · {item.pageCount ? `${item.pageCount} 页` : "文档"}</small></span></span>)}</div>}
             {message.role === "assistant" && <AssistantReasoning text={message.reasoning} pending={message.pending} />}
+            {message.role === "assistant" && <AssistantToolTimeline steps={message.toolSteps} pending={message.pending} />}
             {message.role === "assistant" && message.kind === "proposal" && message.proposal && <AgentProposal message={message} imageModels={imageModels} generating={generating} executed={proposalExecuted} attachedReferences={attachedReferences} maxMessageCharacters={maxMessageCharacters} onChange={onProposalChange} onDismiss={onProposalDismiss} onRestore={onProposalRestore} onApprove={onProposalApprove} onOpenImage={onOpenImage} />}
             {message.role === "assistant" && message.kind !== "proposal" && message.content && message.content !== message.error ? <AssistantMarkdown content={message.content} streaming={message.pending} highlightQuery={searchHit ? searchQuery : ""} /> : message.role !== "assistant" && message.content && message.content !== message.error ? <p>{searchHit ? highlightSearchNodes(message.content, searchQuery) : message.content}</p> : null}
             {message.role === "assistant" && <AssistantWebSources searches={message.webSearches} />}

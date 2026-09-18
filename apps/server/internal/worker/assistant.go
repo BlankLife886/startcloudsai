@@ -59,6 +59,8 @@ const assistantChatRetryInstruction = `直接回答用户的问题。不要调�
 
 const assistantAgentFinalSynthesisInstruction = `工具调用阶段已经结束。请只根据当前对话和已经返回的工具结果，直接给出最终回答。不要再调用、模拟或输出任何工具语法；工具失败时如实说明，禁止声称失败的操作已经完成。`
 
+const assistantAgentProposalExpectedInstruction = `用户这一轮要求生成或编辑图片，最终必须调用 propose_image_action 提交可确认的方案。在那之前你可以先用其他工具核实前提，例如读取附件确认画面要求、联网确认事实细节。掌握的信息已经够用时不要额外调用工具。`
+
 var errAssistantLeakedToolOutput = errors.New("上游模型连续返回了无效的内部工具调用，未生成可用回答，请重试或切换模型")
 var errAssistantAgentEmptyResponse = errors.New("AI 助手在工具调用后仍未生成可用回答，请重试或切换模型")
 
@@ -1504,7 +1506,20 @@ func (w *Worker) executeAssistantAgent(
 	if len(agentReferences) > 0 {
 		nextStage = "analyzing-image"
 	}
+	lastWasImage := lastAssistantMessageWasImage(history, run.UserMessageID, run.AssistantMessageID)
+	fastIntent, fastIntentCertain := fastAssistantIntent(run.Prompt, len(references) > 0, lastWasImage)
+	forceWebSearchTool := assistantPromptRequestsWebSearch(run.Prompt)
+	forceTaskStatusTool := assistantPromptRequestsTaskStatus(run.Prompt)
+	forcedWorkspaceTool := assistantForcedWorkspaceTool(run.Prompt)
+	// 这一轮几乎确定要出图片方案：作为提示交给模型，并保留兜底，但不锁定第一步该调哪个工具，
+	// 否则模型没有机会先读附件或联网核实再提方案。
+	expectProposal := fastIntentCertain && fastIntent == "image" && !forceWebSearchTool && !forceTaskStatusTool && forcedWorkspaceTool == ""
+	// 寒暄、理解类提问和明确说了“不要生成图片”时不提供方案工具，比事后丢弃模型的调用更安全。
+	withholdProposal := fastIntentCertain && fastIntent == "chat"
 	instructions := assistantAgentInstructions(run, imageCatalog, modelCatalog)
+	if expectProposal {
+		instructions += "\n\n" + assistantAgentProposalExpectedInstruction
+	}
 	if len(fileIDs) > 0 {
 		instructions += "\n\n" + assistantAgentDocumentToolInstruction
 	}
@@ -1530,13 +1545,6 @@ func (w *Worker) executeAssistantAgent(
 	answering := false
 	started := time.Now()
 	var firstVisible time.Time
-	lastWasImage := lastAssistantMessageWasImage(history, run.UserMessageID, run.AssistantMessageID)
-	fastIntent, fastIntentCertain := fastAssistantIntent(run.Prompt, len(references) > 0, lastWasImage)
-	forceWebSearchTool := assistantPromptRequestsWebSearch(run.Prompt)
-	forceTaskStatusTool := assistantPromptRequestsTaskStatus(run.Prompt)
-	forcedWorkspaceTool := assistantForcedWorkspaceTool(run.Prompt)
-	forceProposalTool := fastIntentCertain && fastIntent == "image" && !forceWebSearchTool && !forceTaskStatusTool && forcedWorkspaceTool == ""
-	suppressProposalTool := fastIntentCertain && fastIntent == "chat"
 	proposalTool := assistantProposalFunctionTool(modelCatalog)
 	taskStatusRegistry, taskStatusTool, err := w.assistantTaskStatusRegistry()
 	if err != nil {
@@ -1547,6 +1555,9 @@ func (w *Worker) executeAssistantAgent(
 		return err
 	}
 	tools := []sub2api.FunctionTool{proposalTool, webSearchTool(), taskStatusTool}
+	if withholdProposal {
+		tools = assistantToolDefinitionsWithout(tools, proposalTool.Name)
+	}
 	tools = append(tools, workspaceTools...)
 	tools = append(tools, fileTools...)
 	var result sub2api.AgentChatResult
@@ -1554,12 +1565,14 @@ func (w *Worker) executeAssistantAgent(
 	var toolActions []map[string]any
 	var artifacts []map[string]any
 	var successfulFileTools []string
+	// 执行步骤随消息一起持久化，刷新对话后时间线仍可回溯。
+	var toolSteps []map[string]any
 	taskStatusCalls := 0
 	var aggregateUsage sub2api.ChatUsage
 	reasoningParts := make([]string, 0, 2)
 	onUpdate := func(fullText, reasoning string) error {
 		fileRequirementsPending := assistantAgentFileRequirementsPending(fileIDs, wantsArtifact, successfulFileTools, artifacts)
-		visibleText := assistantAgentVisibleText(fullText, forceProposalTool, fileRequirementsPending)
+		visibleText := assistantAgentVisibleText(fullText, expectProposal, fileRequirementsPending)
 		markAssistantFirstToken(&firstVisible, visibleText)
 		markAssistantFirstToken(&firstVisible, reasoning)
 		if time.Since(lastTerminationCheck) >= 400*time.Millisecond {
@@ -1582,13 +1595,14 @@ func (w *Worker) executeAssistantAgent(
 			assistantstream.Publish(ctx, w.Stream, run.ID.String(),
 				assistantstream.Event{Content: visibleText, Reasoning: reasoning, Kind: "agent", Stage: "answering"})
 		}
-		if forceProposalTool || fileRequirementsPending || fullText == "" || time.Since(lastCheckpoint) < time.Second {
+		if expectProposal || fileRequirementsPending || fullText == "" || time.Since(lastCheckpoint) < time.Second {
 			return nil
 		}
 		lastCheckpoint = time.Now()
 		metadata := assistantMessageMetadata(run, nil, "answering", "")
 		attachAssistantReasoning(metadata, reasoning)
 		attachAssistantArtifacts(metadata, artifacts)
+		attachAssistantToolSteps(metadata, toolSteps)
 		return store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, fullText, "agent", "running", metadata)
 	}
 	successfulToolObservations := make(map[string]string)
@@ -1603,8 +1617,6 @@ func (w *Worker) executeAssistantAgent(
 				toolChoice = webSearchTool().Name
 			} else if forcedWorkspaceTool != "" {
 				toolChoice = forcedWorkspaceTool
-			} else if forceProposalTool && !assistantAgentFileRequirementsPending(fileIDs, wantsArtifact, successfulFileTools, artifacts) {
-				toolChoice = proposalTool.Name
 			}
 		}
 		turnTools := assistantAgentToolsForFileRequirements(
@@ -1665,6 +1677,7 @@ func (w *Worker) executeAssistantAgent(
 			// A later model failure cannot safely replay a tool that may already
 			// have produced an external result, even when its response was lost.
 			toolExecutionStarted = true
+			stepStarted := time.Now()
 			switch next.ToolCall.Name {
 			case webSearchTool().Name:
 				if len(searches) >= 3 {
@@ -1715,6 +1728,9 @@ func (w *Worker) executeAssistantAgent(
 				if toolErr == nil {
 					toolActions = append(toolActions, actions...)
 				}
+			}
+			if record := assistantAgentToolStepRecord(next.ToolCall, toolErr, time.Since(stepStarted)); record != nil {
+				toolSteps = append(toolSteps, record)
 			}
 			observation, err = assistantAgentToolObservation(next.ToolCall, observation, toolErr, ctx.Err())
 			if err != nil {
@@ -1782,7 +1798,7 @@ func (w *Worker) executeAssistantAgent(
 		return context.Canceled
 	}
 
-	if forceProposalTool || (!suppressProposalTool && result.ToolCall != nil && result.ToolCall.Name == proposalTool.Name) {
+	if expectProposal || (result.ToolCall != nil && result.ToolCall.Name == proposalTool.Name) {
 		requestID := uuid.NewString()
 		arguments := assistantToolArguments(result.Text)
 		if result.ToolCall != nil && result.ToolCall.Name == proposalTool.Name {
@@ -1792,12 +1808,20 @@ func (w *Worker) executeAssistantAgent(
 			arguments = assistantToolArguments(result.ToolCall.Arguments)
 		}
 		_ = store.UpsertAgentToolStepClaim(ctx, w.St.Pool, run.ID, requestID, proposalTool.Name, arguments, "server", false)
+		assistantstream.Publish(ctx, w.Stream, run.ID.String(), assistantstream.Event{
+			Kind: "agent", Stage: "planning-image",
+			Tool: &assistantstream.ToolCallEvent{RequestID: requestID, Name: proposalTool.Name, Arguments: string(arguments), Execution: "server", Status: "running"},
+		})
 		proposal := defaultAssistantProposal(run)
 		parsedTextFallback := false
 		if result.ToolCall != nil && result.ToolCall.Name == proposalTool.Name {
 			parsed, parseErr := parseAssistantProposal(result.ToolCall.Arguments)
 			if parseErr != nil {
 				_ = store.CompleteAgentToolStep(ctx, w.St.Pool, run.ID, requestID, nil, parseErr.Error(), time.Now().UTC())
+				assistantstream.Publish(ctx, w.Stream, run.ID.String(), assistantstream.Event{
+					Kind: "agent", Stage: "planning-image",
+					Tool: &assistantstream.ToolCallEvent{RequestID: requestID, Name: proposalTool.Name, Arguments: string(arguments), Execution: "server", Status: "failed", Error: parseErr.Error()},
+				})
 				return fmt.Errorf("解析 Agent 图片方案失败: %w", parseErr)
 			}
 			proposal = parsed
@@ -1827,6 +1851,12 @@ func (w *Worker) executeAssistantAgent(
 			"inspectedImageIds": proposal.InspectedImageIDs, "items": traceItems,
 		})
 		_ = store.CompleteAgentToolStep(ctx, w.St.Pool, run.ID, requestID, proposalResult, "", time.Now().UTC())
+		assistantstream.Publish(ctx, w.Stream, run.ID.String(), assistantstream.Event{
+			Kind: "agent", Stage: "planning-image",
+			Tool: &assistantstream.ToolCallEvent{RequestID: requestID, Name: proposalTool.Name, Arguments: string(arguments), Execution: "server", Status: "completed", Result: proposalResult},
+		})
+		toolSteps = append(toolSteps, assistantAgentToolStepRecord(
+			&sub2api.ToolCall{ID: requestID, Name: proposalTool.Name, Arguments: string(arguments)}, nil, 0))
 		proposalContract := assistantProposalGoalContract(run, proposal, len(searches), len(artifacts))
 		w.recordAssistantGoalContract(ctx, run.ID, proposalContract)
 		content := strings.TrimSpace(result.Text)
@@ -1840,6 +1870,7 @@ func (w *Worker) executeAssistantAgent(
 		attachAssistantUsage(metadata, finalizeAssistantUsage(result.Usage, started, firstVisible, run, content))
 		attachAssistantWebSearches(metadata, searches)
 		attachAssistantArtifacts(metadata, artifacts)
+		attachAssistantToolSteps(metadata, toolSteps)
 		if len(toolActions) > 0 {
 			metadata["toolActions"] = toolActions
 		}
@@ -1875,6 +1906,7 @@ func (w *Worker) executeAssistantAgent(
 	attachAssistantUsage(metadata, finalizeAssistantUsage(result.Usage, started, firstVisible, run, text))
 	attachAssistantWebSearches(metadata, searches)
 	attachAssistantArtifacts(metadata, artifacts)
+	attachAssistantToolSteps(metadata, toolSteps)
 	if len(toolActions) > 0 {
 		metadata["toolActions"] = toolActions
 	}
@@ -1904,6 +1936,33 @@ func attachAssistantWebSearches(metadata map[string]any, searches []sub2api.WebS
 		return
 	}
 	metadata["webSearches"] = searches
+}
+
+func attachAssistantToolSteps(metadata map[string]any, steps []map[string]any) {
+	if len(steps) == 0 {
+		return
+	}
+	metadata["toolSteps"] = steps
+}
+
+// assistantAgentToolStepRecord 记录一次工具调用的结果摘要。结果本体留在 agent_tool_steps
+// 表里，消息元数据只保留时间线需要的名称、状态和耗时。
+func assistantAgentToolStepRecord(call *sub2api.ToolCall, toolErr error, elapsed time.Duration) map[string]any {
+	if call == nil {
+		return nil
+	}
+	record := map[string]any{
+		"requestId":  strings.TrimSpace(call.ID),
+		"name":       call.Name,
+		"arguments":  string(assistantToolArguments(call.Arguments)),
+		"status":     "completed",
+		"durationMs": elapsed.Milliseconds(),
+	}
+	if toolErr != nil {
+		record["status"] = "failed"
+		record["error"] = toolErr.Error()
+	}
+	return record
 }
 
 func (w *Worker) runAssistantAgentWebSearch(

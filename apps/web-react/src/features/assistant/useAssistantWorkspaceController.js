@@ -56,6 +56,7 @@ import {
   uid,
 } from "./domain/assistantMessages.js";
 import { assistantStreamEventIsTerminal, mergeAssistantMessageSnapshot, mergeAssistantStreamText } from "./domain/assistantStreamMerge.js";
+import { mergeAssistantToolSteps } from "./domain/assistantToolSteps.js";
 import { mergePersistedAssistantMessage, resolveAssistantRetryIdentity } from "./domain/assistantRetryPolicy.js";
 import { promptNeedsRecentVisual, resolveVisualContext } from "./domain/visualContext.js";
 import { assistantRunGuidance } from "./domain/assistantGuidance.js";
@@ -2171,6 +2172,8 @@ export function useAssistantWorkspaceController() {
           id: persisted?.id || message.id,
           images: Array.isArray(persisted?.images) ? persisted.images : message.images,
           artifacts: Array.isArray(persisted?.artifacts) ? persisted.artifacts : terminal ? [] : message.artifacts,
+          // 本轮流式步骤带着工具结果，比持久化摘要更完整；持久化版本只在刷新后回填。
+          toolSteps: message.toolSteps?.length ? message.toolSteps : persisted?.toolSteps,
           kind: run.resolvedMode || persisted?.kind || message.kind,
           usage: mergeAssistantUsage(message.usage, persisted?.usage, terminal ? {
             durationMs: usageStartedAtMs(message) ? Math.max(1, Date.now() - usageStartedAtMs(message)) : 0,
@@ -2224,6 +2227,7 @@ export function useAssistantWorkspaceController() {
             const usage = event?.usage || extras.firstTokenMs || extras.durationMs
               ? mergeAssistantUsage(message.usage, event?.usage, extras)
               : message.usage;
+            const toolSteps = event?.tool ? mergeAssistantToolSteps(message.toolSteps, event.tool) : message.toolSteps;
             let webSearches = Array.isArray(message.webSearches) ? message.webSearches : [];
             if (event?.tool?.name === "web_search" && event.tool.status === "completed" && event.tool.result) {
               const result = event.tool.result;
@@ -2242,12 +2246,13 @@ export function useAssistantWorkspaceController() {
               ...(event?.context ? { context: event.context } : {}),
               ...(usage ? { usage } : {}),
               ...(webSearches.length ? { webSearches } : {}),
+              ...(toolSteps?.length ? { toolSteps } : {}),
               ...(event?.image ? { images, kind: "image", count: event.imageTotal || message.count } : {}),
               ...(terminalEvent ? { _streamTerminal: true } : {}),
             };
           }),
         }));
-        if (conversationId === activeIdRef.current && (event?.image || event?.reasoning || (event?.stage && !event?.content))) followConversationBottom();
+        if (conversationId === activeIdRef.current && (event?.image || event?.reasoning || event?.tool || (event?.stage && !event?.content))) followConversationBottom();
       },
     });
     try {
