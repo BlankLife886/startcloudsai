@@ -7,6 +7,7 @@ import { useAuth } from "../auth/AuthContext.jsx";
 import "@react/legacy-static/features/share/styles/share-view.css";
 
 const PAGE_SIZE = 16;
+const HERO_ROTATE_MS = 6400;
 gsap.registerPlugin(useGSAP);
 
 async function apiGet(path, params = {}, signal) {
@@ -30,22 +31,48 @@ async function apiGet(path, params = {}, signal) {
   return payload.data;
 }
 
+function firstUrl(...values) {
+  for (const value of values) {
+    if (Array.isArray(value)) {
+      const found = value.find(Boolean);
+      if (found) return String(found);
+      continue;
+    }
+    if (typeof value === "string" && value) return value;
+  }
+  return "";
+}
+
 function normalizeItem(raw) {
-  const cover = raw?.coverUrl || raw?.mediaUrls?.[0] || "";
+  const cover = firstUrl(raw?.coverUrl, raw?.mediaUrls);
   if (!raw?.id || !cover) return null;
+  const mediaUrls =
+    Array.isArray(raw.mediaUrls) && raw.mediaUrls.length
+      ? raw.mediaUrls.map(String)
+      : [cover];
+  const mediaDisplayUrls =
+    Array.isArray(raw.mediaDisplayUrls) && raw.mediaDisplayUrls.length
+      ? raw.mediaDisplayUrls.map((url, index) =>
+          String(url || mediaUrls[index] || cover),
+        )
+      : mediaUrls;
   return {
     id: String(raw.id),
     title: String(raw.title || "").trim() || "AI 作品",
     cover,
-    mediaUrls:
-      Array.isArray(raw.mediaUrls) && raw.mediaUrls.length
-        ? raw.mediaUrls
-        : [cover],
+    thumb: firstUrl(raw.coverThumbUrl, cover),
+    original: firstUrl(mediaUrls, cover),
+    display: firstUrl(raw.mediaDisplayUrls, raw.coverDisplayUrl, mediaUrls, cover),
+    mediaUrls,
+    mediaDisplayUrls,
     authorName: raw.author?.username || "社区创作者",
     authorAvatar: raw.author?.avatarUrl || "",
     createdAt: raw.createdAt || "",
     featured: Boolean(raw.featured),
     categoryName: String(raw.category?.name || "").trim(),
+    tags: Array.isArray(raw.tags)
+      ? raw.tags.filter(Boolean).map(String).slice(0, 8)
+      : [],
   };
 }
 
@@ -78,6 +105,49 @@ function formatDate(value) {
       });
 }
 
+function authorInitial(name) {
+  return String(name || "创").slice(0, 1).toUpperCase();
+}
+
+const PROMPT_HINT = /参考图|用途：|高清优化|提示词|\bprompt\b|\blora\b/i;
+
+function looksLikePrompt(title) {
+  const text = String(title || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return text.length > 22 && PROMPT_HINT.test(text);
+}
+
+function clampTitle(title, max = 16) {
+  const text = String(title || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) return "未命名作品";
+  const first = text.split(/[\n；;]/)[0].trim() || text;
+  if (first.length <= max) return first;
+  return `${first.slice(0, max).replace(/[，,。.\s]+$/, "")}…`;
+}
+
+function itemHeadline(item, max = 18) {
+  return clampTitle(item?.title, max);
+}
+
+function AuthorMark({ name, src, className }) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    setFailed(false);
+  }, [src]);
+  return (
+    <span className={className}>
+      {src && !failed ? (
+        <img src={src} alt="" onError={() => setFailed(true)} />
+      ) : (
+        authorInitial(name)
+      )}
+    </span>
+  );
+}
+
 export function ShareView() {
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -94,12 +164,14 @@ export function ShareView() {
   const [seenItems, setSeenItems] = useState(new Map());
   const [categories, setCategories] = useState([]);
   const [activeCategory, setActiveCategory] = useState("");
+  const [featuredOnly, setFeaturedOnly] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
   const [pageCursors, setPageCursors] = useState([""]);
   const [heroIndex, setHeroIndex] = useState(0);
+  const [heroPaused, setHeroPaused] = useState(false);
   const [categoryStuck, setCategoryStuck] = useState(false);
   const [detailItem, setDetailItem] = useState(null);
   const [detailMediaIndex, setDetailMediaIndex] = useState(0);
@@ -109,15 +181,23 @@ export function ShareView() {
   const heroItems = spotlightSource.slice(0, 5);
   const currentHero =
     heroItems[heroIndex % Math.max(1, heroItems.length)] || null;
-  const hotItems =
-    spotlightSource.length > 5
-      ? spotlightSource.slice(5, 10)
-      : spotlightSource.slice(0, 5);
+  const currentHeroHeadline =
+    currentHero && !looksLikePrompt(currentHero.title)
+      ? itemHeadline(currentHero, 22)
+      : "";
+  const hotItems = useMemo(() => {
+    const pool = [...seenItems.values()];
+    const source = pool.length ? pool : spotlightSource;
+    return source
+      .filter((item) => item.id !== currentHero?.id)
+      .slice(0, 5);
+  }, [seenItems, spotlightSource, currentHero?.id]);
   const galleryStats = useMemo(() => {
     const rows = [...seenItems.values()];
     return {
       works: rows.length,
       creators: new Set(rows.map((item) => item.authorName)).size,
+      featured: rows.filter((item) => item.featured).length,
     };
   }, [seenItems]);
   const topCreators = useMemo(() => {
@@ -125,20 +205,39 @@ export function ShareView() {
     seenItems.forEach((item) => {
       const row = creators.get(item.authorName) || {
         name: item.authorName,
+        avatar: "",
         workCount: 0,
         latestAt: "",
+        latestId: "",
       };
       row.workCount += 1;
-      if (String(item.createdAt) > String(row.latestAt))
+      if (item.authorAvatar && !row.avatar) row.avatar = item.authorAvatar;
+      if (String(item.createdAt) > String(row.latestAt)) {
         row.latestAt = item.createdAt;
+        row.latestId = item.id;
+      }
       creators.set(item.authorName, row);
     });
     return [...creators.values()]
       .sort((a, b) => b.workCount - a.workCount)
       .slice(0, 6);
   }, [seenItems]);
+  const relatedItems = useMemo(() => {
+    if (!detailItem) return [];
+    const rows = [...seenItems.values()].filter(
+      (item) => item.id !== detailItem.id,
+    );
+    const sameCategory = detailItem.categoryName
+      ? rows.filter((item) => item.categoryName === detailItem.categoryName)
+      : [];
+    const pool = (sameCategory.length ? sameCategory : rows).slice(0, 4);
+    return pool;
+  }, [detailItem, seenItems]);
   const activeCategoryName =
     categories.find((item) => item.id === activeCategory)?.name || "";
+  const feedTitle = featuredOnly
+    ? "精选展出"
+    : activeCategoryName || "最新入馆";
 
   const reduceMotion = () =>
     document.documentElement.classList.contains("settings-no-animations") ||
@@ -156,14 +255,14 @@ export function ShareView() {
       }
       gsap.fromTo(
         parts,
-        { opacity: 0, y: 18, filter: "blur(4px)" },
+        { opacity: 0, y: 26, filter: "blur(8px)" },
         {
           opacity: 1,
           y: 0,
           filter: "blur(0px)",
-          duration: 0.62,
-          stagger: 0.07,
-          ease: "power3.out",
+          duration: 0.78,
+          stagger: 0.09,
+          ease: "power4.out",
           clearProps: "filter,transform",
         },
       );
@@ -187,13 +286,14 @@ export function ShareView() {
       feedPlayedRef.current = true;
       gsap.fromTo(
         cards,
-        { opacity: 0, y: soft ? 6 : 14 },
+        { opacity: 0, y: soft ? 10 : 32, scale: soft ? 1 : 0.96 },
         {
           opacity: 1,
           y: 0,
-          duration: soft ? 0.2 : 0.34,
-          stagger: soft ? 0.008 : { each: 0.024, from: "start" },
-          ease: "power2.out",
+          scale: 1,
+          duration: soft ? 0.28 : 0.52,
+          stagger: soft ? 0.012 : { each: 0.045, from: "start" },
+          ease: "power3.out",
           clearProps: "transform",
         },
       );
@@ -219,18 +319,46 @@ export function ShareView() {
         return;
       }
       detailTimelineRef.current = gsap
-        .timeline({ defaults: { ease: "power2.out" } })
-        .fromTo(scrim, { opacity: 0 }, { opacity: 1, duration: 0.16 }, 0)
+        .timeline({ defaults: { ease: "power3.out" } })
+        .fromTo(scrim, { opacity: 0 }, { opacity: 1, duration: 0.22 }, 0)
         .fromTo(
           panel,
-          { opacity: 0, y: 14 },
+          { opacity: 0, y: 40, scale: 0.94, rotateX: 8 },
           {
             opacity: 1,
             y: 0,
-            duration: 0.24,
+            scale: 1,
+            rotateX: 0,
+            duration: 0.42,
             clearProps: "transform",
           },
           0.02,
+        );
+      const visual = detailRef.current.querySelector(
+        ".share-detail__visual .share-progressive-image",
+      );
+      const beats = detailRef.current.querySelectorAll(
+        ".share-detail__author, .share-detail__intro, .share-detail__cta, .share-detail__related",
+      );
+      if (visual)
+        gsap.fromTo(
+          visual,
+          { scale: 1.1 },
+          { scale: 1, duration: 0.7, ease: "power3.out" },
+        );
+      if (beats.length)
+        gsap.fromTo(
+          beats,
+          { opacity: 0, y: 16 },
+          {
+            opacity: 1,
+            y: 0,
+            duration: 0.38,
+            stagger: 0.05,
+            delay: 0.12,
+            ease: "power3.out",
+            clearProps: "transform",
+          },
         );
     },
     {
@@ -240,9 +368,89 @@ export function ShareView() {
     },
   );
 
+  useGSAP(
+    () => {
+      const root = pageRef.current;
+      if (!root || reduceMotion()) return undefined;
+      const pointer = root.querySelector(".community-pointer");
+      const xTo = pointer
+        ? gsap.quickTo(pointer, "x", { duration: 0.7, ease: "power3.out" })
+        : null;
+      const yTo = pointer
+        ? gsap.quickTo(pointer, "y", { duration: 0.7, ease: "power3.out" })
+        : null;
+      let hovered = null;
+      const release = (node) => {
+        if (!node) return;
+        gsap.to(node, {
+          rotateX: 0,
+          rotateY: 0,
+          duration: 0.55,
+          ease: "power3.out",
+          overwrite: "auto",
+        });
+        if (node.classList.contains("community-featured")) {
+          const slides = node.querySelector(".community-featured__slides");
+          if (slides)
+            gsap.to(slides, {
+              x: 0,
+              y: 0,
+              scale: 1,
+              duration: 0.7,
+              ease: "power3.out",
+              overwrite: "auto",
+            });
+        }
+      };
+      const onMove = (event) => {
+        xTo?.(event.clientX);
+        yTo?.(event.clientY);
+        const target = event.target.closest(".community-featured");
+        if (hovered && hovered !== target) release(hovered);
+        hovered = target;
+        if (!target || target.classList.contains("is-empty")) return;
+        const rect = target.getBoundingClientRect();
+        const px = (event.clientX - rect.left) / rect.width - 0.5;
+        const py = (event.clientY - rect.top) / rect.height - 0.5;
+        target.style.setProperty("--mx", `${(px + 0.5) * 100}%`);
+        target.style.setProperty("--my", `${(py + 0.5) * 100}%`);
+        gsap.to(target, {
+          rotateY: px * 7,
+          rotateX: -py * 5,
+          duration: 0.4,
+          ease: "power3.out",
+          overwrite: "auto",
+        });
+        const slides = target.querySelector(".community-featured__slides");
+        if (slides)
+          gsap.to(slides, {
+            x: px * 16,
+            y: py * 12,
+            scale: 1.05,
+            duration: 0.55,
+            ease: "power3.out",
+            overwrite: "auto",
+          });
+      };
+      const onLeave = () => {
+        release(hovered);
+        hovered = null;
+      };
+      root.addEventListener("pointermove", onMove);
+      root.addEventListener("pointerleave", onLeave);
+      return () => {
+        root.removeEventListener("pointermove", onMove);
+        root.removeEventListener("pointerleave", onLeave);
+        release(hovered);
+      };
+    },
+    { scope: pageRef },
+  );
+
   async function loadItems({
     targetPage = page,
     category = activeCategory,
+    featured = featuredOnly,
     resetSpotlight = false,
   } = {}) {
     setLoading(true);
@@ -252,6 +460,7 @@ export function ShareView() {
         limit: PAGE_SIZE,
         cursor: pageCursors[targetPage - 1] || "",
         category,
+        featured: featured ? 1 : undefined,
       });
       const rows = (Array.isArray(data?.items) ? data.items : [])
         .map(normalizeItem)
@@ -271,6 +480,7 @@ export function ShareView() {
       if (
         targetPage === 1 &&
         !category &&
+        !featured &&
         (resetSpotlight || !spotlightItems.length)
       )
         setSpotlightItems(rows.slice(0, 10));
@@ -354,8 +564,39 @@ export function ShareView() {
   }, [location.search, seenItems]);
 
   useEffect(() => {
+    if (heroItems.length < 2 || heroPaused || detailItem || reduceMotion())
+      return undefined;
+    const timer = window.setInterval(() => {
+      setHeroIndex((current) => (current + 1) % heroItems.length);
+    }, HERO_ROTATE_MS);
+    return () => window.clearInterval(timer);
+  }, [heroItems.length, heroPaused, detailItem]);
+
+  useEffect(() => {
     const onKeyDown = (event) => {
-      if (event.key === "Escape") closeDetail();
+      if (event.key === "Escape") {
+        closeDetail();
+        return;
+      }
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      if (detailItem) {
+        const total = detailItem.mediaUrls.length;
+        if (total < 2) return;
+        event.preventDefault();
+        setDetailMediaIndex((current) =>
+          event.key === "ArrowRight"
+            ? (current + 1) % total
+            : (current - 1 + total) % total,
+        );
+        return;
+      }
+      if (heroItems.length < 2) return;
+      event.preventDefault();
+      setHeroIndex((current) =>
+        event.key === "ArrowRight"
+          ? (current + 1) % heroItems.length
+          : (current - 1 + heroItems.length) % heroItems.length,
+      );
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -384,21 +625,37 @@ export function ShareView() {
   function goSubmit() {
     navigate(user ? "/profile" : "/auth?mode=login&redirect=%2Fprofile");
   }
-  function selectCategory(id) {
-    if (id === activeCategory) return;
-    setActiveCategory(id);
+  function resetFeed(next) {
+    setActiveCategory(next.category);
+    setFeaturedOnly(next.featured);
     setPage(1);
     setItems([]);
     setHasMore(false);
     setPageCursors([""]);
-    void loadItems({ targetPage: 1, category: id, resetSpotlight: !id });
+    void loadItems({
+      targetPage: 1,
+      category: next.category,
+      featured: next.featured,
+      resetSpotlight: !next.category && !next.featured,
+    });
+  }
+  function selectCategory(id) {
+    if (id === activeCategory && !featuredOnly) return;
+    resetFeed({ category: id, featured: false });
+  }
+  function selectFeatured() {
+    if (featuredOnly && !activeCategory) return;
+    resetFeed({ category: "", featured: true });
   }
   function refresh() {
     setPage(1);
     setItems([]);
     setHasMore(false);
     setPageCursors([""]);
-    void loadItems({ targetPage: 1, resetSpotlight: !activeCategory });
+    void loadItems({
+      targetPage: 1,
+      resetSpotlight: !activeCategory && !featuredOnly,
+    });
   }
   function changePage(nextPage) {
     if (
@@ -432,7 +689,7 @@ export function ShareView() {
             defaults: { ease: "power2.in" },
             onComplete: resolve,
           })
-          .to(panel, { opacity: 0, y: 10, duration: 0.14 }, 0)
+          .to(panel, { opacity: 0, y: 12, scale: 0.99, duration: 0.16 }, 0)
           .to(scrim, { opacity: 0, duration: 0.12 }, 0.02);
       });
     }
@@ -441,10 +698,22 @@ export function ShareView() {
     if (new URLSearchParams(location.search).has("item"))
       navigate("/share", { replace: true });
   });
+  function openCreator(creator) {
+    const found =
+      seenItems.get(creator.latestId) ||
+      [...seenItems.values()].find((item) => item.authorName === creator.name);
+    if (found) openDetail(found);
+  }
 
   return (
     <main ref={pageRef} className="community-page">
-      <div className="community-atmosphere" aria-hidden="true" />
+      <div className="community-pointer" aria-hidden="true" />
+      <div className="community-atmosphere" aria-hidden="true">
+        <i className="community-orb is-a" />
+        <i className="community-orb is-b" />
+        <i className="community-orb is-c" />
+      </div>
+      <div className="community-grain" aria-hidden="true" />
       <section className="community-intro">
         <div className="community-copy" data-share-motion>
           <div className="community-copy__spine" aria-hidden="true">
@@ -461,7 +730,9 @@ export function ShareView() {
                   画
                 </span>
               </h1>
-              <p className="community-copy__lead">灵感在此汇聚</p>
+              <p className="community-copy__lead">
+                灵感在此汇聚。浏览通过审核的作品，也把你的创作挂上展墙。
+              </p>
               <div className="community-copy__actions">
                 <button
                   type="button"
@@ -469,6 +740,9 @@ export function ShareView() {
                   onClick={scrollFeed}
                 >
                   进入画廊<span aria-hidden="true">→</span>
+                </button>
+                <button type="button" className="is-ghost" onClick={goSubmit}>
+                  我要投稿
                 </button>
               </div>
             </div>
@@ -502,21 +776,26 @@ export function ShareView() {
                   <span>作品</span>
                 </div>
                 <div>
-                  <strong>6</strong>
-                  <span>创作工坊</span>
+                  <strong>{compactNumber(galleryStats.featured)}</strong>
+                  <span>精选</span>
                 </div>
               </div>
             </div>
           </div>
         </div>
         <div
-          className={`community-featured${currentHero ? "" : " is-empty"}`}
+          className={`community-featured${currentHero ? "" : " is-empty"}${heroPaused ? " is-paused" : ""}`}
           data-share-motion
           role="button"
           tabIndex="0"
+          style={{ "--hero-rotate-ms": `${HERO_ROTATE_MS}ms` }}
           aria-label={
             currentHero ? `查看精选作品：${currentHero.title}` : "等待精选作品"
           }
+          onMouseEnter={() => setHeroPaused(true)}
+          onMouseLeave={() => setHeroPaused(false)}
+          onFocus={() => setHeroPaused(true)}
+          onBlur={() => setHeroPaused(false)}
           onClick={() => currentHero && openDetail(currentHero)}
           onKeyDown={(event) =>
             event.key === "Enter" && currentHero && openDetail(currentHero)
@@ -524,70 +803,95 @@ export function ShareView() {
         >
           {currentHero ? (
             <>
-              <ProgressiveImage
-                className="community-featured__image"
-                src={currentHero.cover}
-                alt={currentHero.title}
-                eager
-              />
-              <div className="community-featured__shade" />
-              <div className="community-featured__frame" aria-hidden="true" />
-              <div className="community-featured__meta">
-                <span className="community-featured__index">
-                  Featured {String(heroIndex + 1).padStart(2, "0")}
-                </span>
-                <span className="community-featured__tag">
-                  {shortDate(currentHero.createdAt)}
-                </span>
-                <small>{currentHero.authorName}</small>
-              </div>
-              <button
-                className="community-featured__arrow is-prev"
-                type="button"
-                aria-label="上一张"
-                data-click-guard="off"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  setHeroIndex(
-                    (heroIndex - 1 + heroItems.length) % heroItems.length,
-                  );
-                }}
-              >
-                <i className="bi bi-chevron-left" />
-              </button>
-              <button
-                className="community-featured__arrow is-next"
-                type="button"
-                aria-label="下一张"
-                data-click-guard="off"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  setHeroIndex((heroIndex + 1) % heroItems.length);
-                }}
-              >
-                <i className="bi bi-chevron-right" />
-              </button>
-              <div className="community-featured__dots">
+              <div className="community-featured__slides">
                 {heroItems.map((item, index) => (
-                  <button
+                  <div
                     key={item.id}
-                    type="button"
-                    className={index === heroIndex ? "is-active" : ""}
-                    aria-label={`切换到 ${item.title}`}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setHeroIndex(index);
-                    }}
+                    className={`community-featured__slide${index === heroIndex ? " is-active" : ""}`}
+                    aria-hidden={index !== heroIndex}
                   >
-                    <span>{String(index + 1).padStart(2, "0")}</span>
-                  </button>
+                    <ProgressiveImage
+                      className="community-featured__image"
+                      src={item.original || item.cover}
+                      previewSrc={item.thumb || item.cover}
+                      fallbackSrc={item.cover}
+                      alt={item.title}
+                      eager
+                    />
+                  </div>
                 ))}
               </div>
+              <div className="community-featured__shine" aria-hidden="true" />
+              <div className="community-featured__shade" />
+              {currentHero.featured ? (
+                <span className="community-featured__badge">精选</span>
+              ) : null}
+              <div className="community-featured__meta" key={currentHero.id}>
+                {currentHeroHeadline ? (
+                  <strong title={currentHero.title}>{currentHeroHeadline}</strong>
+                ) : null}
+                <small>
+                  {currentHero.authorName}
+                  {shortDate(currentHero.createdAt)
+                    ? ` · ${shortDate(currentHero.createdAt)}`
+                    : ""}
+                  {currentHero.categoryName &&
+                  currentHeroHeadline !== currentHero.categoryName
+                    ? ` · ${currentHero.categoryName}`
+                    : ""}
+                </small>
+              </div>
+              {heroItems.length > 1 ? (
+                <>
+                  <button
+                    className="community-featured__arrow is-prev"
+                    type="button"
+                    aria-label="上一张"
+                    data-click-guard="off"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setHeroIndex(
+                        (heroIndex - 1 + heroItems.length) % heroItems.length,
+                      );
+                    }}
+                  >
+                    <i className="bi bi-chevron-left" />
+                  </button>
+                  <button
+                    className="community-featured__arrow is-next"
+                    type="button"
+                    aria-label="下一张"
+                    data-click-guard="off"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setHeroIndex((heroIndex + 1) % heroItems.length);
+                    }}
+                  >
+                    <i className="bi bi-chevron-right" />
+                  </button>
+                  <div className="community-featured__dots">
+                    {heroItems.map((item, index) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        className={index === heroIndex ? "is-active" : ""}
+                        aria-label={`切换到 ${itemHeadline(item) || item.authorName}`}
+                        data-click-guard="off"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setHeroIndex(index);
+                        }}
+                      />
+                    ))}
+                  </div>
+                </>
+              ) : null}
             </>
           ) : (
             <div className="community-featured__placeholder">
               <i className="bi bi-images" />
               <span>等待精选作品</span>
+              <small>通过审核的投稿会在这里展出</small>
             </div>
           )}
         </div>
@@ -602,20 +906,32 @@ export function ShareView() {
             </button>
           </header>
           <ol>
-            {hotItems.map((item, index) => (
-              <li key={item.id} onClick={() => openDetail(item)}>
-                <b>{String(index + 1).padStart(2, "0")}</b>
-                <ProgressiveImage src={item.cover} alt="" />
+            {hotItems.map((item, index) => {
+              const headline = itemHeadline(item);
+              return (
+                <li key={item.id} onClick={() => openDetail(item)}>
+                  <b>{String(index + 1).padStart(2, "0")}</b>
+                  <ProgressiveImage src={item.cover} alt="" />
+                  <span>
+                    <strong title={item.title}>
+                      {headline || item.authorName}
+                    </strong>
+                    <small>
+                      {headline ? item.authorName : shortDate(item.createdAt)}
+                    </small>
+                  </span>
+                  <em>{shortDate(item.createdAt)}</em>
+                </li>
+              );
+            })}
+            {!hotItems.length && (
+              <li className="community-hot-panel__empty">
                 <span>
-                  <strong>{item.title}</strong>
-                  <small>{item.authorName}</small>
+                  <strong>展墙整理中</strong>
+                  <small>第一件入馆作品会出现在这里</small>
                 </span>
-                <em>
-                  <i className="bi bi-calendar3" />
-                  {shortDate(item.createdAt)}
-                </em>
               </li>
-            ))}
+            )}
           </ol>
         </aside>
       </section>
@@ -630,46 +946,53 @@ export function ShareView() {
           className={`community-categories${categoryStuck ? " is-stuck" : ""}`}
           aria-label="画廊导航"
         >
+          <div className="community-categories__track">
+            <button
+              type="button"
+              className={!activeCategory && !featuredOnly ? "is-active" : ""}
+              onClick={() => selectCategory("")}
+            >
+              <i className="bi bi-grid" />
+              全部
+            </button>
+            <button
+              type="button"
+              className={featuredOnly ? "is-active" : ""}
+              onClick={selectFeatured}
+            >
+              <i className="bi bi-stars" />
+              精选
+            </button>
+            {categories.map((category) => (
+              <button
+                key={category.id}
+                type="button"
+                className={activeCategory === category.id ? "is-active" : ""}
+                onClick={() => selectCategory(category.id)}
+              >
+                {category.name}
+              </button>
+            ))}
+          </div>
           <button
             type="button"
-            className={!activeCategory ? "is-active" : ""}
-            onClick={() => selectCategory("")}
+            className="is-refresh"
+            disabled={loading}
+            aria-label="刷新馆藏"
+            onClick={refresh}
           >
-            <i className="bi bi-grid" />
-            全部
-          </button>
-          {categories.map((category) => (
-            <button
-              key={category.id}
-              type="button"
-              className={activeCategory === category.id ? "is-active" : ""}
-              onClick={() => selectCategory(category.id)}
-            >
-              {category.name}
-            </button>
-          ))}
-          <button type="button" disabled={loading} onClick={refresh}>
             <i className={`bi bi-arrow-clockwise${loading ? " spin" : ""}`} />
-            刷新馆藏
           </button>
         </nav>
         <div className="community-main" data-share-motion>
           <div className="community-feed-head">
             <div>
-              <strong>{activeCategoryName || "最新入馆"}</strong>
+              <strong>{feedTitle}</strong>
               <span>
                 已收录 {galleryStats.works}
                 {hasMore ? "+" : ""} 件
               </span>
             </div>
-            <button
-              type="button"
-              disabled={loading}
-              onClick={() => loadItems()}
-            >
-              <i className={`bi bi-arrow-clockwise${loading ? " spin" : ""}`} />
-              刷新
-            </button>
           </div>
           <div
             ref={feedRef}
@@ -703,11 +1026,19 @@ export function ShareView() {
               <div className="community-empty">
                 <i className="bi bi-images" />
                 <strong>
-                  {activeCategory ? "该分类暂时没有作品" : "画廊还没有作品"}
+                  {featuredOnly
+                    ? "还没有精选作品"
+                    : activeCategory
+                      ? "该分类暂时没有作品"
+                      : "画廊还没有作品"}
                 </strong>
-                {activeCategory ? (
-                  <span>切换其他分类，或成为这个分类的第一位创作者。</span>
-                ) : null}
+                <span>
+                  {featuredOnly
+                    ? "策展完成后，精选作品会显示在这里。"
+                    : activeCategory
+                      ? "切换其他分类，或成为这个分类的第一位创作者。"
+                      : "去工作台创作，并在个人中心把满意的一幅投稿进来。"}
+                </span>
                 <button
                   type="button"
                   onClick={() => navigate("/text-to-image")}
@@ -721,37 +1052,49 @@ export function ShareView() {
                 aria-label="社区作品"
                 aria-busy={loading}
               >
-                {items.map((item) => (
-                  <article
-                    key={item.id}
-                    className="community-card"
-                    onClick={() => openDetail(item)}
-                  >
-                    <div className="community-card__media">
-                      <ProgressiveImage src={item.cover} alt={item.title} />
-                      {item.categoryName && (
-                        <span className="community-card__category">
-                          {item.categoryName}
-                        </span>
-                      )}
-                      <div className="community-card__overlay">
-                        <span>查看</span>
+                {items.map((item) => {
+                  const headline = itemHeadline(item);
+                  return (
+                    <article
+                      key={item.id}
+                      className="community-card"
+                      title={item.title}
+                      onClick={() => openDetail(item)}
+                    >
+                      <div className="community-card__media">
+                        <ProgressiveImage
+                          src={item.original || item.cover}
+                          previewSrc={item.thumb || item.cover}
+                          fallbackSrc={item.cover}
+                          alt={item.title}
+                        />
+                        {item.featured && (
+                          <span className="community-card__featured">精选</span>
+                        )}
+                        {item.categoryName && (
+                          <span className="community-card__category">
+                            {item.categoryName}
+                          </span>
+                        )}
                       </div>
-                    </div>
-                    <footer>
-                      <strong title={item.title}>{item.title}</strong>
-                      <div className="community-card__meta">
-                        <small>{item.authorName}</small>
-                        <div className="community-card__actions">
-                          <button type="button">
-                            <i className="bi bi-calendar3" />
+                      <footer>
+                        <strong title={item.title}>{headline}</strong>
+                        <div className="community-card__meta">
+                          <div className="community-card__author">
+                            <AuthorMark
+                              name={item.authorName}
+                              src={item.authorAvatar}
+                            />
+                            <small>{item.authorName}</small>
+                          </div>
+                          <time dateTime={item.createdAt || undefined}>
                             {shortDate(item.createdAt)}
-                          </button>
+                          </time>
                         </div>
-                      </div>
-                    </footer>
-                  </article>
-                ))}
+                      </footer>
+                    </article>
+                  );
+                })}
               </div>
             )}
           </div>
@@ -794,10 +1137,12 @@ export function ShareView() {
             </header>
             <ul className="community-creators">
               {topCreators.map((creator) => (
-                <li key={creator.name}>
-                  <span className="community-creator-avatar">
-                    {creator.name.slice(0, 1)}
-                  </span>
+                <li key={creator.name} onClick={() => openCreator(creator)}>
+                  <AuthorMark
+                    name={creator.name}
+                    src={creator.avatar}
+                    className="community-creator-avatar"
+                  />
                   <div>
                     <strong>{creator.name}</strong>
                     <small>
@@ -828,6 +1173,7 @@ export function ShareView() {
               </div>
             </header>
             <div className="community-submit">
+              <p>在工作台完成后，到个人中心把满意的一幅投稿进社区画廊。</p>
               <div className="community-submit__actions">
                 <button
                   type="button"
@@ -867,13 +1213,14 @@ export function ShareView() {
               <i className="bi bi-x-lg" />
             </button>
             <div className="share-detail__visual">
-              <div className="share-detail__frame" aria-hidden="true" />
               <ProgressiveImage
-                src={detailItem.mediaUrls[detailMediaIndex] || detailItem.cover}
+                src={
+                  detailItem.mediaUrls[detailMediaIndex] ||
+                  detailItem.cover
+                }
                 alt={detailItem.title}
                 eager
               />
-              <span className="share-detail__visual-mark">Artwork</span>
               {detailItem.mediaUrls.length > 1 && (
                 <div className="share-detail__thumbs">
                   {detailItem.mediaUrls.map((url, index) => (
@@ -899,11 +1246,10 @@ export function ShareView() {
               <div className="share-detail__body">
                 <header className="share-detail__top">
                   <div className="share-detail__author">
-                    <span>
-                      {String(detailItem.authorName || "创")
-                        .slice(0, 1)
-                        .toUpperCase()}
-                    </span>
+                    <AuthorMark
+                      name={detailItem.authorName}
+                      src={detailItem.authorAvatar}
+                    />
                     <div>
                       <strong>{detailItem.authorName}</strong>
                       <small>AI 创作 · 社区投稿</small>
@@ -912,7 +1258,27 @@ export function ShareView() {
                 </header>
                 <div className="share-detail__intro">
                   <em>Work</em>
-                  <h2>{detailItem.title}</h2>
+                  <h2 title={detailItem.title}>
+                    {looksLikePrompt(detailItem.title)
+                      ? detailItem.categoryName || "社区作品"
+                      : itemHeadline(detailItem, 28)}
+                  </h2>
+                  {looksLikePrompt(detailItem.title) ? (
+                    <p>{detailItem.title}</p>
+                  ) : null}
+                  {(detailItem.featured ||
+                    detailItem.categoryName ||
+                    detailItem.tags.length > 0) && (
+                    <div className="share-detail__tags">
+                      {detailItem.featured ? <span>精选</span> : null}
+                      {detailItem.categoryName ? (
+                        <span>{detailItem.categoryName}</span>
+                      ) : null}
+                      {detailItem.tags.map((tag) => (
+                        <span key={tag}>{tag}</span>
+                      ))}
+                    </div>
+                  )}
                   <div className="share-detail__stats">
                     <span>
                       <i className="bi bi-calendar3" />
@@ -924,6 +1290,38 @@ export function ShareView() {
                     </span>
                   </div>
                 </div>
+                <div className="share-detail__cta">
+                  <button
+                    type="button"
+                    className="is-primary"
+                    onClick={() => navigate("/text-to-image")}
+                  >
+                    去创作同款灵感
+                  </button>
+                  <button type="button" onClick={goSubmit}>
+                    投稿我的作品
+                  </button>
+                </div>
+                {relatedItems.length > 0 && (
+                  <div className="share-detail__related">
+                    <em>More</em>
+                    <strong>同一展墙</strong>
+                    <div>
+                      {relatedItems.map((item) => (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={() => openDetail(item)}
+                        >
+                          <ProgressiveImage
+                            src={item.cover}
+                            alt={item.title}
+                          />
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </section>

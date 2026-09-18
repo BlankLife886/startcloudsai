@@ -9,7 +9,8 @@
   background: #eceef6;
 }
 .share-progressive-image img {
-  position: relative;
+  position: absolute;
+  inset: 0;
   z-index: 1;
   display: block;
   width: 100%;
@@ -19,8 +20,19 @@
   opacity: 0;
   transition: opacity 0.2s ease;
 }
-.share-progressive-image.is-loaded img {
+.share-progressive-image img.is-preview {
+  z-index: 1;
+}
+.share-progressive-image img.is-full {
+  z-index: 2;
+}
+.share-progressive-image.is-preview-loaded img.is-preview,
+.share-progressive-image.is-loaded img.is-full,
+.share-progressive-image.is-loaded img:not(.is-preview) {
   opacity: 1;
+}
+.share-progressive-image.is-loaded img.is-preview {
+  opacity: 0;
 }
 .share-progressive-image__skeleton {
   position: absolute;
