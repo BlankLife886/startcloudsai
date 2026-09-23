@@ -184,7 +184,28 @@ func (s *Server) adminListRedemptionCodes(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	ok(c, buildPage(rows, limit, redemptionCodeDict))
+	batchID := strings.TrimSpace(c.Query("batchId"))
+	summary, err := store.SummarizeRedemptionCodes(c.Request.Context(), s.St.Pool, batchID, search, extra)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	page := buildPage(rows, limit, redemptionCodeDict)
+	page["summary"] = gin.H{
+		"total": summary.Total, "active": summary.Active, "redeemed": summary.Redeemed,
+		"disabled": summary.Disabled, "expired": summary.Expired,
+	}
+	switch status {
+	case "":
+		page["total"] = summary.Total
+	case "redeemed":
+		page["total"] = summary.Redeemed
+	case "disabled":
+		page["total"] = summary.Disabled
+	case "active":
+		page["total"] = summary.Active + summary.Expired
+	}
+	ok(c, page)
 }
 
 func (s *Server) adminDisableRedemptionCode(c *gin.Context, _ *store.User) {

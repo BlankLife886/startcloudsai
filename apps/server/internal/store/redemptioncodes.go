@@ -148,3 +148,31 @@ func ListRedemptionBatches(ctx context.Context, q Q, search string, n int) ([]*R
 	}
 	return out, rows.Err()
 }
+
+// RedemptionCodeSummary 后台列表顶部统计；Active 不含已过期，Expired 为过期但未兑换/禁用的码。
+type RedemptionCodeSummary struct {
+	Total, Active, Redeemed, Disabled, Expired int64
+}
+
+// SummarizeRedemptionCodes 与 ListRedemptionCodes 使用相同的批次、搜索和日期范围（不含状态）。
+func SummarizeRedemptionCodes(ctx context.Context, q Q, batchID, search string, extra ...AdminListFilter) (RedemptionCodeSummary, error) {
+	sql := `SELECT count(*),
+	               count(*) FILTER (WHERE status = 'active' AND (expires_at IS NULL OR expires_at > now())),
+	               count(*) FILTER (WHERE status = 'redeemed'),
+	               count(*) FILTER (WHERE status = 'disabled'),
+	               count(*) FILTER (WHERE status = 'active' AND expires_at <= now())
+	        FROM redemption_codes r WHERE true`
+	args := []any{}
+	if batchID != "" {
+		args = append(args, batchID)
+		sql += fmt.Sprintf(` AND r.batch_id = $%d`, len(args))
+	}
+	if search != "" {
+		args = append(args, search)
+		sql += fmt.Sprintf(` AND r.code = $%d`, len(args))
+	}
+	sql, args = appendAdminDates(sql, args, "r.created_at", extra)
+	var s RedemptionCodeSummary
+	err := q.QueryRow(ctx, sql, args...).Scan(&s.Total, &s.Active, &s.Redeemed, &s.Disabled, &s.Expired)
+	return s, err
+}
