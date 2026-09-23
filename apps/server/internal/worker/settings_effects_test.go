@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -11,7 +12,9 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/BlankLife886/startcloudsai/server/internal/config"
 	"github.com/BlankLife886/startcloudsai/server/internal/media"
+	"github.com/BlankLife886/startcloudsai/server/internal/modelconfig"
 	"github.com/BlankLife886/startcloudsai/server/internal/platformlog"
 	"github.com/BlankLife886/startcloudsai/server/internal/settings"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
@@ -205,5 +208,85 @@ func TestSettingsEffectImageVariantSettingsShapeOutputs(t *testing.T) {
 	lossless, _ := encode()
 	if lossless.ContentType != "image/webp" || string(lossless.Data[12:16]) != "VP8L" {
 		t.Fatalf("lossless setting produced %s chunk %q, want webp VP8L", lossless.ContentType, lossless.Data[12:16])
+	}
+}
+
+// 「同名模型跨服务商泄压」：只有开关打开，且另一家模型同类型、同名、同价时，
+// 第二个任务才会在 provider-a 满载后改走 provider-b；关闭时应排队等待原服务商。
+func TestSettingsEffectCrossProviderBalancingSwitchAndMatchRules(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		enabled     string
+		otherName   string
+		otherPrice  int64
+		wantSpill   bool
+		description string
+	}{
+		{"off", "false", "Shared Image", 12, false, "开关关闭：不借用其他服务商"},
+		{"on-same", "true", "Shared Image", 12, true, "开关打开、同名同价：改走 provider-b"},
+		{"on-other-price", "true", "Shared Image", 20, false, "价格不同：不参与泄压"},
+		{"on-other-name", "true", "Another Image", 12, false, "名称不同：不参与泄压"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := testdb.Setup(t)
+			ctx := context.Background()
+			const masterKey = "worker-cross-provider-effect-key"
+			encrypted, err := settings.EncryptSecret("route-secret", masterKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := modelconfig.Config{
+				Version: modelconfig.Version,
+				Providers: []modelconfig.Provider{
+					{ID: "provider-a", Name: "Provider A", Adapter: modelconfig.AdapterOpenAI, Enabled: true, Routes: []modelconfig.ProviderRoute{{ID: "route-a", Name: "A", BaseURL: "https://a.example.com", APIKey: encrypted, MaxConcurrency: 1, Enabled: true}}},
+					{ID: "provider-b", Name: "Provider B", Adapter: modelconfig.AdapterOpenAI, Enabled: true, Routes: []modelconfig.ProviderRoute{{ID: "route-b", Name: "B", BaseURL: "https://b.example.com", APIKey: encrypted, MaxConcurrency: 1, Enabled: true}}},
+				},
+				Models: []modelconfig.Model{
+					{ID: "model-a", Name: "Shared Image", ProviderID: "provider-a", UpstreamModel: "upstream-a", Kind: modelconfig.ModelKindImage, PriceCents: 12, Qualities: []string{"high"}, Public: true, Default: true, Enabled: true},
+					{ID: "model-b", Name: tc.otherName, ProviderID: "provider-b", UpstreamModel: "upstream-b", Kind: modelconfig.ModelKindImage, PriceCents: tc.otherPrice, Qualities: []string{"high"}, Public: true, Enabled: true},
+				},
+			}
+			if err := modelconfig.Save(ctx, st.Pool, cfg); err != nil {
+				t.Fatal(err)
+			}
+			setWorkerSetting(t, st, "global_max_concurrent_tasks", "100")
+			setWorkerSetting(t, st, "user_max_concurrent_tasks", "100")
+			setWorkerSetting(t, st, "cross_provider_same_model_balancing_enabled", tc.enabled)
+			user, err := store.InsertUser(ctx, st.Pool, fmt.Sprintf("spill-%s@test.dev", uuid.NewString()[:8]), "worker", "x", "user", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ids := make([]uuid.UUID, 2)
+			for index := range ids {
+				params := `{"_providerConfigId":"provider-a","_providerRouteId":"route-a","_modelConfigId":"model-a","_serviceProvider":"openai","_unitPriceCents":12,"quality":"high"}`
+				if err := st.Pool.QueryRow(ctx,
+					`INSERT INTO tasks (user_id, type, model, prompt, params, status, cost_cents) VALUES ($1, 't2i', 'upstream-a', 'test', $2, 'queued', 12) RETURNING id`,
+					user.ID, params).Scan(&ids[index]); err != nil {
+					t.Fatal(err)
+				}
+			}
+			w := &Worker{St: st, Cfg: &config.Config{AppSecret: masterKey}}
+			first, reason, err := w.claimTask(ctx, ids[0])
+			if err != nil || reason != "" || first == nil || taskParamString(first.Params, "_providerConfigId") != "provider-a" {
+				t.Fatalf("%s: first claim task=%v reason=%q err=%v", tc.description, first, reason, err)
+			}
+			second, reason, err := w.claimTask(ctx, ids[1])
+			if err != nil {
+				t.Fatalf("%s: second claim err=%v", tc.description, err)
+			}
+			if tc.wantSpill {
+				if second == nil || taskParamString(second.Params, "_providerConfigId") != "provider-b" || second.CostCents != 12 {
+					t.Fatalf("%s: second task=%v reason=%q, want provider-b at frozen cost 12", tc.description, second, reason)
+				}
+				return
+			}
+			if second != nil {
+				t.Fatalf("%s: second task ran on %q, want it to wait for provider-a", tc.description, taskParamString(second.Params, "_providerConfigId"))
+			}
+			if reason == "" {
+				t.Fatalf("%s: second task neither ran nor deferred", tc.description)
+			}
+			t.Logf("%s: deferred with reason %q", tc.description, reason)
+		})
 	}
 }

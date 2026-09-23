@@ -1530,6 +1530,31 @@ onMounted(() => {
             <el-switch v-model="form.crossProviderSameModelBalancingEnabled" />
           </label>
         </div>
+        <div class="explain">
+          <div class="explain__item">
+            <strong>作用</strong>
+            <p>
+              某家服务商的并发额度用满时，新任务可以改用另一家服务商上的同名模型执行，不用排队等待。
+              关闭时，任务只在用户选定的服务商上执行，满载就排队。
+            </p>
+          </div>
+          <div class="explain__item">
+            <strong>借用条件（需全部满足）</strong>
+            <ul>
+              <li>另一家的模型已启用、已公开且当前可用</li>
+              <li>类型相同：都是生图，或都是对话</li>
+              <li>模型名称相同（不区分大小写）</li>
+              <li>积分价格完全一致，仍按用户下单时的价格扣费</li>
+            </ul>
+          </div>
+          <div class="explain__item">
+            <strong>生效时机</strong>
+            <p>
+              可借用哪些服务商在用户提交任务时就已确定。修改开关只影响之后新提交的任务，
+              已在排队的任务仍按提交时的条件执行。
+            </p>
+          </div>
+        </div>
       </div>
             </template>
           </div>
@@ -1756,6 +1781,13 @@ html.dark .settings-card { box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.04), 0 
 .model-identity__meta span { padding: 3px 10px; border-radius: 999px; background: var(--surface); color: var(--ink-2); font-size: 12px; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 
+/* 功能说明 */
+.explain { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.explain__item { display: grid; align-content: start; gap: 6px; padding: 12px 14px; border-radius: 14px; background: var(--surface-2); }
+.explain__item strong { color: var(--ink); font-size: 13px; font-weight: 650; }
+.explain__item p { margin: 0; color: var(--ink-2); font-size: 12px; line-height: 1.6; }
+.explain__item ul { display: grid; gap: 3px; margin: 0; padding-left: 16px; color: var(--ink-2); font-size: 12px; line-height: 1.5; }
+
 /* 跳转入口 */
 .jump-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 2px; }
 .jump-chip, .jump-row :deep(.el-button) {
@@ -1825,6 +1857,7 @@ html.dark .save-bar { background: var(--surface-3); color: var(--ink); box-shado
 @media (max-width: 1400px) {
   .settings-page { grid-template-columns: 220px minmax(0, 1fr); }
   .field-grid { grid-template-columns: minmax(0, 1fr); }
+  .explain { grid-template-columns: minmax(0, 1fr); }
   .sync-state { display: none; }
 }
 </style>
