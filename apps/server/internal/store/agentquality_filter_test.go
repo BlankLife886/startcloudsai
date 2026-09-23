@@ -56,3 +56,42 @@ func TestAgentQualityFilteredSummaryAndPagination(t *testing.T) {
 		t.Fatalf("page 2 failed: %d %v", len(rows), err)
 	}
 }
+
+func TestAgentQualityUserSearchScopesSummaryAndList(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	target, err := store.InsertUser(ctx, st.Pool, "agent-target-"+uuid.NewString()+"@test.dev", "target", "x", "user", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := store.InsertUser(ctx, st.Pool, "agent-other-"+uuid.NewString()+"@test.dev", "other", "x", "user", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, user := range []*store.User{target, target, other} {
+		run := insertPerfAssistantRun(t, st, user.ID, "infinite_canvas", now.Add(time.Duration(i)*time.Second), "succeeded", nil)
+		if err = store.InsertAgentExecutionTrace(ctx, st.Pool, run.ID, user.ID, nil, "model-a", "high", nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, search := range []string{"agent-target-", target.ID.String()} {
+		options := store.AgentTraceListOptions{Since: now.Add(-time.Hour), Workspace: "canvas", Limit: 50, UserSearch: search}
+		summary, err := store.GetAgentQualitySummaryScoped(ctx, st.Pool, options.Since, options.Workspace, options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows, err := store.ListAdminAgentExecutionTraces(ctx, st.Pool, options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if summary.TotalTraces != 2 || len(rows) != 2 {
+			t.Fatalf("search %q: summary=%d rows=%d", search, summary.TotalTraces, len(rows))
+		}
+		for _, row := range rows {
+			if row.UserEmail != target.Email {
+				t.Fatalf("search %q returned %s", search, row.UserEmail)
+			}
+		}
+	}
+}

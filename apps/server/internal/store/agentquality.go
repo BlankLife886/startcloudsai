@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -157,6 +158,21 @@ type AgentTraceListOptions struct {
 	Limit           int
 	Offset          int
 	IssuesOnly      bool
+	// UserSearch 按用户 ID（精确）或邮箱、用户名（包含）筛选；汇总与列表共用。
+	UserSearch string
+}
+
+// agentTraceUserFilter 返回用户筛选条件；idPos 为精确 ID 参数、likePos 为转义后的包含模式。
+func agentTraceUserFilter(idPos, likePos int) string {
+	return fmt.Sprintf(` AND ($%d='' OR trace.user_id::text=$%d OR EXISTS(SELECT 1 FROM users matched WHERE matched.id=trace.user_id AND (matched.email::text ILIKE $%d OR matched.username ILIKE $%d)))`, idPos, idPos, likePos, likePos)
+}
+
+func agentTraceUserArgs(search string) (string, string) {
+	search = strings.TrimSpace(search)
+	if search == "" {
+		return "", ""
+	}
+	return search, literalSearch(search)
 }
 
 func GetAgentQualitySummary(ctx context.Context, q Q, since time.Time) (AgentQualitySummary, error) {
@@ -168,12 +184,13 @@ func GetAgentQualitySummaryScoped(ctx context.Context, q Q, since time.Time, wor
 	if len(filters) > 0 {
 		f = filters[0]
 	}
+	userID, userLike := agentTraceUserArgs(f.UserSearch)
 	var out AgentQualitySummary
 	err := q.QueryRow(ctx, `WITH selected AS (
 		SELECT * FROM agent_execution_traces trace WHERE started_at >= $1 AND ($2='' OR workspace=$2)
 		AND ($3='' OR model=$3) AND ($4='' OR reasoning_effort=$4) AND ($5='' OR prompt_version=$5)
 		AND ($6='' OR tool_version=$6) AND ($7='' OR status=$7)
-		AND ($8=false OR status='failed' OR EXISTS(SELECT 1 FROM agent_tool_steps step WHERE step.trace_id=trace.id AND step.status IN ('failed','pending','claimed')))
+		AND ($8=false OR status='failed' OR EXISTS(SELECT 1 FROM agent_tool_steps step WHERE step.trace_id=trace.id AND step.status IN ('failed','pending','claimed')))`+agentTraceUserFilter(9, 10)+`
 	), trace_stats AS (
 		SELECT count(*) total,
 			count(*) FILTER (WHERE status='succeeded') succeeded,
@@ -192,7 +209,7 @@ func GetAgentQualitySummaryScoped(ctx context.Context, q Q, since time.Time, wor
 	)
 	SELECT trace_stats.total, trace_stats.succeeded, trace_stats.failed, trace_stats.canceled, trace_stats.running,
 		trace_stats.avg_score, trace_stats.avg_duration, step_stats.total, step_stats.failed, step_stats.unfinished, step_stats.confirmed
-	FROM trace_stats CROSS JOIN step_stats`, since, strings.TrimSpace(workspace), f.Model, f.ReasoningEffort, f.PromptVersion, f.ToolVersion, f.Status, f.IssuesOnly).Scan(&out.TotalTraces, &out.SucceededTraces, &out.FailedTraces,
+	FROM trace_stats CROSS JOIN step_stats`, since, strings.TrimSpace(workspace), f.Model, f.ReasoningEffort, f.PromptVersion, f.ToolVersion, f.Status, f.IssuesOnly, userID, userLike).Scan(&out.TotalTraces, &out.SucceededTraces, &out.FailedTraces,
 		&out.CanceledTraces, &out.RunningTraces, &out.AverageScore, &out.AverageDuration,
 		&out.ToolSteps, &out.FailedSteps, &out.UnfinishedSteps, &out.ConfirmedSteps)
 	return out, err
@@ -233,6 +250,7 @@ func ListAdminAgentExecutionTraces(ctx context.Context, q Q, options AgentTraceL
 	if options.Limit <= 0 || options.Limit > 200 {
 		options.Limit = 50
 	}
+	userID, userLike := agentTraceUserArgs(options.UserSearch)
 	rows, err := q.Query(ctx, `SELECT `+qualifiedAgentTraceCols+`, COALESCE(users.email,''),
 		COALESCE(steps.total,0), COALESCE(steps.failed,0), COALESCE(steps.unfinished,0),
 		GREATEST(0, floor(extract(epoch FROM (COALESCE(trace.finished_at, now())-trace.started_at))*1000)::bigint)
@@ -247,10 +265,10 @@ func ListAdminAgentExecutionTraces(ctx context.Context, q Q, options AgentTraceL
 		  AND ($3='' OR trace.status=$3) AND ($4='' OR trace.model=$4)
 		  AND ($5='' OR trace.reasoning_effort=$5) AND ($6='' OR trace.prompt_version=$6)
 		  AND ($7='' OR trace.tool_version=$7)
-		  AND ($9=false OR trace.status='failed' OR COALESCE(steps.failed,0)>0 OR COALESCE(steps.unfinished,0)>0)
+		  AND ($9=false OR trace.status='failed' OR COALESCE(steps.failed,0)>0 OR COALESCE(steps.unfinished,0)>0)`+agentTraceUserFilter(11, 12)+`
 		ORDER BY trace.started_at DESC, trace.id DESC LIMIT $8 OFFSET $10`, options.Since, strings.TrimSpace(options.Workspace), strings.TrimSpace(options.Status),
 		strings.TrimSpace(options.Model), strings.TrimSpace(options.ReasoningEffort), strings.TrimSpace(options.PromptVersion),
-		strings.TrimSpace(options.ToolVersion), options.Limit, options.IssuesOnly, max(0, options.Offset))
+		strings.TrimSpace(options.ToolVersion), options.Limit, options.IssuesOnly, max(0, options.Offset), userID, userLike)
 	if err != nil {
 		return nil, err
 	}

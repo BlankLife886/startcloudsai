@@ -145,7 +145,12 @@ func (s *Server) adminAgentQualityOverview(c *gin.Context, _ *store.User) {
 		fail(c, errPageBeyondCap)
 		return
 	}
-	traceFilter := store.AgentTraceListOptions{Since: since, Workspace: workspace, Status: status, Model: strings.TrimSpace(c.Query("model")), ReasoningEffort: strings.TrimSpace(c.Query("reasoningEffort")), PromptVersion: strings.TrimSpace(c.Query("promptVersion")), ToolVersion: strings.TrimSpace(c.Query("toolVersion")), Limit: 50, Offset: (page - 1) * 50, IssuesOnly: c.Query("issues") == "true"}
+	userSearch := strings.TrimSpace(c.Query("user"))
+	if len([]rune(userSearch)) > 200 {
+		fail(c, apperr.E("validation_error", "用户搜索不能超过 200 个字符", 422))
+		return
+	}
+	traceFilter := store.AgentTraceListOptions{UserSearch: userSearch, Since: since, Workspace: workspace, Status: status, Model: strings.TrimSpace(c.Query("model")), ReasoningEffort: strings.TrimSpace(c.Query("reasoningEffort")), PromptVersion: strings.TrimSpace(c.Query("promptVersion")), ToolVersion: strings.TrimSpace(c.Query("toolVersion")), Limit: 50, Offset: (page - 1) * 50, IssuesOnly: c.Query("issues") == "true"}
 	summary, err := store.GetAgentQualitySummaryScoped(c.Request.Context(), s.St.Pool, since, workspace, traceFilter)
 	if err != nil {
 		fail(c, err)

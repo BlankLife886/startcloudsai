@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import { Refresh, VideoPlay, View } from "@element-plus/icons-vue";
+import { ArrowDown, CopyDocument, Refresh, Search, VideoPlay, View } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import PageCard from "@/components/PageCard.vue";
 import CursorPager from '@/components/CursorPager.vue';
@@ -140,7 +140,19 @@ const days = ref<7 | 30>(7);
 const workspace = ref<AgentWorkspace>("assistant");
 const status = ref("");
 const issuesOnly = ref(false);
+// 用户搜索：邮箱、用户名或用户 ID；回车或清空时生效，汇总与列表同步筛选。
+const userInput = ref("");
+const userSearch = ref("");
+function applyUserSearch() {
+  userSearch.value = userInput.value.trim();
+}
+function clearUserSearch() {
+  userInput.value = "";
+  userSearch.value = "";
+}
 const tracePage = ref(1);
+// 版本对比：执行次数低于该值时提示样本不足。
+const MIN_VERSION_SAMPLES = 20;
 const versionKey = ref("");
 const activeTab = ref("traces");
 const loading = ref(false);
@@ -231,6 +243,8 @@ function traceVisualCount() {
 
 function traceGoal() {
   return (traceDetail.value?.goalContract || {}) as {
+    goal?: string;
+    acceptanceRequirements?: string[];
     outcomeKind?: string;
     deliverableCount?: number;
     promptMode?: string;
@@ -259,6 +273,7 @@ function queryForSelection() {
     workspace: workspace.value,
     status: status.value,
     issues: issuesOnly.value,
+    user: userSearch.value,
     page: tracePage.value,
     model: selected?.model,
     reasoningEffort: selected?.reasoningEffort,
@@ -309,13 +324,32 @@ async function runEvaluation() {
   }
 }
 
+// 步骤的参数与结果默认收起；失败或有报错的步骤自动展开，便于直接定位问题。
+const openSteps = ref<Record<string, boolean>>({});
+const traceFailedSteps = computed(() => traceDetail.value?.steps.filter((step) => step.status === "failed").length ?? 0);
+async function copyJSON(value: unknown, label: string) {
+  try {
+    await navigator.clipboard.writeText(formatJSON(value));
+    ElMessage.success(`${label}已复制`);
+  } catch {
+    ElMessage.error("复制失败，请手动选择文本复制");
+  }
+}
+function toggleStep(id: string) {
+  openSteps.value = { ...openSteps.value, [id]: !openSteps.value[id] };
+}
+
 async function openTrace(raw: unknown) {
   const row = raw as TraceRow;
   traceDrawer.value = true;
   traceLoading.value = true;
   traceDetail.value = null;
+  openSteps.value = {};
   try {
-    traceDetail.value = await request<TraceDetail>(`/api/v1/admin/agent-quality/traces/${encodeURIComponent(row.id)}`);
+    const detail = await request<TraceDetail>(`/api/v1/admin/agent-quality/traces/${encodeURIComponent(row.id)}`);
+    // 详情接口不含列表已计算的用户邮箱、耗时与步骤统计，沿用列表行的值。
+    traceDetail.value = { ...row, ...detail };
+    openSteps.value = Object.fromEntries(detail.steps.filter((step) => step.status === "failed" || step.errorMessage).map((step) => [step.id, true]));
   } finally {
     traceLoading.value = false;
   }
@@ -354,7 +388,7 @@ watch(workspace, () => {
   versionKey.value = "";
   activeTab.value = "traces";
 });
-watch([workspace, days, status, versionKey, issuesOnly], () => { tracePage.value = 1; void load() });
+watch([workspace, days, status, versionKey, issuesOnly, userSearch], () => { tracePage.value = 1; void load() });
 onMounted(async () => {
   try {
     const cfg = await request<{
@@ -371,6 +405,15 @@ onMounted(async () => {
 <template>
   <div class="page aq-page">
     <PageCard>
+      <!-- 快捷操作放在标题位，与右侧筛选和操作同一行显示 -->
+      <template #header>
+        <div class="quality-next-actions">
+          <el-button :disabled="!summary.failedTraces" @click="activeTab = 'traces'; status = 'failed'">检查 {{ summary.failedTraces }} 次失败执行</el-button>
+          <el-button @click="activeTab = 'versions'">比较版本表现</el-button>
+          <span v-if="evalRuns.length" :title="`最近评测：${evalRuns[0]?.passed}/${evalRuns[0]?.total} 项通过，可在“评测运行”中查看证据`">最近评测：{{ evalRuns[0]?.passed }}/{{ evalRuns[0]?.total }} 项通过，可在“评测运行”中查看证据</span>
+          <span v-else title="尚无评测记录，收集真实样本后运行评测">尚无评测记录，收集真实样本后运行评测</span>
+        </div>
+      </template>
       <template #actions>
         <el-segmented v-model="workspace" :options="[{ label: 'AI 助手', value: 'assistant' }, { label: '无限画布', value: 'canvas' }]" />
         <el-segmented v-model="days" :options="[{ label: '近 7 日', value: 7 }, { label: '近 30 日', value: 30 }]" />
@@ -389,11 +432,17 @@ onMounted(async () => {
       </template>
 
       <el-alert v-if="qualityError" :title="qualityError" description="数据读取失败，不能据此认定没有失败或质量良好。" type="error" :closable="false" />
-      <div class="quality-next-actions"><el-button :disabled="!summary.failedTraces" @click="activeTab = 'traces'; status = 'failed'">检查 {{ summary.failedTraces }} 次失败执行</el-button><el-button @click="activeTab = 'versions'">比较版本表现</el-button><span v-if="evalRuns.length">最近评测：{{ evalRuns[0]?.passed }}/{{ evalRuns[0]?.total }} 项通过，可在“评测运行”中查看证据</span><span v-else>尚无评测记录，收集真实样本后运行评测</span></div>
-      <section class="aq-kpis" aria-label="质量摘要">
-        <article>
+      <div v-if="userSearch" class="aq-active-filter">
+        <el-tag closable @close="clearUserSearch">只看用户：{{ userSearch }}</el-tag>
+        <small>汇总指标与执行追踪按该用户统计；版本对比和评测不受影响</small>
+      </div>
+      <section class="aq-kpis" aria-label="质量摘要" :title="`近 ${days} 日${workspaceLabel(workspace)}，指标与下方记录使用同一筛选范围`">
+        <article class="aq-kpis__runs">
           <small>真实执行</small>
           <strong class="tnum">{{ summary.totalTraces }}</strong>
+          <span class="aq-kpis__breakdown tnum">
+            成功 {{ summary.succeededTraces }} · <b :class="{ 'is-bad': summary.failedTraces > 0 }">失败 {{ summary.failedTraces }}</b> · 取消 {{ summary.canceledTraces }}
+          </span>
         </article>
         <article>
           <small>成功率</small>
@@ -417,18 +466,6 @@ onMounted(async () => {
         </article>
       </section>
 
-      <p class="aq-legend">
-        近 {{ days }} 日 {{ workspaceLabel(workspace) }}
-        <em class="tnum">{{ summary.totalTraces }}</em>
-        次执行，成功
-        <em class="tnum">{{ summary.succeededTraces }}</em>
-        、失败
-        <em class="tnum">{{ summary.failedTraces }}</em>
-        、取消
-        <em class="tnum">{{ summary.canceledTraces }}</em>
-        。指标与下方记录使用同一筛选范围。
-      </p>
-
       <div class="aq-toolbar">
         <div class="aq-tabs" role="tablist" aria-label="质量视图">
           <button
@@ -446,6 +483,15 @@ onMounted(async () => {
           </button>
         </div>
         <div v-if="activeTab === 'traces'" class="aq-toolbar__right">
+          <el-input
+            v-model="userInput"
+            class="aq-user-search"
+            :prefix-icon="Search"
+            placeholder="用户邮箱 / 用户名 / ID，回车搜索"
+            clearable
+            @keyup.enter="applyUserSearch"
+            @clear="applyUserSearch"
+          />
           <el-checkbox v-model="issuesOnly">只看失败或未完成步骤</el-checkbox>
           <el-select v-model="status" clearable placeholder="全部状态">
             <el-option label="执行中" value="running" />
@@ -457,20 +503,29 @@ onMounted(async () => {
       </div>
 
       <div v-loading="loading" class="aq-board">
-        <el-table v-if="activeTab === 'traces'" :data="traces" height="100%" empty-text="当前周期暂无 Agent 执行追踪">
-          <el-table-column label="开始时间" width="150">
-            <template #default="{ row }">{{ time(row.startedAt) }}</template>
+        <el-table
+          v-if="activeTab === 'traces'"
+          :data="traces"
+          height="100%"
+          class="aq-trace-table"
+          empty-text="当前周期暂无 Agent 执行追踪"
+          @row-click="openTrace"
+        >
+          <el-table-column label="开始时间" width="140">
+            <template #default="{ row }"><span class="tnum">{{ time(row.startedAt) }}</span></template>
           </el-table-column>
-          <el-table-column label="模型 / 推理强度" min-width="190">
+          <el-table-column label="模型" min-width="150" show-overflow-tooltip>
             <template #default="{ row }">
-              <div class="aq-primary">
-                <strong :title="row.model || undefined">{{ modelName(row.model) }}</strong>
-                <small>{{ row.reasoningEffort || "默认强度" }}</small>
-              </div>
+              <strong class="aq-cell-strong" :title="row.model || undefined">{{ modelName(row.model) }}</strong>
             </template>
           </el-table-column>
-          <el-table-column label="用户" min-width="180" show-overflow-tooltip prop="userEmail" />
-          <el-table-column label="状态" width="92">
+          <el-table-column label="推理强度" width="100">
+            <template #default="{ row }">
+              <span :class="{ 'aq-cell-muted': !row.reasoningEffort }">{{ row.reasoningEffort || "默认" }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="用户" min-width="200" show-overflow-tooltip prop="userEmail" />
+          <el-table-column label="状态" width="88">
             <template #default="{ row }">
               <el-tag size="small" :type="statusType(row.status)">{{ statusLabel(row.status) }}</el-tag>
             </template>
@@ -480,18 +535,20 @@ onMounted(async () => {
               <strong class="aq-score" :class="scoreClass(row.score)">{{ row.score == null ? "—" : Number(row.score).toFixed(1) }}</strong>
             </template>
           </el-table-column>
-          <el-table-column label="工具步骤" width="110" align="right">
+          <el-table-column label="工具步骤" width="120" align="right">
             <template #default="{ row }">
-              <span class="tnum">{{ row.stepCount }}</span>
-              <small v-if="row.failedSteps || row.unfinishedSteps" class="aq-alert"> · {{ row.failedSteps + row.unfinishedSteps }} 异常</small>
+              <span class="aq-nowrap">
+                <span class="tnum">{{ row.stepCount }}</span>
+                <small v-if="row.failedSteps || row.unfinishedSteps" class="aq-alert"> · {{ row.failedSteps + row.unfinishedSteps }} 异常</small>
+              </span>
             </template>
           </el-table-column>
-          <el-table-column label="耗时" width="100" align="right">
-            <template #default="{ row }">{{ duration(row.durationMs) }}</template>
+          <el-table-column label="耗时" width="90" align="right">
+            <template #default="{ row }"><span class="tnum">{{ duration(row.durationMs) }}</span></template>
           </el-table-column>
-          <el-table-column width="64" align="center">
+          <el-table-column width="56" align="center">
             <template #default="{ row }">
-              <el-button :icon="View" text circle title="查看追踪" @click="openTrace(row)" />
+              <el-button :icon="View" text circle title="查看追踪" aria-label="查看追踪" @click.stop="openTrace(row)" />
             </template>
           </el-table-column>
         </el-table>
@@ -558,7 +615,16 @@ onMounted(async () => {
           </el-table-column>
           <el-table-column label="Prompt 版本" min-width="180" prop="promptVersion" />
           <el-table-column label="工具版本" min-width="180" prop="toolVersion" />
-          <el-table-column label="样本" width="80" align="right" prop="traceCount" />
+          <el-table-column label="样本" width="120" align="right">
+            <template #default="{ row }">
+              <span class="aq-nowrap">
+                <el-tooltip v-if="row.traceCount < MIN_VERSION_SAMPLES" :content="`少于 ${MIN_VERSION_SAMPLES} 次执行，成功率与质量分波动大，不宜直接比较`" placement="top">
+                  <el-tag size="small" type="warning" class="aq-sample-tag">样本不足</el-tag>
+                </el-tooltip>
+                <span class="tnum">{{ row.traceCount }}</span>
+              </span>
+            </template>
+          </el-table-column>
           <el-table-column label="成功率" width="100" align="right">
             <template #default="{ row }">{{ percent(row.traceCount ? (row.succeeded / row.traceCount) * 100 : 0) }}</template>
           </el-table-column>
@@ -575,92 +641,103 @@ onMounted(async () => {
       <CursorPager v-if="activeTab === 'traces'" :has-prev="(data?.page || 1) > 1" :has-next="(data?.page || 1) * 50 < (data?.traceTotal || 0)" :loading="loading" :page="data?.page || 1" :total="data?.traceTotal ?? summary.totalTraces" :page-size="50" :page-sizes="[50]" @update:page="value => { tracePage = value; load() }" />
     </PageCard>
 
-    <el-drawer v-model="traceDrawer" size="min(760px, 92vw)">
+    <el-drawer v-model="traceDrawer" size="min(760px, 92vw)" class="aq-trace-drawer">
       <template #header>
         <div class="aq-drawer-head">
-          <strong>执行追踪</strong>
-          <span v-if="traceDetail">{{ workspaceLabel(traceDetail.workspace) }} · {{ statusLabel(traceDetail.status) }}</span>
+          <div class="aq-drawer-head__title">
+            <strong>执行追踪</strong>
+            <el-tag v-if="traceDetail" size="small" round :type="statusType(traceDetail.status)">{{ statusLabel(traceDetail.status) }}</el-tag>
+          </div>
+          <span v-if="traceDetail">
+            {{ workspaceLabel(traceDetail.workspace) }} · {{ modelName(traceDetail.model) }}{{ traceDetail.reasoningEffort ? ` · ${traceDetail.reasoningEffort}` : "" }} · {{ time(traceDetail.startedAt) }}
+          </span>
         </div>
       </template>
       <div v-loading="traceLoading" class="aq-drawer">
         <template v-if="traceDetail">
-          <div class="aq-detail-grid">
-            <div>
-              <small>状态</small>
-              <strong>{{ statusLabel(traceDetail.status) }}</strong>
-            </div>
+          <section v-if="traceGoal().goal || traceGoal().acceptanceRequirements?.length" class="aq-trace-goal" aria-label="用户目标">
+            <small>用户目标</small>
+            <p v-if="traceGoal().goal">{{ traceGoal().goal }}</p>
+            <ul v-if="traceGoal().acceptanceRequirements?.length">
+              <li v-for="(item, index) in traceGoal().acceptanceRequirements" :key="index">{{ item }}</li>
+            </ul>
+          </section>
+          <section class="aq-trace-overview" aria-label="执行概览">
             <div>
               <small>质量分</small>
-              <strong class="aq-score" :class="scoreClass(traceDetail.score)">{{ traceDetail.score == null ? "—" : Number(traceDetail.score).toFixed(1) }}</strong>
+              <strong class="aq-score tnum" :class="scoreClass(traceDetail.score)">{{ traceDetail.score == null ? "—" : Number(traceDetail.score).toFixed(1) }}</strong>
+            </div>
+            <div>
+              <small>耗时</small>
+              <strong class="tnum">{{ duration(traceDetail.durationMs) }}</strong>
+            </div>
+            <div>
+              <small>工具步骤</small>
+              <strong class="tnum">
+                {{ traceDetail.steps.length }}
+                <em v-if="traceFailedSteps" class="is-bad">失败 {{ traceFailedSteps }}</em>
+              </strong>
             </div>
             <div>
               <small>用户</small>
-              <strong>{{ traceDetail.userEmail || "—" }}</strong>
+              <strong :title="traceDetail.userEmail || ''">{{ traceDetail.userEmail || "—" }}</strong>
             </div>
+          </section>
+
+          <dl class="aq-trace-facts">
             <template v-if="traceDetail.workspace === 'canvas'">
-              <div>
-                <small>节点 / 连线</small>
-                <strong>{{ traceSnapshotCount().nodes }} / {{ traceSnapshotCount().connections }}</strong>
-              </div>
-              <div>
-                <small>选中节点 / 参考图</small>
-                <strong>{{ traceSnapshotCount().selected }} / {{ traceVisualCount() }}</strong>
-              </div>
+              <div><dt>节点 / 连线</dt><dd class="tnum">{{ traceSnapshotCount().nodes }} / {{ traceSnapshotCount().connections }}</dd></div>
+              <div><dt>选中节点 / 参考图</dt><dd class="tnum">{{ traceSnapshotCount().selected }} / {{ traceVisualCount() }}</dd></div>
             </template>
             <template v-else>
-              <div>
-                <small>结果类型</small>
-                <strong>{{ outcomeLabel(traceGoal().outcomeKind) }}</strong>
-              </div>
-              <div>
-                <small>交付数量 / 参考图</small>
-                <strong>{{ traceGoal().deliverableCount || 0 }} / {{ traceGoal().referencedImageCount || traceVisualCount() }}</strong>
-              </div>
-              <div>
-                <small>提示词方式</small>
-                <strong>{{ traceGoal().promptMode === "faithful" ? "忠实执行" : traceGoal().promptMode === "enhanced" ? "智能优化" : "不适用" }}</strong>
-              </div>
-              <div>
-                <small>已看历史图 / 联网</small>
-                <strong>{{ traceGoal().inspectedImageCount || 0 }} / {{ traceGoal().webSearchCount || 0 }}</strong>
-              </div>
+              <div><dt>结果类型</dt><dd>{{ outcomeLabel(traceGoal().outcomeKind) }}</dd></div>
+              <div><dt>提示词方式</dt><dd>{{ traceGoal().promptMode === "faithful" ? "忠实执行" : traceGoal().promptMode === "enhanced" ? "智能优化" : "不适用" }}</dd></div>
+              <div><dt>交付数量 / 参考图</dt><dd class="tnum">{{ traceGoal().deliverableCount || 0 }} / {{ traceGoal().referencedImageCount || traceVisualCount() }}</dd></div>
+              <div><dt>已看历史图 / 联网</dt><dd class="tnum">{{ traceGoal().inspectedImageCount || 0 }} / {{ traceGoal().webSearchCount || 0 }}</dd></div>
             </template>
-            <div>
-              <small>Prompt 版本</small>
-              <strong>{{ traceDetail.promptVersion }}</strong>
-            </div>
-            <div>
-              <small>工具版本</small>
-              <strong>{{ traceDetail.toolVersion }}</strong>
-            </div>
+            <div class="is-wide"><dt>Prompt 版本</dt><dd class="is-mono">{{ traceDetail.promptVersion || "—" }}</dd></div>
+            <div class="is-wide"><dt>工具版本</dt><dd class="is-mono">{{ traceDetail.toolVersion || "—" }}</dd></div>
+          </dl>
+
+          <div class="aq-section-title">
+            <strong>工具步骤</strong>
+            <small class="tnum">{{ traceDetail.steps.length }}</small>
           </div>
-          <div class="aq-step-list">
-            <article v-for="step in traceDetail.steps" :key="step.id">
-              <header>
-                <span>#{{ step.sequence }}</span>
-                <strong>{{ step.toolName }}</strong>
-                <el-tag size="small" :type="statusType(step.status)">{{ statusLabel(step.status) }}</el-tag>
-                <small>{{ duration(step.durationMs) }}</small>
-              </header>
-              <p v-if="step.requiresConfirmation">已走高风险操作确认</p>
-              <p v-if="step.errorMessage" class="aq-error">{{ step.errorMessage }}</p>
-              <el-collapse>
-                <el-collapse-item title="参数与结果">
-                  <div class="aq-json-grid">
-                    <section>
+          <ol v-if="traceDetail.steps.length" class="aq-timeline">
+            <li v-for="step in traceDetail.steps" :key="step.id" :class="`is-${step.status}`">
+              <span class="aq-timeline__dot tnum">{{ step.sequence }}</span>
+              <div class="aq-timeline__body">
+                <header>
+                  <code :title="step.toolName">{{ step.toolName }}</code>
+                  <el-tag size="small" :type="statusType(step.status)">{{ statusLabel(step.status) }}</el-tag>
+                  <small class="tnum">{{ duration(step.durationMs) }}</small>
+                  <button type="button" class="aq-timeline__toggle" :aria-expanded="Boolean(openSteps[step.id])" @click="toggleStep(step.id)">
+                    {{ openSteps[step.id] ? "收起" : "参数与结果" }}
+                    <el-icon :class="{ 'is-open': openSteps[step.id] }"><ArrowDown /></el-icon>
+                  </button>
+                </header>
+                <p v-if="step.requiresConfirmation" class="aq-timeline__note">已走高风险操作确认</p>
+                <p v-if="step.errorMessage" class="aq-timeline__note aq-error">{{ step.errorMessage }}</p>
+                <div v-if="openSteps[step.id]" class="aq-json-stack">
+                  <section>
+                    <div class="aq-json-stack__head">
                       <small>参数</small>
-                      <pre>{{ formatJSON(step.arguments) }}</pre>
-                    </section>
-                    <section>
+                      <el-button text size="small" :icon="CopyDocument" @click="copyJSON(step.arguments, '参数')">复制</el-button>
+                    </div>
+                    <pre>{{ formatJSON(step.arguments) }}</pre>
+                  </section>
+                  <section>
+                    <div class="aq-json-stack__head">
                       <small>结果</small>
-                      <pre>{{ formatJSON(step.result) }}</pre>
-                    </section>
-                  </div>
-                </el-collapse-item>
-              </el-collapse>
-            </article>
-            <el-empty v-if="!traceDetail.steps.length" description="本次执行没有工具步骤" />
-          </div>
+                      <el-button text size="small" :icon="CopyDocument" @click="copyJSON(step.result, '结果')">复制</el-button>
+                    </div>
+                    <pre>{{ formatJSON(step.result) }}</pre>
+                  </section>
+                </div>
+              </div>
+            </li>
+          </ol>
+          <el-empty v-else description="本次执行没有工具步骤" :image-size="64" />
         </template>
       </div>
     </el-drawer>
@@ -730,31 +807,34 @@ onMounted(async () => {
 }
 .aq-kpis {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1.8fr) repeat(5, minmax(0, 1fr));
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
   background: var(--surface-2);
 }
 .aq-kpis article {
-  display: grid;
-  gap: 6px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
   min-width: 0;
-  padding: 14px 16px;
+  padding: 10px 14px;
   border-right: 1px solid var(--border);
 }
 .aq-kpis article:last-child {
   border-right: 0;
 }
 .aq-kpis small {
+  flex: 0 0 auto;
   color: var(--ink-3);
   font-size: 12px;
   font-weight: 650;
+  white-space: nowrap;
 }
 .aq-kpis strong {
   overflow: hidden;
   color: var(--ink);
-  font-size: 22px;
+  font-size: 18px;
   font-weight: 750;
   letter-spacing: -0.03em;
   line-height: 1.1;
@@ -775,17 +855,18 @@ onMounted(async () => {
 .aq-error {
   color: var(--danger);
 }
-.aq-legend {
-  margin: 0;
-  color: var(--ink-2);
-  font-size: 13px;
-  line-height: 1.5;
+.aq-kpis__breakdown {
+  overflow: hidden;
+  color: var(--ink-3);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.aq-legend em {
-  margin: 0 2px;
-  color: var(--ink);
-  font-style: normal;
-  font-weight: 750;
+.aq-kpis__breakdown b {
+  font-weight: 650;
+}
+.aq-kpis__breakdown b.is-bad {
+  color: var(--danger);
 }
 .aq-toolbar {
   display: flex;
@@ -795,14 +876,15 @@ onMounted(async () => {
   justify-content: space-between;
   gap: 12px;
 }
+/* 与任务页状态标签一致：宽度随内容、选中态中性，高度与右侧 32px 控件对齐 */
 .aq-tabs {
-  display: flex;
+  display: inline-flex;
   min-width: 0;
-  flex: 1 1 420px;
+  max-width: 100%;
   align-items: center;
-  gap: 6px;
+  gap: 2px;
   overflow-x: auto;
-  padding: 4px;
+  padding: 2px;
   border: 1px solid var(--border);
   border-radius: var(--radius-pill);
   background: var(--surface-2);
@@ -815,7 +897,7 @@ onMounted(async () => {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 32px;
+  height: 26px;
   padding: 0 12px;
   border: 0;
   border-radius: var(--radius-pill);
@@ -826,6 +908,15 @@ onMounted(async () => {
   font-weight: 600;
   white-space: nowrap;
   cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.aq-tab:hover:not(.is-active) {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+.aq-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 .aq-tab em {
   color: var(--ink-3);
@@ -834,17 +925,31 @@ onMounted(async () => {
   font-weight: 700;
 }
 .aq-tab.is-active {
-  background: var(--accent);
-  color: var(--accent-on);
-  box-shadow: 0 6px 16px color-mix(in srgb, var(--accent) 28%, transparent);
+  background: var(--ink);
+  color: var(--surface);
+  box-shadow: var(--shadow-sm);
 }
 .aq-tab.is-active em {
-  color: color-mix(in srgb, var(--accent-on) 72%, transparent);
+  color: color-mix(in srgb, var(--surface) 78%, transparent);
+}
+html.dark .aq-tab.is-active {
+  background: var(--surface-3);
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+html.dark .aq-tab.is-active em {
+  color: var(--ink-3);
 }
 .aq-toolbar__right {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
+  margin-left: auto;
+}
+.aq-toolbar__right :deep(.el-checkbox) {
+  height: 32px;
+  margin-right: 0;
+  color: var(--ink-2);
 }
 .aq-toolbar__right :deep(.el-select) {
   width: 132px;
@@ -874,106 +979,344 @@ onMounted(async () => {
 .aq-alert {
   font-size: 12px;
 }
-.aq-drawer-head {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
+/* 执行追踪列表：每行单行显示，整行可点击打开详情 */
+.aq-trace-table :deep(.el-table__row) {
+  cursor: pointer;
 }
-.aq-drawer-head strong {
-  font-size: 15px;
+.aq-trace-table :deep(.cell) {
+  white-space: nowrap;
+}
+.aq-cell-strong {
   font-weight: 650;
 }
-.aq-drawer-head span {
+.aq-cell-muted {
   color: var(--ink-3);
-  font-size: 12px;
 }
-.aq-drawer {
-  min-height: 160px;
+.aq-nowrap {
+  white-space: nowrap;
 }
-.aq-detail-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-  margin-bottom: 16px;
-}
-.aq-detail-grid > div {
+.aq-drawer-head {
   display: grid;
   gap: 4px;
   min-width: 0;
-  padding: 12px 14px;
+}
+.aq-drawer-head__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.aq-drawer-head strong {
+  font-size: 16px;
+  font-weight: 700;
+}
+.aq-drawer-head > span {
+  overflow: hidden;
+  color: var(--ink-3);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.aq-drawer {
+  display: grid;
+  align-content: start;
+  gap: 16px;
+  min-height: 160px;
+}
+.aq-trace-overview {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 0.8fr)) minmax(0, 1.6fr);
+  overflow: hidden;
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
   background: var(--surface-2);
 }
-.aq-detail-grid small {
+.aq-trace-overview > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 12px 14px;
+  border-right: 1px solid var(--border);
+}
+.aq-trace-overview > div:last-child {
+  border-right: 0;
+}
+.aq-trace-overview small {
   color: var(--ink-3);
   font-size: 12px;
 }
-.aq-detail-grid strong {
+.aq-trace-overview strong {
   overflow: hidden;
-  font-size: 13px;
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 750;
+  letter-spacing: -0.02em;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.aq-step-list,
+.aq-trace-overview > div:last-child strong {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 22px;
+}
+.aq-trace-overview em {
+  margin-left: 4px;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+.aq-trace-overview em.is-bad {
+  color: var(--danger);
+}
+.aq-trace-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 24px;
+  margin: 0;
+  padding: 0 2px;
+}
+.aq-trace-facts > div {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+}
+.aq-trace-facts > div.is-wide {
+  grid-column: 1 / -1;
+}
+.aq-trace-facts dt {
+  flex: 0 0 112px;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+.aq-trace-facts dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.aq-trace-facts dd.is-mono,
+.aq-timeline code,
+.aq-json-stack pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.aq-trace-facts dd.is-mono {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink-2);
+}
+.aq-section-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+.aq-section-title strong {
+  padding-top: 12px;
+  font-size: 13px;
+  font-weight: 700;
+}
+.aq-section-title small {
+  color: var(--ink-3);
+  font-size: 12px;
+}
+.aq-timeline {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.aq-timeline > li {
+  position: relative;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 12px;
+  padding-bottom: 14px;
+}
+.aq-timeline > li:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  top: 26px;
+  bottom: 2px;
+  left: 11.5px;
+  width: 1px;
+  background: var(--border);
+}
+.aq-timeline__dot {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 11px;
+  font-weight: 700;
+}
+.aq-timeline > li.is-succeeded .aq-timeline__dot {
+  border-color: color-mix(in srgb, var(--success) 45%, transparent);
+  color: var(--success);
+}
+.aq-timeline > li.is-failed .aq-timeline__dot {
+  border-color: color-mix(in srgb, var(--danger) 55%, transparent);
+  color: var(--danger);
+}
+.aq-timeline > li.is-running .aq-timeline__dot {
+  border-color: color-mix(in srgb, var(--warning) 55%, transparent);
+  color: var(--warning);
+}
+.aq-timeline__body {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.aq-timeline__body > header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+}
+.aq-timeline code {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.aq-timeline__body > header > small {
+  color: var(--ink-3);
+  font-size: 12px;
+}
+.aq-timeline__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.aq-timeline__toggle:hover {
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  color: var(--ink);
+}
+.aq-timeline__toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.aq-timeline__toggle .el-icon {
+  transition: transform 0.15s ease;
+}
+.aq-timeline__toggle .el-icon.is-open {
+  transform: rotate(180deg);
+}
+.aq-timeline__note {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 12px;
+}
+.aq-json-stack {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--surface-2);
+}
+.aq-json-stack__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+.aq-json-stack__head small {
+  color: var(--ink-3);
+  font-size: 12px;
+}
+.aq-json-stack__head .el-button {
+  height: 22px;
+  padding: 0 4px;
+}
+.aq-trace-goal {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-control);
+  background: var(--surface-2);
+}
+.aq-trace-goal small {
+  color: var(--ink-3);
+  font-size: 12px;
+}
+.aq-trace-goal p {
+  margin: 0;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.aq-trace-goal ul {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.aq-user-search {
+  width: 240px;
+}
+.aq-active-filter {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.aq-active-filter small {
+  color: var(--ink-3);
+  font-size: 12px;
+}
+.aq-sample-tag {
+  margin-right: 6px;
+}
+.aq-json-stack pre {
+  max-height: 260px;
+  margin: 0;
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 .aq-result-list {
   display: grid;
   gap: 8px;
 }
-.aq-step-list article,
 .aq-result-list article {
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
   background: var(--surface);
-}
-.aq-step-list article > header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 12px;
-}
-.aq-step-list article > header > span,
-.aq-step-list article > header > small {
-  color: var(--ink-3);
-  font-size: 12px;
-}
-.aq-step-list article > header > strong {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  font-size: 13px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.aq-step-list article > p {
-  margin: 0;
-  padding: 0 12px 10px;
-  color: var(--ink-2);
-  font-size: 12px;
-}
-.aq-json-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-}
-.aq-json-grid small {
-  display: block;
-  margin-bottom: 6px;
-  color: var(--ink-3);
-  font-size: 12px;
-}
-.aq-json-grid pre {
-  max-height: 280px;
-  margin: 0;
-  overflow: auto;
-  padding: 10px;
-  border-radius: 10px;
-  background: var(--surface-2);
-  font-size: 12px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-word;
 }
 .aq-eval-summary {
   display: flex;
@@ -1013,7 +1356,7 @@ onMounted(async () => {
   color: var(--ink-2);
   font-size: 12px;
 }
-@media (max-width: 1280px) {
+@media (max-width: 1100px) {
   .aq-kpis {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -1031,13 +1374,22 @@ onMounted(async () => {
   .aq-kpis article:nth-child(even) {
     border-right: 0;
   }
-  .aq-detail-grid,
-  .aq-json-grid {
-    grid-template-columns: 1fr;
+  .aq-trace-overview,
+  .aq-trace-facts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .aq-trace-overview > div:nth-child(2) {
+    border-right: 0;
+  }
+  .aq-trace-overview > div:nth-child(-n + 2) {
+    border-bottom: 1px solid var(--border);
   }
 }
+.quality-next-actions { display:flex;align-items:center;gap:10px;min-width:0; }.quality-next-actions .el-button { margin-left:0; }.quality-next-actions span { min-width:0;overflow:hidden;font-size:12px;color:var(--ink-3);text-overflow:ellipsis;white-space:nowrap; }
+/* 卡片填满视口：列表在表格内部滚动，分页器固定在卡片底部可见。
+   视口过矮时整页滚动，并给列表保留最低可读高度。 */
 .aq-page { overflow-y:auto; }
-.quality-next-actions { display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px; }.quality-next-actions span { font-size:12px;color:var(--ink-3); }
-.aq-page :deep(.page-card) { flex:0 0 auto;min-height:100%; }
-.aq-page :deep(.el-table) { min-height:300px; }
+.aq-page :deep(.page-card) { flex:1 1 0;min-height:560px; }
+.aq-board { min-height:240px; }
+.aq-page :deep(.cursor-pager) { flex:0 0 auto; }
 </style>
