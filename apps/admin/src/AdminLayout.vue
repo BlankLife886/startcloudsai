@@ -560,6 +560,7 @@ async function submitPassword() {
             '/changelog',
             '/feedback',
             '/trial-applications',
+            '/audit',
           ].includes(route.path),
         }"
       >

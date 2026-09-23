@@ -464,12 +464,31 @@ func (s *Server) adminAuditLogs(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	rows, err := store.ListAuditLogs(c.Request.Context(), s.St.Pool, c.Query("admin"), c.Query("path"), limit, cursor, extra)
+	seek, pageNum, err := pageSeek(c, limit)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	ok(c, buildPage(rows, limit, auditLogDict))
+	if pageNum > 0 {
+		cursor = seek
+	}
+	ctx := c.Request.Context()
+	rows, err := store.ListAuditLogs(ctx, s.St.Pool, c.Query("admin"), c.Query("path"), limit, cursor, extra)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	total, err := store.CountAuditLogsCapped(ctx, s.St.Pool, c.Query("admin"), c.Query("path"), extra)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	page := buildPage(rows, limit, auditLogDict)
+	page["total"], page["totalCapped"] = total.Value, total.Capped
+	if pageNum > 0 {
+		page["page"] = pageNum
+	}
+	ok(c, page)
 }
 
 func auditLogDict(l *store.AdminAuditLog) gin.H {

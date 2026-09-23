@@ -35,9 +35,9 @@ func InsertAuditLog(ctx context.Context, q Q, l *AdminAuditLog) error {
 	return err
 }
 
-// ListAuditLogs 审计日志分页（limit+1 行）。admin 模糊匹配 admin_email，path 模糊匹配请求路径。
-func ListAuditLogs(ctx context.Context, q Q, admin, path string, limit int, cursor *Cursor, extra ...AdminListFilter) ([]*AdminAuditLog, error) {
-	sql := `SELECT ` + auditLogCols + ` FROM admin_audit_logs WHERE true`
+// auditLogWhere 为审计列表与计数共用的筛选条件（以 " FROM" 开头）。
+func auditLogWhere(admin, path string, extra []AdminListFilter) (string, []any) {
+	sql := ` FROM admin_audit_logs WHERE true`
 	args := []any{}
 	if admin != "" {
 		args = append(args, "%"+admin+"%")
@@ -52,7 +52,19 @@ func ListAuditLogs(ctx context.Context, q Q, admin, path string, limit int, curs
 		args = append(args, extra[0].Method)
 		sql += fmt.Sprintf(" AND method=$%d", len(args))
 	}
-	sql, args = appendCursor(sql, args, cursor, limit)
+	return sql, args
+}
+
+// CountAuditLogsCapped 与 ListAuditLogs 同范围的带上限计数。
+func CountAuditLogsCapped(ctx context.Context, q Q, admin, path string, extra ...AdminListFilter) (CappedCount, error) {
+	where, args := auditLogWhere(admin, path, extra)
+	return countCapped(ctx, q, where, args)
+}
+
+// ListAuditLogs 审计日志分页（limit+1 行）。admin 模糊匹配 admin_email，path 模糊匹配请求路径。
+func ListAuditLogs(ctx context.Context, q Q, admin, path string, limit int, cursor *Cursor, extra ...AdminListFilter) ([]*AdminAuditLog, error) {
+	where, args := auditLogWhere(admin, path, extra)
+	sql, args := appendCursor(`SELECT `+auditLogCols+where, args, cursor, limit)
 	rows, err := q.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, err

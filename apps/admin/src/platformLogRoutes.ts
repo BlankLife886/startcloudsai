@@ -126,7 +126,24 @@ const tailActions: Record<string, string> = {
   batch: '批量操作', rotate: '轮换密钥', refund: '退款', 'refund-preview': '退款预览', close: '关闭',
   draft: '保存草稿', feedback: '评价', block: '屏蔽', reports: '举报', timeline: '时间线', position: '位置',
   order: '排序', analyze: '分析', image: '图片', trace: '追踪', resolve: '处理', revoke: '解除', run: '执行',
+  cover: '封面', tests: '连通测试', discoveries: '发现模型', 'eval-runs': '运行评测', 'eval-cases': '评测用例',
+  unfreeze: '解冻', adjust: '调整', grants: '发放记录', versions: '版本', publish: '发布', reorder: '排序', sync: '同步',
 }
+
+// 实际请求路径（审计日志保存的是真实 URL）里的 UUID、数字、长十六进制段替换成参数占位，便于按模板匹配。
+const ID_SEGMENT = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\d+|[0-9a-f]{24,})$/i
+
+export function routeTemplate(path: string) {
+  return path.split('/').map(segment => ID_SEGMENT.test(segment) ? ':id' : segment).join('/')
+}
+
+// 路由模板里的参数名（:id、:runId、:taskId…）统一成 :id，精确名称表只需按 :id 书写。
+const normalizeParams = (path: string) => path.replace(/\/:[^/]+/g, '/:id')
+const exactByNormalized = new Map(Object.entries(exact).map(([key, label]) => {
+  const space = key.indexOf(' ')
+  const normalized = space > 0 && !key.startsWith('/') ? `${key.slice(0, space)} ${normalizeParams(key.slice(space + 1))}` : normalizeParams(key)
+  return [normalized, label]
+}))
 
 function actionFor(route: string, method: string) {
   const parts = route.split('/').filter(Boolean)
@@ -145,14 +162,14 @@ function actionFor(route: string, method: string) {
 
 /** 返回接口的中文名称；method 缺省时只按路径匹配。未知路由返回空字符串。 */
 export function routeLabel(route?: string | null, method?: string | null) {
-  const path = String(route || '').trim()
+  const path = normalizeParams(routeTemplate(String(route || '').split('?')[0].trim()))
   if (!path) return ''
   const verb = String(method || '').toUpperCase()
-  const known = (verb && exact[`${verb} ${path}`]) || exact[path]
+  const known = (verb && exactByNormalized.get(`${verb} ${path}`)) || exactByNormalized.get(path)
   if (known) return known
   // 没有请求方法时（如最慢接口排行按路径汇总），合并该路径各方法的名称，例如"社区 · 作品列表 / 投稿"。
   if (!verb) {
-    const labels = Object.keys(exact).filter(key => key.endsWith(` ${path}`)).map(key => exact[key])
+    const labels = [...exactByNormalized].filter(([key]) => key.endsWith(` ${path}`)).map(([, label]) => label)
     if (labels.length === 1) return labels[0]
     if (labels.length > 1) {
       const [head] = labels[0].split(' · ')
