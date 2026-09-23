@@ -201,12 +201,7 @@ func ListTrialAccessApplications(ctx context.Context, q Q, campaignID uuid.UUID,
 		args = append(args, "%"+search+"%")
 		sql += fmt.Sprintf(` AND (u.email ILIKE $%d OR u.username ILIKE $%d OR a.occupation ILIKE $%d)`, len(args), len(args), len(args))
 	}
-	if cursor != nil {
-		args = append(args, cursor.CreatedAt, cursor.ID)
-		sql += fmt.Sprintf(` AND (a.created_at < $%d OR (a.created_at = $%d AND a.id < $%d))`, len(args)-1, len(args)-1, len(args))
-	}
-	args = append(args, limit+1)
-	sql += fmt.Sprintf(` ORDER BY a.created_at DESC, a.id DESC LIMIT $%d`, len(args))
+	sql, args = appendKeyset(sql, args, "a.created_at", "a.id", cursor, limit)
 
 	rows, err := q.Query(ctx, sql, args...)
 	if err != nil {

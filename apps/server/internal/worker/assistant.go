@@ -40,10 +40,13 @@ import (
 )
 
 const (
-	assistantOutputLimit             = 32 << 20
-	assistantC2AItemAttempts         = 2
-	assistantChatAttempts            = 2
-	assistantAgentMaxIterations      = 6
+	assistantOutputLimit        = 32 << 20
+	assistantC2AItemAttempts    = 2
+	assistantChatAttempts       = 2
+	assistantAgentMaxIterations = 32
+	// 只数轮次挡不住卡死：32 轮里每一轮都可能贴着上游超时跑，加起来能占着会话槽和
+	// Agent 并发额度很久，而用户那边只看到一直在转。所以和画布 Agent 一样用挂钟兜底。
+	assistantAgentMaxDuration        = 8 * time.Minute
 	assistantAgentToolErrorRunes     = 800
 	assistantAgentReplayResultRunes  = 4000
 	assistantSynchronousImageLimit   = 5 * time.Minute
@@ -426,6 +429,92 @@ func (w *Worker) heartbeatAssistantRunLease(
 			}
 		}
 	}
+}
+
+type assistantDebugContextKey struct{}
+
+type assistantDebugLog struct {
+	mu      sync.Mutex
+	started time.Time
+	spans   []assistantstream.DebugSpan
+}
+
+func assistantRunClock(run *store.AssistantRun) time.Time {
+	if run != nil && run.StartedAt != nil && !run.StartedAt.IsZero() {
+		return *run.StartedAt
+	}
+	return time.Now()
+}
+
+func withAssistantDebugLog(ctx context.Context, log *assistantDebugLog) context.Context {
+	if log == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, assistantDebugContextKey{}, log)
+}
+
+func assistantDebugLogFrom(ctx context.Context) *assistantDebugLog {
+	log, _ := ctx.Value(assistantDebugContextKey{}).(*assistantDebugLog)
+	return log
+}
+
+func (l *assistantDebugLog) record(step, detail string) assistantstream.DebugSpan {
+	now := time.Now()
+	started := now
+	if l != nil && !l.started.IsZero() {
+		started = l.started
+	}
+	elapsed := now.Sub(started).Milliseconds()
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	span := assistantstream.DebugSpan{
+		Step:      strings.TrimSpace(step),
+		Detail:    strings.TrimSpace(detail),
+		AtMs:      now.UnixMilli(),
+		ElapsedMs: elapsed,
+	}
+	if l == nil || span.Step == "" {
+		return span
+	}
+	l.mu.Lock()
+	l.spans = append(l.spans, span)
+	if len(l.spans) > 48 {
+		l.spans = append([]assistantstream.DebugSpan(nil), l.spans[len(l.spans)-48:]...)
+	}
+	l.mu.Unlock()
+	return span
+}
+
+func (l *assistantDebugLog) snapshot() []assistantstream.DebugSpan {
+	if l == nil {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.spans) == 0 {
+		return nil
+	}
+	out := make([]assistantstream.DebugSpan, len(l.spans))
+	copy(out, l.spans)
+	return out
+}
+
+func (w *Worker) publishAssistantDebug(ctx context.Context, run *store.AssistantRun, step, detail string) {
+	if w == nil || run == nil || strings.TrimSpace(step) == "" {
+		return
+	}
+	kind := strings.TrimSpace(run.ResolvedMode)
+	if kind == "" {
+		kind = strings.TrimSpace(run.Mode)
+	}
+	debugLog := assistantDebugLogFrom(ctx)
+	span := debugLog.record(step, detail)
+	assistantstream.Publish(ctx, w.Stream, run.ID.String(), assistantstream.Event{
+		Kind:       kind,
+		Debug:      &span,
+		DebugTrace: debugLog.snapshot(),
+	})
 }
 
 func (w *Worker) setAssistantRunStage(ctx context.Context, run *store.AssistantRun, resolvedMode, stage string) error {
@@ -819,8 +908,11 @@ const (
 	assistantIntentSummaryRunes  = 80   // 图片消息提示词摘要的最大字符数
 	assistantIntentMaxRunes      = 2000 // 整个对话摘要的最大字符数
 	assistantIntentShortPromptRn = 30   // 判定“延续上一张图”时的短指令阈值
-	assistantIntentTimeout       = 8 * time.Second
-	assistantProposalTimeout     = 15 * time.Second
+	// 意图判定卡在用户敲完回车到屏幕出字之间，是整条链路上唯一的纯空窗期。去掉推理
+	// 之后正常一秒内就回来，这个上限只在上游异常时才会触发；超时走正则兜底，和判定
+	// 失败是同一条路，不会因此少掉任何能力。
+	assistantIntentTimeout   = 3 * time.Second
+	assistantProposalTimeout = 15 * time.Second
 )
 
 // assistantSmallTalkPattern matches greetings that must never launch image generation.
@@ -844,9 +936,11 @@ func assistantSmallTalk(prompt string) bool {
 	return assistantSmallTalkPattern.MatchString(text)
 }
 
-func (w *Worker) classifyAssistantRun(ctx context.Context, client *sub2api.Client, transcript, prompt string, hasReference, lastAssistantWasImage bool) string {
+// classifyAssistantRun 判定用户这一轮想要图片还是对话。第二个返回值说明判定是否可信：
+// 模型给出明确答案才算可信，超时或回答无法解析时退回正则，此时判定只能当作猜测。
+func (w *Worker) classifyAssistantRun(ctx context.Context, client *sub2api.Client, transcript, prompt string, hasReference, lastAssistantWasImage bool) (string, bool) {
 	if intent, certain := fastAssistantIntent(prompt, hasReference, lastAssistantWasImage); certain {
-		return intent
+		return intent, true
 	}
 	referenceText := "没有附带参考图片"
 	if hasReference {
@@ -873,15 +967,59 @@ func (w *Worker) classifyAssistantRun(ctx context.Context, client *sub2api.Clien
 只输出一个单词：IMAGE 或 CHAT，不要任何标点或解释。`
 	intentCtx, cancel := context.WithTimeout(ctx, assistantIntentTimeout)
 	defer cancel()
-	result, err := client.ChatTextWithImages(intentCtx, []sub2api.Message{
+	// 这一步只要一个单词，不继承用户为正题选的推理档位：让模型为 IMAGE/CHAT 这种
+	// 二选一做深度推理，只会把用户敲完回车后的空窗期拉长好几秒，判得并不会更准。
+	result, err := client.WithoutReasoning().ChatTextWithImages(intentCtx, []sub2api.Message{
 		{Role: "system", Content: system}, {Role: "user", Content: transcript},
 	}, nil, nil)
 	if err == nil {
 		if intent := parseAssistantIntentReply(result); intent != "" {
-			return intent
+			return intent, true
 		}
 	}
-	return fallbackAssistantIntent(prompt, hasReference, lastAssistantWasImage)
+	return fallbackAssistantIntent(prompt, hasReference, lastAssistantWasImage), false
+}
+
+// assistantIntentDecision 记录本轮意图判定的来源和可信度。自动授权只在判定可信时
+// 才敢直接花图片积分，因此来源必须一路带到决策点，不能只留下一个字符串。
+type assistantIntentDecision struct {
+	intent       string
+	confident    bool
+	fromFastPath bool
+	usedModel    bool
+}
+
+// classifyAssistantIntentAsync 让模型判定意图的调用与准备上下文、读取参考图这些 I/O
+// 并行，正则已经确定时完全不发起模型调用，所以常见路径不增加延迟也不增加成本。
+//
+// toolForced 表示本轮已经按正则锁定了第一步要调的工具（联网搜索、查任务状态、工作台
+// 工具）。这种情况下模型判定改变不了任何结果：expectProposal 会被强制工具短路，
+// withholdProposal 又只认正则来源。再问模型一次纯属白花一次上游调用，还要算进用户
+// 这一轮的上游成本里。
+func (w *Worker) classifyAssistantIntentAsync(
+	ctx context.Context,
+	client *sub2api.Client,
+	run *store.AssistantRun,
+	history []*store.AssistantMessage,
+	hasReference, lastAssistantWasImage, toolForced bool,
+) func() assistantIntentDecision {
+	if intent, certain := fastAssistantIntent(run.Prompt, hasReference, lastAssistantWasImage); certain {
+		decision := assistantIntentDecision{intent: intent, confident: true, fromFastPath: true}
+		return func() assistantIntentDecision { return decision }
+	}
+	if toolForced {
+		decision := assistantIntentDecision{intent: fallbackAssistantIntent(run.Prompt, hasReference, lastAssistantWasImage)}
+		return func() assistantIntentDecision { return decision }
+	}
+	transcript := buildAssistantIntentTranscript(history, run.UserMessageID, run.AssistantMessageID, run.Prompt)
+	// 缓冲位保证调用方即使提前返回也不会把这个 goroutine 永久阻塞在发送上。
+	result := make(chan assistantIntentDecision, 1)
+	go func() {
+		w.publishAssistantDebug(ctx, run, "intent_model", "正在问模型：这一轮是出图还是对话")
+		intent, confident := w.classifyAssistantRun(ctx, client, transcript, run.Prompt, hasReference, lastAssistantWasImage)
+		result <- assistantIntentDecision{intent: intent, confident: confident, usedModel: true}
+	}()
+	return func() assistantIntentDecision { return <-result }
 }
 
 // parseAssistantIntentReply 解析路由器回复：取最先出现的 IMAGE 或 CHAT，无匹配返回空串。
@@ -1098,6 +1236,9 @@ type assistantImageProposal struct {
 	ReferenceMode      string                   `json:"referenceMode"`
 	InspectedImageIDs  []string                 `json:"inspectedImageIds,omitempty"`
 	Items              []assistantImagePlanItem `json:"items,omitempty"`
+	// AutoApprovable 说明这份方案够不够资格在开启自动授权后免确认直接提交。
+	// 只在服务端判定，因为意图置信度只有这里知道；预算另由界面按当前模型单价把关。
+	AutoApprovable bool `json:"autoApprovable"`
 }
 
 type assistantImagePlanItem struct {
@@ -1289,10 +1430,107 @@ func assistantAgentNeedsFinalSynthesis(result sub2api.AgentChatResult, proposalT
 	return loopExhausted || result.ToolCall != nil || strings.TrimSpace(result.Text) == ""
 }
 
+// 单个工具结果上限 32KB，几十步累积起来足以撑爆模型窗口，所以给工具结果在上下文里
+// 的总占用设一个预算，够放最近几步的完整结果。
+const assistantAgentObservationBudgetBytes = 96 << 10
+
+// 一轮之内最多联网搜几次。并行之后模型可以一次提三个关键词，上限仍按整轮累计算。
+const assistantAgentMaxWebSearches = 3
+
+func assistantAgentToolIsWebSearch(name string) bool {
+	return strings.TrimSpace(name) == webSearchTool().Name
+}
+
+// 只读的文件工具：查目录、搜内容、读原文，都不改变任何外部状态。
+func assistantAgentToolIsReadOnlyFileTool(name string) bool {
+	switch strings.TrimSpace(name) {
+	case assistanttools.ToolFilesList, assistanttools.ToolFilesSearch, assistanttools.ToolFilesRead:
+		return true
+	}
+	return false
+}
+
+// assistantAgentParallelBatch 判定这一轮返回的多个工具调用能不能并发跑。
+//
+// 只有整批都是只读工具才放行：它们没有外部副作用，彼此也不依赖，谁先谁后结果一样。
+// 只要混进一个会改变外部状态的（建文件、提图片方案、送工作区、导入商品），整批退回
+// 原来的单调用串行路径——那些工具的顺序错了，用户可能看到对不上的结果，甚至被重复扣费。
+// 宁可少并行一次，也不能让副作用乱序。
+func assistantAgentParallelBatch(result sub2api.AgentChatResult) []sub2api.ToolCall {
+	if len(result.ToolCalls) < 2 {
+		return nil
+	}
+	for _, call := range result.ToolCalls {
+		if !assistantAgentToolIsWebSearch(call.Name) && !assistantAgentToolIsReadOnlyFileTool(call.Name) {
+			return nil
+		}
+	}
+	return result.ToolCalls
+}
+
+// assistantAgentBatchToolMessages 把一批并发执行的工具拼成合法的上下文片段：一条
+// assistant 消息声明全部 tool_call，后面跟一一配对的结果。少一条配对结果，整轮请求
+// 都会被上游拒掉，所以这里按下标严格对齐。
+func assistantAgentBatchToolMessages(
+	text string,
+	calls []sub2api.ToolCall,
+	observations []string,
+) []sub2api.Message {
+	declared := make([]sub2api.ToolCall, 0, len(calls))
+	for index, call := range calls {
+		if strings.TrimSpace(call.ID) == "" {
+			call.ID = fmt.Sprintf("call_%d", index)
+		}
+		declared = append(declared, call)
+	}
+	messages := make([]sub2api.Message, 0, len(declared)+1)
+	messages = append(messages, sub2api.Message{Role: "assistant", Content: text, ToolCalls: declared})
+	for index, call := range declared {
+		messages = append(messages, sub2api.Message{
+			Role: "tool", Name: call.Name, ToolCallID: call.ID, Content: observations[index],
+		})
+	}
+	return messages
+}
+
+const assistantAgentTrimmedObservation = "[较早的工具结果已省略，以控制上下文长度]"
+
+// 超预算后一次裁到这条水位线，而不是刚好压回预算。裁剪会改写已经发出去过的历史消息，
+// 而上游的提示词缓存按最长公共前缀命中：每改一次，这条消息之后的上下文就要重算一遍。
+// 每轮都精确裁到预算线的话，一旦逼近上限几乎每轮都要改写一次历史，缓存等于常年失效；
+// 一次裁出一半余量，之后能安稳跑很多轮不再碰历史。
+const assistantAgentObservationTrimTarget = assistantAgentObservationBudgetBytes / 2
+
+// trimAssistantAgentObservations 在工具结果总量超出预算时，从最旧的开始换成占位说明，
+// 直到降到水位线以下。只改 tool 消息的内容、不删消息：每个 tool_call 都必须留着配对的
+// 结果，少一条整轮请求就废了。
+func trimAssistantAgentObservations(payload []sub2api.Message) {
+	total := 0
+	for index := range payload {
+		if payload[index].Role == "tool" {
+			total += len(payload[index].Content)
+		}
+	}
+	if total <= assistantAgentObservationBudgetBytes {
+		return
+	}
+	for index := 0; index < len(payload) && total > assistantAgentObservationTrimTarget; index++ {
+		if payload[index].Role != "tool" || payload[index].Content == assistantAgentTrimmedObservation {
+			continue
+		}
+		total -= len(payload[index].Content) - len(assistantAgentTrimmedObservation)
+		payload[index].Content = assistantAgentTrimmedObservation
+	}
+}
+
+// 合成指令追加在末尾，不能插到最前面。整轮循环反复发的都是同一段前缀，上游的提示词
+// 缓存按最长公共前缀命中；在开头插一条消息等于改掉第一个 token，缓存全部作废，最后
+// 这一次要把几万 token 的上下文从头重算一遍，又慢又多花一次全量输入的钱。放在末尾既
+// 保住缓存，也更靠近模型的注意力焦点，循环里的其他提醒本来就是这么追加的。
 func assistantAgentFinalSynthesisPayload(payload []sub2api.Message) []sub2api.Message {
 	out := make([]sub2api.Message, 0, len(payload)+1)
-	out = append(out, sub2api.Message{Role: "system", Content: assistantAgentFinalSynthesisInstruction})
 	out = append(out, payload...)
+	out = append(out, sub2api.Message{Role: "system", Content: assistantAgentFinalSynthesisInstruction})
 	return out
 }
 
@@ -1301,6 +1539,123 @@ type assistantCatalogImage struct {
 	Label       string
 	Description string
 	Image       map[string]any
+}
+
+const (
+	assistantPlanMaxSteps   = 8
+	assistantPlanTitleRunes = 40
+)
+
+// assistantPlanFunctionTool 让 Agent 把自己的执行计划显式说出来。它没有任何外部副作用，
+// 只改变界面上的待办列表，因此不参与去重，也不能把这一轮标记成“已产生外部影响”。
+func assistantPlanFunctionTool() sub2api.FunctionTool {
+	return sub2api.FunctionTool{
+		Name: "update_plan",
+		Description: "把当前任务拆成可核对的待办清单并随进展更新。需要多步或跨工具完成的任务，" +
+			"动手前先调用一次；每完成一步再调用一次更新状态。每次都要提交完整清单，不要只发变化部分；" +
+			"同一时刻最多一项 in_progress。单步就能回答的问题不要调用。",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"steps": map[string]any{
+					"type": "array", "minItems": 2, "maxItems": assistantPlanMaxSteps,
+					"description": "完整的待办清单，按执行顺序排列",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"title":  map[string]any{"type": "string", "description": "一句话说明这一步做什么，20 字以内"},
+							"status": map[string]any{"type": "string", "enum": []string{"pending", "in_progress", "completed"}},
+						},
+						"required":             []string{"title", "status"},
+						"additionalProperties": false,
+					},
+				},
+			},
+			"required":             []string{"steps"},
+			"additionalProperties": false,
+		},
+	}
+}
+
+func parseAssistantPlan(raw string) ([]assistantstream.PlanStep, error) {
+	var payload struct {
+		Steps []struct {
+			Title  string `json:"title"`
+			Status string `json:"status"`
+		} `json:"steps"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &payload); err != nil {
+		return nil, fmt.Errorf("计划参数不是合法 JSON：%w", err)
+	}
+	steps := make([]assistantstream.PlanStep, 0, len(payload.Steps))
+	for _, item := range payload.Steps {
+		title := truncateAssistantRunes(strings.TrimSpace(item.Title), assistantPlanTitleRunes)
+		if title == "" {
+			continue
+		}
+		status := strings.ToLower(strings.TrimSpace(item.Status))
+		if status != "in_progress" && status != "completed" {
+			status = "pending"
+		}
+		steps = append(steps, assistantstream.PlanStep{Title: title, Status: status})
+		if len(steps) >= assistantPlanMaxSteps {
+			break
+		}
+	}
+	if len(steps) == 0 {
+		return nil, errors.New("计划里没有可用的步骤")
+	}
+	return steps, nil
+}
+
+func assistantPlanObservation(steps []assistantstream.PlanStep) string {
+	completed := 0
+	current := ""
+	for _, step := range steps {
+		if step.Status == "completed" {
+			completed++
+		}
+		if step.Status == "in_progress" && current == "" {
+			current = step.Title
+		}
+	}
+	if current != "" {
+		return fmt.Sprintf("计划已记录：共 %d 项，已完成 %d 项，当前进行「%s」。", len(steps), completed, current)
+	}
+	return fmt.Sprintf("计划已记录：共 %d 项，已完成 %d 项。", len(steps), completed)
+}
+
+// assistantProposalAutoApprovable 判定这份方案能否免确认直接生成。
+//
+// 授权依据是用户自己开的那个开关，不是分类器的置信度：用户开了自动授权，就是已经同意
+// “你觉得该出图就出”。而且 Agent 既然选择了提出图片方案，这件事本身就比分类器更有力地
+// 证明了意图——再要求分类器也确信，等于让一个更弱的信号去否决一个更强的信号，
+// 结果就是开了开关却仍然出卡片。
+//
+// 仍然拦住改动已有图片：那是用户明确要求保留确认的操作。
+// 预算不在这里判断，只有界面知道当前模型的单价。
+func assistantProposalAutoApprovable(proposal assistantImageProposal, autoApprove bool) bool {
+	if !autoApprove {
+		return false
+	}
+	return strings.TrimSpace(proposal.Action) == "generate"
+}
+
+// assistantUserAutoApproves 读取用户的自动授权偏好。读不到时按“未授权”处理：
+// 宁可多出一张可关闭的卡片，也不能因为一次查询失败就替用户花钱。
+func (w *Worker) assistantUserAutoApproves(ctx context.Context, userID uuid.UUID) bool {
+	user, err := store.GetUserByID(ctx, w.St.Pool, userID)
+	if err != nil || user == nil {
+		return false
+	}
+	return user.AssistantAutoApprove
+}
+
+func attachAssistantPlan(metadata map[string]any, steps []assistantstream.PlanStep) {
+	if metadata == nil || len(steps) == 0 {
+		return
+	}
+	metadata["plan"] = steps
 }
 
 func assistantProposalFunctionTool(models []map[string]any) sub2api.FunctionTool {
@@ -1418,8 +1773,7 @@ func assistantProposalModelMaxImages(model map[string]any) int {
 	return limit
 }
 
-func assistantAgentInstructions(run *store.AssistantRun, catalog []assistantCatalogImage, models []map[string]any) string {
-	instructions := `你是 StarCloudsAI 的通用执行 Agent，全程使用简体中文，思考过程也使用简体中文。
+const assistantAgentBaseInstruction = `你是 StarCloudsAI 的通用执行 Agent，全程使用简体中文，思考过程也使用简体中文。
 	按以下规则完成判断和必要的工具调用：
 	- 先识别用户要求的全部子目标、先后依赖、硬约束和交付物，并在内部形成简短完成清单；不要只完成最容易的一项就结束。
 	- 多步骤请求必须在同一轮持续推进：按依赖顺序调用工具，把已经验证的结果交给后续工具，直到每个必要交付物都有真实结果或明确失败原因。
@@ -1437,8 +1791,12 @@ func assistantAgentInstructions(run *store.AssistantRun, catalog []assistantCata
 	- 用户要求根据参考图搭建可编辑流程时调用 reference_rebuild；它只准备无限画布草稿，禁止声称已经运行或收费。
 	- 用户要下载完整交付物时调用 delivery_export；它会在浏览器本地打包图片、提示词、参数和清单。
 	- 用户明确要打开站内某个页面时调用 site_operator；只能使用工具允许的站内目的地。
-	- media_action、send_to_workspace、reference_rebuild、product_import 和 delivery_export 返回的动作都必须等待用户在卡片上确认，禁止在回答中声称已执行、已扣费或已完成。
-	- 用户明确要生成新图或编辑已有图片时，可以先给一句简短说明，然后调用 propose_image_action；工具调用成功后不要再输出 JSON 或重复提示词。
+	- media_action、send_to_workspace、reference_rebuild、product_import 和 delivery_export 返回的动作都必须等待用户在卡片上确认，禁止在回答中声称已执行、已扣费或已完成。`
+
+// 下面这十条讲的全是 propose_image_action 的参数怎么填，只有本轮真的把这个工具交给
+// 模型时才有意义。规则不会因为用不上就不占注意力：多读一条无关约束，模型挑错工具、
+// 填错参数的概率就高一分，所以纯对话轮整段不下发。
+const assistantAgentImageInstruction = `	- 用户明确要生成新图或编辑已有图片时，可以先给一句简短说明，然后调用 propose_image_action；工具调用成功后不要再输出 JSON 或重复提示词。
 	- 有参考图、编辑已有图片，或用户强调原样、一模一样、提示词不要改时，promptMode=faithful，faithfulPrompt 必须保留用户目标和原始约束，禁止擅自增加风格、主体或构图。只有需求是模糊创意方向时才使用 enhanced。
 	- 用户明确需要一套不同用途的图片（例如主图、场景图、细节图）时，items 为每张图填写独立 title、prompt 和 referencedImageIds，count 必须等于 items 数量。只是同一提示词生成多个随机变体时 items 返回空数组。
 - 如果当前上游不支持工具调用，无法调用 propose_image_action，则只输出一个与该工具参数完全同结构的 JSON 对象，不要 Markdown、代码块或额外文字。
@@ -1449,6 +1807,20 @@ func assistantAgentInstructions(run *store.AssistantRun, catalog []assistantCata
 	- 生成全新图片时 referencedImageIds 默认必须为空；只有用户明确提到上一张、图1/图2、之前图片的主体/风格，或明确要求修改历史图片时才可引用图片目录。
 	- 用户明确要求几张图时，在当前图片模型目录提供的有效单次上限内填写 count；如果需求数量超过上限，必须在 reason 和 planningSummary 中明确说明单次上限，不能提交会被系统拒绝的超限方案。未指定时使用当前默认数量。
 - 参数只从工具允许值和模型目录选择，系统还会按模型能力做最终校验。`
+
+// assistantAgentInstructions 按本轮真正交到模型手里的能力拼系统提示词。imageWork 为
+// false 时，图片规则、默认参数和图片目录整段都不下发——给模型描述一个它这轮根本没有
+// 的工具，只会挤占它挑对工具、填对参数的余量。
+func assistantAgentInstructions(
+	run *store.AssistantRun,
+	catalog []assistantCatalogImage,
+	models []map[string]any,
+	imageWork bool,
+) string {
+	if !imageWork {
+		return assistantAgentBaseInstruction
+	}
+	instructions := assistantAgentBaseInstruction + "\n" + assistantAgentImageInstruction
 	defaults := []string{fmt.Sprintf("数量=%d", assistantParamInt(run.Params, "count", 1))}
 	for _, item := range []struct{ label, key string }{{"比例", "ratio"}, {"分辨率", "resolution"}, {"质量", "quality"}, {"图片模型", "_imageModelConfigId"}} {
 		if value := assistantParamString(run.Params, item.key, ""); value != "" {
@@ -1475,9 +1847,22 @@ func (w *Worker) executeAssistantAgent(
 	history []*store.AssistantMessage,
 ) error {
 	run.ResolvedMode = "agent"
+	started := assistantRunClock(run)
+	ctx = withAssistantDebugLog(ctx, &assistantDebugLog{started: started})
+	w.publishAssistantDebug(ctx, run, "agent_start", "进入 Agent，正在准备上下文")
 	inheritAssistantDocumentContext(run, history)
 	fileIDs := assistantRunFileIDs(run)
 	wantsArtifact := assistantArtifactRequested(run.Prompt)
+	lastWasImage := lastAssistantMessageWasImage(history, run.UserMessageID, run.AssistantMessageID)
+	forceWebSearchTool := assistantPromptRequestsWebSearch(run.Prompt)
+	forceTaskStatusTool := assistantPromptRequestsTaskStatus(run.Prompt)
+	forcedWorkspaceTool := assistantForcedWorkspaceTool(run.Prompt)
+	toolForced := forceWebSearchTool || forceTaskStatusTool || forcedWorkspaceTool != ""
+	// 尽早发起，让模型判定意图的那次调用被下面的注册表查询和参考图读取盖住。
+	// 放开并行工具调用。上游一次返回多个时，只有整批都只读才会并发执行，
+	// 混进副作用工具会退回串行，判定在 assistantAgentParallelBatch。
+	client = client.WithParallelToolCalls(true)
+	awaitIntent := w.classifyAssistantIntentAsync(ctx, client, run, history, len(references) > 0, lastWasImage, toolForced)
 	fileToolRegistry, fileTools, err := w.assistantAgentFileToolRegistry(len(fileIDs) > 0, wantsArtifact)
 	if err != nil {
 		return err
@@ -1506,17 +1891,29 @@ func (w *Worker) executeAssistantAgent(
 	if len(agentReferences) > 0 {
 		nextStage = "analyzing-image"
 	}
-	lastWasImage := lastAssistantMessageWasImage(history, run.UserMessageID, run.AssistantMessageID)
-	fastIntent, fastIntentCertain := fastAssistantIntent(run.Prompt, len(references) > 0, lastWasImage)
-	forceWebSearchTool := assistantPromptRequestsWebSearch(run.Prompt)
-	forceTaskStatusTool := assistantPromptRequestsTaskStatus(run.Prompt)
-	forcedWorkspaceTool := assistantForcedWorkspaceTool(run.Prompt)
-	// 这一轮几乎确定要出图片方案：作为提示交给模型，并保留兜底，但不锁定第一步该调哪个工具，
-	// 否则模型没有机会先读附件或联网核实再提方案。
-	expectProposal := fastIntentCertain && fastIntent == "image" && !forceWebSearchTool && !forceTaskStatusTool && forcedWorkspaceTool == ""
-	// 寒暄、理解类提问和明确说了“不要生成图片”时不提供方案工具，比事后丢弃模型的调用更安全。
-	withholdProposal := fastIntentCertain && fastIntent == "chat"
-	instructions := assistantAgentInstructions(run, imageCatalog, modelCatalog)
+	intent := awaitIntent()
+	intentDetail := "判定 " + intent.intent
+	switch {
+	case intent.fromFastPath:
+		intentDetail += "（正则直接确定，没花模型）"
+	case intent.usedModel && intent.confident:
+		intentDetail += "（模型判定）"
+	case intent.usedModel:
+		intentDetail += "（模型没说清，走兜底）"
+	default:
+		intentDetail += "（未问模型）"
+	}
+	w.publishAssistantDebug(ctx, run, "intent_done", intentDetail)
+	// 授权判定放回服务端：界面只负责按单价核对预算，要不要免确认由用户的偏好决定。
+	autoApprove := w.assistantUserAutoApproves(ctx, run.UserID)
+	// 判定要出图就把这件事告诉模型，并保留兜底，但不锁定第一步该调哪个工具，否则模型
+	// 没有机会先读附件或联网核实再提方案。多出一张可关闭的方案卡不扣费，所以模型的
+	// 判定也足以据此预期。
+	expectProposal := intent.intent == "image" && !toolForced
+	// 反方向必须更保守：撤掉工具会让用户想做的事直接做不了，所以只有寒暄、理解类提问和
+	// 明确说了“不要生成图片”这些窄而精确的正则可以撤，模型的判定不足以剥夺调用机会。
+	withholdProposal := intent.fromFastPath && intent.intent == "chat"
+	instructions := assistantAgentInstructions(run, imageCatalog, modelCatalog, !withholdProposal)
 	if expectProposal {
 		instructions += "\n\n" + assistantAgentProposalExpectedInstruction
 	}
@@ -1543,7 +1940,6 @@ func (w *Worker) executeAssistantAgent(
 	lastPublish := time.Time{}
 	lastTerminationCheck := time.Time{}
 	answering := false
-	started := time.Now()
 	var firstVisible time.Time
 	proposalTool := assistantProposalFunctionTool(modelCatalog)
 	taskStatusRegistry, taskStatusTool, err := w.assistantTaskStatusRegistry()
@@ -1554,7 +1950,8 @@ func (w *Worker) executeAssistantAgent(
 	if err != nil {
 		return err
 	}
-	tools := []sub2api.FunctionTool{proposalTool, webSearchTool(), taskStatusTool}
+	planTool := assistantPlanFunctionTool()
+	tools := []sub2api.FunctionTool{proposalTool, planTool, webSearchTool(), taskStatusTool}
 	if withholdProposal {
 		tools = assistantToolDefinitionsWithout(tools, proposalTool.Name)
 	}
@@ -1567,9 +1964,16 @@ func (w *Worker) executeAssistantAgent(
 	var successfulFileTools []string
 	// 执行步骤随消息一起持久化，刷新对话后时间线仍可回溯。
 	var toolSteps []map[string]any
+	var plan []assistantstream.PlanStep
 	taskStatusCalls := 0
 	var aggregateUsage sub2api.ChatUsage
+	// 用户按一轮对话计价，但这一轮真实会调用上游模型多次；结算时带上次数，上游成本才准。
+	upstreamCalls := 0
+	if intent.usedModel {
+		upstreamCalls++
+	}
 	reasoningParts := make([]string, 0, 2)
+	debugFirstToken := false
 	onUpdate := func(fullText, reasoning string) error {
 		fileRequirementsPending := assistantAgentFileRequirementsPending(fileIDs, wantsArtifact, successfulFileTools, artifacts)
 		visibleText := assistantAgentVisibleText(fullText, expectProposal, fileRequirementsPending)
@@ -1583,6 +1987,14 @@ func (w *Worker) executeAssistantAgent(
 				}
 				return context.Canceled
 			}
+		}
+		if !debugFirstToken && (visibleText != "" || reasoning != "") {
+			debugFirstToken = true
+			detail := "模型开始吐字"
+			if reasoning != "" && visibleText == "" {
+				detail = "模型开始输出思考"
+			}
+			w.publishAssistantDebug(ctx, run, "model_token", detail)
 		}
 		if !answering {
 			if err := w.setAssistantRunStage(ctx, run, "agent", "answering"); err != nil {
@@ -1603,12 +2015,19 @@ func (w *Worker) executeAssistantAgent(
 		attachAssistantReasoning(metadata, reasoning)
 		attachAssistantArtifacts(metadata, artifacts)
 		attachAssistantToolSteps(metadata, toolSteps)
+		attachAssistantPlan(metadata, plan)
 		return store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, fullText, "agent", "running", metadata)
 	}
 	successfulToolObservations := make(map[string]string)
 	toolExecutionStarted := false
 	loopExhausted := true
+	loopDeadline := time.Now().Add(assistantAgentMaxDuration)
 	for iteration := 0; iteration < assistantAgentMaxIterations; iteration++ {
+		// 超时后不直接报错：工具结果都还在 payload 里，交给后面的最终合成，
+		// 用户至少能拿到一份基于已有进展的回答，而不是转了八分钟然后一场空。
+		if iteration > 0 && time.Now().After(loopDeadline) {
+			break
+		}
 		toolChoice := ""
 		if iteration == 0 {
 			if forceTaskStatusTool {
@@ -1622,14 +2041,28 @@ func (w *Worker) executeAssistantAgent(
 		turnTools := assistantAgentToolsForFileRequirements(
 			tools, proposalTool.Name, fileIDs, wantsArtifact, successfulFileTools, artifacts,
 		)
+		trimAssistantAgentObservations(payload)
+		waitDetail := fmt.Sprintf("第 %d 轮，正在等模型决定下一步", iteration+1)
+		if toolChoice != "" {
+			waitDetail = fmt.Sprintf("第 %d 轮，强制先调 %s", iteration+1, toolChoice)
+		}
+		debugFirstToken = false
+		w.publishAssistantDebug(ctx, run, "model_wait", waitDetail)
 		next, callErr := client.ChatAgentWithTools(ctx, payload, nil, turnTools, toolChoice, onUpdate)
+		upstreamCalls++
 		aggregateUsage = aggregateUsage.Add(next.Usage)
 		if value := strings.TrimSpace(next.Reasoning); value != "" && (len(reasoningParts) == 0 || reasoningParts[len(reasoningParts)-1] != value) {
 			reasoningParts = append(reasoningParts, value)
 		}
 		result = next
 		if callErr != nil {
+			w.publishAssistantDebug(ctx, run, "model_error", callErr.Error())
 			return &assistantProviderError{err: callErr, outputStarted: toolExecutionStarted || result.Text != "" || result.Reasoning != "" || result.ToolCall != nil}
+		}
+		if next.ToolCall != nil {
+			w.publishAssistantDebug(ctx, run, "model_tool", "模型要调用 "+next.ToolCall.Name)
+		} else if strings.TrimSpace(next.Text) != "" {
+			w.publishAssistantDebug(ctx, run, "model_answer", "模型直接写回答，不再调工具")
 		}
 		if next.ToolCall == nil {
 			if reminder := assistantAgentFileRequirementReminder(fileIDs, wantsArtifact, successfulFileTools, artifacts); reminder != "" {
@@ -1665,6 +2098,115 @@ func (w *Worker) executeAssistantAgent(
 			loopExhausted = false
 			break
 		}
+		// 计划更新没有外部副作用，所以既不参与重复调用去重（模型本来就该反复更新它），
+		// 也不设置 toolExecutionStarted —— 否则第一次列计划之后模型一失败就无法再安全
+		// 重试或切换线路，而列计划恰好几乎总是第一步。
+		if next.ToolCall.Name == planTool.Name {
+			w.publishAssistantDebug(ctx, run, "tool_start", "正在更新待办")
+			updated, planErr := parseAssistantPlan(next.ToolCall.Arguments)
+			planObservation := ""
+			if planErr == nil {
+				plan = updated
+				assistantstream.Publish(ctx, w.Stream, run.ID.String(), assistantstream.Event{
+					Kind: "agent", Stage: "planning", Plan: plan,
+				})
+				planObservation = assistantPlanObservation(plan)
+			}
+			observation, observationErr := assistantAgentToolObservation(next.ToolCall, planObservation, planErr, ctx.Err())
+			if observationErr != nil {
+				return observationErr
+			}
+			payload = append(payload, canvasAgentToolMessages(next, observation)...)
+			answering = false
+			w.publishAssistantDebug(ctx, run, "tool_done", "待办已更新")
+			if err := w.setAssistantRunStage(ctx, run, "agent", "thinking"); err != nil {
+				return err
+			}
+			continue
+		}
+		// 模型一次可能要求搜三个关键词或读三个附件。这些工具只读、互不依赖，串行跑
+		// 就是白白多等两次网络往返——一次搜索 1~5 秒，三次串起来用户就要多等十秒。
+		if batch := assistantAgentParallelBatch(next); len(batch) > 0 {
+			batchNames := make([]string, 0, len(batch))
+			for _, call := range batch {
+				batchNames = append(batchNames, call.Name)
+			}
+			w.publishAssistantDebug(ctx, run, "tool_start", "并行执行 "+strings.Join(batchNames, "、"))
+			observations := make([]string, len(batch))
+			searchResults := make([]*sub2api.WebSearchResult, len(batch))
+			failures := make([]error, len(batch))
+			elapsed := make([]time.Duration, len(batch))
+			// 搜索次数上限在派发前按批内顺序算完，避免并发下计数互相覆盖。
+			searchBudget := len(searches)
+			var group sync.WaitGroup
+			for index := range batch {
+				if assistantAgentToolIsWebSearch(batch[index].Name) {
+					searchBudget++
+					if searchBudget > assistantAgentMaxWebSearches {
+						failures[index] = errors.New("联网搜索次数过多，请缩小问题范围后重试")
+						continue
+					}
+				}
+				group.Add(1)
+				go func(index int) {
+					defer group.Done()
+					call := batch[index]
+					started := time.Now()
+					defer func() { elapsed[index] = time.Since(started) }()
+					if assistantAgentToolIsWebSearch(call.Name) {
+						observation, searchResult, searchErr := w.runAssistantAgentWebSearch(ctx, run, &call)
+						observations[index], failures[index] = observation, searchErr
+						if searchErr == nil {
+							searchResults[index] = &searchResult
+						}
+						return
+					}
+					switch {
+					case fileToolRegistry == nil || !fileToolRegistry.Has(call.Name):
+						failures[index] = fmt.Errorf("AI 助手请求了当前不可用的文件工具：%s", call.Name)
+					case len(fileIDs) == 0:
+						failures[index] = errors.New("本轮没有可读取的附件")
+					default:
+						observations[index], _, failures[index] = w.runAssistantAgentFileTool(
+							ctx, run, fileToolRegistry, &call, fileIDs)
+					}
+				}(index)
+			}
+			group.Wait()
+			// 并发的只是执行；归并严格按模型给出的调用顺序做，否则同样一批工具每次跑出来
+			// 的上下文顺序都不同，用户报的问题就再也复现不了。
+			toolExecutionStarted = true
+			for index := range batch {
+				call := batch[index]
+				if searchResults[index] != nil {
+					searches = append(searches, *searchResults[index])
+				}
+				if failures[index] == nil && assistantAgentToolIsReadOnlyFileTool(call.Name) {
+					successfulFileTools = append(successfulFileTools, call.Name)
+				}
+				if record := assistantAgentToolStepRecord(&call, failures[index], elapsed[index]); record != nil {
+					toolSteps = append(toolSteps, record)
+				}
+				merged, observationErr := assistantAgentToolObservation(
+					&call, observations[index], failures[index], ctx.Err())
+				if observationErr != nil {
+					return observationErr
+				}
+				observations[index] = merged
+				if failures[index] == nil {
+					if key := assistantAgentToolCallKey(&call); key != "" {
+						successfulToolObservations[key] = merged
+					}
+				}
+			}
+			payload = append(payload, assistantAgentBatchToolMessages(next.Text, batch, observations)...)
+			answering = false
+			w.publishAssistantDebug(ctx, run, "tool_done", fmt.Sprintf("并行工具完成（%d 个）", len(batch)))
+			if err := w.setAssistantRunStage(ctx, run, "agent", "thinking"); err != nil {
+				return err
+			}
+			continue
+		}
 		callKey := assistantAgentToolCallKey(next.ToolCall)
 		observation, repeated := successfulToolObservations[callKey]
 		if repeated && callKey != "" {
@@ -1672,15 +2214,17 @@ func (w *Worker) executeAssistantAgent(
 				return parentErr
 			}
 			observation = assistantAgentRepeatedToolObservation(observation)
+			w.publishAssistantDebug(ctx, run, "tool_done", next.ToolCall.Name+" 复用上次结果")
 		} else {
 			var toolErr error
 			// A later model failure cannot safely replay a tool that may already
 			// have produced an external result, even when its response was lost.
 			toolExecutionStarted = true
 			stepStarted := time.Now()
+			w.publishAssistantDebug(ctx, run, "tool_start", "正在执行 "+next.ToolCall.Name)
 			switch next.ToolCall.Name {
 			case webSearchTool().Name:
-				if len(searches) >= 3 {
+				if len(searches) >= assistantAgentMaxWebSearches {
 					toolErr = errors.New("联网搜索次数过多，请缩小问题范围后重试")
 					break
 				}
@@ -1739,6 +2283,11 @@ func (w *Worker) executeAssistantAgent(
 			if toolErr == nil && callKey != "" {
 				successfulToolObservations[callKey] = observation
 			}
+			doneDetail := next.ToolCall.Name + " 完成，用了 " + time.Since(stepStarted).Round(10*time.Millisecond).String()
+			if toolErr != nil {
+				doneDetail = next.ToolCall.Name + " 失败：" + toolErr.Error()
+			}
+			w.publishAssistantDebug(ctx, run, "tool_done", doneDetail)
 		}
 		payload = append(payload, canvasAgentToolMessages(next, observation)...)
 		answering = false
@@ -1747,9 +2296,12 @@ func (w *Worker) executeAssistantAgent(
 		}
 	}
 	if assistantAgentNeedsFinalSynthesis(result, proposalTool.Name, loopExhausted) {
+		debugFirstToken = false
+		w.publishAssistantDebug(ctx, run, "synthesis_wait", "工具阶段结束，正在等最后一次总结")
 		final, finalErr := client.CompleteChatTextWithImages(
 			ctx, assistantAgentFinalSynthesisPayload(payload), nil, onUpdate,
 		)
+		upstreamCalls++
 		aggregateUsage = aggregateUsage.Add(final.Usage)
 		if value := strings.TrimSpace(final.Reasoning); value != "" && (len(reasoningParts) == 0 || reasoningParts[len(reasoningParts)-1] != value) {
 			reasoningParts = append(reasoningParts, value)
@@ -1798,7 +2350,10 @@ func (w *Worker) executeAssistantAgent(
 		return context.Canceled
 	}
 
-	if expectProposal || (result.ToolCall != nil && result.ToolCall.Name == proposalTool.Name) {
+	// 第三个条件是兜底：模型没调工具、但把方案 JSON 当正文写出来了。下面的文本解析本来
+	// 就能处理这种情况，之前只是没人让它进来，于是那段 JSON 被当成回答发给了用户。
+	if expectProposal || (result.ToolCall != nil && result.ToolCall.Name == proposalTool.Name) ||
+		assistantTextLooksLikeProposal(result.Text) {
 		requestID := uuid.NewString()
 		arguments := assistantToolArguments(result.Text)
 		if result.ToolCall != nil && result.ToolCall.Name == proposalTool.Name {
@@ -1838,6 +2393,7 @@ func (w *Worker) executeAssistantAgent(
 		proposal = normalizeAssistantProposalWithModels(proposal, run, modelCatalog)
 		proposal = attachAssistantProposalReferences(proposal, run, imageCatalog, modelCatalog)
 		proposal.InspectedImageIDs = assistantCatalogImageIDs(historicalVisionCatalog)
+		proposal.AutoApprovable = assistantProposalAutoApprovable(proposal, autoApprove)
 		traceItems := make([]map[string]any, 0, len(proposal.Items))
 		for _, item := range proposal.Items {
 			traceItems = append(traceItems, map[string]any{
@@ -1871,6 +2427,7 @@ func (w *Worker) executeAssistantAgent(
 		attachAssistantWebSearches(metadata, searches)
 		attachAssistantArtifacts(metadata, artifacts)
 		attachAssistantToolSteps(metadata, toolSteps)
+		attachAssistantPlan(metadata, plan)
 		if len(toolActions) > 0 {
 			metadata["toolActions"] = toolActions
 		}
@@ -1884,7 +2441,7 @@ func (w *Worker) executeAssistantAgent(
 		if err := store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, content, "proposal", "complete", metadata); err != nil {
 			return err
 		}
-		completed, err := assistantbilling.CompleteAttempt(ctx, w.St, run.ID, run.Attempt, "proposal")
+		completed, err := assistantbilling.CompleteAgentAttempt(ctx, w.St, run.ID, run.Attempt, "proposal", upstreamCalls)
 		if err != nil {
 			return err
 		}
@@ -1907,6 +2464,7 @@ func (w *Worker) executeAssistantAgent(
 	attachAssistantWebSearches(metadata, searches)
 	attachAssistantArtifacts(metadata, artifacts)
 	attachAssistantToolSteps(metadata, toolSteps)
+	attachAssistantPlan(metadata, plan)
 	if len(toolActions) > 0 {
 		metadata["toolActions"] = toolActions
 	}
@@ -1917,7 +2475,7 @@ func (w *Worker) executeAssistantAgent(
 	if err := store.UpdateAssistantMessage(ctx, w.St.Pool, run.AssistantMessageID, text, "chat", "complete", metadata); err != nil {
 		return err
 	}
-	completed, err := assistantbilling.CompleteAttempt(ctx, w.St, run.ID, run.Attempt, "chat")
+	completed, err := assistantbilling.CompleteAgentAttempt(ctx, w.St, run.ID, run.Attempt, "chat", upstreamCalls)
 	if err != nil {
 		return err
 	}
@@ -2174,11 +2732,80 @@ func parseAssistantProposal(raw string) (assistantImageProposal, error) {
 	if err := json.Unmarshal([]byte(raw[start:end+1]), &proposal); err != nil {
 		return assistantImageProposal{}, err
 	}
-	if strings.TrimSpace(proposal.Prompt) == "" && strings.TrimSpace(proposal.FaithfulPrompt) == "" && strings.TrimSpace(proposal.EnhancedPrompt) == "" {
+	if !assistantProposalHasPrompt(proposal) {
 		return assistantImageProposal{}, errors.New("proposal prompt is empty")
 	}
 	return proposal, nil
 }
+
+// assistantProposalHasPrompt 判断这份方案到底有没有提示词。
+//
+// 多图方案会把每张图的提示词放在 items 里、顶层留空，这是完全合法的形状。只看顶层会把
+// 这种方案判成“空方案”：模型直接调工具时会得到一个解析失败的错误，而模型把方案写成正文时
+// 兜底也认不出来，于是那段 JSON 被原样发给用户、一张图都不会生成。
+func assistantProposalHasPrompt(proposal assistantImageProposal) bool {
+	if strings.TrimSpace(proposal.Prompt) != "" ||
+		strings.TrimSpace(proposal.FaithfulPrompt) != "" ||
+		strings.TrimSpace(proposal.EnhancedPrompt) != "" {
+		return true
+	}
+	for _, item := range proposal.Items {
+		if strings.TrimSpace(item.Prompt) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// assistantTextLooksLikeProposal 判定模型是不是把方案 JSON 当正文写了出来。方案的字段格式
+// 就写在指令里，所以模型偶尔会不调用工具、直接把 JSON 当回答输出。那段 JSON 对用户毫无意义，
+// 而且没有任何人接手它，结果就是用户说了“开始做图”却一张图都没有。认出来当方案处理。
+//
+// 判定收紧的办法是看结构，不是看某一个字段：正文必须基本上就是一个 JSON 对象、能解析成
+// 方案、且带有出图方案特有的字段。这样正文里顺带引用 JSON 的正常回答不会被误判。
+func assistantTextLooksLikeProposal(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	// 模型常把 JSON 包在 ``` 围栏里，先剥掉再判断。
+	if strings.HasPrefix(trimmed, "```") {
+		if end := strings.LastIndex(trimmed, "```"); end > 3 {
+			if newline := strings.Index(trimmed, "\n"); newline > 0 && newline < end {
+				trimmed = strings.TrimSpace(trimmed[newline+1 : end])
+			}
+		}
+	}
+	// 允许一小段开场白（“好的，方案如下：”），但正文必须以 JSON 结束——否则那是一段
+	// 引用了 JSON 的说明性回答，不该被当成方案劫持掉。
+	start := strings.Index(trimmed, "{")
+	if start < 0 || !strings.HasSuffix(trimmed, "}") {
+		return false
+	}
+	if len([]rune(trimmed[:start])) > assistantProposalTextPrefaceRunes {
+		return false
+	}
+	proposal, err := parseAssistantProposal(trimmed)
+	if err != nil {
+		return false
+	}
+	switch strings.TrimSpace(proposal.Action) {
+	case "generate", "edit":
+		// 写明了出图动作，本身就是足够强的方案特征。
+		return true
+	case "":
+		// action 缺失很常见（归一化会补默认动作），此时光有提示词还不够，必须另有出图方案
+		// 特有的字段，否则恰好含 prompt 的普通 JSON 会被误判成方案。
+		return len(proposal.Items) > 0 || proposal.Count > 0 ||
+			strings.TrimSpace(proposal.Model) != "" ||
+			strings.TrimSpace(proposal.Ratio) != "" ||
+			strings.TrimSpace(proposal.PromptMode) != ""
+	default:
+		// 写明了别的动作（比如 inspect）就不是出图方案。
+		return false
+	}
+}
+
+// assistantProposalTextPrefaceRunes 是方案 JSON 前面允许的开场白长度上限。
+// 够放下“好的，方案如下：”，但放不下一段解释——解释性回答不该被当成方案。
+const assistantProposalTextPrefaceRunes = 30
 
 func normalizeAssistantProposal(proposal assistantImageProposal, run *store.AssistantRun) assistantImageProposal {
 	return normalizeAssistantProposalWithModels(proposal, run, nil)
@@ -2899,12 +3526,19 @@ func (w *Worker) executeAssistantChat(ctx context.Context, client *sub2api.Clien
 	lastPublish := time.Time{}
 	lastTerminationCheck := time.Time{}
 	answering := false
-	started := time.Now()
+	started := assistantRunClock(run)
+	ctx = withAssistantDebugLog(ctx, &assistantDebugLog{started: started})
 	var firstVisible time.Time
 	var latestReasoning string
+	debugFirstToken := false
+	w.publishAssistantDebug(ctx, run, "model_wait", "正在等对话模型")
 	onText := func(fullText, reasoning string) error {
 		if strings.TrimSpace(reasoning) != "" {
 			latestReasoning = reasoning
+		}
+		if !debugFirstToken && (strings.TrimSpace(fullText) != "" || strings.TrimSpace(latestReasoning) != "") {
+			debugFirstToken = true
+			w.publishAssistantDebug(ctx, run, "model_token", "模型开始吐字")
 		}
 		markAssistantFirstToken(&firstVisible, fullText)
 		markAssistantFirstToken(&firstVisible, latestReasoning)

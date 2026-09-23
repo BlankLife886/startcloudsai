@@ -27,17 +27,19 @@ func optionalString(value *string) any {
 
 func userDict(u *store.User) gin.H {
 	return gin.H{
-		"id":                 u.ID.String(),
-		"email":              u.Email,
-		"username":           u.Username,
-		"avatarUrl":          optionalString(u.AvatarURL),
-		"studioFigureUrl":    optionalString(u.StudioFigureURL),
-		"bio":                u.Bio,
-		"location":           u.Location,
-		"websiteUrl":         u.WebsiteURL,
-		"requireCostConfirm": u.RequireCostConfirm,
-		"role":               u.Role,
-		"createdAt":          isoValue(u.CreatedAt),
+		"id":                              u.ID.String(),
+		"email":                           u.Email,
+		"username":                        u.Username,
+		"avatarUrl":                       optionalString(u.AvatarURL),
+		"studioFigureUrl":                 optionalString(u.StudioFigureURL),
+		"bio":                             u.Bio,
+		"location":                        u.Location,
+		"websiteUrl":                      u.WebsiteURL,
+		"requireCostConfirm":              u.RequireCostConfirm,
+		"assistantAutoApprove":            u.AssistantAutoApprove,
+		"assistantAutoApproveBudgetCents": u.AssistantAutoApproveBudgetCents,
+		"role":                            u.Role,
+		"createdAt":                       isoValue(u.CreatedAt),
 	}
 }
 

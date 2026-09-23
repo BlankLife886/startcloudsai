@@ -37,6 +37,9 @@ func billingPage(c *gin.Context) (int, int, error) {
 	if err != nil || size < 1 || size > 100 {
 		return 0, 0, apperr.E("validation_error", "每页须为1-100条", 422)
 	}
+	if (page-1)*size >= store.ListCountCap {
+		return 0, 0, errPageBeyondCap
+	}
 	return page, size, nil
 }
 

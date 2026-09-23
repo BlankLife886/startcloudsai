@@ -683,6 +683,8 @@ func createTaskWithTransaction(ctx context.Context, userID uuid.UUID, in CreateI
 			params["_providerRouteId"] = selection.Provider.RouteID
 			params["_providerRouteKey"] = modelconfig.ExecutionRouteKey(selection.Provider)
 			params["_providerDisplayName"] = selection.Provider.Name
+			params["_providerRouteName"] = selection.Provider.RouteName
+			params["_providerEndpoint"] = modelconfig.ProviderEndpoint(selection.Provider.BaseURL)
 			params["_modelDisplayName"] = selection.Model.Name
 			params["_modelTool"] = selection.Model.Tool
 			params["_modelFastMode"] = selection.Model.FastMode

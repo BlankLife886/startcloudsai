@@ -1,5 +1,10 @@
 商品图一键生产工作流
 
+仓库保存的是 projects.json（infinite-canvas v3 导出格式），未随目录提交 ZIP。
+在本目录运行以下命令，将 projects.json 放在压缩包根目录：
+zip ecommerce-product-production-workflow.zip projects.json
+之后按下述步骤导入。示例仅用于展示工作流结构，未代表当前模型与付费上游已实测通过。
+
 导入方法：
 1. 打开 http://127.0.0.1:3105/canvas
 2. 进入“我的画布”页面。

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -41,6 +42,11 @@ func optionalUUIDQuery(c *gin.Context, key string) (*uuid.UUID, error) {
 }
 
 func (s *Server) adminPlatformLogs(c *gin.Context, _ *store.User) {
+	clientIP := strings.TrimSpace(c.Query("ip"))
+	if clientIP != "" && net.ParseIP(clientIP) == nil {
+		fail(c, apperr.E("validation_error", "ip: 格式不正确", 422))
+		return
+	}
 	category := strings.TrimSpace(c.Query("category"))
 	if category != "" && !store.Contains(store.PlatformLogCategories, category) {
 		fail(c, apperr.E("validation_error", "category: 分类无效", 422))
@@ -83,11 +89,17 @@ func (s *Server) adminPlatformLogs(c *gin.Context, _ *store.User) {
 			return
 		}
 	}
-	items, err := store.ListPlatformLogs(c.Request.Context(), s.St.Pool, store.PlatformLogFilter{
+	filter := store.PlatformLogFilter{
 		Category: category, Level: level, Service: strings.TrimSpace(c.Query("service")), Route: strings.TrimSpace(c.Query("route")),
 		Search: strings.TrimSpace(c.Query("search")), TaskID: taskID, UserID: userID,
 		RequestID: strings.TrimSpace(c.Query("requestId")), Since: since, BeforeID: beforeID, Limit: limit,
-	})
+		ClientIP: clientIP,
+	}
+	if c.Query("export") == "ndjson" {
+		s.exportPlatformLogs(c, filter)
+		return
+	}
+	items, err := store.ListPlatformLogs(c.Request.Context(), s.St.Pool, filter)
 	if err != nil {
 		fail(c, err)
 		return

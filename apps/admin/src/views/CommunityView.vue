@@ -1704,7 +1704,7 @@ onUnmounted(() => {
     &.is-active {
       border-color: transparent;
       background: var(--accent);
-      color: #fff;
+      color: var(--accent-on);
     }
   }
 

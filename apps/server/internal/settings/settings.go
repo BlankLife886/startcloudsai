@@ -19,16 +19,16 @@ var Defaults = map[string]json.RawMessage{
 	"user_max_concurrent_tasks":   json.RawMessage(`4`),
 	"user_max_concurrent_chats":   json.RawMessage(`4`),
 	"global_max_concurrent_tasks": json.RawMessage(`2000`),
-	"global_max_concurrent_chats": json.RawMessage(`32`),
+	"global_max_concurrent_chats": json.RawMessage(`128`),
 	"global_max_active_tasks":     json.RawMessage(`12000`),
 	"global_max_active_images":    json.RawMessage(`12000`),
 	"task_failure_retry_count":    json.RawMessage(`2`),
 	"task_retry_first_delay_secs": json.RawMessage(`3`),
 	"task_retry_backoff_secs":     json.RawMessage(`15`),
 	// 前端输入框字数上限（文生图 / AI 助手 / 创作台）
-	"t2i_prompt_max_chars":          json.RawMessage(`8000`),
-	"assistant_message_max_chars":   json.RawMessage(`12000`),
-	"studio_hub_prompt_max_chars":   json.RawMessage(`2000`),
+	"t2i_prompt_max_chars":        json.RawMessage(`8000`),
+	"assistant_message_max_chars": json.RawMessage(`12000`),
+	"studio_hub_prompt_max_chars": json.RawMessage(`2000`),
 	// 图片三级图（小图/展示图/原图）中变体的编码配置
 	"image_variant_format":                        json.RawMessage(`"webp"`),
 	"image_display_lossless":                      json.RawMessage(`false`),
@@ -66,6 +66,7 @@ var Defaults = map[string]json.RawMessage{
 	"platform_log_user_enabled":           json.RawMessage(`false`),
 	"platform_log_retention_days":         json.RawMessage(`7`),
 	"platform_log_max_mb":                 json.RawMessage(`256`),
+	"audit_log_retention_days":            json.RawMessage(`180`), // 7-365 天；默认同此前固定的 6 个月，升级不额外删除
 	"user_profile_rules":                  json.RawMessage(`{"version":1,"newUserDays":3,"activationDays":7,"activeDays":7,"churnRiskDays":14,"dormantDays":30,"frequentFailureMinRuns":5,"frequentFailureRatePercent":40,"powerUserActiveDays30":7,"powerUserSuccessfulRuns30":20,"powerUserFeatureDiversity30":2,"highValuePercentile":90}`),
 	"user_profile_history_retention_days": json.RawMessage(`180`),
 	"user_behavior_retention_days":        json.RawMessage(`90`),

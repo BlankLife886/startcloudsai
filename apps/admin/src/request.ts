@@ -208,6 +208,10 @@ export interface Page<T> {
   items: T[];
   nextCursor: string | null;
   total?: number;
+  /** total 已达服务端计数上限，实际数量更多 */
+  totalCapped?: boolean;
+  /** 页码跳转请求（?page=N）时服务端回显的页码 */
+  page?: number;
   scopeTotal?: number;
   categoryCounts?: Record<string, number>;
   tags?: string[];
@@ -221,6 +225,7 @@ export function normalizeList<T>(
         items: T[];
         nextCursor?: string | null;
         total?: number;
+        totalCapped?: boolean;
         scopeTotal?: number;
         categoryCounts?: Record<string, number>;
         tags?: string[];
@@ -231,6 +236,7 @@ export function normalizeList<T>(
     items: data.items,
     nextCursor: data.nextCursor ?? null,
     total: data.total,
+    totalCapped: data.totalCapped,
     scopeTotal: data.scopeTotal,
     categoryCounts: data.categoryCounts,
     tags: data.tags,

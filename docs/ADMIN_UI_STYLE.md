@@ -1,6 +1,6 @@
 # 管理端 UI 规范
 
-更新时间：2026-08-02
+更新时间：2026-09-22
 
 本文记录 `apps/admin` 已落地的视觉系统。实现源为 `src/styles/theme.css`、`src/styles.css`、`src/AdminLayout.vue` 和 `src/chartTheme.ts`；新增页面应复用这些变量与组件，不再引用仓库外的设计稿。
 
@@ -35,7 +35,9 @@
   --danger: #dc2626;
   --info: #0284c7;
   --violet: #7c3aed;
-  --radius-card: 22px;
+  --radius-card: 20px;
+  --radius-control: 14px;
+  --radius-pill: 999px;
 }
 
 html.dark {
@@ -56,11 +58,11 @@ html.dark {
 }
 ```
 
-`--accent` 专司品牌与主操作；`--success` 为偏青绿语义色，二者勿混用。压在 accent 底上的文字/图标使用 `--accent-on`。success/warning/danger/info/violet 各有对应 `*-soft` 背景变量。阴影统一用 `--shadow-sm|md|lg`。卡片圆角用 `--radius-card`（约 22px）。正文为 14px/1.5，字体栈以 Inter 和系统中文无衬线字体为主；数字使用 `.tnum` 的 tabular figures。
+`--accent` 专司品牌与主操作；`--success` 为偏青绿语义色，二者勿混用。压在 accent 底上的文字/图标使用 `--accent-on`。success/warning/danger/info/violet 各有对应 `*-soft` 背景变量。阴影统一用 `--shadow-sm|md|lg`。卡片圆角用 `--radius-card`（20px），控件 14px，胶囊 999px。正文为 14px/1.5，字体栈以 Inter 和系统中文无衬线字体为主；数字使用 `.tnum` 的 tabular figures。
 
 ## 页面骨架
 
-- 侧栏桌面宽约 248px，圆角独立于主区；按“总览、业务、社区运营、资金、系统”分组；当前路由使用实心 accent 底 + `--accent-on` 文字。投稿待审数显示在菜单徽标。
+- 侧栏桌面展开宽 252px，圆角独立于主区；按“总览、业务、内容运营、活动与增长、交易与审计”分组；当前路由使用实心 accent 底 + `--accent-on` 文字。投稿待审数显示在菜单徽标。
 - 顶栏显示页面大标题（`route.meta.title`）、待办铃、太阳/月亮分段主题切换，以及右侧头像资料芯片（下拉：改密/退出）。待办来源为投稿数与运行中任务数，加载失败时静默降级。
 - 主内容区使用 `--bg`，页面切换应用 `.anim-fade-up`。页面顶部统一标题、说明与主要动作。
 - 侧栏折叠只用于扩大桌面工作区，不作为移动导航；复杂表格在桌面空间不足时保持水平滚动，不改造成移动端卡片列表。
@@ -68,12 +70,14 @@ html.dark {
 当前信息架构：
 
 ```text
-总览      仪表盘
-业务      用户管理 / 任务监控 / 模型配置
-社区运营  提示词库 / 社区管理 / 投稿审核
-资金      兑换码 / 审计日志
-系统      内容管理 / 系统设置
+总览        仪表盘 / 系统设置
+业务        用户管理 / 任务与调度 / 模型配置 / Agent 质量 / 画布模板
+内容运营    页面控制 / 内容管理 / 首页轮播 / 提示词库 / Skill 词库 / 电商素材 / 社区管理 / 投稿审核 / 用户反馈
+活动与增长  体验活动 / 签到活动 / 好友拼团
+交易与审计  财务中心 / 套餐管理 / 兑换码 / 审计日志 / 运行日志 / 安全中心
 ```
+
+邀请返利菜单受 `REFERRALS_ENABLED` 控制。完整注册路由还包括订单、订阅变更和成本利润等页面，菜单与路由不是同一份清单；当前入口以 `AdminLayout.vue`、`router.ts` 和 [管理端 README](../apps/admin/README.md) 为准。
 
 ## 组件规则
 

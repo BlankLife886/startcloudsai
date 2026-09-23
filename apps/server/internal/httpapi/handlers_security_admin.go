@@ -21,18 +21,47 @@ func securityAdminLimit(c *gin.Context) int {
 	return min(max(value, 1), 200)
 }
 
+// adminSecurityRisks 传 page 时按严重度分页并返回带上限总数；否则保持旧的"最新 N 条"响应。
+// activeBlocks 为仍生效的临时限制（最多 200 条），activeBlocksTotal 为其带上限总数。
 func (s *Server) adminSecurityRisks(c *gin.Context, _ *store.User) {
-	items, err := store.ListSecurityRiskEvents(c.Request.Context(), s.St.Pool, c.Query("unresolved") != "false", securityAdminLimit(c))
+	ctx := c.Request.Context()
+	unresolved := c.Query("unresolved") != "false"
+	blocks, err := store.ListSecurityBlocks(ctx, s.St.Pool, true, 200)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	blocks, err := store.ListSecurityBlocks(c.Request.Context(), s.St.Pool, true, securityAdminLimit(c))
+	blockTotal, err := store.CountActiveSecurityBlocksCapped(ctx, s.St.Pool)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	ok(c, gin.H{"items": items, "activeBlocks": blocks})
+	if c.Query("page") == "" {
+		items, err := store.ListSecurityRiskEvents(ctx, s.St.Pool, unresolved, securityAdminLimit(c))
+		if err != nil {
+			fail(c, err)
+			return
+		}
+		ok(c, gin.H{"items": items, "activeBlocks": blocks, "activeBlocksTotal": blockTotal.Value, "activeBlocksCapped": blockTotal.Capped})
+		return
+	}
+	limit, page, err := pageWindow(c, 20, 100)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	items, err := store.ListSecurityRiskEventsPage(ctx, s.St.Pool, unresolved, limit, (page-1)*limit, true)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	total, err := store.CountSecurityRiskEventsCapped(ctx, s.St.Pool, unresolved)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ok(c, gin.H{"items": items, "total": total.Value, "totalCapped": total.Capped, "page": page, "limit": limit,
+		"activeBlocks": blocks, "activeBlocksTotal": blockTotal.Value, "activeBlocksCapped": blockTotal.Capped})
 }
 
 func (s *Server) adminResolveSecurityRisk(c *gin.Context, admin *store.User) {
@@ -97,12 +126,37 @@ func (s *Server) adminUnfreezeAPIKey(c *gin.Context, _ *store.User) {
 }
 
 func (s *Server) adminUploadHashBlocks(c *gin.Context, _ *store.User) {
-	items, err := store.ListUploadHashBlocks(c.Request.Context(), s.St.Pool, securityAdminLimit(c))
+	if c.Query("page") == "" {
+		items, err := store.ListUploadHashBlocks(c.Request.Context(), s.St.Pool, securityAdminLimit(c))
+		if err != nil {
+			fail(c, err)
+			return
+		}
+		ok(c, gin.H{"items": items})
+		return
+	}
+	limit, page, err := pageWindow(c, 20, 100)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	ok(c, gin.H{"items": items})
+	items, err := store.ListUploadHashBlocksPage(c.Request.Context(), s.St.Pool, limit, (page-1)*limit)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	total, err := store.CountUploadHashBlocksCapped(c.Request.Context(), s.St.Pool, false)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	active, err := store.CountUploadHashBlocksCapped(c.Request.Context(), s.St.Pool, true)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ok(c, gin.H{"items": items, "total": total.Value, "totalCapped": total.Capped, "page": page, "limit": limit,
+		"activeTotal": active.Value, "activeCapped": active.Capped})
 }
 
 func (s *Server) adminAddUploadHashBlock(c *gin.Context, admin *store.User) {
@@ -256,6 +310,32 @@ func (s *Server) adminRunPaymentReconciliation(c *gin.Context, _ *store.User) {
 }
 
 func (s *Server) adminPaymentReconciliations(c *gin.Context, _ *store.User) {
+	if c.Query("page") != "" {
+		page, err := pageNumber(c)
+		if err != nil {
+			fail(c, err)
+			return
+		}
+		if page < 1 {
+			page = 1
+		}
+		if (page-1)*securityAdminLimit(c) >= store.ListCountCap {
+			fail(c, errPageBeyondCap)
+			return
+		}
+		filter, err := adminListFilter(c)
+		if err != nil {
+			fail(c, err)
+			return
+		}
+		items, total, err := store.SearchPaymentReconciliations(c.Request.Context(), s.St.Pool, c.Query("issues") != "false", securityAdminLimit(c), page, filter)
+		if err != nil {
+			fail(c, err)
+			return
+		}
+		ok(c, gin.H{"items": items, "total": total, "page": page, "recoverySupported": true})
+		return
+	}
 	items, err := store.ListPaymentReconciliations(c.Request.Context(), s.St.Pool, c.Query("issues") != "false", securityAdminLimit(c))
 	if err != nil {
 		fail(c, err)

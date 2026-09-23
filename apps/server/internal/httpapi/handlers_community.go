@@ -242,6 +242,14 @@ func (s *Server) adminListPrompts(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
+	seek, pageNum, err := pageSeek(c, limit)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if pageNum > 0 {
+		cursor = seek
+	}
 	filter := store.PromptFilter{
 		TaskType: taskType,
 		Category: c.Query("category"),
@@ -287,6 +295,9 @@ func (s *Server) adminListPrompts(c *gin.Context, _ *store.User) {
 	page["scopeTotal"] = scopeTotal
 	page["categoryCounts"] = categoryCounts
 	page["tags"] = promptTags
+	if pageNum > 0 {
+		page["page"] = pageNum
+	}
 	ok(c, page)
 }
 

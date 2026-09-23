@@ -151,25 +151,24 @@ func MarkSubmissionRemoved(ctx context.Context, q Q, id uuid.UUID, rejectReason 
 
 // ListGalleryAuthors 创作者聚合（limit+1 行，游标按用户 created_at/id 倒序）。
 func ListGalleryAuthors(ctx context.Context, q Q, search string, limit int, cursor *Cursor) ([]*GalleryAuthor, error) {
+	// 先按用户游标取一页有投稿的用户，再逐个统计投稿数；旧写法先聚合全部投稿再分页，
+	// 成本随投稿总量增长。
 	sql := `SELECT u.id, u.email, u.username, u.avatar_url, u.submission_banned_until, u.created_at,
-			count(*) AS submissions,
-			count(*) FILTER (WHERE s.status = 'approved') AS approved,
-			count(*) FILTER (WHERE s.status = 'removed') AS removed
-		FROM gallery_submissions s
-		JOIN users u ON u.id = s.user_id
-		WHERE true`
+			counts.submissions, counts.approved, counts.removed
+		FROM users u
+		CROSS JOIN LATERAL (
+			SELECT count(*) AS submissions,
+				count(*) FILTER (WHERE s.status = 'approved') AS approved,
+				count(*) FILTER (WHERE s.status = 'removed') AS removed
+			FROM gallery_submissions s WHERE s.user_id = u.id
+		) counts
+		WHERE EXISTS (SELECT 1 FROM gallery_submissions s WHERE s.user_id = u.id)`
 	args := []any{}
 	if search != "" {
-		args = append(args, "%"+search+"%")
-		sql += fmt.Sprintf(` AND (u.email ILIKE $%d OR u.username ILIKE $%d)`, len(args), len(args))
+		args = append(args, literalSearch(search))
+		sql += fmt.Sprintf(` AND (u.email::text ILIKE $%d OR u.username ILIKE $%d)`, len(args), len(args))
 	}
-	if cursor != nil {
-		args = append(args, cursor.CreatedAt, cursor.ID)
-		sql += fmt.Sprintf(` AND (u.created_at < $%d OR (u.created_at = $%d AND u.id < $%d))`, len(args)-1, len(args)-1, len(args))
-	}
-	sql += ` GROUP BY u.id, u.email, u.username, u.avatar_url, u.submission_banned_until, u.created_at`
-	args = append(args, limit+1)
-	sql += fmt.Sprintf(` ORDER BY u.created_at DESC, u.id DESC LIMIT $%d`, len(args))
+	sql, args = appendKeyset(sql, args, "u.created_at", "u.id", cursor, limit)
 
 	rows, err := q.Query(ctx, sql, args...)
 	if err != nil {

@@ -155,15 +155,26 @@ type AgentTraceListOptions struct {
 	PromptVersion   string
 	ToolVersion     string
 	Limit           int
+	Offset          int
+	IssuesOnly      bool
 }
 
 func GetAgentQualitySummary(ctx context.Context, q Q, since time.Time) (AgentQualitySummary, error) {
 	return GetAgentQualitySummaryScoped(ctx, q, since, "canvas")
 }
 
-func GetAgentQualitySummaryScoped(ctx context.Context, q Q, since time.Time, workspace string) (AgentQualitySummary, error) {
+func GetAgentQualitySummaryScoped(ctx context.Context, q Q, since time.Time, workspace string, filters ...AgentTraceListOptions) (AgentQualitySummary, error) {
+	f := AgentTraceListOptions{}
+	if len(filters) > 0 {
+		f = filters[0]
+	}
 	var out AgentQualitySummary
-	err := q.QueryRow(ctx, `WITH trace_stats AS (
+	err := q.QueryRow(ctx, `WITH selected AS (
+		SELECT * FROM agent_execution_traces trace WHERE started_at >= $1 AND ($2='' OR workspace=$2)
+		AND ($3='' OR model=$3) AND ($4='' OR reasoning_effort=$4) AND ($5='' OR prompt_version=$5)
+		AND ($6='' OR tool_version=$6) AND ($7='' OR status=$7)
+		AND ($8=false OR status='failed' OR EXISTS(SELECT 1 FROM agent_tool_steps step WHERE step.trace_id=trace.id AND step.status IN ('failed','pending','claimed')))
+	), trace_stats AS (
 		SELECT count(*) total,
 			count(*) FILTER (WHERE status='succeeded') succeeded,
 			count(*) FILTER (WHERE status='failed') failed,
@@ -171,18 +182,17 @@ func GetAgentQualitySummaryScoped(ctx context.Context, q Q, since time.Time, wor
 			count(*) FILTER (WHERE status='running') running,
 			COALESCE(avg(score),0)::float8 avg_score,
 			COALESCE(avg(extract(epoch FROM (COALESCE(finished_at, now())-started_at))*1000),0)::bigint avg_duration
-		FROM agent_execution_traces WHERE started_at >= $1 AND ($2='' OR workspace=$2)
+		FROM selected
 	), step_stats AS (
 		SELECT count(step.id) total,
 			count(step.id) FILTER (WHERE step.status='failed') failed,
 			count(step.id) FILTER (WHERE step.status IN ('pending','claimed')) unfinished,
 			count(step.id) FILTER (WHERE step.requires_confirmation AND step.status='succeeded') confirmed
-		FROM agent_tool_steps step JOIN agent_execution_traces trace ON trace.id=step.trace_id
-		WHERE trace.started_at >= $1 AND ($2='' OR trace.workspace=$2)
+		FROM agent_tool_steps step JOIN selected trace ON trace.id=step.trace_id
 	)
 	SELECT trace_stats.total, trace_stats.succeeded, trace_stats.failed, trace_stats.canceled, trace_stats.running,
 		trace_stats.avg_score, trace_stats.avg_duration, step_stats.total, step_stats.failed, step_stats.unfinished, step_stats.confirmed
-	FROM trace_stats CROSS JOIN step_stats`, since, strings.TrimSpace(workspace)).Scan(&out.TotalTraces, &out.SucceededTraces, &out.FailedTraces,
+	FROM trace_stats CROSS JOIN step_stats`, since, strings.TrimSpace(workspace), f.Model, f.ReasoningEffort, f.PromptVersion, f.ToolVersion, f.Status, f.IssuesOnly).Scan(&out.TotalTraces, &out.SucceededTraces, &out.FailedTraces,
 		&out.CanceledTraces, &out.RunningTraces, &out.AverageScore, &out.AverageDuration,
 		&out.ToolSteps, &out.FailedSteps, &out.UnfinishedSteps, &out.ConfirmedSteps)
 	return out, err
@@ -237,9 +247,10 @@ func ListAdminAgentExecutionTraces(ctx context.Context, q Q, options AgentTraceL
 		  AND ($3='' OR trace.status=$3) AND ($4='' OR trace.model=$4)
 		  AND ($5='' OR trace.reasoning_effort=$5) AND ($6='' OR trace.prompt_version=$6)
 		  AND ($7='' OR trace.tool_version=$7)
-		ORDER BY trace.started_at DESC, trace.id DESC LIMIT $8`, options.Since, strings.TrimSpace(options.Workspace), strings.TrimSpace(options.Status),
+		  AND ($9=false OR trace.status='failed' OR COALESCE(steps.failed,0)>0 OR COALESCE(steps.unfinished,0)>0)
+		ORDER BY trace.started_at DESC, trace.id DESC LIMIT $8 OFFSET $10`, options.Since, strings.TrimSpace(options.Workspace), strings.TrimSpace(options.Status),
 		strings.TrimSpace(options.Model), strings.TrimSpace(options.ReasoningEffort), strings.TrimSpace(options.PromptVersion),
-		strings.TrimSpace(options.ToolVersion), options.Limit)
+		strings.TrimSpace(options.ToolVersion), options.Limit, options.IssuesOnly, max(0, options.Offset))
 	if err != nil {
 		return nil, err
 	}

@@ -1,8 +1,10 @@
 # 项目图标存储、指向与使用清单
 
-更新时间：2026-09-01
+清单统计时间：2026-09-01；当前入口核对：2026-09-22。
 
 本文档清点当前仓库中的全部图标来源，说明图标存放在哪里、由什么图标库提供、重要图标点击后前往哪里或执行什么操作。统计范围包括 React 用户端、Vue 管理后台、无限画布、Flutter 移动端、品牌/模型 SVG、旧版 PNG 操作图标和移动端应用图标。
+
+下表引用数量和后文完整枚举是 2026-09-01 的源码快照，不是当前版本重新计数。当前新增/调整的技能库、下载提示、电商工作台等继续复用现有图标库，不应根据历史数量判断未使用依赖或删除图标。菜单和路由维护入口仍有效，最新管理员路由见 [管理端 README](../apps/admin/README.md)。
 
 > 这里的“指向”分为两类：导航图标指向路由；操作图标不指向页面，而是触发所在组件传入的回调，例如删除、下载、重试、裁剪。纯状态图标和装饰图形没有点击指向。
 
@@ -24,7 +26,7 @@ Bootstrap Icons 的全局入口是 `apps/web-react/src/main.jsx` 中的 `bootstr
 
 ## 二、React 用户端导航图标
 
-主导航的唯一配置源是 `apps/web-react/src/layout/NavBar.jsx`。
+主导航项定义在 `apps/web-react/src/layout/NavBar.jsx`，电商分组复用 `studioTools.js` 的 `COMMERCE_ENTRY_GROUPS`，运行时工具和页面控制还会影响最终菜单。
 
 ### 2.1 一级导航
 
@@ -33,10 +35,10 @@ Bootstrap Icons 的全局入口是 `apps/web-react/src/main.jsx` 中的 `bootstr
 | `bi-house-door-fill` | 首页 | `/` |
 | `bi-grid-1x2-fill` | 创作台 | `/studio` |
 | `bi-bounding-box-circles` | 无限画布 | `/canvas` |
-| `bi-collection` | 我的资产 | `/assets` |
 | `bi-bag-check-fill` | AI 电商 | 展开 AI 电商菜单 |
 | `bi-palette-fill` | 图片设计 | 展开图片设计菜单 |
 | `bi-journal-richtext` | 提示词 | `/prompts` |
+| `bi-lightning-charge-fill` | 技能库 | `/skills` |
 | `bi-images` | 社区 | `/share` |
 | `bi-clock-history` | 历史记录 | `/history`，需要登录 |
 | `bi-credit-card-2-front-fill` | 创作价格 | `/pricing` |
@@ -104,7 +106,10 @@ Bootstrap Icons 的全局入口是 `apps/web-react/src/main.jsx` 中的 `bootstr
 | `Files` | 画布模板 | `/canvas-templates` |
 | `Operation` | 页面控制 | `/page-controls` |
 | `Document` | 内容管理 | `/content` |
+| `Picture` | 首页轮播 | `/home-banners` |
+| `User` | 邀请返利（受功能开关控制） | `/referrals` |
 | `CollectionTag` | 提示词库 | `/prompt-library` |
+| `Brush` | Skill 词库 | `/image-skills` |
 | `ShoppingBag` | 电商素材 | `/ecommerce` |
 | `ChatDotRound` | 社区管理 | `/community` |
 | `Picture` | 投稿审核 | `/gallery` |
@@ -112,7 +117,7 @@ Bootstrap Icons 的全局入口是 `apps/web-react/src/main.jsx` 中的 `bootstr
 | `Star` | 体验活动 | `/trial-applications` |
 | `Calendar` | 签到活动 | `/checkin-activity` |
 | `UserFilled` | 好友拼团 | `/growth-groups` |
-| `TrendCharts` | 成本利润 | `/profitability` |
+| `Wallet` | 财务中心 | `/finance-center` |
 | `Box` | 套餐管理 | `/plans` |
 | `Ticket` | 兑换码 | `/codes` |
 | `List` | 审计日志 | `/audit` |
@@ -120,6 +125,8 @@ Bootstrap Icons 的全局入口是 `apps/web-react/src/main.jsx` 中的 `bootstr
 | `Lock` | 安全中心 | `/security-center` |
 
 后台顶栏和通知区还使用：`Bell` 打开待办通知，`Fold`/`Expand` 收起或展开侧栏，`Sunny`/`Moon` 切换主题，`SwitchButton` 退出登录；它们触发本地动作，不跳转固定路由。
+
+`/profitability`、`/orders`、`/subscription-changes` 仍有注册路由，但不应据旧图标表认为它们都是当前侧栏的独立一级项。
 
 ## 四、无限画布图标与操作
 
@@ -207,7 +214,7 @@ Bootstrap Icons 的全局入口是 `apps/web-react/src/main.jsx` 中的 `bootstr
 | `calendar_month_outlined` | 每日签到 | `/profile/checkin` |
 | `account_balance_wallet_outlined` | 积分钱包 | `/profile/wallet` |
 | `receipt_long_outlined` | 积分明细 | `/profile/wallet/ledger` |
-| `shopping_bag_outlined` | 套餐与订单 | `/profile/purchases` |
+| `shopping_bag_outlined` | 会员与订单 | `/profile/purchases` |
 | `receipt_long_outlined` | 我的订单 | `/profile/purchases/orders` |
 | `card_giftcard_outlined` | 福利中心 | `/profile/benefits` |
 | `auto_awesome_outlined` | 体验资格 | `/profile/benefits/trial` |
@@ -220,6 +227,8 @@ Bootstrap Icons 的全局入口是 `apps/web-react/src/main.jsx` 中的 `bootstr
 | `photo_outlined` | 作品详情 | `/works/:id` |
 
 其余 Material 图标多用于按钮、状态、表单和空状态，不具有固定全局路由。
+
+移动端设计页当前仅开放文生图入口；旧模型设计、染色与去背景路由重定向 `/design`。商店版本的会员/订单页只展示现有权益与记录，不提供外部支付或兑换入口。
 
 ## 六、真实图标文件
 

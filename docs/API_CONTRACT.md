@@ -1,8 +1,8 @@
 # 项目完整 API 接口文档
 
-本文是当前项目服务端接口的统一入口，与 `apps/server/internal/httpapi/router.go` 的实际注册结果对齐。统计时间为 `2026-09-02`，当前共注册 `294` 个方法路由：站内 `/api/v1` 路由 `147` 个、管理员分组路由 `141` 个、开放 API 路由 `5` 个、内部回调 `1` 个。其中 `GET 119`、`POST 90`、`PATCH 39`、`DELETE 35`、`PUT 11`。
+本文是服务端接口说明入口，按 2026-09-22 当前工作区的 `apps/server/internal/httpapi/router.go` 更新。接口按站内、管理员、开放任务、OpenAI 兼容和 OAuth 授权分组；路由数量以当前注册结果为准。功能开关、权限及外部服务配置仍决定路由实际可用性，本次文档核对不表示已部署或完成运行验收。
 
-所有站内业务接口使用 `/api/v1` 前缀，JSON 字段使用 camelCase，时间使用 RFC 3339/ISO 8601，金额使用整数分并以 `Cents` 结尾。当前版本不注册旧 `/api/*` 兼容路由。
+站内业务接口使用 `/api/v1` 前缀，JSON 字段使用 camelCase，时间使用 RFC 3339/ISO 8601。订单人民币金额以整数分表示；钱包、模型/任务和助手费用的 `Cents` 是沿用旧命名的整数平台积分，不能按同名后缀直接视为现金。当前版本不注册旧 `/api/*` 兼容路由。
 
 ## 接口分区
 
@@ -11,13 +11,15 @@
 | 公开/用户站内 API | `/api/v1` | 公开或 `sc_session` | 登录、用户资料、任务、助手、画布、电商、资产、支付和公共内容 |
 | 管理 API | `/api/v1/admin` | `sc_admin_session` | 运营、任务、模型、内容、财务、质量、日志和安全管理 |
 | 开放 API | `/api/open/v1` | `Authorization: Bearer sk-sc-...` | 外部系统上传文件、创建任务、查询结果和接收 Webhook |
+| OpenAI 兼容 API | `/v1` | Bearer API Key | 模型目录、标准图片直通和 Responses 子集；使用兼容响应信封 |
+| 图片技能授权 | `/oauth` | 用户授权与 PKCE | 动态客户端注册、授权码与专用 API Key 签发 |
 | 内部回调 | `/internal/c2a` | 内部回调签名/网络边界 | ChatGPT2API/C2A 向本站推送图片任务事件 |
 
-接口的最终事实来源是服务端路由和 handler；本文提供调用契约。外部开发者使用说明、curl 示例和 Webhook 验签代码另见 [OPEN_API.md](OPEN_API.md)。
+接口的最终事实来源是服务端路由和 handler；本文提供主要调用契约，各业务专项文档补充完整流程。全部已注册方法、路径与处理器包装器见 [HTTP 路由清单](API_ROUTES.md)，包括本文未逐项展开的订阅、返利、轮播和后台账务接口。外部开发者使用说明、curl 示例和 Webhook 验签代码另见 [OPEN_API.md](OPEN_API.md)。
 
 ## 通用约定
 
-成功与失败响应：
+站内及开放任务 API 的成功与失败响应（`/v1` 使用 OpenAI 兼容格式，OAuth 使用其授权协议格式）：
 
 ```json
 { "success": true, "data": {} }
@@ -29,6 +31,7 @@
 - 用户与管理员允许使用相同邮箱，但身份表、密码和会话完全独立，两种 Cookie 不能交叉鉴权。
 - 浏览器写请求的 `Origin` 必须位于 `ALLOWED_ORIGINS`；非浏览器请求可省略 Origin。
 - cursor 列表接受 `limit`、`cursor`，返回 `{items, nextCursor}`；无下一页时 `nextCursor` 为 `null`。
+- 后台用户列表与 `/me/wallet/entries` 的 `total` 为带上限计数（上限 10000），超过时附带 `totalCapped: true`；页码参数 `page` 只能访问前 10000 条，超出返回 422 `validation_error`。
 - limit 在各 handler 中有默认值和上限；客户端不应依赖超大页。
 - 未知路由返回 404 `not_found`，已知路由的错误方法返回 405 `bad_request`。
 - 创建资源成功返回 `201 Created`；读取和带响应表示的更新返回 `200 OK`；无响应体的删除或更新返回 `204 No Content`。
@@ -61,7 +64,7 @@
 | DELETE | `/api/v1/auth/session`       | 可匿名 | 删除当前 session 并清 Cookie                                                                       |
 | GET  | `/api/v1/auth/session`           | 可匿名 | 返回 `{user}`；未登录时 `user:null`                                                                |
 
-用户状态为 banned 或 deleted 时不能登录或调用受保护能力。邮箱验证码只保存规范化 email 与 code 的 HMAC，不保存明文。首次自动建号受 `registrationEnabled` 控制，已有用户登录不受该开关影响。验证码 10 分钟有效、最多错误 5 次且成功后一次性消费。验证码超时返回 `code_expired`，不计入防爆破失败次数；防爆破按邮箱维度计数，不按 IP，避免同一出口 IP 的用户互相牵连。开发环境未配置 SMTP 时 `/auth/email-verification-codes` 会额外返回 `developmentCode`，生产环境不会返回。
+用户状态为 banned 或 deleted 时不能登录或调用受保护能力。邮箱验证码只保存规范化 email 与 code 的 HMAC，不保存明文。首次自动建号受 `registrationEnabled` 控制，已有用户登录不受该开关影响。验证码 10 分钟有效、最多错误 5 次且成功后一次性消费。验证码超时返回 `code_expired`，不计入防爆破失败次数；防爆破按邮箱维度计数，不按 IP，避免同一出口 IP 的用户互相牵连。只有同时满足 `APP_ENV=development`、`DEV_LOGIN_CODE_ECHO=true` 且未配置 SMTP 时，发码响应才含 `developmentCode`。回显默认关闭；没有 SMTP 又不满足回显条件时返回 `503 email_unavailable`。生产环境忽略回显开关，永不返回验证码。
 
 ## 管理员认证
 
@@ -83,7 +86,7 @@
 | GET    | `/api/v1/me/sessions`                 | 当前用户有效会话列表；返回设备识别所需的 `id,current,ip,userAgent,createdAt,expiresAt`，不返回 Cookie 或令牌；当前会话置顶 |
 | DELETE | `/api/v1/me/sessions/{id}`            | 撤销指定的本人有效会话；不能通过该接口操作其他用户的会话 |
 | DELETE | `/api/v1/me/sessions?scope=others`    | 撤销当前用户除本次请求会话以外的所有有效会话，返回 `{revoked}` |
-| PATCH  | `/api/v1/me/profile`                  | 更新 `{username?,avatarUrl?,studioFigureUrl?,bio?,location?,websiteUrl?,requireCostConfirm?}`；简介上限 280 字、所在地 80 字、网站仅允许完整 http/https 地址，头像与形象图只能引用本人站内上传；用户端不支持密码 |
+| PATCH  | `/api/v1/me/profile`                  | 更新 `{username?,avatarUrl?,studioFigureUrl?,bio?,location?,websiteUrl?,requireCostConfirm?,assistantAutoApprove?,assistantAutoApproveBudgetCents?}`；简介上限 280 字、所在地 80 字、网站仅允许完整 http/https 地址，头像与形象图只能引用本人站内上传；用户端不支持密码 |
 | GET    | `/api/v1/me/overview`                 | 钱包、任务汇总/分类型统计、未读数和最近任务                                                                                                                                                                      |
 | GET    | `/api/v1/me/wallet`                   | `{availableCents,balanceCents,frozenCents,totalCents,...}`；`balanceCents` 是 `availableCents` 的兼容别名，禁止再次减去冻结额                                                                                   |
 | GET    | `/api/v1/me/wallet/entries`            | 当前用户账本 cursor 分页                                                                                                                                                                                         |
@@ -99,14 +102,17 @@
 | GET    | `/api/v1/me/growth`                         | 好友拼团、会员、失败补偿、用量里程碑和建议采纳；同时返回当前拼团及奖励进度                                                                                                                                          |
 | POST   | `/api/v1/me/growth/groups`                  | 创建当期好友拼团；同一用户同一活动批次只能参加一个有效拼团                                                                                                                                                        |
 | POST   | `/api/v1/me/growth/groups/join`             | `{code}` 加入拼团；满员后同一事务向全部成员各发放一次积分                                                                                                                                                         |
-| GET    | `/api/v1/me/image-skills`                   | 生图 Skill 候选（官方词库 + 自建，官方在前）及当前装载状态；支持 `taskType`、`search` 筛选，附 `taskTypes`、`maxPerScope` |
-| POST   | `/api/v1/me/image-skills`                   | 自建 Skill：`{name,instruction,description?,taskTypes?,tags?,active?}`；`taskTypes` 为空表示全部生图页面可用，每人最多 100 个 |
+| GET    | `/api/v1/me/image-skills`                   | 可用技能库（官方与云端自建）；支持 `taskType`、`search` 筛选，响应 `{items,owned,maxOwned}`，技能含 `slug`、`instruction` 等字段，不返回装载位 |
+| POST   | `/api/v1/me/image-skills`                   | 自建 Skill：`{name,instruction,slug?,description?,taskTypes?,tags?,active?}`；当前每人云端最多 5 个（服务端常量 `SkillMaxOwnedPerUser`），本地技能不计入，slug 在本人名下唯一 |
 | PATCH  | `/api/v1/me/image-skills/{id}`              | 修改自建 Skill；官方词条对用户只读，命中官方或他人词条返回 404                                                                                                                                                    |
-| DELETE | `/api/v1/me/image-skills/{id}`              | 删除自建 Skill；装载记录随之清理                                                                                                                                                                                  |
-| GET    | `/api/v1/me/image-skills/resolved`          | 给定 `taskType` 时该页面实际生效的 Skill（含 `instruction`），前端据此拼提示词；页面绑定优先于全局 |
-| PUT    | `/api/v1/me/skill-bindings/{scope}`         | 整体替换一个装载位，`{skillIds:[]}`；`scope` 为 `global` 或某个生图页面，传空表示清空，单位最多 5 个                                                                                                              |
+| DELETE | `/api/v1/me/image-skills/{id}`              | 删除本人的自建 Skill，官方或他人技能不可修改 |
 
-生图 Skill 的装载位 `scope` 取 `global` 或 `t2i|coloring|ui_design|ecommerce_design|model_sheet|game_art`，即用户自己填写提示词的页面。`puzzle`（本地工具，不接受云端任务）、`background_remove` 与 `media_tool`（提示词由系统生成的固定文案）不支持装载 Skill。Skill 仅拼接 `instruction` 文本，不预设生图参数。
+技能通过输入框按需引用（`@` 选择及调用名），不再按页面或全局装载。`/me/image-skills/resolved`、`/me/skill-bindings/{scope}` 已不注册；迁移 `00154` 删除装载表。Skill 仅提供指令文本，不自行改变模型和生图参数。
+
+技能名称最多 64 字、说明最多 500 字、正文 1–4000 字；调用名为最多 64 字符的小写字母/数字/连字符形式。云端上限目前是代码常量，不是后台配置项；列表返回的 `owned` 按本次筛选结果计数，创建时以本人全部云端记录重新校验配额。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
 | GET    | `/api/v1/me/notifications`            | 个人通知与全站通知合并后的 cursor 分页；任务与订单通知可包含 `sourceType`、`sourceId`，用于用户端精确深链                                                                                                         |
 | PATCH  | `/api/v1/me/notifications`       | `{ids?:[]}`；省略 ids 表示全部已读；成功返回 204                                                                                                                                                                 |
 | GET    | `/api/v1/me/gallery/submissions`      | 我的投稿 cursor 分页                                                                                                                                                                                             |
@@ -125,6 +131,8 @@
 | DELETE | `/api/v1/me/asset-groups/{id}`        | 删除分组；组内素材 `group_id` 置空                                                                                                                                                                               |
 | GET    | `/api/v1/me/api-models`               | 当前可授权给 API Key 的开放模型                                                                                                                                                                                   |
 | GET/POST | `/api/v1/me/api-keys`               | 查询或创建 API Key；明文仅在创建响应返回一次                                                                                                                                                                      |
+| PATCH | `/api/v1/me/api-keys/{id}`             | 更新本人 Key 的可编辑配置；仍受权限、模型白名单及额度范围校验 |
+| POST | `/api/v1/me/api-keys/{id}/rotate`       | 轮换本人 Key；新明文只返回一次，旧 Key 不再可用 |
 | DELETE | `/api/v1/me/api-keys/{id}`             | 撤销当前用户的 API Key                                                                                                                                                                                            |
 | GET/POST | `/api/v1/me/webhooks`               | 查询或创建 Webhook endpoint                                                                                                                                                                                       |
 | PATCH/DELETE | `/api/v1/me/webhooks/{id}`      | 编辑、轮换 Secret 或删除 Webhook                                                                                                                                                                                   |
@@ -183,7 +191,7 @@ task 主要字段：
 
 新任务的 `model` 在提交时锁定，并由 Worker 实际调用；迁移前的历史任务因过去没有保存该字段，只能在迁移时按当时生效的 `task_models` 配置补齐，补齐后也不会再随后台配置改变。
 
-费用按 `count * taskPrices[type]` 计算。`idempotencyKey` 在同一用户内唯一，客户端重试提交时应复用。成功任务的 `outputKeys`/`originalUrls` 指向原图，`thumbnailKeys`/`thumbnailUrls` 指向最长边 512px 的 JPEG 缩略图；`outputUrls` 为兼容字段，优先返回缩略图。
+费用由服务端报价统一计算，优先使用模型/工作区价格与合格合同锁价；`taskPrices[type]` 仅是遗留目录回退，不可用它替代报价接口。`idempotencyKey` 在同一用户内唯一，重试应复用。成功任务提供原图、小图及展示图地址，变体格式/尺寸来自后台配置（当前默认 WebP、小图 512px、展示图 2048px）；列表和预览优先使用对应变体，下载原图使用 `originalUrls`，旧数据按可用资源回退。
 
 ## AI 电商商品库
 
@@ -230,7 +238,7 @@ task 主要字段：
 
 | 方法 | 路径                  | 说明                                                                                                                                                |
 | ---- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| POST | `/api/v1/uploads`        | multipart 字段 `file`；最大 15 MB，支持 PNG/JPEG/WebP 图片和 MP4/WebM 视频；图片返回 `{key,url,thumbnailKey,thumbnailUrl,contentType,sizeBytes}` 并同步生成 512px JPEG 缩略图，视频返回 `{key,url,contentType,sizeBytes}`；未被业务引用的上传对象保留 7 天后由 Worker 回收 |
+| POST | `/api/v1/uploads`        | multipart 字段 `file`；大小与格式由当前上传配置校验，支持图片及受控视频/音频；图片返回原图、小图等对象元数据，变体默认 WebP，不能假定固定 JPEG；未被业务引用且超过保留期的上传对象由 Worker 回收，详见 [存储链路](IMAGE_STORAGE_AND_DELIVERY.md) |
 | GET  | `/api/v1/files/*key` | 校验访问权限后由 API 代理读取 OSS/当前对象存储并直接返回文件（`200`，私有缓存 1 小时）；客户端无需持有对象存储密钥                                                   |
 
 用户只能读取属于自己的 `uploads/`、`tasks/` key；已审核画廊资源公开；管理员可读取任意业务 key。网关请求体上限为 20 MB，应用层限制仍是 15 MB。
@@ -266,7 +274,7 @@ task 主要字段：
 | GET  | `/api/v1/gallery/submissions` | 公开 | 已审核作品；支持 `category`、`featured=1` 和 cursor；登录用户自动过滤已屏蔽作者 |
 | GET  | `/api/v1/gallery/categories`  | 公开 | active 分类                                         |
 | POST | `/api/v1/gallery/submissions` | 用户 | `{taskId,title,categoryId?}` 投稿成功任务           |
-| POST | `/api/v1/gallery/submissions/{id}/reports` | 用户 | `{reason,detail?}` 幂等举报公开作品；reason 为 `inappropriate|copyright|spam|harassment|other`，其他问题必须填写说明 |
+| POST | `/api/v1/gallery/submissions/{id}/reports` | 用户 | `{reason,detail?}` 幂等举报公开作品；reason 为 `inappropriate\|copyright\|spam\|harassment\|other`，其他问题必须填写说明 |
 | POST | `/api/v1/gallery/users/{id}/block` | 用户 | 幂等屏蔽指定社区作者；不能屏蔽自己 |
 | DELETE | `/api/v1/gallery/users/{id}/block` | 用户 | 幂等解除指定社区作者屏蔽 |
 | GET  | `/api/v1/prompts`             | 公开 | 仅返回 active 且图片资产已验证（或无封面）的提示词；支持 `type`、`category`、`search`、重复 `tag` 和 cursor；`scope=today` 表示滚动 24 小时最新 |
@@ -300,9 +308,9 @@ task 主要字段：
 | GET   | `/api/v1/admin/users/{id}`               | 用户完整资料、钱包拆分、当前套餐、体验申请、签到/拼团、任务/投稿/素材/订单/反馈计数及最近会话摘要 |
 | PATCH | `/api/v1/admin/users/{id}`               | 更新 `{status?,role?,concurrencyBonus?}`；`concurrencyBonus` 为 0~1000 的手动并发追加，叠加在基础并发与订阅加成之上 |
 | GET    | `/api/v1/admin/image-skills`             | 官方 Skill 词库列表；支持 `taskType`、`category`、`search`、`status=enabled` 筛选 |
-| POST   | `/api/v1/admin/image-skills`             | 录入官方 Skill：`{name,instruction,description?,taskTypes?,category?,tags?,coverKey?,sort?,active?}` |
+| POST   | `/api/v1/admin/image-skills`             | 录入官方 Skill：`{name,instruction,slug?,description?,taskTypes?,category?,tags?,coverKey?,sort?,active?}` |
 | PATCH  | `/api/v1/admin/image-skills/{id}`        | 修改官方 Skill；只作用于官方词条，命中用户自建词条返回 404 |
-| DELETE | `/api/v1/admin/image-skills/{id}`        | 删除官方 Skill；用户的装载记录随外键级联清理 |
+| DELETE | `/api/v1/admin/image-skills/{id}`        | 删除官方 Skill；当前无页面/全局装载记录 |
 | GET   | `/api/v1/admin/users/{id}/wallet/entries` | 指定用户账本                                              |
 | POST  | `/api/v1/admin/users/{id}/wallet/entries` | `{deltaCents,reason}`，创建 admin_adjust 账本条目         |
 | GET   | `/api/v1/admin/wallet/entries`                   | 全站账本；筛选 `kind`、`sourceType`、`user`               |
@@ -348,7 +356,7 @@ task 主要字段：
 | DELETE | `/api/v1/admin/trial-campaigns/{id}`                           | 删除无申请记录且未启用的活动                                                                            |
 | POST   | `/api/v1/admin/trial-campaigns/{id}/activation`                | 启用活动；事务内自动关闭此前活动，数据库保证全站最多一个 `active`                                       |
 | POST   | `/api/v1/admin/trial-campaigns/{id}/closure`                   | 关闭活动                                                                                                |
-| GET    | `/api/v1/admin/trial-access-applications`                      | 按 `campaignId`、`pending|approved|rejected` 和用户关键字筛选，返回 cursor 分页与 `total`                 |
+| GET    | `/api/v1/admin/trial-access-applications`                      | 按 `campaignId`、`pending\|approved\|rejected` 和用户关键字筛选，返回 cursor 分页与 `total`                 |
 | PATCH  | `/api/v1/admin/trial-access-applications/{id}`                 | 通过：`{status:"approved",grantCents,expiresAt?,reviewNote?}`；拒绝必须填写 `reviewNote`                |
 | POST   | `/api/v1/admin/trial-access-applications/{id}/reward-reissues` | 对已通过且原礼包失效的申请补发：`{grantCents,expiresAt?,reviewNote?}`                                    |
 
@@ -384,7 +392,7 @@ task 主要字段：
 | 方法   | 路径                                            | 说明                                                                         |
 | ------ | ----------------------------------------------- | ---------------------------------------------------------------------------- |
 | GET    | `/api/v1/admin/gallery/submissions`                | 按状态查看投稿                                                               |
-| POST   | `/api/v1/admin/gallery/submissions/{id}/reviews`   | `{action:approve|reject|remove,reason?}` 创建审核记录                         |
+| POST   | `/api/v1/admin/gallery/submissions/{id}/reviews`   | `{action:approve\|reject\|remove,reason?}` 创建审核记录                         |
 | PUT    | `/api/v1/admin/gallery/submissions/{id}/curation`  | `{featured?,categoryId?,sort?,tags?}` 更新策展状态                           |
 | PATCH  | `/api/v1/admin/gallery/submissions`                | `{ids,featured?,categoryId?,tags?,tagMode?}` 批量更新                         |
 | PATCH  | `/api/v1/admin/gallery/submissions/order`          | `{ids}` 按数组顺序写入作品展示排序                                           |
@@ -412,7 +420,7 @@ task 主要字段：
 | PATCH  | `/api/v1/admin/prompts/{id}`       | 修改词条、排序或 active                                      |
 | DELETE | `/api/v1/admin/prompts/{id}`       | 删除词条                                                     |
 | PUT    | `/api/v1/admin/prompts/{id}/cover` | multipart 封面上传；返回 `{coverUrl,coverWidth,coverHeight}` |
-| GET    | `/api/v1/admin/prompts/export`      | `format=json|csv` 全量导出提示词、来源、排序和资产归属       |
+| GET    | `/api/v1/admin/prompts/export`      | `format=json\|csv` 全量导出提示词、来源、排序和资产归属       |
 | GET    | `/api/v1/admin/prompt-categories` | 返回全部提示词分类及数量                                  |
 | POST   | `/api/v1/admin/prompt-categories` | `{key,label,sort?,active?}` 新增分类                       |
 | PATCH  | `/api/v1/admin/prompt-categories/{id}` | 修改 `label`、`sort` 或 `active`                       |
@@ -425,7 +433,7 @@ task 主要字段：
 | GET    | `/api/v1/admin/prompt-import-batches`                 | 最近 20 个抓取、审核与发布批次                               |
 | POST   | `/api/v1/admin/prompt-import-batches`                 | `{mode,sourceIds}`；空 `sourceIds` 获取全部启用源             |
 | POST   | `/api/v1/admin/prompt-import-batches/upload`          | multipart `file` + `mode`；导入 JSON/CSV，最多 10MB/5000 条   |
-| GET    | `/api/v1/admin/prompt-import-batches/{id}/items`      | 按 `view=all|duplicates|assets|pending|approved|rejected` 分页审核 |
+| GET    | `/api/v1/admin/prompt-import-batches/{id}/items`      | 按 `view=all\|duplicates\|assets\|pending\|approved\|rejected` 分页审核 |
 | GET    | `/api/v1/admin/prompt-import-batches/{id}/items/{itemId}/cover` | 通过后台鉴权代理读取待审核封面 |
 | PUT    | `/api/v1/admin/prompt-import-batches/{id}/items/{itemId}/cover` | 上传 PNG/JPG/WebP 替换待审核封面                          |
 | PATCH  | `/api/v1/admin/prompt-import-batches/{id}/items/{itemId}` | 修改分类、重复决定、合规和审核状态；通过后立即幂等入库     |
@@ -553,7 +561,7 @@ settings 请求/响应：
 | --- | --- | --- |
 | GET | `/api/v1/canvas-projects/{id}/workflow-run` | 当前活动运行，供跨页面接管 |
 | POST | `/api/v1/canvas-projects/{id}/workflow-runs` | 以 `{ownerId,nodeIds}` 创建或重新取得浏览器运行租约 |
-| PATCH | `/api/v1/canvas-projects/{id}/workflow-runs/{runId}` | 同步心跳、节点诊断、费用及 `succeeded|failed|canceled` 终态 |
+| PATCH | `/api/v1/canvas-projects/{id}/workflow-runs/{runId}` | 同步心跳、节点诊断、费用及 `succeeded\|failed\|canceled` 终态 |
 
 普通工作流由当前画布页面执行，仍支持节点依赖、并行分支、刷新恢复、失败重试和取消。运行记录保存逐节点 `nodeMetrics`、`totalCostCents` 和 `errorNodeId`；节点诊断状态为 `queued|running|succeeded|failed|canceled`，包含开始/完成时间、耗时、实际任务费用和原始失败信息。产品化版本、发布、替换输入、后台执行和批量运行接口不再提供。
 
@@ -574,7 +582,9 @@ settings 请求/响应：
 | PATCH  | `/api/v1/assistant/runs/{id}`               | `{status:"canceled"}` 取消任务                            |
 | GET    | `/api/v1/assistant/runs/{id}/events`        | SSE 增量事件流                                              |
 
-助手模型价格来自后台模型配置。对话按每轮模型价计费，生图按模型价乘图片数计费；Agent 创建时预留对话与可能生图费用中的较高值，Worker 按最终 `resolvedMode` 结算并退回差额。运行响应包含 `reservedCents`、`costCents` 与 `billingGeneration`。创建、成功、失败、用户停止、强制删除活动对话、后台取消/强制失败和失败重试的状态变化与钱包账本位于同一事务；失败或取消全额释放当代预留。
+助手模型价格来自后台模型和工作区配置，对话、生图及 Agent 的预留与结算由服务端计算，不能只按客户端提交模式推断费用。运行响应包含 `reservedCents`、`costCents` 与 `billingGeneration`。创建、成功、失败、停止和重试的状态变化与钱包账本位于同一事务。未提交上游时取消释放预留；图片/PPT/PSD 已提交后停止接收须确认费用后果，不能承诺全额退款；画布 Agent 按已完成操作结算并释放未使用部分，以 `cancelPolicy` 的 `chargedPoints`、`refundedPoints` 为准。
+
+个人资料支持 `assistantAutoApprove` 和 `assistantAutoApproveBudgetCents`：默认关闭，单轮预算默认 60，范围 0–100000。允许的图片方案可自动提交，超出预算仍需方案确认，不改变模型权限、钱包或安全边界。
 
 明确的“制作 PPT”或“把参考图制作成 PSD”请求仍使用 `POST /api/v1/assistant/runs`。Worker 通过 ChatGPT2API 可编辑文件任务异步执行，并以 `submitting-file`、`generating-file`、`saving-file` 三个阶段推送进度；完成后消息 `artifacts` 包含本站鉴权下载地址。PSD 请求至少需要一张 JPG、PNG 或 WebP 参考图。
 
@@ -584,7 +594,7 @@ settings 请求/响应：
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/v1/admin/agent-quality` | 单次返回周期汇总、Prompt/工具版本对比、最近追踪、固定评测集与最近评测运行；支持 `days=7|30`、状态和版本筛选 |
+| GET | `/api/v1/admin/agent-quality` | 单次返回周期汇总、Prompt/工具版本对比、最近追踪、固定评测集与最近评测运行；支持 `days=7\|30`、状态和版本筛选 |
 | GET | `/api/v1/admin/agent-quality/traces/{id}` | 返回单次 Agent 的初始画布、视觉参考、恢复点及完整工具步骤 |
 | PATCH | `/api/v1/admin/agent-quality/eval-cases/{id}` | `{active}` 启用或停用固定评测项 |
 | POST | `/api/v1/admin/agent-quality/eval-runs` | 对近 7/30 日最多 200 条真实追踪运行固定评测；可限定模型、推理强度、Prompt 和工具版本 |
@@ -684,8 +694,10 @@ SSE 使用 `text/event-stream`。客户端收到终态后应停止重连；断�
 | 方法 | 路径 | 请求/响应说明 |
 | --- | --- | --- |
 | POST | `/api/v1/commerce/product-briefs` | 基于商品资料和参考资产生成结构化商品 Brief。 |
+| POST | `/api/v1/commerce/listing-plans` | 生成电商 Listing 结构化图片方案。 |
 | GET | `/api/v1/commerce/aplus-catalog` | 返回当前开放的 A+ 模板、版式和模型能力。 |
 | POST | `/api/v1/commerce/aplus-plans` | 根据商品和目标生成 A+ 页面分区计划。 |
+| POST | `/api/v1/commerce/detail-plans` | 根据商品资料生成详情页分区方案。 |
 | GET | `/api/v1/commerce/reviews` | 查询本人电商任务的素材审阅状态。 |
 | PUT | `/api/v1/commerce/reviews/{taskId}` | 新建或更新指定任务的审阅结论。 |
 | GET | `/api/v1/commerce/catalog` | 公开电商素材目录。 |
@@ -711,7 +723,7 @@ SSE 使用 `text/event-stream`。客户端收到终态后应停止重连；断�
 | GET | `/api/v1/admin/badge-counts` | 返回待审核、待处理等导航角标数量。 |
 | GET | `/api/v1/admin/statistics` | 后台首页统计：任务、系统、文本/图片用量、利润、Agent/Open API/OSS 质量摘要。 |
 | GET | `/api/v1/admin/system/metrics` | 当前 CPU、内存、Go、数据库、Redis、队列和 Worker 运行指标。 |
-| GET | `/api/v1/admin/profitability` | `dimension=model|provider|route|workspace|user&days=7|30`；返回周期汇总和最多 50 个维度项。 |
+| GET | `/api/v1/admin/profitability` | `dimension=model\|provider\|route\|workspace\|user&days=7\|30`；返回周期汇总和最多 50 个维度项。 |
 | GET | `/api/v1/admin/user-analytics` | 返回全站用户生命周期、风险、价值、活跃、留存和业务使用聚合。 |
 | POST | `/api/v1/admin/users/{id}/profile/refresh` | 立即重新计算单个用户画像并返回新结果。 |
 | GET | `/api/v1/admin/tasks/{id}/timeline` | 返回任务阶段事件、创建/开始/结束时间，用于拆分排队、上游、拉取和保存耗时。 |
@@ -733,7 +745,7 @@ SSE 使用 `text/event-stream`。客户端收到终态后应停止重连；断�
 | POST | `/api/v1/admin/security/upload-hashes` | `{sha256,reason}`；哈希必须为 64 位十六进制，原因 1-300 字。 |
 | DELETE | `/api/v1/admin/security/upload-hashes/{sha256}` | 停用对应哈希规则；成功返回 `204`。 |
 | GET | `/api/v1/admin/payment-reconciliations` | `issues=false` 可包含正常项，返回最近支付对账结果。 |
-| POST | `/api/v1/admin/payment-reconciliations/run` | 核对最近 30 日最多 500 个候选订单，必要时补齐已支付未到账订单；返回 `{checked,outcomes}`。 |
+| POST | `/api/v1/admin/payment-reconciliations/run` | 无正文时处理最多 100 笔到期对账记录，待处理订单不受旧 30 日/最新 500 条窗口限制；也接受经核实的渠道关联或未建单处置，见“支付”章节。 |
 
 支付对账可能返回 `matched`、`repaired`、`identity_or_amount_mismatch`、`paid_amount_mismatch`、`local_terminal_mismatch`、`local_ahead`、`repair_failed`、`provider_error`。异常会同步形成安全风险事件。
 
@@ -770,6 +782,8 @@ SSE 使用 `text/event-stream`。客户端收到终态后应停止重连；断�
 | 方法 | 路径 | Scope | 说明 |
 | --- | --- | --- | --- |
 | GET | `/api/open/v1/models` | `models:read` | 返回该 Key 可用的公开模型 ID、名称、价格和能力。 |
+| GET | `/api/open/v1/usage` | `tasks:read` | 当前 Key 的调用数、提交预算和限额。 |
+| POST | `/api/open/v1/tasks/quote` | `tasks:write` | 报价，不冻结积分、不创建任务。 |
 | POST | `/api/open/v1/uploads` | `files:write` | multipart `file` 上传参考文件；返回所属 Key 用户的对象 key 和鉴权 URL。 |
 | GET | `/api/open/v1/files/*key` | `tasks:read` | 读取属于该 Key 用户的输入或任务文件。 |
 | POST | `/api/open/v1/tasks` | `tasks:write` | 创建图片任务；支持 `Idempotency-Key` Header，复用站内计费、并发和队列。 |
@@ -777,11 +791,21 @@ SSE 使用 `text/event-stream`。客户端收到终态后应停止重连；断�
 
 Open API 不接受浏览器 Cookie 代替 Bearer Key。Key 明文只在创建/轮换响应出现；数据库只保存哈希。完整请求、错误码、Webhook 事件和验签示例见 [OPEN_API.md](OPEN_API.md)。
 
+| 方法 | OpenAI 兼容路径 | 说明 |
+| --- | --- | --- |
+| GET | `/v1/models`、`/v1/models/{model}` | `models:read`，当前 Key 可用的公开图片/对话模型名称。 |
+| POST | `/v1/images/generations` | `tasks:write`，标准图片直通，不创建站内任务或保存图片。 |
+| POST | `/v1/images/edits` | `tasks:write` 加 `files:write`，multipart 直通编辑。 |
+| POST | `/v1/responses` | `tasks:write`，对话/图片工具兼容子集，支持对应 SSE 流。 |
+| GET | `/v1/responses` | Responses WebSocket 入口，升级连接时校验凭据。 |
+
+标准图片直通不占站内任务队列/执行槽，仍校验 Key 配额、模型价格和钱包。没有 task ID、站内结果恢复或任务 Webhook；请求超时的处理见 [开放 API](OPEN_API.md)。另外注册 `GET /.well-known/oauth-authorization-server`、`POST /oauth/register`、`GET/POST /oauth/authorize`、`POST /oauth/token`，用于图片技能 OAuth 2.0/PKCE 授权；不是用户第三方登录。
+
 ## 内部回调
 
 | 方法 | 路径 | 调用方 | 说明 |
 | --- | --- | --- | --- |
-| POST | `/internal/c2a/image-task-events` | ChatGPT2API/C2A | 推送 `success|error` 图片任务事件，验证通过后触发本站结果轮询；成功返回 `202 Accepted`。 |
+| POST | `/internal/c2a/image-task-events` | ChatGPT2API/C2A | 推送 `success\|error` 图片任务事件，验证通过后触发本站结果轮询；成功返回 `202 Accepted`。 |
 
 该接口不使用 `sc_session`、`sc_admin_session` 或用户 API Key。必须配置 `C2A_CALLBACK_SECRET`，否则接口伪装为 `404`。请求体上限 `16KB`，Header 为 `X-C2A-Timestamp: <unix seconds>` 和 `X-C2A-Signature: sha256=<hex hmac>`；签名原文是 `<timestamp>.<原始请求体字节>`，时间偏差不得超过 5 分钟。生产环境还应通过反向代理或容器网络限制来源，不能作为公网匿名接口开放。
 

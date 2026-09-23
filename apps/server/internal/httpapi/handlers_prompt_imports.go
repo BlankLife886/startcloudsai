@@ -138,6 +138,10 @@ func (s *Server) adminListPromptImportItems(c *gin.Context, _ *store.User) {
 	if value, err := strconv.Atoi(c.Query("page")); err == nil && value > 0 {
 		page = value
 	}
+	if (page-1)*limit >= store.ListCountCap {
+		fail(c, errPageBeyondCap)
+		return
+	}
 	rows, total, err := store.ListPromptImportItems(c.Request.Context(), s.St.Pool, batch.ID,
 		c.DefaultQuery("view", "all"), limit, (page-1)*limit)
 	if err != nil {

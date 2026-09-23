@@ -115,7 +115,8 @@ func ListGrowthGroupMembers(ctx context.Context, q Q, groupID uuid.UUID) ([]*Gro
 	return items, rows.Err()
 }
 
-func GetGrowthGroupAdminOverview(ctx context.Context, q Q, campaignKey string, limit int) (*GrowthGroupAdminSummary, []*GrowthGroupAdminItem, error) {
+// GetGrowthGroupAdminOverview 返回活动汇总与按创建时间倒序的一页团（offset 由调用方限制在 ListCountCap 内）。
+func GetGrowthGroupAdminOverview(ctx context.Context, q Q, campaignKey string, limit, offset int) (*GrowthGroupAdminSummary, []*GrowthGroupAdminItem, error) {
 	var summary GrowthGroupAdminSummary
 	err := q.QueryRow(ctx, `SELECT
 		count(*),
@@ -131,15 +132,15 @@ func GetGrowthGroupAdminOverview(ctx context.Context, q Q, campaignKey string, l
 		return nil, nil, err
 	}
 
+	// 成员数按页内每个团单独统计，避免先聚合整个活动的全部成员再分页。
 	rows, err := q.Query(ctx, `SELECT g.id, g.code, g.owner_id, u.username, u.avatar_url,
 		CASE WHEN g.status='active' AND g.expires_at<=now() THEN 'expired' ELSE g.status END,
-		g.target_members, count(m.user_id), g.reward_cents, g.expires_at, g.completed_at, g.created_at
+		g.target_members, (SELECT count(*) FROM growth_group_members m WHERE m.group_id=g.id),
+		g.reward_cents, g.expires_at, g.completed_at, g.created_at
 		FROM growth_groups g
 		JOIN users u ON u.id=g.owner_id
-		LEFT JOIN growth_group_members m ON m.group_id=g.id
 		WHERE g.campaign_key=$1
-		GROUP BY g.id, u.username, u.avatar_url
-		ORDER BY g.created_at DESC, g.id DESC LIMIT $2`, campaignKey, limit)
+		ORDER BY g.created_at DESC, g.id DESC LIMIT $2 OFFSET $3`, campaignKey, limit, offset)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -21,6 +21,25 @@ import (
 
 var errAssistantRoutesExhausted = errors.New("assistant provider routes exhausted")
 
+const (
+	// 等额度没有次数上限，所以退避会随等待时间翻倍，避免满载的池子被反复空转扫描。
+	assistantCapacityWaitBase    = 3 * time.Second
+	assistantCapacityWaitCeiling = 30 * time.Second
+)
+
+// assistantRunUsesAgentPool 判定这条 run 准入时该不该占 Agent 名额。
+//
+// 库里存的 mode 不足以回答这个问题：带联网搜索、查任务这类请求的对话轮会在执行时被
+// assistantExecutionMode 提升成 Agent，而此刻 resolved_mode 还是空的。只看 mode 的话
+// 这些轮次既不过闸也不被计数，真实并发就会悄悄超过上限。所以准入按"这一轮最终会不会
+// 走 Agent 路径"来判断，等它跑起来 resolved_mode 落库后，统计那边自然就对得上了。
+func assistantRunUsesAgentPool(run *store.AssistantRun) bool {
+	if run == nil || store.AssistantRunIsImage(run) {
+		return false
+	}
+	return store.AssistantRunIsAgent(run) || assistantExecutionMode(run.Mode, run.Prompt) == "agent"
+}
+
 type assistantProviderError struct {
 	err           error
 	outputStarted bool
@@ -169,7 +188,34 @@ func (w *Worker) claimAssistantRun(
 			if err := store.InsertAssistantRunOutbox(ctx, tx, runID); err != nil {
 				return err
 			}
-			return store.RecordAssistantRunOutboxFailure(ctx, tx, runID, "waiting for execution pool capacity", time.Now().UTC().Add(3*time.Second))
+			if err := store.SetAssistantRunQueuedStage(ctx, tx, runID, "waiting-execution-pool"); err != nil {
+				return err
+			}
+			return store.RecordAssistantRunOutboxCapacityWait(ctx, tx, runID,
+				"waiting for execution pool capacity", assistantCapacityWaitBase, assistantCapacityWaitCeiling)
+		}
+		// Agent 走几十步、占住 worker 好几分钟，普通对话几秒就完。共用一个池子时少数
+		// Agent 就能占满，所以再给 Agent 单独设一道闸，给普通对话留出拿不走的空位。
+		if !image && !resumeKnown && assistantRunUsesAgentPool(queued) {
+			agentLimits, err := store.GetAgentExecutionLimits(ctx, tx)
+			if err != nil {
+				return err
+			}
+			agentUsage, err := store.GetAgentExecutionUsage(ctx, tx, queued.UserID)
+			if err != nil {
+				return err
+			}
+			if agentUsage.UserRunning+1 > agentLimits.UserLimit || agentUsage.GlobalRunning+1 > agentLimits.GlobalLimit {
+				if err := store.InsertAssistantRunOutbox(ctx, tx, runID); err != nil {
+					return err
+				}
+				// 等额度可能要等很久，界面只显示"排队中"的话用户不知道自己在等什么。
+				if err := store.SetAssistantRunQueuedStage(ctx, tx, runID, "waiting-agent-pool"); err != nil {
+					return err
+				}
+				return store.RecordAssistantRunOutboxCapacityWait(ctx, tx, runID,
+					"waiting for agent pool capacity", assistantCapacityWaitBase, assistantCapacityWaitCeiling)
+			}
 		}
 		if len(candidates) == 0 {
 			claimLimit := userLimit

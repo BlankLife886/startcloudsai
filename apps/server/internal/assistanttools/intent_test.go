@@ -18,6 +18,8 @@ func TestImageActionRequested(t *testing.T) {
 		{name: "ordinary analysis", prompt: "分析一下品牌图标为什么好看", want: false},
 		{name: "knowledge question", prompt: "如何生成一张海报？", want: false},
 		{name: "capability question", prompt: "你会生成图片吗？", want: false},
+		{name: "start making a sky image", prompt: "你好，开始做一张蓝天白云图", want: true},
+		{name: "make one landscape image", prompt: "做一张蓝天白云图", want: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

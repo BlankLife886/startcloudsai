@@ -8,6 +8,8 @@ import (
 	"github.com/google/uuid"
 )
 
+const DeveloperAPIProfitSourceType = "developer_api"
+
 type UsageProfitEntry struct {
 	SourceType        string
 	SourceID          string
@@ -27,15 +29,10 @@ type UsageProfitEntry struct {
 }
 
 func InsertUsageProfitEntry(ctx context.Context, q Q, entry UsageProfitEntry) error {
-	if entry.Metadata == nil {
-		entry.Metadata = map[string]any{}
-	}
-	metadata, err := json.Marshal(entry.Metadata)
+	entry = normalizeUsageProfitEntry(entry)
+	metadata, err := usageProfitMetadata(entry)
 	if err != nil {
 		return err
-	}
-	if entry.CreatedAt.IsZero() {
-		entry.CreatedAt = time.Now().UTC()
 	}
 	_, err = q.Exec(ctx, `INSERT INTO usage_profit_ledger (
 		source_type, source_id, billing_generation, user_id, event_status, workspace,
@@ -48,12 +45,57 @@ func InsertUsageProfitEntry(ctx context.Context, q Q, entry UsageProfitEntry) er
 	return err
 }
 
+// UpsertUsageProfitEntry finalizes an idempotent direct API accounting event.
+// A timeout can leave a canceled event behind; a later retry with the same
+// idempotency key changes that event to succeeded instead of adding another
+// profitability row.
+func UpsertUsageProfitEntry(ctx context.Context, q Q, entry UsageProfitEntry) error {
+	entry = normalizeUsageProfitEntry(entry)
+	metadata, err := usageProfitMetadata(entry)
+	if err != nil {
+		return err
+	}
+	_, err = q.Exec(ctx, `INSERT INTO usage_profit_ledger (
+		source_type, source_id, billing_generation, user_id, event_status, workspace,
+		provider_id, route_id, model_id, units, revenue_cents, upstream_cost_cents, metadata, created_at, api_key_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+		ON CONFLICT (source_type, source_id, billing_generation) DO UPDATE SET
+			user_id=EXCLUDED.user_id, event_status=EXCLUDED.event_status, workspace=EXCLUDED.workspace,
+			provider_id=EXCLUDED.provider_id, route_id=EXCLUDED.route_id, model_id=EXCLUDED.model_id,
+			units=EXCLUDED.units, revenue_cents=EXCLUDED.revenue_cents,
+			upstream_cost_cents=EXCLUDED.upstream_cost_cents, metadata=EXCLUDED.metadata,
+			api_key_id=EXCLUDED.api_key_id`,
+		entry.SourceType, entry.SourceID, entry.BillingGeneration, entry.UserID, entry.EventStatus,
+		entry.Workspace, entry.ProviderID, entry.RouteID, entry.ModelID, max(entry.Units, 0),
+		max(entry.RevenueCents, 0), max(entry.UpstreamCostCents, 0), metadata, entry.CreatedAt, entry.APIKeyID)
+	return err
+}
+
+func normalizeUsageProfitEntry(entry UsageProfitEntry) UsageProfitEntry {
+	if entry.Metadata == nil {
+		entry.Metadata = map[string]any{}
+	}
+	if entry.CreatedAt.IsZero() {
+		entry.CreatedAt = time.Now().UTC()
+	}
+	return entry
+}
+
+func usageProfitMetadata(entry UsageProfitEntry) ([]byte, error) {
+	metadata, err := json.Marshal(entry.Metadata)
+	if err != nil {
+		return nil, err
+	}
+	return metadata, nil
+}
+
 type ProfitPeriodMetrics struct {
 	RevenueCents      int64 `json:"revenueCents"`
 	UpstreamCostCents int64 `json:"upstreamCostCents"`
 	GrossProfitCents  int64 `json:"grossProfitCents"`
 	SucceededUnits    int64 `json:"succeededUnits"`
 	FailedUnits       int64 `json:"failedUnits"`
+	CanceledUnits     int64 `json:"canceledUnits"`
 }
 
 type ProfitabilitySummary struct {
@@ -63,6 +105,10 @@ type ProfitabilitySummary struct {
 }
 
 func GetProfitabilitySummary(ctx context.Context, q Q, todayStart, last7DaysStart, last30DaysStart time.Time) (*ProfitabilitySummary, error) {
+	return GetProfitabilitySummaryBySource(ctx, q, todayStart, last7DaysStart, last30DaysStart, "")
+}
+
+func GetProfitabilitySummaryBySource(ctx context.Context, q Q, todayStart, last7DaysStart, last30DaysStart time.Time, sourceType string) (*ProfitabilitySummary, error) {
 	var summary ProfitabilitySummary
 	err := q.QueryRow(ctx, `SELECT
 		COALESCE(SUM(revenue_cents) FILTER (WHERE created_at >= $1), 0),
@@ -70,23 +116,26 @@ func GetProfitabilitySummary(ctx context.Context, q Q, todayStart, last7DaysStar
 		COALESCE(SUM(gross_profit_cents) FILTER (WHERE created_at >= $1), 0),
 		COALESCE(SUM(units) FILTER (WHERE created_at >= $1 AND event_status = 'succeeded'), 0),
 		COALESCE(SUM(units) FILTER (WHERE created_at >= $1 AND event_status = 'failed'), 0),
+		COALESCE(SUM(units) FILTER (WHERE created_at >= $1 AND event_status = 'canceled'), 0),
 		COALESCE(SUM(revenue_cents) FILTER (WHERE created_at >= $2), 0),
 		COALESCE(SUM(upstream_cost_cents) FILTER (WHERE created_at >= $2), 0),
 		COALESCE(SUM(gross_profit_cents) FILTER (WHERE created_at >= $2), 0),
 		COALESCE(SUM(units) FILTER (WHERE created_at >= $2 AND event_status = 'succeeded'), 0),
 		COALESCE(SUM(units) FILTER (WHERE created_at >= $2 AND event_status = 'failed'), 0),
+		COALESCE(SUM(units) FILTER (WHERE created_at >= $2 AND event_status = 'canceled'), 0),
 		COALESCE(SUM(revenue_cents) FILTER (WHERE created_at >= $3), 0),
 		COALESCE(SUM(upstream_cost_cents) FILTER (WHERE created_at >= $3), 0),
 		COALESCE(SUM(gross_profit_cents) FILTER (WHERE created_at >= $3), 0),
 		COALESCE(SUM(units) FILTER (WHERE created_at >= $3 AND event_status = 'succeeded'), 0),
-		COALESCE(SUM(units) FILTER (WHERE created_at >= $3 AND event_status = 'failed'), 0)
-		FROM usage_profit_ledger WHERE created_at >= $3`, todayStart, last7DaysStart, last30DaysStart).Scan(
+		COALESCE(SUM(units) FILTER (WHERE created_at >= $3 AND event_status = 'failed'), 0),
+		COALESCE(SUM(units) FILTER (WHERE created_at >= $3 AND event_status = 'canceled'), 0)
+		FROM usage_profit_ledger WHERE created_at >= $3 AND ($4 = '' OR source_type = $4)`, todayStart, last7DaysStart, last30DaysStart, sourceType).Scan(
 		&summary.Today.RevenueCents, &summary.Today.UpstreamCostCents, &summary.Today.GrossProfitCents,
-		&summary.Today.SucceededUnits, &summary.Today.FailedUnits,
+		&summary.Today.SucceededUnits, &summary.Today.FailedUnits, &summary.Today.CanceledUnits,
 		&summary.Last7Days.RevenueCents, &summary.Last7Days.UpstreamCostCents, &summary.Last7Days.GrossProfitCents,
-		&summary.Last7Days.SucceededUnits, &summary.Last7Days.FailedUnits,
+		&summary.Last7Days.SucceededUnits, &summary.Last7Days.FailedUnits, &summary.Last7Days.CanceledUnits,
 		&summary.Last30Days.RevenueCents, &summary.Last30Days.UpstreamCostCents, &summary.Last30Days.GrossProfitCents,
-		&summary.Last30Days.SucceededUnits, &summary.Last30Days.FailedUnits,
+		&summary.Last30Days.SucceededUnits, &summary.Last30Days.FailedUnits, &summary.Last30Days.CanceledUnits,
 	)
 	return &summary, err
 }
@@ -101,6 +150,10 @@ type ProfitabilityBreakdown struct {
 }
 
 func ListProfitabilityBreakdown(ctx context.Context, q Q, dimension string, since time.Time, limit int) ([]ProfitabilityBreakdown, error) {
+	return ListProfitabilityBreakdownBySource(ctx, q, dimension, since, limit, "")
+}
+
+func ListProfitabilityBreakdownBySource(ctx context.Context, q Q, dimension string, since time.Time, limit int, sourceType string) ([]ProfitabilityBreakdown, error) {
 	column := "model_id"
 	from := "usage_profit_ledger ledger"
 	label := "model_id"
@@ -125,8 +178,8 @@ func ListProfitabilityBreakdown(ctx context.Context, q Q, dimension string, sinc
 	rows, err := q.Query(ctx, `SELECT `+column+` AS key, `+label+` AS label,
 		COALESCE(SUM(revenue_cents), 0), COALESCE(SUM(upstream_cost_cents), 0),
 		COALESCE(SUM(gross_profit_cents), 0), COALESCE(SUM(units), 0)
-		FROM `+from+` WHERE ledger.created_at >= $1
-		GROUP BY key ORDER BY SUM(gross_profit_cents) ASC, SUM(revenue_cents) DESC LIMIT $2`, since, limit)
+		FROM `+from+` WHERE ledger.created_at >= $1 AND ($3 = '' OR ledger.source_type = $3)
+		GROUP BY key ORDER BY SUM(gross_profit_cents) ASC, SUM(revenue_cents) DESC LIMIT $2`, since, limit, sourceType)
 	if err != nil {
 		return nil, err
 	}

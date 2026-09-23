@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { createPortal } from "react-dom";
 import { formatTime, messagePreview } from "./domain/assistantMessages.js";
 import { balancedOptionColumns } from "./adaptiveOptionGrid.js";
@@ -22,6 +23,7 @@ import {
 import {
   AssistantAssetLibrary,
   AssistantContextMeter,
+  AssistantAutoApproveDialog,
   AssistantCostDialog,
   AssistantDeleteDialog,
   AssistantFullscreenPreview,
@@ -39,6 +41,8 @@ import {
   AssistantMessageRow,
   ConversationMinimap,
 } from "./AssistantMessageComponents.jsx";
+import { MentionMenu } from "../skills/MentionMenu.jsx";
+import { useMentionMenu } from "../skills/useMentionMenu.js";
 
 const REFERENCE_PROGRESS_RADIUS = 17;
 const REFERENCE_PROGRESS_CIRCUMFERENCE = 2 * Math.PI * REFERENCE_PROGRESS_RADIUS;
@@ -290,6 +294,10 @@ export function AssistantWorkspaceLayout({ workspace }) {
     submitUserMessageEdit,
     updateProposal,
     approveAgentProposal,
+    assistantAutoApprove,
+    assistantAutoApproveBudgetCents,
+    setAssistantAutoApprove,
+    proposalAutoApproved,
     sourceProposalForImage,
     reopenSourceProposal,
     stopRun,
@@ -307,6 +315,13 @@ export function AssistantWorkspaceLayout({ workspace }) {
     renderSidebarBody,
     renderSidebarRail,
   } = workspace;
+  const [autoApproveDialogOpen, setAutoApproveDialogOpen] = useState(false);
+  const mentionMenu = useMentionMenu({
+    textareaRef,
+    value: draft,
+    onChange: setDraft,
+    promptType: "",
+  });
 
   return (
     <div className={`assistant-workspace${isDark ? " is-dark" : ""}${activeRun ? " is-generating" : ""}${sidebarCollapsed ? " is-sidebar-narrow" : ""}${sidebarAnimating ? " is-sidebar-animating" : ""}`} onClick={() => { setCreationMenuOpen(false); setModelMenuOpen(false); setReasoningMenuOpen(false); setPreferencesOpen(false); setActiveMessageMenuId(""); setConversationMenuId(""); }}>
@@ -432,7 +447,7 @@ export function AssistantWorkspaceLayout({ workspace }) {
               ? resolveProposalReferences(activeConversation, message).references
               : previousUser?.referenceImages;
             if (hiddenQueuedMessageIds.has(message.id)) return null;
-            return <AssistantMessageRow key={message.id} message={message} turnId={previousUser?.id} showDate={showDate} expanded={expandedStatusId === message.id} copied={copiedMessageId === message.id} generating={conversationHasWork} feedbackBusy={feedbackBusyIds.has(message.id)} isLastAssistant={message.id === lastAssistantId} isLastUser={message.id === lastUserMessageId} editing={editingMessageId === message.id} editingDraft={editingMessageDraft} moreOpen={activeMessageMenuId === message.id} loadedImages={loadedImages} failedImages={failedImages} imageRetryVersions={imageRetryVersions} imageModels={imageModels} sourceProposal={sourceProposal} proposalExecuted={messages.some((item) => item.role === "user" && item.proposalSourceMessageId === message.id)} attachedReferences={attachedReferences} searchHit={threadSearchHitIds.has(message.id)} searchCurrent={message.id === currentThreadHitId} searchQuery={threadSearch} toolActionBusyId={toolActionBusyId} maxMessageCharacters={maxMessageCharacters} onToolAction={executeAssistantToolAction} onToggleStatus={toggleStatus} onCopy={copyMessage} onFeedback={submitMessageFeedback} onQuote={quoteMessage} onOpenImage={openImage} onImageLoad={markImageLoaded} onImageError={markImageFailed} onImageRetry={retryImage} onUseReference={useGeneratedImageAsReference} onStartEdit={startEditingUserMessage} onEditDraft={setEditingMessageDraft} onCancelEdit={cancelUserMessageEdit} onSubmitEdit={(item) => void submitUserMessageEdit(item)} onRetry={(item) => void retryAssistant(item)} onToggleMore={(id) => setActiveMessageMenuId((current) => current === id ? "" : id)} onDownloadMarkdown={downloadMarkdown} onDelete={(id) => void removeMessage(id)} onProposalChange={(patch) => updateProposal(message.id, patch)} onProposalDismiss={() => updateProposal(message.id, { dismissed: true })} onProposalRestore={() => updateProposal(message.id, { dismissed: false })} onProposalApprove={() => void approveAgentProposal(message)} onReopenProposal={() => reopenSourceProposal(sourceProposal)} />;
+            return <AssistantMessageRow key={message.id} message={message} turnId={previousUser?.id} showDate={showDate} expanded={expandedStatusId === message.id} copied={copiedMessageId === message.id} generating={conversationHasWork} feedbackBusy={feedbackBusyIds.has(message.id)} isLastAssistant={message.id === lastAssistantId} isLastUser={message.id === lastUserMessageId} editing={editingMessageId === message.id} editingDraft={editingMessageDraft} moreOpen={activeMessageMenuId === message.id} loadedImages={loadedImages} failedImages={failedImages} imageRetryVersions={imageRetryVersions} imageModels={imageModels} sourceProposal={sourceProposal} proposalExecuted={messages.some((item) => item.role === "user" && item.proposalSourceMessageId === message.id)} attachedReferences={attachedReferences} autoApprove={assistantAutoApprove} autoApproveBudgetCents={assistantAutoApproveBudgetCents} autoApproved={message.kind === "proposal" ? proposalAutoApproved(message) : false} searchHit={threadSearchHitIds.has(message.id)} searchCurrent={message.id === currentThreadHitId} searchQuery={threadSearch} toolActionBusyId={toolActionBusyId} maxMessageCharacters={maxMessageCharacters} onToolAction={executeAssistantToolAction} onToggleStatus={toggleStatus} onCopy={copyMessage} onFeedback={submitMessageFeedback} onQuote={quoteMessage} onOpenImage={openImage} onImageLoad={markImageLoaded} onImageError={markImageFailed} onImageRetry={retryImage} onUseReference={useGeneratedImageAsReference} onStartEdit={startEditingUserMessage} onEditDraft={setEditingMessageDraft} onCancelEdit={cancelUserMessageEdit} onSubmitEdit={(item) => void submitUserMessageEdit(item)} onRetry={(item) => void retryAssistant(item)} onToggleMore={(id) => setActiveMessageMenuId((current) => current === id ? "" : id)} onDownloadMarkdown={downloadMarkdown} onDelete={(id) => void removeMessage(id)} onProposalChange={(patch) => updateProposal(message.id, patch)} onProposalDismiss={() => updateProposal(message.id, { dismissed: true })} onProposalRestore={() => updateProposal(message.id, { dismissed: false })} onProposalApprove={(options) => approveAgentProposal(message, options)} onReopenProposal={() => reopenSourceProposal(sourceProposal)} />;
           })}</div></section>}
         </div>
 
@@ -648,13 +663,36 @@ export function AssistantWorkspaceLayout({ workspace }) {
               </div>
             )}
             {quotedMessage && <div className="composer-quote"><i className="bi bi-quote" /><span>[{quotedMessage.kind}] {quotedMessage.content}</span><button type="button" title="移除引用" aria-label="移除引用" onClick={() => setQuotedMessage(null)}><i className="bi bi-x-lg" /></button></div>}
-            <textarea ref={textareaRef} name="assistant-message" value={draft} rows={1} aria-label="消息输入" data-assistant-tour="input" placeholder={queueEditingId ? "修改这条排队消息，发送后更新" : activeRun ? "继续输入，发送后会自动排队" : mode === "image" ? "描述你想生成的画面，也可以上传参考图" : "输入问题，或粘贴、拖入图片和文档"} disabled={Boolean(serviceError)} maxLength={maxMessageCharacters} onChange={(event) => { setDraft(event.target.value); if (queueEditingId && !event.target.value) cancelQueueEdit(); }} onKeyDown={(event) => { if (event.key === "Escape" && queueEditingId) { event.preventDefault(); setDraft(""); cancelQueueEdit(); return; } if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void requestSend(); } }} />
+            <div className="mention-field">
+              <textarea ref={textareaRef} name="assistant-message" value={draft} rows={1} aria-label="消息输入" data-assistant-tour="input" placeholder={queueEditingId ? "修改这条排队消息，发送后更新" : activeRun ? "继续输入，发送后会自动排队" : mode === "image" ? "描述你想生成的画面，也可以上传参考图" : "输入问题，或粘贴、拖入图片和文档"} disabled={Boolean(serviceError)} maxLength={maxMessageCharacters} onChange={(event) => { mentionMenu.handleChange(event); if (queueEditingId && !event.target.value) cancelQueueEdit(); }} onClick={mentionMenu.handleCaretSync} onKeyUp={mentionMenu.handleCaretSync} onBlur={mentionMenu.handleBlur} onKeyDown={(event) => { if (mentionMenu.handleKeyDown(event)) return; if (event.key === "Escape" && queueEditingId) { event.preventDefault(); setDraft(""); cancelQueueEdit(); return; } if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void requestSend(); } }} />
+              <MentionMenu {...mentionMenu.menuProps} />
+            </div>
             {mode === "image" && generationSizeError && !preferencesOpen && <p className="exact-size-control__error" role="alert">{selectedModel?.supportsExactSize === true ? generationSizeError : "原精确尺寸模型暂不可用，请重新选择支持精确尺寸的可用模型。已保留当前宽高。"}</p>}
             {draftCharacterCount > Math.min(10000, Math.floor(maxMessageCharacters * 0.8)) && <div className={`draft-counter${draftCharacterCount > maxMessageCharacters ? " is-over" : ""}`}>{draftCharacterCount.toLocaleString("zh-CN")} / {maxMessageCharacters.toLocaleString("zh-CN")}</div>}
             <div className="composer-toolbar">
               <div className="composer-left">
                 <button className="composer-attachment-inline" type="button" data-assistant-tour="attach" title={mode === "image" ? "添加参考图" : "添加附件"} aria-label={mode === "image" ? "添加参考图" : "添加附件"} onClick={() => fileInputRef.current?.click()}><i className="bi bi-paperclip" /></button>
                 <button ref={creationButtonRef} className={`agent-mode-button${creationMenuOpen ? " active" : ""}`} type="button" data-assistant-tour="mode" aria-expanded={creationMenuOpen} onPointerDown={(event) => toggleComposerMenu(event, "creation")} onClick={swallowComposerMenuClick}><SoftMark name={selectedCreation.mark} size="sm" /><span>{selectedCreation.label}</span><i className={`bi bi-chevron-down menu-chevron${creationMenuOpen ? " is-open" : ""}`} /></button>
+                {creationType === "agent" ? (
+                  <button
+                    className={`composer-tool-button assistant-auto-approve-button${assistantAutoApprove ? " is-on" : ""}`}
+                    type="button"
+                    aria-pressed={assistantAutoApprove}
+                    title={assistantAutoApprove
+                      ? `自动授权已开启：单轮 ${assistantAutoApproveBudgetCents} 积分内直接出图，不再等你确认`
+                      : "自动授权已关闭：出图前会先给你方案卡确认"}
+                    onClick={() => {
+                      if (assistantAutoApprove) void setAssistantAutoApprove(false);
+                      else setAutoApproveDialogOpen(true);
+                    }}
+                  >
+                    <i className={`bi ${assistantAutoApprove ? "bi-lightning-charge-fill" : "bi-lightning-charge"}`} />
+                    {/* 明写开/关：只靠变色和一个数字，用户看不出到底开没开。 */}
+                    <span>{assistantAutoApprove
+                      ? `自动授权 开 · ${assistantAutoApproveBudgetCents} 积分`
+                      : "自动授权 关"}</span>
+                  </button>
+                ) : null}
                 <button ref={modelButtonRef} className={`composer-tool-button image-model-button${modelMenuOpen ? " active" : ""}`} type="button" data-assistant-tour="model" title={`模型：${generationModelLabel}`} aria-label={`选择模型，当前为${generationModelLabel}`} aria-expanded={modelMenuOpen} onPointerDown={(event) => toggleComposerMenu(event, "model")} onClick={swallowComposerMenuClick}><ModelCatalogIcon model={selectedModel} size="sm" /><span>{generationModelLabel}</span><i className={`bi bi-chevron-down menu-chevron${modelMenuOpen ? " is-open" : ""}`} /></button>
                 {mode === "image" ? (
                   <button ref={imageSettingsButtonRef} className={`composer-tool-button image-settings-button${preferencesOpen ? " active" : ""}`} type="button" aria-expanded={preferencesOpen} onPointerDown={(event) => toggleComposerMenu(event, "preferences")} onClick={swallowComposerMenuClick}><span>{[...(generationSize.sizeMode === "exact" ? [`${generationSize.exactWidth || "—"}×${generationSize.exactHeight || "—"} px`] : [generationRatio === "auto" ? "Auto" : generationRatio, generationResolution]), generationQuality, `${generationCount}张`].filter(Boolean).join(" | ")}</span><i className={`bi bi-chevron-down menu-chevron${preferencesOpen ? " is-open" : ""}`} /></button>
@@ -754,6 +792,16 @@ export function AssistantWorkspaceLayout({ workspace }) {
         onDelete={deleteConversationRow}
       />
       <AssistantCostDialog payload={costPayload} light={!isDark} onCancel={cancelCost} onConfirm={(skip) => void confirmCost(skip)} />
+      <AssistantAutoApproveDialog
+        open={autoApproveDialogOpen}
+        light={!isDark}
+        budgetCents={assistantAutoApproveBudgetCents}
+        onCancel={() => setAutoApproveDialogOpen(false)}
+        onConfirm={(budget) => {
+          setAutoApproveDialogOpen(false);
+          void setAssistantAutoApprove(true, budget);
+        }}
+      />
       <AssistantFullscreenPreview
         value={selectedImage}
         models={imageModels}

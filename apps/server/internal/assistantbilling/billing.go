@@ -210,17 +210,24 @@ func Complete(ctx context.Context, st *store.Store, id uuid.UUID, resolvedMode s
 }
 
 func CompleteAttempt(ctx context.Context, st *store.Store, id uuid.UUID, expectedAttempt int, resolvedMode string) (bool, error) {
-	return completeAttempt(ctx, st, id, expectedAttempt, resolvedMode, nil)
+	return completeAttempt(ctx, st, id, expectedAttempt, resolvedMode, nil, 0)
+}
+
+// CompleteAgentAttempt 结算一轮 Agent 执行。upstreamCalls 是这一轮真实发起的上游模型
+// 调用次数：用户按一轮对话计价，但多步执行会调用模型多次，只有把次数带进来，利润表里的
+// 上游成本才不会把六轮当成一轮。
+func CompleteAgentAttempt(ctx context.Context, st *store.Store, id uuid.UUID, expectedAttempt int, resolvedMode string, upstreamCalls int) (bool, error) {
+	return completeAttempt(ctx, st, id, expectedAttempt, resolvedMode, nil, upstreamCalls)
 }
 
 func CompleteImageAttempt(ctx context.Context, st *store.Store, id uuid.UUID, expectedAttempt, actualImages int) (bool, error) {
 	if actualImages < 0 {
 		return false, apperr.E("assistant_billing_invalid", "AI 助手实际图片数量无效", 500)
 	}
-	return completeAttempt(ctx, st, id, expectedAttempt, "image", &actualImages)
+	return completeAttempt(ctx, st, id, expectedAttempt, "image", &actualImages, 0)
 }
 
-func completeAttempt(ctx context.Context, st *store.Store, id uuid.UUID, expectedAttempt int, resolvedMode string, actualImages *int) (bool, error) {
+func completeAttempt(ctx context.Context, st *store.Store, id uuid.UUID, expectedAttempt int, resolvedMode string, actualImages *int, upstreamCalls int) (bool, error) {
 	changed := false
 	err := st.Tx(ctx, func(tx pgx.Tx) error {
 		run, err := store.GetAssistantRunForUpdate(ctx, tx, id)
@@ -282,12 +289,20 @@ func completeAttempt(ctx context.Context, st *store.Store, id uuid.UUID, expecte
 				units = requested
 			}
 		}
+		// Units 是计费单位，保持“一轮对话”或“实际出图数”不变，否则营收类报表会被
+		// 上游调用次数污染。只有上游成本按真实调用次数放大。
+		upstreamUnits := units
+		metadata := map[string]any{"mode": resolvedMode}
+		if resolvedMode != "image" && upstreamCalls > 1 {
+			upstreamUnits = upstreamCalls
+			metadata["upstreamCalls"] = upstreamCalls
+		}
 		if err := store.InsertUsageProfitEntry(ctx, tx, store.UsageProfitEntry{
 			SourceType: SourceType, SourceID: run.ID.String(), BillingGeneration: run.BillingGeneration,
 			UserID: run.UserID, EventStatus: "succeeded", Workspace: paramString(run.Params, "workspace"),
 			ProviderID: paramString(run.Params, providerKey), ModelID: paramString(run.Params, modelKey), Units: units,
-			RevenueCents: cost, UpstreamCostCents: paramInt64(run.Params, unitCostKey) * int64(units),
-			Metadata: map[string]any{"mode": resolvedMode}, CreatedAt: time.Now().UTC(),
+			RevenueCents: cost, UpstreamCostCents: paramInt64(run.Params, unitCostKey) * int64(upstreamUnits),
+			Metadata: metadata, CreatedAt: time.Now().UTC(),
 		}); err != nil {
 			return err
 		}

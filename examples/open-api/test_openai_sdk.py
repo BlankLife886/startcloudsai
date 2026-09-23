@@ -24,7 +24,6 @@ from openai_images import image_extension
 
 
 MODEL_ID = "sdk-test-image-model"
-TASK_ID = "sdk-test-task-id"
 PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNoDPj/HwAF9gLQWK3ToAAAAABJRU5ErkJggg=="
 PNG = base64.b64decode(PNG_B64, validate=True)
 MODEL = {"id": MODEL_ID, "object": "model", "created": 0, "owned_by": "starcloudsai"}
@@ -83,7 +82,6 @@ class OpenAIImagesSDKContractTest(unittest.TestCase):
         return self.client(lambda request: httpx.Response(
             200,
             json=IMAGE_RESPONSE,
-            headers={"X-Task-ID": TASK_ID},
         ))
 
     def test_models_list_and_retrieve_parse_standard_model_objects(self):
@@ -132,7 +130,7 @@ class OpenAIImagesSDKContractTest(unittest.TestCase):
         self.assertEqual(decoded, PNG)
         self.assertEqual(result.created, 1788912000)
 
-    def test_raw_generate_preserves_task_id_and_the_parsed_image(self):
+    def test_raw_generate_preserves_standard_response(self):
         raw = self.image_client().images.with_raw_response.generate(
             model=MODEL_ID,
             prompt="raw response test",
@@ -140,7 +138,6 @@ class OpenAIImagesSDKContractTest(unittest.TestCase):
             extra_headers={"Idempotency-Key": "sdk-raw-001"},
         )
         self.assertEqual(raw.status_code, 200)
-        self.assertEqual(raw.headers.get("x-task-id"), TASK_ID)
         self.assertEqual(raw.parse().data[0].b64_json, PNG_B64)
         self.assertEqual(self.requests[0].headers["idempotency-key"], "sdk-raw-001")
 
@@ -216,15 +213,15 @@ class OpenAIImagesSDKContractTest(unittest.TestCase):
 
     def test_should_retry_false_prevents_sdk_automatic_500_retry(self):
         error_body = {"error": {
-            "message": "The created image task failed",
+            "message": "The upstream image call failed",
             "type": "server_error",
             "param": None,
-            "code": "task_failed",
+            "code": "upstream_error",
         }}
         client = self.client(lambda request: httpx.Response(
             500,
             json=error_body,
-            headers={"X-Should-Retry": "false", "X-Task-ID": TASK_ID},
+            headers={"X-Should-Retry": "false"},
         ), max_retries=2)
         with self.assertRaises(openai.InternalServerError) as caught:
             client.images.generate(
@@ -233,9 +230,8 @@ class OpenAIImagesSDKContractTest(unittest.TestCase):
                 extra_headers={"Idempotency-Key": "sdk-failure-001"},
             )
         self.assertEqual(client.max_retries, 2)
-        self.assertEqual(len(self.requests), 1, "SDK must not replay a completed failed task")
-        self.assertEqual(caught.exception.response.headers["x-task-id"], TASK_ID)
-        self.assertEqual(caught.exception.code, "task_failed")
+        self.assertEqual(len(self.requests), 1, "SDK must not retry when the gateway says not to retry")
+        self.assertEqual(caught.exception.code, "upstream_error")
 
 
 if __name__ == "__main__":

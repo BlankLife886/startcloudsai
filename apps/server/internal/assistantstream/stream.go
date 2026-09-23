@@ -29,8 +29,26 @@ type Event struct {
 	Context    map[string]any `json:"context,omitempty"`
 	Usage      map[string]any `json:"usage,omitempty"`
 	Tool       *ToolCallEvent `json:"tool,omitempty"`
+	Plan       []PlanStep     `json:"plan,omitempty"`
+	Debug      *DebugSpan     `json:"debug,omitempty"`
+	DebugTrace []DebugSpan    `json:"debugTrace,omitempty"`
 	Done       bool           `json:"done,omitempty"`
 	Status     string         `json:"status,omitempty"`
+}
+
+// DebugSpan 是给排查用的流程打点，不改变用户看到的阶段文案。
+type DebugSpan struct {
+	Step      string `json:"step"`
+	Detail    string `json:"detail,omitempty"`
+	AtMs      int64  `json:"atMs,omitempty"`
+	ElapsedMs int64  `json:"elapsedMs,omitempty"`
+}
+
+// PlanStep 是 Agent 自己维护的待办项。计划每次整份替换，不发增量，
+// 所以重复或乱序的事件都不会让界面上的勾选状态错位。
+type PlanStep struct {
+	Title  string `json:"title"`
+	Status string `json:"status"`
 }
 
 // ToolCallEvent either asks the browser to run a canvas tool or reports the

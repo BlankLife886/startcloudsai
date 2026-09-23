@@ -1275,9 +1275,9 @@ test.describe('React assistant workspace contract', () => {
     await mockAssistant(page, { conversations })
     await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
 
-    await expect(page.locator('.message-status-metrics')).toContainText('消耗 1.2K')
-    await expect(page.locator('.message-status-metrics')).toContainText('输入 3.8K')
-    await expect(page.locator('.message-status-metrics')).toContainText('首字 0.6s')
+    await expect(page.locator('.message-status-metrics')).toContainText('1.2K')
+    await expect(page.locator('.message-status-metrics')).toContainText('3.8K')
+    await expect(page.locator('.message-status-metrics')).toContainText('0.6s')
     await expect(page.locator('.message-meta')).toContainText('以上内容由 AI 生成')
     await expect(page.locator('.message-meta-duration')).toHaveText('12.4s')
   })
@@ -1296,8 +1296,8 @@ test.describe('React assistant workspace contract', () => {
     await mockAssistant(page, { conversations })
     await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
 
-    await expect(page.locator('.message-status-metrics')).toContainText('消耗 4')
-    await expect(page.locator('.message-status-metrics')).toContainText('输入 800')
+    await expect(page.locator('.message-status-metrics')).toContainText('4')
+    await expect(page.locator('.message-status-metrics')).toContainText('800')
     await expect(page.locator('.message-meta-duration')).toHaveText('5s')
   })
 
@@ -1315,8 +1315,8 @@ test.describe('React assistant workspace contract', () => {
     await mockAssistant(page, { conversations })
     await page.goto('/assistant', { waitUntil: 'domcontentloaded' })
 
-    await expect(page.locator('.assistant-reasoning')).toContainText('思考过程')
-    await page.locator('.assistant-reasoning summary').click()
+    await expect(page.locator('.message-reasoning-toggle')).toContainText('思考')
+    await page.locator('.message-reasoning-toggle').click()
     await expect(page.locator('.assistant-reasoning-body')).toHaveText('先确认目标，再给出可执行的结论。')
   })
 
@@ -1959,7 +1959,7 @@ test.describe('React assistant workspace contract', () => {
     await page.getByRole('button', { name: '发送' }).click()
 
     await expect(page.locator('.message--assistant')).toContainText('SSE 增量回答')
-    await expect(page.locator('.assistant-reasoning')).toContainText('正在思考')
+    await expect(page.locator('.message-reasoning-toggle')).toContainText('在想')
     await expect(page.locator('.assistant-reasoning-body')).toContainText('先拆开问题，再组织成可直接阅读的回答。')
     await expect(page.locator('.topbar-context-clear .assistant-context-meter')).toContainText('42%')
     const topbarLayout = await page.locator('.assistant-topbar').evaluate((element) => {
@@ -1970,8 +1970,8 @@ test.describe('React assistant workspace contract', () => {
     expect(topbarLayout[0].right).toBeLessThanOrEqual(topbarLayout[1].left + 1)
     expect(Math.max(...topbarLayout.map((box) => box.top)) - Math.min(...topbarLayout.map((box) => box.top))).toBeLessThan(20)
     await expect(page.locator('.message--assistant')).toContainText('服务端最终回答')
-    await expect(page.locator('.assistant-reasoning')).toContainText('思考过程')
-    await page.locator('.assistant-reasoning summary').click()
+    await expect(page.locator('.message-reasoning-toggle')).toContainText('思考')
+    await page.locator('.message-reasoning-toggle').click()
     await expect(page.locator('.assistant-reasoning-body')).toContainText('先拆开问题，再组织成可直接阅读的回答。')
     await expect(page.getByRole('button', { name: '停止生成' })).toHaveCount(0)
     await page.locator('.message--assistant .message-status-toggle').click()

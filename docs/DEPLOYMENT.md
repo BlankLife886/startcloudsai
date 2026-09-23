@@ -1,6 +1,14 @@
 # StarCloudsAI 生产部署与运维手册
 
-本文档适用于当前仓库的生产部署、日常更新、备份恢复和故障排查。示例环境使用：
+核对日期：2026-09-22。本文以仓库配置说明生产部署、备份恢复和故障排查，不代表已经核查线上环境。下文主体命令适用于根 `docker-compose.yml`，一体化部署不能直接照搬。
+
+| 部署类型 | Compose 与环境文件 | 更新入口 |
+| --- | --- | --- |
+| 根 Compose（PG17，外接模型服务） | `docker-compose.yml` + `.env` | 本文；蓝绿仅限已验证滚动兼容的版本 |
+| 一体化（PG18 + ChatGPT2API） | `deploy/integrated/docker-compose.yml` + `.env.integrated` | [一体化手册](INTEGRATED_4C8G_MIGRATION.md)、[维护发布](MAINTENANCE_RELEASE.md) |
+| Flutter App | `apps/mobile`，独立构建 | [移动端说明](../apps/mobile/README.md) |
+
+当前工作区包含删除旧技能装载表的 `00154` 等迁移，不能默认使用共享生产库的候选 API 预演升级。旧代码使用 `user_skill_bindings` 时应采用维护窗口，同步升级 API/Worker/前端；Down 不能恢复已删除的装载记录。
 
 需要单独执行生产蓝绿更新时，使用独立手册
 [ZERO_DOWNTIME_RELEASE_RUNBOOK.md](./ZERO_DOWNTIME_RELEASE_RUNBOOK.md)。
@@ -8,15 +16,17 @@
 [INTEGRATED_4C8G_MIGRATION.md](./INTEGRATED_4C8G_MIGRATION.md)，不要把 PG17 数据卷直接挂载给 PG18。
 
 - 域名：`starcloudisai.com`
-- 服务器：`47.82.102.112`
+- 服务器：以实际目标环境为准，不从本文推断当前公网 IP
 - 管理面板：宝塔面板
 - 运行方式：Docker Compose
-- 当前发布分支：`codex/publish-current-project`
+- 发布版本：使用核对过的确切提交；不要将分支名当作部署版本
 - 项目目录：`/www/wwwroot/startcloudsai`
 - 本机网关：`127.0.0.1:8080`
 - 发布方式：本地生成源码包，通过宝塔网页面板手动上传；不使用 SSH 或服务器端 Git 拉取
 
 更换服务器或域名时，只需替换本文中的域名、IP 和项目目录。
+
+本文域名和宝塔目录为既有部署示例，执行前核对真实目标；生产权限、环境变量和发布状态不能由本地代码确认。
 
 ### React 主站
 
@@ -40,7 +50,9 @@ docker compose --env-file .env up -d --build
   -> Docker gateway
      -> /          用户端 web
      -> /admin/    管理端 admin
-     -> /api/v1/      Go server
+     -> /api/        Go server（站内与开放任务 API）
+     -> /v1          Go server（Images/Responses 兼容接口）
+     -> /oauth/、/.well-known/oauth-*  Go server（图片技能授权）
                      -> PostgreSQL
                      -> Redis / Worker
                      -> ChatGPT2API / Sub2API / Alibaba Cloud OSS
@@ -58,7 +70,7 @@ Compose 服务：
 | `postgres` | 用户、钱包、任务和运营数据   | `pg_data`    |
 | `redis`    | 队列和限流状态               | `redis_data` |
 
-生成图片和上传文件保存在阿里云 OSS，不在服务器本地磁盘。香港 ECS 通过同地域内网 endpoint 上传和回读；浏览器始终访问站内文件接口，由服务端鉴权后从 OSS 流式返回。
+站内任务图片和上传文件保存在配置的 S3 兼容对象存储，部署示例使用阿里云 OSS。香港 ECS 可通过同地域内网 endpoint 上传和回读，浏览器通过站内鉴权文件接口读取。标准 `/v1/images/*` 直通请求不进入站内任务队列、不写图片对象存储，不能用“历史记录里有图”验收该链路。
 
 ## 2. 上线前准备
 
@@ -68,8 +80,8 @@ Compose 服务：
 
 | 主机记录 | 类型 | 记录值          |
 | -------- | ---- | --------------- |
-| `@`      | `A`  | `47.82.102.112` |
-| `www`    | `A`  | `47.82.102.112` |
+| `@`      | `A`  | `<目标服务器公网 IP>` |
+| `www`    | `A`  | `<目标服务器公网 IP>` |
 
 已有的企业邮箱 `MX`、`TXT`、`mail`、`smtp` 等记录必须保留。
 
@@ -105,7 +117,7 @@ free -h
 df -h
 ```
 
-2 核 2 GB 服务器建议配置 4 GB Swap。如果 `free -h` 显示 Swap 为 0，首次执行：
+当前根 Compose 的应用和数据容器内存硬上限合计约 5 GB，不能把早期 2 核 2 GB 方案视为默认容量。按目标并发预留构建、旧新镜像并存和系统内存；4C8G 一体化配额见对应手册。Swap 只用于缓冲，不能替代容量验证。确需增加 4 GB Swap 且确认路径尚未占用时，首次执行：
 
 ```bash
 fallocate -l 4G /swapfile
@@ -121,7 +133,7 @@ echo '/swapfile none swap sw 0 0' >> /etc/fstab
 
 ### 3.1 生成并上传发布包
 
-在开发机确认目标提交已经推送后，从仓库根目录生成发布包：
+在开发机确认网站改动已提交并核对目标提交后，从仓库根目录生成发布包：
 
 ```bash
 ./scripts/package-manual-deploy.sh
@@ -134,7 +146,7 @@ startcloudsai-<commit>.tar.gz
 startcloudsai-<commit>.tar.gz.sha256
 ```
 
-发布包由 `git archive` 从当前提交生成，只包含已提交文件，不包含 `.env`、`.git`、依赖目录、构建目录或本地 QA 产物。提交号写在文件名中，用于上线记录和回滚定位。
+脚本拒绝网站范围的未提交修改及未跟踪文件，移动端范围单独排除。发布包由 `git archive HEAD` 生成并额外写入 `RELEASE_COMMIT`，不包含工作区未提交内容或整个 `apps/mobile`。归档的是已跟踪内容，因此仍要检查提交中没有误入环境文件、数据和构建产物；不能假设 Git 自动排除所有敏感文件。脚本不负责推送或生成维护启动器。
 
 首次部署时，在宝塔“文件”页面完成以下操作：
 
@@ -214,6 +226,7 @@ SMTP_FROM=<完整发件邮箱>
 TRIAL_APPLICATION_EMAIL=<体验资格申请接收邮箱；可留空回退到 SMTP_FROM>
 
 WORKER_CONCURRENCY=32
+WORKER_CHAT_CONCURRENCY=8
 USER_MAX_RUNNING_TASKS=100
 SERVER_GOMEMLIMIT=900MiB
 WORKER_GOMEMLIMIT=1700MiB
@@ -233,7 +246,7 @@ GATEWAY_PORT=8080
 - 对象存储未配置时，上传和生成图片无法正常持久化。ECS 与 OSS bucket 必须同为香港地域才能使用 internal endpoint。
 - OSS bucket 保持私有。`OBJECT_STORAGE_PUBLIC_ENDPOINT` 仅用于生成浏览器或上游可访问的 OSS 预签名地址，不能填写内网 endpoint。
 - 生产环境未配置 SMTP 时，用户无法获取账号验证码。
-- `WORKER_CONCURRENCY=32` 是 Worker 启动时的物理槽位，不代表同时执行 32 个图片任务。图片实际并发在后台“全站同时执行”中调整，2 核 2 GB 服务器建议从 4 开始逐级压测。
+- `WORKER_CONCURRENCY=32` 和 `WORKER_CHAT_CONCURRENCY=8` 是此部署示例的物理槽位，Go 缺省值和其他 Compose 覆盖值可能不同。图片、聊天、Agent 业务额度由后台管理，账户图片额度还叠加订阅/人工加成；按真实负载校准，不能直接按槽位推断并发。
 - `GOMEMLIMIT` 必须低于容器硬上限，数据库连接池只有在后台等待指标持续增长后才应调大。指标说明和 pprof/PGO 操作见 [Go 性能与实时可观测性](GO_PERFORMANCE_OBSERVABILITY.md)。
 - 不要把 `.env`、密钥或完整日志发布到 GitHub、聊天截图或工单。
 
@@ -333,9 +346,8 @@ docker compose --env-file .env up -d
 
 ## 4. 宝塔网站和 HTTPS
 
-如需使用 Cloudflare Free 代理网站，先按本节完成源站 HTTPS，再执行
-[`docs/CLOUDFLARE_SETUP.md`](./CLOUDFLARE_SETUP.md)。Cloudflare 接入不会替代宝塔证书，
-也不能把 API 或私有 OSS 图片设为公开缓存。
+仓库不要求启用 CDN。若目标环境选择 Cloudflare 代理，先完成源站 HTTPS，再参考
+[可选 Cloudflare 接入](./CLOUDFLARE_SETUP.md)；不能把 API 或私有图片设为公开缓存。
 
 ### 4.1 创建网站
 
@@ -366,8 +378,10 @@ location / {
 
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-For $remote_addr;
     proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
 
     proxy_connect_timeout 60s;
     proxy_read_timeout 600s;
@@ -375,6 +389,17 @@ location / {
     proxy_buffering off;
 }
 ```
+
+上述 `$connection_upgrade` 需要在外层 Nginx 的 `http {}` 中定义：
+
+```nginx
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    '' close;
+}
+```
+
+已有同名 map 时复用，不在 `server {}` 内重复定义。WebSocket 头用于 `/v1/responses`；SSE 需要继续关闭缓冲。若启用 Cloudflare，应先配置可信边缘 IP，再用清洗后的 `$remote_addr` 覆盖转发头。
 
 在站点 Nginx 配置的 `server {}` 内添加。画布模板 ZIP 最大为 128 MiB，
 这里需要覆盖 ZIP、模板元数据和 multipart 边界：
@@ -435,6 +460,10 @@ unset ADMIN_PASSWORD
 - 上传参考图、提示词封面、资产图片和 128 MiB 以内的画布模板 ZIP 没有 `413`。
 - 原图、缩略图和全屏预览可以通过站内文件接口加载。
 - 任务失败时积分可以正确释放。
+- 支付启用时，订单、通知/主动对账、订阅合同及钱包账本一致；未启用时准确提示不可购买。
+- 开发者 API 按环境开关开放或拒绝；开放时分别核对 `/api/open/v1/tasks` 与 `/v1` 直通行为、流式响应和 OAuth 授权。
+
+涉及真实模型、支付或公开内容的验收使用明确指定的测试账号和范围。上述为验收步骤，不是本次文档更新已执行的测试结果。
 
 ## 7. 日常运维
 
@@ -525,13 +554,15 @@ gzip -t /www/backup/startcloudsai/<备份文件>.sql.gz
 - `/www/wwwroot/startcloudsai/.env`
 - 阿里云 OSS bucket 及 RAM 最小权限访问密钥
 - 宝塔站点 Nginx 和 SSL 配置
-- 当前生产 Git 提交：`git rev-parse HEAD`
+- 当前生产版本：源码归档目录读取 `RELEASE_COMMIT`；仅 Git 检出目录使用 `git rev-parse HEAD`
 
 备份 `.env` 时必须加密或放在受限位置，权限设为 `600`。
 
 ## 9. 手动更新发布
 
-### 9.1 零停机更新（生产推荐）
+### 9.1 蓝绿更新（仅限新旧代码与迁移兼容）
+
+先完成第 1 段的部署类型核对和数据库升级演练。候选 API 连接真实生产库，启动即迁移；它不是预发布沙箱。当前 `00154` 删除表，涉及仍使用旧表的版本升级时跳过本节，使用维护窗口。下面步骤只适用于根 Compose，不能用于 PG18 一体化栈。
 
 生产环境不要直接在承接流量的 `8080` 实例上执行 `up -d --build`。本仓库提供
 `deploy/docker-compose.candidate.yml`，用于在 `127.0.0.1:8081` 启动候选 API、用户端、
@@ -714,7 +745,7 @@ curl https://starcloudisai.com/api/v1/health
 
 Compose 项目目录仍是 `startcloudsai`，所以会复用现有 PostgreSQL 和 Redis 数据卷。`server` 启动时自动执行数据库迁移；更新期间不要同时手动执行迁移，也不要执行 `docker compose down -v`。
 
-### 9.2 只更新部分服务
+### 9.3 只更新部分服务
 
 仅前端：
 
@@ -839,8 +870,8 @@ ALLOWED_ORIGINS=https://starcloudisai.com
 
 1. `worker` 是否为 `Up`。
 2. 后台任务详情是否有结果 URL 或错误。
-3. R2 四项配置是否完整。
-4. `server` 和 `worker` 日志是否出现 R2、C2A 或 Sub2API 错误。
+3. `OBJECT_STORAGE_*` 的 Endpoint、Region、Bucket、凭据和寻址方式是否一致。
+4. `server` 和 `worker` 日志是否出现对象存储、C2A 或 Sub2API 错误。
 5. `/api/v1/files/*` 是否能通过当前登录会话访问。
 
 ### 11.8 更新后页面仍是旧版本

@@ -8,6 +8,7 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    AdminDateRange: typeof import('./components/AdminDateRange.vue')['default']
     AdminDialog: typeof import('./components/AdminDialog.vue')['default']
     AdminListShell: typeof import('./components/AdminListShell.vue')['default']
     CursorPager: typeof import('./components/CursorPager.vue')['default']
@@ -60,6 +61,7 @@ declare module 'vue' {
     ElTooltip: typeof import('element-plus/es')['ElTooltip']
     ListError: typeof import('./components/ListError.vue')['default']
     OrderAccountingDetail: typeof import('./components/OrderAccountingDetail.vue')['default']
+    OriginalImageDownload: typeof import('./components/OriginalImageDownload.vue')['default']
     PageCard: typeof import('./components/PageCard.vue')['default']
     PlanVersionHistory: typeof import('./components/PlanVersionHistory.vue')['default']
     ProgressiveImage: typeof import('./components/ProgressiveImage.vue')['default']

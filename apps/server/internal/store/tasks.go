@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1050,6 +1051,33 @@ func getUserUIDesignAssetRunAsTask(ctx context.Context, q Q, userID, id uuid.UUI
 	return nilOnNoRows(t, err)
 }
 
+// UNION ALL 源按分支拆开，供 unionCursorPage 在每个分支内排序截断。
+// 源 SQL 的嵌套子查询里不能再出现 UNION ALL（TestTaskUnionSourceBranches 守护分支数）；
+// 每个分支单独包装后按列名筛选，所以每个分支的输出列都必须显式命名。
+var (
+	adminTaskSourceBranches         = strings.Split(adminTaskSourceSQL, "UNION ALL")
+	userHistoryTaskSourceBranches   = strings.Split(userHistoryTaskSourceSQL, "UNION ALL")
+	adminTaskOverviewSourceBranches = strings.Split(adminTaskOverviewSourceSQL, "UNION ALL")
+)
+
+// unionCursorPage 对 UNION ALL 源做 (created_at, id) 倒序游标分页（limit+1 行）。
+// 分支含 JOIN 时 PostgreSQL 不会把外层 ORDER BY/LIMIT 下推，只能取出全部行再排序；
+// 这里把筛选、游标与 LIMIT 复制进每个分支，让各分支按自己的时间索引只读 limit+1 行，
+// 外层再合并。where 为以 " AND" 开头的条件，可引用 alias 列名；参数占位符在分支间复用。
+func unionCursorPage(branches []string, alias, cols, where string, args []any, cursor *Cursor, limit int) (string, []any) {
+	if cursor != nil {
+		args = append(args, cursor.CreatedAt, cursor.ID)
+		where += fmt.Sprintf(` AND (created_at, id) < ($%d, $%d)`, len(args)-1, len(args))
+	}
+	args = append(args, limit+1)
+	order := fmt.Sprintf(` ORDER BY created_at DESC, id DESC LIMIT $%d`, len(args))
+	parts := make([]string, len(branches))
+	for i, branch := range branches {
+		parts[i] = `(SELECT * FROM (` + branch + `) ` + alias + ` WHERE true` + where + order + `)`
+	}
+	return `SELECT ` + cols + ` FROM (` + strings.Join(parts, ` UNION ALL `) + `) ` + alias + order, args
+}
+
 // ListTasks 任务分页（limit+1 行）。userID 为 nil 时查全站（后台）。
 func ListTasks(ctx context.Context, q Q, userID *uuid.UUID, taskType, status string, userIDs []uuid.UUID, limit int, cursor *Cursor, excludeSource, source string) ([]*Task, error) {
 	from := "tasks"
@@ -1058,27 +1086,32 @@ func ListTasks(ctx context.Context, q Q, userID *uuid.UUID, taskType, status str
 		from = "(" + userHistoryTaskSourceSQL + ") user_history_tasks"
 		table = "user_history_tasks"
 	}
-	sql := `SELECT ` + taskReadCols(table) + ` FROM ` + from + ` WHERE true`
+	where := ""
 	args := []any{}
 	if userID != nil {
 		args = append(args, *userID)
-		sql += fmt.Sprintf(` AND user_id = $%d`, len(args))
-		sql += ` AND deleted_at IS NULL`
+		where += fmt.Sprintf(` AND user_id = $%d`, len(args))
+		where += ` AND deleted_at IS NULL`
 	}
 	if taskType != "" {
 		args = append(args, taskType)
-		sql += fmt.Sprintf(` AND type = $%d`, len(args))
+		where += fmt.Sprintf(` AND type = $%d`, len(args))
 	}
 	if status != "" {
 		args = append(args, status)
-		sql += fmt.Sprintf(` AND status = $%d`, len(args))
+		where += fmt.Sprintf(` AND status = $%d`, len(args))
 	}
-	sql, args = appendTaskOriginFilter(sql, args, source, excludeSource)
+	where, args = appendTaskOriginFilter(where, args, source, excludeSource)
 	if userIDs != nil {
 		args = append(args, userIDs)
-		sql += fmt.Sprintf(` AND user_id = ANY($%d)`, len(args))
+		where += fmt.Sprintf(` AND user_id = ANY($%d)`, len(args))
 	}
-	sql, args = appendCursor(sql, args, cursor, limit)
+	var sql string
+	if userID != nil {
+		sql, args = unionCursorPage(userHistoryTaskSourceBranches, table, taskReadCols(table), where, args, cursor, limit)
+	} else {
+		sql, args = appendCursor(`SELECT `+taskReadCols(table)+` FROM `+from+` WHERE true`+where, args, cursor, limit)
+	}
 	rows, err := q.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, err
@@ -1216,30 +1249,36 @@ const dashboardWorkSQL = `
 
 // ListAdminTasks merges regular generation tasks with workspace-scoped model
 // runs while keeping assistant_runs as their single execution source of truth.
-func ListAdminTasks(ctx context.Context, q Q, taskType, status, errorCode string, userIDs []uuid.UUID, limit int, cursor *Cursor, source string) ([]*Task, error) {
+// adminTaskWhere 构造后台任务列表、分页定位共用的筛选条件（以 " AND" 开头）。
+func adminTaskWhere(taskType, status, errorCode string, userIDs []uuid.UUID, source string, extra []AdminListFilter) (string, []any) {
 	if taskType == PromptTaskTypeAssistant && source == "" {
 		source = PromptTaskTypeAssistant
 	}
-	sql := `SELECT ` + taskReadCols("admin_tasks") + ` FROM (` + adminTaskSourceSQL + `) admin_tasks WHERE true`
+	where := ""
 	args := []any{}
 	if taskType != "" {
 		args = append(args, taskType)
-		sql += fmt.Sprintf(` AND type = $%d`, len(args))
+		where += fmt.Sprintf(` AND type = $%d`, len(args))
 	}
 	if status != "" {
 		args = append(args, status)
-		sql += fmt.Sprintf(` AND status = $%d`, len(args))
+		where += fmt.Sprintf(` AND status = $%d`, len(args))
 	}
 	if errorCode != "" {
 		args = append(args, "%"+strings.ToLower(strings.TrimSpace(errorCode))+"%")
-		sql += fmt.Sprintf(` AND lower(COALESCE(error_code, '')) LIKE $%d`, len(args))
+		where += fmt.Sprintf(` AND lower(COALESCE(error_code, '')) LIKE $%d`, len(args))
 	}
-	sql, args = appendTaskOriginFilter(sql, args, source, "")
+	where, args = appendTaskOriginFilter(where, args, source, "")
 	if userIDs != nil {
 		args = append(args, userIDs)
-		sql += fmt.Sprintf(` AND user_id = ANY($%d)`, len(args))
+		where += fmt.Sprintf(` AND user_id = ANY($%d)`, len(args))
 	}
-	sql, args = appendCursor(sql, args, cursor, limit)
+	return appendAdminTaskFilter(where, args, extra)
+}
+
+func ListAdminTasks(ctx context.Context, q Q, taskType, status, errorCode string, userIDs []uuid.UUID, limit int, cursor *Cursor, source string, extra ...AdminListFilter) ([]*Task, error) {
+	where, args := adminTaskWhere(taskType, status, errorCode, userIDs, source, extra)
+	sql, args := unionCursorPage(adminTaskSourceBranches, "admin_tasks", taskReadCols("admin_tasks"), where, args, cursor, limit)
 	rows, err := q.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, err
@@ -1256,52 +1295,94 @@ func ListAdminTasks(ctx context.Context, q Q, taskType, status, errorCode string
 	return out, rows.Err()
 }
 
-type AdminTaskOverview struct {
-	Total     int64 `json:"total"`
-	Queued    int64 `json:"queued"`
-	Running   int64 `json:"running"`
-	Succeeded int64 `json:"succeeded"`
-	Failed    int64 `json:"failed"`
-	Canceled  int64 `json:"canceled"`
-	Today     int64 `json:"today"`
+// AdminTaskPageCursor 为页码跳转定位第 offset 条记录之前一条的游标，作为目标页的排他起点，
+// 之后按游标取页。只读取轻量列并在各分支内截断，成本随 offset（≤ ListCountCap）增长，
+// 与总数据量无关。offset 超出结果集时返回 nil。
+func AdminTaskPageCursor(ctx context.Context, q Q, taskType, status, errorCode string, userIDs []uuid.UUID, offset int, source string, extra ...AdminListFilter) (*Cursor, error) {
+	if offset < 1 {
+		return nil, nil
+	}
+	where, args := adminTaskWhere(taskType, status, errorCode, userIDs, source, extra)
+	parts := make([]string, len(adminTaskOverviewSourceBranches))
+	for i, branch := range adminTaskOverviewSourceBranches {
+		parts[i] = fmt.Sprintf(`(SELECT created_at, id FROM (%s) admin_tasks WHERE true%s ORDER BY created_at DESC, id DESC LIMIT %d)`, branch, where, offset)
+	}
+	var cur Cursor
+	err := q.QueryRow(ctx, `SELECT created_at, id FROM (`+strings.Join(parts, ` UNION ALL `)+`) positions
+		ORDER BY created_at DESC, id DESC OFFSET `+strconv.Itoa(offset-1)+` LIMIT 1`, args...).Scan(&cur.CreatedAt, &cur.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &cur, nil
 }
+
+// AdminTaskOverview 各项计数最多为 CountCap；Capped 标记实际超过上限的项。
+type AdminTaskOverview struct {
+	Total     int64           `json:"total"`
+	Queued    int64           `json:"queued"`
+	Running   int64           `json:"running"`
+	Succeeded int64           `json:"succeeded"`
+	Failed    int64           `json:"failed"`
+	Canceled  int64           `json:"canceled"`
+	Today     int64           `json:"today"`
+	CountCap  int64           `json:"countCap"`
+	Capped    map[string]bool `json:"capped"`
+}
+
+// Counts do not need image arrays, assistant message joins, or full serialized params.
+const adminTaskOverviewSourceSQL = `
+ SELECT id,user_id,type,status,prompt,error_code,created_at,params FROM tasks WHERE admin_cleared_at IS NULL
+ UNION ALL
+ SELECT run.id,run.user_id,'assistant'::text AS type,run.status,run.prompt,run.error_code,run.created_at,
+   jsonb_build_object('_source',
+     CASE WHEN conversation.workspace='infinite_canvas' THEN 'react_canvas' ELSE conversation.workspace END,
+     'source',run.params->>'source','_kind',run.params->>'_kind') AS params
+ FROM assistant_runs run
+ JOIN assistant_conversations conversation ON conversation.id=run.conversation_id
+ WHERE run.admin_cleared_at IS NULL AND NOT EXISTS (
+   SELECT 1 FROM tasks task WHERE task.deleted_at IS NULL AND task.admin_cleared_at IS NULL
+   AND task.idempotency_key='` + UIDesignAssetHistoryIdemPrefix + `' || run.id::text
+ )`
 
 // GetAdminTaskOverview returns status totals for the current type/user/error
 // scope. Status itself is intentionally excluded so the UI can switch between
 // status tabs without losing the surrounding overview.
-func GetAdminTaskOverview(ctx context.Context, q Q, taskType, errorCode string, userIDs []uuid.UUID, source string) (*AdminTaskOverview, error) {
-	if taskType == PromptTaskTypeAssistant && source == "" {
-		source = PromptTaskTypeAssistant
+func GetAdminTaskOverview(ctx context.Context, q Q, taskType, errorCode string, userIDs []uuid.UUID, source string, extra ...AdminListFilter) (*AdminTaskOverview, error) {
+	where, args := adminTaskWhere(taskType, "", errorCode, userIDs, source, extra)
+	// 每项独立带上限计数：全量 count(*) FILTER 需要扫描范围内全部行，
+	// 历史越多越慢；截断后每项最多读取 ListCountCap+1 行。
+	keys := []string{"total", "queued", "running", "succeeded", "failed", "canceled", "today"}
+	conditions := []string{"",
+		` AND status = 'queued'`, ` AND status = 'running'`, ` AND status = 'succeeded'`,
+		` AND status = 'failed'`, ` AND status = 'canceled'`,
+		` AND created_at >= (date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai')`,
 	}
-	sql := `SELECT
-		count(*) AS total,
-		count(*) FILTER (WHERE status = 'queued') AS queued,
-		count(*) FILTER (WHERE status = 'running') AS running,
-		count(*) FILTER (WHERE status = 'succeeded') AS succeeded,
-		count(*) FILTER (WHERE status = 'failed') AS failed,
-		count(*) FILTER (WHERE status = 'canceled') AS canceled,
-		count(*) FILTER (WHERE created_at >= date_trunc('day', now())) AS today
-		FROM (` + adminTaskSourceSQL + `) admin_tasks WHERE true`
-	args := []any{}
-	if taskType != "" {
-		args = append(args, taskType)
-		sql += fmt.Sprintf(` AND type = $%d`, len(args))
+	selects := make([]string, len(conditions))
+	for i, condition := range conditions {
+		selects[i] = unionCountSQL(adminTaskOverviewSourceBranches, "admin_tasks", where+condition)
 	}
-	if errorCode != "" {
-		args = append(args, "%"+strings.ToLower(strings.TrimSpace(errorCode))+"%")
-		sql += fmt.Sprintf(` AND lower(COALESCE(error_code, '')) LIKE $%d`, len(args))
+	raw := make([]int64, len(conditions))
+	dest := make([]any, len(raw))
+	for i := range raw {
+		dest[i] = &raw[i]
 	}
-	sql, args = appendTaskOriginFilter(sql, args, source, "")
-	if userIDs != nil {
-		args = append(args, userIDs)
-		sql += fmt.Sprintf(` AND user_id = ANY($%d)`, len(args))
+	if err := q.QueryRow(ctx, `SELECT `+strings.Join(selects, ", "), args...).Scan(dest...); err != nil {
+		return nil, err
 	}
-	var overview AdminTaskOverview
-	err := q.QueryRow(ctx, sql, args...).Scan(
-		&overview.Total, &overview.Queued, &overview.Running, &overview.Succeeded,
-		&overview.Failed, &overview.Canceled, &overview.Today,
-	)
-	return &overview, err
+	overview := AdminTaskOverview{CountCap: ListCountCap, Capped: map[string]bool{}}
+	fields := []*int64{&overview.Total, &overview.Queued, &overview.Running, &overview.Succeeded,
+		&overview.Failed, &overview.Canceled, &overview.Today}
+	for i, value := range raw {
+		count := clipCount(value)
+		*fields[i] = count.Value
+		if count.Capped {
+			overview.Capped[keys[i]] = true
+		}
+	}
+	return &overview, nil
 }
 
 type AdminTaskPurgeResult struct {
@@ -1312,7 +1393,7 @@ type AdminTaskPurgeResult struct {
 // PurgeFinishedAdminTasks hides finished admin-visible records from the admin
 // monitor using the same filters as ListAdminTasks. User history, outputs,
 // wallet ledger, gallery submissions, and ecommerce reviews stay in place.
-func PurgeFinishedAdminTasks(ctx context.Context, st *Store, taskType, status, errorCode string, userIDs []uuid.UUID, source string) (*AdminTaskPurgeResult, error) {
+func PurgeFinishedAdminTasks(ctx context.Context, st *Store, taskType, status, errorCode string, userIDs []uuid.UUID, source string, extra ...AdminListFilter) (*AdminTaskPurgeResult, error) {
 	if st == nil || st.Pool == nil {
 		return nil, errors.New("store is required")
 	}
@@ -1322,7 +1403,7 @@ func PurgeFinishedAdminTasks(ctx context.Context, st *Store, taskType, status, e
 	var result *AdminTaskPurgeResult
 	err := st.Tx(ctx, func(tx pgx.Tx) error {
 		var txErr error
-		result, txErr = purgeFinishedAdminTasksTx(ctx, tx, taskType, status, errorCode, userIDs, source)
+		result, txErr = purgeFinishedAdminTasksTx(ctx, tx, taskType, status, errorCode, userIDs, source, extra...)
 		return txErr
 	})
 	if result == nil {
@@ -1331,7 +1412,7 @@ func PurgeFinishedAdminTasks(ctx context.Context, st *Store, taskType, status, e
 	return result, err
 }
 
-func purgeFinishedAdminTasksTx(ctx context.Context, q Q, taskType, status, errorCode string, userIDs []uuid.UUID, source string) (*AdminTaskPurgeResult, error) {
+func purgeFinishedAdminTasksTx(ctx context.Context, q Q, taskType, status, errorCode string, userIDs []uuid.UUID, source string, extra ...AdminListFilter) (*AdminTaskPurgeResult, error) {
 	if taskType == PromptTaskTypeAssistant && source == "" {
 		source = PromptTaskTypeAssistant
 	}
@@ -1356,6 +1437,7 @@ func purgeFinishedAdminTasksTx(ctx context.Context, q Q, taskType, status, error
 		args = append(args, userIDs)
 		sql += fmt.Sprintf(` AND user_id = ANY($%d)`, len(args))
 	}
+	sql, args = appendAdminTaskFilter(sql, args, extra)
 	rows, err := q.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, err

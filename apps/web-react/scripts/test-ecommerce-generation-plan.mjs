@@ -18,7 +18,10 @@ const [
     ecommerceConsistencyProfile,
     ecommerceShotBlueprints,
     isReusableTaskImageKey,
-    listingShotBlueprintsFromCounts,
+    LISTING_DEFAULT_TYPE_IDS,
+    LISTING_IMAGE_TYPES,
+    listingImageTypeById,
+    listingShotBlueprintsFromPlan,
     normalizeTaskImageKey,
     prepareEcommerceInputFiles,
     coerceEcommerceImageFile,
@@ -26,6 +29,10 @@ const [
     sniffEcommerceImageBytes,
     storageKeyFromMediaUrl,
     supportedEcommerceModules,
+    DETAIL_DIRECTIONS,
+    DETAIL_DEFAULT_DIRECTION_IDS,
+    DETAIL_MAX_DIRECTIONS,
+    normalizeDetailCustomDirection,
     TRYON_DEFAULT_LENS_ID,
     TRYON_LENS_OPTIONS,
     buildTryonPhotographyPrompt,
@@ -74,6 +81,13 @@ const [
     orderConsistencyReferences,
   },
   { tryonSlotDraftRecord },
+  { expandVariantBlueprints, presetFilledCount, presetPromptLines },
+  {
+    detailShotBlueprintsFromPlan,
+    buildDetailTaskPrompt,
+    detailExportChecklist,
+    isAmazonPlatform,
+  },
 ] = await Promise.all([
   vite.ssrLoadModule(
     '/src/legacy-modules/features/ecommerce/ecommerceTools.js',
@@ -84,6 +98,10 @@ const [
   vite.ssrLoadModule(
     '/src/legacy-modules/features/ecommerce/tryonDraftStorage.js',
   ),
+  vite.ssrLoadModule(
+    '/src/features/ecommerce/workbench/workbenchPresets.js',
+  ),
+  vite.ssrLoadModule('/src/features/ecommerce/aplus/detailPage.js'),
 ])
 await vite.close()
 
@@ -108,10 +126,11 @@ assert.deepEqual(
   ['tryon', 'handheld', 'accessory'],
 )
 
+// 商品套图：selectedModules 现在是 seeany 风格的“出图类型 id”，按类型目录顺序出图
 const listingPlan = buildEcommerceGenerationPlan({
   modeId: 'listing',
   count: 4,
-  selectedModules: ['hero', 'selling', 'scene', 'detail'],
+  selectedModules: ['hero', 'selling', 'scene', 'craft'],
   basePrompt: '商品：降噪耳机。',
   referenceCount: 3,
 })
@@ -119,7 +138,7 @@ const listingPlan = buildEcommerceGenerationPlan({
 assert.equal(listingPlan.length, 4)
 assert.deepEqual(
   listingPlan.map((item) => item.viewId),
-  ['hero', 'selling', 'scene', 'detail'],
+  ['hero', 'selling', 'scene', 'craft'],
 )
 assert.equal(new Set(listingPlan.map((item) => item.prompt)).size, 4)
 assert.ok(listingPlan.every((item) => item.prompt.includes('系列连续性锁')))
@@ -128,26 +147,69 @@ assert.ok(listingPlan.every((item) => item.prompt.includes('商品身份角度 3
 assert.ok(listingPlan[0].prompt.includes('第 1/4 张'))
 assert.ok(listingPlan[3].prompt.includes('第 4/4 张'))
 
-const smartListingPlan = buildEcommerceGenerationPlan({
+// 未指定类型时回落到默认勾选的 6 种
+const defaultListingPlan = buildEcommerceGenerationPlan({
   modeId: 'listing',
-  count: 7,
-  selectedModules: [
-    'hero',
-    'selling',
-    'scene',
-    'mood',
-    'detail',
-    'spec',
-    'package',
-  ],
+  count: 18,
   basePrompt: '商品：节日礼盒。',
   referenceCount: 1,
 })
-assert.equal(smartListingPlan.length, 7)
+assert.equal(defaultListingPlan.length, LISTING_DEFAULT_TYPE_IDS.length)
 assert.deepEqual(
-  smartListingPlan.map((item) => item.viewId),
-  ['hero', 'selling', 'scene', 'mood', 'detail', 'spec', 'package'],
+  defaultListingPlan.map((item) => item.viewId),
+  LISTING_DEFAULT_TYPE_IDS,
 )
+assert.equal(LISTING_IMAGE_TYPES.length, 18)
+assert.equal(new Set(LISTING_IMAGE_TYPES.map((item) => item.id)).size, 18)
+assert.ok(LISTING_IMAGE_TYPES.every((item) => item.label && item.direction))
+assert.equal(ecommerceModeById('listing').maxCount, 18)
+
+// 全选 18 种时每张职责各不相同，亚马逊主图带 85% 占比规范
+const fullListingPlan = buildEcommerceGenerationPlan({
+  modeId: 'listing',
+  count: 18,
+  selectedModules: LISTING_IMAGE_TYPES.map((item) => item.id),
+  basePrompt: '商品：节日礼盒。',
+  referenceCount: 1,
+})
+assert.equal(fullListingPlan.length, 18)
+assert.ok(
+  fullListingPlan
+    .find((item) => item.viewId === 'amazon')
+    .prompt.includes('85%'),
+)
+
+// “先策划再生成”：策划文案按 id 对齐进 direction，未策划的类型保持原职责
+const plannedShots = listingShotBlueprintsFromPlan(
+  {
+    summary: '以清晨厨房光线串起整套图',
+    items: [
+      { id: 'hero', headline: '一杯，唤醒清晨', subline: '三档温控', direction: '商品居中，晨光斜射' },
+      { id: 'ghost', headline: '不该出现' },
+    ],
+  },
+  ['white', 'hero'],
+)
+assert.deepEqual(plannedShots.map((item) => item.id), ['white', 'hero'])
+assert.equal(plannedShots[0].headline, undefined)
+assert.equal(plannedShots[1].headline, '一杯，唤醒清晨')
+assert.equal(plannedShots[1].subline, '三档温控')
+assert.ok(plannedShots[1].direction.includes('策划方向：商品居中，晨光斜射'))
+assert.ok(plannedShots[1].direction.includes('「一杯，唤醒清晨」'))
+assert.ok(plannedShots[1].direction.includes('副文案：「三档温控」'))
+assert.ok(plannedShots[1].direction.startsWith(listingImageTypeById('hero').direction))
+assert.deepEqual(
+  listingShotBlueprintsFromPlan(null, ['white']).map((item) => item.id),
+  ['white'],
+)
+const plannedListingPlan = buildEcommerceGenerationPlan({
+  modeId: 'listing',
+  count: 2,
+  shotBlueprints: plannedShots,
+  referenceCount: 1,
+})
+assert.ok(plannedListingPlan[1].prompt.includes('画面标题文案：「一杯，唤醒清晨」'))
+assert.ok(!plannedListingPlan[0].prompt.includes('画面标题文案'))
 
 const clonePlan = buildEcommerceGenerationPlan({
   modeId: 'clone',
@@ -160,46 +222,67 @@ assert.ok(clonePlan.every((item) => item.prompt.includes('复刻分离锁')))
 assert.ok(clonePlan.every((item) => item.prompt.includes('爆款视觉参考')))
 assert.ok(clonePlan.every((item) => item.prompt.includes('商品身份')))
 
-const customListingShots = listingShotBlueprintsFromCounts({
-  white: 1,
-  scene: 3,
-  selling: 2,
-  other: 1,
-})
-assert.equal(customListingShots.length, 7)
-assert.deepEqual(
-  customListingShots.map((item) => item.id),
-  [
-    'white-1',
-    'scene-1',
-    'scene-2',
-    'scene-3',
-    'selling-1',
-    'selling-2',
-    'other-1',
-  ],
+// 单图工具的“出图数量”：同一职责扩展成 N 个有差异的备选方案
+const outpaintVariants = expandVariantBlueprints(
+  ecommerceShotBlueprints('outpaint'),
+  3,
 )
-const customListingPlan = buildEcommerceGenerationPlan({
-  modeId: 'listing',
-  count: 7,
-  shotBlueprints: customListingShots,
+assert.equal(outpaintVariants.length, 3)
+assert.deepEqual(
+  outpaintVariants.map((item) => item.label),
+  ['方案 1', '方案 2', '方案 3'],
+)
+assert.ok(outpaintVariants[1].direction.includes('第 2/3 个备选方案'))
+assert.equal(expandVariantBlueprints(ecommerceShotBlueprints('outpaint'), 1).length, 1)
+assert.equal(expandVariantBlueprints(ecommerceShotBlueprints('outpaint'), 9).length, 4)
+const variantPlan = buildEcommerceGenerationPlan({
+  modeId: 'outpaint',
+  count: 3,
+  shotBlueprints: outpaintVariants,
   referenceCount: 1,
 })
-assert.equal(customListingPlan.length, 7)
-assert.equal(customListingPlan[2].viewLabel, '商品套图 · 场景图 2')
+assert.equal(variantPlan.length, 3)
+assert.equal(variantPlan[2].viewLabel, '智能扩图 · 方案 3')
+assert.ok(variantPlan.every((item) => item.prompt.includes('扩图边界锁')))
+
+// 预置字段：留空不写进 prompt；绑定字段可被 skipBound 去重
+assert.deepEqual(
+  presetPromptLines('shoot', { productType: '3C 数码', display: '' }, { scene: '影棚纯色', tone: '极简' }),
+  ['产品类型：3C 数码。', '场景类型：影棚纯色。'],
+)
+assert.deepEqual(
+  presetPromptLines(
+    'shoot',
+    { productType: '3C 数码' },
+    { scene: '影棚纯色' },
+    { skipBound: new Set(['scene']) },
+  ),
+  ['产品类型：3C 数码。'],
+)
+assert.equal(presetFilledCount('shoot', { productType: '3C 数码', mood: ' ' }), 1)
+assert.deepEqual(presetPromptLines('outpaint', {}), [])
 
 const singleReferenceClone = ecommerceConsistencyProfile('clone', 1)
 assert.equal(singleReferenceClone.essentialReferenceCount, 1)
 assert.ok(singleReferenceClone.identityLock.includes('单参考复刻锁'))
 
+// 详情页：出图方向即版块，每个勾选方向出一张；默认 5 个方向
+assert.equal(DETAIL_DIRECTIONS.length, 16)
+assert.equal(new Set(DETAIL_DIRECTIONS.map((item) => item.value)).size, 16)
+assert.ok(DETAIL_DIRECTIONS.every((item) => item.pepcf && item.direction && item.hint))
+assert.equal(DETAIL_MAX_DIRECTIONS, 20)
 const detailPlan = buildEcommerceGenerationPlan({
   modeId: 'detail',
   count: 4,
   selectedModules: ['hero', 'selling'],
   basePrompt: '生成详情页。',
 })
-assert.equal(detailPlan.length, 1)
-assert.equal(detailPlan[0].viewId, 'detail-page')
+assert.equal(detailPlan.length, 2)
+assert.equal(detailPlan[0].viewId, 'hero')
+assert.equal(detailPlan[1].viewId, 'selling')
+assert.ok(detailPlan[1].prompt.includes('核心卖点图'))
+const detailDefaults = buildEcommerceGenerationPlan({ modeId: 'detail', count: 20 })
+assert.equal(detailDefaults.length, DETAIL_DEFAULT_DIRECTION_IDS.length)
 
 const campaignShots = ecommerceShotBlueprints('campaign')
 assert.equal(campaignShots.length, 4)
@@ -209,17 +292,19 @@ const shootShots = ecommerceShotBlueprints('shoot')
 assert.ok(shootShots[0].direction.includes('不得为了制造新角度'))
 assert.ok(shootShots[1].direction.includes('只有参考图明确提供对应侧面信息'))
 
+// 已勾选方向按目录顺序排列，自定义方向追加在后并保持添加顺序
+const customA = normalizeDetailCustomDirection('  特定圣诞礼盒  展示图 ', 0)
+const customB = normalizeDetailCustomDirection('开箱体验', 1)
+assert.equal(customA.value, 'custom-1')
+assert.equal(customA.label, '特定圣诞礼盒 展示图')
+assert.ok(customA.custom)
+assert.equal(normalizeDetailCustomDirection('   ', 0), null)
 assert.deepEqual(
-  supportedEcommerceModules(['hero', 'angles', 'detail'], 1).map(
-    (item) => item.value,
-  ),
-  ['hero', 'detail'],
-)
-assert.deepEqual(
-  supportedEcommerceModules(['hero', 'angles', 'detail'], 2).map(
-    (item) => item.value,
-  ),
-  ['hero', 'angles', 'detail'],
+  supportedEcommerceModules(
+    ['custom-2', 'service', 'hero', 'custom-1', 'unknown'],
+    [customA, customB],
+  ).map((item) => item.value),
+  ['hero', 'service', 'custom-1', 'custom-2'],
 )
 
 const revisionPrompt = buildEcommerceRevisionPrompt({
@@ -897,5 +982,86 @@ const uploadedDraft = tryonSlotDraftRecord({
 assert.equal(uploadedDraft.source, 'upload')
 assert.equal(uploadedDraft.name, 'coat.webp')
 assert.equal(uploadedDraft.uploadKey, 'uploads/user/coat.webp')
+
+// 详情页 blueprint：策划文案进方向；Amazon 按档位截断并映射官方模块；其他平台跟随画幅
+{
+  const directions = DETAIL_DIRECTIONS.filter((item) =>
+    ['hero', 'pain', 'selling', 'craft', 'scene', 'spec', 'service'].includes(item.value),
+  )
+  const plan = {
+    summary: '暖调居家',
+    painPoints: ['够不够亮'],
+    items: [{ id: 'hero', headline: '一盏灯点亮整间屋', subline: '暖光 3000K', direction: '商品居中' }],
+  }
+  assert.equal(isAmazonPlatform('Amazon'), true)
+  assert.equal(isAmazonPlatform('淘宝 / 天猫 / 1688'), false)
+
+  const taobao = detailShotBlueprintsFromPlan(directions, plan, {
+    platform: '淘宝 / 天猫 / 1688',
+    aspectRatio: '3:4',
+  })
+  assert.equal(taobao.length, 7)
+  assert.equal(taobao[0].aspectRatio, '3:4')
+  assert.equal(taobao[0].aplusSpec, undefined)
+  assert.equal(taobao[0].headline, '一盏灯点亮整间屋')
+  assert.ok(taobao[0].direction.includes('画面主标题：「一盏灯点亮整间屋」'))
+  assert.ok(taobao[0].direction.includes('策划方向：商品居中'))
+  assert.equal(taobao[1].headline, '')
+
+  const amazonBasic = detailShotBlueprintsFromPlan(directions, plan, {
+    platform: 'Amazon',
+    aspectRatio: '3:4',
+    amazon: { marketplaceId: 'US', tier: 'basic' },
+  })
+  assert.equal(amazonBasic.length, 5, 'basic tier caps at 5 modules')
+  assert.equal(amazonBasic[0].outputSize, '970x600')
+  assert.equal(amazonBasic[0].aplusSpec.amazonName, 'Standard Header Image')
+  assert.equal(amazonBasic[0].aplusSpec.pepcf, 'Problem')
+  assert.equal(amazonBasic[0].aplusSpec.headline, '一盏灯点亮整间屋')
+  // 同为 Explain 的两张轮换不同模块版式
+  assert.notEqual(amazonBasic[2].aplusSpec.typeId, amazonBasic[4].aplusSpec.typeId)
+  assert.ok(amazonBasic.every((shot) => shot.aplusSpec && shot.outputSize))
+
+  const amazonPremium = detailShotBlueprintsFromPlan(directions, plan, {
+    platform: 'Amazon',
+    amazon: { marketplaceId: 'US', tier: 'premium' },
+  })
+  assert.equal(amazonPremium.length, 7)
+  assert.equal(amazonPremium[0].aplusSpec.amazonName, 'Premium Banner')
+  assert.equal(amazonPremium[0].outputSize, '1464x600')
+
+  const prompt = buildDetailTaskPrompt({
+    platform: 'Amazon',
+    market: '美国',
+    language: '英文',
+    tone: '简约清新',
+    productName: 'LED 灯泡',
+    note: '突出节能',
+    plan,
+    hasExtraReferences: true,
+    amazon: { marketplaceId: 'US', asin: 'B0ABC12345', competitorAsin: 'B0XYZ99999' },
+  })
+  for (const needle of ['Amazon A+ 规范', 'amazon.com', 'ASIN：B0ABC12345', '竞品 ASIN B0XYZ99999', '买家核心痛点：够不够亮', '用户补充描述：突出节能', '补充参考图', 'Seller Central']) {
+    assert.ok(prompt.includes(needle), `prompt missing ${needle}`)
+  }
+  const genericPrompt = buildDetailTaskPrompt({ platform: '抖音电商', plan })
+  assert.ok(!genericPrompt.includes('Amazon A+ 规范'))
+  assert.ok(genericPrompt.includes('投放平台：抖音电商'))
+
+  const checklist = detailExportChecklist(amazonBasic, [{ url: 'a' }], {
+    platform: 'Amazon',
+    asin: 'B0ABC12345',
+    marketplaceId: 'US',
+  })
+  assert.equal(checklist.length, 5)
+  assert.equal(checklist[0].module, 'Standard Header Image')
+  assert.equal(checklist[0].asin, 'B0ABC12345')
+  assert.equal(checklist[0].imageReady, true)
+  assert.equal(checklist[1].imageReady, false)
+  const genericChecklist = detailExportChecklist(taobao, [], { platform: '淘宝 / 天猫 / 1688', market: '中国大陆' })
+  assert.equal(genericChecklist[0].module, '首屏主视觉')
+  assert.equal(genericChecklist[0].asin, '')
+  assert.equal(genericChecklist[0].marketplace, '中国大陆')
+}
 
 console.log('ecommerce generation plan checks passed')

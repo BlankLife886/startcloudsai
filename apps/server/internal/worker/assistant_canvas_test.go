@@ -1120,7 +1120,9 @@ func TestRunCanvasAgentToolBlocksGenerationUntilVisualInspection(t *testing.T) {
 	}
 	loop.visualInspected = true
 	observation = worker.runCanvasAgentTool(context.Background(), &store.AssistantRun{}, loop, &sub2api.ToolCall{Name: canvasRunGenerationTool().Name, Arguments: `{"nodeIds":["config-1"]}`})
-	if strings.Contains(observation, "必须先调用") || len(loop.pendingOps) != 1 {
+	// After inspection the tool is dispatched to the browser; with no browser in
+	// this test it reports an unconfirmed start instead of the inspection gate.
+	if strings.Contains(observation, canvasInspectVisualsTool().Name) || loop.unconfirmedActionError == "" {
 		t.Fatalf("generation remained blocked after inspection: loop=%#v observation=%q", loop, observation)
 	}
 }
@@ -1283,16 +1285,21 @@ func TestRunCanvasAgentToolRefusesGenerationWithoutNodes(t *testing.T) {
 	}
 }
 
-func TestRunCanvasAgentToolQueuesGenerationWhenBrowserIsUnreachable(t *testing.T) {
+// An unreachable browser does not prove the generation was not submitted, so
+// the start must not be replayed later (that could run and charge twice).
+func TestRunCanvasAgentToolDoesNotReplayGenerationWhenBrowserIsUnreachable(t *testing.T) {
 	worker := &Worker{}
 	loop := &canvasAgentLoopState{}
 	observation := worker.runCanvasAgentTool(context.Background(), &store.AssistantRun{}, loop,
 		&sub2api.ToolCall{Name: "canvas_run_generation", Arguments: `{"nodeIds":["config-1"]}`})
-	if len(loop.pendingOps) != 1 || loop.pendingOps[0]["type"] != "run_generation" {
-		t.Fatalf("pending = %#v", loop.pendingOps)
+	if len(loop.pendingOps) != 0 {
+		t.Fatalf("unconfirmed generation was queued for replay: %#v", loop.pendingOps)
 	}
-	if !strings.Contains(observation, "不要重复调用") {
-		t.Fatalf("observation should stop a retry loop: %q", observation)
+	if loop.unconfirmedActionError == "" || !strings.Contains(observation, "不会补发生成") {
+		t.Fatalf("observation should report an unconfirmed start without replay: %q", observation)
+	}
+	if loop.billableAction || loop.lastToolSucceeded {
+		t.Fatalf("unconfirmed generation must not count as a successful billable action: %#v", loop)
 	}
 }
 

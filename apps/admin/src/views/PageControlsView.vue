@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
-import { Check, Refresh, Search } from "@element-plus/icons-vue";
+import { computed, nextTick, onMounted, ref } from "vue";
+import { ArrowRight, Check, Refresh, Search } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { request } from "@/request";
 
@@ -213,6 +213,33 @@ const loadError = ref("");
 const query = ref("");
 const groupFilter = ref("");
 const statusFilter = ref<StatusFilter>("all");
+const collapsedGroups = ref(new Set(PAGE_GROUPS.map(group => group.title)));
+
+function toggleGroup(title: string) {
+  const next = new Set(collapsedGroups.value);
+  if (next.has(title)) next.delete(title);
+  else next.add(title);
+  collapsedGroups.value = next;
+}
+
+function setAllCollapsed(collapsed: boolean) {
+  const next = new Set(collapsedGroups.value);
+  for (const group of visibleGroups.value) {
+    if (collapsed) next.add(group.title);
+    else next.delete(group.title);
+  }
+  collapsedGroups.value = next;
+}
+
+async function revealPage(key: string) {
+  const group = PAGE_GROUPS.find(group => group.pages.some(page => page.key === key));
+  if (!group) return;
+  const next = new Set(collapsedGroups.value);
+  next.delete(group.title);
+  collapsedGroups.value = next;
+  await nextTick();
+  document.getElementById(`page-control-${key}`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
 const controls = ref<Record<string, PageControl>>(emptyControls());
 const savedControls = ref<Record<string, PageControl>>(emptyControls());
 
@@ -375,6 +402,10 @@ async function save() {
     control.reason = control.reason.trim();
     if (control.status !== "normal" && !control.reason) {
       ElMessage.warning(`「${page.label}」需要填写展示给用户的原因`);
+      query.value = '';
+      groupFilter.value = '';
+      statusFilter.value = 'all';
+      await revealPage(page.key);
       return;
     }
   }
@@ -498,6 +529,14 @@ onMounted(load);
 
       <ListError :error="loadError" :loading="loading" @retry="load" />
 
+      <div class="collapse-toolbar">
+        <span>点击分组展开编辑 · 收起后按颜色查看各页面状态</span>
+        <div>
+          <el-button text :disabled="!visibleGroups.length" @click="setAllCollapsed(false)">展开全部</el-button>
+          <el-button text :disabled="!visibleGroups.length" @click="setAllCollapsed(true)">收起全部</el-button>
+        </div>
+      </div>
+
       <div class="controls-body">
         <el-empty
           v-if="!visibleGroups.length"
@@ -509,7 +548,9 @@ onMounted(load);
           class="control-group"
         >
           <header class="control-group__head">
-            <div>
+            <button type="button" class="group-toggle" :aria-expanded="!collapsedGroups.has(group.title)" :aria-controls="`control-group-${PAGE_GROUPS.findIndex(item => item.title === group.title)}`" @click="toggleGroup(group.title)">
+              <el-icon class="group-chevron" :class="{ 'is-expanded': !collapsedGroups.has(group.title) }"><ArrowRight /></el-icon>
+              <div>
               <h3>{{ group.title }}</h3>
               <p>
                 {{ group.description }}
@@ -521,7 +562,8 @@ onMounted(load);
                   个受限
                 </template>
               </p>
-            </div>
+              </div>
+            </button>
             <el-dropdown
               trigger="click"
               @command="(status) => onGroupCommand(group.title, status)"
@@ -544,10 +586,17 @@ onMounted(load);
             </el-dropdown>
           </header>
 
-          <div class="control-list">
+          <div v-if="collapsedGroups.has(group.title)" class="collapsed-status-list" :aria-label="`${group.title} 页面状态概览`">
+            <button v-for="page in group.pages" :key="page.key" type="button" class="page-status-chip" :class="[`is-${controls[page.key].status}`, { 'is-dirty': isRowDirty(page.key) }]" :title="`${page.label}：${statusMeta(controls[page.key].status).fullLabel}${controls[page.key].reason ? ` · ${controls[page.key].reason}` : ''}${isRowDirty(page.key) ? ' · 未保存' : ''}，点击展开编辑`" @click="revealPage(page.key)">
+              <i aria-hidden="true" /><strong>{{ page.label }}</strong><span>{{ statusMeta(controls[page.key].status).label }}</span><em v-if="isRowDirty(page.key)">未保存</em>
+            </button>
+          </div>
+
+          <div v-show="!collapsedGroups.has(group.title)" :id="`control-group-${PAGE_GROUPS.findIndex(item => item.title === group.title)}`" class="control-list">
             <article
               v-for="page in group.pages"
               :key="page.key"
+              :id="`page-control-${page.key}`"
               class="control-row"
               :class="{
                 'is-dirty': isRowDirty(page.key),
@@ -598,6 +647,23 @@ onMounted(load);
 </template>
 
 <style scoped>
+.collapse-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding: 8px 0; }
+.collapse-toolbar > span { color: var(--ink-3); font-size: 12px; }
+.group-toggle { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; border: 0; padding: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.group-chevron { flex-shrink: 0; color: var(--ink-3); transition: transform 150ms ease; }
+.group-chevron.is-expanded { transform: rotate(90deg); }
+.group-toggle:focus-visible, .page-status-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 6px; }
+.collapsed-status-list { display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 0 14px; }
+.page-status-chip { --status-color: var(--success); display: inline-flex; align-items: center; flex-wrap: wrap; gap: 7px; border: 1px solid color-mix(in srgb, var(--status-color) 25%, var(--border)); border-radius: 8px; padding: 8px 10px; background: color-mix(in srgb, var(--status-color) 7%, var(--surface)); cursor: pointer; line-height: 1.4; }
+.page-status-chip.is-maintenance { --status-color: var(--warning); }
+.page-status-chip.is-developing { --status-color: #a78bfa; }
+.page-status-chip.is-removed { --status-color: var(--ink-3); }
+.page-status-chip > i { width: 6px; height: 6px; border-radius: 50%; background: var(--status-color); }
+.page-status-chip strong { color: var(--ink-2); font-size: 12px; font-weight: 500; }
+.page-status-chip span { color: var(--status-color); font-size: 11px; }
+.page-status-chip em { color: var(--warning); font-size: 10px; font-style: normal; }
+.page-status-chip:hover { border-color: var(--status-color); }
+@media (prefers-reduced-motion: reduce) { .group-chevron { transition: none; } }
 .page-controls-page {
   display: flex;
   flex-direction: column;

@@ -636,6 +636,14 @@ func (s *Server) adminTrialAccessApplications(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
+	seek, pageNum, err := pageSeek(c, limit)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if pageNum > 0 {
+		cursor = seek
+	}
 	ctx := c.Request.Context()
 	if _, err := store.CloseExpiredTrialCampaigns(ctx, s.St.Pool, time.Now().UTC()); err != nil {
 		fail(c, err)
@@ -671,6 +679,9 @@ func (s *Server) adminTrialAccessApplications(c *gin.Context, _ *store.User) {
 		return
 	}
 	page["campaign"] = trialCampaignAdminDict(config, actualApplied, nextApplicationNo)
+	if pageNum > 0 {
+		page["page"] = pageNum
+	}
 	ok(c, page)
 }
 

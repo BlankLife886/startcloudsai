@@ -31,6 +31,9 @@ type profilePatch struct {
 	WebsiteURL         Opt[string] `json:"websiteUrl"`
 	RequireCostConfirm Opt[bool]   `json:"requireCostConfirm"`
 	Password           Opt[any]    `json:"password"`
+
+	AssistantAutoApprove            Opt[bool]  `json:"assistantAutoApprove"`
+	AssistantAutoApproveBudgetCents Opt[int64] `json:"assistantAutoApproveBudgetCents"`
 }
 
 type deleteAccountIn struct {
@@ -403,6 +406,21 @@ func (s *Server) patchProfile(c *gin.Context) {
 		requireCostConfirm = &body.RequireCostConfirm.Value
 		user.RequireCostConfirm = body.RequireCostConfirm.Value
 	}
+	var assistantAutoApprove *bool
+	if body.AssistantAutoApprove.Valid {
+		assistantAutoApprove = &body.AssistantAutoApprove.Value
+		user.AssistantAutoApprove = body.AssistantAutoApprove.Value
+	}
+	var assistantAutoApproveBudget *int64
+	if body.AssistantAutoApproveBudgetCents.Valid {
+		budget := body.AssistantAutoApproveBudgetCents.Value
+		if budget < 0 || budget > 100_000 {
+			fail(c, apperr.E("invalid_argument", "自动授权预算必须在 0 到 100000 积分之间", 400))
+			return
+		}
+		assistantAutoApproveBudget = &budget
+		user.AssistantAutoApproveBudgetCents = budget
+	}
 	var studioFigureURL **string
 	if body.StudioFigureURL.Valid {
 		var v *string
@@ -415,7 +433,8 @@ func (s *Server) patchProfile(c *gin.Context) {
 	}
 	ctx := c.Request.Context()
 	err = s.St.Tx(ctx, func(tx pgx.Tx) error {
-		if err := store.UpdateUserProfile(ctx, tx, user.ID, username, avatarURL, bio, location, website, requireCostConfirm, nil, studioFigureURL); err != nil {
+		if err := store.UpdateUserProfile(ctx, tx, user.ID, username, avatarURL, bio, location, website, requireCostConfirm, nil, studioFigureURL,
+			assistantAutoApprove, assistantAutoApproveBudget); err != nil {
 			return err
 		}
 		if body.AvatarURL.Valid {
@@ -566,8 +585,12 @@ func (s *Server) myLedger(c *gin.Context) {
 		fail(c, err)
 		return
 	}
+	if page > 0 && (page-1)*limit >= store.ListCountCap {
+		fail(c, errPageBeyondCap)
+		return
+	}
 	ctx := c.Request.Context()
-	total, err := store.CountUserLedger(ctx, s.St.Pool, user.ID)
+	total, err := store.CountUserLedgerCapped(ctx, s.St.Pool, user.ID)
 	if err != nil {
 		fail(c, err)
 		return
@@ -598,7 +621,7 @@ func (s *Server) myLedger(c *gin.Context) {
 			items = append(items, serialize(entry))
 		}
 		var next any
-		if int64(page*limit) < total && len(rows) > 0 {
+		if int64(page*limit) < total.Value && len(rows) > 0 {
 			t, id := rows[len(rows)-1].CursorKey()
 			next = encodeCursor(t, id)
 		}
@@ -609,7 +632,7 @@ func (s *Server) myLedger(c *gin.Context) {
 			payload["page"] = 1
 		}
 	}
-	payload["total"] = total
+	payload["total"], payload["totalCapped"] = total.Value, total.Capped
 	payload["pageSize"] = limit
 	ok(c, payload)
 }

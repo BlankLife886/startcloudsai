@@ -11,6 +11,7 @@ import { TASK_TYPE_LABELS } from "@/utils";
 interface ImageSkill {
   id: string;
   name: string;
+  slug: string;
   description: string;
   instruction: string;
   taskTypes: string[];
@@ -23,6 +24,7 @@ interface ImageSkill {
 
 interface SkillForm {
   name: string;
+  slug: string;
   description: string;
   instruction: string;
   taskTypes: string[];
@@ -33,11 +35,14 @@ interface SkillForm {
 }
 
 const NAME_MAX = 64;
+const SLUG_MAX = 64;
 const DESCRIPTION_MAX = 500;
 const INSTRUCTION_MAX = 4000;
+const SLUG_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 
 const defaults = (): SkillForm => ({
   name: "",
+  slug: "",
   description: "",
   instruction: "",
   taskTypes: [],
@@ -59,10 +64,47 @@ const status = ref<"all" | "enabled" | "disabled">("all");
 const taskTypeFilter = ref("all");
 const categoryFilter = ref("all");
 const page = ref(1);
-const pageSize = 10;
+const pageSize = ref(10);
 const visible = ref(false);
 const editingId = ref<string | undefined>();
 const form = reactive<SkillForm>(defaults());
+const slugTouched = ref(false);
+
+function suggestSlug(name: string) {
+  let slug = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  while (slug && !/^[a-z]/.test(slug)) {
+    const index = slug.indexOf("-");
+    slug = index >= 0 ? slug.slice(index + 1) : "";
+  }
+  if (slug.length > SLUG_MAX) {
+    slug = slug.slice(0, SLUG_MAX).replace(/-+$/g, "");
+  }
+  return slug;
+}
+
+function slugErrorOf(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  if (trimmed.length > SLUG_MAX || !SLUG_PATTERN.test(trimmed)) {
+    return "调用名需为字母开头的小写连字符格式，最长 64 个字符";
+  }
+  return "";
+}
+
+const slugError = computed(() => slugErrorOf(form.slug));
+
+function onNameInput() {
+  if (slugTouched.value) return;
+  form.slug = suggestSlug(form.name);
+}
+
+function onSlugInput() {
+  slugTouched.value = true;
+}
 
 function pageLabel(type: string) {
   return TASK_TYPE_LABELS[type] || type;
@@ -101,14 +143,14 @@ const filtered = computed(() => {
     }
     if (categoryFilter.value !== "all" && (item.category || "") !== categoryFilter.value) return false;
     if (!keyword) return true;
-    return [item.name, item.description, item.instruction, item.tags.join(" ")]
+    return [item.name, item.slug, item.description, item.instruction, item.tags.join(" ")]
       .join(" ")
       .toLocaleLowerCase()
       .includes(keyword);
   });
 });
 
-const rows = computed(() => filtered.value.slice((page.value - 1) * pageSize, page.value * pageSize));
+const rows = computed(() => filtered.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value));
 
 const hasFilters = computed(
   () =>
@@ -136,7 +178,7 @@ async function load() {
     items.value = data.items || [];
     taskTypes.value = data.taskTypes || [];
     // 删除或筛选后当前页可能已越界，收回到最后一页。
-    const maxPage = Math.max(1, Math.ceil(filtered.value.length / pageSize));
+    const maxPage = Math.max(1, Math.ceil(filtered.value.length / pageSize.value));
     if (page.value > maxPage) page.value = maxPage;
   } catch (err) {
     error.value = err instanceof Error ? err.message : "加载 Skill 词库失败";
@@ -148,11 +190,13 @@ async function load() {
 function edit(item?: ImageSkill) {
   saveError.value = "";
   editingId.value = item?.id;
+  slugTouched.value = Boolean(item?.slug);
   Object.assign(
     form,
     item
       ? {
           name: item.name,
+          slug: item.slug || "",
           description: item.description,
           instruction: item.instruction,
           taskTypes: [...item.taskTypes],
@@ -173,8 +217,13 @@ function parseTags(text: string) {
 async function save() {
   const name = form.name.trim();
   const instruction = form.instruction.trim();
+  const slug = form.slug.trim();
   if (!name || !instruction) {
     ElMessage.warning("请填写 Skill 名称与指令内容");
+    return;
+  }
+  if (slugError.value) {
+    ElMessage.warning(slugError.value);
     return;
   }
   saving.value = true;
@@ -182,6 +231,7 @@ async function save() {
   try {
     const body = {
       name,
+      slug,
       description: form.description.trim(),
       instruction,
       taskTypes: form.taskTypes,
@@ -222,7 +272,7 @@ async function toggle(item: ImageSkill) {
 async function remove(item: ImageSkill) {
   try {
     await ElMessageBox.confirm(
-      `确认永久删除「${item.name}」？已装载该 Skill 的用户会一并解除装载。`,
+      `确认永久删除「${item.name}」？用户将不能再通过 @ 调用这个技能。`,
       "删除 Skill",
       { type: "warning", confirmButtonText: "确认删除", cancelButtonText: "取消" },
     );
@@ -246,7 +296,7 @@ onMounted(load);
   <div class="skill-page">
     <PageCard
       title="官方 Skill 词库"
-      :subtitle="`${counts.all} 个官方 Skill · 启用中 ${counts.enabled} · 装载后其指令会拼进用户的生图提示词`"
+      :subtitle="`${counts.all} 个官方技能 · 启用中 ${counts.enabled} · 用户在输入框输入 @ 选中后，指令会拼进提示词`"
     >
       <template #actions>
         <div class="skill-actions">
@@ -297,7 +347,7 @@ onMounted(load);
           <el-input
             v-model="query"
             class="skill-search"
-            placeholder="搜索名称、指令或标签"
+            placeholder="搜索名称、调用名、指令或标签"
             :prefix-icon="Search"
             clearable
             @input="page = 1"
@@ -320,6 +370,7 @@ onMounted(load);
         :total="filtered.length"
         :page-size="pageSize"
         @update:page="page = $event"
+        @update:page-size="(size: number) => { pageSize = size; page = 1 }"
       >
         <el-table
           v-loading="loading"
@@ -331,13 +382,14 @@ onMounted(load);
         >
           <template #empty>
             <el-empty :description="hasFilters ? '没有符合条件的 Skill' : '还没有官方 Skill'" :image-size="64">
-              <p v-if="!hasFilters" class="empty-sub">新增后用户即可在 Skill 中心装载</p>
+              <p v-if="!hasFilters" class="empty-sub">新增后用户即可在技能库看到并用 @ 调用</p>
             </el-empty>
           </template>
           <el-table-column label="Skill" min-width="220">
             <template #default="{ row }">
               <div class="skill-cell">
                 <strong>{{ row.name }}</strong>
+                <code v-if="row.slug" class="skill-cell__slug">@{{ row.slug }}</code>
                 <span>{{ row.description || "—" }}</span>
                 <div v-if="row.tags.length" class="skill-cell__tags">
                   <el-tag v-for="tag in row.tags" :key="tag" size="small" effect="plain" type="info">{{ tag }}</el-tag>
@@ -406,28 +458,44 @@ onMounted(load);
       nested-scroll
       confirm-text="保存 Skill"
       :confirm-loading="saving"
-      footer-hint="保存后立即对已装载的用户生效"
+      footer-hint="保存后用户下次调用即生效"
       @confirm="save"
     >
       <el-alert v-if="saveError" :title="saveError" type="error" :closable="false" show-icon class="skill-form__error" />
       <el-form label-position="top" class="skill-form">
         <div class="skill-form__row">
           <el-form-item label="名称" required>
-            <el-input v-model="form.name" :maxlength="NAME_MAX" show-word-limit placeholder="例如：柔光人像" />
+            <el-input
+              v-model="form.name"
+              :maxlength="NAME_MAX"
+              show-word-limit
+              placeholder="例如：柔光人像"
+              @input="onNameInput"
+            />
           </el-form-item>
-          <el-form-item label="分类">
-            <el-select
-              v-model="form.category"
-              filterable
-              allow-create
-              default-first-option
-              clearable
-              placeholder="可新建，例如：人像"
-            >
-              <el-option v-for="name in categories" :key="name" :label="name" :value="name" />
-            </el-select>
+          <el-form-item label="调用名" :error="slugError">
+            <el-input
+              v-model="form.slug"
+              :maxlength="SLUG_MAX"
+              show-word-limit
+              placeholder="留空自动生成，例如 soft-light"
+              @input="onSlugInput"
+            />
+            <p class="skill-form__hint">用于 SKILL.md 导出与 @ 调用；中文名的技能用户会直接 @名称</p>
           </el-form-item>
         </div>
+        <el-form-item label="分类">
+          <el-select
+            v-model="form.category"
+            filterable
+            allow-create
+            default-first-option
+            clearable
+            placeholder="可新建，例如：人像"
+          >
+            <el-option v-for="name in categories" :key="name" :label="name" :value="name" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="简介">
           <el-input
             v-model="form.description"
@@ -465,7 +533,7 @@ onMounted(load);
             <el-switch v-model="form.active" inline-prompt active-text="开" inactive-text="关" />
             <div>
               <strong>启用</strong>
-              <span>停用后不再出现在用户的可装载列表，已装载的也会失效</span>
+              <span>停用后不再出现在用户的技能库与 @ 菜单里</span>
             </div>
           </div>
         </el-form-item>
@@ -580,6 +648,13 @@ onMounted(load);
   font-size: 13px;
   font-weight: 700;
 }
+.skill-cell__slug {
+  color: var(--ink-3);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
 .skill-cell span {
   color: var(--ink-2);
   font-size: 12px;
@@ -617,6 +692,12 @@ onMounted(load);
 }
 .skill-form__error {
   margin-bottom: 12px;
+}
+.skill-form__hint {
+  margin: 6px 0 0;
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.5;
 }
 .skill-form__row {
   display: grid;

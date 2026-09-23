@@ -15,6 +15,7 @@ import (
 
 // ok 输出 {"success": true, "data": ...}。
 func ok(c *gin.Context, data any) {
+	scopeResponseCursors(c, data)
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": data})
 }
 

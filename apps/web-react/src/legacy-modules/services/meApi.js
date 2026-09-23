@@ -50,6 +50,8 @@ export async function listWalletLedger({ limit = 20, cursor = '', page, signal }
     items: Array.isArray(data?.items) ? data.items : [],
     nextCursor: data?.nextCursor || null,
     total: data?.total == null || data?.total === '' ? null : Number(data.total),
+    // total 已达服务端计数上限（页码只能浏览这部分记录），实际条数更多。
+    totalCapped: data?.totalCapped === true,
     page: Number(data?.page || page || 1),
     pageSize: Number(data?.pageSize || limit),
   }

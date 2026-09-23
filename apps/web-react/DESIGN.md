@@ -97,3 +97,5 @@
 4. 新数据追加后动效正确挂载，离开首页后无监听器或 WebGL 资源泄漏。
 5. reduced-motion 和键盘 focus 完整；不验收触屏操作。
 6. 运行 `npm run lint`、`npm run build`，并用 Playwright 检查桌面截图与控制台错误。
+
+第 6 项中的 `npm run lint` 是迁移前的历史命令，当前 React 主站 `package.json` 不提供该脚本。现行构建、领域与浏览器验证命令见 [主站 README](README.md)，不要直接执行已撤除的 lint 命令。

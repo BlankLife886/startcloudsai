@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { assistantClipboardFiles, isImageToPSDRequest, isPSDFile } from "../src/features/assistant/domain/assistantAttachments.js";
-import { assistantPromptRequestsAgent, assistantSendMode, generatedImageRatioLabel, imageRatioFromPrompt } from "../src/features/assistant/domain/assistantMessages.js";
+import { assistantPromptRequestsAgent, assistantSendMode, formatMessageDate, generatedImageRatioLabel, imageRatioFromPrompt, messageDateTime } from "../src/features/assistant/domain/assistantMessages.js";
 import { promptNeedsRecentVisual, resolveVisualContext } from "../src/features/assistant/domain/visualContext.js";
 import { ASSISTANT_REFERENCE_COMPRESSION_THRESHOLD_BYTES, ASSISTANT_REFERENCE_WEBP_QUALITY, needsAssistantReferenceCompression } from "../src/features/assistant/services/assistantReferenceUpload.js";
 
@@ -160,4 +160,13 @@ test("shows actual generated image ratio before falling back to request settings
   assert.equal(generatedImageRatioLabel({ width: 1536, height: 1024 }, { ratio: "16:9" }), "3:2");
   assert.equal(generatedImageRatioLabel({}, { ratio: "9:16" }), "9:16");
   assert.equal(generatedImageRatioLabel({}, { ratio: "auto" }), "Auto");
+});
+
+test("conversation date chips use relative labels instead of a raw calendar stamp", () => {
+  const now = new Date(2026, 8, 18, 22, 0, 0).getTime();
+  assert.equal(formatMessageDate(new Date(2026, 8, 18, 9, 0, 0), now), "今天");
+  assert.equal(formatMessageDate(new Date(2026, 8, 17, 23, 0, 0), now), "昨天");
+  assert.equal(formatMessageDate(new Date(2026, 7, 3, 12, 0, 0), now), "8月3日");
+  assert.equal(formatMessageDate(new Date(2025, 11, 31, 12, 0, 0), now), "2025年12月31日");
+  assert.equal(messageDateTime(new Date(2026, 8, 18, 9, 0, 0)), "2026-09-18");
 });

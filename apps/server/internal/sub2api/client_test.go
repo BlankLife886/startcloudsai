@@ -1130,3 +1130,92 @@ func TestListModels(t *testing.T) {
 		t.Fatalf("models = %#v", models)
 	}
 }
+
+// 开启并行后，上游一轮返回多个工具调用必须按 index 顺序全部解出；关闭时仍要拒绝，
+// 因为调用方那条路径按单个工具写的，静默丢掉其余调用会让模型的请求凭空消失。
+func TestChatAgentWithToolsParsesParallelToolCalls(t *testing.T) {
+	stream := func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_b","function":{"name":"web_search","arguments":"{\"query\":\"乙\"}"}}]}}]}`+"\n\n")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","function":{"name":"web_search","arguments":"{\"query\":\"甲\"}"}}]}}]}`+"\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}
+	var requestedParallel any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		requestedParallel = body["parallel_tool_calls"]
+		stream(w)
+	}))
+	defer server.Close()
+
+	client, _ := New(server.URL, "test-key", "gpt-test", "image-test", 30)
+	tools := []FunctionTool{{Name: "web_search", Parameters: map[string]any{"type": "object"}}}
+	result, err := client.WithParallelToolCalls(true).ChatAgentWithTools(
+		context.Background(), []Message{{Role: "user", Content: "查两件事"}}, nil, tools, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requestedParallel != true {
+		t.Fatalf("开启后请求里必须声明 parallel_tool_calls：%#v", requestedParallel)
+	}
+	if len(result.ToolCalls) != 2 {
+		t.Fatalf("应当解出两个工具调用：%#v", result.ToolCalls)
+	}
+	// 上游的分片可能乱序到达，落地顺序必须按 index 归位。
+	if result.ToolCalls[0].ID != "call_a" || result.ToolCalls[1].ID != "call_b" {
+		t.Fatalf("工具调用没有按 index 排序：%#v", result.ToolCalls)
+	}
+	if result.ToolCall == nil || result.ToolCall.ID != "call_a" {
+		t.Fatalf("ToolCall 必须指向第一个调用，供只认单工具的调用方使用：%#v", result.ToolCall)
+	}
+
+	if _, err := client.ChatAgentWithTools(
+		context.Background(), []Message{{Role: "user", Content: "查两件事"}}, nil, tools, "", nil); err == nil {
+		t.Fatal("未开启并行时收到多个工具调用必须报错，不能静默丢弃")
+	}
+}
+
+// 意图判定这类内部调用不该继承用户为正题选的推理档位：一个单词的输出做深度推理，
+// 只会拉长用户敲完回车后的空窗期，还要额外烧推理 token。
+func TestWithoutReasoningStripsEffortAndSummaryFromInternalCalls(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"CHAT"}}]}`+"\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	// gpt-5 系列会走 reasoning 字段那条分支，正是 summary=detailed 被塞进去的地方。
+	client, _ := New(server.URL, "test-key", "gpt-5.4", "image-test", 30)
+	text, err := client.WithReasoningEffort("xhigh").WithoutReasoning().ChatTextWithImages(
+		context.Background(), []Message{{Role: "user", Content: "今天天气怎么样"}}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text != "CHAT" {
+		t.Fatalf("text = %q", text)
+	}
+	if _, exists := body["reasoning_effort"]; exists {
+		t.Fatalf("内部调用不该带推理档位：%#v", body["reasoning_effort"])
+	}
+	if _, exists := body["reasoning"]; exists {
+		t.Fatalf("内部调用不该索要推理摘要：%#v", body["reasoning"])
+	}
+
+	// 正题调用必须原样保留用户选的档位，别把这个优化误伤到主路径。
+	body = nil
+	if _, err := client.WithReasoningEffort("xhigh").ChatTextWithImages(
+		context.Background(), []Message{{Role: "user", Content: "正题"}}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if body["reasoning_effort"] != "xhigh" {
+		t.Fatalf("主路径的推理档位被误伤：%#v", body["reasoning_effort"])
+	}
+}

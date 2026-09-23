@@ -59,7 +59,12 @@ func (s *Server) adminGrowthGroups(c *gin.Context, _ *store.User) {
 		return
 	}
 
-	summary, items, err := store.GetGrowthGroupAdminOverview(c.Request.Context(), s.St.Pool, campaignKey, 12)
+	limit, page, err := pageWindow(c, 12, 100)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	summary, items, err := store.GetGrowthGroupAdminOverview(c.Request.Context(), s.St.Pool, campaignKey, limit, (page-1)*limit)
 	if err != nil {
 		fail(c, err)
 		return
@@ -82,6 +87,8 @@ func (s *Server) adminGrowthGroups(c *gin.Context, _ *store.User) {
 			"participations": summary.Participations,
 		},
 		"items": rows,
+		"page":  page,
+		"limit": limit,
 	})
 }
 
@@ -148,7 +155,7 @@ func (s *Server) myGrowthPrograms(c *gin.Context) {
 		"rules": gin.H{
 			"groupEnabled": cfg.GroupEnabled, "groupCampaignKey": cfg.GroupCampaignKey,
 			"groupCampaignOrdinal": campaignOrdinal,
-			"groupTargetMembers": cfg.GroupTargetMembers, "groupRewardCents": cfg.GroupRewardCents,
+			"groupTargetMembers":   cfg.GroupTargetMembers, "groupRewardCents": cfg.GroupRewardCents,
 			"groupDurationHours":  cfg.GroupDurationHours,
 			"failureBonusEnabled": cfg.FailureBonusEnabled, "failureBonusCents": cfg.FailureBonusCents,
 			"failureBonusDailyLimit": cfg.FailureBonusDailyLimit, "failureClaimsToday": failureClaims,

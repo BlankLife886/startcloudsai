@@ -4,6 +4,8 @@
 4 核 8 GB 服务器，并把对象存储从 Cloudflare R2 迁移到阿里云香港 OSS。它不包含
 任何生产密钥或本地业务数据。
 
+核对日期：2026-09-22，依据 `deploy/integrated/docker-compose.yml`。这是部署与迁移流程，不是当前服务器已完成迁移的声明；根 Compose 仍使用 PG17，两种栈的环境文件、项目名和网络不能混用。日常网站全量更新见 [维护窗口部署](MAINTENANCE_RELEASE.md)。
+
 ## 1. 目标架构
 
 ```text
@@ -80,6 +82,15 @@ docker compose --env-file deploy/integrated/.env.integrated \
 ```
 
 必须同时看到 `starclouds` 和 `chatgpt2api`，owner 不同。
+
+若本地不用 OSS，可在已经填写上述一体化环境配置后叠加本地存储：
+
+```bash
+sh deploy/integrated/local-compose.sh config --quiet
+sh deploy/integrated/local-compose.sh up -d --build
+```
+
+该脚本合并 `docker-compose.local-storage.yml`，启动 MinIO 并创建本地 bucket，使用专用本地卷。它仍需要 ChatGPT2API 源码、数据库和其他一体化配置，不是独立的完整模拟服务。公网模型上游无法访问 MinIO 的 `127.0.0.1` 签名地址；涉及远程引用的真实生图需使用该上游可达的存储地址。不要在生产叠加本地存储配置。
 
 ## 4. PostgreSQL 17 到 18
 
@@ -170,7 +181,9 @@ OSS bucket 保持私有。普通图片请求始终先访问稳定的 `/api/v1/fi
 数据库大版本切换存在短暂写入窗口，不能宣称完全零停机。若需要秒级切换，应另行设计
 PG17 到 PG18 逻辑复制；在当前数据量未知前，不把它作为默认方案。
 
-### 7.1 一体化环境后端零停机更新
+### 7.1 一体化环境 API 候选更新（仅限滚动兼容版本）
+
+先检查新旧 Schema 与执行协议。当前工作区的 `00154` 删除旧 `user_skill_bindings`，旧代码依赖此表时不得执行本节；应在维护窗口停止旧写入，再升级同版本 API/Worker/前端。候选 `serve` 直接迁移生产数据库，不能用候选健康检查代替隔离升级演练。
 
 一体化部署不能使用仓库根目录的旧版候选 Compose。后端更新应使用
 `deploy/integrated/docker-compose.candidate.yml`：候选 API 在 `8081` 提供服务，复用
@@ -197,7 +210,8 @@ curl -fsSI http://127.0.0.1:8081/admin/
 标记为正式 Server 镜像，并从发布目录只重建 API：
 
 ```bash
-docker tag startcloudsai-integrated-candidate-server:$RELEASE_ID startcloudsai-integrated-server:latest
+export STARCLOUD_RELEASE_TAG="$RELEASE_ID"
+docker tag startcloudsai-integrated-candidate-server:$RELEASE_ID startcloudsai-integrated-server:$STARCLOUD_RELEASE_TAG
 
 cd "$RELEASE_DIR"
 docker compose --env-file deploy/integrated/.env.integrated \
@@ -213,15 +227,18 @@ docker compose --env-file "$INTEGRATED_APP_ENV_FILE" \
   -f "$RELEASE_DIR/deploy/integrated/docker-compose.candidate.yml" down
 ```
 
-Worker 仅在后台确认没有运行中图片任务后单独更新。它会停止领取新任务并等待在途任务结束，
-最多等待 15 分钟；有任务时不要执行：
+仅当旧 Worker 与新 API/迁移仍兼容时才允许暂不更新 Worker；否则必须维护发布。Worker 单独更新前核对图片、聊天/Agent、附件、工作流和上游尝试的活动记录，不仅检查图片任务。优雅停机最多等待 15 分钟：
 
 ```bash
-docker tag startcloudsai-integrated-candidate-server:$RELEASE_ID startcloudsai-integrated-worker:latest
+docker tag startcloudsai-integrated-candidate-server:$RELEASE_ID startcloudsai-integrated-worker:$STARCLOUD_RELEASE_TAG
 cd "$RELEASE_DIR"
 docker compose --env-file deploy/integrated/.env.integrated \
   -f deploy/integrated/docker-compose.yml up -d --no-build --no-deps worker
+docker compose --env-file deploy/integrated/.env.integrated \
+  -f deploy/integrated/docker-compose.yml exec -T worker /app/server check-worker
 ```
+
+以上命令在同一终端使用明确的 `STARCLOUD_RELEASE_TAG`。后续常规 Compose 命令前应把已确认的镜像版本记录到生产环境配置，避免回落到旧 tag；当前候选栈只替换 API，不包含 Web/Admin 构建，不能拿它完成跨前后端协议升级。
 
 ## 8. 验收与回滚
 

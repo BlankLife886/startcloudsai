@@ -349,6 +349,56 @@ function AssistantCostDialog({ payload, light, onCancel, onConfirm }) {
   );
 }
 
+// 开启自动授权前必须让用户看清后果：这是把“花积分”的决定权交给 Agent。
+// 关闭不需要确认，所以这个对话框只在开启方向出现。
+function AssistantAutoApproveDialog({ open, light, budgetCents, onCancel, onConfirm }) {
+  const [budget, setBudget] = useState("");
+  useEffect(() => {
+    if (open) setBudget(String(budgetCents > 0 ? budgetCents : 60));
+  }, [open, budgetCents]);
+  if (!open) return null;
+  const parsed = Math.max(0, Math.round(Number(budget) || 0));
+  return createPortal(
+    <div className={`ai-cost-confirm-layer is-elevated${light ? " is-light" : ""}`} onMouseDown={(event) => event.target === event.currentTarget && onCancel()}>
+      <section className="ai-cost-confirm-panel is-credits" role="dialog" aria-modal="true" aria-labelledby="assistant-auto-approve-title">
+        <header className="ai-cost-confirm-head">
+          <span className="ai-cost-confirm-icon"><i className="bi bi-lightning-charge" /></span>
+          <div className="ai-cost-confirm-titles">
+            <span className="ai-cost-confirm-eyebrow">Agent 自动授权</span>
+            <h5 id="assistant-auto-approve-title">让 Agent 自行决定何时出图</h5>
+          </div>
+          <button type="button" className="ai-cost-confirm-close" aria-label="关闭自动授权设置" onClick={onCancel}><i className="bi bi-x-lg" /></button>
+        </header>
+        <p className="ai-cost-confirm-summary">开启后，Agent 判断需要出图时会直接扣积分生成，不再先给你方案卡确认。</p>
+        <div className="ai-cost-confirm-card">
+          <div className="ai-cost-confirm-total">
+            <div className="ai-cost-confirm-total__copy">
+              <span>单轮预算上限</span>
+              <small>超出这个金额仍然会先给你方案卡</small>
+            </div>
+            <label className="assistant-auto-approve-budget">
+              <input type="number" min="0" max="100000" step="10" value={budget}
+                onChange={(event) => setBudget(event.target.value)} aria-label="单轮预算上限（积分）" />
+              <span>积分</span>
+            </label>
+          </div>
+        </div>
+        <p className="ai-cost-confirm-warn">
+          <i className="bi bi-exclamation-circle" />
+          以下两种情况仍然会先给你方案卡：修改或重绘已有图片、单轮花费超过上面的预算。
+        </p>
+        <footer className="ai-cost-confirm-footer">
+          <div className="ai-cost-confirm-actions">
+            <button type="button" className="ai-cost-confirm-btn ghost" onClick={onCancel}>取消</button>
+            <button type="button" className="ai-cost-confirm-btn primary" onClick={() => onConfirm(parsed)}>我已了解，开启</button>
+          </div>
+        </footer>
+      </section>
+    </div>,
+    document.body,
+  );
+}
+
 function AssistantAssetLibrary({ mounted, dark, entered, tab, kind, search, files, links, images, visibleImages, documents, references, mode, maxReferences, atReferenceLimit, loading, onClose, onTabChange, onKindChange, onSearchChange, onGridScroll, onPickFile, onPickImage }) {
   if (!mounted) return null;
   return createPortal(
@@ -475,6 +525,7 @@ export {
   AssetLibraryLinkRow,
   AssetLibraryTile,
   AssistantContextMeter,
+  AssistantAutoApproveDialog,
   AssistantCostDialog,
   AssistantAssetLibrary,
   AssistantDeleteDialog,

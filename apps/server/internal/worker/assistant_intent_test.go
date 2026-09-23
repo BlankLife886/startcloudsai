@@ -19,6 +19,7 @@ func TestFallbackAssistantIntent(t *testing.T) {
 		want                  string
 	}{
 		{"全新生图请求", "帮我画一张赛博朋克风格的海报", false, false, "image"},
+		{"开始做一张图", "你好，开始做一张蓝天白云图", false, false, "image"},
 		{"纯聊天", "今天天气怎么样", false, false, "chat"},
 		{"寒暄你好", "你好", false, false, "chat"},
 		{"生图后的寒暄你好仍走对话", "你好", false, true, "chat"},
@@ -70,6 +71,7 @@ func TestFastAssistantIntent(t *testing.T) {
 		{"寒暄你好确定走对话", "你好", false, false, "chat", true},
 		{"寒暄你好呀确定走对话", "你好呀", false, false, "chat", true},
 		{"带生图要求的你好不误判", "你好，帮我画一张海报", false, false, "image", true},
+		{"开始做一张图不走模型分类", "你好，开始做一张蓝天白云图", false, false, "image", true},
 		{"图片技术设计不误判", "设计图片数据库表结构", false, false, "", false},
 		{"明确拒绝生成", "不要生成图片，只分析一下思路", false, false, "chat", true},
 		{"拒绝编辑参考图", "不要修改图片，帮我描述一下", true, false, "chat", true},

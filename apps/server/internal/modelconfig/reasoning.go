@@ -183,7 +183,7 @@ func configuredReasoningEfforts(model Model) []string {
 			add(effort)
 		}
 	}
-	if model.supportedReasoningEffortsSet || len(model.SupportedReasoningEfforts) > 0 || len(result) > 0 {
+	if model.ReasoningEnabled != nil || model.supportedReasoningEffortsSet || len(model.SupportedReasoningEfforts) > 0 || len(result) > 0 {
 		return result
 	}
 	return ReasoningEffortsForModel(model.UpstreamModel)
@@ -198,6 +198,10 @@ func normalizeModelReasoningPricing(model *Model) {
 		return
 	}
 	available := configuredReasoningEfforts(*model)
+	if model.ReasoningEnabled != nil && !*model.ReasoningEnabled {
+		model.SupportedReasoningEfforts = nil
+		return
+	}
 	if len(available) == 0 {
 		model.SupportedReasoningEfforts = nil
 		model.ReasoningPricing = nil
@@ -236,7 +240,7 @@ func normalizeModelReasoningPricing(model *Model) {
 			price = fallbackReasoningEffortPricing(*model, effort)
 		}
 		on := reasoningEffortEnabled(price)
-		if incomingSet && !containsStringValue(incoming, effort) {
+		if (model.ReasoningEnabled == nil || price.Enabled == nil) && incomingSet && !containsStringValue(incoming, effort) {
 			on = false
 		}
 		price.Enabled = enabledBool(on)
@@ -276,6 +280,17 @@ func validateDiscountPrice(modelName, label string, standard int64, discount *in
 }
 
 func validateModelReasoningPricing(model Model) error {
+	if model.ReasoningEnabled != nil && !*model.ReasoningEnabled {
+		if model.Enabled && model.Public {
+			if EffectivePrice(model) == 0 && !model.AllowZeroPrice {
+				return fmt.Errorf("对话模型 %s 基础价格为 0；如确需免费，请显式开启允许零价", model.Name)
+			}
+			if EffectivePrice(model) < model.UpstreamCostCents && !model.AllowLossLeader {
+				return fmt.Errorf("对话模型 %s 基础价格低于上游成本；请显式开启允许亏损", model.Name)
+			}
+		}
+		return validateDiscountPrice(model.Name, "基础积分", model.PriceCents, model.DiscountPriceCents)
+	}
 	normalizeModelReasoningPricing(&model)
 	if model.ReasoningPricing == nil {
 		return nil

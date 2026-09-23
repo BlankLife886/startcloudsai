@@ -162,6 +162,127 @@ func TestGenerateImagesUsesNonStreamingContract(t *testing.T) {
 	}
 }
 
+func TestStandardImagesUsePublicGenerationContract(t *testing.T) {
+	var payload map[string]any
+	var asyncRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/image-tasks/") {
+			asyncRequests.Add(1)
+			http.Error(w, "C2A must not be used", http.StatusInternalServerError)
+			return
+		}
+		if r.URL.Path != "/v1/images/generations" {
+			t.Fatalf("path = %q, want /v1/images/generations", r.URL.Path)
+		}
+		if got := r.Header.Get("Idempotency-Key"); got != "standard-task" {
+			t.Errorf("Idempotency-Key = %q, want standard-task", got)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"b64_json":"image-data"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true).WithStandardImages()
+	images, pending, upstreamID, err := client.SubmitGenerateImagesTracked(
+		context.Background(), "standard-task", "draw a cat", "gpt-image-2", 1, "1024x1024", ImageOptions{},
+	)
+	if err != nil || pending || upstreamID != "" || len(images) != 1 || images[0] != "image-data" {
+		t.Fatalf("images=%v pending=%v upstreamID=%q err=%v", images, pending, upstreamID, err)
+	}
+	if asyncRequests.Load() != 0 {
+		t.Fatalf("C2A requests = %d, want 0", asyncRequests.Load())
+	}
+	for _, field := range []string{"client_task_id", "history_disabled"} {
+		if _, exists := payload[field]; exists {
+			t.Fatalf("standard payload contains internal field %q: %#v", field, payload)
+		}
+	}
+}
+
+func TestGenerateImagesStandardPreservesURLResponse(t *testing.T) {
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/images/generations" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if payload["response_format"] != "url" {
+			t.Fatalf("response_format = %#v, want url", payload["response_format"])
+		}
+		if payload["user"] != "client-user" {
+			t.Fatalf("user = %#v, want client-user", payload["user"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"created":123,"data":[{"url":"https://cdn.example.test/image.png"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true).WithStandardImages()
+	response, err := client.GenerateImagesStandard(context.Background(), "url-request", "draw a cat", "gpt-image-2", 1, "", ImageOptions{ResponseFormat: "url", User: "client-user"})
+	if err != nil || response.Created != 123 || len(response.Data) != 1 || response.Data[0].URL != "https://cdn.example.test/image.png" {
+		t.Fatalf("response=%#v err=%v", response, err)
+	}
+}
+
+func TestStandardImagesUsePublicEditContract(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/images/edits" {
+			t.Fatalf("path = %q, want /v1/images/edits", r.URL.Path)
+		}
+		if got := r.Header.Get("Idempotency-Key"); got != "standard-edit" {
+			t.Errorf("Idempotency-Key = %q, want standard-edit", got)
+		}
+		if err := r.ParseMultipartForm(8 << 20); err != nil {
+			t.Fatal(err)
+		}
+		if got := r.FormValue("input_fidelity"); got != "" {
+			t.Errorf("input_fidelity = %q, want omitted", got)
+		}
+		if len(r.MultipartForm.File["image"]) != 1 {
+			t.Fatalf("image files = %d, want 1", len(r.MultipartForm.File["image"]))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"b64_json":"edited-image"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true).WithStandardImages()
+	images, pending, upstreamID, err := client.SubmitEditImagesTracked(
+		context.Background(), "standard-edit", "refine", "gpt-image-2", 1,
+		[]string{base64.StdEncoding.EncodeToString(png1x1())}, "1024x1024", ImageOptions{InputFidelity: "high"},
+	)
+	if err != nil || pending || upstreamID != "" || len(images) != 1 || images[0] != "edited-image" {
+		t.Fatalf("images=%v pending=%v upstreamID=%q err=%v", images, pending, upstreamID, err)
+	}
+}
+
+func TestEditImagesStandardPreservesURLResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(8 << 20); err != nil {
+			t.Fatal(err)
+		}
+		values := r.MultipartForm.Value["response_format"]
+		if len(values) != 1 || values[0] != "url" {
+			t.Fatalf("response_format = %#v, want one url field", values)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"url":"https://cdn.example.test/edited.png"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewWithPolicy(server.URL, "test-key", 30, true).WithStandardImages()
+	response, err := client.EditImagesStandard(context.Background(), "url-edit", "refine", "gpt-image-2", 1,
+		[]string{base64.StdEncoding.EncodeToString(png1x1())}, "", ImageOptions{ResponseFormat: "url"})
+	if err != nil || len(response.Data) != 1 || response.Data[0].URL != "https://cdn.example.test/edited.png" {
+		t.Fatalf("response=%#v err=%v", response, err)
+	}
+}
+
 func TestGenerateImagesWithIDHonorsExplicitQuality(t *testing.T) {
 	var payload map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

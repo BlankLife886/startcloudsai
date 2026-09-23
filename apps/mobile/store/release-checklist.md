@@ -1,5 +1,7 @@
 # Mobile 1.0 Release Checklist
 
+Repository status was reviewed against source on 2026-09-22. Checked items describe code and packaged configuration, not a newly completed build, device test, production deployment, or store approval. Re-run the verification commands in `../README.md` and complete the release-access items before submission.
+
 ## Repository complete
 
 - [x] Production bundle identifiers use `com.starcloudisai.app`.

@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { CopyDocument, Download, Hide, Plus, Refresh, Search, Ticket, View } from '@element-plus/icons-vue'
 import AdminDialog from '@/components/AdminDialog.vue'
+import AdminDateRange from '@/components/AdminDateRange.vue'
 import { normalizeList, request, type Page } from '@/request'
 import { usePagedList } from '@/usePagedList'
 import { formatPoints, formatTime, normalizePoints } from '@/utils'
@@ -52,7 +53,7 @@ const STATUS_FILTERS = [
 ] as const
 
 // ---------- 码列表 ----------
-const filters = reactive({ status: '', batchId: '', search: '' })
+const filters = reactive({ status: '', batchId: '', search: '', createdFrom: '', createdTo: '' })
 
 const pageSize = ref(20)
 
@@ -61,6 +62,8 @@ const { items, loading, error, total, page, hasPrev, hasNext, reset, goToPage, r
     (cursor) =>
       request<Page<RedemptionCode>>('/api/v1/admin/redemption-codes', {
         query: {
+          createdFrom: filters.createdFrom,
+          createdTo: filters.createdTo,
           status: filters.status,
           batchId: filters.batchId,
           search: filters.search.trim(),
@@ -75,6 +78,8 @@ function clearFilters() {
   filters.status = ''
   filters.batchId = ''
   filters.search = ''
+  filters.createdFrom = ''
+  filters.createdTo = ''
   void reset()
 }
 
@@ -132,14 +137,21 @@ async function disableCode(row: RedemptionCode) {
 const batches = ref<CodeBatch[]>([])
 const batchesLoading = ref(false)
 
-async function loadBatches() {
+// 服务端只返回最新 50 个批次；输入关键词时按批次号或备注远程搜索，旧批次仍可选中。
+let batchSearchGeneration = 0
+async function loadBatches(search = '') {
+  const generation = ++batchSearchGeneration
   batchesLoading.value = true
   try {
     const data = await request<CodeBatch[] | { items: CodeBatch[] }>(
       '/api/v1/admin/redemption-code-batches',
-      { silent: true },
+      { query: { search: search.trim() || undefined }, silent: true },
     )
-    batches.value = normalizeList(data).items
+    if (generation !== batchSearchGeneration) return
+    const found = normalizeList(data).items
+    // Keep the selected batch visible even when the latest search omits it.
+    const selected = batches.value.find(batch => batch.batchId === filters.batchId)
+    batches.value = selected && !found.some(batch => batch.batchId === selected.batchId) ? [selected, ...found] : found
   } catch {
     // 批次卡片加载失败不阻塞码列表
   } finally {
@@ -271,11 +283,14 @@ function downloadCodes() {
         </div>
 
         <div class="codes-toolbar__actions">
+          <AdminDateRange v-model:from="filters.createdFrom" v-model:to="filters.createdTo" label="生成时间" @change="reset" />
           <el-select
             v-model="filters.batchId"
             filterable
+            remote
+            :remote-method="loadBatches"
             clearable
-            placeholder="全部批次"
+            placeholder="全部批次（可搜索批次号或备注）"
             :loading="batchesLoading"
             class="batch-select"
             @change="reset"

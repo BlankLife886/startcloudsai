@@ -36,6 +36,7 @@ const dashboardView = memoizeRouteLoader(
   () => import("@/views/DashboardView.vue"),
 );
 const usersView = memoizeRouteLoader(() => import("@/views/UsersView.vue"));
+const userProfileDashboardView = memoizeRouteLoader(() => import("@/views/UserProfileDashboardView.vue"));
 const codesView = memoizeRouteLoader(() => import("@/views/CodesView.vue"));
 const plansView = memoizeRouteLoader(() => import("@/views/PlansView.vue"));
 const ordersView = memoizeRouteLoader(() => import("@/views/OrdersView.vue"));
@@ -81,9 +82,8 @@ const communityView = memoizeRouteLoader(
 const galleryView = memoizeRouteLoader(
   () => import("@/views/GalleryView.vue"),
 );
-const contentView = memoizeRouteLoader(
-  () => import("@/views/ContentView.vue"),
-);
+const announcementsView = memoizeRouteLoader(() => import("@/views/AnnouncementsView.vue"));
+const changelogView = memoizeRouteLoader(() => import("@/views/ChangelogView.vue"));
 const pageControlsView = memoizeRouteLoader(
   () => import("@/views/PageControlsView.vue"),
 );
@@ -99,6 +99,7 @@ const routeLoaders = new Map<string, RouteLoader>([
   ["/forbidden", forbiddenView],
   ["/", dashboardView],
   ["/users", usersView],
+  ["/user-profile-dashboard", userProfileDashboardView],
   ["/codes", codesView],
   ["/plans", plansView],
   ["/orders", ordersView],
@@ -117,7 +118,9 @@ const routeLoaders = new Map<string, RouteLoader>([
   ["/ecommerce", ecommerceView],
   ["/community", communityView],
   ["/gallery", galleryView],
-  ["/content", contentView],
+  ["/content", announcementsView],
+  ["/announcements", announcementsView],
+  ["/changelog", changelogView],
   ["/home-banners", () => import("@/views/HomeBannersView.vue")],
   ["/page-controls", pageControlsView],
   ["/audit", auditView],
@@ -171,6 +174,11 @@ const router = createRouter({
           path: "users",
           component: usersView,
           meta: { title: "用户管理" },
+        },
+        {
+          path: "user-profile-dashboard",
+          component: userProfileDashboardView,
+          meta: { title: "用户画像" },
         },
         {
           path: "codes",
@@ -261,8 +269,17 @@ const router = createRouter({
         },
         {
           path: "content",
-          component: contentView,
-          meta: { title: "内容管理" },
+          redirect: to => ({ path: to.query.tab === 'changelog' ? '/changelog' : '/announcements', query: to.query }),
+        },
+        {
+          path: "announcements",
+          component: announcementsView,
+          meta: { title: "公告管理" },
+        },
+        {
+          path: "changelog",
+          component: changelogView,
+          meta: { title: "更新说明" },
         },
         {
           path: "page-controls",

@@ -42,7 +42,7 @@ func (s *Server) adminReconcileOrRecover(c *gin.Context) {
 	}
 	id, err := uuid.Parse(input.OrderID)
 	providerID := strings.TrimSpace(input.ProviderOrderID)
-	if err != nil || (providerID == "" && input.Resolution != "not_created") || len(providerID) > 128 {
+	if err != nil || (providerID == "" && input.Resolution != "not_created" && input.Resolution != "check") || len(providerID) > 128 {
 		fail(c, apperr.E("validation_error", "请提供有效的平台订单号和渠道单号", 422))
 		return
 	}
@@ -54,6 +54,28 @@ func (s *Server) adminReconcileOrRecover(c *gin.Context) {
 	}
 	if order == nil || order.Provider != "lanjing" {
 		fail(c, apperr.E("order_not_found", "蓝鲸订单不存在", 404))
+		return
+	}
+	if input.Resolution == "check" {
+		if providerID != "" {
+			fail(c, apperr.E("validation_error", "单笔核对使用已保存的渠道单号，不接受覆盖", 422))
+			return
+		}
+		order.ReconcileLeaseID = nil
+		result, err := s.reconcilePaymentOrder(ctx, order)
+		if err != nil {
+			fail(c, apperr.E("payment_provider_error", "该订单核对未完成，请检查渠道状态后重试", 502))
+			return
+		}
+		latest, _, readErr := store.SearchPaymentReconciliations(ctx, s.St.Pool, false, 1, 1, store.AdminListFilter{Search: order.ID.String()})
+		if readErr != nil {
+			fail(c, readErr)
+			return
+		}
+		if len(latest) > 0 {
+			result = latest[0]
+		}
+		ok(c, gin.H{"checked": 1, "outcomes": map[string]int{result.Outcome: 1}, "result": result})
 		return
 	}
 	if input.Resolution == "not_created" {

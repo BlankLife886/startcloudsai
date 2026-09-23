@@ -20,6 +20,7 @@ import (
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantbilling"
+	"github.com/BlankLife886/startcloudsai/server/internal/assistantprice"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistantstream"
 	"github.com/BlankLife886/startcloudsai/server/internal/assistanttools"
 	"github.com/BlankLife886/startcloudsai/server/internal/contractpricing"
@@ -94,6 +95,7 @@ type assistantRunIn struct {
 	Workspace                string                      `json:"workspace"`
 	FastMode                 bool                        `json:"fastMode"`
 	ProposalSourceMessageID  string                      `json:"proposalSourceMessageId"`
+	AutoApproved             bool                        `json:"autoApproved"`
 	ParentOutputURL          string                      `json:"parentOutputUrl"`
 	MaskImage                map[string]any              `json:"maskImage"`
 	MaskBaseImage            map[string]any              `json:"maskBaseImage"`
@@ -1156,8 +1158,14 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 		if routeLimit > 0 {
 			effectiveLimit = min(effectiveLimit, routeLimit)
 		}
+		// 错误码与 /tasks 一致：超过模型自身上限是参数错误；模型允许但账户、全站或
+		// 线路并发不够时是 execution_batch_too_large（与事务内的容量校验相同）。
+		if modelMax := int64(imageSelection.Model.GenerationMaxImages()); modelMax > 0 && int64(body.Count) > modelMax {
+			fail(c, apperr.E("validation_error", fmt.Sprintf("所选模型单次最多生成 %d 张", modelMax), 422))
+			return
+		}
 		if effectiveLimit > 0 && int64(body.Count) > effectiveLimit {
-			fail(c, apperr.E("validation_error", fmt.Sprintf("当前额度下所选模型单次最多生成 %d 张", effectiveLimit), 422))
+			fail(c, apperr.E("execution_batch_too_large", fmt.Sprintf("当前额度下所选模型单次最多生成 %d 张", effectiveLimit), 422))
 			return
 		}
 	}
@@ -1359,16 +1367,14 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 	}
 	imageCostCents := int64(0)
 	if imageSelection != nil {
-		imageCostCents = modelconfig.EffectiveWorkspacePrice(modelCfg, workspace, imageSelection.Model) * int64(body.Count)
-		unitPrice := imageCostCents / int64(max(body.Count, 1))
-		if unitPrice == 0 && !imageSelection.Model.AllowZeroPrice {
-			fail(c, apperr.E("model_zero_price_blocked", "图片模型价格尚未配置，已阻止零积分调用", 503))
+		// 定价与零价/倒挂两道闸走 assistantprice，Agent 执行中创建出图任务时用的是同一段代码，
+		// 避免同一张图在两个入口算出两个价格。
+		imagePrice, priceErr := assistantprice.GuardImageModel(modelCfg, workspace, imageSelection, body.Count)
+		if priceErr != nil {
+			fail(c, priceErr)
 			return
 		}
-		if unitPrice < imageSelection.Model.UpstreamCostCents && !imageSelection.Model.AllowLossLeader {
-			fail(c, apperr.E("model_price_inverted", "图片模型价格低于上游成本，已暂停调用，请联系管理员", 503))
-			return
-		}
+		imageCostCents = imagePrice.Total
 	}
 	if chatSelection != nil {
 		if chatCostCents == 0 && !chatSelection.Model.AllowZeroPrice {
@@ -1454,6 +1460,13 @@ func (s *Server) createAssistantRun(c *gin.Context) {
 			params["_chatCostCents"] = chatCostCents
 			params["_imageCostCents"] = imageCostCents
 			params["_reservedCostCents"] = reservedCents
+		}
+		// 预算要拦在最终定价之后，否则合同折扣或价格覆盖会让实际扣费和判定的金额对不上。
+		if body.AutoApproved {
+			if err := assistantAutoApproveRejection(c.Request.Context(), tx, user, conversation.ID,
+				body.Mode, body.ProposalSourceMessageID, imageCostCents); err != nil {
+				return err
+			}
 		}
 		objectReferenceKeys := append(append([]string(nil), taskOutputReferenceKeys...), assistantOutputKeys...)
 		if len(objectReferenceKeys) > 0 {
@@ -1690,6 +1703,49 @@ func assistantToolExecutionMode(workspace, mode, prompt string) string {
 		return "agent"
 	}
 	return mode
+}
+
+// assistantAutoApproveRejection 校验一次免确认提交。预算是用户为“无人值守的花费”设的上限，
+// 所以只对自动授权触发的提交生效：用户自己点“开始生成”就是当场确认，永远不该被预算拦住。
+// 界面也会按当前单价先算一遍，但那份价格拿不到合同折扣和价格覆盖，只能当提前退回卡片的
+// 体验优化；真正的闸门必须在这里，否则用户设的上限等于没设。
+func assistantAutoApproveRejection(
+	ctx context.Context,
+	q store.Q,
+	user *store.User,
+	conversationID uuid.UUID,
+	mode string,
+	proposalSourceID string,
+	imageCostCents int64,
+) error {
+	if mode != "image" {
+		return apperr.E("assistant_auto_approve_rejected", "自动授权只能用于执行图片方案", 422)
+	}
+	if !user.AssistantAutoApprove {
+		return apperr.E("assistant_auto_approve_rejected", "自动授权已关闭，请确认方案后再提交", 422)
+	}
+	sourceID, parseErr := uuid.Parse(strings.TrimSpace(proposalSourceID))
+	if parseErr != nil {
+		return apperr.E("assistant_auto_approve_rejected", "自动授权提交缺少来源方案", 422)
+	}
+	source, err := store.GetAssistantMessage(ctx, q, sourceID)
+	if err != nil {
+		return err
+	}
+	if source == nil || source.ConversationID != conversationID {
+		return apperr.E("assistant_auto_approve_rejected", "自动授权提交缺少来源方案", 422)
+	}
+	// 资格由 worker 在生成方案时判定并写进消息，客户端说了不算。
+	proposal, _ := source.Metadata["proposal"].(map[string]any)
+	if approvable, _ := proposal["autoApprovable"].(bool); !approvable {
+		return apperr.E("assistant_auto_approve_rejected", "这份方案需要你确认后才能生成", 422)
+	}
+	if imageCostCents > user.AssistantAutoApproveBudgetCents {
+		return apperr.E("assistant_auto_approve_budget_exceeded", fmt.Sprintf(
+			"本次需要 %d 积分，超出自动授权预算 %d 积分，请确认后再生成",
+			imageCostCents, user.AssistantAutoApproveBudgetCents), 422)
+	}
+	return nil
 }
 
 func assistantRunReservedCost(mode string, chatCostCents, imageCostCents int64) int64 {

@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   BASE_BOARD_WIDTH,
   COLLAGE_CATEGORIES,
+  CUSTOM_RATIO_ID,
   FILTER_PRESETS,
   RATIO_PRESETS,
   TEXT_POSITIONS,
@@ -12,15 +13,27 @@ import {
   exportCollage,
   filterTemplates,
   getFilterPresetById,
+  isDarkBackground,
+  parsePixelSize,
+  parseRatioPart,
+  ratioPartsFromValue,
+  resolveBoardRatio,
 } from "@react/legacy-modules/features/ai-puzzle/domain/collageTemplates.js";
 import "@react/legacy-static/features/ai-puzzle/styles/collage-studio.css";
 import { useCollageEditor } from "../features/puzzle/useCollageEditor.js";
+import { useIsDark } from "../hooks/useIsDark.js";
 import { DownloadIcon } from "../components/common/DownloadIcon.jsx";
 
 const EXPORT_SIZES = [
-  { label: "标准 1600px", value: 1600 },
-  { label: "高清 2400px", value: 2400 },
-  { label: "超清 3600px", value: 3600 },
+  { label: "1600", value: 1600 },
+  { label: "2400", value: 2400 },
+  { label: "3600", value: 3600 },
+];
+
+const CANVAS_DENSITY = [
+  { id: "tight", label: "紧凑", gap: 4, radius: 2, padding: 0 },
+  { id: "regular", label: "适中", gap: 8, radius: 6, padding: 0 },
+  { id: "loose", label: "宽松", gap: 16, radius: 16, padding: 16 },
 ];
 
 const INSPIRATION_IMAGES = [
@@ -40,26 +53,102 @@ function Icon({ name, className = "" }) {
   return <i className={`bi bi-${name}${className ? ` ${className}` : ""}`} aria-hidden="true" />;
 }
 
-function TemplatePreview({ item }) {
+function DraftNumberInput({ value, ariaLabel, inputRef, integer = false, parse, onCommit }) {
+  const nodeRef = useRef(null);
+  const focusedRef = useRef(false);
+  const valueRef = useRef(value);
+  valueRef.current = value;
+
+  const attachRef = (node) => {
+    nodeRef.current = node;
+    if (typeof inputRef === "function") inputRef(node);
+    else if (inputRef) inputRef.current = node;
+  };
+
+  useEffect(() => {
+    if (!focusedRef.current && nodeRef.current) nodeRef.current.value = String(value);
+  }, [value]);
+
+  const sanitize = (raw) => String(raw ?? "").replace(integer ? /[^\d]/g : /[^\d.]/g, "");
+
+  const commit = (raw) => {
+    const current = valueRef.current;
+    const n = Number(sanitize(raw));
+    if (!Number.isFinite(n) || n <= 0) {
+      if (nodeRef.current) nodeRef.current.value = String(current);
+      return;
+    }
+    const next = parse(n, current);
+    if (nodeRef.current) nodeRef.current.value = String(next);
+    if (next !== current) onCommit(next, { history: false });
+  };
+
   return (
-    <div className="collage-template-preview" style={{ aspectRatio: item.ratio || 1 }}>
-      {item.cells.map((cell) => (
-        <span
-          key={cell.id}
-          style={{
-            left: `${cell.x * 100}%`,
-            top: `${cell.y * 100}%`,
-            width: `${cell.w * 100}%`,
-            height: `${cell.h * 100}%`,
-          }}
-        />
-      ))}
+    <input
+      ref={attachRef}
+      type="text"
+      inputMode={integer ? "numeric" : "decimal"}
+      autoComplete="off"
+      spellCheck={false}
+      aria-label={ariaLabel}
+      defaultValue={String(value)}
+      onFocus={(event) => {
+        focusedRef.current = true;
+        event.currentTarget.select();
+      }}
+      onChange={(event) => {
+        const next = sanitize(event.target.value);
+        if (event.target.value !== next) event.target.value = next;
+        const n = Number(next);
+        if (!integer || !Number.isFinite(n) || n < 320 || n > 8192) return;
+        if (n !== valueRef.current) onCommit(n, { history: false });
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") event.currentTarget.blur();
+      }}
+      onBlur={(event) => {
+        focusedRef.current = false;
+        commit(event.currentTarget.value);
+      }}
+    />
+  );
+}
+
+function RatioPartInput(props) {
+  return <DraftNumberInput {...props} parse={parseRatioPart} />;
+}
+
+function PixelSizeInput(props) {
+  return <DraftNumberInput {...props} integer parse={parsePixelSize} />;
+}
+
+function TemplatePreview({ item }) {
+  const ratio = item.ratio > 0 ? item.ratio : 1;
+  const boardStyle = ratio >= 1
+    ? { width: "100%", height: `${(1 / ratio) * 100}%` }
+    : { width: `${ratio * 100}%`, height: "100%" };
+  return (
+    <div className="collage-template-preview">
+      <div className="collage-template-preview__board" style={boardStyle}>
+        {item.cells.map((cell) => (
+          <span
+            key={cell.id}
+            style={{
+              left: `calc(${cell.x * 100}% + 1px)`,
+              top: `calc(${cell.y * 100}% + 1px)`,
+              width: `calc(${cell.w * 100}% - 2px)`,
+              height: `calc(${cell.h * 100}% - 2px)`,
+            }}
+          />
+        ))}
+      </div>
     </div>
   );
 }
 
 export function PuzzleView() {
-  const editor = useCollageEditor();
+  const isDark = useIsDark();
+  const editor = useCollageEditor({ darkPaper: isDark });
   const [sideTab, setSideTab] = useState("templates");
   const [inspectorTab, setInspectorTab] = useState("canvas");
   const [mobilePanel, setMobilePanel] = useState("canvas");
@@ -68,9 +157,12 @@ export function PuzzleView() {
   const [inspirationQuery, setInspirationQuery] = useState("");
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const [exportFormat, setExportFormat] = useState("png");
+  const [exportSizeMode, setExportSizeMode] = useState("preset");
   const [exportWidth, setExportWidth] = useState(2400);
+  const [exportHeight, setExportHeight] = useState(2400);
   const [dragOverCell, setDragOverCell] = useState(-1);
   const [uploadDragOver, setUploadDragOver] = useState(false);
+  const [showBadges, setShowBadges] = useState(true);
   const [imageSizes, setImageSizes] = useState(() => new Map());
   const stageRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -89,19 +181,76 @@ export function PuzzleView() {
   }, [inspirationQuery]);
   const boardHeight = BASE_BOARD_WIDTH / editor.boardRatio;
   const boardScale = editor.zoom / 100;
-  const fillProgress = editor.template.cells.length
-    ? Math.round((editor.filledCount / editor.template.cells.length) * 100)
-    : 0;
   const selectedCellState = editor.cells[editor.selectedCell] || null;
+
+  const paperTone = isDarkBackground(editor.background) ? "is-dark-paper" : "is-light-paper";
+  const densityId = CANVAS_DENSITY.find((item) => item.gap === editor.gap && item.radius === editor.radius && item.padding === editor.padding)?.id || "";
+  const ratioParts = editor.ratioId === CUSTOM_RATIO_ID ? editor.customRatio : ratioPartsFromValue(editor.boardRatio);
+  const ratioWidthRef = useRef(null);
+  const exportWidthRef = useRef(null);
+  const exportW = exportWidth;
+  const exportH = exportSizeMode === "custom" ? exportHeight : Math.max(320, Math.round(exportWidth / editor.boardRatio));
+  const exportSizeRef = useRef({ w: exportW, h: exportH });
+  exportSizeRef.current = { w: exportW, h: exportH };
+
+  const applyExportPixels = (w, h, options) => {
+    const nextW = parsePixelSize(w, exportSizeRef.current.w);
+    const nextH = parsePixelSize(h, exportSizeRef.current.h);
+    exportSizeRef.current = { w: nextW, h: nextH };
+    setExportSizeMode("custom");
+    setExportWidth(nextW);
+    setExportHeight(nextH);
+    editor.setRatioFromValue(nextW / nextH, options);
+  };
+
+  const applyRatioId = (id) => {
+    editor.setRatio(id);
+    if (exportSizeMode === "custom") {
+      const nextRatio = resolveBoardRatio(editor.template, id, editor.customRatio);
+      setExportHeight(parsePixelSize(Math.round(exportWidth / nextRatio)));
+    }
+  };
+
+  const applyRatioParts = (w, h, options) => {
+    editor.setCustomRatio(w, h, options);
+    if (exportSizeMode === "custom") {
+      const nextW = parseRatioPart(w, ratioParts.w);
+      const nextH = parseRatioPart(h, ratioParts.h);
+      setExportHeight(parsePixelSize(Math.round(exportWidth * (nextH / nextW))));
+    }
+  };
 
   const fitZoom = useCallback(() => {
     const stage = stageRef.current;
     if (!stage) return;
-    const availableWidth = stage.clientWidth - 48;
-    const availableHeight = stage.clientHeight - 48;
+    const sizer = stage.querySelector(".collage-stage-sizer");
+    const styles = getComputedStyle(sizer || stage);
+    const padX = (parseFloat(styles.paddingLeft) || 0) + (parseFloat(styles.paddingRight) || 0);
+    const padY = (parseFloat(styles.paddingTop) || 0) + (parseFloat(styles.paddingBottom) || 0);
+    const availableWidth = stage.clientWidth - padX;
+    const availableHeight = stage.clientHeight - padY;
+    if (availableWidth < 80 || availableHeight < 80) return;
     const scale = Math.min(availableWidth / BASE_BOARD_WIDTH, availableHeight / boardHeight);
-    editor.setZoom(Math.max(30, Math.min(150, Math.round(scale * 100))));
+    editor.setZoom(Math.max(30, Math.min(150, Math.floor((scale * 100) / 5) * 5)));
   }, [boardHeight, editor.setZoom]);
+
+  useLayoutEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    fitZoom();
+    const observer = new ResizeObserver(() => fitZoom());
+    observer.observe(stage);
+    return () => observer.disconnect();
+  }, [fitZoom, editor.templateId, editor.ratioId, editor.customRatio]);
+
+  useLayoutEffect(() => {
+    if (editor.customBgColor) return;
+    if (isDark && editor.backgroundId === "white") {
+      editor.setBackground("black", { history: false });
+    } else if (!isDark && editor.backgroundId === "black") {
+      editor.setBackground("white", { history: false });
+    }
+  }, [isDark]);
 
   useEffect(() => {
     const urls = ownedUrls.current;
@@ -146,6 +295,10 @@ export function PuzzleView() {
       if (mod && event.key.toLowerCase() === "z") {
         event.preventDefault();
         event.shiftKey ? editor.redo() : editor.undo();
+      }
+      if (mod && event.key.toLowerCase() === "y") {
+        event.preventDefault();
+        editor.redo();
       }
     };
     window.addEventListener("paste", onPaste);
@@ -194,6 +347,7 @@ export function PuzzleView() {
     const state = editor.cells[index];
     if (!state?.src) {
       panRef.current = { index, empty: true };
+      setInspectorTab("cell");
       return;
     }
     setInspectorTab("cell");
@@ -240,19 +394,21 @@ export function PuzzleView() {
       const blob = await exportCollage({
         template: editor.template,
         ratioId: editor.ratioId,
+        customRatio: editor.customRatio,
         cells: editor.cells,
         gap: editor.gap,
         radius: editor.radius,
         padding: editor.padding,
         background: editor.background,
         text: editor.caption,
-        exportWidth,
+        exportWidth: exportW,
+        exportHeight: exportH,
         format: exportFormat,
       });
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = `walleven-collage-${Date.now()}.${exportFormat === "jpeg" ? "jpg" : "png"}`;
+      link.download = `walleven-collage-${exportW}x${exportH}-${Date.now()}.${exportFormat === "jpeg" ? "jpg" : "png"}`;
       link.click();
       window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
     } finally {
@@ -261,24 +417,9 @@ export function PuzzleView() {
   };
 
   return (
-    <main className="collage-studio-page">
+    <main className={`collage-studio-page is-chamber${isDark ? "" : " is-light"}`}>
       <div className="collage-studio">
         <header className="collage-topbar">
-          <div className="collage-topbar-left">
-            <div className="collage-brand">
-              <span className="collage-brand-badge"><Icon name="puzzle-fill" /></span>
-              <div><strong>拼图</strong><small>选模板 · 调布局 · 一键导出</small></div>
-            </div>
-            <div className="collage-top-status">
-              <span className="is-free"><Icon name="shield-check" /> 免费 · 本地处理</span>
-              <span>{editor.filledCount}/{editor.template.cells.length} 格</span>
-              <span>{exportWidth}px</span>
-            </div>
-            <div className="collage-history-btns">
-              <button type="button" title="撤销 (Ctrl+Z)" data-click-guard="off" disabled={!editor.canUndo} onClick={editor.undo}><Icon name="arrow-counterclockwise" /></button>
-              <button type="button" title="重做 (Ctrl+Shift+Z)" data-click-guard="off" disabled={!editor.canRedo} onClick={editor.redo}><Icon name="arrow-clockwise" /></button>
-            </div>
-          </div>
           <div className="collage-topbar-right">
             <button type="button" className="collage-top-btn collage-add-btn" onClick={() => fileInputRef.current?.click()}><Icon name="plus-lg" /><span>添加图片</span></button>
             <button type="button" className="collage-top-btn" disabled={!editor.uploads.length} onClick={editor.autoFillFromUploads}><Icon name="grid-3x3-gap" /><span>自动填充</span></button>
@@ -289,8 +430,9 @@ export function PuzzleView() {
               {exportMenuOpen && <div className="collage-export-menu">
                 <div className="collage-export-menu__title">格式</div>
                 <div className="collage-export-menu__row">{["png", "jpeg"].map((format) => <button key={format} type="button" className={exportFormat === format ? "active" : ""} onClick={() => setExportFormat(format)}>{format === "jpeg" ? "JPG" : "PNG"}</button>)}</div>
-                <div className="collage-export-menu__title">尺寸（长边）</div>
-                <div className="collage-export-menu__col">{EXPORT_SIZES.map((size) => <button key={size.value} type="button" className={exportWidth === size.value ? "active" : ""} onClick={() => setExportWidth(size.value)}>{size.label}</button>)}</div>
+                <div className="collage-export-menu__title">尺寸</div>
+                <div className="collage-export-menu__col">{EXPORT_SIZES.map((size) => <button key={size.value} type="button" className={exportSizeMode === "preset" && exportWidth === size.value ? "active" : ""} onClick={() => { setExportSizeMode("preset"); setExportWidth(size.value); }}>{size.label}</button>)}</div>
+                <button type="button" className={exportSizeMode === "custom" ? "active" : ""} onClick={() => { applyExportPixels(exportW, exportH); exportWidthRef.current?.focus(); }}>自定义 {exportW}×{exportH}</button>
               </div>}
             </div>
           </div>
@@ -307,18 +449,15 @@ export function PuzzleView() {
             </div>
             <div className="collage-side-body">
               {sideTab === "templates" && <>
-                <div className="collage-panel-intro"><span className="collage-panel-intro__icon is-blue"><Icon name="grid-1x2" /></span><div><strong>选择拼图结构</strong><p>按图片数量和展示场景快速选择</p></div></div>
                 <input className="collage-search" type="search" placeholder="搜索模板…" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} />
                 <div className="collage-category-pills">{COLLAGE_CATEGORIES.map((category) => <button key={category.id} type="button" className={categoryId === category.id ? "active" : ""} onClick={() => setCategoryId(category.id)}>{category.label}</button>)}</div>
-                <div className="collage-template-grid">{filteredTemplates.map((item) => <button key={item.id} type="button" className={`collage-template-card${editor.templateId === item.id ? " active" : ""}`} onClick={() => { editor.setTemplate(item.id); setMobilePanel("canvas"); }}><TemplatePreview item={item} /><span className="collage-template-copy"><em>{item.name}</em><small>{item.cells.length} 格 · {item.ratio === 1 ? "方形画布" : "自适应画布"}</small></span><Icon name="chevron-right" className="collage-template-arrow" /></button>)}</div>
+                <div className="collage-template-grid">{filteredTemplates.map((item) => <button key={item.id} type="button" className={`collage-template-card${editor.templateId === item.id ? " active" : ""}`} onClick={() => { editor.setTemplate(item.id); setMobilePanel("canvas"); }}><TemplatePreview item={item} /><span className="collage-template-copy"><em>{item.name}</em><small>{item.cells.length} 格</small></span></button>)}</div>
               </>}
               {sideTab === "uploads" && <>
-                <div className="collage-panel-intro"><span className="collage-panel-intro__icon is-green"><Icon name="images" /></span><div><strong>管理图片素材</strong><p>上传后点击填入，或拖到指定格子</p></div></div>
                 <div className={`collage-upload-zone${uploadDragOver ? " is-dragover" : ""}`} onClick={() => fileInputRef.current?.click()} onDragOver={(event) => { event.preventDefault(); setUploadDragOver(true); }} onDragLeave={() => setUploadDragOver(false)} onDrop={(event) => { event.preventDefault(); setUploadDragOver(false); applyFiles(event.dataTransfer.files); }}><Icon name="cloud-arrow-up" /><span>点击或拖拽上传图片</span><small>支持多选，图片仅在本机处理不会上传服务器</small></div>
                 {editor.uploads.length > 0 ? <><p className="collage-hero-hint">点击素材填入当前格，或拖到画布；支持 Ctrl+V 粘贴图片。</p><div className="collage-material-actions"><button type="button" onClick={() => { editor.autoFillFromUploads(); setMobilePanel("canvas"); }}><Icon name="grid-3x3-gap" />自动填充空格</button><button type="button" disabled={editor.filledCount < 2} onClick={editor.shuffleCells}><Icon name="shuffle" />打乱顺序</button></div><div className="collage-upload-grid">{editor.uploads.map((item) => <div key={item.id} className="collage-upload-item" draggable onDragStart={(event) => { event.dataTransfer.setData("text/plain", item.src); event.dataTransfer.setData("application/x-walleven-collage-src", item.src); }} onClick={() => { editor.assignImageSmart(item.src); setInspectorTab("cell"); setMobilePanel("canvas"); }}><img src={item.src} alt="" draggable={false} /><button type="button" title="移除" onClick={(event) => { event.stopPropagation(); editor.removeUpload(item.id); }}><Icon name="x" /></button></div>)}</div></> : <div className="collage-side-empty"><Icon name="images" /><span>还没有素材，先上传几张图片吧</span></div>}
               </>}
               {sideTab === "inspiration" && <>
-                <div className="collage-panel-intro"><span className="collage-panel-intro__icon is-blue"><Icon name="stars" /></span><div><strong>灵感素材</strong><p>使用内置图片快速体验排版效果</p></div></div>
                 <div className="collage-wallpaper-toolbar"><input className="collage-search" type="search" placeholder="搜索灵感素材…" value={inspirationQuery} onChange={(event) => setInspirationQuery(event.target.value)} /></div>
                 {filteredInspirations.length ? <div className="collage-wallpaper-grid">{filteredInspirations.map((item) => <button key={item.id} type="button" className="collage-wallpaper-item" draggable title={item.label} onDragStart={(event) => event.dataTransfer.setData("text/plain", item.src)} onClick={() => { editor.addUpload(item.src, item.label); editor.assignImageSmart(item.src); setSideTab("uploads"); setMobilePanel("canvas"); }}><img src={item.src} alt={item.label} loading="lazy" draggable={false} /></button>)}</div> : <div className="collage-side-empty"><Icon name="search" /><span>没有匹配的灵感素材</span></div>}
               </>}
@@ -326,11 +465,9 @@ export function PuzzleView() {
           </aside>
 
           <section className={`collage-stage-wrap${mobilePanel === "canvas" ? " is-mobile-active" : ""}`}>
-            <div className="collage-stage-toolbar"><span className="collage-stage-chip">{editor.template.name}</span><span className="collage-stage-chip">{editor.filledCount}/{editor.template.cells.length} 格</span><div className="collage-fill-progress" title={`已填充 ${fillProgress}%`}><span style={{ width: `${fillProgress}%` }} /></div></div>
             <div ref={stageRef} className="collage-stage" onWheel={(event) => { if (!event.ctrlKey && !event.metaKey) return; event.preventDefault(); editor.setZoom(Math.max(30, Math.min(150, editor.zoom + (event.deltaY > 0 ? -5 : 5)))); }}>
-              <div className="collage-stage-sizer"><div className="collage-board-outer" style={{ width: `${BASE_BOARD_WIDTH * boardScale}px`, height: `${boardHeight * boardScale}px` }}><div className="collage-board" style={{ width: `${BASE_BOARD_WIDTH}px`, height: `${boardHeight}px`, background: buildBackgroundCss(editor.background), transform: `scale(${boardScale})` }}>
-                {editor.template.cells.map((cell, index) => { const rect = cellRect(cell); return <div key={cell.id} className={`collage-cell${editor.selectedCell === index ? " selected" : ""}${dragOverCell === index ? " is-drop-target" : ""}`} style={{ left: `${rect.x}px`, top: `${rect.y}px`, width: `${rect.w}px`, height: `${rect.h}px`, borderRadius: `${editor.radius}px` }} onPointerDown={(event) => onCellPointerDown(event, index)} onPointerMove={onCellPointerMove} onPointerUp={onCellPointerUp} onPointerCancel={onCellPointerUp} onDoubleClick={() => editor.cells[index]?.src && editor.resetCellFraming(index)} onDragEnter={(event) => { event.preventDefault(); setDragOverCell(index); }} onDragOver={(event) => event.preventDefault()} onDragLeave={() => setDragOverCell(-1)} onDrop={(event) => { event.preventDefault(); setDragOverCell(-1); const src = event.dataTransfer.getData("application/x-walleven-collage-src") || event.dataTransfer.getData("text/plain"); if (src) { editor.assignImageToCell(index, src); setInspectorTab("cell"); } else applyFiles(event.dataTransfer.files); }}><span className="collage-cell-badge">{index + 1}</span>{editor.cells[index]?.src ? <img src={editor.cells[index].src} style={cellImageStyle(cell, index)} alt="" draggable={false} onLoad={(event) => onImageLoad(event, editor.cells[index].src)} /> : <div className="collage-cell-empty"><Icon name="plus-lg" /><span>拖入图片</span></div>}</div>; })}
-                {!editor.filledCount && <div className="collage-board-empty" onClick={() => { setSideTab("uploads"); setMobilePanel("assets"); }}><Icon name="cloud-arrow-up" /><strong>开始创作</strong><span>上传、粘贴或从壁纸库挑选图片</span><button type="button" onClick={(event) => { event.stopPropagation(); fileInputRef.current?.click(); }}>选择图片</button></div>}
+              <div className="collage-stage-sizer"><div className="collage-board-outer" style={{ width: `${BASE_BOARD_WIDTH * boardScale}px`, height: `${boardHeight * boardScale}px` }}><div className={`collage-board${editor.filledCount ? "" : " is-blank"} ${paperTone}${showBadges ? "" : " is-hide-badges"}`} style={{ width: `${BASE_BOARD_WIDTH}px`, height: `${boardHeight}px`, background: buildBackgroundCss(editor.background), transform: `scale(${boardScale})` }}>
+                {editor.template.cells.map((cell, index) => { const rect = cellRect(cell); const filled = Boolean(editor.cells[index]?.src); return <div key={cell.id} className={`collage-cell${editor.selectedCell === index ? " selected" : ""}${dragOverCell === index ? " is-drop-target" : ""}${filled ? "" : " is-vacant"}`} style={{ left: `${rect.x}px`, top: `${rect.y}px`, width: `${rect.w}px`, height: `${rect.h}px`, borderRadius: `${editor.radius}px` }} onPointerDown={(event) => onCellPointerDown(event, index)} onPointerMove={onCellPointerMove} onPointerUp={onCellPointerUp} onPointerCancel={onCellPointerUp} onDoubleClick={() => filled && editor.resetCellFraming(index)} onDragEnter={(event) => { event.preventDefault(); setDragOverCell(index); }} onDragOver={(event) => event.preventDefault()} onDragLeave={() => setDragOverCell(-1)} onDrop={(event) => { event.preventDefault(); setDragOverCell(-1); const src = event.dataTransfer.getData("application/x-walleven-collage-src") || event.dataTransfer.getData("text/plain"); if (src) { editor.assignImageToCell(index, src); setInspectorTab("cell"); } else applyFiles(event.dataTransfer.files); }}><span className="collage-cell-badge">{index + 1}</span>{filled ? <img src={editor.cells[index].src} style={cellImageStyle(cell, index)} alt="" draggable={false} onLoad={(event) => onImageLoad(event, editor.cells[index].src)} /> : <div className="collage-cell-empty"><span className="collage-cell-empty__mark"><Icon name="plus-lg" /></span></div>}</div>; })}
                 {editor.caption.enabled && editor.caption.content.trim() && <div className="collage-caption" style={{ fontSize: `${Math.max(12, (Number(editor.caption.size) / 100) * BASE_BOARD_WIDTH)}px`, color: editor.caption.color, textShadow: editor.caption.shadow ? "0 2px 12px rgba(0,0,0,.55)" : "none", ...(editor.caption.position === "top" ? { top: "5%", bottom: "auto" } : editor.caption.position === "center" ? { top: "50%", bottom: "auto", transform: "translateY(-50%)" } : { bottom: "5%", top: "auto" }) }}>{editor.caption.content}</div>}
               </div></div></div>
             </div>
@@ -338,22 +475,95 @@ export function PuzzleView() {
           </section>
 
           <aside className={`collage-inspector${mobilePanel === "settings" ? " is-mobile-active" : ""}`}>
-            <div className="collage-inspector-tabs"><button type="button" className={inspectorTab === "canvas" ? "active" : ""} onClick={() => setInspectorTab("canvas")}>画布</button><button type="button" className={inspectorTab === "cell" ? "active" : ""} onClick={() => setInspectorTab("cell")}>格子</button></div>
+            <div className="collage-inspector-head">
+              <div className="collage-inspector-tabs">
+                <button type="button" className={inspectorTab === "canvas" ? "active" : ""} onClick={() => setInspectorTab("canvas")}>画布</button>
+                <button type="button" className={inspectorTab === "cell" ? "active" : ""} onClick={() => setInspectorTab("cell")}>格子</button>
+              </div>
+              <div className="collage-inspector-tools">
+                <button type="button" title="撤销" disabled={!editor.canUndo} onClick={editor.undo}><Icon name="arrow-counterclockwise" /></button>
+                <button type="button" title="重做" disabled={!editor.canRedo} onClick={editor.redo}><Icon name="arrow-clockwise" /></button>
+              </div>
+            </div>
             <div className="collage-inspector-body">
               {inspectorTab === "canvas" ? <>
-                <div className="collage-panel-intro collage-inspector-intro"><span className="collage-panel-intro__icon is-blue"><Icon name="bounding-box" /></span><div><strong>画布设置</strong><p>统一调整版式、留白与背景</p></div></div>
-                <div className="collage-section-label"><strong>布局与尺寸</strong><span>控制画布结构和格子边界</span></div>
-                <div className="collage-field"><span>画布比例</span><div className="collage-ratio-grid">{RATIO_PRESETS.map((preset) => <button key={preset.id} type="button" className={editor.ratioId === preset.id ? "active" : ""} onClick={() => editor.setRatio(preset.id)}>{preset.label}</button>)}</div></div>
-                {[["格子间距", editor.gap, editor.setGap, 28, 1], ["圆角", editor.radius, editor.setRadius, 36, 1], ["画布边距", editor.padding, editor.setPadding, 48, 2]].map(([label, value, setter, max, step]) => <div className="collage-field" key={label}><span>{label}</span><div className="collage-field-row"><input value={value} type="range" min="0" max={max} step={step} onChange={(event) => setter(Number(event.target.value))} /><output>{value}px</output></div></div>)}
-                <div className="collage-section-label"><strong>外观</strong><span>设置背景和叠加标题</span></div>
-                <div className="collage-field"><span>背景</span><div className="collage-bg-grid">{editor.BACKGROUND_PRESETS.map((preset) => <button key={preset.id} type="button" title={preset.label} className={!editor.customBgColor && editor.backgroundId === preset.id ? "active" : ""} style={{ background: buildBackgroundCss(preset) }} onClick={() => editor.setBackground(preset.id)} />)}<label className={`collage-bg-custom${editor.customBgColor ? " active" : ""}`} title="自定义颜色"><Icon name="eyedropper" /><input type="color" value={editor.customBgColor || "#ffffff"} onChange={(event) => editor.setCustomBgColor(event.target.value)} /></label></div></div>
-                <div className="collage-field"><span className="collage-field-toggle">标题文字<button type="button" className={`collage-switch${editor.caption.enabled ? " on" : ""}`} role="switch" aria-checked={editor.caption.enabled} aria-label="标题文字" onClick={() => editor.setCaption((caption) => ({ ...caption, enabled: !caption.enabled }))}><i /></button></span>{editor.caption.enabled && <><input className="collage-search" type="text" maxLength="40" placeholder="输入标题文字…" value={editor.caption.content} onChange={(event) => editor.setCaption((caption) => ({ ...caption, content: event.target.value }), { history: false })} /><div className="collage-text-row"><div className="collage-ratio-grid collage-text-pos">{TEXT_POSITIONS.map((position) => <button key={position.id} type="button" className={editor.caption.position === position.id ? "active" : ""} onClick={() => editor.setCaption((caption) => ({ ...caption, position: position.id }))}>{position.label}</button>)}</div><input className="collage-text-color" type="color" title="文字颜色" value={editor.caption.color} onChange={(event) => editor.setCaption((caption) => ({ ...caption, color: event.target.value }))} /></div><div className="collage-field-row"><input value={editor.caption.size} type="range" min="3" max="10" step="0.5" onChange={(event) => editor.setCaption((caption) => ({ ...caption, size: Number(event.target.value) }), { history: false })} /><output>字号</output></div></>}</div>
-                <div className="collage-field"><span>整体操作</span><div className="collage-quick-actions"><button type="button" disabled={!editor.filledCount} onClick={editor.clearAllCells}><Icon name="eraser" />清空所有格子</button></div></div>
+                <div className="collage-field">
+                  <span>比例</span>
+                  <div className="collage-ratio-grid">
+                    {RATIO_PRESETS.map((preset) => <button key={preset.id} type="button" className={editor.ratioId === preset.id ? "active" : ""} onClick={() => applyRatioId(preset.id)}>{preset.label === "模板默认" ? "默认" : preset.label}</button>)}
+                    <button type="button" className={editor.ratioId === CUSTOM_RATIO_ID ? "active" : ""} onClick={() => { const parts = ratioPartsFromValue(editor.boardRatio); applyRatioParts(parts.w, parts.h, { forceCustom: true }); requestAnimationFrame(() => ratioWidthRef.current?.focus()); }}>自定义</button>
+                  </div>
+                  <div className="collage-ratio-custom">
+                    <RatioPartInput inputRef={ratioWidthRef} value={ratioParts.w} ariaLabel="宽度比" onCommit={(w, options) => applyRatioParts(w, ratioParts.h, options)} />
+                    <em>:</em>
+                    <RatioPartInput value={ratioParts.h} ariaLabel="高度比" onCommit={(h, options) => applyRatioParts(ratioParts.w, h, options)} />
+                    <button type="button" className="collage-ratio-swap" title="对调宽高" onClick={() => applyRatioParts(ratioParts.h, ratioParts.w)}><Icon name="arrow-left-right" /></button>
+                  </div>
+                </div>
+                <div className="collage-field">
+                  <span>疏密</span>
+                  <div className="collage-seg">{CANVAS_DENSITY.map((item) => <button key={item.id} type="button" className={densityId === item.id ? "active" : ""} onClick={() => editor.applyCanvasStyle({ gap: item.gap, radius: item.radius, padding: item.padding })}>{item.label}</button>)}</div>
+                  {[["间距", editor.gap, editor.setGap, 28, 1], ["圆角", editor.radius, editor.setRadius, 36, 1], ["边距", editor.padding, editor.setPadding, 48, 2]].map(([label, value, setter, max, step]) => <div className="collage-field-row" key={label}><em>{label}</em><input value={value} type="range" min="0" max={max} step={step} onChange={(event) => setter(Number(event.target.value))} /><output>{value}</output></div>)}
+                </div>
+                <div className="collage-field">
+                  <span>背景</span>
+                  <div className="collage-bg-grid">{editor.BACKGROUND_PRESETS.map((preset) => <button key={preset.id} type="button" title={preset.label} className={!editor.customBgColor && editor.backgroundId === preset.id ? "active" : ""} style={{ background: buildBackgroundCss(preset) }} onClick={() => editor.setBackground(preset.id)} />)}<label className={`collage-bg-custom${editor.customBgColor ? " active" : ""}`} title="自定义颜色"><Icon name="eyedropper" /><input type="color" value={editor.customBgColor || "#ffffff"} onChange={(event) => editor.setCustomBgColor(event.target.value)} /></label></div>
+                </div>
+                <div className="collage-field">
+                  <span className="collage-field-toggle">标题<button type="button" className={`collage-switch${editor.caption.enabled ? " on" : ""}`} role="switch" aria-checked={editor.caption.enabled} aria-label="标题文字" onClick={() => editor.setCaption((caption) => ({ ...caption, enabled: !caption.enabled }))}><i /></button></span>
+                  {editor.caption.enabled && <>
+                    <input className="collage-search" type="text" maxLength="40" placeholder="输入标题…" value={editor.caption.content} onChange={(event) => editor.setCaption((caption) => ({ ...caption, content: event.target.value }), { history: false })} />
+                    <div className="collage-text-row">
+                      <div className="collage-seg collage-text-pos">{TEXT_POSITIONS.map((position) => <button key={position.id} type="button" className={editor.caption.position === position.id ? "active" : ""} onClick={() => editor.setCaption((caption) => ({ ...caption, position: position.id }))}>{position.label}</button>)}</div>
+                      <input className="collage-text-color" type="color" title="文字颜色" value={editor.caption.color} onChange={(event) => editor.setCaption((caption) => ({ ...caption, color: event.target.value }))} />
+                    </div>
+                    <div className="collage-field-row"><em>字号</em><input value={editor.caption.size} type="range" min="3" max="10" step="0.5" onChange={(event) => editor.setCaption((caption) => ({ ...caption, size: Number(event.target.value) }), { history: false })} /><output>{editor.caption.size}</output></div>
+                  </>}
+                </div>
+                <div className="collage-field">
+                  <span>导出</span>
+                  <div className="collage-seg">{["png", "jpeg"].map((format) => <button key={format} type="button" className={exportFormat === format ? "active" : ""} onClick={() => setExportFormat(format)}>{format === "jpeg" ? "JPG" : "PNG"}</button>)}</div>
+                  <div className="collage-seg" style={{ marginTop: 6 }}>
+                    {EXPORT_SIZES.map((size) => <button key={size.value} type="button" className={exportSizeMode === "preset" && exportWidth === size.value ? "active" : ""} onClick={() => { setExportSizeMode("preset"); setExportWidth(size.value); }}>{size.label}</button>)}
+                  </div>
+                  <div className="collage-ratio-custom collage-size-custom">
+                    <PixelSizeInput inputRef={exportWidthRef} value={exportW} ariaLabel="导出宽度" onCommit={(w, options) => applyExportPixels(w, exportH, options)} />
+                    <em>×</em>
+                    <PixelSizeInput value={exportH} ariaLabel="导出高度" onCommit={(h, options) => applyExportPixels(exportW, h, options)} />
+                    <span className="collage-size-unit">px</span>
+                    <button type="button" className="collage-ratio-swap" title="对调宽高" onClick={() => applyExportPixels(exportH, exportW)}><Icon name="arrow-left-right" /></button>
+                  </div>
+                </div>
+                <div className="collage-field">
+                  <span className="collage-field-toggle">格号<button type="button" className={`collage-switch${showBadges ? " on" : ""}`} role="switch" aria-checked={showBadges} aria-label="格号" onClick={() => setShowBadges((value) => !value)}><i /></button></span>
+                </div>
+                <button type="button" className="collage-inspector-clear" disabled={!editor.filledCount} onClick={editor.clearAllCells}><Icon name="eraser" />清空画布</button>
               </> : <>
-                <div className="collage-panel-intro collage-inspector-intro"><span className="collage-panel-intro__icon is-green"><Icon name="crop" /></span><div><strong>格子调整</strong><p>微调当前图片的取景与风格</p></div></div>
-                <div className="collage-cell-indicator"><span>第 {editor.selectedCell + 1} 格</span><small>{selectedCellState?.src ? "已填充" : "空白"}</small></div>
-                {selectedCellState?.src && <><div className="collage-section-label"><strong>图片效果</strong><span>调整构图和统一色调</span></div><div className="collage-field"><span>取景缩放</span><div className="collage-field-row"><input value={selectedCellState.scale} type="range" min="1" max="3" step="0.05" onChange={(event) => editor.updateCell(editor.selectedCell, { scale: Number(event.target.value) }, { history: false })} /><output>{Math.round(selectedCellState.scale * 100)}%</output></div><p className="collage-field-note">放大后直接在画布上拖动图片调整构图</p></div><div className="collage-field"><span>滤镜</span><div className="collage-filter-grid">{FILTER_PRESETS.map((preset) => <button key={preset.id} type="button" className={selectedCellState.filterId === preset.id ? "active" : ""} onClick={() => editor.setCellFilter(editor.selectedCell, preset.id)}><img src={selectedCellState.src} style={{ filter: buildFilterCss(preset.params) }} alt="" draggable={false} /><em>{preset.label}</em></button>)}</div><div className="collage-quick-actions" style={{ marginTop: 8 }}><button type="button" onClick={() => editor.applyFilterToAll(selectedCellState.filterId)}><Icon name="magic" />应用到全部格子</button></div></div></>}
-                <div className="collage-field"><span>格子操作</span><div className="collage-quick-actions"><button type="button" disabled={!selectedCellState?.src} onClick={() => editor.resetCellFraming(editor.selectedCell)}><Icon name="arrows-angle-contract" />重置取景</button><button type="button" disabled={editor.selectedCell <= 0} onClick={() => editor.swapCells(editor.selectedCell, editor.selectedCell - 1)}><Icon name="arrow-left-right" />与上一格交换</button><button type="button" disabled={editor.selectedCell >= editor.template.cells.length - 1} onClick={() => editor.swapCells(editor.selectedCell, editor.selectedCell + 1)}><Icon name="arrow-left-right" />与下一格交换</button><button type="button" disabled={!selectedCellState?.src} onClick={() => editor.clearCell(editor.selectedCell)}><Icon name="trash3" />清空当前格</button></div></div>
+                <div className="collage-cell-nav">{editor.template.cells.map((cell, index) => <button key={cell.id} type="button" className={editor.selectedCell === index ? "active" : ""} onClick={() => editor.setSelectedCell(index)}>{index + 1}</button>)}</div>
+                {selectedCellState?.src ? <>
+                  <div className="collage-field">
+                    <span>取景</span>
+                    <div className="collage-field-row"><em>缩放</em><input value={selectedCellState.scale} type="range" min="1" max="3" step="0.05" onChange={(event) => editor.updateCell(editor.selectedCell, { scale: Number(event.target.value) }, { history: false })} /><output>{Math.round(selectedCellState.scale * 100)}</output></div>
+                    <p className="collage-field-note">放大后可在画布上拖动构图</p>
+                  </div>
+                  <div className="collage-field">
+                    <span>滤镜</span>
+                    <div className="collage-filter-grid">{FILTER_PRESETS.map((preset) => <button key={preset.id} type="button" className={selectedCellState.filterId === preset.id ? "active" : ""} onClick={() => editor.setCellFilter(editor.selectedCell, preset.id)}><img src={selectedCellState.src} style={{ filter: buildFilterCss(preset.params) }} alt="" draggable={false} /><em>{preset.label}</em></button>)}</div>
+                    <button type="button" className="collage-inspector-clear" onClick={() => editor.applyFilterToAll(selectedCellState.filterId)}>应用到全部格子</button>
+                  </div>
+                  <div className="collage-cell-actions">
+                    <button type="button" onClick={() => editor.resetCellFraming(editor.selectedCell)}>重置取景</button>
+                    <button type="button" disabled={editor.selectedCell <= 0} onClick={() => editor.swapCells(editor.selectedCell, editor.selectedCell - 1)}>与上一格对调</button>
+                    <button type="button" disabled={editor.selectedCell >= editor.template.cells.length - 1} onClick={() => editor.swapCells(editor.selectedCell, editor.selectedCell + 1)}>与下一格对调</button>
+                    <button type="button" onClick={() => editor.clearCell(editor.selectedCell)}>清空此格</button>
+                  </div>
+                </> : (
+                  <div className="collage-side-empty collage-cell-empty-panel">
+                    <Icon name="plus-lg" />
+                    <span>第 {editor.selectedCell + 1} 格还是空的</span>
+                    <button type="button" onClick={() => fileInputRef.current?.click()}>添加图片</button>
+                  </div>
+                )}
               </>}
             </div>
           </aside>

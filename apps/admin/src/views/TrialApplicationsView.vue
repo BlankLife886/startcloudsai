@@ -152,7 +152,7 @@ const {
   refresh,
   retry,
 } = usePagedList<TrialApplication>(
-  async (cursor) => {
+  async (cursor, page) => {
     const result = await request<TrialApplicationPage>(
       "/api/v1/admin/trial-access-applications",
       {
@@ -162,6 +162,7 @@ const {
           search: filters.search.trim(),
           limit: pageSize.value,
           cursor,
+          page,
         },
       },
     );
@@ -169,6 +170,7 @@ const {
     return result;
   },
   () => ({ ...filters, limit: pageSize.value }),
+  { pageSeek: true },
 );
 
 const hasFilters = computed(

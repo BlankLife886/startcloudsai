@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -39,6 +40,32 @@ type Client struct {
 	webSearchModel    string
 	streamIdleTimeout time.Duration
 	maxOutputTokens   int
+	parallelToolCalls bool
+	suppressReasoning bool
+}
+
+// WithoutReasoning 用于意图判定这类只需要一两个词的内部调用。让模型为一个单词的输出
+// 做深度推理、还附带详细推理摘要，既白等几秒也白烧推理 token，而这类判定本来就有
+// 确定性的规则兜底。用户为正题选的推理档位不该被这种内部调用继承。
+func (c *Client) WithoutReasoning() *Client {
+	if c == nil {
+		return nil
+	}
+	clone := *c
+	clone.reasoningEffort = ""
+	clone.suppressReasoning = true
+	return &clone
+}
+
+// WithParallelToolCalls 允许上游在一轮里返回多个工具调用。默认关闭：调用方必须自己
+// 保证这些工具能乱序或并发执行，带副作用的工具批量返回会让执行顺序变得不可控。
+func (c *Client) WithParallelToolCalls(enabled bool) *Client {
+	if c == nil {
+		return nil
+	}
+	clone := *c
+	clone.parallelToolCalls = enabled
+	return &clone
 }
 
 type Message struct {
@@ -123,8 +150,12 @@ type AgentChatResult struct {
 	Text            string
 	Reasoning       string
 	ReasoningTokens int64
-	ToolCall        *ToolCall
-	Usage           ChatUsage
+	// ToolCall 始终是本轮的第一个工具调用，单工具的调用方可以只看它。
+	ToolCall *ToolCall
+	// ToolCalls 是本轮返回的全部工具调用，按上游给的顺序排列。开启并行后模型可以
+	// 一次要求搜三个关键词，调用方自行决定哪些能并发。
+	ToolCalls []ToolCall
+	Usage     ChatUsage
 }
 
 type WebSearchOptions struct {
@@ -814,7 +845,7 @@ func (c *Client) ChatAgentWithTools(
 		"stream_options":      map[string]any{"include_usage": true},
 		"tools":               declarations,
 		"tool_choice":         "auto",
-		"parallel_tool_calls": false,
+		"parallel_tool_calls": c.parallelToolCalls,
 	}
 	c.applyChatOutputLimit(payload)
 	c.applyReasoningRequest(payload)
@@ -965,15 +996,25 @@ func (c *Client) chatAgentWithPayload(
 	if !completed {
 		return result, receivedOutput, errChatStreamIncomplete
 	}
-	if len(toolNames) > 1 || len(toolArguments) > 1 {
+	if !c.parallelToolCalls && (len(toolNames) > 1 || len(toolArguments) > 1) {
 		return result, receivedOutput, errors.New("provider returned multiple tool calls while parallel tool calls are disabled")
 	}
 	if minToolIndex >= 0 {
-		callID := toolIDs[minToolIndex]
-		if callID == "" {
-			callID = fmt.Sprintf("call_%d", minToolIndex)
+		indexes := make([]int, 0, len(toolNames))
+		for index := range toolNames {
+			indexes = append(indexes, index)
 		}
-		result.ToolCall = &ToolCall{ID: callID, Name: toolNames[minToolIndex], Arguments: toolArguments[minToolIndex]}
+		sort.Ints(indexes)
+		result.ToolCalls = make([]ToolCall, 0, len(indexes))
+		for _, index := range indexes {
+			callID := toolIDs[index]
+			if callID == "" {
+				callID = fmt.Sprintf("call_%d", index)
+			}
+			result.ToolCalls = append(result.ToolCalls,
+				ToolCall{ID: callID, Name: toolNames[index], Arguments: toolArguments[index]})
+		}
+		result.ToolCall = &result.ToolCalls[0]
 	}
 	return result, receivedOutput, nil
 }
@@ -1498,7 +1539,7 @@ func (c *Client) usesCompletionTokenLimit() bool {
 }
 
 func (c *Client) applyReasoningRequest(payload map[string]any) {
-	if c == nil || payload == nil {
+	if c == nil || payload == nil || c.suppressReasoning {
 		return
 	}
 	effort := strings.TrimSpace(c.reasoningEffort)

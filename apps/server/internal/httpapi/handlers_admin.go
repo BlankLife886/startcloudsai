@@ -19,6 +19,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
@@ -162,6 +163,11 @@ func (s *Server) adminStats(c *gin.Context, _ *store.User) {
 // ---------- users ----------
 
 func (s *Server) adminListUsers(c *gin.Context, _ *store.User) {
+	extra, err := adminListFilter(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	status := c.Query("status")
 	if status != "" && status != "active" && status != "banned" {
 		fail(c, apperr.E("validation_error", "无效的用户状态", 422))
@@ -194,16 +200,20 @@ func (s *Server) adminListUsers(c *gin.Context, _ *store.User) {
 	}
 	ctx := c.Request.Context()
 	search := strings.TrimSpace(c.Query("search"))
-	total, err := store.CountUsersFiltered(ctx, s.St.Pool, search, status, lifecycle, risk, profileTag)
+	if pageNum > 0 && (pageNum-1)*limit >= store.ListCountCap {
+		fail(c, errPageBeyondCap)
+		return
+	}
+	total, err := store.CountUsersCapped(ctx, s.St.Pool, search, status, lifecycle, risk, profileTag, extra)
 	if err != nil {
 		fail(c, err)
 		return
 	}
 	var rows []*store.User
 	if pageNum > 0 {
-		rows, err = store.ListUsersOffset(ctx, s.St.Pool, search, status, lifecycle, risk, profileTag, limit, (pageNum-1)*limit)
+		rows, err = store.ListUsersOffset(ctx, s.St.Pool, search, status, lifecycle, risk, profileTag, limit, (pageNum-1)*limit, extra)
 	} else {
-		rows, err = store.ListUsers(ctx, s.St.Pool, search, status, lifecycle, risk, profileTag, limit, cursor)
+		rows, err = store.ListUsers(ctx, s.St.Pool, search, status, lifecycle, risk, profileTag, limit, cursor, extra)
 	}
 	if err != nil {
 		fail(c, err)
@@ -234,21 +244,10 @@ func (s *Server) adminListUsers(c *gin.Context, _ *store.User) {
 			missingIDs = append(missingIDs, id)
 		}
 	}
-	if len(missingIDs) > 0 {
-		rules, rulesErr := settings.UserProfileRules(ctx, s.St.Pool)
-		if rulesErr != nil {
-			fail(c, rulesErr)
-			return
-		}
-		if err := store.RefreshUserProfiles(ctx, s.St.Pool, missingIDs, rules, time.Now().UTC()); err != nil {
-			fail(c, err)
-			return
-		}
-		profiles, err = store.UserProfileMetricsByUserIDs(ctx, s.St.Pool, ids)
-		if err != nil {
-			fail(c, err)
-			return
-		}
+	// 列表只读：缺少画像快照的用户交给 Worker 刷新，本次返回空画像。
+	if err := store.EnqueueUserProfileRefresh(ctx, s.St.Pool, missingIDs); err != nil {
+		fail(c, err)
+		return
 	}
 	now := time.Now().UTC()
 	subscribed, err := store.ActiveSubscriptionFlagsByUserIDs(ctx, s.St.Pool, ids, now)
@@ -288,11 +287,11 @@ func (s *Server) adminListUsers(c *gin.Context, _ *store.User) {
 		for _, u := range rows {
 			items = append(items, serialize(u))
 		}
-		ok(c, gin.H{"items": items, "nextCursor": nil, "total": total})
+		ok(c, gin.H{"items": items, "nextCursor": nil, "total": total.Value, "totalCapped": total.Capped})
 		return
 	}
 	page := buildPage(rows, limit, serialize)
-	page["total"] = total
+	page["total"], page["totalCapped"] = total.Value, total.Capped
 	ok(c, page)
 }
 
@@ -1008,6 +1007,11 @@ func (s *Server) adminDeletePlan(c *gin.Context, _ *store.User) {
 // ---------- tasks ----------
 
 func (s *Server) adminListTasks(c *gin.Context, _ *store.User) {
+	extra, err := adminListFilter(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	taskType := c.Query("type")
 	status := c.Query("status")
 	errorCode := strings.TrimSpace(c.Query("errorCode"))
@@ -1033,22 +1037,46 @@ func (s *Server) adminListTasks(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	var userIDs []uuid.UUID
-	if userQuery := c.Query("user"); userQuery != "" {
-		userIDs, err = s.matchUserIDsOrImpossible(c, userQuery)
-		if err != nil {
-			fail(c, err)
-			return
-		}
-	}
-	ctx := c.Request.Context()
-	rows, err := store.ListAdminTasks(ctx, s.St.Pool, taskType, status, errorCode, userIDs, limit, cursor, source)
+	// page 跳转：先定位目标页的排他起点游标，再按游标取页；与页码分页一样只覆盖前 ListCountCap 条。
+	pageNum, err := pageNumber(c)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	overview, err := store.GetAdminTaskOverview(ctx, s.St.Pool, taskType, errorCode, userIDs, source)
-	if err != nil {
+	if pageNum > 0 && (pageNum-1)*limit >= store.ListCountCap {
+		fail(c, errPageBeyondCap)
+		return
+	}
+	var userIDs []uuid.UUID
+	ctx := c.Request.Context()
+	pastEnd := false
+	if pageNum > 0 {
+		cursor, err = store.AdminTaskPageCursor(ctx, s.St.Pool, taskType, status, errorCode, userIDs, (pageNum-1)*limit, source, extra)
+		if err != nil {
+			fail(c, err)
+			return
+		}
+		pastEnd = pageNum > 1 && cursor == nil
+	}
+	var rows []*store.Task
+	var overview *store.AdminTaskOverview
+	group, queryCtx := errgroup.WithContext(ctx)
+	group.Go(func() error {
+		if pastEnd {
+			return nil
+		}
+		var queryErr error
+		rows, queryErr = store.ListAdminTasks(queryCtx, s.St.Pool, taskType, status, errorCode, userIDs, limit, cursor, source, extra)
+		return queryErr
+	})
+	if c.Query("summary") != "false" {
+		group.Go(func() error {
+			var queryErr error
+			overview, queryErr = store.GetAdminTaskOverview(queryCtx, s.St.Pool, taskType, errorCode, userIDs, source, extra)
+			return queryErr
+		})
+	}
+	if err := group.Wait(); err != nil {
 		fail(c, err)
 		return
 	}
@@ -1081,7 +1109,17 @@ func (s *Server) adminListTasks(c *gin.Context, _ *store.User) {
 		}
 		return d
 	})
-	page["summary"] = overview
+	if overview != nil {
+		page["summary"] = overview
+	}
+	if pageNum > 0 {
+		page["page"] = pageNum
+		if cursor != nil {
+			page["cursor"] = encodeCursor(cursor.CreatedAt, cursor.ID)
+		} else {
+			page["cursor"] = nil
+		}
+	}
 	ids := make([]string, 0, len(rows))
 	for _, t := range rows {
 		ids = append(ids, t.ID.String())
@@ -1096,6 +1134,11 @@ func (s *Server) adminListTasks(c *gin.Context, _ *store.User) {
 }
 
 func (s *Server) adminPurgeTasks(c *gin.Context, _ *store.User) {
+	extra, err := adminListFilter(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	taskType := c.Query("type")
 	status := c.Query("status")
 	errorCode := strings.TrimSpace(c.Query("errorCode"))
@@ -1121,15 +1164,7 @@ func (s *Server) adminPurgeTasks(c *gin.Context, _ *store.User) {
 		return
 	}
 	var userIDs []uuid.UUID
-	var err error
-	if userQuery := c.Query("user"); userQuery != "" {
-		userIDs, err = s.matchUserIDsOrImpossible(c, userQuery)
-		if err != nil {
-			fail(c, err)
-			return
-		}
-	}
-	result, err := store.PurgeFinishedAdminTasks(c.Request.Context(), s.St, taskType, status, errorCode, userIDs, source)
+	result, err := store.PurgeFinishedAdminTasks(c.Request.Context(), s.St, taskType, status, errorCode, userIDs, source, extra)
 	if err != nil {
 		fail(c, err)
 		return
@@ -1222,16 +1257,14 @@ func (s *Server) adminSubmissions(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	promptBySubmission := make(map[uuid.UUID]*store.PromptEntry, len(rows))
+	submissionIDs := make([]uuid.UUID, 0, len(rows))
 	for _, sub := range rows {
-		entry, promptErr := store.GetPromptEntryByGallerySubmission(ctx, s.St.Pool, sub.ID)
-		if promptErr != nil {
-			fail(c, promptErr)
-			return
-		}
-		if entry != nil {
-			promptBySubmission[sub.ID] = entry
-		}
+		submissionIDs = append(submissionIDs, sub.ID)
+	}
+	promptBySubmission, err := store.GetPromptEntriesByGallerySubmissions(ctx, s.St.Pool, submissionIDs)
+	if err != nil {
+		fail(c, err)
+		return
 	}
 	unique := map[uuid.UUID]bool{}
 	var uids []uuid.UUID
@@ -2216,6 +2249,7 @@ var settingsCamel = map[string]string{
 	"platform_log_user_enabled":                   "platformLogUserEnabled",
 	"platform_log_retention_days":                 "platformLogRetentionDays",
 	"platform_log_max_mb":                         "platformLogMaxMb",
+	"audit_log_retention_days":                    "auditLogRetentionDays",
 	"user_profile_rules":                          "userProfileRules",
 	"submission_enabled":                          "submissionEnabled",
 	"auto_approve":                                "autoApprove",
@@ -2540,6 +2574,12 @@ func (s *Server) adminPutSettings(c *gin.Context, _ *store.User) {
 			var v int64
 			if err := json.Unmarshal(raw, &v); err != nil || v < 1 || v > 90 {
 				fail(c, apperr.E("validation_error", "platformLogRetentionDays: 须在 1-90 天之间", 422))
+				return
+			}
+		case "audit_log_retention_days":
+			var v int64
+			if err := json.Unmarshal(raw, &v); err != nil || v < 7 || v > 365 {
+				fail(c, apperr.E("validation_error", "auditLogRetentionDays: 须在 7-365 天之间", 422))
 				return
 			}
 		case "platform_log_max_mb":

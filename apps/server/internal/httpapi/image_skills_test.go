@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"context"
 	"encoding/json"
 	"testing"
 
@@ -20,7 +19,7 @@ func decodeSkillData(t *testing.T, body []byte) map[string]any {
 	return envelope.Data
 }
 
-// 后台录入官方词条，用户端能看到并装载；官方词条对用户只读。
+// 后台录入官方词条，用户端能看到；官方词条对用户只读。
 func TestImageSkillLibraryFlowFromAdminToUser(t *testing.T) {
 	env := newCommunityEnv(t)
 	_, admin := env.newUserSession(t, "admin")
@@ -59,45 +58,27 @@ func TestImageSkillLibraryFlowFromAdminToUser(t *testing.T) {
 		t.Fatalf("用户删除了官方词条: %d %s", r.Code, r.Body.String())
 	}
 
-	// 装载到全局后，所有生图页面都带上它。
-	if r := env.do(t, "PUT", "/api/v1/me/skill-bindings/global", map[string]any{"skillIds": []string{skillID}}, token); r.Code != 200 {
-		t.Fatalf("bind global: %d %s", r.Code, r.Body.String())
-	}
-	r = env.do(t, "GET", "/api/v1/me/image-skills/resolved?taskType=t2i", nil, token)
-	if r.Code != 200 {
-		t.Fatalf("resolve: %d %s", r.Code, r.Body.String())
-	}
-	resolved := decodeSkillData(t, r.Body.Bytes())["items"].([]any)
-	if len(resolved) != 1 {
-		t.Fatalf("全局装载未生效: %+v", resolved)
-	}
-	if first := resolved[0].(map[string]any); first["instruction"] == "" {
-		t.Fatalf("解析结果缺少拼接所需的 instruction: %+v", first)
+	// 列表带云端配额信息。
+	r = env.do(t, "GET", "/api/v1/me/image-skills", nil, token)
+	data := decodeSkillData(t, r.Body.Bytes())
+	if data["owned"] != float64(0) || data["maxOwned"] != float64(store.SkillMaxOwnedPerUser) {
+		t.Fatalf("列表缺少云端配额: %+v", data)
 	}
 
-	// 未知生图页面要被拒绝。
-	if r := env.do(t, "GET", "/api/v1/me/image-skills/resolved?taskType=nope", nil, token); r.Code != 422 {
-		t.Fatalf("未知 taskType 未被拒: %d %s", r.Code, r.Body.String())
-	}
-	if r := env.do(t, "PUT", "/api/v1/me/skill-bindings/nope", map[string]any{"skillIds": []string{skillID}}, token); r.Code != 422 {
-		t.Fatalf("未知装载位未被拒: %d %s", r.Code, r.Body.String())
-	}
-
-	// 后台停用后，已装载的词条立即不再生效。
+	// 后台停用后，用户端立即看不到。
 	if r := env.do(t, "PATCH", "/api/v1/admin/image-skills/"+skillID, map[string]any{"active": false}, admin); r.Code != 200 {
 		t.Fatalf("disable: %d %s", r.Code, r.Body.String())
 	}
-	r = env.do(t, "GET", "/api/v1/me/image-skills/resolved?taskType=t2i", nil, token)
+	r = env.do(t, "GET", "/api/v1/me/image-skills", nil, token)
 	if left := decodeSkillData(t, r.Body.Bytes())["items"].([]any); len(left) != 0 {
-		t.Fatalf("停用后仍在生效: %+v", left)
+		t.Fatalf("停用后仍可见: %+v", left)
 	}
 }
 
-// 用户自建词条只属于自己，且页面绑定覆盖全局。
-func TestUserOwnedSkillIsolationAndPageOverride(t *testing.T) {
+// 用户自建词条只属于自己；云端配额按用户各算。
+func TestUserOwnedSkillIsolationAndCloudQuota(t *testing.T) {
 	env := newCommunityEnv(t)
-	ctx := context.Background()
-	mine, token := env.newUserSession(t, "user")
+	_, token := env.newUserSession(t, "user")
 	_, otherToken := env.newUserSession(t, "user")
 
 	r := env.do(t, "POST", "/api/v1/me/image-skills", map[string]any{
@@ -121,47 +102,85 @@ func TestUserOwnedSkillIsolationAndPageOverride(t *testing.T) {
 	if r := env.do(t, "PATCH", "/api/v1/me/image-skills/"+ownID, map[string]any{"name": "篡改"}, otherToken); r.Code != 404 {
 		t.Fatalf("其他用户改动了我的词条: %d %s", r.Code, r.Body.String())
 	}
-	if r := env.do(t, "PUT", "/api/v1/me/skill-bindings/global", map[string]any{"skillIds": []string{ownID}}, otherToken); r.Code != 404 {
-		t.Fatalf("其他用户装载了我的词条: %d %s", r.Code, r.Body.String())
-	}
 
-	// 页面绑定覆盖全局。
-	pageSkill := env.do(t, "POST", "/api/v1/me/image-skills", map[string]any{
-		"name": "涂色专用", "instruction": "线稿清晰，配色明快。", "taskTypes": []string{"coloring"},
-	}, token)
-	pageID := decodeSkillData(t, pageSkill.Body.Bytes())["id"].(string)
-	if r := env.do(t, "PUT", "/api/v1/me/skill-bindings/global", map[string]any{"skillIds": []string{ownID}}, token); r.Code != 200 {
-		t.Fatalf("bind global: %d %s", r.Code, r.Body.String())
+	// 云端配额：满了要 422，删掉一个后又能存。
+	for index := 1; index < store.SkillMaxOwnedPerUser; index++ {
+		if r := env.do(t, "POST", "/api/v1/me/image-skills", map[string]any{
+			"name": "填充", "instruction": "x",
+		}, token); r.Code != 200 {
+			t.Fatalf("第 %d 个云端技能应成功: %d %s", index+1, r.Code, r.Body.String())
+		}
 	}
-	if r := env.do(t, "PUT", "/api/v1/me/skill-bindings/coloring", map[string]any{"skillIds": []string{pageID}}, token); r.Code != 200 {
-		t.Fatalf("bind page: %d %s", r.Code, r.Body.String())
+	if r := env.do(t, "POST", "/api/v1/me/image-skills", map[string]any{
+		"name": "超出", "instruction": "x",
+	}, token); r.Code != 422 {
+		t.Fatalf("超出云端配额应 422: %d %s", r.Code, r.Body.String())
 	}
-	r = env.do(t, "GET", "/api/v1/me/image-skills/resolved?taskType=coloring", nil, token)
-	resolved := decodeSkillData(t, r.Body.Bytes())["items"].([]any)
-	if len(resolved) != 1 || resolved[0].(map[string]any)["id"] != pageID {
-		t.Fatalf("coloring 应只用页面绑定: %+v", resolved)
+	r = env.do(t, "GET", "/api/v1/me/image-skills", nil, token)
+	if data := decodeSkillData(t, r.Body.Bytes()); data["owned"] != float64(store.SkillMaxOwnedPerUser) {
+		t.Fatalf("owned 应为满额: %+v", data)
 	}
-	r = env.do(t, "GET", "/api/v1/me/image-skills/resolved?taskType=t2i", nil, token)
-	fallback := decodeSkillData(t, r.Body.Bytes())["items"].([]any)
-	if len(fallback) != 1 || fallback[0].(map[string]any)["id"] != ownID {
-		t.Fatalf("t2i 应回落到全局: %+v", fallback)
-	}
-
-	// 删除词条要连带清掉装载记录。
-	if r := env.do(t, "DELETE", "/api/v1/me/image-skills/"+pageID, nil, token); r.Code != 200 {
+	if r := env.do(t, "DELETE", "/api/v1/me/image-skills/"+ownID, nil, token); r.Code != 200 {
 		t.Fatalf("delete own skill: %d %s", r.Code, r.Body.String())
 	}
-	bindings, err := store.GetSkillBindings(ctx, env.st.Pool, mine.ID)
-	if err != nil {
-		t.Fatal(err)
+	if r := env.do(t, "POST", "/api/v1/me/image-skills", map[string]any{
+		"name": "腾出位置后", "instruction": "x",
+	}, token); r.Code != 200 {
+		t.Fatalf("删掉后应能再存: %d %s", r.Code, r.Body.String())
 	}
-	if len(bindings["coloring"]) != 0 {
-		t.Fatalf("删除词条后装载记录未清理: %+v", bindings)
+	// 配额只算自己的：别人一个都没存。
+	r = env.do(t, "GET", "/api/v1/me/image-skills", nil, otherToken)
+	if data := decodeSkillData(t, r.Body.Bytes()); data["owned"] != float64(0) {
+		t.Fatalf("配额串到了其他用户: %+v", data)
 	}
-	// 删掉页面绑定后 coloring 重新回落到全局。
-	r = env.do(t, "GET", "/api/v1/me/image-skills/resolved?taskType=coloring", nil, token)
-	back := decodeSkillData(t, r.Body.Bytes())["items"].([]any)
-	if len(back) != 1 || back[0].(map[string]any)["id"] != ownID {
-		t.Fatalf("删除后未回落全局: %+v", back)
+}
+
+// 调用名：可自定义、留空自动推导、重复要被 422 拒绝，改名不影响调用名。
+func TestImageSkillSlug(t *testing.T) {
+	env := newCommunityEnv(t)
+	_, token := env.newUserSession(t, "user")
+
+	r := env.do(t, "POST", "/api/v1/me/image-skills", map[string]any{
+		"name": "柔光人像", "slug": "Soft-Light", "instruction": "柔和顶光。",
+	}, token)
+	if r.Code != 200 {
+		t.Fatalf("create with slug: %d %s", r.Code, r.Body.String())
+	}
+	first := decodeSkillData(t, r.Body.Bytes())
+	if first["slug"] != "soft-light" {
+		t.Fatalf("调用名未收敛为小写: %+v", first)
+	}
+	r = env.do(t, "POST", "/api/v1/me/image-skills", map[string]any{
+		"name": "Product Hero", "instruction": "突出材质。",
+	}, token)
+	second := decodeSkillData(t, r.Body.Bytes())
+	if second["slug"] != "product-hero" {
+		t.Fatalf("留空的调用名未从名称推导: %+v", second)
+	}
+	if r := env.do(t, "POST", "/api/v1/me/image-skills", map[string]any{
+		"name": "撞名", "slug": "soft-light", "instruction": "x",
+	}, token); r.Code != 422 {
+		t.Fatalf("重复调用名应 422: %d %s", r.Code, r.Body.String())
+	}
+	if r := env.do(t, "POST", "/api/v1/me/image-skills", map[string]any{
+		"name": "坏格式", "slug": "Bad_Slug!", "instruction": "x",
+	}, token); r.Code != 422 {
+		t.Fatalf("非法调用名应 422: %d %s", r.Code, r.Body.String())
+	}
+	// 改名不影响已有调用名；显式改调用名要生效。
+	firstID := first["id"].(string)
+	r = env.do(t, "PATCH", "/api/v1/me/image-skills/"+firstID, map[string]any{"name": "改名"}, token)
+	if decodeSkillData(t, r.Body.Bytes())["slug"] != "soft-light" {
+		t.Fatalf("改名不该改调用名: %s", r.Body.String())
+	}
+	r = env.do(t, "PATCH", "/api/v1/me/image-skills/"+firstID, map[string]any{"slug": "soft-light-v2"}, token)
+	if decodeSkillData(t, r.Body.Bytes())["slug"] != "soft-light-v2" {
+		t.Fatalf("显式改调用名未生效: %s", r.Body.String())
+	}
+
+	// 搜索支持按调用名找。
+	r = env.do(t, "GET", "/api/v1/me/image-skills?search=$product", nil, token)
+	if found := decodeSkillData(t, r.Body.Bytes())["items"].([]any); len(found) != 1 {
+		t.Fatalf("按调用名搜索失败: %+v", found)
 	}
 }

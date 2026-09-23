@@ -70,6 +70,24 @@ func (s *Server) adminDiscoverProviderModels(c *gin.Context, _ *store.User) {
 		return
 	}
 	provider.BaseURL = strings.TrimRight(strings.TrimSpace(provider.BaseURL), "/")
+	// Test the requested draft route, not the (possibly empty/stale) primary route.
+	if routeID := strings.TrimSpace(c.Query("routeId")); routeID != "" {
+		found := false
+		for _, route := range provider.Routes {
+			if route.ID == routeID {
+				provider.Routes = []modelconfig.ProviderRoute{route}
+				provider.BaseURL = strings.TrimRight(strings.TrimSpace(route.BaseURL), "/")
+				provider.APIKey = route.APIKey
+				provider.TimeoutSecs = route.TimeoutSecs
+				found = true
+				break
+			}
+		}
+		if !found {
+			fail(c, apperr.E("validation_error", "线路不存在", 422))
+			return
+		}
+	}
 	allowPrivate := s.Cfg.C2APrivateNetworkAllowed()
 	if !modelconfig.ValidAdapter(provider.Adapter) {
 		fail(c, apperr.E("validation_error", "请选择有效的调用协议", 422))
@@ -160,7 +178,8 @@ func (s *Server) adminDiscoverProviderModels(c *gin.Context, _ *store.User) {
 	}
 	if strings.TrimSpace(c.Query("routeId")) != "" {
 		ok(c, gin.H{
-			"ok": true, "modelCount": len(catalog.Models),
+			"ok": true, "modelCount": len(catalog.Models), "models": catalog.Models,
+			"warning": catalog.Warning,
 			"compatibleCount": catalog.CompatibleCount, "taskModelCount": catalog.TaskModelCount,
 		})
 		return

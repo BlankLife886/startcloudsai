@@ -1,6 +1,8 @@
 # Upstream
 
-This application is derived from `basketikun/infinite-canvas`.
+The integrated canvas under `src/canvas` is derived from
+`basketikun/infinite-canvas`. This attribution describes the canvas source,
+not the entire StarCloudsAI web application.
 
 - Repository: https://github.com/basketikun/infinite-canvas
 - Imported release: `v0.15.1`

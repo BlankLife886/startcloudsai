@@ -24,6 +24,7 @@ const documentScrollRoutes = new Set([
   "/studio",
   "/prompts",
   "/history",
+  "/skills",
   "/submissions",
   "/orders",
   "/share",

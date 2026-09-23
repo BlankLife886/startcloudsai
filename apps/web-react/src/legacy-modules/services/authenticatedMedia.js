@@ -1,6 +1,8 @@
 // 新后端产物为短期 presigned URL 或 /api/v1/files/{key} 站内地址，
 // 鉴权靠 HttpOnly Cookie，无需附加 Authorization 头。
 
+import notificationService from './notification.js'
+
 const mediaCache = new Map()
 const inFlightMediaFetches = new Map()
 const MAX_MEDIA_CACHE_ENTRIES = 72
@@ -278,6 +280,65 @@ export function isRetryableAuthenticatedMediaError(error) {
   return status === 0 || status >= 500
 }
 
+function reportMediaProgress(callback, progress) {
+  if (typeof callback !== 'function') return
+  try {
+    callback(progress)
+  } catch {
+    // 进度展示不能影响实际下载。
+  }
+}
+
+async function readMediaResponseBlob(response, onProgress) {
+  if (typeof onProgress !== 'function') return response.blob()
+
+  const reader = response.body?.getReader?.()
+  if (!reader) {
+    const blob = await response.blob()
+    reportMediaProgress(onProgress, {
+      loaded: blob.size,
+      total: blob.size,
+      percent: blob.size ? 100 : 0,
+    })
+    return blob
+  }
+
+  const headerLength = Number(response.headers.get('content-length'))
+  const total = Number.isFinite(headerLength) && headerLength > 0 ? headerLength : 0
+  const chunks = []
+  let loaded = 0
+  reportMediaProgress(onProgress, { loaded: 0, total, percent: total ? 0 : null })
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!value?.byteLength) continue
+      chunks.push(value)
+      loaded += value.byteLength
+      reportMediaProgress(onProgress, {
+        loaded,
+        total,
+        percent: total ? Math.min(100, Math.round((loaded / total) * 100)) : null,
+      })
+    }
+  } catch (error) {
+    try {
+      await reader.cancel()
+    } catch {
+      // The original stream error is more useful to callers.
+    }
+    throw error
+  }
+
+  reportMediaProgress(onProgress, {
+    loaded,
+    total: total || loaded,
+    percent: 100,
+  })
+  return new Blob(chunks, { type: response.headers.get('content-type') || '' })
+}
+
 export async function fetchAuthenticatedMediaBlob(value = '', options = {}) {
   const url = String(value || '').trim()
   if (!url) throw new Error('没有可读取的图片')
@@ -304,7 +365,7 @@ export async function fetchAuthenticatedMediaBlob(value = '', options = {}) {
     throw mediaReadError(response.status)
   }
 
-  const blob = await response.blob()
+  const blob = await readMediaResponseBlob(response, options.onProgress)
   if (!blob.size) throw new Error('任务图片内容无效')
   const type = String(blob.type || '').toLowerCase()
   if (
@@ -444,29 +505,103 @@ export function getCachedAuthenticatedMediaBlob(value = '', options = {}) {
 export async function downloadAuthenticatedMedia(value = '', filename = 'ai-image.png', options = {}) {
   const source = String(value || '').trim()
   if (!source) throw new Error('没有可下载的图片')
-  const blob = await fetchAuthenticatedMediaBlob(source, {
-    cache: 'no-store',
-    fallbackUrl: options.fallbackUrl,
-  })
-  const objectUrl = URL.createObjectURL(blob)
-  const anchor = document.createElement('a')
-  anchor.href = objectUrl
-  anchor.download = resolveMediaDownloadFilename(filename, blob.type)
-  anchor.rel = 'noopener'
-  anchor.style.display = 'none'
-  document.body.appendChild(anchor)
-  try {
-    anchor.click()
-  } finally {
-    anchor.remove()
-    // Large 4K/8K blobs may still be consumed by the browser download process
-    // after the synthetic click returns. Revoking after one second can abort it.
-    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000)
+
+  const requestedFilename = String(filename || 'ai-image').replace(/\s+/g, ' ').trim() || '图片'
+  const displayName = requestedFilename.slice(0, 120)
+  const notificationId = options.notify === false
+    ? null
+    : notificationService.addNotification({
+        type: 'info',
+        title: '下载中',
+        message: displayName,
+        position: 'bottom-right',
+        duration: 0,
+        closable: true,
+        dedupe: false,
+        download: true,
+        progress: 0,
+        progressKnown: false,
+      })
+  let lastProgress = -1
+  let lastProgressAt = 0
+  const updateDownloadProgress = (progress = {}) => {
+    reportMediaProgress(options.onProgress, progress)
+    if (notificationId === null) return
+
+    const total = Number(progress.total || 0)
+    const rawPercent = Number(progress.percent)
+    const known = total > 0 && Number.isFinite(rawPercent)
+    const percent = known ? Math.max(0, Math.min(100, Math.round(rawPercent))) : null
+    const now = Date.now()
+    if (
+      lastProgressAt &&
+      ((known && percent === lastProgress && percent !== 100 && now - lastProgressAt < 120) ||
+        (!known && now - lastProgressAt < 120))
+    ) {
+      return
+    }
+    lastProgress = known ? percent : -1
+    lastProgressAt = now
+    notificationService.updateNotification(notificationId, {
+      progress: percent,
+      progressKnown: known,
+    })
   }
-  return {
-    bytes: blob.size,
-    contentType: blob.type,
-    filename: anchor.download,
+
+  const updateDownloadResult = (patch) => {
+    if (notificationId !== null) notificationService.updateNotification(notificationId, patch)
+  }
+
+  try {
+    const blob = await fetchAuthenticatedMediaBlob(source, {
+      cache: 'no-store',
+      fallbackUrl: options.fallbackUrl,
+      signal: options.signal,
+      onProgress: updateDownloadProgress,
+    })
+    const objectUrl = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = objectUrl
+    anchor.download = resolveMediaDownloadFilename(filename, blob.type)
+    anchor.rel = 'noopener'
+    anchor.style.display = 'none'
+    document.body.appendChild(anchor)
+    try {
+      anchor.click()
+    } finally {
+      anchor.remove()
+      // Large 4K/8K blobs may still be consumed by the browser download process
+      // after the synthetic click returns. Revoking after one second can abort it.
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000)
+    }
+    updateDownloadResult({
+      type: 'success',
+      title: '下载完成',
+      message: `${anchor.download} 已保存`,
+      download: false,
+      progress: 100,
+      progressKnown: true,
+      duration: 3200,
+      closable: false,
+    })
+    return {
+      bytes: blob.size,
+      contentType: blob.type,
+      filename: anchor.download,
+    }
+  } catch (error) {
+    updateDownloadResult({
+      type: 'error',
+      title: '下载失败',
+      message: error?.message || '图片下载失败',
+      download: false,
+      progress: null,
+      progressKnown: false,
+      duration: 5200,
+      closable: true,
+    })
+    if (error && typeof error === 'object') error.downloadNotificationShown = true
+    throw error
   }
 }
 

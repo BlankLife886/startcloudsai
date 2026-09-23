@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { useVirtualMasonryFeed } from "../features/prompts/useVirtualMasonryFeed.js";
 import { taskFailureMessage } from "../features/history/taskFailureMessage.js";
@@ -80,6 +80,13 @@ const TYPE_FILTERS = [
   ["", "全部"],
   [CANVAS_SOURCE, "无限画布"],
   ...Object.entries(TASK_TYPE_LABELS),
+];
+const LAYOUT_OPTIONS = [
+  { id: "grid:3", mode: "grid", columns: 3, label: "3 列网格", icon: "bi-grid" },
+  { id: "grid:4", mode: "grid", columns: 4, label: "4 列网格", icon: "bi-grid-fill" },
+  { id: "grid:6", mode: "grid", columns: 6, label: "6 列网格", icon: "bi-grid-3x3" },
+  { id: "grid:8", mode: "grid", columns: 8, label: "8 列网格", icon: "bi-grid-3x3-gap" },
+  { id: "table", mode: "table", columns: 4, label: "列表模式", icon: "bi-list-ul" },
 ];
 
 function matchesTypeFilter(task, typeFilter) {
@@ -237,8 +244,14 @@ export function HistoryView() {
   const [typeFilter, setTypeFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [statusMenu, setStatusMenu] = useState(false);
+  const [searchExpanded, setSearchExpanded] = useState(false);
+  const statusMenuRef = useRef(null);
+  const searchContainerRef = useRef(null);
+  const searchInputRef = useRef(null);
   const [layoutMode, setLayoutMode] = useState(stored.mode);
   const [gridColumns, setGridColumns] = useState(stored.columns);
+  const [layoutMenu, setLayoutMenu] = useState(false);
+  const layoutMenuRef = useRef(null);
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [preview, setPreview] = useState(null);
@@ -258,7 +271,39 @@ export function HistoryView() {
   const [publishTarget, setPublishTarget] = useState(null);
   const [publishBusy, setPublishBusy] = useState(false);
   const [durationNow, setDurationNow] = useState(() => Date.now());
+  const [toolbarCollapsed, setToolbarCollapsed] = useState(false);
+  const lastScrollYRef = useRef(0);
+  const scrollStopTimerRef = useRef(null);
   cleanupContextRef.current = { userId: String(user?.id || ""), typeFilter };
+
+  useEffect(() => {
+    function handlePointerDown(event) {
+      if (
+        statusMenuRef.current &&
+        !statusMenuRef.current.contains(event.target)
+      ) {
+        setStatusMenu(false);
+      }
+      if (
+        layoutMenuRef.current &&
+        !layoutMenuRef.current.contains(event.target)
+      ) {
+        setLayoutMenu(false);
+      }
+      if (
+        searchContainerRef.current &&
+        !searchContainerRef.current.contains(event.target)
+      ) {
+        if (!search.trim()) {
+          setSearchExpanded(false);
+        }
+      }
+    }
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, [search]);
 
   const visibleTasks = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -307,6 +352,14 @@ export function HistoryView() {
       })),
     [visibleTasks],
   );
+  const getHistoryAspect = useCallback((entry) => {
+    const task = entry?.item;
+    const value = metadata[String(task?.id || "")];
+    if (Number(value?.width) > 0 && Number(value?.height) > 0) {
+      return Number(value.width) / Number(value.height);
+    }
+    return HISTORY_CARD_MEDIA_ASPECT;
+  }, [metadata]);
   const masonry = useVirtualMasonryFeed({
     items: masonryItems,
     fallbackAspect: HISTORY_CARD_MEDIA_ASPECT,
@@ -314,9 +367,48 @@ export function HistoryView() {
     minColumnWidth: 220,
     maxColumns: gridColumns,
     overscan: 280,
-    uniformRows: true,
+    getAspect: getHistoryAspect,
     enabled: layoutMode === "grid",
   });
+
+  useLayoutEffect(() => {
+    const root = masonry.containerRef.current;
+    if (!root || layoutMode !== "grid") return undefined;
+    const align = () => {
+      const dpr = window.devicePixelRatio || 1;
+      for (const card of root.querySelectorAll(".ch-history-masonry__item")) {
+        const rect = card.getBoundingClientRect();
+        const left = Math.round(rect.left * dpr) / dpr;
+        const top = Math.round(rect.top * dpr) / dpr;
+        const right = Math.round(rect.right * dpr) / dpr;
+        const bottom = Math.round(rect.bottom * dpr) / dpr;
+        const dx = left - rect.left;
+        const dy = top - rect.top;
+        const width = right - left;
+        const height = bottom - top;
+        if (
+          Math.abs(dx) < 0.01 &&
+          Math.abs(dy) < 0.01 &&
+          Math.abs(width - rect.width) < 0.01 &&
+          Math.abs(height - rect.height) < 0.01
+        ) {
+          continue;
+        }
+        card.style.left = `${(parseFloat(card.style.left) || 0) + dx}px`;
+        card.style.top = `${(parseFloat(card.style.top) || 0) + dy}px`;
+        card.style.width = `${width}px`;
+        card.style.height = `${height}px`;
+      }
+    };
+    align();
+    window.addEventListener("resize", align);
+    window.addEventListener("scrollend", align);
+    return () => {
+      window.removeEventListener("resize", align);
+      window.removeEventListener("scrollend", align);
+    };
+  }, [layoutMode, masonry.containerRef, masonry.totalHeight, masonry.visibleItems]);
+
   const selectedDownloadTasks = visibleTasks.filter(
     (task) => selectedIds.has(String(task.id)) && taskOriginalUrl(task),
   );
@@ -326,6 +418,33 @@ export function HistoryView() {
         selectedIds.has(String(task.id)) && isHistoryTaskDeletable(task),
     )
     .map((task) => String(task.id));
+  const selectableTaskIds = useMemo(
+    () =>
+      visibleTasks
+        .filter((task) => taskOriginalUrl(task))
+        .map((task) => String(task.id)),
+    [visibleTasks],
+  );
+  const isAllCurrentSelected =
+    selectableTaskIds.length > 0 &&
+    selectableTaskIds.every((id) => selectedIds.has(id));
+
+  const toggleSelectAllCurrent = useCallback(() => {
+    if (isAllCurrentSelected) {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        selectableTaskIds.forEach((id) => next.delete(id));
+        return next;
+      });
+    } else {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        selectableTaskIds.forEach((id) => next.add(id));
+        return next;
+      });
+    }
+  }, [isAllCurrentSelected, selectableTaskIds]);
+
   const previewIndex = preview
     ? previewableTasks.findIndex(
         (task) => String(task.id) === String(preview.id),
@@ -456,6 +575,56 @@ export function HistoryView() {
       subscriptionsRef.current.clear();
     };
   }, []);
+
+  useEffect(() => {
+    const handleScroll = () => {
+      const currentScrollY = Math.max(
+        0,
+        window.scrollY || document.documentElement.scrollTop || 0,
+      );
+      const deltaY = currentScrollY - lastScrollYRef.current;
+      lastScrollYRef.current = currentScrollY;
+
+      if (scrollStopTimerRef.current) {
+        clearTimeout(scrollStopTimerRef.current);
+      }
+
+      // 靠近顶部或菜单处于打开/搜索展开/多选状态时，保持展开不收起
+      if (
+        currentScrollY <= 80 ||
+        statusMenu ||
+        layoutMenu ||
+        searchExpanded ||
+        Boolean(search?.trim()) ||
+        selectMode
+      ) {
+        setToolbarCollapsed(false);
+        return;
+      }
+
+      if (deltaY > 6) {
+        // 向下滚 -> 收起
+        setToolbarCollapsed(true);
+      } else if (deltaY < -6) {
+        // 向上滚 -> 不收起（恢复展开）
+        setToolbarCollapsed(false);
+      }
+
+      // 静止 -> 不收起（停止滚动 350ms 后判定为静止状态，自动平滑展开）
+      scrollStopTimerRef.current = setTimeout(() => {
+        setToolbarCollapsed(false);
+      }, 350);
+    };
+
+    window.addEventListener("scroll", handleScroll, { passive: true });
+
+    return () => {
+      window.removeEventListener("scroll", handleScroll);
+      if (scrollStopTimerRef.current) {
+        clearTimeout(scrollStopTimerRef.current);
+      }
+    };
+  }, [statusMenu, layoutMenu, searchExpanded, search, selectMode]);
 
   useEffect(() => {
     if (!sentinelRef.current || !cursor) return undefined;
@@ -634,9 +803,10 @@ export function HistoryView() {
     setActionBusyIds((current) => new Set(current).add(id));
     try {
       await downloadAuthenticatedMedia(url, downloadFilename(task));
-      notificationService.success("原图已开始下载");
     } catch (error) {
-      notificationService.error(error?.message || "原图下载失败");
+      if (!error?.downloadNotificationShown) {
+        notificationService.error(error?.message || "原图下载失败");
+      }
     } finally {
       if (mountedRef.current)
         setActionBusyIds((current) => {
@@ -853,16 +1023,17 @@ export function HistoryView() {
       total: selectedDownloadTasks.length,
     });
     try {
-      const result = await downloadHistoryImagesAsZip(
+      await downloadHistoryImagesAsZip(
         selectedDownloadTasks.map((task) => ({
           url: taskOriginalUrl(task),
           filename: downloadFilename(task),
         })),
         { onProgress: setBatchProgress },
       );
-      notificationService.success(`已打包 ${result.count} 张原图`);
     } catch (error) {
-      notificationService.error(error?.message || "批量打包下载失败");
+      if (!error?.downloadNotificationShown) {
+        notificationService.error(error?.message || "批量打包下载失败");
+      }
     } finally {
       if (mountedRef.current) {
         setBatchBusy(false);
@@ -929,29 +1100,28 @@ export function HistoryView() {
       data-history-content-motion-state="entered"
     >
       <div className="ch-shell">
-        <div className="ch-sticky-bar">
-          <div className="ch-toolbar" data-guide="history-toolbar">
-            <label className="ch-search">
-              <i className="bi bi-search" />
-              <input
-                value={search}
-                type="search"
-                placeholder="搜索提示词"
-                onChange={(event) => setSearch(event.target.value)}
-              />
-            </label>
-            <div className={`ch-menu${statusMenu ? " is-open" : ""}`}>
+        <div className={`ch-sticky-bar${toolbarCollapsed ? " is-collapsed" : ""}`}>
+          <div
+            className="ch-toolbar ch-toolbar--history-unified"
+            data-guide="history-toolbar"
+          >
+            {/* 最左边：状态选择（下拉菜单） */}
+            <div
+              ref={statusMenuRef}
+              className={`ch-menu ch-menu--status${statusMenu ? " is-open" : ""}`}
+            >
               <button
                 type="button"
                 className="ch-menu__trigger"
                 aria-label="状态筛选"
                 aria-expanded={statusMenu}
-                onClick={() => setStatusMenu(!statusMenu)}
+                onClick={() => setStatusMenu((prev) => !prev)}
               >
-                <span>
-                  {STATUS_FILTERS.find(([id]) => id === statusFilter)?.[1]}
+                <i className="bi bi-funnel ch-menu__leading-icon" aria-hidden="true" />
+                <span className="ch-menu__current-label">
+                  {STATUS_FILTERS.find(([id]) => id === statusFilter)?.[1] || "全部状态"}
                 </span>
-                <i className="bi bi-chevron-down" />
+                <i className="bi bi-chevron-down ch-menu__chevron" aria-hidden="true" />
               </button>
               {statusMenu && (
                 <ul className="ch-menu__panel" role="listbox">
@@ -966,12 +1136,32 @@ export function HistoryView() {
                       }}
                     >
                       <span>{label}</span>
-                      {statusFilter === id && <i className="bi bi-check2" />}
+                      {statusFilter === id && <i className="bi bi-check2" aria-hidden="true" />}
                     </li>
                   ))}
                 </ul>
               )}
             </div>
+
+            <div className="ch-toolbar__divider" />
+
+            {/* 中间：工作台类型选择（平铺胶囊，不做下拉框） */}
+            <div className="ch-chips ch-chips--history-types" data-guide="history-filters">
+              {TYPE_FILTERS.map(([id, label]) => (
+                <button
+                  key={id || "all"}
+                  type="button"
+                  className={`ch-chip${typeFilter === id ? " is-active" : ""}`}
+                  onClick={() => resetForType(id)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            <div className="ch-toolbar__divider" />
+
+            {/* 批量操作与数据清理 */}
             <div className="ch-bulk-bar">
               <button
                 type="button"
@@ -984,45 +1174,6 @@ export function HistoryView() {
               >
                 {selectMode ? "退出多选" : "多选"}
               </button>
-              {selectMode && (
-                <>
-                  <button
-                    type="button"
-                    className="ch-chip"
-                    onClick={() =>
-                      setSelectedIds(
-                        new Set(
-                          visibleTasks
-                            .filter((task) => taskOriginalUrl(task))
-                            .map((task) => String(task.id)),
-                        ),
-                      )
-                    }
-                  >
-                    全选当前
-                  </button>
-                  <button
-                    type="button"
-                    className="ch-chip is-download"
-                    disabled={batchBusy || !selectedDownloadTasks.length}
-                    onClick={downloadSelected}
-                  >
-                    <i className="bi bi-file-earmark-zip" />
-                    {batchLabel}
-                  </button>
-                  <button
-                    type="button"
-                    className="ch-chip is-danger"
-                    disabled={!selectedDeletableIds.length || bulkBusy}
-                    onClick={() => batchDelete(selectedDeletableIds)}
-                  >
-                    删除所选
-                    {selectedDeletableIds.length
-                      ? ` (${selectedDeletableIds.length})`
-                      : ""}
-                  </button>
-                </>
-              )}
               <button
                 type="button"
                 className="ch-chip"
@@ -1042,44 +1193,120 @@ export function HistoryView() {
                 清空全部
               </button>
             </div>
-            <div className="ch-layout-switch">
-              <span>布局</span>
-              {[3, 4, 6, 8].map((count) => (
-                <button
-                  key={count}
-                  type="button"
-                  className={
-                    layoutMode === "grid" && gridColumns === count
-                      ? "is-active"
-                      : ""
-                  }
-                  aria-label={`${count} 列布局`}
-                  onClick={() => setLayout("grid", count)}
-                >
-                  {count}
-                </button>
-              ))}
+
+            <div className="ch-toolbar__divider" />
+
+            {/* 布局切换下拉菜单 */}
+            <div
+              ref={layoutMenuRef}
+              className={`ch-menu ch-menu--layout${layoutMenu ? " is-open" : ""}`}
+            >
               <button
                 type="button"
-                className={layoutMode === "table" ? "is-active" : ""}
-                aria-label="列表布局"
-                onClick={() => setLayout("table")}
+                className="ch-menu__trigger"
+                aria-label="布局切换"
+                aria-expanded={layoutMenu}
+                onClick={() => setLayoutMenu((prev) => !prev)}
               >
-                <i className="bi bi-list-ul" />
+                <i
+                  className={`bi ${layoutMode === "table" ? "bi-list-ul" : "bi-grid"} ch-menu__leading-icon`}
+                  aria-hidden="true"
+                />
+                <span className="ch-menu__current-label">
+                  布局: {layoutMode === "table" ? "列表" : `${gridColumns} 列`}
+                </span>
+                <i className="bi bi-chevron-down ch-menu__chevron" aria-hidden="true" />
               </button>
+              {layoutMenu && (
+                <ul className="ch-menu__panel" role="listbox">
+                  {LAYOUT_OPTIONS.map((item) => {
+                    const isActive =
+                      layoutMode === item.mode &&
+                      (item.mode === "table" || gridColumns === item.columns);
+                    return (
+                      <li
+                        key={item.id}
+                        className={`ch-menu__option${isActive ? " is-active" : ""}`}
+                        onClick={() => {
+                          setLayout(item.mode, item.columns);
+                          setLayoutMenu(false);
+                        }}
+                      >
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: "8px" }}>
+                          <i className={`bi ${item.icon}`} aria-hidden="true" />
+                          <span>{item.label}</span>
+                        </span>
+                        {isActive && <i className="bi bi-check2" aria-hidden="true" />}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
             </div>
-          </div>
-          <div className="ch-chips" data-guide="history-filters">
-            {TYPE_FILTERS.map(([id, label]) => (
-              <button
-                key={id || "all"}
-                type="button"
-                className={`ch-chip${typeFilter === id ? " is-active" : ""}`}
-                onClick={() => resetForType(id)}
+
+            <div className="ch-toolbar__divider" />
+
+            {/* 最右边：交互式搜索框（流式平滑展开，不重叠遮挡任何相邻按钮） */}
+            <div
+              className={`ch-prompt-search-slot ch-history-search-slot${searchExpanded || search.trim() ? " is-expanded" : ""}`}
+            >
+              <div
+                ref={searchContainerRef}
+                className={`ch-prompt-search${searchExpanded || search.trim() ? " is-expanded" : ""}`}
+                onClick={() => {
+                  if (!searchExpanded) {
+                    setSearchExpanded(true);
+                    requestAnimationFrame(() => searchInputRef.current?.focus());
+                  }
+                }}
               >
-                {label}
-              </button>
-            ))}
+                <button
+                  type="button"
+                  className="ch-prompt-search__toggle"
+                  aria-label="搜索"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSearchExpanded(true);
+                    requestAnimationFrame(() => searchInputRef.current?.focus());
+                  }}
+                >
+                  <i className="bi bi-search" aria-hidden="true" />
+                </button>
+                <input
+                  ref={searchInputRef}
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  onFocus={() => setSearchExpanded(true)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                      if (search) {
+                        setSearch("");
+                      } else {
+                        setSearchExpanded(false);
+                        searchInputRef.current?.blur();
+                      }
+                    }
+                  }}
+                  type="search"
+                  placeholder="搜索提示词"
+                  aria-label="搜索提示词"
+                />
+                {search.trim() ? (
+                  <button
+                    type="button"
+                    className="ch-prompt-search__clear"
+                    aria-label="清空搜索"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSearch("");
+                      searchInputRef.current?.focus();
+                    }}
+                  >
+                    <i className="bi bi-x-lg" aria-hidden="true" />
+                  </button>
+                ) : null}
+              </div>
+            </div>
           </div>
         </div>
         <section className="ch-section" data-guide="history-results">
@@ -1136,7 +1363,8 @@ export function HistoryView() {
                     style={{
                       width: item.width,
                       height: item.height,
-                      transform: `translate(${item.left}px, ${item.top}px)`,
+                      left: item.left,
+                      top: item.top,
                     }}
                   >
                     {selectMode && taskOriginalUrl(task) && taskMediaModality(task) === "image" && (
@@ -1169,6 +1397,17 @@ export function HistoryView() {
                           muted
                           playsInline
                           preload="metadata"
+                          onLoadedMetadata={(event) => {
+                            const video = event.currentTarget;
+                            if (video?.videoWidth > 0 && video?.videoHeight > 0) {
+                              masonry.measureFromEvent(item.key, {
+                                currentTarget: {
+                                  naturalWidth: video.videoWidth,
+                                  naturalHeight: video.videoHeight,
+                                },
+                              });
+                            }
+                          }}
                           onError={() => markPreviewMediaUnavailable(task)}
                         />
                       ) : src && taskMediaModality(task) === "audio" ? (
@@ -1193,7 +1432,10 @@ export function HistoryView() {
                           loading={
                             item.index < masonry.columnCount ? "eager" : "lazy"
                           }
-                          onLoad={(event) => revealHistoryImage(task, event)}
+                          onLoad={(event) => {
+                            revealHistoryImage(task, event);
+                            masonry.measureFromEvent(item.key, event);
+                          }}
                           onError={(event) => recoverHistoryImage(task, event)}
                         />
                       ) : (
@@ -1677,7 +1919,7 @@ export function HistoryView() {
                     <dd>{formatBytes(metadata[String(preview.id)]?.bytes)}</dd>
                   </div>
                   <div>
-                    <dt>透明背景</dt>
+                    <dt>移除背景</dt>
                     <dd>
                       {metadata[String(preview.id)] &&
                       !metadata[String(preview.id)].error
@@ -1753,6 +1995,69 @@ export function HistoryView() {
         storageKey={PRODUCT_GUIDE_KEYS.history}
         onClose={() => setGuideOpen(false)}
       />
+      {selectMode && (
+        <aside className="ch-floating-bulk-bar" aria-label="批量操作栏">
+          <div className="ch-floating-bulk-bar__inner">
+            <div className="ch-floating-bulk-bar__badge">
+              <span className="ch-floating-bulk-bar__count-label">已选</span>
+              <span className="ch-floating-bulk-bar__count-pill">
+                {selectedIds.size}
+              </span>
+              <span className="ch-floating-bulk-bar__count-label">项</span>
+            </div>
+
+            <div className="ch-floating-bulk-bar__divider" />
+
+            <div className="ch-floating-bulk-bar__actions">
+              <button
+                type="button"
+                className={`ch-floating-bulk-bar__btn ch-floating-bulk-bar__btn--default ${
+                  isAllCurrentSelected ? "is-active" : ""
+                }`}
+                disabled={bulkBusy || !selectableTaskIds.length}
+                aria-pressed={isAllCurrentSelected}
+                onClick={toggleSelectAllCurrent}
+              >
+                <span>{isAllCurrentSelected ? "取消全选" : "全选当前"}</span>
+              </button>
+
+              <button
+                type="button"
+                className="ch-floating-bulk-bar__btn ch-floating-bulk-bar__btn--primary"
+                disabled={batchBusy || !selectedDownloadTasks.length}
+                onClick={downloadSelected}
+              >
+                <span>{batchLabel}</span>
+              </button>
+
+              <button
+                type="button"
+                className="ch-floating-bulk-bar__btn ch-floating-bulk-bar__btn--danger"
+                disabled={!selectedDeletableIds.length || bulkBusy}
+                onClick={() => batchDelete(selectedDeletableIds)}
+                title="删除所选"
+              >
+                <span>删除</span>
+              </button>
+            </div>
+
+            <div className="ch-floating-bulk-bar__divider" />
+
+            <button
+              type="button"
+              className="ch-floating-bulk-bar__btn ch-floating-bulk-bar__btn--cancel"
+              aria-label="退出多选"
+              title="退出多选"
+              onClick={() => {
+                setSelectMode(false);
+                setSelectedIds(new Set());
+              }}
+            >
+              <span>退出</span>
+            </button>
+          </div>
+        </aside>
+      )}
     </main>
   );
 }

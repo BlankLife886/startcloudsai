@@ -73,7 +73,7 @@ func ListUserFeedback(ctx context.Context, q Q, userID uuid.UUID, limit int, cur
 	args := []any{userID}
 	if cursor != nil {
 		args = append(args, cursor.CreatedAt, cursor.ID)
-		sql += fmt.Sprintf(` AND (created_at < $%d OR (created_at = $%d AND id < $%d))`, len(args)-1, len(args)-1, len(args))
+		sql += fmt.Sprintf(` AND (created_at, id) < ($%d, $%d)`, len(args)-1, len(args))
 	}
 	args = append(args, limit+1)
 	sql += fmt.Sprintf(` ORDER BY created_at DESC, id DESC LIMIT $%d`, len(args))
@@ -110,12 +110,7 @@ func ListAdminFeedback(ctx context.Context, q Q, status, category, search string
 		n := len(args)
 		sql += fmt.Sprintf(` AND (u.email ILIKE $%d OR u.username ILIKE $%d OR f.title ILIKE $%d OR f.content ILIKE $%d)`, n, n, n, n)
 	}
-	if cursor != nil {
-		args = append(args, cursor.CreatedAt, cursor.ID)
-		sql += fmt.Sprintf(` AND (f.created_at < $%d OR (f.created_at = $%d AND f.id < $%d))`, len(args)-1, len(args)-1, len(args))
-	}
-	args = append(args, limit+1)
-	sql += fmt.Sprintf(` ORDER BY f.created_at DESC, f.id DESC LIMIT $%d`, len(args))
+	sql, args = appendKeyset(sql, args, "f.created_at", "f.id", cursor, limit)
 
 	rows, err := q.Query(ctx, sql, args...)
 	if err != nil {

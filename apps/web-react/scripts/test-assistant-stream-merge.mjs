@@ -4,6 +4,7 @@ import test from 'node:test'
 
 import {
   assistantStreamEventIsTerminal,
+  mergeAssistantDebugTrace,
   mergeAssistantMessageSnapshot,
   mergeAssistantStreamText,
 } from '../src/features/assistant/domain/assistantStreamMerge.js'
@@ -107,4 +108,28 @@ test('AssistantWorkspaceView uses the merge policy for polling and SSE paths', a
   assert.match(view, /\.\.\.mergedSnapshot/)
   assert.match(view, /event\?\.context \? \{ context: event\.context \}/)
   assert.match(view, /event\?\.stage \? \{ statusStage: event\.stage \}/)
+  assert.match(view, /mergeAssistantDebugTrace\(message\.debugTrace, event\.debug\)/)
+  assert.match(view, /debugTrace: message\.debugTrace\?\.length \? message\.debugTrace : persisted\?\.debugTrace/)
+})
+
+test('debug spans accumulate in order and survive snapshot merges', () => {
+  const first = mergeAssistantDebugTrace([], { step: 'model_wait', detail: '第 1 轮，正在等模型决定下一步', atMs: 1000, elapsedMs: 3450 })
+  const next = mergeAssistantDebugTrace(first, { step: 'model_token', detail: '模型开始吐字', atMs: 18000, elapsedMs: 3600 })
+  assert.equal(next.length, 2)
+  assert.equal(next[0].step, 'model_wait')
+  assert.equal(next[0].elapsedMs, 3450)
+  assert.equal(next[1].at, 18000)
+  const replayed = mergeAssistantDebugTrace(next, [
+    { step: 'agent_start', detail: '进入 Agent', atMs: 1, elapsedMs: 0 },
+    { step: 'intent_done', detail: '判定 image', atMs: 20, elapsedMs: 12 },
+  ])
+  assert.equal(replayed.length, 2)
+  assert.equal(replayed[0].step, 'agent_start')
+
+  const merged = mergeAssistantMessageSnapshot(
+    { id: 'message-debug', content: 'streamed', debugTrace: next },
+    { id: 'message-debug', content: 'older', statusStage: 'thinking' },
+  )
+  assert.equal(merged.content, 'streamed')
+  assert.equal(merged.debugTrace, next)
 })

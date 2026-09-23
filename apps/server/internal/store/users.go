@@ -15,13 +15,18 @@ import (
 type Cursor struct {
 	CreatedAt time.Time
 	ID        uuid.UUID
+	// Value 为按非时间列排序（热度、手动排序）时游标行的排序值；旧游标没有该值。
+	Value *int64
+	// Offset > 0 表示页码跳转：忽略 CreatedAt/ID，按同一排序跳过 Offset 行。
+	// 由 httpapi 限制在 ListCountCap 以内，只有显式支持的列表函数才会收到。
+	Offset int
 }
 
-const userCols = `id, email, username, password_hash, avatar_url, studio_figure_url, bio, location, website_url, require_cost_confirm, role, status, last_login_at, submission_banned_until, deleted_at, created_at`
+const userCols = `id, email, username, password_hash, avatar_url, studio_figure_url, bio, location, website_url, require_cost_confirm, assistant_auto_approve, assistant_auto_approve_budget_cents, role, status, last_login_at, submission_banned_until, deleted_at, created_at`
 
 func scanUser(row pgx.Row) (*User, error) {
 	var u User
-	err := row.Scan(&u.ID, &u.Email, &u.Username, &u.PasswordHash, &u.AvatarURL, &u.StudioFigureURL, &u.Bio, &u.Location, &u.WebsiteURL, &u.RequireCostConfirm, &u.Role, &u.Status, &u.LastLoginAt, &u.SubmissionBannedUntil, &u.DeletedAt, &u.CreatedAt)
+	err := row.Scan(&u.ID, &u.Email, &u.Username, &u.PasswordHash, &u.AvatarURL, &u.StudioFigureURL, &u.Bio, &u.Location, &u.WebsiteURL, &u.RequireCostConfirm, &u.AssistantAutoApprove, &u.AssistantAutoApproveBudgetCents, &u.Role, &u.Status, &u.LastLoginAt, &u.SubmissionBannedUntil, &u.DeletedAt, &u.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -51,7 +56,7 @@ func InsertUser(ctx context.Context, q Q, email, username, passwordHash, role st
 		email, username, passwordHash, role, lastLoginAt))
 }
 
-func UpdateUserProfile(ctx context.Context, q Q, id uuid.UUID, username *string, avatarURL **string, bio, location, websiteURL *string, requireCostConfirm *bool, passwordHash *string, studioFigureURL **string) error {
+func UpdateUserProfile(ctx context.Context, q Q, id uuid.UUID, username *string, avatarURL **string, bio, location, websiteURL *string, requireCostConfirm *bool, passwordHash *string, studioFigureURL **string, assistantAutoApprove *bool, assistantAutoApproveBudgetCents *int64) error {
 	_, err := q.Exec(ctx,
 		`UPDATE users SET
 			username = COALESCE($2, username),
@@ -61,9 +66,12 @@ func UpdateUserProfile(ctx context.Context, q Q, id uuid.UUID, username *string,
 			website_url = COALESCE($7, website_url),
 			require_cost_confirm = COALESCE($8, require_cost_confirm),
 			password_hash = COALESCE($9, password_hash),
-			studio_figure_url = CASE WHEN $10 THEN $11 ELSE studio_figure_url END
+			studio_figure_url = CASE WHEN $10 THEN $11 ELSE studio_figure_url END,
+			assistant_auto_approve = COALESCE($12, assistant_auto_approve),
+			assistant_auto_approve_budget_cents = COALESCE($13, assistant_auto_approve_budget_cents)
 		 WHERE id = $1`,
-		id, username, avatarURL != nil, avatarDeref(avatarURL), bio, location, websiteURL, requireCostConfirm, passwordHash, studioFigureURL != nil, avatarDeref(studioFigureURL))
+		id, username, avatarURL != nil, avatarDeref(avatarURL), bio, location, websiteURL, requireCostConfirm, passwordHash, studioFigureURL != nil, avatarDeref(studioFigureURL),
+		assistantAutoApprove, assistantAutoApproveBudgetCents)
 	return err
 }
 
@@ -154,8 +162,13 @@ func userListWhere(search, status, lifecycle, risk, profileTag string) (string, 
 	sql := ` FROM users WHERE role = 'user'`
 	args := []any{}
 	if search != "" {
-		args = append(args, "%"+search+"%")
-		sql += fmt.Sprintf(` AND (email ILIKE $%d OR username ILIKE $%d)`, len(args), len(args))
+		if id, err := uuid.Parse(search); err == nil {
+			args = append(args, id)
+			sql += fmt.Sprintf(` AND id = $%d`, len(args))
+		} else {
+			args = append(args, literalSearch(search))
+			sql += fmt.Sprintf(` AND (email::text ILIKE $%d OR username ILIKE $%d)`, len(args), len(args))
+		}
 	}
 	if status != "" {
 		args = append(args, status)
@@ -177,16 +190,18 @@ func userListWhere(search, status, lifecycle, risk, profileTag string) (string, 
 }
 
 // CountUsersFiltered 与 ListUsers 使用同一套筛选。
-func CountUsersFiltered(ctx context.Context, q Q, search, status, lifecycle, risk, profileTag string) (int64, error) {
+func CountUsersFiltered(ctx context.Context, q Q, search, status, lifecycle, risk, profileTag string, extra ...AdminListFilter) (int64, error) {
 	where, args := userListWhere(search, status, lifecycle, risk, profileTag)
+	where, args = appendAdminDates(where, args, "users.created_at", extra)
 	var n int64
 	err := q.QueryRow(ctx, `SELECT count(*)`+where, args...).Scan(&n)
 	return n, err
 }
 
 // ListUsers 后台用户搜索分页（limit+1 行）。画像筛选读取预聚合快照，不扫描历史任务。
-func ListUsers(ctx context.Context, q Q, search, status, lifecycle, risk, profileTag string, limit int, cursor *Cursor) ([]*User, error) {
+func ListUsers(ctx context.Context, q Q, search, status, lifecycle, risk, profileTag string, limit int, cursor *Cursor, extra ...AdminListFilter) ([]*User, error) {
 	where, args := userListWhere(search, status, lifecycle, risk, profileTag)
+	where, args = appendAdminDates(where, args, "users.created_at", extra)
 	sql, args := appendCursor(`SELECT `+userCols+where, args, cursor, limit)
 	rows, err := q.Query(ctx, sql, args...)
 	if err != nil {
@@ -205,7 +220,7 @@ func ListUsers(ctx context.Context, q Q, search, status, lifecycle, risk, profil
 }
 
 // ListUsersOffset 按页码偏移取用户，条数与 CountUsersFiltered 对应。
-func ListUsersOffset(ctx context.Context, q Q, search, status, lifecycle, risk, profileTag string, limit, offset int) ([]*User, error) {
+func ListUsersOffset(ctx context.Context, q Q, search, status, lifecycle, risk, profileTag string, limit, offset int, extra ...AdminListFilter) ([]*User, error) {
 	if limit < 1 {
 		limit = 20
 	}
@@ -213,6 +228,7 @@ func ListUsersOffset(ctx context.Context, q Q, search, status, lifecycle, risk, 
 		offset = 0
 	}
 	where, args := userListWhere(search, status, lifecycle, risk, profileTag)
+	where, args = appendAdminDates(where, args, "users.created_at", extra)
 	args = append(args, limit, offset)
 	sql := fmt.Sprintf(
 		`SELECT %s%s ORDER BY created_at DESC, id DESC LIMIT $%d OFFSET $%d`,
@@ -373,12 +389,22 @@ func UsageSummariesByUserIDs(ctx context.Context, q Q, ids []uuid.UUID) (map[uui
 }
 
 // appendCursor 追加 (created_at, id) 倒序 cursor 条件与 limit+1。
+// 行值比较可直接作为 (created_at DESC, id DESC) 索引的范围条件；OR 展开写法只能
+// 从索引头部逐行过滤，翻页越深越慢。
 func appendCursor(sql string, args []any, cursor *Cursor, limit int) (string, []any) {
-	if cursor != nil {
+	return appendKeyset(sql, args, "created_at", "id", cursor, limit)
+}
+
+// appendKeyset 与 appendCursor 相同，但可指定带表别名的时间列与 id 列。
+func appendKeyset(sql string, args []any, timeCol, idCol string, cursor *Cursor, limit int) (string, []any) {
+	if cursor != nil && cursor.Offset == 0 {
 		args = append(args, cursor.CreatedAt, cursor.ID)
-		sql += fmt.Sprintf(` AND (created_at < $%d OR (created_at = $%d AND id < $%d))`, len(args)-1, len(args)-1, len(args))
+		sql += fmt.Sprintf(` AND (%s, %s) < ($%d, $%d)`, timeCol, idCol, len(args)-1, len(args))
 	}
 	args = append(args, limit+1)
-	sql += fmt.Sprintf(` ORDER BY created_at DESC, id DESC LIMIT $%d`, len(args))
+	sql += fmt.Sprintf(` ORDER BY %s DESC, %s DESC LIMIT $%d`, timeCol, idCol, len(args))
+	if cursor != nil && cursor.Offset > 0 {
+		sql += fmt.Sprintf(` OFFSET %d`, cursor.Offset)
+	}
 	return sql, args
 }

@@ -24,6 +24,9 @@ func referralListParams(c *gin.Context) (string, int, error) {
 	if err != nil || page < 1 || page > 10000 {
 		return "", 0, apperr.E("validation_error", "页码无效", 422)
 	}
+	if (page-1)*20 >= store.ListCountCap {
+		return "", 0, errPageBeyondCap
+	}
 	return query, page, nil
 }
 
@@ -37,8 +40,8 @@ func (s *Server) adminReferralRelations(c *gin.Context, _ *store.User) {
  (SELECT count(*) FROM referral_rewards x WHERE x.invitee_id=r.invitee_id),
  (SELECT COALESCE(sum(reward_points) FILTER(WHERE status IN ('granted','recovery_pending')),0) FROM referral_rewards x WHERE x.invitee_id=r.invitee_id)
  FROM referral_links r JOIN users a ON a.id=r.inviter_id JOIN users b ON b.id=r.invitee_id
- WHERE $1='' OR a.email ILIKE '%'||$1||'%' OR b.email ILIKE '%'||$1||'%' OR r.invitee_id::text=$1 OR r.inviter_id::text=$1
- ORDER BY r.created_at DESC,r.invitee_id DESC LIMIT 21 OFFSET $2`, query, (page-1)*20)
+ WHERE $1='' OR a.email::text ILIKE $3 OR b.email::text ILIKE $3 OR r.invitee_id::text=$1 OR r.inviter_id::text=$1
+ ORDER BY r.created_at DESC,r.invitee_id DESC LIMIT 21 OFFSET $2`, query, (page-1)*20, store.LikePattern(query))
 	if err != nil {
 		fail(c, err)
 		return
@@ -99,10 +102,10 @@ func (s *Server) adminReferralRewards(c *gin.Context, _ *store.User) {
 	LEFT JOIN wallet_ledger v ON v.kind='admin_adjust' AND v.source_type='admin' AND v.source_id='referral-reversal/'||r.order_id::text
  LEFT JOIN referral_settlements s ON s.id=r.settlement_id
  LEFT JOIN wallet_ledger m ON m.kind='grant' AND m.source_type='referral_settlement' AND m.source_id=s.id::text
- WHERE ($1='' OR a.email ILIKE '%'||$1||'%' OR b.email ILIKE '%'||$1||'%' OR r.order_id::text=$1 OR r.inviter_id::text=$1 OR r.invitee_id::text=$1)
+ WHERE ($1='' OR a.email::text ILIKE $5 OR b.email::text ILIKE $5 OR r.order_id::text=$1 OR r.inviter_id::text=$1 OR r.invitee_id::text=$1)
 	AND ($2='' OR r.status=$2)
  AND ($4='' OR to_char(r.settlement_month,'YYYY-MM')=$4)
- ORDER BY r.created_at DESC,r.order_id DESC LIMIT 21 OFFSET $3`, query, status, (page-1)*20, month)
+ ORDER BY r.created_at DESC,r.order_id DESC LIMIT 21 OFFSET $3`, query, status, (page-1)*20, month, store.LikePattern(query))
 	if err != nil {
 		fail(c, err)
 		return

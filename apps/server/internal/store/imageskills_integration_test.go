@@ -2,6 +2,8 @@ package store_test
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -31,145 +33,6 @@ func mustInsertSkill(t *testing.T, st *store.Store, skill *store.ImageSkill) sto
 		t.Fatalf("insert skill %s: %v", skill.Name, err)
 	}
 	return *created
-}
-
-// 页面绑定优先于全局：某页面一旦有绑定，就只用页面的，不再叠加全局。
-func TestResolveSkillsPageBindingOverridesGlobal(t *testing.T) {
-	st := testdb.Setup(t)
-	ctx := context.Background()
-	userID := skillTestUser(t, st)
-
-	global := mustInsertSkill(t, st, &store.ImageSkill{Name: "全局风格"})
-	pageOne := mustInsertSkill(t, st, &store.ImageSkill{Name: "涂色专用", TaskTypes: []string{"coloring"}})
-	pageTwo := mustInsertSkill(t, st, &store.ImageSkill{Name: "涂色补充", TaskTypes: []string{"coloring"}})
-
-	if err := store.SetSkillBindings(ctx, st, userID, store.SkillGlobalScope, []uuid.UUID{global.ID}); err != nil {
-		t.Fatal(err)
-	}
-
-	// 没有页面绑定时，全局对每个页面都生效。
-	for _, taskType := range []string{"t2i", "coloring", "game_art"} {
-		resolved, err := store.ResolveSkillsForTaskType(ctx, st.Pool, userID, taskType)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(resolved) != 1 || resolved[0].ID != global.ID {
-			t.Fatalf("%s 未自动装载全局 skill: %+v", taskType, resolved)
-		}
-	}
-
-	if err := store.SetSkillBindings(ctx, st, userID, "coloring", []uuid.UUID{pageTwo.ID, pageOne.ID}); err != nil {
-		t.Fatal(err)
-	}
-	resolved, err := store.ResolveSkillsForTaskType(ctx, st.Pool, userID, "coloring")
-	if err != nil {
-		t.Fatal(err)
-	}
-	// 覆盖而非叠加，且保留装载顺序。
-	if len(resolved) != 2 || resolved[0].ID != pageTwo.ID || resolved[1].ID != pageOne.ID {
-		t.Fatalf("页面绑定未覆盖全局或丢了顺序: %+v", resolved)
-	}
-	// 其他页面不受影响，仍回落到全局。
-	other, err := store.ResolveSkillsForTaskType(ctx, st.Pool, userID, "t2i")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(other) != 1 || other[0].ID != global.ID {
-		t.Fatalf("t2i 不该被 coloring 的绑定影响: %+v", other)
-	}
-
-	// 清空页面绑定后重新回落到全局。
-	if err := store.SetSkillBindings(ctx, st, userID, "coloring", nil); err != nil {
-		t.Fatal(err)
-	}
-	back, err := store.ResolveSkillsForTaskType(ctx, st.Pool, userID, "coloring")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(back) != 1 || back[0].ID != global.ID {
-		t.Fatalf("清空页面绑定后未回落全局: %+v", back)
-	}
-}
-
-// 停用或收窄适用范围的 skill 不能继续影响已有装载。
-func TestResolveSkillsDropsInactiveAndInapplicable(t *testing.T) {
-	st := testdb.Setup(t)
-	ctx := context.Background()
-	userID := skillTestUser(t, st)
-
-	wide := mustInsertSkill(t, st, &store.ImageSkill{Name: "通用"})
-	kept := mustInsertSkill(t, st, &store.ImageSkill{Name: "保留"})
-	if err := store.SetSkillBindings(ctx, st, userID, store.SkillGlobalScope, []uuid.UUID{wide.ID, kept.ID}); err != nil {
-		t.Fatal(err)
-	}
-
-	// 后台把官方 skill 收窄到只适用于 coloring。
-	wide.TaskTypes = []string{"coloring"}
-	if _, err := store.UpdateSkill(ctx, st.Pool, &wide); err != nil {
-		t.Fatal(err)
-	}
-	resolved, err := store.ResolveSkillsForTaskType(ctx, st.Pool, userID, "t2i")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(resolved) != 1 || resolved[0].ID != kept.ID {
-		t.Fatalf("收窄适用范围后仍在 t2i 生效: %+v", resolved)
-	}
-
-	// 停用后同样不再生效。
-	kept.Active = false
-	if _, err := store.UpdateSkill(ctx, st.Pool, &kept); err != nil {
-		t.Fatal(err)
-	}
-	empty, err := store.ResolveSkillsForTaskType(ctx, st.Pool, userID, "t2i")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(empty) != 0 {
-		t.Fatalf("停用的 skill 仍在生效: %+v", empty)
-	}
-}
-
-func TestSetSkillBindingsRejectsForeignSkillsAndOverflow(t *testing.T) {
-	st := testdb.Setup(t)
-	ctx := context.Background()
-	userID := skillTestUser(t, st)
-	otherID := skillTestUser(t, st)
-
-	mine := mustInsertSkill(t, st, &store.ImageSkill{Name: "我的", OwnerUserID: &userID})
-	theirs := mustInsertSkill(t, st, &store.ImageSkill{Name: "别人的", OwnerUserID: &otherID})
-
-	if err := store.SetSkillBindings(ctx, st, userID, store.SkillGlobalScope, []uuid.UUID{mine.ID}); err != nil {
-		t.Fatalf("自建 skill 应可装载: %v", err)
-	}
-	if err := store.SetSkillBindings(ctx, st, userID, store.SkillGlobalScope, []uuid.UUID{theirs.ID}); err == nil {
-		t.Fatal("装载了别人的 skill")
-	}
-	// 失败的装载不能破坏原有状态。
-	resolved, err := store.ResolveSkillsForTaskType(ctx, st.Pool, userID, "t2i")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(resolved) != 1 || resolved[0].ID != mine.ID {
-		t.Fatalf("失败的装载破坏了原状态: %+v", resolved)
-	}
-
-	overflow := make([]uuid.UUID, 0, store.SkillMaxBindingsPerScope+1)
-	for index := 0; index <= store.SkillMaxBindingsPerScope; index++ {
-		skill := mustInsertSkill(t, st, &store.ImageSkill{Name: "批量", OwnerUserID: &userID})
-		overflow = append(overflow, skill.ID)
-	}
-	if err := store.SetSkillBindings(ctx, st, userID, store.SkillGlobalScope, overflow); err == nil {
-		t.Fatal("超出单位上限仍被接受")
-	}
-	if err := store.SetSkillBindings(ctx, st, userID, "no_such_page", []uuid.UUID{mine.ID}); err == nil {
-		t.Fatal("未知装载位被接受")
-	}
-	// 绑定到不适用的页面要被拒。
-	coloringOnly := mustInsertSkill(t, st, &store.ImageSkill{Name: "仅涂色", OwnerUserID: &userID, TaskTypes: []string{"coloring"}})
-	if err := store.SetSkillBindings(ctx, st, userID, "t2i", []uuid.UUID{coloringOnly.ID}); err == nil {
-		t.Fatal("skill 被绑定到不适用的页面")
-	}
 }
 
 func TestListSkillsScopesOfficialAndOwned(t *testing.T) {
@@ -239,33 +102,95 @@ func TestNormalizeSkillGuardsInput(t *testing.T) {
 	if skill.Tags == nil {
 		t.Fatalf("空值未补齐: %+v", skill)
 	}
+
+	// 控制字符与双向控制符要被剔除：它们能把 @技能名 在视觉上伪装成别的名字。
+	spoof := store.ImageSkill{
+		Name:        "柔光\u202e人像\u0007",
+		Description: "第一行\n第二行\u200b",
+		Instruction: "正文\u0000保留\n换行",
+		Tags:        []string{" 人像 ", "人像", "\u202e", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"},
+	}
+	if err := store.NormalizeSkill(&spoof); err != nil {
+		t.Fatal(err)
+	}
+	if spoof.Name != "柔光人像" || spoof.Description != "第一行 第二行" || spoof.Instruction != "正文保留\n换行" {
+		t.Fatalf("不安全字符未剔除: %q %q %q", spoof.Name, spoof.Description, spoof.Instruction)
+	}
+	if len(spoof.Tags) != store.SkillMaxTags || spoof.Tags[0] != "人像" || spoof.Tags[1] != "a" {
+		t.Fatalf("标签未去重/限量: %v", spoof.Tags)
+	}
+	longTag := store.ImageSkill{Name: "x", Instruction: "x", Tags: []string{strings.Repeat("长", store.SkillMaxTagLen+1)}}
+	if err := store.NormalizeSkill(&longTag); err == nil {
+		t.Fatal("超长标签未被拒绝")
+	}
 }
 
-// 装载位只开放给「用户自己写提示词」的页面。放开其他类型会在装载页出现一堆
-// 永远不生效的选项：puzzle 的任务服务端根本不受理，background_remove 与
-// media_tool 的提示词是系统生成的固定文案，拼进 skill 指令不会有任何效果。
-func TestSkillScopesCoverOnlyPromptDrivenPages(t *testing.T) {
+// 调用名：名称能推导就推导，纯中文名用 id 兜底；官方全局唯一、自建按用户唯一，
+// 自建允许与官方同名。
+func TestSkillSlugDerivationAndUniqueness(t *testing.T) {
 	st := testdb.Setup(t)
 	ctx := context.Background()
 	userID := skillTestUser(t, st)
-	skill := mustInsertSkill(t, st, &store.ImageSkill{Name: "通用", Instruction: "保持构图"})
+	otherID := skillTestUser(t, st)
 
-	want := []string{"t2i", "coloring", "ui_design", "ecommerce_design", "model_sheet", "game_art"}
-	if len(store.SkillTaskTypes) != len(want) {
-		t.Fatalf("装载位清单已变动，请同步迁移的 CHECK 与前端 SKILL_TASK_TYPES: %v", store.SkillTaskTypes)
+	ascii := mustInsertSkill(t, st, &store.ImageSkill{Name: "  Soft Light: Portrait!  "})
+	if ascii.Slug != "soft-light-portrait" {
+		t.Fatalf("ASCII 名称未推导出 hyphen-case 调用名: %q", ascii.Slug)
 	}
-	for _, kind := range want {
-		if !store.Contains(store.SkillTaskTypes, kind) {
-			t.Fatalf("缺少生图页面 %s: %v", kind, store.SkillTaskTypes)
-		}
-		// 每个开放的装载位都要真能写入，否则 CHECK 与 Go 清单已经漂移。
-		if err := store.SetSkillBindings(ctx, st, userID, kind, []uuid.UUID{skill.ID}); err != nil {
-			t.Fatalf("装载位 %s 写入失败，迁移 CHECK 与 SkillTaskTypes 不一致: %v", kind, err)
+	chinese := mustInsertSkill(t, st, &store.ImageSkill{Name: "柔光人像"})
+	if chinese.Slug != store.FallbackSkillSlug(chinese.ID) {
+		t.Fatalf("中文名称未用 id 兜底: %q", chinese.Slug)
+	}
+	explicit := mustInsertSkill(t, st, &store.ImageSkill{Name: "柔光人像", Slug: "Soft-Portrait"})
+	if explicit.Slug != "soft-portrait" {
+		t.Fatalf("显式调用名未小写化: %q", explicit.Slug)
+	}
+
+	// 官方同名冲突。
+	if _, err := store.InsertSkill(ctx, st.Pool, &store.ImageSkill{Name: "撞名", Slug: "soft-portrait", Instruction: "x", Active: true}); !errors.Is(err, store.ErrSkillSlugTaken) {
+		t.Fatalf("官方调用名重复应报 ErrSkillSlugTaken，实际: %v", err)
+	}
+	// 自建可以和官方同名，两个用户之间也互不影响，同一用户内不能重复。
+	mine := mustInsertSkill(t, st, &store.ImageSkill{Name: "我的柔光", Slug: "soft-portrait", OwnerUserID: &userID})
+	mustInsertSkill(t, st, &store.ImageSkill{Name: "别人的柔光", Slug: "soft-portrait", OwnerUserID: &otherID})
+	if _, err := store.InsertSkill(ctx, st.Pool, &store.ImageSkill{Name: "再来一个", Slug: "soft-portrait", OwnerUserID: &userID, Instruction: "x", Active: true}); !errors.Is(err, store.ErrSkillSlugTaken) {
+		t.Fatalf("同一用户内调用名重复应报 ErrSkillSlugTaken，实际: %v", err)
+	}
+	// 改名时也要查重。
+	mine.Slug = store.FallbackSkillSlug(chinese.ID)
+	if _, err := store.UpdateSkill(ctx, st.Pool, &mine); err != nil {
+		t.Fatalf("自建改成与官方相同的调用名应被允许: %v", err)
+	}
+
+	// 非法格式被拒。
+	for _, bad := range []string{"1abc", "-abc", "abc-", "a--b", "Ab c", "中文", "a_b"} {
+		candidate := store.ImageSkill{Name: "x", Slug: bad, Instruction: "x"}
+		if err := store.NormalizeSkill(&candidate); err == nil {
+			t.Fatalf("非法调用名 %q 未被拒绝", bad)
 		}
 	}
-	for _, kind := range []string{"puzzle", "background_remove", "media_tool", "infinite_canvas", "nope"} {
-		if err := store.SetSkillBindings(ctx, st, userID, kind, []uuid.UUID{skill.ID}); err == nil {
-			t.Fatalf("装载位 %s 不该被接受", kind)
-		}
+}
+
+// 云端配额只算存在云端的自建 skill，官方与别人的都不计入。
+func TestCountSkillsOwnedByOnlyCountsOwnCloudSkills(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	userID := skillTestUser(t, st)
+	otherID := skillTestUser(t, st)
+
+	mustInsertSkill(t, st, &store.ImageSkill{Name: "官方"})
+	mustInsertSkill(t, st, &store.ImageSkill{Name: "别人的", OwnerUserID: &otherID})
+	for index := 0; index < store.SkillMaxOwnedPerUser; index++ {
+		mustInsertSkill(t, st, &store.ImageSkill{Name: "我的", OwnerUserID: &userID})
+	}
+	owned, err := store.CountSkillsOwnedBy(ctx, st.Pool, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owned != store.SkillMaxOwnedPerUser {
+		t.Fatalf("配额统计应只算自己的云端 skill，得到 %d", owned)
+	}
+	if store.SkillMaxOwnedPerUser != 5 {
+		t.Fatalf("云端配额约定为 5，实际 %d", store.SkillMaxOwnedPerUser)
 	}
 }

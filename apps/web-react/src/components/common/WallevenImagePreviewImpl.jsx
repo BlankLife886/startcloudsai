@@ -101,6 +101,7 @@ export function WallevenImagePreviewImpl({
   onClose,
   onDownload,
   filename = "image.png",
+  downloadFeedback = true,
   metadata = {},
   model = null,
   enabledActions = {},
@@ -138,6 +139,7 @@ export function WallevenImagePreviewImpl({
   const [resolved, setResolved] = useState("");
   const [processedUrl, setProcessedUrl] = useState("");
   const [loading, setLoading] = useState(true);
+  const [downloadBusy, setDownloadBusy] = useState(false);
   const [error, setError] = useState("");
   const [loadVersion, setLoadVersion] = useState(0);
   const [naturalSize, setNaturalSize] = useState({ width: 0, height: 0 });
@@ -693,7 +695,7 @@ export function WallevenImagePreviewImpl({
       setCropRect(null);
       setCropMode((value) => !value);
     } else if (id === "filters") setShowFilters((value) => !value);
-    else if (id === "download") void downloadCurrent();
+    else if (id === "download") void handleDownload();
     else if (id === "fullscreen") {
       if (document.fullscreenElement) void document.exitFullscreen();
       else void rootRef.current?.requestFullscreen?.();
@@ -1050,7 +1052,7 @@ export function WallevenImagePreviewImpl({
 
   function downloadMockupWallpaper() {
     const image = imageRef.current;
-    if (!image?.naturalWidth || !image?.naturalHeight) return;
+    if (!image?.naturalWidth || !image?.naturalHeight) return false;
     const desktop = mockupMode === "desktop";
     const width = desktop ? desktopConfig.width * (desktopConfig.platform === "macos" ? 2 : 1) : 1290;
     const height = desktop ? desktopConfig.height * (desktopConfig.platform === "macos" ? 2 : 1) : 2796;
@@ -1058,7 +1060,7 @@ export function WallevenImagePreviewImpl({
     canvas.width = Math.min(8192, width);
     canvas.height = Math.min(8192, height);
     const context = canvas.getContext("2d");
-    if (!context) return;
+    if (!context) return false;
     context.filter = displayFilterCss;
     drawCoverImage(context, image, canvas.width, canvas.height);
     const anchor = document.createElement("a");
@@ -1067,21 +1069,20 @@ export function WallevenImagePreviewImpl({
     anchor.click();
     canvas.width = 1;
     canvas.height = 1;
+    return true;
   }
 
   async function downloadCurrent() {
     if (mockupMode !== "none") {
-      downloadMockupWallpaper();
-      return;
+      return downloadMockupWallpaper();
     }
     const modified =
       Boolean(processedUrl) || rotation % 360 !== 0 || hasFilterEffect;
     if (!modified) {
-      onDownload?.(sourceUrl);
-      return;
+      return onDownload ? onDownload(sourceUrl) : false;
     }
     const image = imageRef.current;
-    if (!image?.naturalWidth || !image?.naturalHeight) return;
+    if (!image?.naturalWidth || !image?.naturalHeight) return false;
     const quarterTurn = Math.abs(rotation / 90) % 2 === 1;
     const canvas = document.createElement("canvas");
     canvas.width = quarterTurn ? image.naturalHeight : image.naturalWidth;
@@ -1096,13 +1097,32 @@ export function WallevenImagePreviewImpl({
     );
     canvas.width = 1;
     canvas.height = 1;
-    if (!blob) return;
+    if (!blob) return false;
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
     anchor.download = filename;
     anchor.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    return true;
+  }
+
+  async function handleDownload() {
+    if (downloadBusy) return;
+    const delegated = Boolean(onDownload) && mockupMode === "none" && !processedUrl && rotation % 360 === 0 && !hasFilterEffect;
+    setDownloadBusy(true);
+    try {
+      const started = await downloadCurrent();
+      if (started !== false && downloadFeedback && !delegated) {
+        notificationService.success("下载已开始", { position: "bottom-right" });
+      }
+    } catch (caught) {
+      if (!delegated && !caught?.downloadNotificationShown) {
+        notificationService.error(caught?.message || "图片下载失败", { position: "bottom-right" });
+      }
+    } finally {
+      setDownloadBusy(false);
+    }
   }
 
   const actions = [
@@ -1138,7 +1158,13 @@ export function WallevenImagePreviewImpl({
     ["favorite", "收藏到资产", actionBusy === "favorite" ? "bi-check2" : "bi-folder-plus", false, { disabled: !onFavorite || Boolean(actionBusy) }],
     ["publish", "发布作品", "bi-send", false, { disabled: !onPublish || Boolean(actionBusy) }],
     ["delete", "删除图片", "bi-trash3", false, { danger: true, disabled: !onDelete || Boolean(actionBusy) }],
-    ["download", "下载图片", "bi-download", false],
+    [
+      "download",
+      downloadBusy ? "正在下载…" : "下载图片",
+      downloadBusy ? "bi-arrow-repeat spin" : "bi-download",
+      false,
+      { disabled: downloadBusy },
+    ],
     [
       "fullscreen",
       "切换全屏",

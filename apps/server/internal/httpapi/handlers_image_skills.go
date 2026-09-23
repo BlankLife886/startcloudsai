@@ -2,16 +2,18 @@ package httpapi
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 
 	"github.com/BlankLife886/startcloudsai/server/internal/apperr"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 )
 
 type imageSkillIn struct {
+	// Slug 是调用名；留空则由名称推导（推不出时用 id 兜底）。
+	Slug        string   `json:"slug"`
 	Name        string   `json:"name"`
 	Description string   `json:"description"`
 	Instruction string   `json:"instruction"`
@@ -25,7 +27,7 @@ type imageSkillIn struct {
 
 func imageSkillDict(skill store.ImageSkill) gin.H {
 	return gin.H{
-		"id": skill.ID, "name": skill.Name, "description": skill.Description,
+		"id": skill.ID, "slug": skill.Slug, "name": skill.Name, "description": skill.Description,
 		"instruction": skill.Instruction, "taskTypes": skill.TaskTypes,
 		"category": skill.Category, "tags": skill.Tags, "coverKey": skill.CoverKey,
 		"sort": skill.Sort, "active": skill.Active, "official": skill.Official(),
@@ -46,6 +48,9 @@ func imageSkillDicts(skills []store.ImageSkill) []gin.H {
 func applyImageSkillInput(base *store.ImageSkill, body imageSkillIn, creating bool) {
 	if creating || strings.TrimSpace(body.Name) != "" {
 		base.Name = body.Name
+	}
+	if strings.TrimSpace(body.Slug) != "" {
+		base.Slug = body.Slug
 	}
 	if creating || body.Instruction != "" {
 		base.Instruction = body.Instruction
@@ -76,6 +81,10 @@ func applyImageSkillInput(base *store.ImageSkill, body imageSkillIn, creating bo
 }
 
 func failSkillValidation(c *gin.Context, err error) {
+	if errors.Is(err, store.ErrSkillSlugTaken) {
+		fail(c, apperr.E("validation_error", "slug: 这个调用名已经被占用，换一个试试", 422))
+		return
+	}
 	fail(c, apperr.E("validation_error", err.Error(), 422))
 }
 
@@ -159,7 +168,7 @@ func (s *Server) adminDeleteImageSkill(c *gin.Context, _ *store.User) {
 	ok(c, gin.H{"deleted": true})
 }
 
-// ---------- 用户端：可用 skill 与自建 skill ----------
+// ---------- 用户端：官方 skill + 存在云端的自建 skill ----------
 
 func (s *Server) myImageSkills(c *gin.Context) {
 	user, err := s.requireUser(c)
@@ -179,14 +188,16 @@ func (s *Server) myImageSkills(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	bindings, err := store.GetSkillBindings(ctx, s.St.Pool, user.ID)
-	if err != nil {
-		fail(c, err)
-		return
+	owned := 0
+	for _, skill := range skills {
+		if !skill.Official() {
+			owned++
+		}
 	}
 	ok(c, gin.H{
-		"items": imageSkillDicts(skills), "bindings": bindings,
-		"taskTypes": store.SkillTaskTypes, "maxPerScope": store.SkillMaxBindingsPerScope,
+		"items": imageSkillDicts(skills),
+		// 云端配额：前端据此决定还能不能"保存到云端"。
+		"owned": owned, "maxOwned": store.SkillMaxOwnedPerUser,
 	})
 }
 
@@ -208,7 +219,8 @@ func (s *Server) createMyImageSkill(c *gin.Context) {
 		return
 	}
 	if owned >= store.SkillMaxOwnedPerUser {
-		fail(c, apperr.E("validation_error", "自建 Skill 数量已达上限", 422))
+		fail(c, apperr.E("validation_error",
+			fmt.Sprintf("云端最多保存 %d 个技能，删掉一个或改存本地", store.SkillMaxOwnedPerUser), 422))
 		return
 	}
 	skill := store.ImageSkill{OwnerUserID: &user.ID}
@@ -252,7 +264,7 @@ func (s *Server) patchMyImageSkill(c *gin.Context) {
 	}
 	applyImageSkillInput(current, body, false)
 	// 自建 skill 恒为启用：用户列表按 active 过滤，一旦停用就再也看不到、
-	// 也改不回来了。要停止生效应当取消装载，而不是停用词条。
+	// 也改不回来了。不想用了直接删。
 	current.Active = true
 	updated, err := store.UpdateSkill(ctx, s.St.Pool, current)
 	if err != nil {
@@ -282,60 +294,4 @@ func (s *Server) deleteMyImageSkill(c *gin.Context) {
 		return
 	}
 	ok(c, gin.H{"deleted": true})
-}
-
-// ---------- 用户端：装载状态 ----------
-
-type skillBindingIn struct {
-	SkillIDs []uuid.UUID `json:"skillIds"`
-}
-
-// putMySkillBindings 整体替换一个装载位。scope 为 global 或某个生图页面。
-func (s *Server) putMySkillBindings(c *gin.Context) {
-	user, err := s.requireUser(c)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	var body skillBindingIn
-	if err := bindJSON(c, &body); err != nil {
-		fail(c, err)
-		return
-	}
-	ctx := c.Request.Context()
-	scope := strings.TrimSpace(c.Param("scope"))
-	if err := store.SetSkillBindings(ctx, s.St, user.ID, scope, body.SkillIDs); err != nil {
-		if errors.Is(err, store.ErrSkillNotFound) {
-			fail(c, apperr.E("not_found", "Skill 不存在或已停用", 404))
-			return
-		}
-		failSkillValidation(c, err)
-		return
-	}
-	bindings, err := store.GetSkillBindings(ctx, s.St.Pool, user.ID)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	ok(c, gin.H{"bindings": bindings})
-}
-
-// myResolvedSkills 给出某个生图页面实际生效的 skill，前端据此拼提示词。
-func (s *Server) myResolvedSkills(c *gin.Context) {
-	user, err := s.requireUser(c)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	taskType := strings.TrimSpace(c.Query("taskType"))
-	if !store.Contains(store.SkillTaskTypes, taskType) {
-		fail(c, apperr.E("validation_error", "taskType: 未知的生图页面", 422))
-		return
-	}
-	skills, err := store.ResolveSkillsForTaskType(c.Request.Context(), s.St.Pool, user.ID, taskType)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	ok(c, gin.H{"taskType": taskType, "items": imageSkillDicts(skills)})
 }

@@ -150,7 +150,7 @@ const {
   refresh,
   retry,
 } = usePagedList<FeedbackItem>(
-  (cursor) =>
+  (cursor, page) =>
     request<Page<FeedbackItem>>("/api/v1/admin/feedback", {
       query: {
         status: filters.status,
@@ -158,9 +158,11 @@ const {
         search: filters.search.trim(),
         limit: pageSize.value,
         cursor,
+        page,
       },
     }),
   () => ({ ...filters, limit: pageSize.value }),
+  { pageSeek: true },
 );
 
 const hasFilters = computed(

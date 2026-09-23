@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import { uploadFile } from "@react/legacy-modules/services/tasksApi.js";
+import { downloadAuthenticatedMedia } from "@react/legacy-modules/services/authenticatedMedia.js";
 import { conversationTitle, createAssistantPlaceholder, uid } from "./domain/assistantMessages.js";
 import { assistantCodeLanguageLabel, highlightAssistantCode } from "./domain/assistantCodeHighlight.js";
 import { markAssistantMessageLocal } from "./domain/assistantRetryPolicy.js";
@@ -140,6 +141,8 @@ function ratioOption(value) {
 }
 
 const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "canceled"]);
+// 排队时服务端会把"在等什么额度"写进 stage，界面据此换一条说得清的文案。
+const QUEUE_WAIT_STAGES = new Set(["waiting-agent-pool", "waiting-execution-pool"]);
 const MESSAGE_BATCH_SIZE = 24;
 const LOAD_EARLIER_COOLDOWN_MS = 200;
 const MAX_ASSISTANT_MESSAGE_CHARACTERS = 12000;
@@ -584,12 +587,10 @@ function imageAssetFromItem(image = {}) {
   };
 }
 
-function downloadAssistantImage(image, index = 0) {
-  const link = document.createElement("a");
-  link.href = imageUrl(image);
-  link.download = `assistant-image-${index + 1}.png`;
-  link.rel = "noopener";
-  link.click();
+async function downloadAssistantImage(image, index = 0) {
+  const url = imageUrl(image);
+  if (!url) throw new Error("没有可下载的图片");
+  return downloadAuthenticatedMedia(url, `assistant-image-${index + 1}.png`);
 }
 
 async function copyAssistantImage(image) {
@@ -696,11 +697,19 @@ function messageDurationMs(message) {
 }
 
 function mergeAssistantUsage(current, incoming, extras = {}) {
-  const next = {
-    ...(current && typeof current === "object" ? current : {}),
-    ...(incoming && typeof incoming === "object" ? incoming : {}),
-  };
+  const currentUsage = current && typeof current === "object" ? current : {};
+  const incomingUsage = incoming && typeof incoming === "object" ? incoming : {};
+  const next = { ...currentUsage, ...incomingUsage };
+  for (const key of ["durationMs", "firstTokenMs"]) {
+    const best = Math.max(
+      Math.max(0, Number(currentUsage[key]) || 0),
+      Math.max(0, Number(incomingUsage[key]) || 0),
+      Math.max(0, Number(extras[key]) || 0),
+    );
+    if (best) next[key] = best;
+  }
   for (const [key, value] of Object.entries(extras)) {
+    if (key === "durationMs" || key === "firstTokenMs") continue;
     const amount = Math.max(0, Number(value) || 0);
     if (!amount) continue;
     if (!Math.max(0, Number(next[key]) || 0)) next[key] = amount;
@@ -1188,6 +1197,7 @@ export {
   MAX_ASSISTANT_MESSAGE_CHARACTERS,
   MAX_MODEL_REFERENCE_IMAGES,
   MESSAGE_BATCH_SIZE,
+  QUEUE_WAIT_STAGES,
   REASONING_EFFORT_LABELS,
   RESOLUTIONS,
   SIDEBAR_MOTION_MS,

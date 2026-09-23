@@ -111,7 +111,9 @@ func ListEcommerceProducts(ctx context.Context, q Q, userID uuid.UUID, search, s
 		args = append(args, status)
 		sql += fmt.Sprintf(` AND status = $%d`, len(args))
 	}
-	sql, args = appendCursorUpdated(sql, args, cursor, limit)
+	// 按创建时间分页：按 updated_at 排序时，翻页期间被编辑（或被后台任务更新）的商品
+	// 会移到已读区间，本轮就再也翻不到。
+	sql, args = appendKeyset(sql, args, "created_at", "id", cursor, limit)
 	rows, err := q.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, err
@@ -126,16 +128,6 @@ func ListEcommerceProducts(ctx context.Context, q Q, userID uuid.UUID, search, s
 		items = append(items, product)
 	}
 	return items, rows.Err()
-}
-
-func appendCursorUpdated(sql string, args []any, cursor *Cursor, limit int) (string, []any) {
-	if cursor != nil {
-		args = append(args, cursor.CreatedAt, cursor.ID)
-		sql += fmt.Sprintf(` AND (updated_at, id) < ($%d, $%d)`, len(args)-1, len(args))
-	}
-	args = append(args, limit+1)
-	sql += fmt.Sprintf(` ORDER BY updated_at DESC, id DESC LIMIT $%d`, len(args))
-	return sql, args
 }
 
 func UpdateEcommerceProduct(ctx context.Context, q Q, input NewEcommerceProduct) (*EcommerceProduct, error) {

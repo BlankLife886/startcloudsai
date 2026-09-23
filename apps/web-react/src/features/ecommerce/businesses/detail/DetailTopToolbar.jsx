@@ -74,7 +74,16 @@ export function DetailTopToolbar({
 
   useEffect(() => {
     const onPointer = (event) => {
-      if (!rootRef.current?.contains(event.target)) setActiveMenu("");
+      const target = event.target;
+      if (rootRef.current?.contains(target)) return;
+      // 下拉选项渲染在 portal 里，点选项不能把菜单关掉
+      if (
+        target instanceof Element &&
+        target.closest('.commerce-select-menu, [aria-modal="true"]')
+      ) {
+        return;
+      }
+      setActiveMenu("");
     };
     const onKey = (event) => {
       if (event.key === "Escape") setActiveMenu("");

@@ -32,8 +32,10 @@ const props=defineProps<{userId:string}>();const router=useRouter();
 const data=ref<BillingData | null>(null), lots=ref<Lot[]>([]), lotTotal=ref(0);
 const loading=ref(false),error=ref(''),exporting=ref(false),view=ref('benefits');
 const page=ref(1),lotPage=ref(1),bucket=ref(''),state=ref('');
+const displayedPage=ref(1),displayedLotPage=ref(1);
 let controller:AbortController | undefined;
 async function load(){
+ const requestedPage=page.value,requestedLotPage=lotPage.value;
  controller?.abort();const own=new AbortController();controller=own;const id=props.userId;
  loading.value=true;error.value='';
  try{
@@ -41,7 +43,7 @@ async function load(){
    request<BillingData>(`/api/v1/admin/users/${id}/billing`,{query:{page:page.value,limit:10},signal:own.signal,silent:true}),
    request<{items:Lot[];total:number}>(`/api/v1/admin/users/${id}/credit-lots`,{query:{page:lotPage.value,limit:20,bucket:bucket.value,state:state.value},signal:own.signal,silent:true}),
   ]);
-  if(!own.signal.aborted&&props.userId===id){data.value=billing;lots.value=batches.items;lotTotal.value=batches.total}
+  if(!own.signal.aborted&&props.userId===id){data.value=billing;lots.value=batches.items;lotTotal.value=batches.total;displayedPage.value=requestedPage;displayedLotPage.value=requestedLotPage}
  }catch(e){if(controller===own&&!own.signal.aborted&&!isRequestAborted(e))error.value=e instanceof Error?e.message:'权益读取失败'}
  finally{if(controller===own)loading.value=false}
 }
@@ -104,7 +106,7 @@ async function exportLots(){
       <el-table-column label="下次重置" min-width="170"><template #default="{row}">{{ formatTime(row.nextResetAt) }}</template></el-table-column>
       <el-table-column label="记录" width="110"><template #default="{row}"><el-button link type="primary" @click="order(row.orderId)">订单</el-button><el-button link type="primary" @click="changes(row.id)">变更</el-button></template></el-table-column>
      </el-table>
-     <el-pagination v-model:current-page="page" :page-size="10" :total="data.total" layout="total, prev, pager, next" @current-change="load" />
+     <el-pagination :current-page="displayedPage" :disabled="loading" :page-size="10" :total="data.total" layout="total, prev, pager, next" @update:current-page="value=>{page=value;load()}" />
     </el-tab-pane>
     <el-tab-pane label="积分批次" name="lots">
      <div class="user-billing__filters">
@@ -130,7 +132,7 @@ async function exportLots(){
       <el-table-column prop="revokedPoints" label="权益回收" width="90" />
       <el-table-column label="充值锁价资格" min-width="125"><template #default="{row}">{{ row.bucket==='topup' ? row.priceLockEligible?'符合':'不符合' : '按订阅权益' }}</template></el-table-column>
      </el-table>
-     <el-pagination v-model:current-page="lotPage" :page-size="20" :total="lotTotal" layout="total, prev, pager, next" @current-change="load" />
+     <el-pagination :current-page="displayedLotPage" :disabled="loading" :page-size="20" :total="lotTotal" layout="total, prev, pager, next" @update:current-page="value=>{lotPage=value;load()}" />
     </el-tab-pane>
    </el-tabs>
   </template>

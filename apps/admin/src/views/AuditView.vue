@@ -4,6 +4,7 @@ import type { TableInstance } from 'element-plus'
 import { Search } from '@element-plus/icons-vue'
 import { request, type Page } from '@/request'
 import { usePagedList } from '@/usePagedList'
+import AdminDateRange from '@/components/AdminDateRange.vue'
 import { formatTime, shortId } from '@/utils'
 
 interface AuditLog {
@@ -19,7 +20,7 @@ interface AuditLog {
   detail: Record<string, unknown> | string | null
 }
 
-const filters = reactive({ admin: '', path: '' })
+const filters = reactive({ admin: '', path: '', method: '', createdFrom: '', createdTo: '' })
 const tableRef = ref<TableInstance>()
 
 const pageSize = ref(20)
@@ -28,7 +29,7 @@ const { items, loading, error, total, page, hasPrev, hasNext, reset, goToPage, r
   usePagedList<AuditLog>(
     (cursor) =>
       request<Page<AuditLog>>('/api/v1/admin/audit-logs', {
-        query: { admin: filters.admin, path: filters.path, limit: pageSize.value, cursor },
+        query: { ...filters, limit: pageSize.value, cursor },
       }),
     () => ({ ...filters, limit: pageSize.value }),
   )
@@ -38,6 +39,9 @@ onMounted(reset)
 function clearFilters() {
   filters.admin = ''
   filters.path = ''
+  filters.method = ''
+  filters.createdFrom = ''
+  filters.createdTo = ''
   reset()
 }
 
@@ -76,6 +80,8 @@ const METHOD_TAG: Record<string, 'primary' | 'success' | 'warning' | 'danger' | 
     <PageCard>
       <div class="audit-toolbar">
         <div class="audit-toolbar__actions">
+          <AdminDateRange v-model:from="filters.createdFrom" v-model:to="filters.createdTo" label="操作时间" @change="reset" />
+          <el-select v-model="filters.method" clearable placeholder="请求方法" style="width: 130px" @change="reset"><el-option v-for="method in ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']" :key="method" :label="method" :value="method" /></el-select>
           <el-input
             v-model="filters.admin"
             class="audit-search"

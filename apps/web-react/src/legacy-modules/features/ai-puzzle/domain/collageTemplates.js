@@ -29,6 +29,44 @@ export const RATIO_PRESETS = [
   { id: 'r21x9', label: '21:9', value: 21 / 9 },
 ]
 
+export const CUSTOM_RATIO_ID = 'custom'
+
+export const MIN_EXPORT_EDGE = 320
+export const MAX_EXPORT_EDGE = 8192
+
+export function parsePixelSize(value, fallback = 1080) {
+  const n = Math.round(Number(value))
+  if (!Number.isFinite(n)) return fallback
+  return Math.min(MAX_EXPORT_EDGE, Math.max(MIN_EXPORT_EDGE, n))
+}
+
+export function parseRatioPart(value, fallback = 1) {
+  const n = typeof value === 'number' ? value : Number(String(value).trim())
+  if (!Number.isFinite(n) || n <= 0) return fallback
+  return Math.min(32, Math.max(0.5, Math.round(n * 100) / 100))
+}
+
+export function ratioPartsFromValue(ratio) {
+  const value = Number(ratio)
+  if (!Number.isFinite(value) || value <= 0) return { w: 1, h: 1 }
+  for (const preset of RATIO_PRESETS) {
+    if (preset.value > 0 && Math.abs(preset.value - value) < 0.003) {
+      const [w, h] = preset.label.split(':').map(Number)
+      if (w && h) return { w, h }
+    }
+  }
+  let best = { w: Math.round(value * 100) / 100, h: 1, err: Infinity }
+  for (let h = 1; h <= 32; h += 1) {
+    const raw = value * h
+    const rounded = Math.round(raw * 2) / 2
+    if (rounded < 0.5 || rounded > 32) continue
+    const err = Math.abs(raw - rounded)
+    if (err < best.err) best = { w: rounded, h, err }
+    if (err < 0.008) return { w: rounded, h }
+  }
+  return best.err < 0.05 ? { w: best.w, h: best.h } : { w: Math.round(value * 100) / 100, h: 1 }
+}
+
 export const BACKGROUND_PRESETS = [
   { id: 'white', label: '纯白', type: 'solid', color: '#ffffff' },
   { id: 'black', label: '暗夜', type: 'solid', color: '#0b0b10' },
@@ -399,8 +437,13 @@ export function recommendTemplate(count) {
   return getTemplateById('grid-9')
 }
 
-/** 解析画布实际比例（ratioId = auto 时用模板默认值） */
-export function resolveBoardRatio(template, ratioId = 'auto') {
+/** 解析画布实际比例（ratioId = auto 时用模板默认值，custom 时用自定义宽高） */
+export function resolveBoardRatio(template, ratioId = 'auto', customRatio = null) {
+  if (ratioId === CUSTOM_RATIO_ID) {
+    const w = parseRatioPart(customRatio?.w, 1)
+    const h = parseRatioPart(customRatio?.h, 1)
+    return w / h
+  }
   const preset = getRatioPresetById(ratioId)
   if (preset.value > 0) return preset.value
   return template?.ratio || 1
@@ -488,6 +531,37 @@ function hasFilterParams(params = {}) {
 // ---------------------------------------------------------------------------
 // 背景：预览 CSS 与导出 canvas 填充保持一致
 // ---------------------------------------------------------------------------
+
+function parseHexColor(color) {
+  const value = String(color || "").trim()
+  const hex = value.startsWith("#") ? value.slice(1) : ""
+  if (hex.length === 3) {
+    return [0, 1, 2].map((index) => parseInt(hex[index] + hex[index], 16))
+  }
+  if (hex.length === 6 || hex.length === 8) {
+    return [0, 2, 4].map((index) => parseInt(hex.slice(index, index + 2), 16))
+  }
+  return null
+}
+
+function relativeLuminance(color) {
+  const rgb = parseHexColor(color)
+  if (!rgb) return 1
+  const [red, green, blue] = rgb.map((channel) => {
+    const value = channel / 255
+    return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4
+  })
+  return 0.2126 * red + 0.7152 * green + 0.0722 * blue
+}
+
+export function isDarkBackground(background) {
+  if (!background) return false
+  if (background.type === "linear" && Array.isArray(background.stops) && background.stops.length) {
+    const tones = background.stops.map(([color]) => relativeLuminance(color))
+    return tones.reduce((sum, value) => sum + value, 0) / tones.length < 0.42
+  }
+  return relativeLuminance(background.color || "#ffffff") < 0.42
+}
 
 export function buildBackgroundCss(background) {
   if (!background) return '#ffffff'
@@ -729,6 +803,7 @@ function drawCaption(ctx, text, boardW, boardH) {
 export async function exportCollage({
   template,
   ratioId = 'auto',
+  customRatio = null,
   cells = [],
   gap = 8,
   radius = 6,
@@ -736,12 +811,15 @@ export async function exportCollage({
   background = null,
   text = null,
   exportWidth = 2400,
+  exportHeight = null,
   format = 'png',
   quality = 0.92,
 }) {
-  const ratio = resolveBoardRatio(template, ratioId)
-  const boardW = Math.max(320, Math.round(exportWidth))
-  const boardH = Math.round(boardW / ratio)
+  const ratio = resolveBoardRatio(template, ratioId, customRatio)
+  const boardW = parsePixelSize(exportWidth, 2400)
+  const boardH = exportHeight
+    ? parsePixelSize(exportHeight, Math.round(boardW / ratio))
+    : Math.max(MIN_EXPORT_EDGE, Math.round(boardW / ratio))
   const unit = boardW / BASE_BOARD_WIDTH
 
   const canvas = document.createElement('canvas')

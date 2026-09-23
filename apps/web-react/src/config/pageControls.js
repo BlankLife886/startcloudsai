@@ -84,7 +84,7 @@ const PAGE_LABELS = Object.freeze({
   pricing: "创作价格",
   holo_card: "闪光卡",
   psd_decompose: "PSD 分解",
-  skills: "Skill 中心",
+  skills: "技能库",
   invitation: "邀请好友",
   developer_api_docs: "API 文档",
   ai_tools: "全部工具",

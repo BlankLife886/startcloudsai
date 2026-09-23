@@ -3,7 +3,6 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue"
 import { ArrowRight, Delete, EditPen, Picture, Plus, Refresh, Search, Upload, View } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import AdminDialog from "@/components/AdminDialog.vue";
-import AdminListShell from "@/components/AdminListShell.vue";
 import PageCard from "@/components/PageCard.vue";
 import { request } from "@/request";
 import { formatTime } from "@/utils";
@@ -48,8 +47,6 @@ const error = ref("");
 const query = ref("");
 const status = ref("all");
 const busyId = ref("");
-const page = ref(1);
-const pageSize = 10;
 const editingId = ref<string | undefined>();
 const fileInput = ref<HTMLInputElement>();
 const form = reactive<Banner>(defaults());
@@ -145,9 +142,8 @@ const filtered = computed(() =>
     (item) =>
       (!query.value || `${item.title} ${item.subtitle}`.toLowerCase().includes(query.value.trim().toLowerCase())) &&
       (status.value === "all" || state(item) === status.value),
-  ),
+  ).sort((a, b) => a.sortOrder - b.sortOrder),
 );
-const rows = computed(() => filtered.value.slice((page.value - 1) * pageSize, page.value * pageSize));
 const counts = computed(() => ({
   all: items.value.length,
   展示中: items.value.filter((item) => state(item) === "展示中").length,
@@ -161,7 +157,6 @@ async function load() {
   error.value = "";
   try {
     items.value = (await request<{ items: Banner[] }>("/api/v1/admin/home-banners", { silent: true })).items;
-    page.value = Math.min(page.value, Math.max(1, Math.ceil(filtered.value.length / pageSize) || 1));
   } catch (e) {
     error.value = e instanceof Error ? e.message : "轮播图读取失败";
   } finally {
@@ -327,7 +322,7 @@ onBeforeUnmount(cancelUpload);
             class="status-tab"
             :class="{ 'is-active': status === option.value }"
             :aria-selected="status === option.value"
-            @click="status = option.value; page = 1"
+            @click="status = option.value"
           >
             {{ option.label }}
             <em class="tnum">{{ option.value === "all" ? counts.all : counts[option.value as BannerState] }}</em>
@@ -340,78 +335,39 @@ onBeforeUnmount(cancelUpload);
             placeholder="搜索轮播标题"
             :prefix-icon="Search"
             clearable
-            @input="page = 1"
-            @clear="page = 1"
           />
         </div>
       </div>
 
       <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
 
-      <AdminListShell
-        class="banner-board"
-        fill
-        :has-prev="page > 1"
-        :has-next="page * pageSize < filtered.length"
-        :loading="loading"
-        :page="page"
-        :count="rows.length"
-        :total="filtered.length"
-        :page-size="pageSize"
-        @update:page="page = $event"
-      >
-        <el-table v-loading="loading" class="banner-table" :data="rows" row-key="id" height="100%" table-layout="fixed">
-          <template #empty>
-            <el-empty description="暂无轮播图" :image-size="64" />
-          </template>
-          <el-table-column label="轮播内容" min-width="280">
-            <template #default="{ row }">
-              <div class="banner-row">
-                <el-image :src="row.imageUrl" fit="cover" :preview-src-list="[row.imageUrl]" preview-teleported />
-                <div>
-                  <strong>{{ row.title || "未命名轮播图" }}</strong>
-                  <span>{{ row.subtitle || "—" }}</span>
-                </div>
-              </div>
-            </template>
-          </el-table-column>
-          <el-table-column label="排序" prop="sortOrder" width="76" align="center" sortable />
-          <el-table-column label="状态" width="100" align="center">
-            <template #default="{ row }">
-              <el-tag :type="stateType(state(row as Banner))" effect="light" size="small">
-                {{ state(row as Banner) }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column label="展示时间" min-width="168">
-            <template #default="{ row }">
-              <div class="banner-time">
-                <strong>{{ row.startsAt ? formatTime(row.startsAt) : "立即开始" }}</strong>
-                <span>{{ row.endsAt ? formatTime(row.endsAt) : "长期有效" }}</span>
-              </div>
-            </template>
-          </el-table-column>
-          <el-table-column label="时长" width="76" align="center">
-            <template #default="{ row }">{{ row.durationMs / 1000 }} 秒</template>
-          </el-table-column>
-          <el-table-column label="上架" width="80" align="center">
-            <template #default="{ row }">
-              <el-switch
-                :model-value="row.active"
-                :disabled="!!busyId"
-                :aria-label="`${row.title || '未命名轮播图'}上架`"
-                @change="toggle(row as Banner)"
-              />
-            </template>
-          </el-table-column>
-          <el-table-column label="操作" width="120" align="center" fixed="right">
-            <template #default="{ row }">
-              <el-button text size="small" :icon="EditPen" :disabled="!!busyId" @click="edit(row as Banner)">编辑</el-button>
-              <el-button text size="small" type="danger" :icon="Delete" :disabled="!!busyId" @click="remove(row as Banner)">删除</el-button>
-            </template>
-          </el-table-column>
-        </el-table>
-      </AdminListShell>
+      <div class="banner-gallery-note"><span>图片优先展示 · 点击画面查看原图</span><span>按排序数字从小到大排列</span></div>
+      <div v-loading="loading" class="banner-gallery">
+        <el-empty v-if="!filtered.length && !loading" :description="error ? '轮播图读取失败，请点击刷新重试' : items.length ? '没有匹配的轮播图' : '添加第一张首页轮播图'" :image-size="72">
+          <el-button v-if="!items.length && !error" type="primary" :icon="Plus" @click="edit()">新增轮播图</el-button>
+        </el-empty>
+        <div v-else class="banner-grid">
+          <article v-for="item in filtered" :key="item.id" class="banner-card" :class="{ 'is-offline': !item.active }">
+            <div class="banner-card__image">
+              <el-image :src="item.imageUrl" :alt="item.title || '首页轮播图'" fit="cover" :preview-src-list="[item.imageUrl]" preview-teleported hide-on-click-modal>
+                <template #error><div class="banner-card__placeholder"><el-icon :size="28"><Picture /></el-icon><span>图片暂时无法显示</span></div></template>
+              </el-image>
+              <div class="banner-card__badges"><span class="banner-card__state" :class="`is-${stateType(state(item))}`">{{ state(item) }}</span><span>排序 {{ item.sortOrder }}</span></div>
+              <span class="banner-card__duration">{{ item.durationMs / 1000 }} 秒 / 张</span>
+            </div>
+            <div class="banner-card__body">
+              <h3>{{ item.title || '未命名轮播图' }}</h3>
+              <p class="banner-card__subtitle">{{ item.subtitle || '纯图片展示，未设置副标题' }}</p>
+              <div class="banner-card__link"><el-icon><ArrowRight /></el-icon><span :title="item.linkUrl">{{ item.linkUrl || '未设置跳转链接' }}</span><small v-if="item.linkUrl && item.newTab">新窗口</small></div>
+              <dl class="banner-card__schedule"><div><dt>开始</dt><dd>{{ item.startsAt ? formatTime(item.startsAt) : '立即开始' }}</dd></div><div><dt>结束</dt><dd>{{ item.endsAt ? formatTime(item.endsAt) : '长期有效' }}</dd></div></dl>
+            </div>
+            <footer class="banner-card__footer">
+              <label><el-switch :model-value="item.active" :loading="busyId === item.id" :disabled="!!busyId" :aria-label="(item.title || '未命名轮播图') + '上架'" @change="toggle(item)" /><span>{{ item.active ? '已启用' : '已停用' }}</span></label>
+              <div><el-button :icon="EditPen" :disabled="!!busyId" @click="edit(item)">编辑</el-button><el-button text type="danger" :icon="Delete" :disabled="!!busyId" :aria-label="'删除' + (item.title || '未命名轮播图')" @click="remove(item)">删除</el-button></div>
+            </footer>
+          </article>
+        </div>
+      </div>
     </PageCard>
 
     <AdminDialog
@@ -645,101 +601,37 @@ html.dark .status-tab.is-active em {
   border-radius: 999px;
   box-shadow: 0 0 0 1px var(--border) inset;
 }
-.banner-board {
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-control);
-  background: var(--surface);
-}
-.banner-board :deep(.admin-list-shell) {
-  border-top: 0;
-}
-.banner-board :deep(.admin-list-shell__viewport) {
-  overflow: hidden;
-  scrollbar-gutter: auto;
-}
-.banner-board :deep(.admin-list-shell__footer) {
-  min-height: 52px;
-  padding: 0 16px;
-  background: var(--surface-2);
-}
-.banner-table {
-  --el-table-border-color: transparent;
-}
-.banner-table :deep(.el-table__inner-wrapper::before),
-.banner-table :deep(.el-table__inner-wrapper::after),
-.banner-table :deep(.el-table__border-left-patch) {
-  display: none;
-}
-.banner-table :deep(.el-table .cell) {
-  overflow: hidden;
-  padding: 0 12px;
-}
-.banner-table :deep(.el-table td.el-table__cell),
-.banner-table :deep(.el-table th.el-table__cell) {
-  border: 0;
-}
-.banner-table :deep(.el-table__header-wrapper th.el-table__cell) {
-  height: 40px;
-  padding: 0;
-  background: var(--surface-2);
-  color: var(--ink-3);
-  font-size: 12px;
-  font-weight: 650;
-}
-.banner-table :deep(.el-table__body .el-table__cell) {
-  padding: 8px 0;
-}
-.banner-table :deep(.el-table__row td.el-table__cell) {
-  height: 64px;
-}
-.banner-table :deep(.el-table__row:hover > td.el-table__cell) {
-  background: var(--surface-2);
-}
-.banner-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-width: 0;
-}
-.banner-row :deep(.el-image) {
-  width: 112px;
-  height: 56px;
-  flex: none;
-  overflow: hidden;
-  border-radius: 8px;
-  background: var(--surface-2);
-}
-.banner-row > div {
-  min-width: 0;
-}
-.banner-row strong,
-.banner-row span {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.banner-row strong {
-  color: var(--ink);
-  font-size: 13px;
-}
-.banner-row span,
-.banner-time span {
-  color: var(--ink-3);
-  font-size: 12px;
-}
-.banner-time {
-  display: grid;
-  gap: 2px;
-}
-.banner-time strong {
-  color: var(--ink);
-  font-size: 12px;
-  font-weight: 650;
-}
+.banner-gallery-note { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; padding: 4px 0 16px; color: var(--ink-3); font-size: 12px; }
+.banner-gallery { flex: 1; min-height: 160px; overflow-y: auto; padding: 2px 8px 18px 2px; scrollbar-gutter: stable; }
+.banner-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 20px; }
+.banner-card { min-width: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); transition: border-color 160ms ease, box-shadow 160ms ease; }
+.banner-card:hover { border-color: var(--border-strong); box-shadow: var(--shadow-sm); }
+.banner-card__image { position: relative; aspect-ratio: 16 / 5; background: var(--surface-2); }
+.banner-card__image > :deep(.el-image) { display: block; width: 100%; height: 100%; }
+.banner-card__badges { position: absolute; top: 12px; left: 12px; right: 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px; pointer-events: none; }
+.banner-card__badges > span:not(.banner-card__state), .banner-card__duration { padding: 5px 9px; border-radius: 6px; background: rgb(15 23 42 / 72%); color: white; font-size: 11px; backdrop-filter: blur(8px); }
+.banner-card__state { padding: 5px 10px; border-radius: 999px; color: white; font-size: 11px; font-weight: 600; background: #64748b; }
+.banner-card__state.is-success { background: #087f5b; }
+.banner-card__state.is-warning { background: #a65d08; }
+.banner-card__duration { position: absolute; right: 12px; bottom: 12px; pointer-events: none; }
+.banner-card__placeholder { display: flex; width: 100%; height: 100%; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: var(--ink-3); font-size: 12px; }
+.banner-card__body { padding: 18px 20px; }
+.banner-card h3 { margin: 0; color: var(--ink); font-size: 17px; line-height: 1.5; overflow-wrap: anywhere; }
+.banner-card__subtitle { margin: 6px 0 16px; color: var(--ink-3); font-size: 12px; line-height: 1.7; min-height: 21px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.banner-card__link { display: flex; align-items: center; gap: 8px; padding: 9px 10px; border-radius: 8px; background: var(--surface-2); color: var(--ink-2); font-size: 12px; }
+.banner-card__link > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.banner-card__link small { flex-shrink: 0; font-size: 10px; color: var(--ink-3); }
+.banner-card__schedule { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 16px 0 0; }
+.banner-card__schedule dt { color: var(--ink-3); font-size: 11px; }
+.banner-card__schedule dd { margin: 5px 0 0; color: var(--ink-2); font-size: 12px; font-variant-numeric: tabular-nums; }
+.banner-card__footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; padding: 12px 20px; border-top: 1px solid var(--border); background: color-mix(in srgb, var(--surface-2) 45%, var(--surface)); }
+.banner-card__footer > label { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ink-2); }
+.banner-card__footer > div { display: flex; align-items: center; gap: 8px; }
+.banner-card__footer :deep(.el-button) { margin-left: 0; }
+@media (min-width: 1800px) { .banner-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 900px) { .banner-grid { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 520px) { .banner-card__body { padding: 14px; } .banner-card__footer { padding: 10px 14px; } .banner-card__schedule { grid-template-columns: 1fr; } }
+@media (prefers-reduced-motion: reduce) { .banner-card { transition: none; } }
 .banner-editor {
   display: grid;
   flex: 1;

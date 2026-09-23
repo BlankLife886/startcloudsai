@@ -15,6 +15,11 @@ import (
 
 func TestOpenAIResponsesChatAndStream(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/images/generations" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `{"created":123,"data":[{"b64_json":"image-result"}]}`)
+			return
+		}
 		if r.URL.Path != "/v1/chat/completions" {
 			http.NotFound(w, r)
 			return
@@ -131,6 +136,11 @@ func TestOpenAIResponsesChatAndStream(t *testing.T) {
 
 func TestOpenAIResponsesChatInvokesImageGenerationTool(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/images/generations" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `{"created":123,"data":[{"b64_json":"image-result"}]}`)
+			return
+		}
 		if r.URL.Path != "/v1/chat/completions" {
 			http.NotFound(w, r)
 			return
@@ -171,10 +181,7 @@ func TestOpenAIResponsesChatInvokesImageGenerationTool(t *testing.T) {
 	}
 
 	body := `{"model":"compat-chat-img","input":"生成一只蓝猫"}`
-	done := env.start(t, env.request(http.MethodPost, "/v1/responses", "application/json", "chat-img-1", strings.NewReader(body)))
-	task := env.waitTask(t, "a blue kitten", done)
-	env.completeTask(t, task, uploadTestPNG(t))
-	response := awaitOpenAIIntegrationResponse(t, done)
+	response := env.serve(t, env.request(http.MethodPost, "/v1/responses", "application/json", "chat-img-1", strings.NewReader(body)))
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -193,6 +200,7 @@ func TestOpenAIResponsesChatInvokesImageGenerationTool(t *testing.T) {
 	if !foundImage {
 		t.Fatalf("expected image_generation_call in output=%#v", output)
 	}
+	env.assertNoLocalImagePersistence(t)
 }
 
 func TestOpenAIResponsesChatWebSocketSmoke(t *testing.T) {

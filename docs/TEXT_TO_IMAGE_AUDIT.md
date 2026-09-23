@@ -1,5 +1,7 @@
 # 文生图完整链路审查
 
+> 文档状态（2026-09-22）：历史审计、修复和当次验证记录。下文代码行号、样例账号/批次、日志、服务状态与迁移 146 均对应 2026-09-09；2026-09-22 文档更新没有重新复现或运行回归。当前工作区已继续演进，请通过链接源码及现行测试定位，不把旧通过结果当成本轮验收。 当前规则见 [SERVER_CURRENT_STATE.md](SERVER_CURRENT_STATE.md)。
+
 日期：2026-09-09。首次审查确认 8 类问题，其中 4 类优先级为 P1，4 类为 P2。用户随后授权修复，8 类问题的代码修改已完成。下方原始审查条目记录的是**修复前**的行为和复现证据，不代表当前版本仍有这些缺陷。
 
 ## 修复进展与对应验证
@@ -29,13 +31,15 @@
 
 ## 原始审查记录（修复前）
 
+以下源码链接统一指向仓库相对路径；正文中的旧行号只保留为原审查证据，已不用于定位当前源码。
+
 审查覆盖：页面参数与报价、批次提交、幂等重试、身份切换、服务端输入与模型授权、冻结费用、排队准入、Worker 领取与恢复、C2A/CRUN 请求及轮询、图片下载与保存、部分交付结算、历史重新生成和取消反馈。
 
 ## P1：需要优先处理
 
 ### T2I-01 批次部分提交后改价，重新确认会重复生成和收费
 
-位置：[TextToImageView.jsx](/Users/ycc/Documents/TestCode/startcloudsai/apps/web-react/src/views/TextToImageView.jsx:1413)、[useTextToImageJobs.js](/Users/ycc/Documents/TestCode/startcloudsai/apps/web-react/src/features/text-to-image/useTextToImageJobs.js:366)。
+位置：[TextToImageView.jsx](../apps/web-react/src/views/TextToImageView.jsx)、[useTextToImageJobs.js](../apps/web-react/src/features/text-to-image/useTextToImageJobs.js)。
 
 当前页面把多张图片拆成独立请求，使用 `Promise.all` 等待。第一张已创建，第二张遇到 `price_changed` 时，页面重新报价的数量仍是整批。用户确认后再次调用 `buildPayload`，每张生成新的幂等键，已经接受的第一张也被重新提交。
 
@@ -47,7 +51,7 @@
 
 ### T2I-02 取消弹窗承诺退款，但状态变化后实际可能扣费
 
-位置：[TextToImageView.jsx](/Users/ycc/Documents/TestCode/startcloudsai/apps/web-react/src/views/TextToImageView.jsx:1856)。
+位置：[TextToImageView.jsx](../apps/web-react/src/views/TextToImageView.jsx)。
 
 排队/准备态弹窗告知冻结积分会退回，但 `confirmCancel` 无条件发送 `acknowledgeUpstream: true`。若用户打开弹窗后，Worker 刚好已经提交上游，服务端会认为用户确认了不退款停止，按预留积分结算。前端成功提示仍依据旧 `cancelTarget`，继续显示“冻结积分已退回”。
 
@@ -57,7 +61,7 @@
 
 ### T2I-03 单任务多图的补取恢复会丢失图片下标
 
-位置：[task_outputs.go](/Users/ycc/Documents/TestCode/startcloudsai/apps/server/internal/worker/task_outputs.go:64)，相关保存位置在同文件第 245 行。
+位置：[task_outputs.go](../apps/server/internal/worker/task_outputs.go)，相关保存位置在原审查版本同文件第 245 行。
 
 保存部分图片时，将带空槽的数组压缩后写入 `output_keys`；下一次恢复时，又直接把压缩数组复制到从 0 开始的槽位，丢失原图片下标。
 
@@ -74,7 +78,7 @@
 
 ### T2I-04 兼容回退路径可通过内部参数调用未公开模型
 
-位置：[taskflow.go](/Users/ycc/Documents/TestCode/startcloudsai/apps/server/internal/taskflow/taskflow.go:538)，相关回退条件在第 694 行。
+位置：[taskflow.go](../apps/server/internal/taskflow/taskflow.go)，相关回退条件在原审查版本第 694 行。
 
 创建任务只过滤了三个恢复字段，仍接受客户端传入的 `_providerConfigId`、`_modelConfigId`。当没有公开图片模型、也没有当前工作区绑定时，创建流程允许使用遗留默认服务和默认价格，但后续执行快照却会信任这些内部 ID。
 
@@ -88,7 +92,7 @@
 
 ### T2I-05 客户端内部执行标记可造成容量绕过或永久排队
 
-位置：[taskflow.go](/Users/ycc/Documents/TestCode/startcloudsai/apps/server/internal/taskflow/taskflow.go:538)、[store/tasks.go](/Users/ycc/Documents/TestCode/startcloudsai/apps/server/internal/store/tasks.go:75)。
+位置：[taskflow.go](../apps/server/internal/taskflow/taskflow.go)、[store/tasks.go](../apps/server/internal/store/tasks.go)。
 
 确认了两个同源表现：
 
@@ -99,7 +103,7 @@
 
 ### T2I-06 历史重新生成没有恢复原参考图
 
-位置：[TextToImageView.jsx](/Users/ycc/Documents/TestCode/startcloudsai/apps/web-react/src/views/TextToImageView.jsx:1696)。
+位置：[TextToImageView.jsx](../apps/web-react/src/views/TextToImageView.jsx)。
 
 `applyTaskToInputs` 恢复提示词和部分选项，却没有恢复或清空 references；实际生成继续使用当前页面的参考图。
 
@@ -109,7 +113,7 @@
 
 ### T2I-07 退出后旧异步请求可回填原账号任务
 
-位置：[useTextToImageJobs.js](/Users/ycc/Documents/TestCode/startcloudsai/apps/web-react/src/features/text-to-image/useTextToImageJobs.js:208)，相关 effect 第 265 行。
+位置：[useTextToImageJobs.js](../apps/web-react/src/features/text-to-image/useTextToImageJobs.js)，相关 effect 在原审查版本第 265 行。
 
 列表请求只检查 `mountedRef`。认证改变会先把它设为 false，随后新 effect 又设为 true；旧账号请求返回后仍能写入状态。hook 也只接收 authenticated，不区分用户 ID。
 
@@ -121,7 +125,7 @@
 
 ### T2I-08 普通大图的内存预约按压缩体积计算，严重低估解码占用
 
-位置：[task_outputs.go](/Users/ycc/Documents/TestCode/startcloudsai/apps/server/internal/worker/task_outputs.go:164)。
+位置：[task_outputs.go](../apps/server/internal/worker/task_outputs.go)。
 
 普通输出只按压缩文件大小的 6 倍预约内存，最低 1 MiB；只有 strictAlphaOutput 分支按解码尺寸估算。原图与缩略/展示图处理还会并行执行。
 

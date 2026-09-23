@@ -6,6 +6,7 @@ import { ElMessage } from "element-plus";
 import { request } from "@/request";
 import { normalizePoints } from "@/utils";
 import type { AdminSettings, GrowthMilestone } from "@/components/settings/types";
+import UserProfileRulesDialog from "@/components/UserProfileRulesDialog.vue";
 
 interface PaymentSettings {
   lanjingPayEnabled?: boolean;
@@ -51,6 +52,7 @@ type SettingsSection =
   | "payment"
   | "image-ai"
   | "account"
+  | "image-processing"
   | "growth"
   | "concurrency"
   | "logging"
@@ -80,6 +82,12 @@ const form = reactive({
   t2iPromptMaxChars: 8000,
   assistantMessageMaxChars: 12000,
   studioHubPromptMaxChars: 2000,
+  imageVariantFormat: 'webp',
+  imageDisplayLossless: false,
+  imageDisplayQuality: 85,
+  imageDisplayMaxEdge: 2048,
+  imageThumbMaxEdge: 512,
+  imageFetchConcurrency: 8,
   crossProviderSameModelBalancingEnabled: false,
   platformLoggingEnabled: false,
   platformLogSecurityEnabled: true,
@@ -87,6 +95,7 @@ const form = reactive({
   platformLogUserEnabled: false,
   platformLogRetentionDays: 7,
   platformLogMaxMb: 256,
+  auditLogRetentionDays: 180,
   adminImageAnalysisProviderId: "",
   adminImageAnalysisModelId: "",
   adminImageAnalysisReasoningEffort: "",
@@ -124,6 +133,15 @@ const settingsSignature = () =>
     taskFailureRetryCount: form.taskFailureRetryCount,
     taskRetryFirstDelaySecs: form.taskRetryFirstDelaySecs,
     taskRetryBackoffSecs: form.taskRetryBackoffSecs,
+    t2iPromptMaxChars: form.t2iPromptMaxChars,
+    assistantMessageMaxChars: form.assistantMessageMaxChars,
+    studioHubPromptMaxChars: form.studioHubPromptMaxChars,
+    imageVariantFormat: form.imageVariantFormat,
+    imageDisplayLossless: form.imageDisplayLossless,
+    imageDisplayQuality: form.imageDisplayQuality,
+    imageDisplayMaxEdge: form.imageDisplayMaxEdge,
+    imageThumbMaxEdge: form.imageThumbMaxEdge,
+    imageFetchConcurrency: form.imageFetchConcurrency,
     crossProviderSameModelBalancingEnabled:
       form.crossProviderSameModelBalancingEnabled,
     platformLoggingEnabled: form.platformLoggingEnabled,
@@ -132,6 +150,7 @@ const settingsSignature = () =>
     platformLogUserEnabled: form.platformLogUserEnabled,
     platformLogRetentionDays: form.platformLogRetentionDays,
     platformLogMaxMb: form.platformLogMaxMb,
+    auditLogRetentionDays: form.auditLogRetentionDays,
     adminImageAnalysisProviderId: form.adminImageAnalysisProviderId,
     adminImageAnalysisModelId: form.adminImageAnalysisModelId,
     adminImageAnalysisReasoningEffort: form.adminImageAnalysisReasoningEffort,
@@ -320,7 +339,7 @@ const sections = computed(() => [
   },
   {
     id: "account" as const,
-    label: "账号",
+    label: "注册与用户画像",
     hint: form.registrationEnabled ? "开放注册" : "注册已关闭",
     on: form.registrationEnabled,
   },
@@ -336,6 +355,12 @@ const sections = computed(() => [
     id: "concurrency" as const,
     label: "图片与对话并发",
     hint: `图片 ${effectiveGlobalConcurrency.value} 张 · 对话 ${form.globalMaxConcurrentChats} 次`,
+    on: true,
+  },
+  {
+    id: "image-processing" as const,
+    label: "图片处理",
+    hint: "展示图、缩略图与下载并发",
     on: true,
   },
   {
@@ -436,6 +461,12 @@ function hydrate(settings: AdminSettings & PaymentSettings) {
   form.t2iPromptMaxChars = settings.t2iPromptMaxChars ?? 8000;
   form.assistantMessageMaxChars = settings.assistantMessageMaxChars ?? 12000;
   form.studioHubPromptMaxChars = settings.studioHubPromptMaxChars ?? 2000;
+  form.imageVariantFormat = settings.imageVariantFormat === 'png' ? 'png' : 'webp';
+  form.imageDisplayLossless = settings.imageDisplayLossless ?? false;
+  form.imageDisplayQuality = settings.imageDisplayQuality ?? 85;
+  form.imageDisplayMaxEdge = settings.imageDisplayMaxEdge ?? 2048;
+  form.imageThumbMaxEdge = settings.imageThumbMaxEdge ?? 512;
+  form.imageFetchConcurrency = settings.imageFetchConcurrency ?? 8;
   form.crossProviderSameModelBalancingEnabled =
     settings.crossProviderSameModelBalancingEnabled ?? false;
   form.platformLoggingEnabled = settings.platformLoggingEnabled ?? false;
@@ -444,6 +475,7 @@ function hydrate(settings: AdminSettings & PaymentSettings) {
   form.platformLogUserEnabled = settings.platformLogUserEnabled ?? false;
   form.platformLogRetentionDays = settings.platformLogRetentionDays ?? 7;
   form.platformLogMaxMb = settings.platformLogMaxMb ?? 256;
+  form.auditLogRetentionDays = settings.auditLogRetentionDays ?? 180;
   form.adminImageAnalysisProviderId = settings.adminImageAnalysisProviderId || "";
   form.adminImageAnalysisModelId = settings.adminImageAnalysisModelId || "";
   form.adminImageAnalysisReasoningEffort =
@@ -554,6 +586,12 @@ async function save() {
           t2iPromptMaxChars: form.t2iPromptMaxChars,
           assistantMessageMaxChars: form.assistantMessageMaxChars,
           studioHubPromptMaxChars: form.studioHubPromptMaxChars,
+          imageVariantFormat: form.imageVariantFormat,
+          imageDisplayLossless: form.imageDisplayLossless,
+          imageDisplayQuality: form.imageDisplayQuality,
+          imageDisplayMaxEdge: form.imageDisplayMaxEdge,
+          imageThumbMaxEdge: form.imageThumbMaxEdge,
+          imageFetchConcurrency: form.imageFetchConcurrency,
           crossProviderSameModelBalancingEnabled:
             form.crossProviderSameModelBalancingEnabled,
           platformLoggingEnabled: form.platformLoggingEnabled,
@@ -562,6 +600,7 @@ async function save() {
           platformLogUserEnabled: form.platformLogUserEnabled,
           platformLogRetentionDays: form.platformLogRetentionDays,
           platformLogMaxMb: form.platformLogMaxMb,
+          auditLogRetentionDays: form.auditLogRetentionDays,
           adminImageAnalysisProviderId: form.adminImageAnalysisProviderId,
           adminImageAnalysisModelId: form.adminImageAnalysisModelId,
           adminImageAnalysisReasoningEffort:
@@ -1010,6 +1049,16 @@ onMounted(() => {
                       <em>MB</em>
                     </div>
                   </label>
+                  <label class="field-row">
+                    <span>
+                      <strong>操作审计保留</strong>
+                      <small>管理员操作记录，每小时删除超过保留期的记录；不受上方日志开关影响</small>
+                    </span>
+                    <div class="field-unit">
+                      <el-input-number v-model="form.auditLogRetentionDays" :min="7" :max="365" :precision="0" />
+                      <em>天</em>
+                    </div>
+                  </label>
                 </div>
 
                 <div class="jump-row">
@@ -1050,6 +1099,7 @@ onMounted(() => {
         </div>
         <div class="jump-row">
           <RouterLink class="jump-chip" to="/checkin-activity">签到活动</RouterLink>
+          <UserProfileRulesDialog />
           <RouterLink class="jump-chip" to="/growth-groups">好友拼团</RouterLink>
           <RouterLink class="jump-chip" to="/trial-applications">体验活动</RouterLink>
         </div>
@@ -1275,6 +1325,37 @@ onMounted(() => {
           </label>
         </div>
       </div>
+            </template>
+
+            <template v-else-if="activeSection === 'image-processing'">
+              <div class="settings-card">
+                <div class="field-grid is-stack">
+                  <label class="field-row">
+                    <span><strong>压缩格式</strong><small>展示图和缩略图使用的格式，下载始终使用原图</small></span>
+                    <el-radio-group v-model="form.imageVariantFormat"><el-radio-button value="webp">WebP</el-radio-button><el-radio-button value="png">PNG</el-radio-button></el-radio-group>
+                  </label>
+                  <label class="field-row">
+                    <span><strong>展示图无损压缩</strong><small>仅 WebP 生效，PNG 始终无损</small></span>
+                    <el-switch v-model="form.imageDisplayLossless" :disabled="form.imageVariantFormat !== 'webp'" />
+                  </label>
+                  <label class="field-row">
+                    <span><strong>展示图质量</strong><small>仅有损 WebP 生效</small></span>
+                    <el-input-number v-model="form.imageDisplayQuality" :min="1" :max="100" :precision="0" :disabled="form.imageVariantFormat !== 'webp' || form.imageDisplayLossless" />
+                  </label>
+                  <label class="field-row">
+                    <span><strong>展示图最长边</strong><small>超出后等比缩小，单位为像素</small></span>
+                    <el-input-number v-model="form.imageDisplayMaxEdge" :min="512" :max="8192" :step="256" :precision="0" />
+                  </label>
+                  <label class="field-row">
+                    <span><strong>缩略图最长边</strong><small>列表预览尺寸，单位为像素</small></span>
+                    <el-input-number v-model="form.imageThumbMaxEdge" :min="128" :max="1024" :step="64" :precision="0" />
+                  </label>
+                  <label class="field-row">
+                    <span><strong>图片下载并发</strong><small>单个任务同时拉取上游结果的图片数量</small></span>
+                    <el-input-number v-model="form.imageFetchConcurrency" :min="1" :max="32" :precision="0" />
+                  </label>
+                </div>
+              </div>
             </template>
 
             <template v-else>

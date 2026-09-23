@@ -210,9 +210,12 @@ func Load() *Config {
 		LanjingPayNotifyURL:   strings.TrimSpace(getenv("LANJING_PAY_NOTIFY_URL", "")),
 		LanjingPayTimeoutSecs: getenvInt("LANJING_PAY_TIMEOUT_SECS", 10),
 
-		DatabaseURL:         getenv("DATABASE_URL", "postgres://starclouds:starclouds@localhost:5432/starclouds"),
-		RedisURL:            getenv("REDIS_URL", "redis://localhost:6379/0"),
-		DBMaxConns:          getenvInt32("DB_MAX_CONNS", 0),
+		DatabaseURL: getenv("DATABASE_URL", "postgres://starclouds:starclouds@localhost:5432/starclouds"),
+		RedisURL:    getenv("REDIS_URL", "redis://localhost:6379/0"),
+		// API 和 worker 跑在同一个进程里共用这一个池，pgx 不设就只给 max(4, CPU核数)，
+		// 光 worker 的两个池加起来就有 64 个并发在抢。留在 Postgres 默认 max_connections=100
+		// 之下，多副本部署要按副本数往下调。
+		DBMaxConns:          getenvInt32("DB_MAX_CONNS", 40),
 		DBMinConns:          getenvInt32("DB_MIN_CONNS", 0),
 		DBMaxConnLifetime:   getenvDuration("DB_MAX_CONN_LIFETIME", 30*time.Minute),
 		DBMaxConnIdleTime:   getenvDuration("DB_MAX_CONN_IDLE_TIME", 5*time.Minute),
@@ -243,8 +246,10 @@ func Load() *Config {
 		ObjectStorageUsePathStyle:      getenvBoolWithLegacy("OBJECT_STORAGE_USE_PATH_STYLE", "R2_USE_PATH_STYLE", legacyR2Configured),
 		ObjectStoragePresignExpireSecs: getenvInt("OBJECT_STORAGE_PRESIGN_EXPIRE_SECS", getenvInt("R2_PRESIGN_EXPIRE_SECS", 3600)),
 
-		WorkerConcurrency:      getenvInt("WORKER_CONCURRENCY", 32),
-		WorkerChatConcurrency:  getenvInt("WORKER_CHAT_CONCURRENCY", 8),
+		WorkerConcurrency: getenvInt("WORKER_CONCURRENCY", 32),
+		// 对话和 Agent 几乎整轮都阻塞在上游模型的 HTTP 响应上，不吃 CPU 也不吃内存，
+		// 所以这里放得比图片池宽。真正的物理上限是上游路线的 maxConcurrency。
+		WorkerChatConcurrency:  getenvInt("WORKER_CHAT_CONCURRENCY", 32),
 		WorkerPollConcurrency:  getenvInt("WORKER_POLL_CONCURRENCY", 0),
 		UserMaxRunningTasks:    getenvInt("USER_MAX_RUNNING_TASKS", 100),
 		WorkerImageMemoryMiB:   int64(getenvInt("WORKER_IMAGE_MEMORY_MIB", 1024)),

@@ -1,6 +1,10 @@
-# 主站 React 迁移基线
+# 主站 React 迁移基线（历史记录）
 
-主站采用逐路由迁移。Vue 页面在对应 React 页面通过视觉与交互回归前继续承载生产流量；迁移期间不调整设计、不替换文案，也不套用其他组件库的默认样式。
+2026-09-22 现状说明：迁移已完成，生产主站为 `apps/web-react`，管理端仍独立使用 Vue。下文的逐批进度、通过数量、Vue 对比与合入门槛均是迁移时期记录，不是本次复测结果，也不要求后续产品改动永远保持旧界面。
+
+当前路由由 `src/router.jsx` 定义：画布使用 `/canvas`、`/canvas/:id`、`/canvas/config` 原生路由；素材使用 `/assets`，`/materials` 为兼容重定向。当前技能库通过 `@` 提及展开指令，不再以旧 Skill 多选/绑定组件为准；电商工作台也已继续重构。当前支持范围和日常验证入口分别见 [桌面策略](../../docs/DESKTOP_UI_POLICY.md) 与 [主站 README](README.md)。
+
+迁移当时采用逐路由切换。Vue 页面在对应 React 页面通过视觉与交互回归前继续承载生产流量；迁移期间不调整设计、不替换文案，也不套用其他组件库的默认样式。
 
 ## 路由分组
 
@@ -14,7 +18,7 @@
 
 `/ai-wallpaper`、`/ai-puzzle`、`/auth/login`、`/auth/register` 和 `/incentive-plans/milestone` 是兼容重定向，切换时必须保留。
 
-## 当前进度
+## 迁移完成时的进度记录
 
 React 主站位于 `apps/web-react`。页面、样式、共享模块和静态资源迁移已经完成，默认 Compose 已直接构建 React 主站；Vue 基准服务已在最终回归通过后退出。
 
@@ -142,7 +146,6 @@ React 页面迁移清单已全部完成，当前没有剩余页面。主站源�
 ## 基线命令
 
 ```bash
-npm run test:e2e:visual:update
 npm run test:e2e:visual
 REACT_MIGRATION=1 WEB_BASE_URL=http://127.0.0.1:3105 npx playwright test tests/e2e/react-navigation.spec.js --project chromium
 REACT_MIGRATION=1 WEB_BASE_URL=http://127.0.0.1:3105 npx playwright test tests/e2e/react-public-pages.spec.js --project chromium
@@ -150,4 +153,4 @@ REACT_MIGRATION=1 WEB_BASE_URL=http://127.0.0.1:3105 npx playwright test tests/e
 REACT_MIGRATION=1 WEB_BASE_URL=http://127.0.0.1:3105 npx playwright test tests/e2e/react-account-pages.spec.js --project chromium
 ```
 
-只有在产品页面经过人工确认后才能更新快照；日常 React 改动只允许运行校验命令，不能通过更新快照掩盖偏差。
+当前 `package.json` 不提供 `test:e2e:visual:update` 脚本。只有在产品页面经过人工确认后才能使用 Playwright 的 `--update-snapshots` 更新快照；日常 React 改动运行校验命令，不能通过更新快照掩盖偏差。

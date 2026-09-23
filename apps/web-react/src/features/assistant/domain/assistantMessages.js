@@ -263,6 +263,20 @@ const MESSAGE_STATUS = {
     tone: 'waiting',
     progress: 0,
   },
+  // 等额度和"本对话有任务在跑"是两回事：后者很快就轮到，前者要等别的任务让出名额。
+  // 不说清楚的话，用户只看到一个不动的"排队中"，会以为卡死了。
+  'waiting-agent-pool': {
+    label: '正在等待智能体名额',
+    detail: '智能体任务较多，正在排队等待空闲名额，轮到后会自动开始，无需重新发送。',
+    tone: 'waiting',
+    progress: 0,
+  },
+  'waiting-execution-pool': {
+    label: '正在等待执行名额',
+    detail: '当前执行名额已占满，正在排队等待，轮到后会自动开始，无需重新发送。',
+    tone: 'waiting',
+    progress: 0,
+  },
   routing: {
     label: '正在理解你的问题',
     detail: '正在结合当前对话判断你的真实意图。',
@@ -282,10 +296,16 @@ const MESSAGE_STATUS = {
     progress: 30,
   },
   thinking: {
-    label: '正在组织回答',
+    label: '正在想',
     detail: '上下文已准备，正在形成直接、完整的回答。',
     tone: 'working',
     progress: 42,
+  },
+  planning: {
+    label: '正在制定执行计划',
+    detail: '正在把任务拆成可核对的步骤，执行过程中会逐项更新状态。',
+    tone: 'working',
+    progress: 26,
   },
   web_search: {
     label: '正在联网搜索',
@@ -342,7 +362,7 @@ const MESSAGE_STATUS = {
     progress: 86,
   },
   answering: {
-    label: '正在输入回答',
+    label: '正在写',
     detail: '回答正在实时生成并逐步呈现，你可以随时停止。',
     tone: 'working',
     progress: 62,
@@ -479,7 +499,7 @@ export function messageStatus(message) {
   if (message?.kind === 'proposal' && message?.proposal) {
     return {
       key: 'proposal',
-      label: '创作方案已准备',
+      label: '方案好了',
       detail: '确认提示词和参数后再开始图片生成。',
       tone: 'complete',
       progress: 100,
@@ -487,10 +507,10 @@ export function messageStatus(message) {
   }
   return {
     key: 'complete',
-    label: isImage ? '图片已生成' : '回答已完成',
+    label: isImage ? '图片好了' : '已完成',
     detail: isImage
       ? `已完成 ${message?.images?.length || 0} 张图片，可以预览或下载原图。`
-      : '回答已经生成完成，可以复制、引用或继续追问。',
+      : '可以复制、引用或继续追问。',
     tone: 'complete',
     progress: 100,
   }
@@ -518,10 +538,29 @@ export function messageDateKey(message) {
   return Number.isNaN(date.getTime()) ? '' : date.toDateString()
 }
 
-export function formatMessageDate(value) {
+function startOfLocalDay(date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime()
+}
+
+export function formatMessageDate(value, now = Date.now()) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return ''
-  return `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()}`
+  const today = new Date(now)
+  const deltaDays = Math.round((startOfLocalDay(today) - startOfLocalDay(date)) / 86_400_000)
+  if (deltaDays === 0) return '今天'
+  if (deltaDays === 1) return '昨天'
+  if (date.getFullYear() === today.getFullYear()) {
+    return `${date.getMonth() + 1}月${date.getDate()}日`
+  }
+  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`
+}
+
+export function messageDateTime(value) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${date.getFullYear()}-${month}-${day}`
 }
 
 export function formatTime(value) {

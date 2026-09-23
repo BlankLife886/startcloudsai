@@ -1,5 +1,7 @@
 # CHANGELOG
 
+本文件保留导入画布上游的版本历史，不是 StarCloudsAI 当前完整功能清单。2026-09-22 核对：画布已合并到 `src/canvas`，通过主站 `/canvas`、`/canvas/:id`、`/canvas/config` 原生路由使用；下文桌面客户端、本地 Codex、视频/音频等历史能力不能直接视为本项目默认启用功能。来源版本见 [CANVAS_UPSTREAM.md](CANVAS_UPSTREAM.md)，当前集成见 [README.md](README.md)。
+
 ## Unreleased
 
 ## v0.15.1 - 2026-08-07

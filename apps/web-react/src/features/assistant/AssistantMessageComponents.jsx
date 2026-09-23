@@ -9,8 +9,8 @@ import {
 import { createPortal } from "react-dom";
 import { uploadFile } from "@react/legacy-modules/services/tasksApi.js";
 import notificationService from "@react/legacy-modules/services/notification.js";
-import { formatMessageDate, generatedImageRatioLabel, messageStatus, uid } from "./domain/assistantMessages.js";
-import { assistantToolStepsSummary, normalizeAssistantToolSteps } from "./domain/assistantToolSteps.js";
+import { formatMessageDate, generatedImageRatioLabel, messageDateTime, messageStatus, uid } from "./domain/assistantMessages.js";
+import { assistantToolStepDetail, normalizeAssistantPlan, normalizeAssistantToolSteps } from "./domain/assistantToolSteps.js";
 import { promptNeedsRecentVisual } from "./domain/visualContext.js";
 import { assistantImageBatchLimit } from "./domain/assistantImageLimits.js";
 import {
@@ -69,6 +69,20 @@ import { AssistantPreviewImage, ModelMenuPrice } from "./AssistantWorkspaceUi.js
 function GeneratedImageGrid({ message, imageModels, loadedImages, failedImages, imageRetryVersions, onOpenImage, onImageLoad, onImageError, onImageRetry, onUseReference }) {
   const meta = { ...imageGenerationMeta(message, imageModels), messageId: message.id, runId: message.runId || "", model: message.model || "", requestRatio: message.requestRatio || message.ratio || "", requestSize: message.requestSize || "", width: message.width, height: message.height, quality: message.quality || "", pending: Boolean(message.pending) };
   const imagePlanItems = Array.isArray(message.imagePlanItems) ? message.imagePlanItems : [];
+  const [downloadBusyKey, setDownloadBusyKey] = useState("");
+  const downloadImage = async (image, index, key) => {
+    if (downloadBusyKey) return;
+    setDownloadBusyKey(key);
+    try {
+      await downloadAssistantImage(image, index);
+    } catch (error) {
+      if (!error?.downloadNotificationShown) {
+        notificationService.error(error?.message || "图片下载失败");
+      }
+    } finally {
+      setDownloadBusyKey("");
+    }
+  };
   return (
     <div className={`generated-images${message.images.length === 1 ? " is-single" : ""}${message.images.length > 2 ? " is-many" : ""}`} style={{ "--generated-ratio": imageRatioValue(message), "--image-slot-count": message.images.length }}>
       {message.images.map((image, index) => {
@@ -101,7 +115,7 @@ function GeneratedImageGrid({ message, imageModels, loadedImages, failedImages, 
               <div className="generated-image-actions">
                 <button type="button" title="复制图片" aria-label="复制图片" onClick={() => void copyAssistantImage(image).then(() => notificationService.success("图片已复制")).catch(() => notificationService.error("复制图片失败"))}><i className="bi bi-copy" /></button>
                 <button type="button" title="用作参考图" aria-label="用作参考图" onClick={() => onUseReference(image)}><i className="bi bi-image" /></button>
-                <button type="button" title="下载原图" aria-label="下载原图" onClick={() => downloadAssistantImage(image, index)}><DownloadIcon /></button>
+                <button type="button" title={downloadBusyKey === key ? "正在下载" : "下载原图"} aria-label={downloadBusyKey === key ? "正在下载原图" : "下载原图"} aria-busy={downloadBusyKey === key} disabled={Boolean(downloadBusyKey)} onClick={() => void downloadImage(image, index, key)}>{downloadBusyKey === key ? <i className="bi bi-arrow-repeat spin" aria-hidden="true" /> : <DownloadIcon />}</button>
               </div>
             )}
           </figure>
@@ -119,23 +133,20 @@ function normalizeReasoningText(text) {
     .trim();
 }
 
-function AssistantReasoning({ text, pending }) {
-  const value = normalizeReasoningText(text);
-  const html = useMemo(() => (value ? renderAssistantMarkdownHtml(value, { streaming: false }) : ""), [value]);
-  const [open, setOpen] = useState(Boolean(pending));
-  useEffect(() => {
-    setOpen(Boolean(pending));
-  }, [pending]);
-  if (!value) return null;
+function AssistantReasoningToggle({ text, pending, open, onToggle }) {
+  if (!text) return null;
   return (
-    <details className={`assistant-reasoning${pending ? " is-live" : ""}`} open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
-      <summary>
-        {pending ? <i className="reasoning-pulse" aria-hidden="true" /> : <i className="bi bi-lightbulb" aria-hidden="true" />}
-        <strong>{pending ? "正在思考" : "思考过程"}</strong>
-        <i className={`bi bi-chevron-down${open ? " is-open" : ""}`} aria-hidden="true" />
-      </summary>
-      <div className="assistant-reasoning-body" dangerouslySetInnerHTML={{ __html: html }} />
-    </details>
+    <button
+      type="button"
+      className={`message-reasoning-toggle${pending ? " is-live" : ""}`}
+      aria-expanded={open}
+      aria-label={pending ? "在想" : "思考"}
+      onClick={onToggle}
+    >
+      {pending ? <i className="reasoning-pulse" aria-hidden="true" /> : null}
+      <span>{pending ? "在想" : "思考"}</span>
+      <i className={`bi bi-chevron-down${open ? " is-open" : ""}`} aria-hidden="true" />
+    </button>
   );
 }
 
@@ -283,48 +294,49 @@ const TOOL_STEP_STATE_LABELS = {
   interrupted: "已中断",
 };
 
-function toolStepDetailText(value) {
-  if (value === null || value === undefined || value === "") return "";
-  if (typeof value === "string") {
-    try {
-      return JSON.stringify(JSON.parse(value), null, 2);
-    } catch {
-      return value;
-    }
-  }
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
+const PLAN_STATE_LABELS = {
+  pending: "待开始",
+  in_progress: "进行中",
+  completed: "已完成",
+};
+
+function AssistantPlan({ steps }) {
+  const items = useMemo(() => normalizeAssistantPlan(steps), [steps]);
+  if (!items.length) return null;
+  const completed = items.filter((step) => step.status === "completed").length;
+  return (
+    <section className="assistant-plan" aria-label="执行计划">
+      <header>
+        <i className="bi bi-list-check" aria-hidden="true" />
+        <strong>执行计划</strong>
+        <small>{completed} / {items.length}</small>
+      </header>
+      <ol>
+        {items.map((step, index) => (
+          <li key={`${index}-${step.title}`} className={`is-${step.status}`}>
+            <span className="assistant-plan-mark" aria-label={PLAN_STATE_LABELS[step.status]}>
+              {step.status === "completed" ? <i className="bi bi-check2" aria-hidden="true" /> : null}
+              {step.status === "in_progress" ? <i className="bi bi-arrow-repeat assistant-tool-spin" aria-hidden="true" /> : null}
+            </span>
+            <span>{step.title}</span>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
 }
 
-function AssistantToolTimeline({ steps, pending }) {
+function AssistantToolTimeline({ steps, pending, expanded = false }) {
   const items = useMemo(() => normalizeAssistantToolSteps(steps), [steps]);
-  // null 表示跟随运行状态：执行中自动展开，结束后自动收起，用户点过之后以用户为准。
-  const [manualExpanded, setManualExpanded] = useState(null);
   const [openKey, setOpenKey] = useState("");
-  if (!items.length) return null;
-  const expanded = manualExpanded === null ? Boolean(pending) : manualExpanded;
+  if (!items.length || !expanded) return null;
   return (
-    <section className={`assistant-tool-timeline${pending ? " is-live" : ""}`} aria-label="Agent 执行过程">
-      <button
-        type="button"
-        className="assistant-tool-timeline-toggle"
-        aria-expanded={expanded}
-        onClick={() => setManualExpanded(!expanded)}
-      >
-        <i className="bi bi-list-nested" aria-hidden="true" />
-        <strong>执行过程</strong>
-        <small>{assistantToolStepsSummary(items)}</small>
-        <i className={`bi bi-chevron-down assistant-tool-timeline-chevron${expanded ? " is-expanded" : ""}`} aria-hidden="true" />
-      </button>
-      {expanded ? (
-        <ol className="assistant-tool-timeline-list">
+    <section className={`assistant-tool-timeline is-embedded${pending ? " is-live" : ""}`} aria-label="过程">
+      <ol className="assistant-tool-timeline-list">
           {items.map((step) => {
             // 运行已结束却仍停在 running 的步骤，说明结果事件丢了，不要一直转圈。
             const status = step.status === "running" && !pending ? "interrupted" : step.status;
-            const detail = toolStepDetailText(step.error || step.result || step.arguments);
+            const detail = assistantToolStepDetail(step);
             const open = openKey === step.key;
             return (
               <li key={step.key} className={`assistant-tool-step is-${status}`}>
@@ -355,7 +367,6 @@ function AssistantToolTimeline({ steps, pending }) {
             );
           })}
         </ol>
-      ) : null}
     </section>
   );
 }
@@ -570,7 +581,7 @@ function ProposalPromptDialog({ value, title = "编辑生成提示词", maxMessa
   );
 }
 
-function AgentProposal({ message, imageModels, generating, executed, attachedReferences, maxMessageCharacters = MAX_ASSISTANT_MESSAGE_CHARACTERS, onChange, onDismiss, onRestore, onApprove, onOpenImage }) {
+function AgentProposal({ message, imageModels, generating, executed, attachedReferences, autoApprove = false, autoApproveBudgetCents = 0, autoApproved = false, maxMessageCharacters = MAX_ASSISTANT_MESSAGE_CHARACTERS, onChange, onDismiss, onRestore, onApprove, onOpenImage }) {
   const [openMenu, setOpenMenu] = useState("");
   const [promptEditor, setPromptEditor] = useState(null);
   const [promptExpanded, setPromptExpanded] = useState(false);
@@ -604,8 +615,41 @@ function AgentProposal({ message, imageModels, generating, executed, attachedRef
       window.removeEventListener("scroll", onScroll, true);
     };
   }, [openMenu]);
+  // 自动授权：资格由服务端按用户的开关判定，预算由控制器按真正要下单的那个模型核对。
+  // 够格就完全不渲染卡片，只留一行凭据。
+  // 每份方案只自动提交一次，重渲染不会重复扣费；但提交没成立时必须把入口还给用户，
+  // 否则界面会永远停在"已自动开始生成"，图没有、卡片也回不来。
+  const autoSubmittedRef = useRef(false);
+  useEffect(() => {
+    if (!autoApproved || autoSubmittedRef.current || executed || generating) return;
+    if (message.proposal?.submitting) return;
+    autoSubmittedRef.current = true;
+    void Promise.resolve(onApprove?.({ auto: true })).then((result) => {
+      if (result === true) return;
+      autoSubmittedRef.current = false;
+      // "retry" 只是此刻不能提交，等这轮忙完会自己再试；其余情况退回人工卡片。
+      if (result !== "retry") onChange?.({ autoFailed: true });
+    });
+  }, [autoApproved, executed, generating, message.proposal?.submitting, onApprove, onChange]);
+  // 必须和上面的 hook 放在一起。自动授权开启时下面会提前返回一行凭据，关掉后又
+  // 要渲染完整卡片；钩子写在提前返回后面，关闭授权那一下就会炸。
+  useEffect(() => {
+    if (!message.proposal?.dismissed) return;
+    setOpenMenu("");
+    setPromptEditor(null);
+    setPromptExpanded(false);
+  }, [message.proposal?.dismissed]);
   const proposal = message.proposal;
   if (!proposal) return null;
+  if (autoApproved) {
+    const autoCount = Math.max(1, Number(proposal.count) || 1);
+    return (
+      <section className="agent-proposal-auto" aria-label="已自动执行创作方案">
+        <i className="bi bi-lightning-charge-fill" aria-hidden="true" />
+        <p>{executed ? `已自动生成 ${autoCount} 张图片。` : `已自动开始生成 ${autoCount} 张图片，无需确认。`}</p>
+      </section>
+    );
+  }
   const sourceReferences = attachedReferences?.length ? attachedReferences : promptNeedsRecentVisual(message.prompt) ? proposal.referenceImages : [];
   const referenceImages = proposalReferenceImages(proposal, sourceReferences);
   const recordedModel = imageModels.find((item) => item.model === proposal.model) || imageModels[0] || null;
@@ -746,12 +790,6 @@ function AgentProposal({ message, imageModels, generating, executed, attachedRef
       count: fixedCount || clampImageCount(proposal.count, model, 1),
     });
   };
-  useEffect(() => {
-    if (!proposal.dismissed) return;
-    setOpenMenu("");
-    setPromptEditor(null);
-    setPromptExpanded(false);
-  }, [proposal.dismissed]);
   return (
     <div className={`agent-proposal${proposal.dismissed ? " is-dismissed" : ""}${executed ? " is-executed" : ""}`}>
       {proposal.dismissed ? (
@@ -765,6 +803,14 @@ function AgentProposal({ message, imageModels, generating, executed, attachedRef
         <strong>{proposal.action === "edit" ? "图片编辑方案" : "图片生成方案"}</strong>
         {independentPlan ? <em className="agent-proposal-count">{planItems.length} 张独立图</em> : null}
         {executed ? <span className="agent-proposal-state">已执行</span> : null}
+        {/* 开了自动授权却还出卡片，一定要说清楚原因，否则会被当成开关没生效。 */}
+        {autoApprove && proposal.autoApprovable && !executed ? (
+          <span className="agent-proposal-state is-budget">
+            {proposal.autoFailed
+              ? "自动执行未成功，请确认后重试"
+              : `超出自动授权预算（${autoApproveBudgetCents} 积分），需要确认`}
+          </span>
+        ) : null}
         {!independentPlan ? (
           <div className="agent-proposal-prompt-mode" role="group" aria-label="提示词执行方式">
             <button
@@ -1006,7 +1052,7 @@ function AgentProposal({ message, imageModels, generating, executed, attachedRef
         </div>
         <footer className="agent-proposal-actions">
           <button type="button" className="is-secondary" disabled={busy} onClick={onDismiss}>收起</button>
-          <button type="button" className="is-primary" disabled={busy || generating || !validPlan || (!independentPlan && !String(proposal.prompt || "").trim())} onClick={onApprove}>
+          <button type="button" className="is-primary" disabled={busy || generating || !validPlan || (!independentPlan && !String(proposal.prompt || "").trim())} onClick={() => void onApprove?.()}>
             {busy ? <i className="bi bi-arrow-repeat" aria-hidden="true" /> : null}
             <span>{busy ? "正在提交" : executed ? "再生成一组" : "开始生成"}</span>
           </button>
@@ -1017,18 +1063,69 @@ function AgentProposal({ message, imageModels, generating, executed, attachedRef
   );
 }
 
+function formatDebugOffset(ms) {
+  const value = Math.max(0, Number(ms) || 0);
+  if (value < 100) return `+${Math.round(value)}ms`;
+  if (value < 10_000) return `+${(value / 1000).toFixed(1).replace(/\.0$/, "")}s`;
+  return `+${Math.round(value / 1000)}s`;
+}
+
+function debugSpanElapsedMs(item, fallbackOrigin) {
+  if (item && Number.isFinite(Number(item.elapsedMs))) return Math.max(0, Number(item.elapsedMs));
+  return Math.max(0, (Number(item?.at) || 0) - fallbackOrigin);
+}
+
+function AssistantDebugPanel({ items, startedAt, open }) {
+  const traces = Array.isArray(items) ? items : [];
+  if (!open || !traces.length) return null;
+  const origin = Number(startedAt) || Number(traces[0]?.at) || Date.now();
+  return (
+    <ol className="assistant-debug-trace" aria-label="思考流程">
+      {traces.map((item, index) => {
+        const elapsed = debugSpanElapsedMs(item, origin);
+        const previous = index ? debugSpanElapsedMs(traces[index - 1], origin) : 0;
+        const gapMs = elapsed - previous;
+        const gap = gapMs >= 80 ? formatDurationMs(gapMs) : "";
+        return (
+          <li key={`${item.step}-${item.at}-${index}`} className={gapMs >= 3000 ? "is-slow" : undefined}>
+            <time>{formatDebugOffset(elapsed)}</time>
+            <span>{item.detail || item.step}</span>
+            {gap ? <b>{gap}</b> : null}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
 function AssistantMessageStatus({ message, status, contextUsage, expanded, onToggle }) {
   const pending = Boolean(message.pending);
   const progress = Math.min(92, Math.max(Number(status.progress) || 12, 12));
   const ring = 2 * Math.PI * 7;
   const usage = normalizeAssistantUsage(message);
   const elapsedMs = useElapsedMs(usageStartedAtMs(message), pending);
+  const reasoning = normalizeReasoningText(message.reasoning);
+  const reasoningHtml = useMemo(() => (reasoning ? renderAssistantMarkdownHtml(reasoning, { streaming: false }) : ""), [reasoning]);
+  const [reasoningOpen, setReasoningOpen] = useState(Boolean(pending && reasoning));
+  const toolItems = useMemo(() => normalizeAssistantToolSteps(message.toolSteps), [message.toolSteps]);
+  const debugItems = Array.isArray(message.debugTrace) ? message.debugTrace : [];
+  const [toolsOpen, setToolsOpen] = useState(Boolean(pending && toolItems.length));
+  const [debugOpen, setDebugOpen] = useState(Boolean(pending));
+  useEffect(() => {
+    setReasoningOpen(Boolean(pending && reasoning));
+  }, [pending, reasoning]);
+  useEffect(() => {
+    setToolsOpen(Boolean(pending && toolItems.length));
+  }, [pending, toolItems.length]);
+  useEffect(() => {
+    if (pending && debugItems.length) setDebugOpen(true);
+  }, [pending, debugItems.length]);
   const metrics = [];
-  if (usage?.outputTokens) metrics.push(`消耗 ${formatContextTokens(usage.outputTokens)}`);
-  if (usage?.inputTokens) metrics.push(`输入 ${formatContextTokens(usage.inputTokens)}`);
-  if (usage?.firstTokenMs) metrics.push(`首字 ${formatDurationMs(usage.firstTokenMs)}`);
+  if (usage?.outputTokens) metrics.push({ key: "out", title: "输出 token", text: formatContextTokens(usage.outputTokens) });
+  if (usage?.inputTokens) metrics.push({ key: "in", title: "输入 token", text: formatContextTokens(usage.inputTokens) });
+  if (usage?.firstTokenMs) metrics.push({ key: "ttft", title: "首字耗时", text: formatDurationMs(usage.firstTokenMs) });
   return (
-    <div className={`assistant-message-label is-${status.tone}${pending ? " is-live" : ""}`}>
+    <div className={`assistant-message-label is-${status.tone}${pending ? " is-live" : ""}${reasoning ? " has-reasoning" : ""}`}>
       <div className="message-status-row">
         {pending ? (
           <div className="message-status-toggle" role="status">
@@ -1048,8 +1145,47 @@ function AssistantMessageStatus({ message, status, contextUsage, expanded, onTog
           </button>
         )}
         {pending && usageStartedAtMs(message) ? <b className="message-status-metrics" aria-label="已用时">{formatElapsedClock(elapsedMs)}</b> : null}
-        {!pending && metrics.length ? <b className="message-status-metrics">{metrics.join(" · ")}</b> : null}
+        {!pending && metrics.length ? (
+          <b className="message-status-metrics">
+            {metrics.map((item, index) => (
+              <Fragment key={item.key}>
+                {index ? <i aria-hidden="true" /> : null}
+                <span title={item.title}>{item.text}</span>
+              </Fragment>
+            ))}
+          </b>
+        ) : null}
+        <div className="message-status-extras">
+          <AssistantReasoningToggle text={reasoning} pending={pending} open={reasoningOpen} onToggle={() => setReasoningOpen((open) => !open)} />
+          {toolItems.length ? (
+            <button
+              type="button"
+              className={`message-reasoning-toggle${pending ? " is-live" : ""}`}
+              aria-expanded={toolsOpen}
+              aria-label="过程"
+              onClick={() => setToolsOpen((open) => !open)}
+            >
+              <span>过程 {toolItems.length}</span>
+              <i className={`bi bi-chevron-down${toolsOpen ? " is-open" : ""}`} aria-hidden="true" />
+            </button>
+          ) : null}
+          {debugItems.length ? (
+            <button
+              type="button"
+              className={`message-reasoning-toggle${pending ? " is-live" : ""}`}
+              aria-expanded={debugOpen}
+              aria-label="流程"
+              onClick={() => setDebugOpen((open) => !open)}
+            >
+              <span>流程 {debugItems.length}</span>
+              <i className={`bi bi-chevron-down${debugOpen ? " is-open" : ""}`} aria-hidden="true" />
+            </button>
+          ) : null}
+        </div>
       </div>
+      {reasoningOpen && reasoningHtml ? <div className="assistant-reasoning-body" dangerouslySetInnerHTML={{ __html: reasoningHtml }} /> : null}
+      <AssistantDebugPanel items={debugItems} startedAt={usageStartedAtMs(message)} open={debugOpen} />
+      <AssistantToolTimeline steps={message.toolSteps} pending={pending} expanded={toolsOpen} />
       {!pending && expanded ? (
         <div className="message-status-detail">
           <p>{contextUsage ? "本轮实际送进模型的上下文如下。当前问题和正在生成的回复不计入条数。" : status.detail}</p>
@@ -1281,7 +1417,7 @@ function ConversationMinimap({ items, activeSetterRef, onScrollToMessage }) {
   );
 }
 
-function AssistantMessageRow({ message, turnId, showDate, expanded, copied, generating, feedbackBusy, isLastAssistant, isLastUser, editing, editingDraft, moreOpen, loadedImages, failedImages, imageRetryVersions, imageModels, sourceProposal, proposalExecuted, attachedReferences, searchHit = false, searchCurrent = false, searchQuery = "", toolActionBusyId = "", maxMessageCharacters = MAX_ASSISTANT_MESSAGE_CHARACTERS, onToolAction, onToggleStatus, onCopy, onFeedback, onQuote, onOpenImage, onImageLoad, onImageError, onImageRetry, onUseReference, onStartEdit, onEditDraft, onCancelEdit, onSubmitEdit, onRetry, onToggleMore, onDownloadMarkdown, onDelete, onProposalChange, onProposalDismiss, onProposalRestore, onProposalApprove, onReopenProposal }) {
+function AssistantMessageRow({ message, turnId, showDate, expanded, copied, generating, feedbackBusy, isLastAssistant, isLastUser, editing, editingDraft, moreOpen, loadedImages, failedImages, imageRetryVersions, imageModels, sourceProposal, proposalExecuted, attachedReferences, autoApprove = false, autoApproveBudgetCents = 0, autoApproved = false, searchHit = false, searchCurrent = false, searchQuery = "", toolActionBusyId = "", maxMessageCharacters = MAX_ASSISTANT_MESSAGE_CHARACTERS, onToolAction, onToggleStatus, onCopy, onFeedback, onQuote, onOpenImage, onImageLoad, onImageError, onImageRetry, onUseReference, onStartEdit, onEditDraft, onCancelEdit, onSubmitEdit, onRetry, onToggleMore, onDownloadMarkdown, onDelete, onProposalChange, onProposalDismiss, onProposalRestore, onProposalApprove, onReopenProposal }) {
   const status = message.role === "assistant" ? messageStatus(message) : null;
   const contextUsage = normalizeAssistantContext(message.context);
   const usage = normalizeAssistantUsage(message);
@@ -1289,7 +1425,11 @@ function AssistantMessageRow({ message, turnId, showDate, expanded, copied, gene
   const showImageStage = message.pending && message.kind === "image";
   return (
     <div className="message-turn">
-      {showDate && <h2 className="message-date-divider">{formatMessageDate(message.createdAt)}</h2>}
+      {showDate && formatMessageDate(message.createdAt) ? (
+        <h2 className="message-date-divider">
+          <time dateTime={messageDateTime(message.createdAt)}>{formatMessageDate(message.createdAt)}</time>
+        </h2>
+      ) : null}
       {message.kind === "context-divider" ? <div className="assistant-context-divider"><span /><p><i className="bi bi-eraser" aria-hidden="true" /> 已从这里开始新的上下文</p><span /></div> : <article className={`message message--${message.role}${searchHit ? " is-search-hit" : ""}${searchCurrent ? " is-search-current" : ""}`} data-message-id={message.id} data-turn-id={turnId || undefined}>
         {status && !showImageStage ? <AssistantMessageStatus message={message} status={status} contextUsage={contextUsage} expanded={expanded} onToggle={onToggleStatus} /> : null}
         {message.role === "user" && !editing && <div className="user-message-actions" aria-label="用户消息操作"><button type="button" title={copied ? "已复制" : "复制问题"} aria-label={copied ? "已复制" : "复制问题"} className={copied ? "is-copied" : ""} onClick={() => onCopy(message)}><i className={`bi ${copied ? "bi-check2" : "bi-copy"}`} /></button>{isLastUser && <button type="button" title="编辑问题" aria-label="编辑问题" disabled={generating} onClick={() => onStartEdit(message)}><i className="bi bi-pencil" /></button>}{isLastUser && <button type="button" title="重试" aria-label="重试" disabled={generating} onClick={() => onRetry(message)}><RegenerateIcon /></button>}</div>}
@@ -1298,9 +1438,8 @@ function AssistantMessageRow({ message, turnId, showDate, expanded, copied, gene
             {message.role === "user" && message.quoted && <div className="sent-quote"><i className="bi bi-quote" /><span>[{message.quoted.kind}] {message.quoted.content}</span></div>}
             {message.role === "user" && uniqueReferenceImages(message.referenceImages).length > 0 && <div className="sent-reference-images">{uniqueReferenceImages(message.referenceImages).map((image, index, images) => <button key={image.id || image.fileKey || index} type="button" title="查看参考图" onClick={() => onOpenImage(image, index, images)}><AssistantPreviewImage image={image} alt={image.name || "参考图"} /></button>)}</div>}
             {message.role === "user" && message.attachments?.length > 0 && <div className="assistant-document-chips">{message.attachments.map((item) => <span key={item.id} className="assistant-document-chip"><i className={`bi ${documentIcon(item)}`} /><span><strong>{item.name}</strong><small>{formatDocumentSize(item.sizeBytes)} · {item.pageCount ? `${item.pageCount} 页` : "文档"}</small></span></span>)}</div>}
-            {message.role === "assistant" && <AssistantReasoning text={message.reasoning} pending={message.pending} />}
-            {message.role === "assistant" && <AssistantToolTimeline steps={message.toolSteps} pending={message.pending} />}
-            {message.role === "assistant" && message.kind === "proposal" && message.proposal && <AgentProposal message={message} imageModels={imageModels} generating={generating} executed={proposalExecuted} attachedReferences={attachedReferences} maxMessageCharacters={maxMessageCharacters} onChange={onProposalChange} onDismiss={onProposalDismiss} onRestore={onProposalRestore} onApprove={onProposalApprove} onOpenImage={onOpenImage} />}
+            {message.role === "assistant" && <AssistantPlan steps={message.plan} />}
+            {message.role === "assistant" && message.kind === "proposal" && message.proposal && <AgentProposal message={message} imageModels={imageModels} generating={generating} executed={proposalExecuted} attachedReferences={attachedReferences} autoApprove={autoApprove} autoApproveBudgetCents={autoApproveBudgetCents} autoApproved={autoApproved} maxMessageCharacters={maxMessageCharacters} onChange={onProposalChange} onDismiss={onProposalDismiss} onRestore={onProposalRestore} onApprove={onProposalApprove} onOpenImage={onOpenImage} />}
             {message.role === "assistant" && message.kind !== "proposal" && message.content && message.content !== message.error ? <AssistantMarkdown content={message.content} streaming={message.pending} highlightQuery={searchHit ? searchQuery : ""} /> : message.role !== "assistant" && message.content && message.content !== message.error ? <p>{searchHit ? highlightSearchNodes(message.content, searchQuery) : message.content}</p> : null}
             {message.role === "assistant" && <AssistantWebSources searches={message.webSearches} />}
             {message.role === "assistant" && <AssistantArtifacts items={message.artifacts} />}

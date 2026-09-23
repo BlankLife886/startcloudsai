@@ -148,6 +148,17 @@ func CountActiveUserAPIKeys(ctx context.Context, q Q, userID uuid.UUID) (int, er
 }
 
 func RecordAPIKeyTaskCreation(ctx context.Context, q Q, apiKeyID, userID, taskID uuid.UUID, modelID string, reservedCents int64, now time.Time) error {
+	return recordAPIKeyUsage(ctx, q, apiKeyID, userID, &taskID, modelID, reservedCents, now)
+}
+
+// RecordAPIKeyRequest records a billable developer-API call without creating
+// a site task. task_id is intentionally NULL because the standard direct
+// proxy is not backed by the site's task lifecycle.
+func RecordAPIKeyRequest(ctx context.Context, q Q, apiKeyID, userID uuid.UUID, modelID string, reservedCents int64, now time.Time) error {
+	return recordAPIKeyUsage(ctx, q, apiKeyID, userID, nil, modelID, reservedCents, now)
+}
+
+func recordAPIKeyUsage(ctx context.Context, q Q, apiKeyID, userID uuid.UUID, taskID *uuid.UUID, modelID string, reservedCents int64, now time.Time) error {
 	key, err := scanUserAPIKey(q.QueryRow(ctx, `SELECT `+userAPIKeyCols+` FROM user_api_keys WHERE id=$1 AND user_id=$2 FOR UPDATE`, apiKeyID, userID))
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -189,8 +200,12 @@ func RecordAPIKeyTaskCreation(ctx context.Context, q Q, apiKeyID, userID, taskID
 	if monthTasks+1 > key.MonthlyTaskLimit || monthSpend+reservedCents > key.MonthlySpendLimitCents {
 		return ErrAPIKeyMonthlyLimit
 	}
+	var taskIDValue any
+	if taskID != nil {
+		taskIDValue = *taskID
+	}
 	_, err = q.Exec(ctx, `INSERT INTO api_key_usage_events (api_key_id,user_id,task_id,model_id,reserved_cents,created_at)
-		VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (task_id) DO NOTHING`, apiKeyID, userID, taskID, modelID, max(reservedCents, 0), now)
+		VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (task_id) DO NOTHING`, apiKeyID, userID, taskIDValue, modelID, max(reservedCents, 0), now)
 	return err
 }
 

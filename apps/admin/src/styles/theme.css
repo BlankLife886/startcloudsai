@@ -393,6 +393,37 @@ html.dark .el-switch.is-checked .el-switch__core .el-switch__inner span {
   color: var(--accent-on) !important;
 }
 
+/* 单选按钮组选中态：亮绿底必须配深色文字，包括悬停与键盘焦点。 */
+html.dark .el-radio-button:not(.is-disabled) .el-radio-button__original-radio:checked + .el-radio-button__inner {
+  color: var(--accent-on);
+  font-weight: 600;
+}
+
+/* 同一亮绿选中色在所有实心控件中使用深色前景，不覆盖禁用态或浅底文字态。 */
+html.dark .el-checkbox-button.is-checked:not(.is-disabled) .el-checkbox-button__inner,
+html.dark .el-pagination.is-background .el-pager li.is-active:not(.is-disabled),
+html.dark .el-tag--primary.el-tag--dark {
+  color: var(--accent-on);
+}
+html.dark .el-checkbox-button.is-checked:not(.is-disabled) .el-checkbox-button__inner {
+  font-weight: 600;
+}
+html.dark .el-segmented {
+  --el-segmented-item-selected-color: var(--accent-on);
+}
+html.dark .el-checkbox__input.is-checked:not(.is-disabled) .el-checkbox__inner::after {
+  border-color: var(--accent-on);
+}
+html.dark .el-checkbox__input.is-indeterminate:not(.is-disabled) .el-checkbox__inner::before,
+html.dark .el-radio__input.is-checked:not(.is-disabled) .el-radio__inner::after {
+  background-color: var(--accent-on);
+}
+html.dark .el-date-table td.current:not(.disabled) .el-date-table-cell__text,
+html.dark .el-date-table td.start-date:not(.disabled) .el-date-table-cell__text,
+html.dark .el-date-table td.end-date:not(.disabled) .el-date-table-cell__text {
+  color: var(--accent-on);
+}
+
 /* 实心主按钮：霓虹绿底用深色字（勿作用于 link/text，否则暗色下会看不见） */
 .el-button--primary:not(.is-link):not(.is-text),
 html.dark .el-button--primary:not(.is-link):not(.is-text) {

@@ -179,6 +179,7 @@ type Model struct {
 	ContextWindowTokens          int                  `json:"contextWindowTokens,omitempty"`
 	MaxOutputTokens              int                  `json:"maxOutputTokens,omitempty"`
 	SupportedReasoningEfforts    []string             `json:"supportedReasoningEfforts"`
+	ReasoningEnabled            *bool                `json:"reasoningEnabled,omitempty"`
 	ReasoningPricing             *ReasoningPricing    `json:"reasoningPricing,omitempty"`
 	Public                       bool                 `json:"public"`
 	Default                      bool                 `json:"default"`
@@ -438,6 +439,8 @@ func normalize(cfg *Config) {
 		model.Modality = strings.ToLower(strings.TrimSpace(model.Modality))
 		model.Operations = cleanStrings(model.Operations)
 		model.Kind = strings.TrimSpace(model.Kind)
+		// Retired capability: do not advertise fast mode from old configurations.
+		model.FastMode = false
 		model.Tool = strings.TrimSpace(model.Tool)
 		if model.Kind == "" {
 			model.Kind = ModelKindImage

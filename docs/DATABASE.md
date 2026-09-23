@@ -1,11 +1,11 @@
 # 数据库设计
 
-数据库为 PostgreSQL。精确 DDL 位于 `apps/server/migrations/*.sql`，当前迁移版本为 `00108`；迁移工具是 Goose，并内嵌到 Go 二进制中。本文用于解释表职责、关键约束和跨表事务，不替代迁移文件。
+数据库为 PostgreSQL。精确 DDL 位于 `apps/server/migrations/*.sql`，截至 2026-09-22 当前工作区最高迁移为 `00155`（不代表任何环境已执行）；迁移工具是 Goose，并内嵌到 Go 二进制中。本文解释表职责、关键约束和跨表事务，不替代迁移文件。当前行为概览见 [SERVER_CURRENT_STATE.md](SERVER_CURRENT_STATE.md)。
 
 ## 全局约定
 
 - 业务主键通常为 `uuid DEFAULT gen_random_uuid()`；提示词源主键是 text slug。
-- 金额使用 `bigint` 整数分，禁止浮点账务。
+- 账务使用 `bigint` 整数，禁止浮点。订单 `amount_cents` 等人民币字段以“分”为单位；钱包、任务价格和助手费用的 `*_cents` 是历史命名下的整数平台积分。两类字段不能因后缀相同而直接相加或当作现金；充值比例、合同价格和财务统计各按业务规则解释。
 - 时间使用 `timestamptz`，订阅每日发放日期单独使用 `date`。
 - 可枚举状态由 CHECK 约束保护。
 - JSON 数组/对象使用 `jsonb`，默认分别为 `[]`/`{}`。
@@ -17,10 +17,12 @@
 
 | 列                                                       | 说明                                                                                     |
 | -------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `id`, `email`, `username`, `password_hash`, `avatar_url` | 账号、头像与 bcrypt 密码哈希；email 使用 citext 唯一约束                                 |
+| `id`, `email`, `username`, `password_hash`, `avatar_url` | 账号和头像；email 使用 citext 唯一约束。`password_hash` 是兼容字段，当前普通用户通过邮箱验证码登录，不提供密码登录接口 |
 | `bio`, `location`, `website_url`                         | 用户自填简介、所在地和个人网站；默认空字符串                                             |
 | `role`                                                   | 当前普通账号固定为 `user`；`admin` 仅保留给 `00007` 迁移前的兼容记录，不能用于用户端登录 |
-| `status`                                                 | `active` / `banned`                                                                      |
+| `status`                                                 | `active` / `banned` / `deleted`；`00120` 加入注销终态 |
+| `deleted_at`                                             | 注销时间；账号行保留匿名 UUID 关联必要交易和安全记录，登录资料被匿名化 |
+| `assistant_auto_approve`, `assistant_auto_approve_budget_cents` | 助手图片方案自动授权开关及单轮积分预算，默认 false / 60 |
 | `submission_banned_until`                                | 画廊禁投截止时间，NULL 表示未禁投                                                        |
 | `last_login_at`, `created_at`                            | 登录与创建时间                                                                           |
 
@@ -38,7 +40,7 @@
 
 ### `oauth_login_states`
 
-保存一次性 OAuth state 的 SHA-256、provider、过期时间和创建时间。当前运行时只写 GitHub state；回调必须匹配 provider、Cookie 与未过期数据库记录，并以原子删除完成一次性消费。
+历史第三方登录结构，不代表当前提供 GitHub/Google OAuth 登录。用户登录采用邮箱验证码；开放图片技能的 OAuth 2.0/PKCE 是另外一组 `/oauth/*` 授权接口，不能与历史用户登录表混淆。
 
 ### `admin_accounts`
 
@@ -58,11 +60,11 @@
 
 ### `wallets`
 
-每个用户一行，以 `user_id` 为主键。`balance_cents` / `frozen_cents` 是普通可用与冻结积分，`trial_balance_cents` / `trial_frozen_cents` 是体验可用与冻结积分，均有非负 CHECK。任务冻结优先使用当前启用活动中逐功能获批的体验积分，不满足活动与授权条件时只使用普通积分；两类来源会快照到任务积分预留记录，确保失败退回和成功结算不串桶。
+每个用户一行，以 `user_id` 为主键。`balance_cents` / `frozen_cents` 是普通可用与冻结积分，`trial_balance_cents` / `trial_frozen_cents` 是体验可用与冻结积分，均有非负 CHECK。新版计费优先分配符合用途的订阅批次，再使用符合资格的体验和通用积分；合同锁价另校验订阅/充值批次资格。分配来源在预留时保存，释放时还要核对原批次是否过期，不能把过期订阅额度退入通用余额。详见 [SUBSCRIPTIONS.md](SUBSCRIPTIONS.md)。
 
 ### `wallet_ledger`
 
-图片任务使用 `source_type='task'`，AI 助手使用 `source_type='assistant_run'`。助手失败重试时 `source_id` 使用 `run_id/generation`，保证每代预留、释放和结算分别幂等。`balance_after_cents` 始终记录当时可用积分，冻结积分不重复计入。
+图片任务使用 `source_type='task'`，AI 助手使用 `source_type='assistant_run'`，标准图片直通使用 `source_type='openai_image_request'`，Responses 对话使用 `open_api_responses_chat`。助手失败重试时 `source_id` 使用 `run_id/generation`，保证每代预留、释放和结算分别幂等。`balance_after_cents` 始终记录当时可用积分，冻结积分不重复计入；`settled_points` 用于实际结算统计，不能仅从 `delta_cents` 推算消费。
 
 | 列                         | 说明                                                            |
 | -------------------------- | --------------------------------------------------------------- |
@@ -100,11 +102,11 @@
 保存预留来源，`subscription_changes` 保存升级报价和退款审核。历史自然日订阅不重算；
 新版按24小时周期持久化下一次发放时间和已发期数。
 
-订阅期关联用户、套餐和订单，保存 `starts_at`、`ends_at`、每日发放快照、`last_granted_date` 与 `active|expired` 状态。索引覆盖 `(status, ends_at)` 和用户最近订阅。每日入账幂等来源为 `subscriptionId/YYYY-MM-DD`，日期按北京时间计算。
+订阅关联用户、套餐和订单，保存权益、合同及周期快照。历史 `billing_version=1` 的自然日入账幂等来源为 `subscriptionId/YYYY-MM-DD`；新版 `billing_version=2` 按生效时间的 24 小时期次和独立批次发放，不再套用自然日补发规则。
 
 ### `subscription_periods`
 
-每次购买保存独立生效区间和日额度；续订接在旧周期之后，不修改旧批次额度。`order_id` 唯一，历史批次为空。`grant_starts_on` 与排他的 `grant_ends_on` 限定发放日期，`next_grant_on` 为持久化补发游标。补发涵盖已到期批次，复用原有账本键防止重复入账；新批次发放次数等于购买天数，不额外发放到期日额度。
+保存独立生效区间和额度，`order_id` 唯一。`grant_starts_on`、`grant_ends_on`、`next_grant_on` 支持旧自然日订阅；新版使用 24 小时期次、关闭状态和持久游标，只补发当前仍有效的一期，已过期遗漏期次记为跳过。整期升级关闭旧周期并新建完整期限，不修改历史消耗或把旧未用额度累加到新周期。
 
 ### `redemption_codes`
 
@@ -116,12 +118,12 @@
 
 | 列                                        | 说明                                                                                           |
 | ----------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `type`                                    | `t2i`、`coloring`、`ui_design`、`ecommerce_design`、`model_sheet`、`game_art`、`puzzle`         |
+| `type`                                    | 文生图、染色、设计、电商、模型稿、游戏素材、背景移除/媒体工具等；`puzzle` 仅历史兼容，精确 CHECK 见迁移 |
 | `model`                                   | 新任务提交时锁定的上游模型；Worker 执行和 API 展示共用该值。迁移前历史任务按迁移时生效配置补齐 |
 | `status`                                  | `queued`、`running`、`succeeded`、`failed`、`canceled`                                         |
-| `prompt`, `params`, `count`               | 生成输入；count 限制为 1 至 4                                                                  |
+| `prompt`, `params`, `count`               | 生成输入与张数；提交上限综合模型能力、工作区和可容纳批次校验，不再一律限制 4 张 |
 | `input_keys`, `output_keys`               | 输入和原图 R2 object key 数组                                                                  |
-| `thumbnail_keys`                          | 与原图按索引对应的最长边 512px JPEG 缩略图 key 数组                                            |
+| `thumbnail_keys`                          | 与原图对应的小图 key 数组；尺寸和格式由变体配置决定，默认 512px WebP |
 | `cost_cents`                              | 提交时锁定的费用                                                                               |
 | `work_units`                              | 图片工作量，当前等于 count，用于用户和全站排队容量核算                                         |
 | `idempotency_key`                         | 同一用户内唯一的可选提交键                                                                     |
@@ -151,7 +153,7 @@
 
 任务和助手产物使用 `tasks/` 前缀的 R2 object key。任务删除、失败重试、助手消息/对话裁剪以及部分输出清理时，会在删除数据库所有者或清空产物引用的同一事务中登记待清理 key；`object_key` 唯一，重复登记幂等。`next_attempt_at`、`attempts` 和 `last_error` 保存外部对象存储失败后的持久化重试状态。
 
-Worker 每 5 分钟锁定一批到期作业，在 R2 删除前再次检查任务输入/输出/缩略图、蒙版、助手消息和运行参数、画廊投稿、提示词封面以及画布文档引用。仍被引用的 key 会留在队列中，删除成功后移除作业，失败则延迟 5 分钟重试。迁移文件为 `00063_object_cleanup_jobs.sql`；该队列只处理 `tasks/` 对象，普通 `uploads/` 对象由 `user_upload_objects` / `user_upload_references` 的回收流程负责。
+Worker 每分钟尝试锁定到期作业，并按当前任务压力决定是否执行及批量大小；删除前再次检查任务、助手、画廊、提示词和画布等持久引用。仍被引用的 key 不删除，失败保留作业退避重试。初始迁移为 `00063_object_cleanup_jobs.sql`；普通上传还通过 `user_upload_objects` / `user_upload_references` 记录归属与引用，不能仅依据对象路径决定可删除性。
 
 ### `user_assets`
 
@@ -233,7 +235,7 @@ Worker 每 5 分钟锁定一批到期作业，在 R2 删除前再次检查任务
 
 | 字段组     | 说明                                                     |
 | ---------- | -------------------------------------------------------- | -------- | ---------- |
-| 身份       | text `id`、名称、`source_url`、`json                     | markdown | html` 格式 |
+| 身份       | text `id`、名称、`source_url`、`json                     \| markdown \| html` 格式 |
 | 导入默认值 | `task_type`、`default_tags`                              |
 | 调度       | `enabled`、`auto_sync_enabled`、间隔分钟、`next_sync_at` |
 | 锁         | `sync_lock_token`、`sync_lock_expires_at`，避免并发同步  |
@@ -245,7 +247,7 @@ Worker 每 5 分钟锁定一批到期作业，在 R2 删除前再次检查任务
 
 ### `app_settings`
 
-键值为 `key text PRIMARY KEY` + `value jsonb`。迁移写入的种子值：
+键值为 `key text PRIMARY KEY` + `value jsonb`。下面是部分配置示例及当前应用缺省值（既有数据库值可能被管理员修改，历史迁移种子也不等于当前运行值）：
 
 ```text
 task_prices               {"t2i":20,"coloring":30,"ui_design":30,"ecommerce_design":30,"model_sheet":40,"game_art":30,"puzzle":0}
@@ -253,6 +255,11 @@ user_max_running_tasks    100
 user_max_running_images   400
 global_max_active_tasks   12000
 global_max_active_images  12000
+user_max_concurrent_tasks 4
+user_max_concurrent_chats 4
+global_max_concurrent_tasks 2000
+global_max_concurrent_chats 128
+image_fetch_concurrency 8
 task_failure_retry_count  2
 signup_bonus_cents        100
 registration_enabled      true
@@ -269,7 +276,7 @@ growth_failure_bonus_cents            3
 growth_failure_bonus_daily_limit      3
 growth_usage_rewards_enabled          true
 growth_usage_milestones               [{"units":10,"rewardCents":20},{"units":30,"rewardCents":50},{"units":100,"rewardCents":150}]
-suggestion_reward_max_cents           5000
+suggestion_reward_max_cents           10000
 task_models               {"default":"gpt-image-2"}
 platform_logging_enabled                  false
 platform_log_security_enabled             true
@@ -279,11 +286,11 @@ platform_log_retention_days               7
 platform_log_max_mb                       256
 ```
 
-应用层还为未落库配置提供相同默认值。后台保存后通过 upsert 写入本表。增长奖励都使用带稳定来源 ID 的钱包账本：失败补偿为 `task_failure_bonus` + task ID，用量奖励为 `usage_milestone` + `userId:YYYY-MM:units`，因此任务重放或 Worker 重试不会重复入账。非空 C2A 数据库配置覆盖环境变量；API Key 的管理接口只回传掩码。
+应用缺省值以 `internal/settings/settings.go` 为准；Agent 附加并发默认值在 `internal/store/user_concurrency.go` 中为全局 16、用户 3。后台保存通过 upsert 写入本表。增长奖励使用稳定来源 ID 的钱包账本防重复发放。非空 C2A 数据库配置覆盖环境变量；API Key 管理接口只回传掩码。
 
 ### `admin_audit_logs`
 
-记录管理员 ID/email 快照、method、path、归一化 action、目标 ID、响应状态、IP、脱敏 detail 与创建时间。`admin_id` 指向 `admin_accounts`；管理员被删除时置 NULL，email 快照保留。索引支持全局倒序和按管理员倒序查询。Worker 定期删除 6 个月以前的记录；管理员登录、改密和业务写操作也写入本表。
+记录管理员 ID/email 快照、method、path、归一化 action、目标 ID、响应状态、IP、脱敏 detail 与创建时间。`admin_id` 指向 `admin_accounts`；管理员被删除时置 NULL，email 快照保留。索引支持全局倒序和按管理员倒序查询。Worker 每小时删除超过保留期的记录，保留天数由后台设置 `audit_log_retention_days` 决定（默认 180 天，可设 7-365 天）；管理员登录、改密和业务写操作也写入本表。
 
 ### `platform_logs`
 
@@ -301,9 +308,13 @@ platform_log_max_mb                       256
 
 ### `usage_profit_ledger`
 
+迁移 `00155` 把 `source_type` 扩为 `task|assistant_run|developer_api`，后者记录标准图片直通调用。直通请求不存在站内 task ID；对应钱包来源是 `openai_image_request`。不确定失败的状态用于账务核查，不代表远端一定没有生成或产生成本。
+
 成功、最终失败和运行中取消的图片任务与 AI 助手运行会写入成本利润账本。`(source_type,source_id,billing_generation)` 唯一，Worker 重试不会重复记账。每条记录保存用户实收积分、任务创建时快照的上游单位成本、数量、模型、服务商、线路、工作区和来源 API Key；`gross_profit_cents` 由 PostgreSQL 生成列计算。迁移前的历史任务没有可信的上游成本快照，因此不自动猜测回填，后台利润统计从新任务开始准确累计。
 
 ### `user_api_keys` / `api_key_usage_events`
+
+Key 已有创建、更新、轮换和撤销接口；用量与任务路径的关系需要区分：站内任务创建记录任务额度，标准直通调用通过请求计数记录额度，无须创建 `tasks` 行。额度统计是提交预算，不等于扣除退款后的净消费。
 
 API Key 仅保存 SHA-256 哈希和可识别前缀，明文只在创建时返回。每个 Key 保存 scope、公开模型白名单、日/月任务上限、日/月积分额度、到期时间和限频更新的最近使用信息。`api_key_usage_events` 在创建任务的同一数据库事务内记录额度占用，`task_id` 唯一，幂等重试不会重复占用额度。
 
@@ -336,6 +347,8 @@ Webhook endpoint 保存用户、HTTPS URL、加密 Secret、订阅事件和启�
 新追踪显式写入 `canvas-agent-2026-08-29` 与 `canvas-tools-2026-08-29` 版本，后续改 Prompt 或工具协议时必须同步递增版本，避免不同实现混入同一回归组。迁移 `00100` 至 `00108` 只新增字段及关联索引，不导入旧服务器数据，不修改现有用户、钱包和图片对象；其中工作流产品化相关结构当前仅为历史兼容保留。
 
 ## 迁移与运维
+
+最新结构变化：`00152` 为 `users` 添加 `assistant_auto_approve`（默认 false）及预算（默认 60，范围 0–100000）；`00153` 为 `image_skills` 添加 `slug`，官方全局唯一、自建在用户内唯一；`00154` 删除旧 `user_skill_bindings`，当前技能按输入框引用使用。用户云端自建技能上限由服务端常量限制为 5，本地技能不计入。删除装载表意味着旧服务和旧前端的装载接口不能与新迁移长期混跑；Down 仅重建表结构，不能恢复已删除的装载记录。
 
 ```bash
 # Compose 启动 server 时自动迁移

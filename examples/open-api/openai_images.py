@@ -1,4 +1,4 @@
-"""OpenAI Images compatibility example. Only generate/edit commands create paid tasks."""
+"""OpenAI Images compatibility example. Only generate/edit commands use paid image calls."""
 
 import argparse
 import base64
@@ -15,7 +15,7 @@ def image_extension(data):
         return ".jpg"
     if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return ".webp"
-    raise ValueError("返回的图片格式无法识别；请保留任务 ID，从任务接口检查结果")
+    raise ValueError("返回的图片格式无法识别；请检查上游返回的图片数据")
 
 
 def arguments():
@@ -23,7 +23,7 @@ def arguments():
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("models", help="只读取可用模型，不创建图片任务")
     for name in ("generate", "edit"):
-        command = commands.add_parser(name, help="创建一张图片，会按站内价格消耗积分")
+        command = commands.add_parser(name, help="请求一张图片，会按站内价格消耗积分")
         command.add_argument("--model", required=True, help="模型目录返回的真实 ID")
         command.add_argument("--prompt", required=True)
         command.add_argument("--idempotency-key", required=True, help="提前保存的请求唯一编号；同一请求重试时复用")
@@ -77,7 +77,7 @@ def main():
                 return
 
             print("请求编号:", args.idempotency_key, flush=True)
-            print("将创建或恢复同一编号的图片任务；请保存该编号和原请求内容。", flush=True)
+            print("请求会直接转发到图片上游；重试时复用同一幂等键。", flush=True)
             payload = dict(
                 model=args.model,
                 prompt=args.prompt,
@@ -93,10 +93,9 @@ def main():
                     response = client.images.with_raw_response.edit(image=files[0] if len(files) == 1 else files, **payload)
                 else:
                     response = client.images.with_raw_response.generate(**payload)
-                print("任务 ID:", response.headers.get("x-task-id", "未返回"), flush=True)
                 result = response.parse()
             if not result.data or not result.data[0].b64_json:
-                raise ValueError("响应中没有图片，请用上面的任务 ID 查询最终结果")
+                raise ValueError("响应中没有图片数据")
             image = base64.b64decode(result.data[0].b64_json, validate=True)
             output = args.output.with_suffix(image_extension(image))
             with output.open("xb") as image_file:
@@ -104,15 +103,12 @@ def main():
             print("图片已保存:", output.resolve())
     except APIStatusError as error:
         print("HTTP:", error.status_code)
-        task_id = error.response.headers.get("x-task-id")
-        if task_id:
-            print("任务 ID:", task_id)
         print(error.message)
         if error.status_code == 504:
-            print("等待超时，任务仍会继续。请查询旧版任务接口；再次请求时复用原幂等键和全部参数。")
+            print("直连上游等待超时；不要更换幂等键盲目重试。")
         parser.exit(1)
     except APIConnectionError:
-        parser.exit(1, "连接中断或超时。任务可能已创建；重试时复用原幂等键和全部参数，不要更换请求编号。\n")
+        parser.exit(1, "连接中断或超时。上游是否已生成无法确认；重试时复用原幂等键和全部参数，不要更换请求编号。\n")
     except (OSError, ValueError) as error:
         parser.exit(1, f"{error}\n")
 

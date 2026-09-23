@@ -1,6 +1,6 @@
 # MCP 接入方案：星空云绘
 
-状态：详细设计，未新增可用 MCP 服务或第三方凭据。REST API 并不等于 MCP。
+状态：方案文档，未实现独立可用 MCP 服务。核对日期：2026-09-22；当前 Go 路由没有 `/mcp`，Compose 没有 `mcp` 服务。已经实现的 REST、OpenAI Images/Responses 兼容接口，以及图片技能 OAuth 授权均不是 MCP Server，使用说明见 [OPEN_API.md](OPEN_API.md)。本项目用于代码阅读的 CodeGraph MCP 是开发工具，也不属于对外产品接口。
 
 ## 1. 给非技术用户的解释
 
@@ -23,7 +23,7 @@ MCP 是让 AI 客户端以统一方式发现和调用工具的协议。它不是
 
 使用官方SDK，不手写JSON-RPC解析、协议握手、流式连接或OAuth。项目主要后端为Go，优先评估官方Go SDK与目标客户端支持的协议版本；确有SDK能力缺口时才选择独立TypeScript服务。
 
-协议必须锁定经兼容测试的版本并协商，不把“latest”作为生产契约。检索时官方文档已涉及2026-07-28版本的发现和无状态机制，不能照搬旧版initialize/SSE教程；仍需按实际SDK支持范围验证旧客户端兼容。
+实施时必须锁定经兼容测试的 SDK 和协议版本，不把官方 `latest` 链接当作已经落实的生产契约。本文没有选定依赖版本，也没有完成目标客户端兼容验证。
 
 ## 3. 首版工具清单
 
@@ -56,7 +56,7 @@ MCP 是让 AI 客户端以统一方式发现和调用工具的协议。它不是
 
 MCP网关验证token audience、scope、有效期，映射到站内用户。访问令牌不可直接透传给任意第三方服务器；业务API调用使用受控内部身份交换或明确绑定的用户凭据，不能共享一个管理员Key。
 
-首版内测与公网OAuth版必须分别列出上线门禁，不把API Key适配误称为所有MCP客户端的完整OAuth实现。
+首版内测与公网 OAuth 版必须分别列出上线门禁，不把 API Key 适配误称为所有 MCP 客户端的完整 OAuth 实现。现有 `/oauth/register`、`/oauth/authorize`、`/oauth/token` 服务于图片技能；是否可复用到 MCP 必须另外检查 audience、scope、元数据和客户端协议要求。
 
 ## 6. 风控与积分
 
@@ -106,4 +106,4 @@ MCP网关验证token audience、scope、有效期，映射到站内用户。访�
 - [协议版本与规范](https://modelcontextprotocol.io/specification/latest)
 - [官方SDK](https://github.com/modelcontextprotocol/go-sdk)
 
-说明：架构页面已直接读取核对；最终选定SDK版本和认证方案后，需要再次核验该版本规范与目标客户端，不能仅依据本文生成生产认证代码。
+说明：上述为后续实施时的官方资料入口，不是本次源码核对已完成 MCP 规范认证或兼容测试的证明。选定 SDK 版本和认证方案后，再核验对应规范与目标客户端。

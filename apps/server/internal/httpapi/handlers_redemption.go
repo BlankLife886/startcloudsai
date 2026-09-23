@@ -162,6 +162,11 @@ func redemptionCodeDict(r *store.RedemptionCode) gin.H {
 }
 
 func (s *Server) adminListRedemptionCodes(c *gin.Context, _ *store.User) {
+	extra, err := adminListFilter(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	status := c.Query("status")
 	if status != "" && status != "active" && status != "redeemed" && status != "disabled" {
 		fail(c, apperr.E("validation_error", "无效的兑换码状态", 422))
@@ -174,7 +179,7 @@ func (s *Server) adminListRedemptionCodes(c *gin.Context, _ *store.User) {
 	}
 	search := redemption.NormalizeCode(c.Query("search"))
 	rows, err := store.ListRedemptionCodes(c.Request.Context(), s.St.Pool,
-		status, strings.TrimSpace(c.Query("batchId")), search, limit, cursor)
+		status, strings.TrimSpace(c.Query("batchId")), search, limit, cursor, extra)
 	if err != nil {
 		fail(c, err)
 		return
@@ -212,7 +217,12 @@ func (s *Server) adminDisableRedemptionCode(c *gin.Context, _ *store.User) {
 }
 
 func (s *Server) adminRedemptionBatches(c *gin.Context, _ *store.User) {
-	rows, err := store.ListRedemptionBatches(c.Request.Context(), s.St.Pool, 100)
+	search := strings.TrimSpace(c.Query("search"))
+	if len([]rune(search)) > 100 {
+		fail(c, apperr.E("validation_error", "搜索内容不能超过 100 个字符", 422))
+		return
+	}
+	rows, err := store.ListRedemptionBatches(c.Request.Context(), s.St.Pool, search, 50)
 	if err != nil {
 		fail(c, err)
 		return

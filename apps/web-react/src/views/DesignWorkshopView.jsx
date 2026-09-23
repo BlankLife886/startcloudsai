@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { PackageCheck } from "lucide-react";
 import { useIsDark } from "../hooks/useIsDark.js";
+import { useDownloadAction } from "../hooks/useDownloadAction.js";
 import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
 import { canOpenWallevenImagePreview, WallevenImagePreview } from "../components/common/WallevenImagePreview.jsx";
@@ -1047,6 +1048,9 @@ export function DesignWorkshopView() {
   const [status, setStatus] = useState("");
   const [localError, setLocalError] = useState("");
   const [mediaError, setMediaError] = useState("");
+  const { busy: downloadBusy, run: runDownload } = useDownloadAction({
+    errorMessage: "设计稿下载失败",
+  });
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyPage, setHistoryPage] = useState(0);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -3945,13 +3949,19 @@ export function DesignWorkshopView() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => downloadAuthenticatedMedia(
-                    activeOutput,
-                    `ui-design-${Date.now()}.png`,
-                  ).catch((error) => setMediaError(error?.message || "设计稿下载失败"))}
+                  disabled={downloadBusy}
+                  aria-busy={downloadBusy}
+                  title={downloadBusy ? "正在下载" : "下载设计稿"}
+                  onClick={() => void runDownload(
+                    () => downloadAuthenticatedMedia(
+                      activeOutput,
+                      `ui-design-${Date.now()}.png`,
+                    ),
+                    { successMessage: "设计稿已开始下载" },
+                  )}
                 >
-                  <DownloadIcon />
-                  <span>下载</span>
+                  {downloadBusy ? <i className="bi bi-arrow-repeat spin" /> : <DownloadIcon />}
+                  <span>{downloadBusy ? "下载中…" : "下载"}</span>
                 </button>
                 <button
                   type="button"

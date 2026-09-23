@@ -115,6 +115,7 @@ interface ModelItem {
   contextWindowTokens: number;
   maxOutputTokens: number;
   supportedReasoningEfforts: string[];
+  reasoningEnabled?: boolean;
   reasoningPricing: ReasoningPricing | null;
   public: boolean;
   default: boolean;
@@ -258,30 +259,8 @@ const REASONING_EFFORT_LABELS: Record<string, string> = {
   max: "最大",
 };
 
-function reasoningModelIs(model: string, base: string) {
-  return model === base || model.startsWith(`${base}-`);
-}
-
-function reasoningEffortsForModel(raw: string) {
-  const model = String(raw || "")
-    .trim()
-    .toLowerCase()
-    .split("/")
-    .at(-1) || "";
-  if (!model || model.includes("-chat")) return [];
-  if (reasoningModelIs(model, "gpt-5.6"))
-    return ["low", "medium", "high", "xhigh", "max"];
-  if (["gpt-5.5-pro", "gpt-5.4-pro", "gpt-5.2-pro"].some((base) => reasoningModelIs(model, base)))
-    return ["medium", "high", "xhigh"];
-  if (["gpt-5.5", "gpt-5.4", "gpt-5.2"].some((base) => reasoningModelIs(model, base)))
-    return ["low", "medium", "high", "xhigh"];
-  if (reasoningModelIs(model, "gpt-5.3-codex") || model === "codex-auto-review")
-    return ["low", "medium", "high", "xhigh"];
-  if (reasoningModelIs(model, "gpt-5.1"))
-    return ["none", "low", "medium", "high"];
-  if (["gpt-5", "gpt-5-mini", "gpt-5-nano"].includes(model))
-    return ["minimal", "low", "medium", "high"];
-  return [];
+function configuredReasoningOptions(model: { supportedReasoningEfforts?: string[]; reasoningPricing?: ReasoningPricing | null }) {
+  return [...new Set([...Object.keys(REASONING_EFFORT_LABELS), ...(model.supportedReasoningEfforts || []), ...Object.keys(model.reasoningPricing?.efforts || {})])];
 }
 
 function defaultReasoningEffort(efforts: string[]) {
@@ -297,7 +276,9 @@ function reasoningEffortEnabled(
 function enabledReasoningEfforts(model: {
   supportedReasoningEfforts?: string[];
   reasoningPricing?: ReasoningPricing | null;
+  reasoningEnabled?: boolean;
 }) {
+  if (model.reasoningEnabled === false) return [];
   return (model.supportedReasoningEfforts || []).filter((effort) =>
     reasoningEffortEnabled(model.reasoningPricing?.efforts?.[effort]),
   );
@@ -338,9 +319,9 @@ function normalizeReasoningPricing(
   const prices = Object.fromEntries(
     efforts.map((effort) => {
       const configured = source?.efforts?.[effort];
-      const enabled = fromList
+      const enabled = configured?.enabled ?? (fromList
         ? enabledSet.has(effort)
-        : reasoningEffortEnabled(configured);
+        : Boolean(configured));
       return [
         effort,
         configured
@@ -633,14 +614,12 @@ function hydrate(value: ModelConfig) {
     maxOutputTokens:
       model.kind === "chat" ? Number(model.maxOutputTokens ?? 8192) : 0,
     supportedReasoningEfforts:
-      model.kind === "chat"
+      model.kind === "chat" && model.reasoningEnabled !== false
         ? enabledReasoningEfforts({
-            supportedReasoningEfforts: reasoningEffortsForModel(
-              model.upstreamModel,
-            ),
+            supportedReasoningEfforts: configuredReasoningOptions(model),
             reasoningPricing: normalizeReasoningPricing(
               model.reasoningPricing,
-              reasoningEffortsForModel(model.upstreamModel),
+              configuredReasoningOptions(model),
               model.priceCents,
               model.discountPriceCents,
               Array.isArray(model.supportedReasoningEfforts)
@@ -653,7 +632,7 @@ function hydrate(value: ModelConfig) {
       model.kind === "chat"
         ? normalizeReasoningPricing(
             model.reasoningPricing,
-            reasoningEffortsForModel(model.upstreamModel),
+            configuredReasoningOptions(model),
             model.priceCents,
             model.discountPriceCents,
             Array.isArray(model.supportedReasoningEfforts)
@@ -1709,6 +1688,7 @@ async function discoverProviderModels() {
 }
 
 async function testProviderRoute(route: ProviderRoute) {
+  if (testingProviderRouteId.value) return;
   if (!/^https?:\/\//.test(route.baseUrl.trim()) || !route.apiKey.trim()) {
     ElMessage.warning("请先填写该线路的 Base URL 和 API Key");
     return;
@@ -1724,10 +1704,11 @@ async function testProviderRoute(route: ProviderRoute) {
         body: copyProvider(providerDraft),
       },
     );
-    providerRouteChecks[route.id] = `连接正常 · 可配置 ${result.compatibleCount ?? result.modelCount ?? 0} 个`;
+    providerDraft.discoveredModels = [...new Set([...providerDraft.discoveredModels, ...(result.models || [])])];
+    providerRouteChecks[route.id] = `目录连接正常 · 可读取 ${result.modelCount ?? 0} 个${result.warning ? ` · ${result.warning}` : ''}`;
     ElMessage.success(`${route.name || "线路"}连接正常`);
-  } catch {
-    providerRouteChecks[route.id] = "连接失败";
+  } catch (error) {
+    providerRouteChecks[route.id] = `连接失败：${error instanceof Error ? error.message : '未知错误，请重试'}`;
   } finally {
     testingProviderRouteId.value = "";
   }
@@ -1787,6 +1768,23 @@ async function removeProvider(index: number) {
 }
 
 const modelDialogVisible = ref(false);
+function chooseModelType(kind: ModelKind) {
+  selectModelKind(kind);
+  modelEditorTab.value = 'basic';
+}
+type ModelEditorTab = 'basic' | 'pricing' | 'capabilities' | 'publishing';
+const modelEditorTab = ref<ModelEditorTab>('basic');
+const modelEditorForm = ref<{ $el: HTMLElement } | null>(null);
+watch(modelEditorTab, async () => {
+  await nextTick();
+  modelEditorForm.value?.$el.scrollTo({ top: 0 });
+});
+const modelEditorTabs = computed(() => [
+  { id: 'basic' as const, label: '基本信息', hint: '类型、服务商与模型映射' },
+  { id: 'pricing' as const, label: '计费设置', hint: modelDraft.kind === 'chat' ? '基础积分与推理档位' : '积分、成本与预计耗时' },
+  { id: 'capabilities' as const, label: modelDraft.kind === 'chat' ? '对话能力' : modelDraft.kind === 'image_tool' ? '媒体能力' : '生图能力', hint: modelDraft.kind === 'chat' ? '上下文与输出上限' : modelDraft.kind === 'image_tool' ? '上游声明的参数' : '尺寸、质量与输出选项' },
+  { id: 'publishing' as const, label: '发布设置', hint: '可见性、默认与启用' },
+]);
 const modelEditIndex = ref(-1);
 const discoveringModelOptions = ref(false);
 const modelIconInputRef = ref<HTMLInputElement | null>(null);
@@ -1837,11 +1835,13 @@ const modelDraft = reactive<ModelDraft>({
   supportedReasoningEfforts: [],
   reasoningPricing: null,
   public: true,
+  reasoningEnabled: false,
   default: false,
   enabled: true,
 });
 
 function openModel(index = -1) {
+  modelEditorTab.value = 'basic';
   const source = index >= 0 ? config.models[index] : null;
   const defaultProvider =
     config.providers.find((item) => item.enabled)?.id || "";
@@ -1890,13 +1890,13 @@ function openModel(index = -1) {
           maxOutputTokens: Number(source.maxOutputTokens ?? (source.kind === "chat" ? 8192 : 0)),
           supportedReasoningEfforts:
             source.kind === "chat"
-              ? reasoningEffortsForModel(source.upstreamModel)
+              ? configuredReasoningOptions(source)
               : [],
           reasoningPricing:
             source.kind === "chat"
               ? normalizeReasoningPricing(
                   source.reasoningPricing,
-                  reasoningEffortsForModel(source.upstreamModel),
+                  configuredReasoningOptions(source),
                   source.priceCents,
                   source.discountPriceCents,
                   Array.isArray(source.supportedReasoningEfforts)
@@ -1905,6 +1905,7 @@ function openModel(index = -1) {
                 )
               : null,
           public: source.public,
+          reasoningEnabled: source.reasoningEnabled ?? Boolean(source.supportedReasoningEfforts?.length),
           default: source.default,
           enabled: source.enabled,
           pricePoints: normalizePoints(source.priceCents),
@@ -1973,6 +1974,7 @@ function openModel(index = -1) {
           maxOutputTokens: kindFilter.value === "chat" ? 8192 : 0,
           supportedReasoningEfforts: [],
           reasoningPricing: null,
+          reasoningEnabled: false,
           public: true,
           default: false,
           enabled: true,
@@ -2035,6 +2037,7 @@ async function onModelIconPick(event: Event) {
 
 async function openReasoningPricing(model: ModelItem) {
   openModel(modelOriginalIndex(model));
+  modelEditorTab.value = 'pricing';
   await nextTick();
   document
     .getElementById("model-reasoning-pricing-section")
@@ -2042,6 +2045,7 @@ async function openReasoningPricing(model: ModelItem) {
 }
 
 function focusModelCapabilities() {
+  modelEditorTab.value = 'capabilities';
   requestAnimationFrame(() => {
     document
       .getElementById("model-capabilities-section")
@@ -2304,7 +2308,7 @@ async function onUpstreamModelChange(value: string) {
 function syncModelDraftReasoningPricing(fillFromBase = false) {
   const efforts =
     modelDraft.kind === "chat"
-      ? reasoningEffortsForModel(modelDraft.upstreamModel)
+      ? configuredReasoningOptions(modelDraft)
       : [];
   modelDraft.supportedReasoningEfforts = efforts;
   modelDraft.reasoningPricing = normalizeReasoningPricing(
@@ -2313,6 +2317,17 @@ function syncModelDraftReasoningPricing(fillFromBase = false) {
     modelDraft.pricePoints,
     modelDraft.discountEnabled ? modelDraft.discountPoints : null,
   );
+}
+
+function toggleReasoningSupport(value: unknown) {
+  modelDraft.reasoningEnabled = value === true;
+  if (modelDraft.reasoningEnabled) {
+    syncModelDraftReasoningPricing();
+    if (!enabledReasoningEfforts(modelDraft).length && modelDraft.reasoningPricing) {
+      modelDraft.reasoningPricing.efforts.medium.enabled = true;
+      modelDraft.reasoningPricing.defaultEffort = 'medium';
+    }
+  }
 }
 
 function fillReasoningPricingFromBase() {
@@ -2360,6 +2375,17 @@ function toggleReasoningDiscount(
     price.canvasAgentDiscountPriceCents =
       enabled === true ? price.canvasAgentPriceCents : null;
   }
+}
+
+function setReasoningPrice(
+  effort: string,
+  field: 'assistantPriceCents' | 'assistantDiscountPriceCents' | 'canvasAgentPriceCents' | 'canvasAgentDiscountPriceCents',
+  value: number | null | undefined,
+) {
+  const price = modelDraft.reasoningPricing?.efforts?.[effort];
+  if (!price) return;
+  // Null means explicitly disabled, never a temporarily cleared numeric input.
+  price[field] = normalizePoints(value ?? 0);
 }
 
 function syncDefaultReasoningEffort() {
@@ -2435,6 +2461,7 @@ async function saveModelDraft() {
     !modelDraft.upstreamModel.trim() ||
     !modelDraft.providerId
   ) {
+    modelEditorTab.value = 'basic';
     ElMessage.warning("请填写模型名称、上游模型 ID 和服务商");
     return;
   }
@@ -2443,6 +2470,7 @@ async function saveModelDraft() {
       ? "此模型未声明支持精确尺寸，请先读取模型能力或关闭精确尺寸"
       : validateExactSizeLimits(modelDraft.exactSizeLimits);
     if (error) {
+      modelEditorTab.value = 'capabilities';
       ElMessage.warning(error);
       focusModelCapabilities();
       return;
@@ -2455,6 +2483,7 @@ async function saveModelDraft() {
       (resolution) => !modelDraft.aspectRatiosByResolution[resolution]?.length,
     )
   ) {
+    modelEditorTab.value = 'capabilities';
     ElMessage.warning("每个分辨率至少选择一个用户可用比例");
     focusModelCapabilities();
     return;
@@ -2467,6 +2496,7 @@ async function saveModelDraft() {
       return ratios.includes("auto") && !ratios.some((ratio) => ratio !== "auto");
     })
   ) {
+    modelEditorTab.value = 'capabilities';
     ElMessage.warning("选择 Auto 的分辨率还需要至少一个固定比例");
     focusModelCapabilities();
     return;
@@ -2477,15 +2507,18 @@ async function saveModelDraft() {
 		modelDraft.kind !== "chat" &&
 		!modelDraft.upstreamInputFields.length
 	) {
+		modelEditorTab.value = 'basic';
 		ElMessage.warning("请先读取该 CRUN 模型的实时参数，不能按猜测配置");
 		return;
 	}
 	if (modelDraft.kind === "image_tool") {
 		if (!modelDraft.tool || !modelDraft.operations.length || !Object.keys(modelDraft.upstreamInputSchema).length) {
+			modelEditorTab.value = 'basic';
 			ElMessage.warning("请先读取 CRUN 实时 schema，工具能力不能手工填写");
 			return;
 		}
 		if (provider?.adapter !== "crun") {
+			modelEditorTab.value = 'basic';
 			ElMessage.warning("媒体工具当前只支持 CRUN 服务商");
 			return;
 		}
@@ -2494,6 +2527,7 @@ async function saveModelDraft() {
 			modelDraft.upscaleHighDiscountEnabled &&
 			modelDraft.upscaleHighDiscountPoints > modelDraft.upscaleHighPricePoints
 		) {
+			modelEditorTab.value = 'pricing';
 			ElMessage.warning("4096px 档折扣积分不能高于标准积分");
 			return;
 		}
@@ -2503,6 +2537,7 @@ async function saveModelDraft() {
     modelDraft.outputFormatsEnabled &&
     !modelDraft.outputFormats.length
   ) {
+    modelEditorTab.value = 'capabilities';
     ElMessage.warning("开启指定输出格式后，至少选择一种格式");
     return;
   }
@@ -2511,21 +2546,26 @@ async function saveModelDraft() {
     modelDraft.moderationEnabled &&
     !modelDraft.moderationLevels.length
   ) {
+    modelEditorTab.value = 'capabilities';
     ElMessage.warning("开启内容审核级别后，至少选择一个级别");
     return;
   }
   if (modelDraft.default && (!modelDraft.public || !modelDraft.enabled)) {
+    modelEditorTab.value = 'publishing';
     ElMessage.warning("默认模型必须启用并对用户开放");
     return;
   }
   if (modelDraft.default && modelDraft.status === "maintenance") {
+    modelEditorTab.value = 'publishing';
     ElMessage.warning("维护中的模型不能设为默认模型");
     return;
   }
-  if (modelDraft.kind === "chat" && modelDraft.reasoningPricing) {
+  if (modelDraft.kind === "chat" && modelDraft.reasoningEnabled && modelDraft.reasoningPricing) {
     for (const effort of modelDraft.supportedReasoningEfforts) {
       const price = modelDraft.reasoningPricing.efforts[effort];
+      if (price && !reasoningEffortEnabled(price)) continue;
       if (!price) {
+        modelEditorTab.value = 'pricing';
         ElMessage.warning(`推理强度 ${effort} 缺少积分配置`);
         return;
       }
@@ -2535,6 +2575,7 @@ async function saveModelDraft() {
         (price.canvasAgentDiscountPriceCents !== null &&
           price.canvasAgentDiscountPriceCents > price.canvasAgentPriceCents)
       ) {
+        modelEditorTab.value = 'pricing';
         ElMessage.warning(`${REASONING_EFFORT_LABELS[effort] || effort}档折扣积分不能高于标准积分`);
         return;
       }
@@ -2554,10 +2595,12 @@ async function saveModelDraft() {
         for (const channel of channels) {
           const effective = channel.discount ?? channel.standard;
           if (effective === 0 && !modelDraft.allowZeroPrice) {
+            modelEditorTab.value = 'pricing';
             ElMessage.warning(`${REASONING_EFFORT_LABELS[effort] || effort}档 ${channel.label} 为 0 积分，请开启允许零积分`);
             return;
           }
           if (effective < modelDraft.upstreamCostPoints && !modelDraft.allowLossLeader) {
+            modelEditorTab.value = 'pricing';
             ElMessage.warning(`${REASONING_EFFORT_LABELS[effort] || effort}档 ${channel.label} 价格低于上游成本`);
             return;
           }
@@ -2598,7 +2641,7 @@ async function saveModelDraft() {
             highUpstreamCostCents: normalizePoints(modelDraft.upscaleHighUpstreamCostPoints),
           }
         : null,
-    fastMode: modelDraft.kind === "image" && modelDraft.fastMode,
+    fastMode: false,
     minSeconds: modelDraft.minSeconds,
     maxSeconds: modelDraft.maxSeconds,
     supportsExactSize: modelDraft.kind === "image" && modelDraft.supportsExactSize,
@@ -2654,6 +2697,7 @@ async function saveModelDraft() {
         : 0,
     supportedReasoningEfforts: [] as string[],
     reasoningPricing: null as ReasoningPricing | null,
+    reasoningEnabled: modelDraft.kind === "chat" && modelDraft.reasoningEnabled === true,
     public: modelDraft.public,
     default: modelDraft.default,
     enabled: modelDraft.enabled,
@@ -2666,10 +2710,10 @@ async function saveModelDraft() {
       modelDraft.discountEnabled ? modelDraft.discountPoints : null,
     );
     value.reasoningPricing = pricing;
-    value.supportedReasoningEfforts = enabledReasoningEfforts({
+    value.supportedReasoningEfforts = value.reasoningEnabled ? enabledReasoningEfforts({
       supportedReasoningEfforts: modelDraft.supportedReasoningEfforts,
       reasoningPricing: pricing,
-    });
+    }) : [];
   } else {
     value.supportedReasoningEfforts = [];
     value.reasoningPricing = null;
@@ -2891,7 +2935,6 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
                       }}</span>
                       <span v-if="row.default" class="default-badge">默认</span>
                       <span v-if="row.status === 'maintenance'" class="maintenance-badge">维护中</span>
-                      <span v-if="row.fastMode" class="meta-badge">快速</span>
                       <strong>{{ row.name }}</strong>
                       <span>{{ providerName(row.providerId) }}</span>
                       <span class="mono">{{ row.upstreamModel || "—" }}</span>
@@ -3122,12 +3165,8 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
                   />
                 </label>
                 <label v-if="row.kind === 'image'" class="model-card__switch">
-                  <span>透明背景</span>
+                  <span>移除背景</span>
                   <el-switch v-model="row.transparentBackground" size="small" />
-                </label>
-                <label v-if="row.kind === 'image'" class="model-card__switch">
-                  <span>快速模式</span>
-                  <el-switch v-model="row.fastMode" size="small" />
                 </label>
                 <div class="model-card__actions">
                   <el-button
@@ -3776,6 +3815,7 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
                   size="small"
                   plain
                   :loading="testingProviderRouteId === route.id"
+                  :disabled="Boolean(testingProviderRouteId) && testingProviderRouteId !== route.id"
                   @click="testProviderRoute(route)"
                 >
                   测试线路
@@ -3831,7 +3871,7 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
                 />
               </label>
               <label class="provider-route-field route-timeout-field">
-                <span>超时（秒）</span>
+                <span>请求超时（秒）</span>
                 <el-input-number
                   v-model="route.timeoutSecs"
                   :min="0"
@@ -3840,9 +3880,10 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
                 />
               </label>
             </div>
+            <p class="discovery-note">超时不含排队。0 使用默认值（OpenAI 300 秒，CRUN 图片 1200 秒）；对话小于 30 秒按 300 秒处理。目录测试单次最多 20 秒。OpenAI 图片异步切线等待至少 180 秒，超时后仍可能继续查询或重试，不代表立即停止上游生成。</p>
             <div v-if="providerRouteChecks[route.id]" class="provider-route-check">
               <el-tag
-                :type="providerRouteChecks[route.id] === '连接失败' ? 'danger' : 'success'"
+                :type="providerRouteChecks[route.id].startsWith('连接失败') ? 'danger' : 'success'"
                 size="small"
                 effect="plain"
               >
@@ -3874,57 +3915,54 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
             }}</el-button
           >
         </div>
+        <p class="discovery-note">线路测试读取模型目录，验证地址与鉴权；不代表所有模型均可生成。具体模型能力仍以上游实际调用为准。</p>
+        <div v-if="providerDraft.discoveredModels.length" class="discovered-model-list" aria-label="已读取的模型">
+          <el-tag v-for="model in providerDraft.discoveredModels" :key="model" size="small" effect="plain">{{ model }}</el-tag>
+        </div>
       </el-form>
     </AdminDialog>
 
     <AdminDialog
       v-model="modelDialogVisible"
       :title="modelEditIndex >= 0 ? '编辑模型' : '添加模型'"
-      subtitle="按区块填写映射、计费与能力，确认后写入模型目录"
+      :subtitle="`${kindMeta[modelDraft.kind].name} · ${modelDraft.name || '未命名模型'}`"
       :icon="Cpu"
-      width="min(880px, calc(100% - 24px))"
-      confirm-text="确认"
+      width="min(1080px, calc(100% - 32px))"
+      panel-class="model-config-editor-dialog"
+      nested-scroll
+      :close-on-click-modal="false"
+      :confirm-text="modelEditIndex >= 0 ? '确认修改' : '添加模型'"
+      footer-hint="确认后加入页面待保存配置，点击页面「保存」后生效"
       @confirm="saveModelDraft"
     >
-      <el-form label-position="top" class="dialog-form model-editor">
-        <section class="model-section">
-          <header class="model-section__head">
-            <strong>模型类型</strong>
-            <small>决定用户端入口与后续可配项</small>
+      <div class="model-type-tabs" role="group" aria-label="模型类型">
+        <button v-for="item in kindFilters.filter(entry => entry.id !== 'all')" :key="item.id" type="button" :aria-pressed="modelDraft.kind === item.id" :class="{ 'is-active': modelDraft.kind === item.id }" @click="chooseModelType(item.id as ModelKind)">{{ item.label }}</button>
+      </div>
+      <div class="model-editor-layout">
+      <nav class="model-editor-nav" aria-label="模型配置分组">
+        <button v-for="tab in modelEditorTabs" :key="tab.id" type="button" :class="{ 'is-active': modelEditorTab === tab.id }" :aria-current="modelEditorTab === tab.id ? 'page' : undefined" @click="modelEditorTab = tab.id">
+          <span><strong>{{ tab.label }}</strong><small>{{ tab.hint }}</small></span>
+        </button>
+      </nav>
+      <el-form ref="modelEditorForm" label-position="top" class="dialog-form model-editor">
+
+        <section v-if="modelDraft.kind === 'chat'" v-show="modelEditorTab === 'pricing'" class="model-section">
+          <header class="model-section__head model-support-toggle">
+            <span><strong>支持推理强度</strong><small>由管理员按上游能力配置；关闭后不向上游传递推理强度，用户按基础积分计费</small></span>
+            <el-switch :model-value="modelDraft.reasoningEnabled === true" @change="toggleReasoningSupport" />
           </header>
-          <div class="model-kind-switch" role="radiogroup" aria-label="模型类型">
-            <button
-              v-for="item in kindFilters.filter((entry) => entry.id !== 'all')"
-              :key="item.id"
-              type="button"
-              class="model-kind-card"
-              :class="{ 'is-active': modelDraft.kind === item.id }"
-              @click="selectModelKind(item.id as ModelKind)"
-            >
-              <strong>{{ item.label }}</strong>
-              <small>{{ kindMeta[item.id as ModelKind].detail }}</small>
-            </button>
-          </div>
-          <div v-if="modelDraft.kind === 'image_tool'" class="model-tool-picker">
-            <span class="model-tool-picker__label">工具能力</span>
-            <div class="model-tool-options" aria-label="工具能力">
-              <div class="model-tool-option is-active">
-                <strong>{{ modelDraft.operations.join(" · ") || "等待读取上游 schema" }}</strong>
-                <small>能力、媒体类型和参数均由 CRUN 实时接口自动同步</small>
-              </div>
-            </div>
-          </div>
         </section>
 
         <section
-          v-if="modelDraft.kind === 'chat' && modelDraft.reasoningPricing && modelDraft.supportedReasoningEfforts.length"
+          v-if="modelDraft.kind === 'chat' && modelDraft.reasoningEnabled && modelDraft.reasoningPricing && modelDraft.supportedReasoningEfforts.length"
           id="model-reasoning-pricing-section"
+          v-show="modelEditorTab === 'pricing'"
           class="model-section reasoning-pricing-section"
         >
           <header class="model-section__head reasoning-pricing-head">
             <span>
               <strong>推理强度计费</strong>
-              <small>可按档开启或关闭；全部关闭后用户端按基础积分计费，且不再出现推理强度选项</small>
+              <small>只开启上游支持的档位。积分为 0 不会关闭档位；免费使用需开启「允许零积分」</small>
             </span>
             <div class="reasoning-base-price">
               <label>
@@ -3991,18 +4029,21 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
                 <strong>{{ REASONING_EFFORT_LABELS[effort] || effort }}</strong>
                 <small>{{ effort }}</small>
               </div>
-              <div class="reasoning-channel-price">
-                <label>
+              <div class="reasoning-channel-price" data-channel="AI 助手">
+                <div class="reasoning-price-field">
                   <span>标准积分</span>
                   <el-input-number
-                    v-model="modelDraft.reasoningPricing.efforts[effort].assistantPriceCents"
+                    :model-value="modelDraft.reasoningPricing.efforts[effort].assistantPriceCents"
+                    :key="`assistant-standard-${draftReasoningEffortOn(effort)}`"
+                    :aria-label="effort + ' AI 助手标准积分'"
+                    @update:model-value="setReasoningPrice(effort, 'assistantPriceCents', $event)"
                     :disabled="!draftReasoningEffortOn(effort)"
                     :min="0"
                     :precision="0"
                     :step="1"
                   />
-                </label>
-                <label>
+                </div>
+                <div class="reasoning-price-field">
                   <span>折扣积分</span>
                   <div class="reasoning-discount-control">
                     <el-switch
@@ -4011,7 +4052,10 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
                       @change="toggleReasoningDiscount(effort, 'assistant', $event)"
                     />
                     <el-input-number
-                      v-model="modelDraft.reasoningPricing.efforts[effort].assistantDiscountPriceCents"
+                      :model-value="modelDraft.reasoningPricing.efforts[effort].assistantDiscountPriceCents"
+                      :key="`assistant-discount-${draftReasoningEffortOn(effort)}-${reasoningDiscountEnabled(effort, 'assistant')}`"
+                    :aria-label="effort + ' AI 助手折扣积分'"
+                    @update:model-value="setReasoningPrice(effort, 'assistantDiscountPriceCents', $event)"
                       :disabled="
                         !draftReasoningEffortOn(effort) ||
                         !reasoningDiscountEnabled(effort, 'assistant')
@@ -4021,20 +4065,23 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
                       :step="1"
                     />
                   </div>
-                </label>
+                </div>
               </div>
-              <div class="reasoning-channel-price">
-                <label>
+              <div class="reasoning-channel-price" data-channel="无限画布 Agent">
+                <div class="reasoning-price-field">
                   <span>标准积分</span>
                   <el-input-number
-                    v-model="modelDraft.reasoningPricing.efforts[effort].canvasAgentPriceCents"
+                    :model-value="modelDraft.reasoningPricing.efforts[effort].canvasAgentPriceCents"
+                    :key="`canvas-standard-${draftReasoningEffortOn(effort)}`"
+                    :aria-label="effort + ' 画布 Agent 标准积分'"
+                    @update:model-value="setReasoningPrice(effort, 'canvasAgentPriceCents', $event)"
                     :disabled="!draftReasoningEffortOn(effort)"
                     :min="0"
                     :precision="0"
                     :step="1"
                   />
-                </label>
-                <label>
+                </div>
+                <div class="reasoning-price-field">
                   <span>折扣积分</span>
                   <div class="reasoning-discount-control">
                     <el-switch
@@ -4043,7 +4090,10 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
                       @change="toggleReasoningDiscount(effort, 'canvas_agent', $event)"
                     />
                     <el-input-number
-                      v-model="modelDraft.reasoningPricing.efforts[effort].canvasAgentDiscountPriceCents"
+                      :model-value="modelDraft.reasoningPricing.efforts[effort].canvasAgentDiscountPriceCents"
+                      :key="`canvas-discount-${draftReasoningEffortOn(effort)}-${reasoningDiscountEnabled(effort, 'canvas_agent')}`"
+                    :aria-label="effort + ' 画布 Agent 折扣积分'"
+                    @update:model-value="setReasoningPrice(effort, 'canvasAgentDiscountPriceCents', $event)"
                       :disabled="
                         !draftReasoningEffortOn(effort) ||
                         !reasoningDiscountEnabled(effort, 'canvas_agent')
@@ -4053,7 +4103,7 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
                       :step="1"
                     />
                   </div>
-                </label>
+                </div>
               </div>
             </div>
           </div>
@@ -4067,62 +4117,16 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
                 style="width: 100%"
               />
             </el-form-item>
-            <el-form-item label="零价与亏损策略" class="is-wide">
-              <div class="discount-input">
-                <el-switch v-model="modelDraft.allowZeroPrice" />
-                <span>允许零积分</span>
-                <el-switch v-model="modelDraft.allowLossLeader" />
-                <span>允许价格低于成本</span>
-              </div>
-            </el-form-item>
           </div>
         </section>
 
-        <section class="model-section">
+        <section v-show="modelEditorTab === 'basic'" class="model-section">
           <header class="model-section__head">
-            <strong>映射与展示</strong>
-            <small>服务商上游模型与用户端显示文案</small>
+            <strong>模型信息</strong>
+            <small>先选择服务商与上游模型，再设置用户端看到的名称和介绍</small>
           </header>
-          <div class="model-field-grid">
-            <el-form-item label="自定义名称">
-              <el-input
-                v-model="modelDraft.name"
-                placeholder="用户端显示的模型名称"
-              />
-            </el-form-item>
-            <el-form-item label="用户端状态">
-              <el-select v-model="modelDraft.status" style="width: 100%">
-                <el-option label="正常" value="available" />
-                <el-option label="维护中" value="maintenance" />
-              </el-select>
-            </el-form-item>
-            <el-form-item label="模型图标" class="is-wide">
-              <div class="model-icon-editor">
-                <span class="model-icon-editor__preview" aria-hidden="true">
-                  <img v-if="modelDraft.iconUrl" :src="modelDraft.iconUrl" alt="" />
-                  <Cpu v-else />
-                </span>
-                <div class="model-icon-editor__actions">
-                  <div>
-                    <el-button :icon="Upload" :loading="modelIconUploading" @click="pickModelIcon">
-                      {{ modelDraft.iconUrl ? "替换图标" : "上传图标" }}
-                    </el-button>
-                    <el-button v-if="modelDraft.iconUrl" link type="danger" @click="modelDraft.iconUrl = ''">
-                      移除
-                    </el-button>
-                  </div>
-                  <small>建议上传正方形 PNG、JPG 或 WebP，最大 2MB</small>
-                </div>
-                <input
-                  ref="modelIconInputRef"
-                  class="model-icon-editor__input"
-                  type="file"
-                  accept="image/png,image/jpeg,image/webp"
-                  @change="onModelIconPick"
-                />
-              </div>
-            </el-form-item>
-            <el-form-item label="服务商">
+          <div class="model-field-grid model-basics-grid">
+            <el-form-item label="服务商" class="model-field-provider">
               <el-select
                 v-model="modelDraft.providerId"
                 style="width: 100%"
@@ -4136,7 +4140,13 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
                 />
               </el-select>
             </el-form-item>
-            <el-form-item label="上游模型 ID" class="is-wide">
+            <el-form-item label="显示名称" class="model-field-name">
+              <el-input
+                v-model="modelDraft.name"
+                placeholder="用户端显示的模型名称"
+              />
+            </el-form-item>
+            <el-form-item label="上游模型 ID" class="is-wide model-field-upstream">
               <div class="model-picker">
                 <el-select
                   v-model="modelDraft.upstreamModel"
@@ -4186,9 +4196,38 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
                 </span>
               </div>
             </el-form-item>
-            <el-form-item label="模型说明" class="is-wide">
+            <el-form-item label="模型图标（选填）" class="model-field-icon">
+              <div class="model-icon-editor">
+                <span class="model-icon-editor__preview" aria-hidden="true">
+                  <img v-if="modelDraft.iconUrl" :src="modelDraft.iconUrl" alt="" />
+                  <Cpu v-else />
+                </span>
+                <div class="model-icon-editor__actions">
+                  <div>
+                    <el-button :icon="Upload" :loading="modelIconUploading" @click="pickModelIcon">
+                      {{ modelDraft.iconUrl ? "替换图标" : "上传图标" }}
+                    </el-button>
+                    <el-button v-if="modelDraft.iconUrl" link type="danger" @click="modelDraft.iconUrl = ''">
+                      移除
+                    </el-button>
+                  </div>
+                  <small>建议上传正方形 PNG、JPG 或 WebP，最大 2MB</small>
+                </div>
+                <input
+                  ref="modelIconInputRef"
+                  class="model-icon-editor__input"
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  @change="onModelIconPick"
+                />
+              </div>
+            </el-form-item>
+            <el-form-item label="模型介绍（选填）" class="model-field-description">
               <el-input
                 v-model="modelDraft.description"
+                type="textarea"
+                :rows="3"
+                resize="none"
                 placeholder="用户选择模型时看到的简短说明"
               />
             </el-form-item>
@@ -4198,10 +4237,12 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
         <section
           v-if="
             modelDraft.kind !== 'chat' ||
+            !modelDraft.reasoningEnabled ||
             !modelDraft.reasoningPricing ||
             !modelDraft.supportedReasoningEfforts.length
           "
           class="model-section"
+          v-show="modelEditorTab === 'pricing'"
         >
           <header class="model-section__head">
             <strong>计费与耗时</strong>
@@ -4277,23 +4318,9 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
                 style="width: 100%"
               />
             </el-form-item>
-            <el-form-item label="零价与亏损策略" class="is-wide">
-              <div class="discount-input">
-                <el-switch v-model="modelDraft.allowZeroPrice" />
-                <span>允许零积分</span>
-                <el-switch v-model="modelDraft.allowLossLeader" />
-                <span>允许价格低于成本</span>
-              </div>
-            </el-form-item>
-            <el-form-item
-              v-if="modelDraft.kind === 'image'"
-              label="快速模型"
-            >
-              <el-switch v-model="modelDraft.fastMode" />
-            </el-form-item>
             <el-form-item
               v-if="modelDraft.kind !== 'chat'"
-              label="预计耗时"
+              label="预计生成耗时"
               :class="{ 'is-wide': modelDraft.kind !== 'image' }"
             >
               <div class="eta-input">
@@ -4310,15 +4337,30 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
                 />
                 <span>秒</span>
               </div>
+              <small>用于调度估算完成时间、比较线路；不包含排队，不会到时中断任务。未知可填 0，调度默认按 45 秒估算。</small>
             </el-form-item>
           </div>
         </section>
 
-        <section class="model-section">
+        <section v-show="modelEditorTab === 'pricing'" class="model-section">
+          <header class="model-section__head"><strong>价格策略</strong><small>适用于当前模型的所有价格档位</small></header>
+          <div class="model-price-policy">
+            <label><span><strong>允许零积分</strong><small>开启后可保存并使用免费档位</small></span><el-switch v-model="modelDraft.allowZeroPrice" /></label>
+            <label><span><strong>允许低于成本</strong><small>开启后可设置低于上游成本的价格</small></span><el-switch v-model="modelDraft.allowLossLeader" /></label>
+          </div>
+        </section>
+
+        <section v-show="modelEditorTab === 'publishing'" class="model-section">
           <header class="model-section__head">
             <strong>发布状态</strong>
             <small>控制可见性与调度</small>
           </header>
+          <el-form-item label="用户端状态" class="model-public-status">
+            <el-radio-group v-model="modelDraft.status">
+              <el-radio-button value="available">正常服务</el-radio-button>
+              <el-radio-button value="maintenance">维护中</el-radio-button>
+            </el-radio-group>
+          </el-form-item>
           <div class="model-status-grid">
             <label>
               <span>
@@ -4354,6 +4396,7 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
         <section
           v-if="modelDraft.kind === 'chat'"
           id="model-capabilities-section"
+          v-show="modelEditorTab === 'capabilities'"
           class="model-section"
         >
           <header class="model-section__head">
@@ -4393,6 +4436,7 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
         <section
           v-if="modelDraft.kind === 'image'"
           id="model-capabilities-section"
+          v-show="modelEditorTab === 'capabilities'"
           class="model-section"
         >
           <header class="model-section__head">
@@ -4535,8 +4579,8 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
               </div>
               <div class="model-capability-tile">
                 <div class="model-capability-copy">
-                  <strong>透明背景</strong>
-                  <span>允许生成透明底图片</span>
+                  <strong>移除背景</strong>
+                  <span>允许用户移除背景，输出透明底图片</span>
                 </div>
                 <el-switch
                   v-model="modelDraft.transparentBackground"
@@ -4633,7 +4677,17 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
             </div>
           </div>
         </section>
+        <section v-if="modelDraft.kind === 'image_tool'" v-show="modelEditorTab === 'capabilities'" class="model-section">
+          <header class="model-section__head"><strong>媒体工具能力</strong><small>以下信息来自上游模型参数，修改模型映射后可重新读取</small></header>
+          <div class="model-media-summary"><span>媒体类型：{{ modelDraft.modality || '未读取' }}</span><span>操作：{{ modelDraft.operations.join('、') || '未读取' }}</span></div>
+          <el-empty v-if="!modelDraft.upstreamInputFields.length" description="请在基本信息中选择模型并读取上游参数" :image-size="56" />
+          <div v-else class="model-media-fields">
+            <div v-for="field in modelDraft.upstreamInputFields" :key="field"><code>{{ field }}</code><el-tag size="small" :type="modelDraft.upstreamRequiredInputFields.includes(field) ? 'warning' : 'info'">{{ modelDraft.upstreamRequiredInputFields.includes(field) ? '必填' : '可选' }}</el-tag></div>
+          </div>
+          <el-button @click="modelEditorTab = 'basic'">前往模型映射</el-button>
+        </section>
       </el-form>
+      </div>
     </AdminDialog>
   </div>
 </template>
@@ -4641,14 +4695,103 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
 <style scoped>
 .model-editor {
   display: grid;
+  align-content: start;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
   gap: 14px;
-  padding: 2px 0 4px;
+  padding: 2px 8px 12px 0;
+  scrollbar-gutter: stable;
+}
+
+.model-editor-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
+  gap: 16px;
+}
+
+.model-editor-nav {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+
+.model-editor-nav button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: center;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ink-2);
+  text-align: center;
+  cursor: pointer;
+}
+
+.model-editor-nav button:hover {
+  background: var(--surface-2);
+}
+
+.model-editor-nav button.is-active {
+  border-color: color-mix(in srgb, var(--accent) 25%, var(--border));
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  color: var(--accent-ink);
+}
+
+.model-editor-nav button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.model-editor-nav strong,
+.model-editor-nav small {
+  display: block;
+}
+
+.model-editor-nav strong { font-size: 13px; }
+.model-editor-nav small { margin-top: 5px; font-size: 11px; line-height: 1.5; color: var(--ink-3); }
+.model-editor-nav__number { font-size: 12px; opacity: 0.65; font-variant-numeric: tabular-nums; }
+.model-editor-nav p { margin: auto 8px 8px; color: var(--ink-3); font-size: 11px; line-height: 1.6; }
+
+.model-price-policy { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.model-price-policy label { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 14px; border-radius: 8px; background: var(--surface-2); }
+.model-price-policy strong { display: block; font-size: 13px; color: var(--ink-2); }
+.model-price-policy small { display: block; margin-top: 5px; font-size: 11px; line-height: 1.5; color: var(--ink-3); }
+.model-media-summary { display: flex; flex-wrap: wrap; gap: 16px; font-size: 13px; color: var(--ink-2); }
+.model-media-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.model-media-fields > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; background: var(--surface-2); border-radius: 8px; }
+.model-media-fields code { overflow-wrap: anywhere; min-width: 0; }
+
+@media (max-width: 900px) {
+  .model-editor-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); gap: 12px; }
+  .model-editor-nav { flex-direction: row; padding: 0 0 10px; border-right: 0; border-bottom: 1px solid var(--border); }
+  .model-editor-nav button { flex: 1; justify-content: center; padding: 10px 6px; }
+  .model-editor-nav small, .model-editor-nav p, .model-editor-nav__number { display: none; }
+}
+
+@media (max-width: 600px) {
+  .model-editor .model-field-grid,
+  .model-editor .model-capability-tiles,
+  .model-price-policy,
+  .model-media-fields { grid-template-columns: minmax(0, 1fr); }
+  .model-editor .reasoning-pricing-head { grid-template-columns: minmax(0, 1fr); }
+  .model-editor .reasoning-default-row { flex-wrap: wrap; }
 }
 
 .model-section {
   display: grid;
-  gap: 12px;
-  padding: 14px;
+  gap: 18px;
+  padding: 20px;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--surface);
@@ -4668,7 +4811,21 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
 .model-section__head small {
   color: var(--ink-3);
   font-size: 12px;
+  line-height: 1.6;
 }
+
+.model-support-toggle { display: flex; justify-content: space-between; align-items: center; gap: 24px; }
+.model-support-toggle > span { display: grid; gap: 4px; }
+.model-support-toggle :deep(.el-switch) { flex-shrink: 0; }
+.model-public-status { margin: 0; }
+.model-basics-grid { column-gap: 24px; }
+.model-type-tabs { display: inline-flex; align-self: flex-end; flex-wrap: wrap; gap: 3px; padding: 3px; margin-bottom: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); }
+.model-type-tabs button { padding: 5px 10px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--ink-2); font-size: 12px; line-height: 18px; cursor: pointer; }
+.model-type-tabs button.is-active { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 25%, var(--border)); color: var(--accent-ink); }
+.model-type-tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.model-basics-grid .model-field-icon,
+.model-basics-grid .model-field-description { margin-top: 10px; padding-top: 16px; border-top: 1px solid var(--border); }
+.model-basics-grid .model-icon-editor { align-items: flex-start; }
 
 .reasoning-pricing-head {
   grid-template-columns: minmax(0, 1fr) auto;
@@ -4726,6 +4883,8 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
   display: grid;
   gap: 0;
   overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
 }
 
 .reasoning-price-table__head,
@@ -4736,6 +4895,7 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
 }
 
 .reasoning-price-table__head {
+  background: var(--surface-2);
   color: var(--ink-3);
   font-size: 11px;
   font-weight: 650;
@@ -4748,7 +4908,7 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
 }
 
 .reasoning-price-row.is-off {
-  opacity: 0.58;
+  background: color-mix(in srgb, var(--surface-2) 55%, var(--surface));
 }
 
 .reasoning-effort-enable {
@@ -4768,9 +4928,9 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
 }
 
 .reasoning-effort-name small,
-.reasoning-channel-price label > span {
+.reasoning-price-field > span {
   color: var(--ink-3);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .reasoning-channel-price {
@@ -4779,7 +4939,7 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
   gap: 8px;
 }
 
-.reasoning-channel-price label {
+.reasoning-price-field {
   display: grid;
   min-width: 0;
   gap: 5px;
@@ -4861,55 +5021,6 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
   color: var(--accent-ink);
 }
 
-.model-kind-switch {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.model-kind-card {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface-2);
-  color: inherit;
-  cursor: pointer;
-  text-align: left;
-  transition:
-    border-color 0.15s ease,
-    background 0.15s ease,
-    box-shadow 0.15s ease;
-}
-
-.model-kind-card strong {
-  color: var(--ink-2);
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.model-kind-card small {
-  color: var(--ink-3);
-  font-size: 11px;
-  line-height: 1.35;
-}
-
-.model-kind-card:hover {
-  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
-  background: var(--surface);
-}
-
-.model-kind-card.is-active {
-  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
-  background: color-mix(in srgb, var(--accent-soft) 55%, var(--surface));
-  box-shadow: var(--shadow-sm);
-}
-
-.model-kind-card.is-active strong {
-  color: var(--accent-ink);
-}
 
 .model-field-grid {
   display: grid;
@@ -7254,6 +7365,30 @@ html.dark .assignment-panel {
   min-width: 0;
   gap: 5px;
 }
+.provider-route-field small,
+.discovery-note {
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.discovered-model-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-height: 220px;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+.discovered-model-list :deep(.el-tag),
+.provider-route-check :deep(.el-tag) {
+  height: auto;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}
 .provider-route-field > span {
   color: var(--ink-3);
   font-size: 11px;
@@ -7342,4 +7477,19 @@ html.dark .assignment-panel {
 }
 
 
+@media (max-width: 700px) {
+  :global(.model-config-editor-dialog .admin-dialog__footer) { flex-wrap: wrap; gap: 10px; }
+  :global(.model-config-editor-dialog .admin-dialog__hint) { flex: 1 0 100%; max-width: none; font-size: 11px; line-height: 1.5; }
+  :global(.model-config-editor-dialog .admin-dialog__actions) { margin-left: auto; }
+  .model-editor .reasoning-price-table { border: 0; overflow: visible; gap: 12px; }
+  .model-editor .reasoning-price-table__head { display: none; }
+  .model-editor .reasoning-price-row { min-width: 0; grid-template-columns: 40px minmax(0, 1fr); border: 1px solid var(--border); border-radius: 10px; padding: 6px; }
+  .model-editor .reasoning-channel-price { grid-column: 1 / -1; }
+  .model-editor .reasoning-channel-price::before { content: attr(data-channel); grid-column: 1 / -1; color: var(--ink-2); font-size: 12px; font-weight: 600; }
+  .model-editor-nav { padding: 4px; gap: 2px; }
+  .model-editor-nav button { padding: 10px 2px; }
+  .model-editor-nav strong { font-size: 12px; }
+  .model-editor .model-section { padding: 14px; }
+  .model-editor .model-status-grid { grid-template-columns: minmax(0, 1fr); }
+}
 </style>

@@ -213,8 +213,8 @@ test.describe('Ecommerce Vue to React visual contract @visual', () => {
     await page.goto('/ecommerce-design?tool=detail&visualResult=1', {
       waitUntil: 'domcontentloaded',
     })
-    await page.getByRole('button', { name: '展开连续优化' }).click()
-    await stabilizeVisualPage(page, '.revision-panel.open')
+    await page.getByLabel('结果操作').getByRole('button', { name: '连续优化' }).click()
+    await stabilizeVisualPage(page, '.workbench-revision')
     await expect(page).toHaveScreenshot('ecommerce-revision-desktop.png', { fullPage: true })
   })
 

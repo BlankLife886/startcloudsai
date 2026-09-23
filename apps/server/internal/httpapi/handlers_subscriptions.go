@@ -163,6 +163,10 @@ func (s *Server) mySubscriptionGrants(c *gin.Context) {
 		fail(c, apperr.E("validation_error", "无效页码", 422))
 		return
 	}
+	if (page-1)*20 >= store.ListCountCap {
+		fail(c, errPageBeyondCap)
+		return
+	}
 	type grant struct {
 		ID          uuid.UUID  `json:"id"`
 		OrderID     *uuid.UUID `json:"orderId"`
@@ -311,6 +315,11 @@ func (s *Server) mySubscriptionRefundPreview(c *gin.Context) {
 	ok(c, gin.H{"estimatedAmountCents": calculation.MaxRefundCents, "calculation": calculation, "requiresReview": true})
 }
 func (s *Server) adminSubscriptionChanges(c *gin.Context, _ *store.User) {
+	filter, filterErr := adminListFilter(c)
+	if filterErr != nil {
+		fail(c, filterErr)
+		return
+	}
 	page, parseErr := strconv.Atoi(c.DefaultQuery("page", "1"))
 	query := strings.TrimSpace(c.Query("q"))
 	status, kind := c.Query("status"), c.Query("kind")
@@ -318,7 +327,11 @@ func (s *Server) adminSubscriptionChanges(c *gin.Context, _ *store.User) {
 		fail(c, apperr.E("validation_error", "筛选参数无效", 422))
 		return
 	}
-	items, total, err := store.SearchSubscriptionChanges(c.Request.Context(), s.St.Pool, query, status, kind, page)
+	if (page-1)*25 >= store.ListCountCap {
+		fail(c, errPageBeyondCap)
+		return
+	}
+	items, total, err := store.SearchSubscriptionChanges(c.Request.Context(), s.St.Pool, query, status, kind, page, filter)
 	if err != nil {
 		fail(c, err)
 		return

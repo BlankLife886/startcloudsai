@@ -2407,7 +2407,7 @@ export const ASSET_TYPES = [
       {
         key: 'transparent',
         group: 'composition',
-        label: '透明背景',
+        label: '移除背景',
         icon: 'bi-transparency',
         prompt: '纯净透明背景，主体边缘干净',
       },
@@ -2807,7 +2807,7 @@ export const ASSET_TYPES = [
       {
         key: 'transparent',
         group: 'presentation',
-        label: '透明背景',
+        label: '移除背景',
         icon: 'bi-transparency',
         prompt: '纯净透明背景，主体边缘干净',
       },
@@ -3174,7 +3174,7 @@ export const ASSET_TYPES = [
       {
         key: 'transparent',
         group: 'content',
-        label: '透明背景',
+        label: '移除背景',
         icon: 'bi-transparency',
         prompt: '纯净透明背景，主体边缘干净',
       },

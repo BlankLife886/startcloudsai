@@ -13,15 +13,19 @@ import { useLocale } from "../i18n/index.js";
 import {
   buildEcommerceGenerationPlan,
   buildEcommerceRevisionPrompt,
-  ECOMMERCE_DETAIL_MODULES,
-  ECOMMERCE_MODULES,
+  DETAIL_DEFAULT_DIRECTION_IDS,
+  DETAIL_DIRECTIONS,
+  DETAIL_MAX_CUSTOM_DIRECTIONS,
   ECOMMERCE_MODES,
   ECOMMERCE_RAIL_GROUPS,
   ECOMMERCE_RAIL_MODES,
   ECOMMERCE_REVISION_DIRECTIONS,
   ecommerceModeById,
   ecommerceShotBlueprints,
-  listingShotBlueprintsFromCounts,
+  ecommerceConsistencyProfile,
+  LISTING_DEFAULT_TYPE_IDS,
+  LISTING_IMAGE_TYPES,
+  listingShotBlueprintsFromPlan,
   coerceEcommerceImageFile,
   attachEcommerceUploadKey,
   isReusableTaskImageKey,
@@ -32,6 +36,7 @@ import {
   ecommerceUploadRejectMessage,
   prepareEcommerceInputFiles,
   sniffEcommerceImageBytes,
+  normalizeDetailCustomDirection,
   supportedEcommerceModules,
   TRYON_LENS_OPTIONS,
   buildTryonPhotographyPrompt,
@@ -99,8 +104,9 @@ import {
 import { fetchRuntimeConfig } from "@react/legacy-modules/services/runtimeConfig.js";
 import { composePendingLaunchPrompt, takePendingPrompt } from "@react/legacy-modules/features/creator-hub/studioTools.js";
 import {
-  generateAplusPlan,
   generateCommerceProductBrief,
+  generateDetailPlan,
+  generateListingPlan,
   listTryonCatalog,
 } from "@react/legacy-modules/services/ecommerceApi.js";
 import {
@@ -119,7 +125,10 @@ import {
 } from "@react/legacy-modules/services/meApi.js";
 import { downloadHistoryImagesAsZip } from "@react/legacy-modules/services/historyMediaTools.js";
 import { uploadFile } from "@react/legacy-modules/services/tasksApi.js";
-import { fetchAuthenticatedMediaBlob } from "@react/legacy-modules/services/authenticatedMedia.js";
+import {
+  downloadAuthenticatedMedia,
+  fetchAuthenticatedMediaBlob,
+} from "@react/legacy-modules/services/authenticatedMedia.js";
 import listingPreview from "@react/legacy-static/assets/ecommerce/listing-preview.webp";
 import detailPreview from "@react/legacy-static/assets/ecommerce/detail-preview.webp";
 import tryonPreview from "@react/legacy-static/assets/ecommerce/tryon-preview.webp";
@@ -146,14 +155,20 @@ import { DetailStudio } from "../features/ecommerce/DetailStudio.jsx";
 import { DetailTopToolbar } from "../features/ecommerce/businesses/detail/DetailTopToolbar.jsx";
 import {
   aplusCategoryById,
-  aplusChecklistCsv,
-  aplusExportChecklist,
   aplusMarketplaceById,
-  aplusShotBlueprintsFromPlan,
-  buildAplusTaskPrompt,
-  buildDefaultAplusPlan,
   parseAplusAsinList,
 } from "../features/ecommerce/aplus/amazonAplus.js";
+import {
+  buildDetailTaskPrompt,
+  DETAIL_EXTRA_REFERENCE_MAX,
+  DETAIL_EXTRA_REFERENCE_ROLE,
+  DETAIL_PRODUCT_REFERENCE_MAX,
+  DETAIL_RATIO_OPTIONS,
+  detailChecklistCsv,
+  detailExportChecklist,
+  detailShotBlueprintsFromPlan,
+  isAmazonPlatform,
+} from "../features/ecommerce/aplus/detailPage.js";
 import {
   ACCESSORY_CATEGORY_OPTIONS,
   ACCESSORY_CROP_OPTIONS,
@@ -176,10 +191,27 @@ import {
 } from "../features/ecommerce/accessory/accessoryCommerce.js";
 import { CommerceProductLibrary } from "../features/ecommerce/CommerceProductLibrary.jsx";
 import { CommerceOperationsWorkspace } from "../features/ecommerce/CommerceOperationsWorkspace.jsx";
+import { CREATIVE_SHOOT_SHOTS } from "../features/ecommerce/creativeShootShots.js";
+import { CommerceWorkbench } from "../features/ecommerce/workbench/CommerceWorkbench.jsx";
+import { WorkbenchTopToolbar } from "../features/ecommerce/workbench/WorkbenchTopToolbar.jsx";
 import {
-  CREATIVE_SHOOT_SHOTS,
-  CreativeShootWorkspace,
-} from "../features/ecommerce/CreativeShootWorkspace.jsx";
+  isWorkbenchMode,
+  workbenchHasStyleSlot,
+  workbenchPackForCount,
+  workbenchPackForShootShots,
+  workbenchSpecById,
+} from "../features/ecommerce/workbench/workbenchSpecs.js";
+import {
+  expandVariantBlueprints,
+  presetFilledCount,
+  presetPromptLines,
+  STYLE_REFERENCE_PROMPT,
+  STYLE_REFERENCE_ROLE,
+  WORKBENCH_NOTE_MAX,
+  WORKBENCH_RESOLUTIONS,
+  workbenchPresetFields,
+} from "../features/ecommerce/workbench/workbenchPresets.js";
+import { normalizeImageModelCapabilities } from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
 import { EcommerceMaskEditor } from "../features/ecommerce/EcommerceMaskEditor.jsx";
 import { canOpenWallevenImagePreview, WallevenImagePreview } from "../components/common/WallevenImagePreview.jsx";
 import { TryonFlipLightbox } from "../features/ecommerce/TryonFlipLightbox.jsx";
@@ -201,8 +233,6 @@ import { useAccessoryBusinessState } from "../features/ecommerce/businesses/acce
 import { AccessoryTopToolbar } from "../features/ecommerce/businesses/accessory/AccessoryTopToolbar.jsx";
 import { HANDHELD_ACTIVE_BATCH_STORAGE_KEY } from "../features/ecommerce/businesses/handheld/storageKeys.js";
 import { useHandheldBusinessState } from "../features/ecommerce/businesses/handheld/useHandheldBusinessState.js";
-import { CloneBusinessSettings } from "../features/ecommerce/businesses/clone/CloneBusinessSettings.jsx";
-import { ListingBusinessSettings } from "../features/ecommerce/businesses/listing/ListingBusinessSettings.jsx";
 import "./EcommerceDesignView.css";
 
 gsap.registerPlugin(useGSAP);
@@ -347,13 +377,34 @@ function isDetailMode(id) {
 
 function hidesCommerceSettings(id) {
   return (
-    isShootMode(id) ||
+    isWorkbenchMode(id) ||
     isTryonMode(id) ||
     isHandheldMode(id) ||
     isAccessoryMode(id) ||
     isDetailMode(id)
   );
 }
+
+const SHOOT_DIRECTION_OPTIONS = [
+  { id: "studio", label: "干净棚拍", hint: "主图、官网首屏", scene: "纯色影棚", tone: "极简高级" },
+  { id: "lifestyle", label: "生活场景", hint: "种草、使用情境", scene: "家居生活", tone: "真实自然" },
+  { id: "premium", label: "质感特写", hint: "材质、工艺卖点", scene: "纯色影棚", tone: "轻奢质感" },
+  { id: "concept", label: "概念创意", hint: "新品、广告投放", scene: "科技空间", tone: "科技未来" },
+];
+
+const SHOOT_USE_CASE_OPTIONS = [
+  { id: "listing", label: "商品上架" },
+  { id: "social", label: "社媒种草" },
+  { id: "ads", label: "广告投放" },
+  { id: "brand", label: "品牌视觉" },
+];
+
+const SHOOT_GOAL_OPTIONS = [
+  { id: "conversion", label: "促进转化" },
+  { id: "premium", label: "建立质感" },
+  { id: "explain", label: "解释功能" },
+  { id: "launch", label: "新品传播" },
+];
 
 function catalogOptionById(catalog, id) {
   return catalog.find((item) => item.id === id) || null;
@@ -940,6 +991,9 @@ export function EcommerceBusinessSession({
   const [railEdges, setRailEdges] = useState({ start: true, end: false });
   const [files, setFiles] = useState([]);
   const [previews, setPreviews] = useState([]);
+  const workbenchSlotRef = useRef(-1);
+  const [workbenchNotice, setWorkbenchNotice] = useState("");
+  const [workbenchActionBusy, setWorkbenchActionBusy] = useState(false);
   const {
     tryonSlots,
     setTryonSlots,
@@ -1102,6 +1156,25 @@ export function EcommerceBusinessSession({
   const [shadow, setShadow] = useState(OPTIONS.shadow[0]);
   const [productName, setProductName] = useState("");
   const [sellingPoints, setSellingPoints] = useState("");
+  // 切换业务模块 = 新的业务会话：商品名称 / 卖点不跨模块残留（首帧不触发，保留助手带入的商品信息）
+  const productBriefModeRef = useRef(mode.id);
+  useEffect(() => {
+    if (productBriefModeRef.current === mode.id) return;
+    productBriefModeRef.current = mode.id;
+    setProductName("");
+    setSellingPoints("");
+    // 工作台模块间的补充说明、预置字段、策划方案与风格参考图互不串用
+    setWorkbenchNote("");
+    setPresetValues({});
+    setListingPlan(null);
+    setListingPlanError("");
+    setDetailPlan(null);
+    setDetailPlanError("");
+    setStyleSlot((current) => {
+      if (current?.local && current.url) URL.revokeObjectURL(current.url);
+      return null;
+    });
+  }, [mode.id]);
   const assistantHandoffConsumedRef = useRef(false);
   useEffect(() => {
     if (assistantHandoffConsumedRef.current) return;
@@ -1128,11 +1201,18 @@ export function EcommerceBusinessSession({
     "detail",
     "selling",
   ]);
-  const [selectedModules, setSelectedModules] = useState(
-    ECOMMERCE_MODULES.filter((item) => item.value !== "angles").map(
-      (item) => item.value,
-    ),
-  );
+  // AI 详情页：出图方向多选（16 种内置 + 自定义）、补充参考图、先策划再生成
+  const [selectedModules, setSelectedModules] = useState([
+    ...DETAIL_DEFAULT_DIRECTION_IDS,
+  ]);
+  const [detailCustomDirections, setDetailCustomDirections] = useState([]);
+  const [detailExtraSlots, setDetailExtraSlots] = useState([]);
+  const [detailPlan, setDetailPlan] = useState(null);
+  const [detailPlanning, setDetailPlanning] = useState(false);
+  const [detailPlanError, setDetailPlanError] = useState("");
+  const [detailAutoGenerate, setDetailAutoGenerate] = useState(true);
+  const detailUploadTargetRef = useRef("product");
+  // Amazon 高级选项：只在投放平台为 Amazon 时参与出图与导出
   const [aplusAsin, setAplusAsin] = useState("");
   const [aplusCompetitorAsin, setAplusCompetitorAsin] = useState("");
   const [aplusCategoryId, setAplusCategoryId] = useState("generic");
@@ -1140,19 +1220,33 @@ export function EcommerceBusinessSession({
   const [aplusTier, setAplusTier] = useState("basic");
   const [aplusDisclosure, setAplusDisclosure] = useState(true);
   const [aplusBatchText, setAplusBatchText] = useState("");
-  const [aplusLivePlan, setAplusLivePlan] = useState(null);
-  const [aplusPlanning, setAplusPlanning] = useState(false);
-  const [aplusAnalyzeError, setAplusAnalyzeError] = useState("");
-  const [structureMode, setStructureMode] = useState("smart");
-  const [counts, setCounts] = useState({
-    white: 1,
-    scene: 2,
-    selling: 2,
-    other: 2,
-  });
-  const [cloneType, setCloneType] = useState("电商商品图");
-  const [cloneFidelity, setCloneFidelity] = useState("style");
+  // 商品套图：出图类型多选 + “先策划再生成”
+  const [listingTypeIds, setListingTypeIds] = useState(LISTING_DEFAULT_TYPE_IDS);
+  const [listingPlan, setListingPlan] = useState(null);
+  const [listingPlanning, setListingPlanning] = useState(false);
+  const [listingPlanError, setListingPlanError] = useState("");
+  // 通用工作台：细节补充 / 预置字段 / 清晰度 / 风格参考图
+  const [workbenchNote, setWorkbenchNote] = useState("");
+  const [presetValues, setPresetValues] = useState({});
+  const [resolution, setResolution] = useState("2K");
+  const [styleSlot, setStyleSlot] = useState(null);
   const [textStable, setTextStable] = useState(true);
+  // 清晰度只提供当前模型真正支持的档位；不支持时不下发 resolution，由模型默认输出
+  const workbenchResolutionOptions = useMemo(() => {
+    if (!isWorkbenchMode(mode.id) && !isDetailMode(mode.id)) return [];
+    const selected = models.find((model) =>
+      [model?.id, model?.publicModelKey, model?.model]
+        .map(String)
+        .includes(String(modelId)),
+    );
+    const supported = normalizeImageModelCapabilities(selected || {}).resolutions;
+    return WORKBENCH_RESOLUTIONS.filter((item) => supported.includes(item));
+  }, [mode.id, modelId, models]);
+  const workbenchResolution = workbenchResolutionOptions.includes(resolution)
+    ? resolution
+    : workbenchResolutionOptions.includes("2K")
+      ? "2K"
+      : workbenchResolutionOptions[0] || "";
   const [revisionOpen, setRevisionOpen] = useState(false);
   const [revisionDirection, setRevisionDirection] = useState("precise");
   const [revisionBrief, setRevisionBrief] = useState("");
@@ -2240,6 +2334,14 @@ export function EcommerceBusinessSession({
     () => accessorySlotPresence(accessorySlots),
     [accessorySlots],
   );
+  // 风格 / 构图参考图：作为最后一张参考追加，只借鉴氛围，不进商品身份序列
+  const workbenchStyleFile =
+    isWorkbenchMode(mode.id) &&
+    workbenchHasStyleSlot(workbenchSpecById(mode.id)) &&
+    files.length > 0 &&
+    styleSlot?.file
+      ? styleSlot.file
+      : null;
   const inputFiles =
     mode.id === "tryon"
       ? tryonSlots.garment?.file
@@ -2262,14 +2364,36 @@ export function EcommerceBusinessSession({
           : []
         : mode.id === "accessory"
           ? packAccessorySlotFiles(accessorySlots)
-          : files;
-  const customBlueprints = useMemo(
-    () => listingShotBlueprintsFromCounts(counts),
-    [counts],
+          : workbenchStyleFile
+            ? [...files, workbenchStyleFile]
+            : isDetailMode(mode.id) && detailExtraSlots.length
+              ? [...files, ...detailExtraSlots.map((item) => item.file)]
+              : files;
+  const workbenchReferenceRoles = workbenchStyleFile
+    ? [
+        ...ecommerceConsistencyProfile(mode.id, files.length).roles,
+        STYLE_REFERENCE_ROLE,
+      ]
+    : isDetailMode(mode.id) && detailExtraSlots.length
+      ? [
+          ...ecommerceConsistencyProfile(mode.id, files.length).roles,
+          ...detailExtraSlots.map(() => DETAIL_EXTRA_REFERENCE_ROLE),
+        ]
+      : null;
+  const listingBlueprints = useMemo(
+    () => listingShotBlueprintsFromPlan(listingPlan, listingTypeIds),
+    [listingPlan, listingTypeIds],
+  );
+  const variantBlueprints = useMemo(
+    () =>
+      workbenchSpecById(mode.id)?.packKind === "variants"
+        ? expandVariantBlueprints(ecommerceShotBlueprints(mode.id), requestedCount)
+        : null,
+    [mode.id, requestedCount],
   );
   const selectedModuleDetails = useMemo(
-    () => supportedEcommerceModules(selectedModules, inputFiles.length),
-    [selectedModules, inputFiles.length],
+    () => supportedEcommerceModules(selectedModules, detailCustomDirections),
+    [selectedModules, detailCustomDirections],
   );
   const tryonBlueprints = useMemo(
     () => ecommerceShotBlueprints("tryon").slice(0, 1),
@@ -2283,37 +2407,25 @@ export function EcommerceBusinessSession({
     () => accessoryShotBlueprints(accessoryPack),
     [accessoryPack],
   );
-  const aplusPlan = useMemo(
-    () =>
-      aplusLivePlan?.modules?.length
-        ? aplusLivePlan
-        : buildDefaultAplusPlan({
-            categoryId: aplusCategoryId,
-            marketplaceId: aplusMarketplaceId,
-            tierId: aplusTier,
-            productName,
-            sellingPoints,
-            asin: aplusAsin,
-            competitorAsin: aplusCompetitorAsin,
-            disclosure: aplusDisclosure,
-            selectedModules,
-          }),
-    [
-      aplusLivePlan,
-      aplusCategoryId,
-      aplusMarketplaceId,
-      aplusTier,
-      productName,
-      sellingPoints,
-      aplusAsin,
-      aplusCompetitorAsin,
-      aplusDisclosure,
-      selectedModules,
-    ],
+  const detailAmazonMode = isDetailMode(mode.id) && isAmazonPlatform(platform);
+  const detailAmazon = useMemo(
+    () => ({
+      marketplaceId: aplusMarketplaceId,
+      tier: aplusTier,
+      asin: String(aplusAsin || "").trim().toUpperCase(),
+      competitorAsin: String(aplusCompetitorAsin || "").trim().toUpperCase(),
+      disclosure: aplusDisclosure,
+    }),
+    [aplusMarketplaceId, aplusTier, aplusAsin, aplusCompetitorAsin, aplusDisclosure],
   );
   const aplusBlueprints = useMemo(
-    () => aplusShotBlueprintsFromPlan(aplusPlan),
-    [aplusPlan],
+    () =>
+      detailShotBlueprintsFromPlan(selectedModuleDetails, detailPlan, {
+        platform,
+        aspectRatio,
+        amazon: detailAmazon,
+      }),
+    [selectedModuleDetails, detailPlan, platform, aspectRatio, detailAmazon],
   );
   const aplusMarketplace = aplusMarketplaceById(aplusMarketplaceId);
   const aplusCategory = aplusCategoryById(aplusCategoryId);
@@ -2327,8 +2439,8 @@ export function EcommerceBusinessSession({
   const blueprints =
     mode.id === "shoot"
       ? shootBlueprints
-      : mode.id === "listing" && structureMode === "custom"
-        ? customBlueprints
+      : mode.id === "listing"
+        ? listingBlueprints
         : mode.id === "tryon"
           ? tryonBlueprints
           : mode.id === "handheld"
@@ -2337,7 +2449,7 @@ export function EcommerceBusinessSession({
               ? accessoryBlueprints
               : mode.id === "detail"
                 ? aplusBlueprints
-                : ecommerceShotBlueprints(mode.id, selectedModules);
+                : variantBlueprints || ecommerceShotBlueprints(mode.id, selectedModules);
   const maxOutputCount = Math.max(
     1,
     Math.min(mode.maxCount || 1, blueprints.length || 1),
@@ -2346,9 +2458,7 @@ export function EcommerceBusinessSession({
     mode.id === "shoot"
       ? shootBlueprints.length
       : mode.id === "listing"
-        ? structureMode === "custom"
-          ? customBlueprints.length
-          : 7
+        ? listingBlueprints.length
         : mode.id === "tryon"
           ? tryonBlueprints.length
           : mode.id === "handheld"
@@ -2357,7 +2467,9 @@ export function EcommerceBusinessSession({
               ? accessoryBlueprints.length
               : mode.id === "detail"
                 ? aplusBlueprints.length
-                : Math.min(requestedCount, maxOutputCount);
+                : variantBlueprints
+                  ? variantBlueprints.length
+                  : Math.min(requestedCount, maxOutputCount);
   const tryonLensOption = tryonLensById(tryonLens);
   const tryonLightOption = tryonLightById(tryonLight);
   const tryonMentionModelLabel =
@@ -2448,13 +2560,17 @@ export function EcommerceBusinessSession({
           hasScene: accessoryHasScene,
         })
       : isDetailMode(mode.id)
-        ? buildAplusTaskPrompt({
-            plan: aplusPlan,
-            marketplace: aplusMarketplace,
-            category: aplusCategory,
+        ? buildDetailTaskPrompt({
+            platform,
+            market,
+            language,
+            tone,
             productName,
             sellingPoints,
-            tone,
+            note: workbenchNote,
+            plan: detailPlan,
+            hasExtraReferences: detailExtraSlots.length > 0,
+            amazon: detailAmazonMode ? detailAmazon : null,
           })
       : [
           `任务：${mode.label}。${mode.prompt}`,
@@ -2516,11 +2632,21 @@ export function EcommerceBusinessSession({
           !isTryonMode(mode.id) && textStable
             ? "文字必须准确清晰，无法可靠生成时留白，不得输出乱码。"
             : "",
-          mode.id === "clone" ? `复刻类型：${cloneType}。` : "",
-          mode.id === "clone"
-            ? cloneFidelity === "strict"
-              ? "复刻程度：高度复刻。保持参考图的构图、主体占比、信息层级和光线结构，只替换商品与用户提供的文案。"
-              : "复刻程度：参考风格。继承整体风格与结构，允许重构色彩、场景和次要元素。"
+          // 工作台预置字段（产品类型 / 场景 / 展示方式 / 排版 / 氛围…），留空不写
+          ...(isWorkbenchMode(mode.id)
+            ? presetPromptLines(
+                mode.id,
+                presetValues,
+                { scene, tone, campaign },
+                { skipBound: fields },
+              )
+            : []),
+          isWorkbenchMode(mode.id) && workbenchNote.trim()
+            ? `用户细节补充：${workbenchNote.trim()}`
+            : "",
+          workbenchStyleFile ? STYLE_REFERENCE_PROMPT : "",
+          mode.id === "listing" && listingPlan?.summary
+            ? `整套图视觉主线：${listingPlan.summary}。`
             : "",
           "严格保持参考商品造型、颜色、比例、Logo、包装文字和材质细节一致。",
         ]
@@ -2535,7 +2661,7 @@ export function EcommerceBusinessSession({
       ? Math.max(1, inputFiles.length)
       : isAccessoryMode(mode.id)
         ? Math.max(1, Math.min(3, inputFiles.length))
-        : mode.id === "shoot"
+        : mode.id === "shoot" || isDetailMode(mode.id)
           ? inputFiles.length
           : hidesCommerceSettings(mode.id)
             ? 3
@@ -2544,7 +2670,7 @@ export function EcommerceBusinessSession({
       ? handheldRoles
       : isAccessoryMode(mode.id)
         ? accessoryReferenceRoles(inputFiles.length)
-        : null,
+        : workbenchReferenceRoles,
     identityLock: isHandheldMode(mode.id)
       ? buildHandheldIdentityLock({
           hasModel: handheldHasModel,
@@ -2574,8 +2700,8 @@ export function EcommerceBusinessSession({
     shotBlueprints:
       mode.id === "shoot"
         ? shootBlueprints
-        : mode.id === "listing" && structureMode === "custom"
-          ? customBlueprints
+        : mode.id === "listing"
+          ? listingBlueprints
           : mode.id === "tryon"
             ? tryonBlueprints
             : mode.id === "handheld"
@@ -2584,7 +2710,7 @@ export function EcommerceBusinessSession({
                 ? accessoryBlueprints
                 : mode.id === "detail"
                   ? aplusBlueprints
-                  : null,
+                  : variantBlueprints,
   });
   function handheldPromptForShot(shot, index) {
     const shotId = String(shot?.id || `shot-${index + 1}`);
@@ -2623,9 +2749,8 @@ export function EcommerceBusinessSession({
           : inputFiles.length >= minimumFiles) &&
     modelId &&
     (!fields.has("modules") || selectedModuleDetails.length) &&
-    (mode.id !== "listing" ||
-      structureMode !== "custom" ||
-      customBlueprints.length >= 1) &&
+    (mode.id !== "listing" || (listingBlueprints.length >= 1 && !listingPlanning)) &&
+    (mode.id !== "detail" || !detailPlanning) &&
     (mode.id !== "accessory" ||
       (accessoryPresence.hasProduct &&
         (accessoryScale !== "true" || accessoryHasSize))) &&
@@ -2653,11 +2778,15 @@ export function EcommerceBusinessSession({
               ? "还需选择模特"
               : inputFiles.length < minimumFiles
                 ? `还需 ${minimumFiles - inputFiles.length} 张参考图`
-                : mode.id === "listing" &&
-                    structureMode === "custom" &&
-                    customBlueprints.length < 1
-                  ? "请至少分配 1 张套图"
-                  : "配置完成，可以生成";
+                : mode.id === "listing" && listingBlueprints.length < 1
+                  ? "请至少勾选 1 种出图类型"
+                  : mode.id === "listing" && listingPlanning
+                    ? "AI 正在策划套图文案"
+                    : mode.id === "detail" && !selectedModuleDetails.length
+                      ? "请至少勾选 1 个出图方向"
+                      : mode.id === "detail" && detailPlanning
+                        ? "AI 正在策划详情页"
+                        : "配置完成，可以生成";
   const costLabel = `${Math.max(1, generationPlan.length) * unitPrice} 积分`;
   const detailedCostLabel =
     generationPlan.length > 1
@@ -3149,6 +3278,15 @@ export function EcommerceBusinessSession({
     }
     const incoming = Array.from(list || []);
     const prepared = prepareEcommerceInputFiles(files, incoming, {
+      // 单任务最多 6 张参考图：详情页的补充参考图要从商品图额度里扣
+      ...(isDetailMode(mode.id)
+        ? {
+            limit: Math.max(
+              1,
+              DETAIL_PRODUCT_REFERENCE_MAX - detailExtraSlots.length,
+            ),
+          }
+        : {}),
       maxBytes: ECOMMERCE_IMAGE_MAX_BYTES,
       skipSizeCap: true,
     });
@@ -3169,6 +3307,137 @@ export function EcommerceBusinessSession({
         showTryonUploadNotice(error?.message || "压缩失败，请换一张更小的图片");
       }
     })();
+  }
+  async function placeWorkbenchStyleFile(list) {
+    const incoming = Array.from(list || []).filter(Boolean);
+    if (!incoming.length) return;
+    const prepared = prepareEcommerceInputFiles([], incoming, {
+      limit: 1,
+      maxBytes: ECOMMERCE_IMAGE_MAX_BYTES,
+      skipSizeCap: true,
+    });
+    if (!prepared.next.length) return;
+    compressControllerRef.current?.abort();
+    const controller = new AbortController();
+    compressControllerRef.current = controller;
+    try {
+      const file = await prepareUploadFile(prepared.next[0], controller.signal);
+      if (controller.signal.aborted) return;
+      setStyleSlot((current) => {
+        if (current?.local && current.url) URL.revokeObjectURL(current.url);
+        return { file, url: URL.createObjectURL(file), local: true };
+      });
+    } catch (error) {
+      if (error?.name === "AbortError") return;
+      showTryonUploadNotice(error?.message || "压缩失败，请换一张更小的图片");
+    }
+  }
+  function removeWorkbenchStyleFile() {
+    setStyleSlot((current) => {
+      if (current?.local && current.url) URL.revokeObjectURL(current.url);
+      return null;
+    });
+  }
+  async function placeWorkbenchFiles(index, list) {
+    if (index === "style") {
+      await placeWorkbenchStyleFile(list);
+      return;
+    }
+    const incoming = Array.from(list || []).filter(Boolean);
+    if (!incoming.length) return;
+    const spec = workbenchSpecById(mode.id);
+    const anglesAllowed = Boolean(spec?.slots?.some((slot) => slot.angles));
+    const targetIndex = Number.isInteger(index) ? index : -1;
+    if (targetIndex < 0 || targetIndex >= files.length) {
+      // 追加：单槽位时只取一张，多角度模式允许多选
+      const limit =
+        targetIndex >= 0 || !anglesAllowed ? 1 : Math.max(1, 6 - files.length);
+      addFiles(incoming.slice(0, limit));
+      return;
+    }
+    const prepared = prepareEcommerceInputFiles([], incoming, {
+      limit: 1,
+      maxBytes: ECOMMERCE_IMAGE_MAX_BYTES,
+      skipSizeCap: true,
+    });
+    if (!prepared.next.length) return;
+    compressControllerRef.current?.abort();
+    const controller = new AbortController();
+    compressControllerRef.current = controller;
+    try {
+      const file = await prepareUploadFile(prepared.next[0], controller.signal);
+      if (controller.signal.aborted) return;
+      setSelectedProduct(null);
+      setFiles((current) =>
+        current.map((item, at) => (at === targetIndex ? file : item)),
+      );
+      setPreviews((current) =>
+        current.map((item, at) =>
+          at === targetIndex
+            ? { file, url: URL.createObjectURL(file), local: true }
+            : item,
+        ),
+      );
+    } catch (error) {
+      if (error?.name === "AbortError") return;
+      showTryonUploadNotice(error?.message || "压缩失败，请换一张更小的图片");
+    }
+  }
+  function requestWorkbenchUpload(index) {
+    workbenchSlotRef.current =
+      index === "style" ? "style" : Number.isInteger(index) ? index : -1;
+    fileInput.current?.click();
+  }
+  function showWorkbenchNotice(message) {
+    setWorkbenchNotice(message);
+    window.setTimeout(
+      () =>
+        setWorkbenchNotice((current) => (current === message ? "" : current)),
+      2600,
+    );
+  }
+  async function saveCurrentWorkbenchAsset() {
+    if (!currentRow?.url || workbenchActionBusy) return;
+    setWorkbenchActionBusy(true);
+    try {
+      const blob = await fetchAuthenticatedMediaBlob(currentRow.url, {
+        cache: "default",
+      });
+      const file = new File(
+        [blob],
+        `${mode.id}-${currentRow.index + 1 || 1}.png`,
+        { type: blob.type || "image/png" },
+      );
+      const uploaded = await uploadFile(await prepareUploadFile(file));
+      await createUserAsset({
+        title: `${productName || mode.label} · ${generationPlan[currentRow.index]?.viewLabel?.split(" · ").pop() || `成图 ${currentRow.index + 1 || 1}`}`,
+        fileKey: uploaded.key,
+        thumbnailKey: uploaded.thumbnailKey,
+        contentType: uploaded.contentType || file.type,
+      });
+      showWorkbenchNotice("已存入素材库");
+    } catch (error) {
+      setSubmitError(error?.message || "成图保存失败");
+    } finally {
+      setWorkbenchActionBusy(false);
+    }
+  }
+  async function downloadWorkbenchPack() {
+    if (!currentGroup.length || workbenchActionBusy) return;
+    setWorkbenchActionBusy(true);
+    try {
+      await downloadHistoryImagesAsZip(
+        currentGroup.map((row, index) => ({
+          url: row.url,
+          filename: `${mode.id}-${generationPlan[row.index]?.viewId || index + 1}`,
+        })),
+      );
+      showWorkbenchNotice(`已打包 ${currentGroup.length} 张`);
+    } catch (error) {
+      setSubmitError(error?.message || "套图打包失败");
+    } finally {
+      setWorkbenchActionBusy(false);
+    }
   }
   async function setAccessorySlot(role, list) {
     const slotRole = ["product", "model", "scene"].includes(role)
@@ -3447,27 +3716,6 @@ export function EcommerceBusinessSession({
     setPreviews((current) => current.filter((_, at) => at !== index));
     setSelectedProduct(null);
   }
-  function toggleShootShot(shotId) {
-    setShootShotIds((current) => {
-      if (current.includes(shotId)) {
-        return current.length > 1
-          ? current.filter((id) => id !== shotId)
-          : current;
-      }
-      return current.length < 4 ? [...current, shotId] : current;
-    });
-  }
-  function moveShootShot(shotId, offset) {
-    setShootShotIds((current) => {
-      const from = current.indexOf(shotId);
-      const to = from + offset;
-      if (from < 0 || to < 0 || to >= current.length) return current;
-      const next = [...current];
-      const [item] = next.splice(from, 1);
-      next.splice(to, 0, item);
-      return next;
-    });
-  }
   function referenceLabel(index) {
     return mode.referenceLabels?.[index] || `角度 ${index + 1}`;
   }
@@ -3540,7 +3788,8 @@ export function EcommerceBusinessSession({
         const nextCategory = aplusCategoryById(product.category);
         if (nextCategory?.id) setAplusCategoryId(nextCategory.id);
       }
-      setAplusLivePlan(null);
+      setDetailPlan(null);
+      setDetailPlanError("");
     }
     if (mode.id === "tryon") {
       setTryonSlots({
@@ -3612,7 +3861,7 @@ export function EcommerceBusinessSession({
     setWorkspace("result");
     setPane(hidesCommerceSettings(mode.id) ? "canvas" : "settings");
   }
-  async function uploadAplusInputKeys(files = []) {
+  async function uploadDetailInputKeys(files = []) {
     const keys = [];
     for (const file of files) {
       const cached = normalizeTaskImageKey(file?.uploadKey || "");
@@ -3620,14 +3869,14 @@ export function EcommerceBusinessSession({
         keys.push(cached);
         continue;
       }
-      const source = String(file?.sourceUrl || "").trim();
-      let blob = file;
-      if (!(file instanceof Blob) || !file.size) {
-        if (!source) continue;
-        blob = await fetchAuthenticatedMediaBlob(source, { cache: "no-store" });
+      const match = String(file?.sourceUrl || "").match(
+        /\/api\/v1\/files\/(.+?)(?:\?|$)/,
+      );
+      if (match) {
+        keys.push(decodeURIComponent(match[1]));
+        continue;
       }
-      const ready = await prepareUploadFile(blob);
-      const uploaded = await uploadFile(ready, {
+      const uploaded = await uploadFile(await prepareUploadFile(file), {
         referenceUpload: true,
         behaviorFeature: "ecommerce",
       });
@@ -3638,40 +3887,209 @@ export function EcommerceBusinessSession({
     }
     return keys;
   }
-  async function runAplusPlanner(files = []) {
-    const keys = await uploadAplusInputKeys(files);
-    if (!keys.length) throw new Error("请先上传商品参考图");
-    const planned = await generateAplusPlan({
-      inputKeys: keys,
-      asin: aplusAsin,
-      competitorAsin: aplusCompetitorAsin,
-      categoryId: aplusCategoryId,
-      marketplaceId: aplusMarketplaceId,
+  // AI 详情页：文本模型先诊断买家痛点，再为每个出图方向写主标题 / 副文案 / 构图方向
+  async function runDetailPlanner() {
+    const inputKeys = await uploadDetailInputKeys(
+      files.slice(0, DETAIL_PRODUCT_REFERENCE_MAX),
+    );
+    if (!inputKeys.length) throw new Error("请先上传商品参考图");
+    const extraKeys = await uploadDetailInputKeys(
+      detailExtraSlots.map((item) => item.file).slice(0, DETAIL_EXTRA_REFERENCE_MAX),
+    );
+    const planned = await generateDetailPlan({
+      inputKeys,
+      extraKeys,
+      platform,
+      market,
       language,
-      tier: aplusTier,
+      style: tone,
+      category: aplusCategory.id === "generic" ? "" : aplusCategory.label,
       productName,
       sellingPoints,
-      selectedModules,
-      disclosure: aplusDisclosure,
+      note: workbenchNote,
+      types: selectedModuleDetails.map((item) => ({
+        id: item.value,
+        label: item.label,
+        direction: item.direction,
+      })),
+      ...(detailAmazonMode
+        ? {
+            amazon: {
+              marketplaceId: detailAmazon.marketplaceId,
+              tier: detailAmazon.tier,
+              asin: detailAmazon.asin,
+              competitorAsin: detailAmazon.competitorAsin,
+            },
+          }
+        : {}),
     });
-    if (!planned?.modules?.length) {
-      throw new Error("AI 未能给出有效的 A+ 模块结构");
+    if (!planned?.items?.length) {
+      throw new Error("AI 未能给出有效的详情页策划");
     }
-    setAplusLivePlan(planned);
+    setDetailPlan(planned);
     return planned;
   }
-  async function analyzeAplus() {
-    if (requestAuth({ featureLabel: "A+ 分析" })) return;
-    if (!inputFiles.length || aplusPlanning || jobs.running) return;
-    setAplusAnalyzeError("");
-    setAplusPlanning(true);
-    try {
-      await runAplusPlanner(inputFiles);
-    } catch (error) {
-      setAplusAnalyzeError(error?.message || "AI 分析失败，请重试");
-    } finally {
-      setAplusPlanning(false);
+  async function planDetail() {
+    if (requestAuth({ featureLabel: "详情页智能策划" })) return;
+    if (!files.length || detailPlanning || jobs.running) return;
+    if (!selectedModuleDetails.length) {
+      setDetailPlanError("请至少勾选 1 个出图方向");
+      return;
     }
+    setDetailPlanError("");
+    setDetailPlanning(true);
+    try {
+      await runDetailPlanner();
+    } catch (error) {
+      if (error?.name !== "AbortError") {
+        setDetailPlanError(error?.message || "详情页策划失败，请重试");
+      }
+    } finally {
+      setDetailPlanning(false);
+    }
+  }
+  function toggleDetailDirection(id) {
+    setSelectedModules((current) =>
+      current.includes(id)
+        ? current.filter((item) => item !== id)
+        : [...current, id],
+    );
+  }
+  function addDetailCustomDirection(label) {
+    const current = detailCustomDirections;
+    if (current.length >= DETAIL_MAX_CUSTOM_DIRECTIONS) return;
+    // id 取历史最大序号 + 1，删除后再添加也不会和旧 id 撞车
+    const nextIndex = current.reduce(
+      (max, item) => Math.max(max, Number(item.value.split("-")[1]) || 0),
+      0,
+    );
+    const next = normalizeDetailCustomDirection(label, nextIndex);
+    if (!next || current.some((item) => item.label === next.label)) return;
+    setDetailCustomDirections([...current, next]);
+    setSelectedModules((selected) =>
+      selected.includes(next.value) ? selected : [...selected, next.value],
+    );
+    setDetailPlan(null);
+  }
+  function removeDetailCustomDirection(id) {
+    setDetailCustomDirections((current) =>
+      current.filter((item) => item.value !== id),
+    );
+    setSelectedModules((current) => current.filter((item) => item !== id));
+  }
+  async function placeDetailExtraFiles(list) {
+    const incoming = Array.from(list || []).filter(Boolean);
+    if (!incoming.length) return;
+    // 补充参考图上限 3 张，且与商品图合计不超过单任务 6 张参考图
+    const room = Math.max(
+      0,
+      Math.min(
+        DETAIL_EXTRA_REFERENCE_MAX - detailExtraSlots.length,
+        DETAIL_PRODUCT_REFERENCE_MAX - files.length - detailExtraSlots.length,
+      ),
+    );
+    if (!room) {
+      showTryonUploadNotice("商品图与补充参考图合计最多 6 张");
+      return;
+    }
+    const prepared = prepareEcommerceInputFiles([], incoming, {
+      limit: room,
+      maxBytes: ECOMMERCE_IMAGE_MAX_BYTES,
+      skipSizeCap: true,
+    });
+    if (!prepared.next.length) return;
+    compressControllerRef.current?.abort();
+    const controller = new AbortController();
+    compressControllerRef.current = controller;
+    try {
+      const next = [];
+      for (const file of prepared.next) {
+        next.push(await prepareUploadFile(file, controller.signal));
+      }
+      if (controller.signal.aborted) return;
+      setDetailExtraSlots((current) =>
+        [
+          ...current,
+          ...next.map((file) => ({
+            file,
+            url: URL.createObjectURL(file),
+            local: true,
+          })),
+        ].slice(0, DETAIL_EXTRA_REFERENCE_MAX),
+      );
+    } catch (error) {
+      if (error?.name === "AbortError") return;
+      showTryonUploadNotice(error?.message || "压缩失败，请换一张更小的图片");
+    }
+  }
+  function removeDetailExtraFile(index) {
+    setDetailExtraSlots((current) => {
+      const target = current[index];
+      if (target?.local && target.url) URL.revokeObjectURL(target.url);
+      return current.filter((_, at) => at !== index);
+    });
+  }
+  // 商品套图：先让 AI 为每种出图类型策划标题 / 副文案 / 构图方向，再由用户点生成
+  async function planListing() {
+    if (requestAuth({ featureLabel: "套图智能策划" })) return;
+    if (!files.length || listingPlanning || jobs.running) return;
+    if (!listingTypeIds.length) {
+      setListingPlanError("请至少勾选 1 种出图类型");
+      return;
+    }
+    setListingPlanError("");
+    setListingPlanning(true);
+    try {
+      const inputKeys = await Promise.all(
+        files.slice(0, 6).map(async (file) => {
+          const match = String(file.sourceUrl || "").match(
+            /\/api\/v1\/files\/(.+?)(?:\?|$)/,
+          );
+          return match
+            ? decodeURIComponent(match[1])
+            : (await uploadFile(await prepareUploadFile(file), {
+                referenceUpload: true,
+                behaviorFeature: "ecommerce",
+              })).key;
+        }),
+      );
+      const planned = await generateListingPlan({
+        inputKeys,
+        platform,
+        market,
+        language,
+        productName,
+        sellingPoints,
+        note: workbenchNote,
+        types: LISTING_IMAGE_TYPES.filter((item) =>
+          listingTypeIds.includes(item.id),
+        ).map((item) => ({
+          id: item.id,
+          label: item.label,
+          direction: item.direction,
+        })),
+      });
+      if (!planned?.items?.length) {
+        throw new Error("AI 未能给出有效的套图策划");
+      }
+      setListingPlan(planned);
+    } catch (error) {
+      if (error?.name !== "AbortError") {
+        setListingPlanError(error?.message || "套图策划失败，请重试");
+      }
+    } finally {
+      setListingPlanning(false);
+    }
+  }
+  function toggleListingType(id) {
+    setListingTypeIds((current) =>
+      current.includes(id)
+        ? current.filter((item) => item !== id)
+        : LISTING_IMAGE_TYPES.filter(
+            (item) => current.includes(item.id) || item.id === id,
+          ).map((item) => item.id),
+    );
+    // 类型集合变了，旧策划里多出 / 缺失的条目不再匹配，交给 listingShotBlueprintsFromPlan 按 id 对齐即可
   }
   async function generateBrief() {
     if (requestAuth({ featureLabel: "AI 商品识别" })) return;
@@ -3830,6 +4248,7 @@ export function EcommerceBusinessSession({
           ...item,
           kindVariant: mode.id,
           aspectRatio: item.aspectRatio || aspectRatio,
+          ...(workbenchResolution ? { resolution: workbenchResolution } : {}),
         })),
       });
       const value = Number(quote?.unitPriceCents);
@@ -4121,31 +4540,40 @@ export function EcommerceBusinessSession({
               })
             : null;
         let planItems = generationPlan;
-        if (mode.id === "detail") {
+        if (mode.id === "detail" && !detailPlan?.items?.length) {
+          // 「策划完毕后自动直接生成」：先策划，再用策划结果重组每张图的 prompt
+          setDetailPlanning(true);
           try {
-            const planned = aplusLivePlan?.modules?.length
-              ? aplusLivePlan
-              : await runAplusPlanner(resolvedFiles);
-            if (planned?.modules?.length) {
-              const shots = aplusShotBlueprintsFromPlan(planned);
-              planItems = buildEcommerceGenerationPlan({
-                modeId: mode.id,
-                count: shots.length,
-                selectedModules,
-                basePrompt: buildAplusTaskPrompt({
-                  plan: planned,
-                  marketplace: aplusMarketplaceById(planned.marketplaceId),
-                  category: aplusCategoryById(planned.categoryId),
-                  productName,
-                  sellingPoints,
-                  tone,
-                }),
-                referenceCount: resolvedFiles.length,
-                shotBlueprints: shots,
-              });
-            }
-          } catch {
-            /* 文本规划失败时仍按品类模板出图 */
+            const planned = await runDetailPlanner();
+            const shots = detailShotBlueprintsFromPlan(
+              selectedModuleDetails,
+              planned,
+              { platform, aspectRatio, amazon: detailAmazon },
+            );
+            planItems = buildEcommerceGenerationPlan({
+              modeId: mode.id,
+              count: shots.length,
+              basePrompt: buildDetailTaskPrompt({
+                platform,
+                market,
+                language,
+                tone,
+                productName,
+                sellingPoints,
+                note: workbenchNote,
+                plan: planned,
+                hasExtraReferences: detailExtraSlots.length > 0,
+                amazon: detailAmazonMode ? detailAmazon : null,
+              }),
+              referenceCount: resolvedFiles.length,
+              referenceRoles: workbenchReferenceRoles,
+              shotBlueprints: shots,
+            });
+          } catch (error) {
+            // 策划失败不阻断出图：按方向模板直接生成，并把原因留在策划区
+            setDetailPlanError(error?.message || "详情页策划失败，已按方向模板直接生成");
+          } finally {
+            setDetailPlanning(false);
           }
         }
         await jobs.createBatch({
@@ -4163,6 +4591,7 @@ export function EcommerceBusinessSession({
                 : aspectRatio,
             platform: `${platform} · ${market} · ${language}`,
             batchIndex: index,
+            ...(workbenchResolution ? { resolution: workbenchResolution } : {}),
             ...(item.outputSize ? { outputSize: item.outputSize } : {}),
             ...(item.aplusSpec ? { aplusSpec: item.aplusSpec } : {}),
             ...(accessorySpecBase
@@ -4187,7 +4616,6 @@ export function EcommerceBusinessSession({
     } finally {
       setTryonStarting(false);
       setHandheldStarting(false);
-      setAplusPlanning(false);
     }
   }
   async function executeTryonBriefRevision({
@@ -4708,16 +5136,33 @@ export function EcommerceBusinessSession({
   }
   async function exportAplusPack() {
     if (!currentGroup.length) return;
-    const checklist = aplusExportChecklist(aplusPlan, currentGroup);
+    const checklist = detailExportChecklist(aplusBlueprints, currentGroup, {
+      platform,
+      market,
+      asin: detailAmazonMode ? detailAmazon.asin : "",
+      marketplaceId: detailAmazonMode ? detailAmazon.marketplaceId : "",
+    });
+    const filePrefix = detailAmazonMode && detailAmazon.asin ? detailAmazon.asin : "detail";
     try {
       await downloadHistoryImagesAsZip(
         currentGroup.map((row, index) => ({
           url: row.url,
-          filename: `${aplusPlan.asin || "aplus"}-${String(index + 1).padStart(2, "0")}-${String(checklist[index]?.amazonModule || "module").replace(/\s+/g, "-")}`,
+          filename: `${filePrefix}-${String(index + 1).padStart(2, "0")}-${String(checklist[index]?.module || "module").replace(/\s+/g, "-")}`,
         })),
       );
-      const csv = aplusChecklistCsv(checklist);
-      const json = JSON.stringify({ plan: aplusPlan, checklist }, null, 2);
+      const csv = detailChecklistCsv(checklist);
+      const json = JSON.stringify(
+        {
+          platform,
+          market,
+          language,
+          ...(detailAmazonMode ? { amazon: detailAmazon } : {}),
+          plan: detailPlan,
+          checklist,
+        },
+        null,
+        2,
+      );
       const csvUrl = URL.createObjectURL(
         new Blob([`\ufeff${csv}`], { type: "text/csv;charset=utf-8" }),
       );
@@ -4731,14 +5176,14 @@ export function EcommerceBusinessSession({
         anchor.download = name;
         anchor.click();
       };
-      click(csvUrl, `aplus-upload-${stamp}.csv`);
-      click(jsonUrl, `aplus-copy-${stamp}.json`);
+      click(csvUrl, `detail-upload-${stamp}.csv`);
+      click(jsonUrl, `detail-copy-${stamp}.json`);
       window.setTimeout(() => {
         URL.revokeObjectURL(csvUrl);
         URL.revokeObjectURL(jsonUrl);
       }, 60_000);
     } catch (error) {
-      setSubmitError(error?.message || "A+ 导出失败");
+      setSubmitError(error?.message || "详情页导出失败");
     }
   }
   async function downloadOutput(row) {
@@ -4746,16 +5191,11 @@ export function EcommerceBusinessSession({
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 30_000);
     try {
-      const blob = await fetchAuthenticatedMediaBlob(row.url, {
-        cache: "no-store",
-        signal: controller.signal,
-      });
-      const objectUrl = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = objectUrl;
-      anchor.download = `ecommerce-${mode.id}-${Date.now()}.${blob.type.includes("png") ? "png" : blob.type.includes("webp") ? "webp" : "jpg"}`;
-      anchor.click();
-      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+      return await downloadAuthenticatedMedia(
+        row.url,
+        `ecommerce-${mode.id}-${Date.now()}`,
+        { signal: controller.signal },
+      );
     } finally {
       window.clearTimeout(timeout);
     }
@@ -4933,10 +5373,130 @@ export function EcommerceBusinessSession({
     },
   ];
 
+  // 通用工作台（画布优先）配置：哪些选项直接放在画布上，哪些进顶部菜单
+  const workbenchSpec = isWorkbenchMode(mode.id)
+    ? workbenchSpecById(mode.id)
+    : null;
+  const workbenchCanvasPickKeys = new Set(
+    (workbenchSpec?.picks || []).map((item) => item.key),
+  );
+  const shootDirection =
+    SHOOT_DIRECTION_OPTIONS.find(
+      (item) => item.scene === scene && item.tone === tone,
+    )?.id || "";
+  const workbenchPicks = (workbenchSpec?.picks || [])
+    .map((pick) => {
+      if (pick.key === "direction") {
+        return {
+          key: "direction",
+          label: pick.label,
+          value: shootDirection,
+          options: SHOOT_DIRECTION_OPTIONS,
+          onChange: (id) => {
+            const option = SHOOT_DIRECTION_OPTIONS.find((item) => item.id === id);
+            if (!option) return;
+            setScene(option.scene);
+            setTone(option.tone);
+          },
+        };
+      }
+      const field = creativeFields.find((item) => item.key === pick.key);
+      if (!field || !fields.has(field.key)) return null;
+      return {
+        key: field.key,
+        label: pick.label || field.label,
+        value: field.value,
+        options: field.options,
+        onChange: field.set,
+      };
+    })
+    .filter(Boolean);
+  const workbenchPackOptions = workbenchSpec?.packs || [];
+  const workbenchPackValue =
+    workbenchSpec?.packKind === "count"
+      ? workbenchPackForCount(workbenchSpec, requestedCount)?.id || ""
+      : workbenchSpec?.packKind === "shoot"
+        ? workbenchPackForShootShots(workbenchSpec, shootShotIds)?.id || ""
+        : "";
+  function changeWorkbenchPack(id) {
+    if (!workbenchSpec) return;
+    if (workbenchSpec.packKind === "count") {
+      const option = workbenchSpec.packs.find((item) => item.id === id);
+      if (option) setRequestedCount(Math.max(1, Number(option.count) || 1));
+      return;
+    }
+    if (workbenchSpec.packKind === "shoot") {
+      const option = workbenchSpec.packs.find((item) => item.id === id);
+      if (option?.shotIds?.length) setShootShotIds([...option.shotIds]);
+    }
+  }
+  const workbenchBrowsingGroup =
+    Boolean(workbenchSpec) &&
+    !jobs.running &&
+    Boolean(currentRow) &&
+    currentRow.groupId !== liveGroupId
+      ? currentGroup
+      : null;
+  const workbenchShots = workbenchSpec
+    ? workbenchBrowsingGroup
+      ? workbenchBrowsingGroup.map((row, index) => ({
+          id: `${row.groupId || "shot"}-${index}`,
+          label:
+            blueprints[Number(row.index) || index]?.label ||
+            `第 ${(Number(row.index) || index) + 1} 张`,
+          url: row.url,
+          preview: row.preview || row.url,
+          running: false,
+          failed: false,
+          error: "",
+        }))
+      : (displayCount > 0 ? slots : generationPlan.map(() => null)).map(
+          (slot, index) => {
+            const row = slot?.row || null;
+            const task = slot?.task || null;
+            const status = String(task?.status || "").toLowerCase();
+            return {
+              id: generationPlan[index]?.viewId || `shot-${index}`,
+              label:
+                generationPlan[index]?.viewLabel?.split(" · ").pop() ||
+                blueprints[index]?.label ||
+                `第 ${index + 1} 张`,
+              url: row?.url || "",
+              preview: row?.preview || row?.url || "",
+              running:
+                !row &&
+                ["queued", "running", "waiting_provider"].includes(status),
+              failed: Boolean(slot?.failed),
+              error: slot?.error || "",
+            };
+          },
+        )
+    : [];
+  const workbenchFailed =
+    Boolean(workbenchSpec) &&
+    !jobs.running &&
+    (Boolean(submitError) ||
+      (displayCount > 0 && completedCount === 0 && failedCount === displayCount));
+  const workbenchFailMessage = String(
+    submitError ||
+      slots.find((slot) => slot.error)?.error ||
+      jobs.lastError ||
+      "请检查网络或稍后重试",
+  ).trim();
+  const workbenchResultUrl = workbenchSpec
+    ? jobs.running
+      ? liveGroup.find((row) => row.url === activeUrl)?.url ||
+        liveGroup[0]?.url ||
+        ""
+      : workbenchFailed && !currentRow
+        ? ""
+        : currentRow?.url || ""
+    : "";
+
   return (
     <main
       ref={pageRef}
-      className={`commerce-studio${isShootMode(mode.id) ? " is-shoot" : ""}${isTryonMode(mode.id) ? " is-tryon" : ""}${isHandheldMode(mode.id) ? " is-handheld" : ""}${isAccessoryMode(mode.id) ? " is-accessory" : ""}${isDetailMode(mode.id) ? " is-detail" : ""}`}
+      className={`commerce-studio${isWorkbenchMode(mode.id) ? " is-workbench" : ""}${isShootMode(mode.id) ? " is-shoot" : ""}${isTryonMode(mode.id) ? " is-tryon" : ""}${isHandheldMode(mode.id) ? " is-handheld" : ""}${isAccessoryMode(mode.id) ? " is-accessory" : ""}${isDetailMode(mode.id) ? " is-detail" : ""}`}
       data-ecommerce-business={mode.id}
       data-ecommerce-page-motion-state="waiting"
       data-ecommerce-content-motion-state="waiting"
@@ -4979,7 +5539,7 @@ export function EcommerceBusinessSession({
                 options={TRYON_LENS_OPTIONS.map((item) => ({
                   value: item.id,
                   label: item.range
-                    ? `${t(item.label)} ${item.range}`
+                    ? `${t(item.label)} · ${item.range}`
                     : t(item.label),
                 }))}
                 onChange={setTryonLens}
@@ -5229,6 +5789,116 @@ export function EcommerceBusinessSession({
             onToggleTextStable={() => setTextStable((value) => !value)}
             disabled={jobs.running}
           />
+        ) : isWorkbenchMode(mode.id) ? (
+          <WorkbenchTopToolbar
+            modeId={mode.id}
+            modelId={modelId}
+            modelOptions={commerceModelOptions(models, unitPrice)}
+            onChangeModelId={setModelId}
+            distribution={selectFields
+              .filter((item) => fields.has(item.key))
+              .map((item) => ({
+                key: item.key,
+                label: item.label,
+                value: item.value,
+                options: item.options,
+                onChange: item.set,
+                aria: item.aria,
+              }))}
+            presets={{
+              // 预置字段：绑定字段直接读写 scene / tone / campaign，其余存 presetValues
+              fields: workbenchPresetFields(mode.id)
+                .filter((field) => !workbenchCanvasPickKeys.has(field.key))
+                .map((field) => {
+                  const bound = field.bind
+                    ? creativeFields.find((item) => item.key === field.bind)
+                    : null;
+                  return {
+                    key: field.key,
+                    label: field.label,
+                    placeholder: field.placeholder,
+                    options: field.options,
+                    value: bound ? bound.value : presetValues[field.key] || "",
+                    onChange: bound
+                      ? bound.set
+                      : (value) =>
+                          setPresetValues((current) => ({
+                            ...current,
+                            [field.key]: value,
+                          })),
+                  };
+                }),
+              filledCount: presetFilledCount(mode.id, presetValues),
+              // 未进画布也未进预置字段的风格项（如 backdrop 的视觉风格）仍可在此选择
+              extra: creativeFields
+                .filter(
+                  (item) =>
+                    fields.has(item.key) &&
+                    !workbenchCanvasPickKeys.has(item.key) &&
+                    ["scene", "tone", "campaign"].includes(item.key) &&
+                    // 画布上的“拍摄方向”已同时决定场景与风格，不再单独暴露
+                    !(
+                      workbenchCanvasPickKeys.has("direction") &&
+                      ["scene", "tone"].includes(item.key)
+                    ) &&
+                    !workbenchPresetFields(mode.id).some(
+                      (field) => field.bind === item.key,
+                    ),
+                )
+                .map((item) => ({
+                  key: item.key,
+                  label: item.label,
+                  value: item.value,
+                  options: item.options,
+                  onChange: item.set,
+                  aria: item.aria,
+                })),
+              resolution: workbenchResolutionOptions.length
+                ? {
+                    value: workbenchResolution,
+                    options: workbenchResolutionOptions,
+                    onChange: setResolution,
+                  }
+                : null,
+            }}
+            shoot={
+              isShootMode(mode.id)
+                ? {
+                    useCase: shootUseCase,
+                    useCaseLabel: SHOOT_USE_CASE_LABELS[shootUseCase],
+                    useCaseOptions: SHOOT_USE_CASE_OPTIONS,
+                    onChangeUseCase: setShootUseCase,
+                    goal: shootGoal,
+                    goalLabel: SHOOT_GOAL_LABELS[shootGoal],
+                    goalOptions: SHOOT_GOAL_OPTIONS,
+                    onChangeGoal: setShootGoal,
+                    audience: shootAudience,
+                    onChangeAudience: setShootAudience,
+                    protectedElements: shootProtectedElements,
+                    onChangeProtectedElements: setShootProtectedElements,
+                  }
+                : null
+            }
+            product={
+              mode.id === "outpaint" || mode.id === "enhance" || mode.id === "shadow"
+                ? null
+                : {
+                    name: productName,
+                    onChangeName: setProductName,
+                    sku: isShootMode(mode.id) ? shootSku : undefined,
+                    onChangeSku: setShootSku,
+                    sellingPoints,
+                    onChangeSellingPoints: setSellingPoints,
+                    onGenerateBrief: generateBrief,
+                    canGenerateBrief: previews.length > 0,
+                    textStable: ["listing", "campaign", "clone"].includes(mode.id)
+                      ? textStable
+                      : undefined,
+                    onToggleTextStable: () => setTextStable((value) => !value),
+                  }
+            }
+            disabled={jobs.running}
+          />
         ) : (
           <div className="commerce-header__brand">
             <span className="commerce-header__badge">
@@ -5402,7 +6072,7 @@ export function EcommerceBusinessSession({
             ))}
           </div>
         </nav>
-        {hidesCommerceSettings(mode.id) ? (
+        {hidesCommerceSettings(mode.id) && (
           <>
             <input
               ref={fileInput}
@@ -5412,11 +6082,16 @@ export function EcommerceBusinessSession({
               onChange={(event) => {
                 const files = Array.from(event.target.files || []);
                 event.target.value = "";
-                if (
-                  isShootMode(mode.id) ||
-                  isAccessoryMode(mode.id) ||
-                  isDetailMode(mode.id)
-                ) {
+                if (isWorkbenchMode(mode.id)) {
+                  const index = workbenchSlotRef.current;
+                  workbenchSlotRef.current = -1;
+                  void placeWorkbenchFiles(index, files);
+                } else if (isDetailMode(mode.id)) {
+                  const target = detailUploadTargetRef.current;
+                  detailUploadTargetRef.current = "product";
+                  if (target === "extra") void placeDetailExtraFiles(files);
+                  else addFiles(files);
+                } else if (isAccessoryMode(mode.id)) {
                   addFiles(files);
                 } else {
                   void (isHandheldMode(mode.id)
@@ -5424,7 +6099,7 @@ export function EcommerceBusinessSession({
                     : setTryonSlot("garment", files));
                 }
               }}
-              multiple={isDetailMode(mode.id)}
+              multiple={isDetailMode(mode.id) || isWorkbenchMode(mode.id)}
             />
             <input
               ref={modelFileInput}
@@ -5465,377 +6140,6 @@ export function EcommerceBusinessSession({
               }}
             />
           </>
-        ) : (
-          <aside
-            className={`commerce-settings${pane !== "settings" ? " is-mobile-hidden" : ""}`}
-          >
-            <div className="settings-scroll">
-              <section className="settings-section">
-                <div className="settings-heading settings-heading--source">
-                  <h2>
-                    {mode.uploadTitle || text.source}
-                    <i
-                      className="bi bi-question-circle"
-                      title={mode.uploadHint || "同一商品可上传多个角度"}
-                    />
-                  </h2>
-                </div>
-                <div
-                  className={`product-upload${previews.length ? " has-files" : ""}`}
-                  onDragOver={(event) => event.preventDefault()}
-                  onDrop={(event) => {
-                    event.preventDefault();
-                    addFiles(event.dataTransfer.files);
-                  }}
-                >
-                  {previews.length ? (
-                    <div className="upload-grid">
-                      {previews.map((item, index) => (
-                        <figure key={`${item.url}-${index}`}>
-                          <img
-                            src={item.url}
-                            alt={`${referenceLabel(index)}参考图`}
-                          />
-                          <span className="upload-role">
-                            {referenceLabel(index)}
-                          </span>
-                          <button
-                            type="button"
-                            aria-label={`移除${referenceLabel(index)}参考图`}
-                            onClick={() => removeFile(index)}
-                          >
-                            <i className="bi bi-x-lg" />
-                          </button>
-                        </figure>
-                      ))}
-                      {previews.length < 6 && (
-                        <button
-                          type="button"
-                          className="upload-add"
-                          aria-label="继续添加参考图"
-                          onClick={() => fileInput.current?.click()}
-                        >
-                          <i className="bi bi-plus-lg" />
-                        </button>
-                      )}
-                    </div>
-                  ) : (
-                    <button
-                      type="button"
-                      className="upload-empty"
-                      onClick={() => fileInput.current?.click()}
-                    >
-                      <i className="bi bi-cloud-arrow-up" />
-                      <strong>上传参考图片</strong>
-                      <small>
-                        {mode.uploadHint || "支持 PNG、JPG、WebP，最多 6 张"}
-                      </small>
-                    </button>
-                  )}
-                  <input
-                    ref={fileInput}
-                    hidden
-                    type="file"
-                    accept={ECOMMERCE_IMAGE_ACCEPT}
-                    multiple
-                    onChange={(event) => {
-                      addFiles(event.target.files);
-                      event.target.value = "";
-                    }}
-                  />
-                </div>
-                {mode.referenceLabels?.length ? (
-                  <div className="upload-role-guide">
-                    {mode.referenceLabels.slice(0, 2).map((label, index) => (
-                      <span key={label}>
-                        <b>{index + 1}</b>
-                        <span>
-                          <strong>{label}</strong>
-                          <small>
-                            {index < minimumFiles ? "必填" : "可选"}
-                          </small>
-                        </span>
-                      </span>
-                    ))}
-                  </div>
-                ) : null}
-              </section>
-              {selectedProduct && (
-                <button
-                  type="button"
-                  className="selected-product-context"
-                  onClick={() => openWorkspace("products")}
-                >
-                  <span>
-                    <i className="bi bi-box-seam" />
-                  </span>
-                  <span>
-                    <small>当前商品</small>
-                    <strong>{selectedProduct.title}</strong>
-                  </span>
-                  <i className="bi bi-chevron-right" />
-                </button>
-              )}
-              <section className="settings-section">
-                <div className="settings-heading">
-                  <h2>{text.settings}</h2>
-                </div>
-                <div className="select-row">
-                  {selectFields
-                    .filter((item) => fields.has(item.key))
-                    .map((item) => (
-                      <label key={item.key}>
-                        <span>{t(item.label)}</span>
-                        <CommerceSelect
-                          value={item.value}
-                          options={item.options}
-                          onChange={item.set}
-                          ariaLabel={item.aria}
-                          disabled={jobs.running}
-                        />
-                      </label>
-                    ))}
-                </div>
-                <div className="select-row select-row--output">
-                  <label>
-                    <span>{t("画面比例")}</span>
-                    <CommerceSelect
-                      value={aspectRatio}
-                      options={OPTIONS.ratio}
-                      onChange={setAspectRatio}
-                      ariaLabel="选择画面比例"
-                    />
-                  </label>
-                  {maxOutputCount > 1 && mode.id !== "listing" && (
-                    <label>
-                      <span>{t("生成张数")}</span>
-                      <CommerceSelect
-                        value={outputCount}
-                        options={Array.from(
-                          { length: maxOutputCount },
-                          (_, index) => ({
-                            value: index + 1,
-                            label: `${index + 1} 张`,
-                          }),
-                        )}
-                        onChange={setRequestedCount}
-                        ariaLabel="选择生成张数"
-                      />
-                    </label>
-                  )}
-                  <label>
-                    <span>{t("生成模型")}</span>
-                    <CommerceSelect
-                      value={modelId}
-                      options={commerceModelOptions(models, unitPrice)}
-                      onChange={setModelId}
-                      placeholder="请选择模型"
-                      ariaLabel="选择生成模型"
-                      menuMinWidth={360}
-                    />
-                  </label>
-                </div>
-                {creativeFields.some((item) => fields.has(item.key)) && (
-                  <div className="select-row select-row--creative">
-                    {creativeFields
-                      .filter((item) => fields.has(item.key))
-                      .map((item) => (
-                        <label key={item.key}>
-                          <span>{t(item.label)}</span>
-                          <CommerceSelect
-                            value={item.value}
-                            options={item.options}
-                            onChange={item.set}
-                            ariaLabel={item.aria}
-                          />
-                        </label>
-                      ))}
-                  </div>
-                )}
-              </section>
-              {mode.id === "clone" ? (
-                <CloneBusinessSettings
-                  cloneType={cloneType}
-                  cloneFidelity={cloneFidelity}
-                  onChangeType={setCloneType}
-                  onChangeFidelity={setCloneFidelity}
-                />
-              ) : null}
-              {!hidesCommerceSettings(mode.id) && (
-                <section className="settings-section">
-                  <div className="settings-heading settings-heading--brief">
-                    <h2>
-                      {["listing", "detail", "campaign"].includes(mode.id)
-                        ? "商品卖点与要求"
-                        : "补充要求"}
-                    </h2>
-                    <button
-                      type="button"
-                      className="brief-organize"
-                      onClick={generateBrief}
-                    >
-                      <i className="bi bi-stars" />
-                      AI 生成
-                    </button>
-                  </div>
-                  <label className="text-field">
-                    <span>
-                      {mode.id === "tryon"
-                        ? "服装名称"
-                        : mode.id === "accessory"
-                          ? "饰品名称"
-                          : "商品名称"}
-                    </span>
-                    <input
-                      value={productName}
-                      onChange={(event) => setProductName(event.target.value)}
-                      placeholder="例如：无线降噪蓝牙耳机"
-                    />
-                  </label>
-                  <label className="text-field">
-                    <span>核心卖点</span>
-                    <textarea
-                      value={sellingPoints}
-                      onChange={(event) => setSellingPoints(event.target.value)}
-                      placeholder="填写核心卖点、适用人群、期望场景和具体参数…"
-                    />
-                    <small>{sellingPoints.length}/1200</small>
-                  </label>
-                  <button
-                    type="button"
-                    className={`text-stability-control${textStable ? " active" : ""}`}
-                    role="switch"
-                    aria-checked={textStable}
-                    onClick={() => setTextStable((value) => !value)}
-                  >
-                    <span>
-                      <i className="bi bi-fonts" />
-                    </span>
-                    <span>
-                      <strong>文字稳定性</strong>
-                      <small>锁定已提供文案，无法可靠生成时优先留白</small>
-                    </span>
-                    <i className="text-stability-switch">
-                      <b />
-                    </i>
-                  </button>
-                </section>
-              )}
-              {mode.id === "listing" ? (
-                <ListingBusinessSettings
-                  structureMode={structureMode}
-                  counts={counts}
-                  allocatedCount={customBlueprints.length}
-                  onChangeStructureMode={setStructureMode}
-                  onChangeCounts={setCounts}
-                />
-              ) : null}
-              {fields.has("modules") && mode.id !== "listing" && (
-                <section className="settings-section modules-section">
-                  <h2>
-                    视觉模块 <small>多选</small>
-                  </h2>
-                  <div className="module-grid">
-                    {(mode.id === "detail"
-                      ? ECOMMERCE_DETAIL_MODULES
-                      : ECOMMERCE_MODULES
-                    ).map((item) => (
-                      <label key={item.value}>
-                        <input
-                          type="checkbox"
-                          value={item.value}
-                          checked={selectedModules.includes(item.value)}
-                          disabled={item.value === "angles" && files.length < 2}
-                          onChange={(event) =>
-                            setSelectedModules((current) =>
-                              event.target.checked
-                                ? [...current, item.value]
-                                : current.filter(
-                                    (value) => value !== item.value,
-                                  ),
-                            )
-                          }
-                        />
-                        <span className="module-check">
-                          <i className="bi bi-check" />
-                        </span>
-                        <span>
-                          <strong>{item.label}</strong>
-                          <small>
-                            {item.value === "angles" && files.length < 2
-                              ? "需要至少 2 张角度参考"
-                              : item.hint}
-                          </small>
-                        </span>
-                      </label>
-                    ))}
-                  </div>
-                </section>
-              )}
-              {!hidesCommerceSettings(mode.id) && (
-                <section className="settings-section shot-plan-section">
-                  <div className="settings-heading">
-                    <h2>本次出图结构</h2>
-                    <span>
-                      {generationPlan.length} 张
-                      {generationPlan.length > 1 ? " · 首张后并行" : ""}
-                    </span>
-                  </div>
-                  <ol className="shot-plan-list">
-                    {generationPlan.map((item, index) => (
-                      <li key={item.viewId}>
-                        <span>{index + 1}</span>
-                        <div>
-                          <strong>{item.viewLabel.split(" · ").pop()}</strong>
-                          <small>{blueprints[index]?.direction}</small>
-                        </div>
-                      </li>
-                    ))}
-                  </ol>
-                  {generationPlan.length > 1 && (
-                    <p className="series-lock-note">
-                      <i className="bi bi-link-45deg" />
-                      首张锁定系列视觉后，其余图片并行生成
-                    </p>
-                  )}
-                </section>
-              )}
-            </div>
-            <footer className="generate-bar">
-              <div className="generate-meta">
-                <span className={canGenerate ? "ready" : ""}>
-                  <i
-                    className={`bi ${canGenerate ? "bi-check-circle-fill" : "bi-info-circle"}`}
-                  />
-                  {readiness}
-                </span>
-                <strong>{detailedCostLabel}</strong>
-              </div>
-              {boardError && <p>{boardError}</p>}
-              {jobs.running ? (
-                <button
-                  type="button"
-                  className="cancel-button"
-                  disabled={jobs.cancelling}
-                  onClick={jobs.cancelAll}
-                >
-                  <i className="bi bi-stop-circle" />
-                  停止生成
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  className="generate-button"
-                  disabled={auth.isAuthenticated && !canGenerate}
-                  title={readiness}
-                  onClick={generate}
-                >
-                  <i className="bi bi-images" />
-                  一键生成{mode.label}（{generationPlan.length}张）
-                </button>
-              )}
-            </footer>
-          </aside>
         )}
         <section
           ref={canvasRef}
@@ -6044,292 +6348,166 @@ export function EcommerceBusinessSession({
                 )}
               </div>
             </section>
-          ) : showResultBoard && !hidesCommerceSettings(mode.id) ? (
-            <div
-              className={`result-workspace${jobs.running ? " is-generating" : ""}${!currentRow && !jobs.running ? " is-planned" : ""}`}
-            >
-              {jobs.running && (
-                <div
-                  className={`result-progress${completedCount === 0 ? " is-indeterminate" : ""}`}
-                  aria-hidden="true"
-                >
-                  <i
-                    style={{
-                      width: `${Math.max(8, Math.round(progressRatio * 100))}%`,
-                    }}
-                  />
-                </div>
-              )}
-              <header>
-                <div>
-                  <span>{mode.label}</span>
-                  <strong aria-live="polite">
-                    {jobs.running
-                      ? `生成中 ${completedCount}/${displayCount}`
-                      : failedCount
-                        ? `${completedCount}/${displayCount} 完成，${failedCount} 张失败`
-                        : currentRow
-                          ? blueprints[currentRow.index]?.label ||
-                            mode.shortLabel
-                          : `待生成 ${displayCount} 张`}
-                  </strong>
-                </div>
-                <div className="result-header-actions">
-                  {jobs.running ? (
-                    <button
-                      type="button"
-                      aria-label="停止生成"
-                      onClick={jobs.cancelAll}
-                      disabled={jobs.cancelling}
-                    >
-                      <i className="bi bi-stop-circle" />
-                    </button>
-                  ) : currentRow ? (
-                    <>
-                      <span className="version-badge">V{currentVersion}</span>
-                      <button
-                        type="button"
-                        aria-label="放大查看当前结果"
-                        onClick={() => openImagePreview(currentRow.url)}
-                      >
-                        <i className="bi bi-arrows-fullscreen" />
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="局部编辑当前结果"
-                        onClick={() => setMaskRow(currentRow)}
-                      >
-                        <i className="bi bi-brush" />
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="下载当前结果"
-                        onClick={() => downloadOutput(currentRow)}
-                      >
-                        <DownloadIcon />
-                      </button>
-                    </>
-                  ) : null}
-                </div>
-              </header>
-              <div
-                className={`result-main${revisionOpen ? " revision-is-open" : ""}`}
-              >
-                <div
-                  className={`result-stage ${layoutClass}${hidesCommerceSettings(mode.id) ? " is-ratio-locked" : ""}`}
-                  data-count={slots.length}
-                  data-ratio={
-                    hidesCommerceSettings(mode.id) ? shotRatio : undefined
-                  }
-                  style={
-                    hidesCommerceSettings(mode.id) ? shotRatioStyle : undefined
-                  }
-                >
-                  {slots.map((slot, index) => {
-                    const row = slot.row;
-                    const shotLabel =
-                      generationPlan[index]?.viewLabel.split(" · ").pop() ||
-                      blueprints[index]?.label ||
-                      "";
-                    return (
-                      <article
-                        key={`${liveGroupId || "pending"}-${index}`}
-                        className={`result-image-card${row?.url && row.url === currentRow?.url ? " active" : ""}${row && loaded.has(row.url) ? " loaded" : ""}${row ? "" : " is-pending"}${slot.failed ? " is-failed" : ""}`}
-                        style={
-                          mode.id === "tryon" ||
-                          mode.id === "handheld" ||
-                          displayCount <= 1
-                            ? {
-                                aspectRatio: (
-                                  row?.aspectRatio || aspectRatio
-                                ).replace(":", " / "),
-                              }
-                            : undefined
-                        }
-                      >
-                        {row ? (
-                          <button
-                            type="button"
-                            data-click-guard="off"
-                            className="result-image-hit-area"
-                            aria-label={`查看第 ${index + 1} 张结果细节`}
-                            onClick={() => setActiveUrl(row.url)}
-                            onDoubleClick={() => openImagePreview(row.url)}
-                          >
-                            <span className="result-image-skeleton" />
-                            <AuthenticatedImage
-                              src={row.display || row.url}
-                              fallbackSrc={row.url}
-                              alt={`${mode.label}第 ${index + 1} 张生成结果`}
-                              loading="eager"
-                              maxDimension={1600}
-                              onLoad={() =>
-                                setLoaded(
-                                  (value) => new Set([...value, row.url]),
-                                )
-                              }
-                              onError={() =>
-                                setLoaded((value) => {
-                                  const next = new Set(value);
-                                  next.delete(row.url);
-                                  return next;
-                                })
-                              }
-                            />
-                            <span className="result-image-index">
-                              {String(index + 1).padStart(2, "0")}
-                            </span>
-                            <small className="result-image-label">
-                              {shotLabel}
-                            </small>
-                          </button>
-                        ) : slot.failed ? (
-                          <div className="result-image-failed">
-                            <span className="result-image-index">
-                              {String(index + 1).padStart(2, "0")}
-                            </span>
-                            <strong>生成失败</strong>
-                            <small>
-                              {slot.error || shotLabel || "请重试这一张"}
-                            </small>
-                            <button
-                              type="button"
-                              onClick={() => retrySlot(index)}
-                              disabled={jobs.running || !canGenerate}
-                            >
-                              重试
-                            </button>
-                          </div>
-                        ) : (
-                          <div className="result-image-pending">
-                            <span className="result-image-skeleton" />
-                            <span className="result-image-index">
-                              {String(index + 1).padStart(2, "0")}
-                            </span>
-                            <small>{shotLabel || "等待结果"}</small>
-                          </div>
-                        )}
-                      </article>
-                    );
-                  })}
-                </div>
-                <aside
-                  className={`revision-panel${revisionOpen ? " open" : ""}`}
-                  aria-label="继续调整当前成品"
-                >
-                  <header>
-                    <button
-                      type="button"
-                      className="revision-panel__toggle"
-                      aria-label={
-                        revisionOpen ? "收起连续优化" : "展开连续优化"
-                      }
-                      aria-expanded={revisionOpen}
-                      disabled={jobs.running}
-                      onClick={() => setRevisionOpen((value) => !value)}
-                    >
-                      <i
-                        className={`bi ${revisionOpen ? "bi-chevron-right" : "bi-sliders2"}`}
-                      />
-                    </button>
-                    <div className="revision-panel__title">
-                      <small>连续优化</small>
-                      <strong>继续调整当前成品</strong>
-                    </div>
-                  </header>
-                  {revisionOpen && (
-                    <div className="revision-panel__body">
-                      <p>只描述这一轮需要改变的内容，未提及部分会继续锁定。</p>
-                      <div className="version-lineage">
-                        {Array.from({ length: currentVersion }, (_, index) => (
-                          <span
-                            key={index + 1}
-                            className={
-                              index + 1 === currentVersion ? "active" : ""
-                            }
-                          >
-                            V{index + 1}
-                          </span>
-                        ))}
-                      </div>
-                      <label className="revision-field">
-                        <span>调整方向</span>
-                        <CommerceSelect
-                          value={revisionDirection}
-                          options={ECOMMERCE_REVISION_DIRECTIONS}
-                          onChange={setRevisionDirection}
-                          ariaLabel="选择调整方向"
-                        />
-                      </label>
-                      <label className="revision-field revision-field--brief">
-                        <span>本轮只修改</span>
-                        <textarea
-                          value={revisionBrief}
-                          onChange={(event) =>
-                            setRevisionBrief(event.target.value)
-                          }
-                          placeholder="例如：商品再放大 15%，背景改为浅灰影棚，其他内容保持不变"
-                        />
-                        <small>{revisionBrief.length}/600</small>
-                      </label>
-                      <div className="revision-submit-meta">
-                        <span>
-                          <i className="bi bi-shield-check" />
-                          上一版本会保留
-                        </span>
-                        <strong>{unitPrice} 积分</strong>
-                      </div>
-                      <button
-                        type="button"
-                        className="revision-submit"
-                        disabled={
-                          revisionBrief.trim().length < 4 || jobs.running
-                        }
-                        onClick={reviseCurrent}
-                      >
-                        <i className="bi bi-arrow-repeat" />
-                        生成 V{currentVersion + 1}
-                      </button>
-                    </div>
-                  )}
-                </aside>
-              </div>
-              {modeRows.length > 0 && (
-                <div className="result-strip" role="list" aria-label="生成历史">
-                  {modeRows.map((row) => (
-                    <div
-                      key={row.url}
-                      className="result-strip__item"
-                      role="listitem"
-                    >
-                      <button
-                        type="button"
-                        className={`result-strip__select${row.url === currentRow?.url ? " active" : ""}`}
-                        onClick={() => setActiveUrl(row.url)}
-                      >
-                        <AuthenticatedImage
-                          src={row.preview}
-                          alt=""
-                          maxDimension={180}
-                        />
-                        <span className="result-shot-index">
-                          {String(row.index + 1).padStart(2, "0")} · V
-                          {rowVersion(row)}
-                        </span>
-                      </button>
-                      <button
-                        type="button"
-                        className="result-delete"
-                        aria-label={`删除第 ${row.index + 1} 张结果，第 ${rowVersion(row)} 版`}
-                        onClick={() => setDeleteRow(row)}
-                      >
-                        <i className="bi bi-trash3" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
+          ) : workbenchSpec ? (
+            <CommerceWorkbench
+              spec={workbenchSpec}
+              previews={previews}
+              maxFiles={6}
+              referenceLabel={referenceLabel}
+              onUploadSlot={requestWorkbenchUpload}
+              onDropSlot={(index, list) => void placeWorkbenchFiles(index, list)}
+              onRemoveSlot={(index) =>
+                index === "style" ? removeWorkbenchStyleFile() : removeFile(index)
+              }
+              extraSlots={{ style: styleSlot }}
+              onAddAngles={() => requestWorkbenchUpload(-1)}
+              onPreviewReference={setPreviewUrl}
+              aspectRatio={shotRatio}
+              ratioStyle={shotRatioStyle}
+              onChangeRatio={setAspectRatio}
+              packValue={workbenchPackValue}
+              packOptions={workbenchPackOptions}
+              onChangePack={changeWorkbenchPack}
+              picks={workbenchPicks}
+              typePicker={
+                workbenchSpec.packKind === "types"
+                  ? {
+                      label: "出图类型",
+                      options: LISTING_IMAGE_TYPES,
+                      values: listingTypeIds,
+                      visibleLimit: 6,
+                      onToggle: toggleListingType,
+                      onSelectAll: () =>
+                        setListingTypeIds(LISTING_IMAGE_TYPES.map((item) => item.id)),
+                      onClear: () => setListingTypeIds([]),
+                    }
+                  : null
+              }
+              variants={
+                workbenchSpec.packKind === "variants"
+                  ? {
+                      value: Math.min(requestedCount, mode.maxCount || 4),
+                      min: 1,
+                      max: mode.maxCount || 4,
+                      onStep: (delta) =>
+                        setRequestedCount((current) =>
+                          Math.max(
+                            1,
+                            Math.min(mode.maxCount || 4, (Number(current) || 1) + delta),
+                          ),
+                        ),
+                    }
+                  : null
+              }
+              note={
+                workbenchSpec.note
+                  ? {
+                      value: workbenchNote,
+                      max: WORKBENCH_NOTE_MAX,
+                      onChange: setWorkbenchNote,
+                    }
+                  : null
+              }
+              secondaryAction={
+                workbenchSpec.planning
+                  ? {
+                      label: listingPlan ? "重新策划" : "去智能策划",
+                      sub: listingPlan ? "已按策划出图" : "先定文案再出图",
+                      icon: "bi-magic",
+                      busy: listingPlanning,
+                      busyLabel: "策划中",
+                      active: Boolean(listingPlan),
+                      disabled:
+                        !files.length ||
+                        !listingTypeIds.length ||
+                        (auth.isAuthenticated && !modelId),
+                      hint: !files.length
+                        ? "先上传商品图"
+                        : !listingTypeIds.length
+                          ? "先勾选出图类型"
+                          : "AI 先为每张图写好标题与构图，再一键生成",
+                      onClick: () => void planListing(),
+                    }
+                  : null
+              }
+              planState={
+                workbenchSpec.planning
+                  ? {
+                      busy: listingPlanning,
+                      error: listingPlanError,
+                      active: Boolean(listingPlan),
+                      summary: listingPlan?.summary || "",
+                      onClear: () => {
+                        setListingPlan(null);
+                        setListingPlanError("");
+                      },
+                    }
+                  : null
+              }
+              plan={generationPlan.map((item, index) => ({
+                id: item.viewId,
+                label: item.viewLabel.split(" · ").pop(),
+                headline: blueprints[index]?.headline || "",
+                subline: blueprints[index]?.subline || "",
+              }))}
+              shots={workbenchShots}
+              resultUrl={workbenchResultUrl}
+              history={modeRows}
+              running={jobs.running}
+              failed={workbenchFailed}
+              failMessage={workbenchFailMessage}
+              notice={
+                workbenchNotice ||
+                tryonUploadNotice ||
+                (workbenchFailed && workbenchResultUrl
+                  ? `上次生成未完成：${workbenchFailMessage}`
+                  : "")
+              }
+              elapsedSeconds={ecommerceElapsedSeconds(currentRow?.task)}
+              generationStageLabel={jobs.generationStageLabel || "正在生成"}
+              generateDisabled={auth.isAuthenticated && !canGenerate}
+              generateHint={readiness}
+              shotCount={generationPlan.length}
+              costLabel={costLabel}
+              onGenerate={generate}
+              onCancel={jobs.cancelAll}
+              cancelling={jobs.cancelling}
+              onRetryShot={(index) => void retrySlot(index)}
+              onSelectHistory={setActiveUrl}
+              onResultPreview={(event, payload) =>
+                openImagePreview(payload?.url || "")
+              }
+              onMaskEdit={currentRow ? () => setMaskRow(currentRow) : undefined}
+              onDownload={
+                currentRow ? () => downloadOutput(currentRow) : undefined
+              }
+              onSaveAsset={
+                currentRow ? () => void saveCurrentWorkbenchAsset() : undefined
+              }
+              onDownloadPack={
+                currentGroup.length > 1
+                  ? () => void downloadWorkbenchPack()
+                  : undefined
+              }
+              actionBusy={workbenchActionBusy}
+              revision={
+                currentRow
+                  ? {
+                      available: true,
+                      open: revisionOpen,
+                      onToggle: () => setRevisionOpen((value) => !value),
+                      direction: revisionDirection,
+                      directionOptions: ECOMMERCE_REVISION_DIRECTIONS,
+                      onChangeDirection: setRevisionDirection,
+                      brief: revisionBrief,
+                      onChangeBrief: setRevisionBrief,
+                      onSubmit: reviseCurrent,
+                      version: currentVersion,
+                      price: `${unitPrice} 积分`,
+                    }
+                  : { available: false }
+              }
+            />
           ) : isTryonMode(mode.id) ? (
             <TryonLiveStage
               aspectRatio={shotRatio}
@@ -6653,37 +6831,46 @@ export function EcommerceBusinessSession({
           ) : isDetailMode(mode.id) ? (
             <DetailStudio
               previews={previews}
-              modules={ECOMMERCE_DETAIL_MODULES}
-              selectedModules={selectedModules}
-              onToggleModule={(value) =>
-                setSelectedModules((current) =>
-                  current.includes(value)
-                    ? current.filter((item) => item !== value)
-                    : [...current, value],
-                )
-              }
-              aplus={{
+              maxProductFiles={DETAIL_PRODUCT_REFERENCE_MAX}
+              extraSlots={detailExtraSlots}
+              maxExtraFiles={DETAIL_EXTRA_REFERENCE_MAX}
+              onUploadExtra={() => {
+                detailUploadTargetRef.current = "extra";
+                fileInput.current?.click();
+              }}
+              onDropExtraFiles={(list) => void placeDetailExtraFiles(list)}
+              onRemoveExtraFile={removeDetailExtraFile}
+              directions={DETAIL_DIRECTIONS}
+              customDirections={detailCustomDirections}
+              maxCustomDirections={DETAIL_MAX_CUSTOM_DIRECTIONS}
+              selectedDirectionIds={selectedModules}
+              onToggleDirection={toggleDetailDirection}
+              onAddCustomDirection={addDetailCustomDirection}
+              onRemoveCustomDirection={removeDetailCustomDirection}
+              note={workbenchNote}
+              onChangeNote={setWorkbenchNote}
+              ratio={aspectRatio}
+              ratioOptions={DETAIL_RATIO_OPTIONS}
+              onChangeRatio={setAspectRatio}
+              resolution={workbenchResolution}
+              resolutionOptions={workbenchResolutionOptions}
+              onChangeResolution={setResolution}
+              platform={platform}
+              language={language}
+              amazon={{
+                active: detailAmazonMode,
                 asin: aplusAsin,
                 onChangeAsin: setAplusAsin,
                 competitorAsin: aplusCompetitorAsin,
                 onChangeCompetitorAsin: setAplusCompetitorAsin,
-                categoryId: aplusCategoryId,
-                categoryLabel: aplusCategory.label,
-                onChangeCategory: (id) => {
-                  setAplusCategoryId(id);
-                  setAplusLivePlan(null);
-                  setAplusAnalyzeError("");
-                },
                 marketplaceId: aplusMarketplaceId,
                 marketplaceLabel: aplusMarketplace.label,
-                language: aplusMarketplace.language,
                 onChangeMarketplace: (id) => {
                   const next = aplusMarketplaceById(id);
                   setAplusMarketplaceId(id);
-                  setAplusLivePlan(null);
-                  setAplusAnalyzeError("");
+                  setDetailPlan(null);
+                  setDetailPlanError("");
                   setLanguage(next.language);
-                  setPlatform("Amazon");
                   setMarket(
                     next.id === "CN"
                       ? "中国大陆"
@@ -6699,8 +6886,8 @@ export function EcommerceBusinessSession({
                 tier: aplusTier,
                 onChangeTier: (id) => {
                   setAplusTier(id);
-                  setAplusLivePlan(null);
-                  setAplusAnalyzeError("");
+                  setDetailPlan(null);
+                  setDetailPlanError("");
                 },
                 disclosure: aplusDisclosure,
                 onChangeDisclosure: setAplusDisclosure,
@@ -6710,18 +6897,76 @@ export function EcommerceBusinessSession({
                   const asins = parseAplusAsinList(value);
                   if (asins[0] && !aplusAsin) setAplusAsin(asins[0]);
                 },
-                plan: aplusPlan,
-                analyzed: Boolean(aplusLivePlan?.modules?.length),
-                planning: aplusPlanning,
-                analyzeError: aplusAnalyzeError,
-                onAnalyze: analyzeAplus,
-                analyzeDisabled:
-                  auth.isAuthenticated &&
-                  (!inputFiles.length || aplusPlanning || jobs.running),
-                analyzeHint: inputFiles.length ? "" : "还需上传商品图",
               }}
+              category={{
+                id: aplusCategoryId,
+                label: aplusCategory.label,
+                onChange: (id) => {
+                  setAplusCategoryId(id);
+                  setDetailPlan(null);
+                  setDetailPlanError("");
+                },
+              }}
+              plan={{
+                data: detailPlan,
+                planned: Boolean(detailPlan?.items?.length),
+                planning: detailPlanning,
+                error: detailPlanError,
+                autoGenerate: detailAutoGenerate,
+                onToggleAutoGenerate: () =>
+                  setDetailAutoGenerate((value) => !value),
+                onPlan: planDetail,
+                onClear: () => {
+                  setDetailPlan(null);
+                  setDetailPlanError("");
+                },
+                planDisabled:
+                  auth.isAuthenticated &&
+                  (!files.length ||
+                    !selectedModuleDetails.length ||
+                    detailPlanning ||
+                    jobs.running),
+                planHint: !files.length
+                  ? "还需上传商品图"
+                  : !selectedModuleDetails.length
+                    ? "请至少勾选 1 个出图方向"
+                    : "",
+              }}
+              blueprints={aplusBlueprints}
               resultUrl={currentRow?.url || ""}
               history={modeRows}
+              moduleStates={Array.from(
+                {
+                  length: Math.max(
+                    aplusBlueprints.length,
+                    liveTasks.length,
+                    liveGroup.length,
+                  ),
+                },
+                (_, index) => {
+                  const row = liveGroup.find(
+                    (item) => Number(item.index || 0) === index,
+                  );
+                  const task = liveTasks.find(
+                    (item) => Number(item.batchIndex) === index,
+                  );
+                  return {
+                    url: row?.url || "",
+                    display: row?.display || "",
+                    status: String(task?.status || "").toLowerCase(),
+                    startedAt: task?.startedAt || task?.createdAt || "",
+                    error: task?.error || "",
+                  };
+                },
+              )}
+              runStartedAt={
+                liveTasks
+                  .map(
+                    (task) => task.params?.batchCreatedAt || task.createdAt || "",
+                  )
+                  .filter(Boolean)
+                  .sort()[0] || ""
+              }
               running={jobs.running}
               failed={Boolean((submitError || jobs.error) && !currentRow)}
               failMessage={submitError || jobs.error || ""}
@@ -6731,10 +6976,23 @@ export function EcommerceBusinessSession({
               generateHint={readiness}
               shotCount={generationPlan.length}
               costLabel={costLabel}
-              generateLabel={`一键生成${mode.label}`}
-              onGenerate={generate}
+              generateLabel={
+                detailPlan?.items?.length
+                  ? `生成 ${generationPlan.length} 张详情图`
+                  : detailAutoGenerate
+                    ? "开始 AI 智能策划并生成"
+                    : "AI 智能策划"
+              }
+              onGenerate={
+                detailPlan?.items?.length || detailAutoGenerate
+                  ? generate
+                  : planDetail
+              }
               onCancel={jobs.cancelAll}
-              onUpload={() => fileInput.current?.click()}
+              onUpload={() => {
+                detailUploadTargetRef.current = "product";
+                fileInput.current?.click();
+              }}
               onRemoveFile={removeFile}
               onDropFiles={addFiles}
               onSelectHistory={setActiveUrl}
@@ -6768,54 +7026,6 @@ export function EcommerceBusinessSession({
                     }
                   : { available: false }
               }
-            />
-          ) : mode.id === "shoot" ? (
-            <CreativeShootWorkspace
-              english={localStorage.getItem("starclouds-locale") === "en"}
-              productSources={previews.map((item) => item.url)}
-              productName={productName}
-              sellingPoints={sellingPoints}
-              useCase={shootUseCase}
-              goal={shootGoal}
-              audience={shootAudience}
-              platform={platform}
-              platformOptions={OPTIONS.platform}
-              sku={shootSku}
-              protectedElements={shootProtectedElements}
-              shots={shootShotIds}
-              scene={scene}
-              tone={tone}
-              market={market}
-              marketOptions={OPTIONS.market}
-              aspectRatio={aspectRatio}
-              outputCount={outputCount}
-              models={models}
-              modelId={modelId}
-              plan={generationPlan}
-              readiness={readiness}
-              costLabel={detailedCostLabel}
-              generateDisabled={auth.isAuthenticated && !canGenerate}
-              onUpload={() => fileInput.current?.click()}
-              onOpenProducts={() => openWorkspace("products")}
-              onRemoveProduct={removeFile}
-              onProductNameChange={setProductName}
-              onSellingPointsChange={setSellingPoints}
-              onUseCaseChange={setShootUseCase}
-              onGoalChange={setShootGoal}
-              onAudienceChange={setShootAudience}
-              onPlatformChange={setPlatform}
-              onSkuChange={setShootSku}
-              onProtectedElementsChange={setShootProtectedElements}
-              onToggleShot={toggleShootShot}
-              onMoveShot={moveShootShot}
-              onSelectDirection={(nextScene, nextTone) => {
-                setScene(nextScene);
-                setTone(nextTone);
-              }}
-              onAspectRatioChange={setAspectRatio}
-              onMarketChange={setMarket}
-              onModelChange={setModelId}
-              onGenerate={generate}
             />
           ) : (
             <div className="canvas-empty">

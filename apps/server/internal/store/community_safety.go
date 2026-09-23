@@ -64,10 +64,7 @@ func ListBlockedGalleryUsers(
 	args := []any{blockerUserID}
 	if cursor != nil {
 		args = append(args, cursor.CreatedAt, cursor.ID)
-		sql += fmt.Sprintf(` AND (
-			blocks.created_at < $%d OR
-			(blocks.created_at = $%d AND blocks.blocked_user_id < $%d)
-		)`, len(args)-1, len(args)-1, len(args))
+		sql += fmt.Sprintf(` AND (blocks.created_at, blocks.blocked_user_id) < ($%d, $%d)`, len(args)-1, len(args))
 	}
 	args = append(args, limit+1)
 	sql += fmt.Sprintf(` ORDER BY blocks.created_at DESC, blocks.blocked_user_id DESC LIMIT $%d`, len(args))

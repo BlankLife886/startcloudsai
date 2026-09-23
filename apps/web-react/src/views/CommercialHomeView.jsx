@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
 import {
-  ArrowUp, ArrowUpRight, AudioLines, Box, Clock3, Coins, FileArchive,
+  Apple, ArrowUp, ArrowUpRight, AudioLines, Box, Clock3, FileArchive,
   Gamepad2, Image as ImageIcon, Layers, LayoutGrid, Maximize2, MessageSquareText,
-  Paintbrush, PanelsTopLeft, Puzzle, Scissors, Shirt, ShoppingBag,
-  Sparkles, Video, WandSparkles, Workflow, Wrench,
+  Paintbrush, PanelsTopLeft, Plug, Puzzle, Scissors, Shirt, ShoppingBag,
+  Smartphone, Sparkles, Video, WandSparkles, Workflow, Wrench,
 } from "lucide-react";
 import { fetchRuntimeConfig } from "@react/legacy-modules/services/runtimeConfig.js";
 import { COMMERCE_ENTRY_GROUPS, STUDIO_TOOLS } from "@react/legacy-modules/features/creator-hub/studioTools.js";
@@ -53,26 +53,30 @@ const UPCOMING_ITEMS = [
   {
     id: "ios-app",
     label: "苹果 App",
-    tagline: "iOS 客户端，随时继续创作",
-    icon: "bi-apple",
+    tagline: "iOS 客户端，随行创作与灵感同步",
+    badge: "内测就绪",
+    Icon: Apple,
   },
   {
     id: "android-app",
     label: "安卓 App",
-    tagline: "Android 客户端，同步作品与任务",
-    icon: "bi-android2",
+    tagline: "Android 客户端，多端实时同步",
+    badge: "内测就绪",
+    Icon: Smartphone,
   },
   {
     id: "canvas-scheduled-task",
-    label: "无限画布定时任务",
-    tagline: "按计划自动跑画布工作流",
-    icon: "bi-clock",
+    label: "画布定时任务",
+    tagline: "按计划自动化执行工作流",
+    badge: "规划中",
+    Icon: Clock3,
   },
   {
     id: "mcp",
-    label: "MCP",
-    tagline: "把能力接到 Agent 工具链",
-    icon: "bi-plugin",
+    label: "MCP 协议生态",
+    tagline: "无缝接入 Agent 与开发工作流",
+    badge: "首发支持",
+    Icon: Plug,
   },
 ];
 
@@ -92,9 +96,15 @@ const CREATION_ITEMS = [
 
 const FOOTER_GROUPS = [
   { title: "开始创作", links: [["创作台", "/studio"], ["AI 助手", "/assistant"], ["无限画布", "/canvas"]] },
-  { title: "发现更多", links: [["Skill 中心", "/skills"], ["提示词", "/prompts"], ["创作价格", "/pricing"]] },
+  { title: "发现更多", links: [["技能库", "/skills"], ["提示词", "/prompts"], ["创作价格", "/pricing"]] },
   { title: "我的空间", links: [["创作历史", "/history"], ["我的订单", "/orders"], ["账户设置", "/account"]] },
 ];
+
+const COMMERCE_SUB_TAGS = {
+  "commerce-model": ["真人模特试衣", "手持商品置景", "饰品穿戴合成"],
+  "commerce-create": ["AI 创意商拍", "全套电商主图", "亚马逊 A+ 详情"],
+  "commerce-image": ["多渠道营销图", "智能无损扩图", "商品阴影与质感"],
+};
 
 const COMMERCE_ITEMS = COMMERCE_ENTRY_GROUPS.map((group) => ({
   id: `commerce-${group.id}`,
@@ -104,10 +114,11 @@ const COMMERCE_ITEMS = COMMERCE_ENTRY_GROUPS.map((group) => ({
   cover: group.cover,
   feature: "ai.ecommerceDesign",
   taskType: "ecommerce_design",
+  subtags: COMMERCE_SUB_TAGS[`commerce-${group.id}`] || [],
 }));
 
 const LOCAL_TOOL_ITEMS = [
-  { id: "skills", to: "/skills", label: "Skill 中心", tagline: "装载一次，之后每次生图都自动带上画面要求", icon: "bi-lightning-charge", minPoints: 0 },
+  { id: "skills", to: "/skills", label: "技能库", tagline: "在输入框用 @ 选择技能，提交时自动展开", icon: "bi-lightning-charge", minPoints: 0 },
   { id: "psd-decompose", to: "/psd-decompose", label: "PSD 分解", tagline: "图片转分层 PSD 与素材包", icon: "bi-layers", },
   {
     id: "all-ai-tools",
@@ -206,6 +217,36 @@ function priceLabel(points) {
   return `最低 ${points.toLocaleString("zh-CN")} 积分`;
 }
 
+function PriceMark({ points, title }) {
+  if (points === null || points === undefined) return null;
+  if (points === 0) {
+    return (
+      <b className="home-card__price is-free" title={title}>
+        <span className="home-card__price-icon" aria-hidden="true">
+          <Sparkles size={11} strokeWidth={2.2} />
+        </span>
+        <span className="home-card__price-val">
+          <span className="home-card__price-num">免费</span>
+        </span>
+      </b>
+    );
+  }
+  return (
+    <b className="home-card__price" title={title}>
+      <span className="home-card__price-icon" aria-hidden="true">
+        <Sparkles size={11} strokeWidth={2.2} />
+      </span>
+      <span className="home-card__price-val">
+        <span className="home-card__price-label">消耗</span>
+        {" "}
+        <span className="home-card__price-num">{points.toLocaleString("zh-CN")}</span>
+        {" "}
+        <i>积分</i>
+      </span>
+    </b>
+  );
+}
+
 function CoverCard({ item, badge = "", featured = false }) {
   const Icon = CARD_ICONS[item.id] || CARD_ICONS[item.icon] || ImageIcon;
   const status = STATUS_META[item.status] || STATUS_META[PAGE_STATUS.NORMAL];
@@ -233,22 +274,39 @@ function CoverCard({ item, badge = "", featured = false }) {
           <Icon size={32} strokeWidth={1.75} aria-hidden="true" />
         )}
       </span>
+      <span className="home-card__veil" aria-hidden="true" />
       {shownBadge ? (
         <em className={`home-card__status ${badgeClass}`}><StatusIcon size={12} strokeWidth={1.75} aria-hidden="true" /><span>{shownBadge}</span></em>
       ) : null}
-      {!blocked && price ? <b className="home-card__price" title={price}><Coins size={12} strokeWidth={1.75} aria-hidden="true" /><span>{price}</span></b> : null}
+      {!blocked && price ? <span className="home-card__price-hidden sr-only">{price}</span> : null}
+      {item.to && !blocked ? (
+        <span className="home-card__arrow" aria-hidden="true">
+          <span className="home-card__capsule">
+            <span className="home-card__capsule-text">立即体验</span>
+            <span className="home-card__capsule-icon">
+              <ArrowUpRight size={13} strokeWidth={1.75} />
+            </span>
+          </span>
+        </span>
+      ) : null}
       <span className="home-card__body">
         <span className="home-card__heading">
           <strong title={item.label}>{item.label}</strong>
-          {item.to && !blocked ? <span className="home-card__arrow" aria-hidden="true"><ArrowUpRight size={17} strokeWidth={1.75} /></span> : null}
         </span>
         {blocked && item.reason ? <small className="home-card__description" title={item.reason}>{item.reason}</small> : <span className="home-card__description" title={item.tagline}>{item.tagline}</span>}
+        {item.subtags?.length && !blocked ? (
+          <span className="home-card__subtags" aria-label="核心能力">
+            {item.subtags.map((subtag) => (
+              <span key={subtag} className="home-card__subtag">{subtag}</span>
+            ))}
+          </span>
+        ) : null}
       </span>
     </>
   );
   if (item.to) {
     return (
-      <Link className={className} to={item.to} aria-label={label} data-home-item>
+      <Link className={className} to={item.to} aria-label={label} data-home-item viewTransition>
         {body}
       </Link>
     );
@@ -274,22 +332,25 @@ function CompactCard({ item }) {
       to={item.to}
       aria-label={[item.label, blocked ? status.label : price].filter(Boolean).join("，")}
       data-home-item
+      viewTransition
     >
-      <span className="home-compact__copy">
-        <span className="home-compact__heading">
-          <span className="home-compact__icon" aria-hidden="true">
-            <Icon size={20} strokeWidth={1.6} />
-          </span>
-          <strong title={item.label}>{item.label}</strong>
-          {blocked ? (
-            <em className={`home-card__status ${status.className}`}><StatusIcon size={12} strokeWidth={1.75} aria-hidden="true" /><span>{status.label}</span></em>
-          ) : price ? (
-            <b className="home-card__price" title={price}><Coins size={12} strokeWidth={1.75} aria-hidden="true" /><span>{price}</span></b>
-          ) : null}
-        </span>
-        {description ? <span className="home-compact__description" title={description}>{description}</span> : null}
+      <span className="home-compact__icon" aria-hidden="true">
+        <Icon size={20} strokeWidth={1.6} />
       </span>
-      <ArrowUpRight className="home-compact__arrow" strokeWidth={1.75} aria-hidden="true" />
+      <span className="home-compact__heading">
+        <strong title={item.label}>{item.label}</strong>
+      </span>
+      {description ? <span className="home-compact__description" title={description}>{description}</span> : null}
+      {blocked ? (
+        <em className={`home-card__status ${status.className}`}><StatusIcon size={12} strokeWidth={1.75} aria-hidden="true" /><span>{status.label}</span></em>
+      ) : (
+        <PriceMark points={item.minPoints} title={price} />
+      )}
+      {blocked ? null : (
+        <span className="home-compact__arrow" aria-hidden="true">
+          <ArrowUpRight size={14} strokeWidth={1.75} />
+        </span>
+      )}
     </Link>
   );
 }
@@ -387,6 +448,7 @@ export function CommercialHomeView() {
           <HomeSection
             id="creation"
             title="AI 创作"
+            description="画布、对话、图像与设计"
           >
             <div className="home-creation-layout" data-count={catalog.creation.length}>
               <CoverCard item={catalog.creation[0]} featured />
@@ -405,6 +467,7 @@ export function CommercialHomeView() {
           <HomeSection
             id="commerce"
             title="AI 电商"
+            description="模特、商品与营销视觉"
           >
             <div className="home-card-grid is-three" data-count={catalog.commerce.length}>
               {catalog.commerce.map((item) => (
@@ -418,6 +481,7 @@ export function CommercialHomeView() {
           <HomeSection
             id="tools"
             title="实用工具"
+            description="处理、压缩与拼贴"
           >
             <div className="home-compact-grid" data-count={catalog.tools.length}>
               {catalog.tools.map((item) => (
@@ -430,10 +494,42 @@ export function CommercialHomeView() {
 
       <div className="home-shell home-news">
         <section className="home-upcoming" aria-labelledby="home-upcoming-title">
-          <header><h2 id="home-upcoming-title">即将上线</h2></header>
-          <div className="home-upcoming__items">{UPCOMING_ITEMS.map(item => <div key={item.id} data-home-item>
-            <i className={`bi ${item.icon}`} aria-hidden="true" /><span>{item.label}</span><small>敬请期待</small>
-          </div>)}</div>
+          <header className="home-section__head">
+            <div className="home-section__lead">
+              <h2 id="home-upcoming-title">即将上线</h2>
+              <p>跨端协同、自动化工作流与生态接入</p>
+            </div>
+          </header>
+          <div className="home-upcoming__items">{UPCOMING_ITEMS.map((item) => {
+            const Icon = item.Icon;
+            return (
+              <div key={item.id} className="home-upcoming__item" data-home-item>
+                <div className="home-upcoming__top">
+                  <span className="home-upcoming__icon" aria-hidden="true"><Icon size={20} strokeWidth={1.75} /></span>
+                  {item.badge ? (
+                    <span
+                      className="home-upcoming__badge"
+                      data-badge={
+                        item.badge === "内测就绪"
+                          ? "ready"
+                          : item.badge === "规划中"
+                          ? "planning"
+                          : "first"
+                      }
+                    >
+                      {item.badge}
+                    </span>
+                  ) : null}
+                </div>
+                <span className="home-upcoming__label">{item.label}</span>
+                <span className="home-upcoming__description">{item.tagline}</span>
+                <small className="home-upcoming__status">
+                  <span className="home-upcoming__dot" aria-hidden="true" />
+                  敬请期待
+                </small>
+              </div>
+            );
+          })}</div>
         </section>
       </div>
 
@@ -441,7 +537,7 @@ export function CommercialHomeView() {
         <div className="home-shell home-footer__main">
           <div className="home-footer__brand"><img src="/brand/starcloud-logo.svg" alt="" width="32" height="32" /><strong>星空云绘</strong></div>
           {FOOTER_GROUPS.map(group => <nav key={group.title} aria-label={group.title}><h2>{group.title}</h2>
-            {group.links.filter(([, to]) => isEntryVisible(to)).map(([label, to]) => <Link key={to} to={to}>{label}<ArrowUpRight size={13} aria-hidden="true" /></Link>)}
+            {group.links.filter(([, to]) => isEntryVisible(to)).map(([label, to]) => <Link key={to} to={to} viewTransition>{label}<ArrowUpRight size={13} aria-hidden="true" /></Link>)}
           </nav>)}
         </div>
         <div className="home-shell home-footer__bottom"><span>创作，不止于想象。</span><a href="#home-top">回到顶部<ArrowUp size={13} aria-hidden="true" /></a></div>

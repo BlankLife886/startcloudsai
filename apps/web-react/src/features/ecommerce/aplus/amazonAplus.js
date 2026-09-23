@@ -1,4 +1,7 @@
-/** Amazon A+ / 国内详情：站点、官方模块尺寸、品类知识库、PEPCF 结构。 */
+/**
+ * Amazon A+ 知识库：站点、档位、官方模块尺寸、品类关键词。
+ * 详情页出图链路（方向 → 策划 → blueprint）见 detailPage.js。
+ */
 
 export const APLUS_TIERS = [
   { id: "basic", label: "基础版", maxModules: 5, hint: "Standard A+，最多 5 个模块" },
@@ -174,45 +177,6 @@ export const APLUS_MODULE_TYPES = [
     bodyMax: 500,
   },
 ];
-
-const ARCHETYPES = {
-  spec: {
-    basic: ["std-header", "std-overlay-light", "std-compare", "std-specs", "std-overlay-dark"],
-    premium: [
-      "premium-banner",
-      "std-overlay-light",
-      "std-compare",
-      "std-specs",
-      "premium-hotspots",
-      "std-highlights",
-      "std-overlay-dark",
-    ],
-  },
-  lifestyle: {
-    basic: ["std-header", "std-four-image", "std-overlay-light", "std-highlights", "std-overlay-dark"],
-    premium: [
-      "premium-banner",
-      "std-four-image",
-      "premium-three",
-      "std-compare",
-      "premium-hotspots",
-      "std-highlights",
-      "std-overlay-dark",
-    ],
-  },
-  beauty: {
-    basic: ["std-header", "std-overlay-light", "std-highlights", "std-four-image", "std-overlay-dark"],
-    premium: [
-      "premium-banner",
-      "std-overlay-light",
-      "std-four-image",
-      "std-compare",
-      "premium-hotspots",
-      "std-highlights",
-      "std-overlay-dark",
-    ],
-  },
-};
 
 function cat(id, label, aliases, archetype, extra = {}) {
   return {
@@ -390,134 +354,6 @@ export function aplusTierById(id) {
   return APLUS_TIERS.find((item) => item.id === id) || APLUS_TIERS[0];
 }
 
-export function inferAplusMarketplace({ platform = "", market = "", language = "" } = {}) {
-  const blob = `${platform} ${market} ${language}`.toLowerCase();
-  if (/中国|国内|cn|简体/.test(blob)) return aplusMarketplaceById("CN");
-  if (/德国|de\b|德文/.test(blob)) return aplusMarketplaceById("DE");
-  if (/英国|uk\b/.test(blob)) return aplusMarketplaceById("UK");
-  if (/日本|jp\b|日文/.test(blob)) return aplusMarketplaceById("JP");
-  return aplusMarketplaceById("US");
-}
-
-function moduleCopy(type, category, marketplace, index, productName) {
-  const domestic = marketplace.region === "domestic";
-  const name = productName || category.label;
-  const pain = category.painPoints[index] || category.painPoints[0] || "核心使用问题";
-  if (domestic) {
-    const headlines = {
-      Problem: `${name}，先解决「${pain}」`,
-      Explain: "真实使用方式，一眼看懂",
-      Compare: "和常见方案差在哪",
-      Proof: "可核对的参数与细节",
-      Finish: "包装、质保与安心购买",
-    };
-    return {
-      headline: headlines[type.pepcf] || name,
-      body: `${category.label}模块：只陈述参考图和卖点里已提供的事实，单位使用${marketplace.units}，不写价格。`,
-    };
-  }
-  const headlines = {
-    Problem: `Does it actually solve “${pain}”?`,
-    Explain: "See how it works in real life",
-    Compare: "How it differs from typical options",
-    Proof: "Specs you can verify",
-    Finish: "What you receive and how we stand behind it",
-  };
-  return {
-    headline: headlines[type.pepcf] || name,
-    body: `Category ${category.label}: only state facts from the product images and seller notes. Use ${marketplace.units}. No prices, no superlatives.`,
-  };
-}
-
-export function buildDefaultAplusPlan({
-  categoryId = "generic",
-  marketplaceId = "US",
-  tierId = "basic",
-  productName = "",
-  sellingPoints = "",
-  asin = "",
-  competitorAsin = "",
-  disclosure = false,
-  selectedModules = [],
-} = {}) {
-  const category = aplusCategoryById(categoryId);
-  const marketplace = aplusMarketplaceById(marketplaceId);
-  const tier = aplusTierById(tierId);
-  const sequence = (ARCHETYPES[category.archetype] || ARCHETYPES.lifestyle)[tier.id];
-  const modules = sequence.slice(0, tier.maxModules).map((typeId, index) => {
-    const type = aplusModuleTypeById(typeId);
-    const copy = moduleCopy(type, category, marketplace, index, productName);
-    const imagePrompt = [
-      `Create a ${type.width}x${type.height} RGB Amazon A+ module (${type.amazonName}).`,
-      marketplace.imageStyle,
-      `Product identity must match the reference photos. Category: ${category.label}.`,
-      `PEPCF role: ${type.pepcf}. Headline to render clearly: “${copy.headline}”.`,
-      sellingPoints ? `Seller notes: ${sellingPoints}` : "",
-      marketplace.region === "domestic"
-        ? "Domestic style: studio real-shot product, dimension/spec callouts, Simplified Chinese only if provided, GB units."
-        : "International style: lifestyle scene, local language overlay only from provided copy.",
-      "No watermark, no GIF, no HTML, no QR, no price, no unsubstantiated #1/best/guaranteed claims.",
-      "Mobile-readable type, high contrast, product sharp and unwarped.",
-    ]
-      .filter(Boolean)
-      .join(" ");
-    return {
-      id: `${type.id}-${index + 1}`,
-      typeId: type.id,
-      amazonName: type.amazonName,
-      pepcf: type.pepcf,
-      width: type.width,
-      height: type.height,
-      outputSize: `${type.width}x${type.height}`,
-      aspectRatio: aplusAspectRatio(type.width, type.height),
-      headline: copy.headline,
-      body: copy.body,
-      imagePrompt,
-      visualHints: selectedModules,
-    };
-  });
-  return {
-    asin: String(asin || "").trim().toUpperCase(),
-    competitorAsin: String(competitorAsin || "").trim().toUpperCase(),
-    categoryId: category.id,
-    categoryLabel: category.label,
-    marketplaceId: marketplace.id,
-    language: marketplace.language,
-    languageCode: marketplace.languageCode,
-    tier: tier.id,
-    disclosure: Boolean(disclosure),
-    painPoints: category.painPoints.slice(0, 6),
-    pepcf: modules.map((item) => item.pepcf),
-    compliance: {
-      languageMatched: true,
-      noHtml: true,
-      noGif: true,
-      noPrice: true,
-      disclosureRequired: true,
-      disclosureAcknowledged: Boolean(disclosure),
-    },
-    modules,
-  };
-}
-
-export function aplusShotBlueprintsFromPlan(plan) {
-  return (plan?.modules || []).map((module, index) => ({
-    id: module.id || `aplus-${index + 1}`,
-    label: module.amazonName || `A+ 模块 ${index + 1}`,
-    direction: [
-      `亚马逊模块 ${module.amazonName}，精确输出 ${module.outputSize || `${module.width}x${module.height}`} RGB。`,
-      `PEPCF：${module.pepcf}。标题：${module.headline || ""}。`,
-      module.body || "",
-      module.imagePrompt || "",
-    ]
-      .filter(Boolean)
-      .join(" "),
-    aspectRatio: module.aspectRatio || aplusAspectRatio(module.width, module.height),
-    outputSize: module.outputSize || `${module.width}x${module.height}`,
-    aplusSpec: module,
-  }));
-}
-
 export function parseAplusAsinList(raw = "") {
   return Array.from(
     new Set(
@@ -527,77 +363,4 @@ export function parseAplusAsinList(raw = "") {
         .filter((item) => /^[A-Z0-9]{8,12}$/.test(item)),
     ),
   ).slice(0, 100);
-}
-
-export function aplusExportChecklist(plan, rows = []) {
-  const modules = plan?.modules || [];
-  return modules.map((module, index) => {
-    const row = rows[index];
-    return {
-      index: index + 1,
-      asin: plan.asin || "",
-      marketplace: plan.marketplaceId,
-      amazonModule: module.amazonName,
-      pepcf: module.pepcf,
-      size: module.outputSize || `${module.width}x${module.height}`,
-      headline: module.headline || "",
-      body: module.body || "",
-      imageReady: Boolean(row?.url),
-      sellerCentralNote:
-        "Upload this RGB image into the matching A+ module. Mark AI-generated content Disclosure in Seller Central. Do not add HTML, GIF, prices or off-Amazon links.",
-    };
-  });
-}
-
-export function aplusChecklistCsv(rows = []) {
-  const header = [
-    "index",
-    "asin",
-    "marketplace",
-    "amazon_module",
-    "pepcf",
-    "size",
-    "headline",
-    "body",
-    "seller_central_note",
-  ];
-  const escape = (value) => `"${String(value || "").replace(/"/g, '""')}"`;
-  const valueOf = (row, key) => {
-    if (key === "amazon_module") return row.amazonModule;
-    if (key === "seller_central_note") return row.sellerCentralNote;
-    return row[key];
-  };
-  return [
-    header.join(","),
-    ...rows.map((row) => header.map((key) => escape(valueOf(row, key))).join(",")),
-  ].join("\n");
-}
-
-export function buildAplusTaskPrompt({
-  plan,
-  marketplace,
-  category,
-  productName,
-  sellingPoints,
-  tone,
-} = {}) {
-  const market = marketplace || aplusMarketplaceById(plan?.marketplaceId);
-  const catItem = category || aplusCategoryById(plan?.categoryId);
-  return [
-    "任务：亚马逊 A+ / 详情模块出图。每个模块是一张独立 RGB 图，不是整页长图截图，不是编辑器界面。",
-    `目标站：${market.label}（${market.site}）。语言必须是${market.language}。单位：${market.units}。`,
-    `品类：${catItem.label}。画面风格：${market.imageStyle}。`,
-    productName ? `商品名称：${productName}。` : "",
-    sellingPoints ? `已确认卖点：${sellingPoints}。` : "",
-    plan?.asin ? `本商品 ASIN：${plan.asin}。` : "",
-    plan?.competitorAsin
-      ? `竞品 ASIN ${plan.competitorAsin} 只用于模块顺序与卖点结构参考，禁止复制其品牌、商标或原文案。`
-      : "",
-    tone ? `视觉风格：${tone}。` : "",
-    "合规：无水印、无 GIF、无 HTML、无外链、无价格、无未证实的极限词；文字无法可靠生成时留白。",
-    "2026 Disclosure：画面不要自行加 AI 标记；卖家须在 Seller Central 手动勾选 AI 图 Disclosure。",
-    "严格保持参考商品造型、颜色、比例、Logo 与包装文字。不得虚构认证、参数或效果。",
-  ]
-    .filter(Boolean)
-    .join("\n");
 }

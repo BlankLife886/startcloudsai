@@ -34,22 +34,25 @@ func Contains(list []string, v string) bool {
 }
 
 type User struct {
-	ID                    uuid.UUID
-	Email                 string
-	Username              string
-	PasswordHash          string
-	AvatarURL             *string
-	StudioFigureURL       *string
-	Bio                   string
-	Location              string
-	WebsiteURL            string
-	RequireCostConfirm    bool
-	Role                  string
-	Status                string
-	LastLoginAt           *time.Time
-	SubmissionBannedUntil *time.Time
-	DeletedAt             *time.Time
-	CreatedAt             time.Time
+	ID                 uuid.UUID
+	Email              string
+	Username           string
+	PasswordHash       string
+	AvatarURL          *string
+	StudioFigureURL    *string
+	Bio                string
+	Location           string
+	WebsiteURL         string
+	RequireCostConfirm bool
+	// Agent 自动授权：开启后图片方案不再等确认，直接提交生成，预算是单轮积分上限。
+	AssistantAutoApprove            bool
+	AssistantAutoApproveBudgetCents int64
+	Role                            string
+	Status                          string
+	LastLoginAt                     *time.Time
+	SubmissionBannedUntil           *time.Time
+	DeletedAt                       *time.Time
+	CreatedAt                       time.Time
 }
 
 type UserAsset struct {
@@ -96,7 +99,7 @@ type EcommerceProduct struct {
 	UpdatedAt         time.Time
 }
 
-func (p *EcommerceProduct) CursorKey() (time.Time, uuid.UUID) { return p.UpdatedAt, p.ID }
+func (p *EcommerceProduct) CursorKey() (time.Time, uuid.UUID) { return p.CreatedAt, p.ID }
 
 type EcommerceAssetReview struct {
 	ID         uuid.UUID
@@ -597,7 +600,12 @@ type PromptEntry struct {
 	AssetVerifiedAt     *time.Time
 	AssetNote           string
 	CreatedAt           time.Time
+	// OrderValue 为列表查询时的排序值（热度或手动排序），写入分页游标；其他查询为 nil。
+	OrderValue *int64
 }
+
+// CursorValue 让按热度或手动排序的提示词游标带上排序值。
+func (p *PromptEntry) CursorValue() *int64 { return p.OrderValue }
 
 // GalleryAuthor 创作者聚合行（按用户分组统计投稿）。
 type GalleryAuthor struct {

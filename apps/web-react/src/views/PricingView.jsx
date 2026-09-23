@@ -650,17 +650,97 @@ function FloatingPrices({ id, label, title = label, icon: Icon, dark, children, 
   </Popover>;
 }
 
+function modelFallbackDescription(model) {
+  if (model.kind === "chat") return "支持多轮智能对话与逻辑交互";
+  if (model.kind === "tool") return "针对专项创作场景的实用工具";
+  return "高品质创意生图与多风格呈现";
+}
+
+function modelDisplayResolutions(model) {
+  if (Array.isArray(model.resolutions) && model.resolutions.length > 0) {
+    return model.resolutions;
+  }
+  if (model.kind === "chat") return ["深度推理", "长上下文"];
+  if (model.kind === "tool") return ["精细处理", "即时交付"];
+  return ["超清画质", "风格微调"];
+}
+
 function ModelPrices({ runtimeConfig, groups, loading, dark, t }) {
   const [kind, setKind] = useState("all");
+  const kindsContainerRef = useRef(null);
+  const kindsThumbRef = useRef(null);
+  const previousKind = useRef(null);
+
+  useGSAP(() => {
+    const container = kindsContainerRef.current;
+    const thumb = kindsThumbRef.current;
+    if (!container || !thumb) return;
+
+    const updateThumb = (instant = false) => {
+      const activeButton = container.querySelector(`button[data-kind="${kind}"]`);
+      if (!activeButton) return;
+      const containerRect = container.getBoundingClientRect();
+      const btnRect = activeButton.getBoundingClientRect();
+      const x = btnRect.left - containerRect.left;
+      const width = btnRect.width;
+
+      gsap.to(thumb, {
+        x,
+        duration: instant ? 0 : 0.32,
+        ease: "back.out(1.15)",
+        overwrite: "auto",
+      });
+      gsap.to(thumb, {
+        width,
+        duration: instant ? 0 : 0.28,
+        ease: "power2.out",
+        overwrite: "auto",
+      });
+    };
+
+    const instant = previousKind.current === null
+      || window.matchMedia("(prefers-reduced-motion: reduce)").matches
+      || document.documentElement.classList.contains("settings-no-animations");
+
+    updateThumb(instant);
+    previousKind.current = kind;
+
+    const handleResize = () => updateThumb(true);
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, { scope: kindsContainerRef, dependencies: [kind] });
+
+  useEffect(() => {
+    if (document.fonts && document.fonts.status !== "loaded") {
+      document.fonts.ready.then(() => {
+        const container = kindsContainerRef.current;
+        const thumb = kindsThumbRef.current;
+        const activeButton = container?.querySelector(`button[data-kind="${kind}"]`);
+        if (!container || !thumb || !activeButton) return;
+        const containerRect = container.getBoundingClientRect();
+        const btnRect = activeButton.getBoundingClientRect();
+        gsap.set(thumb, { x: btnRect.left - containerRect.left, width: btnRect.width });
+      });
+    }
+  }, []);
+
   const models = useMemo(() => standaloneModels(runtimeConfig, groups), [runtimeConfig, groups]);
   const filtered = models.filter(model => kind === "all" || model.kind === kind);
   return <section id="pricing-models" className="pp-section pc-models" data-section="models" aria-labelledby="models-title">
     <div className="pp-shell">
       <header className="pc-section-heading">
-        <h2 id="models-title">{t("模型价格")}</h2>
+        <span className="pc-model__screw pc-model__screw--tl" aria-hidden="true">＋</span>
+        <span className="pc-model__screw pc-model__screw--tr" aria-hidden="true">＋</span>
+        <span className="pc-model__screw pc-model__screw--bl" aria-hidden="true">＋</span>
+        <span className="pc-model__screw pc-model__screw--br" aria-hidden="true">＋</span>
+        <div className="pc-section-heading__title-wrap">
+          <h2 id="models-title">{t("模型价格")}</h2>
+          <span className="pc-section-heading__tag">SYS_ENGINE // CORE_MODELS</span>
+        </div>
         <div className="pc-model-controls">
-          <div className="pc-model-kinds" role="group" aria-label={t("模型类型")}>
-            {["all", ...Object.keys(MODEL_KIND_META)].map(value => <button key={value} type="button" aria-pressed={kind === value} onClick={() => setKind(value)}>
+          <div ref={kindsContainerRef} className="pc-model-kinds" role="group" aria-label={t("模型类型")}>
+            <span ref={kindsThumbRef} className="pc-model-kinds__thumb" aria-hidden="true" />
+            {["all", ...Object.keys(MODEL_KIND_META)].map(value => <button key={value} data-kind={value} type="button" aria-pressed={kind === value} onClick={() => setKind(value)}>
               {t(value === "all" ? "全部模型" : MODEL_KIND_META[value].label)}
             </button>)}
           </div>
@@ -670,31 +750,61 @@ function ModelPrices({ runtimeConfig, groups, loading, dark, t }) {
         {[1, 2, 3].map(n => <article key={n} className="pc-model is-loading">
           <div className="pc-model__head" /><p className="pc-model__desc" /><ul className="pc-model__resolutions" /><div className="pc-model__meta" />
         </article>)}
-      </div> : filtered.length ? <div className="pc-model-grid">{filtered.map(model => <article key={model.id} className="pc-model" data-model-id={model.id} data-tone={modelTone(model.id)}>
-        <div className="pc-model__head">
-          <span className="pc-model__mark"><ModelCatalogIcon model={model.catalogModel} size="md" /></span>
-          <div className="pc-model__copy">
-            <div className="pc-model__title">
-              <h3>{model.name}</h3>
-              <span className="pc-model__badge">
-                {isCatalogModelMaintenance(model.catalogModel) ? <ModelMaintenanceBadge model={model.catalogModel} /> : null}
-              </span>
+      </div> : filtered.length ? <div className="pc-model-grid">{filtered.map((model, idx) => {
+        const isMaintenance = isCatalogModelMaintenance(model.catalogModel);
+        const descText = model.description ? t(model.description) : t(modelFallbackDescription(model));
+        const tags = modelDisplayResolutions(model);
+        const modelSeq = String(idx + 1).padStart(2, "0");
+        return (
+          <article key={model.id} className={`pc-model${isMaintenance ? " is-maintenance" : ""}`} data-model-id={model.id} data-tone={modelTone(model.id)}>
+            <span className="pc-model__screw pc-model__screw--tl" aria-hidden="true">＋</span>
+            <span className="pc-model__screw pc-model__screw--tr" aria-hidden="true">＋</span>
+            <span className="pc-model__screw pc-model__screw--bl" aria-hidden="true">＋</span>
+            <span className="pc-model__screw pc-model__screw--br" aria-hidden="true">＋</span>
+
+            <div className="pc-model__head">
+              <span className="pc-model__mark"><ModelCatalogIcon model={model.catalogModel} size="md" /></span>
+              <div className="pc-model__copy">
+                <div className="pc-model__telemetry">
+                  <div className="pc-model__telemetry-status">
+                    <span className="pc-model__telemetry-dot" aria-hidden="true" />
+                    <span>MOD · {modelSeq} // {isMaintenance ? "MAINTENANCE" : "SYS_ONLINE"}</span>
+                  </div>
+                  <span className="pc-model__telemetry-eng">ENG:{model.kind.toUpperCase()}</span>
+                </div>
+                <div className="pc-model__title">
+                  <h3>{model.name}</h3>
+                  <span className="pc-model__badge">
+                    {isMaintenance ? (
+                      <ModelMaintenanceBadge model={model.catalogModel} />
+                    ) : (
+                      <span className="pc-model__kind-pill">
+                        <span className="pc-model__pulse-dot" aria-hidden="true" />
+                        {t(MODEL_KIND_META[model.kind]?.label || "生图")}
+                      </span>
+                    )}
+                  </span>
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
-        <p className="pc-model__desc">{model.description ? t(model.description) : "\u00a0"}</p>
-        <ul className="pc-model__resolutions" aria-label={model.resolutions.length ? t("支持分辨率") : undefined} aria-hidden={model.resolutions.length ? undefined : "true"}>
-          {model.resolutions.map((resolution) => <li key={resolution}>{resolution}</li>)}
-        </ul>
-        <div className="pc-model__meta">
-          <PriceAmount model={model} t={t} />
-          <div className="pc-model__detail">
-            {!!model.variants.length && !isCatalogModelMaintenance(model.catalogModel) ? (
-              <FloatingPrices id={`model-details-${encodeURIComponent(model.id)}`} label="价格明细" title={model.name} dark={dark} t={t}><PriceVariants model={model} t={t} /></FloatingPrices>
-            ) : null}
-          </div>
-        </div>
-      </article>)}</div> : <div className="pp-empty"><ImageIcon size={26} aria-hidden="true" /><strong>{t(models.length ? "暂无此类模型" : "暂无已上架模型")}</strong></div>}
+            <p className="pc-model__desc">{descText}</p>
+            <ul className="pc-model__resolutions" aria-label={tags.length ? t("支持特性") : undefined} aria-hidden={tags.length ? undefined : "true"}>
+              {tags.map((resolution) => <li key={resolution}>{t(resolution)}</li>)}
+            </ul>
+            <div className="pc-model__meta">
+              <div className="pc-model__price-block">
+                <div className="pc-model__energy-label">ENERGY_COST:</div>
+                <PriceAmount model={model} t={t} />
+              </div>
+              <div className="pc-model__detail">
+                {!!model.variants.length && !isMaintenance ? (
+                  <FloatingPrices id={`model-details-${encodeURIComponent(model.id)}`} label="价格明细" title={model.name} dark={dark} t={t}><PriceVariants model={model} t={t} /></FloatingPrices>
+                ) : null}
+              </div>
+            </div>
+          </article>
+        );
+      })}</div> : <div className="pp-empty"><ImageIcon size={26} aria-hidden="true" /><strong>{t(models.length ? "暂无此类模型" : "暂无已上架模型")}</strong></div>}
     </div>
   </section>;
 }
@@ -1397,6 +1507,7 @@ export function PricingView() {
                       <PlanMark kind={plan.kind} />
                       <div className="pp-plan__heading">
                         <h3>{t(plan.name)}</h3>
+                        {plan.description ? <p className="pp-plan__description">{t(plan.description)}</p> : null}
                       </div>
                     </div>
                     <div className="pp-plan__purchase">

@@ -10,6 +10,8 @@
 
 本文同时定义全站图片页面的统一接入方式。提示词页是尺寸元数据和虚拟瀑布流的完整参考实现；创作历史、个人中心、文生图、游戏美术、模型设定图、投稿列表和普通内容卡片按下文的分级策略复用同一套原则。
 
+2026-09-22 当前实现：提示词页为 `apps/web-react/src/views/PromptLibraryView.jsx`，React 虚拟布局 Hook 为 `src/features/prompts/useVirtualMasonryFeed.js`。该页使用图片主导卡片，`bodyHeight: 0`、`minColumnWidth: 260`、`maxColumns: 12`、`overscan: 960`，分页预取为 1200px；不要沿用下文历史 Vue 的 178px 正文高度或最多 4 列作为当前页面参数。图片通过 React `AuthenticatedImage` 加载，列表传入 `maxDimension={720}`、两次重试和 `keepLoaded`；虚拟范围之外仍会卸载卡片。历史测量数据保留用于追溯，本次未重新进行浏览器性能测试。
+
 ## 设计原则
 
 简单的 CSS `column-count` 只能实现瀑布流外观。它会把全部卡片长期保留在 DOM 中，也无法在图片下载前可靠知道卡片高度。长列表需要把图片管线和布局管线一起设计：
@@ -155,7 +157,7 @@ Asynq 周期任务 `cron:backfill_prompt_cover_dimensions` 每 10 分钟执行�
 
 ### 布局计算
 
-当前默认参数：
+当时 Vue 实现的默认参数（当前 React 页面参数见文首）：
 
 | 参数             | 值       | 说明                           |
 | ---------------- | -------- | ------------------------------ |
@@ -226,7 +228,7 @@ API 宽高为空时，首帧使用稳定的 `3:4` 占位比例。图片加载事
 
 ### 图片组件分层
 
-不要让业务页面自行实现鉴权、懒加载、重试和占位。按媒体来源选用以下组件：
+不要让业务页面自行实现鉴权、懒加载、重试和占位。下表保留旧 Vue 组件的职责划分；当前 React 使用 `apps/web-react/src/components/AuthenticatedImage.jsx` 等自有组件，属性和事件应按实际 React 实现传递，不能导入已经删除的 `.vue` 文件：
 
 | 场景                       | 组件                                | 行为                                                         |
 | -------------------------- | ----------------------------------- | ------------------------------------------------------------ |
@@ -252,7 +254,7 @@ API 宽高为空时，首帧使用稳定的 `3:4` 占位比例。图片加载事
 
 ### 页面分级
 
-| 页面类型                | 策略                                                      | 当前接入                                             |
+| 页面类型                | 策略                                                      | 原方案接入示例                                       |
 | ----------------------- | --------------------------------------------------------- | ---------------------------------------------------- |
 | 页面级无限瀑布流        | 确定性布局、视口虚拟化、提前分页                          | 提示词库、创作历史                                   |
 | 工作台内嵌历史/资产列表 | 服务端游标分页、缩略图、`content-visibility` 跳过离屏渲染 | 文生图、游戏美术、模型设定图、插画染色素材抽屉       |
@@ -331,9 +333,10 @@ cd apps/server
 go vet ./...
 go test ./...
 
-cd ../web
-npm run check:imports
-npm run lint
+cd ../web-react
+npm run test:authenticated-media-retry
+npm run test:history-pagination
+npx playwright test tests/e2e/prompt-library.spec.js --project chromium
 npm run build
 
 cd ../admin
@@ -350,7 +353,7 @@ npm run build
 - 加载下一页后容器高度增长，当前滚动位置不跳回顶部。
 - 图片加载失败时卡片结构和操作按钮仍稳定。
 
-当前自动化验证样本中，首屏同时出现 10 种媒体高度；自然宽高比与渲染宽高比最大误差约 `0.004`，未检测到卡片重叠。
+历史自动化验证样本中，首屏同时出现 10 种媒体高度；自然宽高比与渲染宽高比最大误差约 `0.004`，未检测到卡片重叠。这不是 2026-09-22 当前工作区的复测结果。
 
 ## 关键实现文件
 
@@ -362,6 +365,8 @@ npm run build
 - API 序列化：`apps/server/internal/httpapi/serialize.go`
 - 历史回填：`apps/server/internal/promptsync/sync.go`
 - Worker 调度：`apps/server/internal/worker/worker.go`
+- 当前 React 页面与虚拟布局：`apps/web-react/src/views/PromptLibraryView.jsx`、`apps/web-react/src/features/prompts/useVirtualMasonryFeed.js`
+- 当前 React 图片与媒体管线：`apps/web-react/src/components/AuthenticatedImage.jsx`、`apps/web-react/src/legacy-modules/services/authenticatedMedia.js`
 - 历史 Vue 用户端数据适配：`apps/web/src/services/promptsApi.js`、`promptLibrary.js`
 - 历史 Vue 虚拟瀑布流：`apps/web/src/features/creator-hub/useVirtualMasonryFeed.js`
 - 历史 Vue 共享图片组件：`apps/web/src/components/common/OptimizedImage.vue`、`AuthenticatedImage.vue`、`ProgressiveAuthenticatedImage.vue`

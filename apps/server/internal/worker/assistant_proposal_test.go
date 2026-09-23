@@ -87,7 +87,7 @@ func TestAssistantAgentInstructionsPreserveRequestedCount(t *testing.T) {
 		"ratio": "16:9", "resolution": "2K", "count": float64(3), "quality": "high",
 		"_imageModelConfigId": "image-model",
 	}}
-	instructions := assistantAgentInstructions(run, nil, nil)
+	instructions := assistantAgentInstructions(run, nil, nil, true)
 	if !strings.Contains(instructions, "数量=3") || !strings.Contains(instructions, "图片模型=image-model") {
 		t.Fatalf("instructions = %q", instructions)
 	}
@@ -111,6 +111,38 @@ func TestAssistantAgentInstructionsPreserveRequestedCount(t *testing.T) {
 	if !strings.Contains(instructions, "有效单次上限") || !strings.Contains(instructions, "不能提交会被系统拒绝的超限方案") {
 		t.Fatalf("instructions lack effective batch limit rule = %q", instructions)
 	}
+}
+
+// 纯对话轮不会把 propose_image_action 交给模型，那整段图片参数规则就是纯干扰：
+// 模型要先读完十条自己用不上的约束，才轮到判断这句话该怎么答。
+func TestAssistantAgentInstructionsDropImageRulesWhenImageToolIsWithheld(t *testing.T) {
+	run := &store.AssistantRun{Params: map[string]any{
+		"ratio": "16:9", "resolution": "2K", "count": float64(3), "quality": "high",
+		"_imageModelConfigId": "image-model",
+	}}
+	catalog := []assistantCatalogImage{{ID: "img-1", Label: "上一张图"}}
+	models := []map[string]any{{"id": "image-model", "maxCount": 4}}
+	chat := assistantAgentInstructions(run, catalog, models, false)
+	for _, leaked := range []string{
+		"propose_image_action", "promptMode", "referenceMode", "referencedImageIds",
+		"当前默认参数", "当前可用图片目录", "当前可用图片模型", "img-1",
+	} {
+		if strings.Contains(chat, leaked) {
+			t.Fatalf("纯对话轮仍下发了图片规则 %q：%q", leaked, chat)
+		}
+	}
+	// 通用编排和其余工具的规则必须原样保留，省的只能是这轮用不上的那部分。
+	for _, required := range []string{"通用执行 Agent", "全部子目标", "web_search", "task_status", "media_action"} {
+		if !strings.Contains(chat, required) {
+			t.Fatalf("裁剪掉了不该裁的规则 %q：%q", required, chat)
+		}
+	}
+	image := assistantAgentInstructions(run, catalog, models, true)
+	if len(chat) >= len(image) {
+		t.Fatalf("裁剪后提示词没有变短：对话 %d 字节，出图 %d 字节", len(chat), len(image))
+	}
+	t.Logf("系统提示词：出图轮 %d 字节，纯对话轮 %d 字节，省下 %d%%",
+		len(image), len(chat), 100-len(chat)*100/len(image))
 }
 
 func TestAttachAssistantWebSearchesSkipsEmptyAndKeepsSources(t *testing.T) {

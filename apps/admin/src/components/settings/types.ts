@@ -83,6 +83,7 @@ export interface AdminSettings {
   platformLogUserEnabled?: boolean
   platformLogRetentionDays?: number
   platformLogMaxMb?: number
+  auditLogRetentionDays?: number
   lanjingPayEnabled?: boolean
   lanjingPayBaseUrl?: string
   lanjingPaySecret?: string

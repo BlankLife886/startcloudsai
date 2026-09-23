@@ -1,11 +1,10 @@
 # StarCloudsAI 零停机发布独立操作手册
 
-本文档是一份可单独使用的生产更新手册，适用于当前 StarCloudsAI 的宝塔 Nginx + Docker
-Compose 部署。目标是在不中断在线用户、不替换生产数据、不提前消费线上任务的前提下，完成
-API、Worker、用户端、管理端和网关更新。
+核对日期：2026-09-22。本文是根 `docker-compose.yml`（PG17）部署的蓝绿操作参考，仅适用于已经验证新旧 API、Worker、数据库 Schema 与执行协议兼容的版本。它不适用于直接升级 PG18 一体化栈，也不承诺在所有升级中零中断。
 
-最近一次完整实操验证：2026-08-27，部署版本 `303cfc7cb521`。后续版本使用时替换
-`RELEASE_ID`，不要照搬旧提交号。
+当前工作区迁移 `00154_drop_user_skill_bindings.sql` 删除 `user_skill_bindings`，Down 仅重建空表。若旧版本仍读写该表，禁止启动共享生产库的候选 API；应使用 [维护窗口部署](MAINTENANCE_RELEASE.md)。钱包/订阅和执行快照升级也须逐项检查。候选 API 的 `serve` 会立即执行真实迁移，健康检查不能替代兼容性验证。
+
+历史记录中的完整实操验证：2026-08-27，部署版本 `303cfc7cb521`；该结果仅适用于当时版本。本次只核对文档与代码，没有重新进行生产发布验证。
 
 适用环境：
 
@@ -38,7 +37,7 @@ API、Worker、用户端、管理端和网关更新。
 
 1. 发布包只由 `git archive` 生成，不包含开发机 `.env`、数据库、上传目录、依赖和缓存。
 2. 新版本只复制服务器现有的生产 `.env`。
-3. PostgreSQL、Redis 数据卷和 R2 对象存储始终复用生产数据，不复制、不初始化、不删除。
+3. PostgreSQL、Redis 数据卷和配置的 S3/OSS 对象存储始终复用生产数据，不初始化、不删除；另行制作备份。
 4. 候选环境默认不启动 Worker，避免两个版本提前同时消费任务。
 5. 候选环境验证通过后，先优雅滚动 Worker，再切换网页流量。
 6. 宝塔 Nginx 只使用配置检测通过后的 reload，不直接停止 Nginx。
@@ -57,12 +56,12 @@ docker system prune -a
 
 ## 2. 本地生成发布包
 
-在开发机仓库根目录确认目标提交已经推送且工作区干净：
+在开发机仓库根目录确认网站改动已提交，记录目标版本：
 
 ```bash
 git status --short
 git rev-parse --short=12 HEAD
-git rev-parse --short=12 origin/codex/publish-current-project
+git log -1 --format='%H %s'
 ```
 
 生成发布包：
@@ -79,6 +78,8 @@ git rev-parse --short=12 origin/codex/publish-current-project
 ```
 
 发布包必须同时上传到服务器 `/www/wwwroot`。只上传这两个文件，不上传本地 `.env`。
+
+打包脚本拒绝网站范围的未提交改动，归档 `HEAD` 并写入 `RELEASE_COMMIT`，排除整个 `apps/mobile`。移动端单独发布，不能把当前未提交的网站功能当作已进入发布包。
 
 ## 3. 服务器资源预检
 
@@ -350,6 +351,8 @@ docker compose --env-file .env exec -T postgres \
 - 破坏性清理拆到所有实例升级完成后的独立版本。
 - 存在不兼容迁移时，不得继续零停机流程，应安排维护窗口。
 
+当前迁移具体风险和最高源码版本见 [数据库说明](DATABASE.md)。不要仅检查旧 `crun_media`/`media_tool` 类型；还需核对所有待应用迁移、账务约束和删除表。源码最高编号不等于生产库已应用版本。
+
 ## 8. 启动候选环境
 
 只启动四个无状态候选服务：
@@ -497,7 +500,13 @@ curl -fsS http://127.0.0.1:8080/api/v1/health
 curl -fsS http://127.0.0.1:8081/api/v1/health
 ```
 
-日志必须出现 `worker ready`，状态为 `running`，重启次数为 `0`。
+日志应出现 `worker ready`，容器应保持运行且无持续重启，并验证当前消费者心跳：
+
+```bash
+docker compose --env-file .env -p startcloudsai exec -T worker /app/server check-worker
+```
+
+该命令检查图片与聊天消费者，不以日志字符串代替执行池就绪。
 
 ## 11. 检查宝塔 Nginx
 
@@ -512,7 +521,7 @@ client_max_body_size 131m;
 ```bash
 NGINX=/www/server/nginx/sbin/nginx
 SITE_CONF=/www/server/panel/vhost/nginx/starcloudisai.com.conf
-BACKUP_ROOT=$(ls -dt /www/backup/startcloudsai/predeploy-* | head -1)
+: "${BACKUP_ROOT:?请设置第4节记录的本次发布备份目录}"
 
 "$NGINX" -t
 grep -nE 'server_name|client_max_body_size' "$SITE_CONF"
@@ -547,7 +556,7 @@ cp -a "$PROXY_CONF" "$BACKUP_ROOT/nginx-proxy-before-$RELEASE_ID.conf"
 set -euo pipefail
 
 NGINX=/www/server/nginx/sbin/nginx
-BACKUP_ROOT=$(ls -dt /www/backup/startcloudsai/predeploy-* | head -1)
+: "${BACKUP_ROOT:?请设置第4节记录的本次发布备份目录}"
 PROXY_BACKUP="$BACKUP_ROOT/nginx-proxy-before-$RELEASE_ID.conf"
 
 rollback_proxy() {
@@ -580,6 +589,8 @@ echo "PUBLIC TRAFFIC -> 8081: OK"
 ```
 
 Nginx reload 会让旧 worker 进程继续处理已有连接，新请求进入 `8081`。
+
+外层代理还需要转发 `/v1/responses` 的 WebSocket Upgrade，SSE 保持关闭缓冲；当前配置示例见 [部署手册](DEPLOYMENT.md)。
 
 ## 13. 候选环境业务验收
 
@@ -686,7 +697,7 @@ free -h
 set -euo pipefail
 
 NGINX=/www/server/nginx/sbin/nginx
-BACKUP_ROOT=$(ls -dt /www/backup/startcloudsai/predeploy-* | head -1)
+: "${BACKUP_ROOT:?请设置第4节记录的本次发布备份目录}"
 CANDIDATE_PROXY_BACKUP="$BACKUP_ROOT/nginx-proxy-8081-$RELEASE_ID.conf"
 
 cp -a "$PROXY_CONF" "$CANDIDATE_PROXY_BACKUP"
@@ -734,7 +745,7 @@ set -euo pipefail
 export STANDARD_DIR=/www/wwwroot/startcloudsai
 export OLD_CODE_BACKUP=/www/wwwroot/startcloudsai-backup-before-$RELEASE_ID
 
-BACKUP_ROOT=$(ls -dt /www/backup/startcloudsai/predeploy-* | head -1)
+: "${BACKUP_ROOT:?请设置第4节记录的本次发布备份目录}"
 
 cd "$RELEASE_DIR"
 docker compose --env-file .env \
@@ -788,7 +799,7 @@ df -h /
 
 - 公网代理指向 `127.0.0.1:8080`。
 - 正式 Server 为 `healthy`，其余正式容器均为 `Up`。
-- Worker 日志包含 `worker ready`，没有持续重启。
+- Worker 的 `/app/server check-worker` 成功，图片/聊天消费者属于当前容器，没有持续重启。
 - PostgreSQL、Redis 和公网健康接口均为 `ok`。
 - 候选 `8081` 已停止。
 - 标准路径正确指向本次 `$RELEASE_DIR`。
@@ -915,7 +926,7 @@ docker compose --env-file .env -p startcloudsai_candidate \
   logs --since=10m --tail=200 server
 ```
 
-重点检查数据库迁移、R2 配置、Redis、生产 `.env` 和允许来源配置。
+重点检查数据库迁移、`OBJECT_STORAGE_*` 配置、Redis、生产 `.env` 和允许来源配置。
 
 ### 页面更新后旧 chunk 404
 

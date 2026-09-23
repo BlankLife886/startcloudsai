@@ -4,10 +4,12 @@ import { gsap } from "gsap";
 import { useGSAP } from "@gsap/react";
 import { ProgressiveImage } from "../components/ProgressiveImage.jsx";
 import { useAuth } from "../auth/AuthContext.jsx";
+import { useIsDark } from "../hooks/useIsDark.js";
 import "@react/legacy-static/features/share/styles/share-view.css";
 
 const PAGE_SIZE = 16;
 const HERO_ROTATE_MS = 6400;
+const REVEAL_SRC = "/sucai/community-gallery-atmosphere.webp";
 gsap.registerPlugin(useGSAP);
 
 async function apiGet(path, params = {}, signal) {
@@ -150,6 +152,7 @@ function AuthorMark({ name, src, className }) {
 
 export function ShareView() {
   const { user } = useAuth();
+  const isDark = useIsDark();
   const navigate = useNavigate();
   const location = useLocation();
   const pageRef = useRef(null);
@@ -372,14 +375,49 @@ export function ShareView() {
     () => {
       const root = pageRef.current;
       if (!root || reduceMotion()) return undefined;
-      const pointer = root.querySelector(".community-pointer");
-      const xTo = pointer
-        ? gsap.quickTo(pointer, "x", { duration: 0.7, ease: "power3.out" })
-        : null;
-      const yTo = pointer
-        ? gsap.quickTo(pointer, "y", { duration: 0.7, ease: "power3.out" })
-        : null;
+      const reveal = isDark ? root.querySelector(".community-reveal") : null;
+      const art = reveal?.querySelector(".community-reveal__art") || null;
+      const canReveal =
+        Boolean(reveal && art) && !navigator.connection?.saveData;
+      let beamX = null;
+      let beamY = null;
+      let artX = null;
+      let artY = null;
+      let half = 0;
+      let idleId = 0;
+      if (canReveal) {
+        const size = window.matchMedia("(pointer: coarse)").matches ? 560 : 520;
+        half = size / 2;
+        reveal.style.setProperty("--reveal-size", `${size}px`);
+        const move = { duration: 0.16, ease: "power3.out" };
+        beamX = gsap.quickTo(reveal, "x", move);
+        beamY = gsap.quickTo(reveal, "y", move);
+        artX = gsap.quickTo(art, "x", move);
+        artY = gsap.quickTo(art, "y", move);
+      }
       let hovered = null;
+      let lit = false;
+      let raf = 0;
+      let nextX = 0;
+      let nextY = 0;
+      let nextTarget = null;
+      const warmArt = () => {
+        if (!art || art.dataset.ready === "1") return;
+        art.dataset.ready = "1";
+        art.style.backgroundImage = `url("${REVEAL_SRC}")`;
+      };
+      if (canReveal) {
+        const preload = () => {
+          const image = new Image();
+          image.decoding = "async";
+          image.src = REVEAL_SRC;
+          if (image.decode) image.decode().then(warmArt).catch(warmArt);
+          else image.onload = warmArt;
+        };
+        if (typeof requestIdleCallback === "function")
+          idleId = requestIdleCallback(preload, { timeout: 1800 });
+        else idleId = window.setTimeout(preload, 400);
+      }
       const release = (node) => {
         if (!node) return;
         gsap.to(node, {
@@ -402,16 +440,29 @@ export function ShareView() {
             });
         }
       };
-      const onMove = (event) => {
-        xTo?.(event.clientX);
-        yTo?.(event.clientY);
-        const target = event.target.closest(".community-featured");
+      const flush = () => {
+        raf = 0;
+        const x = nextX;
+        const y = nextY;
+        const target = nextTarget?.closest?.(".community-featured") || null;
+        nextTarget = null;
         if (hovered && hovered !== target) release(hovered);
         hovered = target;
+        if (canReveal) {
+          if (!lit) {
+            lit = true;
+            warmArt();
+            root.classList.add("is-lit");
+          }
+          beamX?.(x);
+          beamY?.(y);
+          artX?.(-x + half);
+          artY?.(-y + half);
+        }
         if (!target || target.classList.contains("is-empty")) return;
         const rect = target.getBoundingClientRect();
-        const px = (event.clientX - rect.left) / rect.width - 0.5;
-        const py = (event.clientY - rect.top) / rect.height - 0.5;
+        const px = (x - rect.left) / rect.width - 0.5;
+        const py = (y - rect.top) / rect.height - 0.5;
         target.style.setProperty("--mx", `${(px + 0.5) * 100}%`);
         target.style.setProperty("--my", `${(py + 0.5) * 100}%`);
         gsap.to(target, {
@@ -432,19 +483,31 @@ export function ShareView() {
             overwrite: "auto",
           });
       };
+      const onMove = (event) => {
+        nextX = event.clientX;
+        nextY = event.clientY;
+        nextTarget = event.target;
+        if (!raf) raf = requestAnimationFrame(flush);
+      };
       const onLeave = () => {
+        lit = false;
+        root.classList.remove("is-lit");
         release(hovered);
         hovered = null;
       };
-      root.addEventListener("pointermove", onMove);
+      root.addEventListener("pointermove", onMove, { passive: true });
       root.addEventListener("pointerleave", onLeave);
       return () => {
         root.removeEventListener("pointermove", onMove);
         root.removeEventListener("pointerleave", onLeave);
+        if (raf) cancelAnimationFrame(raf);
+        if (typeof cancelIdleCallback === "function") cancelIdleCallback(idleId);
+        else clearTimeout(idleId);
+        root.classList.remove("is-lit");
         release(hovered);
       };
     },
-    { scope: pageRef },
+    { scope: pageRef, dependencies: [isDark], revertOnUpdate: true },
   );
 
   async function loadItems({
@@ -707,7 +770,11 @@ export function ShareView() {
 
   return (
     <main ref={pageRef} className="community-page">
-      <div className="community-pointer" aria-hidden="true" />
+      {isDark ? (
+        <div className="community-reveal" aria-hidden="true">
+          <div className="community-reveal__art" />
+        </div>
+      ) : null}
       <div className="community-atmosphere" aria-hidden="true">
         <i className="community-orb is-a" />
         <i className="community-orb is-b" />

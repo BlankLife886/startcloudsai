@@ -55,25 +55,3 @@ test('admin can switch referral modes and save the exclusive rule',async({page})
   await page.getByRole('button',{name:'保存配置',exact:true}).click();
   await expect.poll(()=>saved?.mode).toBe('fixed');expect(saved.fixedPoints).toBe(25);
 });
-
-test('Skill catalogue filters, favorites and collects task parameters',async({page})=>{
-  await page.goto('/skills');
-  await expect(page.getByRole('heading',{name:'Skill 中心',exact:true})).toBeVisible();
-  await expect(page.locator('.skill-item')).toHaveCount(5);
-  await page.getByRole('tab',{name:'电商',exact:true}).click();
-  await expect(page.locator('.skill-item')).toHaveCount(1);
-  await page.getByRole('button',{name:'收藏商品主图策划',exact:true}).click();
-  await page.getByRole('checkbox',{name:'已收藏',exact:true}).check();
-  await expect(page.locator('.skill-item')).toHaveCount(1);
-  await page.getByRole('button',{name:'填写参数',exact:true}).click();
-  const dialog=page.getByRole('dialog',{name:'商品主图策划',exact:true});
-  await expect(dialog).toBeVisible();
-  await dialog.getByLabel('商品与真实卖点').fill('可折叠旅行水杯');
-  await dialog.getByLabel('目标用户').fill('城市通勤者');
-  await page.screenshot({path:'../../.artifacts/skill-parameters.png'});
-  await dialog.getByRole('button',{name:'关闭',exact:true}).click();
-  await expect(dialog).not.toBeVisible();
-  await page.getByRole('tab',{name:'全部',exact:true}).click();
-  await page.getByRole('checkbox',{name:'已收藏',exact:true}).uncheck();
-  await page.screenshot({path:'../../.artifacts/skills-catalog.png'});
-});

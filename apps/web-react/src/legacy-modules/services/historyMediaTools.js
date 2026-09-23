@@ -1,5 +1,6 @@
 import { zip } from 'fflate'
 import { fetchAuthenticatedMediaBlob } from '@/services/authenticatedMedia'
+import notificationService from '@/services/notification'
 
 const metadataCache = new Map()
 const metadataWaiters = []
@@ -147,6 +148,35 @@ export async function downloadHistoryImagesAsZip(items = [], { onProgress } = {}
     .filter((item) => item.url)
   if (!sources.length) throw new Error('没有可打包下载的原图')
 
+  const notificationId = notificationService.addNotification({
+    type: 'info',
+    title: '下载中',
+    message: `准备 ${sources.length} 张原图`,
+    position: 'bottom-right',
+    duration: 0,
+    closable: true,
+    dedupe: false,
+    download: true,
+    progress: 0,
+    progressKnown: true,
+  })
+  const reportProgress = (progress) => {
+    onProgress?.(progress)
+    const completed = Math.max(0, Number(progress?.completed || 0))
+    const total = Math.max(1, Number(progress?.total || sources.length))
+    const phase = progress?.phase || 'fetching'
+    const percent = phase === 'done'
+      ? 100
+      : phase === 'packing'
+        ? 92
+        : Math.min(88, Math.round((completed / total) * 88))
+    notificationService.updateNotification(notificationId, {
+      message: phase === 'packing' ? `正在打包 ${total} 张原图` : `正在下载 ${Math.min(completed, total)} / ${total} 张原图`,
+      progress: percent,
+      progressKnown: true,
+    })
+  }
+
   const files = {}
   let completed = 0
   const queue = [...sources]
@@ -163,24 +193,49 @@ export async function downloadHistoryImagesAsZip(items = [], { onProgress } = {}
       }
       files[filename] = new Uint8Array(await blob.arrayBuffer())
       completed += 1
-      onProgress?.({ phase: 'fetching', completed, total: sources.length })
+      reportProgress({ phase: 'fetching', completed, total: sources.length })
     }
   })
-  await Promise.all(workers)
-  onProgress?.({ phase: 'packing', completed, total: sources.length })
-  const archive = await zipFiles(files, { level: 0 })
-  const objectUrl = URL.createObjectURL(new Blob([archive], { type: 'application/zip' }))
-  const anchor = document.createElement('a')
-  anchor.href = objectUrl
-  anchor.download = `ai-originals-${new Date().toISOString().slice(0, 10)}.zip`
-  anchor.rel = 'noopener'
-  document.body.appendChild(anchor)
   try {
-    anchor.click()
-  } finally {
-    anchor.remove()
-    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000)
+    await Promise.all(workers)
+    reportProgress({ phase: 'packing', completed, total: sources.length })
+    const archive = await zipFiles(files, { level: 0 })
+    const objectUrl = URL.createObjectURL(new Blob([archive], { type: 'application/zip' }))
+    const anchor = document.createElement('a')
+    anchor.href = objectUrl
+    anchor.download = `ai-originals-${new Date().toISOString().slice(0, 10)}.zip`
+    anchor.rel = 'noopener'
+    document.body.appendChild(anchor)
+    try {
+      anchor.click()
+    } finally {
+      anchor.remove()
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000)
+    }
+    reportProgress({ phase: 'done', completed, total: sources.length })
+    notificationService.updateNotification(notificationId, {
+      type: 'success',
+      title: '下载完成',
+      message: `${sources.length} 张原图已保存`,
+      download: false,
+      progress: 100,
+      progressKnown: true,
+      duration: 3200,
+      closable: false,
+    })
+    return { count: sources.length, bytes: archive.byteLength }
+  } catch (error) {
+    notificationService.updateNotification(notificationId, {
+      type: 'error',
+      title: '下载失败',
+      message: error?.message || '批量打包下载失败',
+      download: false,
+      progress: null,
+      progressKnown: false,
+      duration: 5200,
+      closable: true,
+    })
+    if (error && typeof error === 'object') error.downloadNotificationShown = true
+    throw error
   }
-  onProgress?.({ phase: 'done', completed, total: sources.length })
-  return { count: sources.length, bytes: archive.byteLength }
 }

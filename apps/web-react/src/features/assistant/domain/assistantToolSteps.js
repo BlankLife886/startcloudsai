@@ -86,16 +86,50 @@ function clampSummary(value) {
   return runes.length > MAX_SUMMARY_RUNES ? `${runes.slice(0, MAX_SUMMARY_RUNES).join('')}…` : text
 }
 
+function summarizeProposalArguments(args) {
+  const items = Array.isArray(args.items) ? args.items : []
+  const first = items[0] && typeof items[0] === 'object' ? items[0] : null
+  const title = typeof first?.title === 'string' ? first.title.trim() : ''
+  const itemPrompt = typeof first?.prompt === 'string' ? first.prompt.trim() : ''
+  const prompt = typeof args.prompt === 'string' ? args.prompt.trim() : ''
+  if (items.length > 1 && title) return clampSummary(`${title} 等 ${items.length} 张`)
+  return clampSummary(title || itemPrompt || prompt)
+}
+
 /** 从工具参数中提取一句可读摘要，用于时间线上不展开也能看懂这一步做了什么。 */
-export function summarizeAssistantToolArguments(raw) {
+export function summarizeAssistantToolArguments(raw, name = '') {
   const args = parseToolArguments(raw)
   if (!args) return ''
+  if (String(name || '').trim() === 'propose_image_action') {
+    return summarizeProposalArguments(args)
+  }
   for (const key of SUMMARY_KEYS) {
     const value = args[key]
     if (typeof value === 'string' && value.trim()) return clampSummary(value)
   }
   for (const value of Object.values(args)) {
     if (typeof value === 'string' && value.trim()) return clampSummary(value)
+  }
+  return ''
+}
+
+function looksLikeJsonPayload(value) {
+  if (value && typeof value === 'object') return true
+  const text = String(value || '').trim()
+  return text.startsWith('{') || text.startsWith('[')
+}
+
+// 展开给用户看的只有失败原因或已经写成人话的结果。原始工具参数是给模型的协议，
+// 尤其是 propose_image_action 那份 JSON，下面的方案卡已经展示过了。
+export function assistantToolStepDetail(step = {}) {
+  const error = String(step.error || '').trim()
+  if (error) return error
+  const result = step.result
+  if (result == null || result === '') return ''
+  if (typeof result === 'string') {
+    const text = result.trim()
+    if (!text || looksLikeJsonPayload(text)) return ''
+    return text
   }
   return ''
 }
@@ -140,7 +174,7 @@ export function mergeAssistantToolSteps(currentSteps, tool, { at = Date.now() } 
     execution: String(tool?.execution || existing?.execution || 'server').trim(),
     status,
     arguments: args,
-    summary: summarizeAssistantToolArguments(args) || existing?.summary || '',
+    summary: summarizeAssistantToolArguments(args, name) || existing?.summary || '',
     result: tool?.result === undefined ? existing?.result : tool.result,
     error: String(tool?.error || '').trim() || (status === 'failed' ? existing?.error || '' : ''),
     startedAt,
@@ -178,13 +212,33 @@ export function normalizeAssistantToolSteps(items) {
       execution: String(item.execution || 'server'),
       status: normalizeStatus(item.status),
       arguments: args,
-      summary: item.summary || summarizeAssistantToolArguments(args),
+      summary: item.summary || summarizeAssistantToolArguments(args, name),
       result: item.result,
       error: String(item.error || '').trim(),
       startedAt: Number(item.startedAt) || 0,
       durationMs: Math.max(0, Number(item.durationMs) || 0),
     })
     if (steps.length >= MAX_STEPS) break
+  }
+  return steps
+}
+
+const PLAN_STATUSES = new Set(['pending', 'in_progress', 'completed'])
+const MAX_PLAN_STEPS = 8
+
+/**
+ * Agent 自己维护的待办清单。计划每次整份替换而不是发增量，所以这里只做校验和裁剪，
+ * 不需要合并逻辑。
+ */
+export function normalizeAssistantPlan(items) {
+  const rows = Array.isArray(items) ? items : []
+  const steps = []
+  for (const item of rows) {
+    const title = String(item?.title || '').trim()
+    if (!title) continue
+    const status = String(item?.status || '').trim().toLowerCase()
+    steps.push({ title, status: PLAN_STATUSES.has(status) ? status : 'pending' })
+    if (steps.length >= MAX_PLAN_STEPS) break
   }
   return steps
 }

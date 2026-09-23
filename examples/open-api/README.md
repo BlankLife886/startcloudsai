@@ -1,5 +1,7 @@
 # StarClouds API 调用示例
 
+文档基线：2026-09-22 当前工作区。Images 使用不存站内图片的直通接口，Node 任务客户端使用持久队列接口；二者不能互换 Base URL 或超时恢复方式。完整兼容范围还包括 Responses 子集，见 [API 文档](../../docs/OPEN_API.md)。
+
 新应用可使用 OpenAI Images 兼容接口；旧的任务客户端继续可用。以下命令在项目根目录运行。域名、模型和 Key 均需替换为真实控制台的数据，演示页凭据不能调用真实 API。
 
 ## Python OpenAI SDK
@@ -25,7 +27,7 @@ python examples/open-api/openai_images.py generate \
   --output './cat.png'
 ```
 
-`generate` 和 `edit` 会创建图片任务并按站内价格消耗积分。先在控制台设置小额测试额度；需要提前核对积分时使用旧版 `/api/open/v1/tasks/quote`。上述调用只请求一张图片，使用模型默认尺寸、质量与输出格式。脚本按真实图片格式自动使用 `.png`、`.jpg` 或 `.webp` 后缀，并拒绝覆盖已有文件。
+`generate` 和 `edit` 会把请求直接转发到图片上游，并按站内价格消耗积分。先在控制台设置小额测试额度；需要提前核对积分时使用旧版 `/api/open/v1/tasks/quote`。上述调用只请求一张图片，使用模型默认尺寸、质量与输出格式。脚本按真实图片格式自动使用 `.png`、`.jpg` 或 `.webp` 后缀，并拒绝覆盖已有文件。
 
 编辑已有图片使用 `edit`，Key 额外需要 `files:write`，模型必须支持参考图：
 
@@ -40,17 +42,9 @@ python examples/open-api/openai_images.py edit \
 
 多图时重复 `--image`；最多6张，图片文件合计不超过32 MiB，含multipart元数据的请求体不超过33 MiB。单图大小与张数还受平台和模型限制。SDK负责生成multipart边界，不要自行设置Content-Type。
 
-脚本打印本次幂等键和服务端返回的 `X-Task-ID`，关闭自动重试，最长等待270秒。每次业务请求需提前保存一个唯一编号及其参数；网络错误后的重试使用同一个编号。要创作另一张图片时才更换编号。
+脚本打印本次幂等键，关闭自动重试，最长等待270秒。每次业务请求需提前保存一个唯一编号及其参数；网络错误后的重试使用同一个编号。网关不保存任务结果，无法通过站内任务接口恢复已断开的标准请求。
 
-如果收到504，只能确定本次HTTP处理超时，已创建的任务会继续处理。保存任务ID后查询状态（需要 `tasks:read`）：
-
-```bash
-export STAR_CLOUD_TASK_ID='替换为响应中的任务ID'
-curl -sS "${STAR_CLOUD_BASE_URL%/v1}/api/open/v1/tasks/$STAR_CLOUD_TASK_ID" \
-  -H "Authorization: Bearer $STAR_CLOUD_API_KEY"
-```
-
-没有收到任务ID时，保持模型、提示词、图片和参数不变，复用原幂等键重试原调用。若 Base64 响应过大，可使用同一幂等键将 `response_format` 改为 `url` 获取短期下载地址；这个交付格式不改变原任务。完整参数、cURL、下载和错误说明见 [API文档](../../docs/OPEN_API.md)。
+如果收到504，只能确定本次HTTP处理超时，上游是否已生成无法确认。保持模型、提示词、图片和参数不变，复用原幂等键重试；只有上游本身支持幂等时，才能避免重复生成。若 Base64 响应过大，可改用 `response_format=url` 获取上游短期下载地址。完整参数、cURL、下载和错误说明见 [API文档](../../docs/OPEN_API.md)。
 
 ## 旧版 Node.js 任务客户端
 
@@ -81,4 +75,4 @@ node --test examples/open-api/webhook.test.mjs
 
 ## 无网络 SDK 协议检查
 
-安装 OpenAI SDK 后可运行 `python examples/open-api/test_openai_sdk.py`。该检查使用真实 SDK 与本地 MockTransport，验证模型列表、JSON 生图、multipart 单图/多图编辑、错误解析和重试提示，不请求任何服务或生成图片。本次已用 OpenAI SDK 3.10.0 验证。
+安装 OpenAI SDK 后可运行 `python examples/open-api/test_openai_sdk.py`。该检查使用真实 SDK 与本地 MockTransport，验证模型列表、JSON 生图、multipart 单图/多图编辑、错误解析和重试提示，不请求任何服务或生成图片。先前记录使用 OpenAI SDK 3.10.0 验证；本次文档更新未重跑该检查，不代表其他 SDK 版本已验证。

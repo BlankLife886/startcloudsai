@@ -32,18 +32,45 @@ html.share-gallery-page #app {
     linear-gradient(180deg, #f7f7ff 0%, #fff 42%, #fafaff 100%);
 }
 
-.community-pointer {
+html:not(.color-scheme-dark) .community-reveal {
+  display: none;
+}
+
+.community-reveal {
+  --reveal-size: 520px;
   pointer-events: none;
   position: fixed;
-  z-index: 0;
+  z-index: 1;
   top: 0;
   left: 0;
-  width: 560px;
-  height: 560px;
-  margin: -280px 0 0 -280px;
+  width: var(--reveal-size);
+  height: var(--reveal-size);
+  margin: calc(var(--reveal-size) / -2) 0 0 calc(var(--reveal-size) / -2);
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(133, 104, 247, 0.18), transparent 68%);
-  mix-blend-mode: multiply;
+  overflow: hidden;
+  opacity: 0;
+  contain: paint;
+  -webkit-mask-image: radial-gradient(circle, #000 28%, transparent 72%);
+  mask-image: radial-gradient(circle, #000 28%, transparent 72%);
+  transition: opacity 0.28s var(--share-ease);
+}
+.community-page.is-lit .community-reveal {
+  opacity: 1;
+  will-change: transform;
+}
+.community-reveal__art {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background-color: #141221;
+  background-position: center;
+  background-size: cover;
+  background-repeat: no-repeat;
+}
+.community-page.is-lit .community-reveal__art {
+  will-change: transform;
 }
 
 .community-atmosphere {
@@ -2178,7 +2205,7 @@ html.settings-no-animations .share-detail__panel {
     animation: none !important;
   }
   .community-featured__slide { transition: none !important; }
-  .community-pointer,
+  .community-reveal,
   .community-grain { display: none; }
 }
 
@@ -2209,7 +2236,7 @@ html.settings-no-animations .community-copy__seal,
 html.settings-no-animations .spin {
   animation: none !important;
 }
-html.settings-no-animations .community-pointer,
+html.settings-no-animations .community-reveal,
 html.settings-no-animations .community-grain {
   display: none;
 }
@@ -2254,9 +2281,8 @@ html.color-scheme-dark.share-gallery-page .community-atmosphere {
     radial-gradient(ellipse 42% 48% at 68% 28%, rgba(133, 104, 247, 0.16), transparent 70%),
     radial-gradient(ellipse 28% 34% at 18% 42%, rgba(90, 120, 220, 0.12), transparent 72%);
 }
-html.color-scheme-dark.share-gallery-page .community-pointer {
-  mix-blend-mode: screen;
-  background: radial-gradient(circle, rgba(181, 163, 255, 0.22), transparent 68%);
+html.color-scheme-dark.share-gallery-page .community-reveal__art {
+  background-color: #1b1730;
 }
 
 html.color-scheme-dark.share-gallery-page .community-copy {

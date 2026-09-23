@@ -14,6 +14,7 @@ import { summarizeCanvasAgentOps, type CanvasAgentOp } from "@/lib/canvas/canvas
 import { canExecuteApprovedCanvasAgentTool, waitForCanvasAgentToolPaint } from "@/lib/canvas/canvas-agent-tool-delivery";
 import { buildCanvasResourceReferences, resolveCanvasReferenceImages } from "@/lib/canvas/canvas-resource-references";
 import { runCanvasAgentTool } from "@/lib/canvas/canvas-hosted-agent";
+import { expandSkillMentions } from "@/lib/image-skill-mentions";
 import { readImageMeta } from "@/lib/image-utils";
 import { randomId } from "@/lib/utils";
 import { StarcloudsApiError, starcloudsApiUrl } from "@/services/starclouds-api";
@@ -1080,7 +1081,8 @@ export function HostedAgentPanel() {
 					referenceImages = [...referenceImages, ...visualInputs.map((item) => ({ id: item.id, name: item.name, dataUrl: item.dataUrl }))].slice(0, MAX_ATTACHMENTS);
 				}
 			}
-            const requestPrompt = appendAttachmentCatalog(promptWithCanvasReferences(promptWithAttachments(text, files), canvasReferences), files);
+            const { prompt: expandedPrompt } = await expandSkillMentions(text);
+            const requestPrompt = appendAttachmentCatalog(promptWithCanvasReferences(promptWithAttachments(expandedPrompt, files), canvasReferences), files);
             const result = await requestCanvasAgentTurn(requestPrompt, {
                 projectId: context.snapshot.projectId,
                 model: hostedModel || canvasConfig.textModel,

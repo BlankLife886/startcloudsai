@@ -132,17 +132,20 @@ func ListSubscriptionChangeEvents(ctx context.Context, q Q, id uuid.UUID) ([]Sub
 	return out, rows.Err()
 }
 
-func SearchSubscriptionChanges(ctx context.Context, q Q, query, status, kind string, page int) ([]*SubscriptionChange, int, error) {
+func SearchSubscriptionChanges(ctx context.Context, q Q, query, status, kind string, page int, extra ...AdminListFilter) ([]*SubscriptionChange, int, error) {
 	where := ` WHERE (kind='refund' OR status<>'quoted') AND ($1='' OR status=$1) AND ($2='' OR kind=$2)
  AND ($3='' OR strpos(lower(id::text),lower($3))>0 OR strpos(lower(subscription_id::text),lower($3))>0
  OR strpos(lower(COALESCE(provider_reference,'')),lower($3))>0
  OR EXISTS(SELECT 1 FROM users u WHERE u.id=c.user_id AND (strpos(lower(u.email),lower($3))>0 OR strpos(lower(u.username),lower($3))>0 OR strpos(u.id::text,$3)>0))
  OR EXISTS(SELECT 1 FROM orders o WHERE (o.subscription_change_id IN(SELECT related.id FROM subscription_changes related WHERE related.subscription_id=c.subscription_id AND related.kind='upgrade') OR o.id=(SELECT s.order_id FROM subscriptions s WHERE s.id=c.subscription_id)) AND (strpos(o.id::text,$3)>0 OR strpos(lower(COALESCE(o.provider_order_id,'')),lower($3))>0)))`
+	args := []any{status, kind, query}
+	where, args = appendAdminDates(where, args, "c.created_at", extra)
 	var total int
-	if err := q.QueryRow(ctx, `SELECT count(*) FROM subscription_changes c`+where, status, kind, query).Scan(&total); err != nil {
+	if err := q.QueryRow(ctx, `SELECT count(*) FROM subscription_changes c`+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	rows, err := q.Query(ctx, `SELECT `+subscriptionChangeCols+` FROM subscription_changes c`+where+` ORDER BY created_at DESC,id DESC LIMIT 25 OFFSET $4`, status, kind, query, (page-1)*25)
+	args = append(args, (page-1)*25)
+	rows, err := q.Query(ctx, `SELECT `+subscriptionChangeCols+` FROM subscription_changes c`+where+fmt.Sprintf(` ORDER BY created_at DESC,id DESC LIMIT 25 OFFSET $%d`, len(args)), args...)
 	if err != nil {
 		return nil, 0, err
 	}

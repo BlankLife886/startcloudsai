@@ -236,7 +236,7 @@ func (w *Worker) Run() error {
 	go w.publishImageFetchMetricsLoop(metricsCtx)
 	chatConcurrency := w.Cfg.WorkerChatConcurrency
 	if chatConcurrency < 1 {
-		chatConcurrency = 8
+		chatConcurrency = 32
 	}
 	chatServer := asynq.NewServer(redisOpt, asynq.Config{
 		Concurrency: chatConcurrency, Queues: taskflow.ChatQueueWeights, DelayedTaskCheckInterval: time.Second,
@@ -564,6 +564,8 @@ func (w *Worker) claimTask(ctx context.Context, taskID uuid.UUID) (*store.Task, 
 				"_providerRouteKey":      modelconfig.ExecutionRouteKey(selected.Provider),
 				"_modelConfigId":         selected.Model.ID,
 				"_providerDisplayName":   selected.Provider.Name,
+				"_providerRouteName":     selected.Provider.RouteName,
+				"_providerEndpoint":      modelconfig.ProviderEndpoint(selected.Provider.BaseURL),
 				"_modelDisplayName":      selected.Model.Name,
 				"_predictedCompleteAtMs": now.Add(predictedGenerationDuration(selected.Model)).UnixMilli(),
 				"_predictedImageUnits":   max(queued.WorkUnits, queued.Count),
@@ -3398,7 +3400,12 @@ func (w *Worker) handleCleanupSessions(ctx context.Context, _ *asynq.Task) error
 	if err != nil {
 		return err
 	}
-	auditN, err := store.DeleteAuditLogsBefore(ctx, w.St.Pool, now.AddDate(0, -6, 0))
+	auditRetentionDays, err := settings.GetInt(ctx, w.St.Pool, "audit_log_retention_days")
+	if err != nil {
+		return err
+	}
+	auditRetentionDays = max(7, min(auditRetentionDays, 365))
+	auditN, err := store.DeleteAuditLogsBefore(ctx, w.St.Pool, now.AddDate(0, 0, -int(auditRetentionDays)))
 	if err != nil {
 		return err
 	}

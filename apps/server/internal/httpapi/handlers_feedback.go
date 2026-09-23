@@ -201,6 +201,14 @@ func (s *Server) adminFeedback(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
+	seek, pageNum, err := pageSeek(c, limit)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if pageNum > 0 {
+		cursor = seek
+	}
 	ctx := c.Request.Context()
 	search := c.Query("search")
 	items, err := store.ListAdminFeedback(ctx, s.St.Pool, status, category, search, limit, cursor)
@@ -217,6 +225,9 @@ func (s *Server) adminFeedback(c *gin.Context, _ *store.User) {
 		return feedbackDict(item, true, true)
 	})
 	page["total"] = total
+	if pageNum > 0 {
+		page["page"] = pageNum
+	}
 	ok(c, page)
 }
 

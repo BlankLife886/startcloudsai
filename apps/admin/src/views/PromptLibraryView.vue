@@ -25,6 +25,7 @@ import {
 import AdminDialog from '@/components/AdminDialog.vue'
 import PromptCategoryManager from '@/components/PromptCategoryManager.vue'
 import { useVirtualMasonryFeed } from '@/composables/useVirtualMasonryFeed'
+import { usePagedList } from '@/usePagedList'
 import { request, normalizeList, type Page } from '@/request'
 import { PROMPT_TASK_TYPES, taskTypeLabel } from '@/utils'
 import draggable from 'vuedraggable'
@@ -726,54 +727,34 @@ async function cacheExternalCovers() {
  * 当前页拖拽仍使用批量重排，未参与排序的条目保持原有相对位置。 */
 const SORT_PAGE_SIZE = 60
 const sortDrawerOpen = ref(false)
-const sortLoading = ref(false)
 const sortSaving = ref(false)
-const sortItems = ref<PromptItem[]>([])
 const sortSnapshot = ref<string[]>([])
 const sortCategory = ref('all')
 const sortType = ref('all')
 const sortStatus = ref('all')
-const sortPage = ref(1)
-const sortCursors = ref<(string | null)[]>([null])
-const sortNextCursor = ref<string | null>(null)
-const sortMatchTotal = ref(0)
 const sortScopeTotal = ref(0)
+const sortList = usePagedList<PromptItem>(async (cursor, page) => {
+  const result = normalizeList(await request<PromptItem[] | Page<PromptItem>>('/api/v1/admin/prompts', {
+    query: {
+      type: sortType.value === 'all' ? '' : sortType.value,
+      category: sortCategory.value === 'all' ? '' : sortCategory.value,
+      status: sortStatus.value === 'all' ? '' : sortStatus.value,
+      search: '', limit: SORT_PAGE_SIZE, cursor, page,
+    }, silent: true,
+  }))
+  sortScopeTotal.value = result.scopeTotal ?? result.total ?? result.items.length
+  return result
+}, () => ({ type: sortType.value, category: sortCategory.value, status: sortStatus.value }), { pageSeek: true })
+const { items: sortItems, loading: sortLoading, page: sortPage, total: sortMatchTotal } = sortList
 let sortFilterTimer: ReturnType<typeof setTimeout> | null = null
 const sortDirty = computed(
-  () => sortItems.value.map((item) => item.id).join('|') !== sortSnapshot.value.join('|'),
+  () => sortItems.value.map(item => item.id).join('|') !== sortSnapshot.value.join('|'),
 )
-
 async function loadSortItems(resetPaging = false) {
-  if (resetPaging) {
-    sortPage.value = 1
-    sortCursors.value = [null]
-  }
-  sortLoading.value = true
-  try {
-    const page: Page<PromptItem> = normalizeList(
-      await request<PromptItem[] | Page<PromptItem>>('/api/v1/admin/prompts', {
-        query: {
-          type: sortType.value === 'all' ? '' : sortType.value,
-          category: sortCategory.value === 'all' ? '' : sortCategory.value,
-          status: sortStatus.value === 'all' ? '' : sortStatus.value,
-          search: '',
-          limit: SORT_PAGE_SIZE,
-          cursor: sortCursors.value[sortPage.value - 1],
-        },
-        silent: true,
-      }),
-    )
-    sortItems.value = page.items
-    sortNextCursor.value = page.nextCursor
-    sortMatchTotal.value = page.total ?? page.items.length
-    sortScopeTotal.value = page.scopeTotal ?? sortMatchTotal.value
-    if (page.nextCursor) sortCursors.value[sortPage.value] = page.nextCursor
-    sortSnapshot.value = sortItems.value.map((item) => item.id)
-  } catch (cause) {
-    ElMessage.error(cause instanceof Error ? cause.message : '排序列表加载失败')
-  } finally {
-    sortLoading.value = false
-  }
+  if (resetPaging) await sortList.reset()
+  else await sortList.refresh()
+  if (sortList.error.value) ElMessage.error(sortList.error.value)
+  else sortSnapshot.value = sortItems.value.map(item => item.id)
 }
 
 function openSortDrawer() {
@@ -812,34 +793,15 @@ function reloadSortForFilters() {
 
 watch([sortCategory, sortType, sortStatus], reloadSortForFilters)
 
-async function changeSortPage(direction: -1 | 1) {
-  if (sortDirty.value) {
-    ElMessage.warning('请先保存或撤销当前页的拖拽调整')
-    return
-  }
-  const nextPage = sortPage.value + direction
-  if (nextPage < 1 || (direction > 0 && !sortNextCursor.value)) return
-  sortPage.value = nextPage
-  await loadSortItems()
-}
-
 async function goToSortPage(target: number) {
-  if (target === sortPage.value) return
+  if (sortLoading.value || target === sortPage.value) return
   if (sortDirty.value) {
     ElMessage.warning('请先保存或撤销当前页的拖拽调整')
     return
   }
-  if (target === 1) {
-    await loadSortItems(true)
-    return
-  }
-  if (target === sortPage.value + 1) {
-    await changeSortPage(1)
-    return
-  }
-  if (target === sortPage.value - 1) {
-    await changeSortPage(-1)
-  }
+  await sortList.goToPage(target)
+  if (sortList.error.value) ElMessage.error(sortList.error.value)
+  else sortSnapshot.value = sortItems.value.map(item => item.id)
 }
 
 async function saveSortOrder(refreshLibrary = true) {
@@ -1065,6 +1027,8 @@ const importReviewSubtitle = computed(() => {
   return `共 ${batch.fetchedCount} 条 · 重复 ${batch.duplicateCount} · 已通过 ${batch.approvedCount} · 已入库 ${batch.importedCount + batch.updatedCount}`
 })
 const importPage = ref(1)
+const displayedImportPage = ref(1)
+let importItemsGeneration = 0
 const importTotal = ref(0)
 const selectedImportItemIds = ref<string[]>([])
 const importFileRef = ref<HTMLInputElement | null>(null)
@@ -1164,16 +1128,22 @@ async function createImportBatch() {
 async function loadImportItems() {
   const batch = activeImportBatch.value
   if (!batch) return
+  const ownGeneration = ++importItemsGeneration
+  const requestedPage = importPage.value
   importItemsLoading.value = true
   try {
     const page = await request<{ items: PromptImportItem[]; total: number }>(
       `/api/v1/admin/prompt-import-batches/${batch.id}/items`,
       { query: { view: importView.value, page: importPage.value, limit: 50 } },
     )
+    if (ownGeneration !== importItemsGeneration) return
     importItems.value = page.items
     importTotal.value = page.total
+    displayedImportPage.value = requestedPage
+  } catch {
+    // request already reports the error; keep the last successful page visible.
   } finally {
-    importItemsLoading.value = false
+    if (ownGeneration === importItemsGeneration) importItemsLoading.value = false
   }
 }
 
@@ -2079,7 +2049,7 @@ onBeforeUnmount(() => {
         <div v-if="!sortLoading && sortItems.length" class="prompt-sort-pagination">
           <CursorPager
             :has-prev="sortPage > 1"
-            :has-next="Boolean(sortNextCursor)"
+            :has-next="sortList.hasNext.value"
             :loading="sortLoading"
             :page="sortPage"
             :count="sortItems.length"
@@ -2674,10 +2644,10 @@ onBeforeUnmount(() => {
         <div class="import-review-footer">
           <CursorPager
             v-if="importTotal > 50"
-            :has-prev="importPage > 1"
-            :has-next="importPage * 50 < importTotal"
+            :has-prev="displayedImportPage > 1"
+            :has-next="displayedImportPage * 50 < importTotal"
             :loading="importItemsLoading"
-            :page="importPage"
+            :page="displayedImportPage"
             :count="importItems.length"
             :total="importTotal"
             :page-size="50"

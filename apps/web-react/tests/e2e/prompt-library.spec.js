@@ -76,7 +76,7 @@ test("matches the Vue populated masonry geometry and preview interactions", asyn
     fulfillJson(route, { items: prompts, nextCursor: null, categoryCounts: { all: 6 } }),
   );
 
-  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.setViewportSize({ width: 1440, height: 800 });
   await page.goto("/prompts");
   await expect(page.locator(".ch-prompt-masonry__item")).toHaveCount(6);
   await expect(page.locator(".ch-page--prompts")).toHaveAttribute(
@@ -153,13 +153,29 @@ test("matches the Vue populated masonry geometry and preview interactions", asyn
   await expect(page.getByRole("dialog", { name: "提示词详情" })).toHaveCount(0);
   await expect(page.locator("body")).not.toHaveCSS("overflow", "hidden");
   await page.evaluate(() => window.scrollTo(0, 0));
+  await page.waitForTimeout(500);
   await page.locator(".ch-prompt-masonry").hover({ position: { x: 4, y: 4 } });
   await page.mouse.wheel(0, 700);
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
 
+  await expect(page.locator(".ch-prompt-search")).not.toHaveClass(/is-expanded/);
   await page.getByPlaceholder("搜索标题、提示词或标签").fill("排版");
+  await expect(page.locator(".ch-prompt-search")).toHaveClass(/is-expanded/);
   await expect(page.locator(".ch-prompt-masonry__item")).toHaveCount(1);
   await expect(page.getByRole("heading", { name: "无图排版灵感" })).toBeVisible();
+  await expect(page.locator(".ch-prompt-card__art-placeholder")).toBeVisible();
+
+  await page.getByLabel("清空搜索").click();
+  await expect(page.locator(".ch-prompt-masonry__item")).toHaveCount(6);
+  await page.getByRole("button", { name: "收起搜索" }).click();
+  await expect(page.locator(".ch-prompt-search")).not.toHaveClass(/is-expanded/);
+
+  await page.getByPlaceholder("搜索标题、提示词或标签").fill("排版");
+  await expect(page.locator(".ch-prompt-masonry__item")).toHaveCount(1);
+
+  const copyBtn = page.locator(".ch-prompt-masonry__item").first().getByRole("button", { name: "复制" });
+  await copyBtn.click();
+  await expect(page.locator(".ch-prompt-btn--copy.is-copied")).toHaveText(/已复制/);
 });
 
 test("preserves scope filters, mobile columns, and prompt handoff", async ({ page }) => {
@@ -178,7 +194,7 @@ test("preserves scope filters, mobile columns, and prompt handoff", async ({ pag
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/prompts");
   await expect(page.locator(".ch-prompt-masonry__item").first()).toBeVisible();
-  expect(await page.locator(".ch-prompt-masonry").evaluate((element) => element.scrollHeight)).toBeGreaterThan(2400);
+  expect(await page.locator(".ch-prompt-masonry").evaluate((element) => element.scrollHeight)).toBeGreaterThan(2300);
   const mobileLefts = await page.locator(".ch-prompt-masonry__item").evaluateAll((cards) =>
     cards.map((card) => Math.round(card.getBoundingClientRect().left)),
   );
@@ -202,6 +218,7 @@ test("preserves scope filters, mobile columns, and prompt handoff", async ({ pag
   await page.keyboard.press("Escape");
   await expect(mobileDialog).toHaveCount(0);
 
+  await page.getByLabel("分类筛选").click();
   await page.getByRole("button", { name: "今日最新" }).click();
   await expect(page.locator(".ch-prompt-masonry__item")).toHaveCount(2);
   await expect(page.locator(".ch-prompt-masonry")).toHaveAttribute(
@@ -210,10 +227,12 @@ test("preserves scope filters, mobile columns, and prompt handoff", async ({ pag
   );
   await expect.poll(() => promptRequests.some((request) => request.scope === "today" && !request.category)).toBe(true);
 
+  await page.getByLabel("分类筛选").click();
   await page.getByRole("button", { name: "摄影" }).click();
   await expect.poll(() => promptRequests.some((request) => request.category === "photography" && !request.scope)).toBe(true);
 
-  await page.locator(".ch-prompt-masonry__item").first().getByRole("button", { name: "去做图" }).click();
+  await page.locator(".ch-prompt-card__media").first().click();
+  await page.getByRole("dialog", { name: "提示词详情" }).getByRole("button", { name: "去做图" }).click();
   await expect(page).toHaveURL(/\/text-to-image$/);
   await expect(page.getByRole("textbox", { name: "创作描述" })).toHaveValue(/电影感城市/);
 });

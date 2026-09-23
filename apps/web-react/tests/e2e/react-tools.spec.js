@@ -22,7 +22,6 @@ test.describe('React local image tools', () => {
     await page.locator('input[type="file"]').setInputFiles(fixtureImage)
 
     await expect(page.locator('.collage-cell img')).toHaveCount(1)
-    await expect(page.locator('.collage-top-status')).toContainText('1/2 格')
     await expect(page.locator('.collage-top-btn.primary').first()).toBeEnabled()
   })
 

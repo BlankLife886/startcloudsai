@@ -128,6 +128,27 @@ function removeNotification(id) {
   }
 }
 
+function updateNotification(id, patch = {}) {
+  const index = notifications.findIndex((notification) => notification.id === id)
+  if (index === -1) return false
+
+  const current = notifications[index]
+  const next = {
+    ...current,
+    ...patch,
+    id: current.id,
+    dedupeKey: current.dedupeKey,
+    revision: (current.revision || 0) + 1,
+    timestamp: Date.now(),
+  }
+  if (patch.type !== undefined) next.type = normalizeType(patch.type)
+  if (!POSITIONS.includes(next.position)) next.position = current.position
+
+  notifications[index] = next
+  emit()
+  return true
+}
+
 function clearNotifications() {
   if (!notifications.length) return
   notifications.splice(0, notifications.length)
@@ -155,6 +176,7 @@ export default {
   subscribe,
   addNotification,
   removeNotification,
+  updateNotification,
   clearNotifications,
   error,
   failure: error,

@@ -62,6 +62,8 @@ import "@react/legacy-styles/generated/features/ai-shared/AiCostConfirmDialog.cs
 import { useAuth } from "../auth/AuthContext.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";
 import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
+import { MentionMenu } from "../features/skills/MentionMenu.jsx";
+import { useMentionMenu } from "../features/skills/useMentionMenu.js";
 import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
 import { ProgressiveAuthenticatedImage } from "../components/ProgressiveAuthenticatedImage.jsx";
 import { DialogMotion } from "../components/motion/DialogMotion.jsx";
@@ -795,6 +797,12 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
         "极光穿过玻璃城市上空，远处雪山泛着蓝紫色光，精致、干净、适合作为 4K 桌面壁纸",
     ),
   );
+  const promptMention = useMentionMenu({
+    textareaRef: promptInputRef,
+    value: prompt,
+    onChange: setPrompt,
+    promptType: "t2i",
+  });
   const [modelId, setModelId] = useState(String(draft.selectedPublicModel || ""));
   const [ratio, setRatio] = useState(String(draft.aspectRatio || "1:1"));
   const [resolution, setResolution] = useState(String(draft.resolutionScale || "1K"));
@@ -842,6 +850,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   const [cost, setCost] = useState(null);
   const [previewKey, setPreviewKey] = useState("");
   const [actionBusyId, setActionBusyId] = useState("");
+  const [downloadBusyKey, setDownloadBusyKey] = useState("");
   const deletionInFlightRef = useRef(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [regenerateTarget, setRegenerateTarget] = useState(null);
@@ -1835,7 +1844,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
   const enhanceSummary = [
     `润色${polish ? "开" : "关"}`,
     `翻译${translate ? "开" : "关"}`,
-    `透明${transparent ? "开" : "关"}`,
+    `移除背景${transparent ? "开" : "关"}`,
     backgroundRemovalModel ? `抠图${autoRemove ? "开" : "关"}` : "",
   ]
     .filter(Boolean)
@@ -1966,13 +1975,20 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
 
   const downloadItem = async (item) => {
     if (!item?.url) return;
+    const downloadKey = String(item.key || `${item.task?.id || "image"}:${item.index || 0}`);
+    if (downloadBusyKey) return;
+    setDownloadBusyKey(downloadKey);
     try {
       await downloadAuthenticatedMedia(
         item.url,
         downloadFilename(item.task, item.index),
       );
     } catch (error) {
-      notificationService.error(error?.message || "图片下载失败");
+      if (!error?.downloadNotificationShown) {
+        notificationService.error(error?.message || "图片下载失败");
+      }
+    } finally {
+      if (workspaceActiveRef.current) setDownloadBusyKey("");
     }
   };
 
@@ -2218,26 +2234,33 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
         </div>
         <div className="t2i-side-scroll">
           <div className="t2i-prompt-box" data-guide="t2i-prompt" data-motion>
-            <textarea
-              ref={promptInputRef}
-              aria-label="创作描述"
-              value={prompt}
-              maxLength={promptMaxChars}
-              placeholder="描述主体、场景、光线与风格…"
-              onFocus={() => setOpenLayer("")}
-              onPointerDown={() => setOpenLayer("")}
-              onChange={(event) => setPrompt(event.target.value)}
-              onPaste={(event) => {
-                const files = Array.from(event.clipboardData?.files || []);
-                if (files.some((file) => file.type.startsWith("image/"))) addReferenceFiles(files);
-              }}
-              onKeyDown={(event) => {
-                if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-                  event.preventDefault();
-                  void requestGeneration();
-                }
-              }}
-            />
+            <div className="mention-field">
+              <textarea
+                ref={promptInputRef}
+                aria-label="创作描述"
+                value={prompt}
+                maxLength={promptMaxChars}
+                placeholder="描述主体、场景、光线与风格…"
+                onFocus={() => setOpenLayer("")}
+                onPointerDown={() => setOpenLayer("")}
+                onChange={promptMention.handleChange}
+                onClick={promptMention.handleCaretSync}
+                onKeyUp={promptMention.handleCaretSync}
+                onBlur={promptMention.handleBlur}
+                onPaste={(event) => {
+                  const files = Array.from(event.clipboardData?.files || []);
+                  if (files.some((file) => file.type.startsWith("image/"))) addReferenceFiles(files);
+                }}
+                onKeyDown={(event) => {
+                  if (promptMention.handleKeyDown(event)) return;
+                  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                    event.preventDefault();
+                    void requestGeneration();
+                  }
+                }}
+              />
+              <MentionMenu {...promptMention.menuProps} />
+            </div>
             <div className={`t2i-prompt-foot${references.length ? " has-refs" : ""}`}>
               <div className="t2i-prompt-refs" aria-label="参考图片" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); addReferenceFiles(event.dataTransfer.files); }}>
                 {references.map((item) => (
@@ -2299,7 +2322,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                 <div className="t2i-prompt-enhancers">
                   <Toggle label="润色" icon="bi-stars" value={polish} onChange={setPolish} />
                   <Toggle label="翻译" icon="bi-translate" value={translate} onChange={setTranslate} />
-                  {currentModel?.transparentBackground ? <Toggle label="透明" icon="bi-transparency" value={transparent} onChange={(next) => { setTransparent(next); if (next) setAutoRemove(false); }} /> : null}
+                  {currentModel?.transparentBackground ? <Toggle label="移除背景" icon="bi-transparency" value={transparent} onChange={(next) => { setTransparent(next); if (next) setAutoRemove(false); }} /> : null}
                   {backgroundRemovalModel && <Toggle label="生成后抠图" icon="bi-person-bounding-box" value={autoRemove} onChange={(next) => { setAutoRemove(next); if (next) setTransparent(false); }} />}
                 </div>
               </section>
@@ -2455,9 +2478,10 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                                   <ImageQuickActions
                                     item={item}
                                     cell
+                                    downloadBusy={Boolean(downloadBusyKey)}
                                     onEdit={() => editTask(item.task)}
                                     onRegenerate={() => setRegenerateTarget(item.task)}
-                                    onDownload={() => void downloadItem(item)}
+                                    onDownload={() => downloadItem(item)}
                                     onReference={() => useAsReference(item)}
                                   />
                                   </>}
@@ -2489,9 +2513,10 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                           ) : null}
                           <ImageQuickActions
                             item={featuredItem}
+                            downloadBusy={Boolean(downloadBusyKey)}
                             onEdit={() => editTask(activeTask)}
                             onRegenerate={() => setRegenerateTarget(activeTask)}
-                            onDownload={() => void downloadItem(featuredItem)}
+                            onDownload={() => downloadItem(featuredItem)}
                             onReference={() => useAsReference(featuredItem)}
                           />
                           </>}
@@ -2675,12 +2700,13 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
             source: "文生图",
           }}
           actionBusy={actionBusyId === previewItem.task.id ? "delete" : ""}
+          downloadFeedback={false}
           onSelect={(url) => {
             const next = previewItems.find((item) => item.url === url);
             if (next) setPreviewKey(next.key);
           }}
           onClose={() => setPreviewKey("")}
-          onDownload={() => void downloadItem(previewItem)}
+          onDownload={() => downloadItem(previewItem)}
           onUseReference={() => useAsReference(previewItem)}
           onDelete={() => requestDelete([previewItem.task])}
         />
@@ -2859,12 +2885,12 @@ export function TaskStatusStage({ task, batchIndex, busy = false, onEdit, onDele
   );
 }
 
-function ImageQuickActions({ cell = false, onEdit, onRegenerate, onDownload, onReference }) {
+function ImageQuickActions({ cell = false, downloadBusy = false, onEdit, onRegenerate, onDownload, onReference }) {
   return (
     <div className={`t2i-stage-quick-actions${cell ? " is-cell" : ""}`} aria-label="图片快捷操作">
       <button type="button" aria-label="编辑图片" title="编辑" onClick={onEdit}><span className="t2i-icon-edit-image" /></button>
       <button type="button" aria-label="重新生成" title="重新生成" onClick={onRegenerate}><RegenerateIcon /></button>
-      <button type="button" aria-label="下载图片" title="下载" onClick={onDownload}><DownloadIcon /></button>
+      <button type="button" aria-label={downloadBusy ? "正在下载图片" : "下载图片"} title={downloadBusy ? "正在下载" : "下载"} disabled={downloadBusy} aria-busy={downloadBusy} onClick={onDownload}>{downloadBusy ? <i className="bi bi-arrow-repeat spin" aria-hidden="true" /> : <DownloadIcon />}</button>
       <button type="button" aria-label="设为参考图" title="设为参考图" onClick={onReference}><span className="t2i-icon-reference" /></button>
     </div>
   );

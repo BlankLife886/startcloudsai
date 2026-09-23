@@ -1,13 +1,13 @@
-# Cloudflare Free 接入与回退
+# Cloudflare 可选接入与回退
 
-更新时间：2026-09-01
+核对日期：2026-09-22。仓库保留 Cloudflare 代理配置示例，但当前应用不依赖 CDN；是否启用、套餐与 DNS 状态需要在目标环境确认。本次未操作域名或 Cloudflare 账户。
 
-适用架构：Cloudflare 全球网络 → 宝塔 Nginx（HTTPS）→ `127.0.0.1:8080` Docker Gateway → API/Web/Admin。OSS 上传和私有图片不经过 Cloudflare。
+适用架构：Cloudflare 代理 → 宝塔 Nginx（HTTPS）→ `127.0.0.1:8080` Docker Gateway → API/Web/Admin。API 到 OSS 的存储流量不经过网站代理；浏览器访问站内私有图片接口时仍经过网站代理，但必须绕过 CDN 缓存。不能将“不缓存”等同于“不经过 Cloudflare”。
 
 ## 1. 接入目标
 
 - 加速前端 JS、CSS、字体、品牌图片和业务封面。
-- 网站和 API 使用 Cloudflare 全球代理，让中国大陆用户可以尽量访问。
+- 可选代理网站和 API；性能、网络可达性和长请求限制须按实际用户网络验证，不作加速保证。
 - 不改变 PostgreSQL、Redis、Worker、ChatGPT2API、OSS 和任务并发配置。
 - API、登录、钱包、任务状态、SSE 和私有图片禁止 CDN 缓存。
 - 保留一键切回 DNS only 的回退能力。
@@ -66,6 +66,8 @@ sh deploy/cloudflare/update-realip-ranges.sh
 
 只有 `nginx -t` 成功后才能 reload。
 
+现有 snippet 只包含普通 HTTP/SSE 代理基础配置。若使用 `/v1/responses` WebSocket，还需按 [部署手册](DEPLOYMENT.md) 补外层 Upgrade/Connection 转发；图片/模板上传大小限制也由外层与容器网关共同决定。
+
 ## 4. Docker Gateway
 
 `deploy/nginx.conf` 会读取宝塔确认过的 `X-Real-IP`，并向 Go 服务传递单一地址。修改配置后只重建无状态 Gateway：
@@ -87,7 +89,7 @@ docker compose --env-file deploy/integrated/.env.integrated \
 
 | 类型 | 名称 | 内容 | 代理状态 |
 |---|---|---|---|
-| A | `@` | 日本服务器公网 IP | Proxied（橙云） |
+| A | `@` | 当前目标服务器公网 IP | Proxied（橙云） |
 | CNAME | `www` | `starcloudisai.com` | Proxied（橙云） |
 | MX/TXT | 按原记录 | 按原记录 | DNS only |
 | OSS 域名 | 按当前配置 | OSS Endpoint | DNS only |
@@ -108,30 +110,35 @@ Cloudflare 控制台设置：
 
 ## 7. Cache Rules
 
-创建两条规则，顺序不可颠倒。
+只缓存明确的静态路径，并显式绕过动态路径。规则重叠时最后匹配的相同设置生效，因此将动态绕过规则放在相关静态缓存规则之后，避免被其他规则覆盖。见 [Cloudflare 规则顺序](https://developers.cloudflare.com/cache/how-to/cache-rules/order/)。下文按用途介绍，控制台执行顺序以此原则为准。
 
 ### 7.1 动态和私有内容绕过缓存
 
 表达式：
 
 ```text
-(http.request.uri.path starts_with "/api/") or
-(http.request.uri.path starts_with "/admin/")
+starts_with(http.request.uri.path, "/api/") or
+(http.request.uri.path eq "/v1") or
+starts_with(http.request.uri.path, "/v1/") or
+(http.request.uri.path eq "/admin") or
+starts_with(http.request.uri.path, "/admin/") or
+starts_with(http.request.uri.path, "/oauth/") or
+starts_with(http.request.uri.path, "/.well-known/oauth-")
 ```
 
 操作：**Bypass cache**。
 
-用户登录、钱包、任务、SSE、后台和 `/api/v1/files/...` 都包含在这条规则中。
+用户登录、钱包、任务、SSE、后台、`/api/v1/files/...`、开放 Images/Responses 和图片技能授权都包含在这条规则中。表达式使用 `starts_with(field, prefix)` 函数，见 [规则表达式语法](https://developers.cloudflare.com/ruleset-engine/rules-language/operators/)。
 
 ### 7.2 静态文件缓存
 
 表达式：
 
 ```text
-(http.request.uri.path starts_with "/assets/") or
-(http.request.uri.path starts_with "/brand/") or
-(http.request.uri.path starts_with "/icons/") or
-(http.request.uri.path starts_with "/sucai/")
+starts_with(http.request.uri.path, "/assets/") or
+starts_with(http.request.uri.path, "/brand/") or
+starts_with(http.request.uri.path, "/icons/") or
+starts_with(http.request.uri.path, "/sucai/")
 ```
 
 操作：
@@ -156,7 +163,7 @@ Cloudflare 控制台设置：
 - 无限画布自动保存；
 - 分片或批量上传。
 
-Cloudflare Free的一条限流规则更适合以后单独保护登录路径，不能拿它限制整个 `/api/`。
+限流规则数量和功能以账户当前套餐为准。若增加边缘限流，按登录或明确业务路径设置，不限制整个 `/api/`、`/v1` 或 OAuth 流程。
 
 ## 9. 验收
 

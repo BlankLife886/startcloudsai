@@ -16,6 +16,7 @@ import { dataUrlToBlob } from "@/lib/data-url";
 import { imageMetadata } from "@/lib/canvas/canvas-node-factory";
 import { cardSizeForMedia } from "@/lib/canvas/canvas-node-size";
 import { resolveCanvasReferenceImages } from "@/lib/canvas/canvas-resource-references";
+import { expandSkillMentions } from "@/lib/image-skill-mentions";
 import { readImageMeta } from "@/lib/image-utils";
 import { randomId } from "@/lib/utils";
 import { uploadImage } from "@/services/image-storage";
@@ -639,7 +640,8 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
             setAgentState({ canvasReferences });
             message.warning(rt(canvasReferences.length ? "someCanvasReferencesMissing" : "canvasReferencesMissing"));
         }
-        const requestPrompt = promptWithCanvasReferences(promptWithAttachments(text, files), canvasReferences);
+        const { prompt: expandedPrompt } = await expandSkillMentions(text);
+        const requestPrompt = promptWithCanvasReferences(promptWithAttachments(expandedPrompt, files), canvasReferences);
         if (!currentState.connected || !requestPrompt || currentState.sending || currentState.waiting || currentState.loadingThreads || !["ready", "warning"].includes(currentState.conversation.status)) return;
         let referenceImages: AgentAttachment[] = [];
         if (canvasReferences.some((item) => item.kind === "image")) {

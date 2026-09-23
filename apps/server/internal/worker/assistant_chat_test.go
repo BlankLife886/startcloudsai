@@ -82,6 +82,42 @@ func TestAssistantConversationPayloadAlwaysIncludesAuthoritativeCurrentPrompt(t 
 	}
 }
 
+// 上一轮联网查到的内容必须能带进下一轮。以前只有助手当时写出来的可见回答会进上下文，
+// 工具拿回的原文全部丢掉，用户追问细节时模型只能重搜或者编。
+func TestAssistantConversationPayloadReplaysPreviousToolFindings(t *testing.T) {
+	run := &store.AssistantRun{
+		ID: uuid.New(), UserMessageID: uuid.New(), AssistantMessageID: uuid.New(), Prompt: "那第二条呢",
+	}
+	history := []*store.AssistantMessage{
+		{ID: uuid.New(), Role: "user", Content: "联网查一下最新的三条政策", Status: "complete"},
+		{ID: uuid.New(), Role: "assistant", Content: "我查到了三条。", Status: "complete", Metadata: map[string]any{
+			"webSearches": []any{map[string]any{
+				"query":   "最新政策",
+				"text":    "第一条是甲，第二条是乙，第三条是丙。",
+				"sources": []any{map[string]any{"title": "政策门户", "url": "https://example.com/a"}},
+			}},
+			"toolSteps": []any{
+				map[string]any{"name": "web_search", "status": "completed"},
+				map[string]any{"name": "files_create", "status": "failed"},
+			},
+		}},
+	}
+	payload, _ := buildAssistantContext("", history, run, nil, false)
+	joined := ""
+	for _, message := range payload {
+		joined += message.Content + "\n"
+	}
+	for _, required := range []string{"最新政策", "第二条是乙", "政策门户", "已成功调用过这些工具", "web_search"} {
+		if !strings.Contains(joined, required) {
+			t.Fatalf("上一轮的检索结果没有带回上下文，缺少 %q：%s", required, joined)
+		}
+	}
+	// 失败的工具不回放：上一轮失败不代表这轮不该再试，写进去反而会劝退模型。
+	if strings.Contains(joined, "files_create") {
+		t.Fatalf("失败的工具不应写进跨轮记忆：%s", joined)
+	}
+}
+
 func TestAssistantConversationPayloadExcludesFutureQueuedMessages(t *testing.T) {
 	run := &store.AssistantRun{
 		ID: uuid.New(), UserMessageID: uuid.New(), AssistantMessageID: uuid.New(), Prompt: "当前任务",

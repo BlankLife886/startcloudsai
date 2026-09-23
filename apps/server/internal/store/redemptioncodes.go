@@ -66,7 +66,7 @@ func DisableRedemptionCode(ctx context.Context, q Q, id uuid.UUID) (bool, error)
 
 // ListRedemptionCodes 后台分页（limit+1 行），LEFT JOIN users 带出 redeemedByEmail。
 // search 匹配完整 code。
-func ListRedemptionCodes(ctx context.Context, q Q, status, batchID, search string, limit int, cursor *Cursor) ([]*RedemptionCode, error) {
+func ListRedemptionCodes(ctx context.Context, q Q, status, batchID, search string, limit int, cursor *Cursor, extra ...AdminListFilter) ([]*RedemptionCode, error) {
 	sql := `SELECT r.id, r.code, r.grant_cents, r.batch_id, r.note, r.status, r.expires_at,
 	               r.redeemed_by, r.redeemed_at, r.created_by, r.created_at, u.email
 	        FROM redemption_codes r LEFT JOIN users u ON u.id = r.redeemed_by WHERE true`
@@ -84,9 +84,11 @@ func ListRedemptionCodes(ctx context.Context, q Q, status, batchID, search strin
 		sql += fmt.Sprintf(` AND r.code = $%d`, len(args))
 	}
 	if cursor != nil {
+		// Range filtering is independent from the cursor position.
 		args = append(args, cursor.CreatedAt, cursor.ID)
-		sql += fmt.Sprintf(` AND (r.created_at < $%d OR (r.created_at = $%d AND r.id < $%d))`, len(args)-1, len(args)-1, len(args))
+		sql += fmt.Sprintf(` AND (r.created_at, r.id) < ($%d, $%d)`, len(args)-1, len(args))
 	}
+	sql, args = appendAdminDates(sql, args, "r.created_at", extra)
 	args = append(args, limit+1)
 	sql += fmt.Sprintf(` ORDER BY r.created_at DESC, r.id DESC LIMIT $%d`, len(args))
 
@@ -119,15 +121,19 @@ type RedemptionBatch struct {
 }
 
 // ListRedemptionBatches 按批次聚合，近 n 批（按批次创建时间倒序）。
-func ListRedemptionBatches(ctx context.Context, q Q, n int) ([]*RedemptionBatch, error) {
+// ListRedemptionBatches 返回最新的 n 个批次；search 非空时按批次号或备注模糊匹配，
+// 供后台批次选择框远程搜索，旧批次不会因数量上限而无法选择。
+func ListRedemptionBatches(ctx context.Context, q Q, search string, n int) ([]*RedemptionBatch, error) {
 	rows, err := q.Query(ctx,
 		`SELECT batch_id, MAX(note), MAX(grant_cents),
 		        count(*),
 		        count(*) FILTER (WHERE status = 'redeemed'),
 		        count(*) FILTER (WHERE status = 'disabled'),
 		        MIN(created_at)
-		 FROM redemption_codes GROUP BY batch_id
-		 ORDER BY MIN(created_at) DESC LIMIT $1`, n)
+		 FROM redemption_codes
+		 WHERE $2 = '' OR batch_id ILIKE $2 OR COALESCE(note, '') ILIKE $2
+		 GROUP BY batch_id
+		 ORDER BY MIN(created_at) DESC LIMIT $1`, n, likeOrEmpty(search))
 	if err != nil {
 		return nil, err
 	}

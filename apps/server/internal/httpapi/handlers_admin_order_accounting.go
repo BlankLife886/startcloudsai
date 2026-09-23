@@ -107,6 +107,14 @@ func (s *Server) adminAccountingOrders(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
+	seek, pageNum, err := pageSeek(c, limit)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if pageNum > 0 {
+		cursor = seek
+	}
 	ctx := c.Request.Context()
 	tx, err := s.St.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
@@ -119,14 +127,22 @@ func (s *Server) adminAccountingOrders(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	summary, err := store.SummarizeOrderAccounting(ctx, tx, f)
-	if err != nil {
-		fail(c, err)
-		return
-	}
 	page := buildPage(rows, limit, accountingOrderDict)
-	page["total"], page["summary"] = summary.Total, summary
+	// 汇总需要扫描筛选范围内全部订单；翻页时前端传 summary=false 复用上次结果。
+	if c.Query("summary") != "false" {
+		summary, err := store.SummarizeOrderAccounting(ctx, tx, f)
+		if err != nil {
+			fail(c, err)
+			return
+		}
+		// 列表 total 只用于分页，与页码分页一样封顶；精确数量见 summary.total。
+		page["total"], page["totalCapped"] = min(summary.Total, int64(store.ListCountCap)), summary.Total > store.ListCountCap
+		page["summary"] = summary
+	}
 	c.Header("Cache-Control", "no-store")
+	if pageNum > 0 {
+		page["page"] = pageNum
+	}
 	ok(c, page)
 }
 

@@ -3785,3 +3785,53 @@ body.canvas-tool-dragging * {
 .canvas-stage--low-zoom .canvas-world [style*="filter"] {
     filter: none !important;
 }
+
+/* ==========================================================================
+   Canvas Workflow Showcase Shelf & Pipeline Animations
+   ========================================================================== */
+
+@keyframes pipelineFlowPulse {
+    0% {
+        stroke-dashoffset: 24;
+    }
+    100% {
+        stroke-dashoffset: 0;
+    }
+}
+
+.pipeline-flow-line {
+    stroke-dasharray: 4, 4;
+    animation: pipelineFlowPulse 1.8s linear infinite;
+}
+
+.group:hover .pipeline-flow-line {
+    animation-duration: 0.9s;
+}
+
+@keyframes jewelBreathPulse {
+    0%, 100% {
+        box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 20%, transparent), 0 0 10px currentColor;
+        transform: scale(1);
+    }
+    50% {
+        box-shadow: 0 0 0 4px color-mix(in srgb, currentColor 32%, transparent), 0 0 16px currentColor;
+        transform: scale(1.12);
+    }
+}
+
+.jewel-dot-pulse {
+    animation: jewelBreathPulse 3.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .pipeline-flow-line,
+    .jewel-dot-pulse {
+        animation: none !important;
+    }
+}
+
+.settings-no-animations .pipeline-flow-line,
+.settings-no-animations .jewel-dot-pulse {
+    animation: none !important;
+}
+

@@ -1,5 +1,7 @@
 # 无限画布与分镜：现状审查、产品蓝图与实施方案
 
+2026-09-22 文档核对说明：本文保留 2026-09-15 的审查依据、M0 进展、测试数量和后续蓝图。下文“当前”“尚未完成”均以原审查时点为边界，不能直接推断今天的线上状态。现码仍通过 `src/canvas/pages/canvas/project.tsx`、分镜相关组件/Hook 和工作流模块运行；已有输入签名、产物指纹与独立尝试身份等恢复保护，技能提及和模板入口也在继续演进。本次仅核对代码和文档，不更新历史测试成绩或宣称完整分镜工作台、收费模型及登录后视觉验收已完成。
+
 日期：2026-09-15。审查对象：当前本地工作区，包含尚未提交的重构代码。
 
 初版审查阶段不修改应用代码、不迁移数据库、不提交真实生成任务；随后按本方案启动了可回归的 M0 修复，仍未进行真实付费生成或破坏性数据操作。
@@ -716,26 +718,26 @@ UI：画布节点、分镜工作台、工作流按钮、Agent工具
 
 所有行号对应本次工作区，后续重构可能变化。
 
-- [分镜执行Hook](/Users/ycc/Documents/TestCode/startcloudsai/apps/web-react/src/canvas/pages/canvas/hooks/use-canvas-storyboard.ts:74)
-- [分镜脚本输入与同步](/Users/ycc/Documents/TestCode/startcloudsai/apps/web-react/src/canvas/components/canvas/canvas-config-node-panel.tsx:512)
-- [分镜文本参数](/Users/ycc/Documents/TestCode/startcloudsai/apps/web-react/src/canvas/components/canvas/canvas-config-node-panel.tsx:863)
-- [分镜编辑器拆分回写](/Users/ycc/Documents/TestCode/startcloudsai/apps/web-react/src/canvas/components/canvas/canvas-config-node-panel.tsx:1079)
-- [规则解析与截断](/Users/ycc/Documents/TestCode/startcloudsai/apps/web-react/src/canvas/lib/canvas/storyboard-parser.ts:289)
-- [AI计划归一化](/Users/ycc/Documents/TestCode/startcloudsai/apps/web-react/src/canvas/lib/canvas/storyboard-parser.ts:411)
-- [画幅识别](/Users/ycc/Documents/TestCode/startcloudsai/apps/web-react/src/canvas/lib/canvas/canvas-storyboard-aspect.ts:23)
-- [分镜分析与生图](/Users/ycc/Documents/TestCode/startcloudsai/apps/web-react/src/canvas/pages/canvas/project.tsx:4203)
-- [分镜批次宿主更新](/Users/ycc/Documents/TestCode/startcloudsai/apps/web-react/src/canvas/pages/canvas/project.tsx:4490)
-- [取消链路](/Users/ycc/Documents/TestCode/startcloudsai/apps/web-react/src/canvas/pages/canvas/project.tsx:4771)
-- [普通工作流执行入口](/Users/ycc/Documents/TestCode/startcloudsai/apps/web-react/src/canvas/pages/canvas/project.tsx:5463)
-- [单镜重试](/Users/ycc/Documents/TestCode/startcloudsai/apps/web-react/src/canvas/pages/canvas/project.tsx:6427)
-- [节点按钮专用分派](/Users/ycc/Documents/TestCode/startcloudsai/apps/web-react/src/canvas/pages/canvas/project.tsx:6986)
-- [会话恢复与聚合](/Users/ycc/Documents/TestCode/startcloudsai/apps/web-react/src/canvas/lib/canvas/canvas-storyboard-recovery.ts:147)
-- [复制metadata](/Users/ycc/Documents/TestCode/startcloudsai/apps/web-react/src/canvas/lib/canvas/canvas-node-copy.ts:29)
-- [中断恢复](/Users/ycc/Documents/TestCode/startcloudsai/apps/web-react/src/canvas/lib/canvas/canvas-generation-helpers.ts:380)
-- [待恢复任务收集](/Users/ycc/Documents/TestCode/startcloudsai/apps/web-react/src/canvas/lib/canvas/canvas-pending-tasks.ts:23)
-- [云端保存与冲突合并](/Users/ycc/Documents/TestCode/startcloudsai/apps/web-react/src/canvas/stores/canvas/use-canvas-store.ts:179)
-- [通用导出](/Users/ycc/Documents/TestCode/startcloudsai/apps/web-react/src/canvas/lib/canvas/canvas-export.ts:13)
-- [历史pipeline](/Users/ycc/Documents/TestCode/startcloudsai/apps/web-react/src/canvas/lib/canvas/canvas-storyboard-pipeline.ts:128)
-- [任务与取消API](/Users/ycc/Documents/TestCode/startcloudsai/apps/web-react/src/canvas/services/canvas-task-api.ts:18)
-- [工作流运行API](/Users/ycc/Documents/TestCode/startcloudsai/apps/web-react/src/canvas/services/canvas-workflow-run-api.ts:3)
-- [桌面支持策略](/Users/ycc/Documents/TestCode/startcloudsai/docs/DESKTOP_UI_POLICY.md:1)
+- [分镜执行Hook](../apps/web-react/src/canvas/pages/canvas/hooks/use-canvas-storyboard.ts)
+- [分镜脚本输入与同步](../apps/web-react/src/canvas/components/canvas/canvas-config-node-panel.tsx)
+- [分镜文本参数](../apps/web-react/src/canvas/components/canvas/canvas-config-node-panel.tsx)
+- [分镜编辑器拆分回写](../apps/web-react/src/canvas/components/canvas/canvas-config-node-panel.tsx)
+- [规则解析与截断](../apps/web-react/src/canvas/lib/canvas/storyboard-parser.ts)
+- [AI计划归一化](../apps/web-react/src/canvas/lib/canvas/storyboard-parser.ts)
+- [画幅识别](../apps/web-react/src/canvas/lib/canvas/canvas-storyboard-aspect.ts)
+- [分镜分析与生图](../apps/web-react/src/canvas/pages/canvas/project.tsx)
+- [分镜批次宿主更新](../apps/web-react/src/canvas/pages/canvas/project.tsx)
+- [取消链路](../apps/web-react/src/canvas/pages/canvas/project.tsx)
+- [普通工作流执行入口](../apps/web-react/src/canvas/pages/canvas/project.tsx)
+- [单镜重试](../apps/web-react/src/canvas/pages/canvas/project.tsx)
+- [节点按钮专用分派](../apps/web-react/src/canvas/pages/canvas/project.tsx)
+- [会话恢复与聚合](../apps/web-react/src/canvas/lib/canvas/canvas-storyboard-recovery.ts)
+- [复制metadata](../apps/web-react/src/canvas/lib/canvas/canvas-node-copy.ts)
+- [中断恢复](../apps/web-react/src/canvas/lib/canvas/canvas-generation-helpers.ts)
+- [待恢复任务收集](../apps/web-react/src/canvas/lib/canvas/canvas-pending-tasks.ts)
+- [云端保存与冲突合并](../apps/web-react/src/canvas/stores/canvas/use-canvas-store.ts)
+- [通用导出](../apps/web-react/src/canvas/lib/canvas/canvas-export.ts)
+- 历史 pipeline：`apps/web-react/src/canvas/lib/canvas/canvas-storyboard-pipeline.ts`（原审计文件，当前已移除；仅保留名称作为历史证据）
+- [任务与取消API](../apps/web-react/src/canvas/services/canvas-task-api.ts)
+- [工作流运行API](../apps/web-react/src/canvas/services/canvas-workflow-run-api.ts)
+- [桌面支持策略](DESKTOP_UI_POLICY.md)

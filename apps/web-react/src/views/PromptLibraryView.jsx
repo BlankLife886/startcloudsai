@@ -63,6 +63,11 @@ export function PromptLibraryView() {
   const [activeCategory, setActiveCategory] = useState("all");
   const [preview, setPreview] = useState(null);
   const [contentRevision, setContentRevision] = useState(0);
+  const [categoryMenuOpen, setCategoryMenuOpen] = useState(false);
+  const [searchExpanded, setSearchExpanded] = useState(false);
+  const categoryMenuRef = useRef(null);
+  const searchContainerRef = useRef(null);
+  const searchInputRef = useRef(null);
   const rootRef = useRef(null);
   const requestIdRef = useRef(0);
   const loadSentinelRef = useRef(null);
@@ -70,6 +75,37 @@ export function PromptLibraryView() {
   const previewInertiaCleanupRef = useRef(null);
   const loadedCoverKeysRef = useRef(new Set());
   const [previewMotionPresent, setPreviewMotionPresent] = useState(false);
+  const [copiedId, setCopiedId] = useState(null);
+  const copiedTimeoutRef = useRef(null);
+
+  useEffect(() => {
+    function handlePointerDown(event) {
+      if (
+        categoryMenuRef.current &&
+        !categoryMenuRef.current.contains(event.target)
+      ) {
+        setCategoryMenuOpen(false);
+      }
+      if (
+        searchContainerRef.current &&
+        !searchContainerRef.current.contains(event.target)
+      ) {
+        if (!search.trim()) {
+          setSearchExpanded(false);
+        }
+      }
+    }
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, [search]);
+
+  useEffect(() => {
+    return () => {
+      if (copiedTimeoutRef.current) clearTimeout(copiedTimeoutRef.current);
+    };
+  }, []);
 
   const stopPreviewInertiaGuard = useCallback(() => {
     previewInertiaCleanupRef.current?.();
@@ -262,12 +298,51 @@ export function PromptLibraryView() {
   const masonry = useVirtualMasonryFeed({
     items: masonryItems,
     fallbackAspect: 3 / 4,
-    bodyHeight: 96,
+    bodyHeight: 0,
+    borderWidth: 0,
     minColumnWidth: 260,
     maxColumns: 12,
     overscan: 960,
     getAspect: getEntryAspect,
   });
+
+  useLayoutEffect(() => {
+    const root = masonry.containerRef.current;
+    if (!root) return undefined;
+    const align = () => {
+      const dpr = window.devicePixelRatio || 1;
+      for (const card of root.querySelectorAll(".ch-prompt-masonry__item")) {
+        const rect = card.getBoundingClientRect();
+        const left = Math.round(rect.left * dpr) / dpr;
+        const top = Math.round(rect.top * dpr) / dpr;
+        const right = Math.round(rect.right * dpr) / dpr;
+        const bottom = Math.round(rect.bottom * dpr) / dpr;
+        const dx = left - rect.left;
+        const dy = top - rect.top;
+        const width = right - left;
+        const height = bottom - top;
+        if (
+          Math.abs(dx) < 0.01 &&
+          Math.abs(dy) < 0.01 &&
+          Math.abs(width - rect.width) < 0.01 &&
+          Math.abs(height - rect.height) < 0.01
+        ) {
+          continue;
+        }
+        card.style.left = `${(parseFloat(card.style.left) || 0) + dx}px`;
+        card.style.top = `${(parseFloat(card.style.top) || 0) + dy}px`;
+        card.style.width = `${width}px`;
+        card.style.height = `${height}px`;
+      }
+    };
+    align();
+    window.addEventListener("resize", align);
+    window.addEventListener("scrollend", align);
+    return () => {
+      window.removeEventListener("resize", align);
+      window.removeEventListener("scrollend", align);
+    };
+  }, [masonry.containerRef, masonry.totalHeight, masonry.visibleItems]);
 
   useGSAP(
     () => {
@@ -314,6 +389,8 @@ export function PromptLibraryView() {
 
   const activeTypeLabel =
     PROMPT_TASK_TYPES.find((item) => item.id === activeType)?.label || "文生图";
+  const activeCategoryLabel =
+    categoryMeta.find((item) => item.id === activeCategory)?.label || "全部";
   const previewIndex = preview
     ? filteredItems.findIndex((item) => String(item.id) === String(preview.id))
     : -1;
@@ -399,10 +476,39 @@ export function PromptLibraryView() {
       notificationService.info("没有可复制的提示词");
       return;
     }
-    try {
-      await navigator.clipboard.writeText(prompt);
+    let copied = false;
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(prompt);
+        copied = true;
+      } catch {
+        // Fallback to execCommand below
+      }
+    }
+    if (!copied) {
+      try {
+        const textarea = document.createElement("textarea");
+        textarea.value = prompt;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        textarea.style.pointerEvents = "none";
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        copied = document.execCommand("copy");
+        document.body.removeChild(textarea);
+      } catch {
+        copied = false;
+      }
+    }
+    if (copied) {
+      setCopiedId(item.id);
+      if (copiedTimeoutRef.current) clearTimeout(copiedTimeoutRef.current);
+      copiedTimeoutRef.current = setTimeout(() => {
+        setCopiedId((current) => (current === item.id ? null : current));
+      }, 1800);
       notificationService.success("提示词已复制");
-    } catch {
+    } else {
       notificationService.error("复制失败，请手动选择文本");
     }
   }
@@ -469,41 +575,139 @@ export function PromptLibraryView() {
       data-prompt-motion-state="idle"
     >
       <div className="ch-shell">
-        <div className="ch-sticky-bar" data-prompt-page-motion>
-          <div className="ch-toolbar">
-            <label className="ch-search">
-              <i className="bi bi-search" aria-hidden="true" />
-              <input
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                type="search"
-                placeholder="搜索标题、提示词或标签"
-              />
-            </label>
-          </div>
-          <div className="ch-chips" aria-label="工作台">
-            {PROMPT_TASK_TYPES.map((type) => (
+        <div className="ch-sticky-bar">
+          <div className="ch-toolbar ch-toolbar--prompts-unified" data-prompt-page-motion>
+            {/* 最左边：分类选择下拉框 */}
+            <div
+              ref={categoryMenuRef}
+              className={`ch-menu ch-menu--category${categoryMenuOpen ? " is-open" : ""}`}
+            >
               <button
-                key={type.id}
                 type="button"
-                className={`ch-chip${activeType === type.id ? " is-active" : ""}`}
-                onClick={() => selectType(type.id)}
+                className="ch-menu__trigger"
+                aria-label="分类筛选"
+                aria-expanded={categoryMenuOpen}
+                onClick={() => setCategoryMenuOpen((prev) => !prev)}
               >
-                {type.label}
+                <i className="bi bi-funnel ch-menu__leading-icon" aria-hidden="true" />
+                <span>{activeCategoryLabel}</span>
+                <i className="bi bi-chevron-down ch-menu__chevron" aria-hidden="true" />
               </button>
-            ))}
-          </div>
-          <div className="ch-chips" aria-label="分类">
-            {categoryMeta.map((category) => (
-              <button
-                key={category.id}
-                type="button"
-                className={`ch-chip${activeCategory === category.id ? " is-active" : ""}`}
-                onClick={() => setActiveCategory(category.id)}
+              {categoryMenuOpen && (
+                <ul className="ch-menu__panel ch-menu__panel--categories" role="listbox">
+                  {categoryMeta.map((category) => (
+                    <li key={category.id} role="none">
+                      <button
+                        type="button"
+                        className={`ch-menu__option${activeCategory === category.id ? " is-active" : ""}`}
+                        onClick={() => {
+                          setActiveCategory(category.id);
+                          setCategoryMenuOpen(false);
+                        }}
+                      >
+                        <span>{category.label}</span>
+                        {activeCategory === category.id && (
+                          <i className="bi bi-check2" aria-hidden="true" />
+                        )}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div className="ch-toolbar__divider" aria-hidden="true" />
+
+            {/* 中间：工作台类型选择（平铺胶囊，不做下拉框） */}
+            <div className="ch-chips ch-chips--prompt-types" aria-label="工作台">
+              {PROMPT_TASK_TYPES.map((type) => (
+                <button
+                  key={type.id}
+                  type="button"
+                  className={`ch-chip${activeType === type.id ? " is-active" : ""}`}
+                  onClick={() => selectType(type.id)}
+                >
+                  {type.label}
+                </button>
+              ))}
+            </div>
+
+            {/* 最右边：交互式搜索框（流式平滑展开，不重叠遮挡任何相邻按钮） */}
+            <div
+              className={`ch-prompt-search-slot${searchExpanded || search.trim() ? " is-expanded" : ""}`}
+            >
+              <div
+                ref={searchContainerRef}
+                className={`ch-prompt-search${searchExpanded || search.trim() ? " is-expanded" : ""}`}
+                onClick={() => {
+                  if (!searchExpanded) {
+                    setSearchExpanded(true);
+                    requestAnimationFrame(() => searchInputRef.current?.focus());
+                  }
+                }}
               >
-                {category.label}
-              </button>
-            ))}
+                <button
+                  type="button"
+                  className="ch-prompt-search__toggle"
+                  aria-label="搜索"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSearchExpanded(true);
+                    requestAnimationFrame(() => searchInputRef.current?.focus());
+                  }}
+                >
+                  <i className="bi bi-search" aria-hidden="true" />
+                </button>
+                <input
+                  ref={searchInputRef}
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  onFocus={() => setSearchExpanded(true)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                      if (search) {
+                        setSearch("");
+                      } else {
+                        setSearchExpanded(false);
+                        searchInputRef.current?.blur();
+                      }
+                    }
+                  }}
+                  type="search"
+                  placeholder="搜索标题、提示词或标签"
+                  aria-label="搜索标题、提示词或标签"
+                  autoComplete="off"
+                  spellCheck="false"
+                />
+                {search.trim() ? (
+                  <button
+                    type="button"
+                    className="ch-prompt-search__clear"
+                    aria-label="清空搜索"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSearch("");
+                      searchInputRef.current?.focus();
+                    }}
+                  >
+                    <i className="bi bi-x-circle-fill" aria-hidden="true" />
+                  </button>
+                ) : searchExpanded ? (
+                  <button
+                    type="button"
+                    className="ch-prompt-search__close"
+                    aria-label="收起搜索"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSearch("");
+                      setSearchExpanded(false);
+                    }}
+                  >
+                    <i className="bi bi-x-lg" aria-hidden="true" />
+                  </button>
+                ) : null}
+              </div>
+            </div>
           </div>
         </div>
 
@@ -525,100 +729,148 @@ export function PromptLibraryView() {
               className="ch-prompt-masonry"
               style={{ height: `${masonry.totalHeight}px` }}
             >
-              {masonry.visibleItems.map((entry) => (
-                <article
-                  key={entry.key}
-                  className="ch-card ch-prompt-masonry__item"
-                  style={{
-                    width: `${entry.width}px`,
-                    height: `${entry.height}px`,
-                    transform: `translate3d(${entry.left}px, ${entry.top}px, 0)`,
-                  }}
-                >
-                  <button
-                    type="button"
-                    className="ch-card__media ch-prompt-card__media"
-                    style={{ height: `${entry.mediaHeight}px` }}
-                    onClick={() => openPreview(entry.item)}
+              {masonry.visibleItems.map((entry) => {
+                const isCopied = copiedId === entry.item.id;
+                const promptSnippet = entry.item.prompt || entry.item.title || "";
+                return (
+                  <article
+                    key={entry.key}
+                    className="ch-card ch-prompt-masonry__item"
+                    style={{
+                      width: `${entry.width}px`,
+                      height: `${entry.height}px`,
+                      left: `${entry.left}px`,
+                      top: `${entry.top}px`,
+                    }}
                   >
-                    {entry.cover ? (
-                      <AuthenticatedImage
-                        className={`ch-prompt-card__image${loadedCoverKeysRef.current.has(entry.key) ? " is-loaded" : ""}`}
-                        src={entry.cover}
-                        alt={entry.item.title || "提示词"}
-                        loading={
-                          entry.index < Math.max(6, masonry.columnCount * 2)
-                            ? "eager"
-                            : "lazy"
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      className="ch-card__media ch-prompt-card__media"
+                      onClick={() => openPreview(entry.item)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          openPreview(entry.item);
                         }
-                        fetchPriority={
-                          entry.index < Math.max(4, masonry.columnCount)
-                            ? "high"
-                            : "low"
-                        }
-                        rootMargin="720px 0px"
-                        maxDimension={720}
-                        retryCount={2}
-                        keepLoaded
-                        onLoad={(event) =>
-                          revealPromptImage(
-                            event,
-                            entry.key,
-                            Number(entry.item.coverWidth) > 0 &&
-                              Number(entry.item.coverHeight) > 0,
-                          )
-                        }
-                      />
-                    ) : (
-                      <div className="ch-card__placeholder">
-                        <i className="bi bi-quote" aria-hidden="true" />
-                        {entry.item.title || "灵感"}
+                      }}
+                      aria-label={`${entry.item.title || "提示词"} - 查看详情`}
+                    >
+                      {entry.cover ? (
+                        <>
+                          <AuthenticatedImage
+                            className={`ch-prompt-card__image${loadedCoverKeysRef.current.has(entry.key) ? " is-loaded" : ""}`}
+                            src={entry.cover}
+                            alt={entry.item.title || "提示词"}
+                            loading={
+                              entry.index < Math.max(6, masonry.columnCount * 2)
+                                ? "eager"
+                                : "lazy"
+                            }
+                            fetchPriority={
+                              entry.index < Math.max(4, masonry.columnCount)
+                                ? "high"
+                                : "low"
+                            }
+                            rootMargin="720px 0px"
+                            maxDimension={720}
+                            retryCount={2}
+                            keepLoaded
+                            onLoad={(event) =>
+                              revealPromptImage(
+                                event,
+                                entry.key,
+                                Number(entry.item.coverWidth) > 0 &&
+                                  Number(entry.item.coverHeight) > 0,
+                              )
+                            }
+                          />
+                          <div className="ch-prompt-card__hover-indicator" aria-hidden="true">
+                            <i className="bi bi-arrows-angle-expand" />
+                            <span>查看详情</span>
+                          </div>
+                        </>
+                      ) : (
+                        <div className="ch-card__placeholder ch-prompt-card__art-placeholder">
+                          <div className="ch-prompt-card__art-watermark" aria-hidden="true">
+                            <i className="bi bi-quote" />
+                          </div>
+                          <div className="ch-prompt-card__art-badge">
+                            <i className="bi bi-stars" aria-hidden="true" />
+                            <span>灵感提示词</span>
+                          </div>
+                          <div className="ch-prompt-card__art-text">
+                            {promptSnippet}
+                          </div>
+                          <div className="ch-prompt-card__hover-indicator" aria-hidden="true">
+                            <i className="bi bi-arrows-angle-expand" />
+                            <span>查看详情</span>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* 图文一体：底部渐变遮罩 + 标题 + 统计与图标操作组 */}
+                      <div className="ch-prompt-card__title-scrim">
+                        <div className="ch-prompt-card__scrim-content">
+                          <h3
+                            className="ch-card__title"
+                            onClick={() => openPreview(entry.item)}
+                          >
+                            {entry.item.title || entry.item.label || "未命名灵感"}
+                          </h3>
+
+                          <div className="ch-prompt-card__scrim-footer">
+                            <div className="ch-prompt-card__scrim-stats">
+                              {entry.item.useCount ? (
+                                <span className="ch-prompt-stat-pill" title={`使用 ${entry.item.useCount} 次`}>
+                                  <i className="bi bi-lightning-charge-fill" aria-hidden="true" />
+                                  <span>{entry.item.useCount}</span>
+                                </span>
+                              ) : null}
+                              {entry.item.favoriteCount ? (
+                                <span className="ch-prompt-stat-pill" title={`收藏 ${entry.item.favoriteCount} 次`}>
+                                  <i className="bi bi-heart-fill" aria-hidden="true" />
+                                  <span>{entry.item.favoriteCount}</span>
+                                </span>
+                              ) : null}
+                            </div>
+
+                            <div className="ch-prompt-card__actions" onClick={(e) => e.stopPropagation()}>
+                              <button
+                                type="button"
+                                className={`ch-prompt-icon-btn ch-prompt-btn--copy${isCopied ? " is-copied" : ""}`}
+                                title={isCopied ? "已复制" : "复制"}
+                                aria-label={isCopied ? "已复制" : "复制"}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  void copyPrompt(entry.item);
+                                }}
+                              >
+                                <i className={`bi ${isCopied ? "bi-check2" : "bi-copy"}`} aria-hidden="true" />
+                                <span className="ch-prompt-icon-btn__label">{isCopied ? "已复制" : "复制"}</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                className={`ch-prompt-icon-btn ch-prompt-btn--fav${entry.item.favorited ? " is-favorited" : ""}`}
+                                title={entry.item.favorited ? "已收藏" : "收藏"}
+                                aria-label={entry.item.favorited ? "已收藏" : "收藏"}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  void toggleFavorite(entry.item);
+                                }}
+                              >
+                                <i className={`bi ${entry.item.favorited ? "bi-heart-fill" : "bi-heart"}`} aria-hidden="true" />
+                                <span className="ch-prompt-icon-btn__label">{entry.item.favorited ? "已收藏" : "收藏"}</span>
+                              </button>
+                            </div>
+                          </div>
+                        </div>
                       </div>
-                    )}
-                  </button>
-                  <div className="ch-card__overlay">
-                    <span className="ch-card__overlay-start">
-                      <span className="ch-card__tag">
-                        {entry.item.category || activeTypeLabel}
-                      </span>
-                    </span>
-                    {entry.item.useCount ? (
-                      <span className="ch-card__overlay-end">
-                        <span className="ch-card__tag">
-                          <i className="bi bi-lightning-charge" aria-hidden="true" />
-                          {entry.item.useCount}
-                        </span>
-                      </span>
-                    ) : null}
-                  </div>
-                  <div className="ch-card__body">
-                    <h3 className="ch-card__title">
-                      {entry.item.title || entry.item.label || "未命名灵感"}
-                    </h3>
-                    <div className="ch-card__actions">
-                      <button
-                        type="button"
-                        className="is-primary"
-                        onClick={() => void usePrompt(entry.item)}
-                      >
-                        去做图
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void copyPrompt(entry.item)}
-                      >
-                        复制
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void toggleFavorite(entry.item)}
-                      >
-                        {entry.item.favorited ? "已收藏" : "收藏"}
-                      </button>
                     </div>
-                  </div>
-                </article>
-              ))}
+                  </article>
+                );
+              })}
             </div>
           )}
           {hasMore || loadingMore ? (

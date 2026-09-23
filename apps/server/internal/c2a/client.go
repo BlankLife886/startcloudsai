@@ -79,6 +79,72 @@ func synchronousImageResult(body []byte, err error) ([]string, error) {
 	return images, nil
 }
 
+// StandardImageData is the response item returned by a standard OpenAI
+// Images endpoint. The developer API keeps the provider's chosen delivery
+// mode instead of forcing every result through local object storage.
+type StandardImageData struct {
+	B64JSON string `json:"b64_json,omitempty"`
+	URL     string `json:"url,omitempty"`
+}
+
+type StandardImageResponse struct {
+	Created int64               `json:"created"`
+	Data    []StandardImageData `json:"data"`
+}
+
+func parseStandardImageResponse(body []byte) (StandardImageResponse, error) {
+	var response StandardImageResponse
+	if err := json.Unmarshal(body, &response); err != nil {
+		return response, &UpstreamError{Message: "上游未返回有效的 OpenAI 图片响应", StatusCode: http.StatusBadGateway}
+	}
+	if len(response.Data) > maxTaskImages {
+		return response, &UpstreamError{Message: "上游返回图片数量超过限制", StatusCode: http.StatusBadGateway}
+	}
+	valid := make([]StandardImageData, 0, len(response.Data))
+	for _, item := range response.Data {
+		item.B64JSON = strings.TrimSpace(item.B64JSON)
+		item.URL = strings.TrimSpace(item.URL)
+		if item.B64JSON != "" {
+			if len(item.B64JSON) > 32<<20 {
+				return response, &UpstreamError{Message: "上游返回的单张图片超过限制", StatusCode: http.StatusBadGateway}
+			}
+			valid = append(valid, item)
+			continue
+		}
+		if item.URL != "" {
+			parsed, err := url.Parse(item.URL)
+			if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+				return response, &UpstreamError{Message: "上游返回了无效的图片 URL", StatusCode: http.StatusBadGateway}
+			}
+			valid = append(valid, item)
+		}
+	}
+	if len(valid) == 0 {
+		var raw map[string]json.RawMessage
+		_ = json.Unmarshal(body, &raw)
+		if textResult := imageTaskResultText(raw); textResult != "" {
+			return response, &UpstreamError{Message: textResult, StatusCode: http.StatusUnprocessableEntity}
+		}
+		return response, &UpstreamError{Message: "上游未返回图片数据", StatusCode: http.StatusBadGateway}
+	}
+	response.Data = valid
+	if response.Created == 0 {
+		response.Created = time.Now().Unix()
+	}
+	return response, nil
+}
+
+func standardImageB64List(response StandardImageResponse) ([]string, error) {
+	images := make([]string, 0, len(response.Data))
+	for _, item := range response.Data {
+		if strings.TrimSpace(item.B64JSON) == "" {
+			return nil, &UpstreamError{Message: "上游未返回 b64_json 图片数据", StatusCode: http.StatusBadGateway}
+		}
+		images = append(images, item.B64JSON)
+	}
+	return images, nil
+}
+
 // NetworkError 连接/超时类错误（可重试一次）。
 type NetworkError struct {
 	Message string
@@ -127,6 +193,7 @@ type Client struct {
 	AllowPrivate     bool
 	openAIImageEdits bool
 	asyncImageEdits  bool
+	standardImages   bool
 }
 
 // WithOpenAIImageEdits uses the standard multipart /v1/images/edits contract.
@@ -149,6 +216,19 @@ func (c *Client) WithAsyncImageEdits() *Client {
 	clone := *c
 	clone.openAIImageEdits = false
 	clone.asyncImageEdits = true
+	return &clone
+}
+
+// WithStandardImages uses only the public OpenAI Images endpoints. It does
+// not probe the internal chatgpt2api task protocol.
+func (c *Client) WithStandardImages() *Client {
+	if c == nil {
+		return c
+	}
+	clone := *c
+	clone.standardImages = true
+	clone.openAIImageEdits = true
+	clone.asyncImageEdits = false
 	return &clone
 }
 
@@ -233,6 +313,10 @@ func errorMessage(body []byte) string {
 }
 
 func (c *Client) doRequest(ctx context.Context, method, path string, payload any, timeout time.Duration) ([]byte, error) {
+	return c.doRequestWithHeaders(ctx, method, path, payload, timeout, nil)
+}
+
+func (c *Client) doRequestWithHeaders(ctx context.Context, method, path string, payload any, timeout time.Duration, headers map[string]string) ([]byte, error) {
 	var body io.Reader
 	if payload != nil {
 		buf, err := json.Marshal(payload)
@@ -259,6 +343,9 @@ func (c *Client) doRequest(ctx context.Context, method, path string, payload any
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
 
 	if method == http.MethodPost && (path == "/api/image-tasks/generations" || path == "/api/image-tasks/edits" || path == "/v1/images/generations" || path == "/v1/images/edits" || path == "/v1/editable-file-tasks") {
 		if err := upstreamguard.Check(reqCtx); err != nil {
@@ -1243,9 +1330,13 @@ func (c *Client) PollImageTasks(ctx context.Context, taskIDs []string, expected 
 }
 
 func imageGenerationPayload(prompt, model string, n int, size string, options ImageOptions) map[string]any {
+	responseFormat := strings.ToLower(strings.TrimSpace(options.ResponseFormat))
+	if responseFormat != "url" {
+		responseFormat = "b64_json"
+	}
 	payload := map[string]any{
 		"model": model, "prompt": prompt, "n": n,
-		"response_format":  "b64_json",
+		"response_format":  responseFormat,
 		"history_disabled": true, "stream": false,
 	}
 	applyImageOptions(payload, options)
@@ -1356,12 +1447,17 @@ func writeMultipartImage(writer *multipart.Writer, field string, index int, enco
 
 func writeMultipartImageOptions(writer *multipart.Writer, options ImageOptions) error {
 	fields := map[string]string{"quality": normalizedImageQuality(options.Quality)}
+	if user := strings.TrimSpace(options.User); user != "" {
+		fields["user"] = user
+	}
 	switch fidelity := strings.ToLower(strings.TrimSpace(options.InputFidelity)); fidelity {
 	case "low", "high":
 		fields["input_fidelity"] = fidelity
 	}
 	if options.TransparentBackground {
 		fields["background"] = "transparent"
+	} else if background := strings.ToLower(strings.TrimSpace(options.Background)); background == "opaque" {
+		fields["background"] = "opaque"
 	}
 	switch format := strings.ToLower(strings.TrimSpace(options.OutputFormat)); format {
 	case "jpg":
@@ -1383,39 +1479,66 @@ func writeMultipartImageOptions(writer *multipart.Writer, options ImageOptions) 
 
 func (c *Client) editImagesMultipart(
 	ctx context.Context,
-	prompt, model string,
+	taskID, prompt, model string,
 	n int,
 	inputImagesB64 []string,
 	size string,
 	options ImageOptions,
 ) (images []string, err error) {
+	response, err := c.editImagesMultipartResponse(ctx, taskID, prompt, model, n, inputImagesB64, size, options)
+	if err != nil {
+		return nil, err
+	}
+	images, err = standardImageB64List(response)
+	if err != nil {
+		return nil, &SynchronousImageError{Err: err}
+	}
+	return images, nil
+}
+
+func (c *Client) editImagesMultipartResponse(
+	ctx context.Context,
+	taskID, prompt, model string,
+	n int,
+	inputImagesB64 []string,
+	size string,
+	options ImageOptions,
+) (response StandardImageResponse, err error) {
 	defer func() {
 		if err != nil {
 			err = &SynchronousImageError{Err: err}
 		}
 	}()
 	if len(inputImagesB64) == 0 {
-		return nil, &UpstreamError{Message: "图像编辑至少需要一张参考图"}
+		return StandardImageResponse{}, &UpstreamError{Message: "图像编辑至少需要一张参考图"}
 	}
 	if len(inputImagesB64) > maxTaskImages {
-		return nil, &UpstreamError{Message: "参考图数量超过限制"}
+		return StandardImageResponse{}, &UpstreamError{Message: "参考图数量超过限制"}
 	}
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
+	responseFormat := strings.ToLower(strings.TrimSpace(options.ResponseFormat))
+	if responseFormat != "url" {
+		responseFormat = "b64_json"
+	}
 	for key, value := range map[string]string{
-		"model": model, "prompt": prompt, "n": fmt.Sprint(n), "response_format": "b64_json",
+		"model": model, "prompt": prompt, "n": fmt.Sprint(n), "response_format": responseFormat,
 	} {
 		if err := writer.WriteField(key, value); err != nil {
-			return nil, err
+			return StandardImageResponse{}, err
 		}
 	}
 	if strings.TrimSpace(size) != "" {
 		if err := writer.WriteField("size", size); err != nil {
-			return nil, err
+			return StandardImageResponse{}, err
 		}
 	}
-	if err := writeMultipartImageOptions(writer, options); err != nil {
-		return nil, err
+	requestOptions := options
+	if c.standardImages {
+		requestOptions.InputFidelity = ""
+	}
+	if err := writeMultipartImageOptions(writer, requestOptions); err != nil {
+		return StandardImageResponse{}, err
 	}
 	imageField := "image"
 	if len(inputImagesB64) > 1 {
@@ -1423,15 +1546,15 @@ func (c *Client) editImagesMultipart(
 	}
 	for index, encoded := range inputImagesB64 {
 		if err := writeMultipartImage(writer, imageField, index, encoded); err != nil {
-			return nil, err
+			return StandardImageResponse{}, err
 		}
 	}
 	if err := writer.Close(); err != nil {
-		return nil, err
+		return StandardImageResponse{}, err
 	}
 	endpoint, err := c.endpointURL("/v1/images/edits")
 	if err != nil {
-		return nil, err
+		return StandardImageResponse{}, err
 	}
 	requestCtx := ctx
 	if c.Timeout > 0 {
@@ -1441,29 +1564,32 @@ func (c *Client) editImagesMultipart(
 	}
 	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, endpoint, &body)
 	if err != nil {
-		return nil, err
+		return StandardImageResponse{}, err
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	if strings.TrimSpace(taskID) != "" {
+		req.Header.Set("Idempotency-Key", taskID)
+	}
 	if err := upstreamguard.Check(requestCtx); err != nil {
-		return nil, err
+		return StandardImageResponse{}, err
 	}
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return nil, &NetworkError{Message: fmt.Sprintf("上游连接失败：%v", err), Err: err}
+		return StandardImageResponse{}, &NetworkError{Message: fmt.Sprintf("上游连接失败：%v", err), Err: err}
 	}
 	defer resp.Body.Close()
 	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
-		return nil, &NetworkError{Message: fmt.Sprintf("上游连接失败：%v", err), Err: err}
+		return StandardImageResponse{}, &NetworkError{Message: fmt.Sprintf("上游连接失败：%v", err), Err: err}
 	}
 	if int64(len(responseBody)) > maxResponseBytes {
-		return nil, &UpstreamError{Message: "上游响应超过 64 MiB 限制", StatusCode: http.StatusBadGateway}
+		return StandardImageResponse{}, &UpstreamError{Message: "上游响应超过 64 MiB 限制", StatusCode: http.StatusBadGateway}
 	}
 	if resp.StatusCode >= 400 {
-		return nil, &UpstreamError{Message: errorMessage(responseBody), StatusCode: resp.StatusCode}
+		return StandardImageResponse{}, &UpstreamError{Message: errorMessage(responseBody), StatusCode: resp.StatusCode}
 	}
-	return extractB64List(responseBody)
+	return parseStandardImageResponse(responseBody)
 }
 
 func isRetryablePollError(err error) bool {
@@ -1515,14 +1641,22 @@ type ImageOptions struct {
 	Quality               string
 	InputFidelity         string
 	TransparentBackground bool
+	Background            string
 	OutputFormat          string
 	ModerationLevel       string
+	ResponseFormat        string
+	User                  string
 }
 
 func applyImageOptions(payload map[string]any, options ImageOptions) {
 	payload["quality"] = normalizedImageQuality(options.Quality)
+	if user := strings.TrimSpace(options.User); user != "" {
+		payload["user"] = user
+	}
 	if options.TransparentBackground {
 		payload["background"] = "transparent"
+	} else if background := strings.ToLower(strings.TrimSpace(options.Background)); background == "opaque" {
+		payload["background"] = "opaque"
 	}
 	switch format := strings.ToLower(strings.TrimSpace(options.OutputFormat)); format {
 	case "jpg":
@@ -1536,6 +1670,27 @@ func applyImageOptions(payload map[string]any, options ImageOptions) {
 	}
 }
 
+func standardImageGenerationPayload(prompt, model string, n int, size string, options ImageOptions) map[string]any {
+	payload := imageGenerationPayload(prompt, model, n, size, options)
+	delete(payload, "history_disabled")
+	return payload
+}
+
+// GenerateImagesStandard calls only the provider's public OpenAI-compatible
+// image generation endpoint and preserves either b64_json or url responses.
+func (c *Client) GenerateImagesStandard(ctx context.Context, idempotencyKey, prompt, model string, n int, size string, options ImageOptions) (StandardImageResponse, error) {
+	if c == nil || !c.standardImages {
+		return StandardImageResponse{}, errors.New("standard image client is not enabled")
+	}
+	body, err := c.doRequestWithHeaders(ctx, http.MethodPost, "/v1/images/generations",
+		standardImageGenerationPayload(prompt, model, n, size, options), c.Timeout,
+		map[string]string{"Idempotency-Key": strings.TrimSpace(idempotencyKey)})
+	if err != nil {
+		return StandardImageResponse{}, err
+	}
+	return parseStandardImageResponse(body)
+}
+
 // GenerateImagesWithID 优先使用 chatgpt2api 异步图片任务接口；taskID 使重试幂等。
 func (c *Client) GenerateImagesWithID(ctx context.Context, taskID, prompt, model string, n int, size string, requestedQuality ...string) ([]string, error) {
 	quality := ""
@@ -1546,6 +1701,12 @@ func (c *Client) GenerateImagesWithID(ctx context.Context, taskID, prompt, model
 }
 
 func (c *Client) GenerateImagesWithOptions(ctx context.Context, taskID, prompt, model string, n int, size string, options ImageOptions) ([]string, error) {
+	if c.standardImages {
+		body, err := c.doRequestWithHeaders(ctx, http.MethodPost, "/v1/images/generations",
+			standardImageGenerationPayload(prompt, model, n, size, options), c.Timeout,
+			map[string]string{"Idempotency-Key": taskID})
+		return synchronousImageResult(body, err)
+	}
 	payload := imageGenerationPayload(prompt, model, n, size, options)
 	images, err := c.submitAndPollImageTask(ctx, "/api/image-tasks/generations", taskID, payload, n)
 	if err == nil || !shouldFallbackToSync(err) {
@@ -1563,6 +1724,10 @@ func (c *Client) SubmitGenerateImages(ctx context.Context, taskID, prompt, model
 // SubmitGenerateImagesTracked also returns the canonical upstream task ID so
 // queue workers never have to assume that it equals client_task_id.
 func (c *Client) SubmitGenerateImagesTracked(ctx context.Context, taskID, prompt, model string, n int, size string, options ImageOptions) ([]string, bool, string, error) {
+	if c.standardImages {
+		images, err := c.GenerateImagesWithOptions(ctx, taskID, prompt, model, n, size, options)
+		return images, false, "", err
+	}
 	payload := imageGenerationPayload(prompt, model, n, size, options)
 	images, pending, upstreamTaskID, err := c.submitImageTaskTracked(ctx, "/api/image-tasks/generations", taskID, payload, n)
 	if err == nil || !shouldFallbackToSync(err) {
@@ -1589,7 +1754,7 @@ func (c *Client) EditImagesWithID(ctx context.Context, taskID, prompt, model str
 
 func (c *Client) EditImagesWithOptions(ctx context.Context, taskID, prompt, model string, n int, inputImagesB64 []string, size string, options ImageOptions) ([]string, error) {
 	if c.openAIImageEdits {
-		return c.editImagesMultipart(ctx, prompt, model, n, inputImagesB64, size, options)
+		return c.editImagesMultipart(ctx, taskID, prompt, model, n, inputImagesB64, size, options)
 	}
 	payload := imageEditPayload(prompt, model, n, inputImagesB64, size, options)
 	usingImageURL := false
@@ -1606,7 +1771,7 @@ func (c *Client) EditImagesWithOptions(ctx context.Context, taskID, prompt, mode
 		return result, err
 	}
 	if c.asyncImageEdits {
-		return c.editImagesMultipart(ctx, prompt, model, n, inputImagesB64, size, options)
+		return c.editImagesMultipart(ctx, taskID, prompt, model, n, inputImagesB64, size, options)
 	}
 	body, err := c.doRequest(ctx, http.MethodPost, "/v1/images/edits", payload, c.Timeout)
 	if !usingImageURL && imageURLRequiredError(err) {
@@ -1620,6 +1785,14 @@ func (c *Client) EditImagesWithOptions(ctx context.Context, taskID, prompt, mode
 	return synchronousImageResult(body, err)
 }
 
+// EditImagesStandard calls only the provider's public multipart edit endpoint.
+func (c *Client) EditImagesStandard(ctx context.Context, idempotencyKey, prompt, model string, n int, inputImagesB64 []string, size string, options ImageOptions) (StandardImageResponse, error) {
+	if c == nil || !c.standardImages {
+		return StandardImageResponse{}, errors.New("standard image client is not enabled")
+	}
+	return c.editImagesMultipartResponse(ctx, idempotencyKey, prompt, model, n, inputImagesB64, size, options)
+}
+
 func (c *Client) SubmitEditImages(ctx context.Context, taskID, prompt, model string, n int, inputImagesB64 []string, size string, options ImageOptions) ([]string, bool, error) {
 	images, pending, _, err := c.SubmitEditImagesTracked(ctx, taskID, prompt, model, n, inputImagesB64, size, options)
 	return images, pending, err
@@ -1629,7 +1802,7 @@ func (c *Client) SubmitEditImages(ctx context.Context, taskID, prompt, model str
 // SubmitGenerateImagesTracked.
 func (c *Client) SubmitEditImagesTracked(ctx context.Context, taskID, prompt, model string, n int, inputImagesB64 []string, size string, options ImageOptions) ([]string, bool, string, error) {
 	if c.openAIImageEdits {
-		images, err := c.editImagesMultipart(ctx, prompt, model, n, inputImagesB64, size, options)
+		images, err := c.editImagesMultipart(ctx, taskID, prompt, model, n, inputImagesB64, size, options)
 		return images, false, "", err
 	}
 	payload := imageEditPayload(prompt, model, n, inputImagesB64, size, options)
@@ -1647,7 +1820,7 @@ func (c *Client) SubmitEditImagesTracked(ctx context.Context, taskID, prompt, mo
 		return images, pending, upstreamTaskID, err
 	}
 	if c.asyncImageEdits {
-		images, err = c.editImagesMultipart(ctx, prompt, model, n, inputImagesB64, size, options)
+		images, err = c.editImagesMultipart(ctx, taskID, prompt, model, n, inputImagesB64, size, options)
 		return images, false, "", err
 	}
 	body, err := c.doRequest(ctx, http.MethodPost, "/v1/images/edits", payload, c.Timeout)

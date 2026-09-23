@@ -1,5 +1,11 @@
 完整电商生产工作流（38 节点）
 
+仓库保存 projects.json 与重建脚本 generate.mjs，未随目录提交 ZIP。
+在本目录运行以下命令，将 projects.json 放在压缩包根目录：
+zip ecommerce-full-production-workflow-38-nodes.zip projects.json
+如需从源码重新生成 JSON，可先运行 node generate.mjs（会覆盖本目录 projects.json）。
+示例仅用于展示工作流结构，未代表当前模型与付费上游已实测通过。
+
 导入：
 1. 打开 http://127.0.0.1:3105/canvas
 2. 进入“我的画布”。

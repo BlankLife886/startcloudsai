@@ -11,6 +11,7 @@ interface ProfitSummary {
   grossProfitCents: number;
   succeededUnits: number;
   failedUnits: number;
+  canceledUnits: number;
 }
 
 interface ProfitRow extends ProfitSummary {
@@ -22,6 +23,7 @@ interface ProfitRow extends ProfitSummary {
 interface ProfitResponse {
   dimension: string;
   days: number;
+  source: string;
   since: string;
   summary: ProfitSummary;
   items: ProfitRow[];
@@ -34,9 +36,16 @@ const dimensions = [
   { value: "workspace", label: "业务" },
   { value: "user", label: "用户" },
 ];
+const sources = [
+  { value: "", label: "全部流水" },
+  { value: "developer_api", label: "开发者 API" },
+  { value: "task", label: "站内任务" },
+  { value: "assistant_run", label: "AI 助手" },
+];
 
 const days = ref<7 | 30>(30);
 const dimension = ref("model");
+const sourceType = ref("");
 const loading = ref(false);
 const loaded = ref(false);
 const data = ref<ProfitResponse | null>(null);
@@ -60,6 +69,7 @@ const summary = computed<ProfitSummary>(() => data.value?.summary || {
   grossProfitCents: 0,
   succeededUnits: 0,
   failedUnits: 0,
+  canceledUnits: 0,
 });
 
 const items = computed(() => data.value?.items || []);
@@ -73,13 +83,14 @@ function rowName(row: Partial<Pick<ProfitRow, "key" | "label">>) {
 }
 const lossCount = computed(() => items.value.filter((item) => item.grossProfitCents < 0).length);
 const dimensionLabel = computed(() => dimensions.find((item) => item.value === dimension.value)?.label || "模型");
+const sourceLabel = computed(() => sources.find((item) => item.value === sourceType.value)?.label || "全部流水");
 
 async function load() {
   const version = ++requestVersion;
   loading.value = true;
   try {
     const result = await request<ProfitResponse>("/api/v1/admin/profitability", {
-      query: { days: days.value, dimension: dimension.value },
+      query: { days: days.value, dimension: dimension.value, source: sourceType.value },
     });
     if (version === requestVersion) data.value = result;
   } catch (error) {
@@ -92,7 +103,7 @@ async function load() {
   }
 }
 
-watch([days, dimension], () => void load());
+watch([days, dimension, sourceType], () => void load());
 onMounted(async () => {
   try {
     const cfg = await request<{
@@ -110,6 +121,9 @@ onMounted(async () => {
   <div class="page profit-page">
     <PageCard>
       <template #actions>
+        <el-select v-model="sourceType" aria-label="流水来源" style="width: 136px">
+          <el-option v-for="item in sources" :key="item.value" :label="item.label" :value="item.value" />
+        </el-select>
         <el-segmented v-model="days" :options="[{ label: '近 7 日', value: 7 }, { label: '近 30 日', value: 30 }]" />
         <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
       </template>
@@ -134,12 +148,14 @@ onMounted(async () => {
       </section>
 
       <p class="profit-legend">
-        近 {{ days }} 日按{{ dimensionLabel }}汇总
+        {{ sourceLabel }}，近 {{ days }} 日按{{ dimensionLabel }}汇总
         <em class="tnum">{{ items.length }}</em>
         项，成功
         <em class="tnum">{{ points(summary.succeededUnits) }}</em>
         、失败
         <em class="tnum">{{ points(summary.failedUnits) }}</em>
+        、待确认
+        <em class="tnum">{{ points(summary.canceledUnits) }}</em>
         。
         <span v-if="lossCount" class="is-loss">{{ lossCount }} 项亏损。</span>
         统计从配置成本后的新任务开始累计。

@@ -61,11 +61,21 @@
 }
 
 .collage-topbar-left,
+.collage-topbar-center,
 .collage-topbar-right {
   display: flex;
   align-items: center;
   gap: 10px;
   min-width: 0;
+}
+
+.collage-topbar-center {
+  flex: 1;
+  justify-content: center;
+}
+
+.collage-topbar-right {
+  justify-content: flex-end;
 }
 
 .collage-brand {
@@ -1011,12 +1021,184 @@
   gap: 8px;
 }
 
+.collage-field-row + .collage-field-row {
+  margin-top: 8px;
+}
+
+.collage-field-row em {
+  flex: 0 0 28px;
+  color: var(--collage-text-dim);
+  font-size: 0.68rem;
+  font-style: normal;
+  font-weight: 650;
+}
+
+.collage-field-row input[type="range"] {
+  flex: 1;
+  width: auto;
+  min-width: 0;
+}
+
 .collage-field-row output {
-  min-width: 40px;
+  min-width: 28px;
   color: #c4b5fd;
   font-size: 0.76rem;
   font-weight: 700;
   text-align: right;
+}
+
+.collage-inspector-head {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.collage-inspector-head .collage-inspector-tabs {
+  flex: 1;
+  min-width: 0;
+}
+
+.collage-inspector-tools {
+  display: flex;
+  flex-shrink: 0;
+  gap: 4px;
+}
+
+.collage-inspector-tools button {
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--collage-border);
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  color: rgba(255, 255, 255, 0.72);
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.collage-inspector-tools button:disabled {
+  opacity: 0.32;
+  cursor: default;
+}
+
+.collage-seg {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.collage-seg + .collage-field-row,
+.collage-seg + .collage-search,
+.collage-search + .collage-text-row {
+  margin-top: 8px;
+}
+
+.collage-seg button {
+  min-height: 28px;
+  border: 0;
+  border-radius: 8px;
+  color: rgba(255, 255, 255, 0.58);
+  background: transparent;
+  font-size: 0.7rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.collage-seg button.active {
+  color: #fff;
+  background: rgba(139, 92, 246, 0.28);
+}
+
+.collage-cell-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.collage-cell-nav button {
+  min-width: 32px;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--collage-border);
+  border-radius: 8px;
+  color: rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 0.74rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.collage-cell-nav button.active {
+  border-color: transparent;
+  color: #fff;
+  background: rgba(139, 92, 246, 0.32);
+}
+
+.collage-cell-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.collage-cell-actions button {
+  min-height: 34px;
+  border: 1px solid var(--collage-border);
+  border-radius: 10px;
+  color: rgba(255, 255, 255, 0.78);
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 0.72rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.collage-cell-actions button:disabled,
+.collage-inspector-clear:disabled {
+  opacity: 0.36;
+  cursor: default;
+}
+
+.collage-inspector-clear {
+  width: 100%;
+  min-height: 36px;
+  margin-top: 8px;
+  border: 1px solid var(--collage-border);
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: rgba(255, 255, 255, 0.72);
+  background: transparent;
+  font-size: 0.76rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.collage-cell-empty-panel {
+  padding: 28px 8px 8px;
+}
+
+.collage-cell-empty-panel button {
+  min-height: 34px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 999px;
+  color: #fff;
+  background: var(--collage-accent);
+  font-size: 0.76rem;
+  font-weight: 680;
+  cursor: pointer;
+}
+
+.collage-board.is-hide-badges .collage-cell-badge {
+  display: none;
 }
 
 .collage-field-note {
@@ -1047,6 +1229,58 @@
   border-color: rgba(34, 211, 238, 0.52);
   color: #fff;
   background: rgba(34, 211, 238, 0.12);
+}
+
+.collage-ratio-custom {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.collage-ratio-custom input {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--collage-border);
+  border-radius: 8px;
+  color: inherit;
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 0.76rem;
+  font-weight: 650;
+  text-align: center;
+  pointer-events: auto;
+}
+
+.collage-ratio-custom em {
+  flex: 0 0 auto;
+  color: var(--collage-text-dim);
+  font-size: 0.84rem;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.collage-size-unit {
+  flex: 0 0 auto;
+  color: var(--collage-text-dim);
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.collage-ratio-swap {
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--collage-border);
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  color: inherit;
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 0.78rem;
+  cursor: pointer;
 }
 
 .collage-bg-grid {
@@ -1982,6 +2216,7 @@ html:not(.color-scheme-dark) .collage-stage {
   }
 
   .collage-topbar-left,
+  .collage-topbar-center,
   .collage-topbar-right {
     gap: 4px;
   }
@@ -2181,4 +2416,1318 @@ html:not(.color-scheme-dark) .collage-stage {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* --------------------------------------------------------------------------
+ * Final immersion lock — one collage chamber.
+ * Far atmosphere → floating glass consoles → lit paper board in a continuous void.
+ * Site light theme does not split the room.
+ * -------------------------------------------------------------------------- */
+html .collage-studio-page.is-chamber,
+html:not(.color-scheme-dark) .collage-studio-page.is-chamber {
+  --collage-accent: #8b5cf6;
+  --collage-accent-2: #5eead4;
+  --collage-accent-soft: rgba(139, 92, 246, 0.16);
+  --collage-panel: rgba(16, 13, 24, 0.62);
+  --collage-panel-2: rgba(12, 10, 18, 0.38);
+  --collage-panel-3: rgba(28, 24, 40, 0.55);
+  --collage-border: rgba(255, 255, 255, 0.07);
+  --collage-text-dim: rgba(236, 232, 244, 0.5);
+  --collage-dot-grid: radial-gradient(rgba(255, 255, 255, 0.13) 1px, transparent 1.2px);
+  --collage-gutter: 12px;
+  --collage-col: 300px;
+  --collage-inset: 12px;
+  position: relative;
+  isolation: isolate;
+  color: #ece8f4;
+  color-scheme: dark;
+  background-color: #08070d !important;
+  background-image: var(--collage-dot-grid) !important;
+  background-size: 22px 22px !important;
+  background-position: 0 0 !important;
+}
+
+.collage-studio-page.is-chamber::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 72% 52% at 14% 0%, rgba(139, 92, 246, 0.24), transparent 60%),
+    radial-gradient(ellipse 56% 44% at 92% 8%, rgba(45, 212, 191, 0.12), transparent 56%);
+}
+
+.collage-studio-page.is-chamber::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: radial-gradient(
+    ellipse 82% 74% at 50% 46%,
+    transparent 42%,
+    rgba(0, 0, 0, 0.5) 100%
+  );
+}
+
+.collage-studio-page.is-chamber .collage-studio {
+  position: relative;
+  z-index: 1;
+}
+
+html .collage-studio-page.is-chamber .collage-topbar,
+html:not(.color-scheme-dark) .main-content.main--studio-console > .collage-studio-page.is-chamber .collage-topbar,
+html.color-scheme-dark .main-content.main--studio-console > .collage-studio-page.is-chamber .collage-topbar,
+html .main-content.main--studio-console > .collage-studio-page.is-chamber .collage-topbar {
+  border-bottom-color: transparent !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  backdrop-filter: none;
+}
+
+html .collage-studio-page.is-chamber .collage-brand-badge {
+  border-radius: 10px;
+  background: linear-gradient(135deg, var(--collage-accent), #6ee7d4);
+  box-shadow: 0 8px 20px rgba(139, 92, 246, 0.28);
+}
+
+html .collage-studio-page.is-chamber .collage-top-btn.primary,
+html .collage-studio-page.is-chamber .collage-export-caret {
+  background: linear-gradient(135deg, #8b5cf6, #6d5ef5);
+  box-shadow: 0 10px 24px rgba(139, 92, 246, 0.28);
+}
+
+html .collage-studio-page.is-chamber .collage-brand strong,
+html .collage-studio-page.is-chamber .collage-template-card,
+html .collage-studio-page.is-chamber .collage-template-card em,
+html .collage-studio-page.is-chamber .collage-panel-intro strong,
+html .collage-studio-page.is-chamber .collage-section-label strong,
+html .collage-studio-page.is-chamber .collage-top-btn,
+html .collage-studio-page.is-chamber .collage-history-btns button,
+html .collage-studio-page.is-chamber .collage-search,
+html .collage-studio-page.is-chamber .collage-ratio-grid button,
+html .collage-studio-page.is-chamber .collage-quick-actions button,
+html .collage-studio-page.is-chamber .collage-material-actions button,
+html .collage-studio-page.is-chamber .collage-zoom-btn,
+html .collage-studio-page.is-chamber .collage-field > span,
+html .collage-studio-page.is-chamber .collage-filter-grid em {
+  color: #ece8f4;
+}
+
+html .collage-studio-page.is-chamber .collage-brand small,
+html .collage-studio-page.is-chamber .collage-top-status span,
+html .collage-studio-page.is-chamber .collage-template-card small,
+html .collage-studio-page.is-chamber .collage-field-note,
+html .collage-studio-page.is-chamber .collage-side-empty,
+html .collage-studio-page.is-chamber .collage-upload-zone,
+html .collage-studio-page.is-chamber .collage-upload-zone small,
+html .collage-studio-page.is-chamber .collage-panel-intro p,
+html .collage-studio-page.is-chamber .collage-section-label span,
+html .collage-studio-page.is-chamber .collage-category-pills button,
+html .collage-studio-page.is-chamber .collage-side-tabs button,
+html .collage-studio-page.is-chamber .collage-inspector-tabs button {
+  color: var(--collage-text-dim);
+}
+
+html .collage-studio-page.is-chamber .collage-top-status span,
+html .collage-studio-page.is-chamber .collage-history-btns button,
+html .collage-studio-page.is-chamber .collage-top-btn,
+html .collage-studio-page.is-chamber .collage-category-pills button,
+html .collage-studio-page.is-chamber .collage-ratio-grid button,
+html .collage-studio-page.is-chamber .collage-quick-actions button,
+html .collage-studio-page.is-chamber .collage-material-actions button,
+html .collage-studio-page.is-chamber .collage-zoom-btn {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+html .collage-studio-page.is-chamber .collage-history-btns {
+  margin-left: auto;
+  padding-left: 0;
+  border-left: 0;
+}
+
+html .collage-studio-page.is-chamber .collage-top-btn.primary,
+html .collage-studio-page.is-chamber .collage-export-caret {
+  color: #fff;
+  background: var(--collage-accent);
+  border-color: transparent;
+}
+
+html .collage-studio-page.is-chamber .collage-top-status span.is-free {
+  border-color: rgba(52, 211, 153, 0.22);
+  color: #86efac;
+  background: rgba(16, 185, 129, 0.1);
+}
+
+html .collage-studio-page.is-chamber .collage-side-tabs button.active,
+html .collage-studio-page.is-chamber .collage-inspector-tabs button.active,
+html .collage-studio-page.is-chamber .collage-category-pills button.active,
+html .collage-studio-page.is-chamber .collage-ratio-grid button.active {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+html .collage-studio-page.is-chamber .collage-template-card.active,
+html .collage-studio-page.is-chamber .collage-category-pills button.active,
+html .collage-studio-page.is-chamber .collage-ratio-grid button.active {
+  color: #fff;
+  background: rgba(139, 92, 246, 0.16);
+}
+
+html .collage-studio-page.is-chamber .collage-side-body,
+html .collage-studio-page.is-chamber .collage-inspector-body,
+html .collage-studio-page.is-chamber .collage-side-tabs,
+html .collage-studio-page.is-chamber .collage-inspector-tabs,
+html:not(.color-scheme-dark) .collage-studio-page.is-chamber .collage-side-body,
+html:not(.color-scheme-dark) .collage-studio-page.is-chamber .collage-inspector-body {
+  background: transparent !important;
+  box-shadow: none;
+}
+
+html .collage-studio-page.is-chamber .collage-sidebar,
+html .collage-studio-page.is-chamber .collage-inspector,
+html:not(.color-scheme-dark) .collage-studio-page.is-chamber .collage-sidebar,
+html:not(.color-scheme-dark) .collage-studio-page.is-chamber .collage-inspector {
+  border: 1px solid rgba(255, 255, 255, 0.09) !important;
+  background:
+    linear-gradient(165deg, rgba(255, 255, 255, 0.08), transparent 40%),
+    linear-gradient(180deg, rgba(20, 15, 32, 0.7), rgba(9, 7, 14, 0.78)) !important;
+  box-shadow:
+    0 22px 52px rgba(0, 0, 0, 0.34),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07);
+}
+
+html .collage-studio-page.is-chamber .collage-search {
+  border-color: rgba(255, 255, 255, 0.08);
+  color: #ece8f4;
+  background: rgba(255, 255, 255, 0.045);
+}
+
+html .collage-studio-page.is-chamber .collage-search::placeholder {
+  color: rgba(236, 232, 244, 0.36);
+}
+
+html .collage-studio-page.is-chamber .collage-template-card {
+  border-color: transparent;
+  background: transparent;
+}
+
+html .collage-studio-page.is-chamber .collage-template-card:hover {
+  border-color: rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.045);
+  box-shadow: none;
+}
+
+html .collage-studio-page.is-chamber .collage-template-card.active {
+  border-color: rgba(139, 92, 246, 0.38);
+  background: rgba(139, 92, 246, 0.12);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+html .collage-studio-page.is-chamber .collage-template-preview {
+  background: rgba(139, 92, 246, 0.16);
+}
+
+html .collage-studio-page.is-chamber .collage-template-card:nth-child(even) .collage-template-preview {
+  background: rgba(45, 212, 191, 0.14);
+}
+
+html .collage-studio-page.is-chamber .collage-panel-intro__icon.is-blue {
+  color: #c4b5fd;
+  background: rgba(139, 92, 246, 0.16);
+}
+
+html .collage-studio-page.is-chamber .collage-panel-intro__icon.is-green {
+  color: #5eead4;
+  background: rgba(45, 212, 191, 0.12);
+}
+
+html .collage-studio-page.is-chamber .collage-upload-zone {
+  border-color: rgba(139, 92, 246, 0.28);
+  color: var(--collage-text-dim);
+  background: rgba(139, 92, 246, 0.08);
+}
+
+html .collage-studio-page.is-chamber .collage-upload-zone i {
+  color: #c4b5fd;
+}
+
+html .collage-studio-page.is-chamber .collage-hero-hint {
+  color: #ddd6fe;
+  background: rgba(139, 92, 246, 0.12);
+}
+
+html .collage-studio-page.is-chamber .collage-field {
+  border-color: rgba(255, 255, 255, 0.06);
+  background: transparent;
+}
+
+html .collage-studio-page.is-chamber .collage-field-row output {
+  color: #c4b5fd;
+}
+
+html .collage-studio-page.is-chamber .collage-bg-custom {
+  color: var(--collage-text-dim);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+html .collage-studio-page.is-chamber .collage-switch {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+html .collage-studio-page.is-chamber .collage-switch.on {
+  background: var(--collage-accent);
+}
+
+html .collage-studio-page.is-chamber .collage-filter-grid button {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+html .collage-studio-page.is-chamber .collage-cell-indicator {
+  border-color: rgba(139, 92, 246, 0.22);
+  color: #ece8f4;
+  background: rgba(139, 92, 246, 0.12);
+}
+
+html .collage-studio-page.is-chamber .collage-export-menu {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(14, 12, 20, 0.92);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(18px);
+}
+
+html .collage-studio-page.is-chamber .collage-export-menu button {
+  border-color: rgba(255, 255, 255, 0.08);
+  color: #ece8f4;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+html .collage-studio-page.is-chamber .collage-mobile-nav {
+  border-color: rgba(255, 255, 255, 0.06);
+  background: rgba(10, 8, 16, 0.72);
+}
+
+html .collage-studio-page.is-chamber .collage-stage-wrap,
+html .collage-studio-page.is-chamber .collage-stage,
+html:not(.color-scheme-dark) .collage-studio-page.is-chamber .collage-stage-wrap,
+html:not(.color-scheme-dark) .collage-studio-page.is-chamber .collage-stage {
+  background: transparent !important;
+  background-image: none !important;
+}
+
+html .collage-studio-page.is-chamber .collage-stage {
+  position: relative;
+  z-index: 1;
+}
+
+html .collage-studio-page.is-chamber .collage-stage-wrap {
+  position: relative;
+}
+
+html .collage-studio-page.is-chamber .collage-stage-wrap::before,
+html .collage-studio-page.is-chamber .collage-board-outer::after {
+  content: none;
+}
+
+html .collage-studio-page.is-chamber .collage-stage-toolbar,
+html .collage-studio-page.is-chamber .collage-stage-footer,
+html:not(.color-scheme-dark) .collage-studio-page.is-chamber .collage-stage-toolbar,
+html:not(.color-scheme-dark) .collage-studio-page.is-chamber .collage-stage-footer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  border: 0;
+  color: rgba(236, 232, 244, 0.62);
+  background: transparent;
+}
+
+html .collage-studio-page.is-chamber .collage-stage-toolbar {
+  top: 0;
+  justify-content: flex-start;
+  min-height: 48px;
+  padding: 8px var(--collage-inset) 0;
+}
+
+html .collage-studio-page.is-chamber .collage-stage-footer {
+  bottom: 0;
+  min-height: 48px;
+  padding: 0 var(--collage-inset) 8px;
+}
+
+html .collage-studio-page.is-chamber .collage-side-tabs,
+html .collage-studio-page.is-chamber .collage-inspector-tabs {
+  box-sizing: border-box;
+  height: 48px;
+  min-height: 48px;
+  padding: 8px var(--collage-inset);
+  border-bottom: 0;
+}
+
+html .collage-studio-page.is-chamber .collage-side-tabs button,
+html .collage-studio-page.is-chamber .collage-inspector-tabs button {
+  min-height: 32px;
+}
+
+html .collage-studio-page.is-chamber .collage-side-body,
+html .collage-studio-page.is-chamber .collage-inspector-body {
+  padding: var(--collage-inset);
+}
+
+html .collage-studio-page.is-chamber .collage-stage-chip,
+html .collage-studio-page.is-chamber .collage-zoom-btn {
+  border-color: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.86);
+  background: rgba(12, 10, 18, 0.42);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+html .collage-studio-page.is-chamber .collage-fill-progress {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+html .collage-studio-page.is-chamber .collage-stage-footer output {
+  border: 0;
+  color: rgba(236, 232, 244, 0.72);
+  background: transparent;
+}
+
+.collage-studio-page.is-chamber .collage-stage-cta {
+  margin-left: auto;
+  min-height: 28px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  color: #2a241c;
+  background: #f4f0e8;
+  font-size: 0.72rem;
+  font-weight: 680;
+  cursor: pointer;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.22);
+}
+
+.collage-studio-page.is-chamber .collage-stage-cta:hover {
+  background: #fff8ee;
+}
+
+.collage-studio-page.is-chamber .collage-stage-sizer {
+  padding: 20px 20px 52px;
+}
+
+.collage-studio-page.is-chamber .collage-board {
+  z-index: 1;
+  overflow: hidden;
+  border-radius: 8px;
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.1),
+    0 0 72px rgba(236, 232, 244, 0.08),
+    0 2px 4px rgba(0, 0, 0, 0.22),
+    0 22px 48px rgba(0, 0, 0, 0.4);
+}
+
+.collage-studio-page.is-chamber .collage-board.is-dark-paper {
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.08),
+    0 16px 36px rgba(0, 0, 0, 0.42);
+}
+
+.collage-studio-page.is-chamber .collage-cell.is-vacant {
+  container-type: size;
+  background: rgba(36, 38, 52, 0.07);
+  box-shadow: inset 0 0 0 1px rgba(36, 38, 52, 0.08);
+}
+
+.collage-studio-page.is-chamber .collage-cell.is-vacant:hover {
+  background: rgba(36, 38, 52, 0.1);
+}
+
+.collage-studio-page.is-chamber .collage-board.is-dark-paper .collage-cell.is-vacant {
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+}
+
+.collage-studio-page.is-chamber .collage-board.is-dark-paper .collage-cell.is-vacant:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.collage-studio-page.is-chamber .collage-cell.selected {
+  box-shadow: inset 0 0 0 2px #a78bfa;
+}
+
+.collage-studio-page.is-chamber .collage-cell.is-drop-target {
+  box-shadow: inset 0 0 0 2px #c4b5fd;
+}
+
+.collage-studio-page.is-chamber .collage-cell-badge {
+  top: 8px;
+  left: 8px;
+  min-width: 18px;
+  height: 18px;
+  border: 0;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+html .collage-studio-page.is-chamber input[type="range"] {
+  appearance: none;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  accent-color: #c4b5fd;
+}
+
+html .collage-studio-page.is-chamber input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  border: 0;
+  border-radius: 50%;
+  background: #f4f0ff;
+  box-shadow:
+    0 0 0 3px rgba(139, 92, 246, 0.28),
+    0 4px 10px rgba(0, 0, 0, 0.35);
+}
+
+html .collage-studio-page.is-chamber input[type="range"]::-moz-range-thumb {
+  width: 13px;
+  height: 13px;
+  border: 0;
+  border-radius: 50%;
+  background: #f4f0ff;
+  box-shadow:
+    0 0 0 3px rgba(139, 92, 246, 0.28),
+    0 4px 10px rgba(0, 0, 0, 0.35);
+}
+
+html .collage-studio-page.is-chamber input[type="range"]::-moz-range-track {
+  height: 3px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.collage-studio-page.is-chamber .collage-cell-empty {
+  gap: 0;
+  color: rgba(36, 38, 52, 0.34);
+  background: transparent;
+  box-shadow: none;
+}
+
+.collage-studio-page.is-chamber .collage-board.is-dark-paper .collage-cell-empty {
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.collage-studio-page.is-chamber .collage-cell-empty::before {
+  content: none;
+}
+
+.collage-studio-page.is-chamber .collage-cell-empty__mark {
+  width: clamp(16px, 12cqmin, 28px);
+  height: clamp(16px, 12cqmin, 28px);
+  border: 0;
+  border-radius: 0;
+  color: inherit;
+  opacity: 0.78;
+  background: transparent;
+  box-shadow: none;
+  font-size: clamp(0.85rem, 8cqmin, 1.35rem);
+}
+
+.collage-studio-page.is-chamber .collage-cell-empty em {
+  display: none;
+}
+
+.collage-studio-page.is-chamber .collage-cell.is-vacant:hover .collage-cell-empty__mark {
+  opacity: 1;
+}
+
+@media (min-width: 721px) {
+  html .main-content.main--studio-console > .collage-studio-page.is-chamber .collage-topbar,
+  html .collage-studio-page.is-chamber .collage-topbar {
+    display: block;
+    height: 0;
+    min-height: 0 !important;
+    padding: 0 !important;
+    overflow: visible;
+    pointer-events: none;
+  }
+
+  html .collage-studio-page.is-chamber .collage-workspace {
+    grid-template-columns: var(--collage-col) minmax(0, 1fr) var(--collage-col);
+    grid-template-rows: minmax(0, 1fr);
+    gap: var(--collage-gutter);
+    padding: var(--collage-gutter);
+    background: transparent;
+  }
+
+  html .collage-studio-page.is-chamber .collage-topbar-right {
+    position: absolute;
+    top: var(--collage-gutter);
+    right: var(--collage-gutter);
+    left: auto;
+    box-sizing: border-box;
+    width: var(--collage-col);
+    height: 48px;
+    min-height: 48px;
+    padding: 8px;
+    justify-content: flex-end;
+    gap: 6px;
+    pointer-events: auto;
+    z-index: 5;
+    border: 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 16px 16px 0 0;
+    background: transparent;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    box-shadow: none;
+  }
+
+  html .collage-studio-page.is-chamber .collage-topbar-right > .collage-top-btn:not(.collage-add-btn):not(.primary) span {
+    display: none;
+  }
+
+  html .collage-studio-page.is-chamber .collage-topbar-right > .collage-top-btn:not(.collage-add-btn):not(.primary) {
+    width: 32px;
+    min-width: 32px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  html .collage-studio-page.is-chamber .collage-sidebar,
+  html .collage-studio-page.is-chamber .collage-inspector {
+    grid-column: auto;
+    grid-row: auto;
+    max-height: none;
+    border-radius: 16px;
+    overflow: hidden;
+    backdrop-filter: blur(22px) saturate(1.15);
+    -webkit-backdrop-filter: blur(22px) saturate(1.15);
+  }
+
+  html .collage-studio-page.is-chamber .collage-inspector {
+    padding-top: 48px;
+  }
+
+  .collage-studio-page.is-chamber .collage-stage-wrap {
+    border-radius: 16px;
+    overflow: hidden;
+    background: transparent !important;
+  }
+}
+
+@media (max-width: 1180px) {
+  html .collage-studio-page.is-chamber {
+    --collage-col: 256px;
+  }
+}
+
+@media (max-width: 1024px) {
+  html .collage-studio-page.is-chamber {
+    --collage-col: 232px;
+    --collage-gutter: 8px;
+    --collage-inset: 10px;
+  }
+}
+
+@media (max-width: 720px) {
+  .collage-studio-page.is-chamber .collage-workspace {
+    gap: 0;
+    padding: 0;
+  }
+
+  .collage-studio-page.is-chamber .collage-sidebar,
+  .collage-studio-page.is-chamber .collage-inspector,
+  .collage-studio-page.is-chamber .collage-stage-wrap {
+    border-radius: 0;
+  }
+
+  .collage-studio-page.is-chamber .collage-sidebar,
+  .collage-studio-page.is-chamber .collage-inspector {
+    background: rgba(10, 8, 16, 0.88) !important;
+    backdrop-filter: blur(18px);
+  }
+
+  .collage-studio-page.is-chamber .collage-stage-toolbar,
+  .collage-studio-page.is-chamber .collage-stage-footer {
+    position: relative;
+    padding: 8px 12px;
+    background: transparent;
+  }
+
+  html .collage-studio-page.is-chamber .collage-template-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+html .collage-studio-page.is-chamber .collage-side-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2px;
+  height: auto;
+  min-height: 0;
+  margin: 10px 10px 0;
+  padding: 3px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+html .collage-studio-page.is-chamber .collage-side-tabs button {
+  min-height: 30px;
+  border-radius: 9px;
+  gap: 4px;
+  font-size: 0.72rem;
+  font-weight: 650;
+}
+
+html .collage-studio-page.is-chamber .collage-side-tabs button i {
+  font-size: 0.78rem;
+}
+
+html .collage-studio-page.is-chamber .collage-search {
+  min-height: 34px;
+  margin-bottom: 8px;
+  border-radius: 10px;
+  font-size: 0.75rem;
+}
+
+html .collage-studio-page.is-chamber .collage-category-pills {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 12px;
+  margin: 0 0 10px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+html .collage-studio-page.is-chamber .collage-category-pills::-webkit-scrollbar {
+  display: none;
+}
+
+html .collage-studio-page.is-chamber .collage-category-pills button,
+html .collage-studio-page.is-chamber .collage-category-pills button.active {
+  flex: 0 0 auto;
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  color: rgba(236, 232, 244, 0.38);
+  background: transparent;
+  box-shadow: none;
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+html .collage-studio-page.is-chamber .collage-category-pills button.active {
+  color: rgba(236, 232, 244, 0.92);
+}
+
+html .collage-studio-page.is-chamber .collage-template-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 2px;
+}
+
+html .collage-studio-page.is-chamber .collage-template-card,
+html .collage-studio-page.is-chamber .collage-template-card:hover,
+html .collage-studio-page.is-chamber .collage-template-card.active {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  box-shadow: none;
+  transform: none;
+}
+
+html .collage-studio-page.is-chamber .collage-template-card:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+html .collage-studio-page.is-chamber .collage-template-card.active,
+html .collage-studio-page.is-chamber .collage-template-card.active:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+html .collage-studio-page.is-chamber .collage-template-preview,
+html .collage-studio-page.is-chamber .collage-template-card:nth-child(even) .collage-template-preview,
+html .collage-studio-page.is-chamber .collage-template-card:hover .collage-template-preview,
+html .collage-studio-page.is-chamber .collage-template-card.active .collage-template-preview,
+html .collage-studio-page.is-chamber .collage-template-card.active:hover .collage-template-preview {
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  aspect-ratio: auto;
+  margin: 0;
+  padding: 0;
+  border-radius: 0;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  box-shadow: none;
+}
+
+html .collage-studio-page.is-chamber .collage-template-preview__board {
+  position: relative;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
+  color: rgba(236, 232, 244, 0.62);
+  background: transparent;
+  box-shadow: none;
+}
+
+html .collage-studio-page.is-chamber .collage-template-card.active .collage-template-preview__board {
+  color: #c4b5fd;
+}
+
+html .collage-studio-page.is-chamber .collage-template-preview__board span,
+html .collage-studio-page.is-chamber .collage-template-card:nth-child(even) .collage-template-preview span {
+  box-sizing: border-box;
+  border: 1.5px solid currentColor;
+  background: transparent;
+  box-shadow: none;
+}
+
+html .collage-studio-page.is-chamber .collage-template-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+  padding: 0;
+}
+
+html .collage-studio-page.is-chamber .collage-template-card em {
+  display: block;
+  margin: 0;
+  overflow: hidden;
+  color: rgba(236, 232, 244, 0.88);
+  font-size: 0.78rem;
+  font-weight: 620;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+html .collage-studio-page.is-chamber .collage-template-card small {
+  display: block;
+  margin: 0;
+  color: rgba(236, 232, 244, 0.36);
+  font-size: 0.66rem;
+  font-weight: 550;
+}
+
+html .collage-studio-page.is-chamber .collage-template-arrow {
+  display: none;
+}
+
+html .collage-studio-page.is-chamber .collage-section-label:first-child {
+  margin-top: 0;
+}
+
+/* Light gallery — same room structure, inverted atmosphere. */
+html .collage-studio-page.is-chamber.is-light,
+html:not(.color-scheme-dark) .collage-studio-page.is-chamber.is-light {
+  --collage-accent: #6557e8;
+  --collage-accent-2: #0f8f78;
+  --collage-accent-soft: rgba(101, 87, 232, 0.1);
+  --collage-panel: rgba(255, 255, 255, 0.86);
+  --collage-panel-2: rgba(247, 247, 251, 0.72);
+  --collage-border: rgba(36, 38, 52, 0.1);
+  --collage-text-dim: rgba(43, 45, 60, 0.56);
+  --collage-dot-grid: radial-gradient(rgba(46, 49, 67, 0.12) 1px, transparent 1.2px);
+  color: #242531;
+  color-scheme: light;
+  background-color: #f3f4f8 !important;
+  background-image: var(--collage-dot-grid) !important;
+}
+
+.collage-studio-page.is-chamber.is-light::before {
+  background:
+    radial-gradient(ellipse 70% 50% at 16% 0%, rgba(109, 92, 255, 0.1), transparent 58%),
+    radial-gradient(ellipse 50% 40% at 92% 8%, rgba(15, 143, 120, 0.07), transparent 54%);
+}
+
+.collage-studio-page.is-chamber.is-light::after {
+  background: radial-gradient(
+    ellipse 86% 78% at 50% 46%,
+    transparent 48%,
+    rgba(78, 72, 104, 0.07) 100%
+  );
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-brand strong,
+html .collage-studio-page.is-chamber.is-light .collage-template-card,
+html .collage-studio-page.is-chamber.is-light .collage-template-card em,
+html .collage-studio-page.is-chamber.is-light .collage-section-label strong,
+html .collage-studio-page.is-chamber.is-light .collage-top-btn,
+html .collage-studio-page.is-chamber.is-light .collage-search,
+html .collage-studio-page.is-chamber.is-light .collage-ratio-grid button,
+html .collage-studio-page.is-chamber.is-light .collage-quick-actions button,
+html .collage-studio-page.is-chamber.is-light .collage-material-actions button,
+html .collage-studio-page.is-chamber.is-light .collage-zoom-btn,
+html .collage-studio-page.is-chamber.is-light .collage-field > span,
+html .collage-studio-page.is-chamber.is-light .collage-filter-grid em {
+  color: #242531;
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-top-status span,
+html .collage-studio-page.is-chamber.is-light .collage-template-card small,
+html .collage-studio-page.is-chamber.is-light .collage-field-note,
+html .collage-studio-page.is-chamber.is-light .collage-side-empty,
+html .collage-studio-page.is-chamber.is-light .collage-upload-zone,
+html .collage-studio-page.is-chamber.is-light .collage-upload-zone small,
+html .collage-studio-page.is-chamber.is-light .collage-section-label span,
+html .collage-studio-page.is-chamber.is-light .collage-category-pills button,
+html .collage-studio-page.is-chamber.is-light .collage-side-tabs button,
+html .collage-studio-page.is-chamber.is-light .collage-inspector-tabs button {
+  color: var(--collage-text-dim);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-top-status span,
+html .collage-studio-page.is-chamber.is-light .collage-top-btn,
+html .collage-studio-page.is-chamber.is-light .collage-category-pills button,
+html .collage-studio-page.is-chamber.is-light .collage-ratio-grid button,
+html .collage-studio-page.is-chamber.is-light .collage-quick-actions button,
+html .collage-studio-page.is-chamber.is-light .collage-material-actions button,
+html .collage-studio-page.is-chamber.is-light .collage-zoom-btn {
+  border-color: rgba(36, 38, 52, 0.1);
+  background: rgba(36, 38, 52, 0.045);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-top-btn.primary,
+html .collage-studio-page.is-chamber.is-light .collage-export-caret {
+  color: #fff;
+  background: linear-gradient(135deg, #6557e8, #7c6ff0);
+  border-color: transparent;
+  box-shadow: 0 8px 20px rgba(101, 87, 232, 0.2);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-top-status span.is-free {
+  border-color: rgba(16, 145, 88, 0.2);
+  color: #087a48;
+  background: #edf9f3;
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-side-tabs button.active,
+html .collage-studio-page.is-chamber.is-light .collage-inspector-tabs button.active {
+  color: #242531;
+  background: rgba(36, 38, 52, 0.06);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-template-card.active,
+html .collage-studio-page.is-chamber.is-light .collage-category-pills button.active,
+html .collage-studio-page.is-chamber.is-light .collage-ratio-grid button.active {
+  color: #4e43c8;
+  background: rgba(101, 87, 232, 0.1);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-sidebar,
+html .collage-studio-page.is-chamber.is-light .collage-inspector,
+html:not(.color-scheme-dark) .collage-studio-page.is-chamber.is-light .collage-sidebar,
+html:not(.color-scheme-dark) .collage-studio-page.is-chamber.is-light .collage-inspector {
+  border-color: rgba(36, 38, 52, 0.1) !important;
+  background:
+    linear-gradient(165deg, rgba(109, 92, 255, 0.05), transparent 40%),
+    rgba(255, 255, 255, 0.88) !important;
+  box-shadow:
+    0 18px 46px rgba(55, 50, 86, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-search {
+  border-color: rgba(36, 38, 52, 0.1);
+  color: #242531;
+  background: rgba(36, 38, 52, 0.04);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-search::placeholder {
+  color: rgba(43, 45, 60, 0.38);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-side-tabs {
+  background: rgba(36, 38, 52, 0.05);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-template-card,
+html .collage-studio-page.is-chamber.is-light .collage-template-card:hover,
+html .collage-studio-page.is-chamber.is-light .collage-template-card.active {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-template-card:hover {
+  background: rgba(36, 38, 52, 0.04);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-template-card.active,
+html .collage-studio-page.is-chamber.is-light .collage-template-card.active:hover {
+  background: rgba(36, 38, 52, 0.06);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-template-preview,
+html .collage-studio-page.is-chamber.is-light .collage-template-card:nth-child(even) .collage-template-preview,
+html .collage-studio-page.is-chamber.is-light .collage-template-card:hover .collage-template-preview,
+html .collage-studio-page.is-chamber.is-light .collage-template-card.active .collage-template-preview {
+  background: transparent;
+  box-shadow: none;
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-template-preview__board {
+  color: rgba(36, 38, 52, 0.55);
+  background: transparent;
+  box-shadow: none;
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-template-card.active .collage-template-preview__board {
+  color: #6557e8;
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-template-preview__board span,
+html .collage-studio-page.is-chamber.is-light .collage-template-card:nth-child(even) .collage-template-preview span {
+  border-color: currentColor;
+  background: transparent;
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-template-card em {
+  color: #242531;
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-template-card small {
+  color: rgba(43, 45, 60, 0.4);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-category-pills button,
+html .collage-studio-page.is-chamber.is-light .collage-category-pills button.active {
+  color: rgba(43, 45, 60, 0.38);
+  background: transparent;
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-category-pills button.active {
+  color: #242531;
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-upload-zone {
+  border-color: rgba(101, 87, 232, 0.22);
+  color: var(--collage-text-dim);
+  background: rgba(101, 87, 232, 0.06);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-upload-zone i {
+  color: #6557e8;
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-hero-hint {
+  color: #4e43c8;
+  background: rgba(101, 87, 232, 0.08);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-field {
+  border-color: rgba(36, 38, 52, 0.08);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-field-row output {
+  color: #4e43c8;
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-bg-custom {
+  color: var(--collage-text-dim);
+  background: rgba(36, 38, 52, 0.05);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-switch {
+  background: #c9cdd5;
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-switch.on {
+  background: var(--collage-accent);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-filter-grid button {
+  background: rgba(36, 38, 52, 0.04);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-cell-indicator {
+  border-color: rgba(101, 87, 232, 0.16);
+  color: #242531;
+  background: rgba(101, 87, 232, 0.08);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-export-menu {
+  border-color: rgba(36, 38, 52, 0.1);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 18px 44px rgba(36, 38, 52, 0.12);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-export-menu button {
+  border-color: rgba(36, 38, 52, 0.1);
+  color: #242531;
+  background: rgba(36, 38, 52, 0.04);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-mobile-nav {
+  border-color: rgba(36, 38, 52, 0.08);
+  background: rgba(255, 255, 255, 0.9);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-stage-wrap::before,
+html .collage-studio-page.is-chamber.is-light .collage-board-outer::after {
+  content: none;
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-stage-toolbar,
+html .collage-studio-page.is-chamber.is-light .collage-stage-footer {
+  color: rgba(43, 45, 60, 0.58);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-stage-chip,
+html .collage-studio-page.is-chamber.is-light .collage-zoom-btn {
+  border-color: rgba(36, 38, 52, 0.1);
+  color: rgba(36, 38, 52, 0.78);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-fill-progress {
+  background: rgba(36, 38, 52, 0.1);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-stage-footer output {
+  color: rgba(43, 45, 60, 0.62);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-stage-cta {
+  color: #fff;
+  background: #242531;
+  box-shadow: 0 6px 16px rgba(36, 38, 52, 0.16);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-stage-cta:hover {
+  background: #16141f;
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-board {
+  box-shadow:
+    0 0 0 1px rgba(36, 38, 52, 0.07),
+    0 1px 2px rgba(36, 38, 52, 0.04),
+    0 14px 28px rgba(36, 38, 52, 0.07),
+    0 32px 64px rgba(36, 38, 52, 0.06);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-cell.is-vacant {
+  background: rgba(36, 38, 52, 0.06);
+  box-shadow: inset 0 0 0 1px rgba(36, 38, 52, 0.08);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-cell.is-vacant:hover {
+  background: rgba(36, 38, 52, 0.09);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-board.is-dark-paper .collage-cell.is-vacant {
+  background: rgba(255, 255, 255, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-board.is-dark-paper .collage-cell.is-vacant:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-cell.selected {
+  box-shadow: inset 0 0 0 2px #6557e8;
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-cell-badge {
+  border: 0;
+  color: #fff;
+  background: rgba(36, 38, 52, 0.45);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-cell-empty,
+html .collage-studio-page.is-chamber.is-light .collage-cell-empty__mark {
+  color: rgba(36, 38, 52, 0.32);
+  background: transparent;
+  box-shadow: none;
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-board.is-dark-paper .collage-cell-empty,
+html .collage-studio-page.is-chamber.is-light .collage-board.is-dark-paper .collage-cell-empty__mark {
+  color: rgba(255, 255, 255, 0.42);
+}
+
+html .collage-studio-page.is-chamber.is-light input[type="range"] {
+  background: rgba(36, 38, 52, 0.12);
+}
+
+html .collage-studio-page.is-chamber.is-light input[type="range"]::-webkit-slider-thumb {
+  background: #fff;
+  box-shadow:
+    0 0 0 3px rgba(101, 87, 232, 0.22),
+    0 3px 8px rgba(36, 38, 52, 0.16);
+}
+
+html .collage-studio-page.is-chamber.is-light input[type="range"]::-moz-range-thumb {
+  background: #fff;
+  box-shadow:
+    0 0 0 3px rgba(101, 87, 232, 0.22),
+    0 3px 8px rgba(36, 38, 52, 0.16);
+}
+
+html .collage-studio-page.is-chamber.is-light input[type="range"]::-moz-range-track {
+  background: rgba(36, 38, 52, 0.12);
+}
+
+@media (min-width: 721px) {
+  html .collage-studio-page.is-chamber.is-light .collage-topbar-right {
+    border-color: rgba(36, 38, 52, 0.1);
+    background: transparent;
+    box-shadow: none;
+  }
+}
+
+@media (max-width: 720px) {
+  .collage-studio-page.is-chamber.is-light .collage-sidebar,
+  .collage-studio-page.is-chamber.is-light .collage-inspector {
+    background: rgba(255, 255, 255, 0.94) !important;
+  }
+}
+
+html .collage-studio-page.is-chamber .collage-inspector-head {
+  box-sizing: border-box;
+  height: 48px;
+  min-height: 48px;
+  padding: 8px var(--collage-inset);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+html .collage-studio-page.is-chamber .collage-inspector-head .collage-inspector-tabs {
+  height: auto;
+  min-height: 0;
+  padding: 3px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+html .collage-studio-page.is-chamber .collage-inspector-head .collage-inspector-tabs button {
+  min-height: 26px;
+  border-radius: 8px;
+}
+
+html .collage-studio-page.is-chamber .collage-inspector-tools button {
+  border-color: rgba(255, 255, 255, 0.08);
+  color: #ece8f4;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+html .collage-studio-page.is-chamber .collage-inspector-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+html .collage-studio-page.is-chamber .collage-inspector .collage-field {
+  margin: 0;
+  padding: 12px 0;
+  border: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 0;
+  background: transparent;
+}
+
+html .collage-studio-page.is-chamber .collage-inspector .collage-field:last-of-type {
+  border-bottom: 0;
+}
+
+html .collage-studio-page.is-chamber .collage-ratio-custom input,
+html .collage-studio-page.is-chamber .collage-ratio-swap {
+  border-color: rgba(255, 255, 255, 0.08);
+  color: #ece8f4;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+html .collage-studio-page.is-chamber .collage-seg {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+html .collage-studio-page.is-chamber .collage-seg button {
+  color: var(--collage-text-dim);
+}
+
+html .collage-studio-page.is-chamber .collage-seg button.active,
+html .collage-studio-page.is-chamber .collage-cell-nav button.active {
+  color: #fff;
+  background: rgba(139, 92, 246, 0.28);
+}
+
+html .collage-studio-page.is-chamber .collage-cell-nav button,
+html .collage-studio-page.is-chamber .collage-cell-actions button,
+html .collage-studio-page.is-chamber .collage-inspector-clear {
+  border-color: rgba(255, 255, 255, 0.08);
+  color: #ece8f4;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+html .collage-studio-page.is-chamber .collage-inspector-clear {
+  margin-top: 4px;
+  background: transparent;
+}
+
+html .collage-studio-page.is-chamber .collage-field-row em {
+  color: var(--collage-text-dim);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-inspector-head {
+  border-bottom-color: rgba(36, 38, 52, 0.08);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-inspector-head .collage-inspector-tabs,
+html .collage-studio-page.is-chamber.is-light .collage-seg {
+  background: rgba(36, 38, 52, 0.05);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-ratio-custom input,
+html .collage-studio-page.is-chamber.is-light .collage-ratio-swap {
+  border-color: rgba(36, 38, 52, 0.1);
+  color: #242531;
+  background: rgba(36, 38, 52, 0.04);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-inspector-tools button,
+html .collage-studio-page.is-chamber.is-light .collage-cell-nav button,
+html .collage-studio-page.is-chamber.is-light .collage-cell-actions button,
+html .collage-studio-page.is-chamber.is-light .collage-inspector-clear {
+  border-color: rgba(36, 38, 52, 0.1);
+  color: #242531;
+  background: rgba(36, 38, 52, 0.04);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-inspector-clear {
+  background: transparent;
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-inspector .collage-field {
+  border-bottom-color: rgba(36, 38, 52, 0.08);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-seg button {
+  color: var(--collage-text-dim);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-seg button.active,
+html .collage-studio-page.is-chamber.is-light .collage-cell-nav button.active {
+  color: #4e43c8;
+  background: rgba(101, 87, 232, 0.12);
+}
+
+html .collage-studio-page.is-chamber.is-light .collage-cell-empty-panel button {
+  background: linear-gradient(135deg, #6557e8, #7c6ff0);
 }

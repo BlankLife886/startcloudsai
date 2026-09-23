@@ -133,7 +133,20 @@ func (s *Server) adminAgentQualityOverview(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	summary, err := store.GetAgentQualitySummaryScoped(c.Request.Context(), s.St.Pool, since, workspace)
+	page, err := pageNumber(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if page < 1 {
+		page = 1
+	}
+	if (page-1)*50 >= store.ListCountCap {
+		fail(c, errPageBeyondCap)
+		return
+	}
+	traceFilter := store.AgentTraceListOptions{Since: since, Workspace: workspace, Status: status, Model: strings.TrimSpace(c.Query("model")), ReasoningEffort: strings.TrimSpace(c.Query("reasoningEffort")), PromptVersion: strings.TrimSpace(c.Query("promptVersion")), ToolVersion: strings.TrimSpace(c.Query("toolVersion")), Limit: 50, Offset: (page - 1) * 50, IssuesOnly: c.Query("issues") == "true"}
+	summary, err := store.GetAgentQualitySummaryScoped(c.Request.Context(), s.St.Pool, since, workspace, traceFilter)
 	if err != nil {
 		fail(c, err)
 		return
@@ -143,10 +156,7 @@ func (s *Server) adminAgentQualityOverview(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	traces, err := store.ListAdminAgentExecutionTraces(c.Request.Context(), s.St.Pool, store.AgentTraceListOptions{
-		Since: since, Workspace: workspace, Status: status, Model: c.Query("model"), ReasoningEffort: c.Query("reasoningEffort"),
-		PromptVersion: c.Query("promptVersion"), ToolVersion: c.Query("toolVersion"), Limit: 80,
-	})
+	traces, err := store.ListAdminAgentExecutionTraces(c.Request.Context(), s.St.Pool, traceFilter)
 	if err != nil {
 		fail(c, err)
 		return
@@ -182,7 +192,7 @@ func (s *Server) adminAgentQualityOverview(c *gin.Context, _ *store.User) {
 		runItems = append(runItems, agentEvalRunDict(item))
 	}
 	ok(c, gin.H{"days": days, "since": isoValue(since), "workspace": workspace, "summary": summary, "versions": versions,
-		"traces": traceItems, "evalCases": caseItems, "evalRuns": runItems})
+		"traces": traceItems, "traceTotal": summary.TotalTraces, "page": page, "limit": 50, "evalCases": caseItems, "evalRuns": runItems})
 }
 
 func (s *Server) adminAgentTrace(c *gin.Context, _ *store.User) {

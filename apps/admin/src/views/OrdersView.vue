@@ -67,11 +67,14 @@ const statusMeta: Record<string, { label: string; type: "success" | "warning" | 
 
 const pageSize = ref(20);
 
+let summaryScope = "";
+let listTotal: Pick<Page<AdminOrder>, "total" | "totalCapped"> = {};
 const {
   items,
   loading,
   error,
   total,
+  totalCapped,
   page,
   hasPrev,
   hasNext,
@@ -80,24 +83,37 @@ const {
   refresh,
   retry,
 } = usePagedList<AdminOrder>(
-  async (cursor) => {
+  async (cursor, page) => {
     const own = ++listGeneration;
     const selected = { ...filters, search:filters.search.trim() };
-    summary.value = null;
-    const result = await request<Page<AdminOrder> & { summary: AccountingSummary }>("/api/v1/admin/orders", {
+    // The summary scans every matching order: fetch it when filters change, reuse it while paging.
+    const scope = JSON.stringify(selected);
+    const includeSummary = scope !== summaryScope || !summary.value;
+    if (includeSummary) summary.value = null;
+    const result = await request<Page<AdminOrder> & { summary?: AccountingSummary }>("/api/v1/admin/orders", {
       query: {
         ...selected,
         cursor,
+        page,
         limit: pageSize.value,
+        summary: includeSummary,
       },
     });
-    if (own === listGeneration) { summary.value = result.summary; appliedFilters.value = selected; }
-    return result;
+    if (own === listGeneration) {
+      if (result.summary) {
+        summary.value = result.summary;
+        summaryScope = scope;
+        listTotal = { total: result.total, totalCapped: result.totalCapped };
+      }
+      appliedFilters.value = selected;
+    }
+    return { ...result, ...listTotal };
   },
   () => ({ ...filters, limit: pageSize.value }),
+  { pageSeek: true },
 );
 
-const matchedTotal = computed(() => total.value ?? items.value.length);
+const matchedTotal = computed(() => summary.value?.total ?? total.value ?? items.value.length);
 
 const pagePaidCents = computed(() =>
   summary.value?.receivedCents ?? 0,
@@ -265,6 +281,7 @@ onMounted(reset);
         :page="page"
         :count="items.length"
         :total="total"
+        :total-capped="totalCapped"
         :page-size="pageSize"
         @update:page="goToPage"
         @update:page-size="(size: number) => { pageSize = size; reset() }"

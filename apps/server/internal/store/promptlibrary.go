@@ -51,6 +51,29 @@ func GetPromptEntryByGallerySubmission(ctx context.Context, q Q, submissionID uu
 	return nilOnNoRows(p, err)
 }
 
+// GetPromptEntriesByGallerySubmissions 批量读取投稿对应的提示词（一次查询），键为投稿 ID。
+func GetPromptEntriesByGallerySubmissions(ctx context.Context, q Q, submissionIDs []uuid.UUID) (map[uuid.UUID]*PromptEntry, error) {
+	out := make(map[uuid.UUID]*PromptEntry, len(submissionIDs))
+	if len(submissionIDs) == 0 {
+		return out, nil
+	}
+	rows, err := q.Query(ctx, `SELECT `+promptCols+` FROM prompt_library WHERE gallery_submission_id = ANY($1)`, submissionIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		p, err := scanPromptEntry(rows)
+		if err != nil {
+			return nil, err
+		}
+		if p.GallerySubmissionID != nil {
+			out[*p.GallerySubmissionID] = p
+		}
+	}
+	return out, rows.Err()
+}
+
 // PromptFilter 提示词库列表筛选；ActiveOnly 用于公开接口。
 type PromptFilter struct {
 	TaskType      string
@@ -145,45 +168,59 @@ func ListPromptTags(ctx context.Context, q Q, f PromptFilter) ([]string, error) 
 }
 
 // ListPromptEntries 提示词分页（limit+1 行）。
+// 非 latest 排序的游标带有游标行的排序值（Cursor.Value），直接按 (排序值, created_at, id)
+// 行值比较：游标行之后被删除或计数变化都不会让后续页变空或错位。旧游标没有排序值时
+// 回退到按游标行当前值比较。Cursor.Offset > 0 时为页码跳转。
 func ListPromptEntries(ctx context.Context, q Q, f PromptFilter, limit int, cursor *Cursor) ([]*PromptEntry, error) {
-	sql := `SELECT ` + promptCols + ` FROM prompt_library WHERE true`
-	args := []any{}
-	sql, args = appendPromptFilter(sql, args, f)
 	order := f.Order
 	if order == "" {
 		order = "manual"
 	}
-	if cursor != nil {
+	value := promptOrderValue(order)
+	sql := `SELECT ` + promptCols + `, ` + value + ` AS cursor_order_value FROM prompt_library WHERE true`
+	args := []any{}
+	sql, args = appendPromptFilter(sql, args, f)
+	if cursor != nil && cursor.Offset == 0 {
 		args = append(args, cursor.ID)
 		idPos := len(args)
 		args = append(args, cursor.CreatedAt)
 		timePos := len(args)
-		switch order {
-		case "latest":
-			sql += fmt.Sprintf(` AND (created_at < $%d OR (created_at = $%d AND id < $%d))`, timePos, timePos, idPos)
-		case "favorites", "likes", "usage", "recommended":
+		switch {
+		case order == "latest":
+			sql += fmt.Sprintf(` AND (created_at, id) < ($%d, $%d)`, timePos, idPos)
+		case cursor.Value != nil && order == "manual":
+			args = append(args, *cursor.Value)
+			sql += fmt.Sprintf(` AND (sort > $%d OR (sort = $%d AND (created_at, id) < ($%d, $%d)))`,
+				len(args), len(args), timePos, idPos)
+		case cursor.Value != nil:
+			args = append(args, *cursor.Value)
+			sql += fmt.Sprintf(` AND (%s, created_at, id) < ($%d, $%d, $%d)`, value, len(args), timePos, idPos)
+		case order == "manual":
+			sql += fmt.Sprintf(` AND (
+				sort > (SELECT sort FROM prompt_library WHERE id = $%d)
+				OR (sort = (SELECT sort FROM prompt_library WHERE id = $%d)
+					AND (created_at < $%d OR (created_at = $%d AND id < $%d)))
+			)`, idPos, idPos, timePos, timePos, idPos)
+		default:
 			metric := promptOrderMetric(order)
 			sql += fmt.Sprintf(` AND (
 				%s < (SELECT %s FROM prompt_library WHERE id = $%d)
 				OR (%s = (SELECT %s FROM prompt_library WHERE id = $%d)
 					AND (created_at < $%d OR (created_at = $%d AND id < $%d)))
 			)`, metric, metric, idPos, metric, metric, idPos, timePos, timePos, idPos)
-		default:
-			sql += fmt.Sprintf(` AND (
-				sort > (SELECT sort FROM prompt_library WHERE id = $%d)
-				OR (sort = (SELECT sort FROM prompt_library WHERE id = $%d)
-					AND (created_at < $%d OR (created_at = $%d AND id < $%d)))
-			)`, idPos, idPos, timePos, timePos, idPos)
 		}
 	}
 	args = append(args, limit+1)
 	switch order {
 	case "latest":
 		sql += fmt.Sprintf(` ORDER BY created_at DESC, id DESC LIMIT $%d`, len(args))
-	case "favorites", "likes", "usage", "recommended":
-		sql += fmt.Sprintf(` ORDER BY %s DESC, created_at DESC, id DESC LIMIT $%d`, promptOrderMetric(order), len(args))
-	default:
+	case "manual":
 		sql += fmt.Sprintf(` ORDER BY sort ASC, created_at DESC, id DESC LIMIT $%d`, len(args))
+	default:
+		sql += fmt.Sprintf(` ORDER BY %s DESC, created_at DESC, id DESC LIMIT $%d`, value, len(args))
+	}
+	if cursor != nil && cursor.Offset > 0 {
+		sql += fmt.Sprintf(` OFFSET %d`, cursor.Offset)
 	}
 	rows, err := q.Query(ctx, sql, args...)
 	if err != nil {
@@ -192,13 +229,31 @@ func ListPromptEntries(ctx context.Context, q Q, f PromptFilter, limit int, curs
 	defer rows.Close()
 	var out []*PromptEntry
 	for rows.Next() {
-		p, err := scanPromptEntry(rows)
-		if err != nil {
+		var p PromptEntry
+		var orderValue int64
+		if err := rows.Scan(&p.ID, &p.Title, &p.Prompt, &p.TaskType, &p.Category, &p.Tags,
+			&p.CoverKey, &p.CoverWidth, &p.CoverHeight, &p.GallerySubmissionID, &p.Sort, &p.LikeCount, &p.FavoriteCount,
+			&p.UseCount, &p.Active, &p.AssetOrigin, &p.AssetVerified, &p.AssetVerifiedAt, &p.AssetNote, &p.CreatedAt, &orderValue); err != nil {
 			return nil, err
 		}
-		out = append(out, p)
+		if order != "latest" {
+			p.OrderValue = &orderValue
+		}
+		out = append(out, &p)
 	}
 	return out, rows.Err()
+}
+
+// promptOrderValue 为游标记录的排序值（bigint）；latest 只按时间排序，返回常量占位。
+func promptOrderValue(order string) string {
+	switch order {
+	case "latest":
+		return `0::bigint`
+	case "manual":
+		return `sort::bigint`
+	default:
+		return `(` + promptOrderMetric(order) + `)::bigint`
+	}
 }
 
 func promptOrderMetric(order string) string {

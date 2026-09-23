@@ -28,6 +28,10 @@ const (
 	assistantContextMetadataMaxRunes    = 1_600
 	assistantContextMemoryLineRunes     = 360
 	assistantContextMemoryMaxLines      = 12
+	// 上一轮的工具结果要带回上下文，但它只是背景，不能挤掉本轮的正题。
+	// 单条截到一段摘要的长度，并且只回放最近几次，整体仍受信封上限约束。
+	assistantContextToolMemoryRunes = 320
+	assistantContextToolMemoryItems = 3
 )
 
 const assistantChatSystemPrompt = `你是 StarCloudsAI 的 AI 助手。
@@ -204,6 +208,7 @@ func assistantContextualizedContent(message *store.AssistantMessage, content str
 			}
 			details = append(details, line)
 		}
+		details = append(details, assistantContextToolMemory(message.Metadata)...)
 	}
 	if len(details) == 0 {
 		return content
@@ -215,6 +220,55 @@ func assistantContextualizedContent(message *store.AssistantMessage, content str
 		return envelope
 	}
 	return content + "\n\n" + envelope
+}
+
+// assistantContextToolMemory 把上一轮真正查到的东西带回本轮上下文。
+//
+// 检索结果本来就写进了消息元数据，却从不参与下一轮的上下文拼装：模型只能看见自己当时
+// 写出来的那段可见回答，工具拿回的原文一律丢失。用户追问一句“那第二条呢”，它其实已经
+// 不记得第二条是什么，只能重新搜一遍或者凭记忆编——这既是“智障”的观感来源，也是重复
+// 联网的成本来源。
+//
+// 回放的是结果摘要而不是全文：全文动辄几十 KB，几轮就能撑爆窗口，而摘要足够让模型接上
+// 话头，真要细节它可以再搜一次。
+func assistantContextToolMemory(metadata map[string]any) []string {
+	searches := assistantContextMaps(metadata["webSearches"])
+	if len(searches) > assistantContextToolMemoryItems {
+		searches = searches[len(searches)-assistantContextToolMemoryItems:]
+	}
+	details := make([]string, 0, len(searches)+1)
+	for _, search := range searches {
+		line := "助手曾联网检索"
+		if query := assistantMapString(search, "query"); query != "" {
+			line += "「" + truncateAssistantRunes(query, 120) + "」"
+		}
+		if text := assistantMapString(search, "text"); text != "" {
+			line += "，查到：" + truncateAssistantRunes(text, assistantContextToolMemoryRunes)
+		}
+		if labels := assistantContextLabels(search["sources"], 3, "title", "url"); len(labels) > 0 {
+			line += "；来源：" + strings.Join(labels, "、")
+		}
+		details = append(details, line)
+	}
+	// 再补一行"哪些工具上一轮已经成功跑过"，让模型不必从头重来。失败的不列：
+	// 上一轮失败不代表这一轮不该再试，写进去反而会劝退它。
+	succeeded := make([]string, 0, 6)
+	seen := map[string]struct{}{}
+	for _, step := range assistantContextMaps(metadata["toolSteps"]) {
+		name := assistantMapString(step, "name")
+		if name == "" || assistantMapString(step, "status") != "completed" {
+			continue
+		}
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		seen[name] = struct{}{}
+		succeeded = append(succeeded, name)
+	}
+	if len(succeeded) > 0 {
+		details = append(details, "助手上一轮已成功调用过这些工具："+strings.Join(succeeded, "、"))
+	}
+	return details
 }
 
 func assistantPromptContinuesDocument(prompt string) bool {

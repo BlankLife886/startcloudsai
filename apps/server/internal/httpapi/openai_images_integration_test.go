@@ -37,15 +37,20 @@ type openAIIntegrationObject struct {
 }
 
 type openAIImagesIntegrationEnv struct {
-	st      *store.Store
-	srv     *Server
-	router  *gin.Engine
-	user    *store.User
-	key     *store.UserAPIKey
-	secret  string
-	storage *httptest.Server
-	mu      sync.Mutex
-	objects map[string]openAIIntegrationObject
+	st                     *store.Store
+	srv                    *Server
+	router                 *gin.Engine
+	user                   *store.User
+	key                    *store.UserAPIKey
+	secret                 string
+	storage                *httptest.Server
+	upstream               *httptest.Server
+	upstreamCalls          int
+	upstreamPaths          []string
+	upstreamInternalFields bool
+	upstreamStatus         int
+	mu                     sync.Mutex
+	objects                map[string]openAIIntegrationObject
 }
 
 func newOpenAIImagesIntegrationEnv(t *testing.T) *openAIImagesIntegrationEnv {
@@ -96,6 +101,64 @@ func newOpenAIImagesIntegrationEnv(t *testing.T) *openAIImagesIntegrationEnv {
 		}
 	}))
 	t.Cleanup(env.storage.Close)
+	upstreamImage := base64.StdEncoding.EncodeToString(uploadTestPNG(t))
+	env.upstream = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		env.mu.Lock()
+		env.upstreamCalls++
+		env.upstreamPaths = append(env.upstreamPaths, request.URL.Path)
+		upstreamStatus := env.upstreamStatus
+		env.mu.Unlock()
+		if upstreamStatus != 0 {
+			http.Error(w, "simulated upstream error", upstreamStatus)
+			return
+		}
+		writeResult := func(responseFormat string) {
+			w.Header().Set("Content-Type", "application/json")
+			if responseFormat == "url" {
+				_, _ = fmt.Fprintf(w, `{"created":123,"data":[{"url":"http://%s/generated.png"}]}`, request.Host)
+				return
+			}
+			_, _ = fmt.Fprintf(w, `{"created":123,"data":[{"b64_json":%q}]}`, upstreamImage)
+		}
+		switch request.URL.Path {
+		case "/v1/images/generations":
+			var payload map[string]any
+			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+				http.Error(w, "invalid json", http.StatusBadRequest)
+				return
+			}
+			if _, exists := payload["client_task_id"]; exists {
+				env.mu.Lock()
+				env.upstreamInternalFields = true
+				env.mu.Unlock()
+			}
+			if _, exists := payload["history_disabled"]; exists {
+				env.mu.Lock()
+				env.upstreamInternalFields = true
+				env.mu.Unlock()
+			}
+			format, _ := payload["response_format"].(string)
+			writeResult(format)
+		case "/v1/images/edits":
+			if err := request.ParseMultipartForm(32 << 20); err != nil {
+				http.Error(w, "invalid multipart", http.StatusBadRequest)
+				return
+			}
+			if request.FormValue("client_task_id") != "" || request.FormValue("history_disabled") != "" {
+				env.mu.Lock()
+				env.upstreamInternalFields = true
+				env.mu.Unlock()
+			}
+			if len(request.MultipartForm.File["image"]) == 0 && len(request.MultipartForm.File["image[]"]) == 0 {
+				http.Error(w, "missing image", http.StatusBadRequest)
+				return
+			}
+			writeResult(request.FormValue("response_format"))
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+	t.Cleanup(env.upstream.Close)
 	// All credentials and endpoints are synthetic and local. Do not load .env or
 	// attach this fixture to a real queue/worker/provider.
 	cfg := &config.Config{
@@ -115,7 +178,7 @@ func newOpenAIImagesIntegrationEnv(t *testing.T) *openAIImagesIntegrationEnv {
 		t.Fatal(err)
 	}
 	provider := modelconfig.Provider{ID: "compat-provider", Name: "Local test provider", Adapter: modelconfig.AdapterOpenAI,
-		BaseURL: "https://never-called.invalid", APIKey: "never-called-test-key", Enabled: true, TimeoutSecs: 10}
+		BaseURL: env.upstream.URL, APIKey: "test-upstream-key", Enabled: true, TimeoutSecs: 10}
 	imageModel := modelconfig.Model{ID: openAIIntegrationModel, Name: openAIIntegrationModel, ProviderID: provider.ID,
 		UpstreamModel: "test-upstream-image", Kind: modelconfig.ModelKindImage, PriceCents: 20,
 		Enabled: true, Public: true, Default: true, MaxImages: 4, MaxReferenceImages: 6,
@@ -188,74 +251,6 @@ func (env *openAIImagesIntegrationEnv) serve(t *testing.T, request *http.Request
 	return response
 }
 
-func (env *openAIImagesIntegrationEnv) start(t *testing.T, request *http.Request) <-chan *httptest.ResponseRecorder {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(request.Context(), 8*time.Second)
-	t.Cleanup(cancel)
-	done := make(chan *httptest.ResponseRecorder, 1)
-	go func() {
-		defer cancel()
-		response := httptest.NewRecorder()
-		env.router.ServeHTTP(response, request.WithContext(ctx))
-		done <- response
-	}()
-	return done
-}
-
-func (env *openAIImagesIntegrationEnv) waitTask(t *testing.T, prompt string, response <-chan *httptest.ResponseRecorder) *store.Task {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		var id uuid.UUID
-		err := env.st.Pool.QueryRow(ctx, "SELECT id FROM tasks WHERE user_id=$1 AND prompt=$2 ORDER BY created_at LIMIT 1", env.user.ID, prompt).Scan(&id)
-		if err == nil {
-			task, err := store.GetUserTask(ctx, env.st.Pool, env.user.ID, id)
-			if err != nil || task == nil {
-				t.Fatalf("read created task = %#v, error %v", task, err)
-			}
-			return task
-		}
-		if err != pgx.ErrNoRows {
-			t.Fatal(err)
-		}
-		select {
-		case result := <-response:
-			t.Fatalf("request returned before creating task: %d %s", result.Code, result.Body.String())
-		case <-ctx.Done():
-			t.Fatal("image request did not persist a task before deadline")
-		case <-ticker.C:
-		}
-	}
-}
-
-func (env *openAIImagesIntegrationEnv) completeTask(t *testing.T, task *store.Task, data []byte) {
-	t.Helper()
-	key := fmt.Sprintf("tasks/%s/%s/original/0.png", env.user.ID, task.ID)
-	env.mu.Lock()
-	env.objects[key] = openAIIntegrationObject{data: data, contentType: "image/png"}
-	env.mu.Unlock()
-	// Simulate only worker output persistence. These API tests assert real task
-	// creation/freezing; worker settlement is independently covered by taskflow.
-	outputs, _ := json.Marshal([]string{key})
-	if _, err := env.st.Pool.Exec(context.Background(), "UPDATE tasks SET status='succeeded',output_keys=$2,finished_at=now() WHERE id=$1", task.ID, outputs); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func awaitOpenAIIntegrationResponse(t *testing.T, done <-chan *httptest.ResponseRecorder) *httptest.ResponseRecorder {
-	t.Helper()
-	select {
-	case result := <-done:
-		return result
-	case <-time.After(9 * time.Second):
-		t.Fatal("image request did not finish")
-		return nil
-	}
-}
-
 func (env *openAIImagesIntegrationEnv) assertBilling(t *testing.T, taskCount int64, points int64) {
 	t.Helper()
 	ctx := context.Background()
@@ -285,13 +280,73 @@ func (env *openAIImagesIntegrationEnv) assertBilling(t *testing.T, taskCount int
 	}
 }
 
+func (env *openAIImagesIntegrationEnv) assertDirectBilling(t *testing.T, requestCount, points int64) {
+	t.Helper()
+	ctx := context.Background()
+	var tasks, events, freezes, spends, releases, profitRows, profitRevenue, profitCost int64
+	for _, query := range []struct {
+		sql   string
+		value *int64
+	}{
+		{"SELECT count(*) FROM tasks WHERE user_id=$1", &tasks},
+		{"SELECT count(*) FROM api_key_usage_events WHERE user_id=$1", &events},
+		{"SELECT count(*) FROM wallet_ledger WHERE user_id=$1 AND kind='freeze' AND source_type=$2", &freezes},
+		{"SELECT count(*) FROM wallet_ledger WHERE user_id=$1 AND kind='spend' AND source_type=$2", &spends},
+		{"SELECT count(*) FROM wallet_ledger WHERE user_id=$1 AND kind='release' AND source_type=$2", &releases},
+	} {
+		args := []any{env.user.ID}
+		if strings.Contains(query.sql, "source_type=$2") {
+			args = append(args, openAIImageBillingSource)
+		}
+		if err := env.st.Pool.QueryRow(ctx, query.sql, args...).Scan(query.value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := env.st.Pool.QueryRow(ctx, `SELECT count(*), COALESCE(SUM(revenue_cents), 0), COALESCE(SUM(upstream_cost_cents), 0)
+		FROM usage_profit_ledger WHERE user_id=$1 AND source_type=$2 AND event_status='succeeded'`, env.user.ID, store.DeveloperAPIProfitSourceType).Scan(&profitRows, &profitRevenue, &profitCost); err != nil {
+		t.Fatal(err)
+	}
+	state, err := store.GetWallet(ctx, env.st.Pool, env.user.ID)
+	if err != nil || state == nil {
+		t.Fatalf("wallet = %#v error=%v", state, err)
+	}
+	if tasks != 0 || events != requestCount || freezes != requestCount || spends != requestCount || releases != 0 || profitRows != requestCount || profitRevenue != points || profitCost != 0 || state.BalanceCents != 1000-points || state.FrozenCents != 0 {
+		t.Fatalf("direct billing: tasks=%d events=%d freezes=%d spends=%d releases=%d profit_rows=%d profit_revenue=%d profit_cost=%d balance=%d frozen=%d; want requests=%d points=%d", tasks, events, freezes, spends, releases, profitRows, profitRevenue, profitCost, state.BalanceCents, state.FrozenCents, requestCount, points)
+	}
+	usage, err := store.GetAPIKeyUsageSummary(ctx, env.st.Pool, env.key.ID, time.Now().UTC())
+	if err != nil || usage.TodayTasks != requestCount || usage.TodaySpendCents != points {
+		t.Fatalf("API usage = %#v error=%v; want requests=%d points=%d", usage, err, requestCount, points)
+	}
+}
+
+func (env *openAIImagesIntegrationEnv) assertNoLocalImagePersistence(t *testing.T) {
+	t.Helper()
+	ctx := context.Background()
+	var tasks, uploads int
+	if err := env.st.Pool.QueryRow(ctx, "SELECT count(*) FROM tasks WHERE user_id=$1", env.user.ID).Scan(&tasks); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.st.Pool.QueryRow(ctx, "SELECT count(*) FROM user_upload_objects WHERE user_id=$1", env.user.ID).Scan(&uploads); err != nil {
+		t.Fatal(err)
+	}
+	env.mu.Lock()
+	objects, upstreamCalls, internalFields := len(env.objects), env.upstreamCalls, env.upstreamInternalFields
+	env.mu.Unlock()
+	if tasks != 0 || uploads != 0 || objects != 0 || internalFields {
+		t.Fatalf("direct image persistence/tasks: tasks=%d uploads=%d objects=%d upstream_calls=%d internal_fields=%t", tasks, uploads, objects, upstreamCalls, internalFields)
+	}
+}
+
+func (env *openAIImagesIntegrationEnv) setUpstreamStatus(status int) {
+	env.mu.Lock()
+	defer env.mu.Unlock()
+	env.upstreamStatus = status
+}
+
 func TestOpenAIResponsesImageGeneration(t *testing.T) {
 	env := newOpenAIImagesIntegrationEnv(t)
 	body := `{"model":"compat-image","input":"a blue sky","tools":[{"type":"image_generation"}]}`
-	done := env.start(t, env.request(http.MethodPost, "/v1/responses", "application/json", "responses-test-1", strings.NewReader(body)))
-	task := env.waitTask(t, "a blue sky", done)
-	env.completeTask(t, task, uploadTestPNG(t))
-	response := awaitOpenAIIntegrationResponse(t, done)
+	response := env.serve(t, env.request(http.MethodPost, "/v1/responses", "application/json", "responses-test-1", strings.NewReader(body)))
 	if response.Code != http.StatusOK {
 		t.Fatalf("responses status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -306,15 +361,14 @@ func TestOpenAIResponsesImageGeneration(t *testing.T) {
 	if len(output) != 1 || output[0].(map[string]any)["type"] != "image_generation_call" || output[0].(map[string]any)["result"] == "" {
 		t.Fatalf("responses output=%#v", output)
 	}
+	env.assertDirectBilling(t, 1, 20)
+	env.assertNoLocalImagePersistence(t)
 }
 
 func TestOpenAIResponsesImageModelWithoutTool(t *testing.T) {
 	env := newOpenAIImagesIntegrationEnv(t)
 	body := `{"model":"compat-image","input":"a blue kitten"}`
-	done := env.start(t, env.request(http.MethodPost, "/v1/responses", "application/json", "responses-image-model-1", strings.NewReader(body)))
-	task := env.waitTask(t, "a blue kitten", done)
-	env.completeTask(t, task, uploadTestPNG(t))
-	response := awaitOpenAIIntegrationResponse(t, done)
+	response := env.serve(t, env.request(http.MethodPost, "/v1/responses", "application/json", "responses-image-model-1", strings.NewReader(body)))
 	if response.Code != http.StatusOK {
 		t.Fatalf("responses status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -326,15 +380,14 @@ func TestOpenAIResponsesImageModelWithoutTool(t *testing.T) {
 	if len(output) != 1 || output[0].(map[string]any)["type"] != "image_generation_call" {
 		t.Fatalf("responses output=%#v", output)
 	}
+	env.assertDirectBilling(t, 1, 20)
+	env.assertNoLocalImagePersistence(t)
 }
 
 func TestOpenAIResponsesImageGenerationStream(t *testing.T) {
 	env := newOpenAIImagesIntegrationEnv(t)
 	body := `{"model":"compat-image","input":[{"role":"user","content":[{"type":"input_text","text":"stream a blue sky"}]}],"tools":[{"type":"image_generation","partial_images":1}],"stream":true}`
-	done := env.start(t, env.request(http.MethodPost, "/v1/responses", "application/json", "responses-stream-1", strings.NewReader(body)))
-	task := env.waitTask(t, "stream a blue sky", done)
-	env.completeTask(t, task, uploadTestPNG(t))
-	response := awaitOpenAIIntegrationResponse(t, done)
+	response := env.serve(t, env.request(http.MethodPost, "/v1/responses", "application/json", "responses-stream-1", strings.NewReader(body)))
 	if response.Code != http.StatusOK || !strings.HasPrefix(response.Header().Get("Content-Type"), "text/event-stream") {
 		t.Fatalf("stream status=%d content-type=%s body=%s", response.Code, response.Header().Get("Content-Type"), response.Body.String())
 	}
@@ -351,6 +404,8 @@ func TestOpenAIResponsesImageGenerationStream(t *testing.T) {
 			t.Fatalf("stream omitted %s: %s", event, response.Body.String())
 		}
 	}
+	env.assertDirectBilling(t, 1, 20)
+	env.assertNoLocalImagePersistence(t)
 }
 
 func TestParseOpenAIResponsesInputImage(t *testing.T) {
@@ -450,7 +505,7 @@ func TestOpenAIImagesIntegrationModelsAndPreflightRejections(t *testing.T) {
 		response := env.serve(t, env.request("POST", "/v1/images/edits", contentType, "reject-"+caseName, bytes.NewReader(data)))
 		requireOpenAIIntegrationStatus(t, response, http.StatusBadRequest, wantCode)
 	}
-	env.assertBilling(t, 0, 0)
+	env.assertDirectBilling(t, 0, 0)
 	var uploads int
 	if err := env.st.Pool.QueryRow(context.Background(), "SELECT count(*) FROM user_upload_objects WHERE user_id=$1", env.user.ID).Scan(&uploads); err != nil || uploads != 0 {
 		t.Fatalf("preflight rejection stored uploads=%d error=%v", uploads, err)
@@ -466,105 +521,119 @@ func TestOpenAIImagesIntegrationModelsAndPreflightRejections(t *testing.T) {
 func TestOpenAIImagesIntegrationGenerationAndIdempotentRedelivery(t *testing.T) {
 	env := newOpenAIImagesIntegrationEnv(t)
 	body := `{"model":"compat-image","prompt":"one billable image","n":1}`
-	done := env.start(t, env.request("POST", "/v1/images/generations", "application/json", "single-charge", strings.NewReader(body)))
-	task := env.waitTask(t, "one billable image", done)
-	env.assertBilling(t, 1, 20)
-	if task.Params["_apiKeyId"] != env.key.ID.String() || task.Params["_source"] != "open_api" || task.Params[openAIImageFingerprintParam] == "" {
-		t.Fatalf("task lost API attribution/fingerprint: %#v", task.Params)
-	}
-	data := uploadTestPNG(t)
-	env.completeTask(t, task, data)
-	first := awaitOpenAIIntegrationResponse(t, done)
+	first := env.serve(t, env.request("POST", "/v1/images/generations", "application/json", "single-charge", strings.NewReader(body)))
 	requireOpenAIIntegrationStatus(t, first, http.StatusOK, "")
 	var result openAIImageResponse
-	if err := json.Unmarshal(first.Body.Bytes(), &result); err != nil || len(result.Data) != 1 || result.Data[0].B64JSON != base64.StdEncoding.EncodeToString(data) {
+	if err := json.Unmarshal(first.Body.Bytes(), &result); err != nil || len(result.Data) != 1 || result.Data[0].B64JSON == "" {
 		t.Fatalf("first image response=%s error=%v", first.Body.String(), err)
 	}
-	if first.Header().Get("X-Task-ID") != task.ID.String() || first.Header().Get("Idempotency-Key") != "single-charge" {
-		t.Fatal("creation response omitted task/idempotency identifiers")
+	if first.Header().Get("X-Task-ID") != "" || first.Header().Get("Idempotency-Key") != "single-charge" {
+		t.Fatal("direct response returned an internal task identifier or omitted idempotency")
 	}
+	env.assertDirectBilling(t, 1, 20)
 	replay := env.serve(t, env.request("POST", "/v1/images/generations", "application/json", "single-charge", strings.NewReader(body)))
 	requireOpenAIIntegrationStatus(t, replay, http.StatusOK, "")
-	if replay.Header().Get("X-Task-ID") != task.ID.String() || replay.Body.String() != first.Body.String() {
-		t.Fatal("same idempotency key did not replay the original task/result")
+	if replay.Header().Get("X-Task-ID") != "" || replay.Body.String() != first.Body.String() {
+		t.Fatal("same idempotency key did not return the same standard upstream result")
 	}
 	urlBody := `{"model":"compat-image","prompt":"one billable image","n":1,"response_format":"url"}`
 	urlReplay := env.serve(t, env.request("POST", "/v1/images/generations", "application/json", "single-charge", strings.NewReader(urlBody)))
 	requireOpenAIIntegrationStatus(t, urlReplay, http.StatusOK, "")
 	result = openAIImageResponse{}
-	if err := json.Unmarshal(urlReplay.Body.Bytes(), &result); err != nil || len(result.Data) != 1 || result.Data[0].B64JSON != "" || !strings.HasPrefix(result.Data[0].URL, env.storage.URL+"/") || urlReplay.Header().Get("X-Task-ID") != task.ID.String() {
+	if err := json.Unmarshal(urlReplay.Body.Bytes(), &result); err != nil || len(result.Data) != 1 || result.Data[0].B64JSON != "" || !strings.Contains(result.Data[0].URL, "/generated.png") || urlReplay.Header().Get("X-Task-ID") != "" {
 		t.Fatalf("URL redelivery=%s error=%v", urlReplay.Body.String(), err)
 	}
-	changed := env.serve(t, env.request("POST", "/v1/images/generations", "application/json", "single-charge",
+	changed := env.serve(t, env.request("POST", "/v1/images/generations", "application/json", "new-upstream-call",
 		strings.NewReader(`{"model":"compat-image","prompt":"changed billable prompt"}`)))
-	requireOpenAIIntegrationStatus(t, changed, http.StatusConflict, "idempotency_key_conflict")
-	env.assertBilling(t, 1, 20)
+	requireOpenAIIntegrationStatus(t, changed, http.StatusOK, "")
+	env.assertDirectBilling(t, 2, 40)
+	env.assertNoLocalImagePersistence(t)
 	if _, err := env.st.Pool.Exec(context.Background(), "UPDATE user_api_keys SET daily_task_limit=1 WHERE id=$1", env.key.ID); err != nil {
 		t.Fatal(err)
 	}
 	quotaDenied := env.serve(t, env.request("POST", "/v1/images/generations", "application/json", "new-over-quota",
-		strings.NewReader(`{"model":"compat-image","prompt":"a new task over daily quota"}`)))
+		strings.NewReader(`{"model":"compat-image","prompt":"a new request over daily quota"}`)))
 	requireOpenAIIntegrationStatus(t, quotaDenied, http.StatusTooManyRequests, "api_key_daily_limit")
-	env.assertBilling(t, 1, 20)
+	env.assertDirectBilling(t, 2, 40)
 }
 
-func TestOpenAIImagesIntegrationMultipartReplayCleansOnlyExtraUploads(t *testing.T) {
+func TestOpenAIImagesIntegrationSeparatesDefiniteAndAmbiguousFailures(t *testing.T) {
+	env := newOpenAIImagesIntegrationEnv(t)
+	body := `{"model":"compat-image","prompt":"failure accounting"}`
+	env.setUpstreamStatus(http.StatusBadRequest)
+	definite := env.serve(t, env.request("POST", "/v1/images/generations", "application/json", "definite-failure", strings.NewReader(body)))
+	requireOpenAIIntegrationStatus(t, definite, http.StatusBadRequest, "upstream_error")
+
+	var eventStatus string
+	var units, revenue, cost int64
+	if err := env.st.Pool.QueryRow(context.Background(), `SELECT event_status, units, revenue_cents, upstream_cost_cents
+		FROM usage_profit_ledger WHERE user_id=$1 AND source_type=$2`, env.user.ID, store.DeveloperAPIProfitSourceType).Scan(&eventStatus, &units, &revenue, &cost); err != nil {
+		t.Fatal(err)
+	}
+	if eventStatus != "failed" || units != 1 || revenue != 0 || cost != 0 {
+		t.Fatalf("definite failure profit event=%s units=%d revenue=%d cost=%d", eventStatus, units, revenue, cost)
+	}
+	state, err := store.GetWallet(context.Background(), env.st.Pool, env.user.ID)
+	if err != nil || state.BalanceCents != 1000 || state.FrozenCents != 0 {
+		t.Fatalf("definite failure wallet=%#v error=%v", state, err)
+	}
+
+	env.setUpstreamStatus(http.StatusGatewayTimeout)
+	ambiguous := env.serve(t, env.request("POST", "/v1/images/generations", "application/json", "ambiguous-failure", strings.NewReader(body)))
+	requireOpenAIIntegrationStatus(t, ambiguous, http.StatusBadGateway, "upstream_error")
+	if err := env.st.Pool.QueryRow(context.Background(), `SELECT event_status, units, revenue_cents, upstream_cost_cents
+		FROM usage_profit_ledger WHERE user_id=$1 AND source_type=$2 AND source_id=$3`, env.user.ID, store.DeveloperAPIProfitSourceType, openAIImageBillingID(env.key.ID, "ambiguous-failure")).Scan(&eventStatus, &units, &revenue, &cost); err != nil {
+		t.Fatal(err)
+	}
+	if eventStatus != "canceled" || units != 1 || revenue != 0 || cost != 0 {
+		t.Fatalf("ambiguous failure profit event=%s units=%d revenue=%d cost=%d", eventStatus, units, revenue, cost)
+	}
+	state, err = store.GetWallet(context.Background(), env.st.Pool, env.user.ID)
+	if err != nil || state.BalanceCents != 980 || state.FrozenCents != 20 {
+		t.Fatalf("ambiguous failure wallet=%#v error=%v", state, err)
+	}
+
+	env.setUpstreamStatus(0)
+	retry := env.serve(t, env.request("POST", "/v1/images/generations", "application/json", "ambiguous-failure", strings.NewReader(body)))
+	requireOpenAIIntegrationStatus(t, retry, http.StatusOK, "")
+	if err := env.st.Pool.QueryRow(context.Background(), `SELECT event_status, units, revenue_cents, upstream_cost_cents
+		FROM usage_profit_ledger WHERE user_id=$1 AND source_type=$2 AND source_id=$3`, env.user.ID, store.DeveloperAPIProfitSourceType, openAIImageBillingID(env.key.ID, "ambiguous-failure")).Scan(&eventStatus, &units, &revenue, &cost); err != nil {
+		t.Fatal(err)
+	}
+	if eventStatus != "succeeded" || units != 1 || revenue != 20 || cost != 0 {
+		t.Fatalf("retried failure profit event=%s units=%d revenue=%d cost=%d", eventStatus, units, revenue, cost)
+	}
+	state, err = store.GetWallet(context.Background(), env.st.Pool, env.user.ID)
+	if err != nil || state.BalanceCents != 980 || state.FrozenCents != 0 {
+		t.Fatalf("retried failure wallet=%#v error=%v", state, err)
+	}
+}
+
+func TestOpenAIImagesIntegrationMultipartDirectProxyDoesNotPersistInput(t *testing.T) {
 	env := newOpenAIImagesIntegrationEnv(t)
 	data := uploadTestPNG(t)
 	fields := map[string]string{"model": openAIIntegrationModel, "prompt": "edit with a real input"}
 	body, contentType := openAIIntegrationMultipart(t, fields, map[string][]byte{"image[]": data})
-	done := env.start(t, env.request("POST", "/v1/images/edits", contentType, "edit-single-charge", bytes.NewReader(body)))
-	task := env.waitTask(t, fields["prompt"], done)
-	if len(task.InputKeys) != 1 {
-		t.Fatalf("image edit input references=%v", task.InputKeys)
-	}
-	var references int
-	if err := env.st.Pool.QueryRow(context.Background(), "SELECT count(*) FROM user_upload_references WHERE reference_type=$1 AND reference_id=$2 AND object_key=$3",
-		store.UploadReferenceTaskInput, task.ID, task.InputKeys[0]).Scan(&references); err != nil || references != 1 {
-		t.Fatalf("committed task input reference=%d error=%v", references, err)
-	}
-	env.mu.Lock()
-	storedOriginal := append([]byte(nil), env.objects[task.InputKeys[0]].data...)
-	env.mu.Unlock()
-	if !bytes.Equal(storedOriginal, data) {
-		t.Fatal("multipart edit did not preserve original file bytes")
-	}
-	env.assertBilling(t, 1, 20)
-	env.completeTask(t, task, data)
-	first := awaitOpenAIIntegrationResponse(t, done)
+	first := env.serve(t, env.request("POST", "/v1/images/edits", contentType, "edit-single-charge", bytes.NewReader(body)))
 	requireOpenAIIntegrationStatus(t, first, http.StatusOK, "")
-	// Switch image[] to image and produce a new multipart boundary/object key.
-	// Fingerprinting is based on bytes, so this must still replay the same task.
+	var result openAIImageResponse
+	if err := json.Unmarshal(first.Body.Bytes(), &result); err != nil || len(result.Data) != 1 || result.Data[0].B64JSON == "" {
+		t.Fatalf("first edit response=%s error=%v", first.Body.String(), err)
+	}
+	if first.Header().Get("X-Task-ID") != "" {
+		t.Fatal("direct edit returned an internal task identifier")
+	}
+	env.assertDirectBilling(t, 1, 20)
+	// A replay with the same key still goes to the standard upstream. The local
+	// gateway keeps no input bytes or task result to replay itself.
 	body, contentType = openAIIntegrationMultipart(t, fields, map[string][]byte{"image": data})
 	replay := env.serve(t, env.request("POST", "/v1/images/edits", contentType, "edit-single-charge", bytes.NewReader(body)))
 	requireOpenAIIntegrationStatus(t, replay, http.StatusOK, "")
-	if replay.Header().Get("X-Task-ID") != task.ID.String() {
-		t.Fatal("multipart replay created a different task")
+	if replay.Header().Get("X-Task-ID") != "" || replay.Body.String() != first.Body.String() {
+		t.Fatal("multipart replay did not preserve the standard upstream response")
 	}
-	env.assertBilling(t, 1, 20)
-	var live, removed, cleanup, protectedOriginal int
-	if err := env.st.Pool.QueryRow(context.Background(), `SELECT count(*) FILTER(WHERE deleted_at IS NULL), count(*) FILTER(WHERE deleted_at IS NOT NULL)
-		FROM user_upload_objects WHERE user_id=$1`, env.user.ID).Scan(&live, &removed); err != nil {
-		t.Fatal(err)
-	}
-	if err := env.st.Pool.QueryRow(context.Background(), "SELECT count(*) FROM object_cleanup_jobs WHERE object_key LIKE $1", "uploads/"+env.user.ID.String()+"/%").Scan(&cleanup); err != nil {
-		t.Fatal(err)
-	}
-	if err := env.st.Pool.QueryRow(context.Background(), "SELECT count(*) FROM user_upload_objects WHERE object_key=$1 AND deleted_at IS NULL", task.InputKeys[0]).Scan(&protectedOriginal); err != nil {
-		t.Fatal(err)
-	}
-	if live != 3 || removed != 3 || cleanup != 3 || protectedOriginal != 1 {
-		t.Fatalf("replayed upload cleanup live=%d removed=%d queued=%d protected-original=%d", live, removed, cleanup, protectedOriginal)
-	}
-	// A changed prompt gets a 409 and its new uploads are also cleaned safely.
-	fields["prompt"] = "different edit under same key"
-	body, contentType = openAIIntegrationMultipart(t, fields, map[string][]byte{"image": data})
-	conflict := env.serve(t, env.request("POST", "/v1/images/edits", contentType, "edit-single-charge", bytes.NewReader(body)))
-	requireOpenAIIntegrationStatus(t, conflict, http.StatusConflict, "idempotency_key_conflict")
-	if err := env.st.Pool.QueryRow(context.Background(), "SELECT count(*) FROM user_upload_objects WHERE user_id=$1 AND deleted_at IS NOT NULL", env.user.ID).Scan(&removed); err != nil || removed != 6 {
-		t.Fatalf("conflicting edit cleanup removed=%d error=%v", removed, err)
-	}
-	env.assertBilling(t, 1, 20)
+	env.assertDirectBilling(t, 1, 20)
+	env.assertNoLocalImagePersistence(t)
 }
 
 func TestOpenAIImagesIntegrationConcurrentCreationReusesOneReservation(t *testing.T) {
@@ -628,16 +697,6 @@ func TestOpenAIImagesIntegrationInvalidLaterImageCleansEarlierUpload(t *testing.
 		map[string][]byte{"image": uploadTestPNG(t), "image[]": []byte("invalid second image")})
 	response := env.serve(t, env.request("POST", "/v1/images/edits", contentType, "bad-second-image", bytes.NewReader(body)))
 	requireOpenAIIntegrationStatus(t, response, http.StatusBadRequest, "unsupported_file")
-	env.assertBilling(t, 0, 0)
-	var live, removed, cleanup int
-	if err := env.st.Pool.QueryRow(context.Background(), `SELECT count(*) FILTER(WHERE deleted_at IS NULL), count(*) FILTER(WHERE deleted_at IS NOT NULL)
-		FROM user_upload_objects WHERE user_id=$1`, env.user.ID).Scan(&live, &removed); err != nil {
-		t.Fatal(err)
-	}
-	if err := env.st.Pool.QueryRow(context.Background(), "SELECT count(*) FROM object_cleanup_jobs WHERE object_key LIKE $1", "uploads/"+env.user.ID.String()+"/%").Scan(&cleanup); err != nil {
-		t.Fatal(err)
-	}
-	if live != 0 || removed != 3 || cleanup != 3 {
-		t.Fatalf("earlier upload leaked after later image failed: live=%d removed=%d cleanup=%d", live, removed, cleanup)
-	}
+	env.assertDirectBilling(t, 0, 0)
+	env.assertNoLocalImagePersistence(t)
 }

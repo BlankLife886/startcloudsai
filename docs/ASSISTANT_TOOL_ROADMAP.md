@@ -2,6 +2,8 @@
 
 ## Current capabilities
 
+Source review: 2026-09-22. This section describes implemented paths, not a new end-to-end validation against paid providers. Actual availability depends on runtime tool and model configuration.
+
 The assistant already supports:
 
 - Public web search with source links and bounded retries.
@@ -9,6 +11,11 @@ The assistant already supports:
 - Downloadable TXT, Markdown, CSV, JSON, and PPTX creation.
 - Image generation/edit proposals with model-capability validation.
 - Dedicated PPT and PSD generation paths.
+- Guarded media actions, image search, public-page capture, workspace handoff,
+  reference-rebuild drafts, product-page import, delivery export, and allowlisted
+  site navigation. See [the current user tool catalog](USER_TOOL_CATALOG.md).
+- Local, account-cloud, and official instruction skills via `@` mentions in the
+  supported composers; these expand prompt text and do not grant extra permissions.
 - Read-only `task_status` diagnostics for the current user's task stage, timing,
   retries, failure reason, charge, and refund state. Internal IDs and provider
   routing data are removed before results reach the model.
@@ -16,6 +23,11 @@ The assistant already supports:
 Canvas tools are intentionally separate. They operate on browser canvas state and
 must not be exposed to normal chat without an explicit workspace and permission
 boundary.
+
+Image proposals can use the user's automatic-approval preference when the server
+marks the proposal eligible. Ordinary tool confirmations and Canvas high-risk
+confirmations remain separate policies; new tools should not assume every image
+proposal always requires another manual click.
 
 ## Recommended next tools
 
@@ -28,7 +40,7 @@ boundary.
 | P1 | `image_inspect` | Reads dimensions, format, transparency, dominant colors, OCR text, and quality warnings from an attached image. | Attached or owned images only; bounded decoding and OCR. |
 | P1 | `document_create` | Adds DOCX, XLSX, and PDF to the existing safe file generator. | Structured schemas, output-size limits, virus/signature checks, owned storage. |
 | P1 | `project_context` | Reads recent project conversations, assets, and accepted requirements so long work can continue consistently. | Explicit project scope; read-only; token budget and retention limits. |
-| P2 | `workflow_draft` | Converts a goal into an editable canvas workflow draft without immediately executing or charging. | Draft-only first; execution requires a separate user confirmation. |
+| P2 | Generalized `workflow_draft` | Extends the existing `reference_rebuild` draft path to a general goal-to-workflow planner. | Draft-only first; execution follows the Canvas confirmation and pricing boundary. |
 
 ## Recommended implementation order
 

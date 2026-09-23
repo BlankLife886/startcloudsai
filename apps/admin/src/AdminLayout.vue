@@ -82,6 +82,7 @@ const NAV_GROUPS = [
     title: "总览",
     items: [
       { path: "/", label: "仪表盘", icon: Odometer },
+      { path: "/user-profile-dashboard", label: "用户画像", icon: DataAnalysis },
       { path: "/settings", label: "系统设置", icon: Setting },
     ],
   },
@@ -99,7 +100,8 @@ const NAV_GROUPS = [
     title: "内容运营",
     items: [
       { path: "/page-controls", label: "页面控制", icon: Operation },
-      { path: "/content", label: "内容管理", icon: Document },
+      { path: "/announcements", label: "公告管理", icon: Bell },
+      { path: "/changelog", label: "更新说明", icon: Document },
       { path: "/home-banners", label: "首页轮播", icon: Picture },
       ...(REFERRALS_ENABLED ? [{ path: "/referrals", label: "邀请返利", icon: User }] : []),
       { path: "/prompt-library", label: "提示词库", icon: CollectionTag },
@@ -554,6 +556,8 @@ async function submitPassword() {
             '/page-controls',
             '/canvas-templates',
             '/content',
+            '/announcements',
+            '/changelog',
             '/feedback',
             '/trial-applications',
           ].includes(route.path),

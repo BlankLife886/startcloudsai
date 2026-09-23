@@ -98,15 +98,28 @@ async function loadOverview() {
   }
   overviewLoading.value = true;
   try {
+    const key = form.campaignKey.trim();
+    if (key !== groupCampaign) {
+      groupCampaign = key;
+      groupPage.value = 1;
+    }
     overview.value = await request<GrowthGroupOverview>(
       "/api/v1/admin/growth/groups",
-      { query: { campaignKey: form.campaignKey.trim() }, silent: true },
+      { query: { campaignKey: key, page: groupPage.value, limit: GROUP_PAGE_SIZE }, silent: true },
     );
   } catch {
     overview.value = null;
   } finally {
     overviewLoading.value = false;
   }
+}
+
+const GROUP_PAGE_SIZE = 12;
+const groupPage = ref(1);
+let groupCampaign = "";
+function changeGroupPage(page: number) {
+  groupPage.value = page;
+  void loadOverview();
 }
 
 async function load() {
@@ -338,6 +351,18 @@ onMounted(load);
           </el-table>
           </div>
           <div v-else class="empty-groups">当前活动期还没有用户发起拼团</div>
+          <CursorPager
+            v-if="(overview?.summary.totalGroups ?? 0) > GROUP_PAGE_SIZE"
+            :has-prev="groupPage > 1"
+            :has-next="groupPage * GROUP_PAGE_SIZE < Math.min(overview?.summary.totalGroups ?? 0, 10000)"
+            :loading="overviewLoading"
+            :page="groupPage"
+            :total="Math.min(overview?.summary.totalGroups ?? 0, 10000)"
+            :total-capped="(overview?.summary.totalGroups ?? 0) > 10000"
+            :page-size="GROUP_PAGE_SIZE"
+            :page-sizes="[GROUP_PAGE_SIZE]"
+            @update:page="changeGroupPage"
+          />
         </section>
       </div>
     </PageCard>

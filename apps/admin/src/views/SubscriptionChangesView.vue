@@ -190,7 +190,11 @@ const names: Record<string, string> = {
   pending: "待支付",
 };
 const money = (value: number) => `¥${(value / 100).toFixed(2)}`;
+const displayedPage = ref(1);
+let listGeneration = 0;
 async function load() {
+  const ownGeneration = ++listGeneration;
+  const requestedPage = page.value;
   loading.value = true;
   error.value = "";
   try {
@@ -203,12 +207,15 @@ async function load() {
       "/api/v1/admin/subscription-changes" + (params.size ? `?${params}` : ""),
       { silent: true },
     );
+    if (ownGeneration !== listGeneration) return;
     items.value = data.items || [];
     total.value = data.total ?? items.value.length;
+    displayedPage.value = requestedPage;
   } catch (e) {
+    if (ownGeneration !== listGeneration) return;
     error.value = e instanceof Error ? e.message : "读取失败";
   } finally {
-    loading.value = false;
+    if (ownGeneration === listGeneration) loading.value = false;
   }
 }
 function open(item: unknown, next: string) {
@@ -433,11 +440,12 @@ watch(()=>route.query.search,value=>{query.value=String(value||'');page.value=1;
     </el-table>
     <el-pagination
       class="subscription-admin-pagination"
-      v-model:current-page="page"
+      :current-page="displayedPage"
+      :disabled="loading"
       :page-size="25"
       :total="total"
       layout="total, prev, pager, next"
-      @current-change="load"
+      @update:current-page="value => { page = value; load() }"
     />
     <el-drawer
       v-model="detailOpen"

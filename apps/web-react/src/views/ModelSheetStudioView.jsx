@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { useAuthPrompt } from "../auth/AuthPromptContext.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";
+import { useDownloadAction } from "../hooks/useDownloadAction.js";
 import { AuthenticatedImage } from "../components/AuthenticatedImage.jsx";
 import { SharePublishDialog } from "../components/SharePublishDialog.jsx";
 import { EcommerceMaskEditor } from "../features/ecommerce/EcommerceMaskEditor.jsx";
@@ -54,7 +55,7 @@ const ASPECT_OPTIONS = ["auto", "16:9", "21:9", "3:2", "4:3", "1:1", "3:4", "2:3
 const BACKGROUND_OPTIONS = [
   { id: "gray", label: "浅灰" },
   { id: "white", label: "纯白" },
-  { id: "transparent", label: "透明" },
+  { id: "transparent", label: "移除背景" },
 ];
 const BRIEF_EXAMPLES = [
   { label: "机甲角色", text: "全身机甲战士角色，硬表面装甲，可动关节结构清晰，冷灰主色配警示橙细节" },
@@ -287,6 +288,9 @@ export function ModelSheetStudioView() {
   const [retryViews, setRetryViews] = useState([]);
   const [lastBatchGroupId, setLastBatchGroupId] = useState("");
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const { busy: downloadBusy, run: runDownload } = useDownloadAction({
+    errorMessage: "模型图下载失败",
+  });
 
   const modelCapabilities = useMemo(() => normalizeImageModelCapabilities(activeModel || {}), [activeModel]);
   const aspectOptions = useMemo(() => {
@@ -347,6 +351,14 @@ export function ModelSheetStudioView() {
     ? `${String(Math.floor(elapsedSeconds / 60)).padStart(2, "0")}:${String(elapsedSeconds % 60).padStart(2, "0")}`
     : "--:--";
   const batchDoneCount = jobs.batchProgress.filter((item) => item.status === "done").length;
+
+  const downloadCurrentModelSheet = useCallback(
+    () => runDownload(
+      () => downloadAuthenticatedMedia(jobs.activeOutput, `ultra-model-sheet-${Date.now()}.png`),
+      { successMessage: "模型图已开始下载" },
+    ),
+    [jobs.activeOutput, runDownload],
+  );
 
   const groups = useMemo(() => {
     const map = new Map();
@@ -643,7 +655,9 @@ export function ModelSheetStudioView() {
       else {
         const url = URL.createObjectURL(result.file); const anchor = document.createElement("a"); anchor.href = url; anchor.download = `ultra-model-sheet-${scale}-${result.targetWidth}x${result.targetHeight}.png`; anchor.click(); window.setTimeout(() => URL.revokeObjectURL(url), 30000);
       }
-    } catch (caught) { notificationService.error(caught?.message || "高清增强失败"); }
+    } catch (caught) {
+      if (!caught?.downloadNotificationShown) notificationService.error(caught?.message || "高清增强失败");
+    }
     finally { setEnhanceBusy(false); }
   }
 
@@ -780,7 +794,7 @@ export function ModelSheetStudioView() {
         {maxReferences > 0 && <button type="button" disabled={!jobs.activeOutput || jobs.running} title="以当前结果作为参考主体继续生成" onClick={() => { if (!referenceItems.some((item) => item.type === "url" && item.url === jobs.activeOutput) && referenceItems.length < maxReferences) setReferenceItems((current) => [...current, { id: `ref-${crypto.randomUUID()}`, type: "url", url: jobs.activeOutput }]); }}><i className="bi bi-pin-angle" /><span>用作参考</span></button>}
         <button type="button" disabled={!jobs.activeOutput || jobs.running} title="涂抹修正当前图的局部（其余保持不变）" onClick={() => setMaskEditorOpen(true)}><i className="bi bi-bandaid" /><span>修正</span></button>
         <div className={`ms3-enhance${enhanceMenuOpen ? " is-open" : ""}`}><button type="button" disabled={!jobs.activeOutput || enhanceBusy} title="本地高清增强导出（不调用模型）" onClick={() => setEnhanceMenuOpen((value) => !value)}><i className={`bi ${enhanceBusy ? "bi-arrow-repeat ms3-spin" : "bi-badge-hd"}`} /><span>{enhanceBusy ? `${enhanceProgress}%` : "增强"}</span></button>{enhanceMenuOpen && <div className="ms3-enhance-menu" role="menu" aria-label="高清增强档位">{["2K","4K","8K"].map((scale) => <button key={scale} type="button" role="menuitem" onClick={() => enhanceDownload(scale)}>{scale}<small>{scale === "2K" ? "快速" : scale === "4K" ? "高清" : "极致"}</small></button>)}</div>}</div>
-        <button type="button" disabled={!jobs.activeOutput} title="全屏查看" onClick={() => canOpenWallevenImagePreview() && setFullscreenOpen(true)}><i className="bi bi-arrows-fullscreen" /><span>大图</span></button><button type="button" disabled={!activeEntry?.jobId} title="发布到广场" onClick={() => setPublishOpen(true)}><i className="bi bi-broadcast" /><span>发布</span></button><button type="button" disabled={!jobs.activeOutput || handoffBusy} title="导出客户与 Codex 可读取的模型交付包" onClick={exportModelSheetPack}><PackageCheck size={15} aria-hidden="true" /><span>{handoffBusy ? "打包中" : "交付"}</span></button><button type="button" disabled={!jobs.activeOutput} title="下载当前模型图" onClick={() => downloadAuthenticatedMedia(jobs.activeOutput, `ultra-model-sheet-${Date.now()}.png`)}><DownloadIcon /><span>下载</span></button>
+        <button type="button" disabled={!jobs.activeOutput} title="全屏查看" onClick={() => canOpenWallevenImagePreview() && setFullscreenOpen(true)}><i className="bi bi-arrows-fullscreen" /><span>大图</span></button><button type="button" disabled={!activeEntry?.jobId} title="发布到广场" onClick={() => setPublishOpen(true)}><i className="bi bi-broadcast" /><span>发布</span></button><button type="button" disabled={!jobs.activeOutput || handoffBusy} title="导出客户与 Codex 可读取的模型交付包" onClick={exportModelSheetPack}><PackageCheck size={15} aria-hidden="true" /><span>{handoffBusy ? "打包中" : "交付"}</span></button><button type="button" disabled={!jobs.activeOutput || downloadBusy} title={downloadBusy ? "正在下载" : "下载当前模型图"} aria-busy={downloadBusy} onClick={() => void downloadCurrentModelSheet()}>{downloadBusy ? <i className="bi bi-arrow-repeat ms3-spin" /> : <DownloadIcon />}<span>{downloadBusy ? "下载中…" : "下载"}</span></button>
       </div></header>
       {(localError || jobs.error) && <p className="ms3-error" role="alert"><i className="bi bi-exclamation-triangle" /><span>{localError || jobs.error}</span>{retryViews.length > 0 && !jobs.running && <button type="button" className="ms3-retry" onClick={() => runSeparateViews(retryViews, { groupId: lastBatchGroupId, sourceOverride: hasReference ? "" : jobs.activeOutput })}><RegenerateIcon />重试失败视图（{retryViews.length}）</button>}</p>}
       <div className={`ms3-viewport${outputMode === "separate" ? " is-turnaround" : ""}`}>

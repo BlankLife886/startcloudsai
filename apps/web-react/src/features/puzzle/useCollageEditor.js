@@ -2,8 +2,12 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import {
   BACKGROUND_PRESETS,
   COLLAGE_TEMPLATES,
+  CUSTOM_RATIO_ID,
+  RATIO_PRESETS,
   getBackgroundPresetById,
   getTemplateById,
+  parseRatioPart,
+  ratioPartsFromValue,
   resolveBoardRatio,
 } from "@react/legacy-modules/features/ai-puzzle/domain/collageTemplates.js";
 
@@ -25,6 +29,7 @@ function cloneSnapshot(state) {
     ...state,
     cells: state.cells.map((cell) => ({ ...cell })),
     caption: { ...state.caption },
+    customRatio: { ...(state.customRatio || { w: 1, h: 1 }) },
   };
 }
 
@@ -32,6 +37,7 @@ const initialTemplate = COLLAGE_TEMPLATES[0];
 const initialEditor = {
   templateId: initialTemplate.id,
   ratioId: "auto",
+  customRatio: { w: 1, h: 1 },
   cells: cellsForTemplate(initialTemplate),
   selectedCell: 0,
   gap: 8,
@@ -49,8 +55,11 @@ const initialEditor = {
   },
 };
 
-export function useCollageEditor() {
-  const [editor, setEditor] = useState(initialEditor);
+export function useCollageEditor({ darkPaper = false } = {}) {
+  const [editor, setEditor] = useState(() => ({
+    ...initialEditor,
+    backgroundId: darkPaper ? "black" : "white",
+  }));
   const [uploads, setUploads] = useState([]);
   const [zoom, setZoom] = useState(85);
   const [exporting, setExporting] = useState(false);
@@ -74,8 +83,8 @@ export function useCollageEditor() {
 
   const template = useMemo(() => getTemplateById(editor.templateId), [editor.templateId]);
   const boardRatio = useMemo(
-    () => resolveBoardRatio(template, editor.ratioId),
-    [template, editor.ratioId],
+    () => resolveBoardRatio(template, editor.ratioId, editor.customRatio),
+    [template, editor.ratioId, editor.customRatio],
   );
   const background = useMemo(
     () =>
@@ -293,12 +302,41 @@ export function useCollageEditor() {
     setExporting,
     setTemplate,
     setRatio: (value) => updateField("ratioId", value),
+    setCustomRatio: (w, h, options = {}) =>
+      commit((current) => {
+        const nextW = parseRatioPart(w, current.customRatio?.w || 1);
+        const nextH = parseRatioPart(h, current.customRatio?.h || 1);
+        const value = nextW / nextH;
+        const match = options.forceCustom
+          ? null
+          : RATIO_PRESETS.find((preset) => preset.value > 0 && Math.abs(preset.value - value) < 0.003);
+        return {
+          ...current,
+          ratioId: match?.id || CUSTOM_RATIO_ID,
+          customRatio: { w: nextW, h: nextH },
+        };
+      }, options),
+    setRatioFromValue: (ratio, options = {}) =>
+      commit((current) => {
+        const value = Number(ratio);
+        if (!Number.isFinite(value) || value <= 0) return current;
+        const match = options.forceCustom
+          ? null
+          : RATIO_PRESETS.find((preset) => preset.value > 0 && Math.abs(preset.value - value) < 0.003);
+        return {
+          ...current,
+          ratioId: match?.id || CUSTOM_RATIO_ID,
+          customRatio: ratioPartsFromValue(value),
+        };
+      }, options),
     setGap: (value, options) => updateField("gap", value, options),
     setRadius: (value, options) => updateField("radius", value, options),
     setPadding: (value, options) => updateField("padding", value, options),
     setSelectedCell: (value) => updateField("selectedCell", value, { history: false }),
-    setBackground: (value) =>
-      commit((current) => ({ ...current, backgroundId: value, customBgColor: "" })),
+    setBackground: (value, options) =>
+      commit((current) => ({ ...current, backgroundId: value, customBgColor: "" }), options),
+    applyCanvasStyle: (patch, options) =>
+      commit((current) => ({ ...current, ...patch }), options),
     setCustomBgColor: (value) =>
       commit((current) => ({ ...current, customBgColor: value })),
     setCaption: (value, options) =>

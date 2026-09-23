@@ -72,10 +72,17 @@ export async function generateCommerceProductBrief(payload, { signal } = {}) {
   })
 }
 
-export async function generateAplusPlan(payload, { signal } = {}) {
-  return apiPost('/commerce/aplus-plans', payload, {
+export async function generateListingPlan(payload, { signal } = {}) {
+  return apiPost('/commerce/listing-plans', payload, {
     signal,
-    fallbackMessage: 'A+ 结构分析失败',
+    fallbackMessage: '套图策划失败',
+  })
+}
+
+export async function generateDetailPlan(payload, { signal } = {}) {
+  return apiPost('/commerce/detail-plans', payload, {
+    signal,
+    fallbackMessage: '详情页策划失败',
   })
 }
 

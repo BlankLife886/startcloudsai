@@ -102,7 +102,7 @@ function changeSection(){page.value=1;if(data.value)data.value.records={items:[]
     <el-table-column label="说明与关联记录" min-width="350"><template #default="{row}">{{ row.detail || row.publicMessage || '—' }}<small>{{ row.publicMessage }}</small><a v-if="row.orderId" :href="orderLink(row.orderId)" target="_blank" rel="noopener">{{ row.orderId }}</a><a v-if="row.changeId" :href="changeLink(row.changeId)" target="_blank" rel="noopener">变更 {{ row.changeId }}</a></template></el-table-column>
     <el-table-column label="金额 / 操作人" width="160"><template #default="{row}">{{ row.kind==='order_removed'?'不涉及资金':billingMoney(row.amountCents) }}<small>{{ row.actor }}</small></template></el-table-column>
    </el-table>
-   <el-pagination :current-page="page" :page-size="data.records.limit" :total="data.records.total" layout="total, prev, pager, next" @current-change="value=>{page=value;load()}" />
+   <el-pagination :current-page="data.records.page" :disabled="loading" :page-size="data.records.limit" :total="data.records.total" layout="total, prev, pager, next" @update:current-page="value=>{page=value;load()}" />
    <p class="subscription-audit__note">用户全部订单实收 {{ billingMoney(data.accountFinance.receivedCents) }}，已退 {{ billingMoney(data.accountFinance.refundedCents) }}；以上明细仅针对当前订阅链路。核查时间 {{ formatTime(data.asOf) }}。</p>
   </template>
  </section>

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AuthenticatedImage } from "../../components/AuthenticatedImage.jsx";
 import { RegenerateIcon } from "../../components/common/RegenerateIcon.jsx";
 import { CommerceSelect } from "./CommerceSelect.jsx";
@@ -9,13 +9,19 @@ import {
   aplusCategoryById,
   searchAplusCategories,
 } from "./aplus/amazonAplus.js";
+import { DETAIL_NOTE_MAX } from "./aplus/detailPage.js";
+import { HandheldGeneratingStage, HandheldRefCard } from "./HandheldStudio.jsx";
+import {
+  TypePicker,
+  WorkbenchGuides,
+  WorkbenchHistory,
+  formatSeconds,
+  groupHistory,
+  ratioVar,
+} from "./workbench/CommerceWorkbench.jsx";
 import "./HandheldStudio.css";
+import "./workbench/CommerceWorkbench.css";
 import "./DetailStudio.css";
-
-function formatSeconds(seconds) {
-  const value = Math.max(0, Number(seconds) || 0);
-  return value >= 100 ? String(value) : String(value).padStart(2, "0");
-}
 
 function isDirectPreviewUrl(src = "") {
   return /^(blob:|data:)/i.test(String(src));
@@ -30,42 +36,154 @@ function ProductThumb({ src, alt }) {
   );
 }
 
-function channelRatioVar(ratio) {
-  const [w, h] = String(ratio || "16:9").split(":");
-  return `${w || 16} / ${h || 9}`;
+const ACTIVE_MODULE_STATUS = new Set(["running", "waiting_provider"]);
+const FAILED_MODULE_STATUS = new Set(["failed", "canceled", "cancelled"]);
+
+function secondsSince(timestamp, now) {
+  const started = Date.parse(timestamp || "");
+  if (!Number.isFinite(started)) return 0;
+  return Math.max(0, Math.floor((now - started) / 1000));
 }
 
-function groupDetailHistory(history) {
-  const groups = [];
-  const seen = new Map();
-  for (const row of history || []) {
-    const id = String(row.groupId || row.task?.id || row.url || "");
-    if (!id) continue;
-    let group = seen.get(id);
-    if (!group) {
-      group = { id, rows: [] };
-      seen.set(id, group);
-      groups.push(group);
-    }
-    const index = Number(row.index || 0);
-    if (!group.rows.some((item) => Number(item.index || 0) === index)) {
-      group.rows.push(row);
-    }
-  }
-  for (const group of groups) {
-    group.rows.sort((a, b) => Number(a.index || 0) - Number(b.index || 0));
-  }
-  return groups;
+// 补充参考卡：模特 / 细节 / 证书等事实依据，最多 3 张，沿用 handheld-ref-card 外观
+function ExtraReferenceCard({
+  items = [],
+  limit = 0,
+  max = 3,
+  running,
+  onUpload,
+  onRemove,
+  onPreview,
+  onDrop,
+}) {
+  const hasItems = items.length > 0;
+  const canAdd = !running && limit > 0 && items.length < limit;
+  return (
+    <div
+      className={`handheld-ref-card workbench-slot workbench-slot--left detail-extras${hasItems ? " has-file" : " is-empty"}`}
+      onDragOver={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const files = event.dataTransfer?.files;
+        if (files?.length && !running) onDrop?.(files);
+      }}
+    >
+      <span className="handheld-ref-card__tag">
+        补充参考 · 可选
+        {hasItems ? (
+          <small>
+            {items.length}/{max}
+          </small>
+        ) : null}
+      </span>
+      {hasItems ? (
+        <div className="detail-extras__grid" data-count={items.length}>
+          {items.map((item, index) => (
+            <span key={`${item.url}-${index}`} className="detail-extras__item">
+              <button
+                type="button"
+                className="detail-extras__shot"
+                aria-label={`查看补充参考图 ${index + 1}`}
+                onClick={() => onPreview?.(item.url)}
+              >
+                <ProductThumb src={item.url} alt={`补充参考图 ${index + 1}`} />
+              </button>
+              <button
+                type="button"
+                className="workbench-angles__remove"
+                aria-label={`移除补充参考图 ${index + 1}`}
+                disabled={running}
+                onClick={() => onRemove?.(index)}
+              >
+                <i className="bi bi-x" />
+              </button>
+            </span>
+          ))}
+          {canAdd ? (
+            <button
+              type="button"
+              className="detail-extras__add"
+              aria-label="继续添加补充参考图"
+              onClick={onUpload}
+            >
+              <i className="bi bi-plus-lg" />
+            </button>
+          ) : null}
+        </div>
+      ) : (
+        <button
+          type="button"
+          className="handheld-ref-card__hit is-upload"
+          aria-label="上传补充参考图"
+          disabled={running || limit <= 0}
+          title={limit <= 0 ? "商品图与补充参考图合计最多 6 张" : undefined}
+          onClick={onUpload}
+        >
+          <i className="bi bi-paperclip" />
+          <span>模特 / 细节 / 证书</span>
+          <small>{limit <= 0 ? "参考图已满" : `最多 ${max} 张`}</small>
+        </button>
+      )}
+      {hasItems ? (
+        <div
+          className="handheld-ref-card__actions"
+          role="group"
+          aria-label="补充参考图操作"
+        >
+          <button
+            type="button"
+            disabled={!canAdd}
+            aria-label="添加补充参考图"
+            onClick={onUpload}
+          >
+            <i className="bi bi-cloud-arrow-up" />
+            上传
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 export function DetailStudio({
   previews = [],
-  modules = [],
-  selectedModules = [],
-  onToggleModule,
-  aplus = {},
+  maxProductFiles = 6,
+  extraSlots = [],
+  maxExtraFiles = 3,
+  onUploadExtra,
+  onDropExtraFiles,
+  onRemoveExtraFile,
+  directions = [],
+  customDirections = [],
+  maxCustomDirections = 4,
+  selectedDirectionIds = [],
+  onToggleDirection,
+  onAddCustomDirection,
+  onRemoveCustomDirection,
+  note = "",
+  onChangeNote,
+  ratio = "3:4",
+  ratioOptions = [],
+  onChangeRatio,
+  resolution = "",
+  resolutionOptions = [],
+  onChangeResolution,
+  platform = "",
+  language = "",
+  amazon = {},
+  category = {},
+  plan = {},
+  blueprints = [],
   resultUrl = "",
   history = [],
+  // 本轮每个版块的实时状态（来自任务列表）：{ url, display, status, startedAt, error }
+  moduleStates = [],
+  // 本轮任务的创建时间：刷新页面后计时从这里续接，而不是从 0 重新开始
+  runStartedAt = "",
   running,
   failed,
   failMessage = "",
@@ -94,658 +212,1107 @@ export function DetailStudio({
   showcaseAlt = "详情页案例预览",
   revision,
 }) {
-  const [runSeconds, setRunSeconds] = useState(0);
+  const rootRef = useRef(null);
+  const runOriginRef = useRef(0);
+  const [now, setNow] = useState(() => Date.now());
   const [categoryQuery, setCategoryQuery] = useState("");
-  const [device, setDevice] = useState("pc");
+  const [customDraft, setCustomDraft] = useState("");
+  // 用户在缩略图条里点选的版块（没有成图的版块也能点开看策划文案）
+  const [pickedIndex, setPickedIndex] = useState(-1);
+
+  // 本轮起点优先取任务创建时间：刷新 / 重进页面后计时续接，不会归零
+  const runStartedMs = useMemo(() => {
+    const fromProp = Date.parse(runStartedAt || "");
+    const fromModules = moduleStates
+      .map((item) => Date.parse(item?.startedAt || ""))
+      .filter(Number.isFinite);
+    const candidates = [fromProp, ...fromModules].filter(Number.isFinite);
+    return candidates.length ? Math.min(...candidates) : 0;
+  }, [runStartedAt, moduleStates]);
 
   useEffect(() => {
-    if (!running) return undefined;
-    setRunSeconds(0);
-    const started = Date.now();
-    const timer = window.setInterval(() => {
-      setRunSeconds(Math.floor((Date.now() - started) / 1000));
-    }, 250);
+    if (!running) {
+      runOriginRef.current = 0;
+      return undefined;
+    }
+    if (runStartedMs) {
+      runOriginRef.current = runStartedMs;
+    } else if (!runOriginRef.current) {
+      runOriginRef.current = Date.now();
+    }
+    const tick = () => setNow(Date.now());
+    tick();
+    const timer = window.setInterval(tick, 250);
     return () => window.clearInterval(timer);
-  }, [running]);
+  }, [running, runStartedMs]);
+
+  const runSeconds =
+    running && runOriginRef.current
+      ? Math.max(0, Math.floor((now - runOriginRef.current) / 1000))
+      : 0;
 
   const waitSeconds = running ? runSeconds : elapsedSeconds;
-  const historyGroups = groupDetailHistory(history);
+  const historyGroups = groupHistory(history);
   const activeGroup =
     historyGroups.find((group) =>
       group.rows.some((row) => row.url === resultUrl),
     ) || historyGroups[0];
-  const planModules = aplus.plan?.modules || [];
   const stacked = useMemo(() => {
     const rows = activeGroup?.rows || [];
-    if (planModules.length) {
-      return planModules.map((module, index) => ({
-        module,
-        row: rows[index] || null,
-      }));
-    }
-    if (rows.length) {
-      return rows.map((row, index) => ({
-        module: {
-          id: `row-${index}`,
-          amazonName: `模块 ${index + 1}`,
-          pepcf: "",
-          width: 970,
-          height: 600,
+    const rowAt = (index) =>
+      rows.find((row) => Number(row.index || 0) === index) || null;
+    const total = Math.max(blueprints.length, running ? moduleStates.length : 0);
+    if (total) {
+      return Array.from({ length: total }, (_, index) => ({
+        shot: blueprints[index] || {
+          id: `module-${index}`,
+          label: `版块 ${index + 1}`,
+          aspectRatio: ratio,
         },
-        row,
+        row: rowAt(index),
+        state: moduleStates[index] || null,
       }));
     }
-    return [];
-  }, [activeGroup, planModules]);
-  const hasImage = stacked.some((item) => item.row?.url) && !running && !failed;
-  const selectedCount = selectedModules.length;
+    return rows.map((row, index) => ({
+      shot: {
+        id: `row-${index}`,
+        label: `版块 ${index + 1}`,
+        aspectRatio: row.aspectRatio || "3:4",
+      },
+      row,
+      state: moduleStates[index] || null,
+    }));
+  }, [activeGroup, blueprints, moduleStates, running, ratio]);
+  const moduleUrl = (item) =>
+    item.row?.url || (running ? item.state?.url || "" : "");
+  const hasAnyShot = stacked.some((item) => moduleUrl(item));
+  const doneCount = stacked.filter((item) => moduleUrl(item)).length;
+  const moduleStatus = (item) => String(item.state?.status || "").toLowerCase();
+  const anyModuleActive = stacked.some(
+    (item) => !moduleUrl(item) && ACTIVE_MODULE_STATUS.has(moduleStatus(item)),
+  );
+  const firstPendingIndex = stacked.findIndex(
+    (item) => !moduleUrl(item) && !FAILED_MODULE_STATUS.has(moduleStatus(item)),
+  );
+  // 每个版块的展示态：舞台、缩略图条、右侧“本次出图”清单共用同一份
+  const modules = stacked.map((item, index) => {
+    const url = moduleUrl(item);
+    const status = moduleStatus(item);
+    const failedModule =
+      !url && (Boolean(item.row?.failed) || FAILED_MODULE_STATUS.has(status));
+    // 任务列表还没同步到状态时，把第一个待出的版块视为正在生成
+    const active =
+      !url &&
+      running &&
+      !failedModule &&
+      (ACTIVE_MODULE_STATUS.has(status) ||
+        (!anyModuleActive && index === firstPendingIndex));
+    const queued = !url && running && !active && !failedModule;
+    const seconds = active
+      ? item.state?.startedAt
+        ? secondsSince(item.state.startedAt, now)
+        : runSeconds
+      : 0;
+    return {
+      ...item,
+      index,
+      url,
+      display: item.row?.display || item.state?.display || url,
+      active,
+      queued,
+      failed: failedModule,
+      seconds,
+      error: item.state?.error || "",
+    };
+  });
+  const planItemClass = (index) => {
+    const module = modules[index];
+    if (!module) return "";
+    if (module.url) return "is-done";
+    if (module.failed) return "is-failed";
+    if (module.active) return "is-running";
+    return "";
+  };
+  // 舞台展示哪个版块：用户点选 > 当前选中的成图 > 正在生成的 > 第一张成图 > 第一个待出
+  // （点选有成图的版块会同步切换 resultUrl，随后清掉点选，回到跟随成图）
+  useEffect(() => {
+    setPickedIndex(-1);
+  }, [resultUrl, running]);
+  const displayModule =
+    (pickedIndex >= 0 && modules[pickedIndex]) ||
+    (resultUrl && modules.find((module) => module.url === resultUrl)) ||
+    modules.find((module) => module.active) ||
+    modules.find((module) => module.url) ||
+    modules.find((module) => !module.failed) ||
+    modules[0] ||
+    null;
+  const displayUrl = displayModule?.url || "";
+  const hasImage = hasAnyShot && !running && !failed;
+  const planned = Boolean(plan.planned);
+  const planItems = useMemo(
+    () => new Map((plan.data?.items || []).map((item) => [item.id, item])),
+    [plan.data],
+  );
+  const selectedCount = selectedDirectionIds.length;
+  const totalDirections = directions.length + customDirections.length;
   const categoryOptions = searchAplusCategories(categoryQuery);
+  const amazonActive = Boolean(amazon.active);
+  const productLimit = Math.max(0, maxProductFiles - extraSlots.length);
+  const extraLimit = Math.max(
+    0,
+    Math.min(maxExtraFiles, maxProductFiles - previews.length),
+  );
+  const customTrimmed = customDraft.trim();
+  const customFull = customDirections.length >= maxCustomDirections;
+  const canAddCustom = customTrimmed.length > 0 && !customFull && !running;
+  // 画框比例跟着当前展示的版块走：Amazon 用官方模块像素，其他平台用所选画幅
+  const displaySpec = displayModule?.shot?.aplusSpec;
+  const displayRatio = displaySpec
+    ? `${displaySpec.width}:${displaySpec.height}`
+    : displayModule?.shot?.aspectRatio || ratio;
+  const [ratioW, ratioH] = displayRatio.split(":").map((value) => Number(value));
+  const frameStyle = {
+    "--commerce-shot-ratio": ratioVar(displayRatio),
+    "--ratio-w": ratioW > 0 ? ratioW : 1,
+    "--ratio-h": ratioH > 0 ? ratioH : 1,
+  };
+  const displaySizeLabel = displaySpec
+    ? `${displaySpec.width}×${displaySpec.height}`
+    : displayRatio;
+  const platformTitle = amazonActive
+    ? `${amazon.marketplaceLabel || "Amazon"} A+`
+    : `${platform || "通用"} 详情页`;
+  const hasProduct = Boolean(previews[0]);
+  const angleItems = previews.slice(1);
+  const displayShotCount = blueprints.length || shotCount;
+  const pickerOptions = useMemo(
+    () => [
+      ...directions.map((item) => ({
+        id: item.value,
+        label: item.label,
+        hint: item.hint,
+      })),
+      ...customDirections.map((item) => ({
+        id: item.value,
+        label: item.label,
+        hint: "自定义方向",
+        custom: true,
+      })),
+    ],
+    [directions, customDirections],
+  );
+  const guideRevision = [
+    previews.map((item) => item.url).join("|"),
+    extraSlots.map((item) => item.url).join("|"),
+    displayRatio,
+    ratio,
+    resolution,
+    selectedDirectionIds.join("|"),
+    customDirections.map((item) => item.value).join("|"),
+    note.length > 0,
+    amazonActive,
+    planned,
+    plan.planning,
+    hasAnyShot,
+    running,
+    blueprints.length,
+  ].join("::");
 
   function handleDrop(event) {
     event.preventDefault();
     const files = event.dataTransfer?.files;
-    if (files?.length) onDropFiles?.(files);
+    if (files?.length && !running) onDropFiles?.(files);
+  }
+  function submitCustom() {
+    if (!canAddCustom) return;
+    onAddCustomDirection?.(customTrimmed);
+    setCustomDraft("");
+  }
+  function selectAllDirections() {
+    for (const item of pickerOptions) {
+      if (!selectedDirectionIds.includes(item.id)) onToggleDirection?.(item.id);
+    }
+  }
+  function clearDirections() {
+    for (const id of selectedDirectionIds) onToggleDirection?.(id);
   }
 
+  const emptySteps = [
+    { label: "上传商品多角度图", done: hasProduct },
+    { label: "勾选出图方向，补充品类与描述", done: hasProduct && selectedCount > 0 },
+    {
+      label: plan.autoGenerate ? "AI 策划文案后自动生成长图" : "AI 策划文案，确认后生成",
+      done: planned,
+    },
+  ];
+
   return (
-    <div className="detail-studio" aria-label="A+详情出图工作台">
+    <div
+      className="commerce-workbench is-detail detail-studio"
+      aria-label="AI 详情页工作台"
+    >
       <section
-        className={`detail-output${running ? " is-running" : ""}`}
-        aria-label="A+详情画布"
+        ref={rootRef}
+        className={`workbench-output handheld-out detail-output has-right-slots${running ? " is-running" : ""}`}
+        aria-label="详情页画布"
         onDragOver={(event) => event.preventDefault()}
         onDrop={handleDrop}
       >
-        <aside className="detail-board" aria-label="详情画布输入">
-          <section className="detail-film">
-            <header className="detail-board__head">
-              <strong>商品图</strong>
-              <small>{previews.length}/6</small>
-            </header>
-            {previews.length ? (
-              <div className="detail-film__list upload-grid">
-                {previews.map((item, index) => (
-                  <figure key={`${item.url}-${index}`}>
-                    <button
-                      type="button"
-                      className="detail-film__shot"
-                      aria-label={`查看参考图 ${index + 1}`}
-                      onClick={() => onPreview?.(item.url)}
-                    >
-                      <ProductThumb
-                        src={item.url}
-                        alt={`参考图 ${index + 1}`}
-                      />
-                    </button>
-                    <button
-                      type="button"
-                      className="detail-film__remove"
-                      aria-label={`移除参考图 ${index + 1}`}
-                      disabled={running}
-                      onClick={() => onRemoveFile?.(index)}
-                    >
-                      <i className="bi bi-x" />
-                    </button>
-                  </figure>
-                ))}
-                {previews.length < 6 ? (
-                  <button
-                    type="button"
-                    className="detail-film__add"
-                    aria-label="继续添加参考图"
-                    disabled={running}
-                    onClick={onUpload}
-                  >
-                    <i className="bi bi-plus-lg" />
-                    <span>添加</span>
-                  </button>
-                ) : null}
-              </div>
-            ) : (
-              <button
-                type="button"
-                className="detail-film__empty"
-                aria-label="上传参考图片"
-                disabled={running}
-                onClick={onUpload}
-              >
-                <i className="bi bi-cloud-arrow-up" />
-                <strong>上传商品图</strong>
-                <small>PNG / JPG / WebP，最多 6 张，可拖到这里</small>
-              </button>
-            )}
-          </section>
+        <WorkbenchGuides
+          rootRef={rootRef}
+          revision={guideRevision}
+          running={running}
+        />
 
-          <section className="detail-brief">
-            <header className="detail-board__head">
-              <strong>站点与品类</strong>
-            </header>
-            <label>
-              <span>品类</span>
-              <input
-                value={categoryQuery || aplus.categoryLabel || ""}
-                onChange={(event) => {
-                  setCategoryQuery(event.target.value);
-                  const match = aplusCategoryById(event.target.value);
-                  if (match && match.id !== "generic") {
-                    aplus.onChangeCategory?.(match.id);
-                  } else {
-                    const labeled = APLUS_CATEGORIES.find(
-                      (item) => item.label === event.target.value,
-                    );
-                    if (labeled) aplus.onChangeCategory?.(labeled.id);
-                  }
-                }}
-                list="detail-aplus-categories"
-                placeholder="灯泡、3C、家居…"
-                disabled={running}
-              />
-              <datalist id="detail-aplus-categories">
-                {categoryOptions.map((item) => (
-                  <option key={item.id} value={item.label} />
-                ))}
-              </datalist>
-            </label>
-            <div className="detail-brief__row">
-              <label>
-                <span>目标站</span>
-                <CommerceSelect
-                  value={aplus.marketplaceId}
-                  options={APLUS_MARKETPLACES.map((item) => ({
-                    value: item.id,
-                    label: item.label,
-                  }))}
-                  onChange={aplus.onChangeMarketplace}
-                  ariaLabel="选择亚马逊站点"
-                  disabled={running}
-                />
-              </label>
-              <label>
-                <span>档位</span>
-                <CommerceSelect
-                  value={aplus.tier}
-                  options={APLUS_TIERS.map((item) => ({
-                    value: item.id,
-                    label: item.label,
-                  }))}
-                  onChange={aplus.onChangeTier}
-                  ariaLabel="选择 A+ 档位"
-                  disabled={running}
-                />
-              </label>
-            </div>
-            <div className="detail-brief__row">
-              <label>
-                <span>ASIN</span>
-                <input
-                  value={aplus.asin || ""}
-                  onChange={(event) => aplus.onChangeAsin?.(event.target.value)}
-                  placeholder="可选"
-                  disabled={running}
-                />
-              </label>
-              <label>
-                <span>竞品 ASIN</span>
-                <input
-                  value={aplus.competitorAsin || ""}
-                  onChange={(event) =>
-                    aplus.onChangeCompetitorAsin?.(event.target.value)
-                  }
-                  placeholder="可选"
-                  disabled={running}
-                />
-              </label>
-            </div>
-            <label className="detail-disclosure">
-              <input
-                type="checkbox"
-                checked={Boolean(aplus.disclosure)}
-                disabled={running}
-                onChange={(event) =>
-                  aplus.onChangeDisclosure?.(event.target.checked)
-                }
-              />
-              <span>Seller Central 手动勾选 AI Disclosure</span>
-            </label>
-            {aplus.batchText !== undefined ? (
-              <details className="detail-more">
-                <summary>批量 ASIN</summary>
-                <textarea
-                  rows={2}
-                  value={aplus.batchText || ""}
-                  onChange={(event) =>
-                    aplus.onChangeBatchText?.(event.target.value)
-                  }
-                  placeholder="每行一个，最多 100 个"
-                  disabled={running}
-                />
-              </details>
-            ) : null}
-          </section>
-
-          <section className="detail-analyze" aria-label="AI 分析">
-            <header className="detail-board__head">
-              <strong>AI 分析</strong>
-              <small>
-                {aplus.planning
-                  ? "诊断中"
-                  : aplus.analyzed
-                    ? "已完成"
-                    : "买家痛点 + 模块"}
-              </small>
-            </header>
-            <button
-              type="button"
-              className={`detail-analyze__run${aplus.planning ? " is-busy" : ""}${aplus.analyzed ? " is-done" : ""}`}
-              disabled={
-                running || aplus.planning || Boolean(aplus.analyzeDisabled)
-              }
-              title={aplus.analyzeHint || undefined}
-              onClick={aplus.onAnalyze}
-            >
-              {aplus.planning ? (
-                <>
-                  <i className="detail-page__spin" aria-hidden="true" />
-                  正在分析痛点与模块
-                </>
-              ) : aplus.analyzed ? (
-                <>
-                  <i className="bi bi-arrow-repeat" />
-                  重新分析
-                </>
-              ) : (
-                <>
-                  <i className="bi bi-stars" />
-                  AI 分析
-                </>
-              )}
-            </button>
-            {aplus.analyzeError ? (
-              <p className="detail-analyze__error" role="alert">
-                {aplus.analyzeError}
-              </p>
-            ) : null}
-            {aplus.analyzed ? (
-              <div className="detail-analyze__result">
-                {aplus.plan?.painPoints?.length ? (
-                  <div>
-                    <span>痛点</span>
-                    <ul>
-                      {aplus.plan.painPoints.map((item) => (
-                        <li key={item}>{item}</li>
-                      ))}
-                    </ul>
-                  </div>
-                ) : null}
-                {aplus.plan?.pepcf?.length ? (
-                  <p className="detail-analyze__pepcf">
-                    <span>结构</span>
-                    {aplus.plan.pepcf.join(" → ")}
-                  </p>
-                ) : null}
-                <ol className="detail-analyze__mods">
-                  {(aplus.plan?.modules || []).map((item, index) => (
-                    <li key={item.id || index}>
-                      <b>{item.pepcf || String(index + 1).padStart(2, "0")}</b>
-                      <strong>{item.headline || item.amazonName}</strong>
-                      <small>
-                        {item.width}×{item.height}
-                      </small>
-                    </li>
-                  ))}
-                </ol>
-              </div>
-            ) : (
-              <p className="detail-analyze__hint">
-                上传商品图后点分析：文本模型会诊断痛点、排出 PEPCF
-                模块，并写好合规文案。
-              </p>
-            )}
-          </section>
-
-          <section className="detail-modules" aria-label="视觉模块">
-            <header className="detail-board__head">
-              <strong>页面模块</strong>
-              <small>{selectedCount} 个</small>
-            </header>
-            <div className="module-grid">
-              {modules.map((item) => (
-                <label key={item.value}>
-                  <input
-                    type="checkbox"
-                    value={item.value}
-                    checked={selectedModules.includes(item.value)}
-                    disabled={
-                      running ||
-                      (item.value === "angles" && previews.length < 2)
-                    }
-                    onChange={() => onToggleModule?.(item.value)}
-                  />
-                  <span className="module-check">
-                    <i className="bi bi-check" />
-                  </span>
-                  <strong>{item.label}</strong>
-                </label>
-              ))}
-            </div>
-          </section>
-        </aside>
-
-        <main className="detail-page" aria-label="详情长图舞台">
-          <header className="detail-page__toolbar">
-            <div>
-              <em>
-                {aplus.marketplaceLabel || "Amazon A+"} ·{" "}
-                {aplus.tier === "premium" ? "Premium" : "基础版"}
-              </em>
-              <span>
-                {planModules.length || shotCount} 个官方尺寸模块 ·{" "}
-                {aplus.language || "英文"}
-              </span>
-            </div>
-            <div className="detail-page__devices" role="tablist" aria-label="预览设备">
-              <button
-                type="button"
-                className={device === "pc" ? "is-active" : ""}
-                onClick={() => setDevice("pc")}
-              >
-                PC
-              </button>
-              <button
-                type="button"
-                className={device === "mobile" ? "is-active" : ""}
-                onClick={() => setDevice("mobile")}
-              >
-                手机
-              </button>
-            </div>
-          </header>
-
-          <div
-            className={`detail-page__stage is-${device}${hasImage ? " has-image" : ""}${running ? " is-running" : ""}${failed && !hasImage ? " is-failed" : ""}`}
-          >
-            {stacked.length &&
-            (hasImage || running || failed || aplus.analyzed) ? (
-              <div className="detail-aplus" data-device={device}>
-                {stacked.map(({ module, row }, index) => {
-                  const url = row?.display || row?.url || "";
-                  return (
-                    <article
-                      key={module.id || index}
-                      className={`detail-aplus__module${url ? " has-shot" : ""}`}
-                      style={{
-                        "--aplus-ratio": `${module.width || 970} / ${module.height || 600}`,
-                      }}
-                    >
-                      <header>
-                        <b>{module.pepcf || String(index + 1).padStart(2, "0")}</b>
-                        <strong>{module.amazonName}</strong>
-                        <small>
-                          {module.width}×{module.height}
-                        </small>
-                      </header>
-                      {url && !running ? (
+        <div
+          className="handheld-board handheld-board--top workbench-board"
+          aria-label="画布输入"
+        >
+          <div className="handheld-board__refs workbench-refs">
+            <HandheldRefCard
+              className="workbench-slot workbench-slot--left handheld-product handheld-product--canvas detail-product"
+              tag={hasProduct ? `商品图 · ${previews.length}/${productLimit}` : "商品图"}
+              image={previews[0]?.url || ""}
+              emptyIcon="bi-box-seam"
+              emptyLabel="拖拽或点击"
+              emptyAria="上传商品图"
+              previewAria="查看商品图"
+              previewAlt="商品图"
+              previewTitle="商品图"
+              groupAria="商品图操作"
+              uploadAria="添加商品图"
+              clearAria="清空商品图"
+              showMore={false}
+              showClear
+              disabled={running}
+              onPreview={(event, payload) => onPreview?.(payload.url)}
+              onUpload={onUpload}
+              onClear={() => onRemoveFile?.(0)}
+              onDrop={(files) => onDropFiles?.(files)}
+            />
+            <ExtraReferenceCard
+              items={extraSlots}
+              limit={extraLimit}
+              max={maxExtraFiles}
+              running={running}
+              onUpload={onUploadExtra}
+              onRemove={onRemoveExtraFile}
+              onPreview={onPreview}
+              onDrop={onDropExtraFiles}
+            />
+            {hasProduct ? (
+              <div className="workbench-angles" aria-label="更多角度">
+                <span className="workbench-angles__label">
+                  <i className="bi bi-collection" />
+                  多角度
+                  <small>
+                    {previews.length}/{productLimit}
+                  </small>
+                </span>
+                <div className="workbench-angles__list" role="list">
+                  {angleItems.map((item, offset) => {
+                    const index = offset + 1;
+                    return (
+                      <span
+                        key={`${item.url}-${index}`}
+                        className="workbench-angles__item"
+                        role="listitem"
+                      >
                         <button
                           type="button"
-                          className="detail-page__shot"
-                          aria-label={`查看${module.amazonName}`}
-                          onClick={(event) => {
-                            onSelectHistory?.(row.url);
-                            onResultPreview?.(event, {
-                              url: row.url,
-                              alt: module.amazonName,
-                              title: module.headline || module.amazonName,
-                            });
-                          }}
+                          className="workbench-angles__shot"
+                          aria-label={`查看商品图 ${index + 1}`}
+                          onClick={() => onPreview?.(item.url)}
                         >
-                          <AuthenticatedImage
-                            src={url}
-                            fallbackSrc={row.url}
-                            alt={module.headline || module.amazonName}
-                          />
+                          <ProductThumb src={item.url} alt="" />
                         </button>
-                      ) : running ? (
-                        <div className="detail-page__generating" role="status">
-                          <i className="detail-page__spin" aria-hidden="true" />
-                          <span>
-                            {index === 0
-                              ? `已等待 ${formatSeconds(waitSeconds)}s`
-                              : "排队中"}
-                          </span>
-                        </div>
-                      ) : (
-                        <div className="detail-aplus__slot">
-                          <strong>{module.headline || "待生成"}</strong>
-                          <span>{module.body || "一键生成后按官方尺寸出图"}</span>
-                        </div>
-                      )}
-                    </article>
-                  );
-                })}
-              </div>
-            ) : failed ? (
-              <div className="detail-page__status" role="alert">
-                <strong>本次生成未完成</strong>
-                <span>{failMessage || "调整参考图或模块后重新生成"}</span>
-              </div>
-            ) : (
-              <div className="detail-page__empty">
-                {showcaseSrc ? (
-                  <div className="showcase-demo is-detail">
-                    <div className="showcase-demo__frame">
-                      <div className="showcase-demo__stage">
-                        <img src={showcaseSrc} alt={showcaseAlt} />
-                      </div>
-                    </div>
-                  </div>
-                ) : null}
-                <strong>还没有 A+ 模块图</strong>
-                <span>
-                  {previews.length
-                    ? "先点左侧 AI 分析，再一键生成官方尺寸模块图"
-                    : "先上传商品图，再选品类和站点"}
-                </span>
-              </div>
-            )}
-            {hasImage && waitSeconds > 0 ? (
-              <span className="detail-page__elapsed">
-                {formatSeconds(waitSeconds)}秒
-              </span>
-            ) : null}
-            {revision?.available ? (
-              <aside
-                className={`revision-panel${revision.open ? " open" : ""}`}
-                aria-label="继续调整当前成品"
-              >
-                <header>
-                  <button
-                    type="button"
-                    className="revision-panel__toggle"
-                    aria-label={
-                      revision.open ? "收起连续优化" : "展开连续优化"
-                    }
-                    aria-expanded={revision.open}
-                    disabled={running}
-                    onClick={revision.onToggle}
-                  >
-                    <i
-                      className={`bi ${revision.open ? "bi-chevron-right" : "bi-sliders2"}`}
-                    />
-                  </button>
-                  <div className="revision-panel__title">
-                    <small>连续优化</small>
-                    <strong>继续调整当前成品</strong>
-                  </div>
-                </header>
-                {revision.open ? (
-                  <div className="revision-panel__body">
-                    <p>只描述这一轮需要改变的内容，未提及部分会继续锁定。</p>
-                    <label className="revision-field">
-                      <span>调整方向</span>
-                      <CommerceSelect
-                        value={revision.direction}
-                        options={revision.directionOptions}
-                        onChange={revision.onChangeDirection}
-                        ariaLabel="选择调整方向"
-                      />
-                    </label>
-                    <label className="revision-field revision-field--brief">
-                      <span>本轮只修改</span>
-                      <textarea
-                        value={revision.brief}
-                        onChange={(event) =>
-                          revision.onChangeBrief?.(event.target.value)
-                        }
-                        placeholder="例如：商品再放大 15%，背景改为浅灰影棚，其他内容保持不变"
-                      />
-                      <small>{(revision.brief || "").length}/600</small>
-                    </label>
+                        <button
+                          type="button"
+                          className="workbench-angles__remove"
+                          aria-label={`移除商品图 ${index + 1}`}
+                          disabled={running}
+                          onClick={() => onRemoveFile?.(index)}
+                        >
+                          <i className="bi bi-x" />
+                        </button>
+                      </span>
+                    );
+                  })}
+                  {previews.length < productLimit ? (
                     <button
                       type="button"
-                      className="revision-submit"
-                      disabled={
-                        String(revision.brief || "").trim().length < 4 ||
-                        running
+                      className="workbench-angles__add"
+                      aria-label="添加更多角度"
+                      disabled={running}
+                      onClick={onUpload}
+                    >
+                      <i className="bi bi-plus-lg" />
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="handheld-brief handheld-brief--canvas workbench-brief">
+            <div className="handheld-platform">
+              <div className="handheld-brief__head">
+                <span className="handheld-brief__kicker">投放到</span>
+                <span className="handheld-brief__meta">
+                  {platformTitle} · {language || "简体中文"}
+                </span>
+              </div>
+              {amazonActive ? (
+                <div className="detail-official" role="note">
+                  <i className="bi bi-lock-fill" aria-hidden="true" />
+                  <div>
+                    <strong>A+ 官方尺寸</strong>
+                    <small>
+                      每个模块按 {amazon.tier === "premium" ? "Premium" : "基础版"}
+                      官方像素输出
+                    </small>
+                  </div>
+                </div>
+              ) : (
+                <div
+                  className="handheld-channels detail-channels"
+                  role="radiogroup"
+                  aria-label="选择详情页画幅"
+                >
+                  {ratioOptions.map((item) => {
+                    const active = ratio === item.value;
+                    return (
+                      <button
+                        key={item.value}
+                        type="button"
+                        role="radio"
+                        aria-checked={active}
+                        aria-label={item.label}
+                        title={item.label}
+                        className={active ? "is-active" : ""}
+                        disabled={running}
+                        onClick={() => onChangeRatio?.(item.value)}
+                      >
+                        <span
+                          className="handheld-channels__frame"
+                          style={{ "--channel-ratio": ratioVar(item.value) }}
+                          aria-hidden="true"
+                        />
+                        <span className="handheld-channels__name">
+                          {item.value}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="handheld-pack workbench-pack">
+              <TypePicker
+                running={running}
+                picker={{
+                  label: "出图方向",
+                  meta: `已选 ${selectedCount}/${totalDirections}`,
+                  options: pickerOptions,
+                  values: selectedDirectionIds,
+                  visibleLimit: 6,
+                  onToggle: onToggleDirection,
+                  onSelectAll: selectAllDirections,
+                  onClear: clearDirections,
+                  onRemove: onRemoveCustomDirection,
+                  customNoun: "自定义方向",
+                  footer: (
+                    <form
+                      className="detail-custom"
+                      data-click-guard="repeat"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        submitCustom();
+                      }}
+                    >
+                      <span className="workbench-picks__label">
+                        自定义方向
+                        <small>
+                          {customDirections.length}/{maxCustomDirections}
+                        </small>
+                      </span>
+                      <div className="detail-custom__row">
+                        <input
+                          value={customDraft}
+                          maxLength={30}
+                          aria-label="自定义出图方向"
+                          placeholder={
+                            customFull
+                              ? `自定义方向最多 ${maxCustomDirections} 个`
+                              : "例如：特定圣诞礼盒展示图"
+                          }
+                          disabled={running || customFull}
+                          onChange={(event) => setCustomDraft(event.target.value)}
+                        />
+                        <button type="submit" disabled={!canAddCustom}>
+                          <i className="bi bi-plus-lg" />
+                          添加
+                        </button>
+                      </div>
+                    </form>
+                  ),
+                }}
+              />
+
+              <div className="detail-brief">
+                <div className="detail-brief__row">
+                  <label className="detail-brief__field">
+                    <span className="workbench-picks__label">品类</span>
+                    <input
+                      className="handheld-input"
+                      value={categoryQuery || category.label || ""}
+                      onChange={(event) => {
+                        setCategoryQuery(event.target.value);
+                        const match = aplusCategoryById(event.target.value);
+                        if (match && match.id !== "generic") {
+                          category.onChange?.(match.id);
+                        } else {
+                          const labeled = APLUS_CATEGORIES.find(
+                            (item) => item.label === event.target.value,
+                          );
+                          if (labeled) category.onChange?.(labeled.id);
+                        }
+                      }}
+                      list="detail-aplus-categories"
+                      placeholder="灯泡、3C、家居…"
+                      aria-label="商品品类"
+                      disabled={running}
+                    />
+                    <datalist id="detail-aplus-categories">
+                      {categoryOptions.map((item) => (
+                        <option key={item.id} value={item.label} />
+                      ))}
+                    </datalist>
+                  </label>
+                  {resolutionOptions.length ? (
+                    <div className="workbench-picks detail-brief__field" aria-label="清晰度">
+                      <span className="workbench-picks__label">清晰度</span>
+                      <div
+                        className="handheld-picks"
+                        role="radiogroup"
+                        aria-label="选择清晰度"
+                      >
+                        {resolutionOptions.map((item) => (
+                          <button
+                            key={item}
+                            type="button"
+                            role="radio"
+                            aria-checked={resolution === item}
+                            className={resolution === item ? "is-active" : ""}
+                            disabled={running}
+                            onClick={() => onChangeResolution?.(item)}
+                          >
+                            {item}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+                <label className="workbench-note detail-note">
+                  <span className="workbench-note__head">
+                    <span className="workbench-picks__label">
+                      补充描述
+                      <small>（选填）</small>
+                    </span>
+                    <small className="workbench-note__count detail-note__count">
+                      {note.length}/{DETAIL_NOTE_MAX}
+                    </small>
+                  </span>
+                  <textarea
+                    rows={2}
+                    value={note}
+                    maxLength={DETAIL_NOTE_MAX}
+                    aria-label="补充描述（选填）"
+                    onChange={(event) => onChangeNote?.(event.target.value)}
+                    placeholder="适用人群、期望场景、具体参数、必须出现或禁止出现的元素…"
+                    disabled={running}
+                  />
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div
+          className="handheld-shots detail-shots"
+          data-count={1}
+          data-ratio={displayRatio}
+          style={frameStyle}
+        >
+          <div
+            className={`handheld-shot-stage${modules.length > 1 ? " has-thumbs" : ""}`}
+          >
+            <div
+              className={`handheld-frame detail-frame${hasImage ? " has-image" : ""}${running ? " is-running" : ""}${failed && !hasAnyShot ? " is-failed" : ""}${planned ? " is-planned" : ""}${displayUrl ? " is-selected" : ""}`}
+              data-ratio={displayRatio}
+              style={frameStyle}
+            >
+              <header className="detail-frame__head">
+                <div className="detail-frame__title">
+                  <em>{platformTitle}</em>
+                  <span>
+                    {displayShotCount} 个版块 · {language || "简体中文"}
+                    {amazonActive ? " · 官方尺寸" : ` · ${ratio}`}
+                    {resolution ? ` · ${resolution}` : ""}
+                    {hasImage && waitSeconds > 0 ? (
+                      <b aria-label={`生成耗时 ${waitSeconds} 秒`}>
+                        {" "}
+                        · 耗时 {formatSeconds(waitSeconds)}秒
+                      </b>
+                    ) : null}
+                  </span>
+                </div>
+                {displayModule && (hasAnyShot || running || planned) ? (
+                  <span className="detail-frame__module" aria-label="当前版块">
+                    <b>
+                      {displaySpec?.pepcf ||
+                        String(displayModule.index + 1).padStart(2, "0")}
+                    </b>
+                    <strong>{displayModule.shot.label}</strong>
+                    <small>{displaySizeLabel}</small>
+                  </span>
+                ) : null}
+              </header>
+
+              <div className="detail-frame__stage">
+                {displayModule && displayUrl ? (
+                  <button
+                    type="button"
+                    className="detail-page__shot"
+                    aria-label={`查看${displayModule.shot.label}`}
+                    aria-pressed="true"
+                    disabled={running}
+                    onClick={(event) => {
+                      onSelectHistory?.(displayUrl);
+                      onResultPreview?.(event, {
+                        url: displayUrl,
+                        alt: displayModule.shot.label,
+                        title: displayModule.shot.headline || displayModule.shot.label,
+                      });
+                    }}
+                  >
+                    <AuthenticatedImage
+                      src={displayModule.display || displayUrl}
+                      fallbackSrc={displayUrl}
+                      alt={displayModule.shot.headline || displayModule.shot.label}
+                    />
+                  </button>
+                ) : displayModule && running && displayModule.active ? (
+                  <HandheldGeneratingStage
+                    productUrl={previews[0]?.url || ""}
+                    sceneImage={extraSlots[0]?.url || ""}
+                    label={displayModule.shot.label}
+                    seconds={displayModule.seconds}
+                    generationStageLabel={generationStageLabel}
+                  />
+                ) : displayModule && running ? (
+                  <div className="detail-aplus__slot is-queued" role="status">
+                    <strong>{displayModule.shot.headline || displayModule.shot.label}</strong>
+                    <span>
+                      排队中 · 已完成 {doneCount}/{modules.length}
+                    </span>
+                  </div>
+                ) : displayModule && displayModule.failed ? (
+                  <div className="detail-aplus__slot is-failed" role="alert">
+                    <strong>该版块未生成</strong>
+                    <span>{displayModule.error || failMessage || "可重新生成本轮"}</span>
+                  </div>
+                ) : failed && !hasAnyShot ? (
+                  <div className="handheld-frame__status" role="alert">
+                    <strong>本次生成未完成</strong>
+                    <span>{failMessage || "调整参考图或出图方向后重新生成"}</span>
+                  </div>
+                ) : displayModule && (planned || hasAnyShot) ? (
+                  <div className="detail-aplus__slot is-planned">
+                    <strong>{displayModule.shot.headline || "待生成"}</strong>
+                    <span>
+                      {displayModule.shot.subline ||
+                        planItems.get(displayModule.shot.id)?.direction ||
+                        "生成后在此展示该版块"}
+                    </span>
+                  </div>
+                ) : (
+                  <div className="handheld-frame__status workbench-empty detail-empty">
+                    {showcaseSrc ? (
+                      <img
+                        className="detail-frame__demo"
+                        src={showcaseSrc}
+                        alt={showcaseAlt}
+                        aria-hidden="true"
+                      />
+                    ) : null}
+                    <strong>还没有详情页版块图</strong>
+                    <ol className="workbench-empty__steps">
+                      {emptySteps.map((step, index) => (
+                        <li key={step.label} className={step.done ? "is-done" : ""}>
+                          <b>
+                            {step.done ? (
+                              <i className="bi bi-check-lg" />
+                            ) : (
+                              String(index + 1).padStart(2, "0")
+                            )}
+                          </b>
+                          <span>{step.label}</span>
+                        </li>
+                      ))}
+                    </ol>
+                    <span>
+                      {hasProduct
+                        ? generateHint || "生成后按顺序拼接成详情长图"
+                        : "上传商品图后开始配置"}
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              {running ? (
+                <span className="workbench-frame__progress detail-frame__progress" role="status">
+                  <i className="handheld-frame__thumb-spin" aria-hidden="true" />
+                  {generationStageLabel} · {doneCount}/{modules.length} · {formatSeconds(waitSeconds)}s
+                </span>
+              ) : null}
+              {revision?.available && revision.open && !running ? (
+                <div
+                  className="workbench-revision"
+                  role="dialog"
+                  aria-label="继续调整当前成品"
+                >
+                  <header>
+                    <div>
+                      <small>连续优化 · 当前 V{revision.version || 1}</small>
+                      <strong>只描述这一轮要改的内容</strong>
+                    </div>
+                    <button
+                      type="button"
+                      aria-label="收起连续优化"
+                      onClick={revision.onToggle}
+                    >
+                      <i className="bi bi-x-lg" />
+                    </button>
+                  </header>
+                  <label className="workbench-revision__field">
+                    <span>调整方向</span>
+                    <CommerceSelect
+                      value={revision.direction}
+                      options={revision.directionOptions || []}
+                      onChange={revision.onChangeDirection}
+                      ariaLabel="选择调整方向"
+                      menuMinWidth={200}
+                    />
+                  </label>
+                  <label className="workbench-revision__field workbench-revision__field--brief">
+                    <span>本轮只修改</span>
+                    <textarea
+                      value={revision.brief || ""}
+                      onChange={(event) =>
+                        revision.onChangeBrief?.(event.target.value)
                       }
+                      placeholder="例如：商品再放大 15%，背景改为浅灰影棚，其他内容保持不变"
+                    />
+                    <small>{String(revision.brief || "").length}/600</small>
+                  </label>
+                  <footer>
+                    <span>
+                      <i className="bi bi-shield-check" />
+                      上一版本会保留
+                    </span>
+                    <button
+                      type="button"
+                      disabled={String(revision.brief || "").trim().length < 4}
                       onClick={revision.onSubmit}
                     >
                       <i className="bi bi-arrow-repeat" />
                       生成 V{Number(revision.version || 1) + 1}
                     </button>
-                  </div>
+                  </footer>
+                </div>
+              ) : null}
+
+              <div className="handheld-actions">
+                <button
+                  type="button"
+                  className={`handheld-submit handheld-submit--frame detail-generate${running ? " is-running" : ""}${failed && !hasAnyShot ? " is-failed" : ""}${plan.planning && !running ? " is-planning" : ""}`}
+                  disabled={running ? cancelling : generateDisabled || plan.planning}
+                  title={!running && generateDisabled ? generateHint : undefined}
+                  aria-label={
+                    running
+                      ? cancelling
+                        ? "正在停止"
+                        : "停止生成"
+                      : plan.planning
+                        ? "AI 正在策划"
+                        : failed && !hasAnyShot
+                          ? `重新生成（${shotCount}张）`
+                          : generateLabel
+                  }
+                  onClick={running ? onCancel : onGenerate}
+                >
+                  {running || plan.planning ? (
+                    <span className="handheld-submit__spinner" aria-hidden="true" />
+                  ) : failed && !hasAnyShot ? (
+                    <RegenerateIcon />
+                  ) : planned ? (
+                    <i className="bi bi-layout-text-window-reverse" aria-hidden="true" />
+                  ) : (
+                    <i className="bi bi-stars" aria-hidden="true" />
+                  )}
+                  <span>
+                    {running
+                      ? cancelling
+                        ? "停止中"
+                        : "停止"
+                      : plan.planning
+                        ? "AI 正在策划"
+                        : failed && !hasAnyShot
+                          ? "重新生成"
+                          : generateLabel}
+                  </span>
+                  <small>
+                    {running
+                      ? cancelling
+                        ? "正在停止"
+                        : generationStageLabel
+                      : plan.planning
+                        ? "分析痛点与版块文案"
+                        : planned || plan.autoGenerate
+                          ? `${shotCount}张${costLabel ? ` · ${costLabel}` : ""}`
+                          : `策划 ${shotCount} 个版块 · 不计费`}
+                  </small>
+                </button>
+                {hasImage ? (
+                  <span className="workbench-frame__actions" aria-label="结果操作">
+                    {revision?.available ? (
+                      <button
+                        type="button"
+                        className={revision.open ? "is-active" : ""}
+                        aria-expanded={Boolean(revision.open)}
+                        onClick={revision.onToggle}
+                      >
+                        <i className="bi bi-sliders2" />
+                        连续优化
+                      </button>
+                    ) : null}
+                    <button type="button" disabled={!onMaskEdit} onClick={onMaskEdit}>
+                      局部修正
+                    </button>
+                    <button type="button" disabled={!onDownload} onClick={onDownload}>
+                      下载
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!onExport || actionBusy}
+                      onClick={onExport}
+                    >
+                      导出图片+文案
+                    </button>
+                    {onSaveAsset ? (
+                      <button
+                        type="button"
+                        disabled={actionBusy}
+                        onClick={onSaveAsset}
+                      >
+                        存入素材库
+                      </button>
+                    ) : null}
+                  </span>
                 ) : null}
-              </aside>
-            ) : null}
-          </div>
-
-          <footer className="detail-page__bar">
-            <button
-              type="button"
-              className={`detail-page__generate${running ? " is-running" : ""}${failed ? " is-failed" : ""}`}
-              disabled={running ? cancelling : generateDisabled}
-              title={!running && generateDisabled ? generateHint : undefined}
-              onClick={running ? onCancel : onGenerate}
-            >
-              {running ? <i className="bi bi-stop-fill" /> : failed ? <RegenerateIcon /> : <i className="bi bi-layout-text-window-reverse" />}
-              <span>
-                {running
-                  ? cancelling
-                    ? "正在停止"
-                    : "停止生成"
-                  : failed
-                    ? "重新生成"
-                    : generateLabel}
-              </span>
-              <small>
-                {running
-                  ? aplus.planning
-                    ? "文本模型规划中"
-                    : generationStageLabel
-                  : `${shotCount}张${costLabel ? ` · ${costLabel}` : ""}`}
-              </small>
-            </button>
-            {hasImage ? (
-              <div className="detail-page__actions">
-                <button type="button" disabled={!onMaskEdit} onClick={onMaskEdit}>
-                  局部修正
-                </button>
-                <button
-                  type="button"
-                  disabled={!onDownload}
-                  onClick={onDownload}
-                >
-                  下载当前
-                </button>
-                <button
-                  type="button"
-                  disabled={!onExport || actionBusy}
-                  onClick={onExport}
-                >
-                  导出图片+文案
-                </button>
-                <button
-                  type="button"
-                  disabled={!onSaveAsset || actionBusy}
-                  onClick={onSaveAsset}
-                >
-                  存入素材库
-                </button>
               </div>
-            ) : null}
-          </footer>
-        </main>
-
-        <aside className="handheld-history" aria-label="详情生成历史">
-          <p className="handheld-history__label">历史</p>
-          {historyGroups.length ? (
-            <div className="handheld-history__list" role="list">
-              {historyGroups.map((group) => {
-                const cover = group.rows[0];
-                const count = Math.max(
-                  group.rows.length,
-                  Number(cover?.groupSize) || 0,
-                );
-                const active = group === activeGroup;
-                const mosaic = count > 1 ? group.rows.slice(0, 4) : [];
-                return (
-                  <button
-                    key={group.id}
-                    type="button"
-                    role="listitem"
-                    className={`handheld-history__item${count > 1 ? " is-set" : ""}${active ? " is-active" : ""}`}
-                    disabled={running}
-                    aria-pressed={active}
-                    onClick={() => {
-                      const current = group.rows.find(
-                        (row) => row.url === resultUrl,
-                      );
-                      onSelectHistory?.(current?.url || cover?.url);
-                    }}
-                  >
-                    <span
-                      className="handheld-history__shot"
-                      style={{
-                        "--handheld-history-ratio": channelRatioVar(
-                          cover?.aspectRatio || "16:9",
-                        ),
+            </div>
+            {modules.length > 1 ? (
+              <div
+                className="handheld-frame__thumbs detail-frame__thumbs"
+                role="list"
+                aria-label="本次版块"
+              >
+                {modules.map((module) => {
+                  const thumbActive = module === displayModule;
+                  const thumbPending = module.active || module.queued;
+                  const thumbLabel = module.shot.label || `第 ${module.index + 1} 张`;
+                  return (
+                    <button
+                      key={module.shot.id || `thumb-${module.index}`}
+                      type="button"
+                      role="listitem"
+                      className={`handheld-frame__thumb${thumbActive ? " is-active" : ""}${thumbPending ? " is-pending" : ""}${module.failed ? " is-failed" : ""}${module.active ? " is-running" : ""}`}
+                      disabled={running && !module.url}
+                      aria-label={
+                        module.failed
+                          ? `${thumbLabel}（未生成）`
+                          : module.active
+                            ? `${thumbLabel}（生成中）`
+                            : module.queued
+                              ? `${thumbLabel}（排队中）`
+                              : thumbLabel
+                      }
+                      aria-pressed={thumbActive}
+                      title={`${thumbLabel} · ${
+                        module.shot.aplusSpec
+                          ? `${module.shot.aplusSpec.width}×${module.shot.aplusSpec.height}`
+                          : module.shot.aspectRatio || ratio
+                      }`}
+                      onClick={() => {
+                        setPickedIndex(module.index);
+                        if (module.url) onSelectHistory?.(module.url);
                       }}
                     >
-                      {mosaic.length ? (
-                        <span
-                          className="handheld-history__mosaic"
-                          data-count={Math.min(4, mosaic.length)}
-                        >
-                          {mosaic.map((row) => (
-                            <AuthenticatedImage
-                              key={row.url}
-                              src={row.preview || row.url}
-                              alt=""
-                            />
-                          ))}
-                        </span>
-                      ) : (
+                      {module.url ? (
                         <AuthenticatedImage
-                          src={cover?.preview || cover?.url}
+                          src={module.row?.preview || module.display || module.url}
                           alt=""
                         />
+                      ) : module.failed ? (
+                        <span className="handheld-frame__thumb-failed">
+                          <i className="bi bi-exclamation-lg" aria-hidden="true" />
+                          <small>未生成</small>
+                        </span>
+                      ) : module.active ? (
+                        <span className="handheld-frame__thumb-pending">
+                          <i className="handheld-frame__thumb-spin" aria-hidden="true" />
+                          <small>{formatSeconds(module.seconds)}s</small>
+                        </span>
+                      ) : module.queued ? (
+                        <span className="handheld-frame__thumb-empty is-queued">
+                          {String(module.index + 1).padStart(2, "0")}
+                          <small>排队</small>
+                        </span>
+                      ) : (
+                        <span className="handheld-frame__thumb-empty">
+                          {String(module.index + 1).padStart(2, "0")}
+                        </span>
                       )}
-                      {count > 1 ? (
-                        <span className="handheld-history__count">{count}</span>
-                      ) : null}
-                    </span>
-                    <span className="handheld-history__meta">
-                      <strong>A+ 详情</strong>
-                    </span>
-                  </button>
-                );
-              })}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="handheld-ref-stack workbench-stack detail-stack">
+          {amazonActive ? (
+            <div
+              className="workbench-plan detail-amazon"
+              aria-label="Amazon A+ 高级选项"
+            >
+              <span className="handheld-ref-card__tag">
+                <i className="bi bi-amazon" aria-hidden="true" />
+                Amazon A+
+              </span>
+              <div className="detail-amazon__fields">
+                <label>
+                  <span>目标站</span>
+                  <CommerceSelect
+                    value={amazon.marketplaceId}
+                    options={APLUS_MARKETPLACES.map((item) => ({
+                      value: item.id,
+                      label: item.label,
+                    }))}
+                    onChange={amazon.onChangeMarketplace}
+                    ariaLabel="选择亚马逊站点"
+                    disabled={running}
+                  />
+                </label>
+                <label>
+                  <span>档位</span>
+                  <CommerceSelect
+                    value={amazon.tier}
+                    options={APLUS_TIERS.map((item) => ({
+                      value: item.id,
+                      label: item.label,
+                    }))}
+                    onChange={amazon.onChangeTier}
+                    ariaLabel="选择 A+ 档位"
+                    disabled={running}
+                  />
+                </label>
+                <label>
+                  <span>ASIN</span>
+                  <input
+                    value={amazon.asin || ""}
+                    onChange={(event) => amazon.onChangeAsin?.(event.target.value)}
+                    placeholder="可选"
+                    aria-label="ASIN"
+                    disabled={running}
+                  />
+                </label>
+                <label>
+                  <span>竞品 ASIN</span>
+                  <input
+                    value={amazon.competitorAsin || ""}
+                    onChange={(event) =>
+                      amazon.onChangeCompetitorAsin?.(event.target.value)
+                    }
+                    placeholder="可选"
+                    aria-label="竞品 ASIN"
+                    disabled={running}
+                  />
+                </label>
+              </div>
+              <label className="detail-check">
+                <input
+                  type="checkbox"
+                  checked={Boolean(amazon.disclosure)}
+                  disabled={running}
+                  onChange={(event) =>
+                    amazon.onChangeDisclosure?.(event.target.checked)
+                  }
+                />
+                <span>Seller Central 手动勾选 AI Disclosure</span>
+              </label>
+              {amazon.batchText !== undefined ? (
+                <details className="detail-amazon__batch">
+                  <summary>批量 ASIN</summary>
+                  <textarea
+                    rows={2}
+                    value={amazon.batchText || ""}
+                    onChange={(event) =>
+                      amazon.onChangeBatchText?.(event.target.value)
+                    }
+                    placeholder="每行一个，最多 100 个"
+                    aria-label="批量 ASIN"
+                    disabled={running}
+                  />
+                </details>
+              ) : null}
+              <small>
+                {amazon.tier === "premium" ? "Premium 最多 7 个模块" : "基础版最多 5 个模块"}
+                ，多勾选的方向按顺序截断
+              </small>
             </div>
-          ) : (
-            <div className="handheld-history__empty">
-              <i className="bi bi-clock-history" />
-              <span>暂无记录</span>
-            </div>
-          )}
-        </aside>
+          ) : null}
+
+          <div
+            className={`workbench-plan detail-plan${planned ? " is-planned" : ""}`}
+            aria-label="本次出图结构"
+          >
+            <span className="handheld-ref-card__tag">
+              {planned ? "策划方案" : "本次出图"}
+            </span>
+            {planned && plan.onClear && !running ? (
+              <button
+                type="button"
+                className="workbench-plan__clear detail-plan__clear"
+                aria-label="清除策划方案"
+                title="清除策划方案，回到未策划状态"
+                disabled={plan.planning}
+                onClick={plan.onClear}
+              >
+                <i className="bi bi-x-lg" />
+                <span>清除</span>
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className={`detail-plan__run${plan.planning ? " is-busy" : ""}${planned ? " is-done" : ""}`}
+              disabled={running || plan.planning || Boolean(plan.planDisabled)}
+              title={plan.planHint || undefined}
+              onClick={plan.onPlan}
+            >
+              {plan.planning ? (
+                <>
+                  <span className="handheld-submit__spinner" aria-hidden="true" />
+                  正在分析痛点与版块
+                </>
+              ) : planned ? (
+                <>
+                  <i className="bi bi-arrow-repeat" />
+                  重新策划
+                </>
+              ) : (
+                <>
+                  <i className="bi bi-stars" />
+                  AI 智能策划
+                </>
+              )}
+            </button>
+            <label className="detail-check detail-plan__auto">
+              <input
+                type="checkbox"
+                checked={Boolean(plan.autoGenerate)}
+                disabled={running || plan.planning}
+                onChange={() => plan.onToggleAutoGenerate?.()}
+              />
+              <span>策划完毕后自动直接生成</span>
+            </label>
+            {plan.error ? (
+              <p className="workbench-plan__status is-error" role="alert">
+                {plan.error}
+              </p>
+            ) : null}
+            {planned ? (
+              <div className="detail-plan__result">
+                {plan.data?.painPoints?.length ? (
+                  <div className="detail-plan__pains">
+                    <span className="workbench-picks__label">买家痛点</span>
+                    <ul>
+                      {plan.data.painPoints.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+                {plan.data?.summary ? (
+                  <p className="workbench-plan__summary">{plan.data.summary}</p>
+                ) : null}
+                <ol>
+                  {blueprints.map((shot, index) => {
+                    return (
+                      <li key={shot.id || index} className={planItemClass(index)}>
+                        <b>{String(index + 1).padStart(2, "0")}</b>
+                        <span>
+                          {shot.label}
+                          {shot.headline ? (
+                            <em className="workbench-plan__copy">
+                              {shot.headline}
+                              {shot.subline ? <small>{shot.subline}</small> : null}
+                            </em>
+                          ) : null}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ol>
+              </div>
+            ) : (
+              <>
+                <ol>
+                  {blueprints.map((shot, index) => {
+                    return (
+                      <li key={shot.id || index} className={planItemClass(index)}>
+                        <b>{String(index + 1).padStart(2, "0")}</b>
+                        <span>{shot.label}</span>
+                      </li>
+                    );
+                  })}
+                </ol>
+                <small>
+                  {blueprints.length
+                    ? plan.autoGenerate
+                      ? "AI 先写痛点与文案，再自动出图"
+                      : "先策划文案，确认后再生成"
+                    : "勾选出图方向后在此预览"}
+                </small>
+              </>
+            )}
+          </div>
+        </div>
+
+        <WorkbenchHistory
+          label="A+ 详情"
+          groups={historyGroups}
+          activeGroup={activeGroup}
+          displayUrl={resultUrl}
+          fallbackRatio="3:4"
+          running={running}
+          onSelectHistory={onSelectHistory}
+        />
       </section>
     </div>
   );

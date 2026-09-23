@@ -1,18 +1,21 @@
 <script setup lang="ts">
 import {
   computed,
-  onBeforeUnmount,
   onMounted,
   reactive,
   ref,
   watch,
 } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useRoute } from 'vue-router'
 import { CopyDocument, Delete, Document, Picture, Refresh, Search, WarningFilled } from '@element-plus/icons-vue'
 import AdminDialog from '@/components/AdminDialog.vue'
-import TaskRuntimeSettingsDialog from '@/components/settings/TaskRuntimeSettingsDialog.vue'
+import AdminDateRange from '@/components/AdminDateRange.vue'
+import { adminRecentRange } from '@/adminListFilters'
+import OriginalImageDownload from '@/components/OriginalImageDownload.vue'
+import { useTaskAutoRefresh } from '@/useTaskAutoRefresh'
 import { request, type Page } from '@/request'
-import { usePagedList } from '@/usePagedList'
+import { seekByPage, usePagedList } from '@/usePagedList'
 import {
   adminFileUrl,
   formatPoints,
@@ -66,9 +69,16 @@ interface TaskSummary {
   failed: number
   canceled: number
   today: number
+  /** 超过 countCap 的计数项，数值显示为"countCap+" */
+  capped?: Partial<Record<TaskCountKey, boolean>>
 }
 
+type TaskCountKey = 'total' | 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled' | 'today'
+
 interface TaskPage extends Page<AdminTask> {
+  /** Exclusive start cursor and page number echoed for a page-number jump */
+  cursor?: string | null
+  page?: number
   summary?: TaskSummary
   billing?: Record<string, BillingAudit[]>
 }
@@ -86,7 +96,13 @@ function fundingLabel(task: AdminTask) {
   return [[d.subscriptionPoints, '订阅'], [d.topupPoints, '额度包'], [d.trialPoints, '体验'], [d.otherPoints, '其他通用']].filter(([n]) => Number(n) > 0).map(([,label]) => label).join(' + ') || '免费'
 }
 
-const filters = reactive({ type: '', status: '', user: '', errorCode: '' })
+const route = useRoute()
+const routeFilter = (key: string) => typeof route.query[key] === 'string' ? String(route.query[key]) : ''
+const initialRange = adminRecentRange()
+const filters = reactive({ type: routeFilter('type'), status: routeFilter('status'), user: routeFilter('user'), errorCode: routeFilter('errorCode'), search: routeFilter('search'), createdFrom: route.query.createdFrom === undefined ? initialRange.createdFrom : routeFilter('createdFrom'), createdTo: route.query.createdTo === undefined ? initialRange.createdTo : routeFilter('createdTo') })
+const loadedFilterSignature = ref('')
+let summaryReadAt = 0
+let summaryScope = ''
 const summary = ref<TaskSummary>({
   total: 0,
   queued: 0,
@@ -97,14 +113,13 @@ const summary = ref<TaskSummary>({
   today: 0,
 })
 const lastUpdatedAt = ref<Date | null>(null)
-const autoRefresh = ref(true)
+const elapsedNow = ref(Date.now())
 const pageSize = ref(20)
 
 const {
   items,
   loading,
   error,
-  total,
   page,
   hasPrev,
   hasNext,
@@ -113,75 +128,88 @@ const {
   refresh,
   retry,
 } = usePagedList<AdminTask>(
-  async (cursor) => {
-    const page = await request<TaskPage>('/api/v1/admin/tasks', {
-      query: {
-        type: filters.type,
-        status: filters.status,
-        user: filters.user,
-        errorCode: filters.errorCode,
-        limit: pageSize.value,
-        cursor,
-      },
-    })
-    if (page.summary) summary.value = page.summary
-    page.items = page.items.map(item => ({ ...item, billing: page.billing?.[item.id] ?? [] }))
-    lastUpdatedAt.value = new Date()
-    return page
-  },
+  cursor => loadTaskPage({ cursor }),
   () => ({
     type: filters.type,
     status: filters.status,
     user: filters.user,
     errorCode: filters.errorCode,
+    search: filters.search.trim(), createdFrom: filters.createdFrom, createdTo: filters.createdTo,
     limit: pageSize.value,
   }),
+  // Page-number jumps resolve the page start on the server in one request.
+  // An API without page support ignores `page` and returns the first page.
+  { seek: seekByPage(target => loadTaskPage({ page: target })) },
 )
+
+async function loadTaskPage(position: { cursor?: string | null, page?: number }) {
+  const filterSnapshot = { ...filters }
+  const scope = JSON.stringify({ ...filterSnapshot, status: '' })
+  const includeSummary = scope !== summaryScope || Date.now() - summaryReadAt >= 60_000
+  const page = await request<TaskPage>('/api/v1/admin/tasks', {
+    query: {
+      ...filterSnapshot,
+      limit: pageSize.value,
+      ...position,
+      summary: includeSummary,
+    },
+  })
+  if (page.summary) { summary.value = page.summary; summaryScope = scope; summaryReadAt = Date.now() }
+  loadedFilterSignature.value = JSON.stringify(filterSnapshot)
+  page.items = page.items.map(item => ({ ...item, billing: page.billing?.[item.id] ?? [] }))
+  lastUpdatedAt.value = new Date()
+  elapsedNow.value = Date.now()
+  return page
+}
+
+// The list is cursor-paged; its total comes from the status summary of the
+// current tab so the pager can offer page numbers and a jump box.
+const listTotalKey = computed<TaskCountKey>(() => (filters.status || 'total') as TaskCountKey)
+const listTotal = computed(() => summary.value[listTotalKey.value])
+const listTotalCapped = computed(() => Boolean(summary.value.capped?.[listTotalKey.value]))
+
+function summaryCount(key: TaskCountKey) {
+  return `${summary.value[key]}${summary.value.capped?.[key] ? '+' : ''}`
+}
 
 const statusTabs = computed(() => [
   {
     value: '',
     label: '全部',
-    count: summary.value.total,
+    count: summaryCount('total'),
     tone: 'all' as const,
   },
   {
     value: 'queued',
     label: '等待中',
-    count: summary.value.queued,
+    count: summaryCount('queued'),
     tone: 'queued' as const,
   },
   {
     value: 'running',
     label: '运行中',
-    count: summary.value.running,
+    count: summaryCount('running'),
     tone: 'running' as const,
   },
   {
     value: 'succeeded',
     label: '已成功',
-    count: summary.value.succeeded,
+    count: summaryCount('succeeded'),
     tone: 'succeeded' as const,
   },
   {
     value: 'failed',
     label: '已失败',
-    count: summary.value.failed,
+    count: summaryCount('failed'),
     tone: 'failed' as const,
   },
   {
     value: 'canceled',
     label: '已取消',
-    count: summary.value.canceled,
+    count: summaryCount('canceled'),
     tone: 'canceled' as const,
   },
 ])
-
-const activeFilterCount = computed(
-  () =>
-    [filters.type, filters.user.trim(), filters.errorCode.trim()].filter(Boolean)
-      .length,
-)
 
 const lastUpdatedLabel = computed(() =>
   lastUpdatedAt.value
@@ -189,40 +217,19 @@ const lastUpdatedLabel = computed(() =>
     : '尚未刷新',
 )
 
-let refreshTimer: number | null = null
-let elapsedTimer: number | null = null
-const elapsedNow = ref(Date.now())
-
-function stopAutoRefresh() {
-  if (refreshTimer !== null) window.clearInterval(refreshTimer)
-  refreshTimer = null
-}
-
-function startAutoRefresh() {
-  stopAutoRefresh()
-  if (!autoRefresh.value) return
-  refreshTimer = window.setInterval(() => {
-    if (!loading.value && document.visibilityState === 'visible') void refresh()
-  }, 15_000)
-}
-
-watch(autoRefresh, startAutoRefresh)
+const { autoRefresh, refreshIntervalSeconds } = useTaskAutoRefresh(
+  () => { void refresh() },
+  () => {
+    const active = (task: AdminTask) => task.status === 'running'
+    if (items.value.some(active) || (detailVisible.value && detail.value && active(detail.value))) {
+      elapsedNow.value = Date.now()
+    }
+  },
+  () => !loading.value,
+)
 
 onMounted(() => {
   void reset()
-  startAutoRefresh()
-  elapsedTimer = window.setInterval(() => {
-    const active = (task: AdminTask) => task.status === 'running'
-    if (document.visibilityState === 'visible' &&
-      (items.value.some(active) || (detailVisible.value && detail.value && active(detail.value)))) {
-      elapsedNow.value = Date.now()
-    }
-  }, 1000)
-})
-
-onBeforeUnmount(() => {
-  stopAutoRefresh()
-  if (elapsedTimer !== null) window.clearInterval(elapsedTimer)
 })
 
 function setStatusTab(status: string) {
@@ -236,10 +243,13 @@ function clearFilters() {
   filters.status = ''
   filters.user = ''
   filters.errorCode = ''
+  filters.search = ''
+  Object.assign(filters, adminRecentRange())
   void reset()
 }
 
 function refreshNow() {
+  summaryReadAt = 0
   if (!loading.value) void refresh()
 }
 
@@ -261,6 +271,17 @@ function taskMediaUrls(task: AdminTask) {
 }
 
 const failedThumbUrls = ref(new Set<string>())
+
+function taskOriginalUrl(task: AdminTask, index = 0, mode: 'output' | 'input' = 'output') {
+  if (mode === 'input') return task.inputKeys?.[index] ? adminFileUrl(task.inputKeys[index]) : ''
+  if (task.outputKeys?.[index]) return adminFileUrl(task.outputKeys[index])
+  const output = task.originalUrls?.[index] || task.outputUrls?.[index]
+  if (output) return output
+  if (!task.outputKeys?.length && !task.originalUrls?.length && !task.outputUrls?.length) {
+    return task.inputKeys?.[index] ? adminFileUrl(task.inputKeys[index]) : ''
+  }
+  return ''
+}
 
 function taskThumbSrc(task: AdminTask, index = 0) {
   const thumbs = (task.thumbnailUrls ?? []).filter(Boolean)
@@ -335,7 +356,7 @@ function taskOperationName(task: AdminTask) {
 }
 
 const serviceProviderMeta = {
-  c2a: { name: 'C2A', detail: '旧版线路（端点未记录）' },
+  c2a: { name: 'C2A', detail: '未记录端点' },
   sub2api: { name: 'Sub2API', detail: 'OpenAI 兼容服务' },
   crun: { name: 'CRUN', detail: 'api.crun.ai' },
   local: { name: '本地处理', detail: '浏览器 Canvas' },
@@ -404,7 +425,7 @@ function taskServiceProviderMeta(task: AdminTask) {
   const models = modelNames.join(' / ')
   const endpoint = endpoints.join(' / ') || routeNames.join(' / ')
   if (providerNames.length) {
-    const routeDetail = endpoint || '历史线路（端点未留存）'
+    const routeDetail = endpoint || '未记录端点'
     return {
       name: providerNames.join(' / '),
       models,
@@ -790,9 +811,16 @@ const finishedCount = computed(() => {
   if (filters.status === 'canceled') return summary.value.canceled
   return summary.value.succeeded + summary.value.failed + summary.value.canceled
 })
+const finishedCountCapped = computed(() => {
+  const capped = summary.value.capped ?? {}
+  if (filters.status === 'queued' || filters.status === 'running') return false
+  if (filters.status) return Boolean(capped[filters.status as TaskCountKey])
+  return Boolean(capped.succeeded || capped.failed || capped.canceled)
+})
 
 const canPurge = computed(
   () =>
+    !loading.value && loadedFilterSignature.value === JSON.stringify(filters) &&
     finishedCount.value > 0 &&
     filters.status !== 'queued' &&
     filters.status !== 'running',
@@ -821,10 +849,12 @@ async function confirmPurge() {
         status: filters.status,
         user: filters.user,
         errorCode: filters.errorCode,
+        search: filters.search.trim(), createdFrom: filters.createdFrom, createdTo: filters.createdTo,
       },
     })
     purgeDialogVisible.value = false
     ElMessage.success(`已从管理端清空 ${result.deleted} 条任务记录，用户历史仍保留`)
+    summaryReadAt = 0
     await reset()
   } finally {
     purging.value = false
@@ -912,19 +942,25 @@ async function forceFail(task: AdminTask) {
   <div class="tasks-page">
     <PageCard
       title="任务监控"
-      :subtitle="`队列与执行状态 · 今日新增 ${summary.today} · 更新于 ${lastUpdatedLabel}`"
+      :subtitle="`队列与执行状态 · 今日新增 ${summaryCount('today')} · 列表更新 ${lastUpdatedLabel} · 状态统计每分钟更新，手动刷新立即更新`"
     >
       <template #actions>
         <div class="refresh-actions">
-          <TaskRuntimeSettingsDialog />
-          <span class="refresh-dot" :class="{ 'is-live': autoRefresh }" />
-          <el-switch
-            v-model="autoRefresh"
-            inline-prompt
-            active-text="自动"
-            inactive-text="手动"
-          />
+          <div class="refresh-preferences" role="group" aria-label="自动刷新设置" :class="{ 'is-live': autoRefresh }">
+            <label class="refresh-toggle">
+              <span>自动刷新</span>
+              <el-switch v-model="autoRefresh" size="small" aria-label="自动刷新任务" />
+            </label>
+            <span class="refresh-divider" aria-hidden="true" />
+            <label class="refresh-interval">
+              <span>每</span>
+              <el-input-number v-model="refreshIntervalSeconds" :min="5" :max="300" :precision="0" :controls="false" aria-label="自动刷新间隔（秒）" />
+              <span>秒</span>
+            </label>
+          </div>
+          <el-button class="refresh-now-button" :icon="Refresh" :loading="loading" @click="refreshNow">刷新</el-button>
           <el-button
+            class="purge-records-button"
             type="danger"
             plain
             :icon="Delete"
@@ -934,7 +970,6 @@ async function forceFail(task: AdminTask) {
           >
             清空记录
           </el-button>
-          <el-button :icon="Refresh" :loading="loading" @click="refreshNow">刷新</el-button>
         </div>
       </template>
 
@@ -959,6 +994,8 @@ async function forceFail(task: AdminTask) {
         </div>
 
         <div class="tasks-toolbar__actions">
+          <AdminDateRange v-model:from="filters.createdFrom" v-model:to="filters.createdTo" @change="reset" />
+          <el-input v-model="filters.search" class="tasks-search" placeholder="任务 ID / 提示词关键词" clearable :prefix-icon="Search" maxlength="200" @keyup.enter="reset" @clear="reset" />
           <el-input
             v-model="filters.user"
             class="tasks-search"
@@ -991,8 +1028,8 @@ async function forceFail(task: AdminTask) {
             @clear="reset"
           />
           <el-button @click="reset">查询</el-button>
-          <el-button text :disabled="!activeFilterCount && !filters.status" @click="clearFilters">
-            重置
+          <el-button text @click="clearFilters">
+            重置为近30天
           </el-button>
         </div>
       </div>
@@ -1007,7 +1044,8 @@ async function forceFail(task: AdminTask) {
         :loading="loading"
         :page="page"
         :count="items.length"
-        :total="total"
+        :total="listTotal"
+        :total-capped="listTotalCapped"
         :page-size="pageSize"
         @update:page="goToPage"
         @update:page-size="(size: number) => { pageSize = size; reset() }"
@@ -1043,6 +1081,9 @@ async function forceFail(task: AdminTask) {
                     @click.stop
                     @error="onTaskThumbError(row as AdminTask)"
                   >
+                    <template #toolbar="{ activeIndex, actions, reset: resetView }">
+                      <OriginalImageDownload :url="taskOriginalUrl(row as AdminTask, activeIndex)" :actions="actions" :reset="resetView" />
+                    </template>
                     <template #error>
                       <div class="media-ph media-ph--sm" title="图片加载失败">
                         <el-icon><Picture /></el-icon>
@@ -1080,13 +1121,17 @@ async function forceFail(task: AdminTask) {
               </template>
             </el-table-column>
 
-            <el-table-column label="状态" width="108" align="left" header-align="left">
+            <el-table-column label="状态" width="124" align="left" header-align="left">
               <template #default="{ row }">
                 <div class="task-status-cell">
                   <span class="kind-text" :class="`is-status-${(row as AdminTask).status}`">
                     {{ taskStatusLabel(row as AdminTask) }}
                   </span>
-                  <small v-if="isUserDeletedTask(row as AdminTask)" class="deletion-mark">用户已删除</small>
+                  <el-tooltip v-if="isUserDeletedTask(row as AdminTask)" content="用户已删除 · 保留任务状态与计费记录供审计" placement="top">
+                    <span class="deletion-mark" tabindex="0" aria-label="用户已删除">
+                      <el-icon :size="13"><Delete /></el-icon>
+                    </span>
+                  </el-tooltip>
                 </div>
               </template>
             </el-table-column>
@@ -1333,6 +1378,9 @@ async function forceFail(task: AdminTask) {
                       hide-on-click-modal
                       @error="detailMediaMode === 'output' ? onTaskThumbError(detail, 0) : undefined"
                     >
+                      <template #toolbar="{ activeIndex, actions, reset: resetView }">
+                        <OriginalImageDownload :url="taskOriginalUrl(detail, activeIndex, detailMediaMode)" :actions="actions" :reset="resetView" />
+                      </template>
                       <template #error>
                         <div class="media-ph">
                           <el-icon><Picture /></el-icon>
@@ -1369,6 +1417,9 @@ async function forceFail(task: AdminTask) {
                         hide-on-click-modal
                         @error="detailMediaMode === 'output' ? onTaskThumbError(detail, index + 1) : undefined"
                       >
+                        <template #toolbar="{ activeIndex, actions, reset: resetView }">
+                          <OriginalImageDownload :url="taskOriginalUrl(detail, activeIndex, detailMediaMode)" :actions="actions" :reset="resetView" />
+                        </template>
                         <template #error>
                           <div class="media-ph media-ph--sm">
                             <el-icon><Picture /></el-icon>
@@ -1678,7 +1729,7 @@ async function forceFail(task: AdminTask) {
         </span>
         <p>
           将按当前筛选从管理端列表移除{{ purgeScope }}的已结束任务，预计
-          <strong class="tnum">{{ finishedCount }}</strong>
+          <strong class="tnum">{{ finishedCount }}{{ finishedCountCapped ? '+' : '' }}</strong>
           条。用户历史、生成结果、钱包账本、画廊投稿和审核记录都会保留。排队中和运行中的任务不会被清空。
         </p>
       </div>
@@ -1711,20 +1762,91 @@ async function forceFail(task: AdminTask) {
 
 .refresh-actions {
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
 
-.refresh-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--ink-3);
+.refresh-preferences {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  height: 36px;
+  padding: 0 10px 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+  transition: border-color 160ms ease;
 }
 
-.refresh-dot.is-live {
-  background: var(--success);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 22%, transparent);
+.refresh-preferences.is-live {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+}
+
+.refresh-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.refresh-divider {
+  width: 1px;
+  height: 16px;
+  background: var(--border);
+}
+
+.refresh-interval {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.refresh-interval :deep(.el-input-number) {
+  width: 48px;
+  line-height: 26px;
+}
+
+.refresh-interval :deep(.el-input__wrapper) {
+  height: 26px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.refresh-interval :deep(.el-input__inner) {
+  height: 26px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.refresh-actions :deep(.el-button) {
+  height: 36px;
+  margin-left: 0;
+  padding: 0 14px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.refresh-actions :deep(.refresh-now-button) {
+  --el-button-bg-color: var(--surface-2);
+  --el-button-border-color: var(--border);
+  --el-button-text-color: var(--ink);
+}
+
+.refresh-actions :deep(.purge-records-button:not(:hover):not(:focus-visible):not(.is-disabled)) {
+  background: transparent;
+  border-color: color-mix(in srgb, var(--el-color-danger) 25%, var(--border));
+  color: var(--el-color-danger);
 }
 
 .tasks-toolbar {
@@ -2171,7 +2293,16 @@ html.dark .status-tab.is-active em {
   color: var(--warning);
 }
 
-.task-status-cell,
+.task-status-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 24px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
 .task-metric {
   display: grid;
   min-width: 0;
@@ -2197,10 +2328,26 @@ html.dark .status-tab.is-active em {
 }
 
 .deletion-mark {
+  display: inline-flex;
+  flex: 0 0 18px;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  color: var(--ink-3);
+  cursor: help;
+}
+
+.deletion-mark:hover,
+.deletion-mark:focus-visible {
   color: var(--warning);
-  font-size: 10px;
-  font-weight: 700;
-  white-space: nowrap;
+  background: color-mix(in srgb, var(--warning) 10%, transparent);
+}
+
+.deletion-mark:focus-visible {
+  outline: 1px solid var(--warning);
+  outline-offset: 2px;
 }
 
 .cell-text {

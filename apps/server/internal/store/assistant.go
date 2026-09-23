@@ -1222,6 +1222,27 @@ func RecordAssistantRunOutboxFailure(ctx context.Context, q Q, runID uuid.UUID, 
 	return err
 }
 
+// RecordAssistantRunOutboxCapacityWait 记录一次"还没轮到"的重投。这不是失败，没有上限，
+// 等多久都得等，所以退避必须随等待时间拉长：固定间隔会让一个满载的池子被空转扫描到底，
+// 排队越久越费数据库。
+func RecordAssistantRunOutboxCapacityWait(
+	ctx context.Context, q Q, runID uuid.UUID, message string, base, ceiling time.Duration,
+) error {
+	_, err := q.Exec(ctx, `UPDATE assistant_run_outbox
+		SET attempts = attempts + 1, last_error = $2,
+			next_attempt_at = now() + LEAST($3 * power(2, LEAST(attempts, 5)), $4) * interval '1 second',
+			updated_at = now()
+		WHERE run_id = $1`, runID, message, base.Seconds(), ceiling.Seconds())
+	return err
+}
+
+// SetAssistantRunQueuedStage 给还在排队的任务写一个阶段，让界面能说清楚它在等什么。
+// 任务一旦被领取就由正常的阶段机制接管，所以这里只认 queued。
+func SetAssistantRunQueuedStage(ctx context.Context, q Q, id uuid.UUID, stage string) error {
+	_, err := q.Exec(ctx, `UPDATE assistant_runs SET stage = $2 WHERE id = $1 AND status = 'queued'`, id, stage)
+	return err
+}
+
 func ListQueuedAssistantRunIDs(ctx context.Context, q Q, limit int) ([]uuid.UUID, error) {
 	rows, err := q.Query(ctx, `SELECT run.id FROM assistant_runs run
 		WHERE run.status = 'queued'

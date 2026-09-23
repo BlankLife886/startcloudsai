@@ -55,7 +55,7 @@ import {
   messagePreview,
   uid,
 } from "./domain/assistantMessages.js";
-import { assistantStreamEventIsTerminal, mergeAssistantMessageSnapshot, mergeAssistantStreamText } from "./domain/assistantStreamMerge.js";
+import { assistantStreamEventIsTerminal, mergeAssistantDebugTrace, mergeAssistantMessageSnapshot, mergeAssistantStreamText } from "./domain/assistantStreamMerge.js";
 import { mergeAssistantToolSteps } from "./domain/assistantToolSteps.js";
 import { mergePersistedAssistantMessage, resolveAssistantRetryIdentity } from "./domain/assistantRetryPolicy.js";
 import { promptNeedsRecentVisual, resolveVisualContext } from "./domain/visualContext.js";
@@ -78,6 +78,7 @@ import {
 import { useAuth } from "../../auth/AuthContext.jsx";
 import { useAuthPrompt } from "../../auth/AuthPromptContext.jsx";
 import { useIsDark } from "../../hooks/useIsDark.js";
+import { expandSkillMentions } from "../skills/skillLibrary.js";
 import { exactImageSizeParams, validateExactImageSize } from "../../config/exactImageSize.js";
 import { availableCatalogModels } from "../../components/common/ModelCatalogIcon.jsx";
 import { assistantClipboardFiles, isAssistantImageFile, isPSDFile } from "./domain/assistantAttachments.js";
@@ -94,6 +95,7 @@ import {
   MAX_ASSISTANT_MESSAGE_CHARACTERS,
   MAX_MODEL_REFERENCE_IMAGES,
   MESSAGE_BATCH_SIZE,
+  QUEUE_WAIT_STAGES,
   REASONING_EFFORT_LABELS,
   RESOLUTIONS,
   SIDEBAR_MOTION_MS,
@@ -2174,6 +2176,9 @@ export function useAssistantWorkspaceController() {
           artifacts: Array.isArray(persisted?.artifacts) ? persisted.artifacts : terminal ? [] : message.artifacts,
           // 本轮流式步骤带着工具结果，比持久化摘要更完整；持久化版本只在刷新后回填。
           toolSteps: message.toolSteps?.length ? message.toolSteps : persisted?.toolSteps,
+          debugTrace: message.debugTrace?.length ? message.debugTrace : persisted?.debugTrace,
+          // 计划每次整份替换：终态以库里的为准，运行中以流式的为准（轮询快照可能落后）。
+          plan: terminal ? (persisted?.plan || message.plan) : (message.plan?.length ? message.plan : persisted?.plan),
           kind: run.resolvedMode || persisted?.kind || message.kind,
           usage: mergeAssistantUsage(message.usage, persisted?.usage, terminal ? {
             durationMs: usageStartedAtMs(message) ? Math.max(1, Date.now() - usageStartedAtMs(message)) : 0,
@@ -2228,6 +2233,12 @@ export function useAssistantWorkspaceController() {
               ? mergeAssistantUsage(message.usage, event?.usage, extras)
               : message.usage;
             const toolSteps = event?.tool ? mergeAssistantToolSteps(message.toolSteps, event.tool) : message.toolSteps;
+            const plan = event?.plan?.length ? event.plan : message.plan;
+            const debugTrace = event?.debugTrace?.length
+              ? mergeAssistantDebugTrace(message.debugTrace, event.debugTrace)
+              : event?.debug
+                ? mergeAssistantDebugTrace(message.debugTrace, event.debug)
+                : message.debugTrace;
             let webSearches = Array.isArray(message.webSearches) ? message.webSearches : [];
             if (event?.tool?.name === "web_search" && event.tool.status === "completed" && event.tool.result) {
               const result = event.tool.result;
@@ -2247,12 +2258,14 @@ export function useAssistantWorkspaceController() {
               ...(usage ? { usage } : {}),
               ...(webSearches.length ? { webSearches } : {}),
               ...(toolSteps?.length ? { toolSteps } : {}),
+              ...(plan?.length ? { plan } : {}),
+              ...(debugTrace?.length ? { debugTrace } : {}),
               ...(event?.image ? { images, kind: "image", count: event.imageTotal || message.count } : {}),
               ...(terminalEvent ? { _streamTerminal: true } : {}),
             };
           }),
         }));
-        if (conversationId === activeIdRef.current && (event?.image || event?.reasoning || event?.tool || (event?.stage && !event?.content))) followConversationBottom();
+        if (conversationId === activeIdRef.current && (event?.image || event?.reasoning || event?.tool || event?.debug || (event?.stage && !event?.content))) followConversationBottom();
       },
     });
     try {
@@ -2295,7 +2308,8 @@ export function useAssistantWorkspaceController() {
     });
   }, [clearConversationRun, monitorRun, patchConversation]);
 
-  const launchRun = useCallback(async ({ conversationId, prompt, userMessage, assistantMessage, responseMode, sourceUserMessageId = "", proposalSourceMessageId = "", maskEdit = null }) => {
+  // 返回 true 表示任务已经创建；返回 false 表示这次没能创建出来，调用方需要把入口还给用户。
+  const launchRun = useCallback(async ({ conversationId, prompt, userMessage, assistantMessage, responseMode, sourceUserMessageId = "", proposalSourceMessageId = "", autoApproved = false, maskEdit = null }) => {
     const controller = new AbortController();
     let launchedRun = {};
     try {
@@ -2321,6 +2335,7 @@ export function useAssistantWorkspaceController() {
         clientAssistantMessageId: assistantMessage.id,
         ...(sourceUserMessageId ? { sourceUserMessageId } : {}),
         proposalSourceMessageId,
+        ...(autoApproved ? { autoApproved: true } : {}),
         referenceImages: (userMessage.referenceImages || []).map((image) => ({ id: image.id, name: image.name, dataUrl: image.dataUrl, thumbnailUrl: image.thumbnailUrl, fileKey: image.fileKey })),
         imagePlanItems: (assistantMessage.imagePlanItems || userMessage.imagePlanItems || []).map((item, index) => ({
           id: item.id || `item-${index + 1}`,
@@ -2357,13 +2372,14 @@ export function useAssistantWorkspaceController() {
         queue: true,
       }, { signal: controller.signal });
       launchedRun = created.run || {};
-      if (!mountedRef.current) return;
+      if (!mountedRef.current) return true;
       applyRunResult(conversationId, assistantMessage.id, created, userMessage.id);
       scheduleWalletRefresh();
       if (created.run?.id && created.run.status === "running") {
         runControllersRef.current.set(created.run.id, controller);
         await monitorRun(conversationId, assistantMessage.id, created.run, controller);
       }
+      return true;
     } catch (error) {
       if (error?.code === "assistant_run_timeout") {
         patchConversation(conversationId, (conversation) => ({
@@ -2372,13 +2388,14 @@ export function useAssistantWorkspaceController() {
             ? { ...message, pending: false, statusStage: "connection-paused", content: message.content || error.message }
             : message),
         }));
-        return;
+        return false;
       }
       if (error?.name !== "AbortError") {
         patchConversation(conversationId, (conversation) => ({ ...conversation, messages: conversation.messages.map((message) => assistantMessageMatchesRun(message, assistantMessage.id, launchedRun) ? { ...message, pending: false, routing: false, statusStage: "failed", error: error?.message || "生成失败，请稍后重试", content: message.content || error?.message || "生成失败，请稍后重试" } : message) }));
       }
       clearConversationRun(conversationId, launchedRun.id);
       removeQueuedRun(launchedRun.id);
+      return false;
     } finally {
       if (launchedRun.id && runControllersRef.current.get(launchedRun.id) === controller) runControllersRef.current.delete(launchedRun.id);
     }
@@ -2567,8 +2584,21 @@ export function useAssistantWorkspaceController() {
         const running = runs.filter((run) => run.status === "running");
         const activeIds = new Set(runs.map((run) => run.id));
         setActiveRuns(Object.fromEntries(running.map((run) => [run.conversationId, run])));
-        setQueuedRuns(runs.filter((run) => run.status === "queued"));
+        const queued = runs.filter((run) => run.status === "queued");
+        setQueuedRuns(queued);
         for (const run of running) startRunMonitor(run);
+        // 排队中的任务不走 monitorRun，阶段只能从这里带过去。等额度可能要等很久，
+        // 不把原因显示出来，界面就只是一个不动的"排队中"。
+        for (const run of queued) {
+          if (!run.conversationId || !run.assistantMessageId) continue;
+          if (!QUEUE_WAIT_STAGES.has(run.stage)) continue;
+          patchConversation(run.conversationId, (conversation) => ({
+            ...conversation,
+            messages: conversation.messages.map((message) => message.id === run.assistantMessageId && message.statusStage !== run.stage
+              ? { ...message, statusStage: run.stage }
+              : message),
+          }));
+        }
         const disappeared = expectedQueued.filter((run) => !activeIds.has(run.id));
         if (disappeared.length) {
           const settled = await Promise.all(disappeared.map(async (run) => ({
@@ -2591,19 +2621,19 @@ export function useAssistantWorkspaceController() {
       stopped = true;
       window.clearTimeout(timer);
     };
-  }, [applyRunResult, auth.isAuthenticated, hasQueuedRuns, startRunMonitor]);
+  }, [applyRunResult, auth.isAuthenticated, hasQueuedRuns, patchConversation, startRunMonitor]);
 
   const requestSend = async () => {
     voiceIntentRef.current = false;
     recognitionRef.current?.abort?.();
     setVoiceListening(false);
     if (requestAuth({ featureLabel: "AI 助手" })) return;
-    const prompt = draft.trim();
+    const draftText = draft.trim();
     if (!canSend) {
       if (generationSizeError) {
         notificationService.warning(generationSizeError);
         setPreferencesOpen(true);
-      } else if (assistantCharacterCount(prompt) > maxMessageCharacters) {
+      } else if (assistantCharacterCount(draftText) > maxMessageCharacters) {
         notificationService.warning(`消息不能超过 ${maxMessageCharacters.toLocaleString("zh-CN")} 个字符`);
       } else if (documents.some((item) => item.status === "queued" || item.status === "processing")) {
         notificationService.warning("文档仍在解析，请等待完成后发送");
@@ -2612,14 +2642,15 @@ export function useAssistantWorkspaceController() {
       }
       return;
     }
-    if (creationType === "chat" && assistantPromptRequestsAgent(prompt)) {
+    if (creationType === "chat" && assistantPromptRequestsAgent(draftText)) {
       notificationService.info("问答模式仅提供回答，请切换到 Agent 或图片模式执行此操作");
       return;
     }
-    const { responseMode, sendModel, requestedCount } = resolveAssistantSend(prompt);
+    const { responseMode, sendModel, requestedCount } = resolveAssistantSend(draftText);
     if (creationType === "image" && responseMode !== "image") {
       notificationService.info("这句话不像画面描述，已按对话回复，不会生成图片");
     }
+    const { prompt } = await expandSkillMentions(draftText);
     if (queueEditingId) {
       const editingRun = followUpRuns.find((run) => run.id === queueEditingId) || queuedRuns.find((run) => run.id === queueEditingId);
       if (editingRun) {
@@ -2655,6 +2686,24 @@ export function useAssistantWorkspaceController() {
     const resolve = costResolverRef.current;
     costResolverRef.current = null;
     resolve?.(false);
+  };
+
+  const assistantAutoApprove = auth.user?.assistantAutoApprove === true;
+  const assistantAutoApproveBudgetCents = Math.max(0, Number(auth.user?.assistantAutoApproveBudgetCents) || 0);
+
+  // 开启前必须让用户看到后果：开启后 Agent 判定要出图就直接扣积分生成，不再等确认。
+  const setAssistantAutoApprove = async (enabled, budgetCents) => {
+    const patch = { assistantAutoApprove: enabled === true };
+    if (Number.isFinite(budgetCents)) patch.assistantAutoApproveBudgetCents = Math.max(0, Math.round(budgetCents));
+    try {
+      const result = await updateProfile(patch);
+      auth.setUser({ ...auth.user, ...(result?.user || patch) });
+      notificationService.success(patch.assistantAutoApprove ? "已开启自动授权" : "已关闭自动授权");
+      return true;
+    } catch (error) {
+      notificationService.error(error?.message || "保存自动授权设置失败");
+      return false;
+    }
   };
 
   const clearConversationContext = async () => {
@@ -3016,50 +3065,86 @@ export function useAssistantWorkspaceController() {
     }) }));
   };
 
-  const approveAgentProposal = async (message) => {
+  // 把方案换算成真正要下单的那个图片请求。自动授权的预算判定和实际提交必须共用这一段：
+  // 两边各自解析一次模型，就会出现按 A 模型的单价放行、按 B 模型的单价扣费。
+  // blocked 表示这份方案在当前模型下根本执行不了，需要用户改了再来。
+  // 这里不判断“此刻能不能提交”——那只跟时机有关，由调用方各自决定，
+  // 否则方案卡会在本轮收尾的那一瞬间闪一下再消失。
+  const resolveProposalRequest = (message) => {
     const liveConversation = conversationsRef.current.find((item) => item.id === activeConversation?.id) || activeConversation;
     const proposalMessage = liveConversation?.messages?.find((item) => item.id === message?.id) || message;
     const proposal = proposalMessage?.proposal;
     const prompt = String(proposal?.prompt || "").trim();
     const imagePlanItems = proposalImagePlanItems(proposal);
-    if (!liveConversation || conversationHasWork || proposal?.submitting || (!prompt && !imagePlanItems.length)) return;
+    if (!liveConversation || !proposal) return { blocked: "方案已失效，请重新发起" };
+    if (!prompt && !imagePlanItems.length) return { blocked: "方案里没有可执行的提示词" };
     const model = modelForMode("image", proposal.model);
     const selected = availableImageModels.find((item) => item.model === model) || selectedImageModel;
+    if (!selected) return { blocked: "当前没有可用的图片模型，请稍后重试" };
     const request = imageRequestFromProposal(proposal, selected);
-    const modelCapabilities = normalizeImageModelCapabilities(selected || {});
+    const modelCapabilities = normalizeImageModelCapabilities(selected);
     const { references: referenceImages } = resolveProposalReferences(liveConversation, proposalMessage, modelCapabilities.maxReferenceImages || MAX_MODEL_REFERENCE_IMAGES);
     const referenceMode = proposalReferenceMode(proposal, referenceImages);
     if (proposal.action === "edit" && !referenceImages.length) {
-      notificationService.warning("没有找到本次编辑所需的参考图，请重新上传后再执行");
-      return;
+      return { blocked: "没有找到本次编辑所需的参考图，请重新上传后再执行" };
     }
     if (referenceImages.length > modelCapabilities.maxReferenceImages) {
-      notificationService.warning(modelCapabilities.maxReferenceImages > 0
+      return { blocked: modelCapabilities.maxReferenceImages > 0
         ? `当前模型最多接收 ${modelCapabilities.maxReferenceImages} 张参考图，请减少参考图或切换模型`
-        : "当前模型不支持参考图，请切换支持图片编辑的模型");
-      return;
+        : "当前模型不支持参考图，请切换支持图片编辑的模型" };
     }
     let count = imagePlanItems.length || clampImageCount(proposal.count, selected, 1);
     if (imagePlanItems.length) {
       if (imageModelMaxCount(selected) < imagePlanItems.length) {
-        notificationService.warning(`当前模型最多生成 ${imageModelMaxCount(selected)} 张，方案需要 ${imagePlanItems.length} 张`);
-        return;
+        return { blocked: `当前模型最多生成 ${imageModelMaxCount(selected)} 张，方案需要 ${imagePlanItems.length} 张` };
       }
     } else if (referenceMode === "individual") {
       if (!referenceImages.length || imageModelMaxCount(selected) < referenceImages.length) {
-        notificationService.warning("当前模型无法按参考图数量逐张生成，请调整模型或参考图");
-        return;
+        return { blocked: "当前模型无法按参考图数量逐张生成，请调整模型或参考图" };
       }
       count = referenceImages.length;
     }
-    if (!(await confirmAssistantCost("image", count, model))) return;
-    const userMessage = { id: uid(), role: "user", content: "执行这个创作方案", localOnly: true, createdAt: new Date().toISOString(), proposalSourceMessageId: proposalMessage.id, referenceMode, referenceImages: referenceImages.map((image) => ({ ...image })), imagePlanItems };
+    const unitCents = Math.max(0, Number(selected.pricePoints) || 0);
+    return {
+      liveConversation, proposalMessage, proposal, prompt, imagePlanItems,
+      model, selected, request, referenceImages, referenceMode, count,
+      unitCents, totalCents: unitCents * count,
+    };
+  };
+
+  // 这份方案能不能免确认直接生成。服务端按用户的开关判定了资格，界面只补预算这一关，
+  // 而且用的是 resolveProposalRequest 算出来的模型和张数——和真正提交的完全一致。
+  // 自动提交失败过的方案（autoFailed）不再自动重试，必须退回卡片让用户自己决定。
+  const proposalAutoApproved = (message) => {
+    const proposal = message?.proposal;
+    if (!assistantAutoApprove || !proposal?.autoApprovable) return false;
+    if (proposal.dismissed || proposal.autoFailed || !assistantAutoApproveBudgetCents) return false;
+    const resolved = resolveProposalRequest(message);
+    // 拿不到单价时宁可让用户自己确认，也不要按 0 积分放行。
+    if (resolved.blocked || !resolved.unitCents) return false;
+    return resolved.totalCents <= assistantAutoApproveBudgetCents;
+  };
+
+  // 返回 true 表示已提交；"retry" 表示此刻不能提交、稍后可原样重试；
+  // false 表示这次提交不成立，调用方（自动授权）必须把入口还给用户。
+  // auto=true 时不弹扣费确认，但定价、预留、余额和预算仍由服务端把关。
+  const approveAgentProposal = async (message, { auto = false } = {}) => {
+    const resolved = resolveProposalRequest(message);
+    if (resolved.blocked) {
+      notificationService.warning(resolved.blocked);
+      return false;
+    }
+    const { liveConversation, proposalMessage, proposal, prompt, imagePlanItems, model, request, referenceImages, referenceMode, count } = resolved;
+    // 本轮还在忙的时候不提交，但这只是时机问题，稍后原样重试即可。
+    if (conversationHasWork || proposal.submitting) return "retry";
+    if (!(await confirmAssistantCost("image", count, model, activeReasoningEffort, { skip: auto }))) return false;
+    const userMessage = { id: uid(), role: "user", content: auto ? "已自动执行这个创作方案" : "执行这个创作方案", localOnly: true, createdAt: new Date().toISOString(), proposalSourceMessageId: proposalMessage.id, referenceMode, referenceImages: referenceImages.map((image) => ({ ...image })), imagePlanItems };
     const assistantMessage = createLocalAssistantPlaceholder({ prompt, responseMode: "image", userMessageId: userMessage.id, defaults: { model, ratio: request.ratio, requestRatio: request.ratio, resolution: request.resolution, count, requestSize: request.requestSize, width: request.width, height: request.height, quality: request.quality, referenceMode } });
     if (imagePlanItems.length) assistantMessage.imagePlanItems = imagePlanItems;
     updateProposal(proposalMessage.id, { submitting: true, dismissed: false });
     patchConversation(liveConversation.id, (conversation) => ({ ...conversation, updatedAt: userMessage.createdAt, messages: [...conversation.messages, userMessage, assistantMessage] }));
     try {
-      await launchRun({ conversationId: liveConversation.id, prompt, userMessage, assistantMessage, responseMode: "image", proposalSourceMessageId: proposalMessage.id });
+      return await launchRun({ conversationId: liveConversation.id, prompt, userMessage, assistantMessage, responseMode: "image", proposalSourceMessageId: proposalMessage.id, autoApproved: auto });
     } finally {
       if (mountedRef.current) updateProposal(proposalMessage.id, { submitting: false });
     }
@@ -3536,6 +3621,10 @@ export function useAssistantWorkspaceController() {
     requestSend,
     confirmCost,
     cancelCost,
+    assistantAutoApprove,
+    assistantAutoApproveBudgetCents,
+    setAssistantAutoApprove,
+    proposalAutoApproved,
     clearConversationContext,
     useGeneratedImageAsReference,
     addAssetReference,

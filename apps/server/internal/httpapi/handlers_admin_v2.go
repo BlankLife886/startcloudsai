@@ -54,6 +54,14 @@ func (s *Server) adminUserLedger(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
+	seek, pageNum, err := pageSeek(c, limit)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if pageNum > 0 {
+		cursor = seek
+	}
 	ctx := c.Request.Context()
 	user, err := store.GetUserByID(ctx, s.St.Pool, userID)
 	if err != nil {
@@ -74,9 +82,19 @@ func (s *Server) adminUserLedger(c *gin.Context, _ *store.User) {
 		fail(c, err)
 		return
 	}
-	ok(c, buildPage(rows, limit, func(entry *store.LedgerEntry) gin.H {
+	total, err := store.CountUserLedgerCapped(ctx, s.St.Pool, userID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	page := buildPage(rows, limit, func(entry *store.LedgerEntry) gin.H {
 		return decorateLedgerEntry(entry, tasksByID, runsByID)
-	}))
+	})
+	page["total"], page["totalCapped"] = total.Value, total.Capped
+	if pageNum > 0 {
+		page["page"] = pageNum
+	}
+	ok(c, page)
 }
 
 // ---------- ledger（全站） ----------
@@ -436,12 +454,17 @@ func (s *Server) adminForceFailTask(c *gin.Context, _ *store.User) {
 // ---------- audit logs ----------
 
 func (s *Server) adminAuditLogs(c *gin.Context, _ *store.User) {
+	extra, err := adminListFilter(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	limit, cursor, err := pageParams(c)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	rows, err := store.ListAuditLogs(c.Request.Context(), s.St.Pool, c.Query("admin"), c.Query("path"), limit, cursor)
+	rows, err := store.ListAuditLogs(c.Request.Context(), s.St.Pool, c.Query("admin"), c.Query("path"), limit, cursor, extra)
 	if err != nil {
 		fail(c, err)
 		return

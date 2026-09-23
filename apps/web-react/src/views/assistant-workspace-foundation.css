@@ -649,25 +649,6 @@
 
 
 /* Image generation mode */
-/* 日期分隔：安静的细线分隔，不再抢过正文层级 */
-.assistant-workspace .message-date-divider {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin: 20px 0 18px;
-  color: var(--assistant-muted);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-}
-
-.assistant-workspace .message-date-divider::before,
-.assistant-workspace .message-date-divider::after {
-  content: '';
-  flex: 1;
-  height: 1px;
-  background: color-mix(in srgb, var(--assistant-border) 70%, transparent);
-}
 
 
 
@@ -1059,10 +1040,6 @@
 
 .assistant-workspace .message {
   margin-bottom: 22px;
-}
-
-.assistant-workspace .message-date-divider {
-  margin: 8px 0 20px;
 }
 
 .assistant-workspace .message--assistant .message-content {

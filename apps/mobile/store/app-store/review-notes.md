@@ -2,7 +2,7 @@
 
 ## Login
 
-The app supports self-registration and login with a verification code sent to any Gmail, Googlemail, or QQ email address accessible to the reviewer. A new account is created automatically and receives starter credits for testing core creation flows.
+The app supports email verification-code login and account creation when enabled by the production server. The login screen reads currently allowed email domains and available login methods from server configuration. Before submission, verify the reviewer can receive a code using an allowed address and has sufficient credits for the review paths; starter credits depend on the current registration configuration and must not be assumed.
 
 ## Main review paths
 

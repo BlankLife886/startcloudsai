@@ -1,6 +1,71 @@
 # 项目错误码、返回信息与通知字典
 
-本文档整理当前项目服务端、异步任务、通知中心及客户端提示的统一契约。统计时间为 `2026-09-01`，同步 API 共提取 `166` 个稳定错误码；任务、AI 助手和文档解析还会产生独立的异步终态码。
+本文档整理项目服务端、异步任务、通知中心及客户端提示的统一契约。2026-09-22 核对当前工作区：对 `apps/server/internal` 非测试 Go 文件中 `apperr.E` 的字面量 code 去重得到 215 项。该统计包含内部错误，不等于公开 API 完整错误数；变量构造的错误和独立异步终态码仍需按调用路径检查。原有分类表保留，下面补齐本轮发现的遗漏；2026-09-01 的 166 项统计不再作为现状。
+
+## 本轮补充的错误契约
+
+以下按现有代码分组，文案列是处理含义，不承诺所有分支使用同一句话。运行时仍应优先显示经服务端清洗的具体原因。
+
+| code | HTTP | 含义与处理 |
+| --- | --- | --- |
+| `model_unavailable` | 503 | 所选模型无可执行线路；刷新配置或稍后重试。 |
+| `execution_batch_too_large` | 422 | 执行批次数量超限；按当前模型/任务限制调整。 |
+| `task_has_outputs` | 409 | 记录已有产物，清理空记录操作保留该项。 |
+| `force_media_required` | 409 | 助手图片仍属于对话，需要显式确认强制移除媒体。 |
+| `idempotency_conflict` | 409 | 同一电商批次重试的参数改变；重新确认新批次。 |
+| `assistant_auto_approve_rejected` | 422 | 自动授权不符合图片方案执行条件。 |
+| `assistant_auto_approve_budget_exceeded` | 422 | 图片费用超过自动授权预算，需用户确认后继续。 |
+| `invalid_argument` | 400 | 自动授权预算等偏好参数不合法。 |
+| `workflow_run_inputs_changed` | 409 | 工作流输入变化或旧运行无输入版本；停止旧运行再新建。 |
+| `account_has_active_tasks` | 409 | 仍有创作/助手任务运行，暂不能注销账号。 |
+| `account_not_deletable` | 409 | 账号当前不能注销；重新认证后检查条件。 |
+| `announcement_stream_unavailable` | 503 | 公告实时连接暂不可用，可按连接策略重试。 |
+| `referrals_unavailable` | 404 | 邀请功能未开放。 |
+| `referral_status_changed` | 409 | 奖励状态已变化，刷新后重新确认。 |
+| `referral_ledger_mismatch` | 409 | 奖励与扣款记录不一致，需要人工核查。 |
+| `api_key_not_active` | 403 | Key 非有效状态，不允许轮换。 |
+| `subscription_exists` | 409 | 已有有效订阅，应走升级或退订流程。 |
+| `upgrade_not_allowed` | 422 | 不满足同系列、更高额度、覆盖原权益的升级条件。 |
+| `subscription_not_upgradeable` | 409 | 当前/旧版订阅不可自动升级。 |
+| `subscription_change_pending` | 409 | 已有订阅变更在处理。 |
+| `upgrade_tasks_pending` | 409 | 升级前需要等待关联任务结算。 |
+| `subscription_grants_pending` | 409 | 历史积分补发待核查，升级暂缓。 |
+| `upgrade_requires_review` | 409 | 付款已记录但权益锁定状态改变，需人工核查。 |
+| `refund_basis_missing` | 409 | 缺少退款核算区间或依据，需人工核查。 |
+| `refund_not_available` | 409 | 当前订阅不支持自助退订。 |
+| `subscription_credits_used` | 409 | 已使用订阅积分或锁价权益，不能直接自助退款。 |
+| `refund_tasks_pending` | 409 | 积分仍用于进行中任务，等待结算。 |
+| `refund_amount_invalid` | 422 | 人工退款金额超出可退范围。 |
+| `refund_conflict` | 409 | 退款时订阅状态发生变化，重新核查。 |
+| `order_not_deletable` | 409 | 订单不符合未收款、未发权益、已过期且无处理中核查/变更等删除条件。 |
+| `plan_changed` | 409 | 充值规则改变，刷新后确认到账积分。 |
+| `upgrade_quote_invalid` | 409 | 升级报价不可用，重新获取。 |
+| `payment_order_conflict` | 409 | 存在其他渠道的待处理订单。 |
+| `payment_order_creating` | 409 | 同套餐订单创建中，不重复下单。 |
+| `user_unsettled_order` | 409 | 已有待处理/核实中的订单，先处理或等待。 |
+| `payment_create_rejected` | 502 | 渠道拒绝创建且本单已结束，检查后再下单。 |
+| `payment_amount_conflict` | 409 | 渠道金额与站内订单不一致。 |
+| `payment_verification_pending` | 409 | 支付结果核实中，不能取消或重复下单。 |
+| `order_recovery_conflict` | 409 | 对账核查结果未保存或订单状态改变。 |
+| `order_provider_conflict` | 409 | 订单已关联其他渠道单号。 |
+| `order_provider_mismatch` | 409 | 渠道订单身份、金额或支付方式不匹配。 |
+
+OpenAI 兼容图片路径另有以下错误。直连模式与任务桥接模式的可见错误不同，不能把桥接模式的任务 ID、等待和原图回放机制套用到所有请求；当前路由与契约见 [开放 API](OPEN_API.md)。
+
+| code | HTTP | 含义与处理 |
+| --- | --- | --- |
+| `model_not_found` | 404 | 模型不存在或当前 Key 无权使用。 |
+| `provider_misconfigured` | 502 | 图片模型缺少可用上游配置。 |
+| `idempotency_key_reused` | 409 | Key 属于已失败的直连请求，不可再次使用。 |
+| `idempotency_key_conflict` | 409 | 同一 Key 对应不同图片参数或文件。 |
+| `image_result_expired` | 410 | 任务桥接结果已被删除。 |
+| `image_generation_timeout` | 504 | 任务桥接同步等待超时，任务可能仍在运行，按响应复用同一 Key。 |
+| `image_generation_failed` | 502 | 任务生成失败；如响应提供任务 ID，查询该任务。 |
+| `image_generation_canceled` | 409 | 图片生成已取消。 |
+| `image_result_unavailable` | 502 | 没有可交付的图片或上游未返回所需 URL。 |
+| `image_response_too_large` | 413 | 任务桥接内联响应过大，按提示改为 URL 格式取结果。 |
+
+证据入口：`internal/httpapi/handlers_openai_direct_images.go`、`handlers_openai_images.go`、`handlers_orders.go`、`handlers_assistant_workspace.go`、`handlers_me.go`、`handlers_tasks.go`，以及 `internal/subscription/`、`internal/referral/`、`internal/taskflow/`（均位于 `apps/server`）。
 
 ## 1. 使用原则
 
@@ -14,7 +79,7 @@
 
 任务失败和 API 请求失败不是同一个概念：
 
-- API 请求失败：HTTP 非 2xx，返回 `{success:false,code,error}`。
+- 普通业务 API 请求失败：HTTP 非 2xx，返回 `{success:false,code,error}`。OpenAI 兼容接口使用 `{error:{message,type,code,param}}` 格式，不能用普通业务响应解包方式解析。
 - 任务执行失败：创建任务的 API 可能已经成功，之后任务进入 `failed`，错误位于任务对象的 `errorCode/errorMessage`。
 - 站内通知：写入 `notifications`，用于长期展示和未读统计。
 - 页面 Toast：短暂反馈，不写通知数据库。
@@ -75,6 +140,7 @@
 | `500` | 本站内部一致性错误；用户不应自行重复扣费尝试。 |
 | `502` | 上游返回异常或响应结构无效。 |
 | `503` | 上游、存储、安全组件或功能配置暂不可用。 |
+| `504` | 同步等待或上游超时；任务桥接的生成可能仍运行，按返回指示查询原请求。 |
 
 ## 4. 认证、权限与通用错误码
 
@@ -510,6 +576,8 @@ Web 历史记录按以下顺序生成失败提示：
 确认弹窗必须用于不可逆或有费用后果的操作：删除、永久删除、撤销 Key、轮换 Key、停止已提交上游任务、强制失败、关闭活动、清空日志和批量操作。
 
 Toast 不代替通知中心：任务成功/失败、钱包到账、体验审核、订单和投稿结果需要持久通知；普通表单保存成功只显示 Toast。
+
+React 当前 Toast 由 `legacy-modules/services/notification.js` 与 `components/toast/ToastNotification.jsx` 处理，默认顶部居中，可按 ID 更新同一条通知。下载提示可展示确定进度或不确定进度，不能把“下载已开始”描述为文件已经保存；`duration: 0` 表示不自动关闭。具体任务/文件状态优先保留在相应页面。
 
 ## 20. 客户端网络错误
 

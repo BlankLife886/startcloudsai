@@ -13,7 +13,10 @@ import (
 const DefaultUserConcurrency = 4
 const DefaultUserChatConcurrency = 4
 const DefaultGlobalImageConcurrency = 2000
-const DefaultGlobalChatConcurrency = 32
+
+// 对话的全局闸门只当安全阀，要明显高于对话池（WORKER_CHAT_CONCURRENCY）。撞池子的任务留在
+// Redis 队列里，有空位立刻被捡走；撞这道闸的任务则落进 outbox 靠退避轮询，醒得慢得多。
+const DefaultGlobalChatConcurrency = 128
 
 // History projections are excluded by a server-owned lease marker, never client params.
 const sharedExecutionTaskSQL = `COALESCE(lease_owner,'') <> '` + UIDesignAssetHistoryLeaseOwner + `'`
@@ -71,6 +74,16 @@ func AssistantRunIsImage(run *AssistantRun) bool {
 	return run != nil && (run.Mode == "image" || (run.Mode == "auto" && run.ResolvedMode == "image"))
 }
 
+// AssistantRunIsAgent 与 assistantAgentSQL 必须保持一致：一个在 Go 里判定待准入的 run，
+// 一个在 SQL 里统计已在跑的 run，两边口径不一样闸门就会漏。
+//
+// 只认 mode 是不够的：worker 会把带联网搜索、查任务这类请求的对话轮提升成 Agent 执行，
+// 这些 run 库里存的仍然是 chat。漏掉它们，真实并发就会超过配置的上限。所以凡是
+// resolved_mode 已经定为 agent 的，无论当初以什么模式提交，都算占用 Agent 名额。
+func AssistantRunIsAgent(run *AssistantRun) bool {
+	return run != nil && (run.Mode == "agent" || run.ResolvedMode == "agent")
+}
+
 func AssistantRunWorkUnits(run *AssistantRun) int64 {
 	if !AssistantRunIsImage(run) {
 		return 1
@@ -88,6 +101,13 @@ func AssistantRunWorkUnits(run *AssistantRun) int64 {
 
 func assistantImageSQL(table string) string {
 	return "(" + table + ".mode = 'image' OR (" + table + ".mode = 'auto' AND COALESCE(" + table + ".resolved_mode,'') = 'image'))"
+}
+
+// assistantAgentSQL 判定一条 run 是否为 Agent 执行。除了显式提交的 agent，还要认
+// resolved_mode：auto 模式准入时还没判定，而 chat 模式可能被 worker 提升成 Agent 执行，
+// 两种情况都只能从 worker 定下的 resolved_mode 看出来。
+func assistantAgentSQL(table string) string {
+	return "(" + table + ".mode = 'agent' OR COALESCE(" + table + ".resolved_mode,'') = 'agent')"
 }
 
 func assistantImageUnitsSQL(table string) string {
@@ -116,6 +136,46 @@ func GetGlobalExecutionLimits(ctx context.Context, q Q) (ExecutionLimits, error)
 	}
 	chat, err := executionSetting(ctx, q, "global_max_concurrent_chats", DefaultGlobalChatConcurrency, DefaultGlobalChatConcurrency)
 	return ExecutionLimits{ImageLimit: image, ChatLimit: chat}, err
+}
+
+// Agent 一轮可以走几十步模型调用，占住一个 worker 好几分钟，而普通对话通常几秒就结束。
+// 两者共用对话池时，少数 Agent 任务就能把池子占满，别人发一句话也得排队。所以 Agent 另设
+// 上限，给普通对话留出永远拿不走的空位。
+//
+// 全局默认必须小于 WORKER_CHAT_CONCURRENCY（默认 32），否则留不出空位，这个设计就失效了。
+// 取一半：Agent 最多吃掉池子的 50%，剩下的永远归普通对话。多开 worker 进程时对话池是按进程
+// 叠加的，而这个上限是全平台一个，所以按单进程来定才安全——真要放开得连着后台配置一起调。
+const (
+	DefaultGlobalAgentConcurrency = 16
+	DefaultUserAgentConcurrency   = 3
+)
+
+type AgentExecutionUsage struct {
+	GlobalRunning int64
+	UserRunning   int64
+}
+
+type AgentExecutionLimits struct {
+	GlobalLimit int64
+	UserLimit   int64
+}
+
+func GetAgentExecutionLimits(ctx context.Context, q Q) (AgentExecutionLimits, error) {
+	global, err := executionSetting(ctx, q, "global_max_concurrent_agents", DefaultGlobalAgentConcurrency, DefaultGlobalAgentConcurrency)
+	if err != nil {
+		return AgentExecutionLimits{}, err
+	}
+	user, err := executionSetting(ctx, q, "user_max_concurrent_agents", DefaultUserAgentConcurrency, DefaultUserAgentConcurrency)
+	return AgentExecutionLimits{GlobalLimit: global, UserLimit: user}, err
+}
+
+func GetAgentExecutionUsage(ctx context.Context, q Q, userID uuid.UUID) (AgentExecutionUsage, error) {
+	var usage AgentExecutionUsage
+	err := q.QueryRow(ctx, `SELECT
+		(SELECT count(*) FROM assistant_runs run WHERE `+assistantExecutionActiveSQL("run")+` AND `+assistantAgentSQL("run")+`),
+		(SELECT count(*) FROM assistant_runs run WHERE run.user_id=$1 AND `+assistantExecutionActiveSQL("run")+` AND `+assistantAgentSQL("run")+`)`,
+		userID).Scan(&usage.GlobalRunning, &usage.UserRunning)
+	return usage, err
 }
 
 func GetGlobalExecutionUsage(ctx context.Context, q Q) (ExecutionUsage, error) {

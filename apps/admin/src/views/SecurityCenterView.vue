@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
+import { useRouter } from 'vue-router';
 import { CircleCheck, Delete, Lock, Plus, Refresh, Search } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import AdminDialog from "@/components/AdminDialog.vue";
@@ -36,8 +37,17 @@ type Reconciliation = {
 };
 
 const tab = ref("risks");
+const router = useRouter();
+const selectedRisk = ref<Risk | null>(null);
+const riskDrawer = ref(false);
+const relatedBlocks = computed(() => selectedRisk.value ? blocks.value.filter(block => [selectedRisk.value?.userId, selectedRisk.value?.apiKeyId, selectedRisk.value?.clientIp].includes(block.subjectValue)) : []);
+function investigateRisk(item: Risk) { selectedRisk.value = item; riskDrawer.value = true }
+function riskLogs(item: Risk) { void router.push({ path: '/platform-logs', query: { category: 'security', userId: item.userId || '', ip: item.clientIp || '', search: item.userId || item.clientIp ? '' : item.category } }) }
 const loading = ref(false);
+const loadError = ref('');
+const loaded = ref(false);
 const running = ref(false);
+const reconciliationReport = ref('');
 const risks = ref<Risk[]>([]);
 const blocks = ref<Block[]>([]);
 const hashes = ref<HashRule[]>([]);
@@ -49,14 +59,29 @@ const recovering = ref(false);
 const recoverySupported = ref(false);
 const recoveryDraft = ref({ orderId: "", providerOrderId: "", resolution: "link", note: "" });
 
-const unresolvedCount = computed(() => risks.value.length);
-const activeHashCount = computed(() => hashes.value.filter((item) => item.active).length);
-const paymentIssueCount = computed(
-  () => reconciliations.value.filter((item) => !["matched", "repaired", "manual_not_created"].includes(item.outcome)).length,
-);
+// 各表服务端分页；计数来自服务端（带上限，超过时显示"N+"），不再由已加载的前 200 条推算。
+const PAGE_SIZE = 20;
+const riskPage = ref(1);
+const hashPage = ref(1);
+const paymentPage = ref(1);
+const riskTotal = ref(0);
+const riskTotalCapped = ref(false);
+const blockTotal = ref(0);
+const blockTotalCapped = ref(false);
+const hashTotal = ref(0);
+const hashTotalCapped = ref(false);
+const activeHashTotal = ref(0);
+const activeHashCapped = ref(false);
+const paymentTotal = ref(0);
+const paymentIssueTotal = ref(0);
+const countLabel = (value: number, capped: boolean) => `${value}${capped ? '+' : ''}`;
+const unresolvedCount = computed(() => countLabel(riskTotal.value, riskTotalCapped.value));
+const blockCount = computed(() => countLabel(blockTotal.value, blockTotalCapped.value));
+const activeHashCount = computed(() => countLabel(activeHashTotal.value, activeHashCapped.value));
+const paymentIssueCount = computed(() => paymentIssueTotal.value);
 
 const tabs = computed(() => [
-  { id: "risks", label: "风险与限制", count: unresolvedCount.value + blocks.value.length },
+  { id: "risks", label: "风险与限制", count: countLabel(riskTotal.value + blockTotal.value, riskTotalCapped.value || blockTotalCapped.value) },
   { id: "uploads", label: "文件安全", count: activeHashCount.value },
   { id: "payments", label: "支付对账", count: paymentIssueCount.value },
 ]);
@@ -106,18 +131,47 @@ function scopeLabel(value: string) {
 async function load() {
   if (loading.value) return;
   loading.value = true;
+  loadError.value = '';
   try {
-    const [riskData, hashData, paymentData] = await Promise.all([
-      request<{ items: Risk[]; activeBlocks: Block[] }>("/api/v1/admin/security/risks", { query: { unresolved: true, limit: 200 }, silent: true }),
-      request<{ items: HashRule[] }>("/api/v1/admin/security/upload-hashes", { query: { limit: 200 }, silent: true }),
-      request<{ items: Reconciliation[]; recoverySupported?: boolean }>("/api/v1/admin/payment-reconciliations", { query: { issues: false, limit: 200 }, silent: true }),
+    const [riskData, hashData, paymentData, issueData] = await Promise.all([
+      request<{ items: Risk[]; activeBlocks: Block[]; total: number; totalCapped?: boolean; activeBlocksTotal: number; activeBlocksCapped?: boolean }>(
+        "/api/v1/admin/security/risks", { query: { unresolved: true, page: riskPage.value, limit: PAGE_SIZE }, silent: true }),
+      request<{ items: HashRule[]; total: number; totalCapped?: boolean; activeTotal: number; activeCapped?: boolean }>(
+        "/api/v1/admin/security/upload-hashes", { query: { page: hashPage.value, limit: PAGE_SIZE }, silent: true }),
+      request<{ items: Reconciliation[]; total: number; recoverySupported?: boolean }>(
+        "/api/v1/admin/payment-reconciliations", { query: { issues: false, page: paymentPage.value, limit: PAGE_SIZE }, silent: true }),
+      request<{ total: number }>("/api/v1/admin/payment-reconciliations", { query: { issues: true, page: 1, limit: 1 }, silent: true }),
     ]);
     risks.value = riskData.items || [];
+    riskTotal.value = riskData.total ?? 0;
+    riskTotalCapped.value = riskData.totalCapped === true;
     blocks.value = riskData.activeBlocks || [];
+    blockTotal.value = riskData.activeBlocksTotal ?? blocks.value.length;
+    blockTotalCapped.value = riskData.activeBlocksCapped === true;
     hashes.value = hashData.items || [];
+    hashTotal.value = hashData.total ?? 0;
+    hashTotalCapped.value = hashData.totalCapped === true;
+    activeHashTotal.value = hashData.activeTotal ?? 0;
+    activeHashCapped.value = hashData.activeCapped === true;
     reconciliations.value = paymentData.items || [];
+    paymentTotal.value = paymentData.total ?? 0;
+    paymentIssueTotal.value = issueData.total ?? 0;
     recoverySupported.value = paymentData.recoverySupported === true;
+    loaded.value = true;
+    // Resolving or removing the last row of a page leaves it empty: step back.
+    const emptied = [
+      [risks.value.length, riskPage] as const,
+      [hashes.value.length, hashPage] as const,
+      [reconciliations.value.length, paymentPage] as const,
+    ].filter(([count, page]) => count === 0 && page.value > 1);
+    if (emptied.length) {
+      emptied.forEach(([, page]) => { page.value -= 1 });
+      loading.value = false;
+      await load();
+      return;
+    }
   } catch (error) {
+    loadError.value = '安全数据读取失败，不能据此判断当前没有风险。';
     ElMessage.error(error instanceof Error ? error.message : "安全数据读取失败");
   } finally {
     loading.value = false;
@@ -125,17 +179,23 @@ async function load() {
 }
 
 async function resolveRisk(item: Risk) {
-  const { value } = await ElMessageBox.prompt("填写处理说明（可留空）", "处理风险事件", {
+  let value = '';
+  try { const result = await ElMessageBox.prompt("填写本次核查结论", "记录处理结果", {
     inputPlaceholder: "已核实 / 误报 / 已联系用户",
     confirmButtonText: "标记已处理",
-  });
+    inputValidator: (text) => Boolean(text.trim()) || '请填写处理结果',
+  }); value = result.value; } catch { return }
   await request(`/api/v1/admin/security/risks/${item.id}/resolve`, { method: "POST", body: { note: value || "" } });
+  risks.value = risks.value.filter(risk => risk.id !== item.id);
+  riskDrawer.value = false;
   ElMessage.success("风险事件已处理");
   await load();
+  if (!risks.value.some(risk => risk.id === item.id)) riskDrawer.value = false;
 }
 
 async function revokeBlock(item: Block) {
   await request(`/api/v1/admin/security/blocks/${item.id}/revoke`, { method: "POST" });
+  blocks.value = blocks.value.filter(block => block.id !== item.id);
   ElMessage.success("临时限制已解除");
   await load();
 }
@@ -162,11 +222,16 @@ async function removeHash(item: HashRule) {
 }
 
 async function runReconciliation() {
+  if (running.value) return;
   running.value = true;
+  reconciliationReport.value = '正在向渠道核对系统选出的最多 100 笔待核查订单…';
   try {
     const result = await request<{ checked: number; outcomes: Record<string, number> }>("/api/v1/admin/payment-reconciliations/run", { method: "POST" });
     ElMessage.success(`已核对 ${result.checked} 笔订单`);
+    reconciliationReport.value = result.checked ? `检查 ${result.checked} 笔：` + Object.entries(result.outcomes || {}).map(([key, count]) => `${outcomeLabel(key)} ${count} 笔`).join('；') : '核对完成：没有符合本次批次条件的订单，不代表历史异常已解决。';
     await load();
+  } catch (error) {
+    reconciliationReport.value = `核对未完成：${error instanceof Error ? error.message : '请求失败'}`;
   } finally {
     running.value = false;
   }
@@ -233,22 +298,24 @@ onMounted(() => void load());
         <el-button v-if="tab === 'payments' && recoverySupported" :icon="Plus" @click="openRecovery()">关联渠道单号</el-button>
       </template>
 
+      <el-alert v-if="loadError" :title="loadError" type="error" :closable="false" />
+      <el-alert v-if="reconciliationReport" :title="reconciliationReport" type="info" :closable="false" />
       <section class="security-kpis" aria-label="安全摘要">
-        <article :class="{ 'is-warn': unresolvedCount > 0 }">
+        <article :class="{ 'is-warn': riskTotal > 0 }">
           <small>未处理风险</small>
-          <strong class="tnum">{{ unresolvedCount }}</strong>
+          <strong class="tnum">{{ loaded && !loadError ? unresolvedCount : '—' }}</strong>
         </article>
-        <article :class="{ 'is-warn': blocks.length > 0 }">
+        <article :class="{ 'is-warn': blockTotal > 0 }">
           <small>临时限制</small>
-          <strong class="tnum">{{ blocks.length }}</strong>
+          <strong class="tnum">{{ loaded && !loadError ? blockCount : '—' }}</strong>
         </article>
         <article>
           <small>拦截规则</small>
-          <strong class="tnum">{{ activeHashCount }}</strong>
+          <strong class="tnum">{{ loaded && !loadError ? activeHashCount : '—' }}</strong>
         </article>
         <article :class="{ 'is-bad': paymentIssueCount > 0 }">
           <small>对账异常</small>
-          <strong class="tnum">{{ paymentIssueCount }}</strong>
+          <strong class="tnum">{{ loaded && !loadError ? paymentIssueCount : '—' }}</strong>
         </article>
       </section>
 
@@ -256,7 +323,7 @@ onMounted(() => void load());
         未处理风险
         <em class="tnum">{{ unresolvedCount }}</em>
         条，生效限制
-        <em class="tnum">{{ blocks.length }}</em>
+        <em class="tnum">{{ blockCount }}</em>
         条，文件拦截
         <em class="tnum">{{ activeHashCount }}</em>
         条。自动修复必须通过渠道订单身份、金额和支付方式校验，其余留人工核查。
@@ -264,6 +331,7 @@ onMounted(() => void load());
       </p>
 
       <div class="security-toolbar">
+        <RouterLink class="security-log-link" to="/platform-logs?category=security">查看安全日志 →</RouterLink>
         <div class="security-tabs" role="tablist" aria-label="安全视图">
           <button
             v-for="item in tabs"
@@ -288,7 +356,7 @@ onMounted(() => void load());
               <strong>生效中的临时限制</strong>
               <small>到期前会拦截对应对象</small>
             </header>
-            <el-table :data="blocks" height="100%" empty-text="当前没有临时限制">
+            <el-table :data="blocks" max-height="420" empty-text="当前没有临时限制">
               <el-table-column label="对象" min-width="220">
                 <template #default="{ row }">
                   <div class="security-cell">
@@ -310,13 +378,14 @@ onMounted(() => void load());
                 </template>
               </el-table-column>
             </el-table>
+            <p v-if="blockTotal > blocks.length" class="security-note">仅显示最新 {{ blocks.length }} 条生效限制，共 {{ blockCount }} 条。</p>
           </section>
           <section class="security-board">
             <header>
               <strong>未处理风险事件</strong>
               <small>处理后会从当前列表移除</small>
             </header>
-            <el-table :data="risks" height="100%" empty-text="暂无未处理风险">
+            <el-table :data="risks" max-height="420" empty-text="暂无未处理风险">
               <el-table-column label="等级" width="110">
                 <template #default="{ row }">
                   <el-tag :type="severityType(row.severity)" effect="light" size="small">
@@ -339,10 +408,22 @@ onMounted(() => void load());
                   <el-button v-if="row.apiKeyId && row.action === 'key_frozen'" text size="small" type="warning" @click="unfreezeKey(row.apiKeyId)">
                     解冻 Key
                   </el-button>
-                  <el-button text size="small" @click="resolveRisk(row as Risk)">处理</el-button>
+                  <el-button text size="small" type="primary" @click="investigateRisk(row as Risk)">核查处理</el-button>
                 </template>
               </el-table-column>
             </el-table>
+            <CursorPager
+              v-if="riskTotal > PAGE_SIZE"
+              :has-prev="riskPage > 1"
+              :has-next="riskPage * PAGE_SIZE < riskTotal"
+              :loading="loading"
+              :page="riskPage"
+              :total="riskTotal"
+              :total-capped="riskTotalCapped"
+              :page-size="PAGE_SIZE"
+              :page-sizes="[PAGE_SIZE]"
+              @update:page="(value: number) => { riskPage = value; load() }"
+            />
           </section>
         </div>
 
@@ -351,7 +432,7 @@ onMounted(() => void load());
             <strong>上传文件哈希黑名单</strong>
             <small>相同文件再次上传时会在写入 OSS 前被拦截</small>
           </header>
-          <el-table :data="hashes" height="100%" empty-text="暂无哈希规则">
+          <el-table :data="hashes" max-height="420" empty-text="暂无哈希规则">
             <el-table-column label="SHA-256" min-width="340">
               <template #default="{ row }"><span class="mono">{{ row.sha256 }}</span></template>
             </el-table-column>
@@ -372,6 +453,18 @@ onMounted(() => void load());
               </template>
             </el-table-column>
           </el-table>
+          <CursorPager
+            v-if="hashTotal > PAGE_SIZE"
+            :has-prev="hashPage > 1"
+            :has-next="hashPage * PAGE_SIZE < hashTotal"
+            :loading="loading"
+            :page="hashPage"
+            :total="hashTotal"
+            :total-capped="hashTotalCapped"
+            :page-size="PAGE_SIZE"
+            :page-sizes="[PAGE_SIZE]"
+            @update:page="(value: number) => { hashPage = value; load() }"
+          />
         </section>
 
         <section v-else class="security-board">
@@ -379,7 +472,7 @@ onMounted(() => void load());
             <strong>支付订单主动对账</strong>
             <small>优先核对未结订单，缺少渠道单号的记录需人工核查</small>
           </header>
-          <el-table :data="reconciliations" height="100%" empty-text="尚未执行对账">
+          <el-table :data="reconciliations" max-height="420" empty-text="尚未执行对账">
             <el-table-column label="订单" min-width="220">
               <template #default="{ row }"><span class="mono">{{ row.orderId }}</span></template>
             </el-table-column>
@@ -411,9 +504,35 @@ onMounted(() => void load());
               </template>
             </el-table-column>
           </el-table>
+          <CursorPager
+            v-if="paymentTotal > PAGE_SIZE"
+            :has-prev="paymentPage > 1"
+            :has-next="paymentPage * PAGE_SIZE < Math.min(paymentTotal, 10000)"
+            :loading="loading"
+            :page="paymentPage"
+            :total="Math.min(paymentTotal, 10000)"
+            :total-capped="paymentTotal > 10000"
+            :page-size="PAGE_SIZE"
+            :page-sizes="[PAGE_SIZE]"
+            @update:page="(value: number) => { paymentPage = value; load() }"
+          />
         </section>
       </div>
     </PageCard>
+    <el-drawer v-model="riskDrawer" title="风险核查" size="min(660px, 96vw)" append-to-body>
+      <div v-if="selectedRisk" class="risk-investigation">
+        <el-tag :type="severityType(selectedRisk.severity)">{{ severityLabel(selectedRisk.severity) }}风险 · #{{ selectedRisk.id }}</el-tag>
+        <h3>{{ selectedRisk.reason }}</h3>
+        <div class="risk-actions"><el-button type="primary" @click="riskLogs(selectedRisk)">查看关联日志</el-button><el-button v-if="selectedRisk.userId" @click="router.push({ path: '/users', query: { search: selectedRisk.userId, userId: selectedRisk.userId } })">查看来源用户</el-button><el-button v-if="typeof selectedRisk.metadata?.orderId === 'string'" @click="router.push({ path: '/orders', query: { search: String(selectedRisk.metadata.orderId), orderId: String(selectedRisk.metadata.orderId) } })">查看关联订单</el-button></div>
+        <dl><dt>发生时间</dt><dd>{{ formatTime(selectedRisk.createdAt) }}</dd><dt>来源 IP</dt><dd>{{ selectedRisk.clientIp || '未记录' }}</dd><dt>触发动作</dt><dd>{{ selectedRisk.action }}</dd></dl>
+        <h4>关联的生效限制</h4>
+        <div v-for="block in relatedBlocks" :key="block.id" class="risk-block"><span>{{ scopeLabel(block.scope) }} · {{ block.reason }}<small>到期 {{ formatTime(block.expiresAt) }}</small></span><el-button type="warning" plain @click="revokeBlock(block)">解除此限制</el-button></div>
+        <p v-if="!relatedBlocks.length">当前没有读取到匹配的临时限制。</p>
+        <el-button v-if="selectedRisk.apiKeyId && selectedRisk.action === 'key_frozen'" type="warning" @click="unfreezeKey(selectedRisk.apiKeyId)">解冻关联 Key</el-button>
+        <details><summary>原始证据</summary><pre>{{ JSON.stringify(selectedRisk.metadata, null, 2) }}</pre></details>
+        <el-button type="primary" @click="resolveRisk(selectedRisk)">记录处理结果</el-button>
+      </div>
+    </el-drawer>
 
     <AdminDialog
       v-model="recoveryDialog" title="核查并恢复订单" :icon="Search" width="520px" confirm-text="核查订单"
@@ -675,4 +794,14 @@ onMounted(() => void load());
     border-top: 0;
   }
 }
+.security-page { overflow-y:auto; }
+.security-log-link { color:var(--accent-ink);font-size:12px;text-decoration:none; }
+.risk-investigation { display:grid;gap:16px;color:var(--ink-2); }.risk-investigation h3,.risk-investigation h4,.risk-investigation p { margin:0; }.risk-actions { display:flex;gap:8px;flex-wrap:wrap; }.risk-actions :deep(.el-button) {margin:0}.risk-investigation dl {display:grid;grid-template-columns:90px 1fr;gap:12px}.risk-investigation dd{margin:0;overflow-wrap:anywhere}.risk-block{display:flex;justify-content:space-between;gap:12px;padding:12px;background:var(--surface-2);border-radius:8px}.risk-block small{display:block;margin-top:6px}.risk-investigation pre{white-space:pre-wrap;overflow-wrap:anywhere}
+.security-page :deep(.page-card) { flex:0 0 auto;min-height:100%; }
+.security-stage { flex:0 0 auto;min-height:0; }
+.security-split { display:flex;flex-direction:column;min-height:0; }
+.security-split > .security-board:first-child { order:2; }
+.security-split > .security-board:last-child { order:1; }
+.security-board { min-height:180px;flex:0 0 auto; }
+.security-note { margin: 8px 0 0; color: var(--ink-3); font-size: 12px; }
 </style>

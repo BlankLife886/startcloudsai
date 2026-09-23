@@ -17,6 +17,14 @@ func (s *Server) adminProfitability(c *gin.Context, _ *store.User) {
 		fail(c, apperr.E("validation_error", "dimension: 仅支持 model/provider/route/workspace/user", 422))
 		return
 	}
+	sourceType := strings.ToLower(strings.TrimSpace(c.Query("source")))
+	if sourceType == "" {
+		sourceType = strings.ToLower(strings.TrimSpace(c.Query("sourceType")))
+	}
+	if sourceType != "" && sourceType != "task" && sourceType != "assistant_run" && sourceType != store.DeveloperAPIProfitSourceType {
+		fail(c, apperr.E("validation_error", "source: 仅支持 task/assistant_run/developer_api", 422))
+		return
+	}
 	days := 30
 	if raw := strings.TrimSpace(c.Query("days")); raw != "" {
 		if raw == "7" {
@@ -32,7 +40,7 @@ func (s *Server) adminProfitability(c *gin.Context, _ *store.User) {
 	if days == 7 {
 		since = last7DaysStart
 	}
-	items, err := store.ListProfitabilityBreakdown(c.Request.Context(), s.St.Pool, dimension, since, 50)
+	items, err := store.ListProfitabilityBreakdownBySource(c.Request.Context(), s.St.Pool, dimension, since, 50, sourceType)
 	if err != nil {
 		fail(c, err)
 		return
@@ -64,7 +72,7 @@ func (s *Server) adminProfitability(c *gin.Context, _ *store.User) {
 			items[index].Label = "未记录"
 		}
 	}
-	summary, err := store.GetProfitabilitySummary(c.Request.Context(), s.St.Pool, todayStart, last7DaysStart, last30DaysStart)
+	summary, err := store.GetProfitabilitySummaryBySource(c.Request.Context(), s.St.Pool, todayStart, last7DaysStart, last30DaysStart, sourceType)
 	if err != nil {
 		fail(c, err)
 		return
@@ -73,5 +81,5 @@ func (s *Server) adminProfitability(c *gin.Context, _ *store.User) {
 	if days == 7 {
 		period = summary.Last7Days
 	}
-	ok(c, gin.H{"dimension": dimension, "days": days, "since": isoValue(since), "summary": period, "items": items})
+	ok(c, gin.H{"dimension": dimension, "days": days, "source": sourceType, "since": isoValue(since), "summary": period, "items": items})
 }

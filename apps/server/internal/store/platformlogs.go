@@ -57,6 +57,7 @@ type PlatformLogFilter struct {
 	TaskID    *uuid.UUID
 	UserID    *uuid.UUID
 	RequestID string
+	ClientIP  string
 	Since     *time.Time
 	BeforeID  int64
 	Limit     int
@@ -196,6 +197,9 @@ func ListPlatformLogs(ctx context.Context, q Q, filter PlatformLogFilter) ([]*Pl
 	}
 	if filter.RequestID != "" {
 		addArg("log.request_id = ?", filter.RequestID)
+	}
+	if filter.ClientIP != "" {
+		addArg("log.client_ip = ?::inet", filter.ClientIP)
 	}
 	if filter.Since != nil {
 		addArg("log.created_at >= ?", *filter.Since)

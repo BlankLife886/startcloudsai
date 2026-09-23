@@ -17,6 +17,7 @@ import { useCanvasUiStore } from "@/stores/canvas/use-canvas-ui-store";
 import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
 import { useCanvasHost } from "@/components/layout/canvas-host-context";
 import { CanvasWorkflowTemplateDialog } from "@/components/canvas/canvas-workflow-template-dialog";
+import { CanvasWorkflowShelf } from "@/components/canvas/canvas-workflow-shelf";
 import { createCanvasProjectFromUploadedTemplate, getCanvasWorkflowTemplate, type CanvasWorkflowTemplateSummary } from "@/services/canvas-workflow-template-api";
 
 gsap.registerPlugin(useGSAP);
@@ -189,18 +190,32 @@ export default function CanvasPage() {
             data-canvas-home-motion-state={entryState}
             data-canvas-card-motion-state={cardEntryState}
         >
-            <div className="canvas-home-pattern__inner relative z-[2] mx-auto flex h-full w-full max-w-[1560px] flex-col px-7">
-                <header data-canvas-entry-item className="canvas-home-toolbar">
-                    <div className="canvas-home-toolbar__copy">
-                        <h1>{t("canvas.title")}</h1>
-                        <p>{t("canvas.createDescription")}</p>
+            <div className="canvas-home-pattern__inner relative z-[2] mx-auto flex h-full w-full max-w-[1560px] flex-col px-6 md:px-8">
+                {/* 1. 工坊级顶部导览 (Studio Header) */}
+                <header data-canvas-entry-item className="canvas-home-toolbar mb-6 pb-2 border-b border-slate-200/60 dark:border-white/5">
+                    <div className="canvas-home-toolbar__copy space-y-1">
+                        <div className="flex items-center gap-3 flex-wrap">
+                            <span
+                                className="w-2.5 h-2.5 rounded-full jewel-dot-pulse inline-block"
+                                style={{ backgroundColor: "#a855f7", color: "#a855f7" }}
+                            />
+                            <h1 className="text-xl md:text-2xl font-extrabold tracking-tight text-slate-900 dark:text-white">
+                                {t("canvas.title")}
+                            </h1>
+                            <span className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-purple-500/10 text-purple-700 dark:text-purple-300 border border-purple-500/20">
+                                自由连线工作流 · 多模态生成
+                            </span>
+                        </div>
+                        <p className="text-xs md:text-sm text-slate-500 dark:text-slate-400 pl-5">
+                            {t("canvas.createDescription")}
+                        </p>
                     </div>
-                    <div className="canvas-home-toolbar__actions">
+                    <div className="canvas-home-toolbar__actions flex items-center gap-2">
                         <Button className="canvas-home-cta" type="primary" disabled={!hydrated} onClick={createAndEnter} icon={<Plus className="size-4" />}>
                             {t("canvas.create")}
                         </Button>
                         <Button disabled={!hydrated} onClick={() => setTemplateLibraryOpen(true)} icon={<LayoutTemplate className="size-4" />}>
-                            {t("canvas.templateLibrary")}
+                            {t("canvas.templateLibrary")} <span className="text-[11px] opacity-70 font-mono ml-0.5">43</span>
                         </Button>
                         <Button disabled={!hydrated} onClick={() => (isAuthenticated ? inputRef.current?.click() : requestAuth())} icon={<FileUp className="size-4" />}>
                             {t("canvas.import")}
@@ -208,12 +223,24 @@ export default function CanvasPage() {
                     </div>
                 </header>
 
-                <section data-canvas-entry-item className={`canvas-home-library${hydrated && !visibleProjects.length && !projectQuery.trim() ? " is-empty" : ""}`}>
-                    {hydrated && !visibleProjects.length && !projectQuery.trim() ? null : <div className="canvas-recent-bar">
-                        <div className="flex shrink-0 items-baseline gap-3">
-                            <h2 className="text-[15px] font-semibold tracking-tight">{t("canvas.recent")}</h2>
-                            <span className="inline-flex h-6 min-w-6 items-center justify-center rounded-full bg-violet-500/10 px-2 text-xs font-medium tabular-nums text-violet-700 dark:bg-violet-400/10 dark:text-violet-300">
-                                {projectQuery.trim() ? filteredProjects.length : visibleProjects.length}
+                {/* 2. 精选案例工作流展台 (Featured Templates Shelf) */}
+                <CanvasWorkflowShelf
+                    onUseTemplate={useWorkflowTemplate}
+                    onOpenTemplateDialog={() => setTemplateLibraryOpen(true)}
+                    disabled={!hydrated}
+                />
+
+                {/* 3. 我的画布项目 (My Projects Section) */}
+                <section data-canvas-entry-item className="canvas-home-library mb-12">
+                    <div className="canvas-recent-bar mb-3">
+                        <div className="flex shrink-0 items-center gap-2.5">
+                            <span
+                                className="w-2.5 h-2.5 rounded-full jewel-dot-pulse inline-block"
+                                style={{ backgroundColor: "#10b981", color: "#10b981" }}
+                            />
+                            <h2 className="text-base font-bold tracking-tight text-slate-900 dark:text-slate-100">{t("canvas.recent")}</h2>
+                            <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-emerald-500/10 px-2 text-xs font-semibold tabular-nums text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+                                {projectQuery.trim() ? `${filteredProjects.length} 个项目` : `${visibleProjects.length} 个项目`}
                             </span>
                         </div>
                         <div className="canvas-recent-bar__tools">
@@ -265,22 +292,14 @@ export default function CanvasPage() {
                                 </button>
                             ) : null}
                         </div>
-                    </div>}
+                    </div>
 
                     {!hydrated ? (
-                        <div className="mt-5 flex min-h-52 items-center justify-center rounded-[18px] border border-dashed border-stone-200 bg-white/70 text-sm text-stone-500 dark:border-white/10 dark:bg-white/[0.03]">{t("canvas.loading")}</div>
+                        <div className="mt-4 flex min-h-36 items-center justify-center rounded-[18px] border border-dashed border-stone-200 bg-white/70 text-sm text-stone-500 dark:border-white/10 dark:bg-white/[0.03]">{t("canvas.loading")}</div>
                     ) : projectQuery.trim() && !filteredProjects.length ? (
-                        <div className="mt-5 flex min-h-40 items-center justify-center rounded-[18px] border border-dashed border-stone-200 bg-white/70 text-sm text-stone-500 dark:border-white/10 dark:bg-white/[0.03]">{t("canvas.noMatchingProjects")}</div>
-                    ) : !filteredProjects.length ? (
-                        <button type="button" className="canvas-home-start" onClick={createAndEnter}>
-                            <span className="canvas-project-tile__plus">
-                                <Plus className="size-7" />
-                            </span>
-                            <strong>{t("canvas.create")}</strong>
-                            <span>{t("canvas.createDescription")}</span>
-                        </button>
+                        <div className="mt-4 flex min-h-32 items-center justify-center rounded-[18px] border border-dashed border-stone-200 bg-white/70 text-sm text-stone-500 dark:border-white/10 dark:bg-white/[0.03]">{t("canvas.noMatchingProjects")}</div>
                     ) : (
-                        <div className="canvas-project-grid mt-4 grid grid-cols-6 gap-3">
+                        <div className="canvas-project-grid mt-4 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
                             {projectQuery.trim() ? null : (
                                 <button type="button" className="canvas-project-tile group text-left" onClick={createAndEnter}>
                                     <span className="canvas-project-tile__preview is-create flex items-center justify-center">
@@ -302,6 +321,7 @@ export default function CanvasPage() {
                         </div>
                     )}
                 </section>
+
             </div>
 
             <input ref={inputRef} type="file" accept="application/zip,.zip" className="hidden" onChange={(event) => void importCanvas(event.target.files?.[0])} />

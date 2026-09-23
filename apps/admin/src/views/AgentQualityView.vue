@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { Refresh, VideoPlay, View } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import PageCard from "@/components/PageCard.vue";
+import CursorPager from '@/components/CursorPager.vue';
 import { isRequestAborted, request } from "@/request";
 import { buildModelCatalog, catalogModelName } from "@/userProfile";
 
@@ -81,6 +82,8 @@ interface EvalRun {
 }
 
 interface Overview {
+  traceTotal?: number;
+  page?: number;
   days: number;
   workspace: AgentWorkspace;
   summary: QualitySummary;
@@ -136,11 +139,14 @@ const emptySummary: QualitySummary = {
 const days = ref<7 | 30>(7);
 const workspace = ref<AgentWorkspace>("assistant");
 const status = ref("");
+const issuesOnly = ref(false);
+const tracePage = ref(1);
 const versionKey = ref("");
 const activeTab = ref("traces");
 const loading = ref(false);
 const evaluating = ref(false);
 const data = ref<Overview | null>(null);
+const qualityError = ref('');
 const traceDrawer = ref(false);
 const traceLoading = ref(false);
 const traceDetail = ref<TraceDetail | null>(null);
@@ -252,6 +258,8 @@ function queryForSelection() {
     days: days.value,
     workspace: workspace.value,
     status: status.value,
+    issues: issuesOnly.value,
+    page: tracePage.value,
     model: selected?.model,
     reasoningEffort: selected?.reasoningEffort,
     promptVersion: selected?.promptVersion,
@@ -262,11 +270,12 @@ function queryForSelection() {
 async function load() {
   const version = ++requestVersion;
   loading.value = true;
+  qualityError.value = '';
   try {
     const result = await request<Overview>("/api/v1/admin/agent-quality", { query: queryForSelection() });
     if (version === requestVersion) data.value = result;
   } catch (error) {
-    if (!isRequestAborted(error)) throw error;
+    if (!isRequestAborted(error) && version === requestVersion) qualityError.value = error instanceof Error ? error.message : '质量数据读取失败';
   } finally {
     if (version === requestVersion) loading.value = false;
   }
@@ -293,6 +302,8 @@ async function runEvaluation() {
     await load();
     activeTab.value = "runs";
     await openEvalRun(run);
+  } catch (error) {
+    qualityError.value = error instanceof Error ? error.message : '评测未完成，请重试';
   } finally {
     evaluating.value = false;
   }
@@ -343,7 +354,7 @@ watch(workspace, () => {
   versionKey.value = "";
   activeTab.value = "traces";
 });
-watch([workspace, days, status, versionKey], () => void load());
+watch([workspace, days, status, versionKey, issuesOnly], () => { tracePage.value = 1; void load() });
 onMounted(async () => {
   try {
     const cfg = await request<{
@@ -377,6 +388,8 @@ onMounted(async () => {
         <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
       </template>
 
+      <el-alert v-if="qualityError" :title="qualityError" description="数据读取失败，不能据此认定没有失败或质量良好。" type="error" :closable="false" />
+      <div class="quality-next-actions"><el-button :disabled="!summary.failedTraces" @click="activeTab = 'traces'; status = 'failed'">检查 {{ summary.failedTraces }} 次失败执行</el-button><el-button @click="activeTab = 'versions'">比较版本表现</el-button><span v-if="evalRuns.length">最近评测：{{ evalRuns[0]?.passed }}/{{ evalRuns[0]?.total }} 项通过，可在“评测运行”中查看证据</span><span v-else>尚无评测记录，收集真实样本后运行评测</span></div>
       <section class="aq-kpis" aria-label="质量摘要">
         <article>
           <small>真实执行</small>
@@ -384,11 +397,11 @@ onMounted(async () => {
         </article>
         <article>
           <small>成功率</small>
-          <strong class="tnum">{{ percent(successRate) }}</strong>
+          <strong class="tnum">{{ summary.totalTraces ? percent(successRate) : '—' }}</strong>
         </article>
         <article :class="scoreClass(summary.averageScore)">
           <small>平均质量分</small>
-          <strong class="tnum">{{ summary.averageScore.toFixed(1) }}</strong>
+          <strong class="tnum">{{ summary.totalTraces ? summary.averageScore.toFixed(1) : '—' }}</strong>
         </article>
         <article :class="{ 'is-bad': summary.unfinishedSteps > 0 }">
           <small>未完成工具调用</small>
@@ -413,7 +426,7 @@ onMounted(async () => {
         <em class="tnum">{{ summary.failedTraces }}</em>
         、取消
         <em class="tnum">{{ summary.canceledTraces }}</em>
-        。评测只回放真实样本。
+        。指标与下方记录使用同一筛选范围。
       </p>
 
       <div class="aq-toolbar">
@@ -433,6 +446,7 @@ onMounted(async () => {
           </button>
         </div>
         <div v-if="activeTab === 'traces'" class="aq-toolbar__right">
+          <el-checkbox v-model="issuesOnly">只看失败或未完成步骤</el-checkbox>
           <el-select v-model="status" clearable placeholder="全部状态">
             <el-option label="执行中" value="running" />
             <el-option label="成功" value="succeeded" />
@@ -558,6 +572,7 @@ onMounted(async () => {
           </el-table-column>
         </el-table>
       </div>
+      <CursorPager v-if="activeTab === 'traces'" :has-prev="(data?.page || 1) > 1" :has-next="(data?.page || 1) * 50 < (data?.traceTotal || 0)" :loading="loading" :page="data?.page || 1" :total="data?.traceTotal ?? summary.totalTraces" :page-size="50" :page-sizes="[50]" @update:page="value => { tracePage = value; load() }" />
     </PageCard>
 
     <el-drawer v-model="traceDrawer" size="min(760px, 92vw)">
@@ -1021,4 +1036,8 @@ onMounted(async () => {
     grid-template-columns: 1fr;
   }
 }
+.aq-page { overflow-y:auto; }
+.quality-next-actions { display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px; }.quality-next-actions span { font-size:12px;color:var(--ink-3); }
+.aq-page :deep(.page-card) { flex:0 0 auto;min-height:100%; }
+.aq-page :deep(.el-table) { min-height:300px; }
 </style>

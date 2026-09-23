@@ -132,7 +132,7 @@ func saveStudioFigureURL(ctx context.Context, st *store.Store, blobStore *storag
 			value = &figureURL
 		}
 		ptr := &value
-		return store.UpdateUserProfile(ctx, tx, userID, nil, nil, nil, nil, nil, nil, nil, ptr)
+		return store.UpdateUserProfile(ctx, tx, userID, nil, nil, nil, nil, nil, nil, nil, ptr, nil, nil)
 	}); err != nil {
 		return err
 	}

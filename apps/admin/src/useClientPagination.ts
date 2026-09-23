@@ -23,17 +23,19 @@ export function useClientPagination<T>(source: () => T[], initialPageSize = 20) 
   }
 
   function goToPage(target: number) {
-    page.value = Math.min(pageCount.value, Math.max(1, target))
+    if (!Number.isFinite(target)) return
+    page.value = Math.min(pageCount.value, Math.max(1, Math.floor(target)))
   }
 
   function setPageSize(size: number) {
-    pageSize.value = size
+    if (!Number.isFinite(size) || size < 1) return
+    pageSize.value = Math.floor(size)
     page.value = 1
   }
 
   watch(total, () => {
     if (page.value > pageCount.value) page.value = pageCount.value
-  })
+  }, { flush: 'sync' })
 
   return {
     items,

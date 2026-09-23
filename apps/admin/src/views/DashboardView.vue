@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { adminRecentRange } from '@/adminListFilters'
 import {
   CircleCheck,
   Reading,
@@ -285,12 +287,21 @@ interface SystemMetricPoint {
 const loading = ref(false)
 const systemLoading = ref(false)
 const helpOpen = ref(false)
+const router = useRouter()
+function overviewLink(label: string) {
+  if (label === '注册用户总数') return { path: '/users' }
+  if (label === '今日新注册') return { path: '/users', query: adminRecentRange(1) }
+  if (label === '当前排队任务' || label === '当前执行任务') return { path: '/tasks', query: { status: label === '当前排队任务' ? 'queued' : 'running', createdFrom: '', createdTo: '' } }
+  return null
+}
+function openOverview(label: string) { const target = overviewLink(label); if (target) void router.push(target) }
 const incidentsOpen = ref(false)
 const stats = ref<AdminStats | null>(null)
 const systemMetrics = ref<SystemMetrics | null>(null)
 const systemHistory = ref<SystemMetricPoint[]>([])
 const systemError = ref('')
 const loadedAt = ref('')
+const businessError = ref('')
 let refreshTimer: number | null = null
 let systemRefreshTimer: number | null = null
 
@@ -346,16 +357,8 @@ function formatUptime(seconds: number) {
 	return `${minutes} 分钟`
 }
 
-function formatMoney(cents: number | null | undefined) {
-	const value = Number(cents)
-	if (!Number.isFinite(value)) return '-'
-	return `¥${(value / 100).toLocaleString('zh-CN', {
-		minimumFractionDigits: 2,
-		maximumFractionDigits: 2,
-	})}`
-}
-
 function formatCount(value: number | null | undefined) {
+	if (value == null) return '—'
 	const count = Number(value)
 	return Number.isFinite(count) ? Math.max(0, Math.round(count)).toLocaleString('zh-CN') : '-'
 }
@@ -533,8 +536,8 @@ const overviewKpis = computed(() => {
 	return [
 		{ label: '注册用户总数', value: formatCount(stats.value?.totalUsers), tone: '', hint: '平台历史累计注册用户数' },
 		{ label: '今日新注册', value: formatCount(stats.value?.newUsersToday), tone: '', hint: '北京时间今天新增的注册用户数' },
-		{ label: '今日毛利', value: formatMoney(stats.value?.profitability?.today.grossProfitCents), tone: profitToday < 0 ? 'is-bad' : profitToday > 0 ? 'is-gain' : '', hint: '北京时间今天的实收收入减上游成本' },
-		{ label: '近 7 日毛利', value: formatMoney(stats.value?.profitability?.last7Days.grossProfitCents), tone: profitWeek < 0 ? 'is-bad' : profitWeek > 0 ? 'is-gain' : '', hint: '含今天在内的 7 个北京时间自然日' },
+		{ label: '今日创作差额', value: stats.value?.profitability ? formatPoints(stats.value.profitability.today.grossProfitCents) + ' 积分' : '—', tone: profitToday < 0 ? 'is-bad' : profitToday > 0 ? 'is-gain' : '', hint: '创作结算积分减上游成本积分，不是人民币净利润' },
+		{ label: '近 7 日创作差额', value: stats.value?.profitability ? formatPoints(stats.value.profitability.last7Days.grossProfitCents) + ' 积分' : '—', tone: profitWeek < 0 ? 'is-bad' : profitWeek > 0 ? 'is-gain' : '', hint: '含今天在内的 7 个北京时间自然日，积分口径' },
 		{ label: '近 24h 新建任务', value: formatCount(p.created), tone: '', hint: '最近 24 小时内创建的任务数' },
 		{ label: '当前排队任务', value: formatCount(p.queuedNow), tone: queueTone === 'danger' ? 'is-bad' : queueTone === 'warning' ? 'is-warn' : '', hint: '当前状态为排队中的任务数' },
 		{ label: '当前执行任务', value: formatCount(p.runningNow), tone: '', hint: '当前状态为执行中的任务数' },
@@ -807,8 +810,11 @@ async function load() {
 	if (loading.value) return
   loading.value = true
   try {
-		stats.value = await request<AdminStats>('/api/v1/admin/statistics')
+		stats.value = await request<AdminStats>('/api/v1/admin/statistics', { silent: true })
+    businessError.value = ''
     loadedAt.value = formatTime(new Date().toISOString())
+  } catch {
+    businessError.value = '业务统计读取失败，当前数字可能是上次快照，请刷新后再判断。'
   } finally {
     loading.value = false
   }
@@ -871,7 +877,7 @@ onBeforeUnmount(() => {
       <div class="status-rail__primary">
         <span class="status-rail__kicker">LIVE</span>
         <span class="status-rail__title">经营与生产总览</span>
-        <span class="status-rail__cadence">LIVE</span>
+        <span class="status-rail__cadence">业务 20 秒 · 系统 5 秒</span>
       </div>
 
       <div class="status-rail__divider" aria-hidden="true" />
@@ -911,7 +917,7 @@ onBeforeUnmount(() => {
 				<CircleCheck v-if="!operationalIncidents.length" />
 				<WarningFilled v-else />
 			</el-icon>
-			<span>{{ operationalIncidents.length ? `${operationalIncidents.length} 项运行告警` : '运行正常' }}</span>
+			<span>{{ !stats || businessError ? '告警状态待同步' : operationalIncidents.length ? `${operationalIncidents.length} 项运行告警` : '暂无运行告警' }}</span>
 		</button>
 
       <div v-if="systemMetrics" class="status-rail__meta">
@@ -994,10 +1000,11 @@ onBeforeUnmount(() => {
       class="dashboard-help-drawer"
     >
       <div class="help-doc">
+        <section class="help-section"><h3>新版阅读顺序</h3><p>先看经营与任务的八项重点，再查看并排的积分总账和 AI 用量，最后结合质量风险与系统图表定位。所有指标保留展示，没有隐藏到 Tab 中。</p><p>创作差额为积分口径，不是人民币净利润；真实收款和退款请去财务中心。当前值、累计值和时间窗口不能直接混算。</p><p>读取失败会提示并保留上次数据。尚未成功读取时显示「—」，不能当作 0 或运行正常。悬停指标可查看口径。</p></section>
         <section class="help-section">
           <h3>这个页面做什么</h3>
           <p>
-            仪表盘是经营与生产的数据大屏。日常先看用户、毛利、排队和成功率，
+            仪表盘是经营与生产的总览。日常先看用户、创作积分差额、排队和成功率，
             出现生产异常时再结合线路、Worker、API 和数据库指标定位问题。
           </p>
           <ul>
@@ -1210,19 +1217,17 @@ onBeforeUnmount(() => {
     </el-drawer>
 
     <div class="dashboard-board">
-      <section class="dash-kpi-group" aria-labelledby="dashboard-overview-title">
-        <header class="dash-kpi-group__header">
-          <h2 id="dashboard-overview-title">经营与任务</h2>
-          <p>“今日”按北京时间自然日，“近 24h”按滚动 24 小时</p>
-        </header>
+      <el-alert v-if="businessError" :title="businessError" type="error" :closable="false" />
+      <section class="dash-kpi-group" aria-label="经营与任务">
         <div class="dash-kpis">
-          <article v-for="item in overviewKpis" :key="item.label" :class="item.tone" :title="item.hint">
+          <article v-for="item in overviewKpis" :key="item.label" :class="[item.tone, { 'is-actionable': overviewLink(item.label) }]" :title="item.hint" :role="overviewLink(item.label) ? 'link' : undefined" :tabindex="overviewLink(item.label) ? 0 : undefined" @click="openOverview(item.label)" @keydown.enter="openOverview(item.label)" @keydown.space.prevent="openOverview(item.label)">
             <small>{{ item.label }}</small>
-            <strong class="tnum">{{ item.value }}</strong>
+            <strong class="tnum">{{ stats ? item.value : '—' }}</strong>
           </article>
         </div>
       </section>
 
+      <div class="dashboard-detail-grid">
       <section class="dash-kpi-group" aria-labelledby="dashboard-credit-title">
         <header class="dash-kpi-group__header">
           <h2 id="dashboard-credit-title">积分总账</h2>
@@ -1231,7 +1236,7 @@ onBeforeUnmount(() => {
         <div class="dash-kpis">
           <article v-for="item in creditKpis" :key="item.label" :title="item.hint">
             <small>{{ item.label }}</small>
-            <strong class="tnum">{{ item.value }}</strong>
+            <strong class="tnum">{{ stats ? item.value : '—' }}</strong>
           </article>
         </div>
       </section>
@@ -1244,11 +1249,12 @@ onBeforeUnmount(() => {
         <div class="dash-kpis">
           <article v-for="item in usageKpis" :key="item.label" :title="item.hint">
             <small>{{ item.label }}</small>
-            <strong class="tnum">{{ item.value }}</strong>
+            <strong class="tnum">{{ stats ? item.value : '—' }}</strong>
           </article>
         </div>
       </section>
 
+      </div>
       <section class="dash-kpi-group" aria-labelledby="dashboard-quality-title">
         <header class="dash-kpi-group__header">
           <h2 id="dashboard-quality-title">质量与风险</h2>
@@ -1257,7 +1263,7 @@ onBeforeUnmount(() => {
         <div class="dash-kpis dash-kpis--quality">
           <article v-for="item in qualityMetrics" :key="item.label" :class="item.tone" :title="item.hint">
             <small>{{ item.label }}</small>
-            <strong class="tnum">{{ item.value }}</strong>
+            <strong class="tnum">{{ stats ? item.value : '—' }}</strong>
           </article>
         </div>
       </section>
@@ -2210,4 +2216,27 @@ onBeforeUnmount(() => {
     border-top: 0;
   }
 }
+/* Overview has one visual hierarchy: headline metrics, supporting ledgers, then diagnosis. */
+.dashboard { --dash-gap:16px; }
+.dashboard-detail-grid { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px; }
+.dashboard .dash-kpi-group { gap:10px; }
+.dashboard .dash-kpi-group__header { flex-wrap:wrap;gap:5px 12px; }
+.dashboard .dash-kpi-group__header h2 { font-size:14px; }
+.dashboard .dash-kpi-group__header p { white-space:normal;overflow:visible;line-height:1.6;font-size:11px; }
+.dashboard .dash-kpis { grid-template-columns:repeat(4,minmax(0,1fr));border-radius:12px;background:var(--surface); }
+.dashboard .dash-kpis article { padding:14px 16px;gap:8px;border:0;border-right:1px solid var(--border);border-bottom:1px solid var(--border); }
+.dashboard .dash-kpis small { font-size:12px;color:var(--ink-2);white-space:normal;line-height:1.5; }
+.dashboard .dash-kpis strong { font-size:25px;line-height:1.25;white-space:normal;overflow-wrap:anywhere;text-overflow:clip; }
+.dashboard-detail-grid .dash-kpi-group { padding:16px;border:1px solid var(--border);border-radius:12px;background:var(--surface); }
+.dashboard-detail-grid .dash-kpis { border:0;border-radius:0; }
+.dashboard-detail-grid .dash-kpis article { padding:10px 8px; }
+.dashboard-detail-grid .dash-kpis strong { font-size:20px; }
+.dashboard .dash-kpis--quality { background:var(--surface-2); }
+.dashboard .dash-kpis--quality strong { font-size:20px; }
+.dashboard .dash-kpis article.is-actionable { cursor:pointer; }.dashboard .dash-kpis article.is-actionable:hover {background:var(--accent-soft)}.dashboard .dash-kpis article.is-actionable:focus-visible {outline:2px solid var(--accent);outline-offset:-2px}
+.dashboard .dash-kpis article.is-actionable small::after { content:' ↗';color:var(--accent-ink); }
+.dashboard .dash-panel :deep(.page-card__title) { font-size:14px; }
+.dashboard .dash-panel :deep(.page-card__subtitle) { font-size:11px; }
+@media(max-width:1250px){.dashboard-detail-grid{grid-template-columns:1fr}.dashboard .dash-kpis{grid-template-columns:repeat(4,minmax(0,1fr));}}
+@media(max-width:700px){.dashboard .dash-kpis{grid-template-columns:repeat(2,minmax(0,1fr));}.dashboard .dash-kpis strong{font-size:21px}.dashboard .dash-kpis article{padding:12px}.dashboard-detail-grid .dash-kpi-group{padding:12px}}
 </style>

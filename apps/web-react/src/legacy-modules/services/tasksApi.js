@@ -9,8 +9,8 @@ import { apiDelete, apiGet, apiPatch, apiPost, apiRequest, apiUploadRequest, bui
 import { listNotifications } from './meApi.js'
 import { scheduleWalletRefresh } from './walletSync.js'
 import { trackReferenceUpload } from './behaviorTracker.js'
-import { composeSkillPrompt } from '../../features/skills/skillComposition.js'
-import { resolveSkillsForTaskType } from '../../features/skills/skillRuntime.js'
+import { SKILL_TASK_TYPES } from '../../features/skills/skillComposition.js'
+import { expandSkillMentions } from '../../features/skills/skillLibrary.js'
 
 export const TASK_TYPES = [
   't2i',
@@ -162,18 +162,20 @@ export async function createTask({
   expectedUnitPriceCents = null,
   isCurrentSession = null,
 } = {}) {
-  // 装载的 Skill 在这里统一生效：全部 9 个生图页面都经过本函数提交，
-  // 所以拼接只需要这一个接入点。Skill 是增强项，读取失败一律按"没有装载"处理，
-  // 绝不能让它挡住生成。
-  let skills = []
-  try {
-    skills = await resolveSkillsForTaskType(type)
-  } catch {
-    skills = []
+  // 技能在这里统一展开：文生图与 AI 电商都经过本函数提交，提示词里的 `@技能`
+  // 会被替换成技能正文（拼在用户输入前面）。技能是增强项，读取失败一律按
+  // "没有技能"处理，绝不能让它挡住生成。
+  let finalPrompt = prompt
+  if (SKILL_TASK_TYPES.includes(type)) {
+    try {
+      finalPrompt = (await expandSkillMentions(prompt)).prompt
+    } catch {
+      finalPrompt = prompt
+    }
   }
   const body = {
     type,
-    prompt: composeSkillPrompt(prompt, skills),
+    prompt: finalPrompt,
     params: params && typeof params === 'object' ? params : {},
     inputKeys: (Array.isArray(inputKeys) ? inputKeys : []).filter(Boolean),
     count: Math.max(1, Math.min(Number(count) || 1, 4)),

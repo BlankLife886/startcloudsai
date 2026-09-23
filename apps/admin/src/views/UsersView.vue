@@ -4,13 +4,11 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { CircleClose, Odometer, Search, Unlock, Wallet } from '@element-plus/icons-vue'
 import AdminDialog from '@/components/AdminDialog.vue'
-import RegistrationSettingsDialog from '@/components/settings/RegistrationSettingsDialog.vue'
+import AdminDateRange from '@/components/AdminDateRange.vue'
 import UserProfilePanel from '@/components/UserProfilePanel.vue'
 import UserBillingPanel from '@/components/UserBillingPanel.vue'
-import UserProfileRulesDialog from '@/components/UserProfileRulesDialog.vue'
-import UserAnalyticsDrawer from '@/components/UserAnalyticsDrawer.vue'
 import { normalizeList, request, type Page } from '@/request'
-import { usePagedList } from '@/usePagedList'
+import { seekByPage, usePagedList } from '@/usePagedList'
 import {
   formatProfileMoney,
   lifecycleLabels,
@@ -217,7 +215,7 @@ function websiteHref(value: string | null | undefined) {
 }
 
 const route = useRoute()
-const filters = reactive({ search: String(route.query.search || ''), status: '', lifecycle: '', risk: '', profileTag: '' })
+const filters = reactive({ search: String(route.query.search || ''), status: String(route.query.status || ''), lifecycle: String(route.query.lifecycle || ''), risk: String(route.query.risk || ''), profileTag: String(route.query.profileTag || ''), createdFrom: String(route.query.createdFrom || ''), createdTo: String(route.query.createdTo || '') })
 
 const lifecycleOptions = Object.entries(lifecycleLabels).map(([value, label]) => ({ value, label }))
 const profileTagOptions = Object.entries(profileTagLabels).map(([value, label]) => ({ value, label }))
@@ -229,31 +227,42 @@ const statusTabs = [
 ] as const
 
 const currentPage = ref(1)
+const displayedUserPage = ref(1)
+let userPageGeneration = 0
 const pageSize = ref(20)
+const totalCapped = ref(false)
 const { items, loading, error, total, reset, refresh, retry } =
   usePagedList<AdminUser>(
-    () =>
-      request<Page<AdminUser>>('/api/v1/admin/users', {
-        query: {
-          search: filters.search,
-          status: filters.status,
-          lifecycle: filters.lifecycle,
-          risk: filters.risk,
-          profileTag: filters.profileTag,
-          limit: pageSize.value,
-          page: currentPage.value,
-        },
-      }).then(normalizeList),
+    async () => {
+      const generation = ++userPageGeneration
+      let target = currentPage.value
+      const query = { ...filters, limit: pageSize.value }
+      let result = normalizeList(await request<Page<AdminUser>>('/api/v1/admin/users', { query: { ...query, page: target } }))
+      if (generation !== userPageGeneration) return result
+      const lastPage = result.total == null ? target : Math.max(1, Math.ceil(result.total / query.limit))
+      if (target > lastPage) {
+        target = lastPage
+        result = normalizeList(await request<Page<AdminUser>>('/api/v1/admin/users', { query: { ...query, page: target } }))
+      }
+      if (generation === userPageGeneration) {
+        currentPage.value = target
+        displayedUserPage.value = target
+        totalCapped.value = Boolean(result.totalCapped)
+      }
+      return result
+    },
     () => ({ ...filters, limit: pageSize.value, page: currentPage.value }),
   )
 
 const listCount = computed(() => items.value.length)
 const listTotal = computed(() => total.value ?? listCount.value)
 
-function changePage(value: number) {
-  if (value === currentPage.value) return
+async function changePage(value: number) {
+  if (loading.value || value === currentPage.value) return
+  const previous = currentPage.value
   currentPage.value = value
-  reset()
+  await reset()
+  if (error.value) currentPage.value = previous
 }
 
 function changePageSize(value: number) {
@@ -279,6 +288,8 @@ function clearFilters() {
   filters.lifecycle = ''
   filters.risk = ''
   filters.profileTag = ''
+  filters.createdFrom = ''
+  filters.createdTo = ''
   queryUsers()
 }
 
@@ -445,20 +456,34 @@ const profileRefreshing = ref(false)
 const ledgerPageSize = ref(20)
 const taskPageSize = ref(20)
 
+function loadUserLedger(position: { cursor?: string | null, page?: number }) {
+  return request<Page<LedgerEntry>>(`/api/v1/admin/users/${drawerUser.value?.id}/wallet/entries`, {
+    query: { limit: ledgerPageSize.value, ...position },
+  })
+}
+
 const ledgerList = usePagedList<LedgerEntry>(
-  (cursor) =>
-    request<Page<LedgerEntry>>(`/api/v1/admin/users/${drawerUser.value?.id}/wallet/entries`, {
-      query: { limit: ledgerPageSize.value, cursor },
-    }),
+  cursor => loadUserLedger({ cursor }),
   () => `${drawerUser.value?.id ?? ''}:${ledgerPageSize.value}`,
+  { seek: seekByPage(page => loadUserLedger({ page })) },
 )
 
+interface UserTaskPage extends Page<UserTask> {
+  summary?: { total: number, capped?: { total?: boolean } }
+}
+
+// The task list is cursor-paged; its (capped) total comes from the status summary.
+async function loadUserTasks(position: { cursor?: string | null, page?: number }): Promise<Page<UserTask>> {
+  const result = await request<UserTaskPage>('/api/v1/admin/tasks', {
+    query: { user: drawerUser.value?.id, limit: taskPageSize.value, ...position },
+  })
+  return { ...result, total: result.summary?.total, totalCapped: Boolean(result.summary?.capped?.total) }
+}
+
 const taskList = usePagedList<UserTask>(
-  (cursor) =>
-    request<Page<UserTask>>('/api/v1/admin/tasks', {
-      query: { user: drawerUser.value?.id, limit: taskPageSize.value, cursor },
-    }),
+  cursor => loadUserTasks({ cursor }),
   () => `${drawerUser.value?.id ?? ''}:${taskPageSize.value}`,
+  { seek: seekByPage(page => loadUserTasks({ page })) },
 )
 
 let overviewGeneration = 0
@@ -581,7 +606,7 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
 
 <template>
   <div class="users-page">
-    <PageCard title="用户管理" subtitle="查看账号资料、资金状态、使用情况与安全信息">
+    <PageCard>
       <div class="users-toolbar">
         <div class="status-tabs" role="tablist" aria-label="账号状态">
           <button
@@ -599,10 +624,12 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
         </div>
 
         <div class="users-toolbar__actions">
+          <AdminDateRange v-model:from="filters.createdFrom" v-model:to="filters.createdTo" label="注册时间" hide-label @change="queryUsers" />
           <el-select
             v-model="filters.lifecycle"
             class="profile-filter"
             placeholder="生命周期"
+            aria-label="生命周期"
             clearable
             @change="queryUsers"
           >
@@ -612,6 +639,7 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
             v-model="filters.risk"
             class="profile-filter"
             placeholder="风险"
+            aria-label="风险等级"
             clearable
             @change="queryUsers"
           >
@@ -623,24 +651,26 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
             v-model="filters.profileTag"
             class="profile-filter is-wide"
             placeholder="画像标签"
+            aria-label="画像标签"
             clearable
             @change="queryUsers"
           >
             <el-option v-for="option in profileTagOptions" :key="option.value" :label="option.label" :value="option.value" />
           </el-select>
-          <UserAnalyticsDrawer />
-          <UserProfileRulesDialog />
-          <RegistrationSettingsDialog />
+        </div>
+
+        <div class="users-toolbar__search">
           <el-input
             v-model="filters.search"
             class="users-search"
-            placeholder="搜索邮箱 / 用户名"
+            placeholder="邮箱 / 用户名 / 完整用户 ID"
+            aria-label="搜索用户"
             clearable
             :prefix-icon="Search"
             @keyup.enter="queryUsers"
             @clear="queryUsers"
           />
-          <el-button @click="queryUsers">查询</el-button>
+          <el-button type="primary" :loading="loading" @click="queryUsers">查询</el-button>
           <el-button text @click="clearFilters">重置</el-button>
         </div>
       </div>
@@ -650,12 +680,13 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
       <AdminListShell
         class="users-board"
         fill
-        :has-prev="currentPage > 1"
-        :has-next="currentPage * pageSize < listTotal"
+        :has-prev="displayedUserPage > 1"
+        :has-next="displayedUserPage * pageSize < listTotal"
         :loading="loading"
-        :page="currentPage"
+        :page="displayedUserPage"
         :count="listCount"
         :total="listTotal"
+        :total-capped="totalCapped"
         :page-size="pageSize"
         @update:page="changePage"
         @update:page-size="changePageSize"
@@ -1189,6 +1220,7 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
               :page="ledgerList.page.value"
               :count="ledgerList.items.value.length"
               :total="ledgerList.total.value"
+              :total-capped="ledgerList.totalCapped.value"
               :page-size="ledgerPageSize"
               @update:page="ledgerList.goToPage"
               @update:page-size="(size: number) => { ledgerPageSize = size; ledgerList.reset() }"
@@ -1261,6 +1293,7 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
               :page="taskList.page.value"
               :count="taskList.items.value.length"
               :total="taskList.total.value"
+              :total-capped="taskList.totalCapped.value"
               :page-size="taskPageSize"
               @update:page="taskList.goToPage"
               @update:page-size="(size: number) => { taskPageSize = size; taskList.reset() }"
@@ -1358,32 +1391,38 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
 
 .users-toolbar {
   display: flex;
-  flex: 0 0 auto;
   flex-wrap: wrap;
+  flex: 0 0 auto;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 12px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
 }
+
+.users-toolbar__search { display: flex; flex: 1 1 330px; align-items: center; gap: 8px; min-width: 0; }
+.users-toolbar__search :deep(.el-button) { margin-left: 0; }
 
 .status-tabs {
   display: inline-flex;
-  flex-wrap: wrap;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
   align-items: center;
-  gap: 6px;
-  padding: 4px;
-  border-radius: 999px;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 9px;
   background: var(--surface-2);
   border: 1px solid var(--border);
 }
 
 .status-tab {
-  height: 32px;
-  padding: 0 14px;
+  height: 28px;
+  padding: 0 11px;
   border: 0;
-  border-radius: 999px;
+  border-radius: 6px;
   background: transparent;
   color: var(--ink-2);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
   transition:
@@ -1393,39 +1432,58 @@ function growthLabel(group: UserGrowthGroup | null | undefined) {
 }
 
 .status-tab.is-active {
-  background: var(--ink);
-  color: var(--surface);
-  box-shadow: var(--shadow-sm);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent);
 }
 
 html.dark .status-tab.is-active {
-  background: var(--surface-3);
-  color: var(--ink);
-  box-shadow: inset 0 0 0 1px var(--border-strong);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
 }
 
 .users-toolbar__actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
 
+.users-toolbar :deep(.el-input__wrapper),
+.users-toolbar :deep(.el-select__wrapper),
+.users-toolbar :deep(.el-date-editor.el-input__wrapper) {
+  min-height: 36px;
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 0 0 1px var(--border-strong) inset;
+  font-size: 12px;
+}
+.users-toolbar :deep(.el-input__wrapper.is-focus),
+.users-toolbar :deep(.el-select__wrapper.is-focused) { box-shadow: 0 0 0 1px var(--accent) inset; }
+.users-toolbar :deep(.el-date-editor) { width: 236px; }
+.users-toolbar :deep(.el-range-input),
+.users-toolbar :deep(.el-range-separator),
+.users-toolbar :deep(.el-input__inner) { font-size: 12px; }
+.users-toolbar__search :deep(.el-button) { height: 36px; padding: 0 14px; border-radius: 8px; font-size: 12px; }
+.status-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
 .users-search {
-  width: min(280px, 70vw);
+  flex: 1;
+  width: 220px;
+  min-width: 180px;
 }
 
 .profile-filter {
-  width: 112px;
+  width: 108px;
 }
 
 .profile-filter.is-wide {
-  width: 128px;
+  width: 120px;
 }
 
 .users-search :deep(.el-input__wrapper) {
   min-height: 36px;
-  border-radius: 999px;
+  border-radius: 8px;
   box-shadow: 0 0 0 1px var(--border) inset;
 }
 
@@ -1827,8 +1885,11 @@ html.dark .status-tab.is-active {
     width: 100%;
   }
 
+  .users-toolbar__search { flex: 0 0 auto; width: 100%; }
+
   .users-search {
     flex: 1;
+    min-width: 0;
     width: auto;
   }
 

@@ -36,7 +36,7 @@ func InsertAuditLog(ctx context.Context, q Q, l *AdminAuditLog) error {
 }
 
 // ListAuditLogs 审计日志分页（limit+1 行）。admin 模糊匹配 admin_email，path 模糊匹配请求路径。
-func ListAuditLogs(ctx context.Context, q Q, admin, path string, limit int, cursor *Cursor) ([]*AdminAuditLog, error) {
+func ListAuditLogs(ctx context.Context, q Q, admin, path string, limit int, cursor *Cursor, extra ...AdminListFilter) ([]*AdminAuditLog, error) {
 	sql := `SELECT ` + auditLogCols + ` FROM admin_audit_logs WHERE true`
 	args := []any{}
 	if admin != "" {
@@ -46,6 +46,11 @@ func ListAuditLogs(ctx context.Context, q Q, admin, path string, limit int, curs
 	if path != "" {
 		args = append(args, "%"+path+"%")
 		sql += fmt.Sprintf(` AND path ILIKE $%d`, len(args))
+	}
+	sql, args = appendAdminDates(sql, args, "created_at", extra)
+	if len(extra) > 0 && extra[0].Method != "" {
+		args = append(args, extra[0].Method)
+		sql += fmt.Sprintf(" AND method=$%d", len(args))
 	}
 	sql, args = appendCursor(sql, args, cursor, limit)
 	rows, err := q.Query(ctx, sql, args...)

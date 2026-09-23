@@ -906,7 +906,7 @@ class _ModelSheetScreenState extends ConsumerState<ModelSheetScreen>
                             if (model.supportsTransparentPng)
                               _BackgroundChoice(
                                 id: 'transparent',
-                                label: '透明',
+                                label: '移除背景',
                                 color: const Color(0xFF9CA3AF),
                                 selected: _background == 'transparent',
                                 onTap: () =>
@@ -1485,7 +1485,7 @@ double _ratioValue(String value) {
 
 String _backgroundLabel(String value) => switch (value) {
   'white' => '纯白背景',
-  'transparent' => '透明背景',
+  'transparent' => '移除背景',
   _ => '浅灰背景',
 };
 

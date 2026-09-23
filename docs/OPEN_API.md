@@ -1,8 +1,19 @@
 # StarClouds API · OpenAI Images 兼容
 
-通过同一组 API Key 和统一图片接口，将不同模型接入自己的应用。新应用可使用 OpenAI SDK 的 Images 方法；已有应用可继续使用下方的任务 API。模型权限、积分账户、额度和任务队列共用。
+核对日期：2026-09-22，依据当前工作区源码（含未提交的直通与 Responses 实现），不代表已部署。站内任务和直通调用的恢复、存储、并发规则不同，见 [服务端行为基线](SERVER_CURRENT_STATE.md)。
+
+通过同一组 API Key 和统一图片接口，将不同模型接入自己的应用。新应用可使用 OpenAI SDK 的 Images 方法；已有应用可继续使用下方的任务 API。模型权限、积分账户和额度共用；标准 `/v1` 图片请求只做鉴权、计费后直连配置的上游，不创建站内任务、不进入站内队列，也不保存输入或输出图片。
 
 这是 **OpenAI Images / Responses 兼容子集**，不代表完整 OpenAI 协议。支持模型目录、生成/编辑图片，以及 Responses 下的图片工具与对话（流式）子集；不提供独立的 Chat Completions 入口、视频或 OpenAI 自有模型。第三方工具须允许自定义 Base URL、模型名称（`model`），并支持本文列出的参数。
+
+## 地址和协议配置
+
+请求链路应保持为：`你的客户端 -> 你的 StarClouds 域名/v1 -> 真实上游服务商/v1`。
+
+- 客户端的 Base URL 填 `https://你的域名/v1`。
+- 管理后台“服务商”的 Base URL 填真实上游地址，例如 `https://上游域名/v1`，不能再填你自己的 StarClouds `/v1`，否则会回环调用自己。
+- 该服务商的调用协议选择 **OpenAI 兼容**，模型的 `UpstreamModel` 填上游真实模型名；CRUN/C2A 任务协议不是标准 `/v1` 直连的上游协议。
+- 标准 `/v1/images/*` 把图片请求转发到上游的 `/v1/images/generations` 或 `/v1/images/edits`，不会把 `client_task_id`、`history_disabled` 等内部字段发给上游；`/v1/responses` 按后文的对话/图片规则分流。
 
 ## 先完成一次测试
 
@@ -35,7 +46,7 @@ python examples/open-api/openai_images.py generate \
   --output './cat.png'
 ```
 
-同一次请求发生网络错误时，保持模型、提示词和参数不变，并复用同一幂等键；新的一张图使用新编号。示例脚本按真实图片格式自动设置文件后缀，禁止覆盖已有输出文件，打印任务 ID，且关闭 SDK 自动重试，便于首次联调时判断发生了什么。图片编辑用法见 `examples/open-api/README.md`。
+同一次请求发生网络错误时，保持模型、提示词和参数不变，并复用同一幂等键；新的一张图使用新编号。示例脚本按真实图片格式自动设置文件后缀，禁止覆盖已有输出文件，打印请求 ID，且关闭 SDK 自动重试，便于首次联调时判断发生了什么。图片编辑用法见 `examples/open-api/README.md`。
 
 核心调用如下，结果中 `b64_json` 是图片数据的 Base64：
 
@@ -63,7 +74,7 @@ response = client.images.with_raw_response.generate(
     response_format="b64_json",
     extra_headers={"Idempotency-Key": request_id},
 )
-print("任务 ID:", response.headers.get("x-task-id"))
+print("请求幂等键:", response.headers.get("idempotency-key"))
 result = response.parse()
 image = base64.b64decode(result.data[0].b64_json, validate=True)
 # 默认输出格式由模型决定，根据真实文件头选择扩展名。
@@ -74,7 +85,7 @@ elif image.startswith(b"\xff\xd8\xff"):
 elif image[:4] == b"RIFF" and image[8:12] == b"WEBP":
     extension = ".webp"
 else:
-    raise ValueError("未知图片格式，请使用任务 ID 检查结果")
+    raise ValueError("未知图片格式，请检查上游返回的图片数据")
 with Path("result" + extension).open("xb") as image_file:
     image_file.write(image)
 ```
@@ -86,12 +97,12 @@ with Path("result" + extension).open("xb") as image_file:
 - JSON 生成请求使用 `Content-Type: application/json`；图片编辑使用 `multipart/form-data`。
 - 成功响应使用 OpenAI Images 结构，不再包裹 `success/data` 任务信封。
 - 错误统一为 `{"error":{"message":"...","type":"...","param":null,"code":"..."}}`。
-- API Key、任务与文件仍按用户隔离；接口不会绕过模型开放状态、Key 白名单、账号风控、限流或余额校验。
+- API Key、账号和账务仍按用户隔离；接口不会绕过模型开放状态、Key 白名单、账号风控、限流或余额校验。标准 `/v1` 图片请求不创建站内任务，也不写入图片对象存储。
 
 | 方法与路径 | 用途 | 所需权限 |
 | --- | --- | --- |
-| `GET /v1/models` | 列出当前 Key 可用的图片模型 | `models:read` |
-| `GET /v1/models/{id}` | 读取单个可用图片模型 | `models:read` |
+| `GET /v1/models` | 列出当前 Key 可用的图片与对话模型 | `models:read` |
+| `GET /v1/models/{id}` | 读取单个可用模型 | `models:read` |
 | `POST /v1/images/generations` | 文生图，等待结果后返回图片 | `tasks:write` |
 | `POST /v1/images/edits` | 上传参考图并编辑，等待结果后返回图片 | `tasks:write`、`files:write` |
 
@@ -127,7 +138,7 @@ curl -sS --max-time 270 -D './generation-headers.txt' \
   -o './generation-response.json'
 ```
 
-`generation-response.json` 是 JSON，不是图片文件；按 Python 示例将 `data[0].b64_json` 解码保存。响应头文件中可以读取 `X-Task-ID`。自行拼接 JSON 时注意转义特殊字符；包含任意用户输入的程序应使用 JSON 序列化库或 SDK。
+`generation-response.json` 是 JSON，不是图片文件；按 Python 示例将 `data[0].b64_json` 解码保存。标准 `/v1` 直连不会返回站内 `X-Task-ID`，需要重试时只复用自己的 `Idempotency-Key`。自行拼接 JSON 时注意转义特殊字符；包含任意用户输入的程序应使用 JSON 序列化库或 SDK。
 
 | 字段 | 说明 |
 | --- | --- |
@@ -143,18 +154,18 @@ curl -sS --max-time 270 -D './generation-headers.txt' \
 | `user` | 可选客户端用户标识，最多256字符，不参与账号认证或权限判定 |
 | `stream` | 只接受省略或 `false`；本版返回完整结果 |
 
-`n` 表示一次请求需要的图片数量，多个请求也可以并行提交；服务端不会把开发者 API 强制串行化。每张图片按一个执行单位计入全局容量和上游线路容量，超过可用容量的请求会排队或返回容量错误。API Key 的每分钟请求数、日/月任务数和日/月积分额度仍然有效。
+`n` 表示一次请求需要的图片数量，多个请求可以并行提交；标准 `/v1` 不占用站内任务并发，不等待站内队列，接受的请求会直接发往所选上游。API Key 的每分钟请求数、日/月调用数和日/月积分额度仍然有效；上游自己的并发、排队和限流由上游负责。
 
 ### Responses API（图片或对话）
 
-`POST /v1/responses` 提供 OpenAI Responses API 的兼容子集，按是否包含 `image_generation` 工具分流：
+`POST /v1/responses` 提供 OpenAI Responses API 的兼容子集，综合请求模型与 `image_generation` 工具分流：
 
 - **对话**：请求未包含 `image_generation` 时，走公开助手聊天模型（`GET /v1/models` 中的 chat 名称）。支持 `stream: true` 的 SSE（`response.created`、`response.output_text.delta`、`response.completed`）。按助手工作区单价冻结并结算积分。
-- **图片**：请求包含一个 `image_generation` 工具时，行为与原先一致；`model` 可以是当前 Key 可用的自定义图片模型名称，也可以省略并由服务端选择默认图片模型。
+- **图片**：明确使用可用图片模型并包含 `image_generation` 工具时，走标准图片直通路径；使用聊天模型时，即使声明此工具也先执行对话，由模型实际工具调用触发出图。未指定模型的选择遵循当前服务端默认模型规则。
 
 仍不是完整 Codex / 多工具 Agent：不支持 `previous_response_id` 多轮状态、shell 等任意函数执行。非图片工具（例如 Codex 附带的 catalog）会被忽略。
 
-当请求使用**聊天模型**（或 Codex 传入未识别的模型名并回落到默认聊天模型）时：服务端按对话处理，并向模型暴露 `image_generation` 工具；模型一旦调用该工具，服务端用现有 Images 任务链路出图并在 Responses `output` 中返回 `image_generation_call`（与 NewAPI/Sub2API 类似的「能聊也能生图」）。当请求明确使用**图片模型名**且带 `image_generation` 时，仍走专用图片路径（不经聊天模型）。
+当请求使用**聊天模型**（或 Codex 传入未识别的模型名并回落到默认聊天模型）时：服务端按对话处理，并向模型暴露 `image_generation` 工具；模型一旦调用该工具，服务端直连配置的图片上游并在 Responses `output` 中返回 `image_generation_call`（与 NewAPI/Sub2API 类似的「能聊也能生图」）。当请求明确使用**图片模型名**且带 `image_generation` 时，仍走专用图片路径（不经聊天模型）。
 
 对话示例：
 
@@ -229,9 +240,9 @@ Cockpit 选择“允许 Codex 使用 Responses WebSocket”时，会连接：
 ws://<你的域名>/v1/responses
 ```
 
-本项目同时支持这个 WebSocket 入口。客户端通过 `Authorization: Bearer <API_KEY>` 完成认证，然后发送与 `POST /v1/responses` 相同的 JSON 请求；服务端返回同样的 Response 对象，`stream: true` 时把 SSE 事件逐条转成 WebSocket JSON 消息。HTTP 与 WebSocket 共用同一套 Responses 实现（图片任务链路或对话计费/上游调用）。
+本项目同时支持这个 WebSocket 入口。客户端通过 `Authorization: Bearer <API_KEY>` 完成认证，然后发送与 `POST /v1/responses` 相同的 JSON 请求；服务端返回同样的 Response 对象，`stream: true` 时把 SSE 事件逐条转成 WebSocket JSON 消息。HTTP 与 WebSocket 共用同一套 Responses 实现（图片直连上游或对话计费/上游调用）。
 
-图片路径复用现有 Images API 的账号鉴权、模型开放状态、API Key 额度、钱包计费、全局/线路并发、任务队列和幂等键。对话路径使用助手模型目录与积分冻结/结算。该端点不会把结果注册成 ChatGPT 私有的 Images 对象，也不会替换 ChatGPT 左侧“图像”工作区。
+图片路径复用现有 Images API 的账号鉴权、模型开放状态、API Key 额度和钱包计费，但不占用站内全局/线路并发、不进入任务队列、不保存图片结果。对话路径使用助手模型目录与积分冻结/结算。该端点不会把结果注册成 ChatGPT 私有的 Images 对象，也不会替换 ChatGPT 左侧“图像”工作区。
 
 图片 `stream: true` 发送 `response.image_generation_call.*` 与最终 `response.completed`；对话流式发送 `response.output_text.delta` 与 `response.completed`。当前子集支持文本生图、Base64 `input_image` 编辑，以及纯文本（可选 `input_image`）对话；暂不支持 `previous_response_id`、远程图片 URL、file_id、完整函数调用或多工具编排。
 
@@ -250,7 +261,7 @@ ws://<你的域名>/v1/responses
 
 `created` 为 Unix 秒时间戳。选用 `response_format: "url"` 时，数组项改为 `{"url":"https://...短期签名地址..."}`，该地址可直接下载，无需再附加 Bearer Header。签名地址有有效期，应及时下载；不要把它当成永久素材地址，也不要公开分享带签名的 URL。
 
-Base64返回限制为单张原图不超过32 MiB、同一响应的原始图片内容总计不超过64 MiB。图片过大时使用同一幂等键改为 `response_format: "url"` 获取地址，不必重复生成。
+标准直通按上游响应解析图片，受上游客户端响应体大小限制，不沿用旧站内结果下载器的“单图 32 MiB”规则。`response_format: "url"` 直接返回上游提供的短期 URL；网关不保存图片，也不能把已经断开的 Base64 响应转换成本地 URL。
 
 ### 编辑图片
 
@@ -277,31 +288,31 @@ curl -sS --max-time 270 -D './edit-headers.txt' \
 
 ### 等待、重试与结果恢复
 
-兼容接口会创建现有图片任务，并最多等待 240 秒：
+兼容接口会在本次 HTTP 请求内等待上游标准接口返回，最多等待 240 秒：
 
-- 成功后返回 `200` 与图片；`X-Task-ID` 响应头关联站内任务。
-- 返回 `504` 表示本次 HTTP 处理或网关等待超时，不等于生成失败；已创建的任务会继续处理，不会因为等待超时而自动取消或再次扣费。
-- 保存 `X-Task-ID`，通过 `GET /api/open/v1/tasks/{id}` 查询终态（需 `tasks:read`），或通过已有 Webhook 接收结果。
-- 没收到任务 ID 时，复用原来的 `Idempotency-Key` 和完全相同内容重试原请求，可重新等待已有任务。不要更换幂等键重复提交同一业务需求。
-- 兼容接口对同一幂等键但生成参数或参考图字节不同的请求返回 `409`。`response_format` 仅决定交付形式，可在 `b64_json` 与 `url` 间切换以取回已有结果。幂等键按 API Key 隔离，生成与编辑共用同一兼容命名空间，与旧版任务 API 隔离；重试时须使用原 API Key，更换或轮换 API Key 后不能用它恢复原幂等请求。
-- 部分模型可能只交付部分图片，此时 `data.length` 可小于请求的 `n`；不要假定长度固定。沿用站内任务结算规则，按实际交付结果结算。
-- 任务失败、已取消或其他业务错误通过错误信封返回。根据 `error.message` 和 `error.code` 判断是否可恢复，不能把所有错误都直接重新扣费提交。
+- 成功后返回 `200` 与上游图片；不会返回站内 `X-Task-ID`。
+- 返回 `504` 只表示本次直连等待超时，网关无法确认上游是否已经生成；请仅在上游支持 `Idempotency-Key` 时复用原键重试。
+- 网关不保存任务状态、输入图片或输出图片，不能通过本服务的 `/api/open/v1/tasks/{id}` 恢复标准 `/v1` 请求。需要可查询的站内任务，请使用旧版任务 API。
+- 成功响应结算积分；明确失败会释放本次预留。若进程在上游返回后、结算完成前中断，账务会保留预留，需由服务端账务修复流程处理。
+- 标准图片直通使用独立的 `developer_api` 利润流水，不创建站内任务，也不占用站内任务并发；成功调用记录用户实收积分、配置的上游成本、模型、服务商和线路。管理员可在后台“利润/成本”页面选择“开发者 API”查看，也可读取 `/api/v1/admin/profitability?source=developer_api`。任务 API 仍创建并持久化站内任务，不能混用此规则。
+- 网络断开、等待超时或上游 5xx 属于结果不确定：本次预留不会直接释放，流水暂记为 `canceled`，使用相同 `Idempotency-Key` 重试后可更新为成功或明确失败。确定失败会释放预留并记为失败；已释放的幂等键再次使用会返回 `409 idempotency_key_reused`。这里的 `canceled` 是账务记录状态，不保证远端任务已停止。
+- `Idempotency-Key` 会按 API Key 哈希为账务幂等键，并原样传给上游；网关不保存请求参数或结果，因此同一键的参数冲突最终由上游决定。不同业务请求必须使用新键。
 
-客户端与反向代理应允许至少 270 秒的请求读取时间。更短的客户端超时或代理 504 不代表服务端未创建任务；仍须保留原幂等键并按上述方式恢复。
+客户端与反向代理应允许至少 270 秒的请求读取时间。更短的客户端超时或代理 504 不代表上游一定没有生成；不要在不确定时更换幂等键盲目重试。
 
-未提供 `Idempotency-Key` 时，服务端会生成并在响应头返回一个编号，同时设置 `X-Should-Retry: false`，提示支持此头的 SDK 不自动重试；若网络在收到响应前断开，客户端仍可能不知道编号。因此实际接入应主动保存并传入幂等键，或关闭 SDK 自动重试。网关自产错误也会提示不自动重试，客户端可带原幂等键明确恢复。
+未提供 `Idempotency-Key` 时，服务端会生成并在响应头返回一个编号，同时设置 `X-Should-Retry: false`，提示支持此头的 SDK 不自动重试；若网络在收到响应前断开，客户端仍可能不知道编号。因此实际接入应主动保存并传入幂等键，或关闭 SDK 自动重试。直连接口不保存本地任务结果，无法通过网关恢复已经断开的响应。
 
 ### 兼容边界与错误
 
 首版不支持 `mask`、`stream: true`（Images 路径）、`partial_images`、`style`、`input_fidelity`、`output_compression`；传入不支持的参数会明确返回 400，不会静默忽略。对话请使用 `POST /v1/responses`（无需 `image_generation` 工具）。
 
-常见状态：`400` 参数/能力不支持，`401` 密钥无效，`403` 缺少权限或模型未授权，`409` 幂等内容冲突或余额不足，`429` 限流/额度已用满，`5xx` 服务或上游失败，`504` 等待超时。不要在日志中记录完整 Authorization Header 或图片 Base64。
+常见状态：`400` 参数/能力不支持，`401` 密钥无效，`403` 缺少权限或模型未授权，`409` 已释放幂等键复用或余额不足，`429` 限流/额度已用满，`5xx` 服务或上游失败，`504` 等待超时。直通不保存完整请求，不能承诺本地检测同键参数冲突。不要在日志中记录完整 Authorization Header 或图片 Base64。
 
 ### Codex 兼容性
 
 当前网关是 **OpenAI Images / Responses 兼容子集**。对 Codex：用聊天模型作为主模型时，`/v1/responses` 可对话，并在模型调用 `image_generation` 时本地出图（Key 需同时有聊天与图片模型权限）。它仍不是完整 Agent（无 shell 等工具环）。也可继续用 StarClouds Image Skill 旁路生图。
 
-开发者 Images API 只选择 OpenAI wire-compatible 的上游线路；OpenAI 官方接口、Sub2API、NewAPI 等只要提供兼容的 `/v1/models`、`/v1/images/generations` 和 `/v1/images/edits`，统一按 OpenAI 兼容适配器配置。CRUN 等内部异步任务协议不会出现在开发者 API 模型目录中。
+开发者 Images API 只选择 OpenAI wire-compatible 的上游线路；OpenAI 官方接口、Sub2API、NewAPI 等只要提供兼容的 `/v1/models`、`/v1/images/generations` 和 `/v1/images/edits`，统一按 OpenAI 兼容适配器配置，并由网关直接调用标准路径。内部异步任务协议（包括 C2A 专用字段）不会出现在开发者 API 请求中，也不会出现在开发者 API 模型目录中。
 
 #### StarClouds Image Skill 登录
 
@@ -344,14 +355,14 @@ Skill 客户端不使用 MCP，也不需要修改 `~/.codex/config.toml` 的 `mc
 
 ## 旧版任务 API
 
-以下 `/api/open/v1` 接口保持原有异步协议，用于报价、用量、任务查询以及已接入应用。它与兼容接口共用账户、Key、任务和账务，但响应格式不同，不应将两个 Base URL 混用。
+以下 `/api/open/v1` 接口保持原有异步协议，用于报价、用量、任务查询以及已接入应用。它与标准 `/v1` 共用账户、Key 和账务，但只有旧版接口创建站内任务、进入队列并保存结果；响应格式不同，不应将两个 Base URL 混用。
 
 ### 基本约定
 
 - Base URL：`https://<你的域名>/api/open/v1`
 - 认证：`Authorization: Bearer sk-sc-...`
 - 请求和响应：UTF-8 JSON；上传接口除外。
-- 金额字段以 `Cents` 结尾，但在本项目中 `1 cent = 1 积分`。
+- 此任务协议中的价格、预留及用量 `Cents` 字段表示整数平台积分；订单人民币金额字段的“分”属于不同业务单位。
 - 时间使用 RFC 3339。
 - 成功响应：`{"success":true,"data":...}`。
 - 失败响应：`{"success":false,"code":"...","error":"..."}`。
@@ -464,6 +475,8 @@ curl -sS -X POST 'https://example.com/api/open/v1/tasks' \
 | `validation_error` | 422 | 请求字段、模型或输入文件不合法 |
 
 ### 查询任务和文件
+
+本节仅适用于 `/api/open/v1/tasks` 已成功接受并返回任务 ID 的请求；标准 `/v1/images/*` 或 Responses 图片调用没有本站任务 ID，不能通过本节接口或站内历史恢复图片。
 
 ```bash
 curl -sS 'https://example.com/api/open/v1/tasks/TASK_UUID' \

@@ -1,5 +1,7 @@
 # Order Workflow
 
+Documentation baseline: current working tree, 2026-09-22. Plans, order creation/list/detail/close and the Lanjing notification endpoint are registered in `apps/server/internal/httpapi/router.go`; payment availability still depends on enabled, valid gateway configuration. This update did not run payments or confirm a deployment. See [current server behavior](SERVER_CURRENT_STATE.md) and [subscriptions](SUBSCRIPTIONS.md).
+
 ## State And Authority
 
 | State | User action | Display |

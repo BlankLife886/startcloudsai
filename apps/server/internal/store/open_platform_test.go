@@ -63,6 +63,34 @@ func TestUsageProfitLedgerIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestDeveloperAPIProfitLedgerFinalizesCanceledEvent(t *testing.T) {
+	st := testdb.Setup(t)
+	ctx := context.Background()
+	user := openPlatformUser(t, st)
+	now := time.Now().UTC().Truncate(time.Second)
+	entry := store.UsageProfitEntry{
+		SourceType: store.DeveloperAPIProfitSourceType, SourceID: "openai-image:" + uuid.NewString(), UserID: user.ID,
+		EventStatus: "canceled", Workspace: "t2i", ModelID: "image-model", CreatedAt: now,
+	}
+	if err := store.UpsertUsageProfitEntry(ctx, st.Pool, entry); err != nil {
+		t.Fatal(err)
+	}
+	entry.EventStatus = "succeeded"
+	entry.Units = 1
+	entry.RevenueCents = 100
+	entry.UpstreamCostCents = 60
+	if err := store.UpsertUsageProfitEntry(ctx, st.Pool, entry); err != nil {
+		t.Fatal(err)
+	}
+	summary, err := store.GetProfitabilitySummaryBySource(ctx, st.Pool, now.Add(-time.Hour), now.Add(-time.Hour), now.Add(-time.Hour), store.DeveloperAPIProfitSourceType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := summary.Today; got.RevenueCents != 100 || got.UpstreamCostCents != 60 || got.GrossProfitCents != 40 || got.SucceededUnits != 1 || got.FailedUnits != 0 {
+		t.Fatalf("developer API summary = %#v", got)
+	}
+}
+
 func TestAPIKeyTaskAndSpendLimits(t *testing.T) {
 	st := testdb.Setup(t)
 	ctx := context.Background()

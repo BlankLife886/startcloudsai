@@ -28,55 +28,85 @@ test.beforeEach(async ({ page }) => {
   await mockEcommerceApis(page);
 });
 
-test("AI commerce opens in a single guided commercial shoot flow", async ({
+// 打开工作台顶部工具栏的某个菜单（如“商品信息”），返回菜单弹层。
+// 切换业务后页头会有入场动画，点击可能落在重渲染之间，这里以 aria-expanded 为准并允许重试一次。
+async function openWorkbenchMenu(page, label) {
+  const trigger = page.getByRole("button", { name: new RegExp(`^${label}，当前：`) });
+  await expect(trigger).toBeVisible();
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await trigger.click();
+    try {
+      await expect(trigger).toHaveAttribute("aria-expanded", "true", {
+        timeout: 1500,
+      });
+      break;
+    } catch (error) {
+      if (attempt === 1) throw error;
+    }
+  }
+  const menu = page.getByRole("dialog", { name: `${label}设置` });
+  await expect(menu).toBeVisible();
+  return menu;
+}
+
+test("AI commerce opens in a canvas-first commercial shoot workbench", async ({
   page,
 }) => {
   await page.goto("/ecommerce-design");
 
-  await expect(page.locator(".commerce-header__copy strong")).toHaveText(
-    "AI 创意商拍",
+  const workbench = page.locator(".commerce-workbench.is-shoot");
+  await expect(workbench).toBeVisible();
+  await expect(page.locator(".commerce-settings")).toHaveCount(0);
+  await expect(page.locator(".workbench-toolbar")).toBeVisible();
+  await expect(page.locator(".commerce-header__actions button")).toHaveCount(3);
+  await expect(page.getByRole("button", { name: "上传商品" }).first()).toBeVisible();
+  await expect(
+    page.getByRole("radiogroup", { name: "选择画面比例" }).getByRole("radio"),
+  ).toHaveCount(5);
+  const packs = page.getByRole("radiogroup", { name: "选择出图任务" });
+  await expect(packs.getByRole("radio")).toHaveCount(3);
+  await expect(packs.getByRole("radio", { name: /商业成片/ })).toHaveAttribute(
+    "aria-checked",
+    "true",
   );
   await expect(
-    page.getByRole("heading", { name: "创建一组商业成片" }),
+    page.getByRole("radiogroup", { name: "拍摄方向" }).getByRole("radio"),
+  ).toHaveCount(4);
+  await expect(page.locator(".workbench-plan li")).toHaveCount(4);
+  await expect(page.locator(".workbench-empty__steps li")).toHaveCount(3);
+  const generate = page.getByRole("button", { name: /^生成商拍成片/ });
+  await expect(generate).toBeDisabled();
+
+  const goalMenu = await openWorkbenchMenu(page, "商业目标");
+  await goalMenu.getByRole("radio", { name: "社媒种草" }).click();
+  await goalMenu.getByRole("radio", { name: "建立质感" }).click();
+  await goalMenu
+    .getByPlaceholder("例如：25-35岁城市通勤人群")
+    .fill("25-35岁城市通勤人群");
+  await expect(
+    page.getByRole("button", { name: "商业目标，当前：社媒种草 · 建立质感" }),
   ).toBeVisible();
-  await expect(page.locator(".commerce-settings")).toHaveCount(0);
-  await expect(page.locator(".commerce-header__actions button")).toHaveCount(3);
-  await expect(page.locator(".creative-flow__step")).toHaveCount(5);
-  await expect(page.getByRole("button", { name: "生成商业成片" })).toHaveCount(
+  await page.keyboard.press("Escape");
+  await expect(goalMenu).toHaveCount(0);
+
+  await packs.getByRole("radio", { name: /主图 \+ 场景/ }).click();
+  await expect(page.locator(".workbench-plan li")).toHaveCount(2);
+  await expect(page.getByRole("button", { name: /^生成商拍成片（2张）/ })).toHaveCount(
     1,
   );
 
-  await page.getByRole("button", { name: "社媒种草" }).click();
-  await page.getByRole("button", { name: "建立质感" }).click();
-  await page
-    .getByPlaceholder("例如：25-35岁城市通勤人群")
-    .fill("25-35岁城市通勤人群");
-  await expect(page.locator(".creative-flow__summary-title")).toContainText(
-    "社媒种草",
-  );
-
-  await expect(page.locator(".creative-flow__shot-builder li")).toHaveCount(4);
-  await page.getByRole("button", { name: "移除镜头 卖点表达" }).click();
-  await expect(page.locator(".creative-flow__shot-builder li")).toHaveCount(3);
-  await page.getByRole("button", { name: "+ 尺寸比例" }).click();
-  await expect(page.locator(".creative-flow__shot-builder li")).toHaveCount(4);
-  await page.getByRole("button", { name: "上移 尺寸比例" }).click();
-  await expect(
-    page.locator(".creative-flow__shot-builder li").nth(2),
-  ).toContainText("尺寸比例");
-
   const lifestyle = page
-    .locator(".creative-flow__directions button")
-    .filter({ hasText: "生活场景" });
+    .getByRole("radiogroup", { name: "拍摄方向" })
+    .getByRole("radio", { name: "生活场景" });
   await lifestyle.click();
-  await expect(lifestyle).toHaveAttribute("aria-pressed", "true");
-  await expect(page.locator(".creative-flow__summary-title")).toContainText(
-    "生活场景",
-  );
+  await expect(lifestyle).toHaveAttribute("aria-checked", "true");
 
-  await page.getByRole("button", { name: /1:1/ }).click();
-  const preview = await page.locator(".creative-flow__preview").boundingBox();
-  expect(Math.abs(preview.width / preview.height - 1)).toBeLessThan(0.02);
+  await page
+    .getByRole("radiogroup", { name: "选择画面比例" })
+    .getByRole("radio", { name: /方图/ })
+    .click();
+  const frame = await page.locator(".handheld-frame").boundingBox();
+  expect(Math.abs(frame.width / frame.height - 1)).toBeLessThan(0.03);
 
   await page
     .locator('input[type="file"]')
@@ -89,45 +119,92 @@ test("AI commerce opens in a single guided commercial shoot flow", async ({
         "base64",
       ),
     });
-  await expect(page.locator(".creative-flow__product-ready")).toBeVisible();
-  await expect(page.locator(".creative-flow__truth")).toHaveAttribute(
-    "open",
-    "",
-  );
-  await expect(
-    page.getByRole("button", { name: "生成商业成片" }),
-  ).toBeEnabled();
+  await expect(page.locator(".workbench-refs .handheld-ref-card.has-file")).toHaveCount(1);
+  await expect(page.locator(".workbench-angles")).toBeVisible();
+  await expect(page.getByRole("button", { name: /^生成商拍成片（2张）/ })).toBeEnabled();
 });
 
-test("guided commercial shoot remains usable on mobile", async ({ page }) => {
+test("workbench exposes seeany-style presets, detail note, resolution and a style reference slot", async ({
+  page,
+}) => {
+  await page.goto("/ecommerce-design");
+  const workbench = page.locator(".commerce-workbench.is-shoot");
+  await expect(workbench).toBeVisible();
+
+  // 可选的风格 / 构图参考图槽位在右侧，商品图未上传前不阻塞
+  const styleSlot = workbench.locator(".workbench-slot--style");
+  await expect(styleSlot).toContainText("参考图 · 可选");
+  await expect(styleSlot).toContainText("风格 / 构图参考");
+
+  // 细节补充：2000 字上限，计数实时
+  const note = workbench.getByRole("textbox", { name: "细节补充" });
+  await note.fill("暖色木质桌面，右上角留白放标题");
+  await expect(workbench.locator(".workbench-note__count")).toContainText("15/2000");
+
+  // 画面预设：seeany 字段（产品类型 / 场景类型 / 产品展示 / 排版呈现 / 氛围营造 / 价值导向）可选可输入
+  const presets = await openWorkbenchMenu(page, "画面预设");
+  for (const label of ["产品类型", "场景类型", "产品展示", "排版呈现", "氛围营造", "价值导向"]) {
+    await expect(presets.getByText(label, { exact: true })).toBeVisible();
+  }
+  await presets
+    .getByRole("group", { name: "产品类型建议" })
+    .getByRole("button", { name: "3C 数码" })
+    .click();
+  await presets.locator("input").nth(2).fill("开箱平铺");
+  await expect(
+    page.getByRole("button", { name: /^画面预设，当前：已填 2 项/ }),
+  ).toBeVisible();
+  // 清晰度只列出模型支持的档位（E2E 模型只支持 1K）
+  const resolution = presets.getByRole("radiogroup", { name: "选择清晰度" });
+  await expect(resolution.getByRole("radio")).toHaveCount(1);
+  await expect(resolution.getByRole("radio", { name: /1K/ })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
+  await page.keyboard.press("Escape");
+
+  // 已删除的自造选项不再出现
+  await expect(page.getByRole("button", { name: /^画面方案/ })).toHaveCount(0);
+});
+
+test("single-image tools offer a variant count instead of fixed packs", async ({
+  page,
+}) => {
+  await page.goto("/ecommerce-design?tool=outpaint");
+  const workbench = page.locator(".commerce-workbench.is-outpaint");
+  await expect(workbench).toBeVisible();
+  await expect(page.getByRole("radiogroup", { name: "选择出图任务" })).toHaveCount(0);
+  const stepper = workbench.getByRole("group", { name: "出图数量" });
+  await expect(stepper).toContainText("1");
+  await expect(page.locator(".workbench-plan li")).toHaveCount(1);
+  await stepper.getByRole("button", { name: "增加出图数量" }).click();
+  await stepper.getByRole("button", { name: "增加出图数量" }).click();
+  await expect(page.locator(".workbench-plan li")).toHaveCount(3);
+  await expect(page.locator(".workbench-plan")).toContainText("方案 3");
+  await expect(page.getByRole("button", { name: /^生成扩图结果（3张）/ })).toHaveCount(1);
+  await stepper.getByRole("button", { name: "增加出图数量" }).click();
+  await expect(stepper.getByRole("button", { name: "增加出图数量" })).toBeDisabled();
+  await expect(page.locator(".workbench-plan li")).toHaveCount(4);
+});
+
+test("canvas-first workbench remains usable on mobile", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/ecommerce-design?tool=shoot");
-  await page
-    .locator(".mobile-pane-switch button")
-    .filter({ hasText: "创作台" })
-    .click();
 
-  await expect(page.locator(".creative-flow")).toBeVisible();
+  await expect(page.locator(".commerce-workbench.is-shoot")).toBeVisible();
   await expect(page.locator(".mobile-pane-switch button")).toHaveCount(3);
-  await expect(page.locator(".creative-flow__directions button")).toHaveCount(
-    4,
-  );
-  const [formBox, summaryBox] = await Promise.all([
-    page.locator(".creative-flow__form").boundingBox(),
-    page.locator(".creative-flow__summary").boundingBox(),
-  ]);
-  expect(summaryBox.y).toBeGreaterThanOrEqual(formBox.y + formBox.height - 1);
+  await expect(page.locator(".commerce-settings")).toHaveCount(0);
+  await expect(
+    page.getByRole("radiogroup", { name: "拍摄方向" }).getByRole("radio"),
+  ).toHaveCount(4);
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= window.innerWidth + 1,
     ),
   ).toBe(true);
-  await page.locator(".commerce-canvas").evaluate((element) => {
-    element.scrollTop = element.scrollHeight;
-  });
-  await expect(
-    page.getByRole("button", { name: "生成商业成片" }),
-  ).toBeVisible();
+  const generate = page.getByRole("button", { name: /^生成商拍成片/ });
+  await generate.scrollIntoViewIfNeeded();
+  await expect(generate).toBeVisible();
 });
 
 test("desktop ecommerce workspace reaches the product library and recovers from an empty search", async ({
@@ -154,13 +231,13 @@ test("desktop ecommerce workspace reaches the product library and recovers from 
     "entered",
   );
   await expect(page.locator("[data-commerce-page-motion-target]")).toHaveCount(
-    4,
+    3,
   );
   await expect(page.locator(".commerce-canvas")).toHaveCSS("opacity", "1");
   await expect(page.locator(".commerce-canvas")).toHaveCSS("transform", "none");
   await expect(page.locator(".commerce-workspace-title")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "新建任务" })).toHaveCount(0);
-  await expect(page.locator(".settings-heading h2").first()).toBeVisible();
+  await expect(page.locator(".commerce-workbench.is-listing")).toBeVisible();
 
   await page
     .locator(".commerce-header__actions button")
@@ -241,12 +318,10 @@ test("English ecommerce workspace keeps labels in one locale", async ({
   );
   await page.goto("/ecommerce-design?tool=listing");
 
-  await expect(page.locator(".settings-heading h2").first()).toHaveText(
-    "Product images",
-  );
+  await expect(page.locator(".commerce-workbench.is-listing")).toBeVisible();
   await expect(
-    page.getByRole("heading", { name: "Generation settings" }),
-  ).toBeVisible();
+    page.locator(".commerce-header__actions button").first(),
+  ).toHaveText("Creative studio");
   await page
     .locator(".commerce-header__actions button")
     .filter({ hasText: "Product library" })
@@ -296,19 +371,11 @@ test("minimum desktop ecommerce workspace stays usable without horizontal overfl
     "data-ecommerce-page-motion-state",
     "entered",
   );
-  await expect(page.locator(".commerce-settings")).toBeVisible();
+  await expect(page.locator(".commerce-settings")).toHaveCount(0);
   await expect(page.locator(".commerce-canvas")).toBeVisible();
+  await expect(page.locator(".commerce-workbench.is-listing")).toBeVisible();
   await expect(page.locator(".canvas-facts")).toHaveCount(0);
-  await expect(
-    page
-      .locator(".settings-heading")
-      .filter({ hasText: "生成设置" })
-      .locator(":scope > span"),
-  ).toHaveCount(0);
-  await expect(page.locator(".showcase-demo img")).toHaveAttribute(
-    "src",
-    /listing-preview/,
-  );
+  await expect(page.locator(".workbench-plan li")).toHaveCount(6);
   await expect(page.getByRole("button", { name: /从商品库选择/ })).toHaveCount(
     0,
   );
@@ -360,7 +427,8 @@ test("minimum desktop ecommerce workspace stays usable without horizontal overfl
   expect(hoverStyles.labelWeight).toBe("800");
   expect(hoverStyles.iconOpacity).toBeGreaterThan(0.7);
   expect(hoverStyles.iconOpacity).toBeLessThanOrEqual(0.8);
-  expect(hoverStyles.iconTransform).not.toBe("none");
+  // 侧栏 hover 只做颜色 / 透明度反馈，不再位移图标
+  expect(hoverStyles.iconTransform).toBe("none");
   await shootTab.click();
   await expect(page).toHaveURL(/tool=shoot/);
   await expect(page.locator(".commerce-studio")).toHaveAttribute(
@@ -379,11 +447,8 @@ test("minimum desktop ecommerce workspace stays usable without horizontal overfl
     scroll.scrollTop = scroll.scrollHeight;
   });
   await expect(page.locator(".commerce-rail")).toHaveClass(/is-at-end/);
-  expect(
-    await page
-      .locator(".creative-flow__preview img")
-      .evaluate((image) => image.naturalWidth > 0),
-  ).toBe(true);
+  await expect(page.locator(".commerce-workbench.is-shoot")).toBeVisible();
+  await expect(page.locator(".handheld-frame")).toBeVisible();
   await expect(page.locator(".mobile-pane-switch")).toBeHidden();
 
   const fitsViewport = await page.evaluate(
@@ -398,9 +463,7 @@ test("ecommerce workspace uses layered atelier surfaces in light and dark", asyn
   await page.goto("/ecommerce-design?tool=listing");
   await expect(page.locator(".commerce-studio")).toBeVisible();
   await expect(page.locator(".commerce-atmosphere")).toBeVisible();
-  await expect(page.locator(".commerce-header__brand")).toContainText(
-    "AI 电商",
-  );
+  await expect(page.locator(".workbench-toolbar")).toBeVisible();
 
   const surfaceTokens = async () =>
     page.evaluate(() => {
@@ -417,17 +480,13 @@ test("ecommerce workspace uses layered atelier surfaces in light and dark", asyn
         ).borderRadius,
         railRadius: getComputedStyle(document.querySelector(".commerce-rail"))
           .borderRadius,
-        settingsRadiusComputed: getComputedStyle(
-          document.querySelector(".commerce-settings"),
-        ).borderRadius,
         canvasRadius: getComputedStyle(
           document.querySelector(".commerce-canvas"),
         ).borderRadius,
-        uploadRadius: getComputedStyle(
-          document.querySelector(".product-upload"),
-        ).borderRadius,
         hasAtmosphere: Boolean(document.querySelector(".commerce-atmosphere")),
-        stepCount: document.querySelectorAll(".showcase-demo__tag").length,
+        hasSettingsAside: Boolean(document.querySelector(".commerce-settings")),
+        stepCount: document.querySelectorAll(".workbench-empty__steps li")
+          .length,
       };
     });
 
@@ -437,11 +496,10 @@ test("ecommerce workspace uses layered atelier surfaces in light and dark", asyn
     settingsRadius: "20px",
     headerRadius: "18px",
     railRadius: "18px",
-    settingsRadiusComputed: "20px",
     canvasRadius: "20px",
-    uploadRadius: "20px",
     hasAtmosphere: true,
-    stepCount: 5,
+    hasSettingsAside: false,
+    stepCount: 3,
   });
   await page.evaluate(() =>
     document.documentElement.classList.add("color-scheme-dark"),
@@ -451,7 +509,7 @@ test("ecommerce workspace uses layered atelier surfaces in light and dark", asyn
     accent: "#8b7bff",
     settingsRadius: "20px",
     hasAtmosphere: true,
-    stepCount: 5,
+    stepCount: 3,
   });
 });
 
@@ -468,9 +526,10 @@ test("desktop ecommerce layout stays aligned across common workspaces", async ({
       height: viewport.height,
     });
     await page.goto("/ecommerce-design?tool=listing");
-    await expect(page.locator(".commerce-settings")).toBeVisible();
+    await expect(page.locator(".commerce-settings")).toHaveCount(0);
     await expect(page.locator(".commerce-rail")).toBeVisible();
     await expect(page.locator(".commerce-canvas")).toBeVisible();
+    await expect(page.locator(".commerce-workbench.is-listing")).toBeVisible();
     await expect(page.locator(".commerce-studio")).toHaveAttribute(
       "data-ecommerce-page-motion-state",
       "entered",
@@ -490,27 +549,31 @@ test("desktop ecommerce layout stays aligned across common workspaces", async ({
       };
       return {
         rail: rect(".commerce-rail"),
-        settings: rect(".commerce-settings"),
         canvas: rect(".commerce-canvas"),
-        showcase: rect(".canvas-showcase"),
-        image: rect(".showcase-demo img"),
+        workbench: rect(".workbench-output"),
+        refs: rect(".workbench-refs"),
+        frame: rect(".handheld-frame"),
+        plan: rect(".workbench-plan"),
+        history: rect(".handheld-history"),
         viewport: { width: window.innerWidth, height: window.innerHeight },
         scrollWidth: document.documentElement.scrollWidth,
       };
     });
-    expect(layout.settings).toBeTruthy();
     expect(layout.rail).toBeTruthy();
     expect(layout.canvas).toBeTruthy();
+    expect(layout.workbench).toBeTruthy();
     expect(layout.scrollWidth).toBeLessThanOrEqual(layout.viewport.width + 1);
-    expect(layout.settings.left - layout.rail.right).toBeGreaterThanOrEqual(4);
-    expect(layout.settings.left - layout.rail.right).toBeLessThanOrEqual(10);
-    expect(layout.canvas.left - layout.settings.right).toBeGreaterThanOrEqual(
-      4,
-    );
-    expect(layout.canvas.left - layout.settings.right).toBeLessThanOrEqual(12);
-    expect(layout.showcase.left).toBeGreaterThanOrEqual(layout.canvas.left);
-    expect(layout.showcase.right).toBeLessThanOrEqual(layout.canvas.right + 1);
-    expect(layout.image.bottom).toBeLessThanOrEqual(layout.showcase.bottom + 1);
+    expect(layout.canvas.left - layout.rail.right).toBeGreaterThanOrEqual(4);
+    expect(layout.canvas.left - layout.rail.right).toBeLessThanOrEqual(12);
+    expect(layout.workbench.left).toBeGreaterThanOrEqual(layout.canvas.left);
+    expect(layout.workbench.right).toBeLessThanOrEqual(layout.canvas.right + 1);
+    if (viewport.width >= 1440) {
+      // 桌面宽屏：结果画框整幅落在工作台内；画布优先：参考区 → 结果画框 → 出图结构 → 历史，从左到右不重叠
+      expect(layout.frame.bottom).toBeLessThanOrEqual(layout.workbench.bottom + 1);
+      expect(layout.frame.left).toBeGreaterThanOrEqual(layout.refs.right - 1);
+      expect(layout.plan.left).toBeGreaterThanOrEqual(layout.frame.right - 1);
+      expect(layout.history.left).toBeGreaterThanOrEqual(layout.plan.right - 1);
+    }
     if (viewport.width === 1024) {
       await expect(page.locator(".nav-mobile-toggle")).toBeVisible();
       await expect(page.locator(".main-nav")).toBeHidden();
@@ -528,21 +591,26 @@ test("mobile ecommerce workspace keeps settings and canvas readable", async ({
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/ecommerce-design?tool=listing");
 
-  await expect(page.locator(".commerce-settings")).toBeVisible();
-  await expect(page.locator(".mobile-tool-switch")).toBeVisible();
-  await expect(page.locator(".mobile-tool-switch button")).toHaveCount(13);
-  await expect(page.locator(".mobile-tool-switch")).toContainText("AI 商拍");
-  await expect(page.locator(".mobile-tool-switch")).toContainText("清晰增强");
-  await expect(page.locator(".generate-button")).toContainText("7张");
+  await expect(page.locator(".commerce-settings")).toHaveCount(0);
+  await expect(page.locator(".commerce-workbench.is-listing")).toBeVisible();
+  await expect(page.getByRole("tab", { name: "创作台" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "上传商品" }).first()).toBeVisible();
+  // 出图类型默认勾选 6 种，画布上直接可见
+  await expect(page.locator(".workbench-types")).toContainText("已选 6 张");
+  await expect(page.locator(".workbench-plan li")).toHaveCount(6);
+  const generate = page.getByRole("button", { name: /^生成商品套图（6张）/ });
+  await generate.scrollIntoViewIfNeeded();
+  await expect(generate).toContainText("6张");
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= window.innerWidth + 1,
     ),
   ).toBe(true);
 
+  await page.getByRole("tab", { name: "历史" }).click();
+  await expect(page.locator(".commerce-workbench")).toHaveCount(0);
   await page.getByRole("tab", { name: "创作台" }).click();
-  await expect(page.locator(".canvas-showcase")).toBeVisible();
-  await expect(page.locator(".showcase-demo img")).toBeVisible();
+  await expect(page.locator(".commerce-workbench.is-listing")).toBeVisible();
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= window.innerWidth + 1,
@@ -556,61 +624,145 @@ test("best-seller recreation supports an optional replacement product", async ({
   await page.goto("/ecommerce-design?tool=clone");
 
   await expect(page.locator(".commerce-workspace-title")).toHaveCount(0);
+  const workbench = page.locator(".commerce-workbench.is-clone");
+  await expect(workbench).toBeVisible();
+  const reference = workbench.locator(".workbench-slot--left");
+  const product = workbench.locator(".workbench-slot--right");
+  await expect(reference).toContainText("爆款参考");
+  await expect(reference).not.toContainText("可选");
+  await expect(product).toContainText("你的商品 · 可选");
+  // 商品槽位在参考图上传前保持锁定，引导用户先放爆款参考
+  await expect(product).toHaveClass(/is-locked/);
+  await expect(product.locator(".handheld-ref-card__hit")).toBeDisabled();
+  await expect(product.locator(".handheld-ref-card__actions")).toBeHidden();
+  await expect(product).toContainText("先上传");
   await expect(
-    page.getByRole("heading", { name: "爆款参考与商品原图" }),
-  ).toBeVisible();
-  await expect(page.locator(".generate-meta")).toContainText("还需 1 张参考图");
-  await expect(page.locator(".upload-role-guide")).toContainText(
-    "爆款参考必填",
-  );
-  await expect(page.locator(".upload-role-guide")).toContainText(
-    "商品原图可选",
-  );
-  await expect(
-    page.getByRole("button", { name: /一键生成爆款图复刻/ }),
+    page.getByRole("button", { name: /^生成爆款复刻/ }),
   ).toBeDisabled();
-  await expect(page.getByLabel("选择文案语言")).toBeVisible();
-  await expect(page.locator(".showcase-demo img")).toHaveAttribute(
-    "src",
-    /clone-preview/,
+  await expect(page.locator(".workbench-empty__steps")).toContainText(
+    "上传爆款参考图",
   );
+
+  // 对齐 seeany：爆款复刻不再有自造的“复刻类型 / 复刻程度”，改为细节补充 + 参考图
+  await expect(page.getByRole("button", { name: /^复刻方式/ })).toHaveCount(0);
+  const note = workbench.getByRole("textbox", { name: "细节补充" });
+  await expect(note).toBeVisible();
+  await note.fill("保留参考图的斜角构图，换成木质桌面");
+  await expect(workbench.locator(".workbench-note__count")).toContainText("/2000");
+
+  await page
+    .locator('input[type="file"]')
+    .first()
+    .setInputFiles({
+      name: "reference.png",
+      mimeType: "image/png",
+      buffer: Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+        "base64",
+      ),
+    });
+  await expect(reference).toHaveClass(/has-file/);
+  await expect(product).not.toHaveClass(/is-locked/);
+  await expect(product.locator(".handheld-ref-card__hit")).toBeEnabled();
+  await expect(product.locator(".handheld-ref-card__actions")).toBeVisible();
+  await expect(page.getByRole("button", { name: /^生成爆款复刻/ })).toBeEnabled();
   await expect(page.getByRole("button", { name: /从素材库选择/ })).toHaveCount(
     0,
   );
-  await expect(page.locator(".canvas-intro")).toContainText("上传爆款参考图");
 });
 
-test("custom listing structure reallocates an exact seven-image set", async ({
+test("listing picks image types from an 18-type catalog and plans copy before generating", async ({
   page,
 }) => {
   await page.goto("/ecommerce-design?tool=listing");
-  await expect(page.locator(".shot-plan-section")).toContainText(
-    "7 张 · 首张后并行",
-  );
-  await expect(page.locator(".shot-plan-section")).not.toContainText(
-    "顺序生成",
-  );
-  await page.getByRole("button", { name: /自定义配置/ }).click();
+  const plan = page.locator(".workbench-plan");
+  await expect(plan.locator("li")).toHaveCount(6);
+  await expect(plan).toContainText("首张锁定系列视觉，其余并行");
+  await expect(plan).not.toContainText("顺序生成");
+  await expect(page.getByRole("button", { name: /^自定义结构/ })).toHaveCount(0);
 
-  await expect(page.locator(".listing-count-config")).toContainText(
-    "已分配 7/7 张",
-  );
-  await expect(page.locator(".listing-count-config")).toContainText("套图已满");
-  await page.getByRole("button", { name: "减少场景图" }).click();
-  await expect(page.locator(".listing-count-config")).toContainText(
-    "已分配 6/7 张",
-  );
-  await expect(page.locator(".listing-count-config")).toContainText("可以生成");
-  await page.getByRole("button", { name: "增加其他" }).click();
-  await expect(page.locator(".listing-count-config")).toContainText("套图已满");
-  await expect(page.locator(".shot-plan-list li")).toHaveCount(7);
+  // 画布上的出图类型：默认 6 种勾选，取消一种 → 5 张
+  const types = page.locator(".workbench-types");
+  await expect(types).toContainText("已选 6 张");
+  await types.getByRole("checkbox", { name: "规格参数图" }).click();
+  await expect(types).toContainText("已选 5 张");
+  await expect(plan.locator("li")).toHaveCount(5);
+  await expect(page.getByRole("button", { name: /^生成商品套图（5张）/ })).toHaveCount(1);
+
+  // “更多”弹层里能看到全部 18 种，并支持全选 / 清空
+  await types.getByRole("button", { name: /更多/ }).click();
+  const more = page.getByRole("dialog", { name: "更多出图类型" });
+  await expect(more.getByRole("checkbox")).toHaveCount(18);
+  await more.getByRole("checkbox", { name: /亚马逊主图/ }).click();
+  await expect(plan.locator("li")).toHaveCount(6);
+  await more.getByRole("button", { name: "全选" }).click();
+  await expect(plan.locator("li")).toHaveCount(18);
+  await more.getByRole("button", { name: "清空" }).click();
+  await expect(plan.locator("li")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^生成商品套图/ })).toBeDisabled();
+  await more.getByRole("checkbox", { name: /首屏视觉图/ }).click();
+  await more.getByRole("checkbox", { name: /核心卖点图/ }).click();
+  await page.keyboard.press("Escape");
+  await expect(more).toHaveCount(0);
+  await expect(plan.locator("li")).toHaveCount(2);
+
+  // 智能策划：上传商品图前不可用；上传后调用策划接口，方案文案进入出图结构
+  const planButton = page.getByRole("button", { name: "去智能策划" });
+  await expect(planButton).toBeDisabled();
+  let planRequest = null;
+  await page.route("**/api/v1/commerce/listing-plans", async (route) => {
+    planRequest = route.request().postDataJSON();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        success: true,
+        data: {
+          summary: "以清晨厨房光线串起整套图",
+          items: [
+            { id: "hero", headline: "一杯，唤醒清晨", subline: "三档温控", direction: "商品居中，晨光斜射" },
+            { id: "selling", headline: "6 小时长效保温", subline: "", direction: "局部放大杯盖密封圈" },
+          ],
+        },
+      }),
+    });
+  });
+  await page
+    .locator('input[type="file"]')
+    .first()
+    .setInputFiles({
+      name: "product.png",
+      mimeType: "image/png",
+      buffer: Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+        "base64",
+      ),
+    });
+  await expect(planButton).toBeEnabled();
+  await planButton.click();
+  await expect(plan).toContainText("策划方案");
+  await expect(plan).toContainText("一杯，唤醒清晨");
+  await expect(plan).toContainText("6 小时长效保温");
+  await expect(plan).toContainText("以清晨厨房光线串起整套图");
+  await expect(page.getByRole("button", { name: "重新策划" })).toBeVisible();
+  expect(planRequest?.types?.map((item) => item.id)).toEqual(["hero", "selling"]);
+  expect(planRequest?.inputKeys).toEqual(["uploads/e2e-user-1/product.png"]);
+
+  // 清除策划回到智能直出
+  await plan.getByRole("button", { name: "清除策划方案" }).click();
+  await expect(plan).not.toContainText("一杯，唤醒清晨");
+  await expect(page.getByRole("button", { name: "去智能策划" })).toBeVisible();
 });
 
 test("AI product brief waits for confirmation and supports regeneration", async ({
   page,
 }) => {
   await page.goto("/ecommerce-design?tool=listing");
-  await page.locator('input[type="file"]').setInputFiles({
+  const productMenu = await openWorkbenchMenu(page, "商品信息");
+  const brief = productMenu.getByRole("button", { name: "AI 帮写卖点" });
+  await expect(brief).toBeDisabled();
+
+  await page.locator('input[type="file"]').first().setInputFiles({
     name: "product.png",
     mimeType: "image/png",
     buffer: Buffer.from(
@@ -618,14 +770,16 @@ test("AI product brief waits for confirmation and supports regeneration", async 
       "base64",
     ),
   });
+  await expect(page.locator(".workbench-refs .handheld-ref-card.has-file")).toHaveCount(1);
+  await expect(brief).toBeEnabled();
 
-  await page.getByRole("button", { name: "AI 生成" }).click();
+  await brief.click();
   const dialog = page.getByRole("dialog", { name: "生成商品名称和卖点" });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole("textbox", { name: "商品名称" })).toHaveValue(
     "第一版商品名称",
   );
-  await expect(page.locator(".text-field input").first()).toHaveValue("");
+  await expect(productMenu.getByLabel("商品名称")).toHaveValue("");
 
   await dialog.getByRole("button", { name: "重新生成" }).click();
   await expect(dialog.getByRole("textbox", { name: "商品名称" })).toHaveValue(
@@ -633,12 +787,15 @@ test("AI product brief waits for confirmation and supports regeneration", async 
   );
   await dialog.getByRole("button", { name: "确认填入" }).click();
 
-  await expect(page.locator(".text-field input").first()).toHaveValue(
+  await expect(productMenu.getByLabel("商品名称")).toHaveValue(
     "第二版商品名称",
   );
-  await expect(page.locator(".text-field textarea")).toHaveValue(
+  await expect(productMenu.getByLabel("核心卖点与要求")).toHaveValue(
     "第二版卖点一\n第二版卖点二",
   );
+  await expect(
+    page.getByRole("button", { name: "商品信息，当前：已填写" }),
+  ).toBeVisible();
 });
 
 test("fashion try-on separates garment, model, and scene choices", async ({
@@ -1356,7 +1513,12 @@ test("switching ecommerce tabs starts an isolated business session", async ({
   page,
 }) => {
   await page.goto("/ecommerce-design?tool=listing");
-  await page.getByLabel("商品名称").fill("只属于商品套图的测试商品");
+  const productMenu = await openWorkbenchMenu(page, "商品信息");
+  await productMenu.getByLabel("商品名称").fill("只属于商品套图的测试商品");
+  await page.keyboard.press("Escape");
+  await expect(
+    page.getByRole("button", { name: "商品信息，当前：已填写" }),
+  ).toBeVisible();
   await page
     .locator('input[type="file"]')
     .first()
@@ -1368,7 +1530,7 @@ test("switching ecommerce tabs starts an isolated business session", async ({
         "base64",
       ),
     });
-  await expect(page.locator(".upload-grid figure")).toHaveCount(1);
+  await expect(page.locator(".workbench-refs .handheld-ref-card.has-file")).toHaveCount(1);
 
   await page.getByRole("button", { name: /饰品穿戴/ }).click();
   await expect(page).toHaveURL(/tool=accessory/);
@@ -1378,12 +1540,14 @@ test("switching ecommerce tabs starts an isolated business session", async ({
   ).toBeVisible();
   await page.getByText("商品信息", { exact: true }).click();
   await expect(page.getByLabel("饰品名称")).toHaveValue("");
-  await expect(page.locator(".upload-grid figure")).toHaveCount(0);
+  await expect(page.locator(".workbench-refs .handheld-ref-card.has-file")).toHaveCount(0);
 
   await page.getByRole("button", { name: /商品套图/ }).click();
   await expect(page).toHaveURL(/tool=listing/);
-  await expect(page.getByLabel("商品名称")).toHaveValue("");
-  await expect(page.locator(".upload-grid figure")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "商品信息，当前：可选" })).toBeVisible();
+  const reopened = await openWorkbenchMenu(page, "商品信息");
+  await expect(reopened.getByLabel("商品名称")).toHaveValue("");
+  await expect(page.locator(".workbench-refs .handheld-ref-card.has-file")).toHaveCount(0);
 });
 
 test("all ecommerce side tabs resolve to their own business session", async ({
@@ -1469,41 +1633,224 @@ test("accessory results support asset and download actions", async ({
   ).toHaveValue("E2E-RING");
 });
 
-test("detail page exposes the complete commerce module catalog", async ({
+test("detail page offers seeany-style directions, custom directions and Amazon-only advanced options", async ({
   page,
 }) => {
   await page.goto("/ecommerce-design?tool=detail");
-  await expect(page.locator(".module-grid label")).toHaveCount(15);
-  await expect(page.getByText("品牌故事图", { exact: true })).toBeVisible();
-  await expect(page.getByText("售后保障图", { exact: true })).toBeVisible();
-  await expect(page.locator(".showcase-demo img")).toHaveAttribute(
+  // 与其他工作台同一套画布：左参考卡 + 选项卡、中舞台、右策划卡、历史栏
+  const workbench = page.locator(".commerce-workbench.is-detail");
+  await expect(workbench).toBeVisible();
+  await expect(workbench.locator(".workbench-slot--left")).toHaveCount(2);
+  await expect(workbench.locator(".handheld-platform")).toBeVisible();
+  await expect(workbench.locator(".handheld-pack")).toBeVisible();
+  await expect(workbench.locator(".detail-frame")).toBeVisible();
+  await expect(workbench.locator(".handheld-history")).toBeVisible();
+  await expect(page.locator(".detail-frame__demo")).toHaveAttribute(
     "src",
     /detail-preview/,
   );
+
+  // 出图方向：芯片 + “更多”弹层里列出全部 16 个内置方向
+  const picker = workbench.locator(".workbench-types");
+  await expect(picker.locator(".handheld-brief__meta")).toHaveText("已选 5/16");
+  await picker.getByRole("button", { name: /^更多/ }).click();
+  const popover = page.getByRole("dialog", { name: "更多出图方向" });
+  const grid = popover.locator(".workbench-types__grid");
+  await expect(grid.getByRole("checkbox")).toHaveCount(16);
+  await expect(grid.getByRole("checkbox", { name: /品牌理念图/ })).toBeVisible();
+  await expect(grid.getByRole("checkbox", { name: /售后与发货图/ })).toBeVisible();
+  await expect(grid.getByRole("checkbox", { name: /权威认证图/ })).toBeVisible();
+  await expect(grid.locator('[aria-checked="true"]')).toHaveCount(5);
+
+  // 自定义方向：回车添加，默认勾选，可删除；最多 4 个
+  const custom = popover.getByRole("textbox", { name: "自定义出图方向" });
+  await custom.fill("特定圣诞礼盒展示图");
+  await custom.press("Enter");
+  await expect(grid.locator("button.is-custom")).toHaveCount(1);
+  await expect(grid.locator("button.is-custom")).toHaveAttribute("aria-checked", "true");
+  await expect(picker.locator(".handheld-brief__meta")).toHaveText("已选 6/17");
+  await expect(custom).toHaveValue("");
+  for (const label of ["节日礼赠", "开箱体验", "尺码对照"]) {
+    await custom.fill(label);
+    await popover.getByRole("button", { name: "添加" }).click();
+  }
+  await expect(grid.locator("button.is-custom")).toHaveCount(4);
+  await expect(custom).toBeDisabled();
+  await popover.getByRole("button", { name: "删除自定义方向 开箱体验" }).click();
+  await expect(grid.locator("button.is-custom")).toHaveCount(3);
+  await expect(custom).toBeEnabled();
+  await popover.getByRole("button", { name: "关闭" }).click();
+  await expect(popover).toHaveCount(0);
+  // 自定义芯片直接出现在选项卡里
+  await expect(
+    picker.locator(".workbench-types__chips button.is-custom"),
+  ).toHaveCount(3);
+
+  // 补充参考图槽 / 补充描述 / 清晰度 / 自动直出开关都在
+  await expect(page.getByRole("button", { name: "上传补充参考图" })).toBeVisible();
+  await page.getByRole("textbox", { name: /补充描述/ }).fill("突出节能，禁止出现人物");
+  await expect(page.locator(".detail-note__count")).toHaveText("11/2000");
+  // 清晰度只列出模型支持的档位（E2E 模型只支持 1K）
+  const resolution = page.getByRole("radiogroup", { name: "选择清晰度" });
+  await expect(resolution.getByRole("radio")).toHaveCount(1);
+  await expect(resolution.getByRole("radio", { name: "1K" })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
+  await expect(
+    page.getByRole("checkbox", { name: "策划完毕后自动直接生成" }),
+  ).toBeChecked();
+  await expect(
+    page.getByRole("button", { name: /开始 AI 智能策划并生成/ }),
+  ).toBeVisible();
+
+  // 默认平台 Amazon：右侧 A+ 卡可见，画幅锁定官方尺寸
+  await expect(page.locator(".detail-amazon")).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "ASIN", exact: true })).toBeVisible();
+  await expect(page.getByRole("radiogroup", { name: "选择详情页画幅" })).toHaveCount(0);
+  await expect(workbench.locator(".detail-official")).toContainText("A+ 官方尺寸");
+  await expect(page.locator(".detail-frame__title em")).toContainText("Amazon US A+");
+  // 基础版最多 5 个模块：多勾的方向按顺序截断
+  await expect(page.locator(".detail-generate small")).toContainText("5张");
+
+  // 切到淘宝：Amazon 卡收起，画幅可选，出图数按勾选数量
+  await page.getByRole("button", { name: /^投放设置/ }).click();
+  await page.getByRole("button", { name: "选择详情投放平台" }).click();
+  await page.getByRole("option", { name: "淘宝 / 天猫 / 1688" }).click();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".detail-amazon")).toHaveCount(0);
+  const ratios = page.getByRole("radiogroup", { name: "选择详情页画幅" });
+  await expect(ratios).toBeVisible();
+  await expect(ratios.getByRole("radio", { name: /^3:4/ })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
+  await ratios.getByRole("radio", { name: /^1:1/ }).click();
+  await expect(page.locator(".detail-frame__title span")).toContainText("1:1");
+  await expect(page.locator(".detail-frame__title em")).toContainText("淘宝 / 天猫 / 1688 详情页");
+  await expect(page.locator(".detail-generate small")).toContainText("8张");
 });
 
-test("continuous optimization stays compact until the user opens it", async ({
+test("detail page plans copy before generating and can stop for review", async ({
+  page,
+}) => {
+  await page.goto("/ecommerce-design?tool=detail");
+  let planRequest = null;
+  await page.route("**/api/v1/commerce/detail-plans", async (route) => {
+    planRequest = route.request().postDataJSON();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        success: true,
+        data: {
+          summary: "暖调居家质感串起整页",
+          painPoints: ["够不够亮", "刺眼吗", "装不装得上"],
+          items: [
+            { id: "hero", headline: "一盏灯点亮整间屋", subline: "暖光 3000K", direction: "商品居中，暖色台面" },
+            { id: "pain", headline: "夜里起身总是摸黑", subline: "", direction: "昏暗卧室，人物摸索开关" },
+          ],
+        },
+      }),
+    });
+  });
+
+  // 只保留 2 个方向，关掉“策划完毕后自动直接生成”
+  const chips = page.locator(".workbench-types__chips");
+  for (const label of [/核心卖点图/, /细节工艺图/, /生活场景图/]) {
+    await chips.getByRole("checkbox", { name: label }).click();
+  }
+  await expect(chips.locator('[aria-checked="true"]')).toHaveCount(2);
+  await expect(page.locator(".detail-plan li")).toHaveCount(2);
+  const autoGenerate = page.getByRole("checkbox", { name: "策划完毕后自动直接生成" });
+  await autoGenerate.click();
+  await expect(autoGenerate).not.toBeChecked();
+  await expect(page.locator(".detail-generate")).toContainText("AI 智能策划");
+  await expect(page.locator(".detail-generate")).not.toContainText("并生成");
+
+  const planButton = page.locator(".detail-plan__run");
+  await expect(planButton).toBeDisabled();
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: "product.png",
+    mimeType: "image/png",
+    buffer: Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      "base64",
+    ),
+  });
+  await expect(planButton).toBeEnabled();
+
+  // 底部主按钮此时只做策划，不计费
+  await expect(page.locator(".detail-generate small")).toContainText("不计费");
+  await page.locator(".detail-generate").click();
+  const result = page.locator(".detail-plan__result");
+  await expect(result).toContainText("买家痛点");
+  await expect(result).toContainText("够不够亮");
+  await expect(result).toContainText("暖调居家质感串起整页");
+  await expect(result).toContainText("一盏灯点亮整间屋");
+  await expect(result).toContainText("夜里起身总是摸黑");
+  expect(planRequest?.types?.map((item) => item.id)).toEqual(["hero", "pain"]);
+  expect(planRequest?.inputKeys).toEqual(["uploads/e2e-user-1/product.png"]);
+  expect(planRequest?.amazon?.marketplaceId).toBe("US");
+
+  // 舞台按策划文案预排版块（与商品套图同一套：大图 + 侧边缩略图条）；主按钮变成生成
+  await expect(page.locator(".detail-frame")).toHaveClass(/is-planned/);
+  await expect(page.locator(".detail-frame__thumbs .handheld-frame__thumb")).toHaveCount(2);
+  await expect(page.locator(".detail-aplus__slot strong").first()).toHaveText(
+    "一盏灯点亮整间屋",
+  );
+  await page.locator(".detail-frame__thumbs .handheld-frame__thumb").nth(1).click();
+  await expect(page.locator(".detail-aplus__slot strong").first()).toHaveText(
+    "夜里起身总是摸黑",
+  );
+  await expect(page.locator(".detail-generate")).toContainText("生成 2 张详情图");
+  await expect(page.getByRole("button", { name: "重新策划" })).toBeVisible();
+
+  // 清除后回到策划前
+  await page.getByRole("button", { name: "清除策划方案" }).click();
+  await expect(result).toHaveCount(0);
+  await expect(page.locator(".detail-generate")).toContainText("AI 智能策划");
+});
+
+test("detail page keeps result actions and continuous optimization inside the frame", async ({
   page,
 }) => {
   await page.goto("/ecommerce-design?tool=detail&seedResult=1");
 
-  const panel = page.locator(".revision-panel");
-  await expect(panel).toBeVisible();
-  await expect(panel).not.toHaveClass(/open/);
-  await expect(page.getByLabel("选择调整方向")).toBeHidden();
+  const frame = page.locator(".detail-frame");
+  await expect(frame).toHaveClass(/has-image/);
+  await expect(frame.locator(".detail-page__shot")).toHaveCount(1);
+  await expect(frame.locator(".detail-frame__module")).toContainText("970×600");
+  const actions = page.getByLabel("结果操作");
+  await expect(actions.getByRole("button", { name: "局部修正" })).toBeEnabled();
+  await expect(actions.getByRole("button", { name: "下载", exact: true })).toBeEnabled();
+  await expect(actions.getByRole("button", { name: "导出图片+文案" })).toBeEnabled();
+  await expect(page.getByLabel("选择调整方向")).toHaveCount(0);
 
-  await page.getByRole("button", { name: "展开连续优化" }).click();
-  await expect(panel).toHaveClass(/open/);
+  await actions.getByRole("button", { name: "连续优化" }).click();
+  const revision = page.getByRole("dialog", { name: "继续调整当前成品" });
+  await expect(revision).toBeVisible();
   await expect(page.getByLabel("选择调整方向")).toBeVisible();
+  await revision.getByRole("button", { name: "收起连续优化" }).click();
+  await expect(revision).toHaveCount(0);
 
-  await page.getByRole("button", { name: "收起连续优化" }).click();
-  await expect(panel).not.toHaveClass(/open/);
+  // 侧边缩略图条列出本次全部版块：切到未生成的版块只换画框内容，结果与操作不丢
+  const thumbs = frame.locator("..").locator(".detail-frame__thumbs .handheld-frame__thumb");
+  await expect(thumbs).toHaveCount(5);
+  await thumbs.nth(1).click();
+  await expect(frame.locator(".detail-frame__module")).toContainText("痛点困扰图");
+  await thumbs.nth(0).click();
+  await expect(frame.locator(".detail-page__shot")).toHaveCount(1);
+  await expect(actions.getByRole("button", { name: "下载", exact: true })).toBeEnabled();
 });
 
 test("product library loads a product into the current task", async ({
   page,
 }) => {
-  await page.goto("/ecommerce-design?tool=detail");
+  await page.goto("/ecommerce-design?tool=listing");
+  await expect(
+    page.getByRole("button", { name: "商品信息，当前：可选" }),
+  ).toBeVisible();
   await page
     .locator(".commerce-header__actions button")
     .filter({ hasText: "商品库" })
@@ -1517,8 +1864,15 @@ test("product library loads a product into the current task", async ({
   );
 
   await page.locator(".commerce-product-card__actions .is-primary").click();
-  await expect(page.getByText("当前商品", { exact: true })).toBeVisible();
-  await expect(page.locator(".upload-grid figure")).toHaveCount(1);
+  await expect(page.locator(".commerce-workbench.is-listing")).toBeVisible();
+  await expect(page.locator(".workbench-refs .handheld-ref-card.has-file")).toHaveCount(1);
+  await expect(
+    page.getByRole("button", { name: "商品信息，当前：已填写" }),
+  ).toBeVisible();
+  const productMenu = await openWorkbenchMenu(page, "商品信息");
+  await expect(productMenu.getByLabel("商品名称")).toHaveValue(
+    "延迟返回的测试商品",
+  );
 });
 
 test("generate asks for credit confirmation before submitting", async ({
@@ -1533,9 +1887,10 @@ test("generate asks for credit confirmation before submitting", async ({
     page.getByText("延迟返回的测试商品", { exact: true }),
   ).toBeVisible();
   await page.locator(".commerce-product-card__actions .is-primary").click();
-  await expect(page.getByRole("button", { name: /一键生成/ })).toBeEnabled();
+  const generateButton = page.getByRole("button", { name: /智能策划并生成/ });
+  await expect(generateButton).toBeEnabled();
 
-  await page.getByRole("button", { name: /一键生成/ }).click();
+  await generateButton.click();
   const dialog = page.getByRole("dialog", { name: "确认生成费用" });
   await expect(dialog).toBeVisible();
   await expect(dialog.locator(".ai-cost-confirm-total")).toContainText(
@@ -1550,7 +1905,7 @@ test("generate asks for credit confirmation before submitting", async ({
   await dialog.getByRole("button", { name: "取消" }).click();
   await expect(dialog).toHaveCount(0);
 
-  await page.getByRole("button", { name: /一键生成/ }).click();
+  await generateButton.click();
   await expect(
     page.getByRole("dialog", { name: "确认生成费用" }),
   ).toBeVisible();
@@ -1687,134 +2042,112 @@ test("ecommerce history exposes deletion and removes the record", async ({
   await expect(page.locator(".workspace-empty")).toBeVisible();
 });
 
-test("generated result controls remain keyboard-accessible after loading history", async ({
+test("workbench keeps result actions reachable after loading history", async ({
   page,
 }) => {
-  await page.goto("/ecommerce-design?tool=detail&seedResult=1");
-  await expect(page.locator(".result-workspace")).toBeVisible();
-  await expect(page.locator(".result-image-tools")).toHaveCount(0);
-  await expect(page.locator(".result-image-card img")).toHaveCSS(
+  await page.goto("/ecommerce-design?tool=listing&seedResult=multi");
+  const workbench = page.locator(".commerce-workbench.is-listing");
+  await expect(workbench).toBeVisible();
+  const frame = workbench.locator(".handheld-frame");
+  await expect(frame).toHaveClass(/has-image/);
+  await expect(page.locator(".result-workspace")).toHaveCount(0);
+  await expect(frame.locator(".handheld-frame__shot img")).toHaveCSS(
     "object-fit",
     "contain",
   );
-  const resultFitsCanvasWithBreathingRoom = await page.evaluate(() => {
-    const stage = document.querySelector(".result-stage.is-single");
-    const card = stage?.querySelector(".result-image-card");
+  const resultFitsStage = await page.evaluate(() => {
+    const stage = document.querySelector(".workbench-output");
+    const card = document.querySelector(".handheld-frame");
     if (!stage || !card) return false;
     const stageRect = stage.getBoundingClientRect();
     const cardRect = card.getBoundingClientRect();
-    const horizontalInset = Math.min(
-      cardRect.left - stageRect.left,
-      stageRect.right - cardRect.right,
-    );
-    const verticalInset = Math.min(
-      cardRect.top - stageRect.top,
-      stageRect.bottom - cardRect.bottom,
-    );
     return (
       cardRect.top >= stageRect.top &&
       cardRect.left >= stageRect.left &&
       cardRect.right <= stageRect.right &&
-      cardRect.bottom <= stageRect.bottom &&
-      horizontalInset >= stageRect.width * 0.08 &&
-      verticalInset >= stageRect.height * 0.08 &&
-      stage.scrollHeight <= stage.clientHeight + 1
+      cardRect.bottom <= stageRect.bottom
     );
   });
-  expect(resultFitsCanvasWithBreathingRoom).toBe(true);
-  await expect(
-    page.getByRole("button", { name: "放大查看当前结果" }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "局部编辑当前结果" }),
-  ).toBeVisible();
+  expect(resultFitsStage).toBe(true);
 
-  const deleteButton = page.locator(".result-delete");
-  await expect(deleteButton).toHaveCount(1);
-  await deleteButton.focus();
-  await expect(deleteButton).toBeFocused();
+  await expect(page.getByRole("button", { name: "查看商品套图" })).toBeVisible();
+  const actions = page.getByLabel("结果操作");
+  await expect(actions.getByRole("button", { name: "连续优化" })).toBeVisible();
+  await expect(actions.getByRole("button", { name: "局部修正" })).toBeEnabled();
+  await expect(actions.getByRole("button", { name: "下载", exact: true })).toBeEnabled();
+  await expect(actions.getByRole("button", { name: "存入素材库" })).toBeEnabled();
+  await expect(actions.getByRole("button", { name: "下载套图" })).toBeEnabled();
+
+  const revisionToggle = actions.getByRole("button", { name: "连续优化" });
+  await revisionToggle.focus();
+  await expect(revisionToggle).toBeFocused();
   await page.keyboard.press("Enter");
-  await page.getByRole("button", { name: "确认删除" }).click();
-  await expect(page.locator(".result-workspace")).toHaveCount(0);
+  const revision = page.getByRole("dialog", { name: "继续调整当前成品" });
+  await expect(revision).toBeVisible();
+  await expect(revision.getByRole("button", { name: /生成 V2/ })).toBeDisabled();
+  await revision.getByRole("textbox").fill("商品再放大 15%，背景改为浅灰影棚");
+  await expect(revision.getByRole("button", { name: /生成 V2/ })).toBeEnabled();
+  await revision.getByRole("button", { name: "收起连续优化" }).click();
+  await expect(revision).toHaveCount(0);
+
+  const historyCard = page
+    .getByLabel("商品套图历史")
+    .getByRole("listitem", { name: "商品套图，共 4 张" });
+  await expect(historyCard).toBeVisible();
+  await expect(historyCard).toHaveAttribute("aria-pressed", "true");
 });
 
-test("multi-image results keep fixed non-overlapping slots after load and hover", async ({
+test("multi-image results render as a stable thumb strip beside the frame", async ({
   page,
 }) => {
   await page.goto("/ecommerce-design?tool=listing&seedResult=multi");
-  const cards = page.locator(".result-image-card");
-  await expect(cards).toHaveCount(4);
-  await expect(cards.locator("img")).toHaveCount(4);
+  const frame = page.locator(".handheld-frame");
+  await expect(frame).toHaveClass(/has-image/);
+  const thumbs = page.getByRole("list", { name: "本次套图" }).getByRole("listitem");
+  await expect(thumbs).toHaveCount(4);
+  await expect(thumbs.locator("img")).toHaveCount(4);
+  await expect(thumbs.first()).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator(".commerce-canvas")).toHaveCSS("transform", "none");
-  await expect(cards).toHaveClass([/loaded/, /loaded/, /loaded/, /loaded/]);
 
   const snapshot = () =>
-    cards.evaluateAll((items) =>
+    thumbs.evaluateAll((items) =>
       items.map((item) => {
         const rect = item.getBoundingClientRect();
         return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
       }),
     );
   const initial = await snapshot();
-  expect(Math.abs(initial[0].x - initial[1].x)).toBeLessThan(0.5);
-  expect(initial[1].y).toBeGreaterThan(initial[0].y);
-  expect(initial[2].x).toBeGreaterThan(initial[0].x);
-  expect(Math.abs(initial[2].y - initial[0].y)).toBeLessThan(0.5);
-  expect(Math.abs(initial[3].x - initial[2].x)).toBeLessThan(0.5);
-  expect(Math.abs(initial[3].y - initial[1].y)).toBeLessThan(0.5);
+  const frameBox = await frame.boundingBox();
+  // 缩略图在画框右侧纵向排列，互不重叠
+  expect(initial.every((rect) => rect.x >= frameBox.x + frameBox.width - 1)).toBe(
+    true,
+  );
+  expect(
+    initial.every((rect, index) =>
+      index === 0 ? true : rect.y >= initial[index - 1].y + initial[index - 1].height - 0.5,
+    ),
+  ).toBe(true);
+  expect(initial.every((rect) => Math.abs(rect.x - initial[0].x) < 0.5)).toBe(true);
   const bounds = await page.evaluate(() => {
-    const canvas = document
-      .querySelector(".commerce-canvas")
-      ?.getBoundingClientRect();
-    const stage = document.querySelector(".result-stage");
+    const canvas = document.querySelector(".commerce-canvas")?.getBoundingClientRect();
+    const stage = document.querySelector(".workbench-output");
     const stageRect = stage?.getBoundingClientRect();
-    const cards = [...document.querySelectorAll(".result-image-card")].map(
-      (item) => item.getBoundingClientRect(),
-    );
     return {
       canvas,
       stage: stageRect,
       scrollWidth: stage?.scrollWidth || 0,
       clientWidth: stage?.clientWidth || 0,
-      scrollHeight: stage?.scrollHeight || 0,
-      clientHeight: stage?.clientHeight || 0,
-      cards: cards.map((rect) => ({
-        left: rect.left,
-        right: rect.right,
-        top: rect.top,
-        bottom: rect.bottom,
-      })),
     };
   });
   expect(bounds.stage.right).toBeLessThanOrEqual(bounds.canvas.right + 1);
   expect(bounds.stage.bottom).toBeLessThanOrEqual(bounds.canvas.bottom + 1);
   expect(bounds.scrollWidth).toBeLessThanOrEqual(bounds.clientWidth + 1);
-  expect(bounds.scrollHeight).toBeLessThanOrEqual(bounds.clientHeight + 1);
-  expect(
-    bounds.cards.every(
-      (rect) =>
-        rect.left >= bounds.stage.left - 0.5 &&
-        rect.right <= bounds.stage.right + 0.5 &&
-        rect.top >= bounds.stage.top - 0.5 &&
-        rect.bottom <= bounds.stage.bottom + 0.5,
-    ),
-  ).toBe(true);
-  expect(
-    initial.every((rect, index) =>
-      initial.slice(index + 1).every((other) => {
-        const overlapWidth =
-          Math.min(rect.x + rect.width, other.x + other.width) -
-          Math.max(rect.x, other.x);
-        const overlapHeight =
-          Math.min(rect.y + rect.height, other.y + other.height) -
-          Math.max(rect.y, other.y);
-        return overlapWidth <= 0 || overlapHeight <= 0;
-      }),
-    ),
-  ).toBe(true);
 
-  await page.waitForTimeout(450);
-  await cards.first().hover();
+  await thumbs.nth(2).click();
+  await expect(thumbs.nth(2)).toHaveAttribute("aria-pressed", "true");
+  await expect(thumbs.first()).toHaveAttribute("aria-pressed", "false");
+  await page.waitForTimeout(300);
+  await thumbs.first().hover();
   await page.waitForTimeout(100);
   const settled = await snapshot();
   expect(

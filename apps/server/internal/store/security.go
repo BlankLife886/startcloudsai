@@ -51,10 +51,22 @@ func InsertSecurityRiskEvent(ctx context.Context, q Q, item NewSecurityRiskEvent
 }
 
 func ListSecurityRiskEvents(ctx context.Context, q Q, unresolvedOnly bool, limit int) ([]*SecurityRiskEvent, error) {
-	limit = min(max(limit, 1), 200)
+	return ListSecurityRiskEventsPage(ctx, q, unresolvedOnly, min(max(limit, 1), 200), 0, false)
+}
+
+// securityRiskRank 与后台展示顺序一致：critical、high、medium、low。
+const securityRiskRank = `CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END`
+
+// ListSecurityRiskEventsPage 分页读取风险事件；bySeverity 时按严重度再按时间倒序，
+// 否则按时间倒序。offset 由调用方限制在 ListCountCap 内。
+func ListSecurityRiskEventsPage(ctx context.Context, q Q, unresolvedOnly bool, limit, offset int, bySeverity bool) ([]*SecurityRiskEvent, error) {
+	order := `id DESC`
+	if bySeverity {
+		order = securityRiskRank + `, id DESC`
+	}
 	rows, err := q.Query(ctx, `SELECT id,user_id,api_key_id,host(client_ip),category,severity,score,action,
 		reason,metadata,resolved_at,resolution_note,created_at FROM security_risk_events
-		WHERE ($1=false OR resolved_at IS NULL) ORDER BY id DESC LIMIT $2`, unresolvedOnly, limit)
+		WHERE ($1=false OR resolved_at IS NULL) ORDER BY `+order+` LIMIT $2 OFFSET $3`, unresolvedOnly, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -210,8 +222,13 @@ type UploadHashBlock struct {
 }
 
 func ListUploadHashBlocks(ctx context.Context, q Q, limit int) ([]*UploadHashBlock, error) {
+	return ListUploadHashBlocksPage(ctx, q, min(max(limit, 1), 200), 0)
+}
+
+// ListUploadHashBlocksPage 按更新时间倒序分页；sha256 作决胜列保证分页稳定。
+func ListUploadHashBlocksPage(ctx context.Context, q Q, limit, offset int) ([]*UploadHashBlock, error) {
 	rows, err := q.Query(ctx, `SELECT sha256,reason,active,created_at,updated_at FROM upload_hash_blocklist
-		ORDER BY updated_at DESC LIMIT $1`, min(max(limit, 1), 200))
+		ORDER BY updated_at DESC, sha256 DESC LIMIT $1 OFFSET $2`, limit, offset)
 	if err != nil {
 		return nil, err
 	}

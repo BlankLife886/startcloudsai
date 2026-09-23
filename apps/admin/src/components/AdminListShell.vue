@@ -1,5 +1,6 @@
 <script setup lang="ts">
-withDefaults(
+import { nextTick, ref, watch } from 'vue'
+const props = withDefaults(
   defineProps<{
     hasPrev: boolean
     hasNext: boolean
@@ -7,6 +8,7 @@ withDefaults(
     page?: number
     count?: number
     total?: number | null
+    totalCapped?: boolean
     pageSize?: number
     pageSizes?: number[]
     /** 视口固定高度；与 fill 互斥 */
@@ -19,12 +21,19 @@ withDefaults(
     page: 1,
     count: 0,
     total: null,
+    totalCapped: false,
     pageSize: 20,
     pageSizes: () => [10, 20, 50],
     viewportHeight: 'clamp(360px, calc(100vh - 300px), 680px)',
     fill: false,
   },
 )
+const viewport = ref<HTMLElement | null>(null)
+watch(() => [props.page, props.pageSize], async () => {
+  await nextTick()
+  viewport.value?.scrollTo({ top: 0 })
+  viewport.value?.querySelectorAll<HTMLElement>('.el-table__body-wrapper .el-scrollbar__wrap').forEach(element => element.scrollTo({ top: 0 }))
+})
 
 defineEmits<{
   'update:page': [value: number]
@@ -38,7 +47,7 @@ defineEmits<{
     :class="{ 'is-fill': fill }"
     :style="fill ? undefined : { '--admin-list-height': viewportHeight }"
   >
-    <div class="admin-list-shell__viewport">
+    <div ref="viewport" class="admin-list-shell__viewport">
       <slot />
     </div>
     <footer class="admin-list-shell__footer">
@@ -50,6 +59,7 @@ defineEmits<{
         :page="page"
         :count="count"
         :total="total"
+        :total-capped="totalCapped"
         :page-size="pageSize"
         :page-sizes="pageSizes"
         @update:page="$emit('update:page', $event)"
@@ -83,6 +93,8 @@ defineEmits<{
 }
 .admin-list-shell__footer {
   display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
   min-height: 50px;
   align-items: center;
   justify-content: space-between;

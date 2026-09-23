@@ -22,7 +22,8 @@ type ContentTab = "announcements" | "changelog";
 type AnnStatusFilter = "all" | "live" | "pending" | "ended" | "disabled";
 type LogTagFilter = "all" | "feature" | "experience" | "highlight";
 
-const activeTab = ref<ContentTab>("announcements");
+const props = defineProps<{ mode: ContentTab }>();
+const activeTab = computed(() => props.mode);
 const query = ref("");
 const annStatusFilter = ref<AnnStatusFilter>("all");
 const logTagFilter = ref<LogTagFilter>("all");
@@ -822,8 +823,7 @@ function clearFilters() {
 }
 
 function refreshAll() {
-  void loadAnnouncements();
-  void loadChangelog();
+  void retryCurrent();
 }
 
 function retryCurrent() {
@@ -876,9 +876,10 @@ watch([query, annStatusFilter, logTagFilter, activeTab], () => {
 });
 
 onMounted(() => {
-  void loadAnnouncements();
-  void loadChangelog();
-  announcementClock = setInterval(() => { announcementNow.value = Date.now(); }, 1000);
+  void retryCurrent();
+  if (activeTab.value === 'announcements') {
+    announcementClock = setInterval(() => { announcementNow.value = Date.now(); }, 1000);
+  }
 });
 onBeforeUnmount(() => clearInterval(announcementClock));
 </script>
@@ -887,29 +888,9 @@ onBeforeUnmount(() => clearInterval(announcementClock));
   <div class="page content-admin-page">
     <PageCard>
       <div class="content-toolbar">
-        <div class="content-tabs" role="tablist" aria-label="内容类型">
-          <button
-            type="button"
-            role="tab"
-            class="content-tab"
-            :class="{ 'is-active': activeTab === 'announcements' }"
-            :aria-selected="activeTab === 'announcements'"
-            @click="activeTab = 'announcements'"
-          >
-            公告
-            <em class="tnum">{{ announcements.length }}</em>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            class="content-tab"
-            :class="{ 'is-active': activeTab === 'changelog' }"
-            :aria-selected="activeTab === 'changelog'"
-            @click="activeTab = 'changelog'"
-          >
-            更新说明
-            <em class="tnum">{{ changelog.length }}</em>
-          </button>
+        <div class="content-page-heading">
+          <strong>{{ activeTab === 'announcements' ? '公告管理' : '更新说明' }}</strong>
+          <span class="tnum">共 {{ activeTab === 'announcements' ? announcements.length : changelog.length }} 条</span>
         </div>
         <div class="content-toolbar__right">
           <input
@@ -1585,6 +1566,9 @@ onBeforeUnmount(() => clearInterval(announcementClock));
 </template>
 
 <style scoped>
+.content-page-heading { display: flex; align-items: baseline; gap: 10px; flex-shrink: 0; }
+.content-page-heading strong { color: var(--ink); font-size: 16px; }
+.content-page-heading span { color: var(--ink-3); font-size: 12px; }
 .content-admin-page {
   display: flex;
   flex-direction: column;

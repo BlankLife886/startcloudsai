@@ -336,6 +336,7 @@ export function WalletView() {
   const [ledgerFilter, setLedgerFilter] = useState("all");
   const [ledgerPage, setLedgerPage] = useState(1);
   const [ledgerTotal, setLedgerTotal] = useState(null);
+  const [ledgerTotalCapped, setLedgerTotalCapped] = useState(false);
   const [ledgerNextCursor, setLedgerNextCursor] = useState(null);
   const [pageSize, setPageSize] = useState(PAGE_SIZE);
   const [jumpPage, setJumpPage] = useState("");
@@ -383,6 +384,7 @@ export function WalletView() {
         setLedger(result.items);
         setLedgerPage(Number(result.page || page) || 1);
         setLedgerTotal(Number.isFinite(result.total) ? result.total : null);
+        setLedgerTotalCapped(result.totalCapped);
         setLedgerNextCursor(result.nextCursor || null);
       } catch (error) {
         if (error?.name !== "AbortError" && mountedRef.current)
@@ -1010,7 +1012,9 @@ export function WalletView() {
                 <span>·</span>
                 <small>
                   {ledgerTotal != null
-                    ? `共 ${ledgerTotal.toLocaleString("zh-CN")} 条`
+                    ? ledgerTotalCapped
+                      ? `最近 ${ledgerTotal.toLocaleString("zh-CN")} 条，更早记录请导出账单`
+                      : `共 ${ledgerTotal.toLocaleString("zh-CN")} 条`
                     : `${ledgerRows.length} 条`}
                 </small>
               </div>

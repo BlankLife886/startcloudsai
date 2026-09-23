@@ -250,7 +250,9 @@ func failOpenAIImage(c *gin.Context, err error) {
 func (s *Server) openAIGenerateImage(c *gin.Context) { s.openAIImage(c, false) }
 func (s *Server) openAIEditImage(c *gin.Context)     { s.openAIImage(c, true) }
 
-func (s *Server) openAIImage(c *gin.Context, editing bool) {
+// openAIImageTaskLegacy is retained for the old task-backed compatibility
+// helpers and tests. Public developer image routes use openAIImage.
+func (s *Server) openAIImageTaskLegacy(c *gin.Context, editing bool) {
 	c.Header("Cache-Control", "no-store")
 	user, err := s.requireUser(c)
 	if err != nil {

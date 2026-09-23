@@ -190,7 +190,7 @@ class ModelSheetRepository {
     }
     if (request.background == 'transparent' &&
         !request.model.supportsTransparentPng) {
-      throw const FormatException('当前模型不支持透明背景');
+      throw const FormatException('当前模型不支持移除背景');
     }
     final data = await _apiClient.post(
       '/tasks',

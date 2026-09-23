@@ -5,12 +5,17 @@ const ICONS = {
   error: "bi-x-lg",
   warning: "bi-exclamation-lg",
   info: "bi-info-lg",
+  download: "bi-download",
 };
 
 export function ToastNotification({ notification, onDismiss }) {
   const rootRef = useRef(null);
   const onDismissRef = useRef(onDismiss);
   const type = notification.type === "failure" ? "error" : notification.type || "info";
+  const isDownload = notification.download === true;
+  const progressNumber = Number(notification.progress);
+  const progressKnown = isDownload && notification.progressKnown !== false && Number.isFinite(progressNumber);
+  const progressValue = progressKnown ? Math.max(0, Math.min(100, progressNumber)) : 0;
   const duration = Number(notification.duration) || 0;
   onDismissRef.current = onDismiss;
 
@@ -42,15 +47,27 @@ export function ToastNotification({ notification, onDismiss }) {
   return (
     <div
       ref={rootRef}
-      className={`app-toast is-${type}`}
+      className={`app-toast is-${type}${isDownload ? " is-download" : ""}`}
       role={type === "error" || type === "warning" ? "alert" : "status"}
     >
       <span className="app-toast-icon" aria-hidden="true">
-        <i className={`bi ${ICONS[type] || ICONS.info}`} />
+        <i className={`bi ${isDownload ? ICONS.download : ICONS[type] || ICONS.info}`} />
       </span>
       <div className="app-toast-copy">
         {notification.title ? <strong>{notification.title}</strong> : null}
         <span>{notification.message}</span>
+        {isDownload ? (
+          <div
+            className={`app-toast-progress${progressKnown ? "" : " is-indeterminate"}`}
+            role="progressbar"
+            aria-label="下载进度"
+            {...(progressKnown
+              ? { "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": Math.round(progressValue) }
+              : {})}
+          >
+            <span style={progressKnown ? { width: `${progressValue}%` } : undefined} />
+          </div>
+        ) : null}
       </div>
       {notification.action?.label ? (
         <button
