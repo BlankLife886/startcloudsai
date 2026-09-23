@@ -34,6 +34,14 @@ type UserAnalyticsDailyPoint struct {
 	ActiveUsers     int64  `json:"activeUsers"`
 	SubmittingUsers int64  `json:"submittingUsers"`
 	SuccessfulUsers int64  `json:"successfulUsers"`
+	// 当日成功生成的图片张数（创作任务 count 之和）与失败任务数
+	Images      int64 `json:"images"`
+	FailedTasks int64 `json:"failedTasks"`
+	// 当日结束时的累计用户数
+	TotalUsers int64 `json:"totalUsers"`
+	// 当日计费收入与上游成本（usage_profit_ledger）
+	RevenueCents      int64 `json:"revenueCents"`
+	UpstreamCostCents int64 `json:"upstreamCostCents"`
 }
 
 type UserRetentionCohort struct {
@@ -68,7 +76,8 @@ type UserAnalytics struct {
 	DailyTrend    []UserAnalyticsDailyPoint  `json:"dailyTrend"`
 	Retention     []UserRetentionCohort      `json:"retention"`
 	Funnel        UserAnalyticsFunnel        `json:"funnel"`
-	CalculatedAt  time.Time                  `json:"calculatedAt"`
+	UserAnalyticsInsights
+	CalculatedAt time.Time `json:"calculatedAt"`
 }
 
 func GetUserAnalytics(ctx context.Context, q Q, now time.Time) (*UserAnalytics, error) {
@@ -162,17 +171,34 @@ func GetUserAnalytics(ctx context.Context, q Q, now time.Time) (*UserAnalytics, 
 		SELECT day, count(DISTINCT user_id) AS submitters,
 			count(DISTINCT user_id) FILTER (WHERE status='succeeded') AS successful
 		FROM runs GROUP BY day
+	), image_daily AS (
+		SELECT (created_at AT TIME ZONE 'Asia/Shanghai')::date AS day,
+			COALESCE(sum(count) FILTER (WHERE status='succeeded'),0) AS images,
+			count(*) FILTER (WHERE status='failed') AS failed
+		FROM tasks WHERE created_at >= $1::timestamptz-interval '30 days' GROUP BY day
+	), ledger_daily AS (
+		SELECT (created_at AT TIME ZONE 'Asia/Shanghai')::date AS day,
+			sum(revenue_cents) AS revenue, sum(upstream_cost_cents) AS cost
+		FROM usage_profit_ledger WHERE created_at >= $1::timestamptz-interval '30 days' GROUP BY day
+	), users_before AS (
+		SELECT count(*) AS users FROM users WHERE role='user'
+			AND (created_at AT TIME ZONE 'Asia/Shanghai')::date < (SELECT min(day) FROM days)
 	)
 	SELECT to_char(days.day,'YYYY-MM-DD'), COALESCE(registrations.users,0),
-		COALESCE(activity_daily.users,0), COALESCE(run_daily.submitters,0), COALESCE(run_daily.successful,0)
+		COALESCE(activity_daily.users,0), COALESCE(run_daily.submitters,0), COALESCE(run_daily.successful,0),
+		COALESCE(image_daily.images,0)::bigint, COALESCE(image_daily.failed,0),
+		(SELECT users FROM users_before) + sum(COALESCE(registrations.users,0)) OVER (ORDER BY days.day),
+		COALESCE(ledger_daily.revenue,0)::bigint, COALESCE(ledger_daily.cost,0)::bigint
 	FROM days LEFT JOIN registrations USING(day) LEFT JOIN activity_daily USING(day)
-	LEFT JOIN run_daily USING(day) ORDER BY days.day`, now)
+	LEFT JOIN run_daily USING(day) LEFT JOIN image_daily USING(day) LEFT JOIN ledger_daily USING(day)
+	ORDER BY days.day`, now)
 	if err != nil {
 		return nil, err
 	}
 	for trendRows.Next() {
 		var item UserAnalyticsDailyPoint
-		if err := trendRows.Scan(&item.Date, &item.NewUsers, &item.ActiveUsers, &item.SubmittingUsers, &item.SuccessfulUsers); err != nil {
+		if err := trendRows.Scan(&item.Date, &item.NewUsers, &item.ActiveUsers, &item.SubmittingUsers, &item.SuccessfulUsers,
+			&item.Images, &item.FailedTasks, &item.TotalUsers, &item.RevenueCents, &item.UpstreamCostCents); err != nil {
 			trendRows.Close()
 			return nil, err
 		}
@@ -297,5 +323,11 @@ func GetUserAnalytics(ctx context.Context, q Q, now time.Time) (*UserAnalytics, 
 		return nil, err
 	}
 	funnelRows.Close()
+
+	insights, err := loadUserAnalyticsInsights(ctx, q, now)
+	if err != nil {
+		return nil, err
+	}
+	result.UserAnalyticsInsights = insights
 	return result, nil
 }

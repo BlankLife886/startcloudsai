@@ -561,6 +561,7 @@ async function submitPassword() {
             '/feedback',
             '/trial-applications',
             '/audit',
+            '/user-profile-dashboard',
           ].includes(route.path),
         }"
       >

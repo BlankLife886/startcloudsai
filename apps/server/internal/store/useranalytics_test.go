@@ -91,7 +91,21 @@ func TestUserAnalyticsAggregatesProfilesRetentionAndFunnel(t *testing.T) {
 		t.Fatalf("retention cohorts = %#v", analytics.Retention)
 	}
 	last := analytics.DailyTrend[len(analytics.DailyTrend)-1]
-	if last.ActiveUsers != 1 || last.SubmittingUsers != 1 || last.SuccessfulUsers != 1 {
+	if last.ActiveUsers != 1 || last.SubmittingUsers != 1 || last.SuccessfulUsers != 1 || last.Images != 1 || last.TotalUsers != 2 {
 		t.Fatalf("today trend = %#v", last)
+	}
+	cmp := analytics.Comparison
+	if cmp.ActiveUsers7 != 1 || cmp.ActiveUsersPrev7 != 1 || cmp.NewUsersPrev30 != 0 || cmp.SucceededRuns30 != 3 {
+		t.Fatalf("comparison = %#v", cmp)
+	}
+	tierUsers := int64(0)
+	for _, tier := range analytics.ValueTiers {
+		tierUsers += tier.Users
+	}
+	if tierUsers != 2 {
+		t.Fatalf("value tiers = %#v", analytics.ValueTiers)
+	}
+	if analytics.Tags == nil || analytics.Watchlist.Risk == nil || analytics.Watchlist.HighValue == nil || analytics.Watchlist.Churn == nil {
+		t.Fatalf("insight lists must be non-nil: %#v", analytics.UserAnalyticsInsights)
 	}
 }
