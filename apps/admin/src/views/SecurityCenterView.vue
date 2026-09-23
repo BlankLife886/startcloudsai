@@ -81,10 +81,24 @@ const activeHashCount = computed(() => countLabel(activeHashTotal.value, activeH
 const paymentIssueCount = computed(() => paymentIssueTotal.value);
 
 const tabs = computed(() => [
-  { id: "risks", label: "风险与限制", count: countLabel(riskTotal.value + blockTotal.value, riskTotalCapped.value || blockTotalCapped.value) },
-  { id: "uploads", label: "文件安全", count: activeHashCount.value },
-  { id: "payments", label: "支付对账", count: paymentIssueCount.value },
+  { id: "risks", label: "风险事件", count: unresolvedCount.value, alert: riskTotal.value > 0 },
+  { id: "blocks", label: "临时限制", count: blockCount.value, alert: false },
+  { id: "uploads", label: "文件拦截", count: activeHashCount.value, alert: false },
+  { id: "payments", label: "支付对账", count: String(paymentIssueCount.value), alert: paymentIssueCount.value > 0 },
 ]);
+
+const categoryLabels: Record<string, string> = {
+  login_bruteforce: "登录暴力尝试", api_key_abuse: "API Key 滥用", upload_blocked_hash: "违规文件上传",
+  payment_amount_mismatch: "支付金额异常", redeem_bruteforce: "兑换码爆破", signup_burst: "批量注册",
+};
+const actionLabels: Record<string, string> = {
+  ip_blocked: "已限制 IP", key_frozen: "已冻结 Key", upload_rejected: "已拒绝上传", order_held: "订单已暂扣",
+  rate_limited: "已限流", observed: "仅记录",
+};
+const categoryLabel = (value: string) => categoryLabels[value] || value;
+// 列表用紧凑时间（月-日 时:分），抽屉里保留完整时间。
+const shortTime = (value?: string) => value ? new Date(value).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }) : "—";
+const actionLabel = (value: string) => actionLabels[value] || value || "—";
 
 function points(value?: number) {
   if (value == null || !Number.isFinite(Number(value))) return "—";
@@ -291,47 +305,7 @@ onMounted(() => void load());
 <template>
   <div class="page security-page">
     <PageCard>
-      <template #actions>
-        <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
-        <el-button v-if="tab === 'uploads'" type="primary" :icon="Plus" @click="hashDialog = true">添加规则</el-button>
-        <el-button v-if="tab === 'payments'" type="primary" :icon="Search" :loading="running" @click="runReconciliation">立即核对</el-button>
-        <el-button v-if="tab === 'payments' && recoverySupported" :icon="Plus" @click="openRecovery()">关联渠道单号</el-button>
-      </template>
-
-      <el-alert v-if="loadError" :title="loadError" type="error" :closable="false" />
-      <el-alert v-if="reconciliationReport" :title="reconciliationReport" type="info" :closable="false" />
-      <section class="security-kpis" aria-label="安全摘要">
-        <article :class="{ 'is-warn': riskTotal > 0 }">
-          <small>未处理风险</small>
-          <strong class="tnum">{{ loaded && !loadError ? unresolvedCount : '—' }}</strong>
-        </article>
-        <article :class="{ 'is-warn': blockTotal > 0 }">
-          <small>临时限制</small>
-          <strong class="tnum">{{ loaded && !loadError ? blockCount : '—' }}</strong>
-        </article>
-        <article>
-          <small>拦截规则</small>
-          <strong class="tnum">{{ loaded && !loadError ? activeHashCount : '—' }}</strong>
-        </article>
-        <article :class="{ 'is-bad': paymentIssueCount > 0 }">
-          <small>对账异常</small>
-          <strong class="tnum">{{ loaded && !loadError ? paymentIssueCount : '—' }}</strong>
-        </article>
-      </section>
-
-      <p class="security-legend">
-        未处理风险
-        <em class="tnum">{{ unresolvedCount }}</em>
-        条，生效限制
-        <em class="tnum">{{ blockCount }}</em>
-        条，文件拦截
-        <em class="tnum">{{ activeHashCount }}</em>
-        条。自动修复必须通过渠道订单身份、金额和支付方式校验，其余留人工核查。
-        <span v-if="paymentIssueCount" class="is-bad">{{ paymentIssueCount }} 笔需要对账。</span>
-      </p>
-
-      <div class="security-toolbar">
-        <RouterLink class="security-log-link" to="/platform-logs?category=security">查看安全日志 →</RouterLink>
+      <template #header>
         <div class="security-tabs" role="tablist" aria-label="安全视图">
           <button
             v-for="item in tabs"
@@ -339,199 +313,172 @@ onMounted(() => void load());
             type="button"
             role="tab"
             class="security-tab"
-            :class="{ 'is-active': tab === item.id }"
+            :class="{ 'is-active': tab === item.id, 'is-alert': item.alert }"
             :aria-selected="tab === item.id"
             @click="tab = item.id"
           >
             {{ item.label }}
-            <em class="tnum">{{ item.count }}</em>
+            <em class="tnum">{{ loaded ? item.count : "—" }}</em>
           </button>
         </div>
+      </template>
+      <template #actions>
+        <el-button v-if="tab === 'uploads'" type="primary" :icon="Plus" @click="hashDialog = true">添加规则</el-button>
+        <el-button v-if="tab === 'payments'" type="primary" :icon="Search" :loading="running" @click="runReconciliation">立即核对</el-button>
+        <el-button v-if="tab === 'payments' && recoverySupported" :icon="Plus" @click="openRecovery()">关联渠道单号</el-button>
+        <el-button @click="router.push('/platform-logs?category=security')">安全日志</el-button>
+        <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
+      </template>
+
+      <el-alert v-if="loadError" :title="loadError" type="error" :closable="false" />
+      <el-alert v-if="reconciliationReport" :title="reconciliationReport" type="info" closable @close="reconciliationReport = ''" />
+
+      <div v-loading="loading" class="security-board">
+        <el-table v-if="tab === 'risks'" :data="risks" height="100%" class="security-table is-clickable" empty-text="暂无未处理风险" @row-click="investigateRisk">
+          <el-table-column label="等级" width="84">
+            <template #default="{ row }"><el-tag :type="severityType(row.severity)" size="small" :effect="row.severity === 'critical' ? 'dark' : 'light'">{{ severityLabel(row.severity) }}</el-tag></template>
+          </el-table-column>
+          <el-table-column label="分数" width="64" align="right">
+            <template #default="{ row }"><span class="tnum" :class="{ 'is-bad': row.score >= 80 }">{{ row.score }}</span></template>
+          </el-table-column>
+          <el-table-column label="类型" width="130" show-overflow-tooltip>
+            <template #default="{ row }"><strong>{{ categoryLabel(row.category) }}</strong></template>
+          </el-table-column>
+          <el-table-column prop="reason" label="原因" min-width="260" show-overflow-tooltip />
+          <el-table-column label="来源" min-width="150" show-overflow-tooltip>
+            <template #default="{ row }"><span class="mono">{{ row.clientIp || row.userId || "—" }}</span></template>
+          </el-table-column>
+          <el-table-column label="已采取" width="110" show-overflow-tooltip>
+            <template #default="{ row }"><span class="muted">{{ actionLabel(row.action) }}</span></template>
+          </el-table-column>
+          <el-table-column label="时间" width="116">
+            <template #default="{ row }"><span class="tnum">{{ shortTime(row.createdAt) }}</span></template>
+          </el-table-column>
+          <el-table-column label="操作" width="150" align="right">
+            <template #default="{ row }">
+              <el-button v-if="row.apiKeyId && row.action === 'key_frozen'" text size="small" type="warning" @click.stop="unfreezeKey(row.apiKeyId)">解冻 Key</el-button>
+              <el-button text size="small" type="primary" @click.stop="investigateRisk(row as Risk)">核查</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+
+        <el-table v-else-if="tab === 'blocks'" :data="blocks" height="100%" class="security-table" empty-text="当前没有临时限制">
+          <el-table-column label="对象" width="100">
+            <template #default="{ row }"><strong>{{ subjectLabel(row.subjectType) }}</strong></template>
+          </el-table-column>
+          <el-table-column label="标识" min-width="260" show-overflow-tooltip>
+            <template #default="{ row }"><span class="mono">{{ row.subjectValue }}</span></template>
+          </el-table-column>
+          <el-table-column label="范围" width="90">
+            <template #default="{ row }"><el-tag size="small" type="info">{{ scopeLabel(row.scope) }}</el-tag></template>
+          </el-table-column>
+          <el-table-column prop="reason" label="原因" min-width="220" show-overflow-tooltip />
+          <el-table-column label="到期" width="116">
+            <template #default="{ row }"><span class="tnum">{{ shortTime(row.expiresAt) }}</span></template>
+          </el-table-column>
+          <el-table-column label="操作" width="80" align="right">
+            <template #default="{ row }"><el-button text size="small" type="warning" @click="revokeBlock(row as Block)">解除</el-button></template>
+          </el-table-column>
+        </el-table>
+
+        <el-table v-else-if="tab === 'uploads'" :data="hashes" height="100%" class="security-table" empty-text="暂无哈希规则">
+          <el-table-column label="SHA-256" min-width="300" show-overflow-tooltip>
+            <template #default="{ row }"><span class="mono">{{ row.sha256 }}</span></template>
+          </el-table-column>
+          <el-table-column prop="reason" label="原因" min-width="220" show-overflow-tooltip />
+          <el-table-column label="状态" width="90">
+            <template #default="{ row }"><el-tag :type="row.active ? 'danger' : 'info'" size="small">{{ row.active ? "拦截中" : "已停用" }}</el-tag></template>
+          </el-table-column>
+          <el-table-column label="更新时间" width="116">
+            <template #default="{ row }"><span class="tnum">{{ shortTime(row.updatedAt) }}</span></template>
+          </el-table-column>
+          <el-table-column label="操作" width="80" align="right">
+            <template #default="{ row }"><el-button v-if="row.active" text size="small" type="danger" :icon="Delete" @click="removeHash(row as HashRule)">停用</el-button></template>
+          </el-table-column>
+        </el-table>
+
+        <el-table v-else :data="reconciliations" height="100%" class="security-table" empty-text="尚未执行对账">
+          <el-table-column label="订单" min-width="150" show-overflow-tooltip>
+            <template #default="{ row }"><span class="mono">{{ row.orderId }}</span></template>
+          </el-table-column>
+          <el-table-column label="本站状态" width="96"><template #default="{ row }">{{ row.localStatus || "—" }}</template></el-table-column>
+          <el-table-column label="本站金额" width="100" align="right"><template #default="{ row }"><span class="tnum">{{ points(row.expectedAmountCents) }}</span></template></el-table-column>
+          <el-table-column label="渠道实付" width="100" align="right">
+            <template #default="{ row }"><span class="tnum" :class="{ 'is-bad': row.providerPaidAmountCents != null && row.providerPaidAmountCents !== row.expectedAmountCents }">{{ points(row.providerPaidAmountCents) }}</span></template>
+          </el-table-column>
+          <el-table-column label="结果" width="130">
+            <template #default="{ row }"><el-tag :type="outcomeType(row.outcome)" :icon="row.outcome === 'matched' ? CircleCheck : undefined" size="small">{{ outcomeLabel(row.outcome) }}</el-tag></template>
+          </el-table-column>
+          <el-table-column prop="detail" label="说明" min-width="200" show-overflow-tooltip />
+          <el-table-column label="核对时间" width="116"><template #default="{ row }"><span class="tnum">{{ shortTime(row.checkedAt) }}</span></template></el-table-column>
+          <el-table-column label="处理" width="180" align="right">
+            <template #default="{ row }">
+              <el-button v-if="recoverySupported && row.outcome === 'provider_id_missing'" text size="small" type="success" @click="confirmNotCreated(row.orderId)">确认未建单</el-button>
+              <el-button v-if="recoverySupported && row.outcome === 'provider_id_missing'" text size="small" @click="openRecovery(row.orderId)">补录单号</el-button>
+              <el-button v-if="recoverySupported && ['close_result_unknown','provider_binding_failed','create_result_unknown'].includes(row.outcome)" text size="small" @click="openRecovery(row.orderId)">继续核查</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
       </div>
 
-      <div v-loading="loading" class="security-stage">
-        <div v-if="tab === 'risks'" class="security-split">
-          <section class="security-board">
-            <header>
-              <strong>生效中的临时限制</strong>
-              <small>到期前会拦截对应对象</small>
-            </header>
-            <el-table :data="blocks" max-height="420" empty-text="当前没有临时限制">
-              <el-table-column label="对象" min-width="220">
-                <template #default="{ row }">
-                  <div class="security-cell">
-                    <strong>{{ subjectLabel(row.subjectType) }}</strong>
-                    <small class="mono">{{ row.subjectValue }}</small>
-                  </div>
-                </template>
-              </el-table-column>
-              <el-table-column label="范围" width="100">
-                <template #default="{ row }">{{ scopeLabel(row.scope) }}</template>
-              </el-table-column>
-              <el-table-column prop="reason" label="原因" min-width="220" show-overflow-tooltip />
-              <el-table-column label="到期" width="170">
-                <template #default="{ row }"><span class="tnum">{{ formatTime(row.expiresAt) }}</span></template>
-              </el-table-column>
-              <el-table-column label="操作" width="80" fixed="right">
-                <template #default="{ row }">
-                  <el-button text size="small" @click="revokeBlock(row as Block)">解除</el-button>
-                </template>
-              </el-table-column>
-            </el-table>
-            <p v-if="blockTotal > blocks.length" class="security-note">仅显示最新 {{ blocks.length }} 条生效限制，共 {{ blockCount }} 条。</p>
-          </section>
-          <section class="security-board">
-            <header>
-              <strong>未处理风险事件</strong>
-              <small>处理后会从当前列表移除</small>
-            </header>
-            <el-table :data="risks" max-height="420" empty-text="暂无未处理风险">
-              <el-table-column label="等级" width="110">
-                <template #default="{ row }">
-                  <el-tag :type="severityType(row.severity)" effect="light" size="small">
-                    {{ severityLabel(row.severity) }} · {{ row.score }}
-                  </el-tag>
-                </template>
-              </el-table-column>
-              <el-table-column prop="category" label="类型" width="180" />
-              <el-table-column prop="reason" label="原因" min-width="240" show-overflow-tooltip />
-              <el-table-column label="来源" min-width="200">
-                <template #default="{ row }">
-                  <span class="mono">{{ row.clientIp || row.userId || "—" }}</span>
-                </template>
-              </el-table-column>
-              <el-table-column label="时间" width="170">
-                <template #default="{ row }"><span class="tnum">{{ formatTime(row.createdAt) }}</span></template>
-              </el-table-column>
-              <el-table-column label="操作" width="150" fixed="right">
-                <template #default="{ row }">
-                  <el-button v-if="row.apiKeyId && row.action === 'key_frozen'" text size="small" type="warning" @click="unfreezeKey(row.apiKeyId)">
-                    解冻 Key
-                  </el-button>
-                  <el-button text size="small" type="primary" @click="investigateRisk(row as Risk)">核查处理</el-button>
-                </template>
-              </el-table-column>
-            </el-table>
-            <CursorPager
-              v-if="riskTotal > PAGE_SIZE"
-              :has-prev="riskPage > 1"
-              :has-next="riskPage * PAGE_SIZE < riskTotal"
-              :loading="loading"
-              :page="riskPage"
-              :total="riskTotal"
-              :total-capped="riskTotalCapped"
-              :page-size="PAGE_SIZE"
-              :page-sizes="[PAGE_SIZE]"
-              @update:page="(value: number) => { riskPage = value; load() }"
-            />
-          </section>
-        </div>
-
-        <section v-else-if="tab === 'uploads'" class="security-board">
-          <header>
-            <strong>上传文件哈希黑名单</strong>
-            <small>相同文件再次上传时会在写入 OSS 前被拦截</small>
-          </header>
-          <el-table :data="hashes" max-height="420" empty-text="暂无哈希规则">
-            <el-table-column label="SHA-256" min-width="340">
-              <template #default="{ row }"><span class="mono">{{ row.sha256 }}</span></template>
-            </el-table-column>
-            <el-table-column prop="reason" label="原因" min-width="240" />
-            <el-table-column label="状态" width="100">
-              <template #default="{ row }">
-                <el-tag :type="row.active ? 'danger' : 'info'" effect="light" size="small">
-                  {{ row.active ? "拦截中" : "已停用" }}
-                </el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column label="更新时间" width="170">
-              <template #default="{ row }"><span class="tnum">{{ formatTime(row.updatedAt) }}</span></template>
-            </el-table-column>
-            <el-table-column label="操作" width="80" fixed="right">
-              <template #default="{ row }">
-                <el-button v-if="row.active" text size="small" type="danger" :icon="Delete" @click="removeHash(row as HashRule)">停用</el-button>
-              </template>
-            </el-table-column>
-          </el-table>
-          <CursorPager
-            v-if="hashTotal > PAGE_SIZE"
-            :has-prev="hashPage > 1"
-            :has-next="hashPage * PAGE_SIZE < hashTotal"
-            :loading="loading"
-            :page="hashPage"
-            :total="hashTotal"
-            :total-capped="hashTotalCapped"
-            :page-size="PAGE_SIZE"
-            :page-sizes="[PAGE_SIZE]"
-            @update:page="(value: number) => { hashPage = value; load() }"
-          />
-        </section>
-
-        <section v-else class="security-board">
-          <header>
-            <strong>支付订单主动对账</strong>
-            <small>优先核对未结订单，缺少渠道单号的记录需人工核查</small>
-          </header>
-          <el-table :data="reconciliations" max-height="420" empty-text="尚未执行对账">
-            <el-table-column label="订单" min-width="220">
-              <template #default="{ row }"><span class="mono">{{ row.orderId }}</span></template>
-            </el-table-column>
-            <el-table-column prop="localStatus" label="本站状态" width="110" />
-            <el-table-column label="金额" width="240">
-              <template #default="{ row }">
-                <div class="security-cell">
-                  <strong>本站 {{ points(row.expectedAmountCents) }}</strong>
-                  <small>上游 {{ points(row.providerPaidAmountCents) }}</small>
-                </div>
-              </template>
-            </el-table-column>
-            <el-table-column label="结果" width="150">
-              <template #default="{ row }">
-                <el-tag :type="outcomeType(row.outcome)" :icon="row.outcome === 'matched' ? CircleCheck : undefined" effect="light" size="small">
-                  {{ outcomeLabel(row.outcome) }}
-                </el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column prop="detail" label="说明" min-width="220" show-overflow-tooltip />
-            <el-table-column label="核对时间" width="170">
-              <template #default="{ row }"><span class="tnum">{{ formatTime(row.checkedAt) }}</span></template>
-            </el-table-column>
-            <el-table-column label="处理" width="130" fixed="right">
-              <template #default="{ row }">
-                <el-button v-if="recoverySupported && row.outcome === 'provider_id_missing'" text type="success" @click="confirmNotCreated(row.orderId)">确认未建单</el-button>
-                <el-button v-if="recoverySupported && row.outcome === 'provider_id_missing'" text @click="openRecovery(row.orderId)">补录渠道单号</el-button>
-                <el-button v-if="recoverySupported && ['close_result_unknown','provider_binding_failed','create_result_unknown'].includes(row.outcome)" text @click="openRecovery(row.orderId)">继续核查</el-button>
-              </template>
-            </el-table-column>
-          </el-table>
-          <CursorPager
-            v-if="paymentTotal > PAGE_SIZE"
-            :has-prev="paymentPage > 1"
-            :has-next="paymentPage * PAGE_SIZE < Math.min(paymentTotal, 10000)"
-            :loading="loading"
-            :page="paymentPage"
-            :total="Math.min(paymentTotal, 10000)"
-            :total-capped="paymentTotal > 10000"
-            :page-size="PAGE_SIZE"
-            :page-sizes="[PAGE_SIZE]"
-            @update:page="(value: number) => { paymentPage = value; load() }"
-          />
-        </section>
-      </div>
+      <p v-if="tab === 'blocks' && blockTotal > blocks.length" class="security-note">仅显示最新 {{ blocks.length }} 条，共 {{ blockCount }} 条生效限制。</p>
+      <CursorPager
+        v-if="tab === 'risks'"
+        :has-prev="riskPage > 1" :has-next="riskPage * PAGE_SIZE < riskTotal" :loading="loading" :page="riskPage"
+        :total="riskTotal" :total-capped="riskTotalCapped" :page-size="PAGE_SIZE" :page-sizes="[PAGE_SIZE]"
+        @update:page="(value: number) => { riskPage = value; load() }"
+      />
+      <CursorPager
+        v-else-if="tab === 'uploads'"
+        :has-prev="hashPage > 1" :has-next="hashPage * PAGE_SIZE < hashTotal" :loading="loading" :page="hashPage"
+        :total="hashTotal" :total-capped="hashTotalCapped" :page-size="PAGE_SIZE" :page-sizes="[PAGE_SIZE]"
+        @update:page="(value: number) => { hashPage = value; load() }"
+      />
+      <CursorPager
+        v-else-if="tab === 'payments'"
+        :has-prev="paymentPage > 1" :has-next="paymentPage * PAGE_SIZE < Math.min(paymentTotal, 10000)" :loading="loading" :page="paymentPage"
+        :total="Math.min(paymentTotal, 10000)" :total-capped="paymentTotal > 10000" :page-size="PAGE_SIZE" :page-sizes="[PAGE_SIZE]"
+        @update:page="(value: number) => { paymentPage = value; load() }"
+      />
     </PageCard>
-    <el-drawer v-model="riskDrawer" title="风险核查" size="min(660px, 96vw)" append-to-body>
+
+    <el-drawer v-model="riskDrawer" size="min(620px, 96vw)" append-to-body class="risk-drawer">
+      <template #header>
+        <div v-if="selectedRisk" class="risk-head">
+          <div class="risk-head__title">
+            <el-tag :type="severityType(selectedRisk.severity)" size="small" :effect="selectedRisk.severity === 'critical' ? 'dark' : 'light'">{{ severityLabel(selectedRisk.severity) }} · {{ selectedRisk.score }}</el-tag>
+            <strong>{{ categoryLabel(selectedRisk.category) }}</strong>
+          </div>
+          <span>#{{ selectedRisk.id }} · {{ formatTime(selectedRisk.createdAt) }}</span>
+        </div>
+      </template>
       <div v-if="selectedRisk" class="risk-investigation">
-        <el-tag :type="severityType(selectedRisk.severity)">{{ severityLabel(selectedRisk.severity) }}风险 · #{{ selectedRisk.id }}</el-tag>
-        <h3>{{ selectedRisk.reason }}</h3>
-        <div class="risk-actions"><el-button type="primary" @click="riskLogs(selectedRisk)">查看关联日志</el-button><el-button v-if="selectedRisk.userId" @click="router.push({ path: '/users', query: { search: selectedRisk.userId, userId: selectedRisk.userId } })">查看来源用户</el-button><el-button v-if="typeof selectedRisk.metadata?.orderId === 'string'" @click="router.push({ path: '/orders', query: { search: String(selectedRisk.metadata.orderId), orderId: String(selectedRisk.metadata.orderId) } })">查看关联订单</el-button></div>
-        <dl><dt>发生时间</dt><dd>{{ formatTime(selectedRisk.createdAt) }}</dd><dt>来源 IP</dt><dd>{{ selectedRisk.clientIp || '未记录' }}</dd><dt>触发动作</dt><dd>{{ selectedRisk.action }}</dd></dl>
-        <h4>关联的生效限制</h4>
-        <div v-for="block in relatedBlocks" :key="block.id" class="risk-block"><span>{{ scopeLabel(block.scope) }} · {{ block.reason }}<small>到期 {{ formatTime(block.expiresAt) }}</small></span><el-button type="warning" plain @click="revokeBlock(block)">解除此限制</el-button></div>
-        <p v-if="!relatedBlocks.length">当前没有读取到匹配的临时限制。</p>
-        <el-button v-if="selectedRisk.apiKeyId && selectedRisk.action === 'key_frozen'" type="warning" @click="unfreezeKey(selectedRisk.apiKeyId)">解冻关联 Key</el-button>
-        <details><summary>原始证据</summary><pre>{{ JSON.stringify(selectedRisk.metadata, null, 2) }}</pre></details>
-        <el-button type="primary" @click="resolveRisk(selectedRisk)">记录处理结果</el-button>
+        <p class="risk-reason">{{ selectedRisk.reason }}</p>
+        <dl class="risk-facts">
+          <div><dt>来源 IP</dt><dd class="mono">{{ selectedRisk.clientIp || "未记录" }}</dd></div>
+          <div><dt>已采取</dt><dd>{{ actionLabel(selectedRisk.action) }}</dd></div>
+          <div v-if="selectedRisk.userId" class="is-wide"><dt>用户</dt><dd class="mono">{{ selectedRisk.userId }}</dd></div>
+          <div v-if="selectedRisk.apiKeyId" class="is-wide"><dt>API Key</dt><dd class="mono">{{ selectedRisk.apiKeyId }}</dd></div>
+        </dl>
+        <div class="risk-actions">
+          <el-button size="small" @click="riskLogs(selectedRisk)">关联日志</el-button>
+          <el-button v-if="selectedRisk.userId" size="small" @click="router.push({ path: '/users', query: { search: selectedRisk.userId, userId: selectedRisk.userId } })">来源用户</el-button>
+          <el-button v-if="typeof selectedRisk.metadata?.orderId === 'string'" size="small" @click="router.push({ path: '/orders', query: { search: String(selectedRisk.metadata.orderId), orderId: String(selectedRisk.metadata.orderId) } })">关联订单</el-button>
+          <el-button v-if="selectedRisk.apiKeyId && selectedRisk.action === 'key_frozen'" size="small" type="warning" plain @click="unfreezeKey(selectedRisk.apiKeyId)">解冻 Key</el-button>
+        </div>
+        <section class="risk-section">
+          <h4>关联的生效限制 <small class="tnum">{{ relatedBlocks.length }}</small></h4>
+          <div v-for="block in relatedBlocks" :key="block.id" class="risk-block">
+            <span><b>{{ scopeLabel(block.scope) }}</b> · {{ block.reason }}<small>到期 {{ formatTime(block.expiresAt) }}</small></span>
+            <el-button size="small" type="warning" plain @click="revokeBlock(block)">解除</el-button>
+          </div>
+          <p v-if="!relatedBlocks.length" class="muted">没有匹配的临时限制。</p>
+        </section>
+        <details class="risk-evidence"><summary>原始证据</summary><pre>{{ JSON.stringify(selectedRisk.metadata, null, 2) }}</pre></details>
       </div>
+      <template #footer>
+        <el-button v-if="selectedRisk" type="primary" @click="resolveRisk(selectedRisk)">记录处理结果</el-button>
+      </template>
     </el-drawer>
 
     <AdminDialog
@@ -570,238 +517,53 @@ onMounted(() => void load());
 </template>
 
 <style scoped>
-.security-page {
-  display: flex;
-  flex-direction: column;
-  width: 100%;
-  height: 100%;
-  min-height: 0;
-  padding: 0;
-}
-.security-page :deep(.page-card) {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  min-height: 0;
-  overflow: hidden;
-}
-.security-page :deep(.page-card__header) {
-  flex-wrap: wrap;
-  align-items: flex-start;
-}
-.security-page :deep(.page-card__actions) {
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-.security-page :deep(.page-card__body) {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  min-height: 0;
-  gap: 14px;
-  overflow: hidden;
-}
-.security-kpis {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-control);
-  background: var(--surface-2);
-}
-.security-kpis article {
-  display: grid;
-  gap: 6px;
-  min-width: 0;
-  padding: 14px 16px;
-  border-right: 1px solid var(--border);
-}
-.security-kpis article:last-child {
-  border-right: 0;
-}
-.security-kpis small {
-  color: var(--ink-3);
-  font-size: 12px;
-  font-weight: 650;
-}
-.security-kpis strong {
-  overflow: hidden;
-  color: var(--ink);
-  font-size: 22px;
-  font-weight: 750;
-  letter-spacing: -0.03em;
-  line-height: 1.1;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.security-kpis article.is-warn strong {
-  color: var(--warning);
-}
-.security-kpis article.is-bad strong,
-.security-legend .is-bad {
-  color: var(--danger);
-}
-.security-legend {
-  margin: 0;
-  color: var(--ink-2);
-  font-size: 13px;
-  line-height: 1.5;
-}
-.security-legend em {
-  margin: 0 2px;
-  color: var(--ink);
-  font-style: normal;
-  font-weight: 750;
-}
-.security-toolbar {
-  display: flex;
-  flex: 0 0 auto;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 12px;
-}
-.security-tabs {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 6px;
-  overflow-x: auto;
-  padding: 4px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-pill);
-  background: var(--surface-2);
-  scrollbar-width: none;
-}
-.security-tabs::-webkit-scrollbar {
-  display: none;
-}
-.security-tab {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 32px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: var(--radius-pill);
-  background: transparent;
-  color: var(--ink-2);
-  font: inherit;
-  font-size: 13px;
-  font-weight: 600;
-  white-space: nowrap;
-  cursor: pointer;
-}
-.security-tab em {
-  color: var(--ink-3);
-  font-size: 12px;
-  font-style: normal;
-  font-weight: 700;
-}
-.security-tab.is-active {
-  background: var(--accent);
-  color: var(--accent-on);
-  box-shadow: 0 6px 16px color-mix(in srgb, var(--accent) 28%, transparent);
-}
-.security-tab.is-active em {
-  color: color-mix(in srgb, var(--accent-on) 72%, transparent);
-}
-.security-stage {
-  display: flex;
-  min-height: 0;
-  flex: 1;
-  flex-direction: column;
-}
-.security-split {
-  display: grid;
-  min-height: 0;
-  flex: 1;
-  grid-template-rows: minmax(180px, 0.7fr) minmax(240px, 1.3fr);
-  gap: 10px;
-}
-.security-board {
-  display: flex;
-  min-height: 0;
-  flex: 1;
-  flex-direction: column;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-control);
-  background: var(--surface);
-}
-.security-board header {
-  display: grid;
-  gap: 2px;
-  padding: 12px 14px 10px;
-}
-.security-board header strong {
-  color: var(--ink);
-  font-size: 13px;
-  font-weight: 650;
-}
-.security-board header small {
-  color: var(--ink-3);
-  font-size: 12px;
-}
-.security-board :deep(.el-table) {
-  flex: 1;
-}
-.security-cell {
-  display: grid;
-  min-width: 0;
-  gap: 3px;
-}
-.security-cell strong,
-.security-cell small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.security-cell strong {
-  color: var(--ink);
-  font-size: 13px;
-}
-.security-cell small {
-  color: var(--ink-3);
-  font-size: 12px;
-}
-.mono {
-  font-family: ui-monospace, monospace;
-  overflow-wrap: anywhere;
-}
-@media (max-width: 1080px) {
-  .security-kpis {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .security-kpis article:nth-child(2) {
-    border-right: 0;
-  }
-  .security-kpis article:nth-child(n + 3) {
-    border-top: 1px solid var(--border);
-  }
-  .security-split {
-    grid-template-rows: minmax(200px, 1fr) minmax(240px, 1fr);
-  }
-}
-@media (max-width: 720px) {
-  .security-kpis {
-    grid-template-columns: 1fr;
-  }
-  .security-kpis article {
-    border-right: 0;
-    border-top: 1px solid var(--border);
-  }
-  .security-kpis article:first-child {
-    border-top: 0;
-  }
-}
-.security-page { overflow-y:auto; }
-.security-log-link { color:var(--accent-ink);font-size:12px;text-decoration:none; }
-.risk-investigation { display:grid;gap:16px;color:var(--ink-2); }.risk-investigation h3,.risk-investigation h4,.risk-investigation p { margin:0; }.risk-actions { display:flex;gap:8px;flex-wrap:wrap; }.risk-actions :deep(.el-button) {margin:0}.risk-investigation dl {display:grid;grid-template-columns:90px 1fr;gap:12px}.risk-investigation dd{margin:0;overflow-wrap:anywhere}.risk-block{display:flex;justify-content:space-between;gap:12px;padding:12px;background:var(--surface-2);border-radius:8px}.risk-block small{display:block;margin-top:6px}.risk-investigation pre{white-space:pre-wrap;overflow-wrap:anywhere}
-.security-page :deep(.page-card) { flex:0 0 auto;min-height:100%; }
-.security-stage { flex:0 0 auto;min-height:0; }
-.security-split { display:flex;flex-direction:column;min-height:0; }
-.security-split > .security-board:first-child { order:2; }
-.security-split > .security-board:last-child { order:1; }
-.security-board { min-height:180px;flex:0 0 auto; }
-.security-note { margin: 8px 0 0; color: var(--ink-3); font-size: 12px; }
+/* 卡片填满视口：表格在内部滚动，分页器固定在底部 */
+.security-page { display: flex; flex-direction: column; width: 100%; height: 100%; min-height: 0; padding: 0; overflow-y: auto; }
+.security-page :deep(.page-card) { display: flex; flex: 1 1 0; flex-direction: column; min-height: 480px; overflow: hidden; }
+.security-page :deep(.page-card__header) { flex-wrap: wrap; }
+.security-page :deep(.page-card__actions) { flex-wrap: wrap; justify-content: flex-end; }
+.security-page :deep(.page-card__body) { display: flex; flex: 1; flex-direction: column; gap: 12px; min-height: 0; overflow: hidden; }
+.security-page :deep(.el-alert) { flex: 0 0 auto; }
+
+.security-tabs { display: inline-flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--surface-2); }
+.security-tab { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 12px; border: 0; border-radius: var(--radius-pill); background: transparent; color: var(--ink-2); font: inherit; font-size: 13px; font-weight: 600; white-space: nowrap; cursor: pointer; transition: background 0.15s ease, color 0.15s ease; }
+.security-tab:hover:not(.is-active) { background: color-mix(in srgb, var(--ink) 6%, transparent); color: var(--ink); }
+.security-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.security-tab em { color: var(--ink-3); font-size: 12px; font-style: normal; font-weight: 700; }
+.security-tab.is-alert em { color: var(--danger); }
+.security-tab.is-active { background: var(--ink); color: var(--surface); box-shadow: var(--shadow-sm); }
+.security-tab.is-active em { color: color-mix(in srgb, var(--surface) 78%, transparent); }
+html.dark .security-tab.is-active { background: var(--surface-3); color: var(--ink); box-shadow: inset 0 0 0 1px var(--border-strong); }
+html.dark .security-tab.is-active em { color: var(--ink-3); }
+
+.security-board { flex: 1; min-height: 240px; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-control); }
+.security-table { width: 100%; }
+.security-table :deep(.cell) { white-space: nowrap; }
+.security-table.is-clickable :deep(.el-table__row) { cursor: pointer; }
+.security-note { flex: 0 0 auto; margin: 0; color: var(--ink-3); font-size: 12px; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+.muted { color: var(--ink-3); }
+.is-bad { color: var(--danger); font-weight: 650; }
+
+.risk-head { display: grid; gap: 4px; min-width: 0; }
+.risk-head__title { display: flex; align-items: center; gap: 8px; }
+.risk-head strong { font-size: 16px; font-weight: 700; }
+.risk-head > span { color: var(--ink-3); font-size: 12px; }
+.risk-investigation { display: grid; gap: 16px; }
+.risk-reason { margin: 0; padding: 12px 14px; border: 1px solid var(--border); border-left: 3px solid var(--danger); border-radius: var(--radius-control); background: var(--surface-2); color: var(--ink); font-size: 14px; line-height: 1.6; }
+.risk-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 24px; margin: 0; }
+.risk-facts > div { display: grid; gap: 2px; min-width: 0; }
+.risk-facts > div.is-wide { grid-column: 1 / -1; }
+.risk-facts dt { color: var(--ink-3); font-size: 12px; }
+.risk-facts dd { margin: 0; font-size: 13px; overflow-wrap: anywhere; }
+.risk-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.risk-actions :deep(.el-button) { margin: 0; }
+.risk-section { display: grid; gap: 8px; padding-top: 12px; border-top: 1px solid var(--border); }
+.risk-section h4 { display: flex; align-items: baseline; gap: 6px; margin: 0; font-size: 13px; }
+.risk-section h4 small { color: var(--ink-3); font-weight: 600; }
+.risk-section p { margin: 0; font-size: 12px; }
+.risk-block { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-control); font-size: 13px; }
+.risk-block small { display: block; margin-top: 2px; color: var(--ink-3); font-size: 12px; }
+.risk-evidence summary { color: var(--ink-2); font-size: 13px; cursor: pointer; }
+.risk-evidence pre { max-height: 260px; margin: 8px 0 0; overflow: auto; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.55; }
 </style>

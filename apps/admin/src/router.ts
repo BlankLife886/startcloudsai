@@ -155,11 +155,6 @@ const router = createRouter({
       meta: { public: true, title: "无权限" },
     },
     {
-      path: "/finance-preview",
-      component: financeCenterView,
-      meta: { public: true, title: "财务中心模拟" },
-    },
-    {
       path: "/",
       component: adminLayout,
       children: [

@@ -1,66 +1,176 @@
 <script setup lang="ts">
-import { Refresh, Search, Warning } from '@element-plus/icons-vue'
+import { Refresh, Search } from '@element-plus/icons-vue'
 import PageCard from '@/components/PageCard.vue'
 import OrderAccountingDetail from '@/components/OrderAccountingDetail.vue'
 import AdminDateRange from '@/components/AdminDateRange.vue'
 import CursorPager from '@/components/CursorPager.vue'
 import { useFinanceWorkspace } from '@/useFinanceWorkspace'
-const financeTime = (value?: string) => value ? new Date(value).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) : '—'
-const { orderActions, mock, activeTab, days, query, orderStatus, range, cashSummary, orders, reconciliations, changes, summary, selectedOrderId, selectedOrder, detailVisible, runningRecon, recoverySupported, outcomeLabels, issueCount, receivedCents, filteredOrders, ledger, tabs, money, points, statusLabel, changeLabel, outcomeType, openOrder, load, runReconciliation, confirmNotCreated, loading, loadError, reconciliationReport, orderList, reconTotal, reconPage, changeTotal, changePage, changeRecordPage, ledgerPager, profitPager } = useFinanceWorkspace()
+const financeTime = (value?: string) => value ? new Date(value).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—'
+const orderTagType = (status?: string) => status === 'completed' ? 'success' : status === 'uncertain' || status === 'paid' ? 'warning' : status === 'failed' ? 'danger' : 'info'
+const { orderActions, activeTab, days, query, orderStatus, range, cashSummary, orders, reconciliations, changes, summary, selectedOrderId, detailVisible, runningRecon, recoverySupported, outcomeLabels, receivedCents, filteredOrders, tabs, money, points, statusLabel, changeLabel, outcomeType, openOrder, load, runReconciliation, confirmNotCreated, loading, loadError, reconciliationReport, orderList, reconTotal, reconIssueTotal, reconPage, changeTotal, changePage, changeRecordPage, profitPager } = useFinanceWorkspace()
+const openOrderRow = (row: { id: string }) => openOrder(row.id)
 </script>
 
 <template>
   <div class="page finance-center">
     <PageCard>
-      <div class="finance-date-filter"><AdminDateRange v-model:from="range.createdFrom" v-model:to="range.createdTo" label="记录时间" /><el-button type="primary" :disabled="loading" @click="load">查询</el-button><span>订单 / 订阅按创建时间，对账按核对时间；修改筛选后点击查询</span></div>
+      <template #header>
+        <div class="finance-filters">
+          <AdminDateRange v-model:from="range.createdFrom" v-model:to="range.createdTo" label="记录时间" />
+          <el-input v-model="query" :prefix-icon="Search" clearable placeholder="搜索用户、订单、套餐" class="finance-search" @keyup.enter="load" @clear="load" />
+          <el-button type="primary" :disabled="loading" @click="load">查询</el-button>
+        </div>
+      </template>
+      <template #actions>
+        <el-segmented v-model="days" :options="[{ label: '近 7 日', value: 7 }, { label: '近 30 日', value: 30 }]" />
+        <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
+      </template>
+
       <el-alert v-if="loadError || orderList.error.value" :title="loadError || orderList.error.value || ''" type="error" :closable="false" />
-      <el-alert v-if="reconciliationReport" :title="reconciliationReport" :type="reconciliationReport.includes('未完成') ? 'error' : 'info'" :closable="false" />
-      <template #actions><el-segmented v-model="days" :options="[{ label: '近 7 日', value: 7 }, { label: '近 30 日', value: 30 }]" /><el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button></template>
-      <header class="finance-heading"><div><p class="eyebrow">FINANCE WORKSPACE</p><h1>统一账务工作台</h1><p>订单、收款、订阅、成本和对账异常都在这里处理。</p></div><el-input v-model="query" :prefix-icon="Search" clearable placeholder="搜索用户、订单、套餐" class="global-search" @keyup.enter="load" @clear="load" /></header>
-      <section class="finance-kpis" aria-label="账务摘要"><article><small>订单</small><strong>{{ cashSummary?.total ?? '—' }}</strong><span>当前订单筛选范围 · 全部匹配</span></article><article><small>确认实收</small><strong>{{ money(receivedCents) }}</strong><span>人民币 · 全部匹配订单汇总</span></article><article :class="{ warn: issueCount > 0 }"><small>本页对账异常</small><strong>{{ issueCount }}</strong><span>{{ issueCount ? "需要人工介入" : "本页未发现异常" }}</span></article><article :class="{ gain: Number(summary.grossProfitCents || 0) >= 0, loss: Number(summary.grossProfitCents || 0) < 0 }"><small>近 {{ days }} 日创作差额</small><strong>{{ points(summary.grossProfitCents) }} 积分</strong><span>积分口径，不是人民币利润</span></article></section>
-      <nav class="finance-tabs" role="tablist" aria-label="账务模块"><button v-for="tab in tabs" :key="tab.id" type="button" role="tab" :aria-selected="activeTab === tab.id" :class="{ active: activeTab === tab.id }" @click="activeTab = tab.id">{{ tab.label }}<em v-if="tab.count">{{ tab.count }}</em></button></nav>
+      <el-alert v-if="reconciliationReport" :title="reconciliationReport" :type="reconciliationReport.includes('未完成') ? 'error' : 'info'" closable @close="reconciliationReport = ''" />
 
-      <section v-if="activeTab === 'overview'" class="workspace-section"><div class="section-heading"><div><h2>近期记录预览</h2><p>仅汇集当前已加载的订单与对账页；完整记录请切换对应模块分页查询。</p></div><el-button v-if="issueCount" text type="warning" @click="activeTab = 'reconcile'">查看 {{ issueCount }} 个异常</el-button></div><div class="ledger" v-loading="loading"><div v-for="item in ledgerPager.items.value" :key="item.id" class="ledger-row"><time>{{ financeTime(item.at) }}</time><i :class="`dot dot-${item.kind}`"></i><div class="ledger-copy"><strong>{{ item.title }}</strong><span>{{ item.detail }}</span></div><b v-if="item.amount">{{ money(item.amount) }}</b><el-tag size="small" :type="item.status === '需要处理' || item.status === '待核实' ? 'warning' : 'info'">{{ item.status }}</el-tag><el-button v-if="item.orderId" text size="small" @click="openOrder(item.orderId)">详情</el-button></div><el-empty v-if="!ledger.length && !loading" description="暂无账务流水" /></div></section>
+      <section class="finance-kpis" aria-label="账务摘要" title="订单与收款按记录时间筛选；创作毛利按近 N 日统计，为积分口径">
+        <article><small>订单</small><strong class="tnum">{{ cashSummary?.total ?? '—' }}</strong></article>
+        <article><small>确认实收</small><strong class="tnum">{{ money(receivedCents) }}</strong></article>
+        <article><small>已退款</small><strong class="tnum">{{ money(cashSummary?.refundedCents) }}</strong></article>
+        <article :class="{ warn: (cashSummary?.pendingOrders || 0) > 0 }"><small>待处理订单</small><strong class="tnum">{{ cashSummary?.pendingOrders ?? '—' }}</strong></article>
+        <article :class="{ warn: reconIssueTotal > 0 }"><small>对账异常</small><strong class="tnum">{{ reconIssueTotal }}</strong></article>
+        <article :class="Number(summary.grossProfitCents || 0) < 0 ? 'loss' : 'gain'"><small>近 {{ days }} 日创作毛利</small><strong class="tnum">{{ points(summary.grossProfitCents) }}<em>积分</em></strong></article>
+      </section>
 
-      <section v-else-if="activeTab === 'orders'" class="workspace-section"><div class="section-heading"><div><h2>订单与收款</h2><p>固定金额订单的应收、实收和发放状态集中核对。</p></div><el-select v-model="orderStatus" @change="load" clearable placeholder="全部状态" style="width: 130px"><el-option label="已完成" value="completed" /><el-option label="待核实" value="uncertain" /><el-option label="待到账" value="paid" /><el-option label="失败" value="failed" /></el-select></div><el-table :data="filteredOrders" v-loading="loading" empty-text="暂无订单" class="finance-table"><el-table-column label="订单 / 用户" min-width="230"><template #default="{ row }"><div class="primary-cell"><strong>{{ row.id }}</strong><span>{{ row.email || "未记录用户" }}</span></div></template></el-table-column><el-table-column label="套餐" min-width="150"><template #default="{ row }">{{ row.planName || "固定额度包 / 订阅" }}</template></el-table-column><el-table-column label="应付 / 实收" width="155" align="right"><template #default="{ row }"><div class="primary-cell align-right"><strong>{{ money(row.amountCents) }}</strong><span>实收 {{ money(row.finance?.receivedCents ?? row.providerPayAmountCents) }}</span></div></template></el-table-column><el-table-column label="状态" width="110"><template #default="{ row }"><el-tag size="small" :type="row.status === 'completed' ? 'success' : row.status === 'uncertain' ? 'warning' : 'info'">{{ statusLabel(row.status) }}</el-tag></template></el-table-column><el-table-column label="创建时间" width="165"><template #default="{ row }">{{ financeTime(row.createdAt) }}</template></el-table-column><el-table-column label="操作" width="80" fixed="right"><template #default="{ row }"><el-button text size="small" @click="openOrder(row.id)">详情</el-button></template></el-table-column></el-table></section>
-
-      <section v-else-if="activeTab === 'reconcile'" class="workspace-section"><div class="section-heading"><div><h2>对账与异常</h2><p>金额不一致、渠道建单结果不明和缺少渠道单号都在这里介入。</p></div><el-button type="primary" :icon="Search" :loading="runningRecon" @click="runReconciliation">立即核对</el-button></div><el-alert v-if="issueCount" type="warning" :closable="false" show-icon :icon="Warning" :title="`${issueCount} 笔订单需要人工核查，未确认前不会自动重复入账。`" class="recon-alert" /><el-table :data="reconciliations" v-loading="loading" empty-text="暂无对账记录" class="finance-table"><el-table-column label="订单" min-width="200"><template #default="{ row }"><button class="link-button" type="button" @click="openOrder(row.orderId)">{{ row.orderId }}</button><small>{{ row.localStatus ? statusLabel(row.localStatus) : "—" }}</small></template></el-table-column><el-table-column label="金额" width="170" align="right"><template #default="{ row }"><div class="primary-cell align-right"><strong>{{ money(row.expectedAmountCents) }}</strong><span>渠道 {{ money(row.providerPaidAmountCents ?? row.providerAmountCents) }}</span></div></template></el-table-column><el-table-column label="核对结果" width="165"><template #default="{ row }"><el-tag size="small" :type="outcomeType(row.outcome)">{{ outcomeLabels[row.outcome] || row.outcome }}</el-tag></template></el-table-column><el-table-column prop="detail" label="说明" min-width="230" show-overflow-tooltip /><el-table-column label="处理" width="260" fixed="right"><template #default="{ row }"><el-button text :loading="orderActions.checkingOrderId.value === row.orderId" :disabled="Boolean(orderActions.checkingOrderId.value)" @click="orderActions.checkOrder(row)">核对该单</el-button><el-button v-if="recoverySupported && row.outcome === 'provider_id_missing'" text type="warning" size="small" @click="confirmNotCreated(row)">确认未建单</el-button><el-button text size="small" @click="openOrder(row.orderId)">订单详情</el-button></template></el-table-column></el-table></section>
-
-      <section v-else-if="activeTab === 'subscriptions'" class="workspace-section"><div class="section-heading"><div><h2>订阅变更</h2><p>开通、升级和退订与付款订单保持同页关联。</p></div></div><el-table :data="changes" v-loading="loading" empty-text="暂无订阅变更" class="finance-table"><el-table-column label="变更" min-width="180"><template #default="{ row }"><strong>{{ changeLabel(row.kind) }}</strong><small>{{ row.id }}</small></template></el-table-column><el-table-column label="套餐 / 用户" min-width="220"><template #default="{ row }"><div class="primary-cell"><strong>{{ row.planName || "订阅计划" }}</strong><span>{{ row.email || row.orderId || "—" }}</span></div></template></el-table-column><el-table-column label="金额" width="125" align="right"><template #default="{ row }">{{ money(row.amountCents) }}</template></el-table-column><el-table-column label="状态" width="110"><template #default="{ row }"><el-tag size="small" :type="row.status === 'completed' || row.status === 'active' ? 'success' : 'warning'">{{ statusLabel(row.status) }}</el-tag></template></el-table-column><el-table-column label="时间" width="165"><template #default="{ row }">{{ financeTime(row.createdAt) }}</template></el-table-column><el-table-column label="关联订单" width="110"><template #default="{ row }"><el-button v-if="row.orderId" text size="small" @click="openOrder(row.orderId)">查看订单</el-button><span v-else>—</span></template></el-table-column></el-table></section>
-
-      <section v-else class="workspace-section"><div class="section-heading"><div><h2>成本与毛利</h2><p>以下均为积分口径，按近 {{ days }} 日统计，与上方自定义日期独立。模型分组最多返回前 50 项。</p></div></div><div class="cost-summary"><div><small>实收积分</small><strong>{{ points(summary.revenueCents) }}</strong></div><div><small>上游成本</small><strong>{{ points(summary.upstreamCostCents) }}</strong></div><div :class="Number(summary.grossProfitCents || 0) < 0 ? 'loss' : 'gain'"><small>毛利</small><strong>{{ points(summary.grossProfitCents) }}</strong></div><div><small>成功 / 失败调用</small><strong>{{ points(summary.succeededUnits) }} / {{ points(summary.failedUnits) }}</strong></div></div><el-table :data="profitPager.items.value" v-loading="loading" empty-text="当前周期暂无成本数据" class="finance-table"><el-table-column label="业务 / 模型" min-width="220"><template #default="{ row }"><strong>{{ row.label || row.key || "未记录" }}</strong></template></el-table-column><el-table-column label="调用量" width="120" align="right"><template #default="{ row }">{{ points(row.units) }}</template></el-table-column><el-table-column label="实收" width="140" align="right"><template #default="{ row }">{{ points(row.revenueCents) }}</template></el-table-column><el-table-column label="上游成本" width="140" align="right"><template #default="{ row }">{{ points(row.upstreamCostCents) }}</template></el-table-column><el-table-column label="毛利" width="140" align="right"><template #default="{ row }"><span :class="Number(row.grossProfitCents || 0) < 0 ? 'loss' : 'gain'">{{ points(row.grossProfitCents) }}</span></template></el-table-column></el-table></section>
-      <footer class="finance-pagination">
-        <CursorPager v-if="activeTab === 'overview'" :has-prev="ledgerPager.hasPrev.value" :has-next="ledgerPager.hasNext.value" :page="ledgerPager.page.value" :total="ledgerPager.total.value" :page-size="6" :page-sizes="[6]" :loading="loading" @update:page="ledgerPager.goToPage" />
-        <CursorPager v-else-if="activeTab === 'orders'" :has-prev="orderList.hasPrev.value" :has-next="orderList.hasNext.value" :page="orderList.page.value" :total="orderList.total.value" :total-capped="orderList.totalCapped.value" :count="orders.length" :page-size="20" :page-sizes="[20]" :loading="loading" @update:page="orderList.goToPage" />
-        <CursorPager v-else-if="activeTab === 'reconcile'" :has-prev="reconPage > 1" :has-next="reconPage * 20 < Math.min(reconTotal, 10000)" :page="reconPage" :total="Math.min(reconTotal, 10000)" :total-capped="reconTotal > 10000" :page-size="20" :page-sizes="[20]" :loading="loading" @update:page="value => changeRecordPage('reconcile', value)" />
-        <CursorPager v-else-if="activeTab === 'subscriptions'" :has-prev="changePage > 1" :has-next="changePage * 25 < Math.min(changeTotal, 10000)" :page="changePage" :total="Math.min(changeTotal, 10000)" :total-capped="changeTotal > 10000" :page-size="25" :page-sizes="[25]" :loading="loading" @update:page="value => changeRecordPage('subscriptions', value)" />
-        <CursorPager v-else :has-prev="profitPager.hasPrev.value" :has-next="profitPager.hasNext.value" :page="profitPager.page.value" :total="profitPager.total.value" :page-size="20" :page-sizes="[20]" @update:page="profitPager.goToPage" />
-      </footer>
-    </PageCard>
-    <el-drawer v-model="detailVisible" title="订单账务详情" size="min(760px, 94vw)" destroy-on-close>
-      <div v-if="mock && selectedOrder" class="mock-detail">
-        <div class="mock-detail__title"><strong>{{ selectedOrder.id }}</strong><el-tag size="small" :type="selectedOrder.status === 'completed' ? 'success' : 'warning'">{{ statusLabel(selectedOrder.status) }}</el-tag></div>
-        <dl><div><dt>用户</dt><dd>{{ selectedOrder.email || "—" }}</dd></div><div><dt>套餐</dt><dd>{{ selectedOrder.planName || "—" }}</dd></div><div><dt>订单金额</dt><dd>{{ money(selectedOrder.amountCents) }}</dd></div><div><dt>渠道实收</dt><dd>{{ money(selectedOrder.providerPayAmountCents) }}</dd></div><div><dt>钱包积分</dt><dd>{{ selectedOrder.status === "completed" ? "1,000 积分" : "待核实后发放" }}</dd></div><div><dt>权益发放</dt><dd>{{ selectedOrder.status === "completed" ? "已发放且不重复" : "等待对账" }}</dd></div></dl>
-        <el-alert v-if="selectedOrder.status === 'uncertain'" type="warning" :closable="false" title="该订单仍待核实，确认渠道未建单后才会解除状态。" />
+      <div class="finance-toolbar">
+        <nav class="finance-tabs" role="tablist" aria-label="账务模块">
+          <button v-for="tab in tabs" :key="tab.id" type="button" role="tab" :aria-selected="activeTab === tab.id" :class="{ active: activeTab === tab.id, alert: tab.id === 'reconcile' && tab.count > 0 }" @click="activeTab = tab.id">
+            {{ tab.label }}<em v-if="tab.count" class="tnum">{{ tab.count }}</em>
+          </button>
+        </nav>
+        <div class="finance-toolbar__right">
+          <el-select v-if="activeTab === 'orders'" v-model="orderStatus" clearable placeholder="全部状态" class="finance-status" @change="load">
+            <el-option label="已完成" value="completed" /><el-option label="待核实" value="uncertain" /><el-option label="待到账" value="paid" /><el-option label="失败" value="failed" />
+          </el-select>
+          <el-button v-else-if="activeTab === 'reconcile'" type="primary" :icon="Search" :loading="runningRecon" @click="runReconciliation">立即核对</el-button>
+          <span v-else-if="activeTab === 'costs'" class="finance-note">积分口径 · 近 {{ days }} 日 · 最多 50 个模型</span>
+        </div>
       </div>
-      <OrderAccountingDetail v-else-if="selectedOrderId" :order-id="selectedOrderId" />
+
+      <section v-if="activeTab === 'costs'" class="finance-cost-strip" aria-label="成本汇总">
+        <span>实收 <b class="tnum">{{ points(summary.revenueCents) }}</b></span>
+        <span>上游成本 <b class="tnum">{{ points(summary.upstreamCostCents) }}</b></span>
+        <span>毛利 <b class="tnum" :class="Number(summary.grossProfitCents || 0) < 0 ? 'loss' : 'gain'">{{ points(summary.grossProfitCents) }}</b></span>
+        <span>成功 / 失败调用 <b class="tnum">{{ points(summary.succeededUnits) }} / {{ points(summary.failedUnits) }}</b></span>
+      </section>
+
+      <div v-loading="loading" class="finance-board">
+        <el-table v-if="activeTab === 'orders'" :data="filteredOrders" height="100%" empty-text="暂无订单" class="finance-table is-clickable" @row-click="openOrderRow">
+          <el-table-column label="订单号" min-width="150" show-overflow-tooltip><template #default="{ row }"><code class="finance-id">{{ row.id }}</code></template></el-table-column>
+          <el-table-column label="用户" min-width="190" show-overflow-tooltip><template #default="{ row }">{{ row.email || "—" }}</template></el-table-column>
+          <el-table-column label="套餐" min-width="170" show-overflow-tooltip><template #default="{ row }">{{ row.planName || "—" }}</template></el-table-column>
+          <el-table-column label="应付" width="110" align="right"><template #default="{ row }"><span class="tnum">{{ money(row.amountCents) }}</span></template></el-table-column>
+          <el-table-column label="实收" width="110" align="right"><template #default="{ row }"><span class="tnum" :class="{ muted: !(row.finance?.receivedCents ?? row.providerPayAmountCents) }">{{ money(row.finance?.receivedCents ?? row.providerPayAmountCents ?? 0) }}</span></template></el-table-column>
+          <el-table-column label="状态" width="112"><template #default="{ row }"><el-tag size="small" :type="orderTagType(row.status)">{{ statusLabel(row.status) }}</el-tag></template></el-table-column>
+          <el-table-column label="创建时间" width="120"><template #default="{ row }"><span class="tnum">{{ financeTime(row.createdAt) }}</span></template></el-table-column>
+        </el-table>
+
+        <el-table v-else-if="activeTab === 'reconcile'" :data="reconciliations" height="100%" empty-text="暂无对账记录" class="finance-table">
+          <el-table-column label="订单号" min-width="150" show-overflow-tooltip><template #default="{ row }"><button class="finance-link" type="button" @click="openOrder(row.orderId)"><code class="finance-id">{{ row.orderId }}</code></button></template></el-table-column>
+          <el-table-column label="本站状态" width="124"><template #default="{ row }">{{ row.localStatus ? statusLabel(row.localStatus) : "—" }}</template></el-table-column>
+          <el-table-column label="应收" width="110" align="right"><template #default="{ row }"><span class="tnum">{{ money(row.expectedAmountCents) }}</span></template></el-table-column>
+          <el-table-column label="渠道实付" width="110" align="right"><template #default="{ row }"><span class="tnum">{{ money(row.providerPaidAmountCents ?? row.providerAmountCents) }}</span></template></el-table-column>
+          <el-table-column label="核对结果" width="130"><template #default="{ row }"><el-tag size="small" :type="outcomeType(row.outcome)">{{ outcomeLabels[row.outcome] || row.outcome }}</el-tag></template></el-table-column>
+          <el-table-column prop="detail" label="说明" min-width="220" show-overflow-tooltip />
+          <el-table-column label="核对时间" width="120"><template #default="{ row }"><span class="tnum">{{ financeTime(row.checkedAt) }}</span></template></el-table-column>
+          <el-table-column label="操作" width="170" fixed="right">
+            <template #default="{ row }">
+              <el-button text size="small" :loading="orderActions.checkingOrderId.value === row.orderId" :disabled="Boolean(orderActions.checkingOrderId.value)" @click="orderActions.checkOrder(row)">核对</el-button>
+              <el-button v-if="recoverySupported && row.outcome === 'provider_id_missing'" text type="warning" size="small" @click="confirmNotCreated(row)">确认未建单</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+
+        <el-table v-else-if="activeTab === 'subscriptions'" :data="changes" height="100%" empty-text="暂无订阅变更" class="finance-table">
+          <el-table-column label="类型" width="110"><template #default="{ row }"><strong>{{ changeLabel(row.kind) }}</strong></template></el-table-column>
+          <el-table-column label="套餐" min-width="170" show-overflow-tooltip><template #default="{ row }">{{ row.planName || "—" }}</template></el-table-column>
+          <el-table-column label="用户" min-width="190" show-overflow-tooltip><template #default="{ row }">{{ row.email || "—" }}</template></el-table-column>
+          <el-table-column label="金额" width="110" align="right"><template #default="{ row }"><span class="tnum" :class="{ loss: Number(row.amountCents) < 0 }">{{ money(row.amountCents) }}</span></template></el-table-column>
+          <el-table-column label="状态" width="100"><template #default="{ row }"><el-tag size="small" :type="row.status === 'completed' || row.status === 'active' ? 'success' : row.status === 'rejected' ? 'danger' : 'warning'">{{ statusLabel(row.status) }}</el-tag></template></el-table-column>
+          <el-table-column label="时间" width="120"><template #default="{ row }"><span class="tnum">{{ financeTime(row.createdAt) }}</span></template></el-table-column>
+          <el-table-column label="关联订单" min-width="150" show-overflow-tooltip><template #default="{ row }"><button v-if="row.orderId" class="finance-link" type="button" @click="openOrder(row.orderId)"><code class="finance-id">{{ row.orderId }}</code></button><span v-else class="muted">—</span></template></el-table-column>
+        </el-table>
+
+        <el-table v-else :data="profitPager.items.value" height="100%" empty-text="当前周期暂无成本数据" class="finance-table">
+          <el-table-column label="业务 / 模型" min-width="200" show-overflow-tooltip><template #default="{ row }"><strong>{{ row.label || row.key || "未记录" }}</strong></template></el-table-column>
+          <el-table-column label="调用量" width="110" align="right"><template #default="{ row }"><span class="tnum">{{ points(row.units) }}</span></template></el-table-column>
+          <el-table-column label="实收" width="130" align="right"><template #default="{ row }"><span class="tnum">{{ points(row.revenueCents) }}</span></template></el-table-column>
+          <el-table-column label="上游成本" width="130" align="right"><template #default="{ row }"><span class="tnum">{{ points(row.upstreamCostCents) }}</span></template></el-table-column>
+          <el-table-column label="毛利" width="130" align="right"><template #default="{ row }"><span class="tnum" :class="Number(row.grossProfitCents || 0) < 0 ? 'loss' : 'gain'">{{ points(row.grossProfitCents) }}</span></template></el-table-column>
+          <el-table-column label="毛利率" width="100" align="right"><template #default="{ row }"><span class="tnum">{{ row.revenueCents ? `${((Number(row.grossProfitCents || 0) / row.revenueCents) * 100).toFixed(1)}%` : "—" }}</span></template></el-table-column>
+        </el-table>
+      </div>
+
+      <CursorPager v-if="activeTab === 'orders'" :has-prev="orderList.hasPrev.value" :has-next="orderList.hasNext.value" :page="orderList.page.value" :total="orderList.total.value" :total-capped="orderList.totalCapped.value" :count="orders.length" :page-size="20" :page-sizes="[20]" :loading="loading" @update:page="orderList.goToPage" />
+      <CursorPager v-else-if="activeTab === 'reconcile'" :has-prev="reconPage > 1" :has-next="reconPage * 20 < Math.min(reconTotal, 10000)" :page="reconPage" :total="Math.min(reconTotal, 10000)" :total-capped="reconTotal > 10000" :page-size="20" :page-sizes="[20]" :loading="loading" @update:page="value => changeRecordPage('reconcile', value)" />
+      <CursorPager v-else-if="activeTab === 'subscriptions'" :has-prev="changePage > 1" :has-next="changePage * 25 < Math.min(changeTotal, 10000)" :page="changePage" :total="Math.min(changeTotal, 10000)" :total-capped="changeTotal > 10000" :page-size="25" :page-sizes="[25]" :loading="loading" @update:page="value => changeRecordPage('subscriptions', value)" />
+      <CursorPager v-else :has-prev="profitPager.hasPrev.value" :has-next="profitPager.hasNext.value" :page="profitPager.page.value" :total="profitPager.total.value" :page-size="20" :page-sizes="[20]" @update:page="profitPager.goToPage" />
+    </PageCard>
+
+    <el-drawer v-model="detailVisible" title="订单账务详情" size="min(760px, 94vw)" destroy-on-close>
+      <OrderAccountingDetail v-if="selectedOrderId" :order-id="selectedOrderId" />
     </el-drawer>
   </div>
 </template>
 
 <style scoped>
-.finance-center{width:100%;min-height:100%;padding:0}.finance-heading{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;padding:2px 0 22px}.eyebrow{margin:0;color:#6b5bd2;font-size:11px;font-weight:700;letter-spacing:2px}.finance-heading h1{margin:7px 0 5px;font-size:26px;line-height:1.2}.finance-heading p:not(.eyebrow){margin:0;color:var(--ink-3);font-size:13px}.global-search{max-width:280px}.finance-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--border);border-radius:var(--radius-control);overflow:hidden;background:var(--surface-2)}.finance-kpis article{display:grid;gap:5px;padding:15px 16px;border-right:1px solid var(--border)}.finance-kpis article:last-child{border-right:0}.finance-kpis small,.finance-kpis span{color:var(--ink-3);font-size:12px}.finance-kpis strong{font-size:23px;line-height:1.1}.finance-kpis .warn strong{color:#bd6d18}.finance-kpis .gain strong{color:#16845b}.finance-kpis .loss strong{color:#c24141}.finance-tabs{display:flex;gap:4px;margin:22px 0 4px;border-bottom:1px solid var(--border);overflow-x:auto}.finance-tabs button{border:0;border-bottom:2px solid transparent;background:none;color:var(--ink-3);cursor:pointer;padding:10px 14px 11px;white-space:nowrap;font-size:13px}.finance-tabs button:hover{color:var(--ink)}.finance-tabs button.active{border-bottom-color:#6b5bd2;color:var(--ink);font-weight:650}.finance-tabs em{display:inline-grid;place-items:center;min-width:19px;height:19px;margin-left:6px;padding:0 5px;border-radius:10px;background:var(--surface-3);font-size:11px;font-style:normal}.workspace-section{padding-top:17px}.section-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:14px}.section-heading h2{margin:0 0 4px;font-size:16px}.section-heading p{margin:0;color:var(--ink-3);font-size:12px}.ledger{min-height:180px}.ledger-row{display:flex;align-items:center;gap:11px;min-height:58px;padding:9px 0;border-bottom:1px solid var(--border)}.ledger-row time{width:110px;flex:none;color:var(--ink-3);font-size:11px}.ledger-row .dot{width:9px;height:9px;flex:none;border-radius:50%;background:#7b6bd6}.dot-对账{background:#d97706!important}.dot-订阅{background:#16845b!important}.ledger-copy{display:flex;flex:1;min-width:0;flex-direction:column;gap:3px}.ledger-copy strong,.ledger-copy span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ledger-copy span{color:var(--ink-3);font-size:12px}.ledger-row b{min-width:80px;text-align:right;font-size:13px}.finance-table{width:100%}.primary-cell{display:flex;flex-direction:column;gap:3px}.primary-cell span,.finance-table small{display:block;color:var(--ink-3);font-size:12px}.align-right{text-align:right}.link-button{padding:0;border:0;background:none;color:var(--el-color-primary);cursor:pointer;font:inherit}.recon-alert{margin-bottom:14px}.cost-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:15px}.cost-summary>div{display:grid;gap:5px;padding:13px 14px;border:1px solid var(--border);border-radius:var(--radius-control);background:var(--surface-2)}.cost-summary small{color:var(--ink-3);font-size:12px}.cost-summary strong{font-size:19px}.gain{color:#16845b}.loss{color:#c24141}@media(max-width:760px){.finance-heading{align-items:flex-start;flex-direction:column}.global-search{max-width:none;width:100%}.finance-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.finance-kpis article:nth-child(2){border-right:0}.finance-kpis article:nth-child(-n+2){border-bottom:1px solid var(--border)}.section-heading{align-items:flex-start;flex-direction:column}.cost-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.ledger-row time{width:88px}.ledger-row b{min-width:60px;font-size:12px}}@media(max-width:470px){.finance-kpis,.cost-summary{grid-template-columns:1fr}.finance-kpis article{border-right:0!important;border-bottom:1px solid var(--border)}.finance-kpis article:last-child{border-bottom:0}.ledger-row{gap:7px}.ledger-row time{width:72px;font-size:10px}.ledger-row .el-tag{display:none}}
-.mock-detail__title{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:18px;font-size:16px}.mock-detail dl{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0;border-top:1px solid var(--border);border-left:1px solid var(--border)}.mock-detail dl div{padding:12px;border-right:1px solid var(--border);border-bottom:1px solid var(--border)}.mock-detail dt{color:var(--ink-3);font-size:12px}.mock-detail dd{margin:5px 0 0;font-size:13px;overflow-wrap:anywhere}
-.finance-center { height:100%;min-height:0;overflow-y:auto;padding:0 2px 20px; }
-.finance-center :deep(.page-card) { min-height:100%; }
-.finance-center :deep(.page-card__header) { min-height:0;padding-bottom:10px; }
-.finance-center :deep(.page-card__body) { padding-top:0; }
-.finance-heading { padding-bottom:12px; }.finance-heading h1 { font-size:21px; }
-.finance-date-filter { display:flex;align-items:center;flex-wrap:wrap;gap:12px;padding:12px 0;margin-bottom:10px;border-bottom:1px solid var(--border); }
-.finance-date-filter > span { color:var(--ink-3);font-size:11px; }
-.finance-kpis { gap:10px;border:0;background:transparent; }.finance-kpis article { border:1px solid var(--border);border-radius:10px;background:var(--surface-2);padding:14px; }.finance-kpis article:last-child{border-right:1px solid var(--border);}
-.finance-kpis strong { font-size:22px;overflow-wrap:anywhere; }.finance-tabs { margin-top:16px; }
-.finance-pagination { padding-top:12px;margin-top:12px;border-top:1px solid var(--border); }
-.workspace-section { overflow-x:auto; }.finance-table { min-width:760px; }
-.finance-center :deep(.el-alert) { margin-bottom:12px; }
+/* 卡片填满视口：表格在内部滚动，分页器固定在底部 */
+.finance-center { display: flex; flex-direction: column; width: 100%; height: 100%; min-height: 0; padding: 0; overflow-y: auto; }
+.finance-center :deep(.page-card) { display: flex; flex: 1 1 0; flex-direction: column; min-height: 520px; overflow: hidden; }
+.finance-center :deep(.page-card__header) { flex-wrap: wrap; padding-bottom: 0; }
+.finance-center :deep(.page-card__body) { display: flex; flex: 1; flex-direction: column; gap: 12px; min-height: 0; overflow: hidden; padding-top: 14px; }
+.finance-center :deep(.el-alert) { flex: 0 0 auto; }
+
+.finance-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.finance-search { width: 240px; }
+
+.finance-kpis { display: grid; flex: 0 0 auto; grid-template-columns: repeat(6, minmax(0, 1fr)); overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--surface-2); }
+.finance-kpis article { display: flex; align-items: baseline; gap: 8px; min-width: 0; padding: 10px 14px; border-right: 1px solid var(--border); }
+.finance-kpis article:last-child { border-right: 0; }
+.finance-kpis small { flex: 0 0 auto; color: var(--ink-3); font-size: 12px; font-weight: 650; white-space: nowrap; }
+.finance-kpis strong { overflow: hidden; color: var(--ink); font-size: 17px; font-weight: 750; letter-spacing: -0.02em; text-overflow: ellipsis; white-space: nowrap; }
+.finance-kpis strong em { margin-left: 3px; color: var(--ink-3); font-size: 11px; font-style: normal; font-weight: 600; }
+.finance-kpis .warn strong { color: var(--warning); }
+.finance-kpis .gain strong { color: var(--success); }
+.finance-kpis .loss strong { color: var(--danger); }
+
+.finance-toolbar { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--border); }
+.finance-tabs { display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; }
+.finance-tabs button { display: inline-flex; align-items: center; margin-bottom: -1px; padding: 9px 12px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--ink-3); font: inherit; font-size: 13px; white-space: nowrap; cursor: pointer; }
+.finance-tabs button:hover { color: var(--ink); }
+.finance-tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.finance-tabs button.active { border-bottom-color: var(--accent); color: var(--ink); font-weight: 650; }
+.finance-tabs em { display: inline-grid; place-items: center; min-width: 18px; height: 18px; margin-left: 6px; padding: 0 5px; border-radius: 9px; background: var(--surface-3); color: var(--ink-2); font-size: 11px; font-style: normal; }
+.finance-tabs button.alert em { background: color-mix(in srgb, var(--warning) 18%, transparent); color: var(--warning); }
+.finance-toolbar__right { display: flex; align-items: center; gap: 8px; padding-bottom: 6px; }
+.finance-status { width: 130px; }
+.finance-note { color: var(--ink-3); font-size: 12px; white-space: nowrap; }
+
+.finance-cost-strip { display: flex; flex: 0 0 auto; flex-wrap: wrap; gap: 8px 24px; color: var(--ink-3); font-size: 12px; }
+.finance-cost-strip b { margin-left: 4px; color: var(--ink); font-size: 14px; }
+
+.finance-board { flex: 1; min-height: 240px; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-control); }
+.finance-table { width: 100%; }
+.finance-table :deep(.cell) { white-space: nowrap; }
+.finance-table.is-clickable :deep(.el-table__row) { cursor: pointer; }
+.finance-center :deep(.el-table__body tr:hover) .finance-id { color: var(--ink); }
+.finance-id { color: var(--ink-2); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+.finance-link { padding: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; }
+.finance-link:hover .finance-id { color: var(--accent-ink, var(--el-color-primary)); text-decoration: underline; }
+.muted { color: var(--ink-3); }
+.gain { color: var(--success); }
+.loss { color: var(--danger); }
+
+
+@media (max-width: 1100px) {
+  .finance-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .finance-kpis article:nth-child(3) { border-right: 0; }
+  .finance-kpis article:nth-child(-n + 3) { border-bottom: 1px solid var(--border); }
+}
 </style>

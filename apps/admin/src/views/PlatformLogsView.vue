@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Delete, Download, Refresh, Search, Setting } from '@element-plus/icons-vue'
+import { Filter, MoreFilled, Refresh, Search } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import PageCard from '@/components/PageCard.vue'
 import { downloadDiagnosticJSON } from '@/diagnosticExport'
 import { request } from '@/request'
-import { formatTime, shortId } from '@/utils'
+import { eventHint, eventLabel } from '@/platformLogEvents'
+import { routeLabel } from '@/platformLogRoutes'
+import { formatTime, shortId, TASK_TYPE_LABELS } from '@/utils'
 import EChart, { type EChartOption } from '@/components/EChart.vue'
 import { chartBase, CHART_COLORS } from '@/chartTheme'
 
@@ -257,8 +259,8 @@ const trendOption = computed<EChartOption>(() => {
   return {
     color: [CHART_COLORS[2], CHART_COLORS[1], CHART_COLORS[3], CHART_COLORS[0]],
     tooltip: { ...base.tooltip, trigger: 'axis' },
-    legend: { top: 0, right: 0, textStyle: base.legendText },
-    grid: { left: 42, right: 44, top: 38, bottom: 26 },
+    legend: { top: 0, left: 0, itemWidth: 14, itemHeight: 8, textStyle: base.legendText },
+    grid: { left: 40, right: 58, top: 32, bottom: 22 },
     xAxis: { type: 'category', boundaryGap: false, data: labels, axisLabel: base.axisLabel, axisLine: base.axisLine },
     yAxis: [
       { type: 'value', minInterval: 1, axisLabel: base.axisLabel, splitLine: base.splitLine },
@@ -274,8 +276,14 @@ const trendOption = computed<EChartOption>(() => {
 })
 
 const diagnosticEntries = computed(() => Object.entries(selected.value?.metadata ?? {})
-  .filter(([, value]) => value !== null && value !== '' && value !== false)
-  .map(([key, value]) => ({ key, label: metadataLabels[key] || key, value: displayValue(key, value) })))
+  .filter(([, value]) => value != null && value !== '' && value !== false)
+  .map(([key, value]) => ({ key, label: metadataLabels[key] || key, value: key === 'route' ? routeDisplay(String(value)) : displayValue(key, value) })))
+
+// 诊断详情里的接口：中文名称后附原始路由，便于对照代码。
+function routeDisplay(route: string) {
+  const label = routeLabel(route, String(selected.value?.metadata?.method || ''))
+  return label ? `${label}（${route}）` : route
+}
 
 function displayValue(key: string, value: unknown) {
   if (typeof value === 'boolean') return value ? '是' : '否'
@@ -448,6 +456,33 @@ async function clearLogs() {
 
 function openSettings() { void router.push({ path: '/settings', query: { section: 'logging' } }) }
 
+// 概览右侧的排行面板在异常事件、最慢接口、异常任务之间切换，避免并排四块卡片。
+const rankView = ref<'events' | 'routes' | 'tasks'>('events')
+const rankViews = computed(() => [
+  { label: `异常事件 ${stats.value?.overview.topEvents.length ?? 0}`, value: 'events' },
+  { label: `最慢接口 ${stats.value?.overview.slowRoutes.length ?? 0}`, value: 'routes' },
+  { label: `异常任务 ${stats.value?.overview.taskIssues.length ?? 0}`, value: 'tasks' },
+])
+// 任务 ID、请求 ID、来源 IP 收进"更多筛选"，已填写的数量显示在按钮上。
+const advancedFilterCount = computed(() => [filters.taskId, filters.requestId, filters.ip].filter(value => value.trim()).length)
+const shortTime = (value?: string) => value ? new Date(value).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }) : '—'
+function contextOf(row: PlatformLog) {
+  const meta = row.metadata || {}
+  const api = meta.route ? routeLabel(String(meta.route), String(meta.method || '')) || String(meta.route) : ''
+  return [api, meta.model, meta.providerDisplayName || meta.provider].filter(Boolean).join(' · ') || '—'
+}
+function contextTitle(row: PlatformLog) {
+  const meta = row.metadata || {}
+  return [meta.method, meta.route].filter(Boolean).join(' ') || ''
+}
+function handleMore(command: string) {
+  if (command === 'settings') openSettings()
+  else if (command === 'diagnostics') void exportDiagnostics()
+  else if (command === 'export') exportAllLogs()
+  else if (command === 'cleanup') void cleanupNow()
+  else if (command === 'clear') void clearLogs().catch(() => undefined)
+}
+
 onMounted(() => {
   void refreshAll()
   refreshTimer = window.setInterval(() => {
@@ -463,164 +498,92 @@ onBeforeUnmount(() => {
 <template>
   <div class="page logs-page">
     <PageCard>
+      <template #header>
+        <div class="logs-head">
+          <el-segmented v-model="filters.range" :options="rangeOptions" @change="changeRange" />
+          <span v-if="stats" class="logs-status" :class="{ 'is-off': !stats.config.enabled }" :title="`安全${categoryEnabled.security ? '开' : '关'} · 运维${categoryEnabled.operations ? '开' : '关'} · 用户${categoryEnabled.user ? '开' : '关'} · 每 30 秒刷新`">
+            <i aria-hidden="true" />
+            {{ stats.config.enabled ? `采集中 · 保留 ${stats.config.retentionDays} 天` : '日志已关闭' }} · 占用 {{ formatBytes(stats.capacity.logicalBytes) }} / {{ formatBytes(stats.maxBytes) }}
+          </span>
+        </div>
+      </template>
       <template #actions>
-        <el-segmented v-model="filters.range" :options="rangeOptions" @change="changeRange" />
-          <el-button :icon="Setting" @click="openSettings">设置</el-button>
-          <el-button :icon="Download" :loading="exportLoading" @click="exportDiagnostics">导出 AI 诊断包</el-button>
-          <el-button :icon="Download" @click="exportAllLogs">导出全部筛选日志</el-button>
-          <el-button :icon="Refresh" :loading="loading || statsLoading" @click="refreshAll">刷新</el-button>
+        <el-button :icon="Refresh" :loading="loading || statsLoading" @click="refreshAll">刷新</el-button>
+        <el-dropdown trigger="click" @command="handleMore">
+          <el-button :icon="MoreFilled" :loading="exportLoading || actionLoading">更多</el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="diagnostics">导出 AI 诊断包</el-dropdown-item>
+              <el-dropdown-item command="export">导出全部筛选日志</el-dropdown-item>
+              <el-dropdown-item command="settings">日志设置</el-dropdown-item>
+              <el-dropdown-item command="cleanup" divided>按保留策略清理</el-dropdown-item>
+              <el-dropdown-item command="clear" class="is-danger">清空全部日志</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
       </template>
 
       <el-alert v-if="loadError" :title="loadError" type="warning" :closable="false" />
       <el-alert v-if="exportReport" :title="exportReport" type="success" :closable="true" @close="exportReport = ''" />
-      <div class="log-quick-actions"><el-button type="danger" plain @click="filters.level = 'error'; load(true)">查看错误事件</el-button><el-button type="warning" plain @click="filters.level = 'warning'; load(true)">查看警告事件</el-button><el-button :disabled="!stats?.overview.slowRoutes.length" @click="stats?.overview.slowRoutes[0] && drillRoute(stats.overview.slowRoutes[0].route)">定位最慢接口</el-button><el-button @click="resetFilters">清除筛选</el-button></div>
-      <section class="logs-kpis" aria-label="日志摘要">
-        <article>
-          <small>事件总量</small>
-          <strong class="tnum">{{ summary.count.toLocaleString("zh-CN") }}</strong>
-        </article>
+
+      <section class="logs-metrics" aria-label="日志与运行摘要">
+        <article><small>事件</small><strong class="tnum">{{ summary.count.toLocaleString("zh-CN") }}</strong></article>
         <article :class="{ 'is-bad': summary.errorCount > 0 }">
-          <small>错误</small>
-          <strong class="tnum">{{ summary.errorCount }}</strong>
+          <small>错误</small><strong class="tnum">{{ summary.errorCount }}<em>{{ errorRate.toFixed(1) }}%</em></strong>
         </article>
-        <article :class="{ 'is-warn': summary.warningCount > 0 }">
-          <small>警告</small>
-          <strong class="tnum">{{ summary.warningCount }}</strong>
-        </article>
-        <article>
-          <small>慢事件</small>
-          <strong class="tnum">{{ summary.slowCount }}</strong>
-        </article>
-        <article>
-          <small>平均耗时</small>
-          <strong class="tnum">{{ formatDuration(summary.averageDurationMs) }}</strong>
-        </article>
+        <article :class="{ 'is-warn': summary.warningCount > 0 }"><small>警告</small><strong class="tnum">{{ summary.warningCount }}</strong></article>
         <article :class="{ 'is-warn': summary.p95DurationMs >= 2000 }">
-          <small>P95 耗时</small>
-          <strong class="tnum">{{ formatDuration(summary.p95DurationMs) }}</strong>
+          <small>P95</small><strong class="tnum">{{ formatDuration(summary.p95DurationMs) }}<em>均 {{ formatDuration(summary.averageDurationMs) }}</em></strong>
         </article>
-      </section>
-
-      <section v-if="systemMetrics" class="logs-live" aria-label="实时压力">
-        <article>
-          <small>API 流量</small>
-          <strong class="tnum">{{ systemMetrics.http.requestsPerSecond.toFixed(2) }} req/s</strong>
-        </article>
-        <article :class="{ 'is-bad': systemMetrics.http.status5xx > 0 }">
-          <small>HTTP 5xx</small>
-          <strong class="tnum">{{ systemMetrics.http.status5xx }}</strong>
-        </article>
-        <article :class="{ 'is-warn': systemMetrics.taskPressure.queued > 0 }">
-          <small>任务压力</small>
-          <strong class="tnum">{{ systemMetrics.taskPressure.queued }} / {{ systemMetrics.taskPressure.running }}</strong>
-        </article>
-        <article :class="{ 'is-warn': systemMetrics.database.utilizationPercent >= 80 }">
-          <small>数据库连接</small>
-          <strong class="tnum">{{ systemMetrics.database.acquiredConnections }} / {{ systemMetrics.database.maxConnections }}</strong>
-        </article>
-        <article :class="{ 'is-warn': systemMetrics.imageFetch.forecastPressure }">
-          <small>图片拉回</small>
-          <strong class="tnum">{{ systemMetrics.imageFetch.active }} / {{ systemMetrics.imageFetch.effectiveLimit }}</strong>
-        </article>
-      </section>
-
-      <p class="logs-legend">
-        {{ rangeLabel }}
-        共
-        <em class="tnum">{{ summary.count.toLocaleString("zh-CN") }}</em>
-        条，错误率
-        <em class="tnum">{{ errorRate.toFixed(1) }}%</em>
-        ，覆盖
-        <em class="tnum">{{ summary.distinctRequests }}</em>
-        条请求 /
-        <em class="tnum">{{ summary.distinctTasks }}</em>
-        个任务。
-        <template v-if="stats">
-          {{ stats.config.enabled ? `采集中 · 保留 ${stats.config.retentionDays} 天` : "日志已关闭" }}
-          · 占用
-          <em>{{ formatBytes(stats.capacity.logicalBytes) }}</em>
-          /
-          {{ formatBytes(stats.maxBytes) }}。
-          安全{{ categoryEnabled.security ? "开" : "关" }}
-          · 运维{{ categoryEnabled.operations ? "开" : "关" }}
-          · 用户{{ categoryEnabled.user ? "开" : "关" }}。
+        <template v-if="systemMetrics">
+          <article><small>API</small><strong class="tnum">{{ systemMetrics.http.requestsPerSecond.toFixed(1) }}<em>req/s</em></strong></article>
+          <article :class="{ 'is-bad': systemMetrics.http.status5xx > 0 }"><small>5xx</small><strong class="tnum">{{ systemMetrics.http.status5xx }}</strong></article>
+          <article :class="{ 'is-warn': systemMetrics.taskPressure.queued > 0 }" title="排队 / 运行中">
+            <small>任务</small><strong class="tnum">{{ systemMetrics.taskPressure.queued }}<em>/ {{ systemMetrics.taskPressure.running }}</em></strong>
+          </article>
+          <article :class="{ 'is-warn': systemMetrics.database.utilizationPercent >= 80 }">
+            <small>数据库</small><strong class="tnum">{{ systemMetrics.database.acquiredConnections }}<em>/ {{ systemMetrics.database.maxConnections }}</em></strong>
+          </article>
         </template>
-        每 30 秒刷新。
-      </p>
+      </section>
 
-      <section class="logs-panels">
-        <article class="logs-panel is-trend">
-          <header>
-            <strong>事件与耗时趋势</strong>
-            <small>判断错误是否集中爆发</small>
-          </header>
-          <EChart v-if="stats?.overview.trend.length" :option="trendOption" height="228px" />
-          <el-empty v-else description="当前周期没有趋势数据" :image-size="46" />
+      <section class="logs-overview">
+        <article class="logs-panel">
+          <header><strong>事件与耗时趋势</strong><small>{{ rangeLabel }}</small></header>
+          <EChart v-if="stats?.overview.trend.length" :option="trendOption" height="176px" />
+          <el-empty v-else description="当前周期没有趋势数据" :image-size="40" />
         </article>
-        <article class="logs-panel is-rank">
-          <header>
-            <strong>异常事件排行</strong>
-            <small>按错误、警告和次数排序</small>
-          </header>
-          <div v-if="stats?.overview.topEvents.length" class="logs-list">
-            <button
-              v-for="item in stats.overview.topEvents"
-              :key="`${item.category}:${item.event}`"
-              type="button"
-              @click="drillEvent(item.event)"
-            >
+        <article class="logs-panel">
+          <header><el-segmented v-model="rankView" size="small" :options="rankViews" /></header>
+          <div v-if="rankView === 'events'" class="logs-list">
+            <button v-for="item in stats?.overview.topEvents || []" :key="`${item.category}:${item.event}`" type="button" :title="eventHint(item.event) || item.event" @click="drillEvent(item.event)">
               <span>
-                <b>{{ item.event }}</b>
-                <small>{{ categoryLabels[item.category] }} · {{ formatTime(item.lastAt) }}</small>
+                <b>{{ eventLabel(item.event) }}</b>
+                <small>{{ categoryLabels[item.category] }} · 最近 {{ shortTime(item.lastAt) }} · <span class="mono">{{ item.event }}</span></small>
               </span>
-              <em v-if="item.errorCount" class="is-bad">{{ item.errorCount }} 错误</em>
-              <em v-else-if="item.warningCount" class="is-warn">{{ item.warningCount }} 警告</em>
-              <em v-else class="tnum">{{ item.count }} 次</em>
+              <em class="rank-count">
+                <span v-if="item.errorCount"><b class="is-bad tnum">{{ item.errorCount }}</b> 次错误</span>
+                <span v-else-if="item.warningCount"><b class="is-warn tnum">{{ item.warningCount }}</b> 次警告</span>
+                <span v-else><b class="tnum">{{ item.count }}</b> 次</span>
+                <small v-if="item.errorCount || item.warningCount" class="tnum">共 {{ item.count }} 次</small>
+              </em>
             </button>
+            <el-empty v-if="!stats?.overview.topEvents.length" description="当前周期没有异常事件" :image-size="36" />
           </div>
-          <el-empty v-else description="当前周期没有异常事件" :image-size="46" />
-        </article>
-        <article class="logs-panel is-slow">
-          <header>
-            <strong>最慢接口</strong>
-            <small>按 P95 耗时排序</small>
-          </header>
-          <div v-if="stats?.overview.slowRoutes.length" class="logs-list">
-            <button
-              v-for="item in stats.overview.slowRoutes"
-              :key="`${item.service}:${item.route}`"
-              type="button"
-              @click="drillRoute(item.route)"
-            >
-              <span>
-                <b>{{ item.route }}</b>
-                <small>{{ item.service }} · {{ item.count }} 次 · {{ item.errorCount }} 错误</small>
-              </span>
-              <em class="tnum">{{ formatDuration(item.p95DurationMs) }}</em>
+          <div v-else-if="rankView === 'routes'" class="logs-list">
+            <button v-for="item in stats?.overview.slowRoutes || []" :key="`${item.service}:${item.route}`" type="button" @click="drillRoute(item.route)">
+              <span><b>{{ routeLabel(item.route) || item.route }}</b><small><span class="mono">{{ item.route }}</span> · 请求 {{ item.count }} 次 · 平均 {{ formatDuration(item.averageDurationMs) }}<template v-if="item.errorCount"> · <span class="is-bad">失败 {{ item.errorCount }} 次</span></template></small></span>
+              <em class="rank-count" title="95% 的请求在这个时间内完成"><span><b class="tnum" :class="{ 'is-warn': item.p95DurationMs >= 2000 }">{{ formatDuration(item.p95DurationMs) }}</b> P95</span></em>
             </button>
+            <el-empty v-if="!stats?.overview.slowRoutes.length" description="暂无接口耗时数据" :image-size="36" />
           </div>
-          <el-empty v-else description="暂无接口耗时数据" :image-size="42" />
-        </article>
-        <article class="logs-panel is-tasks">
-          <header>
-            <strong>异常任务</strong>
-            <small>点击追踪完整时间线</small>
-          </header>
-          <div v-if="stats?.overview.taskIssues.length" class="logs-list">
-            <button
-              v-for="item in stats.overview.taskIssues"
-              :key="item.taskId"
-              type="button"
-              @click="drillTask(item.taskId)"
-            >
-              <span>
-                <b>{{ item.taskType || item.objectType }} · {{ shortId(item.taskId) }}</b>
-                <small>{{ item.errorMessage || item.lastMessage }}<template v-if="item.model"> · {{ item.model }}</template></small>
-              </span>
-              <em class="tnum">{{ item.issueCount }} 条</em>
+          <div v-else class="logs-list">
+            <button v-for="item in stats?.overview.taskIssues || []" :key="item.taskId" type="button" @click="drillTask(item.taskId)">
+              <span><b>{{ item.errorMessage || item.lastMessage || eventLabel(item.lastEvent) }}</b><small>{{ TASK_TYPE_LABELS[item.taskType] || item.taskType || item.objectType }} · <span class="mono">{{ shortId(item.taskId) }}</span><template v-if="item.model"> · {{ item.model }}</template><template v-if="item.userEmail"> · {{ item.userEmail }}</template></small></span>
+              <em class="rank-count"><span><b class="is-bad tnum">{{ item.issueCount }}</b> 条异常</span></em>
             </button>
+            <el-empty v-if="!stats?.overview.taskIssues.length" description="当前周期没有异常任务" :image-size="36" />
           </div>
-          <el-empty v-else description="当前周期没有异常任务" :image-size="42" />
         </article>
       </section>
 
@@ -636,33 +599,36 @@ onBeforeUnmount(() => {
             :aria-selected="filters.category === tab.value"
             @click="setCategory(tab.value)"
           >
-            {{ tab.label }}
-            <em class="tnum">{{ categoryCount[tab.value] }}</em>
+            {{ tab.label }}<em class="tnum">{{ categoryCount[tab.value] }}</em>
           </button>
         </div>
         <div class="logs-toolbar__right">
-          <el-select v-model="filters.level" clearable placeholder="全部等级" @change="load(true)">
-            <el-option label="正常" value="info" />
-            <el-option label="警告" value="warning" />
-            <el-option label="错误" value="error" />
-        </el-select>
-          <el-select v-model="filters.service" clearable placeholder="全部服务" @change="load(true)">
-            <el-option label="API" value="api" />
-            <el-option label="Worker" value="worker" />
-        </el-select>
-          <el-input v-model="filters.taskId" clearable placeholder="任务 ID" @keyup.enter="load(true)" />
-          <el-input v-model="filters.requestId" clearable placeholder="请求 ID" @keyup.enter="load(true)" />
-          <el-input v-model="filters.ip" clearable placeholder="来源 IP" @keyup.enter="load(true)" @clear="load(true)" />
-          <el-input v-model="filters.search" clearable placeholder="事件或描述" :prefix-icon="Search" @keyup.enter="load(true)" />
-          <el-button @click="load(true)">查询</el-button>
+          <el-select v-model="filters.level" clearable placeholder="全部等级" class="logs-select" @change="load(true)">
+            <el-option label="正常" value="info" /><el-option label="警告" value="warning" /><el-option label="错误" value="error" />
+          </el-select>
+          <el-select v-model="filters.service" clearable placeholder="全部服务" class="logs-select" @change="load(true)">
+            <el-option label="API" value="api" /><el-option label="Worker" value="worker" />
+          </el-select>
+          <el-input v-model="filters.search" clearable placeholder="搜索事件或描述" :prefix-icon="Search" class="logs-search" @keyup.enter="load(true)" @clear="load(true)" />
+          <el-popover trigger="click" placement="bottom-end" :width="300">
+            <template #reference>
+              <el-button :icon="Filter" :type="advancedFilterCount ? 'primary' : 'default'" :plain="Boolean(advancedFilterCount)">
+                更多筛选<template v-if="advancedFilterCount"> · {{ advancedFilterCount }}</template>
+              </el-button>
+            </template>
+            <el-form label-position="top" class="logs-advanced" @submit.prevent="load(true)">
+              <el-form-item label="任务 ID"><el-input v-model="filters.taskId" clearable /></el-form-item>
+              <el-form-item label="请求 ID"><el-input v-model="filters.requestId" clearable /></el-form-item>
+              <el-form-item label="来源 IP"><el-input v-model="filters.ip" clearable /></el-form-item>
+              <el-button type="primary" native-type="submit">应用</el-button>
+            </el-form>
+          </el-popover>
           <el-button text @click="resetFilters">重置</el-button>
-        <el-button :loading="actionLoading" @click="cleanupNow">按策略清理</el-button>
-        <el-button type="danger" plain :icon="Delete" :loading="actionLoading" @click="clearLogs">清空</el-button>
         </div>
       </div>
 
       <div v-if="activeDrilldown" class="logs-drill">
-        <span>正在追踪 <em>{{ activeDrilldown }}</em></span>
+        <span>正在追踪 <em class="mono">{{ activeDrilldown }}</em></span>
         <el-button text size="small" @click="clearDrilldown">退出追踪</el-button>
       </div>
 
@@ -671,66 +637,44 @@ onBeforeUnmount(() => {
           <template #empty>
             <el-empty :description="stats?.config.enabled ? '当前筛选条件下没有日志' : '日志已关闭，当前没有记录'" :image-size="54" />
           </template>
-          <el-table-column label="时间" width="164">
-            <template #default="{ row }"><span class="tnum">{{ formatTime(row.createdAt) }}</span></template>
-          </el-table-column>
-          <el-table-column label="等级" width="78">
+          <el-table-column label="时间" width="128"><template #default="{ row }"><span class="tnum">{{ shortTime(row.createdAt) }}</span></template></el-table-column>
+          <el-table-column label="等级" width="70"><template #default="{ row }"><el-tag :type="levelTag(row.level)" size="small">{{ levelLabels[row.level] }}</el-tag></template></el-table-column>
+          <el-table-column label="分类" width="64"><template #default="{ row }"><span class="muted">{{ categoryLabels[row.category] }}</span></template></el-table-column>
+          <el-table-column label="服务" width="72"><template #default="{ row }">{{ row.service }}</template></el-table-column>
+          <el-table-column label="事件" min-width="150" show-overflow-tooltip><template #default="{ row }"><strong :title="row.event">{{ eventLabel(row.event) }}</strong></template></el-table-column>
+          <el-table-column label="描述" min-width="240" show-overflow-tooltip prop="message" />
+          <el-table-column label="上下文" min-width="180" show-overflow-tooltip><template #default="{ row }"><span class="muted" :title="contextTitle(row as PlatformLog)">{{ contextOf(row as PlatformLog) }}</span></template></el-table-column>
+          <el-table-column label="任务 / 请求" width="110">
             <template #default="{ row }">
-              <el-tag :type="levelTag(row.level)" size="small">{{ levelLabels[row.level] }}</el-tag>
+              <button v-if="row.taskId" type="button" class="id-link mono" @click.stop="drillTask(row.taskId)">{{ shortId(row.taskId) }}</button>
+              <button v-else-if="row.requestId" type="button" class="id-link mono" @click.stop="drillRequest(row.requestId)">{{ shortId(row.requestId) }}</button>
+              <span v-else class="muted">—</span>
             </template>
           </el-table-column>
-          <el-table-column label="来源" width="108">
-            <template #default="{ row }">
-              <span class="cell-main">{{ row.service }}</span>
-              <small class="cell-sub">{{ categoryLabels[row.category] }}</small>
-            </template>
-          </el-table-column>
-          <el-table-column label="事件与结果" min-width="280" show-overflow-tooltip>
-            <template #default="{ row }">
-              <strong class="cell-main">{{ row.event }}</strong>
-              <small class="cell-sub">{{ row.message }}</small>
-            </template>
-          </el-table-column>
-          <el-table-column label="上下文" min-width="180" show-overflow-tooltip>
-            <template #default="{ row }">
-              <span class="cell-main">{{ row.metadata?.model || row.metadata?.route || "—" }}</span>
-              <small class="cell-sub">{{ row.metadata?.providerDisplayName || row.metadata?.provider || row.metadata?.taskType || row.metadata?.errorCode || "" }}</small>
-            </template>
-          </el-table-column>
-          <el-table-column label="任务/请求" width="122">
-            <template #default="{ row }">
-              <button v-if="row.taskId" type="button" class="id-link" @click.stop="drillTask(row.taskId)">{{ shortId(row.taskId) }}</button>
-              <button v-else-if="row.requestId" type="button" class="id-link" @click.stop="drillRequest(row.requestId)">{{ shortId(row.requestId) }}</button>
-              <span v-else>—</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="状态" width="72" align="right">
-            <template #default="{ row }"><span class="tnum">{{ row.statusCode || row.metadata?.taskStatus || "—" }}</span></template>
-          </el-table-column>
-          <el-table-column label="耗时" width="96" align="right">
-            <template #default="{ row }">
-              <span class="tnum" :class="{ 'is-warn': (row.durationMs || 0) >= 2000 }">{{ row.durationMs == null ? "—" : formatDuration(row.durationMs) }}</span>
-            </template>
+          <el-table-column label="状态" width="72" align="right"><template #default="{ row }"><span class="tnum">{{ row.statusCode || row.metadata?.taskStatus || "—" }}</span></template></el-table-column>
+          <el-table-column label="耗时" width="84" align="right">
+            <template #default="{ row }"><span class="tnum" :class="{ 'is-warn': (row.durationMs || 0) >= 2000 }">{{ row.durationMs == null ? "—" : formatDuration(row.durationMs) }}</span></template>
           </el-table-column>
         </el-table>
-        <footer class="logs-footer">
-          <span>当前显示 {{ items.length }} 条 · 数据库物理占用 {{ formatBytes(stats?.capacity.physicalBytes) }}</span>
-          <el-button v-if="hasMore" :loading="loading" @click="load(false)">加载更多</el-button>
-        </footer>
       </div>
+      <footer class="logs-footer">
+        <span>已加载 <b class="tnum">{{ items.length }}</b> 条 · 覆盖 {{ summary.distinctRequests }} 个请求 / {{ summary.distinctTasks }} 个任务</span>
+        <el-button v-if="hasMore" size="small" :loading="loading" @click="load(false)">加载更多</el-button>
+      </footer>
     </PageCard>
 
     <el-drawer v-model="detailOpen" title="诊断详情" size="min(680px, 96vw)" append-to-body>
       <div v-if="selected" class="log-detail">
         <div class="log-detail__head" :class="`is-${selected.level}`">
-          <small>{{ levelLabels[selected.level] }} · {{ categoryLabels[selected.category] }}日志</small>
-          <strong>{{ selected.event }}</strong>
+          <small>{{ levelLabels[selected.level] }} · {{ categoryLabels[selected.category] }}日志 · <span class="mono">{{ selected.event }}</span></small>
+          <strong>{{ eventLabel(selected.event) }}</strong>
+          <p v-if="eventHint(selected.event)" class="log-detail__hint">{{ eventHint(selected.event) }}</p>
           <p>{{ selected.message }}</p>
         </div>
         <div class="log-detail__actions">
           <el-button v-if="selected.taskId" size="small" @click="drillTask(selected.taskId)">追踪该任务</el-button>
           <el-button v-if="selected.requestId" size="small" @click="drillRequest(selected.requestId)">追踪该请求</el-button>
-          <el-button v-if="selected.metadata?.route" size="small" @click="drillRoute(String(selected.metadata.route))">查看该路由</el-button>
+          <el-button v-if="selected.metadata?.route" size="small" @click="drillRoute(String(selected.metadata.route))">查看该接口</el-button>
         </div>
         <dl class="log-detail__grid">
           <div><dt>时间</dt><dd>{{ formatTime(selected.createdAt) }}</dd></div>
@@ -767,327 +711,78 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.log-quick-actions { display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px; }.log-quick-actions :deep(.el-button){margin:0}
-.logs-page {
-  display: flex;
-  flex-direction: column;
-  width: 100%;
-  height: 100%;
-  min-height: 0;
-  padding: 0;
-  overflow: auto;
-}
-.logs-page :deep(.page-card) {
-  display: flex;
-  flex: 1 0 auto;
-  flex-direction: column;
-  min-height: 100%;
-}
-.logs-page :deep(.page-card__header) {
-  flex-wrap: wrap;
-  align-items: flex-start;
-}
-.logs-page :deep(.page-card__actions) {
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-.logs-page :deep(.page-card__body) {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  min-height: 0;
-  gap: 14px;
-}
-.logs-kpis,
-.logs-live {
-  display: grid;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-control);
-  background: var(--surface-2);
-}
-.logs-kpis {
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-}
-.logs-live {
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-}
-.logs-kpis article,
-.logs-live article {
-  display: grid;
-  gap: 6px;
-  min-width: 0;
-  padding: 14px 16px;
-  border-right: 1px solid var(--border);
-}
-.logs-live article {
-  padding: 12px 14px;
-}
-.logs-kpis article:last-child,
-.logs-live article:last-child {
-  border-right: 0;
-}
-.logs-kpis small,
-.logs-live small {
-  color: var(--ink-3);
-  font-size: 12px;
-  font-weight: 650;
-}
-.logs-kpis strong,
-.logs-live strong {
-  overflow: hidden;
-  color: var(--ink);
-  font-size: 22px;
-  font-weight: 750;
-  letter-spacing: -0.03em;
-  line-height: 1.1;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.logs-live strong {
-  font-size: 18px;
-}
-.logs-kpis article.is-bad strong,
-.logs-live article.is-bad strong,
-.logs-list em.is-bad {
-  color: var(--danger);
-}
-.logs-kpis article.is-warn strong,
-.logs-live article.is-warn strong,
-.logs-list em.is-warn,
-.tnum.is-warn {
-  color: var(--warning);
-}
-.logs-legend {
-  margin: 0;
-  color: var(--ink-2);
-  font-size: 13px;
-  line-height: 1.5;
-}
-.logs-legend em {
-  margin: 0 2px;
-  color: var(--ink);
-  font-style: normal;
-  font-weight: 750;
-}
-.logs-panels {
-  display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(280px, 0.8fr);
-  grid-template-areas:
-    "trend rank"
-    "slow tasks";
-  gap: 10px;
-}
-.logs-panel.is-trend { grid-area: trend; }
-.logs-panel.is-rank { grid-area: rank; }
-.logs-panel.is-slow { grid-area: slow; }
-.logs-panel.is-tasks { grid-area: tasks; }
-.logs-panel {
-  min-width: 0;
-  padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-control);
-  background: var(--surface);
-}
-.logs-panel header {
-  display: grid;
-  gap: 2px;
-  margin-bottom: 10px;
-}
-.logs-panel header strong {
-  color: var(--ink);
-  font-size: 13px;
-  font-weight: 650;
-}
-.logs-panel header small {
-  color: var(--ink-3);
-  font-size: 12px;
-}
-.logs-list {
-  display: grid;
-  gap: 4px;
-  max-height: 228px;
-  overflow: auto;
-}
-.logs-list button {
-  display: flex;
-  align-items: center;
-  width: 100%;
-  min-height: 46px;
-  padding: 8px 10px;
-  border: 0;
-  border-radius: 10px;
-  background: transparent;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-.logs-list button:hover {
-  background: var(--surface-2);
-}
-.logs-list button > span {
-  min-width: 0;
-  flex: 1;
-}
-.logs-list b,
-.logs-list small {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.logs-list b {
-  color: var(--ink);
-  font-size: 13px;
-}
-.logs-list small {
-  margin-top: 3px;
-  color: var(--ink-3);
-  font-size: 12px;
-}
-.logs-list em {
-  margin-left: 8px;
-  color: var(--ink-2);
-  font-size: 12px;
-  font-style: normal;
-  font-weight: 700;
-  white-space: nowrap;
-}
-.logs-toolbar {
-  display: flex;
-  flex: 0 0 auto;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-.logs-tabs {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 6px;
-  overflow-x: auto;
-  padding: 4px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-pill);
-  background: var(--surface-2);
-  scrollbar-width: none;
-}
-.logs-tabs::-webkit-scrollbar {
-  display: none;
-}
-.logs-tab {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 32px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: var(--radius-pill);
-  background: transparent;
-  color: var(--ink-2);
-  font: inherit;
-  font-size: 13px;
-  font-weight: 600;
-  white-space: nowrap;
-  cursor: pointer;
-}
-.logs-tab em {
-  color: var(--ink-3);
-  font-size: 12px;
-  font-style: normal;
-  font-weight: 700;
-}
-.logs-tab.is-active {
-  background: var(--accent);
-  color: var(--accent-on);
-  box-shadow: 0 6px 16px color-mix(in srgb, var(--accent) 28%, transparent);
-}
-.logs-tab.is-active em {
-  color: color-mix(in srgb, var(--accent-on) 72%, transparent);
-}
-.logs-toolbar__right {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-}
-.logs-toolbar__right :deep(.el-select),
-.logs-toolbar__right :deep(.el-input) {
-  width: 132px;
-}
-.logs-toolbar__right :deep(.el-input.filter-wide),
-.logs-toolbar__right :deep(.el-input:last-of-type) {
-  width: 180px;
-}
-.logs-drill {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-height: 40px;
-  padding: 0 14px;
-  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
-  border-radius: var(--radius-control);
-  background: var(--accent-soft);
-  color: var(--accent-ink);
-  font-size: 13px;
-}
-.logs-drill em {
-  font-style: normal;
-  font-weight: 750;
-  overflow-wrap: anywhere;
-}
-.logs-board {
-  display: grid;
-  min-height: 420px;
-  flex: 1;
-  grid-template-rows: minmax(320px, 1fr) auto;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-control);
-  background: var(--surface);
-}
-.logs-table :deep(.el-table__row) {
-  cursor: pointer;
-}
-.cell-main,
-.cell-sub {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.cell-main {
-  color: var(--ink);
-  font-size: 13px;
-}
-.cell-sub {
-  margin-top: 2px;
-  color: var(--ink-3);
-  font-size: 12px;
-  font-weight: 400;
-}
-.id-link {
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--accent-ink);
-  font: 12px ui-monospace, monospace;
-  cursor: pointer;
-}
-.logs-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-height: 56px;
-  padding: 8px 18px;
-  border-top: 1px solid var(--border);
-  color: var(--ink-3);
-  font-size: 12px;
-  background: var(--surface);
-}
+/* 卡片填满视口：日志表格在内部滚动，底部固定加载更多 */
+.logs-page { display: flex; flex-direction: column; width: 100%; height: 100%; min-height: 0; padding: 0; overflow-y: auto; }
+.logs-page :deep(.page-card) { display: flex; flex: 1 1 0; flex-direction: column; min-height: 720px; overflow: hidden; }
+.logs-page :deep(.page-card__header) { flex-wrap: wrap; }
+.logs-page :deep(.page-card__body) { display: flex; flex: 1; flex-direction: column; gap: 12px; min-height: 0; overflow: hidden; }
+.logs-page :deep(.el-alert) { flex: 0 0 auto; }
+
+.logs-head { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.logs-status { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-3); font-size: 12px; white-space: nowrap; }
+.logs-status i { width: 7px; height: 7px; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 20%, transparent); }
+.logs-status.is-off i { background: var(--ink-3); box-shadow: none; }
+
+.logs-metrics { display: grid; flex: 0 0 auto; grid-template-columns: repeat(8, minmax(0, 1fr)); overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--surface-2); }
+.logs-metrics article { display: flex; align-items: baseline; gap: 8px; min-width: 0; padding: 9px 12px; border-right: 1px solid var(--border); }
+.logs-metrics article:last-child { border-right: 0; }
+.logs-metrics article:nth-child(5) { border-left: 2px solid var(--border-strong, var(--border)); }
+.logs-metrics small { flex: 0 0 auto; color: var(--ink-3); font-size: 12px; font-weight: 650; white-space: nowrap; }
+.logs-metrics strong { overflow: hidden; color: var(--ink); font-size: 16px; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
+.logs-metrics strong em { margin-left: 4px; color: var(--ink-3); font-size: 11px; font-style: normal; font-weight: 600; }
+.logs-metrics article.is-bad strong { color: var(--danger); }
+.logs-metrics article.is-warn strong { color: var(--warning); }
+
+.logs-overview { display: grid; flex: 0 0 auto; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 12px; }
+.logs-panel { display: flex; flex-direction: column; min-width: 0; height: 222px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--surface); }
+.logs-panel header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.logs-panel header strong { font-size: 13px; font-weight: 700; }
+.logs-panel header small { color: var(--ink-3); font-size: 12px; }
+.logs-list { display: grid; align-content: start; flex: 1; gap: 2px; min-height: 0; overflow-y: auto; }
+.logs-list button { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; padding: 6px 8px; border: 0; border-radius: 8px; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.logs-list button:hover { background: color-mix(in srgb, var(--ink) 5%, transparent); }
+.logs-list button > span { display: grid; gap: 1px; min-width: 0; }
+.logs-list b, .logs-list small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.logs-list b { font-size: 12px; font-weight: 650; }
+.logs-list small { color: var(--ink-3); font-size: 11px; }
+.logs-list em { flex: 0 0 auto; color: var(--ink-2); font-size: 12px; font-style: normal; font-weight: 650; }
+.logs-list em.is-bad, .is-bad { color: var(--danger); }
+.logs-list .rank-count { display: grid; justify-items: end; gap: 1px; color: var(--ink-3); font-size: 11px; font-weight: 600; white-space: nowrap; }
+.logs-list .rank-count b { font-size: 14px; font-weight: 750; }
+.logs-list .rank-count small { font-size: 11px; }
+.log-detail__hint { margin: 2px 0 0; color: var(--ink-3); font-size: 12px; }
+.logs-list em.is-warn, .tnum.is-warn { color: var(--warning); }
+
+.logs-toolbar { display: flex; flex: 0 0 auto; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+.logs-tabs { display: inline-flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--surface-2); }
+.logs-tab { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 12px; border: 0; border-radius: var(--radius-pill); background: transparent; color: var(--ink-2); font: inherit; font-size: 13px; font-weight: 600; white-space: nowrap; cursor: pointer; }
+.logs-tab:hover:not(.is-active) { background: color-mix(in srgb, var(--ink) 6%, transparent); color: var(--ink); }
+.logs-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.logs-tab em { color: var(--ink-3); font-size: 12px; font-style: normal; font-weight: 700; }
+.logs-tab.is-active { background: var(--ink); color: var(--surface); box-shadow: var(--shadow-sm); }
+.logs-tab.is-active em { color: color-mix(in srgb, var(--surface) 78%, transparent); }
+html.dark .logs-tab.is-active { background: var(--surface-3); color: var(--ink); box-shadow: inset 0 0 0 1px var(--border-strong); }
+html.dark .logs-tab.is-active em { color: var(--ink-3); }
+.logs-toolbar__right { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.logs-toolbar__right :deep(.el-button) { margin-left: 0; }
+.logs-select { width: 116px; }
+.logs-search { width: 220px; }
+.logs-advanced :deep(.el-form-item) { margin-bottom: 10px; }
+
+.logs-drill { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 12px; border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border)); border-radius: var(--radius-control); background: color-mix(in srgb, var(--accent) 8%, transparent); font-size: 12px; }
+.logs-drill em { color: var(--ink); font-style: normal; font-weight: 650; }
+
+.logs-board { flex: 1; min-height: 220px; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-control); }
+.logs-table :deep(.el-table__row) { cursor: pointer; }
+.logs-table :deep(.cell) { white-space: nowrap; }
+.logs-footer { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 12px; color: var(--ink-3); font-size: 12px; }
+.logs-footer b { color: var(--ink); }
+.id-link { padding: 0; border: 0; background: none; color: var(--ink-2); font-size: 12px; cursor: pointer; }
+.id-link:hover { color: var(--ink); text-decoration: underline; }
+.muted { color: var(--ink-3); }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+:deep(.el-dropdown-menu__item.is-danger) { color: var(--danger); }
+
 .log-detail {
   display: grid;
   gap: 16px;
@@ -1218,59 +913,9 @@ onBeforeUnmount(() => {
   font-family: ui-monospace, monospace;
 }
 @media (max-width: 1280px) {
-  .logs-kpis {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-  .logs-kpis article:nth-child(3) {
-    border-right: 0;
-  }
-  .logs-kpis article:nth-child(n + 4) {
-    border-top: 1px solid var(--border);
-  }
-  .logs-live {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-  .logs-live article:nth-child(3) {
-    border-right: 0;
-  }
-  .logs-live article:nth-child(n + 4) {
-    border-top: 1px solid var(--border);
-  }
-  .logs-panels {
-    grid-template-columns: 1fr 1fr;
-    grid-template-areas:
-      "trend trend"
-      "rank rank"
-      "slow tasks";
-  }
-}
-@media (max-width: 860px) {
-  .logs-kpis,
-  .logs-live,
-  .logs-panels,
-  .log-detail__grid,
-  .log-detail__fields > div {
-    grid-template-columns: 1fr;
-  }
-  .logs-panels {
-    grid-template-areas:
-      "trend"
-      "rank"
-      "slow"
-      "tasks";
-  }
-  .logs-kpis article,
-  .logs-live article {
-    border-right: 0;
-    border-top: 1px solid var(--border);
-  }
-  .logs-kpis article:first-child,
-  .logs-live article:first-child {
-    border-top: 0;
-  }
-  .logs-toolbar {
-    align-items: stretch;
-    flex-direction: column;
-  }
+  .logs-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .logs-metrics article:nth-child(4) { border-right: 0; }
+  .logs-metrics article:nth-child(n + 5) { border-top: 1px solid var(--border); }
+  .logs-metrics article:nth-child(5) { border-left: 0; }
 }
 </style>
