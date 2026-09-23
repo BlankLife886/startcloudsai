@@ -480,3 +480,78 @@ func TestAdminModelListCleansSortsAndCaps(t *testing.T) {
 		t.Fatalf("models = %#v", models)
 	}
 }
+
+// 系统设置页一次提交的完整字段集（与 apps/admin SettingsView 的保存请求一致），
+// 保存后再读回，逐项比对，防止前后端字段名、单位或校验范围不一致。
+func TestAdminSettingsPageFullRoundTrip(t *testing.T) {
+	st := testdb.Setup(t)
+	srv := &Server{Cfg: &config.Config{AppEnv: "development", AppSecret: "settings-page-roundtrip", WorkerConcurrency: 32}, St: st}
+	body := map[string]any{
+		"userMaxRunningTasks": 120, "userMaxRunningImages": 500, "userMaxConcurrentTasks": 6, "userMaxConcurrentChats": 5,
+		"globalMaxConcurrentTasks": 2500, "globalMaxConcurrentChats": 40, "globalMaxActiveTasks": 15000, "globalMaxActiveImages": 16000,
+		"taskFailureRetryCount": 3, "taskRetryFirstDelaySecs": 4, "taskRetryBackoffSecs": 20,
+		"t2iPromptMaxChars": 9000, "assistantMessageMaxChars": 13000, "studioHubPromptMaxChars": 2500,
+		"imageVariantFormat": "png", "imageDisplayLossless": true, "imageDisplayQuality": 80,
+		"imageDisplayMaxEdge": 2304, "imageThumbMaxEdge": 448, "imageFetchConcurrency": 6,
+		"crossProviderSameModelBalancingEnabled": true,
+		"platformLoggingEnabled":                 true, "platformLogSecurityEnabled": true, "platformLogOperationsEnabled": false, "platformLogUserEnabled": true,
+		"platformLogRetentionDays": 14, "platformLogMaxMb": 512, "auditLogRetentionDays": 200,
+		"adminImageAnalysisProviderId": "", "adminImageAnalysisModelId": "", "adminImageAnalysisReasoningEffort": "",
+		"registrationEnabled": false, "signupBonusCents": 150,
+		"growthFailureBonusEnabled": false, "growthFailureBonusCents": 7, "growthFailureBonusDailyLimit": 2,
+		"growthUsageRewardsEnabled": false,
+		"growthUsageMilestones":     []map[string]int{{"units": 5, "rewardCents": 10}, {"units": 30, "rewardCents": 60}},
+		"suggestionRewardMaxCents":  4000,
+		"lanjingPayEnabled":         true, "lanjingPayBaseUrl": "https://2347537.pay.lanjingzf.com", "lanjingPaySecret": "roundtrip-secret-9876",
+		"lanjingPayNotifyUrl": "https://example.com/api/v1/payments/lanjing/notify", "lanjingPayTimeoutSecs": 12,
+		"lanjingPayAlipayEnabled": true, "lanjingPayWechatEnabled": false,
+	}
+	raw, _ := json.Marshal(body)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPut, "/api/v1/admin/settings", strings.NewReader(string(raw)))
+	c.Request.Header.Set("Content-Type", "application/json")
+	srv.adminPutSettings(c, nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	gc, _ := gin.CreateTestContext(httptest.NewRecorder())
+	gc.Request = httptest.NewRequest(http.MethodGet, "/api/v1/admin/settings", nil)
+	out, err := srv.settingsToCamel(gc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asJSON := func(v any) string {
+		if r, ok := v.(json.RawMessage); ok {
+			var decoded any
+			_ = json.Unmarshal(r, &decoded)
+			v = decoded
+		}
+		b, _ := json.Marshal(v)
+		return string(b)
+	}
+	for key, want := range body {
+		got, present := out[key]
+		switch key {
+		case "lanjingPaySecret":
+			if asJSON(got) != `"****9876"` {
+				t.Errorf("%s = %s, want masked ****9876", key, asJSON(got))
+			}
+			continue
+		case "growthUsageMilestones":
+			// 页面提交前已按 units 升序排列，服务端原样保存
+			if asJSON(got) != `[{"rewardCents":10,"units":5},{"rewardCents":60,"units":30}]` {
+				t.Errorf("%s = %s", key, asJSON(got))
+			}
+			continue
+		}
+		if !present {
+			t.Errorf("%s missing from GET response", key)
+			continue
+		}
+		if asJSON(got) != asJSON(want) {
+			t.Errorf("%s = %s, want %s", key, asJSON(got), asJSON(want))
+		}
+	}
+}

@@ -362,7 +362,9 @@ router.beforeEach(async (to, from) => {
   return true;
 });
 
-router.afterEach((to) => {
+router.afterEach((to, _from, failure) => {
+  // 被守卫拦下（例如系统设置有未保存更改）时仍停留在原页面，不改标题
+  if (failure) return;
   document.title = to.meta.title
     ? `${to.meta.title} · StartClouds 管理后台`
     : "StartClouds 管理后台";
