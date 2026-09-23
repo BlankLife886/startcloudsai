@@ -65,13 +65,19 @@ function diffText(current: number, previous: number, period: string) {
   return { text: `比${period}${diff > 0 ? '多' : '少'} ${number(Math.abs(diff))}`, dir: diff > 0 ? 'up' : 'down' }
 }
 
-/** 迷你走势：返回 SVG path（折线 + 面积） */
+/** 迷你走势：返回平滑曲线与面积的 SVG path */
 function sparkPath(values: number[], width = 96, height = 30) {
   if (values.length < 2) return { line: '', area: '' }
   const max = Math.max(1, ...values)
   const step = width / (values.length - 1)
-  const pts = values.map((v, i) => [i * step, height - 2 - (v / max) * (height - 4)])
-  const line = pts.map(([x, y], i) => `${i ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`).join(' ')
+  const pts = values.map((v, i) => [i * step, height - 3 - (v / max) * (height - 6)])
+  let line = `M${pts[0][0].toFixed(1)},${pts[0][1].toFixed(1)}`
+  for (let i = 1; i < pts.length; i++) {
+    const [x0, y0] = pts[i - 1]
+    const [x1, y1] = pts[i]
+    const mx = (x0 + x1) / 2
+    line += ` C${mx.toFixed(1)},${y0.toFixed(1)} ${mx.toFixed(1)},${y1.toFixed(1)} ${x1.toFixed(1)},${y1.toFixed(1)}`
+  }
   return { line, area: `${line} L${width},${height} L0,${height} Z` }
 }
 
@@ -169,7 +175,8 @@ const growthChart = computed<EChartOption>(() => {
   const { info, violet } = palette.value
   return {
     ...base,
-    yAxis: [{ ...(base.yAxis as object[])[0], scale: true }, { ...(base.yAxis as object[])[1], max: (v: { max: number }) => Math.max(4, Math.ceil(v.max * 3)) }],
+    // 用户少时从 0 起，避免 5→6 被画成断崖；用户多时贴近最小值以看清增长
+    yAxis: [{ ...(base.yAxis as object[])[0], min: (v: { min: number; max: number }) => (v.max <= 50 ? 0 : Math.floor(v.min * 0.9)) }, { ...(base.yAxis as object[])[1], max: (v: { max: number }) => Math.max(4, Math.ceil(v.max * 3)) }],
     series: [
       { name: '累计用户', type: 'line', smooth: 0.3, symbol: 'none', lineStyle: { width: 2, color: info }, itemStyle: { color: info }, areaStyle: { color: vgrad(info, '00') }, data: points.map(p => p.totalUsers ?? 0) },
       { name: '新注册', type: 'bar', yAxisIndex: 1, barMaxWidth: 7, itemStyle: { borderRadius: [3, 3, 0, 0], color: `${violet}99` }, data: points.map(p => p.newUsers) },
@@ -382,18 +389,24 @@ onBeforeUnmount(() => {
     <template v-else>
       <!-- 核心指标 -->
       <section class="kpis">
-        <article v-for="kpi in kpis" :key="kpi.key" class="kpi">
+        <article v-for="kpi in kpis" :key="kpi.key" class="kpi" :class="`tone-${kpi.tone}`">
           <div class="kpi-top">
             <span class="kpi-label">{{ kpi.label }}</span>
-            <span class="kpi-icon" :class="`tone-${kpi.tone}`"><component :is="kpi.icon" /></span>
+            <span class="kpi-icon"><component :is="kpi.icon" /></span>
           </div>
           <div class="kpi-mid">
             <strong class="tnum">{{ kpi.value }}</strong>
-            <svg v-if="kpi.spark?.line" class="spark" :class="`tone-${kpi.tone}`" viewBox="0 0 96 30" preserveAspectRatio="none" aria-hidden="true">
-              <path :d="kpi.spark.area" class="spark-area" />
+            <svg v-if="kpi.spark?.line" class="spark" viewBox="0 0 96 30" preserveAspectRatio="none" aria-hidden="true">
+              <defs>
+                <linearGradient :id="`spark-${kpi.key}`" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="currentColor" stop-opacity="0.35" />
+                  <stop offset="100%" stop-color="currentColor" stop-opacity="0" />
+                </linearGradient>
+              </defs>
+              <path :d="kpi.spark.area" :fill="`url(#spark-${kpi.key})`" />
               <path :d="kpi.spark.line" class="spark-line" />
             </svg>
-            <svg v-else-if="kpi.ring !== undefined && kpi.ring !== null" class="ring" :class="`tone-${kpi.tone}`" viewBox="0 0 36 36" aria-hidden="true">
+            <svg v-else-if="kpi.ring !== undefined && kpi.ring !== null" class="ring" viewBox="0 0 36 36" aria-hidden="true">
               <circle cx="18" cy="18" r="15" class="ring-track" />
               <circle cx="18" cy="18" r="15" class="ring-value" :stroke-dasharray="`${(kpi.ring * 94.25).toFixed(1)} 94.25`" />
             </svg>
@@ -589,7 +602,8 @@ onBeforeUnmount(() => {
 .head-actions :deep(.el-button) { margin: 0; }
 
 /* 卡片 */
-.card { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 14px 16px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); box-shadow: var(--shadow-sm); }
+.card { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 14px 16px; border-radius: 14px; background: var(--surface); box-shadow: 0 1px 2px rgb(0 0 0 / 0.04), 0 8px 24px -12px rgb(0 0 0 / 0.18); }
+html.dark .card { box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.04), 0 10px 28px -14px rgb(0 0 0 / 0.6); }
 .card-head { display: flex; flex: 0 0 auto; align-items: flex-start; gap: 12px; margin-bottom: 10px; }
 .card-head > div:first-child { flex: 1; min-width: 0; }
 h3 { margin: 0; color: var(--ink); font-size: 14px; font-weight: 650; }
@@ -611,26 +625,77 @@ h3 { margin: 0; color: var(--ink); font-size: 14px; font-weight: 650; }
 
 /* 核心指标 */
 .kpis { display: grid; flex: 0 0 auto; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
-.kpi { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 12px 14px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); box-shadow: var(--shadow-sm); }
+/* 金属质感卡片：拉丝纹理 + 斜向高光 + 上亮下暗的倒角；无边框，色调来自 .tone-* */
+.kpi {
+  --sheen: rgb(255 255 255 / 0.55);
+  --brush: rgb(255 255 255 / 0.35);
+  --bevel-hi: rgb(255 255 255 / 0.9);
+  --bevel-lo: rgb(15 23 42 / 0.08);
+  position: relative; display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 12px 14px; overflow: hidden;
+  border-radius: 14px;
+  background:
+    repeating-linear-gradient(90deg, var(--brush) 0 1px, transparent 1px 3px),
+    radial-gradient(120% 100% at 100% 0%, color-mix(in srgb, var(--tone) 26%, transparent), transparent 62%),
+    linear-gradient(160deg, color-mix(in srgb, var(--tone) 16%, #f8fafc) 0%, #eef1f5 48%, color-mix(in srgb, var(--tone) 10%, #dfe4ea) 100%);
+  background-blend-mode: soft-light, normal, normal;
+  box-shadow:
+    inset 0 1px 0 var(--bevel-hi),
+    inset 0 -1px 0 var(--bevel-lo),
+    0 1px 2px rgb(15 23 42 / 0.06),
+    0 10px 24px -14px color-mix(in srgb, var(--tone) 60%, rgb(15 23 42 / 0.4));
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+html.dark .kpi {
+  --sheen: rgb(255 255 255 / 0.1);
+  --brush: rgb(255 255 255 / 0.05);
+  --bevel-hi: rgb(255 255 255 / 0.12);
+  --bevel-lo: rgb(0 0 0 / 0.5);
+  background:
+    repeating-linear-gradient(90deg, var(--brush) 0 1px, transparent 1px 3px),
+    radial-gradient(120% 100% at 100% 0%, color-mix(in srgb, var(--tone) 24%, transparent), transparent 62%),
+    linear-gradient(160deg, color-mix(in srgb, var(--tone) 14%, #2a303c) 0%, #1c212b 50%, color-mix(in srgb, var(--tone) 8%, #14181f) 100%);
+  box-shadow:
+    inset 0 1px 0 var(--bevel-hi),
+    inset 0 -1px 0 var(--bevel-lo),
+    0 12px 28px -14px color-mix(in srgb, var(--tone) 45%, rgb(0 0 0 / 0.7));
+}
+/* 斜向高光带，悬停时扫过 */
+.kpi::after {
+  content: ''; position: absolute; inset: -40% -60%; pointer-events: none;
+  background: linear-gradient(110deg, transparent 42%, var(--sheen) 50%, transparent 58%);
+  transform: translateX(-18%);
+  transition: transform 0.8s ease;
+}
+.kpi:hover { transform: translateY(-1px); }
+.kpi:hover::after { transform: translateX(18%); }
+@media (prefers-reduced-motion: reduce) { .kpi, .kpi:hover, .kpi::after, .kpi:hover::after { transform: none; transition: none; } }
+.kpi > * { position: relative; z-index: 1; }
 .kpi-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .kpi-label { color: var(--ink-2); font-size: 12px; font-weight: 600; }
-.kpi-icon { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 8px; background: var(--tone-soft); color: var(--tone-ink); }
-.kpi-icon svg { width: 14px; height: 14px; }
+.kpi-icon {
+  display: grid; place-items: center; width: 28px; height: 28px; border-radius: 9px;
+  background:
+    linear-gradient(160deg, rgb(255 255 255 / 0.55) 0%, rgb(255 255 255 / 0) 45%),
+    linear-gradient(160deg, color-mix(in srgb, var(--tone) 85%, #fff), color-mix(in srgb, var(--tone) 65%, #000));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.6), inset 0 -1px 0 rgb(0 0 0 / 0.25), 0 4px 10px -2px color-mix(in srgb, var(--tone) 50%, transparent);
+  color: #fff;
+}
+.tone-accent .kpi-icon { color: var(--accent-on); }
+.kpi-icon svg { width: 15px; height: 15px; }
 .kpi-mid { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; min-height: 32px; }
-.kpi-mid strong { overflow: hidden; color: var(--ink); font-size: 26px; font-weight: 700; line-height: 1.1; letter-spacing: -0.02em; text-overflow: ellipsis; white-space: nowrap; }
-.spark { flex: 0 0 auto; width: 88px; height: 28px; }
-.spark-line { fill: none; stroke: var(--tone); stroke-width: 1.6; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
-.spark-area { fill: var(--tone-soft); stroke: none; }
-.ring { flex: 0 0 auto; width: 32px; height: 32px; transform: rotate(-90deg); }
+.kpi-mid strong { overflow: hidden; background: linear-gradient(180deg, var(--ink) 30%, color-mix(in srgb, var(--ink) 55%, var(--tone)) 100%); -webkit-background-clip: text; background-clip: text; color: transparent; font-size: 26px; font-weight: 700; line-height: 1.1; letter-spacing: -0.02em; text-overflow: ellipsis; white-space: nowrap; }
+.spark { flex: 0 0 auto; width: 92px; height: 30px; color: var(--tone); }
+.spark-line { fill: none; stroke: var(--tone); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.ring { flex: 0 0 auto; width: 34px; height: 34px; transform: rotate(-90deg); }
 .ring circle { fill: none; stroke-width: 4; }
-.ring-track { stroke: var(--surface-3); }
+.ring-track { stroke: color-mix(in srgb, var(--tone) 16%, var(--surface-2)); }
 .ring-value { stroke: var(--tone); stroke-linecap: round; }
 .kpi-foot { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .kpi-sub { overflow: hidden; color: var(--ink-3); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .chip { flex: 0 0 auto; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 650; white-space: nowrap; }
 .chip.is-up { background: var(--success-soft); color: var(--success); }
 .chip.is-down { background: var(--danger-soft); color: var(--danger); }
-.chip.is-flat { background: var(--surface-2); color: var(--ink-2); }
+.chip.is-flat { background: color-mix(in srgb, var(--ink-3) 14%, transparent); color: var(--ink-2); }
 
 /* 趋势 */
 .mini-stats { display: flex; gap: 18px; margin: 0; }
@@ -662,10 +727,10 @@ h3 { margin: 0; color: var(--ink); font-size: 14px; font-weight: 650; }
 .stack i { min-width: 3px; }
 
 /* 风险 */
-.risk-stats { display: grid; grid-template-columns: repeat(3, 1fr); margin-top: 10px; border: 1px solid var(--border); border-radius: 10px; }
-.risk-stats button { display: grid; gap: 1px; padding: 8px 10px; border: 0; border-right: 1px solid var(--border); background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.risk-stats { display: grid; grid-template-columns: repeat(3, 1fr); margin-top: 10px; border-radius: 10px; background: var(--surface-2); }
+.risk-stats button { display: grid; gap: 1px; padding: 8px 10px; border: 0; border-right: 1px solid color-mix(in srgb, var(--ink-3) 14%, transparent); background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .risk-stats button:last-child { border-right: 0; }
-.risk-stats button:hover { background: var(--surface-2); }
+.risk-stats button:hover { background: var(--surface-3); }
 .risk-stats button:first-child:hover { border-radius: 10px 0 0 10px; }
 .risk-stats button:last-child:hover { border-radius: 0 10px 10px 0; }
 .risk-stats span { display: inline-flex; align-items: center; gap: 5px; color: var(--ink-2); font-size: 11px; }
@@ -673,9 +738,9 @@ h3 { margin: 0; color: var(--ink); font-size: 14px; font-weight: 650; }
 .risk-stats b { color: var(--ink); font-size: 20px; font-weight: 700; line-height: 1.2; }
 .risk-stats small { color: var(--ink-3); font-size: 11px; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
-.chips button { display: inline-flex; align-items: center; gap: 6px; padding: 3px 4px 3px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--ink-2); font: inherit; font-size: 12px; cursor: pointer; }
-.chips button:hover { border-color: var(--accent); color: var(--ink); }
-.chips b { min-width: 20px; padding: 0 6px; border-radius: 999px; background: var(--surface-2); color: var(--ink); font-size: 11px; text-align: center; }
+.chips button { display: inline-flex; align-items: center; gap: 6px; padding: 3px 4px 3px 10px; border: 0; border-radius: 999px; background: var(--surface-2); color: var(--ink-2); font: inherit; font-size: 12px; cursor: pointer; }
+.chips button:hover { background: var(--accent-soft); color: var(--ink); }
+.chips b { min-width: 20px; padding: 0 6px; border-radius: 999px; background: var(--surface); color: var(--ink); font-size: 11px; text-align: center; }
 
 /* 表格（价值 / 留存共用） */
 table { width: 100%; border-collapse: collapse; font-size: 12px; }
