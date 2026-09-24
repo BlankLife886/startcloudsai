@@ -36,6 +36,13 @@ import { DialogMotion } from "../components/motion/DialogMotion.jsx";
 import { LogoutDialog } from "../components/LogoutDialog.jsx";
 import { useIsDark } from "../hooks/useIsDark.js";
 import {
+  UsageDurationCard,
+  UsagePanel,
+  UsageRhythmCard,
+  usageHeroLinks,
+} from "../features/profile-usage/ProfileUsageDashboard.jsx";
+import { useProfileUsage } from "../features/profile-usage/useProfileUsage.js";
+import {
   DRESSUP_CATEGORIES,
   buildDressupSourcePlan,
   dressupSlotSummary,
@@ -867,152 +874,6 @@ function taskPreviewUrl(task = {}) {
   );
 }
 
-function chartParts(items) {
-  return items
-    .map((item) => ({ ...item, value: numeric(item.value) }))
-    .filter((item) => item.value > 0);
-}
-
-function MiniBars({ items }) {
-  const parts = chartParts(items);
-  const values = parts.length ? parts : [{ value: 1, color: "var(--pc-accent-soft)" }];
-  const max = Math.max(1, ...values.map((item) => item.value));
-  const width = 80;
-  const height = 64;
-  const gap = 8;
-  const barWidth = Math.min(18, (width - 16 - gap * Math.max(0, values.length - 1)) / values.length);
-  const startX = (width - (barWidth * values.length + gap * Math.max(0, values.length - 1))) / 2;
-  return (
-    <svg className="pp-soft-stat__svg" viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
-      {values.map((item, index) => {
-        const barHeight = Math.max(parts.length ? 6 : 4, (item.value / max) * 48);
-        return (
-          <rect
-            key={`${item.color}-${index}`}
-            x={startX + index * (barWidth + gap)}
-            y={height - 6 - barHeight}
-            width={barWidth}
-            height={barHeight}
-            rx="5"
-            fill={item.color}
-          />
-        );
-      })}
-    </svg>
-  );
-}
-
-function MiniDonut({ items }) {
-  const parts = chartParts(items);
-  const total = parts.reduce((sum, item) => sum + item.value, 0);
-  const size = 76;
-  const center = size / 2;
-  const radius = 26;
-  const stroke = 8;
-  const circle = 2 * Math.PI * radius;
-  let offset = 0;
-  return (
-    <svg className="pp-soft-stat__svg is-donut" viewBox={`0 0 ${size} ${size}`} aria-hidden="true">
-      <circle
-        cx={center}
-        cy={center}
-        r={radius}
-        fill="none"
-        stroke="var(--pc-accent-soft)"
-        strokeWidth={stroke}
-      />
-      {parts.map((item, index) => {
-        const length = (item.value / total) * circle;
-        const node = (
-          <circle
-            key={`${item.color}-${index}`}
-            cx={center}
-            cy={center}
-            r={radius}
-            fill="none"
-            stroke={item.color}
-            strokeWidth={stroke}
-            strokeDasharray={`${length} ${circle - length}`}
-            strokeDashoffset={-offset}
-            strokeLinecap="butt"
-            transform={`rotate(-90 ${center} ${center})`}
-          />
-        );
-        offset += length;
-        return node;
-      })}
-    </svg>
-  );
-}
-
-function MiniGauge({ value, max = 0 }) {
-  const amount = numeric(value);
-  const ceiling = Math.max(amount, numeric(max), 1);
-  const progress = amount / ceiling;
-  const radius = 26;
-  const circle = 2 * Math.PI * radius;
-  const dash = circle * 0.72;
-  return (
-    <svg className="pp-soft-stat__svg is-donut" viewBox="0 0 76 76" aria-hidden="true">
-      <circle
-        cx="38"
-        cy="42"
-        r={radius}
-        fill="none"
-        stroke="var(--pc-accent-soft)"
-        strokeWidth="8"
-        strokeDasharray={`${dash} ${circle}`}
-        strokeLinecap="round"
-        transform="rotate(140 38 42)"
-      />
-      <circle
-        cx="38"
-        cy="42"
-        r={radius}
-        fill="none"
-        stroke="var(--pc-accent)"
-        strokeWidth="8"
-        strokeDasharray={`${dash * progress} ${circle}`}
-        strokeLinecap="round"
-        transform="rotate(140 38 42)"
-      />
-    </svg>
-  );
-}
-
-function MiniStack({ items }) {
-  const parts = chartParts(items);
-  const total = parts.reduce((sum, item) => sum + item.value, 0) || 1;
-  let x = 8;
-  return (
-    <svg className="pp-soft-stat__svg" viewBox="0 0 80 64" aria-hidden="true">
-      <defs>
-        <clipPath id="pp-soft-stack">
-          <rect x="8" y="22" width="64" height="18" rx="9" />
-        </clipPath>
-      </defs>
-      <rect x="8" y="22" width="64" height="18" rx="9" fill="var(--pc-accent-soft)" />
-      <g clipPath="url(#pp-soft-stack)">
-        {parts.map((item, index) => {
-          const width = (item.value / total) * 64;
-          const node = (
-            <rect
-              key={`${item.color}-${index}`}
-              x={x}
-              y="22"
-              width={width}
-              height="18"
-              fill={item.color}
-            />
-          );
-          x += width;
-          return node;
-        })}
-      </g>
-    </svg>
-  );
-}
-
 export function ProfileView() {
   const auth = useAuth();
   const { isEntryVisible } = usePageControls();
@@ -1035,7 +896,6 @@ export function ProfileView() {
   const showGeneratedFigureRef = useRef(() => []);
   const skipProfilePreviewRef = useRef(false);
   const [overview, setOverview] = useState(null);
-  const [unreadCount, setUnreadCount] = useState(0);
   const [figureBusy, setFigureBusy] = useState("");
   const [figurePreviewUrl, setFigurePreviewUrl] = useState("");
   const [figureNote, setFigureNote] = useState("");
@@ -1069,7 +929,6 @@ export function ProfileView() {
       if (!mountedRef.current || controller.signal.aborted) return;
       setOverview(result);
       const unread = numeric(result?.unreadNotifications);
-      setUnreadCount(unread);
       window.dispatchEvent(
         new CustomEvent("starclouds:notifications-updated", {
           detail: { unreadCount: unread, source: "profile-overview" },
@@ -1224,14 +1083,6 @@ export function ProfileView() {
     [overview],
   );
   const materialCount = numeric(overview?.assetCount);
-  const assetUngrouped = numeric(overview?.assetUngrouped);
-  const assetGrouped = Math.max(0, materialCount - assetUngrouped);
-  const unreadPersonal = numeric(overview?.unreadPersonal);
-  const unreadBroadcast = numeric(overview?.unreadBroadcast);
-  const walletAvailable = numeric(overview?.wallet?.availableCents ?? overview?.wallet?.balanceCents);
-  const walletFrozen = numeric(overview?.wallet?.frozenCents);
-  const walletTrial = numeric(overview?.wallet?.trialBalanceCents);
-  const walletNormal = numeric(overview?.wallet?.normalBalanceCents);
   const balanceCents = numeric(overview?.wallet?.balanceCents);
   const pointsDisplay = formatPoints(balanceCents, { withUnit: false });
   const customFigure = Boolean(auth.user?.studioFigureUrl || figurePreviewUrl);
@@ -1808,6 +1659,9 @@ export function ProfileView() {
     await requestStudioFigureGenerate(file);
   };
 
+  // 创作数据：左侧入口卡、右侧创作数据面板与底部卡片共用一次请求。
+  const usage = useProfileUsage();
+
   const confirmLogout = async () => {
     if (loggingOut) return;
     setLoggingOut(true);
@@ -1852,43 +1706,8 @@ export function ProfileView() {
                   <div className="pp-soft-hero__rim" />
                 </div>
               </div>
-              <nav className="pp-soft-hero-links" aria-label="个人入口">
-                {[
-                  {
-                    to: "/assets",
-                    icon: "bi-collection",
-                    tone: "assets",
-                    title: "我的资产",
-                    value: String(materialCount),
-                    hint: "件素材",
-                  },
-                  {
-                    to: "/submissions",
-                    icon: "bi-send-check",
-                    tone: "submissions",
-                    title: "我的投稿",
-                    value: String(submissionStats.total),
-                    hint: submissionStats.pending
-                      ? `待审 ${submissionStats.pending}`
-                      : "社区投稿",
-                  },
-                  {
-                    to: "/wallet",
-                    icon: "bi-wallet2",
-                    tone: "wallet",
-                    title: "我的钱包",
-                    value: pointsDisplay,
-                    hint: "可用积分",
-                  },
-                  {
-                    to: "/orders",
-                    icon: "bi-receipt",
-                    tone: "orders",
-                    title: "我的订单",
-                    value: "",
-                    hint: "充值与订阅",
-                  },
-                ].map((item, index) => (
+              <nav className="pp-soft-hero-links" aria-label="创作数据">
+                {usageHeroLinks(usage, pointsDisplay).map((item, index) => (
                   <Link
                     key={item.to}
                     to={item.to}
@@ -2031,179 +1850,77 @@ export function ProfileView() {
                 {loggingOut ? "退出中…" : "退出登录"}
               </button>
             </div>
-            <aside className="pp-soft-performance">
-              <header>
-                <strong>Performance</strong>
-                {isEntryVisible("/submissions") && <button type="button" onClick={() => navigate("/submissions")}>
-                  查看投稿
-                </button>}
-              </header>
-              <div className="pp-soft-progress">
-                <div className="pp-soft-progress__meta">
-                  <strong aria-hidden="true">{successRate}</strong>
-                  <span>成功率 {successRate}%</span>
-                </div>
-                <b>
-                  <i style={{ width: `${successRate}%` }} />
-                </b>
-              </div>
-              {typeMix.length ? (
-                <ul className="pp-soft-types">
-                  {typeMix.map((item) => (
-                    <li key={item.type}>
-                      <span>{item.label}</span>
-                      <strong>{item.count}</strong>
-                      <b>
-                        <i style={{ width: `${Math.round((item.count / typeMixMax) * 100)}%` }} />
-                      </b>
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-              <ul className="pp-soft-perf-list">
-                <li>
-                  <span>进行中</span>
-                  <strong>{taskStats.running}</strong>
-                </li>
-                <li className="is-ok">
-                  <span>已成功</span>
-                  <strong>{taskStats.succeeded}</strong>
-                </li>
-                <li className="is-bad">
-                  <span>失败</span>
-                  <strong>{taskStats.failed}</strong>
-                </li>
-                <li>
-                  <span>审核中</span>
-                  <strong>{submissionStats.pending}</strong>
-                </li>
-              </ul>
-              {recentLoop.length && isEntryVisible("/history") ? (
-                <div
-                  className="pp-soft-recent"
-                  style={{ "--pp-recent-n": recentLoop.length }}
-                >
-                  <div className="pp-soft-recent__viewport">
-                    <div className="pp-soft-recent__track">
-                      {[0, 1].map((copy) => (
-                        <ul
-                          key={copy}
-                          className="pp-soft-recent__set"
-                          aria-hidden={copy ? true : undefined}
-                          inert={copy ? true : undefined}
-                        >
-                          {recentLoop.map((task, index) => {
-                            const preview = taskPreviewUrl(task);
-                            const label = `${taskTypeLabel(task.type)} ${taskStatusLabel(task.status)}`;
-                            return (
-                              <li key={`${copy}-${task.id || task.createdAt}-${index}`}>
-                                <Link to="/history" aria-label={copy ? undefined : label} title={copy ? undefined : label} tabIndex={copy ? -1 : undefined}>
-                                  {isAuthenticatedAiMediaUrl(preview) ? (
-                                    <AuthenticatedImage
-                                      src={preview}
-                                      alt=""
-                                      loading="lazy"
-                                      maxDimension={240}
-                                    />
-                                  ) : (
-                                    <img src={preview} alt="" />
-                                  )}
-                                </Link>
-                              </li>
-                            );
-                          })}
-                        </ul>
-                      ))}
-                    </div>
+            <UsagePanel
+              usage={usage}
+              taskStats={taskStats}
+              successRate={successRate}
+              typeMix={typeMix}
+              typeMixMax={typeMixMax}
+            />
+            <div className="pp-soft-stats">
+              <UsageDurationCard usage={usage} />
+              <UsageRhythmCard usage={usage} />
+              <section className="pp-soft-stat pp-dash-card is-recent">
+                <header>
+                  <span>最近作品</span>
+                  {isEntryVisible("/history") ? <Link to="/history">全部</Link> : null}
+                </header>
+                {recentLoop.length && isEntryVisible("/history") ? (
+              <div
+                className="pp-soft-recent"
+                style={{ "--pp-recent-n": recentLoop.length }}
+              >
+                <div className="pp-soft-recent__viewport">
+                  <div className="pp-soft-recent__track">
+                    {[0, 1].map((copy) => (
+                      <ul
+                        key={copy}
+                        className="pp-soft-recent__set"
+                        aria-hidden={copy ? true : undefined}
+                        inert={copy ? true : undefined}
+                      >
+                        {recentLoop.map((task, index) => {
+                          const preview = taskPreviewUrl(task);
+                          const label = `${taskTypeLabel(task.type)} ${taskStatusLabel(task.status)}`;
+                          return (
+                            <li key={`${copy}-${task.id || task.createdAt}-${index}`}>
+                              <Link to="/history" aria-label={copy ? undefined : label} title={copy ? undefined : label} tabIndex={copy ? -1 : undefined}>
+                                {isAuthenticatedAiMediaUrl(preview) ? (
+                                  <AuthenticatedImage
+                                    src={preview}
+                                    alt=""
+                                    loading="lazy"
+                                    maxDimension={240}
+                                  />
+                                ) : (
+                                  <img src={preview} alt="" />
+                                )}
+                              </Link>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    ))}
                   </div>
                 </div>
-              ) : null}
-              <div className="pp-soft-perf-foot">
-                <Link to="/history">创作历史</Link>
-                <Link to="/account">账号设置</Link>
               </div>
-            </aside>
-            <div className="pp-soft-stats">
-              <Link to="/assets" className="pp-soft-stat">
-                <small>
-                  已分组 {assetGrouped} · 未分组 {assetUngrouped || (assetGrouped ? 0 : materialCount)}
-                </small>
-                <strong>{materialCount}</strong>
-                <span>我的资产</span>
-                <div className="pp-soft-stat__chart">
-                  <MiniBars
-                    items={[
-                      { value: assetGrouped, color: "var(--pc-accent)" },
-                      { value: assetUngrouped || (assetGrouped ? 0 : materialCount), color: "var(--pc-accent-strong)" },
-                    ]}
-                  />
+                ) : (
+                  <p className="pp-dash-card__empty">还没有作品，去创作台试试</p>
+                )}
+              </section>
+              <nav className="pp-soft-stat pp-dash-card is-shortcuts" aria-label="快捷入口">
+                <header>
+                  <span>快捷入口</span>
+                </header>
+                <div className="pp-dash-links">
+                  <Link to="/assets"><i className="bi bi-collection" />我的资产<b className="tnum">{materialCount}</b></Link>
+                  <Link to="/submissions"><i className="bi bi-send-check" />我的投稿<b className="tnum">{submissionStats.total}</b></Link>
+                  <Link to="/orders"><i className="bi bi-receipt" />我的订单</Link>
+                  <Link to="/history"><i className="bi bi-clock-history" />创作历史</Link>
+                  <Link to="/account"><i className="bi bi-gear" />账号设置</Link>
+                  <Link to="/wallet"><i className="bi bi-wallet2" />我的钱包</Link>
                 </div>
-              </Link>
-              <Link to="/notifications" className="pp-soft-stat">
-                <small>
-                  {unreadPersonal || unreadBroadcast
-                    ? `个人 ${unreadPersonal} · 广播 ${unreadBroadcast}`
-                    : unreadCount
-                      ? `共 ${unreadCount} 条`
-                      : "暂无未读"}
-                </small>
-                <strong>{unreadCount}</strong>
-                <span>未读通知</span>
-                <div className="pp-soft-stat__chart">
-                  {unreadPersonal || unreadBroadcast ? (
-                    <MiniDonut
-                      items={[
-                        { value: unreadPersonal, color: "var(--pc-accent)" },
-                        { value: unreadBroadcast, color: "var(--pc-accent-strong)" },
-                      ]}
-                    />
-                  ) : (
-                    <MiniGauge value={unreadCount} max={Math.max(unreadCount, 10)} />
-                  )}
-                </div>
-              </Link>
-              <Link to="/submissions" className="pp-soft-stat">
-                <small>
-                  待审 {submissionStats.pending} · 未过审 {submissionStats.rejected}
-                </small>
-                <strong>
-                  {String(submissionStats.approved).padStart(2, "0")}
-                </strong>
-                <span>过审投稿</span>
-                <div className="pp-soft-stat__chart">
-                  <MiniDonut
-                    items={[
-                      { value: submissionStats.approved, color: "var(--pc-accent)" },
-                      { value: submissionStats.pending, color: "var(--pc-warning)" },
-                      { value: submissionStats.rejected, color: "var(--pc-danger)" },
-                      { value: submissionStats.removed, color: "var(--pc-faint)" },
-                    ]}
-                  />
-                </div>
-              </Link>
-              <Link to="/wallet" className="pp-soft-stat is-earn">
-                <small>
-                  冻结 {formatPoints(walletFrozen, { withUnit: false })}
-                  {walletTrial > 0
-                    ? ` · 试用 ${formatPoints(walletTrial, { withUnit: false })}`
-                    : ""}
-                </small>
-                <strong>{pointsDisplay}</strong>
-                <span>可用积分</span>
-                <div className="pp-soft-stat__chart">
-                  {walletTrial > 0 || walletFrozen > 0 ? (
-                    <MiniStack
-                      items={[
-                        { value: walletNormal || walletAvailable, color: "var(--pc-earn)" },
-                        { value: walletTrial, color: "#14b8a6" },
-                        { value: walletFrozen, color: "var(--pc-accent-soft)" },
-                      ]}
-                    />
-                  ) : (
-                    <MiniGauge value={walletAvailable} max={Math.max(walletAvailable, 100)} />
-                  )}
-                </div>
-              </Link>
+              </nav>
             </div>
           </section>
         </main>

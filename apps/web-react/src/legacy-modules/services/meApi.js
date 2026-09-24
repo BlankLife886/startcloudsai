@@ -13,6 +13,12 @@ export async function getOverview({ signal } = {}) {
   return apiGet('/me/overview', { signal, fallbackMessage: '总览读取失败' })
 }
 
+/** 创作数据：逐日用量（张数 / 次数 / 积分 / 时长）与星期 × 小时的创作时段分布，按 tz 归档。 */
+export async function getUsageStats({ tz = '', signal } = {}) {
+  const query = tz ? `?tz=${encodeURIComponent(tz)}` : ''
+  return apiGet(`/me/usage-stats${query}`, { signal, fallbackMessage: '创作数据读取失败' })
+}
+
 /** 钱包总额，以及 normal/trial 两个独立积分余额与冻结额。 */
 export async function getWallet({ signal } = {}) {
   return apiGet('/me/wallet', { signal, fallbackMessage: '钱包读取失败' })
