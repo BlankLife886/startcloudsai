@@ -551,6 +551,26 @@ func (s *Server) overview(c *gin.Context) {
 	})
 }
 
+// myUsageStats 返回个人中心的使用统计。tz 为浏览器的 IANA 时区，用于按用户本地时间归档；
+// 无效或缺省时按北京时间统计。
+func (s *Server) myUsageStats(c *gin.Context) {
+	user, err := s.requireUser(c)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	timezone := strings.TrimSpace(c.Query("tz"))
+	if _, err := time.LoadLocation(timezone); err != nil || timezone == "" || timezone == "Local" || len(timezone) > 64 {
+		timezone = "Asia/Shanghai"
+	}
+	stats, err := store.GetUserUsageStats(c.Request.Context(), s.St.Pool, user.ID, timezone)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	ok(c, gin.H{"timezone": timezone, "days": stats.Days, "weekdayHour": stats.WeekdayHour})
+}
+
 func (s *Server) myWallet(c *gin.Context) {
 	user, err := s.requireUser(c)
 	if err != nil {
