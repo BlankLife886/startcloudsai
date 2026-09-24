@@ -64,8 +64,9 @@ var ImageOutputFormats = []string{"png", "jpeg", "webp"}
 var ImageModerationLevels = []string{"auto", "low"}
 
 const (
-	DefaultMaxImages = 4
-	MaxImagesLimit   = 100
+	DefaultMaxImages        = 4
+	MaxImagesLimit          = 100
+	MaxReferenceImagesLimit = 16
 )
 
 type Provider struct {
@@ -179,7 +180,7 @@ type Model struct {
 	ContextWindowTokens          int                  `json:"contextWindowTokens,omitempty"`
 	MaxOutputTokens              int                  `json:"maxOutputTokens,omitempty"`
 	SupportedReasoningEfforts    []string             `json:"supportedReasoningEfforts"`
-	ReasoningEnabled            *bool                `json:"reasoningEnabled,omitempty"`
+	ReasoningEnabled             *bool                `json:"reasoningEnabled,omitempty"`
 	ReasoningPricing             *ReasoningPricing    `json:"reasoningPricing,omitempty"`
 	Public                       bool                 `json:"public"`
 	Default                      bool                 `json:"default"`
@@ -310,6 +311,14 @@ type WorkspaceBinding struct {
 	ModelIDs        []string                         `json:"modelIds"`
 	DefaultModelIDs map[string]string                `json:"defaultModelIds"`
 	ModelPricing    map[string]WorkspaceModelPricing `json:"modelPricing,omitempty"`
+	ModelLimits     map[string]WorkspaceModelLimits  `json:"modelLimits,omitempty"`
+}
+
+// WorkspaceModelLimits 是页面在模型自身配置之上追加的额度，只允许追加（>= 0）。
+// 最终值 = 模型配置 + 追加值，并受服务端硬上限约束。
+type WorkspaceModelLimits struct {
+	ExtraReferenceImages int `json:"extraReferenceImages"`
+	ExtraImages          int `json:"extraImages"`
 }
 
 type WorkspaceModelPricing struct {
@@ -544,6 +553,14 @@ func normalize(cfg *Config) {
 			}
 		}
 		binding.ModelPricing = modelPricing
+		modelLimits := make(map[string]WorkspaceModelLimits, len(binding.ModelLimits))
+		for modelID, limits := range binding.ModelLimits {
+			modelID = strings.TrimSpace(modelID)
+			if modelID != "" && (limits.ExtraReferenceImages != 0 || limits.ExtraImages != 0) {
+				modelLimits[modelID] = limits
+			}
+		}
+		binding.ModelLimits = modelLimits
 		normalizedWorkspaces[strings.TrimSpace(key)] = binding
 	}
 	cfg.Workspaces = normalizedWorkspaces
@@ -909,8 +926,8 @@ func Validate(cfg Config) error {
 			if requiresQuality && len(model.Qualities) == 0 {
 				return fmt.Errorf("模型 %s 至少需要一个输出质量", model.Name)
 			}
-			if model.MaxReferenceImages < 0 || model.MaxReferenceImages > 16 {
-				return fmt.Errorf("模型 %s 的参考图数量须在 0-16 之间", model.Name)
+			if model.MaxReferenceImages < 0 || model.MaxReferenceImages > MaxReferenceImagesLimit {
+				return fmt.Errorf("模型 %s 的参考图数量须在 0-%d 之间", model.Name, MaxReferenceImagesLimit)
 			}
 			if model.MaxImages < 1 || model.MaxImages > MaxImagesLimit {
 				return fmt.Errorf("模型 %s 的单次生成张数须在 1-%d 之间", model.Name, MaxImagesLimit)
@@ -965,6 +982,24 @@ func Validate(cfg Config) error {
 			}
 			if effective < model.UpstreamCostCents && !model.AllowLossLeader {
 				return fmt.Errorf("页面 %s 的模型 %s 用户价格低于上游成本", workspace, model.Name)
+			}
+		}
+		for modelID, limits := range binding.ModelLimits {
+			model, exists := models[modelID]
+			if !exists || !assigned[modelID] {
+				return fmt.Errorf("页面 %s 的追加额度模型必须包含在该页面的可选模型中：%s", workspace, modelID)
+			}
+			if model.Kind != ModelKindImage {
+				return fmt.Errorf("页面 %s 只能为生图模型追加参考图和生成张数：%s", workspace, model.Name)
+			}
+			if limits.ExtraReferenceImages < 0 || limits.ExtraImages < 0 {
+				return fmt.Errorf("页面 %s 的模型 %s 追加额度不能为负", workspace, model.Name)
+			}
+			if model.MaxReferenceImages+limits.ExtraReferenceImages > MaxReferenceImagesLimit {
+				return fmt.Errorf("页面 %s 的模型 %s 参考图总数不能超过 %d 张", workspace, model.Name, MaxReferenceImagesLimit)
+			}
+			if model.GenerationMaxImages()+limits.ExtraImages > MaxImagesLimit {
+				return fmt.Errorf("页面 %s 的模型 %s 单次生成张数不能超过 %d 张", workspace, model.Name, MaxImagesLimit)
 			}
 		}
 	}
@@ -1141,6 +1176,38 @@ func ResolveWorkspacePrice(cfg Config, workspace string, model Model) ResolvedWo
 	}
 }
 
+func workspaceModelLimits(cfg Config, workspace string, model Model) WorkspaceModelLimits {
+	if binding, ok := cfg.Workspaces[strings.TrimSpace(workspace)]; ok {
+		return binding.ModelLimits[model.ID]
+	}
+	return WorkspaceModelLimits{}
+}
+
+// ApplyWorkspaceLimits 返回叠加了页面追加额度的模型副本。
+func ApplyWorkspaceLimits(cfg Config, workspace string, model Model) Model {
+	if model.Kind != ModelKindImage {
+		return model
+	}
+	model.MaxReferenceImages = WorkspaceMaxReferenceImages(cfg, workspace, model)
+	model.MaxImages = WorkspaceGenerationMaxImages(cfg, workspace, model)
+	return model
+}
+
+// WorkspaceMaxReferenceImages 返回模型在指定页面可用的参考图上限（模型配置 + 页面追加）。
+func WorkspaceMaxReferenceImages(cfg Config, workspace string, model Model) int {
+	total := model.MaxReferenceImages + max(0, workspaceModelLimits(cfg, workspace, model).ExtraReferenceImages)
+	return min(total, MaxReferenceImagesLimit)
+}
+
+// WorkspaceGenerationMaxImages 返回模型在指定页面的单次生成张数上限（模型配置 + 页面追加）。
+func WorkspaceGenerationMaxImages(cfg Config, workspace string, model Model) int {
+	base := model.GenerationMaxImages()
+	if model.Kind == ModelKindImageTool {
+		return base
+	}
+	return min(base+max(0, workspaceModelLimits(cfg, workspace, model).ExtraImages), MaxImagesLimit)
+}
+
 func EffectiveWorkspacePrice(cfg Config, workspace string, model Model) int64 {
 	return ResolveWorkspacePrice(cfg, workspace, model).EffectiveCents
 }
@@ -1289,6 +1356,9 @@ func PublicModelsForWorkspace(cfg Config, workspace, kind string) []Selection {
 	out := make([]Selection, 0, len(models))
 	for _, selection := range models {
 		if allowed[selection.Model.ID] {
+			// 页面级追加额度直接折算进返回的模型，下游的能力校验、张数校验和
+			// 下发给用户端的 maxReferenceImages / maxImages 都自动使用页面有效值。
+			selection.Model = ApplyWorkspaceLimits(cfg, workspace, selection.Model)
 			out = append(out, selection)
 		}
 	}

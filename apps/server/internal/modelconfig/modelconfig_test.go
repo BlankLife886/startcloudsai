@@ -719,3 +719,51 @@ func TestEcommerceTaskUsesIndependentWorkspace(t *testing.T) {
 		t.Fatalf("ecommerce workspace must be a valid admin workspace")
 	}
 }
+
+func TestWorkspaceModelLimitsExtendAssignedImageModel(t *testing.T) {
+	cfg := testConfig()
+	cfg.Workspaces = map[string]WorkspaceBinding{
+		WorkspaceT2I: {
+			ModelIDs:    []string{"image-fast"},
+			ModelLimits: map[string]WorkspaceModelLimits{"image-fast": {ExtraReferenceImages: 2, ExtraImages: 3}},
+		},
+		WorkspaceColoring: {ModelIDs: []string{"image-fast"}},
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("workspace limits should be valid: %v", err)
+	}
+	baseSelection, _ := SelectPublicForWorkspace(cfg, WorkspaceColoring, ModelKindImage, "image-fast")
+	base := baseSelection.Model
+	selected, ok := SelectPublicForWorkspace(cfg, WorkspaceT2I, ModelKindImage, "image-fast")
+	if !ok {
+		t.Fatal("expected t2i selection")
+	}
+	if selected.Model.MaxReferenceImages != base.MaxReferenceImages+2 || selected.Model.GenerationMaxImages() != base.GenerationMaxImages()+3 {
+		t.Fatalf("t2i limits = refs %d images %d, base refs %d images %d",
+			selected.Model.MaxReferenceImages, selected.Model.GenerationMaxImages(), base.MaxReferenceImages, base.GenerationMaxImages())
+	}
+	if unbound, _ := SelectPublic(cfg, ModelKindImage, "image-fast"); unbound.Model.MaxReferenceImages != base.MaxReferenceImages || unbound.Model.GenerationMaxImages() != base.GenerationMaxImages() {
+		t.Fatalf("extra limits leaked outside the page: %#v", unbound.Model)
+	}
+}
+
+func TestWorkspaceModelLimitsValidation(t *testing.T) {
+	cfg := testConfig()
+	cases := []struct {
+		name   string
+		ids    []string
+		limits map[string]WorkspaceModelLimits
+		want   string
+	}{
+		{"negative", []string{"image-fast"}, map[string]WorkspaceModelLimits{"image-fast": {ExtraImages: -1}}, "不能为负"},
+		{"unassigned", []string{"image-fast"}, map[string]WorkspaceModelLimits{"image-quality": {ExtraImages: 1}}, "必须包含"},
+		{"too many refs", []string{"image-fast"}, map[string]WorkspaceModelLimits{"image-fast": {ExtraReferenceImages: MaxReferenceImagesLimit}}, "参考图总数"},
+		{"too many images", []string{"image-fast"}, map[string]WorkspaceModelLimits{"image-fast": {ExtraImages: MaxImagesLimit}}, "单次生成张数"},
+	}
+	for _, tc := range cases {
+		cfg.Workspaces = map[string]WorkspaceBinding{WorkspaceT2I: {ModelIDs: tc.ids, ModelLimits: tc.limits}}
+		if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s: expected %q, got %v", tc.name, tc.want, err)
+		}
+	}
+}

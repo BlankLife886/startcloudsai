@@ -10,7 +10,7 @@ import {
 } from "vue";
 import { onBeforeRouteLeave } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { Coin, Connection, Cpu, Delete, Plus, Refresh, Search, Upload } from "@element-plus/icons-vue";
+import { Check, Close, Connection, Cpu, Delete, EditPen, Loading, Plus, Refresh, Search, Upload } from "@element-plus/icons-vue";
 import AdminDialog from "@/components/AdminDialog.vue";
 import PageCard from "@/components/PageCard.vue";
 import { request } from "@/request";
@@ -140,6 +140,13 @@ interface WorkspaceBinding {
   modelIds: string[];
   defaultModelIds: Partial<Record<ModelKind, string>>;
   modelPricing: Record<string, WorkspaceModelPricing>;
+  modelLimits: Record<string, WorkspaceModelLimits>;
+}
+
+/** 页面在模型自身配置之上追加的参考图 / 生成张数，只允许 >= 0。 */
+interface WorkspaceModelLimits {
+  extraReferenceImages: number;
+  extraImages: number;
 }
 
 interface WorkspaceModelPricing {
@@ -478,11 +485,6 @@ const loading = ref(false);
 const saving = ref(false);
 const activeView = ref<"models" | "workspaces" | "providers">("models");
 const activeWorkspaceKey = ref<WorkspaceKey>("assistant");
-const workspacePricingDialogVisible = ref(false);
-const pricingWorkspaceKey = ref<WorkspaceKey>("assistant");
-const workspacePricingDraft = ref<
-  Record<WorkspaceKey, Record<string, WorkspaceModelPricing>>
->({} as Record<WorkspaceKey, Record<string, WorkspaceModelPricing>>);
 const kindFilter = ref<"all" | ModelKind>("all");
 const modelSearch = ref("");
 const reasoningPriceScope = ref<ReasoningPriceScope>("assistant");
@@ -528,6 +530,48 @@ const saveStatusLabel = computed(() => {
   if (!configLoaded.value) return "加载中…";
   return "已保存";
 });
+
+const canSave = computed(
+  () => configLoaded.value && !loading.value && !saving.value && isDirty.value,
+);
+const kindCounts = computed(() => {
+  const counts: Record<"all" | ModelKind, number> = { all: config.models.length, image: 0, chat: 0, image_tool: 0 };
+  for (const model of config.models) counts[model.kind] = (counts[model.kind] || 0) + 1;
+  return counts;
+});
+const providerRouteCount = computed(() =>
+  config.providers.reduce((sum, provider) => sum + (provider.routes?.length || 0), 0),
+);
+const saveShortcutLabel = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘S" : "Ctrl+S";
+
+const modelSearchInput = ref<{ focus: () => void } | null>(null);
+const modelSearchFocused = ref(false);
+
+function isDialogOpen() {
+  return Array.from(document.querySelectorAll<HTMLElement>(".el-overlay"))
+    .some((overlay) => getComputedStyle(overlay).display !== "none");
+}
+
+function isTypingTarget(target: EventTarget | null) {
+  const el = target as HTMLElement | null;
+  return !!el && (el.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName));
+}
+
+function handleToolbarShortcut(event: KeyboardEvent) {
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+    event.preventDefault();
+    // 弹窗里的草稿尚未写回配置，打开弹窗时不响应全局保存。
+    if (canSave.value && !isDialogOpen()) void save();
+    return;
+  }
+  if (
+    event.key === "/" && !event.metaKey && !event.ctrlKey && !event.altKey &&
+    activeView.value === "models" && !isTypingTarget(event.target) && !isDialogOpen()
+  ) {
+    event.preventDefault();
+    modelSearchInput.value?.focus();
+  }
+}
 
 const viewTabs = computed(() => [
   { value: "models" as const, label: "模型目录", count: config.models.length },
@@ -675,7 +719,15 @@ function hydrate(value: ModelConfig) {
                 : Math.max(0, Number(pricing.discountPriceCents)),
           }]),
       );
-      return [workspace.key, { modelIds, defaultModelIds, modelPricing }];
+      const modelLimits = Object.fromEntries(
+        Object.entries(saved?.modelLimits || {})
+          .filter(([modelId]) => modelIds.includes(modelId))
+          .map(([modelId, limits]) => [modelId, {
+            extraReferenceImages: Math.max(0, Math.round(Number(limits?.extraReferenceImages) || 0)),
+            extraImages: Math.max(0, Math.round(Number(limits?.extraImages) || 0)),
+          }]),
+      );
+      return [workspace.key, { modelIds, defaultModelIds, modelPricing, modelLimits }];
     }),
   ) as Record<WorkspaceKey, WorkspaceBinding>;
   sanitizeWorkspaceBindings();
@@ -750,7 +802,6 @@ function retainSubmittedReasoning(saved: ModelConfig, submitted: ModelConfig) {
     }),
   };
 }
-
 
 function createId(prefix: string) {
   return `${prefix}-${crypto.randomUUID()}`;
@@ -837,111 +888,6 @@ const activeWorkspace = computed(
     workspaceMeta[0],
 );
 
-const pricingWorkspace = computed(
-  () =>
-    workspaceMeta.find(
-      (workspace) => workspace.key === pricingWorkspaceKey.value,
-    ) || workspaceMeta[0],
-);
-
-const pricingWorkspaceModels = computed(() => {
-  const binding = config.workspaces[pricingWorkspace.value.key];
-  if (!binding) return [] as ModelItem[];
-  const assigned = new Set(binding.modelIds);
-  return config.models.filter(
-    (model) =>
-      assigned.has(model.id) && pricingWorkspace.value.kinds.includes(model.kind),
-  );
-});
-
-function openWorkspacePricing() {
-  const firstAssigned = workspaceMeta.find(
-    (workspace) => workspaceAssignedCount(workspace) > 0,
-  );
-  if (!workspaceAssignedCount(activeWorkspace.value) && firstAssigned) {
-    pricingWorkspaceKey.value = firstAssigned.key;
-  } else {
-    pricingWorkspaceKey.value = activeWorkspace.value.key;
-  }
-  workspacePricingDraft.value = Object.fromEntries(
-    workspaceMeta.map((workspace) => [
-      workspace.key,
-      cloneJSON(config.workspaces[workspace.key]?.modelPricing || {}),
-    ]),
-  ) as Record<WorkspaceKey, Record<string, WorkspaceModelPricing>>;
-  workspacePricingDialogVisible.value = true;
-}
-
-function pricingDraftOverride(model: ModelItem) {
-  return workspacePricingDraft.value[pricingWorkspace.value.key]?.[model.id] || null;
-}
-
-function pricingDraftEffectivePrice(model: ModelItem) {
-  const pricing = pricingDraftOverride(model);
-  return pricing ? pricing.discountPriceCents ?? pricing.priceCents : effectivePrice(model);
-}
-
-function setPricingDraftOverride(model: ModelItem, enabled: boolean) {
-  const workspacePricing =
-    workspacePricingDraft.value[pricingWorkspace.value.key] ||
-    (workspacePricingDraft.value[pricingWorkspace.value.key] = {});
-  if (!enabled) {
-    delete workspacePricing[model.id];
-    return;
-  }
-  workspacePricing[model.id] = {
-    priceCents: normalizePoints(model.priceCents),
-    discountPriceCents:
-      model.discountPriceCents === null || model.discountPriceCents === undefined
-        ? null
-        : normalizePoints(model.discountPriceCents),
-  };
-}
-
-function setPricingDraftDiscount(model: ModelItem, enabled: boolean) {
-  const pricing = pricingDraftOverride(model);
-  if (!pricing) return;
-  pricing.discountPriceCents = enabled ? pricing.priceCents : null;
-}
-
-function pricingWorkspaceOverrideCount(
-  workspace: (typeof workspaceMeta)[number],
-) {
-  const assigned = new Set(config.workspaces[workspace.key]?.modelIds || []);
-  return Object.keys(workspacePricingDraft.value[workspace.key] || {}).filter(
-    (modelId) => assigned.has(modelId),
-  ).length;
-}
-
-async function saveWorkspacePricingDraft() {
-  for (const workspace of workspaceMeta) {
-    const binding = config.workspaces[workspace.key];
-    if (!binding) continue;
-    const assigned = new Set(binding.modelIds);
-    binding.modelPricing = Object.fromEntries(
-      Object.entries(workspacePricingDraft.value[workspace.key] || {})
-        .filter(([modelId]) => assigned.has(modelId))
-        .map(([modelId, pricing]) => {
-          const priceCents = normalizePoints(pricing.priceCents);
-          const discountPriceCents =
-            pricing.discountPriceCents === null ||
-            pricing.discountPriceCents === undefined
-              ? null
-              : Math.min(priceCents, normalizePoints(pricing.discountPriceCents));
-          return [modelId, { priceCents, discountPriceCents }];
-        }),
-    );
-  }
-  ElMessage.success("价格修改已暂存，请点击顶部“保存配置”生效");
-  workspacePricingDialogVisible.value = false;
-}
-
-function openWorkspaceAssignmentFromPricing() {
-  activeWorkspaceKey.value = pricingWorkspace.value.key;
-  workspacePricingDialogVisible.value = false;
-  activeView.value = "workspaces";
-}
-
 const uiDesignServiceRoutes = computed(() =>
   IMAGE_SERVICE_ROUTES.filter(
     (route) => route.key === "ui_design" || route.key === "ui_design_asset",
@@ -955,6 +901,37 @@ const assignedWorkspaceModels = computed(() => {
   return workspaceAvailableModels(activeWorkspace.value)
     .filter((model) => order.has(model.id))
     .sort((a, b) => (order.get(a.id) || 0) - (order.get(b.id) || 0));
+});
+
+const poolSearch = ref("");
+watch(activeWorkspaceKey, () => { poolSearch.value = ""; });
+
+// 按模型类型分组：已加入的模型在前，可加入的模型以虚线卡片跟在同组末尾；筛选同时作用于两者。
+const workspaceBoardGroups = computed(() => {
+  const workspace = activeWorkspace.value;
+  const binding = config.workspaces[workspace.key];
+  const query = poolSearch.value.trim().toLowerCase();
+  const matches = (model: ModelItem) =>
+    !query ||
+    [model.name, model.upstreamModel, providerName(model.providerId)]
+      .some((value) => value.toLowerCase().includes(query));
+  const kinds = [...new Set([
+    ...workspace.kinds,
+    ...assignedWorkspaceModels.value.map((model) => model.kind),
+    ...poolWorkspaceModels.value.map((model) => model.kind),
+  ])];
+  return kinds.map((kind) => {
+    const defaultId = binding?.defaultModelIds[kind];
+    const defaultModel = defaultId && binding?.modelIds.includes(defaultId)
+      ? config.models.find((model) => model.id === defaultId)
+      : undefined;
+    return {
+      kind,
+      defaultName: defaultModel?.name || "",
+      assigned: assignedWorkspaceModels.value.filter((model) => model.kind === kind && matches(model)),
+      pool: poolWorkspaceModels.value.filter((model) => model.kind === kind && matches(model)),
+    };
+  });
 });
 
 const poolWorkspaceModels = computed(() => {
@@ -1018,6 +995,7 @@ function removeWorkspaceModel(
   if (!binding) return;
   binding.modelIds = binding.modelIds.filter((id) => id !== modelId);
   delete binding.modelPricing[modelId];
+  delete binding.modelLimits[modelId];
   ensureWorkspaceDefaults(workspace);
 }
 
@@ -1027,7 +1005,23 @@ function clearWorkspaceModels(workspace: (typeof workspaceMeta)[number]) {
   binding.modelIds = [];
   binding.defaultModelIds = {};
   binding.modelPricing = {};
+  binding.modelLimits = {};
   ensureWorkspaceDefaults(workspace);
+}
+
+async function confirmClearWorkspace(workspace: (typeof workspaceMeta)[number]) {
+  const count = workspaceAssignedCount(workspace);
+  if (!count) return;
+  try {
+    await ElMessageBox.confirm(
+      `确认移出「${workspace.name}」的全部 ${count} 个模型？该页面的页面价格和追加额度也会一并清除。`,
+      "清空页面模型",
+      { type: "warning", confirmButtonText: "清空", cancelButtonText: "取消" },
+    );
+  } catch {
+    return;
+  }
+  clearWorkspaceModels(workspace);
 }
 
 function addAllPoolModels(workspace: (typeof workspaceMeta)[number]) {
@@ -1071,6 +1065,7 @@ function sanitizeWorkspaceBindings() {
       modelIds: [],
       defaultModelIds: {},
       modelPricing: {},
+      modelLimits: {},
     };
     const allowed = new Set(
       workspaceAvailableModels(workspace).map((model) => model.id),
@@ -1093,6 +1088,23 @@ function sanitizeWorkspaceBindings() {
           return [modelId, { priceCents, discountPriceCents }];
         }),
     );
+    // 追加额度只对已加入该页面的生图模型有效，并按服务端硬上限收紧。
+    binding.modelLimits = Object.fromEntries(
+      Object.entries(binding.modelLimits || {})
+        .flatMap(([modelId, limits]) => {
+          const model = config.models.find((item) => item.id === modelId);
+          if (!model || model.kind !== "image" || !binding.modelIds.includes(modelId)) return [];
+          const extraReferenceImages = Math.min(
+            Math.max(0, Math.round(Number(limits.extraReferenceImages) || 0)),
+            Math.max(0, MAX_REFERENCE_IMAGES_LIMIT - model.maxReferenceImages),
+          );
+          const extraImages = Math.min(
+            Math.max(0, Math.round(Number(limits.extraImages) || 0)),
+            Math.max(0, MAX_IMAGES_LIMIT - model.maxImages),
+          );
+          return extraReferenceImages || extraImages ? [[modelId, { extraReferenceImages, extraImages }]] : [];
+        }),
+    );
     config.workspaces[workspace.key] = binding;
     ensureWorkspaceDefaults(workspace);
   }
@@ -1104,6 +1116,7 @@ function pruneWorkspaceModel(modelId: string) {
     if (!binding) continue;
     binding.modelIds = binding.modelIds.filter((id) => id !== modelId);
     delete binding.modelPricing[modelId];
+    delete binding.modelLimits[modelId];
     for (const kind of workspace.kinds) {
       if (binding.defaultModelIds[kind] === modelId) {
         binding.defaultModelIds[kind] = "";
@@ -1127,10 +1140,113 @@ function workspaceEffectivePrice(workspace: (typeof workspaceMeta)[number], mode
   return pricing ? pricing.discountPriceCents ?? pricing.priceCents : effectivePrice(model);
 }
 
-function workspacePriceLabel(workspace: (typeof workspaceMeta)[number], model: ModelItem) {
+// 页面价格直接写进配置草稿，与其他页面分配改动一样，点顶部「保存配置」后生效。
+function setWorkspacePriceOverride(workspace: (typeof workspaceMeta)[number], model: ModelItem, enabled: boolean) {
+  const binding = config.workspaces[workspace.key];
+  if (!binding) return;
+  if (!binding.modelPricing) binding.modelPricing = {};
+  if (!enabled) {
+    delete binding.modelPricing[model.id];
+    return;
+  }
+  if (binding.modelPricing[model.id]) return;
+  binding.modelPricing[model.id] = {
+    priceCents: normalizePoints(model.priceCents),
+    discountPriceCents:
+      model.discountPriceCents === null || model.discountPriceCents === undefined
+        ? null
+        : normalizePoints(model.discountPriceCents),
+  };
+}
+
+function setWorkspacePriceField(
+  workspace: (typeof workspaceMeta)[number],
+  model: ModelItem,
+  key: keyof WorkspaceModelPricing,
+  value: string | number,
+) {
   const pricing = workspacePriceOverride(workspace, model);
-  const prefix = pricing ? "页面价" : "继承";
-  return `${prefix} ${formatPoints(workspaceEffectivePrice(workspace, model))} 积分`;
+  if (!pricing) return;
+  const points = normalizePoints(Math.max(0, Math.round(Number(value) || 0)));
+  if (key === "priceCents") {
+    pricing.priceCents = points;
+    if (pricing.discountPriceCents !== null && pricing.discountPriceCents > points) {
+      pricing.discountPriceCents = points;
+    }
+  } else if (pricing.discountPriceCents !== null) {
+    pricing.discountPriceCents = Math.min(points, pricing.priceCents);
+  }
+}
+
+function setWorkspaceDiscountEnabled(workspace: (typeof workspaceMeta)[number], model: ModelItem, enabled: boolean) {
+  const pricing = workspacePriceOverride(workspace, model);
+  if (!pricing) return;
+  pricing.discountPriceCents = enabled ? pricing.priceCents : null;
+}
+
+// 与服务端保存校验一致，提前提示会导致「保存配置」失败的价格。
+function workspacePriceWarning(workspace: (typeof workspaceMeta)[number], model: ModelItem) {
+  const pricing = workspacePriceOverride(workspace, model);
+  if (!pricing) return "";
+  const effective = pricing.discountPriceCents ?? pricing.priceCents;
+  if (effective === 0 && !model.allowZeroPrice) {
+    return "用户价格为 0：需先在模型中允许零价，否则保存会失败。";
+  }
+  if (effective < model.upstreamCostCents && !model.allowLossLeader) {
+    return `低于上游成本 ${formatPoints(model.upstreamCostCents)}：需先在模型中允许低于成本，否则保存会失败。`;
+  }
+  return "";
+}
+
+// 与服务端 modelconfig 的硬上限一致：参考图 0-16 张，单次生成 1-100 张。
+const MAX_REFERENCE_IMAGES_LIMIT = 16;
+const MAX_IMAGES_LIMIT = 100;
+
+function workspaceModelLimits(workspace: (typeof workspaceMeta)[number], model: ModelItem): WorkspaceModelLimits {
+  return config.workspaces[workspace.key]?.modelLimits?.[model.id] || { extraReferenceImages: 0, extraImages: 0 };
+}
+
+function workspaceLimitSummary(workspace: (typeof workspaceMeta)[number], model: ModelItem) {
+  const extra = workspaceModelLimits(workspace, model);
+  return {
+    extended: extra.extraReferenceImages > 0 || extra.extraImages > 0,
+    references: Math.min(MAX_REFERENCE_IMAGES_LIMIT, model.maxReferenceImages + extra.extraReferenceImages),
+    images: Math.min(MAX_IMAGES_LIMIT, model.maxImages + extra.extraImages),
+  };
+}
+
+function resetWorkspaceModelLimits(workspace: (typeof workspaceMeta)[number], model: ModelItem) {
+  delete config.workspaces[workspace.key]?.modelLimits?.[model.id];
+}
+
+function workspaceLimitFields(workspace: (typeof workspaceMeta)[number], model: ModelItem) {
+  const extra = workspaceModelLimits(workspace, model);
+  return [
+    { key: "extraReferenceImages" as const, label: "参考图", unit: "张", base: model.maxReferenceImages, cap: MAX_REFERENCE_IMAGES_LIMIT, steps: [2, 4, 8] },
+    { key: "extraImages" as const, label: "单次生成", unit: "张", base: model.maxImages, cap: MAX_IMAGES_LIMIT, steps: [4, 8, 16] },
+  ].map((field) => ({
+    ...field,
+    extra: extra[field.key],
+    maxExtra: Math.max(0, field.cap - field.base),
+    total: Math.min(field.cap, field.base + extra[field.key]),
+  }));
+}
+
+function setWorkspaceModelLimit(
+  workspace: (typeof workspaceMeta)[number],
+  model: ModelItem,
+  key: keyof WorkspaceModelLimits,
+  value: number | undefined | null,
+) {
+  const binding = config.workspaces[workspace.key];
+  if (!binding) return;
+  const base = key === "extraReferenceImages" ? model.maxReferenceImages : model.maxImages;
+  const cap = key === "extraReferenceImages" ? MAX_REFERENCE_IMAGES_LIMIT : MAX_IMAGES_LIMIT;
+  const extra = Math.min(Math.max(0, cap - base), Math.max(0, Math.round(Number(value) || 0)));
+  const next = { ...workspaceModelLimits(workspace, model), [key]: extra };
+  if (!binding.modelLimits) binding.modelLimits = {};
+  if (next.extraReferenceImages || next.extraImages) binding.modelLimits[model.id] = next;
+  else delete binding.modelLimits[model.id];
 }
 
 function workspacePriceUnit(model: ModelItem) {
@@ -1272,11 +1388,6 @@ function modelWorkspaceNames(modelId: string) {
     .map((workspace) => workspace.name);
 }
 
-function modelWorkspaceLine(modelId: string) {
-  const names = modelWorkspaceNames(modelId);
-  return names.length ? names.join(" · ") : "尚未分配";
-}
-
 function providerAdapterLabel(providerId: string) {
   return config.providers.find((item) => item.id === providerId)?.adapter ===
     "crun"
@@ -1307,139 +1418,107 @@ function aspectByResolutionParts(model: ModelItem) {
     }));
 }
 
-function modelCardHighlights(model: ModelItem) {
-  if (model.kind === "chat" && model.reasoningPricing) {
-    const efforts = enabledReasoningEfforts(model);
-    if (!efforts.length) return [];
-    const label = (effort: string) =>
-      REASONING_EFFORT_LABELS[effort] || effort;
-    const effective = (standard: number, discount: number | null) =>
-      discount === null ? standard : discount;
+type ModelCardCell = {
+  label: string;
+  value: string;
+  tags?: string[];
+  parts?: Array<{ label: string; text: string }>;
+  muted?: boolean;
+};
+
+function formatTokens(value: number) {
+  if (!value) return "—";
+  if (value >= 1_000_000) return `${+(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1000) return `${Math.round(value / 1000)}K`;
+  return String(value);
+}
+
+function tagCell(label: string, tags: string[], empty = "—"): ModelCardCell {
+  return tags.length
+    ? { label, value: tags.join(" · "), tags }
+    : { label, value: empty, muted: true };
+}
+
+function reasoningPriceTags(model: ModelItem, scope: ReasoningPriceScope) {
+  if (!model.reasoningPricing) return [];
+  return enabledReasoningEfforts(model).map((effort) => {
+    const price = model.reasoningPricing!.efforts[effort];
+    const value =
+      scope === "assistant"
+        ? price.assistantDiscountPriceCents ?? price.assistantPriceCents
+        : price.canvasAgentDiscountPriceCents ?? price.canvasAgentPriceCents;
+    return `${REASONING_EFFORT_LABELS[effort] || effort} ${value}`;
+  });
+}
+
+// 每类模型固定 4 格概要 + 2 行明细，同类卡片高度一致、字段逐行对齐。
+function modelCardStats(model: ModelItem): ModelCardCell[] {
+  const seconds = model.maxSeconds ? `${model.minSeconds}-${model.maxSeconds}s` : "—";
+  if (model.kind === "image") {
     return [
+      tagCell("质量", (model.qualities || []).map(qualityLabel)),
+      tagCell("格式", (model.outputFormats || []).map((item) => item.toUpperCase())),
+      { label: "参考图 / 单次", value: `${model.maxReferenceImages} / ${model.maxImages} 张` },
+      { label: "耗时", value: seconds },
+    ];
+  }
+  if (model.kind === "chat") {
+    const efforts = enabledReasoningEfforts(model);
+    const defaultEffort = model.reasoningPricing?.defaultEffort;
+    return [
+      { label: "上下文", value: formatTokens(model.contextWindowTokens) },
+      { label: "最大输出", value: formatTokens(model.maxOutputTokens) },
+      tagCell("推理档位", efforts.map((effort) => REASONING_EFFORT_LABELS[effort] || effort), "未启用"),
       {
-        label: "推理档位",
-        value: efforts.map(label).join(" · "),
-        tags: efforts.map(label),
-      },
-      {
-        label: "AI 助手积分",
-        value: efforts
-          .map((effort) => {
-            const price = model.reasoningPricing!.efforts[effort];
-            return `${label(effort)} ${effective(price.assistantPriceCents, price.assistantDiscountPriceCents)}`;
-          })
-          .join(" · "),
-        tags: efforts.map((effort) => {
-          const price = model.reasoningPricing!.efforts[effort];
-          return `${label(effort)} ${effective(price.assistantPriceCents, price.assistantDiscountPriceCents)}`;
-        }),
-      },
-      {
-        label: "画布 Agent 积分",
-        value: efforts
-          .map((effort) => {
-            const price = model.reasoningPricing!.efforts[effort];
-            return `${label(effort)} ${effective(price.canvasAgentPriceCents, price.canvasAgentDiscountPriceCents)}`;
-          })
-          .join(" · "),
-        tags: efforts.map((effort) => {
-          const price = model.reasoningPricing!.efforts[effort];
-          return `${label(effort)} ${effective(price.canvasAgentPriceCents, price.canvasAgentDiscountPriceCents)}`;
-        }),
+        label: "默认档位",
+        value: efforts.length && defaultEffort ? REASONING_EFFORT_LABELS[defaultEffort] || defaultEffort : "—",
+        muted: !efforts.length,
       },
     ];
   }
-  if (model.kind !== "image") return [];
-  const qualities = (model.qualities || []).map((item) => qualityLabel(item));
-  const formats = (model.outputFormats || []).map((item) =>
-    item.toUpperCase(),
-  );
   return [
-    {
-      label: "质量",
-      value: joinList(qualities),
-      tags: qualities,
-    },
-    {
-      label: "格式",
-      value: joinList(formats),
-      tags: formats,
-    },
-    {
-      label: "参考图",
-      value: `${model.maxReferenceImages} 张`,
-    },
-    {
-      label: "单次张数",
-      value: `${model.maxImages} 张`,
-    },
-    {
-      label: "耗时",
-      value: `${model.minSeconds}-${model.maxSeconds}s`,
-    },
+    { label: "工具", value: model.tool === "background_remove" ? "背景移除" : model.tool || "—" },
+    { label: "耗时", value: seconds },
+    { label: "协议", value: providerAdapterLabel(model.providerId) },
+    { label: "输入字段", value: `${model.upstreamInputFields?.length || 0} 个` },
   ];
 }
 
-function modelCardSections(model: ModelItem) {
-  type Spec = {
-    label: string;
-    value: string;
-    wide?: boolean;
-    parts?: Array<{ label: string; text: string }>;
-  };
-  type Section = { title: string; items: Spec[] };
-  const sections: Section[] = [];
-
-  const runtime: Spec[] = [];
-  if (model.kind === "image_tool") {
-    runtime.push({
-      label: "工具",
-      value:
-        model.tool === "background_remove"
-          ? "背景移除"
-          : model.tool || "—",
-    });
-  }
-  if (model.kind !== "chat" && model.kind !== "image") {
-    runtime.push({
-      label: "耗时",
-      value: `${model.minSeconds}-${model.maxSeconds}s`,
-    });
-  }
-  if (runtime.length) sections.push({ title: "运行", items: runtime });
-
+function modelCardRows(model: ModelItem): ModelCardCell[] {
+  const rows: ModelCardCell[] = [];
   if (model.kind === "image") {
-    const aspectParts = aspectByResolutionParts(model);
-    sections.push({
-      title: "画面",
-      items: [
-        {
-          label: "",
-          value: formatAspectByResolution(model),
-          wide: true,
-          parts: aspectParts.length ? aspectParts : undefined,
-        },
-        ...(model.supportsExactSize ? [{
-          label: "精确尺寸",
-          value: `宽 ${model.exactSizeLimits.minWidth}–${model.exactSizeLimits.maxWidth} · 高 ${model.exactSizeLimits.minHeight}–${model.exactSizeLimits.maxHeight} px`,
-          wide: true,
-        }] : []),
-      ],
-    });
+    const parts = aspectByResolutionParts(model).map((part) => ({
+      label: part.label,
+      text: `${part.text.split("/").length} 种比例`,
+    }));
+    rows.push(
+      parts.length
+        ? { label: "画幅", value: formatAspectByResolution(model), parts }
+        : { label: "画幅", value: "—", muted: true },
+      model.supportsExactSize
+        ? {
+            label: "精确尺寸",
+            value: `宽 ${model.exactSizeLimits.minWidth}–${model.exactSizeLimits.maxWidth} · 高 ${model.exactSizeLimits.minHeight}–${model.exactSizeLimits.maxHeight} px`,
+          }
+        : { label: "精确尺寸", value: "不支持", muted: true },
+    );
+  } else if (model.kind === "chat") {
+    rows.push(
+      tagCell("助手积分", reasoningPriceTags(model, "assistant"), "按基础积分"),
+      tagCell("画布积分", reasoningPriceTags(model, "canvas_agent"), "按基础积分"),
+    );
+  } else {
+    rows.push(
+      tagCell("输入", model.upstreamInputFields || []),
+      tagCell("必填", model.upstreamRequiredInputFields || []),
+    );
   }
-
-  sections.push({
-    title: "分配",
-    items: [
-      {
-        label: "",
-        value: modelWorkspaceLine(model.id),
-        wide: true,
-      },
-    ],
-  });
-
-  return sections;
+  const pages = modelWorkspaceNames(model.id);
+  rows.push(
+    { label: "分配", value: pages.length ? pages.join(" · ") : "尚未分配", muted: !pages.length },
+    { label: "说明", value: model.description || "暂无说明", muted: !model.description },
+  );
+  return rows;
 }
 
 function modelModerationLine(model: ModelItem) {
@@ -2797,8 +2876,15 @@ onBeforeRouteLeave(async () => {
     return true;
   } catch { return false; }
 });
-onMounted(() => { window.addEventListener("beforeunload", warnBeforeUnload); void load(); });
-onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnload); });
+onMounted(() => {
+  window.addEventListener("beforeunload", warnBeforeUnload);
+  window.addEventListener("keydown", handleToolbarShortcut);
+  void load();
+});
+onBeforeUnmount(() => {
+  window.removeEventListener("beforeunload", warnBeforeUnload);
+  window.removeEventListener("keydown", handleToolbarShortcut);
+});
 </script>
 
 <template>
@@ -2806,7 +2892,7 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
     <el-alert v-if="loadFailed" type="error" title="配置加载失败，保存已禁用。请重新加载，不要重新创建现有配置。" :closable="false" show-icon />
     <PageCard>
       <div class="config-toolbar">
-        <div class="config-toolbar__heading">
+        <div class="config-toolbar__row">
           <div class="status-tabs" role="tablist" aria-label="模型配置视图">
             <button
               v-for="tab in viewTabs"
@@ -2823,75 +2909,81 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
             </button>
           </div>
 
-          <div class="config-toolbar__heading-actions">
-            <el-button type="primary" :loading="saving" :disabled="!configLoaded || loading || !isDirty" @click="save">保存配置</el-button>
+          <div class="config-toolbar__commit">
+            <el-tooltip content="从服务器重新加载配置" placement="bottom">
+              <el-button class="toolbar-icon-button" :icon="Refresh" :loading="loading" aria-label="刷新" @click="load" />
+            </el-tooltip>
             <el-button v-if="loadFailed" :disabled="loading" @click="load">重新加载</el-button>
-            <div
-              class="save-status"
-              :class="{ 'is-dirty': isDirty, 'is-saving': saving }"
-            >
-              <span class="save-status__dot" />
-              {{ saveStatusLabel }}
-            </div>
-            <el-button
-              v-if="activeView === 'models'"
-              type="primary"
-              :icon="Coin"
-              class="workspace-pricing-entry"
-              @click="openWorkspacePricing"
-            >
-              页面模型价格
-            </el-button>
-          </div>
-        </div>
-
-        <div v-if="activeView === 'models'" class="config-toolbar__actions">
-          <div class="kind-filter" role="tablist" aria-label="模型类型">
             <button
-              v-for="item in kindFilters"
-              :key="item.id"
               type="button"
-              :class="{ active: kindFilter === item.id }"
-              @click="kindFilter = item.id"
+              class="save-button"
+              :class="{ 'is-dirty': isDirty || saving, 'is-failed': loadFailed }"
+              :disabled="!canSave"
+              :aria-label="isDirty ? `保存配置（${saveShortcutLabel}）` : saveStatusLabel"
+              @click="save"
             >
-              {{ item.label }}
+              <Loading v-if="saving" class="save-button__icon is-spinning" aria-hidden="true" />
+              <span v-else-if="isDirty" class="save-button__dot" aria-hidden="true" />
+              <Check v-else-if="configLoaded && !loadFailed" class="save-button__icon" aria-hidden="true" />
+              <span role="status">{{ isDirty && !saving ? "保存配置" : saveStatusLabel }}</span>
+              <kbd v-if="isDirty && !saving">{{ saveShortcutLabel }}</kbd>
             </button>
           </div>
-          <el-input
-            v-model="modelSearch"
-            clearable
-            placeholder="搜索模型 / 上游 ID / 服务商"
-            class="model-search"
-            :prefix-icon="Search"
-          />
-          <div class="config-toolbar__buttons">
-            <el-button
-              type="primary"
-              :icon="Plus"
-              :disabled="!config.providers.length"
-              @click="openModel()"
+        </div>
+
+        <div v-if="activeView === 'models'" class="config-toolbar__row config-toolbar__row--sub">
+          <div class="config-toolbar__filters">
+            <div class="kind-filter" role="tablist" aria-label="模型类型">
+              <button
+                v-for="item in kindFilters"
+                :key="item.id"
+                type="button"
+                role="tab"
+                :aria-selected="kindFilter === item.id"
+                :class="{ active: kindFilter === item.id }"
+                @click="kindFilter = item.id"
+              >
+                {{ item.label }}
+                <em class="tnum">{{ kindCounts[item.id] }}</em>
+              </button>
+            </div>
+            <el-input
+              ref="modelSearchInput"
+              v-model="modelSearch"
+              clearable
+              placeholder="搜索模型 / 上游 ID / 服务商"
+              class="model-search"
+              :prefix-icon="Search"
+              @focus="modelSearchFocused = true"
+              @blur="modelSearchFocused = false"
+              @keydown.esc="modelSearch ? (modelSearch = '') : ($event.target as HTMLInputElement).blur()"
             >
-              添加模型
-            </el-button>
-            <el-button :icon="Refresh" :loading="loading" @click="load">
-              刷新
-            </el-button>
+              <template v-if="!modelSearch && !modelSearchFocused" #suffix>
+                <kbd class="search-kbd" title="按 / 聚焦搜索">/</kbd>
+              </template>
+            </el-input>
+            <span v-if="modelSearch.trim()" class="config-toolbar__result tnum">
+              匹配 {{ filteredModels.length }} 个
+            </span>
           </div>
-        </div>
-
-        <div v-else-if="activeView === 'providers'" class="config-toolbar__actions">
           <div class="config-toolbar__buttons">
-            <el-button type="primary" :icon="Plus" @click="openProvider()">
-              添加服务商
-            </el-button>
-            <el-button :icon="Refresh" :loading="loading" @click="load">
-              刷新
-            </el-button>
+            <el-tooltip content="请先添加服务商" placement="bottom" :disabled="!!config.providers.length">
+              <span class="toolbar-button-wrap">
+                <el-button class="toolbar-add" :icon="Plus" :disabled="!config.providers.length" @click="openModel()">
+                  添加模型
+                </el-button>
+              </span>
+            </el-tooltip>
           </div>
         </div>
 
-        <div v-else class="config-toolbar__actions">
-          <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
+        <div v-else-if="activeView === 'providers'" class="config-toolbar__row config-toolbar__row--sub">
+          <span class="config-toolbar__summary tnum">
+            {{ config.providers.length }} 个服务商 · {{ providerRouteCount }} 条线路
+          </span>
+          <div class="config-toolbar__buttons">
+            <el-button class="toolbar-add" :icon="Plus" @click="openProvider()">添加服务商</el-button>
+          </div>
         </div>
       </div>
 
@@ -2926,16 +3018,18 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
                     <Cpu v-else />
                   </span>
                   <div class="model-card__identity-copy">
-                    <div
-                      class="model-card__line"
-                      :title="`${kindName(row.kind)} · ${row.name} · ${providerName(row.providerId)} · ${row.upstreamModel} · ${providerAdapterLabel(row.providerId)}`"
-                    >
+                    <div class="model-card__title">
+                      <strong :title="row.name">{{ row.name }}</strong>
                       <span class="kind-badge" :class="`is-${row.kind}`">{{
                         kindName(row.kind)
                       }}</span>
                       <span v-if="row.default" class="default-badge">默认</span>
                       <span v-if="row.status === 'maintenance'" class="maintenance-badge">维护中</span>
-                      <strong>{{ row.name }}</strong>
+                    </div>
+                    <div
+                      class="model-card__line"
+                      :title="`${providerName(row.providerId)} · ${row.upstreamModel} · ${providerAdapterLabel(row.providerId)}`"
+                    >
                       <span>{{ providerName(row.providerId) }}</span>
                       <span class="mono">{{ row.upstreamModel || "—" }}</span>
                       <span>{{ providerAdapterLabel(row.providerId) }}</span>
@@ -3076,68 +3170,42 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
                 </el-popover>
               </header>
 
-              <div
-                v-if="modelCardHighlights(row as ModelItem).length"
-                class="model-card__highlights"
-                :class="{ 'is-reasoning': row.kind === 'chat' }"
-              >
+              <dl class="model-card__stats">
                 <div
-                  v-for="item in modelCardHighlights(row as ModelItem)"
-                  :key="item.label"
-                  class="model-card__highlight"
+                  v-for="cell in modelCardStats(row as ModelItem)"
+                  :key="cell.label"
+                  class="model-card__stat"
                 >
-                  <span>{{ item.label }}</span>
-                  <div
-                    v-if="item.tags?.length"
-                    class="model-card__tags"
-                    :title="item.value"
-                  >
-                    <span
-                      v-for="tag in item.tags"
-                      :key="tag"
-                      class="res-badge"
-                      >{{ tag }}</span
-                    >
-                  </div>
-                  <strong v-else :title="item.value">{{ item.value }}</strong>
+                  <dt>{{ cell.label }}</dt>
+                  <dd :title="cell.value" :class="{ 'is-muted': cell.muted }">
+                    <span v-if="cell.tags" class="model-card__tags">
+                      <span v-for="tag in cell.tags" :key="tag" class="res-badge">{{ tag }}</span>
+                    </span>
+                    <span v-else class="model-card__text">{{ cell.value }}</span>
+                  </dd>
                 </div>
-              </div>
+              </dl>
 
-              <div class="model-card__sections">
-                <section
-                  v-for="section in modelCardSections(row as ModelItem)"
-                  :key="section.title"
-                  class="model-card__block"
+              <dl class="model-card__rows">
+                <div
+                  v-for="cell in modelCardRows(row as ModelItem)"
+                  :key="cell.label"
+                  class="model-card__row"
                 >
-                  <dl>
-                    <div
-                      v-for="(item, itemIndex) in section.items"
-                      :key="`${section.title}-${itemIndex}`"
-                      class="model-card__spec"
-                      :class="{ 'is-wide': item.wide }"
-                    >
-                      <dt v-if="item.label">{{ item.label }}</dt>
-                      <dd v-if="item.parts?.length" :title="item.value">
-                        <span class="model-card__aspects">
-                          <span
-                            v-for="part in item.parts"
-                            :key="part.label"
-                            class="model-card__aspect"
-                          >
-                            <span class="res-badge">{{ part.label }}</span>
-                            <span>{{ part.text }}</span>
-                          </span>
-                        </span>
-                      </dd>
-                      <dd v-else :title="item.value">{{ item.value }}</dd>
-                    </div>
-                  </dl>
-                </section>
-              </div>
-
-              <p class="model-card__desc" :title="row.description || undefined">
-                {{ row.description || "暂无说明" }}
-              </p>
+                  <dt>{{ cell.label }}</dt>
+                  <dd :title="cell.value" :class="{ 'is-muted': cell.muted }">
+                    <span v-if="cell.parts" class="model-card__aspects">
+                      <span v-for="part in cell.parts" :key="part.label" class="model-card__aspect">
+                        <span class="res-badge">{{ part.label }}</span>{{ part.text }}
+                      </span>
+                    </span>
+                    <span v-else-if="cell.tags" class="model-card__tags">
+                      <span v-for="tag in cell.tags" :key="tag" class="res-badge">{{ tag }}</span>
+                    </span>
+                    <span v-else class="model-card__text">{{ cell.value }}</span>
+                  </dd>
+                </div>
+              </dl>
 
               <footer class="model-card__foot">
                 <div
@@ -3223,31 +3291,60 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
       >
         <div class="assignment-shell">
           <aside class="assignment-rail" aria-label="前台页面">
-            <p class="assignment-rail__hint">① 选择页面</p>
+            <p class="assignment-rail__hint">业务页面</p>
             <button
               v-for="workspace in workspaceMeta"
               :key="workspace.key"
               type="button"
               class="assignment-rail-item"
-              :class="{ 'is-active': activeWorkspaceKey === workspace.key }"
+              :class="{
+                'is-active': activeWorkspaceKey === workspace.key,
+                'is-empty': !workspaceAssignedCount(workspace),
+              }"
+              :title="workspaceDefaultSummary(workspace)"
+              :aria-current="activeWorkspaceKey === workspace.key ? 'page' : undefined"
               @click="activeWorkspaceKey = workspace.key"
             >
-              <span class="assignment-rail-item__main">
-                <strong>{{ workspace.name }}</strong>
-                <small>{{ workspaceDefaultSummary(workspace) }}</small>
-              </span>
+              <span class="assignment-rail-item__name">{{ workspace.name }}</span>
               <em class="tnum">{{ workspaceAssignedCount(workspace) }}</em>
             </button>
           </aside>
 
           <div class="assignment-main">
             <header class="assignment-main__head">
-              <div>
+              <div class="assignment-main__title">
                 <strong>{{ activeWorkspace.name }}</strong>
-                <small
-                  >用户在「{{ activeWorkspace.name }}」能看到的模型 ·
-                  {{ activeWorkspace.detail }}</small
+                <small>{{ activeWorkspace.detail }}</small>
+              </div>
+              <div v-if="activeWorkspace.kinds.length" class="assignment-defaults">
+                <label
+                  v-for="kind in activeWorkspace.kinds"
+                  :key="kind"
+                  class="assignment-default"
                 >
+                  <span>{{ workspaceDefaultLabel(activeWorkspace, kind) }}</span>
+                  <el-select
+                    v-model="
+                      config.workspaces[activeWorkspace.key].defaultModelIds[kind]
+                    "
+                    clearable
+                    filterable
+                    :disabled="
+                      !workspaceDefaultOptions(activeWorkspace, kind).length
+                    "
+                    placeholder="先加入模型"
+                  >
+                    <el-option
+                      v-for="model in workspaceDefaultOptions(
+                        activeWorkspace,
+                        kind,
+                      )"
+                      :key="model.id"
+                      :label="model.name"
+                      :value="model.id"
+                    />
+                  </el-select>
+                </label>
               </div>
             </header>
 
@@ -3275,167 +3372,312 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
               </ul>
             </section>
 
-            <div class="assignment-defaults" v-if="activeWorkspace.kinds.length">
-              <label
-                v-for="kind in activeWorkspace.kinds"
-                :key="kind"
-                class="assignment-default"
+            <div class="assignment-toolbar">
+              <el-input
+                v-model="poolSearch"
+                clearable
+                placeholder="筛选模型 / 服务商"
+                class="assignment-search"
+                :prefix-icon="Search"
+              />
+              <span class="assignment-toolbar__summary tnum">
+                已加入 <b>{{ assignedWorkspaceModels.length }}</b>
+                <template v-if="poolWorkspaceModels.length"> · 可加入 <b>{{ poolWorkspaceModels.length }}</b></template>
+              </span>
+              <button
+                type="button"
+                class="assignment-link"
+                :disabled="!poolWorkspaceModels.length"
+                @click="addAllPoolModels(activeWorkspace)"
               >
-                <span>{{ workspaceDefaultLabel(activeWorkspace, kind) }}</span>
-                <el-select
-                  v-model="
-                    config.workspaces[activeWorkspace.key].defaultModelIds[kind]
-                  "
-                  clearable
-                  filterable
-                  :disabled="
-                    !workspaceDefaultOptions(activeWorkspace, kind).length
-                  "
-                  placeholder="先从右侧加入模型"
-                >
-                  <el-option
-                    v-for="model in workspaceDefaultOptions(
-                      activeWorkspace,
-                      kind,
-                    )"
-                    :key="model.id"
-                    :label="model.name"
-                    :value="model.id"
-                  />
-                </el-select>
-              </label>
+                全部加入
+              </button>
+              <button
+                type="button"
+                class="assignment-link is-danger"
+                :disabled="!assignedWorkspaceModels.length"
+                @click="confirmClearWorkspace(activeWorkspace)"
+              >
+                清空
+              </button>
             </div>
 
-            <div class="assignment-transfer">
-              <section class="assignment-col is-on">
-                <header class="assignment-col__head">
-                  <div>
-                    <strong>② 已加入此页面</strong>
-                    <span class="tnum">{{ assignedWorkspaceModels.length }}</span>
-                  </div>
-                  <el-button
-                    link
-                    type="danger"
-                    :disabled="!assignedWorkspaceModels.length"
-                    @click="clearWorkspaceModels(activeWorkspace)"
-                  >
-                    清空
-                  </el-button>
+            <div class="assignment-board">
+              <section
+                v-for="group in workspaceBoardGroups"
+                :key="group.kind"
+                class="assign-group"
+              >
+                <header class="assign-group__head">
+                  <i class="kind-dot" :class="`is-${group.kind}`" />
+                  <strong>{{ kindName(group.kind) }}</strong>
+                  <em class="tnum">{{ group.assigned.length }}</em>
+                  <small v-if="group.defaultName">默认：{{ group.defaultName }}</small>
                 </header>
-                <ul v-if="assignedWorkspaceModels.length" class="assignment-list">
-                  <li
-                    v-for="model in assignedWorkspaceModels"
-                    :key="model.id"
-                    class="assignment-card"
-                    :class="{
-                      'is-default': isWorkspaceDefaultModel(
-                        activeWorkspace,
-                        model,
-                      ),
-                    }"
-                  >
-                    <div class="assignment-card__body">
-                      <strong :title="model.name">
-                        {{ model.name }}
-                        <small v-if="model.status === 'maintenance'" class="assignment-maintenance">维护中</small>
-                      </strong>
-                      <small
-                        >{{ kindName(model.kind) }} ·
-                        {{ providerName(model.providerId) }}</small
-                      >
-                      <em class="assignment-card__price">
-                        {{ workspacePriceLabel(activeWorkspace, model) }}
-                      </em>
-                    </div>
-                    <div class="assignment-card__foot">
-                      <button
-                        v-if="
-                          isWorkspaceDefaultModel(activeWorkspace, model)
-                        "
-                        type="button"
-                        class="assignment-default-tag"
-                        disabled
-                      >
-                        默认
-                      </button>
-                      <button
-                        v-else
-                        type="button"
-                        class="assignment-default-btn"
-                        :disabled="model.status === 'maintenance'"
-                        :title="model.status === 'maintenance' ? '维护中的模型不能设为默认' : undefined"
-                        @click="
-                          setWorkspaceDefaultModel(activeWorkspace, model)
-                        "
-                      >
-                        设为默认
-                      </button>
-                      <el-button
-                        link
-                        type="danger"
-                        @click="removeWorkspaceModel(activeWorkspace, model.id)"
-                      >
-                        移除
-                      </el-button>
-                    </div>
-                  </li>
-                </ul>
-                <el-empty
-                  v-else
-                  description="还没有模型，从右侧点「加入」"
-                  :image-size="48"
-                />
-              </section>
 
-              <section class="assignment-col is-pool">
-                <header class="assignment-col__head">
-                  <div>
-                    <strong>③ 从目录加入</strong>
-                    <span class="tnum">{{ poolWorkspaceModels.length }}</span>
-                  </div>
-                  <el-button
-                    link
-                    :disabled="!poolWorkspaceModels.length"
-                    @click="addAllPoolModels(activeWorkspace)"
-                  >
-                    全部加入
-                  </el-button>
-                </header>
-                <ul v-if="poolWorkspaceModels.length" class="assignment-list">
-                  <li
-                    v-for="model in poolWorkspaceModels"
+                <div class="assign-grid">
+                  <article
+                    v-for="model in group.assigned"
                     :key="model.id"
-                    class="assignment-card"
+                    class="assign-card"
+                    :class="{ 'is-default': isWorkspaceDefaultModel(activeWorkspace, model) }"
                   >
-                    <div class="assignment-card__body">
-                      <strong :title="model.name">{{ model.name }}</strong>
-                      <small
-                        >{{ kindName(model.kind) }} ·
-                        {{ providerName(model.providerId) }}</small
+                    <header class="assign-card__head">
+                      <span class="assign-card__title">
+                        <strong :title="model.name">{{ model.name }}</strong>
+                        <small>
+                          {{ providerName(model.providerId) }}
+                          <em v-if="model.status === 'maintenance'" class="assignment-maintenance">维护中</em>
+                        </small>
+                      </span>
+                      <button
+                        type="button"
+                        role="radio"
+                        class="assignment-default-radio"
+                        :class="{ 'is-on': isWorkspaceDefaultModel(activeWorkspace, model) }"
+                        :aria-checked="isWorkspaceDefaultModel(activeWorkspace, model)"
+                        :disabled="model.status === 'maintenance' && !isWorkspaceDefaultModel(activeWorkspace, model)"
+                        :title="
+                          isWorkspaceDefaultModel(activeWorkspace, model)
+                            ? `当前是${workspaceDefaultLabel(activeWorkspace, model.kind)}`
+                            : model.status === 'maintenance'
+                              ? '维护中的模型不能设为默认'
+                              : `设为${workspaceDefaultLabel(activeWorkspace, model.kind)}`
+                        "
+                        @click="setWorkspaceDefaultModel(activeWorkspace, model)"
                       >
-                      <em class="tnum"
-                        >{{ formatPoints(effectivePrice(model)) }} 积分</em
-                      >
+                        <i aria-hidden="true" />
+                        <span>{{ isWorkspaceDefaultModel(activeWorkspace, model) ? "默认" : "设为默认" }}</span>
+                      </button>
+                    </header>
+                    <div class="assign-card__controls">
+                    <el-popover
+                      v-if="model.kind === 'image'"
+                      placement="bottom-end"
+                      :width="320"
+                      trigger="click"
+                      :show-arrow="false"
+                    >
+                      <template #reference>
+                        <button
+                          v-for="limit in [workspaceLimitSummary(activeWorkspace, model)]"
+                          :key="`${model.id}-limit`"
+                          type="button"
+                          class="assignment-limit-chip"
+                          :class="{ 'is-extended': limit.extended }"
+                          :title="`本页面：参考图最多 ${limit.references} 张，单次最多生成 ${limit.images} 张（点击调整追加额度）`"
+                        >
+                          <span><em>参考</em><b class="tnum">{{ limit.references }}</b></span>
+                          <span><em>生成</em><b class="tnum">{{ limit.images }}</b></span>
+                        </button>
+                      </template>
+                      <div class="assignment-limit-pop">
+                        <header>
+                          <strong>页面追加额度</strong>
+                          <small>只对「{{ activeWorkspace.name }}」里的 {{ model.name }} 生效</small>
+                        </header>
+                        <section
+                          v-for="field in workspaceLimitFields(activeWorkspace, model)"
+                          :key="field.key"
+                          class="assignment-limit-field"
+                        >
+                          <div class="assignment-limit-field__head">
+                            <span>{{ field.label }}</span>
+                            <strong class="tnum" :class="{ 'is-extended': field.extra > 0 }">
+                              {{ field.total }}<small>{{ field.unit }}</small>
+                            </strong>
+                          </div>
+                          <div class="assignment-limit-field__body">
+                            <div class="limit-stepper">
+                              <button
+                                type="button"
+                                :disabled="field.extra <= 0"
+                                :aria-label="`${field.label}追加减 1`"
+                                @click="setWorkspaceModelLimit(activeWorkspace, model, field.key, field.extra - 1)"
+                              >−</button>
+                              <label>
+                                <span>+</span>
+                                <input
+                                  class="tnum"
+                                  type="number"
+                                  inputmode="numeric"
+                                  min="0"
+                                  :max="field.maxExtra"
+                                  :value="field.extra"
+                                  :aria-label="`${field.label}追加数量`"
+                                  @change="setWorkspaceModelLimit(activeWorkspace, model, field.key, Number(($event.target as HTMLInputElement).value)); ($event.target as HTMLInputElement).value = String(workspaceModelLimits(activeWorkspace, model)[field.key])"
+                                />
+                              </label>
+                              <button
+                                type="button"
+                                :disabled="field.extra >= field.maxExtra"
+                                :aria-label="`${field.label}追加加 1`"
+                                @click="setWorkspaceModelLimit(activeWorkspace, model, field.key, field.extra + 1)"
+                              >+</button>
+                            </div>
+                            <div class="limit-quick">
+                              <button
+                                v-for="step in field.steps"
+                                :key="step"
+                                type="button"
+                                :disabled="field.extra >= field.maxExtra"
+                                @click="setWorkspaceModelLimit(activeWorkspace, model, field.key, field.extra + step)"
+                              >+{{ step }}</button>
+                            </div>
+                          </div>
+                          <small class="assignment-limit-field__hint tnum">
+                            模型 {{ field.base }} 张{{ field.extra ? ` + 页面追加 ${field.extra} 张` : "" }} · 最多 {{ field.cap }} 张
+                          </small>
+                        </section>
+                        <footer>
+                          <p>追加前请确认上游模型支持这么多输入图，否则任务会在上游失败。</p>
+                          <button
+                            type="button"
+                            class="assignment-link"
+                            :disabled="!workspaceLimitSummary(activeWorkspace, model).extended"
+                            @click="resetWorkspaceModelLimits(activeWorkspace, model)"
+                          >恢复模型默认</button>
+                        </footer>
+                      </div>
+                    </el-popover>
+                    <el-popover
+                      placement="bottom-end"
+                      :width="300"
+                      trigger="click"
+                      :show-arrow="false"
+                    >
+                      <template #reference>
+                        <button
+                          type="button"
+                          class="price-tag"
+                          :class="{ 'is-override': workspacePriceOverride(activeWorkspace, model) }"
+                          :title="`点击设置「${activeWorkspace.name}」里的页面价格`"
+                        >
+                          <b class="tnum">{{ formatPoints(workspaceEffectivePrice(activeWorkspace, model)) }}</b>
+                          <span class="price-tag__unit">积分</span>
+                          <span class="price-tag__source">
+                            {{ workspacePriceOverride(activeWorkspace, model) ? "页面价" : "继承" }}
+                          </span>
+                          <EditPen class="price-tag__edit" aria-hidden="true" />
+                        </button>
+                      </template>
+                      <div class="assignment-price-pop">
+                        <header>
+                          <strong>页面价格</strong>
+                          <small>只对「{{ activeWorkspace.name }}」里的 {{ model.name }} 生效</small>
+                        </header>
+                        <div class="price-mode" role="radiogroup" aria-label="定价方式">
+                          <button
+                            type="button"
+                            role="radio"
+                            :aria-checked="!workspacePriceOverride(activeWorkspace, model)"
+                            :class="{ 'is-on': !workspacePriceOverride(activeWorkspace, model) }"
+                            @click="setWorkspacePriceOverride(activeWorkspace, model, false)"
+                          >继承目录价</button>
+                          <button
+                            type="button"
+                            role="radio"
+                            :aria-checked="Boolean(workspacePriceOverride(activeWorkspace, model))"
+                            :class="{ 'is-on': workspacePriceOverride(activeWorkspace, model) }"
+                            @click="setWorkspacePriceOverride(activeWorkspace, model, true)"
+                          >页面单独定价</button>
+                        </div>
+
+                        <div v-if="!workspacePriceOverride(activeWorkspace, model)" class="price-inherit">
+                          <span>用户支付</span>
+                          <strong class="tnum">{{ formatPoints(effectivePrice(model)) }}<small>{{ workspacePriceUnit(model) }}</small></strong>
+                          <em v-if="hasDiscountPrice(model)" class="tnum">原价 {{ formatPoints(model.priceCents) }}</em>
+                        </div>
+
+                        <template v-else>
+                          <label class="price-field">
+                            <span>标准价格</span>
+                            <span class="price-input">
+                              <input
+                                class="tnum"
+                                type="number"
+                                inputmode="numeric"
+                                min="0"
+                                step="1"
+                                :value="workspacePriceOverride(activeWorkspace, model)?.priceCents"
+                                aria-label="标准价格"
+                                @change="setWorkspacePriceField(activeWorkspace, model, 'priceCents', ($event.target as HTMLInputElement).value); ($event.target as HTMLInputElement).value = String(workspacePriceOverride(activeWorkspace, model)?.priceCents ?? '')"
+                              />
+                              <em>{{ workspacePriceUnit(model) }}</em>
+                            </span>
+                          </label>
+                          <div class="price-field">
+                            <span class="price-field__switch">
+                              活动价格
+                              <el-switch
+                                size="small"
+                                :model-value="workspacePriceOverride(activeWorkspace, model)?.discountPriceCents != null"
+                                @change="setWorkspaceDiscountEnabled(activeWorkspace, model, $event === true)"
+                              />
+                            </span>
+                            <span
+                              v-if="workspacePriceOverride(activeWorkspace, model)?.discountPriceCents != null"
+                              class="price-input"
+                            >
+                              <input
+                                class="tnum"
+                                type="number"
+                                inputmode="numeric"
+                                min="0"
+                                :max="workspacePriceOverride(activeWorkspace, model)?.priceCents"
+                                step="1"
+                                :value="workspacePriceOverride(activeWorkspace, model)?.discountPriceCents"
+                                aria-label="活动价格"
+                                @change="setWorkspacePriceField(activeWorkspace, model, 'discountPriceCents', ($event.target as HTMLInputElement).value); ($event.target as HTMLInputElement).value = String(workspacePriceOverride(activeWorkspace, model)?.discountPriceCents ?? '')"
+                              />
+                              <em>{{ workspacePriceUnit(model) }}</em>
+                            </span>
+                            <small v-else>开启后按活动价结算</small>
+                          </div>
+                          <p v-if="workspacePriceWarning(activeWorkspace, model)" class="price-warn">
+                            {{ workspacePriceWarning(activeWorkspace, model) }}
+                          </p>
+                        </template>
+
+                        <footer class="tnum">
+                          目录价 {{ formatPoints(effectivePrice(model)) }} {{ workspacePriceUnit(model) }}
+                          <template v-if="model.upstreamCostCents"> · 上游成本 {{ formatPoints(model.upstreamCostCents) }}</template>
+                        </footer>
+                      </div>
+                    </el-popover>
+                      <el-tooltip content="移出此页面" placement="top">
+                        <button
+                          type="button"
+                          class="assignment-icon-btn is-danger assign-card__remove"
+                          aria-label="移出此页面"
+                          @click="removeWorkspaceModel(activeWorkspace, model.id)"
+                        >
+                          <Close aria-hidden="true" />
+                        </button>
+                      </el-tooltip>
                     </div>
-                    <div class="assignment-card__foot">
-                      <el-button
-                        link
-                        @click="addWorkspaceModel(activeWorkspace, model.id)"
-                      >
-                        加入
-                      </el-button>
-                    </div>
-                  </li>
-                </ul>
-                <el-empty
-                  v-else
-                  :description="
-                    workspaceAvailableModels(activeWorkspace).length
-                      ? '目录模型都已加入此页面'
-                      : '模型目录暂无可用模型（需启用且对用户开放）'
-                  "
-                  :image-size="48"
-                />
+                  </article>
+
+                  <button
+                    v-for="model in group.pool"
+                    :key="model.id"
+                    type="button"
+                    class="assign-card is-ghost"
+                    :title="`加入「${activeWorkspace.name}」`"
+                    @click="addWorkspaceModel(activeWorkspace, model.id)"
+                  >
+                    <span class="assign-card__plus"><Plus aria-hidden="true" /></span>
+                    <span class="assign-card__title">
+                      <strong>{{ model.name }}</strong>
+                      <small class="tnum">{{ providerName(model.providerId) }} · {{ formatPoints(effectivePrice(model)) }} 积分</small>
+                    </span>
+                    <em>加入</em>
+                  </button>
+
+                  <p v-if="!group.assigned.length && !group.pool.length" class="assign-grid__empty">
+                    {{ poolSearch.trim() ? "没有匹配的模型" : `还没有可用的${kindName(group.kind)}（需在模型目录中启用并对用户开放）` }}
+                  </p>
+                </div>
               </section>
             </div>
           </div>
@@ -3447,8 +3689,13 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
         <div class="editable-file-control__identity">
           <span class="editable-file-control__icon"><el-icon><Connection /></el-icon></span>
           <div>
-            <strong>PPT / PSD</strong>
-            <small>{{ config.editableFiles.enabled ? "用户端已开放" : "用户端未开放" }}</small>
+            <strong>
+              可编辑文件 · PPT / PSD
+              <span class="provider-chip" :class="config.editableFiles.enabled ? 'is-on' : 'is-off'">
+                {{ config.editableFiles.enabled ? "用户端已开放" : "未开放" }}
+              </span>
+            </strong>
+            <small>为 PPT / PSD 导出指定服务商与线路</small>
           </div>
         </div>
         <div class="editable-file-control__fields">
@@ -3512,73 +3759,78 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
           <el-empty description="添加服务商并读取其模型目录" :image-size="60" />
         </template>
         <el-table-column
-          label="名称 / Base URL"
-          min-width="200"
+          label="服务商"
+          min-width="240"
           align="left"
           header-align="left"
         >
           <template #default="{ row }">
             <div
               class="provider-identity"
+              :class="{ 'is-disabled': !row.enabled }"
               :title="`${row.name || '—'} · ${row.baseUrl || '—'}`"
             >
-              <strong>{{ row.name || "—" }}</strong>
-              <span class="mono">{{ row.baseUrl || "—" }}</span>
+              <span class="provider-avatar" :class="`is-${row.adapter}`" aria-hidden="true">
+                {{ (row.name || "?").slice(0, 1).toUpperCase() }}
+              </span>
+              <span class="provider-identity__copy">
+                <strong>{{ row.name || "—" }}</strong>
+                <span class="mono">{{ row.baseUrl || "—" }}</span>
+              </span>
             </div>
           </template>
         </el-table-column>
+        <el-table-column label="协议" min-width="120" align="left" header-align="left">
+          <template #default="{ row }">
+            <span class="provider-chip" :class="`is-${row.adapter}`">{{ adapterName(row.adapter) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="线路" min-width="72" align="left" header-align="left">
+          <template #default="{ row }">
+            <span class="provider-count tnum">{{ row.routes?.length || 1 }}</span>
+          </template>
+        </el-table-column>
         <el-table-column
-          label="并发（主/总）"
+          label="并发 主 / 总"
           min-width="110"
           align="left"
           header-align="left"
         >
           <template #default="{ row }">
             <span class="cell-text tnum">
-              {{ row.maxConcurrency }} /
-              {{ providerCapacity(row as ModelProvider) }}
+              {{ row.maxConcurrency }}<span class="cell-sep">/</span>{{ providerCapacity(row as ModelProvider) }}
             </span>
           </template>
         </el-table-column>
-        <el-table-column label="线路数" min-width="80" align="left" header-align="left">
-          <template #default="{ row }">
-            <span class="cell-text tnum">{{ row.routes?.length || 1 }}</span>
-          </template>
-        </el-table-column>
         <el-table-column
-          label="可读取模型"
-          min-width="100"
+          label="超时"
+          min-width="80"
           align="left"
           header-align="left"
         >
           <template #default="{ row }">
-            <el-button
+            <span class="cell-text tnum">{{ row.timeoutSecs }}<span class="cell-unit">s</span></span>
+          </template>
+        </el-table-column>
+        <el-table-column
+          label="模型目录"
+          min-width="110"
+          align="left"
+          header-align="left"
+        >
+          <template #default="{ row }">
+            <button
               v-if="row.discoveredModels?.length"
-              link
-              type="primary"
+              type="button"
+              class="provider-catalog-btn"
               @click="openDiscoveredModelsDialog(row as ModelProvider)"
             >
-              查看
-            </el-button>
-            <span v-else class="cell-text is-muted">—</span>
+              <span class="tnum">{{ row.discoveredModels.length }}</span> 个 · 查看
+            </button>
+            <span v-else class="cell-text is-muted">未读取</span>
           </template>
         </el-table-column>
-        <el-table-column
-          label="主超时秒"
-          min-width="96"
-          align="left"
-          header-align="left"
-        >
-          <template #default="{ row }">
-            <span class="cell-text tnum">{{ row.timeoutSecs }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="协议" min-width="120" align="left" header-align="left">
-          <template #default="{ row }">
-            <span class="cell-text">{{ adapterName(row.adapter) }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="启用" min-width="88" align="left" header-align="left">
+        <el-table-column label="启用" min-width="76" align="left" header-align="left">
           <template #default="{ row }">
             <el-switch v-model="row.enabled" />
           </template>
@@ -3590,8 +3842,17 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
           header-align="left"
         >
           <template #default="{ $index }">
-            <el-button link type="primary" @click="openProvider($index)">编辑</el-button>
-            <el-button link type="danger" @click="removeProvider($index)">删除</el-button>
+            <div class="row-actions">
+              <button type="button" class="card-btn is-solid" @click="openProvider($index)">
+                <EditPen aria-hidden="true" />
+                编辑
+              </button>
+              <el-tooltip content="删除服务商" placement="top">
+                <button type="button" class="card-btn is-icon is-danger" aria-label="删除服务商" @click="removeProvider($index)">
+                  <Delete aria-hidden="true" />
+                </button>
+              </el-tooltip>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -3599,135 +3860,6 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
       </AdminListShell>
       </section>
     </PageCard>
-
-    <AdminDialog
-      v-model="workspacePricingDialogVisible"
-      title="页面模型价格"
-      subtitle="修改已分配到各业务页面的模型价格"
-      :icon="Coin"
-      width="min(1040px, calc(100% - 24px))"
-      panel-class="workspace-pricing-dialog-panel"
-      confirm-text="应用到草稿"
-      :confirm-loading="saving"
-      :close-on-click-modal="false"
-      @confirm="saveWorkspacePricingDraft"
-    >
-      <div class="workspace-pricing-dialog">
-        <aside class="workspace-pricing-pages" aria-label="业务页面">
-          <button
-            v-for="workspace in workspaceMeta"
-            :key="workspace.key"
-            type="button"
-            :class="{ 'is-active': pricingWorkspaceKey === workspace.key }"
-            @click="pricingWorkspaceKey = workspace.key"
-          >
-            <span>
-              <strong>{{ workspace.name }}</strong>
-              <small>已分配 {{ workspaceAssignedCount(workspace) }} 个模型</small>
-            </span>
-            <em
-              v-if="pricingWorkspaceOverrideCount(workspace)"
-              class="tnum"
-            >
-              {{ pricingWorkspaceOverrideCount(workspace) }}
-            </em>
-          </button>
-        </aside>
-
-        <section class="workspace-pricing-main">
-          <header class="workspace-pricing-main__head">
-            <span>
-              <strong>{{ pricingWorkspace.name }}</strong>
-              <small>{{ pricingWorkspace.detail }}</small>
-            </span>
-            <em class="tnum">{{ pricingWorkspaceModels.length }} 个模型</em>
-          </header>
-
-          <div v-if="pricingWorkspaceModels.length" class="workspace-pricing-list">
-            <article
-              v-for="model in pricingWorkspaceModels"
-              :key="model.id"
-              class="workspace-pricing-row"
-            >
-              <header>
-                <span>
-                  <strong>{{ model.name }}</strong>
-                  <small>
-                    {{ kindName(model.kind) }} · {{ providerName(model.providerId) }} ·
-                    模型目录 {{ formatPoints(effectivePrice(model)) }}
-                    {{ workspacePriceUnit(model) }}
-                  </small>
-                </span>
-                <em>
-                  当前 {{ formatPoints(pricingDraftEffectivePrice(model)) }}
-                  {{ workspacePriceUnit(model) }}
-                </em>
-              </header>
-
-              <div class="workspace-pricing-row__controls">
-                <label class="workspace-pricing-toggle">
-                  <span>
-                    <strong>页面单独定价</strong>
-                    <small>关闭后继承模型目录价格</small>
-                  </span>
-                  <el-switch
-                    :model-value="Boolean(pricingDraftOverride(model))"
-                    @change="setPricingDraftOverride(model, $event === true)"
-                  />
-                </label>
-
-                <template v-if="pricingDraftOverride(model)">
-                  <label class="workspace-pricing-field">
-                    <span>标准价格</span>
-                    <el-input-number
-                      v-model="workspacePricingDraft[pricingWorkspace.key][model.id].priceCents"
-                      :min="0"
-                      :precision="0"
-                      :step="1"
-                    />
-                    <em>{{ workspacePriceUnit(model) }}</em>
-                  </label>
-                  <label class="workspace-pricing-toggle is-compact">
-                    <span>
-                      <strong>活动价格</strong>
-                      <small>开启后优先结算</small>
-                    </span>
-                    <el-switch
-                      :model-value="pricingDraftOverride(model)?.discountPriceCents !== null"
-                      @change="setPricingDraftDiscount(model, $event === true)"
-                    />
-                  </label>
-                  <label
-                    v-if="pricingDraftOverride(model)?.discountPriceCents !== null"
-                    class="workspace-pricing-field"
-                  >
-                    <span>活动价格</span>
-                    <el-input-number
-                      v-model="workspacePricingDraft[pricingWorkspace.key][model.id].discountPriceCents"
-                      :min="0"
-                      :max="workspacePricingDraft[pricingWorkspace.key][model.id].priceCents"
-                      :precision="0"
-                      :step="1"
-                    />
-                    <em>{{ workspacePriceUnit(model) }}</em>
-                  </label>
-                </template>
-              </div>
-            </article>
-          </div>
-
-          <el-empty
-            v-else
-            description="该页面还没有分配模型"
-            :image-size="64"
-          >
-            <el-button type="primary" @click="openWorkspaceAssignmentFromPricing">
-              前往页面分配
-            </el-button>
-          </el-empty>
-        </section>
-      </div>
-    </AdminDialog>
 
     <AdminDialog
       v-model="discoveredModelsDialogVisible"
@@ -5021,7 +5153,6 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
   color: var(--accent-ink);
 }
 
-
 .model-field-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -5212,102 +5343,225 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
   padding-top: 16px;
 }
 
-.save-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  color: var(--ink-3);
-  font-size: 12px;
-  font-weight: 650;
-}
-
-.save-status__dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--success);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 18%, transparent);
-}
-
-.save-status.is-dirty .save-status__dot {
-  background: var(--warning);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning) 18%, transparent);
-}
-
-.save-status.is-saving .save-status__dot {
-  background: var(--info);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--info) 18%, transparent);
-}
-
 .config-toolbar {
   display: grid;
   gap: 10px;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
 }
 
-.config-toolbar__heading {
+.config-toolbar__row {
   display: flex;
   min-width: 0;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 12px;
 }
 
-.config-toolbar__heading-actions {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 14px;
+.config-toolbar__row--sub {
+  gap: 10px;
 }
 
-.workspace-pricing-entry {
-  min-width: 112px;
-}
-
-.config-toolbar__actions {
-  display: flex;
-  width: 100%;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  min-width: 0;
-}
-
+.config-toolbar__commit,
+.config-toolbar__filters,
 .config-toolbar__buttons {
   display: inline-flex;
-  flex: 0 0 auto;
-  flex-wrap: nowrap;
+  min-width: 0;
   align-items: center;
   gap: 8px;
+}
+
+.config-toolbar__commit,
+.config-toolbar__buttons {
+  flex: 0 0 auto;
   white-space: nowrap;
 }
 
-.config-toolbar__buttons :deep(.el-button) {
-  margin-left: 0 !important;
+.config-toolbar__filters {
+  flex: 1 1 auto;
 }
 
-.config-toolbar__buttons :deep(.el-button + .el-button) {
-  margin-left: 0 !important;
+.config-toolbar :deep(.el-button + .el-button) {
+  margin-left: 0;
+}
+
+.config-toolbar__result,
+.config-toolbar__summary {
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.config-toolbar .toolbar-icon-button {
+  --el-button-text-color: var(--ink-2);
+  --el-button-bg-color: var(--surface-2);
+  --el-button-border-color: transparent;
+  --el-button-hover-text-color: var(--ink);
+  --el-button-hover-bg-color: var(--surface-3);
+  --el-button-hover-border-color: transparent;
+  --el-button-active-bg-color: var(--surface-3);
+  --el-button-active-border-color: transparent;
+  font-weight: 600;
+}
+
+.toolbar-icon-button {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 50%;
+}
+
+.search-kbd {
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 5px;
+  color: var(--ink-3);
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--border);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.config-toolbar__row--sub :deep(.el-button) {
+  height: 34px;
+  padding: 0 14px;
+  border-radius: var(--radius-pill);
+}
+
+.model-search :deep(.el-input__wrapper) {
+  height: 34px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  box-shadow: none;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.model-search :deep(.el-input__wrapper:hover) {
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+
+.model-search :deep(.el-input__wrapper.is-focus) {
+  background: var(--surface);
+  box-shadow:
+    inset 0 0 0 1px var(--accent),
+    0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.toolbar-button-wrap {
+  display: inline-flex;
+}
+
+.config-toolbar .toolbar-add {
+  --el-button-text-color: var(--accent-ink);
+  --el-button-bg-color: var(--accent-soft);
+  --el-button-border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  --el-button-hover-text-color: var(--accent-on);
+  --el-button-hover-bg-color: var(--accent);
+  --el-button-hover-border-color: var(--accent);
+  --el-button-active-text-color: var(--accent-on);
+  --el-button-active-bg-color: var(--accent-hover);
+  --el-button-active-border-color: var(--accent-hover);
+  font-weight: 700;
+}
+
+.save-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 36px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  color: var(--ink-3);
+  background: var(--surface-2);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  white-space: nowrap;
+  cursor: default;
+  transition:
+    background 0.18s ease,
+    color 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+.save-button__icon {
+  width: 14px;
+  height: 14px;
+  color: var(--success);
+}
+
+.save-button__icon.is-spinning {
+  color: inherit;
+  animation: save-spin 0.9s linear infinite;
+}
+
+.save-button__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent-on);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-on) 18%, transparent);
+}
+
+.save-button kbd {
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent-on) 12%, transparent);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  opacity: 0.75;
+}
+
+.save-button.is-dirty {
+  color: var(--accent-on);
+  background: var(--accent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent);
+  cursor: pointer;
+}
+
+.save-button.is-dirty:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.save-button.is-dirty:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.save-button.is-failed {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+@keyframes save-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .status-tabs {
   display: inline-flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
-  padding: 4px;
+  gap: 2px;
+  padding: 3px;
   border-radius: 999px;
   background: var(--surface-2);
-  box-shadow: 0 1px 2px rgb(16 24 40 / 0.04);
 }
 
 .status-tab {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 32px;
-  padding: 0 12px;
+  height: 30px;
+  padding: 0 14px;
   border: 0;
   border-radius: 999px;
   background: transparent;
@@ -5338,10 +5592,18 @@ onBeforeUnmount(() => { window.removeEventListener("beforeunload", warnBeforeUnl
   color: color-mix(in srgb, var(--surface) 78%, transparent);
 }
 
-html.dark .status-tab.is-active {
-  background: var(--surface-3);
+.status-tab:not(.is-active):hover {
   color: var(--ink);
-  box-shadow: 0 2px 8px rgb(0 0 0 / 0.28);
+}
+
+html.dark .status-tab.is-active {
+  background: var(--ink);
+  color: var(--bg);
+  box-shadow: none;
+}
+
+html.dark .status-tab.is-active em {
+  color: color-mix(in srgb, var(--bg) 60%, transparent);
 }
 
 .config-panel {
@@ -5353,13 +5615,13 @@ html.dark .status-tab.is-active {
 
 .editable-file-control {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) minmax(420px, auto);
+  grid-template-columns: minmax(180px, 1fr) auto;
   align-items: center;
   gap: 16px;
-  margin-bottom: 10px;
-  padding: 10px 12px;
+  margin-bottom: 12px;
+  padding: 10px 12px 10px 10px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 14px;
   background: var(--surface);
 }
 
@@ -5373,22 +5635,25 @@ html.dark .status-tab.is-active {
 
 .editable-file-control__icon {
   display: grid;
-  width: 32px;
-  height: 32px;
-  flex: 0 0 32px;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
   place-items: center;
-  border-radius: 7px;
-  background: var(--surface-2);
+  border-radius: 10px;
+  background: var(--accent-soft);
   color: var(--accent-ink);
 }
 
 .editable-file-control__identity > div {
   display: grid;
   min-width: 0;
-  gap: 2px;
+  gap: 3px;
 }
 
 .editable-file-control__identity strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   color: var(--ink);
   font-size: 13px;
   font-weight: 700;
@@ -5396,7 +5661,11 @@ html.dark .status-tab.is-active {
 
 .editable-file-control__identity small {
   color: var(--ink-3);
-  font-size: 11px;
+  font-size: 12px;
+}
+
+.editable-file-control__fields :deep(.el-select__wrapper) {
+  border-radius: var(--radius-pill);
 }
 
 .editable-file-control__fields :deep(.el-select) {
@@ -5475,8 +5744,9 @@ html.dark .status-tab.is-active {
 
 .model-card {
   position: relative;
-  display: grid;
-  gap: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
   min-width: 0;
   padding: 14px;
   border: 1px solid var(--border);
@@ -5501,7 +5771,12 @@ html.dark .status-tab.is-active {
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  padding-right: 168px;
+}
+
+.model-card__head .model-card__price {
+  position: static;
+  flex: 0 0 auto;
+  margin: -4px -4px 0 0;
 }
 
 .model-card__identity {
@@ -5515,17 +5790,38 @@ html.dark .status-tab.is-active {
 .model-card__identity-copy {
   display: grid;
   min-width: 0;
-  gap: 6px;
+  gap: 3px;
 }
 
 .model-card__icon {
-  width: 34px;
-  height: 34px;
+  width: 38px;
+  height: 38px;
 }
 
 .model-card__icon svg {
   width: 17px;
   height: 17px;
+}
+
+.model-card__title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.model-card__title strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-card__title > span {
+  flex: 0 0 auto;
 }
 
 .model-card__line {
@@ -5536,17 +5832,9 @@ html.dark .status-tab.is-active {
   white-space: nowrap;
 }
 
-.model-card__line strong {
-  flex: 0 1 auto;
-  overflow: hidden;
-  color: var(--ink);
-  font-size: 15px;
-  font-weight: 700;
-  text-overflow: ellipsis;
-}
-
 .model-card__line span {
   flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   color: var(--ink-2);
   font-size: 12px;
@@ -5557,10 +5845,13 @@ html.dark .status-tab.is-active {
   color: var(--ink-3);
 }
 
-.model-card__line > .kind-badge,
-.model-card__line > .default-badge,
-.model-card__line > .maintenance-badge,
-.model-card__line > .meta-badge {
+.model-card__line span + span::before {
+  content: "·";
+  margin: 0 7px;
+  color: var(--ink-3);
+}
+
+.meta-badge {
   flex: 0 0 auto;
   align-self: center;
 }
@@ -5839,133 +6130,118 @@ html.dark .model-card__price .price-scope {
   color: var(--ink-3);
 }
 
-.model-card__desc {
-  margin: 0;
-  overflow: hidden;
-  color: var(--ink-3);
-  font-size: 12px;
-  line-height: 1.45;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-
-.model-card__highlights {
+.model-card__stats {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-  padding: 10px 12px;
+  margin: 0;
+  padding: 10px 0;
   border-radius: 10px;
   background: var(--surface-2);
 }
 
-.model-card__highlights.is-reasoning {
-  grid-template-columns: minmax(0, 1fr);
-}
-
-.model-card__highlights.is-reasoning .model-card__highlight {
-  grid-template-columns: 104px minmax(0, 1fr);
-  align-items: start;
-}
-
-.model-card__highlight {
+.model-card__stat {
   display: grid;
   min-width: 0;
-  gap: 3px;
+  align-content: start;
+  gap: 5px;
+  padding: 0 12px;
 }
 
-.model-card__highlight > span {
+.model-card__stat + .model-card__stat {
+  border-left: 1px solid var(--border);
+}
+
+.model-card__stat dt,
+.model-card__row dt {
   color: var(--ink-3);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
+  white-space: nowrap;
 }
 
-.model-card__highlight strong {
+.model-card__stat dd {
+  display: flex;
+  min-width: 0;
+  height: 20px;
+  align-items: center;
+  margin: 0;
   overflow: hidden;
   color: var(--ink);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 650;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.model-card__tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  min-width: 0;
-}
-
-.model-card__sections {
+.model-card__rows {
   display: grid;
-  gap: 8px;
-}
-
-.model-card__block {
-  display: grid;
-  gap: 8px;
-  padding: 10px 12px;
-  border-radius: 10px;
-  background: var(--surface-2);
-}
-
-.model-card__block > dl {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px 12px;
+  gap: 6px;
   margin: 0;
+  padding: 0 2px;
 }
 
-.model-card__spec {
+.model-card__row {
   display: grid;
+  grid-template-columns: 56px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 20px;
+}
+
+.model-card__row dd {
+  display: flex;
   min-width: 0;
-  gap: 2px;
-}
-
-.model-card__spec.is-wide,
-.model-card__block > dl .model-card__spec:nth-child(1):nth-last-child(1) {
-  grid-column: 1 / -1;
-}
-
-.model-card__spec dt {
-  color: var(--ink-3);
-  font-size: 10px;
-  font-weight: 600;
-}
-
-.model-card__spec dd {
+  align-items: center;
   margin: 0;
   overflow: hidden;
   color: var(--ink-2);
   font-size: 12px;
-  line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.model-card__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-card__stat dd.is-muted,
+.model-card__row dd.is-muted {
+  color: var(--ink-3);
+  font-weight: 500;
+}
+
+.model-card__tags,
 .model-card__aspects {
-  display: inline-flex;
-  flex-wrap: wrap;
-  gap: 4px 10px;
-  white-space: normal;
+  display: flex;
+  min-width: 0;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+}
+
+.model-card__aspects {
+  gap: 12px;
 }
 
 .model-card__aspect {
-  display: inline;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
   color: var(--ink-2);
-}
-
-.model-card__aspect > .res-badge {
-  margin-right: 6px;
-  vertical-align: middle;
 }
 
 .res-badge {
   display: inline-flex;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  min-width: 28px;
-  padding: 2px 7px;
+  min-width: 24px;
+  padding: 2px 6px;
   border-radius: 6px;
   color: #fff;
   background: var(--ink);
@@ -5985,7 +6261,8 @@ html.dark .res-badge {
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
-  padding-top: 4px;
+  margin-top: auto;
+  padding-top: 10px;
   border-top: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
 }
 
@@ -6025,6 +6302,68 @@ html.dark .res-badge {
   margin-left: auto;
 }
 
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.card-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  color: var(--ink-2);
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.card-btn svg {
+  width: 13px;
+  height: 13px;
+}
+
+.card-btn:hover {
+  color: var(--ink);
+  background: var(--surface-2);
+}
+
+.card-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.card-btn.is-solid {
+  color: var(--ink);
+  background: var(--surface-2);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.card-btn.is-solid:hover {
+  color: var(--accent-on);
+  background: var(--accent);
+  box-shadow: none;
+}
+
+.card-btn.is-icon {
+  width: 28px;
+  justify-content: center;
+  padding: 0;
+  color: var(--ink-3);
+}
+
+.card-btn.is-danger:hover {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
 .model-catalog-empty {
   display: grid;
   height: 100%;
@@ -6032,15 +6371,9 @@ html.dark .res-badge {
 }
 
 .model-search {
-  flex: 1 1 160px;
+  flex: 0 1 260px;
   width: auto;
-  min-width: 120px;
-  max-width: 240px;
-}
-
-.config-toolbar__actions .kind-filter,
-.config-toolbar__actions .save-status {
-  flex: 0 0 auto;
+  min-width: 160px;
 }
 .image-capability-editor {
   display: grid;
@@ -6214,10 +6547,12 @@ html.dark .res-badge {
   padding: 3px;
   border-radius: 999px;
   background: var(--surface-2);
-  box-shadow: 0 1px 2px rgb(16 24 40 / 0.04);
 }
 
 .kind-filter button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   height: 28px;
   padding: 0 10px;
   border: 0;
@@ -6229,6 +6564,14 @@ html.dark .res-badge {
   font-weight: 600;
 }
 
+.kind-filter button em {
+  color: var(--ink-3);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 600;
+  opacity: 0.8;
+}
+
 .kind-filter button.active {
   color: var(--ink);
   background: var(--surface);
@@ -6236,33 +6579,32 @@ html.dark .res-badge {
   font-weight: 700;
 }
 
+.kind-filter button.active em {
+  color: var(--ink-2);
+  opacity: 1;
+}
+
+.kind-filter button:not(.active):hover {
+  color: var(--ink);
+}
+
+html.dark .kind-filter button.active {
+  background: var(--surface-3);
+}
+
 .assignment-panel {
-  --assign-accent: #3f6b2a;
-  --assign-accent-soft: #e8f0e4;
-  --assign-accent-ink: #2a4a1c;
-  --assign-tint: #f3f6f2;
   display: flex;
   flex: 1;
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: calc(var(--radius-card) - 4px);
-  background: var(--surface);
-  box-shadow: var(--shadow-sm);
-}
-
-html.dark .assignment-panel {
-  --assign-accent: #7ea66a;
-  --assign-accent-soft: rgb(126 166 106 / 0.16);
-  --assign-accent-ink: #b7d0a8;
-  --assign-tint: color-mix(in srgb, var(--assign-accent-soft) 55%, var(--surface));
 }
 
 .assignment-shell {
   display: grid;
   flex: 1;
-  grid-template-columns: 220px minmax(0, 1fr);
+  grid-template-columns: 176px minmax(0, 1fr);
+  gap: 16px;
   min-height: 0;
 }
 
@@ -6271,84 +6613,100 @@ html.dark .assignment-panel {
   flex-direction: column;
   gap: 2px;
   min-height: 0;
-  padding: 14px 12px;
+  padding: 12px 8px;
   overflow: auto;
-  border-right: 1px solid var(--border);
-  background: color-mix(in srgb, var(--assign-tint) 70%, var(--surface-2));
+  border-radius: 14px;
+  background: var(--surface-2);
 }
 
 .assignment-rail__hint {
-  margin: 0 8px 10px;
+  margin: 2px 10px 8px;
   color: var(--ink-3);
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 650;
+  letter-spacing: 0.04em;
 }
 
 .assignment-rail-item {
-  display: grid;
+  position: relative;
+  display: flex;
   width: 100%;
-  grid-template-columns: minmax(0, 1fr) auto;
+  min-height: 38px;
+  flex: 0 0 auto;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
-  padding: 9px 10px;
+  padding: 0 10px 0 12px;
   border: 0;
-  border-radius: 8px;
+  border-radius: 10px;
   background: transparent;
-  color: inherit;
+  color: var(--ink-2);
   cursor: pointer;
   text-align: left;
-  transition: background 0.15s ease;
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .assignment-rail-item:hover {
   background: color-mix(in srgb, var(--surface) 70%, transparent);
+  color: var(--ink);
 }
 
 .assignment-rail-item.is-active {
   background: var(--surface);
-  box-shadow: inset 2px 0 0 var(--assign-accent);
+  color: var(--ink);
+  box-shadow: var(--shadow-sm);
 }
 
-.assignment-rail-item.is-active .assignment-rail-item__main strong {
-  color: var(--assign-accent-ink);
+.assignment-rail-item.is-active::before {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 3px;
+  height: 16px;
+  border-radius: 0 3px 3px 0;
+  background: var(--accent);
+  content: "";
+  transform: translateY(-50%);
 }
 
-.assignment-rail-item__main {
-  display: grid;
+.assignment-rail-item:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.assignment-rail-item__name {
   min-width: 0;
-  gap: 2px;
-}
-
-.assignment-rail-item__main strong {
-  color: var(--ink-2);
+  overflow: hidden;
   font-size: 13px;
   font-weight: 650;
-}
-
-.assignment-rail-item__main small {
-  overflow: hidden;
-  color: var(--ink-3);
-  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .assignment-rail-item > em {
   display: inline-grid;
-  min-width: 22px;
-  height: 22px;
+  min-width: 24px;
+  height: 20px;
+  flex: 0 0 auto;
+  padding: 0 7px;
   place-items: center;
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--surface-3) 80%, transparent);
+  border-radius: var(--radius-pill);
+  background: var(--surface-3);
   color: var(--ink-3);
   font-size: 11px;
   font-style: normal;
-  font-weight: 650;
+  font-weight: 700;
 }
 
 .assignment-rail-item.is-active > em {
-  background: var(--assign-accent-soft);
-  color: var(--assign-accent-ink);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+/* 页面还没有分配任何模型时，用警示色提醒 */
+.assignment-rail-item.is-empty > em {
+  background: var(--warning-soft);
+  color: var(--warning);
 }
 
 .assignment-main {
@@ -6358,22 +6716,31 @@ html.dark .assignment-panel {
   gap: 14px;
   min-width: 0;
   min-height: 0;
-  padding: 16px 18px;
-  background: var(--surface);
+  padding: 4px 0 0;
 }
 
 .assignment-main__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+}
+
+.assignment-main__title {
   display: grid;
-  gap: 3px;
+  min-width: 0;
+  gap: 2px;
 }
 
-.assignment-main__head strong {
+.assignment-main__title strong {
   color: var(--ink);
-  font-size: 15px;
-  font-weight: 700;
+  font-size: 17px;
+  font-weight: 750;
+  letter-spacing: -0.01em;
 }
 
-.assignment-main__head small {
+.assignment-main__title small {
   color: var(--ink-3);
   font-size: 12px;
 }
@@ -6444,471 +6811,971 @@ html.dark .assignment-panel {
 }
 
 .assignment-defaults {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 10px;
-  padding: 12px;
-  border-radius: 10px;
-  background: var(--assign-tint);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .assignment-default {
-  display: grid;
-  gap: 6px;
-  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  height: 34px;
+  padding-left: 12px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
 }
 
 .assignment-default > span {
-  color: var(--assign-accent-ink);
+  color: var(--ink-3);
   font-size: 12px;
   font-weight: 600;
+  white-space: nowrap;
 }
 
 .assignment-default :deep(.el-select) {
-  width: 100%;
+  width: 180px;
 }
 
-.assignment-transfer {
-  display: grid;
-  flex: 1;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 12px;
-  min-height: 0;
-}
-
-.assignment-col {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-height: 0;
-  padding: 12px 14px;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface);
-}
-
-.assignment-col.is-on {
-  background: var(--assign-tint);
-  border-color: color-mix(in srgb, var(--assign-accent) 22%, var(--border));
-}
-
-.assignment-col.is-pool {
-  background: color-mix(in srgb, var(--surface-2) 70%, var(--surface));
-}
-
-.assignment-col__head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding-bottom: 4px;
-}
-
-.assignment-col__head > div {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.assignment-col__head strong {
-  color: var(--ink);
-  font-size: 12px;
+.assignment-default :deep(.el-select__wrapper) {
+  min-height: 34px;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  box-shadow: none !important;
   font-weight: 650;
 }
 
-.assignment-col__head span {
+.assignment-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.assignment-toolbar .assignment-search {
+  width: 260px;
+}
+
+.assignment-toolbar .assignment-search :deep(.el-input__wrapper) {
+  height: 34px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  box-shadow: none;
+}
+
+.assignment-toolbar .assignment-search :deep(.el-input__wrapper.is-focus) {
+  background: var(--surface);
+  box-shadow:
+    inset 0 0 0 1px var(--accent),
+    0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.assignment-toolbar__summary {
+  margin-right: auto;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.assignment-toolbar__summary b {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.assignment-board {
+  display: grid;
+  flex: 1;
+  align-content: start;
+  gap: 22px;
+  min-height: 0;
+  padding: 16px;
+  overflow: auto;
+  border-radius: 16px;
+  background: var(--surface-2);
+}
+
+.assign-group {
+  display: grid;
+  gap: 10px;
+}
+
+.assign-group__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.assign-group__head strong {
+  font-weight: 700;
+}
+
+.assign-group__head em {
   display: inline-grid;
   min-width: 22px;
-  height: 22px;
+  height: 20px;
+  padding: 0 6px;
   place-items: center;
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--surface-3) 75%, var(--surface));
+  border-radius: var(--radius-pill);
+  background: var(--surface-3);
   color: var(--ink-2);
-  font-size: 11px;
-  font-weight: 650;
-}
-
-.assignment-col.is-on .assignment-col__head span {
-  background: var(--assign-accent-soft);
-  color: var(--assign-accent-ink);
-}
-
-.assignment-list {
-  display: grid;
-  flex: 1;
-  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
-  align-content: start;
-  gap: 8px;
-  min-height: 0;
-  margin: 0;
-  padding: 2px 0 0;
-  overflow: auto;
-  list-style: none;
-}
-
-.assignment-card {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 12px;
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface);
-  box-shadow: var(--shadow-sm);
-  transition:
-    border-color 0.15s ease,
-    box-shadow 0.15s ease;
-}
-
-.assignment-card:hover {
-  border-color: color-mix(in srgb, var(--assign-accent) 28%, var(--border));
-  box-shadow: var(--shadow-md);
-}
-
-.assignment-card.is-default {
-  border-color: color-mix(in srgb, var(--assign-accent) 42%, var(--border));
-  background: color-mix(in srgb, var(--assign-accent-soft) 45%, var(--surface));
-}
-
-.assignment-card__body {
-  display: grid;
-  min-width: 0;
-  gap: 4px;
-}
-
-.assignment-card__body strong {
-  color: var(--ink);
-  font-size: 13px;
-  font-weight: 700;
-  line-height: 1.3;
-  word-break: break-word;
-}
-
-.assignment-card__body small,
-.assignment-card__body em {
-  color: var(--ink-3);
   font-size: 11px;
   font-style: normal;
-  line-height: 1.35;
+  font-weight: 700;
 }
 
-.assignment-card__body em {
-  color: var(--ink-2);
-  font-weight: 600;
-}
-
-.assignment-card__body .assignment-card__price {
-  color: var(--assign-accent-ink);
-}
-
-.assignment-card__foot {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px;
-  margin-top: auto;
-  padding-top: 2px;
-}
-
-.assignment-default-tag,
-.assignment-default-btn {
-  height: 24px;
-  padding: 0 8px;
-  border: 0;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.assignment-default-tag {
-  color: var(--assign-accent-ink);
-  background: var(--assign-accent-soft);
-  cursor: default;
-}
-
-.assignment-default-btn {
-  color: var(--ink-3);
-  background: var(--surface-2);
-}
-
-.assignment-default-btn:hover {
-  color: var(--assign-accent-ink);
-  background: var(--assign-accent-soft);
-}
-
-.assignment-card__foot :deep(.el-button.is-link) {
-  color: var(--ink-2);
-  font-weight: 600;
-}
-
-.assignment-card__foot > :last-child {
-  margin-left: auto;
-}
-
-.assignment-card__foot :deep(.el-button.is-link:hover) {
-  color: var(--assign-accent-ink);
-}
-
-.assignment-card__foot :deep(.el-button.is-link--danger),
-.assignment-card__foot :deep(.el-button--danger.is-link) {
-  color: var(--danger);
-}
-
-.assignment-card__foot :deep(.el-button.is-link--danger:hover),
-.assignment-card__foot :deep(.el-button--danger.is-link:hover) {
-  color: color-mix(in srgb, var(--danger) 85%, var(--ink));
-}
-
-.assignment-col .el-empty {
-  flex: 1;
-}
-
-.workspace-pricing-dialog {
-  display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
-  min-height: min(560px, calc(100dvh - 230px));
+.assign-group__head small {
   overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
-}
-
-.workspace-pricing-pages {
-  display: flex;
-  min-height: 0;
-  flex-direction: column;
-  gap: 4px;
-  overflow-y: auto;
-  padding: 10px;
-  border-right: 1px solid var(--border);
-  background: var(--surface-2);
-}
-
-.workspace-pricing-pages button {
-  display: flex;
-  width: 100%;
-  min-height: 54px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 8px 10px;
-  border: 1px solid transparent;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--ink-2);
-  text-align: left;
-  cursor: pointer;
-}
-
-.workspace-pricing-pages button:hover {
-  background: var(--surface);
-}
-
-.workspace-pricing-pages button.is-active {
-  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
-  background: var(--surface);
-  color: var(--ink);
-  box-shadow: var(--shadow-sm);
-}
-
-.workspace-pricing-pages button > span {
-  display: grid;
-  min-width: 0;
-  gap: 3px;
-}
-
-.workspace-pricing-pages strong {
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.workspace-pricing-pages small {
   color: var(--ink-3);
-  font-size: 11px;
-}
-
-.workspace-pricing-pages em {
-  display: grid;
-  min-width: 22px;
-  height: 22px;
-  place-items: center;
-  border-radius: 50%;
-  background: var(--accent-soft);
-  color: var(--accent-ink);
-  font-size: 11px;
-  font-style: normal;
-  font-weight: 700;
-}
-
-.workspace-pricing-main {
-  display: flex;
-  min-width: 0;
-  min-height: 0;
-  flex-direction: column;
-}
-
-.workspace-pricing-main__head {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 14px 16px;
-  border-bottom: 1px solid var(--border);
-}
-
-.workspace-pricing-main__head > span {
-  display: grid;
-  min-width: 0;
-  gap: 3px;
-}
-
-.workspace-pricing-main__head strong {
-  color: var(--ink);
-  font-size: 14px;
-}
-
-.workspace-pricing-main__head small,
-.workspace-pricing-main__head > em {
-  color: var(--ink-3);
-  font-size: 11px;
-  font-style: normal;
-}
-
-.workspace-pricing-list {
-  min-height: 0;
-  overflow-y: auto;
-}
-
-.workspace-pricing-row {
-  display: grid;
-  gap: 14px;
-  padding: 16px;
-  border-bottom: 1px solid var(--border);
-}
-
-.workspace-pricing-row > header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.workspace-pricing-row > header > span {
-  display: grid;
-  min-width: 0;
-  gap: 4px;
-}
-
-.workspace-pricing-row > header strong {
-  overflow: hidden;
-  color: var(--ink);
-  font-size: 13px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.workspace-pricing-row > header small {
-  color: var(--ink-3);
-  font-size: 11px;
-}
-
-.workspace-pricing-row > header > em {
-  flex: 0 0 auto;
-  padding: 4px 8px;
-  border-radius: 6px;
-  background: var(--surface-2);
-  color: var(--accent-ink);
-  font-size: 11px;
-  font-style: normal;
-  font-weight: 700;
-}
-
-.workspace-pricing-row__controls {
+.assign-grid {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) minmax(240px, 1.15fr);
-  align-items: center;
-  gap: 12px 18px;
+  grid-template-columns: repeat(auto-fill, minmax(272px, 1fr));
+  gap: 10px;
 }
 
-.workspace-pricing-toggle {
-  display: flex;
+.assign-grid__empty {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 18px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface) 55%, transparent);
+  color: var(--ink-3);
+  font-size: 12px;
+  text-align: center;
+}
+
+.assign-card {
+  position: relative;
+  display: grid;
+  align-content: space-between;
+  gap: 12px;
   min-width: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
+  min-height: 100px;
+  padding: 14px 14px 12px 16px;
+  border: 0;
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow:
+    0 1px 2px rgb(16 24 40 / 0.06),
+    0 2px 8px rgb(16 24 40 / 0.04);
+  transition: box-shadow 0.18s ease, background 0.18s ease, transform 0.18s ease;
 }
 
-.workspace-pricing-toggle > span {
+.assign-card:hover {
+  box-shadow:
+    0 2px 4px rgb(16 24 40 / 0.06),
+    0 10px 24px rgb(16 24 40 / 0.08);
+  transform: translateY(-1px);
+}
+
+.assign-card.is-default {
+  background: color-mix(in srgb, var(--accent-soft) 75%, var(--surface));
+}
+
+html.dark .assign-card:not(.is-ghost) {
+  background: var(--surface-3);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.3);
+}
+
+html.dark .assign-card:not(.is-ghost):hover {
+  box-shadow: 0 8px 22px rgb(0 0 0 / 0.35);
+}
+
+html.dark .assign-card.is-default {
+  background: color-mix(in srgb, var(--accent) 9%, var(--surface-3));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.assign-card__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.assign-card__title {
   display: grid;
   min-width: 0;
   gap: 2px;
 }
 
-.workspace-pricing-toggle strong,
-.workspace-pricing-field > span {
-  color: var(--ink-2);
+.assign-card__title strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assign-card__title small {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  color: var(--ink-3);
   font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assign-card__controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.assign-card__controls .assignment-limit-chip {
+  width: auto;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 10px;
+}
+
+.assign-card.is-default .assignment-limit-chip:not(.is-extended),
+.assign-card.is-default .price-tag:not(.is-override) {
+  background: color-mix(in srgb, var(--surface) 80%, transparent);
+}
+
+html.dark .assign-card .assignment-limit-chip:not(.is-extended),
+html.dark .assign-card .price-tag:not(.is-override) {
+  background: var(--surface-2);
+}
+
+.assign-card__remove {
+  margin-left: auto;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.assign-card:hover .assign-card__remove,
+.assign-card__remove:focus-visible {
+  opacity: 1;
+}
+
+.assign-card .assignment-default-radio {
+  flex: 0 0 auto;
+  margin: -2px -4px 0 0;
+}
+
+.assign-card .assignment-default-radio span {
+  display: inline;
+}
+
+/* 可加入的模型：虚线卡片，整张可点 */
+.assign-card.is-ghost {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-self: start;
+  min-height: 60px;
+  padding: 10px 12px;
+  align-content: center;
+  align-items: center;
+  background: color-mix(in srgb, var(--surface) 45%, transparent);
+  box-shadow: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.assign-card.is-ghost .assign-card__title strong {
+  color: var(--ink-2);
   font-weight: 650;
 }
 
-.workspace-pricing-toggle small {
-  color: var(--ink-3);
-  font-size: 11px;
+.assign-card.is-ghost:hover {
+  background: var(--surface);
+  box-shadow:
+    0 1px 2px rgb(16 24 40 / 0.06),
+    0 2px 8px rgb(16 24 40 / 0.04);
+  transform: none;
 }
 
-.workspace-pricing-field {
+.assign-card.is-ghost:hover .assign-card__title strong {
+  color: var(--ink);
+}
+
+html.dark .assign-card.is-ghost {
+  background: color-mix(in srgb, var(--surface-3) 28%, transparent);
+}
+
+html.dark .assign-card.is-ghost:hover {
+  background: var(--surface-3);
+}
+
+.assign-card__plus {
   display: grid;
-  grid-template-columns: 64px minmax(110px, 1fr) 52px;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--ink-2);
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.assign-card__plus svg {
+  width: 15px;
+  height: 15px;
+}
+
+.assign-card.is-ghost:hover .assign-card__plus {
+  background: var(--accent);
+  color: var(--accent-on);
+}
+
+.assign-card.is-ghost > em {
+  color: var(--ink-3);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 650;
+}
+
+.assign-card.is-ghost:hover > em {
+  color: var(--accent-ink);
+}
+
+.assignment-link {
+  height: 26px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.assignment-link:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--surface-3);
+}
+
+.assignment-link.is-danger:hover:not(:disabled) {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.assignment-link:disabled {
+  color: var(--ink-3);
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.kind-dot {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ink-3);
+}
+
+.kind-dot.is-image {
+  background: var(--info);
+}
+
+.kind-dot.is-chat {
+  background: var(--success);
+}
+
+.kind-dot.is-image_tool {
+  background: var(--warning);
+}
+
+/* 价格列按整列最宽值对齐：同一分组内的行共用最小宽度 */
+
+
+
+
+
+.assignment-limit-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: 112px;
+  height: 26px;
+  justify-content: center;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.assignment-limit-chip span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+}
+
+.assignment-limit-chip em {
+  color: var(--ink-3);
+  font-style: normal;
+}
+
+.assignment-limit-chip b {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.assignment-limit-chip:hover {
+  background: var(--surface-3);
+}
+
+.assignment-limit-chip.is-extended {
+  background: var(--info-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--info) 30%, transparent);
+}
+
+.assignment-limit-chip.is-extended b {
+  color: var(--info);
+}
+
+.assignment-limit-pop {
+  display: grid;
+  gap: 12px;
+}
+
+.assignment-limit-pop header {
+  display: grid;
+  gap: 2px;
+}
+
+.assignment-limit-pop header strong {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.assignment-limit-pop header small {
+  overflow: hidden;
+  color: var(--ink-3);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assignment-limit-field {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+
+.assignment-limit-field__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  color: var(--ink-2);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.assignment-limit-field__head strong {
+  color: var(--ink);
+  font-size: 22px;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+
+.assignment-limit-field__head strong.is-extended {
+  color: var(--info);
+}
+
+.assignment-limit-field__head strong small {
+  margin-left: 2px;
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.assignment-limit-field__body {
+  display: flex;
   align-items: center;
   gap: 8px;
 }
 
-.workspace-pricing-field :deep(.el-input-number) {
-  width: 100%;
+.limit-stepper {
+  display: inline-grid;
+  grid-template-columns: 34px 58px 34px;
+  height: 34px;
+  overflow: hidden;
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--border);
 }
 
-.workspace-pricing-field > em {
+.limit-stepper button {
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.limit-stepper button:hover:not(:disabled) {
+  background: var(--surface-3);
+}
+
+.limit-stepper button:disabled {
+  color: var(--ink-3);
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.limit-stepper label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  border-inline: 1px solid var(--border);
+  color: var(--ink-3);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.limit-stepper input {
+  width: 32px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  text-align: center;
+  outline: none;
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.limit-stepper input::-webkit-inner-spin-button,
+.limit-stepper input::-webkit-outer-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
+}
+
+.limit-stepper:focus-within {
+  box-shadow:
+    inset 0 0 0 1px var(--accent),
+    0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.limit-quick {
+  display: flex;
+  flex: 1;
+  gap: 4px;
+}
+
+.limit-quick button {
+  flex: 1;
+  height: 30px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--border);
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.limit-quick button:hover:not(:disabled) {
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+  box-shadow: none;
+}
+
+.limit-quick button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.assignment-limit-field__hint {
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.assignment-limit-pop footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.assignment-limit-pop footer p {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.assignment-limit-pop footer .assignment-link {
+  flex: 0 0 auto;
+}
+
+
+
+
+/* 页面价格胶囊：价格为主，来源（继承 / 页面价）为辅，末尾的笔形图标提示可编辑 */
+.price-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 8px 0 10px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--ink-3);
+  font: inherit;
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.12s ease, box-shadow 0.12s ease, color 0.12s ease;
+}
+
+.price-tag b {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 750;
+  letter-spacing: -0.01em;
+}
+
+.price-tag__unit {
+  color: var(--ink-3);
+}
+
+.price-tag__source {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 2px;
+  color: var(--ink-3);
+}
+
+.price-tag__source::before {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: currentColor;
+  content: "";
+  opacity: 0.6;
+}
+
+.price-tag__edit {
+  width: 12px;
+  height: 12px;
+  margin-left: 2px;
+  color: var(--ink-3);
+  opacity: 0.45;
+  transition: opacity 0.12s ease, color 0.12s ease;
+}
+
+.price-tag:hover {
+  background: var(--surface-3);
+}
+
+.price-tag:hover .price-tag__edit,
+.price-tag:focus-visible .price-tag__edit {
+  color: var(--ink);
+  opacity: 1;
+}
+
+.price-tag:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.price-tag.is-override {
+  background: var(--warning-soft);
+}
+
+.price-tag.is-override b,
+.price-tag.is-override .price-tag__source,
+.price-tag.is-override .price-tag__edit {
+  color: var(--warning);
+}
+
+.price-tag.is-override .price-tag__source {
+  font-weight: 700;
+}
+
+.price-tag.is-override:hover {
+  background: color-mix(in srgb, var(--warning) 18%, var(--surface));
+}
+
+.assignment-price-pop {
+  display: grid;
+  gap: 12px;
+}
+
+.assignment-price-pop header {
+  display: grid;
+  gap: 2px;
+}
+
+.assignment-price-pop header strong {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.assignment-price-pop header small {
+  overflow: hidden;
+  color: var(--ink-3);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.price-mode {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+}
+
+.price-mode button {
+  height: 30px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--ink-3);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.price-mode button.is-on {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow-sm);
+}
+
+.price-inherit {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 12px;
+  background: var(--surface-2);
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.price-inherit strong {
+  margin-left: auto;
+  color: var(--ink);
+  font-size: 22px;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+
+.price-inherit strong small {
+  margin-left: 3px;
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.price-inherit em {
+  color: var(--ink-3);
+  font-style: normal;
+  text-decoration: line-through;
+}
+
+.price-field {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.price-field__switch {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.price-field > small {
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.price-input {
+  display: flex;
+  align-items: center;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--border);
+  transition: box-shadow 0.15s ease;
+}
+
+.price-input:focus-within {
+  box-shadow:
+    inset 0 0 0 1px var(--accent),
+    0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.price-input input {
+  min-width: 0;
+  flex: 1;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 700;
+  outline: none;
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.price-input input::-webkit-inner-spin-button,
+.price-input input::-webkit-outer-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
+}
+
+.price-input em {
+  flex: 0 0 auto;
   color: var(--ink-3);
   font-size: 11px;
   font-style: normal;
+  font-weight: 600;
 }
 
-@media (max-width: 760px) {
-  .workspace-pricing-dialog {
-    grid-template-columns: minmax(0, 1fr);
-    min-height: min(640px, calc(100dvh - 190px));
-  }
-
-  .workspace-pricing-pages {
-    flex-direction: row;
-    overflow-x: auto;
-    overflow-y: hidden;
-    border-right: 0;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .workspace-pricing-pages button {
-    min-width: 152px;
-  }
-
-  .workspace-pricing-row > header,
-  .workspace-pricing-row__controls {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .workspace-pricing-row > header {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .workspace-pricing-row > header > em {
-    align-self: flex-start;
-  }
+.price-warn {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--warning-soft);
+  color: var(--warning);
+  font-size: 11px;
+  line-height: 1.5;
 }
+
+.assignment-price-pop footer {
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.assignment-default-radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 8px 0 6px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--ink-3);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.assignment-default-radio i {
+  position: relative;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1.5px var(--border-strong);
+  transition: box-shadow 0.12s ease, background 0.12s ease;
+}
+
+.assignment-default-radio span {
+  display: none;
+}
+
+.assignment-default-radio:hover:not(:disabled) {
+  background: var(--surface-3);
+}
+
+.assignment-default-radio:hover:not(:disabled) i {
+  box-shadow: inset 0 0 0 1.5px var(--accent-ink);
+}
+
+.assignment-default-radio.is-on {
+  color: var(--accent-on);
+  background: var(--accent);
+  cursor: default;
+}
+
+.assignment-default-radio.is-on i {
+  background: var(--accent-on);
+  box-shadow: inset 0 0 0 3.5px var(--accent);
+}
+
+.assignment-default-radio.is-on span {
+  display: inline;
+}
+
+.assignment-default-radio:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.assignment-icon-btn {
+  display: inline-grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ink-3);
+  cursor: pointer;
+}
+
+.assignment-icon-btn svg {
+  width: 13px;
+  height: 13px;
+}
+
+.assignment-icon-btn.is-danger:hover {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
 .config-table :deep(.el-table__inner-wrapper::before) {
   display: none;
 }
@@ -7027,12 +7894,40 @@ html.dark .assignment-panel {
   display: flex;
   min-width: 0;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
 
-.provider-identity strong {
-  flex: 0 1 auto;
+.provider-identity.is-disabled {
+  opacity: 0.55;
+}
+
+.provider-avatar {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  place-items: center;
+  border-radius: 10px;
+  background: var(--surface-2);
+  box-shadow: inset 0 0 0 1px var(--border);
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 750;
+}
+
+.provider-avatar.is-crun {
+  background: var(--warning-soft);
+  color: var(--warning);
+  box-shadow: none;
+}
+
+.provider-identity__copy {
+  display: grid;
   min-width: 0;
+  gap: 2px;
+}
+
+.provider-identity__copy strong {
   overflow: hidden;
   color: var(--ink);
   font-size: 13px;
@@ -7041,14 +7936,90 @@ html.dark .assignment-panel {
   white-space: nowrap;
 }
 
-.provider-identity span {
-  flex: 1 1 12ch;
-  min-width: 0;
+.provider-identity__copy .mono {
   overflow: hidden;
-  color: var(--ink-2);
-  font-size: 12px;
+  color: var(--ink-3);
+  font-size: 11.5px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.provider-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 11.5px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.provider-chip.is-openai {
+  background: var(--info-soft);
+  color: var(--info);
+}
+
+.provider-chip.is-crun {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.provider-chip.is-on {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.provider-chip.is-off {
+  background: var(--surface-3);
+  color: var(--ink-3);
+}
+
+.provider-count {
+  display: inline-grid;
+  min-width: 24px;
+  height: 22px;
+  padding: 0 7px;
+  place-items: center;
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.cell-sep {
+  margin: 0 4px;
+  color: var(--ink-3);
+}
+
+.cell-unit {
+  margin-left: 1px;
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.provider-catalog-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.provider-catalog-btn:hover {
+  background: var(--accent);
+  color: var(--accent-on);
 }
 
 .discovered-model-grid {
@@ -7462,20 +8433,10 @@ html.dark .assignment-panel {
   font-size: 11px;
 }
 @media (max-width: 1100px) {
-  .config-toolbar__heading {
+  .config-toolbar__row--sub {
     flex-wrap: wrap;
   }
-
-  .config-toolbar__heading-actions {
-    width: 100%;
-    justify-content: space-between;
-  }
-
-  .config-toolbar__actions {
-    justify-content: flex-start;
-  }
 }
-
 
 @media (max-width: 700px) {
   :global(.model-config-editor-dialog .admin-dialog__footer) { flex-wrap: wrap; gap: 10px; }
@@ -7491,5 +8452,4 @@ html.dark .assignment-panel {
   .model-editor-nav strong { font-size: 12px; }
   .model-editor .model-section { padding: 14px; }
   .model-editor .model-status-grid { grid-template-columns: minmax(0, 1fr); }
-}
-</style>
+}</style>
