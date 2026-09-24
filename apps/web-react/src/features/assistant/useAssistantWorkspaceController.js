@@ -71,7 +71,7 @@ import {
   IMAGE_ASPECT_RATIOS,
   clampImageCount,
   getModelAspectRatiosForResolution,
-  imageCountOptions,
+  imageCountChoices,
   imageModelMaxCount,
   normalizeImageModelCapabilities,
 } from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
@@ -506,7 +506,7 @@ export function useAssistantWorkspaceController() {
     return query ? generationModels.filter((item) => `${item.label} ${item.model} ${item.description || ""}`.toLowerCase().includes(query)) : generationModels;
   }, [generationModels, modelSearch]);
   const selectedImageModel = availableImageModels.find((item) => item.model === imageModel) || (generationSize.sizeMode === "exact" ? null : availableImageModels[0] || null);
-  const availableCounts = useMemo(() => selectedImageModel ? imageCountOptions(selectedImageModel) : [], [selectedImageModel]);
+  const availableCounts = useMemo(() => selectedImageModel ? imageCountChoices(selectedImageModel, generationCount) : [], [generationCount, selectedImageModel]);
   const maxImages = selectedImageModel ? imageModelMaxCount(selectedImageModel) : 0;
   const maxReferences = normalizeImageModelCapabilities(selectedImageModel || {}).maxReferenceImages;
   const atReferenceLimit = references.length >= maxReferences;

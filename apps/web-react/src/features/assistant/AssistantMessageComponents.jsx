@@ -16,7 +16,7 @@ import { assistantImageBatchLimit } from "./domain/assistantImageLimits.js";
 import {
   clampImageCount,
   getModelAspectRatiosForResolution,
-  imageCountOptions,
+  imageCountChoices,
   normalizeImageModelCapabilities,
 } from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
 import { useIsDark } from "../../hooks/useIsDark.js";
@@ -666,7 +666,7 @@ function AgentProposal({ message, imageModels, generating, executed, attachedRef
   const resolutions = RESOLUTIONS.filter((item) => modelCapabilities.resolutions.includes(item.id));
   const qualities = IMAGE_QUALITY_OPTIONS.filter((item) => modelCapabilities.qualities.includes(item.id));
   const ratios = getModelAspectRatiosForResolution(selectedModel, proposal.resolution).map(ratioOption);
-  const counts = selectedModel && assistantImageBatchLimit(selectedModel) > 0 ? imageCountOptions(selectedModel) : [];
+  const counts = selectedModel && assistantImageBatchLimit(selectedModel) > 0 ? imageCountChoices(selectedModel, proposal.count) : [];
   const referenceMode = proposalReferenceMode(proposal, referenceImages);
   const individualReferences = !independentPlan && referenceMode === "individual" && referenceImages.length > 0;
   const proposalCount = independentPlan ? planItems.length : individualReferences ? referenceImages.length : frozenProposal ? Math.max(1, Number(proposal.count) || 1) : clampImageCount(proposal.count || 1, selectedModel, 1);

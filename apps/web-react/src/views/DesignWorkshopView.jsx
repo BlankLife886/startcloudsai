@@ -109,7 +109,6 @@ import "./DesignWorkshopView.css";
 
 const SETTINGS_KEY = "ui-design-workshop-v2";
 const UPLOADS_KEY = "ui-design-workshop-uploads-v1";
-const MAX_REFERENCES = 6;
 const ACTIVE_JOB_STATUSES = new Set(["queued", "running", "waiting_provider"]);
 const IMAGE_NAME_PATTERN = /\.(png|jpe?g|webp)$/i;
 const IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
@@ -1116,12 +1115,8 @@ export function DesignWorkshopView() {
   const availableModels = useMemo(() => availableCatalogModels(models), [models]);
   const activeModel =
     availableModels.find((item) => item.id === modelId) || availableModels[0] || null;
-  const referenceLimit = activeModel
-    ? Math.min(
-        MAX_REFERENCES,
-        Math.max(0, Number(activeModel.maxReferenceImages || 0)),
-      )
-    : MAX_REFERENCES;
+  // 参考图上限完全按所选模型的后台配置，不再额外封顶。
+  const referenceLimit = normalizeImageModelCapabilities(activeModel || {}).maxReferenceImages;
   const unitCost = Math.max(0, Number(activeModel?.creditCost || 0));
   const totalCost =
     unitCost * Math.max(1, isIteration ? 1 : selectedDeviceIds.length);

@@ -19,7 +19,6 @@ import { SharePublishDialog } from "../components/SharePublishDialog.jsx";
 import { ConfirmDialog } from "../components/ConfirmDialog.jsx";
 import { useIllustrationColoringJobs } from "../features/illustration-coloring/useIllustrationColoringJobs.js";
 import {
-  COLORING_BATCH_COUNT_OPTIONS,
   COLORING_COMPRESS_KB_OPTIONS,
   COLORING_FORMAT_OPTIONS,
   formatBytes,
@@ -35,7 +34,9 @@ import {
   T2I_RESOLUTION_OPTIONS,
 } from "@react/legacy-modules/features/ai-wallpaper/composables/wallpaperStudioConstants.js";
 import {
+  clampImageCount,
   getModelAspectRatiosForResolution,
+  imageCountChoices,
   normalizeImageModelCapabilities,
 } from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
 import {
@@ -410,6 +411,10 @@ export function AiIllustrationColoringView() {
   const moderationOptions = useMemo(() => T2I_MODERATION_OPTIONS
     .filter((item) => selectedModel?.moderationLevels?.includes(item.value)), [selectedModel]);
   const maxReferences = Math.max(0, Number(selectedModel?.maxReferenceImages || 0) - 1);
+  const countOptions = useMemo(
+    () => imageCountChoices(selectedModel || {}, settings.generationCount).map((value) => ({ value, label: `${value} 张` })),
+    [selectedModel, settings.generationCount],
+  );
   const unitCost = selectedModel?.creditCost || 0;
   const totalCost = unitCost * settings.generationCount;
   const canSubmit = !disabledMessage && Boolean(selectedModel) && Boolean(source?.file || source?.remoteUrl || sourceUrl) && !jobs.submitting;
@@ -505,6 +510,13 @@ export function AiIllustrationColoringView() {
       return next;
     });
   }, []);
+
+  // 切换模型后把张数收紧到该模型的「单次张数」以内。
+  useEffect(() => {
+    if (!selectedModel) return;
+    const next = clampImageCount(settings.generationCount, selectedModel, 1);
+    if (next !== settings.generationCount) updateSettings({ generationCount: next });
+  }, [selectedModel, settings.generationCount, updateSettings]);
 
   const chooseSource = useCallback(async (file) => {
     if (!file?.type?.startsWith("image/")) return;
@@ -665,7 +677,7 @@ export function AiIllustrationColoringView() {
           <div className="coloring-source-tools"><button type="button" className="coloring-source-tool" disabled={controlsLocked} title="本地上传" aria-label="本地上传" onClick={() => fileInput.current?.click()}><i className="bi bi-upload" /></button></div>
         </div><input ref={fileInput} type="file" accept="image/*" hidden onChange={(event) => { void chooseSource(event.target.files?.[0]); event.target.value = ""; }} /></section>
         <section className="coloring-block"><header className="coloring-block-head"><span>配色描述</span><small>{prompt.length} 字</small></header><textarea className="coloring-textarea" value={prompt} disabled={controlsLocked} placeholder="描述主色、阴影倾向、材质或氛围，例如：薄荷绿与珊瑚粉，暖色阴影，线稿保持清晰…" onChange={(event) => setPrompt(event.target.value)} /></section>
-        <section className="coloring-block coloring-parameter-block"><header className="coloring-block-head"><span>输出设置</span><small>{resolutionOptions.length || orientationOptions.length ? outputPreview.label : "模型默认"}</small></header><div className="coloring-parameter-selectors">{orientationOptions.length > 0 && <div className="coloring-selector-field is-wide"><span>输出比例</span><ColoringSelect value={settings.outputOrientation} options={orientationOptions} onChange={(value) => updateSettings({ outputOrientation: value })} label="输出比例" disabled={controlsLocked} /></div>}{resolutionOptions.length > 0 && <div className="coloring-selector-field"><span>分辨率</span><ColoringSelect value={settings.outputSize} options={resolutionOptions} onChange={(value) => updateSettings({ outputSize: value })} label="分辨率" disabled={controlsLocked} /></div>}<div className="coloring-selector-field"><span>生成张数</span><ColoringSelect value={settings.generationCount} options={COLORING_BATCH_COUNT_OPTIONS.map((value) => ({ value, label: `${value} 张` }))} onChange={(value) => updateSettings({ generationCount: Number(value) })} label="生成张数" disabled={controlsLocked} /></div>{qualityOptions.length > 0 && <div className="coloring-selector-field"><span>质量</span><ColoringSelect value={quality} options={qualityOptions} onChange={setQuality} label="质量" disabled={controlsLocked} /></div>}{outputFormatOptions.length > 0 && <div className="coloring-selector-field"><span>格式</span><ColoringSelect value={outputFormat} options={outputFormatOptions} onChange={setOutputFormat} label="格式" disabled={controlsLocked} /></div>}{moderationOptions.length > 0 && <div className="coloring-selector-field is-wide"><span>内容审核</span><ColoringSelect value={moderation} options={moderationOptions} onChange={setModeration} label="内容审核" disabled={controlsLocked} /></div>}</div></section>
+        <section className="coloring-block coloring-parameter-block"><header className="coloring-block-head"><span>输出设置</span><small>{resolutionOptions.length || orientationOptions.length ? outputPreview.label : "模型默认"}</small></header><div className="coloring-parameter-selectors">{orientationOptions.length > 0 && <div className="coloring-selector-field is-wide"><span>输出比例</span><ColoringSelect value={settings.outputOrientation} options={orientationOptions} onChange={(value) => updateSettings({ outputOrientation: value })} label="输出比例" disabled={controlsLocked} /></div>}{resolutionOptions.length > 0 && <div className="coloring-selector-field"><span>分辨率</span><ColoringSelect value={settings.outputSize} options={resolutionOptions} onChange={(value) => updateSettings({ outputSize: value })} label="分辨率" disabled={controlsLocked} /></div>}<div className="coloring-selector-field"><span>生成张数</span><ColoringSelect value={settings.generationCount} options={countOptions} onChange={(value) => updateSettings({ generationCount: Number(value) })} label="生成张数" disabled={controlsLocked} /></div>{qualityOptions.length > 0 && <div className="coloring-selector-field"><span>质量</span><ColoringSelect value={quality} options={qualityOptions} onChange={setQuality} label="质量" disabled={controlsLocked} /></div>}{outputFormatOptions.length > 0 && <div className="coloring-selector-field"><span>格式</span><ColoringSelect value={outputFormat} options={outputFormatOptions} onChange={setOutputFormat} label="格式" disabled={controlsLocked} /></div>}{moderationOptions.length > 0 && <div className="coloring-selector-field is-wide"><span>内容审核</span><ColoringSelect value={moderation} options={moderationOptions} onChange={setModeration} label="内容审核" disabled={controlsLocked} /></div>}</div></section>
       </div><div className="coloring-side-footer">{unitCost > 0 && <div className="coloring-footer-meta"><span>本次约消耗</span><strong>{totalCost} 积分</strong></div>}{jobs.history.some((item) => ACTIVE.has(item.status)) && active && <button type="button" className="coloring-secondary-btn coloring-new-task-btn" disabled={jobs.submitting} onClick={beginNewTask}><i className="bi bi-plus-circle" />新建染色任务</button>}<button type="button" className="coloring-primary-btn" disabled={auth.isAuthenticated && !canSubmit} onClick={startColoring}><i className={`bi ${jobs.submitting ? "bi-arrow-repeat spin" : "bi-palette-fill"}`} />{jobs.submitting ? "正在提交…" : settings.generationCount > 1 ? `开始 AI 染色 · ${settings.generationCount} 张` : "开始 AI 染色"}</button>{active && ["failed", "cancelled", "canceled"].includes(active.status) && <button type="button" className="coloring-retry-btn" disabled={jobs.submitting} onClick={startColoring}><RegenerateIcon />重试失败任务</button>}{active && isActiveColoringJobStatus(active.status) && <button type="button" className="coloring-secondary-btn" disabled={jobs.submitting} onClick={() => void cancelColoring(false, active)}><i className="bi bi-x-circle" />取消任务</button>}</div></aside>
 
       <section className="coloring-stage"><div ref={stageRef} className={`coloring-stage-shell${isFullscreen ? " is-fullscreen" : ""}`}>

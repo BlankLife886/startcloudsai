@@ -4,6 +4,9 @@ import { modelMaintenance, modelOptionMeta, resolveModelForCapability, type AiCo
 
 export const CANVAS_IMAGE_MAX_COUNT = 4;
 export const CANVAS_IMAGE_HARD_MAX_COUNT = 100;
+// 参考图上限以后台模型配置为准；服务端允许 0-16，模型信息缺失时沿用旧的 4 张兜底。
+export const CANVAS_IMAGE_DEFAULT_MAX_REFERENCES = 4;
+export const CANVAS_IMAGE_HARD_MAX_REFERENCES = 16;
 export const CANVAS_IMAGE_ASPECT_RATIOS = ["auto", "16:9", "9:16", "1:1", "3:2", "2:3", "5:4", "4:5", "4:3", "3:4", "21:9", "9:21"] as const;
 export const CANVAS_IMAGE_RESOLUTIONS = ["1K", "2K", "4K"] as const;
 export const CANVAS_IMAGE_QUALITIES = ["low", "medium", "high"] as const;
@@ -15,6 +18,7 @@ export type CanvasImageModelCapabilities = {
     qualities: string[];
     transparentBackground: boolean;
     maxImages: number;
+    maxReferenceImages: number;
     supportsExactSize: boolean;
     exactSizeLimits: NonNullable<ChannelModel["exactSizeLimits"]>;
 };
@@ -59,6 +63,14 @@ export function canvasImageMaxCount(model?: ChannelModel | null) {
     return CANVAS_IMAGE_MAX_COUNT;
 }
 
+export function canvasImageMaxReferences(model?: ChannelModel | null) {
+    const raw = Number(model?.maxReferenceImages);
+    if (Number.isFinite(raw) && raw >= 0) {
+        return Math.min(CANVAS_IMAGE_HARD_MAX_REFERENCES, Math.floor(raw));
+    }
+    return CANVAS_IMAGE_DEFAULT_MAX_REFERENCES;
+}
+
 export function canvasImageModelCapabilities(model?: ChannelModel | null): CanvasImageModelCapabilities {
     const safe: Partial<ChannelModel> = model ?? {};
     const hasConfiguredAspectRatios = Array.isArray(safe.aspectRatios);
@@ -82,6 +94,7 @@ export function canvasImageModelCapabilities(model?: ChannelModel | null): Canva
         qualities: normalizeList(safe.qualities, CANVAS_IMAGE_QUALITIES, CANVAS_IMAGE_QUALITIES),
         transparentBackground: safe.transparentBackground !== false,
         maxImages: canvasImageMaxCount(model),
+        maxReferenceImages: canvasImageMaxReferences(model),
         ...normalizeExactSizeCapabilities(safe),
     };
 }

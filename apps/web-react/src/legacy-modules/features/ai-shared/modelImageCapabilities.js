@@ -20,7 +20,9 @@ export const IMAGE_OUTPUT_FORMATS = ['png', 'jpeg', 'webp']
 export const IMAGE_MODERATION_LEVELS = ['auto', 'low']
 export const IMAGE_RESOLUTIONS = ['1K', '2K', '4K']
 export const IMAGE_COUNT_DEFAULT_MAX = 4
-export const IMAGE_COUNT_HARD_MAX = 16
+// 单次生成张数以后台模型配置（服务端下发的 maxImages）为准；这里只镜像服务端
+// modelconfig.MaxImagesLimit 作为兜底，不再在前端另设更小的上限。
+export const IMAGE_COUNT_HARD_MAX = 100
 
 function normalizeEnumList(value, allowed, fallback) {
   if (!Array.isArray(value)) return [...fallback]
@@ -144,6 +146,22 @@ export function imageModelMaxCount(model = {}) {
 
 export function imageCountOptions(model = {}) {
   return Array.from({ length: imageModelMaxCount(model) }, (_, index) => index + 1)
+}
+
+// 张数选择器的候选项：上限不超过 8 时逐一列出，更大时按 1/2/4/8… 倍增并补上
+// 上限本身，保证选项数量可控；current 为当前值时一并保留，避免选中态丢失。
+export function imageCountChoices(model = {}, current) {
+  const max = imageModelMaxCount(model)
+  const choices = new Set()
+  if (max <= 8) {
+    for (let count = 1; count <= max; count += 1) choices.add(count)
+  } else {
+    for (let count = 1; count < max; count *= 2) choices.add(count)
+    choices.add(max)
+  }
+  const selected = Math.round(Number(current))
+  if (Number.isFinite(selected) && selected >= 1 && selected <= max) choices.add(selected)
+  return [...choices].sort((a, b) => a - b)
 }
 
 export function clampImageCount(value, model, fallback = 2) {

@@ -9,6 +9,7 @@ import { historyTaskQueryScope, historyTaskDeleteTarget, historyTaskRequiresForc
 import { savePendingBatch, readPendingBatch } from '../src/features/text-to-image/pendingBatchStore.js';
 import { submissionFailure, submissionTask, serverTaskCounts, LOCAL_SUBMISSION_STATUSES, QUEUE_CAPACITY_CODES, taskStatePresentation } from '../src/features/text-to-image/submissionState.js';
 import { taskTimestamp, taskGenerationElapsedMs, taskTotalElapsedMs } from '../src/legacy-modules/features/ai-wallpaper/domain/taskGenerationTiming.js';
+import { IMAGE_COUNT_HARD_MAX } from '../src/legacy-modules/features/ai-shared/modelImageCapabilities.js';
 
 const read = (path) => ts.createSourceFile(path, fs.readFileSync(new URL(path, import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const view = read('../src/views/TextToImageView.jsx');
@@ -208,7 +209,7 @@ test('canvas stop halts generation at once and keeps a rejected cancel retryable
 });
 
 test('pending cards keep their identity when the server accepts them', () => {
-  const context = { ACTIVE_STATUSES: new Set(['queued', 'running', 'waiting_provider']), LOCAL_SUBMISSION_STATUSES };
+  const context = { ACTIVE_STATUSES: new Set(['queued', 'running', 'waiting_provider']), LOCAL_SUBMISSION_STATUSES, IMAGE_COUNT_HARD_MAX };
   execute(['taskOutputs', 'taskThumbnailOutputs', 'taskDisplayOutputs', 'taskGroupKey', 'buildGalleryItems'].map(name => declaration(view, name)).join('\n') + '\nglobalThis.items = buildGalleryItems;', context);
   const temporary = { id: 'client', clientRequestId: 'client', serverJobId: '', status: 'submitting', batchId: 'group', batchIndex: 0, batchSize: 1 };
   const accepted = { ...temporary, id: 'server', serverJobId: 'server', status: 'queued' };
@@ -695,7 +696,7 @@ test('accepted response from an old account never triggers cancellation under th
   const context = {
     exports: {}, DOMException, mapJobKindToTaskType: () => 't2i', createTask: async () => pending.promise,
     resolveInputKeyForUrl: async () => '', cancelTask: async () => { cancellations++; },
-    invalidateStudioCreditSnapshot() {}, taskToLegacyJob: (task) => task,
+    invalidateStudioCreditSnapshot() {}, taskToLegacyJob: (task) => task, IMAGE_COUNT_HARD_MAX,
   };
   execute(declaration(adapter, 'createServerAiJob'), context);
   const result = context.exports.createServerAiJob({ kind: 'wallpaper-image-generation', signal: controller.signal, isCurrentSession: () => current });
@@ -711,7 +712,7 @@ test('ordinary abort never automatically acknowledges forfeiting upstream genera
   const context = {
     exports: {}, DOMException, mapJobKindToTaskType: () => 't2i', createTask: async () => pending.promise,
     resolveInputKeyForUrl: async () => '', cancelTask: async (_id, options) => { acknowledgements.push(options.acknowledgeUpstream); },
-    invalidateStudioCreditSnapshot() {}, taskToLegacyJob: (task) => task,
+    invalidateStudioCreditSnapshot() {}, taskToLegacyJob: (task) => task, IMAGE_COUNT_HARD_MAX,
   };
   execute(declaration(adapter, 'createServerAiJob'), context);
   const result = context.exports.createServerAiJob({ kind: 'wallpaper-image-generation', signal: controller.signal });

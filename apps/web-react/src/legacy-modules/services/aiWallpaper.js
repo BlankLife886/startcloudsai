@@ -7,6 +7,7 @@
  * 上层组合式函数无需大改。
  */
 import { invalidateStudioCreditSnapshot } from '@/features/ai-shared/studioUsage'
+import { IMAGE_COUNT_HARD_MAX } from '../features/ai-shared/modelImageCapabilities.js'
 import {
   cancelTask,
   cancelTaskGroup,
@@ -404,7 +405,7 @@ export async function createServerAiJob(payload = {}) {
   const legacyParams = payload.params && typeof payload.params === 'object' ? payload.params : {}
   const count = Math.max(
     1,
-    Math.min(Number(payload.units || input.count || legacyParams.count || 1) || 1, 4),
+    Math.min(Number(payload.units || input.count || legacyParams.count || 1) || 1, IMAGE_COUNT_HARD_MAX),
   )
 
   const sourceUrls = Array.from(
@@ -492,7 +493,7 @@ export async function quoteServerAiJob(payload = {}) {
   const legacyParams = payload.params && typeof payload.params === 'object' ? payload.params : {}
   const count = Math.max(
     1,
-    Math.min(Number(payload.units || input.count || legacyParams.count || 1) || 1, 16),
+    Math.min(Number(payload.units || input.count || legacyParams.count || 1) || 1, IMAGE_COUNT_HARD_MAX),
   )
   return quoteTaskPrice({
     type,

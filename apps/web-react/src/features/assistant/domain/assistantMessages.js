@@ -1,4 +1,5 @@
 // AI 助手消息领域函数：纯函数与常量，供视图/组合式复用。
+import { IMAGE_COUNT_HARD_MAX } from '../../../legacy-modules/features/ai-shared/modelImageCapabilities.js'
 
 export function uid() {
   return globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`
@@ -39,7 +40,7 @@ const ASSISTANT_DIRECT_DRAW_ACTION =
   /(?:(?:^|请|帮我|给我|替我|再)\s*(?:画(?!面|布|质|法|风)|绘制)\s*(?:一|两|二|三|四|五|六|七|八|九|十|个|只|张|幅|出|一下)|\b(?:draw|illustrate)\s+(?:a|an|the|this|that|one|two|three|\d+)\b)/i
 
 const ASSISTANT_COUNTED_IMAGE_ACTION =
-  /(?:生成|创建|制作|设计|做|来).{0,12}(?:[1-9]|1[0-6]|[一二两三四五六七八九十])\s*(?:张|幅)/i
+  /(?:生成|创建|制作|设计|做|来).{0,12}(?:100|[1-9][0-9]?|[一二两三四五六七八九十])\s*(?:张|幅)/i
 
 const ASSISTANT_NEGATED_IMAGE_ACTION =
   /(?:(?:不要|无需|不用|别|不需要|禁止|停止|取消).{0,12}(?:生成|生图|创建|绘制|画|制作|设计|重绘|修改|编辑|调整|替换|去背景|抠图|扩图|裁剪|切图)|(?:do\s+not|don't|dont|no\s+need\s+to|without)\s+(?:generate|create|draw|design|render|edit|modify|replace|crop|upscale))/i
@@ -136,13 +137,13 @@ export function assistantSendMode(creationType, documentCount = 0, prompt = '') 
 export function imageCountFromPrompt(prompt, maxCount = IMAGE_COUNTS[IMAGE_COUNTS.length - 1]) {
   const text = String(prompt || '').trim()
   if (!text) return 0
-  const limit = Math.min(16, Math.max(1, Math.floor(Number(maxCount) || IMAGE_COUNTS[IMAGE_COUNTS.length - 1])))
+  const limit = Math.min(IMAGE_COUNT_HARD_MAX, Math.max(1, Math.floor(Number(maxCount) || IMAGE_COUNTS[IMAGE_COUNTS.length - 1])))
   const chineseNumbers = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 }
   const patterns = [
-    /([1-9]|1[0-6]|[一二两三四五六七八九十])\s*(?:张|幅)\s*(?:图片|图像|图|海报|插画|头像|壁纸|封面|logo|标志|视觉稿|效果图)?/i,
-    /([1-9]|1[0-6]|[一二两三四五六七八九十])\s*(?:个|份)\s*(?:图片|图像|图|海报|插画|头像|壁纸|封面|logo|标志|视觉稿|效果图)/i,
-    /(?:图片|图像|海报|插画|头像|壁纸|封面|logo|标志|视觉稿|效果图)\s*([1-9]|1[0-6]|[一二两三四五六七八九十])\s*(?:张|幅|个|份)?/i,
-    /\b([1-9]|1[0-6])\s*(?:images?|pictures?|variations?)\b/i,
+    /(100|[1-9][0-9]?|[一二两三四五六七八九十])\s*(?:张|幅)\s*(?:图片|图像|图|海报|插画|头像|壁纸|封面|logo|标志|视觉稿|效果图)?/i,
+    /(100|[1-9][0-9]?|[一二两三四五六七八九十])\s*(?:个|份)\s*(?:图片|图像|图|海报|插画|头像|壁纸|封面|logo|标志|视觉稿|效果图)/i,
+    /(?:图片|图像|海报|插画|头像|壁纸|封面|logo|标志|视觉稿|效果图)\s*(100|[1-9][0-9]?|[一二两三四五六七八九十])\s*(?:张|幅|个|份)?/i,
+    /\b(100|[1-9][0-9]?)\s*(?:images?|pictures?|variations?)\b/i,
   ]
   for (const pattern of patterns) {
     const matched = text.match(pattern)?.[1]

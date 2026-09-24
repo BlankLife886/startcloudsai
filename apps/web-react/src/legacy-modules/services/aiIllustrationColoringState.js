@@ -1,3 +1,4 @@
+import { IMAGE_COUNT_HARD_MAX } from '../features/ai-shared/modelImageCapabilities.js'
 import { getScopedLocalItem, setScopedLocalItem } from '@/services/scopedLocalStorage'
 import { normalizeGptImageOutputSize } from './aiImageOutputSize.js'
 
@@ -41,7 +42,6 @@ export const COLORING_FORMAT_OPTIONS = [
 ]
 
 export const COLORING_COMPRESS_KB_OPTIONS = [256, 512, 1024, 1536, 2048, 3072, 4096]
-export const COLORING_BATCH_COUNT_OPTIONS = [1, 2, 3, 4]
 
 export const DEFAULT_COLORING_SETTINGS = {
   enableCompress: false,
@@ -504,8 +504,10 @@ export function normalizeColoringSettings(value = {}) {
       : legacyOrientation === 'landscape'
         ? '16:9'
         : legacyOrientation
-  const generationCount = COLORING_BATCH_COUNT_OPTIONS.includes(Number(source.generationCount))
-    ? Number(source.generationCount)
+  // 张数上限由所选模型的「单次张数」决定，页面按模型再收紧；这里只拦截非法值。
+  const savedCount = Math.floor(Number(source.generationCount))
+  const generationCount = savedCount >= 1 && savedCount <= IMAGE_COUNT_HARD_MAX
+    ? savedCount
     : DEFAULT_COLORING_SETTINGS.generationCount
   return {
     // 只有用户明确开启才允许压缩。缺失、字符串或旧版脏值都按关闭处理，

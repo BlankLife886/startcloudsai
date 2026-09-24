@@ -13,7 +13,6 @@ import { normalizeSelectedWallpaperSkillIds } from "@react/legacy-modules/featur
 import {
   SHOW_GENERATION_SKILL_CONTROLS,
   T2I_ASPECT_OPTIONS,
-  T2I_COUNT_OPTIONS,
   T2I_MODERATION_OPTIONS,
   T2I_OUTPUT_FORMAT_OPTIONS,
   T2I_QUALITY_OPTIONS,
@@ -25,6 +24,9 @@ import {
 import {
   getModelAutoAspectRatioCandidates,
   getModelAspectRatiosForResolution,
+  IMAGE_COUNT_HARD_MAX,
+  clampImageCount,
+  imageCountChoices,
   normalizeImageModelCapabilities,
 } from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
 import {
@@ -531,7 +533,7 @@ function buildGalleryItems(tasks, unavailableImageKeys = {}, { limit = 120 } = {
       const batchSize = Math.max(1, Number(task.batchSize || 1));
       const slots = batchSize > 1
         ? 1
-        : Math.min(4, Math.max(1, Number(task.count || 1)));
+        : Math.min(IMAGE_COUNT_HARD_MAX, Math.max(1, Number(task.count || 1)));
       for (let index = 0; index < slots; index += 1) {
         items.push({
           key: `${task.clientRequestId || task.id}-${index}`,
@@ -812,7 +814,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     exactHeight: draft.sizeMode === "exact" ? String(draft.exactHeight || "") : "",
   }));
   const [quality, setQuality] = useState(String(draft.imageQuality || "medium"));
-  const [count, setCount] = useState(Math.min(4, Math.max(1, Number(draft.imageCount) || 1)));
+  const [count, setCount] = useState(Math.min(IMAGE_COUNT_HARD_MAX, Math.max(1, Math.floor(Number(draft.imageCount)) || 1)));
   const [outputFormat, setOutputFormat] = useState(String(draft.upscaleOutputFormat || "auto"));
   const [moderation, setModeration] = useState(String(draft.moderationLevel || ""));
   const [polish, setPolish] = useState(draft.promptPolishEnabled === true);
@@ -1128,6 +1130,16 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     }
   }, [ratio, ratioOptions]);
 
+  // 张数跟随所选模型的「单次张数」配置；模型未加载完时不收紧，避免草稿被默认上限截断。
+  const countOptions = useMemo(
+    () => imageCountChoices(currentModel || {}, count).map((value) => ({ value, label: `${value}张` })),
+    [count, currentModel],
+  );
+  useEffect(() => {
+    if (!currentModel) return;
+    setCount((current) => clampImageCount(current, currentModel, 1));
+  }, [currentModel]);
+
   useEffect(() => {
     if (!qualityOptions.length) {
       if (quality) setQuality("");
@@ -1170,7 +1182,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
     if (config.resolution) setResolution(String(config.resolution));
     if (config.sizeMode === "exact") setImageSize({ sizeMode: "exact", exactWidth: String(config.exactWidth || ""), exactHeight: String(config.exactHeight || "") });
     if (config.quality) setQuality(config.quality);
-    if (config.count) setCount(Math.min(4, Math.max(1, Number(config.count) || 1)));
+    if (config.count) setCount(Math.min(IMAGE_COUNT_HARD_MAX, Math.max(1, Math.floor(Number(config.count)) || 1)));
     if (Array.isArray(config.skills)) {
       setSelectedSkillIds(normalizeSelectedWallpaperSkillIds(config.skills, WALLPAPER_SKILL_OPTIONS));
     }
@@ -2307,7 +2319,7 @@ function TextToImageWorkspace({ user, authenticated, onRequireAuth, onUserPatch 
                 </div></div>}
                 <div className="t2i-compact-field-row">
                   {imageSize.sizeMode !== "exact" && <CompactSegments label="分辨率" value={resolution} options={resolutionOptions} onChange={setResolution} />}
-                  <CompactSegments label="张数" value={count} options={T2I_COUNT_OPTIONS} onChange={(value) => setCount(Number(value))} />
+                  <CompactSegments label="张数" value={count} options={countOptions} onChange={(value) => setCount(Number(value))} />
                 </div>
               </section>
             )}

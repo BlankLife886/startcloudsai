@@ -2,7 +2,7 @@ import { nanoid } from "nanoid";
 
 import i18n from "@/i18n";
 import { storageKeyFromUrl } from "@/lib/canvas/canvas-preview-url";
-import { canvasImageSizeParams, canvasImageMaxCount, coerceCanvasImageSettings } from "@/lib/canvas/canvas-image-model";
+import { canvasImageSizeParams, canvasImageMaxCount, canvasImageMaxReferences, coerceCanvasImageSettings } from "@/lib/canvas/canvas-image-model";
 import type { CanvasAgentOp, CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
 import { createCanvasAgentToolDelivery, createCanvasAgentToolJournal, type CanvasAgentToolResultEnvelope } from "@/lib/canvas/canvas-agent-tool-delivery";
 import { compactCanvasSnapshot, resolveCanvasAgentCompletion } from "@/lib/canvas/canvas-hosted-agent";
@@ -433,7 +433,14 @@ export function imagesFromCanvasTask(task: CanvasTask) {
 export async function requestCanvasImages(config: AiConfig, prompt: string, references: ReferenceImage[] = [], mask?: ReferenceImage, options?: AbortSignal | CanvasTaskOptions) {
     const { signal, onCreated, idempotencyKey, onBeforeCreate } = normalizeTaskOptions(options);
     const params = canvasImageTaskParams(config);
-    const inputKeys = await Promise.all(references.slice(0, 4).map(ensureReferenceKey));
+    // 参考图数量按模型配置校验：超出时在提交前明确提示，不再静默截断到固定张数。
+    const referenceLimit = canvasImageMaxReferences(modelOptionMeta(config, config.model));
+    if (references.length > referenceLimit) {
+        throw new Error(referenceLimit > 0
+            ? `当前模型最多支持 ${referenceLimit} 张参考图，已连接 ${references.length} 张，请减少参考图或切换模型`
+            : "当前模型不支持参考图，请断开参考图或切换模型");
+    }
+    const inputKeys = await Promise.all(references.map(ensureReferenceKey));
     const maskKey = mask ? await ensureReferenceKey(mask) : "";
     if (signal?.aborted) throw abortError();
     const count = Math.max(1, Math.min(canvasImageMaxCount(modelOptionMeta(config, config.model)), Math.floor(Math.abs(Number(config.count)) || 1)));

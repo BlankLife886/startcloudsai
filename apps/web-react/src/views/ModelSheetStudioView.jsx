@@ -36,7 +36,8 @@ import "./ModelSheetStudioView.css";
 const SETTINGS_KEY = "ultra-model-sheet-studio-v2";
 const LABELS_KEY = "ultra-model-sheet-labels-v1";
 const SUBJECTS_KEY = "ultra-model-sheet-subjects-v1";
-const MAX_REFERENCES = 4;
+// 恢复草稿时的兜底上限（与服务端参考图上限 16 一致）；实际数量随后按所选模型配置收紧。
+const MAX_REFERENCES = 16;
 const VIEW_OPTIONS = [
   { id: "front", label: "正面", en: "F", icon: "bi-person-standing" },
   { id: "side", label: "侧面", en: "S", icon: "bi-person-walking" },

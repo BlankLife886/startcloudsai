@@ -100,6 +100,26 @@ func supports(values []string, requested string) bool {
 	return false
 }
 
+// requestedImageCount 返回本次请求对应的「单次生成张数」。文生图、插画染色和
+// 游戏美术把用户选择的 N 张拆成 N 个 count=1 的任务提交，并在参数里带上整批
+// 张数（batchSize / variantCount），因此要按整批张数校验模型的单次张数上限；
+// 电商套图、模型设定图等按业务规格拆分的批次不受此限制。
+func requestedImageCount(taskType string, params map[string]any, count int) int {
+	switch taskType {
+	case "t2i", "coloring", "game_art":
+	default:
+		return count
+	}
+	if stringParam(params, "_source") == "react_canvas" {
+		return count
+	}
+	batch := int(max(numericParam(params, "batchSize"), numericParam(params, "variantCount")))
+	if batch > 1 {
+		return batch * count
+	}
+	return count
+}
+
 func validateModelImageCapabilities(model modelconfig.Model, params map[string]any, referenceCount int) error {
 	if err := modelconfig.ValidateExactImageParams(model, "", params); err != nil {
 		return apperr.E("validation_error", err.Error(), 422)
@@ -293,7 +313,7 @@ func QuoteTaskPrice(ctx context.Context, q store.Q, in CreateInput, users ...uui
 			if err := validateModelImageCapabilities(selection.Model, in.Params, len(in.InputKeys)); err != nil {
 				return nil, err
 			}
-			if in.Count > selection.Model.GenerationMaxImages() {
+			if requestedImageCount(in.Type, in.Params, in.Count) > selection.Model.GenerationMaxImages() {
 				return nil, apperr.E("validation_error", fmt.Sprintf("所选模型单次最多生成 %d 张", selection.Model.GenerationMaxImages()), 422)
 			}
 		}
@@ -615,7 +635,7 @@ func createTaskWithTransaction(ctx context.Context, userID uuid.UUID, in CreateI
 				if err := validateModelImageCapabilities(selection.Model, params, len(in.InputKeys)); err != nil {
 					return err
 				}
-				if in.Count > selection.Model.GenerationMaxImages() {
+				if requestedImageCount(in.Type, params, in.Count) > selection.Model.GenerationMaxImages() {
 					return apperr.E("validation_error", fmt.Sprintf("所选模型单次最多生成 %d 张", selection.Model.GenerationMaxImages()), 422)
 				}
 				if quality := stringParam(params, "quality"); quality != "" {

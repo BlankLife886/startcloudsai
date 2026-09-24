@@ -1,9 +1,11 @@
+import { IMAGE_COUNT_HARD_MAX } from "../../legacy-modules/features/ai-shared/modelImageCapabilities.js";
 export function pendingBatchEntries(batch) {
   return (batch?.entries || []).filter((entry) => !entry.task && !entry.discarded);
 }
 
 export function createSubmissionBatch({ count, sourceUrls, buildPayload }) {
-  const batchSize = Math.min(4, Math.max(1, Math.floor(Number(count) || 1)));
+  // 张数上限由后台模型配置决定，服务端按整批张数校验；这里只做兜底。
+  const batchSize = Math.min(IMAGE_COUNT_HARD_MAX, Math.max(1, Math.floor(Number(count) || 1)));
   const batchId = `batch-${crypto.randomUUID()}`;
   const batchCreatedAt = new Date().toISOString();
   return {

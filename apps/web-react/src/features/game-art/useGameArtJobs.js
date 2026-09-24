@@ -7,6 +7,7 @@ import {
   waitForServerAiJob,
 } from "@react/legacy-modules/services/aiWallpaper.js";
 import {
+  IMAGE_COUNT_HARD_MAX,
   coerceImageModelSettings,
   normalizeImageModelCapabilities,
 } from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
@@ -228,7 +229,7 @@ export function useGameArtJobs({ model, isAuthenticated }) {
 
   const generate = useCallback(async ({ prompt, file, sourceUrl = "", aspectRatio, count, quality, transparentPngEnabled, viewLabel, kindVariant, referencePreviewUrl = "" }) => {
     if (!model || !String(prompt || "").trim()) return { outputs: [], failures: [] };
-    const total = Math.max(1, Math.min(Number(count) || 1, 4));
+    const total = Math.max(1, Math.min(Math.floor(Number(count)) || 1, IMAGE_COUNT_HARD_MAX));
     const runId = crypto.randomUUID();
     const groupId = crypto.randomUUID();
     const createdAt = new Date().toISOString();

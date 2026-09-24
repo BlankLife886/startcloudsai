@@ -37,7 +37,10 @@ import {
   stashPendingPrompt,
 } from "@react/legacy-modules/features/creator-hub/studioTools.js";
 import {
+  clampImageCount,
   getModelAspectRatiosForResolution,
+  imageCountChoices,
+  imageModelMaxCount,
   normalizeImageModelCapabilities,
 } from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
 import { resolveModelPointPricing } from "@react/legacy-modules/features/ai-shared/modelPointPricing.js";
@@ -84,7 +87,8 @@ const CREATION_TYPE_MARK = {
   image: "image",
 };
 const COMPOSER_DRAFT_KEY = "studio-hub-composer-draft-v1";
-const MAX_COMPOSER_REFS = 4;
+// 草稿里保存的参考图数量兜底（与服务端参考图上限 16 一致）；实际可用数量按所选模型配置收紧。
+const MAX_COMPOSER_REFS = 16;
 const TOOL_WALL_ORDER = ["assistant", "t2i", "model", "coloring", "ui", "game"];
 const ECOMMERCE_MODE_IDS = [
   "shoot",
@@ -712,10 +716,14 @@ export function StudioHubView() {
     availableModelOptions.find((model) => model.default) ||
     availableModelOptions[0] ||
     null;
-  const maxReferences =
-    selectedTool?.id === "assistant"
-      ? 4
-      : Math.max(0, Number(selectedModel?.maxReferenceImages ?? 4) || 0);
+  // AI 助手的参考图始终交给生图模型处理，因此按助手当前生图模型的参考图上限计算。
+  const referenceModel =
+    selectedTool?.id === "assistant" && selectedConfig.skill !== "image"
+      ? availableCatalogModels(assistantModels.image).find((model) => model.default) ||
+        availableCatalogModels(assistantModels.image)[0] ||
+        null
+      : selectedModel;
+  const maxReferences = normalizeImageModelCapabilities(referenceModel || {}).maxReferenceImages;
   const fields = useMemo(() => {
     const launchFields = studioLaunchFields(selectedTool?.id, selectedConfig);
     const capabilities = normalizeImageModelCapabilities(selectedModel || {});
@@ -781,6 +789,14 @@ export function StudioHubView() {
               };
             }),
           ],
+        }];
+      if (field.key === "count" && selectedModel)
+        return [{
+          ...field,
+          options: imageCountChoices(selectedModel, selectedConfig.count).map((value) => ({
+            value,
+            label: `${value}张`,
+          })),
         }];
       if (!usesModelImageParams) return [field];
       if (field.key === "resolution") {
@@ -1551,7 +1567,7 @@ export function StudioHubView() {
         config.reasoningEffort = selectedConfig.reasoningEffort;
       }
       config.count =
-        imageCountFromPrompt(prompt) || Math.max(1, Number(config.count) || 2);
+        imageCountFromPrompt(prompt, imageModelMaxCount(selectedModel || {})) || Math.max(1, Number(config.count) || 2);
       if (config.mode === "image") {
         const capabilities = normalizeImageModelCapabilities(selectedModel || {});
         const resolution = String(config.resolution || "").toUpperCase();
@@ -1574,7 +1590,7 @@ export function StudioHubView() {
       const count =
         selectedTool.id === "assistant"
           ? 1
-          : Math.max(1, Math.min(4, Number(config.count) || 1));
+          : clampImageCount(config.count, selectedModel || {}, 1);
       const assistantImageMode = selectedConfig.skill === "image";
       const assistantCatalog = availableCatalogModels(assistantImageMode ? assistantModels.image : assistantModels.conversation);
       const assistantModel = assistantCatalog.find((item) => item.id === config.model) || assistantCatalog[0];
@@ -1586,7 +1602,7 @@ export function StudioHubView() {
         Number(resolveModelPointPricing(pricedAssistantModel).effective ?? 0),
       );
       const assistantTotal = assistantImageMode
-        ? assistantUnit * Math.min(4, Number(config.count) || 2)
+        ? assistantUnit * clampImageCount(config.count || 2, assistantModel || {}, 1)
         : assistantUnit;
       const unitPrice =
         selectedTool.id === "assistant"

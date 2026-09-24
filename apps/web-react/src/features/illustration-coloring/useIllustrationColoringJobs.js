@@ -7,6 +7,7 @@ import {
   uploadAiInputFile,
 } from "@react/legacy-modules/services/aiWallpaper.js";
 import { createIllustrationColoringJob } from "@react/legacy-modules/services/aiIllustrationColoring.js";
+import { IMAGE_COUNT_HARD_MAX } from "@react/legacy-modules/features/ai-shared/modelImageCapabilities.js";
 import { prepareColoringUploadBlob } from "@react/legacy-modules/features/ai-illustration-coloring/domain/prepareColoringUpload.js";
 import {
   isActiveColoringJobStatus,
@@ -194,7 +195,7 @@ export function useIllustrationColoringJobs({ authenticated }) {
         const remoteReferences = Array.from(
           new Set([...(referenceUrls || []), ...uploadedReferences].filter(Boolean)),
         ).slice(0, referenceLimit);
-        const count = Math.max(1, Math.min(4, Number(options.generationCount || 1)));
+        const count = Math.max(1, Math.min(IMAGE_COUNT_HARD_MAX, Math.floor(Number(options.generationCount)) || 1));
         const batchId = count > 1 ? `coloring-${crypto.randomUUID()}` : "";
         const hasExplicitOutput = Boolean(options.outputSize && options.outputOrientation);
         const output = hasExplicitOutput
