@@ -776,6 +776,8 @@ const TIMELINE_STAGE_META: Record<string, { label: string; hint: string }> = {
   image_persist: { label: '保存图片', hint: '生成小图和展示图（后台「图片处理」可配格式与质量），与原图一起存入云存储' },
   retry: { label: '自动重试', hint: '上游临时报错（如账号池忙）时，系统按「系统设置→调度与重试」里的退避时间自动重试' },
   upstream_error: { label: '上游报错', hint: '上游服务商返回了错误信息，若还有重试机会会自动重试' },
+  upstream_unconfirmed: { label: '上游未确认收到', hint: '提交请求超时后，上游在宽限时间内始终查不到这个任务，判定请求没送达；有重试机会时会自动重新提交' },
+  upstream_poll: { label: '轮询异常', hint: '提交后平台定期向上游查询进度；这里汇总查询次数、失败次数和最近一次失败原因' },
   succeeded: { label: '任务完成', hint: '从创建到完成的总耗时（含排队），图片已保存、费用已结算' },
   failed: { label: '任务失败', hint: '任务终止，冻结的积分已退回用户' },
 }
@@ -855,8 +857,75 @@ function billingFunding(audit: BillingAudit) {
 const STAGE_TONES: Record<string, string> = {
   queued: 'muted', retry_started: 'muted', input_prepare: 'violet', submitted: 'info',
   upstream_generate: 'accent', result_download: 'warning', image_persist: 'success',
-  retry: 'orange', upstream_error: 'danger', succeeded: 'success', failed: 'danger',
+  retry: 'orange', upstream_error: 'danger', upstream_unconfirmed: 'orange', upstream_poll: 'orange', succeeded: 'success', failed: 'danger',
 }
+interface SubmitTraceView {
+  key: string
+  parts: string[]
+  verdict: string
+  tone: 'ok' | 'warn'
+}
+
+// 上游提交的连接层耗时（worker 写入 meta.submitTraces），用来区分"请求没发完"和"上游收到后不响应"。
+function submitTraceViews(event: TimelineEvent): SubmitTraceView[] {
+  const traces = Array.isArray(event.meta?.submitTraces) ? (event.meta.submitTraces as Record<string, unknown>[]) : []
+  return traces.map((trace, index) => {
+    const num = (key: string) => (typeof trace[key] === 'number' ? (trace[key] as number) : -1)
+    const bytes = num('bodyBytes')
+    const gotConn = num('gotConnMs')
+    const wrote = num('wroteRequestMs')
+    const firstByte = num('firstByteMs')
+    const status = num('statusCode')
+    const parts = [
+      gotConn < 0 ? '未拿到连接' : trace.connReused ? `复用连接（空闲 ${formatDurationMs(num('connIdleMs')) || '0 毫秒'}）` : '新建连接',
+      bytes > 0 ? `请求体 ${bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`}` : '',
+      wrote >= 0 ? `发送完成 ${formatDurationMs(wrote)}` : '请求未发送完成',
+      firstByte >= 0 ? `首字节 ${formatDurationMs(firstByte)}` : '未收到上游响应',
+      status > 0 ? `HTTP ${status}` : '',
+      trace.localAddr ? `本地 ${trace.localAddr}` : '',
+    ].filter(Boolean)
+    let verdict = ''
+    if (gotConn < 0) verdict = '没有建立到上游的连接'
+    else if (wrote < 0) verdict = '请求体没有发完，问题在本端或网络'
+    else if (firstByte < 0) verdict = '请求已完整发给上游，上游未响应'
+    return { key: `${index}`, parts, verdict, tone: verdict ? 'warn' : 'ok' }
+  })
+}
+
+function clockTime(iso: unknown): string {
+  if (typeof iso !== 'string' || !iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+// 轮询统计（worker 写入 meta.pollCount 等）：说明"上游早已完成、本端为什么晚取到"。
+function pollStatsView(event: TimelineEvent): SubmitTraceView | null {
+  const meta = event.meta || {}
+  const num = (key: string) => (typeof meta[key] === 'number' ? (meta[key] as number) : -1)
+  const pollCount = num('pollCount')
+  const upstreamFinished = clockTime(meta.upstreamFinishedAt)
+  if (pollCount <= 0 && !upstreamFinished) return null
+  const pollErrors = Math.max(0, num('pollErrorCount'))
+  const lastError = typeof meta.lastPollError === 'string' ? meta.lastPollError : ''
+  const lastErrorAt = clockTime(meta.lastPollErrorAt)
+  const firstSeen = clockTime(meta.firstSeenCompletedAt)
+  const lag = num('detectionLagMs')
+  const parts = [
+    pollCount > 0 ? `查询上游 ${pollCount} 次` : '',
+    pollErrors > 0 ? `失败 ${pollErrors} 次` : '',
+    lastError ? `最近错误：${lastError.length > 80 ? `${lastError.slice(0, 80)}…` : lastError}${lastErrorAt ? `（${lastErrorAt}）` : ''}` : '',
+    num('lastPollMs') > 0 ? `单次查询 ${formatDurationMs(num('lastPollMs'))}` : '',
+    upstreamFinished ? `上游完成 ${upstreamFinished}` : '',
+    firstSeen ? `本端发现 ${firstSeen}` : '',
+  ].filter(Boolean)
+  let verdict = ''
+  if (lag >= 30000) verdict = `上游早已完成，本端晚了 ${formatDurationMs(lag)} 才取到`
+  else if (pollErrors > 0 && pollErrors >= pollCount) verdict = '所有查询都失败了'
+  return { key: 'poll', parts, verdict, tone: verdict ? 'warn' : 'ok' }
+}
+
 function stageTone(event: TimelineEvent) {
   if (event.status === 'error') return 'danger'
   return STAGE_TONES[event.stage] || 'muted'
@@ -1660,6 +1729,14 @@ async function forceFail(task: AdminTask) {
                         </div>
                         <div v-if="timelineBarWidth(event)" class="time-steps__bar"><u :style="{ width: timelineBarWidth(event) }" /></div>
                         <p v-if="event.message" class="time-steps__msg">{{ taskErrorMessage(event.message) }}</p>
+                        <p v-for="trace in submitTraceViews(event)" :key="trace.key" :class="['time-steps__trace', `is-${trace.tone}`]">
+                          <span>{{ trace.parts.join(' · ') }}</span>
+                          <b v-if="trace.verdict">{{ trace.verdict }}</b>
+                        </p>
+                        <p v-if="pollStatsView(event)" :class="['time-steps__trace', `is-${pollStatsView(event)!.tone}`]">
+                          <span>{{ pollStatsView(event)!.parts.join(' · ') }}</span>
+                          <b v-if="pollStatsView(event)!.verdict">{{ pollStatsView(event)!.verdict }}</b>
+                        </p>
                         <p v-if="timelineStageHint(event.stage)" class="time-steps__hint">{{ timelineStageHint(event.stage) }}</p>
                       </div>
                     </li>
@@ -3199,6 +3276,9 @@ html.dark .tasks-board {
 .time-steps__msg { margin: 4px 0 0; color: var(--ink-2); font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; }
 .time-steps li.tone-danger .time-steps__msg { color: var(--danger); }
 .time-steps__hint { margin: 2px 0 0; color: var(--ink-3); font-size: 11px; line-height: 1.5; }
+.time-steps__trace { display: flex; flex-wrap: wrap; gap: 2px 8px; margin: 4px 0 0; color: var(--ink-2); font-size: 11px; line-height: 1.5; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.time-steps__trace b { font-weight: 600; }
+.time-steps__trace.is-warn b { color: var(--warning, #b7791f); }
 
 /* ---------- 内容 ---------- */
 .content-prompt { max-height: 320px; margin: 0; padding: 12px 14px; overflow: auto; border-radius: 12px; background: var(--surface); color: var(--ink); font-family: inherit; font-size: 13px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }

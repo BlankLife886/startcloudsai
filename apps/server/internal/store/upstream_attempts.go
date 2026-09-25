@@ -173,6 +173,79 @@ func SetTaskUpstreamAttemptPending(ctx context.Context, q Q, id uuid.UUID, upstr
 	return err
 }
 
+// MarkTaskUpstreamAttemptSubmitUnconfirmed 记录提交请求没有拿到上游确认（超时/5xx 等结果不确定）。
+func MarkTaskUpstreamAttemptSubmitUnconfirmed(ctx context.Context, q Q, id uuid.UUID) error {
+	_, err := q.Exec(ctx, `UPDATE task_upstream_attempts SET submit_unconfirmed = true
+		WHERE id = $1 AND status IN ('submitting','pending')`, id)
+	return err
+}
+
+// ObserveTaskUpstreamAttemptPoll 记录一次轮询是否在上游找到了该任务。返回值是"提交未获确认、
+// 上游也从未见过该任务"已持续的时长；上游见过它或提交已获确认时返回 0。
+func ObserveTaskUpstreamAttemptPoll(ctx context.Context, q Q, id uuid.UUID, missing bool, now time.Time) (time.Duration, error) {
+	if !missing {
+		_, err := q.Exec(ctx, `UPDATE task_upstream_attempts
+			SET upstream_seen_at = COALESCE(upstream_seen_at, $2), upstream_missing_since = NULL
+			WHERE id = $1 AND status IN ('submitting','pending')`, id, now)
+		return 0, err
+	}
+	var unconfirmed, neverSeen bool
+	var missingSince time.Time
+	err := q.QueryRow(ctx, `UPDATE task_upstream_attempts
+		SET upstream_missing_since = COALESCE(upstream_missing_since, $2)
+		WHERE id = $1 AND status IN ('submitting','pending')
+		RETURNING submit_unconfirmed, upstream_seen_at IS NULL, upstream_missing_since`, id, now).Scan(&unconfirmed, &neverSeen, &missingSince)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil || !unconfirmed || !neverSeen {
+		return 0, err
+	}
+	return max(0, now.Sub(missingSince)), nil
+}
+
+// UpstreamAttemptPollStats 是一次上游尝试的轮询统计。
+type UpstreamAttemptPollStats struct {
+	PollCount       int
+	PollErrorCount  int
+	LastPollError   string
+	LastPollErrorAt *time.Time
+	LastPollMs      int
+}
+
+// RecordTaskUpstreamAttemptPollObservation 累计一次轮询观察；pollErr 非空时计为失败并记下错误。
+func RecordTaskUpstreamAttemptPollObservation(ctx context.Context, q Q, id uuid.UUID, pollErr string, pollMs int64, now time.Time) error {
+	if len(pollErr) > 2000 {
+		pollErr = pollErr[:2000]
+	}
+	_, err := q.Exec(ctx, `UPDATE task_upstream_attempts SET
+		poll_count = poll_count + 1,
+		poll_error_count = poll_error_count + CASE WHEN $2 <> '' THEN 1 ELSE 0 END,
+		last_poll_error = CASE WHEN $2 <> '' THEN $2 ELSE last_poll_error END,
+		last_poll_error_at = CASE WHEN $2 <> '' THEN $4 ELSE last_poll_error_at END,
+		last_poll_ms = LEAST($3, 2147483647)::integer
+		WHERE id = $1`, id, pollErr, max(pollMs, 0), now)
+	return err
+}
+
+func GetTaskUpstreamAttemptPollStats(ctx context.Context, q Q, id uuid.UUID) (UpstreamAttemptPollStats, error) {
+	var stats UpstreamAttemptPollStats
+	var lastError *string
+	var lastMs *int
+	err := q.QueryRow(ctx, `SELECT poll_count, poll_error_count, last_poll_error, last_poll_error_at, last_poll_ms
+		FROM task_upstream_attempts WHERE id = $1`, id).Scan(&stats.PollCount, &stats.PollErrorCount, &lastError, &stats.LastPollErrorAt, &lastMs)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return stats, nil
+	}
+	if lastError != nil {
+		stats.LastPollError = *lastError
+	}
+	if lastMs != nil {
+		stats.LastPollMs = *lastMs
+	}
+	return stats, err
+}
+
 // ClaimPendingUpstreamTasksByRoute leases attempt rows, not task rows. This is
 // what lets an old route keep polling after the task itself has moved to a new
 // route or temporarily returned to queued.

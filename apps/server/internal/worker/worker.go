@@ -2042,13 +2042,14 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 	})
 	var imagesB64 []string
 	var callErr error
+	submitTraces := &upstreamSubmitTraces{}
 	if attemptErr == nil && store.TaskHasKnownCRUNJobs(task) {
 		attemptErr = upstreamguard.Check(ctx)
 	}
 	if attemptErr != nil {
 		callErr = fmt.Errorf("persist upstream attempt: %w", attemptErr)
 	} else {
-		imagesB64, callErr = w.callUpstream(ctx, task, provider, model, collector.persist)
+		imagesB64, callErr = w.callUpstream(c2a.WithSubmitObserver(ctx, submitTraces.add), task, provider, model, collector.persist)
 	}
 	// Some OpenAI-compatible async gateways can acknowledge the request with an
 	// empty body/result while the deterministic client_task_id is already being
@@ -2085,6 +2086,12 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 				_, _ = store.RequeueRunningTaskOwned(ctx, w.St.Pool, taskID, leaseOwner)
 				return fmt.Errorf("persist pending upstream attempt: %w", persistErr)
 			}
+			if ambiguousOpenAISubmit {
+				// 上游没确认收到：轮询若持续查不到该任务，可提前判定未送达（见 finishPendingImagePoll）。
+				if markErr := store.MarkTaskUpstreamAttemptSubmitUnconfirmed(ctx, w.St.Pool, attemptID); markErr != nil {
+					log.Printf("task %s attempt %s mark submit unconfirmed failed: %v", taskID, attemptID, markErr)
+				}
+			}
 		}
 		if markErr := store.MarkTaskUpstreamPendingOwned(ctx, w.St.Pool, taskID, leaseOwner); markErr != nil {
 			_, _ = store.RequeueRunningTaskOwned(ctx, w.St.Pool, taskID, leaseOwner)
@@ -2110,7 +2117,7 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 		w.recordTimeline(ctx, taskID, "submitted", "info",
 			"生成请求已提交给上游服务商，等待上游生成",
 			time.Since(upstreamStartedAt).Milliseconds(),
-			map[string]any{"provider": provider, "model": model})
+			submitTraces.withMeta(map[string]any{"provider": provider, "model": model}))
 		return nil
 	}
 	outputKeys, thumbnailKeys := collector.completed()
@@ -2130,7 +2137,7 @@ func (w *Worker) handleRunTask(ctx context.Context, t *asynq.Task) error {
 		w.recordTimeline(ctx, taskID, "upstream_generate", "info",
 			"上游服务商已完成生成并返回图片",
 			time.Since(upstreamStartedAt).Milliseconds(),
-			map[string]any{"provider": provider, "model": model, "images": len(imagesB64)})
+			submitTraces.withMeta(map[string]any{"provider": provider, "model": model, "images": len(imagesB64)}))
 	}
 	var outputProcessingErr *taskOutputProcessingError
 	if callErr != nil {
@@ -2502,6 +2509,7 @@ func (w *Worker) pollOpenAIProviderTaskBatch(ctx context.Context, client *c2a.Cl
 		if task == nil {
 			return
 		}
+		w.recordUpstreamPollObservation(ctx, task, result)
 		if openAIPollNeedsFetch(result) {
 			w.startOpenAIResultFetch(provider, task, result, claimID)
 			return
@@ -2633,9 +2641,24 @@ func (w *Worker) applyOpenAIPollResult(ctx context.Context, client *c2a.Client, 
 		if !result.CompletedAt.IsZero() {
 			generateMs = max(result.CompletedAt.Sub(submittedAt).Milliseconds(), 0)
 		}
+		// 上游自报了完成时间时以它为准："AI 生成"与上游日志一致，本端发现得晚的部分单独列出。
+		if !result.UpstreamFinishedAt.IsZero() && result.UpstreamFinishedAt.After(submittedAt) {
+			generateMs = result.UpstreamFinishedAt.Sub(submittedAt).Milliseconds()
+		}
+		meta := w.upstreamPollMeta(ctx, task, map[string]any{"images": nonEmptyImageCount(images)})
+		meta["submittedAt"] = submittedAt.UTC().Format(time.RFC3339Nano)
+		if !result.CompletedAt.IsZero() {
+			meta["firstSeenCompletedAt"] = result.CompletedAt.UTC().Format(time.RFC3339Nano)
+		}
+		if !result.UpstreamFinishedAt.IsZero() {
+			meta["upstreamFinishedAt"] = result.UpstreamFinishedAt.UTC().Format(time.RFC3339Nano)
+			if !result.CompletedAt.IsZero() {
+				meta["detectionLagMs"] = max(result.CompletedAt.Sub(result.UpstreamFinishedAt).Milliseconds(), 0)
+			}
+		}
 		w.recordTimeline(ctx, task.ID, "upstream_generate", "info",
 			"上游服务商已完成图片生成",
-			generateMs, map[string]any{"images": nonEmptyImageCount(images)})
+			generateMs, meta)
 	}
 	if downloadMs > 0 {
 		w.recordTimeline(ctx, task.ID, "result_download", "info",
@@ -2929,6 +2952,10 @@ func (w *Worker) failCurrentTaskAndCloseAttempts(ctx context.Context, attemptTas
 		return
 	}
 	if won && failedTask != nil {
+		if meta := w.upstreamPollMeta(ctx, attemptTask, map[string]any{}); meta["pollErrorCount"] != nil && meta["pollErrorCount"] != 0 {
+			w.recordTimeline(ctx, failedTask.ID, "upstream_poll", "warning",
+				fmt.Sprintf("查询上游进度 %d 次，其中 %d 次失败", meta["pollCount"], meta["pollErrorCount"]), -1, meta)
+		}
 		taskflow.NotifyTaskFailed(ctx, w.St.Pool, failedTask)
 		if errorCode == "upstream_error" {
 			w.recordTimeline(ctx, failedTask.ID, "upstream_error", "warning",
@@ -3004,6 +3031,45 @@ func (w *Worker) finishUncertainImagePoll(ctx context.Context, task *store.Task,
 	w.failCurrentTaskAndCloseAttempts(ctx, task, "upstream_unreachable", "所有生成线路均已失联或失败，任务已终止并退款")
 }
 
+// unconfirmedSubmitGrace 是提交超时后、上游持续查不到该任务的容忍时长。上游在高并发下
+// 可能先上传参考图再登记任务，查不到并不立即说明请求丢失；超过该时长仍从未见过，就按
+// "请求未送达"处理，而不是一直等到线路超时（通常数分钟）。
+const unconfirmedSubmitGrace = 90 * time.Second
+
+// abandonUnconfirmedSubmit 在提交未获确认且上游始终查不到任务时提前收尾：优先按重试策略
+// 重新提交（沿用同一 client_task_id，单线路时重试原线路），重试用尽才失败退款。
+// 返回 true 表示已处理，调用方不应再续租。
+func (w *Worker) abandonUnconfirmedSubmit(ctx context.Context, task *store.Task, attemptID uuid.UUID, unconfirmedFor time.Duration, now time.Time) bool {
+	scheduled, err := store.MarkTaskUpstreamAttemptFailoverScheduled(ctx, w.St.Pool, attemptID, now)
+	if err != nil {
+		log.Printf("task %s attempt %s unconfirmed-submit failover fence failed: %v", task.ID, attemptID, err)
+		return false
+	}
+	if !scheduled && !taskParamBool(task.Params, "_upstreamAttemptFailoverScheduled") {
+		return false
+	}
+	current, err := store.GetTask(ctx, w.St.Pool, task.ID)
+	if err != nil || current == nil || current.Status != "running" || !taskUsesAttemptRoute(current, task) {
+		return false
+	}
+	detail := fmt.Sprintf("提交请求超时后上游在 %d 秒内始终查不到该任务，判定请求未送达上游", int64(unconfirmedFor.Seconds()))
+	_ = store.RecordTaskUpstreamAttemptPollError(ctx, w.St.Pool, attemptID, detail)
+	w.recordTimeline(ctx, task.ID, "upstream_unconfirmed", "warning", detail, -1,
+		w.upstreamPollMeta(ctx, task, map[string]any{"attemptId": attemptID.String(), "unconfirmedMs": unconfirmedFor.Milliseconds()}))
+	retried, retryErr := w.scheduleTaskRetry(ctx, current, taskLeaseOwner(current))
+	if retryErr != nil {
+		log.Printf("task %s unconfirmed-submit retry scheduling failed: %v", task.ID, retryErr)
+		return false
+	}
+	if retried {
+		log.Printf("task %s attempt %s submit never confirmed after %s; resubmitting", task.ID, attemptID, unconfirmedFor.Round(time.Second))
+		return true
+	}
+	log.Printf("task %s attempt %s submit never confirmed after %s; retries exhausted, closing task", task.ID, attemptID, unconfirmedFor.Round(time.Second))
+	w.failCurrentTaskAndCloseAttempts(ctx, task, "upstream_unreachable", "上游未收到生成请求，任务已终止并退款")
+	return true
+}
+
 func (w *Worker) finishPendingImagePoll(ctx context.Context, task *store.Task, provider *modelconfig.Provider, claimID string, result c2a.ImageTaskPollResult) {
 	if claimID != "" {
 		_, _ = store.ReleaseTaskCompletionClaim(ctx, w.St.Pool, task.ID, claimID)
@@ -3021,6 +3087,13 @@ func (w *Worker) finishPendingImagePoll(ctx context.Context, task *store.Task, p
 	now := time.Now().UTC()
 	if w.expireImagePollAttempt(ctx, task) {
 		return
+	}
+	if unconfirmedFor, err := store.ObserveTaskUpstreamAttemptPoll(ctx, w.St.Pool, attemptID, result.Missing, now); err != nil {
+		log.Printf("task %s attempt %s record poll observation failed: %v", task.ID, attemptID, err)
+	} else if unconfirmedFor >= unconfirmedSubmitGrace {
+		if w.abandonUnconfirmedSubmit(ctx, task, attemptID, unconfirmedFor, now) {
+			return
+		}
 	}
 	if failoverAt, ok := upstreamAttemptTime(task, "_upstreamAttemptFailoverAtMs"); ok && !now.Before(failoverAt) {
 		scheduled, err := store.MarkTaskUpstreamAttemptFailoverScheduled(ctx, w.St.Pool, attemptID, now)

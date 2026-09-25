@@ -318,11 +318,13 @@ func (c *Client) doRequest(ctx context.Context, method, path string, payload any
 
 func (c *Client) doRequestWithHeaders(ctx context.Context, method, path string, payload any, timeout time.Duration, headers map[string]string) ([]byte, error) {
 	var body io.Reader
+	bodyBytes := 0
 	if payload != nil {
 		buf, err := json.Marshal(payload)
 		if err != nil {
 			return nil, err
 		}
+		bodyBytes = len(buf)
 		body = bytes.NewReader(buf)
 	}
 	endpoint, err := c.endpointURL(path)
@@ -347,15 +349,40 @@ func (c *Client) doRequestWithHeaders(ctx context.Context, method, path string, 
 		req.Header.Set(key, value)
 	}
 
-	if method == http.MethodPost && (path == "/api/image-tasks/generations" || path == "/api/image-tasks/edits" || path == "/v1/images/generations" || path == "/v1/images/edits" || path == "/v1/editable-file-tasks") {
+	isImageSubmit := method == http.MethodPost && (path == "/api/image-tasks/generations" || path == "/api/image-tasks/edits" || path == "/v1/images/generations" || path == "/v1/images/edits" || path == "/v1/editable-file-tasks")
+	if isImageSubmit {
 		if err := upstreamguard.Check(reqCtx); err != nil {
 			return nil, err
 		}
+		traceCtx, trace := withSubmitTrace(req.Context())
+		req = req.WithContext(traceCtx)
+		var traceResp *http.Response
+		var traceErr error
+		defer func() { trace.log(path, submitClientTaskID(payload), bodyBytes, traceResp, traceErr) }()
+		resp, err := c.HTTPClient.Do(req)
+		traceResp, traceErr = resp, err
+		if err != nil {
+			return nil, &NetworkError{Message: fmt.Sprintf("上游连接失败：%v", err), Err: err}
+		}
+		return readUpstreamResponse(resp)
 	}
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
 		return nil, &NetworkError{Message: fmt.Sprintf("上游连接失败：%v", err), Err: err}
 	}
+	return readUpstreamResponse(resp)
+}
+
+func submitClientTaskID(payload any) string {
+	if m, ok := payload.(map[string]any); ok {
+		if id, ok := m["client_task_id"].(string); ok && id != "" {
+			return id
+		}
+	}
+	return "-"
+}
+
+func readUpstreamResponse(resp *http.Response) ([]byte, error) {
 	defer resp.Body.Close()
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
@@ -413,6 +440,36 @@ type imageTask struct {
 	TextResult   string           `json:"-"`
 	Data         []map[string]any `json:"data"`
 	Results      []map[string]any `json:"results"`
+	// FinishedAt 是上游自报的完成时间（若返回）；用于区分"上游生成慢"与"本端轮询发现得晚"。
+	FinishedAt time.Time `json:"-"`
+}
+
+// parseUpstreamTimestamp 兼容 RFC3339 字符串与秒/毫秒时间戳，无法识别时返回零值。
+func parseUpstreamTimestamp(raw json.RawMessage) time.Time {
+	if len(raw) == 0 {
+		return time.Time{}
+	}
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return time.Time{}
+		}
+		for _, layout := range []string{time.RFC3339Nano, "2006-01-02 15:04:05", "2006-01-02T15:04:05"} {
+			if parsed, err := time.Parse(layout, text); err == nil {
+				return parsed.UTC()
+			}
+		}
+		raw = json.RawMessage(text)
+	}
+	var number float64
+	if json.Unmarshal(raw, &number) != nil || number <= 0 {
+		return time.Time{}
+	}
+	if number > 1e12 {
+		return time.UnixMilli(int64(number)).UTC()
+	}
+	return time.Unix(int64(number), int64((number-float64(int64(number)))*1e9)).UTC()
 }
 
 func (t *imageTask) UnmarshalJSON(buf []byte) error {
@@ -453,6 +510,12 @@ func (t *imageTask) UnmarshalJSON(buf []byte) error {
 	t.Terminal = readBool("terminal", "done")
 	t.Progress = readString("progress")
 	t.ErrorCode = readString("error_code", "errorCode")
+	for _, key := range []string{"finished_at", "finishedAt", "completed_at", "completedAt"} {
+		if finished := parseUpstreamTimestamp(raw[key]); !finished.IsZero() {
+			t.FinishedAt = finished
+			break
+		}
+	}
 	t.TextResult = imageTaskResultText(raw)
 	t.Error = readString("error", "message", "public_error", "publicError", "error_message", "errorMessage")
 	if t.Error == "" {
@@ -610,6 +673,11 @@ type ImageTaskPollResult struct {
 	// CompletedAt 是轮询首次看到上游 succeeded 的时刻（下载开始前）。
 	// 时间线用它计算真实上游耗时，避免把本地串行下载/入库算进“上游生成”。
 	CompletedAt time.Time
+	// UpstreamFinishedAt 是上游自报的完成时间（上游返回时才有）。
+	UpstreamFinishedAt time.Time
+	// PollMs / PollBytes 是本次批量状态查询的耗时与响应体积（同批任务共享）。
+	PollMs    int64
+	PollBytes int64
 	// ImagePayload 是上游返回的 url / b64 列表。状态轮询可以只带回这个字段，
 	// 由 worker 按配置的并发去下载，避免询问进度被拉图堵住。
 	ImagePayload []map[string]any
@@ -1130,6 +1198,30 @@ func (c *Client) pollImageTasksEach(ctx context.Context, taskIDs []string, expec
 	if len(taskIDs) > 100 {
 		taskIDs = taskIDs[:100]
 	}
+	// 每批查询输出一行诊断（耗时/体积/状态/首个错误），并把耗时与体积带进每个任务的结果，
+	// 供 worker 汇总到任务时间线，定位"上游早已完成、本端却迟迟没取到"的原因。
+	pollStarted := time.Now()
+	body := &countingReader{}
+	pollStatus := 0
+	pollItems := 0
+	var pollErr error
+	emitResult := emit
+	emit = func(taskID string, result ImageTaskPollResult) {
+		result.PollMs = time.Since(pollStarted).Milliseconds()
+		result.PollBytes = body.n
+		if result.Err != nil && pollErr == nil && !result.Pending {
+			pollErr = result.Err
+		}
+		emitResult(taskID, result)
+	}
+	defer func() {
+		errText := "-"
+		if pollErr != nil {
+			errText = strings.ReplaceAll(pollErr.Error(), "\n", " ")
+		}
+		log.Printf("c2a poll trace ids=%d status=%d items=%d bytes=%d duration_ms=%d err=%s",
+			len(taskIDs), pollStatus, pollItems, body.n, time.Since(pollStarted).Milliseconds(), errText)
+	}()
 	requested := make(map[string]struct{}, len(taskIDs))
 	for _, taskID := range taskIDs {
 		requested[taskID] = struct{}{}
@@ -1168,8 +1260,10 @@ func (c *Client) pollImageTasksEach(ctx context.Context, taskIDs []string, expec
 		return
 	}
 	defer resp.Body.Close()
+	pollStatus = resp.StatusCode
+	body.r = resp.Body
 	if resp.StatusCode >= 400 {
-		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+		body, readErr := io.ReadAll(io.LimitReader(body, maxResponseBytes+1))
 		if readErr != nil {
 			emitRemaining(ImageTaskPollResult{Err: &NetworkError{Message: fmt.Sprintf("上游连接失败：%v", readErr)}})
 			return
@@ -1178,7 +1272,7 @@ func (c *Client) pollImageTasksEach(ctx context.Context, taskIDs []string, expec
 		return
 	}
 
-	limited := &io.LimitedReader{R: resp.Body, N: maxResponseBytes + 1}
+	limited := &io.LimitedReader{R: body, N: maxResponseBytes + 1}
 	decoder := json.NewDecoder(limited)
 	failDecode := func(decodeErr error) error {
 		if limited.N <= 0 {
@@ -1230,6 +1324,7 @@ func (c *Client) pollImageTasksEach(ctx context.Context, taskIDs []string, expec
 			}
 			task.ID = requestedID
 			items = append(items, task)
+			pollItems = len(items)
 		}
 		if _, err := decoder.Token(); err != nil {
 			emitRemaining(ImageTaskPollResult{Err: failDecode(err)})
@@ -1250,13 +1345,14 @@ func (c *Client) pollImageTasksEach(ctx context.Context, taskIDs []string, expec
 	emitPollResult := func(task imageTask, images []string, payload []map[string]any, stats downloadStats, done bool, taskErr error, completedAt time.Time) {
 		emit(task.ID, ImageTaskPollResult{
 			Images: images, ImagePayload: payload, Pending: !done,
-			ExplicitFailure: imageTaskStatusFailed(normalizedImageTaskStatus(task)) || imageTaskIsTextFailure(task),
-			Status:          normalizedImageTaskStatus(task),
-			ErrorMessage:    strings.TrimSpace(task.Error),
-			Err:             taskErr,
-			CompletedAt:     completedAt,
-			DownloadMs:      stats.Ms,
-			DownloadBytes:   stats.Bytes,
+			ExplicitFailure:    imageTaskStatusFailed(normalizedImageTaskStatus(task)) || imageTaskIsTextFailure(task),
+			Status:             normalizedImageTaskStatus(task),
+			ErrorMessage:       strings.TrimSpace(task.Error),
+			Err:                taskErr,
+			CompletedAt:        completedAt,
+			UpstreamFinishedAt: task.FinishedAt,
+			DownloadMs:         stats.Ms,
+			DownloadBytes:      stats.Bytes,
 		})
 	}
 	for _, task := range items {
@@ -1574,7 +1670,13 @@ func (c *Client) editImagesMultipartResponse(
 	if err := upstreamguard.Check(requestCtx); err != nil {
 		return StandardImageResponse{}, err
 	}
+	bodyBytes := body.Len()
+	traceCtx, trace := withSubmitTrace(req.Context())
+	req = req.WithContext(traceCtx)
 	resp, err := c.HTTPClient.Do(req)
+	defer func() {
+		trace.log("/v1/images/edits", submitClientTaskID(map[string]any{"client_task_id": strings.TrimSpace(taskID)}), bodyBytes, resp, err)
+	}()
 	if err != nil {
 		return StandardImageResponse{}, &NetworkError{Message: fmt.Sprintf("上游连接失败：%v", err), Err: err}
 	}

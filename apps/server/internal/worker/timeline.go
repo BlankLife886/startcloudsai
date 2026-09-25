@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/BlankLife886/startcloudsai/server/internal/c2a"
 	"github.com/BlankLife886/startcloudsai/server/internal/platformlog"
 	"github.com/BlankLife886/startcloudsai/server/internal/store"
 	"github.com/google/uuid"
@@ -179,4 +180,68 @@ func (w *Worker) copyTaskTimeline(ctx context.Context, from, to uuid.UUID) {
 			return
 		}
 	}
+}
+
+// upstreamSubmitTraces 收集一次上游调用内每次图片提交的连接耗时，写入时间线 meta，
+// 后台任务详情据此区分"请求体没发完"与"上游收完请求不响应"。
+type upstreamSubmitTraces struct {
+	mu     sync.Mutex
+	traces []map[string]any
+}
+
+func (t *upstreamSubmitTraces) add(trace c2a.SubmitTrace) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.traces = append(t.traces, trace.Map())
+}
+
+func (t *upstreamSubmitTraces) withMeta(meta map[string]any) map[string]any {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.traces) > 0 {
+		meta["submitTraces"] = append([]map[string]any(nil), t.traces...)
+	}
+	return meta
+}
+
+// recordUpstreamPollObservation 为任务当前的上游尝试累计一次轮询观察（成功/失败、耗时）。
+func (w *Worker) recordUpstreamPollObservation(ctx context.Context, task *store.Task, result c2a.ImageTaskPollResult) {
+	attemptID := upstreamAttemptID(task)
+	if attemptID == uuid.Nil || w.St == nil {
+		return
+	}
+	pollErr := ""
+	switch {
+	case result.Err != nil:
+		pollErr = result.Err.Error()
+	case result.Missing:
+		pollErr = "上游查询结果中没有该任务"
+	}
+	if err := store.RecordTaskUpstreamAttemptPollObservation(ctx, w.St.Pool, attemptID, pollErr, result.PollMs, time.Now().UTC()); err != nil {
+		log.Printf("task %s attempt %s record poll observation failed: %v", task.ID, attemptID, err)
+	}
+}
+
+// upstreamPollMeta 把当前上游尝试的轮询统计并入时间线 meta。
+func (w *Worker) upstreamPollMeta(ctx context.Context, task *store.Task, meta map[string]any) map[string]any {
+	attemptID := upstreamAttemptID(task)
+	if attemptID == uuid.Nil || w.St == nil {
+		return meta
+	}
+	stats, err := store.GetTaskUpstreamAttemptPollStats(ctx, w.St.Pool, attemptID)
+	if err != nil || stats.PollCount == 0 {
+		return meta
+	}
+	meta["pollCount"] = stats.PollCount
+	meta["pollErrorCount"] = stats.PollErrorCount
+	if stats.LastPollMs > 0 {
+		meta["lastPollMs"] = stats.LastPollMs
+	}
+	if stats.LastPollError != "" {
+		meta["lastPollError"] = sanitizeUpstreamMessage(stats.LastPollError)
+	}
+	if stats.LastPollErrorAt != nil {
+		meta["lastPollErrorAt"] = stats.LastPollErrorAt.UTC().Format(time.RFC3339Nano)
+	}
+	return meta
 }
