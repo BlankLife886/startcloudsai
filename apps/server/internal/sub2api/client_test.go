@@ -346,6 +346,25 @@ func TestWebSearchUsesLongerResponseHeaderTimeout(t *testing.T) {
 	}
 }
 
+func TestVisionChatUsesLongerResponseHeaderTimeout(t *testing.T) {
+	client, err := New("https://example.com", "test-key", "gpt-test", "image-test", 300)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vision, ok := client.visionHTTP.Transport.(*http.Transport)
+	if !ok || vision.ResponseHeaderTimeout != 120*time.Second {
+		t.Fatalf("vision response header timeout = %v", vision.ResponseHeaderTimeout)
+	}
+	withImages := map[string]any{"messages": chatPayloadMessages([]Message{{Role: "user", Content: "merge"}}, []string{"data:image/png;base64,AA=="})}
+	if !chatPayloadHasImages(withImages) {
+		t.Fatal("payload with image parts not detected")
+	}
+	textOnly := map[string]any{"messages": chatPayloadMessages([]Message{{Role: "user", Content: "hello"}}, nil)}
+	if chatPayloadHasImages(textOnly) {
+		t.Fatal("text-only payload detected as vision request")
+	}
+}
+
 func TestChatTextWithImagesPublishesCumulativeSSEDeltas(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

@@ -20,12 +20,13 @@ import (
 )
 
 const (
-	maxImageResponseBytes     = 32 << 20
-	maxWebSearchResponseBytes = 2 << 20
-	maxWebSearchTextBytes     = 48 << 10
-	maxWebSearchSources       = 12
-	chatStreamAttempts        = 2
-	chatStreamRetryDelay      = 200 * time.Millisecond
+	maxImageResponseBytes       = 32 << 20
+	maxWebSearchResponseBytes   = 2 << 20
+	maxWebSearchTextBytes       = 48 << 10
+	maxWebSearchSources         = 12
+	chatStreamAttempts          = 2
+	chatStreamRetryDelay        = 200 * time.Millisecond
+	visionResponseHeaderTimeout = 120 * time.Second
 )
 
 type Client struct {
@@ -37,6 +38,7 @@ type Client struct {
 	imageModel        string
 	httpClient        *http.Client
 	webSearchHTTP     *http.Client
+	visionHTTP        *http.Client
 	webSearchModel    string
 	streamIdleTimeout time.Duration
 	maxOutputTokens   int
@@ -220,6 +222,9 @@ func New(baseURL, apiKey, chatModel, imageModel string, timeoutSecs int) (*Clien
 	transport.ResponseHeaderTimeout = min(timeout, 30*time.Second)
 	webSearchTransport := transport.Clone()
 	webSearchTransport.ResponseHeaderTimeout = min(timeout, 75*time.Second)
+	// 带参考图的对话要等上游下载/编码完所有图片才开始流式返回，多图时首包常超过 30 秒。
+	visionTransport := transport.Clone()
+	visionTransport.ResponseHeaderTimeout = min(timeout, visionResponseHeaderTimeout)
 	return &Client{
 		baseURL:           baseURL,
 		apiKey:            strings.TrimSpace(apiKey),
@@ -227,6 +232,7 @@ func New(baseURL, apiKey, chatModel, imageModel string, timeoutSecs int) (*Clien
 		imageModel:        fallback(strings.TrimSpace(imageModel), "gpt-image-2"),
 		httpClient:        &http.Client{Timeout: timeout, Transport: transport},
 		webSearchHTTP:     &http.Client{Timeout: min(timeout, 90*time.Second), Transport: webSearchTransport},
+		visionHTTP:        &http.Client{Timeout: timeout, Transport: visionTransport},
 		webSearchModel:    "gpt-5-search-api",
 		streamIdleTimeout: idleTimeout,
 	}, nil
@@ -1625,6 +1631,9 @@ func (c *Client) chatStreamWithPayload(ctx context.Context, payload map[string]a
 	// streams once the configured duration elapses. The request context already carries the
 	// worker/task deadline and cancellation, so keep the stream alive while data is arriving.
 	streamClient := *c.httpClient
+	if c.visionHTTP != nil && chatPayloadHasImages(payload) {
+		streamClient = *c.visionHTTP
+	}
 	streamClient.Timeout = 0
 	resp, err := streamClient.Do(req)
 	if err != nil {
@@ -1635,6 +1644,20 @@ func (c *Client) chatStreamWithPayload(ctx context.Context, payload map[string]a
 		return nil, decodeUpstreamError(resp)
 	}
 	return resp, nil
+}
+
+func chatPayloadHasImages(payload map[string]any) bool {
+	messages, _ := payload["messages"].([]any)
+	for _, raw := range messages {
+		message, _ := raw.(map[string]any)
+		parts, _ := message["content"].([]any)
+		for _, part := range parts {
+			if item, ok := part.(map[string]any); ok && item["type"] == "image_url" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func contains(values []string, value string) bool {
