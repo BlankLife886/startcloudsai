@@ -495,6 +495,15 @@ func createTaskWithTransaction(ctx context.Context, userID uuid.UUID, in CreateI
 		if err := store.LockUserTaskCreation(ctx, tx, userID); err != nil {
 			return err
 		}
+		// 先于任何写入锁住 API Key，与 last_used_at 更新（锁 Key → 触发器写画像刷新队列）保持
+		// 相同加锁顺序；否则插入任务时触发器已占住队列行，最后再锁 Key 会与之死锁。
+		if developerAPI {
+			if apiKeyID, parseErr := uuid.Parse(strings.TrimSpace(stringParam(in.Params, "_apiKeyId"))); parseErr == nil {
+				if err := store.LockUserAPIKeyForUsage(ctx, tx, apiKeyID, userID); err != nil {
+					return err
+				}
+			}
+		}
 		if in.IdempotencyKey != nil && *in.IdempotencyKey != "" {
 			existing, err := store.GetTaskByIdemKey(ctx, tx, userID, *in.IdempotencyKey)
 			if err != nil {

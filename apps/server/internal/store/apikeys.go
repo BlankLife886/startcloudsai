@@ -147,6 +147,19 @@ func CountActiveUserAPIKeys(ctx context.Context, q Q, userID uuid.UUID) (int, er
 	return count, err
 }
 
+// LockUserAPIKeyForUsage 在事务开头锁住 API Key 行。API Key 的 last_used_at 更新会经触发器
+// 写 user_profile_refresh_queue（先锁 Key、后写队列）；创建任务的事务若先插入任务（同样经
+// 触发器写队列）、最后才锁 Key，两边加锁顺序相反，同一 Key 的并发请求会死锁。
+// Key 不存在或已失效时不报错，交由随后的 RecordAPIKeyTaskCreation 给出业务错误。
+func LockUserAPIKeyForUsage(ctx context.Context, q Q, apiKeyID, userID uuid.UUID) error {
+	var locked int
+	err := q.QueryRow(ctx, `SELECT 1 FROM user_api_keys WHERE id=$1 AND user_id=$2 FOR UPDATE`, apiKeyID, userID).Scan(&locked)
+	if err == pgx.ErrNoRows {
+		return nil
+	}
+	return err
+}
+
 func RecordAPIKeyTaskCreation(ctx context.Context, q Q, apiKeyID, userID, taskID uuid.UUID, modelID string, reservedCents int64, now time.Time) error {
 	return recordAPIKeyUsage(ctx, q, apiKeyID, userID, &taskID, modelID, reservedCents, now)
 }
