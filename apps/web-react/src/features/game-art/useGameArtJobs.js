@@ -242,7 +242,7 @@ export function useGameArtJobs({ model, isAuthenticated }) {
       let effectiveSource = String(sourceUrl || "");
       if (file) {
         patchTask(runId, { status: "正在上传参考图" });
-        effectiveSource = await uploadAiInputFile(file, { featureKey: "ai.gameDesign", signal: context.controller.signal });
+        effectiveSource = await uploadAiInputFile(file, { featureKey: "ai.gameDesign", signal: context.controller.signal, compressReference: true });
       }
       const results = await Promise.all(Array.from({ length: total }, async (_, index) => {
         patchTask(runId, {

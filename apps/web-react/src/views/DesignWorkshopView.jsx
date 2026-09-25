@@ -1604,6 +1604,16 @@ export function DesignWorkshopView() {
         if (pending) {
           const prompt = composePendingLaunchPrompt(pending, 1000);
           if (prompt) setBrief(prompt);
+          // 创作台已上传的参考图以远程地址带入，提交时无需再次上传
+          const launchReferences = (pending.config?.referenceImages || [])
+            .filter((item) => item.dataUrl)
+            .map((item, index) => ({
+              id: crypto.randomUUID(),
+              url: item.dataUrl,
+              preview: "",
+              name: item.name || `参考图 ${index + 1}`,
+            }));
+          if (launchReferences.length) setReferences(launchReferences);
         }
       })
       .catch((error) => {
@@ -1980,7 +1990,8 @@ export function DesignWorkshopView() {
       const uploaded = [];
       for (const item of references)
         uploaded.push(
-          await uploadAiInputFile(item.file, { signal: controller.signal }),
+          item.url ||
+            (await uploadAiInputFile(item.file, { signal: controller.signal, compressReference: true })),
         );
       let seriesAnchorUrl = retryAnchor;
       const failures = [];
@@ -2920,7 +2931,7 @@ export function DesignWorkshopView() {
       const uploadedRefs = [];
       for (const item of regionReferences) {
         uploadedRefs.push({
-          url: await uploadAiInputFile(item.file),
+          url: await uploadAiInputFile(item.file, { compressReference: true }),
           name: item.name || "用户参考图",
         });
       }
@@ -3552,10 +3563,17 @@ export function DesignWorkshopView() {
                       <div className="dws-composer-refs">
                         {references.map((item, index) => (
                           <article key={item.id}>
-                            <img
-                              src={item.preview}
-                              alt={item.name || `参考图 ${index + 1}`}
-                            />
+                            {item.url ? (
+                              <AuthenticatedImage
+                                src={item.url}
+                                alt={item.name || `参考图 ${index + 1}`}
+                              />
+                            ) : (
+                              <img
+                                src={item.preview}
+                                alt={item.name || `参考图 ${index + 1}`}
+                              />
+                            )}
                             <button
                               type="button"
                               aria-label={`移除参考图 ${index + 1}`}

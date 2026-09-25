@@ -267,7 +267,8 @@ function normalizePendingLaunchConfig(value) {
           }
         })
         .filter(Boolean)
-        .slice(0, 4)
+        // 与创作台参考图上限（16）一致；各工作台再按所选模型的参考图上限收紧
+        .slice(0, 16)
       continue
     }
     if (key === 'autoStart' || key === 'costConfirmed') {

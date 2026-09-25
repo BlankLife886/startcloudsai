@@ -298,6 +298,9 @@ export function GameArtStudioView() {
         if (text) setTypeState((current) => ({ ...current, [nextType]: { ...current[nextType], prompt: text, aspect: ASSET_TYPES.find((type) => type.id === nextType)?.aspects.includes(configValue.ratio) ? configValue.ratio : current[nextType].aspect } }));
         if (validImageCount(configValue.count)) setImageCount(validImageCount(configValue.count));
         if (configValue.model && selectable.some((item) => item.id === configValue.model)) setModelId(configValue.model);
+        // 游戏美术只有一个参考图槽位，取创作台的第一张
+        const reference = configValue.referenceImages?.[0]?.dataUrl;
+        if (reference) { setReferenceUrl(reference); setInputFile(null); setSourcePreview(""); }
       }
     }).catch(() => undefined);
     return () => { disposed = true; if (previewRef.current) URL.revokeObjectURL(previewRef.current); };

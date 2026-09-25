@@ -46,7 +46,8 @@ import { formatColoringErrorText } from "@react/legacy-modules/features/ai-illus
 import { fetchRuntimeConfig } from "@react/legacy-modules/services/runtimeConfig.js";
 import { resolveModelPointPricing } from "@react/legacy-modules/features/ai-shared/modelPointPricing.js";
 import { getWallet } from "@react/legacy-modules/services/meApi.js";
-import { downloadAuthenticatedMedia } from "@react/legacy-modules/services/authenticatedMedia.js";
+import { downloadAuthenticatedMedia, fetchAuthenticatedMediaBlob } from "@react/legacy-modules/services/authenticatedMedia.js";
+import { composePendingLaunchPrompt, takePendingPrompt } from "@react/legacy-modules/features/creator-hub/studioTools.js";
 import { submitShareItem } from "@react/legacy-modules/services/shareGallery.js";
 import notificationService from "@react/legacy-modules/services/notification.js";
 import "@react/legacy-static/features/ai-illustration-coloring/styles/illustration-coloring.css";
@@ -257,6 +258,7 @@ export function AiIllustrationColoringView() {
   const navigate = useNavigate();
   const fileInput = useRef(null);
   const referenceInput = useRef(null);
+  const launchHandoffRef = useRef(false);
   const stageRef = useRef(null);
   const dragRef = useRef(null);
   const sourceRef = useRef(null);
@@ -503,6 +505,40 @@ export function AiIllustrationColoringView() {
       setCompareMode("split");
     }
   }, [active, source]);
+
+  // 创作台交接：第一张参考图作为线稿，其余作为配色参考图。等登录态确定后再读取，
+  // 避免被上面「未登录清空」的副作用覆盖。
+  useEffect(() => {
+    if (launchHandoffRef.current || auth.loading || !auth.isAuthenticated) return;
+    launchHandoffRef.current = true;
+    const pending = takePendingPrompt("coloring");
+    if (!pending) return;
+    const text = composePendingLaunchPrompt(pending);
+    if (text) setPrompt(text);
+    const [lineArt, ...extra] = (pending.config?.referenceImages || []).filter((item) => item.dataUrl);
+    if (extra.length) {
+      setReferences(extra.map((item, index) => ({
+        id: `studio-ref-${index}`,
+        previewUrl: item.dataUrl,
+        remoteUrl: item.dataUrl,
+        name: item.name || `参考图 ${index + 1}`,
+        owned: false,
+      })));
+    }
+    if (!lineArt) return;
+    const url = lineArt.dataUrl;
+    setSource({ preview: url, remoteUrl: url, file: null, owned: false, meta: null });
+    jobs.setActiveId("");
+    setCompareMode("result");
+    // 线稿尺寸决定「跟随原图」的输出像素，读取远程图片补齐
+    fetchAuthenticatedMediaBlob(url)
+      .then((blob) => imageMeta(new File([blob], lineArt.name || "line-art.png", { type: blob.type || "image/png" })))
+      .then((meta) => {
+        setSource((current) => (current?.remoteUrl === url ? { ...current, meta } : current));
+        setSourceMeta(meta);
+      })
+      .catch(() => undefined);
+  }, [auth.isAuthenticated, auth.loading, jobs]);
 
   const updateSettings = useCallback((patch) => {
     setSettings((current) => {

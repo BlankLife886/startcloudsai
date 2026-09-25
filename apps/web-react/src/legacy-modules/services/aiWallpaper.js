@@ -8,6 +8,7 @@
  */
 import { invalidateStudioCreditSnapshot } from '@/features/ai-shared/studioUsage'
 import { IMAGE_COUNT_HARD_MAX } from '../features/ai-shared/modelImageCapabilities.js'
+import { compressReferenceImageFile } from '../features/ai-shared/referenceImageCompression.js'
 import {
   cancelTask,
   cancelTaskGroup,
@@ -376,7 +377,11 @@ function legacyResultFromTask(task = {}) {
 /** 上传参考图，返回可展示 URL（内部登记 URL→key 供 createServerAiJob 使用）。 */
 export async function uploadAiInputFile(file, options = {}) {
   if (!file) throw new Error('请先选择一张图片')
-  const uploaded = await uploadFile(file, {
+  // 参考图先压缩，避免多张原图超出任务输入图的累计大小上限；蒙版等精确输入不传该选项
+  const uploadTarget = options?.compressReference
+    ? await compressReferenceImageFile(file, { signal: options?.signal })
+    : file
+  const uploaded = await uploadFile(uploadTarget, {
     signal: options?.signal,
     referenceUpload: true,
     behaviorFeature: options?.behaviorFeature,
@@ -575,7 +580,11 @@ export async function prepareAiInputReference(item, { signal, isCurrentSession }
   assertCurrent()
   let key = item.key || ''
   if (!key && item.url) key = await resolveInputKeyForUrl(item.url, { signal, isCurrentSession })
-  if (!key && item.file) key = (await uploadFile(item.file, { signal })).key
+  if (!key && item.file) {
+    const file = await compressReferenceImageFile(item.file, { signal })
+    assertCurrent()
+    key = (await uploadFile(file, { signal })).key
+  }
   assertCurrent()
   if (!key) throw createInputImageLostError()
   return { key, url: `/api/v1/files/${key.split('/').map(encodeURIComponent).join('/')}` }

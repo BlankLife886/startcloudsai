@@ -27,14 +27,16 @@ func TestValidateTaskInputKeys(t *testing.T) {
 		return size, nil
 	}
 
-	for i := 0; i < 7; i++ {
-		sizes[key(i)] = 1
+	keys := make([]string, maxTaskInputImages+1)
+	for i := range keys {
+		keys[i] = key(i)
+		sizes[keys[i]] = 1
 	}
-	if err := validateTaskInputKeys(context.Background(), userID, []string{key(0), key(1), key(2), key(3), key(4), key(5), key(6)}, 16<<20, objectSize); err == nil {
-		t.Fatal("seven input images unexpectedly accepted")
+	if err := validateTaskInputKeys(context.Background(), userID, keys, 16<<20, objectSize); err == nil {
+		t.Fatal("input images over the count limit unexpectedly accepted")
 	}
-	if err := validateTaskInputKeys(context.Background(), userID, []string{key(0), key(1), key(2), key(3), key(4), key(5)}, 16<<20, objectSize); err != nil {
-		t.Fatalf("six input images rejected: %v", err)
+	if err := validateTaskInputKeys(context.Background(), userID, keys[:maxTaskInputImages], 16<<20, objectSize); err != nil {
+		t.Fatalf("input images at the count limit rejected: %v", err)
 	}
 	if err := validateTaskInputKeys(context.Background(), userID, []string{key(0), key(0)}, 16<<20, objectSize); err == nil {
 		t.Fatal("duplicate input image unexpectedly accepted")

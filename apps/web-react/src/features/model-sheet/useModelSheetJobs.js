@@ -375,6 +375,7 @@ export function useModelSheetJobs({ model, isAuthenticated }) {
         files.filter(Boolean).map((file) => uploadAiInputFile(file, {
           featureKey: "ai.ultraModelSheet",
           signal: controller.signal,
+          compressReference: true,
         })),
       );
       let effectiveSources = [...new Set([...uploaded, ...sourceUrls.filter(Boolean)])];

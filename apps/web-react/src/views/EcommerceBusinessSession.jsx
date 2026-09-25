@@ -1180,13 +1180,33 @@ export function EcommerceBusinessSession({
     if (assistantHandoffConsumedRef.current) return;
     assistantHandoffConsumedRef.current = true;
     const pending = takePendingPrompt(["ecommerce", "ecommerce_design"]);
-    if (!pending) return;
+    if (!pending) return undefined;
     const brief = composePendingLaunchPrompt(pending).trim();
-    if (!brief) return;
-    const productTitle = brief.match(/^商品[：:]\s*([^\n]+)/)?.[1]?.trim();
-    if (productTitle) setProductName(productTitle.slice(0, 120));
-    setSellingPoints(brief.slice(0, 2000));
-    setPane("settings");
+    if (brief) {
+      const productTitle = brief.match(/^商品[：:]\s*([^\n]+)/)?.[1]?.trim();
+      if (productTitle) setProductName(productTitle.slice(0, 120));
+      setSellingPoints(brief.slice(0, 2000));
+      setPane("settings");
+    }
+    // 创作台参考图作为商品图带入；按当前模式落到对应槽位（试穿/手持/商品图）
+    const referenceUrls = (pending.config?.referenceImages || [])
+      .map((item) => item.dataUrl)
+      .filter(Boolean);
+    if (!referenceUrls.length) return undefined;
+    // 交接只消费一次，不在 cleanup 里作废结果：StrictMode 的二次挂载不会再次读取交接数据
+    void Promise.all(
+      referenceUrls.map(async (url, index) => {
+        const blob = await fetchAuthenticatedMediaBlob(url, { cache: "no-store" });
+        const file = new File([blob], `studio-reference-${index + 1}.png`, {
+          type: blob.type || "image/png",
+        });
+        Object.defineProperty(file, "sourceUrl", { value: url });
+        return file;
+      }),
+    )
+      .then((files) => addFiles(files))
+      .catch((error) => setSubmitError(error?.message || "参考图载入失败，请重新上传"));
+    return undefined;
   }, []);
   const [shootUseCase, setShootUseCase] = useState("listing");
   const [shootGoal, setShootGoal] = useState("conversion");

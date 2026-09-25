@@ -19,6 +19,7 @@ import {
   getDefaultRuntimeConfig,
 } from "@react/legacy-modules/services/runtimeConfig.js";
 import { listTasks, uploadFile } from "@react/legacy-modules/services/tasksApi.js";
+import { compressReferenceImageFile } from "@react/legacy-modules/features/ai-shared/referenceImageCompression.js";
 import {
   getScopedLocalItem,
   setScopedLocalItem,
@@ -1517,7 +1518,10 @@ export function StudioHubView() {
     try {
       const uploaded = await Promise.all(
         incoming.map(async (file) => {
-          const result = await uploadFile(file, { signal: controller.signal });
+          const result = await uploadFile(
+            await compressReferenceImageFile(file, { signal: controller.signal }),
+            { signal: controller.signal },
+          );
           return persistableReferences([
             {
               id: crypto.randomUUID(),

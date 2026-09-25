@@ -435,6 +435,11 @@ export function ModelSheetStudioView() {
         if (ASPECT_OPTIONS.includes(configValue.ratio)) { pendingOverridesRef.current.add("aspectRatio"); setAspectRatio(configValue.ratio); }
         if ([1, 2, 3, 4].includes(Number(configValue.count))) { pendingOverridesRef.current.add("boardCount"); setBoardCount(Number(configValue.count)); }
         if (configValue.model && available.some((item) => item.id === configValue.model)) setModelId(configValue.model);
+        const launchReferences = (configValue.referenceImages || [])
+          .filter((item) => item.dataUrl)
+          .slice(0, MAX_REFERENCES)
+          .map((item) => ({ id: `ref-${crypto.randomUUID()}`, type: "url", url: item.dataUrl }));
+        if (launchReferences.length) { pendingOverridesRef.current.add("referenceItems"); setReferenceItems(launchReferences); }
       }
     }).catch(() => undefined);
     return () => {
@@ -472,7 +477,7 @@ export function ModelSheetStudioView() {
       .filter((item) => item?.type === "url" && item.url)
       .slice(0, MAX_REFERENCES);
     const savedSubjects = Array.isArray(readJson(SUBJECTS_KEY, [])) ? readJson(SUBJECTS_KEY, []) : [];
-    setReferenceItems(savedReferences);
+    if (!pendingOverridesRef.current.has("referenceItems")) setReferenceItems(savedReferences);
     setSubjects(savedSubjects.filter((item) => item?.id && item?.url).slice(0, 12));
     setActiveSubjectId(String(saved.activeSubjectId || ""));
     setOutputLabels(readJson(LABELS_KEY, {}));
@@ -634,7 +639,7 @@ export function ModelSheetStudioView() {
     setSubjectSaving(true);
     try {
       let url = referenceUrls[0] || "";
-      if (!url && referenceFiles[0]) url = await uploadAiInputFile(referenceFiles[0], { featureKey: "ai.ultraModelSheet" });
+      if (!url && referenceFiles[0]) url = await uploadAiInputFile(referenceFiles[0], { featureKey: "ai.ultraModelSheet", compressReference: true });
       if (!url) url = jobs.activeOutput;
       if (!url) throw new Error("请先导入参考图或选中一张生成结果");
       const subject = { id: `sub-${crypto.randomUUID()}`, name, url, description: prompt.trim().slice(0, 400), createdAt: new Date().toISOString() };

@@ -9,6 +9,9 @@ export function useReferenceDraft(userId) {
   const [ready, setReady] = useState(false);
   const [storageError, setStorageError] = useState("");
   const revision = useRef(0);
+  // 每个草稿 key 只记录一次读取起点：StrictMode 会重跑读取副作用，若在重跑时重新取
+  // revision，就会把挂载期间写入的参考图（如创作台带入）当成旧状态而被存储草稿覆盖。
+  const loadStart = useRef({ key: null, revision: 0 });
   const previewURLs = useRef(new Set());
   const setReferences = useCallback(value => { revision.current++; updateReferences(value); }, []);
   const key = userId || "guest";
@@ -21,7 +24,8 @@ export function useReferenceDraft(userId) {
   }, []);
   useEffect(() => {
     let active = true;
-    const startedRevision = revision.current;
+    if (loadStart.current.key !== key) loadStart.current = { key, revision: revision.current };
+    const startedRevision = loadStart.current.revision;
     void (async () => {
       try {
         await writes.get(key);

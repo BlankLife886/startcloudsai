@@ -101,6 +101,14 @@ func multipartImageRequestForTest(t *testing.T, fields [][2]string, files []stri
 	return request
 }
 
+func repeatedImageFields(count int) []string {
+	fields := make([]string, count)
+	for i := range fields {
+		fields[i] = "image[]"
+	}
+	return fields
+}
+
 func TestOpenAIImageMultipartContract(t *testing.T) {
 	base := [][2]string{{"model", "test-image"}, {"prompt", "change the background"}}
 	for _, tt := range []struct {
@@ -117,7 +125,7 @@ func TestOpenAIImageMultipartContract(t *testing.T) {
 		{"no image", base, nil, 1024, "image"},
 		{"model duplicated", append(base, [2]string{"model", "another-model"}), []string{"image"}, 1024, "model"},
 		{"per image size bound", base, []string{"image"}, 4, "image"},
-		{"reference count bound", base, []string{"image[]", "image[]", "image[]", "image[]", "image[]", "image[]", "image[]"}, 1024, "image"},
+		{"reference count bound", base, repeatedImageFields(maxTaskInputImages + 1), 1024, "image"},
 		{"count fractional", append(base, [2]string{"n", "1.5"}), []string{"image"}, 1024, "n"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

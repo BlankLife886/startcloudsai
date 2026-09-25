@@ -27,8 +27,10 @@ import (
 const maxTaskPromptRunes = 40000
 
 // The model-specific capability check may impose a lower limit. This transport
-// bound must also cover the ecommerce workspace, which supports six references.
-const maxTaskInputImages = 6
+// bound must cover the largest reference count an admin can configure for a
+// model (including per-workspace extras), otherwise requests the model allows
+// are rejected before reaching that check.
+const maxTaskInputImages = modelconfig.MaxReferenceImagesLimit
 
 // outputURLsFor 返回站内受保护文件地址，避免把客户端是否能直连 R2
 // 变成任务结果能否展示的额外前提。
